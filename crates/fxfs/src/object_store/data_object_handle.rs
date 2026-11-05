@@ -4177,9 +4177,10 @@ mod tests {
         }
 
         // Check that the overwrites haven't messed up the filesystem state
+        // fxdax: with the filesystem's lock, which nothing here holds, so that a compaction the
+        // flush task starts doesn't commit midway through the check (TASK-176).
         let fsck_options = FsckOptions {
             fail_on_warning: true,
-            no_lock: true,
             on_error: Box::new(|err| println!("fsck error: {:?}", err)),
             ..Default::default()
         };
@@ -4332,9 +4333,10 @@ mod tests {
         }
 
         // Check that the overwrites haven't messed up the filesystem state
+        // fxdax: with the filesystem's lock, which nothing here holds, so that a compaction the
+        // flush task starts doesn't commit midway through the check (TASK-176).
         let fsck_options = FsckOptions {
             fail_on_warning: true,
-            no_lock: true,
             on_error: Box::new(|err| println!("fsck error: {:?}", err)),
             ..Default::default()
         };
@@ -4407,9 +4409,10 @@ mod tests {
         }
 
         // Check that the overwrites haven't messed up the filesystem state
+        // fxdax: with the filesystem's lock, which nothing here holds, so that a compaction the
+        // flush task starts doesn't commit midway through the check (TASK-176).
         let fsck_options = FsckOptions {
             fail_on_warning: true,
-            no_lock: true,
             on_error: Box::new(|err| println!("fsck error: {:?}", err)),
             ..Default::default()
         };
@@ -4490,9 +4493,10 @@ mod tests {
         assert_eq!(object.get_size(), 12288);
 
         // Check that the overwrites haven't messed up the filesystem state
+        // fxdax: with the filesystem's lock, which nothing here holds, so that a compaction the
+        // flush task starts doesn't commit midway through the check (TASK-176).
         let fsck_options = FsckOptions {
             fail_on_warning: true,
-            no_lock: true,
             on_error: Box::new(|err| println!("fsck error: {:?}", err)),
             ..Default::default()
         };
@@ -5130,17 +5134,23 @@ mod tests {
             let store = shared_context_clone.lock().store.as_ref().cloned().unwrap();
             let shared_context = shared_context_clone.clone();
             async move {
-                // First run fsck on the current filesystem.
-                let options = FsckOptions {
+                // First run fsck on the current filesystem. fxdax: without its lock, which the
+                // commit this follows holds. The filesystems mounted below are checked with
+                // theirs, as their own work goes on meanwhile (compactions, the graveyard's reap
+                // and trims): a commit of it that overtook a check without the lock had the check
+                // find a journal block missing from the allocator and another extra, or an object
+                // orphaned (TASK-176).
+                let options = |no_lock| FsckOptions {
                     fail_on_warning: true,
-                    no_lock: true,
+                    no_lock,
                     on_error: Box::new(|err| println!("fsck error: {:?}", err)),
                     ..Default::default()
                 };
+                let (unlocked, locked) = (options(true), options(false));
                 let fs = store.filesystem();
 
-                fsck_with_options(fs.clone(), &options).await.expect("fsck_with_options failed");
-                fsck_volume_with_options(fs.as_ref(), &options, store.store_object_id(), None)
+                fsck_with_options(fs.clone(), &unlocked).await.expect("fsck_with_options failed");
+                fsck_volume_with_options(fs.as_ref(), &unlocked, store.store_object_id(), None)
                     .await
                     .expect("fsck_volume_with_options failed");
 
@@ -5193,18 +5203,16 @@ mod tests {
                     }
 
                     // Run fsck.
-                    fsck_with_options(fs.clone(), &options)
-                        .await
-                        .expect("fsck_with_options failed");
-                    fsck_volume_with_options(fs.as_ref(), &options, store.store_object_id(), None)
+                    fsck_with_options(fs.clone(), &locked).await.expect("fsck_with_options failed");
+                    fsck_volume_with_options(fs.as_ref(), &locked, store.store_object_id(), None)
                         .await
                         .expect("fsck_volume_with_options failed");
                     fs.close().await.expect("close failed");
                 }
 
                 // Run fsck on fs2.
-                fsck_with_options(fs2.clone(), &options).await.expect("fsck_with_options failed");
-                fsck_volume_with_options(fs2.as_ref(), &options, store.store_object_id(), None)
+                fsck_with_options(fs2.clone(), &locked).await.expect("fsck_with_options failed");
+                fsck_volume_with_options(fs2.as_ref(), &locked, store.store_object_id(), None)
                     .await
                     .expect("fsck_volume_with_options failed");
                 fs2.close().await.expect("close failed");

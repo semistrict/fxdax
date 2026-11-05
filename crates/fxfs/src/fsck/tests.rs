@@ -5211,3 +5211,40 @@ async fn test_illegal_key_in_root_store() {
         test.errors()
     );
 }
+
+// fxdax: a check with the filesystem's lock finds nothing amiss while it compacts, as its flush
+// task may at any time. Without the lock, a compaction's commits overtook a check, which found a
+// journal block missing from the allocator and another extra, or a layer file orphaned
+// (TASK-176): fsck without the lock is only for one whose commits the caller holds off.
+#[fuchsia::test]
+async fn test_a_check_while_compacting_finds_nothing() {
+    let test = FsckTest::new().await;
+    let fs = test.filesystem();
+    let root_volume = root_volume(fs.clone()).await.unwrap();
+    let volume = root_volume.new_volume("vol", NewChildStoreOptions::default()).await.unwrap();
+    let root_directory =
+        Directory::open(&volume, volume.root_directory_object_id()).await.expect("open failed");
+    for round in 0..40 {
+        let mut transaction = volume
+            .new_transaction(
+                lock_keys![LockKey::object(volume.store_object_id(), root_directory.object_id())],
+                Options::default(),
+            )
+            .await
+            .expect("new_transaction failed");
+        root_directory
+            .create_child_file(&mut transaction, &format!("file {round}"))
+            .await
+            .expect("create_child_file failed");
+        transaction.commit().await.expect("commit failed");
+        let options = FsckOptions {
+            fail_on_warning: true,
+            on_error: Box::new(move |issue| eprintln!("round {round}: {issue:?}")),
+            ..Default::default()
+        };
+        let (compacted, checked) =
+            join!(fs.journal().force_compact(), fsck_with_options(fs.clone(), &options));
+        compacted.expect("force_compact failed");
+        checked.unwrap_or_else(|error| panic!("round {round}: {error:#}"));
+    }
+}
