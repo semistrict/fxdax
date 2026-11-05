@@ -25,7 +25,9 @@ mod sync;
 #[cfg(test)]
 mod tests;
 
-pub use physmap::{ArenaId, CHUNK_SIZE, PhysLocation, max_size};
+pub use physmap::{
+    ArenaId, CHUNK_SIZE, DEFAULT_MAX_MAP_COUNT, PhysLocation, max_map_count, max_size,
+};
 pub use pmm::quarantine::{Quarantined, quarantine_with};
 pub use pmm::relief::{RELIEF_BYTES, relieve_with};
 use std::os::fd::{BorrowedFd, OwnedFd};

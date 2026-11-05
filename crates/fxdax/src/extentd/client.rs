@@ -46,6 +46,10 @@ pub struct RemoteExtentStore {
     transfer: Option<Transfer>,
     /// fxdax: whether its window copies on write (backlog doc-13), once created so.
     copying: std::sync::atomic::AtomicBool,
+    /// fxdax: how many mappings the host lets a process make, if it limits them, as the daemon
+    /// says ([`Opened`]), which its window budgets its own by: this process, in a jail without
+    /// /proc, can't read it (TASK-172).
+    max_map_count: Option<u64>,
 }
 
 impl RemoteExtentStore {
@@ -122,8 +126,9 @@ impl RemoteExtentStore {
         let (Some(own), Some(public)) = (fds.next(), fds.next()) else {
             return Err(Error::msg("the daemon sent no physical memory"));
         };
-        let Opened { branch, arena, epoch } = Opened::from_args(reply.header.args)
-            .map_err(|_| Error::msg("the daemon named no arena"))?;
+        let opened = Opened::from_args(reply.header.args);
+        let Opened { branch, arena, epoch, max_map_count } =
+            opened.map_err(|_| Error::msg("the daemon named no arena"))?;
         // Its tenant's arena, and the default one, read-only.
         let memories = vec![(arena, own), (crate::pages::ArenaId::DEFAULT, public)];
         // A follower's view's commit, which it has heard of.
@@ -144,7 +149,7 @@ impl RemoteExtentStore {
         };
         let copying = std::sync::atomic::AtomicBool::new(false);
         let faults = Mutex::new(None);
-        Ok(Self { client, branch, memories, faults, read_only, transfer, copying })
+        Ok(Self { client, branch, memories, faults, read_only, transfer, copying, max_map_count })
     }
 
     /// fxdax: whether it is a follower's, read-only ([`RemoteExtentStore::connect_read_only`]).
@@ -527,6 +532,12 @@ impl RemoteExtentStore {
         self.client.stage_counts()
     }
 
+    /// fxdax: the runs of pages its window keeps installed at most, once it is created.
+    #[cfg(test)]
+    pub(super) fn window_budget(&self) -> Option<usize> {
+        self.client.stage.get().map(|stage| stage.budget())
+    }
+
     /// Has `lost` called once the daemon goes, closing the connection: at once if it went already.
     /// Nothing the store asks is served from then on, its window's faults included, and it doesn't
     /// connect again: a VMM stops its VM, which can't go on, visibly to its host (TASK-50.2).
@@ -574,7 +585,9 @@ impl RemoteExtentStore {
             .map_err(Error::new)?;
         let phys = crate::dax::uffd::Memories::Given(memories);
         // SAFETY: As the caller promises.
-        let stage = unsafe { UffdSecondStage::new(base.as_ptr() as usize, size, phys, prefault) }?;
+        let stage = unsafe {
+            UffdSecondStage::new(base.as_ptr() as usize, size, phys, prefault, self.max_map_count)
+        }?;
         if private_max.is_some() {
             stage.copy_on_write()?;
         }

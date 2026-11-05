@@ -724,17 +724,23 @@ pub(crate) struct Opened {
     pub arena: ArenaId,
     /// fxdax: a follower's view's commit's epoch; 0 of a store opened to write.
     pub epoch: u64,
+    /// fxdax: how many mappings the host lets a process make, if it limits them
+    /// (`physmem::max_map_count`), which the VM process's window budgets its own by: the daemon
+    /// reads it for the VM process, which can't in a jail without /proc (TASK-172). 0 if it
+    /// doesn't limit them.
+    pub max_map_count: Option<u64>,
 }
 
 impl Opened {
     pub fn args(&self) -> [u64; 5] {
-        [self.branch, self.arena.0.into(), self.epoch, 0, 0]
+        [self.branch, self.arena.0.into(), self.epoch, self.max_map_count.unwrap_or(0), 0]
     }
 
     /// What a reply of `args` says: `EINVAL` of an arena that is none.
     pub fn from_args(args: [u64; 5]) -> Result<Self, Errno> {
         let arena = ArenaId(u32::try_from(args[1]).map_err(|_| Errno::EINVAL)?);
-        Ok(Self { branch: args[0], arena, epoch: args[2] })
+        let max_map_count = (args[3] != 0).then_some(args[3]);
+        Ok(Self { branch: args[0], arena, epoch: args[2], max_map_count })
     }
 }
 
@@ -1258,7 +1264,8 @@ mod tests {
             arena in any::<u32>(),
             mappings_of in proptest::collection::vec((any::<[u64; 5]>(), any::<bool>()), 0..16),
         ) {
-            let opened = Opened { branch: a, arena: ArenaId(arena), epoch: b };
+            let max_map_count = (c != 0).then_some(c);
+            let opened = Opened { branch: a, arena: ArenaId(arena), epoch: b, max_map_count };
             prop_assert_eq!(Opened::from_args(opened.args()), Ok(opened));
             let info = Info(ExtentInfo {
                 capacity: a,

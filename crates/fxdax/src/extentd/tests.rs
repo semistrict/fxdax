@@ -177,6 +177,28 @@ fn windows_let_go_of_the_daemons_pages_as_their_connection_goes() {
     assert_eq!(unsafe { libc::munmap(memory.as_ptr().cast(), 2 * ps) }, 0);
 }
 
+/// fxdax TASK-172: a VM process's window keeps as many runs of pages installed as the mappings the
+/// daemon says the host lets a process make allow, not as what it reads of /proc itself: in its
+/// jail, without /proc, it budgeted by Linux's default, 30,717 runs where the GCE hosts' limit,
+/// 1,048,576, allows 522,240. The daemon here says 300,000, which neither /proc nor the default
+/// is: 4,096 of them kept for the process's others, half the rest.
+#[test]
+fn windows_budget_by_the_mappings_the_daemon_says_the_host_allows() {
+    host();
+    super::server::MAX_MAP_COUNT_GIVEN.set(300_000).unwrap();
+    let ps = page_size() as usize;
+    let dir = tempfile::tempdir().unwrap();
+    let (store, served) = connect(&dir.path().join("store"), 1 << 24);
+    let memory = memory(2);
+    // SAFETY: The memory is the test's, and outlives the store.
+    unsafe { store.create_dax_window_in_host_memory(memory, 2 * ps as u64, None, 1) }.unwrap();
+    assert_eq!(store.window_budget(), Some(147_952));
+    drop(store);
+    served.join().unwrap();
+    // SAFETY: Unmaps the memory, which nothing uses any more.
+    assert_eq!(unsafe { libc::munmap(memory.as_ptr().cast(), 2 * ps) }, 0);
+}
+
 /// fxdax: with `FXDAX_EXTENTD_REMOTE` naming a bucket, the stores the daemon opens keep their
 /// branches there: a durable commit is an uploaded one.
 #[test]

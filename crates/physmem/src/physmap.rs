@@ -75,18 +75,28 @@ const UNASSIGNED: u64 = u64::MAX;
 const MAPPINGS_RESERVED: u64 = 4096;
 
 /// fxdax: the most physical memory, in bytes, whose chunks the host maps (TASK-79.37), if it
-/// limits the mappings a process makes, as Linux does: `vm.max_map_count` of them (65,530 unless
-/// raised), [`MAPPINGS_RESERVED`] kept for the process's others, a chunk a mapping at most. macOS
-/// does not.
+/// limits the mappings a process makes ([`max_map_count`]; Linux's default if /proc doesn't say),
+/// [`MAPPINGS_RESERVED`] kept for the process's others, a chunk a mapping at most.
 pub fn max_size() -> Option<u64> {
-    if !cfg!(target_os = "linux") {
-        return None;
-    }
-    let max = std::fs::read_to_string("/proc/sys/vm/max_map_count")
-        .ok()
-        .and_then(|max| max.trim().parse::<u64>().ok())
-        .unwrap_or(65_530);
+    let max = max_map_count().unwrap_or(Some(DEFAULT_MAX_MAP_COUNT))?;
     Some(max.saturating_sub(MAPPINGS_RESERVED) * CHUNK_SIZE as u64)
+}
+
+/// fxdax: Linux's `vm.max_map_count` unless raised.
+pub const DEFAULT_MAX_MAP_COUNT: u64 = 65_530;
+
+/// fxdax: how many mappings the host lets a process make, if it limits them, as Linux does:
+/// `vm.max_map_count` ([`DEFAULT_MAX_MAP_COUNT`] unless raised), which only /proc says; macOS
+/// does not. A process without /proc can't learn it, and fails: a VM process in its jail is told
+/// it by its daemon, which reads it here (TASK-172), as the default in its place would be wrong
+/// wherever the host raised it.
+pub fn max_map_count() -> std::io::Result<Option<u64>> {
+    if !cfg!(target_os = "linux") {
+        return Ok(None);
+    }
+    let max = std::fs::read_to_string("/proc/sys/vm/max_map_count")?;
+    let invalid = |err| std::io::Error::new(std::io::ErrorKind::InvalidData, err);
+    Ok(Some(max.trim().parse().map_err(invalid)?))
 }
 
 /// Host memory backing the PMM.

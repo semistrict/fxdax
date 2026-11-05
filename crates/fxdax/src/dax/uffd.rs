@@ -339,14 +339,16 @@ pub(crate) type TakenCounts = [u64; 2];
 /// libraries', guest memory's, its threads' stacks'.
 const MAPPINGS_RESERVED: usize = 4096;
 
-/// The runs of pages a second stage keeps installed at most: half of the mappings the process may
-/// make (`vm.max_map_count`) beyond [`MAPPINGS_RESERVED`], as each run, a mapping of its own,
-/// splits the memory around it, a mapping too.
-fn default_budget() -> usize {
-    let max = std::fs::read_to_string("/proc/sys/vm/max_map_count")
-        .ok()
-        .and_then(|max| max.trim().parse::<usize>().ok())
-        .unwrap_or(65_530);
+/// The runs of pages a second stage keeps installed at most, in a process the host lets make
+/// `max_map_count` mappings, if it limits them (`physmem::max_map_count`): half of those beyond
+/// [`MAPPINGS_RESERVED`], as each run, a mapping of its own, splits the memory around it, a mapping
+/// too. fxdax: told the limit, as a VM process in a jail without /proc can't read it, which once
+/// had it budget by Linux's default, a seventeenth of the hosts' (TASK-172).
+pub(crate) fn budget(max_map_count: Option<u64>) -> usize {
+    let Some(max) = max_map_count else {
+        return usize::MAX / 2;
+    };
+    let max = usize::try_from(max).unwrap_or(usize::MAX);
     (max.saturating_sub(MAPPINGS_RESERVED) / 2).max(1)
 }
 
@@ -371,8 +373,12 @@ fn refused(what: &str, offset: u64, thread: u32) {
 /// fxdax: the name of thread `thread`, as the kernel has it: whether a fault the window refused was
 /// a vCPU's, the guest's own access, a device's, the VMM's on its behalf, or a kernel thread's, as
 /// KVM's asynchronous page faults are, a vCPU's access faulted in for it as its guest goes on
-/// (TASK-44.12): this process's threads, then any.
+/// (TASK-44.12): this process's threads, then any. fxdax: "gone" only if /proc is there to say
+/// so: a jailed VMM has none, where every thread would read as gone (TASK-172).
 fn thread_name(thread: u32) -> String {
+    if !std::path::Path::new("/proc/self").exists() {
+        return "unnamed: no /proc".to_owned();
+    }
     [format!("/proc/self/task/{thread}/comm"), format!("/proc/{thread}/comm")]
         .iter()
         .find_map(|path| std::fs::read_to_string(path).ok())
@@ -751,11 +757,18 @@ impl Memories {
     }
 }
 
+/// How many mappings the host lets a test's process make, which a test, with /proc, reads.
+#[cfg(test)]
+pub(crate) fn host_max_map_count() -> Option<u64> {
+    physmem::max_map_count().expect("the host's vm.max_map_count")
+}
+
 impl UffdSecondStage {
     /// Takes over the `size` bytes of host memory at `base`, replacing them with memory whose
     /// faults userfaultfd reports, as nothing is mapped yet: the window's pages are mapped there
     /// from `phys`, physical memory. `prefault`, if any, is told of the pages mapped
-    /// there.
+    /// there. It keeps as many runs of pages installed as a process the host lets make
+    /// `max_map_count` mappings may ([`budget`]).
     ///
     /// # Safety
     ///
@@ -765,9 +778,16 @@ impl UffdSecondStage {
         size: u64,
         memories: Memories,
         prefault: Option<Arc<dyn Prefault>>,
+        max_map_count: Option<u64>,
     ) -> Result<Arc<Self>, Error> {
+        let budget = budget(max_map_count);
+        log::info!(
+            "fxdax: a DAX window of {size} bytes keeps at most {budget} runs of pages installed, \
+             the host letting a process make {} mappings",
+            max_map_count.map_or_else(|| "any number of".to_owned(), |max| max.to_string())
+        );
         // SAFETY: As the caller promises.
-        unsafe { Self::with_budget(base, size, memories, prefault, default_budget()) }
+        unsafe { Self::with_budget(base, size, memories, prefault, budget) }
     }
 
     /// As [`new`](Self::new), keeping at most `budget` runs of pages installed.
@@ -807,7 +827,13 @@ impl UffdSecondStage {
         prefault: Option<Arc<dyn Prefault>>,
     ) -> Result<Arc<Self>, Error> {
         // SAFETY: As the caller promises.
-        unsafe { Self::new(base, size, Memories::InProcess, prefault) }
+        unsafe { Self::new(base, size, Memories::InProcess, prefault, host_max_map_count()) }
+    }
+
+    /// The runs of pages it keeps installed at most.
+    #[cfg(test)]
+    pub(crate) fn budget(&self) -> usize {
+        self.budget
     }
 
     /// Serves the faults on the memory with `window`, on a thread of its own, until the returned
@@ -2148,8 +2174,7 @@ mod tests {
         let file = TestSource::filled(2, 1).source();
         // SAFETY: Only the test uses the memory, which outlives the window.
         let stage =
-            unsafe { UffdSecondStage::new(base, (2 * ps) as u64, Memories::InProcess, None) }
-                .unwrap();
+            unsafe { UffdSecondStage::in_process(base, (2 * ps) as u64, None) }.unwrap();
         let (dax, _window) = Dax::in_host_memory(stage.clone()).unwrap();
         dax.window.map(0, &file, 0, (2 * ps) as u64);
         assert_eq!(stage.taken(), [0, 0], "mapped where nothing was");
@@ -2204,8 +2229,7 @@ mod tests {
         let file = TestSource::scattered(pages as u64, |page| tag(page as usize)).source();
         // SAFETY: Only the test uses the memory, which outlives the window.
         let stage =
-            unsafe { UffdSecondStage::new(base, (pages * ps) as u64, Memories::InProcess, None) }
-                .unwrap();
+            unsafe { UffdSecondStage::in_process(base, (pages * ps) as u64, None) }.unwrap();
         let (dax, _window) = Dax::in_host_memory(stage.clone()).unwrap();
         dax.window.map(0, &file, 0, (pages * ps) as u64);
         // SAFETY: The memory is the window's, whose faults the fault thread serves.
@@ -2215,7 +2239,8 @@ mod tests {
                 assert_eq!(load(page), tag(page), "round {round}, page {page}");
             }
             let runs = stage.pages.lock().unwrap().runs;
-            assert!(runs <= default_budget(), "round {round}: {runs} runs installed");
+            let budget = budget(host_max_map_count());
+            assert!(runs <= budget, "round {round}: {runs} runs installed");
         }
         drop(dax);
         // SAFETY: Unmaps the memory, which nothing uses any more.

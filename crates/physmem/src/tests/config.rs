@@ -63,6 +63,7 @@ fn sizes_past_what_the_host_maps_are_invalid() {
     let max = crate::max_size().expect("Linux limits a process's mappings");
     let max_map_count = std::fs::read_to_string("/proc/sys/vm/max_map_count").unwrap();
     let max_map_count: u64 = max_map_count.trim().parse().unwrap();
+    assert_eq!(crate::max_map_count().unwrap(), Some(max_map_count));
     assert_eq!(max, (max_map_count - 4096) * CHUNK);
     let why =
         format!("{} bytes, more than the host maps, {max}: raise vm.max_map_count", max + CHUNK);
@@ -74,6 +75,7 @@ fn sizes_past_what_the_host_maps_are_invalid() {
 #[cfg(target_os = "macos")]
 #[test]
 fn macos_maps_any_size() {
+    assert_eq!(crate::max_map_count().unwrap(), None);
     assert_eq!(crate::max_size(), None);
 }
 

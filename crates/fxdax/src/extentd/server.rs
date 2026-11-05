@@ -64,6 +64,26 @@ pub fn serve_tenant(listener: UnixListener, tenant: Arc<Tenant>) {
     serve_as(listener, move || Ok(tenant.clone()))
 }
 
+/// fxdax: how many mappings the host lets a process make, which the reply to an `OPEN` tells the VM
+/// process ([`Opened`]), as it can't read it in a jail without /proc (TASK-172): Linux's default,
+/// said, if this process can't either.
+fn max_map_count() -> Option<u64> {
+    #[cfg(test)]
+    if let Some(&given) = MAX_MAP_COUNT_GIVEN.get() {
+        return Some(given);
+    }
+    physmem::max_map_count().unwrap_or_else(|err| {
+        let default = physmem::DEFAULT_MAX_MAP_COUNT;
+        log::warn!("extentd: the host's vm.max_map_count: {err}: telling VM processes {default}");
+        Some(default)
+    })
+}
+
+/// fxdax: what the daemon tells VM processes of the host's mappings in a test, in place of the
+/// host's ([`max_map_count`]).
+#[cfg(test)]
+pub(super) static MAX_MAP_COUNT_GIVEN: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+
 /// fxdax: how long an accept that failed waits to be tried again, as files close (TASK-79.35).
 pub(super) const ACCEPT_AGAIN: std::time::Duration = std::time::Duration::from_millis(50);
 
@@ -1075,7 +1095,8 @@ impl Connection {
         if let Request::Open { path, opening: codec::Opening::ReadOnly } = request {
             let branch = self.follow(path)?;
             let epoch = self.store().ok_or(Errno::EBADF)?.epoch()?;
-            reply.args = Opened { branch, arena: self.arena_id(), epoch }.args();
+            let max_map_count = max_map_count();
+            reply.args = Opened { branch, arena: self.arena_id(), epoch, max_map_count }.args();
             fds.extend(self.memories());
             return Ok(());
         }
@@ -1296,7 +1317,8 @@ impl Connection {
         let opened = self.open(&path, how).await;
         let fds = match &opened {
             Ok(branch) => {
-                reply.args = Opened { branch: *branch, arena: self.arena_id(), epoch: 0 }.args();
+                let (branch, arena, max_map_count) = (*branch, self.arena_id(), max_map_count());
+                reply.args = Opened { branch, arena, epoch: 0, max_map_count }.args();
                 Vec::from(self.memories())
             }
             Err(_) => Vec::new(),
