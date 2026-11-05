@@ -290,10 +290,30 @@ pub async fn take_lease(
 
 /// The epoch of the lease at `key`: 0 if there is none.
 pub async fn lease_epoch(bucket: &impl Bucket, key: &str) -> Result<u64, Error> {
+    Ok(lease(bucket, key).await?.map_or(0, |lease| lease.epoch))
+}
+
+/// The lease at `key`, if there is one.
+pub async fn lease(bucket: &impl Bucket, key: &str) -> Result<Option<Lease>, Error> {
     match bucket::get(bucket, key).await {
-        Some(object) => Ok(Lease::decode(&object.bytes)?.epoch),
-        None => Ok(0),
+        Some(object) => Ok(Some(Lease::decode(&object.bytes)?)),
+        None => Ok(None),
     }
+}
+
+/// Whether the lease at `key` is still the taking of epoch `epoch` by `holder`: its epoch alone
+/// may be another taking's, as a deleted branch's lease the collector removed and a taking created
+/// again, at epoch 1, before finding the branch deleted (TASK-179).
+pub async fn holds_lease(
+    bucket: &impl Bucket,
+    key: &str,
+    epoch: u64,
+    holder: u64,
+) -> Result<bool, Error> {
+    let lease = lease(bucket, key).await?;
+    Ok(lease.is_some_and(|lease| {
+        lease.epoch == epoch && (lease.holder == holder || !rules().leases_by_takings)
+    }))
 }
 
 /// Deletes `branch`, as `holder`, of the placement whose fencing token is `token`: no writer takes

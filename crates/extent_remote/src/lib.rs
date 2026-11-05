@@ -202,6 +202,10 @@ pub(crate) struct Rules {
     /// writer holding the lease to name nothing further along its way than the writer does
     /// (TASK-175).
     pub moves_taken_first: bool,
+    /// A writer finds the lease still its by its taking, its holder with its epoch, not by its
+    /// epoch alone: a deleted branch's lease removed and taken again restarts its epochs
+    /// (TASK-179).
+    pub leases_by_takings: bool,
 }
 
 impl Rules {
@@ -229,6 +233,7 @@ impl Rules {
         extent_keys_name_segments: true,
         ways_from_seals: true,
         moves_taken_first: true,
+        leases_by_takings: true,
     };
 }
 

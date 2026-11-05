@@ -1052,6 +1052,47 @@ mod tests {
         branch::delete(&bucket, 2, 12, u64::MAX).await
     }
 
+    /// TASK-179: a writer of a branch deleted meanwhile, whose lease the collector removed and a
+    /// taking created again, at the writer's epoch, before finding the branch deleted, acknowledges
+    /// nothing: the lease is another taking's. Found by the simulation, seed 9030 of its
+    /// `bases_deleted_under_live_forks` at SIM_SOAK=100, where such a writer gave its forks'
+    /// children records naming what the collector had reclaimed.
+    #[test]
+    fn writers_acknowledge_nothing_once_their_epoch_is_taken_again() {
+        assert_eq!(block_on(acknowledge_past_a_lease_taken_again()), Err(Error::Fenced));
+    }
+
+    /// A writer finding the lease its by its epoch alone: it acknowledges its segment.
+    #[test]
+    fn writers_acknowledging_nothing_once_their_epoch_is_taken_again_need_leases_by_takings() {
+        crate::set_rules(crate::Rules { leases_by_takings: false, ..crate::Rules::ALL });
+        let acknowledged = block_on(acknowledge_past_a_lease_taken_again());
+        crate::set_rules(crate::Rules::ALL);
+        assert_eq!(acknowledged, Ok(Some(1)));
+    }
+
+    /// What a writer's acknowledgement of its segment gives, uploaded before its branch was
+    /// deleted, a pass removed its lease, and a taking that read the record before the deletion
+    /// took the lease again.
+    async fn acknowledge_past_a_lease_taken_again() -> Result<Option<u64>, Error> {
+        let bucket = store();
+        branch::create(&*bucket, 1, 0).await.unwrap();
+        let writer = Writer::open(bucket.clone(), 1, 10, 0).await.unwrap();
+        let objects =
+            Batch::from(Commit { tag: 1, ..Commit::default() }).close(&mut writer.chain()).frame();
+        let seq = writer.add_segment(objects).unwrap();
+        writer.upload(seq).await.unwrap();
+        let record = branch::record(&*bucket, 1).await.unwrap().unwrap();
+        let before = recovery::recover(&*bucket, 1, None).await.unwrap();
+        branch::delete(&*bucket, 1, 11, u64::MAX).await.unwrap();
+        collect(&*bucket, 1, &KEEP).await.unwrap();
+        assert!(!keys(&*bucket).await.contains(&layout::lease(1)));
+        let taken = Writer::open_recovered(bucket.clone(), record, before, 12, 0).await;
+        assert_eq!(taken.err(), Some(Error::Deleted));
+        assert_eq!(branch::lease_epoch(&*bucket, &layout::lease(1)).await, Ok(writer.epoch()));
+        writer.acknowledge().await
+    }
+
     /// A bucket that runs `then` once, at the first request its hook names.
     struct Hooked {
         bucket: Arc<Direct>,

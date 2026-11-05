@@ -92,6 +92,8 @@ pub struct Writer<B: Bucket> {
     bucket: Arc<B>,
     branch: u64,
     epoch: u64,
+    /// Who took its lease: unique to its taking, which the lease must still be.
+    holder: u64,
     /// What its uploads may hold at once, with those of the writers it shares it with.
     budget: Arc<Budget>,
     inner: Mutex<Inner>,
@@ -213,7 +215,7 @@ impl<B: Bucket> Writer<B> {
         if rules().epoch_sequences {
             // Still its lease, no later writer's segment, minted from a later range, is in what
             // it recovered.
-            if branch::lease_epoch(&*bucket, &layout::lease(branch)).await? != epoch {
+            if !branch::holds_lease(&*bucket, &layout::lease(branch), epoch, holder).await? {
                 return Err(Error::Fenced);
             }
             floor = epoch << EPOCH_SHIFT;
@@ -223,6 +225,7 @@ impl<B: Bucket> Writer<B> {
             bucket,
             branch,
             epoch,
+            holder,
             budget: Budget::new(Limits::UNBOUNDED),
             inner: Mutex::new(Inner {
                 state,
@@ -394,8 +397,9 @@ impl<B: Bucket> Writer<B> {
         let Some(through) = through else {
             return Ok(self.inner().state.through);
         };
+        let lease = layout::lease(self.branch);
         if rules().acks_after_lease
-            && branch::lease_epoch(&*self.bucket, &layout::lease(self.branch)).await? != self.epoch
+            && !branch::holds_lease(&*self.bucket, &lease, self.epoch, self.holder).await?
         {
             return Err(self.stop(Error::Fenced));
         }
