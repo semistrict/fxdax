@@ -5,13 +5,20 @@
 # Killer: none
 #
 # TASK-150.9: a DAX file's change of size has Fxfs zero its last block past the end by moving it
-# (FXFS_SET_KEEP_TAIL dropped), from under the window, which goes on mapping it. Killed by neither
-# the simulator nor a real kernel since copying on write: fxfs-guest-checks-dax's
-# append_stopped_short_in_a_page killed it before (GCE fxdax-test-t18-ac, 2026-11-03), and passes
-# with it in now, alone in 3 rounds (GCE fxdax-test-r625, 2026-11-05) and among the suite's every
-# check; guest/sim's model of Fxfs moves the block so too (zero_tail), and none of its one-run tests
-# or scenarios, nor 300 seeds of interleave and failures, fails with it in. A blind spot, not an
-# equivalent: TASK-149.30, which is to have the simulator kill it.
+# (FXFS_SET_KEEP_TAIL dropped), from under the window, which goes on mapping it. Killed on writable
+# DAX by fxfs-guest-checks-dax's append_stopped_short_in_a_page (GCE fxdax-test-t18-ac, 2026-11-03),
+# where the window's page was the old block itself, written through. Equivalent copying on write
+# (TASK-149.30): the flag changes only a cut to within a block (a growth zeroes the old end's block
+# either way, and drops its range first, fxfs_dax_grow_begin), and fxfs_dax_resize_begin zeroes the
+# last page past the new end through the window before Fxfs cuts (fxfs_dax_zero_part), which makes
+# the page private, a copy of the old block, dirty. Nothing then reads the old block through the
+# window: a private page goes only by a MAP or UNMAP, after its writeback, and the window maps then
+# what Fxfs holds, never the moved block's old place. If writeback and a rebind come between the
+# zeroing and the cut, the page maps a block that holds zeros past the end already, which Fxfs's
+# txn_zero_tail leaves where it is (and the model's move_tail). So the move costs a block written,
+# and a crash between keeps the file's bytes either way. As it was: passes alone in 3 rounds of
+# fxfs-guest-checks-dax (GCE fxdax-test-r625, 2026-11-05), and every guest/sim one-run test and
+# scenario, and 300 seeds of interleave and failures.
 
 --- a/guest/linux/fs/fxfs/data.c
 +++ b/guest/linux/fs/fxfs/data.c
