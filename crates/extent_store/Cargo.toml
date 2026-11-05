@@ -10,6 +10,7 @@ publish = false
 anyhow.workspace = true
 bincode.workspace = true
 extent_frame.workspace = true
+extent_remote.workspace = true
 fail = "0.5.1"
 libc.workspace = true
 log.workspace = true

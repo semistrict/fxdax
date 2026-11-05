@@ -17,10 +17,12 @@ use crate::layout::{
     add_piece, branch_dir, create_branch_dirs, decode, encode, held_frees, index_path,
     list_numbers, segment_path,
 };
-use crate::segments::{Reaped, footer_last, segment_footer};
+use crate::segments::{Reaped, segment_footer};
 use crate::store::Options;
 use anyhow::{Error, anyhow, bail, ensure};
+use extent_frame::segment::{Location, epoch_of};
 use extent_frame::spent::Spent;
+use extent_remote::recovery::{Places, Seal, State};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use storage_device::ExtentId;
@@ -290,53 +292,69 @@ pub(crate) fn start_fork<D: Dir>(
 
 /// `branch`'s state from its newest checkpoint and the footers of its closed segments after it:
 /// the segment open as of the checkpoint, and each closed after it that follows on; over `base`,
-/// the layer its index is over, if any.
+/// the layer its index is over, if any. The footers are applied by the one replay every reader of a
+/// branch's history uses, as object storage's recovery applies them (`extent_remote`'s
+/// [`State::apply`], TASK-165.3), its extents placed in the store's segments ([`Replayed`]).
 pub(crate) fn rebuild<D: Dir>(
     dir: &D,
     branch: u64,
     base: Option<Arc<Layer>>,
 ) -> Result<Recovered, Error> {
     let (checkpoint, _) = newest_checkpoint(dir, branch)?;
-    let mut state = Recovered::of(checkpoint, base);
-    let mut last: Option<(u64, u64)> = None;
+    let Recovered { epoch, next_sequence, root, segment, extents, spent } =
+        Recovered::of(checkpoint, base);
+    let first = SegmentId { branch, number: segment };
+    let mut state = State::of(branch, Replayed { extents, segment: first });
+    (state.next_sequence, state.root, state.spent) = (next_sequence, Some(root), spent);
     for number in list_numbers(dir, &branch_dir(SEGMENTS, branch))? {
-        if number < state.segment {
+        if number < segment {
             continue;
         }
-        let segment = SegmentId { branch, number };
-        let path = segment_path(segment);
+        let at = SegmentId { branch, number };
+        let path = segment_path(at);
         let (_, footer) = read_frame(&dir.open(&path, true)?)?
             .ok_or_else(|| anyhow!("{path} is not a whole framed file"))?;
         let Some(footer) = segment_footer(&footer)? else { break };
-        if (number == state.segment) != last.is_none()
-            || last.is_some_and(|last| footer.after != Some(last))
-        {
+        // The segment the checkpoint names, open as of it, which holds what came after it, follows
+        // whatever it follows; one after it is gone, and the branch with it.
+        match (number == segment, state.through) {
+            (true, _) => state.last_segment = footer.after,
+            (false, None) => break,
+            (false, Some(_)) => {}
+        }
+        state.extents.segment = at;
+        if !state.apply(&footer) {
             break;
         }
-        last = Some((footer.seq, footer.epoch));
-        let epoch = footer_last(&footer);
-        for &(extent, offset, len) in &footer.contents.extents {
-            let piece = Piece { segment, offset, extent_offset: 0, len };
-            state.extents.insert(extent, Extent { len, data: Data::Pieces(vec![piece]) });
-        }
-        for (extent, location) in footer.own() {
-            state.extents.insert(extent, Extent { len: location.len, data: Data::Own });
-        }
-        for &extent in &footer.contents.frees {
-            // fxdax: as a delta's frees (`Recovered::apply`): a footer frees those a commit held
-            // alone, which the store spent ([`held_frees`], TASK-160.15).
-            if extent.branch == branch {
-                state.spent.insert(extent.sequence);
-            }
-            state.extents.remove(&extent);
-        }
-        if let Some(root) = footer.contents.root.clone() {
-            state.root = root;
-        }
-        state.next_sequence = footer.contents.next_sequence;
-        state.epoch = state.epoch.max(epoch);
     }
-    Ok(state)
+    let epoch = state.last_commit.map_or(epoch, |tag| epoch.max(epoch_of(tag)));
+    let State { extents, next_sequence, root, spent, .. } = state;
+    let (root, extents) = (root.unwrap_or_default(), extents.extents);
+    Ok(Recovered { epoch, next_sequence, root, segment, extents, spent })
+}
+
+/// A branch's extents as a replay of the footers of its closed segments places them ([`rebuild`]):
+/// sealed in one run of `segment`, the segment applied, or in files of their own.
+struct Replayed {
+    extents: Extents,
+    segment: SegmentId,
+}
+
+impl Places for Replayed {
+    fn seal(&mut self, extent: ExtentId, seal: Seal) {
+        let entry = match seal {
+            Seal::Run(Location { offset, len, .. }) => {
+                let piece = Piece { segment: self.segment, offset, extent_offset: 0, len };
+                Extent { len, data: Data::Pieces(vec![piece]) }
+            }
+            Seal::Own(location) => Extent { len: location.len, data: Data::Own },
+        };
+        self.extents.insert(extent, entry);
+    }
+
+    fn free(&mut self, extent: ExtentId) {
+        self.extents.remove(&extent);
+    }
 }
 
 /// The index an open branch appends its commits' records to: a delta each, in its current file,

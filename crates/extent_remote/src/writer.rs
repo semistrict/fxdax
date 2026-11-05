@@ -206,7 +206,7 @@ impl<B: Bucket> Writer<B> {
                     footer
                 }
             };
-            state.apply(&key, &footer);
+            state.apply(&footer);
             seq += 1;
         }
         let mut floor = 0;
@@ -407,8 +407,7 @@ impl<B: Bucket> Writer<B> {
                 if *entry.key() > through {
                     break;
                 }
-                let (seq, pending) = entry.remove_entry();
-                inner.state.apply(&layout::segment(self.branch, seq), &pending.footer);
+                inner.state.apply(&entry.remove().footer);
             }
         }
         failpoint!("writer::acknowledged");

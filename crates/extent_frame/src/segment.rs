@@ -58,10 +58,7 @@ impl Footer {
     /// is: the object its writer uploaded before it, at the key naming the writer's epoch and it
     /// ([`extent_key`]), which tells the collector whose it is.
     pub fn own(&self) -> impl Iterator<Item = (ExtentId, Location)> + '_ {
-        self.contents.own.iter().map(|&(sequence, len)| {
-            let extent = ExtentId { branch: self.branch, sequence };
-            (extent, Location { key: extent_key(self.epoch, self.seq, extent), offset: 0, len })
-        })
+        self.contents.own_at(self.branch, self.epoch, self.seq)
     }
 }
 
@@ -82,6 +79,22 @@ pub struct Contents {
     pub root: Option<Vec<u8>>,
     pub next_sequence: u64,
     pub forks: Vec<Child>,
+}
+
+impl Contents {
+    /// The extents sealed on their own, `branch`'s, and where each is, in segment `seq` of the
+    /// writer of lease epoch `epoch`: the object that writer uploaded before it ([`extent_key`]).
+    pub fn own_at(
+        &self,
+        branch: u64,
+        epoch: u64,
+        seq: u64,
+    ) -> impl Iterator<Item = (ExtentId, Location)> + '_ {
+        self.own.iter().map(move |&(sequence, len)| {
+            let extent = ExtentId { branch, sequence };
+            (extent, Location { key: extent_key(epoch, seq, extent), offset: 0, len })
+        })
+    }
 }
 
 /// One writer's footers, in the order its segments close (doc-7, Fencing): numbered on without

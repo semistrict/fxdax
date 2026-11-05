@@ -19,7 +19,7 @@
 //! started from has come: if one has, the segment may be one it covers, gone, and it starts again.
 
 use crate::bucket::{self, Bucket};
-use crate::layout::{self, Footer, Fork, Location, Origin, Segment};
+use crate::layout::{self, Contents, Footer, Fork, Location, Origin, Segment};
 use crate::record::Record;
 use crate::{Error, object, rules};
 use extent_frame::spent::Spent;
@@ -29,11 +29,15 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 use storage_device::ExtentId;
 
-/// What a branch holds as of a segment.
+/// What a branch holds as of a segment: where its extents are, `P`, and the rest of its state.
+/// One replay makes it, [`State::apply`], whoever reads the branch's history: its recovery, so its
+/// writers, its collector, its points and its deletion; a writer acknowledging its segments; and a
+/// local store rebuilding it from the footers of its closed segments (TASK-165.3). Each places the
+/// extents as it keeps them ([`Places`]).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct State {
+pub struct State<P = Extents> {
     pub branch: u64,
-    pub extents: BTreeMap<ExtentId, Location>,
+    pub extents: P,
     pub next_sequence: u64,
     pub root: Option<Vec<u8>>,
     /// The tag of the last commit, which may be the parent's, before the fork.
@@ -45,16 +49,53 @@ pub struct State {
     pub epoch: u64,
     /// The last segment applied.
     pub through: Option<u64>,
-    /// The branch's own extents it held and freed, whose IDs it writes no more, for a store taking
-    /// it on another host, which its local index isn't on (TASK-150.6).
+    /// The sequence numbers of the branch's own extents it freed, which it writes no more: one
+    /// rule, every free of them a footer names (TASK-79.6, TASK-150.6, TASK-165.3).
     pub spent: Spent,
+}
+
+/// Where a branch's extents are in the bucket.
+pub type Extents = BTreeMap<ExtentId, Location>;
+
+/// Where a branch's extents are, as a replay of its segments places them ([`State::apply`]).
+pub trait Places {
+    /// Seals `extent` where `seal` says, in the segment applied.
+    fn seal(&mut self, extent: ExtentId, seal: Seal);
+
+    /// Frees `extent`.
+    fn free(&mut self, extent: ExtentId);
+}
+
+/// Where a replay seals an extent, in the bucket: in a run of its segment's data, or in an object
+/// of its own, which its writer uploaded before it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Seal {
+    Run(Location),
+    Own(Location),
+}
+
+impl Places for Extents {
+    fn seal(&mut self, extent: ExtentId, (Seal::Run(location) | Seal::Own(location)): Seal) {
+        self.insert(extent, location);
+    }
+
+    fn free(&mut self, extent: ExtentId) {
+        self.remove(&extent);
+    }
 }
 
 impl State {
     pub fn new(branch: u64) -> Self {
+        Self::of(branch, Extents::new())
+    }
+}
+
+impl<P> State<P> {
+    /// The state of `branch` before its first segment, its extents placed in `extents`.
+    pub fn of(branch: u64, extents: P) -> Self {
         Self {
             branch,
-            extents: BTreeMap::new(),
+            extents,
             next_sequence: 0,
             root: None,
             last_commit: None,
@@ -66,44 +107,88 @@ impl State {
         }
     }
 
-    /// The state of `child`, forked from this one, but for the extents it inherits: its root, and
-    /// its last commit.
-    fn inheriting(&self, child: u64) -> Self {
-        Self { root: self.root.clone(), last_commit: self.last_commit, ..Self::new(child) }
+    /// The state of `child`, forked from this one, before its first segment, its extents placed
+    /// in `extents`: what it inherits but its extents, its root and its last commit.
+    fn inheriting<Q>(&self, child: u64, extents: Q) -> State<Q> {
+        State {
+            root: self.root.clone(),
+            last_commit: self.last_commit,
+            ..State::of(child, extents)
+        }
     }
 
-    /// Applies the segment at `key`, unless it is void. Returns whether it applied it.
-    pub fn apply(&mut self, key: &str, footer: &Footer) -> bool {
+    /// The state, its extents placed in what `place` makes of them.
+    pub fn placed<Q>(self, place: impl FnOnce(P) -> Q) -> State<Q> {
+        let Self {
+            branch,
+            extents,
+            next_sequence,
+            root,
+            last_commit,
+            last_segment,
+            forks,
+            epoch,
+            through,
+            spent,
+        } = self;
+        let extents = place(extents);
+        State {
+            branch,
+            extents,
+            next_sequence,
+            root,
+            last_commit,
+            last_segment,
+            forks,
+            epoch,
+            through,
+            spent,
+        }
+    }
+}
+
+impl<P: Places> State<P> {
+    /// Applies `footer`'s segment, unless it is void: one not following the last applied, which
+    /// its footer names (doc-7, Fencing). Returns whether it applied it.
+    pub fn apply(&mut self, footer: &Footer) -> bool {
         self.through = Some(footer.seq);
         if footer.after != self.last_segment && rules().continuity {
             return false;
         }
         self.last_segment = Some((footer.seq, footer.epoch));
         self.epoch = self.epoch.max(footer.epoch);
-        for &(extent, offset, len) in &footer.contents.extents {
-            self.extents.insert(extent, Location { key: key.to_owned(), offset, len });
+        self.apply_contents(footer.seq, footer.epoch, &footer.contents);
+        true
+    }
+
+    /// Applies `contents`, those of the branch's segment `seq`, of the writer of lease epoch
+    /// `epoch`: what its commits sealed, where they sealed it, then what they freed; the root they
+    /// set, their last commit, the branch's next sequence number, the largest named, and the forks
+    /// at its end. Every free of the branch's own extents spends it, as the store that freed it
+    /// spent it: a footer frees only what a commit held, not what was freed while open
+    /// (TASK-160.15), and one sealed and freed within the segment is a free and no seal (TASK-165.3).
+    pub fn apply_contents(&mut self, seq: u64, epoch: u64, contents: &Contents) {
+        let key = layout::segment(self.branch, seq);
+        for &(extent, offset, len) in &contents.extents {
+            self.extents.seal(extent, Seal::Run(Location { key: key.clone(), offset, len }));
         }
-        for (extent, location) in footer.own() {
-            self.extents.insert(extent, location);
+        for (extent, location) in contents.own_at(self.branch, epoch, seq) {
+            self.extents.seal(extent, Seal::Own(location));
         }
-        // Every free of the branch's own extents spends it, as its store spent it: a footer frees
-        // only what a commit held, not what was freed while open (TASK-160.15); and one sealed and
-        // freed within the segment is no seal of its, but a free (TASK-165.3).
-        for extent in &footer.contents.frees {
-            self.extents.remove(extent);
+        for &extent in &contents.frees {
+            self.extents.free(extent);
             if extent.branch == self.branch {
                 self.spent.insert(extent.sequence);
             }
         }
-        if let Some(root) = &footer.contents.root {
+        if let Some(root) = &contents.root {
             self.root = Some(root.clone());
         }
-        if let Some(&commit) = footer.contents.commits.last() {
+        if let Some(&commit) = contents.commits.last() {
             self.last_commit = Some(commit);
         }
-        self.next_sequence = self.next_sequence.max(footer.contents.next_sequence);
-        self.forks.extend(footer.contents.forks.iter().map(|child| Fork::at(footer.seq, child)));
-        true
+        self.next_sequence = self.next_sequence.max(contents.next_sequence);
+        self.forks.extend(contents.forks.iter().map(|child| Fork::at(seq, child)));
     }
 }
 
@@ -123,62 +208,72 @@ impl Recovered<Layers> {
     /// The branch's state, its layers in one.
     pub(crate) fn flatten(self) -> Recovered {
         let Self { state, end, checkpoint, touched } = self;
-        Recovered { state: state.flatten(), end, checkpoint, touched }
+        Recovered { state: state.placed(Layered::flatten), end, checkpoint, touched }
     }
 }
 
-/// A branch's state in layers: what it inherited, if it has no checkpoint of its own, its
-/// parent's state where it was forked, shared, as read, with the other forks of the parent there;
-/// under its own, what its segments made of it since. The collector, recovering many forks of a
+/// A branch's state in layers ([`Layered`]).
+pub(crate) type Layers = State<Layered>;
+
+/// Where a branch's extents are, in layers: what it inherited, if it has no checkpoint of its own,
+/// its parent's state where it was forked, shared, as read, with the other forks of the parent
+/// there; over it, what its segments made of it since. The collector, recovering many forks of a
 /// base, takes what they inherited together once, not each fork's copy (TASK-92.7).
 #[derive(Clone, Debug)]
-pub(crate) struct Layers {
+pub(crate) struct Layered {
     pub inherited: Option<Arc<State>>,
-    /// Its state, but for the extents it inherited and holds still: all of them, with nothing
+    /// Where its extents are but those it inherited and holds still: all of them, with nothing
     /// inherited.
-    pub own: State,
+    pub own: Extents,
     /// The extents it inherited that it holds no longer where it inherited them: freed, or sealed
     /// again.
     pub shadowed: BTreeSet<ExtentId>,
 }
 
-impl Layers {
+impl Layered {
     /// `state`, in one layer.
-    fn of(state: State) -> Self {
-        Self { inherited: None, own: state, shadowed: BTreeSet::new() }
+    fn of(state: State) -> Layers {
+        state.placed(|own| Self { inherited: None, own, shadowed: BTreeSet::new() })
     }
 
     /// The state of `child`, forked from `inherited`, before its segments.
-    fn inheriting(inherited: Arc<State>, child: u64) -> Self {
-        let own = inherited.inheriting(child);
-        Self { inherited: Some(inherited), own, shadowed: BTreeSet::new() }
+    fn inheriting(inherited: Arc<State>, child: u64) -> Layers {
+        let extents = Self { inherited: None, own: Extents::new(), shadowed: BTreeSet::new() };
+        let mut state = inherited.inheriting(child, extents);
+        state.extents.inherited = Some(inherited);
+        state
     }
 
-    /// Applies the segment at `key`, as [`State::apply`] does.
-    fn apply(&mut self, key: &str, footer: &Footer) {
-        if self.own.apply(key, footer)
-            && let Some(inherited) = &self.inherited
-        {
-            let sealed = footer.contents.extents.iter().map(|&(extent, ..)| extent);
-            let sealed = sealed.chain(footer.own().map(|(extent, _)| extent));
-            let changed = sealed.chain(footer.contents.frees.iter().copied());
-            let shadowed = changed.filter(|extent| inherited.extents.contains_key(extent));
-            self.shadowed.extend(shadowed);
+    /// Shadows `extent` if it inherited it.
+    fn shadow(&mut self, extent: ExtentId) {
+        let inherited = self.inherited.as_ref();
+        if inherited.is_some_and(|inherited| inherited.extents.contains_key(&extent)) {
+            self.shadowed.insert(extent);
         }
     }
 
-    /// The state, in one: what it inherited and holds still, and its own.
-    fn flatten(self) -> State {
+    /// Where its extents are, in one: what it inherited and holds still, and its own.
+    fn flatten(self) -> Extents {
         let Self { inherited, mut own, shadowed } = self;
-        if let Some(inherited) = inherited {
-            let mut extents = Arc::unwrap_or_clone(inherited).extents;
-            for extent in &shadowed {
-                extents.remove(extent);
-            }
-            extents.append(&mut own.extents);
-            own.extents = extents;
+        let Some(inherited) = inherited else { return own };
+        let mut extents = Arc::unwrap_or_clone(inherited).extents;
+        for extent in &shadowed {
+            extents.remove(extent);
         }
-        own
+        extents.append(&mut own);
+        extents
+    }
+}
+
+impl Places for Layered {
+    fn seal(&mut self, extent: ExtentId, seal: Seal) {
+        self.shadow(extent);
+        self.own.seal(extent, seal);
+    }
+
+    fn free(&mut self, extent: ExtentId) {
+        self.shadow(extent);
+        self.own.free(extent);
     }
 }
 
@@ -304,7 +399,7 @@ pub async fn recover_on(
 ) -> Result<Recovered, Error> {
     let Recovered { state, end, checkpoint, touched } = before;
     let branch = state.branch;
-    let before = Recovered { state: Layers::of(state), end, checkpoint, touched };
+    let before = Recovered { state: Layered::of(state), end, checkpoint, touched };
     match follow(bucket, before).await {
         Ok(recovered) => Ok(recovered.flatten()),
         Err(Attempt::Restart) => recover(bucket, branch, origin).await,
@@ -327,13 +422,13 @@ async fn attempt<B: Bucket>(
             };
             touched.insert(newest.key.clone());
             let seq = state.through.ok_or_else(|| Error::Corrupt(newest.key.clone()))?;
-            (Layers::of(Arc::unwrap_or_clone(state)), Some(seq))
+            (Layered::of(Arc::unwrap_or_clone(state)), Some(seq))
         }
         None => match origin {
-            None => (Layers::of(State::new(branch)), None),
+            None => (Layered::of(State::new(branch)), None),
             Some(origin) => {
                 let at = state_at(checkpoints, origin.parent, origin.at, &mut touched).await?;
-                (Layers::inheriting(at, branch), None)
+                (Layered::inheriting(at, branch), None)
             }
         },
     };
@@ -349,9 +444,9 @@ async fn follow(
     mut recovered: Recovered<Layers>,
 ) -> Result<Recovered<Layers>, Attempt> {
     let Recovered { state, end, touched, .. } = &mut recovered;
-    let branch = state.own.branch;
+    let branch = state.branch;
     *end = footers(bucket, branch, *end, u64::MAX, |key, footer| {
-        state.apply(&key, &footer);
+        state.apply(&footer);
         touched.insert(key);
     })
     .await?;
@@ -457,7 +552,7 @@ fn state_at<'a, B: Bucket>(
                 if state.through == Some(at) {
                     return Ok(state);
                 }
-                Layers::of(Arc::unwrap_or_clone(state))
+                Layered::of(Arc::unwrap_or_clone(state))
             }
             None => {
                 let key = layout::record(branch);
@@ -467,25 +562,25 @@ fn state_at<'a, B: Bucket>(
                 touched.insert(key);
                 let record = Record::decode(branch, &object.bytes)?;
                 match record.origin() {
-                    None => Layers::of(State::new(branch)),
+                    None => Layered::of(State::new(branch)),
                     Some(origin) => {
                         let inherited =
                             state_at(checkpoints, origin.parent, origin.at, touched).await?;
-                        Layers::inheriting(inherited, branch)
+                        Layered::inheriting(inherited, branch)
                     }
                 }
             }
         };
-        let from = state.own.through.map_or(0, |seq| seq + 1);
+        let from = state.through.map_or(0, |seq| seq + 1);
         let applied = footers(bucket, branch, from, at, |key, footer| {
-            state.apply(&key, &footer);
+            state.apply(&footer);
             touched.insert(key);
         });
         // Acknowledged segments go only once a checkpoint covers them.
         if applied.await? <= at {
             return Err(Attempt::Restart);
         }
-        Ok(Arc::new(state.flatten()))
+        Ok(Arc::new(state.placed(Layered::flatten)))
     })
 }
 
@@ -505,7 +600,7 @@ mod tests {
     use super::*;
     use crate::batch::{Batch, Commit};
     use crate::branch;
-    use crate::layout::{Contents, child};
+    use crate::layout::child;
     use crate::sim::bucket::SimBucket;
     use crate::store::Store;
     use crate::writer::Writer;

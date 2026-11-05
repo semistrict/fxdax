@@ -42,7 +42,7 @@ use crate::bucket::{self, Bucket, Meta};
 use crate::layout::{self, Kind, Location, Moves, Origin};
 use crate::moves::{Moved, MovesMaps};
 use crate::record::Record;
-use crate::recovery::{self, Checkpoints, Layers, Recovered, State};
+use crate::recovery::{self, Checkpoints, Layered, Layers, Recovered, State};
 use crate::{Error, branch, rules};
 use futures::StreamExt as _;
 use std::collections::{BTreeMap, BTreeSet};
@@ -275,7 +275,7 @@ async fn recover_live(
             };
             // A child with a record is queued by it, as it says: one whose ID another branch took
             // as the fork was made has another origin than its parent's state says (TASK-79.82).
-            for fork in &recovered.state.own.forks {
+            for fork in &recovered.state.forks {
                 let recorded = records.contains_key(&fork.child);
                 if recorded || !rules().forks_from_states || live.taken.contains(&fork.child) {
                     continue;
@@ -322,10 +322,11 @@ impl Live {
     /// Folds in `recovered`, a live branch's: its own layer, and what it inherited into
     /// `inherited`, its round's, which [`Live::inherit`] folds in once for all its forks.
     fn add(&mut self, recovered: Recovered<Layers>, inherited: &mut Inherited) {
-        let Recovered { state: Layers { inherited: from, own, shadowed }, end, touched, .. } =
-            recovered;
+        let Recovered { state, end, touched, .. } = recovered;
+        let State { branch, extents, epoch, next_sequence, .. } = state;
+        let Layered { inherited: from, own, shadowed } = extents;
         self.touched.extend(touched);
-        for (extent, location) in own.extents {
+        for (extent, location) in own {
             self.located.entry(extent).or_default().insert(location);
         }
         if let Some(from) = from {
@@ -334,8 +335,7 @@ impl Live {
                 None => inherited.states.push((from, shadowed)),
             }
         }
-        let ended = Ended { end, epoch: own.epoch, next_sequence: own.next_sequence };
-        self.branches.insert(own.branch, ended);
+        self.branches.insert(branch, Ended { end, epoch, next_sequence });
     }
 
     /// Folds in what forks inherited, `inherited`: each state once, but the extents of it none of
