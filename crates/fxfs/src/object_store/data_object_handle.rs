@@ -5067,8 +5067,11 @@ mod tests {
 
     #[fuchsia::test]
     async fn test_trim() {
-        // Format a new filesystem.
-        let device = DeviceHolder::new(FakeDevice::new(16384, TEST_DEVICE_BLOCK_SIZE));
+        // Format a new filesystem. fxdax: of 16 MiB, not 8: the object below, of more extents than
+        // a transaction can free, left the second pass's truncate, which reserves room for its
+        // transaction, as upstream's does, less of 8 MiB than that, now and then, as compactions
+        // went (TASK-181).
+        let device = DeviceHolder::new(FakeDevice::new(32768, TEST_DEVICE_BLOCK_SIZE));
         let fs = FxFilesystem::new_empty(device).await.expect("new_empty failed");
         let block_size = fs.block_size();
         root_volume(fs.clone())
