@@ -3,11 +3,11 @@ id: TASK-168
 title: >-
   The DAX checks suites run near their 180 s limit: checks-dax-small timed out
   once, checks-dax-delay takes 177 s on the debug kernel
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-04 09:18'
-updated_date: '2026-11-05 05:42'
+updated_date: '2026-11-05 10:17'
 labels: []
 dependencies: []
 priority: medium
@@ -23,15 +23,15 @@ GCE r533 (batch 2026-11-04 at 9e92e6925): fxfs-guest-checks-dax-small timed out 
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 No checks suite runs within 20% of its limit on GCE n2-standard-4, release and debug kernels
-- [ ] #2 Each check's time is in the results
+- [x] #1 No checks suite runs within 20% of its limit on GCE n2-standard-4, release and debug kernels
+- [x] #2 Each check's time is in the results
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -56,4 +56,12 @@ GCE (n2-standard-4): r560 release us-central1-a and r561 debug us-west1-b: every
 Tests: guest/tests' unit tests in Lima: host half 60/60, guest half 57/57 as root (3 loop-device tests need root); the table's 4 tests on both halves; vm:: 11/11. macOS: FXDAX_TEST_PARTS=scripts scripts/test.sh, 151 tests and the mutant checks pass. Not run: KASAN, coverage and rust-checks kernels (their factors guessed); cargo nextest --workspace (DoD 1), unchanged code.
 
 Structure: the class of bug, a suite outrunning one limit that named no check, is gone: a limit per check, the one table owning order, suites and budgets, which host and guest can't disagree on. Left of TASK-160.30: checks still share PID 1, a crash takes the rest.
+
+GCE r584 on main c919610e7: Linux workspace 2249/2249 and every other part pass; macOS 2068/2068 + Shuttle on the landed stack; CI 41994971122; scripts/upstream-changes.py --check passes. r564 (release) and r565 (debug), real filter: every checks suite at 16-21% of its limit; r583 on the landed stack: checks 61/291 s, -dax 73/373, -delay 73/373, -small 74/368, overrun 4/30. r565's one failure was KCSAN's lru_add name, reviewed in a4c7cdf06.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+One table of guest checks, each with a budget (twice its slowest release time, 3 s at least, scaled for debug 1.5x measured, KASAN/coverage guessed, object storage, FXDAX_CHECKS_SCALE); the guest times each check and a watchdog ends the run naming one past its budget; a suite's limit is its budgets' sum plus 30 s; FXDAX_CHECKS naming nothing fails; fxfs-guest-checks-overrun proves the watchdog. Every suite at 16-21% of its limit on release and debug (r564, r565, r583); each check's time is in the log. GCE r584 on main c919610e7: Linux workspace 2249/2249 and every other part pass; macOS 2068/2068 + Shuttle on the landed stack; CI 41994971122; scripts/upstream-changes.py --check passes.
+<!-- SECTION:FINAL_SUMMARY:END -->

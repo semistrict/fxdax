@@ -3,11 +3,11 @@ id: TASK-157
 title: >-
   Tests that fail under load: forks failing at each step, and windows sharing a
   base
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-02 01:59'
-updated_date: '2026-11-05 05:59'
+updated_date: '2026-11-05 10:17'
 labels: []
 dependencies: []
 priority: medium
@@ -23,15 +23,15 @@ From TASK-150.20 under load: guests_forks_failing_at_each_step_harm_nothing fail
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Each cause found, in the test or the code
-- [ ] #2 Each passes 500 runs under load
+- [x] #1 Each cause found, in the test or the code
+- [x] #2 Each passes 500 runs under load
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -49,4 +49,12 @@ guests_forks_failing_at_each_step_harm_nothing. CAUSE: each step's FailGuard ('1
 BLIND SPOT: tests on the stores alone run their uploaders idle, so a one-shot failpoint there is only ever passed by the work under test. The daemon's tests open stores with the default interval, which none of them saw. LOOKED AROUND: the other one-shot failpoints in extentd/tests.rs (forks_whose_answers_are_lost_stand, control_forks_failing_fork_again, restores_over_what_a_dead_host_left_fail_until_it_is_deleted) arm daemon or fork-path steps (extentd::*, remote::forked, fork::committed, delete::*), which no idle uploader passes. fork_faults and restore_faults use idle options. No other test counts strong_count after a page-in (dax.rs:1497 and server.rs acks_tests have no page-ins).
 STRUCTURE: the class is process-global failpoints shared by every store's uploader. Making it impossible would mean scoping a failpoint to one store, but the steps sit in three crates (extent_store, extent_remote, fxdax), many with no store in hand: too large for this, not done. Tests keeping the other uploaders quiet is the existing convention, which this follows. Making read_part drop its Arc before it notifies would not close the windows race: a second fault can find the page present before the task lets go, so counting before page-ins stays the right way.
 OTHER RUNS: macOS clippy + workspace (FXDAX_TEST_PARTS='clippy workspace' scripts/test.sh), 2053 of 2053 passed. Linux -p fxdax in Docker, 448 of 455: 7 environmental failures, none touching this change (no sudo: grants x3; no eu-stack: stacks x3; no git for the build stamp: builds_are_stamped_with_their_commit). scripts/upstream-changes.py --check passes. Full Linux workspace and GCE not run. Mid-run the Mac's disk filled (ENOSPC) and OrbStack died; the runs it cut short were rerun, and the counts above are all from after.
+
+GCE r584 on main c919610e7: Linux workspace 2249/2249 and every other part pass; macOS 2068/2068 + Shuttle on the landed stack; CI 41994971122; scripts/upstream-changes.py --check passes. Under load after landing with TASK-160.8 (let_go ported to the store table): 49/49 and 50/50 before the 1 h limit.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Both causes in the tests: windows_share_bases_pages counted holders while a page-in task still held the extent (counts before page-in now); guests_forks_failing_at_each_step_harm_nothing's one-shot failpoint was taken by another store's interval uploader (stores::uploads_when_asked, and each step waits for the last's stores to close). Under load: 42/300 failing -> 1004/1004 passing; 31/72 -> 512/512. GCE r584 on main c919610e7: Linux workspace 2249/2249 and every other part pass; macOS 2068/2068 + Shuttle on the landed stack; CI 41994971122; scripts/upstream-changes.py --check passes.
+<!-- SECTION:FINAL_SUMMARY:END -->

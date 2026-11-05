@@ -1,11 +1,11 @@
 ---
 id: TASK-160.8
 title: 'extentd: one table owns each store path''s lifecycle'
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-03 13:08'
-updated_date: '2026-11-05 05:25'
+updated_date: '2026-11-05 10:17'
 labels:
   - structure
 dependencies: []
@@ -23,16 +23,16 @@ Who holds the store at a key, and as what, has five owners: open_paths(), instan
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 One table and one connection phase
-- [ ] #2 A test of concurrent OPENs as the VM process exits
-- [ ] #3 TASK-79.34's and 150.5's tests pass
+- [x] #1 One table and one connection phase
+- [x] #2 A test of concurrent OPENs as the VM process exits
+- [x] #3 TASK-79.34's and 150.5's tests pass
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -68,4 +68,12 @@ Review fixes (2026-11-05), each committed separately on task-160-8:
 - 04b87cfb6 (refactor) and 9223cbd3f (fix): bug in stores::retire, which cut the followers off before marking the store retired. How it was found: the 2026-10-21 review. Blind spot: the model never cut followers, and the ordering lived in stores.rs, outside the model. Test: the model's retire now cuts as production does, and both followers check that a follower of a retired store was cut. It went red ('a follower of a store its writer retired wasn't cut off') with the cut first, and red again with only the mark moved first. The cause is a follower that looked the store up before the mark and made its view after the cut. Fix: mark before cutting, and StoreTable::follow looks again after making the follower (extentd's stores::followed uses it). Rules marks_before_cutting and followers_look_again are each shown needed. Looking around: the rest of the review's finding (sync/stat not looking again under their hold, and short-lived Arcs making hold_alone return EBUSY) is still open.
 - Optional item skipped: opens_race_the_exit_of_the_vm_process_writing_their_store runs once, and whether take-over or retired refusal happens there depends on scheduling; the Shuttle runs assert they reach both.
 - Tests: macOS workspace+shuttle EXIT=0 (2059/2059, fxdax shuttle 32/32). Linux in Docker: clippy disallowed_methods clean, shuttle 55/55. nextest -p fxdax: 453/462. Seven failures are environment-only (eu-stack x3, grants ENOENT x3, build stamp). Two are TASK-157's load flakes: guests_forks_failing_at_each_step_harm_nothing, and windows_share_bases_pages, which passed alone 5/5 and lives in extents.rs, which this branch doesn't change.
+
+GCE r584 on main c919610e7: Linux workspace 2249/2249 and every other part pass; macOS 2068/2068 + Shuttle on the landed stack; CI 41994971122; scripts/upstream-changes.py --check passes. Guest suites through extentd on main since: r583, r585, r593 jailed, all pass (r582's two failures were TASK-170/171, not this).
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+One StoreTable keyed by store_key replaces five owners of who holds a store; every hold a value released on drop; a connection's state one Phase, its store lock-free in a OnceLock; the retire race (a follower slipping in between cut and mark) found red in the widened Shuttle model and fixed (mark before cut; StoreTable::follow looks again). Reviewed independently; five findings fixed. GCE r584 on main c919610e7: Linux workspace 2249/2249 and every other part pass; macOS 2068/2068 + Shuttle on the landed stack; CI 41994971122; scripts/upstream-changes.py --check passes.
+<!-- SECTION:FINAL_SUMMARY:END -->
