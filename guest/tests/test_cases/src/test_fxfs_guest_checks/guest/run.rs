@@ -259,10 +259,11 @@ mod tests {
         assert_eq!(run_script("exit 101", budget), (Ok(Ended::Exited(101)), false, true));
     }
 
-    /// A crash fails the check by its signal.
+    /// A crash fails the check by its signal. Without a core, which the GCE hosts' runs report as
+    /// a process crashed (r610).
     #[test]
     fn crashes_fail_by_signal() {
-        let ended = run_script("kill -BUS $$", Duration::from_secs(10));
+        let ended = run_script("ulimit -c 0; kill -BUS $$", Duration::from_secs(10));
         assert_eq!(ended, (Ok(Ended::Signalled(libc::SIGBUS)), false, true));
     }
 
