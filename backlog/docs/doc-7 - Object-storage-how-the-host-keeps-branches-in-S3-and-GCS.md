@@ -3,7 +3,7 @@ id: doc-7
 title: 'Object storage: how the host keeps branches in S3 and GCS'
 type: specification
 created_date: '2026-10-17 01:31'
-updated_date: '2026-11-05 07:56'
+updated_date: '2026-11-05 08:59'
 ---
 # Object storage: how the host keeps branches in S3 and GCS
 
@@ -225,6 +225,10 @@ record; TASK-28.6 gives it this format.)
 
 A writer writes one every so many segments or bytes of footers, on clean shutdown, and at a fork,
 recording there where the collector moved extents, and dropping forks whose children were deleted.
+It names the extents moved where they went itself before it writes the checkpoint, only forward
+along their ways (another checkpoint of its own may have taken them further): so a checkpoint of
+the writer holding the lease names no extent further along its moves than the writer does, which the
+collector relies on (Garbage collection, TASK-175).
 
 **A branch's state** is its newest checkpoint, then the footers of its segments after it, in order,
 to the first one missing, skipping void ones. A branch with no checkpoint starts from its parent's
@@ -232,7 +236,10 @@ state at its fork: the parent's newest checkpoint up to the fork point, then the
 to it, or, with none, from the parent's own origin. **A reader that finds a segment missing** lists
 the checkpoints again: if one newer than its own has come, the collector may have removed the
 segment, which it covers, and the reader starts again; otherwise the branch ends there. The
-collector removes segments only once a checkpoint covers them, so this is exact.
+collector removes segments only once a checkpoint covers them, so this is exact. So does a reader
+that found no checkpoint of a branch and finds what it went to instead gone, its parent's record or
+state: if one of the branch's has come since, the collector, recovering the branch from it, may have
+removed that, a deleted parent's record, and the reader starts again (TASK-177).
 
 ## Fencing
 
@@ -251,7 +258,10 @@ The lease says who should write a branch; the dense, create-only segments and th
   writer fills the gaps between them with empty segments, so that its own follow without one.
 - **A writer acknowledges a segment** once it and every one before it are created and a read of the
   lease, after them, shows the lease still its. A later writer took the lease after that, and looked
-  for the branch's end after, so it found the segment and fenced after it.
+  for the branch's end after, so it found the segment and fenced after it. *Its* is its taking, the
+  lease's holder with its epoch, not its epoch alone: the collector removes a deleted branch's
+  lease, and a taking that read the record before the deletion creates it again, at epoch 1, before
+  it finds the branch deleted (TASK-179).
 - **Minting:** after recovering, the writer checks that the lease is still its, then mints extent IDs
   from its epoch's range, the epoch shifted above bit 40 (`EPOCH_SHIFT`). No later writer's segment,
   minted from a later range, is in what it recovered, and no other writer mints from its range, so
@@ -325,7 +335,10 @@ and the footers after it, and serves the guest from an empty cache.
 - **Deleting a branch** takes its lease at a final epoch (no writer takes it again, and the one it has
   stops at its next acknowledgement), gives the children of the forks in its state their records,
   then marks its record deleted. Deleting a fork's child before it has its record creates the record
-  deleted.
+  deleted. A deletion whose recovery of the branch finds something lost, the record deleted since
+  by another deletion (a placement cut off deletes once the latest one's deletion ended the lease),
+  is done: that one gave the children their records, and the collector may have reclaimed what
+  recovering the branch needs since (TASK-178).
 - **Deleted forks' records stay:** a parent's writer slow to record a fork could otherwise make the
   record again. Collecting them needs a bound on how long a writer can stall; they are small, and
   their number is bounded by the forks made.
@@ -420,7 +433,11 @@ so, whether or not a host holds it, which only hosts know: `fxdax-gc URL --branc
 lists those no host holds, FILE naming what they do, and `fxdax-gc URL --delete-branch ID` deletes
 one for the next pass to reclaim. A pass:
 
-1. **Takes `gc/lease`**, at a new epoch, and stops before deleting if another pass took it since.
+1. **Takes `gc/lease`**, at a new epoch, and stops before deleting if another pass took it since;
+   so it does too, without failing, where it finds lost what a live branch needs: what it read
+   before may be older than what the pass that took the lease read, deleting since (a point it read
+   live, and the point's fork being made, read after the point's deletion). A pass not fenced can't
+   find that: what a pass deletes, it read after it took the lease (TASK-180).
 2. **Lists every object first.** What is written after the listing is no candidate, which is what
    makes reading branches' states after it safe: what they name was either listed, and is seen as
    needed, or was not, and is left. Without this, a child's lease written after its record was read
@@ -435,7 +452,19 @@ one for the next pass to reclaim. A pass:
    meanwhile is not live; any other failure stops the pass, which never deletes what it could not
    read.
 5. **Marks** the objects holding the extents the states name, and the moves the way to them goes
-   through, whose maps are needed even once their data moved on.
+   through, whose maps are needed even once their data moved on. A branch's writer names its
+   extents where the checkpoint it recovered from, or its own since, said, which the state the pass
+   read may name further along their moves: a checkpoint of another writer's landing after the
+   writer recovered the branch (the writer it took the branch from, which doesn't know), or the
+   parent's state a branch inherited them from, which its writer read as it was then. So **the way
+   starts where each extent was sealed**, every moves on it kept, unless the state's checkpoint is
+   by the writer holding the branch's lease, read after the checkpoint was listed: a writer taking
+   the branch after that recovers from that checkpoint or a later one, which names its extents no
+   less far along, and the writer that made it named them so before it wrote it. *Decided
+   2026-11-05 (TASK-175):* rather than checkpoints counting only once a later footer names them
+   (each footer naming its writer's newest), which needs the format, a rebase when a fence finds
+   one, and replays from older checkpoints while the newest waits; or a grace period after the last
+   pass that saw a state name the moves' object (time, which correctness doesn't depend on).
 6. **Compacts** objects whose live extents are under a fraction of their data: segments no recovery
    reads, and moves. Their live extents go to `moves/<key>`, data and map in one object, written
    whole, so there is never compaction output without its map, and no orphan of it. A reader that
@@ -508,7 +537,10 @@ rules need a model and tests before code"): `crates/extent_remote`, its `sim` mo
   their records and saying they are being made, the collector giving those up, its listing the
   records after the states, and records naming their owners. The collector going by the segments
   extents' keys name is shown needed by a test of its own
-  (`extents_ahead_of_their_segments_need_keys_naming_them`). These tests search seeds: a change to the simulation can move the
+  (`extents_ahead_of_their_segments_need_keys_naming_them`), as are ways starting at extents'
+  seals (`writers_reading_past_checkpoints_landing_after_they_took_over_need_ways_from_seals`, and
+  `ways_from_seals`, found by `recreated`'s seeds) and writers naming what their checkpoints move
+  before writing them (`writers_naming_what_their_checkpoints_move_need_moves_taken_first`). These tests search seeds: a change to the simulation can move the
   seed that finds a violation past a test's range, which then fails; widen it, or make its profile
   likelier to find the case.
 - **TLA+** *(added 2026-11-05, TASK-165.2):* `specs/bucket/Bucket.tla` models the protocol, with

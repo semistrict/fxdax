@@ -18,6 +18,20 @@ The task proposed that the window's `Mapping` carry `Dax`'s `K`, so that the sto
 **Instead:** `Window<K>`, generic through `DaxWindow`, the cache's window list (`Source::mapped`) and the userfaultfd stage, for a value the source already holds.
 **Undoing it:** a field on `Mapping` and a type parameter on `Window`; `Source::origin` would stay for zeros.
 
+## Late checkpoints: the collector's ways to extents start at their seals (TASK-175, 2026-11-05)
+
+A checkpoint landing after a branch's writer recovered it (the writer it took the branch from, fenced and unaware, checkpointing late) names extents further along their moves than the writer does. The collector kept the moves only from where the state it read names them, compacted them in turn and deleted them: the writer lost the extents. Reachable on main (a direct test, red at 13db5c67c); a fork's inherited extents, and a writer's own checkpoint before it took its moves, had the same hole. Decided:
+- **The way to an extent starts where it was sealed, every moves on it kept, unless the branch's newest checkpoint is by the writer holding its lease**, read after the checkpoints were listed; inherited extents' always (doc-7, Garbage collection, step 5). *Cost:* a lease GET per checkpointed branch per pass; moves compacted in turn stay while a branch's newest checkpoint isn't its lease holder's (until that writer's next one) or while forks without checkpoints of their own inherit through them.
+- **A writer names what its checkpoint moves where it went before it writes it**, only forward along the way.
+*Instead:* (1) a checkpoint counts only once a later footer names it: a format change, a fence rebasing on what it finds, recoveries reading an older checkpoint while the newest waits, forks no longer starting from the checkpoint at their fork; (2) a fence naming the checkpoint its writer recovered from: unsound (`dead-ends/fences-naming-their-checkpoints.md`); (3) keeping a moves a grace period after a pass last saw a state name what it is of: time, which doc-7 says correctness doesn't depend on.
+*Undoing it:* `Rules::ways_from_seals` and `moves_taken_first`'s code (collector.rs's `behind`, writer.rs's `take_moves`).
+
+The soak this was verified with, SIM_SOAK=100 of every holds test (TASK-165.3 had run 10), found four more holes, on main too: main's soak fails stale_placements seed 3953 (TASK-178's, the same failure) and bases_deleted_under_live_forks seed 1775 ("collector: lost: branches/2", TASK-177's kind). Each fixed as the protocol's other rules go, rather than by a structure of its own:
+- **A recovery that found no checkpoint of a branch, finding what it inherited instead lost, starts again if one has come** (TASK-177), as for a segment gone. *Instead:* keep a deleted parent's record while any child might recover from it: no bound on that.
+- **A deletion whose recovery of the branch fails, the record deleted since, is done** (TASK-178), as the collector takes it.
+- **A writer's lease is its taking, epoch and holder** (TASK-179). *Instead:* never remove a deleted branch's lease (an object per branch ever deleted), or take a missing lease only for a record read after it.
+- **A pass fenced by a later one stops without failing where it finds something lost** (TASK-180), as it stops before deleting. *Instead:* read the records again before recovering what a relisting found: narrower, and every relisting a round of GETs.
+
 ## Local disk as the bucket's WAL and cache: how (TASK-165, doc-14, 2026-11-04)
 
 The user chose the direction (review of 2026-11-04, decision 2); doc-14 decides the rest, where the task left it open:
