@@ -367,11 +367,9 @@ mod tests {
         };
         let marker = canonical.join("remote-0000000000000004");
         // The marker's next, half written, its host crashing before it went in place.
-        std::fs::write(canonical.join("remote-0000000000000004.new"), "1").unwrap();
-        assert_eq!(
-            named(),
-            ["fence-0000000000000004", "remote-0000000000000004", "remote-0000000000000004.new"]
-        );
+        let new = "remote-0000000000000004.new-00000000000000ab";
+        std::fs::write(canonical.join(new), "1").unwrap();
+        assert_eq!(named(), ["fence-0000000000000004", "remote-0000000000000004", new]);
 
         let marked = std::fs::read(&marker).unwrap();
         std::fs::remove_file(&marker).unwrap();

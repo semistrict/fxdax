@@ -93,19 +93,46 @@ fn fence(branch: u64) -> String {
 }
 
 /// Writes `bytes` to the file `name` in the directory `dir`, durably, whole or not at all: to a new
-/// file ([`new_file`]), synced, then renamed over it, the directory synced.
+/// file of its own ([`write_new`]), then renamed over it, the directory synced. Of two writes at
+/// once, the one renamed last stays.
 fn write_durably(dir: &Path, name: &str, bytes: &[u8]) -> std::io::Result<()> {
-    let new = dir.join(new_file(name));
-    let mut file = std::fs::File::create(&new)?;
-    std::io::Write::write_all(&mut file, bytes)?;
-    file.sync_all()?;
-    std::fs::rename(&new, dir.join(name))?;
+    let new = write_new(dir, name, bytes)?;
+    std::fs::rename(&new, dir.join(name)).inspect_err(|_| drop(std::fs::remove_file(&new)))?;
     std::fs::File::open(dir)?.sync_all()
 }
 
-/// The file [`write_durably`] writes the file `name`'s next bytes to, before it renames it over it.
+/// Writes `bytes` to a new file of the file `name`'s in the directory `dir` ([`new_file`]), synced,
+/// and returns its path: what goes in place of the file, or as it, whole ([`write_durably`],
+/// [`claim`]). It goes again if the write fails.
+fn write_new(dir: &Path, name: &str, bytes: &[u8]) -> std::io::Result<PathBuf> {
+    let new = dir.join(new_file(name));
+    let written = || -> std::io::Result<()> {
+        let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&new)?;
+        std::io::Write::write_all(&mut file, bytes)?;
+        file.sync_all()
+    };
+    written().inspect_err(|_| drop(std::fs::remove_file(&new)))?;
+    // Where a test has another writer of the file write it meanwhile (TASK-184).
+    fail::fail_point!("remote::written");
+    Ok(new)
+}
+
+/// The name of a new file of the file `name`'s ([`write_new`]): one of its own for each write, so
+/// that two writers of one file at once each write their own, as a fork claiming its child and the
+/// uploader naming the origin of a fork to that ID in its claim do (TASK-184). A shared one, either
+/// truncated the other's or removed it from under its rename. Named for the file, so that what a
+/// crash leaves goes with it ([`unmark`]).
 fn new_file(name: &str) -> String {
-    format!("{name}.new")
+    format!("{name}{NEW}{:016x}", rand::random::<u64>())
+}
+
+/// What a new file's name has between its file's name and its own part ([`new_file`]).
+const NEW: &str = ".new-";
+
+/// Whether `file`, a name in a store's directory, is the file `name` or a new file of it
+/// ([`new_file`]).
+fn is_of(file: &str, name: &str) -> bool {
+    file.strip_prefix(name).is_some_and(|rest| rest.is_empty() || rest.starts_with(NEW))
 }
 
 /// Places the store directory `dir`'s copy of `branch` (TASK-39.7): records, durably, the fencing
@@ -204,10 +231,7 @@ impl Claim {
 /// not having gone.
 fn claim(dir: &Path, child: u64, claim: Claim) -> std::io::Result<bool> {
     let name = claim_file(child);
-    let new = dir.join(new_file(&name));
-    let mut file = std::fs::File::create(&new)?;
-    std::io::Write::write_all(&mut file, claim.text().as_bytes())?;
-    file.sync_all()?;
+    let new = write_new(dir, &name, claim.text().as_bytes())?;
     // Linked into place only if nothing is there: whole, unlike a file created and then written.
     let linked = std::fs::hard_link(&new, dir.join(&name));
     std::fs::remove_file(&new)?;
@@ -367,16 +391,24 @@ impl Host {
 }
 
 /// Removes the marker, fencing token and claim of `branch`, deleted, from the store directory
-/// `dir`, and their next versions a crash left before they went in place ([`write_durably`]):
-/// failing with the file it could not remove.
+/// `dir`, and their new files a crash left before they went in place ([`new_file`]): failing with
+/// the file it could not remove.
 pub(crate) fn unmark(dir: &Path, branch: u64) -> anyhow::Result<()> {
-    for name in [marker(branch), fence(branch), claim_file(branch)] {
-        for name in [new_file(&name), name] {
-            let path = dir.join(name);
-            match std::fs::remove_file(&path) {
-                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-                removed => removed.with_context(|| format!("removing {}", path.display()))?,
-            }
+    let names = [marker(branch), fence(branch), claim_file(branch)];
+    let listed = match std::fs::read_dir(dir) {
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        listed => listed.with_context(|| format!("listing {}", dir.display()))?,
+    };
+    for entry in listed {
+        let file = entry.with_context(|| format!("listing {}", dir.display()))?.file_name();
+        let of = |file: &str| names.iter().any(|name| is_of(file, name));
+        if !file.to_str().is_some_and(of) {
+            continue;
+        }
+        let path = dir.join(file);
+        match std::fs::remove_file(&path) {
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            removed => removed.with_context(|| format!("removing {}", path.display()))?,
         }
     }
     Ok(())
@@ -3871,6 +3903,108 @@ mod tests {
             assert_eq!(Claim::parse(text), Some(claim));
         }
         assert_eq!(Claim::parse("owner 7\nof b\n"), None);
+    }
+
+    /// TASK-184: two writers of one file of a store's directory at once each write a new file of
+    /// their own, the second writing while the first has written its own and not yet put it in
+    /// place: a fork claiming a child claimed already, as a fork retried does, and the uploader
+    /// naming the origin of the fork to it in its claim, either first; or two writes of a
+    /// marker. Sharing one, the second truncated the first's and removed it, or renamed it, from
+    /// under it: the uploader's write failed (`ENOENT`), stopping its uploads, or the fork's.
+    #[test]
+    fn writers_of_one_file_at_once_each_write_their_own() {
+        use super::{Claim, Forked, claim, claim_file, claim_origin, claimed, marker};
+        use extent_remote::layout::Origin;
+        use extent_remote::record::Kind;
+        let (child, origin) = (7, Origin { parent: 0xa, at: 0x10 });
+        let first = Claim { owner: 9, forked: Forked::Pending { point: false } };
+        let named = Claim { owner: 9, forked: Forked::Made(Kind::Fork(origin)) };
+        let retried = Claim { owner: 10, forked: Forked::Pending { point: false } };
+        type Wrote = Result<bool, String>;
+        /// What `first` gives, and `second`, which writes as `first` has written its new file;
+        /// and what is left in `dir`.
+        fn at_once(
+            dir: &std::path::Path,
+            first: impl FnOnce() -> Wrote,
+            second: impl FnOnce() -> Wrote + Send + 'static,
+        ) -> (Wrote, Option<Wrote>, Vec<String>) {
+            let (second, gave) = (Mutex::new(Some(second)), Arc::new(Mutex::new(None)));
+            let guard = {
+                let gave = gave.clone();
+                // Once: the second's own new file passes here too.
+                fail::FailGuard::with_callback("remote::written", move || {
+                    let second = second.lock().unwrap().take();
+                    if let Some(second) = second {
+                        *gave.lock().unwrap() = Some(second());
+                    }
+                })
+                .unwrap()
+            };
+            let first = first();
+            drop(guard);
+            let left = std::fs::read_dir(dir).unwrap();
+            let mut left: Vec<_> =
+                left.map(|entry| entry.unwrap().file_name().into_string().unwrap()).collect();
+            left.sort();
+            (first, gave.lock().unwrap().take(), left)
+        }
+        let fork = |dir: &std::path::Path| {
+            let dir = dir.to_owned();
+            move || claim(&dir, child, retried).map_err(|err| err.to_string())
+        };
+        let naming = |dir: &std::path::Path| {
+            let dir = dir.to_owned();
+            move || claim_origin(&dir, child, origin).map_err(|err| err.to_string())
+        };
+
+        // The uploader naming the origin, a fork to the child claiming it meanwhile.
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(claim(dir.path(), child, first).map_err(|err| err.to_string()), Ok(true));
+        let gave = at_once(dir.path(), naming(dir.path()), fork(dir.path()));
+        assert_eq!(gave, (Ok(true), Some(Ok(false)), vec![claim_file(child)]));
+        assert_eq!(claimed(dir.path(), child).unwrap(), Some(named));
+
+        // A fork to the child claiming it, the uploader naming the origin meanwhile.
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(claim(dir.path(), child, first).map_err(|err| err.to_string()), Ok(true));
+        let gave = at_once(dir.path(), fork(dir.path()), naming(dir.path()));
+        assert_eq!(gave, (Ok(false), Some(Ok(true)), vec![claim_file(child)]));
+        assert_eq!(claimed(dir.path(), child).unwrap(), Some(named));
+
+        // Two writes of a marker: the one renamed last stays.
+        let dir = tempfile::tempdir().unwrap();
+        let marked = |dir: &std::path::Path, tag: u64| {
+            let marker = super::Marker::new(dir, 3);
+            move || marker.write(Some(tag), []).map(|()| true).map_err(|err| err.to_string())
+        };
+        let gave = at_once(dir.path(), marked(dir.path(), 1), marked(dir.path(), 2));
+        assert_eq!(gave, (Ok(true), Some(Ok(true)), vec![marker(3)]));
+        assert_eq!(super::Marker::new(dir.path(), 3).read().unwrap(), [1]);
+    }
+
+    /// What a crash leaves of a branch's files beside its store, their new files among them, goes
+    /// as the branch is deleted, and nothing of another branch's.
+    #[test]
+    fn unmarking_removes_new_files_a_crash_left() {
+        use super::{claim_file, fence, marker, new_file, unmark};
+        let dir = tempfile::tempdir().unwrap();
+        let names = |branch| [marker(branch), fence(branch), claim_file(branch)];
+        for name in names(3).into_iter().chain(names(4)) {
+            std::fs::write(dir.path().join(&name), "").unwrap();
+            std::fs::write(dir.path().join(new_file(&name)), "").unwrap();
+        }
+        unmark(dir.path(), 3).unwrap();
+        let left = std::fs::read_dir(dir.path()).unwrap();
+        let mut left: Vec<_> =
+            left.map(|entry| entry.unwrap().file_name().into_string().unwrap()).collect();
+        left.sort();
+        let (kept, new): (Vec<_>, Vec<_>) =
+            left.into_iter().partition(|name| !name.contains(".new-"));
+        let mut expected = names(4).to_vec();
+        expected.sort();
+        assert_eq!(kept, expected);
+        assert_eq!(new.len(), 3, "{new:?}");
+        assert!(new.iter().all(|name| name.contains("0000000000000004.new-")), "{new:?}");
     }
 
     /// The record of a branch no fork made, its store's own, of no parent, but for its owner
