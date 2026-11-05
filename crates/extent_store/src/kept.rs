@@ -212,7 +212,8 @@ mod tests {
     use crate::layout::Data;
 
     fn freed(freed: u64, uploader: bool, len: u64) -> Kept {
-        Kept { entry: Extent { len, data: Data::Remote }, freed, uploader }
+        let location = extent_frame::segment::Location { key: "k".to_owned(), offset: 0, len };
+        Kept { entry: Extent { len, data: Data::Remote(location) }, freed, uploader }
     }
 
     fn extent(sequence: u64) -> ExtentId {

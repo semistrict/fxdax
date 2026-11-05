@@ -545,6 +545,10 @@ pub struct Remote {
 struct Shared {
     store: Arc<Store<HostDir>>,
     fetcher: Arc<Fetcher>,
+    /// The branch's writer, once it took the branch.
+    writer: std::sync::OnceLock<Arc<Writer<Bucket>>>,
+    /// The point the store is of, if it is one, once attached.
+    point: std::sync::OnceLock<Point>,
     progress: Mutex<Progress>,
     /// Notified as the progress changes: what waits for uploads listens to it, blocking or not
     /// (TASK-43.6).
@@ -592,53 +596,42 @@ fn blocking<T>(work: impl FnOnce() -> T) -> T {
     tokio::task::block_in_place(work)
 }
 
-/// Reads the extents a store holds whose data is in object storage ([`Store::adopt`]), on the
-/// remotes' runtime, which their uploads use too, under the host's budget of GETs.
+/// Reads the extents a store holds whose data is in object storage ([`Store::adopt`]), at their
+/// locations there, as the store names them, on the remotes' runtime, which their uploads use too,
+/// under the host's budget of GETs.
 pub struct Fetcher {
     runtime: tokio::runtime::Handle,
     parts: Arc<fetch::Fetcher<Bucket>>,
-    /// The branch's writer, once it took the branch.
-    writer: std::sync::OnceLock<Arc<Writer<Bucket>>>,
-    /// The point the store is of, if it is one, once attached.
-    point: std::sync::OnceLock<Arc<Point>>,
 }
 
-/// A point a store holds ([`Shared::start_point`]): its branch, what its record names, and the
-/// state it names, which never changes.
+/// A point a store holds ([`Shared::start_point`]): its branch, and what its record names.
 struct Point {
     branch: u64,
     origin: Origin,
-    state: State,
 }
 
 impl Fetcher {
-    /// Where `extent` is, if the branch's object storage holds it: as its writer has it, or as the
-    /// point has it.
-    fn location(&self, extent: ExtentId) -> Option<Location> {
-        match self.point.get() {
-            Some(point) => point.state.extents.get(&extent).cloned(),
-            None => self.writer.get()?.location(extent),
-        }
+    /// What reads extents' data from `bucket`, keeping the parts it fetches in `cache`, if given,
+    /// the host's.
+    pub(crate) fn new(bucket: Arc<Bucket>, cache: Option<Arc<Cache>>) -> Arc<Self> {
+        let runtime = RUNTIME.handle().clone();
+        let runs = runtime.clone();
+        let spawn: fetch::Spawn = Arc::new(move |future| drop(runs.spawn(future)));
+        let parts = fetch::Fetcher::new(bucket, BUDGET.clone(), MEMORY.clone(), cache);
+        Arc::new(Self { runtime, parts: Arc::new(parts.reading_ahead(spawn)) })
     }
 
-    /// Where `extent`'s data begins in its object's data, if the branch's object storage holds it.
-    pub fn offset(&self, extent: ExtentId) -> Option<u64> {
-        Some(self.location(extent)?.offset)
-    }
-
-    /// `len` bytes at `offset` in `extent`: as many as it holds.
+    /// `len` bytes at `offset` in `extent`, whose data is at `location` in the bucket: as many as
+    /// it holds.
     pub fn read(
         &self,
         extent: ExtentId,
+        location: Location,
         offset: u64,
         len: u64,
     ) -> impl std::future::Future<Output = Result<Vec<u8>, Failure>> + Send + use<> {
-        let location = self.location(extent);
         let parts = self.parts.clone();
         let read = self.runtime.spawn(async move {
-            let location = location.ok_or_else(|| {
-                Failure::msg(format!("{extent:?} is not in the branch's object storage"))
-            })?;
             Ok(parts.read(extent, &location, offset, len, Priority::Demand).await?)
         });
         async move { read.await.map_err(|err| Failure::local(err, "fetching"))? }
@@ -720,22 +713,13 @@ impl Remote {
         holder: u64,
         options: Options,
     ) -> Result<Self, Failure> {
-        let runtime = RUNTIME.handle().clone();
-        let cache = options.cache.clone();
-        let runs = runtime.clone();
-        let spawn: fetch::Spawn = Arc::new(move |future| drop(runs.spawn(future)));
-        let parts = fetch::Fetcher::new(bucket.clone(), BUDGET.clone(), MEMORY.clone(), cache);
-        let parts = Arc::new(parts.reading_ahead(spawn));
-        let fetcher = Arc::new(Fetcher {
-            runtime,
-            parts,
-            writer: Default::default(),
-            point: Default::default(),
-        });
+        let fetcher = Fetcher::new(bucket.clone(), options.cache.clone());
         let dir = store.lineage().hold_dir()?;
         let shared = Arc::new(Shared {
             store,
             fetcher,
+            writer: Default::default(),
+            point: Default::default(),
             progress: Mutex::new(Progress::default()),
             changed: Event::new(),
             wake: tokio::sync::Notify::new(),
@@ -838,7 +822,7 @@ impl Remote {
     pub fn forked(&self, epoch: u64, child: u64) -> Result<(), Failure> {
         failpoint!("remote::forked");
         let shared = &self.shared;
-        if let Some(point) = shared.fetcher.point.get() {
+        if let Some(point) = shared.point.get() {
             let claim = claimed(shared.store.dir().path(), child)?;
             let claim = claim.ok_or_else(|| Failure::msg(format!("{child:x} is not claimed")))?;
             let (of, origin) = (point.branch, point.origin);
@@ -854,7 +838,7 @@ impl Remote {
             true => Some(Ok(())),
             false => progress.failed.clone().map(Err),
         })?;
-        match shared.fetcher.writer.get() {
+        match shared.writer.get() {
             Some(writer) if writer.refused(child) => {
                 Err(extent_remote::Error::ChildTaken(child).into())
             }
@@ -893,7 +877,7 @@ impl Remote {
         }
         failpoint!("remote::claim");
         let dir = self.shared.store.dir().path();
-        let forked = match self.shared.fetcher.point.get() {
+        let forked = match self.shared.point.get() {
             Some(of) => Forked::Made(Kind::Forking { origin: of.origin, point: of.branch }),
             None => Forked::Pending { point: child.point },
         };
@@ -904,7 +888,7 @@ impl Remote {
     /// Whether the store holds a point: nothing it does goes to object storage but its forks'
     /// records.
     pub fn is_point(&self) -> bool {
-        self.shared.fetcher.point.get().is_some()
+        self.shared.point.get().is_some()
     }
 
     /// Lets go of the claim of `child`, whose fork failed before its commit, making nothing
@@ -1026,7 +1010,7 @@ impl Shared {
         let writer = match self.start(&bucket, holder).await {
             Ok(Some(writer)) => {
                 let writer = Arc::new(writer);
-                let _ = self.fetcher.writer.set(writer.clone());
+                let _ = self.writer.set(writer.clone());
                 started.send(Ok(())).unwrap();
                 writer
             }
@@ -1247,8 +1231,7 @@ impl Shared {
             }
             blocking(|| self.take(&state))?;
         }
-        let point = Arc::new(Point { branch, origin, state });
-        let _ = self.fetcher.point.set(point);
+        let _ = self.point.set(Point { branch, origin });
         let mut progress = self.progress.lock().unwrap();
         progress.uploaded_through(u64::MAX);
         progress.forked_through(u64::MAX);
@@ -1536,7 +1519,7 @@ impl Shared {
             self.store.set_capacity(capacity)?;
         }
         for (extent, location) in &state.extents {
-            self.store.adopt(*extent, location.len)?;
+            self.store.adopt(*extent, location.clone())?;
         }
         self.store.spend(&state.spent)?;
         self.store.commit(Some(state.root.as_deref().unwrap_or_default()))?;
@@ -1991,7 +1974,7 @@ mod tests {
             store.commit(None).unwrap();
         }
         let shared = &remote.shared;
-        let writer = shared.fetcher.writer.get().unwrap().clone();
+        let writer = shared.writer.get().unwrap().clone();
         let mut in_flight = super::InFlight::new(shared.marker());
         let mut taken = Vec::new();
         while shared.gather(&writer, &mut in_flight, true).unwrap().took {

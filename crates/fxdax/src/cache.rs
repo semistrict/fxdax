@@ -211,7 +211,7 @@ pub(crate) fn cached(
     let key = (arena, extent);
     let cached = extents.entry(key).or_insert_with(|| {
         let holders = Arc::new(Holders::default());
-        let stored = StoredExtent::new(holders.clone(), store, remote.as_deref(), extent, recorder);
+        let stored = StoredExtent::new(holders.clone(), store, extent, recorder);
         Cached {
             extent: Arc::new(CachedExtent::new(arena, extent, Box::new(stored), len)),
             holders,
@@ -346,11 +346,10 @@ struct StoredExtent {
 }
 
 impl StoredExtent {
-    /// `extent`, read through `holders`, laid out as `store`, reading through `remote`, holds it.
+    /// `extent`, read through `holders`, laid out as `store` holds it.
     fn new(
         holders: Arc<Holders>,
         store: &Store<HostDir>,
-        remote: Option<&crate::remote::Fetcher>,
         extent: ExtentId,
         recorder: Option<Arc<Recorder>>,
     ) -> Self {
@@ -359,9 +358,7 @@ impl StoredExtent {
         // object storage holds it in.
         let offset = match store.place(id) {
             Ok(Some(extent_store::Place::Run { offset, .. })) => offset,
-            Ok(Some(extent_store::Place::Remote)) => {
-                remote.and_then(|remote| remote.offset(id)).unwrap_or(0)
-            }
+            Ok(Some(extent_store::Place::Remote(location))) => location.offset,
             _ => 0,
         };
         let phase = offset % extent_frame::PART / page_size() * page_size();
@@ -399,11 +396,11 @@ impl Contents for StoredExtent {
                     stats::add(Counter::PageInBytes, buf.len() as u64);
                     return Box::pin(std::future::ready(Ok(())));
                 }
-                Err(error)
-                    if error.downcast_ref::<extent_store::RemoteData>().is_some()
+                Err(ref error)
+                    if let Some(data) = error.downcast_ref::<extent_store::RemoteData>()
                         && let Some(remote) = remote =>
                 {
-                    let fetched = remote.read(id, offset, buf.len() as u64);
+                    let fetched = remote.read(id, data.location.clone(), offset, buf.len() as u64);
                     return Box::pin(async move {
                         let data = fetched.await?;
                         stats::add(Counter::FetchedBytes, data.len() as u64);

@@ -208,6 +208,9 @@ pub struct ExtentStore {
     /// fxdax: what each of its locks is locked through: set by a panic holding one, after which it
     /// serves nothing more (`crate::fence`, TASK-153.16).
     fence: Fence,
+    /// fxdax: what reads its extents whose data is in the bucket while it has no uploader, made
+    /// when first needed ([`ExtentStore::fetcher`]).
+    fetcher: OnceLock<Arc<crate::remote::Fetcher>>,
 }
 
 /// fxdax: the `MAP`s of open extents refused (backlog doc-13), which no guest makes: a tripwire,
@@ -542,6 +545,7 @@ impl ExtentStore {
             changes: StoreMutex::new("changes", WindowChanges::default()),
             flush_turns: Default::default(),
             fence: Fence::new(path),
+            fetcher: OnceLock::new(),
         }
     }
 
@@ -568,6 +572,7 @@ impl ExtentStore {
             changes: StoreMutex::new("changes", WindowChanges::default()),
             flush_turns: Default::default(),
             fence: Fence::new(&self.path),
+            fetcher: OnceLock::new(),
         }
     }
 
@@ -702,6 +707,18 @@ impl ExtentStore {
         match &self.following {
             Some(following) => following.writer.remote.get(),
             None => self.remote.get(),
+        }
+    }
+
+    /// fxdax: what reads the extents the store holds whose data is in the bucket, at their
+    /// locations there: its uploader's, which keeps what it fetches in the host's cache; or, if it
+    /// has none, one of the bucket its description names, which a store whose branch was taken
+    /// into it reads, opened where no uploader is (TASK-165.8).
+    fn fetcher(&self) -> Arc<crate::remote::Fetcher> {
+        match self.uploader() {
+            Some(remote) => remote.fetcher(),
+            None => (self.fetcher.get_or_init(|| crate::remote::Fetcher::new(self.bucket.clone(), None)))
+                .clone(),
         }
     }
 
@@ -977,14 +994,10 @@ impl ExtentStore {
             None => self.store.read(extent.into(), offset, data),
         };
         match read {
-            Err(error) if error.downcast_ref::<extent_store::RemoteData>().is_some() => {
-                let remote = self.uploader().ok_or(Errno::EIO)?;
-                let fetched = futures::executor::block_on(remote.fetcher().read(
-                    extent.into(),
-                    offset,
-                    data.len() as u64,
-                ))
-                .map_err(remote_errno)?;
+            Err(ref error) if let Some(remote) = error.downcast_ref::<extent_store::RemoteData>() => {
+                let (location, len) = (remote.location.clone(), data.len() as u64);
+                let fetched = self.fetcher().read(extent.into(), location, offset, len);
+                let fetched = futures::executor::block_on(fetched).map_err(remote_errno)?;
                 data[..fetched.len()].copy_from_slice(&fetched);
                 data[fetched.len()..].fill(0);
                 Ok(())
@@ -1484,7 +1497,7 @@ impl ExtentStore {
     /// The sealed `extent`, of `len` bytes, in the cache: read from this store if no other store
     /// has it cached.
     fn cached(&self, extent: ExtentId, len: u64) -> Result<Arc<CachedExtent>> {
-        let remote = self.uploader().map(crate::remote::Remote::fetcher);
+        let remote = Some(self.fetcher());
         let recorder = self.profiling.as_ref().map(|(recorder, _)| recorder.clone());
         cache::cached(&self.store, self.arenas.of(extent), remote, recorder, extent, len)
     }
@@ -1809,7 +1822,7 @@ fn replay(store: Arc<Store<HostDir>>, arenas: Arenas, units: Vec<profile::Unit>)
             for unit in units.iter().skip(first).step_by(REPLAY_THREADS) {
                 let id: storage_device::ExtentId = unit.extent.into();
                 let Ok(Some((len, false))) = store.extent(id) else { continue };
-                if matches!(store.place(id), Ok(Some(extent_store::Place::Remote))) {
+                if matches!(store.place(id), Ok(Some(extent_store::Place::Remote(_)))) {
                     continue;
                 }
                 let arena = arenas.of(unit.extent);
@@ -1839,6 +1852,12 @@ mod tests {
     use std::sync::atomic::Ordering;
     use futures::executor::block_on;
 
+    /// An error of a read of `extent`, whose data is in the bucket.
+    fn remote_data(extent: storage_device::ExtentId) -> extent_store::RemoteData {
+        let location = extent_frame::segment::Location { key: "k".to_owned(), offset: 0, len: 1 };
+        extent_store::RemoteData { extent, location }
+    }
+
     /// Each of the store's errors has its errno, as doc-4 has them, a follower's among them, in
     /// context or not; any other is EIO (TASK-160.12).
     #[test]
@@ -1855,7 +1874,7 @@ mod tests {
             (TooSmall { capacity: 1, held: 2 }.into(), Errno::ENOSPC),
             (Unaligned { offset: 1, len: 2 }.into(), Errno::EINVAL),
             (TooLong { offset: 1, len: 2 }.into(), Errno::EINVAL),
-            (extent_store::RemoteData(extent).into(), Errno::EIO),
+            (remote_data(extent).into(), Errno::EIO),
             (anyhow::anyhow!("the disk"), Errno::EIO),
         ];
         for (error, expected) in cases {

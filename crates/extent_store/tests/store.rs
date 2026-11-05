@@ -7,7 +7,7 @@
 mod common;
 
 use common::noise;
-use extent_frame::segment::{Chain, Child, Contents};
+use extent_frame::segment::{Chain, Child, Contents, Location};
 use extent_store::{
     Closed, Description, Dir, File as _, Footprint, HostDir, Lineage, MemDir, MemFile, NoSpace,
     Options, Part, Place, RemoteData, Spent, Store, TooLong, TooSmall,
@@ -352,16 +352,24 @@ fn uploads_keep_freed_data_until_released() {
     assert!(dir.list(&of("segments", BRANCH)).unwrap().len() < segments);
 }
 
-/// fxdax: a store holds extents whose data is elsewhere: committed and recovered like others, and
-/// freed so, but read from elsewhere.
+/// fxdax: where in the bucket an extent of `len` bytes is: at `offset` in the object at `key`.
+fn bucket_location(key: &str, offset: u64, len: u64) -> Location {
+    Location { key: key.to_owned(), offset, len }
+}
+
+/// fxdax: a store holds extents whose data is in the bucket: committed and recovered like others,
+/// and freed so, but read from the bucket, at their locations there, which a read's error names
+/// (TASK-165.8).
 #[test]
 fn adopted_extents_are_held_without_their_data() {
     let dir = MemDir::new();
     let store = create(dir.clone(), 1 << 20);
     assert!(store.upload(WRITER, store.epoch().unwrap()).unwrap());
-    store.adopt(extent(5), 3 * BLOCK as u64).unwrap();
-    store.adopt(ExtentId::new(BRANCH + 1, 9), BLOCK as u64).unwrap();
-    assert!(store.adopt(extent(5), BLOCK as u64).is_err());
+    let location = bucket_location("segments/0000000000000007/0000000000000003", 8192, 3 * BLOCK as u64);
+    store.adopt(extent(5), location.clone()).unwrap();
+    let other = bucket_location("extents/0000000000000008/1.2.9", 0, BLOCK as u64);
+    store.adopt(ExtentId::new(BRANCH + 1, 9), other).unwrap();
+    assert!(store.adopt(extent(5), bucket_location("k", 0, BLOCK as u64)).is_err());
     store.commit(None).unwrap();
     // Not uploaded again: a checkpoint names them, no footer.
     assert!(store.close_now().unwrap());
@@ -373,7 +381,9 @@ fn adopted_extents_are_held_without_their_data() {
     assert_eq!(store.unreleased_bytes().unwrap(), 0);
     let check = |store: &Store<MemDir>| {
         assert_eq!(store.extent(extent(5)).unwrap(), Some((3 * BLOCK as u64, false)));
-        error_is(store.read(extent(5), 0, &mut [0; BLOCK]), RemoteData(extent(5)));
+        let remote = RemoteData { extent: extent(5), location: location.clone() };
+        error_is(store.read(extent(5), 0, &mut [0; BLOCK]), remote);
+        assert_eq!(store.place(extent(5)).unwrap(), Some(Place::Remote(location.clone())));
         assert_eq!(store.info().unwrap().used, 4 * BLOCK as u64);
         assert_eq!(store.info().unwrap().next_sequence, 6);
         // Sealed.
@@ -1385,7 +1395,7 @@ fn closed_segments_hold_the_branchs_history() {
     }
     assert!(segments() > 2, "no segment filled");
     store.free(extent(0)).unwrap();
-    store.adopt(ExtentId::new(BRANCH + 9, 3), BLOCK as u64).unwrap();
+    store.adopt(ExtentId::new(BRANCH + 9, 3), bucket_location("k", 0, BLOCK as u64)).unwrap();
     store.commit(None).unwrap();
     store.clean(0.9).unwrap();
     let state = closed_state(&store);

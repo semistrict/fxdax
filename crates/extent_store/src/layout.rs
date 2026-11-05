@@ -7,13 +7,15 @@
 use crate::dir::Dir;
 use anyhow::{Context as _, Error, anyhow, bail, ensure};
 use serde::{Deserialize, Serialize};
+use extent_frame::segment::Location;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use storage_device::ExtentId;
 
 /// The first line of a store's description: its format. fxdax: 6 names the bucket a host's store
-/// keeps its branches in (TASK-165.6). A store of another format is refused ([`Format`]): nothing
-/// reads, converts or upgrades it.
-pub(crate) const FORMAT: &str = "fxdax extent store 6";
+/// keeps its branches in (TASK-165.6); 7 places an extent whose data is in the bucket by its
+/// location there (TASK-165.8). A store of another format is refused ([`Format`]): nothing reads,
+/// converts or upgrades it.
+pub(crate) const FORMAT: &str = "fxdax extent store 7";
 
 /// fxdax: the error of a store whose description is of another format than [`FORMAT`], an older
 /// one included: refused, as nothing reads it.
@@ -283,13 +285,13 @@ pub(crate) fn add_piece(pieces: &mut Vec<Piece>, mut piece: Piece) {
 }
 
 /// Where an extent's data is: pieces in segments, the later of overlapping pieces holding the data
-/// written last, or a file of its own; or, fxdax, elsewhere: in object storage, which the store's
-/// user reads it from.
+/// written last, or a file of its own; or, fxdax, in the bucket, at its location there, which the
+/// store's user reads it from (TASK-165.8).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum Data {
     Pieces(Vec<Piece>),
     Own,
-    Remote,
+    Remote(Location),
 }
 
 /// An extent: its length, the end of its furthest write, and where its data is.
@@ -337,7 +339,7 @@ pub(crate) fn files_of<'a>(
             Data::Own => {
                 files.insert(FileKey::Own(*extent));
             }
-            Data::Remote => {}
+            Data::Remote(_) => {}
         }
     }
     files
@@ -369,8 +371,10 @@ struct Rest {
     segment: u64,
 }
 
-/// The key of an extent's place in a checkpoint's table, if its data is elsewhere.
-const REMOTE: &str = "remote";
+/// fxdax: what begins the key of an extent's place in a checkpoint's table, if its data is in the
+/// bucket: then its key there, its offset there the row's (TASK-165.8). Keys there look as the
+/// store's own paths do.
+const BUCKET: &str = "bucket:";
 /// The key of a row of a fork's checkpoint's table naming an extent of its parent's it holds no
 /// longer.
 const GONE: &str = "gone";
@@ -393,7 +397,7 @@ impl Checkpoint {
                     _ => bail!("{extent:?} is not sealed in one run"),
                 },
                 Data::Own => (extent_path(*extent), 0),
-                Data::Remote => (REMOTE.to_owned(), 0),
+                Data::Remote(location) => (format!("{BUCKET}{}", location.key), location.offset),
             };
             entries.push(((extent.branch, extent.sequence), key, offset, entry.len));
         }
@@ -432,8 +436,8 @@ impl Checkpoint {
                 spent.push((extent, row.offset));
                 continue;
             }
-            let data = if row.key == REMOTE {
-                Data::Remote
+            let data = if let Some(key) = row.key.strip_prefix(BUCKET) {
+                Data::Remote(Location { key: key.to_owned(), offset: row.offset, len: row.len })
             } else if row.key == extent_path(extent) {
                 Data::Own
             } else {
@@ -469,8 +473,8 @@ pub(crate) enum Change {
     Move { extent: ExtentId, pieces: Vec<Piece> },
     /// The extent's data was copied to its own file, sealing it at its length.
     MoveOwn { extent: ExtentId },
-    /// fxdax: the store holds the extent, sealed, of `len` bytes, whose data is elsewhere.
-    Adopt { extent: ExtentId, len: u64 },
+    /// fxdax: the store holds the extent, sealed, whose data is in the bucket, at `location`.
+    Adopt { extent: ExtentId, location: Location },
 }
 
 /// fxdax: of `changes`, an epoch's, the extents it freed that a commit held: but those written in
@@ -505,14 +509,14 @@ pub(crate) struct Delta {
 }
 
 /// Where an extent's data is, as a store's user sees it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Place {
     /// One run in a segment of a branch's, at an offset: the extent is sealed.
     Run { branch: u64, number: u64, offset: u64 },
     /// Its own file.
     Own,
-    /// Elsewhere: in object storage.
-    Remote,
+    /// fxdax: in the bucket, at its location there.
+    Remote(Location),
     /// Pieces, as it was written: the extent is open.
     Pieces,
 }
@@ -663,6 +667,8 @@ mod tests {
                 len,
             }]),
         };
+        let key = "segments/0000000000000002/0000000000000004".to_owned();
+        let remote = Location { key, offset: 8192, len: 4096 };
         let checkpoint = Checkpoint {
             epoch: 9,
             next_sequence: 7,
@@ -671,7 +677,7 @@ mod tests {
             extents: vec![
                 (ExtentId::new(1, 2), run(3, 4096, 8192)),
                 (ExtentId::new(1, 5), Extent { len: 1 << 20, data: Data::Own }),
-                (ExtentId::new(2, 1), Extent { len: 4096, data: Data::Remote }),
+                (ExtentId::new(2, 1), Extent { len: 4096, data: Data::Remote(remote) }),
             ],
             gone: vec![ExtentId::new(1, 3)],
             spent: vec![(ExtentId::new(1, 0), 2), (ExtentId::new(1, 6), 9)],
@@ -693,7 +699,7 @@ mod tests {
         let kept = StoreFile { bucket, ..file.clone() };
         assert_eq!(StoreFile::parse(&kept.text()).unwrap(), kept);
         // fxdax: older formats are refused, by their format (TASK-165.6).
-        for older in ["fxdax extent store 2", "fxdax extent store 5"] {
+        for older in ["fxdax extent store 2", "fxdax extent store 5", "fxdax extent store 6"] {
             let refused = StoreFile::parse(&format!("{older}\nblock_size 4096\nbranch 1\n"));
             let found = refused.unwrap_err().downcast::<Format>().unwrap().found;
             assert_eq!(found, older);

@@ -153,7 +153,7 @@ impl<F: File> State<F> {
                 self.own_files.forget(extent);
                 self.unreferenced.released.push(FileKey::Own(extent));
             }
-            Data::Remote => {}
+            Data::Remote(_) => {}
         }
     }
 
@@ -202,7 +202,7 @@ impl<F: File> State<F> {
                 }
             }
             Data::Own => self.own_files.keep_for_uploader(extent, kept),
-            Data::Remote => {}
+            Data::Remote(_) => {}
         }
     }
 

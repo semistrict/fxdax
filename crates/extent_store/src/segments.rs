@@ -1291,7 +1291,7 @@ impl Window {
                     ensure!(extent.branch == segment.branch, "{extent:?} is another branch's");
                     own.push((extent.sequence, entry.len));
                 }
-                Data::Remote => {}
+                Data::Remote(_) => {}
             }
         }
         Ok((extents, own))

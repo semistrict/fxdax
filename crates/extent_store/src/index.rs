@@ -56,8 +56,8 @@ fn apply(extents: &mut Extents, change: Change) {
                 entry.data = Data::Own;
             }
         }
-        Change::Adopt { extent, len } => {
-            extents.insert(extent, Extent { len, data: Data::Remote });
+        Change::Adopt { extent, location } => {
+            extents.insert(extent, Extent { len: location.len, data: Data::Remote(location) });
         }
     }
 }

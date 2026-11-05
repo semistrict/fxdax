@@ -27,7 +27,7 @@ use crate::sync::{Condvar, Mutex, MutexGuard, rules, spawn_or_return};
 use crate::uploads::{Closed, Snapshot, Uploads};
 use crate::views::{Limits, Sealed, View, Views};
 use anyhow::{Context as _, Error, anyhow, bail, ensure};
-use extent_frame::segment::{Chain, Child};
+use extent_frame::segment::{Chain, Child, Location};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io;
 use std::sync::Arc;
@@ -72,11 +72,14 @@ pub struct TooSmall {
 #[error("{0:?} was written before: an extent's ID is written once")]
 pub struct Spent(pub ExtentId);
 
-/// fxdax: the error of a read of an extent the store holds whose data is elsewhere
-/// ([`Store::adopt`]).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
-#[error("{0:?}'s data is not in the store")]
-pub struct RemoteData(pub ExtentId);
+/// fxdax: the error of a read of an extent the store holds whose data is in the bucket, at
+/// `location` ([`Store::adopt`]): what the store's user reads it from.
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("{extent:?}'s data is in the bucket, at {location:?}")]
+pub struct RemoteData {
+    pub extent: ExtentId,
+    pub location: Location,
+}
 
 /// The error of I/O at an offset, or of a length, not a multiple of the block size, or empty.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
@@ -341,7 +344,7 @@ fn place_of(entry: &Extent) -> Place {
             _ => Place::Pieces,
         },
         Data::Own => Place::Own,
-        Data::Remote => Place::Remote,
+        Data::Remote(location) => Place::Remote(location.clone()),
     }
 }
 
@@ -458,7 +461,7 @@ impl<D: Dir> Store<D> {
                     let file = file.with_context(|| format!("extent {extent:?}'s file"))?;
                     own_sizes.insert(*extent, file.size()?);
                 }
-                Data::Remote => {}
+                Data::Remote(_) => {}
             }
         }
         // Those it holds nothing in, all of its origin's extents in them hidden, it let go of.
@@ -1091,7 +1094,7 @@ impl<D: Dir> Store<D> {
                     source.locate(offset, held_end - offset, unpacked, &mut parts)?;
                 }
             }
-            Data::Remote => bail!(RemoteData(extent)),
+            Data::Remote(location) => bail!(RemoteData { extent, location: location.clone() }),
             Data::Pieces(pieces) => {
                 for (start, end, source) in paint(pieces, offset, held_end) {
                     match source {
@@ -1193,24 +1196,25 @@ impl<D: Dir> Store<D> {
                 }
             }
             Data::Own => state.uncommitted.let_go(entry.len),
-            Data::Remote => unreachable!("an open extent's data is in segments or a raw file"),
+            Data::Remote(_) => unreachable!("an open extent's data is in segments or a raw file"),
         }
         self.changed(state);
         Ok(())
     }
 
-    /// fxdax: holds `extent`, sealed, of `len` bytes, whose data is elsewhere: reads of it fail
+    /// fxdax: holds `extent`, sealed, whose data is in the bucket, at `location`: reads of it fail
     /// with [`RemoteData`], and the store's user reads it from there. A branch kept in object
     /// storage, opened where its data is not, holds its extents so.
-    pub fn adopt(&self, extent: ExtentId, len: u64) -> Result<(), Error> {
+    pub fn adopt(&self, extent: ExtentId, location: Location) -> Result<(), Error> {
         let mut state = self.writable()?;
         ensure!(!state.extents.contains_key(&extent), "the store holds {extent:?}");
-        state.extents.insert(extent, Extent { len, data: Data::Remote });
+        let len = location.len;
+        state.extents.insert(extent, Extent { len, data: Data::Remote(location.clone()) });
         state.space.added(len, extent.branch == self.branch);
         if extent.branch == self.branch {
             state.next_sequence = state.next_sequence.max(extent.sequence + 1);
         }
-        state.uncommitted.push(Change::Adopt { extent, len });
+        state.uncommitted.push(Change::Adopt { extent, location });
         // Footers name no extent whose data is elsewhere: a checkpoint does.
         state.index.want_checkpoint();
         Ok(())
@@ -1520,7 +1524,7 @@ impl<D: Dir> Store<D> {
         let large = entry.len >= self.options.large_extent;
         let open = state.segments.open_segment();
         match (&entry.data, state.uncommitted.placement(extent)) {
-            (Data::Remote, _) => return Ok(()),
+            (Data::Remote(_), _) => return Ok(()),
             // Written to a raw file of its own, which it is framed from.
             (Data::Own, Some(Placement::Own(raw))) => {
                 let raw = raw.clone();
