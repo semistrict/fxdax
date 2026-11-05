@@ -4757,10 +4757,19 @@ pub(crate) mod guest {
     /// lost a store (a page mapped back to its extent before the writeback of a store to it was
     /// sealed, or with a store to it under way), or if a writeback lost one made after its
     /// write-protect (a store into its swapped-out set, its page left clean).
+    ///
+    /// The stores go to a set of `HOT` pages that moves on by a page every `STEP`, so that each
+    /// page, left behind, goes unstored for many of the worker's rounds, which rebind it, while
+    /// stores race the rebinds of the pages beside it, and, as the set comes back to it, its own.
+    /// Stored to all in turn, a page went unstored between its writeback and its rebind only if
+    /// the loop stalled: the faster the loop, the fewer rebound, 31 and 45 at two million rounds,
+    /// none at last (GCE r582, r583; TASK-171).
     fn test_stores_under_rebinds() {
         use std::os::unix::fs::FileExt;
         const PAGE: usize = 4096;
         const PAGES: usize = 64;
+        const HOT: usize = 8;
+        const STEP: Duration = Duration::from_millis(2);
         const LEN: usize = PAGES * PAGE;
         let name = path("stores-under-rebinds");
         let mut expected = cow_base_file(&name, LEN, 0x99);
@@ -4768,12 +4777,15 @@ pub(crate) mod guest {
         let map = CowMapping::new(&file, LEN);
         let rebound = stats()["dax_rebound_pages"];
         let every = Param::set("dax_rebind_every", "10");
-        let deadline = Instant::now() + Duration::from_secs(2);
+        let start = Instant::now();
+        let deadline = start + Duration::from_secs(2);
         let mut round: usize = 0;
         while Instant::now() < deadline {
-            // Pages in an order that varies, each at an offset of its own, stored and written in
-            // turn.
-            let at = (round * 7 % PAGES) * PAGE + round * 61 % (PAGE - 8);
+            // The hot pages in an order that varies, each at an offset of its own, stored and
+            // written in turn.
+            let first = (start.elapsed().as_nanos() / STEP.as_nanos()) as usize;
+            let page = (first + round * 7 % HOT) % PAGES;
+            let at = page * PAGE + round * 61 % (PAGE - 8);
             let value = (round as u64).to_le_bytes();
             if round % 2 == 0 {
                 map.bytes()[at..at + 8].copy_from_slice(&value);
