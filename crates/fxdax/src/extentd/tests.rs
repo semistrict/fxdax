@@ -941,6 +941,64 @@ fn a_stray_access_stays_refused_and_is_given_up_on() {
     assert_eq!(unsafe { libc::munmap(memory.as_ptr().cast(), 4 * ps) }, 0);
 }
 
+/// fxdax TASK-187: what a forked VM's guest pays for each store to a page not yet here, of a large
+/// window that copies on write (GCE r632, pgbench forked at 0.57 of no DAX, its VMMs restricting
+/// pages for KVM's workers' writes 2^18 times and more): KVM's worker writes the page in for the
+/// vCPU's store, which the stage resolves as a load and restricts to reads, so that the worker's
+/// write fails; the vCPU's store then fails, `KVM_RUN` with `EFAULT`, and the VMM retries it once
+/// the stage's fault thread has lifted the restriction (`guest_access_failed`); the store, retried,
+/// makes the page private. A store failed once, then, or twice where the fault thread was slow to
+/// lift: 357 times while the VMM retried at once and a lift walked every page of the window, 140
+/// once a lift walked the pages restricted alone (printed, with the time the stores took).
+#[test]
+fn a_store_after_a_workers_write_waits_for_one_lift() {
+    use crate::{AccessFailures, Failure};
+    host();
+    let ps = page_size() as usize;
+    // A 1 GiB window, of which the guest stores to `STORES` pages.
+    const PAGES: usize = 1 << 18;
+    const STORES: usize = 1000;
+    let dir = tempfile::tempdir().unwrap();
+    let (store, served) = connect(&dir.path().join("store"), 1 << 24);
+    let memory = memory(PAGES);
+    let size = (PAGES * ps) as u64;
+    // SAFETY: The memory is the test's, and outlives the store.
+    unsafe { store.create_dax_window_in_host_memory(memory, size, None, STORES as u64) }.unwrap();
+    futures::executor::block_on(store.map_zeros_async(0, size)).unwrap();
+    let base = memory.as_ptr() as usize;
+    crate::guest_thread_started();
+    let (mut failed, start) = (0u64, std::time::Instant::now());
+    for page in 0..STORES {
+        // Every 64th page, as a forked guest's stores are spread over its window.
+        let addr = base + page * 64 * ps;
+        let worker = std::thread::spawn(move || kernel_store(addr));
+        assert_eq!(worker.join().unwrap(), Err(libc::EFAULT), "the worker's write went through");
+        let mut failures = AccessFailures::default();
+        while let Err(errno) = kernel_store(addr) {
+            assert_eq!(errno, libc::EFAULT);
+            failed += 1;
+            let retry = failures.failed(std::time::Instant::now());
+            assert!(matches!(retry, Failure::Retry { ended: None }), "{retry:?}");
+        }
+    }
+    let took = start.elapsed();
+    eprintln!(
+        "{STORES} stores after workers' writes, of a window of {PAGES} pages: {failed} retries \
+         failed, {:.1} a store, in {took:?}, {:?} a store",
+        failed as f64 / STORES as f64,
+        took / STORES as u32
+    );
+    let told = crate::describe_windows(Some(base));
+    let pages = format!("{STORES} private, 0 withheld, 0 restricted (0 for workers' writes)");
+    assert!(told.contains(&pages), "{told}");
+    assert!(failed <= 2 * STORES as u64, "{failed} retries failed");
+
+    drop(store);
+    served.join().unwrap();
+    // SAFETY: Unmaps the memory, which nothing uses any more.
+    assert_eq!(unsafe { libc::munmap(memory.as_ptr().cast(), PAGES * ps) }, 0);
+}
+
 /// TASK-131.6: the daemon's gauges of its extent cache and its windows' mappings follow a window's
 /// mappings: a sealed extent's, the cached extent its mappings hold (pinned), its page faulted in,
 /// then mapped at once again; and unmapped, the cached extent nothing holds (idle).

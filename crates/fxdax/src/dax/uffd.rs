@@ -307,19 +307,82 @@ fn is_guests(thread: u32) -> bool {
     GUEST_THREADS.read().unwrap_or_else(std::sync::PoisonError::into_inner).contains(&thread)
 }
 
-/// fxdax: the event file descriptors the fault threads of the stages serving faults poll for a
-/// guest's access failing ([`guest_access_failed`]), each its thread's while it runs.
-static LIFTS: std::sync::Mutex<Vec<Arc<File>>> = std::sync::Mutex::new(Vec::new());
+/// fxdax: the lifts of the stages serving faults ([`guest_access_failed`]), each its fault
+/// thread's while it runs.
+static LIFTS: std::sync::Mutex<Vec<Arc<Lift>>> = std::sync::Mutex::new(Vec::new());
+
+/// fxdax: how long a guest's access failing waits for the fault threads' lifts at most
+/// ([`guest_access_failed`]): less than a run of failures' gap (`AccessFailures::IN_A_ROW`), so
+/// that a fault thread slow to lift leaves the VMM retrying the access, one run of failures.
+const LIFT_PATIENCE: std::time::Duration = std::time::Duration::from_millis(5);
+
+/// fxdax: a fault thread's lifts of what its stage restricted for workers' writes, which a guest's
+/// access failing asks for, and waits for ([`guest_access_failed`]).
+struct Lift {
+    /// What the fault thread polls, signalled at each ask.
+    fd: File,
+    /// The asks made so far.
+    asked: AtomicU64,
+    /// The asks the fault thread has lifted for, all those made before its last lift began.
+    lifted: std::sync::Mutex<u64>,
+    done: std::sync::Condvar,
+}
+
+impl Lift {
+    fn new() -> Result<Self, Error> {
+        let (asked, lifted) = (AtomicU64::new(0), std::sync::Mutex::new(0));
+        Ok(Self { fd: event_fd()?, asked, lifted, done: std::sync::Condvar::new() })
+    }
+
+    /// Asks the fault thread to lift: the ask's number, which [`Self::wait`] waits for.
+    fn ask(&self) -> u64 {
+        let ask = self.asked.fetch_add(1, Ordering::AcqRel) + 1;
+        // A write fails with `EAGAIN` only if the counter would overflow, when it is signalled.
+        let _ = (&self.fd).write(&1u64.to_ne_bytes());
+        ask
+    }
+
+    /// Waits until the fault thread has lifted for ask `ask`, or `deadline` has passed.
+    fn wait(&self, ask: u64, deadline: std::time::Instant) {
+        let mut lifted = self.lifted.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        while *lifted < ask {
+            let Some(left) = deadline.checked_duration_since(std::time::Instant::now()) else {
+                return;
+            };
+            lifted = (self.done.wait_timeout(lifted, left))
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .0;
+        }
+    }
+
+    /// On the fault thread, signalled: lifts with `lift`, for the asks made before it began.
+    fn serve(&self, lift: impl FnOnce()) {
+        let mut count = [0u8; 8];
+        // A read fails with `EAGAIN` only if nothing signalled it since the last.
+        let _ = (&self.fd).read(&mut count);
+        let asked = self.asked.load(Ordering::Acquire);
+        lift();
+        let mut lifted = self.lifted.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        *lifted = (*lifted).max(asked);
+        self.done.notify_all();
+    }
+}
 
 /// fxdax: a guest's access failed, as `KVM_RUN` does with `EFAULT`, which the VMM retries: each
 /// stage lifts the restrictions it made for workers' writes, on windows that copy on write, so that
 /// the access, a store, retried, faults to the window (see the module docs). Called on a vCPU's
-/// thread: it signals the fault threads, which lift them, and waits for nothing.
+/// thread: it signals the fault threads, which lift them, and waits until they have, for
+/// [`LIFT_PATIENCE`] at most. It waited for nothing once, and the vCPU, retrying at once, failed
+/// again and again until the fault thread had lifted: 140 times a store after a worker's write,
+/// 357 while a lift walked every page of the window (TASK-187,
+/// `a_store_after_a_workers_write_waits_for_one_lift`).
 pub fn guest_access_failed() {
-    let lifts = LIFTS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    for lift in lifts.iter() {
-        // A write fails with `EAGAIN` only if the counter would overflow, when it is signalled.
-        let _ = (&**lift).write(&1u64.to_ne_bytes());
+    let lifts: Vec<Arc<Lift>> =
+        LIFTS.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+    let asks: Vec<u64> = lifts.iter().map(|lift| lift.ask()).collect();
+    let deadline = std::time::Instant::now() + LIFT_PATIENCE;
+    for (lift, ask) in lifts.iter().zip(asks) {
+        lift.wait(ask, deadline);
     }
 }
 
@@ -849,7 +912,7 @@ impl UffdSecondStage {
         let stop = Arc::new(event_fd()?);
         let wake = Arc::new(EventFdWaker(event_fd()?));
         // fxdax: a guest's access failing, said to every stage (`guest_access_failed`).
-        let lift = Arc::new(event_fd()?);
+        let lift = Arc::new(Lift::new()?);
         LIFTS.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(lift.clone());
         let thread_stop = stop.clone();
         let (stage, thread_lift) = (self.clone(), lift.clone());
@@ -874,7 +937,7 @@ impl UffdSecondStage {
     /// concurrently: each is a future, which this thread polls once `wake`, its waker, signals that
     /// it can make progress, as when Fxfs's pager supplies the page it waits for. fxdax: and lifts
     /// what workers' writes restricted as `lift` is signalled ([`guest_access_failed`]).
-    fn serve_faults(&self, window: &dyn Faults, stop: &File, wake: Arc<EventFdWaker>, lift: &File) {
+    fn serve_faults(&self, window: &dyn Faults, stop: &File, wake: Arc<EventFdWaker>, lift: &Lift) {
         let waker = Waker::from(wake.clone());
         let mut cx = Context::from_waker(&waker);
         let mut faults = FuturesUnordered::new();
@@ -882,7 +945,7 @@ impl UffdSecondStage {
             libc::pollfd { fd: self.host.uffd.as_raw_fd(), events: libc::POLLIN, revents: 0 },
             libc::pollfd { fd: stop.as_raw_fd(), events: libc::POLLIN, revents: 0 },
             libc::pollfd { fd: wake.0.as_raw_fd(), events: libc::POLLIN, revents: 0 },
-            libc::pollfd { fd: lift.as_raw_fd(), events: libc::POLLIN, revents: 0 },
+            libc::pollfd { fd: lift.fd.as_raw_fd(), events: libc::POLLIN, revents: 0 },
         ];
         loop {
             // Make what progress the faults can, and then wait for new faults or for a fault's
@@ -904,10 +967,7 @@ impl UffdSecondStage {
                 wake.reset();
             }
             if fds[3].revents != 0 {
-                let mut count = [0u8; 8];
-                // A read fails with `EAGAIN` only if nothing signalled it since the last.
-                let _ = (&*lift).read(&mut count);
-                self.lift_worker_restrictions();
+                lift.serve(|| self.lift_worker_restrictions());
             }
             while let Some(msg) = self.read_event() {
                 if msg.event == UFFD_EVENT_PAGEFAULT {
@@ -1890,7 +1950,7 @@ impl Wake for EventFdWaker {
 pub(crate) struct FaultThread {
     stop: Arc<File>,
     /// fxdax: what it polls for a guest's access failing ([`guest_access_failed`]).
-    lift: Arc<File>,
+    lift: Arc<Lift>,
     thread: Option<crate::thread::Thread<()>>,
 }
 
@@ -1905,7 +1965,7 @@ impl Drop for FaultThread {
 }
 
 /// fxdax: a fault thread polls `lift` no more ([`LIFTS`]).
-fn forget_lift(lift: &Arc<File>) {
+fn forget_lift(lift: &Arc<Lift>) {
     let mut lifts = LIFTS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     lifts.retain(|registered| !Arc::ptr_eq(registered, lift));
 }
