@@ -3,11 +3,11 @@ id: TASK-174
 title: >-
   A deleted root's record the collector drops is made again, as a fork's child,
   by its parent's slow writer, naming segments collected
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-05 07:38'
-updated_date: '2026-11-05 13:51'
+updated_date: '2026-11-05 15:39'
 labels: []
 dependencies: []
 priority: high
@@ -23,15 +23,15 @@ Found by specs/bucket's TLA+ (TASK-165.2), the model BucketForks, before its fix
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A test that makes C's record again after the pass dropped it with the code as it is, and finds no record made again after the fix
-- [ ] #2 The rule the fix adds is in extent_remote's Rules, with its simulation test and specs/bucket's mutation
+- [x] #1 A test that makes C's record again after the pass dropped it with the code as it is, and finds no record made again after the fix
+- [x] #2 The rule the fix adds is in extent_remote's Rules, with its simulation test and specs/bucket's mutation
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
 - [ ] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -51,4 +51,12 @@ Red/green: collector::tests::deleted_roots_keep_their_records_from_slow_writers_
 Spec: rule recordsKept (GcFinish's doomedKey drops a deleted root's record not touched without it, rec' follows), mutation NoRecordsKept on BucketForks's model: violates NothingNeededGone in 2s. The header's TASK-174 difference is gone.
 Simulation: a new action, usurp (a root takes a pending fork's child's ID and is deleted, World::usurp, Event::Usurped giving the fork its child back when the fork's record came first); profile usurped holds 200 seeds (forks_ids_taken_by_roots_deleted); collection_needs_records_kept finds seed 1 with the rule off ('branch 32's record says Some(Origin { parent: 2, at: 13 })': the deleted root's record remade as the fork's child).
 Blind spot: the simulation's roots never took an ID a fork had named (contest only raced a fork whose segment never went), and no test had a writer pause between its lease read and its records. Class: usurp and the Gated bucket. Look around: TASK-177's restart on a parent's record found gone (recovery::unless_checkpointed) is reached now only if a record goes; its two tests run with records_kept off, so it stays covered. Other deletes of records: none; abandon_claim and abandon mark deleted, never remove. Structure: the record is the one owner of whether an ID is taken; never removing it makes the slow-writer race impossible for every kind, which is the fix.
+
+Verified 2026-11-05 at 10331f633 (collector-fixes). Simulation, release: every rule test (21, deletions_need_fences seed 4505, collection_needs_records_kept seed 1) and SIM_SOAK=100 of every holds test (20,000 seeds each, everything 30,000), 43/43 pass in 327 s. scripts/check-tla.sh, all specs and traces: exit 0; every bucket model holds (BucketForks 9,684,100 states 233 s, BucketPointsDeep 149 s), every mutation finds its violation (NoRecoveriesByOrigins 120 s, NoRecordsKept 5 s, NoDeletionsFence 2 s). macOS FXDAX_TEST_PARTS='workspace shuttle' scripts/test.sh --no-fail-fast: workspace 2112/2114, the two failures unrelated flakes under a load average of 53, each passing alone (fxdax fork_faults each_write_of_a_failed_forks_cleanup_going_wrong 7/7, filed TASK-184: claim.new shared by two writers; fxfs test_trim 3/3, filed TASK-185); shuttle part run alone, all pass. Linux (Docker, OrbStack, rust:1 arm64): cargo nextest run -p extent_remote -p extent_store 433/433 (572 s). scripts/upstream-changes.py --check: exit 0. Not run: GCE (scripts/test-gce.sh), so DoD #1 stays unchecked.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+The collector keeps every record, a deleted root's too (Rules::records_kept, Record::may_drop false), so a parent's slow writer finds the root's deleted record and makes none naming what a pass reclaimed. Direct test red with the rule off (the record made as the fork's child, the next pass Lost); specs/bucket rule recordsKept and mutation NoRecordsKept; simulation action usurp, profile forks_ids_taken_by_roots_deleted, rule test collection_needs_records_kept (seed 1). Verified by the soak, check-tla.sh, macOS and Linux runs; GCE not run.
+<!-- SECTION:FINAL_SUMMARY:END -->

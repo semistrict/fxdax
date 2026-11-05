@@ -4,11 +4,11 @@ title: >-
   Two deletions of a branch at once: the second, recovering past a fork segment
   that landed after the first marked the branch deleted, records the fork's
   child after the collector let go of what it needs
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-05 10:53'
-updated_date: '2026-11-05 14:08'
+updated_date: '2026-11-05 15:39'
 labels:
   - remote
   - collector
@@ -26,15 +26,15 @@ Found by specs/bucket's TLA+ (TASK-165.2, the model BucketForks), once a deletio
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A test with two deletions of a branch and a fork segment landing between their recoveries, red with the code as it is: the child recorded after the branch was marked deleted, and a pass losing it
-- [ ] #2 The fix is a field of extent_remote's Rules, with a simulation test turning it off, and its TLA+ doc line names specs/bucket/mutations/NoDeletionsFence.cfg
+- [x] #1 A test with two deletions of a branch and a fork segment landing between their recoveries, red with the code as it is: the child recorded after the branch was marked deleted, and a pass losing it
+- [x] #2 The fix is a field of extent_remote's Rules, with a simulation test turning it off, and its TLA+ doc line names specs/bucket/mutations/NoDeletionsFence.cfg
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
 - [ ] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -55,4 +55,12 @@ Spec: deletionsFence is now a field's rule (header: 28 fields, then deletionsDon
 Simulation: profile deleted_forking (forks, stale and latest deletions, takeovers, collectors): branches_deleted_twice_while_forking holds 200 seeds; deletions_need_fences finds seed 4505 with the rule off (a fork's child lost: 'branch 1b does not open: lost: ... keeps going', the collector failing likewise).
 passes_read_records_and_checkpoints_once_and_delete_at_once now counts the deleted forks' fences among what a pass deletes (10, then 2, where 8 and 1).
 Blind spot: the simulation's stale deletions ran only in stale_placements, which forks little, so no fork segment was in flight across two deletions; and the collector's assumption that a deleted branch's children have records before it is marked deleted had no test with two deletions. Class: deleted_forking and the direct test. Look around: other places a branch's end is read without a fence: delete_fork's claim (recovery::holds, read once, its record a claim that lost_is_ok covers), the collector (reads, never relies on an end not moving: may_land keeps segments at or past it), points (no writer). Structure: the deletion's fence makes the deletion a writer taking the branch over for the last time, the one rule that settles a branch's end, now one function for both.
+
+Verified 2026-11-05 at 10331f633 (collector-fixes). Simulation, release: every rule test (21, deletions_need_fences seed 4505, collection_needs_records_kept seed 1) and SIM_SOAK=100 of every holds test (20,000 seeds each, everything 30,000), 43/43 pass in 327 s. scripts/check-tla.sh, all specs and traces: exit 0; every bucket model holds (BucketForks 9,684,100 states 233 s, BucketPointsDeep 149 s), every mutation finds its violation (NoRecoveriesByOrigins 120 s, NoRecordsKept 5 s, NoDeletionsFence 2 s). macOS FXDAX_TEST_PARTS='workspace shuttle' scripts/test.sh --no-fail-fast: workspace 2112/2114, the two failures unrelated flakes under a load average of 53, each passing alone (fxdax fork_faults each_write_of_a_failed_forks_cleanup_going_wrong 7/7, filed TASK-184: claim.new shared by two writers; fxfs test_trim 3/3, filed TASK-185); shuttle part run alone, all pass. Linux (Docker, OrbStack, rust:1 arm64): cargo nextest run -p extent_remote -p extent_store 433/433 (572 s). scripts/upstream-changes.py --check: exit 0. Not run: GCE (scripts/test-gce.sh), so DoD #1 stays unchecked.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+A deletion fences the branch (Rules::deletions_fence): branch::delete, having recovered it, creates an empty segment of the final epoch at the end it found (recovery::fence, shared with the writer's fence), applying a segment landed there first, so every deletion finds the same forks and records their children before the branch is marked deleted. Direct test with two deletions and a fork segment landing between them, red with the rule off (the child recorded, the next pass Lost); specs/bucket's deletionsFence is now a field's rule; simulation profile branches_deleted_twice_while_forking, rule test deletions_need_fences (seed 4505). Verified by the soak, check-tla.sh, macOS and Linux runs; GCE not run.
+<!-- SECTION:FINAL_SUMMARY:END -->
