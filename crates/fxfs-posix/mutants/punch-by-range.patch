@@ -1,8 +1,7 @@
-diff --git a/crates/fxfs/src/object_store/data_object_handle.rs b/crates/fxfs/src/object_store/data_object_handle.rs
-index 4c15560f2..9728e32fc 100644
---- a/crates/fxfs/src/object_store/data_object_handle.rs
-+++ b/crates/fxfs/src/object_store/data_object_handle.rs
-@@ -2467,9 +2467,7 @@ impl<S: HandleOwner> DataObjectHandle<S> {
+diff --git a/crates/fxfs/src/object_store/data_object_handle/in_commits.rs b/crates/fxfs/src/object_store/data_object_handle/in_commits.rs
+--- a/crates/fxfs/src/object_store/data_object_handle/in_commits.rs
++++ b/crates/fxfs/src/object_store/data_object_handle/in_commits.rs
+@@ -97,9 +97,7 @@
      ) -> Result<(), Error> {
          let mut start = range.start;
          loop {

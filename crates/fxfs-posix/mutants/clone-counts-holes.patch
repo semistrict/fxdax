@@ -1,6 +1,6 @@
---- a/crates/fxfs/src/object_store/data_object_handle.rs
-+++ b/crates/fxfs/src/object_store/data_object_handle.rs
-@@ -2524,7 +2524,7 @@
+--- a/crates/fxfs/src/object_store/data_object_handle/in_commits.rs
++++ b/crates/fxfs/src/object_store/data_object_handle/in_commits.rs
+@@ -71,7 +71,7 @@
              let (end, taken) = self.end_of_room(start..range.end, room / 2, &shared).await?;
              let dst_range = dst_of(start)..dst_of(end);
              let (dst_end, _) = dst.end_of_room(dst_range, room - taken, &freed).await?;
