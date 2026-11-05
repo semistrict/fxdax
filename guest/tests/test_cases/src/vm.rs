@@ -976,6 +976,10 @@ mod tests {
         assert_eq!(checked("reviewed.console.txt", &reviewed), Ok(()));
         let peer = kcsan("folio_batch_move_lru / fxfs_vfs_read_folios+0x1b3/0x1f0", "0x1 -> 0x8");
         assert_eq!(checked("peer.console.txt", &peer), Ok(()));
+        // The same race, as KCSAN named it for lru_add inlined into folio_batch_move_lru (r565).
+        let inlined =
+            kcsan("fxfs_vfs_read_folios / lru_add", "0x000fffe000000001 -> 0x000fffe000000008");
+        assert_eq!(checked("inlined-peer.console.txt", &inlined), Ok(()));
         let ours =
             kcsan("fxfs_dax_region_open+0x10/0x20 / fxfs_dax_map_to+0x30/0x40", "0x0 -> 0x1");
         assert_eq!(
@@ -1001,8 +1005,9 @@ const KCSAN_REVIEWED_CHANGE: u64 = 0x0004_0000;
 /// The functions of the kernel's whose races with fxdax's code KCSAN reports, looked into:
 /// folio_batch_move_lru reads a folio's flags, a folio new to the LRU, as the worker that read it
 /// (fxfs_vfs_read_folios) marks it uptodate and unlocks it, for any bits of the word, as the
-/// reads of any filesystem finishing on another thread race it.
-const KCSAN_REVIEWED_PEERS: [&str; 1] = ["folio_batch_move_lru"];
+/// reads of any filesystem finishing on another thread race it. KCSAN names lru_add for the same
+/// race where it's inlined into folio_batch_move_lru (GCE r565, TASK-168).
+const KCSAN_REVIEWED_PEERS: [&str; 2] = ["folio_batch_move_lru", "lru_add"];
 
 /// Whether the kernel's function `function` is fxdax's code's: fs/fxfs's, its Rust's
 /// (whose mangled names name its crates, fxfs and fxfs_linux), or virtio_extent's.
