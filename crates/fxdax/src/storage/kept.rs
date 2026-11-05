@@ -255,6 +255,23 @@ mod tests {
         })
     }
 
+    /// TASK-165.6: an image dropped has let go of its store, which this process opens again at
+    /// once, as the extent daemon does a store an import made: its uploader's task, held up by the
+    /// failpoint after it said it stopped, keeps nothing of it open. That task said so before it let
+    /// go of the store, and the daemon found the import's store still open (`EIO`, CI 42119298585).
+    #[test]
+    fn images_dropped_let_go_of_their_stores() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("image");
+        let scenario = fail::FailScenario::setup();
+        fail::cfg("remote::stopped", "sleep(500)").unwrap();
+        drop(Storage::create(&path, SIZE).unwrap());
+        let reopened = host_store::open(&path).map(|opened| opened.store.description().branch);
+        scenario.teardown();
+        let branch = reopened.map_err(|err| format!("{err:#}"));
+        assert_eq!(branch.map(|_| ()), Ok(()));
+    }
+
     /// TASK-165.6: an image kept in a host's bucket, as a store the extent daemon made is, which
     /// this process opens, has no collector here: the host's collects it.
     #[test]

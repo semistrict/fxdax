@@ -747,7 +747,12 @@ impl Remote {
         // A task, not a thread of its own (TASK-34).
         RUNTIME.spawn(async move {
             uploader.run(uploads, holder, started).await;
+            // The store let go of before the uploader says it stopped: so that dropping this
+            // returns with nothing of the uploader's holding the store open, which the process may
+            // open again at once, as extentd does a store an image it imported made (TASK-165.6).
+            drop(uploader);
             let _ = stop.send(());
+            fail::fail_point!("remote::stopped");
         });
         match start.recv() {
             Ok(Ok(())) => {
