@@ -6,6 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-11-05 03:16'
+updated_date: '2026-11-05 17:15'
 labels: []
 dependencies:
   - TASK-165.3
@@ -40,3 +41,9 @@ doc-14, step 7. The local lineage and remote.rs's claim, marker and take_parent 
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+From TASK-165.6: an image's own file bucket is <image>/bucket, inside its directory, which its clones' handles name. That holds only while the local lineage keeps an image's directory as long as its clones live; once forks are only in the bucket, a deleted image's directory goes with its bucket under its clones. Move it (beside the image, or a bucket the caller names) in this step.
+<!-- SECTION:NOTES:END -->

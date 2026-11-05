@@ -1,9 +1,11 @@
 ---
 id: TASK-165.6
 title: 'Images keep their branches in a file:// bucket: every store has a bucket'
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-11-05 03:16'
+updated_date: '2026-11-05 17:15'
 labels: []
 dependencies:
   - TASK-165.1
@@ -33,3 +35,35 @@ doc-14, step 6. Storage's images (the fxdax CLI's, mounted by Storage::open, als
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. extent_store: a host store's description (StoreFile) names its bucket's URL; create_host requires one; Lineage::bucket, host_bucket.
+2. fxdax host_store: one registry of buckets by URL (extentd's own registered under its URL); create names this host's bucket (FXDAX_EXTENTD_REMOTE) or, on a machine that is no host, a file bucket of the store's own in its directory; open resolves the description's bucket and refuses a store naming none (made by older code); the token of copies never placed: the host's, or 1.
+3. Refactor: ExtentStore::fork_durable's fork protocol (claim, fork_host_with, forked, failed forks deleted) moves to host_store::fork, shared with Storage.
+4. Storage: an image's device holds its store kept in its bucket (an uploader attached, Remote); a commit fails once uploading failed, waits on the lag bound, cleans locally, and nudges the file bucket's collector; closing waits for uploads; clone_to forks through host_store::fork, so the clone is a fork in the bucket; delete deletes the branch in the description's bucket.
+5. storage/collect.rs: one collector per file bucket per process, a pass on a thread of its own after a commit, at most one a minute.
+6. extentd: attaches a store to the bucket its description names (an image's file bucket, or the daemon's); deletes there.
+7. Tests for each; decision on older images in OPEN_QUESTIONS.md; macOS workspace+shuttle, Linux Docker, GCE guest cases with images.
+<!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Design (commits 32d5654bb, 8550a3de1):
+- extent_store: local format 6. A host store's description (store) names its bucket's URL; create_host requires one; Lineage::bucket, host_bucket. Stores of memory (Store::create) name none. Format 5 and older are refused, opened or deleted, by extent_store::Format, which fxdax's Error::errno maps to ENOTSUP (AGENTS.md: no migrations). doc-11 updated.
+- fxdax host_store: one bucket per URL per process (host_store::bucket; extentd's own registered under its URL, use_bucket in tests). create names this host's bucket (FXDAX_EXTENTD_REMOTE) or, where none is, <store>/bucket, a file bucket of its own which its forks share. open returns the store with its bucket (Opened): no store opens without one. token(): FXDAX_EXTENTD_TOKEN's, or 1.
+- Refactor first (32d5654bb): ExtentStore::fork_durable's fork protocol is host_store::fork, shared with images.
+- Storage (storage/kept.rs): an image's store with an uploader (Remote) attached. After a commit: fails once uploading failed (Remote::failed, new), waits on the lag bound, cleans locally as before, starts the collector. Closing waits for uploads. clone_to forks through host_store::fork (a fork in the bucket); Storage::delete deletes the branch in the description's bucket.
+- storage/collect.rs: the collector of an image's own bucket, one per bucket per process, a pass on a thread of its own after a commit, at most one a minute, grace 60 s. A host's bucket is never collected in-process.
+- extentd attaches a store to the bucket its description names (an image it serves keeps its branch in the image's file bucket) and deletes there.
+- scripts/test-e2e.sh: the shared daemon keeps stores in a file bucket on /dev/shm, not its memory: the cases open its stores in their own processes, where a memory bucket is another (a restore's claim of a point's fork found no point there).
+- Decisions: OPEN_QUESTIONS.md, 'Every store names its bucket ...'.
+
+Tests, each red with its behaviour removed (mutated and run): storage::kept images_keep_their_branches_in_a_file_bucket_of_their_own (close without waiting for uploads), clones_are_forks_in_their_images_bucket (fork without the remote), deleting_images_deletes_their_branches (delete without the bucket), commits_start_the_collector (no after_commit), the_collector_reclaims_what_images_freed, images_in_a_hosts_bucket_are_not_collected_here (keeps_own_bucket always true); host_store older_stores_are_refused_by_their_format (format 5 accepted), stores_name_their_hosts_bucket_or_one_of_their_own (host's URL ignored); extent_store stores_and_their_forks_name_their_bucket (bucket line not written), layout descriptions; extentd keeps_branches_in_the_buckets_their_stores_name (attached to the daemon's bucket, Linux).
+
+Runs: macOS FXDAX_TEST_PARTS='workspace shuttle' scripts/test.sh: green (workspace 2129/2129). Linux in Docker, cargo nextest -p fxdax -p extent_store: 694/701, the 7 environment-only (eu-stack x3, grants ENOENT x3, build stamp). GCE r620, the 22 guest cases using images: 21 pass; fxfs-guest-crash-stray-dax fails, as it does on main at 75bd872ba (r623, round 2: exited 0, not 159), also r621/r622 here: filed as TASK-187, not this change's.
+
+Overlap: TASK-165.5 (remote.rs: Remote::failed added, block_on pub(crate), 3 test lines take Opened's store). Collector work (TASK-173/174/183): Collector's public API only. TASK-165.7 must move an image's bucket out of <image>/bucket once the local lineage no longer keeps the image's directory as long as its clones.
+<!-- SECTION:NOTES:END -->
