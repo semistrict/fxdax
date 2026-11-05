@@ -18,34 +18,60 @@
 # RESULTS/gate.json. It fails if a run or a gate does.
 # docs/measurements/dax-cow-gate.md says what each case measures.
 #
-# Usage: perf-gate-gce.sh [--bare-metal] INSTANCE RESULTS
+# Usage: perf-gate-gce.sh [--bare-metal] INSTANCE RESULTS [PHASE...]
 #
 # INSTANCE is a host scripts/test-gce.sh made (`test-gce.sh create`), of the
 # kind the numbers are reported as: GCE's VMs, nested, by default; with
 # --bare-metal, a metal machine type (FXDAX_GCE_MACHINE). Numbers of the two
-# kinds are not compared. A release guest kernel unless FXDAX_GUEST_KERNEL_BUILD
-# says otherwise; FXDAX_GATE_* are the gates' thresholds (pgbench-gate.py), and
-# every other FXDAX_* reaches the host (test-gce.sh), FXDAX_GUEST_CMDLINE among
-# them.
+# kinds are not compared. The PHASEs, in order, of `single`, `density` and
+# `gate`, all three by default: each a run of its own, so that a driver whose
+# commands have a time limit runs one a command (r580 met a two-hour limit in
+# its density run), each later phase reusing the host's builds; `gate` reads
+# both runs' results in RESULTS. A release guest kernel unless
+# FXDAX_GUEST_KERNEL_BUILD says otherwise; each Firecracker in its jailer's
+# jail, as production runs it, unless FXDAX_FIRECRACKER_JAIL is set empty
+# (TASK-172: a jailed VM process's DAX window budgets its mappings as the host
+# allows, as an unjailed one's does); FXDAX_GATE_* are the gates' thresholds
+# (pgbench-gate.py), and every other FXDAX_* reaches the host (test-gce.sh),
+# FXDAX_GUEST_CMDLINE among them.
 set -euo pipefail
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+usage() { echo "Usage: $0 [--bare-metal] INSTANCE RESULTS [single|density|gate]..." >&2; exit 2; }
 host=nested
 if [[ ${1:-} == --bare-metal ]]; then
     host=bare-metal
     shift
 fi
-[[ $# == 2 ]] || { echo "Usage: $0 [--bare-metal] INSTANCE RESULTS" >&2; exit 2; }
+(( $# >= 2 )) || usage
 instance=$1 results=$2
+shift 2
+phases=("$@")
+(( ${#phases[@]} > 0 )) || phases=(single density gate)
+for phase in "${phases[@]}"; do
+    [[ $phase =~ ^(single|density|gate)$ ]] || usage
+done
 # The suites (`runner list --tag perf-single`, `--tag perf-density`).
 single="--tag perf-single"
 density="--tag perf-density"
 export FXDAX_WORKSPACE_TESTS=0 FXDAX_E2E_ROUNDS=1
 export FXDAX_GUEST_KERNEL_BUILD=${FXDAX_GUEST_KERNEL_BUILD:-release}
+export FXDAX_FIRECRACKER_JAIL=${FXDAX_FIRECRACKER_JAIL-1}
 status=0
-FXDAX_E2E_TEST=$single "$repo/scripts/test-gce.sh" run "$instance" "$results/single" || status=$?
-FXDAX_PGBENCH_VMS=${FXDAX_PERF_GATE_VMS:-3} \
-    FXDAX_PGBENCH_RUNS=${FXDAX_PERF_GATE_DENSITY_RUNS:-2} FXDAX_E2E_TEST=$density \
-    "$repo/scripts/test-gce.sh" run "$instance" "$results/density" || status=$?
-"$repo/scripts/pgbench-gate.py" --host "$host" --json "$results/gate.json" \
-    "$results/single" "$results/density" || status=$?
+for phase in "${phases[@]}"; do
+    case $phase in
+        single)
+            FXDAX_E2E_TEST=$single "$repo/scripts/test-gce.sh" run "$instance" "$results/single" ||
+                status=$?
+            ;;
+        density)
+            FXDAX_PGBENCH_VMS=${FXDAX_PERF_GATE_VMS:-3} \
+                FXDAX_PGBENCH_RUNS=${FXDAX_PERF_GATE_DENSITY_RUNS:-2} FXDAX_E2E_TEST=$density \
+                "$repo/scripts/test-gce.sh" run "$instance" "$results/density" || status=$?
+            ;;
+        gate)
+            "$repo/scripts/pgbench-gate.py" --host "$host" --json "$results/gate.json" \
+                "$results/single" "$results/density" || status=$?
+            ;;
+    esac
+done
 exit "$status"

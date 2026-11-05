@@ -29,8 +29,8 @@ FAKE_TEST_GCE = r"""#!/usr/bin/env bash
 set -euo pipefail
 results=$3
 echo "$* E2E_TEST=$FXDAX_E2E_TEST VMS=${FXDAX_PGBENCH_VMS:-} RUNS=${FXDAX_PGBENCH_RUNS:-} \
-ROUNDS=$FXDAX_E2E_ROUNDS WORKSPACE=$FXDAX_WORKSPACE_TESTS KERNEL=$FXDAX_GUEST_KERNEL_BUILD" \
-    >> "$CALLS"
+ROUNDS=$FXDAX_E2E_ROUNDS WORKSPACE=$FXDAX_WORKSPACE_TESTS KERNEL=$FXDAX_GUEST_KERNEL_BUILD \
+JAIL=${FXDAX_FIRECRACKER_JAIL:-}" >> "$CALLS"
 mib=1048576
 case $FXDAX_E2E_TEST in
     "--tag perf-single") cases="fxfs-guest-pgbench fxfs-guest-pgbench-dax pgbench-ext4-dax-pmem
@@ -98,9 +98,10 @@ class PerfGateGce(unittest.TestCase):
         self.calls = self.root / "calls.txt"
         self.results = self.root / "results"
 
-    def gate(self, *args, **environment):
+    def gate(self, *args, phases=(), **environment):
         return subprocess.run(
-            [self.root / "scripts" / "perf-gate-gce.sh", *args, "fxdax-test-r1", self.results],
+            [self.root / "scripts" / "perf-gate-gce.sh", *args, "fxdax-test-r1", self.results,
+             *phases],
             env={"PATH": "/usr/bin:/bin", "CALLS": str(self.calls), **environment},
             capture_output=True, text=True)
 
@@ -108,9 +109,9 @@ class PerfGateGce(unittest.TestCase):
         gated = self.gate()
         self.assertEqual(self.calls.read_text().splitlines(), [
             f"run fxdax-test-r1 {self.results}/single E2E_TEST={SINGLE} VMS= RUNS= "
-            "ROUNDS=1 WORKSPACE=0 KERNEL=release",
+            "ROUNDS=1 WORKSPACE=0 KERNEL=release JAIL=1",
             f"run fxdax-test-r1 {self.results}/density E2E_TEST={DENSITY} VMS=3 "
-            "RUNS=2 ROUNDS=1 WORKSPACE=0 KERNEL=release",
+            "RUNS=2 ROUNDS=1 WORKSPACE=0 KERNEL=release JAIL=1",
         ])
         # Each density run's last VM at 80 tps against its first's 100.
         self.assertEqual((gated.returncode, gated.stderr), (1, "".join(
@@ -149,7 +150,7 @@ class PerfGateGce(unittest.TestCase):
         gated = self.gate("--bare-metal", FXDAX_GATE_DENSITY="0.8", FXDAX_PERF_GATE_VMS="2",
                           FXDAX_PERF_GATE_DENSITY_RUNS="3", FXDAX_GUEST_KERNEL_BUILD="debug")
         self.assertEqual((gated.returncode, gated.stderr), (0, ""))
-        self.assertIn("VMS=2 RUNS=3 ROUNDS=1 WORKSPACE=0 KERNEL=debug",
+        self.assertIn("VMS=2 RUNS=3 ROUNDS=1 WORKSPACE=0 KERNEL=debug JAIL=1",
                       self.calls.read_text().splitlines()[1])
         self.assertEqual(json.loads((self.results / "gate.json").read_text())["host"], "bare-metal")
 
@@ -159,9 +160,29 @@ class PerfGateGce(unittest.TestCase):
         self.assertEqual(len(self.calls.read_text().splitlines()), 2)
         self.assertTrue((self.results / "gate.json").exists())
 
+    def test_its_phases_one_a_command_then_the_gate_over_both(self):
+        """TASK-164.5: each phase a command of its own, as a driver whose commands have a time limit
+        runs them (r580 met a two-hour limit), unjailed if asked; the gate reads both runs'."""
+        self.assertEqual(self.gate(phases=["single"], FXDAX_FIRECRACKER_JAIL="").returncode, 0)
+        self.assertEqual(self.gate(phases=["density"]).returncode, 0)
+        self.assertEqual(self.calls.read_text().splitlines(), [
+            f"run fxdax-test-r1 {self.results}/single E2E_TEST={SINGLE} VMS= RUNS= "
+            "ROUNDS=1 WORKSPACE=0 KERNEL=release JAIL=",
+            f"run fxdax-test-r1 {self.results}/density E2E_TEST={DENSITY} VMS=3 "
+            "RUNS=2 ROUNDS=1 WORKSPACE=0 KERNEL=release JAIL=1",
+        ])
+        self.assertFalse((self.results / "gate.json").exists())
+        gated = self.gate(phases=["gate"], FXDAX_GATE_DENSITY="0.8")
+        self.assertEqual((gated.returncode, gated.stderr), (0, ""))
+        self.assertEqual(len(self.calls.read_text().splitlines()), 2)
+        report = json.loads((self.results / "gate.json").read_text())
+        self.assertEqual(report["memory"]["dax-density"]["per_added_vm_mib"], 300.0)
+        self.assertEqual(report["bigmap"]["bigmap-dax"]["written_memory_per_byte"], 1.0)
+
     def test_its_usage(self):
-        usage = subprocess.run([script.SCRIPTS / "perf-gate-gce.sh", "fxdax-test-r1"],
-                               capture_output=True, text=True)
-        self.assertEqual(usage.returncode, 2)
-        self.assertRegex(usage.stderr, r"Usage: .*perf-gate-gce.sh \[--bare-metal\] INSTANCE "
-                                       r"RESULTS\n$")
+        for args in [["fxdax-test-r1"], ["fxdax-test-r1", "results", "bigmap"]]:
+            usage = subprocess.run([script.SCRIPTS / "perf-gate-gce.sh", *args],
+                                   capture_output=True, text=True)
+            self.assertEqual(usage.returncode, 2)
+            self.assertRegex(usage.stderr, r"Usage: .*perf-gate-gce.sh \[--bare-metal\] INSTANCE "
+                                           r"RESULTS \[single\|density\|gate\]\.\.\.\n$")

@@ -8,14 +8,23 @@ from measurement).
 ## Running it
 
 ```sh
-scripts/test-gce.sh create fxdax-perf-r1          # n2-standard-4, nested, by default
-scripts/perf-gate-gce.sh fxdax-perf-r1 /tmp/perf-gate-$(date -u +%Y-%m-%dT%H%MZ)
-scripts/test-gce.sh delete fxdax-perf-r1
+scripts/test-gce.sh create fxdax-test-perf-r1     # n2-standard-4, nested, by default
+results=/tmp/perf-gate-$(date -u +%Y-%m-%dT%H%MZ)
+scripts/perf-gate-gce.sh fxdax-test-perf-r1 "$results" single
+scripts/perf-gate-gce.sh fxdax-test-perf-r1 "$results" density
+scripts/perf-gate-gce.sh fxdax-test-perf-r1 "$results" gate
+scripts/test-gce.sh delete fxdax-test-perf-r1
 ```
 
 It runs every case below, one VM each (`RESULTS/single`), then the density cases
 (`RESULTS/density`), then `scripts/pgbench-gate.py` over both, which writes `RESULTS/gate.json` and
-fails on any gate. About two hours on an n2-standard-4.
+fails on any gate. Without phases it runs all three in one command, more than two hours on an
+n2-standard-4: r580 met its driver's two-hour limit in the density run. One phase a command keeps
+each under it, the density run reusing the single run's builds on the host.
+
+- Each Firecracker runs in its jailer's jail, as production runs it (`FXDAX_FIRECRACKER_JAIL=1`,
+  set empty for none): since TASK-172, a jailed VM process's window budgets its mappings by the
+  host's `vm.max_map_count`, which the daemon tells it, as an unjailed one's does.
 
 - DAX copies on write, the only DAX since writable DAX was deleted (2026-11-04,
   dead-ends/writable-dax.md): the `-dax` cases are copy-on-write DAX's, and the `-dax-cow` cases
