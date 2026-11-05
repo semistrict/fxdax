@@ -6,7 +6,7 @@
 # Run fxdax's guest tests (guest/tests) on this host, Linux with KVM (on macOS, use
 # scripts/test-e2e-linux.sh, which runs this in Lima). Arguments name the test
 # cases (default: extent-guest, the fxfs-guest cases, their crash and checks cases,
-# fxfs-guest-checks-dax-delay and -small, and the pgbench ones), which boot fxdax's Firecracker (vendor/firecracker,
+# fxfs-guest-checks-dax-delay, -small and -overrun, and the pgbench ones), which boot fxdax's Firecracker (vendor/firecracker,
 # with its fxdax feature), which this builds, and the guest kernel
 # FXDAX_GUEST_KERNEL names (scripts/build-guest-kernel.sh builds it). Each test's
 # logs are kept under $FXDAX_E2E_RESULTS (default: a new temporary directory).
@@ -28,7 +28,7 @@ root=$(cd "$(dirname "$0")/.." && pwd)
 harness="$root/guest/tests"
 tests=("$@")
 if (( ${#tests[@]} == 0 )); then
-    tests=(extent-guest fxfs-guest fxfs-guest-dax fxfs-guest-crash fxfs-guest-crash-dax fxfs-guest-crash-dax-killed fxfs-guest-checks fxfs-guest-checks-dax fxfs-guest-checks-dax-delay fxfs-guest-checks-dax-small fxfs-guest-pgbench fxfs-guest-pgbench-dax fxfs-guest-crash-stray-dax fxfs-guest-docker-dax)
+    tests=(extent-guest fxfs-guest fxfs-guest-dax fxfs-guest-crash fxfs-guest-crash-dax fxfs-guest-crash-dax-killed fxfs-guest-checks fxfs-guest-checks-dax fxfs-guest-checks-dax-delay fxfs-guest-checks-dax-small fxfs-guest-checks-overrun fxfs-guest-pgbench fxfs-guest-pgbench-dax fxfs-guest-crash-stray-dax fxfs-guest-docker-dax)
 fi
 results=${FXDAX_E2E_RESULTS:-$(mktemp -d "${TMPDIR:-/tmp}/fxdax-e2e.XXXXXX")}
 mkdir -p "$results"

@@ -70,6 +70,8 @@ case ${FXDAX_GUEST_KERNEL_BUILD:-} in
             exit 1
         fi
         export FXDAX_GUEST_KERNEL="$kernel_work/out/x86_64/vmlinux"
+        # Its kind, which the guest tests' time limits scale by (TASK-168).
+        export FXDAX_GUEST_KERNEL_BUILD
         sha256sum "$FXDAX_GUEST_KERNEL" > "$results/guest-kernel.txt"
         ;;
     *)

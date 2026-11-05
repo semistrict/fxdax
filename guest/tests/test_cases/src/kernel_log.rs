@@ -22,18 +22,20 @@ pub fn records() -> Vec<String> {
     kmsg().map_or_else(Vec::new, read)
 }
 
-/// fxdax: runs `log`, then prints what the kernel logged meanwhile, as [`print`] does: what a
-/// sysrq says, without all that came before it.
-pub fn print_during(log: impl FnOnce()) {
-    // A reader past every record there is so far.
+/// fxdax: the guest's stacks, its CPUs', blocked tasks' and every task's (sysrq l, w and t), each
+/// record as "kernel: RECORD": the kernel's hung task reports name only tasks in uninterruptible
+/// sleep, not one looping, or sleeping killably, holding what they wait for (load_during_move's,
+/// GCE r526).
+pub fn stacks() -> Vec<String> {
+    // A reader past every record there is so far: what the sysrqs say, without all before them.
     let kmsg = kmsg().filter(|kmsg| {
         // SAFETY: A plain system call on an open file.
         unsafe { libc::lseek(kmsg.as_raw_fd(), 0, libc::SEEK_END) >= 0 }
     });
-    log();
-    for record in kmsg.map_or_else(Vec::new, read) {
-        eprint!("kernel: {record}");
+    for key in [b"l", b"w", b"t"] {
+        let _ = fs::write("/proc/sysrq-trigger", key);
     }
+    kmsg.map_or_else(Vec::new, read).into_iter().map(|record| format!("kernel: {record}")).collect()
 }
 
 fn kmsg() -> Option<fs::File> {

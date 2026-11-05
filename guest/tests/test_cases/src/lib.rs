@@ -64,7 +64,7 @@ use test_runner_deadlock::TestRunnerDeadlock;
 #[cfg(any(feature = "host", target_os = "linux"))]
 mod test_fxfs_guest_checks;
 #[cfg(any(feature = "host", target_os = "linux"))]
-use test_fxfs_guest_checks::TestFxfsGuestChecks;
+use test_fxfs_guest_checks::{PAGE_CACHE_CHECKS, TestFxfsGuestChecks};
 #[cfg(any(feature = "host", target_os = "linux"))]
 mod test_fxfs_guest_script;
 #[cfg(any(feature = "host", target_os = "linux"))]
@@ -284,24 +284,27 @@ pub fn test_cases() -> Vec<TestCase> {
             }),
         ),
         #[cfg(any(feature = "host", target_os = "linux"))]
-        TestCase::new(
-            "fxfs-guest-checks",
-            Box::new(TestFxfsGuestChecks { dax: false, delay: false, small_window: false }),
-        ),
+        TestCase::new("fxfs-guest-checks", Box::new(PAGE_CACHE_CHECKS)),
         #[cfg(any(feature = "host", target_os = "linux"))]
         TestCase::new(
             "fxfs-guest-checks-dax",
-            Box::new(TestFxfsGuestChecks { dax: true, delay: false, small_window: false }),
+            Box::new(TestFxfsGuestChecks { dax: true, ..PAGE_CACHE_CHECKS }),
         ),
         #[cfg(any(feature = "host", target_os = "linux"))]
         TestCase::new(
             "fxfs-guest-checks-dax-delay",
-            Box::new(TestFxfsGuestChecks { dax: true, delay: true, small_window: false }),
+            Box::new(TestFxfsGuestChecks { dax: true, delay: true, ..PAGE_CACHE_CHECKS }),
         ),
         #[cfg(any(feature = "host", target_os = "linux"))]
         TestCase::new(
             "fxfs-guest-checks-dax-small",
-            Box::new(TestFxfsGuestChecks { dax: true, delay: false, small_window: true }),
+            Box::new(TestFxfsGuestChecks { dax: true, small_window: true, ..PAGE_CACHE_CHECKS }),
+        ),
+        // fxdax: a check outrunning its budget fails the run by name (TASK-168).
+        #[cfg(any(feature = "host", target_os = "linux"))]
+        TestCase::new(
+            "fxfs-guest-checks-overrun",
+            Box::new(TestFxfsGuestChecks { overrun: true, ..PAGE_CACHE_CHECKS }),
         ),
         #[cfg(any(feature = "host", target_os = "linux"))]
         TestCase::new(

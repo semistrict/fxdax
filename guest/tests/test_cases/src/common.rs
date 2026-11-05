@@ -47,6 +47,23 @@ pub fn fxdax_guest_should_run() -> ShouldRun {
     ShouldRun::Yes
 }
 
+/// fxdax: how many times slower than a release one the guest kernel is, by its kind,
+/// FXDAX_GUEST_KERNEL_BUILD's, as scripts/lib/test-linux-host.sh built it (a release one if
+/// unset): what a test's time limits scale by (TASK-168). The debug kernel's measured: its checks
+/// of a second or more took 1.37 times the release kernel's at most (GCE r561, r562 against r560,
+/// r563). The others' guessed, KASAN's from its outrunning the checks' 180 s where the release
+/// kernel took 140 s or so (TASK-44.8).
+pub fn guest_kernel_slowness() -> anyhow::Result<f64> {
+    match std::env::var("FXDAX_GUEST_KERNEL_BUILD").unwrap_or_default().as_str() {
+        "" | "release" => Ok(1.0),
+        "debug" | "rust-checks" | "coverage" => Ok(1.5),
+        "kasan" => Ok(4.0),
+        kind => anyhow::bail!(
+            "FXDAX_GUEST_KERNEL_BUILD is release, debug, kasan, coverage or rust-checks, not {kind:?}"
+        ),
+    }
+}
+
 /// An extent daemon of the test's own, FXDAX_EXTENTD_BIN, serving at `socket`, and its control API
 /// beside it ([`control`]), once this returns, with `env` in its environment, and `memory` bytes of
 /// memory if given (its default, 1 GiB, otherwise), logging to `<name>.log` in the test's directory.

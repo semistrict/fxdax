@@ -189,7 +189,8 @@ fn run_single_test(
     };
 
     let mut child = child;
-    let deadline = std::time::Instant::now() + timeout;
+    let began = std::time::Instant::now();
+    let deadline = began + timeout;
     let exited = loop {
         if let Some(status) = child.try_wait().unwrap_or(None) {
             break status;
@@ -218,6 +219,9 @@ fn run_single_test(
         std::thread::sleep(std::time::Duration::from_millis(100));
     };
 
+    // fxdax: how long it took of its limit, which the verdict says: a test near its limit shows
+    // before it times out (TASK-168).
+    let took = format!("{} s of {} s", began.elapsed().as_secs(), timeout.as_secs());
     let stdout = fs::read(&stdout_path).unwrap_or_default();
 
     let test_name = test_case.name.to_string();
@@ -255,13 +259,13 @@ fn run_single_test(
 
     match &outcome {
         TestOutcome::Pass => {
-            eprintln!("OK");
+            eprintln!("OK ({took})");
             if !keep_all {
                 let _ = fs::remove_dir_all(&test_dir);
             }
         }
         TestOutcome::Fail(reason) => {
-            eprintln!("FAIL:");
+            eprintln!("FAIL ({took}):");
             eprintln!("{reason}");
         }
         TestOutcome::Skip(reason) => {
@@ -271,7 +275,7 @@ fn run_single_test(
             eprintln!("TIMEOUT");
         }
         TestOutcome::Report(report) => {
-            eprintln!("REPORT");
+            eprintln!("REPORT ({took})");
             eprintln!("{:2}", report.text());
             if !keep_all {
                 let _ = fs::remove_dir_all(&test_dir);

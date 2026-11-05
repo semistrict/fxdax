@@ -27,7 +27,193 @@ pub struct TestFxfsGuestChecks {
     /// fxdax: whether the DAX window is small, 32 MiB, as the checks' files fill it: ranges are
     /// reclaimed under load (TASK-119.12).
     pub small_window: bool,
+    /// fxdax: whether the run is of [`OVERRUN`] alone, on a hundredth of its budget, which it
+    /// outruns: the guest ends the run, naming it, as it does any check that outruns its budget
+    /// (TASK-168).
+    #[cfg_attr(feature = "guest", allow(dead_code))]
+    pub overrun: bool,
 }
+
+/// The suite without a DAX window, whose files are in the page cache: the others are this, with
+/// what they change.
+pub const PAGE_CACHE_CHECKS: TestFxfsGuestChecks =
+    TestFxfsGuestChecks { dax: false, delay: false, small_window: false, overrun: false };
+
+impl TestFxfsGuestChecks {
+    /// fxdax: the checks this suite runs, in their order, those of `only` alone, names separated
+    /// by commas, if it names any (FXDAX_CHECKS): each with its index in [`CHECKS`]. Fails on a
+    /// name no check has, which ran nothing and passed (TASK-160.30).
+    pub(crate) fn checks(&self, only: &str) -> Result<Vec<(usize, &'static Check)>, String> {
+        let only: Vec<&str> = only.split(',').filter(|name| !name.is_empty()).collect();
+        if let Some(unknown) = only.iter().find(|name| !CHECKS.iter().any(|c| c.name == **name)) {
+            return Err(format!("FXDAX_CHECKS names {unknown:?}, which no check is called"));
+        }
+        let ours = |check: &Check| check.suites.have(self);
+        let named = |check: &Check| only.is_empty() || only.contains(&check.name);
+        Ok(CHECKS.iter().enumerate().filter(|(_, check)| ours(check) && named(check)).collect())
+    }
+}
+
+/// fxdax: the check an overrun run ([`TestFxfsGuestChecks::overrun`]) runs: one that takes
+/// seconds on any kernel, which a hundredth of its budget is too short for.
+#[cfg_attr(feature = "guest", allow(dead_code))]
+const OVERRUN: &str = "enospc";
+
+/// fxdax: in the host's environment, what scales the checks' budgets besides the guest kernel and
+/// storage, for a slower host; in the guest's, all that scales them, as the host has it.
+const SCALE: &str = "FXDAX_CHECKS_SCALE";
+
+/// fxdax: what the guest says, as it ends the run, of check `name` running on past its `budget`.
+fn overran(name: &str, budget: std::time::Duration) -> String {
+    format!("FAILED: {name}, still running after its budget of {budget:.2?}")
+}
+
+/// fxdax: which of the suites a check runs in.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum Suites {
+    All,
+    /// Those with a DAX window.
+    Dax,
+    /// Those with a DAX window of 512 MiB, which the checks' files don't fill.
+    LargeDax,
+    /// Those without one, whose files are in the page cache.
+    PageCache,
+    /// Those with a DAX window of 32 MiB, which they do.
+    SmallDax,
+}
+
+impl Suites {
+    fn have(self, suite: &TestFxfsGuestChecks) -> bool {
+        match self {
+            Suites::All => true,
+            Suites::Dax => suite.dax,
+            Suites::LargeDax => suite.dax && !suite.small_window,
+            Suites::PageCache => !suite.dax,
+            Suites::SmallDax => suite.dax && suite.small_window,
+        }
+    }
+}
+
+/// fxdax: a check of the guest's Fxfs: its name, which suites run it, and its budget, what it may
+/// take on a release guest kernel on GCE's n2-standard-4 with its store in the daemon's memory:
+/// twice the most it took there, in any suite (GCE r560's page cache, r563's DAX), and 3 s at
+/// least, which the host scales for other kernels and storage (`host::TestFxfsGuestChecks::run`). One that runs on past it, the
+/// guest ends the run, naming it, its stacks dumped: rather than the suite outrunning a limit of
+/// its own, which a few slow checks crossed and named none of them (TASK-168). A suite's limit is
+/// its checks' budgets', and more, for its VM's boot.
+#[derive(Debug, PartialEq)]
+pub(crate) struct Check {
+    pub(crate) name: &'static str,
+    pub(crate) suites: Suites,
+    pub(crate) budget: std::time::Duration,
+}
+
+/// fxdax: every check, in the order they run, `name: suites, budget in seconds => body`, the body
+/// a function of the guest's, given its suite's fields in parentheses where it takes them, such
+/// as `test_mmap_write(dax)`: given to `$then`, which makes of them what each side needs, the
+/// host's [`CHECKS`] and the guest's bodies of them, so that the two can't disagree (TASK-168).
+macro_rules! checks {
+    ($then:ident) => {
+        $then! {
+            host_file: All, 3 => test_host_file;
+            mmap_write: All, 3 => test_mmap_write(dax);
+            regular_write: All, 3 => test_regular_write;
+            namespace: All, 3 => test_namespace;
+            truncate_mapped: All, 3 => test_truncate_mapped;
+            eviction_writes_back: All, 3 => test_eviction_writes_back;
+            tmpfile: All, 3 => test_tmpfile;
+            fallocate: All, 3 => test_fallocate;
+            zero_mapped: All, 3 => test_zero_mapped;
+            seal_race: All, 3 => test_seal_race(dax);
+            writes_across_seals: All, 23 => test_writes_across_seals;
+            stats: All, 3 => test_stats;
+            log_writes: All, 21 => test_log_writes;
+            acls: All, 3 => test_acls;
+            xattrs_read_as_written_back: All, 3 => test_xattrs_read_as_written_back;
+            freeze: All, 3 => test_freeze;
+            show_options: All, 3 => test_show_options(dax);
+            write_removes_privileges: All, 3 => test_write_removes_privileges;
+            delayed_unlinks: All, 3 => test_delayed_unlinks;
+            sparse: All, 3 => test_sparse;
+            blocks_follow_writes: All, 3 => test_blocks_follow_writes;
+            write_from_own_mapping: All, 3 => test_write_from_own_mapping;
+            write_from_same_page: All, 3 => test_write_from_same_page;
+            short_copy: All, 3 => test_short_copy;
+            append_stopped_short: All, 3 => test_append_stopped_short;
+            append_stopped_short_in_a_page: All, 3 => test_append_stopped_short_in_a_page;
+            write_past_end_copies_nothing: All, 3 => test_write_past_end_copies_nothing;
+            direct_read_past_end: All, 3 => test_direct_read_past_end;
+            store_past_end: All, 3 => test_store_past_end;
+            store_past_end_then_written: All, 3 => test_store_past_end_then_written;
+            store_past_end_then_cloned: All, 3 => test_store_past_end_then_cloned;
+            read_into_own_mapping: All, 3 => test_read_into_own_mapping;
+            write_over_mapped_hole: All, 3 => test_write_over_mapped_hole;
+            file_handles: All, 3 => test_file_handles;
+            unsupported: All, 3 => test_unsupported;
+            reflinks: All, 3 => test_reflinks;
+            removed_directories: All, 3 => test_removed_directories;
+            lockups_show_every_cpu: All, 3 => test_lockups_show_every_cpu;
+            file_attributes: All, 3 => test_file_attributes;
+            idmapped_mount: All, 3 => test_idmapped_mount;
+            multigrain_times: All, 3 => test_multigrain_times;
+            cache_shrinks: All, 3 => test_cache_shrinks;
+            direct_io: All, 3 => test_direct_io;
+            timestamps_clamped: All, 3 => test_timestamps_clamped;
+            random_ops: All, 8 => test_random_ops;
+            torture: All, 38 => test_torture;
+            pmd_write_unlink: Dax, 3 => test_pmd_write_unlink;
+            mapped_after_write: Dax, 3 => test_mapped_after_write;
+            dropped_after_seals: Dax, 3 => test_dropped_after_seals;
+            reads_stay_mapped: LargeDax, 3 => test_reads_stay_mapped;
+            writes_private: LargeDax, 3 => test_writes_private;
+            stale_entry_flushed: LargeDax, 3 => test_stale_entry_flushed;
+            pmd_over_stale_index: LargeDax, 3 => test_pmd_over_stale_index;
+            faults_writes_compaction: Dax, 17 => test_faults_writes_compaction;
+            append_pages: Dax, 3 => test_append_pages;
+            append_size: Dax, 3 => test_append_size;
+            append_writeback: Dax, 3 => test_append_writeback;
+            append_while_mapped: Dax, 3 => test_append_while_mapped;
+            append_size_follows_data: Dax, 3 => test_append_size_follows_data;
+            append_reserved_tail: Dax, 3 => test_append_reserved_tail;
+            map_failed: Dax, 3 => test_map_failed;
+            map_many_failed: Dax, 3 => test_map_many_failed;
+            write_killed: Dax, 3 => test_write_killed;
+            // Copying on write's own (doc-13, TASK-164.2, 164.3).
+            cow_store_persists: Dax, 3 => test_cow_store_persists;
+            cow_unwritten_stay_shared: Dax, 3 => test_cow_unwritten_stay_shared;
+            cow_dirty_truncate_punch_clone: Dax, 3 => test_cow_dirty_truncate_punch_clone;
+            cow_commit_after_bytes: Dax, 3 => test_cow_commit_after_bytes;
+            cow_created_in_page_cache: Dax, 3 => test_cow_created_in_page_cache;
+            rebind_against_loads_and_stores: Dax, 3 => test_rebind_against_loads_and_stores;
+            stores_under_rebinds: Dax, 5 => test_stores_under_rebinds;
+            // Files on DAX are in no page cache.
+            large_folios: PageCache, 3 => test_large_folios;
+            scattered_writeback: PageCache, 3 => test_scattered_writeback;
+            partial_writeback: PageCache, 3 => test_partial_writeback;
+            // Of a small window, which it fills.
+            window_held_killed: SmallDax, 4 => test_window_held_killed;
+            // Last: it fills the filesystem, then removes what it filled it with.
+            enospc: All, 33 => test_enospc;
+            write_times_add_up: Dax, 3 => test_write_times_add_up;
+            // Of the checks before, on a small window (TASK-119.12).
+            window_filled: SmallDax, 3 => test_window_filled;
+            // Last: it unmounts, which what the others left open would keep it from.
+            unbind_waits_for_unmount: All, 3 => test_unbind_waits_for_unmount;
+        }
+    };
+}
+
+/// fxdax: [`checks`]'s table, the host's and the guest's.
+macro_rules! check_table {
+    ($($name:ident: $suites:ident, $budget:literal => $body:ident $(($field:ident))?;)*) => {
+        pub(crate) const CHECKS: &[Check] = &[$(Check {
+            name: stringify!($name),
+            suites: Suites::$suites,
+            budget: std::time::Duration::from_secs($budget),
+        },)*];
+    };
+}
+checks!(check_table);
 
 /// Offset of the second 2 MiB DAX chunk.
 const CHUNK: usize = 2 << 20;
@@ -75,14 +261,16 @@ fn pattern(offset: usize) -> u8 {
 pub(crate) mod host {
     use super::*;
 
-    use crate::common::{fxdax_guest_should_run, setup_rootfs};
+    use crate::common::{fxdax_guest_should_run, guest_kernel_slowness, setup_rootfs};
     use crate::script::{self, Failure};
     use crate::script_vm::{self, Replays};
     use crate::vm::Vm;
     use crate::{ShouldRun, Test, TestOutcome, TestSetup};
+    use anyhow::Context;
     use futures::executor::block_on;
     use fxdax::{Attr, Filesystem, Node, Owner, Storage};
     use std::path::Path;
+    use std::time::Duration;
 
     fn create_image(path: &Path) -> anyhow::Result<()> {
         block_on(async {
@@ -129,16 +317,77 @@ pub(crate) mod host {
         })
     }
 
+    /// fxdax: what a run of the checks takes besides its checks: creating the image, booting, and
+    /// syncing as the guest ends.
+    const SETUP: Duration = Duration::from_secs(30);
+
+    impl TestFxfsGuestChecks {
+        /// fxdax: the checks a run is of, FXDAX_CHECKS's (an overrun run's own), as
+        /// [`TestFxfsGuestChecks::checks`] has them.
+        fn only(&self) -> String {
+            if self.overrun {
+                return OVERRUN.to_owned();
+            }
+            std::env::var("FXDAX_CHECKS").unwrap_or_default()
+        }
+
+        /// fxdax: the run's checks, and what their budgets are scaled by: the guest kernel's
+        /// slowness, its storage's, object storage's taking twice the daemon's memory's (270 s
+        /// where 135 s, GCE r353), and FXDAX_CHECKS_SCALE's, for a slower host (TASK-168). An
+        /// overrun run's a hundredth.
+        fn run(&self) -> anyhow::Result<(Vec<(usize, &'static Check)>, f64)> {
+            let checks = self.checks(&self.only()).map_err(anyhow::Error::msg)?;
+            anyhow::ensure!(!checks.is_empty(), "FXDAX_CHECKS names none of this suite's checks");
+            if self.overrun {
+                return Ok((checks, 0.01));
+            }
+            let remote = std::env::var_os("FXDAX_EXTENTD_REMOTE").is_some_and(|r| !r.is_empty());
+            let storage = if remote { 2.0 } else { 1.0 };
+            let given = match std::env::var(SCALE) {
+                Ok(given) => given.parse().with_context(|| format!("{SCALE} is {given:?}"))?,
+                Err(_) => 1.0,
+            };
+            Ok((checks, guest_kernel_slowness()? * storage * given))
+        }
+
+        /// fxdax: what a replay of random_ops alone may take (`script_vm`).
+        fn random_ops_limit(&self) -> Duration {
+            let scale = self.run().map_or(1.0, |(_, scale)| scale);
+            let random_ops = CHECKS.iter().find(|check| check.name == "random_ops").unwrap();
+            SETUP + random_ops.budget.mul_f64(scale)
+        }
+    }
+
     impl Test for TestFxfsGuestChecks {
         fn should_run(&self) -> ShouldRun {
             fxdax_guest_should_run()
         }
 
+        /// fxdax: its checks' budgets, scaled, and [`SETUP`]: a limit that grows with its checks.
+        /// The guest ends a run sooner, as a check outruns its budget, unless too stuck to
+        /// (TASK-168). [`SETUP`] alone for a run of no checks it can run, which start_vm fails.
         fn timeout_secs(&self) -> u64 {
-            // fxdax: the fault, write and compaction checks run for seconds,
-            // and filling the filesystem (`enospc`) most of a minute. With branches in object
-            // storage, uploading all the while, they took 270 s on GCE (r353).
-            if std::env::var_os("FXDAX_EXTENTD_REMOTE").is_some() { 360 } else { 180 }
+            let budgets = self.run().map(|(checks, scale)| {
+                checks.iter().map(|(_, check)| check.budget.mul_f64(scale)).sum()
+            });
+            (SETUP + budgets.unwrap_or_default()).as_secs()
+        }
+
+        /// fxdax: names the check the guest was in, after the last its log has the time of.
+        fn timed_out(self: Box<Self>, test_setup: TestSetup) -> Option<String> {
+            let (checks, scale) = self.run().ok()?;
+            let log = std::fs::read_to_string(test_setup.tmp_dir.join("log.txt")).ok()?;
+            let last = log.lines().rev().find_map(|line| {
+                let (_, rest) = line.split_once("PASS: ").or_else(|| line.split_once("FAIL: "))?;
+                rest.split_whitespace().next()
+            });
+            let at = match last {
+                Some(last) => checks.iter().position(|(_, check)| check.name == last)? + 1,
+                None => 0,
+            };
+            let (_, running) = checks.get(at)?;
+            let budget = running.budget.mul_f64(scale);
+            Some(format!("out of time in {}, of a budget of {budget:.2?}", running.name))
         }
 
         fn start_vm(self: Box<Self>, test_setup: TestSetup) -> anyhow::Result<()> {
@@ -153,9 +402,11 @@ pub(crate) mod host {
             vm.guest_kernel()?;
             vm.extent_store("fxdax", &image, IMAGE_SIZE, window)?;
             // FXDAX_CHECKS names the checks to run, separated by commas (such as
-            // `seal_race,sparse`), for a quick run: all of them otherwise.
-            let only = std::env::var("FXDAX_CHECKS").unwrap_or_default();
-            vm.env(&std::ffi::CString::new(format!("FXDAX_CHECKS={only}"))?);
+            // `seal_race,sparse`), for a quick run: all of them otherwise. fxdax: and the guest
+            // their budgets' scale (TASK-168).
+            let (_, scale) = self.run()?;
+            vm.env(&std::ffi::CString::new(format!("FXDAX_CHECKS={}", self.only()))?);
+            vm.env(&std::ffi::CString::new(format!("{SCALE}={scale}"))?);
             let seed = seed();
             eprintln!("{}: seed {seed} (FXDAX_SEED={seed} replays it)", test_setup.test_case);
             std::fs::write(test_setup.tmp_dir.join("seed"), seed.to_string())?;
@@ -170,6 +421,17 @@ pub(crate) mod host {
         fn check(self: Box<Self>, stdout: Vec<u8>, test_setup: TestSetup) -> TestOutcome {
             let output = String::from_utf8(stdout).unwrap();
             let seed = std::fs::read_to_string(test_setup.tmp_dir.join("seed")).unwrap();
+            // fxdax: the guest ended the run as its check ran on past its budget (TASK-168).
+            if self.overrun {
+                let (checks, scale) = self.run().unwrap();
+                let [(_, check)] = checks[..] else { panic!("an overrun run of {checks:?}") };
+                let expected = format!("\n{}\n", overran(check.name, check.budget.mul_f64(scale)));
+                return if output == expected {
+                    TestOutcome::Pass
+                } else {
+                    TestOutcome::Fail(format!("expected exactly {expected:?}, got {output:?}"))
+                };
+            }
             if output != "OK\n" {
                 // fxdax: random_ops, run alone, as a run of its script told what to drop can be
                 // (TASK-149.2).
@@ -180,7 +442,7 @@ pub(crate) mod host {
                         seed: seed.parse().unwrap(),
                         mix: script::ONE_FILE,
                         env: &[("FXDAX_CHECKS", "random_ops")],
-                        timeout: std::time::Duration::from_secs(self.timeout_secs()),
+                        timeout: self.random_ops_limit(),
                         verdict: &|_, stdout| Failure::parse(&String::from_utf8_lossy(stdout)),
                     };
                     replays.report(&failure)
@@ -279,6 +541,7 @@ pub(crate) mod guest {
     use crate::Test;
     pub(crate) use crate::guest_fxfs::evict;
     use crate::guest_fxfs::{cow_base_file, is_dax, read_in_sealed};
+    use crate::guest_init;
     use crate::posix_acl;
     use crate::script::{self, Rng};
     use crate::script_run::{self, Run};
@@ -290,6 +553,8 @@ pub(crate) mod guest {
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
     use std::os::unix::io::AsRawFd;
     use std::panic::{AssertUnwindSafe, catch_unwind};
+    use std::sync::mpsc;
+    use std::time::{Duration, Instant};
 
     const MNT: &str = "/mnt/fxdax";
     /// The device's tag, which the image is mounted by, and its mount's counts are named by
@@ -852,7 +1117,6 @@ pub(crate) mod guest {
     fn test_writes_across_seals() {
         use std::sync::Arc;
         use std::sync::atomic::{AtomicBool, Ordering};
-        use std::time::{Duration, Instant};
 
         const FILES: usize = 4;
         let stop = Arc::new(AtomicBool::new(false));
@@ -891,7 +1155,6 @@ pub(crate) mod guest {
     /// it (TASK-119.1).
     fn test_log_writes() {
         use std::os::unix::fs::FileExt;
-        use std::time::{Duration, Instant};
 
         const WRITERS: usize = 4;
         const SIZE: usize = 16 << 20;
@@ -4496,7 +4759,6 @@ pub(crate) mod guest {
     /// write-protect (a store into its swapped-out set, its page left clean).
     fn test_stores_under_rebinds() {
         use std::os::unix::fs::FileExt;
-        use std::time::{Duration, Instant};
         const PAGE: usize = 4096;
         const PAGES: usize = 64;
         const LEN: usize = PAGES * PAGE;
@@ -4537,128 +4799,84 @@ pub(crate) mod guest {
         fs::remove_file(&name).unwrap();
     }
 
+    /// fxdax: [`checks`]'s bodies, in [`CHECKS`]'s order, each given its suite. A body's given
+    /// its suite's fields as it takes them, and most take none.
+    macro_rules! check_bodies {
+        ($($name:ident: $suites:ident, $budget:literal => $body:ident $(($field:ident))?;)*) => {
+            #[allow(unused_variables)]
+            const BODIES: &[fn(&TestFxfsGuestChecks)] =
+                &[$(|suite: &TestFxfsGuestChecks| $body($(suite.$field)?),)*];
+        };
+    }
+    checks!(check_bodies);
+
+    /// fxdax: ends the run if a check runs on past its budget: says which on the console, with
+    /// the guest's stacks, and resets the VM. A check that hung, or slowed down, fails by name, at
+    /// once, rather than its suite running on to a limit of its own (TASK-168).
+    struct Watchdog(mpsc::Sender<Running>);
+
+    /// The check running, if one is: its name, its deadline, and the budget it was given.
+    type Running = Option<(&'static str, Instant, Duration)>;
+
+    impl Watchdog {
+        fn start() -> Self {
+            let (running, told) = mpsc::channel();
+            std::thread::spawn(move || {
+                let mut check: Running = None;
+                loop {
+                    let next = match check {
+                        Some((_, deadline, _)) => {
+                            told.recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                        }
+                        None => told.recv().map_err(|_| mpsc::RecvTimeoutError::Disconnected),
+                    };
+                    match next {
+                        Ok(next) => check = next,
+                        Err(mpsc::RecvTimeoutError::Timeout) => {
+                            let (name, _, budget) = check.unwrap();
+                            let stacks = crate::kernel_log::stacks().concat();
+                            guest_init::complain_out(&format!(
+                                "{name}: still running after its budget of {budget:.2?}; the \
+                                 guest's stacks:\n{stacks}"
+                            ));
+                            guest_init::say_out(&overran(name, budget));
+                            guest_init::crash();
+                        }
+                        Err(mpsc::RecvTimeoutError::Disconnected) => return,
+                    }
+                }
+            });
+            Self(running)
+        }
+
+        /// Says check `name` runs, which `budget` gives till `deadline`; or, with None, that
+        /// none does.
+        fn running(&self, check: Running) {
+            self.0.send(check).unwrap();
+        }
+    }
+
     impl Test for TestFxfsGuestChecks {
         fn in_guest(self: Box<Self>) {
-            let dax = self.dax;
             mount();
-
-            let mmap_write = || test_mmap_write(dax);
-            let seal_race = || test_seal_race(dax);
-            let show_options = || test_show_options(dax);
-            let mut tests: Vec<(&str, &dyn Fn())> = vec![
-                ("host_file", &test_host_file),
-                ("mmap_write", &mmap_write),
-                ("regular_write", &test_regular_write),
-                ("namespace", &test_namespace),
-                ("truncate_mapped", &test_truncate_mapped),
-                ("eviction_writes_back", &test_eviction_writes_back),
-                ("tmpfile", &test_tmpfile),
-                ("fallocate", &test_fallocate),
-                ("zero_mapped", &test_zero_mapped),
-                ("seal_race", &seal_race),
-                ("writes_across_seals", &test_writes_across_seals),
-                ("stats", &test_stats),
-                ("log_writes", &test_log_writes),
-                ("acls", &test_acls),
-                ("xattrs_read_as_written_back", &test_xattrs_read_as_written_back),
-                ("freeze", &test_freeze),
-                ("show_options", &show_options),
-                ("write_removes_privileges", &test_write_removes_privileges),
-                ("delayed_unlinks", &test_delayed_unlinks),
-                ("sparse", &test_sparse),
-                ("blocks_follow_writes", &test_blocks_follow_writes),
-                ("write_from_own_mapping", &test_write_from_own_mapping),
-                ("write_from_same_page", &test_write_from_same_page),
-                ("short_copy", &test_short_copy),
-                ("append_stopped_short", &test_append_stopped_short),
-                ("append_stopped_short_in_a_page", &test_append_stopped_short_in_a_page),
-                ("write_past_end_copies_nothing", &test_write_past_end_copies_nothing),
-                ("direct_read_past_end", &test_direct_read_past_end),
-                ("store_past_end", &test_store_past_end),
-                ("store_past_end_then_written", &test_store_past_end_then_written),
-                ("store_past_end_then_cloned", &test_store_past_end_then_cloned),
-                ("read_into_own_mapping", &test_read_into_own_mapping),
-                ("write_over_mapped_hole", &test_write_over_mapped_hole),
-                ("file_handles", &test_file_handles),
-                ("unsupported", &test_unsupported),
-                ("reflinks", &test_reflinks),
-                ("removed_directories", &test_removed_directories),
-                ("lockups_show_every_cpu", &test_lockups_show_every_cpu),
-                ("file_attributes", &test_file_attributes),
-                ("idmapped_mount", &test_idmapped_mount),
-                ("multigrain_times", &test_multigrain_times),
-                ("cache_shrinks", &test_cache_shrinks),
-                ("direct_io", &test_direct_io),
-                ("timestamps_clamped", &test_timestamps_clamped),
-                ("random_ops", &test_random_ops),
-                ("torture", &test_torture),
-            ];
-            if dax {
-                tests.push(("pmd_write_unlink", &test_pmd_write_unlink));
-                tests.push(("mapped_after_write", &test_mapped_after_write));
-                tests.push(("dropped_after_seals", &test_dropped_after_seals));
-                if !self.small_window {
-                    tests.push(("reads_stay_mapped", &test_reads_stay_mapped));
-                    tests.push(("writes_private", &test_writes_private));
-                    tests.push(("stale_entry_flushed", &test_stale_entry_flushed));
-                    tests.push(("pmd_over_stale_index", &test_pmd_over_stale_index));
-                }
-                tests.push(("faults_writes_compaction", &test_faults_writes_compaction));
-                tests.push(("append_pages", &test_append_pages));
-                tests.push(("append_size", &test_append_size));
-                tests.push(("append_writeback", &test_append_writeback));
-                tests.push(("append_while_mapped", &test_append_while_mapped));
-                tests.push(("append_size_follows_data", &test_append_size_follows_data));
-                tests.push(("append_reserved_tail", &test_append_reserved_tail));
-                tests.push(("map_failed", &test_map_failed));
-                tests.push(("map_many_failed", &test_map_many_failed));
-                tests.push(("write_killed", &test_write_killed));
-                // fxdax: copying on write's own (doc-13, TASK-164.2, 164.3).
-                tests.push(("cow_store_persists", &test_cow_store_persists));
-                tests.push(("cow_unwritten_stay_shared", &test_cow_unwritten_stay_shared));
-                tests.push(("cow_dirty_truncate_punch_clone", &test_cow_dirty_truncate_punch_clone));
-                tests.push(("cow_commit_after_bytes", &test_cow_commit_after_bytes));
-                tests.push(("cow_created_in_page_cache", &test_cow_created_in_page_cache));
-                tests.push((
-                    "rebind_against_loads_and_stores",
-                    &test_rebind_against_loads_and_stores,
-                ));
-                tests.push(("stores_under_rebinds", &test_stores_under_rebinds));
-            }
-            // Files on DAX are in no page cache.
-            if !dax {
-                tests.push(("large_folios", &test_large_folios));
-                tests.push(("scattered_writeback", &test_scattered_writeback));
-                tests.push(("partial_writeback", &test_partial_writeback));
-            }
-            // Of a small window, which it fills.
-            if self.small_window {
-                tests.push(("window_held_killed", &test_window_held_killed));
-            }
-            // Last: it fills the filesystem, then removes what it filled it with.
-            tests.push(("enospc", &test_enospc));
-            if dax {
-                tests.push(("write_times_add_up", &test_write_times_add_up));
-            }
-            // fxdax: of the checks before, on a small window (TASK-119.12).
-            if self.small_window {
-                tests.push(("window_filled", &test_window_filled));
-            }
-            // fxdax: last: it unmounts, which what the others left open would keep it from.
-            tests.push(("unbind_waits_for_unmount", &test_unbind_waits_for_unmount));
             let only = std::env::var("FXDAX_CHECKS").unwrap_or_default();
-            let only: Vec<&str> = only.split(',').filter(|name| !name.is_empty()).collect();
+            let checks = self.checks(&only).unwrap();
+            let scale: f64 = std::env::var(SCALE).map_or(1.0, |scale| scale.parse().unwrap());
+            let watchdog = Watchdog::start();
             let mut failed = Vec::new();
-            for (name, test) in &tests {
-                if !only.is_empty() && !only.contains(name) {
-                    continue;
-                }
-                if catch_unwind(AssertUnwindSafe(test)).is_err() {
-                    eprintln!("FAIL: {name}");
-                    failed.push(*name);
+            for (at, check) in checks {
+                let budget = check.budget.mul_f64(scale);
+                let began = Instant::now();
+                watchdog.running(Some((check.name, began + budget, budget)));
+                let passed = catch_unwind(AssertUnwindSafe(|| BODIES[at](&self))).is_ok();
+                watchdog.running(None);
+                // fxdax: each check's time, against its budget, in the run's log (TASK-168).
+                let took = began.elapsed();
+                let verdict = if passed { "PASS" } else { "FAIL" };
+                eprintln!("{verdict}: {} ({took:.2?} of {budget:.2?})", check.name);
+                if !passed {
+                    failed.push(check.name);
                     unmap_what_it_left();
-                } else {
-                    eprintln!("PASS: {name}");
                 }
             }
             save_coverage();
@@ -4672,5 +4890,85 @@ pub(crate) mod guest {
                 println!("FAILED: {}", failed.join(", "));
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const PAGE_CACHE: TestFxfsGuestChecks = PAGE_CACHE_CHECKS;
+    const DAX: TestFxfsGuestChecks = TestFxfsGuestChecks { dax: true, ..PAGE_CACHE };
+    const SMALL: TestFxfsGuestChecks = TestFxfsGuestChecks { small_window: true, ..DAX };
+
+    fn names(suite: &TestFxfsGuestChecks, only: &str) -> Vec<&'static str> {
+        suite.checks(only).unwrap().into_iter().map(|(_, check)| check.name).collect()
+    }
+
+    /// A suite's last `n` checks.
+    fn last(suite: &TestFxfsGuestChecks, n: usize) -> Vec<&'static str> {
+        let names = names(suite, "");
+        names[names.len() - n..].to_vec()
+    }
+
+    /// The suites' checks, as they ran before the table (TASK-168): the end of each, which the
+    /// checks before leave what they look at, and each suite's own.
+    #[test]
+    fn suites_run_their_checks_in_order() {
+        assert_eq!(
+            last(&PAGE_CACHE, 7),
+            [
+                "random_ops",
+                "torture",
+                "large_folios",
+                "scattered_writeback",
+                "partial_writeback",
+                "enospc",
+                "unbind_waits_for_unmount",
+            ]
+        );
+        assert_eq!(
+            last(&DAX, 4),
+            ["stores_under_rebinds", "enospc", "write_times_add_up", "unbind_waits_for_unmount"]
+        );
+        assert_eq!(
+            last(&SMALL, 6),
+            [
+                "stores_under_rebinds",
+                "window_held_killed",
+                "enospc",
+                "write_times_add_up",
+                "window_filled",
+                "unbind_waits_for_unmount",
+            ]
+        );
+        assert!(names(&DAX, "").contains(&"reads_stay_mapped"));
+        assert!(!names(&SMALL, "").contains(&"reads_stay_mapped"));
+        assert!(!names(&PAGE_CACHE, "").contains(&"pmd_write_unlink"));
+    }
+
+    /// FXDAX_CHECKS's checks run in the table's order, those of the suite alone.
+    #[test]
+    fn named_checks_run_alone() {
+        assert_eq!(names(&DAX, "enospc,sparse,large_folios"), ["sparse", "enospc"]);
+        let checks = DAX.checks("enospc").unwrap();
+        assert_eq!(CHECKS[checks[0].0].name, "enospc");
+    }
+
+    /// A name no check has fails, which ran nothing and passed (TASK-160.30).
+    #[test]
+    fn unknown_names_fail() {
+        assert_eq!(
+            DAX.checks("sparse,nope"),
+            Err("FXDAX_CHECKS names \"nope\", which no check is called".to_owned())
+        );
+    }
+
+    #[test]
+    fn names_are_unique() {
+        let mut names: Vec<_> = CHECKS.iter().map(|check| check.name).collect();
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(names.len(), CHECKS.len());
     }
 }

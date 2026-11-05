@@ -17,7 +17,7 @@
 # made from a container image), fxfs-guest-snapshot (a VM snapshotted and restored twice, each
 # into a store of its own; and suspended, and moved through a bucket, and suspended with hundreds
 # of volumes mounted), fxfs-guest-checks (checks
-# of the guest's Fxfs against the host's) and extent-guest (the extent-store device's driver), each with
+# of the guest's Fxfs against the host's, and -overrun, one outrunning its budget) and extent-guest (the extent-store device's driver), each with
 # a DAX window too where it has a case of it, and pjdfstest-fxfs-guest(-dax) (pjdfstest, whose
 # rootfs podman builds). On macOS it runs in Lima (scripts/lib/lima.sh). The kernel is kept in
 # $FXDAX_E2E_RESULTS (default: a new temporary directory), with the tests' logs.
@@ -48,4 +48,5 @@ FXDAX_GUEST_KERNEL="$results/$(basename "$built")" FXDAX_E2E_RESULTS="$results" 
     fxfs-guest-import \
     fxfs-guest-import-dax fxfs-guest-snapshot fxfs-guest-snapshot-dax fxfs-guest-suspend-dax fxfs-guest-migrate-dax fxfs-guest-migrate-tenant-dax fxfs-guest-checks \
     fxfs-guest-checks-dax fxfs-guest-checks-dax-delay fxfs-guest-checks-dax-small \
+    fxfs-guest-checks-overrun \
     pjdfstest-fxfs-guest pjdfstest-fxfs-guest-dax

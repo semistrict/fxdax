@@ -19,7 +19,8 @@
 # each FXDAX_E2E_ROUNDS times, under Firecracker's seccomp filter with
 # FXDAX_FIRECRACKER_SECCOMP, in its jailer's jail with FXDAX_FIRECRACKER_JAIL
 # (scripts/test-e2e.sh), fxfs-guest-checks' checks alone with FXDAX_CHECKS
-# (such as `sparse,acls`). FXDAX_GUEST_KERNEL
+# (such as `sparse,acls`), their budgets scaled by FXDAX_CHECKS_SCALE (such as 2, on a slower
+# FXDAX_GCE_MACHINE). FXDAX_GUEST_KERNEL
 # names fxdax's x86-64 guest kernel (scripts/build-guest-kernel.sh), for the
 # guest Fxfs tests, or FXDAX_GUEST_KERNEL_BUILD (release, debug, kasan, coverage or rust-checks) has the host
 # build one from the source (scripts/lib/test-linux-host.sh), a release one if neither is

@@ -94,10 +94,8 @@ pub fn set_up() -> Init {
 }
 
 /// fxdax: says where the guest is stuck if the test still runs [`crate::GUEST_WATCHDOG`] seconds
-/// after the agent starts, shortly before the runner kills it: its CPUs', blocked tasks' and every
-/// task's stacks (sysrq l, w and t), on standard error, once. The kernel's hung task reports name
-/// only tasks in uninterruptible sleep, not one looping, or sleeping killably, holding what they
-/// wait for (load_during_move's, GCE r526).
+/// after the agent starts, shortly before the runner kills it: its stacks
+/// ([`crate::kernel_log::stacks`]), on standard error, once.
 fn start_watchdog() {
     let Some(secs) = std::env::var(crate::GUEST_WATCHDOG).ok().and_then(|secs| secs.parse().ok())
     else {
@@ -106,11 +104,7 @@ fn start_watchdog() {
     std::thread::spawn(move || {
         std::thread::sleep(Duration::from_secs(secs));
         eprintln!("watchdog: still running after {secs} s: the guest's stacks follow");
-        crate::kernel_log::print_during(|| {
-            for key in [b"l", b"w", b"t"] {
-                let _ = std::fs::write("/proc/sysrq-trigger", key);
-            }
-        });
+        eprint!("{}", crate::kernel_log::stacks().concat());
     });
 }
 
@@ -169,11 +163,11 @@ fn console() -> File {
 /// (TASK-119.16). Its frame comes between the forwarders', which may end mid-line: hence a line
 /// begun anew.
 pub fn say(line: &str) {
-    say_to(&mut console(), line);
+    say_to(&mut console(), (STDOUT_START, STDOUT_END), line);
 }
 
-fn say_to(console: &mut File, line: &str) {
-    let framed = [&[STDOUT_START, b'\n'], line.as_bytes(), &[b'\n', STDOUT_END]].concat();
+fn say_to(console: &mut File, (start, end): (u8, u8), line: &str) {
+    let framed = [&[start, b'\n'], line.as_bytes(), &[b'\n', end]].concat();
     console.write_all(&framed).expect("write to the console");
 }
 
@@ -181,8 +175,18 @@ fn say_to(console: &mut File, line: &str) {
 /// waits in its pipe and the console, which a VM stopping loses, though what follows the line
 /// reached the store (a crash soak's round 21 of 50, 2026-10-31).
 pub fn say_out(line: &str) {
+    say_drained((STDOUT_START, STDOUT_END), line);
+}
+
+/// fxdax: [`say_out`], but as the agent's standard error: for a process about to [`crash`], whose
+/// standard error's pipe the VM stopping would lose.
+pub fn complain_out(text: &str) {
+    say_drained((STDERR_START, STDERR_END), text);
+}
+
+fn say_drained(frame: (u8, u8), text: &str) {
     let mut console = console();
-    say_to(&mut console, line);
+    say_to(&mut console, frame, text);
     // SAFETY: A plain system call.
     assert_eq!(
         unsafe { libc::tcdrain(console.as_raw_fd()) },
