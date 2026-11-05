@@ -1249,6 +1249,43 @@ static void cow_private_failed(void)
 	cow_check_file("after PRIVATEs failed", 8 * PAGE_SIZE);
 }
 
+static bool cow_pinned_stored;
+
+static void cow_store_page0(void *arg)
+{
+	cow_put(0, 1, true);
+	WRITE_ONCE(cow_pinned_stored, true);
+}
+
+/*
+ * That a store to a page of a slice a pin holds waits for the pin to go (TASK-79.49, TASK-149.31):
+ * the file's ranges dropped, a load maps its chunk again as a slice of its extent's region, and a
+ * pin of page 0, as vmsplice takes one (sim_pin_user_page), holds the page. A store to it can't use
+ * the slice (-EXDEV), whose drop waits for the page to be unused, as a truncate does: a fault from
+ * user mode holds no pins. One that failed rather than wait, as a fault from the kernel does, which
+ * may hold the pin itself (get_user_pages), was a SIGBUS (-EFAULT here) where the pin goes soon.
+ * The guest check slice_held's steps, which went with writable DAX.
+ */
+static void cow_store_to_pinned_slice(void)
+{
+	struct task_struct *storer;
+	struct page *pin;
+
+	cow_mapped_file(8);
+	drop_ranges(cow_target);
+	cow_check(0, true, "the slice's load");
+	pin = sim_pin_user_page(cow_addr);
+	check(pin, "pinning page 0");
+	storer = sim_spawn("storer", cow_store_page0, NULL);
+	msleep(50);
+	check(!READ_ONCE(cow_pinned_stored),
+	      "the store to page 0 didn't wait for its pin: page 0 wasn't a slice's");
+	sim_unpin_page(pin);
+	wait_for(storer);
+	cow_check(0, true, "after the pin went");
+	cow_check_file("after a store to a pinned slice's page", 8 * PAGE_SIZE);
+}
+
 static const struct {
 	const char *name;
 	void (*run)(void);
@@ -1285,6 +1322,7 @@ static const struct {
 	COW_SCENARIO(cow_writeback_before_store),
 	COW_SCENARIO(cow_map_during_seal),
 	COW_SCENARIO(cow_private_failed),
+	COW_SCENARIO(cow_store_to_pinned_slice),
 };
 
 static void scenario(void *arg)

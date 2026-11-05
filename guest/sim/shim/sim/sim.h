@@ -124,6 +124,9 @@ int sim_user_store(unsigned long addr, const void *buf, size_t len);
 int sim_user_load(unsigned long addr, void *buf, size_t len);
 /* How many bytes it copied, without faulting if `pagefault_disabled`, as copy_{to,from}_user. */
 size_t sim_copy_user(unsigned long addr, void *buf, size_t len, bool write);
+/* A pin of a task's page, as vmsplice takes one (pin_user_pages): the page, or NULL. */
+struct page *sim_pin_user_page(unsigned long addr);
+void sim_unpin_page(struct page *page);
 
 /* The sim's Fxfs: reads the file as it would, from its extents, for the tests to check. */
 void fxfs_sim_read(struct fxfs *fs, u64 ino, u64 offset, void *buf, size_t len);

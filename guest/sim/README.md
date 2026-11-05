@@ -54,7 +54,7 @@ Written here (see each file's head for what it leaves out):
 | Simulated | Where | How far it goes |
 | --- | --- | --- |
 | Scheduler, locks, wait queues, RCU, workqueues | `kernel/sched.c`, `locks.c`, `workqueue.c` | One task at a time; wait queues as the kernel's; rwsem order as the kernel's, not its optimistic spinning |
-| Page tables and faults | `kernel/mm.c` | Two flat arrays per VMA, with `mm/memory.c`'s insert and fault rules rewritten, and `mmap_lock`. No TLB, no MMU, no GUP, no private mappings |
+| Page tables and faults | `kernel/mm.c` | Two flat arrays per VMA, with `mm/memory.c`'s insert and fault rules rewritten, and `mmap_lock`. A pin, as `get_user_pages` takes one (`sim_pin_user_page`), is the page's reference alone, faulted in as the kernel faults. No TLB, no MMU, no private mappings |
 | VFS and page cache | `kernel/vfs.c`, `mount.c` | What dax.c and data.c call; the VFS's checks before a clone, and its writing both back, as `generic_remap_file_range_prep`. `super.c` is not built: its fsync, and its writing of an inode's attributes, its size alone here, are rewritten, so that a bug in them shows on a real kernel alone |
 | Host device | `kernel/device.c`, `host.c` | The window copies on write (doc-13): real memory, a memfd mapped page by page, read-only, so that a store the host refuses is a SIGSEGV. A MAP maps sealed extents alone (EPERM for an open one, which tests count) and zeros past what was written; `MAP_ZEROS` maps zeros; `PRIVATE` copies pages to private memory at the same addresses, ENOMEM past `private_max` (a quarter of the window, or what a test sets); a MAP or UNMAP frees private pages, as doc-13's host. A store to a sealed or zero page, which the host's userfaultfd write-protect would copy at, fails the run: the guest makes each page it dirties private first (TASK-164.9), so such a store is to a page no iomap made private. Requests complete at once, or fail with EIO as a test asks, or a MAP waits on its way as a test holds it: no virtqueue, no second stage, no async page faults, whose writes the host takes as reads |
 | Fxfs | `fxfs/fxfs.c` | A model of what the protocol assumes: blocks, open extents that go one way, shared blocks, the staging extent `zero_tail` moves a last block to, `FreeAfter::Flush`, one seal in four a flush, reservations that fail. Writeback (`fxfs_write_many`) allocating then: its copy of the pages, a page at a time, blocks of the staging extent for 256 KiB at most, as Fxfs packs small files, else a new extent, written, then the commit, which a test may hold to look at what a crash would leave, or fail; reservations of dirty pages, given back once. No seal comes between taking blocks and writing them, so the packed write a seal refuses, which Fxfs tries again in an extent of its own, has no counterpart. No journal, tree or crash consistency |
@@ -101,8 +101,9 @@ It can't find:
   (KCSAN's findings, as GCE r255's), doesn't show.
 - **Anything between two scheduling points.** A race on plain fields with no lock between its two
   sides isn't explored unless a delay point or a split falls there.
-- **Real page tables.** TLB shootdowns, PTE races with hardware, `get_user_pages`, KVM's stage 2,
-  async page faults, userfaultfd: all outside it.
+- **Real page tables.** TLB shootdowns, PTE races with hardware, `get_user_pages`' own races
+  (its fast walk, a pin taken as a mapping goes), KVM's stage 2, async page faults, userfaultfd:
+  all outside it. A pin is a reference a test takes and drops.
 - **The host.** extentd, uffd and the VMM are fakes here.
 - **Fxfs.** Journal, compaction, crash recovery, and whatever the model gets wrong that
   `crates/fxfs-sim-diff`, which runs the model beside Fxfs, doesn't find ("The model against Fxfs").
@@ -232,6 +233,7 @@ a quarter of the window, the other tests' a quarter; and these scenarios, at 64 
 | `cow_map_during_seal` | an fsync's seal held after it began (`fxfs_sim_hold_seals`), Fxfs taking its writeback's extent for sealed already, the device not: a read's slice, a write's range, a load's fault and a store's, of the chunk, wait for the seal to map it, the faults holding their DAX entries, and ask no MAP the host refuses |
 | `cow_reclaim_after_writeback_met_a_fault` | an fsync writes back a page whose DAX entry a load's fault, paused, holds, which stays tagged dirty: once other files' chunks fill the window, reclaim has taken the range all the same |
 | `cow_private_failed` | the device failing the `PRIVATE` of a write(2)'s iomap, and of a store's fault's: the write fails EIO, the store SIGBUS, nothing dirty nor reserved; again, both succeed |
+| `cow_store_to_pinned_slice` | a pin of a slice's page, as vmsplice's (`sim_pin_user_page`): a store to it, which can't use the slice, waits for the pin to go, its fault from user mode holding none, then lands (TASK-79.49; the guest check `slice_held`'s steps, gone with writable DAX) |
 
 Each ends with read(2) and Fxfs holding every page's last store, no room for dirty pages left
 reserved, and no MAP of an open extent asked. The rules' mutants:
@@ -256,6 +258,7 @@ reserved, and no MAP of an open extent asked. The rules' mutants:
 | `task-164.4-truncate-unwritten` | expected equivalent: a grow drops the chunk at the old end, which writes it back |
 | `task-164.9-private-failure-ignored` | `cow_private_failed`: the write whose `PRIVATE` failed stores to a page no `PRIVATE` made the VM's |
 | `task-164.2-writeback-holds-no-range` | `cow_reclaim_during_writeback`: the writeback hands Fxfs the zeros of the chunk reclaim gave its range's space to, reads the window where nothing is mapped, or the range reclaim freed (ASan) |
+| `task-79.49-store-fails-on-pins` | `cow_store_to_pinned_slice`: the store fails (SIGBUS), its fault's drop of the slice refusing to wait for the pin (TASK-149.31) |
 | `unmapped-page-read-as-hole` | `hole_mapped_then_written`: a load of page 2, which a truncate's failed MAP of zeros left with no window page, reads the kernel's zero page where read(2) reads a write's bytes |
 
 In dax.c's copying on write as it stood at batch 2026-11-04c (CI run 41823852629), behind

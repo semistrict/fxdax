@@ -5,8 +5,8 @@
  * what mm/memory.c does to them for a DAX file's shared mapping, rewritten for two flat arrays:
  * inserting PTEs and PMDs and the checks that refuse them (insert_page_into_pte_locked, whose
  * refusals were TASK-124's SIGBUS), unmapping, write-protecting, and the fault paths that call a
- * mapping's vm_ops. A user access is one step of a task: no TLB, no store buffer. Private mappings
- * aren't simulated.
+ * mapping's vm_ops. A user access is one step of a task: no TLB, no store buffer. A pin, as
+ * get_user_pages takes one, is a reference to the page alone. Private mappings aren't simulated.
  */
 
 #include <sim/sim.h>
@@ -398,14 +398,17 @@ static struct vm_area_struct *find_vma(struct mm_struct *mm, unsigned long addr)
 	return NULL;
 }
 
-/* __handle_mm_fault, for a shared mapping of a DAX file. */
-static vm_fault_t handle_fault(struct vm_area_struct *vma, unsigned long addr, bool write)
+/*
+ * __handle_mm_fault, for a shared mapping of a DAX file: a user access's (`user`), or the kernel's,
+ * as get_user_pages faults a page in.
+ */
+static vm_fault_t handle_fault(struct vm_area_struct *vma, unsigned long addr, bool write, bool user)
 {
 	struct vm_fault vmf = {
 		.vma = vma,
 		.address = addr & PAGE_MASK,
 		.pgoff = linear_page_index(vma, addr),
-		.flags = FAULT_FLAG_USER | (write ? FAULT_FLAG_WRITE : 0),
+		.flags = (user ? FAULT_FLAG_USER : 0) | (write ? FAULT_FLAG_WRITE : 0),
 		.pmd = pmd_of(vma, addr),
 	};
 	pte_t *pte = pte_of(vma, addr);
@@ -438,8 +441,8 @@ static vm_fault_t handle_fault(struct vm_area_struct *vma, unsigned long addr, b
 	return 0;
 }
 
-/* What a user access of `addr` reaches, or NULL if it would fault. */
-static void *translate(struct vm_area_struct *vma, unsigned long addr, bool write)
+/* The page a user access of `addr` reaches, or NULL if it would fault. */
+static struct page *translate_page(struct vm_area_struct *vma, unsigned long addr, bool write)
 {
 	pmd_t pmd = *pmd_of(vma, addr);
 	pte_t pte = *pte_of(vma, addr);
@@ -447,13 +450,19 @@ static void *translate(struct vm_area_struct *vma, unsigned long addr, bool writ
 	if (pmd_trans_huge(pmd)) {
 		if (write && !pmd_write(pmd))
 			return NULL;
-		return page_address(pfn_to_page(pmd_pfn(pmd) + ((addr >> PAGE_SHIFT) &
-								(PTRS_PER_PTE - 1)))) +
-		       offset_in_page(addr);
+		return pfn_to_page(pmd_pfn(pmd) + ((addr >> PAGE_SHIFT) & (PTRS_PER_PTE - 1)));
 	}
 	if (!pte_present(pte) || (write && !pte_write(pte)))
 		return NULL;
-	return page_address(pfn_to_page(pte_pfn(pte))) + offset_in_page(addr);
+	return pfn_to_page(pte_pfn(pte));
+}
+
+/* What a user access of `addr` reaches, or NULL if it would fault. */
+static void *translate(struct vm_area_struct *vma, unsigned long addr, bool write)
+{
+	struct page *page = translate_page(vma, addr, write);
+
+	return page ? page_address(page) + offset_in_page(addr) : NULL;
 }
 
 unsigned long sim_mm_faults;
@@ -482,7 +491,7 @@ size_t sim_copy_user(unsigned long addr, void *buf, size_t len, bool write)
 			vma = find_vma(mm, addr);
 			current->fault_drops = 0;
 			if (vma)
-				ret = handle_fault(vma, addr, write);
+				ret = handle_fault(vma, addr, write, true);
 			current->fault_drops = -1;
 			up_read(&mm->lock);
 			if (!vma || (ret & VM_FAULT_ERROR))
@@ -517,6 +526,43 @@ void sim_mm_describe(unsigned long addr)
 bool sim_mm_is_huge(unsigned long addr)
 {
 	return pmd_trans_huge(*pmd_of(find_vma(current->mm, addr), addr));
+}
+
+/*
+ * pin_user_pages' of the page at `addr`, read-only, as vmsplice's: faulted in by the kernel if
+ * need be, which isn't a user fault, and held by a reference, which keeps the page busy
+ * (dax_layout_busy_page_range) until sim_unpin_page. The page, or NULL if the fault failed.
+ */
+struct page *sim_pin_user_page(unsigned long addr)
+{
+	struct mm_struct *mm = current->mm;
+	struct vm_area_struct *vma;
+	struct page *page = NULL;
+	vm_fault_t ret = 0;
+
+	down_read(&mm->lock);
+	for (;;) {
+		vma = find_vma(mm, addr);
+		if (!vma || (ret & VM_FAULT_ERROR))
+			break;
+		page = translate_page(vma, addr, false);
+		if (page) {
+			folio_get(page_folio(page));
+			break;
+		}
+		sim_mm_faults++;
+		current->fault_drops = 0;
+		ret = handle_fault(vma, addr, false, false);
+		current->fault_drops = -1;
+	}
+	up_read(&mm->lock);
+	return page;
+}
+
+/* unpin_user_page: once the pin was the page's last use, the page is idle. */
+void sim_unpin_page(struct page *page)
+{
+	folio_put(page_folio(page));
 }
 
 int sim_user_store(unsigned long addr, const void *buf, size_t len)
