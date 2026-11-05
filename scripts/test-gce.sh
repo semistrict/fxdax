@@ -15,8 +15,8 @@
 # FXDAX_GCE_PROJECT is the project (default: gcloud's), FXDAX_GCE_ZONE the zone
 # to try first (default: us-east4-a), FXDAX_GCE_MACHINE the machine type
 # (default: n2-standard-4), and FXDAX_E2E_TEST the guest tests' cases to
-# run, separated by spaces, instead of scripts/test-e2e.sh's (`all` runs every one),
-# each FXDAX_E2E_ROUNDS times, under Firecracker's seccomp filter with
+# run, separated by spaces, by name or `--tag SUITE`, as scripts/test-e2e.sh's arguments,
+# instead of its default suite, each FXDAX_E2E_ROUNDS times, under Firecracker's seccomp filter with
 # FXDAX_FIRECRACKER_SECCOMP, in its jailer's jail with FXDAX_FIRECRACKER_JAIL
 # (scripts/test-e2e.sh), fxfs-guest-checks' checks alone with FXDAX_CHECKS
 # (such as `sparse,acls`), their budgets scaled by FXDAX_CHECKS_SCALE (such as 2, on a slower
@@ -36,7 +36,7 @@
 # FXDAX_* and PJDFSTEST_* variable set here reaches the host too
 # (scripts/lib/gce.sh), such as FXDAX_FOLLOW_SECONDS and FXDAX_PJDFSTEST_TESTS.
 set -euo pipefail
-[[ ${FXDAX_E2E_TEST:-} =~ ^[a-z0-9\ -]*$ ]] || { echo "FXDAX_E2E_TEST names test cases" >&2; exit 2; }
+[[ ${FXDAX_E2E_TEST:-} =~ ^[a-z0-9\ -]*$ ]] || { echo "FXDAX_E2E_TEST selects test cases" >&2; exit 2; }
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 project=${FXDAX_GCE_PROJECT:-$(gcloud config get-value project 2>/dev/null)}
 source "$repo/scripts/lib/gce.sh"
@@ -67,7 +67,7 @@ run() {
     # The run's own prefix of the bucket, if one is named.
     local remote=
     if [[ -n ${FXDAX_EXTENTD_REMOTE:-} ]]; then remote=${FXDAX_EXTENTD_REMOTE%/}/$run; fi
-    # shellcheck disable=SC2086 # The tests are names separated by spaces.
+    # shellcheck disable=SC2086 # The tests' selectors are words separated by spaces.
     gce_remote_detached "$run" "$(gce_host_command "$run" "FXDAX_EXTENTD_REMOTE=$remote" \
         test-linux-host.sh ${FXDAX_E2E_TEST:-})" > "$results/remote.log" 2>&1 || status=$?
     gce_fetch "$run" || status=$?

@@ -457,6 +457,9 @@ scripts/test-e2e.sh        # Linux (KVM): FXDAX_GUEST_KERNEL names the kernel
 scripts/test-e2e-linux.sh  # Linux, in a Lima VM
 ```
 
+Each case is in suites, which the scripts run it by: `scripts/test-e2e.sh --tag kernel`, or cases
+by name, `--tag e2e` if none (the runner's `list --help` names the suites).
+
 `scripts/test-guest-kernel.sh` builds the guest kernel with Fxfs in it and runs
 the guest tests on it, in Lima on macOS.
 

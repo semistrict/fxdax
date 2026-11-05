@@ -118,58 +118,199 @@ impl ShouldRun {
     }
 }
 
+/// fxdax: declares [`Tag`], each tag's variant and name, its doc its help (`runner list --help`).
+macro_rules! tags {
+    ($($(#[doc = $doc:literal])+ $tag:ident = $name:literal,)+) => {
+        /// fxdax: the suites a case is in, which the scripts select it by (`runner list --tag`),
+        /// none of them keeping a list of names: each list a script kept missed cases the others
+        /// had, and a case new to the harness was in none (TASK-160.29). Every case has one at
+        /// least, [`Tag::Manual`] if no suite runs it.
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        pub enum Tag {
+            $($(#[doc = $doc])+ $tag,)+
+        }
+
+        impl Tag {
+            pub const ALL: &[Tag] = &[$(Tag::$tag,)+];
+
+            /// The tag as the scripts name it.
+            pub fn name(self) -> &'static str {
+                match self {
+                    $(Tag::$tag => $name,)+
+                }
+            }
+
+            /// What it selects: its doc, on a line.
+            pub fn about(self) -> &'static str {
+                match self {
+                    $(Tag::$tag => concat!($($doc),+).trim_start(),)+
+                }
+            }
+
+            /// The tag named `name`.
+            pub fn named(name: &str) -> Option<Tag> {
+                Self::ALL.iter().copied().find(|tag| tag.name() == name)
+            }
+        }
+    };
+}
+
+tags! {
+    /// scripts/test-e2e.sh's cases unless it is told others, which scripts/test-gce.sh runs
+    /// unless FXDAX_E2E_TEST says otherwise: the guest's Fxfs, its crash tests and checks, and
+    /// pgbench, with a DAX window and without, in minutes.
+    E2e = "e2e",
+    /// scripts/test-guest-kernel.sh's: the guest kernel's Fxfs, as its every feature is used.
+    Kernel = "kernel",
+    /// The nightly's (.github/workflows/nightly.yml), as production runs them: e2e's and
+    /// kernel's, and every other case cheap enough on a release kernel.
+    Nightly = "nightly",
+    /// scripts/dax-gate.sh's suites, rounds of each, on its first host.
+    DaxGate = "dax-gate",
+    /// The suites scripts/dax-gate.sh's mutants are each killed by.
+    DaxGateMutants = "dax-gate-mutants",
+    /// The suites scripts/guest-mutants-gce.py kills each mutant with, unless told others.
+    Mutants = "mutants",
+    /// scripts/soak-workloads-gce.sh's crash group: the VM stopped mid-workload.
+    SoakCrash = "soak-crash",
+    /// scripts/soak-workloads-gce.sh's checks group: with delays and on a small window.
+    SoakChecks = "soak-checks",
+    /// scripts/soak-workloads-gce.sh's sanitized group, on the debug kernel.
+    SoakSanitized = "soak-sanitized",
+    /// scripts/soak-workloads-gce.sh's replicas group: followers, snapshots and migrations.
+    SoakReplicas = "soak-replicas",
+    /// scripts/perf-gate-gce.sh's cases of one VM each.
+    PerfSingle = "perf-single",
+    /// scripts/perf-gate-gce.sh's density run, VMs on forks of one base.
+    PerfDensity = "perf-density",
+    /// scripts/bench.sh's cases unless FXDAX_BENCH_CASES says others.
+    Bench = "bench",
+    /// In no suite, run by name alone: measurements of one thing (a profile, a lock's
+    /// contention, a fork's), xfstests (hours), and runner-deadlock, which fails on purpose.
+    Manual = "manual",
+}
+
+/// fxdax: the cases of `cases` named by `names` or tagged with one of `tags`, each once, in their
+/// order there: those a script runs (`runner list`). It fails on a name no case has.
+pub fn select(
+    cases: Vec<TestCase>,
+    names: &[String],
+    tags: &[Tag],
+) -> Result<Vec<TestCase>, String> {
+    if let Some(unknown) = names.iter().find(|name| cases.iter().all(|case| case.name != *name)) {
+        return Err(format!("no such test case: {unknown}"));
+    }
+    Ok(cases
+        .into_iter()
+        .filter(|case| {
+            names.iter().any(|name| name == case.name)
+                || case.tags.iter().any(|tag| tags.contains(tag))
+        })
+        .collect())
+}
+
 pub fn test_cases() -> Vec<TestCase> {
-    // Register your test here:
+    // Register your test here, with the suites it is in (fxdax: TASK-160.29):
     vec![
-        TestCase::new("pjdfstest-fxfs-guest", Box::new(TestPjdfstest { dax: false })),
-        TestCase::new("pjdfstest-fxfs-guest-dax", Box::new(TestPjdfstest { dax: true })),
-        TestCase::new("xfstests-fxfs-guest", Box::new(TestXfstests { dax: false })),
-        TestCase::new("xfstests-fxfs-guest-dax", Box::new(TestXfstests { dax: true })),
-        TestCase::new("fxfs-guest", Box::new(TestFxfsGuest::host_formats())),
-        TestCase::new("fxfs-guest-format", Box::new(TestFxfsGuest::guest_formats())),
-        TestCase::new("fxfs-guest-crash", Box::new(TestFxfsGuest::crash())),
-        TestCase::new("fxfs-guest-resize", Box::new(TestFxfsGuestResize)),
-        TestCase::new("fxfs-guest-live-fork", Box::new(TestFxfsGuestLiveFork)),
-        TestCase::new("fxfs-guest-volumes", Box::new(TestFxfsGuestVolumes { dax: false })),
-        TestCase::new("fxfs-guest-volumes-dax", Box::new(TestFxfsGuestVolumes { dax: true })),
+        TestCase::new(
+            "pjdfstest-fxfs-guest",
+            &[Tag::Kernel, Tag::Nightly],
+            Box::new(TestPjdfstest { dax: false }),
+        ),
+        TestCase::new(
+            "pjdfstest-fxfs-guest-dax",
+            &[Tag::Kernel, Tag::Nightly],
+            Box::new(TestPjdfstest { dax: true }),
+        ),
+        TestCase::new("xfstests-fxfs-guest", &[Tag::Manual], Box::new(TestXfstests { dax: false })),
+        TestCase::new(
+            "xfstests-fxfs-guest-dax",
+            &[Tag::Manual],
+            Box::new(TestXfstests { dax: true }),
+        ),
+        TestCase::new(
+            "fxfs-guest",
+            &[Tag::E2e, Tag::Kernel, Tag::Nightly],
+            Box::new(TestFxfsGuest::host_formats()),
+        ),
+        TestCase::new(
+            "fxfs-guest-format",
+            &[Tag::Kernel, Tag::Nightly],
+            Box::new(TestFxfsGuest::guest_formats()),
+        ),
+        TestCase::new(
+            "fxfs-guest-crash",
+            &[Tag::E2e, Tag::Kernel, Tag::Nightly, Tag::SoakCrash],
+            Box::new(TestFxfsGuest::crash()),
+        ),
+        TestCase::new(
+            "fxfs-guest-resize",
+            &[Tag::Kernel, Tag::Nightly],
+            Box::new(TestFxfsGuestResize),
+        ),
+        TestCase::new(
+            "fxfs-guest-live-fork",
+            &[Tag::Kernel, Tag::Nightly],
+            Box::new(TestFxfsGuestLiveFork),
+        ),
+        TestCase::new(
+            "fxfs-guest-volumes",
+            &[Tag::Kernel, Tag::Nightly],
+            Box::new(TestFxfsGuestVolumes { dax: false }),
+        ),
+        TestCase::new(
+            "fxfs-guest-volumes-dax",
+            &[Tag::Kernel, Tag::Nightly],
+            Box::new(TestFxfsGuestVolumes { dax: true }),
+        ),
         TestCase::new(
             "fxfs-guest-shared-volumes",
+            &[Tag::Kernel, Tag::Nightly],
             Box::new(TestFxfsGuestSharedVolumes { dax: false }),
         ),
         TestCase::new(
             "fxfs-guest-shared-volumes-dax",
+            &[Tag::Kernel, Tag::Nightly],
             Box::new(TestFxfsGuestSharedVolumes { dax: true }),
         ),
         TestCase::new(
             "fxfs-guest-pgbench",
+            &[Tag::E2e, Tag::Nightly, Tag::PerfSingle],
             Box::new(TestFxfsGuestPgbench::on(PgbenchStorage::Fxfs)),
         ),
         TestCase::new(
             "fxfs-guest-pgbench-dax",
+            &[Tag::E2e, Tag::Nightly, Tag::PerfSingle],
             Box::new(TestFxfsGuestPgbench::on(PgbenchStorage::FxfsDax)),
         ),
         TestCase::new(
             "fxfs-guest-pgbench-profile",
+            &[Tag::Manual],
             Box::new(TestFxfsGuestPgbench::on(PgbenchStorage::Fxfs).probed(Probe::Profile)),
         ),
         TestCase::new(
             "fxfs-guest-pgbench-dax-profile",
+            &[Tag::Manual],
             Box::new(TestFxfsGuestPgbench::on(PgbenchStorage::FxfsDax).probed(Probe::Profile)),
         ),
         TestCase::new(
             "fxfs-guest-pgbench-locks",
+            &[Tag::Manual],
             Box::new(TestFxfsGuestPgbench::on(PgbenchStorage::Fxfs).probed(Probe::Locks)),
         ),
         TestCase::new(
             "fxfs-guest-pgbench-nofsync",
+            &[Tag::Manual],
             Box::new(TestFxfsGuestPgbench::on(PgbenchStorage::Fxfs).without_fsync()),
         ),
         TestCase::new(
             "pgbench-ext4-dax-pmem",
+            &[Tag::PerfSingle],
             Box::new(TestFxfsGuestPgbench::on(PgbenchStorage::Ext4DaxPmem)),
         ),
         TestCase::new(
             "fxfs-guest-pgbench-forked",
+            &[Tag::PerfSingle],
             Box::new(
                 TestFxfsGuestPgbench::on(PgbenchStorage::Fxfs)
                     .with_database(PgbenchDatabase::Forked),
@@ -177,6 +318,7 @@ pub fn test_cases() -> Vec<TestCase> {
         ),
         TestCase::new(
             "fxfs-guest-pgbench-dax-forked",
+            &[Tag::Mutants, Tag::PerfSingle],
             Box::new(
                 TestFxfsGuestPgbench::on(PgbenchStorage::FxfsDax)
                     .with_database(PgbenchDatabase::Forked),
@@ -184,6 +326,7 @@ pub fn test_cases() -> Vec<TestCase> {
         ),
         TestCase::new(
             "fxfs-guest-pgbench-density",
+            &[Tag::PerfDensity],
             Box::new(
                 TestFxfsGuestPgbench::on(PgbenchStorage::Fxfs)
                     .with_database(PgbenchDatabase::Density),
@@ -191,43 +334,71 @@ pub fn test_cases() -> Vec<TestCase> {
         ),
         TestCase::new(
             "fxfs-guest-pgbench-dax-density",
+            &[Tag::PerfDensity],
             Box::new(
                 TestFxfsGuestPgbench::on(PgbenchStorage::FxfsDax)
                     .with_database(PgbenchDatabase::Density),
             ),
         ),
-        TestCase::new("fxfs-guest-bigmap", Box::new(TestFxfsGuestBigmap { dax: false })),
-        TestCase::new("fxfs-guest-bigmap-dax", Box::new(TestFxfsGuestBigmap { dax: true })),
-        TestCase::new("fxfs-guest-daemon-lost", Box::new(TestFxfsGuestDaemonLost)),
-        TestCase::new("runner-deadlock", Box::new(TestRunnerDeadlock)),
-        TestCase::new("fxfs-guest-follow", Box::new(TestFxfsGuestFollow { dax: false })),
-        TestCase::new("fxfs-guest-follow-dax", Box::new(TestFxfsGuestFollow { dax: true })),
+        TestCase::new(
+            "fxfs-guest-bigmap",
+            &[Tag::PerfSingle],
+            Box::new(TestFxfsGuestBigmap { dax: false }),
+        ),
+        TestCase::new(
+            "fxfs-guest-bigmap-dax",
+            &[Tag::PerfSingle],
+            Box::new(TestFxfsGuestBigmap { dax: true }),
+        ),
+        TestCase::new(
+            "fxfs-guest-daemon-lost",
+            &[Tag::Kernel, Tag::Nightly],
+            Box::new(TestFxfsGuestDaemonLost),
+        ),
+        TestCase::new("runner-deadlock", &[Tag::Manual], Box::new(TestRunnerDeadlock)),
+        TestCase::new(
+            "fxfs-guest-follow",
+            &[Tag::Kernel, Tag::Nightly],
+            Box::new(TestFxfsGuestFollow { dax: false }),
+        ),
+        TestCase::new(
+            "fxfs-guest-follow-dax",
+            &[Tag::Kernel, Tag::Nightly],
+            Box::new(TestFxfsGuestFollow { dax: true }),
+        ),
         TestCase::new(
             "fxfs-guest-follow-remount",
+            &[Tag::Nightly],
             Box::new(TestFxfsGuestFollowRemount { dax: false }),
         ),
         TestCase::new(
             "fxfs-guest-follow-remount-dax",
+            &[Tag::Nightly, Tag::SoakReplicas],
             Box::new(TestFxfsGuestFollowRemount { dax: true }),
         ),
         TestCase::new(
             "fxfs-guest-follow-torture",
+            &[Tag::Kernel, Tag::Nightly, Tag::SoakReplicas],
             Box::new(TestFxfsGuestFollowTorture { dax: false, mutant: None }),
         ),
         TestCase::new(
             "fxfs-guest-follow-torture-dax",
+            &[Tag::Kernel, Tag::Nightly, Tag::SoakReplicas],
             Box::new(TestFxfsGuestFollowTorture { dax: true, mutant: None }),
         ),
         TestCase::new(
             "fxfs-guest-follow-torture-mutant",
+            &[Tag::Kernel, Tag::Nightly],
             Box::new(TestFxfsGuestFollowTorture { dax: false, mutant: Some(Mutant::Invalidation) }),
         ),
         TestCase::new(
             "fxfs-guest-follow-torture-mutant-dax",
+            &[Tag::Kernel, Tag::Nightly],
             Box::new(TestFxfsGuestFollowTorture { dax: true, mutant: Some(Mutant::Invalidation) }),
         ),
         TestCase::new(
             "fxfs-guest-follow-torture-mutant-faults-dax",
+            &[Tag::Kernel, Tag::Nightly],
             Box::new(TestFxfsGuestFollowTorture {
                 dax: true,
                 mutant: Some(Mutant::InvalidationFaults),
@@ -235,28 +406,42 @@ pub fn test_cases() -> Vec<TestCase> {
         ),
         TestCase::new(
             "fxfs-guest-follow-torture-mutant-barrier-dax",
+            &[Tag::Kernel, Tag::Nightly],
             Box::new(TestFxfsGuestFollowTorture { dax: true, mutant: Some(Mutant::Barrier) }),
         ),
         TestCase::new(
             "fxfs-guest-follow-torture-mutant-nested-dax",
+            &[Tag::Kernel, Tag::Nightly],
             Box::new(TestFxfsGuestFollowTorture { dax: true, mutant: Some(Mutant::Nested) }),
         ),
-        TestCase::new("fxfs-guest-import", Box::new(TestFxfsGuestImport { dax: false })),
-        TestCase::new("fxfs-guest-import-dax", Box::new(TestFxfsGuestImport { dax: true })),
+        TestCase::new(
+            "fxfs-guest-import",
+            &[Tag::Kernel, Tag::Nightly],
+            Box::new(TestFxfsGuestImport { dax: false }),
+        ),
+        TestCase::new(
+            "fxfs-guest-import-dax",
+            &[Tag::Kernel, Tag::Nightly],
+            Box::new(TestFxfsGuestImport { dax: true }),
+        ),
         TestCase::new(
             "fxfs-guest-snapshot",
+            &[Tag::Kernel, Tag::Nightly],
             Box::new(TestFxfsGuestSnapshot { dax: false, mode: SnapshotMode::Zygote, volumes: 0 }),
         ),
         TestCase::new(
             "fxfs-guest-snapshot-dax",
+            &[Tag::Kernel, Tag::Nightly, Tag::SoakReplicas],
             Box::new(TestFxfsGuestSnapshot { dax: true, mode: SnapshotMode::Zygote, volumes: 0 }),
         ),
         TestCase::new(
             "fxfs-guest-suspend-dax",
+            &[Tag::Kernel, Tag::Nightly, Tag::SoakReplicas],
             Box::new(TestFxfsGuestSnapshot { dax: true, mode: SnapshotMode::Suspend, volumes: 0 }),
         ),
         TestCase::new(
             "fxfs-guest-snapshot-volumes",
+            &[Tag::Kernel, Tag::Nightly],
             Box::new(TestFxfsGuestSnapshot {
                 dax: false,
                 mode: SnapshotMode::Suspend,
@@ -265,6 +450,7 @@ pub fn test_cases() -> Vec<TestCase> {
         ),
         TestCase::new(
             "fxfs-guest-snapshot-volumes-dax",
+            &[Tag::Kernel, Tag::Nightly],
             Box::new(TestFxfsGuestSnapshot {
                 dax: true,
                 mode: SnapshotMode::Suspend,
@@ -273,10 +459,12 @@ pub fn test_cases() -> Vec<TestCase> {
         ),
         TestCase::new(
             "fxfs-guest-migrate-dax",
+            &[Tag::Kernel, Tag::Nightly, Tag::SoakReplicas],
             Box::new(TestFxfsGuestSnapshot { dax: true, mode: SnapshotMode::Migrate, volumes: 0 }),
         ),
         TestCase::new(
             "fxfs-guest-migrate-tenant-dax",
+            &[Tag::Kernel, Tag::Nightly],
             Box::new(TestFxfsGuestSnapshot {
                 dax: true,
                 mode: SnapshotMode::TenantMigrate,
@@ -284,120 +472,191 @@ pub fn test_cases() -> Vec<TestCase> {
             }),
         ),
         #[cfg(any(feature = "host", target_os = "linux"))]
-        TestCase::new("fxfs-guest-checks", Box::new(PAGE_CACHE_CHECKS)),
+        TestCase::new(
+            "fxfs-guest-checks",
+            &[Tag::E2e, Tag::Kernel, Tag::Nightly, Tag::SoakChecks, Tag::SoakSanitized],
+            Box::new(PAGE_CACHE_CHECKS),
+        ),
         #[cfg(any(feature = "host", target_os = "linux"))]
         TestCase::new(
             "fxfs-guest-checks-dax",
+            &[
+                Tag::E2e,
+                Tag::Kernel,
+                Tag::Nightly,
+                Tag::DaxGate,
+                Tag::DaxGateMutants,
+                Tag::Mutants,
+                Tag::SoakChecks,
+                Tag::SoakSanitized,
+            ],
             Box::new(TestFxfsGuestChecks { dax: true, ..PAGE_CACHE_CHECKS }),
         ),
         #[cfg(any(feature = "host", target_os = "linux"))]
         TestCase::new(
             "fxfs-guest-checks-dax-delay",
+            &[
+                Tag::E2e,
+                Tag::Kernel,
+                Tag::Nightly,
+                Tag::DaxGate,
+                Tag::DaxGateMutants,
+                Tag::Mutants,
+                Tag::SoakChecks,
+            ],
             Box::new(TestFxfsGuestChecks { dax: true, delay: true, ..PAGE_CACHE_CHECKS }),
         ),
         #[cfg(any(feature = "host", target_os = "linux"))]
         TestCase::new(
             "fxfs-guest-checks-dax-small",
+            &[Tag::E2e, Tag::Kernel, Tag::Nightly, Tag::DaxGate, Tag::SoakChecks],
             Box::new(TestFxfsGuestChecks { dax: true, small_window: true, ..PAGE_CACHE_CHECKS }),
         ),
         // fxdax: a check outrunning its budget fails the run by name (TASK-168).
         #[cfg(any(feature = "host", target_os = "linux"))]
         TestCase::new(
             "fxfs-guest-checks-overrun",
+            &[Tag::E2e, Tag::Kernel, Tag::Nightly],
             Box::new(TestFxfsGuestChecks { overrun: true, ..PAGE_CACHE_CHECKS }),
         ),
         #[cfg(any(feature = "host", target_os = "linux"))]
         TestCase::new(
             "fxfs-guest-script",
+            &[Tag::Nightly],
             Box::new(TestFxfsGuestScript { dax: false, full: false }),
         ),
         #[cfg(any(feature = "host", target_os = "linux"))]
         TestCase::new(
             "fxfs-guest-script-dax",
+            &[Tag::Nightly],
             Box::new(TestFxfsGuestScript { dax: true, full: false }),
         ),
         #[cfg(any(feature = "host", target_os = "linux"))]
         TestCase::new(
             "fxfs-guest-script-full",
+            &[Tag::Nightly],
             Box::new(TestFxfsGuestScript { dax: false, full: true }),
         ),
         #[cfg(any(feature = "host", target_os = "linux"))]
         TestCase::new(
             "fxfs-guest-script-full-dax",
+            &[Tag::Nightly],
             Box::new(TestFxfsGuestScript { dax: true, full: true }),
         ),
-        TestCase::new("fxfs-guest-dax", Box::new(TestFxfsGuest::host_formats().with_dax())),
-        TestCase::new("fxfs-guest-crash-dax", Box::new(TestFxfsGuest::crash().with_dax())),
-        TestCase::new("fxfs-guest-crash-dax-killed", Box::new(TestFxfsGuest::crash_killed())),
+        TestCase::new(
+            "fxfs-guest-dax",
+            &[Tag::E2e, Tag::Kernel, Tag::Nightly, Tag::DaxGate, Tag::DaxGateMutants, Tag::Mutants],
+            Box::new(TestFxfsGuest::host_formats().with_dax()),
+        ),
+        TestCase::new(
+            "fxfs-guest-crash-dax",
+            &[Tag::E2e, Tag::Kernel, Tag::Nightly, Tag::DaxGate, Tag::SoakCrash],
+            Box::new(TestFxfsGuest::crash().with_dax()),
+        ),
+        TestCase::new(
+            "fxfs-guest-crash-dax-killed",
+            &[Tag::E2e, Tag::Kernel, Tag::Nightly, Tag::DaxGate, Tag::SoakCrash],
+            Box::new(TestFxfsGuest::crash_killed()),
+        ),
         TestCase::new(
             "fxfs-guest-crash-dax-daemon-killed",
+            &[Tag::Nightly],
             Box::new(TestFxfsGuest::crash_daemon_killed()),
         ),
-        TestCase::new("fxfs-guest-crash-stray-dax", Box::new(TestFxfsGuest::crash_stray())),
-        TestCase::new("fxfs-guest-faults-dax", Box::new(TestFxfsGuest::faults())),
-        TestCase::new("fxfs-guest-docker-dax", Box::new(TestFxfsGuestDocker)),
-        TestCase::new("extent-guest", Box::new(TestExtentGuest)),
+        TestCase::new(
+            "fxfs-guest-crash-stray-dax",
+            &[Tag::E2e, Tag::Nightly],
+            Box::new(TestFxfsGuest::crash_stray()),
+        ),
+        TestCase::new(
+            "fxfs-guest-faults-dax",
+            &[Tag::SoakSanitized],
+            Box::new(TestFxfsGuest::faults()),
+        ),
+        TestCase::new(
+            "fxfs-guest-docker-dax",
+            &[Tag::E2e, Tag::Nightly],
+            Box::new(TestFxfsGuestDocker),
+        ),
+        TestCase::new(
+            "extent-guest",
+            &[Tag::E2e, Tag::Kernel, Tag::Nightly],
+            Box::new(TestExtentGuest),
+        ),
         #[cfg(any(feature = "host", target_os = "linux"))]
         TestCase::new(
             "bench-fs-ext4-guest-kernel",
+            &[Tag::Bench],
             Box::new(TestFsBench { backend: BenchBackend::Ext4GuestKernel }),
         ),
         #[cfg(any(feature = "host", target_os = "linux"))]
         TestCase::new(
             "bench-fs-ext4-dax-pmem",
+            &[Tag::Bench],
             Box::new(TestFsBench { backend: BenchBackend::Ext4DaxPmem }),
         ),
         #[cfg(any(feature = "host", target_os = "linux"))]
         TestCase::new(
             "bench-fs-ext4-pmem",
+            &[Tag::Manual],
             Box::new(TestFsBench { backend: BenchBackend::Ext4Pmem }),
         ),
         #[cfg(any(feature = "host", target_os = "linux"))]
         TestCase::new(
             "bench-fs-fxfs-guest",
+            &[Tag::Bench],
             Box::new(TestFsBench { backend: BenchBackend::FxfsGuest }),
         ),
         #[cfg(any(feature = "host", target_os = "linux"))]
         TestCase::new(
             "bench-fs-fxfs-guest-dax",
+            &[Tag::Bench],
             Box::new(TestFsBench { backend: BenchBackend::FxfsGuestDax }),
         ),
         #[cfg(any(feature = "host", target_os = "linux"))]
         TestCase::new(
             "bench-fs-fxfs-guest-dax-followed",
+            &[Tag::Manual],
             Box::new(TestFsBench { backend: BenchBackend::FxfsGuestDaxFollowed }),
         ),
         TestCase::new(
             "bench-fs-fxfs-guest-dax-followed-idle",
+            &[Tag::Manual],
             Box::new(TestFsBench { backend: BenchBackend::FxfsGuestDaxFollowedIdle }),
         ),
         #[cfg(any(feature = "host", target_os = "linux"))]
         TestCase::new(
             "bench-fork-fxfs-guest-dax-warm",
+            &[Tag::Manual],
             Box::new(TestFsBench { backend: BenchBackend::FxfsGuestDaxForkWarm }),
         ),
         #[cfg(any(feature = "host", target_os = "linux"))]
         TestCase::new(
             "bench-fork-fxfs-guest-dax-cold",
+            &[Tag::Manual],
             Box::new(TestFsBench { backend: BenchBackend::FxfsGuestDaxForkCold }),
         ),
         #[cfg(any(feature = "host", target_os = "linux"))]
         TestCase::new(
             "bench-fork-fxfs-guest-warm",
+            &[Tag::Manual],
             Box::new(TestFsBench { backend: BenchBackend::FxfsGuestForkWarm }),
         ),
         #[cfg(any(feature = "host", target_os = "linux"))]
         TestCase::new(
             "bench-fork-ext4-dax-pmem",
+            &[Tag::Manual],
             Box::new(TestFsBench { backend: BenchBackend::Ext4DaxPmemFork }),
         ),
         #[cfg(any(feature = "host", target_os = "linux"))]
         TestCase::new(
             "bench-fork-ext4-pmem",
+            &[Tag::Manual],
             Box::new(TestFsBench { backend: BenchBackend::Ext4PmemFork }),
         ),
         TestCase::new(
             "bench-fork-fxfs-guest-dax-profiled",
+            &[Tag::Manual],
             Box::new(TestFsBench { backend: BenchBackend::FxfsGuestDaxForkProfiled }),
         ),
     ]
@@ -555,14 +814,16 @@ pub trait Test {
 
 pub struct TestCase {
     pub name: &'static str,
+    /// fxdax: the suites it is in.
+    pub tags: &'static [Tag],
     pub test: Box<dyn Test>,
 }
 
 impl TestCase {
     // Your test can be parametrized, so you can add the same test multiple times constructed with
     // different parameters with and specify a different name here.
-    pub fn new(name: &'static str, test: Box<dyn Test>) -> Self {
-        Self { name, test }
+    pub fn new(name: &'static str, tags: &'static [Tag], test: Box<dyn Test>) -> Self {
+        Self { name, tags, test }
     }
 
     /// Check if this test should run on this platform.
@@ -608,5 +869,66 @@ mod tests {
                 panic!("test_cases() contains test named {name}, but the name is reseved")
             }
         }
+    }
+
+    /// fxdax: the names of the cases of `cases` in no suite, not even [`Tag::Manual`].
+    fn untagged(cases: &[TestCase]) -> Vec<&'static str> {
+        cases.iter().filter(|case| case.tags.is_empty()).map(|case| case.name).collect()
+    }
+
+    /// fxdax: a case new to the harness says where it runs, or where it doesn't: one in no suite
+    /// was run by none of the scripts, as xfstests' and the scripts' cases were (TASK-160.29).
+    #[test]
+    fn every_case_is_in_a_suite() {
+        assert_eq!(untagged(&test_cases()), Vec::<&str>::new());
+        let mut cases = test_cases();
+        cases.push(TestCase::new("untagged", &[], Box::new(TestRunnerDeadlock)));
+        assert_eq!(untagged(&cases), ["untagged"]);
+    }
+
+    /// fxdax: no suite is empty, and each tag's name is its own.
+    #[test]
+    fn every_tag_selects_cases() {
+        let cases = test_cases();
+        for &tag in Tag::ALL {
+            assert!(cases.iter().any(|case| case.tags.contains(&tag)), "{tag:?} selects nothing");
+            assert_eq!(Tag::named(tag.name()), Some(tag));
+            assert!(!tag.about().is_empty() && !tag.about().starts_with(' '), "{tag:?}");
+        }
+        assert_eq!(Tag::named("nope"), None);
+    }
+
+    fn names_of(cases: Vec<TestCase>) -> Vec<&'static str> {
+        cases.into_iter().map(|case| case.name).collect()
+    }
+
+    /// fxdax: a selection is of the cases named and tagged, once each, as registered.
+    #[test]
+    fn a_selection_is_of_cases_named_and_tagged() {
+        let select = |names: &[&str], tags: &[Tag]| {
+            let names: Vec<String> = names.iter().map(|name| name.to_string()).collect();
+            select(test_cases(), &names, tags).map(names_of)
+        };
+        assert_eq!(
+            select(&[], &[Tag::DaxGateMutants]),
+            Ok(vec!["fxfs-guest-checks-dax", "fxfs-guest-checks-dax-delay", "fxfs-guest-dax"])
+        );
+        // Named before the tag's, but run as registered, and once.
+        assert_eq!(
+            select(&["fxfs-guest-dax", "extent-guest"], &[Tag::DaxGateMutants, Tag::PerfDensity]),
+            Ok(vec![
+                "fxfs-guest-pgbench-density",
+                "fxfs-guest-pgbench-dax-density",
+                "fxfs-guest-checks-dax",
+                "fxfs-guest-checks-dax-delay",
+                "fxfs-guest-dax",
+                "extent-guest",
+            ])
+        );
+        assert_eq!(select(&[], &[]), Ok(vec![]));
+        assert_eq!(
+            select(&["fxfs-guest-dax", "fxfs-guest-nope"], &[]),
+            Err("no such test case: fxfs-guest-nope".to_string())
+        );
     }
 }

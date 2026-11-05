@@ -38,6 +38,14 @@ The guest agent (PID 1) ran every check of fxfs-guest-checks under catch_unwind,
 **Instead:** fork per check without exec (unsafe in a process with threads); the overrun suite with a few checks after the failing ones (cheaper, and shows less).
 **Undoing it:** `run_to` back to calling the body in-process; the overrun suite's `Suites::Failing` checks dropped.
 
+## Guest test cases are selected by tags, the nightly runs 50 (TASK-160.29, 2026-11-05)
+
+Every case is tagged with the suites it is in (`Tag`, guest/tests/test_cases/src/lib.rs); scripts pass `--tag SUITE` through `FXDAX_E2E_TEST` (or test-e2e.sh's arguments) and test-e2e.sh asks `runner list`. Each script's old list is now exactly its tag's selection; cases run in registration order, not each list's. Decided:
+- **`manual`** tags the 16 cases no suite runs (xfstests, 4 hours each; runner-deadlock, failing on purpose; profiles, lock_stat, nofsync and the bench's followed and fork measurements), so that "untagged" stays an error.
+- **The nightly** (`--tag nightly`) runs e2e's and kernel's cases plus crash-dax-daemon-killed, follow-remount(-dax) and the four script cases: 50, from 15. Left out: xfstests (hours), faults-dax (needs the debug kernel; soak-sanitized runs it), the measurements. The nightly still needs its GCP secrets (above).
+- **`FXDAX_E2E_TEST=all` is gone:** it ran runner-deadlock and other cases that skip, which now fail a run asking for them by name.
+**Undoing it:** a case's tags are a list beside its name; a suite is a variant of `Tag`.
+
 ## Local disk as the bucket's WAL and cache: how (TASK-165, doc-14, 2026-11-04)
 
 The user chose the direction (review of 2026-11-04, decision 2); doc-14 decides the rest, where the task left it open:

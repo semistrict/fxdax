@@ -12,7 +12,7 @@ use std::panic::catch_unwind;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use tempdir::TempDir;
-use test_cases::{Report, ShouldRun, Test, TestCase, TestOutcome, TestSetup, test_cases};
+use test_cases::{Report, ShouldRun, Tag, Test, TestCase, TestOutcome, TestSetup, test_cases};
 
 struct TestResult {
     name: String,
@@ -511,6 +511,32 @@ enum CliCommand {
         #[arg(long)]
         tmp_dir: PathBuf,
     },
+    /// fxdax: prints the names of the cases selected, a line each, as registered: what the
+    /// scripts run, by tag, keeping no lists of names (TASK-160.29).
+    List {
+        /// Every case of the suite TAG
+        #[arg(long = "tag", value_name = "TAG", value_parser = tag_parser())]
+        tags: Vec<Tag>,
+        /// The cases of these names
+        names: Vec<String>,
+    },
+}
+
+/// fxdax: a [`Tag`] by its name, the tags and what each selects in `--help`.
+fn tag_parser() -> impl clap::builder::TypedValueParser<Value = Tag> {
+    use clap::builder::{PossibleValue, PossibleValuesParser, TypedValueParser};
+    let tags = Tag::ALL.iter().map(|tag| PossibleValue::new(tag.name()).help(tag.about()));
+    PossibleValuesParser::new(tags).map(|name| Tag::named(&name).expect("a tag clap took"))
+}
+
+/// fxdax: `runner list`'s, which fails if it selects nothing: a run of no cases passes.
+fn list(names: &[String], tags: &[Tag]) -> anyhow::Result<()> {
+    let cases = test_cases::select(test_cases(), names, tags).map_err(anyhow::Error::msg)?;
+    anyhow::ensure!(!cases.is_empty(), "no test case selected: name cases, or --tag a suite");
+    for case in cases {
+        println!("{}", case.name);
+    }
+    Ok(())
 }
 
 impl Default for CliCommand {
@@ -536,6 +562,7 @@ fn main() -> anyhow::Result<()> {
 
     match command {
         CliCommand::StartVm { test_case, tmp_dir } => start_vm(TestSetup { test_case, tmp_dir }),
+        CliCommand::List { tags, names } => list(&names, &tags),
         CliCommand::Test { test_case, base_dir, keep_all, github_summary } => {
             run_tests(&test_case, base_dir, keep_all, github_summary)
         }

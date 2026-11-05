@@ -4,9 +4,9 @@
 # found in the LICENSE file.
 
 # Run fxdax's guest tests (guest/tests) on this host, Linux with KVM (on macOS, use
-# scripts/test-e2e-linux.sh, which runs this in Lima). Arguments name the test
-# cases (default: extent-guest, the fxfs-guest cases, their crash and checks cases,
-# fxfs-guest-checks-dax-delay, -small and -overrun, and the pgbench ones), which boot fxdax's Firecracker (vendor/firecracker,
+# scripts/test-e2e-linux.sh, which runs this in Lima). Arguments select the test cases, by name or
+# by suite, `--tag SUITE` (the guest tests' runner's `list`, whose --help names the suites;
+# default: --tag e2e), which boot fxdax's Firecracker (vendor/firecracker,
 # with its fxdax feature), which this builds, and the guest kernel
 # FXDAX_GUEST_KERNEL names (scripts/build-guest-kernel.sh builds it). Each test's
 # logs are kept under $FXDAX_E2E_RESULTS (default: a new temporary directory).
@@ -26,9 +26,9 @@
 set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 harness="$root/guest/tests"
-tests=("$@")
-if (( ${#tests[@]} == 0 )); then
-    tests=(extent-guest fxfs-guest fxfs-guest-dax fxfs-guest-crash fxfs-guest-crash-dax fxfs-guest-crash-dax-killed fxfs-guest-checks fxfs-guest-checks-dax fxfs-guest-checks-dax-delay fxfs-guest-checks-dax-small fxfs-guest-checks-overrun fxfs-guest-pgbench fxfs-guest-pgbench-dax fxfs-guest-crash-stray-dax fxfs-guest-docker-dax)
+selectors=("$@")
+if (( ${#selectors[@]} == 0 )); then
+    selectors=(--tag e2e)
 fi
 results=${FXDAX_E2E_RESULTS:-$(mktemp -d "${TMPDIR:-/tmp}/fxdax-e2e.XXXXXX")}
 mkdir -p "$results"
@@ -42,6 +42,13 @@ if [[ -z ${LIBCLANG_PATH:-} ]] && command -v llvm-config > /dev/null; then
     LIBCLANG_PATH=$(llvm-config --libdir)
 fi
 if [[ -n ${LIBCLANG_PATH:-} ]]; then export LIBCLANG_PATH; fi
+
+# The harness's runner, which boots a VM for each test, and says which cases the arguments select,
+# a selection naming no case failing before anything else is built (TASK-160.29).
+(cd "$harness" && cargo build -q -p runner)
+runner="$harness/target/debug/runner"
+listed=$("$runner" list "${selectors[@]}")
+mapfile -t tests <<< "$listed"
 
 # With frame pointers, as every build here has them (.cargo/config.toml), which the bench's perf
 # call graphs walk (FXDAX_BENCH_PERF). With FXDAX_FAILPOINTS, a daemon whose failpoints it sets (FAILPOINTS, the fail crate's): requests
@@ -124,7 +131,7 @@ elif [[ -n ${FXDAX_GUEST_HUGE_PAGES:-} ]]; then
 fi
 # fxfs-guest-docker-dax's Docker, its static binaries (Apache-2.0), downloaded once, and BusyBox,
 # its containers' image, the host's static one (busybox-static).
-if [[ -z ${FXDAX_DOCKER_STATIC:-} && " ${tests[*]} " =~ \ (all|fxfs-guest-docker-dax)\  ]]; then
+if [[ -z ${FXDAX_DOCKER_STATIC:-} && " ${tests[*]} " == *" fxfs-guest-docker-dax "* ]]; then
     docker_version=29.9.1
     case $(uname -m) in
         x86_64) docker_sha256=c158ecc55adb3afb01bbd3539ed3b997d20c26dbdc418080506cc1bf5243ff57 ;;
@@ -141,8 +148,8 @@ if [[ -z ${FXDAX_DOCKER_STATIC:-} && " ${tests[*]} " =~ \ (all|fxfs-guest-docker
     fi
     export FXDAX_DOCKER_STATIC="$docker_dir" FXDAX_BUSYBOX="${FXDAX_BUSYBOX:-/bin/busybox}"
 fi
-# The harness: the guest agent, a static binary each guest runs as its init, and the runner,
-# which boots a VM for each test. pjdfstest's cases take its repository and commit as they build.
+# The harness's guest agent, a static binary each guest runs as its init. pjdfstest's cases take
+# its repository and commit as they build.
 guest_target="$(uname -m)-unknown-linux-musl"
 (cd "$harness" && cargo test -q -p test_cases --features guest)
 # The VMM's extent device, which no other suite reaches (TASK-79.102): its tests' store has a
@@ -150,7 +157,6 @@ guest_target="$(uname -m)-unknown-linux-musl"
 (cd "$firecracker_dir" && FXDAX_EXTENTD_REMOTE=memory:///vmm FXDAX_EXTENTD_TOKEN=1 \
     cargo test -q -p vmm --lib --features fxdax extent::)
 (cd "$harness" && cargo build -q --target "$guest_target" -p guest-agent)
-(cd "$harness" && cargo build -q -p runner)
 export FXDAX_GUEST_AGENT="$harness/target/$guest_target/debug/guest-agent"
 socket="$results/extentd.sock"
 control="$results/extentd.control"
@@ -190,7 +196,7 @@ for test in "${tests[@]}"; do
     if (( rounds == 1 )); then
         # fxdax: said as a failed round of several is, which guest-mutants-gce.py reads: a mutant
         # killed in a single round was taken for a broken run (TASK-119.8).
-        if ! "$harness/target/debug/runner" test --test-case "$test" --base-dir "$results/$test" \
+        if ! "$runner" test --test-case "$test" --base-dir "$results/$test" \
             --keep-all; then
             echo "$test: failed in round 1 of 1: see $results/$test" >&2
             status=1
@@ -199,7 +205,7 @@ for test in "${tests[@]}"; do
     fi
     for (( round = 1; round <= rounds; round++ )); do
         base="$results/$test/round-$round"
-        if ! "$harness/target/debug/runner" test --test-case "$test" --base-dir "$base" \
+        if ! "$runner" test --test-case "$test" --base-dir "$base" \
             --keep-all; then
             echo "$test: failed in round $round of $rounds: see $base" >&2
             status=1

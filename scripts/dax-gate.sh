@@ -37,14 +37,9 @@ mkdir -p "$results"
 echo "dax-gate: $commit, results in $results"
 
 export FXDAX_GCE_ZONE=$zone FXDAX_WORKSPACE_TESTS=0 FXDAX_GUEST_KERNEL_BUILD=release
-# fxdax: on one line, as test-gce.sh takes them: a newline in them was refused, and the gate's
-# suites never ran (TASK-119.8).
-suites=(fxfs-guest-dax fxfs-guest-crash-dax fxfs-guest-crash-dax-killed fxfs-guest-checks-dax
-    fxfs-guest-checks-dax-delay
-    fxfs-guest-checks-dax-small)
 
-# Host A: the suites, rounds of each.
-FXDAX_E2E_TEST="${suites[*]}" FXDAX_E2E_ROUNDS=$rounds \
+# Host A: the suites, rounds of each (`runner list --tag dax-gate`).
+FXDAX_E2E_TEST="--tag dax-gate" FXDAX_E2E_ROUNDS=$rounds \
     scripts/test-gce.sh run "$host_a" "$results/suites" > "$results/suites.log" 2>&1 &
 suites_pid=$!
 
@@ -55,8 +50,7 @@ suites_pid=$!
     echo "pgbench-dax-forked passed"
     pgbench=$results/pgbench/e2e/fxfs-guest-pgbench-dax-forked/fxfs-guest-pgbench-dax-forked
     scripts/pgbench-probes.py "$pgbench/run.console.txt"
-    FXDAX_E2E_TEST="fxfs-guest-dax fxfs-guest-checks-dax fxfs-guest-checks-dax-delay" \
-        FXDAX_E2E_ROUNDS=$mutant_rounds \
+    FXDAX_E2E_TEST="--tag dax-gate-mutants" FXDAX_E2E_ROUNDS=$mutant_rounds \
         scripts/guest-mutants-gce.py "$host_b" "$zone" "$results/mutants" \
         | tee "$results/mutants.txt"
 ) > "$results/host-b.log" 2>&1 &

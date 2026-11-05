@@ -16,7 +16,8 @@ from pathlib import Path
 import script
 
 # The fake test-gce.sh: records its arguments and the variables the gate sets, and writes each case
-# it is to run a log as the case's would be, or fails if FAKE_FAIL names its results. A pgbench
+# it is to run, those of the suite FXDAX_E2E_TEST tags as the runner has them, a log as the case's
+# would be, or fails if FAKE_FAIL names its results. A pgbench
 # case's: a VM a run of tps 100, every VM after the first one a run of tps 80, as
 # FXDAX_PGBENCH_VMS has it: the tps on the console (log.txt), the runs each VM made in the guest's
 # output (stdout.txt); a density case's, the host's memory too, before the first VM and after each
@@ -31,7 +32,14 @@ echo "$* E2E_TEST=$FXDAX_E2E_TEST VMS=${FXDAX_PGBENCH_VMS:-} RUNS=${FXDAX_PGBENC
 ROUNDS=$FXDAX_E2E_ROUNDS WORKSPACE=$FXDAX_WORKSPACE_TESTS KERNEL=$FXDAX_GUEST_KERNEL_BUILD" \
     >> "$CALLS"
 mib=1048576
-for case in $FXDAX_E2E_TEST; do
+case $FXDAX_E2E_TEST in
+    "--tag perf-single") cases="fxfs-guest-pgbench fxfs-guest-pgbench-dax pgbench-ext4-dax-pmem
+        fxfs-guest-pgbench-forked fxfs-guest-pgbench-dax-forked fxfs-guest-bigmap
+        fxfs-guest-bigmap-dax" ;;
+    "--tag perf-density") cases="fxfs-guest-pgbench-density fxfs-guest-pgbench-dax-density" ;;
+    *) echo "no such suite: $FXDAX_E2E_TEST" >&2; exit 2 ;;
+esac
+for case in $cases; do
     place=$results/e2e/$case/$case
     log=$place/log.txt
     mkdir -p "$place"
@@ -72,11 +80,9 @@ done
 [[ ${FAKE_FAIL:-} != "$(basename "$results")" ]]
 """
 
-# The cases of the single run, and of the density run.
-SINGLE = ("fxfs-guest-pgbench fxfs-guest-pgbench-dax pgbench-ext4-dax-pmem "
-          "fxfs-guest-pgbench-forked fxfs-guest-pgbench-dax-forked "
-          "fxfs-guest-bigmap fxfs-guest-bigmap-dax")
-DENSITY = "fxfs-guest-pgbench-density fxfs-guest-pgbench-dax-density"
+# The suites of the single run, and of the density run.
+SINGLE = "--tag perf-single"
+DENSITY = "--tag perf-density"
 
 
 class PerfGateGce(unittest.TestCase):

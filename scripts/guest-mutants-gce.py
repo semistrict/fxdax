@@ -19,8 +19,9 @@ on is killed; one they pass, missed, needs a test, or is recorded here as equiva
 runs every mutant (or those named) on HOST, made with scripts/test-gce.sh create, writing each
 run's results under RESULTS, and prints each mutant's fate. --check runs nothing: it makes each
 mutant's edits of the sources as they are, in memory, as CI does, and fails if one isn't found
-once, which would have the mutant test nothing. FXDAX_E2E_TEST names the suites, the
-DAX ones by default; FXDAX_MUTANT_KERNEL the kernel the host builds for every mutant (debug, with
+once, which would have the mutant test nothing. FXDAX_E2E_TEST selects the suites, by name
+or by tag, as scripts/test-e2e.sh's arguments do, the mutants suite by default
+(`runner list --tag mutants`); FXDAX_MUTANT_KERNEL the kernel the host builds for every mutant (debug, with
 lockdep and KCSAN, or kasan), each's own otherwise; the other FXDAX_* settings reach the host as
 scripts/test-gce.sh says.
 """
@@ -101,8 +102,7 @@ MUTANTS = [
 
 # Equivalent mutants, which no suite can kill, and why:
 
-SUITES = ("fxfs-guest-dax fxfs-guest-checks-dax fxfs-guest-checks-dax-delay "
-          "fxfs-guest-pgbench-dax-forked")
+SUITES = "--tag mutants"
 
 
 class Unfound(Exception):

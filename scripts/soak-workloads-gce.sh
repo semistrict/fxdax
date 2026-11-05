@@ -5,7 +5,7 @@
 
 # Soaks the guest suites on disposable GCE hosts, a host for each group of workloads at once, each
 # case many rounds, stopping at its first failing round, whose logs its results keep
-# (scripts/test-e2e.sh):
+# (scripts/test-e2e.sh); a group's cases are those of its suite, `runner list --tag soak-GROUP`:
 #
 #   crash     the VM stopped mid-workload, its process killed
 #   checks    the guest checks, with delays and on a small window
@@ -34,11 +34,12 @@ done
 factor=${FXDAX_SOAK_ROUNDS:-1}
 [[ $factor =~ ^[1-9][0-9]*$ ]] || { echo "FXDAX_SOAK_ROUNDS is a factor" >&2; exit 2; }
 
-# Runs `group` on a host of its own: its rounds, its kernel, its seconds of following, its cases.
+# Runs `group`'s suite on a host of its own: its rounds, its kernel, its seconds of following.
 soak() {
-    local group=$1 rounds=$2 kernel=$3 seconds=$4 cases=$5
-    FXDAX_WORKSPACE_TESTS=0 FXDAX_E2E_ROUNDS=$((rounds * factor)) FXDAX_E2E_TEST=$cases \
-        FXDAX_GUEST_KERNEL_BUILD=$kernel FXDAX_FOLLOW_SECONDS=$seconds \
+    local group=$1 rounds=$2 kernel=$3 seconds=$4
+    FXDAX_WORKSPACE_TESTS=0 FXDAX_E2E_TEST="--tag soak-$group" \
+        FXDAX_E2E_ROUNDS=$((rounds * factor)) FXDAX_GUEST_KERNEL_BUILD=$kernel \
+        FXDAX_FOLLOW_SECONDS=$seconds \
         "$repo/scripts/test-gce.sh" all "fxdax-test-soak-$group-$(date -u +%m%d%H%M%S)" \
         "$results/$group" > "$results/$group.log" 2>&1
 }
@@ -48,23 +49,10 @@ results=$(cd "$results" && pwd)
 pids=()
 for group in "${groups[@]}"; do
     case $group in
-        crash)
-            soak crash 50 release 20 "fxfs-guest-crash fxfs-guest-crash-dax \
-fxfs-guest-crash-dax-killed" &
-            ;;
-        checks)
-            soak checks 10 release 20 "fxfs-guest-checks fxfs-guest-checks-dax \
-fxfs-guest-checks-dax-delay fxfs-guest-checks-dax-small" &
-            ;;
-        sanitized)
-            soak sanitized 10 debug 20 "fxfs-guest-checks fxfs-guest-checks-dax \
-fxfs-guest-faults-dax" &
-            ;;
-        replicas)
-            soak replicas 5 release 600 "fxfs-guest-follow-torture fxfs-guest-follow-torture-dax \
-fxfs-guest-follow-remount-dax fxfs-guest-snapshot-dax fxfs-guest-suspend-dax \
-fxfs-guest-migrate-dax" &
-            ;;
+        crash) soak crash 50 release 20 & ;;
+        checks) soak checks 10 release 20 & ;;
+        sanitized) soak sanitized 10 debug 20 & ;;
+        replicas) soak replicas 5 release 600 & ;;
         shapes)
             FXDAX_SOAK_ROUNDS=$((3 * factor)) "$repo/scripts/soak-gce.sh" "$results/shapes" \
                 > "$results/shapes.log" 2>&1 &

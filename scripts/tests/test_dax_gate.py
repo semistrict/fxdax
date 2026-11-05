@@ -15,16 +15,18 @@ TEST_GCE = SCRIPTS / "test-gce.sh"
 
 
 class DaxGate(unittest.TestCase):
-    def test_suites_are_test_cases_test_gce_takes(self):
-        """The suites the gate runs on its first host, as it hands them to test-gce.sh, are names
-        test-gce.sh takes: a newline among them was refused, and the suites never ran."""
-        suites = subprocess.run(
-            ["bash", "-c", 'eval "$(sed -n "/^suites=(/,/)$/p" "$1")"; printf %s "${suites[*]}"',
-             "bash", GATE], check=True, capture_output=True, text=True).stdout
-        self.assertIn("fxfs-guest-checks-dax-delay", suites.split(" "))
+    def test_suites_are_ones_test_gce_takes(self):
+        """What the gate hands test-gce.sh to run, its suites by tag, test-gce.sh takes: a newline
+        among the cases it named once was refused, and the suites never ran."""
+        given = re.findall(r'FXDAX_E2E_TEST=("[^"]*"|\S+)', GATE.read_text())
+        self.assertEqual([selection.strip('"') for selection in given],
+                         ["--tag dax-gate", "fxfs-guest-pgbench-dax-forked",
+                          "--tag dax-gate-mutants"])
         pattern = re.search(r"\[\[ \$\{FXDAX_E2E_TEST:-\} =~ (.+?) \]\] \|\|", TEST_GCE.read_text())
-        ran = subprocess.run(["bash", "-c", f'[[ $1 =~ {pattern.group(1)} ]]', "bash", suites])
-        self.assertEqual(ran.returncode, 0, f"test-gce.sh refuses {suites!r}")
+        for selection in given:
+            ran = subprocess.run(["bash", "-c", f'[[ $1 =~ {pattern.group(1)} ]]', "bash",
+                                  selection.strip('"')])
+            self.assertEqual(ran.returncode, 0, f"test-gce.sh refuses {selection!r}")
 
 
 if __name__ == "__main__":

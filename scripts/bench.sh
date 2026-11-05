@@ -14,7 +14,8 @@
 #
 # Usage: scripts/bench.sh [ITERATIONS]   (default 3)
 #
-# FXDAX_BENCH_CASES names the cases to run, separated by spaces (default: all),
+# FXDAX_BENCH_CASES selects the cases to run, as scripts/test-e2e.sh's arguments do, by name or
+# by tag, separated by spaces (default: --tag bench, the ext4 and Fxfs cases of one VM each),
 # and FXDAX_BENCH_GROUPS the groups of workloads (default: all; see
 # test_fs_bench.rs).
 #
@@ -25,8 +26,7 @@
 set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 iterations=${1:-3}
-cases=${FXDAX_BENCH_CASES:-bench-fs-ext4-guest-kernel bench-fs-ext4-dax-pmem
-    bench-fs-fxfs-guest bench-fs-fxfs-guest-dax}
+cases=${FXDAX_BENCH_CASES:---tag bench}
 results=${FXDAX_BENCH_RESULTS:-$(mktemp -d "${TMPDIR:-/tmp}/fxdax-bench.XXXXXX")}
 mkdir -p "$results"
 results=$(cd "$results" && pwd)
@@ -42,7 +42,7 @@ status=0 report=0
 # FXDAX_EXTENTD_MEMORY says otherwise: with its default, 1 GiB, a DAX guest's working set
 # doesn't fit, and its faults page in again what was evicted, which measures that (TASK-109.3).
 export FXDAX_EXTENTD_MEMORY=${FXDAX_EXTENTD_MEMORY:-$((8 << 30))}
-# shellcheck disable=SC2086 # The cases are names separated by spaces.
+# shellcheck disable=SC2086 # The cases' selectors are words separated by spaces.
 FXDAX_BENCH_ITERATIONS=$iterations FXDAX_BENCH_RESULTS=$results \
     FXDAX_E2E_RESULTS=$results/logs "$root/scripts/test-e2e.sh" $cases >&2 || status=$?
 echo "Results: $results" >&2

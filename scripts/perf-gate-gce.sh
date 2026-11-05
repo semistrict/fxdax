@@ -36,10 +36,9 @@ if [[ ${1:-} == --bare-metal ]]; then
 fi
 [[ $# == 2 ]] || { echo "Usage: $0 [--bare-metal] INSTANCE RESULTS" >&2; exit 2; }
 instance=$1 results=$2
-single="fxfs-guest-pgbench fxfs-guest-pgbench-dax pgbench-ext4-dax-pmem"
-single+=" fxfs-guest-pgbench-forked fxfs-guest-pgbench-dax-forked"
-single+=" fxfs-guest-bigmap fxfs-guest-bigmap-dax"
-density="fxfs-guest-pgbench-density fxfs-guest-pgbench-dax-density"
+# The suites (`runner list --tag perf-single`, `--tag perf-density`).
+single="--tag perf-single"
+density="--tag perf-density"
 export FXDAX_WORKSPACE_TESTS=0 FXDAX_E2E_ROUNDS=1
 export FXDAX_GUEST_KERNEL_BUILD=${FXDAX_GUEST_KERNEL_BUILD:-release}
 status=0
