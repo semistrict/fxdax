@@ -3,7 +3,7 @@ id: doc-14
 title: 'Local disk as the bucket''s write-ahead log and cache: one storage engine'
 type: specification
 created_date: '2026-11-05 03:13'
-updated_date: '2026-11-05 08:13'
+updated_date: '2026-11-05 13:25'
 ---
 # Local disk as the bucket's write-ahead log and cache: one storage engine
 
@@ -311,23 +311,25 @@ bucket's prefix, at least as late as the last acknowledged), reopening against a
 before the code that changes the protocol: leases with fencing tokens, the fence, dense
 create-only segments linked by `after`, acknowledging after a lease read, hosts crashing with or
 without their WAL and rebasing it after the fence, forks recorded after their acknowledgement,
-failed forks' deletions, points and their restores, placements, and one collector listing first,
-compacting segments and moves. Invariants: no acknowledged commit is lost (`NoAckedLost`); every
-live branch's history is a path of its own commits, each applied once, holding what they made
-(`HistoriesOwn`); no ID is minted twice (`NoIdTwice`); nothing a live branch needs is deleted
-(`NothingNeededGone`); and the simulation's other checks (points unwritten, leases current,
-deletions only by who may, one making per branch, no pass of the collector lost). Ten models as
-designed (`specs/bucket/*.cfg`, each a part of the steps, at 2 hosts, 2 branches, 4 segments
-(compaction's 3), 1 collector, points at 1 host and 3 branches) hold; one mutation per `Rules`
-field and per WAL rule (`specs/bucket/mutations`, named for the rule, `NoFence` for `fence` and so
-on) each gives its counterexample, run by `make check-tla` (`scripts/check-tla.sh`). What it found:
-the WAL's rebase by segments (above), and two holes in the collector, TASK-173 (a child recovered
-by its parent's state is not recovered again by a record of another origin found on relisting)
-and TASK-174 (a deleted root's record dropped, then made again as a fork's child by its parent's
-slow writer), which the spec models fixed; and it reproduces TASK-175 (`mutations/Task175.cfg`: a
-fenced writer's late checkpoint naming moves, the moves compacted and deleted under the live
-writer), which its models as designed leave out (no compaction of moves) until TASK-175's fix is a
-rule.
+failed forks' deletions, points and their restores, placements, and passes of the collector,
+overlapping, listing first, compacting segments and moves. Invariants: no acknowledged commit is
+lost (`NoAckedLost`); every live branch's history is a path of its own commits, each applied once,
+holding what they made (`HistoriesOwn`); no ID is minted twice (`NoIdTwice`); nothing a live
+branch needs is deleted (`NothingNeededGone`); and the simulation's other checks (points
+unwritten, leases current, deletions only by who may, one making per branch, no pass of the
+collector lost). Eleven models as designed (`specs/bucket/*.cfg`, each a part of the steps, at 2
+hosts, 2 branches, 4 segments (compaction's 3), 1 collector, points at 1 host and 3 branches,
+overlapping passes at 2) hold; one mutation per `Rules` field, per WAL rule and per rule the spec
+adds (`specs/bucket/mutations`, named for the rule, `NoFence` for `fence` and so on) each gives its
+counterexample, run by `make check-tla` (`scripts/check-tla.sh`). What it found: the WAL's rebase
+by segments (above), and two holes in the collector, TASK-173 (a child recovered by its parent's
+state is not recovered again by a record of another origin found on relisting) and TASK-174 (a
+deleted root's record dropped, then made again as a fork's child by its parent's slow writer),
+which the spec models fixed; it reproduced TASK-175 (a fenced writer's late checkpoint naming
+moves, the moves compacted and deleted under the live writer), whose trace is now
+`NoWaysFromSeals`, the mutation of its fix's rule; and it found TASK-183 (two deletions of a
+branch at once, the second recording a never-acknowledged fork's child after a pass let go of its
+origin), which it models fixed (`deletionsFence`: a deletion fences the end it recovered to).
 
 **The seam's tests become tests of the bucket protocol:**
 

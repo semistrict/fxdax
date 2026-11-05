@@ -3,7 +3,7 @@ id: doc-7
 title: 'Object storage: how the host keeps branches in S3 and GCS'
 type: specification
 created_date: '2026-10-17 01:31'
-updated_date: '2026-11-05 08:59'
+updated_date: '2026-11-05 11:03'
 ---
 # Object storage: how the host keeps branches in S3 and GCS
 
@@ -557,9 +557,17 @@ rules need a model and tests before code"): `crates/extent_remote`, its `sim` mo
   (`NoPointsTakeNoWriter`), `forks_check_points` (`NoForksCheckPoints`), `forks_pending`
   (`NoForksPending`), `collector_abandons` (`NoCollectorAbandons`), `records_relisted`
   (`NoRecordsRelisted`), `records_owned` (`NoRecordsOwned`), `extent_keys_name_segments`
-  (`NoExtentKeysNameSegments`), and doc-14's `wal_follows` (`NoWalFollows`) and `wal_after_fence`
-  (`NoWalAfterFence`). It found TASK-173 and TASK-174 in the collector, and reproduces TASK-175
-  (`mutations/Task175.cfg`); the spec's header says where it differs from the code.
+  (`NoExtentKeysNameSegments`), `ways_from_seals` (`NoWaysFromSeals`, TASK-175's trace),
+  `moves_taken_first` (`NoMovesTakenFirst`), `leases_by_takings` (`NoLeasesByTakings`),
+  `passes_fenced_stop` (`NoPassesFencedStop`), and doc-14's `wal_follows` (`NoWalFollows`) and
+  `wal_after_fence` (`NoWalAfterFence`); `newest_checkpoint` has a second, of what a fork inherited
+  (`NoNewestCheckpointInherited`, TASK-177), and branch::delete's taking a deletion done by another
+  as done, which is no field of `Rules`, one of its own (`NoDeletionsDoneByOthers`, TASK-178). It
+  found TASK-173 and TASK-174 in the collector, and TASK-183: two deletions of a branch at once,
+  a never-acknowledged fork's segment landing between their recoveries, the second records the
+  fork's child after a pass, reading the branch deleted, let go of its origin; the spec models a
+  deletion fencing the end it recovered to (`deletionsFence`, `NoDeletionsFence`), which the code
+  lacks. The spec's header says where it differs from the code.
 - `SIM_SOAK=<n>` runs the profiles over n times the seeds; `SIM_SEED`, `SIM_SEEDS`, `SIM_PROFILE` and
   `SIM_OFF` run the ignored test `one` to debug a seed.
 - **RustFS** for the S3 backend, in the workspace tests.

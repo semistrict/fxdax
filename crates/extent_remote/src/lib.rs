@@ -136,7 +136,8 @@ pub(crate) struct Rules {
     /// Readers that find a segment missing check that no checkpoint newer than theirs has come;
     /// those that found none of a branch's and find what it inherited lost, that none has come
     /// (TASK-177).
-    /// TLA+: `specs/bucket/mutations/NoNewestCheckpoint.cfg`.
+    /// TLA+: `specs/bucket/mutations/NoNewestCheckpoint.cfg`,
+    /// `specs/bucket/mutations/NoNewestCheckpointInherited.cfg`.
     pub newest_checkpoint: bool,
     /// The collector finds forks in their parents' states, not only by their records.
     /// TLA+: `specs/bucket/mutations/NoForksFromStates.cfg`.
@@ -196,19 +197,23 @@ pub(crate) struct Rules {
     /// holding the branch's lease, read after the checkpoint was: a checkpoint of another writer's,
     /// landing after the writer recovered the branch, or an inherited state, may name the extent
     /// further along its moves than the writer does (TASK-175).
+    /// TLA+: `specs/bucket/mutations/NoWaysFromSeals.cfg`.
     pub ways_from_seals: bool,
     /// A writer names the extents its checkpoint records as moved where they went before it
     /// creates the checkpoint, not once it is created: the collector trusts a checkpoint of the
     /// writer holding the lease to name nothing further along its way than the writer does
     /// (TASK-175).
+    /// TLA+: `specs/bucket/mutations/NoMovesTakenFirst.cfg`.
     pub moves_taken_first: bool,
     /// A writer finds the lease still its by its taking, its holder with its epoch, not by its
     /// epoch alone: a deleted branch's lease removed and taken again restarts its epochs
     /// (TASK-179).
+    /// TLA+: `specs/bucket/mutations/NoLeasesByTakings.cfg`.
     pub leases_by_takings: bool,
     /// A pass of the collector that finds what a live branch needs lost stops, without failing, if
     /// a later pass took the collector's lease from it: what it read before may be older than what
     /// that pass, deleting since, read (TASK-180).
+    /// TLA+: `specs/bucket/mutations/NoPassesFencedStop.cfg`.
     pub passes_fenced_stop: bool,
 }
 

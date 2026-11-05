@@ -12,8 +12,8 @@
 #   doc-13, TASK-164.4). Writable DAX's specs (dax, dax-region, extent-open) went with it
 #   (dead-ends/writable-dax.md);
 # - specs/bucket: branches in object storage with the host's WAL (doc-7, doc-14, TASK-165.2): its
-#   mutations, one per rule of extent_remote's Rules and of the WAL, and Task175, a bug not yet
-#   fixed, which must be found until it is;
+#   mutations, one per rule of extent_remote's Rules (two of newest_checkpoint), of branch::delete
+#   and of the WAL;
 #
 #   check-tla.sh [MODEL...]
 #

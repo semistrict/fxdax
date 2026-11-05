@@ -477,7 +477,7 @@ find the violation of: `specs/dax-cow`'s include a writeback leaving a fault's
 PTE writable, which guest/sim found (`guest/sim`).
 
 ```sh
-make check-tla             # a few minutes, on Java; fetches TLC once
+make check-tla             # about 20 minutes, on Java; fetches TLC once
 ```
 
 ## Benchmarks
