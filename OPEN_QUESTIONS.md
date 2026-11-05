@@ -32,6 +32,12 @@ The soak this was verified with, SIM_SOAK=100 of every holds test (TASK-165.3 ha
 - **A writer's lease is its taking, epoch and holder** (TASK-179). *Instead:* never remove a deleted branch's lease (an object per branch ever deleted), or take a missing lease only for a record read after it.
 - **A pass fenced by a later one stops without failing where it finds something lost** (TASK-180), as it stops before deleting. *Instead:* read the records again before recovering what a relisting found: narrower, and every relisting a round of GETs.
 
+## Each guest check in a process of its own; the overrun suite runs the page cache's checks (TASK-160.30, 2026-11-05)
+
+The guest agent (PID 1) ran every check of fxfs-guest-checks under catch_unwind, so a crash took the VM and the checks after it. Decided: the agent runs itself again per check (`FXDAX_CHECK` names it), in a process group of its own, to its budget; past it the guest's stacks are dumped and the group killed. Then, in one place (`guest::run::Guest::put_back`), it sets fxfs's writable module parameters back to what the guest booted with, thaws the filesystem and mounts it again if a check left it so, saying each, before waiting 10 s at most for the group; a group that outlives that resets the VM, as a hang did before. The host's verifies are now per check, in the table, and run for the checks FXDAX_CHECKS names too, where they ran only for a whole suite. fxfs-guest-checks-overrun now runs two checks made to fail (a SIGBUS, a write into a frozen filesystem) and then the whole page cache suite, about 60 s where it took 4 s, to show the rest pass after them.
+**Instead:** fork per check without exec (unsafe in a process with threads); the overrun suite with a few checks after the failing ones (cheaper, and shows less).
+**Undoing it:** `run_to` back to calling the body in-process; the overrun suite's `Suites::Failing` checks dropped.
+
 ## Local disk as the bucket's WAL and cache: how (TASK-165, doc-14, 2026-11-04)
 
 The user chose the direction (review of 2026-11-04, decision 2); doc-14 decides the rest, where the task left it open:
