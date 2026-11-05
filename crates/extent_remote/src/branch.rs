@@ -114,7 +114,7 @@ pub async fn create_forked(bucket: &impl Bucket, child: u64, owner: u64) -> Resu
     .await
 }
 
-/// `branch`'s record, if it has one: [`Error::Format`] if it is of a newer format than this one,
+/// `branch`'s record, if it has one: [`Error::Format`] if it is of another format than this one,
 /// whose objects this reads none of.
 pub async fn record(bucket: &impl Bucket, branch: u64) -> Result<Option<Record>, Error> {
     match bucket::get(bucket, &layout::record(branch)).await {

@@ -90,8 +90,8 @@ pub enum Error {
     Lost(String),
     #[error("corrupt: {0}")]
     Corrupt(String),
-    /// The branch's record says its objects are of a format newer than this one's, which reads
-    /// none of them (doc-11, rule 3; TASK-141.2).
+    /// The branch's record says its objects are of another format than this one's, newer or
+    /// older, which reads none of them (doc-11, rule 3; TASK-141.2, TASK-165.3).
     #[error(
         "branch {branch:x} is of format {format}, which this reader, of format {ours}, doesn't read",
         ours = layout::FORMAT

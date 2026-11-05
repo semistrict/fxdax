@@ -202,7 +202,7 @@ async fn abandon(bucket: &impl Bucket, records: &mut BTreeMap<u64, Record>) -> R
 
 /// The record of `branch` at the key of `meta`, which a listing gave, if there is one, and the
 /// version read: as `known` has it, if it read it at the version listed; or read now, unless it is
-/// of a newer format ([`Error::Format`]), which stops the pass: what that branch needs, it can't
+/// of another format ([`Error::Format`]), which stops the pass: what that branch needs, it can't
 /// read.
 async fn read_record(
     bucket: &impl Bucket,

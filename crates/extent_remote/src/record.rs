@@ -65,8 +65,8 @@ impl Kind {
 #[serde(into = "Flags", try_from = "Flags")]
 pub struct Record {
     /// The format of the branch's objects ([`FORMAT`]), first, so that a reader of any format
-    /// reads it before the rest, which it can read only if it is of its own or older
-    /// ([`Record::decode`], TASK-141.2).
+    /// reads it before the rest, which it can read only if it is of its own ([`Record::decode`],
+    /// TASK-141.2, TASK-165.3).
     pub format: u32,
     /// The branch's owner: a number its maker chose at random, unique to that making, which every
     /// record of the branch names, whoever writes it: a fork's host, its parent's writers and its
@@ -81,12 +81,12 @@ pub struct Record {
 }
 
 impl Record {
-    /// The record of `branch` that `bytes` encode, unless it is of a format newer than this one,
-    /// which its first bytes say ([`Error::Format`]), or its flags say no [`Kind`]
+    /// The record of `branch` that `bytes` encode, unless it is of another format than this one,
+    /// newer or older, which its first bytes say ([`Error::Format`]), or its flags say no [`Kind`]
     /// ([`Error::Corrupt`]).
     pub fn decode(branch: u64, bytes: &[u8]) -> Result<Self, Error> {
         let format: u32 = decode(bytes.get(..4).unwrap_or(bytes))?;
-        if format > FORMAT {
+        if format != FORMAT {
             return Err(Error::Format { branch, format });
         }
         decode(bytes)
@@ -202,17 +202,21 @@ mod tests {
     use super::*;
     use crate::layout::encode;
 
-    /// A record says its format first: one of a newer format is refused, naming it, whatever
-    /// follows, which this format may not read (TASK-141.2).
+    /// A record says its format first: one of another format, newer or older, is refused, naming
+    /// it, whatever follows, which this format doesn't read (TASK-141.2, TASK-165.3).
     #[test]
-    fn records_of_newer_formats_are_refused() {
+    fn records_of_other_formats_are_refused() {
         let record = Kind::Own.of(7);
         let bytes = encode(&record);
         assert_eq!(&bytes[..4], &FORMAT.to_le_bytes());
         assert_eq!(Record::decode(3, &bytes), Ok(record));
         let mut newer = (FORMAT + 1).to_le_bytes().to_vec();
         newer.extend_from_slice(b"what a later format holds");
-        assert_eq!(Record::decode(3, &newer), Err(Error::Format { branch: 3, format: 2 }));
+        assert_eq!(Record::decode(3, &newer), Err(Error::Format { branch: 3, format: 3 }));
+        // Format 1's record, whose footers and checkpoints this format reads wrong.
+        let mut older = bytes.clone();
+        older[..4].copy_from_slice(&1u32.to_le_bytes());
+        assert_eq!(Record::decode(3, &older), Err(Error::Format { branch: 3, format: 1 }));
         assert!(matches!(Record::decode(3, &bytes[..3]), Err(Error::Corrupt(_))));
     }
 
@@ -270,7 +274,7 @@ mod tests {
             forking: None,
             claimed: false,
         };
-        let corrupt = "a branch's record of no kind: Flags { format: 1, owner: 9, origin: None, \
+        let corrupt = "a branch's record of no kind: Flags { format: 2, owner: 9, origin: None, \
                        forked: true, deleted: false, point: true, forking: None, claimed: false }";
         let refused = Record::decode(2, &encode(&refused));
         assert_eq!(refused, Err(Error::Corrupt(corrupt.to_owned())));
