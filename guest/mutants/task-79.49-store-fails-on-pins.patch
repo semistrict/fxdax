@@ -2,10 +2,14 @@
 # Copyright 2026 The fxdax Authors.
 #
 # Kernel: release
-# Killer: fxfs-guest-checks-dax
+# Killer: none
 #
 # TASK-79.49: a store from user mode fails on a page of a slice pinned, as a fault from the kernel
-# does: a SIGBUS where the pin goes soon (GCE r307, slice_held, which went with writable DAX).
+# does: a SIGBUS where the pin goes soon. Killed by slice_held (GCE r307), a vmsplice pinning a
+# slice's page and a store to it, which went with writable DAX (37c331a6c); no guest check stores to
+# a pinned slice's page since, and fxfs-guest-checks-dax passes with it in, 3 rounds (GCE
+# fxdax-test-r625, 2026-11-05). guest/sim has no pins (no GUP). A blind spot: TASK-149.31, a check
+# that does, which would name its killer here.
 
 --- a/guest/linux/fs/fxfs/dax.c
 +++ b/guest/linux/fs/fxfs/dax.c

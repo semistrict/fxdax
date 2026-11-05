@@ -2,10 +2,15 @@
 # Copyright 2026 The fxdax Authors.
 #
 # Kernel: release
-# Killer: fxfs-guest-checks-dax-small window_held_killed
+# Killer: none
 #
 # TASK-79.49: a fault with no room looks for none of its signals: a splice holding the window
-# can't be killed. window_held_killed: the process still runs (GCE r307).
+# couldn't be killed, window_held_killed's process still running (GCE r307). Equivalent since a
+# fault's waits for room are bounded (FXFS_DAX_NO_ROOM_WAITS) and killable (fxfs_dax_wait_released's
+# wait_event_killable_timeout): killed, each wait returns at once, and the fault fails after its
+# 3,000 rounds, its process dying all the same. fxfs-guest-checks-dax-small passes with it in,
+# window_held_killed alone in 3 rounds and every check of it once (GCE fxdax-test-r625, 2026-11-05),
+# as the DAX gate's suites did at 10e0d6749.
 
 --- a/guest/linux/fs/fxfs/dax.c
 +++ b/guest/linux/fs/fxfs/dax.c

@@ -1,15 +1,17 @@
 # SPDX-License-Identifier: GPL-2.0
 # Copyright 2026 The fxdax Authors.
 #
-# Kernel: release
-# Killer: fxfs-guest-checks-dax append_stopped_short_in_a_page
+# Kernel: sim
+# Killer: none
 #
 # TASK-150.9: a DAX file's change of size has Fxfs zero its last block past the end by moving it
-# (FXFS_SET_KEEP_TAIL dropped), from under the window, which goes on mapping it:
-# append_stopped_short_in_a_page reads the moved block's zeros (GCE fxdax-test-t18-ac). guest/sim's
-# model of Fxfs moves the block so too (zero_tail), but no run of it fails with this in, neither its
-# append_stopped_short_in_a_page scenario nor 300 seeds of interleave and failures (2026-11-05): its
-# blind spot, TASK-184.
+# (FXFS_SET_KEEP_TAIL dropped), from under the window, which goes on mapping it. Killed by neither
+# the simulator nor a real kernel since copying on write: fxfs-guest-checks-dax's
+# append_stopped_short_in_a_page killed it before (GCE fxdax-test-t18-ac, 2026-11-03), and passes
+# with it in now, alone in 3 rounds (GCE fxdax-test-r625, 2026-11-05) and among the suite's every
+# check; guest/sim's model of Fxfs moves the block so too (zero_tail), and none of its one-run tests
+# or scenarios, nor 300 seeds of interleave and failures, fails with it in. A blind spot, not an
+# equivalent: TASK-149.30, which is to have the simulator kill it.
 
 --- a/guest/linux/fs/fxfs/data.c
 +++ b/guest/linux/fs/fxfs/data.c
