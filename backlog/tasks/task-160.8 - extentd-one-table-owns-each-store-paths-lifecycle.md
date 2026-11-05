@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-03 13:08'
-updated_date: '2026-11-05 04:23'
+updated_date: '2026-11-05 05:25'
 labels:
   - structure
 dependencies: []
@@ -60,4 +60,12 @@ Done on branch task-160-8 (9e5415bc6 refactor, c9a287385 test, 8462b2145 OPEN_QU
 - Found, not fixed (docs/reviews/2026-10-21-main.md): stores::retire cuts the followers before it marks the store retired, so a follower can slip in between (swap the order). sync and stat don't look again for the store open under their hold, so they can open a second instance and get EBUSY after the flock wait (use hold.instance()). Short-lived Arcs taken for metrics or listing can make hold_alone return EBUSY.
 
 Update after rerunning on Linux, once disk space was back: guests_forks_failing_at_each_step_harm_nothing alone failed 2 of 5 runs on the base commit 9f81f6018 and 1 of 5 on this branch, each time at remote::gather in the same way. The flake predates this branch, isn't caused by it, and is TASK-157's. Linux nextest -p fxdax is clean apart from TASK-157's flake and the seven environment-only failures (eu-stack x3, grants ENOENT x3, build stamp).
+
+Review fixes (2026-11-05), each committed separately on task-160-8:
+- 8f425af51: Hold::open now refuses with EBUSY, and Hold::keep gives the point back, when something is already open. They used to replace it silently. The daemon still forks a point it was refused, unkept, and logs it. One test each.
+- d59100d43: the connection's store is in a OnceLock again, read without a lock on every request. Phase is Unopened | Opening | Writing(Arc<Hold>) | Following. Connection::drop takes poisoned locks anyway. finish_connection retires the store without holding the phase lock.
+- b08254458, a13527ed9: in the Shuttle model the writer's hold lives in Conn and is released by its last drop. Forks hold a clone of the kept point, and closing a point waits for them. The runs reach a claim waiting for a writer whose connection is gone, and a close waiting for a fork. The model found a real case: with one_holder off, a claim dropped the connection it passed while holding the table's lock, re-entering the lock and aborting. That connection is now dropped outside the lock too.
+- 04b87cfb6 (refactor) and 9223cbd3f (fix): bug in stores::retire, which cut the followers off before marking the store retired. How it was found: the 2026-10-21 review. Blind spot: the model never cut followers, and the ordering lived in stores.rs, outside the model. Test: the model's retire now cuts as production does, and both followers check that a follower of a retired store was cut. It went red ('a follower of a store its writer retired wasn't cut off') with the cut first, and red again with only the mark moved first. The cause is a follower that looked the store up before the mark and made its view after the cut. Fix: mark before cutting, and StoreTable::follow looks again after making the follower (extentd's stores::followed uses it). Rules marks_before_cutting and followers_look_again are each shown needed. Looking around: the rest of the review's finding (sync/stat not looking again under their hold, and short-lived Arcs making hold_alone return EBUSY) is still open.
+- Optional item skipped: opens_race_the_exit_of_the_vm_process_writing_their_store runs once, and whether take-over or retired refusal happens there depends on scheduling; the Shuttle runs assert they reach both.
+- Tests: macOS workspace+shuttle EXIT=0 (2059/2059, fxdax shuttle 32/32). Linux in Docker: clippy disallowed_methods clean, shuttle 55/55. nextest -p fxdax: 453/462. Seven failures are environment-only (eu-stack x3, grants ENOENT x3, build stamp). Two are TASK-157's load flakes: guests_forks_failing_at_each_step_harm_nothing, and windows_share_bases_pages, which passed alone 5/5 and lives in extents.rs, which this branch doesn't change.
 <!-- SECTION:NOTES:END -->
