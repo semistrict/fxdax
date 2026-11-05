@@ -26,6 +26,7 @@ lockdep and KCSAN, or kasan), each's own otherwise; the other FXDAX_* settings r
 scripts/test-gce.sh says.
 """
 
+import importlib.util
 import os
 import subprocess
 import sys
@@ -33,6 +34,9 @@ import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+_spec = importlib.util.spec_from_file_location("guest_results", ROOT / "scripts" / "guest_results.py")
+guest_results = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(guest_results)
 DAX = "guest/linux/fs/fxfs/dax.c"
 SUPER = "guest/linux/fs/fxfs/super.c"
 DATA = "guest/linux/fs/fxfs/data.c"
@@ -158,22 +162,19 @@ def run(host, zone, results, name, edits, build):
             log = open(Path(results) / f"{name}.log", "w")
             ran = subprocess.run([tree / "scripts/test-gce.sh", "run", host, out], env=env,
                                  stdout=log, stderr=subprocess.STDOUT, cwd=tree)
-            # scripts/test-e2e.sh says a round failed in the guest tests' log, e2e.log.
-            logs = [out / "remote.log", out / "e2e.log"]
-            said = "".join(log.read_text(errors="replace") for log in logs if log.exists())
-            return fate(ran.returncode, said)
+            return fate(ran.returncode, guest_results.load(out / "e2e"))
         finally:
             subprocess.run(["git", "-C", ROOT, "worktree", "remove", "--force", tree], check=True)
 
 
-def fate(status, logs):
-    """A mutant's fate, from its run's exit status and the host's logs: killed only if a suite
-    failed a round (scripts/test-e2e.sh says so, in e2e.log); a run that failed otherwise, as a
-    build that doesn't compile or a host lost, is BROKEN, and says nothing of the suites
-    (TASK-119.8)."""
+def fate(status, summary):
+    """A mutant's fate, from its run's exit status and its guest tests' summary
+    (scripts/guest_results.py), None if they never started: killed only if a suite failed a round,
+    or ran out of time; a run that failed otherwise, as a build that doesn't compile or a host lost,
+    is BROKEN, and says nothing of the suites (TASK-119.8, TASK-160.31)."""
     if status == 0:
         return "MISSED"
-    return "killed" if ": failed in round " in logs else "BROKEN"
+    return "killed" if summary and summary["failed"] else "BROKEN"
 
 
 def main():

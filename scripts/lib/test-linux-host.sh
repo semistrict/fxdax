@@ -92,9 +92,16 @@ sysctl -q -w kernel.core_pattern="$cores/core.%p"
 ulimit -c unlimited
 echo 0x11 > /proc/self/coredump_filter
 echo "== guest tests" >&2
+# With FXDAX_RESULTS_BUCKET, a prefix of a bucket the run's results go to as each case ends, as they
+# are here (scripts/guest_results.py), by gcloud, as the host's service account.
+if [[ -n ${FXDAX_RESULTS_BUCKET:-} ]]; then
+    command -v gcloud > /dev/null || snap install google-cloud-cli --classic > /dev/null ||
+        echo "no gcloud: the guest tests' results stay here alone" >&2
+fi
 e2e_status=0
-FXDAX_E2E_RESULTS="$results/e2e" "$repo/scripts/test-e2e.sh" "$@" \
-    > "$results/e2e.log" 2>&1 || e2e_status=$?
+FXDAX_E2E_RESULTS="$results/e2e" \
+    FXDAX_RESULTS_BUCKET="${FXDAX_RESULTS_BUCKET:+${FXDAX_RESULTS_BUCKET%/}/e2e}" \
+    "$repo/scripts/test-e2e.sh" "$@" > "$results/e2e.log" 2>&1 || e2e_status=$?
 echo "guest tests: exit $e2e_status" >&2
 for core in "$cores"/core.*; do
     [[ -f $core ]] || continue

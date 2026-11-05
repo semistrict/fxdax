@@ -31,13 +31,14 @@ class Mutants(unittest.TestCase):
         self.assertEqual(changed, [True] * len(changed))
 
     def test_fates(self):
-        """A run that passed missed its mutant; one whose suites failed a round, a single one
-        too, killed it; one that failed otherwise, as a build that doesn't compile, is broken."""
+        """A run that passed missed its mutant; one whose suites failed a round, or ran out of
+        time in one, as its summary says, killed it; one that failed otherwise, as a build that
+        doesn't compile, its guest tests never started, or a host lost, is broken."""
         fate = guest_mutants.fate
-        self.assertEqual(fate(0, "fxfs-guest-checks-dax: 2 rounds passed"), "MISSED")
-        self.assertEqual(fate(1, "fxfs-guest-checks-dax: failed in round 2 of 3: see x"), "killed")
-        self.assertEqual(fate(1, "fxfs-guest-checks-dax: failed in round 1 of 1: see x"), "killed")
-        self.assertEqual(fate(1, "make: *** [fs/fxfs/dax.o] Error 1"), "BROKEN")
+        self.assertEqual(fate(0, {"failed": []}), "MISSED")
+        self.assertEqual(fate(1, {"failed": ["fxfs-guest-checks-dax"]}), "killed")
+        self.assertEqual(fate(1, {"failed": []}), "BROKEN")
+        self.assertEqual(fate(1, None), "BROKEN")
 
 
 if __name__ == "__main__":

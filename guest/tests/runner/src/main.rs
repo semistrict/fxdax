@@ -5,6 +5,7 @@
 use anyhow::Context;
 use clap::Parser;
 use nix::sys::resource::{Resource, getrlimit, setrlimit};
+use std::collections::BTreeMap;
 use std::env;
 use std::fs::{self, File};
 use std::io::Write;
@@ -18,6 +19,41 @@ struct TestResult {
     name: String,
     outcome: TestOutcome,
     log_path: Option<PathBuf>,
+    /// fxdax: what the test ran, its outcome as data: what it took, the checks it failed, and
+    /// what it chose that replays it (TASK-160.31). None if it didn't run.
+    ran: Option<Ran>,
+}
+
+/// fxdax: what a test that ran says of itself besides its outcome.
+struct Ran {
+    /// How long it took, and its limit.
+    took: std::time::Duration,
+    limit: std::time::Duration,
+    /// The checks its guest said failed (`failed_checks`).
+    failed_checks: Vec<String>,
+    /// What it chose that a replay needs, as the knobs that choose it: FXDAX_SEED, of a test that
+    /// keeps its seed in its directory's file `seed` (fxfs-guest-checks', fxfs-guest-script's).
+    chosen: BTreeMap<String, String>,
+    /// What a test that ran out of time had to add (`Test::timed_out`).
+    said: Option<String>,
+}
+
+/// fxdax: the checks a test's guest said failed, as the checks suites' guest says them as it ends,
+/// a line `FAILED: a, b`, or as one outruns its budget, `FAILED: a, still running after …`: the
+/// names of checks, identifiers, the rest of such a line left out.
+fn failed_checks(stdout: &str) -> Vec<String> {
+    let identifier = |word: &&str| {
+        !word.is_empty()
+            && word.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+    };
+    let lines = stdout.lines().filter_map(|line| line.strip_prefix("FAILED: "));
+    lines.flat_map(|names| names.split(", ").filter(identifier)).map(str::to_owned).collect()
+}
+
+/// fxdax: what a test chose that a replay needs, from what it left in its directory `dir`.
+fn chosen(dir: &Path) -> BTreeMap<String, String> {
+    let seed = fs::read_to_string(dir.join("seed")).ok();
+    seed.map(|seed| ("FXDAX_SEED".to_owned(), seed.trim().to_owned())).into_iter().collect()
 }
 
 fn get_test(name: &str) -> anyhow::Result<Box<dyn Test>> {
@@ -100,6 +136,7 @@ fn run_single_test(
             name: test_case.name.to_string(),
             outcome: TestOutcome::Skip(reason),
             log_path: None,
+            ran: None,
         });
     }
 
@@ -117,6 +154,7 @@ fn run_single_test(
                 name: test_case.name.to_string(),
                 outcome: TestOutcome::Skip("rootfs image build failed"),
                 log_path: None,
+                ran: None,
             });
         }
     } else {
@@ -207,13 +245,22 @@ fn run_single_test(
                 let test = get_test(&test_name).unwrap();
                 test.timed_out(TestSetup { test_case: test_name, tmp_dir: test_dir_clone })
             });
-            if let Ok(Some(said)) = said {
+            let said = said.ok().flatten();
+            if let Some(said) = &said {
                 eprintln!("{said}");
             }
+            let ran = Ran {
+                took: began.elapsed(),
+                limit: timeout,
+                failed_checks: Vec::new(),
+                chosen: chosen(&test_dir),
+                said,
+            };
             return Ok(TestResult {
                 name: test_case.name.to_string(),
                 outcome: TestOutcome::Timeout,
                 log_path: Some(log_path),
+                ran: Some(ran),
             });
         }
         std::thread::sleep(std::time::Duration::from_millis(100));
@@ -221,8 +268,10 @@ fn run_single_test(
 
     // fxdax: how long it took of its limit, which the verdict says: a test near its limit shows
     // before it times out (TASK-168).
-    let took = format!("{} s of {} s", began.elapsed().as_secs(), timeout.as_secs());
+    let elapsed = began.elapsed();
+    let took = format!("{} s of {} s", elapsed.as_secs(), timeout.as_secs());
     let stdout = fs::read(&stdout_path).unwrap_or_default();
+    let said_failed = failed_checks(&String::from_utf8_lossy(&stdout));
 
     let test_name = test_case.name.to_string();
     let checks_console = get_test(&test_name).unwrap().checks_console();
@@ -256,6 +305,16 @@ fn run_single_test(
     // Runs after check() regardless of outcome, so leaked processes are
     // cleaned up even if the test crashed.
     kill_cleanup_pids(&test_dir);
+    // fxdax: before a test that passed has its directory removed. The checks it failed only if it
+    // failed: an overrun run passes on its check's failing (TASK-168).
+    let failed = if matches!(outcome, TestOutcome::Fail(_)) { said_failed } else { Vec::new() };
+    let ran = Ran {
+        took: elapsed,
+        limit: timeout,
+        failed_checks: failed,
+        chosen: chosen(&test_dir),
+        said: None,
+    };
 
     match &outcome {
         TestOutcome::Pass => {
@@ -283,7 +342,12 @@ fn run_single_test(
         }
     }
 
-    Ok(TestResult { name: test_case.name.to_string(), outcome, log_path: Some(log_path) })
+    Ok(TestResult {
+        name: test_case.name.to_string(),
+        outcome,
+        log_path: Some(log_path),
+        ran: Some(ran),
+    })
 }
 
 /// fxdax: saves, before a test that hung is killed, the stacks of every thread of its processes,
@@ -409,11 +473,74 @@ fn write_github_summary(
     Ok(())
 }
 
+/// fxdax: where `runner test` writes its case's outcome as data, and of which round of which run
+/// (TASK-160.31).
+struct Record {
+    outcome: PathBuf,
+    /// scripts/guest_results.py's run.json: its commit, its knobs and its rounds.
+    run: Option<PathBuf>,
+    round: u32,
+}
+
+/// fxdax: `result`'s outcome as data, in round `round` of the run `run` says (`Record::run`), with
+/// the knobs that replay it, those of the run and those the case chose, and the command that does.
+fn outcome_json(result: &TestResult, run: &serde_json::Value, round: u32) -> serde_json::Value {
+    let ran = result.ran.as_ref();
+    let (outcome, reason) = match &result.outcome {
+        TestOutcome::Pass => ("pass", None),
+        TestOutcome::Fail(reason) => ("fail", Some(reason.clone())),
+        TestOutcome::Timeout => ("timeout", ran.and_then(|ran| ran.said.clone())),
+        TestOutcome::Skip(reason) => ("skip", Some(reason.to_string())),
+        TestOutcome::Report(_) => ("report", None),
+    };
+    let given = run["knobs"].as_object().into_iter().flatten();
+    let mut knobs: BTreeMap<String, String> = given
+        .filter_map(|(name, value)| Some((name.clone(), value.as_str()?.to_owned())))
+        .collect();
+    knobs.extend(ran.into_iter().flat_map(|ran| ran.chosen.clone()));
+    serde_json::json!({
+        "case": result.name,
+        "round": round,
+        "rounds": run["rounds"].as_u64().unwrap_or(1),
+        "outcome": outcome,
+        "reason": reason,
+        "failed_checks": ran.map(|ran| ran.failed_checks.clone()).unwrap_or_default(),
+        "took_secs": ran.map(|ran| ran.took.as_secs_f64()),
+        "limit_secs": ran.map(|ran| ran.limit.as_secs()),
+        "commit": run["commit"],
+        "replay": replay(&result.name, &knobs),
+        "knobs": knobs,
+    })
+}
+
+/// fxdax: the command that runs `case` again on a GCE host as it ran, its knobs `knobs`.
+fn replay(case: &str, knobs: &BTreeMap<String, String>) -> String {
+    let mut words = vec!["FXDAX_WORKSPACE_TESTS=0".to_owned(), format!("FXDAX_E2E_TEST={case}")];
+    let others = knobs
+        .iter()
+        .filter(|(name, _)| !["FXDAX_WORKSPACE_TESTS", "FXDAX_E2E_TEST"].contains(&name.as_str()));
+    words.extend(others.map(|(name, value)| format!("{name}={}", shell_word(value))));
+    words.push("scripts/test-gce.sh all".to_owned());
+    words.join(" ")
+}
+
+/// fxdax: `value` as a shell reads it back: as it is if it holds nothing a shell treats specially,
+/// in single quotes otherwise.
+fn shell_word(value: &str) -> String {
+    let plain = |b: u8| b.is_ascii_alphanumeric() || b"_./:=,@%+-".contains(&b);
+    if !value.is_empty() && value.bytes().all(plain) {
+        value.to_owned()
+    } else {
+        format!("'{}'", value.replace('\'', "'\\''"))
+    }
+}
+
 fn run_tests(
     test_case: &str,
     base_dir: Option<PathBuf>,
     keep_all: bool,
     github_summary: bool,
+    record: Option<Record>,
 ) -> anyhow::Result<()> {
     // Create the base directory - either use provided path or create a temp one
     let base_dir = match base_dir {
@@ -438,11 +565,28 @@ fn run_tests(
     if tests_to_run.is_empty() {
         anyhow::bail!("No such test: {test_case}");
     }
+    anyhow::ensure!(
+        record.is_none() || tests_to_run.len() == 1,
+        "--outcome is a single case's: name it"
+    );
 
     let max_name_len = tests_to_run.iter().map(|t| t.name.len()).max().unwrap_or(0);
 
     for tc in &tests_to_run {
         results.push(run_single_test(tc, &base_dir, keep_all, max_name_len).context(tc.name)?);
+    }
+    if let (Some(record), [result]) = (&record, &results[..]) {
+        let run = match &record.run {
+            Some(path) => {
+                serde_json::from_slice(&fs::read(path).with_context(|| path.display().to_string())?)
+                    .with_context(|| path.display().to_string())?
+            }
+            None => serde_json::Value::Null,
+        };
+        let mut outcome = serde_json::to_vec_pretty(&outcome_json(result, &run, record.round))?;
+        outcome.push(b'\n');
+        fs::write(&record.outcome, outcome)
+            .with_context(|| record.outcome.display().to_string())?;
     }
 
     let num_pass = results.iter().filter(|r| matches!(r.outcome, TestOutcome::Pass)).count();
@@ -504,6 +648,16 @@ enum CliCommand {
         /// Write test results to GitHub Actions job summary ($GITHUB_STEP_SUMMARY)
         #[arg(long)]
         github_summary: bool,
+        /// fxdax: write the case's outcome, as JSON, to this file
+        #[arg(long)]
+        outcome: Option<PathBuf>,
+        /// fxdax: the run the case is of, its commit, knobs and rounds (a run.json of
+        /// scripts/guest_results.py's), which its outcome records
+        #[arg(long, requires = "outcome")]
+        run: Option<PathBuf>,
+        /// fxdax: the round of the run it is, which its outcome records
+        #[arg(long, default_value_t = 1, requires = "outcome")]
+        round: u32,
     },
     StartVm {
         #[arg(long)]
@@ -546,6 +700,9 @@ impl Default for CliCommand {
             base_dir: None,
             keep_all: false,
             github_summary: false,
+            outcome: None,
+            run: None,
+            round: 1,
         }
     }
 }
@@ -563,8 +720,109 @@ fn main() -> anyhow::Result<()> {
     match command {
         CliCommand::StartVm { test_case, tmp_dir } => start_vm(TestSetup { test_case, tmp_dir }),
         CliCommand::List { tags, names } => list(&names, &tags),
-        CliCommand::Test { test_case, base_dir, keep_all, github_summary } => {
-            run_tests(&test_case, base_dir, keep_all, github_summary)
+        CliCommand::Test { test_case, base_dir, keep_all, github_summary, outcome, run, round } => {
+            let record = outcome.map(|outcome| Record { outcome, run, round });
+            run_tests(&test_case, base_dir, keep_all, github_summary, record)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// fxdax: a checks suite's guest's failures as it says them, and nothing else on its lines.
+    #[test]
+    fn failed_checks_are_those_the_guest_names() {
+        let stdout = "OK base\nFAILED: sparse, acls\nFAILED: random_ops, still running after its \
+            budget of 1.50s\nFAILED setxattr\n";
+        assert_eq!(failed_checks(stdout), ["sparse", "acls", "random_ops"]);
+        assert_eq!(failed_checks("OK\n"), Vec::<String>::new());
+    }
+
+    #[test]
+    fn shell_words_read_back_as_they_are() {
+        assert_eq!(shell_word("gs://bucket/prefix"), "gs://bucket/prefix");
+        assert_eq!(shell_word("--tag e2e"), "'--tag e2e'");
+        assert_eq!(shell_word("it's"), "'it'\\''s'");
+        assert_eq!(shell_word(""), "''");
+    }
+
+    /// fxdax: a round's outcome as data: the run's knobs and those the case chose, which its
+    /// replay runs it with, alone, on a GCE host.
+    #[test]
+    fn an_outcome_says_how_to_replay_it() {
+        let ran = Ran {
+            took: std::time::Duration::from_millis(41_500),
+            limit: std::time::Duration::from_secs(180),
+            failed_checks: vec!["sparse".to_owned()],
+            chosen: [("FXDAX_SEED".to_owned(), "77".to_owned())].into(),
+            said: None,
+        };
+        let result = TestResult {
+            name: "fxfs-guest-checks-dax".to_owned(),
+            outcome: TestOutcome::Fail("seed 77: expected exactly \"OK\\n\"".to_owned()),
+            log_path: None,
+            ran: Some(ran),
+        };
+        let run = serde_json::json!({
+            "commit": "abc123",
+            "rounds": 5,
+            "knobs": {
+                "FXDAX_E2E_TEST": "--tag dax-gate",
+                "FXDAX_E2E_ROUNDS": "5",
+                "FXDAX_GUEST_CMDLINE": "fxfs.follow_apply_delay_us=200 quiet",
+                "FXDAX_WORKSPACE_TESTS": "0",
+            },
+        });
+        assert_eq!(
+            outcome_json(&result, &run, 3),
+            serde_json::json!({
+                "case": "fxfs-guest-checks-dax",
+                "round": 3,
+                "rounds": 5,
+                "outcome": "fail",
+                "reason": "seed 77: expected exactly \"OK\\n\"",
+                "failed_checks": ["sparse"],
+                "took_secs": 41.5,
+                "limit_secs": 180,
+                "commit": "abc123",
+                "replay": "FXDAX_WORKSPACE_TESTS=0 FXDAX_E2E_TEST=fxfs-guest-checks-dax \
+                    FXDAX_E2E_ROUNDS=5 FXDAX_GUEST_CMDLINE='fxfs.follow_apply_delay_us=200 quiet' \
+                    FXDAX_SEED=77 scripts/test-gce.sh all",
+                "knobs": {
+                    "FXDAX_E2E_ROUNDS": "5",
+                    "FXDAX_E2E_TEST": "--tag dax-gate",
+                    "FXDAX_GUEST_CMDLINE": "fxfs.follow_apply_delay_us=200 quiet",
+                    "FXDAX_SEED": "77",
+                    "FXDAX_WORKSPACE_TESTS": "0",
+                },
+            })
+        );
+    }
+
+    /// fxdax: a case run without a run's record, by hand, and skipped.
+    #[test]
+    fn an_outcome_of_no_run() {
+        let result = TestResult {
+            name: "runner-deadlock".to_owned(),
+            outcome: TestOutcome::Skip("a deadlock on purpose"),
+            log_path: None,
+            ran: None,
+        };
+        let outcome = outcome_json(&result, &serde_json::Value::Null, 1);
+        assert_eq!(
+            (&outcome["outcome"], &outcome["reason"], &outcome["rounds"], &outcome["commit"]),
+            (
+                &serde_json::json!("skip"),
+                &serde_json::json!("a deadlock on purpose"),
+                &serde_json::json!(1),
+                &serde_json::Value::Null
+            )
+        );
+        assert_eq!(
+            outcome["replay"],
+            "FXDAX_WORKSPACE_TESTS=0 FXDAX_E2E_TEST=runner-deadlock scripts/test-gce.sh all"
+        );
     }
 }

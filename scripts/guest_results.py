@@ -1,0 +1,235 @@
+#!/usr/bin/env python3
+# Copyright 2026 The fxdax Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+"""The guest tests' results as data (TASK-160.31): what scripts/test-e2e.sh's runs write, and what
+the scripts that drive them read in place of grepping logs.
+
+A run's results directory (test-e2e.sh's FXDAX_E2E_RESULTS) holds:
+
+- run.json: the run's commit (scripts/build-commit.sh), its knobs, every FXDAX_* and PJDFSTEST_*
+  variable it was given but those that say where it writes (WHERE), its rounds and its cases;
+- CASE/round-K.json: each round's outcome, as the runner writes it (`runner test --outcome`): pass,
+  fail, timeout, skip or report, why, the checks failed, what it took of its limit, the commit, the
+  knobs, its own among them (FXDAX_SEED), and the command that replays it;
+- summary.json: each case's outcome, its last round's (`unrun` before it starts, `running` between
+  rounds), the cases that failed, and the run's exit status once it ended (null before), rewritten
+  as each round ends.
+
+With FXDAX_RESULTS_BUCKET naming a prefix of a bucket (gs://bucket/prefix), each round's case, the
+summary and, as the run ends, its logs are uploaded there as they are written, so that a host lost
+mid-run keeps its finished cases: run.json, summary.json, cases/CASE.tar.gz (the case's directory,
+as scripts/lib/gce.sh's gce_fetch takes it) and logs.tar.gz (the files beside them). `fetch` gets
+them back.
+
+    guest_results.py start RESULTS ROUNDS CASE...   (test-e2e.sh, before its first case)
+    guest_results.py ended RESULTS CASE             (after each round of a case)
+    guest_results.py finish RESULTS STATUS          (as it exits)
+    guest_results.py report RESULTS                 how each case went; exits 1 unless the run passed
+    guest_results.py fetch PREFIX RESULTS           what a bucket kept of a run
+"""
+
+import json
+import os
+import re
+import subprocess
+import sys
+import tarfile
+import tempfile
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+# The variables that say where a run writes, or where its kernel is, not how it runs: not knobs.
+# FXDAX_GUEST_KERNEL is one only where FXDAX_GUEST_KERNEL_BUILD says how to build it, as
+# scripts/lib/test-linux-host.sh does.
+WHERE = {"FXDAX_E2E_RESULTS", "FXDAX_BENCH_RESULTS", "FXDAX_COVERAGE", "FXDAX_RESULTS_BUCKET"}
+# What a case's directory holds that isn't results: the guests' root filesystems, their images,
+# and jails, as gce_fetch leaves them out.
+NOT_RESULTS = re.compile(r"(^|/)(rootfs|jail)(/|$)|rootfs\.ext4$")
+FAILED = {"fail", "timeout"}
+
+
+def knobs(environment):
+    """The knobs of a run given `environment`."""
+    where = WHERE | ({"FXDAX_GUEST_KERNEL"} if environment.get("FXDAX_GUEST_KERNEL_BUILD") else set())
+    return {name: value for name, value in sorted(environment.items())
+            if name.startswith(("FXDAX_", "PJDFSTEST_")) and name not in where}
+
+
+def write(path, value):
+    """Writes `value` to `path` as JSON, whole or not at all, for readers as it changes."""
+    staged = path.with_name(path.name + ".new")
+    staged.write_text(json.dumps(value, indent=1) + "\n")
+    staged.replace(path)
+
+
+def rounds_of(results, case):
+    """The outcomes of `case`'s rounds, in their order."""
+    files = (results / case).glob("round-*.json")
+    numbered = sorted((int(re.fullmatch(r"round-(\d+)\.json", f.name).group(1)), f) for f in files)
+    return [json.loads(f.read_text()) for _, f in numbered]
+
+
+def case_summary(results, case, rounds):
+    """How `case` went, from its rounds' outcomes."""
+    ran = rounds_of(results, case)
+    if not ran:
+        return {"case": case, "outcome": "unrun", "round": 0, "rounds_passed": 0}
+    last = ran[-1]
+    outcome = last["outcome"]
+    if outcome in ("pass", "report") and last["round"] < rounds:
+        outcome = "running"
+    return {
+        "case": case,
+        "outcome": outcome,
+        "round": last["round"],
+        "rounds_passed": sum(each["outcome"] in ("pass", "report") for each in ran),
+        "failed_checks": last["failed_checks"],
+        "reason": last["reason"],
+        "replay": last["replay"],
+    }
+
+
+def summarize(results, status=None):
+    """Rewrites `results`' summary.json, of its rounds so far, and the exit status `status`."""
+    run = json.loads((results / "run.json").read_text())
+    cases = [case_summary(results, case, run["rounds"]) for case in run["cases"]]
+    summary = {
+        "commit": run["commit"],
+        "rounds": run["rounds"],
+        "status": status,
+        "failed": [each["case"] for each in cases if each["outcome"] in FAILED],
+        "cases": cases,
+        "knobs": run["knobs"],
+    }
+    write(results / "summary.json", summary)
+    return summary
+
+
+def archive(results, paths, into):
+    """Writes to `into` a gzipped tar of `paths`, as relative to `results`, and of what lies under
+    them that is results: no sockets, nor what NOT_RESULTS names."""
+    with tarfile.open(into, mode="w:gz") as tar:
+        for path in paths:
+            for each in [path, *sorted(path.rglob("*"))] if path.is_dir() else [path]:
+                name = str(each.relative_to(results))
+                if NOT_RESULTS.search(name) or not (each.is_file() or each.is_dir()):
+                    continue
+                tar.add(each, arcname=name, recursive=False)
+    return into
+
+
+def upload(results, objects):
+    """Uploads `objects` under FXDAX_RESULTS_BUCKET, if set: each a name there, and the paths of
+    `results` it is, a file of them or an archive of several (`archive`). A failure says so, and
+    the run goes on, its results on its host."""
+    bucket = os.environ.get("FXDAX_RESULTS_BUCKET", "").rstrip("/")
+    if not bucket:
+        return
+    with tempfile.TemporaryDirectory() as staging:
+        for name, paths in objects:
+            if name.endswith(".tar.gz"):
+                file = archive(results, paths, Path(staging) / name.replace("/", "_"))
+            else:
+                [file] = paths
+            done = subprocess.run(["gcloud", "storage", "cp", "--quiet", str(file),
+                                   f"{bucket}/{name}"], capture_output=True, text=True)
+            if done.returncode != 0:
+                print(f"guest_results: uploading {name} to {bucket}: {done.stderr.strip()}",
+                      file=sys.stderr)
+
+
+def start(results, rounds, cases):
+    commit = subprocess.run([ROOT / "scripts" / "build-commit.sh", ROOT], check=True,
+                            capture_output=True, text=True).stdout.strip()
+    results.mkdir(parents=True, exist_ok=True)
+    write(results / "run.json", {"commit": commit, "knobs": knobs(os.environ), "rounds": rounds,
+                                 "cases": cases})
+    summarize(results)
+    upload(results, [("run.json", [results / "run.json"]),
+                     ("summary.json", [results / "summary.json"])])
+
+
+def ended(results, case):
+    summarize(results)
+    upload(results, [(f"cases/{case}.tar.gz", [results / case]),
+                     ("summary.json", [results / "summary.json"])])
+
+
+def finish(results, status):
+    summarize(results, status)
+    logs = [path for path in sorted(results.iterdir()) if path.is_file()]
+    upload(results, [("logs.tar.gz", logs), ("summary.json", [results / "summary.json"])])
+
+
+def fetch(prefix, results):
+    """Gets what the bucket's `prefix` kept of a run into `results`, as the host had it."""
+    results.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory() as staging:
+        subprocess.run(["gcloud", "storage", "cp", "--recursive", "--quiet", prefix.rstrip("/"),
+                        staging], check=True)
+        [kept] = Path(staging).iterdir()
+        for path in sorted(kept.rglob("*")):
+            if path.name.endswith(".tar.gz"):
+                with tarfile.open(path) as tar:
+                    tar.extractall(results, filter="data")
+            elif path.is_file():
+                path.replace(results / path.name)
+
+
+def load(results):
+    """`results`' summary, or None if it has none: its run never started."""
+    path = Path(results) / "summary.json"
+    return json.loads(path.read_text()) if path.exists() else None
+
+
+def report(summary):
+    """How each case of `summary` went, a line each, and a replay's under a failure's."""
+    rounds = summary["rounds"]
+    lines = []
+    for each in summary["cases"]:
+        case, outcome, round_ = each["case"], each["outcome"], each["round"]
+        if outcome in ("pass", "report"):
+            lines.append(f"{case}: passed" + (f" {rounds} rounds" if rounds > 1 else ""))
+        elif outcome in FAILED:
+            failed = "timed out" if outcome == "timeout" else "failed"
+            checks = each["failed_checks"]
+            lines.append(f"{case}: {failed} in round {round_} of {rounds}"
+                         + (f", checks {', '.join(checks)}" if checks else ""))
+            lines.append(f"  replay: {each['replay']}")
+        elif outcome == "skip":
+            lines.append(f"{case}: skipped: {each['reason']}")
+        elif outcome == "running":
+            lines.append(f"{case}: stopped after round {round_} of {rounds}, which passed")
+        else:
+            lines.append(f"{case}: not run")
+    status = summary["status"]
+    lines.append("the run did not finish" if status is None else f"the run ended with {status}")
+    return lines
+
+
+def main(argv):
+    command, args = argv[0] if argv else "", argv[1:]
+    if command == "start" and len(args) >= 3:
+        start(Path(args[0]), int(args[1]), args[2:])
+    elif command == "ended" and len(args) == 2:
+        ended(Path(args[0]), args[1])
+    elif command == "finish" and len(args) == 2:
+        finish(Path(args[0]), int(args[1]))
+    elif command == "report" and len(args) == 1:
+        summary = load(args[0])
+        if summary is None:
+            print(f"{args[0]}: no summary: the guest tests never started")
+            return 1
+        print("\n".join(report(summary)))
+        return 0 if summary["status"] == 0 else 1
+    elif command == "fetch" and len(args) == 2:
+        fetch(args[0], Path(args[1]))
+    else:
+        sys.exit(__doc__)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

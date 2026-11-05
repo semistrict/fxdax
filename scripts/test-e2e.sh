@@ -14,7 +14,9 @@
 # at a case's first failing round, whose logs it keeps, in ROUND-K under the
 # case's, and drops the passing rounds' but for what their guests said, in
 # round-K.log there, which measurements repeated round by round need (pgbench's
-# tps). Firecracker runs under its production seccomp filter (FXDAX_FIRECRACKER_SECCOMP, real by
+# tps). Each round's outcome is kept as data, in round-K.json there, and the run's in summary.json
+# and run.json beside the cases' (scripts/guest_results.py, which says what each holds), uploaded
+# under FXDAX_RESULTS_BUCKET, a prefix of a bucket, if set, as each round ends. Firecracker runs under its production seccomp filter (FXDAX_FIRECRACKER_SECCOMP, real by
 # default; log, or none), and FXDAX_FIRECRACKER_JAIL=1 in its jailer's jail, as an unprivileged
 # user (see below).
 #
@@ -49,6 +51,10 @@ if [[ -n ${LIBCLANG_PATH:-} ]]; then export LIBCLANG_PATH; fi
 runner="$harness/target/debug/runner"
 listed=$("$runner" list "${selectors[@]}")
 mapfile -t tests <<< "$listed"
+rounds=${FXDAX_E2E_ROUNDS:-1}
+[[ $rounds =~ ^[1-9][0-9]*$ ]] || { echo "FXDAX_E2E_ROUNDS is a count" >&2; exit 2; }
+# The run as data, its knobs as it was given them, before this sets any (TASK-160.31).
+"$root/scripts/guest_results.py" start "$results" "$rounds" "${tests[@]}"
 
 # With frame pointers, as every build here has them (.cargo/config.toml), which the bench's perf
 # call graphs walk (FXDAX_BENCH_PERF). With FXDAX_FAILPOINTS, a daemon whose failpoints it sets (FAILPOINTS, the fail crate's): requests
@@ -189,34 +195,31 @@ export FXDAX_EXTENTD="$socket"
 # fxdax: the daemon's binary, for cases that start daemons of their own.
 export FXDAX_EXTENTD_BIN="$extentd_bin"
 
-rounds=${FXDAX_E2E_ROUNDS:-1}
-[[ $rounds =~ ^[1-9][0-9]*$ ]] || { echo "FXDAX_E2E_ROUNDS is a count" >&2; exit 2; }
 status=0
 for test in "${tests[@]}"; do
-    if (( rounds == 1 )); then
-        # fxdax: said as a failed round of several is, which guest-mutants-gce.py reads: a mutant
-        # killed in a single round was taken for a broken run (TASK-119.8).
-        if ! "$runner" test --test-case "$test" --base-dir "$results/$test" \
-            --keep-all; then
-            echo "$test: failed in round 1 of 1: see $results/$test" >&2
-            status=1
-        fi
-        continue
-    fi
     for (( round = 1; round <= rounds; round++ )); do
-        base="$results/$test/round-$round"
-        if ! "$runner" test --test-case "$test" --base-dir "$base" \
-            --keep-all; then
+        # A single round's logs in the case's directory, where scripts/pgbench-gate.py reads them;
+        # each of several rounds' in one of its own.
+        base="$results/$test"
+        (( rounds == 1 )) || base+="/round-$round"
+        passed=1
+        "$runner" test --test-case "$test" --base-dir "$base" --keep-all \
+            --outcome "$results/$test/round-$round.json" --run "$results/run.json" \
+            --round "$round" || passed=0
+        if (( passed && rounds > 1 )); then
+            find "$base" -name log.txt -exec cp {} "$results/$test/round-$round.log" \;
+            rm -r "$base"
+        fi
+        "$root/scripts/guest_results.py" ended "$results" "$test"
+        if (( ! passed )); then
             echo "$test: failed in round $round of $rounds: see $base" >&2
             status=1
             break
         fi
-        find "$base" -name log.txt -exec cp {} "$results/$test/round-$round.log" \;
-        rm -r "$base"
-        if (( round == rounds )); then
-            echo "$test: $rounds rounds passed" >&2
-        fi
     done
+    if (( passed && rounds > 1 )); then
+        echo "$test: $rounds rounds passed" >&2
+    fi
 done
 if [[ $seccomp == log ]]; then
     # The audit records of the system calls the filter would refuse: thread, call, count.
@@ -246,4 +249,5 @@ if ! "$root/scripts/dax-refusals.py" "$results/extentd.log" "${firecracker_logs[
     status=1
 fi
 echo "Logs: $results" >&2
+"$root/scripts/guest_results.py" finish "$results" "$status"
 exit "$status"

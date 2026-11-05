@@ -15,7 +15,9 @@ once by another run, whose maker label is "winner", and which this create then f
 found by its zone, as gcloud's describe and delete find one, and by its name alone in a listing;
 described as JSON, it is its name and zone. scp writes, where it copies to here, an archive of one
 file, fetched, which names what it copied; and keeps what it copies to a host in uploaded/, by its
-path there, its slashes underscores. A call this does not know fails, so that its test does too.
+path there, its slashes underscores. Cloud Storage's copies (`storage cp`, of a file, or with
+--recursive, of a directory into one) go to and from its buckets, kept in $FAKE_GCLOUD/gs, and fail
+if "storage" is failing. A call this does not know fails, so that its test does too.
 
 Usage: python3 fake_gcloud.py ARG...
 """
@@ -44,6 +46,14 @@ def find(instances, call, name, zone):
     return instances[name]
 
 
+def bucket(path):
+    """Where a path of a bucket's, gs://BUCKET/NAME, is kept: $FAKE_GCLOUD/gs/BUCKET/NAME; any
+    other path is this machine's."""
+    if path.startswith("gs://"):
+        return STATE / "gs" / path.removeprefix("gs://")
+    return Path(path)
+
+
 def main(argv):
     words = [arg for arg in argv if not arg.startswith("--")]
     flags = dict(arg[2:].partition("=")[::2] for arg in argv if arg.startswith("--"))
@@ -70,6 +80,15 @@ def main(argv):
             shutil.copyfile(words[2], STATE / "uploaded" / name)
     elif words[:2] == ["storage", "rm"]:
         pass
+    elif words[:2] == ["storage", "cp"]:
+        if "storage" in state.get("failing", []):
+            sys.exit("ERROR: (gcloud.storage.cp) copying failed")
+        source, target = (bucket(word) for word in words[2:4])
+        if "recursive" in flags:
+            shutil.copytree(source, target / source.name)
+        else:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source, target)
     elif command[2:] == ("list",) and command[1] in state.get("failing", []):
         sys.exit(f"ERROR: (gcloud.compute.{command[1]}.list) listing the {command[1]} failed")
     elif command == ("compute", "zones", "list"):

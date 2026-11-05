@@ -32,7 +32,10 @@
 # nextest's arguments for the workspace's, such as a filter. FXDAX_EXTENTD_REMOTE,
 # if set, names a bucket (gs://bucket/prefix) the guest tests' extent daemons
 # keep their stores' branches in, under a prefix of the run's own: the host, made
-# with FXDAX_GCE_STORAGE set, reaches it (scripts/lib/gce.sh). Every other
+# with FXDAX_GCE_STORAGE set, reaches it (scripts/lib/gce.sh). FXDAX_RESULTS_BUCKET, if set,
+# names one (gs://bucket/prefix) the guest tests' results go to as each case ends, under the run's
+# prefix (scripts/guest_results.py), from which they are fetched if the host's are lost: a host
+# killed mid-run keeps its finished cases. Every other
 # FXDAX_* and PJDFSTEST_* variable set here reaches the host too
 # (scripts/lib/gce.sh), such as FXDAX_FOLLOW_SECONDS and FXDAX_PJDFSTEST_TESTS.
 set -euo pipefail
@@ -64,13 +67,21 @@ run() {
     local run status=0
     run=$(gce_run_name)
     gce_push_source "$run"
-    # The run's own prefix of the bucket, if one is named.
-    local remote=
+    # The run's own prefixes of the buckets, if they are named.
+    local remote= kept=
     if [[ -n ${FXDAX_EXTENTD_REMOTE:-} ]]; then remote=${FXDAX_EXTENTD_REMOTE%/}/$run; fi
+    if [[ -n ${FXDAX_RESULTS_BUCKET:-} ]]; then kept=${FXDAX_RESULTS_BUCKET%/}/$run; fi
     # shellcheck disable=SC2086 # The tests' selectors are words separated by spaces.
     gce_remote_detached "$run" "$(gce_host_command "$run" "FXDAX_EXTENTD_REMOTE=$remote" \
-        test-linux-host.sh ${FXDAX_E2E_TEST:-})" > "$results/remote.log" 2>&1 || status=$?
+        "FXDAX_RESULTS_BUCKET=$kept" test-linux-host.sh ${FXDAX_E2E_TEST:-})" \
+        > "$results/remote.log" 2>&1 || status=$?
     gce_fetch "$run" || status=$?
+    # The guest tests' results the host didn't give back, as a host lost mid-run doesn't: what
+    # the bucket kept of them, each case as it ended.
+    if [[ -n $kept && ! -e $results/e2e/summary.json ]]; then
+        echo "The host's results are lost: fetching what $kept kept." >&2
+        "$repo/scripts/guest_results.py" fetch "$kept/e2e" "$results/e2e" || status=$?
+    fi
     # The last lines, which say how the tests went: up to four.
     local lines
     lines=$(wc -l < "$results/remote.log")

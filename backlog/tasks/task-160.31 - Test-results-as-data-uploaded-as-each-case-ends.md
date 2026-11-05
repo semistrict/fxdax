@@ -1,9 +1,11 @@
 ---
 id: TASK-160.31
 title: 'Test results as data, uploaded as each case ends'
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-11-03 13:09'
+updated_date: '2026-11-05 07:59'
 labels:
   - structure
 dependencies: []

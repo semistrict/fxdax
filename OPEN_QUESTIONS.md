@@ -38,6 +38,15 @@ The guest agent (PID 1) ran every check of fxfs-guest-checks under catch_unwind,
 **Instead:** fork per check without exec (unsafe in a process with threads); the overrun suite with a few checks after the failing ones (cheaper, and shows less).
 **Undoing it:** `run_to` back to calling the body in-process; the overrun suite's `Suites::Failing` checks dropped.
 
+## Guest test results as data: names, knobs, replay, bucket (TASK-160.31, 2026-11-05)
+
+Each round's outcome is `CASE/round-K.json` (the runner's `test --outcome`), not `outcome.json`, so that a soak's passing rounds keep theirs beside `round-K.log` once their directories go; the run's `run.json` (commit, knobs, rounds, cases) and `summary.json` sit beside the cases (`scripts/guest_results.py`). Decided where the task left it open:
+- **Knobs** are every `FXDAX_*` and `PJDFSTEST_*` test-e2e.sh is given, but those saying where it writes (`FXDAX_E2E_RESULTS`, `FXDAX_BENCH_RESULTS`, `FXDAX_COVERAGE`, `FXDAX_RESULTS_BUCKET`) and a kernel the host built (`FXDAX_GUEST_KERNEL` beside `FXDAX_GUEST_KERNEL_BUILD`); a case's own is `FXDAX_SEED`, from the `seed` file the checks and script cases already leave in their directory. **Replay** is `FXDAX_WORKSPACE_TESTS=0 FXDAX_E2E_TEST=CASE <knobs> scripts/test-gce.sh all`. *Instead:* each case declaring its knobs through `TestSetup` (touches every case, test_fxfs_guest_checks.rs among them, which TASK-160.30 is rewriting).
+- **Failed checks** are read from the checks guest's `FAILED: a, b` line (and an overrun's `FAILED: a, still …`). TASK-160.30 must keep that line, or give the runner the names another way.
+- **A mutant's fate:** killed if the summary has a case failed or timed out; a run failing otherwise (DAX refusals alone among them, as before) is BROKEN.
+- **Uploads:** `FXDAX_RESULTS_BUCKET` (new; also gives the host the storage scope) gets `run.json`, `summary.json`, `cases/CASE.tar.gz` after each round and `logs.tar.gz` at the end, under the run's prefix; test-gce.sh fetches them when the host gave back no summary. An upload that fails says so in e2e.log and the run goes on. The nightly sets it to `$FXDAX_NIGHTLY_BUCKET/results`.
+**Undoing it:** the formats are guest_results.py's and the runner's `outcome_json`; nothing else writes them.
+
 ## Guest test cases are selected by tags, the nightly runs 50 (TASK-160.29, 2026-11-05)
 
 Every case is tagged with the suites it is in (`Tag`, guest/tests/test_cases/src/lib.rs); scripts pass `--tag SUITE` through `FXDAX_E2E_TEST` (or test-e2e.sh's arguments) and test-e2e.sh asks `runner list`. Each script's old list is now exactly its tag's selection; cases run in registration order, not each list's. Decided:

@@ -69,9 +69,11 @@ if part scripts; then
     "$root/scripts/guest-mutants-gce.py" --check
 fi
 # The guest tests' own tests, the host's half and the guest's, which build on Linux alone: their
-# runner's (guest/tests/test_cases/src/vm.rs, script_vm.rs) and the guest agent's, some of which
-# mount loop devices, as root, with mkfs.ext4 and mkfs.xfs: CI runs this part as root.
+# harness's (guest/tests/test_cases/src/vm.rs, script_vm.rs, the runner's) and the guest agent's,
+# some of which mount loop devices, as root, with mkfs.ext4 and mkfs.xfs: CI runs this part as
+# root.
 if part guest; then
     cargo nextest run --manifest-path "$root/guest/tests/Cargo.toml" -p test_cases --features host
     cargo nextest run --manifest-path "$root/guest/tests/Cargo.toml" -p test_cases --features guest
+    cargo nextest run --manifest-path "$root/guest/tests/Cargo.toml" -p runner
 fi

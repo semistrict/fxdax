@@ -56,14 +56,24 @@ suites_pid=$!
 ) > "$results/host-b.log" 2>&1 &
 host_b_pid=$!
 
-failed=()
-wait "$suites_pid" || failed+=("the suites ($results/suites.log)")
-wait "$host_b_pid" || failed+=("pgbench-dax-forked ($results/pgbench.log)")
-if [[ -f $results/mutants.txt ]] && grep -q '^MISSED' "$results/mutants.txt"; then
-    failed+=("mutants missed: $(grep '^MISSED' "$results/mutants.txt" | cut -d: -f1 | tr '\n' ' ')")
+# What failed: each run's cases, as its summary has them (scripts/guest_results.py).
+failed=0
+if ! wait "$suites_pid"; then
+    echo "dax-gate: FAILED: the suites ($results/suites.log):" >&2
+    scripts/guest_results.py report "$results/suites/e2e" >&2 || true
+    failed=1
 fi
-if (( ${#failed[@]} )); then
-    printf 'dax-gate: FAILED: %s\n' "${failed[@]}" >&2
+if ! wait "$host_b_pid"; then
+    echo "dax-gate: FAILED: host B ($results/host-b.log); pgbench-dax-forked:" >&2
+    scripts/guest_results.py report "$results/pgbench/e2e" >&2 || true
+    failed=1
+fi
+if [[ -f $results/mutants.txt ]] && grep -q '^MISSED' "$results/mutants.txt"; then
+    echo "dax-gate: FAILED: mutants missed: $(grep '^MISSED' "$results/mutants.txt" | cut -d: -f1 |
+        tr '\n' ' ')" >&2
+    failed=1
+fi
+if (( failed )); then
     exit 1
 fi
 git notes --ref=dax-gate add -f -m "passed $(date -u +%FT%TZ): $results" "$commit"

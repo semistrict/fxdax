@@ -2579,6 +2579,7 @@ dependencies = [
  "clap",
  "macros",
  "nix 0.29.0",
+ "serde_json",
  "tempdir",
  "test_cases",
 ]

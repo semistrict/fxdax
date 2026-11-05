@@ -27,9 +27,10 @@
 # DURATION) and results, and passes any of its own creation flags in
 # create_flags.
 #
-# A host has no service account, unless FXDAX_GCE_STORAGE is set: then it has
-# the project's default one, with read and write access to Cloud Storage, for
-# an extent daemon keeping its stores' branches in a bucket (doc-7).
+# A host has no service account, unless FXDAX_GCE_STORAGE or FXDAX_RESULTS_BUCKET
+# is set: then it has the project's default one, with read and write access to
+# Cloud Storage, for an extent daemon keeping its stores' branches in a bucket
+# (doc-7), or the guest tests keeping their results in one (test-gce.sh).
 
 cloud=(gcloud --quiet --project="$project")
 # This run's mark, which the hosts it makes carry as their maker label.
@@ -41,7 +42,7 @@ gce_maker=$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')
 gce_run_name() {
     echo "run-$(date -u +%Y%m%dT%H%M%SZ)-$gce_maker"
 }
-if [[ -n ${FXDAX_GCE_STORAGE:-} ]]; then
+if [[ -n ${FXDAX_GCE_STORAGE:-}${FXDAX_RESULTS_BUCKET:-} ]]; then
     account_flags=(--scopes=storage-rw)
 else
     account_flags=(--no-service-account --no-scopes)

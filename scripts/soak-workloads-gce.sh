@@ -16,7 +16,9 @@
 #
 #   scripts/soak-workloads-gce.sh RESULTS [GROUP...]
 #
-# runs every group, or those named, each in RESULTS/GROUP, and prints how each went. A project's
+# runs every group, or those named, each in RESULTS/GROUP, and prints how each went, and each
+# case of its suite, from its summary (scripts/guest_results.py): its rounds, or the round it
+# failed in, its checks failed, and the command that replays it. A project's
 # CPU quota bounds the hosts it can have at once. FXDAX_SOAK_ROUNDS scales each group's rounds by
 # a factor (1 by default), and every FXDAX_* setting scripts/test-gce.sh takes reaches each host.
 # A host pushes the working tree as its run begins: run from a tree that doesn't change meanwhile.
@@ -67,6 +69,10 @@ for i in "${!groups[@]}"; do
     else
         status=1
         echo "${groups[$i]}: failed, see $results/${groups[$i]}.log"
+    fi
+    # shapes' runs are soak-gce.sh's, each its own.
+    if [[ ${groups[$i]} != shapes ]]; then
+        "$repo/scripts/guest_results.py" report "$results/${groups[$i]}/e2e" | sed 's/^/  /' || true
     fi
 done
 exit "$status"
