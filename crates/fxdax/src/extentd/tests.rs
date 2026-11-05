@@ -4065,6 +4065,123 @@ fn stores_held_through_their_connections_are_let_go_once_they_are() {
     assert_eq!(resizing.join().unwrap(), Err(Errno::ETIMEDOUT));
 }
 
+/// TASK-160.8: `OPEN`s of a store, to write it and to follow it, all at once as the VM process
+/// writing it exits, each tried again on `EBUSY` until it opens the store, or, to write it, another
+/// connection writes it: one writes it, as the first lets it go, holding it until all are done, the
+/// others refused (`EBUSY`); each follower follows it, the first's, a follower's or the next
+/// writer's; all read what the first committed. Once all are gone, nothing holds the store, nor
+/// has it open, and it opens again.
+#[test]
+fn opens_race_the_exit_of_the_vm_process_writing_their_store() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Barrier, RwLock, mpsc};
+    const WRITERS: usize = 4;
+    const FOLLOWERS: usize = 4;
+    host();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("store");
+    let (first, served) = connect(&path, 1 << 24);
+    let extent = ExtentId { branch: first.branch(), sequence: 1 };
+    assert_eq!(write(&first, extent, 0, &pattern(1, BLOCK)), Ok(()));
+    assert_eq!(first.commit(None), Ok(()));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let tried = move |errno: Option<Errno>| {
+        errno != Some(Errno::EBUSY) || std::time::Instant::now() >= deadline
+    };
+    // All at once; those that open the store keep it until all are done: until the test lets go
+    // of `done`.
+    let start = Arc::new(Barrier::new(WRITERS + FOLLOWERS + 1));
+    let done = Arc::new(RwLock::new(()));
+    let all_done = done.write().unwrap();
+    let won = Arc::new(AtomicBool::new(false));
+    let (wrote, writes) = mpsc::channel();
+    let writers: Vec<_> = (0..WRITERS)
+        .map(|_| {
+            let (path, start, done, won, wrote) =
+                (path.clone(), start.clone(), done.clone(), won.clone(), wrote.clone());
+            std::thread::spawn(move || {
+                start.wait();
+                let opened = loop {
+                    let (client, server) = UnixStream::pair().unwrap();
+                    let tenant = default_tenant().unwrap();
+                    let served = std::thread::spawn(move || serve_connection(server, tenant));
+                    match RemoteExtentStore::over(client, &path, Opening::Create(1 << 24)) {
+                        Ok(store) => {
+                            won.store(true, Ordering::SeqCst);
+                            break Ok((store, served));
+                        }
+                        Err(error) => {
+                            served.join().unwrap();
+                            if tried(error.errno()) || won.load(Ordering::SeqCst) {
+                                break Err(error.errno());
+                            }
+                        }
+                    }
+                };
+                match opened {
+                    Ok((store, served)) => {
+                        wrote.send(Ok(read(&store, extent, 0, BLOCK))).unwrap();
+                        drop(done.read().unwrap());
+                        drop(store);
+                        served.join().unwrap();
+                    }
+                    Err(errno) => wrote.send(Err(errno)).unwrap(),
+                }
+            })
+        })
+        .collect();
+    let (followed, follows) = mpsc::channel();
+    let followers: Vec<_> = (0..FOLLOWERS)
+        .map(|_| {
+            let (path, start, done, followed) =
+                (path.clone(), start.clone(), done.clone(), followed.clone());
+            std::thread::spawn(move || {
+                start.wait();
+                let following = loop {
+                    match follow(&path) {
+                        Err(errno) if !tried(errno) => {}
+                        following => break following,
+                    }
+                };
+                match following {
+                    Ok((follower, served)) => {
+                        followed.send(Ok(read(&follower, extent, 0, BLOCK))).unwrap();
+                        drop(done.read().unwrap());
+                        drop(follower);
+                        served.join().unwrap();
+                    }
+                    Err(errno) => followed.send(Err(errno)).unwrap(),
+                }
+            })
+        })
+        .collect();
+    drop((wrote, followed));
+    // Its VM process exits.
+    start.wait();
+    drop(first);
+    served.join().unwrap();
+    // Each says once, the store open or not.
+    let wait = std::time::Duration::from_secs(60);
+    let writes: Vec<_> =
+        (0..WRITERS).map(|_| writes.recv_timeout(wait).expect("a writer said nothing")).collect();
+    let follows: Vec<_> = (0..FOLLOWERS)
+        .map(|_| follows.recv_timeout(wait).expect("a follower said nothing"))
+        .collect();
+    drop(all_done);
+    for thread in writers.into_iter().chain(followers) {
+        thread.join().unwrap();
+    }
+    let (opened, refused): (Vec<_>, Vec<_>) = writes.into_iter().partition(Result::is_ok);
+    assert_eq!(opened, vec![Ok(Ok(pattern(1, BLOCK)))]);
+    assert_eq!(refused, vec![Err(Some(Errno::EBUSY)); WRITERS - 1]);
+    assert_eq!(follows, vec![Ok(Ok(pattern(1, BLOCK))); FOLLOWERS]);
+    assert!(super::stores::table().is_empty(), "the store is held or open once all are gone");
+    let (again, served) = connect(&path, 1 << 24);
+    assert_eq!(read(&again, extent, 0, BLOCK), Ok(pattern(1, BLOCK)));
+    drop(again);
+    served.join().unwrap();
+}
+
 /// TASK-79.16: a VM process that keeps as much stream data in flight as the protocol allows,
 /// whole extents' writes of eight threads, four in flight at once, the others waiting for room
 /// until one is answered, is served on: what a request's payload holds is counted in flight until
