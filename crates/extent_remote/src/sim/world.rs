@@ -22,6 +22,7 @@ use futures::task::LocalSpawnExt as _;
 use rand::rngs::StdRng;
 use rand::{RngExt as _, SeedableRng as _};
 use std::cell::RefCell;
+use std::collections::hash_map::Entry;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::future::Future;
 use std::rc::Rc;
@@ -314,6 +315,10 @@ struct Restore {
     taken: Option<Branch>,
 }
 
+/// What a segment's footer says of the branch's history: the segment it follows, by its number and
+/// epoch, and its commits.
+type Applied = (Option<(u64, u64)>, Vec<u64>);
+
 pub struct World {
     rng: StdRng,
     profile: Profile,
@@ -329,6 +334,9 @@ pub struct World {
     collectors: BTreeMap<u64, AbortHandle>,
     unforks: BTreeMap<u64, Unfork>,
     restores: BTreeMap<u64, Restore>,
+    /// What the footer of each segment the history check read says, by its branch, number and
+    /// epoch, one writer stamping one footer at a place.
+    footers: RefCell<HashMap<(u64, u64, u64), Applied>>,
     next_id: u64,
     /// Whether requests fail.
     faults: bool,
@@ -355,6 +363,7 @@ impl World {
             collectors: BTreeMap::new(),
             unforks: BTreeMap::new(),
             restores: BTreeMap::new(),
+            footers: RefCell::default(),
             next_id: 1,
             faults: true,
             quiescing: false,
@@ -1381,23 +1390,31 @@ impl World {
     /// The commits the segments of the branch `recovered` is since its newest checkpoint make, in
     /// the order recovering it applied them: each applied segment found by the footer of the one
     /// after it, from the last.
-    fn applied(direct: &Direct, recovered: &Recovered) -> Vec<u64> {
+    fn applied(&self, direct: &Direct, recovered: &Recovered) -> Vec<u64> {
         let branch = recovered.state.branch;
-        let mut footers = Vec::new();
+        let mut footers = self.footers.borrow_mut();
+        let mut applied = Vec::new();
         let mut at = recovered.state.last_segment;
         while let Some((seq, epoch)) = at
             && recovered.checkpoint.is_none_or(|checkpoint| seq > checkpoint)
         {
-            let key = crate::layout::segment(branch, seq);
-            let Some(object) = block_on(crate::bucket::get(direct, &key)) else { break };
-            let Ok(footer) = crate::layout::Segment::footer(&object.bytes) else { break };
-            if footer.epoch != epoch {
-                break;
-            }
-            at = footer.after;
-            footers.push(footer);
+            let (after, commits) = match footers.entry((branch, seq, epoch)) {
+                Entry::Occupied(known) => known.into_mut(),
+                Entry::Vacant(unknown) => {
+                    let key = crate::layout::segment(branch, seq);
+                    let Some(object) = block_on(crate::bucket::get(direct, &key)) else { break };
+                    let Ok(footer) = crate::layout::Segment::footer(&object.bytes) else { break };
+                    if footer.epoch != epoch {
+                        break;
+                    }
+                    unknown.insert((footer.after, footer.contents.commits))
+                }
+            };
+            applied.push(commits.clone());
+            at = *after;
         }
-        footers.iter().rev().flat_map(|footer| footer.contents.commits.iter().copied()).collect()
+        applied.reverse();
+        applied.concat()
     }
 
     /// Whether `ancestor` is `head` or before it.
@@ -1505,7 +1522,7 @@ impl World {
             // Its segments since its newest checkpoint apply each commit after its parent: each
             // once, in order, none another writer's history put after it.
             let mut before = recovered.checkpoint.is_none().then_some(branch.base);
-            for commit in Self::applied(&direct, &recovered) {
+            for commit in self.applied(&direct, &recovered) {
                 let parent = self.commits[&commit].parent;
                 if let Some(before) = before.filter(|&before| before != parent) {
                     violations.push(format!(
