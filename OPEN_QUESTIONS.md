@@ -1,5 +1,11 @@
 # Open questions
 
+## gcloud needs a fresh login; fxdax-test-r632 is still up (2026-11-05)
+
+gcloud's tokens expired mid-session ("Reauthentication failed. cannot prompt during non-interactive execution"), which only `gcloud auth login` fixes. Until then no GCE run, and `fxdax-test-r632` (us-east4-a, the perf gate's host) couldn't be deleted: it deletes itself 8 h after it was made, about 2026-11-05 23:15 UTC.
+**Recommended:** `gcloud auth login`; then `scripts/test-gce.sh delete fxdax-test-r632` if it's still there.
+**Until then:** unverified: dropping pgbench-ext4-dax-pmem's 8 GB image from the results (backed out, TASK-164.5's notes).
+
 ## The nightly needs GCP credentials in GitHub (2026-11-02)
 
 `.github/workflows/nightly.yml` never ran: its YAML didn't parse (fixed in a1e079306). Now it parses, it needs the repository's `GCP_WORKLOAD_IDENTITY_PROVIDER` and `GCP_SERVICE_ACCOUNT` secrets and its `FXDAX_GCE_PROJECT` and `FXDAX_NIGHTLY_BUCKET` variables, none of which is set. Granting GitHub access to the GCP project is yours.
@@ -47,6 +53,10 @@ data_object_handle.rs and volume.rs keep upstream's shape; fxdax's additions are
 FxFilesystem's options own read-only. fxfs-posix's `Fxfs::new` makes a volume read-only if its mount asks or its filesystem is; the guest's `Filesystem` reads the filesystem's options rather than keeping a copy; its `flush_volume` checks the volume's, which refuses a flush of a volume mounted -o ro on a writable filesystem (it checked the filesystem's only). The guest's `ExtentDevice` writes nothing only as `Filesystem::open` says (`writing_nothing`), no longer also from DEVICE_READ_ONLY at `find`; `read_only()` is `follows()`, what that flag says.
 **Instead:** derive the filesystem's read-only from its device (`Device::is_read_only`) in `FxFilesystemBuilder::open`, which changes upstream code.
 **Undoing it:** the guest's field back, and `Fxfs::new` taking its argument as it is.
+
+## The perf gate's thresholds: doc-13's for tps, r632's for the rest (TASK-164.5, 2026-11-05)
+
+Set from the first complete run, GCE r632: `density-memory` 0.9 and `density-memory-mib` 2560 (measured 0.862, 2,361), `bigmap-read` 4.0 (5.76), `bigmap-written-memory` 1.5 (1.29), `bigmap-guest-cache` 0.05 (0.0); `dax` 0.95 and `forked-dax` 0.9 stay doc-13's expectations, so the gate fails on `forked-dax` (0.573) until TASK-164.6 closes the gap. *Instead:* `forked-dax` from the measurement too, which would pass a 43% loss doc-13 says shouldn't be; or the density gates at 0.8 and 768 MiB, which DAX is far from (it saves 14% a VM). *Undoing it:* DEFAULTS in scripts/pgbench-gate.py.
 
 ## The daemon tells a VM process the host's vm.max_map_count; the perf gate runs jailed (TASK-172, TASK-164.5, 2026-11-05)
 
