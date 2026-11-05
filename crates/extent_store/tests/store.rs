@@ -2224,12 +2224,24 @@ const SMALL_SEGMENTS: Options = Options { max_extent: 64 << 10, ..OPTIONS };
 /// The most bytes of data a segment of [`SMALL_SEGMENTS`] holds: a segment's, and an extent's.
 const SEGMENT_LIMIT: u64 = 128 << 10;
 
-/// The bytes of data of each of the branch's segments in `dir`: open ones' raw files, closed ones'
-/// framed data.
-fn segment_data(dir: &MemDir) -> Vec<u64> {
+/// The names of `store`'s segments being framed, in its branch's directories: their framed files
+/// may not be written yet ([`Store::framing`], TASK-189).
+fn framing(store: &Store<MemDir>) -> BTreeSet<String> {
+    store.framing().into_iter().map(|number| format!("{number:016x}")).collect()
+}
+
+/// The bytes of data of each of the branch's segments in `dir`, `store`'s: open ones' raw files,
+/// closed ones' framed data. Not the framed file of a segment being framed behind what closed it,
+/// which may not be written yet, and whose raw file holds its data until its framing ends
+/// ([`Store::framing`], TASK-189).
+fn segment_data(store: &Store<MemDir>, dir: &MemDir) -> Vec<u64> {
+    let framing = framing(store);
     let mut lens = Vec::new();
     for kind in ["open-segments", "segments"] {
         for name in dir.list(&of(kind, BRANCH)).unwrap() {
+            if kind == "segments" && framing.contains(&name) {
+                continue;
+            }
             let file = dir.open(&format!("{}/{name}", of(kind, BRANCH)), true).unwrap();
             let mut bytes = vec![0; file.size().unwrap() as usize];
             file.read_at(&mut bytes, 0).unwrap();
@@ -2238,6 +2250,58 @@ fn segment_data(dir: &MemDir) -> Vec<u64> {
         }
     }
     lens
+}
+
+/// TASK-189: reading the branch's segments beside the store between writes, as [`segment_data`]
+/// does, reads no framed file a framing has created and not yet written: a write closed the
+/// segment holding a commit's data for want of room, and framed it behind, on a thread of its own.
+/// Each framing waits at the failpoint between its file's creation and its write while the helper
+/// reads: read so, unskipped, the file was empty, `Corrupt("an object's trailer")`, as in CI run
+/// 42105764695. The failpoint is the process's, as nextest gives each test.
+#[test]
+fn segments_read_beside_the_store_skip_framed_files_being_written() {
+    use std::sync::Mutex;
+    use std::sync::mpsc::channel;
+    let dir = MemDir::new();
+    let description = Description { block_size: BLOCK as u32, capacity: 64 << 20, branch: BRANCH };
+    let store = Store::create(dir.clone(), description, SMALL_SEGMENTS).unwrap();
+    assert!(store.upload(WRITER, 0).unwrap());
+    let block = |sequence: u64| pattern(sequence as u8, 0, BLOCK);
+    store.write(extent(96), 0, &block(96)).unwrap();
+    store.commit(None).unwrap();
+    // Each framing says it waits, its file created, and waits until let go: or until the test
+    // stops, failing, its channels dropped, so that the store's drop, waiting for its framings,
+    // ends.
+    let (waiting, waits) = channel();
+    let (go, gone) = channel::<()>();
+    let gone = Mutex::new(gone);
+    let guard = fail::FailGuard::with_callback("segments::framing", move || {
+        let _ = waiting.send(());
+        let _ = gone.lock().unwrap().recv();
+    })
+    .unwrap();
+    let (mut seen, mut reads) = (BTreeSet::new(), 0);
+    for sequence in 0..48 {
+        store.write(extent(sequence), 0, &block(sequence)).unwrap();
+        let begun: Vec<u64> = (store.framing().into_iter()).filter(|n| seen.insert(*n)).collect();
+        for _ in &begun {
+            waits.recv().unwrap();
+        }
+        if !begun.is_empty() {
+            let lens = segment_data(&store, &dir);
+            assert!(lens.iter().all(|len| *len <= SEGMENT_LIMIT), "segments of {lens:?}");
+            reads += 1;
+        }
+        for _ in &begun {
+            go.send(()).unwrap();
+        }
+    }
+    drop(guard);
+    assert!(reads > 0, "no segment framed behind a write");
+    store.commit(None).unwrap();
+    for sequence in 0..48 {
+        assert!(read(&store, extent(sequence), 0, BLOCK) == block(sequence), "{sequence}");
+    }
 }
 
 /// TASK-150.2: a segment a write closed for want of room, holding a commit's data, goes to the
@@ -2334,13 +2398,13 @@ fn segments_hold_a_segment_and_an_extent_at_most() {
     // 192 KiB of blocks, no commit's data with them.
     for sequence in 0..48 {
         store.write(extent(sequence), 0, &block(sequence)).unwrap();
-        let lens = segment_data(&dir);
+        let lens = segment_data(&store, &dir);
         assert!(lens.iter().all(|len| *len <= SEGMENT_LIMIT), "segments of {lens:?}");
     }
     check(&store, 0..48);
     store.commit(None).unwrap();
     check(&store, 0..48);
-    let lens = segment_data(&dir);
+    let lens = segment_data(&store, &dir);
     assert!(lens.iter().all(|len| *len <= SEGMENT_LIMIT), "segments of {lens:?}");
     let own = dir.list(&of("extents", BRANCH)).unwrap().len();
     assert!(own > 0, "no extent sealed in a file of its own");
@@ -2351,14 +2415,14 @@ fn segments_hold_a_segment_and_an_extent_at_most() {
     store.commit(None).unwrap();
     for sequence in 48..96 {
         store.write(extent(sequence), 0, &block(sequence)).unwrap();
-        let lens = segment_data(&dir);
+        let lens = segment_data(&store, &dir);
         assert!(lens.iter().all(|len| *len <= SEGMENT_LIMIT), "segments of {lens:?}");
     }
     store.commit(None).unwrap();
     check(&store, 0..97);
     let lasts: Vec<u64> = store.closed(usize::MAX).unwrap().iter().map(Closed::last).collect();
     assert_eq!(lasts, [1, 2, 3]);
-    let lens = segment_data(&dir);
+    let lens = segment_data(&store, &dir);
     assert!(lens.iter().all(|len| *len <= SEGMENT_LIMIT), "segments of {lens:?}");
     drop(store);
     check(&Store::open(dir.clone(), SMALL_SEGMENTS).unwrap(), 0..97);
@@ -2393,7 +2457,7 @@ fn rewrites_take_no_segment_past_a_segment_and_an_extent() {
     let store = Store::create(dir.clone(), description, SMALL_SEGMENTS).unwrap();
     for seed in 0..64 {
         store.write(extent(1), 0, &pattern(seed, 0, 2 * BLOCK)).unwrap();
-        let lens = segment_data(&dir);
+        let lens = segment_data(&store, &dir);
         assert!(lens.iter().all(|len| *len <= SEGMENT_LIMIT), "segments of {lens:?}");
     }
     assert_eq!(read(&store, extent(1), 0, 2 * BLOCK), pattern(63, 0, 2 * BLOCK));
@@ -2688,7 +2752,12 @@ fn churn_pinning(pass: u64) -> usize {
             }
         }
         store.commit(None).unwrap();
+        // Not those being framed, closed by a write for room, which the commit waited not for:
+        // counted once framed (TASK-189).
+        let framing = framing(&store);
         let segments = dir.list(&of("segments", BRANCH)).unwrap();
+        let segments: Vec<_> =
+            segments.into_iter().filter(|name| !framing.contains(name)).collect();
         for name in segments.iter().filter(|name| !closed.contains(*name)) {
             uncounted += frame(&dir, name);
         }

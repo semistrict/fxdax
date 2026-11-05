@@ -24,6 +24,8 @@ thiserror.workspace = true
 [dev-dependencies]
 # Its own tests audit the store's counts (the `audit` feature).
 extent_store = { path = ".", features = ["audit"] }
+# And set its failpoints (TASK-189).
+fail = { version = "0.5.1", features = ["failpoints"] }
 tempfile.workspace = true
 
 [lints]

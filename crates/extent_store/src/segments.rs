@@ -1196,6 +1196,9 @@ fn frame_segment<D: Dir>(
     raw.read_cached(data.as_mut_slice(), 0)?;
     let bytes = extent_frame::framed(data.as_slice(), footer);
     let file = dir.create(path, true)?;
+    // Where the framed file is in its directory, not yet written: whole only once its framing
+    // ends, which its store says ([`Store::framing`](crate::Store::framing), TASK-189).
+    fail::fail_point!("segments::framing");
     file.write_at(&bytes, 0)?;
     let framed = Framed::new(Arc::new(file), extent_frame::Parts::of(&bytes)?);
     SEGMENT_CLOSES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);

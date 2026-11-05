@@ -1725,6 +1725,17 @@ impl<D: Dir> Store<D> {
         }
     }
 
+    /// fxdax: the numbers of the branch's segments being framed behind what closed them
+    /// ([`Store::frame_behind`]): their framed files, in the store's directory already, are whole
+    /// only once their framings end, their raw files holding their data meanwhile. What reads the
+    /// directory beside the store, as a test does, reads no other framed file (TASK-189).
+    pub fn framing(&self) -> Vec<u64> {
+        let state = self.lock();
+        let framing = state.segments.framings().iter();
+        let ours = framing.filter(|segment| segment.branch == self.branch);
+        ours.map(|segment| segment.number).collect()
+    }
+
     /// fxdax: `state`, once no segment is being framed ([`Store::frame_behind`]), which it let go
     /// of meanwhile.
     fn framed<'a>(
