@@ -578,8 +578,10 @@ impl<C, S, P> Hold<'_, C, S, P> {
     }
 
     /// Retires the store connections have open at its key, its writer gone with writes
-    /// uncommitted: neither a writer nor a follower opens it while followers have it.
-    pub fn retire(&self) {
+    /// uncommitted: `cut` cuts its followers off, without the table's lock, and neither a writer
+    /// nor a follower opens it while followers have it.
+    pub fn retire(&self, cut: impl FnOnce()) {
+        cut();
         if !rules().retirement {
             return;
         }
@@ -912,7 +914,7 @@ mod shuttle_tests {
                     let writing = conn.writing.lock().unwrap();
                     let Writing { store, hold } = writing.as_ref().unwrap();
                     store.dirty.store(true, Ordering::SeqCst);
-                    hold.hold().retire();
+                    hold.hold().retire(|| ());
                 }
                 // The last of it, unless a claim of the store has it as it meets it: it lets the
                 // store go then, outside the table's lock.
@@ -1213,7 +1215,7 @@ mod tests {
         let (held, _) = write(&table, key, &writer).unwrap();
         let store = Arc::new("writer's");
         held.open(&store).unwrap();
-        held.retire();
+        held.retire(|| ());
         drop(held);
         assert_eq!(table.instance(key).map(|(_, retired)| retired), Some(true));
         let held = table.hold(key, None).unwrap();

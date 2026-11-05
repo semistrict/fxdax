@@ -87,8 +87,7 @@ pub(super) fn take_over(
 /// fxdax: retires `store`, which the connection holding it as `hold` wrote, gone with writes
 /// uncommitted: its followers are cut off, and no connection opens it until they are gone.
 pub(super) fn retire(hold: &Hold, store: &ExtentStore) {
-    store.cut_followers();
-    hold.retire();
+    hold.retire(|| store.cut_followers());
 }
 
 /// fxdax: the store at `path` for a follower to follow (backlog doc-8): the one a writer's
