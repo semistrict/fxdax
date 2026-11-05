@@ -28,8 +28,8 @@ pub(super) const RUNS: usize = 100;
 fn faults_wait_for_the_pager() {
     let ps = page_size();
     let pager = TestSource::paged(2);
-    let (dax, window) = Dax::<()>::new(2 * ps, None).unwrap();
-    dax.window.map(0, &pager.source(), 0, 2 * ps).unwrap();
+    let (dax, window) = Dax::new(2 * ps, None).unwrap();
+    dax.window.map(0, &pager.source(), 0, 2 * ps);
     let faults: Vec<_> = (0..2)
         .map(|page| {
             let window = window.clone();
@@ -232,12 +232,11 @@ fn access<G: Guest>(guest: &G, window: &DaxWindow, offset: u64, kind: Access) ->
 /// goes on until it reads both pages freed or stored to, as a guest polling them would. Checked: a
 /// vCPU never reads a page older than one it read; once the free returns, no page of the extent
 /// is mapped; one store is made, its private page the one page writable; every access completes.
-pub(super) fn stores_race_frees<G: Guest>(mut dax: Dax<Arc<u8>>, guest: Arc<G>) {
+pub(super) fn stores_race_frees<G: Guest>(mut dax: Dax, guest: Arc<G>) {
     let ps = page_size();
     let sealed = TestSource::filled(2, SEALED);
-    let (zeros, window) = (crate::cache::zeros().unwrap(), DaxWindow(dax.window.clone()));
-    let (mapped, freed) = (Arc::new(0), Arc::new(1));
-    dax.map(0, mapped.clone(), &sealed.source(), 0, 2 * ps).unwrap();
+    let window = DaxWindow(dax.window.clone());
+    dax.map(0, &sealed.source(), 0, 2 * ps);
     let mut extent = Vec::new();
     sealed.each_present(0..2, &mut |_, frame| extent.push(guest.place(frame.location())));
 
@@ -268,7 +267,7 @@ pub(super) fn stores_race_frees<G: Guest>(mut dax: Dax<Arc<u8>>, guest: Arc<G>) 
 
     let freeing = guest.clone();
     let store = thread::spawn(move || {
-        dax.replace_kept(mapped.identity(), freed, &zeros).unwrap();
+        assert_eq!(dax.map_zeros_over(&sealed), [0..2 * ps]);
         let still: Vec<_> =
             freeing.mapped().into_iter().filter(|(_, at)| extent.contains(at)).collect();
         assert!(still.is_empty(), "the freed extent is mapped after its free: {still:#x?}");
@@ -404,7 +403,7 @@ impl Guest for StageGuest {
 
 fn frees_on_a_fake_stage() {
     let stage = Arc::new(FakeStage::default());
-    let (dax, window) = super::tests::copying::<Arc<u8>>(2, 1, Some(stage.clone()));
+    let (dax, window) = super::tests::copying(2, 1, Some(stage.clone()));
     stores_race_frees(dax, Arc::new(StageGuest { stage, window }));
 }
 
@@ -465,15 +464,15 @@ fn stored(guest: &StageGuest, offset: u64) -> bool {
 fn copies_race_maps() {
     let ps = page_size();
     let stage = Arc::new(FakeStage::default());
-    let (mut dax, window) = super::tests::copying::<()>(1, 1, Some(stage.clone()));
+    let (mut dax, window) = super::tests::copying(1, 1, Some(stage.clone()));
     let (first, second) = (TestSource::filled(1, FIRST), TestSource::filled(1, SECOND));
-    dax.map(0, (), &first.source(), 0, ps).unwrap();
+    dax.map(0, &first.source(), 0, ps);
     let guest = Arc::new(StageGuest { stage: stage.clone(), window: window.clone() });
     let storing = guest.clone();
     let vcpu = thread::spawn(move || assert!(stored(&storing, 0), "the store was refused"));
     let mapped = second.source();
     let map = thread::spawn(move || {
-        dax.map(0, (), &mapped, 0, ps).unwrap();
+        dax.map(0, &mapped, 0, ps);
         dax
     });
     vcpu.join().unwrap();
@@ -527,9 +526,9 @@ fn needs_copies_to_recheck_their_mappings() {
 fn copies_race_their_bound() {
     let ps = page_size();
     let stage = Arc::new(FakeStage::default());
-    let (mut dax, window) = super::tests::copying::<()>(2, 1, Some(stage.clone()));
+    let (mut dax, window) = super::tests::copying(2, 1, Some(stage.clone()));
     let source = TestSource::filled(2, FIRST);
-    dax.map(0, (), &source.source(), 0, 2 * ps).unwrap();
+    dax.map(0, &source.source(), 0, 2 * ps);
     let guest = Arc::new(StageGuest { stage, window: window.clone() });
     let vcpus: Vec<_> = (0..2)
         .map(|page| {

@@ -15,7 +15,7 @@
 //! A page evicted is unmapped from each window that maps it first; freed, it waits in quarantine
 //! for the VM processes that may reach it still (`physmem::quarantine_with`, TASK-79.9).
 
-use crate::dax::{Source, Window};
+use crate::dax::{Origin, Source, Window};
 use crate::error::{Errno, Result};
 use crate::extents::ExtentId;
 use crate::pages::{ArenaId, page_size};
@@ -750,6 +750,10 @@ impl Source for CachedExtent {
         let mut table = self.pages.lock().unwrap();
         table.windows.retain(|mapped| !std::ptr::eq(mapped.as_ptr(), window));
     }
+
+    fn origin(&self) -> Origin {
+        Origin::Extent(self.extent)
+    }
 }
 
 /// Zeros, which windows map read-only where nothing else is to be read: one page of them, of the
@@ -767,8 +771,8 @@ impl Source for Zeros {
         Box::pin(std::future::ready(Ok(false)))
     }
 
-    fn is_zeros(&self) -> bool {
-        true
+    fn origin(&self) -> Origin {
+        Origin::Zeros
     }
 }
 

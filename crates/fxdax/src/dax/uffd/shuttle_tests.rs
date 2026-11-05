@@ -457,7 +457,7 @@ fn frees_through_userfaultfd(at_once: bool) {
         true => Arc::new(Remapping { stage: telling, held: Default::default() }),
         false => telling,
     };
-    let (dax, _) = super::super::tests::copying::<Arc<u8>>(2, 1, Some(second_stage));
+    let (dax, _) = super::super::tests::copying(2, 1, Some(second_stage));
     let window = dax.window.clone();
     stores_race_frees(dax, Arc::new(HostGuest { memory, stage, window, base }));
 }
@@ -472,10 +472,7 @@ fn frees_remapped() {
 
 /// fxdax: a stage over a model of its host memory, and a window of `pages` pages through it,
 /// whose changes it makes in steps, or at once ([`Remapping`]).
-fn modelled(
-    pages: u64,
-    at_once: bool,
-) -> (ModelMemory, Arc<UffdSecondStage<ModelMemory>>, Dax<()>) {
+fn modelled(pages: u64, at_once: bool) -> (ModelMemory, Arc<UffdSecondStage<ModelMemory>>, Dax) {
     let ps = page_size();
     let memory = ModelMemory::default();
     // SAFETY: The model changes no memory.
@@ -495,7 +492,7 @@ fn modelled(
         true => Arc::new(Remapping { stage: telling, held: Default::default() }),
         false => telling,
     };
-    let (dax, _) = Dax::<()>::new(pages * ps, Some(second_stage)).unwrap();
+    let (dax, _) = Dax::new(pages * ps, Some(second_stage)).unwrap();
     (memory, stage, dax)
 }
 
@@ -512,24 +509,24 @@ fn remaps_end_as_steps_do() {
     let unwritten = TestSource::paged(2).source();
     let pages = |memory: &ModelMemory| memory.0.lock().unwrap().pages.clone();
     let maps = |memory: &ModelMemory| memory.0.lock().unwrap().maps;
-    let mut change = |what: &str, mmaps: usize, make: &dyn Fn(&mut Dax<()>)| {
+    let mut change = |what: &str, mmaps: usize, make: &dyn Fn(&mut Dax)| {
         let before = maps(&at_once);
         make(&mut steps_dax);
         make(&mut at_once_dax);
         assert_eq!(pages(&at_once), pages(&steps), "{what}: the memory differs");
         assert_eq!(maps(&at_once) - before, mmaps, "{what}: mmaps");
     };
-    change("sealed", 1, &|dax| dax.map(0, (), &sealed, 0, 2 * ps).unwrap());
-    change("the same pages", 0, &|dax| dax.map(0, (), &sealed, 0, 2 * ps).unwrap());
+    change("sealed", 1, &|dax| dax.map(0, &sealed, 0, 2 * ps));
+    change("the same pages", 0, &|dax| dax.map(0, &sealed, 0, 2 * ps));
     // A store faulted on the second page, which the window refused, as it doesn't copy on write.
     for stage in [&steps_stage, &at_once_stage] {
         let addr = 64 * ps as usize + ps as usize;
         stage.restrict(addr, stage.seen(addr), libc::PROT_READ);
     }
     // The first page in place, the second, restricted, installed anew.
-    change("the same, one restricted", 1, &|dax| dax.map(0, (), &sealed, 0, 2 * ps).unwrap());
-    change("other memory", 1, &|dax| dax.map(0, (), &other, 0, 2 * ps).unwrap());
-    change("nothing in memory", 1, &|dax| dax.map(0, (), &unwritten, 0, 2 * ps).unwrap());
+    change("the same, one restricted", 1, &|dax| dax.map(0, &sealed, 0, 2 * ps));
+    change("other memory", 1, &|dax| dax.map(0, &other, 0, 2 * ps));
+    change("nothing in memory", 1, &|dax| dax.map(0, &unwritten, 0, 2 * ps));
 }
 
 #[test]
@@ -570,13 +567,13 @@ fn refusal_races_changes() {
     }
     .unwrap();
     let telling = Arc::new(Telling { stage: stage.clone(), memory: memory.clone() });
-    let (mut dax, _) = Dax::<Arc<u8>>::new(ps, Some(telling)).unwrap();
+    let (mut dax, _) = Dax::new(ps, Some(telling)).unwrap();
     let window = dax.window.clone();
-    let (sealed, zeros) = (TestSource::filled(1, SEALED).source(), crate::cache::zeros().unwrap());
-    dax.map(0, Arc::new(0), &sealed, 0, ps).unwrap();
+    let sealed = TestSource::filled(1, SEALED).source();
+    dax.map(0, &sealed, 0, ps);
     let guest = HostGuest { memory, stage: stage.clone(), window, base };
 
-    let change = thread::spawn(move || dax.map(0, Arc::new(1), &zeros, 0, ps).unwrap());
+    let change = thread::spawn(move || dax.map_zeros(0, ps));
     // A store faulted on the page, which the window refused, as it maps it read-only.
     let seen = stage.seen(base);
     stage.restrict(base, seen, libc::PROT_READ);
@@ -605,14 +602,14 @@ fn withholding_races_maps() {
     }
     .unwrap();
     let telling = Arc::new(Telling { stage: stage.clone(), memory: memory.clone() });
-    let (mut dax, _) = Dax::<Arc<u8>>::new(ps, Some(telling)).unwrap();
+    let (mut dax, _) = Dax::new(ps, Some(telling)).unwrap();
     let window = dax.window.clone();
     // Not yet written, it has no page in memory, and is zeros as it is brought in.
     let file = TestSource::anonymous(1).source();
     let guest = HostGuest { memory, stage: stage.clone(), window: window.clone(), base };
 
     let map = thread::spawn(move || {
-        dax.map(0, Arc::new(0), &file, 0, ps).unwrap();
+        dax.map(0, &file, 0, ps);
         dax
     });
     // A load's fault, as KVM makes for the guest.
@@ -778,11 +775,11 @@ fn worker_writes_copy_nothing(vcpu_stores: bool, not_here: NotHere) {
     stage.copy_on_write().unwrap();
     guest_thread(VCPU);
     let telling = Arc::new(Telling { stage: stage.clone(), memory: memory.clone() });
-    let (mut dax, _) = super::super::tests::copying::<()>(pages, 1, Some(telling));
+    let (mut dax, _) = super::super::tests::copying(pages, 1, Some(telling));
     let window = dax.window.clone();
     // Not in memory as it is mapped, and zeros as it is brought in: not here until a fault.
     let file = TestSource::anonymous(pages).source();
-    dax.map(0, (), &file, 0, pages * ps).unwrap();
+    dax.map(0, &file, 0, pages * ps);
     let guest = HostGuest { memory, stage: stage.clone(), window: window.clone(), base };
     if not_here == NotHere::LeftOut {
         load(&guest, 0);
@@ -905,10 +902,10 @@ fn stores_to_pages_here_copy_them() {
     .unwrap();
     stage.copy_on_write().unwrap();
     let telling = Arc::new(Telling { stage: stage.clone(), memory: memory.clone() });
-    let (mut dax, _) = super::super::tests::copying::<()>(1, 1, Some(telling));
+    let (mut dax, _) = super::super::tests::copying(1, 1, Some(telling));
     let window = dax.window.clone();
     let sealed = TestSource::filled(1, SEALED);
-    dax.map(0, (), &sealed.source(), 0, ps).unwrap();
+    dax.map(0, &sealed.source(), 0, ps);
     let guest = HostGuest { memory, stage, window: window.clone(), base };
     let mut shared = None;
     sealed.each_present(0..1, &mut |_, frame| shared = Some(frame.location()));
@@ -936,7 +933,7 @@ fn stores_to_pages_here_copy_them_once() {
 /// fxdax: a stage over a model of its host memory, of a window that copies on write, of `pages`
 /// pages, holding as many private pages, and the window through it, which tells the model of its
 /// changes in steps.
-fn modelled_copying(pages: u64) -> (ModelMemory, Arc<UffdSecondStage<ModelMemory>>, Dax<()>) {
+fn modelled_copying(pages: u64) -> (ModelMemory, Arc<UffdSecondStage<ModelMemory>>, Dax) {
     let ps = page_size();
     let memory = ModelMemory::default();
     // SAFETY: The model changes no memory.
@@ -953,7 +950,7 @@ fn modelled_copying(pages: u64) -> (ModelMemory, Arc<UffdSecondStage<ModelMemory
     .unwrap();
     stage.copy_on_write().unwrap();
     let telling = Arc::new(Telling { stage: stage.clone(), memory: memory.clone() });
-    let (dax, _) = super::super::tests::copying::<()>(pages, pages, Some(telling));
+    let (dax, _) = super::super::tests::copying(pages, pages, Some(telling));
     (memory, stage, dax)
 }
 
@@ -966,7 +963,7 @@ fn private_pages_race_loads() {
     let ps = page_size();
     let (memory, stage, mut dax) = modelled_copying(1);
     let sealed = TestSource::filled(1, SEALED).source();
-    dax.map(0, (), &sealed, 0, ps).unwrap();
+    dax.map(0, &sealed, 0, ps);
     let window = dax.window.clone();
     let guest = HostGuest { memory, stage, window: window.clone(), base: 64 * ps as usize };
     let guest = Arc::new(guest);
@@ -1019,7 +1016,7 @@ fn private_pages_go_with_their_unmaps() {
     let ps = page_size();
     let (memory, stage, mut dax) = modelled_copying(1);
     let sealed = TestSource::filled(1, SEALED).source();
-    dax.map(0, (), &sealed, 0, ps).unwrap();
+    dax.map(0, &sealed, 0, ps);
     let window = dax.window.clone();
     future::block_on(window.make_private(0, ps)).unwrap();
     let guest = HostGuest { memory, stage, window, base: 64 * ps as usize };
@@ -1027,7 +1024,7 @@ fn private_pages_go_with_their_unmaps() {
         Outcome::Made(read) => assert_eq!(read, STORED),
         _ => panic!("a store to a private page faulted, or failed"),
     }
-    dax.unmap(0, ps).unwrap();
+    dax.unmap(0, ps);
     for _ in 0..ATTEMPTS {
         match guest.access(0, Access::Read, None) {
             Outcome::Made(read) => panic!("an access found a private page gone: {read:#x}"),

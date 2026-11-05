@@ -26,7 +26,7 @@
 //! names, so that no commit changes anything in a window.
 
 use crate::cache::{self, CachedExtent};
-use crate::dax::{Dax, DaxWindow, Keep, SecondStage, Source};
+use crate::dax::{Dax, DaxWindow, SecondStage, Source};
 use crate::error::{Errno, Error, Result};
 use crate::faults::failpoint;
 use crate::fence::{Fence, Held, StoreMutex, StoreRwLock};
@@ -81,45 +81,6 @@ pub struct StoreBytes {
     /// Of the extents it inherited from the branches it was forked from, which may still share
     /// them.
     pub inherited: u64,
-}
-
-/// A window's mapping: whose pages it maps, a sealed extent in the cache, or zeros, which the
-/// window keeps while it maps them, by their identity
-/// (`dax::source_identity`); and what it maps, which a snapshot of its VM maps again where the VM
-/// is restored ([`ExtentStore::window_mappings`]).
-#[derive(Clone)]
-struct Mapped {
-    pages: usize,
-    maps: Maps,
-}
-
-/// What a window's mapping maps.
-#[derive(Clone, Copy)]
-enum Maps {
-    /// The extent's bytes: those at `offset` at the window's `window_offset`, where the mapping
-    /// began, and those after them in order.
-    Extent {
-        extent: ExtentId,
-        window_offset: u64,
-        offset: u64,
-    },
-    Zeros,
-}
-
-impl Mapped {
-    fn extent(pages: &Arc<dyn Source>, extent: ExtentId, window_offset: u64, offset: u64) -> Self {
-        Self { pages: pages.identity(), maps: Maps::Extent { extent, window_offset, offset } }
-    }
-
-    fn zeros(zeros: &Arc<dyn Source>) -> Self {
-        Self { pages: zeros.identity(), maps: Maps::Zeros }
-    }
-}
-
-impl Keep for Mapped {
-    fn identity(&self) -> usize {
-        self.pages
-    }
 }
 
 /// A mapping of a store's DAX window, as a snapshot of its VM records it, to map it again where
@@ -217,7 +178,7 @@ pub struct ExtentStore {
     path: std::path::PathBuf,
     /// fxdax: the forks of other stores attached to it, whose extents it reads through to.
     bases: Arc<Bases>,
-    dax: StoreMutex<Option<Dax<Mapped>>>,
+    dax: StoreMutex<Option<Dax>>,
     /// fxdax: the arenas of physical memory its extents' pages are of (TASK-43).
     arenas: Arenas,
     /// fxdax: the uploader of the store's branch to object storage, if it has one: durable
@@ -1139,21 +1100,14 @@ impl ExtentStore {
         // rewriting the same blocks, sealing each version (a database's log, fsynced at each
         // transaction), filled the cache with pages only the window's mappings kept, which no
         // eviction could take (ENOMEM).
-        self.replace_kept(cached.identity())
-    }
-
-    /// Maps zeros where the window maps what keeps a freed extent's pages, which has the identity
-    /// `kept` (`Dax::replace_kept`).
-    fn replace_kept(&self, kept: usize) -> Result<()> {
         let mut dax = self.dax.lock(&self.fence)?;
         let Some(dax) = dax.as_mut() else { return Ok(()) };
-        let zeros = dax.zeros();
+        let freed = dax.map_zeros_over(&cached);
         let mut changes = self.changes.lock(&self.fence)?;
-        for (start, end, _) in dax.kept(kept) {
-            changes.record(start, end - start, Change::Freed);
+        for range in freed {
+            changes.record(range.start, range.end - range.start, Change::Freed);
         }
-        drop(changes);
-        dax.replace_kept(kept, Mapped::zeros(&zeros), &zeros)
+        Ok(())
     }
 
     /// Commits what was written and freed, and `root` as the store's root if given, durably
@@ -1390,7 +1344,7 @@ impl ExtentStore {
 
     fn install_dax(
         &self,
-        create: impl FnOnce() -> Result<(Dax<Mapped>, DaxWindow), Error>,
+        create: impl FnOnce() -> Result<(Dax, DaxWindow), Error>,
     ) -> Result<DaxWindow, Error> {
         let mut dax = self.dax.lock(&self.fence)?;
         if dax.is_some() {
@@ -1458,20 +1412,12 @@ impl ExtentStore {
         let dax = dax.as_mut().ok_or(Errno::ENOSYS)?;
         let within = end.min(extent_len.next_multiple_of(page_size())).max(offset);
         if within > offset {
-            let keep = Mapped::extent(&cached, extent, window_offset, offset);
-            dax.map(window_offset, keep, &cached, offset, within - offset)?;
+            dax.map(window_offset, &cached, offset, within - offset);
         }
-        self.map_zeros(dax, window_offset + (within - offset), end - within)
-    }
-
-    /// Maps zeros, read-only, at `len` bytes of the window at `window_offset`, if any
-    /// ([`Dax::zeros`]).
-    fn map_zeros(&self, dax: &mut Dax<Mapped>, window_offset: u64, len: u64) -> Result<()> {
-        if len == 0 {
-            return Ok(());
+        if end > within {
+            dax.map_zeros(window_offset + (within - offset), end - within);
         }
-        let zeros = dax.zeros();
-        dax.map(window_offset, Mapped::zeros(&zeros), &zeros, 0, len)
+        Ok(())
     }
 
     /// Maps zeros, read-only, at `len` bytes of the DAX window at `window_offset`, as a mapping a
@@ -1481,7 +1427,8 @@ impl ExtentStore {
         let dax = dax.as_mut().ok_or(Errno::ENOSYS)?;
         dax.check_range(window_offset, len)?;
         self.changes.lock(&self.fence)?.record(window_offset, len, Change::Zeros);
-        self.map_zeros(dax, window_offset, len)
+        dax.map_zeros(window_offset, len);
+        Ok(())
     }
 
     /// The DAX window's mappings, in order: what a snapshot of the VM records, to map them again
@@ -1489,22 +1436,7 @@ impl ExtentStore {
     /// [`ExtentStore::map_zeros_at`]. Without a window, none.
     pub fn window_mappings(&self) -> Result<Vec<WindowMapping>> {
         let dax = self.dax.lock(&self.fence)?;
-        let Some(dax) = dax.as_ref() else { return Ok(Vec::new()) };
-        let mappings = dax
-            .mappings()
-            .map(|(start, end, mapped)| WindowMapping {
-                window_offset: start,
-                len: end - start,
-                contents: match mapped.maps {
-                    Maps::Extent { extent, window_offset, offset } => MappingContents::Extent {
-                        extent,
-                        offset: offset + (start - window_offset),
-                    },
-                    Maps::Zeros => MappingContents::Zeros,
-                },
-            })
-            .collect();
-        Ok(mappings)
+        Ok(dax.as_ref().map_or_else(Vec::new, Dax::mappings))
     }
 
     /// fxdax: notes the page at `window_offset` refused `what` (a guest's access), and returns
@@ -1599,7 +1531,8 @@ impl ExtentStore {
         let dax = dax.as_mut().ok_or(Errno::ENOSYS)?;
         dax.check_range(window_offset, len)?;
         self.changes.lock(&self.fence)?.record(window_offset, len, Change::Unmap);
-        dax.unmap(window_offset, len)
+        dax.unmap(window_offset, len);
+        Ok(())
     }
 
     /// The sealed `extent`, of `len` bytes, in the cache: read from this store if no other store

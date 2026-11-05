@@ -1927,8 +1927,8 @@ mod tests {
         let pager = TestSource::paged(2);
         // SAFETY: Only the test uses the memory, which outlives the window.
         let stage = unsafe { UffdSecondStage::in_process(base, 2 * ps as u64, None) }.unwrap();
-        let (dax, _window) = Dax::<()>::in_host_memory(stage).unwrap();
-        dax.window.map(0, &pager.source(), 0, 2 * ps as u64).unwrap();
+        let (dax, _window) = Dax::in_host_memory(stage).unwrap();
+        dax.window.map(0, &pager.source(), 0, 2 * ps as u64);
 
         // SAFETY: The memory is the window's, whose faults the fault thread serves.
         let load =
@@ -1971,13 +1971,13 @@ mod tests {
         let file = TestSource::filled(2, 7).source();
         // SAFETY: Only the test uses the memory, which outlives the window.
         let stage = unsafe { UffdSecondStage::in_process(base, 2 * ps as u64, None) }.unwrap();
-        let (dax, _window) = Dax::<()>::in_host_memory(stage.clone()).unwrap();
-        dax.window.map(0, &file, 0, ps as u64).unwrap();
+        let (dax, _window) = Dax::in_host_memory(stage.clone()).unwrap();
+        dax.window.map(0, &file, 0, ps as u64);
         // SAFETY: The memory is the window's, whose faults the fault thread serves.
         assert_eq!(unsafe { (base as *const u8).read_volatile() }, 7);
 
         stage.release();
-        dax.window.map(ps as u64, &file, ps as u64, ps as u64).unwrap();
+        dax.window.map(ps as u64, &file, ps as u64, ps as u64);
         stage.unmap(0, ps as u64);
         let maps = std::fs::read_to_string("/proc/self/maps").unwrap();
         let window: Vec<&str> = (maps.lines())
@@ -2026,9 +2026,9 @@ mod tests {
         let stage =
             unsafe { UffdSecondStage::in_process(memory as usize, 4 * ps, Some(told.clone())) }
                 .unwrap();
-        let (dax, _window) = Dax::<()>::in_host_memory(stage.clone()).unwrap();
-        dax.window.map(0, &file, 0, 2 * ps).unwrap();
-        dax.window.map(3 * ps, &file, 3 * ps, ps).unwrap();
+        let (dax, _window) = Dax::in_host_memory(stage.clone()).unwrap();
+        dax.window.map(0, &file, 0, 2 * ps);
+        dax.window.map(3 * ps, &file, 3 * ps, ps);
         assert_eq!(*told.0.lock().unwrap(), []);
 
         stage.prefault_installed(0, 4 * ps);
@@ -2077,8 +2077,8 @@ mod tests {
             )
         }
         .unwrap();
-        let (dax, _window) = Dax::<()>::in_host_memory(stage.clone()).unwrap();
-        dax.window.map(0, &file, 0, (PAGES * ps) as u64).unwrap();
+        let (dax, _window) = Dax::in_host_memory(stage.clone()).unwrap();
+        dax.window.map(0, &file, 0, (PAGES * ps) as u64);
 
         // The mappings in the window's memory: its runs installed, and what lies between them.
         let mappings = || {
@@ -2150,8 +2150,8 @@ mod tests {
         let stage =
             unsafe { UffdSecondStage::new(base, (2 * ps) as u64, Memories::InProcess, None) }
                 .unwrap();
-        let (dax, _window) = Dax::<()>::in_host_memory(stage.clone()).unwrap();
-        dax.window.map(0, &file, 0, (2 * ps) as u64).unwrap();
+        let (dax, _window) = Dax::in_host_memory(stage.clone()).unwrap();
+        dax.window.map(0, &file, 0, (2 * ps) as u64);
         assert_eq!(stage.taken(), [0, 0], "mapped where nothing was");
         let phys = |page: usize| stage.pages.lock().unwrap().pages[page].mapped.unwrap().phys;
         let first = phys(0);
@@ -2206,8 +2206,8 @@ mod tests {
         let stage =
             unsafe { UffdSecondStage::new(base, (pages * ps) as u64, Memories::InProcess, None) }
                 .unwrap();
-        let (dax, _window) = Dax::<()>::in_host_memory(stage.clone()).unwrap();
-        dax.window.map(0, &file, 0, (pages * ps) as u64).unwrap();
+        let (dax, _window) = Dax::in_host_memory(stage.clone()).unwrap();
+        dax.window.map(0, &file, 0, (pages * ps) as u64);
         // SAFETY: The memory is the window's, whose faults the fault thread serves.
         let load = |page: usize| unsafe { ((base + page * ps) as *const u8).read_volatile() };
         for round in 0..2 {
@@ -2245,7 +2245,7 @@ mod tests {
         let base = memory as usize;
         // SAFETY: Only the test uses the memory, which outlives the window.
         let stage = unsafe { UffdSecondStage::in_process(base, ps as u64, None) }.unwrap();
-        let (dax, _window) = Dax::<()>::in_host_memory(stage).unwrap();
+        let (dax, _window) = Dax::in_host_memory(stage).unwrap();
         let mut pipe = [0; 2];
         // SAFETY: Creates a pipe, which the test closes.
         assert_eq!(unsafe { libc::pipe(pipe.as_mut_ptr()) }, 0);
@@ -2257,7 +2257,7 @@ mod tests {
 
         // Not yet written, the source has no page in memory, and its first is zeros.
         let source = TestSource::anonymous(1).source();
-        dax.window.map(0, &source, 0, ps as u64).unwrap();
+        dax.window.map(0, &source, 0, ps as u64);
         assert_eq!(write(), ps as isize);
         let mut read = vec![1u8; ps];
         // SAFETY: Reads into `read`, which is `ps` bytes.
@@ -2301,10 +2301,10 @@ mod tests {
         let stage = unsafe { UffdSecondStage::in_process(base, ps as u64, None) }.unwrap();
         let copying = crate::dax::CopyOnWrite::reserve(crate::pages::ArenaId::DEFAULT, 1).unwrap();
         let (mut dax, window) =
-            Dax::<()>::in_host_memory_copying(stage.clone(), Some(copying)).unwrap();
+            Dax::in_host_memory_copying(stage.clone(), Some(copying)).unwrap();
         // Not in memory as it is mapped, and zeros as it is brought in: not here until a fault.
         let file = TestSource::anonymous(1);
-        dax.map(0, (), &file.source(), 0, ps as u64).unwrap();
+        dax.map(0, &file.source(), 0, ps as u64);
         let mut pipe = [0; 2];
         // SAFETY: Creates a pipe, which the test closes.
         assert_eq!(unsafe { libc::pipe(pipe.as_mut_ptr()) }, 0);
@@ -2391,10 +2391,10 @@ mod tests {
         let arena = crate::pages::ArenaId::DEFAULT;
         let copying = crate::dax::CopyOnWrite::reserve(arena, PAGES as u64).unwrap();
         let (mut dax, window) =
-            Dax::<()>::in_host_memory_copying(stage.clone(), Some(copying)).unwrap();
+            Dax::in_host_memory_copying(stage.clone(), Some(copying)).unwrap();
         let tag = |page: usize| (page % 251) as u8 + 1;
         let file = TestSource::scattered(PAGES as u64, |page| tag(page as usize)).source();
-        dax.map(0, (), &file, 0, size).unwrap();
+        dax.map(0, &file, 0, size);
         for page in (0..PAGES).rev() {
             let (offset, len) = ((page * ps) as u64, ps as u64);
             futures::executor::block_on(window.make_private(offset, len)).unwrap();
@@ -2438,10 +2438,10 @@ mod tests {
         let arena = crate::pages::ArenaId::DEFAULT;
         let copying = crate::dax::CopyOnWrite::reserve(arena, PAGES as u64).unwrap();
         let (mut dax, window) =
-            Dax::<()>::in_host_memory_copying(stage.clone(), Some(copying)).unwrap();
+            Dax::in_host_memory_copying(stage.clone(), Some(copying)).unwrap();
         let tag = |page: usize| (page % 251) as u8 + 1;
         let file = TestSource::scattered(PAGES as u64, |page| tag(page as usize)).source();
-        dax.map(0, (), &file, 0, size).unwrap();
+        dax.map(0, &file, 0, size);
         // Every other page private, stored to.
         for page in (0..PAGES).step_by(2) {
             let (offset, len) = ((page * ps) as u64, ps as u64);
@@ -2498,9 +2498,9 @@ mod tests {
         let arena = crate::pages::ArenaId::DEFAULT;
         let copying = crate::dax::CopyOnWrite::reserve(arena, 2).unwrap();
         let (mut dax, window) =
-            Dax::<()>::in_host_memory_copying(stage.clone(), Some(copying)).unwrap();
+            Dax::in_host_memory_copying(stage.clone(), Some(copying)).unwrap();
         let file = TestSource::filled(2, 7).source();
-        dax.map(0, (), &file, 0, (2 * ps) as u64).unwrap();
+        dax.map(0, &file, 0, (2 * ps) as u64);
         futures::executor::block_on(window.make_private(0, ps as u64)).unwrap();
 
         let told = describe_windows(Some(base + 5));
