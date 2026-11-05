@@ -14,6 +14,7 @@ use crate::layout::{Child, Origin};
 use crate::record::Kind;
 use crate::writer::Writer;
 use crate::{Error, branch, recovery, rules};
+use extent_frame::spent::Spent;
 use futures::executor::{LocalPool, LocalSpawner, block_on};
 use futures::future::{AbortHandle, abortable};
 use futures::task::LocalSpawnExt as _;
@@ -1216,6 +1217,26 @@ impl World {
         (extents, root)
     }
 
+    /// The sequence numbers of `branch`'s own extents that the commits up to `head` freed once a
+    /// commit before held them, which it writes no more (TASK-79.6, TASK-165.3): not those a commit
+    /// sealed and freed itself, which no commit held.
+    fn spent(&self, branch: u64, head: Option<u64>) -> Spent {
+        let mut spent = Spent::default();
+        let mut at = head;
+        while let Some(tag) = at {
+            let truth = &self.commits[&tag];
+            let sealed =
+                |extent: &ExtentId| truth.extents.iter().any(|(sealed, ..)| sealed == extent);
+            for extent in truth.frees.iter().filter(|extent| extent.branch == branch) {
+                if !sealed(extent) {
+                    spent.insert(extent.sequence);
+                }
+            }
+            at = truth.parent;
+        }
+        spent
+    }
+
     /// Whether `ancestor` is `head` or before it.
     fn precedes(&self, ancestor: u64, head: Option<u64>) -> bool {
         let mut at = head;
@@ -1326,6 +1347,10 @@ impl World {
             let (extents, root) = self.expected(head);
             if state.root != root {
                 violations.push(format!("branch {id:x}'s root is {:?}, not {root:?}", state.root));
+            }
+            let spent = self.spent(id, head);
+            if state.spent != spent {
+                violations.push(format!("branch {id:x} spent {:?}, not {spent:?}", state.spent));
             }
             let held: Vec<_> = state.extents.keys().collect();
             let made: Vec<_> = extents.keys().collect();

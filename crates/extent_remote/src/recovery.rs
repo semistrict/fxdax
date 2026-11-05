@@ -86,10 +86,12 @@ impl State {
         for (extent, location) in &footer.own {
             self.extents.insert(*extent, location.clone());
         }
-        // Those it held: one sealed and freed in one segment no other branch or host ever saw. A
-        // footer frees no extent freed while open, which no commit held (TASK-160.15).
+        // Every free of the branch's own extents spends it, as its store spent it: a footer frees
+        // only what a commit held, not what was freed while open (TASK-160.15); and one sealed and
+        // freed within the segment is no seal of its, but a free (TASK-165.3).
         for extent in &footer.frees {
-            if self.extents.remove(extent).is_some() && extent.branch == self.branch {
+            self.extents.remove(extent);
+            if extent.branch == self.branch {
                 self.spent.insert(extent.sequence);
             }
         }

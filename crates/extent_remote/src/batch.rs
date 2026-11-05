@@ -13,6 +13,7 @@
 
 use crate::layout::{self, Chain, Child, Contents, Footer, Segment};
 use crate::writer::{Body, Objects};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 use storage_device::ExtentId;
 
@@ -40,10 +41,21 @@ impl Commit {
 
 /// What one segment's commits make, by the lengths of the extents they seal: the contents of its
 /// footer, once closed on its writer's chain ([`Plan::close`]); the extents in its data one after
-/// another, from where its data begins.
+/// another, from where its data begins. fxdax: as a store's segment does, its footer seals what its
+/// commits sealed that the branch holds as of its last, and frees what they freed that a commit
+/// held: one sealed by a commit and freed by a later is a free alone, which spends it; one a commit
+/// seals and frees itself no commit held, and is neither (TASK-160.15, TASK-165.3).
 #[derive(Default)]
 pub struct Plan {
+    /// Its commits' tags, root, and the next sequence number as of them: its footer's contents but
+    /// what [`Plan::contents`] makes of the rest.
     contents: Contents,
+    /// The extents its commits seal, in its data, at an offset, of a length, and on their own, by
+    /// their sequence numbers, of a length; and those they free: each with the commit, by its
+    /// index, that sealed or freed it.
+    extents: Vec<((ExtentId, u64, u64), usize)>,
+    own: Vec<((u64, u64), usize)>,
+    frees: Vec<(ExtentId, usize)>,
     /// How long its data is: where the next extent sealed in it goes.
     data: u64,
     /// The bytes of the extents it seals, in its data and on their own.
@@ -54,7 +66,7 @@ impl Plan {
     /// Seals `extent`, of `len` bytes, in its data, after those before it. The branch's next
     /// sequence number is past it.
     pub fn seal(&mut self, extent: ExtentId, len: u64) {
-        self.contents.extents.push((extent, self.data, len));
+        self.extents.push(((extent, self.data, len), self.committing()));
         self.data += len;
         self.sealed(extent.sequence, len);
     }
@@ -62,8 +74,13 @@ impl Plan {
     /// Seals the extent of the branch whose sequence number is `sequence`, of `len` bytes, on its
     /// own. The branch's next sequence number is past it.
     pub fn seal_own(&mut self, sequence: u64, len: u64) {
-        self.contents.own.push((sequence, len));
+        self.own.push(((sequence, len), self.committing()));
         self.sealed(sequence, len);
+    }
+
+    /// The index of the commit being made.
+    fn committing(&self) -> usize {
+        self.contents.commits.len()
     }
 
     /// An extent of `sequence`, of `len` bytes, is sealed.
@@ -80,17 +97,61 @@ impl Plan {
     /// Commits what it seals, as commit `tag`, which frees `frees` and sets `root`, if one: after
     /// the commits before it.
     pub fn commit(&mut self, tag: u64, frees: Vec<ExtentId>, root: Option<Vec<u8>>) {
-        self.contents.frees.extend(frees);
+        let commit = self.committing();
+        self.frees.extend(frees.into_iter().map(|extent| (extent, commit)));
         if root.is_some() {
             self.contents.root = root;
         }
         self.contents.commits.push(tag);
     }
 
+    /// Whether it holds no commit.
+    fn is_empty(&self) -> bool {
+        self.contents.commits.is_empty()
+    }
+
+    /// Its footer's contents, as `branch`'s: what its commits sealed that none of them freed, and
+    /// what they freed that a commit before held.
+    fn contents(self, branch: u64) -> Contents {
+        let Self { mut contents, extents, own, frees, .. } = self;
+        let in_data = extents.iter().map(|&((extent, ..), by)| (extent, by));
+        let on_own = own.iter().map(|&((sequence, _), by)| (ExtentId::new(branch, sequence), by));
+        let sealed: HashMap<ExtentId, usize> = in_data.chain(on_own).collect();
+        let mut freed = HashSet::new();
+        for (extent, by) in frees {
+            match sealed.get(&extent) {
+                Some(&at) => {
+                    freed.insert(extent);
+                    if at < by {
+                        contents.frees.push(extent);
+                    }
+                }
+                None => contents.frees.push(extent),
+            }
+        }
+        let held = |extent: &ExtentId| !freed.contains(extent);
+        contents.extents = extents
+            .into_iter()
+            .map(|(sealed, _)| sealed)
+            .filter(|(extent, ..)| held(extent))
+            .collect();
+        contents.own = (own.into_iter())
+            .map(|(sealed, _)| sealed)
+            .filter(|&(sequence, _)| held(&ExtentId::new(branch, sequence)))
+            .collect();
+        contents
+    }
+
     /// Closes it on `chain`, as the writer's next segment, which the chain goes on after: its
     /// footer, stamped, whose objects read their data as they upload ([`objects`]).
     pub fn close(self, chain: &mut Chain) -> Footer {
-        chain.close(self.contents)
+        self.close_forking(chain, Vec::new())
+    }
+
+    /// Closes it on `chain`, as [`Plan::close`] does, with forks of the branch at its end to
+    /// `forks`, their children.
+    fn close_forking(self, chain: &mut Chain, forks: Vec<Child>) -> Footer {
+        chain.close(Contents { forks, ..self.contents(chain.branch()) })
     }
 }
 
@@ -136,8 +197,8 @@ fn own_object(data: &[u8]) -> Vec<u8> {
 pub struct Batch {
     plan: Plan,
     data: Vec<u8>,
-    /// In the order they are sealed.
-    own: Vec<Vec<u8>>,
+    /// Those sealed on their own, by their sequence numbers.
+    own: BTreeMap<u64, Vec<u8>>,
 }
 
 impl From<Commit> for Batch {
@@ -158,14 +219,14 @@ impl Batch {
         }
         for (sequence, bytes) in commit.own {
             self.plan.seal_own(sequence, bytes.len() as u64);
-            self.own.push(bytes);
+            self.own.insert(sequence, bytes);
         }
         self.plan.commit(commit.tag, commit.frees, commit.root);
     }
 
     /// Whether it holds no commit.
     pub fn is_empty(&self) -> bool {
-        self.plan.contents.commits.is_empty()
+        self.plan.is_empty()
     }
 
     /// Closes it on `chain`, its writer's, as the writer's next segment, which the chain goes on
@@ -182,23 +243,26 @@ impl Batch {
     }
 
     fn close_forking(self, chain: &mut Chain, forks: Vec<Child>) -> Unframed {
-        let footer = chain.close(Contents { forks, ..self.plan.contents });
+        let footer = self.plan.close_forking(chain, forks);
         Unframed { segment: Segment { data: self.data, footer }, own: self.own }
     }
 }
 
 /// A batch closed, its segment's footer stamped: its data, and that of its extents of their own,
-/// in the order its footer names them, yet to be framed.
+/// by their sequence numbers, yet to be framed.
 pub struct Unframed {
     segment: Segment,
-    own: Vec<Vec<u8>>,
+    own: BTreeMap<u64, Vec<u8>>,
 }
 
 impl Unframed {
     /// Its objects, framed: the segment's, and its extents of their own's, at their keys.
-    pub fn frame(self) -> Objects {
-        let own = (self.segment.footer.own.iter().zip(self.own))
-            .map(|((_, location), data)| (location.key.clone(), own_object(&data).into()))
+    pub fn frame(mut self) -> Objects {
+        let own = (self.segment.footer.own.iter())
+            .map(|(extent, location)| {
+                let data = self.own.remove(&extent.sequence).expect("sealed on its own");
+                (location.key.clone(), own_object(&data).into())
+            })
             .collect();
         let footer = self.segment.footer.clone();
         Objects { footer, segment: self.segment.encode().into(), own }
@@ -283,6 +347,34 @@ mod tests {
         let own = own.read().unwrap();
         assert_eq!((own_key, layout::data(&own).unwrap()), (&key, b"large".to_vec()));
         assert_eq!((chain.next_seq(), chain.after()), (1, Some((0, 2))));
+    }
+
+    /// TASK-165.3: as a store's segment's footer does, a batch's seals what its commits sealed that
+    /// none of them freed, and frees what a commit before the freeing one held: an extent sealed and
+    /// later freed in it, in its data or on its own, is a free alone; one a commit seals and frees
+    /// itself is neither; an inherited extent of the same sequence number as one sealed on its own
+    /// is freed as it is.
+    #[test]
+    fn batches_free_what_a_commit_before_held() {
+        let mut chain = Chain::new(1, 2, 0, None, 0);
+        let (small, large, other) = (ExtentId::new(1, 3), ExtentId::new(1, 4), ExtentId::new(1, 5));
+        let (written, inherited, kept) =
+            (ExtentId::new(1, 6), ExtentId::new(9, 4), ExtentId::new(1, 7));
+        let mut batch = Batch::default();
+        let extents = vec![(small, b"small".to_vec()), (kept, b"kept".to_vec())];
+        let own = vec![(large.sequence, b"large".to_vec()), (other.sequence, b"other".to_vec())];
+        batch.commit(Commit { tag: 7, extents, own, ..Commit::default() });
+        let extents = vec![(written, b"written".to_vec())];
+        let frees = vec![small, large, written, inherited];
+        batch.commit(Commit { tag: 8, extents, frees, ..Commit::default() });
+        let objects = batch.close(&mut chain).frame();
+        let footer = objects.footer;
+        assert_eq!(footer.extents, [(kept, 5, 4)]);
+        let key = layout::extent(2, 0, other);
+        assert_eq!(footer.own, [(other, layout::Location { key: key.clone(), offset: 0, len: 5 })]);
+        assert_eq!(footer.frees, [small, large, inherited]);
+        let own: Vec<_> = objects.own.iter().map(|(key, _)| key.clone()).collect();
+        assert_eq!(own, [key]);
     }
 
     /// A segment planned by the lengths of the extents it seals frames what a batch of the same

@@ -3179,6 +3179,36 @@ mod tests {
         }
     }
 
+    /// TASK-165.3: an extent sealed by one commit and freed by the next, both in one segment, whose
+    /// footer frees it and seals it not, is spent on a host that takes the branch, as it is on the
+    /// store that made it: every reader of a footer spends every free of the branch's own extents.
+    #[test]
+    fn extents_sealed_and_freed_in_one_segment_are_spent_where_their_branch_is_taken() {
+        let dir = tempfile::tempdir().unwrap();
+        let bucket = Arc::new(Bucket::new(Arc::new(InMemory::new()), ""));
+        let first = ExtentStore::create(dir.path().join("first"), 1 << 30).unwrap();
+        let branch = first.branch();
+        first.attach_remote(bucket.clone(), 1, idle()).unwrap();
+        let sealed = write(&first, 1, &pattern(1, BLOCK));
+        first.commit_ordered(Some(b"root")).unwrap();
+        first.free(sealed).unwrap();
+        first.commit(None).unwrap();
+        let footers = footers(&bucket, branch);
+        let last = footers.last().unwrap();
+        let freed = storage_device::ExtentId::new(branch, sealed.sequence);
+        assert_eq!((last.commits.len(), last.extents.len(), &last.frees), (1, 0, &vec![freed]));
+        let data = pattern(3, BLOCK);
+        let again = [crate::VolatileSlice::from(&data[..])];
+        assert_eq!(first.write(sealed, 0, &again), Err(crate::Errno::EPERM));
+        // Its host lost: the branch's state is its footers'.
+        std::mem::forget(first);
+
+        let taken = ExtentStore::create_for_branch(dir.path().join("taken"), 1 << 30, branch);
+        let taken = taken.unwrap();
+        taken.attach_remote(bucket, 2, idle()).unwrap();
+        assert_eq!(taken.write(sealed, 0, &again), Err(crate::Errno::EPERM));
+    }
+
     /// TASK-141.2: a branch whose record says a format newer than this daemon's is refused, naming
     /// the branch and the format, before anything of it is read or written: no store takes it, its
     /// lease is as it was, and no segment of it is written.
