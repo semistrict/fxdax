@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-03 13:09'
-updated_date: '2026-11-05 08:15'
+updated_date: '2026-11-05 10:24'
 labels:
   - structure
 dependencies: []
@@ -59,4 +59,6 @@ Nightly missed: every follow, snapshot, suspend, migrate, volumes, import, resiz
 Structure: fine as it is now; one owner of where a case runs, the case's registration.
 
 Verified: FXDAX_TEST_PARTS="clippy scripts guest" scripts/test.sh in Docker (rust:1, root): clippy clean, 159 script tests, test_cases host 63/63, guest 60/60, runner 4/4.
+
+GCE r605 (us-central1-a, release kernel, FXDAX_E2E_TEST by name, as the brief asked): test-e2e.sh asked the runner, which ran the three cases in registration order (checks-dax-small, checks-overrun, dax), all OK (74 s of 368 s, 4 s of 30 s, 2 s of 15 s); guest tests exit 0. Tag selections themselves checked against the old lists in Docker (above); no GCE run of a --tag suite yet.
 <!-- SECTION:NOTES:END -->
