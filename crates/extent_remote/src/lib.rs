@@ -133,7 +133,9 @@ pub(crate) struct Rules {
     /// The collector lists objects before it reads what branches need.
     /// TLA+: `specs/bucket/mutations/NoCandidatesFirst.cfg`.
     pub candidates_first: bool,
-    /// Readers that find a segment missing check that no checkpoint newer than theirs has come.
+    /// Readers that find a segment missing check that no checkpoint newer than theirs has come;
+    /// those that found none of a branch's and find what it inherited lost, that none has come
+    /// (TASK-177).
     /// TLA+: `specs/bucket/mutations/NoNewestCheckpoint.cfg`.
     pub newest_checkpoint: bool,
     /// The collector finds forks in their parents' states, not only by their records.

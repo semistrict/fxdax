@@ -443,7 +443,12 @@ async fn attempt<B: Bucket>(
         None => match origin {
             None => (Layered::of(State::new(branch)), None, None),
             Some(origin) => {
-                let at = state_at(checkpoints, origin.parent, origin.at, &mut touched).await?;
+                let at = match state_at(checkpoints, origin.parent, origin.at, &mut touched).await {
+                    Ok(at) => at,
+                    Err(failed) => {
+                        return Err(unless_checkpointed(bucket, branch, u64::MAX, failed).await);
+                    }
+                };
                 (Layered::inheriting(at, branch), None, None)
             }
         },
@@ -572,17 +577,25 @@ fn state_at<'a, B: Bucket>(
             }
             None => {
                 let key = layout::record(branch);
-                let Some(object) = bucket::get(bucket, &key).await else {
-                    return Err(Attempt::Failed(Error::Lost(key)));
+                let inherited = match bucket::get(bucket, &key).await {
+                    None => Err(Attempt::Failed(Error::Lost(key))),
+                    Some(object) => {
+                        touched.insert(key);
+                        match Record::decode(branch, &object.bytes)?.origin() {
+                            None => Ok(None),
+                            Some(origin) => {
+                                state_at(checkpoints, origin.parent, origin.at, touched)
+                                    .await
+                                    .map(Some)
+                            }
+                        }
+                    }
                 };
-                touched.insert(key);
-                let record = Record::decode(branch, &object.bytes)?;
-                match record.origin() {
-                    None => Layered::of(State::new(branch)),
-                    Some(origin) => {
-                        let inherited =
-                            state_at(checkpoints, origin.parent, origin.at, touched).await?;
-                        Layered::inheriting(inherited, branch)
+                match inherited {
+                    Ok(None) => Layered::of(State::new(branch)),
+                    Ok(Some(inherited)) => Layered::inheriting(inherited, branch),
+                    Err(failed) => {
+                        return Err(unless_checkpointed(bucket, branch, at, failed).await);
                     }
                 }
             }
@@ -598,6 +611,27 @@ fn state_at<'a, B: Bucket>(
         }
         Ok(Arc::new(state.placed(Layered::flatten)))
     })
+}
+
+/// What `failed` gives, a recovery of `branch` that found no checkpoint of it up to its segment
+/// `at` and went to what it inherited instead: one that found that lost starts again if a
+/// checkpoint of the branch up to there has come since, which the collector, going by it, may have
+/// let what it found lost go for: the record of a parent deleted, which no other recovery reads
+/// (doc-7, Checkpoints; TASK-177).
+async fn unless_checkpointed(
+    bucket: &impl Bucket,
+    branch: u64,
+    at: u64,
+    failed: Attempt,
+) -> Attempt {
+    if !matches!(failed, Attempt::Failed(Error::Lost(_))) || !rules().newest_checkpoint {
+        return failed;
+    }
+    let listed = bucket::list(bucket, &layout::checkpoints(branch)).await;
+    let checkpointed = listed.iter().any(
+        |meta| matches!(layout::kind(&meta.key), layout::Kind::Checkpoint { seq, .. } if seq <= at),
+    );
+    if checkpointed { Attempt::Restart } else { failed }
 }
 
 /// Whether `branch` holds its segment `at`, as a fork's recovery from there needs: the state as of

@@ -897,7 +897,7 @@ mod tests {
     /// the collector having run until they delete nothing more.
     async fn read_as_a_checkpoint_lands() -> Result<Vec<u8>, Error> {
         let direct = Arc::new(Direct(SimBucket::new()));
-        let bucket = Arc::new(Landing { bucket: direct.clone(), then: Mutex::default() });
+        let bucket = Arc::new(Hooked::new(direct.clone(), Hook::Checkpointed));
         branch::create(&*bucket, 1, 0).await.unwrap();
         let writer = Arc::new(Writer::open(bucket.clone(), 1, 10, 0).await.unwrap());
         let Compacted { kept, moved, .. } = compacted(&*bucket, &writer).await;
@@ -960,15 +960,86 @@ mod tests {
         }
     }
 
-    /// A bucket that runs `then` once, as the create of a checkpoint takes effect, before it is
-    /// answered.
-    struct Landing {
+    /// TASK-177: a fork's recovery that listed no checkpoint of the fork's own, going to its
+    /// parent's state where it was forked, finds the parent's record gone, the parent deleted and
+    /// the collector having dropped its record once the fork's own checkpoint came: it starts again
+    /// from that checkpoint. Found by the simulation, seed 210 of its `forks` at SIM_SOAK=100.
+    #[test]
+    fn forks_recover_past_parents_records_their_own_checkpoints_let_go() {
+        assert_eq!(block_on(recover_as_a_fork_checkpoints()), Ok(vec![ExtentId::new(1, 1 << 40)]));
+    }
+
+    /// A recovery that finds what it inherited lost not looking for a checkpoint that came since:
+    /// it fails on the record.
+    #[test]
+    fn forks_recovering_past_parents_records_their_own_checkpoints_let_go_need_newest_checkpoints()
+    {
+        crate::set_rules(crate::Rules { newest_checkpoint: false, ..crate::Rules::ALL });
+        let recovered = block_on(recover_as_a_fork_checkpoints());
+        crate::set_rules(crate::Rules::ALL);
+        assert_eq!(recovered, Err(Error::Lost(layout::record(1))));
+    }
+
+    /// The extents a fork's recovery finds, its parent deleted, the fork's writer checkpointing and
+    /// a pass of the collector running as the recovery reads the parent's record.
+    async fn recover_as_a_fork_checkpoints() -> Result<Vec<ExtentId>, Error> {
+        use crate::layout::{Contents, Origin, Segment};
+        use crate::writer::Objects;
+        let direct = Arc::new(Direct(SimBucket::new()));
+        let bucket = Arc::new(Hooked::new(direct.clone(), Hook::Getting(layout::record(1))));
+        branch::create(&*bucket, 1, 0).await.unwrap();
+        let parent = Writer::open(bucket.clone(), 1, 10, 0).await.unwrap();
+        let extent = ExtentId::new(1, parent.chain().next_sequence());
+        let extents = vec![(extent, b"held".to_vec())];
+        commit(&parent, Commit { tag: 1, extents, ..Commit::default() }).await;
+        let footer =
+            parent.chain().close(Contents { forks: vec![child(2)], ..Contents::default() });
+        let segment = Segment { data: Vec::new(), footer: footer.clone() }.encode().into();
+        let at = parent.add_segment(Objects { footer, segment, own: Vec::new() }).unwrap();
+        parent.upload(at).await.unwrap();
+        parent.acknowledge().await.unwrap();
+        branch::delete(&*bucket, 1, 11, u64::MAX).await.unwrap();
+        let forked = Arc::new(Writer::open(bucket.clone(), 2, 12, 0).await.unwrap());
+        let passing = direct.clone();
+        *bucket.then.lock().unwrap() = Some(Box::new(move || {
+            forked.checkpoint().now_or_never().unwrap().unwrap();
+            collect(&*passing, 1, &KEEP).now_or_never().unwrap().unwrap();
+        }));
+        let recovered = recovery::recover(&*bucket, 2, Some(Origin { parent: 1, at })).await?;
+        Ok(recovered.state.extents.into_keys().collect())
+    }
+
+    /// A bucket that runs `then` once, at the first request its hook names.
+    struct Hooked {
         bucket: Arc<Direct>,
+        hook: Hook,
         then: Mutex<Option<Box<dyn FnOnce() + Send>>>,
     }
 
-    impl Bucket for Landing {
+    /// Where [`Hooked`] runs what it runs.
+    enum Hook {
+        /// As the create of a checkpoint takes effect, before it is answered.
+        Checkpointed,
+        /// Before a get of the object at this key.
+        Getting(String),
+    }
+
+    impl Hooked {
+        fn new(bucket: Arc<Direct>, hook: Hook) -> Self {
+            Self { bucket, hook, then: Mutex::default() }
+        }
+
+        /// What it runs, if `now` and it has yet to.
+        fn then(&self, now: bool) -> Option<Box<dyn FnOnce() + Send>> {
+            now.then(|| self.then.lock().unwrap().take()).flatten()
+        }
+    }
+
+    impl Bucket for Hooked {
         fn get(&self, key: &str) -> impl Future<Output = Result<Object, BucketError>> + Send {
+            if let Some(then) = self.then(matches!(&self.hook, Hook::Getting(at) if at == key)) {
+                then();
+            }
             self.bucket.get(key)
         }
 
@@ -998,7 +1069,7 @@ mod tests {
             mode: PutMode,
         ) -> impl Future<Output = Result<Version, BucketError>> + Send {
             let checkpoint = matches!(layout::kind(key), Kind::Checkpoint { .. });
-            let then = checkpoint.then(|| self.then.lock().unwrap().take()).flatten();
+            let then = self.then(checkpoint && matches!(self.hook, Hook::Checkpointed));
             let put = self.bucket.put(key, bytes, mode);
             async move {
                 let put = put.await;
