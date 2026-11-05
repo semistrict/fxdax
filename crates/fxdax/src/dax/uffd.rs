@@ -442,6 +442,11 @@ struct Pages {
     /// fxdax: whether the memory was let go of ([`UffdSecondStage::release`]): nothing changes
     /// it from now on.
     released: bool,
+    /// fxdax: the pages restricted for workers' writes, some perhaps unrestricted since, which a
+    /// guest's access failing lifts ([`UffdSecondStage::lift_worker_restrictions`]): each of a
+    /// vCPU's `KVM_RUN`s failing lifts them, thousands a second while the guest strays, which a
+    /// look at every page of the window took the fault thread from serving faults for (TASK-187).
+    for_workers: Vec<usize>,
 }
 
 impl Pages {
@@ -949,7 +954,8 @@ impl<H: HostMemory> UffdSecondStage<H> {
             return Err(Error::msg("DAX window memory must be whole pages"));
         }
         let pages = vec![PageChanges::default(); size / page_size];
-        let pages = Mutex::new(Pages { pages, runs: 0, clock: 0, released: false });
+        let for_workers = Vec::new();
+        let pages = Mutex::new(Pages { pages, runs: 0, clock: 0, released: false, for_workers });
         let budget = budget.max(1);
         let taken = Taken::default();
         let stage = Arc::new(Self {
@@ -1106,7 +1112,8 @@ impl<H: HostMemory> UffdSecondStage<H> {
         pages.pages[page].withheld = withheld;
         pages.pages[page].restricted = prot == libc::PROT_READ;
         pages.pages[page].for_worker = false;
-        changed_protection("restricted to reads", offset, made, seen);
+        let what = if withheld { "withheld" } else { "restricted to reads" };
+        changed_protection(what, offset, made, seen);
     }
 
     /// fxdax: restricts the page at `addr` to reads for a worker's write, resolved as a load, on a
@@ -1125,6 +1132,15 @@ impl<H: HostMemory> UffdSecondStage<H> {
             return;
         }
         self.host.protect(addr, page_size, libc::PROT_READ);
+        let Pages { pages: all, for_workers, .. } = &mut *pages;
+        // Pages unrestricted since stay listed till a lift, of which a VM may take none: dropped
+        // once the list is as long as the window, each page listed once while it is restricted.
+        if for_workers.len() >= all.len() {
+            for_workers.retain(|&at| all[at].restricted && all[at].for_worker);
+        }
+        if !(all[at].restricted && all[at].for_worker) {
+            for_workers.push(at);
+        }
         let page = &mut pages.pages[at];
         (page.restricted, page.for_worker) = (true, true);
         let offset = (addr - self.base) as u64;
@@ -1143,7 +1159,7 @@ impl<H: HostMemory> UffdSecondStage<H> {
         if pages.released {
             return;
         }
-        for at in 0..pages.pages.len() {
+        for at in std::mem::take(&mut pages.for_workers) {
             let page = &mut pages.pages[at];
             if !(page.restricted && page.for_worker) {
                 continue;
