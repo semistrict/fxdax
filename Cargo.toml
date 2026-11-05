@@ -142,3 +142,12 @@ fuchsia = { path = "crates/fuchsia" }
 fuchsia-macro = { path = "crates/fuchsia-macro" }
 fidl-fuchsia-diagnostics-types = { path = "crates/fidl-fuchsia-diagnostics-types" }
 diagnostics-log = { path = "crates/diagnostics-log" }
+
+# extent_remote's simulation (scripts/test.sh's part sim): optimized, as its seed searches, seconds
+# to minutes each so, took past 20 minutes each unoptimized and ran CI's workspace job out of time;
+# with a debug build's checks kept, its debug_asserts and overflows, among which are the protocol's
+# invariants (TASK-188).
+[profile.sim]
+inherits = "release"
+debug-assertions = true
+overflow-checks = true

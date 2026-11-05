@@ -3,12 +3,12 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-# Run clippy's rules (clippy.toml), the test suite, the concurrency tests under Shuttle, the
-# scripts' tests (scripts/tests) and the mutant runners' checks, and on Linux the guest tests'
-# own tests (guest/tests, both halves): what CI runs, a part a job.
-# Arguments are passed to the suite's `cargo nextest run`. FXDAX_TEST_PARTS names the parts to
-# run, separated by spaces (default: all of clippy, workspace, shuttle, scripts, and guest on
-# Linux).
+# Run clippy's rules (clippy.toml), the test suite, extent_remote's simulation, the concurrency
+# tests under Shuttle, the scripts' tests (scripts/tests) and the mutant runners' checks, and on
+# Linux the guest tests' own tests (guest/tests, both halves): what CI runs, a part a job.
+# Arguments are passed to the suite's and the simulation's `cargo nextest run`. FXDAX_TEST_PARTS
+# names the parts to run, separated by spaces (default: all of clippy, workspace, sim, shuttle,
+# scripts, and guest on Linux).
 #
 # Unicode tests compare against the Unicode Character Database, which is
 # downloaded and checksummed on first use.
@@ -29,7 +29,7 @@ echo "$SHA256  $zip" | shasum -a 256 -c - >/dev/null
 # keep, rather than the terminal they have none of: an abort said nothing else (TASK-100).
 export LIBC_FATAL_STDERR_=1
 
-parts="clippy workspace shuttle scripts"
+parts="clippy workspace sim shuttle scripts"
 [[ $(uname) != Linux ]] || parts+=" guest"
 parts=${FXDAX_TEST_PARTS:-$parts}
 part() { # name: whether FXDAX_TEST_PARTS has it
@@ -42,8 +42,18 @@ if part clippy; then
     UCD_ZIP="$zip" cargo clippy --manifest-path "$root/Cargo.toml" --workspace --tests -- \
         -A clippy::all -D clippy::disallowed_methods
 fi
+# extent_remote's simulation: its profiles' soaks, and its rules' seed searches, each until a seed
+# with the rule off finds what the rule prevents, up to 20,000. Its own part, built with the
+# profile sim, optimized with a debug build's checks: unoptimized, in the suite's build, four
+# searches took 20 to 27 minutes each, which ran CI's workspace job out of time (TASK-188).
+sim='package(extent_remote) & test(/^sim::/)'
 if part workspace; then
-    UCD_ZIP="$zip" cargo nextest run --manifest-path "$root/Cargo.toml" --workspace "$@"
+    UCD_ZIP="$zip" cargo nextest run --manifest-path "$root/Cargo.toml" --workspace \
+        -E "not ($sim)" "$@"
+fi
+if part sim; then
+    cargo nextest run --manifest-path "$root/Cargo.toml" --cargo-profile sim -p extent_remote \
+        -E "$sim" "$@"
 fi
 # The concurrency tests under Shuttle, built with each crate's `shuttle` feature, which only they
 # can run (TASK-44).

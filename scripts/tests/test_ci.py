@@ -42,8 +42,8 @@ def packages():
 class Ci(unittest.TestCase):
     def test_each_part_installs_its_own_tools_alone(self):
         installed = packages()
-        self.assertEqual(sorted(installed), sorted(["workspace", "shuttle", "clippy scripts",
-                                                    "guest"]))
+        self.assertEqual(sorted(installed), sorted(["workspace", "sim", "shuttle",
+                                                    "clippy scripts", "guest"]))
         for package, users in OWN.items():
             self.assertEqual({part for part, has in installed.items() if package in has}, users,
                              package)

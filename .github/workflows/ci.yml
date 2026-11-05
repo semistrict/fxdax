@@ -20,10 +20,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # The workspace's suite takes most of an hour; the Shuttle suites, each built with its
-        # crate's feature, a build of their own; the guest tests' own, a workspace of their own; the
-        # rest, minutes.
-        parts: [workspace, shuttle, clippy scripts, guest]
+        # The workspace's suite, a quarter of an hour of tests; extent_remote's simulation, whose
+        # seed searches took most of an hour in the suite's unoptimized build, an optimized build of
+        # its own (TASK-188); the Shuttle suites, each built with its crate's feature, a build of
+        # their own; the guest tests' own, a workspace of their own; the rest, minutes.
+        parts: [workspace, sim, shuttle, clippy scripts, guest]
         # What a part's tests run beyond what every part builds with: Coccinelle, whose rules the
         # scripts' tests check; xfsprogs, for the guest tests' own of reflinks. Coccinelle and its
         # OCaml are three quarters of the downloads: every part fetching them, a slow mirror (57
