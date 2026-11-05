@@ -3190,12 +3190,18 @@ fn reopened(socket: &Path, path: &Path) -> RemoteExtentStore {
 /// Waits for the daemon to have let go of the store at `path`, whose connection went: closed, its
 /// uploader done with what closing uploads, as another connection may open it then.
 fn let_go(path: &Path) {
-    let (paths, key) = (super::stores::open_paths(), super::stores::store_key(path));
-    // `EBUSY` until the daemon sees the connection going; then the wait is for its store to go.
-    while paths.hold(&key, std::sync::Weak::new(), None) == Err(Errno::EBUSY) {
+    let (table, key) = (super::stores::table(), super::stores::store_key(path));
+    // `EBUSY` until the daemon sees the connection going; then the wait is for it to let go.
+    let hold = loop {
+        match table.hold(&key, None) {
+            Err(Errno::EBUSY) => std::thread::yield_now(),
+            held => break held.unwrap(),
+        }
+    };
+    // Then for its store, closing, to go: the table has it while anything does.
+    while hold.instance().is_some() {
         std::thread::yield_now();
     }
-    paths.release(&key);
 }
 
 /// TASK-44.10: a guest's fork failing at each of its steps ([`crate::faults::FORK_STEPS`]) fails
