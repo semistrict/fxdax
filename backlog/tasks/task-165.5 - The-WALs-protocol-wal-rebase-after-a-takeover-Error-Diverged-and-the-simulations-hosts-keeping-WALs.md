@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-05 03:16'
-updated_date: '2026-11-05 16:10'
+updated_date: '2026-11-05 19:18'
 labels: []
 dependencies:
   - TASK-165.2
@@ -70,4 +70,12 @@ Verified 2026-11-05 (branch task-165-5, on 75bd872ba).
 - Linux, Docker (OrbStack, rust:1 arm64), cargo nextest run -p extent_remote -p extent_store -p fxdax: 893/901, before the footer cache. The 8 failures: eu-stack (stacks_name_where_threads_wait, fxdaxctl_ and the_daemon_writes_its_stacks_on_sigquit), grants ENOENT (3), the build stamp, and seccomp's copy_on_write_windows_run_under_firecrackers_seccomp_filters, because this worktree had vendor/firecracker checked out at a2db2b3b0, not main's d53645971; after git submodule update it passes.
 - scripts/upstream-changes.py --check: exit 0.
 Not run: GCE (scripts/test-gce.sh), DoD #1's Linux half.
+
+Rebased 2026-11-05 onto 10f6159ab (collector fixes TASK-173, 174, 183; TASK-160.24). Conflicts: lib.rs's Rules (recoveries_by_origins, records_kept, deletions_fence kept, then wal_follows, wal_after_fence), sim/mod.rs (one()'s rule and profile names, both kept), Bucket.tla's header (the 28 fields, deletionsDoneByOthers with none, the WAL's two the last fields too), OPEN_QUESTIONS.md (both sides' decisions). sim/world.rs merged by itself, but not soundly: main's restore and usurp set a pending fork's child aside (out of World::branches) while a point's restore or a root takes its ID, and World::opened's restamping unwrapped the child to move its origin (a panic) and, the child set aside, left the origin it is put back with stale. Fixed (9c2d4e62e): World::fork_child finds the child by its owner wherever it is (branches, a restore's or an unfork's taken, World::usurped, which now holds usurp's fork as restores hold theirs, out of its future), never a restore's or root's branch of the same ID; forked_wals gains usurp = 2. Red without World::usurped in the lookup: SIM_SOAK=100 of logs_of_forks_put_after_takeovers, seed 2076, 'branch f's record says Some(Origin { parent: 2, at: 7 })'.
+Verified after the rebase (9c2d4e62e):
+- Rule tests, release: 25/25 test_needs pass (167 s); logs_need_to_follow seed 2, logs_need_the_end_after_the_fence seed 182, deletions_need_fences 4505, collection_needs_records_kept 1.
+- Soak, release, SIM_SOAK=100 of the 19 holds tests (main's three new among them): 19/19 (581 s); points_restored_on_many_hosts_at_once flagged leaky by nextest, passing.
+- check-tla.sh, bucket spec by model name: 11/11 models hold, 32/32 mutations give their counterexamples (NoWalFollows: NoAckedLost; NoWalAfterFence: HistoriesOwn). In parts: the first run of all 43 was stopped at the 2-hour background limit after Bucket, BucketCompaction and BucketForks had passed (load average 13-17: BucketForks 4531 s, 681 s before); the rest by name in three runs.
+- macOS FXDAX_TEST_PARTS='workspace shuttle' scripts/test.sh --no-fail-fast: exit 0, workspace 2146/2146, shuttle parts green.
+Not rerun after the rebase: Linux in Docker; GCE never run.
 <!-- SECTION:NOTES:END -->
