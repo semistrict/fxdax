@@ -869,6 +869,78 @@ fn windows_copy_on_write_in_the_vm_process() {
     assert_eq!(unsafe { libc::munmap(memory.as_ptr().cast(), 4 * ps) }, 0);
 }
 
+/// A byte at `addr` written to a pipe, the kernel reading it, faulting for reading as KVM does for
+/// a vCPU's load: `Err` with the errno it failed with.
+fn kernel_load(addr: usize) -> Result<(), i32> {
+    let mut pipe = [0; 2];
+    // SAFETY: Makes a pipe, writes the byte at `addr` to it, and closes it.
+    unsafe {
+        assert_eq!(libc::pipe(pipe.as_mut_ptr()), 0);
+        let written = libc::write(pipe[1], addr as *const libc::c_void, 1);
+        let errno = std::io::Error::last_os_error().raw_os_error().unwrap();
+        libc::close(pipe[0]);
+        libc::close(pipe[1]);
+        if written == 1 { Ok(()) } else { Err(errno) }
+    }
+}
+
+/// fxdax TASK-187: a guest's stray access, a load or a store at a window offset nothing maps
+/// (fxfs.dax_stray, fxfs-guest-crash-stray-dax), its page faulted first by KVM's asynchronous page
+/// fault's worker, writing, then by the vCPU, stays refused, withheld, however often the vCPU
+/// retries it as the VMM does ([`AccessFailures`](crate::AccessFailures)), each retry lifting what
+/// the stage restricted for workers' writes; and is given up on, its VM stopped (Firecracker's
+/// 159), after a second of failures 25 µs apart, the clock the test's, though the vCPU exits
+/// thirteen times between each two, as one taking the guest's interrupts does: vCPU 0 in GCE r621
+/// and r622 failed a dozen times, exited, failed again, for as long as the case ran, as an exit
+/// ended its run of failures.
+#[test]
+fn a_stray_access_stays_refused_and_is_given_up_on() {
+    use crate::{AccessFailures, FailingRun, Failure};
+    host();
+    let ps = page_size() as usize;
+    let dir = tempfile::tempdir().unwrap();
+    let (store, served) = connect(&dir.path().join("store"), 1 << 24);
+    let memory = memory(4);
+    // SAFETY: The memory is the test's, and outlives the store.
+    unsafe { store.create_dax_window_in_host_memory(memory, 4 * ps as u64, None, 2) }.unwrap();
+    assert!(store.copies_on_write());
+    let base = memory.as_ptr() as usize;
+    // KVM's worker, a thread not the guest's, faulting the page in for writing for a vCPU's load.
+    let worker = std::thread::spawn(move || kernel_store(base + 2 * ps));
+    assert_eq!(worker.join().unwrap(), Err(libc::EFAULT), "the worker's write went through");
+    crate::guest_thread_started();
+    let step = std::time::Duration::from_micros(25);
+    let accesses: [(&str, fn(usize) -> Result<(), i32>, usize); 2] =
+        [("load", kernel_load, base + 2 * ps), ("store", kernel_store, base + 3 * ps + ps / 2)];
+    for (what, access, addr) in accesses {
+        let mut failures = AccessFailures::default();
+        let start = std::time::Instant::now();
+        let mut now = start;
+        let answer = loop {
+            assert_eq!(access(addr), Err(libc::EFAULT), "the stray {what} went through");
+            match failures.failed(now) {
+                Failure::Retry { ended: None } if now - start < 2 * AccessFailures::PATIENCE => {}
+                answer => break answer,
+            }
+            for _ in 0..13 {
+                assert_eq!(failures.ran(|| now), None, "a run ended {:?} in", now - start);
+            }
+            now += step;
+        };
+        let (last, failures) = (start + 40_000 * step, 40_001);
+        let run = FailingRun { first: start, last, failures, exits: 13 * (failures - 1) };
+        assert_eq!(answer, Failure::GiveUp(run), "the stray {what}");
+    }
+    let told = crate::describe_windows(Some(base));
+    let pages = "0 pages installed, 0 left out, 0 private, 2 withheld, 0 restricted";
+    assert!(told.contains(pages), "{told}");
+
+    drop(store);
+    served.join().unwrap();
+    // SAFETY: Unmaps the memory, which nothing uses any more.
+    assert_eq!(unsafe { libc::munmap(memory.as_ptr().cast(), 4 * ps) }, 0);
+}
+
 /// TASK-131.6: the daemon's gauges of its extent cache and its windows' mappings follow a window's
 /// mappings: a sealed extent's, the cached extent its mappings hold (pinned), its page faulted in,
 /// then mapped at once again; and unmapped, the cached extent nothing holds (idle).

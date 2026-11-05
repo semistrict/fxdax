@@ -31,6 +31,7 @@
 //! out as the window is, so that they cost it no mapping each (`dax::uffd`); the window keeps where
 //! they are and how many.
 
+pub(crate) mod failures;
 #[cfg(all(test, feature = "shuttle"))]
 mod shuttle_tests;
 #[cfg(target_os = "linux")]

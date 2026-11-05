@@ -61,7 +61,8 @@
 //! or read-only where a store would go untracked, so that such a fault fails with `EFAULT` rather
 //! than resolving wrongly: a page of zeros faulted in, or a store not dirtying its page. A VMM must
 //! then let the guest retry its access, as fxdax's Firecracker retries a vCPU's `KVM_RUN` that
-//! fails with `EFAULT` for a moment.
+//! fails with `EFAULT` for a moment, giving up on one that keeps failing
+//! ([`AccessFailures`](crate::AccessFailures)).
 //!
 //! Each run of pages mapped here, consecutive pages of one arena's memory, is a mapping of the
 //! process's own, of which Linux allows `vm.max_map_count` (65,530 by default); a window's pages
