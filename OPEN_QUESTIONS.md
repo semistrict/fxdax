@@ -60,6 +60,14 @@ data.c drives resize, punch and clone for both kinds of regular file, over `stru
 **Instead:** `IS_DAX(inode) ? &dax : &cache` in data.c, which would have guest/sim link a stub of the page cache's table; fsync in data.c, with the VFS's metadata syncs faked.
 **Undoing it:** fold `fxfs_data_ops` back into `IS_DAX` branches in super.c, and guest/sim's mount.c's copies back.
 
+## One replay, capacity by commits: how (TASK-165.3, 2026-11-05)
+
+- **A resize is the next commit's, not a commit of its own:** `Store::set_capacity` keeps the local record as before and has the next commit's segment footer carry the capacity. A resize that committed would seal the extents a guest has open, whose next writes would then be refused. *Instead:* a commit with no seals at each resize, once commits no longer seal what's open (the open segment's log, TASK-165.9). *Undoing it:* `Uncommitted::resize`.
+- **A store attaching to a branch whose state names no capacity, or another, restates its own with its next commit** (`Store::restate_capacity`), rather than in a segment of its own at attaching: attaching makes no more segments than before (fork tests name segments by number, TASK-157's). Until that commit, a host taking the branch elsewhere gives it the capacity it made its store with, as before. *Undoing it:* the diff's last plan commits the capacity (`Plan::commit`'s `capacity`), and the tests' segment numbers move by one.
+- **A batch's footer has a store's shape:** an extent its commits sealed and later freed is a free alone, one a commit sealed and freed itself is neither (`batch::Plan::contents`). So the simulation's footers are the store's, and its new check of spent IDs sees the rule the store's footers need. *Undoing it:* `Plan::contents` keeps every seal.
+- **A footer holds its segment's `Contents`, its extents of their own placed at its writer's keys by its place** (`Footer::own`): a footer naming its own extents elsewhere can't be made, and `Chain::admit` checks the place alone. *Undoing it:* the format, again.
+- **The local record keeps the capacity until the lineage goes** (TASK-165.7); the store's local checkpoints and `rebuild` don't carry it.
+
 ## The host's copy-on-write DAX protocol once writable DAX is deleted (TASK-164.7, 2026-11-04)
 
 Writable DAX is deleted from the host (vendor/firecracker's extent device, crates/fxdax, physmem, extent_store). Decided, where the brief left it open:
@@ -139,12 +147,6 @@ Only a guest can seal its open extents, whose pages count against a budget its d
 `State::audit` recounts the ~15 byte counters from everything the branch holds each time its state's lock is let go, in builds with the `audit` feature. Decided: `shuttle` implies it, and `extent_store` turns it on for its own tests by a dev-dependency on itself. Cargo unifies features in one build, so a workspace test run (`cargo nextest run --workspace`, `scripts/test.sh`, GCE) audits the stores of fxdax's and the other crates' tests too: more checking, at the cost of a walk of every extent per critical section. Only branches holding at most 4,096 extents are audited (`AUDITED_EXTENTS`). Unbounded, fxdax's `counting_followers_walks_no_extents`, which writes a 32,768-extent base one extent at a time, ran past an hour on GCE. Release builds and the daemon never audit.
 **Instead:** `cfg(debug_assertions)`, which also audits debug daemons and guest tests, whose stores are large; or an opt-in each test calls, which misses the ones that don't.
 **Undoing it:** drop the self dev-dependency (the Shuttle and lib tests still audit), or `audit = []` and the `cfg`s.
-
-## The three footer replays stay three for now (TASK-160.15, 2026-11-03)
-
-TASK-160.15's bug is fixed at the source: footers free only extents a commit held (`layout::held_frees`, which delta replay uses too), so local rebuild spends what the store spends. Merging the replays into `extent_frame::segment::Replay` is left for later. They differ on purpose: remote recovery spends only the frees of extents it held before the segment, takes the largest `next_sequence`, and has its own continuity rule and layers. Each difference needs its own decision, and TASK-153.7/.8/.9 changed the footers of both crates just now (Footer.forks of Child).
-**Instead:** merge them now, choosing one rule for each of those differences, across a format change in flight.
-**Undoing it:** nothing to undo; the merge is TASK-160.15's AC #2, still open.
 
 ## The journal's end is in the root, set by each sync's barrier (TASK-153.13)
 
