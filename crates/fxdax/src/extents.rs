@@ -3515,12 +3515,18 @@ mod tests {
             store.attach_base(&base, &ancestry).unwrap();
             store.map(extent, 0, ps, 0).unwrap();
         }
+        // Counted before anything pages in: a page-in holds the extent too, a while after the
+        // fault it serves returns (TASK-157), as `windows_share_extents_pages` counts.
+        let extent_cached = cached(extent).expect("the extent is cached");
+        // The cache's, the test's, and each window's mapping.
+        assert_eq!(Arc::strong_count(&extent_cached), 4);
         for window in &windows {
             block_on(window.fault(0, Access::Read)).unwrap();
+            // SAFETY: The test faulted the page in, and nothing writes it.
+            let mapped = unsafe { std::slice::from_raw_parts(window.host_base(), ps as usize) };
+            assert!(mapped == pattern(4, ps as usize), "a window maps other data");
         }
-        let extent_cached = cached(extent).expect("the extent is cached");
-        // The cache's, the test's, and each window's.
-        assert_eq!(Arc::strong_count(&extent_cached), 4);
+        assert!(Arc::ptr_eq(&cached(extent).unwrap(), &extent_cached), "cached anew");
         let mut held = vec![0; ps as usize];
         extent_cached.read(0, &mut held).unwrap();
         assert!(held == pattern(4, ps as usize), "the cache holds other data");
