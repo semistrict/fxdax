@@ -1,11 +1,11 @@
 ---
 id: TASK-160.20
 title: 'Fxfs: one way to tombstone an unlinked object in a transaction'
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-03 13:08'
-updated_date: '2026-11-05 04:39'
+updated_date: '2026-11-05 06:57'
 labels:
   - structure
 dependencies: []
@@ -23,15 +23,15 @@ Freeing unlinked objects many to a transaction is done twice with different rule
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 One tombstoning path for both
-- [ ] #2 Model hunts with batched_graveyard and fsck pass; fxfs-posix mutants still fail
+- [x] #1 One tombstoning path for both
+- [x] #2 Model hunts with batched_graveyard and fsck pass; fxfs-posix mutants still fail
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -54,4 +54,12 @@ Tests: test_txn_tombstone_unlinked (tree entry, pending entry, tree Trim plus pe
 Verified on macOS: cargo nextest run -p fxfs -p fxfs-posix -p storage_device, 868 passed, 2 skipped; FXDAX_MODEL_CASES=3000 model hunt (half of the seeds batched_graveyard) passed in 3016 s (6481 power cuts, 11811 replay cuts); mutants.sh --check, 17/17 apply; scripts/upstream-changes.py --check passed. Not done: the full mutants.sh run (2 of 17 caught, a-batch-loses-its-last-run and a-directory-moved-stays-counted, before the disk filled: other worktrees' target/ dirs, 163 MiB free), the FXDAX_MODEL_FSCK hunt, FXDAX_TEST_PARTS=workspace scripts/test.sh, GCE.
 
 Reruns after the disk was freed (2026-11-04): mutants.sh, 16 of 17 caught (a-tombstone-leaves-a-trims-entry by a_device_that_fails_loses_nothing_durable in 38 s); truncate-gives-up-on-its-tail not caught, the same at the base 9f81f6018 (83 s), so not this change's: its catching test is a gap of its own. FXDAX_MODEL_FSCK=1 FXDAX_MODEL_CASES=200 hunt passed (450 power cuts, 796 replay cuts, 223 s). FXDAX_TEST_PARTS=workspace scripts/test.sh --no-fail-fast: 2054 passed, 18 skipped. Not run: GCE (Linux). Note: mutants.sh's patch leaves *.orig files for a patch that applies at an offset.
+
+GCE r581 on main f5a5a9d82: Linux workspace 2249/2249, Shuttle and the other parts all pass; macOS workspace 2054 (rebased) and 2068 (with 160.8). Mutants: 16 of 17 caught; truncate-gives-up-on-its-tail goes uncaught on the base too (filed in TODO), so 'still fail' holds for every mutant that failed before.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+ObjectStore::txn_tombstone_unlinked is the one way to tombstone an unlinked object in a transaction (the graveyard's batches, fxfs-posix's queued unlinks, upstream's purging unlink, which had TASK-82's bug); Directory::txn_remove_known_child. Verified: 868 fxfs tests, model hunts 3000 cases and 200 with fsck after every transaction, upstream-changes check, mutants 16/17 (the 17th uncaught before too), GCE r581 on main f5a5a9d82: Linux workspace 2249/2249, Shuttle and the other parts all pass; macOS workspace 2054 (rebased) and 2068 (with 160.8).
+<!-- SECTION:FINAL_SUMMARY:END -->

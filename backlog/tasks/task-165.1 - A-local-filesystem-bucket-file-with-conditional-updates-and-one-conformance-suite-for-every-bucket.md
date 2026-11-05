@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-05 03:15'
-updated_date: '2026-11-05 05:00'
+updated_date: '2026-11-05 06:57'
 labels: []
 dependencies: []
 documentation:
@@ -33,7 +33,7 @@ doc-14, step 1. Development, tests and images need a bucket on the host's filesy
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
 - [x] #2 scripts/upstream-changes.py --check passes
 - [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
@@ -62,6 +62,8 @@ Verification:
 - Linux (Docker via OrbStack, rust:1, CARGO_TARGET_DIR=/target/t165), not GCE: workspace 2231/2240 passed. The 9 failures, none in extent_remote: environment only (stacks_name_where_threads_wait, fxdaxctl_writes_its_stacks_on_sigquit, the_daemon_writes_its_stacks_on_sigquit: eu-stack missing; builds_are_stamped_with_their_commit; three grants tests: ENOENT), plus guests_forks_failing_at_each_step_harm_nothing (TASK-157's known failure under load) and serves_hundreds_of_forks_of_a_base (64 threads under load). Both passed when rerun alone in the same container. The Shuttle part (skipped by set -e after the workspace part failed) then passed in full.
 - scripts/upstream-changes.py --check passes. DoD #3: extent_remote is fxdax's own crate; no upstream code changed.
 - DoD #1 left unchecked: Linux was run in Docker as asked, not on GCE (scripts/test-gce.sh).
+
+GCE r581 on main f5a5a9d82: Linux workspace 2249/2249, Shuttle and the other parts all pass; macOS workspace 2054 (rebased) and 2068 (with 160.8).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
