@@ -1262,11 +1262,11 @@ impl Connection {
     /// process of the writer's commits after its view's ([`COMMITTED`]); and returns its branch.
     fn follow(&self, path: &Path) -> Result<u64, Errno> {
         let opening = self.opening()?;
-        let followed = stores::followed(path, self.arena())?;
-        if followed.access().public && !self.tenant.policy.follows_public_bases {
+        let follower = stores::followed(path, self.arena())?;
+        if follower.access().public && !self.tenant.policy.follows_public_bases {
             return Err(Errno::EPERM);
         }
-        let store = Arc::new(followed.follow());
+        let store = Arc::new(follower);
         let (epoch, sender, told) = (store.epoch()?, self.peer.sender.clone(), store.clone());
         self.start_behind(move |stopped| tell_commits(told, epoch, sender, stopped));
         let branch = store.branch();

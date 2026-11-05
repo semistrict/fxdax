@@ -51,6 +51,10 @@ pub(crate) struct Rules {
     pub open_outlives_holders: bool,
     /// A store retired stays so while followers have it.
     pub retirement: bool,
+    /// A store is marked retired before its followers are cut off.
+    pub marks_before_cutting: bool,
+    /// A follower made looks again for the store retired, as it was made.
+    pub followers_look_again: bool,
 }
 
 impl Rules {
@@ -59,6 +63,8 @@ impl Rules {
         release_wakes: true,
         open_outlives_holders: true,
         retirement: true,
+        marks_before_cutting: true,
+        followers_look_again: true,
     };
 }
 
@@ -342,6 +348,26 @@ impl<C, S, P> StoreTable<C, S, P> {
         self.inner.lock().unwrap().entries.get_mut(key)?.instance()?.get()
     }
 
+    /// A follower of the store connections have open at `key`, as `follow` makes it, if one is:
+    /// `EBUSY` if it is retired, or was retired as `follow` made it, which its writer's retirement
+    /// may not have cut off ([`Hold::retire`]).
+    pub fn follow<F>(
+        &self,
+        key: &Path,
+        follow: impl FnOnce(&Arc<S>) -> Result<F, Errno>,
+    ) -> Result<Option<F>, Errno> {
+        let Some((store, retired)) = self.instance(key) else { return Ok(None) };
+        if retired {
+            return Err(Errno::EBUSY);
+        }
+        let follower = follow(&store)?;
+        let retired = |(now, retired): (Arc<S>, bool)| retired && Arc::ptr_eq(&now, &store);
+        if rules().followers_look_again && self.instance(key).is_some_and(retired) {
+            return Err(Errno::EBUSY);
+        }
+        Ok(Some(follower))
+    }
+
     /// `f`'s of the point kept open at `key`, if one is: under the table's lock, which `f` takes
     /// for no longer than to look at it.
     pub fn point<R>(&self, key: &Path, f: impl FnOnce(&mut P) -> R) -> Option<R> {
@@ -580,15 +606,22 @@ impl<C, S, P> Hold<'_, C, S, P> {
     /// Retires the store connections have open at its key, its writer gone with writes
     /// uncommitted: `cut` cuts its followers off, without the table's lock, and neither a writer
     /// nor a follower opens it while followers have it.
+    ///
+    /// Marked first, then cut (TASK-160.8): a follower made before the cut is cut off, and one made
+    /// after finds it marked as it looks again ([`StoreTable::follow`]). Cut first, a follower
+    /// finding it unmarked between the two followed a store retired, never cut off.
     pub fn retire(&self, cut: impl FnOnce()) {
-        cut();
-        if !rules().retirement {
-            return;
+        let mut cut = Some(cut);
+        if !rules().marks_before_cutting {
+            cut.take().map(|cut| cut());
         }
-        let mut inner = self.table.inner.lock().unwrap();
-        if let Some(instance) = inner.entries.get_mut(&self.key).and_then(Entry::instance) {
-            instance.retired = true;
+        if rules().retirement {
+            let mut inner = self.table.inner.lock().unwrap();
+            if let Some(instance) = inner.entries.get_mut(&self.key).and_then(Entry::instance) {
+                instance.retired = true;
+            }
         }
+        cut.map(|cut| cut());
     }
 
     /// Keeps `point` open at its key for forks, after its hold too: the daemon's, which found
@@ -643,7 +676,7 @@ mod shuttle_tests {
     use crate::shuttle_testing::{config, fails_with, runs};
     use shuttle::future::block_on;
     use shuttle::scheduler::{PctScheduler, RandomScheduler};
-    use shuttle::sync::atomic::{AtomicBool, Ordering};
+    use shuttle::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use shuttle::sync::mpsc;
     use shuttle::{Runner, thread};
 
@@ -700,10 +733,12 @@ mod shuttle_tests {
     }
 
     /// The store, opened: counted open until it is dropped, closed; dirty once its writer went
-    /// with writes uncommitted. A point's says it is closed, dropping what does.
+    /// with writes uncommitted; and how many times its followers were cut off. A point's says it
+    /// is closed, dropping what does.
     struct Store {
         counts: Arc<Counts>,
         dirty: AtomicBool,
+        cuts: AtomicUsize,
         _closing: Option<mpsc::Sender<()>>,
     }
 
@@ -715,8 +750,8 @@ mod shuttle_tests {
         fn opened(counts: &Arc<Counts>, closing: Option<mpsc::Sender<()>>) -> Arc<Self> {
             let others = counts.open.fetch_add(1, Ordering::SeqCst);
             counts.most_open.fetch_max(others + 1, Ordering::SeqCst);
-            let dirty = AtomicBool::new(false);
-            Arc::new(Store { counts: counts.clone(), dirty, _closing: closing })
+            let (dirty, cuts) = (AtomicBool::new(false), AtomicUsize::new(0));
+            Arc::new(Store { counts: counts.clone(), dirty, cuts, _closing: closing })
         }
     }
 
@@ -834,27 +869,50 @@ mod shuttle_tests {
         Ok(())
     }
 
+    /// A follower of the store, as `ExtentStore::follow` makes one: its view of it, which a cut of
+    /// its followers made after it cuts off.
+    struct Follower {
+        store: Arc<Store>,
+        cuts: usize,
+    }
+
+    impl Follower {
+        fn of(store: Arc<Store>) -> Self {
+            let cuts = store.cuts.load(Ordering::SeqCst);
+            Follower { store, cuts }
+        }
+
+        /// Whether it follows a store its writer retired, gone with writes uncommitted, without
+        /// having been cut off.
+        fn uncut_of_retired(&self) -> bool {
+            self.store.dirty.load(Ordering::SeqCst)
+                && self.store.cuts.load(Ordering::SeqCst) == self.cuts
+        }
+    }
+
     /// Follows the store, as a follower does (`extentd::stores::followed`): the store connections
-    /// have open, unless retired; or, held by the daemon, its point closed, the store opened.
-    fn follow(table: &Table, counts: &Arc<Counts>) -> Result<Arc<Store>, Errno> {
+    /// have open, unless retired ([`StoreTable::follow`]); or, held by the daemon, which no writer
+    /// retires a store under, its point closed, the store opened.
+    fn follow(table: &Table, counts: &Arc<Counts>) -> Result<Follower, Errno> {
         let open = |found: Option<(Arc<Store>, bool)>| match found {
             Some((_, true)) => Err(Errno::EBUSY),
             Some((store, false)) => Ok(Some(store)),
             None => Ok(None),
         };
-        if let Some(store) = open(table.instance(Path::new(KEY)))? {
+        let follow = |store: &Arc<Store>| Ok(Follower::of(store.clone()));
+        if let Some(follower) = table.follow(Path::new(KEY), follow)? {
             reached("a follower followed the store open");
-            return Ok(store);
+            return Ok(follower);
         }
         let hold = Counted::new(counts, table.hold(Path::new(KEY), None)?);
         close(hold.hold().take_point());
         if let Some(store) = open(hold.hold().instance())? {
-            return Ok(store);
+            return Ok(Follower::of(store));
         }
         reached("a follower opened the store");
         let store = Store::open(counts);
         hold.hold().open(&store)?;
-        Ok(store)
+        Ok(Follower::of(store))
     }
 
     /// Forks the store, as the daemon does (`extentd::stores::fork`): through its writer, or the
@@ -899,6 +957,9 @@ mod shuttle_tests {
         let (later_tx, later) = mpsc::channel::<()>();
         let (going_tx, going) = mpsc::channel::<()>();
         let released = Arc::new(AtomicBool::new(false));
+        // That the first went, its store retired if it is to be, to each follower.
+        let (gone_to_follower, gone_follower) = mpsc::channel::<()>();
+        let (gone_to_later, gone_later) = mpsc::channel::<()>();
 
         // The VM's connection, whose VM process goes while it writes the store.
         let first = {
@@ -914,12 +975,15 @@ mod shuttle_tests {
                     let writing = conn.writing.lock().unwrap();
                     let Writing { store, hold } = writing.as_ref().unwrap();
                     store.dirty.store(true, Ordering::SeqCst);
-                    hold.hold().retire(|| ());
+                    hold.hold().retire(|| drop(store.cuts.fetch_add(1, Ordering::SeqCst)));
                 }
                 // The last of it, unless a claim of the store has it as it meets it: it lets the
                 // store go then, outside the table's lock.
                 drop(conn);
                 released.store(true, Ordering::SeqCst);
+                // Unheard by a follower that follows nothing.
+                let _ = gone_to_follower.send(());
+                let _ = gone_to_later.send(());
             })
         };
         // The VM restored from its snapshot, opening the store as the first goes: it gets it
@@ -935,28 +999,34 @@ mod shuttle_tests {
                 drop(conn);
             })
         };
-        // A follower of the first's store, following it for a while.
+        // A follower of the first's store, following it until the first went: cut off, if it
+        // retired it.
         let follower = {
             let counts = counts.clone();
             thread::spawn(move || {
                 followed.recv().unwrap();
-                if let Ok(store) = follow(table, &counts) {
-                    thread::yield_now();
-                    thread::yield_now();
-                    drop(store);
+                if let Ok(follower) = follow(table, &counts) {
+                    gone_follower.recv().unwrap();
+                    let uncut = follower.uncut_of_retired();
+                    drop(follower);
+                    assert!(!uncut, "a follower of a store its writer retired wasn't cut off");
                 }
             })
         };
-        // A follower, following the store as the first goes: never its store once it retired it.
+        // A follower, following the store as the first goes: never its store once it retired it,
+        // and, before or as it does, cut off.
         let following_later = {
             let (counts, released) = (counts.clone(), released.clone());
             thread::spawn(move || {
                 later.recv().unwrap();
                 let after = released.load(Ordering::SeqCst);
-                if let Ok(store) = follow(table, &counts) {
-                    let retired = after && store.dirty.load(Ordering::SeqCst);
-                    drop(store);
+                if let Ok(follower) = follow(table, &counts) {
+                    let retired = after && follower.store.dirty.load(Ordering::SeqCst);
+                    gone_later.recv().unwrap();
+                    let uncut = follower.uncut_of_retired();
+                    drop(follower);
                     assert!(!retired, "a follower followed a store its writer retired");
+                    assert!(!uncut, "a follower of a store its writer retired wasn't cut off");
                 }
             })
         };
@@ -1053,11 +1123,28 @@ mod shuttle_tests {
         fails_without(rules, false, "open twice at once");
     }
 
-    /// A store its writer retired, forgotten as such, is followed after.
+    /// A store its writer retired, forgotten as such, is followed after, and on, uncut, by a
+    /// follower made as it was retired: whichever a schedule meets first.
     #[test]
     fn needs_retirement() {
         let rules = Rules { retirement: false, ..Rules::ALL };
-        fails_without(rules, true, "followed a store its writer retired");
+        fails_without(rules, true, "a store its writer retired");
+    }
+
+    /// TASK-160.8: a store's followers cut off before it is marked retired, a follower finding it
+    /// unmarked between the two is followed on, uncut (`extentd::stores::retire` did so).
+    #[test]
+    fn needs_retirement_to_mark_before_cutting() {
+        let rules = Rules { marks_before_cutting: false, ..Rules::ALL };
+        fails_without(rules, true, "retired wasn't cut off");
+    }
+
+    /// A follower that found the store unmarked before its writer retired it, and was made after
+    /// its followers were cut off, follows a retired store on, uncut, unless it looks again.
+    #[test]
+    fn needs_followers_to_look_again() {
+        let rules = Rules { followers_look_again: false, ..Rules::ALL };
+        fails_without(rules, true, "retired wasn't cut off");
     }
 }
 

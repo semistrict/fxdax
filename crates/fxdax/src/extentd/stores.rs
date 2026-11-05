@@ -85,36 +85,37 @@ pub(super) fn take_over(
 }
 
 /// fxdax: retires `store`, which the connection holding it as `hold` wrote, gone with writes
-/// uncommitted: its followers are cut off, and no connection opens it until they are gone.
+/// uncommitted: marked so, and then its followers cut off ([`Hold::retire`]), and no connection
+/// opens it until they are gone.
 pub(super) fn retire(hold: &Hold, store: &ExtentStore) {
     hold.retire(|| store.cut_followers());
 }
 
-/// fxdax: the store at `path` for a follower to follow (backlog doc-8): the one a writer's
-/// connection, or followers', have open; or, if none has, the store opened as of its last commit,
-/// as a writer opens it, its pages of `arena`, which a writer opening it then takes over. `EBUSY`
-/// while a writer is opening it, or it is retired, or open in another arena ([`in_arena`]).
-pub(super) fn followed(path: &Path, arena: &Arc<Arena>) -> Result<Arc<ExtentStore>, Errno> {
-    let open = |found: Option<(Arc<ExtentStore>, bool)>| match found {
-        Some((_, true)) => Err(Errno::EBUSY),
-        Some((store, false)) => in_arena(&store, arena).map(|()| Some(store)),
-        None => Ok(None),
-    };
+/// fxdax: a follower of the store at `path` (backlog doc-8): of the one a writer's connection, or
+/// followers', have open ([`crate::store_table::StoreTable::follow`]); or, if none has, of the
+/// store opened as of its last commit, as a writer opens it, its pages of `arena`, which a writer
+/// opening it then takes over. `EBUSY` while a writer is opening it, or it is retired, or as it is
+/// followed, or open in another arena ([`in_arena`]).
+pub(super) fn followed(path: &Path, arena: &Arc<Arena>) -> Result<ExtentStore, Errno> {
+    let follow = |store: &Arc<ExtentStore>| in_arena(store, arena).map(|()| store.follow());
     let key = store_key(path);
-    if let Some(store) = open(table().instance(&key))? {
-        return Ok(store);
+    if let Some(follower) = table().follow(&key, follow)? {
+        return Ok(follower);
     }
-    // No other opens it meanwhile: a follower, a writer, or the daemon's work.
+    // No other opens it meanwhile: a follower, a writer, or the daemon's work; nor retires it,
+    // which only its writer does.
     let hold = hold_blocking(&key)?;
-    if let Some(store) = open(hold.instance())? {
-        return Ok(store);
+    match hold.instance() {
+        Some((_, true)) => return Err(Errno::EBUSY),
+        Some((store, false)) => return follow(&store),
+        None => {}
     }
     if !path.exists() {
         return Err(Errno::ENOENT);
     }
     let store = Arc::new(open_store(path, None, Some(arena))?);
     hold.open(&store)?;
-    Ok(store)
+    Ok(store.follow())
 }
 
 /// fxdax: `EBUSY` unless `store`'s own pages are of `arena`: the connection's, which its VM
