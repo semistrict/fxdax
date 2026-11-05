@@ -395,7 +395,26 @@ them. The model of Fxfs takes `write_inode`, and fails a growth as `interleave`'
 
 | Mutant | Caught by |
 | --- | --- |
-| `task-160.2-resize-no-rollback` | `interleave`'s failing seeds: a growth that failed leaves the file as long as it was, seed 1. Without that check, the end's check of Fxfs's size, seed 233 |
+| `task-160.2-resize-no-rollback` | `interleave`'s failing seeds: a growth that failed leaves the file as long as it was, seed 1, seed 8 since the model zeroes every growth's tail (TASK-149.14.2). Without that check, the end's check of Fxfs's size, seed 233 |
+
+## The model's growths, as Fxfs's (TASK-149.14.2)
+
+A DAX file's truncate keeps its last block (`FXFS_SET_KEEP_TAIL`), the window zeroing past the end
+in its own page. Fxfs zeroes what a cut left there as the file grows, every way it grows, unless the
+growth writes that block anew (`txn_grow_size`, `zero_tail_before_growth`), and a write of part of a
+block keeps of the rest what the file held up to its end, zeros past it (`read_unaligned_ends`):
+fxfs-posix's `every_growth_finds_what_a_cut_left_past_the_end_zeroed`. The model zeroed only a
+truncate's growth: a writeback of the last page up to the end kept the bytes past it, and a writeback
+past the end, or a clone, grew the file over them. Found by the hunt's range on main (f5a5a9d82),
+`failures 140272 1000`: a writeback that swapped the last page out during a write past the end,
+before the write grew the file, then the fsync's writeback past it; read(2) had zeros, Fxfs's
+extents what the truncate left (`read(2) has 0, and Fxfs's extents 0x41`). The model's growths go
+through one function now (`grow`, `zero_before_growth`), as Fxfs's do.
+
+| Mutant | Caught by |
+| --- | --- |
+| `task-149.14.2-growth-keeps-tail` | `fxfs_growths_zero_past_a_cut`: a write past it |
+| `task-149.14.2-partial-write-keeps-past-end` | `fxfs_growths_zero_past_a_cut`: a write in the block |
 
 ## Layout
 

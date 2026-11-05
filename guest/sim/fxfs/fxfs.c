@@ -10,8 +10,10 @@
  *   those it holds. One no request reached, the device takes a write to, which leaves it not open,
  *   until the next seal seals it.
  * - A cut that isn't told what the kernel keeps of the last block (FXFS_SET_KEEP_TAIL) zeros what
- *   that block holds past the end by moving it to the staging extent (zero_tail), and so does a
- *   grow, past the old end.
+ *   that block holds past the end by moving it to the staging extent (zero_tail), and so does every
+ *   growth, a truncate's, a writeback's or a clone's, past the old end, unless it writes that block
+ *   anew (txn_grow_size); a writeback of part of a block keeps what it holds up to the end alone,
+ *   zeros past it (read_unaligned_ends).
  * - An extent dies once nothing holds a block of it and it isn't the staging extent, and is freed
  *   after a device flush that follows its death (FreeAfter::Flush): one seal in SIM_FLUSH_SEALS here.
  *   Until then the window goes on showing it; then the device maps zeros.
@@ -460,15 +462,36 @@ static void set_size(struct stub_file *file, u64 size)
 }
 
 /*
- * Makes `file` `size` bytes long if it is shorter, zeroing what its last block holds past the old
- * end (move_tail): what a cut that kept the tail (FXFS_SET_KEEP_TAIL) left there is no data.
+ * Ahead of a growth of `file` to `size`, zeroes what its last block holds past the end (move_tail),
+ * unless the growth writes that block anew (`writes_last`), as Fxfs's txn_grow_size and
+ * zero_tail_before_growth do, every way a file grows: what a cut that kept the tail
+ * (FXFS_SET_KEEP_TAIL) left there is no data.
  */
-static void grow(struct fxfs *fs, struct stub_file *file, u64 size)
+static void zero_before_growth(struct fxfs *fs, struct stub_file *file, u64 size, bool writes_last)
 {
-	if (size <= file->size)
-		return;
-	move_tail(fs, file, file->size);
-	set_size(file, size);
+	if (size > file->size && !writes_last)
+		move_tail(fs, file, file->size);
+}
+
+/* Makes `file` `size` bytes long if it is shorter, as zero_before_growth says. */
+static void grow(struct fxfs *fs, struct stub_file *file, u64 size, bool writes_last)
+{
+	zero_before_growth(fs, file, size, writes_last);
+	if (size > file->size)
+		set_size(file, size);
+}
+
+/*
+ * What a write of part of `file`'s block `page` keeps of the rest: what the block holds up to the
+ * file's end, and zeros past it, as Fxfs's read_unaligned_ends.
+ */
+static void read_kept(struct fxfs *fs, struct stub_file *file, u64 page, void *buf)
+{
+	u64 at = page << PAGE_SHIFT;
+	size_t kept = file->size > at ? min_t(u64, file->size - at, PAGE_SIZE) : 0;
+
+	read_block(fs, &file->blocks[page], buf);
+	memset(buf + kept, 0, PAGE_SIZE - kept);
 }
 
 /* What Fxfs says of `file`: its size, and the 512-byte blocks its data takes. */
@@ -519,7 +542,7 @@ int fxfs_write_inode(struct fxfs *fs, u64 ino, const struct fxfs_setattr *set)
 		for (page = DIV_ROUND_UP(set->size, PAGE_SIZE); page < file->nr_blocks; page++)
 			put_block(fs, &file->blocks[page]);
 		if (set->size > old) {
-			grow(fs, file, set->size);
+			grow(fs, file, set->size, false);
 		} else {
 			if (set->size < old && !(set->valid & FXFS_SET_KEEP_TAIL))
 				move_tail(fs, file, set->size);
@@ -546,6 +569,9 @@ int fxfs_clone_range(struct fxfs *fs, u64 src, u64 offset, u64 len, u64 dst, u64
 	mutex_lock(&fs->lock);
 	reserve_blocks(from, (offset >> PAGE_SHIFT) + pages);
 	reserve_blocks(to, (dst_offset >> PAGE_SHIFT) + pages);
+	/* Before the blocks are shared, as one of them may be the tail it zeroes. */
+	zero_before_growth(fs, to, size, to->size >> PAGE_SHIFT >= dst_offset >> PAGE_SHIFT &&
+			   to->size >> PAGE_SHIFT < (dst_offset >> PAGE_SHIFT) + pages);
 	for (page = 0; page < pages; page++) {
 		block = &to->blocks[(dst_offset >> PAGE_SHIFT) + page];
 		put_block(fs, block);
@@ -557,7 +583,8 @@ int fxfs_clone_range(struct fxfs *fs, u64 src, u64 offset, u64 len, u64 dst, u64
 			extent->refs[block->page]++;
 		}
 	}
-	to->size = max(to->size, size);
+	if (size > to->size)
+		set_size(to, size);
 	attr_of(to, attr);
 	mutex_unlock(&fs->lock);
 	if (to != from)
@@ -706,6 +733,7 @@ int fxfs_write_many(struct fxfs *fs, u64 ino, const struct fxfs_write_part *part
 	char *copies;
 	size_t i, n = 0, total = 0;
 	u64 page, end = 0, store, first = 0;
+	bool writes_last = false;
 
 	/* The room, taken first, whatever the writes come to, as fxfs-posix's write_dirty takes it. */
 	mutex_lock(&fs->lock);
@@ -732,7 +760,7 @@ int fxfs_write_many(struct fxfs *fs, u64 ino, const struct fxfs_write_part *part
 			if (at > page << PAGE_SHIFT || stop < (page + 1) << PAGE_SHIFT) {
 				mutex_lock(&fs->lock);
 				reserve_blocks(file, page + 1);
-				read_block(fs, &file->blocks[page], copy);
+				read_kept(fs, file, page, copy);
 				mutex_unlock(&fs->lock);
 			}
 			memcpy(copy + offset_in_page(at), parts[i].data + (at - from), stop - at);
@@ -794,6 +822,7 @@ int fxfs_write_many(struct fxfs *fs, u64 ino, const struct fxfs_write_part *part
 	written += n;
 	for (i = 0; i < n; i++) {
 		page = pages[i].page;
+		writes_last |= page == file->size >> PAGE_SHIFT;
 		reserve_blocks(file, page + 1);
 		if (ino == watched_ino && page == watched_page)
 			sim_log("sim: ino %llu page %llu: written back by %s, from extent %llu page %llu to extent %llu page %llu, at %llu ns\n",
@@ -803,7 +832,7 @@ int fxfs_write_many(struct fxfs *fs, u64 ino, const struct fxfs_write_part *part
 		put_block(fs, &file->blocks[page]);
 		file->blocks[page] = pages[i].block;
 	}
-	file->size = max(file->size, end);
+	grow(fs, file, end, writes_last);
 	mutex_unlock(&fs->lock);
 	mutex_unlock(&file->lock);
 	kfree(pages);

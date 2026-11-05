@@ -1,0 +1,29 @@
+# SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
+# Copyright 2026 The fxdax Authors.
+#
+# TASK-149.14.2, the model of Fxfs's own: a writeback past the end, and a clone past it, grow the
+# file over what a cut that kept its last block (FXFS_SET_KEEP_TAIL) left past the end, where Fxfs
+# zeroes it (txn_grow_size, zero_tail_before_growth). failures 140272 at 1,000 on main: read(2) has
+# zeros, Fxfs's extents a byte the cut left. fxfs_growths_zero_past_a_cut: a write past it.
+
+--- a/guest/sim/fxfs/fxfs.c
++++ b/guest/sim/fxfs/fxfs.c
+@@ -569,9 +569,6 @@
+ 	mutex_lock(&fs->lock);
+ 	reserve_blocks(from, (offset >> PAGE_SHIFT) + pages);
+ 	reserve_blocks(to, (dst_offset >> PAGE_SHIFT) + pages);
+-	/* Before the blocks are shared, as one of them may be the tail it zeroes. */
+-	zero_before_growth(fs, to, size, to->size >> PAGE_SHIFT >= dst_offset >> PAGE_SHIFT &&
+-			   to->size >> PAGE_SHIFT < (dst_offset >> PAGE_SHIFT) + pages);
+ 	for (page = 0; page < pages; page++) {
+ 		block = &to->blocks[(dst_offset >> PAGE_SHIFT) + page];
+ 		put_block(fs, block);
+@@ -832,7 +829,7 @@
+ 		put_block(fs, &file->blocks[page]);
+ 		file->blocks[page] = pages[i].block;
+ 	}
+-	grow(fs, file, end, writes_last);
++	grow(fs, file, end, true);
+ 	mutex_unlock(&fs->lock);
+ 	mutex_unlock(&file->lock);
+ 	kfree(pages);

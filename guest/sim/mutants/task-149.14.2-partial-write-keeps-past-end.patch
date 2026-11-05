@@ -1,0 +1,19 @@
+# SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
+# Copyright 2026 The fxdax Authors.
+#
+# TASK-149.14.2, the model of Fxfs's own: a writeback of part of a block keeps all the block held
+# of the rest, past the file's end too, where Fxfs keeps what it held up to the end and zeroes past
+# it (read_unaligned_ends): a DAX file's last page, written back up to the end, kept what a cut
+# left. fxfs_growths_zero_past_a_cut: a write in the block.
+
+--- a/guest/sim/fxfs/fxfs.c
++++ b/guest/sim/fxfs/fxfs.c
+@@ -760,7 +760,7 @@
+ 			if (at > page << PAGE_SHIFT || stop < (page + 1) << PAGE_SHIFT) {
+ 				mutex_lock(&fs->lock);
+ 				reserve_blocks(file, page + 1);
+-				read_kept(fs, file, page, copy);
++				read_block(fs, &file->blocks[page], copy);
+ 				mutex_unlock(&fs->lock);
+ 			}
+ 			memcpy(copy + offset_in_page(at), parts[i].data + (at - from), stop - at);

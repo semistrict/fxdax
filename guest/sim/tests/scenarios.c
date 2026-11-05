@@ -221,6 +221,86 @@ static void write_past_end_copies_nothing(void)
 	check(done == sizeof(got) && !memcmp(got, bytes, sizeof(got)), "the read: %zd", done);
 }
 
+/*
+ * That every way the model of Fxfs grows a file reads zeros where a cut that kept its last block
+ * (FXFS_SET_KEEP_TAIL), as a DAX file's truncate does, left bytes past the end, as Fxfs does
+ * (fxfs-posix's every_growth_finds_what_a_cut_left_past_the_end_zeroed): a writeback in that block
+ * keeps of it what was the file's alone (read_unaligned_ends); one past it, a truncate, and a clone
+ * past it, even of that block, zero the tail of a block they don't write (txn_grow_size,
+ * zero_tail_before_growth). Where the model kept them, a writeback of a DAX file's last page up to
+ * its end, and one past the end after it, read them back (failures 140272 at 1,000).
+ */
+static void fxfs_growths_zero_past_a_cut(void)
+{
+	static const struct {
+		const char *what;
+		u64 size;
+	} growths[] = {
+		{ "a write in the block", 2000 },
+		{ "a write past it", 65537 },
+		{ "a truncate", 65537 },
+		{ "a clone past it", 65536 + 2 * PAGE_SIZE },
+		{ "a clone of the block past it", 65536 + PAGE_SIZE },
+	};
+	struct fxfs_setattr cut = { .valid = FXFS_SET_SIZE | FXFS_SET_KEEP_TAIL, .size = 1000 };
+	struct fxfs *fs = mount->info->fs;
+	static char bytes[2 * PAGE_SIZE], expected[PAGE_SIZE], got[PAGE_SIZE];
+	struct fxfs_write_part part = { 0, bytes, sizeof(bytes) };
+	struct fxfs_setattr grown = { .valid = FXFS_SET_SIZE };
+	u64 source = fxfs_sim_new_file(fs), ino;
+	struct fxfs_attr attr;
+	size_t i, at;
+
+	memset(bytes, 's', sizeof(bytes));
+	check(!fxfs_write_many(fs, source, &part, 1, 0), "the clones' source's write");
+	memset(bytes, 'c', sizeof(bytes));
+	for (i = 0; i < ARRAY_SIZE(growths); i++) {
+		ino = fxfs_sim_new_file(fs);
+		part = (struct fxfs_write_part) { 0, bytes, sizeof(bytes) };
+		check(!fxfs_write_many(fs, ino, &part, 1, 0), "%s: the write", growths[i].what);
+		check(!fxfs_write_inode(fs, ino, &cut), "%s: the cut", growths[i].what);
+		switch (i) {
+		case 0:
+			part = (struct fxfs_write_part) { 1999, "w", 1 };
+			check(!fxfs_write_many(fs, ino, &part, 1, 0), "%s", growths[i].what);
+			break;
+		case 1:
+			part = (struct fxfs_write_part) { 65536, "w", 1 };
+			check(!fxfs_write_many(fs, ino, &part, 1, 0), "%s", growths[i].what);
+			break;
+		case 2:
+			grown.size = growths[i].size;
+			check(!fxfs_write_inode(fs, ino, &grown), "%s", growths[i].what);
+			break;
+		case 3:
+			check(!fxfs_clone_range(fs, source, 0, 2 * PAGE_SIZE, ino, 65536,
+						growths[i].size, &attr), "%s", growths[i].what);
+			break;
+		case 4:
+			check(!fxfs_clone_range(fs, ino, 0, PAGE_SIZE, ino, 65536, growths[i].size,
+						&attr), "%s", growths[i].what);
+			break;
+		}
+		check(fxfs_sim_size(fs, ino) == growths[i].size, "%s: Fxfs's size is %llu",
+		      growths[i].what, fxfs_sim_size(fs, ino));
+		memset(expected, 0, sizeof(expected));
+		memset(expected, 'c', 1000);
+		if (i == 0)
+			expected[1999] = 'w';
+		fxfs_sim_read(fs, ino, 0, got, sizeof(got));
+		for (at = 0; at < sizeof(got); at++)
+			check(got[at] == expected[at], "%s: byte %zu is %#x, not %#x", growths[i].what,
+			      at, (u8)got[at], (u8)expected[at]);
+		/* The clone of the block shares it as the growth left it. */
+		if (i == 4) {
+			fxfs_sim_read(fs, ino, 65536, got, sizeof(got));
+			for (at = 0; at < sizeof(got); at++)
+				check(got[at] == expected[at], "%s: byte %zu of the clone is %#x, not %#x",
+				      growths[i].what, at, (u8)got[at], (u8)expected[at]);
+		}
+	}
+}
+
 /* A file's ranges gone, as a reflink's, to be mapped again. */
 static void drop_ranges(struct file *file)
 {
@@ -1183,6 +1263,7 @@ static const struct {
 	SCENARIO(append_stopped_short_in_a_page),
 	SCENARIO(store_past_end_then_written),
 	SCENARIO(write_past_end_copies_nothing),
+	SCENARIO(fxfs_growths_zero_past_a_cut),
 	SCENARIO(write_killed),
 	SCENARIO(unmap_failed),
 	SCENARIO(allocations_failed),
