@@ -420,8 +420,11 @@ impl Room {
 #[derive(Clone, Copy, Debug)]
 struct Rules {
     after: After,
-    /// Whether it fails once a batch of queued unlinks failed (`UNLINK_FAILED`).
-    gated: bool,
+    /// Whether it changes what the filesystem holds: what fails once a batch of queued unlinks
+    /// failed, Fxfs then maybe holding names the kernel doesn't, until it remounts
+    /// (`UNLINK_FAILED`). Every change, the data's too: it fails stop, as ext4 does once its
+    /// journal aborts.
+    changes: bool,
     room: Room,
     /// Whether it holds the truncate guard of the inode it names until it ends, as Fxfs's
     /// `acquire_context_for_replace` does: what it replaces or cuts can't be freed meanwhile.
@@ -429,14 +432,14 @@ struct Rules {
 }
 
 impl Op {
-    /// The table: what each operation comes after, whether it fails once a batch failed, where its
-    /// transactions' room comes from, and whether it guards the inode it names.
+    /// The table: what each operation comes after, whether it changes what the filesystem holds,
+    /// where its transactions' room comes from, and whether it guards the inode it names.
     #[rustfmt::skip]
     const fn rules(self) -> Rules {
         use After::*;
         use Room::*;
-        let (after, gated, room, guards) = match self {
-            //                 after    gated  room            guards
+        let (after, changes, room, guards) = match self {
+            //                   after   changes room            guards
             Op::Lookup =>       (Named,   false, NoTransactions, false),
             Op::Readdir =>      (Named,   false, NoTransactions, false),
             Op::AttrByHandle => (Named,   false, NoTransactions, false),
@@ -448,20 +451,20 @@ impl Op {
             Op::UnlinkLater =>  (Nothing, true,  NoTransactions, false),
             Op::Rename =>       (All,     true,  Reserved,       true),
             Op::Exchange =>     (All,     true,  Reserved,       false),
-            Op::Clone =>        (All,     false, Reserved,       false),
+            Op::Clone =>        (All,     true,  Reserved,       false),
             Op::Punch =>        (Nothing, true,  Reserved,       true),
-            Op::Allocate =>     (Nothing, false, Reserved,       false),
-            Op::Write =>        (Nothing, false, Reserved,       false),
-            Op::WriteDirty =>   (Nothing, false, Dirtied,        false),
-            Op::Cut =>          (Nothing, false, Borrowed,       false),
-            Op::Grow =>         (Nothing, false, Reserved,       false),
+            Op::Allocate =>     (Nothing, true,  Reserved,       false),
+            Op::Write =>        (Nothing, true,  Reserved,       false),
+            Op::WriteDirty =>   (Nothing, true,  Dirtied,        false),
+            Op::Cut =>          (Nothing, true,  Borrowed,       false),
+            Op::Grow =>         (Nothing, true,  Reserved,       false),
             Op::SetAttr =>      (Nothing, true,  Borrowed,       false),
-            Op::WriteXattrs =>  (Nothing, false, Reserved,       false),
+            Op::WriteXattrs =>  (Nothing, true,  Reserved,       false),
             Op::Sync =>         (All,     false, NoTransactions, false),
             Op::Fsync =>        (All,     false, NoTransactions, false),
             Op::Statfs =>       (All,     false, NoTransactions, false),
         };
-        Rules { after, gated, room, guards }
+        Rules { after, changes, room, guards }
     }
 }
 
@@ -1822,8 +1825,9 @@ impl<P: Platform> Fxfs<P> {
     }
 
     /// Begins `op`, naming the inode `named` if it names one, as the table says (`Op::rules`): once
-    /// the queued unlinks it comes after are applied, unless a batch of them failed, if that fails
-    /// it, holding `named`'s truncate guard if it guards it. Its transactions are what it returns.
+    /// the queued unlinks it comes after are applied, unless a batch of them failed and it changes
+    /// what the filesystem holds, holding `named`'s truncate guard if it guards it. Its
+    /// transactions are what it returns.
     async fn begin(&self, op: Op, named: Option<u64>) -> Result<Begun<'_, P>, Error> {
         let rules = op.rules();
         if rules.after == After::All {
@@ -1837,7 +1841,7 @@ impl<P: Platform> Fxfs<P> {
             }
             _ => false,
         };
-        if rules.gated {
+        if rules.changes {
             ensure!(!self.delayed.queue.lock().unwrap().failed, UNLINK_FAILED);
         }
         let _guard = match named {

@@ -528,3 +528,27 @@ async fn each_operation_comes_after_the_unlinks_its_row_says() {
     }
     assert_eq!(wrong, Vec::<String>::new());
 }
+
+/// Once a batch of queued unlinks failed, Fxfs may hold names the kernel doesn't: every change a VFS
+/// asks fails, until the filesystem remounts; what reads, or makes durable what's there, works.
+/// The page cache's writeback refused leaves the room it reserved as one that fails does.
+#[fuchsia::test]
+async fn every_change_fails_once_a_batch_failed() {
+    let mut refused = Vec::new();
+    for op in EVERY_OP {
+        let objects = objects().await;
+        objects.fs.delayed.queue.lock().unwrap().failed = true;
+        match call(&objects, op).await {
+            Ok(()) => {}
+            Err(error) => {
+                assert_eq!(errno(&error), Errno::EIO, "{op:?}: {error:#}");
+                refused.push(op);
+            }
+        }
+        assert_eq!(objects.fs.dirty.dirty_bytes(objects.f), 0, "{op:?}: dirty room left");
+        objects.fs.stop_delayed().await.unwrap();
+    }
+    let reads = [Op::Lookup, Op::Readdir, Op::AttrByHandle, Op::Sync, Op::Fsync, Op::Statfs];
+    let changes: Vec<Op> = EVERY_OP.into_iter().filter(|op| !reads.contains(op)).collect();
+    assert_eq!(refused, changes);
+}

@@ -55,6 +55,12 @@ Every case is tagged with the suites it is in (`Tag`, guest/tests/test_cases/src
 - **`FXDAX_E2E_TEST=all` is gone:** it ran runner-deadlock and other cases that skip, which now fail a run asking for them by name.
 **Undoing it:** a case's tags are a list beside its name; a suite is a variant of `Tag`.
 
+## Once a batch of queued unlinks failed, every change fails, the data's too (TASK-160.23, 2026-11-05)
+
+A failed batch leaves Fxfs maybe holding names the kernel took for gone; changes then failed with EIO until a remount, but only those through `transaction_with`. Clone (`clone_range`), writes (`write`, `write_many`), the page cache's writeback (`write_dirty`), `allocate`, truncates (shrinking or not) and the writeback of extended attributes made their transactions elsewhere and went on. Decided: each operation's row says whether it changes what the filesystem holds (`Op::rules`' `changes`), and every one that does fails: those seven too. The filesystem fails stop, as ext4 does once its journal aborts, by one rule rather than a list of exceptions. A writeback refused leaves the room its dirty data reserved as one that fails does: the page cache's pages are no longer dirty either way. Not refused: lookups, readdir, reads, `sync`, `fsync`, `statfs` (making what's there durable, or reading it), `set_xattr`/`remove_xattr` (kept in memory, their writeback refused), `evict` (frees nothing once a batch failed, as before), and the queue's own batches, which bring Fxfs back to the kernel's view.
+**Instead:** leave data writes and cuts going: a file's data doesn't depend on its names, and a writeback refused loses what the page cache held; but what failed a batch is mostly the device, which fails them too.
+**Undoing it:** `false` in the `changes` column of the operations to let through, and `every_change_fails_once_a_batch_failed`'s list.
+
 ## Local disk as the bucket's WAL and cache: how (TASK-165, doc-14, 2026-11-04)
 
 The user chose the direction (review of 2026-11-04, decision 2); doc-14 decides the rest, where the task left it open:

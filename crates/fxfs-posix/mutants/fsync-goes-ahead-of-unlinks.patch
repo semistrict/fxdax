@@ -1,12 +1,12 @@
 diff --git a/crates/fxfs-posix/src/lib.rs b/crates/fxfs-posix/src/lib.rs
 --- a/crates/fxfs-posix/src/lib.rs
 +++ b/crates/fxfs-posix/src/lib.rs
-@@ -458,7 +458,7 @@
+@@ -461,7 +461,7 @@
              Op::SetAttr =>      (Nothing, true,  Borrowed,       false),
-             Op::WriteXattrs =>  (Nothing, false, Reserved,       false),
+             Op::WriteXattrs =>  (Nothing, true,  Reserved,       false),
              Op::Sync =>         (All,     false, NoTransactions, false),
 -            Op::Fsync =>        (All,     false, NoTransactions, false),
 +            Op::Fsync =>        (Nothing, false, NoTransactions, false),
              Op::Statfs =>       (All,     false, NoTransactions, false),
          };
-         Rules { after, gated, room, guards }
+         Rules { after, changes, room, guards }
