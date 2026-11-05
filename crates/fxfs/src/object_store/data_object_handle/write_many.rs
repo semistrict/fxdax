@@ -9,7 +9,7 @@
 use super::DataObjectHandle;
 use crate::checksum::{Checksum, Checksums};
 use crate::errors::FxfsError;
-use crate::object_handle::ObjectHandle;
+use crate::object_handle::{ObjectHandle, ReadObjectHandle};
 use crate::object_store::HandleOwner;
 use crate::object_store::allocator::Reservation;
 use crate::object_store::extent_record::ExtentValue;
@@ -82,8 +82,15 @@ impl<S: HandleOwner> DataObjectHandle<S> {
                 let mut transaction = match reserved {
                     None => self.new_transaction().await?,
                     Some(reserved) => {
-                        let data = rest.iter().map(|write| write.blocks.end - write.blocks.start);
-                        let options = self.reserved_transaction_options(reserved, data.sum());
+                        let blocks = rest.iter().map(|write| write.blocks.clone());
+                        let data: u64 =
+                            blocks.clone().map(|blocks| blocks.end - blocks.start).sum();
+                        // And the last block, which their growth may write again, zeroed past the
+                        // end: no page of it was dirtied, nor reserved room for (TASK-149.29).
+                        let end = rest.last().map_or(0, |last| last.range.end);
+                        let tail = self.growth_zeroes_tail(self.get_size(), end, blocks);
+                        let data = data + if tail { self.block_size().get() } else { 0 };
+                        let options = self.reserved_transaction_options(reserved, data);
                         self.new_transaction_with_options(options).await?
                     }
                 };

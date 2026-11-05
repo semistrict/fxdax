@@ -21,8 +21,9 @@ use std::ops::Range;
 impl<S: HandleOwner> DataObjectHandle<S> {
     /// fxdax: zeros what the last block of a file of `size` bytes holds past them, unless it is
     /// zeros already, as it nearly always is: says whether it wrote the block. A growth's zeroing
-    /// writes back no block its writes didn't reserve room for, unless a cut left one so (TASK-80,
-    /// TASK-153.4). No extent of the file may start past its last block.
+    /// writes back no block its writes didn't reserve room for but one a cut left so, whose room a
+    /// writeback paid with its dirty pages' counts (`growth_zeroes_tail`; TASK-80, TASK-153.4,
+    /// TASK-149.29). No extent of the file may start past its last block.
     pub(super) async fn txn_zero_tail<'a>(
         &'a self,
         transaction: &mut Transaction<'a>,
@@ -103,11 +104,30 @@ impl<S: HandleOwner> DataObjectHandle<S> {
         if size <= old {
             return Ok(());
         }
-        let last = self.block_size().align_down(old);
-        if !replaced.iter().any(|blocks| blocks.start <= last && last < blocks.end) {
+        if self.growth_zeroes_tail(old, size, replaced.iter().cloned()) {
             self.txn_zero_tail(transaction, old).await?;
         }
         self.txn_update_size(transaction, size, None).await
+    }
+
+    /// fxdax: whether a growth of the file from `old` bytes to `size` zeros its last block past
+    /// `old`: if `old` is within it, unless `replaced`, the blocks it writes anew, has it. Where the
+    /// block holds zeros there, as it nearly always does, the zeroing writes nothing
+    /// (`txn_zero_tail`); where a cut left what it held (SET_KEEP_TAIL, a DAX file's), the block is
+    /// written again, which room reserved for the growth's own blocks alone didn't pay for: a
+    /// writeback paid with its dirty pages' room failed NoSpace (TASK-149.29). What decides whether
+    /// a growth zeroes, and what its room counts (`write_many_paid`).
+    pub(super) fn growth_zeroes_tail(
+        &self,
+        old: u64,
+        size: u64,
+        mut replaced: impl Iterator<Item = Range<u64>>,
+    ) -> bool {
+        let block_size = self.block_size();
+        let last = block_size.align_down(old);
+        size > old
+            && !block_size.is_aligned(old)
+            && !replaced.any(|blocks| blocks.start <= last && last < blocks.end)
     }
 
     /// fxdax: ahead of a growth to `size` that finds the file's extents before it changes them, a
@@ -121,11 +141,7 @@ impl<S: HandleOwner> DataObjectHandle<S> {
         replaced: Option<Range<u64>>,
     ) -> Result<(), Error> {
         let old = self.txn_get_size(transaction);
-        let last = self.block_size().align_down(old);
-        if size <= old
-            || self.block_size().is_aligned(old)
-            || replaced.is_some_and(|blocks| blocks.start <= last && last < blocks.end)
-        {
+        if !self.growth_zeroes_tail(old, size, replaced.into_iter()) {
             return Ok(());
         }
         if self.txn_zero_tail(transaction, old).await? {

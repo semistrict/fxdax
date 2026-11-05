@@ -332,6 +332,28 @@ async fn every_growth_finds_what_a_cut_left_past_the_end_zeroed() {
     fs.stop_delayed().await.unwrap();
 }
 
+/// fxdax: a writeback paid with the room the page cache reserved for the pages it dirtied, growing
+/// the file past an end within a block that a cut left as it was (SET_KEEP_TAIL, a DAX file's),
+/// rewrites that block too, zeroed past the end (`txn_grow_size`), which no page of it paid for: it
+/// failed NoSpace, on a filesystem all but empty (TASK-149.29, found by crates/fxfs-sim-diff).
+#[fuchsia::test]
+async fn a_writeback_paid_with_dirty_room_has_room_for_the_tail_its_growth_zeroes() {
+    let (fs, root) = volume().await;
+    let ino = fs.new_file(root, b"grown").await;
+    fs.write(ino, 0, &[b'c'; 8192]).await.unwrap();
+    fs.setattr(ino, &set_size(1000, SET_KEEP_TAIL)).await.unwrap();
+    fs.reserve_dirty(ino, 4096).unwrap();
+    fs.write_dirty(ino, &mut [(8192, &[b'w'; 4096][..])], 4096).await.unwrap();
+    let mut read = vec![0xff; 12288];
+    assert_eq!(fs.read(ino, 0, &mut read).await.unwrap(), 12288);
+    assert_eq!((&read[..1000], &read[1000..8192], &read[8192..]), (
+        &[b'c'; 1000][..],
+        &[0; 7192][..],
+        &[b'w'; 4096][..]
+    ));
+    fs.stop_delayed().await.unwrap();
+}
+
 /// The last bytes a file can hold are read back as written (xfstests generic/303, generic/525).
 #[fuchsia::test]
 async fn a_files_last_bytes_read_back() {
