@@ -24,6 +24,15 @@ jobs:
         # crate's feature, a build of their own; the guest tests' own, a workspace of their own; the
         # rest, minutes.
         parts: [workspace, shuttle, clippy scripts, guest]
+        # What a part's tests run beyond what every part builds with: Coccinelle, whose rules the
+        # scripts' tests check; xfsprogs, for the guest tests' own of reflinks. Coccinelle and its
+        # OCaml are three quarters of the downloads: every part fetching them, a slow mirror (57
+        # kB/s) took 40 minutes of the workspace's 90 (run 42089880804, TASK-172).
+        include:
+          - parts: clippy scripts
+            packages: coccinelle
+          - parts: guest
+            packages: xfsprogs
     env:
       FXDAX_TEST_PARTS: ${{ matrix.parts }}
     steps:
@@ -34,13 +43,12 @@ jobs:
           submodules: true
       - name: Install the build's tools
         # elfutils' eu-stack and sqlite3, which tests run, as on the GCE hosts
-        # (scripts/lib/linux-host-setup.sh); Coccinelle, whose rules the scripts' tests check;
-        # xfsprogs, for the guest tests' own of reflinks; and libseccomp, which Firecracker's
-        # seccompiler links.
+        # (scripts/lib/linux-host-setup.sh); libseccomp, which Firecracker's seccompiler links; and
+        # the part's own (matrix.packages).
         run: |
           sudo apt-get update
-          sudo apt-get install -y protobuf-compiler libclang-dev clang elfutils sqlite3 coccinelle \
-            xfsprogs libseccomp-dev
+          sudo apt-get install -y protobuf-compiler libclang-dev clang elfutils sqlite3 \
+            libseccomp-dev ${{ matrix.packages }}
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-unknown-linux-musl
