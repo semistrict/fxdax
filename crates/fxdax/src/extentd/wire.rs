@@ -367,13 +367,6 @@ impl Queued {
     }
 }
 
-thread_local! {
-    /// fxdax: the sender this thread holds back what it sends through, and how many corks deep
-    /// ([`AsyncSender::cork`]).
-    static CORKED: std::cell::RefCell<Option<(usize, usize)>> =
-        const { std::cell::RefCell::new(None) };
-}
-
 impl AsyncSender {
     /// Sends through `stream`, which the caller made non-blocking, on the runtime it is made on.
     pub fn new(stream: UnixStream) -> io::Result<Self> {
@@ -414,69 +407,54 @@ impl AsyncSender {
         self.queue(header, Vec::new(), &[], true)
     }
 
-    /// fxdax: holds back what this thread sends through it, until [`AsyncSender::uncork`], to send
-    /// it all at once, in as few writes as the socket takes: the messages of one change to a
-    /// window, which its VM process then reads, and makes, together (TASK-91.16). Others' sends
-    /// meanwhile send what it held back first, in order, so that it delays none of theirs. Corks
-    /// nest; this thread mustn't wait for what it holds back, as for a stage operation's
-    /// acknowledgement, until it uncorks.
-    pub fn cork(self: &std::sync::Arc<Self>) {
-        CORKED.with_borrow_mut(|corked| match corked {
-            Some((sender, depth)) => {
-                assert_eq!(*sender, self.identity(), "a thread corks one sender at a time");
-                *depth += 1;
-            }
-            None => *corked = Some((self.identity(), 1)),
-        });
-    }
-
-    /// fxdax: ends a [`AsyncSender::cork`]: the last one sends what this thread held back.
-    pub fn uncork(self: &std::sync::Arc<Self>) {
-        let last = CORKED.with_borrow_mut(|corked| {
-            let (sender, depth) = corked.as_mut().expect("uncorked a sender not corked");
-            assert_eq!(*sender, self.identity(), "uncorked another sender than corked");
-            *depth -= 1;
-            let last = *depth == 0;
-            if last {
-                *corked = None;
-            }
-            last
-        });
-        if last {
-            let mut queue = self.queue.lock().unwrap();
-            if !queue.draining && queue.failed.is_none() {
-                self.write_queued(&mut queue);
-            }
+    /// fxdax: sends `headers`, messages of no payload, as [`AsyncSender::send`] would one after
+    /// another, but at once, in as few writes as the socket takes: the operations of one change to
+    /// a window, which its VM process then reads, and makes, together (TASK-91.16). `headers` is
+    /// called with the sender's queue locked, so that what it makes, such as the IDs it gives,
+    /// is in the order it is sent in.
+    pub fn send_all(
+        self: &std::sync::Arc<Self>,
+        headers: impl FnOnce() -> Vec<Header>,
+    ) -> io::Result<()> {
+        let mut queue = self.queue.lock().unwrap();
+        for header in headers() {
+            self.push(&mut queue, header, Vec::new(), Vec::new(), false)?;
         }
-    }
-
-    /// fxdax: whether this thread holds back what it sends through any sender
-    /// ([`AsyncSender::cork`]).
-    pub fn corked() -> bool {
-        CORKED.with_borrow(Option::is_some)
-    }
-
-    /// What tells this sender from another, for [`CORKED`].
-    fn identity(&self) -> usize {
-        self as *const Self as usize
+        self.flush(&mut queue)
     }
 
     /// Sends `header`, `payload` and `fds`, as [`AsyncSender::send`] does, in place of a message
     /// of its kind waiting if it is the `latest` of what its kind says.
     fn queue(
         self: &std::sync::Arc<Self>,
-        mut header: Header,
+        header: Header,
         payload: Vec<u8>,
         fds: &[BorrowedFd<'_>],
         latest: bool,
     ) -> io::Result<()> {
         assert!(fds.len() <= MAX_FDS, "too many descriptors for a message");
+        // The descriptors are the queue's until it sends them, with the message's first bytes.
+        let fds = fds.iter().map(|fd| fd.try_clone_to_owned()).collect::<io::Result<_>>()?;
+        let mut queue = self.queue.lock().unwrap();
+        self.push(&mut queue, header, payload, fds, latest)?;
+        self.flush(&mut queue)
+    }
+
+    /// Puts `header`, `payload` and `fds` at the end of `queue`, or, if it is the `latest` of what
+    /// its kind says, in place of a message of its kind waiting; fails once the socket failed.
+    fn push(
+        &self,
+        queue: &mut Queue,
+        mut header: Header,
+        payload: Vec<u8>,
+        fds: Vec<OwnedFd>,
+        latest: bool,
+    ) -> io::Result<()> {
         header.len = payload.len() as u64;
         header.fds = fds.len() as u32;
         let latest = latest.then_some(header.kind);
         let header = header.as_bytes().try_into().unwrap();
         let message = Queued { header, payload, sent: 0, latest };
-        let mut queue = self.queue.lock().unwrap();
         if let Some(failed) = queue.failed {
             return Err(failed.into());
         }
@@ -487,15 +465,15 @@ impl AsyncSender {
             queued.header = message.header;
             return Ok(());
         }
-        // The descriptors are the queue's until it sends them, with the message's first bytes.
-        let fds = fds.iter().map(|fd| fd.try_clone_to_owned()).collect::<io::Result<_>>()?;
         self.queued.fetch_add(message.left(), std::sync::atomic::Ordering::Relaxed);
         queue.messages.push_back((message, fds));
-        // Held back by this thread, or written by the task draining the queue, if one does.
-        let corked = CORKED
-            .with_borrow(|corked| corked.is_some_and(|(sender, _)| sender == self.identity()));
-        if !corked && !queue.draining {
-            self.write_queued(&mut queue);
+        Ok(())
+    }
+
+    /// Writes what `queue` holds, unless the task draining it does: fails once the socket failed.
+    fn flush(self: &std::sync::Arc<Self>, queue: &mut Queue) -> io::Result<()> {
+        if !queue.draining && queue.failed.is_none() {
+            self.write_queued(queue);
         }
         queue.failed.map_or(Ok(()), |failed| Err(failed.into()))
     }
@@ -720,9 +698,9 @@ impl Receiver {
     /// ([`STAGE_MAPPED`]) and its pages ([`STAGE_MAP`]), each within it, which it returns, in
     /// order, for the VM process to make with the unmap at once. Up to 63 messages, without
     /// crossing another, a gap, or partial input. The unmap's ID becomes the largest of those it
-    /// joined: never a later map's, as operations taking access away that haven't reached the
-    /// wire yet may own the IDs between, whose pages kept must stay quarantined. Each message is
-    /// taken as [`Stage::decode`] has it: one it refuses, it leaves.
+    /// joined, whose acknowledgement is of every ID before it, as IDs reach the wire in order
+    /// (TASK-160.11): not a later map's, which takes no access away. Each message is taken as
+    /// [`Stage::decode`] has it: one it refuses, it leaves.
     pub fn take_change(&mut self, unmap: &mut Stage) -> io::Result<Vec<crate::dax::Anew>> {
         let StageOp::Unmap { offset, len } = unmap.op else { return Ok(Vec::new()) };
         let (mut start, Some(mut end)) = (offset, offset.checked_add(len)) else {
@@ -1178,12 +1156,12 @@ mod tests {
         assert_eq!(gone.map_err(|err| err.kind()), Err(io::ErrorKind::BrokenPipe));
     }
 
-    /// fxdax: what a thread sends corked waits until it uncorks, then arrives, in order
-    /// (TASK-91.16); another thread's send meanwhile sends what waits first, then its own, as
-    /// corking delays none of its sends; a message's descriptors arrive with it, whatever was
-    /// sent with it.
+    /// fxdax: what one `send_all` sends arrives together, in order, after what was sent before
+    /// it (TASK-91.16); IDs it gives as it makes the messages, under the queue's lock, reach the
+    /// other end in the order they were given, whatever other threads send meanwhile
+    /// (TASK-160.11): a stage operation's ID sent behind a later one's would be acknowledged by it.
     #[test]
-    fn corked_sends_wait_for_uncorking_or_another_send() {
+    fn sends_of_a_batch_arrive_in_the_order_made() {
         let runtime =
             tokio::runtime::Builder::new_multi_thread().worker_threads(1).enable_all().build();
         let runtime = runtime.unwrap();
@@ -1193,46 +1171,33 @@ mod tests {
             let _entered = runtime.enter();
             AsyncSender::new(ours).unwrap()
         });
-        let waiting = |stream: &UnixStream| {
-            let mut byte = [0u8; 1];
-            // SAFETY: Peeks a byte into `byte`, without waiting.
-            let got = unsafe {
-                libc::recv(
-                    stream.as_raw_fd(),
-                    byte.as_mut_ptr().cast(),
-                    1,
-                    libc::MSG_PEEK | libc::MSG_DONTWAIT,
-                )
-            };
-            got > 0
+        let mut receiver = Receiver::new(theirs);
+        let mut ids = |count: usize| -> Vec<u64> {
+            (0..count).map(|_| receiver.receive(|| 0).unwrap().unwrap().header.id).collect()
         };
-        let mut receiver = Receiver::new(theirs.try_clone().unwrap());
-        let mut ids = |count: usize| -> Vec<(u64, usize)> {
-            (0..count)
-                .map(|_| {
-                    let message = receiver.receive(|| 0).unwrap().unwrap();
-                    (message.header.id, message.fds.len())
-                })
-                .collect()
-        };
-        sender.cork();
-        sender.send(Header::new(STAGE_UNMAP, 1), Vec::new(), &[]).unwrap();
-        sender.send(Header::new(STAGE_MAP, 2), Vec::new(), &[]).unwrap();
-        assert!(!waiting(&theirs), "a corked send arrived");
-        let other = sender.clone();
-        std::thread::spawn(move || other.send(Header::new(REPLY, 3), Vec::new(), &[]).unwrap())
-            .join()
-            .unwrap();
-        assert_eq!(ids(3), [(1, 0), (2, 0), (3, 0)]);
-        sender.cork();
-        sender.send(Header::new(STAGE_MAP, 4), Vec::new(), &[]).unwrap();
         let file = tempfile::tempfile().unwrap();
-        sender.send(Header::new(REPLY, 5), Vec::new(), &[file.as_fd()]).unwrap();
-        sender.send(Header::new(STAGE_MAP, 6), Vec::new(), &[]).unwrap();
-        sender.uncork();
-        assert!(!waiting(&theirs), "a send arrived while corked");
-        sender.uncork();
-        assert_eq!(ids(3), [(4, 0), (5, 1), (6, 0)]);
-        assert!(!AsyncSender::corked());
+        sender.send(Header::new(REPLY, 1), Vec::new(), &[file.as_fd()]).unwrap();
+        let batch = || vec![Header::new(STAGE_UNMAP, 2), Header::new(STAGE_MAP, 3)];
+        sender.send_all(batch).unwrap();
+        assert_eq!(ids(3), [1, 2, 3]);
+
+        let (threads, batches) = (8, 100);
+        let next = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let senders: Vec<_> = (0..threads)
+            .map(|_| {
+                let (sender, next) = (sender.clone(), next.clone());
+                std::thread::spawn(move || {
+                    for _ in 0..batches {
+                        let id = || next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        let batch = || (0..3).map(|_| Header::new(STAGE_MAP, id())).collect();
+                        sender.send_all(batch).unwrap();
+                    }
+                })
+            })
+            .collect();
+        let received = ids(threads * batches * 3);
+        senders.into_iter().for_each(|sender| sender.join().unwrap());
+        let expected: Vec<u64> = (0..(threads * batches * 3) as u64).collect();
+        assert!(received == expected, "IDs out of order: {received:?}");
     }
 }

@@ -216,38 +216,42 @@ enum Op {
 }
 
 /// The window's changes, held back and made as the extent daemon sends them and its VM process
-/// makes them (TASK-91.16): what a thread makes in a change ([`SecondStage::begin_change`]) is
-/// held back, as the daemon's sender holds a corked thread's messages, until the change ends, or
-/// another thread makes something outside a change, which makes what was held back first, in
-/// order; then each unmap is made with what follows it within what it unmaps, at once
-/// ([`SecondStage::remap`]), as the VM process takes it (`wire::Receiver::take_change`).
+/// makes them (TASK-91.16): what the window makes in a change ([`SecondStage::begin_change`]) is
+/// held back, as the daemon's stage holds back its operations, until the change ends; then each
+/// unmap is made with what follows it within what it unmaps, at once ([`SecondStage::remap`]), as
+/// the VM process takes it (`wire::Receiver::take_change`). The window makes its changes, and
+/// every other call, under its lock: one begun in another's, or anything made from another thread
+/// meanwhile, fails (TASK-160.11).
 struct Remapping {
     stage: Arc<Telling>,
-    held: shuttle::sync::Mutex<Held>,
+    held: shuttle::sync::Mutex<Option<Held>>,
 }
 
-#[derive(Default)]
+/// A change being made: the thread making it, and what it made.
 struct Held {
-    /// The threads in a change, and how many changes deep.
-    changing: Vec<(thread::ThreadId, usize)>,
+    changing: thread::ThreadId,
     ops: Vec<Op>,
 }
 
 impl Remapping {
-    /// Makes `op`: held back if this thread is in a change, or made after what was held back.
+    /// Makes `op`: held back if the window is in a change, which this thread must be making.
     fn make(&self, op: Op) {
         let mut held = self.held.lock().unwrap();
-        let me = thread::current().id();
-        held.ops.push(op);
-        if !held.changing.iter().any(|(changing, _)| *changing == me) {
-            self.flush(&mut held);
+        match held.as_mut() {
+            Some(change) => {
+                let me = thread::current().id();
+                assert_eq!(change.changing, me, "{op:?} made from another thread in a change");
+                change.ops.push(op);
+            }
+            None => self.flush(vec![op]),
         }
     }
 
-    /// Makes what was held back, in order, holding it so that what is made after waits.
-    fn flush(&self, held: &mut Held) {
+    /// Makes what was held back, `ops`, in order, holding the lock, so that what is made after
+    /// waits.
+    fn flush(&self, ops: Vec<Op>) {
         let ps = page_size();
-        let mut ops = std::mem::take(&mut held.ops).into_iter().peekable();
+        let mut ops = ops.into_iter().peekable();
         while let Some(op) = ops.next() {
             match op {
                 Op::Unmap(mut start, len) => {
@@ -306,22 +310,15 @@ impl SecondStage for Remapping {
 
     fn begin_change(&self) {
         let mut held = self.held.lock().unwrap();
-        let me = thread::current().id();
-        match held.changing.iter_mut().find(|(changing, _)| *changing == me) {
-            Some((_, depth)) => *depth += 1,
-            None => held.changing.push((me, 1)),
-        }
+        assert!(held.is_none(), "a change begun in another");
+        *held = Some(Held { changing: thread::current().id(), ops: Vec::new() });
     }
 
     fn end_change(&self) {
         let mut held = self.held.lock().unwrap();
-        let me = thread::current().id();
-        let at = held.changing.iter().position(|(changing, _)| *changing == me).unwrap();
-        held.changing[at].1 -= 1;
-        if held.changing[at].1 == 0 {
-            held.changing.remove(at);
-            self.flush(&mut held);
-        }
+        let change = held.take().expect("a change ended, not begun");
+        assert_eq!(change.changing, thread::current().id(), "a change ended by another thread");
+        self.flush(change.ops);
     }
 }
 

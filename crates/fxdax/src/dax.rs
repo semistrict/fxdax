@@ -82,11 +82,13 @@ pub trait SecondStage: Send + Sync {
     /// back, so that accesses to them fault again.
     fn window_mapped(&self, _offset: u64, _len: u64) {}
 
-    /// fxdax: the window begins a change of its mapping of a range, which may unmap what it maps
-    /// there, then map the range anew ([`window_mapped`](Self::window_mapped)) and its pages in
-    /// memory: what this thread makes here until [`end_change`](Self::end_change) is one change,
-    /// which a stage in another process, sent it whole (`crate::extentd`), may make at once
-    /// ([`remap`](Self::remap), TASK-91.16). Changes may nest.
+    /// fxdax: the window begins a change of its mappings, which may unmap what it maps, then map
+    /// ranges anew ([`window_mapped`](Self::window_mapped)) and their pages in memory: what it
+    /// makes here until [`end_change`](Self::end_change) is one change, which a stage in another
+    /// process, sent it whole (`crate::extentd`), may make at once ([`remap`](Self::remap),
+    /// TASK-91.16). The window makes a change under its lock, as it makes every call here, so
+    /// that nothing else of its comes between: changes don't nest, and a stage may hold back
+    /// what a change makes until it ends, which no wait comes before.
     fn begin_change(&self) {}
 
     /// fxdax: ends [`begin_change`](Self::begin_change).
@@ -584,6 +586,13 @@ impl Window {
         }
     }
 
+    /// fxdax: begins a change of its second stage, if it has one, which ends as what it returns
+    /// is dropped: begun with the window's lock held, and dropped before it is let go of
+    /// ([`SecondStage::begin_change`]).
+    fn change(&self) -> Option<Change<'_>> {
+        self.stage().map(|stage| Change::begin(stage.as_ref()))
+    }
+
     fn host_base(&self) -> Option<usize> {
         match self.translation {
             Translation::Host { base } => Some(base),
@@ -679,8 +688,8 @@ impl Window {
             if !zeros {
                 waited |= source.clone().bring_in(page).await?;
             }
-            let _change = self.stage().map(|stage| Change::begin(stage.as_ref()));
             let mut state = self.state.lock().unwrap();
+            let _change = self.change();
             // Mapped anew meanwhile, by the guest's MAP or a free's zeros, the store is to what is
             // mapped now.
             let same = state.mapping_at(offset).is_some_and(|(start, mapping)| {
@@ -823,8 +832,8 @@ impl Window {
         len: u64,
         private: Private,
     ) {
-        let _change = self.stage().map(|stage| Change::begin(stage.as_ref()));
         let mut state = self.state.lock().unwrap();
+        let _change = self.change();
         self.map_locked(&mut state, offset, source, source_offset / page_size(), len, private);
     }
 
@@ -863,8 +872,8 @@ impl Window {
     /// nothing to map. fxdax: the private pages there stay, the guest's, which only its own `MAP`
     /// or `UNMAP` ends (backlog doc-13).
     fn map_zeros_over(self: &Arc<Self>, source: usize, zeros: &Arc<dyn Source>) -> Vec<Range<u64>> {
-        let _change = self.stage().map(|stage| Change::begin(stage.as_ref()));
         let mut state = self.state.lock().unwrap();
+        let _change = self.change();
         let Some(starts) = state.by_source.get(&source) else { return Vec::new() };
         let ranges: Vec<Range<u64>> =
             starts.iter().map(|start| *start..state.mappings[start].end).collect();

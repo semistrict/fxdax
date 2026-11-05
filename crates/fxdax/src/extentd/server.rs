@@ -1161,7 +1161,7 @@ impl Connection {
             // No larger than the daemon makes room for, the codec has it (TASK-150.3).
             Request::Window { size, private_max } => {
                 let (sender, acks) = (self.peer.sender.clone(), self.peer.acks.clone());
-                let stage = Arc::new(RemoteStage { sender, acks });
+                let stage = Arc::new(RemoteStage { sender, acks, change: Mutex::default() });
                 // fxdax: a writer's copies on write, and only a writer's (backlog doc-13).
                 let writer = self.hold().is_some();
                 let window = match private_max {
@@ -1641,6 +1641,17 @@ struct AckState {
     watched: Option<Watched>,
 }
 
+impl AckState {
+    /// The ID of the next stage operation, which takes access to pages away if `taking`.
+    fn next(&mut self, taking: bool) -> u64 {
+        self.sent += 1;
+        if taking {
+            self.last_taking = self.sent;
+        }
+        self.sent
+    }
+}
+
 /// fxdax: how the watchdog last found a VM process with stage operations taking access away
 /// unacknowledged.
 struct Watched {
@@ -1654,14 +1665,10 @@ struct Watched {
 }
 
 impl Acks {
-    /// The ID of the next stage operation, which takes access to pages away if `taking`.
-    fn next(&self, taking: bool) -> u64 {
-        let mut state = self.state.lock().unwrap();
-        state.sent += 1;
-        if taking {
-            state.last_taking = state.sent;
-        }
-        state.sent
+    /// The ID of `op`, the next stage operation sent, which the caller queues to send before it
+    /// gives another ([`RemoteStage::send_now`]).
+    fn sent(&self, op: &StageOp) -> u64 {
+        self.state.lock().unwrap().next(op.taking())
     }
 
     fn acked(&self, id: u64) {
@@ -2066,8 +2073,6 @@ impl Parking {
     /// them has made the stage operations taking them away, or the daemon let it go, which it does
     /// once it has stopped answering ([`Peer::unresponsive`]).
     pub(super) fn wait(&self) {
-        // What this thread holds back would never be acknowledged.
-        assert!(!AsyncSender::corked(), "waited for pages freed with stage operations held back");
         let mut parked = self.0.parked.lock().unwrap();
         while *parked > 0 {
             parked = self.0.freed.wait(parked).unwrap();
@@ -2113,16 +2118,31 @@ async fn watch() {
 struct RemoteStage {
     sender: Arc<AsyncSender>,
     acks: Arc<Acks>,
+    /// fxdax: the operations of the change the window is making, if it is, held back to be sent
+    /// together as it ends (TASK-91.16). The window makes its changes, and every call here, under
+    /// its lock (`SecondStage::begin_change`): nothing else of the window's comes between, nor
+    /// does any wait, so that the guest's access to a page waits for no operation held back
+    /// (TASK-160.11).
+    change: Mutex<Option<Vec<StageOp>>>,
 }
 
 impl RemoteStage {
-    /// Sends the stage operation `op`, which the VM process acknowledges if it takes access to
-    /// pages away ([`StageOp::taking`]).
+    /// Sends the stage operation `op`, or holds it back with the change being made.
     fn send(&self, op: StageOp) {
-        let taking = op.taking();
-        let id = self.acks.next(taking);
+        let mut change = self.change.lock().unwrap();
+        match change.as_mut() {
+            Some(ops) => ops.push(op),
+            None => self.send_now(&[op]),
+        }
+    }
+
+    /// Sends `ops` at once, in order, each with the next ID ([`Acks::sent`]), given as they are
+    /// queued, so that IDs reach the VM process in order: the VM process acknowledges those that
+    /// take access to pages away ([`StageOp::taking`]), each for every ID before it.
+    fn send_now(&self, ops: &[StageOp]) {
+        let stages = || ops.iter().map(|op| Stage { id: self.acks.sent(op), op: *op }.encode());
         // Failing, the VM process is gone, and its mappings with it.
-        let _ = self.sender.send(Stage { id, op }.encode(), Vec::new(), &[]);
+        let _ = self.sender.send_all(|| stages().collect());
     }
 }
 
@@ -2134,11 +2154,16 @@ impl SecondStage for RemoteStage {
     }
 
     fn begin_change(&self) {
-        self.sender.cork();
+        let before = self.change.lock().unwrap().replace(Vec::new());
+        assert!(before.is_none(), "a window's change begun in another");
     }
 
     fn end_change(&self) {
-        self.sender.uncork();
+        let mut change = self.change.lock().unwrap();
+        let ops = change.take().expect("a window's change ended, not begun");
+        if !ops.is_empty() {
+            self.send_now(&ops);
+        }
     }
 
     fn unmap(&self, offset: u64, len: u64) {
@@ -2159,6 +2184,11 @@ mod acks_tests {
     use super::{Acks, BEHIND};
     use std::sync::Arc;
 
+    /// The ID of the next stage operation sent, which takes access to pages away if `taking`.
+    fn next(acks: &Acks, taking: bool) -> u64 {
+        acks.state.lock().unwrap().next(taking)
+    }
+
     /// TASK-79.9: pages freed are parked until the VM process has made what it was sent so far
     /// that takes access to pages away, not what it was sent after, nor what gives access; and
     /// not at all with none of that unacknowledged, or once the VM process is gone.
@@ -2166,12 +2196,12 @@ mod acks_tests {
     fn parked_until_what_takes_access_away_is_acknowledged() {
         let acks = Acks::default();
         let pages: Arc<dyn Send + Sync> = Arc::new(());
-        let mapped = acks.next(false);
+        let mapped = next(&acks, false);
         acks.park(&pages);
         assert_eq!(Arc::strong_count(&pages), 1, "parked behind a map");
-        let unmapped = acks.next(true);
+        let unmapped = next(&acks, true);
         acks.park(&pages);
-        let after = acks.next(true);
+        let after = next(&acks, true);
         assert_eq!(Arc::strong_count(&pages), 2);
         acks.acked(mapped);
         assert_eq!(Arc::strong_count(&pages), 2);
@@ -2194,9 +2224,9 @@ mod acks_tests {
         let acks = Acks::default();
         let start = std::time::Instant::now();
         let at = |seconds| start + std::time::Duration::from_secs(seconds);
-        let first = acks.next(true);
+        let first = next(&acks, true);
         (0..50_000).for_each(|_| {
-            acks.next(true);
+            next(&acks, true);
         });
         assert_eq!(acks.unanswered(at(0)), std::time::Duration::ZERO);
         for second in 1..=20 {
@@ -2212,8 +2242,8 @@ mod acks_tests {
         let acks = Acks::default();
         let start = std::time::Instant::now();
         let at = |seconds| start + std::time::Duration::from_secs(seconds);
-        let first = acks.next(true);
-        let last = (0..1000).map(|_| acks.next(true)).last().unwrap();
+        let first = next(&acks, true);
+        let last = (0..1000).map(|_| next(&acks, true)).last().unwrap();
         assert_eq!(acks.behind(at(0)), std::time::Duration::ZERO);
         acks.unanswered(at(0));
         for second in 1..=60 {
@@ -2223,7 +2253,7 @@ mod acks_tests {
         assert_eq!(acks.behind(at(60)), BEHIND);
         // Cleared, what comes after counts on its own.
         acks.acked(last);
-        let next = acks.next(true);
+        let next = next(&acks, true);
         assert_eq!(acks.unanswered(at(61)), std::time::Duration::ZERO);
         assert_eq!(acks.behind(at(61)), std::time::Duration::ZERO);
         acks.acked(next);
@@ -2237,10 +2267,10 @@ mod acks_tests {
         let start = std::time::Instant::now();
         let at = |seconds| start + std::time::Duration::from_secs(seconds);
         assert_eq!(acks.unanswered(at(0)), std::time::Duration::ZERO);
-        let first = acks.next(true);
+        let first = next(&acks, true);
         assert_eq!(acks.unanswered(at(1)), std::time::Duration::ZERO);
         assert_eq!(acks.unanswered(at(3)), std::time::Duration::from_secs(2));
-        let second = acks.next(true);
+        let second = next(&acks, true);
         acks.acked(first);
         assert_eq!(acks.unanswered(at(4)), std::time::Duration::ZERO);
         assert_eq!(acks.unanswered(at(9)), std::time::Duration::from_secs(5));
