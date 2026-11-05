@@ -1009,6 +1009,49 @@ mod tests {
         Ok(recovered.state.extents.into_keys().collect())
     }
 
+    /// TASK-178: a deletion that finds a branch live, as a placement cut off does once the latest
+    /// placement's deletion ended the lease, recovers it to give its forks' children their records;
+    /// that other deletion finishing meanwhile, and a pass reclaiming what recovering the branch
+    /// needed, a fork's, its parent's segments up to the fork among it, the deletion is done, as
+    /// the other gave the children their records. Found by the simulation, seed 3953 of its
+    /// `stale_placements` at SIM_SOAK=100, on main too.
+    #[test]
+    fn deletions_finished_by_others_meanwhile_are_done() {
+        assert_eq!(block_on(delete_as_another_deletion_finishes()), Ok(()));
+    }
+
+    /// What deleting a fork gives, another deletion of it finishing and a pass of the collector
+    /// running as it lists the fork's checkpoints, recovering it.
+    async fn delete_as_another_deletion_finishes() -> Result<(), Error> {
+        use crate::layout::{Contents, Segment};
+        use crate::writer::Objects;
+        let direct = Arc::new(Direct(SimBucket::new()));
+        branch::create(&*direct, 1, 0).await.unwrap();
+        let parent = Writer::open(direct.clone(), 1, 10, 0).await.unwrap();
+        let extent = ExtentId::new(1, parent.chain().next_sequence());
+        let extents = vec![(extent, b"held".to_vec())];
+        commit(&parent, Commit { tag: 1, extents, ..Commit::default() }).await;
+        let footer =
+            parent.chain().close(Contents { forks: vec![child(2)], ..Contents::default() });
+        let segment = Segment { data: Vec::new(), footer: footer.clone() }.encode().into();
+        let at = parent.add_segment(Objects { footer, segment, own: Vec::new() }).unwrap();
+        parent.upload(at).await.unwrap();
+        parent.acknowledge().await.unwrap();
+        commit(&parent, Commit { tag: 2, frees: vec![extent], ..Commit::default() }).await;
+        parent.checkpoint().await.unwrap();
+        Writer::open(direct.clone(), 2, 11, 0).await.unwrap().checkpoint().await.unwrap();
+        let passing = direct.clone();
+        let bucket = Meanwhile {
+            bucket: direct,
+            branch: 2,
+            meanwhile: std::sync::Mutex::new(Some(move || {
+                branch::delete(&*passing, 2, 13, u64::MAX).now_or_never().unwrap().unwrap();
+                collect(&*passing, 1, &KEEP).now_or_never().unwrap().unwrap();
+            })),
+        };
+        branch::delete(&bucket, 2, 12, u64::MAX).await
+    }
+
     /// A bucket that runs `then` once, at the first request its hook names.
     struct Hooked {
         bucket: Arc<Direct>,

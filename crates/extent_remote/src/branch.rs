@@ -327,6 +327,13 @@ pub async fn delete(
     if record.forking().is_none() {
         let forks = match recover(bucket, branch, record.origin()).await {
             Ok(recovered) => recovered.state.forks,
+            // Deleted meanwhile, by another deletion, which gave its children their records: what
+            // recovering it needs, the collector may have reclaimed since (TASK-178).
+            Err(Error::Lost(_))
+                if self::record(bucket, branch).await?.is_none_or(|r| r.deleted) =>
+            {
+                return Ok(());
+            }
             Err(Error::Lost(_)) if lost_is_ok(bucket, branch, &record).await? => Vec::new(),
             Err(error) => return Err(error),
         };
