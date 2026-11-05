@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-05 06:37'
-updated_date: '2026-11-05 16:11'
+updated_date: '2026-11-05 16:13'
 labels:
   - guest-sim
 dependencies: []
@@ -67,4 +67,6 @@ Red and green:
 Note: ~/.local/bin/grep on this Mac is a wrapper (eish) that hung mutants.sh non-interactively; the script uses sed.
 
 macOS: FXDAX_TEST_PARTS='workspace scripts' scripts/test.sh --no-fail-fast: 2123 passed, 18 skipped (includes both fxfs-sim-diff tests); scripts part 159 python tests OK, crates/fxfs-sim-diff/mutants.sh --check 4 checked 0 broken. Not done here: AC #3 (it runs in CI) needs the push and a CI run; DoD #1's Linux half (GCE) not run, though guest/sim's Linux zloop passed in Docker.
+
+Commits on task-149-29: c96d6dbb2 (fxfs: dirty room counts the tail a growth zeroes), f86edf9a6 (guest/sim: model leaves a zero tail where it is), 1c7a2487f (crates/fxfs-sim-diff). Left open: AC #3 needs CI on the pushed branch; DoD #1's GCE run.
 <!-- SECTION:NOTES:END -->
