@@ -990,15 +990,25 @@ impl Journal {
                     last_checkpoint.file_offset, super_block.super_block_journal_file_offset
                 )));
             }
+            // fxdax: which fails if the block the journal ends in wasn't read: one it started in
+            // that didn't verify (TASK-149.23).
+            reader.skip_to_end_of_block()?;
             // fxdax: nor may it end before where a barrier last found it written: damage, not a
             // crash, ended it there, and what a sync acknowledged after would be lost unsaid
-            // (TASK-153.13).
+            // (TASK-153.13). It ends where replay discarded a transaction, if it did, or else at
+            // the end of the block it read last: a barrier follows a write of whole blocks, whose
+            // last may begin a record that goes on in a block the cut lost, which replay stops
+            // before; the record's transaction wasn't whole at the barrier, which acknowledged
+            // nothing of it, and the block was (TASK-182).
+            let ended = match discarded_to {
+                Some(_) => last_checkpoint.file_offset,
+                None => reader.journal_file_checkpoint().file_offset,
+            };
             let journal_end = self.super_block_manager.journal_end().await;
-            if last_checkpoint.file_offset < journal_end {
+            if ended < journal_end {
                 return Err(anyhow!(FxfsError::Inconsistent).context(format!(
-                    "journal replay cut short; journal finishes at {}, but was written to {} \
-                     before a barrier",
-                    last_checkpoint.file_offset, journal_end
+                    "journal replay cut short; journal finishes at {ended}, but was written to \
+                     {journal_end} before a barrier"
                 )));
             }
             let handle = ObjectStore::open_object(
@@ -1016,9 +1026,6 @@ impl Journal {
             })?;
             let _ = self.handle.set(handle);
             let mut inner = self.inner.lock();
-            // fxdax: which fails if the block the journal ends in wasn't read: one it started in
-            // that didn't verify (TASK-149.23).
-            reader.skip_to_end_of_block()?;
             let mut writer_checkpoint = reader.journal_file_checkpoint();
 
             // Make sure we don't accidentally use the reader from now onwards. fxdax: but for a

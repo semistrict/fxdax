@@ -2781,3 +2781,36 @@ fn an_unlink_applied_after_an_operation_may_be_cut_with_it_kept() {
     ];
     Setting::awkward(6784763639641074038, ROOMY).with_graveyard_of_seed().holds(ops);
 }
+
+/// The fsck hunt's sequence of TASK-182: a power cut, with fsck after every transaction, left a
+/// journal that replay refused, as ending before where a barrier had found it written.
+#[test]
+fn a_cut_with_fsck_after_every_transaction_replays_as_far_as_its_barrier() {
+    let ops = vec![
+        Op::SetDirXattr { dir: 0, name: 0, len: 1, byte: 0 },
+        Op::Create(1),
+        Op::Tmpfile(0),
+        Op::Tmpfile(0),
+        Op::Symlink(0),
+        Op::Write { file: 10, at: 8192, len: 1, byte: 0 },
+        Op::Sync,
+        Op::Write { file: 4, at: 40960, len: 4096, byte: 0 },
+        Op::Sync,
+        Op::Fill { file: 3, page: 0, pages: 3945, stride: 1, byte: 0 },
+        Op::UnlinkLater(1),
+        Op::Symlink(2),
+        Op::RemoveXattr { file: 0, name: 0 },
+        Op::Truncate { file: 1, size: 4096 },
+        Op::Fill { file: 14, page: 3, pages: 3377, stride: 1, byte: 0 },
+        Op::Write { file: 2, at: 16384, len: 8193, byte: 0 },
+        Op::Write { file: 8, at: 1, len: 4096, byte: 0 },
+        Op::Write { file: 1, at: 1, len: 4096, byte: 0 },
+        Op::Crash,
+        Op::Truncate { file: 8, size: 4294963200 },
+        Op::Close(5),
+        Op::Symlink(1),
+        Op::Fill { file: 0, page: 0, pages: 2997, stride: 2, byte: 0 },
+    ];
+    let setting = Setting::awkward(12436301060589371142, ROOMY).with_graveyard_of_seed();
+    setting.with_fsck_each(true).holds(ops);
+}
