@@ -3,7 +3,7 @@ id: doc-14
 title: 'Local disk as the bucket''s write-ahead log and cache: one storage engine'
 type: specification
 created_date: '2026-11-05 03:13'
-updated_date: '2026-11-05 13:25'
+updated_date: '2026-11-05 14:49'
 ---
 # Local disk as the bucket's write-ahead log and cache: one storage engine
 
@@ -182,6 +182,14 @@ the commits in turn.
    as doc-7's recovery on the same host has it ("if it holds the local ones up to there"), neither
    diverges, and what decides is what the guest's history is. A segment holding no commit but a
    fork stamps the base it was stamped over, as one with commits does.
+
+   *Implemented 2026-11-05 (TASK-165.5):* `extent_remote::Wal::rebase` takes what the writer found
+   at the branch's end (`Writer::fenced`: its last commit as recovery found it and after the fence,
+   and its chain) and places the WAL's segments by the guest's last commit through each, its base
+   for none: a segment holding no commit, a fork's alone, is placed by the commit before it, and of
+   the places the branch's last commit matches the last is taken as landed (a fork whose segment
+   did not land, never acknowledged, is lost, rather than made twice). The WAL's base is then the
+   branch's last commit after the fence.
 5. The branch's state is the recovery's, the WAL's footers applied over it. The guest mints from the
    writer's floor (`Chain::next_sequence`).
 

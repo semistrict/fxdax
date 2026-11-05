@@ -3,9 +3,11 @@ id: TASK-165.5
 title: >-
   The WAL's protocol: wal::rebase after a takeover, Error::Diverged, and the
   simulation's hosts keeping WALs
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-11-05 03:16'
+updated_date: '2026-11-05 14:49'
 labels: []
 dependencies:
   - TASK-165.2
@@ -24,7 +26,7 @@ doc-14, step 5. A host's closed segments not yet acknowledged replace remote.rs'
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 extent_remote::wal::rebase takes the state recovered and fenced, and a WAL's footers: drops those recovery applied, restamps the rest on the writer's chain (own extents at the new keys) if the first follows the fence's after, and otherwise fails with Error::Diverged
+- [ ] #1 extent_remote::wal::rebase (Wal::rebase) takes what the writer found at the branch's end, recovered and fenced, and a WAL's footers and base: by commits (doc-14 as TASK-165.2 changed it), drops the segments to the branch's last commit after the fence if it is one of the WAL's, restamps the rest on the writer's chain (own extents at the new keys) if it is one of the WAL's or its base, and otherwise fails with Error::Diverged
 - [ ] #2 Unit tests: WAL wholly landed, partly landed, landed past a gap (void), none landed, another writer moved on, empty WAL
 - [ ] #3 The simulation's hosts keep WALs of stamped segments, lost or kept at a crash, and every open on a host with one runs wal::rebase; all profiles pass
 - [ ] #4 Rules gains wal_follows and wal_after_fence, each turned off by a test_needs! that finds a violation
