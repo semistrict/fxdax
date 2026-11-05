@@ -344,7 +344,7 @@ impl ImageShared {
     }
 
     pub async fn clone_storage_to(&self, path: &Path) -> Result<Storage, Error> {
-        let Kind::Image { store, writes, .. } = &self.storage_kind else {
+        let Kind::Image { image, writes, .. } = &self.storage_kind else {
             return Err(Error::msg("memory cannot be cloned to an image"));
         };
         let filesystem = self.with_open(|open| (*open.filesystem).clone())?;
@@ -354,7 +354,7 @@ impl ImageShared {
             })
             .await
             .map_err(Error::new)?;
-        clone_image(store.clone(), writes.clone(), path).await
+        clone_image(image.clone(), writes.clone(), path).await
     }
 
     /// Unmounts the volumes still mounted, closes the filesystem, and gives the storage back.

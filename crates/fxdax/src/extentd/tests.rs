@@ -221,6 +221,33 @@ fn keeps_branches_in_object_storage() {
     served.join().unwrap();
 }
 
+/// fxdax: a store whose description names a bucket other than the daemon's, as an image's names
+/// its own file bucket, keeps its branch there as the daemon serves it, not in the daemon's
+/// (TASK-165.6): the image's other openers, the fxdax CLI's, find it there.
+#[test]
+fn keeps_branches_in_the_buckets_their_stores_name() {
+    host();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("image");
+    let url = format!("file://{}/", dir.path().canonicalize().unwrap().join("bucket").display());
+    let branch = crate::host_store::new_branch();
+    drop(crate::host_store::create_in(&path, 1 << 20, branch, &url).unwrap());
+    let (store, served) = connect(&path, 1 << 20);
+    let extent = ExtentId { branch, sequence: 1 };
+    write(&store, extent, 0, &pattern(1, 2 * BLOCK)).unwrap();
+    store.commit(Some(b"root")).unwrap();
+    let image = extent_remote::store::Store::from_url(&url).unwrap();
+    let daemons = super::stores::remote_bucket().unwrap();
+    futures::executor::block_on(async {
+        let state = extent_remote::recover(&image, branch, None).await.unwrap().state;
+        assert_eq!(state.root, Some(b"root".to_vec()));
+        let record = extent_remote::branch::record(&*daemons, branch).await.unwrap();
+        assert_eq!(record, None, "the daemon's bucket has the image's branch");
+    });
+    drop(store);
+    served.join().unwrap();
+}
+
 /// fxdax: the daemon keeps what its bucket did, its requests and bytes, what the stores'
 /// followers are, how many and how far behind, what serving the stores cost, and the requests it
 /// served, in the file `FXDAX_EXTENTD_STATS` names, soon after each change: the bench reports it

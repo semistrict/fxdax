@@ -97,10 +97,15 @@
 //! An image's I/O bypasses the host's page cache where the host filesystem allows, and runs on
 //! threads of its own. Freeing an extent removes its file.
 //!
+//! An image keeps its branch in a bucket, as every extent store does: a file bucket of its own,
+//! in its directory, which its description names (or, on a host of fxdax's system, the host's).
+//! Its commits are uploaded behind them, and closing it waits for them to be; what it frees, the
+//! process collects there after its commits.
+//!
 //! An image can be cloned: [`Storage::clone_to`] clones closed storage, and
 //! [`Image::clone_storage_to`] a mounted image's, after writing back its volumes' dirty data.
 //! A clone is a fork of the image's extent store, which shares the image's data rather than
-//! copies it, whatever it holds.
+//! copies it, whatever it holds, and of its branch in its bucket, which the clone shares.
 
 #![deny(missing_docs)]
 

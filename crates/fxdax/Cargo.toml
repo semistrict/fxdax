@@ -43,6 +43,7 @@ extent_remote.workspace = true
 extent_frame.workspace = true
 extent_store.workspace = true
 tokio.workspace = true
+url.workspace = true
 tar = { version = "0.4.46", default-features = false }
 flate2.workspace = true
 sha2.workspace = true

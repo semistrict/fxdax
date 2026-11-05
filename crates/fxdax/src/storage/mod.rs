@@ -4,22 +4,24 @@
 
 //! The storage a filesystem lives on: an image, or memory.
 
+mod collect;
 mod gate;
 mod image;
 mod io;
+mod kept;
 
 use crate::error::{Error, Result};
 use crate::executor::Executor;
 use crate::filesystem::DEFAULT_EXECUTOR_THREADS;
 use crate::host_store;
-use extent_store::{HostDir, Store};
-use fxfs::filesystem::FxFilesystem;
 use anyhow::Context as _;
+use fxfs::filesystem::FxFilesystem;
 use fxfs::fsck::errors::FsckIssue;
 use fxfs::fsck::{FsckOptions, fsck_volume_with_options, fsck_with_options};
 use fxfs::object_store::volume::{list_volumes, root_volume};
 use gate::WriteGate;
 use image::ImageDevice;
+use kept::Kept;
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -38,12 +40,13 @@ pub struct Storage {
 #[derive(Clone)]
 pub(crate) enum Kind {
     /// An image: its directory, whether the device's I/O bypasses the page cache, the device's
-    /// writes and frees, which cloning the image pauses, and its store, which a clone forks.
+    /// writes and frees, which cloning the image pauses, and its store, kept in its bucket, which
+    /// a clone forks.
     Image {
         dir: PathBuf,
         direct: bool,
         writes: Arc<WriteGate>,
-        store: Arc<Store<HostDir>>,
+        image: Arc<Kept>,
     },
     Memory,
 }
@@ -63,21 +66,24 @@ impl Storage {
     /// The size of the blocks storage is read and written in. Storage sizes are multiples of it.
     pub const BLOCK_SIZE: u32 = host_store::BLOCK_SIZE;
 
-    /// The image at `path`: a directory holding an extent store (see `image`).
+    /// The image at `path`: a directory holding an extent store (see `image`), or a clone's
+    /// handle, its branch kept in the bucket its description names (see `kept`).
     ///
     /// Its I/O bypasses the host's page cache where the host filesystem allows, as the in-process
     /// kernel caches files' pages already, and runs on threads of its own (io_uring on Linux).
+    /// It fails for an image made by older code, which kept its branch in no bucket, and which
+    /// nothing converts.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, Error> {
         let dir = path.as_ref().to_owned();
         let writes = Arc::new(WriteGate::default());
         let device = ImageDevice::open(&dir, writes.clone()).map_err(Error::new)?;
-        let (direct, store) = (device.is_direct(), device.store());
-        let kind = Kind::Image { dir, direct, writes, store };
-        Ok(Self { device: DeviceHolder::new(device), kind })
+        Ok(Self::image(dir, writes, device))
     }
 
     /// A new image at `path`, which must not exist, holding at most `size` bytes. It holds nothing
-    /// until the filesystem writes to it, and must be formatted before it is mounted.
+    /// until the filesystem writes to it, and must be formatted before it is mounted. Its branch
+    /// is kept in a file bucket of its own, in its directory, which its clones share; or, on a host
+    /// of fxdax's system, in the host's bucket (`FXDAX_EXTENTD_REMOTE`).
     pub fn create(path: impl AsRef<Path>, size: u64) -> Result<Self, Error> {
         let path = path.as_ref();
         if size < Self::BLOCK_SIZE as u64 {
@@ -86,9 +92,15 @@ impl Storage {
         let writes = Arc::new(WriteGate::default());
         let device = ImageDevice::create(path, size, host_store::new_branch(), writes.clone())
             .map_err(Error::new)?;
-        let (dir, direct, store) = (path.to_owned(), device.is_direct(), device.store());
-        let kind = Kind::Image { dir, direct, writes, store };
-        Ok(Self { device: DeviceHolder::new(device), kind })
+        Ok(Self::image(path.to_owned(), writes, device))
+    }
+
+    /// The storage of the image at `dir` whose device is `device`, its writes going through
+    /// `writes`.
+    fn image(dir: PathBuf, writes: Arc<WriteGate>, device: ImageDevice) -> Self {
+        let (direct, image) = (device.is_direct(), device.image());
+        let kind = Kind::Image { dir, direct, writes, image };
+        Self { device: DeviceHolder::new(device), kind }
     }
 
     /// `size` bytes of memory, which hold a filesystem until they are dropped, such as for a
@@ -111,26 +123,29 @@ impl Storage {
 
     /// Clones the image to a new image at `path`, which must not exist, and returns its storage.
     /// The clone is a fork of the image's extent store: it takes the same time and space whatever
-    /// the image holds, sharing the image's data, whose files each keeps while it holds them.
-    /// `path` is the fork's handle, naming the image's directory, which must stay where it is for
-    /// as long as the clone does. Memory cannot be cloned.
+    /// the image holds, sharing the image's data, whose files each keeps while it holds them; and
+    /// a fork of its branch in its bucket, which the clone keeps its own branch in. `path` is the
+    /// fork's handle, naming the image's directory, which must stay where it is for as long as the
+    /// clone does. Memory cannot be cloned.
     ///
     /// The storage must not be mounted, which it is not while it is the caller's. To clone a
     /// mounted filesystem's, see [`Filesystem::clone_storage_to`](crate::Filesystem::clone_storage_to).
     pub async fn clone_to(&self, path: impl AsRef<Path>) -> Result<Storage, Error> {
-        let Kind::Image { store, writes, .. } = &self.kind else {
+        let Kind::Image { image, writes, .. } = &self.kind else {
             return Err(Error::msg("memory cannot be cloned to an image"));
         };
-        clone_image(store.clone(), writes.clone(), path.as_ref()).await
+        clone_image(image.clone(), writes.clone(), path.as_ref()).await
     }
 
     /// Deletes the image at `path`, which nothing in this process has open: a clone, or an image,
-    /// whose data goes but for what other clones hold. An image whose clones live keeps its
-    /// directory, holding what they share of it, which no longer opens, and which goes with the
-    /// last of them (TASK-39.4). An image's directory must not be removed otherwise while clones of
-    /// it live: they hold their data there. Fails with `ENOENT` if there is none at `path`.
+    /// whose data goes but for what other clones hold, and its branch in its bucket, whose
+    /// collector reclaims what no other branch inherited from it. An image whose clones live keeps
+    /// its directory, holding what they share of it, which no longer opens, and which goes with
+    /// the last of them (TASK-39.4). An image's directory must not be removed otherwise while
+    /// clones of it live: they hold their data there, and their bucket, if it is the image's own.
+    /// Fails with `ENOENT` if there is none at `path`.
     pub fn delete(path: impl AsRef<Path>) -> Result<(), Error> {
-        host_store::delete(path.as_ref(), None)
+        kept::delete(path.as_ref())
     }
 
     /// The most bytes the storage holds.
@@ -158,11 +173,9 @@ impl Storage {
             let checked = async {
                 fsck_with_options(filesystem.clone(), &options).await?;
                 let store_ids =
-                    list_volumes(root_volume(filesystem.clone()).await?.volume_directory())
-                        .await?;
+                    list_volumes(root_volume(filesystem.clone()).await?.volume_directory()).await?;
                 for store_id in store_ids {
-                    fsck_volume_with_options(filesystem.as_ref(), &options, store_id, None)
-                        .await?;
+                    fsck_volume_with_options(filesystem.as_ref(), &options, store_id, None).await?;
                 }
                 anyhow::Ok(())
             };
@@ -195,12 +208,12 @@ impl fmt::Debug for Storage {
     }
 }
 
-/// Clones the image whose store is `store` to a new image at `path`, a fork of the store with a
-/// branch of its own, on a thread of its own, as forking commits the store durably. The clone
-/// pauses `writes`, the device's writes and frees, while it forks, so that it is the image as it
-/// was at one time.
+/// Clones `image` to a new image at `path`, a fork of its store, and of its branch in its bucket,
+/// with a branch of its own ([`Kept::fork`]), on a thread of its own, as forking commits the store
+/// durably and waits for the fork's upload. The clone pauses `writes`, the device's writes and
+/// frees, until the fork's commit is made, so that it is the image as it was at one time.
 pub(crate) async fn clone_image(
-    store: Arc<Store<HostDir>>,
+    image: Arc<Kept>,
     writes: Arc<WriteGate>,
     path: &Path,
 ) -> Result<Storage, Error> {
@@ -209,20 +222,10 @@ pub(crate) async fn clone_image(
     std::thread::Builder::new()
         .name("fxdax clone".into())
         .spawn(move || {
-            let _paused = writes.pause();
-            let forked = extent_store::fork_host(&store, &path, host_store::new_branch());
-            let cloned = forked.map_err(|error| {
-                // A fork that failed once its commit was made leaves its handle, naming a branch
-                // the store has not (`extent_store::ForkCommitted`): an image's is kept nowhere
-                // else, so it goes at once, leaving nothing of the clone.
-                if error.downcast_ref::<extent_store::ForkCommitted>().is_some()
-                    && let Err(why) = host_store::delete(&path, None)
-                {
-                    log::warn!("fxdax: leaving {}, a clone that failed: {why:#}", path.display());
-                }
-                Error::new(error.context(format!("cloning to {}", path.display())))
-            });
-            let _ = done.send(cloned.map(|_| path));
+            let forked = image.fork(&path, writes.pause());
+            let cloned =
+                forked.map_err(|error| error.context(format!("cloning to {}", path.display())));
+            let _ = done.send(cloned.map(|()| path));
         })
         .map_err(Error::new)?;
     let path = cloned.await.map_err(Error::new)??;

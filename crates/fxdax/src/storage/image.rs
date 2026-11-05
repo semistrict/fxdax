@@ -14,10 +14,12 @@
 //!   which sync the image, and cleaning, which runs after a commit once segments hold much freed
 //!   space.
 //! - Flushing commits the store: a barrier, durable, which seals the extents written before it.
+//! - fxdax: the store's branch is kept in its bucket (see `kept`): its commits are uploaded behind
+//!   them, and closing the device waits for them to be.
 
 use super::gate::WriteGate;
 use super::io::{Io, Op};
-use crate::host_store;
+use super::kept::Kept;
 use anyhow::{Context, Error, bail};
 use async_trait::async_trait;
 use extent_store::{Aligned, Description, HostDir, Part, Store};
@@ -43,6 +45,8 @@ async fn unblock<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> R
 
 /// An Fxfs device on an image. See the module docs.
 pub(crate) struct ImageDevice {
+    image: Arc<Kept>,
+    /// The image's store, the one `image` keeps.
     store: Arc<Store<HostDir>>,
     description: Description,
     io: Io,
@@ -53,33 +57,35 @@ pub(crate) struct ImageDevice {
 
 impl ImageDevice {
     /// Makes a new image at `dir`, which must not exist, holding at most `capacity` bytes, of
-    /// `branch` ([`host_store::create`]), and its device, whose writes, frees and commits go
-    /// through `writes`.
+    /// `branch` ([`Kept::create`]), and its device, whose writes, frees and commits go through
+    /// `writes`.
     pub fn create(
         dir: &Path,
         capacity: u64,
         branch: u64,
         writes: Arc<WriteGate>,
     ) -> Result<Self, Error> {
-        Self::new(host_store::create(dir, capacity, branch)?, writes)
+        Self::new(Kept::create(dir, capacity, branch)?, writes)
     }
 
     /// The device of the image at `dir`, or of the clone whose handle `dir` is, whose writes,
     /// frees and commits go through `writes`.
     pub fn open(dir: &Path, writes: Arc<WriteGate>) -> Result<Self, Error> {
-        let store = host_store::open(dir).with_context(|| format!("opening {}", dir.display()))?;
-        Self::new(store, writes)
+        let image = Kept::open(dir).with_context(|| format!("opening {}", dir.display()))?;
+        Self::new(image, writes)
     }
 
-    /// The image's extent store.
-    pub fn store(&self) -> Arc<Store<HostDir>> {
-        self.store.clone()
+    /// The image's store, kept in its bucket.
+    pub fn image(&self) -> Arc<Kept> {
+        self.image.clone()
     }
 
-    fn new(store: Store<HostDir>, writes: Arc<WriteGate>) -> Result<Self, Error> {
+    fn new(image: Kept, writes: Arc<WriteGate>) -> Result<Self, Error> {
+        let store = image.store().clone();
         let description = store.description();
         Ok(Self {
-            store: Arc::new(store),
+            image: Arc::new(image),
+            store,
             description,
             io: Io::new().context("starting the image's I/O")?,
             allocator: BufferAllocator::new(
@@ -125,14 +131,15 @@ impl ImageDevice {
         Ok(())
     }
 
-    /// Commits the store, setting its root to `root` if given, and cleans it if its segments hold
-    /// much freed space ([`host_store::clean_after_commit`]), off the executor's threads.
+    /// Commits the store, setting its root to `root` if given, and does what follows a commit
+    /// ([`Kept::committed`]): cleans it if its segments hold much freed space, and collects its
+    /// bucket if that is due; off the executor's threads.
     async fn commit(&self, root: Option<Vec<u8>>) -> Result<(), Error> {
         let _writing = self.writes.write().await;
-        let store = self.store.clone();
+        let image = self.image.clone();
         unblock(move || {
-            store.commit(root.as_deref())?;
-            host_store::clean_after_commit(&store)
+            image.store().commit(root.as_deref())?;
+            image.committed()
         })
         .await?
     }
@@ -280,8 +287,12 @@ impl Device for ImageDevice {
         self.commit(Some(root.to_vec())).await.context("committing the image's root")
     }
 
+    /// Flushes, and waits for the image's commits to be uploaded: a closed image's branch is whole
+    /// in its bucket.
     async fn close(&self) -> Result<(), Error> {
-        self.flush().await
+        self.flush().await?;
+        let image = self.image.clone();
+        unblock(move || image.wait_uploaded()).await?.context("uploading the image's commits")
     }
 
     async fn flush(&self) -> Result<(), Error> {
@@ -300,7 +311,7 @@ mod tests {
     use std::path::PathBuf;
     use storage_device::NoExtent;
 
-    const BLOCK: u32 = host_store::BLOCK_SIZE;
+    const BLOCK: u32 = crate::host_store::BLOCK_SIZE;
     const MIB: usize = 1 << 20;
     const BRANCH: u64 = 7;
 

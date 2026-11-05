@@ -43,6 +43,8 @@ pub struct Lineage<D: Dir> {
     pub(crate) dir: D,
     pub(crate) block_size: u32,
     pub(crate) options: Options,
+    /// fxdax: the URL of the bucket its branches are kept in, if its description names one.
+    bucket: Option<String>,
     /// Its branches' records, which their stores and their deletions change.
     records: BranchRecords,
     /// Which branches hold each file of extents' data, and which files may go.
@@ -75,6 +77,17 @@ impl<D: Dir> Lineage<D> {
     /// Makes a new store in `dir`, which is empty, of one branch, as `description` describes, and
     /// opens it.
     pub fn create(dir: D, description: Description, options: Options) -> Result<Arc<Self>, Error> {
+        Self::create_kept(dir, description, None, options)
+    }
+
+    /// fxdax: makes a new store as [`Lineage::create`] does, whose description names `bucket`, the
+    /// URL of the bucket its branches are kept in, if given ([`Lineage::bucket`]).
+    pub fn create_kept(
+        dir: D,
+        description: Description,
+        bucket: Option<&str>,
+        options: Options,
+    ) -> Result<Arc<Self>, Error> {
         let Description { block_size, capacity, branch } = description;
         ensure!(
             block_size.is_power_of_two() && block_size as usize <= crate::framed::ALIGNMENT,
@@ -92,7 +105,8 @@ impl<D: Dir> Lineage<D> {
         write_record(&dir, branch, 0, &record)?;
         // The description is last: until it is durable, the directory is no store.
         let file = dir.create(DESCRIPTION, false)?;
-        file.write_at(StoreFile { block_size, first: branch }.text().as_bytes(), 0)?;
+        let bucket = bucket.map(str::to_owned);
+        file.write_at(StoreFile { block_size, first: branch, bucket }.text().as_bytes(), 0)?;
         file.sync()?;
         dir.sync_dir("")?;
         dir.barrier()?;
@@ -113,7 +127,7 @@ impl<D: Dir> Lineage<D> {
 
     /// [`Lineage::open`], with the store's directory taken.
     fn open_taken(dir: D, options: Options) -> Result<Arc<Self>, Error> {
-        let StoreFile { block_size, first } = {
+        let StoreFile { block_size, first, bucket } = {
             let file = dir.open(DESCRIPTION, false).context("opening the store's description")?;
             let text = String::from_utf8(read_file(&file)?).context("reading the description")?;
             StoreFile::parse(&text)?
@@ -123,6 +137,7 @@ impl<D: Dir> Lineage<D> {
             dir,
             block_size,
             options,
+            bucket,
             records,
             ledger: Mutex::new(ledger),
             holds: Mutex::new(0),
@@ -242,6 +257,13 @@ impl<D: Dir> Lineage<D> {
         let path = segment_path(segment);
         let file = Arc::new(Framed::open(self.dir.open(&path, true)?, &path)?);
         Ok(self.files.lock().unwrap().insert(segment, file))
+    }
+
+    /// fxdax: the URL of the bucket the store's branches are kept in, as its description names it:
+    /// every store in a host's directory names one ([`crate::create_host`]); none, one of memory's,
+    /// or one made by older code, which fxdax opens no more (TASK-165.6).
+    pub fn bucket(&self) -> Option<&str> {
+        self.bucket.as_deref()
     }
 
     /// The branch opening the store, rather than one of its branches, opens.

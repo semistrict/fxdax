@@ -292,7 +292,7 @@ fn disclaim(dir: &Path, branch: u64) -> std::io::Result<()> {
 
 /// Runs `future` to its end on a runtime of its own, as what is called from no runtime's task
 /// does.
-fn block_on<F: std::future::Future>(future: F) -> Result<F::Output, Failure> {
+pub(crate) fn block_on<F: std::future::Future>(future: F) -> Result<F::Output, Failure> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -923,6 +923,11 @@ impl Remote {
     /// How many commits waited for the lag to shrink.
     pub fn stalls(&self) -> u64 {
         self.shared.progress.lock().unwrap().stalls
+    }
+
+    /// Why uploading stopped, if it did: the store's commits are its branch's no more.
+    pub fn failed(&self) -> Option<Failure> {
+        self.shared.progress.lock().unwrap().failed.clone()
     }
 }
 
@@ -1924,7 +1929,7 @@ mod tests {
     {
         const EXTENT: usize = 1 << 20;
         let dir = tempfile::tempdir().unwrap();
-        let store = crate::host_store::create(&dir.path().join("store"), 1 << 30, 7).unwrap();
+        let store = crate::host_store::create(&dir.path().join("store"), 1 << 30, 7).unwrap().store;
         let store = Arc::new(store);
         let bucket = Arc::new(Bucket::new(Arc::new(InMemory::new()), ""));
         let remote = super::Remote::attach(store.clone(), bucket, 1, options).unwrap();
@@ -1968,7 +1973,7 @@ mod tests {
     #[test]
     fn gathers_take_what_may_upload_at_once() {
         let dir = tempfile::tempdir().unwrap();
-        let store = crate::host_store::create(&dir.path().join("store"), 1 << 30, 7).unwrap();
+        let store = crate::host_store::create(&dir.path().join("store"), 1 << 30, 7).unwrap().store;
         let store = Arc::new(store);
         let bucket = Arc::new(Bucket::new(Arc::new(InMemory::new()), ""));
         let remote = super::Remote::attach(store.clone(), bucket.clone(), 1, idle()).unwrap();
@@ -2016,7 +2021,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("store");
         let branch = crate::host_store::new_branch();
-        let store = Arc::new(crate::host_store::create(&path, 1 << 30, branch).unwrap());
+        let store = Arc::new(crate::host_store::create(&path, 1 << 30, branch).unwrap().store);
         let bucket = Arc::new(Bucket::new(Arc::new(InMemory::new()), ""));
         let remote = super::Remote::attach(store.clone(), bucket, 1, idle()).unwrap();
         assert!(!free(&path), "taken while the store is open");

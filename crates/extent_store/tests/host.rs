@@ -6,8 +6,8 @@
 //! directory for one process at a time (TASK-44.1).
 
 use extent_store::{
-    Description, Dir, File as _, HostDir, Options, create_host, delete_host, fork_host, open_host,
-    resolve_host,
+    Description, Dir, File as _, HostDir, Options, create_host, delete_host, fork_host,
+    host_bucket, open_host, resolve_host,
 };
 use std::path::Path;
 use storage_device::ExtentId;
@@ -28,7 +28,7 @@ const OPTIONS: Options = Options {
 fn create(path: &Path) -> extent_store::Store<HostDir> {
     std::fs::create_dir(path).unwrap();
     let description = Description { block_size: BLOCK as u32, capacity: 1 << 20, branch: BRANCH };
-    create_host(path, description, false, OPTIONS).unwrap()
+    create_host(path, description, "memory:///host", false, OPTIONS).unwrap()
 }
 
 /// A store's directory resolves to it and its first branch; a fork's handle, to the store's
@@ -46,6 +46,23 @@ fn handles_resolve_to_their_store_and_branch() {
     std::env::set_current_dir(dir.path()).unwrap();
     fork_host(&store, Path::new("relative"), BRANCH + 2).unwrap();
     assert_eq!(resolve_host(Path::new("relative")).unwrap(), (canonical, BRANCH + 2));
+}
+
+/// fxdax: a host's store names the bucket its branches are kept in, which its forks share, read
+/// through their handles too (TASK-165.6).
+#[test]
+fn stores_and_their_forks_name_their_bucket() {
+    let dir = tempfile::tempdir().unwrap();
+    let (path, fork) = (dir.path().join("store"), dir.path().join("fork"));
+    let store = create(&path);
+    fork_host(&store, &fork, BRANCH + 1).unwrap();
+    assert_eq!(store.lineage().bucket(), Some("memory:///host"));
+    for named in [&path, &fork] {
+        assert_eq!(host_bucket(named).unwrap().as_deref(), Some("memory:///host"));
+    }
+    drop(store);
+    let forked = open_host(&fork, false, OPTIONS).unwrap();
+    assert_eq!(forked.lineage().bucket(), Some("memory:///host"));
 }
 
 /// Deleting a fork removes its handle; the store, its directory, once its last branch goes.

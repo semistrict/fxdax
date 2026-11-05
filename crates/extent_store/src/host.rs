@@ -73,14 +73,17 @@ pub fn open_host(path: &Path, direct: bool, options: Options) -> Result<Store<Ho
 }
 
 /// Makes a new store at `path`, which must be an empty directory, as `description` describes, and
-/// opens it.
+/// opens it. fxdax: its description names `bucket`, the URL of the bucket its branches are kept
+/// in, as every host's store's does ([`Lineage::bucket`], TASK-165.6).
 pub fn create_host(
     path: &Path,
     description: Description,
+    bucket: &str,
     direct: bool,
     options: Options,
 ) -> Result<Store<HostDir>, Error> {
-    let lineage = Lineage::create(HostDir::new(path, direct)?, description, options)?;
+    let dir = HostDir::new(path, direct)?;
+    let lineage = Lineage::create_kept(dir, description, Some(bucket), options)?;
     OPEN.lock().unwrap().push((path.canonicalize()?, Arc::downgrade(&lineage)));
     lineage.open_branch(description.branch)
 }
@@ -388,13 +391,24 @@ pub fn resolve_host(path: &Path) -> Result<(PathBuf, u64), Error> {
     let (store, branch) = resolve(path)?;
     let branch = match branch {
         Some(branch) => branch,
-        None => {
-            let text = std::fs::read_to_string(store.join(DESCRIPTION))
-                .with_context(|| format!("reading {}'s description", store.display()))?;
-            StoreFile::parse(&text)?.first
-        }
+        None => store_file(&store)?.first,
     };
     Ok((store, branch))
+}
+
+/// fxdax: the URL of the bucket the store at `path`, or the fork whose handle `path` is, keeps its
+/// branches in, as the store's description names it ([`Lineage::bucket`]): none for a store made
+/// by older code, which names none (TASK-165.6).
+pub fn host_bucket(path: &Path) -> Result<Option<String>, Error> {
+    let (store, _) = resolve(path)?;
+    Ok(store_file(&store)?.bucket)
+}
+
+/// The description of the store whose directory is `store`.
+fn store_file(store: &Path) -> Result<StoreFile, Error> {
+    let text = std::fs::read_to_string(store.join(DESCRIPTION))
+        .with_context(|| format!("reading {}'s description", store.display()))?;
+    StoreFile::parse(&text)
 }
 
 /// Whether the directory at `path` is a fork's handle.
@@ -417,6 +431,9 @@ mod tests {
     use storage_device::ExtentId;
 
     const BLOCK: usize = 4096;
+
+    /// The bucket the tests' stores name, which nothing here reaches.
+    const BUCKET: &str = "memory:///host";
 
     /// The steps of this thread's deletions' removals ([`removals`]): those taken, and how many
     /// more may be, if limited.
@@ -461,7 +478,7 @@ mod tests {
         let (path, fork) = (temp.path().join("store"), temp.path().join("fork"));
         std::fs::create_dir(&path).unwrap();
         let description = Description { block_size: BLOCK as u32, capacity: 1 << 20, branch: 3 };
-        let store = create_host(&path, description, true, Options::default()).unwrap();
+        let store = create_host(&path, description, BUCKET, true, Options::default()).unwrap();
         std::fs::create_dir(&fork).unwrap();
         let taken = fork_host(&store, &fork, 4).unwrap_err();
         assert_eq!(taken.downcast_ref::<Taken>(), Some(&Taken(fork.clone())), "{taken:#}");
@@ -476,7 +493,7 @@ mod tests {
         let (path, fork) = (temp.path().join("store"), temp.path().join("fork"));
         std::fs::create_dir(&path).unwrap();
         let description = Description { block_size: BLOCK as u32, capacity: 1 << 20, branch: 3 };
-        let store = create_host(&path, description, true, Options::default()).unwrap();
+        let store = create_host(&path, description, BUCKET, true, Options::default()).unwrap();
         fork_host(&store, &fork, 4).unwrap();
         assert!(!fork_failed(&fork));
         fail_fork(&fork).unwrap();
@@ -494,7 +511,7 @@ mod tests {
         let (path, fork) = (temp.path().join("store"), temp.path().join("fork"));
         std::fs::create_dir(&path).unwrap();
         let description = Description { block_size: BLOCK as u32, capacity: 1 << 20, branch: 3 };
-        let store = create_host(&path, description, true, Options::default()).unwrap();
+        let store = create_host(&path, description, BUCKET, true, Options::default()).unwrap();
         store.write(ExtentId::new(3, 0), 0, &[7; BLOCK]).unwrap();
         fork_host(&store, &fork, 4).unwrap();
         assert!(is_handle(&fork) && !is_handle(&path));
@@ -532,7 +549,7 @@ mod tests {
         let (path, fork) = (temp.path().join("store"), temp.path().join("fork"));
         std::fs::create_dir(&path).unwrap();
         let description = Description { block_size: BLOCK as u32, capacity: 1 << 20, branch: 3 };
-        let store = create_host(&path, description, true, Options::default()).unwrap();
+        let store = create_host(&path, description, BUCKET, true, Options::default()).unwrap();
         fork_host(&store, &fork, 4).unwrap();
         let lineage = store.lineage().clone();
         drop(store);
@@ -557,7 +574,7 @@ mod tests {
         let (path, fork) = (temp.join("store"), temp.join("fork"));
         std::fs::create_dir(&path).unwrap();
         let description = Description { block_size: BLOCK as u32, capacity: 1 << 20, branch: 3 };
-        let store = create_host(&path, description, true, Options::default()).unwrap();
+        let store = create_host(&path, description, BUCKET, true, Options::default()).unwrap();
         store.write(ExtentId::new(3, 0), 0, &[7; BLOCK]).unwrap();
         fork_host(&store, &fork, 4).unwrap();
         drop(store);
@@ -609,7 +626,7 @@ mod tests {
         let path = temp.path().join("alone");
         std::fs::create_dir(&path).unwrap();
         let description = Description { block_size: BLOCK as u32, capacity: 1 << 20, branch: 5 };
-        drop(create_host(&path, description, true, Options::default()).unwrap());
+        drop(create_host(&path, description, BUCKET, true, Options::default()).unwrap());
         delete_host_with(&path, Options::default(), |_, _| Ok(()), stopping).unwrap_err();
         stopped_removing(&path);
         delete_host(&path, Options::default()).unwrap();
@@ -700,7 +717,7 @@ mod tests {
         let (path, fork) = (temp.path().join("store"), temp.path().join("fork"));
         std::fs::create_dir(&path).unwrap();
         let description = Description { block_size: BLOCK as u32, capacity: 1 << 20, branch: 3 };
-        let store = create_host(&path, description, true, Options::default()).unwrap();
+        let store = create_host(&path, description, BUCKET, true, Options::default()).unwrap();
         store.write(ExtentId::new(3, 0), 0, &[7; BLOCK]).unwrap();
         fork_host(&store, &fork, 4).unwrap();
         drop(store);
@@ -741,7 +758,7 @@ mod tests {
         let (path, fork) = (temp.path().join("store"), temp.path().join("fork"));
         std::fs::create_dir(&path).unwrap();
         let description = Description { block_size: BLOCK as u32, capacity: 1 << 20, branch: 3 };
-        let store = create_host(&path, description, true, Options::default()).unwrap();
+        let store = create_host(&path, description, BUCKET, true, Options::default()).unwrap();
         // A write in progress, which the fork's commit waits for.
         let writing = store.begin_write(ExtentId::new(3, 0), 0, BLOCK as u64).unwrap();
         let (waited, handle, recorded) = std::thread::scope(|scope| {
@@ -777,7 +794,7 @@ mod tests {
         let (path, fork) = (temp.path().join("store"), temp.path().join("fork"));
         std::fs::create_dir(&path).unwrap();
         let description = Description { block_size: BLOCK as u32, capacity: 1 << 20, branch: 3 };
-        let store = create_host(&path, description, true, Options::default()).unwrap();
+        let store = create_host(&path, description, BUCKET, true, Options::default()).unwrap();
         fork_host(&store, &fork, 4).unwrap();
         let lineage = store.lineage().clone();
         // Each call: which, with what, whether the store had the branch, and whether the handle
@@ -825,7 +842,7 @@ mod tests {
         let path = temp.path().join("store");
         std::fs::create_dir(&path).unwrap();
         let description = Description { block_size: BLOCK as u32, capacity: 1 << 20, branch: 3 };
-        let store = create_host(&path, description, true, Options::default()).unwrap();
+        let store = create_host(&path, description, BUCKET, true, Options::default()).unwrap();
         // Its handle's place is taken.
         let taken = temp.path().join("taken");
         std::fs::create_dir(&taken).unwrap();
@@ -851,7 +868,7 @@ mod tests {
         let path = temp.path().join("store");
         std::fs::create_dir(&path).unwrap();
         let description = Description { block_size: BLOCK as u32, capacity: 1 << 20, branch: 3 };
-        let store = create_host(&path, description, true, Options::default()).unwrap();
+        let store = create_host(&path, description, BUCKET, true, Options::default()).unwrap();
         store.write(ExtentId::new(3, 0), 0, &[7; BLOCK]).unwrap();
         let record = path.join(format!("{}/{:016x}.{:016x}", crate::layout::BRANCHES, 4, 0));
         std::fs::create_dir(&record).unwrap();
@@ -892,7 +909,7 @@ mod tests {
         let path = temp.path().join("store");
         std::fs::create_dir(&path).unwrap();
         let description = Description { block_size: BLOCK as u32, capacity: 1 << 20, branch: 3 };
-        let store = create_host(&path, description, true, Options::default()).unwrap();
+        let store = create_host(&path, description, BUCKET, true, Options::default()).unwrap();
         let fork = temp.path().join("fork");
         let epoch = store.epoch().unwrap();
         let seen = std::cell::Cell::new(None);

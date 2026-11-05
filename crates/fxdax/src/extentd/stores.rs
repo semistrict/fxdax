@@ -535,13 +535,17 @@ pub(super) async fn attach(
     .await
 }
 
-/// The store at `path`, as `open` opens it, keeping its branch in the daemon's bucket.
+/// The store at `path`, as `open` opens it, keeping its branch in the bucket its description
+/// names: the daemon's, for the stores it made, or another's, as an image's file bucket, for one
+/// it serves (TASK-165.6).
 fn attached(
     path: &Path,
     open: impl FnOnce() -> Result<ExtentStore, crate::Error>,
 ) -> Result<ExtentStore, Errno> {
-    let bucket = remote_bucket()?;
+    // The daemon's own first, which the stores naming it share (`host_store::bucket`).
+    remote_bucket()?;
     let store = open().map_err(|err| errno_of(format_args!("opening {}", path.display()), err))?;
+    let bucket = store.bucket().clone();
     let token = crate::remote::host_token().map_err(|err| {
         log::error!("extentd: {err}");
         Errno::EINVAL
@@ -660,7 +664,7 @@ pub(super) fn deleted_if_failed(path: &Path) -> Result<(), Errno> {
     if !ExtentStore::fork_failed(path) {
         return Ok(());
     }
-    let bucket = remote_bucket()?;
+    let bucket = bucket_of(path)?;
     ExtentStore::delete(path, Some(&bucket)).map_err(|err| {
         errno_of(format_args!("deleting {}, a fork that failed", path.display()), err)
     })
@@ -856,11 +860,25 @@ pub(super) async fn sync(path: PathBuf) -> Result<(), Errno> {
     synced
 }
 
-/// Deletes the store at `path`, or the fork whose handle it is, and its branch in the daemon's
-/// bucket ([`ExtentStore::delete`]): `EBUSY` while a connection has it open.
+/// Deletes the store at `path`, or the fork whose handle it is, and its branch in its bucket
+/// ([`ExtentStore::delete`], [`bucket_of`]): `EBUSY` while a connection has it open.
 pub(super) async fn delete(path: PathBuf) -> Result<(), Errno> {
-    let bucket = remote_bucket()?;
+    let bucket = bucket_of(&path)?;
     delete_alone(path, Some(bucket)).await
+}
+
+/// The bucket the store at `path`, or the fork whose handle it is, keeps its branch in, as its
+/// description names it (TASK-165.6): or, if its description is not there, as for what a
+/// deletion that stopped partway left, which deletes nothing in a bucket, the daemon's.
+fn bucket_of(path: &Path) -> Result<Arc<extent_remote::store::Store>, Errno> {
+    match crate::host_store::bucket_at(path) {
+        Ok(Some(bucket)) => Ok(bucket),
+        Ok(None) => remote_bucket(),
+        Err(err) => {
+            log::warn!("extentd: the bucket of {}: {err:#}", path.display());
+            Err(Errno::EIO)
+        }
+    }
 }
 
 /// fxdax: deletes this host's copy of the store at `path`, or of the fork whose handle it is
@@ -1041,13 +1059,12 @@ pub(crate) fn remote_bucket() -> Result<Arc<extent_remote::store::Store>, Errno>
         log::error!("extentd: {err}");
         Errno::EIO
     })?;
-    let bucket = extent_remote::store::Store::from_url(&host.bucket).map_err(|err| {
-        log::error!("extentd: FXDAX_EXTENTD_REMOTE: {err}");
+    let bucket = crate::host_store::bucket(&host.bucket).map_err(|err| {
+        log::error!("extentd: FXDAX_EXTENTD_REMOTE: {err:#}");
         Errno::EIO
     })?;
     Ok(BUCKET
         .get_or_init(|| {
-            let bucket = Arc::new(bucket);
             watch_stats(Arc::downgrade(&bucket));
             bucket
         })
@@ -1056,7 +1073,8 @@ pub(crate) fn remote_bucket() -> Result<Arc<extent_remote::store::Store>, Errno>
 
 /// Whether the stores opened upload only when something waits for an upload ([`uploads_when_asked`]).
 #[cfg(test)]
-static UPLOADS_WHEN_ASKED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static UPLOADS_WHEN_ASKED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 
 /// Has the stores opened from now on upload only when something waits for an upload (a fork, a
 /// sync, a commit stalled at the lag's bound, the store closing), never as their interval runs
@@ -1069,10 +1087,13 @@ pub(super) fn uploads_when_asked() {
 }
 
 /// Makes `bucket` the daemon's, before any store opens: for tests that put themselves between the
-/// daemon's stores and their objects.
+/// daemon's stores and their objects. The stores naming `FXDAX_EXTENTD_REMOTE`'s bucket open it
+/// (`host_store::use_bucket`).
 #[cfg(test)]
 pub(super) fn use_bucket(bucket: extent_remote::store::Store) {
     let bucket = Arc::new(bucket);
+    let host = crate::remote::Host::from_env().expect("the daemon's host");
+    crate::host_store::use_bucket(&host.bucket, bucket.clone()).unwrap();
     assert!(BUCKET.set(bucket.clone()).is_ok(), "the daemon has its bucket already");
     watch_stats(Arc::downgrade(&bucket));
 }

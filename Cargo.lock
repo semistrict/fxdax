@@ -1384,6 +1384,7 @@ dependencies = [
  "tonic-prost",
  "tonic-prost-build",
  "tower",
+ "url",
  "zerocopy",
 ]
 

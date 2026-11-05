@@ -10,8 +10,19 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use storage_device::ExtentId;
 
-/// The first line of a store's description: its format.
-pub(crate) const FORMAT: &str = "fxdax extent store 5";
+/// The first line of a store's description: its format. fxdax: 6 names the bucket a host's store
+/// keeps its branches in (TASK-165.6). A store of another format is refused ([`Format`]): nothing
+/// reads, converts or upgrades it.
+pub(crate) const FORMAT: &str = "fxdax extent store 6";
+
+/// fxdax: the error of a store whose description is of another format than [`FORMAT`], an older
+/// one included: refused, as nothing reads it.
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("a store of format {found:?}, not {FORMAT:?}: refused")]
+pub struct Format {
+    /// The description's first line.
+    pub found: String,
+}
 
 /// A branch of a store, as its user sees it: the size of the blocks extents are read and written
 /// in, which is the store's, the most bytes the branch's extents may hold, and the branch, whose
@@ -24,11 +35,14 @@ pub struct Description {
 }
 
 /// The store's description, its `store` file: its format, block size, and first branch, which
-/// opening the store, rather than one of its branches, opens.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// opening the store, rather than one of its branches, opens; and fxdax: the URL of the bucket its
+/// branches are kept in, which every store in a host's directory names (`create_host`, TASK-165.6),
+/// and a store of memory's need not.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct StoreFile {
     pub block_size: u32,
     pub first: u64,
+    pub bucket: Option<String>,
 }
 
 /// The fields of a text of lines of `key value`, after its first, which is `first`.
@@ -50,15 +64,21 @@ fn number(fields: &HashMap<String, String>, key: &str) -> Result<u64, Error> {
 
 impl StoreFile {
     pub(crate) fn parse(text: &str) -> Result<Self, Error> {
-        let fields = fields(text, FORMAT).context("not an extent store of this format")?;
+        let found = text.lines().next().unwrap_or_default();
+        if found != FORMAT {
+            return Err(Format { found: found.to_owned() }.into());
+        }
+        let fields = fields(text, FORMAT)?;
         Ok(Self {
             block_size: number(&fields, "block_size")?.try_into().context("bad block_size")?,
             first: number(&fields, "branch")?,
+            bucket: fields.get("bucket").cloned(),
         })
     }
 
     pub(crate) fn text(&self) -> String {
-        format!("{FORMAT}\nblock_size {}\nbranch {}\n", self.block_size, self.first)
+        let bucket = self.bucket.as_ref().map_or(String::new(), |url| format!("bucket {url}\n"));
+        format!("{FORMAT}\nblock_size {}\nbranch {}\n{bucket}", self.block_size, self.first)
     }
 }
 
@@ -666,9 +686,18 @@ mod tests {
 
     #[test]
     fn descriptions() {
-        let file = StoreFile { block_size: 4096, first: u64::MAX };
+        let file = StoreFile { block_size: 4096, first: u64::MAX, bucket: None };
         assert_eq!(StoreFile::parse(&file.text()).unwrap(), file);
-        assert!(StoreFile::parse("fxdax extent store 2\nblock_size 4096\nbranch 1\n").is_err());
+        // fxdax: a host's store names its bucket (TASK-165.6).
+        let bucket = Some("file:///images/a/bucket".to_owned());
+        let kept = StoreFile { bucket, ..file.clone() };
+        assert_eq!(StoreFile::parse(&kept.text()).unwrap(), kept);
+        // fxdax: older formats are refused, by their format (TASK-165.6).
+        for older in ["fxdax extent store 2", "fxdax extent store 5"] {
+            let refused = StoreFile::parse(&format!("{older}\nblock_size 4096\nbranch 1\n"));
+            let found = refused.unwrap_err().downcast::<Format>().unwrap().found;
+            assert_eq!(found, older);
+        }
         assert!(StoreFile::parse(&format!("{FORMAT}\nblock_size 4096\n")).is_err());
 
         let origin = Origin { parent: 3, epoch: 9, next_sequence: 12, index: 2 };

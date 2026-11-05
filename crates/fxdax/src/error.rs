@@ -25,13 +25,24 @@ impl Error {
         Self(anyhow::Error::msg(message))
     }
 
-    /// The errno that caused the error, if one did.
+    /// The error, saying what failed with it: its errno stays its own.
+    pub(crate) fn context(self, context: impl fmt::Display + Send + Sync + 'static) -> Self {
+        Self(self.0.context(context))
+    }
+
+    /// The errno that caused the error, if one did: `ENOTSUP` for a store of another format, an
+    /// older one included, which is refused (`extent_store::Format`, TASK-165.6).
     pub fn errno(&self) -> Option<Errno> {
         // An errno added as context is found by downcasting the error, not its causes.
-        self.0
-            .downcast_ref::<Errno>()
-            .or_else(|| self.0.chain().find_map(|cause| cause.downcast_ref::<Errno>()))
-            .copied()
+        let errno = self.0.downcast_ref::<Errno>().copied();
+        errno
+            .or_else(|| self.0.chain().find_map(|cause| cause.downcast_ref::<Errno>()).copied())
+            .or_else(|| {
+                self.0
+                    .chain()
+                    .any(|cause| cause.is::<extent_store::Format>())
+                    .then_some(Errno::ENOTSUP)
+            })
     }
 
     /// Whether what failed waited for something busy and gave up: another process's lock of a

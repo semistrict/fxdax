@@ -170,16 +170,22 @@ if [[ -e $socket || -e $control ]]; then
     echo "$socket exists: a daemon may be running" >&2
     exit 2
 fi
-# A host keeps stores in a bucket, FXDAX_EXTENTD_REMOTE's or one in its memory, as of placement 1
-# unless one is named; what it did with it scripts/bench-report.py reports. Its kernel takes
-# FXDAX_EXTENTD_MEMORY bytes at most, if set, or the daemon's default.
-env FXDAX_EXTENTD_REMOTE="${FXDAX_EXTENTD_REMOTE:-memory:///e2e}" \
+# A host keeps stores in a bucket, FXDAX_EXTENTD_REMOTE's or a file bucket in memory, on tmpfs,
+# as of placement 1 unless one is named; what it did with it scripts/bench-report.py reports. Not
+# one in the daemon's memory: the cases open the stores it made in processes of their own (fxdax's
+# Storage), which keep a store's branch in the bucket its description names (TASK-165.6). Its
+# kernel takes FXDAX_EXTENTD_MEMORY bytes at most, if set, or the daemon's default.
+bucket_dir=
+if [[ -z ${FXDAX_EXTENTD_REMOTE:-} ]]; then
+    bucket_dir=$(mktemp -d /dev/shm/fxdax-e2e-bucket.XXXXXX)
+fi
+env FXDAX_EXTENTD_REMOTE="${FXDAX_EXTENTD_REMOTE:-file://$bucket_dir}" \
     FXDAX_EXTENTD_TOKEN="${FXDAX_EXTENTD_TOKEN:-1}" \
     FXDAX_EXTENTD_STATS="$results/extentd-stats.txt" FXDAX_EXTENTD_GRPC="$control" \
     FAILPOINTS="${FXDAX_FAILPOINTS:-}" "$extentd_bin" "$socket" ${FXDAX_EXTENTD_MEMORY:-} \
     > "$results/extentd.log" 2>&1 &
 daemon=$!
-trap 'kill "$daemon" 2> /dev/null; rm -f "$socket" "$control"' EXIT
+trap 'kill "$daemon" 2> /dev/null; rm -f "$socket" "$control"; [[ -z $bucket_dir ]] || rm -r "$bucket_dir"' EXIT
 while [[ ! -S $socket || ! -S $control ]]; do
     if ! kill -0 "$daemon" 2> /dev/null; then
         echo "the extent daemon exited: see $results/extentd.log" >&2

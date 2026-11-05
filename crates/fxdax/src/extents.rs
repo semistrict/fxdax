@@ -173,6 +173,9 @@ impl StoreAccess {
 /// An extent store a guest's filesystem lives on. See the module docs.
 pub struct ExtentStore {
     store: Arc<Store<HostDir>>,
+    /// fxdax: the bucket the store's description names, which its branch is kept in
+    /// (`host_store::Opened`, TASK-165.6).
+    bucket: Arc<extent_remote::store::Store>,
     /// fxdax: where it was opened: its directory, or its handle's, which keeps what is attached to
     /// it (backlog doc-10).
     path: std::path::PathBuf,
@@ -440,7 +443,8 @@ impl ExtentStore {
     pub const MAX_EXTENT: u64 = 64 << 20;
 
     /// A new store at `path`, which must not exist, holding at most `capacity` bytes, with a branch
-    /// of its own.
+    /// of its own. fxdax: kept in this host's bucket, or, where this is no host of fxdax's system, a
+    /// file bucket of its own, which its description names (`host_store::create`, TASK-165.6).
     pub fn create(path: impl AsRef<Path>, capacity: u64) -> Result<Self, Error> {
         Self::create_for_branch(path, capacity, host_store::new_branch())
     }
@@ -464,9 +468,9 @@ impl ExtentStore {
         branch: u64,
         arena: Option<Arc<Arena>>,
     ) -> Result<Self, Error> {
-        let store = host_store::create(path.as_ref(), capacity, branch).map_err(Error::new)?;
-        let public = public_branches(store.dir().path())?;
-        Ok(Self::new(path.as_ref(), store, public, arena, true))
+        let opened = host_store::create(path.as_ref(), capacity, branch).map_err(Error::new)?;
+        let public = public_branches(opened.store.dir().path())?;
+        Ok(Self::new(path.as_ref(), opened, public, arena, true))
     }
 
     /// The store at `path`, or the fork whose handle `path` is ([`ExtentStore::fork`]), as of its
@@ -482,9 +486,9 @@ impl ExtentStore {
     /// the default arena, without one. Those of public branches' extents, which every tenant's
     /// forks of them share, are of the default arena.
     pub fn open_in(path: impl AsRef<Path>, arena: Option<Arc<Arena>>) -> Result<Self, Error> {
-        let store = host_store::open(path.as_ref()).map_err(Error::new)?;
-        let public = public_branches(store.dir().path())?;
-        Ok(Self::new(path.as_ref(), store, public, arena, true))
+        let opened = host_store::open(path.as_ref()).map_err(Error::new)?;
+        let public = public_branches(opened.store.dir().path())?;
+        Ok(Self::new(path.as_ref(), opened, public, arena, true))
     }
 
     /// fxdax: the store at `path`, a fork attached to other stores (backlog doc-10), to read
@@ -492,10 +496,10 @@ impl ExtentStore {
     /// it reads no boot profile. Its pages are of `arena`, or the default arena if it is public,
     /// as a public base's are, which every tenant's VM processes hold read-only.
     pub fn open_base(path: impl AsRef<Path>, arena: Option<Arc<Arena>>) -> Result<Self, Error> {
-        let store = host_store::open(path.as_ref()).map_err(Error::new)?;
-        let public = public_branches(store.dir().path())?;
-        let arena = arena.filter(|_| !public.contains(&store.description().branch));
-        Ok(Self::new(path.as_ref(), store, public, arena, false))
+        let opened = host_store::open(path.as_ref()).map_err(Error::new)?;
+        let public = public_branches(opened.store.dir().path())?;
+        let arena = arena.filter(|_| !public.contains(&opened.store.description().branch));
+        Ok(Self::new(path.as_ref(), opened, public, arena, false))
     }
 
     /// fxdax: the store at `path`, as [`ExtentStore::open`] has it, for work on it that boots no
@@ -504,28 +508,30 @@ impl ExtentStore {
     /// the pages of what it names, tenants' too, in the default arena, which every VM process
     /// holds, nor recorded (TASK-79.17).
     pub fn open_without_profile(path: impl AsRef<Path>) -> Result<Self, Error> {
-        let store = host_store::open(path.as_ref()).map_err(Error::new)?;
-        let public = public_branches(store.dir().path())?;
-        Ok(Self::new(path.as_ref(), store, public, None, false))
+        let opened = host_store::open(path.as_ref()).map_err(Error::new)?;
+        let public = public_branches(opened.store.dir().path())?;
+        Ok(Self::new(path.as_ref(), opened, public, None, false))
     }
 
-    /// The store `store`, opened at `path`, of whose lineage the branches `public` are public
+    /// The store `opened` at `path`, of whose lineage the branches `public` are public
     /// ([`public_branches`]), its own extents' pages of `arena`, or the default arena without one;
     /// its base's boot profile read or recorded if `profiled` ([`ExtentStore::profile`]).
     fn new(
         path: &Path,
-        store: Store<HostDir>,
+        opened: host_store::Opened,
         public: std::collections::BTreeSet<u64>,
         arena: Option<Arc<Arena>>,
         profiled: bool,
     ) -> Self {
         cache::relieve_pressure();
+        let host_store::Opened { store, bucket } = opened;
         let store = Arc::new(store);
         let arenas = Arenas { own: arena, public: Arc::new(public) };
         Self {
             profiling: profiled.then(|| Self::profile(&store, &arenas)).flatten(),
             arenas,
             store,
+            bucket,
             path: path.to_owned(),
             bases: Default::default(),
             dax: StoreMutex::new("dax", None),
@@ -551,6 +557,7 @@ impl ExtentStore {
             profiling: None,
             arenas: self.arenas.clone(),
             store: self.store.clone(),
+            bucket: self.bucket.clone(),
             path: self.path.clone(),
             bases: self.bases.clone(),
             dax: StoreMutex::new("dax", None),
@@ -840,7 +847,13 @@ impl ExtentStore {
         path: impl AsRef<Path>,
         bucket: Option<&extent_remote::store::Store>,
     ) -> Result<(), Error> {
-        host_store::delete(path.as_ref(), bucket)
+        host_store::delete(path.as_ref(), bucket, crate::remote::host_token)
+    }
+
+    /// fxdax: the bucket the store's description names, which its branch is kept in: what its
+    /// daemon attaches it to (TASK-165.6).
+    pub fn bucket(&self) -> &Arc<extent_remote::store::Store> {
+        &self.bucket
     }
 
     /// fxdax: the store's uploader, if it has one.
