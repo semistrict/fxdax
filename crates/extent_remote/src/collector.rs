@@ -1679,6 +1679,27 @@ mod tests {
     /// it inherited. Found by the simulation, seed 5310 of its `restores`.
     #[test]
     fn forks_of_points_made_and_gone_within_a_pass_keep_what_they_hold() {
+        assert_eq!(
+            read_what_a_fork_of_a_point_made_and_gone_within_a_pass_holds(),
+            Ok(b"held".to_vec())
+        );
+    }
+
+    /// The pass not listing the records again after it read the states: it never finds the
+    /// restored branch, and reclaims what it inherited. The simulation's
+    /// `collection_needs_records_listed_after_states` searches seeds for the same, which a change
+    /// of the trajectories moves (TASK-175's moved it from seed 5310 to 64216 of `restores`).
+    #[test]
+    fn forks_of_points_made_and_gone_within_a_pass_keeping_what_they_hold_need_records_relisted() {
+        crate::set_rules(crate::Rules { records_relisted: false, ..crate::Rules::ALL });
+        let read = read_what_a_fork_of_a_point_made_and_gone_within_a_pass_holds();
+        crate::set_rules(crate::Rules::ALL);
+        assert!(matches!(read, Err(Error::Lost(_))), "{read:?}");
+    }
+
+    /// What the restored branch of [`forks_of_points_made_and_gone_within_a_pass_keep_what_they_hold`]
+    /// reads of the extent it inherited, once the pass is done.
+    fn read_what_a_fork_of_a_point_made_and_gone_within_a_pass_holds() -> Result<Vec<u8>, Error> {
         let sim = SimBucket::new();
         let direct = Arc::new(Direct(sim.clone()));
         const POINT: u64 = 2;
@@ -1735,10 +1756,9 @@ mod tests {
         block_on(collect(&during, 1, &now)).unwrap();
         block_on(async {
             let record = branch::record(&*direct, RESTORED).await.unwrap();
-            let recovered = recovery::recover(&*direct, RESTORED, record.unwrap().origin()).await;
-            let location = recovered.unwrap().state.extents[&extent].clone();
-            assert_eq!(crate::read(&direct, extent, &location).await.unwrap(), b"held");
-        });
+            let recovered = recovery::recover(&*direct, RESTORED, record.unwrap().origin()).await?;
+            crate::read(&direct, extent, &recovered.state.extents[&extent]).await
+        })
     }
 
     /// A live branch whose recovery finds what it needs gone fails the pass, which deletes

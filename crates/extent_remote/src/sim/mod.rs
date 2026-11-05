@@ -134,6 +134,7 @@ fn one() {
         "recovering" => recovering(),
         "failed" => failed_forks(),
         "restores" => restores(),
+        "whole_restores" => whole_restores(),
         other => panic!("no profile {other}"),
     };
     let count = std::env::var("SIM_SEEDS").map_or(1, |count| count.parse().unwrap());
@@ -377,7 +378,19 @@ test_needs!(restores_need_records_saying_they_are_being_made, forks_pending, res
 
 test_needs!(collection_needs_abandoning_restores, collector_abandons, restores());
 
-test_needs!(collection_needs_records_listed_after_states, records_relisted, restores());
+/// Restores as [`restores`] makes them, but no host dying, no collector stopped and no request
+/// failing once it took effect: a pass that misses a restored branch then reclaims what it inherited,
+/// rather than stopping first. With `restores` itself, the trajectories TASK-175 moved put the first
+/// seed missing it at 64216, past the search (it was 5310).
+fn whole_restores() -> Profile {
+    let mut profile = restores();
+    profile.weights.crash = 0;
+    profile.weights.stop_collector = 0;
+    profile.fail_after = 0.0;
+    profile
+}
+
+test_needs!(collection_needs_records_listed_after_states, records_relisted, whole_restores());
 
 /// Case 7: collectors stopping midway, two at once, one fenced by another. Case 8: writers' indexes
 /// older than compactions.
