@@ -230,13 +230,16 @@ RUN apk add --no-cache postgresql postgresql-contrib perf e2fsprogs
     }
 
     /// Boots `vm`, named `name`, in Firecracker: its API socket and files named after it, each
-    /// VM's its own, as one's socket outlives it.
+    /// VM's its own, as one's socket outlives it. fxdax: its root image too: a density case's VMs
+    /// run at once, and each VM's boot made the one image anew under those running on it, whose
+    /// guests' ext4 then failed its checksums (r632, TASK-164.5).
     fn boot(
         test_setup: &TestSetup,
         root: &Path,
         name: &str,
-        vm: Vm,
+        mut vm: Vm,
     ) -> anyhow::Result<Firecracker> {
+        vm.root_image(&format!("{name}.rootfs.ext4"));
         vm.spawn_api(root, &test_setup.test_case, name, &Vm::api_socket(name))
     }
 
