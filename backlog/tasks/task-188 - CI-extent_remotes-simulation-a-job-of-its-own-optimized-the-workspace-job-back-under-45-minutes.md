@@ -29,15 +29,15 @@ CI's `test (workspace)` job took 42-51 minutes on main and was cancelled at its 
 <!-- AC:BEGIN -->
 - [x] #1 scripts/test.sh has a part `sim` running extent_remote's `sim::` tests optimized, with debug assertions and overflow checks kept; the workspace part no longer runs them
 - [x] #2 .github/workflows/ci.yml runs part `sim` as a matrix entry of its own; every test still runs in some job
-- [ ] #3 Each rule test's seed search is bounded and fails naming its range when no seed finds a violation
-- [ ] #4 The decision is under # Decisions in OPEN_QUESTIONS.md
+- [x] #3 Each rule test's seed search is bounded and fails naming its range when no seed finds a violation
+- [x] #4 The decision is under # Decisions in OPEN_QUESTIONS.md
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
 - [ ] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -52,4 +52,6 @@ CI's `test (workspace)` job took 42-51 minutes on main and was cancelled at its 
 abd90f507 (on TASK-172's 9ff0b49bc, its per-part packages: part sim installs the common build tools alone; test_ci.py expects the part). macOS, M-series: FXDAX_TEST_PARTS=sim scripts/test.sh 74.8 s wall (build 33.6 s, tests 39.0 s, 47 passed, 4 marked leaky by nextest, passing; none leaky in CI's logs); slowest deletions_need_fences 37.6 s, recoveries_need_newest_checkpoints 37.3 s, collection_needs_records_listed_after_states 29.1 s, takeovers_need_fences 26.9 s (CI debug: 1,590, 1,619, 1,175, 1,217 s). FXDAX_TEST_PARTS=workspace scripts/test.sh --no-fail-fast 326 s wall, 2,102 passed, no sim:: test run (65 skipped: the 47, and the ignored and Linux-only). FXDAX_TEST_PARTS="clippy scripts" 37 s, clippy clean, 163 scripts tests OK, mutants 17/4/38 apply. CI not yet run: the workspace part estimated from land-h at ~3,100 test-seconds without the simulation, about a quarter of an hour on 4 cores. Seed searches: already bounded at 0..20,000, panicking "no seed of 0..20000 needed the rule"; unchanged. Other SLOW tests of the logs (fxdax::handover, extentd's followers tests, fxfs-posix model/corrupt, extent_store::crash) are fixed-count workloads, not searches; they stay in the workspace part.
 
 CI 42114566873 on 9c5d9ef9a: test (sim) 7 min, all 47 sim tests; test (workspace) 18 min, against 42-52 min before (and two runs cancelled at 90). Every job green.
+
+AC3: the searches were already bounded at 20,000 seeds, failing 'no seed of 0..20000 needed the rule'. AC4: OPEN_QUESTIONS.md has the decision. upstream-changes --check passes.
 <!-- SECTION:NOTES:END -->
