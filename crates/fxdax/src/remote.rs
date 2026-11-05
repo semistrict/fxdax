@@ -416,8 +416,9 @@ impl Failure {
 
     /// The errno of the failure, as doc-4 and doc-7 have them: a branch this writer lost, to
     /// another writer or deleted, or one nothing writes, is one the store takes no more commits for
-    /// (`EROFS`); one a later placement holds, which a placement cut off takes back no more,
-    /// `ESTALE`; a branch, or a point, gone, `ENOENT`; a fork's child's ID taken, `EEXIST`; a branch
+    /// (`EROFS`); one a later placement holds, which a placement cut off takes back no more, or
+    /// one another writer moved on from this host's write-ahead log, which the store opens no more
+    /// until `fxdaxctl take` drops it, `ESTALE`; a branch, or a point, gone, `ENOENT`; a fork's child's ID taken, `EEXIST`; a branch
     /// of a newer format, `ENOTSUP`. None for what the store failed to read or write, here or in
     /// object storage, which is the caller's `EIO`, logged.
     pub(crate) fn errno(&self) -> Option<crate::Errno> {
@@ -427,7 +428,7 @@ impl Failure {
             Self::Remote(Error::Fenced | Error::Displaced | Error::Deleted | Error::Point) => {
                 Some(Errno::EROFS)
             }
-            Self::Remote(Error::Stale) => Some(Errno::ESTALE),
+            Self::Remote(Error::Stale | Error::Diverged) => Some(Errno::ESTALE),
             Self::Remote(Error::NoBranch) | Self::PointDeleted => Some(Errno::ENOENT),
             Self::Remote(Error::ChildTaken(_)) => Some(Errno::EEXIST),
             // A branch of a newer format than this host reads, until it is upgraded (doc-11).

@@ -30,6 +30,7 @@ use crate::layout::{self, Chain, Child, Footer, Location, Origin};
 use crate::moves::MovesMaps;
 use crate::record::Record;
 use crate::recovery::{self, Recovered, State};
+use crate::wal::Fenced;
 use crate::{EPOCH_SHIFT, Error, branch, rules};
 use futures::{StreamExt as _, TryStreamExt as _};
 use std::collections::{BTreeMap, BTreeSet};
@@ -96,6 +97,8 @@ pub struct Writer<B: Bucket> {
     holder: u64,
     /// What its uploads may hold at once, with those of the writers it shares it with.
     budget: Arc<Budget>,
+    /// Where it found the branch's end, taking it over.
+    fenced: Fenced,
     inner: Mutex<Inner>,
 }
 
@@ -176,6 +179,7 @@ impl<B: Bucket> Writer<B> {
             Some(before) => recovery::recover_on(&*bucket, record.origin(), before).await?,
         };
         let mut state = recovered.state;
+        let recovered_commit = state.last_commit;
         let mut seq = recovered.end;
         // Its fence: an empty segment of its at the branch's end, so that no earlier writer's
         // segment, landing late, changes the state it starts from; one that landed there first is
@@ -209,12 +213,14 @@ impl<B: Bucket> Writer<B> {
             floor = epoch << EPOCH_SHIFT;
         }
         let chain = chain_after(&state, epoch, seq, floor);
+        let fenced = Fenced { recovered: recovered_commit, last_commit: state.last_commit, chain };
         let writer = Self {
             bucket,
             branch,
             epoch,
             holder,
             budget: Budget::new(Limits::UNBOUNDED),
+            fenced,
             inner: Mutex::new(Inner {
                 state,
                 chain,
@@ -247,6 +253,12 @@ impl<B: Bucket> Writer<B> {
 
     pub fn epoch(&self) -> u64 {
         self.epoch
+    }
+
+    /// Where it found the branch's end, taking it over: what a host's write-ahead log is put after
+    /// ([`Wal::rebase`](crate::Wal::rebase)), before the writer takes a segment.
+    pub fn fenced(&self) -> Fenced {
+        self.fenced
     }
 
     /// The branch's state as of the last segment acknowledged.

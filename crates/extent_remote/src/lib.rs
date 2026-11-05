@@ -40,6 +40,7 @@ pub mod object;
 pub mod record;
 pub mod recovery;
 pub mod store;
+pub mod wal;
 pub mod writer;
 
 #[cfg(test)]
@@ -50,6 +51,7 @@ pub use bucket::Bucket;
 pub use fetch::read;
 pub use layout::Location;
 pub use recovery::{Recovered, State, recover};
+pub use wal::{Fenced, Wal};
 pub use writer::{Body, Objects, Writer};
 
 /// Extent IDs' sequence numbers carry the epoch of the writer that minted them above this bit,
@@ -100,6 +102,12 @@ pub enum Error {
     /// What a writer was to upload, it could not read where it is kept: a store's file.
     #[error("reading {0}")]
     Read(String),
+    /// Another writer's commits moved the branch on from the host's write-ahead log's: the branch's
+    /// last commit is neither one of the log's nor the one the log started from. Its commits were
+    /// never acknowledged, and no writer puts them after another's: the store opens only once
+    /// `fxdaxctl take` drops the log (doc-14, Opening a store).
+    #[error("another writer's commits moved the branch on from the write-ahead log's")]
+    Diverged,
 }
 
 impl From<extent_frame::Corrupt> for Error {
@@ -233,6 +241,15 @@ pub(crate) struct Rules {
     /// is marked deleted (TASK-183).
     /// TLA+: `specs/bucket/mutations/NoDeletionsFence.cfg`.
     pub deletions_fence: bool,
+    /// A host's write-ahead log is put after the branch's end only if the branch's last commit is
+    /// one of the log's or the one it started from: otherwise another writer's commits came after
+    /// what the log holds, and it diverged (doc-14, Opening a store).
+    /// TLA+: `specs/bucket/mutations/NoWalFollows.cfg`.
+    pub wal_follows: bool,
+    /// That last commit is the branch's after the writer's fence, which applied what landed at the
+    /// end since recovery found it, the log's own segments among them, not as recovery found it.
+    /// TLA+: `specs/bucket/mutations/NoWalAfterFence.cfg`.
+    pub wal_after_fence: bool,
 }
 
 impl Rules {
@@ -265,6 +282,8 @@ impl Rules {
         recoveries_by_origins: true,
         records_kept: true,
         deletions_fence: true,
+        wal_follows: true,
+        wal_after_fence: true,
     };
 }
 

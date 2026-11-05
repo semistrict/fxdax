@@ -1930,6 +1930,7 @@ mod tests {
             (Failure::Remote(Error::Deleted), Errno::EROFS),
             (Failure::Remote(Error::Point), Errno::EROFS),
             (Failure::Remote(Error::Stale), Errno::ESTALE),
+            (Failure::Remote(Error::Diverged), Errno::ESTALE),
             (Failure::Remote(Error::NoBranch), Errno::ENOENT),
             (Failure::PointDeleted, Errno::ENOENT),
             (Failure::Remote(Error::ChildTaken(3)), Errno::EEXIST),
