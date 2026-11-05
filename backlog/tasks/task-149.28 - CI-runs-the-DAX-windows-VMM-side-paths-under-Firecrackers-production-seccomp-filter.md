@@ -3,11 +3,11 @@ id: TASK-149.28
 title: >-
   CI runs the DAX window's VMM-side paths under Firecracker's production seccomp
   filter
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-05 03:49'
-updated_date: '2026-11-05 04:43'
+updated_date: '2026-11-05 05:40'
 labels: []
 dependencies: []
 parent_task_id: TASK-149
@@ -23,10 +23,10 @@ The jailed VMM runs Firecracker's production seccomp filter (vendor/firecracker/
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A Linux test CI runs (the workspace part of scripts/test.sh) compiles the "vmm" section of the JSON with vendor/firecracker's seccompiler, as Firecracker's build does, and runs the VMM side of a copy-on-write window under it: the window created, extents mapped, pages made private with and without a source page, unmapped, released
+- [x] #1 A Linux test CI runs (the workspace part of scripts/test.sh) compiles the "vmm" section of the JSON with vendor/firecracker's seccompiler, as Firecracker's build does, and runs the VMM side of a copy-on-write window under it: the window created, extents mapped, pages made private with and without a source page, unmapped, released
 - [x] #2 A system call the filter refuses fails the test with its name and number, its arguments and its thread, every one the run makes, rather than killing the test process
 - [x] #3 Shown red: with pread64 taken out of the JSON the test fails naming pread64 (17 on x86-64); green with it back
-- [ ] #4 The macOS build and FXDAX_TEST_PARTS=workspace scripts/test.sh still pass; CI installs what the test needs
+- [x] #4 The macOS build and FXDAX_TEST_PARTS=workspace scripts/test.sh still pass; CI installs what the test needs
 <!-- AC:END -->
 
 ## Definition of Done
@@ -65,4 +65,12 @@ Not run: x86-64. OrbStack here is arm64, and a filter for x86-64 can't run under
 Structure: the filter is a hand-kept list beside code that changes. This test is what keeps the two in step on every CI run. The remaining gap is calls only musl makes, and threads starting.
 
 macOS, FXDAX_TEST_PARTS=workspace scripts/test.sh: 2,053 of 2,053 passed (584 s). AC 1 and AC 4 wait for CI's first run, the first on x86-64 and the first with the submodule checkout and libseccomp-dev.
+
+x86-64: CI 41969564320 on seccomp-guard, workspace part: fxdax::seccomp copy_on_write_windows_run_under_firecrackers_seccomp_filters passed. macOS workspace 2068/2068 on the landing tree. Red runs were on aarch64 (pread64 is 67 there); x86-64's red wasn't run.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+crates/fxdax/tests/seccomp.rs runs the VMM side of a copy-on-write window (map, private with and without a source, fill, punch, unmap, release) on threads under the vmm and vcpu filters compiled from vendor/firecracker's JSON, refusals notified and named with arguments and thread. Red on aarch64 with each of pread64, memfd_create, fallocate, UFFDIO_COPY taken out; green with them; green on x86-64 in CI 41969564320.
+<!-- SECTION:FINAL_SUMMARY:END -->
