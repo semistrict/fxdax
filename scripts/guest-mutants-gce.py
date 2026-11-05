@@ -34,6 +34,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 DAX = "guest/linux/fs/fxfs/dax.c"
 SUPER = "guest/linux/fs/fxfs/super.c"
+DATA = "guest/linux/fs/fxfs/data.c"
 
 # Each mutant: its name, what it takes out, and its edits, (old, new) text of dax.c, or (old, new,
 # path) of another file, each of which must be found there once; and, for one only an assertion of a debug kernel's finds, the
@@ -52,8 +53,8 @@ MUTANTS = [
         "resize_moves_the_last_block",
         "a DAX file's change of size has Fxfs zero its last block past the end by moving it, from "
         "under the window, which goes on mapping it (TASK-150.9)",
-        [("\terr = fxfs_vfs_write_attr(inode, FXFS_SET_SIZE | (IS_DAX(inode) ? FXFS_SET_KEEP_TAIL : 0));",
-          "\terr = fxfs_vfs_write_attr(inode, FXFS_SET_SIZE);", SUPER)],
+        [("\terr = fxfs_vfs_write_attr(inode, FXFS_SET_SIZE | (ops->keeps_tail ? FXFS_SET_KEEP_TAIL : 0));",
+          "\terr = fxfs_vfs_write_attr(inode, FXFS_SET_SIZE);", DATA)],
     ),
     (
         "regions_find_unlocked",
