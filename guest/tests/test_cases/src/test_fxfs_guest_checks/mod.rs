@@ -25,10 +25,9 @@ pub struct TestFxfsGuestChecks {
     /// fxdax: whether the DAX window is small, 32 MiB, as the checks' files fill it: ranges are
     /// reclaimed under load (TASK-119.12).
     pub small_window: bool,
-    /// fxdax: whether the run is of [`OVERRUN`] alone, on a hundredth of its budget, which it
-    /// outruns: the guest ends the run, naming it, as it does any check that outruns its budget
-    /// (TASK-168).
-    #[cfg_attr(feature = "guest", allow(dead_code))]
+    /// fxdax: whether the suite runs the checks made to fail ([`Suites::Failing`]) before the page
+    /// cache's: one crashes, and one hangs in the kernel past its budget, which the guest ends
+    /// (TASK-168). Each fails alone, by name, and the rest pass (TASK-160.30).
     pub overrun: bool,
 }
 
@@ -52,18 +51,37 @@ impl TestFxfsGuestChecks {
     }
 }
 
-/// fxdax: the check an overrun run ([`TestFxfsGuestChecks::overrun`]) runs: one that takes
-/// seconds on any kernel, which a hundredth of its budget is too short for.
-#[cfg_attr(feature = "guest", allow(dead_code))]
-const OVERRUN: &str = "enospc";
-
 /// fxdax: in the host's environment, what scales the checks' budgets besides the guest kernel and
 /// storage, for a slower host; in the guest's, all that scales them, as the host has it.
 const SCALE: &str = "FXDAX_CHECKS_SCALE";
 
-/// fxdax: what the guest says, as it ends the run, of check `name` running on past its `budget`.
-fn overran(name: &str, budget: std::time::Duration) -> String {
-    format!("FAILED: {name}, still running after its budget of {budget:.2?}")
+/// fxdax: how a check's process ended, as the guest's log says after the check's time
+/// (TASK-160.30).
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "host", allow(dead_code))]
+pub(crate) enum Ended {
+    Passed,
+    /// With a status other than 0: 101 as it panicked, the panic's message before it in the log.
+    Exited(i32),
+    /// By a signal: a crash, such as a SIGBUS.
+    Signalled(i32),
+    /// Running on past its budget: killed.
+    Overran,
+}
+
+impl std::fmt::Display for Ended {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match *self {
+            Ended::Passed => write!(f, "passed"),
+            Ended::Exited(status) => write!(f, "exited with {status}"),
+            Ended::Signalled(signal) => {
+                // SAFETY: strsignal's string, which this copies before anything calls it again.
+                let name = unsafe { std::ffi::CStr::from_ptr(nix::libc::strsignal(signal)) };
+                write!(f, "killed by signal {signal} ({})", name.to_string_lossy())
+            }
+            Ended::Overran => write!(f, "still running after its budget: killed"),
+        }
+    }
 }
 
 /// fxdax: which of the suites a check runs in.
@@ -78,6 +96,9 @@ pub(crate) enum Suites {
     PageCache,
     /// Those with a DAX window of 32 MiB, which they do.
     SmallDax,
+    /// The overrun suite's alone: the checks made to fail, which no other runs
+    /// ([`TestFxfsGuestChecks::overrun`]).
+    Failing,
 }
 
 impl Suites {
@@ -88,6 +109,7 @@ impl Suites {
             Suites::LargeDax => suite.dax && !suite.small_window,
             Suites::PageCache => !suite.dax,
             Suites::SmallDax => suite.dax && suite.small_window,
+            Suites::Failing => suite.overrun,
         }
     }
 }
@@ -95,10 +117,10 @@ impl Suites {
 /// fxdax: a check of the guest's Fxfs: its name, which suites run it, and its budget, what it may
 /// take on a release guest kernel on GCE's n2-standard-4 with its store in the daemon's memory:
 /// twice the most it took there, in any suite (GCE r560's page cache, r563's DAX), and 3 s at
-/// least, which the host scales for other kernels and storage (`host::TestFxfsGuestChecks::run`). One that runs on past it, the
-/// guest ends the run, naming it, its stacks dumped: rather than the suite outrunning a limit of
-/// its own, which a few slow checks crossed and named none of them (TASK-168). A suite's limit is
-/// its checks' budgets', and more, for its VM's boot.
+/// least, which the host scales for other kernels and storage (`host::TestFxfsGuestChecks::run`).
+/// One that runs on past it, the guest kills, its stacks dumped, and fails by name: rather than
+/// the suite outrunning a limit of its own, which a few slow checks crossed and named none of them
+/// (TASK-168). A suite's limit is its checks' budgets', and more, for its VM's boot.
 #[derive(Debug, PartialEq)]
 pub(crate) struct Check {
     pub(crate) name: &'static str,
@@ -106,21 +128,28 @@ pub(crate) struct Check {
     pub(crate) budget: std::time::Duration,
 }
 
-/// fxdax: every check, in the order they run, `name: suites, budget in seconds => body`, the body
-/// a function of the guest's, given its suite's fields in parentheses where it takes them, such
-/// as `test_mmap_write(dax)`: given to `$then`, which makes of them what each side needs, the
-/// host's [`CHECKS`] and the guest's bodies of them, so that the two can't disagree (TASK-168).
+/// fxdax: every check, in the order they run, a declaration of it: `name: suites, budget in
+/// seconds => body`, the body a function of the guest's, given its suite's fields in parentheses
+/// where it takes them, such as `test_mmap_write(dax)`, and, after a comma, the host's verify of
+/// what it left in the image, if it has one, a function of the host's (`host::Image`). Given to
+/// `$then`, which makes of them what each side needs: the [`CHECKS`] both have, the guest's bodies
+/// of them, and the host's verifies, so that none can disagree on which is which (TASK-168). The
+/// guest runs each body in a process of its own (TASK-160.30).
 macro_rules! checks {
     ($then:ident) => {
         $then! {
+            // Made to fail, first, in the overrun suite alone: they fail by name, and the rest
+            // pass after them (TASK-160.30).
+            crashes: Failing, 3 => test_crashes;
+            hangs: Failing, 3 => test_hangs;
             host_file: All, 3 => test_host_file;
-            mmap_write: All, 3 => test_mmap_write(dax);
-            regular_write: All, 3 => test_regular_write;
-            namespace: All, 3 => test_namespace;
-            truncate_mapped: All, 3 => test_truncate_mapped;
-            eviction_writes_back: All, 3 => test_eviction_writes_back;
-            tmpfile: All, 3 => test_tmpfile;
-            fallocate: All, 3 => test_fallocate;
+            mmap_write: All, 3 => test_mmap_write(dax), verify_mmap_write;
+            regular_write: All, 3 => test_regular_write, verify_regular_write;
+            namespace: All, 3 => test_namespace, verify_namespace;
+            truncate_mapped: All, 3 => test_truncate_mapped, verify_truncate_mapped;
+            eviction_writes_back: All, 3 => test_eviction_writes_back, verify_eviction_writes_back;
+            tmpfile: All, 3 => test_tmpfile, verify_tmpfile;
+            fallocate: All, 3 => test_fallocate, verify_fallocate;
             zero_mapped: All, 3 => test_zero_mapped;
             seal_race: All, 3 => test_seal_race(dax);
             writes_across_seals: All, 23 => test_writes_across_seals;
@@ -131,7 +160,7 @@ macro_rules! checks {
             freeze: All, 3 => test_freeze;
             show_options: All, 3 => test_show_options(dax);
             write_removes_privileges: All, 3 => test_write_removes_privileges;
-            delayed_unlinks: All, 3 => test_delayed_unlinks;
+            delayed_unlinks: All, 3 => test_delayed_unlinks, verify_delayed_unlinks;
             sparse: All, 3 => test_sparse;
             blocks_follow_writes: All, 3 => test_blocks_follow_writes;
             write_from_own_mapping: All, 3 => test_write_from_own_mapping;
@@ -157,8 +186,8 @@ macro_rules! checks {
             cache_shrinks: All, 3 => test_cache_shrinks;
             direct_io: All, 3 => test_direct_io;
             timestamps_clamped: All, 3 => test_timestamps_clamped;
-            random_ops: All, 8 => test_random_ops;
-            torture: All, 38 => test_torture;
+            random_ops: All, 8 => test_random_ops, verify_random_ops;
+            torture: All, 38 => test_torture, verify_torture;
             pmd_write_unlink: Dax, 3 => test_pmd_write_unlink;
             mapped_after_write: Dax, 3 => test_mapped_after_write;
             dropped_after_seals: Dax, 3 => test_dropped_after_seals;
@@ -172,7 +201,7 @@ macro_rules! checks {
             append_writeback: Dax, 3 => test_append_writeback;
             append_while_mapped: Dax, 3 => test_append_while_mapped;
             append_size_follows_data: Dax, 3 => test_append_size_follows_data;
-            append_reserved_tail: Dax, 3 => test_append_reserved_tail;
+            append_reserved_tail: Dax, 3 => test_append_reserved_tail, verify_append_reserved_tail;
             map_failed: Dax, 3 => test_map_failed;
             map_many_failed: Dax, 3 => test_map_many_failed;
             write_killed: Dax, 3 => test_write_killed;
@@ -203,7 +232,8 @@ macro_rules! checks {
 
 /// fxdax: [`checks`]'s table, the host's and the guest's.
 macro_rules! check_table {
-    ($($name:ident: $suites:ident, $budget:literal => $body:ident $(($field:ident))?;)*) => {
+    ($($name:ident: $suites:ident, $budget:literal => $body:ident $(($field:ident))?
+        $(, $verify:ident)?;)*) => {
         pub(crate) const CHECKS: &[Check] = &[$(Check {
             name: stringify!($name),
             suites: Suites::$suites,
@@ -268,6 +298,7 @@ mod tests {
     const PAGE_CACHE: TestFxfsGuestChecks = PAGE_CACHE_CHECKS;
     const DAX: TestFxfsGuestChecks = TestFxfsGuestChecks { dax: true, ..PAGE_CACHE };
     const SMALL: TestFxfsGuestChecks = TestFxfsGuestChecks { small_window: true, ..DAX };
+    const OVERRUN: TestFxfsGuestChecks = TestFxfsGuestChecks { overrun: true, ..PAGE_CACHE };
 
     fn names(suite: &TestFxfsGuestChecks, only: &str) -> Vec<&'static str> {
         suite.checks(only).unwrap().into_iter().map(|(_, check)| check.name).collect()
@@ -313,6 +344,27 @@ mod tests {
         assert!(names(&DAX, "").contains(&"reads_stay_mapped"));
         assert!(!names(&SMALL, "").contains(&"reads_stay_mapped"));
         assert!(!names(&PAGE_CACHE, "").contains(&"pmd_write_unlink"));
+    }
+
+    /// The overrun suite runs the checks made to fail, then the page cache's, as that suite does;
+    /// no other suite runs them (TASK-160.30).
+    #[test]
+    fn failing_checks_run_first_in_the_overrun_suite_alone() {
+        let overrun = names(&OVERRUN, "");
+        assert_eq!(overrun[..2], ["crashes", "hangs"]);
+        assert_eq!(overrun[2..], names(&PAGE_CACHE, ""));
+        for suite in [PAGE_CACHE, DAX, SMALL] {
+            assert!(!names(&suite, "").contains(&"crashes"));
+        }
+    }
+
+    /// How a check ended, as the guest's log says it.
+    #[test]
+    fn ends_say_how() {
+        assert_eq!(Ended::Exited(101).to_string(), "exited with 101");
+        let signalled = Ended::Signalled(nix::libc::SIGBUS).to_string();
+        assert_eq!(signalled, format!("killed by signal {} (Bus error)", nix::libc::SIGBUS));
+        assert_eq!(Ended::Overran.to_string(), "still running after its budget: killed");
     }
 
     /// FXDAX_CHECKS's checks run in the table's order, those of the suite alone.

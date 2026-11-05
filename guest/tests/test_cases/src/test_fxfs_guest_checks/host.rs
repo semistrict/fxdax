@@ -10,7 +10,7 @@ use super::*;
 use crate::common::{fxdax_guest_should_run, guest_kernel_slowness, setup_rootfs};
 use crate::script::{self, Failure};
 use crate::script_vm::{self, Replays};
-use crate::vm::Vm;
+use crate::vm::{Vm, without_kernel_lines};
 use crate::{ShouldRun, Test, TestOutcome, TestSetup};
 use anyhow::Context;
 use futures::executor::block_on;
@@ -68,25 +68,18 @@ pub(crate) fn seed() -> u64 {
 const SETUP: Duration = Duration::from_secs(30);
 
 impl TestFxfsGuestChecks {
-    /// fxdax: the checks a run is of, FXDAX_CHECKS's (an overrun run's own), as
-    /// [`TestFxfsGuestChecks::checks`] has them.
+    /// fxdax: the checks a run is of, FXDAX_CHECKS's, as [`TestFxfsGuestChecks::checks`] has
+    /// them.
     fn only(&self) -> String {
-        if self.overrun {
-            return OVERRUN.to_owned();
-        }
         std::env::var("FXDAX_CHECKS").unwrap_or_default()
     }
 
     /// fxdax: the run's checks, and what their budgets are scaled by: the guest kernel's
     /// slowness, its storage's, object storage's taking twice the daemon's memory's (270 s
-    /// where 135 s, GCE r353), and FXDAX_CHECKS_SCALE's, for a slower host (TASK-168). An
-    /// overrun run's a hundredth.
+    /// where 135 s, GCE r353), and FXDAX_CHECKS_SCALE's, for a slower host (TASK-168).
     fn run(&self) -> anyhow::Result<(Vec<(usize, &'static Check)>, f64)> {
         let checks = self.checks(&self.only()).map_err(anyhow::Error::msg)?;
         anyhow::ensure!(!checks.is_empty(), "FXDAX_CHECKS names none of this suite's checks");
-        if self.overrun {
-            return Ok((checks, 0.01));
-        }
         let remote = std::env::var_os("FXDAX_EXTENTD_REMOTE").is_some_and(|r| !r.is_empty());
         let storage = if remote { 2.0 } else { 1.0 };
         let given = match std::env::var(SCALE) {
@@ -94,6 +87,57 @@ impl TestFxfsGuestChecks {
             Err(_) => 1.0,
         };
         Ok((checks, guest_kernel_slowness()? * storage * given))
+    }
+
+    /// fxdax: what the guest says as the run ends: OK, or the checks that failed, those made to
+    /// fail alone ([`Suites::Failing`]).
+    fn expected(&self, checks: &[(usize, &'static Check)]) -> String {
+        let failing: Vec<&str> = (checks.iter())
+            .filter(|(_, check)| check.suites == Suites::Failing)
+            .map(|(_, check)| check.name)
+            .collect();
+        if failing.is_empty() {
+            "OK\n".to_owned()
+        } else {
+            format!("FAILED: {}\n", failing.join(", "))
+        }
+    }
+
+    /// fxdax: whether the guest's log, `log`, says that those of `checks` made to fail failed as
+    /// they were made to, by name, and that it put back what they left: the fault injection
+    /// `crashes` set, the filesystem `hangs` froze (TASK-160.30). Each check's own line, after its
+    /// time.
+    fn failed_as_made_to(checks: &[(usize, &Check)], log: &str, scale: f64) -> Result<(), String> {
+        let ended = |name: &str, ended: Ended| {
+            let line = log.lines().find(|line| line.starts_with(&format!("FAIL: {name} (")));
+            let said = format!("): {ended}");
+            match line {
+                Some(line) if line.ends_with(&said) => Ok(()),
+                line => Err(format!("{name}: expected a line ending {said:?}, got {line:?}")),
+            }
+        };
+        let said = |line: String| {
+            let found = log.lines().any(|said| said == line);
+            if found { Ok(()) } else { Err(format!("expected the line {line:?} in the log")) }
+        };
+        for (_, check) in checks.iter().filter(|(_, check)| check.suites == Suites::Failing) {
+            let budget = check.budget.mul_f64(scale);
+            match check.name {
+                "crashes" => {
+                    ended("crashes", Ended::Signalled(nix::libc::SIGBUS))?;
+                    said("crashes: left fxfs.dax_fail_maps at 1000, set back to 0".to_owned())?;
+                }
+                "hangs" => {
+                    ended("hangs", Ended::Overran)?;
+                    said(format!(
+                        "hangs: still running after its budget of {budget:.2?}; the guest's stacks:"
+                    ))?;
+                    said("hangs: left the filesystem frozen, thawed".to_owned())?;
+                }
+                name => panic!("{name}, made to fail, says nothing of how"),
+            }
+        }
+        Ok(())
     }
 
     /// fxdax: what a replay of random_ops alone may take (`script_vm`).
@@ -167,18 +211,9 @@ impl Test for TestFxfsGuestChecks {
     fn check(self: Box<Self>, stdout: Vec<u8>, test_setup: TestSetup) -> TestOutcome {
         let output = String::from_utf8(stdout).unwrap();
         let seed = std::fs::read_to_string(test_setup.tmp_dir.join("seed")).unwrap();
-        // fxdax: the guest ended the run as its check ran on past its budget (TASK-168).
-        if self.overrun {
-            let (checks, scale) = self.run().unwrap();
-            let [(_, check)] = checks[..] else { panic!("an overrun run of {checks:?}") };
-            let expected = format!("\n{}\n", overran(check.name, check.budget.mul_f64(scale)));
-            return if output == expected {
-                TestOutcome::Pass
-            } else {
-                TestOutcome::Fail(format!("expected exactly {expected:?}, got {output:?}"))
-            };
-        }
-        if output != "OK\n" {
+        let (checks, scale) = self.run().unwrap();
+        let expected = self.expected(&checks);
+        if output != expected {
             // fxdax: random_ops, run alone, as a run of its script told what to drop can be
             // (TASK-149.2).
             let shrunk = Failure::parse(&output).map(|failure| {
@@ -195,8 +230,14 @@ impl Test for TestFxfsGuestChecks {
             });
             let shrunk = shrunk.unwrap_or_default();
             return TestOutcome::Fail(format!(
-                "seed {seed}: expected exactly \"OK\\n\", got {output:?}\n{shrunk}"
+                "seed {seed}: expected exactly {expected:?}, got {output:?}\n{shrunk}"
             ));
+        }
+        // fxdax: the checks made to fail failed alone, as made to, and the rest passed after
+        // them (TASK-160.30).
+        let log = std::fs::read_to_string(test_setup.tmp_dir.join("log.txt")).unwrap();
+        if let Err(failed) = Self::failed_as_made_to(&checks, &without_kernel_lines(&log), scale) {
+            return TestOutcome::Fail(format!("seed {seed}: {failed}"));
         }
         // fxdax: fsck, whichever checks ran.
         let fs = open_image(&test_setup.tmp_dir.join("fxdax.img"));
@@ -211,71 +252,125 @@ impl Test for TestFxfsGuestChecks {
                 std::fs::write(counts.join(name), count).unwrap();
             }
         }
-        // The host's checks are of what all the guest's checks wrote.
-        if std::env::var_os("FXDAX_CHECKS").is_some_and(|only| !only.is_empty()) {
-            return TestOutcome::Pass;
+        // The host's verifies of what each check left (TASK-160.30), of those that ran.
+        let image = Image { fs: &fs, seed: &seed, suite: &self };
+        for (at, _) in &checks {
+            if let Some(verify) = VERIFIES[*at] {
+                verify(&image);
+            }
         }
-
-        let mapped = read_path(&fs, "dax-mapped");
-        assert_eq!(mapped.len(), MAPPED_SIZE, "host: dax-mapped size");
-        // The guest's Fxfs, with a window, wrote more once the file was read in as DAX.
-        let dax_writes = self.dax;
-        let after = CHUNK + 4096;
-        for (offset, &byte) in mapped.iter().enumerate() {
-            let expected = if dax_writes && offset < EVICTED.len() {
-                EVICTED[offset]
-            } else if dax_writes && (after..after + WRITTEN.len()).contains(&offset) {
-                WRITTEN[offset - after]
-            } else if (CHUNK..CHUNK + WRITTEN.len()).contains(&offset) {
-                WRITTEN[offset - CHUNK]
-            } else {
-                pattern(offset)
-            };
-            assert_eq!(byte, expected, "host: dax-mapped byte {offset}");
-        }
-
-        assert_eq!(read_path(&fs, "written"), WRITTEN);
-        assert_eq!(read_path(&fs, "dir/renamed"), b"renamed");
-        assert_eq!(lookup_path(&fs, "dir/renamed").1.nlink, 2);
-        assert_eq!(read_path(&fs, "dir/link"), b"renamed");
-        assert_eq!(block_on(lookup_path(&fs, "sym").0.readlink()).unwrap(), b"written");
-        assert_eq!(read_path(&fs, "truncated"), vec![b't'; 100]);
-        assert!(block_on(fs.root().lookup(b"unlinked")).is_err());
-        // Never fsynced: only removing the mapping wrote it back
-        assert_eq!(read_path(&fs, "evicted"), EVICTED);
-        // Made with O_TMPFILE, then named.
-        assert_eq!(read_path(&fs, "tmpfile-linked"), b"unnamed, then linked");
-        assert_eq!(lookup_path(&fs, "tmpfile-linked").1.nlink, 1);
-        assert_eq!(read_path(&fs, "fallocated"), vec![0; 8192]);
-        assert_eq!(read_path(&fs, "punched"), punched_contents(16000, 12000));
-        // Unlinked, later, in batches, before the fsync of their directory.
-        assert!(block_on(fs.root().lookup(b"delayed")).is_err(), "delayed/ remains");
-        assert_eq!(read_path(&fs, "delayed-kept/again"), b"recreated");
-        assert_eq!(lookup_path(&fs, "delayed-kept/linked").1.nlink, 1);
-        assert!(block_on(lookup_path(&fs, "delayed-kept").0.lookup(b"gone")).is_err());
-        // fxdax: random_ops's file, as the store holds it, is as its model (TASK-119.2).
-        assert!(
-            read_path(&fs, RANDOM_OPS) == read_path(&fs, RANDOM_OPS_MODEL),
-            "host: seed {seed}: random-ops differs from its model"
-        );
-        // fxdax: and its operations, which replay it (TASK-119.15).
-        let history = read_path(&fs, RANDOM_OPS_HISTORY);
-        assert!(
-            history.starts_with(format!("seed {seed}\n").as_bytes()),
-            "host: random_ops's history is of another seed"
-        );
-        // fxdax: and the blocks appends reserved past a file's end left it as written (TASK-133).
-        if self.dax {
-            assert_eq!(read_path(&fs, APPEND_RESERVED), append_reserved());
-        }
-        // fxdax: and torture's (TASK-119.5).
-        for name in (0..TORTURE_FILES).map(torture) {
-            assert!(
-                read_path(&fs, &name) == read_path(&fs, &format!("{name}.model")),
-                "host: seed {seed}: {name} differs from its model"
-            );
-        }
-
         TestOutcome::Pass
+    }
+}
+
+/// fxdax: the image as the host's Fxfs reads it once the VM is gone, which a check's verify
+/// looks at what the check left in: of the run of seed `seed`, of suite `suite`.
+pub(crate) struct Image<'a> {
+    fs: &'a Filesystem,
+    seed: &'a str,
+    suite: &'a TestFxfsGuestChecks,
+}
+
+/// fxdax: [`checks`]'s verifies, in [`CHECKS`]'s order: each check's, if it has one.
+macro_rules! check_verifies {
+    ($($name:ident: $suites:ident, $budget:literal => $body:ident $(($field:ident))?
+        $(, $verify:ident)?;)*) => {
+        const VERIFIES: &[Option<fn(&Image)>] = &[$(check_verifies!(@verify $($verify)?),)*];
+    };
+    (@verify) => { None };
+    (@verify $verify:ident) => { Some($verify) };
+}
+checks!(check_verifies);
+
+fn verify_mmap_write(image: &Image) {
+    let mapped = read_path(image.fs, "dax-mapped");
+    assert_eq!(mapped.len(), MAPPED_SIZE, "host: dax-mapped size");
+    // The guest's Fxfs, with a window, wrote more once the file was read in as DAX.
+    let dax_writes = image.suite.dax;
+    let after = CHUNK + 4096;
+    for (offset, &byte) in mapped.iter().enumerate() {
+        let expected = if dax_writes && offset < EVICTED.len() {
+            EVICTED[offset]
+        } else if dax_writes && (after..after + WRITTEN.len()).contains(&offset) {
+            WRITTEN[offset - after]
+        } else if (CHUNK..CHUNK + WRITTEN.len()).contains(&offset) {
+            WRITTEN[offset - CHUNK]
+        } else {
+            pattern(offset)
+        };
+        assert_eq!(byte, expected, "host: dax-mapped byte {offset}");
+    }
+}
+
+fn verify_regular_write(image: &Image) {
+    assert_eq!(read_path(image.fs, "written"), WRITTEN);
+}
+
+fn verify_namespace(image: &Image) {
+    let fs = image.fs;
+    assert_eq!(read_path(fs, "dir/renamed"), b"renamed");
+    assert_eq!(lookup_path(fs, "dir/renamed").1.nlink, 2);
+    assert_eq!(read_path(fs, "dir/link"), b"renamed");
+    assert_eq!(block_on(lookup_path(fs, "sym").0.readlink()).unwrap(), b"written");
+    assert!(block_on(fs.root().lookup(b"unlinked")).is_err());
+}
+
+fn verify_truncate_mapped(image: &Image) {
+    assert_eq!(read_path(image.fs, "truncated"), vec![b't'; 100]);
+}
+
+/// Never fsynced: only removing the mapping wrote it back
+fn verify_eviction_writes_back(image: &Image) {
+    assert_eq!(read_path(image.fs, "evicted"), EVICTED);
+}
+
+/// Made with O_TMPFILE, then named.
+fn verify_tmpfile(image: &Image) {
+    assert_eq!(read_path(image.fs, "tmpfile-linked"), b"unnamed, then linked");
+    assert_eq!(lookup_path(image.fs, "tmpfile-linked").1.nlink, 1);
+}
+
+fn verify_fallocate(image: &Image) {
+    assert_eq!(read_path(image.fs, "fallocated"), vec![0; 8192]);
+    assert_eq!(read_path(image.fs, "punched"), punched_contents(16000, 12000));
+}
+
+/// Unlinked, later, in batches, before the fsync of their directory.
+fn verify_delayed_unlinks(image: &Image) {
+    let fs = image.fs;
+    assert!(block_on(fs.root().lookup(b"delayed")).is_err(), "delayed/ remains");
+    assert_eq!(read_path(fs, "delayed-kept/again"), b"recreated");
+    assert_eq!(lookup_path(fs, "delayed-kept/linked").1.nlink, 1);
+    assert!(block_on(lookup_path(fs, "delayed-kept").0.lookup(b"gone")).is_err());
+}
+
+/// fxdax: random_ops's file, as the store holds it, is as its model (TASK-119.2), and its
+/// operations, which replay it, are there (TASK-119.15).
+fn verify_random_ops(image: &Image) {
+    let (fs, seed) = (image.fs, image.seed);
+    assert!(
+        read_path(fs, RANDOM_OPS) == read_path(fs, RANDOM_OPS_MODEL),
+        "host: seed {seed}: random-ops differs from its model"
+    );
+    let history = read_path(fs, RANDOM_OPS_HISTORY);
+    assert!(
+        history.starts_with(format!("seed {seed}\n").as_bytes()),
+        "host: random_ops's history is of another seed"
+    );
+}
+
+/// fxdax: the blocks appends reserved past a file's end left it as written (TASK-133).
+fn verify_append_reserved_tail(image: &Image) {
+    assert_eq!(read_path(image.fs, APPEND_RESERVED), append_reserved());
+}
+
+/// fxdax: torture's files are as their models (TASK-119.5).
+fn verify_torture(image: &Image) {
+    for name in (0..TORTURE_FILES).map(torture) {
+        assert!(
+            read_path(image.fs, &name) == read_path(image.fs, &format!("{name}.model")),
+            "host: seed {}: {name} differs from its model",
+            image.seed
+        );
     }
 }

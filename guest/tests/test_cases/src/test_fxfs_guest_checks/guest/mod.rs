@@ -3,10 +3,9 @@
 // found in the LICENSE file.
 
 //! The guest's half of fxfs-guest-checks: what the checks share, each area's checks in a module of
-//! its own, and the running of them.
+//! its own, and the running of them, each in a process of its own ([`run`]).
 
 use super::*;
-use crate::Test;
 pub(crate) use crate::guest_fxfs::evict;
 use crate::guest_fxfs::{cow_base_file, is_dax, read_in_sealed};
 use crate::guest_init;
@@ -21,18 +20,19 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::os::unix::io::AsRawFd;
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 mod appends;
 mod attributes;
 mod copies;
 mod cow;
+mod failing;
 mod files;
 mod filesystem;
 mod namespace;
 mod page_cache;
 mod random;
+mod run;
 mod seals;
 mod window;
 
@@ -40,6 +40,7 @@ use appends::*;
 use attributes::*;
 use copies::*;
 use cow::*;
+use failing::*;
 use files::*;
 use filesystem::*;
 use namespace::*;
@@ -73,19 +74,6 @@ fn try_mount() -> std::io::Result<()> {
         libc::mount(source.as_ptr(), target.as_ptr(), fstype.as_ptr(), 0, std::ptr::null())
     };
     if ret == 0 { Ok(()) } else { Err(std::io::Error::last_os_error()) }
-}
-
-/// Unmaps what a check that failed left mapped of the image's files, which would keep the
-/// checks after it from unmounting, and fail them too.
-fn unmap_what_it_left() {
-    let maps = fs::read_to_string("/proc/self/maps").unwrap();
-    for line in maps.lines().filter(|line| line.contains(MNT)) {
-        let range = line.split_whitespace().next().unwrap();
-        let (start, end) = range.split_once('-').unwrap();
-        let start = usize::from_str_radix(start, 16).unwrap();
-        let end = usize::from_str_radix(end, 16).unwrap();
-        assert_eq!(unsafe { libc::munmap(start as *mut libc::c_void, end - start) }, 0);
-    }
 }
 
 /// Unmounts the image.
@@ -212,8 +200,12 @@ fn wait_for_child(child: libc::pid_t, limit: std::time::Duration) -> i32 {
     }
 }
 
-/// fxdax: one of fxfs's module parameters set for a check, as it was again once the guard
-/// goes: a check that fails leaves the checks after it as they were.
+/// fxdax: where fxfs's module parameters are.
+const PARAMS: &str = "/sys/module/fxfs/parameters";
+
+/// fxdax: one of fxfs's module parameters set for the rest of a check, or a part of it, as it was
+/// again once the guard goes. What a check leaves set, as it crashes or hangs, the agent sets back
+/// as the guest booted with it, before the next check ([`run`], TASK-160.30).
 struct Param {
     path: String,
     was: String,
@@ -221,7 +213,7 @@ struct Param {
 
 impl Param {
     fn set(name: &str, value: &str) -> Self {
-        let path = format!("/sys/module/fxfs/parameters/{name}");
+        let path = format!("{PARAMS}/{name}");
         let was = fs::read_to_string(&path).unwrap().trim().to_string();
         fs::write(&path, value).unwrap();
         Self { path, was }
@@ -230,7 +222,8 @@ impl Param {
 
 impl Drop for Param {
     fn drop(&mut self) {
-        // Not a panic, which in a check's unwinding would abort the checks after it.
+        // Not a panic, which in a panic's unwinding would abort the check's process before the
+        // first panic's message said why it failed.
         if let Err(err) = fs::write(&self.path, &self.was) {
             eprintln!("setting {} back to {}: {err}", self.path, self.was);
         }
@@ -241,14 +234,7 @@ impl Drop for Param {
 /// for a task to wait at `step`.
 struct Pauses;
 
-impl Drop for Pauses {
-    fn drop(&mut self) {
-        Self::set(0);
-    }
-}
-
 impl Pauses {
-    const PAUSE: &str = "/sys/module/fxfs/parameters/dax_pause";
     const PAUSED: &str = "/sys/module/fxfs/parameters/dax_paused";
     /// A write(2) with its iomap made, before its copy (FXFS_DAX_STEP_WRITE_MAPPED).
     const WRITE_MAPPED: u64 = 1 << 5;
@@ -256,24 +242,18 @@ impl Pauses {
     /// (FXFS_DAX_STEP_REBIND, fxfs_dax_rebind).
     const REBIND: u64 = 1 << 7;
 
-    fn set(steps: u64) {
-        fs::write(Self::PAUSE, steps.to_string()).unwrap();
-    }
-
     /// Pauses `steps`, as `begin`, those of a file only the file `path`'s tasks.
-    fn begin_of(steps: u64, path: &str) -> (Self, Param) {
+    fn begin_of(steps: u64, path: &str) -> (Param, Param) {
         use std::os::unix::fs::MetadataExt;
         let only = Param::set("dax_pause_ino", &fs::metadata(path).unwrap().ino().to_string());
         (Self::begin(steps), only)
     }
 
-    /// Pauses `steps` until the guard goes, which lets every task waiting go on: a check that
-    /// fails leaves none waiting, as the checks after it would.
-    fn begin(steps: u64) -> Self {
+    /// Pauses `steps` until the guard goes, which lets every task waiting go on.
+    fn begin(steps: u64) -> Param {
         // A hung task's stack on the console, at KERN_INFO.
         fs::write("/proc/sys/kernel/printk", "7").unwrap();
-        Self::set(steps);
-        Self
+        Param::set("dax_pause", &steps.to_string())
     }
 
     fn wait(step: u64) {
@@ -303,92 +283,11 @@ impl Pauses {
 /// fxdax: [`checks`]'s bodies, in [`CHECKS`]'s order, each given its suite. A body's given
 /// its suite's fields as it takes them, and most take none.
 macro_rules! check_bodies {
-    ($($name:ident: $suites:ident, $budget:literal => $body:ident $(($field:ident))?;)*) => {
+    ($($name:ident: $suites:ident, $budget:literal => $body:ident $(($field:ident))?
+        $(, $verify:ident)?;)*) => {
         #[allow(unused_variables)]
         const BODIES: &[fn(&TestFxfsGuestChecks)] =
             &[$(|suite: &TestFxfsGuestChecks| $body($(suite.$field)?),)*];
     };
 }
 checks!(check_bodies);
-
-/// fxdax: ends the run if a check runs on past its budget: says which on the console, with
-/// the guest's stacks, and resets the VM. A check that hung, or slowed down, fails by name, at
-/// once, rather than its suite running on to a limit of its own (TASK-168).
-struct Watchdog(mpsc::Sender<Running>);
-
-/// The check running, if one is: its name, its deadline, and the budget it was given.
-type Running = Option<(&'static str, Instant, Duration)>;
-
-impl Watchdog {
-    fn start() -> Self {
-        let (running, told) = mpsc::channel();
-        std::thread::spawn(move || {
-            let mut check: Running = None;
-            loop {
-                let next = match check {
-                    Some((_, deadline, _)) => {
-                        told.recv_timeout(deadline.saturating_duration_since(Instant::now()))
-                    }
-                    None => told.recv().map_err(|_| mpsc::RecvTimeoutError::Disconnected),
-                };
-                match next {
-                    Ok(next) => check = next,
-                    Err(mpsc::RecvTimeoutError::Timeout) => {
-                        let (name, _, budget) = check.unwrap();
-                        let stacks = crate::kernel_log::stacks().concat();
-                        guest_init::complain_out(&format!(
-                            "{name}: still running after its budget of {budget:.2?}; the \
-                             guest's stacks:\n{stacks}"
-                        ));
-                        guest_init::say_out(&overran(name, budget));
-                        guest_init::crash();
-                    }
-                    Err(mpsc::RecvTimeoutError::Disconnected) => return,
-                }
-            }
-        });
-        Self(running)
-    }
-
-    /// Says check `name` runs, which `budget` gives till `deadline`; or, with None, that
-    /// none does.
-    fn running(&self, check: Running) {
-        self.0.send(check).unwrap();
-    }
-}
-
-impl Test for TestFxfsGuestChecks {
-    fn in_guest(self: Box<Self>) {
-        mount();
-        let only = std::env::var("FXDAX_CHECKS").unwrap_or_default();
-        let checks = self.checks(&only).unwrap();
-        let scale: f64 = std::env::var(SCALE).map_or(1.0, |scale| scale.parse().unwrap());
-        let watchdog = Watchdog::start();
-        let mut failed = Vec::new();
-        for (at, check) in checks {
-            let budget = check.budget.mul_f64(scale);
-            let began = Instant::now();
-            watchdog.running(Some((check.name, began + budget, budget)));
-            let passed = catch_unwind(AssertUnwindSafe(|| BODIES[at](&self))).is_ok();
-            watchdog.running(None);
-            // fxdax: each check's time, against its budget, in the run's log (TASK-168).
-            let took = began.elapsed();
-            let verdict = if passed { "PASS" } else { "FAIL" };
-            eprintln!("{verdict}: {} ({took:.2?} of {budget:.2?})", check.name);
-            if !passed {
-                failed.push(check.name);
-                unmap_what_it_left();
-            }
-        }
-        save_coverage();
-        fsync_dir(MNT);
-
-        if failed.is_empty() {
-            println!("OK");
-        } else {
-            // What the guest's Fxfs logged.
-            crate::kernel_log::print();
-            println!("FAILED: {}", failed.join(", "));
-        }
-    }
-}
