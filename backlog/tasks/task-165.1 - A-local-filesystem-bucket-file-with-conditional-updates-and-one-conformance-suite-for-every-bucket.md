@@ -3,9 +3,11 @@ id: TASK-165.1
 title: >-
   A local-filesystem bucket: file:// with conditional updates, and one
   conformance suite for every bucket
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-11-05 03:15'
+updated_date: '2026-11-05 03:19'
 labels: []
 dependencies: []
 documentation:
@@ -35,3 +37,13 @@ doc-14, step 1. Development, tests and images need a bucket on the host's filesy
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. extent_remote::local: an object_store ObjectStore over LocalFileSystem (fsync on) adding conditional updates and serialised deletes and overwrites, under a bucket-wide lock (a mutex in the process, flock of .fxdax-lock across processes), the lock file kept out of listings.
+2. store::object_store_at maps file:///dir to it (made if missing), the throttle as for any store.
+3. bucket::tests::conformance: what every bucket must do; run over memory://, file://, the sim's Direct, and in over_a_real_store (RustFS, Azurite).
+4. Concurrent updates from one version through two buckets on one directory: one wins.
+5. tests/gc.rs over file://. Docs: doc-7 decision 9, README/dev docs naming file://.
+<!-- SECTION:PLAN:END -->

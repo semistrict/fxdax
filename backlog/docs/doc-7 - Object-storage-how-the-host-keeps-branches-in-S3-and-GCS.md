@@ -3,7 +3,7 @@ id: doc-7
 title: 'Object storage: how the host keeps branches in S3 and GCS'
 type: specification
 created_date: '2026-10-17 01:31'
-updated_date: '2026-11-03 14:39'
+updated_date: '2026-11-05 03:25'
 ---
 # Object storage: how the host keeps branches in S3 and GCS
 
@@ -125,7 +125,10 @@ Settled with the user on 2026-10-16:
    its own. Any host can run it.
 9. **Tests use RustFS** (Apache-2.0) as a local S3 server, Azurite (MIT) as a local Blob Storage
    (`scripts/test-azurite.sh`), and GCS on GCE. Real S3 once credentials
-   are available.
+   are available. *Added 2026-11-04 (TASK-165.1):* and a directory of the host's, `file:///DIR`
+   (`extent_remote::local`): `object_store`'s `LocalFileSystem`, which refuses conditional updates,
+   with them added under a `flock` of the bucket's; every bucket runs one conformance suite
+   (`bucket::conformance`).
 10. **Branches come first.** The store learns O(1) forks (doc-2's milestone 2 part) before uploads,
    because the remote layout needs lineage from the start.
 

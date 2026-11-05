@@ -306,7 +306,8 @@ cut off neither takes a branch back nor deletes it from under a later one
 (`FXDAX_EXTENTD_REMOTE`) and its placement's token from the control plane
 (`FXDAX_EXTENTD_TOKEN`, not 0), and refuses to start without them: there is no
 single-node mode. Tests and development use an in-memory bucket
-(`memory:///NAME`). fxdaxctl, without the daemon, changes existing stores'
+(`memory:///NAME`), or one in a directory of the host's (`file:///DIR`), which
+outlives the daemon and is shared with fxdaxctl and fxdax-gc. fxdaxctl, without the daemon, changes existing stores'
 branches on the same terms, and makes new stores (`take`, `import`) anywhere.
 
 ### `vendor/firecracker`: the VMM

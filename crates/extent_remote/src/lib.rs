@@ -13,8 +13,8 @@
 //! collector, alone, deletes: what no live branch can reach, and objects it compacts.
 //!
 //! The object store is anything with conditional writes ([`Bucket`]): S3 and GCS through the
-//! `object_store` crate ([`store::Store`]), and in tests a simulation that delays, reorders and
-//! fails requests.
+//! `object_store` crate ([`store::Store`]), a directory of the host's ([`local`]), and in tests a
+//! simulation that delays, reorders and fails requests.
 
 /// fxdax: a step of the protocol, which the failpoint of its name fails (the `fail` crate's,
 /// TASK-44.10): the function it is in returns an error there, or whatever a test set the failpoint
@@ -34,6 +34,7 @@ pub mod checkpoint;
 pub mod collector;
 pub mod fetch;
 pub mod layout;
+pub mod local;
 mod moves;
 pub mod object;
 pub mod record;

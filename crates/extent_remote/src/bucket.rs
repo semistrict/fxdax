@@ -255,6 +255,77 @@ pub(crate) async fn update(
     }
 }
 
+/// fxdax: what every bucket must do, which branches rely on (TASK-165.1), with objects under
+/// `root`, which it leaves as it found them: a bucket in memory, on the host's filesystem, the
+/// simulation's, and S3's and Azure's servers alike run it.
+#[cfg(test)]
+pub(crate) async fn conformance(bucket: &impl Bucket, root: &str) {
+    let key = &format!("{root}/object");
+    let none =
+        Version { e_tag: Some("\"fxdax-conformance\"".to_owned()), version: Some("0".to_owned()) };
+
+    // Nothing there: read as none, deleted as nothing, updated from no version.
+    assert_eq!(bucket.get(key).await.map(|object| object.bytes), Err(Error::NotFound));
+    assert_eq!(bucket.head(key).await.map(|meta| meta.size), Err(Error::NotFound));
+    assert_eq!(bucket.get_range(key, ByteRange::Bounded(0..1)).await, Err(Error::NotFound));
+    assert_eq!(bucket.delete(key).await, Ok(()));
+    let update = bucket.put(key, vec![1], PutMode::Update(none.clone())).await;
+    assert_eq!(update, Err(Error::Precondition));
+
+    // Created once, and read as it was written, whole or by ranges, reading short past its end.
+    let written: Vec<u8> = (0..100).collect();
+    let first = bucket.put(key, written.clone(), PutMode::Create).await.unwrap();
+    assert_eq!(bucket.put(key, vec![2], PutMode::Create).await, Err(Error::AlreadyExists));
+    let object = bucket.get(key).await.unwrap();
+    let meta = (object.meta.key.as_str(), object.meta.size, &object.meta.version);
+    assert_eq!((object.bytes, meta), (written, (key.as_str(), 100, &first)));
+    let read = |range| bucket.get_range(key, range);
+    assert_eq!(read(ByteRange::Bounded(10..20)).await, Ok((10..20).collect()));
+    assert_eq!(read(ByteRange::Bounded(90..120)).await, Ok((90..100).collect()));
+    assert_eq!(read(ByteRange::Suffix(10)).await, Ok((90..100).collect()));
+    assert_eq!(read(ByteRange::Suffix(200)).await, Ok((0..100).collect()));
+
+    // Updated only from its version, which an update makes another.
+    assert_eq!(bucket.put(key, vec![3], PutMode::Update(none)).await, Err(Error::Precondition));
+    let second = bucket.put(key, vec![4; 50], PutMode::Update(first.clone())).await.unwrap();
+    assert_ne!(second, first);
+    assert_eq!(bucket.put(key, vec![5], PutMode::Update(first)).await, Err(Error::Precondition));
+    let meta = bucket.head(key).await.unwrap();
+    assert_eq!((meta.size, meta.version), (50, second.clone()));
+    assert_eq!(bucket.get(key).await.unwrap().bytes, vec![4; 50]);
+    bucket.put(key, vec![6; 7], PutMode::Update(second)).await.unwrap();
+
+    // Listed by prefix, in the order of their keys, the prefix a whole segment of them.
+    let listed = [format!("{root}/list/b"), format!("{root}/list/a"), format!("{root}/list/c/d")];
+    for key in listed.iter().chain([&format!("{root}/listing")]) {
+        bucket.put(key, key.as_bytes().to_vec(), PutMode::Create).await.unwrap();
+    }
+    let keys: Vec<String> = (bucket.list(&format!("{root}/list/")).await.unwrap().into_iter())
+        .map(|meta| meta.key)
+        .collect();
+    assert_eq!(keys, [listed[1].as_str(), &listed[0], &listed[2]]);
+    let all: Vec<(String, u64)> = (bucket.list(&format!("{root}/")).await.unwrap().into_iter())
+        .map(|meta| (meta.key, meta.size))
+        .collect();
+    let mut expected: Vec<(String, u64)> =
+        listed.iter().map(|key| (key.clone(), key.len() as u64)).collect();
+    let listing = format!("{root}/listing");
+    expected.extend([(listing.clone(), listing.len() as u64), (key.clone(), 7)]);
+    expected.sort();
+    assert_eq!(all, expected);
+
+    // Deleted, and gone: created anew after.
+    for key in listed.iter().chain([&format!("{root}/listing"), key]) {
+        assert_eq!(bucket.delete(key).await, Ok(()));
+    }
+    assert_eq!(bucket.head(key).await.map(|meta| meta.size), Err(Error::NotFound));
+    assert_eq!(bucket.delete(key).await, Ok(()));
+    assert_eq!(bucket.list(&format!("{root}/")).await.map(|list| list.len()), Ok(0));
+    bucket.put(key, vec![8], PutMode::Create).await.unwrap();
+    assert_eq!(bucket.get(key).await.unwrap().bytes, [8]);
+    bucket.delete(key).await.unwrap();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

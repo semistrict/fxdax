@@ -190,7 +190,8 @@ impl Store {
     }
 
     /// The bucket at `url`: `s3://bucket/prefix`, `gs://bucket/prefix`, `az://container/prefix`
-    /// (Azure Blob Storage, TASK-46), or `memory:///prefix`, configured, credentials included, from
+    /// (Azure Blob Storage, TASK-46), `memory:///prefix`, or `file:///dir`, the directory `dir` of
+    /// the host's filesystem ([`crate::local`], TASK-165.1), configured, credentials included, from
     /// the environment's `AWS_*`, `GOOGLE_*` or `AZURE_*` variables: for Azure, the account
     /// (`AZURE_STORAGE_ACCOUNT_NAME`) and its key (`AZURE_STORAGE_ACCOUNT_KEY`), a SAS token, or a
     /// service principal's or managed identity's, as `object_store`'s `MicrosoftAzureBuilder`
@@ -232,8 +233,17 @@ impl Store {
 /// be, as the sandbox team's RustFS, 25 ms away, which made Fxfs's commits wait (TASK-61, TASK-62).
 pub fn object_store_at(url: &str) -> Result<(Arc<dyn ObjectStore>, String), String> {
     let url = url::Url::parse(url).map_err(|error| format!("{url}: {error}"))?;
-    let (store, path) = object_store::parse_url_opts(&url, std::env::vars())
-        .map_err(|error| format!("{url}: {error}"))?;
+    let (store, path): (Box<dyn ObjectStore>, Path) = match url.scheme() {
+        // fxdax: `object_store`'s own refuses conditional updates (TASK-165.1).
+        "file" => {
+            let dir = url.to_file_path().map_err(|()| format!("{url}: no directory"))?;
+            let local =
+                crate::local::Local::new(&dir).map_err(|error| format!("{url}: {error}"))?;
+            (Box::new(local), Path::default())
+        }
+        _ => object_store::parse_url_opts(&url, std::env::vars())
+            .map_err(|error| format!("{url}: {error}"))?,
+    };
     let latency = match std::env::var("FXDAX_REMOTE_LATENCY_MS") {
         Ok(ms) if !ms.is_empty() => std::time::Duration::from_millis(
             ms.parse().map_err(|_| format!("FXDAX_REMOTE_LATENCY_MS={ms} is no count"))?,
@@ -428,7 +438,7 @@ pub async fn probe(bucket: &impl Bucket, nonce: u64) -> Result<(), String> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     /// Requests that failed wait from 50 ms, doubling, to at most 5 s.
@@ -706,14 +716,61 @@ mod tests {
         futures::executor::block_on(branch_lifecycle(memory(), 1));
     }
 
+    /// fxdax: the bucket of the directory `dir`, by its URL (TASK-165.1).
+    pub(crate) fn file(dir: &std::path::Path) -> Arc<Store> {
+        let url = url::Url::from_directory_path(dir).unwrap();
+        Arc::new(Store::from_url(url.as_str()).unwrap())
+    }
+
+    #[test]
+    fn memory_buckets_conform() {
+        futures::executor::block_on(crate::bucket::conformance(&*memory(), "conformance"));
+    }
+
+    /// fxdax: a bucket on the host's filesystem does what every bucket must (TASK-165.1).
+    #[test]
+    fn file_buckets_conform() {
+        let dir = tempfile::tempdir().unwrap();
+        futures::executor::block_on(crate::bucket::conformance(&*file(dir.path()), "conformance"));
+    }
+
+    #[test]
+    fn simulated_buckets_conform() {
+        let bucket = crate::sim::bucket::Direct(crate::sim::bucket::SimBucket::new());
+        futures::executor::block_on(crate::bucket::conformance(&bucket, "conformance"));
+    }
+
+    /// fxdax: `object_store`'s own bucket of a directory refuses conditional updates, which the
+    /// probe finds; fxdax's honours them (TASK-165.1).
+    #[test]
+    fn file_buckets_honour_conditional_writes() {
+        let dir = tempfile::tempdir().unwrap();
+        let files = object_store::local::LocalFileSystem::new_with_prefix(dir.path()).unwrap();
+        let theirs = Store::new(Arc::new(files), "");
+        let refused = futures::executor::block_on(probe(&theirs, 1)).unwrap_err();
+        assert_eq!(
+            refused,
+            "the store does not honour conditional writes: an update of another version gave \
+             Err(Unavailable)"
+        );
+        futures::executor::block_on(probe(&*file(dir.path()), 2)).unwrap();
+    }
+
+    #[test]
+    fn branches_on_a_file_store() {
+        let dir = tempfile::tempdir().unwrap();
+        futures::executor::block_on(branch_lifecycle(file(dir.path()), 1));
+    }
+
     /// Probes the bucket at `url`'s conditional writes, and runs branches' lifecycle there.
     fn over_a_real_store(url: &str) {
         let runtime = tokio::runtime::Runtime::new().unwrap();
         runtime.block_on(async {
             let store = Arc::new(Store::from_url(url).unwrap());
             probe(&*store, std::process::id().into()).await.unwrap();
-            // Each run its own branches.
+            // Each run its own branches, and objects.
             let root = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos() as u64;
+            crate::bucket::conformance(&*store, &format!("conformance-{root:x}")).await;
             branch_lifecycle(store, root & !1).await;
         });
     }
