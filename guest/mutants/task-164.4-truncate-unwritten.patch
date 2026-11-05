@@ -1,9 +1,12 @@
 # SPDX-License-Identifier: GPL-2.0
 # Copyright 2026 The fxdax Authors.
 #
-# TASK-164.4, doc-13: a resize doesn't write the file's dirty pages back first. Expected equivalent
-# here: a grow from a partial page drops the chunk there, which writes it back, and the model's
-# Fxfs zeroes nothing a later writeback doesn't write over. cow_truncate_dirty, if anything.
+# Kernel: sim
+# Killer: none
+#
+# TASK-164.4, doc-13: a resize doesn't write the file's dirty pages back first. Equivalent here: a
+# grow from a partial page drops the chunk there, which writes it back, and the model's Fxfs zeroes
+# nothing a later writeback doesn't write over; cow_truncate_dirty would see one that did.
 
 --- a/guest/linux/fs/fxfs/dax.c
 +++ b/guest/linux/fs/fxfs/dax.c

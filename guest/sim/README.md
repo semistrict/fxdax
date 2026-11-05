@@ -10,13 +10,15 @@ TASK-149.14. The workspace doesn't build it: `zloop.sh` runs it, in CI's `guest-
 
 On Linux, with clang and lld, against a tree of the guest's kernel: `scripts/build-guest-kernel.sh`
 leaves one, and `kernel-tree.sh <tree>` fetches what's needed of one, in seconds, with nothing built.
+Elsewhere, `linux.sh COMMAND` runs any of what follows in a container (Docker, `Dockerfile`'s
+image), with `KERNEL` and `BUILD` in its volume `fxdax-sim`: `./linux.sh ./zloop.sh`.
 
 ```
 make KERNEL=<tree> BUILD=<dir>
 <dir>/tests/smoke                        # one task: writes, faults, writeback, seals
 <dir>/tests/interleave SEED [OPERATIONS] # tasks at once, the seed's interleaving
 KERNEL=<tree> BUILD=<dir> ./zloop.sh     # with fixes/*.patch in: every test, then 3,000 seeds of each
-KERNEL=<tree> BUILD=<dir> ./mutants.sh -b fixes/x.patch...   # puts past bugs back: which it finds
+KERNEL=<tree> BUILD=<dir> ./mutants.sh   # puts past bugs back (../mutants), each before its killer
 KERNEL=<tree> BUILD=<dir> ./mutants.sh --check                # that each still applies, in seconds
 <dir>/tests/failures SEED [OPERATIONS]   # the same, as allocations, MAPs, UNMAPs and PRIVATEs fail
 <dir>/tests/scenarios [NAME]             # paths no seed takes, each played out; none lists them
@@ -177,9 +179,13 @@ With patch 0012 (TASK-150.21): `zloop.sh`'s 3,000 seeds and every test of one ru
 ## Past bugs put back
 
 `mutants.sh`: past bugs, picked by hand from dax.c's history for being in its protocol, so not a
-fair sample of all its bugs. 3,000 seeds at most, an eighth at 1,000 operations. Seeds move as the
-workload does. Writable DAX's mutants went with it; those of what stays, as they were found before
-copying on write, and since (batch 2026-11-04e, every run copying on write, 2,000 seeds):
+fair sample of all its bugs. They are `../mutants`, one set with those only a real kernel finds
+(TASK-160.32), each patch's header naming its killer, the run here that must fail with it in
+(`../mutants/README.md`): `mutants.sh` runs that alone, a seeded one's seeds, 2,000 by default, an
+eighth at 1,000 operations, until one fails, and fails if it doesn't. A hunt of everything with a
+mutant in is `zloop.sh -p`'s. Seeds move as the workload does. Writable DAX's mutants went with it;
+those of what stays, as they were found before copying on write, and since (batch 2026-11-04e,
+every run copying on write, 2,000 seeds):
 
 | Past bug | Found at | How |
 | --- | --- | --- |
@@ -424,10 +430,11 @@ through one function now (`grow`, `zero_before_growth`), as Fxfs's do.
 - `fxfs/`: the model of Fxfs.
 - `tests/`: what runs: `interleave`'s seeds, and scenarios, one run each. A test fails by panicking,
   the seed named.
-- `mutants/`: past bugs, each a patch that takes its fix away; `fixes/`: candidate fixes of bugs
-  found here, kept out of dax.c until someone decides on them, and which `mutants.sh -b` applies.
-  Each applies with no fuzz, or fails `mutants.sh --check`, which CI runs.
+- `../mutants/`: past bugs, each a patch that takes its fix away, its header naming its killer;
+  `fixes/`: candidate fixes of bugs found here, kept out of dax.c until someone decides on them,
+  which `zloop.sh` applies, and `mutants.sh -b` if asked. Each applies with no fuzz, or fails
+  `mutants.sh --check`, which CI runs.
 - `known-failures`: open bugs' failures, which `zloop.sh` doesn't fail for.
 - `inventory.py`: what a source spells of the kernel, by libclang against the real headers.
-- `zloop.sh`, `check.sh`, `mutants.sh`, `lib.sh`, what they share, and `kernel-tree.sh`, the
-  sources for them.
+- `zloop.sh`, `check.sh`, `mutants.sh`, `lib.sh`, what they share, `kernel-tree.sh`, the
+  sources for them, and `linux.sh`, which runs them elsewhere than on Linux.

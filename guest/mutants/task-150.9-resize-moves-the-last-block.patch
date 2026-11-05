@@ -1,0 +1,24 @@
+# SPDX-License-Identifier: GPL-2.0
+# Copyright 2026 The fxdax Authors.
+#
+# Kernel: release
+# Killer: fxfs-guest-checks-dax append_stopped_short_in_a_page
+#
+# TASK-150.9: a DAX file's change of size has Fxfs zero its last block past the end by moving it
+# (FXFS_SET_KEEP_TAIL dropped), from under the window, which goes on mapping it:
+# append_stopped_short_in_a_page reads the moved block's zeros (GCE fxdax-test-t18-ac). guest/sim's
+# model of Fxfs moves the block so too (zero_tail), but no run of it fails with this in, neither its
+# append_stopped_short_in_a_page scenario nor 300 seeds of interleave and failures (2026-11-05): its
+# blind spot, TASK-184.
+
+--- a/guest/linux/fs/fxfs/data.c
++++ b/guest/linux/fs/fxfs/data.c
+@@ -40,7 +40,7 @@
+ 	truncate_setsize(inode, size);
+ 	if (iattr)
+ 		setattr_copy(idmap, inode, iattr);
+-	err = fxfs_vfs_write_attr(inode, FXFS_SET_SIZE | (ops->keeps_tail ? FXFS_SET_KEEP_TAIL : 0));
++	err = fxfs_vfs_write_attr(inode, FXFS_SET_SIZE);
+ 	/*
+ 	 * fxdax: with no room, a file grown goes back to its size: nothing is past its old end yet,
+ 	 * and the inode saying a size Fxfs hasn't would lose it at eviction. A cut borrows the room

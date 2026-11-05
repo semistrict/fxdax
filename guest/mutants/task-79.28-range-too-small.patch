@@ -1,8 +1,13 @@
 # SPDX-License-Identifier: GPL-2.0
 # Copyright 2026 The fxdax Authors.
 #
+# Kernel: sim
+# Killer: none
+#
 # TASK-79.28, 97e9fa8ee: a write whose range a fault mapped again too small drops it and maps it
-# again. It was a WARN and EIO.
+# again. It was a WARN and EIO. Equivalent since TASK-147: a fault that sizes its range from the old
+# end holds the invalidate lock the write's fxfs_dax_fit waits for, and one after it sees `growing`;
+# task-79.28-before-147, with that gone too, shows what this was.
 
 --- a/guest/linux/fs/fxfs/dax.c
 +++ b/guest/linux/fs/fxfs/dax.c

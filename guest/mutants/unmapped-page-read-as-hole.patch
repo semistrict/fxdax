@@ -1,6 +1,9 @@
 # SPDX-License-Identifier: GPL-2.0
 # Copyright 2026 The fxdax Authors.
 #
+# Kernel: sim
+# Killer: hole_mapped_then_written
+#
 # guest/sim's failures, seed 1669 (CI run 41876989384): a read's iomap of a page the file has with
 # no window page, as a truncate's failed MAP of zeros leaves those past its end, which a write past
 # them grows the file over, says a hole, so that a fault maps the kernel's zero page; a write(2)

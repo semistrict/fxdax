@@ -1,6 +1,9 @@
 # SPDX-License-Identifier: GPL-2.0
 # Copyright 2026 The fxdax Authors.
 #
+# Kernel: sim
+# Killer: scenarios write_past_end_copies_nothing
+#
 # A write past the end that copies nothing grows the file to where it was to begin.
 
 --- a/guest/linux/fs/fxfs/dax.c

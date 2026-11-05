@@ -1,6 +1,9 @@
 # SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
 # Copyright 2026 The fxdax Authors.
 #
+# Kernel: sim
+# Killer: scenarios fxfs_growths_zero_past_a_cut
+#
 # TASK-149.14.2, the model of Fxfs's own: a writeback of part of a block keeps all the block held
 # of the rest, past the file's end too, where Fxfs keeps what it held up to the end and zeroes past
 # it (read_unaligned_ends): a DAX file's last page, written back up to the end, kept what a cut

@@ -10,18 +10,21 @@
 # and pgbench-dax-forked, on a base's database, whose files are DAX and whose stores copy on write,
 # whose data is checked and whose write path's latencies stay under their ceilings
 # (scripts/pgbench-probes.py): a database made in the run is files created in the mount, which the
-# page cache writes (doc-13); and every hand mutant of dax.c
-# (scripts/guest-mutants-gce.py) killed by the suites within FXDAX_GATE_MUTANT_ROUNDS rounds
-# (default 3). A pass is recorded as a note on HEAD (`git notes --ref=dax-gate`), which
-# scripts/hooks/pre-push asks for of a push changing the guest's DAX code:
-# `git config core.hooksPath scripts/hooks` installs it.
+# page cache writes (doc-13); and every hand mutant (guest/mutants) killed by the killer its header
+# names: first, before either host runs anything, the simulator's, in minutes
+# (guest/sim/mutants.sh, through guest/sim/linux.sh, so on Linux with KERNEL and BUILD set, or in
+# a container elsewhere); then, on the second host, those that need a real kernel
+# (scripts/guest-mutants-gce.py), each's killer within FXDAX_GATE_MUTANT_ROUNDS rounds (default 3).
+# A pass is recorded as a note on HEAD (`git notes --ref=dax-gate`), which scripts/hooks/pre-push
+# asks for of a push changing the guest's DAX code: `git config core.hooksPath scripts/hooks`
+# installs it.
 #
 # Usage: dax-gate.sh HOST_A HOST_B [ZONE] — the hosts' zone (default: us-east4-a).
 # FXDAX_GATE_ROUNDS is the suites' rounds (default 5). Results go to /tmp/fxdax-gate-<commit>.
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/.." && pwd)
-(( $# >= 2 )) || { sed -n '6,20p' "$0" >&2; exit 2; }
+(( $# >= 2 )) || { sed -n '6,23p' "$0" >&2; exit 2; }
 host_a=$1 host_b=$2 zone=${3:-us-east4-a}
 rounds=${FXDAX_GATE_ROUNDS:-5}
 mutant_rounds=${FXDAX_GATE_MUTANT_ROUNDS:-3}
@@ -36,6 +39,15 @@ results=/tmp/fxdax-gate-${commit:0:12}
 mkdir -p "$results"
 echo "dax-gate: $commit, results in $results"
 
+# The simulator's mutants, each killed in seconds or not at all: what it misses fails the gate
+# before the hosts spend hours.
+if ! guest/sim/linux.sh ./mutants.sh > "$results/sim-mutants.txt" 2>&1; then
+    echo "dax-gate: FAILED: the simulator's mutants ($results/sim-mutants.txt):" >&2
+    grep -vE '^(fate|killed|none) ' "$results/sim-mutants.txt" >&2 || true
+    exit 1
+fi
+echo "dax-gate: the simulator's mutants killed"
+
 export FXDAX_GCE_ZONE=$zone FXDAX_WORKSPACE_TESTS=0 FXDAX_GUEST_KERNEL_BUILD=release
 
 # Host A: the suites, rounds of each (`runner list --tag dax-gate`).
@@ -43,16 +55,15 @@ FXDAX_E2E_TEST="--tag dax-gate" FXDAX_E2E_ROUNDS=$rounds \
     scripts/test-gce.sh run "$host_a" "$results/suites" > "$results/suites.log" 2>&1 &
 suites_pid=$!
 
-# Host B: pgbench-dax-forked, then every mutant, each of which a round of the suites must kill.
+# Host B: pgbench-dax-forked, then the mutants that need a real kernel, each its killer's case.
 (
     FXDAX_E2E_TEST=fxfs-guest-pgbench-dax-forked FXDAX_E2E_ROUNDS=1 \
         scripts/test-gce.sh run "$host_b" "$results/pgbench" > "$results/pgbench.log" 2>&1
     echo "pgbench-dax-forked passed"
     pgbench=$results/pgbench/e2e/fxfs-guest-pgbench-dax-forked/fxfs-guest-pgbench-dax-forked
     scripts/pgbench-probes.py "$pgbench/run.console.txt"
-    FXDAX_E2E_TEST="--tag dax-gate-mutants" FXDAX_E2E_ROUNDS=$mutant_rounds \
-        scripts/guest-mutants-gce.py "$host_b" "$zone" "$results/mutants" \
-        | tee "$results/mutants.txt"
+    FXDAX_E2E_ROUNDS=$mutant_rounds \
+        scripts/guest-mutants-gce.py "$host_b" "$zone" "$results/mutants" > "$results/mutants.txt"
 ) > "$results/host-b.log" 2>&1 &
 host_b_pid=$!
 
@@ -68,9 +79,9 @@ if ! wait "$host_b_pid"; then
     scripts/guest_results.py report "$results/pgbench/e2e" >&2 || true
     failed=1
 fi
-if [[ -f $results/mutants.txt ]] && grep -q '^MISSED' "$results/mutants.txt"; then
-    echo "dax-gate: FAILED: mutants missed: $(grep '^MISSED' "$results/mutants.txt" | cut -d: -f1 |
-        tr '\n' ' ')" >&2
+if [[ -f $results/mutants.txt ]] && grep -vqE '^(killed|none) ' "$results/mutants.txt"; then
+    echo "dax-gate: FAILED: mutants not killed ($results/mutants.txt):" >&2
+    grep -vE '^(killed|none) ' "$results/mutants.txt" >&2
     failed=1
 fi
 if (( failed )); then

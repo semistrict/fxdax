@@ -11,9 +11,7 @@ from pathlib import Path
 import script
 
 cocci = script.load("cocci-guest")
-guest_mutants = script.load("guest-mutants-gce")
-
-DAX = script.SCRIPTS.parent / guest_mutants.DAX
+DAX = script.SCRIPTS.parent / "guest" / "linux" / "fs" / "fxfs" / "dax.c"
 
 
 # fxfs_dax_region_open with TASK-99's race: as it was before 7caa43578, its region's lock taken out.

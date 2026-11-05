@@ -1,6 +1,9 @@
 # SPDX-License-Identifier: GPL-2.0
 # Copyright 2026 The fxdax Authors.
 #
+# Kernel: sim
+# Killer: scenarios cow_private_failed
+#
 # TASK-164.9, doc-13: the iomap whose PRIVATE fails goes on, its pages dirty, as a write(2)'s
 # PRIVATE ahead of its copy did before: dirty without private, the store left to the host's copy,
 # after a writeback may have moved the page's block. cow_private_failed: the write succeeds, and the

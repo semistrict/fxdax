@@ -1,9 +1,13 @@
 # SPDX-License-Identifier: GPL-2.0
 # Copyright 2026 The fxdax Authors.
 #
+# Kernel: sim
+# Killer: none
+#
 # TASK-153.1: a fault with no limit on how many times it has its range dropped, as dax.c had: with
-# TASK-140's bug it goes round for ever, unkillable. mutants.sh -b mutants/task-140-read-only-slice.patch
-# task-153.1-fault-limit says livelock; TASK-140's bug alone, a fault that fails and says so.
+# TASK-140's bug, a fault that can't get on, it goes round for ever, unkillable. Equivalent without
+# it: nothing else drops a fault's slice for ever. TASK-140's bug is no mutant here; `mutants.sh -b`
+# with it in shows the livelock.
 
 --- a/guest/linux/fs/fxfs/dax.c
 +++ b/guest/linux/fs/fxfs/dax.c

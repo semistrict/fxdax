@@ -1,6 +1,9 @@
 # SPDX-License-Identifier: GPL-2.0
 # Copyright 2026 The fxdax Authors.
 #
+# Kernel: sim
+# Killer: scenarios store_past_end_then_written
+#
 # TASK-79.28 as it was before TASK-147: task-79.28-range-too-small's WARN and EIO, with what has
 # kept a fault from mapping a range too small since. On its own that mutant is equivalent: a fault
 # that sizes its range from the old end holds the invalidate lock the write's fxfs_dax_fit waits

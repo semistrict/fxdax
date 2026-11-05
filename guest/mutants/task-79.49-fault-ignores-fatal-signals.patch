@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: GPL-2.0
+# Copyright 2026 The fxdax Authors.
+#
+# Kernel: release
+# Killer: fxfs-guest-checks-dax-small window_held_killed
+#
+# TASK-79.49: a fault with no room looks for none of its signals: a splice holding the window
+# can't be killed. window_held_killed: the process still runs (GCE r307).
+
+--- a/guest/linux/fs/fxfs/dax.c
++++ b/guest/linux/fs/fxfs/dax.c
+@@ -2992,10 +2992,6 @@
+ 		if (error != -EAGAIN && error != -EXDEV)
+ 			break;
+ 		/* fxdax: a fault killed meanwhile tries no more (TASK-79.49). */
+-		if (fatal_signal_pending(current)) {
+-			ret = VM_FAULT_SIGBUS;
+-			break;
+-		}
+ 		if (error == -EXDEV) {
+ 			/*
+ 			 * A slice can't take the store: it maps the chunk no more. fxdax: a fault that

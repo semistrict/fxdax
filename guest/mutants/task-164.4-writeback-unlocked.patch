@@ -1,6 +1,9 @@
 # SPDX-License-Identifier: GPL-2.0
 # Copyright 2026 The fxdax Authors.
 #
+# Kernel: sim
+# Killer: scenarios cow_rebind_during_writeback
+#
 # TASK-164.4, doc-13: writeback holds no wb_lock from its swap to its commit: a rebind finds the
 # pages it swapped out clean, their extents Fxfs's old ones, and maps those over the private pages
 # it is writing. cow_rebind_during_writeback.

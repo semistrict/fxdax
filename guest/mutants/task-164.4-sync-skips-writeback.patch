@@ -1,6 +1,9 @@
 # SPDX-License-Identifier: GPL-2.0
 # Copyright 2026 The fxdax Authors.
 #
+# Kernel: sim
+# Killer: scenarios cow_fsync_during_writeback
+#
 # TASK-164.4, doc-13: a sync's settle writes back only files with pages dirty, passing by one whose
 # pages a writeback under way swapped out and has yet to commit: the sync seals without them.
 # cow_fsync_during_writeback's sync.

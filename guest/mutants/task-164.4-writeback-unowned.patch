@@ -1,6 +1,9 @@
 # SPDX-License-Identifier: GPL-2.0
 # Copyright 2026 The fxdax Authors.
 #
+# Kernel: sim
+# Killer: scenarios cow_rebind_against_stores
+#
 # TASK-164.4, doc-13: writeback takes pages the host hasn't made private, an iomap having dirtied
 # them before their stores: their window pages map the old blocks, which die as the writeback moves
 # them, and read zeros once Fxfs frees them, which the store copies. cow_writeback_before_store;

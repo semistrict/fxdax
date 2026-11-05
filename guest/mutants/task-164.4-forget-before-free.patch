@@ -1,6 +1,9 @@
 # SPDX-License-Identifier: GPL-2.0
 # Copyright 2026 The fxdax Authors.
 #
+# Kernel: sim
+# Killer: scenarios cow_truncate_held
+#
 # TASK-164.4, doc-13: private pages counted free as the UNMAP or MAP of zeros over them begins, not
 # as it ends: the budget gives their room to another's store, which the host, holding them still,
 # refuses past private_max. cow_truncate_held; interleave's seed 90, a range's UNMAP.

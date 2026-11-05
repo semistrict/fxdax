@@ -1,6 +1,9 @@
 # SPDX-License-Identifier: GPL-2.0
 # Copyright 2026 The fxdax Authors.
 #
+# Kernel: sim
+# Killer: scenarios cow_rebind_against_stores
+#
 # TASK-164.4, doc-13: an iomap doesn't count its pages private: the budget never holds a write up,
 # nor has the worker rebind, and a store past private_max is refused, as the VM stops.
 # cow_rebind_against_stores, writing twice private_max.

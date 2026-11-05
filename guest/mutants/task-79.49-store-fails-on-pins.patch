@@ -1,0 +1,20 @@
+# SPDX-License-Identifier: GPL-2.0
+# Copyright 2026 The fxdax Authors.
+#
+# Kernel: release
+# Killer: fxfs-guest-checks-dax
+#
+# TASK-79.49: a store from user mode fails on a page of a slice pinned, as a fault from the kernel
+# does: a SIGBUS where the pin goes soon (GCE r307, slice_held, which went with writable DAX).
+
+--- a/guest/linux/fs/fxfs/dax.c
++++ b/guest/linux/fs/fxfs/dax.c
+@@ -1717,7 +1717,7 @@
+  */
+ static vm_fault_t fxfs_dax_fault_drop_slice(struct vm_fault *vmf, vm_fault_t ret)
+ {
+-	bool user = vmf->flags & FAULT_FLAG_USER;
++	bool user = false;
+ 	int err = fxfs_dax_drop_slice(file_inode(vmf->vma->vm_file),
+ 				      (loff_t)vmf->pgoff << PAGE_SHIFT, user);
+ 

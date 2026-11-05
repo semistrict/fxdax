@@ -1,20 +1,26 @@
 # SPDX-License-Identifier: GPL-2.0
 # Copyright 2026 The fxdax Authors.
 #
-# TASK-164.4, doc-13: a range with no dirty page is released with its DAX entries as they are: one
-# tagged dirty, a writeback having left it so, a fault holding it (or, since TASK-164.9, any a write
-# fault tagged, which only writepages and the release clean), fails the invalidation for ever, so
-# that the range is never reclaimed. cow_reclaim_after_writeback_met_a_fault; interleave's seed
-# 3390 at 1,000 operations.
+# Kernel: sim
+# Killer: scenarios cow_reclaim_after_writeback_met_a_fault
+#
+# TASK-164.4, doc-13: a range with no dirty page is released with its DAX entries as they are,
+# fxfs_dax_clean_entries taken out: one tagged dirty, a writeback having left it so, a fault holding
+# it (or, since TASK-164.9, any a write fault tagged, which only writepages and the release clean),
+# fails the invalidation for ever, so that the range is never reclaimed;
+# cow_reclaim_after_writeback_met_a_fault, interleave's seed 3390 at 1,000 operations. Until
+# TASK-160.32 this mutant wrote the entries back (filemap_fdatawrite_range) in place of cleaning
+# them, which since the release holds the file's semaphore deadlocks on it in writepages, every run
+# failing at once and its scenario never reached.
 
 --- a/guest/linux/fs/fxfs/dax.c
 +++ b/guest/linux/fs/fxfs/dax.c
-@@ -1193,7 +1193,7 @@
+@@ -1172,8 +1172,6 @@
  	 * and a fault waiting for room reclaimed the range again and again (guest/sim, seed 3390 at
  	 * 1,000 operations).
  	 */
 -	if (fxfs_dax_clean_entries(inode, start, end))
-+	if (filemap_fdatawrite_range(mapping, start, end))
- 		return false;
+-		return false;
  	return !invalidate_inode_pages2_range(mapping, start >> PAGE_SHIFT, end >> PAGE_SHIFT);
  }
+ 

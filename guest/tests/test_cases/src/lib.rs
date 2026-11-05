@@ -167,10 +167,6 @@ tags! {
     Nightly = "nightly",
     /// scripts/dax-gate.sh's suites, rounds of each, on its first host.
     DaxGate = "dax-gate",
-    /// The suites scripts/dax-gate.sh's mutants are each killed by.
-    DaxGateMutants = "dax-gate-mutants",
-    /// The suites scripts/guest-mutants-gce.py kills each mutant with, unless told others.
-    Mutants = "mutants",
     /// scripts/soak-workloads-gce.sh's crash group: the VM stopped mid-workload.
     SoakCrash = "soak-crash",
     /// scripts/soak-workloads-gce.sh's checks group: with delays and on a small window.
@@ -318,7 +314,7 @@ pub fn test_cases() -> Vec<TestCase> {
         ),
         TestCase::new(
             "fxfs-guest-pgbench-dax-forked",
-            &[Tag::Mutants, Tag::PerfSingle],
+            &[Tag::PerfSingle],
             Box::new(
                 TestFxfsGuestPgbench::on(PgbenchStorage::FxfsDax)
                     .with_database(PgbenchDatabase::Forked),
@@ -485,8 +481,6 @@ pub fn test_cases() -> Vec<TestCase> {
                 Tag::Kernel,
                 Tag::Nightly,
                 Tag::DaxGate,
-                Tag::DaxGateMutants,
-                Tag::Mutants,
                 Tag::SoakChecks,
                 Tag::SoakSanitized,
             ],
@@ -500,8 +494,6 @@ pub fn test_cases() -> Vec<TestCase> {
                 Tag::Kernel,
                 Tag::Nightly,
                 Tag::DaxGate,
-                Tag::DaxGateMutants,
-                Tag::Mutants,
                 Tag::SoakChecks,
             ],
             Box::new(TestFxfsGuestChecks { dax: true, delay: true, ..PAGE_CACHE_CHECKS }),
@@ -545,7 +537,7 @@ pub fn test_cases() -> Vec<TestCase> {
         ),
         TestCase::new(
             "fxfs-guest-dax",
-            &[Tag::E2e, Tag::Kernel, Tag::Nightly, Tag::DaxGate, Tag::DaxGateMutants, Tag::Mutants],
+            &[Tag::E2e, Tag::Kernel, Tag::Nightly, Tag::DaxGate],
             Box::new(TestFxfsGuest::host_formats().with_dax()),
         ),
         TestCase::new(
@@ -910,18 +902,21 @@ mod tests {
             select(test_cases(), &names, tags).map(names_of)
         };
         assert_eq!(
-            select(&[], &[Tag::DaxGateMutants]),
-            Ok(vec!["fxfs-guest-checks-dax", "fxfs-guest-checks-dax-delay", "fxfs-guest-dax"])
+            select(&[], &[Tag::PerfDensity]),
+            Ok(vec!["fxfs-guest-pgbench-density", "fxfs-guest-pgbench-dax-density"])
         );
         // Named before the tag's, but run as registered, and once.
         assert_eq!(
-            select(&["fxfs-guest-dax", "extent-guest"], &[Tag::DaxGateMutants, Tag::PerfDensity]),
+            select(&["fxfs-guest-dax", "extent-guest"], &[Tag::DaxGate, Tag::PerfDensity]),
             Ok(vec![
                 "fxfs-guest-pgbench-density",
                 "fxfs-guest-pgbench-dax-density",
                 "fxfs-guest-checks-dax",
                 "fxfs-guest-checks-dax-delay",
+                "fxfs-guest-checks-dax-small",
                 "fxfs-guest-dax",
+                "fxfs-guest-crash-dax",
+                "fxfs-guest-crash-dax-killed",
                 "extent-guest",
             ])
         );

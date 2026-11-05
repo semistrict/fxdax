@@ -1,6 +1,9 @@
 # SPDX-License-Identifier: GPL-2.0
 # Copyright 2026 The fxdax Authors.
 #
+# Kernel: sim
+# Killer: scenarios cow_map_during_seal
+#
 # TASK-164.4, doc-13: copying on write, a range maps the extents Fxfs says sealed as a seal in
 # progress has yet to seal them on the device (OpenExtents::seal, at its beginning): the host
 # refuses the MAP (-EPERM), and the range seals and tries again. cow_map_during_seal's write.

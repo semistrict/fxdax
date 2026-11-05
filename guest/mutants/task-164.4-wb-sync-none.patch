@@ -1,6 +1,9 @@
 # SPDX-License-Identifier: GPL-2.0
 # Copyright 2026 The fxdax Authors.
 #
+# Kernel: sim
+# Killer: scenarios cow_rebind_skips_dirty
+#
 # TASK-164.4, doc-13: writeback write-protects nothing, as when it left it to
 # dax_writeback_mapping_range, not forced to WB_SYNC_ALL, which alone acts: a fault's PTE stays
 # writable, and a store through it after the copy is in no set. cow_rebind_skips_dirty: the store

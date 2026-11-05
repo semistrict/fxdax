@@ -1,0 +1,38 @@
+# SPDX-License-Identifier: GPL-2.0
+# Copyright 2026 The fxdax Authors.
+#
+# Kernel: release
+# Killer: fxfs-guest-crash
+#
+# TASK-79.29: a created inode's inherited ACLs go with write_inode, not with its creation, which an
+# fsync of another inode makes durable without them: the crash test's inherit_acls, the host's
+# getxattr ENODATA (GCE r307). super.c, which guest/sim doesn't build.
+
+--- a/guest/linux/fs/fxfs/super.c
++++ b/guest/linux/fs/fxfs/super.c
+@@ -598,10 +598,6 @@
+ 		return err;
+ 	gid = fxfs_vfs_new_gid(idmap, dir, &mode);
+ 	/* fxdax: the ACLs it inherits, made with it (TASK-79.29). */
+-	err = fxfs_vfs_acl_xattr(default_acl, ACL_TYPE_DEFAULT, mode, xattrs, &nr_xattrs,
+-				 &values[0]);
+-	if (!err)
+-		err = fxfs_vfs_acl_xattr(acl, ACL_TYPE_ACCESS, mode, xattrs, &nr_xattrs, &values[1]);
+ 	if (!err)
+ 		err = fxfs_nofs(fxfs_create(fxfs_vfs_fs(dir->i_sb), dir->i_ino, dentry->d_name.name,
+ 					    dentry->d_name.len, mode, new_encode_dev(rdev),
+@@ -623,13 +619,7 @@
+ 	 */
+ 	inode_has_no_xattr(d_inode(dentry));
+ 	/* fxdax: its ACLs, written with it, cached as fxfs_vfs_store_acl caches them. */
+-	if (default_acl && S_ISDIR(mode))
+-		set_cached_acl(d_inode(dentry), ACL_TYPE_DEFAULT, default_acl);
+-	if (acl)
+-		set_cached_acl(d_inode(dentry), ACL_TYPE_ACCESS, acl);
+-	posix_acl_release(default_acl);
+-	posix_acl_release(acl);
+-	return 0;
++	return fxfs_vfs_init_acls(d_inode(dentry), default_acl, acl);
+ }
+ 
+ /* Creates an unnamed regular file in `dir`, which a link may name later (O_TMPFILE). */

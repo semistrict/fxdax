@@ -1,6 +1,9 @@
 # SPDX-License-Identifier: GPL-2.0
 # Copyright 2026 The fxdax Authors.
 #
+# Kernel: sim
+# Killer: scenarios cow_fsync_during_writeback
+#
 # TASK-164.4, doc-13: writeback returns at once, nothing being dirty, without waiting for one under
 # way, which swapped the pages out and has yet to commit them: an fsync meeting the worker's
 # writeback returns with the stores before it neither written nor sealed.

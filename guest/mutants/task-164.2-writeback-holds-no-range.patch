@@ -1,6 +1,9 @@
 # SPDX-License-Identifier: GPL-2.0
 # Copyright 2026 The fxdax Authors.
 #
+# Kernel: sim
+# Killer: scenarios cow_reclaim_during_writeback
+#
 # TASK-164.2, doc-13, GCE r544's class: a writeback holds no range of the pages it reads from the
 # window, so reclaim frees one under it, its space given to another range, and the writeback reads
 # that range's pages, or nothing mapped, for the file's. cow_reclaim_during_writeback.

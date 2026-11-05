@@ -1,6 +1,9 @@
 # SPDX-License-Identifier: GPL-2.0
 # Copyright 2026 The fxdax Authors.
 #
+# Kernel: sim
+# Killer: interleave
+#
 # TASK-147: how far a write past the end grows the file, which ranges mapped
 # meanwhile are to reach: a fault on the write's own source mapped the chunk only as large as the
 # file, and the write's end was lost (xfstests generic/638).

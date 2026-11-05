@@ -20,8 +20,7 @@ class DaxGate(unittest.TestCase):
         among the cases it named once was refused, and the suites never ran."""
         given = re.findall(r'FXDAX_E2E_TEST=("[^"]*"|\S+)', GATE.read_text())
         self.assertEqual([selection.strip('"') for selection in given],
-                         ["--tag dax-gate", "fxfs-guest-pgbench-dax-forked",
-                          "--tag dax-gate-mutants"])
+                         ["--tag dax-gate", "fxfs-guest-pgbench-dax-forked"])
         pattern = re.search(r"\[\[ \$\{FXDAX_E2E_TEST:-\} =~ (.+?) \]\] \|\|", TEST_GCE.read_text())
         for selection in given:
             ran = subprocess.run(["bash", "-c", f'[[ $1 =~ {pattern.group(1)} ]]', "bash",

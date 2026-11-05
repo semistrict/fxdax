@@ -1,6 +1,9 @@
 # SPDX-License-Identifier: GPL-2.0
 # Copyright 2026 The fxdax Authors.
 #
+# Kernel: sim
+# Killer: scenarios cow_rebind_skips_dirty
+#
 # TASK-164.4, doc-13: a rebind takes dirty pages too, which no extent holds yet: the MAP of what
 # Fxfs has discards their stores. cow_rebind_skips_dirty.
 

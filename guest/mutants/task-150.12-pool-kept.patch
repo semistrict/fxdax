@@ -1,6 +1,9 @@
 # SPDX-License-Identifier: GPL-2.0
 # Copyright 2026 The fxdax Authors.
 #
+# Kernel: sim
+# Killer: scenarios unmap_failed
+#
 # TASK-150.12: the pool destroyed with what a failed UNMAP keeps taken: gen_pool_destroy's BUG_ON.
 
 --- a/guest/linux/fs/fxfs/dax.c

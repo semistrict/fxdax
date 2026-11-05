@@ -1,6 +1,9 @@
 # SPDX-License-Identifier: GPL-2.0
 # Copyright 2026 The fxdax Authors.
 #
+# Kernel: sim
+# Killer: scenarios cow_swap_during_write
+#
 # TASK-164.4, doc-13: writeback swaps the dirty set out under the file's semaphore shared, as doc-13
 # had it: a write(2) between the iomap that dirtied its page and its copy straddles it, its bytes in
 # neither set. cow_swap_during_write: the next fsync writes nothing of them.

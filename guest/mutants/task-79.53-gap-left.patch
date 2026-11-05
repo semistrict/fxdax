@@ -1,7 +1,11 @@
 # SPDX-License-Identifier: GPL-2.0
 # Copyright 2026 The fxdax Authors.
 #
-# TASK-79.53, on DAX: a write past the end leaves what a mapping stored past the old end to be read.
+# Kernel: sim
+# Killer: failures
+#
+# TASK-79.53, on DAX: a write past the end leaves what a mapping stored past the old end to be read:
+# failures' seed 2, reading it all, a byte of the gap not 0.
 
 --- a/guest/linux/fs/fxfs/dax.c
 +++ b/guest/linux/fs/fxfs/dax.c

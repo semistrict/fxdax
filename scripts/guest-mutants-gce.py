@@ -3,150 +3,156 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-"""Hand mutants of the guest's DAX code (guest/linux/fs/fxfs/dax.c), run on a GCE test host
-(TASK-44.19).
+"""The guest's hand mutants that need a real kernel, run on a GCE test host (TASK-44.19,
+TASK-160.32).
 
-cargo-mutants changes Rust alone; the guest's C has its locks, and its checks of signals and pins,
-which a mutant here takes out, one at a time (writable DAX's, of its gate, seals and moves, went
-with it, 2026-11-04): in a worktree of HEAD, the mutant's edits made,
-scripts/test-gce.sh runs the DAX suites on a guest kernel the host builds from it. The host keeps
-its kernel's build directory, so each mutant recompiles fs/fxfs alone. A mutant the suites fail
-on is killed; one they pass, missed, needs a test, or is recorded here as equivalent, with why.
+Every past bug put back is a patch of guest/mutants, whose header names its killer and the kernel
+it needs (guest/mutants/README.md). guest/sim/mutants.sh runs those of the simulator's, in
+seconds; these are the rest, each a guest kernel's (release, debug, or kasan), its killer a guest
+case, and the check of it that fails if the case is a checks suite:
 
     scripts/guest-mutants-gce.py HOST ZONE RESULTS [MUTANT...]
-    scripts/guest-mutants-gce.py --check [MUTANT...]
+    scripts/guest-mutants-gce.py --check
 
-runs every mutant (or those named) on HOST, made with scripts/test-gce.sh create, writing each
-run's results under RESULTS, and prints each mutant's fate. --check runs nothing: it makes each
-mutant's edits of the sources as they are, in memory, as CI does, and fails if one isn't found
-once, which would have the mutant test nothing. FXDAX_E2E_TEST selects the suites, by name
-or by tag, as scripts/test-e2e.sh's arguments do, the mutants suite by default
-(`runner list --tag mutants`); FXDAX_MUTANT_KERNEL the kernel the host builds for every mutant (debug, with
-lockdep and KCSAN, or kasan), each's own otherwise; the other FXDAX_* settings reach the host as
-scripts/test-gce.sh says.
+runs each (or those named) on HOST, made with scripts/test-gce.sh create: in a worktree of HEAD
+with its patch in, scripts/test-gce.sh runs its killer's case alone, of its checks the killer's
+alone (FXDAX_CHECKS), FXDAX_E2E_ROUNDS times, on a guest kernel of its kind built from the
+worktree; the host keeps its kernel's build directory, so each mutant recompiles fs/fxfs alone. It
+writes each run's results under RESULTS, prints each mutant's fate, and exits 1 unless each was
+killed. A mutant is killed only if its killer failed, as the run's summary says
+(scripts/guest_results.py); MISSED if not; BROKEN if the run failed otherwise, as a build that
+doesn't compile or a host lost, which says nothing of the killer. One whose killer is `none` isn't
+run. FXDAX_MUTANT_KERNEL is the kernel of every mutant, in place of each's own; the other FXDAX_*
+settings reach the host as scripts/test-gce.sh says.
+
+--check runs nothing: every mutant's header names a kernel and a killer there is, and each of these
+patches applies to the sources as they are, as CI checks; guest/sim/mutants.sh --check applies the
+simulator's, which take a kernel's tree.
 """
 
 import importlib.util
 import os
+import re
 import subprocess
 import sys
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 _spec = importlib.util.spec_from_file_location("guest_results", ROOT / "scripts" / "guest_results.py")
 guest_results = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(guest_results)
-DAX = "guest/linux/fs/fxfs/dax.c"
-SUPER = "guest/linux/fs/fxfs/super.c"
-DATA = "guest/linux/fs/fxfs/data.c"
-
-# Each mutant: its name, what it takes out, and its edits, (old, new) text of dax.c, or (old, new,
-# path) of another file, each of which must be found there once; and, for one only an assertion of a debug kernel's finds, the
-# kernel the host builds (FXDAX_GUEST_KERNEL_BUILD: debug, with lockdep), release otherwise.
-MUTANTS = [
-    # Missed by every suite here (2026-11-02); killed by guest/sim's reaches_at_once, which held a
-    # MAP at the host as a second one, further, ended (TASK-44.19), and went with writable DAX.
-    (
-        "map_to_unlocked",
-        "a region's MAPs and its mapped go without the region's lock: two MAP as far as each "
-        "found mapped, and the one that ends last says so (TASK-44.17)",
-        [("\tint err = 0;\n\n\tmutex_lock(&region->lock);\n", "\tint err = 0;\n\n"),
-         ("out:\n\tmutex_unlock(&region->lock);\n\treturn err;\n}", "out:\n\treturn err;\n}")],
-    ),
-    (
-        "resize_moves_the_last_block",
-        "a DAX file's change of size has Fxfs zero its last block past the end by moving it, from "
-        "under the window, which goes on mapping it (TASK-150.9)",
-        [("\terr = fxfs_vfs_write_attr(inode, FXFS_SET_SIZE | (ops->keeps_tail ? FXFS_SET_KEEP_TAIL : 0));",
-          "\terr = fxfs_vfs_write_attr(inode, FXFS_SET_SIZE);", DATA)],
-    ),
-    (
-        "regions_find_unlocked",
-        "a region is looked up without the regions lock, which fxfs_dax_find_region asserts held: "
-        "a lockdep kernel's assertion fails (TASK-44.9)",
-        [("\tspin_lock(&dax->regions_lock);\n\tregion = fxfs_dax_find_region(dax, e->branch, "
-          "e->sequence);\n\tif (region)\n\t\tregion->refs++;\n\tspin_unlock(&dax->regions_lock);"
-          "\n\tif (region)\n\t\treturn region;\n",
-          "\tregion = fxfs_dax_find_region(dax, e->branch, e->sequence);\n\tif (region)\n"
-          "\t\tregion->refs++;\n\tif (region)\n\t\treturn region;\n")],
-        "debug",
-    ),
-    (
-        "inherited_acls_written_back",
-        "a created inode's inherited ACLs go with write_inode, not with its creation, which an "
-        "fsync of another inode makes durable without them (TASK-79.29)",
-        [("\terr = fxfs_vfs_acl_xattr(default_acl, ACL_TYPE_DEFAULT, mode, xattrs, &nr_xattrs,\n"
-          "\t\t\t\t &values[0]);\n\tif (!err)\n"
-          "\t\terr = fxfs_vfs_acl_xattr(acl, ACL_TYPE_ACCESS, mode, xattrs, &nr_xattrs, "
-          "&values[1]);\n\tif (!err)\n\t\terr = fxfs_nofs(fxfs_create(",
-          "\tif (!err)\n\t\terr = fxfs_nofs(fxfs_create(", SUPER),
-         ("\tif (default_acl && S_ISDIR(mode))\n"
-          "\t\tset_cached_acl(d_inode(dentry), ACL_TYPE_DEFAULT, default_acl);\n\tif (acl)\n"
-          "\t\tset_cached_acl(d_inode(dentry), ACL_TYPE_ACCESS, acl);\n"
-          "\tposix_acl_release(default_acl);\n\tposix_acl_release(acl);\n\treturn 0;\n}\n\n"
-          "/* Creates an unnamed regular file",
-          "\treturn fxfs_vfs_init_acls(d_inode(dentry), default_acl, acl);\n}\n\n"
-          "/* Creates an unnamed regular file", SUPER)],
-    ),
-    (
-        "fault_ignores_fatal_signals",
-        "a fault with no room looks for none of its signals: a splice holding the window can't be "
-        "killed (TASK-79.49)",
-        [("\t\tif (fatal_signal_pending(current)) {\n\t\t\tret = VM_FAULT_SIGBUS;\n"
-          "\t\t\tbreak;\n\t\t}\n", "")],
-    ),
-    (
-        "store_fails_on_pins",
-        "a store from user mode fails on a page of a slice pinned, as a fault from the kernel does: "
-        "a SIGBUS where the pin goes soon (TASK-79.49)",
-        [("\tbool user = vmf->flags & FAULT_FLAG_USER;\n", "\tbool user = false;\n")],
-    ),
-]
-
-# Equivalent mutants, which no suite can kill, and why:
-
-SUITES = "--tag mutants"
+MUTANTS = ROOT / "guest" / "mutants"
+SIM = ROOT / "guest" / "sim"
+CASES = ROOT / "guest" / "tests" / "test_cases" / "src" / "lib.rs"
+CHECKS = ROOT / "guest" / "tests" / "test_cases" / "src" / "test_fxfs_guest_checks" / "mod.rs"
+# The kernels a mutant may need: the simulator, or a guest kernel scripts/test-gce.sh's host
+# builds (FXDAX_GUEST_KERNEL_BUILD).
+KERNELS = {"sim", "release", "debug", "kasan"}
 
 
-class Unfound(Exception):
-    """A mutant's edit not found once in its file."""
+@dataclass(frozen=True)
+class Mutant:
+    """A past bug put back: guest/mutants/NAME.patch, and what its header says of it."""
+
+    name: str
+    path: Path
+    # Where it runs: "sim", or the guest kernel it needs.
+    kernel: str
+    # Its killer's words: a test of the simulator's and its arguments, or a guest case and the
+    # check of it that fails; () if nothing kills it, its header saying why.
+    killer: tuple
+
+    @property
+    def real(self):
+        """Whether it needs a real kernel, which this runs it on."""
+        return self.kernel != "sim"
 
 
-def mutated(tree, edits):
-    """The files of `tree` a mutant's edits change, as they make them, each in turn."""
-    texts = {}
-    for old, new, *file in edits:
-        path = tree / (file[0] if file else DAX)
-        text = texts.get(path) or path.read_text()
-        if text.count(old) != 1:
-            raise Unfound(f"{path}: a mutant's edit is found {text.count(old)} times: {old!r}")
-        texts[path] = text.replace(old, new)
-    return texts
+def mutant(path):
+    """The mutant of the patch `path`, as its header's `# Kernel:` and `# Killer:` say."""
+    fields = dict(re.findall(r"^# (Kernel|Killer): (.*)$", path.read_text(), re.MULTILINE))
+    killer = tuple(fields.get("Killer", "").split())
+    return Mutant(path.stem, path, fields.get("Kernel", ""), () if killer == ("none",) else killer)
 
 
-def mutate(tree, edits):
-    try:
-        for path, text in mutated(tree, edits).items():
-            path.write_text(text)
-    except Unfound as unfound:
-        raise SystemExit(str(unfound))
+def mutants():
+    """Every mutant of guest/mutants, by name."""
+    return [mutant(path) for path in sorted(MUTANTS.glob("*.patch"))]
 
 
-def check(names):
-    """Each mutant's edits found once in the sources as they are: a line for each that isn't."""
-    broken = []
-    for name, _, edits, *_ in MUTANTS:
-        if names and name not in names:
-            continue
-        try:
-            mutated(ROOT, edits)
-        except Unfound as unfound:
-            broken.append(f"{name}: {unfound}")
+def runs():
+    """What a header may name as a killer: the guest's cases, its checks suites' checks, the
+    simulator's tests, and the scenarios of its tests/scenarios."""
+    scenarios = (SIM / "tests" / "scenarios.c").read_text()
+    return {
+        "cases": set(re.findall(r'TestCase::new\(\s*"([a-z0-9-]+)"', CASES.read_text())),
+        "checks": set(re.findall(r"^ +(\w+): \w+, \d+ =>", CHECKS.read_text(), re.MULTILINE)),
+        "sim": {path.stem for path in (SIM / "tests").glob("*.c")},
+        "scenarios": set(re.findall(r"^\t(?:COW_)?SCENARIO\((\w+)\),$", scenarios, re.MULTILINE)),
+    }
+
+
+def unsound(each, known):
+    """What is wrong with the header of `each`, a mutant, given the runs there are (`runs()`),
+    or None."""
+    if each.kernel not in KERNELS:
+        return f"its kernel is {each.kernel!r}, none of {sorted(KERNELS)}"
+    if not each.killer:
+        has = re.search(r"^# Killer: none$", each.path.read_text(), re.MULTILINE)
+        return None if has else "its header names no killer"
+    test, *arguments = each.killer
+    if not each.real:
+        if test not in known["sim"]:
+            return f"its killer {test!r} is no test of guest/sim's"
+        if test == "scenarios" and (len(arguments) != 1 or arguments[0] not in known["scenarios"]):
+            return f"its killer {' '.join(each.killer)!r} is no scenario of tests/scenarios"
+        return None
+    if test not in known["cases"]:
+        return f"its killer {test!r} is no guest case"
+    if len(arguments) > 1 or arguments and arguments[0] not in known["checks"]:
+        return f"its killer {' '.join(each.killer)!r} names no check of the guest's checks suites"
+    return None
+
+
+def check():
+    """What is wrong with the mutants, a line for each wrong: a header naming no kernel or killer
+    there is, or a real kernel's patch that doesn't apply to the sources as they are."""
+    known, broken = runs(), []
+    for each in mutants():
+        wrong = unsound(each, known)
+        if wrong is None and each.real:
+            applied = subprocess.run(["git", "-C", ROOT, "apply", "--check", each.path],
+                                     capture_output=True, text=True)
+            if applied.returncode != 0:
+                wrong = f"it doesn't apply: {applied.stderr.strip()}"
+        if wrong:
+            broken.append(f"{each.name}: {wrong}")
     return broken
 
 
-def run(host, zone, results, name, edits, build):
+def fate(status, summary, killer):
+    """A mutant's fate, and what its run said, from the run's exit status and its guest tests'
+    summary (scripts/guest_results.py), None if they never started, given its killer, a case and
+    the check of it to fail, if any: killed only if the killer failed, the case failing a round, or
+    running out of time in one, with its check among those failed (TASK-160.31)."""
+    case, *check = killer
+    ran = next((each for each in summary["cases"] if each["case"] == case), None) if summary else None
+    failed = ran is not None and ran["outcome"] in guest_results.FAILED
+    if ran is None or (status != 0 and not failed):
+        return "BROKEN", f"the run ended with {status}, {case} {ran['outcome'] if ran else 'never ran'}"
+    if not failed:
+        return "MISSED", f"{case} passed"
+    said = ", ".join(ran["failed_checks"]) or ran["reason"]
+    if check and check[0] not in ran["failed_checks"]:
+        return "MISSED", f"{case} failed, but not {check[0]}: {said}"
+    return "killed", f"{case} {ran['outcome']}: {said}"
+
+
+def run(host, zone, results, each, kernel):
+    """Runs the mutant `each` on `host`: its fate, and what its run said."""
+    case, *check = each.killer
     with tempfile.TemporaryDirectory(prefix="fxdax-mutant-") as scratch:
         tree = Path(scratch) / "tree"
         subprocess.run(["git", "-C", ROOT, "worktree", "add", "-q", "--detach", tree, "HEAD"],
@@ -154,46 +160,45 @@ def run(host, zone, results, name, edits, build):
         try:
             subprocess.run(["git", "-C", tree, "submodule", "update", "--init", "-q",
                             "vendor/firecracker"], check=True)
-            mutate(tree, edits)
+            subprocess.run(["git", "-C", tree, "apply", each.path], check=True)
             env = dict(os.environ, FXDAX_GCE_ZONE=zone, FXDAX_WORKSPACE_TESTS="0",
-                       FXDAX_GUEST_KERNEL_BUILD=build,
-                       FXDAX_E2E_TEST=os.environ.get("FXDAX_E2E_TEST", SUITES))
-            out = Path(results) / name
-            log = open(Path(results) / f"{name}.log", "w")
-            ran = subprocess.run([tree / "scripts/test-gce.sh", "run", host, out], env=env,
-                                 stdout=log, stderr=subprocess.STDOUT, cwd=tree)
-            return fate(ran.returncode, guest_results.load(out / "e2e"))
+                       FXDAX_GUEST_KERNEL_BUILD=kernel, FXDAX_E2E_TEST=case)
+            env.pop("FXDAX_CHECKS", None)
+            env.update({"FXDAX_CHECKS": check[0]} if check else {})
+            out = Path(results) / each.name
+            with open(Path(results) / f"{each.name}.log", "w") as log:
+                ran = subprocess.run([tree / "scripts/test-gce.sh", "run", host, out], env=env,
+                                     stdout=log, stderr=subprocess.STDOUT, cwd=tree)
+            return fate(ran.returncode, guest_results.load(out / "e2e"), each.killer)
         finally:
             subprocess.run(["git", "-C", ROOT, "worktree", "remove", "--force", tree], check=True)
 
 
-def fate(status, summary):
-    """A mutant's fate, from its run's exit status and its guest tests' summary
-    (scripts/guest_results.py), None if they never started: killed only if a suite failed a round,
-    or ran out of time; a run that failed otherwise, as a build that doesn't compile or a host lost,
-    is BROKEN, and says nothing of the suites (TASK-119.8, TASK-160.31)."""
-    if status == 0:
-        return "MISSED"
-    return "killed" if summary and summary["failed"] else "BROKEN"
-
-
 def main():
-    if sys.argv[1:2] == ["--check"]:
-        broken = check(set(sys.argv[2:]))
+    if sys.argv[1:] == ["--check"]:
+        broken = check()
         for line in broken:
             print(line, file=sys.stderr)
-        print(f"mutants: {len(MUTANTS)} checked, {len(broken)} broken")
+        print(f"mutants: {len(mutants())} checked, {len(broken)} broken")
         raise SystemExit(1 if broken else 0)
     if len(sys.argv) < 4:
         raise SystemExit(__doc__)
     host, zone, results, names = sys.argv[1], sys.argv[2], sys.argv[3], set(sys.argv[4:])
+    chosen = [each for each in mutants() if each.real and (not names or each.name in names)]
+    unknown = names - {each.name for each in chosen}
+    if unknown:
+        raise SystemExit(f"no mutant of a real kernel is named {', '.join(sorted(unknown))}")
     Path(results).mkdir(parents=True, exist_ok=True)
-    for name, what, edits, *build in MUTANTS:
-        if names and name not in names:
+    survived = 0
+    for each in chosen:
+        if not each.killer:
+            print(f"none {each.name}: nothing kills it: see its header", flush=True)
             continue
-        kernel = os.environ.get("FXDAX_MUTANT_KERNEL") or (build[0] if build else "release")
-        ended = run(host, zone, results, name, edits, kernel)
-        print(f"{ended} {name}: {what}", flush=True)
+        kernel = os.environ.get("FXDAX_MUTANT_KERNEL") or each.kernel
+        ended, said = run(host, zone, results, each, kernel)
+        survived += ended != "killed"
+        print(f"{ended} {each.name} ({' '.join(each.killer)}, {kernel}): {said}", flush=True)
+    raise SystemExit(1 if survived else 0)
 
 
 if __name__ == "__main__":

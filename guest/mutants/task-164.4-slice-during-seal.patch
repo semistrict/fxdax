@@ -1,6 +1,9 @@
 # SPDX-License-Identifier: GPL-2.0
 # Copyright 2026 The fxdax Authors.
 #
+# Kernel: sim
+# Killer: scenarios cow_map_during_seal
+#
 # TASK-164.4, doc-13: copying on write, a slice's region maps the extent Fxfs says sealed as a seal
 # in progress has yet to seal it on the device: the host refuses the MAP (-EPERM), and the chunk is
 # mapped as a range of its own instead. cow_map_during_seal's read.

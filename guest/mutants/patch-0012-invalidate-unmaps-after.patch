@@ -1,6 +1,9 @@
 # SPDX-License-Identifier: GPL-2.0
 # Copyright 2026 The fxdax Authors.
 #
+# Kernel: sim
+# Killer: none
+#
 # Patch 0012, TASK-150.21: an invalidation puts an entry's folio with its pages mapped still, a
 # PMD's split under a PTE of it (fs/dax.c's WARN in dax_folio_put).
 

@@ -1,0 +1,25 @@
+# SPDX-License-Identifier: GPL-2.0
+# Copyright 2026 The fxdax Authors.
+#
+# Kernel: sim
+# Killer: read_mappings_stay
+#
+# TASK-44.9: a region looked up without the regions lock, which fxfs_dax_find_region asserts held.
+# guest/sim's lockdep assertions are the kernel's: read_mappings_stay's first read of a slice fails
+# it, in a second. A real kernel's did too, on a debug kernel only, in round 1 of
+# fxfs-guest-checks-dax (GCE r255), which scripts/guest-mutants-gce.py ran it as until TASK-160.32.
+
+--- a/guest/linux/fs/fxfs/dax.c
++++ b/guest/linux/fs/fxfs/dax.c
+@@ -1322,11 +1322,9 @@
+ 	struct fxfs_dax_region *region, *new;
+ 	long window_offset;
+ 
+-	spin_lock(&dax->regions_lock);
+ 	region = fxfs_dax_find_region(dax, e->branch, e->sequence);
+ 	if (region)
+ 		region->refs++;
+-	spin_unlock(&dax->regions_lock);
+ 	if (region)
+ 		return region;
+ 

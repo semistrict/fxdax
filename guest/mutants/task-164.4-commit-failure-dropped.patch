@@ -1,6 +1,9 @@
 # SPDX-License-Identifier: GPL-2.0
 # Copyright 2026 The fxdax Authors.
 #
+# Kernel: sim
+# Killer: scenarios cow_commit_failed
+#
 # TASK-164.4, doc-13: a writeback whose Fxfs commit failed, after its bytes, says nothing: fsync
 # returns as if the pages were in Fxfs, which holds the file as it was. cow_commit_failed. (That the
 # commit follows the bytes is Fxfs's, fxfs_write_many's, which the model keeps and

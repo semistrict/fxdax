@@ -2,18 +2,23 @@
 # SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
 # Copyright 2026 The fxdax Authors.
 #
-# Puts each of mutants/*.patch into a copy of dax.c, pages.c, device.c or fs/dax.c, builds the tests
-# against it, and runs seeds until one fails: how many seeds a past bug takes to show, or that it doesn't.
+# Puts each past bug of ../mutants whose header names this simulator as its kernel (`Kernel: sim`,
+# ../mutants/README.md) into a copy of dax.c, pages.c, data.c, device.c, the model of Fxfs or
+# fs/dax.c, builds the tests against it, and runs its killer, the run its header names
+# (`Killer:`): a test of one run, a scenario (`scenarios NAME`), or a test that takes seeds
+# (`interleave`, `failures`), run seed after seed until one fails. The mutant is killed only if its
+# killer fails; MISSED if it passes; BROKEN if it doesn't apply or build, or its killer is no run
+# here. One whose killer is `none`, which nothing here can kill, its header saying why, isn't run.
 #
 #   mutants.sh [--check] [-b BASE.patch]... [-s SEEDS] [-o OPERATIONS] [-j JOBS] [-J SEED_JOBS] [NAME...]
 #
-# OPERATIONS, as zloop.sh has them, are 200, and 1,000 for a seed in 8. With -b, as many as asked,
-# every build has BASE too: a fix a run needs out of its way. Takes
-# KERNEL and BUILD as the Makefile does. dax.c itself stays as it is. A NAME with no patch builds
-# what the -b fixes make, which is how to see they leave nothing failing. JOBS mutants run at once,
-# each SEED_JOBS seeds at once. --check runs nothing: it applies and reverses each mutant's patches,
-# with no fuzz, in seconds, as CI does. A mutant whose patch doesn't apply, here or in a run, fails
-# this.
+# NAMEs are mutants, every one of the simulator's by default. SEEDS, 2,000 by default, are as
+# many as a seeded killer has; OPERATIONS, as zloop.sh has them, 200, and 1,000 for a seed in 8.
+# With -b, as many as asked, every build has BASE too: a fix a run needs out of its way. Takes
+# KERNEL and BUILD as the Makefile does (linux.sh, elsewhere than on Linux). dax.c itself stays as
+# it is. JOBS mutants run at once, each SEED_JOBS seeds at once. Exits 1 unless each mutant run
+# was killed. --check runs nothing: it applies and reverses each mutant's patches, with no fuzz, in
+# seconds, as CI does, and fails if one doesn't, or names no killer.
 
 set -u -o pipefail
 cd "$(dirname "$0")"
@@ -38,28 +43,34 @@ shift $((OPTIND - 1))
 
 . ./lib.sh
 
+# A field of a mutant's header: `# FIELD: value`.
+field() { # name, field
+    sed -n "s/^# $2: //p" "../mutants/$1.patch"
+}
+
 names=("$@")
 if [[ ${#names[@]} == 0 ]]; then
-    names=()
-    for patch in mutants/*.patch; do
-        names+=("$(basename "$patch" .patch)")
+    for patch in ../mutants/*.patch; do
+        name=$(basename "$patch" .patch)
+        [[ $(field "$name" Kernel) != sim ]] || names+=("$name")
     done
 fi
 
 # A mutant's patches: the bases, then its own.
 patches() { # name
-    local patch
-    for patch in "${bases[@]}"; do
-        echo "$patch"
-    done
-    [[ ! -f mutants/$1.patch ]] || echo "mutants/$1.patch"
+    printf '%s\n' "${bases[@]}" "../mutants/$1.patch"
 }
 
 if [[ -n $check ]]; then
     broken=0
     for name in "${names[@]}"; do
         mapfile -t patches < <(patches "$name")
-        sim_check "$name" "${patches[@]}" || broken=$((broken + 1))
+        if [[ -z $(field "$name" Killer) ]]; then
+            echo "$name: its header names no killer" >&2
+            broken=$((broken + 1))
+        elif ! sim_check "$name" "${patches[@]}"; then
+            broken=$((broken + 1))
+        fi
     done
     echo "mutants: ${#names[@]} checked, $broken broken"
     ((broken == 0))
@@ -75,62 +86,69 @@ failed() { # dir, test, arguments...
     sim_failure "$dir/log"
 }
 
-run() { # name
-    local name=$1 dir=$BUILD/mutants/$1 patches found="" seed first one runs began took i stop=0
-    mapfile -t patches < <(patches "$name")
-    if ! sim_build "$name" "${patches[@]}"; then
-        printf '%-34s %-24s %-9s %s\n' "$name" - - "BROKEN: it doesn't apply or build"
-        echo "$name" >> "$BUILD/mutants/broken"
-        return
-    fi
+# A mutant's fate, a line: its fate, name, killer, and what the killer said, or why it has none.
+fate() { # fate, name, killer, said
+    printf '%-8s %-44s %-40s %s\n' "$@"
+    [[ $1 == killed || $1 == none ]] || echo "$2" >> "$BUILD/mutants/survived"
+}
+
+# Its killer's seeds, SEED_JOBS at once, until one fails: the first of a batch to fail is the one
+# to say, as `seed N: what it said`.
+seeded() { # dir, test
+    local dir=$1 test=$2 seed i
     for ((i = 0; i < seed_jobs; i++)); do
         mkdir -p "$dir/$i"
-        for test in "${seeded[@]}"; do
-            cp "$dir/$test" "$dir/$i/"
+        cp "$dir/$test" "$dir/$i/"
+    done
+    for ((seed = 1; seed <= seeds; seed += seed_jobs)); do
+        for ((i = 0; i < seed_jobs && seed + i <= seeds; i++)); do
+            (failed "$dir/$i" "$test" $((seed + i)) "${operations:-$(((seed + i) % 8 ? 200 : 1000))}" ||
+                true) > "$dir/$i/failure" &
+        done
+        wait
+        for ((i = 0; i < seed_jobs; i++)); do
+            if [[ -s $dir/$i/failure ]]; then
+                echo "seed $((seed + i)): $(cat "$dir/$i/failure")"
+                return
+            fi
         done
     done
-    began=$(date +%s.%N)
-    mapfile -t runs < <(sim_one_runs "$dir")
-    for one in "${runs[@]}"; do
-        # shellcheck disable=SC2086
-        if found=$(failed "$dir" $one); then
-            found=${found:-$one}
-            seed=${one#scenarios }
-            break
-        fi
-    done
-    if [[ -z $found ]]; then
-        # Seeds at once, a batch at a time: the first of a batch to fail is the one to say.
-        for ((seed = 1, first = 0; seed <= seeds && !stop; seed += seed_jobs)); do
-            for ((i = 0; i < seed_jobs && seed + i <= seeds; i++)); do
-                (ops=${operations:-$(((seed + i) % 8 ? 200 : 1000))}
-                 for test in "${seeded[@]}"; do
-                     failed "$dir/$i" "$test" $((seed + i)) "$ops" && break
-                 done) > "$dir/$i/failure" &
-            done
-            wait
-            for ((i = 0; i < seed_jobs; i++)); do
-                if [[ -s $dir/$i/failure ]]; then
-                    found=$(cat "$dir/$i/failure")
-                    first=$((seed + i))
-                    stop=1
-                    break
-                fi
-            done
-        done
-        seed=$first
+    return 1
+}
+
+run() { # name
+    local name=$1 dir=$BUILD/mutants/$1 killer patches said began
+    killer=$(field "$name" Killer)
+    if [[ $killer == none ]]; then
+        fate none "$name" - "nothing here kills it: see its header"
+        return
     fi
-    took=$(printf '%.1f' "$(echo "$(date +%s.%N) - $began" | bc)")
-    if [[ -n $found ]]; then
-        printf '%-34s %-24s %-9s %s\n' "$name" "$seed" "${took}s" "$found"
+    mapfile -t patches < <(patches "$name")
+    mkdir -p "$dir"
+    if ! sim_build "$name" "${patches[@]}" > "$dir/build.log" 2>&1; then
+        fate BROKEN "$name" "$killer" "it doesn't apply or build: $dir/build.log"
+        return
+    fi
+    began=$SECONDS
+    if [[ " ${seeded[*]} " == *" $killer "* ]]; then
+        said=$(seeded "$dir" "$killer") || said=""
+    elif sim_one_runs "$dir" | grep -xF -- "$killer" > /dev/null; then
+        # shellcheck disable=SC2086
+        said=$(failed "$dir" $killer) || said=""
     else
-        printf '%-34s %-24s %-9s %s\n' "$name" "none/$seeds" "${took}s" 'not caught'
+        fate BROKEN "$name" "$killer" "its killer is no run here (sim_one_runs, or ${seeded[*]})"
+        return
+    fi
+    if [[ -n $said ]]; then
+        fate killed "$name" "$killer" "$((SECONDS - began)) s: $said"
+    else
+        fate MISSED "$name" "$killer" "$((SECONDS - began)) s: it passed"
     fi
 }
 
 mkdir -p "$BUILD/mutants"
-: > "$BUILD/mutants/broken"
-printf '%-34s %-24s %-9s %s\n' mutant seeds time 'first failure'
+: > "$BUILD/mutants/survived"
+printf '%-8s %-44s %-40s %s\n' fate mutant killer 'what it said'
 for name in "${names[@]}"; do
     run "$name" &
     while (($(jobs -rp | wc -l) >= jobs)); do
@@ -138,4 +156,4 @@ for name in "${names[@]}"; do
     done
 done
 wait
-[[ ! -s $BUILD/mutants/broken ]]
+[[ ! -s $BUILD/mutants/survived ]]
