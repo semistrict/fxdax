@@ -3,9 +3,11 @@ id: TASK-168
 title: >-
   The DAX checks suites run near their 180 s limit: checks-dax-small timed out
   once, checks-dax-delay takes 177 s on the debug kernel
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-11-04 09:18'
+updated_date: '2026-11-05 03:15'
 labels: []
 dependencies: []
 priority: medium
@@ -31,3 +33,13 @@ GCE r533 (batch 2026-11-04 at 9e92e6925): fxfs-guest-checks-dax-small timed out 
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. One declarative table of the checks (name, suites, budget, body) that host and guest share (X-macro), replacing the guest's hand-ordered list.
+2. The guest times each check (PASS/FAIL: name (took of budget) in the log) and a watchdog ends the run, naming the check and dumping the guest's stacks, when one outruns its budget.
+3. The host derives the suite's limit from its checks' budgets, scaled by the guest kernel's kind (FXDAX_GUEST_KERNEL_BUILD, exported by test-linux-host.sh), object storage and FXDAX_CHECKS_SCALE; unknown FXDAX_CHECKS names fail.
+4. The runner prints each test's time of its limit; fxfs-guest-checks-overrun tests the watchdog.
+5. GCE: measure per-check times on release and debug kernels, set budgets from them, re-run both to verify no suite within 20% of its limit.
+<!-- SECTION:PLAN:END -->
