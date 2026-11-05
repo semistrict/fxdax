@@ -116,6 +116,7 @@ fn one() {
             "leases_by_takings" => rules.leases_by_takings = false,
             "passes_fenced_stop" => rules.passes_fenced_stop = false,
             "recoveries_by_origins" => rules.recoveries_by_origins = false,
+            "records_kept" => rules.records_kept = false,
             other => panic!("no rule {other}"),
         }
     }
@@ -137,6 +138,7 @@ fn one() {
         "restores" => restores(),
         "whole_restores" => whole_restores(),
         "taking_ids" => restores_taking_ids(),
+        "usurped" => usurped(),
         other => panic!("no profile {other}"),
     };
     let count = std::env::var("SIM_SEEDS").map_or(1, |count| count.parse().unwrap());
@@ -396,6 +398,24 @@ fn restores_taking_ids() -> Profile {
 }
 
 test_holds!(restores_taking_forks_ids, restores_taking_ids());
+
+/// Roots taking the IDs of forks' children whose segments are not yet acknowledged, and deleted,
+/// while the forks' parents are deleted and collectors run: a parent's writer slow to record its
+/// fork finds the root's record, deleted (TASK-174).
+fn usurped() -> Profile {
+    weights(|weights| {
+        weights.fork = 6;
+        weights.open = 6;
+        weights.usurp = 4;
+        weights.delete = 3;
+        weights.collect = 8;
+        weights.checkpoint = 2;
+    })
+}
+
+test_holds!(forks_ids_taken_by_roots_deleted, usurped());
+
+test_needs!(collection_needs_records_kept, records_kept, usurped());
 
 /// Restores as [`restores`] makes them, but no host dying, no collector stopped and no request
 /// failing once it took effect: a pass that misses a restored branch then reclaims what it inherited,

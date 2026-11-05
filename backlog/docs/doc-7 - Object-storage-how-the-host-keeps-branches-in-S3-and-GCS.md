@@ -3,7 +3,7 @@ id: doc-7
 title: 'Object storage: how the host keeps branches in S3 and GCS'
 type: specification
 created_date: '2026-10-17 01:31'
-updated_date: '2026-11-05 13:46'
+updated_date: '2026-11-05 13:51'
 ---
 # Object storage: how the host keeps branches in S3 and GCS
 
@@ -339,9 +339,11 @@ and the footers after it, and serves the guest from an empty cache.
   by another deletion (a placement cut off deletes once the latest one's deletion ended the lease),
   is done: that one gave the children their records, and the collector may have reclaimed what
   recovering the branch needs since (TASK-178).
-- **Deleted forks' records stay:** a parent's writer slow to record a fork could otherwise make the
-  record again. Collecting them needs a bound on how long a writer can stall; they are small, and
-  their number is bounded by the forks made.
+- **Deleted branches' records stay**, forks' children's and roots' alike: a parent's writer slow to
+  record a fork could otherwise make the record again, of a fork's child, or of a root that took the
+  ID the fork's guest named and was deleted, naming what the collector reclaimed (TASK-174).
+  Collecting them needs a bound on how long a writer can stall; they are small, and their number
+  is bounded by the branches made.
 - This replaced `copy_store`, which forked by copying every file: locally, a fork is a record in
   its parent's store (Where it stands).
 
@@ -487,8 +489,7 @@ one for the next pass to reclaim. A pass:
      its own, which would have to land before what it covers and be read after the listing, two
      orderings more (`dead-ends/collector-in-flight-declarations.md`);
    - moves no state's way goes through, once compacted in turn or once their object is gone;
-   - deleted branches' records no live branch's recovery read, unless a fork's; leases of branches
-     with no live record.
+   - no record, deleted or not (Forks, TASK-174); leases of branches with no live record.
 
 **Time** (the grace period, by the store's clock) only spares readers that just looked an extent up
 a round trip; correctness does not depend on it.
@@ -535,14 +536,18 @@ rules need a model and tests before code"): `crates/extent_remote`, its `sim` mo
   12. two forks naming one child within a round trip, neither's segment landing, each taking a
      record of its own (`failed_forks_deleted_anywhere`, its `twins`);
   13. a restore of a point naming the child of a fork whose segment is not yet acknowledged,
-     whichever's record comes first taking the ID (`restores_taking_forks_ids`, TASK-173).
+     whichever's record comes first taking the ID (`restores_taking_forks_ids`, TASK-173);
+  14. a root taking the ID of a fork's child whose segment is not yet acknowledged, and deleted,
+     as the fork's parent is deleted and collectors run (`forks_ids_taken_by_roots_deleted`,
+     TASK-174).
 - **Each rule** has a test that turns it off and expects a seed to find what it violates: fences,
   links between segments, acknowledging after a lease read, minting from the epoch's range,
   recording forks after their acknowledgement, listing before reading states, finding forks in
   states, deleting an earlier writer's extents only after a later one's segment, readers
   checking for a newer checkpoint, points refusing writers, forks of points reading the point after
   their records and saying they are being made, the collector giving those up, its listing the
-  records after the states, and records naming their owners. The collector going by the segments
+  records after the states, records naming their owners, and its keeping deleted roots' records
+  (`collection_needs_records_kept`, of `forks_ids_taken_by_roots_deleted`'s profile). The collector going by the segments
   extents' keys name is shown needed by a test of its own
   (`extents_ahead_of_their_segments_need_keys_naming_them`), as are ways starting at extents'
   seals (`writers_reading_past_checkpoints_landing_after_they_took_over_need_ways_from_seals`, and
@@ -570,13 +575,14 @@ rules need a model and tests before code"): `crates/extent_remote`, its `sim` mo
   (`NoExtentKeysNameSegments`), `ways_from_seals` (`NoWaysFromSeals`, TASK-175's trace),
   `moves_taken_first` (`NoMovesTakenFirst`), `leases_by_takings` (`NoLeasesByTakings`),
   `passes_fenced_stop` (`NoPassesFencedStop`), `recoveries_by_origins` (`NoRecoveriesByOrigins`,
-  TASK-173), and doc-14's `wal_follows` (`NoWalFollows`) and
+  TASK-173), `records_kept` (`NoRecordsKept`, TASK-174), and doc-14's `wal_follows` (`NoWalFollows`) and
   `wal_after_fence` (`NoWalAfterFence`); `newest_checkpoint` has a second, of what a fork inherited
   (`NoNewestCheckpointInherited`, TASK-177), and branch::delete's taking a deletion done by another
   as done, which is no field of `Rules`, one of its own (`NoDeletionsDoneByOthers`, TASK-178). It
   found TASK-173 in the collector, a child recovered once, by its parent's state, though a record
-  found on relisting names a restore's origin (fixed: `recoveries_by_origins`); TASK-174; and
-  TASK-183: two deletions of a branch at once,
+  found on relisting names a restore's origin (fixed: `recoveries_by_origins`); TASK-174, a deleted root's
+  record dropped and made again by a parent's slow writer as a fork's child (fixed: `records_kept`);
+  and TASK-183: two deletions of a branch at once,
   a never-acknowledged fork's segment landing between their recoveries, the second records the
   fork's child after a pass, reading the branch deleted, let go of its origin; the spec models a
   deletion fencing the end it recovered to (`deletionsFence`, `NoDeletionsFence`), which the code

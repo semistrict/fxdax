@@ -221,6 +221,11 @@ pub(crate) struct Rules {
     /// took the ID, which listing the records again finds (TASK-173).
     /// TLA+: `specs/bucket/mutations/NoRecoveriesByOrigins.cfg`.
     pub recoveries_by_origins: bool,
+    /// The collector drops no branch's record, a deleted root's neither: a writer of a parent slow
+    /// to record a fork whose child's ID a root took, and was deleted, would make the record again,
+    /// naming what the collector reclaimed (TASK-174).
+    /// TLA+: `specs/bucket/mutations/NoRecordsKept.cfg`.
+    pub records_kept: bool,
 }
 
 impl Rules {
@@ -251,6 +256,7 @@ impl Rules {
         leases_by_takings: true,
         passes_fenced_stop: true,
         recoveries_by_origins: true,
+        records_kept: true,
     };
 }
 

@@ -75,8 +75,8 @@ pub struct Record {
     /// tells its own, landed though its answer was lost, from another's (TASK-79.82, TASK-153.9).
     pub owner: u64,
     pub kind: Kind,
-    /// A deleted fork's record stays, which a writer of its parent that is slow to record the fork
-    /// could make again were it removed ([`Record::may_drop`]).
+    /// A deleted branch's record stays, which a writer of a parent that is slow to record a fork to
+    /// its ID could make again were it removed ([`Record::may_drop`]).
     pub deleted: bool,
 }
 
@@ -132,11 +132,14 @@ impl Record {
         }
     }
 
-    /// Whether the collector may delete it, once no branch forked from the branch needs it: a
-    /// deleted branch's of no parent's. A fork's stays, which a writer of its parent that is slow
-    /// to record the fork could make again.
+    /// Whether the collector may delete it, once no branch forked from the branch needs it: never.
+    /// A deleted fork's child's record, a writer of its parent that is slow to record the fork
+    /// could make again; and so a deleted root's, whose ID a fork's guest may have named, that
+    /// fork's segment acknowledged and its child not yet recorded, as the root took the ID: its
+    /// record, made then, would name what the collector reclaimed (TASK-174). Their number is
+    /// bounded by the branches made. Without the rule that they stay, a deleted root's goes.
     pub fn may_drop(&self) -> bool {
-        self.deleted && self.kind == Kind::Root
+        !rules().records_kept && self.deleted && self.kind == Kind::Root
     }
 }
 

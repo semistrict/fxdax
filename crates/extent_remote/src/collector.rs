@@ -99,7 +99,7 @@ pub async fn collect(
 
 /// The collector, from one pass to the next: it remembers the branches' records it read, with the
 /// versions it read them at, and reads one again only once it changed: few do, and those of
-/// deleted forks, which stay, never do (TASK-92.7).
+/// deleted branches, which stay, never do (TASK-92.7, TASK-174).
 pub struct Collector {
     options: Options,
     /// The records read, by their keys, with the versions they were read at.
@@ -637,8 +637,8 @@ impl Pass {
                             !self.objects.contains_key(from) && aged(meta)
                         }
                 }
-                // A deleted branch's record goes once no branch forked from it needs it, unless it
-                // is a fork's. A lease goes with its branch: writers do not take a deleted one.
+                // A deleted branch's record stays ([`Record::may_drop`], TASK-174). A lease goes
+                // with its branch: writers do not take a deleted one.
                 Kind::Record { branch } => {
                     self.records.get(&branch).is_some_and(Record::may_drop)
                         && !self.touched.contains(key)
@@ -1021,8 +1021,14 @@ mod tests {
     /// parent's state where it was forked, finds the parent's record gone, the parent deleted and
     /// the collector having dropped its record once the fork's own checkpoint came: it starts again
     /// from that checkpoint. Found by the simulation, seed 210 of its `forks` at SIM_SOAK=100.
+    /// Records are kept since (TASK-174): with them, the recovery finds the parent's segments gone
+    /// instead, and starts again as for any segment gone; this is what it does should a record go.
     #[test]
     fn forks_recover_past_parents_records_their_own_checkpoints_let_go() {
+        crate::set_rules(crate::Rules { records_kept: false, ..crate::Rules::ALL });
+        let recovered = block_on(recover_as_a_fork_checkpoints());
+        crate::set_rules(crate::Rules::ALL);
+        assert_eq!(recovered, Ok(vec![ExtentId::new(1, 1 << 40)]));
         assert_eq!(block_on(recover_as_a_fork_checkpoints()), Ok(vec![ExtentId::new(1, 1 << 40)]));
     }
 
@@ -1031,7 +1037,9 @@ mod tests {
     #[test]
     fn forks_recovering_past_parents_records_their_own_checkpoints_let_go_need_newest_checkpoints()
     {
-        crate::set_rules(crate::Rules { newest_checkpoint: false, ..crate::Rules::ALL });
+        let rules =
+            crate::Rules { newest_checkpoint: false, records_kept: false, ..crate::Rules::ALL };
+        crate::set_rules(rules);
         let recovered = block_on(recover_as_a_fork_checkpoints());
         crate::set_rules(crate::Rules::ALL);
         assert_eq!(recovered, Err(Error::Lost(layout::record(1))));
@@ -1272,6 +1280,134 @@ mod tests {
         let now = Options { compact_below: 0.0, grace: 0 };
         collect(&during, 1, &now).await?;
         collect(&*direct, 2, &now).await
+    }
+
+    /// TASK-174: a root that took the ID of a fork's child, and was deleted, keeps its record:
+    /// the fork's parent's writer, which acknowledged the fork before the parent's deletion ended
+    /// its lease and was slow to record the child, finds it deleted once a pass ran, and makes
+    /// none. Found by specs/bucket's TLA+ (TASK-165.2), the model BucketForks.
+    #[test]
+    fn deleted_roots_keep_their_records_from_slow_writers_forking_to_their_ids() {
+        let (record, passed) = block_on(record_a_fork_to_a_deleted_root());
+        let deleted = Record { deleted: true, ..crate::record::Kind::Root.of(0x21) };
+        assert_eq!((record, passed), (Some(deleted), Ok(Report { deleted: 0, compacted: 0 })));
+    }
+
+    /// The collector dropping a deleted root's record: the slow writer makes it again, a fork's
+    /// child's, naming its parent's segments, which the pass deleted, and the next pass fails.
+    #[test]
+    fn deleted_roots_keeping_their_records_need_records_kept() {
+        crate::set_rules(crate::Rules { records_kept: false, ..crate::Rules::ALL });
+        let (record, passed) = block_on(record_a_fork_to_a_deleted_root());
+        crate::set_rules(crate::Rules::ALL);
+        let made = crate::record::Kind::Fork(Origin { parent: 1, at: 1 }).of(0x22);
+        assert_eq!((record, passed), (Some(made), Err(Error::Lost(layout::record(1)))));
+    }
+
+    /// Child 2's record, and what a pass gives, once the writer of branch 1 forked to 2, which a
+    /// root took and was deleted, and recorded the fork after branch 1's deletion and a pass.
+    async fn record_a_fork_to_a_deleted_root() -> (Option<Record>, Result<Report, Error>) {
+        use crate::layout::{Contents, Segment};
+        use crate::writer::Objects;
+        const PARENT: u64 = 1;
+        const CHILD: u64 = 2;
+        let direct = Arc::new(Direct(SimBucket::new()));
+        let (slow, open) = Gated::new(direct.clone(), Gate::Put(layout::record(CHILD)));
+        let slow = Arc::new(slow);
+        branch::create(&*direct, PARENT, 0).await.unwrap();
+        let writer = Writer::open(slow, PARENT, 10, 0).await.unwrap();
+        branch::create(&*direct, CHILD, 0x21).await.unwrap();
+        branch::delete(&*direct, CHILD, 11, 0).await.unwrap();
+        let forked = Child { branch: CHILD, owner: 0x22, point: false };
+        let footer = writer.chain().close(Contents { forks: vec![forked], ..Contents::default() });
+        let segment = Segment { data: Vec::new(), footer: footer.clone() }.encode().into();
+        let at = writer.add_segment(Objects { footer, segment, own: Vec::new() }).unwrap();
+        writer.upload(at).await.unwrap();
+        // The lease read, the fork's child's record waits.
+        let mut acknowledging = Box::pin(writer.acknowledge());
+        assert!((&mut acknowledging).now_or_never().is_none());
+        branch::delete(&*direct, PARENT, 12, 0).await.unwrap();
+        let now = Options { compact_below: 0.0, grace: 0 };
+        collect(&*direct, 1, &now).await.unwrap();
+        open.send(()).unwrap();
+        assert_eq!((&mut acknowledging).now_or_never(), Some(Ok(Some(at))));
+        let record = branch::record(&*direct, CHILD).await.unwrap();
+        (record, collect(&*direct, 2, &now).await)
+    }
+
+    /// A bucket whose first request its gate names waits until the gate opens: what [`Gated::new`]
+    /// gives with it opens it.
+    struct Gated {
+        bucket: Arc<Direct>,
+        gate: Gate,
+        closed: Mutex<Option<futures::channel::oneshot::Receiver<()>>>,
+    }
+
+    /// The request a [`Gated`] bucket holds.
+    enum Gate {
+        /// The put of an object at this key.
+        Put(String),
+    }
+
+    impl Gated {
+        fn new(bucket: Arc<Direct>, gate: Gate) -> (Self, futures::channel::oneshot::Sender<()>) {
+            let (open, closed) = futures::channel::oneshot::channel();
+            (Self { bucket, gate, closed: Mutex::new(Some(closed)) }, open)
+        }
+
+        /// What the request waits for, if `now` and the gate is yet to hold one.
+        fn wait(&self, now: bool) -> Option<futures::channel::oneshot::Receiver<()>> {
+            now.then(|| self.closed.lock().unwrap().take()).flatten()
+        }
+    }
+
+    impl Bucket for Gated {
+        fn get(&self, key: &str) -> impl Future<Output = Result<Object, BucketError>> + Send {
+            self.bucket.get(key)
+        }
+
+        fn get_range(
+            &self,
+            key: &str,
+            range: ByteRange,
+        ) -> impl Future<Output = Result<Vec<u8>, BucketError>> + Send {
+            self.bucket.get_range(key, range)
+        }
+
+        fn head(&self, key: &str) -> impl Future<Output = Result<Meta, BucketError>> + Send {
+            self.bucket.head(key)
+        }
+
+        fn list(
+            &self,
+            prefix: &str,
+        ) -> impl Future<Output = Result<Vec<Meta>, BucketError>> + Send {
+            self.bucket.list(prefix)
+        }
+
+        fn put(
+            &self,
+            key: &str,
+            bytes: Vec<u8>,
+            mode: PutMode,
+        ) -> impl Future<Output = Result<Version, BucketError>> + Send {
+            let Gate::Put(at) = &self.gate;
+            let gate = self.wait(at == key);
+            async move {
+                if let Some(gate) = gate {
+                    gate.await.unwrap();
+                }
+                self.bucket.put(key, bytes, mode).await
+            }
+        }
+
+        fn delete(&self, key: &str) -> impl Future<Output = Result<(), BucketError>> + Send {
+            self.bucket.delete(key)
+        }
+
+        fn now(&self) -> u64 {
+            self.bucket.now()
+        }
     }
 
     /// A bucket that runs `then` once, at the first request its hook names.

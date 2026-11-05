@@ -45,7 +45,7 @@
 (*                                                                         *)
 (* Each rule is a member of Rules; specs/bucket/mutations removes one      *)
 (* each, and must find the violation it prevents (each mutation's model    *)
-(* says which, and how). The first 26 are the fields of extent_remote's    *)
+(* says which, and how). The first 27 are the fields of extent_remote's    *)
 (* `Rules` (crates/extent_remote/src/lib.rs); then one the code holds      *)
 (* with no field (TASK-178), and one it lacks (TASK-183); the last two     *)
 (* doc-14's, which TASK-165.5 adds:                                        *)
@@ -115,6 +115,9 @@
 (*   state's, not once: a child recovered by the state, that fork refused, *)
 (*   may have a record of a restore's origin, found on relisting           *)
 (*   (TASK-173).                                                           *)
+(* - recordsKept (NoRecordsKept): the collector drops no record, a deleted *)
+(*   root's neither: a parent's writer slow to record a fork whose child's *)
+(*   ID a root took, and was deleted, would make it again (TASK-174).      *)
 (* - deletionsDoneByOthers (NoDeletionsDoneByOthers): a deletion whose     *)
 (*   recovery of the branch finds what it needs lost, the record deleted   *)
 (*   since, is done (TASK-178; branch::delete, with no field of Rules).    *)
@@ -143,10 +146,10 @@
 (*   open, its guest's commits dropped by `take`, though the branch holds  *)
 (*   them or nothing came after them. By commits, as doc-7's recovery on   *)
 (*   the same host was, neither diverges.                                  *)
-(* - No record is dropped: a deleted root's stays too, as a deleted fork's *)
-(*   does (TASK-174). What TASK-177 found lost, a fork's deleted parent's  *)
-(*   record, is here that parent's segments to the fork, which the         *)
-(*   collector lets go of for the same reason: the fork's checkpoint.      *)
+(* - What TASK-177 found lost, a fork's deleted parent's record, which no *)
+(*   record is now (recordsKept), is here that parent's segments to the    *)
+(*   fork, which the collector lets go of for the same reason: the fork's  *)
+(*   checkpoint.                                                           *)
 (*                                                                         *)
 (* Steps are what the code does between two requests, or merged: a        *)
 (* writer's taking reads the record, takes the lease and reads the record  *)
@@ -190,7 +193,8 @@ AllRules == {"acksAfterLease", "fence", "continuity", "epochSequences", "records
              "pointsTakeNoWriter", "forksCheckPoints", "forksPending", "collectorAbandons",
              "recordsRelisted", "recordsOwned", "extentKeysNameSegments", "waysFromSeals",
              "movesTakenFirst", "leasesByTakings", "passesFencedStop", "recoveriesByOrigins",
-             "deletionsDoneByOthers", "deletionsFence", "walFollows", "walAfterFence"}
+             "recordsKept", "deletionsDoneByOthers", "deletionsFence", "walFollows",
+             "walAfterFence"}
 
 AllCan == {"commit", "mint", "seg", "own", "free", "fork", "point", "restore", "unfork",
            "contest", "delete", "deletePoints", "place", "checkpoint", "collect", "compact",
@@ -896,7 +900,12 @@ ProcStep(h) ==
                     ELSE /\ proc' = [proc EXCEPT ![h].pc = "recover", ![h].ck = Newest(b)]
                          /\ UNCHANGED rec
                  /\ UNCHANGED <<seg, own, ckpt, lease, moves, inflight, makers, errors>>
-            [] q.op = "delete" /\ q.pc = "recover" ->
+            [] q.op = "delete" /\ q.pc = "recover" /\ rec[b] = None ->
+                 \* Its record dropped since, as only a deleted root's is, without recordsKept:
+                 \* done, as by another deletion.
+                 /\ Done(h)
+                 /\ UNCHANGED <<seg, own, ckpt, rec, lease, moves, inflight, makers, errors>>
+            [] q.op = "delete" /\ q.pc = "recover" /\ rec[b] # None ->
                  \* Its recovery, starting again with the checkpoints listed again; then an
                  \* empty segment of the final epoch created where it found the first missing
                  \* (deletionsFence; a point, which no writer has, needs none), that read and the
@@ -1181,10 +1190,12 @@ GcFinish(i) ==
                    /\ k \notin hops
                    /\ IF k \in named THEN Depth(k) < Hops /\ next(k) \in objs
                       ELSE Key(k[2], k[3], Depth(k) - 1) \notin objs
-              \* No record: a deleted root's stays too, as a deleted fork's does, which a slow
-              \* writer of a parent naming its ID as a fork's child would make again
-              \* (extent_remote's Record::may_drop drops it, TASK-174).
-              [] k[1] = "rec" -> FALSE
+              \* No record (recordsKept): a deleted root's stays too, as a deleted fork's does,
+              \* which a slow writer of a parent naming its ID as a fork's child would make again
+              \* (TASK-174). Without the rule, a deleted root's goes once no recovery read it.
+              [] k[1] = "rec" -> /\ ~R("recordsKept")
+                                 /\ recs[k[2]] # None /\ recs[k[2]].deleted
+                                 /\ recs[k[2]].kind = "root" /\ k \notin touched
               [] k[1] = "lease" -> ~(recs[k[2]] # None /\ ~recs[k[2]].deleted)
         D == IF Fenced(i) THEN {} ELSE {k \in objs : doomedKey(k)}
     IN /\ g.pc = "finish"
@@ -1199,8 +1210,9 @@ GcFinish(i) ==
        /\ ckpt' = [b \in Branches |-> [s \in Seqs |-> IF <<"ckpt", b, s>> \in D THEN None
                                                       ELSE ckpt[b][s]]]
        /\ lease' = [b \in Branches |-> IF <<"lease", b>> \in D THEN None ELSE lease[b]]
+       /\ rec' = [b \in Branches |-> IF <<"rec", b>> \in D THEN None ELSE rec[b]]
        /\ gc' = [gc EXCEPT ![i] = GcIdle]
-       /\ UNCHANGED <<rec, inflight, hostVars, truthVars, countVars>>
+       /\ UNCHANGED <<inflight, hostVars, truthVars, countVars>>
 
 GcNext ==
     \/ GcStart

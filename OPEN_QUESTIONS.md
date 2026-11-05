@@ -8,6 +8,10 @@
 
 # Decisions
 
+## The collector keeps every record, deleted roots' too (TASK-174, 2026-11-05)
+
+A root that took the ID of a fork's child, and was deleted, lost its record to the collector; the fork's parent's writer, slow to record the fork, then made the child's record, naming the parent's segments the pass had reclaimed, and every pass after stopped. Decided: **`Rules::records_kept`**, no record goes, as deleted forks' children's already stayed (`Record::may_drop` is false). *Cost:* a record per branch ever made, small. *Instead:* drop a deleted root's record once no writer that could name its ID as a fork's child can still record, which needs a bound on how long a writer stalls, as doc-7 says of forks' records. TASK-177's restart, for a parent's record found gone, now guards only what would drop one; its tests run with the rule off. *Undoing it:* `Record::may_drop`'s rule.
+
 ## The collector recovers a branch by each origin it is named by (TASK-173, 2026-11-05)
 
 A child the collector recovered by its parent's state, that fork refused because a restore of a point took the child's ID first, was not recovered again by the record of the restore's origin found on relisting, and what that origin needed went. Decided: **`Rules::recoveries_by_origins`**, the collector keys what it recovered by branch and origin, recovering a branch once by each origin its record or a parent's state names, and whether a segment or extent may yet land goes by every recovery of the branch. *Cost:* a refused fork's child is recovered twice in that pass, the state's way kept too. *Instead:* trust the record over the state, dropping the state's recovery when a record comes: what the state's recovery read may already be all the pass keeps of the parent, and the state's fork is never the child's then; keeping both is simpler and only keeps more. The simulation's restores now name pending forks' children (`restores_taking_forks_ids`), but no seed of 0..20,000 reaches the rule's window; the direct test and specs/bucket's `NoRecoveriesByOrigins` show it needed. *Undoing it:* `Live::recovered`'s by-origin arm.

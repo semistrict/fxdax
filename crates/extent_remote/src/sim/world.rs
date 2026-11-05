@@ -67,6 +67,9 @@ pub struct Weights {
     pub restore: u32,
     /// A host's stale copy of a point tries to take it as a writer, which must fail.
     pub write_point: u32,
+    /// A root takes the ID of a fork's child whose segment is not yet acknowledged, as a guest may
+    /// name any, and is deleted (TASK-174).
+    pub usurp: u32,
     /// The store's clock advances.
     pub tick: u32,
 }
@@ -114,6 +117,7 @@ impl Default for Profile {
                 point: 0,
                 restore: 0,
                 write_point: 0,
+                usurp: 0,
                 tick: 3,
             },
             options: Options { compact_below: 0.5, grace: 4 },
@@ -258,6 +262,15 @@ enum Event {
         child: u64,
         result: Result<(), Error>,
     },
+    /// What a root of `owner` taking the ID of the child of `fork`, whose segment was not yet
+    /// acknowledged, gave, and deleting it after.
+    Usurped {
+        child: u64,
+        owner: u64,
+        fork: Branch,
+        created: Result<(), Error>,
+        deleted: Option<Result<(), Error>>,
+    },
     /// A writer took a point, which must not happen.
     PointTaken {
         point: u64,
@@ -388,6 +401,7 @@ impl World {
             w.point,
             w.restore,
             w.write_point,
+            w.usurp,
             w.tick,
         ];
         let mut roll = self.rng.random_range(0..choices.iter().sum::<u32>());
@@ -417,6 +431,7 @@ impl World {
             17 => self.fork(true),
             18 => self.restore(),
             19 => self.write_point(),
+            20 => self.usurp(),
             _ => {
                 let ticks = self.rng.random_range(1..=self.profile.options.grace);
                 self.bucket.advance(ticks);
@@ -624,6 +639,20 @@ impl World {
                     Err(error) => self.violation(format!("forking point {point:x}: {error}")),
                 }
             }
+            Event::Usurped { child, owner, fork, created, deleted } => match (created, deleted) {
+                // The root took the ID, and is gone.
+                (Ok(()), Some(Ok(()))) => {
+                    let mut found = Branch::forked(None, None, false, owner);
+                    found.deleting = true;
+                    drop(self.branches.insert(child, found))
+                }
+                // The fork's record came first: its child, as it was.
+                (Err(Error::Corrupt(_)), None) => drop(self.branches.insert(child, fork)),
+                (created, deleted) => self.violation(format!(
+                    "a root taking the ID of the fork to {child:x} gave {created:?}, deleting it \
+                     {deleted:?}"
+                )),
+            },
             Event::PointTaken { point, result } => match result {
                 // A fork's child is no branch until it has its record, nor a point.
                 Err(Error::Point | Error::Deleted | Error::NoBranch) => {}
@@ -1134,6 +1163,28 @@ impl World {
             events
                 .borrow_mut()
                 .push(Event::Twinned { child, taken: [(first, taken), (second, also)] });
+        });
+    }
+
+    /// A root takes the ID of a fork's child whose segment is not yet acknowledged, as a guest may
+    /// name any, and is deleted: the fork's parent's writer, slow to record the fork, finds the
+    /// root's record, deleted (TASK-174).
+    fn usurp(&mut self) {
+        let pending = self.pending_forks();
+        if pending.is_empty() {
+            return;
+        }
+        let child = pending[self.rng.random_range(0..pending.len())];
+        let fork = self.branches.remove(&child).unwrap();
+        let (owner, holder) = (self.id(), self.id());
+        let (bucket, events) = (self.bucket.clone(), self.events.clone());
+        self.spawn(async move {
+            let created = branch::create(&*bucket, child, owner).await;
+            let deleted = match created {
+                Ok(()) => Some(branch::delete(&*bucket, child, holder, 0).await),
+                Err(_) => None,
+            };
+            events.borrow_mut().push(Event::Usurped { child, owner, fork, created, deleted });
         });
     }
 
@@ -1769,7 +1820,7 @@ impl World {
             }
         }
         for key in self.bucket.keys() {
-            // Deleted forks' records stay.
+            // Deleted branches' records stay (TASK-174).
             if let crate::layout::Kind::Record { branch } = crate::layout::kind(&key)
                 && let Ok(Some(record)) = block_on(branch::record(&direct, branch))
                 && record.deleted
