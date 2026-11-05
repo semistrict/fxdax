@@ -285,6 +285,7 @@ mod tests {
                 root: Some(b"root".to_vec()),
                 next_sequence: 6,
                 forks: vec![Child { branch: 7, owner: 8, point: false }],
+                capacity: Some(1 << 30),
             },
         };
         let segment = Segment { data: b"abc".to_vec(), footer: footer.clone() };

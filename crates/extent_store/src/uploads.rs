@@ -18,13 +18,14 @@ use std::io;
 use std::sync::Arc;
 use storage_device::ExtentId;
 
-/// fxdax: what a store held when its uploader began: its extents, with their lengths, and root, as
-/// of `epoch`.
+/// fxdax: what a store held when its uploader began: its extents, with their lengths, root and
+/// capacity, as of `epoch`.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Snapshot {
     pub epoch: u64,
     pub extents: Vec<(ExtentId, u64)>,
     pub root: Vec<u8>,
+    pub capacity: u64,
 }
 
 /// fxdax: a segment the store closed, for its uploader to upload: its footer, its file, framed,

@@ -770,10 +770,16 @@ impl<F: File> Segments<F> {
         self.window.first <= epoch || !self.window.forks.is_empty()
     }
 
-    /// Records what a commit changed, `changes`, and its root, if it set one, in the open
-    /// segment's footer to be: `extents` the branch's extents as of it.
-    pub fn record(&mut self, changes: &[Change], root: Option<&[u8]>, extents: &Extents) {
-        self.window.commit(changes, root, extents);
+    /// Records what a commit changed, `changes`, and its root and the branch's capacity, if it
+    /// set them, in the open segment's footer to be: `extents` the branch's extents as of it.
+    pub fn record(
+        &mut self,
+        changes: &[Change],
+        root: Option<&[u8]>,
+        capacity: Option<u64>,
+        extents: &Extents,
+    ) {
+        self.window.commit(changes, root, capacity, extents);
     }
 
     /// Whether the open segment is to close, as `options` say, once no write is in progress in
@@ -814,6 +820,7 @@ impl<F: File> Segments<F> {
             root: window.root,
             next_sequence,
             forks: window.forks,
+            capacity: window.capacity,
         });
         let segment = self.tracked.get_mut(&number).unwrap();
         let raw = match &segment.phase {
@@ -1211,6 +1218,8 @@ struct Window {
     root: Option<Vec<u8>>,
     /// The branches forked at its end.
     forks: Vec<Child>,
+    /// fxdax: the branch's capacity, as the last of its commits to set it set it (TASK-165.3).
+    capacity: Option<u64>,
 }
 
 impl Window {
@@ -1222,7 +1231,13 @@ impl Window {
     /// those of extents a commit held, which the store spent, if its own: so that the footer's
     /// readers spend all it frees, as the store did (TASK-160.15). Those of extents written in it,
     /// open, it frees not: no commit held them, nor names them, and the store writes them again.
-    fn commit(&mut self, changes: &[Change], root: Option<&[u8]>, extents: &Extents) {
+    fn commit(
+        &mut self,
+        changes: &[Change],
+        root: Option<&[u8]>,
+        capacity: Option<u64>,
+        extents: &Extents,
+    ) {
         let held = held_frees(changes);
         let mut touched = BTreeSet::new();
         for change in changes {
@@ -1251,6 +1266,9 @@ impl Window {
         }
         if let Some(root) = root {
             self.root = Some(root.to_vec());
+        }
+        if capacity.is_some() {
+            self.capacity = capacity;
         }
     }
 

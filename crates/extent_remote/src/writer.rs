@@ -864,6 +864,7 @@ mod tests {
                     root: Some(b"root".to_vec()),
                     next_sequence: 4,
                     forks: vec![],
+                    capacity: None,
                 },
             };
             let segment = |footer: &Footer| -> Vec<u8> {

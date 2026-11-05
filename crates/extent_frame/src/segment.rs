@@ -69,7 +69,10 @@ impl Footer {
 /// length, at the writer's keys ([`Footer::own`]): an inherited extent a branch uploads goes in its
 /// data, as a key of the extents a branch uploads names that branch alone (TASK-150.1); the extents
 /// they free, the branch's, or inherited; the root, if they set one; the branch's next sequence
-/// number as of them, at least; and the forks made at its end, by their children.
+/// number as of them, at least; the forks made at its end, by their children; and the branch's
+/// capacity, the most bytes its extents may hold, if they set it: a resize is a commit's, ordered
+/// with the others, so that the branch has it wherever it is taken, its forks inherit it, and a
+/// point keeps it as it was (TASK-165.3).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Contents {
     pub commits: Vec<u64>,
@@ -79,6 +82,7 @@ pub struct Contents {
     pub root: Option<Vec<u8>>,
     pub next_sequence: u64,
     pub forks: Vec<Child>,
+    pub capacity: Option<u64>,
 }
 
 impl Contents {
@@ -248,6 +252,7 @@ mod tests {
                     Child { branch: 3, owner: 0x33, point: false },
                     Child { branch: 4, owner: 0x44, point: true },
                 ],
+                capacity: Some(1 << 30),
             },
         };
         let bytes = footer.encode();

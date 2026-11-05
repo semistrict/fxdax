@@ -596,6 +596,9 @@ pub(crate) struct Uncommitted<F> {
     copies: Vec<Copied>,
     /// fxdax: the bytes the open extents' raw files take (TASK-79.89).
     raw: u64,
+    /// fxdax: the capacity set since the last commit, which the next sets in the branch's state
+    /// as object storage keeps it, its segment's footer saying so (TASK-165.3).
+    capacity: Option<u64>,
 }
 
 /// fxdax: a copy of cleaning's: of `extent`, sealed, as `entry` was, in `piece`, which the segment
@@ -629,7 +632,8 @@ struct Open<F> {
 impl<F> Default for Uncommitted<F> {
     fn default() -> Self {
         let (open, changes, copies) = (HashMap::new(), Vec::new(), Vec::new());
-        Self { open, openings: 0, changes, overwritten: 0, let_go: 0, copies, raw: 0 }
+        let (overwritten, let_go, raw) = (0, 0, 0);
+        Self { open, openings: 0, changes, overwritten, let_go, copies, raw, capacity: None }
     }
 }
 
@@ -755,6 +759,16 @@ impl<F> Uncommitted<F> {
     /// fxdax: cleaning's copies, for the commit, which makes them their extents' places.
     pub fn take_copies(&mut self) -> Vec<Copied> {
         std::mem::take(&mut self.copies)
+    }
+
+    /// fxdax: the branch's capacity is `capacity`, as of the next commit.
+    pub fn resize(&mut self, capacity: u64) {
+        self.capacity = Some(capacity);
+    }
+
+    /// fxdax: the capacity set since the last commit, if any, for the commit, which sets it.
+    pub fn take_capacity(&mut self) -> Option<u64> {
+        self.capacity.take()
     }
 
     /// The changes since the last commit, for the commit, which seals the extents open.

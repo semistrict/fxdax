@@ -18,8 +18,8 @@ use std::sync::Arc;
 use storage_device::ExtentId;
 
 /// A commit: the extents it seals, which it minted, stored in its segment or, `own`, by their
-/// sequence numbers, on their own; the extents it frees; and the root, if it sets it. `tag` names
-/// it in footers.
+/// sequence numbers, on their own; the extents it frees; and the root and the branch's capacity,
+/// if it sets them. `tag` names it in footers.
 #[derive(Clone, Debug, Default)]
 pub struct Commit {
     pub tag: u64,
@@ -27,15 +27,17 @@ pub struct Commit {
     pub own: Vec<(u64, Vec<u8>)>,
     pub frees: Vec<ExtentId>,
     pub root: Option<Vec<u8>>,
+    pub capacity: Option<u64>,
 }
 
 impl Commit {
-    /// Whether it changes nothing: it seals and frees no extent, and sets no root.
+    /// Whether it changes nothing: it seals and frees no extent, and sets no root nor capacity.
     pub fn is_empty(&self) -> bool {
         self.extents.is_empty()
             && self.own.is_empty()
             && self.frees.is_empty()
             && self.root.is_none()
+            && self.capacity.is_none()
     }
 }
 
@@ -47,8 +49,8 @@ impl Commit {
 /// seals and frees itself no commit held, and is neither (TASK-160.15, TASK-165.3).
 #[derive(Default)]
 pub struct Plan {
-    /// Its commits' tags, root, and the next sequence number as of them: its footer's contents but
-    /// what [`Plan::contents`] makes of the rest.
+    /// Its commits' tags, root, capacity, and the next sequence number as of them: its footer's
+    /// contents but what [`Plan::contents`] makes of the rest.
     contents: Contents,
     /// The extents its commits seal, in its data, at an offset, of a length, and on their own, by
     /// their sequence numbers, of a length; and those they free: each with the commit, by its
@@ -94,13 +96,22 @@ impl Plan {
         self.bytes
     }
 
-    /// Commits what it seals, as commit `tag`, which frees `frees` and sets `root`, if one: after
-    /// the commits before it.
-    pub fn commit(&mut self, tag: u64, frees: Vec<ExtentId>, root: Option<Vec<u8>>) {
+    /// Commits what it seals, as commit `tag`, which frees `frees`, and sets `root` and the
+    /// branch's `capacity`, if given: after the commits before it.
+    pub fn commit(
+        &mut self,
+        tag: u64,
+        frees: Vec<ExtentId>,
+        root: Option<Vec<u8>>,
+        capacity: Option<u64>,
+    ) {
         let commit = self.committing();
         self.frees.extend(frees.into_iter().map(|extent| (extent, commit)));
         if root.is_some() {
             self.contents.root = root;
+        }
+        if capacity.is_some() {
+            self.contents.capacity = capacity;
         }
         self.contents.commits.push(tag);
     }
@@ -222,7 +233,7 @@ impl Batch {
             self.plan.seal_own(sequence, bytes.len() as u64);
             self.own.insert(sequence, bytes);
         }
-        self.plan.commit(commit.tag, commit.frees, commit.root);
+        self.plan.commit(commit.tag, commit.frees, commit.root, commit.capacity);
     }
 
     /// Whether it holds no commit.
@@ -308,8 +319,8 @@ mod tests {
     }
 
     /// A batch's segment holds its commits' extents in its data, in order, those of their own in
-    /// objects of their own at the writer's keys, its frees and its last root; a fork is at its
-    /// end.
+    /// objects of their own at the writer's keys, its frees, its last root and its last capacity;
+    /// a fork is at its end.
     #[test]
     fn batches_frame_their_commits() {
         let mut chain = Chain::new(1, 2, 0, None, 0);
@@ -317,32 +328,30 @@ mod tests {
         let mut batch = Batch::default();
         assert!(batch.is_empty());
         let extents = vec![(small, b"small".to_vec())];
-        batch.commit(Commit { tag: 7, extents, root: Some(b"one".to_vec()), ..Commit::default() });
+        let (root, capacity) = (Some(b"one".to_vec()), Some(1 << 20));
+        batch.commit(Commit { tag: 7, extents, root, capacity, ..Commit::default() });
         let own = vec![(large.sequence, b"large".to_vec())];
         let frees = vec![freed];
-        batch.commit(Commit {
-            tag: 8,
-            own,
-            frees,
-            root: Some(b"two".to_vec()),
-            ..Commit::default()
-        });
+        let (root, capacity) = (Some(b"two".to_vec()), Some(2 << 20));
+        batch.commit(Commit { tag: 8, own, frees, root, capacity, ..Commit::default() });
+        batch.commit(Commit { tag: 9, ..Commit::default() });
         assert!(!batch.is_empty());
         let objects = batch.fork(child(9), &mut chain).frame();
         let segment = objects.segment.read().unwrap();
         let footer: Footer = layout::footer(&segment).unwrap();
         assert_eq!(footer, objects.footer);
         assert_eq!((footer.seq, footer.epoch, footer.after), (0, 2, None));
-        assert_eq!(footer.contents.commits, [7, 8]);
+        assert_eq!(footer.contents.commits, [7, 8, 9]);
         assert_eq!(footer.contents.extents, [(small, 0, 5)]);
         let key = layout::extent(2, footer.seq, large);
         assert_eq!(
             footer.own().collect::<Vec<_>>(),
             [(large, layout::Location { key: key.clone(), offset: 0, len: 5 })]
         );
+        let contents = footer.contents;
         assert_eq!(
-            (footer.contents.frees, footer.contents.root, footer.contents.forks),
-            (vec![freed], Some(b"two".to_vec()), vec![child(9)])
+            (contents.frees, contents.root, contents.forks, contents.capacity),
+            (vec![freed], Some(b"two".to_vec()), vec![child(9)], Some(2 << 20))
         );
         assert_eq!(layout::data(&segment).unwrap(), b"small");
         let [(own_key, own)] = &objects.own[..] else {
@@ -402,6 +411,7 @@ mod tests {
             own: vec![(large.sequence, data[&large].clone())],
             frees: vec![freed],
             root: root.clone(),
+            capacity: Some(1 << 20),
         };
         let chain = Chain::new(1, 2, 0, None, 0);
         let batch = Batch::from(commit).close(&mut chain.clone()).frame();
@@ -414,7 +424,7 @@ mod tests {
             }
         }
         assert_eq!(plan.bytes(), 16);
-        plan.commit(7, vec![freed], root);
+        plan.commit(7, vec![freed], root, Some(1 << 20));
         let reads = Arc::new(std::sync::Mutex::new(Vec::new()));
         let read: Read = {
             let reads = reads.clone();

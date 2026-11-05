@@ -52,6 +52,9 @@ pub struct State<P = Extents> {
     /// The sequence numbers of the branch's own extents it freed, which it writes no more: one
     /// rule, every free of them a footer names (TASK-79.6, TASK-150.6, TASK-165.3).
     pub spent: Spent,
+    /// The most bytes its extents may hold, as its last commit to set it set it, if one did: its
+    /// own, or, before its first, its parent's at the fork (TASK-165.3).
+    pub capacity: Option<u64>,
 }
 
 /// Where a branch's extents are in the bucket.
@@ -104,15 +107,17 @@ impl<P> State<P> {
             epoch: 0,
             through: None,
             spent: Spent::default(),
+            capacity: None,
         }
     }
 
     /// The state of `child`, forked from this one, before its first segment, its extents placed
-    /// in `extents`: what it inherits but its extents, its root and its last commit.
+    /// in `extents`: what it inherits but its extents, its root, its last commit and its capacity.
     fn inheriting<Q>(&self, child: u64, extents: Q) -> State<Q> {
         State {
             root: self.root.clone(),
             last_commit: self.last_commit,
+            capacity: self.capacity,
             ..State::of(child, extents)
         }
     }
@@ -130,6 +135,7 @@ impl<P> State<P> {
             epoch,
             through,
             spent,
+            capacity,
         } = self;
         let extents = place(extents);
         State {
@@ -143,6 +149,7 @@ impl<P> State<P> {
             epoch,
             through,
             spent,
+            capacity,
         }
     }
 }
@@ -163,8 +170,8 @@ impl<P: Places> State<P> {
 
     /// Applies `contents`, those of the branch's segment `seq`, of the writer of lease epoch
     /// `epoch`: what its commits sealed, where they sealed it, then what they freed; the root they
-    /// set, their last commit, the branch's next sequence number, the largest named, and the forks
-    /// at its end. Every free of the branch's own extents spends it, as the store that freed it
+    /// set, their last commit, the branch's next sequence number, the largest named, the forks at
+    /// its end, and the capacity they set. Every free of the branch's own extents spends it, as the store that freed it
     /// spent it: a footer frees only what a commit held, not what was freed while open
     /// (TASK-160.15), and one sealed and freed within the segment is a free and no seal (TASK-165.3).
     pub fn apply_contents(&mut self, seq: u64, epoch: u64, contents: &Contents) {
@@ -189,6 +196,9 @@ impl<P: Places> State<P> {
         }
         self.next_sequence = self.next_sequence.max(contents.next_sequence);
         self.forks.extend(contents.forks.iter().map(|child| Fork::at(seq, child)));
+        if contents.capacity.is_some() {
+            self.capacity = contents.capacity;
+        }
     }
 }
 
@@ -600,7 +610,7 @@ mod tests {
     use super::*;
     use crate::batch::{Batch, Commit};
     use crate::branch;
-    use crate::layout::child;
+    use crate::layout::{Child, child};
     use crate::sim::bucket::SimBucket;
     use crate::store::Store;
     use crate::writer::Writer;
@@ -702,6 +712,52 @@ mod tests {
                 checkpoints,
             ]
         );
+    }
+
+    /// TASK-165.3: a branch's capacity is its state, set by its commits, recovered from its
+    /// segments and its checkpoints wherever it is taken; a fork's child has its parent's at the
+    /// fork, until it sets its own, and a point keeps it as it was, whatever the parent sets after.
+    #[test]
+    fn capacities_are_set_by_commits() {
+        futures::executor::block_on(async {
+            let bucket = Arc::new(Store::new(Arc::new(InMemory::new()), ""));
+            branch::create(&*bucket, 1, 0).await.unwrap();
+            let parent = Writer::open(bucket.clone(), 1, 10, 0).await.unwrap();
+            assert_eq!(parent.state().capacity, None);
+            let resize = |tag, capacity: u64| {
+                Batch::from(Commit { tag, capacity: Some(capacity), ..Commit::default() })
+            };
+            let landed = async |writer: &Writer<Store>, objects| {
+                let seq = writer.add_segment(objects).unwrap();
+                writer.upload(seq).await.unwrap();
+                writer.acknowledge().await.unwrap();
+                seq
+            };
+            let forked = resize(1, 1 << 20).fork(child(2), &mut parent.chain()).frame();
+            let forked = Origin { parent: 1, at: landed(&parent, forked).await };
+            let point = Child { branch: 3, owner: 0, point: true };
+            let pointed = Batch::default().fork(point, &mut parent.chain()).frame();
+            let pointed = Origin { parent: 1, at: landed(&parent, pointed).await };
+            landed(&parent, resize(2, 2 << 20).close(&mut parent.chain()).frame()).await;
+            let capacity = async |branch, origin| {
+                let recovered = recover(&*bucket, branch, origin).await.unwrap();
+                (recovered.checkpoint.is_some(), recovered.state.capacity)
+            };
+            assert_eq!(parent.state().capacity, Some(2 << 20));
+            assert_eq!(capacity(1, None).await, (false, Some(2 << 20)));
+            assert_eq!(capacity(2, Some(forked)).await, (false, Some(1 << 20)));
+            assert_eq!(capacity(3, Some(pointed)).await, (false, Some(1 << 20)));
+            parent.checkpoint().await.unwrap();
+            assert_eq!(capacity(1, None).await, (true, Some(2 << 20)));
+
+            let child = Writer::open(bucket.clone(), 2, 11, 0).await.unwrap();
+            assert_eq!(child.state().capacity, Some(1 << 20));
+            landed(&child, resize(3, 4 << 20).close(&mut child.chain()).frame()).await;
+            child.checkpoint().await.unwrap();
+            assert_eq!(capacity(2, Some(forked)).await, (true, Some(4 << 20)));
+            assert_eq!(capacity(1, None).await, (true, Some(2 << 20)));
+            assert_eq!(capacity(3, Some(pointed)).await, (false, Some(1 << 20)));
+        });
     }
 
     /// A fork's checkpoints hold its own state, from which it recovers; another branch's

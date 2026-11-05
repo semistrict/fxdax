@@ -1719,6 +1719,35 @@ fn locating_parts_stored_compressed() {
     assert_eq!(read(&store, extent(2), 0, 16 * BLOCK), noise(2, 16 * BLOCK));
 }
 
+/// fxdax: a resize is the next commit's, which a segment's footer says, as object storage keeps
+/// the branch's capacity: the last resize of its commits', or none if none resized it; and so is
+/// a restatement of the capacity as it is (TASK-165.3).
+#[test]
+fn resizes_are_their_next_commits() {
+    let store = create(MemDir::new(), 1 << 20);
+    assert!(store.upload(Chain::new(BRANCH, 3, 0, None, 0), 0).unwrap());
+    let capacity = |store: &Store<MemDir>| {
+        store.close_now().unwrap();
+        store.flush().unwrap();
+        closed_one(store).footer.contents.capacity
+    };
+    store.set_capacity(2 << 20).unwrap();
+    store.set_capacity(3 << 20).unwrap();
+    store.commit(None).unwrap();
+    assert_eq!(capacity(&store), Some(3 << 20));
+    store.commit(None).unwrap();
+    assert_eq!(capacity(&store), None);
+    store.commit(None).unwrap();
+    store.set_capacity(4 << 20).unwrap();
+    store.commit(None).unwrap();
+    assert_eq!(capacity(&store), Some(4 << 20));
+    assert_eq!(store.snapshot().unwrap().capacity, 4 << 20);
+    // Restated, for an uploader whose branch says another.
+    store.restate_capacity().unwrap();
+    store.commit(None).unwrap();
+    assert_eq!(capacity(&store), Some(4 << 20));
+}
+
 /// fxdax: given a writer's chain, the store closes its segments for the writer, as object storage
 /// keeps them: numbered on from where the chain is, each following the one before, its commits
 /// tagged with the writer's epoch, its extents of their own at the writer's keys; and keeps each,
@@ -1760,6 +1789,7 @@ fn segments_close_for_the_writer_of_their_chain() {
                 root: Some(b"one".to_vec()),
                 next_sequence: 100,
                 forks: vec![],
+                capacity: None,
             },
         }
     );

@@ -1160,6 +1160,11 @@ impl Shared {
             if !self.store.upload(chain, snapshot.epoch)? {
                 continue;
             }
+            // The branch's capacity, if it says none, or another: the store's next commit sets it
+            // (TASK-165.3).
+            if remote.capacity != Some(snapshot.capacity) {
+                blocking(|| self.store.restate_capacity())?;
+            }
             // What it holds is durable before it is uploaded.
             blocking(|| self.store.flush())?;
             if !segments.is_empty() {
@@ -1357,7 +1362,7 @@ impl Shared {
                 false => plan.seal(extent, len),
             }
         }
-        plan.commit(tag, frees, root);
+        plan.commit(tag, frees, root, None);
         plans.push(plan);
         plans
     }
@@ -1482,8 +1487,11 @@ impl Shared {
 
     /// Takes what the branch holds into the store, which holds nothing: a branch opened on a host
     /// without it. The store holds the branch's extents, whose data stays in object storage, read
-    /// as the guest reads it ([`Fetcher`]).
+    /// as the guest reads it ([`Fetcher`]), and has its capacity, if it has one (TASK-165.3).
     fn take(&self, state: &extent_remote::State) -> Result<(), Failure> {
+        if let Some(capacity) = state.capacity {
+            self.store.set_capacity(capacity)?;
+        }
         for (extent, location) in &state.extents {
             self.store.adopt(*extent, location.len)?;
         }
@@ -3211,6 +3219,45 @@ mod tests {
         let taken = taken.unwrap();
         taken.attach_remote(bucket, 2, idle()).unwrap();
         assert_eq!(taken.write(sealed, 0, &again), Err(crate::Errno::EPERM));
+    }
+
+    /// TASK-165.3: a branch's capacity is its state, set by the commit after a resize: a host that
+    /// takes the branch has it, not the capacity it made its store with, whether the branch's state
+    /// there comes from a checkpoint or from its segments' footers; and a store attaching to a
+    /// branch that has none, or another, sets its own with its next commit.
+    #[test]
+    fn resizes_hold_where_their_branch_is_taken() {
+        for checkpointed in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let bucket = Arc::new(Bucket::new(Arc::new(InMemory::new()), ""));
+            let first = ExtentStore::create(dir.path().join("first"), 1 << 30).unwrap();
+            let branch = first.branch();
+            first.attach_remote(bucket.clone(), 1, idle()).unwrap();
+            let recovered = || {
+                let recovered = recover(&*bucket, branch, None);
+                futures::executor::block_on(recovered).unwrap().state.capacity
+            };
+            assert_eq!(recovered(), None, "{checkpointed}");
+            first.commit(None).unwrap();
+            assert_eq!(recovered(), Some(1 << 30), "{checkpointed}");
+            write(&first, 1, &pattern(1, BLOCK));
+            first.set_capacity(3 << 29).unwrap();
+            first.commit(None).unwrap();
+            assert_eq!(recovered(), Some(3 << 29), "{checkpointed}");
+            if checkpointed {
+                drop(first);
+            } else {
+                std::mem::forget(first);
+            }
+
+            let taken = ExtentStore::create_for_branch(dir.path().join("taken"), 1 << 30, branch);
+            let taken = taken.unwrap();
+            taken.attach_remote(bucket.clone(), 2, idle()).unwrap();
+            assert_eq!(taken.info().unwrap().capacity, 3 << 29, "{checkpointed}");
+            taken.set_capacity(1 << 31).unwrap();
+            taken.commit(None).unwrap();
+            assert_eq!(recovered(), Some(1 << 31), "{checkpointed}");
+        }
     }
 
     /// TASK-141.2: a branch whose record says a format newer than this daemon's is refused, naming

@@ -1234,7 +1234,8 @@ impl<D: Dir> Store<D> {
         let mut extents: Vec<_> =
             state.extents.iter().into_iter().map(|(extent, entry)| (*extent, entry.len)).collect();
         extents.sort();
-        Ok(Snapshot { epoch: state.epoch, extents, root: state.root.clone() })
+        let (root, capacity) = (state.root.clone(), state.space.capacity());
+        Ok(Snapshot { epoch: state.epoch, extents, root, capacity })
     }
 
     /// fxdax: from now on, keeps for an uploader the segments it closes, until uploaded
@@ -1339,12 +1340,12 @@ impl<D: Dir> Store<D> {
         self.make_moves(state);
         let sealing = self.seal_open(state)?;
         self.publish(state, epoch, root, &sealing);
-        let changes = state.uncommitted.take();
+        let (changes, capacity) = (state.uncommitted.take(), state.uncommitted.take_capacity());
         if let Some(uploads) = &mut state.uploads {
             uploads.record(epoch, &changes, &state.extents);
         }
         // The open segment's footer records them, before the segment closes.
-        state.segments.record(&changes, root, &state.extents);
+        state.segments.record(&changes, root, capacity, &state.extents);
         // fxdax: with the rule off, the closings for room since the last commit are framed only
         // now, by a commit that may never come (TASK-150.2).
         for unframed in std::mem::take(&mut state.deferred) {
@@ -2089,8 +2090,9 @@ impl<D: Dir> Store<D> {
     }
 
     /// Sets the most bytes the branch's extents may hold, durably: the branch's record holds it
-    /// from now on. It may grow it, or shrink it no lower than what the extents hold, with what
-    /// writes in progress may add ([`TooSmall`]).
+    /// from now on, and the next commit sets it in the branch's state, as its segment's footer
+    /// says. It may grow it, or shrink it no lower than what the extents hold, with what writes in
+    /// progress may add ([`TooSmall`]).
     pub fn set_capacity(&self, capacity: u64) -> Result<(), Error> {
         let mut state = self.writable()?;
         let block_size = self.lineage.block_size as u64;
@@ -2099,7 +2101,19 @@ impl<D: Dir> Store<D> {
         // Held while the record changes, so that no write grows past the capacity meanwhile.
         self.lineage.set_capacity(self.branch, self.token, capacity)?;
         state.space.set_capacity(capacity);
+        // fxdax: and the branch's in object storage, as of the next commit (TASK-165.3).
+        state.uncommitted.resize(capacity);
         self.changed(&state);
+        Ok(())
+    }
+
+    /// fxdax: has the next commit set the branch's capacity, as it is, in the branch's state as
+    /// object storage keeps it, its segment's footer saying so: for an uploader whose branch says
+    /// none there, or another (TASK-165.3).
+    pub fn restate_capacity(&self) -> Result<(), Error> {
+        let mut state = self.writable()?;
+        let capacity = state.space.capacity();
+        state.uncommitted.resize(capacity);
         Ok(())
     }
 

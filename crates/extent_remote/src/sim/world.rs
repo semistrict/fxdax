@@ -163,6 +163,8 @@ struct Truth {
     extents: Vec<(ExtentId, Vec<u8>, bool)>,
     frees: Vec<ExtentId>,
     root: Option<Vec<u8>>,
+    /// The branch's capacity, if it sets it (TASK-165.3).
+    capacity: Option<u64>,
 }
 
 #[derive(Default)]
@@ -665,6 +667,7 @@ impl World {
                 tag,
                 frees: truth.frees.clone(),
                 root: truth.root.clone(),
+                capacity: truth.capacity,
                 ..Commit::default()
             };
             for (extent, bytes, own) in &truth.extents {
@@ -735,10 +738,14 @@ impl World {
             }
         }
         let root = self.rng.random_bool(0.2).then(|| tag.to_le_bytes().to_vec());
+        // Every fifth by its tag resizes the branch: by the tag, not the generator, so that the
+        // seeds make the same runs as before resizes came (TASK-165.3).
+        let capacity = (tag % 5 == 0).then_some(tag << 20);
         let mut commit = Commit {
             tag,
             frees: frees.iter().copied().collect(),
             root: root.clone(),
+            capacity,
             ..Commit::default()
         };
         for (extent, bytes, own) in &extents {
@@ -763,7 +770,7 @@ impl World {
         self.hosts[host].disk.entry(branch).or_default().push(tag);
         self.commits.insert(
             tag,
-            Truth { branch, parent, extents, frees: frees.into_iter().collect(), root },
+            Truth { branch, parent, extents, frees: frees.into_iter().collect(), root, capacity },
         );
     }
 
@@ -1217,6 +1224,19 @@ impl World {
         (extents, root)
     }
 
+    /// The capacity the commits up to `head` leave: the last one set, a fork's parent's before it.
+    fn capacity(&self, head: Option<u64>) -> Option<u64> {
+        let mut at = head;
+        while let Some(tag) = at {
+            let truth = &self.commits[&tag];
+            if truth.capacity.is_some() {
+                return truth.capacity;
+            }
+            at = truth.parent;
+        }
+        None
+    }
+
     /// The sequence numbers of `branch`'s own extents that the commits up to `head` freed once a
     /// commit before held them, which it writes no more (TASK-79.6, TASK-165.3): not those a commit
     /// sealed and freed itself, which no commit held.
@@ -1352,6 +1372,11 @@ impl World {
             if state.spent != spent {
                 violations.push(format!("branch {id:x} spent {:?}, not {spent:?}", state.spent));
             }
+            let capacity = self.capacity(head);
+            if state.capacity != capacity {
+                let found = state.capacity;
+                violations.push(format!("branch {id:x}'s capacity is {found:?}, not {capacity:?}"));
+            }
             let held: Vec<_> = state.extents.keys().collect();
             let made: Vec<_> = extents.keys().collect();
             if held != made {
@@ -1479,7 +1504,14 @@ impl World {
                 }
                 self.commits.insert(
                     tag,
-                    Truth { branch, parent, extents: Vec::new(), frees: Vec::new(), root: None },
+                    Truth {
+                        branch,
+                        parent,
+                        extents: Vec::new(),
+                        frees: Vec::new(),
+                        root: None,
+                        capacity: None,
+                    },
                 );
                 self.hosts[host].sessions.get_mut(&branch).unwrap().guest.head = Some(tag);
             }

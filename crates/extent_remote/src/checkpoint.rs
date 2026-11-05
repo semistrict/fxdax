@@ -95,6 +95,7 @@ mod tests {
         }
         state.root = Some(b"root".to_vec());
         state.through = Some(7);
+        state.capacity = Some(1 << 30);
         state
     }
 
