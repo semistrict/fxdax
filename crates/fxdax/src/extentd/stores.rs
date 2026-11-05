@@ -114,7 +114,7 @@ pub(super) fn followed(path: &Path, arena: &Arc<Arena>) -> Result<Arc<ExtentStor
         return Err(Errno::ENOENT);
     }
     let store = Arc::new(open_store(path, None, Some(arena))?);
-    hold.open(&store);
+    hold.open(&store)?;
     Ok(store)
 }
 
@@ -307,7 +307,8 @@ fn forked(key: &Path, point: &Weak<HeldStore>) -> Option<std::time::Instant> {
 /// fxdax: keeps `store`, opened to fork at the key `hold` holds, open for the forks after it
 /// (TASK-92.5), until none forks it for [`LINGER`] ([`let_go_when_idle`]), a fork of it fails
 /// ([`let_go_failed`]), or the daemon holds its path to work on it otherwise, or a connection to
-/// write it.
+/// write it. Its caller found nothing open there: were something, the table would refuse it, and
+/// the point, not kept, would close once its caller's fork is done.
 fn keep(hold: &Hold, store: ExtentStore) -> Arc<HeldStore> {
     let (closing, closed) = futures::channel::oneshot::channel();
     // What says it is closed goes after the store.
@@ -315,9 +316,18 @@ fn keep(hold: &Hold, store: ExtentStore) -> Arc<HeldStore> {
         store: Arc::new(store),
         _then: Some(Then::SayClosed { _closing: closing }),
     });
-    hold.keep(Point { store: store.clone(), closed, forked: std::time::Instant::now() });
-    // On the runtime that lives as long as the daemon, whatever its caller's.
-    super::server::IO.spawn(let_go_when_idle(hold.key().to_owned(), Arc::downgrade(&store)));
+    let point = Point { store: store.clone(), closed, forked: std::time::Instant::now() };
+    match hold.keep(point) {
+        Ok(()) => {
+            let idle = let_go_when_idle(hold.key().to_owned(), Arc::downgrade(&store));
+            // On the runtime that lives as long as the daemon, whatever its caller's.
+            drop(super::server::IO.spawn(idle));
+        }
+        Err(_) => log::error!(
+            "extentd: {} has something open already: the point opened isn't kept",
+            hold.key().display()
+        ),
+    }
     store
 }
 
@@ -484,7 +494,7 @@ fn base(path: &Path, arena: Option<&Arc<Arena>>) -> Result<Arc<ExtentStore>, Err
         return Err(Errno::ENOENT);
     }
     let store = Arc::new(attached(path, || ExtentStore::open_base(path, arena.cloned()))?);
-    hold.open(&store);
+    hold.open(&store)?;
     Ok(store)
 }
 

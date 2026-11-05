@@ -230,6 +230,15 @@ impl<S, P> Open<S, P> {
     fn is_nothing(&self) -> bool {
         matches!(self, Open::Nothing)
     }
+
+    /// Whether nothing is open: nothing, or a store none has open any more.
+    fn is_closed(&self) -> bool {
+        match self {
+            Open::Nothing => true,
+            Open::Followed(instance) => instance.store.strong_count() == 0,
+            Open::Point(_) => false,
+        }
+    }
 }
 
 impl<C: Writer, S, P> Entry<C, S, P> {
@@ -541,26 +550,29 @@ impl<C, S, P> Hold<'_, C, S, P> {
     }
 
     /// `store` is the store connections have open at its key from now on, while one has it: the
-    /// writer's holding it, or, held by the daemon, followers'. The daemon opens one only where it
-    /// found nothing open.
+    /// writer's holding it, or, held by the daemon, followers'. `EBUSY`, and nothing changed, if
+    /// a store is open there, or a point kept: what holds the store opens it only where it found
+    /// nothing open, or takes over what it found ([`Hold::instance`]).
     ///
     /// Its methods change its entry only if it is its holder's, which nothing but a claim past
-    /// [`Rules::one_holder`] takes from it: none panics, which, under the table's lock, would
-    /// poison every store's entry, as under Shuttle it would abort the run (TASK-55).
-    pub fn open(&self, store: &Arc<S>) {
+    /// [`Rules::one_holder`] takes from it, and only as they say, refusing otherwise: none panics,
+    /// which, under the table's lock, would poison every store's entry, as under Shuttle it would
+    /// abort the run (TASK-55).
+    pub fn open(&self, store: &Arc<S>) -> Result<(), Errno> {
         let instance = Instance { store: Arc::downgrade(store), retired: false };
         let mut inner = self.table.inner.lock().unwrap();
         inner.entries.retain(|_, entry| !entry.is_stale());
-        let displaced = match inner.entries.get_mut(&self.key) {
-            Some(Entry::Writer { store, .. }) => {
+        match inner.entries.get_mut(&self.key) {
+            Some(Entry::Writer { store, .. }) if store.store.strong_count() == 0 => {
                 *store = instance;
-                None
+                Ok(())
             }
-            Some(Entry::Daemon(open)) => Some(std::mem::replace(open, Open::Followed(instance))),
-            _ => None,
-        };
-        drop(inner);
-        drop(displaced);
+            Some(Entry::Daemon(open)) if open.is_closed() => {
+                *open = Open::Followed(instance);
+                Ok(())
+            }
+            _ => Err(Errno::EBUSY),
+        }
     }
 
     /// Retires the store connections have open at its key, its writer gone with writes
@@ -576,16 +588,18 @@ impl<C, S, P> Hold<'_, C, S, P> {
     }
 
     /// Keeps `point` open at its key for forks, after its hold too: the daemon's, which found
-    /// nothing open there.
-    pub fn keep(&self, point: P) {
+    /// nothing open there. Refused, `point` given back, if a store is open there or a point kept
+    /// already, or a writer holds it.
+    pub fn keep(&self, point: P) -> Result<(), P> {
         let mut inner = self.table.inner.lock().unwrap();
-        let displaced = match inner.entries.get_mut(&self.key) {
-            Some(Entry::Daemon(open)) => std::mem::replace(open, Open::Point(point)),
-            _ => Open::Point(point),
-        };
-        drop(inner);
-        // Without the lock: a point closes as it is dropped.
-        drop(displaced);
+        match inner.entries.get_mut(&self.key) {
+            Some(Entry::Daemon(open)) if open.is_closed() => {
+                *open = Open::Point(point);
+                Ok(())
+            }
+            // Dropped without the lock: a point closes as it is dropped.
+            _ => Err(point),
+        }
     }
 
     /// Takes the point kept open at its key, if one is, to close it.
@@ -759,7 +773,7 @@ mod shuttle_tests {
             }
             None => Store::open(counts),
         };
-        hold.hold().open(&store);
+        hold.hold().open(&store)?;
         Ok(Writing { store, hold })
     }
 
@@ -782,7 +796,7 @@ mod shuttle_tests {
         }
         reached("a follower opened the store");
         let store = Store::open(counts);
-        hold.hold().open(&store);
+        hold.hold().open(&store)?;
         Ok(store)
     }
 
@@ -799,7 +813,8 @@ mod shuttle_tests {
         };
         if hold.hold().instance().is_none() && table.point(Path::new(KEY), |_| ()).is_none() {
             reached("a fork kept a point");
-            hold.hold().keep(Store::open(counts));
+            // Refused only past one holder, which the run then fails for.
+            let _ = hold.hold().keep(Store::open(counts));
         }
         Ok(())
     }
@@ -1094,7 +1109,7 @@ mod tests {
         let (writer, next) = (connection(false), connection(false));
         let (held, _) = write(&table, key, &writer).unwrap();
         let store = Arc::new("writer's");
-        held.open(&store);
+        held.open(&store).unwrap();
         let followed = table.instance(key).unwrap().0;
         writer.0.store(true, Ordering::Relaxed);
         drop((held, store));
@@ -1121,7 +1136,7 @@ mod tests {
         let writer = connection(false);
         let (held, _) = write(&table, key, &writer).unwrap();
         let store = Arc::new("writer's");
-        held.open(&store);
+        held.open(&store).unwrap();
         held.retire();
         drop(held);
         assert_eq!(table.instance(key).map(|(_, retired)| retired), Some(true));
@@ -1141,7 +1156,7 @@ mod tests {
         let table = Table::new();
         let key = Path::new("point");
         let held = table.hold(key, None).unwrap();
-        held.keep("point");
+        held.keep("point").unwrap();
         drop(held);
         assert_eq!(table.point(key, |point| *point), Some("point"));
         let held = table.hold(key, None).unwrap();
@@ -1153,9 +1168,53 @@ mod tests {
         drop(held);
         assert!(table.is_empty());
         let held = table.hold(key, None).unwrap();
-        held.keep("again");
+        held.keep("again").unwrap();
         assert_eq!(held.take_point(), Some("again"));
         drop(held);
         assert!(table.is_empty());
+    }
+
+    /// A store opened where one is open, or a point kept, is refused, and changes nothing: its
+    /// holder takes over what it found, or works on it, rather than open it twice.
+    #[test]
+    fn stores_opened_where_something_is_open_are_refused() {
+        let table = Table::new();
+        let key = Path::new("store");
+        let (held, _) = write(&table, key, &connection(false)).unwrap();
+        let (first, second) = (Arc::new("first"), Arc::new("second"));
+        held.open(&first).unwrap();
+        assert_eq!(held.open(&second), Err(Errno::EBUSY));
+        drop(held);
+        let held = table.hold(key, None).unwrap();
+        assert_eq!(held.open(&second), Err(Errno::EBUSY));
+        assert!(Arc::ptr_eq(&held.instance().unwrap().0, &first));
+        drop((held, first));
+        let held = table.hold(key, None).unwrap();
+        held.keep("point").unwrap();
+        assert_eq!(held.open(&second), Err(Errno::EBUSY));
+        assert_eq!(held.instance(), None);
+        assert_eq!(held.take_point(), Some("point"));
+        held.open(&second).unwrap();
+        assert!(Arc::ptr_eq(&held.instance().unwrap().0, &second));
+    }
+
+    /// A point kept where one is kept already, or a store is open, or by a writer, is refused,
+    /// given back, and changes nothing.
+    #[test]
+    fn points_kept_where_something_is_open_are_refused() {
+        let table = Table::new();
+        let key = Path::new("point");
+        let held = table.hold(key, None).unwrap();
+        held.keep("first").unwrap();
+        assert_eq!(held.keep("second"), Err("second"));
+        assert_eq!(table.point(key, |point| *point), Some("first"));
+        assert_eq!(held.take_point(), Some("first"));
+        let store = Arc::new("store");
+        held.open(&store).unwrap();
+        assert_eq!(held.keep("second"), Err("second"));
+        drop((held, store));
+        let (held, _) = write(&table, key, &connection(false)).unwrap();
+        assert_eq!(held.keep("second"), Err("second"));
+        assert_eq!(table.point(key, |point| *point), None);
     }
 }

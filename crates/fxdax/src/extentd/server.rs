@@ -1372,7 +1372,7 @@ impl Connection {
             _ => open_store(path, None, Some(arena)),
         };
         let store = Arc::new(opened?);
-        hold.open(&store);
+        hold.open(&store)?;
         Ok(store)
     }
 
