@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-05 06:37'
-updated_date: '2026-11-05 16:13'
+updated_date: '2026-11-05 17:37'
 labels:
   - guest-sim
 dependencies: []
@@ -69,4 +69,11 @@ Note: ~/.local/bin/grep on this Mac is a wrapper (eish) that hung mutants.sh non
 macOS: FXDAX_TEST_PARTS='workspace scripts' scripts/test.sh --no-fail-fast: 2123 passed, 18 skipped (includes both fxfs-sim-diff tests); scripts part 159 python tests OK, crates/fxfs-sim-diff/mutants.sh --check 4 checked 0 broken. Not done here: AC #3 (it runs in CI) needs the push and a CI run; DoD #1's Linux half (GCE) not run, though guest/sim's Linux zloop passed in Docker.
 
 Commits on task-149-29: c96d6dbb2 (fxfs: dirty room counts the tail a growth zeroes), f86edf9a6 (guest/sim: model leaves a zero tail where it is), 1c7a2487f (crates/fxfs-sim-diff). Left open: AC #3 needs CI on the pushed branch; DoD #1's GCE run.
+
+Rebased on main 10f6159ab (TASK-160.24's moves, TASK-160.32's one mutant set):
+- The fix's code now lives in data_object_handle/tail.rs (growth_zeroes_tail, used by txn_grow_size and zero_tail_before_growth) and data_object_handle/write_many.rs (write_many_paid's room). Red again with the room count off (No space), green with it.
+- The model's mutants are guest/mutants', a header kind of their own: Kernel: model, Killer: fxfs-sim-diff the_models_past_drifts_from_fxfs (task-149.29-tail-moved-though-zero, task-164.4-model-seal-forgets-late). scripts/guest-mutants-gce.py knows the kind: --check checks the killer names a #[test] of crates/fxfs-sim-diff/src/diff_tests.rs, and that the patch applies; the GCE runner and guest/sim/mutants.sh skip it. scripts/tests/test_guest_mutants.py covers it. crates/fxfs-sim-diff/mutants.sh reads guest/mutants and runs a model mutant against its killer alone; it fails unless each is killed.
+- cargo check --workspace --tests --locked: passes with UCD_ZIP set and fails without it, on origin/main and on the branch alike (fxfs-unicode's lib test reads UCD_ZIP at compile time). cargo check -p fxfs-unicode alone fails on flate2's features (no backend selected) on origin/main too. The cc lock bump (1.8.0 -> 1.11.0, find-msvc-tools 0.1.14 -> 0.1.15) is in neither.
+
+After the rebase: cargo nextest run -p fxfs -p fxfs-posix -p fxfs-sim-diff: 842 passed, 2 skipped. crates/fxfs-sim-diff/mutants.sh: task-149.29-tail-moved-though-zero and task-164.4-model-seal-forgets-late killed by fxfs-sim-diff the_models_past_drifts_from_fxfs (12 s each); the two 149.14.2 (Kernel: sim) found too. scripts/upstream-changes.py --check passes. macOS FXDAX_TEST_PARTS='workspace scripts' scripts/test.sh --no-fail-fast: 2135 passed (1 leaky: fxfs super_block::tests::test_mount_with_a_journal_that_starts_anywhere), 18 skipped; 160 python tests OK; mutants --check 17, 4 and 38 checked, 0 broken.
 <!-- SECTION:NOTES:END -->
