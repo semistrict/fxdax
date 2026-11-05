@@ -3,9 +3,11 @@ id: TASK-176
 title: >-
   Flaky: fxfs test_trim's fsck of its replayed snapshot finds a journal block
   missing from the allocator (owner 3)
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-11-05 08:17'
+updated_date: '2026-11-05 10:59'
 labels:
   - bug
   - flaky
@@ -23,8 +25,8 @@ Seen twice on 2026-11-05 on branch task-160-25 (TASK-160.25), on macOS under loa
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The cause is known: a race in the test's fsck, or a bug in Fxfs
-- [ ] #2 test_trim passes 500 stress runs under load, 4 at once
+- [x] #1 The cause is known: a race in the test's fsck, or a bug in Fxfs
+- [x] #2 test_trim passes 500 stress runs under load, 4 at once
 <!-- AC:END -->
 
 ## Definition of Done
@@ -33,3 +35,34 @@ Seen twice on 2026-11-05 on branch task-160-25 (TASK-160.25), on macOS under loa
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Compare test_trim's failure rate on task-160-25 and on origin/main, 400 stress runs each, same profile, run in parallel.
+2. Find the cause; fix it in the test or the code, red then green.
+3. Look for the same pattern elsewhere.
+<!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+## Rates (2026-11-05, macOS, nextest archives of one dev build each, run from the same target dir)
+- 2 jobs at once (base = origin/main c919610e7's journal.rs, mine = task-160-25): 400 of 400 each, no failure.
+- 4 jobs at once (2 base, 2 the lock fix below), 150 iterations each job: base 10 of 300 (6 fsck failures, TASK-176's own errors: owner-3 MissingAllocation and ExtraAllocations, AllocatedBytesMismatch, OrphanedObject; and 4 NoSpace, TASK-181); the lock fix 4 of 300 (4 NoSpace, no fsck failure).
+So TASK-176 is pre-existing, not TASK-160.25's: the rates match, and it comes with load.
+
+## Cause
+test_trim's post-commit hook checks three filesystems with one FsckOptions, no_lock: true. The live one needs it: its hook runs inside commit_transaction, holding the commit mutex. fs2 (replayed from the snapshot) and the filesystem remounted for the trim don't, and their own work goes on as they're checked: the flush task's compactions, the graveyard's reap and trims. A commit of that work overtaking an unlocked check has it read the root parent's tree and the allocator on two sides of the commit: an old layer or journal block missing from the allocator, a new one extra, a layer file orphaned. The 60 s wait_for_flush panic after it was the compaction left in flight as the test panicked.
+Upstream's test has the same no_lock (it's upstream's code); fxdax compacts sooner (METADATA_LOW_MARGIN), which makes the overlap likelier.
+
+## Fix and proof
+- test_trim: the live filesystem's check stays unlocked; fs2's and the remount's take their lock (FsckOptions::no_lock false).
+- Red: an experiment forcing a compaction of fs2 during its check: unlocked, 5 of 120 failed (OrphanedObject, owner-3 ExtraAllocations); locked, 0 of 120 then 1 of 400, which was TASK-181's NoSpace, not fsck.
+- Class test, fsck/tests.rs test_a_check_while_compacting_finds_nothing: 40 rounds of a commit, then fsck run while force_compact runs. With no_lock: 10 of 10 stress runs red (round 14, OrphanedObject(4, 38)); with the lock: 100 of 100 green.
+- AC #2: test_trim with both fixes (this one and TASK-181's device), 4 jobs at once, 125 each: 500 of 500, during a model hunt.
+
+## Looked around
+data_object_handle.rs's four overwrite tests checked their live filesystem without the lock in the test body, nothing holding commits off, so the flush task could compact during the check: they take the lock now. filesystem.rs's FsckAfterEveryTransaction runs as a post-commit hook, so it holds the commit mutex: no_lock is right there. The NoSpace that showed up in the stress runs is TASK-181, at the same rate with and without this fix.
+Not run: GCE (Linux).
+<!-- SECTION:NOTES:END -->

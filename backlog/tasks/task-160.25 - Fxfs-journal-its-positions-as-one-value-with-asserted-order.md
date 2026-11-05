@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-03 13:09'
-updated_date: '2026-11-05 09:02'
+updated_date: '2026-11-05 12:44'
 labels:
   - structure
 dependencies: []
@@ -81,4 +81,8 @@ fsck of the snapshot replayed in test_trim's post-commit hook found a root-paren
 
 ## Structure (AGENTS.md)
 The bugs the task names (TASK-139, 60, 26.6.1, 149.3, 153.13) came from positions kept in step by hand at each site. Each now has one owner and its orders are checked as it changes; the next breach is a panic in a debug run at the change that made it, not a replay that fails later. The journal's own transaction (make_room) and its size class are left as they are; see the structural option above.
+
+## TASK-182, found by TASK-160.23's fsck hunt (its task is on that branch, not this one), fixed here: fe1c465b8
+The pinned sequence fails on this branch as on main, with no JournalPosition assert firing: the mismatch is between Root::journal_end, set before the cut, and what replay after it finds, which no in-memory position spans. Cause: a sync's barrier follows a flush of whole blocks, which may go past the sync's padding into blocks of later transactions; flush() records that write's end. A record begun in its last block and going on in the next, which the cut lost, stops replay at the record's start (307150), short of the end recorded (307200): refused, though the record's transaction was never whole, nor acknowledged. Replay now compares journal_end with the end of the block it read last (the reader verified it), or with where it discarded a transaction if it did, as before. Red then green: model test a_cut_with_fsck_after_every_transaction_replays_as_far_as_its_barrier. FXDAX_MODEL_CASES=3000 FXDAX_MODEL_FSCK=1: 34 of 34 (6,827 s). journal tests 84 of 84, test_a_journal_ending_before_its_synced_end_is_refused among them. Not the same cause as TASK-176 (test_trim's unlocked fsck).
+After the rebase on origin/main (c919610e7) and these fixes: cargo nextest run -p fxfs -p fxfs-posix -p storage_device, 885 of 885.
 <!-- SECTION:NOTES:END -->
