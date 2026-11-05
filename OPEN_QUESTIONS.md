@@ -8,6 +8,25 @@
 
 # Decisions
 
+## Local disk as the bucket's WAL and cache: how (TASK-165, doc-14, 2026-11-04)
+
+The user chose the direction (review of 2026-11-04, decision 2); doc-14 decides the rest, where the task left it open:
+- **WAL segments are stamped as they close**, by the writer's chain: each is the object byte for byte (doc-7, decision 1), and footers alone tell, after a takeover, which landed (recovery applied them) and whether the rest follow the branch's end; those that do are restamped on the new chain. *Instead:* an unstamped WAL stamped at upload, which needs a record of every lease epoch the store took to tell its commits in the bucket from another host's: remote.rs's marker again. *Undoing it:* `wal::rebase` and the WAL's file format (TASK-165.5, 165.9).
+- **A commit's local durability is a log beside the open segment** (a record of each commit's `Contents`, hashed, synced by the flush), folded into the footer when it closes. *Instead:* a segment closed per flush, 20 PUTs a second per VM; or keeping the index's deltas, a second encoding of the branch's state. *Undoing it:* TASK-165.9.
+- **A WAL that doesn't follow the bucket refuses to open** (`Error::Diverged`, `ESTALE`) until `fxdaxctl take` drops it, as a stale store refuses now. *Instead:* drop it silently: the guest's restarted VM would see a history it never committed. *Undoing it:* one arm of the open path.
+- **Capacity is branch state, set by commits** (footers and checkpoints): resizes are ordered with commits, forks inherit, points never change. *Instead:* a field of the record, updated by compare-and-swap, unordered with the commits it bounds. Format change (FORMAT 2).
+- **One spending rule:** every footer free of the branch's own extents spends it (footers already free only extents a commit held). Remote recovery's "held before the segment" rule goes: it kept an ID sealed and freed within one segment writable elsewhere, which nothing needs, each writer minting from its own epoch's range. *Undoing it:* the rule in `apply_contents` (TASK-165.3).
+- **Formats:** objects of any format but the reader's are refused, older ones too; today's local stores aren't opened or converted (AGENTS.md: nothing uses fxdax yet).
+- **extent_store depends on extent_remote, and the uploader moves into it**, so that the host's side of the seam is tested against a memory bucket in one crate; `fxdax::remote` keeps the host's configuration, budgets, runtime and errno mapping. *Instead:* keep the uploader in fxdax, with its tests a crate away from the store they drive.
+- **The part cache is kept across restarts**, its index rebuilt from its files: without a full local copy, an extentd restart would otherwise refetch every base.
+- **The collector is the only cleaner;** the bound of three times the capacity on local files (TASK-79.89) goes with local dead space. The host's disk is bounded by the lag bound, the open segment's room and the cache's capacity.
+- **Views (followers, frozen) keep working** on the new engine; a view reading an extent the collector reclaimed a grace period after its free is cut off. *Instead:* hold the collector off for views, which it can't see on another host.
+- **The file bucket** is object_store's `LocalFileSystem` with conditional updates, and overwrites and deletes, under a bucket-wide `flock` (each holding opening the lock file anew, so that it excludes holdings in its own process too), e-tags being `LocalFileSystem`'s (inode, modification time in µs, size). *Instead:* a `Bucket` of our own beside `Store`, which `Store::from_url`, its stats and its throttle wouldn't cover. The e-tag could repeat only if a replaced file's inode were reused with the same size within its microsecond, the clock not going back.
+- **The TLA+ spec comes before the protocol's code** (TASK-165.2, then 165.5), modelling the WAL's rebase; it is TASK-44.5's AC #1 too.
+- **Steps 7 and 8 land in one batch**, so that main never has forks on one host reading their base back from the bucket.
+- **A fork has no claim file:** its child's ID is checked with one GET; a fork whose answer a crash lost stands if its segment landed (the parent's next writer records it) and never was if the disk went with it; a fork fenced before its acknowledgement deletes its child by its owner (`branch::delete_fork`).
+- **Images keep their branches in a file bucket named in their description**, their clones sharing it, their collector in-process (TASK-165.6).
+
 ## The host's copy-on-write DAX protocol once writable DAX is deleted (TASK-164.7, 2026-11-04)
 
 Writable DAX is deleted from the host (vendor/firecracker's extent device, crates/fxdax, physmem, extent_store). Decided, where the brief left it open:
