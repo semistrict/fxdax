@@ -10,12 +10,12 @@ use super::codec::{
     stream_bytes,
 };
 use super::pool::Pool;
-use super::stores::{self, CLOSING_WAIT, open_paths, open_store, store_key};
+use super::stores::{self, open_store, store_key};
 use super::wire::*;
-use crate::open_stores::Holder;
 use crate::store_requests::{self, Guest, Resizes, Shrinking};
+use crate::store_table::Writer;
+use crate::{Commit, MappingContents, VolatileSlice, VolatileSliceMut, WindowMapping};
 use crate::{DaxWindow, Errno, ExtentStore, SecondStage};
-use crate::{Commit, MappingContents, StoreRole, VolatileSlice, VolatileSliceMut, WindowMapping};
 use std::os::fd::AsFd;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
@@ -355,9 +355,7 @@ async fn run_connection(stream: UnixStream, tenant: Arc<Tenant>) {
         this: this.clone(),
         tenant,
         peer: peer.clone(),
-        opening: AtomicBool::new(false),
-        store: OnceLock::new(),
-        path: OnceLock::new(),
+        phase: Mutex::new(Phase::Unopened),
         window: Mutex::new(None),
         behind: Mutex::new(None),
         shrinking: Shrinking::new(),
@@ -416,19 +414,15 @@ async fn run_connection(stream: UnixStream, tenant: Arc<Tenant>) {
         drop(stop);
         let _ = behind.await;
     }
-    let path = connection.path.get().cloned();
     let finished = tokio::task::spawn_blocking(move || finish_connection(connection));
     if let Err(err) = finished.await {
         log::error!("extentd: letting a connection's store go: {err}");
     }
     // Its store goes, with its window and open extents, before another connection may open it:
     // once nothing holds the connection any more, as a request's job, its receiving task, or the
-    // control API's work through it may still, whose last to let go closes its store (TASK-54,
-    // TASK-79.34). fxdax: but for its followers'.
+    // control API's work through it may still, whose last to let go closes its store and then
+    // lets its path go (TASK-54, TASK-79.34). fxdax: but for its followers'.
     let _ = gone_for_good.await;
-    if let Some(path) = path {
-        open_paths().release(&path);
-    }
     peer.forget();
 }
 
@@ -511,7 +505,7 @@ impl Connection {
     fn reaches_pages(&self) -> bool {
         // fxdax: a fenced store's window, which a panic may have left half changed, isn't looked
         // at: it may, as far as anyone knows (TASK-153.16).
-        if self.store.get().is_some_and(|store| store.is_fenced()) {
+        if self.store().is_some_and(|store| store.is_fenced()) {
             return true;
         }
         let window = self.window.lock().unwrap();
@@ -520,19 +514,15 @@ impl Connection {
 }
 
 /// Lets the store of `connection`, whose VM process is gone and whose requests are done, go: once
-/// what it committed is durable.
+/// what it committed is durable, if it writes it.
 fn finish_connection(connection: Arc<Connection>) {
-    let path = connection.path.get().cloned();
-    let writer = |store: &&Arc<ExtentStore>| store.access().role != StoreRole::Follower;
-    if let Some(store) = connection.store.get().filter(writer) {
+    if let Some(store) = connection.writing() {
         if let Err(err) = store.flush() {
             log::error!("extentd: making a store's last commits durable: {err:?}");
         }
         // fxdax: what it wrote since its last commit no next writer knows of, nor takes over.
-        if let Some(path) = &path
-            && store.is_quiescent() != Ok(true)
-        {
-            stores::retire(path, store);
+        if store.is_quiescent() != Ok(true) {
+            connection.retire();
         }
     }
     connection.peer.sender.shutdown();
@@ -652,7 +642,7 @@ impl Answer {
             // A full store: which request found it so, and how full: of its extents' bytes, or
             // of the host's disk, which it may fill far from its capacity (TASK-79.105).
             if errno == Errno::ENOSPC
-                && let Some(store) = self.connection.store.get()
+                && let Some(store) = self.connection.store()
             {
                 let used = store.info().map(|info| (info.used, info.capacity));
                 let disk = store.disk_bytes();
@@ -692,7 +682,7 @@ impl Answer {
 impl Drop for Answer {
     fn drop(&mut self) {
         if std::thread::panicking()
-            && let Some(store) = self.connection.store.get()
+            && let Some(store) = self.connection.store()
         {
             let kind = self.request.kind;
             store.fence(|| format!("a panic serving request {kind}"));
@@ -734,7 +724,7 @@ fn serve_future(turn: Turn, serving: impl std::future::Future<Output = ()> + Sen
     }
 }
 
-impl Holder for Connection {
+impl Writer for Connection {
     fn going(&self) -> bool {
         self.closing.load(Ordering::Acquire) || self.peer.sender.peer_gone()
     }
@@ -785,12 +775,8 @@ pub(super) struct Connection {
     tenant: Arc<Tenant>,
     /// Its VM process, which it sends to: fxdax: as the daemon depends on it (TASK-79.9).
     peer: Arc<Peer>,
-    /// fxdax: whether an [`OPEN`] is in progress ([`Opening`]).
-    opening: AtomicBool,
-    /// Its store: fxdax: a follower's, if read-only (backlog doc-8).
-    store: OnceLock<Arc<ExtentStore>>,
-    /// The path of the store it writes, which it holds.
-    path: OnceLock<PathBuf>,
+    /// Where it is in its life: its store, once open, and how it has it (TASK-160.8).
+    phase: Mutex<Phase>,
     window: Mutex<Option<DaxWindow>>,
     /// What works behind the store, a task, and what stops it, dropped: making a writer's commits
     /// durable behind them; fxdax: telling a follower's VM process of its writer's commits.
@@ -809,27 +795,73 @@ pub(super) struct Connection {
     /// fxdax: whether its VM process said its build ([`BUILD`]), once.
     said_build: AtomicBool,
     /// What says, as it drops, that the connection has: its last field, dropped after its store,
-    /// window and open extents (TASK-79.34).
+    /// window and open extents, and its hold of its store's path (TASK-79.34).
     _alive: tokio::sync::oneshot::Sender<std::convert::Infallible>,
 }
 
+/// Where a connection is in its life ([`Connection::phase`]): one `OPEN` at a time, and one store,
+/// which it writes, holding its path, or follows (TASK-150.5, TASK-160.8).
+enum Phase {
+    /// Its VM process opened no store yet.
+    Unopened,
+    /// fxdax: an [`OPEN`] in progress, the only one ([`Opening`]).
+    Opening,
+    /// It writes `store`, which it holds as `hold` in the daemon's table (`stores::table`), until
+    /// it is dropped, after its store and window ([`Connection`]'s drop).
+    Writing { store: Arc<ExtentStore>, hold: stores::Hold },
+    /// fxdax: it follows a store, read-only (backlog doc-8): of the store connections have open,
+    /// which the table has, and which it holds none of.
+    Following(Arc<ExtentStore>),
+}
+
+impl Phase {
+    /// Its store, once open.
+    fn store(&self) -> Option<&Arc<ExtentStore>> {
+        match self {
+            Phase::Writing { store, .. } | Phase::Following(store) => Some(store),
+            Phase::Unopened | Phase::Opening => None,
+        }
+    }
+}
+
 /// fxdax: an [`OPEN`] in progress on a connection ([`Connection::opening`]), the only one, until
-/// dropped; only it gives the connection its store, which it has once.
+/// dropped; only it gives the connection its store, which it has once: its phase goes back to
+/// [`Phase::Unopened`] unless it opened one.
 struct Opening<'a>(&'a Connection);
 
 impl Opening<'_> {
-    /// The connection has `store` from now on, and holds it at `path`, if it writes it.
-    fn opened(self, store: Arc<ExtentStore>, path: Option<PathBuf>) {
-        assert!(self.0.store.set(store).is_ok(), "a connection opened a second store");
-        if let Some(path) = path {
-            assert!(self.0.path.set(path).is_ok(), "a connection holds a second store");
-        }
+    /// The connection is in `phase` from now on, its store open. Checked without the phase's lock,
+    /// which a panic would poison, as what serves its requests looks at it as it unwinds.
+    fn opened(self, opened: Phase) {
+        assert!(opened.store().is_some(), "a connection opened no store");
+        let was = std::mem::replace(&mut *self.0.phase.lock().unwrap(), opened);
+        assert!(matches!(was, Phase::Opening), "a connection opened a second store");
     }
 }
 
 impl Drop for Opening<'_> {
     fn drop(&mut self) {
-        self.0.opening.store(false, Ordering::Release);
+        let mut phase = self.0.phase.lock().unwrap();
+        if matches!(*phase, Phase::Opening) {
+            *phase = Phase::Unopened;
+        }
+    }
+}
+
+impl Drop for Connection {
+    /// Its store goes, then its window, as they did before (TASK-79.34), and only then its hold of
+    /// its store's path, which those waiting to open it may then (TASK-54): all it has open is
+    /// closed by then, but for what its followers have.
+    fn drop(&mut self) {
+        let phase = std::mem::replace(self.phase.get_mut().unwrap(), Phase::Unopened);
+        let (store, hold) = match phase {
+            Phase::Writing { store, hold } => (Some(store), Some(hold)),
+            Phase::Following(store) => (Some(store), None),
+            Phase::Unopened | Phase::Opening => (None, None),
+        };
+        drop(store);
+        drop(self.window.get_mut().unwrap().take());
+        drop(hold);
     }
 }
 
@@ -850,8 +882,24 @@ fn failpoint(kind: u32) -> Option<&'static str> {
 
 impl Connection {
     /// Its store, once it has opened one.
-    pub(super) fn store(&self) -> Option<&Arc<ExtentStore>> {
-        self.store.get()
+    pub(super) fn store(&self) -> Option<Arc<ExtentStore>> {
+        self.phase.lock().unwrap().store().cloned()
+    }
+
+    /// Its store, if it writes it.
+    fn writing(&self) -> Option<Arc<ExtentStore>> {
+        match &*self.phase.lock().unwrap() {
+            Phase::Writing { store, .. } => Some(store.clone()),
+            _ => None,
+        }
+    }
+
+    /// fxdax: retires the store it writes, its VM process gone with writes uncommitted
+    /// ([`stores::retire`]).
+    fn retire(&self) {
+        if let Phase::Writing { store, hold } = &*self.phase.lock().unwrap() {
+            stores::retire(hold, store);
+        }
     }
 
     /// The arena of physical memory its store's own pages are of: its tenant's.
@@ -956,7 +1004,7 @@ impl Connection {
         };
         // fxdax: a store a panic went through serves nothing more, of whatever the panic left half
         // done (`crate::fence`, TASK-153.16).
-        if self.store.get().is_some_and(|store| store.is_fenced()) {
+        if self.store().is_some_and(|store| store.is_fenced()) {
             return refuse(answer, Errno::EIO);
         }
         let request = Request::decode(&message).and_then(|request| {
@@ -1039,12 +1087,12 @@ impl Connection {
     ) -> Result<(), Errno> {
         if let Request::Open { path, opening: codec::Opening::ReadOnly } = request {
             let branch = self.follow(path)?;
-            let epoch = self.store.get().ok_or(Errno::EBADF)?.epoch()?;
+            let epoch = self.store().ok_or(Errno::EBADF)?.epoch()?;
             reply.args = Opened { branch, arena: self.arena_id(), epoch }.args();
             fds.extend(self.memories());
             return Ok(());
         }
-        let store = self.store.get().ok_or(Errno::EBADF)?;
+        let store = &self.store().ok_or(Errno::EBADF)?;
         // fxdax: a request failing, with the errno given (EIO by default), or waiting, as
         // FAILPOINTS says, in a daemon built with the failpoints feature (TASK-44.10):
         // `extentd::map=1%return(5)` fails one MAP in a hundred with EIO, `extentd::commit=
@@ -1128,7 +1176,7 @@ impl Connection {
                 let (sender, acks) = (self.peer.sender.clone(), self.peer.acks.clone());
                 let stage = Arc::new(RemoteStage { sender, acks });
                 // fxdax: a writer's copies on write, and only a writer's (backlog doc-13).
-                let writer = store.access().role == StoreRole::Writer;
+                let writer = self.writing().is_some();
                 let window = match private_max {
                     Some(most) if writer => {
                         store.create_copying_dax_window(*size, Some(stage), *most)
@@ -1188,7 +1236,7 @@ impl Connection {
             static REFUSED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
             let count = REFUSED.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
             if (count <= 1000 || count.is_power_of_two())
-                && let Some(store) = self.store.get()
+                && let Some(store) = self.store()
             {
                 log::warn!(
                     "extentd: {what} at DAX window offset {offset:#x} refused ({count} so far): {}",
@@ -1235,7 +1283,7 @@ impl Connection {
         let (epoch, sender, told) = (store.epoch()?, self.peer.sender.clone(), store.clone());
         self.start_behind(move |stopped| tell_commits(told, epoch, sender, stopped));
         let branch = store.branch();
-        opening.opened(store, None);
+        opening.opened(Phase::Following(store));
         Ok(branch)
     }
 
@@ -1243,13 +1291,13 @@ impl Connection {
     /// requests are served side by side, or it has its store (TASK-150.5). What an `OPEN` holds
     /// meanwhile, its store's path among it, its [`Opening`] gives the connection, or it lets go of.
     fn opening(&self) -> Result<Opening<'_>, Errno> {
-        if self.opening.swap(true, Ordering::AcqRel) {
-            return Err(Errno::EBUSY);
-        }
-        let opening = Opening(self);
-        match self.store.get() {
-            Some(_) => Err(Errno::EBUSY),
-            None => Ok(opening),
+        let mut phase = self.phase.lock().unwrap();
+        match *phase {
+            Phase::Unopened => {
+                *phase = Phase::Opening;
+                Ok(Opening(self))
+            }
+            Phase::Opening | Phase::Writing { .. } | Phase::Following(_) => Err(Errno::EBUSY),
         }
     }
 
@@ -1283,41 +1331,31 @@ impl Connection {
             *branch = 0;
         }
         let opening = self.opening()?;
-        let key = store_key(path);
-        open_paths().hold_async(&key, self.this.clone(), CLOSING_WAIT).await?;
+        let hold = stores::hold_to_write(&store_key(path), self.this.clone()).await?;
+        // Closed before its hold lets its path go, if it fails here.
+        let store = self.open_held(path, &hold, &how).await?;
         // A VM process opens no store to write that its writer may not write
         // ([`crate::StoreAccess::may_write`]): a public base, only forks of it (TASK-43), what it
         // wrote being every tenant's, its pages the default arena's, which every VM process holds
         // (TASK-79.17); fxdax: nor a point, which nothing writes (doc-7, Points).
-        let opened = self.open_held(path, &key, &how).await;
-        let opened = opened.and_then(|store| store.access().may_write().map(|()| store));
-        let started = opened.map(|store| {
-            let flushed = store.clone();
-            self.start_behind(move |stopped| flush_behind(flushed, stopped));
-            store
-        });
-        match started {
-            Ok(store) => {
-                let branch = store.branch();
-                opening.opened(store, Some(key));
-                Ok(branch)
-            }
-            Err(errno) => {
-                open_paths().release(&key);
-                Err(errno)
-            }
-        }
+        store.access().may_write()?;
+        let flushed = store.clone();
+        self.start_behind(move |stopped| flush_behind(flushed, stopped));
+        let branch = store.branch();
+        opening.opened(Phase::Writing { store, hold });
+        Ok(branch)
     }
 
-    /// Opens the store at `path`, whose key `key` it holds, as [`Connection::open`] does.
+    /// Opens the store at `path`, which `hold` holds, as [`Connection::open`] does: the store
+    /// connections have open there from now on.
     async fn open_held(
         &self,
         path: &Path,
-        key: &Path,
+        hold: &stores::Hold,
         how: &codec::Opening,
     ) -> Result<Arc<ExtentStore>, Errno> {
         let arena = self.arena();
-        if let Some(store) = stores::take_over(key, arena).await? {
+        if let Some(store) = stores::take_over(hold, arena)? {
             return Ok(store);
         }
         let opened = match how {
@@ -1334,7 +1372,7 @@ impl Connection {
             _ => open_store(path, None, Some(arena)),
         };
         let store = Arc::new(opened?);
-        stores::register(key, &store);
+        hold.open(&store);
         Ok(store)
     }
 
@@ -1363,7 +1401,7 @@ impl Resizes for Connection {
     /// no thread while it waits for the guest's answer (TASK-43.6). The store's I/O runs on a
     /// blocking thread.
     async fn resize(&self, capacity: u64) -> Result<(), Errno> {
-        let store = stores::Live(self.store.get().ok_or(Errno::EBADF)?.clone());
+        let store = stores::Live(self.store().ok_or(Errno::EBADF)?);
         store_requests::resize_held(&store, self, &self.shrinking, capacity, SHRINK_WAIT).await
     }
 }

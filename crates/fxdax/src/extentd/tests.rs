@@ -358,7 +358,7 @@ fn shrinks_dropped_by_their_callers_stop_waiting() {
     let tenants = dir.path().join("tenants");
     std::fs::create_dir(&tenants).unwrap();
     std::thread::spawn(move || super::control::serve_control(listener, tenants));
-    let connection = super::stores::open_paths().holder(&super::stores::store_key(&path)).unwrap();
+    let connection = super::stores::table().writer(&super::stores::store_key(&path)).unwrap();
 
     control(async {
         let mut client = super::control::connect(&socket).await.unwrap();
@@ -1920,7 +1920,7 @@ fn wait_for_open_segments(path: &Path, branch: u64, bytes: u64) -> u64 {
 /// ([`ExtentStore::dead_bytes`]): the bytes of its segments' data no extent is in, which cleaning
 /// takes back, but those another branch may hold extents in, as a fork's.
 fn dead_bytes(path: &Path) -> u64 {
-    let connection = super::stores::open_paths().holder(&super::stores::store_key(path)).unwrap();
+    let connection = super::stores::table().writer(&super::stores::store_key(path)).unwrap();
     connection.store().unwrap().dead_bytes().unwrap()
 }
 
@@ -2471,7 +2471,7 @@ fn hundreds_of_writers_flush_on_threads_they_share() {
     let theirs: Vec<_> = (paths.iter())
         .map(|path| {
             let key = super::stores::store_key(path);
-            super::stores::open_paths().holder(&key).unwrap().store().unwrap().clone()
+            super::stores::table().writer(&key).unwrap().store().unwrap()
         })
         .collect();
     let ((probe, others), probed) = (stores.split_first().unwrap(), theirs[0].clone());
@@ -3069,7 +3069,7 @@ fn tenants_take_no_branch_by_naming_it() {
 /// nothing, and both stores open for others once the connection goes.
 #[test]
 fn connections_open_one_store_at_a_time() {
-    use super::stores::{open_paths, store_key};
+    use super::stores::{store_key, table};
     use super::wire::*;
     use std::os::unix::ffi::OsStrExt as _;
     host();
@@ -3079,18 +3079,18 @@ fn connections_open_one_store_at_a_time() {
     std::thread::spawn(move || serve(listener));
     let (first, second) = (dir.path().join("first"), dir.path().join("second"));
     let key = store_key(&first);
-    open_paths().hold(&key, std::sync::Weak::new(), None).unwrap();
+    let held = table().hold(&key, None).unwrap();
 
     let stream = UnixStream::connect(&socket).unwrap();
     let sender = Sender::new(stream.try_clone().unwrap());
     let mut receiver = Receiver::new(stream.try_clone().unwrap());
     let open = |id| Header::new(OPEN, id).with_args(&[1 << 24]).with_flags(OPEN_CREATE);
     sender.send(open(1), first.as_os_str().as_bytes(), &[]).unwrap();
-    while !open_paths().is_waited_for(&key) {
+    while !table().is_waited_for(&key) {
         std::thread::yield_now();
     }
     let second_opened = call(&sender, &mut receiver, open(2), second.as_os_str().as_bytes());
-    open_paths().release(&key);
+    drop(held);
     let first_opened = receiver.receive(|| 0).unwrap().unwrap();
     let statuses =
         (first_opened.header.id, first_opened.header.status, second_opened.header.status);
@@ -3470,7 +3470,7 @@ fn childs_opened_during_their_forks_wait_for_them() {
     };
     let key = super::stores::store_key(&child);
     let opened_now = || opened.load(std::sync::atomic::Ordering::Relaxed);
-    let waiting = || super::stores::open_paths().is_waited_for(&key);
+    let waiting = || super::stores::table().is_waited_for(&key);
     while !waiting() && !opened_now() && !opening.is_finished() {
         let late = std::time::Instant::now() >= deadline;
         assert!(!late, "the child's opening neither waited nor ended");
@@ -3687,8 +3687,7 @@ fn faults_waiting_for_object_storage_hold_up_no_request() {
         })
         .collect();
     // Every fault received, each waiting for a fetch.
-    let connection =
-        super::stores::open_paths().holder(&super::stores::store_key(&restored)).unwrap();
+    let connection = super::stores::table().writer(&super::stores::store_key(&restored)).unwrap();
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     while connection.unanswered() < FAULTS || gated.waiting() == 0 {
         assert!(std::time::Instant::now() < deadline, "{} faults", connection.unanswered());
@@ -3802,7 +3801,7 @@ fn followers_that_stop_reading_are_told_of_the_latest_commit() {
         assert!(queued <= size_of::<Header>() as u64, "{queued} bytes queued for VM processes");
     }
     let key = super::stores::store_key(&path);
-    let holder = super::stores::open_paths().holder(&key).unwrap();
+    let holder = super::stores::table().writer(&key).unwrap();
     let latest = holder.store().unwrap().committed().unwrap();
     // Each commit it is told of after the last, the latest last.
     let told = within(std::time::Duration::from_secs(10), move || {
@@ -4162,7 +4161,7 @@ fn window_mappings_are_answered_beside_the_stream_data_in_flight() {
         sender.send(read, &[], &[]).unwrap();
     }
     sender.send(Header::new(MAPPINGS, id + reads + 1), &[], &[]).unwrap();
-    let holder = super::stores::open_paths().holder(&super::stores::store_key(&path)).unwrap();
+    let holder = super::stores::table().writer(&super::stores::store_key(&path)).unwrap();
     // All of them queued, but what the socket holds, a mebibyte at most.
     let replies = reads * MAX_PAYLOAD + count * MAPPING_BYTES - (1 << 20);
     while holder.queued() < replies {

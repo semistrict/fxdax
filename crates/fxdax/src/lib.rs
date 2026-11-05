@@ -119,9 +119,6 @@ mod image;
 pub mod import;
 mod memory;
 mod node;
-// The extent daemon's (Linux), and its tests' everywhere.
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-mod open_stores;
 pub mod pages;
 mod profile;
 pub mod remote;
@@ -134,6 +131,9 @@ mod storage;
 pub mod stacks;
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 mod store_requests;
+// The extent daemon's (Linux), and its tests' everywhere.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+mod store_table;
 #[cfg(test)]
 mod test_data;
 #[cfg(target_os = "linux")]

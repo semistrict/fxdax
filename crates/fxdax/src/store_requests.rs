@@ -6,14 +6,14 @@
 //! it, through the connection holding it, whose guest agrees to a shrink first, or here, if none
 //! does, growing it alone; and choosing the store a fork forks: the holder's, live, or the store
 //! opened here, which no connection opens meanwhile. Generic over the store, its guest and its
-//! connection, as `open_stores` is over its holders, so that its Shuttle tests run this code, the
+//! connection, as `store_table` is over its writers, so that its Shuttle tests run this code, the
 //! daemon's own, with models of them: every interleaving of opens, commits, resizes, forks and
 //! closes the scheduler chooses, against what the daemon promises.
 
 use crate::Errno;
-use crate::open_stores::{Holder, Paths, within};
+use crate::store_table::{Hold, Holding, StoreTable, Writer, within};
 use std::future::Future;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::Duration;
 
 #[cfg(feature = "shuttle")]
@@ -85,8 +85,8 @@ pub(crate) trait Guest: Send + Sync {
     fn tell(&self, capacity: u64, ask: bool) -> Result<(), Errno>;
 }
 
-/// A connection holding a store, which resizes it ([`resize_held`]).
-pub(crate) trait Resizes: Holder {
+/// A connection writing a store, which resizes it ([`resize_held`]).
+pub(crate) trait Resizes: Writer {
     fn resize(&self, capacity: u64) -> impl Future<Output = Result<(), Errno>> + Send;
 }
 
@@ -218,41 +218,27 @@ pub(crate) async fn resize_held(
     }
 }
 
-/// The daemon holding a store, which no connection opens meanwhile, until it is dropped: by the
-/// store opened here under it, as it closes, so that its path is let go only once it is
-/// (TASK-79.34).
-pub(crate) struct Released<'a, H: Holder> {
-    paths: &'a Paths<H>,
-    key: PathBuf,
-}
-
-impl<H: Holder> Drop for Released<'_, H> {
-    fn drop(&mut self) {
-        // Those waiting to open it may.
-        self.paths.release(&self.key);
-    }
-}
-
 /// Sets the capacity of the store `key` names to `capacity` bytes: through the connection
-/// holding it, if one does ([`Resizes::resize`]); or, if none does, here, as `open` opens it,
-/// given what holds it meanwhile, which the store keeps until it is closed: growing it, and not
-/// shrinking it (`EBUSY`), its guest not here to agree. `EBUSY` while a connection whose VM
-/// process is gone holds it, or the daemon.
-pub(crate) async fn resize<'a, H, S, F>(
-    paths: &'a Paths<H>,
+/// writing it, if one does ([`Resizes::resize`]); or, if none does, here, as `open` opens it,
+/// given the daemon's hold of it meanwhile, which the store keeps until it is closed, so that its
+/// path is let go only once it is (TASK-79.34): growing it, and not shrinking it (`EBUSY`), its
+/// guest not here to agree. `EBUSY` while a connection whose VM process is gone holds it, or the
+/// daemon.
+pub(crate) async fn resize<'a, C, I, P, S, F>(
+    table: &'a StoreTable<C, I, P>,
     key: &Path,
     capacity: u64,
-    open: impl FnOnce(Option<Released<'a, H>>) -> F,
+    open: impl FnOnce(Option<Hold<'a, C, I, P>>) -> F,
 ) -> Result<(), Errno>
 where
-    H: Resizes,
+    C: Resizes,
     S: Capacity,
     F: Future<Output = Result<S, Errno>>,
 {
     let held = match rules().through_holder {
-        true => match paths.holder_or_hold(key)? {
-            Some(holder) => return holder.resize(capacity).await,
-            None => Some(Released { paths, key: key.to_owned() }),
+        true => match table.writer_or_hold(key)? {
+            Holding::Writer(writer) => return writer.resize(capacity).await,
+            Holding::Held(held) => Some(held),
         },
         false => None,
     };
@@ -263,35 +249,35 @@ where
         Err(errno) => Err(errno),
     };
     // Closed before those waiting to open it may (it once let them wait out CLOSING_WAIT: found
-    // by open_stores.rs's Shuttle tests, TASK-44.6).
+    // by the store table's Shuttle tests, TASK-44.6).
     store.close().await;
     set
 }
 
-/// The store a fork of the store `key` names forks: `live`'s, of the connection holding it, if
+/// The store a fork of the store `key` names forks: `live`'s, of the connection writing it, if
 /// one does whose VM process isn't gone (`EBUSY` if it has none yet); or, if none does, the store
-/// as `open` opens it here, given what holds it meanwhile, which the store keeps until it is
-/// closed, so that no connection opens it until then; once one going lets it go, waiting `wait`
-/// at most (`EBUSY`).
-pub(crate) async fn forking<'a, H, S, F>(
-    paths: &'a Paths<H>,
+/// as `open` opens it here, given the daemon's hold of it meanwhile, which the store keeps until
+/// it is closed, so that no connection opens it until then; once one going lets it go, waiting
+/// `wait` at most (`EBUSY`).
+pub(crate) async fn forking<'a, C, I, P, S, F>(
+    table: &'a StoreTable<C, I, P>,
     key: &Path,
-    live: impl FnOnce(&H) -> Option<S>,
+    live: impl FnOnce(&C) -> Option<S>,
     wait: Duration,
-    open: impl FnOnce(Option<Released<'a, H>>) -> F,
+    open: impl FnOnce(Option<Hold<'a, C, I, P>>) -> F,
 ) -> Result<S, Errno>
 where
-    H: Holder,
+    C: Writer,
     S: Close,
     F: Future<Output = Result<S, Errno>>,
 {
     if !rules().fork_through_holder {
         return open(None).await;
     }
-    if let Some(holder) = paths.holder_or_hold_async(key, wait).await? {
-        return live(&holder).ok_or(Errno::EBUSY);
-    }
-    let held = Released { paths, key: key.to_owned() };
+    let held = match table.writer_or_hold_async(key, wait).await? {
+        Holding::Writer(writer) => return live(&writer).ok_or(Errno::EBUSY),
+        Holding::Held(held) => held,
+    };
     if !rules().forks_hold_their_paths {
         // Let go of as the call returns.
         return open(None).await;
@@ -369,7 +355,17 @@ mod shuttle_tests {
     /// hold it, as of its last durable commit, with what holds it meanwhile, if anything does.
     enum View<'a> {
         Live(Arc<Model>),
-        Here(Arc<Model>, Option<Released<'a, Conn>>),
+        Here(Arc<Model>, Option<ModelHold<'a>>),
+    }
+
+    /// The table of the store, which holds no store open for connections, nor points.
+    type Table = StoreTable<Conn, (), ()>;
+    type ModelHold<'a> = Hold<'a, Conn, (), ()>;
+
+    /// Holds the store at `KEY` for `conn` to write it, as a connection does as it opens it.
+    fn write<'a>(table: &'a Table, conn: &Arc<Conn>) -> ModelHold<'a> {
+        let held = table.hold_to_write(Path::new(KEY), Arc::downgrade(conn), Duration::MAX);
+        block_on(held).unwrap().0
     }
 
     impl View<'_> {
@@ -448,7 +444,7 @@ mod shuttle_tests {
         }
     }
 
-    impl Holder for Conn {
+    impl Writer for Conn {
         fn going(&self) -> bool {
             self.going.load(Ordering::SeqCst)
         }
@@ -476,8 +472,7 @@ mod shuttle_tests {
     /// Opens the store here, as its files hold it, keeping what holds it until it is closed.
     fn here<'a>(
         model: &Arc<Model>,
-    ) -> impl FnOnce(Option<Released<'a, Conn>>) -> std::future::Ready<Result<View<'a>, Errno>>
-    {
+    ) -> impl FnOnce(Option<ModelHold<'a>>) -> std::future::Ready<Result<View<'a>, Errno>> {
         let model = model.clone();
         move |held| {
             model.open();
@@ -487,7 +482,7 @@ mod shuttle_tests {
 
     fn run() {
         let key = Path::new(KEY);
-        let paths = Arc::new(Paths::<Conn>::new());
+        let table: &'static Table = Box::leak(Box::new(StoreTable::new()));
         let model = Model::new();
         // The commits made, as the guest saw them return.
         let committed = Arc::new(AtomicU64::new(0));
@@ -498,11 +493,11 @@ mod shuttle_tests {
         // The VM's connection: opens the store, commits, lets its guest answer shrinks, and
         // closes once the resizes are done, its commits durable first.
         let first = {
-            let (paths, model, committed) = (paths.clone(), model.clone(), committed.clone());
+            let (model, committed) = (model.clone(), committed.clone());
             thread::spawn(move || {
                 let (asks_tx, asks) = mpsc::channel();
                 let conn = Conn::new(model.clone(), Some(asks_tx));
-                paths.hold(key, Arc::downgrade(&conn), None).unwrap();
+                let held = write(table, &conn);
                 model.open();
                 let guest = {
                     let conn = conn.clone();
@@ -526,18 +521,18 @@ mod shuttle_tests {
                 conn.guest.asks.lock().unwrap().take();
                 guest.join().unwrap();
                 model.close();
-                paths.release(key);
+                drop(held);
             })
         };
 
         // The VM's manager: resizes the store while the VM has it open: grows it, shrinks it,
         // which the guest agrees to, and shrinks it below what the guest holds, which it doesn't.
         let resizer = {
-            let (paths, model) = (paths.clone(), model.clone());
+            let model = model.clone();
             thread::spawn(move || {
                 opened.recv().unwrap();
                 for (capacity, expected) in [(12, Ok(())), (6, Ok(())), (3, Err(Errno::ENOSPC))] {
-                    let resized = block_on(resize(&paths, key, capacity, here(&model)));
+                    let resized = block_on(resize(table, key, capacity, here(&model)));
                     model.opened_once_at_a_time();
                     assert_eq!(resized, expected, "resizing to {capacity}");
                 }
@@ -548,12 +543,12 @@ mod shuttle_tests {
         // A fork of the store, at any point: of the connection's store, live, or of the store as
         // its files hold it, once no connection has it open.
         let fork = {
-            let (paths, model, committed) = (paths.clone(), model.clone(), committed.clone());
+            let (model, committed) = (model.clone(), committed.clone());
             thread::spawn(move || {
                 let before = committed.load(Ordering::SeqCst);
                 let live = |conn: &Conn| Some(View::Live(conn.store.clone()));
                 let forking =
-                    block_on(forking(&paths, key, live, Duration::MAX, here(&model))).unwrap();
+                    block_on(forking(table, key, live, Duration::MAX, here(&model))).unwrap();
                 let forked = forking.forked();
                 // Checked once closed: a task panicking unwinds through what it holds, whose
                 // drops take Shuttle's locks, which fail in a failed run with panics that abort.
@@ -565,21 +560,21 @@ mod shuttle_tests {
 
         // The VM restored from a snapshot, opening its store as the first goes.
         let second = {
-            let (paths, model) = (paths.clone(), model.clone());
+            let model = model.clone();
             thread::spawn(move || {
                 going.recv().unwrap();
                 let conn = Conn::new(model.clone(), None);
-                paths.hold(key, Arc::downgrade(&conn), None).unwrap();
+                let held = write(table, &conn);
                 model.open();
                 model.close();
-                paths.release(key);
+                drop(held);
             })
         };
         for thread in [first, resizer, fork, second] {
             thread.join().unwrap();
         }
         model.opened_once_at_a_time();
-        assert!(paths.holder(key).is_none(), "the store is held once all let it go");
+        assert!(table.is_empty(), "the store is held once all let it go");
     }
 
     fn randomly() {
@@ -589,7 +584,7 @@ mod shuttle_tests {
     /// A store opened here whose closing, its call cancelled, is left to a thread of its own, as
     /// `extentd::stores::Here`'s is to a blocking thread, with what holds it, which it lets go once
     /// the store is closed.
-    struct ClosedBehind(Option<(Arc<Model>, Option<Released<'static, Conn>>)>);
+    struct ClosedBehind(Option<(Arc<Model>, Option<ModelHold<'static>>)>);
 
     impl Close for ClosedBehind {
         async fn close(mut self) {
@@ -616,8 +611,8 @@ mod shuttle_tests {
     /// a connection opening it at once finds it closed.
     fn cancelled_fork() {
         let key = Path::new(KEY);
-        // As the daemon's are, which outlive what the closing thread holds of them.
-        let paths: &'static Paths<Conn> = Box::leak(Box::new(Paths::new()));
+        // As the daemon's is, which outlives what the closing thread holds of it.
+        let table: &'static Table = Box::leak(Box::new(StoreTable::new()));
         let model = Model::new();
         let (forked_tx, forked) = mpsc::channel::<()>();
         let fork = {
@@ -628,7 +623,7 @@ mod shuttle_tests {
                     std::future::ready(Ok(ClosedBehind(Some((model, held)))))
                 };
                 let live = |_: &Conn| None;
-                let forking = block_on(forking(paths, key, live, Duration::MAX, here)).unwrap();
+                let forking = block_on(forking(table, key, live, Duration::MAX, here)).unwrap();
                 forked_tx.send(()).unwrap();
                 // Its call cancelled.
                 drop(forking);
@@ -639,10 +634,10 @@ mod shuttle_tests {
             thread::spawn(move || {
                 forked.recv().unwrap();
                 let conn = Conn::new(model.clone(), None);
-                paths.hold(key, Arc::downgrade(&conn), None).unwrap();
+                let held = write(table, &conn);
                 model.open();
                 model.close();
-                paths.release(key);
+                drop(held);
             })
         };
         fork.join().unwrap();
@@ -676,11 +671,11 @@ mod shuttle_tests {
     /// view agreeing.
     fn resizes_at_once() {
         let key = Path::new(KEY);
-        let paths = Arc::new(Paths::<Conn>::new());
+        let table: &'static Table = Box::leak(Box::new(StoreTable::new()));
         let model = Model::new();
         let (asks_tx, asks) = mpsc::channel();
         let conn = Conn::new(model.clone(), Some(asks_tx));
-        paths.hold(key, Arc::downgrade(&conn), None).unwrap();
+        let held = write(table, &conn);
         let guest = {
             let conn = conn.clone();
             thread::spawn(move || answer(conn, asks))
@@ -688,8 +683,8 @@ mod shuttle_tests {
         let resizers: Vec<_> = [12, 6]
             .into_iter()
             .map(|capacity| {
-                let (paths, model) = (paths.clone(), model.clone());
-                thread::spawn(move || block_on(resize(&paths, key, capacity, here(&model))))
+                let model = model.clone();
+                thread::spawn(move || block_on(resize(table, key, capacity, here(&model))))
             })
             .collect();
         for resizer in resizers {
@@ -700,7 +695,7 @@ mod shuttle_tests {
         let capacity = model.capacity.load(Ordering::SeqCst);
         let view = conn.guest.view.load(Ordering::SeqCst);
         assert_eq!(capacity, view, "the store's capacity and its guest's view differ");
-        paths.release(key);
+        drop(held);
     }
 
     #[test]
@@ -761,14 +756,14 @@ mod shuttle_tests {
         fails_without(Rules { fork_through_holder: false, ..Rules::ALL }, "open twice at once");
     }
 
-    /// The store is open once at a time: as open_stores.rs's Shuttle tests show, here through the
-    /// requests.
+    /// The store is open once at a time: as the store table's Shuttle tests show, here through
+    /// the requests.
     #[test]
     fn needs_one_holder() {
         *RULES.lock().unwrap() = Rules::ALL;
-        crate::open_stores::set_rules(crate::open_stores::Rules {
+        crate::store_table::set_rules(crate::store_table::Rules {
             one_holder: false,
-            ..crate::open_stores::Rules::ALL
+            ..crate::store_table::Rules::ALL
         });
         fails_with("open twice at once", randomly);
     }

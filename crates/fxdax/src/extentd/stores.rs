@@ -11,75 +11,61 @@
 //! runtime's blocking threads ([`blocking`]), as do opening and closing a store, which waits for
 //! another process's lock of it, and its branch's take from object storage.
 //!
-//! fxdax: a store open for connections is one instance ([`ExtentStore`]), which its writer's
-//! connection, if any, holds the path of, and its followers' follow (backlog doc-8). Followers
-//! that find no writer open it as a writer would, and a writer opening it then takes it over
-//! ([`ExtentStore::take_over`]), as it does a writer's that went while followers followed it, if
-//! nothing is open in it. A writer that went with writes uncommitted retires its store: its
-//! followers are cut off, and neither a writer nor a follower opens it until they are gone.
+//! Who holds a store, and what is open of it, is the daemon's one table's (`crate::store_table`,
+//! TASK-160.8), each hold a value that lets the store go as it is dropped. fxdax: a store open for
+//! connections is one instance ([`ExtentStore`]), its writer's, if a connection writes it, and its
+//! followers', which follow it (backlog doc-8). Followers that find no writer open it as a writer
+//! would, and a writer opening it then takes it over ([`ExtentStore::take_over`]), as it does a
+//! writer's that went while followers followed it, if nothing is open in it. A writer that went
+//! with writes uncommitted retires its store: its followers are cut off, and neither a writer nor
+//! a follower opens it until they are gone.
 
 use super::server::Connection;
-use crate::open_stores::{Holder, Paths};
 use crate::pages::Arena;
-use crate::store_requests::{self, Capacity, Close, Released};
+use crate::store_requests::{self, Capacity, Close};
+use crate::store_table::{self, StoreTable, Writer as _};
 use crate::{Errno, ExtentInfo, ExtentStore};
 use extent_remote::cache::Cache;
 use extent_remote::store::Stats;
 use std::borrow::Borrow;
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, OnceLock, Weak};
+use std::sync::{Arc, OnceLock, Weak};
 
-/// The stores connections have open, which no other may open, with the connections: what a
-/// resize of one finds. A store the daemon forks, syncs or resizes while no connection has it
-/// is held by none.
-pub(super) fn open_paths() -> &'static Paths<Connection> {
-    static PATHS: OnceLock<Paths<Connection>> = OnceLock::new();
-    PATHS.get_or_init(Paths::new)
+/// The daemon's stores, by their keys ([`store_key`]): who holds each, a connection writing it or
+/// the daemon working on it, and what is open of it, the store connections have open or a point
+/// kept open for forks.
+pub(super) type Table = StoreTable<Connection, ExtentStore, Point>;
+
+/// A store held ([`table`]): by a connection writing it, or by the daemon working on it, which no
+/// connection opens meanwhile; until it is dropped.
+pub(super) type Hold = store_table::Hold<'static, Connection, ExtentStore, Point>;
+
+/// The daemon's stores ([`Table`]).
+pub(super) fn table() -> &'static Table {
+    static TABLE: OnceLock<Table> = OnceLock::new();
+    TABLE.get_or_init(StoreTable::new)
 }
 
-/// fxdax: the stores open for connections, writers' and followers', by their keys, while any
-/// connection has them; and whether retired (see the module docs).
-fn instances() -> &'static Mutex<HashMap<PathBuf, (Weak<ExtentStore>, bool)>> {
-    static INSTANCES: OnceLock<Mutex<HashMap<PathBuf, (Weak<ExtentStore>, bool)>>> =
-        OnceLock::new();
-    INSTANCES.get_or_init(Default::default)
+/// Holds the store `key` names for `connection` to write it, once a connection whose VM process
+/// is gone lets it go, waiting at most [`CLOSING_WAIT`] (`EBUSY`), holding no thread meanwhile:
+/// `EBUSY` while a connection not going writes it. fxdax: the point kept open of it for forks,
+/// which the hold takes, closed, once the forks of it under way are done.
+pub(super) async fn hold_to_write(key: &Path, connection: Weak<Connection>) -> Result<Hold, Errno> {
+    let (hold, point) = table().hold_to_write(key, connection, CLOSING_WAIT).await?;
+    close_point(point).await;
+    Ok(hold)
 }
 
-/// fxdax: the store open at `key` for connections, if one is, and whether it is retired.
-fn instance(key: &Path) -> Option<(Arc<ExtentStore>, bool)> {
-    let instances = instances().lock().unwrap();
-    let (store, retired) = instances.get(key)?;
-    Some((store.upgrade()?, *retired))
-}
-
-/// fxdax: `store` is the one open at `key` for connections, for as long as one has it.
-pub(super) fn register(key: &Path, store: &Arc<ExtentStore>) {
-    let mut instances = instances().lock().unwrap();
-    instances.retain(|_, (store, _)| store.strong_count() > 0);
-    instances.insert(key.to_owned(), (Arc::downgrade(store), false));
-}
-
-/// fxdax: the store open at `key`, its writer gone with writes uncommitted, is retired: its
-/// followers are cut off, and no connection opens it until they are gone.
-pub(super) fn retire(key: &Path, store: &ExtentStore) {
-    store.cut_followers();
-    if let Some((_, retired)) = instances().lock().unwrap().get_mut(key) {
-        *retired = true;
-    }
-}
-
-/// fxdax: the store open at `key` for followers, or a writer that went, which the writer holding
-/// it takes over ([`ExtentStore::take_over`]), if one is: `EBUSY` if it is open in an arena not
-/// `arena` ([`in_arena`]), retired, or something is open in it; and as the store refuses a writer,
-/// a point or a public base ([`crate::StoreAccess::may_write`]). A point kept open for forks
-/// ([`kept`]) the writer opens anew, closed first, once the forks of it under way are done.
-pub(super) async fn take_over(
-    key: &Path,
+/// fxdax: the store followers have open at the key `hold` holds for a writer, or a writer's that
+/// went, which the writer takes over ([`ExtentStore::take_over`]), if one is: `EBUSY` if it is
+/// open in an arena not `arena` ([`in_arena`]), retired, or something is open in it; and as the
+/// store refuses a writer, a point or a public base ([`crate::StoreAccess::may_write`]).
+pub(super) fn take_over(
+    hold: &Hold,
     arena: &Arc<Arena>,
 ) -> Result<Option<Arc<ExtentStore>>, Errno> {
-    close_kept(key).await;
-    let Some((store, retired)) = instance(key) else { return Ok(None) };
+    let Some((store, retired)) = hold.instance() else { return Ok(None) };
+    let key = hold.key();
     if let Err(errno) = in_arena(&store, arena) {
         log::warn!("extentd: {} is open for followers in another arena: {errno}", key.display());
         return Err(errno);
@@ -98,29 +84,37 @@ pub(super) async fn take_over(
     }
 }
 
+/// fxdax: retires `store`, which the connection holding it as `hold` wrote, gone with writes
+/// uncommitted: its followers are cut off, and no connection opens it until they are gone.
+pub(super) fn retire(hold: &Hold, store: &ExtentStore) {
+    store.cut_followers();
+    hold.retire();
+}
+
 /// fxdax: the store at `path` for a follower to follow (backlog doc-8): the one a writer's
 /// connection, or followers', have open; or, if none has, the store opened as of its last commit,
 /// as a writer opens it, its pages of `arena`, which a writer opening it then takes over. `EBUSY`
 /// while a writer is opening it, or it is retired, or open in another arena ([`in_arena`]).
 pub(super) fn followed(path: &Path, arena: &Arc<Arena>) -> Result<Arc<ExtentStore>, Errno> {
-    let open = |key: &Path| match instance(key) {
+    let open = |found: Option<(Arc<ExtentStore>, bool)>| match found {
         Some((_, true)) => Err(Errno::EBUSY),
         Some((store, false)) => in_arena(&store, arena).map(|()| Some(store)),
         None => Ok(None),
     };
-    if let Some(store) = open(&store_key(path))? {
+    let key = store_key(path);
+    if let Some(store) = open(table().instance(&key))? {
         return Ok(store);
     }
     // No other opens it meanwhile: a follower, a writer, or the daemon's work.
-    let held = Held::new(path)?;
-    if let Some(store) = open(&held.0)? {
+    let hold = hold_blocking(&key)?;
+    if let Some(store) = open(hold.instance())? {
         return Ok(store);
     }
     if !path.exists() {
         return Err(Errno::ENOENT);
     }
     let store = Arc::new(open_store(path, None, Some(arena))?);
-    register(&held.0, &store);
+    hold.open(&store);
     Ok(store)
 }
 
@@ -135,7 +129,8 @@ fn in_arena(store: &ExtentStore, arena: &Arc<Arena>) -> Result<(), Errno> {
 /// restored from a snapshot at once opens the store its VM had (TASK-39.1).
 pub(super) const CLOSING_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
 
-/// The path that names the store at `path` in [`open_paths`]: whichever way a request names it.
+/// The path that names the store at `path` in the daemon's [`table`]: whichever way a request
+/// names it.
 pub(super) fn store_key(path: &Path) -> PathBuf {
     if let Ok(path) = path.canonicalize() {
         return path;
@@ -147,45 +142,38 @@ pub(super) fn store_key(path: &Path) -> PathBuf {
     }
 }
 
-/// The daemon holding a store, which no connection opens meanwhile, until it is dropped.
-struct Held(PathBuf);
+/// Holds the store `key` names for the daemon, which no connection opens meanwhile: `EBUSY` while
+/// a connection writes it, once a connection whose VM process is gone lets it go, waiting at most
+/// [`CLOSING_WAIT`]. fxdax: the point kept open of it for forks, if any, closed: the daemon's work
+/// on it but forking it has it alone (TASK-92.5). It blocks.
+fn hold_blocking(key: &Path) -> Result<Hold, Errno> {
+    let hold = table().hold(key, Some(CLOSING_WAIT))?;
+    close_point_blocking(hold.take_point());
+    Ok(hold)
+}
 
-impl Held {
-    /// Holds the store at `path`: `EBUSY` while a connection has it open, once a connection whose
-    /// VM process is gone lets it go, waiting at most [`CLOSING_WAIT`]. fxdax: the point kept open
-    /// of it for forks ([`kept`]), if any, closed: the daemon's work on it but forking it has it
-    /// alone (TASK-92.5). It blocks.
-    fn new(path: &Path) -> Result<Self, Errno> {
-        let key = store_key(path);
-        open_paths().hold(&key, Weak::new(), Some(CLOSING_WAIT))?;
-        close_kept_now(&key);
-        Ok(Self(key))
-    }
+/// Holds the store at `path` for the daemon, as [`hold_blocking`] does, holding no thread while
+/// it waits.
+async fn hold(path: &Path) -> Result<Hold, Errno> {
+    let hold = hold_to_fork(path).await?;
+    close_point(hold.take_point()).await;
+    Ok(hold)
+}
 
-    /// Holds the store at `path`, as [`Held::new`] does, holding no thread while it waits.
-    async fn acquire(path: &Path) -> Result<Self, Errno> {
-        let held = Self::to_fork(path).await?;
-        close_kept(&held.0).await;
-        Ok(held)
-    }
+/// fxdax: holds the store at `path` for the daemon, as [`hold`] does, but for the point kept open
+/// of it, which it leaves open: to fork it, or open it to ([`point`]).
+async fn hold_to_fork(path: &Path) -> Result<Hold, Errno> {
+    table().hold_async(&store_key(path), CLOSING_WAIT).await
+}
 
-    /// fxdax: holds the store at `path`, as [`Held::acquire`] does, but for the point kept open of
-    /// it, which it leaves open: to fork it, or open it to ([`point`]).
-    async fn to_fork(path: &Path) -> Result<Self, Errno> {
-        let key = store_key(path);
-        open_paths().hold_async(&key, Weak::new(), CLOSING_WAIT).await?;
-        Ok(Self(key))
+/// Holds the store at `path` for the daemon, as [`hold`] does: `EBUSY` while followers have it
+/// open too.
+async fn hold_alone(path: &Path) -> Result<Hold, Errno> {
+    let hold = hold(path).await?;
+    if hold.instance().is_some() {
+        return Err(Errno::EBUSY);
     }
-
-    /// Holds the store at `path`, as [`Held::acquire`] does: `EBUSY` while followers have it open
-    /// too.
-    async fn alone(path: &Path) -> Result<Self, Errno> {
-        let held = Self::acquire(path).await?;
-        if instance(&held.0).is_some() {
-            return Err(Errno::EBUSY);
-        }
-        Ok(held)
-    }
+    Ok(hold)
 }
 
 /// Runs `work`, which blocks, on one of the runtime's blocking threads, and returns what it
@@ -199,13 +187,21 @@ pub(super) async fn blocking<T: Send + 'static>(
     })
 }
 
-/// A store the daemon works on, and what holds its path meanwhile, if anything does, dropped in
-/// that order (TASK-79.34): the path is let go only once the store, one the daemon opened, is
-/// closed, whoever drops it last, a call or a blocking thread whose work a cancelled call left
-/// going.
-struct HeldStore {
+/// A store the daemon works on, and what it lets go of once the store is closed, if anything,
+/// dropped in that order (TASK-79.34): the daemon's hold of its path is let go only once the
+/// store, one the daemon opened, is closed, whoever drops it last, a call or a blocking thread
+/// whose work a cancelled call left going.
+pub(super) struct HeldStore {
     store: Arc<ExtentStore>,
-    _held: Option<Box<dyn Send + Sync>>,
+    _then: Option<Then>,
+}
+
+/// What a store the daemon works on lets go of once it is closed ([`HeldStore`]).
+enum Then {
+    /// The daemon's hold of its path.
+    LetGo { _hold: Hold },
+    /// fxdax: what says a point kept open is closed, to what closes it ([`Point`]).
+    SayClosed { _closing: futures::channel::oneshot::Sender<std::convert::Infallible> },
 }
 
 impl Borrow<ExtentStore> for HeldStore {
@@ -220,16 +216,16 @@ impl Borrow<ExtentStore> for HeldStore {
 struct Here(Option<Arc<HeldStore>>);
 
 impl Here {
-    /// The store at `path`, opened on a blocking thread ([`open_here`]), which `held` holds.
-    async fn open(path: &Path, held: Option<Box<dyn Send + Sync>>) -> Result<Self, Errno> {
+    /// The store at `path`, opened on a blocking thread ([`open_here`]), which `hold` holds.
+    async fn open(path: &Path, hold: Hold) -> Result<Self, Errno> {
         let path = path.to_owned();
-        let open = move || Ok(HeldStore { store: Arc::new(open_here(&path)?), _held: held });
+        let open = move || Ok(HeldStore::new(Arc::new(open_here(&path)?), Some(hold)));
         Ok(Self(Some(Arc::new(blocking(open).await?))))
     }
 
-    /// `store`, open for connections, which `held` holds, if anything does.
-    fn of(store: Arc<ExtentStore>, held: Option<Box<dyn Send + Sync>>) -> Self {
-        Self(Some(Arc::new(HeldStore { store, _held: held })))
+    /// `store`, which `hold` holds, if anything does: one open for connections, or opened here.
+    fn of(store: Arc<ExtentStore>, hold: Option<Hold>) -> Self {
+        Self(Some(Arc::new(HeldStore::new(store, hold))))
     }
 
     /// fxdax: `point`, a point kept open for forks ([`keep`]).
@@ -239,6 +235,13 @@ impl Here {
 
     fn store(&self) -> &Arc<HeldStore> {
         self.0.as_ref().expect("an open store")
+    }
+}
+
+impl HeldStore {
+    /// `store`, which `hold` holds, if anything does.
+    fn new(store: Arc<ExtentStore>, hold: Option<Hold>) -> Self {
+        Self { store, _then: hold.map(|_hold| Then::LetGo { _hold }) }
     }
 }
 
@@ -278,64 +281,58 @@ const LINGER: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// fxdax: a point the daemon opened to fork, kept open for the forks after it ([`keep`]): its
 /// store, which they fork at once, as it is; what says it is closed, to what closes it, once the
-/// forks forking it are done; and when it was last forked.
-struct Point {
+/// forks forking it are done; and when it was last forked. Kept in the daemon's [`table`], at the
+/// key of the store it is, of which no connection has anything open: what holds the store's path
+/// to work on it, but to fork it, closes the point first ([`hold`], [`hold_to_write`]).
+pub(super) struct Point {
     store: Arc<HeldStore>,
     closed: futures::channel::oneshot::Receiver<std::convert::Infallible>,
     forked: std::time::Instant,
 }
 
-/// fxdax: the points kept open, by their keys (TASK-92.5). None is of a store a connection has
-/// open, nor followers: what holds a store's path to work on it, but to fork it, closes the point
-/// kept of it first ([`Held`], [`take_over`]).
-fn points() -> &'static Mutex<HashMap<PathBuf, Point>> {
-    static POINTS: OnceLock<Mutex<HashMap<PathBuf, Point>>> = OnceLock::new();
-    POINTS.get_or_init(Default::default)
-}
-
 /// fxdax: the point kept open at `key`, if one is, forked now.
 fn kept(key: &Path) -> Option<Arc<HeldStore>> {
-    let mut points = points().lock().unwrap();
-    let point = points.get_mut(key)?;
-    point.forked = std::time::Instant::now();
-    Some(point.store.clone())
+    table().point(key, |point| {
+        point.forked = std::time::Instant::now();
+        point.store.clone()
+    })
 }
 
 /// fxdax: when `point`, kept open at `key`, was last forked, if it is kept still.
 fn forked(key: &Path, point: &Weak<HeldStore>) -> Option<std::time::Instant> {
-    let points = points().lock().unwrap();
-    let kept =
-        points.get(key).filter(|kept| std::ptr::eq(Arc::as_ptr(&kept.store), point.as_ptr()));
-    kept.map(|kept| kept.forked)
+    let kept = |kept: &mut Point| std::ptr::eq(Arc::as_ptr(&kept.store), point.as_ptr());
+    table().point(key, |point| kept(point).then_some(point.forked)).flatten()
 }
 
-/// fxdax: keeps `store`, opened at `key` to fork, open for the forks after it (TASK-92.5), until
-/// none forks it for [`LINGER`] ([`let_go_when_idle`]), a fork of it fails ([`let_go_failed`]),
-/// or the daemon holds its path to work on it otherwise. Its caller holds the path.
-fn keep(key: &Path, store: ExtentStore) -> Arc<HeldStore> {
+/// fxdax: keeps `store`, opened to fork at the key `hold` holds, open for the forks after it
+/// (TASK-92.5), until none forks it for [`LINGER`] ([`let_go_when_idle`]), a fork of it fails
+/// ([`let_go_failed`]), or the daemon holds its path to work on it otherwise, or a connection to
+/// write it.
+fn keep(hold: &Hold, store: ExtentStore) -> Arc<HeldStore> {
     let (closing, closed) = futures::channel::oneshot::channel();
     // What says it is closed goes after the store.
-    let store = Arc::new(HeldStore { store: Arc::new(store), _held: Some(Box::new(closing)) });
-    let point = Point { store: store.clone(), closed, forked: std::time::Instant::now() };
-    let replaced = points().lock().unwrap().insert(key.to_owned(), point);
-    assert!(replaced.is_none(), "two points kept open of {}", key.display());
+    let store = Arc::new(HeldStore {
+        store: Arc::new(store),
+        _then: Some(Then::SayClosed { _closing: closing }),
+    });
+    hold.keep(Point { store: store.clone(), closed, forked: std::time::Instant::now() });
     // On the runtime that lives as long as the daemon, whatever its caller's.
-    super::server::IO.spawn(let_go_when_idle(key.to_owned(), Arc::downgrade(&store)));
+    super::server::IO.spawn(let_go_when_idle(hold.key().to_owned(), Arc::downgrade(&store)));
     store
 }
 
-/// fxdax: closes the point kept open at `key`, if one is, and returns once it is closed: once the
-/// forks forking it are done. It blocks.
-fn close_kept_now(key: &Path) {
-    let Some(Point { store, closed, .. }) = points().lock().unwrap().remove(key) else { return };
+/// fxdax: closes `point`, if given, a point kept open its holder took, and returns once it is
+/// closed: once the forks forking it are done. It blocks.
+fn close_point_blocking(point: Option<Point>) {
+    let Some(Point { store, closed, .. }) = point else { return };
     drop(store);
     let _ = futures::executor::block_on(closed);
 }
 
-/// fxdax: closes the point kept open at `key`, as [`close_kept_now`] does, holding no thread while
-/// it waits, its closing on a blocking thread.
-async fn close_kept(key: &Path) {
-    let Some(Point { store, closed, .. }) = points().lock().unwrap().remove(key) else { return };
+/// fxdax: closes `point`, as [`close_point_blocking`] does, holding no thread while it waits, its
+/// closing on a blocking thread.
+async fn close_point(point: Option<Point>) {
+    let Some(Point { store, closed, .. }) = point else { return };
     drop(tokio::task::spawn_blocking(move || drop(store)));
     let _ = closed.await;
 }
@@ -349,9 +346,9 @@ async fn let_go_when_idle(key: PathBuf, point: Weak<HeldStore>) {
         match LINGER.checked_sub(last.elapsed()).filter(|left| !left.is_zero()) {
             Some(left) => tokio::time::sleep(left).await,
             None => {
-                let Ok(_held) = Held::to_fork(&key).await else { return };
+                let Ok(hold) = hold_to_fork(&key).await else { return };
                 if forked(&key, &point).is_some_and(|last| last.elapsed() >= LINGER) {
-                    return close_kept(&key).await;
+                    return close_point(hold.take_point()).await;
                 }
             }
         }
@@ -366,9 +363,9 @@ async fn let_go_failed(key: &Path, point: Weak<HeldStore>) {
     if forked(key, &point).is_none() {
         return;
     }
-    let Ok(_held) = Held::to_fork(key).await else { return };
+    let Ok(hold) = hold_to_fork(key).await else { return };
     if forked(key, &point).is_some() {
-        close_kept(key).await;
+        close_point(hold.take_point()).await;
     }
 }
 
@@ -428,22 +425,15 @@ where
     (**store).borrow().uploaded(epoch).await
 }
 
-impl Drop for Held {
-    fn drop(&mut self) {
-        // Those waiting to open it may.
-        open_paths().release(&self.0);
-    }
-}
-
 /// The store a connection has open at `path`, if one has, whose VM process isn't gone: one going
-/// is let go once its last commits are durable, which [`Held::new`] waits for. fxdax: or, with no
+/// is let go once its last commits are durable, which [`hold`] waits for. fxdax: or, with no
 /// writer's connection, its followers' (backlog doc-8).
 fn open_by_connection(path: &Path) -> Option<Arc<ExtentStore>> {
     let key = store_key(path);
-    match open_paths().holder(&key) {
-        Some(holder) if holder.going() => None,
-        Some(holder) => holder.store().cloned(),
-        None => instance(&key).map(|(store, _)| store),
+    match table().writer(&key) {
+        Some(writer) if writer.going() => None,
+        Some(writer) => writer.store(),
+        None => table().instance(&key).map(|(store, _)| store),
     }
 }
 
@@ -473,7 +463,7 @@ pub(super) fn open_store(
 /// arena, if public, or `arena`: `EBUSY` in another's, whose pages the connection's VM process
 /// doesn't hold.
 fn base(path: &Path, arena: Option<&Arc<Arena>>) -> Result<Arc<ExtentStore>, Errno> {
-    let open = |key: &Path| match instance(key) {
+    let open = |found: Option<(Arc<ExtentStore>, bool)>| match found {
         Some((_, true)) => Err(Errno::EBUSY),
         Some((store, false)) if store.is_public() => Ok(Some(store)),
         Some((store, false)) => {
@@ -482,18 +472,19 @@ fn base(path: &Path, arena: Option<&Arc<Arena>>) -> Result<Arc<ExtentStore>, Err
         }
         None => Ok(None),
     };
-    if let Some(store) = open(&store_key(path))? {
+    let key = store_key(path);
+    if let Some(store) = open(table().instance(&key))? {
         return Ok(store);
     }
-    let held = Held::new(path)?;
-    if let Some(store) = open(&held.0)? {
+    let hold = hold_blocking(&key)?;
+    if let Some(store) = open(hold.instance())? {
         return Ok(store);
     }
     if !path.exists() {
         return Err(Errno::ENOENT);
     }
     let store = Arc::new(attached(path, || ExtentStore::open_base(path, arena.cloned()))?);
-    register(&held.0, &store);
+    hold.open(&store);
     Ok(store)
 }
 
@@ -508,11 +499,10 @@ pub(super) async fn attach(
         std::io::ErrorKind::NotFound => Errno::ENOENT,
         _ => Errno::EIO,
     })?;
-    let (public, ancestry) = match instance(&store_key(&base)) {
+    let (public, ancestry) = match table().instance(&store_key(&base)) {
         Some((store, _)) => (store.is_public(), store.ancestry()),
         None => {
-            let held = Held::acquire(&base).await?;
-            let here = Here::open(&base, Some(Box::new(held))).await?;
+            let here = Here::open(&base, hold(&base).await?).await?;
             let what = (here.store().store.is_public(), here.store().store.ancestry());
             here.close().await;
             what
@@ -524,7 +514,7 @@ pub(super) async fn attach(
     if let Some(store) = open_by_connection(&path) {
         return blocking(move || store.attach_base(&base, &ancestry)).await;
     }
-    let held = Held::acquire(&path).await?;
+    let held = hold(&path).await?;
     blocking(move || {
         let _held = held;
         if !path.exists() {
@@ -583,7 +573,7 @@ pub(super) async fn create(
     branch: Option<u64>,
     token: Option<u64>,
 ) -> Result<u64, Errno> {
-    let held = Held::acquire(&path).await?;
+    let held = hold(&path).await?;
     blocking(move || {
         // Let go of once the work is done, though the call may give up on it before.
         let _held = held;
@@ -611,7 +601,7 @@ pub(super) async fn import(
     image: PathBuf,
     reference: Option<String>,
 ) -> Result<u64, Errno> {
-    let held = Held::acquire(&path).await?;
+    let held = hold(&path).await?;
     blocking(move || {
         let _held = held;
         if path.exists() {
@@ -725,15 +715,15 @@ async fn point(from: &Path, branch: u64, capacity: u64) -> Result<(Arc<HeldStore
     if let Some(point) = kept(&store_key(from)) {
         return Ok((point, Opened::Before));
     }
-    let held = Held::to_fork(from).await?;
+    let hold = hold_to_fork(from).await?;
     // Opened by a restore that held it before, beside this one.
-    if let Some(point) = kept(&held.0) {
+    if let Some(point) = kept(hold.key()) {
         return Ok((point, Opened::Now));
     }
-    if let Some((store, _)) = instance(&held.0) {
-        return Ok((Arc::new(HeldStore { store, _held: Some(Box::new(held)) }), Opened::Now));
+    if let Some((store, _)) = hold.instance() {
+        return Ok((Arc::new(HeldStore::new(store, Some(hold))), Opened::Now));
     }
-    Ok((keep(&held.0, take_store(from, branch, capacity)?), Opened::Now))
+    Ok((keep(&hold, take_store(from, branch, capacity)?), Opened::Now))
 }
 
 /// Forks the store at `from` to a new branch, `branch`, at `to`: live, if a connection has it
@@ -756,7 +746,7 @@ pub(super) async fn fork(
     branch: u64,
     point: bool,
 ) -> Result<u64, Errno> {
-    let _child = Held::to_fork(&to).await?;
+    let _child = hold_to_fork(&to).await?;
     let key = store_key(&from);
     let named = branch != 0;
     let new = || if named { branch } else { crate::host_store::new_branch() };
@@ -783,26 +773,28 @@ async fn fork_held(
     key: &Path,
 ) -> Result<(), Errno> {
     let live = |connection: &Connection| {
-        let store = connection.store().cloned()?;
-        Some(Forked { store: Here::of(store, None), live: true })
+        Some(Forked { store: Here::of(connection.store()?, None), live: true })
     };
-    let open = |held: Option<Released<'static, Connection>>| async {
-        let held = held.map(|held| Box::new(held) as Box<dyn Send + Sync>);
-        if let Some((store, _)) = instance(key) {
-            return Ok(Forked { store: Here::of(store, held), live: true });
+    let open = |hold: Option<Hold>| async {
+        if let Some((store, _)) = table().instance(key) {
+            return Ok(Forked { store: Here::of(store, hold), live: true });
         }
         // Opened by a restore that held it before.
         if let Some(point) = kept(key) {
             return Ok(Forked { store: Here::kept(point), live: false });
         }
-        // Let go of once kept.
         let opening = from.to_owned();
-        let point = keep(key, blocking(move || open_here(&opening)).await?);
-        Ok(Forked { store: Here::kept(point), live: false })
+        let store = blocking(move || open_here(&opening)).await?;
+        let store = match hold {
+            // Let go of once kept.
+            Some(hold) => Here::kept(keep(&hold, store)),
+            None => Here::of(Arc::new(store), None),
+        };
+        Ok(Forked { store, live: false })
     };
     let forking = match kept(key) {
         Some(point) => Forked { store: Here::kept(point), live: false },
-        None => store_requests::forking(open_paths(), key, live, CLOSING_WAIT, open).await?,
+        None => store_requests::forking(table(), key, live, CLOSING_WAIT, open).await?,
     };
     let (store, live) = (forking.store.store().clone(), forking.live);
     let held = Arc::downgrade(&store);
@@ -837,8 +829,7 @@ pub(super) async fn sync(path: PathBuf) -> Result<(), Errno> {
     if let Some(store) = open_by_connection(&path) {
         return uploaded(&store).await;
     }
-    let held = Held::acquire(&path).await?;
-    let here = Here::open(&path, Some(Box::new(held))).await?;
+    let here = Here::open(&path, hold(&path).await?).await?;
     let synced = uploaded(here.store()).await;
     here.close().await;
     synced
@@ -866,7 +857,7 @@ async fn delete_alone(
     path: PathBuf,
     bucket: Option<Arc<extent_remote::store::Store>>,
 ) -> Result<(), Errno> {
-    let held = Held::alone(&path).await?;
+    let held = hold_alone(&path).await?;
     blocking(move || {
         let _held = held;
         ExtentStore::delete(&path, bucket.as_deref())
@@ -883,34 +874,33 @@ async fn delete_alone(
 /// (`EROFS`).
 pub(super) async fn resize(path: PathBuf, capacity: u64) -> Result<(), Errno> {
     let key = store_key(&path);
-    let open = |held: Option<Released<'static, Connection>>| {
+    let open = |hold: Option<Hold>| {
         let key = key.clone();
-        let held = held.map(|held| Box::new(held) as Box<dyn Send + Sync>);
         blocking(move || {
             // fxdax: open for followers, it grows as it is; the point kept open of it for forks,
             // it opens anew, closed first (TASK-92.5): attached, as any store the daemon opens,
             // which says whether it is a point (TASK-160.10).
-            let store = match instance(&key) {
+            let store = match table().instance(&key) {
                 Some((store, _)) => store,
                 None => {
-                    close_kept_now(&key);
+                    close_point_blocking(hold.as_ref().and_then(Hold::take_point));
                     if !key.exists() {
                         return Err(Errno::ENOENT);
                     }
                     Arc::new(open_here(&key)?)
                 }
             };
-            Ok(Here::of(store, held))
+            Ok(Here::of(store, hold))
         })
     };
-    store_requests::resize(open_paths(), &key, capacity, open).await
+    store_requests::resize(table(), &key, capacity, open).await
 }
 
 /// Places the store at `path`, or the fork whose handle it is, at the placement whose fencing
 /// token is `token` ([`ExtentStore::place`]): `EBUSY` while a connection has it open, whose
 /// writer took its branch with the token it had.
 pub(super) async fn place(path: PathBuf, token: u64) -> Result<(), Errno> {
-    let held = Held::alone(&path).await?;
+    let held = hold_alone(&path).await?;
     blocking(move || {
         let _held = held;
         ExtentStore::place(&path, token)
@@ -923,7 +913,7 @@ pub(super) async fn place(path: PathBuf, token: u64) -> Result<(), Errno> {
 /// ([`ExtentStore::make_public`]): `EBUSY` while a connection has it open, whose guest could
 /// write it still.
 pub(super) async fn make_public(path: PathBuf, generation: bool) -> Result<(), Errno> {
-    let held = Held::alone(&path).await?;
+    let held = hold_alone(&path).await?;
     blocking(move || {
         let _held = held;
         let store = ExtentStore::open_without_profile(&path)
@@ -966,12 +956,7 @@ fn state_of(store: &ExtentStore, open: bool) -> Result<StoreState, Errno> {
 /// The stores connections have open, writers' and followers', by their paths, with what each is
 /// and holds (TASK-50.5).
 pub(super) fn list() -> Result<Vec<(PathBuf, StoreState)>, Errno> {
-    let stores: Vec<(PathBuf, Arc<ExtentStore>)> = {
-        let instances = instances().lock().unwrap();
-        (instances.iter())
-            .filter_map(|(path, (store, _))| Some((path.clone(), store.upgrade()?)))
-            .collect()
-    };
+    let stores = table().instances();
     stores.into_iter().map(|(path, store)| Ok((path, state_of(&store, true)?))).collect()
 }
 
@@ -980,7 +965,7 @@ pub(super) async fn stat(path: PathBuf) -> Result<StoreState, Errno> {
     if let Some(store) = open_by_connection(&path) {
         return state_of(&store, true);
     }
-    let held = Held::acquire(&path).await?;
+    let held = hold(&path).await?;
     blocking(move || {
         let _held = held;
         if !path.exists() {
@@ -1003,13 +988,12 @@ pub(super) fn bucket_stats() -> Option<extent_remote::store::Stats> {
 
 /// How many stores connections have open, to write (`metrics`).
 pub(super) fn open_count() -> usize {
-    open_paths().held_by_holders()
+    table().writers()
 }
 
 /// fxdax: the stores open for connections, writers' and followers'.
 fn open_instances() -> Vec<Arc<ExtentStore>> {
-    let instances = instances().lock().unwrap();
-    instances.values().filter_map(|(store, _)| store.upgrade()).collect()
+    table().instances().into_iter().map(|(_, store)| store).collect()
 }
 
 /// The branches of the stores open for connections whose commits upload now, and what their
