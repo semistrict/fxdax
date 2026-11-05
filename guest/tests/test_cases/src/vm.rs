@@ -956,14 +956,29 @@ mod tests {
             std::fs::write(&path, console).unwrap();
             complaints(&path).map_err(|err| err.to_string())
         };
-        let kcsan = |functions: &str, change: &str| {
+        // A report of `functions`, with each access of `accesses`, "read (marked)" or the like,
+        // and the function at its stack's top.
+        let kcsan_of = |functions: &str, accesses: &[(&str, &str)], change: &str| {
+            let accesses: String = (accesses.iter())
+                .map(|(access, function)| {
+                    format!(
+                        "[ 1.0] {access} to 0xffffea0000306840 of 8 bytes by task 7 on cpu 0:\n\
+                         [ 1.0]  {function}+0x10/0x20\n\
+                         [ 1.0]  worker_thread+0x413/0x730\n\
+                         [ 1.0] \n"
+                    )
+                })
+                .collect();
             format!(
                 "[ 1.0] ==================================================================\n\
                  [ 1.0] BUG: KCSAN: data-race in {functions}\n\
+                 [ 1.0] \n\
+                 {accesses}\
                  [ 1.0] value changed: {change}\n\
                  [ 1.0] ==================================================================\n"
             )
         };
+        let kcsan = |functions: &str, change: &str| kcsan_of(functions, &[], change);
         assert_eq!(checked("quiet.console.txt", "[ 0.1] Linux version 6.18\n"), Ok(()));
         let warned = "[ 2.0] WARNING: CPU: 1 PID: 7 at fs/fxfs/dax.c:120 fxfs_dax_seal+0x1/0x2\n";
         assert_eq!(
@@ -974,12 +989,61 @@ mod tests {
         assert_eq!(checked("theirs.console.txt", &theirs), Ok(()));
         let reviewed = kcsan("fxfs_dax_seal+0x10/0x20 / kthread_is_per_cpu", "0x40000 -> 0x0");
         assert_eq!(checked("reviewed.console.txt", &reviewed), Ok(()));
-        let peer = kcsan("folio_batch_move_lru / fxfs_vfs_read_folios+0x1b3/0x1f0", "0x1 -> 0x8");
+        // A folio's flags, which a reviewed peer reads plainly as fxdax's code changes them,
+        // marked: its reads finishing (r565, r611), or a page_mkwrite's lock as writeback holds it
+        // (r611).
+        let peer = kcsan_of(
+            "folio_batch_move_lru / fxfs_vfs_read_folios+0x1b3/0x1f0",
+            &[("write (marked)", "fxfs_vfs_read_folios"), ("read", "folio_batch_move_lru")],
+            "0x1 -> 0x8",
+        );
         assert_eq!(checked("peer.console.txt", &peer), Ok(()));
         // The same race, as KCSAN named it for lru_add inlined into folio_batch_move_lru (r565).
-        let inlined =
-            kcsan("fxfs_vfs_read_folios / lru_add", "0x000fffe000000001 -> 0x000fffe000000008");
+        let inlined = kcsan_of(
+            "fxfs_vfs_read_folios / lru_add",
+            &[("write (marked)", "fxfs_vfs_read_folios"), ("read", "lru_add")],
+            "0x000fffe000000001 -> 0x000fffe000000008",
+        );
         assert_eq!(checked("inlined-peer.console.txt", &inlined), Ok(()));
+        let generations = kcsan_of(
+            "fxfs_vfs_read_folios / lru_gen_add_folio",
+            &[("write (marked)", "fxfs_vfs_read_folios"), ("read", "lru_gen_add_folio")],
+            "0x000fffe000000001 -> 0x000fffe000000008",
+        );
+        assert_eq!(checked("generations-peer.console.txt", &generations), Ok(()));
+        let put = kcsan_of(
+            "folios_put_refs / fxfs_vfs_read_folios",
+            &[("write (marked)", "fxfs_vfs_read_folios"), ("read", "folios_put_refs")],
+            "0x000fffe000000021 -> 0x000fffe000000028",
+        );
+        assert_eq!(checked("put-peer.console.txt", &put), Ok(()));
+        let mkwrite = kcsan_of(
+            "__lruvec_stat_mod_folio / fxfs_vfs_page_mkwrite",
+            &[
+                ("read-write (marked)", "fxfs_vfs_page_mkwrite"),
+                ("read", "__lruvec_stat_mod_folio"),
+            ],
+            "0x000fffe00000412d -> 0x000fffe0000041ad",
+        );
+        assert_eq!(checked("mkwrite-peer.console.txt", &mkwrite), Ok(()));
+        // fxdax's side plain, or not in the report: a race of its own, whatever its peer.
+        let plain = kcsan_of(
+            "fxfs_vfs_read_folios / lru_gen_add_folio",
+            &[("write", "fxfs_vfs_read_folios"), ("read", "lru_gen_add_folio")],
+            "0x1 -> 0x8",
+        );
+        let unsaid = kcsan("fxfs_vfs_read_folios / lru_gen_add_folio", "0x1 -> 0x8");
+        for (name, console) in [("plain-peer.console.txt", plain), ("unsaid.console.txt", unsaid)] {
+            assert_eq!(
+                checked(name, &console),
+                Err(format!(
+                    "a kernel complained: {:#?}",
+                    vec![
+                        "[ 1.0] BUG: KCSAN: data-race in fxfs_vfs_read_folios / lru_gen_add_folio"
+                    ]
+                ))
+            );
+        }
         let ours =
             kcsan("fxfs_dax_region_open+0x10/0x20 / fxfs_dax_map_to+0x30/0x40", "0x0 -> 0x1");
         assert_eq!(
@@ -1002,12 +1066,27 @@ mod tests {
 /// word, read whole (the scheduler's kthread_is_per_cpu, for PF_KTHREAD; mem_cgroup_from_task).
 const KCSAN_REVIEWED_CHANGE: u64 = 0x0004_0000;
 
-/// The functions of the kernel's whose races with fxdax's code KCSAN reports, looked into:
-/// folio_batch_move_lru reads a folio's flags, a folio new to the LRU, as the worker that read it
-/// (fxfs_vfs_read_folios) marks it uptodate and unlocks it, for any bits of the word, as the
-/// reads of any filesystem finishing on another thread race it. KCSAN names lru_add for the same
-/// race where it's inlined into folio_batch_move_lru (GCE r565, TASK-168).
-const KCSAN_REVIEWED_PEERS: [&str; 2] = ["folio_batch_move_lru", "lru_add"];
+/// The functions of the kernel's whose races with fxdax's code KCSAN reports, looked into: each
+/// reads a folio's flags plainly, for a field of the word that doesn't change while the folio is
+/// in the page cache (its zone, its node), as fxdax's code changes the folio's flag bits through
+/// the folio API, atomically, as any filesystem's does. folio_batch_move_lru reads a folio new to
+/// the LRU as the worker that read it (fxfs_vfs_read_folios) marks it uptodate and unlocks it, as
+/// the reads of any filesystem finishing on another thread race it; KCSAN names lru_add for the
+/// same race where it's inlined into folio_batch_move_lru (GCE r565, TASK-168), and
+/// lru_gen_add_folio, the multi-gen LRU's, for its folio_zonenum (r611, r613), and
+/// folios_put_refs, where folio_batch_move_lru puts its batch, for its folio_is_zone_device (r617).
+/// __lruvec_stat_mod_folio reads a folio's node (folio_pgdat) as writeback cleans it, holding its
+/// lock, and a store's page_mkwrite (fxfs_vfs_page_mkwrite) locks it, which sets PG_waiters as it
+/// waits, as filemap_page_mkwrite does (r611). Reviewed only while fxdax's side of the race is
+/// marked: a plain access of its own to a folio's flags would be a race of fxdax's, whichever of
+/// the kernel's functions met it (TASK-44.8.1).
+const KCSAN_REVIEWED_PEERS: [&str; 5] = [
+    "folio_batch_move_lru",
+    "lru_add",
+    "lru_gen_add_folio",
+    "folios_put_refs",
+    "__lruvec_stat_mod_folio",
+];
 
 /// Whether the kernel's function `function` is fxdax's code's: fs/fxfs's, its Rust's
 /// (whose mangled names name its crates, fxfs and fxfs_linux), or virtio_extent's.
@@ -1030,6 +1109,33 @@ fn ours(function: &str) -> bool {
     function.contains("fxfs")
         || function.starts_with("vext_")
         || function.starts_with("virtio_extent")
+}
+
+/// The function of a frame or of a KCSAN report's title, "FUNCTION[+OFFSET/LENGTH]".
+fn function_of(frame: &str) -> &str {
+    frame.trim().split('+').next().unwrap_or_default()
+}
+
+/// One of the accesses a KCSAN report says raced: the function at the top of its stack, and
+/// whether the access was marked (an atomic, a bit operation, READ_ONCE) or plain.
+struct KcsanAccess<'a> {
+    function: &'a str,
+    marked: bool,
+}
+
+/// The accesses of a KCSAN report, its lines after its title: each a line "read-write (marked) to
+/// 0xADDRESS of 8 bytes by task 1 on cpu 0:", or "race at unknown origin, with read to ...", and
+/// its stack on the lines after.
+fn kcsan_accesses<'a>(report: &[&'a str]) -> Vec<KcsanAccess<'a>> {
+    let text = |line: &'a str| line.split_once("] ").map_or(line, |(_, text)| text).trim();
+    report
+        .windows(2)
+        .filter(|pair| text(pair[0]).contains(" to 0x") && text(pair[0]).ends_with(':'))
+        .map(|pair| KcsanAccess {
+            function: function_of(text(pair[1])),
+            marked: text(pair[0]).contains("(marked)"),
+        })
+        .collect()
 }
 
 /// What a kernel says as it finds itself wrong: a WARN_ON's, a BUG's, lockdep's, KCSAN's, and
@@ -1058,22 +1164,28 @@ pub fn complaints(console: &Path) -> anyhow::Result<()> {
             continue;
         }
         // "BUG: KCSAN: data-race in FUNCTION[+OFFSET/LENGTH][ / FUNCTION[+...]]", then the
-        // report, to a line of '='s, which says "value changed: 0xOLD -> 0xNEW".
+        // report, to a line of '='s: its accesses, each with its stack, and "value changed:
+        // 0xOLD -> 0xNEW".
         if let Some((_, functions)) = line.split_once("BUG: KCSAN: data-race in ") {
-            let names: Vec<&str> = (functions.split(" / "))
-                .map(|function| function.trim().split('+').next().unwrap_or_default())
-                .collect();
+            let names: Vec<&str> = functions.split(" / ").map(function_of).collect();
             let of_ours = names.iter().any(|function| ours(function));
-            let reviewed = names.iter().any(|function| KCSAN_REVIEWED_PEERS.contains(function));
-            let report = lines[at + 1..].iter().take_while(|line| !line.contains("=========="));
-            let changed = report.filter_map(|line| line.split_once("value changed: ")).find_map(
-                |(_, change)| {
+            let rest = &lines[at + 1..];
+            let report = &rest
+                [..rest.iter().position(|line| line.contains("==========")).unwrap_or(rest.len())];
+            let accesses = kcsan_accesses(report);
+            let ours_marked = accesses.iter().any(|access| ours(access.function))
+                && accesses.iter().all(|access| access.marked || !ours(access.function));
+            let reviewed =
+                ours_marked && names.iter().any(|function| KCSAN_REVIEWED_PEERS.contains(function));
+            let changed = report
+                .iter()
+                .filter_map(|line| line.split_once("value changed: "))
+                .find_map(|(_, change)| {
                     let (old, new) = change.split_once(" -> ")?;
                     let word =
                         |hex: &str| u64::from_str_radix(hex.trim().strip_prefix("0x")?, 16).ok();
                     Some(word(old)? ^ word(new)?)
-                },
-            );
+                });
             if !of_ours || reviewed || changed == Some(KCSAN_REVIEWED_CHANGE) {
                 continue;
             }
