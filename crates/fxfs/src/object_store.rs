@@ -11,7 +11,9 @@
 // guest kernel's page cache (TASK-80). A store may have layers of a base, a volume another
 // filesystem wrote, below its own (StoreInfoV61, `ObjectStore::manifest`, backlog doc-10). What stops
 // a transaction is what it takes of the journal (`Transaction::room`), not the number of mutations
-// upstream's TRANSACTION_MUTATION_THRESHOLD stood for it with.
+// upstream's TRANSACTION_MUTATION_THRESHOLD stood for it with. An unlinked object is tombstoned in
+// a transaction of its caller's by `ObjectStore::txn_tombstone_unlinked` alone, which the
+// graveyard's batches (`tombstone_objects`), purging unlinks and fxfs-posix's queued unlinks call.
 
 pub mod allocator;
 pub mod base_layer;
@@ -1565,16 +1567,15 @@ impl ObjectStore {
     }
 
     /// fxdax: tombstones the objects `object_ids`, which are in the graveyard, as `tombstone_object`
-    /// does each, but as many to a transaction as fit: a small file's tombstone is a few
-    /// mutations, which a transaction of its own costs several times over. An object with more
-    /// than one attribute, or more extents than fit, is finished on its own.
+    /// does each, but as many to a transaction as fit (`txn_tombstone_unlinked`): a small file's
+    /// tombstone is a few mutations, which a transaction of its own costs several times over. An
+    /// object with more than one attribute, or more extents than fit, is finished on its own.
     pub async fn tombstone_objects(
         &self,
         object_ids: &[u64],
         txn_options: Options<'_>,
     ) -> Result<(), Error> {
-        // The most objects a transaction tombstones: the locks it takes, whatever room it has. One
-        // that fills it is finished on its own too, as `trim_some` stops there.
+        // The most objects a transaction tombstones: the locks it takes, whatever room it has.
         const BATCH_OBJECTS: usize = 32;
         let fs = self.filesystem();
         let store_id = self.store_object_id;
@@ -1584,7 +1585,6 @@ impl ObjectStore {
             let mut truncate_keys = LockKeys::with_capacity(batch.len());
             let mut keys = LockKeys::with_capacity(2 * batch.len());
             for &object_id in batch {
-                self.key_manager.remove(object_id).await;
                 truncate_keys.push(LockKey::truncate(store_id, object_id));
                 keys.push(LockKey::object_attribute(
                     store_id,
@@ -1598,23 +1598,13 @@ impl ObjectStore {
             let mut unfinished = Vec::new();
             let mut done = 0;
             for &object_id in batch {
+                done += 1;
+                if !self.txn_tombstone_unlinked(&mut transaction, object_id).await? {
+                    unfinished.push(object_id);
+                }
+                // What a full transaction leaves goes in the next.
                 if transaction.is_full() {
                     break;
-                }
-                done += 1;
-                let mode = TrimMode::Tombstone(TombstoneMode::Object);
-                match self
-                    .trim_some(&mut transaction, object_id, AttributeId::SORTED_START, mode)
-                    .await?
-                {
-                    TrimResult::Done(None) => {
-                        self.remove_from_graveyard(&mut transaction, object_id)
-                    }
-                    TrimResult::Done(Some(_)) => unfinished.push(object_id),
-                    TrimResult::Incomplete => {
-                        unfinished.push(object_id);
-                        break;
-                    }
                 }
             }
             if transaction.mutations().is_empty() {
@@ -1983,11 +1973,72 @@ impl ObjectStore {
         Ok(result)
     }
 
+    /// fxdax: tombstones `object_id`, which has no names left, in `transaction`, as the graveyard's
+    /// `tombstone_object` would in transactions of its own: and returns whether it did. What
+    /// tombstones an unlinked object in a transaction of its caller's does so here: the graveyard's
+    /// batches (`tombstone_objects`), an unlink that frees what it unlinks (fxfs-posix's queued
+    /// unlinks, `replace_child_with_purge`). The caller holds the object's lock, its attributes'
+    /// (AttributeId::SORTED_START) and its truncate lock.
+    ///
+    /// The object is in the graveyard, or this fails, as `tombstone_object` does: its entry is the
+    /// transaction's own, which the unlink of its last name adds (`adjust_refs`), or the tree's;
+    /// or both, the tree's a truncate's trim, which ran out of room before it removed it. A
+    /// tombstone takes the entry with it, whichever it is: the transaction's is taken back, the
+    /// tree's removed (TASK-82: fsck found a trim's entry of an object gone).
+    ///
+    /// It doesn't tombstone, and leaves the object in the graveyard, whatever it frees of it, if
+    /// the transaction is full or fills first, the object having more extents than it has room
+    /// for, or if the object has attributes other than its data. An object with nothing allocated,
+    /// as files never written are, has no extents to walk.
+    pub async fn txn_tombstone_unlinked(
+        &self,
+        transaction: &mut Transaction<'_>,
+        object_id: u64,
+    ) -> Result<bool, Error> {
+        if transaction.is_full() {
+            return Ok(false);
+        }
+        let entry = ObjectKey::graveyard_entry(self.graveyard_directory_object_id(), object_id);
+        let in_tree = self.tree.find(&entry).await?.is_some();
+        let in_graveyard =
+            match transaction.get_object_mutation(self.store_object_id, entry.clone()) {
+                Some(mutation) => mutation.item.value != ObjectValue::None,
+                None => in_tree,
+            };
+        ensure!(
+            in_graveyard,
+            anyhow!(FxfsError::Inconsistent).context("Tombstoning object not in graveyard")
+        );
+        self.key_manager.remove(object_id).await;
+        let tombstoned = self.tombstone_if_unallocated(transaction, object_id).await?
+            || matches!(
+                self.trim_some(
+                    transaction,
+                    object_id,
+                    AttributeId::SORTED_START,
+                    TrimMode::Tombstone(TombstoneMode::Object),
+                )
+                .await?,
+                TrimResult::Done(None)
+            );
+        if tombstoned {
+            if in_tree {
+                self.remove_from_graveyard(transaction, object_id);
+            } else {
+                transaction.remove(
+                    self.store_object_id,
+                    Mutation::replace_or_insert_object(entry, ObjectValue::None),
+                );
+            }
+        }
+        Ok(tombstoned)
+    }
+
     /// fxdax: tombstones `object_id` in `transaction`, if it has nothing allocated, as `trim_some`
     /// (TrimMode::Tombstone(TombstoneMode::Object)) would, without walking its extents, of which
-    /// it has none: and returns whether it did. An object with storage allocated (a trim of it
-    /// may be in the graveyard too) is left to `trim_some`.
-    pub async fn tombstone_if_unallocated(
+    /// it has none: and returns whether it did. An object with storage allocated is left to
+    /// `trim_some`. Nor has it attributes in the graveyard, which their writes' extents put there.
+    async fn tombstone_if_unallocated(
         &self,
         transaction: &mut Transaction<'_>,
         object_id: u64,
@@ -3630,7 +3681,7 @@ mod tests {
     use crate::object_store::journal::JournalOptions;
     use crate::object_store::object_record::{AttributeKey, ObjectKey, ObjectKind, ObjectValue};
     use crate::object_store::store_object_handle::MAX_INLINE_XATTR_SIZE;
-    use crate::object_store::transaction::{Options, lock_keys};
+    use crate::object_store::transaction::{LockKeys, Options, lock_keys};
     use crate::object_store::volume::root_volume;
     use crate::serialized_types::{DEFAULT_MAX_SERIALIZED_RECORD_SIZE, Versioned, VersionedLatest};
     use crate::testing;
@@ -3959,8 +4010,6 @@ mod tests {
         fsck(fs.clone()).await.expect("fsck failed");
     }
 
-    /// fxdax: an object with nothing allocated is tombstoned in the caller's transaction; one with
-    /// storage allocated isn't.
     /// fxdax: a store's information may say it has no graveyard, which what adds to one asserts it
     /// has, so it doesn't open.
     #[fuchsia::test]
@@ -4035,73 +4084,114 @@ mod tests {
         fs.close().await.expect("close failed");
     }
 
+    /// fxdax: an unlinked object is tombstoned in its caller's transaction, whatever its graveyard
+    /// entry is (the transaction's own, the tree's, or both, the tree's a trim's), taking the entry
+    /// with it, which the graveyard's count says too; one with attributes other than its data
+    /// stays in the graveyard, and one not in it isn't tombstoned.
     #[fuchsia::test]
-    async fn test_tombstone_if_unallocated() {
+    async fn test_txn_tombstone_unlinked() {
         let fs = test_filesystem().await;
-        let root_store = fs.root_store();
-        let (empty_id, written_id) = {
-            let mut transaction = root_store
-                .new_transaction(lock_keys![], Options::default())
-                .await
-                .expect("new_transaction failed");
-            let empty = ObjectStore::create_object(
-                &root_store,
-                &mut transaction,
-                HandleOptions::default(),
-                None,
-            )
-            .await
-            .expect("create_object failed");
-            let written = ObjectStore::create_object(
-                &root_store,
-                &mut transaction,
-                HandleOptions::default(),
-                None,
-            )
-            .await
-            .expect("create_object failed");
-            transaction.commit().await.expect("commit failed");
-            let mut buffer = written.allocate_buffer(8192).await;
-            buffer.fill(0xaa);
-            written.write_or_append(Some(0), buffer.as_ref()).await.expect("write failed");
-            (empty.object_id(), written.object_id())
+        let store = fs.root_store();
+        let store_id = store.store_object_id();
+        let entry = |object_id| {
+            ObjectKey::graveyard_entry(store.graveyard_directory_object_id(), object_id)
         };
-
-        let store_id = root_store.store_object_id();
-        let mut transaction = root_store
-            .new_transaction(
-                lock_keys![
-                    LockKey::object(store_id, empty_id),
-                    LockKey::object(store_id, written_id)
-                ],
-                Options::default(),
-            )
+        let mut transaction = store
+            .new_transaction(lock_keys![], Options::default())
             .await
             .expect("new_transaction failed");
+        let mut handles = Vec::new();
+        for _ in 0..5 {
+            handles.push(
+                ObjectStore::create_object(
+                    &store,
+                    &mut transaction,
+                    HandleOptions::default(),
+                    None,
+                )
+                .await
+                .expect("create_object failed"),
+            );
+        }
+        transaction.commit().await.expect("commit failed");
+        let [empty, written, trimmed, two_attributes, named] = handles.try_into().ok().unwrap();
+        for handle in [&written, &trimmed, &two_attributes] {
+            let mut buffer = handle.allocate_buffer(8192).await;
+            buffer.fill(0xaa);
+            handle.write_or_append(Some(0), buffer.as_ref()).await.expect("write failed");
+        }
+        two_attributes.write_attr(AttributeId::TEST_ID, b"bar").await.expect("write_attr failed");
+        let ids = [&empty, &written, &trimmed, &two_attributes, &named].map(|h| h.object_id());
+        let [empty, written, trimmed, two_attributes, named] = ids;
+
+        // Before: the empty object's entry and the trim of another in the tree.
+        let graveyard_count = store.graveyard_count();
+        let mut transaction = store
+            .new_transaction(lock_keys![LockKey::object(store_id, empty)], Options::default())
+            .await
+            .expect("new_transaction failed");
+        store.add_to_graveyard(&mut transaction, empty);
+        transaction
+            .add(store_id, Mutation::replace_or_insert_object(entry(trimmed), ObjectValue::Trim));
+        transaction.commit().await.expect("commit failed");
+        assert_eq!(store.graveyard_count(), graveyard_count + 2);
+
+        // The unlinks of the others' last names put them in the graveyard in the transaction that
+        // tombstones them.
+        let mut keys = LockKeys::with_capacity(2 * ids.len());
+        for object_id in ids {
+            keys.push(LockKey::object(store_id, object_id));
+            keys.push(LockKey::object_attribute(store_id, object_id, AttributeId::SORTED_START));
+        }
+        let mut transaction =
+            store.new_transaction(keys, Options::default()).await.expect("new_transaction failed");
+        for object_id in [written, trimmed, two_attributes] {
+            assert!(store.adjust_refs(&mut transaction, object_id, -1).await.expect("adjust_refs"));
+        }
+        for object_id in [empty, written, trimmed] {
+            assert!(
+                store
+                    .txn_tombstone_unlinked(&mut transaction, object_id)
+                    .await
+                    .expect("tombstone failed"),
+                "{object_id} not tombstoned"
+            );
+        }
         assert!(
-            root_store
-                .tombstone_if_unallocated(&mut transaction, empty_id)
+            !store
+                .txn_tombstone_unlinked(&mut transaction, two_attributes)
                 .await
                 .expect("tombstone failed")
         );
-        assert!(
-            !root_store
-                .tombstone_if_unallocated(&mut transaction, written_id)
-                .await
-                .expect("tombstone failed")
-        );
+        let error = store
+            .txn_tombstone_unlinked(&mut transaction, named)
+            .await
+            .expect_err("tombstoned what isn't in the graveyard");
+        assert!(FxfsError::Inconsistent.matches(&error), "{error:?}");
         transaction.commit().await.expect("commit failed");
 
-        let error = ObjectStore::open_object(&root_store, empty_id, HandleOptions::default(), None)
-            .await
-            .err()
-            .expect("open_object succeeded");
-        assert!(FxfsError::NotFound.matches(&error));
-        ObjectStore::open_object(&root_store, written_id, HandleOptions::default(), None)
-            .await
-            .expect("open_object failed");
-        // Let fsck check allocations.
+        for object_id in [empty, written, trimmed] {
+            assert!(store.tree().find(&entry(object_id)).await.expect("find").is_none());
+            let error = ObjectStore::open_object(&store, object_id, HandleOptions::default(), None)
+                .await
+                .err()
+                .expect("open_object succeeded");
+            assert!(FxfsError::NotFound.matches(&error), "{error:?}");
+        }
+        assert!(store.tree().find(&entry(two_attributes)).await.expect("find").is_some());
+        assert_eq!(store.graveyard_count(), graveyard_count + 1);
+        // Let fsck check allocations, and that no entry is left of an object gone.
         fsck(fs.clone()).await.expect("fsck failed");
+
+        // The graveyard finishes what it left. (Its count isn't checked: `trim_or_tombstone`
+        // removes an attribute's entry there never was, which it counts.)
+        store
+            .tombstone_object(two_attributes, Options::default(), None)
+            .await
+            .expect("tombstone failed");
+        assert!(store.tree().find(&entry(two_attributes)).await.expect("find").is_none());
+        fsck(fs.clone()).await.expect("fsck failed");
+        fs.close().await.expect("close failed");
     }
 
     #[fuchsia::test]

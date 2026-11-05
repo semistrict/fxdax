@@ -1,0 +1,21 @@
+--- a/crates/fxfs/src/object_store.rs
++++ b/crates/fxfs/src/object_store.rs
+@@ -2022,14 +2022,10 @@
+                 TrimResult::Done(None)
+             );
+         if tombstoned {
+-            if in_tree {
+-                self.remove_from_graveyard(transaction, object_id);
+-            } else {
+-                transaction.remove(
+-                    self.store_object_id,
+-                    Mutation::replace_or_insert_object(entry, ObjectValue::None),
+-                );
+-            }
++            transaction.remove(
++                self.store_object_id,
++                Mutation::replace_or_insert_object(entry, ObjectValue::None),
++            );
+         }
+         Ok(tombstoned)
+     }

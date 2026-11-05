@@ -37,7 +37,7 @@ use fxfs::object_store::{
     AttributeId, AttributeKey, DataObjectHandle, Directory, ExtentAccess, FileExtent,
     HandleOptions, MAX_INLINE_XATTR_SIZE, MAX_XATTR_NAME_SIZE, MAX_XATTR_VALUE_SIZE,
     ObjectDescriptor, ObjectKey, ObjectKind, ObjectStore, ObjectValue, SetExtendedAttributeMode,
-    StoreObjectHandle, Timestamp, TombstoneMode, TrimMode, TrimResult,
+    StoreObjectHandle, Timestamp,
 };
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::collections::{BTreeMap, BTreeSet};
@@ -1403,7 +1403,7 @@ impl<P: Platform> Fxfs<P> {
 
     /// Makes `ops`, queued in order, in one transaction: unlinks, then evictions, which free the
     /// inodes whose last names went: in it, as the graveyard would, when the inode's unlink is in
-    /// it too (`tombstone_now`), or through the graveyard.
+    /// it too (`ObjectStore::txn_tombstone_unlinked`), or through the graveyard.
     async fn apply_unlinks(&self, ops: &[DelayedOp]) -> Result<(), Error> {
         let store = self.volume.store_object_id();
         let mut unlinked: Vec<u64> = ops
@@ -1416,8 +1416,9 @@ impl<P: Platform> Fxfs<P> {
         unlinked.sort_unstable();
         unlinked.dedup();
         // The inodes freed here, rather than through the graveyard.
-        let mut freed = Vec::new();
-        if !unlinked.is_empty() {
+        let freed = if unlinked.is_empty() {
+            Vec::new()
+        } else {
             // As `replace_transaction` takes them: what is replaced can't be freed meanwhile.
             let mut guards = Vec::with_capacity(unlinked.len());
             for &ino in &unlinked {
@@ -1448,10 +1449,7 @@ impl<P: Platform> Fxfs<P> {
             let mut inos = unlinked.clone();
             inos.extend(
                 dirs.iter()
-                    .filter(|(_, directory)| {
-                        let dir_type = directory.dir_type();
-                        dir_type.is_casefold() || dir_type.is_encrypted()
-                    })
+                    .filter(|(_, directory)| !directory.names_are_keys())
                     .map(|(dir, _)| *dir),
             );
             // Removing a name is what lets a full filesystem free space.
@@ -1473,49 +1471,34 @@ impl<P: Platform> Fxfs<P> {
             for op in ops {
                 if let DelayedOp::Unlink { dir, name, ino } = op {
                     let directory = &dirs[dir];
-                    let dir_type = directory.dir_type();
-                    if dir_type.is_casefold() || dir_type.is_encrypted() {
+                    // What the kernel says a name links, which it needn't look up where the name
+                    // is its key, leaving the times of the inode and the directory, which the
+                    // kernel writes back with them.
+                    let last_name = if directory.names_are_keys() {
+                        directory.txn_remove_known_child(&mut transaction, name, *ino).await?
+                    } else {
                         let replaced =
                             replace_child(&mut transaction, None, (directory, name)).await?;
                         check_replaced(&replaced, Some(*ino))?;
-                        if let ReplacedChild::Object(ino) = replaced {
-                            last_names.push(ino);
-                        }
-                        continue;
-                    }
-                    // fxdax: as `replace_child` removes a name, but for what the kernel says it
-                    // links, a file, symlink or special file, which it needn't look up: and the
-                    // times of the inode and the directory, which the kernel writes back with
-                    // them.
-                    transaction.add(
-                        store,
-                        Mutation::replace_or_insert_object(
-                            ObjectKey::child(*dir, name, dir_type),
-                            ObjectValue::None,
-                        ),
-                    );
-                    if self.volume.adjust_refs_impl(&mut transaction, *ino, -1, true).await? {
+                        matches!(replaced, ReplacedChild::Object(_))
+                    };
+                    if last_name {
                         last_names.push(*ino);
                     }
                 }
             }
+            // What a full transaction leaves goes through the graveyard.
             let mut tombstoned = Vec::new();
-            // What a full transaction leaves goes through the graveyard: each that went on would
-            // add its next extent all the same, past what the transaction may take.
             for &ino in &evicted {
-                if !transaction.is_full()
-                    && last_names.contains(&ino)
-                    && self.tombstone_now(&mut transaction, ino).await?
+                if last_names.contains(&ino)
+                    && self.volume.txn_tombstone_unlinked(&mut transaction, ino).await?
                 {
                     tombstoned.push(ino);
                 }
             }
             transaction.commit().await?;
-            for ino in tombstoned {
-                self.volume.key_manager.remove(ino).await;
-                freed.push(ino);
-            }
-        }
+            tombstoned
+        };
         for op in ops {
             if let DelayedOp::Evict { ino } = op
                 && !freed.contains(ino)
@@ -1524,49 +1507,6 @@ impl<P: Platform> Fxfs<P> {
             }
         }
         Ok(())
-    }
-
-    /// fxdax: tombstones `ino`, whose last name `transaction` removes, putting it in the graveyard,
-    /// in `transaction` rather than the graveyard: as the graveyard would (`tombstone_objects`),
-    /// and out of it again. False if it can't wholly, which leaves the rest to the graveyard: an
-    /// object with more extents than the transaction has room for, or more attributes, or one in
-    /// the graveyard already, which its entry's kind (a trim) may concern. An object with nothing
-    /// allocated, as files never written are, has no extents to walk: but it may be in the
-    /// graveyard still, a truncate's trim, which ran out of room before it removed its entry, which
-    /// goes with the object, as the graveyard's tombstone removes it (TASK-82: fsck found the
-    /// entry of an object gone).
-    async fn tombstone_now(
-        &self,
-        transaction: &mut Transaction<'_>,
-        ino: u64,
-    ) -> Result<bool, Error> {
-        let store = &self.volume;
-        let entry = ObjectKey::graveyard_entry(store.graveyard_directory_object_id(), ino);
-        let in_graveyard = store.tree().find(&entry).await?.is_some();
-        let tombstoned = store.tombstone_if_unallocated(transaction, ino).await?
-            || (!in_graveyard
-                && matches!(
-                    store
-                        .trim_some(
-                            transaction,
-                            ino,
-                            AttributeId::SORTED_START,
-                            TrimMode::Tombstone(TombstoneMode::Object),
-                        )
-                        .await?,
-                    TrimResult::Done(None)
-                ));
-        if tombstoned {
-            // The entry `transaction` adds, which a graveyard's tombstone would remove.
-            transaction.remove(
-                store.store_object_id(),
-                Mutation::replace_or_insert_object(entry, ObjectValue::Some),
-            );
-            if in_graveyard {
-                store.remove_from_graveyard(transaction, ino);
-            }
-        }
-        Ok(tombstoned)
     }
 
     /// Sets the attributes of the object `ino` that `set` says.
