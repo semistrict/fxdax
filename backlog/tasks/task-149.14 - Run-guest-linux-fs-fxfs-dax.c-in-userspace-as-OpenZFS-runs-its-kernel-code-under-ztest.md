@@ -6,7 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-11-01 06:38'
-updated_date: '2026-11-03 02:10'
+updated_date: '2026-11-05 03:05'
 labels: []
 dependencies: []
 parent_task_id: TASK-149
@@ -18,6 +18,8 @@ ordinal: 500
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
 Most fixes (about 72% of 231 recent ones) are in DAX and the guest kernel, and dax.c can only run in a VM, on GCE, so its failures take hours to pin down and nothing shrinks them. OpenZFS builds its kernel code into a userspace library, libzpool, with a fake kernel underneath, and ztest stresses it in parallel, killing itself with SIGKILL as a power cut, reopening the same pool, and running on every push through zloop.sh (~/src/zfs: cmd/ztest.c, scripts/zloop.sh). Measured: dax.c is 5,259 lines making 229 distinct kernel calls, 38 of them MM and 27 VFS. User-Mode Linux can't do this: FS_DAX needs ZONE_DEVICE, which needs memory hotplug UML lacks, and it is x86-only. The code under test stays real and the kernel beneath it is fake, so locks become scheduling points, giving seeded interleavings in C, which Shuttle can't reach. Real page tables and fs/dax.c are simulated, so guests remain the check of what the shim gets wrong. Rank: above TASK-149.2 if the spike works, as its script generator then drives this too.
+
+At 9f81f6018 (writable DAX deleted, 37c331a6c): dax.c is 3,968 lines and moves no page, so the fault check (the AC on faulting again) is reset only by something other than a fault unmapping a page: a rebind's MAP over it (fxfs_dax_rebind, guest/linux/fs/fxfs/dax.c:2168), an UNMAP of a range (fxfs_dax_drop_pinned, dax.c:1647), a truncate or punch. A writeback's write-protect (fxfs_dax_protect, dax.c:2054-2069) makes the next store fault, not a load. The sim still counts faults in one global, sim_mm_faults (guest/sim/kernel/mm.c:459, 479), read by tests/read_mappings_stay.c alone. Patch 0010 still exists (guest/linux/patches/0010-dax-read-replaces-no-entry-naming-its-page.patch).
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria
@@ -28,8 +30,8 @@ Most fixes (about 72% of 231 recent ones) are in DAX and the guest kernel, and d
 - [x] #4 Stores carry a generation, so a stale or zero read is caught, as ztest's txg stamps catch temporal incursions
 - [x] #5 Reintroducing a past DAX bug (a moved-unmapped mutant) fails
 - [ ] #6 It runs in CI on every push, as zloop does
-- [ ] #7 Every scenario and seed checks that a load faults again on a page its mapping already held only after dax.c moved the page or something other than a fault unmapped it
-- [ ] #8 With patch 0010 taken out, interleave fails that check, with no scenario written for it
+- [ ] #7 Every scenario and seed checks that a load faults again on a page its mapping already held only after something other than a fault unmapped it (a rebind's MAP over it, an UNMAP, a truncate or punch), counted per mapping and page in guest/sim/kernel/mm.c
+- [ ] #8 With patch 0010 taken out, interleave fails the fault check above, with no scenario written for it
 <!-- AC:END -->
 
 ## Definition of Done

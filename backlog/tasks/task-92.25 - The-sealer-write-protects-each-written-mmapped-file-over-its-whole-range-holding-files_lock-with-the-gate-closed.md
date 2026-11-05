@@ -3,9 +3,10 @@ id: TASK-92.25
 title: >-
   The sealer write-protects each written, mmapped file over its whole range,
   holding files_lock, with the gate closed
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-10-22 21:06'
+updated_date: '2026-11-05 03:07'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -39,3 +40,9 @@ Found by the 2026-10-21 review of main at 6a0a3f8 (severity medium): docs/review
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Obsolete: made so by the deletion of writable DAX (37c331a6c). Nothing a seal does write-protects any more: fxfs_dax_seal's whole-range wp_shared_mapping_range(mapping, 0, ULONG_MAX) under files_lock, range->writable and the gate that drained stores (fxfs_device_store_begin/end) are gone. What replaced it: each writeback write-protects only the dirty runs of the pages it took (fxfs_dax_protect, guest/linux/fs/fxfs/dax.c:2054-2069, called from fxfs_dax_write_back at 2140), holding only its file's writeback lock, after its semaphore is let go; the seal (fxfs_device_seal_begin/end, guest/linux/fs/fxfs/device.c:167-192) waits for no stores. Nothing was measured, so the ACs stay unchecked.
+<!-- SECTION:FINAL_SUMMARY:END -->

@@ -5,7 +5,7 @@ status: To Do
 assignee:
   - '@claude'
 created_date: '2026-11-01 06:13'
-updated_date: '2026-11-03 02:10'
+updated_date: '2026-11-05 03:05'
 labels: []
 dependencies: []
 parent_task_id: TASK-149
@@ -17,6 +17,8 @@ ordinal: 503000
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
 Most bugs are in DAX, where random_ops runs but failures take hours to pin down: no operation script to replay and no shrinking, and few failures combined. This brings the model test's method to a real guest, on top of TASK-44.15's oracle: scripts of mmap, DAX writes, reads through mappings of the same file, fork, truncate, a nearly full disk and VM kills, generated on the host from a seed.
+
+At 9f81f6018 (writable DAX deleted, 37c331a6c): the past bugs AC5 named went with writable DAX: TASK-140's livelock (its mutant guest/sim/mutants/task-140-read-only-slice.patch, deleted) and the moved-unmapped mutants (no page moves now). Copy-on-write DAX's own are in guest/sim/mutants: unmapped-page-read-as-hole (a load reading zeros where read(2) reads a write's bytes) and the task-164.4-* writeback mutants, such as task-164.4-protect-by-entries (a fault's writable PTE left across a writeback, then a store the host refuses).
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria
@@ -25,7 +27,7 @@ Most bugs are in DAX, where random_ops runs but failures take hours to pin down:
 - [ ] #2 A failing script shrinks to a smaller one that still fails, in a VM
 - [ ] #3 Scripts combine mappings, fork, a nearly full disk and a VM killed at a random point
 - [ ] #4 Each file is checked against a model, after a kill as after a clean stop
-- [ ] #5 Reintroducing a past DAX bug (TASK-140's livelock, or a moved-unmapped mutant) fails, shrunk
+- [ ] #5 Reintroducing a past copy-on-write DAX bug (guest/sim/mutants/unmapped-page-read-as-hole.patch, or task-164.4-protect-by-entries.patch) fails in a VM, shrunk
 <!-- AC:END -->
 
 ## Definition of Done

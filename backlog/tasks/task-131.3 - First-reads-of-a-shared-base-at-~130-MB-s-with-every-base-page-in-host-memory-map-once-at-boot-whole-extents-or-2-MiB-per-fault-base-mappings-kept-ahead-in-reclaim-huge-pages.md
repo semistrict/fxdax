@@ -7,7 +7,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-10-29 21:13'
-updated_date: '2026-10-30 01:41'
+updated_date: '2026-11-05 03:06'
 labels:
   - performance
 dependencies: []
@@ -20,6 +20,8 @@ ordinal: 474000
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
 Sandbox team round 8: VMs finding every base page in memory still read at ~130 MB/s. Options they list: map a fork's base into the window once at boot; map whole extents or 2 MiB per fault; keep base mappings ahead of writable ones when the window reclaims; huge pages. TASK-112.1 cut a first read of /usr from 2.31 s to 0.69 s with MAP_AHEAD (nested n2).
+
+At 9f81f6018 (writable DAX deleted, 37c331a6c): the window holds no writable mappings, only sealed extents and zeros, read-only, and private pages on the host, so the option of keeping base mappings ahead of writable ones when the window reclaims no longer applies; the window reclaims the least recently used range no iomap uses (fxfs_dax_reclaim, guest/linux/fs/fxfs/dax.c:1253-). MAP_AHEAD is still the device's (guest/linux/include/linux/virtio_extent.h).
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria

@@ -3,9 +3,10 @@ id: TASK-149.26
 title: >-
   Scenarios for the mutants no seed finds: task-153.3-lag-under-a-pte and the
   rest
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-11-03 12:42'
+updated_date: '2026-11-05 03:07'
 labels: []
 dependencies: []
 parent_task_id: TASK-149
@@ -31,3 +32,9 @@ guest/sim/mutants.sh at TASK-150.21 (patch 0012) leaves six mutants uncaught in 
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Obsolete: made so by the deletion of writable DAX (37c331a6c). Five of the six mutants went with the code they mutated: patch-0008-pmd-entry-not-split (patch 0008 deleted), task-150.14-unlisted-bits, task-153.3-refused-slice-stale, task-153.6-lag-past-the-end and task-153.3-lag-under-a-pte (lagging pages and refused slices deleted); none is in guest/sim/mutants any more. The sixth, task-153.1-fault-limit, is recorded as equivalent under copy-on-write in guest/sim/README.md:186 (nothing else drops a fault's slice for ever; with TASK-140's bug, gone with writable DAX, it was a livelock), as task-79.28-range-too-small is at README.md:189. Nothing was run here, so the ACs stay unchecked.
+<!-- SECTION:FINAL_SUMMARY:END -->
