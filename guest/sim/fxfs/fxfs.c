@@ -430,18 +430,26 @@ int fxfs_fsync(struct fxfs *fs)
 
 /*
  * zero_tail, a file `size` bytes long's, as its last block's multi_write has it: the block moves, to
- * a block holding what it held up to `size`, written through the device. A seal between would
- * have it tried again: the model takes no scheduling point in it.
+ * a block holding what it held up to `size`, written through the device; unless it holds zeros past
+ * `size` already, when it stays, as Fxfs's txn_zero_tail leaves it (TASK-149.29: the model moved
+ * it, and every growth of a file whose last block was partial left that block open, to be sealed
+ * again, where Fxfs's stays as it was, sealed and shared alike). A seal between would have it tried
+ * again: the model takes no scheduling point in it.
  */
 static void move_tail(struct fxfs *fs, struct stub_file *file, u64 size)
 {
 	u64 at = size >> PAGE_SHIFT, in_extent;
 	struct stub_extent *extent;
 	char data[PAGE_SIZE];
+	size_t i;
 
 	if (!offset_in_page(size) || at >= file->nr_blocks || !file->blocks[at].sequence)
 		return;
 	read_block(fs, &file->blocks[at], data);
+	for (i = offset_in_page(size); i < PAGE_SIZE && !data[i]; i++)
+		;
+	if (i == PAGE_SIZE)
+		return;
 	memset(data + offset_in_page(size), 0, PAGE_SIZE - offset_in_page(size));
 	in_extent = take_staged(fs, 1, &extent);
 	put_block(fs, &file->blocks[at]);

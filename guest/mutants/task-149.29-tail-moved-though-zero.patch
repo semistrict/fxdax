@@ -1,0 +1,30 @@
+# SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
+# Copyright 2026 The fxdax Authors.
+#
+# Kernel: model
+# Killer: fxfs-sim-diff the_models_past_drifts_from_fxfs
+#
+# TASK-149.29, the model of Fxfs's own: zero_tail moves a file's last block whatever it holds past
+# the end, where Fxfs's txn_zero_tail leaves a block holding zeros there as it is: every growth of a
+# file whose last block is partial left that block in an extent of its own, open, unshared.
+# crates/fxfs-sim-diff, its growth past a tail of zeros, shared: blocks shared, the model's none,
+# Fxfs's the clone's. guest/sim's own tests can't see it: dax.c is right either way.
+
+--- a/guest/sim/fxfs/fxfs.c
++++ b/guest/sim/fxfs/fxfs.c
+@@ -441,15 +441,10 @@
+ 	u64 at = size >> PAGE_SHIFT, in_extent;
+ 	struct stub_extent *extent;
+ 	char data[PAGE_SIZE];
+-	size_t i;
+ 
+ 	if (!offset_in_page(size) || at >= file->nr_blocks || !file->blocks[at].sequence)
+ 		return;
+ 	read_block(fs, &file->blocks[at], data);
+-	for (i = offset_in_page(size); i < PAGE_SIZE && !data[i]; i++)
+-		;
+-	if (i == PAGE_SIZE)
+-		return;
+ 	memset(data + offset_in_page(size), 0, PAGE_SIZE - offset_in_page(size));
+ 	in_extent = take_staged(fs, 1, &extent);
+ 	put_block(fs, &file->blocks[at]);
