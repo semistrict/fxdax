@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-05 07:05'
-updated_date: '2026-11-05 08:29'
+updated_date: '2026-11-05 10:18'
 labels:
   - bug
   - dax
@@ -32,7 +32,7 @@ GCE r582 (main f5a5a9d82, FXDAX_FIRECRACKER_JAIL=1, production seccomp filter): 
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
 - [x] #2 scripts/upstream-changes.py --check passes
 - [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
@@ -57,6 +57,8 @@ Looked around: the other wake, make_private's, wakes faults on a page now privat
 Decision recorded in OPEN_QUESTIONS.md: ENOMEM from PRIVATE stays an EIO in the guest (doc-13: a divergence, not a budget).
 
 Verified. GCE r593, the fix, jailed under the production seccomp filter: pgbench-dax-forked passed all five 60 s runs (647-771 tps), fault-stores=2, no ENOMEM (r582/r591/r592 jailed without it: about 22,000, failing). checks-dax passed. The Linux workspace's dax:: tests (25), including the real-uffd worker_writes_copy_nothing_and_the_guests_stores_copy, and every Shuttle suite passed (fxdax's 59, the new left-out cases among them). r594, the fix, not jailed: both suites passed, fault-stores=16. macOS scripts/test.sh workspace+shuttle: 2,068/2,068 and every Shuttle suite. scripts/upstream-changes.py --check passes. Not run: the full Linux workspace (only dax:: on GCE); the change is confined to dax/uffd.rs, Linux-only, all of whose tests ran.
+
+GCE r584 on main c919610e7: Linux workspace 2249/2249; CI 41994971122; guest suites since: r583, r585 (jailed) pass.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

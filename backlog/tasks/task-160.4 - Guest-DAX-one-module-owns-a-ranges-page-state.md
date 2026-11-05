@@ -1,11 +1,11 @@
 ---
 id: TASK-160.4
 title: 'Guest DAX: one module owns a range''s page state'
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-03 13:08'
-updated_date: '2026-11-05 05:46'
+updated_date: '2026-11-05 10:18'
 labels:
   - structure
 dependencies:
@@ -24,16 +24,16 @@ Re-scoped 2026-11-04 after writable DAX was deleted (doc-13): the writable and l
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 No bitmap of a range is read or edited outside one module (pages.c), which dax.c sees only through named transitions and queries
-- [ ] #2 The module checks its invariants (dirty implies private, private and zeros imply mapped) at each transition
-- [ ] #3 guest/sim's mutants of page state, rewritten against the module, are still caught: task-164.4-forget-before-free, task-164.4-rebind-dirty, task-164.4-writeback-unowned, task-164.9-private-failure-ignored, task-164.4-swap-shared, task-164.4-private-uncounted, unmapped-page-read-as-hole
+- [x] #1 No bitmap of a range is read or edited outside one module (pages.c), which dax.c sees only through named transitions and queries
+- [x] #2 The module checks its invariants (dirty implies private, private and zeros imply mapped) at each transition
+- [x] #3 guest/sim's mutants of page state, rewritten against the module, are still caught: task-164.4-forget-before-free, task-164.4-rebind-dirty, task-164.4-writeback-unowned, task-164.9-private-failure-ignored, task-164.4-swap-shared, task-164.4-private-uncounted, unmapped-page-read-as-hole
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -57,4 +57,12 @@ Verified: guest/sim check.sh -s 300 0 failed; zloop.sh -s 3000 passed (199 s); m
 Since: fill no longer WARNs on pages mapped already, but on private ones: task-164.4-extents-during-seal showed fxfs_dax_map_pages' retry after an -EPERM maps again over the pages its first try mapped, which is right (a MAP over an extent's or zeros' read-only page); a MAP over a private page but a rebind's is what loses bytes. fill also clears `zeros` for an extent's pages. That mutant is caught as the README says, by the EPERM tripwire (cow_rebind_against_stores first). Full mutants run: every mutant caught but the five known; zloop.sh -s 3000 passed again; kernel builds.
 
 GCE r570 (real seccomp): fxfs-guest-dax passed, the other three killed by the VMM's seccomp (TASK-169, host side). GCE r571 (FXDAX_FIRECRACKER_SECCOMP=log): all four DAX suites passed.
+
+GCE r584 on main c919610e7: Linux workspace 2249/2249; CI 41994971122; guest suites since: r583, r585 (jailed) pass.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+pages.{c,h} owns a range's four page-state bitmaps (mapped, zeros, private, dirty) behind named transitions (fill, dirty, swap, rebind, cut, unmap) and queries, checking dirty=>private and private/zeros=>mapped at each; dax.c can't see inside. guest/sim's page-state mutants all caught; zloop 3000 x3. GCE r584 on main c919610e7: Linux workspace 2249/2249; CI 41994971122; guest suites since: r583, r585 (jailed) pass. A KCSAN report on the dirty bitmap's unlocked read (debug kernel) is being fixed separately.
+<!-- SECTION:FINAL_SUMMARY:END -->

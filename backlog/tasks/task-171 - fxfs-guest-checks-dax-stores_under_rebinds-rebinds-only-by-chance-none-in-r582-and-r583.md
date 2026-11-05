@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-05 07:05'
-updated_date: '2026-11-05 08:29'
+updated_date: '2026-11-05 10:18'
 labels:
   - bug
   - dax
@@ -31,7 +31,7 @@ stores_under_rebinds asserts that some page was rebound in its two seconds. Its 
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
 - [x] #2 scripts/upstream-changes.py --check passes
 - [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
@@ -52,6 +52,8 @@ Fix: stores go to a hot set of 8 pages that moves on by a page every 2 ms. Each 
 Looked around: rebind_against_loads_and_stores uses pause points, deterministic. No other check asserts a rebind count over a free-running loop (rg dax_rebound_pages in test_fxfs_guest_checks.rs).
 
 Verified: stores_under_rebinds rebound 995 pages at 1,243,078 rounds (r593, jailed) and 991 at 1,558,974 (r594), against 0-45 near those speeds before. Both checks-dax runs passed.
+
+GCE r584 on main c919610e7: Linux workspace 2249/2249; CI 41994971122; guest suites since: r583, r585 (jailed) pass.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

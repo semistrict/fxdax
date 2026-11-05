@@ -1,11 +1,11 @@
 ---
 id: TASK-160.2
 title: 'Guest DAX: resize, punch and clone driven from one module the sim builds'
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-03 13:08'
-updated_date: '2026-11-05 05:46'
+updated_date: '2026-11-05 10:18'
 labels:
   - structure
 dependencies:
@@ -24,15 +24,15 @@ super.c isn't built in guest/sim; its resize, punch, clone and fsync are rewritt
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The sim builds the real resize, punch and clone
-- [ ] #2 A mutant removing the resize rollback is found by the sim
+- [x] #1 The sim builds the real resize, punch and clone
+- [x] #2 A mutant removing the resize rollback is found by the sim
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -54,4 +54,12 @@ AC #2: the model fails a growth in write_inode as fxfs_sim_fail asks (a cut neve
 Verified: kernel builds (arm64, Docker debian:trixie, scripts/build-guest-kernel.sh, after data.c's include order fix); guest/sim check.sh -s 400 0 failed; zloop.sh -s 3000 passed twice (487 s, 456 s); mutants.sh --check 29/0; every mutant caught but the five known (patch-0012, task-153.1, task-164.4-truncate-unwritten, task-79.28-range-too-small, task-44.19), none/2000 each. GCE r570: fxfs-guest-dax passed; the other three killed by Firecracker's seccomp (pread64 in make_private, host side, TASK-169).
 
 GCE r571 (FXDAX_FIRECRACKER_SECCOMP=log, us-west1-b, us-west1-a full): fxfs-guest-dax, fxfs-guest-checks-dax, fxfs-guest-crash-dax and xfstests-fxfs-guest-dax all passed; the log filter logged pread64 alone (TASK-169).
+
+GCE r584 on main c919610e7: Linux workspace 2249/2249; CI 41994971122; guest suites since: r583, r585 (jailed) pass.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+data.c holds resize (with its rollback), fallocate and punch (the partial-page split once) and remap over fxfs_data_ops, one per inode (page cache's, the window's); guest/sim builds it in place of its drifted copies; task-160.2-resize-no-rollback caught by the sim. GCE r584 on main c919610e7: Linux workspace 2249/2249; CI 41994971122; guest suites since: r583, r585 (jailed) pass.
+<!-- SECTION:FINAL_SUMMARY:END -->
