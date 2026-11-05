@@ -3,7 +3,7 @@ id: doc-14
 title: 'Local disk as the bucket''s write-ahead log and cache: one storage engine'
 type: specification
 created_date: '2026-11-05 03:13'
-updated_date: '2026-11-05 03:25'
+updated_date: '2026-11-05 08:13'
 ---
 # Local disk as the bucket's write-ahead log and cache: one storage engine
 
@@ -154,20 +154,34 @@ the commits in turn.
 3. **Close the open segment** if one was left: its data and the whole records of its log (up to the
    first torn one) give its contents; it is framed from its raw file, as `close_left_open` does now,
    and stamped by the new chain. Writes after the last durable commit are dropped, as now.
-4. **Put the WAL after the branch's end** (`extent_remote::wal::rebase`, new):
-   - WAL segments recovery applied before the fence (their footers, at their keys, are in the
-     branch's history) are acknowledged now: dropped from the WAL, into the cache;
-   - the first WAL segment recovery didn't apply (never landed, or landed past a gap and so void)
-     must follow the last segment it applied (the fence's `after`): then it and the rest are
-     restamped on the new chain
-     (their data parts unchanged; a new tail; their own extents at the new writer's keys), and
-     upload as any closed segment;
-   - otherwise another writer moved the branch on: the WAL **diverged**, the store refuses to open
+4. **Put the WAL after the branch's end** (`extent_remote::wal::rebase`, new), by commits, as the
+   branch is after the fence (`wal_after_fence`: the fence may have applied the WAL's own segments,
+   landed since recovery found the end). The WAL keeps its **base**, the commit its first segment
+   was stamped over (the branch's last commit then), rewritten as its prefix is acknowledged:
+   - if the branch's last commit is one of the WAL's, the WAL's segments to it are in the branch:
+     acknowledged now, dropped from the WAL, into the cache;
+   - if the branch's last commit is that one, or the WAL's base, the rest are restamped on the new
+     chain after the fence (`wal_follows`) (their data parts unchanged; a new tail; their own
+     extents at the new writer's keys), and upload as any closed segment;
+   - otherwise another writer's commits moved the branch on: the WAL **diverged**, the store refuses to open
      (`extent_remote::Error::Diverged`, `ESTALE`) until `fxdaxctl take` drops its WAL, losing what
      the guest was never promised (doc-7, Recovery on the same host). An empty WAL never diverges:
      opening a store directory of an empty WAL is how a branch is taken, here or on any host.
    Restamping writes each new file and syncs it before removing the old; a WAL holding both after a
    crash keeps the one stamped last, by their footers' epochs.
+
+   *Changed 2026-11-05 (TASK-165.2), found by the TLA+ spec (model BucketWal's bounds with
+   checkpoints):* this step went by segments first: the WAL segments whose footers recovery read
+   were acknowledged, and the first other one had to follow the fence's `after`. Recovery reads no
+   footer a checkpoint covers, so a WAL whose segments landed and a later writer then checkpointed
+   past them was declared diverged though the branch holds every one of its commits: host A
+   uploads segment 1 and crashes keeping its WAL, host B takes the branch, recovers segment 1,
+   fences and checkpoints, host A takes the branch back, recovers from B's checkpoint, and refuses
+   to open. So was a WAL the branch moved past by an empty fence alone (a takeover that crashed
+   after fencing), its guest's commits dropped by `take` though nothing came after them. By commits,
+   as doc-7's recovery on the same host has it ("if it holds the local ones up to there"), neither
+   diverges, and what decides is what the guest's history is. A segment holding no commit but a
+   fork stamps the base it was stamped over, as one with commits does.
 5. The branch's state is the recovery's, the WAL's footers applied over it. The guest mints from the
    writer's floor (`Chain::next_sequence`).
 
@@ -276,9 +290,11 @@ servers, RustFS and Azurite.
 Its hosts' disks become WALs of stamped segments, and every open on a host with one runs the
 production `wal::rebase`, not the simulation's own re-batching (`World::opened`): the host's side
 of the seam is then in the simulation. Two rules join `Rules`, each shown needed by a seed:
-`wal_follows` (a WAL is put after the branch only if it follows the end recovery found) and
-`wal_after_fence` (rebased after the fence, not before). A crash keeps the WAL or loses it, as
-`disk` is kept or cleared now.
+`wal_follows` (a WAL is put after the branch only if the branch's last commit is one of the WAL's
+or its base; specs/bucket's mutation `NoWalFollows`: a host's WAL put after another host's
+acknowledged commit, which is lost) and `wal_after_fence` (that last commit is the branch's after
+the fence, not as recovery found it; `NoWalAfterFence`: the WAL's own segment, landed between,
+applied twice). A crash keeps the WAL or loses it, as `disk` is kept or cleared now.
 
 **Shuttle** (`extent_store/tests/shuttle`) keeps the write path's scenarios (writers, commits,
 rolling over, framing, flushes failing) and gains the WAL's: the uploader acknowledging while
@@ -291,14 +307,27 @@ protocol's interleavings stay the simulation's.
 late as the last durable, now across: a crash with the disk (WAL replayed) and without it (the
 bucket's prefix, at least as late as the last acknowledged), reopening against a memory bucket.
 
-**TLA+** (`specs/bucket/Bucket.tla`, TASK-165.2, the task's AC #3; TASK-44.5's AC #1): leases with
-fencing tokens, the fence, dense create-only segments linked by `after`, acknowledging after a
-lease read, hosts crashing with or without their WAL and rebasing it, forks recorded after their
-acknowledgement, points, and the collector listing first. Invariants: no acknowledged commit is
-lost; every branch's history is a path of its own commits; no ID is minted twice; nothing a live
-branch needs is deleted. One mutation per `Rules` field, each a counterexample, run by
-`make check-tla`. The simulation found TASK-79.18 and 79.3 only after the fact; TLC exhausts the
-small cases instead of sampling them. It comes before the code that changes the protocol.
+**TLA+** (`specs/bucket/Bucket.tla`, TASK-165.2, the task's AC #3; TASK-44.5's AC #1), written
+before the code that changes the protocol: leases with fencing tokens, the fence, dense
+create-only segments linked by `after`, acknowledging after a lease read, hosts crashing with or
+without their WAL and rebasing it after the fence, forks recorded after their acknowledgement,
+failed forks' deletions, points and their restores, placements, and one collector listing first,
+compacting segments and moves. Invariants: no acknowledged commit is lost (`NoAckedLost`); every
+live branch's history is a path of its own commits, each applied once, holding what they made
+(`HistoriesOwn`); no ID is minted twice (`NoIdTwice`); nothing a live branch needs is deleted
+(`NothingNeededGone`); and the simulation's other checks (points unwritten, leases current,
+deletions only by who may, one making per branch, no pass of the collector lost). Ten models as
+designed (`specs/bucket/*.cfg`, each a part of the steps, at 2 hosts, 2 branches, 4 segments
+(compaction's 3), 1 collector, points at 1 host and 3 branches) hold; one mutation per `Rules`
+field and per WAL rule (`specs/bucket/mutations`, named for the rule, `NoFence` for `fence` and so
+on) each gives its counterexample, run by `make check-tla` (`scripts/check-tla.sh`). What it found:
+the WAL's rebase by segments (above), and two holes in the collector, TASK-173 (a child recovered
+by its parent's state is not recovered again by a record of another origin found on relisting)
+and TASK-174 (a deleted root's record dropped, then made again as a fork's child by its parent's
+slow writer), which the spec models fixed; and it reproduces TASK-175 (`mutations/Task175.cfg`: a
+fenced writer's late checkpoint naming moves, the moves compacted and deleted under the live
+writer), which its models as designed leave out (no compaction of moves) until TASK-175's fix is a
+rule.
 
 **The seam's tests become tests of the bucket protocol:**
 

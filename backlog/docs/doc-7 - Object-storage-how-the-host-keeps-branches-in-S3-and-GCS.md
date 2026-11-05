@@ -3,7 +3,7 @@ id: doc-7
 title: 'Object storage: how the host keeps branches in S3 and GCS'
 type: specification
 created_date: '2026-10-17 01:31'
-updated_date: '2026-11-05 03:25'
+updated_date: '2026-11-05 07:56'
 ---
 # Object storage: how the host keeps branches in S3 and GCS
 
@@ -511,6 +511,23 @@ rules need a model and tests before code"): `crates/extent_remote`, its `sim` mo
   (`extents_ahead_of_their_segments_need_keys_naming_them`). These tests search seeds: a change to the simulation can move the
   seed that finds a violation past a test's range, which then fails; widen it, or make its profile
   likelier to find the case.
+- **TLA+** *(added 2026-11-05, TASK-165.2):* `specs/bucket/Bucket.tla` models the protocol, with
+  doc-14's WAL, at the level of what each step reads and writes, and TLC exhausts small models of
+  it (`specs/bucket/*.cfg`) where the simulation samples. Each rule above is a member of its
+  `Rules`, and a mutation of `specs/bucket/mutations` removes it and must find the violation it
+  prevents, run by `scripts/check-tla.sh` (`make check-tla`): `acks_after_lease`
+  (`NoAcksAfterLease`), `fence` (`NoFence`), `continuity` (`NoContinuity`), `epoch_sequences`
+  (`NoEpochSequences`), `records_after_ack` (`NoRecordsAfterAck`), `candidates_first`
+  (`NoCandidatesFirst`), `newest_checkpoint` (`NoNewestCheckpoint`), `forks_from_states`
+  (`NoForksFromStates`), `orphans_after_successor` (`NoOrphansAfterSuccessor`), `tokens`
+  (`NoTokens`), `delete_tokens` (`NoDeleteTokens`), `footers` (`NoFooters`), `fork_claims_ids`
+  (`NoForkClaimsIds`), `fork_claims_landed` (`NoForkClaimsLanded`), `points_take_no_writer`
+  (`NoPointsTakeNoWriter`), `forks_check_points` (`NoForksCheckPoints`), `forks_pending`
+  (`NoForksPending`), `collector_abandons` (`NoCollectorAbandons`), `records_relisted`
+  (`NoRecordsRelisted`), `records_owned` (`NoRecordsOwned`), `extent_keys_name_segments`
+  (`NoExtentKeysNameSegments`), and doc-14's `wal_follows` (`NoWalFollows`) and `wal_after_fence`
+  (`NoWalAfterFence`). It found TASK-173 and TASK-174 in the collector, and reproduces TASK-175
+  (`mutations/Task175.cfg`); the spec's header says where it differs from the code.
 - `SIM_SOAK=<n>` runs the profiles over n times the seeds; `SIM_SEED`, `SIM_SEEDS`, `SIM_PROFILE` and
   `SIM_OFF` run the ignored test `one` to debug a seed.
 - **RustFS** for the S3 backend, in the workspace tests.
