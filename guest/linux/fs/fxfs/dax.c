@@ -471,6 +471,7 @@ static u64 fxfs_dax_page_offset(const struct fxfs_dax_range *range, unsigned lon
 
 static const struct address_space_operations fxfs_dax_aops;
 static const struct file_operations fxfs_dax_file_operations;
+static const struct fxfs_data_ops fxfs_dax_data_ops;
 static int fxfs_dax_break_layouts(struct inode *inode, loff_t start);
 static int fxfs_dax_zero_tail(struct inode *inode, loff_t old, loff_t size);
 static void fxfs_dax_put_region(struct fxfs_dax *dax, struct fxfs_dax_region *region);
@@ -2912,7 +2913,7 @@ static ssize_t fxfs_dax_write_iter(struct kiocb *iocb, struct iov_iter *from)
 	 * leaves it as it was, wherever it began past the end.
 	 */
 	if (iocb->ki_pos < end && end > old_size) {
-		err = fxfs_vfs_resize(inode, done ? max(old_size, iocb->ki_pos) : old_size, NULL, NULL);
+		err = fxfs_data_resize(inode, done ? max(old_size, iocb->ki_pos) : old_size, NULL, NULL);
 		if (err && !done)
 			ret = err;
 	}
@@ -3102,8 +3103,8 @@ static const struct file_operations fxfs_dax_file_operations = {
 	.splice_read = copy_splice_read,
 	.splice_write = iter_file_splice_write,
 	.fsync = fxfs_vfs_fsync,
-	.fallocate = fxfs_vfs_fallocate,
-	.remap_file_range = fxfs_vfs_remap_file_range,
+	.fallocate = fxfs_data_fallocate,
+	.remap_file_range = fxfs_data_remap_file_range,
 };
 
 /*
@@ -3591,6 +3592,7 @@ bool fxfs_dax_set_inode(struct inode *inode, bool created)
 	if (!file)
 		return false;
 	fxfs_vfs_inode(inode)->dax.file = file;
+	fxfs_vfs_inode(inode)->data = &fxfs_dax_data_ops;
 	inode->i_flags |= S_DAX;
 	inode->i_fop = &fxfs_dax_file_operations;
 	inode->i_mapping->a_ops = &fxfs_dax_aops;
@@ -3780,17 +3782,18 @@ static int fxfs_dax_grow_begin(struct inode *inode, loff_t old, loff_t size)
 }
 
 /*
- * Their DAX entries go, once their pages are unused, and the window's ranges of them, to be mapped
- * again as they are after the reflink, a range's dirty pages written back first
- * (fxfs_dax_drop_pinned), as XFS writes back both files' ranges: a destination's are other blocks.
- * And the destination's ranges too small for its new size, and its last block, which Fxfs zeroes
- * past the end as it grows (fxfs_dax_grow_begin).
+ * A reflink's `len` bytes at `pos` of `inode`, to or from them (fxfs_data_ops): their DAX entries
+ * go, once their pages are unused, and the window's ranges of them, to be mapped again as they are
+ * after the reflink, a range's dirty pages written back first (fxfs_dax_drop_pinned), as XFS writes
+ * back both files' ranges: a destination's are other blocks. And the destination's ranges too
+ * small for its new size, `size`, and its last block, which Fxfs zeroes past the end as it grows
+ * (fxfs_dax_grow_begin).
  */
-int fxfs_dax_remap(struct inode *inode, loff_t pos, loff_t len, loff_t size)
+static int fxfs_dax_remap_begin(struct inode *inode, loff_t pos, loff_t len, loff_t size)
 {
 	int err;
 
-	if (!IS_DAX(inode) || !fxfs_dax_file(inode) || !len)
+	if (!fxfs_dax_file(inode) || !len)
 		return 0;
 	err = fxfs_dax_grow_begin(inode, i_size_read(inode), size);
 	if (!err)
@@ -3802,35 +3805,30 @@ int fxfs_dax_remap(struct inode *inode, loff_t pos, loff_t len, loff_t size)
 	return err;
 }
 
-int fxfs_dax_punch_begin(struct inode *inode, loff_t start, loff_t end)
+/*
+ * A hole punched from `start` to `end` (fxfs_data_ops): the pages' mappings go, once unused, from
+ * the first, which its partial pages, zeroed through the window (fxfs_dax_zero_part), map again.
+ */
+static int fxfs_dax_punch_begin(struct inode *inode, loff_t start, loff_t end)
 {
-	loff_t first = round_up(start, PAGE_SIZE), last = round_down(end, PAGE_SIZE);
-	int err;
-
-	filemap_invalidate_lock(inode->i_mapping);
-	err = fxfs_dax_break_layouts(inode, round_down(start, PAGE_SIZE));
-	if (!err && first > last) {
-		err = fxfs_dax_zero_part(inode, start, end - start);
-	} else {
-		if (!err && start < first)
-			err = fxfs_dax_zero_part(inode, start, first - start);
-		if (!err && last < end)
-			err = fxfs_dax_zero_part(inode, last, end - last);
-	}
-	/* The chunks of the whole pages freed, mapped again from where their data is, if anywhere. */
-	if (!err && first < last)
-		err = fxfs_dax_drop(inode, first >> FXFS_DAX_SHIFT, (last - 1) >> FXFS_DAX_SHIFT, -1);
-	if (err)
-		filemap_invalidate_unlock(inode->i_mapping);
-	return err;
+	return fxfs_dax_break_layouts(inode, round_down(start, PAGE_SIZE));
 }
 
-void fxfs_dax_punch_end(struct inode *inode)
+/*
+ * The chunks of a hole's whole pages from `start` to `end`, before Fxfs frees their blocks: mapped
+ * again from where their data is, if anywhere.
+ */
+static int fxfs_dax_punch_drop(struct inode *inode, loff_t start, loff_t end)
 {
-	filemap_invalidate_unlock(inode->i_mapping);
+	return fxfs_dax_drop(inode, start >> FXFS_DAX_SHIFT, (end - 1) >> FXFS_DAX_SHIFT, -1);
 }
 
-int fxfs_dax_resize_begin(struct inode *inode, loff_t size)
+/*
+ * Before and after a change of size to `size` (fxfs_data_ops): the first waits for the pages past
+ * the size to be unused, and zeroes the last page past it, holding the invalidate_lock and the
+ * writeback lock, which the second lets go of, once it has mapped zeros past the size.
+ */
+static int fxfs_dax_resize_begin(struct inode *inode, loff_t size)
 {
 	struct fxfs_dax_file *file = fxfs_dax_file(inode);
 	int err;
@@ -3870,7 +3868,7 @@ int fxfs_dax_resize_begin(struct inode *inode, loff_t size)
 	return 0;
 }
 
-void fxfs_dax_resize_end(struct inode *inode, loff_t size)
+static void fxfs_dax_resize_end(struct inode *inode, loff_t size)
 {
 	struct fxfs_dax_file *file = fxfs_dax_file(inode);
 	struct fxfs_dax *dax = fxfs_dax_of(inode);
@@ -3923,3 +3921,17 @@ void fxfs_dax_resize_end(struct inode *inode, loff_t size)
 	mutex_unlock(&file->wb_lock);
 	filemap_invalidate_unlock(inode->i_mapping);
 }
+
+/*
+ * fxdax: what a DAX file's data's changes do in the window (data.c): a cut's tail zeroed through it
+ * (fxfs_dax_resize_begin), and so a punch's partial pages (fxfs_dax_zero_part).
+ */
+static const struct fxfs_data_ops fxfs_dax_data_ops = {
+	.resize_begin = fxfs_dax_resize_begin,
+	.resize_end = fxfs_dax_resize_end,
+	.keeps_tail = true,
+	.punch_begin = fxfs_dax_punch_begin,
+	.zero = fxfs_dax_zero_part,
+	.punch_drop = fxfs_dax_punch_drop,
+	.remap_begin = fxfs_dax_remap_begin,
+};

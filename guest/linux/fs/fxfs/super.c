@@ -17,7 +17,6 @@
 #include <linux/dax.h>
 #include <linux/delay.h>
 #include <linux/exportfs.h>
-#include <linux/falloc.h>
 #include <linux/fiemap.h>
 #include <linux/sizes.h>
 #include <linux/fileattr.h>
@@ -221,7 +220,7 @@ static void fxfs_vfs_update_attr(struct inode *inode, const struct fxfs_attr *at
  * Writes what the kernel keeps of `inode` to Fxfs: its mode, owner and times, and with
  * FXFS_SET_SIZE in `valid`, its size; and the changes to its extended attributes.
  */
-static int fxfs_vfs_write_attr(struct inode *inode, u32 valid)
+int fxfs_vfs_write_attr(struct inode *inode, u32 valid)
 {
 	struct timespec64 atime = inode_get_atime(inode), mtime = inode_get_mtime(inode);
 	struct timespec64 ctime = inode_get_ctime(inode);
@@ -818,47 +817,8 @@ static int fxfs_vfs_rename(struct mnt_idmap *idmap, struct inode *old_dir,
 /*
  * Sets the attributes `iattr` says, as the VFS has them (setattr_copy: the current time unless the
  * caller gives one, set-group-ID cleared as it must be), on the inode, which writes them back to
- * Fxfs (write_inode), as ext4's journal does: a change of size at once.
+ * Fxfs (write_inode), as ext4's journal does: a change of size at once (fxfs_data_resize).
  */
-/*
- * Makes `inode` `size` bytes long, with the attributes `iattr` sets, if any, and writes them back.
- * Its inode lock held. fxdax: every change of a file's size goes here: a DAX write stopped short
- * made its own, telling Fxfs nothing of the window's last block, which Fxfs moved from under it to
- * zero what it held past the end (TASK-150.9).
- */
-static int fxfs_vfs_zero_past_end(struct inode *inode, loff_t size, loff_t to);
-
-int fxfs_vfs_resize(struct inode *inode, loff_t size, struct mnt_idmap *idmap, struct iattr *iattr)
-{
-	loff_t old_size = i_size_read(inode);
-	int err;
-
-	if (IS_DAX(inode)) {
-		err = fxfs_dax_resize_begin(inode, size);
-		if (err)
-			return err;
-	} else if (size > old_size) {
-		err = fxfs_vfs_zero_past_end(inode, i_size_read(inode), size);
-		if (err)
-			return err;
-	}
-	/* The page cache past the size goes first, so writeback can't write it back. */
-	truncate_setsize(inode, size);
-	if (iattr)
-		setattr_copy(idmap, inode, iattr);
-	err = fxfs_vfs_write_attr(inode, FXFS_SET_SIZE | (IS_DAX(inode) ? FXFS_SET_KEEP_TAIL : 0));
-	/*
-	 * fxdax: with no room, a file grown goes back to its size: nothing is past its old end yet,
-	 * and the inode saying a size Fxfs hasn't would lose it at eviction. A cut borrows the room
-	 * it needs (TASK-60), and its pages are gone either way.
-	 */
-	if (err && size > old_size)
-		i_size_write(inode, old_size);
-	if (IS_DAX(inode))
-		fxfs_dax_resize_end(inode, i_size_read(inode));
-	return err;
-}
-
 static int fxfs_vfs_setattr(struct mnt_idmap *idmap, struct dentry *dentry, struct iattr *iattr)
 {
 	struct inode *inode = d_inode(dentry);
@@ -877,7 +837,7 @@ static int fxfs_vfs_setattr(struct mnt_idmap *idmap, struct dentry *dentry, stru
 			iattr->ia_mtime = iattr->ia_ctime;
 			iattr->ia_valid |= ATTR_MTIME | ATTR_CTIME;
 		}
-		err = fxfs_vfs_resize(inode, size, idmap, iattr);
+		err = fxfs_data_resize(inode, size, idmap, iattr);
 	}
 	/*
 	 * fxdax: the access ACL's entries follow the mode, as ext4's: the mask, or the group's, as
@@ -1087,89 +1047,6 @@ static int fxfs_vfs_write_zeros(struct inode *inode, loff_t pos, loff_t len)
 		return -ENOMEM;
 	err = fxfs_nofs(fxfs_write(fxfs_vfs_fs(inode->i_sb), inode->i_ino, pos, zeros, len));
 	kfree(zeros);
-	return err;
-}
-
-/*
- * Makes `start` to `end` of `inode`, within its size, a hole: its partial pages zeroed, its whole
- * pages' blocks freed. With the inode's lock held.
- */
-static int fxfs_vfs_punch(struct inode *inode, loff_t start, loff_t end)
-{
-	loff_t first = round_up(start, PAGE_SIZE), last = round_down(end, PAGE_SIZE);
-	int err;
-
-	if (end <= start)
-		return 0;
-	if (IS_DAX(inode)) {
-		err = fxfs_dax_punch_begin(inode, start, end);
-		if (err)
-			return err;
-	} else {
-		filemap_invalidate_lock(inode->i_mapping);
-		err = filemap_write_and_wait_range(inode->i_mapping, start, end - 1);
-		/*
-		 * fxdax: folios go whole, clean, not zeroed in part: a partial page's zeros, in the cache
-		 * before Fxfs has them, stayed there if it had no room, what the file held coming back
-		 * when the cache let them go.
-		 */
-		if (!err)
-			err = invalidate_inode_pages2_range(inode->i_mapping, start >> PAGE_SHIFT,
-							    (end - 1) >> PAGE_SHIFT);
-		if (!err && first > last) {
-			err = fxfs_vfs_write_zeros(inode, start, end - start);
-		} else {
-			if (!err && start < first)
-				err = fxfs_vfs_write_zeros(inode, start, first - start);
-			if (!err && last < end)
-				err = fxfs_vfs_write_zeros(inode, last, end - last);
-		}
-	}
-	if (!err && first < last)
-		err = fxfs_nofs(fxfs_punch(fxfs_vfs_fs(inode->i_sb), inode->i_ino, first,
-					   last - first));
-	if (IS_DAX(inode))
-		fxfs_dax_punch_end(inode);
-	else
-		filemap_invalidate_unlock(inode->i_mapping);
-	return err;
-}
-
-/*
- * fallocate(2): makes the file at least `offset` + `len` bytes long, unless FALLOC_FL_KEEP_SIZE;
- * with FALLOC_FL_PUNCH_HOLE or FALLOC_FL_ZERO_RANGE, makes the range within the file a hole
- * first. Blocks never written read as zeros, and take no space until written: an extent store
- * can't reserve them, so a write to them can still find no space, though more than the filesystem
- * has room for is refused. Other modes aren't supported.
- */
-long fxfs_vfs_fallocate(struct file *file, int mode, loff_t offset, loff_t len)
-{
-	struct inode *inode = file_inode(file);
-	loff_t end = offset + len;
-	long err;
-
-	if (mode & ~(FALLOC_FL_KEEP_SIZE | FALLOC_FL_PUNCH_HOLE | FALLOC_FL_ZERO_RANGE))
-		return -EOPNOTSUPP;
-	if (!S_ISREG(inode->i_mode))
-		return -ENODEV;
-	inode_lock(inode);
-	err = inode_newsize_ok(inode, end);
-	/* fxdax: whatever it changes: setuid goes, as for any write (xfstests generic/683). */
-	if (!err)
-		err = file_modified(file);
-	if (!err && (mode & (FALLOC_FL_PUNCH_HOLE | FALLOC_FL_ZERO_RANGE)))
-		err = fxfs_vfs_punch(inode, offset, min(end, i_size_read(inode)));
-	/* fxdax: what it can't reserve it can refuse (xfstests generic/213). */
-	if (!err && !(mode & (FALLOC_FL_PUNCH_HOLE | FALLOC_FL_ZERO_RANGE))) {
-		struct fxfs_statfs statfs;
-
-		err = fxfs_nofs(fxfs_statfs(fxfs_vfs_fs(inode->i_sb), &statfs));
-		if (!err && len > (statfs.free_blocks * statfs.block_size) + inode_get_bytes(inode))
-			err = -ENOSPC;
-	}
-	if (!err && !(mode & FALLOC_FL_KEEP_SIZE) && end > i_size_read(inode))
-		err = fxfs_vfs_resize(inode, end, NULL, NULL);
-	inode_unlock(inode);
 	return err;
 }
 
@@ -1662,6 +1539,8 @@ void fxfs_vfs_make_room(struct super_block *sb)
 	sync_filesystem(sb);
 	up_read(&sb->s_umount);
 }
+
+static int fxfs_vfs_zero_past_end(struct inode *inode, loff_t size, loff_t to);
 
 /*
  * Readies the folio a write of `len` bytes at `pos` copies into, as large as the write, reading
@@ -2400,81 +2279,67 @@ static int fxfs_vfs_mmap(struct file *file, struct vm_area_struct *vma)
 	return err;
 }
 
-/*
- * FICLONE, FICLONERANGE and copy_file_range within the filesystem: makes `file_out`'s `len` bytes
- * at `pos_out` share `file_in`'s at `pos_in` (fxfs_clone_range), copying nothing, with both inodes'
- * locks and invalidate_locks held, after the VFS has checked and written back both ranges: a
- * clone to the source's end takes its last block whole. The window's ranges of them go first
- * (fxfs_dax_remap); a destination in the page cache drops its folios after. Not FIDEDUPERANGE.
- */
-loff_t fxfs_vfs_remap_file_range(struct file *file_in, loff_t pos_in, struct file *file_out,
-				 loff_t pos_out, loff_t len, unsigned int remap_flags)
+/* fxdax: a page-cache file's size changes: what its cached page held past the end, zeroed. */
+static int fxfs_vfs_cache_resize_begin(struct inode *inode, loff_t size)
 {
-	struct inode *src = file_inode(file_in), *dst = file_inode(file_out);
-	struct fxfs_attr attr;
-	loff_t blocks, size;
+	if (size <= i_size_read(inode))
+		return 0;
+	return fxfs_vfs_zero_past_end(inode, i_size_read(inode), size);
+}
+
+/*
+ * fxdax: a hole punched: its range written back, and its folios gone whole, clean, not zeroed in
+ * part: a partial page's zeros, in the cache before Fxfs has them, stayed there if it had no room,
+ * what the file held coming back when the cache let them go. Its partial pages are zeroed in Fxfs
+ * (fxfs_vfs_write_zeros).
+ */
+static int fxfs_vfs_cache_punch_begin(struct inode *inode, loff_t start, loff_t end)
+{
+	int err = filemap_write_and_wait_range(inode->i_mapping, start, end - 1);
+
+	if (!err)
+		err = invalidate_inode_pages2_range(inode->i_mapping, start >> PAGE_SHIFT,
+						    (end - 1) >> PAGE_SHIFT);
+	return err;
+}
+
+/*
+ * fxdax: as every growth past the end: what the cached page held past it, up to the clone at
+ * `pos`, is no data, stores through a mapping there for one (TASK-79.53, TASK-153.4). A clone from
+ * before the end replaces the last block whole. Written back, as the VFS wrote back the clone's
+ * range, so that its folio, which may reach into that range, goes clean.
+ */
+static int fxfs_vfs_cache_remap_begin(struct inode *inode, loff_t pos, loff_t len, loff_t size)
+{
+	loff_t old = i_size_read(inode);
 	int err;
 
-	if (remap_flags & ~(REMAP_FILE_DEDUP | REMAP_FILE_ADVISORY))
-		return -EINVAL;
-	if (remap_flags & REMAP_FILE_DEDUP)
-		return -EOPNOTSUPP;
-	lock_two_nondirectories(src, dst);
-	filemap_invalidate_lock_two(src->i_mapping, dst->i_mapping);
-	err = generic_remap_file_range_prep(file_in, pos_in, file_out, pos_out, &len, remap_flags);
-	if (err < 0 || !len)
-		goto out;
-	blocks = round_up(len, i_blocksize(src));
-	size = max(i_size_read(dst), pos_out + len);
-	/*
-	 * fxdax: as every growth past the end: what the cached page held past it, up to the clone,
-	 * is no data, stores through a mapping there for one (TASK-79.53, TASK-153.4). A clone from
-	 * before the end replaces the last block whole. Written back, as the VFS wrote back the
-	 * clone's range, so that its folio, which may reach into that range, goes clean.
-	 */
-	if (!IS_DAX(dst) && pos_out > i_size_read(dst)) {
-		err = fxfs_vfs_zero_past_end(dst, i_size_read(dst), pos_out);
-		if (!err)
-			err = filemap_write_and_wait_range(dst->i_mapping, i_size_read(dst),
-							   pos_out - 1);
-		if (err)
-			goto out;
-	}
-	err = fxfs_dax_remap(src, pos_in, blocks, i_size_read(src));
+	if (pos <= old)
+		return 0;
+	err = fxfs_vfs_zero_past_end(inode, old, pos);
 	if (!err)
-		err = fxfs_dax_remap(dst, pos_out, blocks, size);
-	if (err)
-		goto out;
-	err = fxfs_nofs(fxfs_clone_range(fxfs_vfs_fs(dst->i_sb), src->i_ino, pos_in, blocks,
-					 dst->i_ino, pos_out, size, &attr));
-	if (err) {
-		/*
-		 * With no room, what it got to stands, and the size it reached, if past the inode's:
-		 * Fxfs has no more of a file than was written back, so its size may be short of the
-		 * inode's, whose dirty pages past it a smaller size would lose.
-		 */
-		if (fxfs_nofs(fxfs_attr_of_open(fxfs_vfs_fs(dst->i_sb), dst->i_ino, &attr)))
-			goto out;
-		size = max_t(loff_t, i_size_read(dst), attr.size);
-	}
-	i_size_write(dst, size);
-	dst->i_blocks = attr.blocks;
-	/*
-	 * Folios of the destination's range go whole, clean as the VFS left them: truncating a large
-	 * one partly would zero the part, which a read would find, rather than the clone's data.
-	 */
-	if (!IS_DAX(dst)) {
-		int invalidated = invalidate_inode_pages2_range(dst->i_mapping,
-								pos_out >> PAGE_SHIFT,
-								(pos_out + blocks - 1) >> PAGE_SHIFT);
-
-		err = err ?: invalidated;
-	}
-out:
-	filemap_invalidate_unlock_two(src->i_mapping, dst->i_mapping);
-	unlock_two_nondirectories(src, dst);
-	return err ?: len;
+		err = filemap_write_and_wait_range(inode->i_mapping, old, pos - 1);
+	return err;
 }
+
+/*
+ * Folios of a destination's range go whole, clean as the VFS left them: truncating a large one
+ * partly would zero the part, which a read would find, rather than the clone's data.
+ */
+static int fxfs_vfs_cache_remapped(struct inode *inode, loff_t pos, loff_t len)
+{
+	return invalidate_inode_pages2_range(inode->i_mapping, pos >> PAGE_SHIFT,
+					     (pos + len - 1) >> PAGE_SHIFT);
+}
+
+/* fxdax: a regular file in the page cache: what its data's changes do there (data.c). */
+static const struct fxfs_data_ops fxfs_vfs_cache_data = {
+	.resize_begin = fxfs_vfs_cache_resize_begin,
+	.punch_begin = fxfs_vfs_cache_punch_begin,
+	.zero = fxfs_vfs_write_zeros,
+	.remap_begin = fxfs_vfs_cache_remap_begin,
+	.remapped = fxfs_vfs_cache_remapped,
+};
 
 static const struct file_operations fxfs_vfs_file_operations = {
 	.open = fxfs_vfs_file_open,
@@ -2486,8 +2351,8 @@ static const struct file_operations fxfs_vfs_file_operations = {
 	.splice_read = filemap_splice_read,
 	.splice_write = iter_file_splice_write,
 	.fsync = fxfs_vfs_fsync,
-	.fallocate = fxfs_vfs_fallocate,
-	.remap_file_range = fxfs_vfs_remap_file_range,
+	.fallocate = fxfs_data_fallocate,
+	.remap_file_range = fxfs_data_remap_file_range,
 };
 
 /* fxdax: a follower's regular files, in the page cache: read-only, under its fill barrier. */
@@ -2648,6 +2513,8 @@ static struct inode *fxfs_vfs_alloc_inode(struct super_block *sb)
 
 	if (!fi)
 		return NULL;
+	/* fxdax: in the page cache, unless it is made a DAX inode (fxfs_dax_set_inode). */
+	fi->data = &fxfs_vfs_cache_data;
 	fxfs_dax_inode_init(&fi->dax);
 	atomic64_set(&fi->gen, 0);
 	fi->fsflags = 0;

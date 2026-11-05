@@ -2,7 +2,9 @@
 // Copyright 2026 The fxdax Authors.
 /*
  * A mounted file, as fs/fxfs/super.c makes one, in the order super.c calls dax.c: the VFS's system
- * calls for tests. super.c itself isn't built: its truncate and fsync are rewritten here.
+ * calls for tests. super.c itself isn't built: its fsync, and its writing of an inode's attributes,
+ * are rewritten here. Its changes of a file as a whole are data.c's, built as they are: a truncate,
+ * a punch and a clone go there, as the VFS's system calls do.
  */
 
 #include <sim/sim.h>
@@ -229,86 +231,47 @@ int sim_fsync(struct file *file)
 	return file->f_inode->i_fop->fsync(file, 0, LLONG_MAX, 0);
 }
 
-/* super.c's, for a DAX file: its size written back, not the rest of the inode. */
-int fxfs_vfs_resize(struct inode *inode, loff_t size, struct mnt_idmap *idmap, struct iattr *iattr)
+/*
+ * super.c's, which writes the inode's mode, owner and times too: here, the size, if `valid` says
+ * so, as Fxfs's write_inode takes it.
+ */
+int fxfs_vfs_write_attr(struct inode *inode, u32 valid)
 {
 	struct fxfs_setattr set = {
-		.valid = FXFS_SET_SIZE | FXFS_SET_KEEP_TAIL, .size = size,
+		.valid = valid & (FXFS_SET_SIZE | FXFS_SET_KEEP_TAIL),
+		.size = i_size_read(inode),
 	};
-	int err = fxfs_dax_resize_begin(inode, size);
 
-	if (err)
-		return err;
-	truncate_setsize(inode, size);
-	err = fxfs_nofs(fxfs_setattr(fxfs_vfs_fs(inode->i_sb), inode->i_ino, &set));
-	fxfs_dax_resize_end(inode, size);
-	return err;
+	return fxfs_nofs(fxfs_write_inode(fxfs_vfs_fs(inode->i_sb), inode->i_ino, &set));
 }
 
+/* truncate(2), as do_truncate has it: the inode's lock, then setattr's change of size. */
 int sim_truncate(struct file *file, loff_t size)
 {
 	struct inode *inode = file_inode(file);
 	int err;
 
 	inode_lock(inode);
-	err = fxfs_vfs_resize(inode, size, NULL, NULL);
+	err = fxfs_data_resize(inode, size, NULL, NULL);
 	inode_unlock(inode);
 	return err;
 }
 
-/*
- * fxfs_vfs_remap_file_range, for two DAX files: the VFS's preparation is writing both back, and the
- * window's ranges of them go. Page-aligned, and past the destination's end only as far as it says.
- */
+/* FICLONERANGE, as ioctl_file_clone has it: the file operation, which takes the locks. */
 int sim_clone(struct file *in, loff_t pos_in, struct file *out, loff_t pos_out, loff_t len)
 {
-	struct inode *src = file_inode(in), *dst = file_inode(out);
-	loff_t size;
-	struct fxfs_attr attr;
-	int err;
+	loff_t done = out->f_inode->i_fop->remap_file_range(in, pos_in, out, pos_out, len, 0);
 
-	/* By address, as lock_two_nondirectories and filemap_invalidate_lock_two do. */
-	inode_lock(min(src, dst));
-	inode_lock(max(src, dst));
-	filemap_invalidate_lock(min(src->i_mapping, dst->i_mapping));
-	filemap_invalidate_lock(max(src->i_mapping, dst->i_mapping));
-	size = max(i_size_read(dst), pos_out + len);
-	err = filemap_write_and_wait_range(src->i_mapping, pos_in, pos_in + len - 1);
-	if (!err)
-		err = filemap_write_and_wait_range(dst->i_mapping, pos_out, pos_out + len - 1);
-	if (!err)
-		err = fxfs_dax_remap(src, pos_in, len, i_size_read(src));
-	if (!err)
-		err = fxfs_dax_remap(dst, pos_out, len, size);
-	if (!err)
-		err = fxfs_nofs(fxfs_clone_range(fxfs_vfs_fs(dst->i_sb), src->i_ino, pos_in, len,
-						 dst->i_ino, pos_out, size, &attr));
-	if (!err)
-		i_size_write(dst, size);
-	filemap_invalidate_unlock(max(src->i_mapping, dst->i_mapping));
-	filemap_invalidate_unlock(min(src->i_mapping, dst->i_mapping));
-	inode_unlock(max(src, dst));
-	inode_unlock(min(src, dst));
-	return err;
+	if (done < 0)
+		return done;
+	return done == len ? 0 : -EINVAL;
 }
 
-/* fxfs_vfs_punch, for a DAX file. */
+/* fallocate(2) with FALLOC_FL_PUNCH_HOLE, which the VFS has keep the size. */
 int sim_punch(struct file *file, loff_t start, loff_t end)
 {
-	struct inode *inode = file_inode(file);
-	loff_t first = round_up(start, PAGE_SIZE), last = round_down(end, PAGE_SIZE);
-	int err;
-
-	inode_lock(inode);
-	err = fxfs_dax_punch_begin(inode, start, end);
-	if (!err) {
-		if (first < last)
-			err = fxfs_nofs(fxfs_punch(fxfs_vfs_fs(inode->i_sb), inode->i_ino, first,
-						   last - first));
-		fxfs_dax_punch_end(inode);
-	}
-	inode_unlock(inode);
-	return err;
+	return file->f_inode->i_fop->fallocate(file, FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE,
+					       start, end - start);
 }
 
 unsigned long sim_mmap(struct file *file, loff_t offset, size_t len)

@@ -11,5 +11,5 @@ sim/time.h: linux/delay.h linux/timekeeping.h linux/ktime.h linux/jiffies.h
 sim/workqueue.h: linux/workqueue.h
 sim/slab.h: linux/slab.h linux/gfp.h linux/gfp_types.h linux/vmalloc.h
 sim/mm.h: linux/mm.h linux/mm_types.h linux/mmu_notifier.h linux/highmem.h linux/rmap.h linux/memcontrol.h linux/pagevec.h linux/vmstat.h linux/pagewalk.h asm/pgalloc.h linux/mmzone.h
-sim/fs.h: linux/fs.h linux/pagemap.h linux/uio.h linux/writeback.h linux/seq_file.h linux/blkdev.h linux/buffer_head.h linux/blk_types.h linux/scatterlist.h
+sim/fs.h: linux/fs.h linux/falloc.h linux/pagemap.h linux/uio.h linux/writeback.h linux/seq_file.h linux/blkdev.h linux/buffer_head.h linux/blk_types.h linux/scatterlist.h
 sim/module.h: linux/moduleparam.h

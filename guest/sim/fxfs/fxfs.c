@@ -450,7 +450,35 @@ static void move_tail(struct fxfs *fs, struct stub_file *file, u64 size)
 	sim_device_wrote(extent->sequence, in_extent, 1);
 }
 
-int fxfs_setattr(struct fxfs *fs, u64 ino, const struct fxfs_setattr *set)
+/* What Fxfs says of `file`: its size, and the 512-byte blocks its data takes. */
+static void attr_of(const struct stub_file *file, struct fxfs_attr *attr)
+{
+	u64 page, blocks = 0;
+
+	for (page = 0; page < file->nr_blocks; page++)
+		blocks += !!file->blocks[page].sequence;
+	*attr = (struct fxfs_attr) {
+		.ino = file->ino,
+		.size = file->size,
+		.blocks = blocks << (PAGE_SHIFT - SECTOR_SHIFT),
+		.mode = S_IFREG | 0644,
+		.nlink = 1,
+	};
+}
+
+int fxfs_attr_of_open(struct fxfs *fs, u64 ino, struct fxfs_attr *attr)
+{
+	struct stub_file *file = lock_file(fs, ino);
+
+	mutex_lock(&fs->lock);
+	attr_of(file, attr);
+	mutex_unlock(&fs->lock);
+	mutex_unlock(&file->lock);
+	return 0;
+}
+
+/* The size alone of what the kernel keeps of the inode: the model has no mode, owner or times. */
+int fxfs_write_inode(struct fxfs *fs, u64 ino, const struct fxfs_setattr *set)
 {
 	struct stub_file *file = lock_file(fs, ino);
 	u64 page, old;
@@ -501,6 +529,7 @@ int fxfs_clone_range(struct fxfs *fs, u64 src, u64 offset, u64 len, u64 dst, u64
 		}
 	}
 	to->size = max(to->size, size);
+	attr_of(to, attr);
 	mutex_unlock(&fs->lock);
 	if (to != from)
 		mutex_unlock(&to->lock);

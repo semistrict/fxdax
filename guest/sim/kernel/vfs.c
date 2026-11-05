@@ -52,6 +52,49 @@ ssize_t noop_direct_IO(struct kiocb *iocb, struct iov_iter *iter)
 	return -EINVAL;
 }
 
+/*
+ * fs/remap_range.c's, for files within a test's: no checks, and both ranges written back, as the
+ * VFS writes them back before a filesystem shares their blocks.
+ */
+int generic_remap_file_range_prep(struct file *file_in, loff_t pos_in, struct file *file_out,
+				  loff_t pos_out, loff_t *len, unsigned int remap_flags)
+{
+	int err = filemap_write_and_wait_range(file_in->f_mapping, pos_in, pos_in + *len - 1);
+
+	return err ?: filemap_write_and_wait_range(file_out->f_mapping, pos_out,
+						   pos_out + *len - 1);
+}
+
+/* By address, as the kernel's. */
+void lock_two_nondirectories(struct inode *inode1, struct inode *inode2)
+{
+	inode_lock(min(inode1, inode2));
+	if (inode1 != inode2)
+		inode_lock(max(inode1, inode2));
+}
+
+void unlock_two_nondirectories(struct inode *inode1, struct inode *inode2)
+{
+	if (inode1 != inode2)
+		inode_unlock(max(inode1, inode2));
+	inode_unlock(min(inode1, inode2));
+}
+
+void filemap_invalidate_lock_two(struct address_space *mapping1, struct address_space *mapping2)
+{
+	filemap_invalidate_lock(min(mapping1, mapping2));
+	if (mapping1 != mapping2)
+		filemap_invalidate_lock(max(mapping1, mapping2));
+}
+
+void filemap_invalidate_unlock_two(struct address_space *mapping1,
+				   struct address_space *mapping2)
+{
+	if (mapping1 != mapping2)
+		filemap_invalidate_unlock(max(mapping1, mapping2));
+	filemap_invalidate_unlock(min(mapping1, mapping2));
+}
+
 /* truncate_inode_pages_range's for value entries: truncate_folio_batch_exceptionals. */
 void truncate_setsize(struct inode *inode, loff_t size)
 {

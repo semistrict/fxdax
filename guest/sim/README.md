@@ -42,6 +42,7 @@ Compiled as they are, from the tree or the repo:
 | Real | From |
 | --- | --- |
 | `dax.c`, `pages.c`, `device.c`, `hist.h`, `vfs.h`, `fxfs.h`, `device.h` | fs/fxfs: all of the window's protocol |
+| `data.c` | fs/fxfs: a file's changes as a whole, resize, punch (fallocate) and clone, with dax.c's operations (TASK-160.2) |
 | `fs/dax.c` | with guest/linux/patches/0007 and 0010-0012: DAX entries, their locks, shared folios |
 | `fs/iomap/iter.c`, `lib/xarray.c`, `lib/genalloc.c` | the kernel's |
 | `linux/{list,rculist,hash,hashtable,xarray,iomap,dax,genalloc,wait,wait_bit}.h` | the kernel's headers |
@@ -52,7 +53,7 @@ Written here (see each file's head for what it leaves out):
 | --- | --- | --- |
 | Scheduler, locks, wait queues, RCU, workqueues | `kernel/sched.c`, `locks.c`, `workqueue.c` | One task at a time; wait queues as the kernel's; rwsem order as the kernel's, not its optimistic spinning |
 | Page tables and faults | `kernel/mm.c` | Two flat arrays per VMA, with `mm/memory.c`'s insert and fault rules rewritten, and `mmap_lock`. No TLB, no MMU, no GUP, no private mappings |
-| VFS and page cache | `kernel/vfs.c`, `mount.c` | What dax.c calls. `super.c` is not built: its resize, punch, clone and fsync are rewritten, so that a bug in them shows on a real kernel alone |
+| VFS and page cache | `kernel/vfs.c`, `mount.c` | What dax.c and data.c call; the VFS's checks before a clone, and its writing both back, as `generic_remap_file_range_prep`. `super.c` is not built: its fsync, and its writing of an inode's attributes, its size alone here, are rewritten, so that a bug in them shows on a real kernel alone |
 | Host device | `kernel/device.c`, `host.c` | The window copies on write (doc-13): real memory, a memfd mapped page by page, read-only, so that a store the host refuses is a SIGSEGV. A MAP maps sealed extents alone (EPERM for an open one, which tests count) and zeros past what was written; `MAP_ZEROS` maps zeros; `PRIVATE` copies pages to private memory at the same addresses, ENOMEM past `private_max` (a quarter of the window, or what a test sets); a MAP or UNMAP frees private pages, as doc-13's host. A store to a sealed or zero page, which the host's userfaultfd write-protect would copy at, fails the run: the guest makes each page it dirties private first (TASK-164.9), so such a store is to a page no iomap made private. Requests complete at once, or fail with EIO as a test asks, or a MAP waits on its way as a test holds it: no virtqueue, no second stage, no async page faults, whose writes the host takes as reads |
 | Fxfs | `fxfs/fxfs.c` | A model of what the protocol assumes: blocks, open extents that go one way, shared blocks, the staging extent `zero_tail` moves a last block to, `FreeAfter::Flush`, one seal in four a flush, reservations that fail. Writeback (`fxfs_write_many`) allocating then: its copy of the pages, a page at a time, blocks of the staging extent for 256 KiB at most, as Fxfs packs small files, else a new extent, written, then the commit, which a test may hold to look at what a crash would leave, or fail; reservations of dirty pages, given back once. No seal comes between taking blocks and writing them, so the packed write a seal refuses, which Fxfs tries again in an extent of its own, has no counterpart. No journal, tree or crash consistency |
 

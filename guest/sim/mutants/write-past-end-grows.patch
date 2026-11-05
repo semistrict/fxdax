@@ -5,12 +5,12 @@
 
 --- a/guest/linux/fs/fxfs/dax.c
 +++ b/guest/linux/fs/fxfs/dax.c
-@@ -2924,7 +2924,7 @@
+@@ -2913,7 +2913,7 @@
  	 * leaves it as it was, wherever it began past the end.
  	 */
  	if (iocb->ki_pos < end && end > old_size) {
--		err = fxfs_vfs_resize(inode, done ? max(old_size, iocb->ki_pos) : old_size, NULL, NULL);
-+		err = fxfs_vfs_resize(inode, max(old_size, iocb->ki_pos), NULL, NULL);
+-		err = fxfs_data_resize(inode, done ? max(old_size, iocb->ki_pos) : old_size, NULL, NULL);
++		err = fxfs_data_resize(inode, max(old_size, iocb->ki_pos), NULL, NULL);
  		if (err && !done)
  			ret = err;
  	}

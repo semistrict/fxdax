@@ -1,8 +1,8 @@
 /* SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause */
 /* Copyright 2026 The fxdax Authors. */
 /*
- * What Fxfs's VFS glue (super.c) and its DAX (dax.c) share: the superblock's and inodes' state,
- * and calls into Rust.
+ * What Fxfs's VFS glue (super.c), its changes of files' data (data.c) and its DAX (dax.c) share:
+ * the superblock's and inodes' state, and calls into Rust.
  */
 #ifndef _FS_FXFS_VFS_H
 #define _FS_FXFS_VFS_H
@@ -240,8 +240,6 @@ ssize_t fxfs_vfs_follower_read(struct kiocb *iocb, struct iov_iter *to,
 int fxfs_vfs_file_open(struct inode *inode, struct file *file);
 int fxfs_vfs_file_release(struct inode *inode, struct file *file);
 
-/* fallocate(2), for regular files, DAX or not (super.c). */
-long fxfs_vfs_fallocate(struct file *file, int mode, loff_t offset, loff_t len);
 /* llseek(2), with SEEK_DATA and SEEK_HOLE, for regular files, DAX or not (super.c). */
 loff_t fxfs_vfs_llseek(struct file *file, loff_t offset, int whence);
 /*
@@ -251,10 +249,60 @@ loff_t fxfs_vfs_llseek(struct file *file, loff_t offset, int whence);
 void fxfs_vfs_make_room(struct super_block *sb);
 /* fsync(2), for files of any kind, DAX or not (super.c). */
 int fxfs_vfs_fsync(struct file *file, loff_t start, loff_t end, int datasync);
-int fxfs_vfs_resize(struct inode *inode, loff_t size, struct mnt_idmap *idmap, struct iattr *iattr);
-/* fxdax: reflinks (FICLONE, FICLONERANGE, copy_file_range), for regular files, DAX or not. */
-loff_t fxfs_vfs_remap_file_range(struct file *file_in, loff_t pos_in, struct file *file_out,
-				 loff_t pos_out, loff_t len, unsigned int remap_flags);
+/*
+ * Writes what the kernel keeps of `inode` to Fxfs: its mode, owner and times, and with
+ * FXFS_SET_SIZE in `valid`, its size (super.c).
+ */
+int fxfs_vfs_write_attr(struct inode *inode, u32 valid);
+
+/*
+ * fxdax: what holds a regular file's data, the page cache (super.c) or the DAX window (dax.c): what
+ * each does around data.c's changes of the file as a whole, which are the same for both, and which
+ * guest/sim builds as they are (TASK-160.2). An inode's, as its i_fop and a_ops are, set with them.
+ * With the inode's lock held for writing.
+ */
+struct fxfs_data_ops {
+	/*
+	 * Before and after Fxfs takes `inode`'s new size, `size`: the first readies the pages past
+	 * the old end or the new one; the second, if any, ends what the first began, with the size
+	 * the inode has then, which is the old one again if Fxfs couldn't grow the file.
+	 */
+	int (*resize_begin)(struct inode *inode, loff_t size);
+	void (*resize_end)(struct inode *inode, loff_t size);
+	/*
+	 * Whether a cut leaves Fxfs the last block as it is (FXFS_SET_KEEP_TAIL): its bytes past
+	 * the end are zeroed already, by resize_begin.
+	 */
+	bool keeps_tail;
+	/*
+	 * A hole punched from `start` to `end`, with the invalidate_lock held for writing: the
+	 * first readies the range; `zero` zeroes `len` bytes at `pos`, within a page, each of its
+	 * partial pages; and the last, if any, lets go of its whole pages from `start` to `end`,
+	 * before Fxfs frees their blocks.
+	 */
+	int (*punch_begin)(struct inode *inode, loff_t start, loff_t end);
+	int (*zero)(struct inode *inode, loff_t pos, loff_t len);
+	int (*punch_drop)(struct inode *inode, loff_t start, loff_t end);
+	/*
+	 * A reflink of `len` bytes at `pos`, to or from the inode, which grows to `size` bytes if
+	 * that is longer, with its invalidate_lock held for writing: the first readies them, before
+	 * Fxfs shares the blocks; the second, if any, of a destination's, after.
+	 */
+	int (*remap_begin)(struct inode *inode, loff_t pos, loff_t len, loff_t size);
+	int (*remapped)(struct inode *inode, loff_t pos, loff_t len);
+};
+
+/*
+ * data.c: changes of a regular file as a whole, the same whatever holds its data (fxfs_data_ops).
+ * fxfs_data_resize makes `inode` `size` bytes long, with the attributes `iattr` sets, if any,
+ * written back with it; the others are fallocate(2) and reflinks (FICLONE, FICLONERANGE,
+ * copy_file_range), as file operations.
+ */
+int fxfs_data_resize(struct inode *inode, loff_t size, struct mnt_idmap *idmap,
+		     struct iattr *iattr);
+long fxfs_data_fallocate(struct file *file, int mode, loff_t offset, loff_t len);
+loff_t fxfs_data_remap_file_range(struct file *file_in, loff_t pos_in, struct file *file_out,
+				  loff_t pos_out, loff_t len, unsigned int remap_flags);
 
 struct fxfs_dax_file;
 
@@ -265,6 +313,8 @@ struct fxfs_dax_inode {
 };
 
 struct fxfs_vfs_inode {
+	/* fxdax: what holds its data, if it is a regular file. */
+	const struct fxfs_data_ops *data;
 	struct fxfs_dax_inode dax;
 	/*
 	 * fxdax: a follower's directory's generation: how many batches changed its entries, which
@@ -349,26 +399,6 @@ void fxfs_dax_written(struct inode *inode);
  */
 int fxfs_dax_write_back(struct inode *inode);
 /*
- * Before and after a DAX file's size changes to `size`, under its inode's lock: the first waits
- * for the pages past the size to be unused, and zeroes the last page past it; the second unmaps
- * what is past it from the window.
- */
-int fxfs_dax_resize_begin(struct inode *inode, loff_t size);
-/*
- * Before and after a hole is punched in a DAX file from `start` to `end`, under its inode's lock:
- * the first zeroes the range's partial pages through the window, and drops the window's ranges of
- * its whole pages, holding the invalidate_lock, which the second releases.
- */
-int fxfs_dax_punch_begin(struct inode *inode, loff_t start, loff_t end);
-void fxfs_dax_punch_end(struct inode *inode);
-void fxfs_dax_resize_end(struct inode *inode, loff_t size);
-/*
- * fxdax: readies a DAX file's `len` bytes at `pos` for a reflink to or from them, which makes
- * another file's share their blocks, or them another's, the file growing to `size` bytes if it is
- * longer: with its inode's lock and invalidate_lock held for writing.
- */
-int fxfs_dax_remap(struct inode *inode, loff_t pos, loff_t len, loff_t size);
-/*
  * fxdax: a follower's writer changed file `ino`'s data from byte `start` to `end`, inclusive,
  * which the window's ranges of its chunks there may map as it was: drops them, to be mapped again
  * as needed. Through `inode`, the file's, if one is read in, whose invalidate_lock the caller
@@ -408,11 +438,6 @@ static inline int fxfs_dax_settle(struct fxfs_dax *dax)
 static inline void fxfs_dax_stop(struct fxfs_dax *dax) {}
 static inline void fxfs_dax_start(struct fxfs_dax *dax) {}
 static inline void fxfs_dax_frozen(struct fxfs_dax *dax) {}
-static inline int fxfs_dax_punch_begin(struct inode *inode, loff_t start, loff_t end)
-{
-	return -EOPNOTSUPP;
-}
-static inline void fxfs_dax_punch_end(struct inode *inode) {}
 static inline void fxfs_dax_quiesce(struct fxfs_dax *dax) {}
 static inline void fxfs_dax_thaw(struct fxfs_dax *dax) {}
 static inline void fxfs_dax_destroy(struct fxfs_dax *dax) {}
@@ -425,15 +450,6 @@ static inline bool fxfs_dax_set_inode(struct inode *inode, bool created)
 static inline void fxfs_dax_evict(struct inode *inode) {}
 static inline void fxfs_dax_written(struct inode *inode) {}
 static inline int fxfs_dax_write_back(struct inode *inode)
-{
-	return 0;
-}
-static inline int fxfs_dax_resize_begin(struct inode *inode, loff_t size)
-{
-	return 0;
-}
-static inline void fxfs_dax_resize_end(struct inode *inode, loff_t size) {}
-static inline int fxfs_dax_remap(struct inode *inode, loff_t pos, loff_t len, loff_t size)
 {
 	return 0;
 }

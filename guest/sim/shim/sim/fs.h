@@ -33,6 +33,11 @@
 #define READ 0
 #define WRITE 1
 #define VERIFY_READ READ
+#define FALLOC_FL_KEEP_SIZE 0x01
+#define FALLOC_FL_PUNCH_HOLE 0x02
+#define FALLOC_FL_ZERO_RANGE 0x10
+#define REMAP_FILE_DEDUP (1 << 0)
+#define REMAP_FILE_ADVISORY (1 << 2)
 
 struct kiocb;
 struct iov_iter;
@@ -81,6 +86,7 @@ struct inode {
 	u8 i_blkbits;
 	unsigned long i_ino;
 	loff_t i_size;
+	u64 i_blocks;
 	struct super_block *i_sb;
 	struct address_space *i_mapping;
 	const struct file_operations *i_fop;
@@ -191,6 +197,17 @@ int filemap_write_and_wait_range(struct address_space *mapping, loff_t start, lo
 void tag_pages_for_writeback(struct address_space *mapping, pgoff_t start, pgoff_t end);
 int vfs_fsync_range(struct file *file, loff_t start, loff_t end, int datasync);
 #define __generic_remap_file_range_prep(in, pos_in, out, pos_out, len, flags, ops) (-EOPNOTSUPP)
+int generic_remap_file_range_prep(struct file *file_in, loff_t pos_in, struct file *file_out,
+				  loff_t pos_out, loff_t *len, unsigned int remap_flags);
+void lock_two_nondirectories(struct inode *inode1, struct inode *inode2);
+void unlock_two_nondirectories(struct inode *inode1, struct inode *inode2);
+void filemap_invalidate_lock_two(struct address_space *mapping1, struct address_space *mapping2);
+void filemap_invalidate_unlock_two(struct address_space *mapping1,
+				   struct address_space *mapping2);
+#define inode_newsize_ok(inode, size) ((size) > (inode)->i_sb->s_maxbytes ? -EFBIG : 0)
+#define file_modified(file) 0
+void setattr_copy(struct mnt_idmap *idmap, struct inode *inode, const struct iattr *attr);
+loff_t inode_get_bytes(struct inode *inode);
 bool noop_dirty_folio(struct address_space *mapping, struct folio *folio);
 ssize_t noop_direct_IO(struct kiocb *iocb, struct iov_iter *iter);
 unsigned long thp_get_unmapped_area(struct file *file, unsigned long addr, unsigned long len,
