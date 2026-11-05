@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-05 17:15'
-updated_date: '2026-11-05 19:16'
+updated_date: '2026-11-05 19:22'
 labels:
   - bug
   - dax
@@ -67,4 +67,11 @@ Blind spots: Firecracker's vCPU code had no test that ran anywhere (test-e2e.sh 
 - test_exit_code_sent_before_the_exit_event, in vmm, which test-e2e.sh now runs on GCE beside efaults_.
 Looked around: no other place signals exit_evt or sends Exited.
 Structure: the retry policy belonged with the window that makes memory inaccessible, not in the VMM; moved. Restricting for workers' writes at all is KVM's async page faults' doing (their worker writes for loads and stores alike), which TASK-170 left as it is. Nothing more fundamental found.
+
+The lift's wait is 2cb1d4c42. Verified locally: macOS workspace 2,135 of 2,135 and Shuttle, before the lift's wait, which is Linux code alone. Linux in Docker (arm64, OrbStack) with it: fxdax 466 of 470, the 4 failures the container's (no git for builds_are_stamped_with_their_commit; a helper binary the 3 grants tests spawn); every Shuttle suite; vmm's 16 (extent::, efaults_, test_exit_code_). AC2 not met yet: gcloud's login expired. GCE runs still needed, on HEAD, numbers 645 to 649:
+- fxfs-guest-crash-stray-dax, 20 rounds, unjailed and jailed;
+- jailed fxfs-guest-dax, fxfs-guest-checks-dax, fxfs-guest-crash-dax and fxfs-guest-pgbench-dax-forked;
+- the perf gate's forked-dax against r632's 0.573;
+- the control, 13db5c67c without COW, 20 rounds, FXDAX_FIRECRACKER_SECCOMP=log, from worktree t187-13db5c67c.
+Hosts fxdax-test-r645-t187, r646 and r648 were created before the login expired and were never used: delete them (scripts/test-gce.sh delete NAME) or let them go at their 8 h lifetime.
 <!-- SECTION:NOTES:END -->
