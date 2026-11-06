@@ -3043,6 +3043,7 @@ name = "test_cases"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "extent_remote",
  "extent_store",
  "follower_history",
  "futures",
@@ -3052,6 +3053,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempdir",
+ "tokio",
 ]
 
 [[package]]

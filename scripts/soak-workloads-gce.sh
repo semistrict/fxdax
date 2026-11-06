@@ -13,6 +13,10 @@
 #             slow for the delays' and the small window's within their cases' timeouts
 #   replicas  followers under torture and remounting, snapshots, suspending and migrating
 #   shapes    DAX pgbench over guest memory, vCPUs and windows (scripts/soak-gce.sh)
+#   mixed     VMs on forks of a base under writers, fsx-style scripts and pgbench for hours, each
+#             round through VMs killed, the daemon killed, uploads failing and late, the host or
+#             its cache lost, and checked against doc-12 (fxfs-guest-soak, TASK-67), on a host
+#             of more CPUs (FXDAX_GCE_MACHINE, n2-standard-8 by default)
 #
 #   scripts/soak-workloads-gce.sh RESULTS [GROUP...]
 #
@@ -28,18 +32,22 @@ results=${1:?usage: soak-workloads-gce.sh RESULTS [GROUP...]}
 shift
 groups=("$@")
 if (( ${#groups[@]} == 0 )); then
-    groups=(crash checks sanitized replicas shapes)
+    groups=(crash checks sanitized replicas shapes mixed)
 fi
 for group in "${groups[@]}"; do
-    [[ $group =~ ^(crash|checks|sanitized|replicas|shapes)$ ]] || { echo "no such group: $group" >&2; exit 2; }
+    [[ $group =~ ^(crash|checks|sanitized|replicas|shapes|mixed)$ ]] || { echo "no such group: $group" >&2; exit 2; }
 done
 factor=${FXDAX_SOAK_ROUNDS:-1}
 [[ $factor =~ ^[1-9][0-9]*$ ]] || { echo "FXDAX_SOAK_ROUNDS is a factor" >&2; exit 2; }
 
-# Runs `group`'s suite on a host of its own: its rounds, its kernel, its seconds of following.
+# Runs `group`'s suite on a host of its own: its rounds, its kernel, its seconds of following. The
+# mixed group's, some 5 minutes a round, on 8 vCPUs, its daemons built to fail uploads.
 soak() {
-    local group=$1 rounds=$2 kernel=$3 seconds=$4
-    FXDAX_WORKSPACE_TESTS=0 FXDAX_E2E_TEST="--tag soak-$group" \
+    local group=$1 rounds=$2 kernel=$3 seconds=$4 own=()
+    if [[ $group == mixed ]]; then
+        own=(FXDAX_EXTENTD_FAILPOINTS=1 "FXDAX_GCE_MACHINE=${FXDAX_GCE_MACHINE:-n2-standard-8}")
+    fi
+    env ${own[@]+"${own[@]}"} FXDAX_WORKSPACE_TESTS=0 FXDAX_E2E_TEST="--tag soak-$group" \
         FXDAX_E2E_ROUNDS=$((rounds * factor)) FXDAX_GUEST_KERNEL_BUILD=$kernel \
         FXDAX_FOLLOW_SECONDS=$seconds \
         "$repo/scripts/test-gce.sh" all "fxdax-test-soak-$group-$(date -u +%m%d%H%M%S)" \
@@ -55,6 +63,7 @@ for group in "${groups[@]}"; do
         checks) soak checks 10 release 20 & ;;
         sanitized) soak sanitized 10 debug 20 & ;;
         replicas) soak replicas 5 release 600 & ;;
+        mixed) soak mixed 40 release 0 & ;;
         shapes)
             FXDAX_SOAK_ROUNDS=$((3 * factor)) "$repo/scripts/soak-gce.sh" "$results/shapes" \
                 > "$results/shapes.log" 2>&1 &

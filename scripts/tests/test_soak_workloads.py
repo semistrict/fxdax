@@ -20,7 +20,7 @@ class SoakWorkloads(unittest.TestCase):
     def test_every_group_soaks_a_suite(self):
         """Each group of the guest's cases soaks the suite tagged with its name (TASK-160.29)."""
         groups = re.findall(r"^ +(\w+)\) soak \1 ", SOAK.read_text(), re.MULTILINE)
-        self.assertEqual(groups, ["crash", "checks", "sanitized", "replicas"])
+        self.assertEqual(groups, ["crash", "checks", "sanitized", "replicas", "mixed"])
         self.assertEqual({f"soak-{group}" for group in groups} - test_guest_tags.tags(), set())
 
     def test_a_group_unknown_makes_no_host(self):

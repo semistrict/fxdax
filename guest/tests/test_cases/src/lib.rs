@@ -77,6 +77,13 @@ use test_fxfs_guest_script::TestFxfsGuestScript;
 mod test_fxfs_guest_fsx;
 #[cfg(any(feature = "host", target_os = "linux"))]
 use test_fxfs_guest_fsx::TestFxfsGuestFsx;
+// fxdax: hours of mixed load through every crash doc-12 names (TASK-67), its plans and verdicts in
+// `soak`.
+pub mod soak;
+#[cfg(any(feature = "host", target_os = "linux"))]
+mod test_fxfs_guest_soak;
+#[cfg(any(feature = "host", target_os = "linux"))]
+use test_fxfs_guest_soak::TestFxfsGuestSoak;
 
 // The scripts of operations of fxfs-guest-checks' random_ops and fxfs-guest-script: what they are,
 // the guest's running of them, and the host's replays of them in VMs.
@@ -186,6 +193,9 @@ tags! {
     SoakSanitized = "soak-sanitized",
     /// scripts/soak-workloads-gce.sh's replicas group: followers, snapshots and migrations.
     SoakReplicas = "soak-replicas",
+    /// scripts/soak-workloads-gce.sh's mixed group: VMs on forks of a base under mixed load for
+    /// hours, through VMs, the daemon and the host crashing and uploads failing.
+    SoakMixed = "soak-mixed",
     /// scripts/perf-gate-gce.sh's cases of one VM each.
     PerfSingle = "perf-single",
     /// scripts/perf-gate-gce.sh's density run, VMs on forks of one base.
@@ -564,6 +574,8 @@ pub fn test_cases() -> Vec<TestCase> {
             &[Tag::E2e, Tag::Kernel, Tag::Nightly],
             Box::new(TestFxfsGuestChecks { overrun: true, ..PAGE_CACHE_CHECKS }),
         ),
+        #[cfg(any(feature = "host", target_os = "linux"))]
+        TestCase::new("fxfs-guest-soak", &[Tag::SoakMixed], Box::new(TestFxfsGuestSoak)),
         #[cfg(any(feature = "host", target_os = "linux"))]
         TestCase::new(
             "fxfs-guest-script",

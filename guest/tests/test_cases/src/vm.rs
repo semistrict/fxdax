@@ -793,11 +793,10 @@ fn push(array: &mut serde_json::Value, value: serde_json::Value) {
 /// `console`, to standard output, and the rest, its standard error and what the kernel says, to
 /// standard error.
 pub fn split_console(mut console: impl std::io::Read) -> anyhow::Result<()> {
-    use crate::{STDERR_END, STDERR_START, STDOUT_END, STDOUT_START};
     use std::io::Write;
 
     let (mut stdout, mut stderr) = (std::io::stdout().lock(), std::io::stderr().lock());
-    let mut in_stdout = false;
+    let mut framing = Framing::default();
     let mut buffer = vec![0; 4096];
     loop {
         let n = match console.read(&mut buffer) {
@@ -806,24 +805,54 @@ pub fn split_console(mut console: impl std::io::Read) -> anyhow::Result<()> {
             Err(err) if err.kind() == std::io::ErrorKind::Interrupted => continue,
             Err(err) => return Err(err.into()),
         };
+        framing.split(&buffer[..n], &mut stdout, &mut stderr)?;
+        stdout.flush()?;
+        stderr.flush()?;
+    }
+}
+
+/// fxdax: the guest agent's standard output, of what its console holds, `console`, as
+/// [`split_console`] passes it on: for a test that reads what each of several VMs said
+/// (fxfs-guest-soak, TASK-67).
+pub fn guest_stdout(console: &[u8]) -> String {
+    let (mut stdout, mut rest) = (Vec::new(), Vec::new());
+    Framing::default().split(console, &mut stdout, &mut rest).expect("writes to memory");
+    String::from_utf8_lossy(&stdout).into_owned()
+}
+
+/// Where a console's bytes go, as `guest_init` frames the agent's standard output on it: between
+/// STDOUT_START and STDOUT_END to the agent's, all else to the rest.
+#[derive(Default)]
+struct Framing {
+    in_stdout: bool,
+}
+
+impl Framing {
+    /// Passes `bytes`, the console's next, to `stdout` and `rest`.
+    fn split(
+        &mut self,
+        bytes: &[u8],
+        stdout: &mut impl std::io::Write,
+        rest: &mut impl std::io::Write,
+    ) -> std::io::Result<()> {
+        use crate::{STDERR_END, STDERR_START, STDOUT_END, STDOUT_START};
         let is_marker =
             |b: &u8| matches!(*b, STDOUT_START | STDOUT_END | STDERR_START | STDERR_END);
-        for run in buffer[..n].split_inclusive(is_marker) {
+        for run in bytes.split_inclusive(is_marker) {
             let (bytes, marker) = match run.split_last() {
                 Some((b, bytes)) if is_marker(b) => (bytes, Some(*b)),
                 _ => (run, None),
             };
-            if in_stdout {
+            if self.in_stdout {
                 stdout.write_all(bytes)?;
             } else {
-                stderr.write_all(bytes)?;
+                rest.write_all(bytes)?;
             }
             if let Some(marker) = marker {
-                in_stdout = marker == STDOUT_START;
+                self.in_stdout = marker == STDOUT_START;
             }
         }
-        stdout.flush()?;
-        stderr.flush()?;
+        Ok(())
     }
 }
 
@@ -894,6 +923,25 @@ mod tests {
             at("soon").unwrap_err().to_string(),
             "FXDAX_TEST_DEADLINE is \"soon\", not seconds"
         );
+    }
+
+    /// fxdax: the agent's output, framed on the console among the kernel's lines and the agent's
+    /// standard error, read back alone, across frames (TASK-67).
+    #[test]
+    fn guest_stdout_is_what_its_frames_hold() {
+        use crate::{STDERR_END, STDERR_START, STDOUT_END, STDOUT_START};
+        let mut console = b"[    0.1] booting\n".to_vec();
+        console.extend([STDOUT_START]);
+        console.extend(b"synced 0 1\nsyn");
+        console.extend([STDOUT_END, STDERR_START]);
+        console.extend(b"an error\n");
+        console.extend([STDERR_END]);
+        console.extend(b"[    0.2] the kernel\n");
+        console.extend([STDOUT_START]);
+        console.extend(b"ced 0 2\n");
+        console.extend([STDOUT_END]);
+        assert_eq!(guest_stdout(&console), "synced 0 1\nsynced 0 2\n");
+        assert_eq!(guest_stdout(b"nothing framed\n"), "");
     }
     use std::io::{Read, Write};
     use std::os::unix::net::{UnixListener, UnixStream};

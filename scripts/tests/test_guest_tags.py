@@ -39,7 +39,8 @@ class GuestTags(unittest.TestCase):
         self.assertEqual(named() - tags(), set())
 
     def test_every_suite_runs_but_the_manual_one(self):
-        soaked = {f"soak-{group}" for group in ["crash", "checks", "sanitized", "replicas"]}
+        groups = ["crash", "checks", "sanitized", "replicas", "mixed"]
+        soaked = {f"soak-{group}" for group in groups}
         self.assertEqual(tags() - named() - soaked, {"manual"})
 
 

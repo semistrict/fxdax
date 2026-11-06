@@ -59,15 +59,24 @@ rounds=${FXDAX_E2E_ROUNDS:-1}
 # With frame pointers, as every build here has them (.cargo/config.toml), which the bench's perf
 # call graphs walk (FXDAX_BENCH_PERF). With FXDAX_FAILPOINTS, a daemon whose failpoints it sets (FAILPOINTS, the fail crate's): requests
 # failing or waiting as it says, such as extentd::map=1%return(5) (TASK-44.10); with FXDAX_FAULT_SEED, those of a
-# fork's steps its seed says (fxdax::faults).
+# fork's steps its seed says (fxdax::faults); with FXDAX_EXTENTD_FAILPOINTS=1, one built with them,
+# none set, for cases that set their own daemons' (fxfs-guest-soak, TASK-67).
 extentd_features=()
-if [[ -n ${FXDAX_FAILPOINTS:-}${FXDAX_FAULT_SEED:-} ]]; then extentd_features=(--features failpoints); fi
+if [[ -n ${FXDAX_FAILPOINTS:-}${FXDAX_FAULT_SEED:-}${FXDAX_EXTENTD_FAILPOINTS:-} ]]; then
+    extentd_features=(--features failpoints)
+fi
 cargo build --release --manifest-path "$root/Cargo.toml" -p fxdax --bin fxdax-extentd \
     --bin fxdaxctl ${extentd_features[@]+"${extentd_features[@]}"}
 extentd_bin="$root/target/release/fxdax-extentd"
 # fxdax: fxdaxctl, beside it, for cases that run it against the daemon (fxfs-guest-stats,
-# TASK-111.4).
+# TASK-111.4); and the bucket's collector, fxdax-gc, for those that collect their bucket
+# (fxfs-guest-soak).
 export FXDAXCTL_BIN="$root/target/release/fxdaxctl"
+cargo build --release --manifest-path "$root/Cargo.toml" -p extent_remote --bin fxdax-gc
+export FXDAX_GC_BIN="$root/target/release/fxdax-gc"
+# The run's directory, by which a case that goes on from round to round keys what it keeps
+# (fxfs-guest-soak).
+export FXDAX_E2E_RUN="$results"
 # From its directory, whose .cargo/config.toml sets its target directory and build environment.
 # FXDAX_FIRECRACKER_SECCOMP builds Firecracker as production does, for musl, which compiles in its
 # filter (TASK-50.1): `real`, the default, runs under that; `log` under a copy of it that allows
