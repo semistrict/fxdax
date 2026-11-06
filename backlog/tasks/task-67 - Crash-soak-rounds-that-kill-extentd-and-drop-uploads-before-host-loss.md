@@ -5,8 +5,9 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-10-21 19:54'
-updated_date: '2026-11-06 06:48'
-labels: []
+updated_date: '2026-11-06 14:54'
+labels:
+  - sandbox
 dependencies: []
 priority: high
 ordinal: 176000
