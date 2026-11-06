@@ -6,7 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-11-05 03:16'
-updated_date: '2026-11-05 17:15'
+updated_date: '2026-11-06 02:23'
 labels: []
 dependencies:
   - TASK-165.3
@@ -46,4 +46,20 @@ doc-14, step 7. The local lineage and remote.rs's claim, marker and take_parent 
 
 <!-- SECTION:NOTES:BEGIN -->
 From TASK-165.6: an image's own file bucket is <image>/bucket, inside its directory, which its clones' handles name. That holds only while the local lineage keeps an image's directory as long as its clones live; once forks are only in the bucket, a deleted image's directory goes with its bucket under its clones. Move it (beside the image, or a bucket the caller names) in this step.
+
+Implemented on branch task-165-7 (rebased on origin/land-l, i.e. main + TASK-165.6), three commits with 165.8's step:
+- 875bf7fb2 extent_store: Data::Remote(Location), local format 7 (refactor; no behaviour change).
+- eaeffc8b4 fxdax: forks, points and deletion only in the bucket (host_store::fork/make_child, remote::take_branch, Remote::unfork, child_free; claims, child markers, take_parent, handles gone; image's own bucket beside it, <image>.bucket).
+- 5dfaeb0e5 extent_store: a store holds one branch (lineage.rs, branch_records.rs, layers.rs, ledger.rs deleted; Dir::claim refuses a second opening in a process; delete_host removes the directory whole).
+Decisions: OPEN_QUESTIONS.md, "Forks, points and deletion are the bucket's alone".
+TASK-184: done on main meanwhile (write_new); kept for markers and fences, its claim cases gone with claims. TASK-186: moot, closed.
+
+Tests deleted (fxdax, step 1; replaced by the bucket's fork protocol tests in fork_faults/restore_faults and those listed as added): claims_read_as_written, deleting_a_fork_removes_its_placement, deleting_a_handle_never_described_removes_it, deleting_an_emptied_handle_finishes_it, each_write_of_a_childs_upload_meeting_the_collector, forks_are_named_by_their_branch, forks_failed_whose_deletion_failed_keep_their_handle_and_branch, forks_failed_whose_handles_are_deleted_later_leave_branches_that_took_their_childs_id_be, forks_failed_whose_host_crashed_as_they_were_deleted_are_deleted_again, forks_left_by_a_crash_take_no_branch_that_took_their_childs_id, forks_taking_records_of_their_own_take_none_of_another_branch, forks_their_parents_branch_names_not_take_records_of_their_own, forks_to_a_branch_the_store_has_make_nothing, forks_whose_host_crashed_before_their_record_are_deleted_in_object_storage_too, forks_whose_parents_are_open_nowhere_take_their_parents_branch_and_records_of_their_own, forks_whose_parents_were_deleted_here_take_their_parents_branch_and_records_of_their_own, forks_whose_record_was_lost_record_themselves, forks_whose_segment_may_land_yet_take_no_branch_of_their_own, forks_whose_segment_never_lands_take_records_of_their_own_once_their_parents_are_taken, forks_with_records_of_their_own_are_deleted_with_their_handles, restores_fork_anew_over_forks_that_failed, restores_over_what_a_dead_host_left_fail_until_it_is_deleted, stores_are_cleaned_once_the_forks_sharing_their_segments_go, what_a_child_uploads_of_what_it_inherited_outlives_the_collector.
+Tests added (fxdax, step 1): deleting_a_store_never_described_removes_it, deleting_an_emptied_store_finishes_it, forks_failed_whose_deletion_is_refused_leave_their_branch_to_its_placement, forks_to_a_child_forked_before_make_nothing, forks_whose_host_crashed_stand_once_their_segment_lands, restores_fork_anew_over_forks_left_unmade, restores_over_what_a_failed_cleanup_left_fork_anew, stores_with_no_uploader_fork_nothing; plus forks_orphaned_by_a_lost_host_keep_what_they_inherited_until_deleted (fork_faults). Rewritten for the bucket: fork_faults/restore_faults step lists (FORK_STEPS, CLEANUP_STEPS), extentd fork/restore tests, storage clone tests, fxdaxctl fork tests.
+Tests deleted (step 2): extent_store's 79 tests of forks, lineages, layers, ledger, handles, inherited segments and shared files (tests/lineage.rs, tests/shuttle/lineage.rs and their cases in store.rs/host.rs/shuttle), e.g. forks_share_their_parents_state, files_go_once_every_holder_let_them_go_durably, needs_forks_to_wait_for_framings, needs_openings_and_deletions_to_wait; fxdax deletions_stopped_at_a_branchs_records_finish, unmarking_removes_new_files_a_crash_left (unmark gone: a store's markers are in its own directory, removed with it). Added: extent_store stores_open_once, stores_name_their_branch_and_bucket, deleting_stores, deletions_delete_their_branch_elsewhere_first, deletions_remove_the_stores_directory_durably, deletions_stopped_at_any_step_finish, checkpoints_replace_the_index_files_before. Shuttle needs_closes_to_wait_for_framings_after_a_failed_flush writes on after reopening, which finds the race again.
+Runs: macOS extent_store+extent_remote+fxdax 671/671 (HEAD of step 2), step 1 alone 729/729; Linux (OrbStack, rust:1) step 2 847/853 and step 1 905/911, failing only eu-stack (3), grants ENOENT (3).
+
+Runs at 42e484d75 (with TASK-165.8): see TASK-165.8's notes. GCE suites still to run before landing: forks, snapshots, volumes, migration, live fork.
+
+Rebased onto main 752515020 (land-l landed): 8fa81ef66 (Data::Remote), bb8c0f4e2 and 42db93a24 (TASK-165.7), b447c610b (TASK-165.8); hashes above are before the rebase. At b447c610b: macOS FXDAX_TEST_PARTS="workspace shuttle sim" scripts/test.sh --no-fail-fast green (workspace 2027/2027, sim 47/47, shuttle 38+6+6+32+10+18); Linux extent_store+extent_remote+fxdax 834/840, failing only eu-stack (3) and grants ENOENT (3).
 <!-- SECTION:NOTES:END -->

@@ -4,9 +4,10 @@ title: >-
   fxdax: claim_origin reads a child's claim, then writes it: it revives a claim
   the child's deletion removed meanwhile, or names a dead fork's origin in a
   later fork's claim of the ID
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-11-05 16:24'
+updated_date: '2026-11-06 01:44'
 labels:
   - remote
   - structure
@@ -34,3 +35,15 @@ Found looking around TASK-184 (2026-11-05). crates/fxdax/src/remote.rs: claim_or
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Moot after TASK-165.7 (branch task-165-7, commit eaeffc8b4): fxdax writes no claim file any more (claims, origin-* files, claim_origin, disclaim are gone); a fork's child is recorded in the bucket alone. The race this task describes has no code left to happen in.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Closed as moot: TASK-165.7 removed fork claims (claim_origin and its read-then-write) altogether; nothing to fix.
+<!-- SECTION:FINAL_SUMMARY:END -->
