@@ -39,9 +39,10 @@ class Mutants(unittest.TestCase):
 
     def test_one_set_of_both_kinds(self):
         """The simulator's mutants, the model's and the real kernels' are one set, and each needs
-        one."""
+        one: the debug kernel's since TASK-212, whose killer injects allocation failures only that
+        kernel can."""
         kernels = {each.kernel for each in guest_mutants.mutants()}
-        self.assertEqual(kernels, {"sim", "model", "release"})
+        self.assertEqual(kernels, {"sim", "model", "release", "debug"})
 
     def test_what_the_runs_are(self):
         """What a killer may name, as the sources declare them."""
