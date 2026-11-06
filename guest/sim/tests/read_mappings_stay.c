@@ -14,7 +14,8 @@
 #define FILLER_LEN (2UL << 20)
 #define TURNS 64
 
-#define check(cond, ...) do { if (!(cond)) sim_panic(__VA_ARGS__); } while (0)
+/* What it expects, void once a sweep's call has failed (kernel/sweep.c). */
+#define check sim_expect
 
 static struct sim_mount *mount;
 static struct file *hot, *fillers[FILLERS];
@@ -84,6 +85,7 @@ int main(void)
 	}
 	sim_spawn("scenario", scenario, NULL);
 	sim_run();
+	sim_end(SIM_END_READ_FILES);
 	sim_log("read_mappings_stay: passed\n");
 	return 0;
 }

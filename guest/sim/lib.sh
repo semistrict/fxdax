@@ -25,10 +25,17 @@ sim_one_runs() { # dir
     done
 }
 
+# A sweep's runs, as sim_one_runs lists them, but read_pressure's with two readers of two rounds:
+# its 64 files' writes are most of its calls.
+sim_sweep_runs() { # dir
+    sim_one_runs "$1" | sed 's/^read_pressure$/read_pressure 1 2 2/'
+}
+
+# Every run checks for leaks as it exits (sim_end), and for each sanitizer's report.
 sim_prepare() {
     make -s -j"$(nproc)" "KERNEL=${KERNEL:?}" "BUILD=${BUILD:?}" compile || exit 1
     eval "$(make -s "KERNEL=$KERNEL" "BUILD=$BUILD" flags)"
-    export ASAN_OPTIONS=detect_leaks=0:detect_stack_use_after_return=0
+    export ASAN_OPTIONS=detect_leaks=1:detect_stack_use_after_return=0
 }
 
 # The sources a build compiles, as `patch -p1` names them in `dir`, and where each is from.
@@ -112,3 +119,46 @@ sim_known() { # log
     done < known-failures
     return 1
 }
+
+# How many calls a run in `dir` may fail, as its end says (sim_end), or how it failed as it is,
+# nothing failing, and false.
+sim_sweep_calls() { # dir, run...
+    local dir=$1 log
+    shift
+    log=$(mktemp)
+    # shellcheck disable=SC2068
+    if ! timeout 120 "$dir/"$@ > "$log" 2>&1; then
+        echo "$* fails, nothing failing: $(sim_failure "$log")"
+        rm -f "$log"
+        return 1
+    fi
+    sed -n 's/^sim: end: \([0-9]*\) calls may fail$/\1/p' "$log"
+    rm -f "$log"
+}
+
+# One run of the sweep in `dir`, its call `n` failing: what it said, if it failed, kept in `logs`.
+sim_sweep_one() { # dir, logs, n, run...
+    local dir=$1 logs=$2 n=$3 log
+    shift 3
+    log=$logs/$(tr ' ' '-' <<< "$*")-$n.log
+    # shellcheck disable=SC2068
+    if SIM_SWEEP=$n timeout 120 "$dir/"$@ > "$log" 2>&1; then
+        rm -f "$log"
+    else
+        echo "$* at call $n: $(sim_failure "$log")"
+    fi
+}
+
+# The sweep of a run in `dir`: each of its calls failing in turn, JOBS at once, logs in `logs`. Says
+# each that failed, and fails if one did.
+sim_sweep() { # dir, logs, jobs, run...
+    local dir=$1 logs=$2 jobs=$3 calls failed
+    shift 3
+    mkdir -p "$logs"
+    calls=$(sim_sweep_calls "$dir" "$@") || { echo "$calls"; return 1; }
+    failed=$(seq 1 "$calls" | xargs -P "$jobs" -I{} bash -c 'sim_sweep_one "$@"' _ "$dir" "$logs" {} "$@")
+    [[ -z $failed ]] && return 0
+    sort -t' ' -k1,1 -V <<< "$failed"
+    return 1
+}
+export -f sim_sweep_one sim_failure sim_failure_line

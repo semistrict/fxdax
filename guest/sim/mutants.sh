@@ -5,8 +5,9 @@
 # Puts each past bug of ../mutants whose header names this simulator as its kernel (`Kernel: sim`,
 # ../mutants/README.md) into a copy of dax.c, pages.c, data.c, device.c, the model of Fxfs or
 # fs/dax.c, builds the tests against it, and runs its killer, the run its header names
-# (`Killer:`): a test of one run, a scenario (`scenarios NAME`), or a test that takes seeds
-# (`interleave`, `failures`), run seed after seed until one fails. The mutant is killed only if its
+# (`Killer:`): a test of one run, a scenario (`scenarios NAME`), a test that takes seeds
+# (`interleave`, `failures`), run seed after seed until one fails, or a sweep of a run of one
+# (`sweep scenarios NAME`, sweep.sh), each of its calls failing in turn. The mutant is killed only if its
 # killer fails; MISSED if it passes; BROKEN if it doesn't apply or build, or its killer is no run
 # here. One whose killer is `none`, which nothing here can kill, its header saying why, isn't run.
 #
@@ -130,13 +131,16 @@ run() { # name
         return
     fi
     began=$SECONDS
-    if [[ " ${seeded[*]} " == *" $killer "* ]]; then
+    if [[ $killer == "sweep "* ]] && sim_sweep_runs "$dir" | grep -xF -- "${killer#sweep }" > /dev/null; then
+        # shellcheck disable=SC2086
+        said=$(sim_sweep "$dir" "$dir/sweep" "$seed_jobs" ${killer#sweep } | head -1)
+    elif [[ " ${seeded[*]} " == *" $killer "* ]]; then
         said=$(seeded "$dir" "$killer") || said=""
     elif sim_one_runs "$dir" | grep -xF -- "$killer" > /dev/null; then
         # shellcheck disable=SC2086
         said=$(failed "$dir" $killer) || said=""
     else
-        fate BROKEN "$name" "$killer" "its killer is no run here (sim_one_runs, or ${seeded[*]})"
+        fate BROKEN "$name" "$killer" "its killer is no run here (sim_one_runs, sweep of one, or ${seeded[*]})"
         return
     fi
     if [[ -n $said ]]; then

@@ -11,6 +11,7 @@
 
 #include <sim/sim.h>
 #include <sim/host.h>
+#include <sim/shadow.h>
 #include <linux/dax.h>
 
 /*
@@ -565,14 +566,71 @@ void sim_unpin_page(struct page *page)
 	folio_put(page_folio(page));
 }
 
+/* Its pieces, a mapping's each, the file model's calls (kernel/shadow.c). */
+void sim_user_access_begin(struct sim_user_access *access, unsigned long addr, size_t len,
+			   bool store)
+{
+	size_t at = 0;
+
+	access->count = 0;
+	access->store = store;
+	while (at < len && access->count < SIM_ACCESS_PIECES) {
+		struct vm_area_struct *vma = find_vma(current->mm, addr + at);
+		size_t part;
+		loff_t pos;
+
+		if (!vma)
+			break;
+		part = min_t(size_t, len - at, vma->vm_end - (addr + at));
+		pos = ((loff_t)vma->vm_pgoff << PAGE_SHIFT) + (addr + at - vma->vm_start);
+		if (store)
+			sim_shadow_store_begin(&access->pieces[access->count].call, vma->vm_file, pos,
+					       part);
+		else
+			sim_shadow_read_begin(&access->pieces[access->count].call, vma->vm_file, pos,
+					      part);
+		access->pieces[access->count].at = at;
+		access->pieces[access->count].len = part;
+		access->count++;
+		at += part;
+	}
+}
+
+void sim_user_access_end(struct sim_user_access *access, const void *bytes, size_t done)
+{
+	int i;
+
+	for (i = 0; i < access->count; i++) {
+		size_t at = access->pieces[i].at;
+		size_t got = done > at ? min(done - at, access->pieces[i].len) : 0;
+
+		if (access->store)
+			sim_shadow_store_end(&access->pieces[i].call, bytes ? bytes + at : NULL, got);
+		else
+			sim_shadow_read_end(&access->pieces[i].call, "a load", bytes + at, got);
+	}
+}
+
 int sim_user_store(unsigned long addr, const void *buf, size_t len)
 {
-	return sim_copy_user(addr, (void *)buf, len, true) == len ? 0 : -EFAULT;
+	struct sim_user_access access;
+	size_t done;
+
+	sim_user_access_begin(&access, addr, len, true);
+	done = sim_copy_user(addr, (void *)buf, len, true);
+	sim_user_access_end(&access, buf, done);
+	return done == len ? 0 : -EFAULT;
 }
 
 int sim_user_load(unsigned long addr, void *buf, size_t len)
 {
-	return sim_copy_user(addr, buf, len, false) == len ? 0 : -EFAULT;
+	struct sim_user_access access;
+	size_t done;
+
+	sim_user_access_begin(&access, addr, len, false);
+	done = sim_copy_user(addr, buf, len, false);
+	sim_user_access_end(&access, buf, done);
+	return done == len ? 0 : -EFAULT;
 }
 
 /* A VMA's page tables go with it. */

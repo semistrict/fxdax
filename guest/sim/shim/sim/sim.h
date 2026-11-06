@@ -14,6 +14,8 @@
 void sim_init(u64 seed);
 /* A new task, which runs `fn(arg)` once sim_run runs. */
 struct task_struct *sim_spawn(const char *name, void (*fn)(void *arg), void *arg);
+/* As sim_spawn, a task nothing holds, freed once done. */
+void sim_spawn_detached(const char *name, void (*fn)(void *arg), void *arg);
 /* Runs every task to its end, and fails the run on a deadlock or a livelock. */
 void sim_run(void);
 /* A scheduling point: the seed may run another task here. */
@@ -27,6 +29,34 @@ u64 sim_points(void);
 u64 sim_switches(void);
 /* Has each scheduling point logged, with the task it ran. */
 void sim_trace_on(void);
+
+/*
+ * The sweep (kernel/sweep.c): whether the call of the code under test at `file`:`line`, `what` it
+ * is, fails, as SIM_SWEEP=N fails the Nth to ask, once; whether that one has; and how many have
+ * asked. Once it has failed, a test's expectations are void: sim_unexpected fails the run, unless
+ * it has, when it says so and the run goes on, to what the end of it checks (sim_end).
+ */
+bool sim_sweep_fails(const char *what, const char *file, int line);
+bool sim_swept(void);
+u64 sim_sweep_calls(void);
+/* While paused, no call asks: the end of a run's reads of what it checks. */
+void sim_sweep_pause(bool pause);
+/* The scheduler's, as the clock moves to `now` with every task asleep (kernel/sweep.c). */
+void sim_sweep_watch(u64 now);
+__printf(1, 2) void sim_unexpected(const char *format, ...);
+/* A test's expectation: void once a sweep's call has failed. */
+#define sim_expect(cond, ...) do { if (!(cond)) sim_unexpected(__VA_ARGS__); } while (0)
+/*
+ * Waits, a millisecond at a time, ten seconds at most, for what a test expects to come: which a
+ * sweep's failure may keep from coming.
+ */
+#define sim_await(cond, ...) do {					\
+	int waited_;							\
+									\
+	for (waited_ = 0; !(cond) && waited_ < 10000; waited_++)	\
+		msleep(1);						\
+	sim_expect(cond, __VA_ARGS__);					\
+} while (0)
 
 /*
  * Has `count` allocations by fs/fxfs's own sources fail, after `skip` more of them; or one in `odds`
@@ -68,6 +98,13 @@ u64 sim_device_private_freed(void);
 u64 sim_device_private_refused(void);
 u64 sim_device_open_maps_refused(void);
 /*
+ * That the window maps nothing, and holds no page private, but what UNMAPs that failed kept: the
+ * mount gone (sim_end).
+ */
+void sim_device_check_unmounted(void);
+/* How many of the window's pages UNMAPs that failed kept. */
+u64 sim_device_kept(void);
+/*
  * Has the next MAP wait on its way to the host, others running meanwhile, until released: the
  * pages of the MAP held, or 0 if none is.
  */
@@ -85,13 +122,32 @@ unsigned long sim_mm_writable_mapping(u64 page, u64 pages);
 /* Logs what happens to the PTE of a task's address. */
 void sim_mm_watch(unsigned long addr);
 
-/* A mount, as fs/fxfs/super.c's, of the sim's Fxfs (fxfs/fxfs.c). */
+/*
+ * A mount, as fs/fxfs/super.c's, of the sim's Fxfs (fxfs/fxfs.c): its files, opened, and the model
+ * of what each holds (kernel/shadow.c). Freed, it syncs, unmaps what maps its files, and evicts
+ * those it hasn't, as an unmount does.
+ */
 struct sim_mount {
 	struct super_block sb;
 	struct fxfs_vfs_info *info;
+	struct list_head files, shadows;
 };
 struct sim_mount *sim_mount_new(void);
 void sim_mount_free(struct sim_mount *mount);
+/*
+ * The end of a run, which every test calls once its tasks are done (TASK-149.15, TASK-149.18): the
+ * mount, if one is left, synced, each file holding what its calls were told (kernel/shadow.c), and,
+ * unless the test's own end has read each whole (SIM_END_FILES_READ), reading as Fxfs's extents
+ * hold it, then freed; the window mapping nothing but what failed UNMAPs kept; and how many calls
+ * a sweep may fail, said.
+ */
+enum sim_end_files {
+	SIM_END_READ_FILES,
+	SIM_END_FILES_READ,
+};
+void sim_end(enum sim_end_files files);
+/* A run ended where it is, void, as a sweep's failure left it (sim_sweep_watch): nothing checked. */
+void sim_end_void(void);
 /* One of the counts dax.c shows of the mount (fxfs_dax_show_stats), by name, as /proc/fs/fxfs. */
 u64 sim_dax_stat(struct sim_mount *mount, const char *name);
 struct file *sim_file_new(struct sim_mount *mount);
@@ -132,6 +188,7 @@ void sim_unpin_page(struct page *page);
 void fxfs_sim_read(struct fxfs *fs, u64 ino, u64 offset, void *buf, size_t len);
 u64 fxfs_sim_size(struct fxfs *fs, u64 ino);
 u64 fxfs_sim_new_file(struct fxfs *fs);
+/* NULL if the device isn't found, as a sweep's failure has it. */
 struct fxfs *fxfs_sim_new(void);
 void fxfs_sim_free(struct fxfs *fs);
 /* How many blocks writeback wrote, extents were freed, transactions failed. */

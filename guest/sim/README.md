@@ -22,6 +22,8 @@ KERNEL=<tree> BUILD=<dir> ./mutants.sh   # puts past bugs back (../mutants), eac
 KERNEL=<tree> BUILD=<dir> ./mutants.sh --check                # that each still applies, in seconds
 <dir>/tests/failures SEED [OPERATIONS]   # the same, as allocations, MAPs, UNMAPs and PRIVATEs fail
 <dir>/tests/scenarios [NAME]             # paths no seed takes, each played out; none lists them
+KERNEL=<tree> BUILD=<dir> ./sweep.sh [RUN...] # each run of one, each of its failable calls failing in turn
+SIM_SWEEP=N <dir>/tests/scenarios NAME    # one of the sweep's runs, its Nth call failing
 ```
 
 `interleave`'s flags say what to log of a run, and `failures`' (`-v`, `-W`, `-a`, `-w`); replaying
@@ -112,6 +114,68 @@ It can't find:
 - **Copy on write's host side**: userfaultfd, KVM's async page faults resolved as reads, a source
   evicting its pages, a snapshot refused while pages are private. The model copies pages at a
   `PRIVATE` alone, in the request, and nothing else of the host's runs meanwhile.
+
+## The sweep, and the end of a run (TASK-149.15, TASK-149.18)
+
+`tests/failures` fails calls at random, one in so many; the sweep enumerates. Every call of the code
+under test that a real kernel may see fail asks `kernel/sweep.c` first: allocations by fs/fxfs,
+fs/dax.c and the XArrays and pool they use; the device's MAPs, UNMAPs and PRIVATEs; and the model of
+Fxfs's room for dirty pages, growths, writeback's commits, clones (part way, as Fxfs's transactions
+of one), seals and lookups. `SIM_SWEEP=N` fails the Nth, once; up to it the run is the run without
+it. `sweep.sh` runs each run of one (every test of one run, every scenario; read_pressure with two
+readers of two rounds) as it is, to count its calls, then once for each N. Once the call has failed,
+what the test expects is void (`sim_expect`, `sim_unexpected`: logged, and the run goes on); what holds
+whatever fails isn't: ASan, UBSan, LeakSanitizer (every run, at exit), the WARNs of dax.c and
+fs/dax.c, this kernel's checks, and the end of the run. A run still going 300 s of virtual time after
+the failure, every task asleep, one at a pause point or a hold its test can no longer let go of, ends
+there, void; with none, a deadlock or a livelock stops it, as without a failure.
+
+Every test ends with `sim_end`: the mount, if one is left, synced (an error once, a sweep's failure
+once, then it must succeed), each file fsynced whose writeback error no fsync told yet, read whole
+as Fxfs's extents hold it and as long as Fxfs says (but where a writeback failed: the window then holds
+what Fxfs doesn't, as a page cache does), its known bytes durable; then unmounted, as an unmount does:
+mappings gone, files evicted, the volume removed, the window mapping nothing, and holding no private
+page, but what UNMAPs that failed kept. Then how many calls the run reached, for the sweep.
+
+The file model (`kernel/shadow.c`) is what tasks were told: every byte a write(2), a store, a
+truncate, a punch or a clone said a file holds, once the call ended, unless another call changed its
+page meanwhile, or the call failed, or its bytes were a task's memory. A read(2) or a load reads it;
+an fsync that returned 0, and the end's sync, find it in Fxfs's extents, and the size: every
+acknowledged write durable. A writeback that fails, as it fails, forgets what changed since the file
+was last durable: its pages are clean, and a rebind or a drop may show what Fxfs holds at once.
+
+Every waiter is woken (`kernel/sched.c`): a timed wait whose time ends it, its entry queued, ends
+early, as a spurious wake, and fails the run if it then finds its condition true: a wake lost, which a
+time limit would have hidden. No task ends with an entry queued.
+
+In dax.c, found by the sweep and the file model, each fixed:
+
+1. **An fsync returned without a range dirtied before it began.** Writeback counted its file's dirty
+   ranges with the semaphore shared, allocated its batch, and swapped no more than that many with it
+   held for writing: a store between dirtied the first chunk's range, which the swap took, passing the
+   second's by. `failures 62`, the file model at the syncer's fsync. Counted again under the write lock,
+   the batch made larger if need be. `cow_writeback_counts_again` (pause point 10, `COUNTED`),
+   `task-149.15-writeback-batch-short`.
+2. **A sync without the memory for its list of files returned 0**, having written none back
+   (`fxfs_dax_busy_files`): -ENOMEM now. The sweep of `short_copy`, the end's sync, the file model.
+   `task-149.15-sync-without-memory`.
+3. **A write that could never have room in the window waited for ever.** Each round of the budget's
+   worker, which each wait for room asked for, counted as a range let go of, and reset the wait's count
+   toward giving up (`FXFS_DAX_NO_ROOM_WAITS`). read_pressure's window, its aligned room taken by a
+   failed UNMAP: livelock. The worker's writeback lets go of its ranges as it ends, which says so.
+   `unmaps_failed_take_the_window`, `task-149.15-round-releases`.
+
+And this simulator's own: a failed mount (the device, the DAX, the volume) went on with what it hadn't;
+a test's struct files and the model's extents' counts leaked; ended tasks' stacks were kept until a
+run ended, gigabytes of a work's queued again and again; a sync's recorded error was told twice.
+
+| Mutant | Caught by |
+| --- | --- |
+| `task-149.15-writeback-batch-short` | `cow_writeback_counts_again`: the second chunk's write not in Fxfs after the fsync |
+| `task-149.15-sync-without-memory` | `sweep scenarios short_copy`: the end's sync, its allocation failed, writes nothing back |
+| `task-149.15-round-releases` | `unmaps_failed_take_the_window`: livelock, the write never failing ENOSPC |
+| `task-149.18-round-unwoken`, the worker's round waking no one it throttled | `interleave` seed 5: a lost wake, the throttled write's |
+| `task-149.18-release-unwoken`, a range let go of waking no one waiting for room | `read_pressure`: a lost wake, the writer's |
 
 ## What it found
 
@@ -474,6 +538,7 @@ end, and an operation at a seal's points at a cut near the end, which 64 didn't 
   nothing else but `REAL_HEADERS`.
 - `kernel/`: the fake kernel. `kernel/host.c` alone sees libc.
 - `fxfs/`: the model of Fxfs.
+- `kernel/sweep.c`: what fails, and when (the sweep); `kernel/shadow.c`: the file model.
 - `tests/`: what runs: `interleave`'s seeds, and scenarios, one run each. A test fails by panicking,
   the seed named.
 - `../mutants/`: past bugs, each a patch that takes its fix away, its header naming its killer;
@@ -482,5 +547,5 @@ end, and an operation at a seal's points at a cut near the end, which 64 didn't 
   `mutants.sh --check`, which CI runs.
 - `known-failures`: open bugs' failures, which `zloop.sh` doesn't fail for.
 - `inventory.py`: what a source spells of the kernel, by libclang against the real headers.
-- `zloop.sh`, `check.sh`, `mutants.sh`, `lib.sh`, what they share, `kernel-tree.sh`, the
+- `zloop.sh`, `check.sh`, `mutants.sh`, `sweep.sh`, `lib.sh`, what they share, `kernel-tree.sh`, the
   sources for them, and `linux.sh`, which runs them elsewhere than on Linux.

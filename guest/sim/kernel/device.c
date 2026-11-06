@@ -52,6 +52,8 @@ struct extent {
 struct window_page {
 	struct extent *extent;
 	u8 state;
+	/* Whether an UNMAP of it failed: the guest keeps it from use for good, mapped as it was. */
+	bool kept;
 };
 
 struct virtio_extent {
@@ -146,6 +148,14 @@ void sim_device_wrote(u64 sequence, u64 page, u64 pages)
 bool sim_device_sealed(u64 sequence)
 {
 	return find_extent(sequence)->sealed;
+}
+
+/* Whether the store holds extent `sequence`, written as far as its page `page`. */
+bool sim_device_holds(u64 sequence, u64 page)
+{
+	struct extent *extent = find_extent(sequence);
+
+	return extent && extent->held && page < extent->length;
 }
 
 u64 sim_device_length(u64 sequence)
@@ -441,8 +451,10 @@ u64 sim_device_held_map(void)
 	return holding;
 }
 
+/* Lets the MAP held go, or the hold go, if no MAP came to it, as a sweep's failure may have it. */
 void sim_device_release_map(void)
 {
+	hold_next = false;
 	holding = 0;
 }
 
@@ -484,10 +496,16 @@ static u64 unmap_lost;
 
 static bool request_fails(const struct vext_request *req)
 {
+	static const char *const what[] = {
+		[VIRTIO_EXTENT_T_MAP] = "a MAP", [VIRTIO_EXTENT_T_UNMAP] = "an UNMAP",
+		[VIRTIO_EXTENT_T_PRIVATE] = "a PRIVATE",
+	};
 	u32 type = req->type;
 	bool fail = false;
 
-	if (failing_odds && !(sim_random() % failing_odds)) {
+	if (sim_sweep_fails(what[type], __FILE__, __LINE__)) {
+		fail = true;
+	} else if (failing_odds && !(sim_random() % failing_odds)) {
 		fail = type != VIRTIO_EXTENT_T_UNMAP || unmap_lost < UNMAP_LOST_MAX;
 		unmap_lost += fail && type == VIRTIO_EXTENT_T_UNMAP ? req->len : 0;
 	} else if (failing && type == failing_type && !failing_skip--) {
@@ -499,6 +517,42 @@ static bool request_fails(const struct vext_request *req)
 	return fail;
 }
 
+/* Marks the pages of an UNMAP that failed kept, as the guest keeps them (sim_device_check_unmounted). */
+static void unmap_failed(const struct vext_request *req)
+{
+	u64 page, first = req->window_offset >> PAGE_SHIFT;
+
+	for (page = first; page < first + (req->len >> PAGE_SHIFT); page++)
+		device.pages[page].kept = true;
+}
+
+u64 sim_device_kept(void)
+{
+	u64 page, kept = 0;
+
+	for (page = 0; page < device.window_len >> PAGE_SHIFT; page++)
+		kept += device.pages[page].kept;
+	return kept;
+}
+
+void sim_device_check_unmounted(void)
+{
+	u64 page, pages = device.window_len >> PAGE_SHIFT, private = 0;
+	static const char *const states[] = { "nothing", "zeros", "an extent", "a private page" };
+
+	for (page = 0; page < pages; page++) {
+		const struct window_page *at = &device.pages[page];
+
+		private += at->state == WINDOW_PRIVATE;
+		if (at->state != WINDOW_NONE && !at->kept)
+			sim_panic("the end: window page %llx maps %s, unmounted, with no UNMAP that failed of it",
+				  page, states[at->state]);
+	}
+	if (private != device.private_pages)
+		sim_panic("the end: the window has %llu private pages, and counts %llu", private,
+			  device.private_pages);
+}
+
 int virtio_extent_call(struct virtio_extent *vext, struct vext_request *req)
 {
 	int err;
@@ -507,6 +561,8 @@ int virtio_extent_call(struct virtio_extent *vext, struct vext_request *req)
 	sim_point("a device request");
 	if ((req->type == VIRTIO_EXTENT_T_MAP || req->type == VIRTIO_EXTENT_T_UNMAP ||
 	     req->type == VIRTIO_EXTENT_T_PRIVATE) && request_fails(req)) {
+		if (req->type == VIRTIO_EXTENT_T_UNMAP)
+			unmap_failed(req);
 		sim_point("a device reply");
 		return -EIO;
 	}

@@ -58,6 +58,8 @@ struct super_block {
 	void *s_fs_info;
 	loff_t s_maxbytes;
 	unsigned long s_flags;
+	/* A writeback's error, of any of its files, which the next sync returns, and clears: s_wb_err's. */
+	int s_wb_err;
 };
 
 struct address_space {
@@ -171,10 +173,16 @@ static inline int iov_iter_rw(const struct iov_iter *i) { return i->data_source;
 #define file_update_time(file) 0
 #define file_remove_privs(file) 0
 #define mapping_gfp_mask(mapping) GFP_KERNEL
+/* The file model's (kernel/shadow.c): a writeback of the mapping's file failed. */
+void sim_shadow_wb_failed(struct address_space *mapping);
 static inline void mapping_set_error(struct address_space *mapping, int error)
 {
-	if (error)
-		mapping->wb_err = error;
+	if (!error)
+		return;
+	sim_shadow_wb_failed(mapping);
+	mapping->wb_err = error;
+	if (mapping->host)
+		mapping->host->i_sb->s_wb_err = error;
 }
 static inline bool mapping_empty(const struct address_space *mapping)
 {

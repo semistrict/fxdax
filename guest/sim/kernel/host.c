@@ -118,13 +118,23 @@ static void fiber_main(unsigned int low, unsigned int high)
 	abort();
 }
 
+/*
+ * Stacks of fibers freed, for the next: tasks come and go by the thousand, a work's each time it is
+ * queued, and a stack mapped and unmapped each time had the process's memory grow by gigabytes.
+ */
+#define SPARE_STACKS 64
+static void *spare_stacks[SPARE_STACKS];
+static int spares;
+
 struct sim_fiber *host_fiber_new(void (*fn)(void *arg), void *arg)
 {
 	struct sim_fiber *fiber = calloc(1, sizeof(*fiber));
 
 	if (!fiber)
 		die("calloc");
-	if (posix_memalign(&fiber->stack, 4096, FIBER_STACK))
+	if (spares)
+		fiber->stack = spare_stacks[--spares];
+	else if (posix_memalign(&fiber->stack, 4096, FIBER_STACK))
 		die("posix_memalign");
 	fiber->stack_size = FIBER_STACK;
 	fiber->fn = fn;
@@ -162,7 +172,10 @@ void host_fiber_switch(struct sim_fiber *from, struct sim_fiber *to)
 
 void host_fiber_free(struct sim_fiber *fiber)
 {
-	free(fiber->stack);
+	if (spares < SPARE_STACKS)
+		spare_stacks[spares++] = fiber->stack;
+	else
+		free(fiber->stack);
 	free(fiber);
 }
 
@@ -287,6 +300,23 @@ _Noreturn void host_exit(int status)
 	fflush(stdout);
 	fflush(stderr);
 	_exit(status);
+}
+
+void host_at_exit(void (*fn)(void))
+{
+	if (atexit(fn))
+		die("atexit");
+}
+
+_Noreturn void host_end(int status)
+{
+	fflush(stderr);
+	exit(status);
+}
+
+const char *host_getenv(const char *name)
+{
+	return getenv(name);
 }
 
 void host_write_log(const char *line, size_t len)

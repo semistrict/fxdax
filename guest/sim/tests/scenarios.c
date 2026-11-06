@@ -31,7 +31,8 @@
  */
 #define COW_PRIVATE_MAX 64
 
-#define check(cond, ...) do { if (!(cond)) sim_panic(__VA_ARGS__); } while (0)
+/* What it expects, void once a sweep's call has failed (kernel/sweep.c). */
+#define check sim_expect
 
 static struct sim_mount *mount;
 
@@ -345,8 +346,7 @@ static void write_killed(void)
 	snprintf(value, sizeof(value), "%lu", PAUSE_WRITE_MAPPED);
 	sim_param_set("dax_pause", value);
 	writer = sim_spawn("writer", write_killed_file, NULL);
-	while (!(sim_param_read("dax_paused") & PAUSE_WRITE_MAPPED))
-		msleep(1);
+	sim_await(sim_param_read("dax_paused") & PAUSE_WRITE_MAPPED, "no write waits mapped");
 	writer->killed = true;
 	sim_param_set("dax_pause", "0");
 	msleep(100);
@@ -722,8 +722,7 @@ static void cow_crash_between_bytes_and_commit(void)
 	cow_put_pages(0, pages - 1, 1);
 	fxfs_sim_hold_commits(true);
 	syncer = sim_spawn("syncer", cow_fsync, NULL);
-	while (!fxfs_sim_commit_held())
-		msleep(1);
+	sim_await(fxfs_sim_commit_held(), "no writeback's commit held");
 	fxfs_sim_read(mount->info->fs, ino, 0, got, sizeof(got));
 	check(!memcmp(got, old, sizeof(got)), "a crash before the commit doesn't show the file as it was");
 	fxfs_sim_read_pending(mount->info->fs, ino, 0, got, sizeof(got));
@@ -757,8 +756,7 @@ static void cow_rebind_now(void *arg)
 
 	check(!sim_param_set("dax_rebind_now", "1"), "rebinding now");
 	asked = sim_dax_stat(mount, "dax_rebinds_asked");
-	while (sim_dax_stat(mount, "dax_rebinds_done") < asked)
-		msleep(1);
+	sim_await(sim_dax_stat(mount, "dax_rebinds_done") >= asked, "no rebind came");
 }
 
 /* A file of `pages` pages, written back, sealed and mapped, each page private and clean. */
@@ -782,8 +780,7 @@ static struct task_struct *cow_pause(unsigned long step, void (*run)(void *), vo
 	snprintf(value, sizeof(value), "%lu", step);
 	sim_param_set("dax_pause", value);
 	task = sim_spawn("paused", run, arg);
-	while (!(sim_param_read("dax_paused") & step))
-		msleep(1);
+	sim_await(sim_param_read("dax_paused") & step, "no task waits at step %#lx", step);
 	return task;
 }
 
@@ -823,8 +820,7 @@ static void cow_rebind_during_writeback(void)
 	cow_put_pages(0, 7, 1);
 	fxfs_sim_hold_commits(true);
 	syncer = sim_spawn("syncer", cow_fsync, NULL);
-	while (!fxfs_sim_commit_held())
-		msleep(1);
+	sim_await(fxfs_sim_commit_held(), "no writeback's commit held");
 	rebinder = sim_spawn("rebinder", cow_rebind_now, NULL);
 	msleep(50);
 	fxfs_sim_hold_commits(false);
@@ -852,8 +848,7 @@ static void cow_rebind_skips_dirty(void)
 	freed = sim_device_private_freed();
 	fxfs_sim_hold_commits(true);
 	rebinder = sim_spawn("rebinder", cow_rebind_now, NULL);
-	while (!fxfs_sim_commit_held())
-		msleep(1);
+	sim_await(fxfs_sim_commit_held(), "no writeback's commit held");
 	cow_put(1, 2, false);
 	fxfs_sim_hold_commits(false);
 	wait_for(rebinder);
@@ -896,8 +891,7 @@ static void cow_rebind_against_write(void)
 		cow_mapped_file(8);
 		sim_device_hold_map();
 		rebinder = sim_spawn("rebinder", cow_rebind_now, NULL);
-		while (!sim_device_held_map())
-			msleep(1);
+		sim_await(sim_device_held_map(), "no MAP held");
 		other = sim_spawn("other", ways[way], (void *)1UL);
 		msleep(50);
 		sim_device_release_map();
@@ -1153,8 +1147,7 @@ static void cow_map_during_seal(void)
 		cow_put_pages(0, 7, 1);
 		fxfs_sim_hold_seals(true);
 		syncer = sim_spawn("syncer", cow_fsync, NULL);
-		while (!fxfs_sim_seal_held())
-			msleep(1);
+		sim_await(fxfs_sim_seal_held(), "no seal held");
 		drop_ranges(cow_target);
 		mapper = sim_spawn("mapper", ways[way], NULL);
 		msleep(50);
@@ -1195,8 +1188,7 @@ static void cow_truncate_held(void)
 	first = cow_target;
 	sim_device_hold_map();
 	truncater = sim_spawn("truncater", cow_truncate_to_a_page, first);
-	while (!sim_device_held_map())
-		msleep(1);
+	sim_await(sim_device_held_map(), "no MAP held");
 	second = sim_spawn("second", cow_second_file, (void *)24UL);
 	msleep(50);
 	sim_device_release_map();
@@ -1280,7 +1272,8 @@ static void cow_store_to_pinned_slice(void)
 	msleep(50);
 	check(!READ_ONCE(cow_pinned_stored),
 	      "the store to page 0 didn't wait for its pin: page 0 wasn't a slice's");
-	sim_unpin_page(pin);
+	if (pin)
+		sim_unpin_page(pin);
 	wait_for(storer);
 	cow_check(0, true, "after the pin went");
 	cow_check_file("after a store to a pinned slice's page", 8 * PAGE_SIZE);
@@ -1345,6 +1338,7 @@ int main(int argc, char **argv)
 				sim_device_private_max(COW_PRIVATE_MAX);
 			sim_spawn(scenarios[i].name, scenario, scenarios[i].run);
 			sim_run();
+			sim_end(SIM_END_READ_FILES);
 			sim_log("%s: passed\n", scenarios[i].name);
 			return 0;
 		}

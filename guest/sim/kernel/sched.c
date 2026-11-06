@@ -8,6 +8,14 @@
  * Time is virtual. Each scheduling point moves the clock a little, and when every task sleeps it
  * moves to the first that wakes; a task waiting 10 ms costs nothing. If none can ever wake the
  * tasks are deadlocked, which is reported with what each holds and waits for.
+ *
+ * Every waiter is woken (TASK-149.18). A wait with no time limit that no wake comes to is a
+ * deadlock, or a livelock if others go on; but one with a time limit, as dax.c's waits for room are,
+ * ends anyway, a wake lost costing only time. So a timed wait's sleep that its time ends, its entry
+ * queued still, ends early, as a spurious wake, a jiffy left: a wait that then finds its condition
+ * true, its entry queued, was due a wake that never came, which fails the run (finish_wait). Its
+ * condition false, the wait goes on, its time up. And no task ends with an entry queued, which a
+ * wake would find on a stack gone.
  */
 
 #include <sim/sim.h>
@@ -21,8 +29,15 @@
 struct task_struct *sim_current;
 
 static LIST_HEAD(tasks);
-/* Tasks done, which a run frees as it ends: a coroutine can't free its own stack. */
+/*
+ * Tasks done, whose stacks the next task to run frees, a coroutine can't free its own, and those
+ * nothing holds, a work's, with them; the rest, which their spawners may look at, a run frees as it
+ * ends (`freed`). Kept until a run ended, the workqueue's, a task each work queued, filled the
+ * memory of a run whose works were queued again and again, as reclaim waiting for room has the
+ * budget's worker (read_pressure, a sweep's failed UNMAP).
+ */
 static LIST_HEAD(ended);
+static LIST_HEAD(freed);
 static struct task_struct main_task = { .pid = 0, .comm = "main" };
 static u64 rng_state;
 /* In percent: how likely a point is to leave the current task running, which the seed picks. */
@@ -144,12 +159,15 @@ static bool wake_sleepers(bool idle)
 	}
 	if (!first)
 		return false;
-	if (idle && first > now_ns)
+	if (idle && first > now_ns) {
 		now_ns = first;
+		sim_sweep_watch(now_ns);
+	}
 	list_for_each_entry(task, &tasks, tasks) {
 		if (task->wake_ns && task->wake_ns <= now_ns && task->__state != TASK_RUNNING) {
 			task->wake_ns = 0;
 			task->__state = TASK_RUNNING;
+			task->timed_out = true;
 			woke = true;
 		}
 	}
@@ -160,10 +178,30 @@ static bool wake_sleepers(bool idle)
  * Picks the next task to run, among those that can, leaving this one running a share of the time
  * (`sticky`) unless `yield` asks: and switches to it.
  */
+/* Frees the tasks done, from another. */
+static void free_ended(void)
+{
+	struct task_struct *task, *next;
+
+	list_for_each_entry_safe(task, next, &ended, tasks) {
+		host_fiber_free(task->fiber);
+		task->fiber = NULL;
+		if (task->detached) {
+			list_del(&task->tasks);
+			host_free(task);
+		} else {
+			list_move(&task->tasks, &freed);
+		}
+	}
+}
+
 static void pick_next(const char *what, bool yield)
 {
 	struct task_struct *task, *next = NULL, *prev = current;
 	unsigned int count = 0, at;
+
+	if (!prev->done)
+		free_ended();
 
 	wake_sleepers(false);
 	if (!rcu_readers && rcu_pending)
@@ -235,6 +273,12 @@ void cond_resched(void)
 	sim_point("cond_resched");
 }
 
+/* Whether `task` has a wait queue entry queued: a wake would take it off. */
+static bool queued(const struct task_struct *task)
+{
+	return task->waiting && !list_empty(&task->waiting->entry);
+}
+
 long schedule_timeout(long timeout)
 {
 	u64 deadline;
@@ -243,10 +287,26 @@ long schedule_timeout(long timeout)
 		schedule();
 		return timeout;
 	}
+	/* A timed wait's condition false after its early end: its time is up. */
+	if (current->probed && queued(current)) {
+		current->probed = false;
+		__set_current_state(TASK_RUNNING);
+		sim_point("a timed wait's end");
+		return 0;
+	}
+	current->probed = false;
+	current->timed_out = false;
 	deadline = now_ns + timeout * (NSEC_PER_SEC / HZ);
 	current->wake_ns = deadline;
 	schedule();
-	return now_ns >= deadline ? 0 : (deadline - now_ns) / (NSEC_PER_SEC / HZ) + 1;
+	if (now_ns < deadline)
+		return (deadline - now_ns) / (NSEC_PER_SEC / HZ) + 1;
+	/* Ended by its time, its entry queued: early, for the wait to look at its condition. */
+	if (current->timed_out && queued(current)) {
+		current->probed = true;
+		return 1;
+	}
+	return 0;
 }
 
 int wake_up_process(struct task_struct *task)
@@ -254,6 +314,7 @@ int wake_up_process(struct task_struct *task)
 	if (task->__state == TASK_RUNNING)
 		return 0;
 	task->__state = TASK_RUNNING;
+	task->timed_out = false;
 	return 1;
 }
 
@@ -282,12 +343,19 @@ static void task_main(void *arg)
 	task->fn(task->arg);
 	if (task->nr_held)
 		sim_panic("%s ended holding %s", task->comm, task->held[0].name);
+	if (queued(task))
+		sim_panic("%s ended with its wait queue entry queued", task->comm);
 	task->done = true;
 	task->__state = TASK_NORMAL;
 	list_move(&task->tasks, &ended);
 	wake_up_process(&main_task);
 	pick_next("exit", true);
 	sim_panic("%s ran after its end", task->comm);
+}
+
+void sim_spawn_detached(const char *name, void (*fn)(void *arg), void *arg)
+{
+	sim_spawn(name, fn, arg)->detached = true;
 }
 
 struct task_struct *sim_spawn(const char *name, void (*fn)(void *arg), void *arg)
@@ -319,9 +387,9 @@ void sim_run(void)
 	}
 	if (rcu_pending)
 		rcu_run_callbacks();
-	list_for_each_entry_safe(task, next, &ended, tasks) {
+	free_ended();
+	list_for_each_entry_safe(task, next, &freed, tasks) {
 		list_del(&task->tasks);
-		host_fiber_free(task->fiber);
 		host_free(task);
 	}
 }
@@ -365,6 +433,11 @@ int default_wake_function(struct wait_queue_entry *wq_entry, unsigned int mode, 
 {
 	struct task_struct *task = wq_entry->private;
 
+	/* Woken, if late: running already, its time having ended its sleep, its entry queued. */
+	if (task->waiting == wq_entry) {
+		task->timed_out = false;
+		task->probed = false;
+	}
 	if (!(task->__state & mode))
 		return 0;
 	return wake_up_process(task);
@@ -378,6 +451,13 @@ int autoremove_wake_function(struct wait_queue_entry *wq_entry, unsigned int mod
 	if (ret)
 		list_del_init_careful(&wq_entry->entry);
 	return ret;
+}
+
+/* That `wq_entry`, of the current task's, is queued now. */
+static void queue_entry(struct wait_queue_entry *wq_entry)
+{
+	if (wq_entry->private == current)
+		current->waiting = wq_entry;
 }
 
 int __wake_up(struct wait_queue_head *wq_head, unsigned int mode, int nr, void *key)
@@ -418,6 +498,7 @@ static void prepare(struct wait_queue_head *wq_head, struct wait_queue_entry *wq
 			wq_entry->flags &= ~WQ_FLAG_EXCLUSIVE;
 			list_add(&wq_entry->entry, &wq_head->head);
 		}
+		queue_entry(wq_entry);
 	}
 	set_current_state(state);
 	spin_unlock(&wq_head->lock);
@@ -448,14 +529,24 @@ long prepare_to_wait_event(struct wait_queue_head *wq_head, struct wait_queue_en
 	return 0;
 }
 
+/*
+ * As the kernel's; and a timed wait that ends after its sleep ended early (schedule_timeout), its
+ * entry queued, ends as its condition is true, which nothing woke it for: a wake lost.
+ */
 void finish_wait(struct wait_queue_head *wq_head, struct wait_queue_entry *wq_entry)
 {
 	__set_current_state(TASK_RUNNING);
+	if (current->probed && queued(current) && current->waiting == wq_entry)
+		sim_panic("a lost wake: %s's timed wait ended by its time, its condition true, with no wake",
+			  current->comm);
+	current->probed = false;
 	if (!list_empty_careful(&wq_entry->entry)) {
 		spin_lock(&wq_head->lock);
 		list_del_init(&wq_entry->entry);
 		spin_unlock(&wq_head->lock);
 	}
+	if (current->waiting == wq_entry)
+		current->waiting = NULL;
 }
 
 /* The table of queues waits for a variable hash into, as kernel/sched/wait_bit.c's. */

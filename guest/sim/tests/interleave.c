@@ -1069,6 +1069,7 @@ int main(int argc, char **argv)
 		check_slots(&small[i]);
 	for (i = 0; i < WORKERS; i++)
 		check_extents(&workers[i]);
+	sim_end(SIM_END_FILES_READ);
 	fxfs_sim_stats(&written, &freed, &failed);
 	sim_log("interleave: seed %llu passed: %llu points, %llu switches, %llu device maps, %llu blocks written back, %llu extents freed, %llu transactions failed, %lu PMDs, trace %llx\n",
 		seed, sim_points(), sim_switches(), sim_device_maps(), written, freed, failed,

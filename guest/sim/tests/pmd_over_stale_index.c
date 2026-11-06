@@ -73,6 +73,7 @@ int main(void)
 	sim_device_init(64UL << 20);
 	sim_spawn("scenario", scenario, NULL);
 	sim_run();
+	sim_end(SIM_END_READ_FILES);
 	sim_log("pmd_over_stale_index: passed\n");
 	return 0;
 }

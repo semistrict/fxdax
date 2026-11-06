@@ -20,7 +20,8 @@
 #include <sim/sim.h>
 #include <linux/virtio_extent.h>
 
-#define check(cond, ...) do { if (!(cond)) sim_panic(__VA_ARGS__); } while (0)
+/* What it expects, void once a sweep's call has failed (kernel/sweep.c). */
+#define check sim_expect
 
 static void written_over_a_hole(struct sim_mount *mount)
 {
@@ -104,6 +105,7 @@ int main(void)
 	sim_device_init(32UL << 20);
 	sim_spawn("scenario", scenario, NULL);
 	sim_run();
+	sim_end(SIM_END_READ_FILES);
 	sim_log("hole_mapped_then_written: passed\n");
 	return 0;
 }

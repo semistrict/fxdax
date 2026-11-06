@@ -13,7 +13,8 @@
 static struct sim_mount *mount;
 static struct file *file;
 
-#define check(cond, ...) do { if (!(cond)) sim_panic(__VA_ARGS__); } while (0)
+/* What it expects, void once a sweep's call has failed (kernel/sweep.c). */
+#define check sim_expect
 
 static void fill(char *buf, size_t len, unsigned char seed)
 {
@@ -102,6 +103,7 @@ int main(void)
 	sim_device_init(WINDOW_LEN);
 	sim_spawn("scenario", scenario, NULL);
 	sim_run();
+	sim_end(SIM_END_READ_FILES);
 	fxfs_sim_stats(&written, &freed, &failed);
 	sim_log("smoke: passed: %llu points, %llu switches, %llu device maps, %llu blocks written back, %llu extents freed, trace %llx\n",
 		sim_points(), sim_switches(), sim_device_maps(), written, freed, sim_trace_hash());

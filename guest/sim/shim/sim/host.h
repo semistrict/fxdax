@@ -49,6 +49,11 @@ void host_window_private(u64 offset, u64 len, bool zeros);
 
 void host_stack_trace(void);
 __noreturn void host_exit(int status);
+/* Has `fn` run as the process exits, as host_end ends it, after which LeakSanitizer looks. */
+void host_at_exit(void (*fn)(void));
+__noreturn void host_end(int status);
 void host_write_log(const char *line, size_t len);
+/* The process's environment's `name`, or NULL. */
+const char *host_getenv(const char *name);
 
 #endif

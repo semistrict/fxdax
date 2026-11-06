@@ -21,7 +21,9 @@
  *   whoever holds them.
  * - A transaction fails, if a test asks (fxfs_sim_fail), before it does anything, as one out of space
  *   does: room for dirty pages (fxfs_reserve_dirty) is refused, and a file's growth
- *   (fxfs_write_inode). A cut never fails, as Fxfs's borrows the room it needs.
+ *   (fxfs_write_inode). A cut never fails, as Fxfs's borrows the room it needs. A sweep
+ *   (kernel/sweep.c) has those fail, and writeback's commit, a clone part way, as Fxfs's
+ *   transactions of it, a seal and a lookup of a file's extents, each before it does anything.
  * - Writeback (fxfs_write_many), the page cache's and copy-on-write DAX's (doc-13), allocates at
  *   writeback: it copies its pages, a page at a time, into its own buffer, writes them to new
  *   blocks, in one device write no seal comes into, and commits after the bytes: a crash before
@@ -111,6 +113,7 @@ void fxfs_sim_watch(u64 ino, u64 page)
 }
 
 void sim_device_wrote(u64 sequence, u64 page, u64 pages);
+bool sim_device_holds(u64 sequence, u64 page);
 bool sim_device_sealed(u64 sequence);
 u64 sim_device_length(u64 sequence);
 
@@ -142,9 +145,12 @@ struct fxfs *fxfs_sim_new(void)
 	struct fxfs *fs = kzalloc(sizeof(*fs), GFP_KERNEL);
 	struct fxfs_device_info info;
 
+	/* Without it, as a sweep has fs/fxfs/device.c's allocation fail, no filesystem. */
 	fs->dev = fxfs_device_find("sim", 3, &info);
-	if (!fs->dev)
-		sim_panic("no device");
+	if (!fs->dev) {
+		kfree(fs);
+		return NULL;
+	}
 	mutex_init(&fs->lock);
 	mutex_init(&fs->seal);
 	init_rwsem(&fs->writes);
@@ -156,11 +162,45 @@ struct fxfs *fxfs_sim_new(void)
 	return fs;
 }
 
+/*
+ * Every acknowledged object exists (TASK-149.18): each block a file names is of an extent the
+ * model holds and the store holds written that far, which a crash after the commit naming it would
+ * read; and each extent's counts are what the files' blocks say, which its death, and its free
+ * after a flush, go by. As the filesystem goes, nothing under way.
+ */
+static void check_blocks(struct fxfs *fs)
+{
+	struct stub_extent *extent;
+	struct stub_file *file;
+	u64 page, named;
+
+	list_for_each_entry(file, &fs->files, list) {
+		for (page = 0; page < file->nr_blocks; page++) {
+			const struct block *block = &file->blocks[page];
+
+			if (block->sequence && !sim_device_holds(block->sequence, block->page))
+				sim_panic("the model: ino %llu's block %llu names extent %llu's page %llu, which the store doesn't hold",
+					  file->ino, page, block->sequence, block->page);
+		}
+	}
+	list_for_each_entry(extent, &fs->extents, list) {
+		named = 0;
+		list_for_each_entry(file, &fs->files, list) {
+			for (page = 0; page < file->nr_blocks; page++)
+				named += file->blocks[page].sequence == extent->sequence;
+		}
+		if (named != extent->live)
+			sim_panic("the model: extent %llu counts %llu blocks live, and files name %llu",
+				  extent->sequence, extent->live, named);
+	}
+}
+
 void fxfs_sim_free(struct fxfs *fs)
 {
 	struct stub_extent *extent, *next_extent;
 	struct stub_file *file, *next_file;
 
+	check_blocks(fs);
 	list_for_each_entry_safe(file, next_file, &fs->files, list) {
 		list_del(&file->list);
 		kfree(file->blocks);
@@ -329,6 +369,8 @@ ssize_t fxfs_dax_extents(struct fxfs *fs, u64 ino, u64 offset, u64 len, struct f
 	ssize_t count = 0;
 	u32 access;
 
+	if (sim_sweep_fails("Fxfs's lookup of extents", __FILE__, __LINE__))
+		return -EIO;
 	mutex_lock(&fs->lock);
 	file = find_file(fs, ino);
 	end = min(end, file->nr_blocks);
@@ -384,6 +426,8 @@ int fxfs_fsync(struct fxfs *fs)
 {
 	struct stub_extent *extent, *next;
 
+	if (sim_sweep_fails("a seal", __FILE__, __LINE__))
+		return -EIO;
 	mutex_lock(&fs->seal);
 	down_write(&fs->writes);
 	fxfs_device_seal_begin(fs->dev);
@@ -421,6 +465,7 @@ int fxfs_fsync(struct fxfs *fs)
 		list_del(&extent->list);
 		sim_device_free_extent(extent->sequence);
 		frees++;
+		kfree(extent->refs);
 		kfree(extent);
 	}
 	mutex_unlock(&fs->lock);
@@ -538,8 +583,9 @@ int fxfs_write_inode(struct fxfs *fs, u64 ino, const struct fxfs_setattr *set)
 	struct stub_file *file = lock_file(fs, ino);
 	u64 page, old;
 
-	if ((set->valid & FXFS_SET_SIZE) && set->size > file->size && fail_odds &&
-	    !(sim_random() % fail_odds)) {
+	if ((set->valid & FXFS_SET_SIZE) && set->size > file->size &&
+	    (sim_sweep_fails("a growth", __FILE__, __LINE__) ||
+	     (fail_odds && !(sim_random() % fail_odds)))) {
 		failures++;
 		mutex_unlock(&file->lock);
 		return -ENOSPC;
@@ -568,7 +614,18 @@ int fxfs_clone_range(struct fxfs *fs, u64 src, u64 offset, u64 len, u64 dst, u64
 	struct stub_file *from, *to;
 	u64 page, pages = len >> PAGE_SHIFT;
 	struct block *block;
+	int err = 0;
 
+	/*
+	 * Failing, as a sweep has it, in its second half's transaction: what the first shared stands,
+	 * and the size that reached, as Fxfs's clone, a transaction at a time, leaves them.
+	 */
+	if (sim_sweep_fails("a clone", __FILE__, __LINE__)) {
+		failures++;
+		err = -ENOSPC;
+		pages /= 2;
+		size = pages ? min(size, dst_offset + (pages << PAGE_SHIFT)) : 0;
+	}
 	/* By number, as Fxfs takes a transaction's locks in order. */
 	from = lock_file(fs, min(src, dst));
 	to = src == dst ? from : lock_file(fs, max(src, dst));
@@ -598,7 +655,7 @@ int fxfs_clone_range(struct fxfs *fs, u64 src, u64 offset, u64 len, u64 dst, u64
 	if (to != from)
 		mutex_unlock(&to->lock);
 	mutex_unlock(&from->lock);
-	return 0;
+	return err;
 }
 
 int fxfs_punch(struct fxfs *fs, u64 ino, u64 offset, u64 len)
@@ -628,7 +685,8 @@ int fxfs_reserve_dirty(struct fxfs *fs, u64 ino, u64 bytes)
 {
 	struct stub_file *file;
 
-	if (fail_odds && !(sim_random() % fail_odds)) {
+	if (sim_sweep_fails("room for dirty pages", __FILE__, __LINE__) ||
+	    (fail_odds && !(sim_random() % fail_odds))) {
 		failures++;
 		return -ENOSPC;
 	}
@@ -741,7 +799,7 @@ int fxfs_write_many(struct fxfs *fs, u64 ino, const struct fxfs_write_part *part
 	char *copies;
 	size_t i, n = 0, total = 0;
 	u64 page, end = 0, store, first = 0;
-	bool writes_last = false;
+	bool writes_last = false, fail;
 
 	/* The room, taken first, whatever the writes come to, as fxfs-posix's write_dirty takes it. */
 	mutex_lock(&fs->lock);
@@ -810,11 +868,15 @@ int fxfs_write_many(struct fxfs *fs, u64 ino, const struct fxfs_write_part *part
 	}
 	sim_point("writeback's commit");
 	mutex_lock(&fs->lock);
-	if (writebacks_to_fail) {
+	fail = sim_sweep_fails("writeback's commit", __FILE__, __LINE__);
+	if (!fail && writebacks_to_fail) {
+		writebacks_to_fail--;
+		fail = true;
+	}
+	if (fail) {
 		/*
 		 * The new blocks named by no record, which die; the room was taken all the same.
 		 */
-		writebacks_to_fail--;
 		failures++;
 		for (i = 0; i < n; i++) {
 			extent->live--;

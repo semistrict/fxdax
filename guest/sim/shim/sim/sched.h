@@ -58,11 +58,21 @@ struct task_struct {
 	const void *blocked_lock;
 	/* The virtual time a timed sleep ends, or 0. */
 	u64 wake_ns;
+	/*
+	 * The wait queue entry it has queued, if any: none as it ends. Whether its last sleep ended by
+	 * its time rather than a wake; and whether that ended a timed wait's sleep early, a spurious
+	 * wake, for the wait to look at its condition once more, which, if true, no wake told it of
+	 * (kernel/sched.c's lost wakes).
+	 */
+	struct wait_queue_entry *waiting;
+	bool timed_out, probed;
 	struct mm_struct *mm;
 	struct sim_fiber *fiber;
 	void (*fn)(void *arg);
 	void *arg;
 	bool done;
+	/* Whether nothing looks at it once done, which frees it then (sim_spawn_detached). */
+	bool detached;
 	struct list_head tasks;
 };
 

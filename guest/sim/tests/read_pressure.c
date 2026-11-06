@@ -15,7 +15,8 @@
 #define POPULAR 8
 #define MAX_READERS 16
 
-#define check(cond, ...) do { if (!(cond)) sim_panic(__VA_ARGS__); } while (0)
+/* What it expects, void once a sweep's call has failed (kernel/sweep.c). */
+#define check sim_expect
 
 static struct sim_mount *mount;
 static struct file *files[FILES];
@@ -133,6 +134,7 @@ int main(int argc, char **argv)
 	for (n = 0; n < readers; n++)
 		sim_spawn("reader", reader_task, NULL);
 	sim_run();
+	sim_end(SIM_END_READ_FILES);
 	sim_log("read_pressure: seed %llu passed: %llu points, %llu switches, %llu device maps\n",
 		seed, sim_points(), sim_switches(), sim_device_maps());
 	return 0;

@@ -10,7 +10,8 @@
 
 #include <sim/sim.h>
 
-#define check(cond, ...) do { if (!(cond)) sim_panic(__VA_ARGS__); } while (0)
+/* What a test expects, void once a sweep's call has failed (kernel/sweep.c). */
+#define check sim_expect
 
 static inline void pause_at(unsigned long steps)
 {
@@ -23,12 +24,7 @@ static inline void pause_at(unsigned long steps)
 /* Waits for a task to wait at `step`. */
 static inline void pause_wait(unsigned long step)
 {
-	int waited;
-
-	for (waited = 0; !(sim_param_read("dax_paused") & step); waited++) {
-		check(waited < 10000, "no task waits at step %#lx", step);
-		msleep(1);
-	}
+	sim_await(sim_param_read("dax_paused") & step, "no task waits at step %#lx", step);
 }
 
 #endif

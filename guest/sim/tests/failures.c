@@ -631,6 +631,7 @@ int main(int argc, char **argv)
 	}
 	sim_spawn("unmount", unmount_task, NULL);
 	sim_run();
+	sim_end(SIM_END_FILES_READ);
 	sim_log("failures: seed %llu passed: %llu points, %llu allocations and %llu requests failed, trace %llx\n",
 		seed, sim_points(), sim_allocs_failed(), sim_device_failed(), sim_trace_hash());
 	return 0;

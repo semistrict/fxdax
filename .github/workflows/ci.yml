@@ -123,7 +123,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Install the build's tools
-        run: sudo apt-get update && sudo apt-get install -y clang lld
+        run: sudo apt-get update && sudo apt-get install -y clang lld llvm
       - uses: actions/cache@v6
         with:
           path: target/sim-kernel
@@ -140,3 +140,29 @@ jobs:
         with:
           name: guest-sim-logs
           path: target/sim/logs
+
+  # guest/sim's sweep (TASK-149.15): each run of one, each of its calls that may fail failing in
+  # turn, 14,000 runs, a job of its own beside guest-sim's seeds, which take most of theirs.
+  guest-sim-sweep:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      KERNEL: ${{ github.workspace }}/target/sim-kernel
+      BUILD: ${{ github.workspace }}/target/sim
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install the build's tools
+        run: sudo apt-get update && sudo apt-get install -y clang lld llvm
+      - uses: actions/cache@v6
+        with:
+          path: target/sim-kernel
+          key: sim-kernel-${{ hashFiles('scripts/build-guest-kernel.sh', 'guest/linux/patches/*') }}
+      - name: Fetch the kernel's sources
+        run: guest/sim/kernel-tree.sh "$KERNEL"
+      - name: Fail each call of every run of one in turn
+        run: guest/sim/sweep.sh -d "$BUILD/sweep"
+      - uses: actions/upload-artifact@v7
+        if: failure()
+        with:
+          name: guest-sim-sweep-logs
+          path: target/sim/sweep

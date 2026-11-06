@@ -24,8 +24,10 @@ mutant is run and what its fate is:
 - **`Killer:`** the run that must fail with the mutant in. The mutant is killed only if it does:
   another test failing doesn't count, and the run's other tests aren't run.
   - Of the simulator's, a test of `guest/sim/tests` and its arguments: one of one run
-    (`hole_mapped_then_written`), a scenario (`scenarios NAME`), or a test that takes seeds
-    (`interleave`, `failures`), which runs seed after seed until one fails.
+    (`hole_mapped_then_written`), a scenario (`scenarios NAME`), a test that takes seeds
+    (`interleave`, `failures`), which runs seed after seed until one fails, or the sweep of a run of
+    one (`sweep scenarios NAME`, `guest/sim/sweep.sh`), which runs it once for each of its calls
+    that may fail, that call failing, until one run fails.
   - Of the model's, `fxfs-sim-diff` and a test of the crate's (`the_models_past_drifts_from_fxfs`).
   - Of a real kernel's, a guest case (`runner list`), and, if it is a checks suite, the check of it
     that fails, as the case's `failed_checks` say (`scripts/guest_results.py`): the case is run

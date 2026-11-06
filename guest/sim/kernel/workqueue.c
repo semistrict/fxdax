@@ -76,7 +76,7 @@ bool queue_work(struct workqueue_struct *wq, struct work_struct *work)
 	run = kmalloc(sizeof(*run), GFP_ATOMIC);
 	run->work = work;
 	run->wq = wq;
-	sim_spawn(wq->name, work_task, run);
+	sim_spawn_detached(wq->name, work_task, run);
 	return true;
 }
 

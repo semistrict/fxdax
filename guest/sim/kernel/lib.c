@@ -25,15 +25,31 @@ u64 sim_allocs_failed(void)
 	return allocs_failed;
 }
 
-/* Whether an allocation by the source `file` fails. */
-static bool alloc_fails(gfp_t gfp, const char *file)
+char *strstr(const char *haystack, const char *needle);
+
+/*
+ * Whether an allocation by the source `file` is the code under test's, which a sweep fails:
+ * fs/fxfs's own, which tests have fail too (sim_alloc_fail, sim_alloc_fail_odds), fs/dax.c's, or
+ * of the XArrays and the pool they use, whose callers see it fail.
+ */
+static bool under_test(const char *file)
 {
-	char *strstr(const char *haystack, const char *needle);
+	return strstr(file, "fs/fxfs/") || strstr(file, "fs/dax.c") || strstr(file, "lib/xarray.c") ||
+	       strstr(file, "lib/genalloc.c");
+}
+
+/* Whether an allocation by the source `file`, at `line`, fails. */
+static bool alloc_fails(gfp_t gfp, const char *file, int line)
+{
 	bool fail = false;
 
-	if ((gfp & __GFP_NOFAIL) || !strstr(file, "fs/fxfs/"))
+	if ((gfp & __GFP_NOFAIL) || !under_test(file))
 		return false;
-	if (alloc_odds && !(sim_random() % alloc_odds))
+	if (sim_sweep_fails("an allocation", file, line))
+		fail = true;
+	else if (!strstr(file, "fs/fxfs/"))
+		fail = false;
+	else if (alloc_odds && !(sim_random() % alloc_odds))
 		fail = true;
 	else if (alloc_failing && !alloc_skip--) {
 		alloc_skip = 0;
@@ -44,12 +60,12 @@ static bool alloc_fails(gfp_t gfp, const char *file)
 	return fail;
 }
 
-void *sim_kmalloc(size_t size, gfp_t gfp, const char *file)
+void *sim_kmalloc(size_t size, gfp_t gfp, const char *file, int line)
 {
 	void *p;
 
 	might_alloc(gfp);
-	if (alloc_fails(gfp, file))
+	if (alloc_fails(gfp, file, line))
 		return NULL;
 	p = host_malloc(size);
 	if (gfp & __GFP_ZERO)
@@ -57,10 +73,10 @@ void *sim_kmalloc(size_t size, gfp_t gfp, const char *file)
 	return p;
 }
 
-void *sim_krealloc(const void *p, size_t size, gfp_t gfp, const char *file)
+void *sim_krealloc(const void *p, size_t size, gfp_t gfp, const char *file, int line)
 {
 	might_alloc(gfp);
-	if (alloc_fails(gfp, file))
+	if (alloc_fails(gfp, file, line))
 		return NULL;
 	return host_realloc((void *)p, size);
 }
@@ -82,10 +98,10 @@ struct kmem_cache *kmem_cache_create_simple(const char *name, size_t size)
 	return cache;
 }
 
-/* Zeroed, as the XArray's one cache's constructor has its nodes. */
-void *kmem_cache_alloc(struct kmem_cache *cache, gfp_t gfp)
+/* Zeroed, as the XArray's one cache's constructor has its nodes: an allocation of its caller's. */
+void *sim_kmem_cache_alloc(struct kmem_cache *cache, gfp_t gfp, const char *file, int line)
 {
-	return kzalloc(cache->size, gfp);
+	return sim_kmalloc(cache->size, gfp | __GFP_ZERO, file, line);
 }
 
 void kmem_cache_free(struct kmem_cache *cache, void *p)

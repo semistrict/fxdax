@@ -1,0 +1,25 @@
+# SPDX-License-Identifier: GPL-2.0
+# Copyright 2026 The fxdax Authors.
+#
+# Kernel: sim
+# Killer: read_pressure
+#
+# TASK-149.18: a range freed, or its last user done, counts in `released` without waking those
+# waiting for room in the window (fxfs_dax_wait_released), which wait 10 ms at a time: each wakes
+# by its time instead, only slower, which nothing saw. guest/sim's timed waits now end early as a
+# spurious wake when their time ends them, their entries queued, and one finding its condition
+# true then is a wake lost: the run fails.
+# read_pressure: the writer's wait for room.
+
+--- a/guest/linux/fs/fxfs/dax.c
++++ b/guest/linux/fs/fxfs/dax.c
+@@ -914,9 +914,6 @@
+ static void fxfs_dax_released(struct fxfs_dax *dax)
+ {
+ 	atomic_long_inc(&dax->released);
+-	/* Pairs the condition update with a waiter preparing to sleep before testing the queue. */
+-	if (wq_has_sleeper(&dax->wait))
+-		wake_up_all(&dax->wait);
+ }
+ 
+ /* Waits up to `ms` milliseconds for a range to be freed, or its last user done, since `seen`. */
