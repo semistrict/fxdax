@@ -508,13 +508,15 @@ RUN apk add --no-cache postgresql postgresql-contrib perf e2fsprogs
             // must be.
             let sockets = tempdir::TempDir::new("fxdax-pgbench")?;
             let socket = sockets.path().join("extentd.sock");
-            let latency = std::env::var_os("FXDAX_REMOTE_LATENCY_MS");
+            let given = std::env::var_os("FXDAX_REMOTE_LATENCY_MS");
+            let bucket = std::env::var_os("FXDAX_EXTENTD_REMOTE");
+            let latency = added_latency(given.as_deref(), bucket.as_deref());
             let stats = dir.join("extentd-stats.txt");
             // fxdax: its metrics, which say what its memory holds (`crate::measure`).
             let metrics = crate::measure::metrics_address()?;
             let metrics_at = metrics.to_string();
             let env = [
-                ("FXDAX_REMOTE_LATENCY_MS", latency.as_deref().unwrap_or(OsStr::new("25"))),
+                ("FXDAX_REMOTE_LATENCY_MS", latency),
                 ("FXDAX_EXTENTD_STATS", stats.as_os_str()),
                 ("FXDAX_EXTENTD_METRICS", OsStr::new(&metrics_at)),
             ];
@@ -654,6 +656,41 @@ RUN apk add --no-cache postgresql postgresql-contrib perf e2fsprogs
                 }
             }
             TestOutcome::Pass
+        }
+    }
+
+    /// fxdax: the milliseconds the case's daemon adds to each of its bucket's requests:
+    /// FXDAX_REMOTE_LATENCY_MS's, `given`, if set; otherwise 25, the sandbox team's RustFS's, to a
+    /// bucket here, `bucket` naming one in files or none (the daemon's is then in its memory,
+    /// `crate::common::spawn_daemon`), and none to a real one, which is as far as it is. Added to
+    /// GCS's, the forked case's restart after its crash, its reads of what the fork inherited
+    /// ranged GETs one after another, took more than pg_ctl's 900 s (GCE r740, TASK-209).
+    fn added_latency<'a>(given: Option<&'a OsStr>, bucket: Option<&'a OsStr>) -> &'a OsStr {
+        let here = bucket.and_then(OsStr::to_str).is_none_or(|url| {
+            url.is_empty() || url.starts_with("memory:") || url.starts_with("file:")
+        });
+        given.unwrap_or(OsStr::new(if here { "25" } else { "" }))
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        /// The 25 ms stand for a bucket as far as the sandbox team's: added to one in memory or
+        /// in files, not to a real one, which is as far as it is.
+        #[test]
+        fn latency_is_added_to_local_buckets_alone() {
+            let at = |given: Option<&str>, bucket: Option<&str>| {
+                added_latency(given.map(OsStr::new), bucket.map(OsStr::new)).to_owned()
+            };
+            assert_eq!(at(None, None), "25");
+            assert_eq!(at(None, Some("")), "25");
+            assert_eq!(at(None, Some("memory:///e2e")), "25");
+            assert_eq!(at(None, Some("file:///dev/shm/bucket")), "25");
+            assert_eq!(at(None, Some("gs://bucket/prefix/run")), "");
+            assert_eq!(at(None, Some("s3://bucket/prefix")), "");
+            assert_eq!(at(Some("50"), Some("gs://bucket/prefix")), "50");
+            assert_eq!(at(Some("0"), None), "0");
         }
     }
 }
