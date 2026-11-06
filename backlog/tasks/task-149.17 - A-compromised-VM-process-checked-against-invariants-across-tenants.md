@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-01 16:53'
-updated_date: '2026-11-06 09:55'
+updated_date: '2026-11-06 10:52'
 labels: []
 dependencies:
   - TASK-77
@@ -76,6 +76,8 @@ Decision moved here from OPEN_QUESTIONS.md (2026-11-06):
 - **Arenas' memfds sealed against shrinking, and 0600** (physmem `create_shared_memory`): a VM process ftruncate()d its tenant's arena, which the daemon hands it to write, and the daemon died of SIGBUS; the default arena, handed every VM process read-only, was 0777, reopenable to write through /proc/self/fd by another user. A process of the daemon's own user, as the default tenant's VM processes are, can still reopen it: it can ptrace the daemon anyway. *Instead:* F_SEAL_FUTURE_WRITE on the default arena, which would refuse the daemon's own mappings of chunks it takes later. *Undoing it:* the two calls in `create_shared_memory`, and `resize` growing only.
 - **Reads and writes copy 1 MiB pieces** (`ExtentStore::PIECE`), not a copy of each request's length the connection's room didn't count. A read of an open extent the guest is writing at once may now see part of the write, and a follower's read of data in the bucket fetches a piece at a time. *Instead:* count each running request's length against the room (a VM process keeping more requests in flight than the room holds would be let go). *Undoing it:* `PIECE` = `usize::MAX`.
 - **A root holds 4 KiB at most on the wire** (`wire::MAX_ROOT`, the extent device's own `MAX_ROOT`), `EINVAL` past it, where a VM process's could be 64 MiB, which its store kept and wrote with its commits, and each `ROOT` copied, uncounted. A refusal of the wire's, as TASK-141.3's are. *Instead:* count a `ROOT`'s reply against the room, leaving 64 MiB roots in stores. *Undoing it:* the two checks in `codec`.
+
+2026-11-06, land-h after main's TASK-141.3, 194, 205 (CI 42198652435 red): the harness's OPENs said wire version 0, refused EPROTONOSUPPORT, so no connection of mallory's opened a store and a flood's write found none (EBADF); the harness's, not the daemon's: they say wire::VERSION now, and the test asks that some of mallory's stores committed, which would have caught it in every case. Mutants a-second-open-holds-its-path (the connection's report, snapshot.rs, set once too) and forks-take-branches-claimed (past child_free and record_fork since TASK-165.7) rewritten; the other seven's hunks moved to their lines. Docker: 96 cases and 2,000 (seed 201) pass; 10 of 10 mutants killed, a-second-open by the path held; fxdax, extent_store and physmem 701 of 705, the 4 the container's (git, sudo).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
