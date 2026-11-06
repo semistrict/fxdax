@@ -261,8 +261,10 @@ pub(crate) async fn update(
 #[cfg(test)]
 pub(crate) async fn conformance(bucket: &impl Bucket, root: &str) {
     let key = &format!("{root}/object");
+    // A version no object has: GCS's generation 0 is none, but a write conditional on it is one
+    // where no object is, which creates one (TASK-205); its generations are times, in µs.
     let none =
-        Version { e_tag: Some("\"fxdax-conformance\"".to_owned()), version: Some("0".to_owned()) };
+        Version { e_tag: Some("\"fxdax-conformance\"".to_owned()), version: Some("1".to_owned()) };
 
     // Nothing there: read as none, deleted as nothing, updated from no version.
     assert_eq!(bucket.get(key).await.map(|object| object.bytes), Err(Error::NotFound));

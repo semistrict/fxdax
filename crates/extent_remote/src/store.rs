@@ -13,6 +13,7 @@
 //! and the bytes it uploads, by kind of object, and downloads ([`Store::stats`]).
 
 use crate::bucket::{Bucket, ByteRange, Error, Meta, Object, PutMode, Version};
+use crate::client::Client;
 use crate::layout::{self, Kind};
 use futures::{StreamExt as _, TryStreamExt as _, stream};
 use object_store::path::Path;
@@ -232,6 +233,16 @@ impl Store {
 /// FXDAX_REMOTE_LATENCY_MS milliseconds more, if set: an object store as far as a host's own may
 /// be, as the sandbox team's RustFS, 25 ms away, which made Fxfs's commits wait (TASK-61, TASK-62).
 pub fn object_store_at(url: &str) -> Result<(Arc<dyn ObjectStore>, String), String> {
+    object_store_with(url, std::env::vars(), &Client::DEFAULT)
+}
+
+/// The object store at `url`, configured by `options` as `object_store::parse_url_opts` would
+/// configure it, but for its HTTP client: `client`'s, fxdax's own (TASK-205).
+pub(crate) fn object_store_with(
+    url: &str,
+    options: impl IntoIterator<Item = (String, String)>,
+    client: &Client,
+) -> Result<(Arc<dyn ObjectStore>, String), String> {
     let url = url::Url::parse(url).map_err(|error| format!("{url}: {error}"))?;
     let (store, path): (Box<dyn ObjectStore>, Path) = match url.scheme() {
         // fxdax: `object_store`'s own refuses conditional updates (TASK-165.1).
@@ -241,8 +252,7 @@ pub fn object_store_at(url: &str) -> Result<(Arc<dyn ObjectStore>, String), Stri
                 crate::local::Local::new(&dir).map_err(|error| format!("{url}: {error}"))?;
             (Box::new(local), Path::default())
         }
-        _ => object_store::parse_url_opts(&url, std::env::vars())
-            .map_err(|error| format!("{url}: {error}"))?,
+        _ => cloud(&url, options, client).map_err(|error| format!("{url}: {error}"))?,
     };
     let latency = match std::env::var("FXDAX_REMOTE_LATENCY_MS") {
         Ok(ms) if !ms.is_empty() => std::time::Duration::from_millis(
@@ -263,6 +273,44 @@ pub fn object_store_at(url: &str) -> Result<(Arc<dyn ObjectStore>, String), Stri
     };
     let throttled = object_store::throttle::ThrottledStore::new(store, config);
     Ok((Arc::new(throttled), path.as_ref().to_owned()))
+}
+
+/// The store of a URL of a cloud's, or of memory, and the path it names in it, as
+/// `object_store::parse_url_opts` makes them, but with `client`.
+fn cloud(
+    url: &url::Url,
+    options: impl IntoIterator<Item = (String, String)>,
+    client: &Client,
+) -> object_store::Result<(Box<dyn ObjectStore>, Path)> {
+    use object_store::ObjectStoreScheme as Scheme;
+    let (scheme, path) = Scheme::parse(url)?;
+    let path = Path::parse(path)?;
+    // The client's options first, which the environment's add to.
+    macro_rules! built {
+        ($builder:ty) => {{
+            let builder = (<$builder>::new().with_url(url.as_str()))
+                .with_client_options(client.options())
+                .with_http_connector(*client);
+            let builder = options.into_iter().fold(builder, |builder, (key, value)| {
+                match key.to_ascii_lowercase().parse() {
+                    Ok(key) => builder.with_config(key, value),
+                    Err(_) => builder,
+                }
+            });
+            Box::new(builder.build()?)
+        }};
+    }
+    let store: Box<dyn ObjectStore> = match scheme {
+        Scheme::Memory => Box::new(object_store::memory::InMemory::new()),
+        Scheme::AmazonS3 => built!(object_store::aws::AmazonS3Builder),
+        Scheme::GoogleCloudStorage => built!(object_store::gcp::GoogleCloudStorageBuilder),
+        Scheme::MicrosoftAzure => built!(object_store::azure::MicrosoftAzureBuilder),
+        other => {
+            let source = format!("no buckets of {other:?}").into();
+            return Err(object_store::Error::Generic { store: "fxdax", source });
+        }
+    };
+    Ok((store, path))
 }
 
 /// What a request's failure means to branches. Failures other than the ones the protocol answers
@@ -450,6 +498,7 @@ pub(crate) mod tests {
     use crate::batch::{Batch, Commit};
     use crate::bucket::Bucket;
     use crate::layout::Origin;
+    use crate::s3_server::S3Server;
     use crate::writer::Writer;
     use crate::{Error as BranchError, branch, collector, recovery};
     use object_store::memory::InMemory;
@@ -762,6 +811,159 @@ pub(crate) mod tests {
         futures::executor::block_on(branch_lifecycle(file(dir.path()), 1));
     }
 
+    /// fxdax: a bucket of the S3 server in memory (TASK-205), under `prefix`, through `client`.
+    fn s3(server: &S3Server, prefix: &str, client: &Client) -> Arc<Store> {
+        let url = format!("s3://{}/{prefix}", crate::s3_server::BUCKET);
+        let (store, prefix) = object_store_with(&url, server.options(), client).unwrap();
+        Arc::new(Store::new(store, &prefix))
+    }
+
+    fn runtime() -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap()
+    }
+
+    /// fxdax: S3 over HTTP, through fxdax's client, does what every bucket must, and branches live
+    /// there: the server in memory the tests below slow is as S3 is to them (TASK-205).
+    #[test]
+    fn s3_buckets_conform() {
+        runtime().block_on(async {
+            let server = S3Server::start(None);
+            let bucket = s3(&server, "conformance", &Client::DEFAULT);
+            crate::bucket::conformance(&*bucket, "conformance").await;
+            branch_lifecycle(s3(&server, "branches", &Client::DEFAULT), 1).await;
+        });
+    }
+
+    /// `len` bytes that do not compress, from a xorshift generator seeded with `seed`.
+    fn noise(len: usize, mut seed: u64) -> Vec<u8> {
+        (0..len)
+            .map(|_| {
+                seed ^= seed << 13;
+                seed ^= seed >> 7;
+                seed ^= seed << 17;
+                seed as u8
+            })
+            .collect()
+    }
+
+    /// TASK-205: a writer's uploads over a link slower than what they have in flight at once, by
+    /// the stall time, a host's upstream that its uploads share: each lands at its first attempt,
+    /// and every commit is acknowledged. Under `object_store`'s timeout of a whole request, which
+    /// they all ran out of together, part sent, none ever did.
+    ///
+    /// What a connection's socket buffers counts as sent ([`crate::client`]): over loopback, whose
+    /// segments are 64 KiB, Linux lets a socket that the server reads slowly buffer up to 4 MiB,
+    /// which took a request's 2 MiB whole and left nothing to move for seconds. So objects larger
+    /// than that, and a stall longer than it takes a request's share of the link to carry it.
+    #[test]
+    fn uploads_land_over_a_slow_link() {
+        const RATE: u64 = 16 << 20;
+        const SEGMENTS: u64 = 8;
+        const EXTENT: usize = 16 << 20;
+        let client = Client { stall: std::time::Duration::from_secs(4), ..Client::DEFAULT };
+        assert!(SEGMENTS * EXTENT as u64 >= 2 * RATE * client.stall.as_secs());
+        assert!(RATE / SEGMENTS * client.stall.as_secs() >= 2 * (4 << 20));
+        runtime().block_on(async {
+            let server = S3Server::start(Some(RATE));
+            let bucket = s3(&server, "slow", &client);
+            branch::create(&*bucket, 1, 0).await.unwrap();
+            let writer = Writer::open(bucket.clone(), 1, 10, 1).await.unwrap();
+            let seqs: Vec<u64> = (1..=SEGMENTS)
+                .map(|tag| {
+                    let sequence = writer.chain().next_sequence();
+                    let own = vec![(sequence, noise(EXTENT, tag))];
+                    add(&writer, Commit { tag, own, ..Commit::default() })
+                })
+                .collect();
+            let creates = bucket.stats().requests(Request::Create);
+            let uploads = futures::future::join_all(seqs.iter().map(|seq| writer.upload(*seq)));
+            let wait = std::time::Duration::from_secs(30);
+            let uploaded = tokio::time::timeout(wait, uploads).await.expect("uploads landed");
+            assert_eq!(uploaded, vec![Ok(()); SEGMENTS as usize]);
+            assert_eq!(writer.acknowledge().await, Ok(seqs.last().copied()));
+            // A segment and its extent each, each once.
+            let created = bucket.stats().requests(Request::Create) - creates;
+            assert_eq!(created, 2 * SEGMENTS);
+        });
+    }
+
+    /// TASK-205: an upload to a server that reads nothing of it fails, once it moved no bytes for
+    /// the stall time, rather than wait for ever.
+    #[test]
+    fn stalled_uploads_time_out() {
+        let client = Client { stall: std::time::Duration::from_secs(1), ..Client::DEFAULT };
+        runtime().block_on(async {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let server = S3Server::at(listener.local_addr().unwrap());
+            tokio::spawn(async move {
+                let mut held = vec![];
+                loop {
+                    held.push(listener.accept().await.unwrap().0);
+                }
+            });
+            let bucket = s3(&server, "stalled", &client);
+            let start = tokio::time::Instant::now();
+            let put = bucket.put("object", noise(32 << 20, 1), PutMode::Create);
+            let put = tokio::time::timeout(10 * client.stall, put).await.expect("the upload ended");
+            let took = start.elapsed();
+            assert_eq!(put, Err(Error::Unavailable));
+            assert!(took >= client.stall && took < 5 * client.stall, "failed after {took:?}");
+        });
+    }
+
+    /// TASK-205: what fxdax's client costs at a bandwidth nothing limits, against `object_store`'s
+    /// own: 32 objects of 16 MiB uploaded at once to the S3 server in memory, by each in turn,
+    /// 25 times, then their median. Run with `--run-ignored only --no-capture`, in release.
+    #[test]
+    #[ignore]
+    fn client_throughput() {
+        const OBJECTS: usize = 32;
+        const SIZE: usize = 16 << 20;
+        const ROUNDS: usize = 25;
+        runtime().block_on(async {
+            let server = S3Server::start(None);
+            let theirs = |prefix: &str| {
+                let builder = object_store::aws::AmazonS3Builder::new()
+                    .with_url(format!("s3://{}/{prefix}", crate::s3_server::BUCKET))
+                    .with_client_options(Client::DEFAULT.options());
+                let builder =
+                    server.options().into_iter().fold(builder, |builder, (key, value)| {
+                        builder.with_config(key.parse().unwrap(), value)
+                    });
+                Arc::new(Store::new(Arc::new(builder.build().unwrap()), prefix))
+            };
+            let stores = [
+                ("fxdax's", s3(&server, "ours", &Client::DEFAULT)),
+                ("object_store's", theirs("theirs")),
+            ];
+            let body = noise(SIZE, 1);
+            let mut rates = [vec![], vec![]];
+            for round in 0..ROUNDS {
+                for ((name, store), rates) in stores.iter().zip(&mut rates) {
+                    let start = std::time::Instant::now();
+                    let puts = (0..OBJECTS).map(|object| {
+                        let (store, body) = (&store, body.clone());
+                        async move { store.put(&format!("{object}"), body, PutMode::Create).await }
+                    });
+                    for put in futures::future::join_all(puts).await {
+                        put.unwrap();
+                    }
+                    let took = start.elapsed();
+                    let rate = (OBJECTS * SIZE) as f64 / took.as_secs_f64() / 1e6;
+                    eprintln!("round {round}: {name} client: {took:?}, {rate:.0} MB/s");
+                    rates.push(rate);
+                    for object in 0..OBJECTS {
+                        store.delete(&format!("{object}")).await.unwrap();
+                    }
+                }
+            }
+            for ((name, _), rates) in stores.iter().zip(&mut rates) {
+                rates.sort_by(f64::total_cmp);
+                eprintln!("{name} client: median {:.0} MB/s", rates[ROUNDS / 2]);
+            }
+        });
+    }
+
     /// Probes the bucket at `url`'s conditional writes, and runs branches' lifecycle there.
     fn over_a_real_store(url: &str) {
         let runtime = tokio::runtime::Runtime::new().unwrap();
@@ -781,6 +983,38 @@ pub(crate) mod tests {
     #[ignore]
     fn rustfs() {
         over_a_real_store(&std::env::var("FXDAX_S3_URL").expect("FXDAX_S3_URL names the bucket"));
+    }
+
+    /// fxdax: the same over GCS, through fxdax's client (TASK-205): `FXDAX_GCS_URL` names a bucket
+    /// and a prefix, under which the run leaves its branches, reached with the environment's
+    /// credentials. Then 32 objects of 8 MiB uploaded at once, which a host's upstream below
+    /// 9 MB/s took longer to carry than `object_store`'s 30 s: each lands at its first attempt.
+    #[test]
+    #[ignore]
+    fn gcs() {
+        let url = std::env::var("FXDAX_GCS_URL").expect("FXDAX_GCS_URL names the bucket");
+        over_a_real_store(&url);
+        const OBJECTS: u64 = 32;
+        const SIZE: usize = 8 << 20;
+        runtime().block_on(async {
+            let store = Store::from_url(&url).unwrap();
+            let run = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+            let keys: Vec<String> = (0..OBJECTS).map(|n| format!("uploads-{run:x}/{n}")).collect();
+            let start = std::time::Instant::now();
+            let puts = keys
+                .iter()
+                .zip(1..)
+                .map(|(key, seed)| store.put(key, noise(SIZE, seed), PutMode::Create));
+            let landed: Vec<bool> =
+                futures::future::join_all(puts).await.iter().map(Result::is_ok).collect();
+            let took = start.elapsed();
+            let rate = (OBJECTS as usize * SIZE) as f64 / took.as_secs_f64() / 1e6;
+            eprintln!("{OBJECTS} objects of {SIZE} bytes at once: {took:?}, {rate:.1} MB/s");
+            assert_eq!(landed, vec![true; OBJECTS as usize]);
+            for key in &keys {
+                store.delete(key).await.unwrap();
+            }
+        });
     }
 
     /// The same over Azure Blob Storage, as its emulator, Azurite, serves it (TASK-46):
