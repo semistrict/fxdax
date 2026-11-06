@@ -38,6 +38,12 @@ struct vext_queue {
 	struct virtqueue *vq;
 	/* Serializes the queue's use. */
 	spinlock_t lock;
+	/*
+	 * fxdax: whether it takes no requests, as the device resets (vext_reset_prepare) until it
+	 * finds its queues again: set, and read before a request is added, under `lock`, so that none
+	 * is added to a queue the reset goes on to let go of (TASK-201).
+	 */
+	bool closed;
 	/* Woken as the device completes requests, making room in the queue. */
 	wait_queue_head_t room;
 	/* The requests it has taken. */
@@ -119,7 +125,10 @@ struct virtio_extent {
 	void *stats_arg;
 	struct work_struct stats_work;
 	u64 stats_answered;
-	/* fxdax: whether it is closed (virtio_extent_close), which `open_lock` guards. */
+	/*
+	 * fxdax: whether it is closed (virtio_extent_close), which `open_lock` guards: its queues are
+	 * then (`struct vext_queue`'s `closed`).
+	 */
 	struct mutex open_lock;
 	bool closed;
 	/* fxdax: those who found it and have yet to put it, whom unbinding it waits for. */
@@ -400,9 +409,6 @@ int virtio_extent_submit(struct virtio_extent *vext, struct vext_request *req)
 	/* fxdax: a follower's filesystem writes nothing: a write here is its bug (doc-8, testing 1). */
 	if (WARN_ON_ONCE(type->writes && virtio_extent_read_only(vext)))
 		return -EROFS;
-	/* fxdax: it has no queues then. */
-	if (READ_ONCE(vext->closed))
-		return -ESHUTDOWN;
 	data_len = type->data && vext_has(req, type->data_if) ? req->data_len : 0;
 	root_len = type->root_if && req->flags & type->root_if ? req->root_len : 0;
 	if (data_len && !req->data)
@@ -454,7 +460,13 @@ int virtio_extent_submit(struct virtio_extent *vext, struct vext_request *req)
 	for (;;) {
 		req->queued_ns = ktime_get_ns();
 		spin_lock_irqsave(&queue->lock, flags);
-		err = virtqueue_add_sgs(queue->vq, sgs, out_sgs, in_sgs, req, GFP_ATOMIC);
+		/*
+		 * fxdax: closed, as the device resets or is closed, it has no queues, or will not
+		 * once this is added: looked at once, without the lock, before, a request added after
+		 * went to a queue let go of, or that a reset device never completed (TASK-201).
+		 */
+		err = queue->closed ? -ESHUTDOWN :
+			virtqueue_add_sgs(queue->vq, sgs, out_sgs, in_sgs, req, GFP_ATOMIC);
 		if (!err) {
 			bool notify = virtqueue_kick_prepare(queue->vq);
 
@@ -471,8 +483,9 @@ int virtio_extent_submit(struct virtio_extent *vext, struct vext_request *req)
 			sg_free_table(&req->data_sgt);
 			return err;
 		}
-		/* The queue is full: wait for the device to complete a request. */
-		wait_event(queue->room, READ_ONCE(queue->vq->num_free) >= descs);
+		/* The queue is full: wait for the device to complete a request, or the queue to close. */
+		wait_event(queue->room,
+			   READ_ONCE(queue->closed) || READ_ONCE(queue->vq->num_free) >= descs);
 	}
 }
 EXPORT_SYMBOL_GPL(virtio_extent_submit);
@@ -638,16 +651,26 @@ static int vext_find_queues(struct virtio_extent *vext)
 	unsigned int i, offered;
 	int err;
 
-	virtio_cread_le(vdev, struct virtio_extent_config, num_request_queues, &offered);
-	vext->nr_queues = clamp(offered, 1U, nr_cpu_ids);
-	/* fxdax: as it opens again, their counts go on. */
-	if (!vext->queues)
+	/*
+	 * fxdax: as it opens again, the same queues, their counts going on: their locks, which a
+	 * request takes to find a queue closed, stay as they are (TASK-201).
+	 */
+	if (!vext->queues) {
+		virtio_cread_le(vdev, struct virtio_extent_config, num_request_queues, &offered);
+		vext->nr_queues = clamp(offered, 1U, nr_cpu_ids);
 		vext->queues = devm_kcalloc(&vdev->dev, vext->nr_queues, sizeof(*vext->queues),
 					    GFP_KERNEL);
+		if (!vext->queues)
+			return -ENOMEM;
+		for (i = 0; i < vext->nr_queues; i++) {
+			spin_lock_init(&vext->queues[i].lock);
+			init_waitqueue_head(&vext->queues[i].room);
+		}
+	}
 	infos = kcalloc(vext->nr_queues, sizeof(*infos), GFP_KERNEL);
 	vqs = kcalloc(vext->nr_queues, sizeof(*vqs), GFP_KERNEL);
 	err = -ENOMEM;
-	if (!vext->queues || !infos || !vqs)
+	if (!infos || !vqs)
 		goto out;
 	for (i = 0; i < vext->nr_queues; i++)
 		infos[i] = (struct virtqueue_info){ "requests", vext_done };
@@ -655,9 +678,12 @@ static int vext_find_queues(struct virtio_extent *vext)
 	if (err)
 		goto out;
 	for (i = 0; i < vext->nr_queues; i++) {
-		vext->queues[i].vq = vqs[i];
-		spin_lock_init(&vext->queues[i].lock);
-		init_waitqueue_head(&vext->queues[i].room);
+		struct vext_queue *queue = &vext->queues[i];
+
+		spin_lock_irq(&queue->lock);
+		queue->vq = vqs[i];
+		queue->closed = false;
+		spin_unlock_irq(&queue->lock);
 	}
 out:
 	kfree(infos);
@@ -1169,8 +1195,31 @@ static void vext_config_changed(struct virtio_device *vdev)
 }
 
 /*
+ * fxdax: closes its queues to requests, under each one's lock, which a request is added under
+ * (virtio_extent_submit): none is added after, and those waiting for room find them closed.
+ */
+static void vext_close_queues(struct virtio_extent *vext)
+{
+	unsigned int i;
+
+	for (i = 0; i < vext->nr_queues; i++) {
+		struct vext_queue *queue = &vext->queues[i];
+
+		spin_lock_irq(&queue->lock);
+		queue->closed = true;
+		spin_unlock_irq(&queue->lock);
+		wake_up_all(&queue->room);
+	}
+}
+
+/*
  * fxdax: resets the device, and lets its queues go (virtio_extent_close): a filesystem that
- * unmounted left only what no task waits for, its last let-go of commits, which fails.
+ * unmounted left only what no task waits for, its last let-go of commits, which fails. Its queues
+ * closed first, then the stats work, which asks of the device whenever the host asks for stats,
+ * done: its request in flight answered by the device, live still, and any after refused
+ * (-ESHUTDOWN). Then the reset, which nothing adds to a queue after: a request the stats work
+ * added once the reset had let go of the queues was a use after free, or, added once it had
+ * completed those queued, it waited for ever (TASK-201).
  */
 static int vext_reset_prepare(struct virtio_device *vdev)
 {
@@ -1178,6 +1227,8 @@ static int vext_reset_prepare(struct virtio_device *vdev)
 	struct vext_request *req;
 	unsigned int i;
 
+	vext_close_queues(vext);
+	flush_work(&vext->stats_work);
 	virtio_reset_device(vdev);
 	for (i = 0; i < vext->nr_queues; i++) {
 		struct vext_queue *queue = &vext->queues[i];
@@ -1208,7 +1259,7 @@ void virtio_extent_close(struct virtio_extent *vext)
 	mutex_lock(&vext->open_lock);
 	if (virtio_extent_read_only(vext) && !vext->closed) {
 		WARN_ON_ONCE(virtio_device_reset_prepare(vext->vdev));
-		WRITE_ONCE(vext->closed, true);
+		vext->closed = true;
 	}
 	mutex_unlock(&vext->open_lock);
 }
@@ -1234,7 +1285,7 @@ int virtio_extent_open(struct virtio_extent *vext)
 		goto out;
 	}
 	virtio_cread_le(vdev, struct virtio_extent_config, branch, &vext->config.branch);
-	WRITE_ONCE(vext->closed, false);
+	vext->closed = false;
 out:
 	mutex_unlock(&vext->open_lock);
 	return err;
