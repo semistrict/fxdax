@@ -586,12 +586,27 @@ mod tests {
         Runner::new(scheduler, config).run(run(profile));
     }
 
+    /// Reads of deleted files held open are rare under random schedules: 20 runs reached none in
+    /// CI on Linux (run 42178623463), though 40 of 40 batches reached one on macOS. Further batches of fresh random schedules
+    /// run until one does, up to `BATCHES`, so the check stays one of what the simulation
+    /// reaches rather than of one batch's luck.
     #[test]
     fn followers_show_prefixes_randomly() {
+        const BATCHES: usize = 5;
         simulations(RandomScheduler::new(runs()), config(), Profile::default());
         reached();
+        for _ in 1..BATCHES {
+            if REACHED.lock().unwrap().reads_of_deleted >= 1 {
+                break;
+            }
+            simulations(RandomScheduler::new(runs()), config(), Profile::default());
+        }
         let reached = REACHED.lock().unwrap();
-        assert!(reached.reads_of_deleted >= 1, "{reached:?} in {} runs", runs());
+        assert!(
+            reached.reads_of_deleted >= 1,
+            "{reached:?} in at most {BATCHES} x {} runs",
+            runs()
+        );
     }
 
     #[test]
