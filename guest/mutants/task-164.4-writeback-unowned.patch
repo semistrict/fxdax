@@ -14,7 +14,7 @@
 
 --- a/guest/linux/fs/fxfs/dax.c
 +++ b/guest/linux/fs/fxfs/dax.c
-@@ -2534,21 +2534,8 @@
+@@ -2676,26 +2676,8 @@
  		err = -ENOBUFS;
  		goto unreserve;
  	}
@@ -28,7 +28,12 @@
 -					    pages + ahead, fxfs_dax_page_offset(range, first), err);
 -			atomic_long_sub(newly + beyond, &dax->private);
 -			wake_up_all(&dax->budget_wait);
--			err = -EIO;
+-			/*
+-			 * fxdax: ENOMEM as ENOMEM, the guest's request's memory not found, not EIO
+-			 * (TASK-44.15); the host's refusal is EIO already (fxfs_device_private).
+-			 */
+-			if (err != -ENOMEM)
+-				err = -EIO;
 -			goto unreserve;
 -		}
 +	if (newly)
