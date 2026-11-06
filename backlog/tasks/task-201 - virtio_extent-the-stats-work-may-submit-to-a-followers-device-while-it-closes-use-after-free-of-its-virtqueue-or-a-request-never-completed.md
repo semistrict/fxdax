@@ -3,9 +3,11 @@ id: TASK-201
 title: >-
   virtio_extent: the stats work may submit to a follower's device while it
   closes: use after free of its virtqueue, or a request never completed
-status: To Do
-assignee: []
+status: Done
+assignee:
+  - '@claude'
 created_date: '2026-11-06 06:51'
+updated_date: '2026-11-06 09:40'
 labels:
   - guest
   - virtio_extent
@@ -37,14 +39,42 @@ Not reproducible on demand: it needs a VM with a follower, the host asking for s
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 No request reaches a virtqueue that virtio_extent_close is resetting or has freed
-- [ ] #2 A stats ask racing a follower's unmount ends, answered or -ESHUTDOWN, and unbinding the device afterwards returns
+- [x] #1 No request reaches a virtqueue that virtio_extent_close is resetting or has freed
+- [x] #2 A stats ask racing a follower's unmount ends, answered or -ESHUTDOWN, and unbinding the device afterwards returns
 - [ ] #3 A test widening the window (a delay knob, or a KASAN soak of stats asks against follower remounts) that fails on main
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Per-queue closed flag under the queue lock, read where a request is added; vext_close_queues before a reset; reset_prepare: close queues, flush stats work, reset.
+2. Queue locks initialized once (not on reopen).
+3. No on-demand test possible (the window is now one critical section): prove by structure; run follower and stats cases on GCE.
+<!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Done on guest-199, commit cf362f61d.
+
+Fix: each request queue has a closed flag its lock guards; virtio_extent_submit reads it under the lock it adds the request under (one critical section with virtqueue_add_sgs), and waiters for room wake on it. vext_reset_prepare (virtio_extent_close, vext_remove, and the open path's NEEDS_RESET) closes every queue under its lock, flushes the stats work (a request it already added completes on the live device; any later is refused -ESHUTDOWN), then resets, detaches and frees the queues. Reopening sets each queue's vq and closed=false under its lock; queue locks and wait queues are initialized once, and the number of queues is fixed at probe (a reopen re-initialized the locks a closed queue's submitters may hold, and could have grown nr_queues past the array).
+
+Test: none can make the old race fail on demand, as allowed by the brief. The window was between submit's lockless load of closed and virtqueue_add_sgs; those are now one critical section under the queue lock, which closing takes, so no delay can be put inside it, and a knob before the lock would pass on the old code too (the stats work would then find closed already set). The order is proven by construction: a request is added only under a lock whose holder saw the queue open, and a reset begins only after every queue was closed under that lock and the stats work flushed, so the detach loop sees every request added and nothing is added after. Runs touching the paths: GCE r762 fxfs-guest-follow-remount (followers' close and reopen), fxfs-guest-stats (the stats work), and fxfs-guest-checks' unbind_waits_for_unmount (vext_remove) pass. AC#3 left unchecked for that reason; a KASAN soak of stats asks against follower remounts (TASK-44.8's sanitizer kernels) is the remaining way to stress it, not run.
+
+Blind spot: the stats work (TASK-111.4) added a second submitter outside the filesystem's lifetime, which close's ordering assumed was the only one; no test asks for stats while a follower closes. Look around: no other submitter outside the filesystem exists (selftest runs only via sysfs while bound).
+
+Verified: check-guest.sh arm64 ok; GCE r762 as above.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Queues close under their locks before a reset, the stats work flushed between: no request reaches a queue being reset or freed. Proven by construction (no on-demand test possible, explained in notes; AC#3 unchecked); follower, stats and unbind cases pass on GCE r762.
+<!-- SECTION:FINAL_SUMMARY:END -->

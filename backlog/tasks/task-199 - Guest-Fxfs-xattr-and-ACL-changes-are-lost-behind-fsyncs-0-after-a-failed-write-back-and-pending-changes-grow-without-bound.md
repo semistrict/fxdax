@@ -3,10 +3,11 @@ id: TASK-199
 title: >-
   Guest Fxfs: xattr and ACL changes are lost behind fsync's 0 after a failed
   write-back, and pending changes grow without bound
-status: To Do
-assignee: []
+status: Done
+assignee:
+  - '@claude'
 created_date: '2026-11-06 06:47'
-updated_date: '2026-11-06 06:48'
+updated_date: '2026-11-06 09:39'
 labels:
   - guest
   - fxfs
@@ -59,15 +60,46 @@ The bound in (2) needs a check of its own: a setxattr loop over distinct names, 
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 An xattr or ACL change the filesystem has no room for is refused by setxattr (ENOSPC), or reported by every fsync until it is durable: none returns 0 while the change would be lost at eviction
-- [ ] #2 A failed write_inode (attributes or xattrs), including the flusher's, is reported by the next fsync of the file (or the inode stays dirty so that fsync retries it)
-- [ ] #3 Pending xattr changes are bounded, in bytes per volume, so an unprivileged setxattr loop can't pin unbounded kernel memory; at the bound, setxattr writes back or fails
-- [ ] #4 A guest check covering both, failing on main
+- [x] #1 An xattr or ACL change the filesystem has no room for is refused by setxattr (ENOSPC), or reported by every fsync until it is durable: none returns 0 while the change would be lost at eviction
+- [x] #2 A failed write_inode (attributes or xattrs), including the flusher's, is reported by the next fsync of the file (or the inode stays dirty so that fsync retries it)
+- [x] #3 Pending xattr changes are bounded, in bytes per volume, so an unprivileged setxattr loop can't pin unbounded kernel memory; at the bound, setxattr writes back or fails
+- [x] #4 A guest check covering both, failing on main
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. fxfs-posix: set_xattr and remove_xattr commit at once (Op::SetXattr Reserved, Op::RemoveXattr Borrowed); the pending map, its writeback and evict's log go; write_inode is setattr; create writes large inherited xattrs in its transaction (fxfs set_extended_attribute_impl public, remove_extended_attribute_with_options).
+2. guest: fxfs_vfs_write_inode marks a failed inode dirty again (fsync retries and reports); fxfs.fail_write_inode=<ino> fault injection.
+3. Tests: fxfs-posix xattrs_are_made_at_once, a_full_filesystem_refuses_xattrs_and_removes_them, the op table; model_tests sets refused when full; guest checks xattr_on_full_filesystem_is_refused, xattrs_bounded, failed_write_inode_reported.
+4. Verify: macOS, Linux Docker, check-guest, GCE jailed; a bug-back run showing the checks red.
+<!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Done on guest-199, commit e33ebef98 (tree verified as aa7073516).
+
+Design (OPEN_QUESTIONS.md, Decisions): extended attributes are written through, each set or removal a transaction of its own (Op::SetXattr Room::Reserved: NoSpace, so setxattr ENOSPC, on a filesystem without room; Op::RemoveXattr Room::Borrowed, as what frees). The pending map (Fxfs::xattrs), its writeback in write_inode and evict's 'not written back' log are gone; write_inode is setattr (fxfs_write_inode calls it; the unused fxfs_setattr FFI went). A new object's inherited ACLs too large to keep inline are written in its creation's transaction (fxfs set_extended_attribute_impl made public; remove_extended_attribute_with_options added: upstream deviations, documented in store_object_handle.rs's header). The guest's write_inode marks a failed inode dirty again (not one being freed), so the next writeback retries it and every fsync reports the failure until it is durable. fxfs.fail_write_inode=INO fails an inode's next writeback (fault injection). The task's suggested design (reserve room for the pending change, plus a byte bound, plus fsync reporting) was rejected: three mechanisms for what one transaction does. Cost: a setxattr is now a transaction, not a map insert.
+
+Blind spot: no test saw the VFS's writeback fail: guest/sim doesn't build super.c, and fxfs-posix's model tests called write_inode themselves and dropped what it failed to write, as the model did, accepting the loss. Tests added: fxfs-posix xattrs_are_made_at_once (set, replace, remove, inherited large ACL; closed with no write_inode and reopened) and a_full_filesystem_refuses_xattrs_and_removes_them (small sets until NoSpace, the refused one absent, a large one removed on the full filesystem); the op table's every_change_fails_once_a_batch_failed and each_operation_comes_after_the_unlinks now cover SetXattr and RemoveXattr; model_tests take a set refused NoSpace as unchanged. Guest checks: failed_write_inode_reported (chmod, sync's writeback failed by injection, fsync, remount: mode kept; an fsync's own failure returns EIO), xattr_on_full_filesystem_is_refused (fill, small setxattrs until ENOSPC, the refused one ENODATA, every accepted one read back after a remount), xattrs_bounded (64,000-byte xattrs of distinct names until twice MemTotal or ENOSPC: oom_kill unchanged, refused once full).
+
+Bug back (GCE r763, old fxfs-posix and write_inode, injections and checks kept): failed_write_inode_reported red (mode 0644 after remount, not 0600); xattr_on_full_filesystem_is_refused red ('a full filesystem took 100,000 extended attributes'); xattrs_bounded: the guest OOM-killed everything and panicked ('System is deadlocked on memory'), the log saying 'inode 4 evicted with extended attributes not written back'.
+
+Look around: setattr's failures in the flusher (chmod, chown, utimes with EIO) were the same blind spot, fixed by the same re-dirtying, which failed_write_inode_reported covers. fileattr_set and the resize path write attributes synchronously and return their errors already. Structure: the class (in-memory state outliving the failure of its writeback) is gone for xattrs; for the kernel's own inode attributes the VFS keeps the state, and re-dirtying keeps it until durable. Coverage not rerun.
+
+Verified: macOS workspace (scripts/test.sh workspace) 2032/2033 then the one failing test (my first version of the full-filesystem unit test, assuming a small inline xattr couldn't fit) fixed and passing; Linux Docker (privileged) 2221/2225, the 4 Docker-only failures known on main (build stamp, three socket grants); guest/tests harness 135/135; check-guest.sh arm64 ok; upstream-changes.py --check ok; GCE (us-west1-b, jailed): r762 workspace 2225/2225 (run d), fxfs-guest-checks, -checks-dax, -checks-dax-small all pass (run c), fxfs-guest, -dax, -snapshot-dax, -suspend-dax, -migrate-dax, -stats, -follow-remount pass (run a).
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+xattrs and ACLs are written through (setxattr ENOSPC on a full filesystem, nothing pending, nothing unbounded); write_inode re-dirties a failed inode so fsync reports it until durable. Verified by fxfs-posix unit tests, three guest checks red with the bug back (GCE r763) and green with the fix (r762), macOS, Linux Docker and GCE workspace.
+<!-- SECTION:FINAL_SUMMARY:END -->
