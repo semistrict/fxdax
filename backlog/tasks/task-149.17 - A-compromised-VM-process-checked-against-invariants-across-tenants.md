@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-01 16:53'
-updated_date: '2026-11-06 09:51'
+updated_date: '2026-11-06 09:55'
 labels: []
 dependencies:
   - TASK-77
@@ -69,6 +69,13 @@ AC5, mutants (crates/fxdax/mutants, run by crates/fxdax/mutants.sh, --check in s
 Overlap with other agents: extentd/codec.rs and wire.rs (MAX_ROOT, beside TASK-141.3's wire refusals); extentd/server.rs only QUEUED_ROOM made pub(super); extents.rs read/write and one added extent_store method, Store::write_with (TASK-165.x work in extent_store); tests.rs gains one mod line, the tests living in extentd/tests/hostile.rs.
 
 Runs at 4abc16ade and after (merged with main at 60c862a2e): Linux in Docker (OrbStack, aarch64, privileged): the hostile test 6,000 cases seed 103 (23.6 min) and 9,000 cases seed 104 (48.6 min), all passing (seed 104: 243,545 of mallory's requests served, 2,412 restores, 8,480 of its stores committed at the end, 432 floods let go); an earlier run of seed 102 passed 14,160 cases in 2 h before its output was cut; one of seed 101 found the harness's own limit at about case 4,096 (bob's store full, fixed in its last commit). nextest -p fxdax -p extent_store -p physmem: 771 of 777, the hostile test's then too-rare restore check (fixed since) and 5 of the container's: builds_are_stamped_with_their_commit (no git), grants' three (no sudo), seccomp's (this worktree's vendor/firecracker behind main's; passes at e64c4b283). Shuttle: extent_store 62/62 and 7/7, physmem 6/6, fxdax 59/59. Mutants: 10 of 10 killed. macOS: FXDAX_TEST_PARTS="workspace shuttle" scripts/test.sh, workspace 2,120 of 2,120 and every Shuttle part. scripts/upstream-changes.py --check passes. Not run: the whole Linux workspace (Lima or GCE).
+
+Decision moved here from OPEN_QUESTIONS.md (2026-11-06):
+## What a compromised VM process found, fixed at the narrowest place (TASK-149.17, 2026-11-06)
+
+- **Arenas' memfds sealed against shrinking, and 0600** (physmem `create_shared_memory`): a VM process ftruncate()d its tenant's arena, which the daemon hands it to write, and the daemon died of SIGBUS; the default arena, handed every VM process read-only, was 0777, reopenable to write through /proc/self/fd by another user. A process of the daemon's own user, as the default tenant's VM processes are, can still reopen it: it can ptrace the daemon anyway. *Instead:* F_SEAL_FUTURE_WRITE on the default arena, which would refuse the daemon's own mappings of chunks it takes later. *Undoing it:* the two calls in `create_shared_memory`, and `resize` growing only.
+- **Reads and writes copy 1 MiB pieces** (`ExtentStore::PIECE`), not a copy of each request's length the connection's room didn't count. A read of an open extent the guest is writing at once may now see part of the write, and a follower's read of data in the bucket fetches a piece at a time. *Instead:* count each running request's length against the room (a VM process keeping more requests in flight than the room holds would be let go). *Undoing it:* `PIECE` = `usize::MAX`.
+- **A root holds 4 KiB at most on the wire** (`wire::MAX_ROOT`, the extent device's own `MAX_ROOT`), `EINVAL` past it, where a VM process's could be 64 MiB, which its store kept and wrote with its commits, and each `ROOT` copied, uncounted. A refusal of the wire's, as TASK-141.3's are. *Instead:* count a `ROOT`'s reply against the room, leaving 64 MiB roots in stores. *Undoing it:* the two checks in `codec`.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
