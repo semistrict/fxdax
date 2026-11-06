@@ -55,7 +55,8 @@ Decisions made without you, still yours to confirm or overturn. Each is a line o
 
 - **The host's copy-on-write protocol:** no flag on `WINDOW` (`args[1]` the private pages); retired numbers not reused; every map read-only. TASK-164.7, 2026-11-04.
 - **Private pages are the VM process's memory** (a memfd laid out as the window), not the tenant's arena: a tenant's limit no longer bounds them, `private_max` does. TASK-164.1 and doc-13, 2026-11-04.
-- **A PRIVATE refused with ENOMEM stays an EIO,** not a wait. TASK-170, 2026-11-05.
+- **A PRIVATE refused with ENOMEM stays an EIO,** not a wait. TASK-170, 2026-11-05. The host's refusal, that is: one the guest found no memory to ask for fails ENOMEM (`fxfs_device_private` tells them apart). TASK-44.15, 2026-11-06.
+- **A writeback Fxfs had no memory for keeps its pages dirty,** their room reserved again, failing ENOMEM without setting the file's error; an I/O error's pages are lost as TASK-149.15 has it; an eviction gives them up after a second of tries. doc-13's writeback, step 4. *Instead:* the file marked failed, every later fsync failing, which loses data for a transient error. TASK-207, 2026-11-06.
 - **A window's mappings carry no K:** a source says what it is (`Source::origin`). TASK-160.11, 2026-11-05.
 - **The window's struct pages are made a memory section at a time,** in the driver's `direct_access`; a kernel without FS_DAX takes no window. TASK-92.8, 2026-11-05.
 - **What holds a file's data is an operations table of its inode's;** fsync stays super.c's. TASK-160.2, 2026-11-04.

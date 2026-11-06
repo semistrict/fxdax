@@ -3,11 +3,11 @@ id: TASK-44.15
 title: >-
   Random file operations with an oracle on the guest Fxfs: fsx-style mmap,
   write, truncate and fsync, differential against ext4, xfstests' generic group
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-10-24 21:31'
-updated_date: '2026-11-06 09:16'
+updated_date: '2026-11-06 12:01'
 labels: []
 dependencies: []
 parent_task_id: TASK-44
@@ -25,14 +25,14 @@ The guest checks are each a scenario someone thought of. fsx's random mixes of m
 <!-- AC:BEGIN -->
 - [x] #1 A guest test runs seeded fsx-style operation sequences on Fxfs with and without DAX, verifying contents, and the same on ext4 to compare
 - [x] #2 xfstests' generic group runs against the guest Fxfs, its failures triaged and filed
-- [ ] #3 Both run with injection on (the fault and delay injection tasks)
+- [x] #3 Both run with injection on (the fault and delay injection tasks)
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -60,4 +60,12 @@ GCE r693 (us-west1-b, release kernel, jailed, FXDAX_FSX_SECS=600): fxfs-guest-fs
 r698 (us-central1-b, debug kernel, both fixes but the write's): fxfs-guest-fsx-faults-dax FAILED, finding 3: write(2) EIO after 'making 1 pages at 178000 of the window private: -12': fxfs_dax_dirty made any failed PRIVATE -EIO, the device's ENOMEM too. Fixed: ENOMEM stays ENOMEM (dax.c), as fxfs_dax_throttle's no room already is; guest/sim's device fails a request with an errno a test says (sim_device_fail_with), and cow_private_failed's write whose PRIVATE had no memory is ENOMEM: red without (-5), green with; scenarios, zloop -s 300, mutants.sh --check (34; task-164.4-writeback-unowned and task-164.9-private-failure-ignored rebased onto the change, both still killed) and guest-mutants-gce.py --check (38) pass. r699 (us-central1-a, us-west1 out of quota; debug kernel, all fixes): fxfs-guest-checks-dax pass, fxfs-guest-fsx-dax 26 scripts, 2,480 files DAX, pass; fxfs-guest-fsx-faults-dax FAILED again, finding 2's class, now with its lineage: a clone within file 0 carried what its source held before op 528's write, an fsync between refused ENOMEM: fxfs_dax_write_back leaves a failed writeback's pages clean. Filed TASK-207 (high): it changes doc-13's writeback on errors, and r697's mismatch is likely the same. xfstests: AC 2 met by r695/r696, the 13 failures each a known one with its reason and task (TASK-143 to 145, the rest said in KNOWN_FAILURES). AC 3 open: the fsx cases run under delay injection (r693) and fault injection (r694, r697-r699), xfstests under neither, and -faults-dax fails until TASK-207.
 
 Every-bug notes (AGENTS.md). Found by: the fsx cases under the debug kernel's fault injection, a refusal allowed only for ENOMEM, its effects held within what the operation could reach. Blind spot: fxfs-guest-faults-dax let any errno fail a call, and checked only fsynced files after; no test failed the device's requests for memory and looked at the errno or at the data written before a failed writeback. Class tests: the fsx-faults case (any call's errno and the data after), sim_device_fail_with (any device errno in guest/sim). Looked around: the other -EIO in dax.c are the protocol's own (seals that never end, a write finding no range, a range past its file), not a device's errno; device.rs's errno_error passed ENOENT, ENOSPC and EROFS and nothing else, now ENOMEM through fxfs_posix::device_error. Structure: a device's errno and what a caller sees of it are decided in one function now, the rest EIO by the table's rule; the writeback's error semantics are the structural question, TASK-207.
+
+2026-11-06, rebased onto 027dcbf80 (OPEN_QUESTIONS taken in main's one-line form; the decision's detail is here, as main moves them). TASK-170's decision (the host's PRIVATE ENOMEM stays EIO) had been overturned by c6a7fca30, which passed every ENOMEM: restored in 522f22147, fxfs_device_private telling the host's refusal from the guest's own. TASK-207 fixed (522f22147, 74243d3e6). Fault injection seeded (68ea2efd8): /proc/thread-self/fail-nth, the Nth allocation of a chosen call failing, the call and N the script seed's by operation; r780's guest death replayed and shrank from boots to one operation, the harness's own read of fail-nth (fixed: opened once, before anything is armed). AC 3: the fsx cases under delay injection (r693's -delay-dax) and fault injection (r782's -faults-dax, 20 min, 900 refusals, pass); xfstests generic/quick with DAX under delay injection (GCE r781, us-central1-b, fxfs.dax_delay_us=200 fxfs.dax_delay_seed=781 on the guest's command line, jailed): pass, 650 listed, 365 not run, the same 13 known failures. Not xfstests under fault injection: its tests' expected outputs fail on any refused call by design, which says nothing of Fxfs; fault injection is the fsx cases', whose oracle allows refusals and checks what they leave. DoD 1: macOS scripts/test.sh clippy and workspace 2,039/2,039; Linux (Docker via OrbStack, aarch64, /target/t4415) cargo nextest run --workspace 2,279: 2,276 passed, fxdax::grants' 3 failing for want of sudo in the container, 16/16 once installed. DoD 2: upstream-changes.py --check passes. DoD 3: the guest's changes say fxdax: where they are; no upstream file changed but dax.c's and device.c's own (fxdax's).
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+fxfs-guest-fsx (-dax, -delay-dax, -faults-dax) run seeded fsx-style scripts of a wide mix on Fxfs and ext4 in one guest, step by step, held to a model that says every outcome and to ext4 for timestamps; failures shrink in the guest and replay from a boot, fault injection seeded through fail-nth. They found three bugs: two ENOMEMs reaching userspace as EIO (fixed, c6a7fca30, with TASK-170's host case restored in 522f22147) and a DAX writeback that lost its pages on ENOMEM (TASK-207, fixed); the page cache's same flaw is TASK-212. xfstests generic/quick passes with DAX and without (r695, r696) and under delay injection (r781), its 13 failures known and filed. Verified on GCE r693-r699 and r780-r782, macOS and Linux workspaces, guest/sim.
+<!-- SECTION:FINAL_SUMMARY:END -->

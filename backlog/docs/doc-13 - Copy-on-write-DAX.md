@@ -3,7 +3,7 @@ id: doc-13
 title: Copy-on-write DAX
 type: specification
 created_date: '2026-11-04 07:55'
-updated_date: '2026-11-06 06:42'
+updated_date: '2026-11-06 09:35'
 ---
 # Copy-on-write DAX: the window maps sealed extents only; a store gets a private copy
 
@@ -203,6 +203,14 @@ the no-DAX path's (`fxfs_vfs_writepages`) with window pages for folios:
    its page is dirty again either way.
 3. The writeback set is kept until the barrier after that transaction completes (the device's seal
    count passes the one noted): its pages' extents are sealed then.
+4. A writeback that fails: what an I/O error stopped is clean, the error the file's, told by the
+   next fsync and syncfs, as the page cache's; its private pages read as written until a rebind,
+   a drop or a truncate shows what Fxfs holds. What Fxfs had no memory to write (`ENOMEM`) stays
+   dirty, its room reserved again (`fxfs_reserve_dirty_what_fits`: the failed `fxfs_write_many`
+   took it), and the writeback fails `ENOMEM` without setting the file's error: the next writes it.
+   Clean, a rebind brought back the blocks those pages replaced and a clone carried them, though
+   nothing had failed to be written (TASK-207). An eviction, after which no writeback finds the
+   file, tries again for a second, then gives them up as an I/O error's.
 
 **Rebinding** frees private pages: under the file's semaphore held exclusively, a private page in
 neither set, whose data's extent is sealed, is `MAP`ped to that extent's page (`MAP_MANY`, a run
