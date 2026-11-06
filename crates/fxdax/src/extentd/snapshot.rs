@@ -230,8 +230,9 @@ pub(super) struct Report {
     /// installed ([`super::wire::STAGE_COUNTS`]).
     costs: [AtomicU64; 4],
     installed: AtomicU64,
-    /// fxdax: and its runs of private pages ([`super::wire::STAGE_PRIVATE_COUNTS`], TASK-164.10).
-    private: [AtomicU64; 3],
+    /// fxdax: and its runs of private pages, and its `PRIVATE` requests' waits
+    /// ([`super::wire::STAGE_PRIVATE_COUNTS`], TASK-164.10).
+    private: [AtomicU64; 5],
     /// Its window's gauges, and the runs of pages its VM process said its second stage keeps
     /// installed at most, 0 if it didn't ([`super::wire::WINDOW`]), once it has one.
     window: OnceLock<(Arc<Gauges>, u64)>,
@@ -340,11 +341,13 @@ impl Report {
     /// counts its stage operations (TASK-164.10).
     pub fn private_counted(&self, counts: super::codec::PrivateCosts) {
         use crate::stats::Counter;
-        let [runs, pages, ns] = counts;
+        let [runs, pages, ns, requests, waited] = counts;
         let said = [
             (runs, Counter::StagePrivateRuns),
             (pages, Counter::StagePrivatePages),
             (ns, Counter::StagePrivateNs),
+            (requests, Counter::VmPrivateRequests),
+            (waited, Counter::VmPrivateRequestNs),
         ];
         for (before, (count, counter)) in self.private.iter().zip(said) {
             let added = count.saturating_sub(before.fetch_max(count, Ordering::Relaxed));

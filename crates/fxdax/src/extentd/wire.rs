@@ -226,7 +226,8 @@ pub(crate) const MAX_STATS: usize = 64 << 10;
 pub(crate) const MAP_MANY: u32 = 32;
 /// fxdax: of the stage operations the VM process has made of the connection's, the runs of private
 /// pages it made, each at once, `args[0]`, the pages they made, `args[1]`, and the nanoseconds
-/// they took it, `args[2]`, so far (`Stats::stage_private_runs`, TASK-164.10): said once
+/// they took it, `args[2]`; and the [`PRIVATE`] requests it made, `args[3]`, and the nanoseconds
+/// it waited for their replies, `args[4]`, so far (`Stats::stage_private_runs`, TASK-164.10): said once
 /// [`STAGE_COUNTS_EVERY`] has passed since it last said, as it makes them, and as it closes the
 /// connection. Nothing replies.
 pub(crate) const STAGE_PRIVATE_COUNTS: u32 = 33;

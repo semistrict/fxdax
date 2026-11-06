@@ -1467,9 +1467,11 @@ fn child_changes_its_window() {
     // fxdax: made private, a run of a page, over the page installed (TASK-164.10).
     store.make_private(0, ps).unwrap();
     let [ops, ns, overwritten, left_out] = store.stage_counts().costs;
-    let [runs, pages, private_ns] = store.private_counts();
+    let [runs, pages, private_ns, requests, waited] = store.private_counts();
     drop(store);
-    println!("STAGE {ops} {ns} {overwritten} {left_out} {runs} {pages} {private_ns}");
+    println!(
+        "STAGE {ops} {ns} {overwritten} {left_out} {runs} {pages} {private_ns} {requests} {waited}"
+    );
 }
 
 /// TASK-91.16: what its VM processes' changes to their windows cost them, which they make, the
@@ -1500,9 +1502,13 @@ fn vm_processes_tell_the_daemon_what_their_windows_cost() {
         .find_map(|line| line.strip_prefix("STAGE "))
         .unwrap_or_else(|| panic!("the child changed nothing: {stdout}"));
     let said: Vec<u64> = stage.split(' ').map(|count| count.parse().unwrap()).collect();
-    let [ops, ns, overwritten, left_out, runs, pages, private_ns] = said[..] else {
-        panic!("not seven counts: {stage}");
+    let [ops, ns, overwritten, left_out, runs, pages, private_ns, requests, waited] = said[..]
+    else {
+        panic!("not nine counts: {stage}");
     };
+    // fxdax: one PRIVATE, waited for longer than its stage operation took (TASK-164.10).
+    assert_eq!(requests, 1, "{stdout}");
+    assert!(waited > private_ns, "{stdout}");
     assert_eq!(ops, 6, "{stdout}");
     // fxdax: the unmap took access away, from the page the load faulted in (TASK-91.16); the
     // private page from the page mapped anew.
@@ -1517,6 +1523,8 @@ fn vm_processes_tell_the_daemon_what_their_windows_cost() {
     // fxdax: and the runs of private pages, as the VM process told them (TASK-164.10).
     let private = (counted.stage_private_runs, counted.stage_private_pages);
     assert_eq!((private, counted.stage_private_ns), ((runs, pages), private_ns));
+    let waits = (counted.vm_private_requests, counted.vm_private_request_ns);
+    assert_eq!(waits, (requests, waited));
     // fxdax: the daemon's maps of pages, one a page: the fault's, and the map's anew, of the page
     // in memory by then (TASK-108.1).
     let ps = page_size();

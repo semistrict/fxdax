@@ -535,7 +535,12 @@ impl RemoteExtentStore {
 
     /// [`RemoteExtentStore::make_private`], waiting for the daemon holding no thread.
     pub async fn make_private_async(&self, window_offset: u64, len: u64) -> Result<()> {
-        self.client.request(&Request::Private { window_offset, len }).await.map(drop)
+        let start = std::time::Instant::now();
+        let made = self.client.request(&Request::Private { window_offset, len }).await.map(drop);
+        // fxdax: as this process waited for it, the daemon's and its stage operations' parts
+        // apart (TASK-164.10).
+        self.client.stage_counts.private_request_since(start);
+        made
     }
 
     /// fxdax: whether its window copies on write, a writer's
@@ -927,7 +932,7 @@ impl Client {
             // fxdax: the runs of private pages, said as often, apart (TASK-164.10).
             if told.duration_since(told_private) >= STAGE_COUNTS_EVERY {
                 let private = self.stage_counts.private();
-                if private[0] != 0
+                if (private[0] | private[3]) != 0
                     && let Err(err) =
                         self.sender.send(Made::PrivateCounts(private).encode(), &[], &[])
                 {
@@ -1072,6 +1077,9 @@ struct StageCosts {
     private_runs: AtomicU64,
     private_pages: AtomicU64,
     private_ns: AtomicU64,
+    /// The `PRIVATE` requests made, and the nanoseconds this process waited for their replies.
+    private_requests: AtomicU64,
+    private_request_ns: AtomicU64,
 }
 
 impl StageCosts {
@@ -1095,10 +1103,22 @@ impl StageCosts {
         [self.ops.load(Ordering::Relaxed), self.ns.load(Ordering::Relaxed)]
     }
 
+    /// Counts a `PRIVATE` request sent at `start`, its reply here.
+    fn private_request_since(&self, start: std::time::Instant) {
+        self.private_requests.fetch_add(1, Ordering::Relaxed);
+        self.private_request_ns.fetch_add(start.elapsed().as_nanos() as u64, Ordering::Relaxed);
+    }
+
     /// The runs of private pages, as [`STAGE_PRIVATE_COUNTS`] says them.
     fn private(&self) -> PrivateCosts {
         let load = |counter: &AtomicU64| counter.load(Ordering::Relaxed);
-        [load(&self.private_runs), load(&self.private_pages), load(&self.private_ns)]
+        [
+            load(&self.private_runs),
+            load(&self.private_pages),
+            load(&self.private_ns),
+            load(&self.private_requests),
+            load(&self.private_request_ns),
+        ]
     }
 }
 

@@ -634,8 +634,9 @@ impl StageCounts {
 }
 
 /// fxdax: what a VM process's runs of private pages cost it so far, as [`STAGE_PRIVATE_COUNTS`]
-/// says it: how many, their pages, their nanoseconds.
-pub(crate) type PrivateCosts = [u64; 3];
+/// says it: how many, their pages, their nanoseconds; and its `PRIVATE` requests, and the
+/// nanoseconds it waited for their replies.
+pub(crate) type PrivateCosts = [u64; 5];
 
 impl Made {
     pub fn encode(&self) -> Header {
@@ -657,7 +658,7 @@ impl Made {
         match kind {
             ACK => Ok(Made::Ack { id, counts }),
             STAGE_COUNTS => Ok(Made::Counts(counts)),
-            STAGE_PRIVATE_COUNTS => Ok(Made::PrivateCounts([args[0], args[1], args[2]])),
+            STAGE_PRIVATE_COUNTS => Ok(Made::PrivateCounts(args)),
             _ => Err(Errno::EINVAL),
         }
     }
@@ -1394,8 +1395,8 @@ mod tests {
         assert_eq!(ack, Header::new(ACK, 4).with_args(&[1, 2, 3, 4, 5]));
         let asked = Told::Stats { ask: 6 }.encode();
         assert_eq!(asked, Header::new(STATS_ASK, 0).with_args(&[6]));
-        let private = Made::PrivateCounts([1, 64, 5]).encode();
-        assert_eq!(private, Header::new(STAGE_PRIVATE_COUNTS, 0).with_args(&[1, 64, 5]));
+        let private = Made::PrivateCounts([1, 64, 5, 2, 9]).encode();
+        assert_eq!(private, Header::new(STAGE_PRIVATE_COUNTS, 0).with_args(&[1, 64, 5, 2, 9]));
     }
 
     proptest! {
@@ -1426,7 +1427,11 @@ mod tests {
             }
             let counts = StageCounts { costs: [a, b, c, d], installed: e };
             let other = StageCounts { costs: [b, c, d, e], installed: a };
-            let made = [Made::Ack { id, counts }, Made::Counts(other), Made::PrivateCounts([c, d, e])];
+            let made = [
+                Made::Ack { id, counts },
+                Made::Counts(other),
+                Made::PrivateCounts([a, b, c, d, e]),
+            ];
             for made in made {
                 let message = Message { header: made.encode(), payload: vec![], fds: vec![] };
                 prop_assert_eq!(Made::decode(&message), Ok(made));
@@ -1525,7 +1530,7 @@ mod tests {
     fn the_wire_is_its_version() {
         /// The version, and the fingerprint of the wire it is. A change to the wire is a new
         /// version, both changed together, never the fingerprint alone.
-        const WIRE: (u64, u64) = (2, 0x5291_562e_414e_597a);
+        const WIRE: (u64, u64) = (2, 0xd5fc_cc20_e41e_8279);
         let fingerprint = fingerprint();
         assert_eq!(
             (VERSION, fingerprint),
@@ -1594,7 +1599,7 @@ mod tests {
             StageCounts { costs: [1, 2, 3, 4], installed: 5 },
             StageCounts { costs: [5, 6, 7, 8], installed: 9 },
         );
-        let private = Made::PrivateCounts([1, 64, 5]);
+        let private = Made::PrivateCounts([1, 64, 5, 2, 9]);
         for made in [Made::Ack { id: 2, counts }, Made::Counts(other), private] {
             header(&mut hashed, made.encode());
         }

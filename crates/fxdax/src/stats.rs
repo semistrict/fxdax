@@ -99,6 +99,13 @@ pub struct Stats {
     pub stage_private_pages: u64,
     /// The nanoseconds they took the VM processes.
     pub stage_private_ns: u64,
+    /// fxdax: the `PRIVATE` requests the VM processes made, as they told the daemon
+    /// (`extentd::wire::STAGE_PRIVATE_COUNTS`), and the nanoseconds they waited for the replies:
+    /// what the daemon's part of them and their stage operations leave of the guest's wait is the
+    /// VM process's own, and the socket's (TASK-164.10).
+    pub vm_private_requests: u64,
+    /// The nanoseconds they waited for those replies.
+    pub vm_private_request_ns: u64,
 }
 
 /// The counters, in the order of [`Stats`]' fields.
@@ -134,10 +141,12 @@ pub(crate) enum Counter {
     StagePrivateRuns,
     StagePrivatePages,
     StagePrivateNs,
+    VmPrivateRequests,
+    VmPrivateRequestNs,
 }
 
 /// The counters [`Counter`] names, which this module keeps.
-const COUNTED: usize = 30;
+const COUNTED: usize = 32;
 
 /// The counters a snapshot holds: those it keeps, and the extent store's.
 const COUNTERS: usize = COUNTED + 3;
@@ -197,6 +206,8 @@ pub fn stats() -> Stats {
         stage_private_runs: count(Counter::StagePrivateRuns),
         stage_private_pages: count(Counter::StagePrivatePages),
         stage_private_ns: count(Counter::StagePrivateNs),
+        vm_private_requests: count(Counter::VmPrivateRequests),
+        vm_private_request_ns: count(Counter::VmPrivateRequestNs),
     }
 }
 
@@ -237,6 +248,8 @@ impl Stats {
             self.stage_private_runs,
             self.stage_private_pages,
             self.stage_private_ns,
+            self.vm_private_requests,
+            self.vm_private_request_ns,
         ]
     }
 
@@ -277,6 +290,8 @@ impl Stats {
             stage_private_runs: word(30),
             stage_private_pages: word(31),
             stage_private_ns: word(32),
+            vm_private_requests: word(33),
+            vm_private_request_ns: word(34),
         }
     }
 
@@ -324,6 +339,8 @@ impl Stats {
             "stage-private-runs",
             "stage-private-pages",
             "stage-private-ns",
+            "vm-private-requests",
+            "vm-private-request-ns",
         ];
         std::array::from_fn(|at| (names[at], words[at]))
     }

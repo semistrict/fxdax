@@ -442,6 +442,8 @@ impl Extentd for Control {
             stage_private_runs: _,
             stage_private_pages: _,
             stage_private_ns: _,
+            vm_private_requests: _,
+            vm_private_request_ns: _,
         } = crate::stats::stats();
         use extent_remote::store::{Request, Upload};
         let bucket = stores::remote_bucket().map_err(status)?.stats();
@@ -787,6 +789,8 @@ impl Client {
             stage_private_runs: 0,
             stage_private_pages: 0,
             stage_private_ns: 0,
+            vm_private_requests: 0,
+            vm_private_request_ns: 0,
         })
     }
 
