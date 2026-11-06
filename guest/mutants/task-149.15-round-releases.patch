@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: GPL-2.0
+# Copyright 2026 The fxdax Authors.
+#
+# Kernel: sim
+# Killer: scenarios unmaps_failed_take_the_window
+#
+# TASK-149.15: each round of the budget's worker counts as a range let go of (fxfs_dax_released),
+# which a wait for room in the window asks for: a write that can never have room, the window's
+# room kept from use by UNMAPs that failed, finds something let go of after every wait, and waits
+# for ever. Found by guest/sim's sweep of read_pressure, a failed UNMAP taking its small window's
+# aligned room: livelock. unmaps_failed_take_the_window: livelock, the write never failing ENOSPC.
+
+--- a/guest/linux/fs/fxfs/dax.c
++++ b/guest/linux/fs/fxfs/dax.c
+@@ -2362,6 +2362,7 @@
+ 	atomic64_set(&dax->rebinds_done, asked);
+ 	atomic64_inc(&dax->rounds);
+ 	wake_up_all(&dax->budget_wait);
++	fxfs_dax_released(dax);
+ 	if (every && !READ_ONCE(dax->stopping)) {
+ 		msleep(every);
+ 		fxfs_dax_kick(dax, false);

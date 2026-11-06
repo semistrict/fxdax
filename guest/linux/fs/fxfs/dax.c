@@ -2341,7 +2341,11 @@ static void fxfs_dax_prune(struct fxfs_dax *dax)
  * out of room for ranges), it writes back whatever is dirty; asked to rebind all
  * (fxfs.dax_rebind_now, fxfs.dax_rebind_every), as many as it can. Then it prunes the page-cache
  * inodes sealed since, says which asks to rebind all it served, those made before it began, and
- * wakes those the budget held up, and the window's reclaim.
+ * wakes those the budget held up. The window's reclaim learns of ranges its writeback cleaned as
+ * it lets go of them (fxfs_dax_put_range), not of a round: woken by every round, which each wait
+ * for room asked for, a write that could never have room, its window's aligned room lost to UNMAPs
+ * that failed, found something let go of each time, and waited for ever (guest/sim's sweep,
+ * read_pressure).
  */
 static void fxfs_dax_work(struct work_struct *work)
 {
@@ -2358,7 +2362,6 @@ static void fxfs_dax_work(struct work_struct *work)
 	atomic64_set(&dax->rebinds_done, asked);
 	atomic64_inc(&dax->rounds);
 	wake_up_all(&dax->budget_wait);
-	fxfs_dax_released(dax);
 	if (every && !READ_ONCE(dax->stopping)) {
 		msleep(every);
 		fxfs_dax_kick(dax, false);

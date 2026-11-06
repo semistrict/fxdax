@@ -373,6 +373,37 @@ static void unmap_failed(void)
 	mount = NULL;
 }
 
+/*
+ * That a write the window can never have room for fails, ENOSPC, rather than wait for ever: the
+ * ranges' half of the window, chunk by chunk, kept from use as each UNMAP of it fails (TASK-44.22).
+ * The budget's worker's rounds, which each wait for room asks for, counted as ranges let go of, and
+ * the write waited for ever (read_pressure in guest/sim's sweep, a failed UNMAP taking its small
+ * window's aligned room).
+ */
+static void cow_rebind_now(void *arg);
+
+static void unmaps_failed_take_the_window(void)
+{
+	static char chunk[CHUNK_LEN];
+	const int chunks = WINDOW_LEN / 2 / CHUNK_LEN;
+	struct file *file;
+	ssize_t done;
+	int i;
+
+	memset(chunk, 'w', sizeof(chunk));
+	for (i = 0; i < chunks; i++) {
+		/* Its pages private no more, which an UNMAP that failed keeps counted for good. */
+		file = new_file(chunk, sizeof(chunk));
+		check(!sim_fsync(file), "file %d's fsync", i);
+		cow_rebind_now(NULL);
+		sim_device_fail(VIRTIO_EXTENT_T_UNMAP, 0, 1);
+		check(!sim_truncate(file, 0), "truncating file %d", i);
+		check(sim_device_failed() == i + 1, "file %d's UNMAP didn't fail", i);
+	}
+	done = sim_write(sim_file_new(mount), 0, chunk, sizeof(chunk));
+	check(done == -ENOSPC, "a write with no room in the window for its chunk: %zd", done);
+}
+
 static char sweep_bytes[PAGE_SIZE * 64];
 
 /* Goes round allocating with the `skip`th allocation failing, for each until none is left. */
@@ -1338,6 +1369,7 @@ static const struct {
 	SCENARIO(fxfs_growths_zero_past_a_cut),
 	SCENARIO(write_killed),
 	SCENARIO(unmap_failed),
+	SCENARIO(unmaps_failed_take_the_window),
 	SCENARIO(allocations_failed),
 	COW_SCENARIO(cow_rebind_against_stores),
 	COW_SCENARIO(cow_writeback_against_stores),
