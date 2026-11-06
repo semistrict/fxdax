@@ -18,6 +18,7 @@
 //! fxdaxctl resize DIR CAPACITY
 //! fxdaxctl public DIR
 //! fxdaxctl stat DIR
+//! fxdaxctl stats [--json]
 //! fxdaxctl --version
 //! ```
 //!
@@ -66,6 +67,15 @@
 //! branches it was forked from), what billing it alone charges it and what it shares (TASK-49);
 //! whether it is public, and, through the daemon, open. `--version` prints the commit it was built
 //! of (`fxdax::BUILD_COMMIT`, TASK-111.7).
+//!
+//! `stats`, through the daemon alone, prints what the daemon, its VM processes and their guests
+//! counted, as of one moment, each with the commit it was built of (the control API's
+//! `GetSnapshot`, TASK-111.4): with `--json`, as one JSON object, of `taken_unix_ns`, `extentd`
+//! (`build`, `counters`, `gauges`) and `vms`, each VM process's `connection`, `branch` (hex),
+//! `path`, `follower`, `vmm` (`build`, `counters`, `gauges`), `window`, `answered`, `answer_ns` and
+//! `guest` (`build`, `counters`, `histograms`), null where it has none; otherwise as lines of a
+//! path through that object and a value, `vms.0.guest.counters.seals 12`. Counters only grow: a
+//! measurement is the difference of two.
 
 use anyhow::{Context as _, bail};
 use fxdax::ExtentStore;
@@ -78,25 +88,65 @@ fn usage() -> anyhow::Error {
          fxdaxctl point SRC DST | fxdaxctl delete DIR | fxdaxctl drop DIR | \
          fxdaxctl resize DIR CAPACITY | fxdaxctl public DIR | \
          fxdaxctl public-generation DIR | fxdaxctl attach DIR BASE | fxdaxctl stat DIR | \
-         fxdaxctl --version"
+         fxdaxctl stats [--json] | fxdaxctl --version"
     )
 }
 
 /// What fxdaxctl was asked to do.
 enum Command {
-    Take { dir: PathBuf, capacity: u64, branch: u64, token: Option<u64> },
-    Place { dir: PathBuf, token: u64 },
-    Sync { dir: PathBuf },
-    Import { dir: PathBuf, capacity: u64, image: PathBuf, reference: Option<String> },
+    Take {
+        dir: PathBuf,
+        capacity: u64,
+        branch: u64,
+        token: Option<u64>,
+    },
+    Place {
+        dir: PathBuf,
+        token: u64,
+    },
+    Sync {
+        dir: PathBuf,
+    },
+    Import {
+        dir: PathBuf,
+        capacity: u64,
+        image: PathBuf,
+        reference: Option<String>,
+    },
     /// A fork, a point if `point`.
-    Fork { src: PathBuf, dst: PathBuf, point: bool },
-    Delete { dir: PathBuf },
-    Drop { dir: PathBuf },
-    Resize { dir: PathBuf, capacity: u64 },
-    Public { dir: PathBuf },
-    PublicGeneration { dir: PathBuf },
-    Attach { dir: PathBuf, base: PathBuf },
-    Stat { dir: PathBuf },
+    Fork {
+        src: PathBuf,
+        dst: PathBuf,
+        point: bool,
+    },
+    Delete {
+        dir: PathBuf,
+    },
+    Drop {
+        dir: PathBuf,
+    },
+    Resize {
+        dir: PathBuf,
+        capacity: u64,
+    },
+    Public {
+        dir: PathBuf,
+    },
+    PublicGeneration {
+        dir: PathBuf,
+    },
+    Attach {
+        dir: PathBuf,
+        base: PathBuf,
+    },
+    Stat {
+        dir: PathBuf,
+    },
+    /// fxdax: a snapshot of the daemon's, its VM processes' and their guests' counters, as JSON if
+    /// `json` (TASK-111.4).
+    Stats {
+        json: bool,
+    },
 }
 
 impl Command {
@@ -127,6 +177,8 @@ impl Command {
             ["public-generation", dir] => Self::PublicGeneration { dir: dir.into() },
             ["attach", dir, base] => Self::Attach { dir: dir.into(), base: base.into() },
             ["stat", dir] => Self::Stat { dir: dir.into() },
+            ["stats"] => Self::Stats { json: false },
+            ["stats", "--json"] => Self::Stats { json: true },
             _ => bail!(usage()),
         })
     }
@@ -170,6 +222,13 @@ impl Command {
                 );
                 print!("{lines}");
             }
+            Self::Stats { json } => {
+                let snapshot = snapshot_json(&daemon.snapshot(None)?);
+                match json {
+                    true => println!("{}", serde_json::to_string_pretty(&snapshot)?),
+                    false => print!("{}", flattened(&snapshot)),
+                }
+            }
         }
         Ok(())
     }
@@ -182,6 +241,9 @@ impl Command {
     /// Does it here, on stores nothing has open: new ones anywhere; existing ones with the bucket
     /// and a placement token.
     fn locally(self) -> anyhow::Result<()> {
+        if let Self::Stats { .. } = self {
+            bail!("stats are the extent daemon's: name its control socket (FXDAX_EXTENTD_GRPC)");
+        }
         // What stat reads needs no branch changed, nor does a copy dropped, its branch left be.
         let existing = !matches!(
             self,
@@ -246,6 +308,7 @@ impl Command {
                 let ancestry = ExtentStore::open(&base)?.ancestry();
                 ExtentStore::open(&dir)?.attach_base(&base.canonicalize()?, &ancestry)?;
             }
+            Self::Stats { .. } => unreachable!("refused above"),
             Self::Stat { dir } => {
                 let store = ExtentStore::open(&dir)?;
                 let (info, bytes) = (store.info()?, store.bytes()?);
@@ -286,6 +349,78 @@ fn stat_lines(
         lines += &format!("open {open}\n");
     }
     lines
+}
+
+/// fxdax: `snapshot` as `stats --json` prints it (TASK-111.4): see the module docs. Maps' keys in
+/// order.
+#[cfg(target_os = "linux")]
+fn snapshot_json(
+    snapshot: &fxdax::extentd::control::proto::GetSnapshotResponse,
+) -> serde_json::Value {
+    use serde_json::{Value, json};
+    let named = |map: &std::collections::HashMap<String, u64>| -> Value {
+        map.iter().map(|(name, value)| (name.clone(), Value::from(*value))).collect()
+    };
+    let nonempty = |text: &str| (!text.is_empty()).then(|| text.to_owned());
+    let vms = snapshot.vms.iter().map(|vm| {
+        let guest = vm.guest.as_ref().map(|guest| {
+            let histograms: serde_json::Map<String, Value> = (guest.histograms.iter())
+                .map(|(name, histogram)| (name.clone(), json!(histogram.buckets)))
+                .collect();
+            json!({
+                "build": nonempty(&guest.build),
+                "counters": named(&guest.counters),
+                "histograms": histograms,
+            })
+        });
+        json!({
+            "connection": vm.connection,
+            "branch": format!("{:x}", vm.branch),
+            "path": vm.path,
+            "follower": vm.follower,
+            "vmm": {
+                "build": nonempty(&vm.build),
+                "counters": named(&vm.counters),
+                "gauges": named(&vm.gauges),
+            },
+            "window": (!vm.window.is_empty()).then(|| named(&vm.window)),
+            "answered": vm.answered,
+            "answer_ns": vm.answered.then_some(vm.answer_ns),
+            "guest": guest,
+        })
+    });
+    json!({
+        "taken_unix_ns": snapshot.taken_unix_ns,
+        "extentd": {
+            "build": snapshot.build,
+            "counters": named(&snapshot.counters),
+            "gauges": named(&snapshot.gauges),
+        },
+        "vms": vms.collect::<Vec<_>>(),
+    })
+}
+
+/// fxdax: `value`, as lines of a path through it, its keys and indices joined by dots, and a value
+/// there that holds no other: what `stats` prints without `--json`.
+#[cfg(target_os = "linux")]
+fn flattened(value: &serde_json::Value) -> String {
+    use serde_json::Value;
+    fn lines(at: &str, value: &Value, out: &mut String) {
+        let within =
+            |name: &str| if at.is_empty() { name.to_owned() } else { format!("{at}.{name}") };
+        match value {
+            Value::Object(map) => {
+                map.iter().for_each(|(name, value)| lines(&within(name), value, out))
+            }
+            Value::Array(values) => (values.iter().enumerate())
+                .for_each(|(index, value)| lines(&within(&index.to_string()), value, out)),
+            Value::String(text) => *out += &format!("{at} {text}\n"),
+            value => *out += &format!("{at} {value}\n"),
+        }
+    }
+    let mut out = String::new();
+    lines("", value, &mut out);
+    out
 }
 
 fn main() -> anyhow::Result<()> {

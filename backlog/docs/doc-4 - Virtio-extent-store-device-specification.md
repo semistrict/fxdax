@@ -3,7 +3,7 @@ id: doc-4
 title: Virtio extent-store device specification
 type: specification
 created_date: '2026-10-13 22:18'
-updated_date: '2026-11-04 16:32'
+updated_date: '2026-11-06 01:18'
 ---
 # The virtio extent-store device
 
@@ -93,6 +93,7 @@ Settled in a design review on 2026-10-13:
 | 6 | `VIRTIO_EXTENT_F_FREE_MANY` | `FREE` takes `FREE_MANY`: its data names more extents to free (TASK-41). Excludes `READ_ONLY`. |
 | 7 | `VIRTIO_EXTENT_F_MAP_MANY` | `MAP` takes `MAP_MANY`: its data holds more maps (TASK-91.4). Needs `DAX`. |
 | 8 | `VIRTIO_EXTENT_F_MAP_AHEAD` | `MAP`, and each of its further maps, takes `MAP_AHEAD`: the guest accesses the pages next (TASK-112.1). Needs `DAX`. |
+| 11 | `VIRTIO_EXTENT_F_STATS` | The configuration holds `stats_asked`, which changes while the device runs: the host asks for the guest's stats, which it answers with `STATS` (Stats, TASK-111.4). A follower's too. |
 | 29 | `VIRTIO_RING_F_EVENT_IDX` | The ring's notification suppression: the device offers it, so that a guest's requests queued while it takes them, and its completions while the driver takes them, cost no exit each. |
 | 32 | `VIRTIO_F_VERSION_1` | Required. |
 
@@ -117,12 +118,13 @@ struct virtio_extent_config {
 	le64 committed;           /* F_READ_ONLY: the epoch of the writer's latest commit */
 	le64 private_max;         /* F_DAX: the most private pages the window holds at once, in
 	                             pages of map_alignment; 0 with F_READ_ONLY */
+	le64 stats_asked;         /* F_STATS: the host's latest ask for the guest's stats, or 0 */
 };
 ```
 
 The configuration never changes while the device runs, but for `capacity` and `asked`, with
-`F_RESIZE`, and `committed`, with `F_READ_ONLY`. The host sets `private_max` as it opens the
-device, and reserves that much memory for the VM then, so that a store never waits for memory.
+`F_RESIZE`, `committed`, with `F_READ_ONLY`, and `stats_asked`, with `F_STATS`. The host sets
+`private_max` as it opens the device, and reserves that much memory for the VM then, so that a store never waits for memory.
 
 ### Resizing
 
@@ -135,6 +137,20 @@ guest shrinks if its filesystem holds less than `asked`, with room left for its 
 (16 MiB, in fxdax's Fxfs), and answers with `RESIZED`, whether it took it; the store shrinks only
 then, never below what its extents hold. The host waits 10 s for the answer. A store no VM has
 open grows, and does not shrink.
+
+### Stats
+
+*Added 2026-11-05 (TASK-111.4).* The host takes one snapshot of what its extent daemon, each VM's
+process and each guest counted (`fxdaxctl stats --json`, the control API's `GetSnapshot`). With
+`F_STATS`, the device asks the guest for its part: it sets `stats_asked` to a new number and raises
+a configuration change; the guest answers with `STATS`, naming the ask, its data its stats as UTF-8
+text, `VIRTIO_EXTENT_MAX_STATS` (64 KiB) at most: lines of a name and a value, a number or a
+histogram's numbers between commas (`NAME_hist`), and `commit COMMIT`, the commit its filesystem
+was built of. fxdax's guest says what its `/proc/fs/fxfs/TAG` says, and `/proc/fs/fxfs/build`. An
+answer answers the asks before it too, as the guest may see only the latest. A guest with nothing
+mounted answers with no text. The host waits for the answer a while (2 s by default), and reports
+the guest as not having answered past it. The device asks only once the driver acked `F_STATS`, and
+until it resets; otherwise the VM process answers itself, with no guest's stats.
 
 ### Virtqueues
 
@@ -206,6 +222,7 @@ struct virtio_extent_resp {
 | 13 | `PIN` | `struct virtio_extent_id id;` | none |
 | 14 | `UNPIN` | `struct virtio_extent_id id;` | none |
 | 16 | `PRIVATE` | `le64 window_offset; le64 len;` | none |
+| 17 | `STATS` | `le64 asked;` (the `stats_asked` it answers) | device reads the guest's stats, text, the rest of the request's data (Stats) |
 
 ### `WRITE`
 

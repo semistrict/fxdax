@@ -127,6 +127,10 @@ service Extentd {
   rpc ListStores(ListStoresRequest) returns (ListStoresResponse);
   // What the daemon did since it started: counters, which only grow.
   rpc GetStats(GetStatsRequest) returns (GetStatsResponse);
+  // What the daemon, its VM processes and their guests counted, as of one moment, each with the
+  // commit it was built of (TASK-111.4): the daemon asks every VM process that opened a store, each
+  // its guest, waits for their answers, a while at most, and reads its own counters then.
+  rpc GetSnapshot(GetSnapshotRequest) returns (GetSnapshotResponse);
   // Grants a tenant a VM socket, making the tenant if it is new: the path of a socket for the
   // caller to bind-mount into the tenant's jails, through which VM processes open stores in the
   // tenant's directory alone. Granting a tenant again returns its socket, given to the uid and gid
@@ -397,6 +401,76 @@ message GetStatsResponse {
   uint64 segment_closes = 21;
   // The nanoseconds closing them took.
   uint64 segment_close_ns = 22;
+}
+
+// Asks for a snapshot.
+message GetSnapshotRequest {
+  // How long to wait for the VM processes' answers, in milliseconds: 0 for 2,000; 60,000 at most.
+  uint32 wait_ms = 1;
+}
+
+// What the daemon, its VM processes and their guests counted, by the names its metrics give them.
+// Counters only grow, so that a measurement is the difference of two snapshots; gauges are as of
+// the snapshot.
+message GetSnapshotResponse {
+  // When the daemon read its own counters, its VM processes having answered or the wait being
+  // over: nanoseconds since the Unix epoch.
+  uint64 taken_unix_ns = 1;
+  // The commit the daemon was built of.
+  string build = 2;
+  // Its counters: those its metrics name fxdax_extentd_NAME_total, as `window_open_maps_refused`.
+  map<string, uint64> counters = 3;
+  // Its gauges: those its metrics name fxdax_extentd_NAME.
+  map<string, uint64> gauges = 4;
+  // Its VM processes that opened a store, in the order they connected.
+  repeated VmSnapshot vms = 5;
+}
+
+// A VM process, and its guest, as it answered, or as the daemon has it if it didn't.
+message VmSnapshot {
+  // Its connection's number, the daemon's count of connections as it connected: what tells apart
+  // a store's writer and its followers, of one branch.
+  uint64 connection = 1;
+  // Its store's branch.
+  uint64 branch = 2;
+  // Its store's directory, without symbolic links.
+  string path = 3;
+  // Whether it follows its store, read-only, or writes it.
+  bool follower = 4;
+  // The commit it said it was built of, empty if it didn't.
+  string build = 5;
+  // Its counters: its window's stage operations, `stage_ops`, their nanoseconds, `stage_ns`, and
+  // those that took access away from pages, `stage_overwrites` and `stage_leave_outs`.
+  map<string, uint64> counters = 6;
+  // Its gauges (TASK-111.5): the runs of pages its window has installed in its memory, each a
+  // mapping the host's vm.max_map_count limits, `host_mappings`, and the most it keeps,
+  // `host_mapping_budget`, if it said.
+  map<string, uint64> gauges = 7;
+  // Its window's, the daemon's, if it has one: `mappings`, `mapped_bytes`, `pages` and
+  // `private_pages`.
+  map<string, uint64> window = 8;
+  // Whether it answered within the wait.
+  bool answered = 9;
+  // How long after it was asked it answered, in nanoseconds: 0 if it didn't.
+  uint64 answer_ns = 10;
+  // Its guest's, if a guest answered.
+  optional GuestSnapshot guest = 11;
+}
+
+// What a guest's Fxfs counted, as its /proc/fs/fxfs/TAG says.
+message GuestSnapshot {
+  // The commit it was built of, empty if it didn't say.
+  string build = 1;
+  // Its counters and gauges.
+  map<string, uint64> counters = 2;
+  // Its histograms, by name without `_hist`.
+  map<string, Histogram> histograms = 3;
+}
+
+// A histogram's buckets' counts, in order.
+message Histogram {
+  // Each bucket's count.
+  repeated uint64 buckets = 1;
 }
 
 // What the daemon did with its bucket.

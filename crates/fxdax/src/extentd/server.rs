@@ -10,6 +10,7 @@ use super::codec::{
     stream_bytes,
 };
 use super::pool::Pool;
+use super::snapshot;
 use super::stores::{self, open_store, store_key};
 use super::wire::*;
 use crate::store_requests::{self, Guest, Resizes, Shrinking};
@@ -330,25 +331,6 @@ pub(super) fn connections() -> usize {
     CONNECTIONS.load(Ordering::Relaxed)
 }
 
-/// fxdax: the builds VM processes said ([`BUILD`]), each with its connection, which it lasts as
-/// long as, and its store's branch (TASK-111.7).
-static BUILDS: Mutex<Vec<(Weak<Connection>, u64, String)>> = Mutex::new(Vec::new());
-
-/// fxdax: the builds the VM processes connected said, by their stores' branches, each with how
-/// many said it (`metrics`): a writer and its followers are of one branch. In order of branch and
-/// commit.
-pub(super) fn vm_builds() -> Vec<((u64, String), usize)> {
-    let mut builds = BUILDS.lock().unwrap();
-    // Gone, as their connections are: not upgraded, which would have the last to let go of one
-    // close its store here.
-    builds.retain(|(connection, _, _)| connection.strong_count() > 0);
-    let mut counted = std::collections::BTreeMap::new();
-    for (_, branch, commit) in builds.iter() {
-        *counted.entry((*branch, commit.clone())).or_insert(0) += 1;
-    }
-    counted.into_iter().collect()
-}
-
 /// Receives the VM process's messages, serving its requests ([`receive`]), until it is gone; then,
 /// once its requests are done, lets its store go.
 async fn run_connection(stream: UnixStream, tenant: Arc<Tenant>) {
@@ -384,8 +366,7 @@ async fn run_connection(stream: UnixStream, tenant: Arc<Tenant>) {
         closing: AtomicBool::new(false),
         requests: Mutex::new(Requests::default()),
         drained: Arc::new(event_listener::Event::new()),
-        stage_counts: Default::default(),
-        said_build: AtomicBool::new(false),
+        report: snapshot::Report::new(&peer.sender),
         _alive: alive,
     });
     match AsyncReceiver::new(stream) {
@@ -476,10 +457,10 @@ fn receive(
                 Ok(Some(message)) if [ACK, STAGE_COUNTS].contains(&message.header.kind) => {
                     match Made::decode(&message) {
                         Ok(Made::Ack { id, counts }) => {
-                            connection.stage_counted(counts);
+                            connection.report.stage_counted(counts);
                             connection.peer.acks.acked(id)
                         }
-                        Ok(Made::Counts(counts)) => connection.stage_counted(counts),
+                        Ok(Made::Counts(counts)) => connection.report.stage_counted(counts),
                         Err(errno) => log::warn!(
                             "extentd: a VM process's malformed {}, dropped ({errno:?}): {:?}",
                             if message.header.kind == ACK { "ACK" } else { "STAGE_COUNTS" },
@@ -815,10 +796,9 @@ pub(super) struct Connection {
     /// Its requests received and not done (TASK-34), and what says when none is left.
     requests: Mutex<Requests>,
     drained: Arc<event_listener::Event>,
-    /// fxdax: what its VM process last said its stage operations cost it ([`STAGE_COUNTS`]).
-    stage_counts: [std::sync::atomic::AtomicU64; 4],
-    /// fxdax: whether its VM process said its build ([`BUILD`]), once.
-    said_build: AtomicBool,
+    /// fxdax: what the daemon reports of its VM process (TASK-111.4): its store, its build, what
+    /// it says of its window's second stage, and its answers to asks for its stats.
+    report: Arc<snapshot::Report>,
     /// What says, as it drops, that the connection has: its last field, dropped after its store,
     /// window and open extents, and its hold of its store's path (TASK-79.34).
     _alive: tokio::sync::oneshot::Sender<std::convert::Infallible>,
@@ -847,9 +827,11 @@ enum Phase {
 struct Opening<'a>(&'a Connection);
 
 impl Opening<'_> {
-    /// The connection has `store` from now on, as `opened` says: [`Phase::Writing`] or
+    /// The connection has `store`, at `path`, from now on, as `opened` says: [`Phase::Writing`] or
     /// [`Phase::Following`]. Checked without the phase's lock, which a panic would poison.
-    fn opened(self, store: Arc<ExtentStore>, opened: Phase) {
+    fn opened(self, path: &Path, store: Arc<ExtentStore>, opened: Phase) {
+        let follower = matches!(opened, Phase::Following);
+        self.0.report.opened(store_key(path), store.branch(), follower);
         assert!(self.0.store.set(store).is_ok(), "a connection opened a second store");
         let was = std::mem::replace(&mut *self.0.phase.lock().unwrap(), opened);
         assert!(matches!(was, Phase::Opening), "a connection opened a store not opening one");
@@ -950,36 +932,6 @@ impl Connection {
             return Err(std::io::Error::new(std::io::ErrorKind::QuotaExceeded, what));
         }
         requests.stream_bytes += bytes;
-        Ok(())
-    }
-
-    /// fxdax: counts what its VM process says its stage operations have cost it so far, `args`
-    /// as [`STAGE_COUNTS`] has them, as the daemon's (`Stats::stage_ops`): what it didn't say
-    /// before. A count only grows: one said again, or smaller, adds nothing.
-    fn stage_counted(&self, args: codec::StageCosts) {
-        use crate::stats::Counter;
-        let said = [
-            (args[0], Counter::StageOps),
-            (args[1], Counter::StageNs),
-            (args[2], Counter::StageOverwrites),
-            (args[3], Counter::StageLeaveOuts),
-        ];
-        for (before, (count, counter)) in self.stage_counts.iter().zip(said) {
-            crate::stats::add(
-                counter,
-                count.saturating_sub(before.fetch_max(count, Ordering::Relaxed)),
-            );
-        }
-    }
-
-    /// fxdax: records the build its VM process says, `commit` ([`BUILD`]), with its store's
-    /// `branch`, for the daemon's metrics while it is connected (TASK-111.7): `EEXIST` said again.
-    /// A label's characters, as many as [`MAX_BUILD`] at most, as the codec has it.
-    fn said_build(&self, branch: u64, commit: &str) -> Result<(), Errno> {
-        if self.said_build.swap(true, Ordering::AcqRel) {
-            return Err(Errno::EEXIST);
-        }
-        BUILDS.lock().unwrap().push((self.this.clone(), branch, commit.to_owned()));
         Ok(())
     }
 
@@ -1180,7 +1132,7 @@ impl Connection {
             }
             Request::Info => store.info().map(|info| reply.args = Info(info).args()),
             // No larger than the daemon makes room for, the codec has it (TASK-150.3).
-            Request::Window { size, private_max } => {
+            Request::Window { size, private_max, budget } => {
                 let (sender, acks) = (self.peer.sender.clone(), self.peer.acks.clone());
                 let stage = Arc::new(RemoteStage { sender, acks, change: Mutex::default() });
                 // fxdax: a writer's copies on write, and only a writer's (backlog doc-13).
@@ -1204,6 +1156,8 @@ impl Connection {
                 // fxdax: its mappings' reply, as many as it may have, its VM process's room
                 // holds (TASK-79.43).
                 self.peer.set_window(window.size());
+                // fxdax: its gauges, and its runs' budget, as its VM process says (TASK-111.5).
+                self.report.windowed(window.gauges(), *budget);
                 *self.window.lock().unwrap() = Some(window);
                 Ok(())
             }
@@ -1211,7 +1165,8 @@ impl Connection {
                 self.shrinking.answered(*capacity, *took);
                 Ok(())
             }
-            Request::Build(commit) => self.said_build(store.branch(), commit),
+            Request::Build(commit) => self.report.said_build(commit),
+            Request::Stats { ask, guest } => self.report.answered(*ask, *guest),
             // Served apart, as futures ([`Connection::serve_in_turn`]).
             Request::Open { .. } | Request::Fault(_) | Request::Private { .. } => {
                 Err(Errno::EINVAL)
@@ -1291,7 +1246,7 @@ impl Connection {
         let (epoch, sender, told) = (store.epoch()?, self.peer.sender.clone(), store.clone());
         self.start_behind(move |stopped| tell_commits(told, epoch, sender, stopped));
         let branch = store.branch();
-        opening.opened(store, Phase::Following);
+        opening.opened(path, store, Phase::Following);
         Ok(branch)
     }
 
@@ -1351,7 +1306,7 @@ impl Connection {
         let flushed = store.clone();
         self.start_behind(move |stopped| flush_behind(flushed, stopped));
         let branch = store.branch();
-        opening.opened(store, Phase::Writing(Arc::new(hold)));
+        opening.opened(path, store, Phase::Writing(Arc::new(hold)));
         Ok(branch)
     }
 

@@ -77,6 +77,40 @@ pub fn serve_control(
     })
 }
 
+/// fxdax: `snapshot`, as the API has it (TASK-111.4).
+fn snapshot_response(snapshot: super::snapshot::Snapshot) -> GetSnapshotResponse {
+    let named = |pairs: &[(&str, u64)]| -> std::collections::HashMap<String, u64> {
+        pairs.iter().map(|(name, value)| ((*name).to_owned(), *value)).collect()
+    };
+    let vms = snapshot.vms.into_iter().map(|vm| VmSnapshot {
+        connection: vm.connection,
+        branch: vm.branch,
+        path: vm.path.to_string_lossy().into_owned(),
+        follower: vm.follower,
+        build: vm.build.clone().unwrap_or_default(),
+        counters: named(&vm.counters()),
+        gauges: named(&vm.gauges()),
+        window: vm.window().map_or_else(Default::default, |window| named(&window)),
+        answered: vm.answered.is_some(),
+        answer_ns: vm.answered.map_or(0, |took| took.as_nanos() as u64),
+        guest: vm.guest.map(|guest| GuestSnapshot {
+            build: guest.build.unwrap_or_default(),
+            counters: guest.counters.into_iter().collect(),
+            histograms: (guest.histograms.into_iter())
+                .map(|(name, buckets)| (name, Histogram { buckets }))
+                .collect(),
+        }),
+    });
+    let taken = snapshot.taken.duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
+    GetSnapshotResponse {
+        taken_unix_ns: taken.as_nanos() as u64,
+        build: snapshot.build.to_owned(),
+        counters: snapshot.counters.into_iter().collect(),
+        gauges: named(&snapshot.gauges),
+        vms: vms.collect(),
+    }
+}
+
 /// Whether this process serves the control API ([`serve_control`]).
 static CONTROL_SERVING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
@@ -393,6 +427,17 @@ impl Extentd for Control {
         }))
     }
 
+    async fn get_snapshot(
+        &self,
+        request: Request<GetSnapshotRequest>,
+    ) -> Result<Response<GetSnapshotResponse>, Status> {
+        let wait = match request.into_inner().wait_ms {
+            0 => super::snapshot::WAIT,
+            ms => std::time::Duration::from_millis(ms.into()),
+        };
+        Ok(Response::new(snapshot_response(super::snapshot::take(wait).await)))
+    }
+
     async fn grant(
         &self,
         request: Request<GrantRequest>,
@@ -634,6 +679,19 @@ impl Client {
         let what = format!("shrinking the memory of {}", tenant.unwrap_or("the daemon"));
         let response = self.call(what, |mut c| async move { c.shrink_memory(request).await })?;
         Ok(response.bytes)
+    }
+
+    /// fxdax: what the daemon, its VM processes and their guests counted, as of one moment, each
+    /// with its build (`GetSnapshot`, TASK-111.4): the VM processes' answers waited for `wait` at
+    /// most, the daemon's default if none.
+    pub fn snapshot(
+        &self,
+        wait: Option<std::time::Duration>,
+    ) -> Result<GetSnapshotResponse, crate::Error> {
+        let wait_ms = wait.map_or(0, |wait| u32::try_from(wait.as_millis()).unwrap_or(u32::MAX));
+        self.call("asking the extent daemon for a snapshot".to_owned(), |mut c| async move {
+            c.get_snapshot(GetSnapshotRequest { wait_ms }).await
+        })
     }
 
     /// The daemon's counters (`GetStats`).

@@ -29,6 +29,7 @@
 #include <linux/virtio_extent.h>
 #include <linux/vmalloc.h>
 #include <linux/wait.h>
+#include <linux/workqueue.h>
 
 #include "selftest.h"
 
@@ -108,6 +109,16 @@ struct virtio_extent {
 	spinlock_t changed_lock;
 	vext_config_changed_t changed;
 	void *changed_arg;
+	/*
+	 * fxdax: what answers the host's asks for the guest's stats (virtio_extent_set_stats), which
+	 * `stats_lock` guards; the work answering them, from a configuration change; and the ask it
+	 * answered last (TASK-111.4).
+	 */
+	struct mutex stats_lock;
+	vext_stats_t stats;
+	void *stats_arg;
+	struct work_struct stats_work;
+	u64 stats_answered;
 	/* fxdax: whether it is closed (virtio_extent_close), which `open_lock` guards. */
 	struct mutex open_lock;
 	bool closed;
@@ -200,6 +211,12 @@ bool virtio_extent_read_only(struct virtio_extent *vext)
 	return virtio_has_feature(vext->vdev, VIRTIO_EXTENT_F_READ_ONLY);
 }
 EXPORT_SYMBOL_GPL(virtio_extent_read_only);
+
+/* fxdax: whether the host asks the guest for its stats (F_STATS, TASK-111.4). */
+static bool vext_stats_asked(struct virtio_extent *vext)
+{
+	return virtio_has_feature(vext->vdev, VIRTIO_EXTENT_F_STATS);
+}
 
 /* Describes `len` bytes of `buf`, kmalloc'd or vmalloc'd, in `sgt`, a page at a time if need be. */
 static int vext_map_data(struct sg_table *sgt, void *buf, size_t len)
@@ -305,6 +322,13 @@ static u32 vext_args_epoch(struct vext_request *req, u32 data_len, u32 root_len)
 	return sizeof(req->args.epoch);
 }
 
+/* fxdax: a STATS names the ask it answers (TASK-111.4). */
+static u32 vext_args_stats(struct vext_request *req, u32 data_len, u32 root_len)
+{
+	req->args.stats = (struct virtio_extent_stats) { .asked = cpu_to_le64(req->offset) };
+	return sizeof(req->args.stats);
+}
+
 /* Which way a request's data goes: to the device, which reads it, or from it, which writes it. */
 enum vext_way { VEXT_NO_DATA, VEXT_OUT, VEXT_IN };
 
@@ -343,6 +367,8 @@ static const struct vext_type {
 	[VIRTIO_EXTENT_T_UNPIN] = { "unpin", vext_args_id },
 	/* 15 was writable DAX's SEALED: no type. */
 	[VIRTIO_EXTENT_T_PRIVATE] = { "private", vext_args_private, .writes = true },
+	/* fxdax: the guest's stats, its text, which a follower's device takes too (TASK-111.4). */
+	[VIRTIO_EXTENT_T_STATS] = { "stats", vext_args_stats, VEXT_OUT },
 };
 
 /* The row of `req`'s type, or NULL if it has none. */
@@ -928,6 +954,8 @@ static int vext_map_window(struct virtio_extent *vext)
 }
 #endif
 
+static void vext_stats_work(struct work_struct *work);
+
 static int vext_probe(struct virtio_device *vdev)
 {
 	struct virtio_extent *vext;
@@ -940,6 +968,8 @@ static int vext_probe(struct virtio_device *vdev)
 	vdev->priv = vext;
 	spin_lock_init(&vext->changed_lock);
 	mutex_init(&vext->open_lock);
+	mutex_init(&vext->stats_lock);
+	INIT_WORK(&vext->stats_work, vext_stats_work);
 	vext_read_config(vext);
 #if IS_ENABLED(CONFIG_FS_DAX)
 	err = vext_map_window(vext);
@@ -1025,6 +1055,65 @@ void virtio_extent_set_config_changed(struct virtio_extent *vext, vext_config_ch
 }
 EXPORT_SYMBOL_GPL(virtio_extent_set_config_changed);
 
+void virtio_extent_set_stats(struct virtio_extent *vext, vext_stats_t stats, void *arg)
+{
+	mutex_lock(&vext->stats_lock);
+	vext->stats = stats;
+	vext->stats_arg = arg;
+	mutex_unlock(&vext->stats_lock);
+}
+EXPORT_SYMBOL_GPL(virtio_extent_set_stats);
+
+/*
+ * fxdax: answers the host's latest ask for the guest's stats, if it hasn't (F_STATS, TASK-111.4):
+ * with what the filesystem says (virtio_extent_set_stats), or nothing. Answered once, failing or
+ * not: the host asks again, which answers the asks before it too.
+ */
+static void vext_stats_work(struct work_struct *work)
+{
+	struct virtio_extent *vext = container_of(work, struct virtio_extent, stats_work);
+	struct vext_request *req = NULL;
+	ssize_t len = 0;
+	char *buf = NULL;
+	u64 asked, again;
+	int err;
+
+	/* Read whole: the same twice, as the device may change it between halves. */
+	virtio_cread_le(vext->vdev, struct virtio_extent_config, stats_asked, &asked);
+	do {
+		again = asked;
+		virtio_cread_le(vext->vdev, struct virtio_extent_config, stats_asked, &asked);
+	} while (asked != again);
+	if (!asked || asked == vext->stats_answered)
+		return;
+	vext->stats_answered = asked;
+	req = kzalloc(sizeof(*req), GFP_KERNEL);
+	buf = kvmalloc(VIRTIO_EXTENT_MAX_STATS, GFP_KERNEL);
+	if (!req || !buf) {
+		err = -ENOMEM;
+		goto out;
+	}
+	mutex_lock(&vext->stats_lock);
+	if (vext->stats)
+		len = vext->stats(vext->stats_arg, buf, VIRTIO_EXTENT_MAX_STATS);
+	mutex_unlock(&vext->stats_lock);
+	if (len < 0) {
+		dev_warn_ratelimited(&vext->vdev->dev, "the filesystem's stats: %zd\n", len);
+		len = 0;
+	}
+	req->type = VIRTIO_EXTENT_T_STATS;
+	req->offset = asked;
+	req->data = buf;
+	req->data_len = min_t(size_t, len, VIRTIO_EXTENT_MAX_STATS);
+	err = virtio_extent_call(vext, req);
+out:
+	/* A follower's device, closed, answers itself. */
+	if (err && err != -ESHUTDOWN)
+		dev_warn_ratelimited(&vext->vdev->dev, "answering an ask for stats: %d\n", err);
+	kvfree(buf);
+	kfree(req);
+}
+
 static void vext_config_changed(struct virtio_device *vdev)
 {
 	struct virtio_extent *vext = vdev->priv;
@@ -1034,6 +1123,9 @@ static void vext_config_changed(struct virtio_device *vdev)
 	if (vext->changed)
 		vext->changed(vext->changed_arg);
 	spin_unlock_irqrestore(&vext->changed_lock, flags);
+	/* fxdax: an ask for the guest's stats, if it changed, the work finds (TASK-111.4). */
+	if (vext_stats_asked(vext))
+		schedule_work(&vext->stats_work);
 }
 
 /*
@@ -1121,6 +1213,8 @@ static void vext_remove(struct virtio_device *vdev)
 	 * this: unbinding waits for it to unmount, which needs requests to go on (TASK-79.48).
 	 */
 	wait_event_idle(devices_unused, !atomic_read(&vext->users));
+	/* fxdax: no ask for stats is answered from now on (TASK-111.4). */
+	cancel_work_sync(&vext->stats_work);
 	vext_selftest_remove(vdev);
 	sysfs_remove_group(&vdev->dev.kobj, &vext_attr_group);
 	/* Closed, it has no queues left to let go of. */
@@ -1144,6 +1238,7 @@ static const unsigned int vext_features[] = {
 	VIRTIO_EXTENT_F_FREE_MANY,
 	VIRTIO_EXTENT_F_MAP_MANY,
 	VIRTIO_EXTENT_F_MAP_AHEAD,
+	VIRTIO_EXTENT_F_STATS,
 };
 
 static struct virtio_driver vext_driver = {

@@ -52,8 +52,9 @@ pub(crate) enum Request<'a> {
     Info,
     /// [`WINDOW`]: of `size` bytes, [`MAX_WINDOW`] at most; fxdax: copying on write, of
     /// `private_max` private pages at most, as many as it has pages at most, if given, a writer's;
-    /// or not, a follower's, its `args[1]` 0.
-    Window { size: u64, private_max: Option<u64> },
+    /// or not, a follower's, its `args[1]` 0. Its VM process keeps `budget` runs of pages
+    /// installed at most, 0 if it doesn't say (TASK-111.5).
+    Window { size: u64, private_max: Option<u64>, budget: u64 },
     /// [`FAULT`].
     Fault(Fault),
     /// [`FORK`]: to `branch`, a new directory at `path`; a point if `quiescent`.
@@ -77,6 +78,9 @@ pub(crate) enum Request<'a> {
     Build(&'a str),
     /// fxdax: [`PRIVATE`].
     Private { window_offset: u64, len: u64 },
+    /// fxdax: [`STATS`]: the answer to ask `ask`, with its guest's stats if it has a guest that
+    /// answers, [`MAX_STATS`] bytes at most.
+    Stats { ask: u64, guest: Option<&'a str> },
 }
 
 /// How an [`OPEN`] opens its store.
@@ -185,6 +189,7 @@ fn known_flags(kind: u32) -> Result<u32, Errno> {
         COMMIT => COMMIT_ROOT | COMMIT_DURABLE,
         FAULT => FAULT_WRITE | FAULT_PAGE | FAULT_PROBE,
         FORK => FORK_QUIESCENT,
+        STATS => STATS_GUEST,
         FREE | FREE_MANY | UNMAP | ROOT | INFO | WINDOW | RESIZED | MAPPINGS | ADVANCE | LET_GO
         | PIN | UNPIN | TRANSFER | BUILD | PRIVATE => 0,
         _ => return Err(Errno::EINVAL),
@@ -217,6 +222,7 @@ impl<'a> Request<'a> {
             Request::Transfer { .. } => TRANSFER,
             Request::Build(_) => BUILD,
             Request::Private { .. } => PRIVATE,
+            Request::Stats { .. } => STATS,
         }
     }
 
@@ -304,8 +310,8 @@ impl<'a> Request<'a> {
             Request::Root | Request::Info | Request::Mappings | Request::Advance => {
                 message(0, [0; 5])
             }
-            Request::Window { size, private_max } => {
-                message(0, [*size, private_max.unwrap_or(0), 0, 0, 0])
+            Request::Window { size, private_max, budget } => {
+                message(0, [*size, private_max.unwrap_or(0), *budget, 0, 0])
             }
             Request::Fault(Fault { offset, access, page, probe }) => {
                 let flags = flag(*access == Access::Write, FAULT_WRITE)
@@ -327,6 +333,11 @@ impl<'a> Request<'a> {
             Request::Build(commit) => message(0, [0; 5]).carrying(commit.as_bytes()),
             Request::Private { window_offset, len } => {
                 message(0, [*window_offset, *len, 0, 0, 0])
+            }
+            Request::Stats { ask, guest } => {
+                let args = [*ask, 0, 0, 0, 0];
+                message(flag(guest.is_some(), STATS_GUEST), args)
+                    .carrying(guest.unwrap_or_default().as_bytes())
             }
         }
     }
@@ -449,7 +460,7 @@ impl<'a> Request<'a> {
                 if args[1] > args[0] / crate::pages::page_size() {
                     return Err(Errno::EINVAL);
                 }
-                Request::Window { size: args[0], private_max }
+                Request::Window { size: args[0], private_max, budget: args[2] }
             }
             FAULT => {
                 nothing()?;
@@ -491,6 +502,16 @@ impl<'a> Request<'a> {
                 nothing()?;
                 Request::Private { window_offset: args[0], len: args[1] }
             }
+            STATS => {
+                let guest = match has(STATS_GUEST) {
+                    true => Some(stats_text(payload)?),
+                    false => {
+                        nothing()?;
+                        None
+                    }
+                };
+                Request::Stats { ask: args[0], guest }
+            }
             _ => return Err(Errno::EINVAL),
         })
     }
@@ -527,6 +548,15 @@ fn build(payload: &[u8]) -> Result<&str, Errno> {
     Ok(commit)
 }
 
+/// fxdax: the guest's stats a [`STATS`]'s payload holds: `EINVAL` unless UTF-8, [`MAX_STATS`]
+/// bytes at most (TASK-111.4).
+fn stats_text(payload: &[u8]) -> Result<&str, Errno> {
+    if payload.len() > MAX_STATS {
+        return Err(Errno::EINVAL);
+    }
+    std::str::from_utf8(payload).map_err(|_| Errno::EINVAL)
+}
+
 /// fxdax: `extents`, as a [`FREE_MANY`]'s payload names them.
 fn extent_ids_payload(extents: &[ExtentId]) -> Vec<u8> {
     (extents.iter())
@@ -551,23 +581,41 @@ fn word(bytes: &[u8]) -> u64 {
 /// What a VM process says of the stage operations it made, which nothing replies to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Made {
-    /// [`ACK`]: it made stage operation `id`, and those before it; and its operations so far
-    /// cost it `counts`, as [`STAGE_COUNTS`] says them.
-    Ack { id: u64, counts: StageCosts },
+    /// [`ACK`]: it made stage operation `id`, and those before it; and its second stage is as
+    /// `counts` says, as [`STAGE_COUNTS`] says it.
+    Ack { id: u64, counts: StageCounts },
     /// fxdax: [`STAGE_COUNTS`] (TASK-91.16).
-    Counts(StageCosts),
+    Counts(StageCounts),
 }
 
-/// fxdax: what a VM process's stage operations cost it so far, as [`STAGE_COUNTS`] says it, its
-/// first four words: how many, their nanoseconds, and those that took access away from pages it
-/// had installed, by how: installed over, left out.
-pub(crate) type StageCosts = [u64; 4];
+/// fxdax: what a VM process says of its window's second stage, as [`STAGE_COUNTS`] says it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct StageCounts {
+    /// What its stage operations cost it so far, counts that only grow: how many, their
+    /// nanoseconds, and those that took access away from pages it had installed, by how: installed
+    /// over, left out (TASK-91.16).
+    pub costs: [u64; 4],
+    /// The runs of pages it has installed now, each a mapping of its own (TASK-111.5).
+    pub installed: u64,
+}
+
+impl StageCounts {
+    fn args(&self) -> [u64; 5] {
+        let [ops, ns, overwrites, leave_outs] = self.costs;
+        [ops, ns, overwrites, leave_outs, self.installed]
+    }
+
+    fn from_args(args: [u64; 5]) -> Self {
+        let [ops, ns, overwrites, leave_outs, installed] = args;
+        Self { costs: [ops, ns, overwrites, leave_outs], installed }
+    }
+}
 
 impl Made {
     pub fn encode(&self) -> Header {
         match *self {
-            Made::Ack { id, counts } => Header::new(ACK, id).with_args(&counts),
-            Made::Counts(counts) => Header::new(STAGE_COUNTS, 0).with_args(&counts),
+            Made::Ack { id, counts } => Header::new(ACK, id).with_args(&counts.args()),
+            Made::Counts(counts) => Header::new(STAGE_COUNTS, 0).with_args(&counts.args()),
         }
     }
 
@@ -578,7 +626,7 @@ impl Made {
         if flags != 0 || status != 0 || !message.payload.is_empty() || !message.fds.is_empty() {
             return Err(Errno::EINVAL);
         }
-        let counts = [args[0], args[1], args[2], args[3]];
+        let counts = StageCounts::from_args(args);
         match kind {
             ACK => Ok(Made::Ack { id, counts }),
             STAGE_COUNTS => Ok(Made::Counts(counts)),
@@ -597,6 +645,8 @@ pub(crate) enum Told {
     Capacity { capacity: u64, ask: bool },
     /// fxdax: [`COMMITTED`].
     Committed { epoch: u64 },
+    /// fxdax: [`STATS_ASK`].
+    Stats { ask: u64 },
 }
 
 impl Told {
@@ -606,6 +656,7 @@ impl Told {
             Told::Capacity { capacity, ask } => (Header::new(CAPACITY, 0).with_args(&[capacity]))
                 .with_flags(if ask { CAPACITY_ASK } else { 0 }),
             Told::Committed { epoch } => Header::new(COMMITTED, 0).with_args(&[epoch]),
+            Told::Stats { ask } => Header::new(STATS_ASK, 0).with_args(&[ask]),
         }
     }
 
@@ -622,6 +673,7 @@ impl Told {
                 Ok(Told::Capacity { capacity: args[0], ask: flags & CAPACITY_ASK != 0 })
             }
             COMMITTED => known(0).map(|()| Told::Committed { epoch: args[0] }),
+            STATS_ASK => known(0).map(|()| Told::Stats { ask: args[0] }),
             _ => Stage::decode(header).map(Told::Stage),
         }
     }
@@ -828,6 +880,8 @@ mod tests {
         paths: [PathBuf; 2],
         extents: Vec<ExtentId>,
         build: String,
+        /// fxdax: a guest's stats (TASK-111.4).
+        stats: String,
         commit: Commit,
         access: Access,
     }
@@ -840,13 +894,26 @@ mod tests {
         (
             (any::<[u64; 5]>(), any::<[bool; 3]>(), bytes(), bytes()),
             ([path(), path()], proptest::collection::vec(extent, 0..8)),
-            "[a-zA-Z0-9._-]{1,64}",
+            ("[a-zA-Z0-9._-]{1,64}", "(\\PC{0,16}\n){0,8}"),
             prop_oneof![Just(Commit::Ordered), Just(Commit::Durable)],
             prop_oneof![Just(Access::Read), Just(Access::Write)],
         )
-            .prop_map(|((words, flags, data, root), (paths, extents), build, commit, access)| {
-                Fields { words, flags, data, root, paths, extents, build, commit, access }
-            })
+            .prop_map(
+                |((words, flags, data, root), (paths, extents), (build, stats), commit, access)| {
+                    Fields {
+                        words,
+                        flags,
+                        data,
+                        root,
+                        paths,
+                        extents,
+                        build,
+                        stats,
+                        commit,
+                        access,
+                    }
+                },
+            )
     }
 
     /// A request of every shape there is, of `fields`, with `area` as a transfer area: each kind,
@@ -880,10 +947,11 @@ mod tests {
             Request::Commit { commit, root: one.then_some(&fields.data[..]) },
             Request::Root,
             Request::Info,
-            Request::Window { size: a % (MAX_WINDOW + 1), private_max: None },
+            Request::Window { size: a % (MAX_WINDOW + 1), private_max: None, budget: c },
             Request::Window {
                 size: MAX_WINDOW,
                 private_max: Some(1 + b % (MAX_WINDOW / crate::pages::page_size())),
+                budget: d,
             },
             Request::Fault(Fault { offset: a, access: fields.access, page: one, probe: false }),
             Request::Fault(Fault { offset: a, access: Access::Read, page: true, probe: true }),
@@ -897,13 +965,15 @@ mod tests {
             Request::Transfer { len: a, area: Area(area) },
             Request::Build(&fields.build),
             Request::Private { window_offset: a, len: b },
+            Request::Stats { ask: a, guest: None },
+            Request::Stats { ask: b, guest: Some(&fields.stats) },
         ]
     }
 
     /// Every kind of request.
-    const KINDS: [u32; 22] = [
+    const KINDS: [u32; 23] = [
         OPEN, READ, WRITE, FREE, MAP, UNMAP, COMMIT, ROOT, INFO, WINDOW, FAULT, FORK, RESIZED,
-        MAPPINGS, ADVANCE, LET_GO, PIN, UNPIN, TRANSFER, FREE_MANY, BUILD, PRIVATE,
+        MAPPINGS, ADVANCE, LET_GO, PIN, UNPIN, TRANSFER, FREE_MANY, BUILD, PRIVATE, STATS,
     ];
 
     /// `request`, as its receiver receives it: of ID `id`.
@@ -961,6 +1031,8 @@ mod tests {
                 COMMIT => 0b11,
                 FAULT => 0b11,
                 FORK => 0b1,
+                // fxdax: the guest's (TASK-111.4).
+                STATS => 0b1,
                 _ => 0,
             }
         };
@@ -972,6 +1044,7 @@ mod tests {
             paths: [PathBuf::from("store"), PathBuf::from("from")],
             extents: vec![ExtentId { branch: 1, sequence: 3 }],
             build: "abc".into(),
+            stats: "seals 1\n".into(),
             commit: Commit::Ordered,
             access: Access::Read,
         };
@@ -1014,6 +1087,7 @@ mod tests {
         let told = ops.map(|op| Told::Stage(Stage { id: 1, op })).into_iter().chain([
             Told::Capacity { capacity: 4096, ask: false },
             Told::Committed { epoch: 1 },
+            Told::Stats { ask: 1 },
         ]);
         for told in told {
             let header = told.encode();
@@ -1065,6 +1139,12 @@ mod tests {
         refused(Header::new(OPEN, 1).with_flags(OPEN_FORK_FROM), b"store\0", vec![]);
         refused(Header::new(BUILD, 1), b"a\"b", vec![]);
         refused(Header::new(BUILD, 1), &[b'a'; MAX_BUILD + 1], vec![]);
+        // fxdax: a guest's stats, without the flag that says it carries them; past their most;
+        // not text (TASK-111.4).
+        refused(Header::new(STATS, 1), b"seals 1\n", vec![]);
+        let guest = Header::new(STATS, 1).with_flags(STATS_GUEST);
+        refused(guest, &[b'\n'; MAX_STATS + 1], vec![]);
+        refused(guest, b"seals \xff\n", vec![]);
     }
 
     /// TASK-160.9: the bytes are those the VM process and the daemon wrote by hand before.
@@ -1183,12 +1263,22 @@ mod tests {
                 header(TRANSFER, 0, &[4096]),
                 vec![],
             ),
-            (Request::Window { size: 8192, private_max: None }, header(WINDOW, 0, &[8192]), vec![]),
             (
-                Request::Window { size: 8192, private_max: Some(2) },
-                header(WINDOW, 0, &[8192, 2]),
+                Request::Window { size: 8192, private_max: None, budget: 0 },
+                header(WINDOW, 0, &[8192]),
                 vec![],
             ),
+            (
+                Request::Window { size: 8192, private_max: Some(2), budget: 3 },
+                header(WINDOW, 0, &[8192, 2, 3]),
+                vec![],
+            ),
+            (
+                Request::Stats { ask: 5, guest: Some("seals 1\n") },
+                header(STATS, STATS_GUEST, &[5]),
+                b"seals 1\n".to_vec(),
+            ),
+            (Request::Stats { ask: 5, guest: None }, header(STATS, 0, &[5]), vec![]),
             (
                 Request::Private { window_offset: 4096, len: 8192 },
                 header(PRIVATE, 0, &[4096, 8192]),
@@ -1222,8 +1312,11 @@ mod tests {
         assert_eq!(zeros, Header::new(STAGE_PRIVATE, 4).with_args(&[1]).with_flags(STAGE_ACK));
         let ask = Told::Capacity { capacity: 4096, ask: true }.encode();
         assert_eq!(ask, Header::new(CAPACITY, 0).with_args(&[4096]).with_flags(CAPACITY_ASK));
-        let ack = Made::Ack { id: 4, counts: [1, 2, 3, 4] }.encode();
-        assert_eq!(ack, Header::new(ACK, 4).with_args(&[1, 2, 3, 4]));
+        let counts = StageCounts { costs: [1, 2, 3, 4], installed: 5 };
+        let ack = Made::Ack { id: 4, counts }.encode();
+        assert_eq!(ack, Header::new(ACK, 4).with_args(&[1, 2, 3, 4, 5]));
+        let asked = Told::Stats { ask: 6 }.encode();
+        assert_eq!(asked, Header::new(STATS_ASK, 0).with_args(&[6]));
     }
 
     proptest! {
@@ -1247,11 +1340,14 @@ mod tests {
             let told = stages.map(|op| Told::Stage(Stage { id, op })).into_iter().chain([
                 Told::Capacity { capacity: a, ask },
                 Told::Committed { epoch: a },
+                Told::Stats { ask: b },
             ]);
             for told in told {
                 prop_assert_eq!(Told::decode(&told.encode()), Ok(told));
             }
-            for made in [Made::Ack { id, counts: [a, b, c, d] }, Made::Counts([b, c, d, e])] {
+            let counts = StageCounts { costs: [a, b, c, d], installed: e };
+            let other = StageCounts { costs: [b, c, d, e], installed: a };
+            for made in [Made::Ack { id, counts }, Made::Counts(other)] {
                 let message = Message { header: made.encode(), payload: vec![], fds: vec![] };
                 prop_assert_eq!(Made::decode(&message), Ok(made));
             }

@@ -99,6 +99,7 @@ pub mod memory;
 pub mod metrics;
 mod pool;
 pub(crate) mod server;
+mod snapshot;
 mod stores;
 pub(crate) mod wire;
 

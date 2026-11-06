@@ -1125,6 +1125,166 @@ fn metrics_show_the_daemons_and_its_vm_processes_builds() {
     assert_eq!(builds(), [daemon]);
 }
 
+/// fxdax TASK-111.5: the metrics show each VM process's window, its mappings and pages, by its
+/// store's branch and its connection's number, a writer's and its follower's apart, and the runs of
+/// pages its second stage has installed, as it last said, against the most it keeps, as it said
+/// making its window.
+#[test]
+fn metrics_gauge_each_vm_processs_window_and_host_mappings() {
+    host();
+    let ps = page_size() as usize;
+    let series = |name: &str, vm: &super::snapshot::Vm| -> Option<u64> {
+        let metrics = super::metrics::render();
+        let labels = format!("{{branch=\"{:x}\",connection=\"{}\"}} ", vm.branch, vm.connection);
+        let name = format!("fxdax_extentd_{name}{labels}");
+        metrics
+            .lines()
+            .find_map(|line| line.strip_prefix(&name))
+            .map(|value| value.parse().unwrap())
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let (store, served) = connect(&dir.path().join("store"), 1 << 24);
+    let (follower, followed) = follow(&dir.path().join("store")).unwrap();
+    let vms = super::snapshot::vms();
+    assert_eq!(vms.iter().map(|vm| vm.follower).collect::<Vec<_>>(), [false, true]);
+    let (writer, following) = (&vms[0], &vms[1]);
+    assert!(writer.connection < following.connection);
+    // No window yet.
+    assert_eq!(series("vm_window_mappings", writer), None);
+    assert_eq!(series("vm_host_mapping_budget", writer), None);
+
+    let memory = memory(4);
+    // SAFETY: The memory is the test's, and outlives the store.
+    unsafe { store.create_dax_window_in_host_memory(memory, 4 * ps as u64, None, 1) }.unwrap();
+    let budget = store.window_budget().unwrap() as u64;
+    assert_eq!(series("vm_host_mapping_budget", writer), Some(budget));
+    assert_eq!(series("vm_window_mappings", writer), Some(0));
+    assert_eq!(series("vm_host_mappings", writer), Some(0));
+    assert_eq!(series("vm_window_mappings", following), None);
+    let extent = ExtentId { branch: store.branch(), sequence: 1 };
+    write(&store, extent, 0, &pattern(3, 2 * ps)).unwrap();
+    store.commit(None).unwrap();
+    store.map(extent, 0, 2 * ps as u64, 0).unwrap();
+    store.map(extent, 0, ps as u64, 3 * ps as u64).unwrap();
+    // SAFETY: The window's memory, whose faults the store serves.
+    let window = unsafe { std::slice::from_raw_parts(memory.as_ptr(), 4 * ps) };
+    assert!(window[3 * ps..] == pattern(3, ps)[..], "its mapping maps other data");
+    assert_eq!(series("vm_window_mappings", writer), Some(2));
+    assert_eq!(series("vm_window_mapped_bytes", writer), Some(3 * ps as u64));
+    assert_eq!(series("vm_window_private_pages", writer), Some(0));
+    let pages = series("vm_window_pages", writer).unwrap();
+    assert!((1..=3).contains(&pages), "{pages} pages");
+
+    // Its runs installed as it said, unmapping all but the page at 3: as of a snapshot, which
+    // it answers with them.
+    store.unmap(0, 2 * ps as u64).unwrap();
+    snapshot(WAIT).join().unwrap();
+    assert_eq!(series("vm_window_mappings", writer), Some(1));
+    assert_eq!(series("vm_window_pages", writer), Some(1));
+    assert_eq!(series("vm_host_mappings", writer), Some(1));
+
+    drop((store, follower));
+    served.join().unwrap();
+    followed.join().unwrap();
+    assert_eq!(super::snapshot::vms(), []);
+    // SAFETY: Unmaps the memory, which nothing uses any more.
+    assert_eq!(unsafe { libc::munmap(memory.as_ptr().cast(), 4 * ps) }, 0);
+}
+
+/// fxdax TASK-111.4: a snapshot holds the daemon's counters and gauges and its build, and each VM
+/// process's, as it answered: one whose guest answers, its guest's stats and build among it, its
+/// counts as of its answer; one with no guest to ask, at once, without; and one whose guest never
+/// answers, as the daemon has it once the wait is over. An answer to an ask answers those before
+/// it.
+#[test]
+fn snapshots_hold_the_daemons_vm_processes_and_guests_stats() {
+    host();
+    let ps = page_size() as usize;
+    let dir = tempfile::tempdir().unwrap();
+    // Whose guest answers, as the test does.
+    let (store, served) = connect(&dir.path().join("store"), 1 << 24);
+    let (asked, asks) = std::sync::mpsc::channel();
+    store.on_stats_asked(move |ask| asked.send(ask).is_ok());
+    // With no guest.
+    let (guestless, guestless_served) = connect(&dir.path().join("other"), 1 << 24);
+    // Whose guest never answers.
+    let (silent, silent_served) = connect(&dir.path().join("silent"), 1 << 24);
+    silent.on_stats_asked(|_| true);
+
+    let memory = memory(2);
+    // SAFETY: The memory is the test's, and outlives the store.
+    unsafe { store.create_dax_window_in_host_memory(memory, 2 * ps as u64, None, 1) }.unwrap();
+    let extent = ExtentId { branch: store.branch(), sequence: 1 };
+    write(&store, extent, 0, &pattern(5, ps)).unwrap();
+    store.commit(None).unwrap();
+    store.map(extent, 0, ps as u64, 0).unwrap();
+
+    // The silent one's wait is the test's.
+    let taking = snapshot(std::time::Duration::from_secs(2));
+    let ask = asks.recv().unwrap();
+    let guest = "seals 3\nseals_hist 0,2,1\ncommit abc\n";
+    store.answer_stats(ask, Some(guest)).unwrap();
+    let taken = taking.join().unwrap();
+
+    assert_eq!(taken.build, crate::BUILD_COMMIT);
+    let named = |pairs: &[(String, u64)], name: &str| {
+        pairs.iter().find(|(named, _)| named == name).map(|(_, value)| *value)
+    };
+    assert_eq!(named(&taken.counters, "maps"), Some(1));
+    let gauges: Vec<(String, u64)> =
+        taken.gauges.iter().map(|(name, value)| ((*name).to_owned(), *value)).collect();
+    assert_eq!(named(&gauges, "connections"), Some(3));
+    let paths: Vec<_> = taken.vms.iter().map(|vm| vm.path.clone()).collect();
+    let canonical = dir.path().canonicalize().unwrap();
+    assert_eq!(paths, ["store", "other", "silent"].map(|name| canonical.join(name)));
+
+    let (answered, without, unanswered) = (&taken.vms[0], &taken.vms[1], &taken.vms[2]);
+    assert_eq!(answered.branch, store.branch());
+    assert_eq!(answered.build.as_deref(), Some(crate::BUILD_COMMIT));
+    assert!(answered.answered.is_some(), "{answered:?}");
+    let window = answered.window.expect("its window's gauges");
+    assert_eq!((window.mappings, window.mapped_bytes), (1, ps as u64));
+    assert_eq!(answered.stage.installed, window.pages, "its runs installed as of its answer");
+    assert_eq!(answered.budget, Some(store.window_budget().unwrap() as u64));
+    let guest = answered.guest.as_ref().expect("its guest's stats");
+    assert_eq!(guest.build.as_deref(), Some("abc"));
+    assert_eq!(guest.counters.get("seals"), Some(&3));
+    assert_eq!(guest.histograms.get("seals"), Some(&vec![0, 2, 1]));
+
+    assert!(without.answered.is_some() && without.guest.is_none(), "{without:?}");
+    assert_eq!((without.window, without.budget), (None, None));
+    assert!(unanswered.answered.is_none() && unanswered.guest.is_none(), "{unanswered:?}");
+    assert_eq!(unanswered.build.as_deref(), Some(crate::BUILD_COMMIT));
+
+    // Two asks the guest is slow to answer, one answer, to the later, answering both.
+    drop(silent);
+    silent_served.join().unwrap();
+    let (first, second) = (snapshot(WAIT), snapshot(WAIT));
+    let asked = [asks.recv().unwrap(), asks.recv().unwrap()];
+    store.answer_stats(asked[0].max(asked[1]), None).unwrap();
+    for taking in [first, second] {
+        let taken = taking.join().unwrap();
+        assert!(taken.vms[0].answered.is_some(), "{:?}", taken.vms[0]);
+    }
+
+    drop((store, guestless));
+    for served in [served, guestless_served] {
+        served.join().unwrap();
+    }
+    // SAFETY: Unmaps the memory, which nothing uses any more.
+    assert_eq!(unsafe { libc::munmap(memory.as_ptr().cast(), 2 * ps) }, 0);
+}
+
+/// How long a test's snapshot waits for answers that come, none of its VM processes silent.
+const WAIT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// fxdax: a snapshot the daemon takes, waiting `wait` at most for its VM processes, on a thread of
+/// its own, which they answer meanwhile (TASK-111.4).
+fn snapshot(wait: std::time::Duration) -> JoinHandle<super::snapshot::Snapshot> {
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    std::thread::spawn(move || runtime.block_on(super::snapshot::take(wait)))
+}
+
 /// The environment a child process of [`two_processes_map_the_same_pages`] is told what to map in;
 /// and, if set, that it runs on once it has, until its input closes.
 const CHILD_SOCKET: &str = "FXDAX_EXTENTD_TEST_SOCKET";
@@ -1284,7 +1444,7 @@ fn child_changes_its_window() {
     store.unmap(0, ps).unwrap();
     // Mapped anew, with its page in memory, which the window maps at once.
     store.map(extent, 0, ps, 0).unwrap();
-    let [ops, ns, overwritten, left_out] = store.stage_counts();
+    let [ops, ns, overwritten, left_out] = store.stage_counts().costs;
     drop(store);
     println!("STAGE {ops} {ns} {overwritten} {left_out}");
 }

@@ -103,7 +103,9 @@ pub(crate) const INFO: u32 = 9;
 /// doc-13), of `args[1]` private pages at most, one at least, which the daemon reserves against
 /// its tenant's memory (`ENOMEM` past it): a store to a page makes the page private. A follower's
 /// copies nothing, refusing every store, its `args[1]` 0 (`EINVAL` otherwise, as a writer's of
-/// 0).
+/// 0). `args[2]` is how many runs of pages the VM process keeps installed at most, each a mapping
+/// of its own, by the mappings the host lets it make ([`OPEN`]'s reply): 0 if it doesn't say, which
+/// the daemon's metrics show (TASK-111.5).
 pub(crate) const WINDOW: u32 = 10;
 /// Resolves the guest's fault at `args[0]` in the window: a store if [`FAULT_WRITE`], on that page
 /// alone if [`FAULT_PAGE`]. The stage operations it takes come before the reply.
@@ -170,9 +172,10 @@ pub(crate) const MAX_WINDOW: u64 = 64 << 30;
 /// fxdax: the stage operations the VM process has made of the connection's, `args[0]`, the
 /// nanoseconds they took it, `args[1]`, and those of them that took access away from pages it had
 /// installed, by how, `args[2..4]` (`Stats::stage_overwrites`), so far, which the daemon counts as
-/// its own (`Stats::stage_ops`, TASK-91.16): said with each [`ACK`]; otherwise once [`STAGE_COUNTS_EVERY`]
-/// has passed since it last said, as it makes them; and as it closes the connection. Nothing
-/// replies.
+/// its own (`Stats::stage_ops`, TASK-91.16); and the runs of pages it has installed now, `args[4]`,
+/// which [`WINDOW`]'s `args[2]` bounds (TASK-111.5): said with each [`ACK`]; otherwise once
+/// [`STAGE_COUNTS_EVERY`] has passed since it last said, as it makes them; before each [`STATS`];
+/// and as it closes the connection. Nothing replies.
 pub(crate) const STAGE_COUNTS: u32 = 27;
 /// fxdax: the VM process's build, the commit it was built of ([`crate::BUILD_COMMIT`]), the
 /// payload, [`MAX_BUILD`] bytes at most, of letters, digits, `.`, `_` and `-`: which the daemon's
@@ -188,6 +191,19 @@ pub(crate) const MAX_BUILD: usize = 64;
 /// follower's window, which copies nothing. The stage operations it takes come before the
 /// reply.
 pub(crate) const PRIVATE: u32 = 30;
+/// fxdax: the VM process's answer to the daemon's [`STATS_ASK`] `args[0]`: with [`STATS_GUEST`],
+/// its guest's stats, the payload, UTF-8 text of [`MAX_STATS`] bytes at most, as the guest's
+/// driver said them (backlog doc-4's `STATS`): lines of a name and a value, a number, or a
+/// histogram's numbers between commas, and its build, `commit COMMIT`. Without, it has no guest to
+/// ask: its device not activated, or its driver taking no asks. It says its stage counts
+/// ([`STAGE_COUNTS`]) just before, so that the daemon has them as of the answer. A guest's answer
+/// to an ask answers those before it too, the device asking the latest alone (TASK-111.4).
+pub(crate) const STATS: u32 = 31;
+/// fxdax: a [`STATS`] carries its guest's stats.
+pub(crate) const STATS_GUEST: u32 = 1 << 0;
+/// fxdax: the most bytes of a guest's stats a [`STATS`] carries, many times what the guest's
+/// Fxfs says (a few KiB).
+pub(crate) const MAX_STATS: usize = 64 << 10;
 /// fxdax: how long a VM process's stage operations go uncounted at most while it makes them
 /// ([`STAGE_COUNTS`]): within a sample of the daemon's stats file (`FXDAX_EXTENTD_STATS`).
 pub(crate) const STAGE_COUNTS_EVERY: std::time::Duration = std::time::Duration::from_millis(500);
@@ -244,6 +260,9 @@ pub(crate) const CAPACITY_ASK: u32 = 1 << 0;
 /// fxdax: the writer of a follower's store committed: its latest commit's epoch is `args[0]`,
 /// which the follower may [`ADVANCE`] to. Sent once for each run of commits.
 pub(crate) const COMMITTED: u32 = 105;
+/// fxdax: asks the VM process for its stats and its guest's, as of now: ask `args[0]`, which its
+/// [`STATS`] answers, those asked before it among them (TASK-111.4).
+pub(crate) const STATS_ASK: u32 = 109;
 // 107 asked the guest to seal, writable DAX's (TASK-153.15), not reused.
 /// A stage operation the daemon waits for the VM process to acknowledge ([`ACK`]), as it must for
 /// one that takes access to a page away, before it frees the page or shares it.

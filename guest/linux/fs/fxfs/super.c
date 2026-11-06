@@ -3045,6 +3045,23 @@ static int fxfs_vfs_stats_show(struct seq_file *m, void *v)
 	return 0;
 }
 
+/*
+ * fxdax: what the filesystem `arg` is of says to the host's asks for its stats (the driver's
+ * F_STATS, TASK-111.4), in the `len` bytes at `buf`: what /proc/fs/fxfs/<its tag> says, and its
+ * build, as /proc/fs/fxfs/build says it. One show function writes both, here through a seq_file
+ * over `buf`, which writes nothing past it: -EOVERFLOW if it would have.
+ */
+static ssize_t fxfs_vfs_stats_text(void *arg, char *buf, size_t len)
+{
+	struct seq_file m = { .buf = buf, .size = len, .private = arg };
+	int err = fxfs_vfs_stats_show(&m, NULL);
+
+	if (err)
+		return err;
+	fxfs_vfs_build_show(&m, NULL);
+	return seq_has_overflowed(&m) ? -EOVERFLOW : m.count;
+}
+
 /* The filesystems known, which outlive their mounts (`struct fxfs_vfs_filesystem`). */
 static LIST_HEAD(fxfs_vfs_filesystems);
 static DEFINE_MUTEX(fxfs_vfs_filesystems_lock);
@@ -3080,7 +3097,8 @@ static void fxfs_vfs_filesystem_close(struct fxfs_vfs_filesystem *filesystem)
 {
 	unsigned int nofs;
 
-	/* Once its readers are done. */
+	/* Once its readers are done: fxdax: the host's asks for its stats', too (TASK-111.4). */
+	virtio_extent_set_stats(filesystem->vext, NULL, NULL);
 	proc_remove(filesystem->stats);
 	filesystem->stats = NULL;
 	if (filesystem->filesystem) {
@@ -3142,6 +3160,8 @@ static int fxfs_vfs_filesystem_open(struct fxfs_vfs_filesystem *filesystem, stru
 	if (fxfs_vfs_proc && !strchr(fc->source, '/'))
 		filesystem->stats = proc_create_single_data(fc->source, 0444, fxfs_vfs_proc,
 							    fxfs_vfs_stats_show, filesystem);
+	/* fxdax: and the host's asks for its stats have it say them (TASK-111.4). */
+	virtio_extent_set_stats(filesystem->vext, fxfs_vfs_stats_text, filesystem);
 	return 0;
 err_close:
 	fxfs_vfs_filesystem_close(filesystem);

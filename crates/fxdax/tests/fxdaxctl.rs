@@ -282,6 +282,61 @@ fn commands_through_the_daemon() {
     assert_eq!(format!("{:x}", ExtentStore::open(&fork).unwrap().branch()), branch);
 }
 
+/// fxdax TASK-111.4: `stats --json` prints one snapshot through the daemon: its build and
+/// counters, and its VM process's, as its guest answered, with the guest's counters, histograms and
+/// build; without `--json`, the same as lines of a path and a value. Without the daemon, refused.
+#[cfg(target_os = "linux")]
+#[test]
+fn stats_are_one_snapshot_of_the_daemon_and_its_vms() {
+    let dir = tempfile::tempdir().unwrap();
+    let fxdaxctl = Fxdaxctl::through_daemon(dir.path(), &[]);
+    let path = dir.path().join("store");
+    let store = fxdax::RemoteExtentStore::connect(dir.path().join("vms.sock"), &path, 1 << 24);
+    let store = std::sync::Arc::new(store.unwrap());
+    // Its guest answers each ask, off the thread the ask comes on.
+    let answering = std::sync::Arc::downgrade(&store);
+    store.on_stats_asked(move |ask| {
+        let store = answering.clone();
+        std::thread::spawn(move || {
+            let guest = "seals 3\nseals_hist 0,2,1\ncommit abc\n";
+            if let Some(store) = store.upgrade() {
+                store.answer_stats(ask, Some(guest)).unwrap();
+            }
+        });
+        true
+    });
+    let run = |args: &[&str]| {
+        let args: Vec<&Path> = args.iter().map(Path::new).collect();
+        fxdaxctl.run(&args).unwrap()
+    };
+
+    let json: serde_json::Value = serde_json::from_str(&run(&["stats", "--json"])).unwrap();
+    assert_eq!(json["extentd"]["build"], fxdax::BUILD_COMMIT);
+    assert_eq!(json["extentd"]["gauges"]["connections"], 1);
+    assert!(json["taken_unix_ns"].as_u64() > Some(0), "{json}");
+    let vm = &json["vms"][0];
+    assert_eq!(vm["path"], path.canonicalize().unwrap().to_str().unwrap());
+    assert_eq!(vm["branch"], format!("{:x}", store.branch()));
+    assert_eq!((&vm["follower"], &vm["answered"]), (&false.into(), &true.into()));
+    assert_eq!(vm["vmm"]["build"], fxdax::BUILD_COMMIT);
+    assert_eq!(vm["vmm"]["counters"]["stage_ops"], 0);
+    assert_eq!(vm["window"], serde_json::Value::Null);
+    let guest = &vm["guest"];
+    assert_eq!(guest["build"], "abc");
+    assert_eq!(guest["counters"], serde_json::json!({ "seals": 3 }));
+    assert_eq!(guest["histograms"], serde_json::json!({ "seals": [0, 2, 1] }));
+
+    let lines = run(&["stats"]);
+    let line = |at: &str| lines.lines().find_map(|line| line.strip_prefix(&format!("{at} ")));
+    assert_eq!(line("vms.0.guest.counters.seals"), Some("3"), "{lines}");
+    assert_eq!(line("vms.0.guest.histograms.seals.1"), Some("2"), "{lines}");
+    assert_eq!(line("extentd.build"), Some(fxdax::BUILD_COMMIT), "{lines}");
+
+    drop(store);
+    let refused = Fxdaxctl::local().run(&[Path::new("stats"), Path::new("--json")]);
+    assert!(refused.unwrap_err().contains("FXDAX_EXTENTD_GRPC"));
+}
+
 /// What `child`, whose standard error is piped, writes there once sent SIGQUIT (TASK-44.13): its
 /// threads' stacks, from their heading to the first line after it naming `waiting`, a function a
 /// thread of it waits in. Its standard error is read to its end, so that its writes never fail.

@@ -899,10 +899,16 @@ impl UffdSecondStage {
         unsafe { Self::new(base, size, Memories::InProcess, prefault, host_max_map_count()) }
     }
 
-    /// The runs of pages it keeps installed at most.
-    #[cfg(test)]
+    /// The runs of pages it keeps installed at most: fxdax: which its VM process tells the
+    /// daemon of (TASK-111.5).
     pub(crate) fn budget(&self) -> usize {
         self.budget
+    }
+
+    /// fxdax: the runs of pages it has installed now, each a mapping of the process's, which
+    /// [`budget`](Self::budget) bounds (TASK-111.5).
+    pub(crate) fn installed(&self) -> u64 {
+        self.pages.lock().unwrap().runs as u64
     }
 
     /// Serves the faults on the memory with `window`, on a thread of its own, until the returned
@@ -2207,7 +2213,7 @@ mod tests {
                 .count()
         };
         let within = |when: &str| {
-            let runs = stage.pages.lock().unwrap().runs;
+            let runs = stage.installed() as usize;
             assert!(runs <= BUDGET, "{when}: {runs} runs installed");
             assert!(mappings() <= 2 * BUDGET + 1, "{when}: {} mappings", mappings());
         };
@@ -2315,7 +2321,7 @@ mod tests {
             for page in 0..pages {
                 assert_eq!(load(page), tag(page), "round {round}, page {page}");
             }
-            let runs = stage.pages.lock().unwrap().runs;
+            let runs = stage.installed() as usize;
             let budget = budget(host_max_map_count());
             assert!(runs <= budget, "round {round}: {runs} runs installed");
         }
@@ -2625,7 +2631,7 @@ mod tests {
                 // SAFETY: The window's memory, whose faults the fault thread serves.
                 let loaded = unsafe { ((base + page * ps) as *const u8).read_volatile() };
                 assert_eq!(loaded, tag(page), "page {page}");
-                let runs = stage.pages.lock().unwrap().runs;
+                let runs = stage.installed() as usize;
                 assert!(runs <= BUDGET, "page {page}: {runs} runs installed");
             }
         }

@@ -302,6 +302,12 @@ impl DaxWindow {
     pub fn private_pages(&self) -> u64 {
         self.0.private_pages()
     }
+
+    /// fxdax: its gauges, which follow its mappings as they change, and fall to nothing as it
+    /// goes: one window's of what [`live`] counts of them all (TASK-111.5).
+    pub(crate) fn gauges(&self) -> Arc<Gauges> {
+        self.0.state.lock().unwrap().gauges.clone()
+    }
 }
 
 impl std::fmt::Debug for DaxWindow {
@@ -340,7 +346,6 @@ enum Pte {
 }
 
 /// A window's mappings and the pages it has mapped, under its lock.
-#[derive(Default)]
 struct WindowState {
     /// The mapped ranges of the window, by start. They do not overlap.
     mappings: BTreeMap<u64, Mapping>,
@@ -351,6 +356,9 @@ struct WindowState {
     /// fxdax: the private pages' offsets, of a window that copies on write ([`CopyOnWrite`]):
     /// each mapped there, writable, in `ptes`, within a mapping, which is still its source's.
     private: BTreeSet<u64>,
+    /// fxdax: what those are, counted, for whoever reads them without the lock: the daemon's
+    /// gauges (TASK-131.6, TASK-111.5).
+    gauges: Arc<Gauges>,
 }
 
 /// fxdax: what a private page holds of its source's page ([`Window::private_bytes`]).
@@ -401,15 +409,37 @@ impl Drop for CopyOnWrite {
     }
 }
 
-/// The process's windows' mappings, their bytes, and the pages they have mapped, all windows'
-/// together, as their states change: the extent daemon's gauges (`crate::extentd::metrics`,
-/// TASK-131.6). fxdax: and their private pages, of those (backlog doc-13).
-static LIVE_MAPPINGS: AtomicU64 = AtomicU64::new(0);
-static LIVE_MAPPED_BYTES: AtomicU64 = AtomicU64::new(0);
-static LIVE_PTES: AtomicU64 = AtomicU64::new(0);
-static LIVE_PRIVATE: AtomicU64 = AtomicU64::new(0);
+/// A window's mappings, their bytes, and the pages it has mapped, as its state changes: the extent
+/// daemon's gauges (`crate::extentd::metrics`, TASK-131.6), read without the window's lock. fxdax:
+/// and its private pages, of those (backlog doc-13); one window's, which the daemon reports of each
+/// VM's (TASK-111.5), and which add up to all windows' ([`live`]). Nothing once the window goes.
+#[derive(Default)]
+pub(crate) struct Gauges {
+    mappings: AtomicU64,
+    mapped_bytes: AtomicU64,
+    pages: AtomicU64,
+    private_pages: AtomicU64,
+}
 
-/// The process's windows' mappings, as of now.
+impl Gauges {
+    /// The window's mappings, as of now.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    pub(crate) fn live(&self) -> Live {
+        Live {
+            mappings: self.mappings.load(Ordering::Relaxed),
+            mapped_bytes: self.mapped_bytes.load(Ordering::Relaxed),
+            pages: self.pages.load(Ordering::Relaxed),
+            private_pages: self.private_pages.load(Ordering::Relaxed),
+        }
+    }
+}
+
+/// fxdax: the process's windows' gauges, each kept as long as its window, or whoever holds it.
+/// The standard library's lock, as Shuttle's isn't made in a static, and nothing waits on it.
+static WINDOWS: std::sync::Mutex<Vec<std::sync::Weak<Gauges>>> = std::sync::Mutex::new(Vec::new());
+
+/// Windows' mappings, as of now: the process's, all windows' ([`live`]), or one window's
+/// ([`Gauges::live`]).
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Live {
@@ -424,33 +454,52 @@ pub(crate) struct Live {
     pub private_pages: u64,
 }
 
-/// The process's windows' mappings, as of now.
+/// The process's windows' mappings, as of now: every window's gauges, added up.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub(crate) fn live() -> Live {
-    Live {
-        mappings: LIVE_MAPPINGS.load(Ordering::Relaxed),
-        mapped_bytes: LIVE_MAPPED_BYTES.load(Ordering::Relaxed),
-        pages: LIVE_PTES.load(Ordering::Relaxed),
-        private_pages: LIVE_PRIVATE.load(Ordering::Relaxed),
-    }
+    let mut windows = WINDOWS.lock().unwrap();
+    windows.retain(|gauges| gauges.strong_count() > 0);
+    (windows.iter().filter_map(std::sync::Weak::upgrade)).fold(Live::default(), |all, gauges| {
+        let window = gauges.live();
+        Live {
+            mappings: all.mappings + window.mappings,
+            mapped_bytes: all.mapped_bytes + window.mapped_bytes,
+            pages: all.pages + window.pages,
+            private_pages: all.private_pages + window.private_pages,
+        }
+    })
 }
 
 impl Drop for WindowState {
+    /// Its gauges fall to nothing, which whoever holds them reads from now on.
     fn drop(&mut self) {
-        let bytes: u64 = self.mappings.iter().map(|(start, mapping)| mapping.end - start).sum();
-        LIVE_MAPPINGS.fetch_sub(self.mappings.len() as u64, Ordering::Relaxed);
-        LIVE_MAPPED_BYTES.fetch_sub(bytes, Ordering::Relaxed);
-        LIVE_PTES.fetch_sub(self.ptes.len() as u64, Ordering::Relaxed);
-        LIVE_PRIVATE.fetch_sub(self.private.len() as u64, Ordering::Relaxed);
+        let gauges = &self.gauges;
+        for gauge in [&gauges.mappings, &gauges.mapped_bytes, &gauges.pages, &gauges.private_pages]
+        {
+            gauge.store(0, Ordering::Relaxed);
+        }
     }
 }
 
 impl WindowState {
+    /// A window's state, mapping nothing, its gauges among the process's windows' ([`live`]).
+    fn new() -> Self {
+        let gauges = Arc::new(Gauges::default());
+        WINDOWS.lock().unwrap().push(Arc::downgrade(&gauges));
+        Self {
+            mappings: BTreeMap::new(),
+            by_source: HashMap::new(),
+            ptes: BTreeMap::new(),
+            private: BTreeSet::new(),
+            gauges,
+        }
+    }
+
     /// Records that the window has mapped `pte` at `offset`, where it had mapped nothing.
     fn insert_pte(&mut self, offset: u64, pte: Pte) {
         let previous = self.ptes.insert(offset, pte);
         debug_assert!(previous.is_none(), "a page mapped over another at {offset:#x}");
-        LIVE_PTES.fetch_add(1, Ordering::Relaxed);
+        self.gauges.pages.fetch_add(1, Ordering::Relaxed);
     }
 
     /// fxdax: records that the window has mapped a private page at `offset`, where it had mapped
@@ -459,14 +508,14 @@ impl WindowState {
         self.insert_pte(offset, Pte::Private);
         let inserted = self.private.insert(offset);
         debug_assert!(inserted, "a private page over another at {offset:#x}");
-        LIVE_PRIVATE.fetch_add(1, Ordering::Relaxed);
+        self.gauges.private_pages.fetch_add(1, Ordering::Relaxed);
     }
 
     /// fxdax: forgets the private pages of `start..end`, which the window has unmapped, the stage
     /// letting go of them with what it unmapped.
     fn forget_private(&mut self, start: u64, end: u64) {
         let offsets: Vec<u64> = self.private.range(start..end).copied().collect();
-        LIVE_PRIVATE.fetch_sub(offsets.len() as u64, Ordering::Relaxed);
+        self.gauges.private_pages.fetch_sub(offsets.len() as u64, Ordering::Relaxed);
         for offset in offsets {
             self.private.remove(&offset);
         }
@@ -475,7 +524,7 @@ impl WindowState {
     /// Records that the window has unmapped the page at `offset`, which it had mapped.
     fn remove_pte(&mut self, offset: u64) {
         if self.ptes.remove(&offset).is_some() {
-            LIVE_PTES.fetch_sub(1, Ordering::Relaxed);
+            self.gauges.pages.fetch_sub(1, Ordering::Relaxed);
         }
     }
 
@@ -500,16 +549,16 @@ impl WindowState {
     fn insert(&mut self, start: u64, mapping: Mapping) {
         let identity = source_identity(&mapping.source);
         self.by_source.entry(identity).or_default().insert(start);
-        LIVE_MAPPINGS.fetch_add(1, Ordering::Relaxed);
-        LIVE_MAPPED_BYTES.fetch_add(mapping.end - start, Ordering::Relaxed);
+        self.gauges.mappings.fetch_add(1, Ordering::Relaxed);
+        self.gauges.mapped_bytes.fetch_add(mapping.end - start, Ordering::Relaxed);
         let previous = self.mappings.insert(start, mapping);
         debug_assert!(previous.is_none(), "a mapping over another at {start:#x}");
     }
 
     fn remove(&mut self, start: u64) -> Mapping {
         let mapping = self.mappings.remove(&start).expect("a mapping there");
-        LIVE_MAPPINGS.fetch_sub(1, Ordering::Relaxed);
-        LIVE_MAPPED_BYTES.fetch_sub(mapping.end - start, Ordering::Relaxed);
+        self.gauges.mappings.fetch_sub(1, Ordering::Relaxed);
+        self.gauges.mapped_bytes.fetch_sub(mapping.end - start, Ordering::Relaxed);
         let identity = source_identity(&mapping.source);
         let starts = self.by_source.get_mut(&identity).expect("its source's mappings");
         starts.remove(&start);
@@ -572,7 +621,7 @@ impl Window {
             Some(stage) => Translation::Stage(stage),
             None => Translation::Host { base: reserve(None, len).map_err(|_| Errno::ENOMEM)? },
         };
-        let state = Mutex::new(WindowState::default());
+        let state = Mutex::new(WindowState::new());
         Ok(Self { size, translation, state, copy_on_write })
     }
 
@@ -1656,8 +1705,9 @@ pub(crate) mod tests {
     }
 
     /// The windows' gauges (`live`) follow their mappings, split and unmapped, and their pages,
-    /// mapped and unmapped, and drop to nothing as the windows go. Each test runs in a process of
-    /// its own (nextest), whose windows are its own.
+    /// mapped and unmapped, and drop to nothing as the windows go; fxdax: and so do each window's
+    /// own (`DaxWindow::gauges`, TASK-111.5), which add up to them, held past their window or not.
+    /// Each test runs in a process of its own (nextest), whose windows are its own.
     #[test]
     fn live_gauges_follow_the_windows_mappings_and_pages() {
         let ps = page_size();
@@ -1669,24 +1719,33 @@ pub(crate) mod tests {
         };
         let (source, other) = (TestSource::numbered(4, 1), TestSource::paged(2));
         let (mut dax, window) = Dax::new(6 * ps, Some(Arc::new(Recorded::default()))).unwrap();
-        let (mut second, _) = Dax::new(2 * ps, Some(Arc::new(Recorded::default()))).unwrap();
+        let (mut second, second_window) =
+            Dax::new(2 * ps, Some(Arc::new(Recorded::default()))).unwrap();
         assert_eq!(live(), Live::default());
+        assert_eq!(window.gauges().live(), Live::default());
 
         dax.map(0, &source.source(), 0, 4 * ps);
         dax.map(4 * ps, &other.source(), 0, 2 * ps);
         second.map(0, &TestSource::numbered(2, 5).source(), 0, 2 * ps);
         assert_eq!(live(), gauges(3, 8, 6));
+        assert_eq!(window.gauges().live(), gauges(2, 6, 4));
+        assert_eq!(second_window.gauges().live(), gauges(1, 2, 2));
 
         other.supply(1, 3);
         futures::executor::block_on(window.fault(5 * ps, Access::Read)).unwrap();
         assert_eq!(live(), gauges(3, 8, 7));
+        assert_eq!(window.gauges().live(), gauges(2, 6, 5));
 
         // The first mapping split in two around the page unmapped.
         dax.unmap(ps, ps);
         assert_eq!(live(), gauges(4, 7, 6));
+        assert_eq!(window.gauges().live(), gauges(3, 5, 4));
+        assert_eq!(second_window.gauges().live(), gauges(1, 2, 2));
 
-        drop(second);
+        let held = second_window.gauges();
+        drop((second, second_window));
         assert_eq!(live(), gauges(3, 5, 4));
+        assert_eq!(held.live(), Live::default());
         drop((dax, window));
         assert_eq!(live(), Live::default());
     }

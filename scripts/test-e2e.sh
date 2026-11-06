@@ -63,8 +63,11 @@ rounds=${FXDAX_E2E_ROUNDS:-1}
 extentd_features=()
 if [[ -n ${FXDAX_FAILPOINTS:-}${FXDAX_FAULT_SEED:-} ]]; then extentd_features=(--features failpoints); fi
 cargo build --release --manifest-path "$root/Cargo.toml" -p fxdax --bin fxdax-extentd \
-    ${extentd_features[@]+"${extentd_features[@]}"}
+    --bin fxdaxctl ${extentd_features[@]+"${extentd_features[@]}"}
 extentd_bin="$root/target/release/fxdax-extentd"
+# fxdax: fxdaxctl, beside it, for cases that run it against the daemon (fxfs-guest-stats,
+# TASK-111.4).
+export FXDAXCTL_BIN="$root/target/release/fxdaxctl"
 # From its directory, whose .cargo/config.toml sets its target directory and build environment.
 # FXDAX_FIRECRACKER_SECCOMP builds Firecracker as production does, for musl, which compiles in its
 # filter (TASK-50.1): `real`, the default, runs under that; `log` under a copy of it that allows

@@ -7,7 +7,7 @@
 
 pub(crate) use super::codec::Opening;
 use super::codec::{
-    Advanced, Area, Data, Encoded, Fault, Info, Made, Opened, ReadInto, Request, StageCosts,
+    Advanced, Area, Data, Encoded, Fault, Info, Made, Opened, ReadInto, Request, StageCounts,
     StageOp, Told, stream_bytes,
 };
 use super::wire::*;
@@ -53,6 +53,10 @@ pub struct RemoteExtentStore {
 }
 
 impl RemoteExtentStore {
+    /// fxdax: the most bytes of a guest's stats an answer carries ([`RemoteExtentStore::answer_stats`],
+    /// TASK-111.4).
+    pub const MAX_STATS: usize = MAX_STATS;
+
     /// The store at `store` that the daemon listening at `socket` serves, created with `capacity`
     /// bytes if it doesn't exist.
     pub fn connect(
@@ -230,6 +234,26 @@ impl RemoteExtentStore {
     /// [`RemoteExtentStore::resized`], waiting for the daemon holding no thread.
     pub async fn resized_async(&self, capacity: u64, took: bool) -> Result<()> {
         self.client.request(&Request::Resized { capacity, took }).await.map(drop)
+    }
+
+    /// fxdax: calls `asked` with each of the daemon's asks for this process's stats and its
+    /// guest's (`STATS_ASK`, TASK-111.4): it asks the guest, if it has one that answers, and says
+    /// so, the guest's answer then going to [`RemoteExtentStore::answer_stats`]; otherwise the store
+    /// answers at once, with no guest's stats, as it does unless something is called so. Called on
+    /// the thread receiving the daemon's messages, it must not wait.
+    pub fn on_stats_asked(&self, asked: impl Fn(u64) -> bool + Send + Sync + 'static) {
+        let _ = self.client.stats_asked.set(Box::new(asked));
+    }
+
+    /// fxdax: answers the daemon's ask `ask` for this process's stats ([`STATS`]), with the
+    /// guest's, `guest`, its text, if it has a guest that answered: those asked before it too.
+    pub fn answer_stats(&self, ask: u64, guest: Option<&str>) -> Result<()> {
+        blocking(self.answer_stats_async(ask, guest))
+    }
+
+    /// [`RemoteExtentStore::answer_stats`], waiting for the daemon holding no thread.
+    pub async fn answer_stats_async(&self, ask: u64, guest: Option<&str>) -> Result<()> {
+        self.client.answer_stats(ask, guest).await.map(drop)
     }
 
     /// The branch whose extents the guest mints.
@@ -528,7 +552,7 @@ impl RemoteExtentStore {
     /// fxdax: the stage operations this process made of the store's window so far, and the
     /// nanoseconds they took, which it tells the daemon ([`STAGE_COUNTS`]).
     #[cfg(test)]
-    pub(super) fn stage_counts(&self) -> StageCosts {
+    pub(super) fn stage_counts(&self) -> StageCounts {
         self.client.stage_counts()
     }
 
@@ -592,7 +616,10 @@ impl RemoteExtentStore {
             stage.copy_on_write()?;
         }
         let _ = self.client.stage.set(stage.clone());
-        self.client.request_blocking(&Request::Window { size, private_max })?;
+        // fxdax: and the runs of pages it keeps installed, which the daemon's metrics show
+        // (TASK-111.5).
+        let budget = stage.budget() as u64;
+        self.client.request_blocking(&Request::Window { size, private_max, budget })?;
         self.copying.store(private_max.is_some(), Ordering::Release);
         *faults = Some(stage.serve(Arc::new(RemoteFaults { client: self.client.clone(), size }))?);
         Ok(())
@@ -670,9 +697,11 @@ struct Client {
     stage: OnceLock<Arc<UffdSecondStage>>,
     /// fxdax: what making the stage operations cost this process, which it tells the daemon
     /// (TASK-91.16).
-    stage_counts: StageCounts,
+    stage_counts: StageCosts,
     /// What the daemon's changes of the store's capacity go to ([`RemoteExtentStore::on_capacity`]).
     capacity: OnceLock<Box<dyn Fn(u64, bool) + Send + Sync>>,
+    /// fxdax: what the daemon's asks for stats go to ([`RemoteExtentStore::on_stats_asked`]).
+    stats_asked: OnceLock<Box<dyn Fn(u64) -> bool + Send + Sync>>,
     /// fxdax: the latest commit of a follower's writer heard of, and what hears of the next
     /// ([`RemoteExtentStore::on_committed`]).
     committed: AtomicU64,
@@ -694,8 +723,9 @@ impl Client {
             waiting: Mutex::new(Some(Waiting::default())),
             room: std::sync::Condvar::new(),
             stage: OnceLock::new(),
-            stage_counts: StageCounts::default(),
+            stage_counts: StageCosts::default(),
             capacity: OnceLock::new(),
+            stats_asked: OnceLock::new(),
             committed: AtomicU64::new(0),
             on_committed: OnceLock::new(),
             closing: Default::default(),
@@ -829,6 +859,13 @@ impl Client {
                     }
                     continue;
                 }
+                // fxdax: no guest asked, it answers with none (TASK-111.4).
+                Ok(Told::Stats { ask }) => {
+                    if !self.stats_asked.get().is_some_and(|asked| asked(ask)) {
+                        drop(self.answer_stats(ask, None));
+                    }
+                    continue;
+                }
                 Err(errno) => {
                     log::error!("the extent daemon's message refused ({errno:?}): {header:?}");
                     break;
@@ -844,15 +881,14 @@ impl Client {
             let start = std::time::Instant::now();
             let made = self.make(stage.op, &anew);
             self.stage_counts.count_since(start);
-            let counts = self.stage_counts();
             if let Err(err) = made {
                 log::error!("making the extent daemon's change to the window: {err}");
                 break;
             }
             let tell = if stage.op.taking() {
-                Made::Ack { id: stage.id, counts }
+                Made::Ack { id: stage.id, counts: self.stage_counts() }
             } else if told.elapsed() >= STAGE_COUNTS_EVERY {
-                Made::Counts(counts)
+                Made::Counts(self.stage_counts())
             } else {
                 continue;
             };
@@ -880,7 +916,7 @@ impl Client {
     /// ([`STAGE_COUNTS`]).
     fn tell_stage_counts(&self) {
         let counts = self.stage_counts();
-        if counts[0] == 0 {
+        if counts.costs[0] == 0 {
             return;
         }
         let told = self.sender.send(Made::Counts(counts).encode(), &[], &[]);
@@ -894,11 +930,24 @@ impl Client {
 
     /// fxdax: what the stage operations made so far cost, as [`STAGE_COUNTS`] says it: how many,
     /// the nanoseconds they took, and the changes among them that took access away from pages
-    /// installed, by how (`dax::uffd::Taken`).
-    fn stage_counts(&self) -> StageCosts {
+    /// installed, by how (`dax::uffd::Taken`); and the runs of pages installed now (TASK-111.5).
+    fn stage_counts(&self) -> StageCounts {
         let [ops, ns] = self.stage_counts.counts();
-        let [overwritten, left_out] = self.stage.get().map_or([0; 2], |stage| stage.taken());
-        [ops, ns, overwritten, left_out]
+        let stage = self.stage.get();
+        let [overwritten, left_out] = stage.map_or([0; 2], |stage| stage.taken());
+        let installed = stage.map_or(0, |stage| stage.installed());
+        StageCounts { costs: [ops, ns, overwritten, left_out], installed }
+    }
+
+    /// fxdax: answers the daemon's ask `ask` for stats ([`STATS`]), with the guest's, `guest`, if
+    /// any: its stage counts said first ([`STAGE_COUNTS`]), so that the daemon has them as of the
+    /// answer, which it receives after them (TASK-111.4).
+    fn answer_stats(&self, ask: u64, guest: Option<&str>) -> BoxFuture<'static, Reply> {
+        let counts = Made::Counts(self.stage_counts()).encode();
+        if let Err(err) = self.sender.send(counts, &[], &[]) {
+            log::warn!("telling the extent daemon the window's counts: {err}");
+        }
+        self.request(&Request::Stats { ask, guest })
     }
 
     /// Makes the stage operation `op` to the window; or, an unmap, with what follows it within
@@ -953,12 +1002,12 @@ impl Waiting {
 /// fxdax: the stage operations a VM process made of a window, and the nanoseconds they took, as
 /// [`STAGE_COUNTS`] tells them: the receiving thread counts them, which makes them.
 #[derive(Default)]
-struct StageCounts {
+struct StageCosts {
     ops: AtomicU64,
     ns: AtomicU64,
 }
 
-impl StageCounts {
+impl StageCosts {
     /// Counts an operation made since `start`.
     fn count_since(&self, start: std::time::Instant) {
         self.ops.fetch_add(1, Ordering::Relaxed);

@@ -22,6 +22,15 @@
 //!   TASK-131.6); fxdax: `fxdax_extentd_window_private_pages`, of those, the private copies of
 //!   windows that copy on write, and `fxdax_extentd_window_open_maps_refused_total`, the `MAP`s of
 //!   open extents refused, which no guest makes (backlog doc-13).
+//! - fxdax: of each VM process connected that opened a store, by its store's branch, in
+//!   hexadecimal, and its connection's number (`connection`), which tells a writer and its
+//!   followers apart (TASK-111.5): `fxdax_extentd_vm_window_mappings`,
+//!   `fxdax_extentd_vm_window_mapped_bytes`, `fxdax_extentd_vm_window_pages` and
+//!   `fxdax_extentd_vm_window_private_pages`, its window's, as the gauges above count all windows';
+//!   `fxdax_extentd_vm_host_mappings`, the runs of pages its window's second stage has installed in
+//!   its memory, each a mapping the host's `vm.max_map_count` limits, as it last said with its
+//!   stage operations, and `fxdax_extentd_vm_host_mapping_budget`, the most it keeps, as it said as
+//!   it made its window, from the limit the daemon told it (TASK-172).
 //! - `fxdax_extentd_<counter>_total`: the counters the control API's `GetStats` reports
 //!   (`crate::stats::Stats::named`, its dashes underscores): maps, faults, page-ins, reads and
 //!   their nanoseconds and bytes; the VM processes' changes to their windows (`stage_ops`) and
@@ -50,7 +59,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 /// The kinds of request metrics are kept of, and their names.
-const KINDS: [(u32, &str); 21] = [
+const KINDS: [(u32, &str); 22] = [
     (OPEN, "open"),
     (READ, "read"),
     (WRITE, "write"),
@@ -73,6 +82,8 @@ const KINDS: [(u32, &str); 21] = [
     (FREE_MANY, "free_many"),
     // fxdax: backlog doc-13.
     (PRIVATE, "private"),
+    // fxdax: TASK-111.4.
+    (STATS, "stats"),
 ];
 
 /// The upper bounds of the requests' duration histograms' buckets, in seconds: from what the
@@ -177,43 +188,11 @@ pub fn render() -> String {
          built of, as they said."
     );
     let _ = writeln!(out, "# TYPE {name} gauge");
-    for ((branch, commit), count) in super::server::vm_builds() {
+    for ((branch, commit), count) in super::snapshot::vm_builds() {
         let _ = writeln!(out, "{name}{{branch=\"{branch:x}\",commit=\"{commit}\"}} {count}");
     }
 
-    let (entries, live) = (crate::cache::entries(), crate::dax::live());
-    let gauges = [
-        ("connections", "VM processes connected.", super::server::connections() as u64),
-        (
-            "stores_open",
-            "Stores VM processes' connections write.",
-            super::stores::open_count() as u64,
-        ),
-        ("follower_views", "Followers' views of stores.", super::stores::follower_views() as u64),
-        (
-            "extent_cache_pinned_entries",
-            "Sealed extents cached that a window's mapping, a read or a page-in holds.",
-            entries.pinned,
-        ),
-        (
-            "extent_cache_idle_entries",
-            "Sealed extents cached that nothing but the cache holds.",
-            entries.idle,
-        ),
-        ("window_mappings", "Ranges the VMs' DAX windows map, all windows'.", live.mappings),
-        ("window_mapped_bytes", "Bytes those ranges span.", live.mapped_bytes),
-        (
-            "window_pages",
-            "Pages the VMs' DAX windows have mapped in their VM processes, all windows'.",
-            live.pages,
-        ),
-        (
-            "window_private_pages",
-            "Of those, private copies of pages stores made, of windows that copy on write.",
-            live.private_pages,
-        ),
-    ];
-    for (name, help, value) in gauges {
+    for (name, help, value) in gauges() {
         let _ = writeln!(out, "# HELP fxdax_extentd_{name} {help}");
         let _ = writeln!(out, "# TYPE fxdax_extentd_{name} gauge");
         let _ = writeln!(out, "fxdax_extentd_{name} {value}");
@@ -224,21 +203,42 @@ pub fn render() -> String {
     let _ = writeln!(out, "# TYPE {name} counter");
     let _ = writeln!(out, "{name} {}", crate::extents::open_maps_refused());
 
-    let memory = [
-        ("memory_bytes", "Memory extents' pages hold, every tenant's.", Some(physmem::arenas_bytes())),
-        ("memory_limit_bytes", "The limit of every tenant's memory.", physmem::total_cap()),
+    // fxdax: each VM process's (TASK-111.5).
+    let vms = super::snapshot::vms();
+    type Gauge = fn(&super::snapshot::Vm) -> Option<u64>;
+    let series: [(&str, &str, Gauge); 6] = [
+        ("vm_window_mappings", "Ranges a VM's DAX window maps.", |vm| Some(vm.window?.mappings)),
+        ("vm_window_mapped_bytes", "Bytes those ranges span.", |vm| Some(vm.window?.mapped_bytes)),
+        ("vm_window_pages", "Pages a VM's DAX window has mapped in its VM process.", |vm| {
+            Some(vm.window?.pages)
+        }),
+        ("vm_window_private_pages", "Of those, private copies of pages stores made.", |vm| {
+            Some(vm.window?.private_pages)
+        }),
         (
-            "memory_capacity_bytes",
-            "The most memory the daemon has.",
-            Some(physmem::count_total_bytes()),
+            "vm_host_mappings",
+            "Runs of pages a VM process's window has installed in its memory, each a mapping, as \
+             it last said.",
+            |vm| vm.window.is_some().then_some(vm.stage.installed),
+        ),
+        (
+            "vm_host_mapping_budget",
+            "The most runs of pages a VM process's window keeps installed, as it said.",
+            |vm| vm.budget,
         ),
     ];
-    for (name, help, value) in memory {
-        let Some(value) = value else { continue };
+    for (name, help, value) in series {
         let _ = writeln!(out, "# HELP fxdax_extentd_{name} {help}");
         let _ = writeln!(out, "# TYPE fxdax_extentd_{name} gauge");
-        let _ = writeln!(out, "fxdax_extentd_{name} {value}");
+        for vm in &vms {
+            if let Some(value) = value(vm) {
+                let (branch, connection) = (vm.branch, vm.connection);
+                let labels = format!("branch=\"{branch:x}\",connection=\"{connection}\"");
+                let _ = writeln!(out, "fxdax_extentd_{name}{{{labels}}} {value}");
+            }
+        }
     }
+
     let tenants = super::memory::tenants();
     let name = "fxdax_extentd_tenant_memory_bytes";
     let _ =
@@ -322,6 +322,49 @@ pub fn render() -> String {
         let _ = writeln!(out, "{name} {}", stats.downloaded);
     }
     out
+}
+
+/// The daemon's gauges, as of now, each with its name, without `fxdax_extentd_`, and what it is:
+/// what its metrics and snapshots report (TASK-111.4). The memory's limit only if it has one.
+pub(super) fn gauges() -> Vec<(&'static str, &'static str, u64)> {
+    let (entries, live) = (crate::cache::entries(), crate::dax::live());
+    let mut gauges = vec![
+        ("connections", "VM processes connected.", super::server::connections() as u64),
+        (
+            "stores_open",
+            "Stores VM processes' connections write.",
+            super::stores::open_count() as u64,
+        ),
+        ("follower_views", "Followers' views of stores.", super::stores::follower_views() as u64),
+        (
+            "extent_cache_pinned_entries",
+            "Sealed extents cached that a window's mapping, a read or a page-in holds.",
+            entries.pinned,
+        ),
+        (
+            "extent_cache_idle_entries",
+            "Sealed extents cached that nothing but the cache holds.",
+            entries.idle,
+        ),
+        ("window_mappings", "Ranges the VMs' DAX windows map, all windows'.", live.mappings),
+        ("window_mapped_bytes", "Bytes those ranges span.", live.mapped_bytes),
+        (
+            "window_pages",
+            "Pages the VMs' DAX windows have mapped in their VM processes, all windows'.",
+            live.pages,
+        ),
+        (
+            "window_private_pages",
+            "Of those, private copies of pages stores made, of windows that copy on write.",
+            live.private_pages,
+        ),
+        ("memory_bytes", "Memory extents' pages hold, every tenant's.", physmem::arenas_bytes()),
+        ("memory_capacity_bytes", "The most memory the daemon has.", physmem::count_total_bytes()),
+    ];
+    if let Some(limit) = physmem::total_cap() {
+        gauges.push(("memory_limit_bytes", "The limit of every tenant's memory.", limit));
+    }
+    gauges
 }
 
 /// `value` as a label's value in Prometheus' text format: its backslashes, double quotes and

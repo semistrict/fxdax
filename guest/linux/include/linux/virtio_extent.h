@@ -57,6 +57,11 @@
  * device maps them for it ahead of its accesses (fxdax's TASK-112.1).
  */
 #define VIRTIO_EXTENT_F_MAP_AHEAD 8
+/*
+ * fxdax: the host asks the guest for its stats: the configuration's `stats_asked` changes, telling
+ * it with a configuration change, and the guest answers with STATS (fxdax's TASK-111.4).
+ */
+#define VIRTIO_EXTENT_F_STATS 11
 
 #define VIRTIO_EXTENT_T_READ 1
 #define VIRTIO_EXTENT_T_WRITE 2
@@ -85,8 +90,17 @@
  * a fault of the host's each. ENOMEM past private_max.
  */
 #define VIRTIO_EXTENT_T_PRIVATE 16
+/*
+ * F_STATS: the guest's stats, its data, text of VIRTIO_EXTENT_MAX_STATS bytes at most, lines of a
+ * name and a value: the answer to the ask its arguments name (stats_asked), and those before it.
+ * Followers answer too: it writes nothing.
+ */
+#define VIRTIO_EXTENT_T_STATS 17
 /* The last request type. */
-#define VIRTIO_EXTENT_T_LAST VIRTIO_EXTENT_T_PRIVATE
+#define VIRTIO_EXTENT_T_LAST VIRTIO_EXTENT_T_STATS
+
+/* F_STATS: the most bytes of the guest's stats a STATS carries. */
+#define VIRTIO_EXTENT_MAX_STATS (64 << 10)
 
 /*
  * WRITE: a barrier precedes it; a COMMIT follows it (F_WRITE_COMMIT); that commit is durable; it
@@ -133,6 +147,8 @@ struct virtio_extent_config {
 	__le64 committed;
 	/* F_DAX: the most private pages the device holds at once (pages of map_alignment). */
 	__le64 private_max;
+	/* F_STATS: the host's latest ask for the guest's stats, or 0 before the first. */
+	__le64 stats_asked;
 } __packed;
 
 struct virtio_extent_id {
@@ -199,6 +215,11 @@ struct virtio_extent_resized {
 	__le64 capacity;
 };
 
+/* STATS: the ask it answers. */
+struct virtio_extent_stats {
+	__le64 asked;
+};
+
 /* ADVANCE: the epoch of the commit the view is as of now. LET_GO: the epoch it lets go up to. */
 struct virtio_extent_epoch {
 	__le64 epoch;
@@ -261,7 +282,8 @@ struct vext_request {
 	/*
 	 * READ, WRITE, MAP: where in the extent. MAP, UNMAP, PRIVATE: how much (len), and where in
 	 * the window.
-	 * RESIZED: the capacity asked (offset). LET_GO: the epoch (offset).
+	 * RESIZED: the capacity asked (offset). LET_GO: the epoch (offset). STATS: the ask answered
+	 * (offset).
 	 */
 	u64 offset;
 	u64 len;
@@ -271,8 +293,8 @@ struct vext_request {
 	 * VIRTIO_EXTENT_COMMIT_ROOT; FREE's further extents, with VIRTIO_EXTENT_FREE_MANY; MAP's
 	 * further maps, with VIRTIO_EXTENT_MAP_MANY; ROOT's buffer, of max_root bytes and a struct
 	 * virtio_extent_root_len after them; INFO's struct virtio_extent_info; ADVANCE's struct
-	 * virtio_extent_epoch. fxdax: READ's and WRITE's length too: one length for all data
-	 * (TASK-160.7).
+	 * virtio_extent_epoch; STATS's text. fxdax: READ's and WRITE's length too: one length for all
+	 * data (TASK-160.7).
 	 */
 	void *data;
 	u32 data_len;
@@ -300,6 +322,7 @@ struct vext_request {
 		struct virtio_extent_commit commit;
 		struct virtio_extent_resized resized;
 		struct virtio_extent_epoch epoch;
+		struct virtio_extent_stats stats;
 	} args;
 	struct virtio_extent_resp resp;
 	struct sg_table data_sgt;
@@ -372,6 +395,15 @@ bool virtio_extent_capacity(struct virtio_extent *vext, u64 *capacity, u64 *aske
 typedef void (*vext_config_changed_t)(void *arg);
 void virtio_extent_set_config_changed(struct virtio_extent *vext, vext_config_changed_t changed,
 				      void *arg);
+
+/*
+ * fxdax: has the driver answer the host's asks for the guest's stats (F_STATS) with what
+ * `stats(arg, buf, len)` writes in the `len` bytes at `buf`, VIRTIO_EXTENT_MAX_STATS: how many
+ * bytes, or a -errno; with nothing while `stats` is NULL, or fails. Called from a work item, it may
+ * sleep; once this returns, the one set before is called no more.
+ */
+typedef ssize_t (*vext_stats_t)(void *arg, char *buf, size_t len);
+void virtio_extent_set_stats(struct virtio_extent *vext, vext_stats_t stats, void *arg);
 
 #endif /* __KERNEL__ */
 
