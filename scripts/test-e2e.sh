@@ -190,17 +190,26 @@ fi
 # one in the daemon's memory: the cases open the stores it made in processes of their own (fxdax's
 # Storage), which keep a store's branch in the bucket its description names (TASK-165.6). Its
 # kernel takes FXDAX_EXTENTD_MEMORY bytes at most, if set, or the daemon's default.
+# fxdax: what its stores read from the bucket it keeps in a part cache of its own on disk, as
+# production's daemon does (FXDAX_EXTENTD_CACHE, doc-7), unless FXDAX_EXTENTD_CACHE says
+# otherwise, empty for none; not this process's, which the cases' own daemons would share
+# (TASK-164.12).
 bucket_dir=
 if [[ -z ${FXDAX_EXTENTD_REMOTE:-} ]]; then
     bucket_dir=$(mktemp -d /dev/shm/fxdax-e2e-bucket.XXXXXX)
 fi
+cache_dir=
+if [[ -z ${FXDAX_EXTENTD_CACHE+set} ]]; then
+    cache_dir=$(mktemp -d "${TMPDIR:-/tmp}/fxdax-e2e-cache.XXXXXX")
+fi
 env FXDAX_EXTENTD_REMOTE="${FXDAX_EXTENTD_REMOTE:-file://$bucket_dir}" \
+    FXDAX_EXTENTD_CACHE="${FXDAX_EXTENTD_CACHE-$cache_dir}" \
     FXDAX_EXTENTD_TOKEN="${FXDAX_EXTENTD_TOKEN:-1}" \
     FXDAX_EXTENTD_STATS="$results/extentd-stats.txt" FXDAX_EXTENTD_GRPC="$control" \
     FAILPOINTS="${FXDAX_FAILPOINTS:-}" "$extentd_bin" "$socket" ${FXDAX_EXTENTD_MEMORY:-} \
     > "$results/extentd.log" 2>&1 &
 daemon=$!
-trap 'kill "$daemon" 2> /dev/null; rm -f "$socket" "$control"; [[ -z $bucket_dir ]] || rm -r "$bucket_dir"' EXIT
+trap 'kill "$daemon" 2> /dev/null; rm -f "$socket" "$control"; [[ -z $bucket_dir ]] || rm -r "$bucket_dir"; [[ -z $cache_dir ]] || rm -r "$cache_dir"' EXIT
 while [[ ! -S $socket || ! -S $control ]]; do
     if ! kill -0 "$daemon" 2> /dev/null; then
         echo "the extent daemon exited: see $results/extentd.log" >&2

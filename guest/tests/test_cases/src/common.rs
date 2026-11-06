@@ -67,6 +67,10 @@ pub fn guest_kernel_slowness() -> anyhow::Result<f64> {
 /// An extent daemon of the test's own, FXDAX_EXTENTD_BIN, serving at `socket`, and its control API
 /// beside it ([`control`]), once this returns, with `env` in its environment, and `memory` bytes of
 /// memory if given (its default, 1 GiB, otherwise), logging to `<name>.log` in the test's directory.
+/// fxdax: it keeps what its stores read from their bucket in a part cache of its own,
+/// `<name>-cache` in the test's directory, as production's daemon keeps it on the host's disk
+/// (`FXDAX_EXTENTD_CACHE`, doc-7), unless `env` or this process says otherwise, empty for none: one
+/// daemon at a time has a cache's directory (TASK-164.12).
 pub fn spawn_daemon(
     test_setup: &TestSetup,
     socket: &Path,
@@ -95,6 +99,12 @@ pub fn spawn_daemon(
     if !named("FXDAX_EXTENTD_TOKEN") {
         command.env("FXDAX_EXTENTD_TOKEN", "1");
     }
+    let given = env.iter().find(|(var, _)| *var == "FXDAX_EXTENTD_CACHE").map(|(_, value)| *value);
+    let ours = std::env::var_os("FXDAX_EXTENTD_CACHE");
+    if let Some(cache) = part_cache(given, ours.as_deref(), &test_setup.tmp_dir, name) {
+        fs::create_dir_all(&cache)?;
+        command.env("FXDAX_EXTENTD_CACHE", cache);
+    }
     let daemon = command.envs(env.iter().copied()).stderr(log).spawn()?;
     test_setup.register_cleanup_pid(daemon.id());
     let deadline = Instant::now() + Duration::from_secs(30);
@@ -108,6 +118,20 @@ pub fn spawn_daemon(
             Err(err) => return Err(anyhow::anyhow!("the daemon {name}: {err:#}")),
         }
     }
+}
+
+/// fxdax: the part cache a test's daemon `name` is given, in `dir`, the test's directory, as
+/// production's daemon keeps one on the host's disk (`FXDAX_EXTENTD_CACHE`, doc-7), unless
+/// `FXDAX_EXTENTD_CACHE` is said, `given` the daemon or `ours` this process, which it then takes
+/// as it is, empty for none. Without one, a fork paged in what it inherited from the bucket a ranged
+/// GET at a time: forked-dax 0.304 in the perf gate, 0.849 with it (TASK-164.12, GCE r790, r792).
+fn part_cache(
+    given: Option<&std::ffi::OsStr>,
+    ours: Option<&std::ffi::OsStr>,
+    dir: &Path,
+    name: &str,
+) -> Option<PathBuf> {
+    (given.is_none() && ours.is_none()).then(|| dir.join(format!("{name}-cache")))
 }
 
 /// Gives the extent daemon's socket at `socket`, its user's alone (TASK-155), to the user of the
@@ -160,4 +184,26 @@ pub fn copy_dir(from: &Path, to: &Path) -> anyhow::Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::ffi::OsStr;
+
+    /// TASK-164.12: a test's daemon keeps a part cache of its own in the test's directory, as
+    /// production's does, unless FXDAX_EXTENTD_CACHE is said, by the daemon's environment or this
+    /// process's, which it takes as it is, empty for none.
+    #[test]
+    fn daemons_keep_a_part_cache_unless_told_otherwise() {
+        let dir = Path::new("/tmp/case");
+        let cache = |given: Option<&str>, ours: Option<&str>| {
+            part_cache(given.map(OsStr::new), ours.map(OsStr::new), dir, "extentd")
+        };
+        assert_eq!(cache(None, None), Some(PathBuf::from("/tmp/case/extentd-cache")));
+        assert_eq!(cache(Some(""), None), None);
+        assert_eq!(cache(Some("/nvme/cache"), None), None);
+        assert_eq!(cache(None, Some("")), None);
+        assert_eq!(cache(None, Some("/nvme/cache")), None);
+    }
 }
