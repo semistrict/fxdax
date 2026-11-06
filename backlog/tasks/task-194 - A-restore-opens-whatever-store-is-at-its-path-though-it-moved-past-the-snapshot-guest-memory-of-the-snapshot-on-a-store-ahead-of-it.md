@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-06 06:43'
-updated_date: '2026-11-06 07:24'
+updated_date: '2026-11-06 08:06'
 labels:
   - bug
   - restore
@@ -31,17 +31,17 @@ Legitimate cases must keep working: a snapshot taken, then the VM stopped withou
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A restore into a path whose store has commits since the snapshot's point fails, with an errno the integrator guide documents, and changes nothing there
-- [ ] #2 A restore into the store a snapshot was taken of, unwritten since, and a retried restore over a fork it left unwritten, still succeed
-- [ ] #3 restores_refuse_a_store_written_since_its_point passes, un-ignored
-- [ ] #4 docs/integrator-guide.md says what path_on_host a restore may name
+- [x] #1 A restore into a path whose store has commits since the snapshot's point fails, with an errno the integrator guide documents, and changes nothing there
+- [x] #2 A restore into the store a snapshot was taken of, unwritten since, and a retried restore over a fork it left unwritten, still succeed
+- [x] #3 restores_refuse_a_store_written_since_its_point passes, un-ignored
+- [x] #4 docs/integrator-guide.md says what path_on_host a restore may name
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
 - [ ] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -58,4 +58,6 @@ Legitimate cases must keep working: a snapshot taken, then the VM stopped withou
 
 <!-- SECTION:NOTES:BEGIN -->
 Decision: refuse (EEXIST), not fork afresh: a fresh fork over the path would delete what the VM wrote since; the test filed with the task expected EEXIST. Compared by state (root and extents), not epochs: the point's Origin.at is a bucket segment number, not a store's local epoch, and a fork's first epoch is a store-format detail; equal state is what the guest's memory needs. Red without the check (both tests), green with it; extentd's restore, snapshot and point tests 40/40 (Linux Docker).
+
+Fixed in 33adafabb. Verified: macOS workspace 2031/2031 (rebased on main acc0c1c47); Linux Docker clippy clean, extentd's restore, snapshot, point, drain and wire tests 65/65; the full Linux workspace before the rebase onto main's last 5 commits 2229/2233 (grants' jail helper absent in the container; extent_store's durable_commits_keep_the_open_segments_pages_cached_on_the_host once, page cache under load, 3/3 alone). Left In Progress for DoD 1's GCE run, which CI's isn't.
 <!-- SECTION:NOTES:END -->
