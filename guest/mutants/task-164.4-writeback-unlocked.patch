@@ -10,15 +10,15 @@
 
 --- a/guest/linux/fs/fxfs/dax.c
 +++ b/guest/linux/fs/fxfs/dax.c
-@@ -3857,7 +3857,6 @@
+@@ -2101,7 +2101,6 @@
  	 * them, and an fsync returns only once they are durable. Returning at once, as no page was
  	 * dirty, an fsync met by the worker's writeback sealed none of its pages (guest/sim, seed 962).
  	 */
 -	mutex_lock(&file->wb_lock);
  	if (!atomic_long_read(&file->dirty_pages))
  		goto out;
- 	down_read(&file->sem);
-@@ -3904,7 +3903,6 @@
+ 	parts = kmalloc_array(FXFS_DAX_WRITEBACK_RUN, sizeof(*parts), GFP_NOFS);
+@@ -2161,7 +2160,6 @@
  	if (err)
  		mapping_set_error(inode->i_mapping, err);
  out:

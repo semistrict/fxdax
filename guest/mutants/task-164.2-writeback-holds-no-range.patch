@@ -10,17 +10,17 @@
 
 --- a/guest/linux/fs/fxfs/dax.c
 +++ b/guest/linux/fs/fxfs/dax.c
-@@ -2068,7 +2068,7 @@
+@@ -2089,7 +2089,7 @@
  	struct fxfs_write_part *parts = NULL;
  	struct fxfs_dax_range *range;
  	unsigned long chunk;
--	size_t nr = 0, most = 0, i;
-+	size_t nr = 0, most = 0;
+-	size_t nr = 0, most, now, i;
++	size_t nr = 0, most, now;
  	long pages = 0;
  	int err = 0;
  
-@@ -2101,8 +2101,6 @@
- 		if (nr == most || !fxfs_dax_range_dirty(range))
+@@ -2142,8 +2142,6 @@
+ 		if (!fxfs_dax_range_dirty(range))
  			continue;
  		batch[nr].range = range;
 -		/* Kept, mapped, while the writeback reads it: no reclaim, no drop. */
@@ -28,7 +28,7 @@
  		pages += fxfs_dax_pages_swap(range->state, batch[nr].pages);
  		nr++;
  	}
-@@ -2112,8 +2110,6 @@
+@@ -2153,8 +2151,6 @@
  	/* Before it reads its ranges' window pages, which nothing may free (pause points). */
  	fxfs_dax_pause_file(FXFS_DAX_STEP_WRITEBACK, inode->i_ino);
  	err = fxfs_dax_write_pages(dax, inode, batch, nr, parts);

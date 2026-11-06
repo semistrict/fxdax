@@ -23,6 +23,7 @@
 #define PAUSE_WRITE_MAPPED BIT(5)
 #define PAUSE_WRITEBACK BIT(8)
 #define PAUSE_FAULTED BIT(9)
+#define PAUSE_COUNTED BIT(10)
 /* A chunk's range, the window's whole ranges, at a chunk's alignment. */
 #define CHUNK_LEN (2UL << 20)
 /*
@@ -1279,6 +1280,47 @@ static void cow_store_to_pinned_slice(void)
 	cow_check_file("after a store to a pinned slice's page", 8 * PAGE_SIZE);
 }
 
+static struct file *counted_file;
+
+static void counted_fsync(void *arg)
+{
+	check(!sim_fsync(counted_file), "the fsync a store met");
+}
+
+/*
+ * That a writeback counts its file's dirty ranges again once it holds the semaphore for writing.
+ * Paused between its count and its swap (dax_pause), a store to the file's first chunk dirties a
+ * range it didn't count: with a batch as large as the count, the swap took that range, first in the
+ * file, and passed the second's by, written before the fsync began, which returned 0 without it
+ * (the file model's, failures seed 62).
+ */
+static void cow_writeback_counts_again(void)
+{
+	static char bytes[BIG_LEN], got[6];
+	const loff_t second = CHUNK_LEN + 5 * PAGE_SIZE;
+	struct task_struct *syncer;
+	unsigned long addr;
+	char value[24];
+
+	fill(bytes, sizeof(bytes), 3);
+	counted_file = new_file(bytes, sizeof(bytes));
+	check(!sim_fsync(counted_file), "the file's fsync");
+	addr = sim_mmap(counted_file, 0, sizeof(bytes));
+	check(sim_write(counted_file, second, "second", 6) == 6, "the second chunk's write");
+	snprintf(value, sizeof(value), "%lu", file_inode(counted_file)->i_ino);
+	sim_param_set("dax_pause_ino", value);
+	snprintf(value, sizeof(value), "%lu", PAUSE_COUNTED);
+	sim_param_set("dax_pause", value);
+	syncer = sim_spawn("syncer", counted_fsync, NULL);
+	sim_await(sim_param_read("dax_paused") & PAUSE_COUNTED, "no writeback waits, counted");
+	check(!sim_user_store(addr + 3 * PAGE_SIZE, "first", 5), "the first chunk's store");
+	sim_param_set("dax_pause", "0");
+	wait_for(syncer);
+	fxfs_sim_read(mount->info->fs, file_inode(counted_file)->i_ino, second, got, sizeof(got));
+	check(!memcmp(got, "second", sizeof(got)),
+	      "the fsync returned without the second chunk's write, before it began");
+}
+
 static const struct {
 	const char *name;
 	void (*run)(void);
@@ -1316,6 +1358,7 @@ static const struct {
 	COW_SCENARIO(cow_map_during_seal),
 	COW_SCENARIO(cow_private_failed),
 	COW_SCENARIO(cow_store_to_pinned_slice),
+	COW_SCENARIO(cow_writeback_counts_again),
 };
 
 static void scenario(void *arg)

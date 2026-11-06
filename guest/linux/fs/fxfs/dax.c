@@ -184,6 +184,12 @@ enum fxfs_dax_step {
 	 * its page's DAX entry until it returns (fxfs_dax_protect).
 	 */
 	FXFS_DAX_STEP_FAULTED = 9,
+	/*
+	 * A writeback, its file's dirty ranges counted, its batch allocated for them, before it holds
+	 * the semaphore for writing to swap them out, holding the writeback lock alone
+	 * (fxfs_dax_write_back).
+	 */
+	FXFS_DAX_STEP_COUNTED = 10,
 };
 static unsigned long fxfs_dax_pause_steps;
 module_param_named(dax_pause, fxfs_dax_pause_steps, ulong, 0644);
@@ -2063,6 +2069,18 @@ static void fxfs_dax_protect(struct address_space *mapping, const struct fxfs_da
  * left a writable PTE to a page the set took, which a rebind then lost the stores of. Fxfs takes a
  * file's size as its writeback writes its pages, as the page cache's.
  */
+/* fxdax: how many of `file`'s ranges hold dirty pages: with its semaphore held, shared at least. */
+static size_t fxfs_dax_dirty_ranges(struct fxfs_dax_file *file)
+{
+	struct fxfs_dax_range *range;
+	unsigned long chunk;
+	size_t dirty = 0;
+
+	xa_for_each(&file->ranges, chunk, range)
+		dirty += fxfs_dax_range_dirty(range);
+	return dirty;
+}
+
 int fxfs_dax_write_back(struct inode *inode)
 {
 	struct fxfs_dax_file *file = fxfs_dax_file(inode);
@@ -2071,7 +2089,7 @@ int fxfs_dax_write_back(struct inode *inode)
 	struct fxfs_write_part *parts = NULL;
 	struct fxfs_dax_range *range;
 	unsigned long chunk;
-	size_t nr = 0, most = 0, i;
+	size_t nr = 0, most, now, i;
 	long pages = 0;
 	int err = 0;
 
@@ -2086,22 +2104,42 @@ int fxfs_dax_write_back(struct inode *inode)
 	mutex_lock(&file->wb_lock);
 	if (!atomic_long_read(&file->dirty_pages))
 		goto out;
-	down_read(&file->sem);
-	xa_for_each(&file->ranges, chunk, range)
-		most += fxfs_dax_range_dirty(range);
-	up_read(&file->sem);
-	if (!most)
-		goto out;
-	/* Before the swap: a writeback that can't write leaves the set dirty. */
-	batch = fxfs_nofs(kvmalloc_array(most, sizeof(*batch), GFP_KERNEL));
 	parts = kmalloc_array(FXFS_DAX_WRITEBACK_RUN, sizeof(*parts), GFP_NOFS);
-	if (!batch || !parts) {
+	if (!parts) {
 		err = -ENOMEM;
 		goto out;
 	}
-	down_write(&file->sem);
+	down_read(&file->sem);
+	most = fxfs_dax_dirty_ranges(file);
+	up_read(&file->sem);
+	/*
+	 * The batch, before the swap, as many as the semaphore held shared counted: a writeback that
+	 * can't write leaves the set dirty. Counted again once it is held for writing, which keeps
+	 * iomaps from dirtying more, and made larger if they did beside the count: one too small passed
+	 * by the ranges last in the file, dirty before an fsync began, which returned 0 without them
+	 * (guest/sim's file model, failures seed 62).
+	 */
+	for (;;) {
+		if (!most)
+			goto out;
+		batch = fxfs_nofs(kvmalloc_array(most, sizeof(*batch), GFP_KERNEL));
+		if (!batch) {
+			err = -ENOMEM;
+			goto out;
+		}
+		/* Between the count and the swap, where iomaps may dirty more (pause points). */
+		fxfs_dax_pause_file(FXFS_DAX_STEP_COUNTED, inode->i_ino);
+		down_write(&file->sem);
+		now = fxfs_dax_dirty_ranges(file);
+		if (now && now <= most)
+			break;
+		up_write(&file->sem);
+		kvfree(batch);
+		batch = NULL;
+		most = now;
+	}
 	xa_for_each(&file->ranges, chunk, range) {
-		if (nr == most || !fxfs_dax_range_dirty(range))
+		if (!fxfs_dax_range_dirty(range))
 			continue;
 		batch[nr].range = range;
 		/* Kept, mapped, while the writeback reads it: no reclaim, no drop. */

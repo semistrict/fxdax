@@ -1,0 +1,34 @@
+# SPDX-License-Identifier: GPL-2.0
+# Copyright 2026 The fxdax Authors.
+#
+# Kernel: sim
+# Killer: scenarios cow_writeback_counts_again
+#
+# TASK-149.15, doc-13: writeback sizes its batch by the dirty ranges it counts with the file's
+# semaphore held shared, and swaps out no more than that many once it holds it for writing: a store
+# beside the count dirties another range, first in the file, which the swap takes, passing by the
+# last, dirty before an fsync began, which returns 0 without it. Found by the file model's
+# durability check (TASK-149.18), failures seed 62; cow_writeback_counts_again: Fxfs's extents lack
+# the second chunk's write after the fsync.
+
+--- a/guest/linux/fs/fxfs/dax.c
++++ b/guest/linux/fs/fxfs/dax.c
+@@ -2130,16 +2130,10 @@
+ 		/* Between the count and the swap, where iomaps may dirty more (pause points). */
+ 		fxfs_dax_pause_file(FXFS_DAX_STEP_COUNTED, inode->i_ino);
+ 		down_write(&file->sem);
+-		now = fxfs_dax_dirty_ranges(file);
+-		if (now && now <= most)
+-			break;
+-		up_write(&file->sem);
+-		kvfree(batch);
+-		batch = NULL;
+-		most = now;
++		break;
+ 	}
+ 	xa_for_each(&file->ranges, chunk, range) {
+-		if (!fxfs_dax_range_dirty(range))
++		if (nr == most || !fxfs_dax_range_dirty(range))
+ 			continue;
+ 		batch[nr].range = range;
+ 		/* Kept, mapped, while the writeback reads it: no reclaim, no drop. */

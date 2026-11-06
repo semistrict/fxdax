@@ -10,16 +10,21 @@
 
 --- a/guest/linux/fs/fxfs/dax.c
 +++ b/guest/linux/fs/fxfs/dax.c
-@@ -2067,7 +2067,7 @@
- 		err = -ENOMEM;
- 		goto out;
- 	}
--	down_write(&file->sem);
-+	down_read(&file->sem);
- 	xa_for_each(&file->ranges, chunk, range) {
- 		if (nr == most || !fxfs_dax_range_dirty(range))
- 			continue;
-@@ -2085,7 +2085,7 @@
+@@ -2129,11 +2129,11 @@
+ 		}
+ 		/* Between the count and the swap, where iomaps may dirty more (pause points). */
+ 		fxfs_dax_pause_file(FXFS_DAX_STEP_COUNTED, inode->i_ino);
+-		down_write(&file->sem);
++		down_read(&file->sem);
+ 		now = fxfs_dax_dirty_ranges(file);
+ 		if (now && now <= most)
+ 			break;
+-		up_write(&file->sem);
++		up_read(&file->sem);
+ 		kvfree(batch);
+ 		batch = NULL;
+ 		most = now;
+@@ -2148,7 +2148,7 @@
  		nr++;
  	}
  	fxfs_dax_count(dax, file, 0, -pages);
