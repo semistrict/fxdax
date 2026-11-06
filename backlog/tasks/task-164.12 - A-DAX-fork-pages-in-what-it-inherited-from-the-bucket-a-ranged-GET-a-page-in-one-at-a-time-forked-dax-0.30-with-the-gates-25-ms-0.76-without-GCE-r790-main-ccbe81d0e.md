@@ -7,7 +7,7 @@ title: >-
 status: In Progress
 assignee: []
 created_date: '2026-11-06 13:47'
-updated_date: '2026-11-06 15:52'
+updated_date: '2026-11-06 17:30'
 labels:
   - performance
   - dax
@@ -34,8 +34,8 @@ The perf gate's full run on main ccbe81d0e (docs/measurements/dax-cow-gate.md, r
 ## Definition of Done
 <!-- DOD:BEGIN -->
 - [ ] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Notes
@@ -46,4 +46,6 @@ The perf gate's full run on main ccbe81d0e (docs/measurements/dax-cow-gate.md, r
 The fix, as the user decided for a cache that brings forked-dax to 0.8: the test daemons default to a part cache, as they default to a file bucket. guest/tests/test_cases/src/common.rs's spawn_daemon gives each case's daemon <name>-cache in the test's directory (part_cache), scripts/test-e2e.sh its own daemon a directory of its own, removed on exit, unless FXDAX_EXTENTD_CACHE is set, empty for none; scripts/lib/gce.sh's fetch leaves *-cache on the host. Test: common::tests::daemons_keep_a_part_cache_unless_told_otherwise (Docker, with latency_is_added_to_local_buckets_alone: 2 passed), which fails without the default (its first assertion). guest/tests/Cargo.lock brought up to date with extent_store's humantime, hyper and reqwest, which cargo adds at every build.
 
 The full perf gate with it (r794: single on r792, density on r793, the gate phase over both), every case and every gate passing: forked-dax 0.836 (dax-forked 1163, 1221, 1188, 1287, 1211 against no-dax-forked's 1450 median), decay of dax-forked 1.04, dax 0.974, density-memory 0.847, density-memory-mib 2,097.4, bigmap-read 5.52; dax-forked's daemon 126,148 page-ins, 11 ranged GETs. docs/measurements/dax-cow-gate.md has it.
+
+Validation: scripts/upstream-changes.py --check passes; FXDAX_TEST_PARTS=workspace scripts/test.sh on macOS: 2049 passed, 71 skipped (the change touches no workspace crate: guest/tests and scripts alone); Linux by land-p2's CI. The dax-gate on it (r792, r795): suites, pgbench-dax-forked and its probes pass, once pgbench-probes measures a MAP alone (TASK-164.6 has it).
 <!-- SECTION:NOTES:END -->
