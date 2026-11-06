@@ -1531,6 +1531,81 @@ mod tests {
         assert_eq!(root, Some(b"second".to_vec()));
     }
 
+    /// The store names an extent its uploader acknowledged where it was sealed, its segment's key
+    /// (`Store::acknowledged`), for as long as it holds it, whatever its writer's checkpoints name
+    /// it at since. The collector keeps the moves on an extent's way from where the branch's newest
+    /// checkpoint names it, that of the writer holding the lease: compacted twice, from its segment
+    /// into moves and from those into moves of moves, the first moves go, though the store's way to
+    /// the extent starts at the segment, gone, and goes through them.
+    #[test]
+    #[ignore = "TASK-195"]
+    fn extents_compacted_twice_read_where_the_store_names_them() {
+        const EXTENT: usize = 64 * BLOCK;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("store");
+        let bucket = Arc::new(Bucket::new(Arc::new(InMemory::new()), ""));
+        let options = extent_remote::collector::Options { compact_below: 0.5, grace: 0 };
+        let collect = |holder| {
+            let pass = extent_remote::collector::collect(&*bucket, holder, &options);
+            futures::executor::block_on(pass).unwrap()
+        };
+        // One segment, of extents 1 to 16, which don't compress, freed but 1 to 3; the store
+        // closing checkpoints it.
+        let store = ExtentStore::create(&path, 16 * EXTENT as u64).unwrap();
+        let branch = store.branch();
+        store.attach_remote(bucket.clone(), 1, idle()).unwrap();
+        for sequence in 1..=16 {
+            write(&store, sequence, &noise(sequence, EXTENT));
+        }
+        store.commit(None).unwrap();
+        for sequence in 4..=16 {
+            store.free(ExtentId { branch, sequence }).unwrap();
+        }
+        store.commit(None).unwrap();
+        drop(store);
+        // The segment compacted: 1 to 3 in its moves.
+        assert_eq!(collect(1).compacted, 1);
+
+        // Its writer then frees 2 and 3 and checkpoints, naming 1 in the moves, which hold a third
+        // of what they did.
+        let store = ExtentStore::open(&path).unwrap();
+        store.attach_remote(bucket.clone(), 2, idle()).unwrap();
+        store.free(ExtentId { branch, sequence: 2 }).unwrap();
+        store.free(ExtentId { branch, sequence: 3 }).unwrap();
+        store.commit(None).unwrap();
+        drop(store);
+        // The segment goes, no state naming it there; the moves are compacted, then go too.
+        collect(3);
+        collect(4);
+        let keys: Vec<String> =
+            futures::executor::block_on(extent_remote::Bucket::list(&*bucket, ""))
+                .unwrap()
+                .into_iter()
+                .map(|meta| meta.key)
+                .filter(|key| key.starts_with("moves/") || key.starts_with("segments/"))
+                .collect();
+        let twice = format!("moves/moves/segments/{branch:016x}/");
+        let once = format!("moves/segments/{branch:016x}/");
+        assert!(keys.iter().any(|key| key.starts_with(&twice)), "{keys:?}");
+        assert!(!keys.iter().any(|key| key.starts_with(&once)), "{keys:?}");
+        // The branch has it: its newest checkpoint names it in the first moves, gone, whose own
+        // moves hold it.
+        let extent = ExtentId { branch, sequence: 1 };
+        futures::executor::block_on(async {
+            let state = recover(&*bucket, branch, None).await.unwrap().state;
+            let held = storage_device::ExtentId::new(branch, 1);
+            let location = &state.extents[&held];
+            assert!(location.key.starts_with(&once), "{location:?}");
+            assert_eq!(read(&bucket, held, location).await, Ok(noise(1, EXTENT)));
+        });
+
+        let store = ExtentStore::open(&path).unwrap();
+        store.attach_remote(bucket.clone(), 3, idle()).unwrap();
+        let mut data = vec![0; EXTENT];
+        let read = store.read(extent, 0, &mut [crate::VolatileSliceMut::from(&mut data[..])]);
+        assert_eq!(read.map(|()| data == noise(1, EXTENT)), Ok(true));
+    }
+
     /// The footers of `branch`'s segments in `bucket`, in order.
     fn footers(bucket: &Bucket, branch: u64) -> Vec<extent_remote::layout::Footer> {
         use extent_remote::layout;
