@@ -1303,14 +1303,16 @@ static void cow_private_failed(void)
 /*
  * fxdax: that a writeback Fxfs finds no memory for (TASK-207) fails its fsync ENOMEM, Fxfs holding
  * the file as it was, and keeps its pages dirty, their room reserved again: a rebind, which maps
- * the file's sealed extents over its clean private pages, leaves them as written, and the next
- * fsync writes them. Clean, as an I/O error's, the rebind brought back the blocks they replaced,
- * and a clone, which takes the store's, carried those (fxfs-guest-fsx-faults-dax, GCE r699).
+ * the file's sealed extents over its clean private pages, leaves them as written, as does a clone,
+ * which takes the store's blocks, and the next fsync writes them. Clean, as an I/O error's, the
+ * clone carried the blocks they replaced, and the rebind brought those back
+ * (fxfs-guest-fsx-faults-dax, GCE r699).
  */
 static void cow_writeback_found_no_memory(void)
 {
 	static char old[8 * PAGE_SIZE], got[8 * PAGE_SIZE];
 	struct fxfs *fs = mount->info->fs;
+	struct file *copy;
 	u64 page;
 	int err;
 
@@ -1325,6 +1327,11 @@ static void cow_writeback_found_no_memory(void)
 	check(fxfs_sim_reserved(fs, file_inode(cow_target)->i_ino) == 8 * PAGE_SIZE,
 	      "a writeback that found no memory left %llu bytes of room reserved for its 8 pages",
 	      fxfs_sim_reserved(fs, file_inode(cow_target)->i_ino));
+	/* A clone takes the store's blocks, once the VFS has written the source back. */
+	copy = new_file(old, sizeof(old));
+	check(!sim_clone(cow_target, 0, copy, 0, sizeof(got)), "the clone");
+	check_file("the clone of a file whose writeback found no memory", copy, cow_expected,
+		   sizeof(got));
 	wait_for(sim_spawn("rebinder", cow_rebind_now, NULL));
 	for (page = 0; page < 8; page++)
 		cow_check(page, page % 2, "after a writeback that found no memory, and a rebind");
