@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-10-22 21:06'
-updated_date: '2026-11-06 04:42'
+updated_date: '2026-11-06 06:10'
 labels:
   - review-2026-10-21
 dependencies:
@@ -73,4 +73,6 @@ Not done: AC 2's GCE suites passing (the DAX snapshot suites fail on main by TAS
 Correction: r687's mapping count wasn't recorded (a passing round keeps no VM log); its window mapped the 1,024 pieces plus the files' metadata, so 'about 1,280' is an estimate.
 
 2026-11-06, for landing apart from TASK-191: rebased onto origin/main 6754d1469 (one conflict, OPEN_QUESTIONS.md's decisions, both kept); vendor/firecracker 0477d531b already on the fork's fxdax-v1.16.1 (e64c4b283), plus 0285e0cb3, its Cargo.lock with fxdax's url (guest/tests' needed the same; cargo metadata --locked passes in both, main's guest lock fails it). Verified on the rebased tree: Linux Docker fxdax 482/486 (the build stamp and three grants tests, Docker's, as main), shuttle 59/59; macOS workspace 2119/2119 and every shuttle part; GCE r704 (us-east4-a, us-west2 out of quota; jailed): the vmm crate's extent and vCPU tests 16/16 (they build on x86-64 alone), fxfs-guest-snapshot 3/3, fxfs-guest-migrate-dax 3/3. Still In Progress: the DAX snapshot suites' end-to-end test with a mapped DAX file waits for TASK-191.
+
+2026-11-06, after TASK-111.4 landed: rebased onto main f81174090; vendor/firecracker's MAP_MANY commit onto the fork's 96cb97976 (a42d32a13), which has fxdax's url in its Cargo.lock, so 0285e0cb3 dropped, as did guest/tests' lock commit (main has url there). STATS took wire 31, so MAP_MANY is 32 (the notes above saying 31 predate this). 111.4 made stage_counts() a struct: the restore test reads .costs. Verified: Linux Docker fxdax 471/475 (the build stamp and three grants tests, Docker's), shuttle 59/59, clippy nothing on lines changed; macOS workspace 2031/2031 and every shuttle part; GCE r705 (us-east4-a, jailed, n2-standard-4, tree 883dbd889, the test fix not in it, which no case builds): the vmm crate's extent and vCPU tests 18/18, fxfs-guest-snapshot 3/3, fxfs-guest-migrate-dax 3/3, fxfs-guest-stats 3/3; host deleted. Still In Progress, waiting for TASK-191.
 <!-- SECTION:NOTES:END -->
