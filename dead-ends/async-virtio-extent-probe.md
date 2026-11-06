@@ -10,3 +10,10 @@ boot, on every fork boot.
 **Why it's dead:** No boot gain to show. Whatever the window's memmap costs now, an asynchronous
 probe doesn't take it off the path to init and a mount.
 **Reopen if:** A boot at loglevel 7 with initcall_debug shows what the probe costs on main today.
+
+**Since:** 2026-11-05, TASK-92.8 measured it (the driver's `window` attribute, GCE r673, jailed): the
+probe's memremap_pages of a 2 GiB window took 153-157 ms of a 489-501 ms boot to init (305-333 ms
+with no window), of an 8 GiB window 608 ms of 1085. Making the window's struct pages a part at a
+time as dax_direct_access reaches them took it off the boot instead (r674: 369-381 ms; 505 ms for
+8 GiB). The asynchronous probe stays dead: the cost is there, but deferring the probe didn't move it
+off the path to init.

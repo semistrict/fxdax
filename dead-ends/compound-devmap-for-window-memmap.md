@@ -12,3 +12,9 @@ MEMORY_DEVICE_FS_DAX either.
 **Reopen if:** Linux's fs-dax stops writing tail pages' struct pages. Left in TASK-92.8: the memmap
 made a part at a time, or struct pages in the window itself (altmap), which saves the 32 MiB, not
 the init.
+
+**Since:** 2026-11-05, TASK-92.8 cut the memmap another way: struct pages made a memory section at a
+time as the window's pages are first reached, so a guest pays for the window it uses (r674: 18 MiB
+at a pgbench run's end against 32 MiB for a 2 GiB window). An altmap was ruled out too: it moves the
+memmap into the window, which copies on write, so its stores would be private pages counted against
+private_max, the same memory on the host, and the init's cost stays.
