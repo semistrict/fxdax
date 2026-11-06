@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-06 03:14'
-updated_date: '2026-11-06 07:04'
+updated_date: '2026-11-06 07:05'
 labels:
   - bug
   - dax
@@ -30,15 +30,15 @@ Found by TASK-92.14's test (2026-11-06, GCE r685 to r688, main at 752515020 with
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
 - [x] #1 The cause named, with the run that shows it
-- [ ] #2 fxfs-guest-snapshot's pieces stored to through a writable shared mapping before the freeze (TASK-92.14's reproduction) pass 20 rounds of each DAX snapshot suite, jailed, the restored bytes checked
+- [x] #2 fxfs-guest-snapshot's pieces stored to through a writable shared mapping before the freeze (TASK-92.14's reproduction) pass 20 rounds of each DAX snapshot suite, jailed, the restored bytes checked
 - [x] #3 A guest check or unit test that fails with the cause put back
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
 - [ ] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -255,4 +255,6 @@ GCE r650, jailed, release kernel, at 5633ca4eb with the test: fxfs-guest-snapsho
 On main, TASK-92.14's r689 showed reads alone through a PROT_READ shared mapping leave the private page, which fits the cause: a vCPU's load queues the worker whose write met the page installed before it ran. The guest check (30efce5be's) is the held-back test above, with stores to every eighth page besides.
 
 Decision moved here from OPEN_QUESTIONS.md (2026-11-06): The uffd stage took every write-protect fault as the guest's store, from any thread, and made the page private; KVM's async page-fault worker writes for loads too, and met pages installed after the vCPU's load had queued it, so the host held private pages the guest never counted, and refused its frozen VM's snapshot. Decided: **such a write resolves as a load and restricts the page for the worker**, as one of a page not here did, and the vCPU's own access decides. A guest makes a page private before it stores (doc-13), so none of its stores comes through a worker. *Cost:* a store doc-13's guest never makes, a vCPU's to a page it didn't make private, retried through the worker, now fails until given up on (159) rather than copying. *Instead:* telling the worker's write for a load from one for a store, which userfaultfd can't. *Undoing it:* `for_worker`'s `!store` back in `UffdSecondStage::resolve`.
+
+GCE r651 (us-east4-a, jailed, release kernel) at 2b44afc36, the stores in: fxfs-guest-snapshot-dax, -suspend-dax, -migrate-dax and -migrate-tenant-dax 20 of 20 rounds each, no snapshot point refused in extentd's log (AC2), where main failed 10 of 12 such rounds (r685, r686, r688) and every round of r689. DoD 1: the workspace ran on macOS and in Linux Docker (fxdax 471 of 475, the container's 4), not on GCE.
 <!-- SECTION:NOTES:END -->
