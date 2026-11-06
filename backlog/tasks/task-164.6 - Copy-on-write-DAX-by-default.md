@@ -4,9 +4,10 @@ title: The copy-on-write DAX perf gate passes
 status: To Do
 assignee: []
 created_date: '2026-11-04 07:58'
-updated_date: '2026-11-06 07:05'
+updated_date: '2026-11-06 13:47'
 labels: []
-dependencies: []
+dependencies:
+  - TASK-164.12
 parent_task_id: TASK-164
 priority: high
 type: task
@@ -43,4 +44,6 @@ doc-13's stage 3 was to make copy-on-write DAX the default; since its stage 4 de
 2026-11-06, rewritten to what it means now (the user): 'by default' no longer applies, copy-on-write being the only DAX. The old AC 2's 'base first reads at today's DAX's' is dropped: it compared against DAX before writable DAX was deleted, a build no longer kept nor runnable against main's guest and host; bigmap's cold-read gate (bigmap-read, at least 4x no DAX's; r632 5.76, r650 5.13) is what gates first reads now. Its 'writes of created files at no-DAX's tps' is the dax gate (r650 0.999), its forked pgbench forked-dax at 0.8 (r650 0.836). TASK-164.11 stays open, later work.
 
 Decision moved here from OPEN_QUESTIONS.md (2026-11-06): The user's call: copy-on-write DAX's one host round trip a page's first store (doc-13) is worth its cost. Measured after TASK-164.10, jailed, nested (GCE r650): 0.836 (1,217 against 1,455 tps) and 0.854 on a rerun (1,216 against 1,424), from r649's 0.579; doc-13 had expected 0.9-1.0. `scripts/pgbench-gate.py`'s `forked-dax` threshold is 0.8, those numbers with room for a nested host's noise, and docs/measurements/dax-cow-gate.md and doc-13 say so. Left for later, as TASK-164.11 and its two subtasks: the VMM's request path (~165 µs of every request), and a page made private without replacing its mapping (~135 µs a run, a TLB flush of every vCPU); besides, unmeasured, the private pages' pre-fault off the critical path, `private_max` against the density gate, and the window's fragmentation. *Undoing it:* the threshold back to 0.9, which r650 fails.
+
+2026-11-06, the full gate on main ccbe81d0e (GCE r790 single, r791 density, jailed, nested; docs/measurements/dax-cow-gate.md): not met. AC1: every case passed and every gate but two: forked-dax 0.304 (against 0.8) and decay of dax-forked 0.114 (against 0.9), dax-forked 711, 1023, 439, 116, 81 tps against no-dax-forked's median 1,444. The rest: dax 0.976, static-dax 1.23, decay 0.97-1.39 elsewhere, density 1.07 and 1.24, density-memory 0.871 (2,097.8 MiB a VM added against 2,409.5), density-memory-mib 2,097.8, bigmap-read 5.32, bigmap-guest-cache 0.0, bigmap-written-memory 1.32. Cause, not the forked-perf changes: since TASK-165.8 a fork pages in what it inherited from the bucket, a ranged GET a page-in, one at a time, each with the case's 25 ms of added latency; rerun without it, forked-dax 0.756 and decay 0.92, still a GET a page-in. TASK-164.12 has it, and blocks this. AC2: the dax-gate wasn't run, AC1 failing.
 <!-- SECTION:NOTES:END -->

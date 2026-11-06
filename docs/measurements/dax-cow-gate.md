@@ -87,14 +87,51 @@ measurement).
 
 ## Runs
 
+### r790 and r791, 2026-11-06: the full gate on main ccbe81d0e, jailed, nested; fails `forked-dax` and `decay` of `dax-forked`
+
+GCE n2-standard-4 (nested, Cascade Lake): the single phase on `fxdax-test-r790-gate` (us-east4-a),
+the density phase on `fxdax-test-r791-gate` (us-central1-a), both at ccbe81d0e (vendor/firecracker
+3d1e01bd2), release guest kernel, every Firecracker jailed; the gate phase over both. Every case
+passed; every gate but two:
+
+| Case | Runs | Median |
+|---|---|---|
+| no-dax | 1390, 1379, 1472, 1474, 1481 | 1472 |
+| dax | 1437, 1428, 1474, 1455, 1435 | 1437 |
+| ext4-dax-pmem | 1169, 1143, 1169, 1192, 1192 | 1169 |
+| no-dax-forked | 1055, 1370, 1444, 1467, 1470 | 1444 |
+| dax-forked | 711, 1023, 439, 116, 81 | 439 |
+| no-dax-density (3 VMs, 2 runs) | 782, 756 / 886, 759 / 894, 757 | |
+| dax-density (3 VMs, 2 runs) | 636, 871 / 963, 886 / 974, 901 | |
+
+Gates: **`forked-dax` 0.304 (fails 0.8)**, **`decay` of dax-forked 0.114 (fails 0.9)**; `dax` 0.976,
+`static-dax` 1.23, `decay` 0.97-1.39 elsewhere, `density` 1.07 and 1.24, `density-memory` 0.871
+(no DAX 2,409.5 MiB a VM added, DAX 2,097.8; first VMs 3,282.6 and 2,646.5), `density-memory-mib`
+2,097.8, `bigmap-read` 5.32 (88.9 against 16.7 MiB/s), `bigmap-guest-cache` 0.0,
+`bigmap-written-memory` 1.32 (bigmap with DAX: 2,780 stores/s, p50 355 us, p99 471, max 1,004; msync
+1.14 s).
+
+What dax-forked spent: its PRIVATEs' daemon part grew from 0.4 ms to 540 ms a request, the VM
+process's runs staying at 0.1-0.4 ms: each waited for its source page to be brought in, and the
+daemon paged in one part at a time, a ranged GET of the bucket each, ~2,200 a minute, one every
+~27 ms, which the case's 25 ms of added latency a bucket request makes (its default, a bucket in
+memory; TASK-209 keeps it off real buckets). Since TASK-165.8, acknowledged segments leave the
+store for the bucket, so a fork reads what it inherited from there: r649 and r650 fetched nothing.
+No DAX pays those reads once, into its guest's page cache; DAX pays them again whenever the daemon
+must bring a page in. The same pair rerun on r790 with FXDAX_REMOTE_LATENCY_MS=0: dax-forked 1180,
+1250, 941, 1082, 1088 against 1197, 1363, 1439, 1458, 1460, `forked-dax` 0.756 (fails 0.8),
+`decay` 0.92, still 13-36k page-ins a minute, a ranged GET each, 400-1,100 MiB fetched, the
+daemon's part of a PRIVATE 47-391 us (r650: 83). TASK-164.12 has it. The dax-gate (scripts/dax-gate.sh)
+wasn't run.
+
 ### r650, 2026-11-06: single phase, jailed, nested; `forked-dax` 0.836, from r649's 0.579
 
 It failed the 0.9 then in force; the user took it, 2026-11-06, and the threshold is 0.8 since. A rerun of
-the forked pair on the same host, at 968ab1048: 0.854 (1,216 against 1,424).
+the forked pair on the same host, at e51d4ade6: 0.854 (1,216 against 1,424).
 
 GCE `fxdax-test-r650-tperf`, n2-standard-4 (nested, Cascade Lake), us-east4-a, release guest
 kernel, every Firecracker jailed. At fedc14fd5 with TASK-164.10's changes uncommitted (their
-commits db814fe00 and 1a26248d1): a `PRIVATE`'s pages made as one run in the VM process, pages
+commits 99e68ad10 and f485ccb2f): a `PRIVATE`'s pages made as one run in the VM process, pages
 made private ahead of a log's writes, rebinds a range at a time in one `MAP_MANY`. The density
 phase wasn't run.
 

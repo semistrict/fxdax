@@ -4,11 +4,11 @@ title: >-
   snapshots_after_private_pages_are_rebound_restore_their_bytes dies of SIGSEGV
   now and then: a store fault's probe installs the next pages read-only under
   the stores that follow
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-06 09:05'
-updated_date: '2026-11-06 09:06'
+updated_date: '2026-11-06 13:47'
 labels:
   - bug
   - dax
@@ -33,9 +33,9 @@ Main (027dcbf80) CI run 42185193953, Linux x86, workspace job: fxdax extentd::te
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Notes
@@ -45,4 +45,12 @@ Cause (AC1): under gdb (Docker, arm64, iteration 60), the test's own thread, reg
 Fix: on a window that copies on write, a write probes ahead only if it is a worker's (a load's: a run of loads gains by it); a guest's store there takes a private page whether the page is here or not, a fault either way, so its probe gained nothing and raced the stores after it. Under doc-13 a guest makes its pages private before it stores (TASK-164.9), so no VM's store reaches it: only tests' host threads did.
 Tests (AC2): stores_to_pages_not_here_install_nothing_after_them_once (uffd's Shuttle model: a guest store to a page not here leaves the next page not here; a worker's write still maps the next ahead), red with the probe back for every write ('the store's fault installed the page after it'). AC3: Linux in Docker, nextest --stress-count: the test 2,000 of 2,000 with the fix (land-v without it 497 of 500; main's first failure at iteration 110, and 60 under gdb), extentd's snapshot and private tests 200 of 200 (100 of 100 before); fxdax Shuttle 66 of 66, dax::uffd and extentd 140 of 140.
 Blind spot: no test had a guest's store fault on a copy-on-write window with another access right after it; the Shuttle model resolves a fault whole, probe included, before the next access, so the probe's timing never showed there; the real-uffd test did, now and then. Looked around: the other installs made after a faulting thread is woken are a reinstall's (before the wake) and none else; a worker's probe can race a vCPU's next access the same way, which the VMM's retry covers, by design (the module docs' 'a VMM must then let the guest retry').
+
+Landed on main in land-vr (ccbe81d0e), CI 42205895326 green: its workspace job on Linux x86 (not GCE), shuttle and the rest. upstream-changes.py --check passes on main; the change is fxdax's own code, no upstream file (DoD 3).
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+A real-uffd test's guest thread died of SIGSEGV now and then (main's CI 42185193953; 3 runs in 500 on land-v): its store's missing fault made the page private and woke it, and only then the uffd stage probed the next page, installing it and the pages brought in with it read-only for a moment (install's PROT_READ until write-protected) under the thread's next store. On a window that copies on write a guest's store probes nothing now, as it takes a private page either way; a worker's write, a load's, still does. Verified: a Shuttle test red with the probe back; the test 2,000 of 2,000 and 500 of 500 under nextest --stress-count, its sibling snapshot and private tests 200 of 200; main's CI green.
+<!-- SECTION:FINAL_SUMMARY:END -->

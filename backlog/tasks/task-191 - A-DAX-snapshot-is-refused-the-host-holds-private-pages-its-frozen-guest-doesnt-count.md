@@ -3,11 +3,11 @@ id: TASK-191
 title: >-
   A DAX snapshot is refused: the host holds private pages its frozen guest
   doesn't count
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-06 03:14'
-updated_date: '2026-11-06 09:30'
+updated_date: '2026-11-06 13:47'
 labels:
   - bug
   - dax
@@ -36,7 +36,7 @@ Found by TASK-92.14's test (2026-11-06, GCE r685 to r688, main at 752515020 with
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
 - [x] #2 scripts/upstream-changes.py --check passes
 - [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
@@ -247,16 +247,24 @@ index 4d1ffef23..7ca3f2b5d 100644
 ```
 
 Cause (AC1): the uffd stage told KVM's async page-fault worker's writes from the guest's stores only for missing faults (for_worker = !store && ...): a write-protect fault was taken as the guest's store, from any thread, and the window made the page private (Window::copy), which no PRIVATE of the guest's asked for, so the guest never counted it. The worker writes for loads and stores alike (async_pf_execute's FOLL_WRITE), and the page a vCPU's load found not here (a missing fault, so the worker) may be installed, write-protected, before the worker runs: by another fault on it, by the probe that installs the page after a worker's write ('a sequential writer'), or by a MAP of pages in memory. TASK-92.14's guest reads 1,024 pages in order through a writable shared mapping, ~950 worker writes a round: the probe of page N+1 by page N's worker met page N+1's worker already queued, now writing a write-protected page. Under doc-13 a guest makes every page private before it stores (TASK-164.9), so no store of its comes through a worker. Shown by the host-side test below (red before the fix: 1 private page); the guest symptom by r685, r686, r688 on main (10 of 12 DAX snapshot rounds refused, 'the window has 2 private pages').
-Fix (a9728e1b0): on a window that copies on write, any write by a thread not the guest's, write-protect fault or missing, resolves as a load and restricts the page to reads for the worker; the vCPU's own access decides, as for pages not here. The probe stays: it saves loads' faults too.
-Tests: worker_writes_of_pages_here_before_loads_copy_nothing and _before_stores_copy_nothing (Shuttle, uffd's model: a page installed at MAP, the worker's write copies nothing and fails, the vCPU's load reads the extent, its store fails until a lift and then copies), red before the fix. stores_to_pages_here_copy_them is the vCPU's own store now (it encoded the old belief that only a store write-protect-faults). needs_worker_writes_restricted now fails as 'the worker's write never ended': without the restriction the retried write faults as a load for good, where it copied before. Guest check (9121498b5): TASK-92.14's snapshot test, its stores put back (writable shared mapping of 1,024 one-page extents, every eighth page stored to, frozen: 0 private and 0 dirty asserted; restored bytes checked); extentd logs why a snapshot's point or fork is refused (TASK-92.14's hunk). Both are TASK-92.14's uncommitted work, taken here: whichever lands second takes the other's.
+Fix (373895c11): on a window that copies on write, any write by a thread not the guest's, write-protect fault or missing, resolves as a load and restricts the page to reads for the worker; the vCPU's own access decides, as for pages not here. The probe stays: it saves loads' faults too.
+Tests: worker_writes_of_pages_here_before_loads_copy_nothing and _before_stores_copy_nothing (Shuttle, uffd's model: a page installed at MAP, the worker's write copies nothing and fails, the vCPU's load reads the extent, its store fails until a lift and then copies), red before the fix. stores_to_pages_here_copy_them is the vCPU's own store now (it encoded the old belief that only a store write-protect-faults). needs_worker_writes_restricted now fails as 'the worker's write never ended': without the restriction the retried write faults as a load for good, where it copied before. Guest check (6e3b379a6): TASK-92.14's snapshot test, its stores put back (writable shared mapping of 1,024 one-page extents, every eighth page stored to, frozen: 0 private and 0 dirty asserted; restored bytes checked); extentd logs why a snapshot's point or fork is refused (TASK-92.14's hunk). Both are TASK-92.14's uncommitted work, taken here: whichever lands second takes the other's.
 Blind spot: the worker tests faulted only pages not here; nothing had a worker write a page here, which the model allowed (access_by(WORKER) on an installed page) and stores_to_pages_here_copy_them asserted copied. Looked around: the other write-protect path, refused stores on a window that doesn't copy, restricts and copies nothing already; Window::fault's store path is reached now only by guest threads.
 Structure: the stage decided what a fault was from its kind (missing or write-protect) where only the thread says whether it is the guest's; it decides by the thread now for every write. Window::copy's store path stays for a vCPU's own store, which doc-13's guest never makes; making a host store fault fatal is a further step, not taken.
-GCE r650, jailed, release kernel, at 1a26248d1 with the test: fxfs-guest-snapshot-dax 4 of 4, fxfs-guest-suspend-dax 4 of 4 (restores 76-125 ms); the DAX suites (fxfs-guest-dax, -checks-dax, -checks-dax-small, -crash-dax, -crash-dax-killed, -crash-stray-dax) pass. Not run: 20 rounds of each DAX snapshot suite (AC2 asks), -migrate-dax and -migrate-tenant-dax.
-On main, TASK-92.14's r689 showed reads alone through a PROT_READ shared mapping leave the private page, which fits the cause: a vCPU's load queues the worker whose write met the page installed before it ran. The guest check (9121498b5's) is the held-back test above, with stores to every eighth page besides.
+GCE r650, jailed, release kernel, at f485ccb2f with the test: fxfs-guest-snapshot-dax 4 of 4, fxfs-guest-suspend-dax 4 of 4 (restores 76-125 ms); the DAX suites (fxfs-guest-dax, -checks-dax, -checks-dax-small, -crash-dax, -crash-dax-killed, -crash-stray-dax) pass. Not run: 20 rounds of each DAX snapshot suite (AC2 asks), -migrate-dax and -migrate-tenant-dax.
+On main, TASK-92.14's r689 showed reads alone through a PROT_READ shared mapping leave the private page, which fits the cause: a vCPU's load queues the worker whose write met the page installed before it ran. The guest check (6e3b379a6's) is the held-back test above, with stores to every eighth page besides.
 
 Decision moved here from OPEN_QUESTIONS.md (2026-11-06): The uffd stage took every write-protect fault as the guest's store, from any thread, and made the page private; KVM's async page-fault worker writes for loads too, and met pages installed after the vCPU's load had queued it, so the host held private pages the guest never counted, and refused its frozen VM's snapshot. Decided: **such a write resolves as a load and restricts the page for the worker**, as one of a page not here did, and the vCPU's own access decides. A guest makes a page private before it stores (doc-13), so none of its stores comes through a worker. *Cost:* a store doc-13's guest never makes, a vCPU's to a page it didn't make private, retried through the worker, now fails until given up on (159) rather than copying. *Instead:* telling the worker's write for a load from one for a store, which userfaultfd can't. *Undoing it:* `for_worker`'s `!store` back in `UffdSecondStage::resolve`.
 
 GCE r651 (us-east4-a, jailed, release kernel) at 2b44afc36, the stores in: fxfs-guest-snapshot-dax, -suspend-dax, -migrate-dax and -migrate-tenant-dax 20 of 20 rounds each, no snapshot point refused in extentd's log (AC2), where main failed 10 of 12 such rounds (r685, r686, r688) and every round of r689. DoD 1: the workspace ran on macOS and in Linux Docker (fxdax 471 of 475, the container's 4), not on GCE.
 
-On rebasing onto main 1fefc017c: TASK-190's writes_to_pages_here_are_stores_whoever_makes_them (dac960b77) asserted the belief this task refutes, that KVM's worker writes only pages not here, so any thread's write to a page here is a store. It is writes_to_pages_here_are_stores_of_the_guests_alone now, in a9728e1b0: a thread not the guest's writes nothing (EFAULT) and copies nothing; a vCPU's write fails while the restriction stands and, once its failure lifts it (guest_access_failed), is a store in a private copy. Red with the store back (the worker's write made, Ok for EFAULT).
+On rebasing onto main 1fefc017c: TASK-190's writes_to_pages_here_are_stores_whoever_makes_them (dac960b77) asserted the belief this task refutes, that KVM's worker writes only pages not here, so any thread's write to a page here is a store. It is writes_to_pages_here_are_stores_of_the_guests_alone now, in 373895c11: a thread not the guest's writes nothing (EFAULT) and copies nothing; a vCPU's write fails while the restriction stands and, once its failure lifts it (guest_access_failed), is a store in a private copy. Red with the store back (the worker's write made, Ok for EFAULT).
+
+Landed on main in land-vr (ccbe81d0e; the fix 373895c11, the guest check 6e3b379a6), CI 42205895326 green: its workspace job on Linux x86 (not GCE), guest, shuttle, sim and guest-sim jobs. macOS workspace 2,031 of 2,031 on land-v before. upstream-changes.py --check passes on main.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+KVM's async page-fault worker writes for loads too (FOLL_WRITE), and the uffd stage took a write-protect fault of any thread for the guest's store: a worker meeting a page installed after the vCPU's load had queued it made a private page the guest never counted, and the frozen guest's snapshot was refused (10 of 12 DAX snapshot rounds on main, r685, r686, r688; every round of r689). On a window that copies on write, any write by a thread not the guest's now resolves as a load and restricts the page for the worker. Verified: Shuttle tests red before (a private page), TASK-190's test turned to the rule and red with the store back; fxfs-guest-snapshot-dax, -suspend-dax, -migrate-dax and -migrate-tenant-dax 20 of 20 each, jailed, with stores before the freeze (GCE r651); main's CI green.
+<!-- SECTION:FINAL_SUMMARY:END -->
