@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-10-21 19:54'
-updated_date: '2026-11-06 14:53'
+updated_date: '2026-11-06 19:28'
 labels:
   - sandbox
 dependencies: []
@@ -65,4 +65,11 @@ Runs (2026-11-06), all n2-standard-8, us-east1-c (us-central1 out of CPU quota),
 - r757 (55 rounds, 7 h limit), started 12:53Z: running detached when this Mac's gcloud sign-in expired at 14:53Z (OPEN_QUESTIONS.md); its rounds are in gs://echophase-fxdax-bench/soak67-results/run-*/e2e, unread. Not yet the 3 h asked.
 Measures so far (r755, rounds 1-8): bucket 0.41, 0.93, 1.25, 1.62, 1.73, 1.09, 1.38, 1.48 GB (bounded); stores 0.5-2.3 MB, 73 MB while a failed upload's store held its data; loaded daemons' peak RSS 1.45-1.93 GB; checking daemon's 0.85-2.18 GB, levelling once writers keep KEPT_RUNS runs; cache 1.3, 2.4, 3.2, 4.4, 5.4, 5.8, 6.8, 7.9 GB, about 1 GB a round, bounded only by 4 GiB left free on its filesystem.
 Not yet run: the soak against GCS (the real-bucket runs, ccbe81d0e, found GCS works); r758 and r759 are left for it.
+
+Runs after gcloud's sign-in (2026-11-06):
+- r757 (file bucket, 55 rounds asked): 39 rounds passed, 2.1 h of rounds (7 host losses, 4 cache losses more, 13 daemon kills, 6 failed uploads, VMs killed in 34 rounds, stores forked anew in 13); round 40 failed: TASK-217 (after the daemon's kill and the cache's loss, an extent its store places in the bucket reads EIO; state kept in gs://echophase-fxdax-bench/soak67-evidence/r757-round40-state.tar.gz). Diagnosis gap fixed on land-k2 (ce8ab6a71): a failed page-in logs its cause.
+- r758 (GCS, gs://echophase-fxdax-bench/soak67-gcs): 13 rounds passed (3 host losses); round 14: TASK-216 (a crashed VM's store held while its uploader drains, the VM booted again EBUSY past CLOSING_WAIT under 1000 ms added latency). The soak adds no latency to real buckets since (f6df8a53f).
+- r759 (GCS): 37 rounds passed, 2.3 h of rounds (5 host losses, 3 cache losses more, 9 daemon kills, 4 failed uploads, VMs killed in 30 rounds, stores forked anew in 11); round 38, VM crashes alone: TASK-218 (slot 1's store, 37 rounds old, mounted with more metadata borrowed than it reserves, its first compaction closing the journal; state kept in soak67-evidence/r759-round38-state.tar.gz and soak67-gcs/run-20261106T162704Z-afc14ccc).
+Growth, r757 rounds 1-39 and r759 rounds 1-37: the bucket 0.4-2.3 GB, flat after round 4; the stores 0.4-9.5 MB; the loaded daemons' peak RSS 0.7-2.0 GB; the checking daemon's 0.6-2.9 GB, flat after round 5 once writers keep their runs; none past its bound. The cache about 1 GB a round, reset by each cache or host loss (r759: 1.1, 2.1, 0.6 lost, ... 7.4 GB at round 36), bounded only by CACHE_FLOOR.
+No single run has reached the 3 h asked: each stopped at a finding, r757 at 2.1 h and r759 at 2.3 h of rounds. Run numbers r750-r759 are spent; the hosts are deleted, and the results prefix with them.
 <!-- SECTION:NOTES:END -->
