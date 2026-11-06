@@ -9,7 +9,9 @@
 // than at device offsets (backlog doc-4): the types that hold locations are V60. AllocatorInfoV60
 // adds snapshots' owners, the sequence number the allocator mints extents from, and the extents
 // dying when the allocator's tree was compacted, which a mount frees again. Version 61 adds
-// StoreInfoV61: layers of a base, and the branches of its extents (backlog doc-10).
+// StoreInfoV61: layers of a base, and the branches of its extents (backlog doc-10). Version 62's
+// MutationV62, and JournalRecordV62 that holds it, record what replay needs to find the metadata
+// space borrowed as the filesystem had it (`Mutation::UpdateBorrowed`, TASK-218).
 
 use crate::blob_metadata::{BlobMetadata, BlobMetadataV53};
 use crate::lsm_tree::{
@@ -22,11 +24,11 @@ use crate::object_store::allocator::{
 use crate::object_store::journal::super_block::{
     SuperBlockHeader, SuperBlockHeaderV32, SuperBlockRecord, SuperBlockRecordV60,
 };
-use crate::object_store::journal::{JournalRecord, JournalRecordV60};
+use crate::object_store::journal::{JournalRecord, JournalRecordV62};
 use crate::object_store::object_record::{
     FsverityMetadata, FsverityMetadataV50, ObjectKey, ObjectKeyV54, ObjectValue, ObjectValueV60,
 };
-use crate::object_store::transaction::{Mutation, MutationV60};
+use crate::object_store::transaction::{Mutation, MutationV62};
 use crate::object_store::{
     EncryptedMutations, EncryptedMutationsV49, EncryptedTransaction, EncryptedTransactionV60,
     StoreInfo, StoreInfoV61,
@@ -43,7 +45,7 @@ use std::collections::BTreeMap;
 ///
 /// IMPORTANT: When changing this (major or minor), update the list of possible versions at
 /// https://cs.opensource.google/fuchsia/fuchsia/+/main:third_party/cobalt_config/fuchsia/local_storage/versions.txt.
-pub const LATEST_VERSION: Version = Version { major: 61, minor: 0 };
+pub const LATEST_VERSION: Version = Version { major: 62, minor: 0 };
 
 /// The last version of the filesystem where keys in layer files used the old serialization format
 /// (prior to SerializeKey and delta encoding).
@@ -140,10 +142,10 @@ versioned_types! {
         50.. => FsverityMetadataV50,
     }
     JournalRecord {
-        60.. => JournalRecordV60,
+        62.. => JournalRecordV62,
     }
     Mutation {
-        60.. => MutationV60,
+        62.. => MutationV62,
     }
     ObjectKey {
         54.. => ObjectKeyV54,

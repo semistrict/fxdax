@@ -98,6 +98,10 @@ struct Inner {
     // eventually it will be recovered (potentially after a full compaction).
     borrowed_metadata_space: u64,
 
+    // fxdax: `borrowed_metadata_space` as replay found it, before the mount's own transactions: what
+    // the filesystem had borrowed when it stopped, if nothing was lost (TASK-218).
+    borrowed_as_replayed: u64,
+
     // The maximum transaction size that has been encountered so far.
     max_transaction_size: (u64, UintProperty),
 
@@ -151,6 +155,7 @@ impl ObjectManager {
                 last_end_offset: 0,
                 last_journal_usage: 0,
                 borrowed_metadata_space: 0,
+                borrowed_as_replayed: 0,
                 max_transaction_size: (0, metrics::detail().create_uint("max_transaction_size", 0)),
                 reserved_space: journal::RESERVED_SPACE,
             }),
@@ -260,6 +265,11 @@ impl ObjectManager {
             for store_id in object_ids {
                 self.open_store(&root_store, store_id).await?;
             }
+        }
+
+        {
+            let mut inner = self.inner.write();
+            inner.borrowed_as_replayed = inner.borrowed_metadata_space;
         }
 
         // This can fail if a filesystem is created and truncated to a size
@@ -397,10 +407,16 @@ impl ObjectManager {
         let allocator_object_id = self.inner.read().allocator_object_id;
 
         for (object_id, mutation) in mutations {
-            if let Mutation::UpdateBorrowed(borrowed) = mutation {
-                if let Some(txn_size) = txn_size {
+            if let Mutation::UpdateBorrowed { borrowed, from, paid } = mutation {
+                // fxdax: as the transaction borrowed live (`did_commit_transaction`): what its
+                // reservation didn't pay of its usage from `from`, which replay can't tell from
+                // where the last it replayed ended, as a transaction paying for padding writes
+                // nothing to the journal (TASK-218).
+                if txn_size.is_some() {
+                    let usage = end_offset.checked_sub(from).ok_or(FxfsError::Inconsistent)?;
+                    let space = reserved_space_from_journal_usage(usage);
                     self.inner.write().borrowed_metadata_space = borrowed
-                        .checked_add(reserved_space_from_journal_usage(txn_size))
+                        .checked_add(space - space.min(paid))
                         .ok_or(FxfsError::Inconsistent)?;
                 }
                 continue;
@@ -511,7 +527,18 @@ impl ObjectManager {
                 inner.borrowed_metadata_space =
                     inner.borrowed_metadata_space.saturating_sub(sub - add);
             }
-            Some(Mutation::UpdateBorrowed(inner.borrowed_metadata_space))
+            // fxdax: with what replay needs to find what the transaction borrows of its own usage,
+            // which `did_commit_transaction` adds: where it counts it from, and what of it the
+            // transaction's reservation pays, which is untouched until then.
+            let paid = match &transaction.metadata_reservation {
+                MetadataReservation::Borrowing(reservation) => reservation.amount(),
+                _ => 0,
+            };
+            Some(Mutation::UpdateBorrowed {
+                borrowed: inner.borrowed_metadata_space,
+                from: inner.last_end_offset,
+                paid,
+            })
         } else {
             // This transaction should have had no impact on the metadata reservation or the amount
             // we need to reserve.
@@ -791,6 +818,12 @@ impl ObjectManager {
 
     pub fn borrowed_metadata_space(&self) -> u64 {
         self.inner.read().borrowed_metadata_space
+    }
+
+    /// fxdax: the metadata space borrowed as replay found it, before the mount's own transactions:
+    /// what the filesystem had borrowed when it stopped, unless a crash lost some of what it did.
+    pub fn borrowed_as_replayed(&self) -> u64 {
+        self.inner.read().borrowed_as_replayed
     }
 
     pub fn set_borrowed_metadata_space(&self, v: u64) {

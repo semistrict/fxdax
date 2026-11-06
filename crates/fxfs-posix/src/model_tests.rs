@@ -991,11 +991,17 @@ impl World {
 
     /// Unmounts, as a guest's `umount` does, leaving the device.
     async fn unmount(self) -> Result<DeviceHolder, String> {
+        self.unmount_borrowing().await.map(|(device, _)| device)
+    }
+
+    /// Unmounts, leaving the device, and the metadata space the filesystem borrowed as it closed.
+    async fn unmount_borrowing(self) -> Result<(DeviceHolder, u64), String> {
         let Self { filesystem, fs, .. } = self;
         fs.stop_delayed().await.map_err(|e| format!("stopping: {e:#}"))?;
         drop(fs);
         filesystem.close().await.map_err(|e| format!("closing: {e:#}"))?;
-        Ok(filesystem.take_device().await)
+        let borrowed = filesystem.object_manager().borrowed_metadata_space();
+        Ok((filesystem.take_device().await, borrowed))
     }
 
     /// `done`, unless the filesystem had no room for it, which is `None`: what a full filesystem
@@ -1348,10 +1354,17 @@ impl World {
         self.model.open.clone().into_iter().for_each(|ino| self.close(ino));
         let (setting, root, cut) = (self.setting, self.root, self.cut);
         let (model, tally) = (self.model.clone(), self.tally.clone());
-        let device = self.unmount().await?;
+        let (device, borrowed) = self.unmount_borrowing().await?;
         device.reopen(false);
         let mut world = Self::mount(setting, device, root, model, tally).await?;
         world.cut = cut;
+        // Replay finds the metadata space borrowed as the filesystem had it: a mount that found
+        // more borrowed it again, and a store whose many mounts each did ran out of room to
+        // compact (TASK-218).
+        let replayed = world.filesystem.object_manager().borrowed_as_replayed();
+        if replayed != borrowed {
+            return Err(format!("{replayed} bytes borrowed as replayed, {borrowed} as unmounted"));
+        }
         world.settle();
         Ok(world)
     }

@@ -77,6 +77,7 @@ Decisions made without you, still yours to confirm or overturn. Each is a line o
 - **A failed thaw leaves the filesystem frozen and the next resumes at the step that failed;** a read-only superblock's freeze reaches Fxfs through wrapped `freeze_super`/`thaw_super` (an emergency sysrq thaw bypasses them). TASK-200, TASK-202, 2026-11-06.
 - **The driver's queues close under their locks before a reset,** then the stats work is flushed, then the device resets. TASK-201, 2026-11-06.
 - **Fxfs refuses every version but its own** (`EARLIEST_SUPPORTED_VERSION` is `LATEST_VERSION`); upstream's generic upgrade code stays, unreachable; a refusal is `InvalidVersion`, EINVAL. TASK-141.1, 2026-11-05.
+- **Fxfs format 62: `UpdateBorrowed` records where its transaction's journal usage counts from and what its reservation pays**, so replay finds the metadata space borrowed as the filesystem had it; format-61 stores are refused, as any older format is. TASK-218, 2026-11-06.
 - **TASK-141.1 and 141.3 were rewritten to the no-migrations rule's refusals rather than closed.** TASK-141, 2026-11-05.
 - **Once a batch of queued unlinks failed, every change fails,** data's too, as ext4 after a journal abort. TASK-160.23, 2026-11-05.
 - **Corruption is EUCLEAN and EBADMSG, not EIO,** in one errno table for both VFSs. TASK-160.21, 2026-11-03.

@@ -3425,7 +3425,7 @@ impl JournalingObject for ObjectStore {
                     | Mutation::BeginFlush
                     | Mutation::EndFlush
                     | Mutation::DeleteVolume
-                    | Mutation::UpdateBorrowed(_) => {
+                    | Mutation::UpdateBorrowed { .. } => {
                         writer.write(mutation);
                     }
                 }

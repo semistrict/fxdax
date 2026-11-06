@@ -67,7 +67,7 @@ use crate::object_store::journal::writer::JournalWriter;
 use crate::object_store::object_manager::ObjectManager;
 use crate::object_store::object_record::{AttributeKey, ObjectKey, ObjectKeyData, ObjectValue};
 use crate::object_store::transaction::{
-    AllocatorMutation, LockKey, Mutation, MutationV60, ObjectMutationIterator, ObjectStoreMutation,
+    AllocatorMutation, LockKey, Mutation, MutationV62, ObjectMutationIterator, ObjectStoreMutation,
     Options, TRANSACTION_MAX_JOURNAL_USAGE, Transaction, lock_keys,
 };
 use crate::object_store::{
@@ -161,16 +161,16 @@ pub struct JournalCheckpointV32 {
     pub version: Version,
 }
 
-pub type JournalRecord = JournalRecordV60;
+pub type JournalRecord = JournalRecordV62;
 
 #[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug, Serialize, Deserialize, TypeFingerprint, Versioned)]
 #[cfg_attr(fuzz, derive(arbitrary::Arbitrary))]
-pub enum JournalRecordV60 {
+pub enum JournalRecordV62 {
     EndBlock,
     Mutation {
         object_id: u64,
-        mutation: MutationV60,
+        mutation: MutationV62,
     },
     /// Commits records in the transaction.
     Commit,
@@ -666,7 +666,7 @@ impl Journal {
             Mutation::BeginFlush => {}
             Mutation::EndFlush => {}
             Mutation::DeleteVolume => {}
-            Mutation::UpdateBorrowed(_) => {}
+            Mutation::UpdateBorrowed { .. } => {}
             Mutation::UpdateMutationsKey(_) => {}
             Mutation::CreateInternalDir(owner_object_id) => {
                 return *owner_object_id != INVALID_OBJECT_ID;
@@ -4020,6 +4020,70 @@ mod tests {
         // shrunk.
         let now = fs.object_manager().metadata_reservation().amount();
         assert!(now >= reserved, "the metadata reservation shrank from {reserved} to {now}");
+        fs.close().await.expect("close failed");
+    }
+
+    // fxdax: a mount's replay finds the metadata space borrowed as the filesystem had it when it
+    // stopped. A transaction that may borrow but reserves what it can (`Borrowing`), such as an
+    // unlink or a tombstone, borrowed nothing live, but replay took it as having borrowed all its
+    // journal usage: each mount whose replay ended past one borrowed it again, which the next
+    // super-block kept and no compaction repaid. A guest store through 37 rounds of crashes and
+    // pgbench mounted with 10 MB borrowed, more than its reservation holds, and its first
+    // compaction found no room (TASK-218).
+    #[fuchsia::test]
+    async fn test_a_mount_borrows_what_the_filesystem_had_borrowed() {
+        let mut device = DeviceHolder::new(FakeDevice::new(1 << 16, 4096));
+        let fs = FxFilesystemBuilder::new().format(true).open(device).await.expect("open failed");
+        let volumes = root_volume(fs.clone()).await.expect("root_volume failed");
+        let store = volumes
+            .new_volume("default", NewChildStoreOptions::default())
+            .await
+            .expect("new_volume failed");
+        let dir =
+            Directory::open(&store, store.root_directory_object_id()).await.expect("open failed");
+        let mut transaction = store
+            .new_transaction(
+                lock_keys![LockKey::object(store.store_object_id(), dir.object_id())],
+                Options::default(),
+            )
+            .await
+            .expect("new_transaction failed");
+        let file = dir.create_child_file(&mut transaction, "file").await.expect("create failed");
+        transaction.commit().await.expect("commit failed");
+        let file_id = file.object_id();
+        drop((file, dir, store, volumes));
+        let mut fs = fs;
+        for round in 0..8u64 {
+            let volumes = root_volume(fs.clone()).await.expect("root_volume failed");
+            let store = volumes.volume("default", StoreOptions::default()).await.expect("volume");
+            let file = ObjectStore::open_object(&store, file_id, HandleOptions::default(), None)
+                .await
+                .expect("open_object failed");
+            let options = Options { borrow_metadata_space: true, ..Default::default() };
+            let mut transaction = store
+                .new_transaction(
+                    lock_keys![LockKey::object(store.store_object_id(), file_id)],
+                    options,
+                )
+                .await
+                .expect("new_transaction failed");
+            let times = fidl_fuchsia_io::MutableNodeAttributes {
+                modification_time: Some(round),
+                ..Default::default()
+            };
+            file.update_attributes(&mut transaction, Some(&times), None)
+                .await
+                .expect("update_attributes failed");
+            transaction.commit().await.expect("commit failed");
+            drop((file, store, volumes));
+            let borrowed = fs.object_manager().borrowed_metadata_space();
+            fs.close().await.expect("close failed");
+            device = fs.take_device().await;
+            device.reopen(false);
+            fs = FxFilesystemBuilder::new().open(device).await.expect("open failed");
+            let replayed = fs.object_manager().borrowed_as_replayed();
+            assert_eq!(replayed, borrowed, "round {round}: borrowed as replayed, and as it was");
+        }
         fs.close().await.expect("close failed");
     }
 

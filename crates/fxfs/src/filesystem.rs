@@ -915,7 +915,7 @@ impl FxFilesystem {
                 .apply_transaction(transaction, &journal_checkpoint)
                 .expect("Transactions must not fail in image_builder_mode");
             if let Some(mutation) = maybe_mutation {
-                assert!(matches!(mutation, Mutation::UpdateBorrowed(_)));
+                assert!(matches!(mutation, Mutation::UpdateBorrowed { .. }));
                 // These are Mutation::UpdateBorrowed which are normally used to track borrowing of
                 // metadata reservations. As we are image-building and not using the journal,
                 // we don't track this.

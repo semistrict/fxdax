@@ -89,13 +89,13 @@ pub struct TransactionLocks<'a>(pub WriteGuard<'a>);
 /// transaction, these are stored as a set which allows some mutations to be deduplicated and found
 /// (and we require custom comparison functions below).  For example, we need to be able to find
 /// object size changes.
-pub type Mutation = MutationV60;
+pub type Mutation = MutationV62;
 
 #[derive(
     Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize, TypeFingerprint, Versioned,
 )]
 #[cfg_attr(fuzz, derive(arbitrary::Arbitrary))]
-pub enum MutationV60 {
+pub enum MutationV62 {
     ObjectStore(ObjectStoreMutationV60),
     EncryptedObjectStore(#[serde(with = "crate::zerocopy_serialization")] Box<[u8]>),
     Allocator(AllocatorMutationV60),
@@ -106,7 +106,19 @@ pub enum MutationV60 {
     EndFlush,
     /// Volume has been deleted. Requires we remove it from the set of managed ObjectStore.
     DeleteVolume,
-    UpdateBorrowed(u64),
+    /// fxdax: the metadata space borrowed, `borrowed`, before a transaction that may borrow
+    /// accounts for its own journal usage, which it does from `from`, the journal offset where the
+    /// last transaction's ended, padding since included, four times over; and `paid`, the most of
+    /// that its own reservation pays, which it doesn't borrow (`MetadataReservation::Borrowing`).
+    /// Upstream's holds `borrowed` alone, and replay took the transaction as borrowing all of its
+    /// usage from where the last it replayed ended: what a reservation paid, live, and the padding
+    /// a transaction the journal doesn't hold paid, it borrowed again, a mount at a time, which no
+    /// compaction repaid (TASK-218).
+    UpdateBorrowed {
+        borrowed: u64,
+        from: u64,
+        paid: u64,
+    },
     UpdateMutationsKey(UpdateMutationsKey),
     CreateInternalDir(u64),
 }
