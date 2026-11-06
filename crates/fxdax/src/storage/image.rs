@@ -167,8 +167,23 @@ impl Device for ImageDevice {
         mut buffer: MutableBufferRef<'_>,
         _read_opts: ReadOptions,
     ) -> Result<(), Error> {
+        let parts = match self.store.locate(extent, offset, buffer.len() as u64) {
+            // fxdax: in the image's bucket, as a clone holds what it inherited (TASK-165.7).
+            Err(ref error)
+                if let Some(remote) = error.downcast_ref::<extent_store::RemoteData>() =>
+            {
+                let location = remote.location.clone();
+                let fetcher = self.image.fetcher();
+                let fetched = fetcher.read(extent, location, offset, buffer.len() as u64).await?;
+                let (len, end) = (fetched.len(), buffer.len());
+                buffer.reborrow().subslice_mut(..len).copy_from_slice(&fetched);
+                buffer.reborrow().subslice_mut(len..end).fill(0);
+                return Ok(());
+            }
+            parts => parts?,
+        };
         let mut at = 0;
-        for part in self.store.locate(extent, offset, buffer.len() as u64)? {
+        for part in parts {
             match part {
                 // A raw file's part, through the descriptor bypassing the host's page cache,
                 // which the store's own reads of raw files take through the cache
@@ -580,5 +595,4 @@ mod tests {
             pattern(0, BLOCK as usize)
         );
     }
-
 }

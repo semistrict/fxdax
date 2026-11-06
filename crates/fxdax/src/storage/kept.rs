@@ -61,6 +61,12 @@ impl Kept {
         &self.store
     }
 
+    /// What reads the store's extents whose data is in the bucket, as a clone's inherited extents
+    /// are (TASK-165.7).
+    pub fn fetcher(&self) -> Arc<remote::Fetcher> {
+        self.remote.fetcher()
+    }
+
     /// What follows a commit of the store's: it fails once the uploader has, the branch another
     /// writer's or deleted, or its bucket out of reach for good, rather than the image go on as
     /// a branch no bucket has; it waits while more of its commits wait to be uploaded than the
@@ -89,7 +95,7 @@ impl Kept {
     /// fork's commit is made.
     pub fn fork<H>(&self, path: &Path, held: H) -> Result<(), Error> {
         let child = Child { branch: host_store::new_branch(), owner: rand::random(), point: false };
-        host_store::fork(&self.store, Some(&self.remote), path, child, || Ok(()), held)
+        host_store::fork(&self.store, Some(&self.remote), path, child, |_| Ok(()), held)
     }
 
     /// The bucket's collector in this process, if it is the image's own.
@@ -170,14 +176,14 @@ mod tests {
             .sum()
     }
 
-    /// TASK-165.6: an image keeps its branch in a file bucket of its own, in its directory, which
-    /// its description names: closed, the branch holds what its store does.
+    /// TASK-165.6: an image keeps its branch in a file bucket of its own, beside its directory
+    /// (TASK-165.7), which its description names: closed, the branch holds what its store does.
     #[test]
     fn images_keep_their_branches_in_a_file_bucket_of_their_own() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("image");
         let storage = block_on(image_with(&path, b"file", b"contents"));
-        let own = path.canonicalize().unwrap().join("bucket");
+        let own = dir.path().canonicalize().unwrap().join("image.bucket");
         let url = format!("file://{}/", own.display());
         assert_eq!(extent_store::host_bucket(&path).unwrap(), Some(url));
         let image = image(&storage);
@@ -314,7 +320,7 @@ mod tests {
         image.wait_uploaded().unwrap();
         drop(image);
 
-        let own = path.join("bucket");
+        let own = dir.path().join("image.bucket");
         let before = bucket_bytes(&own);
         assert!(before >= 20 * MIB as u64, "{before} bytes");
         let image = Kept::open(&path).unwrap();

@@ -106,9 +106,10 @@ fn clone_mounted_filesystem() {
     })
 }
 
-/// An image deleted while a clone of it lives keeps its directory, which holds what the clone
-/// shares of it, and no longer mounts; the clone mounts as before, and its deletion takes the
-/// image's directory too (TASK-39.4).
+/// An image deleted while a clone of it lives goes, its directory with it: the clone mounts as
+/// before, reading what it inherited in the image's bucket, which is beside the image's directory,
+/// not in it (TASK-39.4, TASK-165.7). Before, the image's directory stayed, holding what the clone
+/// shared of it, and went with the clone.
 #[test]
 fn delete_images_and_their_clones() {
     block_on(async {
@@ -120,21 +121,13 @@ fn delete_images_and_their_clones() {
         assert!(Storage::delete(&path).is_err(), "deleted an open image");
         drop((clone, storage));
         Storage::delete(&path).unwrap();
-        assert!(path.exists());
-        let error = Storage::open(&path).expect_err("opened a deleted image");
-        assert_eq!(
-            format!("{error:#}"),
-            format!(
-                "opening {}: the store was deleted: its directory holds its forks' data alone",
-                path.display()
-            )
-        );
+        assert!(!path.exists());
+        assert!(Storage::open(&path).is_err(), "opened a deleted image");
         let fs = Filesystem::mount(Storage::open(&clone_path).unwrap()).await.unwrap();
         assert_eq!(read(&fs, b"file").await, b"original");
         fs.close().await.unwrap();
         Storage::delete(&clone_path).unwrap();
         assert!(!clone_path.exists());
-        assert!(!path.exists());
     })
 }
 

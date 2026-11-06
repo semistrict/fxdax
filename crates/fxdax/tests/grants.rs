@@ -339,13 +339,15 @@ fn points_dropped_restore_no_more_and_leave_the_snapshot() {
     there.daemon.create(&point, snapshot.branch, None).unwrap();
     let restored = restore(socket, &vm, &point, snapshot.branch).unwrap();
     there.daemon.drop_store(&point).unwrap();
+    // Gone, though forks of it live, which hold none of its directory (TASK-165.7).
+    assert!(!point.exists(), "the copy stayed");
     let other = there.acme.join("other");
     let refused = restore(socket, &other, &point, snapshot.branch);
-    assert_eq!(refused.map(drop), Err(Some(Errno::EIO)));
+    assert_eq!(refused.map(drop), Err(Some(Errno::ENOENT)));
     assert!(snapshotted(&restored, snapshot.extent), "what was restored went with the point");
     write(&restored, &pattern(6), b"restored");
 
-    // At another path while forks hold that one's directory.
+    // At another path.
     let again = there.acme.join("point-again");
     there.daemon.create(&again, snapshot.branch, None).unwrap();
     assert_eq!(restore(socket, &other, &again, 0).unwrap().root().unwrap(), b"snapshotted");
@@ -534,7 +536,6 @@ fn bases_made_points_fork_on_several_hosts_at_once() {
     assert_eq!(failure(again), (Code::InvalidArgument, Errno::EINVAL));
     assert_eq!(refused(&other.daemon.vms, &copy), Some(Errno::EROFS));
 }
-
 
 /// The environment of this test's process as another user ([`as_another_user`]): a socket of the
 /// daemon's, mounted where a jail would have it, and a socket beside it anyone may connect to.

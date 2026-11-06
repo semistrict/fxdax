@@ -651,6 +651,25 @@ impl<D: Dir> Store<D> {
         made().context(ForkCommitted { child })
     }
 
+    /// fxdax: commits, durably, a commit whose segment's footer names `child`, a fork of the
+    /// branch, which its owner and whether it is a point say (doc-7, Forks): the fork is made where
+    /// the branch's segments go, as they go, and nowhere here (TASK-165.7). Its segment closes at
+    /// the commit. Returns the commit's epoch. One that fails once its commit was made fails with
+    /// [`ForkCommitted`]: the segment names the fork, as a host crashing then would leave it.
+    pub fn commit_fork(&self, child: Child) -> Result<u64, Error> {
+        let committing = self.committing.lock().unwrap();
+        self.writable()?.segments.close_for_fork(child);
+        self.commit_locked(&committing, None, false)?;
+        let epoch = self.lock().epoch;
+        let made = || -> Result<u64, Error> {
+            failpoint!("fork::committed");
+            self.flush()?;
+            failpoint!("fork::flushed");
+            Ok(epoch)
+        };
+        made().context(ForkCommitted { child: child.branch })
+    }
+
     /// The branch the branch was forked from, if it is a fork.
     pub fn parent(&self) -> Option<u64> {
         self.parent

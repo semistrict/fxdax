@@ -25,6 +25,13 @@ fn host() {
     }
 }
 
+/// Keeps `store`'s branch in the bucket its description names, the daemon's, as forking it needs
+/// (TASK-165.7): a store made here, not through the daemon, which attaches those it opens.
+fn kept(store: &ExtentStore) {
+    let options = crate::remote::Options { token: 1, ..Default::default() };
+    store.attach_remote(store.bucket().clone(), rand::random(), options).unwrap();
+}
+
 /// A daemon serving one connection, on a thread, and its client, of the store at `path`.
 fn connect(path: &Path, capacity: u64) -> (RemoteExtentStore, JoinHandle<()>) {
     let (client, server) = UnixStream::pair().unwrap();
@@ -1203,6 +1210,7 @@ fn two_processes_map_the_same_pages() {
         let extent = ExtentId { branch: store.branch(), sequence: 1 };
         store.write(extent, 0, &[VolatileSlice::from(&pattern(9, ps)[..])]).unwrap();
         store.commit(None).unwrap();
+        kept(&store);
         store.fork(&child, extent.branch + 1).unwrap();
         extent
     };
@@ -1480,6 +1488,7 @@ fn two_vm_processes(name: &str, env: &[&str]) -> TwoVmProcesses {
         let extent = ExtentId { branch: store.branch(), sequence: 1 };
         store.write(extent, 0, &[VolatileSlice::from(&pattern(9, ps)[..])]).unwrap();
         store.commit(None).unwrap();
+        kept(&store);
         store.fork(&child, extent.branch + 1).unwrap();
         extent
     };
@@ -1927,9 +1936,10 @@ fn stores_fork_live_once_nothing_is_open() {
     assert!(read(&forked, extent(3), 0, BLOCK).is_err());
 }
 
-/// TASK-39.4: a store is deleted through the daemon while a fork of it is open: refused while its
-/// own VM process has it open; then its directory stays, holding what the fork shares, and no
-/// longer opens, while the fork reads it and writes as before, until the fork is deleted too.
+/// TASK-39.4: a store is deleted through the daemon while its fork is open, though not while its
+/// own VM process has it open: its directory goes, while the fork reads what it inherited and
+/// writes as before, until it is deleted too. Before TASK-165.7, the store's directory stayed,
+/// holding what the fork shared of it.
 #[test]
 fn stores_are_deleted_while_their_forks_are_open() {
     host();
@@ -1949,9 +1959,7 @@ fn stores_are_deleted_while_their_forks_are_open() {
     assert_eq!(busy.err().and_then(|error| error.errno()), Some(Errno::EBUSY));
     drop(store);
     delete_store(&path).unwrap();
-    assert!(path.exists(), "the store's directory went while its fork lives");
-    let deleted = RemoteExtentStore::connect(&socket, &path, 1 << 24);
-    assert_eq!(deleted.err().map(|error| error.errno()), Some(Some(Errno::EIO)));
+    assert!(!path.exists(), "the store's directory stayed");
     assert_eq!(read(&forked, base, 0, BLOCK), Ok(pattern(1, BLOCK)));
     let own = ExtentId { branch: forked.branch(), sequence: 1 };
     write(&forked, own, 0, &pattern(2, BLOCK)).unwrap();
@@ -1965,7 +1973,7 @@ fn stores_are_deleted_while_their_forks_are_open() {
     assert_eq!(read(&forked, base, 0, BLOCK), Ok(pattern(1, BLOCK)));
     drop(forked);
     delete_store(&fork).unwrap();
-    assert!(!fork.exists() && !path.exists(), "the last branch gone, its directory goes");
+    assert!(!fork.exists());
     let missing = delete_store(&fork);
     assert_eq!(missing.err().and_then(|error| error.errno()), Some(Errno::ENOENT));
 }
@@ -2169,53 +2177,6 @@ fn stores_are_cleaned_behind_their_guests_commits() {
     store.commit(None).unwrap();
     assert_eq!(dead_bytes(&path), 0);
     assert_eq!(info().available, 12 * extent_bytes);
-    for sequence in [1, 17] {
-        let extent = ExtentId { branch, sequence };
-        assert_eq!(read(&store, extent, 0, EXTENT), Ok(crate::test_data::noise(sequence, EXTENT)));
-    }
-    drop(store);
-    served.join().unwrap();
-}
-
-/// TASK-79.2: a fork deleted leaves the store it was forked from what that store freed since in
-/// the segments they shared, which the fork held, as dead space of its own, which takes none of
-/// its guest's room either: once the store's dead space in all is past the capacity's worth, a
-/// pass copies what is live of the segments it is in, with no commit of the store's guest, and the
-/// guest's next commit lets them go.
-#[test]
-fn stores_are_cleaned_once_the_forks_sharing_their_segments_go() {
-    let extent_bytes = EXTENT as u64;
-    host();
-    let dir = tempfile::tempdir().unwrap();
-    let (path, fork) = (dir.path().join("store"), dir.path().join("fork"));
-    let (store, served) = connect(&path, 16 * extent_bytes);
-    let branch = store.branch();
-    let info = || store.info().unwrap();
-    // As above, the fork holding the first segment.
-    write_extents(&store, 1..=16);
-    store.commit(None).unwrap();
-    store.fork(&fork, branch + 1).unwrap();
-    free_extents(&store, 2..=16);
-    write_extents(&store, 17..=31);
-    store.commit(None).unwrap();
-    free_extents(&store, 18..=31);
-    store.commit_ordered(None).unwrap();
-    // 14 extents' worth no extent holds, within the capacity's worth: what the store freed of
-    // those the fork holds is none of its own.
-    wait_for_uploader(&path);
-    assert_eq!(dead_bytes(&path), 14 * extent_bytes);
-    assert_eq!(info().available, 14 * extent_bytes);
-    delete_store(&fork).unwrap();
-    // The two extents live copied, no commit having come since: the fork gone, 29 extents' worth
-    // no extent holds, 13 past the capacity's, which stay until one comes.
-    assert_eq!(wait_for_open_segments(&path, branch, 2 * extent_bytes), 2 * extent_bytes);
-    assert_eq!(dead_bytes(&path), 29 * extent_bytes);
-    assert_eq!(info().available, 14 * extent_bytes);
-    // The commit makes the copies their extents' places: the segments no extent is in any more
-    // go, and their dead space with them.
-    store.commit(None).unwrap();
-    assert_eq!(dead_bytes(&path), 0);
-    assert_eq!(info().available, 14 * extent_bytes);
     for sequence in [1, 17] {
         let extent = ExtentId { branch, sequence };
         assert_eq!(read(&store, extent, 0, EXTENT), Ok(crate::test_data::noise(sequence, EXTENT)));
@@ -2575,11 +2536,10 @@ fn serves_hundreds_of_forks_of_a_base() {
     // The daemon's threads: its runtimes', and the requests' running, not a set per connection.
     assert!(after.threads < 64, "{} threads: {:?}", after.threads, thread_names());
     // Each fork's: the connection's two ends here, and the client's, with its kernel's memory, its
-    // arena and the default one, read-only (TASK-79.17); its store's index and open segment. And
-    // those the forks share: the files of the base's segments they read, the most
-    // `Options::open_files` (64) of them.
+    // arena and the default one, read-only (TASK-79.17); its store's directory, its own since
+    // TASK-165.7, its index and open segment. And the base's, which it is attached to.
     let opened = after.files - before.files;
-    assert!(opened <= 9 * FORKS + 64, "{opened} files for {FORKS} forks");
+    assert!(opened <= 10 * FORKS + 64, "{opened} files for {FORKS} forks");
     assert!(resident < 1 << 20, "{resident} bytes a fork");
     drop(stores);
 }
@@ -2610,6 +2570,7 @@ fn counting_followers_walks_no_extents() {
             base.commit(None).unwrap();
         }
     }
+    kept(&base);
     let forks: Vec<_> = (1..=FORKS)
         .map(|n| {
             let fork = dir.path().join(format!("fork-{n}"));
@@ -2971,6 +2932,7 @@ fn stores_worked_on_here_read_no_boot_profile() {
     let extent = ExtentId { branch: store.branch(), sequence: 1 };
     store.write(extent, 0, &[VolatileSlice::from(&pattern(7, ps)[..])]).unwrap();
     store.commit(None).unwrap();
+    kept(&store);
     store.fork(&fork, extent.branch + 1).unwrap();
     drop(store);
     // The base's profile, as its first fork to boot recorded it.
@@ -3345,11 +3307,11 @@ fn tenants_connections_are_bounded() {
     drop(connected);
 }
 
-/// TASK-79.84: a VM restored from a snapshot to where a fork of its point failed before, whose
-/// deletion stopped partway, leaving the fork's handle, marked failed, gets a fork made anew, of a
-/// branch of its own, holding what the point holds: not the failed fork, which goes.
+/// TASK-79.84: a VM restored from a snapshot to where a fork of its point was left unmade, its host
+/// crashing as it made the child's store, gets a fork made anew, of a branch of its own, holding
+/// what the point holds: what was left goes (`host_store::unmade`, TASK-165.7).
 #[test]
-fn restores_fork_anew_over_forks_that_failed() {
+fn restores_fork_anew_over_forks_left_unmade() {
     host();
     let dir = tempfile::tempdir().unwrap();
     let socket = dir.path().join("extentd.sock");
@@ -3363,15 +3325,14 @@ fn restores_fork_anew_over_forks_that_failed() {
     store.fork_quiescent(&point, store.branch() + 1).unwrap();
     drop(store);
 
-    // A fork of the point there, as one that failed leaves it.
+    // What a fork of the point there leaves, its host crashing before its store's description.
     let restored = dir.path().join("restored");
-    let failed = fork_store(&point, &restored).unwrap();
-    extent_store::fail_fork(&restored).unwrap();
+    std::fs::create_dir_all(restored.join("segments")).unwrap();
+    std::fs::write(restored.join("ancestry"), "1 /elsewhere\n").unwrap();
     let ours = RemoteExtentStore::connect_forked(&socket, &restored, &point, 0, 0).unwrap();
-    assert_ne!(ours.branch(), failed, "the restored VM opened the failed fork");
     assert_eq!(ours.root(), Ok(b"root".to_vec()));
     assert_eq!(read(&ours, extent, 0, BLOCK), Ok(pattern(8, BLOCK)));
-    assert!(!ExtentStore::fork_failed(&restored), "the new fork's handle reads as failed");
+    assert!(!crate::host_store::unmade(&restored), "the new fork is no store");
 }
 
 /// What a store of the daemon's at `path` mints next, as its guest mints: from its writer's floor,
@@ -3410,7 +3371,7 @@ fn let_go(path: &Path) {
 }
 
 /// TASK-44.10: a guest's fork failing at each of its steps ([`crate::faults::FORK_STEPS`]) fails
-/// with `EIO`, leaving no handle; the store opens again, holds what it held, and forks; and
+/// with `EIO`, leaving nothing at its path; the store opens again, holds what it held, and forks; and
 /// another's store is served on. `remote::fork_faults` goes further, on stores alone: this is the
 /// daemon's side, its requests, connections, and errnos.
 ///
@@ -3490,7 +3451,7 @@ fn forks_whose_answers_are_lost_stand() {
     drop(failing);
     assert_eq!(store.fork(&child, rand::random()), Err(Errno::EEXIST));
     assert_eq!(store.fork(&dir.path().join("again"), branch), Err(Errno::EEXIST));
-    assert!(!dir.path().join("again").exists(), "a refused fork left its handle");
+    assert!(!dir.path().join("again").exists(), "a refused fork left a store");
     assert_eq!(store.commit(Some(b"later")), Ok(()));
     let forked = RemoteExtentStore::connect(&socket, &child, 1 << 24).unwrap();
     assert_eq!(forked.root(), Ok(b"root".to_vec()));
@@ -3503,7 +3464,7 @@ fn forks_whose_answers_are_lost_stand() {
         }
     };
     assert_eq!(deleted.map_err(|err| err.to_string()), Ok(()));
-    assert!(!child.exists(), "its handle is left");
+    assert!(!child.exists(), "its store is left");
 }
 
 /// TASK-44.10: a fork of the control API's failing once its store's commits were uploaded makes
@@ -3531,41 +3492,38 @@ fn control_forks_failing_fork_again() {
     let failing = fail::FailGuard::new("remote::forked", "1*return").unwrap();
     let branch = control(super::stores::fork(base.clone(), again.clone(), 0, false)).unwrap();
     drop(failing);
-    assert_eq!(extent_store::resolve_host(&again).unwrap().1, branch);
-    assert!(!ExtentStore::fork_failed(&again), "the fork made anew reads as failed");
+    assert_eq!(ExtentStore::open(&again).map(|store| store.branch()).map_err(drop), Ok(branch));
     let (forked, served) = connect(&again, 1 << 24);
     assert_eq!(read(&forked, extent, 0, BLOCK), Ok(pattern(3, BLOCK)));
     drop(forked);
     served.join().unwrap();
 }
 
-/// TASK-44.10: what a host's dying, and a cleanup's failing with it, leave at a restore's path, a
-/// handle naming no branch of its store, which says nothing of its failing, opens as no store: a
-/// restore there fails, with `EIO`, until the handle is deleted, then forks.
+/// TASK-44.10: a restore, a fork of a point, which commits nothing, failing once its child's record
+/// is made, its cleanup failing with it, leaves nothing at the restore's path, and in the bucket an
+/// orphan, the child's record live (doc-14): a restore there forks anew. Before, it left a handle
+/// naming no branch, which opened as no store until deleted.
 #[test]
-fn restores_over_what_a_dead_host_left_fail_until_it_is_deleted() {
+fn restores_over_what_a_failed_cleanup_left_fork_anew() {
     host();
     let dir = tempfile::tempdir().unwrap();
     let socket = dir.path().join("extentd.sock");
     let listener = UnixListener::bind(&socket).unwrap();
     std::thread::spawn(move || serve(listener));
-    let (point, restored) = (dir.path().join("point"), dir.path().join("restored"));
-    let store = RemoteExtentStore::connect(&socket, &point, 1 << 24).unwrap();
-    let extent = minted(&store);
-    write(&store, extent, 0, &pattern(4, BLOCK)).unwrap();
-    store.commit(Some(b"root")).unwrap();
-    drop(store);
+    let (store, point, restored) =
+        (dir.path().join("store"), dir.path().join("point"), dir.path().join("restored"));
+    let made = RemoteExtentStore::connect(&socket, &store, 1 << 24).unwrap();
+    let extent = minted(&made);
+    write(&made, extent, 0, &pattern(4, BLOCK)).unwrap();
+    made.commit(Some(b"root")).unwrap();
+    made.fork_quiescent(&point, made.branch() + 1).unwrap();
+    drop(made);
 
-    let left = ["fork::committed", "delete::failed", "delete::elsewhere"];
+    let left = ["fork::made", "branch::lease_ended"];
     let failing = left.map(|step| fail::FailGuard::new(step, "1*return").unwrap());
     let forked = fork_store(&point, &restored).map_err(|err| err.errno());
     drop(failing);
-    assert_eq!(forked, Err(Some(Errno::EIO)));
-    assert!(restored.exists() && !ExtentStore::fork_failed(&restored), "no leftover");
-
-    let opened = RemoteExtentStore::connect_forked(&socket, &restored, &point, 0, 0);
-    assert_eq!(opened.err().and_then(|error| error.errno()), Some(Errno::EIO));
-    delete_store(&restored).unwrap();
+    assert_eq!((forked, restored.exists()), (Err(Some(Errno::EIO)), false));
     let ours = RemoteExtentStore::connect_forked(&socket, &restored, &point, 0, 0).unwrap();
     assert_eq!(read(&ours, extent, 0, BLOCK), Ok(pattern(4, BLOCK)));
 }
@@ -4194,7 +4152,10 @@ fn vm_processes_of_no_tenant_write_no_public_base() {
     store.make_public().unwrap();
     let forked = store.branch() + 1;
     drop(store);
-    ExtentStore::open(&base).unwrap().fork(&fork, forked).unwrap();
+    let opened = ExtentStore::open(&base).unwrap();
+    kept(&opened);
+    opened.fork(&fork, forked).unwrap();
+    drop(opened);
     let refused = RemoteExtentStore::connect(&socket, &base, 1 << 24);
     assert_eq!(refused.err().and_then(|error| error.errno()), Some(Errno::EPERM));
     let opened = RemoteExtentStore::connect(&socket, &fork, 1 << 24).map(|store| store.branch());

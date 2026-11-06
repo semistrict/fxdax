@@ -23,10 +23,11 @@
 //! ([`InFlight`]): the marker names every segment that may land, before its upload goes, so that
 //! the store opened again knows the branch's last commit for its own. A fork the store makes is a
 //! fork of the branch once the segment its commit ends is acknowledged, which gives the child its
-//! record, and checkpointed ([`Remote::forked`]): the child's marker names the fork's commit from
-//! before the segment may land, so that a child its parent's host crashed before recording takes
-//! no branch of its own while the segment may land yet, but takes its parent's branch first, as
-//! the parent's next writer would, which ends that (TASK-79.72).
+//! record, and checkpointed ([`Remote::forked`]): only then is the child's store made, its state
+//! taken from the bucket ([`take_branch`]), so that no store here holds a child the bucket has no
+//! record of (TASK-165.7). A fork that fails before is deleted in the bucket, as the fork's alone
+//! ([`Remote::unfork`]): one whose host crashed stands, its segment landing, as the bucket's
+//! protocol has it, or never was, the disk lost.
 //!
 //! What a host holds to upload is bounded, however far behind its stores are (TASK-79.19): a
 //! store's segments upload [`IN_FLIGHT`] at once, the rest staying in the store meanwhile, each
@@ -45,7 +46,7 @@ use event_listener::{Event, Listener as _};
 use extent_remote::batch;
 use extent_remote::cache::Cache;
 use extent_remote::fetch::{self, Budget, Limits, Priority};
-use extent_remote::layout::{Child, Footer, Location, Origin, epoch_of, writer_of};
+use extent_remote::layout::{Child, Footer, Location, Origin, epoch_of};
 use extent_remote::record::{Kind, Record};
 use extent_remote::store::Store as Bucket;
 use extent_remote::{Body, Objects, State, Writer, branch};
@@ -102,8 +103,8 @@ fn write_durably(dir: &Path, name: &str, bytes: &[u8]) -> std::io::Result<()> {
 }
 
 /// Writes `bytes` to a new file of the file `name`'s in the directory `dir` ([`new_file`]), synced,
-/// and returns its path: what goes in place of the file, or as it, whole ([`write_durably`],
-/// [`claim`]). It goes again if the write fails.
+/// and returns its path: what goes in place of the file, whole ([`write_durably`]). It goes again
+/// if the write fails.
 fn write_new(dir: &Path, name: &str, bytes: &[u8]) -> std::io::Result<PathBuf> {
     let new = dir.join(new_file(name));
     let written = || -> std::io::Result<()> {
@@ -118,8 +119,7 @@ fn write_new(dir: &Path, name: &str, bytes: &[u8]) -> std::io::Result<PathBuf> {
 }
 
 /// The name of a new file of the file `name`'s ([`write_new`]): one of its own for each write, so
-/// that two writers of one file at once each write their own, as a fork claiming its child and the
-/// uploader naming the origin of a fork to that ID in its claim do (TASK-184). A shared one, either
+/// that two writers of one file at once each write their own (TASK-184). A shared one, either
 /// truncated the other's or removed it from under its rename. Named for the file, so that what a
 /// crash leaves goes with it ([`unmark`]).
 fn new_file(name: &str) -> String {
@@ -144,152 +144,6 @@ pub(crate) fn place(dir: &Path, branch: u64, token: u64) -> std::io::Result<()> 
     write_durably(dir, &fence(branch), format!("{token}\n").as_bytes())
 }
 
-/// The file in a store's directory that claims a branch of the store, a fork's child, for the fork
-/// in object storage ([`claim`]): the fork, made while the store kept its branch there, made no
-/// branch there but one whose record names the child's owner, which the file names, chosen as the
-/// fork claimed it; and the fork's origin, once its segment goes there (TASK-79.82, TASK-153.9).
-fn claim_file(branch: u64) -> String {
-    format!("origin-{branch:016x}")
-}
-
-/// What the fork a claim is of gives its child in object storage, as far as its host knows.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Forked {
-    /// Nothing yet: a fork by a commit of its parent's, whose segment has not gone to object
-    /// storage; to a point if `point`.
-    Pending { point: bool },
-    /// The record it gives its child, of this kind: a fork at the segment the fork's commit ends,
-    /// once that goes, a point or not; or, from the first, a fork of a point, whose store made no
-    /// commit in object storage, the child's record being its fork (`Kind::Forking`).
-    Made(Kind),
-}
-
-/// A fork's child's claim: the child's owner, which every record of it names (`Record::owner`),
-/// and what the fork gives it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct Claim {
-    owner: u64,
-    forked: Forked,
-}
-
-impl Claim {
-    /// What its file holds: `owner` and the owner, then the origin's parent and segment, if known,
-    /// after `point` for a fork to a point, or `of` and the point for a fork of one, each number in
-    /// hex.
-    fn text(&self) -> String {
-        let origin = |origin: Origin| format!("{:x} {:x}", origin.parent, origin.at);
-        let forked = match self.forked {
-            Forked::Pending { point: false } => String::new(),
-            Forked::Pending { point: true } => "point".to_owned(),
-            Forked::Made(Kind::Fork(at)) => origin(at),
-            Forked::Made(Kind::Point(at)) => format!("point {}", origin(at)),
-            Forked::Made(Kind::Forking { origin: at, point }) => {
-                format!("of {point:x} {}", origin(at))
-            }
-            Forked::Made(kind @ (Kind::Root | Kind::Own | Kind::Claim(_))) => {
-                unreachable!("a fork gives its child no record of {kind:?}")
-            }
-        };
-        format!("owner {:x}\n{forked}\n", self.owner)
-    }
-
-    /// The claim a file holding `text` says.
-    fn parse(text: &str) -> Option<Self> {
-        let hex = |word: &str| u64::from_str_radix(word, 16).ok();
-        let origin = |parent: &str, at: &str| Some(Origin { parent: hex(parent)?, at: hex(at)? });
-        let ["owner", owner, ref forked @ ..] = text.split_whitespace().collect::<Vec<_>>()[..]
-        else {
-            return None;
-        };
-        let forked = match *forked {
-            [] => Forked::Pending { point: false },
-            ["point"] => Forked::Pending { point: true },
-            [parent, at] => Forked::Made(Kind::Fork(origin(parent, at)?)),
-            ["point", parent, at] => Forked::Made(Kind::Point(origin(parent, at)?)),
-            ["of", point, parent, at] => {
-                Forked::Made(Kind::Forking { origin: origin(parent, at)?, point: hex(point)? })
-            }
-            _ => return None,
-        };
-        Some(Self { owner: hex(owner)?, forked })
-    }
-
-    /// The record its fork gives its child, as deleting the child goes by: one of its own, if the
-    /// fork is made nowhere in object storage yet.
-    fn kind(&self) -> Kind {
-        match self.forked {
-            Forked::Pending { .. } => Kind::Own,
-            Forked::Made(kind) => kind,
-        }
-    }
-}
-
-/// Claims `child` in the store directory `dir` for a fork of the store's ([`claim_file`]), as
-/// `claim` says, durably, whole or not at all, as the fork reserves it, before the fork's commit:
-/// unless it is claimed already, as by a fork to it made before, or one whose cleanup stopped.
-/// Returns whether it claimed it. The claim of a fork's segment names no origin yet, the segment
-/// not having gone.
-fn claim(dir: &Path, child: u64, claim: Claim) -> std::io::Result<bool> {
-    let name = claim_file(child);
-    let new = write_new(dir, &name, claim.text().as_bytes())?;
-    // Linked into place only if nothing is there: whole, unlike a file created and then written.
-    let linked = std::fs::hard_link(&new, dir.join(&name));
-    std::fs::remove_file(&new)?;
-    match linked {
-        Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
-        linked => {
-            linked?;
-            std::fs::File::open(dir)?.sync_all()?;
-            Ok(true)
-        }
-    }
-}
-
-/// The claim of `branch` of the store directory `dir`, if it is claimed for a fork ([`claim`]).
-fn claimed(dir: &Path, branch: u64) -> Result<Option<Claim>, Failure> {
-    let path = dir.join(claim_file(branch));
-    let text = match std::fs::read_to_string(&path) {
-        Ok(text) => text,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(err) => return Err(Failure::local(err, format!("reading {}", path.display()))),
-    };
-    let unparsed = || Failure::msg(format!("{}: {text:?} names no origin", path.display()));
-    Claim::parse(&text).map(Some).ok_or_else(unparsed)
-}
-
-/// Whether `branch` of the store directory `dir` is claimed for a fork ([`claim`]).
-pub(crate) fn is_claimed(dir: &Path, branch: u64) -> Result<bool, Failure> {
-    Ok(claimed(dir, branch)?.is_some())
-}
-
-/// Names `origin` in the claim of `child`, a fork's child, in the store directory `dir`, durably,
-/// whole or not at all, as the fork's segment goes to object storage: if the child is claimed, its
-/// fork not deleted here meanwhile, as one failing once its commit was made is before its segment
-/// goes. Returns whether it is.
-fn claim_origin(dir: &Path, child: u64, origin: Origin) -> Result<bool, Failure> {
-    let Some(claim) = claimed(dir, child)? else { return Ok(false) };
-    let forked = match claim.forked {
-        Forked::Pending { point: false } => Forked::Made(Kind::Fork(origin)),
-        Forked::Pending { point: true } => Forked::Made(Kind::Point(origin)),
-        made @ Forked::Made(_) => made,
-    };
-    let text = Claim { forked, ..claim }.text();
-    let written = write_durably(dir, &claim_file(child), text.as_bytes());
-    written.map_err(|err| Failure::local(err, "recording the fork's origin"))?;
-    Ok(true)
-}
-
-/// Removes the claim of `branch` of the store directory `dir`, if it has one, durably.
-fn disclaim(dir: &Path, branch: u64) -> std::io::Result<()> {
-    match std::fs::remove_file(dir.join(claim_file(branch))) {
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        removed => {
-            removed?;
-            std::fs::File::open(dir)?.sync_all()
-        }
-    }
-}
-
 /// Runs `future` to its end on a runtime of its own, as what is called from no runtime's task
 /// does.
 pub(crate) fn block_on<F: std::future::Future>(future: F) -> Result<F::Output, Failure> {
@@ -300,34 +154,14 @@ pub(crate) fn block_on<F: std::future::Future>(future: F) -> Result<F::Output, F
     Ok(runtime.block_on(future))
 }
 
-/// Deletes `branch` of the store directory `dir` in `bucket` (`extent_remote::branch::delete`), as
-/// the placement whose fencing token is `token`: its writer stops at its next acknowledgement, no
-/// writer takes it again, and the collector reclaims what no other branch inherited from it, as its
-/// forks' branches live on (TASK-39.4). Deleting it again does nothing. A later placement's
-/// branch, whose token is higher, is not deleted (`extent_remote::Error::Stale`, TASK-45.1). A fork's child
-/// claimed for its fork ([`claim`]) is deleted only if its branch there is the fork's
-/// (`extent_remote::branch::delete_fork`): a branch of another's that took the child's ID, as a
-/// guest may give any, is left as it is (TASK-79.82).
-pub fn delete_branch(bucket: &Bucket, dir: &Path, branch: u64, token: u64) -> Result<(), Failure> {
-    let holder = rand::random();
-    let deleted = match claimed(dir, branch)? {
-        None => block_on(branch::delete(bucket, branch, holder, token))?.map(|()| true),
-        Some(claim) => {
-            let forked = claim.kind();
-            block_on(branch::delete_fork(bucket, branch, forked, claim.owner, holder, token))?
-        }
-    };
-    match deleted {
-        Ok(true) => Ok(()),
-        Ok(false) => {
-            log::warn!(
-                "fxdax: leaving branch {branch:x} in object storage, another's: a fork to its ID \
-                 failed here"
-            );
-            Ok(())
-        }
-        Err(err) => Err(err.into()),
-    }
+/// Deletes `branch` in `bucket` (`extent_remote::branch::delete`), as the placement whose fencing
+/// token is `token`: its writer stops at its next acknowledgement, no writer takes it again, and
+/// the collector reclaims what no other branch inherited from it, as its forks' branches live on
+/// (TASK-39.4). Deleting it again does nothing. A later placement's branch, whose token is higher,
+/// is not deleted (`extent_remote::Error::Stale`, TASK-45.1). A store's directory holds a branch
+/// only once the bucket has its record (TASK-165.7), so that the branch it names is its own.
+pub fn delete_branch(bucket: &Bucket, branch: u64, token: u64) -> Result<(), Failure> {
+    Ok(block_on(branch::delete(bucket, branch, rand::random(), token))??)
 }
 
 /// The fencing token of the copy of `branch` in the store directory `dir`: its placement's
@@ -390,11 +224,11 @@ impl Host {
     }
 }
 
-/// Removes the marker, fencing token and claim of `branch`, deleted, from the store directory
-/// `dir`, and their new files a crash left before they went in place ([`new_file`]): failing with
-/// the file it could not remove.
+/// Removes the marker and fencing token of `branch`, deleted, from the store directory `dir`, and
+/// their new files a crash left before they went in place ([`new_file`]): failing with the file it
+/// could not remove.
 pub(crate) fn unmark(dir: &Path, branch: u64) -> anyhow::Result<()> {
-    let names = [marker(branch), fence(branch), claim_file(branch)];
+    let names = [marker(branch), fence(branch)];
     let listed = match std::fs::read_dir(dir) {
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         listed => listed.with_context(|| format!("listing {}", dir.display()))?,
@@ -549,6 +383,9 @@ struct Shared {
     writer: std::sync::OnceLock<Arc<Writer<Bucket>>>,
     /// The point the store is of, if it is one, once attached.
     point: std::sync::OnceLock<Point>,
+    /// The origins of the forks of the segments the uploader took, by their children: what a fork
+    /// that fails deletes its child by (TASK-165.7).
+    forks: Mutex<std::collections::BTreeMap<u64, Origin>>,
     progress: Mutex<Progress>,
     /// Notified as the progress changes: what waits for uploads listens to it, blocking or not
     /// (TASK-43.6).
@@ -720,6 +557,7 @@ impl Remote {
             fetcher,
             writer: Default::default(),
             point: Default::default(),
+            forks: Default::default(),
             progress: Mutex::new(Progress::default()),
             changed: Event::new(),
             wake: tokio::sync::Notify::new(),
@@ -809,29 +647,28 @@ impl Remote {
         shared.wait(|progress| shared.reached(progress, epoch, true))
     }
 
-    /// Makes the fork the store made of its branch with its commit `epoch` ([`Store::fork`]) a
-    /// fork of the branch in object storage too, once the commits up to the fork are uploaded: the
-    /// child's record names the branch, and the segment the fork's commit ends, as its origin, and
-    /// a checkpoint at the fork is where its recovery starts. The child's marker names the fork's
-    /// commit, which the child inherits, from before the segment may land ([`InFlight::upload`]).
-    /// `child`'s ID may be another branch's by then, which took it after [`Remote::claim`] found it
-    /// free (`extent_remote::Error::ChildTaken`): the fork failed, and the uploader goes on.
+    /// Makes the fork the store made of its branch with its commit `epoch`
+    /// ([`Store::commit_fork`]) a fork of the branch in object storage, once the commits up to the
+    /// fork are uploaded: the segment the fork's commit ends names `child`, whose record the
+    /// acknowledgement makes, naming the branch and the segment as its origin, and a checkpoint at
+    /// the fork is where its recovery starts. `child`'s ID may be another branch's by then, which
+    /// took it after [`Remote::child_free`] found it free (`extent_remote::Error::ChildTaken`): the
+    /// fork failed, and the uploader goes on.
     ///
-    /// A fork of a point commits nothing in object storage: the child's record is the fork, and
-    /// fails if the point was deleted ([`Failure::PointDeleted`]; `branch::fork_point`).
-    pub fn forked(&self, epoch: u64, child: u64) -> Result<(), Failure> {
+    /// A fork of a point commits nothing: the child's record is the fork, and fails if the point
+    /// was deleted ([`Failure::PointDeleted`]; `branch::fork_point`).
+    pub fn forked(&self, epoch: u64, child: Child) -> Result<(), Failure> {
         failpoint!("remote::forked");
         let shared = &self.shared;
         if let Some(point) = shared.point.get() {
-            let claim = claimed(shared.store.dir().path(), child)?;
-            let claim = claim.ok_or_else(|| Failure::msg(format!("{child:x} is not claimed")))?;
             let (of, origin) = (point.branch, point.origin);
-            let forking = branch::fork_point(&*self.bucket, child, of, origin, claim.owner);
+            let forking = branch::fork_point(&*self.bucket, child.branch, of, origin, child.owner);
             return match block_on(forking)? {
                 Err(extent_remote::Error::Deleted) => Err(Failure::PointDeleted),
                 forked => Ok(forked?),
             };
         }
+        let child = child.branch;
         // Its commit's segment uploads now, if it is not yet uploaded.
         shared.ask(epoch, false)?;
         shared.wait(|progress| match progress.forked >= epoch {
@@ -846,43 +683,43 @@ impl Remote {
         }
     }
 
-    /// Deletes the branch of `child` in object storage, a fork the store made that
-    /// [`Remote::forked`] failed to make a fork of its branch too, before the child goes here: the
-    /// fork's segment may have landed after all, its writer taken over before acknowledging it,
-    /// and the branch's next writer gives the child a record then, which would keep what it
-    /// inherited for ever, no store holding it. Deleted first, the child takes none; and a host
-    /// crashing before the child went here leaves its handle, which deleting again finishes
-    /// (TASK-79.78). Its copy was never placed: it is deleted as this host's placement
-    /// (`Options::token`). Only a branch the fork made is deleted, as the child's claim says
-    /// ([`Remote::claim`]): one of another's, which took the child's ID, is left as it is
-    /// (TASK-79.82).
-    pub fn unfork(&self, child: u64) -> Result<(), Failure> {
-        let dir = self.shared.store.dir().path();
-        delete_branch(&self.bucket, dir, child, self.shared.options.token)
+    /// Deletes `child` in object storage, a fork the store made that [`Remote::forked`] failed to
+    /// make: its segment may land after all, its writer taken over before acknowledging it, and the
+    /// branch's next writer gives the child a record then, which would keep what it inherited for
+    /// ever, no store holding it. Deleted first, it gets a record saying so, which the segment
+    /// landing finds (TASK-79.78). Only a branch the fork made is deleted, its record naming the
+    /// fork's owner: one of another's, which took the child's ID, is left as it is (TASK-79.82). As
+    /// the fork's segment gave the child its origin, if the uploader took it; or of no parent, if
+    /// it never did. Its copy was never placed: it is deleted as this host's placement
+    /// (`Options::token`).
+    pub fn unfork(&self, child: Child) -> Result<(), Failure> {
+        let origin = self.shared.forks.lock().unwrap().get(&child.branch).copied();
+        let forked = match (origin, child.point) {
+            (None, _) => Kind::Own,
+            (Some(origin), true) => Kind::Point(origin),
+            (Some(origin), false) => Kind::Fork(origin),
+        };
+        let (holder, token) = (rand::random(), self.shared.options.token);
+        let deleting =
+            branch::delete_fork(&*self.bucket, child.branch, forked, child.owner, holder, token);
+        if !block_on(deleting)?? {
+            log::warn!(
+                "fxdax: leaving branch {:x} in object storage, another's: a fork to its ID failed \
+                 here",
+                child.branch
+            );
+        }
+        Ok(())
     }
 
-    /// Claims `child` for a fork the store is making of its branch, before the fork's commit
-    /// ([`Store::fork_with`]): unless another branch has its ID in object storage, as a guest may
-    /// give any, whose record its parent's writers, finding it another's, would fail on for ever;
-    /// or a fork to it here claimed it before. Returns whether it claimed it: one GET of the
-    /// child's record, and a file in the store's directory ([`claim`]), whose deletion goes with
-    /// the child's, which deletes in object storage only the branch the fork made
-    /// ([`Remote::unfork`], TASK-79.82). The child, its owner, which the fork chose and every
-    /// record of it names, and whether it is a point, are `child`'s. A claim of a fork of a point
-    /// names the point, and the origin the child's record will, so that what a crash leaves
-    /// finishes the fork, or deletes it, knowing that.
-    pub fn claim(&self, child: Child) -> Result<bool, Failure> {
-        if block_on(branch::record(&*self.bucket, child.branch))??.is_some() {
-            return Ok(false);
-        }
-        failpoint!("remote::claim");
-        let dir = self.shared.store.dir().path();
-        let forked = match self.shared.point.get() {
-            Some(of) => Forked::Made(Kind::Forking { origin: of.origin, point: of.branch }),
-            None => Forked::Pending { point: child.point },
-        };
-        claim(dir, child.branch, Claim { owner: child.owner, forked })
-            .map_err(|err| Failure::local(err, format!("claiming branch {:x}", child.branch)))
+    /// Whether `child`'s ID is free in object storage for a fork the store is making of its
+    /// branch, before the fork's commit: unless another branch has it, as a guest may give any,
+    /// whose record its parent's writers, finding it another's, would fail on for ever. One GET of
+    /// the child's record.
+    pub fn child_free(&self, child: u64) -> Result<bool, Failure> {
+        let found = block_on(branch::record(&*self.bucket, child))??;
+        failpoint!("remote::child_free");
+        Ok(found.is_none())
     }
 
     /// Whether the store holds a point: nothing it does goes to object storage but its forks'
@@ -891,17 +728,15 @@ impl Remote {
         self.shared.point.get().is_some()
     }
 
-    /// Lets go of the claim of `child`, whose fork failed before its commit, making nothing
-    /// ([`Remote::claim`]).
-    pub fn disclaim(&self, child: u64) -> Result<(), Failure> {
-        let dir = self.shared.store.dir().path();
-        disclaim(dir, child).map_err(|err| Failure::local(err, format!("disclaiming {child:x}")))
-    }
-
     /// The lowest sequence number the store's guest may mint extents' IDs from, which the writer's
     /// epoch gives: no writer of the branch before minted from there.
     pub fn next_sequence(&self) -> u64 {
         self.shared.progress.lock().unwrap().next_sequence
+    }
+
+    /// The bucket the store's branch is kept in.
+    pub(crate) fn bucket(&self) -> &Bucket {
+        &self.bucket
     }
 
     /// What reads the extents the store holds whose data is in object storage.
@@ -1102,8 +937,8 @@ impl Shared {
 
     /// Takes the branch, and uploads what the store holds that it doesn't: unless the branch moved
     /// on elsewhere since the store last uploaded to it. A store that holds nothing takes what the
-    /// branch holds. A fork's child whose record its parent's host crashed before giving it takes
-    /// it from its parent's state ([`Shared::record`]).
+    /// branch holds, as a fork's child does, whose store is made only once the bucket has its
+    /// record (TASK-165.7).
     ///
     /// What the store does is decided twice ([`Shared::plan`]). Before the lease, from the
     /// branch's state then, so that a store plainly stale fences no writer; it changes nothing
@@ -1122,22 +957,10 @@ impl Shared {
         let branch = self.store.description().branch;
         let ours = self.marker().read()?;
         let held = blocking(|| self.store.snapshot())?;
-        let found = match self.record(bucket, branch, &ours).await? {
+        let found = match record(bucket, branch).await? {
             None => {
                 failpoint!("remote::create_branch");
-                // A fork's child taking a record of its own, its fork not made there, which its
-                // claim, and its deletion, take for the fork's (`branch::create_forked`,
-                // TASK-79.82).
-                match claimed(self.store.dir().path(), branch)? {
-                    // No origin, no point: its snapshot was never made.
-                    Some(Claim { forked: Forked::Pending { point: true }, .. }) => {
-                        return Err(Failure::msg(format!(
-                            "point {branch:x} was never made in object storage"
-                        )));
-                    }
-                    Some(claim) => branch::create_forked(&**bucket, branch, claim.owner).await?,
-                    None => branch::create(&**bucket, branch, rand::random()).await?,
-                }
+                branch::create(&**bucket, branch, rand::random()).await?;
                 None
             }
             Some(record) if record.is_point() => {
@@ -1162,7 +985,7 @@ impl Shared {
         let remote = writer.state();
         match Self::plan(&remote, &ours, &held)? {
             Plan::Diff => {}
-            Plan::Take => blocking(|| self.take(&remote))?,
+            Plan::Take => blocking(|| take(&self.store, &remote))?,
             Plan::Claim => blocking(|| self.marker().write(remote.last_commit, []))?,
         }
         let lease = Lease { token, epoch: writer.epoch(), taken: SystemTime::now() };
@@ -1229,103 +1052,13 @@ impl Shared {
                     "the store of point {branch:x} holds another state"
                 )));
             }
-            blocking(|| self.take(&state))?;
+            blocking(|| take(&self.store, &state))?;
         }
         let _ = self.point.set(Point { branch, origin });
         let mut progress = self.progress.lock().unwrap();
         progress.uploaded_through(u64::MAX);
         progress.forked_through(u64::MAX);
         Ok(())
-    }
-
-    /// The record of the store's branch, `branch`, whose marker names `ours`, if it has one: unless
-    /// it is another's, its claim naming another origin, a store being a fork's child whose ID
-    /// another branch took as the fork was made, which a crash left its handle: taking it would fence
-    /// that branch's writer, and upload this store's extents into it (TASK-79.82). A
-    /// fork's child has none yet if its parent's host crashed once the fork's segment landed,
-    /// before giving it its record, which the parent's next writer gives it, from the forks the
-    /// parent's state names. The child attaching first takes it so too: a branch of its own, it
-    /// would fail every writer of its parent after, giving it its record. A child whose fork its
-    /// parent's state names not, its segment never uploaded, or made while the parent's branch was
-    /// kept nowhere, has a branch of its own; but not while the segment may land yet (TASK-79.72).
-    /// The child's marker names the fork's commit, by its tag, from before a writer of the
-    /// parent's takes the segment to upload ([`InFlight::upload`]), and none of that writer's
-    /// segments lands in the parent's branch once a later writer's is in it: until one is, the
-    /// child takes the parent's branch itself, as the parent's next writer would, which makes its
-    /// state final ([`Shared::take_parent`]). It refuses while a store of the parent's is open
-    /// here, whose writer lands the fork, or takes the branch, itself.
-    ///
-    /// A fork of a point its host crashed in the middle of finishes first, its claim saying what
-    /// it is, as its record does: it fails if the point was deleted. So it takes no branch of its
-    /// own, which no writer of its parent's would know of.
-    async fn record(
-        &self,
-        bucket: &Arc<Bucket>,
-        branch: u64,
-        ours: &[u64],
-    ) -> Result<Option<Record>, Failure> {
-        let claim = claimed(self.store.dir().path(), branch)?;
-        if let Some(record) = branch::record(&**bucket, branch).await? {
-            let another = |claim: Claim| !record.is_child_of(claim.owner);
-            if !record.deleted && claim.is_some_and(another) {
-                return Err(extent_remote::Error::ChildTaken(branch).into());
-            }
-            let Some(point) = record.forking().filter(|_| !record.deleted) else {
-                return Ok(Some(record));
-            };
-            branch::finish_point_fork(&**bucket, branch, point).await?;
-            return Ok(branch::record(&**bucket, branch).await?);
-        }
-        if let Some(Claim { owner, forked: Forked::Made(Kind::Forking { origin, point }) }) = claim
-        {
-            branch::fork_point(&**bucket, branch, point, origin, owner).await?;
-            return Ok(branch::record(&**bucket, branch).await?);
-        }
-        let Some(parent) = self.store.parent() else { return Ok(None) };
-        // A parent deleted gave the children of its forks their records first.
-        let parents = branch::record(&**bucket, parent).await?;
-        let Some(parents) = parents.filter(|record| !record.deleted) else { return Ok(None) };
-        let mut state = extent_remote::recover(&**bucket, parent, parents.origin()).await?.state;
-        // Where the fork is in the parent's branch, if its state names it.
-        let forked = |state: &State| state.forks.iter().find(|fork| fork.child == branch).copied();
-        if forked(&state).is_none() && ours.iter().any(|&tag| writer_of(tag) >= state.epoch) {
-            state = self.take_parent(bucket, parent).await.map_err(|err| {
-                Failure::local(err, format!(
-                    "branch {branch:x}, a fork of branch {parent:x}, has no record, and the writer \
-                     that uploads the fork may land it yet: taking the parent's branch"
-                ))
-            })?;
-        }
-        match forked(&state) {
-            Some(fork) => {
-                let origin = Origin { parent, at: fork.at };
-                let child = Child { branch, owner: fork.owner, point: fork.point };
-                branch::record_fork(&**bucket, child, origin).await?;
-                Ok(branch::record(&**bucket, branch).await?)
-            }
-            None => Ok(None),
-        }
-    }
-
-    /// Takes the branch of the store's parent, `parent`, as the parent's next writer here would,
-    /// with the token it would ([`Shared::token`]), and lets it go: its state then, which no
-    /// earlier writer's segment changes, the taking writer's fence in their place
-    /// (`extent_remote::Writer::open`). It commits nothing: the parent, attaching later, finds its
-    /// branch's last commit one its marker names still, as it would after any writer of its
-    /// failed. The parent's branch is held open in the store meanwhile, so that no store of it
-    /// opens here and takes it with a writer this one would fence: it fails if one has it open,
-    /// whose writer may be the one that lands the fork. A parent deleted here, which opens no more,
-    /// is not held.
-    async fn take_parent(&self, bucket: &Arc<Bucket>, parent: u64) -> Result<State, Failure> {
-        let lineage = self.store.lineage();
-        let held = match lineage.has(parent) {
-            true => Some(blocking(|| lineage.open_branch(parent))?),
-            false => None,
-        };
-        let token = self.token(parent)?;
-        let taken = Writer::open(bucket.clone(), parent, rand::random(), token).await;
-        blocking(|| drop(held));
-        Ok(taken?.state())
     }
 
     /// What a store whose marker names `ours`, holding `held`, does with its branch, whose state is
@@ -1420,13 +1153,16 @@ impl Shared {
         let mut segments = Vec::with_capacity(closed.len());
         for closed in closed {
             let tag = closed.tag();
-            let forks = closed.footer.contents.forks.iter().map(|forked| forked.branch);
-            let forks = forks.collect();
+            let forks: Vec<u64> =
+                closed.footer.contents.forks.iter().map(|forked| forked.branch).collect();
             let own = closed.own.iter().map(|(key, file)| Ok((key.clone(), stored(file)?)));
             let own = own.collect::<Result<_, Failure>>()?;
             let objects = Objects { footer: closed.footer, segment: stored(&closed.file)?, own };
             let seq = writer.add_segment(objects)?;
-            segments.push(Uploading { seq, number: closed.number, tag, forks });
+            // Where each fork it ends is, which a fork failing deletes its child by.
+            let origin = Origin { parent: writer.branch(), at: seq };
+            self.forks.lock().unwrap().extend(forks.iter().map(|&child| (child, origin)));
+            segments.push(Uploading { seq, number: closed.number, tag, forks: !forks.is_empty() });
         }
         let took = !segments.is_empty();
         in_flight.upload(writer, segments)?;
@@ -1453,7 +1189,7 @@ impl Shared {
             Ok::<_, Failure>(())
         })?;
         failpoint!("remote::released");
-        let forks = acked.iter().any(|segment| !segment.forks.is_empty());
+        let forks = acked.iter().any(|segment| segment.forks);
         {
             let mut progress = self.progress.lock().unwrap();
             progress.uploaded_through(epoch);
@@ -1504,27 +1240,58 @@ impl Shared {
         Marker::new(self.store.dir().path(), self.store.description().branch)
     }
 
-    /// The fencing token of the store's copy of `branch`, its own or its parent's ([`place`]):
-    /// `Options::token` if it was never placed.
+    /// The fencing token of the store's copy of `branch` ([`place`]): `Options::token` if it was
+    /// never placed.
     fn token(&self, branch: u64) -> Result<u64, Failure> {
         let placed = placed_token(self.store.dir().path(), branch)?;
         Ok(placed.unwrap_or(self.options.token))
     }
+}
 
-    /// Takes what the branch holds into the store, which holds nothing: a branch opened on a host
-    /// without it. The store holds the branch's extents, whose data stays in object storage, read
-    /// as the guest reads it ([`Fetcher`]), and has its capacity, if it has one (TASK-165.3).
-    fn take(&self, state: &extent_remote::State) -> Result<(), Failure> {
-        if let Some(capacity) = state.capacity {
-            self.store.set_capacity(capacity)?;
-        }
-        for (extent, location) in &state.extents {
-            self.store.adopt(*extent, location.clone())?;
-        }
-        self.store.spend(&state.spent)?;
-        self.store.commit(Some(state.root.as_deref().unwrap_or_default()))?;
-        self.marker().write(state.last_commit, [])
+/// The record of `branch`, if it has one: a fork of a point its host crashed in the middle of, its
+/// record saying so, finished first, which fails if the point was deleted. So the store takes no
+/// state of a fork not made.
+async fn record(bucket: &Bucket, branch: u64) -> Result<Option<Record>, Failure> {
+    let found = branch::record(bucket, branch).await?;
+    let Some(point) = found.as_ref().filter(|record| !record.deleted).and_then(Record::forking)
+    else {
+        return Ok(found);
+    };
+    branch::finish_point_fork(bucket, branch, point).await?;
+    Ok(branch::record(bucket, branch).await?)
+}
+
+/// Takes `branch`, as `bucket` holds it, into `store`, which holds nothing, as its own: a fork's
+/// child, made once the bucket has its record (`host_store::fork`, TASK-165.7). Its writer, when
+/// the store is attached, finds the branch as the store holds it, which needs no upload. No lease
+/// is taken: the store takes the branch's state as of now, changing nothing in the bucket.
+pub(crate) fn take_branch(
+    store: &Store<HostDir>,
+    bucket: &Bucket,
+    branch: u64,
+) -> Result<(), Failure> {
+    let state = block_on(async {
+        let found = record(bucket, branch).await?;
+        let found = found.filter(|record| !record.deleted).ok_or(extent_remote::Error::NoBranch)?;
+        Ok::<_, Failure>(extent_remote::recover(bucket, branch, found.origin()).await?.state)
+    })??;
+    take(store, &state)
+}
+
+/// Takes what the branch holds, `state`, into `store`, which holds nothing: a branch opened on a
+/// host without it, or a fork's child. The store holds the branch's extents, whose data stays in
+/// object storage, at their locations there, read as the guest reads it ([`Fetcher`]), and has its
+/// capacity, if it has one (TASK-165.3); its marker names the branch's last commit, its own.
+fn take(store: &Store<HostDir>, state: &extent_remote::State) -> Result<(), Failure> {
+    if let Some(capacity) = state.capacity {
+        store.set_capacity(capacity)?;
     }
+    for (extent, location) in &state.extents {
+        store.adopt(*extent, location.clone())?;
+    }
+    store.spend(&state.spent)?;
+    store.commit(Some(state.root.as_deref().unwrap_or_default()))?;
+    Marker::new(store.dir().path(), state.branch).write(state.last_commit, [])
 }
 
 /// The bytes of `file`, a segment's the store closed or an extent's of its own it names, read only
@@ -1568,11 +1335,6 @@ impl Marker {
         Self { dir: dir.to_owned(), branch }
     }
 
-    /// The marker of `branch`, another branch of the store.
-    fn of(&self, branch: u64) -> Self {
-        Self::new(&self.dir, branch)
-    }
-
     /// The commits it names: the last uploaded, and those uploading; none if there is no marker.
     fn read(&self) -> Result<Vec<u64>, Failure> {
         let path = self.dir.join(marker(self.branch));
@@ -1605,12 +1367,12 @@ impl Marker {
 }
 
 /// A segment uploading: its number in the branch, and in the store; the tag of the store's commit
-/// it ends with; and the children of the forks made at its end.
+/// it ends with; and whether forks are made at its end.
 struct Uploading {
     seq: u64,
     number: u64,
     tag: u64,
-    forks: Vec<u64>,
+    forks: bool,
 }
 
 impl Uploading {
@@ -1635,17 +1397,9 @@ impl InFlight {
     }
 
     /// Uploads `segments`, which `writer` took, after those uploading: once the marker names them
-    /// with every one uploading, the last uploaded being `writer`'s last commit, and the marker of
-    /// each child of the forks made at their ends names the fork's commit, which the child
-    /// inherits, as uploading: so a child whose record its parent's host crashed before giving it
-    /// knows that the fork may land yet (TASK-79.72). No upload goes if a marker cannot be
-    /// written, but the children's markers written before it stay, naming a commit that does not
-    /// land: harmless, as the uploader fails then, and with it the forks, whose children go, and
-    /// their markers with them (`ExtentStore::fork`). Each child's claim names the fork's origin,
-    /// the segment's place in the branch, likewise, which the child's record has if the parent's
-    /// writers give it one: what deleting the child deletes in object storage (TASK-79.82). A child
-    /// deleted here already has no claim, its fork having failed once its commit was made, and
-    /// gets no marker, which nothing would delete.
+    /// with every one uploading, the last uploaded being `writer`'s last commit. No upload goes if
+    /// the marker cannot be written. A fork's child has no store here until its record is in the
+    /// bucket (TASK-165.7), so its segment marks nothing of the child's.
     fn upload(
         &mut self,
         writer: &Arc<Writer<Bucket>>,
@@ -1653,17 +1407,6 @@ impl InFlight {
     ) -> Result<(), Failure> {
         if segments.is_empty() {
             return Ok(());
-        }
-        for segment in &segments {
-            for &child in &segment.forks {
-                let origin = Origin { parent: self.marker.branch, at: segment.seq };
-                let claimed = claim_origin(&self.marker.dir, child, origin)?;
-                failpoint!("remote::origin_named");
-                if claimed {
-                    self.marker.of(child).write(None, [segment.tag])?;
-                }
-                failpoint!("remote::child_marked");
-            }
         }
         let tags = self.tags().chain(segments.iter().map(|segment| segment.tag));
         self.marker.write(writer.last_commit(), tags)?;
@@ -1869,43 +1612,6 @@ mod tests {
         let before = Some(b"before".to_vec());
         assert_eq!((last.contents.commits.len(), &last.contents.root), (1, &before));
         assert_eq!(uploaded(&bucket, branch), (written, Some(b"before".to_vec())));
-    }
-
-    /// TASK-150.1: a child with a branch of its own, forked where no bucket was, uploads what it
-    /// inherited as it attaches, large extents too. A pass of the collector while the segment naming
-    /// them is on its way leaves what the branch is about to hold.
-    #[test]
-    fn what_a_child_uploads_of_what_it_inherited_outlives_the_collector() {
-        let dir = tempfile::tempdir().unwrap();
-        let parent = ExtentStore::create(dir.path().join("parent"), 1 << 30).unwrap();
-        let large = pattern(5, super::LARGE as usize);
-        let inherited = write(&parent, 1, &large);
-        parent.commit(Some(b"root")).unwrap();
-        let (path, branch) = (dir.path().join("child"), parent.branch() + 1);
-        parent.fork(&path, branch).unwrap();
-        drop(parent);
-        let child = ExtentStore::open(&path).unwrap();
-
-        let memory: Arc<dyn object_store::ObjectStore> = Arc::new(InMemory::new());
-        let bucket = Arc::new(Bucket::new(memory.clone(), ""));
-        let gated = Arc::new(Gated::over(memory));
-        // Its fence lands; the segment naming the extents waits.
-        gated.hold.send_replace(Hold::SegmentsFrom(1));
-        let reached = Arc::new(Bucket::new(gated.clone(), ""));
-        let attaching = std::thread::spawn(move || {
-            let attached = child.attach_remote(reached, 1, idle());
-            (child, attached)
-        });
-        gated.wait_held(1);
-        let options = extent_remote::collector::Options { compact_below: 0.0, grace: 0 };
-        futures::executor::block_on(extent_remote::collector::collect(&*bucket, 1, &options))
-            .unwrap();
-        gated.hold.send_replace(Hold::Nothing);
-        let (child, attached) = attaching.join().unwrap();
-        attached.unwrap();
-        let held = (vec![(inherited.sequence, large)], Some(b"root".to_vec()));
-        assert_eq!(uploaded(&bucket, branch), held);
-        drop(child);
     }
 
     /// A store whose commit, of more bytes than `options` let wait, is in a segment closed for want
@@ -3368,9 +3074,9 @@ mod tests {
         futures::executor::block_on(branch::record(&**bucket, child)).unwrap().unwrap()
     }
 
-    /// TASK-79.20: so does a fork's child whose marker was lost, its parent's host crashing once
-    /// the fork was made in object storage, before the marker named the fork's commit: its store
-    /// holds what its branch inherited.
+    /// TASK-79.20: so does a fork's child whose marker was lost, its host crashing once its store
+    /// took the child's state, before the marker named the fork's commit: its store holds what its
+    /// branch inherited.
     #[test]
     fn forks_whose_marker_was_lost_attach() {
         let dir = tempfile::tempdir().unwrap();
@@ -3379,47 +3085,19 @@ mod tests {
         parent.attach_remote(bucket.clone(), 1, idle()).unwrap();
         let child = parent.branch() + 1;
         forked(&parent, &bucket, &dir.path().join("child"), child);
-        std::fs::remove_file(dir.path().join("parent").join(super::marker(child))).unwrap();
+        std::fs::remove_file(dir.path().join("child").join(super::marker(child))).unwrap();
 
         let forked = ExtentStore::open(dir.path().join("child")).unwrap();
         assert_eq!(forked.attach_remote(bucket.clone(), 2, idle()), Ok(()));
         assert_eq!(forked.root(), Ok(b"root".to_vec()));
     }
 
-    /// TASK-79.20: a fork's child whose record was lost, its parent's host crashing once the fork's
-    /// segment landed, before it gave the child its record, takes its record from its parent's
-    /// state, as the parent's next writer would: a fork still, which the parent, attaching again,
-    /// finds so. Its marker, which names the fork's commit from before the segment went
-    /// (TASK-79.72), and which such a crash leaves, is lost here too: the child takes its record
-    /// so whether its marker names the fork or nothing.
+    /// TASK-79.78: a fork to a child it made before, as a fork retried to another path, fails
+    /// having made nothing, the bucket having the child's record: no commit of the parent's names
+    /// the child again, from another point, which its writers, finding the child forked twice,
+    /// would fail on for ever, the parent's branch taken by none again. The parent attaches again.
     #[test]
-    fn forks_whose_record_was_lost_record_themselves() {
-        let dir = tempfile::tempdir().unwrap();
-        let bucket = Arc::new(Bucket::new(Arc::new(InMemory::new()), ""));
-        let parent = ExtentStore::create(dir.path().join("parent"), 1 << 30).unwrap();
-        parent.attach_remote(bucket.clone(), 1, idle()).unwrap();
-        let child = parent.branch() + 1;
-        let record = forked(&parent, &bucket, &dir.path().join("child"), child);
-        let key = extent_remote::layout::record(child);
-        futures::executor::block_on(extent_remote::Bucket::delete(&*bucket, &key)).unwrap();
-        std::fs::remove_file(dir.path().join("parent").join(super::marker(child))).unwrap();
-
-        let forked = ExtentStore::open(dir.path().join("child")).unwrap();
-        assert_eq!(forked.attach_remote(bucket.clone(), 2, idle()), Ok(()));
-        let recorded = futures::executor::block_on(branch::record(&*bucket, child)).unwrap();
-        assert_eq!(recorded, Some(record));
-        assert_eq!(forked.root(), Ok(b"root".to_vec()));
-        drop((forked, parent));
-        let parent = ExtentStore::open(dir.path().join("parent")).unwrap();
-        assert_eq!(parent.attach_remote(bucket.clone(), 3, idle()), Ok(()));
-    }
-
-    /// TASK-79.78: a fork to a branch the store has, as a fork retried to another path once its
-    /// cleanup left its handle, fails having made nothing: no commit of the parent's names the
-    /// child again, from another point, which its writers, finding the child forked twice, would
-    /// fail on for ever, the parent's branch taken by none again. The parent attaches again.
-    #[test]
-    fn forks_to_a_branch_the_store_has_make_nothing() {
+    fn forks_to_a_child_forked_before_make_nothing() {
         let dir = tempfile::tempdir().unwrap();
         let bucket = Arc::new(Bucket::new(Arc::new(InMemory::new()), ""));
         let parent = ExtentStore::create(dir.path().join("parent"), 1 << 30).unwrap();
@@ -3429,9 +3107,8 @@ mod tests {
         let again = dir.path().join("again");
         let forked = parent.fork(&again, child);
         let errno = forked.as_ref().map(drop).map_err(crate::Error::errno);
-        let has = format!("the store has a branch {child:#x}");
         let forked = forked.map_err(|err| err.to_string());
-        assert_eq!((forked, again.exists()), (Err(has), false));
+        assert_eq!((forked, again.exists()), (anothers(child), false));
         assert_eq!(errno, Err(Some(crate::Errno::EEXIST)));
         drop(parent);
 
@@ -3443,47 +3120,83 @@ mod tests {
         assert_eq!(forks, [(child, 2, false)]);
     }
 
-    /// A fork made while its parent kept its branch nowhere, the parent attaching after, is no fork
-    /// of the parent's branch, whose state names it not: its child takes a record of its own, and
-    /// uploads what it inherited.
+    /// TASK-165.7: a fork is the bucket's: a store with no uploader forks nothing (`ENOTSUP`),
+    /// committing nothing, and leaving nothing at the fork's path. Before, it forked here, and its
+    /// child took a record of its own once attached, uploading what it inherited.
     #[test]
-    fn forks_their_parents_branch_names_not_take_records_of_their_own() {
+    fn stores_with_no_uploader_fork_nothing() {
         let dir = tempfile::tempdir().unwrap();
-        let bucket = Arc::new(Bucket::new(Arc::new(InMemory::new()), ""));
         let parent = ExtentStore::create(dir.path().join("parent"), 1 << 30).unwrap();
         write(&parent, 1, &pattern(1, BLOCK));
         parent.commit(Some(b"root")).unwrap();
-        let child = parent.branch() + 1;
-        parent.fork(dir.path().join("child"), child).unwrap();
-        parent.attach_remote(bucket.clone(), 1, idle()).unwrap();
+        let epoch = parent.committed().unwrap();
+        let path = dir.path().join("child");
+        let forked = parent.fork(&path, parent.branch() + 1).map_err(|err| err.errno());
+        let refused = (forked, path.exists(), parent.committed());
+        assert_eq!(refused, (Err(Some(crate::Errno::ENOTSUP)), false, Ok(epoch)));
+    }
 
-        let forked = ExtentStore::open(dir.path().join("child")).unwrap();
-        assert_eq!(forked.attach_remote(bucket.clone(), 2, idle()), Ok(()));
+    /// TASK-165.7: a fork whose host crashed as its segment uploaded leaves no store of its child
+    /// here, the store being made only once the bucket has the child's record: the directory it
+    /// began at the fork's path is no store, and goes as one left unmade. The segment, landing
+    /// late, is the fork, which stands (doc-14): the parent's next writer gives the child its
+    /// record, and a store naming the child, made anywhere, takes what it inherited. Before, the
+    /// fork's handle, a store of the child's at once, took no branch of its own while the segment
+    /// might land, but took its parent's branch itself, through markers naming the fork
+    /// (TASK-79.72), and gave the child its record from the parent's state (TASK-79.20).
+    #[test]
+    fn forks_whose_host_crashed_stand_once_their_segment_lands() {
+        let dir = tempfile::tempdir().unwrap();
+        let memory: Arc<dyn object_store::ObjectStore> = Arc::new(InMemory::new());
+        let gated = Arc::new(Gated::over(memory.clone()));
+        let bucket = Arc::new(Bucket::new(memory, ""));
+        let path = dir.path().join("child");
+        let (branch, child, fork) = forking_held(dir.path(), &gated, &path);
+        // The host gone: what it has in flight may land still.
+        gated.shut.store(true, std::sync::atomic::Ordering::Relaxed);
+        assert!(crate::host_store::unmade(&path), "the fork's directory is a store already");
+        assert!(ExtentStore::open(&path).is_err(), "the fork's directory opens");
+        crate::ExtentStore::delete(&path, None).unwrap();
+        assert!(!path.exists());
+
+        gated.hold.send_replace(Hold::Nothing);
+        gated.wait_went(1);
+        // Its fork goes on unseen, in a copy of the bucket only it reaches, as a dead host's.
+        gated.sever();
+        gated.shut.store(false, std::sync::atomic::Ordering::Relaxed);
+        let next = extent_remote::Writer::open(bucket.clone(), branch, 3, 0);
+        futures::executor::block_on(next).unwrap();
         let record = futures::executor::block_on(branch::record(&*bucket, child)).unwrap();
-        assert_eq!(record.map(|record| record.origin()), Some(None));
-        assert_eq!(
-            uploaded(&bucket, child),
-            (vec![(1, pattern(1, BLOCK))], Some(b"root".to_vec()))
-        );
+        let origin = extent_remote::layout::Origin { parent: branch, at: 2 };
+        assert_eq!(record.map(|record| record.origin()), Some(Some(origin)));
+        let taken = ExtentStore::create_for_branch(dir.path().join("taken"), 1 << 30, child);
+        let taken = taken.unwrap();
+        assert_eq!(taken.attach_remote(bucket.clone(), 4, idle()), Ok(()));
+        assert_eq!(taken.root(), Ok(b"root".to_vec()));
+        let mut data = vec![0; BLOCK];
+        let extent = ExtentId { branch, sequence: 1 };
+        taken.read(extent, 0, &mut [crate::VolatileSliceMut::from(&mut data[..])]).unwrap();
+        assert_eq!(data, pattern(1, BLOCK));
+        // The crashed host's fork, its writer reaching the bucket no more, fails, finding nothing
+        // at its path, and deletes nothing there.
+        let forked = fork.join().unwrap().map_err(|err| err.to_string());
+        let unmade = format!("forking to branch {child:x}: making its store");
+        assert_eq!((forked, path.exists()), (Err(unmade), false));
+        let record = futures::executor::block_on(branch::record(&*bucket, child)).unwrap();
+        assert_eq!(record.map(|record| record.deleted), Some(false));
     }
 
-    /// A parent store, in `dir`, whose host crashed as the segment of its fork uploaded
-    /// (TASK-79.72): its writer reached the bucket through `gated`, which holds the segment's PUT,
-    /// and is shut, as the host reaches it no more; `bucket` is the bucket as it is. The fork, to
-    /// `child`, whose handle is in `dir` too, waits for the segment in the thread
-    /// [`CrashedFork::new`] returns, which holds the parent's store open. fxdax's uploader runs on
-    /// tokio, and on threads of its own, which neither Shuttle nor extent_remote's simulation
-    /// drives: the gate orders what lands when, deterministically, as the simulation would.
-    struct CrashedFork {
-        dir: std::path::PathBuf,
-        gated: Arc<Gated>,
-        bucket: Arc<Bucket>,
-        branch: u64,
-        child: u64,
+    /// Why a fork to `child` fails, its writer finding its branch taken.
+    fn taken_over(child: u64) -> Result<(), String> {
+        Err(format!("forking branch {child:x}: another writer took the branch"))
     }
 
-    /// A fork, waiting in a thread of its own: what it gives.
-    type Forking = std::thread::JoinHandle<Result<(), crate::Error>>;
+    /// The host whose disk is at `from`, crashed, restarted with its disk as the crash left it at
+    /// `to`: its stores copied there, no store of them open. What the crashed host's writes
+    /// had in flight may land still, as a dead host's PUTs may.
+    pub(super) fn restart(from: &std::path::Path, to: &std::path::Path) {
+        copy_dir(from, to);
+    }
 
     /// Copies the directory `from` to `to`, every file in it as it is.
     fn copy_dir(from: &std::path::Path, to: &std::path::Path) {
@@ -3498,183 +3211,8 @@ mod tests {
         }
     }
 
-    impl CrashedFork {
-        fn new(dir: &std::path::Path) -> (Self, Forking) {
-            let memory: Arc<dyn object_store::ObjectStore> = Arc::new(InMemory::new());
-            let gated = Arc::new(Gated::over(memory.clone()));
-            let bucket = Arc::new(Bucket::new(memory, ""));
-            let parent = Arc::new(ExtentStore::create(dir.join("parent"), 1 << 30).unwrap());
-            parent.attach_remote(Arc::new(Bucket::new(gated.clone(), "")), 1, idle()).unwrap();
-            let branch = parent.branch();
-            write(&parent, 1, &pattern(1, BLOCK));
-            parent.commit(Some(b"root")).unwrap();
-            // The fork's segment, after the writer's fence and the commit's.
-            let forking = extent_remote::layout::segment(branch, 2);
-            gated.hold.send_replace(Hold::Key(forking));
-            let child = branch + 1;
-            let fork = {
-                let path = dir.join("child");
-                std::thread::spawn(move || parent.fork(path, child))
-            };
-            gated.wait_held(1);
-            gated.shut.store(true, std::sync::atomic::Ordering::Relaxed);
-            (Self { dir: dir.to_owned(), gated, bucket, branch, child }, fork)
-        }
-
-        /// Takes the parent's branch, as the parent's next writer.
-        fn take(&self) -> Result<(), extent_remote::Error> {
-            let next = extent_remote::Writer::open(self.bucket.clone(), self.branch, 3, 0);
-            futures::executor::block_on(next).map(drop)
-        }
-
-        /// Why the child refuses to attach while the segment may land yet, the parent's store
-        /// open here.
-        fn refusal(&self) -> super::Failure {
-            super::Failure::msg(format!(
-                "branch {:x}, a fork of branch {:x}, has no record, and the writer that uploads \
-                 the fork may land it yet: taking the parent's branch: branch {:#x} is open",
-                self.child, self.branch, self.branch
-            ))
-        }
-
-        /// The parent's writer, in reach again: it finds the branch taken, and `fork` fails, as
-        /// it says.
-        fn end(&self, fork: Forking) -> Result<(), String> {
-            self.gated.shut.store(false, std::sync::atomic::Ordering::Relaxed);
-            self.gated.hold.send_replace(Hold::Nothing);
-            fork.join().unwrap().map_err(|err| err.to_string())
-        }
-    }
-
-    /// Why a fork to `child` fails, its writer finding its branch taken.
-    fn taken(child: u64) -> Result<(), String> {
-        Err(format!("forking branch {child:x}: another writer took the branch"))
-    }
-
-    /// The host whose disk is at `from`, crashed, restarted with its disk as the crash left it at
-    /// `to`: the parent's store and the fork's handle, copied there, the handle naming the copy,
-    /// if it had got that far; no store of them open. What the crashed host's writes had in flight
-    /// may land still, as a dead host's PUTs may.
-    pub(super) fn restart(from: &std::path::Path, to: &std::path::Path) {
-        std::fs::create_dir(to).unwrap();
-        let named = |dir: &std::path::Path| dir.join("parent");
-        copy_dir(&named(from), &named(to));
-        let (parent, copy) =
-            (named(from).canonicalize().unwrap(), named(to).canonicalize().unwrap());
-        // Every handle beside it, naming the copy.
-        for entry in std::fs::read_dir(from).unwrap() {
-            let entry = entry.unwrap();
-            if entry.file_name() == "parent" {
-                continue;
-            }
-            copy_dir(&entry.path(), &to.join(entry.file_name()));
-            let handle = to.join(entry.file_name()).join("store");
-            if let Ok(text) = std::fs::read_to_string(&handle) {
-                let text = text.replace(parent.to_str().unwrap(), copy.to_str().unwrap());
-                std::fs::write(&handle, text).unwrap();
-            }
-        }
-    }
-
-    /// TASK-79.72: a fork's child with no record, its parent's host crashing while the fork's
-    /// segment uploaded, takes no branch of its own while the segment may land yet: the parent's
-    /// branch still the writer's that uploads it, whose store is open here, the child refuses. The
-    /// segment lands; the parent's next writer gives the child its record, and the child attaches
-    /// as the fork.
-    #[test]
-    fn forks_whose_segment_may_land_yet_take_no_branch_of_their_own() {
-        let dir = tempfile::tempdir().unwrap();
-        let (crashed, fork) = CrashedFork::new(dir.path());
-        let forked = ExtentStore::open(dir.path().join("child")).unwrap();
-        let refused = forked.attach_remote(crashed.bucket.clone(), 2, idle());
-        crashed.gated.hold.send_replace(Hold::Nothing);
-        crashed.gated.wait_went(1);
-        assert_eq!((refused, crashed.take()), (Err(crashed.refusal()), Ok(())));
-
-        assert_eq!(forked.attach_remote(crashed.bucket.clone(), 4, idle()), Ok(()));
-        let record = futures::executor::block_on(branch::record(&*crashed.bucket, crashed.child));
-        let origin = extent_remote::layout::Origin { parent: crashed.branch, at: 2 };
-        assert_eq!(record.unwrap().map(|record| record.origin()), Some(Some(origin)));
-        assert_eq!(forked.root(), Ok(b"root".to_vec()));
-        assert_eq!(crashed.end(fork), taken(crashed.child));
-    }
-
-    /// TASK-79.72: so does a fork's child whose segment never lands, its parent's store open here,
-    /// until its parent's branch is taken again: the next writer's fence takes the segment's
-    /// place, the parent's state names the fork not, and the child takes a record of its own,
-    /// uploading what it inherited.
-    #[test]
-    fn forks_whose_segment_never_lands_take_records_of_their_own_once_their_parents_are_taken() {
-        let dir = tempfile::tempdir().unwrap();
-        let (crashed, fork) = CrashedFork::new(dir.path());
-        let forked = ExtentStore::open(dir.path().join("child")).unwrap();
-        let refused = forked.attach_remote(crashed.bucket.clone(), 2, idle());
-        assert_eq!((refused, crashed.take()), (Err(crashed.refusal()), Ok(())));
-        assert_eq!(crashed.end(fork), taken(crashed.child));
-
-        assert_eq!(forked.attach_remote(crashed.bucket.clone(), 4, idle()), Ok(()));
-        let record = futures::executor::block_on(branch::record(&*crashed.bucket, crashed.child));
-        assert_eq!(record.unwrap().map(|record| record.origin()), Some(None));
-        let inherited = (vec![(1, pattern(1, BLOCK))], Some(b"root".to_vec()));
-        assert_eq!(uploaded(&crashed.bucket, crashed.child), inherited);
-    }
-
-    /// A fork's child with no record whose segment may land yet, its parent's host restarted, in
-    /// `restarted`, after the crash `crashed` says, and the parent's store open nowhere: the child
-    /// attaches, and the segment lands late, as the fork, failing, says.
-    fn attached_after_restart(
-        crashed: &CrashedFork,
-        fork: Forking,
-        restarted: &std::path::Path,
-    ) -> (Result<(), super::Failure>, Result<(), String>) {
-        let forked = ExtentStore::open(restarted.join("child")).unwrap();
-        let attached = forked.attach_remote(crashed.bucket.clone(), 2, idle());
-        (attached, crashed.end(fork))
-    }
-
-    /// TASK-79.72: a fork's child with no record whose segment may land yet, its parent's store
-    /// open nowhere, its host restarted after the crash, takes its parent's branch itself, as the
-    /// parent's next writer here would: the segment, landing late, finds that writer's fence in its
-    /// place, and the child takes a record of its own, uploading what it inherited. The parent,
-    /// attaching again, finds its branch's last commit one it uploaded, and no fork.
-    #[test]
-    fn forks_whose_parents_are_open_nowhere_take_their_parents_branch_and_records_of_their_own() {
-        let dir = tempfile::tempdir().unwrap();
-        let (crashed, restarted) = (dir.path().join("crashed"), dir.path().join("restarted"));
-        std::fs::create_dir(&crashed).unwrap();
-        let (crashed, fork) = CrashedFork::new(&crashed);
-        restart(&crashed.dir, &restarted);
-        let attached = attached_after_restart(&crashed, fork, &restarted);
-        assert_eq!(attached, (Ok(()), taken(crashed.child)));
-        let record = futures::executor::block_on(branch::record(&*crashed.bucket, crashed.child));
-        assert_eq!(record.unwrap().map(|record| record.origin()), Some(None));
-        let inherited = (vec![(1, pattern(1, BLOCK))], Some(b"root".to_vec()));
-        assert_eq!(uploaded(&crashed.bucket, crashed.child), inherited);
-
-        let parent = ExtentStore::open(restarted.join("parent")).unwrap();
-        assert_eq!(parent.attach_remote(crashed.bucket.clone(), 3, idle()), Ok(()));
-        assert_eq!(parent.root(), Ok(b"root".to_vec()));
-        let parents = futures::executor::block_on(recover(&*crashed.bucket, crashed.branch, None));
-        assert_eq!(parents.unwrap().state.forks, []);
-    }
-
-    /// TASK-79.72: so does one whose parent was deleted here, but not in object storage, which no
-    /// store of it opens again to take its branch.
-    #[test]
-    fn forks_whose_parents_were_deleted_here_take_their_parents_branch_and_records_of_their_own() {
-        let dir = tempfile::tempdir().unwrap();
-        let (crashed, restarted) = (dir.path().join("crashed"), dir.path().join("restarted"));
-        std::fs::create_dir(&crashed).unwrap();
-        let (crashed, fork) = CrashedFork::new(&crashed);
-        restart(&crashed.dir, &restarted);
-        ExtentStore::delete(restarted.join("parent"), None).unwrap();
-        let attached = attached_after_restart(&crashed, fork, &restarted);
-        assert_eq!(attached, (Ok(()), taken(crashed.child)));
-        let record = futures::executor::block_on(branch::record(&*crashed.bucket, crashed.child));
-        assert_eq!(record.unwrap().map(|record| record.origin()), Some(None));
-        let inherited = (vec![(1, pattern(1, BLOCK))], Some(b"root".to_vec()));
-        assert_eq!(uploaded(&crashed.bucket, crashed.child), inherited);
-    }
+    /// A fork, waiting in a thread of its own: what it gives.
+    type Forking = std::thread::JoinHandle<Result<(), crate::Error>>;
 
     /// A fork that fails once its segment landed, its parent's writer taken over before it
     /// acknowledged it (TASK-79.72): the parent, in `dir`, reaches the bucket, `memory`, through
@@ -3757,7 +3295,7 @@ mod tests {
         failed.land(Hold::Nothing);
         let forked = fork.join().unwrap().map_err(|err| err.to_string());
         let handle = dir.path().join("child");
-        assert_eq!((forked, handle.exists()), (taken(failed.child), false));
+        assert_eq!((forked, handle.exists()), (taken_over(failed.child), false));
         failed.next.hold.send_replace(Hold::Nothing);
         assert_eq!(taking.join().unwrap(), Ok(()));
 
@@ -3775,78 +3313,14 @@ mod tests {
         assert_eq!(parents.unwrap().state.forks, [fork]);
     }
 
-    /// TASK-79.78: a fork that failed is deleted as any store is, in object storage first, then
-    /// here: its host crashing in between leaves its handle, naming its branch still, which
-    /// deleting again finishes, not a branch no store holds, to which the parent's next writer
-    /// gives a record, and which the collector would keep, with what it inherited, for ever. Here
-    /// the host crashes as the deletion's first write, of the child's lease, goes, which never
-    /// lands: its disk, copied then, restarts, and the fork's handle is deleted there, as the fork
-    /// failed; the parent frees what the child inherited, and a pass of the collector deletes it.
-    #[test]
-    fn forks_failed_whose_host_crashed_as_they_were_deleted_are_deleted_again() {
-        let dir = tempfile::tempdir().unwrap();
-        let (crashed, restarted) = (dir.path().join("crashed"), dir.path().join("restarted"));
-        std::fs::create_dir(&crashed).unwrap();
-        let (failed, fork, taking) = FailedFork::new(&crashed);
-        failed.land(Hold::Key(extent_remote::layout::lease(failed.child)));
-        failed.gated.wait_held(1);
-        let named = extent_store::resolve_host(&crashed.join("child"));
-        let named = named.map(|(_, branch)| branch).map_err(|err| err.to_string());
-        assert_eq!(named, Ok(failed.child));
-        restart(&crashed, &restarted);
-        // The parent's next writer gives the child its record, the fork in the parent's branch.
-        failed.next.hold.send_replace(Hold::Nothing);
-        assert_eq!(taking.join().unwrap(), Ok(()));
-        let origin = extent_remote::layout::Origin { parent: failed.branch, at: 2 };
-        let record = |deleted| extent_remote::record::Record {
-            deleted,
-            ..extent_remote::record::Kind::Claim(origin).of(0)
-        };
-        assert_eq!(failed.record().map(unowned), Some(record(false)));
-
-        // Placed, so that deleting it in the bucket takes its placement's token: tests name no
-        // host's (`host_token`).
-        let (bucket, handle) = (failed.bucket(), restarted.join("child"));
-        ExtentStore::place(&handle, 1).unwrap();
-        ExtentStore::delete(&handle, Some(&bucket)).unwrap();
-        assert_eq!((failed.record().map(unowned), handle.exists()), (Some(record(true)), false));
-        let inherited = ExtentId { branch: failed.branch, sequence: FailedFork::OWN };
-        let parent = ExtentStore::open(restarted.join("parent")).unwrap();
-        parent.attach_remote(bucket.clone(), 4, idle()).unwrap();
-        parent.free(inherited).unwrap();
-        parent.commit(None).unwrap();
-        drop(parent);
-        // The parent's extents stored on their own: the one the child inherited, which the first
-        // writer uploaded before its first segment of commits.
-        let own = || {
-            let prefix = extent_remote::layout::extents(failed.branch);
-            let listed = extent_remote::Bucket::list(&*bucket, &prefix);
-            let listed = futures::executor::block_on(listed).unwrap();
-            listed.into_iter().map(|meta| meta.key).collect::<Vec<_>>()
-        };
-        assert_eq!(own(), [extent_remote::layout::extent(1, 1, inherited.into())]);
-        let options = extent_remote::collector::Options { compact_below: 0.0, grace: 0 };
-        futures::executor::block_on(extent_remote::collector::collect(&*bucket, 1, &options))
-            .unwrap();
-        assert_eq!(own(), Vec::<String>::new());
-
-        // The crashed host's write lands late, as a dead host's may, and finds the branch deleted:
-        // the deletion it began finishes there, though the pass deleted what recovering the child
-        // reads, and leaves the record as the restarted host's left it.
-        failed.gated.hold.send_replace(Hold::Nothing);
-        let forked = fork.join().unwrap().map_err(|err| err.to_string());
-        let ended = (forked, failed.record().map(unowned), crashed.join("child").exists());
-        assert_eq!(ended, (taken(failed.child), Some(record(true)), false));
-    }
-
-    /// TASK-79.78: a fork that failed whose deletion in object storage fails keeps its handle,
-    /// naming its branch, and its branch here, as any store whose deletion stopped does: no branch
-    /// kept in object storage alone. Here a later placement takes the child's branch as the
+    /// TASK-79.78: a fork that failed whose deletion in object storage is refused changes nothing
+    /// there, and leaves nothing here: here a later placement takes the child's branch as the
     /// deletion's first write, of its lease, goes, so that the deletion, as this host's placement,
-    /// refuses (`ESTALE`), changing nothing there: the parent's next writer gives the child its
-    /// record, live.
+    /// refuses (`ESTALE`): the parent's next writer gives the child its record, live, the later
+    /// placement's. Before, the fork's handle stayed, naming the branch, and its store held it
+    /// here; now a child's store is made only once its fork is (TASK-165.7).
     #[test]
-    fn forks_failed_whose_deletion_failed_keep_their_handle_and_branch() {
+    fn forks_failed_whose_deletion_is_refused_leave_their_branch_to_its_placement() {
         let dir = tempfile::tempdir().unwrap();
         let (failed, fork, taking) = FailedFork::new(dir.path());
         let lease = extent_remote::layout::lease(failed.child);
@@ -3857,62 +3331,24 @@ mod tests {
         assert_eq!(later, Ok(1));
         failed.gated.hold.send_replace(Hold::Nothing);
         let forked = fork.join().unwrap().map_err(|err| err.to_string());
-        let handle = dir.path().join("child");
-        let named = extent_store::resolve_host(&handle);
-        let named = named.map(|(_, branch)| branch).map_err(|err| err.to_string());
-        assert_eq!((forked, named), (taken(failed.child), Ok(failed.child)));
-        // Its handle says it failed (TASK-79.84).
-        assert!(ExtentStore::fork_failed(&handle), "the handle left reads as a fork made");
+        let path = dir.path().join("child");
+        assert_eq!((forked, path.exists()), (taken_over(failed.child), false));
         failed.next.hold.send_replace(Hold::Nothing);
         assert_eq!(taking.join().unwrap(), Ok(()));
 
         let origin = extent_remote::layout::Origin { parent: failed.branch, at: 2 };
         let live = extent_remote::record::Kind::Claim(origin).of(0);
         assert_eq!(failed.record().map(unowned), Some(live));
-        assert_eq!(ExtentStore::open(&handle).unwrap().root(), Ok(b"root".to_vec()));
-    }
-
-    /// TASK-160.14: a claim's file reads back as the claim written, whatever its fork gives its
-    /// child: nothing yet, to a point or not; a fork at a segment, a point or not; or a fork of a
-    /// point. Deleting the child goes by the kind of record that is, one of its own until its
-    /// fork's segment goes.
-    #[test]
-    fn claims_read_as_written() {
-        use super::{Claim, Forked};
-        use extent_remote::layout::Origin;
-        use extent_remote::record::Kind;
-        let origin = Origin { parent: 0xa, at: 0x10 };
-        let forking = Kind::Forking { origin, point: 0xb };
-        let claims = [
-            (Forked::Pending { point: false }, "owner 7\n\n", Kind::Own),
-            (Forked::Pending { point: true }, "owner 7\npoint\n", Kind::Own),
-            (Forked::Made(Kind::Fork(origin)), "owner 7\na 10\n", Kind::Fork(origin)),
-            (Forked::Made(Kind::Point(origin)), "owner 7\npoint a 10\n", Kind::Point(origin)),
-            (Forked::Made(forking), "owner 7\nof b a 10\n", forking),
-        ];
-        for (forked, text, kind) in claims {
-            let claim = Claim { owner: 7, forked };
-            assert_eq!((claim.text().as_str(), claim.kind()), (text, kind));
-            assert_eq!(Claim::parse(text), Some(claim));
-        }
-        assert_eq!(Claim::parse("owner 7\nof b\n"), None);
     }
 
     /// TASK-184: two writers of one file of a store's directory at once each write a new file of
     /// their own, the second writing while the first has written its own and not yet put it in
-    /// place: a fork claiming a child claimed already, as a fork retried does, and the uploader
-    /// naming the origin of the fork to it in its claim, either first; or two writes of a
-    /// marker. Sharing one, the second truncated the first's and removed it, or renamed it, from
-    /// under it: the uploader's write failed (`ENOENT`), stopping its uploads, or the fork's.
+    /// place, as two writes of a marker. Sharing one, the second truncated the first's and removed
+    /// it, or renamed it, from under it: the uploader's write failed (`ENOENT`), stopping its
+    /// uploads. (Its cases of a fork's claim went with claims, TASK-165.7.)
     #[test]
     fn writers_of_one_file_at_once_each_write_their_own() {
-        use super::{Claim, Forked, claim, claim_file, claim_origin, claimed, marker};
-        use extent_remote::layout::Origin;
-        use extent_remote::record::Kind;
-        let (child, origin) = (7, Origin { parent: 0xa, at: 0x10 });
-        let first = Claim { owner: 9, forked: Forked::Pending { point: false } };
-        let named = Claim { owner: 9, forked: Forked::Made(Kind::Fork(origin)) };
-        let retried = Claim { owner: 10, forked: Forked::Pending { point: false } };
+        use super::marker;
         type Wrote = Result<bool, String>;
         /// What `first` gives, and `second`, which writes as `first` has written its new file;
         /// and what is left in `dir`.
@@ -3941,28 +3377,6 @@ mod tests {
             left.sort();
             (first, gave.lock().unwrap().take(), left)
         }
-        let fork = |dir: &std::path::Path| {
-            let dir = dir.to_owned();
-            move || claim(&dir, child, retried).map_err(|err| err.to_string())
-        };
-        let naming = |dir: &std::path::Path| {
-            let dir = dir.to_owned();
-            move || claim_origin(&dir, child, origin).map_err(|err| err.to_string())
-        };
-
-        // The uploader naming the origin, a fork to the child claiming it meanwhile.
-        let dir = tempfile::tempdir().unwrap();
-        assert_eq!(claim(dir.path(), child, first).map_err(|err| err.to_string()), Ok(true));
-        let gave = at_once(dir.path(), naming(dir.path()), fork(dir.path()));
-        assert_eq!(gave, (Ok(true), Some(Ok(false)), vec![claim_file(child)]));
-        assert_eq!(claimed(dir.path(), child).unwrap(), Some(named));
-
-        // A fork to the child claiming it, the uploader naming the origin meanwhile.
-        let dir = tempfile::tempdir().unwrap();
-        assert_eq!(claim(dir.path(), child, first).map_err(|err| err.to_string()), Ok(true));
-        let gave = at_once(dir.path(), fork(dir.path()), naming(dir.path()));
-        assert_eq!(gave, (Ok(false), Some(Ok(true)), vec![claim_file(child)]));
-        assert_eq!(claimed(dir.path(), child).unwrap(), Some(named));
 
         // Two writes of a marker: the one renamed last stays.
         let dir = tempfile::tempdir().unwrap();
@@ -3979,9 +3393,9 @@ mod tests {
     /// as the branch is deleted, and nothing of another branch's.
     #[test]
     fn unmarking_removes_new_files_a_crash_left() {
-        use super::{claim_file, fence, marker, new_file, unmark};
+        use super::{fence, marker, new_file, unmark};
         let dir = tempfile::tempdir().unwrap();
-        let names = |branch| [marker(branch), fence(branch), claim_file(branch)];
+        let names = |branch| [marker(branch), fence(branch)];
         for name in names(3).into_iter().chain(names(4)) {
             std::fs::write(dir.path().join(&name), "").unwrap();
             std::fs::write(dir.path().join(new_file(&name)), "").unwrap();
@@ -3996,7 +3410,7 @@ mod tests {
         let mut expected = names(4).to_vec();
         expected.sort();
         assert_eq!(kept, expected);
-        assert_eq!(new.len(), 3, "{new:?}");
+        assert_eq!(new.len(), 2, "{new:?}");
         assert!(new.iter().all(|name| name.contains("0000000000000004.new-")), "{new:?}");
     }
 
@@ -4125,70 +3539,11 @@ mod tests {
         assert_eq!(parent.wait_uploaded(), Ok(()));
     }
 
-    /// TASK-79.82: a fork's handle whose child's ID another branch took, which its host's crash
-    /// left, takes no branch of that one's: a branch with nothing in it yet, whose state its store
-    /// would take for its own to upload to, is left as it is, its lease its writer's. Here it opens
-    /// while its fork waits for its segment, as it does restarted; the fork's cleanup goes on after.
-    #[test]
-    fn forks_left_by_a_crash_take_no_branch_that_took_their_childs_id() {
-        let dir = tempfile::tempdir().unwrap();
-        let memory: Arc<dyn object_store::ObjectStore> = Arc::new(InMemory::new());
-        let gated = Arc::new(Gated::over(memory.clone()));
-        let bucket = Arc::new(Bucket::new(memory, ""));
-        let path = dir.path().join("child");
-        let (_, child, fork) = forking_held(dir.path(), &gated, &path);
-        futures::executor::block_on(branch::create(&*bucket, child, 0)).unwrap();
-        let lease = extent_remote::layout::lease(child);
-        assert_eq!(futures::executor::block_on(branch::take_lease(&*bucket, &lease, 7, 0)), Ok(1));
-        let leased = || {
-            let epoch = branch::lease_epoch(&*bucket, &lease);
-            futures::executor::block_on(epoch)
-        };
-
-        let opened = ExtentStore::open(&path).unwrap();
-        let attached = opened.attach_remote(bucket.clone(), 8, idle());
-        let refused = super::Failure::Remote(extent_remote::Error::ChildTaken(child));
-        assert_eq!(attached.as_ref().map_err(ToString::to_string), Err(refused.to_string()));
-        assert_eq!(attached, Err(refused));
-        assert_eq!(leased(), Ok(1));
-        // Closed before the fork goes on: its cleanup leaves a handle open.
-        drop(opened);
-        gated.hold.send_replace(Hold::Nothing);
-        let forked = fork.join().unwrap().map_err(|err| err.to_string());
-        assert_eq!((forked, path.exists(), leased()), (anothers(child), false, Ok(1)));
-    }
-
-    /// TASK-79.82: so does a deletion, later, of the handle of such a fork, which its cleanup left,
-    /// its child open here then.
-    #[test]
-    fn forks_failed_whose_handles_are_deleted_later_leave_branches_that_took_their_childs_id_be() {
-        let dir = tempfile::tempdir().unwrap();
-        let memory: Arc<dyn object_store::ObjectStore> = Arc::new(InMemory::new());
-        let gated = Arc::new(Gated::over(memory.clone()));
-        let bucket = Arc::new(Bucket::new(memory, ""));
-        let path = dir.path().join("child");
-        let (_, child, fork) = forking_held(dir.path(), &gated, &path);
-        let opened = ExtentStore::open(&path).unwrap();
-        let others = others(&dir.path().join("other"), &bucket, child);
-        gated.hold.send_replace(Hold::Nothing);
-        let forked = fork.join().unwrap().map_err(|err| err.to_string());
-        assert_eq!((forked, path.exists()), (anothers(child), true));
-        drop(opened);
-
-        // Placed, so that deleting it in the bucket takes its placement's token, as high as the
-        // other's: tests name no host's (`host_token`).
-        ExtentStore::place(&path, 2).unwrap();
-        let deleted = ExtentStore::delete(&path, Some(&bucket)).map_err(|err| err.to_string());
-        assert_eq!((deleted, path.exists()), (Ok(()), false));
-        let record = futures::executor::block_on(branch::record(&*bucket, child)).unwrap();
-        assert_eq!((record.map(unowned), live(&others, &bucket)), (Some(own_record()), lives()));
-    }
-
-    /// TASK-79.78, TASK-79.82: a fork that fails once its commit was made, here as its record
-    /// cannot be written, its place taken by a directory, is deleted in object storage too, as one
-    /// failing later is: the segment its commit ends, which names the fork, uploads after, and the
-    /// parent's writer, giving the child its record, finds it deleted, so that no branch is kept
-    /// there that no handle names.
+    /// TASK-79.78, TASK-79.82: a fork that fails once its commit was made, here as its flush
+    /// fails, is deleted in object storage, as one failing later is: the segment its commit ends,
+    /// which names the fork, uploads after, and the parent's writer, giving the child its record,
+    /// finds it deleted, so that no branch is kept there that no store holds. It leaves nothing at
+    /// its path.
     #[test]
     fn forks_failed_once_committed_leave_their_child_no_branch() {
         let dir = tempfile::tempdir().unwrap();
@@ -4198,13 +3553,11 @@ mod tests {
         write(&parent, 1, &pattern(1, BLOCK));
         parent.commit(Some(b"root")).unwrap();
         let child = parent.branch() + 1;
-        let record = format!("branches/{child:016x}.{:016x}", 0);
-        let record = dir.path().join("parent").join(record);
-        std::fs::create_dir(&record).unwrap();
         let path = dir.path().join("child");
+        let flushed = fail::FailGuard::new("fork::flushed", "return").unwrap();
         let forked = parent.fork(&path, child).map_err(|err| format!("{err:#}"));
-        std::fs::remove_dir(&record).unwrap();
-        assert!(!path.exists(), "the fork's handle is left");
+        drop(flushed);
+        assert!(!path.exists(), "the fork's directory is left");
 
         parent.commit(Some(b"later")).unwrap();
         assert_eq!(parent.wait_uploaded(), Ok(()));
@@ -4217,117 +3570,11 @@ mod tests {
         // The checkpoint at the fork, its child deleted, names it no more.
         let parents = futures::executor::block_on(recover(&*bucket, parent.branch(), None));
         assert_eq!(parents.unwrap().state.forks, []);
-        // TASK-44.10: nor a marker, its commit's segment going after its child was deleted here.
-        let marker = dir.path().join("parent").join(super::marker(child));
-        assert!(!marker.exists(), "the marker of a child deleted is left");
-        let unwritten = format!(
+        let unflushed = format!(
             "forking branch {child:x}: the fork to branch {child:#x} failed once its commit was \
-             made: creating branches/{child:016x}.{:016x}: File exists (os error 17)",
-            0
+             made: failpoint fork::flushed"
         );
-        assert_eq!(forked, Err(unwritten));
-    }
-
-    /// TASK-79.78, TASK-79.82: a fork whose host crashed once its commit was made, before its
-    /// record was written, leaves its handle, naming a branch the store has not, which deleting
-    /// deletes in object storage too: there the segment the fork's commit ends, which names the
-    /// fork, may have landed, here before the crash, the parent's writer giving the child its
-    /// record, which the collector would keep, with what the child inherited, for ever.
-    #[test]
-    fn forks_whose_host_crashed_before_their_record_are_deleted_in_object_storage_too() {
-        let dir = tempfile::tempdir().unwrap();
-        let (crashed, restarted) = (dir.path().join("crashed"), dir.path().join("restarted"));
-        std::fs::create_dir(&crashed).unwrap();
-        let bucket = Arc::new(Bucket::new(Arc::new(InMemory::new()), ""));
-        let parent = ExtentStore::create(crashed.join("parent"), 1 << 30).unwrap();
-        parent.attach_remote(bucket.clone(), 1, idle()).unwrap();
-        let child = parent.branch() + 1;
-        let record = forked(&parent, &bucket, &crashed.join("child"), child);
-        restart(&crashed, &restarted);
-        // Its record, never written.
-        let records = restarted.join("parent").join("branches");
-        for entry in std::fs::read_dir(&records).unwrap() {
-            let name = entry.unwrap().file_name().into_string().unwrap();
-            if name.starts_with(&format!("{child:016x}.")) {
-                std::fs::remove_file(records.join(name)).unwrap();
-            }
-        }
-
-        let handle = restarted.join("child");
-        ExtentStore::place(&handle, 1).unwrap();
-        let deleted = ExtentStore::delete(&handle, Some(&bucket)).map_err(|err| err.to_string());
-        assert_eq!((deleted, handle.exists()), (Ok(()), false));
-        let deleted = extent_remote::record::Record { deleted: true, ..record };
-        let record = futures::executor::block_on(branch::record(&*bucket, child)).unwrap();
-        assert_eq!(record, Some(deleted));
-    }
-
-    /// TASK-79.82: a fork's child that took a record of its own, its fork failed, the fork's
-    /// segment never landing, is deleted in object storage with its handle, as any store is: its
-    /// branch there is its own.
-    #[test]
-    fn forks_with_records_of_their_own_are_deleted_with_their_handles() {
-        let dir = tempfile::tempdir().unwrap();
-        let (crashed, fork) = CrashedFork::new(dir.path());
-        let forked = ExtentStore::open(dir.path().join("child")).unwrap();
-        let refused = forked.attach_remote(crashed.bucket.clone(), 2, idle());
-        assert_eq!((refused, crashed.take()), (Err(crashed.refusal()), Ok(())));
-        assert_eq!(crashed.end(fork), taken(crashed.child));
-        assert_eq!(forked.attach_remote(crashed.bucket.clone(), 4, idle()), Ok(()));
-        let record = || {
-            let record = branch::record(&*crashed.bucket, crashed.child);
-            futures::executor::block_on(record).unwrap()
-        };
-        assert_eq!(record().map(|record| record.origin()), Some(None));
-        drop(forked);
-
-        let handle = dir.path().join("child");
-        ExtentStore::place(&handle, 4).unwrap();
-        let deleted = ExtentStore::delete(&handle, Some(&crashed.bucket));
-        assert_eq!((deleted.map_err(|err| err.to_string()), handle.exists()), (Ok(()), false));
-        let deleted = extent_remote::record::Record {
-            deleted: true,
-            ..extent_remote::record::Kind::Own.of(0)
-        };
-        assert_eq!(record().map(unowned), Some(deleted));
-    }
-
-    /// TASK-79.82: a fork's child taking a record of its own takes none of another's: a branch
-    /// taking its ID as it does, whose record says the same but for being a fork's, is left as it
-    /// is, its lease its writer's; and deleting the handle leaves it so too.
-    #[test]
-    fn forks_taking_records_of_their_own_take_none_of_another_branch() {
-        let dir = tempfile::tempdir().unwrap();
-        let (crashed, fork) = CrashedFork::new(dir.path());
-        let forked = ExtentStore::open(dir.path().join("child")).unwrap();
-        let refused = forked.attach_remote(crashed.bucket.clone(), 2, idle());
-        assert_eq!((refused, crashed.take()), (Err(crashed.refusal()), Ok(())));
-        assert_eq!(crashed.end(fork), taken(crashed.child));
-
-        let (bucket, child) = (crashed.bucket.clone(), crashed.child);
-        let lease = extent_remote::layout::lease(child);
-        let leased = lease.clone();
-        let taking = fail::FailGuard::with_callback("remote::create_branch", move || {
-            futures::executor::block_on(branch::create(&*bucket, child, 0)).unwrap();
-            let taken = branch::take_lease(&*bucket, &leased, 7, 0);
-            assert_eq!(futures::executor::block_on(taken), Ok(1));
-        });
-        let taking = taking.unwrap();
-        let attached = forked.attach_remote(crashed.bucket.clone(), 4, idle());
-        drop(taking);
-        let refused = super::Failure::Remote(extent_remote::Error::ChildTaken(child));
-        assert_eq!(attached.as_ref().map_err(ToString::to_string), Err(refused.to_string()));
-        assert_eq!(attached, Err(refused));
-        drop(forked);
-
-        let handle = dir.path().join("child");
-        ExtentStore::place(&handle, 4).unwrap();
-        let deleted = ExtentStore::delete(&handle, Some(&crashed.bucket));
-        assert_eq!((deleted.map_err(|err| err.to_string()), handle.exists()), (Ok(()), false));
-        let record = futures::executor::block_on(branch::record(&*crashed.bucket, child));
-        assert_eq!(record, Ok(Some(own_record())));
-        let epoch = branch::lease_epoch(&*crashed.bucket, &lease);
-        assert_eq!(futures::executor::block_on(epoch), Ok(1));
+        assert_eq!(forked, Err(unflushed));
     }
 
     /// A marker names the last commit uploaded, or none, and those uploading, and reads back so;
@@ -4361,7 +3608,7 @@ mod tests {
         let text = || std::fs::read_to_string(&path).unwrap();
         let mut in_flight = super::InFlight::new(super::Marker::new(dir.path(), 7));
         let uploading =
-            |seq, tag| super::Uploading { seq, number: seq + 10, tag, forks: Vec::new() };
+            |seq, tag| super::Uploading { seq, number: seq + 10, tag, forks: false };
         in_flight.upload(&writer, vec![uploading(3, 0x13)]).unwrap();
         assert_eq!((text(), in_flight.len()), ("- 13\n".to_owned(), 1));
         in_flight.upload(&writer, vec![uploading(4, 0x14), uploading(5, 0x15)]).unwrap();

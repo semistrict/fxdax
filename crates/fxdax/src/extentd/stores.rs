@@ -657,16 +657,16 @@ fn take_store(path: &Path, branch: u64, capacity: u64) -> Result<ExtentStore, Er
     open_here(path)
 }
 
-/// Finishes deleting the fork at `path`, if its fork failed ([`ExtentStore::fork_failed`]), and
-/// its branch in the daemon's bucket, as [`delete`] would: a deletion of its that stopped partway
-/// (TASK-79.84). Its holder holds `path`.
-pub(super) fn deleted_if_failed(path: &Path) -> Result<(), Errno> {
-    if !ExtentStore::fork_failed(path) {
+/// Removes what a store's making, or a fork's, left at `path`, unmade, its host crashing
+/// (`host_store::unmade`): no store, which a fork or a restore to `path` makes anew. Its holder
+/// holds `path`.
+pub(super) fn removed_if_unmade(path: &Path) -> Result<(), Errno> {
+    if !crate::host_store::unmade(path) {
         return Ok(());
     }
-    let bucket = bucket_of(path)?;
-    ExtentStore::delete(path, Some(&bucket)).map_err(|err| {
-        errno_of(format_args!("deleting {}, a fork that failed", path.display()), err)
+    std::fs::remove_dir_all(path).map_err(|err| {
+        log::warn!("extentd: removing {}, a store unmade: {err}", path.display());
+        Errno::EIO
     })
 }
 
@@ -689,8 +689,8 @@ pub(super) async fn fork_from(
 ) -> Result<(), Errno> {
     match fork_point(from, branch, capacity, path).await {
         (Err(errno), Opened::Before) if errno != Errno::EEXIST => {
-            // What the failed fork left at `path` goes first, as before any restore's.
-            deleted_if_failed(path)?;
+            // What a crash left at `path` goes first, as before any restore's.
+            removed_if_unmade(path)?;
             fork_point(from, branch, capacity, path).await.0
         }
         (forked, _) => forked,
@@ -779,7 +779,6 @@ pub(super) async fn fork(
     let first = new();
     match fork_held(&from, &to, first, point, &key).await {
         Err(errno) if !named && was_kept && errno != Errno::EEXIST => {
-            deleted_if_failed(&to)?;
             let second = new();
             fork_held(&from, &to, second, point, &key).await.map(|()| second)
         }

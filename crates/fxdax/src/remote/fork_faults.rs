@@ -8,6 +8,12 @@
 //! the fork, what [`World::settle`] checks: no data lost, no other branch harmed, nothing leaked
 //! for good, and a later fork succeeding, or the same one failing cleanly.
 //!
+//! A fork is the bucket's alone (TASK-165.7): its child's store is made only once the bucket has
+//! the child's record, so that nothing here names a child the bucket may not have. What a fork
+//! whose host died, or whose cleanup failed, leaves in the bucket stands, as the bucket's protocol
+//! has it (doc-14): an orphan, a live branch no store holds, which an operator finds among the live
+//! branches and deletes ([`World::settle`], `fxdax-gc --branches`).
+//!
 //! A host dying is its disk, copied there and then, restarted, and its bucket cut off, so that what
 //! it had going runs to its end unseen ([`Gated::sever`]): every write of a dead host's kept, synced
 //! or not, as its file system may keep them.
@@ -49,7 +55,7 @@ enum Fault {
     Write(usize, Mishap),
 }
 
-/// What the host's control plane does with what a dead host left at a fork's handle.
+/// What the host's control plane does with what a dead host left at a fork's path.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Leftover {
     /// Deletes it, as of a fork that failed.
@@ -233,7 +239,7 @@ impl World {
         Some(guard.unwrap())
     }
 
-    /// Forks the parent to `child`, its handle at `child` in the host's disk, with `faults`
+    /// Forks the parent to `child`, its store at `child` in the host's disk, with `faults`
     /// happening; and lets go of the parent, whatever its uploader has left to do.
     fn fork(&mut self, faults: &[Fault]) -> Result<(), crate::Error> {
         let guards: Vec<_> = faults.iter().filter_map(|fault| self.arm(*fault)).collect();
@@ -290,39 +296,59 @@ impl World {
         block_on(branch::live(&*self.bucket)).unwrap().into_keys().collect()
     }
 
+    /// The branches live in the bucket that no store holds, of those `named`: what a fork whose
+    /// host died, or whose cleanup failed, leaves standing, which an operator finds so, and
+    /// deletes, whichever placement took it last, as `fxdax-gc --branches` and `--delete-branch`
+    /// do. Only the fork's child may be one, and only if the fork failed.
+    fn delete_orphans(&self, named: &[u64], failed: bool, case: &str) {
+        let orphans: Vec<_> =
+            self.live().into_iter().filter(|live| !named.contains(live)).collect();
+        if orphans.is_empty() {
+            return;
+        }
+        assert!(failed, "{case}: a fork made left orphans: {orphans:x?}");
+        assert_eq!(orphans, [self.child], "{case}: orphans");
+        let deleted = block_on(branch::delete(&*self.bucket, self.child, rand::random(), u64::MAX));
+        assert_eq!(deleted, Ok(()), "{case}: deleting the orphan");
+    }
+
     /// What must hold whatever came of the fork, `forked`, `case` saying what went wrong. The
     /// collector's passes go first, then between each step, as nothing keeps them away.
     fn settle(self, forked: Result<(), crate::Error>, leftover: Leftover, case: &str) {
-        let handle = self.path("child");
+        let path = self.path("child");
         let mut children = Vec::new();
         // Those to check, once the parent's next writer took its branch.
         let mut unchecked: Vec<(PathBuf, &[u8])> = Vec::new();
         self.collect(case);
 
-        // What the host left at the handle goes, or is the fork, as its caller was told, or finds.
+        // What the host left at the fork's path goes, or is the fork, as its caller was told, or
+        // finds: a store of the child's, or a directory its making left unmade.
         let made = forked.is_ok() && !self.dead.load(Ordering::SeqCst);
-        if handle.exists() {
+        if path.exists() {
             if made {
-                children.push(handle.clone());
-                unchecked.push((handle.clone(), b"root"));
+                children.push(path.clone());
+                unchecked.push((path.clone(), b"root"));
             } else if leftover == Leftover::Opened {
-                match self.open(&handle) {
+                match self.open(&path) {
                     Ok(store) => {
                         assert!(!self.taken.load(Ordering::SeqCst), "{case}: it took another's");
                         self.check_fork(&store, b"root", case);
-                        children.push(handle.clone());
+                        children.push(path.clone());
                     }
-                    Err(_) => self.delete(&handle, case),
+                    Err(_) => self.delete(&path, case),
                 }
             } else {
-                self.delete(&handle, case);
+                self.delete(&path, case);
             }
+        } else {
+            assert!(!made, "{case}: a fork made left no store");
         }
         self.collect(case);
 
         // The parent's next writer takes its branch, and it holds what it held.
-        let path = self.path("parent");
-        let parent = self.open(&path).unwrap_or_else(|err| panic!("{case}: the parent: {err}"));
+        let parent_path = self.path("parent");
+        let parent =
+            self.open(&parent_path).unwrap_or_else(|err| panic!("{case}: the parent: {err}"));
         self.gated.land_late();
         assert_eq!(parent.root(), Ok(b"root".to_vec()), "{case}");
         for (extent, data) in &self.held {
@@ -340,24 +366,24 @@ impl World {
         assert_eq!(root, Some(b"later".to_vec()), "{case}");
         self.collect(case);
 
-        // Of a child gone, nothing is left beside the parent's store.
-        if children.is_empty() {
-            let named = format!("{:016x}", self.child);
-            let left = std::fs::read_dir(&path).unwrap();
-            let left = left.map(|entry| entry.unwrap().file_name().into_string().unwrap());
-            let left: Vec<_> = left.filter(|name| name.contains(&named)).collect();
-            assert_eq!(left, Vec::<String>::new(), "{case}: left of the child");
+        // What the fork left standing in the bucket, no store holding it, an operator deletes.
+        let taken = self.taken.load(Ordering::SeqCst);
+        let mut named = vec![self.branch, self.other.branch()];
+        named.extend(children.iter().map(|_| self.child));
+        if taken {
+            named.push(self.child);
         }
+        self.delete_orphans(&named, !made, case);
+        self.collect(case);
 
         // A fork to the same child, and to the same place, makes it if nothing has its ID, or fails
         // cleanly; one to a new child forks.
-        let taken = self.taken.load(Ordering::SeqCst);
         let spent = self.record(self.child).is_some() || !children.is_empty();
-        let again = parent.fork(&handle, self.child).map_err(|err| err.errno());
+        let again = parent.fork(&path, self.child).map_err(|err| err.errno());
         assert_eq!(again, if spent { Err(Some(Errno::EEXIST)) } else { Ok(()) }, "{case}: again");
         if !spent {
-            children.push(handle.clone());
-            unchecked.push((handle.clone(), b"later"));
+            children.push(path.clone());
+            unchecked.push((path.clone(), b"later"));
         }
         let retried = crate::host_store::new_branch();
         assert_eq!(
@@ -372,16 +398,16 @@ impl World {
             self.check_fork(&opened, root, case);
         }
 
-        // No branch lives that no handle names, none another's was harmed, and it goes on.
+        // No branch lives that no store holds, none another's was harmed, and it goes on.
         let mut live = self.live();
         live.sort();
         let mut named = vec![self.branch, self.other.branch()];
-        named.extend(children.iter().map(|child| extent_store::resolve_host(child).unwrap().1));
+        named.extend(children.iter().map(|child| ExtentStore::open(child).unwrap().branch()));
         if taken {
             named.push(self.child);
         }
         named.sort();
-        assert_eq!(live, named, "{case}: branches no handle names, or lost");
+        assert_eq!(live, named, "{case}: branches no store holds, or lost");
         for (extent, data) in &self.other_held {
             assert!(read(&self.other, *extent, data.len()) == *data, "{case}: another's extent");
         }
@@ -398,7 +424,7 @@ impl World {
             self.delete(child, case);
         }
         drop(parent);
-        self.delete(&path, case);
+        self.delete(&parent_path, case);
         self.collect(case);
         let keys = block_on(extent_remote::Bucket::list(&*self.bucket, "")).unwrap();
         let kept = |branch| branch == self.other.branch() || taken && branch == self.child;
@@ -419,9 +445,12 @@ impl World {
             })
             .collect();
         assert_eq!(leaked, Vec::<String>::new(), "{case}: left in the bucket");
+        // But the file buckets beside the stores their descriptions name, which outlive them, and
+        // which they keep nothing in here, attached to the world's bucket instead.
         let left = std::fs::read_dir(&self.host).unwrap();
-        let left: Vec<_> = left.map(|entry| entry.unwrap().file_name()).collect();
-        assert_eq!(left, Vec::<std::ffi::OsString>::new(), "{case}: left on the host's disk");
+        let left = left.map(|entry| entry.unwrap().file_name().into_string().unwrap());
+        let left: Vec<_> = left.filter(|name| !name.ends_with(".bucket")).collect();
+        assert_eq!(left, Vec::<String>::new(), "{case}: left on the host's disk");
     }
 }
 
@@ -491,17 +520,7 @@ fn forks_take_their_steps_in_order() {
     assert_eq!(traced(&[]), FORK_STEPS);
     let cleanup = traced(&[Fault::Fails("writer::acknowledge")]);
     let cleaned: Vec<_> = cleanup.into_iter().filter(|step| !FORK_STEPS.contains(step)).collect();
-    assert_eq!(
-        cleaned,
-        [
-            "delete::failed",
-            "delete::elsewhere",
-            "branch::claimed",
-            "branch::claim_lease_ended",
-            "delete::branch",
-            "delete::after"
-        ]
-    );
+    assert_eq!(cleaned, ["branch::claimed", "branch::claim_lease_ended"]);
 }
 
 /// A step of a fork that fails fails the fork, and what must hold holds.
@@ -535,10 +554,10 @@ fn branches_taking_the_childs_id_at_each_step() {
 #[test]
 fn branches_taking_the_id_of_a_fork_whose_host_dies() {
     host();
-    let after_claim = FORK_STEPS.iter().position(|step| *step == "fork::claimed").unwrap();
-    all(FORK_STEPS[after_claim + 1..].iter().flat_map(|&step| {
+    let after_free = FORK_STEPS.iter().position(|step| *step == "remote::child_free").unwrap();
+    all(FORK_STEPS[after_free + 1..].iter().flat_map(|&step| {
         [Leftover::Deleted, Leftover::Opened]
-            .map(|leftover| (vec![Fault::Taken("fork::claimed"), Fault::Dies(step)], leftover))
+            .map(|leftover| (vec![Fault::Taken("remote::child_free"), Fault::Dies(step)], leftover))
     }));
 }
 
@@ -571,64 +590,14 @@ fn each_write_of_a_fork_meeting_the_collector() {
         .map(|write| (vec![Fault::Write(write, Mishap::Collected)], Leftover::Deleted)));
 }
 
-/// What a pass of the collector over `bucket` does as a [`Mishap`] calls it.
-fn pass(bucket: &Arc<Bucket>) -> Arc<dyn Fn() + Send + Sync> {
-    let bucket = bucket.clone();
-    Arc::new(move || {
-        let options = extent_remote::collector::Options { compact_below: 0.0, grace: 0 };
-        block_on(extent_remote::collector::collect(&*bucket, rand::random(), &options)).unwrap();
-    })
-}
-
-/// TASK-150.1: a child with a branch of its own, forked where no bucket was, uploads what it
-/// inherited as it attaches, of every size, with a pass of the collector just before the write
-/// numbered `write`, if it is one of its: it holds all of it then, read from the bucket alone. Says
-/// how many writes the upload made.
-fn upload_of_what_was_inherited(write: usize) -> usize {
-    let temp = tempfile::tempdir().unwrap();
-    let parent = ExtentStore::create(temp.path().join("parent"), 1 << 30).unwrap();
-    let sizes = [BLOCK, 2 * BLOCK, super::LARGE as usize, 2 * super::LARGE as usize];
-    let held = sizes.iter().enumerate().map(|(at, &len)| {
-        let extent = ExtentId { branch: parent.branch(), sequence: at as u64 + 1 };
-        let data = pattern(at as u8, len);
-        parent.write(extent, 0, &[VolatileSlice::from(&data[..])]).unwrap();
-        (extent.sequence, data)
-    });
-    let held: Vec<_> = held.collect();
-    parent.commit(Some(b"root")).unwrap();
-    let (path, branch) = (temp.path().join("child"), parent.branch() + 1);
-    parent.fork(&path, branch).unwrap();
-    drop(parent);
-
-    let memory: Arc<dyn object_store::ObjectStore> = Arc::new(InMemory::new());
-    let bucket = Arc::new(Bucket::new(memory.clone(), ""));
-    let gated = Arc::new(Gated::over(memory));
-    gated.arm(write, Mishap::Collected, pass(&bucket));
-    let child = ExtentStore::open(&path).unwrap();
-    child.attach_remote(Arc::new(Bucket::new(gated.clone(), "")), 1, options()).unwrap();
-    assert_eq!(uploaded(&bucket, branch), (held, Some(b"root".to_vec())), "write {write}");
-    gated.writes()
-}
-
-/// TASK-150.1: a pass of the collector just before each write of a child's upload of what it
-/// inherited takes nothing the segments on their way name.
-#[test]
-fn each_write_of_a_childs_upload_meeting_the_collector() {
-    host();
-    let count = upload_of_what_was_inherited(usize::MAX);
-    assert!(count >= 3, "its record, its lease, its fence, its segment: {count}");
-    for write in 0..count {
-        upload_of_what_was_inherited(write);
-    }
-}
-
 /// Where a fork may fail for what its cleanup finds: nothing of it in object storage, its segment
-/// on its way, there unacknowledged, and acknowledged, its child's record given.
-const FAILING_FOR_CLEANUPS: [&str; 4] =
-    ["fork::committed", "remote::marked", "writer::uploaded", "writer::checkpoint"];
+/// on its way, there unacknowledged, and acknowledged, its child's record given; and its child's
+/// store made.
+const FAILING_FOR_CLEANUPS: [&str; 5] =
+    ["fork::committed", "remote::marked", "writer::uploaded", "writer::checkpoint", "fork::made"];
 
 /// A failed fork's cleanup failing, or its host dying, at each step, or a write of it going wrong,
-/// leaves what deleting the fork's handle again finishes.
+/// leaves nothing here, and in the bucket what stands, as an orphan, which an operator deletes.
 #[test]
 fn cleanups_of_failed_forks_going_wrong_at_each_step() {
     host();

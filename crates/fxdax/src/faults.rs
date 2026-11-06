@@ -25,21 +25,17 @@ macro_rules! failpoint {
 }
 pub(crate) use failpoint;
 
-/// The steps of a fork, in the order it takes them, those that fail: claiming its child, its
-/// commit, then, on the uploader's side, its segment's upload and acknowledgement, which gives the
-/// child its record, and the checkpoint that makes it.
-pub const FORK_STEPS: [&str; 23] = [
+/// The steps of a fork, in the order it takes them, those that fail: finding its child's ID free
+/// in the bucket, its commit naming the child, then, on the uploader's side, its segment's upload
+/// and acknowledgement, which gives the child its record, and the checkpoint that makes it; then
+/// the child's store made, taking its state from the bucket (TASK-165.7).
+pub const FORK_STEPS: [&str; 20] = [
     "fork::durable",
-    "fork::handle",
-    "remote::claim",
-    "fork::claimed",
+    "remote::child_free",
     "fork::committed",
     "fork::flushed",
-    "fork::recorded",
     "remote::forked",
     "remote::gather",
-    "remote::origin_named",
-    "remote::child_marked",
     "remote::marked",
     "writer::upload",
     "writer::uploaded",
@@ -52,42 +48,36 @@ pub const FORK_STEPS: [&str; 23] = [
     "writer::checkpoint",
     "writer::checkpointed",
     "remote::checkpointed",
+    "fork::recorded",
+    "fork::made",
 ];
 
 /// The steps of a restore: a fork of a point, in the order it takes them, on any host holding a
-/// copy of it (doc-7, Points): its child's claim, the fork in that host's copy alone, then its child's
-/// record, a read of the point's, and the record made. No upload, as it commits nothing in object
-/// storage.
-pub const RESTORE_STEPS: [&str; 12] = [
+/// copy of it (doc-7, Points): its child's ID found free, its child's record, a read of the
+/// point's, and the record made; then the child's store. No upload, as it commits nothing.
+pub const RESTORE_STEPS: [&str; 9] = [
     "fork::durable",
-    "fork::handle",
-    "remote::claim",
-    "fork::claimed",
-    "fork::committed",
-    "fork::flushed",
-    "fork::recorded",
+    "remote::child_free",
     "remote::forked",
     "point::record",
     "point::recorded",
     "point::checked",
     "point::made",
+    "fork::recorded",
+    "fork::made",
 ];
 
 /// The steps of the daemon's around a fork: a guest's request, and a fork the control API asked
 /// for once its store's commits are uploaded; and the fork made, the answer to its guest lost.
 pub const DAEMON_STEPS: [&str; 3] = ["extentd::fork", "extentd::fork_uploaded", "extentd::forked"];
 
-/// The steps of a failed fork's cleanup, or of deleting its handle later, in order: the first two
-/// or the next two of the object-storage ones, by whether the child has a record.
-pub const CLEANUP_STEPS: [&str; 8] = [
-    "delete::failed",
-    "delete::elsewhere",
+/// The steps of a failed fork's cleanup, its child deleted in the bucket as the fork's alone, in
+/// order: the first two, or the next two, by whether the child has a record.
+pub const CLEANUP_STEPS: [&str; 4] = [
     "branch::claimed",
     "branch::claim_lease_ended",
     "branch::lease_ended",
     "branch::children_recorded",
-    "delete::branch",
-    "delete::after",
 ];
 
 /// One in how many steps a seed fails.

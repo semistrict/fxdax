@@ -24,7 +24,8 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-/// How many hosts hold the point: the snapshot's own, whose copy is a fork's handle, then others.
+/// How many hosts hold the point: the snapshot's own, whose copy the point's fork made, then
+/// others.
 const HOSTS: usize = 3;
 
 /// What goes wrong in a restore on one of the hosts.
@@ -59,7 +60,7 @@ struct Hosts {
     point: u64,
     /// What the point holds, and its root.
     held: Vec<(ExtentId, Vec<u8>)>,
-    /// The forks made, by their branches, with their handles.
+    /// The forks made, by their branches, with their stores' paths.
     children: Arc<Mutex<Vec<(u64, PathBuf)>>>,
     /// Whether a host died.
     dead: Arc<AtomicBool>,
@@ -161,7 +162,7 @@ impl Hosts {
         assert_eq!(written, Vec::<&String>::new(), "{case}: the point was written");
     }
 
-    /// Asserts the fork `child` holds what the point held, in the bucket, and, its handle at
+    /// Asserts the fork `child` holds what the point held, in the bucket, and, its store at
     /// `path`, opened, reads it and goes on.
     fn check_fork(&self, child: u64, path: &Path, case: &str) {
         let mut read = in_bucket(&self.bucket, child).unwrap_or_else(|err| panic!("{case}: {err}"));
@@ -190,7 +191,7 @@ impl Hosts {
         forked
     }
 
-    /// Arms `fault`, for a restore on `host` of the child whose handle will be at `name`.
+    /// Arms `fault`, for a restore on `host` of the child whose store will be at `name`.
     fn arm(&self, host: usize, fault: Fault) -> Option<FailGuard> {
         let once = Arc::new(AtomicBool::new(false));
         let guard = match fault {
@@ -335,6 +336,19 @@ impl Hosts {
         self.gated[host].land_late();
         Self::collect(&self.bucket, case);
         self.check_unwritten(case);
+        // What a restore whose host died left standing in the bucket, no store holding it, an
+        // operator finds among the live branches, and deletes (TASK-165.7).
+        let mut named = vec![self.point, self.source.as_ref().unwrap().branch()];
+        named.extend(self.children.lock().unwrap().iter().map(|(child, _)| *child));
+        let live = block_on(branch::live(&*self.bucket)).unwrap();
+        let orphans: Vec<_> = live.into_keys().filter(|live| !named.contains(live)).collect();
+        if !orphans.is_empty() {
+            assert!(!told, "{case}: a restore made left orphans: {orphans:x?}");
+            assert_eq!(orphans, [child], "{case}: orphans");
+            let deleted = block_on(branch::delete(&*self.bucket, child, rand::random(), u64::MAX));
+            assert_eq!(deleted, Ok(()), "{case}: deleting the orphan");
+            Self::collect(&self.bucket, case);
+        }
 
         // Every host restores it still: none's copy went stale. None, once it is deleted, of
         // which what the fork leaves goes with it.

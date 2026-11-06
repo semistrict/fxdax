@@ -27,15 +27,15 @@
 //! acts on stores itself, on stores nothing has open, as their lock says, which an extent daemon
 //! serving them holds (it waits a while for it, then refuses). `take` and `import`, which make new
 //! stores, work so anywhere, as when building base images where no daemon runs. The others change
-//! existing stores' branches, which are in a bucket: they need the bucket (`FXDAX_EXTENTD_REMOTE`)
-//! and this host's placement's fencing token (`FXDAX_EXTENTD_TOKEN`), and refuse otherwise
-//! (`fxdax::remote::Host`, TASK-45).
+//! existing stores' branches, which are in the bucket each store's description names: they need
+//! this host's (`FXDAX_EXTENTD_REMOTE`) and its placement's fencing token (`FXDAX_EXTENTD_TOKEN`),
+//! and refuse otherwise (`fxdax::remote::Host`, TASK-45).
 //!
 //! `take` makes an empty store at DIR, of CAPACITY bytes, of BRANCH (hex): once extentd opens it,
 //! with `FXDAX_EXTENTD_REMOTE` naming the branch's bucket, it takes what the branch holds there,
 //! whose data it fetches as it is read; placed at TOKEN, if given, as `place` places it. A
 //! snapshot's point it reads, taking no lease, as any number of hosts do at once. `place`
-//! places the store at DIR, or the fork whose handle it is, at the placement whose fencing token,
+//! places the store at DIR at the placement whose fencing token,
 //! its boot ID, is TOKEN (TASK-39.7): its writer takes its branch in object storage with that token
 //! from then on, which a later placement's exceeds, so that a placement cut off takes no branch
 //! back from the one after it (`ESTALE`), and its commits fail once a later one takes it. `sync`
@@ -48,16 +48,13 @@
 //! and extended attributes; see `fxdax::import`. `fork` copies the store at SRC to a new store at
 //! DST, of a new branch, which it prints: through the daemon, live, if a VM has SRC open, once
 //! nothing is open on it, as with the guest's filesystem frozen (fsfreeze), and refused otherwise
-//! (TASK-39.3). With `FXDAX_EXTENTD_REMOTE`, the new branch is a fork of SRC's there, made once
-//! SRC's commits are uploaded, holding its extents without uploading them again. DST is a handle
-//! naming SRC's store, which holds the fork's data: SRC's directory must not be removed while forks
-//! of it live. `point` forks so, once nothing is open, to a point (TASK-158): a name of SRC's
+//! (TASK-39.3). The new branch is a fork of SRC's in its bucket, made once SRC's commits are
+//! uploaded, holding its extents without uploading them again; DST is a store of its own, which
+//! reads them there (TASK-165.7). `point` forks so, once nothing is open, to a point (TASK-158): a name of SRC's
 //! state as it is, written by none, which any number of hosts fork at once, each from a copy `take`
 //! makes of its branch, as a snapshot's restores do; for a base forked on several hosts. `delete`
-//! deletes a fork, or a store, whose data goes but for what other branches hold: a store whose
-//! forks live keeps its directory, holding what they share of it, which no longer opens, and
-//! which goes with the last of them (TASK-39.4); with `FXDAX_EXTENTD_REMOTE`, its branch there too,
-//! its forks' living on. `drop` deletes the store at DIR as `delete` does, this
+//! deletes a store, a fork or not: its branch in its bucket, its forks' living on, and its
+//! directory (TASK-39.4). `drop` deletes the store at DIR as `delete` does, this
 //! host's copy of it, its branch staying in the bucket (TASK-154): what `take` made, once this host
 //! is done with it. `resize` sets the store's capacity, the size of the disk
 //! its guest sees, to CAPACITY bytes: through the daemon, a store its VM has open grows at once,
@@ -73,7 +70,6 @@
 use anyhow::{Context as _, bail};
 use fxdax::ExtentStore;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
 fn usage() -> anyhow::Error {
     anyhow::anyhow!(
@@ -191,16 +187,12 @@ impl Command {
             self,
             Self::Take { .. } | Self::Import { .. } | Self::Stat { .. } | Self::Drop { .. }
         );
-        let bucket = match existing.then(fxdax::remote::Host::from_env).transpose() {
-            Ok(Some(host)) => Some(
-                extent_remote::store::Store::from_url(&host.bucket).map_err(anyhow::Error::msg)?,
-            ),
-            Ok(None) => None,
-            Err(why) => bail!(
+        if let Some(Err(why)) = existing.then(fxdax::remote::Host::from_env) {
+            bail!(
                 "without the extent daemon (FXDAX_EXTENTD_GRPC), fxdaxctl changes no existing \
                  store's branch here: {why}"
-            ),
-        };
+            );
+        }
         match self {
             Self::Take { dir, capacity, branch, token } => {
                 ExtentStore::create_for_branch(&dir, capacity, branch)?;
@@ -210,9 +202,8 @@ impl Command {
             }
             Self::Place { dir, token } => ExtentStore::place(&dir, token)?,
             Self::Sync { dir } => {
-                let bucket = bucket.context("an existing store's sync has its bucket")?;
                 let store = ExtentStore::open(&dir)?;
-                attach(&store, bucket)?;
+                attach(&store)?;
                 store.wait_uploaded()?;
             }
             Self::Import { dir, capacity, image, reference } => {
@@ -222,9 +213,7 @@ impl Command {
             }
             Self::Fork { src, dst, point } => {
                 let store = ExtentStore::open(&src)?;
-                if let Some(bucket) = bucket {
-                    attach(&store, bucket)?;
-                }
+                attach(&store)?;
                 let branch = rand::random::<u64>().max(1);
                 if point {
                     store.point(&dst, branch)?;
@@ -233,15 +222,16 @@ impl Command {
                 }
                 println!("{branch:x}");
             }
-            Self::Delete { dir } => ExtentStore::delete(&dir, bucket.as_ref())?,
+            Self::Delete { dir } => {
+                let bucket = ExtentStore::bucket_at(&dir)?;
+                ExtentStore::delete(&dir, bucket.as_deref())?
+            }
             Self::Drop { dir } => ExtentStore::delete(&dir, None)?,
             Self::Resize { dir, capacity } => {
                 let store = ExtentStore::open(&dir)?;
                 // Attached, which says whether it is a point, whose capacity changes nowhere
                 // (TASK-160.10).
-                if let Some(bucket) = bucket {
-                    attach(&store, bucket)?;
-                }
+                attach(&store)?;
                 if capacity < store.info()?.capacity {
                     bail!(
                         "shrinking a store needs its guest to agree: resize it through the \
@@ -315,10 +305,10 @@ fn main() -> anyhow::Result<()> {
     }
 }
 
-/// Keeps `store`'s branch in `bucket`, with this host's fencing token.
-fn attach(store: &ExtentStore, bucket: extent_remote::store::Store) -> anyhow::Result<()> {
+/// Keeps `store`'s branch in the bucket its description names, as this host's placement.
+fn attach(store: &ExtentStore) -> anyhow::Result<()> {
     let token = fxdax::remote::host_token()?;
     let options = fxdax::remote::Options { token, ..Default::default() };
-    store.attach_remote(Arc::new(bucket), rand::random(), options)?;
+    store.attach_remote(store.bucket().clone(), rand::random(), options)?;
     Ok(())
 }

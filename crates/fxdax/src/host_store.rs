@@ -8,17 +8,17 @@
 //! also clean theirs here after commits ([`clean_after_commit`]); the daemon's stores, behind
 //! their guests' commits ([`clean_behind`]).
 //!
-//! Every store keeps its branches in a bucket, which its description names (TASK-165.6): one made
-//! on a host of fxdax's system, this host's (`FXDAX_EXTENTD_REMOTE`); one made elsewhere, as an
-//! image of the fxdax CLI's or a test's is, a file bucket of its own, in its directory, which its
+//! Every store keeps its branch in a bucket, which its description names (TASK-165.6): one made on
+//! a host of fxdax's system, this host's (`FXDAX_EXTENTD_REMOTE`); one made elsewhere, as an image
+//! of the fxdax CLI's or a test's is, a file bucket of its own, beside its directory, which its
 //! forks share ([`create`]). Opening a store opens its bucket ([`Opened`]), the one this process
 //! has of that URL ([`bucket`]). A store made by older code, of an older format, is refused
 //! (`extent_store::Format`), opened or deleted alike: nothing reads or converts it.
 //!
-//! Both open stores with the same options, as they must: the process shares a directory's store
-//! between the branches of it that it opens, with the options of whichever opened it first
-//! (`extent_store::host`). A fork needs none of its own: `extent_store::fork_host` makes its
-//! handle, which [`open`] opens.
+//! A store's directory holds its branch alone. Forks, points and deletions are the bucket's
+//! (TASK-165.7): a fork is a commit of its parent's naming the child, made once its segment is
+//! acknowledged, which gives the child its record; the child's directory is made only then, a
+//! store of its own taking the child's state from the bucket ([`fork`]).
 
 use crate::error::{Errno, Error};
 use crate::faults::failpoint;
@@ -58,9 +58,10 @@ pub(crate) fn new_branch() -> u64 {
     rand::random::<u64>().max(1)
 }
 
-/// The directory in a store's directory that is its own file bucket, where no host's bucket is
-/// ([`create`]).
-const OWN_BUCKET: &str = "bucket";
+/// What the name of the directory beside a store's that is its own file bucket ends with, where no
+/// host's bucket is ([`create`]): beside it, not in it, as its forks keep their branches there,
+/// which outlive it.
+const OWN_BUCKET: &str = ".bucket";
 
 /// The fencing token a copy of a store never placed takes its branch with where no placement names
 /// one, as for the fxdax CLI's images ([`token`]): the first placement's.
@@ -100,24 +101,27 @@ fn bucket_for(path: &Path) -> anyhow::Result<String> {
     bucket_named(host, path)
 }
 
-/// The URL of the bucket a store made at `path`, a directory, keeps its branches in, on the host
-/// whose bucket's URL is `host`, if it is one: that; or a file bucket of the store's own, in its
-/// directory ([`OWN_BUCKET`]), which its forks share.
+/// The URL of the bucket a store made at `path`, a directory, keeps its branch in, on the host
+/// whose bucket's URL is `host`, if it is one: that; or a file bucket of the store's own, beside
+/// its directory ([`OWN_BUCKET`]), which its forks share, and which outlives it.
 fn bucket_named(host: Option<String>, path: &Path) -> anyhow::Result<String> {
     if let Some(url) = host {
         return Ok(url);
     }
-    let own = path.canonicalize()?.join(OWN_BUCKET);
+    let path = path.canonicalize()?;
+    let name = path.file_name().ok_or_else(|| anyhow::anyhow!("{} has no name", path.display()))?;
+    let own = path.with_file_name(format!("{}{OWN_BUCKET}", name.to_string_lossy()));
     let url = url::Url::from_directory_path(&own)
         .map_err(|()| anyhow::anyhow!("{} names no file bucket", own.display()))?;
     Ok(url.to_string())
 }
 
-/// Whether `store` keeps its branches in a file bucket of its own, in its directory, as a store
-/// made where no host's bucket is does ([`bucket_named`]): which no host's collector collects.
+/// Whether `store` keeps its branch in a file bucket no host's collector collects: one made beside
+/// a store's directory, where no host's bucket was ([`bucket_named`]), its own or that of the
+/// store it was forked from, which its forks share.
 pub(crate) fn keeps_own_bucket(store: &Store<HostDir>) -> bool {
-    let own = bucket_named(None, store.dir().path());
-    own.is_ok_and(|own| store.lineage().bucket() == Some(own.as_str()))
+    let url = store.lineage().bucket().unwrap_or_default();
+    url.starts_with("file:") && url.trim_end_matches('/').ends_with(OWN_BUCKET)
 }
 
 /// The fencing token copies of stores never placed take their branches with where this process
@@ -142,16 +146,14 @@ impl Opened {
     /// (`extent_store::create_host`).
     fn of(store: Store<HostDir>) -> anyhow::Result<Self> {
         let named = store.lineage().bucket().map(str::to_owned);
-        let url = named.ok_or_else(|| {
-            anyhow::anyhow!("{} names no bucket", store.dir().path().display())
-        })?;
+        let url = named
+            .ok_or_else(|| anyhow::anyhow!("{} names no bucket", store.dir().path().display()))?;
         let bucket = bucket(&url).with_context(|| format!("opening the bucket {url}"))?;
         Ok(Self { store, bucket })
     }
 }
 
-/// The bucket the store at `path`, or the fork whose handle `path` is, names, if its description
-/// is there: as deleting it, or what of it a deletion that stopped left, goes by. A store of
+/// The bucket the store at `path` names, if its description is there: as deleting it, or what of it a deletion that stopped left, goes by. A store of
 /// another format is refused (`extent_store::Format`).
 pub(crate) fn bucket_at(path: &Path) -> anyhow::Result<Option<Arc<Bucket>>> {
     match extent_store::host_bucket(path) {
@@ -204,121 +206,156 @@ fn make(path: &Path, capacity: u64, branch: u64, bucket: Option<&str>) -> anyhow
     })
 }
 
-/// Opens the store at `path`, or the fork whose handle `path` is, as of its last commit, with the
-/// bucket it names.
+/// Opens the store at `path` as of its last commit, with the bucket it names.
 pub(crate) fn open(path: &Path) -> anyhow::Result<Opened> {
     Opened::of(extent_store::open_host(path, DIRECT, options())?)
 }
 
+/// Whether `path` is a directory a store's making, or a fork's, left unmade, its host crashing:
+/// no store, as its description, made last, is not there; deleting it finishes it ([`delete`]).
+pub(crate) fn unmade(path: &Path) -> bool {
+    path.is_dir() && !path.join("store").exists()
+}
+
 /// Forks `store`, as of its last commit, made durable first, to `child`, a new branch holding what
-/// it holds, whose handle is a new directory at `path`, which [`open`] opens: `EEXIST` if anything
-/// is at `path`. It takes the same time and space whatever the store holds, sharing the store's
-/// files rather than copying them (`extent_store::fork_host_with`). `before` goes once the handle
-/// is in place, before the fork's commit; `held`, given, is let go of once the commit is made,
-/// before the fork's upload goes. With `remote`, the store's uploader, the fork's branch is a
-/// fork of the store's in its bucket too, made once the fork's commit is uploaded, which inherits
-/// its extents rather than uploads them again (doc-7, Forks). A fork not made there fails, and its
-/// child is deleted as [`delete`] deletes a store, there first: a deletion that stops partway,
-/// failing there, as for a branch a later placement holds, or its host crashing, leaves the
-/// handle at `path`, naming the child, which deleting it finishes, as any store's; until then, no
-/// fork to `path` is made. So is one that fails once its commit was made, before it is made here
-/// (`extent_store::ForkCommitted`), as the commit's segment, naming the fork, uploads after.
+/// it holds, whose store is a new directory at `path`, which [`open`] opens: `EEXIST` if anything is
+/// at `path`. The fork is made in the bucket alone (doc-7, Forks; TASK-165.7): `remote`, the
+/// store's uploader, uploads the store's commit naming the child ([`Store::commit_fork`]), whose
+/// acknowledgement gives the child its record, inheriting the store's extents rather than copies;
+/// `held`, given, is let go of once that commit is made, before its upload goes. Only then is the
+/// child's store made, at `path`, taking the child's state from the bucket
+/// (`crate::remote::take_branch`): every extent of it there, at its location there, read from
+/// there, or the host's cache. `prepare` writes what the caller keeps beside the store into its
+/// directory first, before its description, which makes it a store. A fork of a store with no
+/// uploader fails with `ENOTSUP`, making nothing.
 ///
-/// The caller names the child: with a remote, a fork to a child whose ID another branch has in
-/// the bucket fails with `EEXIST`, making nothing; and so does one whose child's ID another branch
-/// took as it was made, its commit standing, which names a child its parent's writers leave be;
-/// and the deletion of a fork that failed deletes there only the branch it made
-/// (`Remote::claim`, TASK-79.82).
+/// The caller names the child: a fork to a child whose ID another branch has in the bucket fails
+/// with `EEXIST`, making nothing; and so does one whose child's ID another branch took as it was
+/// made, its commit standing, which names a child its parent's writers leave be (TASK-79.82). A
+/// fork that fails once its commit was made, its upload failing, or the store's, is deleted in the
+/// bucket as the fork's alone (`Remote::unfork`), so that its segment, landing late, makes nothing
+/// (TASK-79.78); its host crashing, it stands, or never was, as the bucket has it.
 ///
-/// A fork of a point commits nothing in the bucket: its child's record is the fork, which fails
-/// with `ENOENT` once the point is deleted (`Remote::forked`).
+/// A fork of a point commits nothing: its child's record is the fork, which fails with `ENOENT`
+/// once the point is deleted (`Remote::forked`).
 pub(crate) fn fork<H>(
     store: &Store<HostDir>,
     remote: Option<&Remote>,
     path: &Path,
     child: Child,
-    before: impl FnOnce() -> anyhow::Result<()>,
+    prepare: impl FnOnce(&Path) -> anyhow::Result<()>,
     held: H,
 ) -> Result<(), Error> {
     let branch = child.branch;
-    let claimed = std::cell::Cell::new(false);
-    let taken = || {
-        let refused = format!("forking to branch {branch:x}: another branch has its ID");
-        anyhow::Error::new(Errno::EEXIST).context(refused)
+    let Some(remote) = remote else {
+        let refused = format!(
+            "forking to branch {branch:x}: a fork is the bucket's, and the store has no uploader"
+        );
+        return Err(Error::new(anyhow::Error::new(Errno::ENOTSUP).context(refused)));
     };
-    let claim = || -> anyhow::Result<()> {
-        before()?;
-        let Some(remote) = remote else { return Ok(()) };
-        if !remote.claim(child)? {
-            return Err(taken());
+    std::fs::create_dir(path).map_err(|err| match err.kind() {
+        std::io::ErrorKind::AlreadyExists => {
+            Error::new(anyhow::Error::new(err).context(Errno::EEXIST))
         }
-        claimed.set(true);
-        Ok(())
-    };
-    let forked = extent_store::fork_host_with(store, path, child, claim);
-    drop(held);
-    let failed = match forked {
-        Ok(epoch) => match remote.map(|remote| remote.forked(epoch, branch)) {
-            None | Some(Ok(())) => return Ok(()),
-            Some(Err(Failure::Remote(extent_remote::Error::ChildTaken(_)))) => taken(),
-            Some(Err(Failure::PointDeleted)) => anyhow::Error::new(Errno::ENOENT)
-                .context(format!("forking to branch {branch:x}: the point was deleted")),
-            Some(Err(err)) => anyhow::anyhow!("forking branch {branch:x}: {err}"),
-        },
-        Err(err) if err.downcast_ref::<extent_store::ForkCommitted>().is_some() => {
-            err.context(format!("forking branch {branch:x}"))
-        }
-        Err(err) => {
-            // It made nothing: its claim goes with it.
-            if let Some(remote) = remote.filter(|_| claimed.get())
-                && let Err(why) = remote.disclaim(branch)
-            {
-                log::warn!("fxdax: keeping the claim of branch {branch:x}: {why}");
-            }
-            // A store at `path` already, or a fork's handle, as of a fork retried: `EEXIST`, as
-            // making a store there gives (TASK-79.83); but not for what else the fork found there
-            // already as it made its files. So for a child the store has: its ID is taken, here as
-            // in the bucket (TASK-79.82).
-            let exists = err.downcast_ref::<extent_store::HasBranch>().is_some();
-            return Err(match err.downcast_ref::<extent_store::Taken>() {
-                Some(_) => Error::new(err.context(Errno::EEXIST)),
-                None if exists => {
-                    Error::new(anyhow::Error::new(Errno::EEXIST).context(err.to_string()))
-                }
-                None => Error::new(err),
-            });
-        }
-    };
-    // Leave no fork its branch doesn't have behind, deleted as any store is: in the bucket, where
-    // its segment may have landed after all (`Remote::unfork`), then here, so that a crash or a
-    // failure in between leaves its handle, which deleting again finishes, not a branch no store
-    // holds (TASK-79.78). A child opened before the deletion found it open nowhere stays, with its
-    // branch; one opened after, while its branch is deleted in the bucket, finds it deleted there
-    // (`EROFS`), and keeps its handle, and its branch here, while it is open. Its handle says it
-    // failed, first, so that a deletion stopping partway leaves no handle taken for a fork made
-    // (`extent_store::fork_failed`, TASK-79.84).
-    if let Err(why) = extent_store::fail_fork(path) {
-        log::warn!("fxdax: marking the fork to {} failed: {why:#}", path.display());
+        _ => Error::new(anyhow::Error::new(err).context(format!("creating {}", path.display()))),
+    })?;
+    let forked = fork_in(store, remote, path, child, prepare, held);
+    if forked.is_err() {
+        // Leave nothing half made behind.
+        let _ = std::fs::remove_dir_all(path);
     }
-    let unfork = |_: &Path, child| remote.map_or(Ok(()), |remote| remote.unfork(child));
-    if let Err(why) = delete_with(path, unfork) {
-        log::warn!("fxdax: leaving branch {branch:x}, whose fork failed: {why:#}");
-    }
-    Err(Error::new(failed))
+    forked
 }
 
-/// Deletes the store at `path`, or the fork whose handle `path` is, which nothing has open
-/// (`extent_store::delete_host`): its extents go but for those other branches hold, and a store
-/// whose forks live keeps its directory, holding what they share of it, until the last of them
-/// goes (TASK-39.4). With `bucket`, its branch there is deleted first, its forks' branches living
-/// on; the records of its branch's placement and uploads go with it either way, once it went from
-/// the store, before the handle naming it. A deletion that stopped partway is finished by deleting
-/// again, which finds them by that handle (TASK-79.71), and a fork's handle whose fork stopped
-/// before its description was in place goes (TASK-79.20).
+/// Forks `store` to `child` as [`fork`] does, into the directory at `path`, made empty.
+fn fork_in<H>(
+    store: &Store<HostDir>,
+    remote: &Remote,
+    path: &Path,
+    child: Child,
+    prepare: impl FnOnce(&Path) -> anyhow::Result<()>,
+    held: H,
+) -> Result<(), Error> {
+    let branch = child.branch;
+    let failed = |err: Failure| match err {
+        Failure::Remote(extent_remote::Error::ChildTaken(_)) => taken(branch),
+        Failure::PointDeleted => anyhow::Error::new(Errno::ENOENT)
+            .context(format!("forking to branch {branch:x}: the point was deleted")),
+        err => anyhow::anyhow!("forking branch {branch:x}: {err}"),
+    };
+    if !remote.child_free(branch).map_err(|err| Error::new(failed(err)))? {
+        return Err(Error::new(taken(branch)));
+    }
+    let made = match remote.is_point() {
+        true => {
+            drop(held);
+            remote.forked(0, child).map_err(failed)
+        }
+        false => {
+            let committed = store.commit_fork(child);
+            drop(held);
+            match committed {
+                Ok(epoch) => remote.forked(epoch, child).map_err(failed),
+                Err(err) if err.downcast_ref::<extent_store::ForkCommitted>().is_some() => {
+                    Err(err.context(format!("forking branch {branch:x}")))
+                }
+                // It made nothing.
+                Err(err) => return Err(Error::new(err)),
+            }
+        }
+    };
+    let made = made.and_then(|()| {
+        failpoint!("fork::recorded");
+        make_child(store, remote, path, branch, prepare)
+            .with_context(|| format!("forking to branch {branch:x}: making its store"))?;
+        failpoint!("fork::made");
+        Ok(())
+    });
+    let Err(err) = made else { return Ok(()) };
+    // Leave no fork whose store went behind, as the fork's alone: its segment may land yet.
+    if let Err(why) = remote.unfork(child) {
+        log::warn!("fxdax: leaving branch {branch:x}, whose fork failed: {why}");
+    }
+    Err(Error::new(err))
+}
+
+/// The error of a fork to `branch`, whose ID another branch has in the bucket.
+fn taken(branch: u64) -> anyhow::Error {
+    let refused = format!("forking to branch {branch:x}: another branch has its ID");
+    anyhow::Error::new(Errno::EEXIST).context(refused)
+}
+
+/// Makes the store of `branch`, a fork of `parent`'s branch the bucket has the record of, in the
+/// directory at `path`, made empty: `prepare` writes into it first; then the store, of the parent's
+/// capacity, naming the parent's bucket, taking what the bucket its uploader, `remote`, keeps the
+/// branch in holds of the child.
+fn make_child(
+    parent: &Store<HostDir>,
+    remote: &Remote,
+    path: &Path,
+    branch: u64,
+    prepare: impl FnOnce(&Path) -> anyhow::Result<()>,
+) -> anyhow::Result<()> {
+    prepare(path)?;
+    let capacity = parent.description().capacity;
+    let url = parent.lineage().bucket().map(str::to_owned);
+    let url =
+        url.ok_or_else(|| anyhow::anyhow!("{} names no bucket", parent.dir().path().display()))?;
+    let description = Description { block_size: BLOCK_SIZE, capacity, branch };
+    let store = extent_store::create_host(path, description, &url, DIRECT, options())?;
+    crate::remote::take_branch(&store, remote.bucket(), branch)?;
+    let parent = path.parent().filter(|parent| !parent.as_os_str().is_empty());
+    std::fs::File::open(parent.unwrap_or(Path::new(".")))?.sync_all()?;
+    Ok(())
+}
+
+/// Deletes the store at `path`, which nothing has open: with `bucket`, its branch there first, its
+/// forks' branches living on, as the placement its copy was placed at, or, never placed, as the one
+/// `token` gives; then its directory. A deletion that stopped partway is finished by deleting
+/// again (TASK-79.71), and a directory a store's or a fork's making left unmade ([`unmade`]) goes.
 ///
 /// Fails with `ENOENT` if nothing is at `path`, and with `ESTALE` if a later placement of the
-/// store holds its branch in `bucket`. A copy never placed deletes its branch as the placement
-/// `token` gives.
+/// store holds its branch in `bucket`.
 pub(crate) fn delete(
     path: &Path,
     bucket: Option<&Bucket>,
@@ -329,20 +366,17 @@ pub(crate) fn delete(
         Some(bucket) => {
             let placed = crate::remote::placed_token(dir, branch)?;
             let token = placed.map_or_else(&token, Ok)?;
-            crate::remote::delete_branch(bucket, dir, branch, token)
+            crate::remote::delete_branch(bucket, branch, token)
         }
         None => Ok(()),
     })
 }
 
-/// Deletes the store at `path`, or the fork whose handle `path` is, as [`delete`] does, `elsewhere`
-/// deleting its branch where else it is kept, given the store's directory and the branch: once the
-/// branch is found open nowhere here, before it goes here, so that a deletion that stopped partway,
-/// the host crashing or `elsewhere` failing, leaves the branch named by its handle still, which
-/// deleting again finishes, never kept elsewhere alone. A fork's child the store has not, its fork
-/// failing, or its host crashing, once the fork's commit was made, before its record was written,
-/// is deleted elsewhere too if its fork claimed it there (`crate::remote::claim`), before its
-/// handle goes: there the commit's segment, naming the fork, may have landed (TASK-79.82).
+/// Deletes the store at `path` as [`delete`] does, `elsewhere` deleting its branch where else it
+/// is kept, given the store's directory and the branch: once the branch is found open nowhere
+/// here, before it goes here, so that a deletion that stopped partway, the host crashing or
+/// `elsewhere` failing, leaves the store still, which deleting again finishes, never a branch kept
+/// elsewhere alone.
 pub(crate) fn delete_with(
     path: &Path,
     elsewhere: impl Fn(&Path, u64) -> Result<(), crate::remote::Failure>,
@@ -350,8 +384,12 @@ pub(crate) fn delete_with(
     if !path.exists() {
         return Err(Errno::ENOENT.into());
     }
-    // Whether `elsewhere` went before the store deleted the branch, which it had then.
-    let went = std::cell::Cell::new(false);
+    // What a store's making, or a fork's, left, or a deletion that stopped once its description
+    // went: no store, nor any branch's.
+    if unmade(path) {
+        let removed = std::fs::remove_dir_all(path);
+        return removed.with_context(|| format!("removing {}", path.display())).map_err(Error::new);
+    }
     let elsewhere = |dir: &Path, branch| -> Result<(), crate::remote::Failure> {
         failpoint!("delete::elsewhere");
         elsewhere(dir, branch)
@@ -359,16 +397,8 @@ pub(crate) fn delete_with(
     extent_store::delete_host_with(
         path,
         options(),
-        |dir, branch| {
-            went.set(true);
-            Ok(elsewhere(dir, branch)?)
-        },
-        |dir, branch| {
-            if !went.get() && crate::remote::is_claimed(dir, branch)? {
-                elsewhere(dir, branch)?;
-            }
-            crate::remote::unmark(dir, branch)
-        },
+        |dir, branch| Ok(elsewhere(dir, branch)?),
+        |dir, branch| crate::remote::unmark(dir, branch),
     )
     .map_err(|err| {
         // Its errno, if deleting the branch elsewhere failed with one: `ESTALE` for a branch a
@@ -508,24 +538,10 @@ mod tests {
         assert!(data == noise(extents - 1), "extent {} differs", extents - 1);
     }
 
-    /// The logs name a fork by its own branch, of the store it was forked from, whose directory
-    /// holds its files too: not by that directory alone, which names the store it was forked
-    /// from, as a fork's cleaning, logged so, read as its base's (TASK-79.2).
-    #[test]
-    fn forks_are_named_by_their_branch() {
-        let dir = tempfile::tempdir().unwrap();
-        let (path, fork) = (dir.path().join("store"), dir.path().join("fork"));
-        let store = create(&path, MIB, 3).unwrap().store;
-        extent_store::fork_host(&store, &fork, 4).unwrap();
-        let forked = open(&fork).unwrap().store;
-        assert_eq!(forked.dir().path(), path);
-        assert_eq!(named(&forked), format!("branch 4 of {}", path.display()));
-        assert_eq!(named(&store), format!("branch 3 of {}", path.display()));
-    }
-
     /// TASK-165.6: a store made on a host of fxdax's system names the host's bucket; one made
-    /// elsewhere, a file bucket of its own, in its directory, where its branches are kept: its
-    /// forks', named by their handles, too.
+    /// elsewhere, a file bucket of its own, beside its directory, where its branch is kept: its
+    /// forks' too, which name it. Beside it, not in it, so that it outlives the store, its forks'
+    /// branches living on (TASK-165.7).
     #[test]
     fn stores_name_their_hosts_bucket_or_one_of_their_own() {
         let dir = tempfile::tempdir().unwrap();
@@ -533,23 +549,34 @@ mod tests {
         std::fs::create_dir(&path).unwrap();
         let host = Some("gs://bucket/prefix".to_owned());
         assert_eq!(bucket_named(host, &path).unwrap(), "gs://bucket/prefix");
-        let own = path.canonicalize().unwrap().join("bucket");
+        let own = dir.path().canonicalize().unwrap().join("store.bucket");
         let url = format!("file://{}/", own.display());
         assert_eq!(bucket_named(None, &path).unwrap(), url);
 
         // Where no host's bucket is, as in this test's process.
         let (made, fork) = (dir.path().join("made"), dir.path().join("fork"));
         let Opened { store, bucket } = create(&made, MIB, 3).unwrap();
-        extent_store::fork_host(&store, &fork, 4).unwrap();
-        let own = made.canonicalize().unwrap().join("bucket");
+        let store = Arc::new(store);
+        let options = crate::remote::Options { token: 1, ..Default::default() };
+        let remote = Remote::attach(store.clone(), bucket.clone(), 1, options).unwrap();
+        let child = Child { branch: 4, owner: 1, point: false };
+        super::fork(&store, Some(&remote), &fork, child, |_| Ok(()), ()).unwrap();
+        let own = dir.path().canonicalize().unwrap().join("made.bucket");
         let url = format!("file://{}/", own.display());
         for named in [&made, &fork] {
             assert_eq!(extent_store::host_bucket(named).unwrap(), Some(url.clone()));
         }
+        assert!(keeps_own_bucket(&store), "a store's own bucket is a host's");
         // The bucket is this process's one of its URL, whose objects are in its directory.
         assert!(Arc::ptr_eq(&bucket, &self::bucket(&url).unwrap()));
-        futures::executor::block_on(extent_remote::branch::create(&*bucket, 3, 1)).unwrap();
         assert!(own.join("branches").exists(), "{:?}", std::fs::read_dir(&own).unwrap());
+        // The store deleted, its fork's branch lives on in it.
+        drop(remote);
+        drop(store);
+        delete(&made, Some(&bucket), || Ok(1)).unwrap();
+        assert!(!made.exists() && own.exists());
+        let record = futures::executor::block_on(extent_remote::branch::record(&*bucket, 4));
+        assert_eq!(record.unwrap().map(|record| record.deleted), Some(false));
     }
 
     /// TASK-165.6: a store made by older code, of an older format, is refused by its format,
@@ -577,96 +604,65 @@ mod tests {
         assert!(path.join("store").exists());
     }
 
-    /// Deleting a fork removes the record of its branch's placement, whichever stack deletes it.
+    /// A store's directory whose deletion stopped once its description was gone, or whose making
+    /// stopped before it began, empty, is removed by deleting it again.
     #[test]
-    fn deleting_a_fork_removes_its_placement() {
+    fn deleting_an_emptied_store_finishes_it() {
         let dir = tempfile::tempdir().unwrap();
-        let (path, fork) = (dir.path().join("store"), dir.path().join("fork"));
-        let store = create(&path, MIB, 3).unwrap().store;
-        extent_store::fork_host(&store, &fork, 4).unwrap();
-        crate::ExtentStore::place(&fork, 9).unwrap();
-        let canonical = path.canonicalize().unwrap();
-        assert_eq!(crate::remote::placed_token(&canonical, 4), Ok(Some(9)));
-        crate::Storage::delete(&fork).unwrap();
-        assert!(!fork.exists());
-        assert_eq!(crate::remote::placed_token(&canonical, 4), Ok(None));
-        drop(store);
-        assert_eq!(
-            crate::Storage::delete(&fork).err().and_then(|err| err.errno()),
-            Some(Errno::ENOENT)
-        );
+        let path = dir.path().join("fork");
+        std::fs::create_dir(&path).unwrap();
+        assert!(unmade(&path));
+        delete(&path, None, token).unwrap();
+        assert!(!path.exists());
     }
 
-    /// A fork's handle whose deletion stopped once its description was gone is removed by
-    /// deleting it again.
+    /// TASK-79.20: a store whose description was never put in place, its host crashing as its
+    /// making, or a fork's, wrote what goes before it, is no store, and is removed by deleting it,
+    /// as extentd and fxdaxctl delete it.
     #[test]
-    fn deleting_an_emptied_handle_finishes_it() {
+    fn deleting_a_store_never_described_removes_it() {
         let dir = tempfile::tempdir().unwrap();
-        let handle = dir.path().join("fork");
-        std::fs::create_dir(&handle).unwrap();
-        delete(&handle, None, token).unwrap();
-        assert!(!handle.exists());
+        let path = dir.path().join("fork");
+        std::fs::create_dir_all(path.join("segments")).unwrap();
+        std::fs::write(path.join("ancestry"), "3 /elsewhere\n").unwrap();
+        assert!(unmade(&path));
+        delete(&path, None, token).unwrap();
+        assert!(!path.exists());
     }
 
-    /// TASK-79.20: a fork's handle whose description was never put in place, its host crashing
-    /// while `extent_store::fork_host` wrote it, before the fork, is removed by deleting it, as
-    /// extentd and fxdaxctl delete it.
-    #[test]
-    fn deleting_a_handle_never_described_removes_it() {
-        let dir = tempfile::tempdir().unwrap();
-        let handle = dir.path().join("fork");
-        std::fs::create_dir(&handle).unwrap();
-        // The description written, not yet renamed into place.
-        std::fs::write(handle.join("store.new"), "fxdax extent store handle\n").unwrap();
-        delete(&handle, None, token).unwrap();
-        assert!(!handle.exists());
-    }
-
-    /// TASK-79.71: a fork's deletion that stopped as it removed the records of its branch's
-    /// placement and uploads from the store's directory, its branch deleted, is finished by
-    /// deleting again, which leaves none of them there, nor one a crash left half written. Here
-    /// the marker of its uploads is a directory, which removing it as a file fails on, until it is
-    /// the file it was again, as the deletion stopped left it.
+    /// TASK-79.71: a store's deletion that stopped as it removed the records of its branch's
+    /// placement and uploads from its directory, its branch deleted, is finished by deleting
+    /// again, which leaves nothing. Here the marker of its uploads is a directory, which removing it
+    /// as a file fails on, until it is the file it was again, as the deletion stopped left it.
     #[test]
     fn deletions_stopped_at_a_branchs_records_finish() {
-        use std::sync::Arc;
         let dir = tempfile::tempdir().unwrap();
-        let (path, fork) = (dir.path().join("store"), dir.path().join("fork"));
-        let store = create(&path, MIB, 3).unwrap().store;
-        // Something for the fork's uploader to upload, which its marker names.
-        store.write(ExtentId::new(3, 0), 0, &[7; BLOCK_SIZE as usize]).unwrap();
-        store.commit(None).unwrap();
-        extent_store::fork_host(&store, &fork, 4).unwrap();
-        crate::ExtentStore::place(&fork, 9).unwrap();
+        let path = dir.path().join("store");
+        drop(create(&path, MIB, 3).unwrap());
+        crate::ExtentStore::place(&path, 9).unwrap();
         let memory = Arc::new(object_store::memory::InMemory::new());
         let bucket = Arc::new(extent_remote::store::Store::new(memory, ""));
-        let forked = crate::ExtentStore::open(&fork).unwrap();
-        forked.attach_remote(bucket.clone(), 1, crate::remote::Options::default()).unwrap();
-        drop(forked);
-        let canonical = path.canonicalize().unwrap();
-        // The files of the store's directory that name the fork's branch.
-        let named = || {
-            let names = std::fs::read_dir(&canonical).unwrap();
-            let names = names.map(|entry| entry.unwrap().file_name().into_string().unwrap());
-            let mut names: Vec<_> =
-                names.filter(|name| name.contains(&format!("{:016x}", 4))).collect();
-            names.sort();
-            names
-        };
-        let marker = canonical.join("remote-0000000000000004");
-        // The marker's next, half written, its host crashing before it went in place.
-        let new = "remote-0000000000000004.new-00000000000000ab";
-        std::fs::write(canonical.join(new), "1").unwrap();
-        assert_eq!(named(), ["fence-0000000000000004", "remote-0000000000000004", new]);
-
+        let store = crate::ExtentStore::open(&path).unwrap();
+        let block = [7; BLOCK_SIZE as usize];
+        let extent = crate::ExtentId { branch: 3, sequence: 0 };
+        store.write(extent, 0, &[crate::VolatileSlice::from(&block[..])]).unwrap();
+        store.commit(None).unwrap();
+        store.attach_remote(bucket.clone(), 1, crate::remote::Options::default()).unwrap();
+        drop(store);
+        let marker = path.join("remote-0000000000000003");
+        // The marker's next, half written, its host crashing before it went in place: it goes
+        // with the directory (TASK-184).
+        std::fs::write(path.join("remote-0000000000000003.new-00000000000000ab"), "1").unwrap();
         let marked = std::fs::read(&marker).unwrap();
         std::fs::remove_file(&marker).unwrap();
         std::fs::create_dir(&marker).unwrap();
-        let stopped = delete(&fork, Some(&bucket), token).map_err(|err| err.to_string());
-        assert_eq!(stopped, Err(format!("removing {}", marker.display())));
+        let stopped = delete(&path, Some(&bucket), token).map_err(|err| err.to_string());
+        assert_eq!(stopped, Err(format!("removing {}", marker.canonicalize().unwrap().display())));
         std::fs::remove_dir(&marker).unwrap();
         std::fs::write(&marker, marked).unwrap();
-        let resumed = delete(&fork, Some(&bucket), token).map_err(|err| err.to_string());
-        assert_eq!((resumed, fork.exists(), named()), (Ok(()), false, Vec::<String>::new()));
+        let resumed = delete(&path, Some(&bucket), token).map_err(|err| err.to_string());
+        assert_eq!((resumed, path.exists()), (Ok(()), false));
+        let record = futures::executor::block_on(extent_remote::branch::record(&*bucket, 3));
+        assert_eq!(record.unwrap().map(|record| record.deleted), Some(true));
     }
 }

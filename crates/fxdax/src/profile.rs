@@ -129,8 +129,13 @@ impl Recorder {
                 extent.branch, extent.sequence
             ));
         }
+        // fxdax: in the base's directory, which it makes nothing of if it went: a fork's directory
+        // is its own, and outlives its base's (TASK-165.7).
         let dir = self.path.parent().expect("a profile is in a directory");
-        std::fs::create_dir_all(dir)?;
+        match std::fs::create_dir(dir) {
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {}
+            created => created?,
+        }
         // Whole, or not at all.
         let new = self.path.with_extension("new");
         std::fs::write(&new, text)?;

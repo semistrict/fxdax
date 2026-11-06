@@ -97,8 +97,9 @@ fn read(store: &ExtentStore, extent: ExtentId) -> Vec<u8> {
     data
 }
 
-/// TASK-39.4: `fxdaxctl delete` deletes a store whose fork lives, which keeps what it shares of
-/// it, and deletes the store's directory with the fork.
+/// TASK-39.4: `fxdaxctl delete` deletes a store whose fork lives: its branch in its bucket and its
+/// directory, the fork living on, a store of its own, reading what it inherited in the bucket
+/// (TASK-165.7). Before, the store's directory stayed, holding what the fork shared of it.
 fn stores_are_deleted_while_their_forks_live(fxdaxctl: Fxdaxctl, dir: &Path) {
     let (path, fork) = (dir.join("store"), dir.join("fork"));
     let store = ExtentStore::create(&path, 1 << 24).unwrap();
@@ -110,12 +111,7 @@ fn stores_are_deleted_while_their_forks_live(fxdaxctl: Fxdaxctl, dir: &Path) {
     let branch = u64::from_str_radix(printed.trim(), 16).unwrap();
 
     fxdaxctl.run(&[Path::new("delete"), &path]).unwrap();
-    assert!(path.exists(), "the store's directory went while its fork lives");
-    let error = ExtentStore::open(&path).err().expect("opened a deleted store");
-    assert_eq!(
-        format!("{error:#}"),
-        "the store was deleted: its directory holds its forks' data alone"
-    );
+    assert!(!path.exists(), "the store's directory stayed");
     let forked = ExtentStore::open(&fork).unwrap();
     assert_eq!(forked.branch(), branch);
     assert_eq!(read(&forked, extent), [7; BLOCK]);
@@ -127,15 +123,14 @@ fn stores_are_deleted_while_their_forks_live(fxdaxctl: Fxdaxctl, dir: &Path) {
     let stat = fxdaxctl.run(&[Path::new("stat"), &fork]).unwrap();
     assert!(stat.contains(&format!("used {}\n", 2 * BLOCK)), "{stat}");
     assert!(stat.contains(&format!("own {BLOCK}\ninherited {BLOCK}\n")), "{stat}");
-    // Deleted again, as after a deletion that stopped partway: nothing more goes.
-    fxdaxctl.run(&[Path::new("delete"), &path]).unwrap();
-    assert!(path.exists(), "the store's directory went while its fork lives");
+    // Deleted again: nothing is there.
+    assert!(fxdaxctl.run(&[Path::new("delete"), &path]).is_err(), "deleted nothing again");
     let forked = ExtentStore::open(&fork).unwrap();
     assert_eq!(read(&forked, extent), [7; BLOCK]);
     drop(forked);
 
     fxdaxctl.run(&[Path::new("delete"), &fork]).unwrap();
-    assert!(!fork.exists() && !path.exists());
+    assert!(!fork.exists());
 }
 
 /// TASK-154: `fxdaxctl drop` deletes what `take` made, a copy of a branch this host holds nothing

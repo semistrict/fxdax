@@ -77,6 +77,9 @@ fn public_bases_are_shared_read_only() {
     drop(base);
     let forks = [dir.path().join("one/fork"), dir.path().join("two/fork")];
     let base = ExtentStore::open(&base_path).unwrap();
+    // A fork is the bucket's (TASK-165.7).
+    let options = fxdax::remote::Options { token: 1, ..Default::default() };
+    base.attach_remote(base.bucket().clone(), rand::random(), options).unwrap();
     for (fork, branch) in forks.iter().zip(1..) {
         base.fork(fork, base.branch() + branch).unwrap();
     }

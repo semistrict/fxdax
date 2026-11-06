@@ -66,8 +66,8 @@ impl Storage {
     /// The size of the blocks storage is read and written in. Storage sizes are multiples of it.
     pub const BLOCK_SIZE: u32 = host_store::BLOCK_SIZE;
 
-    /// The image at `path`: a directory holding an extent store (see `image`), or a clone's
-    /// handle, its branch kept in the bucket its description names (see `kept`).
+    /// The image at `path`: a directory holding an extent store (see `image`), a clone's or not,
+    /// its branch kept in the bucket its description names (see `kept`).
     ///
     /// Its I/O bypasses the host's page cache where the host filesystem allows, as the in-process
     /// kernel caches files' pages already, and runs on threads of its own (io_uring on Linux).
@@ -122,11 +122,10 @@ impl Storage {
     }
 
     /// Clones the image to a new image at `path`, which must not exist, and returns its storage.
-    /// The clone is a fork of the image's extent store: it takes the same time and space whatever
-    /// the image holds, sharing the image's data, whose files each keeps while it holds them; and
-    /// a fork of its branch in its bucket, which the clone keeps its own branch in. `path` is the
-    /// fork's handle, naming the image's directory, which must stay where it is for as long as the
-    /// clone does. Memory cannot be cloned.
+    /// The clone is a fork of the image's branch in its bucket, which the clone keeps its own
+    /// branch in: it takes the same space whatever the image holds, inheriting the image's
+    /// extents rather than copies, read from the bucket (TASK-165.7). `path` is the clone's own
+    /// directory. Memory cannot be cloned.
     ///
     /// The storage must not be mounted, which it is not while it is the caller's. To clone a
     /// mounted filesystem's, see [`Filesystem::clone_storage_to`](crate::Filesystem::clone_storage_to).
@@ -137,13 +136,11 @@ impl Storage {
         clone_image(image.clone(), writes.clone(), path.as_ref()).await
     }
 
-    /// Deletes the image at `path`, which nothing in this process has open: a clone, or an image,
-    /// whose data goes but for what other clones hold, and its branch in its bucket, whose
-    /// collector reclaims what no other branch inherited from it. An image whose clones live keeps
-    /// its directory, holding what they share of it, which no longer opens, and which goes with
-    /// the last of them (TASK-39.4). An image's directory must not be removed otherwise while
-    /// clones of it live: they hold their data there, and their bucket, if it is the image's own.
-    /// Fails with `ENOENT` if there is none at `path`.
+    /// Deletes the image at `path`, which nothing in this process has open, a clone or not: its
+    /// branch in its bucket, whose collector reclaims what no other branch inherited from it, and
+    /// its directory. Its clones live on: their branches are the bucket's, which an image's own
+    /// keeps beside its directory, not in it (TASK-165.7). Fails with `ENOENT` if there is none
+    /// at `path`.
     pub fn delete(path: impl AsRef<Path>) -> Result<(), Error> {
         kept::delete(path.as_ref())
     }

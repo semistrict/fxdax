@@ -1368,12 +1368,12 @@ impl Connection {
             return Ok(store);
         }
         let opened = match how {
-            // fxdax: or where a fork of it failed, whose deletion stopped partway, which is no
-            // store: its deletion finished first, as deleting it would (TASK-79.84).
+            // fxdax: or where a store's making was left unmade, its host crashing, which is no
+            // store: removed first, as deleting it would (TASK-79.84).
             codec::Opening::ForkFrom { from, branch, capacity }
-                if !path.exists() || ExtentStore::fork_failed(path) =>
+                if !path.exists() || crate::host_store::unmade(path) =>
             {
-                stores::deleted_if_failed(path)?;
+                stores::removed_if_unmade(path)?;
                 stores::fork_from(from, *branch, *capacity, path).await?;
                 open_store(path, None, Some(arena))
             }
