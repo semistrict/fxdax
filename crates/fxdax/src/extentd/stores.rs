@@ -1244,10 +1244,14 @@ fn write_stats(file: &std::path::Path, lines: &[String]) -> std::io::Result<()> 
 const CACHE_FLOOR: u64 = 4 << 30;
 
 /// fxdax: the cache in the directory `FXDAX_EXTENTD_CACHE` names, if it names one (empty, it names
-/// none), where what the stores opened read from their bucket is kept.
+/// none), where what the stores opened read from their bucket is kept. Opened once, by the first
+/// store to open, those opening meanwhile waiting for it: a cache holds its directory locked, and
+/// two opened at once, as a daemon's VMs booting at once open their stores, failed the second
+/// (TASK-67). A failure is the caller's, and the next tries again.
 fn remote_cache() -> Result<Option<Arc<Cache>>, Errno> {
-    static CACHE: OnceLock<Option<Arc<Cache>>> = OnceLock::new();
-    if let Some(cache) = CACHE.get() {
+    static CACHE: std::sync::Mutex<Option<Option<Arc<Cache>>>> = std::sync::Mutex::new(None);
+    let mut opened = CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(cache) = &*opened {
         return Ok(cache.clone());
     }
     let cache = match std::env::var_os("FXDAX_EXTENTD_CACHE") {
@@ -1260,5 +1264,39 @@ fn remote_cache() -> Result<Option<Arc<Cache>>, Errno> {
         },
         _ => None,
     };
-    Ok(CACHE.get_or_init(|| cache).clone())
+    Ok(opened.insert(cache).clone())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// fxdax: the daemon's first stores, opened at once, share the one cache, which holds its
+    /// directory locked: each found none yet and opened its own, and the second's lock failed, its
+    /// store with EIO, as a daemon started again served its VMs booted again all at once
+    /// (fxfs-guest-soak, TASK-67: a VM of five exited 1 at boot).
+    #[test]
+    fn stores_opened_at_once_share_the_cache() {
+        let dir = tempfile::tempdir().unwrap();
+        // SAFETY: nextest runs each test in a process of its own, whose other threads don't read
+        // the environment yet.
+        unsafe { std::env::set_var("FXDAX_EXTENTD_CACHE", dir.path()) };
+        let at_once = std::sync::Barrier::new(16);
+        let caches: Vec<_> = std::thread::scope(|scope| {
+            let opening: Vec<_> = (0..16)
+                .map(|_| {
+                    scope.spawn(|| {
+                        at_once.wait();
+                        remote_cache()
+                    })
+                })
+                .collect();
+            opening.into_iter().map(|opening| opening.join().unwrap()).collect()
+        });
+        let first = caches[0].clone().expect("a cache").expect("FXDAX_EXTENTD_CACHE's");
+        for cache in caches {
+            let cache = cache.expect("a cache").expect("FXDAX_EXTENTD_CACHE's");
+            assert!(Arc::ptr_eq(&cache, &first), "two caches of one directory");
+        }
+    }
 }
