@@ -916,6 +916,69 @@ mod tests {
         assert!(!path.exists(), "the store is left half made");
     }
 
+    /// Where [`child_dies_importing`] imports, which [`a_store_whose_importer_died_is_made_anew`]
+    /// names.
+    const CHILD_STORE: &str = "FXDAX_IMPORT_TEST_STORE";
+
+    /// An import whose process dies, for [`a_store_whose_importer_died_is_made_anew`]: fills the
+    /// store at [`CHILD_STORE`] with a file, synced, says so, and waits to be killed.
+    #[test]
+    #[ignore = "run by a_store_whose_importer_died_is_made_anew"]
+    fn child_dies_importing() {
+        use crate::import::testing::{Entry, Kind, layer};
+        let Ok(path) = std::env::var(CHILD_STORE) else { return };
+        let half = layer(&[Entry::new("half", Kind::File(b"half an image"))]).unwrap();
+        let made = block_on(make_store(Path::new(&path), 64 << 20, |storage| async move {
+            let fs = Filesystem::format(storage).await?;
+            let mut importer = Importer::new(&fs);
+            importer.apply(&half[..]).await?;
+            fs.root().fsync().await?;
+            println!("FILLED");
+            std::future::pending().await
+        }));
+        panic!("the import ended: {made:?}");
+    }
+
+    /// TASK-196: a store whose import's process died as it filled it, killed or its host crashing,
+    /// is no store: what the import made of it opens as none, and an import to its path makes it
+    /// anew. On main the half-made store opened, a filesystem holding part of its image, and
+    /// every import to the path after failed with `EEXIST` (`ImportImage`'s ALREADY_EXISTS),
+    /// which a caller that retries an import its daemon's restart cut off takes for the store.
+    #[test]
+    #[ignore = "TASK-196"]
+    fn a_store_whose_importer_died_is_made_anew() {
+        use crate::import::testing::{Entry, Kind, layer};
+        use std::io::BufRead as _;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("store");
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "import::tests::child_dies_importing", "--ignored", "--nocapture"])
+            .env(CHILD_STORE, &path)
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let stdout = std::io::BufReader::new(child.stdout.take().unwrap());
+        let filled = stdout.lines().map(Result::unwrap).any(|line| line == "FILLED");
+        child.kill().unwrap();
+        child.wait().unwrap();
+        assert!(filled, "the child's import never filled the store");
+
+        let opened = block_on(async { Filesystem::mount(Storage::open(&path)?).await });
+        assert!(opened.is_err(), "the store half made opens");
+        drop(opened);
+        let image = dir.path().join("whole.tar");
+        let whole = layer(&[Entry::new("whole", Kind::File(b"the whole image"))]).unwrap();
+        std::fs::write(&image, whole).unwrap();
+        block_on(store(&path, 64 << 20, &image, None)).unwrap();
+        let names = block_on(async {
+            let fs = Filesystem::mount(Storage::open(&path).unwrap()).await.unwrap();
+            let entries = fs.root().entries().await.unwrap();
+            fs.close().await.unwrap();
+            entries.into_iter().map(|entry| entry.name).collect::<Vec<_>>()
+        });
+        assert_eq!(names, [b"whole".to_vec()]);
+    }
+
     /// A chunk of a file is written a run of data at a time: the blocks that hold data, together
     /// while they are consecutive, a short last one too, but not the blocks of zeros between.
     #[test]
