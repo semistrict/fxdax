@@ -35,6 +35,7 @@
 #include <linux/seq_file.h>
 #include <linux/slab.h>
 #include <linux/statfs.h>
+#include <linux/sysfs.h>
 #include <linux/uio.h>
 #include <linux/virtio_extent.h>
 #include <linux/workqueue.h>
@@ -2435,12 +2436,40 @@ static int fxfs_vfs_sync_fs(struct super_block *sb, int wait)
 }
 
 /*
+ * fxdax: fault injection (TASK-200): the next thaw of a filesystem fails before its step this
+ * names, 1 telling the device, 2 renewing the journal's tail, 3 recording it, which is 0 again
+ * then (fxfs_set_fail_thaw_at): it stays frozen, for the next thaw to go on from that step.
+ */
+static int fxfs_vfs_fail_thaw_at_set(const char *val, const struct kernel_param *kp)
+{
+	unsigned int step;
+	int err = kstrtouint(val, 0, &step);
+
+	if (err)
+		return err;
+	fxfs_set_fail_thaw_at(step);
+	return 0;
+}
+
+static int fxfs_vfs_fail_thaw_at_get(char *buffer, const struct kernel_param *kp)
+{
+	return sysfs_emit(buffer, "%u\n", fxfs_fail_thaw_at());
+}
+
+static const struct kernel_param_ops fxfs_vfs_fail_thaw_at_ops = {
+	.set = fxfs_vfs_fail_thaw_at_set,
+	.get = fxfs_vfs_fail_thaw_at_get,
+};
+module_param_cb(fail_thaw_at, &fxfs_vfs_fail_thaw_at_ops, NULL, 0644);
+MODULE_PARM_DESC(fail_thaw_at, "Fail the next thaw before this step: 1 telling the device, 2 renewing the journal's tail, 3 recording it (fault injection)");
+
+/*
  * Freezing (fsfreeze, FIFREEZE): the VFS stops a volume's writers and syncs it, and once all the
- * filesystem's volumes are frozen, the filesystem is made durable, and holds its background work,
- * compacting and freeing, which writes nothing until it thaws: nothing is open on the device, the
- * point a snapshot of the VM is taken at (fxdax's TASK-39.1). With the first volume to thaw, it
- * learns the device's branch, which a VM restored from the snapshot has its own of. With the lock
- * held.
+ * filesystem's volumes are frozen, read-only ones too (fxfs_vfs_settle_frozen), the filesystem is
+ * made durable, and holds its background work, compacting and freeing, which writes nothing until
+ * it thaws: nothing is open on the device, the point a snapshot of the VM is taken at (fxdax's
+ * TASK-39.1). With the first volume to thaw, it learns the device's branch, which a VM restored
+ * from the snapshot has its own of. With the lock held.
  */
 static int fxfs_vfs_filesystem_freeze(struct fxfs_vfs_filesystem *filesystem)
 {
@@ -2448,7 +2477,7 @@ static int fxfs_vfs_filesystem_freeze(struct fxfs_vfs_filesystem *filesystem)
 	int err;
 
 	lockdep_assert_held(&filesystem->lock);
-	if (filesystem->volumes_frozen < filesystem->volumes)
+	if (filesystem->frozen || filesystem->volumes_frozen < filesystem->volumes)
 		return 0;
 	if (dax)
 		fxfs_dax_quiesce(dax);
@@ -2465,44 +2494,164 @@ static int fxfs_vfs_filesystem_freeze(struct fxfs_vfs_filesystem *filesystem)
 	return 0;
 }
 
-static int fxfs_vfs_freeze_fs(struct super_block *sb)
+/*
+ * fxdax: thaws the filesystem, if it is frozen. A thaw that fails leaves it frozen, its DAX
+ * quiesced, as the VFS leaves a superblock whose unfreeze_fs failed: the next thaw goes on from the
+ * step this one stopped at (fxfs_thaw), where taking the filesystem for thawed had writers pass
+ * the VFS to wait for ever at the device Fxfs still held closed (TASK-200). With the lock held.
+ */
+static int fxfs_vfs_filesystem_thaw(struct fxfs_vfs_filesystem *filesystem)
 {
-	struct fxfs_vfs_filesystem *filesystem = fxfs_vfs_info(sb)->filesystem;
 	int err;
 
-	mutex_lock(&filesystem->lock);
+	lockdep_assert_held(&filesystem->lock);
+	if (!filesystem->frozen)
+		return 0;
+	err = fxfs_nofs(fxfs_thaw(filesystem->filesystem));
+	if (err)
+		return err;
+	if (filesystem->dax)
+		fxfs_dax_thaw(filesystem->dax);
+	filesystem->frozen = false;
+	/*
+	 * fxdax: a store resized while the VM was away, snapshotted, told it nothing: what the device
+	 * says now it takes as if told, before anything thawed sees the filesystem's size.
+	 */
+	if (!fxfs_filesystem_follows(filesystem->filesystem)) {
+		schedule_work(&filesystem->resize);
+		flush_work(&filesystem->resize);
+	}
+	return 0;
+}
+
+/* fxdax: the volume of `info` frozen, and its filesystem with it, if it was the last. */
+static int fxfs_vfs_volume_freeze(struct fxfs_vfs_info *info)
+{
+	struct fxfs_vfs_filesystem *filesystem = info->filesystem;
+	int err;
+
+	lockdep_assert_held(&filesystem->lock);
+	if (WARN_ON_ONCE(info->frozen))
+		return 0;
+	info->frozen = true;
 	filesystem->volumes_frozen++;
 	err = fxfs_vfs_filesystem_freeze(filesystem);
-	if (err)
+	if (err) {
+		info->frozen = false;
 		filesystem->volumes_frozen--;
-	mutex_unlock(&filesystem->lock);
+	}
+	return err;
+}
+
+/*
+ * fxdax: the volume of `info` thawed, and its filesystem, if frozen, first: a failed thaw leaves
+ * both frozen.
+ */
+static int fxfs_vfs_volume_thaw(struct fxfs_vfs_info *info)
+{
+	struct fxfs_vfs_filesystem *filesystem = info->filesystem;
+	int err;
+
+	lockdep_assert_held(&filesystem->lock);
+	/* A count that would wrap, as a thaw retried once did (TASK-200). */
+	if (WARN_ON_ONCE(!info->frozen || !filesystem->volumes_frozen))
+		return 0;
+	err = fxfs_vfs_filesystem_thaw(filesystem);
+	if (err)
+		return err;
+	info->frozen = false;
+	filesystem->volumes_frozen--;
+	return 0;
+}
+
+static int fxfs_vfs_freeze_fs(struct super_block *sb)
+{
+	struct fxfs_vfs_info *info = fxfs_vfs_info(sb);
+	int err;
+
+	mutex_lock(&info->filesystem->lock);
+	err = fxfs_vfs_volume_freeze(info);
+	mutex_unlock(&info->filesystem->lock);
 	return err;
 }
 
 static int fxfs_vfs_unfreeze_fs(struct super_block *sb)
 {
-	struct fxfs_vfs_filesystem *filesystem = fxfs_vfs_info(sb)->filesystem;
+	struct fxfs_vfs_info *info = fxfs_vfs_info(sb);
+	int err;
+
+	mutex_lock(&info->filesystem->lock);
+	err = fxfs_vfs_volume_thaw(info);
+	mutex_unlock(&info->filesystem->lock);
+	return err;
+}
+
+/*
+ * fxdax: a read-only superblock, frozen or thawed as the VFS says, taken so by its filesystem: the
+ * VFS freezes and thaws one without a call to the filesystem (freeze_super calls no freeze_fs for
+ * it), whose freeze, waiting for every superblock, would otherwise never come, and its VM never be
+ * snapshotted, though each fsfreeze returned 0 (TASK-202). A writable one's freeze_fs and
+ * unfreeze_fs keep. A follower's isn't: its device can't be snapshotted, and its batches go on.
+ * Returns 1 if it froze or thawed the volume, 0 if not, or a -errno: a thaw that failed leaves the
+ * filesystem frozen, for the next to go on. With the superblock's s_umount held, which keeps what
+ * the VFS says of it.
+ */
+static int fxfs_vfs_settle_frozen(struct super_block *sb)
+{
+	struct fxfs_vfs_info *info = fxfs_vfs_info(sb);
+	struct fxfs_vfs_filesystem *filesystem = info->filesystem;
+	bool frozen = sb->s_writers.frozen == SB_FREEZE_COMPLETE;
 	int err = 0;
 
+	lockdep_assert_held(&sb->s_umount);
+	if (!sb_rdonly(sb) || info->follows)
+		return 0;
 	mutex_lock(&filesystem->lock);
-	filesystem->volumes_frozen--;
-	if (filesystem->frozen) {
-		err = fxfs_nofs(fxfs_thaw(filesystem->filesystem));
-		if (filesystem->dax)
-			fxfs_dax_thaw(filesystem->dax);
-		filesystem->frozen = false;
-		/*
-		 * fxdax: a store resized while the VM was away, snapshotted, told it nothing: what
-		 * the device says now it takes as if told, before anything thawed sees the
-		 * filesystem's size.
-		 */
-		if (!err && !fxfs_filesystem_follows(filesystem->filesystem)) {
-			schedule_work(&filesystem->resize);
-			flush_work(&filesystem->resize);
-		}
-	}
+	if (frozen && !info->frozen)
+		err = fxfs_vfs_volume_freeze(info) ?: 1;
+	else if (!frozen && info->frozen)
+		err = fxfs_vfs_volume_thaw(info) ?: 1;
 	mutex_unlock(&filesystem->lock);
 	return err;
+}
+
+/*
+ * fxdax: FIFREEZE's, and the kernel's, freeze of a superblock (freeze_super), then its
+ * filesystem's of a read-only one (fxfs_vfs_settle_frozen): failing, the superblock is thawed
+ * again, as a writable one stays thawed if its freeze_fs fails.
+ */
+static int fxfs_vfs_freeze_super(struct super_block *sb, enum freeze_holder who,
+				 const void *owner)
+{
+	int err = freeze_super(sb, who, owner);
+
+	if (err)
+		return err;
+	down_read(&sb->s_umount);
+	err = fxfs_vfs_settle_frozen(sb);
+	up_read(&sb->s_umount);
+	if (err < 0) {
+		thaw_super(sb, who, owner);
+		return err;
+	}
+	return 0;
+}
+
+/*
+ * fxdax: FITHAW's, and the kernel's, thaw of a superblock (thaw_super), then its filesystem's of a
+ * read-only one (fxfs_vfs_settle_frozen). One whose filesystem failed to thaw is thawed already
+ * for the VFS, which refuses it a second thaw (-EINVAL): that retries the filesystem's.
+ */
+static int fxfs_vfs_thaw_super(struct super_block *sb, enum freeze_holder who, const void *owner)
+{
+	int err = thaw_super(sb, who, owner), settled;
+
+	down_read(&sb->s_umount);
+	settled = fxfs_vfs_settle_frozen(sb);
+	up_read(&sb->s_umount);
+	if (settled < 0)
+		return settled;
+	return settled ? 0 : err;
 }
 
 static int fxfs_vfs_statfs(struct dentry *dentry, struct kstatfs *buf)
@@ -2594,6 +2743,8 @@ static const struct super_operations fxfs_vfs_super_operations = {
 	.sync_fs = fxfs_vfs_sync_fs,
 	.freeze_fs = fxfs_vfs_freeze_fs,
 	.unfreeze_fs = fxfs_vfs_unfreeze_fs,
+	.freeze_super = fxfs_vfs_freeze_super,
+	.thaw_super = fxfs_vfs_thaw_super,
 	.nr_cached_objects = fxfs_vfs_nr_cached_objects,
 	.free_cached_objects = fxfs_vfs_free_cached_objects,
 };
@@ -3213,7 +3364,9 @@ static int fxfs_vfs_filesystem_join(struct fxfs_vfs_info *info, struct fs_contex
 /*
  * The volume of `info`, its inodes evicted, leaves its filesystem, which closes with the last. The
  * volumes left may all be frozen by then, which freezes the filesystem. A frozen filesystem has
- * none leave: a frozen superblock stays until it thaws.
+ * none leave: a frozen superblock stays until it thaws. fxdax: but a read-only one an emergency
+ * thaw thawed (do_thaw_all, which calls no thaw_super of a filesystem's), which writes nothing; the
+ * last to leave thaws the filesystem, which then closes.
  */
 static void fxfs_vfs_filesystem_leave(struct fxfs_vfs_info *info)
 {
@@ -3222,7 +3375,16 @@ static void fxfs_vfs_filesystem_leave(struct fxfs_vfs_info *info)
 	int err;
 
 	mutex_lock(&filesystem->lock);
-	WARN_ON_ONCE(filesystem->frozen);
+	WARN_ON_ONCE(filesystem->frozen && !info->frozen);
+	if (filesystem->volumes == 1 && filesystem->frozen) {
+		err = fxfs_vfs_filesystem_thaw(filesystem);
+		if (err)
+			pr_warn("fxfs: thawing as the last volume left: %d\n", err);
+	}
+	if (info->frozen) {
+		info->frozen = false;
+		filesystem->volumes_frozen--;
+	}
 	filesystem->volumes--;
 	if (info->dax_volume && filesystem->volumes)
 		fxfs_dax_remove_volume(info->dax, info->dax_volume);
@@ -3411,15 +3573,30 @@ static int fxfs_vfs_get_tree(struct fs_context *fc)
 	return 0;
 }
 
-/* fxdax: a filesystem mounted read-only, or following its writer, stays so, and a volume itself. */
+/*
+ * fxdax: a filesystem mounted read-only, or following its writer, stays so, and a volume itself.
+ * A volume remounted read-only is synced first, as ext4's and XFS's are, leaving nothing dirty: the
+ * VFS freezes a read-only superblock without syncing it, and its filesystem's freeze waits for
+ * nothing of it (TASK-202). One remounted writable that its filesystem counts frozen, which an
+ * emergency thaw leaves (fxfs_vfs_filesystem_leave), thaws its filesystem first.
+ */
 static int fxfs_vfs_reconfigure(struct fs_context *fc)
 {
 	struct super_block *sb = fc->root->d_sb;
+	bool read_only = fc->sb_flags_mask & SB_RDONLY ? fc->sb_flags & SB_RDONLY : sb_rdonly(sb);
+	int err;
 
-	if (!(fc->sb_flags & SB_RDONLY) && fxfs_read_only(fxfs_vfs_fs(sb)))
+	if (!read_only && fxfs_read_only(fxfs_vfs_fs(sb)))
 		return invalf(fc, "fxfs: mounted read-only, or following a writer: it stays so");
 	if (fc->fs_private && strcmp(fc->fs_private, fxfs_vfs_info(sb)->volume))
 		return invalf(fc, "fxfs: a mount's volume stays its own");
+	if (read_only && !sb_rdonly(sb))
+		return sync_filesystem(sb);
+	if (!read_only && sb_rdonly(sb)) {
+		err = fxfs_vfs_settle_frozen(sb);
+		if (err < 0)
+			return err;
+	}
 	return 0;
 }
 

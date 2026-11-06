@@ -175,7 +175,15 @@ int fxfs_sync(struct fxfs *fs);
  * of its own in a VM restored from a snapshot taken frozen, and writes again (TASK-39.1).
  */
 int fxfs_freeze(struct fxfs_filesystem *filesystem);
+/*
+ * A thaw that fails leaves the filesystem frozen, and the next goes on from the step it stopped at
+ * (TASK-200). fxfs_set_fail_thaw_at, fault injection: the next thaw fails before its step `step`,
+ * 1 telling the device, 2 renewing the journal's tail, 3 recording it, and fxfs_fail_thaw_at is 0
+ * again; 0, none.
+ */
 int fxfs_thaw(struct fxfs_filesystem *filesystem);
+void fxfs_set_fail_thaw_at(u32 step);
+u32 fxfs_fail_thaw_at(void);
 /*
  * fxdax: a shared volume's (backlog doc-10). fxfs_flush_volume puts all a volume holds in one layer,
  * with the filesystem not frozen. fxfs_manifest writes what describes it to `buf`, with the

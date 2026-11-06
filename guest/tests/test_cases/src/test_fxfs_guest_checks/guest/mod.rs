@@ -82,6 +82,28 @@ fn mount_with(flags: libc::c_ulong) -> std::io::Result<()> {
     if ret == 0 { Ok(()) } else { Err(std::io::Error::last_os_error()) }
 }
 
+/// fxdax: `FIFREEZE` and `FITHAW`: `_IOWR('X', 119, int)` and `_IOWR('X', 120, int)`.
+const FIFREEZE: libc::c_ulong = 0xc004_5877;
+const FITHAW: libc::c_ulong = 0xc004_5878;
+
+/// fxdax: freezes (`FIFREEZE`) or thaws (`FITHAW`), as `request` says, the volume mounted at
+/// `target`.
+fn freeze_at(target: &str, request: libc::c_ulong) -> std::io::Result<()> {
+    let dir = fs::File::open(target).unwrap();
+    let ret = unsafe { libc::ioctl(dir.as_raw_fd(), request as _, 0) };
+    if ret == 0 { Ok(()) } else { Err(std::io::Error::last_os_error()) }
+}
+
+/// fxdax: how many requests of the type `name` the device has taken, as its driver counts them
+/// (its `requests` in sysfs): `freeze` those telling it the filesystem froze or thawed.
+fn device_requests(name: &str) -> u64 {
+    let device = crate::extent_driver::device();
+    let path = format!("/sys/bus/virtio/drivers/virtio_extent/{device}/requests");
+    let requests = fs::read_to_string(&path).unwrap();
+    let count = requests.lines().find_map(|line| line.strip_prefix(&format!("{name} ")));
+    count.unwrap_or_else(|| panic!("no {name} in {path}: {requests}")).parse().unwrap()
+}
+
 /// fxdax: a fault injection counting down, `name`, has run out.
 fn assert_injected(name: &str) {
     let left = fs::read_to_string(format!("{PARAMS}/{name}")).unwrap();

@@ -32,25 +32,114 @@ pub(super) fn test_stats() {
 
 /// Freezing the filesystem and thawing it (FIFREEZE, FITHAW).
 pub(super) fn test_freeze() {
-    const FIFREEZE: libc::c_ulong = 0xc0045877;
-    const FITHAW: libc::c_ulong = 0xc0045878;
-    let dir = fs::File::open(MNT).unwrap();
-    let ret = unsafe { libc::ioctl(dir.as_raw_fd(), FIFREEZE as _, 0) };
-    assert_eq!(ret, 0, "FIFREEZE: {}", std::io::Error::last_os_error());
+    freeze_at(MNT, FIFREEZE).expect("FIFREEZE");
     // A writer waits while it is frozen, and goes on as it thaws.
-    let (wrote, written) = std::sync::mpsc::channel();
-    let writer = std::thread::spawn(move || {
-        fs::write(path("frozen"), b"written once thawed").unwrap();
-        wrote.send(()).unwrap();
-    });
-    let waited = written.recv_timeout(std::time::Duration::from_millis(500));
-    assert_eq!(waited, Err(std::sync::mpsc::RecvTimeoutError::Timeout), "wrote while frozen");
-    let ret = unsafe { libc::ioctl(dir.as_raw_fd(), FITHAW as _, 0) };
-    assert_eq!(ret, 0, "FITHAW: {}", std::io::Error::last_os_error());
+    let writer = writer_waits("frozen", b"written once thawed", "frozen");
+    freeze_at(MNT, FITHAW).expect("FITHAW");
     writer.join().unwrap();
     assert_eq!(fs::read(path("frozen")).unwrap(), b"written once thawed");
     fs::write(path("thawed"), b"writes go on").unwrap();
     assert_eq!(fs::read(path("thawed")).unwrap(), b"writes go on");
+}
+
+/// A writer of `data` to the file `name`, which waits, the filesystem frozen (`what` says how):
+/// to be joined once it thaws.
+fn writer_waits(name: &str, data: &'static [u8], what: &str) -> std::thread::JoinHandle<()> {
+    let (wrote, written) = std::sync::mpsc::channel();
+    let name = path(name);
+    let writer = std::thread::spawn(move || {
+        fs::write(name, data).unwrap();
+        // Waited for no longer, once it waited.
+        let _ = wrote.send(());
+    });
+    let waited = written.recv_timeout(std::time::Duration::from_millis(500));
+    assert_eq!(waited, Err(std::sync::mpsc::RecvTimeoutError::Timeout), "wrote while {what}");
+    writer
+}
+
+/// fxdax: a thaw that fails leaves the filesystem frozen, as the VFS leaves the superblock, and
+/// the next goes on from the step it stopped at, never taking one twice (TASK-200): failing
+/// before it tells the device it thaws (fxfs.fail_thaw_at 1), and before it renews the journal's
+/// tail, the device told, and open again (2). Writers wait meanwhile, and write once it thaws,
+/// durably. The device is told of the freeze, and of the thaw, once each. Fxfs took a thaw that
+/// failed for done: the next let every writer in, to wait for ever at the device it held closed.
+pub(super) fn test_failed_thaw_thaws_on_retry() {
+    for step in [1, 2] {
+        let told = device_requests("freeze");
+        freeze_at(MNT, FIFREEZE).expect("FIFREEZE");
+        assert_eq!(device_requests("freeze"), told + 1, "frozen, step {step}: the device told");
+        {
+            let _fail = Param::set("fail_thaw_at", &step.to_string());
+            let failed = freeze_at(MNT, FITHAW).expect_err("a thaw made to fail");
+            assert_eq!(failed.raw_os_error(), Some(libc::EIO), "step {step}: {failed}");
+            assert_injected("fail_thaw_at");
+        }
+        let thawed_told = told + 1 + u64::from(step > 1);
+        assert_eq!(device_requests("freeze"), thawed_told, "step {step}: the device told");
+        let name = format!("thawed-on-retry-{step}");
+        let writer = writer_waits(&name, b"written once thawed", "a thaw failed");
+        freeze_at(MNT, FITHAW).expect("FITHAW after one failed");
+        writer.join().unwrap();
+        assert_eq!(device_requests("freeze"), told + 2, "step {step}: told of the thaw once");
+        fs::File::open(path(&name)).unwrap().sync_all().unwrap();
+        assert_eq!(fs::read(path(&name)).unwrap(), b"written once thawed");
+        fs::remove_file(path(&name)).unwrap();
+    }
+}
+
+/// The image mounted writable again as this goes, if a check that mounts it read-only failed: the
+/// checks after it write.
+struct MountedWritable;
+
+impl Drop for MountedWritable {
+    fn drop(&mut self) {
+        let mounts = fs::read_to_string("/proc/self/mounts").unwrap_or_default();
+        let read_only = mounts.lines().any(|mount| {
+            let fields: Vec<&str> = mount.split_whitespace().collect();
+            fields.get(1) == Some(&MNT) && fields.get(3).is_some_and(|o| o.starts_with("ro"))
+        });
+        if read_only {
+            // Not a panic, which in a panic's unwinding would abort before the first said why.
+            let _ = freeze_at(MNT, FITHAW);
+            let unmounted = unsafe { libc::umount(CString::new(MNT).unwrap().as_ptr()) };
+            if unmounted != 0 || mount_with(0).is_err() {
+                eprintln!("mounting {MNT} writable again: {}", std::io::Error::last_os_error());
+            }
+        }
+    }
+}
+
+/// fxdax: a volume remounted read-only, or mounted so, freezes its filesystem as a writable one
+/// does, which tells the device, and thaws it (TASK-202): the VFS freezes a read-only superblock
+/// without a call to its filesystem, which waited for it for ever, and its VM was never
+/// snapshotted, though fsfreeze returned 0. Remounted writable, it takes writes again; what was
+/// written before reads back mounted read-only.
+pub(super) fn test_read_only_freezes() {
+    let freezes_and_thaws = |what: &str| {
+        let told = device_requests("freeze");
+        freeze_at(MNT, FIFREEZE).expect("FIFREEZE");
+        assert_eq!(device_requests("freeze"), told + 1, "{what}: frozen, the device told");
+        freeze_at(MNT, FITHAW).expect("FITHAW");
+        assert_eq!(device_requests("freeze"), told + 2, "{what}: thawed, the device told");
+    };
+    let _writable = MountedWritable;
+    let name = path("read-only");
+    fs::write(&name, b"written before").unwrap();
+    // Its inode dirty, which the remount writes back.
+    fs::set_permissions(&name, fs::Permissions::from_mode(0o600)).unwrap();
+    mount_with(libc::MS_REMOUNT | libc::MS_RDONLY).expect("remounting read-only");
+    freezes_and_thaws("remounted read-only");
+    mount_with(libc::MS_REMOUNT).expect("remounting writable");
+    fs::write(&name, b"written again").unwrap();
+    // The filesystem too, which writes nothing.
+    unmount();
+    mount_with(libc::MS_RDONLY).expect("mounting read-only");
+    freezes_and_thaws("mounted read-only");
+    assert_eq!(fs::read(&name).unwrap(), b"written again");
+    assert_eq!(fs::metadata(&name).unwrap().permissions().mode() & 0o777, 0o600);
+    unmount();
+    mount();
+    fs::remove_file(&name).unwrap();
 }
 
 /// Unbinding the driver from a mounted device waits for it to unmount, the filesystem working

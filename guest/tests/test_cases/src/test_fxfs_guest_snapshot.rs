@@ -33,6 +33,12 @@
 //! suspends, thaws and uses each (TASK-136.2). Mounted first, with nothing in the journal, the
 //! default volume reads the device fewer times than there are volumes: the rest stay closed.
 //!
+//! fxfs-guest-suspend-read-only-volume and fxfs-guest-suspend-remounted-read-only: a volume
+//! mounted read-only beside the default, or the default remounted read-only, frozen with the rest,
+//! freezes the filesystem, and the VM is snapshotted (`ReadOnly`): the VFS freezes a read-only
+//! superblock without a call to its filesystem, which waited for it, and the device refused the
+//! snapshot (TASK-202).
+//!
 //! The VMs run in Firecracker driven through its API. Their root filesystem's disk is read-only,
 //! as the restored VMs share it. The guest tells the host it is frozen over vsock, and each
 //! restored guest, whose connection the restore resets, asks the host its name on a new one.
@@ -46,7 +52,23 @@ pub struct TestFxfsGuestSnapshot {
     pub mode: Mode,
     /// How many volumes the guest mounts besides the default: on a store the host makes, if any.
     pub volumes: usize,
+    /// What of the guest's is read-only as it freezes.
+    pub read_only: ReadOnly,
 }
+
+/// What of the guest's is read-only as it freezes (TASK-202).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ReadOnly {
+    Nothing,
+    /// A volume of its own, `RO_VOLUME`, mounted read-only beside the default, on a store the host
+    /// makes with it, which the guest writes to first, mounted writable.
+    Volume,
+    /// The default volume, remounted read-only before it freezes, and writable once it thaws.
+    Remounted,
+}
+
+/// The volume `ReadOnly::Volume` mounts read-only.
+const RO_VOLUME: &str = "ro";
 
 /// As many volumes as a sandbox may have mounted (backlog doc-10).
 pub const VOLUMES: usize = 256;
@@ -144,7 +166,7 @@ mod host {
         dir.join(format!("store-{name}"))
     }
 
-    /// Makes the store at `path`, with the default volume and `volumes` others, empty.
+    /// Makes the store at `path`, with the default volume, `volumes` others and `RO_VOLUME`, empty.
     fn format(path: &Path, volumes: usize) -> anyhow::Result<()> {
         block_on(async {
             let image = Image::format(Storage::create(path, CAPACITY)?).await?;
@@ -152,6 +174,7 @@ mod host {
             for volume in 0..volumes {
                 image.create_volume(&format!("v{volume}")).await?.unmount().await?;
             }
+            image.create_volume(RO_VOLUME).await?.unmount().await?;
             image.compact().await?;
             image.close().await?;
             Ok(())
@@ -246,7 +269,7 @@ mod host {
                         .with_context(|| format!("taking {name} from the bundle"))?;
                 }
             } else {
-                if self.volumes > 0 {
+                if self.volumes > 0 || self.read_only == ReadOnly::Volume {
                     format(&store(dir, "source"), self.volumes)?;
                 }
                 let mut vm = Vm::new(2, 512)?;
@@ -461,6 +484,8 @@ mod guest {
     use std::os::fd::AsRawFd;
 
     const MNT: &str = "/mnt/fxfs";
+    /// The volume a mount naming none mounts (fs/fxfs's FXFS_DEFAULT_VOLUME).
+    const FXFS_DEFAULT: &str = "default";
     /// `FIFREEZE` and `FITHAW`: `_IOWR('X', 119, int)` and `_IOWR('X', 120, int)`.
     const FIFREEZE: libc::c_ulong = 0xc004_5877;
     const FITHAW: libc::c_ulong = 0xc004_5878;
@@ -521,30 +546,45 @@ mod guest {
 
     fn mount_volumes(volumes: usize) {
         for volume in 0..volumes {
-            let (source, target, fstype, options) = (
-                CString::new("extents").unwrap(),
-                CString::new(at(volume)).unwrap(),
-                CString::new("fxfs").unwrap(),
-                CString::new(format!("volume=v{volume}")).unwrap(),
-            );
-            let ret = unsafe {
-                libc::mount(
-                    source.as_ptr(),
-                    target.as_ptr(),
-                    fstype.as_ptr(),
-                    0,
-                    options.as_ptr().cast(),
-                )
-            };
-            assert_eq!(ret, 0, "mount v{volume}: {}", std::io::Error::last_os_error());
+            mount_volume(&format!("v{volume}"), &at(volume), 0);
         }
+    }
+
+    /// Mounts the volume `name` at `target`, with the mount's `flags`; or, with `MS_REMOUNT`,
+    /// mounts it again so.
+    fn mount_volume(name: &str, target: &str, flags: libc::c_ulong) {
+        let (source, target, fstype, options) = (
+            CString::new("extents").unwrap(),
+            CString::new(target).unwrap(),
+            CString::new("fxfs").unwrap(),
+            CString::new(format!("volume={name}")).unwrap(),
+        );
+        let ret = unsafe {
+            libc::mount(
+                source.as_ptr(),
+                target.as_ptr(),
+                fstype.as_ptr(),
+                flags,
+                options.as_ptr().cast(),
+            )
+        };
+        assert_eq!(ret, 0, "mount {name} ({flags:#x}): {}", std::io::Error::last_os_error());
     }
 
     fn unmount_volumes(volumes: usize) {
         for volume in 0..volumes {
-            let target = CString::new(at(volume)).unwrap();
-            assert_eq!(unsafe { libc::umount(target.as_ptr()) }, 0, "umount v{volume}");
+            unmount_at(&at(volume));
         }
+    }
+
+    fn unmount_at(target: &str) {
+        let target_c = CString::new(target).unwrap();
+        assert_eq!(unsafe { libc::umount(target_c.as_ptr()) }, 0, "umount {target}");
+    }
+
+    /// Where `RO_VOLUME` mounts, read-only.
+    fn read_only_at() -> String {
+        format!("{MNT}/{RO_VOLUME}")
     }
 
     /// How many reads of the device the filesystem made since it opened.
@@ -635,6 +675,21 @@ mod guest {
             let mapped = map(&format!("{MNT}/mapped"));
             // Read through the mapping, which with a DAX window maps the window's pages.
             assert!(mapped == &mapped_pattern()[..], "the mapping before the snapshot");
+            match self.read_only {
+                ReadOnly::Nothing => {}
+                // Written to writable first, then mounted read-only, frozen first.
+                ReadOnly::Volume => {
+                    fs::create_dir(read_only_at()).unwrap();
+                    mount_volume(RO_VOLUME, &read_only_at(), 0);
+                    fs::write(format!("{}/before", read_only_at()), BEFORE).unwrap();
+                    unmount_at(&read_only_at());
+                    mount_volume(RO_VOLUME, &read_only_at(), libc::MS_RDONLY);
+                    freeze_at(&read_only_at(), FIFREEZE);
+                }
+                ReadOnly::Remounted => {
+                    mount_volume(FXFS_DEFAULT, MNT, libc::MS_REMOUNT | libc::MS_RDONLY)
+                }
+            }
             freeze(volumes, FIFREEZE);
             {
                 let mut host = connect();
@@ -648,6 +703,16 @@ mod guest {
             let name = name_from_host();
             eprintln!("{name}: thawing");
             freeze(volumes, FITHAW);
+            match self.read_only {
+                ReadOnly::Nothing => {}
+                ReadOnly::Volume => {
+                    freeze_at(&read_only_at(), FITHAW);
+                    let before = fs::read(format!("{}/before", read_only_at())).unwrap();
+                    assert_eq!(before, BEFORE);
+                    unmount_at(&read_only_at());
+                }
+                ReadOnly::Remounted => mount_volume(FXFS_DEFAULT, MNT, libc::MS_REMOUNT),
+            }
             eprintln!("{name}: thawed");
             if self.mode == Mode::Suspend {
                 grown();

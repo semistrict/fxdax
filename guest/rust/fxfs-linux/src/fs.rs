@@ -12,7 +12,7 @@
 
 use crate::device::{Dax, DeviceStats, Durability, DurableGuard, ExtentDevice, Freezer, Resizer};
 use crate::follow::{Following, GuestFollow};
-use anyhow::{Context as _, Error, ensure};
+use anyhow::{Error, anyhow, ensure};
 use follower::{Failed, Kernel as _};
 use fxfs::errors::FxfsError;
 use fxfs::filesystem::{
@@ -25,7 +25,7 @@ pub use fxfs_posix::{Attr, DaxExtent, ReaddirStart, SetAttr, StatFs};
 use fxfs_posix::{Platform, SyncCounts};
 use linux_rt::Task;
 use std::future::Future;
-use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use storage_device::DeviceHolder;
@@ -84,9 +84,40 @@ pub struct Filesystem {
     resizer: Resizer,
     /// fxdax: what freezes the device with the filesystem (`freeze`).
     freezer: Freezer,
-    /// fxdax: while frozen, the task holding the filesystem's commits (`hold_commits`).
-    frozen: Mutex<Option<Task<()>>>,
+    /// fxdax: while frozen, how far a thaw has got (`thaw`).
+    frozen: Mutex<Option<Frozen>>,
 }
+
+/// fxdax: a frozen filesystem, as far as thawing it has got: each step of `Filesystem::thaw` taken
+/// once, the next thaw resuming at the one a failed thaw stopped at. Until the last is done, the
+/// filesystem is frozen, as the VFS keeps a superblock whose thaw failed (TASK-200).
+enum Frozen {
+    /// The device closed to writes, frees and commits, and told it is frozen; the filesystem's
+    /// commits held by the task, and its journal's compactions paused, unless it writes nothing.
+    /// Next: telling the device it thaws, taking its branch, and opening it.
+    Closed { commits: Option<Task<()>> },
+    /// The device open again, on its branch, the commits still held. Next: renewing the journal's
+    /// tail, before anything commits, then letting commits go on.
+    Opened { commits: Option<Task<()>> },
+    /// The journal's tail renewed, commits going on, compactions still paused. Next: recording the
+    /// tail in a super-block, before anything compacts.
+    Renewed,
+}
+
+impl Frozen {
+    /// The step it is at, as `fxfs.fail_thaw_at` names it (`FAIL_THAW_AT`).
+    fn step(&self) -> u32 {
+        match self {
+            Frozen::Closed { .. } => 1,
+            Frozen::Opened { .. } => 2,
+            Frozen::Renewed => 3,
+        }
+    }
+}
+
+/// fxdax: fault injection (TASK-200): the next thaw fails before its step this names (`Frozen::step`),
+/// which is 0 again then; 0, none.
+pub(crate) static FAIL_THAW_AT: AtomicU32 = AtomicU32::new(0);
 
 /// What the guest kernel gives a mounted volume: its filesystem's, and on a follower, what follows
 /// the writer.
@@ -243,8 +274,15 @@ impl Filesystem {
     /// what committed meanwhile, and closes the device to writes, frees and commits, sealing what
     /// is open: the point a snapshot of the VM is taken at, which nothing changes until it thaws
     /// (TASK-39.1). Its other background work, freeing and unlinking, waits at the device or to
-    /// commit.
+    /// commit. One that writes nothing, opened read-only, has none of those to stop: it closes and
+    /// tells the device alone (TASK-202).
     pub async fn freeze(&self) -> Result<(), Error> {
+        ensure!(self.frozen.lock().unwrap().is_none(), FxfsError::InvalidArgs);
+        if self.read_only() {
+            self.freezer.freeze().await?;
+            *self.frozen.lock().unwrap() = Some(Frozen::Closed { commits: None });
+            return Ok(());
+        }
         let journal = self.filesystem.journal();
         journal.pause_compactions().await;
         let frozen = async {
@@ -265,7 +303,7 @@ impl Filesystem {
                 self.filesystem.sync(options).await?;
             }
             self.freezer.freeze().await?;
-            *self.frozen.lock().unwrap() = Some(commits);
+            *self.frozen.lock().unwrap() = Some(Frozen::Closed { commits: Some(commits) });
             anyhow::Ok(())
         }
         .await;
@@ -278,21 +316,65 @@ impl Filesystem {
     /// fxdax: thaws the filesystem: tells the device, and takes its branch, which is a store's
     /// of its own in a VM restored from a snapshot taken frozen: the allocator mints extents of it,
     /// and the journal continues in new ones of it before anything else commits, which a
-    /// super-block then records. Then it compacts again.
+    /// super-block then records. Then it compacts again. A step that fails leaves it frozen at
+    /// that step (`Frozen`), which the next thaw goes on from, never taking one twice: the device
+    /// may be unreachable meanwhile, as its daemon restarts (TASK-200).
     pub async fn thaw(&self) -> Result<(), Error> {
-        let branch = self.freezer.unfreeze().await?;
-        self.filesystem.allocator().set_branch(branch);
-        self.freezer.open();
-        let renewed = self.filesystem.renew_journal_tail().await;
-        // Commits go on as the task holding them is dropped, which cancels it.
-        drop(self.frozen.lock().unwrap().take());
-        let recorded = match renewed {
-            Ok(true) => self.filesystem.record_journal_tail().await,
-            Ok(false) => Ok(()),
-            Err(error) => Err(error),
-        };
+        let mut frozen = self.frozen.lock().unwrap().take().ok_or(FxfsError::InvalidArgs)?;
+        loop {
+            frozen = match self.thaw_step(frozen).await {
+                Ok(Some(next)) => next,
+                Ok(None) => break,
+                Err((stopped, error)) => {
+                    let step = stopped.step();
+                    *self.frozen.lock().unwrap() = Some(stopped);
+                    return Err(error.context(format!("thawing, at step {step}: still frozen")));
+                }
+            };
+        }
         self.filesystem.journal().resume_compactions();
-        recorded.context("renewing the journal's tail as the filesystem thaws")
+        Ok(())
+    }
+
+    /// fxdax: the step of a thaw `frozen` is at, taken: what is frozen after it, if anything; or,
+    /// failed, `frozen` as it was, and why.
+    async fn thaw_step(&self, frozen: Frozen) -> Result<Option<Frozen>, (Frozen, Error)> {
+        if FAIL_THAW_AT
+            .compare_exchange(frozen.step(), 0, Ordering::Relaxed, Ordering::Relaxed)
+            .is_ok()
+        {
+            let step = frozen.step();
+            return Err((frozen, anyhow!("fxfs.fail_thaw_at: failing before step {step}")));
+        }
+        match frozen {
+            Frozen::Closed { commits } => match self.freezer.unfreeze().await {
+                Ok(branch) => {
+                    self.filesystem.allocator().set_branch(branch);
+                    self.freezer.open();
+                    // One that writes nothing has no journal to renew.
+                    Ok(commits.is_some().then_some(Frozen::Opened { commits }))
+                }
+                Err(error) => Err((Frozen::Closed { commits }, error)),
+            },
+            Frozen::Opened { commits } => match self.filesystem.renew_journal_tail().await {
+                // Commits go on as the task holding them is dropped, which cancels it.
+                Ok(renewed) => {
+                    drop(commits);
+                    Ok(renewed.then_some(Frozen::Renewed))
+                }
+                Err(error) => Err((
+                    Frozen::Opened { commits },
+                    error.context("renewing the journal's tail as the filesystem thaws"),
+                )),
+            },
+            Frozen::Renewed => match self.filesystem.record_journal_tail().await {
+                Ok(()) => Ok(None),
+                Err(error) => Err((
+                    Frozen::Renewed,
+                    error.context("recording the journal's renewed tail as the filesystem thaws"),
+                )),
+            },
+        }
     }
 
     /// fxdax: takes the size the host resized the store to, as the device's configuration says,

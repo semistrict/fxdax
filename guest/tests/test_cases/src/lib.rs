@@ -57,7 +57,9 @@ use test_fxfs_guest_volumes::TestFxfsGuestVolumes;
 mod test_fxfs_guest_docker;
 use test_fxfs_guest_docker::TestFxfsGuestDocker;
 mod test_fxfs_guest_snapshot;
-use test_fxfs_guest_snapshot::{Mode as SnapshotMode, TestFxfsGuestSnapshot, VOLUMES};
+use test_fxfs_guest_snapshot::{
+    Mode as SnapshotMode, ReadOnly as SnapshotReadOnly, TestFxfsGuestSnapshot, VOLUMES,
+};
 mod test_extent_guest;
 use test_extent_guest::{TestExtentGuest, TestExtentGuestOtherVersion};
 mod test_runner_deadlock;
@@ -430,17 +432,52 @@ pub fn test_cases() -> Vec<TestCase> {
         TestCase::new(
             "fxfs-guest-snapshot",
             &[Tag::Kernel, Tag::Nightly],
-            Box::new(TestFxfsGuestSnapshot { dax: false, mode: SnapshotMode::Zygote, volumes: 0 }),
+            Box::new(TestFxfsGuestSnapshot {
+                dax: false,
+                mode: SnapshotMode::Zygote,
+                volumes: 0,
+                read_only: SnapshotReadOnly::Nothing,
+            }),
         ),
         TestCase::new(
             "fxfs-guest-snapshot-dax",
             &[Tag::Kernel, Tag::Nightly, Tag::SoakReplicas],
-            Box::new(TestFxfsGuestSnapshot { dax: true, mode: SnapshotMode::Zygote, volumes: 0 }),
+            Box::new(TestFxfsGuestSnapshot {
+                dax: true,
+                mode: SnapshotMode::Zygote,
+                volumes: 0,
+                read_only: SnapshotReadOnly::Nothing,
+            }),
         ),
         TestCase::new(
             "fxfs-guest-suspend-dax",
             &[Tag::Kernel, Tag::Nightly, Tag::SoakReplicas],
-            Box::new(TestFxfsGuestSnapshot { dax: true, mode: SnapshotMode::Suspend, volumes: 0 }),
+            Box::new(TestFxfsGuestSnapshot {
+                dax: true,
+                mode: SnapshotMode::Suspend,
+                volumes: 0,
+                read_only: SnapshotReadOnly::Nothing,
+            }),
+        ),
+        TestCase::new(
+            "fxfs-guest-suspend-read-only-volume",
+            &[Tag::Kernel, Tag::Nightly],
+            Box::new(TestFxfsGuestSnapshot {
+                dax: false,
+                mode: SnapshotMode::Suspend,
+                volumes: 0,
+                read_only: SnapshotReadOnly::Volume,
+            }),
+        ),
+        TestCase::new(
+            "fxfs-guest-suspend-remounted-read-only",
+            &[Tag::Kernel, Tag::Nightly],
+            Box::new(TestFxfsGuestSnapshot {
+                dax: false,
+                mode: SnapshotMode::Suspend,
+                volumes: 0,
+                read_only: SnapshotReadOnly::Remounted,
+            }),
         ),
         TestCase::new(
             "fxfs-guest-snapshot-volumes",
@@ -449,6 +486,7 @@ pub fn test_cases() -> Vec<TestCase> {
                 dax: false,
                 mode: SnapshotMode::Suspend,
                 volumes: VOLUMES,
+                read_only: SnapshotReadOnly::Nothing,
             }),
         ),
         TestCase::new(
@@ -458,12 +496,18 @@ pub fn test_cases() -> Vec<TestCase> {
                 dax: true,
                 mode: SnapshotMode::Suspend,
                 volumes: VOLUMES,
+                read_only: SnapshotReadOnly::Nothing,
             }),
         ),
         TestCase::new(
             "fxfs-guest-migrate-dax",
             &[Tag::Kernel, Tag::Nightly, Tag::SoakReplicas],
-            Box::new(TestFxfsGuestSnapshot { dax: true, mode: SnapshotMode::Migrate, volumes: 0 }),
+            Box::new(TestFxfsGuestSnapshot {
+                dax: true,
+                mode: SnapshotMode::Migrate,
+                volumes: 0,
+                read_only: SnapshotReadOnly::Nothing,
+            }),
         ),
         TestCase::new(
             "fxfs-guest-migrate-tenant-dax",
@@ -472,6 +516,7 @@ pub fn test_cases() -> Vec<TestCase> {
                 dax: true,
                 mode: SnapshotMode::TenantMigrate,
                 volumes: 0,
+                read_only: SnapshotReadOnly::Nothing,
             }),
         ),
         #[cfg(any(feature = "host", target_os = "linux"))]

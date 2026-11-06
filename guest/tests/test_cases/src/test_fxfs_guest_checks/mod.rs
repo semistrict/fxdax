@@ -163,6 +163,8 @@ macro_rules! checks {
             xattr_on_full_filesystem_is_refused: All, 5 => test_xattr_on_full_filesystem_is_refused;
             xattrs_bounded: All, 8 => test_xattrs_bounded;
             freeze: All, 3 => test_freeze;
+            failed_thaw_thaws_on_retry: All, 3 => test_failed_thaw_thaws_on_retry;
+            read_only_freezes: All, 3 => test_read_only_freezes;
             show_options: All, 3 => test_show_options(dax);
             write_removes_privileges: All, 3 => test_write_removes_privileges;
             delayed_unlinks: All, 3 => test_delayed_unlinks, verify_delayed_unlinks;

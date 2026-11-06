@@ -53,12 +53,17 @@ struct fxfs_vfs_filesystem {
 	struct workqueue_struct *readahead;
 	/* fxdax: takes the size the host resizes the store to (fxfs_resize), off the interrupt. */
 	struct work_struct resize;
-	/* Its superblocks, and how many of those are frozen. */
+	/*
+	 * Its superblocks, and how many of those are frozen (`struct fxfs_vfs_info`'s `frozen`),
+	 * read-only ones too (fxfs_vfs_settle_frozen).
+	 */
 	unsigned int volumes;
 	unsigned int volumes_frozen;
 	/*
 	 * fxdax: whether the filesystem is frozen, which takes all its volumes frozen: nothing is
-	 * open on the device, so no volume mounts until it thaws, with the first to thaw.
+	 * open on the device, so no volume mounts until it thaws, with the first to thaw. A thaw that
+	 * failed leaves it frozen, as the VFS leaves the superblock, for the next to go on from where
+	 * it stopped (fxfs_thaw, TASK-200).
 	 */
 	bool frozen;
 };
@@ -75,6 +80,13 @@ struct fxfs_vfs_info {
 	struct fxfs *fs;
 	struct fxfs_dax *dax;
 	struct fxfs_dax_volume *dax_volume;
+	/*
+	 * fxdax: whether its filesystem counts it frozen (`volumes_frozen`), which its filesystem's
+	 * lock guards: a writable superblock as the VFS freezes it (freeze_fs) and thaws it
+	 * (unfreeze_fs); a read-only one, which the VFS freezes without a call to its filesystem, as
+	 * fxfs_vfs_freeze_super and fxfs_vfs_thaw_super find it frozen or not (TASK-202).
+	 */
+	bool frozen;
 	/*
 	 * fxdax: a follower's (fxfs_follows, backlog doc-8): applies its writer's commits, as its
 	 * device tells of them, off the interrupt (fxfs_follow).

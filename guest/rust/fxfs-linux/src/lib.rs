@@ -517,7 +517,8 @@ pub unsafe extern "C" fn fxfs_freeze(filesystem: *const Filesystem) -> c_int {
     }
 }
 
-/// fxdax: thaws the filesystem (`Filesystem::thaw`).
+/// fxdax: thaws the filesystem (`Filesystem::thaw`): failing, it stays frozen, and the next thaw
+/// goes on from where this stopped.
 ///
 /// # Safety
 ///
@@ -530,6 +531,19 @@ pub unsafe extern "C" fn fxfs_thaw(filesystem: *const Filesystem) -> c_int {
         Ok(()) => 0,
         Err(error) => -errno(&error),
     }
+}
+
+/// fxdax: fault injection (TASK-200): the next thaw fails before its step `step`, 1 telling the
+/// device, 2 renewing the journal's tail, 3 recording it; 0, none (`fs::FAIL_THAW_AT`).
+#[unsafe(no_mangle)]
+pub extern "C" fn fxfs_set_fail_thaw_at(step: u32) {
+    fs::FAIL_THAW_AT.store(step, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// fxdax: the step the next thaw fails before (`fxfs_set_fail_thaw_at`): 0 once one has.
+#[unsafe(no_mangle)]
+pub extern "C" fn fxfs_fail_thaw_at() -> u32 {
+    fs::FAIL_THAW_AT.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 /// fxdax: flushes the volume whole (`GuestFxfs::flush_volume`).
