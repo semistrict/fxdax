@@ -11,17 +11,24 @@ import script
 pgbench_probes = script.load("pgbench-probes")
 
 COUNTERS = (
-    "window_maps_ns 4000000 window_map_requests 10 dax_writes_ns 3000000 dax_writes 10"
+    "window_maps 100 window_maps_ns 4000000 window_map_requests 10 "
+    "dax_writes_ns 3000000 dax_writes 10"
 )
 
 
 class Probes(unittest.TestCase):
     def test_means_each_probe(self):
         means = pgbench_probes.probes(pgbench_probes.stats(f"x\nfxfs stats: {COUNTERS}\n"))
-        self.assertEqual(
-            means,
-            [("window MAP request", 400.0, 560), ("write(2)", 300.0, 560)],
+        self.assertEqual(means, [("window MAP", 40.0, 80), ("write(2)", 300.0, 560)])
+
+    def test_a_map_is_measured_alone_whatever_its_request_holds(self):
+        """TASK-164.6: since TASK-164.10, a MAP request holds ~38 maps (MAP_MANY), each ~53 us,
+        a request ~2 ms: a request's mean measured how many maps a request held."""
+        batched = "window_maps 3800 window_maps_ns 201400000 window_map_requests 100"
+        means = pgbench_probes.probes(
+            pgbench_probes.stats(f"fxfs stats: {batched} dax_writes_ns 1 dax_writes 1")
         )
+        self.assertEqual(means[0], ("window MAP", 53.0, 80))
 
     def test_takes_the_last_line(self):
         console = f"fxfs stats: dax_writes 1\nfxfs stats: {COUNTERS}\n"

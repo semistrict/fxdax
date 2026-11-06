@@ -6,8 +6,12 @@
 """What a pgbench run's guest says of DAX's write path, and whether it got worse (TASK-146.3).
 
 Reads the last `fxfs stats:` line of a pgbench run's console, what /proc/fs/fxfs said at its end,
-and prints the mean of each probe: a window MAP request and a write(2). Fails if one is past its ceiling: half as much again as measured on 2026-10-31 (GCE r365,
-default commits, against which a host's variation is well within that).
+and prints the mean of each probe: a window MAP and a write(2). Fails if one is past its ceiling:
+half as much again as measured, a write(2)'s on 2026-10-31 (GCE r365, default commits, against
+which a host's variation is well within that), a MAP's on 2026-11-06 (r794: 53 us; 49-71 us
+since TASK-164.10, r650-r794). A MAP is measured alone, not a request: since TASK-164.10 a MAP
+request holds ~38 maps (MAP_MANY), ~2 ms a request, which measured how many maps it held
+(TASK-164.6).
 
 Usage: scripts/pgbench-probes.py CONSOLE
 """
@@ -17,7 +21,7 @@ import sys
 
 # Each probe: its name, the counters of its nanoseconds and of how many, and its ceiling in us.
 PROBES = [
-    ("window MAP request", "window_maps_ns", "window_map_requests", 560),
+    ("window MAP", "window_maps_ns", "window_maps", 80),
     ("write(2)", "dax_writes_ns", "dax_writes", 560),
 ]
 

@@ -75,6 +75,7 @@ Decisions made without you, still yours to confirm or overturn. Each is a line o
 - **A `PRIVATE`'s pages are one change of the window, made by the VM process as a run** (one mmap, none where nothing is installed); **a write(2) following on from its file's last makes 16 to 64 pages ahead private**; **a rebind maps a range's runs in one `MAP_MANY`, a range at a time, the files dirtied longest ago first.** TASK-164.10, 2026-11-05.
 - **A write by any thread not the guest's, on a window that copies on write, resolves as a load** and restricts the page for KVM's worker: no worker makes a page private, a guest making its pages private before it stores. TASK-191, 2026-11-06.
 - **The perf gate's thresholds:** doc-13's for `dax`, r632's for the rest (TASK-164.5, 2026-11-05); **`forked-dax` 0.8, the user's decision** that the forked pgbench at ~0.84 of no DAX (r650: 0.836, 0.854) is doc-13's one host round trip a first store worth paying, its further cuts TASK-164.11's (TASK-164.6, 2026-11-06).
+- **The dax-gate's MAP probe is a map's mean, not a request's,** ceiling 80 us (half as much again as r794's 53): since TASK-164.10 a MAP request holds ~38 maps, ~2 ms, past the request's 560 us ceiling from writable DAX's r365. *Undoing it:* the request's mean back, with a ceiling of copy-on-write DAX's requests. TASK-164.6, 2026-11-06.
 
 ## Fxfs
 
