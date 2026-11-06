@@ -746,6 +746,19 @@ enum NotHere {
     LeftOut,
 }
 
+/// KVM's worker's write of page 0, retried as get_user_pages retries it, until it fails or is
+/// made: it must end, or the worker faults for good. fxdax: on a window that copies on write it
+/// fails, its page restricted to reads, since taken as a load, never a store (TASK-191).
+fn worker_writes(guest: &HostGuest) {
+    for _ in 0..ATTEMPTS {
+        match guest.access_by(WORKER, 0, Access::Write, None) {
+            Outcome::Faulted(fault) => future::block_on(fault).unwrap(),
+            Outcome::Failed | Outcome::Made(_) => return,
+        }
+    }
+    panic!("the worker's write never ended");
+}
+
 /// The vCPU's load at `offset`, retried as KVM retries it, until it is made.
 fn load(guest: &HostGuest, offset: u64) {
     for _ in 0..ATTEMPTS {
@@ -806,12 +819,7 @@ fn worker_writes_copy_nothing(vcpu_stores: bool, not_here: NotHere) {
     }
 
     // The worker's write, retried as get_user_pages retries it, until it fails or is made.
-    for _ in 0..ATTEMPTS {
-        match guest.access_by(WORKER, 0, Access::Write, None) {
-            Outcome::Faulted(fault) => future::block_on(fault).unwrap(),
-            Outcome::Failed | Outcome::Made(_) => break,
-        }
-    }
+    worker_writes(&guest);
     assert_eq!(window.private_pages(), 0, "a worker's write copied the page");
 
     let (kind, write) = if vcpu_stores { (Access::Write, Some(7)) } else { (Access::Read, None) };
@@ -864,11 +872,12 @@ fn worker_writes_of_pages_left_out_before_stores_copy_nothing() {
 }
 
 /// fxdax: a worker's write of a page `not_here`, resolved as a load, or installed again, left out,
-/// leaving the page writable here: the write, retried, faults as a store, and copies the page for
-/// a load.
+/// leaving the page writable here: the write, retried, faults again, as a load, for good. It
+/// faulted as a store and copied the page for a load, before such writes were loads alone
+/// (TASK-191).
 fn needs_worker_writes_restricted(not_here: NotHere) {
     *RULES.lock().unwrap() = Rules { worker_writes_restricted: false, ..Rules::ALL };
-    fails_with("a worker's write copied the page", || {
+    fails_with("the worker's write never ended", || {
         Runner::new(RandomScheduler::new(1), config())
             .run(move || worker_writes_copy_nothing(false, not_here));
     });
@@ -905,9 +914,10 @@ fn needs_failures_to_lift_worker_restrictions_of_pages_left_out() {
 }
 
 /// fxdax TASK-164.1: on a window that copies on write, a vCPU's store to a page here, mapped
-/// read-only, write-protected, faults as a store, whoever's thread reports it, as only a store
-/// faults so (KVM's worker's for the vCPU's store, which waits for it): the page is copied,
-/// mapped writable here in its place, and holds the store; the extent's page is as it was.
+/// read-only, write-protected, faults as a store, reported by its own thread: the page is copied,
+/// mapped writable here in its place, and holds the store; the extent's page is as it was. KVM's
+/// worker's write faults so too, for a load as for a store, and copies nothing
+/// ([`worker_writes_of_pages_here_copy_nothing`], TASK-191).
 fn stores_to_pages_here_copy_them() {
     let ps = page_size();
     let memory = ModelMemory::default();
@@ -928,7 +938,8 @@ fn stores_to_pages_here_copy_them() {
     sealed.each_present(0..1, &mut |_, frame| shared = Some(frame.location()));
     let shared = shared.unwrap();
 
-    match guest.access_by(WORKER, 0, Access::Write, None) {
+    guest_thread(VCPU);
+    match guest.access_by(VCPU, 0, Access::Write, Some(7)) {
         Outcome::Faulted(fault) => future::block_on(fault).unwrap(),
         _ => panic!("a store to a page mapped read-only was made, or failed"),
     }
@@ -945,6 +956,74 @@ fn stores_to_pages_here_copy_them() {
 #[test]
 fn stores_to_pages_here_copy_them_once() {
     Runner::new(RandomScheduler::new(1), config()).run(stores_to_pages_here_copy_them);
+}
+
+/// fxdax TASK-191: on a window that copies on write, KVM's worker's write of a page here, mapped
+/// read-only and write-protected, copies nothing: the worker writes for a vCPU's load as for its
+/// store (`async_pf_execute`'s `FOLL_WRITE`), and a page the vCPU's load found not here may be
+/// installed before the worker runs, by another fault, the window's probe of the page after a
+/// worker's write, or the guest's `MAP` of a page in memory. A guest makes a page private before
+/// it stores to it (doc-13, TASK-164.9), so only a load gets here so: resolved as a load, the page
+/// restricted to reads, the worker's write, retried, fails. The vCPU's load is made, of the
+/// extent's page; its store, which a guest would have made private first, fails until a failure
+/// lifts the restriction, and is a store then, made in a private copy. Red with the worker's
+/// write taken as a store: a private page the guest never counted, which kept its frozen VM's
+/// snapshot refused (GCE r685, r686, r688: 'the window has 2 private pages').
+fn worker_writes_of_pages_here_copy_nothing(vcpu_stores: bool) {
+    let ps = page_size();
+    let memory = ModelMemory::default();
+    let base = 64 * ps as usize;
+    // SAFETY: The model changes no memory.
+    let stage = unsafe {
+        UffdSecondStage::with_host(base, ps, memory.clone(), Memories::InProcess, None, usize::MAX)
+    }
+    .unwrap();
+    stage.copy_on_write().unwrap();
+    guest_thread(VCPU);
+    let telling = Arc::new(Telling { stage: stage.clone(), memory: memory.clone() });
+    let (mut dax, _) = super::super::tests::copying(1, 1, Some(telling));
+    let window = dax.window.clone();
+    // In memory as it is mapped: installed here at once, write-protected.
+    let sealed = TestSource::filled(1, SEALED);
+    dax.map(0, &sealed.source(), 0, ps);
+    let guest = HostGuest { memory, stage: stage.clone(), window: window.clone(), base };
+    assert!(stage.pages.lock().unwrap().pages[0].mapped.is_some_and(|mapped| mapped.installed));
+
+    // The worker's write, retried as get_user_pages retries it, until it fails or is made.
+    worker_writes(&guest);
+    assert_eq!(window.private_pages(), 0, "a worker's write copied the page");
+
+    let (kind, write) = if vcpu_stores { (Access::Write, Some(7)) } else { (Access::Read, None) };
+    let mut failed = false;
+    let read = 'access: {
+        for _ in 0..ATTEMPTS {
+            match guest.access(0, kind, write) {
+                Outcome::Made(read) => break 'access read,
+                Outcome::Faulted(fault) => future::block_on(fault).unwrap(),
+                Outcome::Failed => {
+                    failed = true;
+                    stage.lift_worker_restrictions();
+                }
+            }
+        }
+        panic!("the vCPU's {kind:?} never completed");
+    };
+    match vcpu_stores {
+        true => assert_eq!((read, failed, window.private_pages()), (7, true, 1)),
+        false => assert_eq!((read, failed, window.private_pages()), (SEALED, false, 0)),
+    }
+}
+
+#[test]
+fn worker_writes_of_pages_here_before_loads_copy_nothing() {
+    Runner::new(RandomScheduler::new(1), config())
+        .run(|| worker_writes_of_pages_here_copy_nothing(false));
+}
+
+#[test]
+fn worker_writes_of_pages_here_before_stores_copy_nothing() {
+    Runner::new(RandomScheduler::new(1), config())
+        .run(|| worker_writes_of_pages_here_copy_nothing(true));
 }
 
 /// fxdax: a stage over a model of its host memory, of a window that copies on write, of `pages`

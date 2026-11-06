@@ -34,8 +34,11 @@
 //! store, which a load mustn't: the worker's write, of a page not here, is a load's as much as a
 //! store's. So a fault for writing is the guest's store if it write-protected the page here, as a
 //! load of a page here takes no fault, and if the faulting thread is one of the guest's own (its
-//! vCPUs', [`guest_thread_started`]); a worker's write of a page not here is resolved as a load,
-//! the page made read-only here so that the worker's write fails. The vCPU's own access decides: a
+//! vCPUs', [`guest_thread_started`]); a worker's write is resolved as a load, the page made
+//! read-only here so that the worker's write fails: of a page not here, and of one write-protected
+//! here, as the page a vCPU's load found not here may be installed before the worker runs, by
+//! another fault, a probe or a map (TASK-191). A guest makes a page private before it stores to it
+//! (doc-13), so no store of its comes through a worker. The vCPU's own access decides: a
 //! load is made; a store fails, `KVM_RUN` with `EFAULT`, and the VMM, which retries it, says so
 //! ([`guest_access_failed`]), which lifts the restrictions such writes made: the store, retried,
 //! write-protected here now, faults as one.
@@ -1281,11 +1284,13 @@ impl<H: HostMemory> UffdSecondStage<H> {
         // here without userfaultfd. A fault on a page not mapped here may be for writing whatever
         // the guest's access (see the module docs), and resolves that page alone.
         let store = flags & UFFD_PAGEFAULT_FLAG_WP != 0;
-        // fxdax: a worker's write of a page not here, on a window that copies on write, which a
-        // load may have made, is resolved as a load, and the page restricted to reads here once
-        // it is (see the module docs).
-        let for_worker =
-            !store && access == Access::Write && self.copying() && !is_guests(thread);
+        // fxdax: a worker's write, on a window that copies on write, which a load may have made, is
+        // resolved as a load, and the page restricted to reads here once it is (see the module
+        // docs): of a page not here, and of one here, write-protected, which the vCPU's load found
+        // not here, and another fault, a probe or a map installed before the worker ran. That
+        // one, taken as a store, made a private page the guest never counted, and its frozen
+        // VM's snapshot was refused (TASK-191, GCE r685, r686, r688).
+        let for_worker = access == Access::Write && self.copying() && !is_guests(thread);
         // A page the window maps, left out past the budget, is installed again, as it was, without
         // the window; any other fault is the window's to resolve.
         let reinstalled = !store && self.reinstall(addr);
@@ -1331,10 +1336,10 @@ impl<H: HostMemory> UffdSecondStage<H> {
         let offset = (addr - self.base) as u64;
         // The page as the access found it, which a fault the window does not resolve restricts.
         let seen = self.seen(addr);
-        let resolved = if store {
-            window.fault(offset, access).await
-        } else if for_worker {
+        let resolved = if for_worker {
             window.fault_page(offset, Access::Read).await
+        } else if store {
+            window.fault(offset, access).await
         } else {
             window.fault_page(offset, access).await
         };
@@ -2481,12 +2486,16 @@ mod tests {
     }
 
     /// fxdax: on a window that copies on write, a write to a page installed here, write-protected,
-    /// is a store, whichever thread makes it: the page is made private, the write made there, as
-    /// KVM's worker writes only pages not here, a load of a page here taking no fault. A test of a
-    /// worker's write must keep its page from here: `a_store_after_a_workers_write_waits_for_one_lift`
-    /// mapped zeros, which a host's `vm.max_map_count` past OrbStack's kept installed (GCE r691).
+    /// is a store only if a guest's thread makes it (TASK-191): any other's, as KVM's worker's,
+    /// which writes for loads too and may find the page a vCPU's load missed installed by the time
+    /// it runs, is resolved as a load, the page restricted to reads, and fails, nothing copied; a
+    /// vCPU's write fails while the restriction stands, and once a failure lifts it, as the VMM
+    /// asks, is a store, made in a private copy. Red with any thread's write taken as a store: the
+    /// worker's made a private page no guest counted. A test of a worker's write needn't keep its
+    /// page from here any more, as `a_store_after_a_workers_write_waits_for_one_lift` did by mapping
+    /// zeros, which a host's `vm.max_map_count` past OrbStack's kept installed (GCE r691, TASK-190).
     #[test]
-    fn writes_to_pages_here_are_stores_whoever_makes_them() {
+    fn writes_to_pages_here_are_stores_of_the_guests_alone() {
         use crate::dax::Source as _;
         let ps = page_size() as usize;
         // SAFETY: Maps anonymous memory, which this test owns.
@@ -2526,18 +2535,31 @@ mod tests {
             }
         };
 
-        // No thread of this process is the guest's.
+        let extent_byte = || {
+            let mut shared = 0;
+            // SAFETY: The extent's page is in memory while its lock is held.
+            file.each_present(0..1, &mut |_, frame| shared = unsafe { *frame.as_ptr() });
+            shared
+        };
+        // A thread not the guest's, as KVM's worker is.
         let worker = std::thread::spawn(move || read_into(base)).join().unwrap();
-        assert_eq!(worker, Ok(()));
+        assert_eq!(worker, Err(libc::EFAULT), "a worker's write was made");
+        assert_eq!(window.private_pages(), 0, "a worker's write copied the page");
+        assert_eq!(extent_byte(), 9, "the worker's write reached the extent's page");
+        // A vCPU's, which fails while the worker's restriction stands, and is a store once lifted.
+        let vcpu = std::thread::spawn(move || {
+            crate::guest_thread_started();
+            let restricted = read_into(base);
+            crate::guest_access_failed();
+            (restricted, read_into(base))
+        });
+        assert_eq!(vcpu.join().unwrap(), (Err(libc::EFAULT), Ok(())));
         assert_eq!(window.private_pages(), 1);
         // SAFETY: The window's page, private now, which nothing else accesses.
         let page = unsafe { std::slice::from_raw_parts(base as *const u8, ps) };
         assert_eq!(page[0], 7);
         assert!(page[1..].iter().all(|&byte| byte == 9), "the private page holds other data");
-        let mut shared = 0;
-        // SAFETY: The extent's page is in memory while its lock is held.
-        file.each_present(0..1, &mut |_, frame| shared = unsafe { *frame.as_ptr() });
-        assert_eq!(shared, 9, "the write reached the extent's page");
+        assert_eq!(extent_byte(), 9, "the vCPU's write reached the extent's page");
 
         drop(dax);
         // SAFETY: Closes the pipe and unmaps the memory, which nothing uses any more.
