@@ -288,6 +288,9 @@ enum Opens {
     /// A restore of its own, of the point its VM manager made for it, as a restored VM opens its
     /// store, naming the point's branch.
     Restores,
+    /// Two stores of its own at once, two OPENs in flight, of which a connection has one
+    /// (TASK-150.5).
+    Twice,
 }
 
 /// A connection of mallory's, all it does.
@@ -559,6 +562,7 @@ fn hostile() -> impl Strategy<Value = Hostile> {
         2 => Just(Opens::Own),
         1 => elsewhere.prop_map(Opens::Elsewhere),
         1 => Just(Opens::Restores),
+        1 => Just(Opens::Twice),
     ];
     let acking = prop_oneof![
         8 => Just(Acking::Honest),
@@ -1201,6 +1205,9 @@ struct Seen {
     committed: Option<Option<i32>>,
     /// The store it opened to write, if any.
     wrote: Option<PathBuf>,
+    /// What each of its `OPEN`s named, and how it was answered: what its last commit's failure
+    /// says.
+    opens: Vec<(PathBuf, u32, i32)>,
 }
 
 /// What both of a connection's threads share: what it sent, by ID, and what was answered.
@@ -1302,6 +1309,10 @@ fn receive(
                     seen.memories.extend(message.fds);
                 }
             }
+            if let Some(request) = request.filter(|request| request.kind == OPEN) {
+                let path = shared.paths.lock().unwrap().get(&header.id).cloned().unwrap_or_default();
+                seen.opens.push((path, request.flags, header.status));
+            }
             shared.answers.answer(header.id, header.status);
             if header.id == LAST && stop_at_last {
                 return seen;
@@ -1374,12 +1385,25 @@ fn run_hostile(
         Opens::Shared(store) => Some(names.place(Place::Own(store))),
         Opens::Own => Some(names.vms.join(format!("{}-c{index}", names.case))),
         Opens::Elsewhere(place) => Some(names.place(place)),
-        Opens::Restores => None,
+        Opens::Restores | Opens::Twice => None,
     };
     if let Some(path) = opened {
         let open = Header::new(OPEN, id()).with_args(&[STORE_BYTES, 0, 0, 0, VERSION]).with_flags(OPEN_CREATE);
         if let Ok(id) = send(open, path.as_os_str().as_bytes(), None) {
             shared.answers.wait(id);
+        }
+    }
+    if hostile.opens == Opens::Twice {
+        let opens: Vec<_> = ["a", "b"]
+            .map(|which| {
+                let path = names.vms.join(format!("{}-t{index}{which}", names.case));
+                let open = Header::new(OPEN, id()).with_args(&[STORE_BYTES, 0, 0, 0, VERSION]);
+                send(open.with_flags(OPEN_CREATE), path.as_os_str().as_bytes(), None)
+            })
+            .into_iter()
+            .collect();
+        for open in opens.into_iter().flatten() {
+            shared.answers.wait(open);
         }
     }
     if hostile.opens == Opens::Restores {
@@ -1433,7 +1457,13 @@ fn run_hostile(
     let mut committed = None;
     if hostile.waits {
         // Whatever it said, the store it writes commits, as one used as the protocol allows does:
-        // what the daemon took of it, it can commit (TASK-150.7).
+        // what the daemon took of it, it can commit (TASK-150.7). Once its OPENs are answered: one
+        // waiting for its path, which a connection going holds, is served after a COMMIT sent
+        // meanwhile, which finds no store (EBADF), as it rightly would.
+        let opens: Vec<u64> = shared.paths.lock().unwrap().keys().copied().collect();
+        for open in opens {
+            shared.answers.wait(open);
+        }
         let commit = Header::new(COMMIT, id()).with_flags(COMMIT_DURABLE);
         let status = send(commit, &[], None).ok().and_then(|id| shared.answers.wait(id));
         committed = shared.writer.load(Ordering::Relaxed).then_some(status);
@@ -1635,9 +1665,12 @@ fn a_compromised_vm_process_harms_no_tenant_beside_it() {
             for (hostile, seen) in hostiles.iter().zip(&seen) {
                 prop_assert_eq!(&seen.stolen, &Vec::<String>::new());
                 prop_assert_eq!(&seen.vast, &Vec::<u64>::new());
+                // It has one store at most, however many of its OPENs were at once (TASK-150.5).
+                let opened = seen.opens.iter().filter(|(_, _, status)| *status == 0).count();
+                prop_assert!(opened <= 1, "a connection opened {opened} stores: {:?}", seen.opens);
                 // Its store, if it writes one, commits.
                 if let Some(status) = seen.committed {
-                    prop_assert_eq!(status, Some(0), "mallory's store didn't commit");
+                    prop_assert_eq!(status, Some(0), "mallory's store didn't commit: {:?}", seen.opens);
                     commits.fetch_add(1, Ordering::Relaxed);
                 }
                 // A flood past its room is let go.
