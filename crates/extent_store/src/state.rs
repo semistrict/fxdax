@@ -193,6 +193,17 @@ impl<F: File> State<F> {
         }
     }
 
+    /// fxdax: the extents `moved` says the collector moved, from where to where, held or kept, named
+    /// where they went, if they are named on their way there ([`Store::moved`](crate::Store::moved)).
+    pub fn moved(&mut self, moved: &[(ExtentId, Location, Location)]) {
+        for (extent, _, to) in moved {
+            if let Some(entry) = self.extents.get_mut(extent) {
+                entry.data.follow(to);
+            }
+            self.kept.moved(*extent, to);
+        }
+    }
+
     /// fxdax: segment `segment`, closed, is acknowledged in the bucket, at `key`, and the extents
     /// stored on their own its footer names are at `own` there (TASK-165.8): its extents sealed in
     /// it, and those stored on their own, held or kept, are the bucket's from now on, read there,

@@ -794,8 +794,17 @@ impl<D: Dir> Shared<D> {
         };
         let writer = Arc::new(writer.uploading_within(self.uploads.clone()));
         let opening = Opening { state: writer.state(), fenced: Some(writer.fenced()), cache };
-        let store = blocking(|| recovering.open(options, opening))?;
-        let _ = self.store.set(Arc::new(store));
+        let store = Arc::new(blocking(|| recovering.open(options, opening))?);
+        // The store names what it reads in the bucket where the writer's checkpoints move it, as
+        // the writer does (TASK-195).
+        let following = Arc::downgrade(&store);
+        writer.following(move |moved| {
+            let Some(store) = following.upgrade() else { return };
+            if let Err(err) = store.moved(moved) {
+                log::warn!("fxdax: following the collector's moves: {err:#}");
+            }
+        });
+        let _ = self.store.set(store);
         let _ = self.writer.set(writer.clone());
         let lease = Lease { token, epoch: writer.epoch(), taken: SystemTime::now() };
         let mut progress = self.progress.lock().unwrap();

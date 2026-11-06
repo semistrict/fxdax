@@ -216,6 +216,13 @@ pub(crate) struct Rules {
     /// (TASK-175).
     /// TLA+: `specs/bucket/mutations/NoMovesTakenFirst.cfg`.
     pub moves_taken_first: bool,
+    /// A host's store reading the extents its writer's checkpoints record as moved names them
+    /// where they went, as the writer does, before the checkpoint lands
+    /// ([`Writer::following`](crate::Writer::following)): it names none further back along its
+    /// way than the writer's newest checkpoint, from which the collector keeps the moves (TASK-195).
+    /// Simulation only (`sim::stores_need_to_follow_moves`): specs/bucket models the writer's
+    /// state, not a store's names.
+    pub stores_follow_moves: bool,
     /// A writer finds the lease still its by its taking, its holder with its epoch, not by its
     /// epoch alone: a deleted branch's lease removed and taken again restarts its epochs
     /// (TASK-179).
@@ -280,6 +287,7 @@ impl Rules {
         extent_keys_name_segments: true,
         ways_from_seals: true,
         moves_taken_first: true,
+        stores_follow_moves: true,
         leases_by_takings: true,
         passes_fenced_stop: true,
         recoveries_by_origins: true,

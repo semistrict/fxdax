@@ -1815,6 +1815,17 @@ impl<D: Dir> Store<D> {
         Ok(closed)
     }
 
+    /// fxdax: the extents `moved` says the collector moved, from where to where, as the uploader's
+    /// writer names them where they went before its checkpoint lands (`Writer::following`): those
+    /// the store reads in the bucket, held or kept, are named there too, if it names them on their
+    /// way there, so that it names none further back than the writer's newest checkpoint, from
+    /// which the collector keeps the moves (TASK-195). Before, it named each where it was sealed,
+    /// whose object the collector deleted, and the moves after, once compacted again.
+    pub fn moved(&self, moved: &[(ExtentId, Location, Location)]) -> Result<(), Error> {
+        self.state()?.moved(moved);
+        Ok(())
+    }
+
     /// fxdax: segment `number`, which [`Store::closed`] gave, the first of the write-ahead log, is
     /// acknowledged in the bucket: the extents sealed in it, and those stored on their own its
     /// footer names, are read there from now on ([`RemoteData`]), and their files leave the store

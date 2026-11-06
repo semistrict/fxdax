@@ -89,6 +89,10 @@ pub struct Objects {
     pub own: Vec<(String, Body)>,
 }
 
+/// What a writer tells of the extents its checkpoints record as moved, from where to where, as it
+/// names them where they went ([`Writer::following`]).
+pub type Mover = Box<dyn Fn(&[(ExtentId, Location, Location)]) + Send + Sync>;
+
 pub struct Writer<B: Bucket> {
     bucket: Arc<B>,
     branch: u64,
@@ -100,6 +104,8 @@ pub struct Writer<B: Bucket> {
     /// Where it found the branch's end, taking it over.
     fenced: Fenced,
     inner: Mutex<Inner>,
+    /// What follows the collector's moves with it, if anything does ([`Writer::following`]).
+    mover: std::sync::OnceLock<Mover>,
 }
 
 struct Inner {
@@ -230,6 +236,7 @@ impl<B: Bucket> Writer<B> {
                 refused: BTreeSet::new(),
                 stopped: None,
             }),
+            mover: std::sync::OnceLock::new(),
         };
         // Forks acknowledged by the writers before, whose children may lack their records.
         writer.record_forks().await?;
@@ -241,6 +248,17 @@ impl<B: Bucket> Writer<B> {
     /// bounded only by how many at once it is asked for.
     pub fn uploading_within(self, budget: Arc<Budget>) -> Self {
         Self { budget, ..self }
+    }
+
+    /// Has `mover` told of the extents the writer's checkpoints record as moved, from where to
+    /// where, as the writer names them where they went, before each checkpoint lands: a host's
+    /// store reading them, which so names none further back along its way than the writer's newest
+    /// checkpoint, from which the collector keeps the moves (TASK-195). Once.
+    pub fn following(
+        &self,
+        mover: impl Fn(&[(ExtentId, Location, Location)]) + Send + Sync + 'static,
+    ) {
+        let _ = self.mover.set(Box::new(mover));
     }
 
     fn inner(&self) -> MutexGuard<'_, Inner> {
@@ -522,6 +540,13 @@ impl<B: Bucket> Writer<B> {
             {
                 *at = to.clone();
             }
+        }
+        drop(inner);
+        // And what follows them with it.
+        if rules().stores_follow_moves
+            && let Some(mover) = self.mover.get()
+        {
+            mover(moved);
         }
     }
 }

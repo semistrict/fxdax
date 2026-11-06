@@ -10,7 +10,7 @@
 use super::bucket::{Direct, Fault, SimBucket};
 use crate::batch::{Batch, Commit, Data, Unframed};
 use crate::collector::{self, Options};
-use crate::layout::{Child, Footer, Origin};
+use crate::layout::{self, Child, Footer, Location, Origin};
 use crate::record::Kind;
 use crate::wal::Wal;
 use crate::writer::Writer;
@@ -26,7 +26,7 @@ use std::collections::hash_map::Entry;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::future::Future;
 use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use storage_device::ExtentId;
 
 /// How likely each action is, per step.
@@ -197,6 +197,11 @@ struct Session {
     /// disk: its store's open segment, which goes into the log when the session ends
     /// ([`World::stop`]), as opening the store again closes it.
     batch: Batch,
+    /// Where the host's store names the extents it reads in the bucket, as fxdax's does: as its
+    /// writer's state names them as it opened, and as each acknowledgement left those it adds,
+    /// then where its writer's checkpoints move them, if it follows them (`Writer::following`,
+    /// TASK-195). What the store reads there must be.
+    names: Arc<Mutex<BTreeMap<ExtentId, Location>>>,
 }
 
 #[derive(Default)]
@@ -568,9 +573,18 @@ impl World {
                     // Out of the log; a session ended since leaves them for the next to find
                     // landed.
                     if let Some(through) = through
-                        && self.writer(host, branch, session).is_some()
+                        && let Some(writer) = self.writer(host, branch, session)
                     {
                         self.hosts[host].wals.get_mut(&branch).unwrap().acknowledge(through);
+                        // The store names those it adds where they were acknowledged; those
+                        // it named before, where it did.
+                        let state = writer.state();
+                        let found = &self.hosts[host].sessions[&branch];
+                        let mut names = found.names.lock().unwrap();
+                        names.retain(|extent, _| state.extents.contains_key(extent));
+                        for (extent, location) in &state.extents {
+                            names.entry(*extent).or_insert_with(|| location.clone());
+                        }
                     }
                 }
                 Err(_) => self.end(host, branch, session),
@@ -768,7 +782,22 @@ impl World {
         let head = wal.head();
         let restamped: Vec<(Footer, Data)> = wal.segments().cloned().collect();
         self.hosts[host].wals.insert(branch, wal);
-        self.hosts[host].sessions.get_mut(&branch).unwrap().writer = Some(writer.clone());
+        let found = self.hosts[host].sessions.get_mut(&branch).unwrap();
+        found.writer = Some(writer.clone());
+        // The store names what it reads where the writer's state does as it opens, and follows
+        // where its checkpoints move it.
+        *found.names.lock().unwrap() = writer.state().extents.clone().into_iter().collect();
+        let names = found.names.clone();
+        writer.following(move |moved| {
+            let mut names = names.lock().unwrap();
+            for (extent, _, to) in moved {
+                if let Some(at) = names.get_mut(extent)
+                    && layout::further(&at.key, &to.key)
+                {
+                    *at = to.clone();
+                }
+            }
+        });
         for (footer, data) in restamped {
             // Its forks are made where it is now.
             for child in &footer.contents.forks {
@@ -1088,6 +1117,7 @@ impl World {
             tasks: Vec::new(),
             guest: Guest::default(),
             batch: Batch::default(),
+            names: Arc::default(),
         };
         self.hosts[host].sessions.insert(branch, started);
         let (bucket, events) = (self.bucket.clone(), self.events.clone());
@@ -1601,6 +1631,17 @@ impl World {
                         Ok(_) => violations
                             .push(format!("branch {id:x}'s writer: {extent:?} reads wrong")),
                         Err(error) => violations.push(format!("branch {id:x}'s writer: {error}")),
+                    }
+                }
+                // And its store, where it names them (TASK-195).
+                let names = session.names.lock().unwrap().clone();
+                for (extent, location) in &names {
+                    let Some(bytes) = session.guest.held.get(extent) else { continue };
+                    match block_on(crate::read(&direct, *extent, location)) {
+                        Ok(read) if read == *bytes => {}
+                        Ok(_) => violations
+                            .push(format!("branch {id:x}'s store: {extent:?} reads wrong")),
+                        Err(error) => violations.push(format!("branch {id:x}'s store: {error}")),
                     }
                 }
             }

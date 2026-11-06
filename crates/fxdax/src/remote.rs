@@ -366,15 +366,22 @@ mod tests {
         assert_eq!(uploaded(&bucket, branch), after);
     }
 
-    /// The store names an extent its uploader acknowledged where it was sealed, its segment's key
-    /// (`Store::acknowledged`), for as long as it holds it, whatever its writer's checkpoints name
-    /// it at since. The collector keeps the moves on an extent's way from where the branch's newest
-    /// checkpoint names it, that of the writer holding the lease: compacted twice, from its segment
-    /// into moves and from those into moves of moves, the first moves go, though the store's way to
-    /// the extent starts at the segment, gone, and goes through them.
+    /// TASK-195: a store reads what it holds after the collector compacted it twice, its writer
+    /// checkpointing between, with the host's cache and without. It names an extent where the
+    /// writer's checkpoints move it, as the writer does (`Writer::following`), from where the
+    /// collector keeps the moves: compacted from its segment into moves, and from those into moves
+    /// of moves, the segment goes, and the first moves. Before, the store named it in the segment
+    /// as long as it held it: gone, and its moves gone, the guest's read failed (`EIO`) on a live
+    /// branch, which a recovery read through the moves of moves.
     #[test]
-    #[ignore = "TASK-195"]
     fn extents_compacted_twice_read_where_the_store_names_them() {
+        compacted_twice(false);
+        compacted_twice(true);
+    }
+
+    /// [`extents_compacted_twice_read_where_the_store_names_them`], with the host's cache if
+    /// `cached`.
+    fn compacted_twice(cached: bool) {
         const EXTENT: usize = 64 * BLOCK;
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("store");
@@ -384,9 +391,12 @@ mod tests {
             let pass = extent_remote::collector::collect(&*bucket, holder, &options);
             futures::executor::block_on(pass).unwrap()
         };
-        // One segment, of extents 1 to 16, which don't compress, freed but 1 to 3; the store
-        // closing checkpoints it.
-        let store = kept_in(&path, (16 * EXTENT as u64, None), &bucket.clone(), idle()).unwrap();
+        let cache =
+            cached.then(|| Arc::new(Cache::open(&dir.path().join("cache"), 1 << 30, 0).unwrap()));
+        let keeping = extent_store::upload::Options { cache, ..idle() };
+        // One segment, of extents 1 to 16, which don't compress, freed but 1 to 3.
+        let store = kept_in(&path, (16 * EXTENT as u64, None), &bucket, keeping).unwrap();
+        let store = Arc::new(store);
         let branch = store.branch();
         for sequence in 1..=16 {
             write(&store, sequence, &noise(sequence, EXTENT));
@@ -395,18 +405,22 @@ mod tests {
         for sequence in 4..=16 {
             store.free(ExtentId { branch, sequence }).unwrap();
         }
-        store.commit(None).unwrap();
-        drop(store);
+        // Its writer checkpoints, as every so many segments, each commit here one.
+        let checkpointed = || {
+            for _ in 0..extent_store::upload::CHECKPOINT_EVERY {
+                store.commit(None).unwrap();
+            }
+        };
+        checkpointed();
         // The segment compacted: 1 to 3 in its moves.
         assert_eq!(collect(1).compacted, 1);
-
-        // Its writer then frees 2 and 3 and checkpoints, naming 1 in the moves, which hold a third
-        // of what they did.
-        let store = reopened(&path, idle()).unwrap();
+        // The store frees 2 and 3, and its writer checkpoints, as every so many segments, naming 1
+        // in the moves, which hold a third of what they did.
         store.free(ExtentId { branch, sequence: 2 }).unwrap();
         store.free(ExtentId { branch, sequence: 3 }).unwrap();
-        store.commit(None).unwrap();
-        drop(store);
+        checkpointed();
+        // A follower of the store, which reads what the store names.
+        let follower = store.follow();
         // The segment goes, no state naming it there; the moves are compacted, then go too.
         collect(3);
         collect(4);
@@ -421,21 +435,14 @@ mod tests {
         let once = format!("moves/segments/{branch:016x}/");
         assert!(keys.iter().any(|key| key.starts_with(&twice)), "{keys:?}");
         assert!(!keys.iter().any(|key| key.starts_with(&once)), "{keys:?}");
-        // The branch has it: its newest checkpoint names it in the first moves, gone, whose own
-        // moves hold it.
+        // The store, open all along, reads it there, and so does its follower.
         let extent = ExtentId { branch, sequence: 1 };
-        futures::executor::block_on(async {
-            let state = recover(&*bucket, branch, None).await.unwrap().state;
-            let held = storage_device::ExtentId::new(branch, 1);
-            let location = &state.extents[&held];
-            assert!(location.key.starts_with(&once), "{location:?}");
-            assert_eq!(read(&bucket, held, location).await, Ok(noise(1, EXTENT)));
-        });
-
-        let store = reopened(&path, idle()).unwrap();
-        let mut data = vec![0; EXTENT];
-        let read = store.read(extent, 0, &mut [crate::VolatileSliceMut::from(&mut data[..])]);
-        assert_eq!(read.map(|()| data == noise(1, EXTENT)), Ok(true));
+        let reads = |store: &ExtentStore| {
+            let mut data = vec![0; EXTENT];
+            let read = store.read(extent, 0, &mut [crate::VolatileSliceMut::from(&mut data[..])]);
+            read.map(|()| data == noise(1, EXTENT))
+        };
+        assert_eq!([reads(&store), reads(&follower)], [Ok(true), Ok(true)], "cached: {cached}");
     }
 
     /// The footers of `branch`'s segments in `bucket`, in order.
