@@ -84,6 +84,8 @@ u64 sim_device_map_requests(void);
  * `skip` more of them; or one MAP or UNMAP in `odds`, from the seed, until told 0: how many have.
  */
 void sim_device_fail(u32 type, u64 skip, u64 count);
+/* fxdax: as sim_device_fail, failing them with `err`, a -errno, as the guest's device may (ENOMEM). */
+void sim_device_fail_with(u32 type, u64 skip, u64 count, int err);
 void sim_device_fail_odds(unsigned int odds);
 u64 sim_device_failed(void);
 /*

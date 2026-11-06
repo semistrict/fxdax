@@ -79,9 +79,13 @@ struct virtio_extent {
 } device;
 
 static struct dax_device { int unused; } dax_device;
-/* What a test has fail: how many of which requests, after how many more, or one in how many. */
+/*
+ * What a test has fail: how many of which requests, after how many more, with which errno, or one
+ * in how many.
+ */
 static u32 failing_type;
 static u64 failing_skip, failing, failed;
+static int failing_err;
 static unsigned int failing_odds;
 static int dax_readers;
 
@@ -471,9 +475,15 @@ static void hold_map(const struct vext_request *req)
 
 void sim_device_fail(u32 type, u64 skip, u64 count)
 {
+	sim_device_fail_with(type, skip, count, -EIO);
+}
+
+void sim_device_fail_with(u32 type, u64 skip, u64 count, int err)
+{
 	failing_type = type;
 	failing_skip = skip;
 	failing = count;
+	failing_err = err;
 }
 
 void sim_device_fail_odds(unsigned int odds)
@@ -494,26 +504,29 @@ u64 sim_device_failed(void)
 static u64 unmap_lost;
 #define UNMAP_LOST_MAX (device.window_len / 4)
 
-static bool request_fails(const struct vext_request *req)
+/* The errno `req` fails with, as a test has requests fail, or 0. */
+static int request_fails(const struct vext_request *req)
 {
 	static const char *const what[] = {
 		[VIRTIO_EXTENT_T_MAP] = "a MAP", [VIRTIO_EXTENT_T_UNMAP] = "an UNMAP",
 		[VIRTIO_EXTENT_T_PRIVATE] = "a PRIVATE",
 	};
 	u32 type = req->type;
-	bool fail = false;
+	int fail = 0;
 
 	if (sim_sweep_fails(what[type], __FILE__, __LINE__)) {
-		fail = true;
+		fail = -EIO;
 	} else if (failing_odds && !(sim_random() % failing_odds)) {
-		fail = type != VIRTIO_EXTENT_T_UNMAP || unmap_lost < UNMAP_LOST_MAX;
-		unmap_lost += fail && type == VIRTIO_EXTENT_T_UNMAP ? req->len : 0;
+		bool lost = type != VIRTIO_EXTENT_T_UNMAP || unmap_lost < UNMAP_LOST_MAX;
+
+		fail = lost ? -EIO : 0;
+		unmap_lost += lost && type == VIRTIO_EXTENT_T_UNMAP ? req->len : 0;
 	} else if (failing && type == failing_type && !failing_skip--) {
 		failing_skip = 0;
 		failing--;
-		fail = true;
+		fail = failing_err;
 	}
-	failed += fail;
+	failed += !!fail;
 	return fail;
 }
 
@@ -559,12 +572,16 @@ int virtio_extent_call(struct virtio_extent *vext, struct vext_request *req)
 
 	/* The request crosses to the host, and others run meanwhile; a seal may end on the way. */
 	sim_point("a device request");
-	if ((req->type == VIRTIO_EXTENT_T_MAP || req->type == VIRTIO_EXTENT_T_UNMAP ||
-	     req->type == VIRTIO_EXTENT_T_PRIVATE) && request_fails(req)) {
-		if (req->type == VIRTIO_EXTENT_T_UNMAP)
-			unmap_failed(req);
-		sim_point("a device reply");
-		return -EIO;
+	if (req->type == VIRTIO_EXTENT_T_MAP || req->type == VIRTIO_EXTENT_T_UNMAP ||
+	    req->type == VIRTIO_EXTENT_T_PRIVATE) {
+		int fail = request_fails(req);
+
+		if (fail) {
+			if (req->type == VIRTIO_EXTENT_T_UNMAP)
+				unmap_failed(req);
+			sim_point("a device reply");
+			return fail;
+		}
 	}
 	switch (req->type) {
 	case VIRTIO_EXTENT_T_MAP:

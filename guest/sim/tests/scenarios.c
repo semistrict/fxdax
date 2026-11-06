@@ -1236,7 +1236,8 @@ static void cow_truncate_held(void)
  * That the iomap that dirties a page has the host make it private first, and fails the write if
  * the host doesn't (TASK-164.9): the file's pages rebound, mapping its sealed extent, a write(2) to
  * page 2 and a store to page 5, each with the device failing its PRIVATE, fail (-EIO, the fault's
- * SIGBUS), dirtying nothing, reserving nothing; tried again, they succeed. A page dirtied without
+ * SIGBUS), dirtying nothing, reserving nothing; tried again, they succeed; and a write to page 3
+ * whose PRIVATE found no memory fails ENOMEM. A page dirtied without
  * its PRIVATE is the window's mapping of an old block, which a writeback may move and Fxfs free
  * before its store comes (cow_writeback_before_store): the host, which this one makes refuse a
  * store to a page no PRIVATE made private, as the oracle of the rule, would have copied zeros.
@@ -1274,6 +1275,18 @@ static void cow_private_failed(void)
 		cow_check(pages[i], mapped, "after its PRIVATE failed");
 		cow_put(pages[i], round, mapped);
 	}
+	/*
+	 * fxdax: a PRIVATE the guest's device had no memory for fails the write ENOMEM, as an
+	 * allocation's failure does, not EIO, which says data is lost (GCE r698, TASK-44.15).
+	 */
+	reserved = fxfs_sim_reserved(mount->info->fs, file_inode(cow_target)->i_ino);
+	sim_device_fail_with(VIRTIO_EXTENT_T_PRIVATE, 0, 1, -ENOMEM);
+	err = (int)sim_write(cow_target, 3 * PAGE_SIZE, &round, sizeof(round));
+	check(err == -ENOMEM, "a write whose PRIVATE had no memory: %d", err);
+	check(fxfs_sim_reserved(mount->info->fs, file_inode(cow_target)->i_ino) == reserved,
+	      "a write whose PRIVATE had no memory left room reserved");
+	cow_check(3, false, "after its PRIVATE had no memory");
+	cow_put(3, round, false);
 	cow_check_file("after PRIVATEs failed", 8 * PAGE_SIZE);
 }
 

@@ -2534,9 +2534,9 @@ static int fxfs_dax_throttle(struct fxfs_dax *dax, unsigned int *waits)
  * page is private, whenever its store lands. A fault's store lands after its iomap_end, maybe after
  * a writeback has taken its page, moved its block, and had Fxfs free the old one: the host copying
  * the page at the store, as it would, copied the zeros the window reads there then (guest/sim,
- * seed 2802 at 1,000 operations). A failed PRIVATE fails the write, -EIO, nothing dirty, the room
- * given back; what the host made private of it stays so, uncounted until a write makes it dirty,
- * or a MAP or UNMAP frees it. With the file's semaphore held shared, which the caller holds until
+ * seed 2802 at 1,000 operations). A failed PRIVATE fails the write, -EIO, or -ENOMEM if it found
+ * no memory, nothing dirty, the room given back; what the host made private of it stays so,
+ * uncounted until a write makes it dirty, or a MAP or UNMAP frees it. With the file's semaphore held shared, which the caller holds until
  * the store or the copy is done (fxfs_dax_iomap_end): no writeback swaps the page out, nor a rebind
  * maps over it, meanwhile.
  *
@@ -2590,7 +2590,9 @@ static int fxfs_dax_dirty(struct inode *inode, struct fxfs_dax_range *range, uns
 					    pages + ahead, fxfs_dax_page_offset(range, first), err);
 			atomic_long_sub(newly + beyond, &dax->private);
 			wake_up_all(&dax->budget_wait);
-			err = -EIO;
+			/* fxdax: ENOMEM as ENOMEM, the request's memory not found (TASK-44.15). */
+			if (err != -ENOMEM)
+				err = -EIO;
 			goto unreserve;
 		}
 		WRITE_ONCE(range->file->dirtied, jiffies);

@@ -18,7 +18,7 @@
 
 mod errno;
 
-pub use errno::{Errno, errno, xattr_errno};
+pub use errno::{Errno, device_error, errno, xattr_errno};
 
 use anyhow::{Error, anyhow, bail, ensure};
 use event_listener::Event;

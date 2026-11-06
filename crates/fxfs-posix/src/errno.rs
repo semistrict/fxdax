@@ -199,6 +199,18 @@ fn errno_of_call(error: &Error, call: Call) -> Errno {
     errno
 }
 
+/// fxdax: `error`, of a storage device that failed a request with `errno`, as [`errno`] is to
+/// classify it: ENOMEM, the request's memory not found, as itself, no I/O having failed (a
+/// guest's allocation, as its kernel's fault injection fails them, came to EIO: GCE r694,
+/// TASK-44.15); any other as `error` holds it, which is EIO unless it holds an errno or an
+/// FxfsError already. The device's error stays in the chain, for what looks for it there.
+pub fn device_error(errno: Errno, error: Error) -> Error {
+    match errno {
+        Errno::ENOMEM => error.context(Errno::ENOMEM),
+        _ => error,
+    }
+}
+
 /// The outermost `E` that `error` holds, as [`errno`] has it.
 fn outermost<E: std::error::Error + Send + Sync + 'static>(error: &Error) -> Option<&E> {
     error.downcast_ref::<E>().or_else(|| error.chain().find_map(|cause| cause.downcast_ref()))
@@ -310,5 +322,25 @@ mod tests {
         assert_eq!((errno(&io), xattr_errno(&io)), (Errno::EIO, Errno::EIO));
         let result: Result<(), Error> = Err(anyhow!("unclassified"));
         assert_eq!(errno(&result.context("in context").unwrap_err()), Errno::EIO);
+    }
+
+    /// A device's error, the guest's extent store's: ENOMEM is ENOMEM, not an I/O error, the
+    /// device's error kept in the chain; the rest EIO, as before (GCE r694, TASK-44.15).
+    #[test]
+    fn a_device_out_of_memory_is_enomem() {
+        #[derive(Debug)]
+        struct Failed;
+        impl std::fmt::Display for Failed {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("the device failed")
+            }
+        }
+        impl std::error::Error for Failed {}
+        let out_of_memory = device_error(Errno::ENOMEM, Failed.into()).context("zeroing a range");
+        assert_eq!(errno(&out_of_memory), Errno::ENOMEM);
+        assert!(out_of_memory.chain().any(|cause| cause.is::<Failed>()));
+        for other in [Errno::EIO, Errno::EPROTO, Errno::ETIMEDOUT, Errno::EINVAL] {
+            assert_eq!(errno(&device_error(other, Failed.into())), Errno::EIO, "{other}");
+        }
     }
 }

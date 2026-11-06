@@ -33,6 +33,7 @@ use core::ffi::{c_char, c_int, c_void};
 use futures::future::try_join_all;
 use futures::task::AtomicWaker;
 use fxfs::errors::FxfsError;
+use fxfs_posix::Errno;
 use std::future::Future;
 use std::marker::PhantomData;
 use std::pin::Pin;
@@ -983,7 +984,10 @@ fn errno_error(status: c_int, extent: Option<ExtentId>) -> Error {
         (ENOENT, Some(extent)) => NoExtent(extent).into(),
         (ENOSPC, _) => anyhow!(FxfsError::NoSpace),
         (EROFS, _) => anyhow!(FxfsError::ReadOnlyFilesystem),
-        (errno, extent) => DeviceError { errno, extent }.into(),
+        // fxdax: ENOMEM as ENOMEM, not an I/O error (fxfs_posix::device_error, TASK-44.15).
+        (errno, extent) => {
+            fxfs_posix::device_error(Errno::from_raw(errno), DeviceError { errno, extent }.into())
+        }
     }
 }
 
