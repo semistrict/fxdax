@@ -45,11 +45,11 @@ jobs:
       - name: Install the build's tools
         # elfutils' eu-stack and sqlite3, which tests run, as on the GCE hosts
         # (scripts/lib/linux-host-setup.sh); libseccomp, which Firecracker's seccompiler links; and
-        # the part's own (matrix.packages).
+        # the part's own (matrix.packages). No protoc, which protox stands in for
+        # (crates/fxdax/build.rs), nor libclang, which no bindgen of either workspace needs.
         run: |
           sudo apt-get update
-          sudo apt-get install -y protobuf-compiler libclang-dev clang elfutils sqlite3 \
-            libseccomp-dev ${{ matrix.packages }}
+          sudo apt-get install -y clang elfutils sqlite3 libseccomp-dev ${{ matrix.packages }}
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-unknown-linux-musl
@@ -127,7 +127,7 @@ jobs:
       - uses: actions/cache@v6
         with:
           path: target/sim-kernel
-          key: sim-kernel-${{ hashFiles('scripts/build-guest-kernel.sh', 'guest/linux/patches/*') }}
+          key: sim-kernel-${{ hashFiles('scripts/build-guest-kernel.sh', 'guest/sim/kernel-tree.sh', 'guest/linux/patches/*') }}
       - name: Fetch the kernel's sources
         run: guest/sim/kernel-tree.sh "$KERNEL"
       # First, as it takes seconds: a past bug whose patch no longer applies would test nothing.
@@ -156,7 +156,7 @@ jobs:
       - uses: actions/cache@v6
         with:
           path: target/sim-kernel
-          key: sim-kernel-${{ hashFiles('scripts/build-guest-kernel.sh', 'guest/linux/patches/*') }}
+          key: sim-kernel-${{ hashFiles('scripts/build-guest-kernel.sh', 'guest/sim/kernel-tree.sh', 'guest/linux/patches/*') }}
       - name: Fetch the kernel's sources
         run: guest/sim/kernel-tree.sh "$KERNEL"
       - name: Fail each call of every run of one in turn

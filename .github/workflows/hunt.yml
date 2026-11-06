@@ -48,11 +48,12 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Install the build's tools
-        run: sudo apt-get update && sudo apt-get install -y clang lld
+        # llvm for ASan's symbolizer, as CI's guest-sim has it: a failure's stacks named.
+        run: sudo apt-get update && sudo apt-get install -y clang lld llvm
       - uses: actions/cache@v6
         with:
           path: target/sim-kernel
-          key: sim-kernel-${{ hashFiles('scripts/build-guest-kernel.sh', 'guest/linux/patches/*') }}
+          key: sim-kernel-${{ hashFiles('scripts/build-guest-kernel.sh', 'guest/sim/kernel-tree.sh', 'guest/linux/patches/*') }}
       - name: Fetch the kernel's sources
         run: guest/sim/kernel-tree.sh "$KERNEL"
       # Seeds past CI's 3,000, 20,000 a run, the shards a quarter each.

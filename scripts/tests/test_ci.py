@@ -50,5 +50,11 @@ class Ci(unittest.TestCase):
 
     def test_every_part_installs_what_the_builds_need(self):
         for part, has in packages().items():
-            self.assertLessEqual({"protobuf-compiler", "libclang-dev", "clang", "elfutils",
-                                  "sqlite3", "libseccomp-dev"}, has, part)
+            self.assertLessEqual({"clang", "elfutils", "sqlite3", "libseccomp-dev"}, has, part)
+
+    def test_no_build_needs_protoc_or_libclang(self):
+        """What lets the job install neither: the gRPC API compiled by protox, not protoc, and no
+        bindgen, which loads libclang, in either workspace. One that comes needs them back."""
+        self.assertIn("protox::compile", (ROOT / "crates/fxdax/build.rs").read_text())
+        for lock in [ROOT / "Cargo.lock", ROOT / "guest/tests/Cargo.lock"]:
+            self.assertNotIn('name = "bindgen"', lock.read_text(), lock)
