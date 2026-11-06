@@ -123,6 +123,19 @@ p50 347 us, p99 467, max 1,015; msync 1.12 s).
 dax-forked's daemon: 126,148 page-ins, 11 of them ranged GETs, the rest from the part cache; a
 PRIVATE request 247 us on average (79.6 s over 321,910; r790: 6.4 ms over 160,488).
 
+The dax-gate (scripts/dax-gate.sh) on r792 and r795, then r799 and r795 (us-east4-a), the first
+since 3e6615852 (2026-10-29). It failed twice before passing, neither time on DAX's code:
+`pgbench-probes.py`'s window MAP request, 2,202 us against its 560 us ceiling, and then the mutant
+`inherited_acls_written_back`, missed. The probe took a MAP request's mean, set by writable DAX's
+r365, and since TASK-164.10 a request holds ~38 maps: it now takes a map's mean, 49-71 us since
+TASK-164.10 (r649: 226), with a ceiling of 80, half as much again as r794's 53. The mutant's killer,
+the crash test, passed 15 rounds of 15 with it in: since TASK-199 a setxattr is made at once, so
+ACLs set after their creation are durable by the next fsync all the same. Its killer is now
+`inherited_acls_on_full_filesystem`: on a full filesystem, the creation is made and its ACLs refused.
+At dde984800 the gate passes, noted on it: the six suites 5 rounds each; pgbench-dax-forked, its
+data checked, a map 59 us, a write(2) 428 us; the simulator's mutants 35 killed, 6 `none`; the
+real kernel's, task-212's and task-79.29's killed, task-79.49's `none`.
+
 ### r790 and r791, 2026-11-06: the full gate on main ccbe81d0e, jailed, nested; fails `forked-dax` and `decay` of `dax-forked`
 
 GCE n2-standard-4 (nested, Cascade Lake): the single phase on `fxdax-test-r790-gate` (us-east4-a),

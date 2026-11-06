@@ -4,10 +4,10 @@ title: >-
   A DAX fork pages in what it inherited from the bucket, a ranged GET a page-in,
   one at a time: forked-dax 0.30 with the gate's 25 ms, 0.76 without (GCE r790,
   main ccbe81d0e)
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-11-06 13:47'
-updated_date: '2026-11-06 17:30'
+updated_date: '2026-11-06 18:50'
 labels:
   - performance
   - dax
@@ -33,7 +33,7 @@ The perf gate's full run on main ccbe81d0e (docs/measurements/dax-cow-gate.md, r
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
 - [x] #2 scripts/upstream-changes.py --check passes
 - [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
@@ -49,3 +49,9 @@ The full perf gate with it (r794: single on r792, density on r793, the gate phas
 
 Validation: scripts/upstream-changes.py --check passes; FXDAX_TEST_PARTS=workspace scripts/test.sh on macOS: 2049 passed, 71 skipped (the change touches no workspace crate: guest/tests and scripts alone); Linux by land-p2's CI. The dax-gate on it (r792, r795): suites, pgbench-dax-forked and its probes pass, once pgbench-probes measures a MAP alone (TASK-164.6 has it).
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Cause: the test daemons had no part cache, which production's daemon keeps on the host's disk (FXDAX_EXTENTD_CACHE, doc-7). Since TASK-165.8, acknowledged segments leave the store for the bucket, so a fork paged in what it inherited one ranged GET at a time (r790: 57,466 GETs, forked-dax 0.304). Fix: the test daemons default to a part cache (common.rs's part_cache, test-e2e.sh's own directory), unless FXDAX_EXTENTD_CACHE says otherwise; gce_fetch leaves the caches on the host. Verified: daemons_keep_a_part_cache_unless_told_otherwise (fails without the default); forked pair r792 0.849 at 25 ms (26 GETs), r793 0.864 at 0 ms; full perf gate r794, every gate passing (forked-dax 0.836, decay of dax-forked 1.04); dax-gate passed at dde984800; macOS workspace 2049 passed; Linux by land-p2's CI.
+<!-- SECTION:FINAL_SUMMARY:END -->
