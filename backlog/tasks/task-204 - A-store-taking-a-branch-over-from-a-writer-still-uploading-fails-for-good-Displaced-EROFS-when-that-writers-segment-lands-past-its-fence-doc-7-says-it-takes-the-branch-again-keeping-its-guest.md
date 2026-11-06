@@ -4,9 +4,11 @@ title: >-
   A store taking a branch over from a writer still uploading fails for good
   (Displaced, EROFS) when that writer's segment lands past its fence: doc-7 says
   it takes the branch again, keeping its guest
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-11-06 06:55'
+updated_date: '2026-11-06 07:07'
 labels:
   - storage
   - takeover
@@ -35,3 +37,9 @@ Found by the storage review of 2026-11-06. doc-7, Fencing: "A create that fails 
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Taken into TASK-165.9 (the user, 2026-11-06). How its design resolves it: a WAL put after the branch's end by commits (Wal::rebase) is what opening a store does; a writer displaced (Error::Displaced, an earlier writer's segment landed past its fence where its next goes) is the same situation live. The uploader, extent_store's now, keeps the store and takes the branch again instead of failing: a new lease (Writer::open, a new epoch, fenced past every segment landed), the store's queue of unacknowledged segments rebased by commits (Store::rebase: those landed acknowledged, the rest stamped anew in memory, the open segment's chain moved on), and uploads go on; the guest's commits wait meanwhile, none acknowledged lost. The late segment is void (it follows no segment of the branch), so the branch's last commit is one of the store's own and the WAL follows; Diverged stays a failure (ESTALE) for a WAL another writer's commits moved past. Fenced (a later writer's segment, or the lease another's) stays fatal: that is losing the branch. remote.rs's module doc and doc-7 say the same. The simulation's takeovers_while_uploading checks a displaced host takes the branch again and its durable commits reach the branch. Lands right after TASK-165.9's design commit, on task-165-9.
+<!-- SECTION:NOTES:END -->

@@ -4,9 +4,11 @@ title: >-
   A store reads an extent where its segment was acknowledged; the collector,
   keeping moves only from where the lease holder's checkpoint names it, deletes
   the first moves of an extent compacted twice: EIO on a live branch
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-11-06 06:45'
+updated_date: '2026-11-06 07:07'
 labels:
   - storage
   - collector
@@ -35,3 +37,9 @@ Found by the storage review of 2026-11-06. Since TASK-165.8 (a31f82a98) a store 
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Taken into TASK-165.9 (the user, 2026-11-06). How its design resolves it: the uploader moves into extent_store and holds both the branch's writer and the store, so one owner keeps the store's locations with the writer's. Writer::checkpoint gains a hook where it takes the collector's moves (take_moves, before the checkpoint lands under moves_taken_first): the uploader has the store name every extent it holds there too (Store::moved: Data::Remote of held and kept extents, forward along their ways only, layout::further), so the store never names an extent further back than the lease holder's newest checkpoint, which is what the collector keeps moves from (collector.rs behind / Pass::new). Followers read the same store state (views), so they follow. Forks' children have no taken copy any more: a child's store opens by recovery from the bucket, which names its extents as the newest checkpoint does, and its own uploader keeps them so after. Points have no writer and no checkpoints of their own here: left as they are, noted. The simulation gets a host reader holding locations as a store does (set at acknowledgement, moved only by the writer's checkpoint hook), checked readable after each pass, with a rule (stores_follow_moves) whose mutation shows the fix needed. Lands right after TASK-165.9's design commit, on task-165-9.
+<!-- SECTION:NOTES:END -->
