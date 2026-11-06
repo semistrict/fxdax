@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-10-22 21:06'
-updated_date: '2026-11-06 06:10'
+updated_date: '2026-11-06 06:58'
 labels:
   - review-2026-10-21
 dependencies:
@@ -75,4 +75,7 @@ Correction: r687's mapping count wasn't recorded (a passing round keeps no VM lo
 2026-11-06, for landing apart from TASK-191: rebased onto origin/main 6754d1469 (one conflict, OPEN_QUESTIONS.md's decisions, both kept); vendor/firecracker 0477d531b already on the fork's fxdax-v1.16.1 (e64c4b283), plus 0285e0cb3, its Cargo.lock with fxdax's url (guest/tests' needed the same; cargo metadata --locked passes in both, main's guest lock fails it). Verified on the rebased tree: Linux Docker fxdax 482/486 (the build stamp and three grants tests, Docker's, as main), shuttle 59/59; macOS workspace 2119/2119 and every shuttle part; GCE r704 (us-east4-a, us-west2 out of quota; jailed): the vmm crate's extent and vCPU tests 16/16 (they build on x86-64 alone), fxfs-guest-snapshot 3/3, fxfs-guest-migrate-dax 3/3. Still In Progress: the DAX snapshot suites' end-to-end test with a mapped DAX file waits for TASK-191.
 
 2026-11-06, after TASK-111.4 landed: rebased onto main f81174090; vendor/firecracker's MAP_MANY commit onto the fork's 96cb97976 (a42d32a13), which has fxdax's url in its Cargo.lock, so 0285e0cb3 dropped, as did guest/tests' lock commit (main has url there). STATS took wire 31, so MAP_MANY is 32 (the notes above saying 31 predate this). 111.4 made stage_counts() a struct: the restore test reads .costs. Verified: Linux Docker fxdax 471/475 (the build stamp and three grants tests, Docker's), shuttle 59/59, clippy nothing on lines changed; macOS workspace 2031/2031 and every shuttle part; GCE r705 (us-east4-a, jailed, n2-standard-4, tree 883dbd889, the test fix not in it, which no case builds): the vmm crate's extent and vCPU tests 18/18, fxfs-guest-snapshot 3/3, fxfs-guest-migrate-dax 3/3, fxfs-guest-stats 3/3; host deleted. Still In Progress, waiting for TASK-191.
+
+Decision moved here from OPEN_QUESTIONS.md (2026-11-06):
+The VMM mapped a snapshot's window mappings again one `MAP` at a time before the VM resumed, a round trip and a change of the window each. Decided: **a daemon request of its own, `MAP_MANY` (32)**, whose payload is the mappings as `MAPPINGS`' reply has them; the daemon maps them all in one change of the window (one lock, the ranges anew told the VM process in runs, the pages in memory installed in runs across mappings). The VMM sends the whole map at once, in payload-bounded chunks (1.4 million mappings each). **Eager, not lazy on fault:** of a 1,280-mapping restore's 14-23 ms, the installs a lazy restore would skip are 3.6-5.5 ms, and each would come back as a fault after resume (dead-ends/lazy-restore-of-window-mappings.md). *Instead:* a flag on `MAP` (a daemon older than it would map the first and ignore the rest, as `FREE_MANY`'s reasoning says); pipelining `MAP`s without waiting (round trips overlap, but a change and a decode per mapping stay). *Undoing it:* `Request::MapMany` and the VMM's `map_again` back to a loop of `MAP`s.
 <!-- SECTION:NOTES:END -->
