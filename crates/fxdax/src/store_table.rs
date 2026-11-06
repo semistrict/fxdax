@@ -830,6 +830,19 @@ mod shuttle_tests {
         fn hold(&self) -> &Hold<'t, Conn, Store, Point> {
             &self._hold
         }
+
+        /// Opens `store` where it holds, as [`Hold::open`] does, which refuses (`EBUSY`) what holds
+        /// a store found with nothing open only if another holder took it from under it: a claim
+        /// past [`Rules::one_holder`], and nothing else, does. Counted as two holders as it shows,
+        /// rather than left to the refusal, which the holder meets first and the run would report
+        /// in its place, as a schedule may have it before its check of the holders.
+        fn open(&self, store: &Arc<Store>) -> Result<(), Errno> {
+            let opened = self._hold.open(store);
+            if opened.is_err() {
+                self.counts.two_holders.store(true, Ordering::SeqCst);
+            }
+            opened
+        }
     }
 
     impl Drop for Counted<'_> {
@@ -869,9 +882,12 @@ mod shuttle_tests {
                 reached("a writer took the store over");
                 store
             }
-            None => Store::open(counts),
+            None => {
+                let store = Store::open(counts);
+                hold.open(&store)?;
+                store
+            }
         };
-        hold.hold().open(&store)?;
         *conn.writing.lock().unwrap() = Some(Writing { store, hold });
         Ok(())
     }
@@ -918,7 +934,7 @@ mod shuttle_tests {
         }
         reached("a follower opened the store");
         let store = Store::open(counts);
-        hold.hold().open(&store)?;
+        hold.open(&store)?;
         Ok(Follower::of(store))
     }
 
@@ -973,12 +989,21 @@ mod shuttle_tests {
             let (counts, released) = (counts.clone(), released.clone());
             thread::spawn(move || {
                 let conn = Conn::new();
-                write(table, &counts, &conn).unwrap();
+                // Refused only if another holder took the store from under it, which the run's
+                // check of the holders reports.
+                let wrote = match write(table, &counts, &conn) {
+                    Ok(()) => true,
+                    Err(refused) => {
+                        let two = counts.two_holders.load(Ordering::SeqCst);
+                        assert!(two, "the first writer was refused: {refused:?}");
+                        false
+                    }
+                };
                 followed_tx.send(()).unwrap();
                 later_tx.send(()).unwrap();
                 conn.going.store(true, Ordering::SeqCst);
                 going_tx.send(()).unwrap();
-                if dirty {
+                if dirty && wrote {
                     let writing = conn.writing.lock().unwrap();
                     let Writing { store, hold } = writing.as_ref().unwrap();
                     store.dirty.store(true, Ordering::SeqCst);
@@ -1114,6 +1139,18 @@ mod shuttle_tests {
     fn needs_one_holder() {
         let rules = Rules { one_holder: false, ..Rules::ALL };
         fails_without(rules, false, "two holders hold the store");
+    }
+
+    /// CI run 42234149254's schedule: a claim past the rule took the first writer's store from
+    /// under it, whose opening it then refused (`EBUSY`), which the writer met, and the run
+    /// reported, before its check of the holders. Counted as two holders as it shows, it is.
+    #[test]
+    fn needs_one_holder_where_the_first_writer_meets_the_second() {
+        set_rules(Rules { one_holder: false, ..Rules::ALL });
+        fails_with("two holders hold the store", || {
+            let scheduler = RandomScheduler::new_from_seed(4791423815028538899, 1);
+            Runner::new(scheduler, config()).run(|| run(false));
+        });
     }
 
     /// The resize that let the store go without waking those waiting for it (fixed by having it
