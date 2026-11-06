@@ -10,9 +10,9 @@
 
 --- a/guest/linux/fs/fxfs/dax.c
 +++ b/guest/linux/fs/fxfs/dax.c
-@@ -3403,7 +3403,8 @@
- 
- 	nr = fxfs_dax_busy_files(dax, &files);
+@@ -3440,7 +3440,8 @@
+ 	if (nr < 0)
+ 		return nr;
  	for (i = 0; i < nr; i++) {
 -		struct inode *inode = fxfs_dax_inode_of(dax, files[i]);
 +		struct inode *inode = atomic_long_read(&files[i]->dirty_pages) ?

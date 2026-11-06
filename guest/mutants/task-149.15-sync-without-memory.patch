@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: GPL-2.0
+# Copyright 2026 The fxdax Authors.
+#
+# Kernel: sim
+# Killer: sweep scenarios short_copy
+#
+# TASK-149.15: a sync whose list of the files to write back can't be allocated writes none back and
+# returns 0, as fxfs_dax_busy_files said it found none: the files' writes, acknowledged, aren't in
+# Fxfs after it. The sweep of short_copy: the end of the run's sync, its allocation failing, and the
+# file model's durability check (TASK-149.18) after it, or the unmount finding dirty pages.
+
+--- a/guest/linux/fs/fxfs/dax.c
++++ b/guest/linux/fs/fxfs/dax.c
+@@ -2241,7 +2241,7 @@
+ 		}
+ 	}
+ 	mutex_unlock(&dax->files_lock);
+-	return most && !*files ? -ENOMEM : nr;
++	return nr;
+ }
+ 
+ /* fxdax: the inode read in for `file`, with a reference, if there is one. */

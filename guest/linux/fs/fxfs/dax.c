@@ -2214,9 +2214,10 @@ static long fxfs_dax_rebind(struct fxfs_dax *dax, struct fxfs_dax_file *file)
 
 /*
  * fxdax: references to every volume's files with dirty or private pages, in `*files`, which the
- * caller frees, putting each: how many.
+ * caller frees, putting each: how many, or -ENOMEM without the memory for them, when a sync
+ * mustn't say it wrote them (guest/sim's sweep: it returned 0, and the files' writes were lost).
  */
-static size_t fxfs_dax_busy_files(struct fxfs_dax *dax, struct fxfs_dax_file ***files)
+static ssize_t fxfs_dax_busy_files(struct fxfs_dax *dax, struct fxfs_dax_file ***files)
 {
 	struct fxfs_dax_volume *volume;
 	struct fxfs_dax_file *file;
@@ -2240,7 +2241,7 @@ static size_t fxfs_dax_busy_files(struct fxfs_dax *dax, struct fxfs_dax_file ***
 		}
 	}
 	mutex_unlock(&dax->files_lock);
-	return nr;
+	return most && !*files ? -ENOMEM : nr;
 }
 
 /* fxdax: the inode read in for `file`, with a reference, if there is one. */
@@ -2263,9 +2264,13 @@ static struct inode *fxfs_dax_inode_of(struct fxfs_dax *dax, struct fxfs_dax_fil
 static void fxfs_dax_relieve(struct fxfs_dax *dax, long target, bool write)
 {
 	struct fxfs_dax_file **files;
-	size_t nr = fxfs_dax_busy_files(dax, &files), i;
+	ssize_t nr = fxfs_dax_busy_files(dax, &files), i;
 	struct fxfs *wrote = NULL;
 	int err;
+
+	/* Without the memory, the next round relieves them. */
+	if (nr < 0)
+		return;
 
 	for (i = 0; write && i < nr; i++) {
 		struct fxfs_dax_volume *volume = READ_ONCE(files[i]->volume);
@@ -3425,10 +3430,12 @@ void fxfs_dax_remove_volume(struct fxfs_dax *dax, struct fxfs_dax_volume *volume
 int fxfs_dax_settle(struct fxfs_dax *dax)
 {
 	struct fxfs_dax_file **files;
-	size_t nr, i;
+	ssize_t nr, i;
 	int err = 0;
 
 	nr = fxfs_dax_busy_files(dax, &files);
+	if (nr < 0)
+		return nr;
 	for (i = 0; i < nr; i++) {
 		struct inode *inode = fxfs_dax_inode_of(dax, files[i]);
 
