@@ -351,6 +351,13 @@ struct fxfs_dax_range {
 	 * dirty set, until writeback swaps them out (fxfs_dax_write_back).
 	 */
 	struct fxfs_dax_pages *state;
+	/*
+	 * fxdax: whether a MAP of its pages failed (fxfs_dax_map_all), which may have mapped some of
+	 * them all the same, as a MAP_MANY's requests before the one that failed did: its state says
+	 * nothing of those, which its UNMAP takes nonetheless (fxfs_dax_unmap_range). Under its
+	 * file's semaphore held for writing.
+	 */
+	bool unsure;
 	/* Freed after a grace period: the stats walk files' ranges without their semaphores. */
 	struct rcu_head rcu;
 };
@@ -761,6 +768,7 @@ static long fxfs_dax_map_all(struct fxfs_dax *dax, struct fxfs_dax_range *range,
 		return 0;
 	if (count > 1 && !rebind && fxfs_dax_inject(&fxfs_dax_fail_maps)) {
 		rebound = fxfs_dax_map_all(dax, range, maps, 1, rebind);
+		range->unsure = true;
 		return rebound < 0 ? rebound : -EIO;
 	}
 	err = fxfs_dax_device_map_many(dax, maps, count);
@@ -790,6 +798,8 @@ static long fxfs_dax_map_all(struct fxfs_dax *dax, struct fxfs_dax_range *range,
 				pr_warn("fxfs: mapping %llu bytes at %llu of %s at %llu of the DAX window failed: %d\n",
 					map->len, map->offset, map->zeros ? "zeros" : "an extent",
 					map->window_offset, one);
+				/* What the MAP_MANY mapped of those after it, it doesn't say. */
+				range->unsure = true;
 				return one;
 			}
 		}
@@ -1192,7 +1202,8 @@ static void fxfs_dax_free_range(struct fxfs_dax *dax, struct fxfs_dax_range *ran
  */
 static void fxfs_dax_unmap_range(struct fxfs_dax *dax, struct fxfs_dax_range *range)
 {
-	bool mapped = !range->region && fxfs_dax_pages_any_mapped(range->state, 0, range->pages);
+	bool mapped = !range->region &&
+		      (range->unsure || fxfs_dax_pages_any_mapped(range->state, 0, range->pages));
 	int err = 0;
 
 	lockdep_assert_held_write(&range->file->sem);

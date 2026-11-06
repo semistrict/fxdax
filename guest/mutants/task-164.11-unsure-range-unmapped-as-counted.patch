@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: GPL-2.0
+# Copyright 2026 The fxdax Authors.
+#
+# Kernel: sim
+# Killer: range_map_failed_part_way
+#
+# TASK-164.11: a range whose MAPs failed part way is UNMAPped as its pages say alone: a MAP_MANY's
+# requests before the one that failed mapped pages it never counted, and they stay mapped for good
+# (guest/sim failures, seed 972 at 200 operations). range_map_failed_part_way: window page 0 maps an
+# extent, unmounted.
+
+--- a/guest/linux/fs/fxfs/dax.c
++++ b/guest/linux/fs/fxfs/dax.c
+@@ -1203,7 +1203,7 @@
+ static void fxfs_dax_unmap_range(struct fxfs_dax *dax, struct fxfs_dax_range *range)
+ {
+ 	bool mapped = !range->region &&
+-		      (range->unsure || fxfs_dax_pages_any_mapped(range->state, 0, range->pages));
++		      (fxfs_dax_pages_any_mapped(range->state, 0, range->pages));
+ 	int err = 0;
+ 
+ 	lockdep_assert_held_write(&range->file->sem);
