@@ -3347,8 +3347,7 @@ fn window_mappings_past_a_messages_payload_arrive() {
             let (mut payload, mut fds) = (Vec::new(), Vec::new());
             match request.header.kind {
                 OPEN => {
-                    reply.args[0] = 7;
-                    reply.args[1] = 1;
+                    reply.args = opened_args(7);
                     fds = vec![own.as_fd(), public.as_fd()];
                 }
                 MAPPINGS => {
@@ -3357,7 +3356,7 @@ fn window_mappings_past_a_messages_payload_arrive() {
                         .flat_map(u64::to_le_bytes)
                         .collect();
                 }
-                WINDOW => {}
+                BUILD | TRANSFER | WINDOW => {}
                 _ => reply.status = -Errno::EINVAL.raw(),
             }
             sender.send(reply, &payload, &fds).unwrap();
@@ -3405,7 +3404,7 @@ fn raw_connection(
     let stream = UnixStream::connect(socket).unwrap();
     let (sender, mut receiver) =
         (Sender::new(stream.try_clone().unwrap()), Receiver::new(stream.try_clone().unwrap()));
-    let open = Header::new(OPEN, 1).with_args(&[capacity]).with_flags(OPEN_CREATE);
+    let open = Header::new(OPEN, 1).with_args(&[capacity, 0, 0, 0, VERSION]).with_flags(OPEN_CREATE);
     sender.send(open, std::os::unix::ffi::OsStrExt::as_bytes(path.as_os_str()), &[]).unwrap();
     let opened = receiver.receive(|| 0).unwrap().unwrap();
     assert_eq!(opened.header.status, 0);
@@ -3596,7 +3595,7 @@ fn connections_open_one_store_at_a_time() {
     let stream = UnixStream::connect(&socket).unwrap();
     let sender = Sender::new(stream.try_clone().unwrap());
     let mut receiver = Receiver::new(stream.try_clone().unwrap());
-    let open = |id| Header::new(OPEN, id).with_args(&[1 << 24]).with_flags(OPEN_CREATE);
+    let open = |id| Header::new(OPEN, id).with_args(&[1 << 24, 0, 0, 0, VERSION]).with_flags(OPEN_CREATE);
     sender.send(open(1), first.as_os_str().as_bytes(), &[]).unwrap();
     while !table().is_waited_for(&key) {
         std::thread::yield_now();
@@ -3931,13 +3930,15 @@ fn extents_freed_together_are_freed_in_one_request() {
     serving.join().unwrap();
 }
 
-/// TASK-92.13: a VM process's frees of many extents in one request, against a daemon older than
-/// that request, which knows `FREE` alone, fail (`EINVAL`), none freed: not the first freed alone,
-/// its request taken for a `FREE`, the rest leaked, and success said. The daemon here is one by
-/// hand, as a daemon before TASK-92.13 serves: it frees what a `FREE` names, ignoring the flags and
-/// payload it doesn't know, and refuses requests it doesn't know.
+/// TASK-92.13, TASK-141.3: a VM process's frees of many extents in one request never reach a daemon
+/// older than that request, which knows `FREE` alone, and would free the first, ignoring the flags
+/// and payload it doesn't know, the rest leaked, success said: a daemon of another wire version,
+/// an older one saying none, the VM process refuses as it opens its store, closing the connection
+/// on it, naming both versions. The daemon here is one by hand, as a daemon before TASK-92.13
+/// served. Before TASK-141.3, the VM process opened its store, and its `FREE_MANY` failed with
+/// the daemon's `EINVAL`.
 #[test]
-fn frees_of_many_extents_fail_against_daemons_without_them() {
+fn daemons_of_other_wire_versions_are_refused() {
     use super::wire::*;
     use std::os::fd::AsFd;
     let ps = page_size();
@@ -3946,30 +3947,120 @@ fn frees_of_many_extents_fail_against_daemons_without_them() {
         let (sender, mut receiver) =
             (Sender::new(daemon.try_clone().unwrap()), Receiver::new(daemon));
         let (own, public) = (memfd(ps), memfd(ps));
-        let mut freed = Vec::new();
+        let mut served = Vec::new();
         while let Ok(Some(request)) = receiver.receive(|| 0) {
             let mut reply = Header::new(REPLY, request.header.id);
             let mut fds = Vec::new();
-            let args = request.header.args;
+            served.push(request.header.kind);
             match request.header.kind {
+                // As a daemon of no wire version replied: its args[4] 0.
                 OPEN => {
-                    reply.args[0] = 7;
-                    reply.args[1] = 1;
+                    reply.args = [7, 1, 0, 0, 0];
                     fds = vec![own.as_fd(), public.as_fd()];
                 }
-                FREE => freed.push(ExtentId { branch: args[0], sequence: args[1] }),
                 _ => reply.status = -Errno::EINVAL.raw(),
             }
             sender.send(reply, &[], &fds).unwrap();
         }
-        freed
+        served
     });
-    let store = RemoteExtentStore::over(client, Path::new("store"), Opening::Create(1 << 20));
-    let store = store.unwrap();
-    let extents: Vec<_> = (1..=3).map(|sequence| ExtentId { branch: 7, sequence }).collect();
-    let freeing = store.free_many(&extents);
+    let refused = RemoteExtentStore::over(client, Path::new("store"), Opening::Create(1 << 20));
+    let refused = refused.err().expect("a daemon of another wire version refused");
+    assert_eq!(refused.errno(), Some(Errno::EPROTONOSUPPORT));
+    assert_eq!(
+        format!("{refused:#}"),
+        format!(
+            "opening the extent store at store: the extent daemon is of wire version 0, this VM \
+             process of {VERSION}: EPROTONOSUPPORT (errno 93)"
+        )
+    );
+    // Closed on, once it opened: nothing else asked of it.
+    assert_eq!(answering.join().unwrap(), [OPEN]);
+}
+
+/// TASK-141.3: a daemon refuses a VM process of another wire version as it opens its store, with
+/// `EPROTONOSUPPORT` and its own version, whatever else its `OPEN` holds, and opens nothing for it;
+/// a VM process of its own version, after, it serves. Before, nothing said a version: a VM process
+/// of another build was served, its requests read as this one has them.
+#[test]
+fn vm_processes_of_other_wire_versions_are_refused() {
+    use super::wire::*;
+    host();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("store");
+    let (client, server) = UnixStream::pair().unwrap();
+    let served = std::thread::spawn(move || serve_connection(server, default_tenant().unwrap()));
+    let (sender, mut receiver) =
+        (Sender::new(client.try_clone().unwrap()), Receiver::new(client.try_clone().unwrap()));
+    let named = std::os::unix::ffi::OsStrExt::as_bytes(path.as_os_str());
+    for (id, other) in [(1, 0), (2, VERSION + 1), (3, u64::MAX)] {
+        // Flags this version doesn't know, as another's OPEN may have.
+        for flags in [OPEN_CREATE, u32::MAX] {
+            let open = Header::new(OPEN, id).with_args(&[1 << 24, 0, 0, 0, other]).with_flags(flags);
+            sender.send(open, named, &[]).unwrap();
+            let reply = receiver.receive(|| 0).unwrap().unwrap();
+            let said = (reply.header.id, reply.header.status, super::codec::version(&reply.header));
+            assert_eq!(said, (id, -Errno::EPROTONOSUPPORT.raw(), VERSION), "{other}, {flags:#x}");
+            assert!(reply.fds.is_empty());
+        }
+    }
+    assert!(!path.exists(), "a store was made for a VM process of another version");
+    drop((sender, receiver, client));
+    served.join().unwrap();
+    let (store, served) = connect(&path, 1 << 24);
+    assert_eq!(store.info().map(|info| info.capacity), Ok(1 << 24));
     drop(store);
-    assert_eq!((freeing, answering.join().unwrap()), (Err(Errno::EINVAL), Vec::new()));
+    served.join().unwrap();
+}
+
+/// TASK-141.3: what opening asks of a daemon of the VM process's own version, its build and its
+/// transfer area, is required, not let be as an older daemon's refusal was: refused, opening fails,
+/// and the connection is closed on, which lets the store go for another to open.
+#[test]
+fn openings_fail_on_refusals_of_what_they_ask() {
+    use super::wire::*;
+    use std::os::fd::AsFd;
+    let ps = page_size();
+    for refusing in [BUILD, TRANSFER] {
+        let (client, daemon) = UnixStream::pair().unwrap();
+        let answering = std::thread::spawn(move || {
+            let (sender, mut receiver) =
+                (Sender::new(daemon.try_clone().unwrap()), Receiver::new(daemon));
+            let (own, public) = (memfd(ps), memfd(ps));
+            let mut served = Vec::new();
+            while let Ok(Some(request)) = receiver.receive(|| 0) {
+                let mut reply = Header::new(REPLY, request.header.id);
+                let mut fds = Vec::new();
+                served.push(request.header.kind);
+                match request.header.kind {
+                    OPEN => {
+                        reply.args = opened_args(7);
+                        fds = vec![own.as_fd(), public.as_fd()];
+                    }
+                    kind if kind == refusing => reply.status = -Errno::EINVAL.raw(),
+                    BUILD | TRANSFER => {}
+                    _ => reply.status = -Errno::EINVAL.raw(),
+                }
+                sender.send(reply, &[], &fds).unwrap();
+            }
+            served
+        });
+        let opened = RemoteExtentStore::over(client, Path::new("store"), Opening::Create(1 << 20));
+        let refused = opened.err().expect("opening failed");
+        assert_eq!(refused.errno(), Some(Errno::EINVAL), "{refused:#}");
+        let asked = match refusing {
+            BUILD => vec![OPEN, BUILD],
+            _ => vec![OPEN, BUILD, TRANSFER],
+        };
+        assert_eq!(answering.join().unwrap(), asked);
+    }
+}
+
+/// What a daemon by hand replies to an `OPEN`, of its store of `branch`: the default arena's memory
+/// its own, as of no tenant, and its wire version this one.
+fn opened_args(branch: u64) -> [u64; 5] {
+    let arena = crate::pages::ArenaId(1);
+    super::codec::Opened { branch, arena, epoch: 0, max_map_count: None }.args()
 }
 
 /// TASK-79.95: a fork's child opened while the fork is being made, its segment not yet in the
@@ -4342,7 +4433,7 @@ fn followers_that_stop_reading_are_told_of_the_latest_commit() {
     // its writer is done.
     let stream = UnixStream::connect(&socket).unwrap();
     let (sender, mut receiver) = (Sender::new(stream.try_clone().unwrap()), Receiver::new(stream));
-    let open = Header::new(OPEN, 1).with_flags(OPEN_READ_ONLY);
+    let open = Header::new(OPEN, 1).with_args(&[0, 0, 0, 0, VERSION]).with_flags(OPEN_READ_ONLY);
     sender.send(open, std::os::unix::ffi::OsStrExt::as_bytes(path.as_os_str()), &[]).unwrap();
     let opened = receiver.receive(|| 0).unwrap().unwrap();
     assert_eq!(opened.header.status, 0);
@@ -5073,13 +5164,13 @@ fn whatever_a_vm_process_says_harms_no_other() {
     let opening = prop_oneof![
         (0u64..4, any::<bool>()).prop_map(|(store, creating)| {
             let flags = if creating { OPEN_CREATE } else { 0 };
-            (OPEN, flags, 0, [1 << 24, 0, 0, 0, 0], format!("open-{store}").into_bytes())
+            (OPEN, flags, 0, [1 << 24, 0, 0, 0, VERSION], format!("open-{store}").into_bytes())
         }),
         (0u64..4, any::<bool>(), prop_oneof![Just(OTHER_BRANCH), Just(GIVEN_BRANCH)]).prop_map(
             move |(store, absent, branch)| {
                 let point = if absent { &nothing } else { &taken };
                 let named = [format!("open-{store}").as_bytes(), point].concat();
-                (OPEN, OPEN_FORK_FROM, RESTORE, [1 << 24, branch, 0, 0, 0], named)
+                (OPEN, OPEN_FORK_FROM, RESTORE, [1 << 24, branch, 0, 0, VERSION], named)
             }
         ),
     ];

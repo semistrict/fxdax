@@ -11,6 +11,12 @@
 //!
 //! fxdax: each message's fields, its flags and arguments, payload and descriptors, are encoded and
 //! decoded in [`super::codec`] alone (TASK-160.9), which refuses what a kind gives no meaning.
+//!
+//! fxdax: the wire has a version, [`VERSION`], and a VM process and a daemon of different ones
+//! refuse each other as the VM process opens its store (TASK-141.3), rather than serve with what
+//! requests both happen to know: AGENTS.md's rule, no migrations, which has a format change
+//! outright and the old one refused. Every request is required of a daemon of the VM process's
+//! version, so none is optional: a refusal of one fails the connection.
 
 use super::codec::{Stage, StageOp};
 use std::io::{self, Read, Write};
@@ -59,6 +65,15 @@ impl Header {
     }
 }
 
+/// fxdax: the wire's version (TASK-141.3), which a change to any message, its kinds, flags,
+/// arguments, payloads, bounds or what they mean, makes a new one: the VM process says its own in
+/// its [`OPEN`], which a daemon of another refuses (`EPROTONOSUPPORT`), logging both, before
+/// anything else of it; and the daemon says its own in its reply, which the VM process refuses if
+/// another, naming both. Where it is said, `args[4]` of an `OPEN` and of its reply, with the
+/// [`Header`]'s layout, [`OPEN`]'s and [`REPLY`]'s kinds and a reply's status, is what no version
+/// moves. `the_wire_is_its_version` (codec.rs) fails on a change to the wire without a new one.
+pub(crate) const VERSION: u64 = 1;
+
 // Requests, from a VM process. A reply ([`REPLY`]) answers each, but for [`ACK`].
 
 /// Opens the store at the path the payload holds, creating it with `args[0]` bytes of capacity if
@@ -72,7 +87,8 @@ impl Header {
 /// the kernel's physical memory. fxdax: with [`OPEN_READ_ONLY`], a follower of the store (backlog
 /// doc-8), as of its latest commit, whose epoch is the reply's `args[2]`. The reply's `args[3]` is
 /// how many mappings the host lets a process make, 0 if it doesn't limit them, which a VM process
-/// in a jail without /proc can't read (TASK-172).
+/// in a jail without /proc can't read (TASK-172). fxdax: its `args[4]` is the VM process's wire
+/// [`VERSION`], and its reply's the daemon's.
 pub(crate) const OPEN: u32 = 1;
 /// Reads `args[3]` bytes at `args[2]` in extent `args[0..2]` (`READ`): the reply's payload; or,
 /// with [`READ_TRANSFER`], into the connection's transfer area at `args[4]` ([`TRANSFER`]).
@@ -156,10 +172,7 @@ pub(crate) const TRANSFER: u32 = 25;
 /// fxdax: frees extent `args[0..2]`, and those the payload names after it ([`EXTENT_ID_BYTES`]),
 /// each as [`FREE`] frees it, in order: the first that fails fails the request, those before it
 /// freed, as a guest's `FREE` with doc-4's `FREE_MANY` does, a flush's dead extents in one round
-/// trip, not one each (TASK-92.13). A request of its own, not a flag of `FREE`'s: a daemon older
-/// than it, which ignored flags it didn't know, would free the first alone and succeed, the rest
-/// leaked, where it refuses a request it doesn't know (`EINVAL`). fxdax: a daemon refuses flags it
-/// doesn't know now too (TASK-160.9).
+/// trip, not one each (TASK-92.13).
 pub(crate) const FREE_MANY: u32 = 26;
 /// The most bytes a transfer area holds.
 pub(crate) const MAX_TRANSFER_AREA: u64 = 64 << 20;
@@ -179,8 +192,8 @@ pub(crate) const MAX_WINDOW: u64 = 64 << 30;
 pub(crate) const STAGE_COUNTS: u32 = 27;
 /// fxdax: the VM process's build, the commit it was built of ([`crate::BUILD_COMMIT`]), the
 /// payload, [`MAX_BUILD`] bytes at most, of letters, digits, `.`, `_` and `-`: which the daemon's
-/// metrics show by its store's branch (TASK-111.7). Said once, after [`OPEN`]. A request, which a
-/// daemon older than it refuses (`EINVAL`), and the VM process lets be.
+/// metrics show by its store's branch (TASK-111.7). Said once, after [`OPEN`], as every VM process
+/// does: refused, the VM process's connection fails (TASK-141.3).
 pub(crate) const BUILD: u32 = 28;
 // 29 was the guest's answer to an ask to seal, writable DAX's (TASK-153.15), not reused.
 /// fxdax: the most bytes a [`BUILD`]'s commit has.

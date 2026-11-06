@@ -919,6 +919,19 @@ impl Connection {
     /// its reply is queued ([`Answer`]). Past them, `QuotaExceeded`: the VM process broke the
     /// protocol, and is let go, rather than held without end in the daemon's memory.
     fn within_bounds(&self, header: &Header) -> std::io::Result<()> {
+/// fxdax: refuses the [`OPEN`] of `header`, of a VM process of another wire version, its connection
+/// opening nothing (TASK-141.3): logged, naming both versions, and replied to with
+/// `EPROTONOSUPPORT` and the daemon's version.
+fn refuse_version(header: &Header, answer: Answer) {
+    log::error!(
+        "extentd: refusing a VM process of wire version {}: this daemon's is {VERSION}, and a VM \
+         process and a daemon of different wire formats don't serve each other",
+        codec::version(header)
+    );
+    let reply = codec::with_version(answer.reply_header());
+    answer.send(Err(Errno::EPROTONOSUPPORT), reply, Vec::new(), Vec::new());
+}
+
         // fxdax: nor what its stage operations cost, which it says unasked (TASK-91.16).
         if header.kind == ACK || header.kind == STAGE_COUNTS {
             return Ok(());
@@ -1028,6 +1041,7 @@ impl Connection {
     }
 
     /// Serves `request`, and replies, as `answer` owes.
+            Err(Errno::EPROTONOSUPPORT) => refuse_version(&message.header, answer),
     fn serve(&self, request: &Request<'_>, answer: Answer) {
         let mut reply = answer.reply_header();
         let mut payload = Vec::new();

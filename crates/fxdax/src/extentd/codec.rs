@@ -9,6 +9,10 @@
 //! replies say besides their status ([`Opened`], [`Info`], [`Advanced`], [`mappings`]). The bytes
 //! are those each end wrote by hand before.
 //!
+//! An [`OPEN`] and its reply say their sender's wire [`VERSION`] ([`version`], TASK-141.3): one of
+//! another is refused (`EPROTONOSUPPORT`) before anything else of it, as nothing else of it may
+//! mean what this version has it mean.
+//!
 //! Decoding refuses (`EINVAL`) what a message's kind gives no meaning: a flag it doesn't know, or
 //! flags it knows together that it doesn't, an argument out of its range, a payload or descriptors
 //! it has no use for, a status, which replies alone have, and a path that is empty or holds a NUL.
@@ -249,7 +253,7 @@ impl<'a> Request<'a> {
         match self {
             Request::Open { path, opening } => {
                 let path = path.as_os_str().as_bytes();
-                match opening {
+                let mut open = match opening {
                     Opening::Existing => message(0, [0; 5]).carrying(path),
                     Opening::Create(capacity) => {
                         message(OPEN_CREATE, [*capacity, 0, 0, 0, 0]).carrying(path)
@@ -260,7 +264,9 @@ impl<'a> Request<'a> {
                         message(OPEN_FORK_FROM, args).carrying(path).followed_by(from)
                     }
                     Opening::ReadOnly => message(OPEN_READ_ONLY, [0; 5]).carrying(path),
-                }
+                };
+                open.header = with_version(open.header);
+                open
             }
             Request::Read { extent, offset, len, into } => match into {
                 ReadInto::Reply => message(0, [extent.branch, extent.sequence, *offset, *len, 0]),
@@ -346,10 +352,15 @@ impl<'a> Request<'a> {
         }
     }
 
-    /// The request `message` is: `EINVAL` unless it is one its kind allows.
+    /// The request `message` is: `EINVAL` unless it is one its kind allows; fxdax:
+    /// `EPROTONOSUPPORT` for an [`OPEN`] of another wire version, whatever else it holds
+    /// (TASK-141.3).
     pub fn decode(message: &'a Message) -> Result<Self, Errno> {
         let Message { header, payload, fds } = message;
         let Header { kind, flags, args, status, .. } = *header;
+        if kind == OPEN && version(header) != VERSION {
+            return Err(Errno::EPROTONOSUPPORT);
+        }
         if status != 0 || flags & !known_flags(kind)? != 0 {
             return Err(Errno::EINVAL);
         }
@@ -776,6 +787,22 @@ impl Stage {
     }
 }
 
+/// fxdax: where an [`OPEN`] and its reply say their sender's wire [`VERSION`] (TASK-141.3).
+const VERSION_ARG: usize = 4;
+
+/// fxdax: the wire version the [`OPEN`], or the reply to one, of `header` says: its sender's
+/// (TASK-141.3), whatever the rest of it holds, as no version moves where it is said.
+pub(crate) fn version(header: &Header) -> u64 {
+    header.args[VERSION_ARG]
+}
+
+/// fxdax: `header`, an [`OPEN`] or a reply to one, saying this end's wire [`VERSION`]: as a
+/// daemon's reply refusing an `OPEN` of another version does too (TASK-141.3).
+pub(crate) fn with_version(mut header: Header) -> Header {
+    header.args[VERSION_ARG] = VERSION;
+    header
+}
+
 /// What a reply to an [`OPEN`] says, with the physical memory it carries (TASK-43, TASK-79.17).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Opened {
@@ -793,12 +820,17 @@ pub(crate) struct Opened {
 }
 
 impl Opened {
+    /// Its arguments, with this daemon's wire [`VERSION`], last ([`VERSION_ARG`]).
     pub fn args(&self) -> [u64; 5] {
-        [self.branch, self.arena.0.into(), self.epoch, self.max_map_count.unwrap_or(0), 0]
+        [self.branch, self.arena.0.into(), self.epoch, self.max_map_count.unwrap_or(0), VERSION]
     }
 
-    /// What a reply of `args` says: `EINVAL` of an arena that is none.
+    /// What a reply of `args` says: `EINVAL` of an arena that is none; fxdax: `EPROTONOSUPPORT`
+    /// from a daemon of another wire version, before anything else of it (TASK-141.3).
     pub fn from_args(args: [u64; 5]) -> Result<Self, Errno> {
+        if args[VERSION_ARG] != VERSION {
+            return Err(Errno::EPROTONOSUPPORT);
+        }
         let arena = ArenaId(u32::try_from(args[1]).map_err(|_| Errno::EINVAL)?);
         let max_map_count = (args[3] != 0).then_some(args[3]);
         Ok(Self { branch: args[0], arena, epoch: args[2], max_map_count })
@@ -1081,7 +1113,7 @@ mod tests {
         }
         // Flags known, that mean nothing together.
         let refused = |kind, flags, payload: &[u8]| {
-            let header = Header::new(kind, 1).with_flags(flags);
+            let header = with_version(Header::new(kind, 1).with_flags(flags));
             let message = Message { header, payload: payload.to_vec(), fds: vec![] };
             assert_eq!(Request::decode(&message).err(), Some(Errno::EINVAL), "{kind}, {flags:#x}");
         };
@@ -1155,12 +1187,13 @@ mod tests {
         let transfer = Header::new(WRITE, 1).with_args(&[1, 1, 0, 0, 8]);
         refused(transfer.with_flags(WRITE_TRANSFER), b"no root", vec![]);
         refused(Header::new(COMMIT, 1), b"no root", vec![]);
+        let open = |flags| with_version(Header::new(OPEN, 1).with_flags(flags));
         for path in [&b""[..], &b"a\0b"[..]] {
             refused(Header::new(FORK, 1), path, vec![]);
-            refused(Header::new(OPEN, 1).with_flags(OPEN_CREATE), path, vec![]);
+            refused(open(OPEN_CREATE), path, vec![]);
         }
-        refused(Header::new(OPEN, 1).with_flags(OPEN_FORK_FROM), b"no from", vec![]);
-        refused(Header::new(OPEN, 1).with_flags(OPEN_FORK_FROM), b"store\0", vec![]);
+        refused(open(OPEN_FORK_FROM), b"no from", vec![]);
+        refused(open(OPEN_FORK_FROM), b"store\0", vec![]);
         refused(Header::new(BUILD, 1), b"a\"b", vec![]);
         refused(Header::new(BUILD, 1), &[b'a'; MAX_BUILD + 1], vec![]);
         // fxdax: a guest's stats, without the flag that says it carries them; past their most;
@@ -1183,7 +1216,7 @@ mod tests {
         let cases: Vec<(Request<'_>, Header, Vec<u8>)> = vec![
             (
                 Request::Open { path: "s".into(), opening: Opening::Create(4096) },
-                header(OPEN, OPEN_CREATE, &[4096]),
+                header(OPEN, OPEN_CREATE, &[4096, 0, 0, 0, VERSION]),
                 b"s".to_vec(),
             ),
             (
@@ -1191,12 +1224,12 @@ mod tests {
                     path: "s".into(),
                     opening: Opening::ForkFrom { from: "f".into(), branch: 3, capacity: 4096 },
                 },
-                header(OPEN, OPEN_FORK_FROM, &[4096, 3]),
+                header(OPEN, OPEN_FORK_FROM, &[4096, 3, 0, 0, VERSION]),
                 b"s\0f".to_vec(),
             ),
             (
                 Request::Open { path: "s".into(), opening: Opening::ReadOnly },
-                header(OPEN, OPEN_READ_ONLY, &[]),
+                header(OPEN, OPEN_READ_ONLY, &[0, 0, 0, 0, VERSION]),
                 b"s".to_vec(),
             ),
             (
@@ -1432,13 +1465,157 @@ mod tests {
     /// meaning nothing together.
     #[test]
     fn replies_malformed_are_refused() {
-        assert_eq!(Opened::from_args([1, 1 << 32, 0, 0, 0]).err(), Some(Errno::EINVAL));
+        assert_eq!(Opened::from_args([1, 1 << 32, 0, 0, VERSION]).err(), Some(Errno::EINVAL));
         let mapping = |flags: u64| [0u64, 4096, 1, 1, 0, flags].map(u64::to_le_bytes).concat();
         assert_eq!(mappings(&mapping(0)[..40]).err(), Some(Errno::EINVAL));
         // fxdax: bit 0, writable, writable DAX's (backlog doc-13).
         for flags in [1, MAPPING_ZEROS | 1, 1 << 2, 1 << 63] {
             assert_eq!(mappings(&mapping(flags)).err(), Some(Errno::EINVAL), "{flags:#x}");
         }
+    }
+
+    /// TASK-141.3: an `OPEN` of another wire version is refused as such, whatever else it holds,
+    /// as is a reply to one from a daemon of another, an older one's, saying none, among them.
+    #[test]
+    fn opens_of_other_wire_versions_are_refused() {
+        let area = area();
+        proptest!(|(drawn in fields(), id in any::<u64>(), flags in any::<u32>())| {
+            let opens = requests(&drawn, area.as_fd()).into_iter().filter(|r| r.kind() == OPEN);
+            for open in opens {
+                let mut message = sent(&open, id);
+                prop_assert_eq!(version(&message.header), VERSION);
+                for other in [0, VERSION + 1, u64::MAX] {
+                    message.header.args[4] = other;
+                    let refused = Some(Errno::EPROTONOSUPPORT);
+                    prop_assert_eq!(Request::decode(&message).err(), refused);
+                    message.header.flags = flags;
+                    prop_assert_eq!(Request::decode(&message).err(), refused);
+                }
+            }
+        });
+        let opened = Opened { branch: 1, arena: ArenaId::DEFAULT, epoch: 0, max_map_count: None };
+        assert_eq!(version(&Header::new(REPLY, 1).with_args(&opened.args())), VERSION);
+        for other in [0, VERSION + 1] {
+            let [branch, arena, epoch, max_map_count, _] = opened.args();
+            let args = [branch, arena, epoch, max_map_count, other];
+            assert_eq!(Opened::from_args(args).err(), Some(Errno::EPROTONOSUPPORT), "{other}");
+            // Before its arena, which another version may say otherwise.
+            let args = [branch, u64::MAX, epoch, max_map_count, other];
+            assert_eq!(Opened::from_args(args).err(), Some(Errno::EPROTONOSUPPORT), "{other}");
+        }
+    }
+
+    /// TASK-141.3: the wire as this [`VERSION`] has it, as a fingerprint of everything its two ends
+    /// must agree on: what each kind of message encodes to, of fixed fields, and decodes from (the
+    /// flags each kind knows), the replies' arguments, the [`Header`]'s layout, and the bounds.
+    /// A change to any of it without a new `VERSION` fails here: a VM process and a daemon of the
+    /// two would meet as of one version, and serve each other with what neither means.
+    #[test]
+    fn the_wire_is_its_version() {
+        /// The version, and the fingerprint of the wire it is. A change to the wire is a new
+        /// version, both changed together, never the fingerprint alone.
+        const WIRE: (u64, u64) = (1, 0xf969_c721_1dd7_f01d);
+        let fingerprint = fingerprint();
+        assert_eq!(
+            (VERSION, fingerprint),
+            WIRE,
+            "the wire changed, its fingerprint {fingerprint:#x}: wire::VERSION goes up with it, to \
+             {}, and WIRE here to ({}, {fingerprint:#x}) (AGENTS.md: no migrations)",
+            WIRE.0 + 1,
+            WIRE.0 + 1,
+        );
+    }
+
+    /// The wire's fingerprint ([`the_wire_is_its_version`]): FNV-1a of what it is made of.
+    fn fingerprint() -> u64 {
+        let mut hash = 0xcbf2_9ce4_8422_2325u64;
+        let mut hashed = |bytes: &[u8]| {
+            for byte in bytes {
+                hash = (hash ^ u64::from(*byte)).wrapping_mul(0x0100_0000_01b3);
+            }
+            // Where each part ends.
+            hash = (hash ^ 0xff).wrapping_mul(0x0100_0000_01b3);
+        };
+        let header = |hashed: &mut dyn FnMut(&[u8]), header: Header| {
+            hashed(zerocopy::IntoBytes::as_bytes(&header))
+        };
+        hashed(&std::mem::size_of::<Header>().to_le_bytes());
+        let fields = Fields {
+            words: [3, 5, 4096, 8192, 1 << 20],
+            flags: [true, true, false],
+            data: (0..64).collect(),
+            root: b"root".to_vec(),
+            paths: [PathBuf::from("store"), PathBuf::from("from")],
+            extents: vec![ExtentId { branch: 7, sequence: 9 }, ExtentId { branch: 7, sequence: 11 }],
+            build: "build".into(),
+            stats: "stats".into(),
+            commit: Commit::Durable,
+            access: Access::Write,
+        };
+        let area = area();
+        for request in requests(&fields, area.as_fd()) {
+            let message = sent(&request, 1);
+            header(&mut hashed, message.header);
+            hashed(&message.payload);
+        }
+        for kind in 0..256 {
+            hashed(&known_flags(kind).map_or(u64::MAX, u64::from).to_le_bytes());
+        }
+        let phys = PhysLocation { arena: ArenaId(6), offset: 1 << 21 };
+        let told = [
+            StageOp::Map { offset: 4096, phys, len: 8192 },
+            StageOp::Unmap { offset: 4096, len: 8192 },
+            StageOp::Mapped { offset: 4096, len: 8192 },
+            StageOp::Private { offset: 4096, from: Some(phys) },
+            StageOp::Private { offset: 4096, from: None },
+        ]
+        .map(|op| Told::Stage(Stage { id: 2, op }))
+        .into_iter()
+        .chain([
+            Told::Capacity { capacity: 1 << 30, ask: true },
+            Told::Committed { epoch: 12 },
+            Told::Stats { ask: 6 },
+        ]);
+        for told in told {
+            header(&mut hashed, told.encode());
+        }
+        let (counts, other) = (
+            StageCounts { costs: [1, 2, 3, 4], installed: 5 },
+            StageCounts { costs: [5, 6, 7, 8], installed: 9 },
+        );
+        for made in [Made::Ack { id: 2, counts }, Made::Counts(other)] {
+            header(&mut hashed, made.encode());
+        }
+        let opened = Opened { branch: 3, arena: ArenaId(6), epoch: 12, max_map_count: Some(65530) };
+        let info = ExtentInfo {
+            capacity: 1 << 30,
+            used: 4096,
+            available: (1 << 30) - 4096,
+            next_sequence: 12,
+            sequence_floor: 1 << 40,
+        };
+        let replies = [opened.args(), Info(info).args(), Advanced { epoch: 12 }.args()];
+        hashed(&replies.as_flattened().iter().flat_map(|word| word.to_le_bytes()).collect::<Vec<_>>());
+        let extent = MappingContents::Extent { extent: ExtentId { branch: 3, sequence: 4 }, offset: 8192 };
+        hashed(&mappings_payload(&[
+            WindowMapping { window_offset: 0, len: 4096, contents: extent },
+            WindowMapping { window_offset: 4096, len: 8192, contents: MappingContents::Zeros },
+        ]));
+        let bounds = [
+            MAX_PAYLOAD,
+            MAX_TRANSFER_AREA,
+            MAX_WINDOW,
+            MAX_REQUESTS as u64,
+            MAX_STREAM_BYTES,
+            MAX_FDS as u64,
+            MAX_BUILD as u64,
+            MAX_STATS as u64,
+            MAPPING_BYTES,
+            EXTENT_ID_BYTES as u64,
+            STAGE_COUNTS_EVERY.as_nanos() as u64,
+        ];
+        hashed(&bounds.iter().flat_map(|bound| bound.to_le_bytes()).collect::<Vec<_>>());
+        hash
     }
 
     /// fxdax: the extents a `FREE_MANY`'s payload names are those put in it, in order; one that

@@ -41,9 +41,8 @@ pub struct RemoteExtentStore {
     faults: Mutex<Option<FaultThread>>,
     /// fxdax: whether it is a follower's, read-only (backlog doc-8).
     read_only: bool,
-    /// Its transfer area, which reads and writes move their data through ([`TRANSFER`]), unless
-    /// the daemon took none.
-    transfer: Option<Transfer>,
+    /// Its transfer area, which reads and writes move their data through ([`TRANSFER`]).
+    transfer: Transfer,
     /// fxdax: whether its window copies on write (backlog doc-13), once created so.
     copying: std::sync::atomic::AtomicBool,
     /// fxdax: how many mappings the host lets a process make, if it limits them, as the daemon
@@ -114,43 +113,52 @@ impl RemoteExtentStore {
         Self::over(stream, store.as_ref(), Opening::ReadOnly)
     }
 
-    /// The store at `store`, served over `stream`.
+    /// The store at `store`, served over `stream`. fxdax: by a daemon of this VM process's wire
+    /// version alone, which takes every request there is (TASK-141.3): one of another, or that
+    /// refuses any of what opening asks, the connection is closed on, failing.
     pub(crate) fn over(stream: UnixStream, store: &Path, opening: Opening) -> Result<Self, Error> {
         let client = Client::start(stream).map_err(Error::new)?;
+        let opened = Self::open(client.clone(), store, opening);
+        if opened.is_err() {
+            client.sender.shutdown();
+        }
+        opened.map_err(|err| err.context(format!("opening the extent store at {}", store.display())))
+    }
+
+    /// Opens the store at `store` over `client`'s connection ([`RemoteExtentStore::over`]): its
+    /// `OPEN`, the VM process's build, and its transfer area.
+    fn open(client: Arc<Client>, store: &Path, opening: Opening) -> Result<Self, Error> {
         let read_only = matches!(opening, Opening::ReadOnly);
         let open = Request::Open { path: store.to_owned(), opening };
-        let reply = client.request_blocking(&open).map_err(|errno| {
-            client.sender.shutdown();
-            Error::new(
-                anyhow::Error::new(errno)
-                    .context(format!("opening the extent store at {}", store.display())),
-            )
+        let reply = client.request_blocking(&open).map_err(|errno| match errno {
+            Errno::EPROTONOSUPPORT => Error::new(anyhow::Error::new(errno).context(format!(
+                "the extent daemon refused this VM process's wire version {VERSION}: it is of \
+                 another, which its log names"
+            ))),
+            errno => Error::from(errno),
         })?;
+        let opened = Opened::from_args(reply.header.args).map_err(|errno| match errno {
+            Errno::EPROTONOSUPPORT => Error::new(anyhow::Error::new(errno).context(format!(
+                "the extent daemon is of wire version {}, this VM process of {VERSION}",
+                super::codec::version(&reply.header)
+            ))),
+            errno => Error::new(anyhow::Error::new(errno).context("the daemon named no arena")),
+        })?;
+        let Opened { branch, arena, epoch, max_map_count } = opened;
         let mut fds = reply.fds.into_iter();
         let (Some(own), Some(public)) = (fds.next(), fds.next()) else {
             return Err(Error::msg("the daemon sent no physical memory"));
         };
-        let opened = Opened::from_args(reply.header.args);
-        let Opened { branch, arena, epoch, max_map_count } =
-            opened.map_err(|_| Error::msg("the daemon named no arena"))?;
         // Its tenant's arena, and the default one, read-only.
         let memories = vec![(arena, own), (crate::pages::ArenaId::DEFAULT, public)];
         // A follower's view's commit, which it has heard of.
         client.committed.fetch_max(epoch, Ordering::AcqRel);
-        // fxdax: its build, which the daemon's metrics show (TASK-111.7): a daemon older than that
-        // refuses it, which costs nothing.
-        if let Err(errno) = client.request_blocking(&Request::Build(crate::BUILD_COMMIT)) {
-            log::debug!("extentd: the daemon took no build ({}): {errno:?}", crate::BUILD_COMMIT);
-        }
-        let transfer = match Transfer::give(&client) {
-            Ok(transfer) => Some(transfer),
-            Err(err) => {
-                log::warn!(
-                    "extentd: a transfer area: {err}; reads and writes go through the socket"
-                );
-                None
-            }
-        };
+        // fxdax: its build, which the daemon's metrics show (TASK-111.7).
+        client.request_blocking(&Request::Build(crate::BUILD_COMMIT)).map_err(|errno| {
+            Error::new(anyhow::Error::new(errno).context("saying this VM process's build"))
+        })?;
+        let transfer = Transfer::give(&client)
+            .map_err(|err| err.context("giving the daemon a transfer area"))?;
         let copying = std::sync::atomic::AtomicBool::new(false);
         let faults = Mutex::new(None);
         Ok(Self { client, branch, memories, faults, read_only, transfer, copying, max_map_count })
@@ -303,7 +311,7 @@ impl RemoteExtentStore {
     ) -> Result<()> {
         let len: usize = buffers.iter().map(VolatileSliceMut::len).sum();
         let read = |into| Request::Read { extent, offset, len: len as u64, into };
-        if let Some(slot) = self.transfer.as_ref().and_then(|transfer| transfer.take(len)) {
+        if let Some(slot) = self.transfer.take(len) {
             self.client.request(&read(ReadInto::Transfer { at: slot.offset() })).await?;
             let data = slot.bytes(len);
             let mut at = 0;
@@ -356,7 +364,7 @@ impl RemoteExtentStore {
             }
         };
         let write = |data| Request::Write { extent, offset, data, barriers };
-        if let Some(mut slot) = self.transfer.as_ref().and_then(|transfer| transfer.take(len)) {
+        if let Some(mut slot) = self.transfer.take(len) {
             gather(slot.bytes_mut(len));
             let data = Data::Transfer { at: slot.offset(), len: len as u64 };
             return self.client.request(&write(data)).await.map(drop);
@@ -369,14 +377,13 @@ impl RemoteExtentStore {
     /// How many reads and writes moved their data through the transfer area.
     #[cfg(test)]
     pub(super) fn transfers(&self) -> u64 {
-        self.transfer.as_ref().map_or(0, |transfer| transfer.used.load(Ordering::Relaxed))
+        self.transfer.used.load(Ordering::Relaxed)
     }
 
     /// The transfer area's slots, taken until dropped, which no read or write then has.
     #[cfg(test)]
     pub(super) fn take_transfer_slots(&self) -> Vec<impl Drop + '_> {
-        let transfer = self.transfer.as_ref().expect("a transfer area");
-        std::iter::from_fn(|| transfer.take(1)).collect()
+        std::iter::from_fn(|| self.transfer.take(1)).collect()
     }
 
     /// Sends `header`, `payload` and `fds`, a request, as they are, however malformed, and
@@ -1049,8 +1056,22 @@ impl Transfer {
     /// The slots: as many as the daemon serves a connection's requests at once.
     const SLOTS: usize = 8;
 
-    /// A transfer area, given to the daemon over `client`'s connection.
-    fn give(client: &Client) -> std::io::Result<Self> {
+    /// A transfer area, given to the daemon over `client`'s connection: the daemon's errno if it
+    /// refuses it.
+    fn give(client: &Client) -> Result<Self, Error> {
+        let (transfer, file) = Self::make().map_err(Error::new)?;
+        let area = Request::Transfer { len: transfer.len() as u64, area: Area(file.as_fd()) };
+        client.request_blocking(&area)?;
+        Ok(transfer)
+    }
+
+    /// The bytes of the area.
+    fn len(&self) -> usize {
+        Self::SLOT * Self::SLOTS
+    }
+
+    /// A transfer area, mapped, and its memory, sealed at its size.
+    fn make() -> std::io::Result<(Self, std::fs::File)> {
         let len = Self::SLOT * Self::SLOTS;
         // SAFETY: The name is a C string.
         let fd = unsafe {
@@ -1093,10 +1114,7 @@ impl Transfer {
             free: Mutex::new((0..Self::SLOTS).rev().collect()),
             used: AtomicU64::new(0),
         };
-        let area = Request::Transfer { len: len as u64, area: Area(file.as_fd()) };
-        client.request_blocking(&area)
-            .map_err(|errno| std::io::Error::from_raw_os_error(errno.raw()))?;
-        Ok(transfer)
+        Ok((transfer, file))
     }
 
     /// A free slot for `len` bytes, if one is free and holds them.
@@ -1113,7 +1131,7 @@ impl Transfer {
 impl Drop for Transfer {
     fn drop(&mut self) {
         // SAFETY: Unmaps the area, which no slot is had of any more.
-        unsafe { libc::munmap(self.addr.as_ptr().cast(), Self::SLOT * Self::SLOTS) };
+        unsafe { libc::munmap(self.addr.as_ptr().cast(), self.len()) };
     }
 }
 
