@@ -82,8 +82,11 @@ pub fn spawn_daemon(
 
     let bin = std::env::var_os("FXDAX_EXTENTD_BIN").context("FXDAX_EXTENTD_BIN")?;
     let log = fs::File::create(test_setup.tmp_dir.join(format!("{name}.log")))?;
-    // A host keeps stores in a bucket, `env`'s or this process's, or one in its memory, as of
-    // placement 1, unless one is named.
+    // A host keeps stores in a bucket, `env`'s or this process's, or a file bucket of its own in
+    // the test's directory, as of placement 1, unless one is named. Not one in its memory: the
+    // cases open the stores it made in processes of their own, after it, which keep a store's
+    // branch in the bucket its description names, and opening one whose branch the bucket lacks,
+    // its commits acknowledged, is refused (TASK-165.9), as scripts/test-e2e.sh's daemon's.
     let named = |var: &str| {
         env.iter().any(|(given, value)| *given == var && !value.is_empty())
             || std::env::var_os(var).is_some_and(|value| !value.is_empty())
@@ -94,7 +97,8 @@ pub fn spawn_daemon(
         command.arg(memory.to_string());
     }
     if !named("FXDAX_EXTENTD_REMOTE") {
-        command.env("FXDAX_EXTENTD_REMOTE", format!("memory:///{name}"));
+        let bucket = test_setup.tmp_dir.join(format!("{name}.bucket"));
+        command.env("FXDAX_EXTENTD_REMOTE", format!("file://{}/", bucket.display()));
     }
     if !named("FXDAX_EXTENTD_TOKEN") {
         command.env("FXDAX_EXTENTD_TOKEN", "1");
