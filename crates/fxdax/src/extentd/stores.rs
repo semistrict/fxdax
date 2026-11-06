@@ -1257,15 +1257,29 @@ fn daemon_line() -> String {
         true => format!("durable_lag_gt_{}ms={count}", 1u64 << (bucket - 1)),
     };
     let buckets: Vec<String> = lags.buckets.iter().enumerate().map(bucket).collect();
+    // And where it went: how long its flushes took, the slowest's phases and each phase's
+    // longest, and its framings.
+    let timings = extent_store::timings();
+    let mut timed = vec![
+        format!("flush_count={}", timings.flushes),
+        format!("flush_slow={}", timings.slow_flushes),
+    ];
+    for (kind, phases) in [("slowest", timings.slowest), ("max", timings.phase_max)] {
+        let named = phases.named().map(|(phase, us)| format!("flush_{kind}_{phase}_us={us}"));
+        timed.extend(named);
+    }
+    timed.push(format!("framing_count={}", timings.framings));
+    timed.push(format!("framing_max_us={}", timings.framing_max_us));
     format!(
         "daemon: {} durable_lag_count={} durable_lag_max_us={} durable_lag_p50_ms={} \
-         durable_lag_p99_ms={} {}",
+         durable_lag_p99_ms={} {} {}",
         named.join(" "),
         lags.count,
         lags.max_us,
         quantile(0.5),
         quantile(0.99),
-        buckets.join(" ")
+        buckets.join(" "),
+        timed.join(" ")
     )
 }
 
