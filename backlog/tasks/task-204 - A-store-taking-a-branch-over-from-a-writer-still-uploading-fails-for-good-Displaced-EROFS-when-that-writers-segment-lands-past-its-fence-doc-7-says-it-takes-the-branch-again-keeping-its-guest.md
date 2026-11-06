@@ -8,7 +8,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-06 06:55'
-updated_date: '2026-11-06 07:07'
+updated_date: '2026-11-06 12:37'
 labels:
   - storage
   - takeover
@@ -42,4 +42,6 @@ Found by the storage review of 2026-11-06. doc-7, Fencing: "A create that fails 
 
 <!-- SECTION:NOTES:BEGIN -->
 Taken into TASK-165.9 (the user, 2026-11-06). How its design resolves it: a WAL put after the branch's end by commits (Wal::rebase) is what opening a store does; a writer displaced (Error::Displaced, an earlier writer's segment landed past its fence where its next goes) is the same situation live. The uploader, extent_store's now, keeps the store and takes the branch again instead of failing: a new lease (Writer::open, a new epoch, fenced past every segment landed), the store's queue of unacknowledged segments rebased by commits (Store::rebase: those landed acknowledged, the rest stamped anew in memory, the open segment's chain moved on), and uploads go on; the guest's commits wait meanwhile, none acknowledged lost. The late segment is void (it follows no segment of the branch), so the branch's last commit is one of the store's own and the WAL follows; Diverged stays a failure (ESTALE) for a WAL another writer's commits moved past. Fenced (a later writer's segment, or the lease another's) stays fatal: that is losing the branch. remote.rs's module doc and doc-7 say the same. The simulation's takeovers_while_uploading checks a displaced host takes the branch again and its durable commits reach the branch. Lands right after TASK-165.9's design commit, on task-165-9.
+
+Fixed in 3a63ada14 on task-165-9. extent_store::upload: an upload, gather or acknowledgement failing Displaced has the uploader take the branch again (Shared::after, Shared::retake): the branch's record and recovery, Writer::open_recovered with the same placement's token and a new holder, then Store::rebase (Queue::rebase: extent_remote::Wal::rebase over the queued footers, those landed acknowledged through Store::acknowledged, the rest restamped in memory and to be taken again; the open segment's chain set after them, Segments::set_chain), the new writer's lease, floor and progress (Shared::took), and the uploads go on, the guest's commits waiting meanwhile. Diverged, Fenced, Deleted still stop it. takeovers_of_writers_still_uploading_keep_their_guests un-ignored and rewritten for the new opening (the store's opening is the takeover): the commit succeeds, the lease epoch moved on by one, the branch holds it; with the retake off, EROFS and Displaced. The simulation's displaced sessions take their branch again with the same token, keeping their guests (World::retake), and opened() checks the log put after the branch ends with the guest's last commit (a violation otherwise; a log diverged ends the session, as the store refuses): reached in ten profiles, the 48 sim tests pass. doc-7 Fencing and upload.rs's module doc say so; OPEN_QUESTIONS.md has the decision line.
 <!-- SECTION:NOTES:END -->
