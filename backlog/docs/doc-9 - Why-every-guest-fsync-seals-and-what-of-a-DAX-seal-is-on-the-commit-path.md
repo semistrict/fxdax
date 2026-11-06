@@ -3,7 +3,7 @@ id: doc-9
 title: 'Why every guest fsync seals, and what of a DAX seal is on the commit path'
 type: other
 created_date: '2026-10-28 03:23'
-updated_date: '2026-11-04 16:32'
+updated_date: '2026-11-06 06:43'
 ---
 # Why every guest fsync seals, and what of a DAX seal is on the commit path
 
@@ -12,8 +12,9 @@ on write now: the window maps sealed extents and zeros, read-only, and a page th
 private copy in host memory, which writeback sends as `WRITE`s to new extents, then a commit, as
 without DAX. So a seal never touches the window: no write-protect at the commit (`commit_seal_ns`
 went), no restage, no evacuation, no store waiting for a seal, and a DAX fsync costs what a no-DAX
-one does. Section 1 holds, every fsync still sealing for the reasons it gives, but for its third
-bullet: nothing writable is ever mapped, so nothing is left to protect at a seal. Section 2 is a
+one does. Section 1 holds, every fsync still sealing for the reasons it gives, but for its first
+bullet's "a commit writes its open extents' data" (`WRITE`s did, before it) and its third
+bullet: no open extent is ever mapped (doc-13's invariant 1), so a seal leaves nothing to protect. Section 2 is a
 record of writable DAX's commit path (dead-ends/writable-dax.md); its levers went with it. Section 3
 is DAX's ceiling as well as no DAX's.
 

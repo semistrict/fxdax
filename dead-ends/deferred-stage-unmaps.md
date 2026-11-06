@@ -15,3 +15,6 @@ changes with in-place reprotection in the VM process (pushed at e3d46ea92, ~112 
 change) and the stage counters (ae046fc9a).
 **Reopen if:** Protection has to be deferred and batched to save flushes. The Shuttle model
 faults_race_deferred_unmaps on the branch covers the races.
+
+**Since:** 2026-11-04, writable DAX deleted (37c331a6c, TASK-164): seals no longer write-protect
+the window and STAGE_PROTECT is gone, so there is no protection to defer or batch.

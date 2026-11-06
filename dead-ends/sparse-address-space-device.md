@@ -1,6 +1,6 @@
 # The extent device as a sparse per-filesystem address space
 
-**Tried:** 2026-10-13, TASK-26.2 (doc-4's first version) and TASK-26.3, branch sparse-address-space
+**Tried:** 2026-10-13, TASK-26.2 (doc-4's first version) and TASK-26.3, tag archive/sparse-address-space
 (1eda65db8, "Parked: Fxfs on a sparse-address-space extent store").
 **Idea:** Fxfs would keep its offsets and fixed superblocks, with no ALLOC round trips: storage used
 where written and released by FREE, and forks and immutability entirely host-side. The user was

@@ -3,9 +3,14 @@ id: doc-3
 title: 'TASK-26.1 spike: porting Fxfs into the guest''s Linux kernel'
 type: other
 created_date: '2026-10-13 21:31'
-updated_date: '2026-10-13 21:31'
+updated_date: '2026-11-06 06:43'
 ---
 # TASK-26.1: porting Fxfs into the guest's Linux kernel
+
+**Status: historical.** The port this spike sized landed (TASK-26.6): guest/linux/fs/fxfs and
+guest/rust. libkrun and libkrunfw are gone (TASK-40): guests run on Firecracker, on Amazon Linux's
+6.18 kernel as Firecracker's CI configures it (scripts/build-guest-kernel.sh), and the guest tests
+live in guest/tests. The report below is kept as written.
 
 Spike report, 2026-10-13. It sizes porting Fxfs's code into the guest kernel (doc-2, requirement
 5), and recommends how.

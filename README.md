@@ -88,7 +88,9 @@ their leading comment:
   frozen, its extents never deallocated one by one while any store shares
   them, and freed once none does. Blocks written in place (preallocated
   files) are written to new blocks where a snapshot shares them. fsck checks
-  shared extents, and the on-disk format is version 59.
+  shared extents, and the on-disk format is version 61, the only one a mount
+  reads: no format is migrated.
+
 ### `crates/physmem`: physical memory
 
 The extent cache's pages, and the DAX windows', are host shared
@@ -155,34 +157,38 @@ of these stands in with the items the code copied from Fuchsia uses:
 - `error.rs` holds `Errno`, Linux's errno values on every host, mapped from
   Fxfs's errors, and `Error`, for setting up.
 - `storage/` holds `Storage`: an image, or memory. It checks filesystems
-  (fsck), and clones images: a clone is a fork of the image's extent store,
-  whose directory is a handle naming the image's. `Storage::delete` deletes
-  clones and images: an image whose clones live keeps its directory, holding
-  what they share of it, until the last of them goes (TASK-39.4); removing an
-  image's directory (`rm -rf`) while clones of it live is not supported: they
-  hold their data in it.
+  (fsck), and clones images: a clone is a fork of the image's branch in the
+  bucket its store keeps it in, the image's own file bucket, `<image>.bucket`
+  beside its directory, or on a host of fxdax's system the host's
+  (`FXDAX_EXTENTD_REMOTE`); the clone's directory is a store of its own, which
+  reads what it inherited from the bucket (TASK-165.7). `Storage::delete`
+  deletes clones and images alike: the branch in its bucket, whose collector
+  reclaims what no other branch inherited, and the directory; clones live on.
+  An image's own bucket's collector runs in the processes that have its images
+  open (`collect.rs`), the only cleaner of what they free (TASK-165.8).
   - `image.rs` is the device on images, in place of Fuchsia's
     `FileBackedDevice`: an extent store in a directory, `crates/extent_store`'s.
     Extents' I/O bypasses the host's page cache where the host filesystem
     allows (`O_DIRECT`, `F_NOCACHE`).
   - `io.rs` runs extents' I/O off Fxfs's executor threads: on an io_uring on
     Linux, and a small thread pool elsewhere.
-- `host_store.rs` makes, opens and deletes both host stacks' extent stores in
-  the host's directories, images (`Storage`) and guests' stores
+- `host_store.rs` makes, opens, forks and deletes both host stacks' extent
+  stores in the host's directories, images (`Storage`) and guests' stores
   (`ExtentStore`), with one block size, one set of options and one way of
-  minting branches, and cleans images' stores after their commits.
+  minting branches. Neither stack cleans its stores (TASK-165.8).
 - `pages.rs` configures physical memory (`crates/physmem`): its size, which
   extents' pages come from, and tenants' arenas of it.
 - `executor.rs` holds the fuchsia-async executor Fxfs runs on.
 
 `crates/extent_store` is fxdax's too: backlog doc-4's extent store on local
 disk, of segments, large extents' own files, and an index of checkpoints and
-per-commit deltas, which recovers to a prefix of its commits after a crash and
-cleans segments mostly freed: images' stores clean so after their commits,
-the extent daemon's not yet. A store holds branches: a fork takes the same
-time and space whatever the store holds, and shares its parent's files, which
-go once no branch holds extents in them. Its tests run it on a file system in
-memory that crashes at random points.
+per-commit deltas, which recovers to a prefix of its commits after a crash. A
+store's directory holds one branch; forks, points and deletion are the
+bucket's (`crates/extent_remote`, TASK-165.7). Nothing cleans a store: once a
+segment is acknowledged in the bucket, it and the extents' files it names
+leave the directory, for the host's cache of the bucket's objects, and the
+bucket's collector takes back what no extent is in (TASK-165.8). Its tests run
+it on a file system in memory that crashes at random points.
 
 **DAX on Linux.** KVM maps a guest's memory from the host memory backing its
 memory slot, and follows the host's mappings. On arm64, though, a fault it
@@ -383,7 +389,7 @@ virtio extent store. Its first pieces, from TASK-26.1's spike:
   it supports, with fs/fxfs built in, the Rust linked into it as one object of
   what the kernel calls (link-time optimized). The kernel itself has no Rust
   support enabled: Kbuild never sees the Rust. fxdax's changes to the kernel
-  are a series of four commits on the release (`guest/linux/patches`, each
+  are a series of commits on the release (`guest/linux/patches`, each
   with the files of `guest/linux` it adds), which the script makes in the
   kernel's tree and builds. Its `out/<arch>` has what builds the same kernel
   elsewhere: `patches/` (`git am` them on the release), `libfxfs_linux.a`
@@ -406,7 +412,7 @@ shrinker of its cached records, and a device's volumes mounted side by side
 (`mount -t fxfs -o volume=NAME tag path`), each with a superblock of its own,
 opened as it mounts, sharing the device's journal and DAX window: the filesystem
 freezes once all of them are frozen. What programs see of the rest (the guest
-suites' `unsupported` check pins the first two):
+suites' `unsupported` check pins deduplication's and `MAP_SYNC`'s):
 
 - Deduplication (`FIDEDUPERANGE`, `duperemove`) reports `EOPNOTSUPP` in each
   destination's status.
@@ -423,18 +429,13 @@ suites' `unsupported` check pins the first two):
 - Fxfs's in-memory layers of its trees, bounded by its journal's size, are not
   shrunk under the guest's memory pressure; its cached records and its page
   cache are.
-- Files not on DAX are cached in 4 KiB folios, not large ones: more overhead
-  per byte in large sequential I/O (TASK-26.19.11).
+- A follower's files not on DAX are cached in 4 KiB folios, not large ones,
+  as its batches drop ranges of them: more overhead per byte in large
+  sequential I/O. A writer's are in large folios (TASK-26.19.11).
 
 ## Not ported yet
 
-The backlog (`backlog/`, managed with Backlog.md) tracks what remains. The
-main gaps:
-
-- **Upstream tests:** Fxfs's `file.rs` and `volume.rs` tests aren't ported
-  yet (TASK-3).
-- **Host mapping limit:** each mapped page is its own host mapping, so a large
-  window can exceed `vm.max_map_count` (TASK-12).
+The backlog (`backlog/`, managed with Backlog.md) tracks what remains.
 
 ## Testing
 
@@ -474,8 +475,10 @@ labelled n2 host with nested KVM, which deletes itself after 8 hours, and
 
 The protocols whose bugs are rare interleavings have TLA+ specs, which TLC
 model-checks exhaustively over small bounds (`specs/`): live read-only
-followers (`specs/follower`, backlog doc-8) and the guest Fxfs's copy-on-write
-DAX (`specs/dax-cow`, backlog doc-13, `guest/linux/fs/fxfs/dax.c`). Each rule
+followers (`specs/follower`, backlog doc-8), the guest Fxfs's copy-on-write
+DAX (`specs/dax-cow`, backlog doc-13, `guest/linux/fs/fxfs/dax.c`), and
+branches in the bucket with the host's write-ahead log (`specs/bucket`,
+backlog doc-7 and doc-14). Each rule
 of a protocol has a mutation, the spec with that rule removed, which TLC must
 find the violation of: `specs/dax-cow`'s include a writeback leaving a fault's
 PTE writable, which guest/sim found (`guest/sim`).
@@ -491,11 +494,11 @@ the extent daemon serves, with a DAX window and without, with ext4 on the same
 kernel, over a virtio-blk disk backed by an image file on the same host
 filesystem and with DAX on writable virtio-pmem. The workloads are fio's sequential and random reads and
 writes (cold and warm), fsync-heavy appends and I/O through `mmap`, creating,
-stating, listing and removing 10,000 files, and untarring and building GNU
-make (`guest/tests/test_cases/src/test_fs_bench.rs`).
+stating, listing and removing 2,000 files (`FXDAX_BENCH_FILES`), and untarring
+and building Lua (`guest/tests/test_cases/src/test_fs_bench.rs`).
 `scripts/bench-report.py` turns the measurements into a table of medians,
-spreads and ratios to ext4. The guests' root filesystem is a Fedora image built
-with podman.
+spreads and ratios to ext4. The guests' root filesystem is an Alpine image
+built with podman.
 
 ```sh
 scripts/bench-gce.sh       # x86-64 Linux with KVM, on a disposable GCE host

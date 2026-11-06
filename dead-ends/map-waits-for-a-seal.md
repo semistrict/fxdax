@@ -19,3 +19,8 @@ Sealing), and a writable MAP refused waits for their answers, 10 s at most, befo
 more. Still never for its own guest's seal, for the reason above: its own MAP fails `ENOMEM` and
 its guest seals, as before; and a guest asked to seal never waits for another's, which might wait
 for it in turn (`crates/fxdax/src/extentd/seals.rs`).
+
+**Since:** 2026-11-04, writable DAX deleted (37c331a6c, TASK-164): writable MAPs, the gate, the
+open-page budget and seal asks (`F_SEAL`, `seal_asked`, `SEALED`,
+crates/fxdax/src/extentd/seals.rs) are gone. A store past `private_max` stops its VM (doc-13,
+invariant 4); no MAP waits for or asks a seal.

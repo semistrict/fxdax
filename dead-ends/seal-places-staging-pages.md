@@ -11,3 +11,6 @@ the root, and doc-9 later showed a DAX commit already costs ~0.43 ms against ~0.
 **Reopen if:** The cost of a host mapping falls far enough that two of them on the commit path no
 longer matter. TASK-91.16 took host time per window change from ~112 to ~85 us, and its 50 us per
 MAP target was set aside.
+
+**Since:** 2026-11-04, writable DAX deleted (37c331a6c, TASK-164): the window holds no staging
+pages and evacuation is gone. Moot.

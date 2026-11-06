@@ -12,3 +12,6 @@ write mapping its page alone.
 regions.
 **Reopen if:** Regions can be freed without every file's range letting go of them, for example if
 staging regions stop mixing files' pages.
+
+**Since:** 2026-11-04, writable DAX deleted (37c331a6c, TASK-164): evacuation and staging regions
+for writes are gone. Moot.

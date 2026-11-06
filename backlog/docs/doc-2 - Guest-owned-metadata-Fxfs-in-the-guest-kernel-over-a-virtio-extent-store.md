@@ -3,12 +3,22 @@ id: doc-2
 title: 'Guest-owned metadata: Fxfs in the guest kernel over a virtio extent store'
 type: specification
 created_date: '2026-10-13 19:53'
-updated_date: '2026-11-04 16:32'
+updated_date: '2026-11-06 06:52'
 ---
 # Guest-owned metadata: Fxfs in the guest kernel over a virtio extent store
 
 Status: agreed design, 2026-10-13. Milestone 1 is planned; later milestones are outlined. Some decisions
 are provisional, and milestone 1 settles them (see Open decisions).
+
+**Status, 2026-11-06:** built, on Firecracker rather than libkrun (TASK-40): Fxfs in the guest kernel
+(TASK-26.6), snapshots and live forks of a running VM's store (TASK-39.1, TASK-39.3), object storage
+(TASK-28, doc-7), local disk becoming its write-ahead log and cache (doc-14, TASK-165), copy-on-write
+DAX (doc-13). Milestone 1's open question, the write path, was decided on 2026-11-04 from the
+first-principles review's measurements (docs/reviews/2026-11-04-first-principles.md, section 1):
+sealed extents alone on DAX, a store's page copied on write, data written by `WRITE` requests at
+writeback (doc-13, TASK-164). The host's page cache is fxdax's own extent cache
+(`crates/fxdax/src/cache.rs`); the in-process Zircon kernel was deleted (TASK-96.1). The plan below
+is kept as written, with revisions marked.
 
 ## Why
 
@@ -90,7 +100,7 @@ Settled in a design review on 2026-10-13.
 ## Architecture
 
 ```
- guest kernel                         host (libkrun + fxdax)                 object storage
+ guest kernel                         host (Firecracker + fxdax)             object storage
 ┌───────────────────────────┐        ┌──────────────────────────────┐      ┌─────────────────────┐
 │ VFS                       │        │ extent-store device          │      │ segments (packed    │
 │  └ Fxfs (ported)          │ virtio │  ├ extent index per branch   │ GCS  │  extents, commit    │
@@ -164,13 +174,14 @@ A shared extent is reclaimed only when every branch that inherited it has freed 
 with back-references in btrfs snapshots. Each branch records its own frees, and garbage collection
 decides.
 
-**Page cache.** The shared pages are the in-process kernel's pager-backed memory, keyed by extent. The
-same machinery serves fxdax's DAX windows today:
+**Page cache.** The shared pages are fxdax's extent cache (`crates/fxdax/src/cache.rs`), physical memory
+keyed by extent (the in-process kernel's pager-backed memory until TASK-96.1). The DAX windows map it
+with:
 
-- userfaultfd faults;
-- write-protect dirty tracking;
+- userfaultfd faults (`crates/fxdax/src/dax/uffd.rs`);
+- write-protect faults, a store's copy on write (doc-13);
 - KVM pre-faulting;
-- the VMA-replacement race fix with EFAULT retry.
+- the EFAULT retry (`crates/fxdax/src/dax/failures.rs`).
 
 Every VM and fork on the host maps the same pages for the same extent. Behind memory sits a cache on
 local NVMe, and behind that, ranged reads from object storage with read-ahead.
@@ -193,6 +204,9 @@ local NVMe, and behind that, ranged reads from object storage with read-ahead.
 - `frees/<branch>/<seq>`: the extents the branch freed.
 - `leases/<branch>`: the epoch, held with conditional writes (S3 `If-Match`; GCS generation
   preconditions).
+
+*Revised (doc-7, Layout):* the bucket keeps `checkpoints/<branch>/<seq>`, and no `index/` or `frees/`:
+a segment's footer is its index delta and its frees (`extent_remote::layout`).
 
 **Garbage collection** reads branches, indexes and frees to find extents that no live branch can still
 reach. It compacts segments that are mostly garbage and records its progress with conditional writes. It
@@ -236,6 +250,9 @@ Provisional choices, which milestone 1 or the fork milestone settles:
 - Fxfs moves from the host to the guest, behind a new device layer.
 - The FUSE server and virtio-fs device give way to the extent-store device.
 - Host persistence moves from an image file to object storage, through local caches.
+
+*Revised 2026-11-06:* the Zircon kernel port was deleted (TASK-96.1): the extent cache, physical memory
+and DAX windows are fxdax's own. libkrun was removed for Firecracker (TASK-40).
 
 ## Milestones
 

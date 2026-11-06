@@ -13,3 +13,6 @@ only, and writes go through the guest page cache. That removes the write and sto
 retries the driver mostly governs, and the lock cycle (fault, semaphore, gate, seal) that made
 the retries necessary.
 **Reopen if:** read-only DAX is abandoned and writable DAX kept.
+
+**Since:** 2026-11-04, writable DAX deleted (37c331a6c, TASK-164): copy-on-write DAX (doc-13) is
+the only DAX; writable-dax.md.

@@ -3,7 +3,7 @@ id: doc-4
 title: Virtio extent-store device specification
 type: specification
 created_date: '2026-10-13 22:18'
-updated_date: '2026-11-06 01:18'
+updated_date: '2026-11-06 06:39'
 ---
 # The virtio extent-store device
 
@@ -89,7 +89,7 @@ Settled in a design review on 2026-10-13:
 | 2 | `VIRTIO_EXTENT_F_WRITE_COMMIT` | `WRITE` takes `WRITE_COMMIT`: a commit follows the write. |
 | 3 | `VIRTIO_EXTENT_F_RESIZE` | The configuration holds `capacity` and `asked`, which change while the device runs (Resizing); the guest answers a shrink with `RESIZED`. |
 | 4 | `VIRTIO_EXTENT_F_FREEZE` | `FREEZE` works, and `INFO` says the `branch` (Snapshots). |
-| 5 | `VIRTIO_EXTENT_F_READ_ONLY` | The device follows a store another VM writes, read-only (Followers): `ADVANCE`, `LET_GO`, `PIN` and `UNPIN` work, and the configuration holds `committed`, which changes while the device runs. Excludes `WRITE_COMMIT` and `RESIZE`. With `DAX`, its window copies nothing: a store to it is refused, `PRIVATE` fails with `EROFS`, and `private_max` is 0. |
+| 5 | `VIRTIO_EXTENT_F_READ_ONLY` | The device follows a store another VM writes, read-only (Followers): `ADVANCE`, `LET_GO`, `PIN` and `UNPIN` work, and the configuration holds `committed`, which changes while the device runs. Excludes `WRITE_COMMIT` and `RESIZE`. With `DAX`, its window copies nothing: a store to it is refused, `PRIVATE` and `MAP_ZEROS` fail with `EINVAL`, and `private_max` is 0. |
 | 6 | `VIRTIO_EXTENT_F_FREE_MANY` | `FREE` takes `FREE_MANY`: its data names more extents to free (TASK-41). Excludes `READ_ONLY`. |
 | 7 | `VIRTIO_EXTENT_F_MAP_MANY` | `MAP` takes `MAP_MANY`: its data holds more maps (TASK-91.4). Needs `DAX`. |
 | 8 | `VIRTIO_EXTENT_F_MAP_AHEAD` | `MAP`, and each of its further maps, takes `MAP_AHEAD`: the guest accesses the pages next (TASK-112.1). Needs `DAX`. |
@@ -224,6 +224,8 @@ struct virtio_extent_resp {
 | 16 | `PRIVATE` | `le64 window_offset; le64 len;` | none |
 | 17 | `STATS` | `le64 asked;` (the `stats_asked` it answers) | device reads the guest's stats, text, the rest of the request's data (Stats) |
 
+Type 15 was writable DAX's `SEALED`, and `MAP`'s flag bit 0 its `MAP_WRITE`: retired, not reused.
+
 ### `WRITE`
 
 Writes `len` bytes at `offset` in extent `id`. Both are multiples of `block_size`, and the end is
@@ -291,7 +293,8 @@ multiples of `map_alignment`, and the range lies within the window.
 - The mapping is read-only to the extent: a store to one of its pages makes the page private
   (Shared memory), and the extent never changes.
 - With `MAP_ZEROS` (bit 3), the range maps zeros, `id` and `offset` ignored: holes, and pages past
-  a file's end, which a store then makes private pages of zeros, with nothing to copy.
+  a file's end, which a store then makes private pages of zeros, with nothing to copy. A
+  follower's window takes no `MAP_ZEROS` (`EINVAL`).
 - A `MAP` replaces whatever the window held there, freeing its private pages.
 
 With `MAP_MANY` (bit 1, `F_MAP_MANY`), the data holds more maps, each a
@@ -314,7 +317,7 @@ pages.
 none, and maps them for the guest ahead of its accesses, as `MAP_AHEAD` does: a guest about to
 write many pages that aren't private yet, as a `write(2)` of them, makes them so in one round trip,
 rather than a fault of the host's each. Pages already private stay as they are. It fails with
-`ENOMEM` past `private_max`, and with `EINVAL` where nothing is mapped.
+`ENOMEM` past `private_max`, and with `EINVAL` where nothing is mapped, or of a follower's window.
 
 Every VM on a host that maps the same extent maps the same host pages, which is safe because
 extents never change once sealed.
@@ -383,13 +386,13 @@ its own count and the floor there may be 2^40 numbers.
 | Status | When |
 |---|---|
 | `0` | Success. |
-| `EPERM` (1) | A write to a sealed extent, or to another branch's; a `MAP` of an open extent. |
+| `EPERM` (1) | A write to a sealed extent, or to another branch's; a `MAP` of an open extent; a `WRITE`, `FREE` or `COMMIT` of a public base's store (TASK-43). |
 | `ENOENT` (2) | A `READ` or `MAP` of an extent that does not exist, or was freed. |
 | `EIO` (5) | The store failed to read or write. |
-| `EINVAL` (22) | An unknown type or flag, a misaligned or out-of-range offset, length or window offset, or a feature's flag the device does not offer. |
+| `EINVAL` (22) | An unknown type or flag, a misaligned or out-of-range offset, length or window offset, or a feature's flag the device does not offer. With `F_READ_ONLY`, a `PRIVATE`, or a `MAP_ZEROS`. |
 | `ENOMEM` (12) | A `PRIVATE` past `private_max`. |
 | `ENOSPC` (28) | The store cannot hold more for this branch. |
-| `EROFS` (30) | The store stopped taking writes for this branch: another host took its lease (milestone 4), or the host is shutting it down. Reads still work. With `F_READ_ONLY`, every `WRITE`, `FREE`, `COMMIT`, `PRIVATE` and `RESIZED`. |
+| `EROFS` (30) | The store stopped taking writes for this branch: another host took its lease (milestone 4), or the host is shutting it down. Reads still work. With `F_READ_ONLY`, every `WRITE`, `FREE`, `COMMIT` and `RESIZED`. |
 | `ESTALE` (116) | `F_READ_ONLY`: the follower was cut off (Followers). |
 
 With `F_READ_ONLY`, a `READ` or `MAP` of an extent the follower's view let go of (freed before
@@ -491,7 +494,8 @@ each VM sees it as follows (TASK-50.2):
 Each VM's filesystem is a branch, with its own ID and root.
 
 - **Forking** a branch makes a child with a new ID, a copy of the parent's root, and every extent
-  the parent had at the fork. It takes O(1): the host records the parent and the fork point.
+  the parent had at the fork. It takes O(1): the host records the parent and the fork point, in
+  its bucket (crates/extent_remote/src/branch.rs); a store directory on the host holds one branch.
 - **After a fork,** each branch mints extents under its own ID. A branch that frees an inherited
   extent drops only its own claim, and the host deletes the extent once every branch that has it has
   freed it.
@@ -518,7 +522,8 @@ had in its memory, so the snapshot is taken at a point nothing is open:
   `READ`, `MAP` of sealed extents and `UNMAP` go on. It tells the device with `FREEZE` and
   `FREEZE_FROZEN`. Freezing writes back every dirty page and maps every private page back to the
   extent that now holds it, so that the window maps extents and zeros alone. A VMM refuses to
-  snapshot a device whose guest isn't frozen, or whose window holds a private page.
+  snapshot a device whose guest isn't frozen. (fxdax's Firecracker does not check the window for
+  private pages: it records what each mapping was copied from, not a private page's bytes.)
 - **The snapshot** holds the device's state, its window's place in guest memory and what each
   mapping of the window maps (an extent's bytes, or zeros), and a point of the store: the host
   forks the store, as of its last commit, which with nothing open is all the guest wrote.
@@ -539,18 +544,22 @@ This section describes how the host stores extents. It is not part of the protoc
   about 16-64 MiB. Extents of 4 MiB and more are stored on their own, as objects of their own.
 - **The index.** An index maps each extent ID to its segment and offset, or to its own object. Each
   upload adds to it, with periodic checkpoints.
-- **Cleaning.** The host rewrites segments that are mostly freed extents, copying the live small
-  extents into new segments. Large extents are deleted whole and never copied.
+- **Cleaning.** The bucket's collector (`fxdax-gc`, crates/extent_remote/src/collector.rs), the
+  only cleaner, compacts objects that are mostly freed extents, copying the live small extents
+  into new objects. Large extents are deleted whole and never copied. The host cleans nothing
+  locally (TASK-165.8).
 - **Milestone 1** keeps segments, large extents and the index in files on local disk. Milestone 3
-  uploads them to object storage, in the layout doc-2 describes, and keeps local disk as a cache.
+  uploads them to object storage, in the layout doc-2 describes; a segment acknowledged there
+  leaves the store for the host's part cache.
 - **Caches.** The host's memory and NVMe cache extents by ID: pages in memory, which VMs map through
   their DAX windows, and extents on NVMe, which misses in memory read from before object storage.
   Every VM, fork and snapshot on the host that reads the same extent shares both.
 
 ## What Fxfs becomes
 
-One on-disk format: extents only (TASK-26.3). The same Fxfs runs on the host, for fxdax's virtio-fs
-path, whose image files become a local extent store, and in the guest.
+One on-disk format: extents only (TASK-26.3). The same Fxfs runs on the host, where fxdax builds
+images and imports container images into stores (crates/fxdax/src/image.rs, import.rs), each a
+local extent store, and in the guest.
 
 | Fxfs | Becomes |
 |---|---|

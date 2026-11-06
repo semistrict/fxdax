@@ -10,3 +10,5 @@ counted the rest: 45,698 read waits, 17.83 s; 4,968 write waits, 1.6 ms; faults 
 (TASK-112.4).
 **Reopen if:** The counters change, as they did under evacuation-semaphore-downgrade.md, where
 writes waited 7.5 s.
+
+**Since:** 2026-11-04, writable DAX deleted (37c331a6c, TASK-164): evacuation is gone. Moot.

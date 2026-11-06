@@ -10,3 +10,7 @@ write_iter change: without it crash-dax passes. The hang was not diagnosed furth
 bugs were fixed otherwise: faults take file->sem only by trylock and retry without their DAX entry
 (718788ca9); a range too small for the write is dropped and mapped again (97e9fa8ee).
 **Reopen if:** The hang is diagnosed and something needs this lock held across the copy.
+
+**Since:** 2026-11-04, writable DAX deleted (37c331a6c, TASK-164): the gate and moves are gone, and
+with them both bugs' causes; copy-on-write DAX's one locking rule is the file's semaphore (doc-13,
+invariant 3). Nothing needs this lock across the copy for them.

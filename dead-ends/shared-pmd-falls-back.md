@@ -4,7 +4,7 @@
 **Idea:** `fxfs_dax_iomap_read` said a fault's pages were shared and made the iomap a page short of a
 PMD if a slice or a move had them in a region, so that `dax_iomap_pmd_fault` falls back. 3,000 seeds
 passed with it.
-**Result:** `tests/pmd_over_stale_index` WARNs at fs/dax.c:458 with it. A range's own space says
+**Result:** `guest/sim/tests/pmd_over_stale_index.c` WARNs at fs/dax.c:458 with it. A range's own space says
 shared too, through a page relocated (`fxfs_dax_cow`), which its condition missed. Moving the
 condition after `fxfs_dax_cow` can't work: `fxfs_dax_cow` forgets pages it says are shared because
 the fault replaces their entries, and a fault that falls back replaces none.

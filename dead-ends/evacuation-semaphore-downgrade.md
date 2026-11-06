@@ -13,3 +13,6 @@ the placing, which skipped its runs.
 **Why it's dead:** Writers need the semaphore for writing, so they keep waiting behind the MAP, and
 the placing then races them for the range.
 **Reopen if:** Nothing in this form. The live design is TASK-112.5, a MAP with no semaphore held.
+
+**Since:** 2026-11-04, writable DAX deleted (37c331a6c, TASK-164): evacuation is gone, TASK-112.5's
+MAP with no semaphore held with it. Moot.

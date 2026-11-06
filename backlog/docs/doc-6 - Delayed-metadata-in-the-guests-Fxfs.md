@@ -3,9 +3,11 @@ id: doc-6
 title: Delayed metadata in the guest's Fxfs
 type: other
 created_date: '2026-10-15 08:43'
-updated_date: '2026-10-30 22:45'
+updated_date: '2026-11-06 06:43'
 ---
 # Delayed metadata in the guest's Fxfs (TASK-26.18.2)
+
+**Status: landed (TASK-26.18.2),** as `Delayed` in crates/fxfs-posix/src/lib.rs, differing from the design below: only unlinks of non-directories are delayed, not rmdir; two workers (`DELAYED_WORKERS`) apply batches of different inodes at once, each inode's operations in the order queued, and changes of names and syncs drain all first (`drain_all`); a batch tombstones, in its own transaction, the evicted inodes whose unlinks it holds; and the queue holds at most 128 (`DELAYED_QUEUE`), past which an unlink applies batches itself rather than block.
 
 ## Why
 

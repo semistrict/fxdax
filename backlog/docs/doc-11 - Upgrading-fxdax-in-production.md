@@ -3,7 +3,7 @@ id: doc-11
 title: Upgrading fxdax in production
 type: other
 created_date: '2026-10-31 20:30'
-updated_date: '2026-11-06 01:09'
+updated_date: '2026-11-06 06:37'
 ---
 # Upgrading fxdax in production (TASK-141)
 
@@ -14,7 +14,7 @@ AGENTS.md's rule, the user's (2026-11-05): **no migrations, ever**. A format cha
 | Layer | How it is versioned | What a mismatch does today |
 |---|---|---|
 | Fxfs format (guest kernel, `crates/fxfs`) | `LATEST_VERSION` 61; `EARLIEST_SUPPORTED_VERSION` is `LATEST_VERSION` (`serialized_types/types.rs`) | A filesystem of any other version is refused at mount, its version named (`FxfsError::InvalidVersion`, `EINVAL` in the guest), writing nothing; so are a manifest, and a base's layers, of another (TASK-141.1) |
-| Store files (`extent_store`) | `FORMAT`, "fxdax extent store 6" (6 names the bucket, TASK-165.6), matched exactly | Refused, opened or deleted, by its format (`extent_store::Format`, `ENOTSUP`) |
+| Store files (`extent_store`) | `FORMAT`, "fxdax extent store 7" (6 named the bucket, TASK-165.6; 7 places bucket data by its location there and holds one branch, no branch records, TASK-165.7, TASK-165.8), matched exactly | Refused, opened or deleted, by its format (`extent_store::Format`, `ENOTSUP`) |
 | Branches in a bucket (`extent_remote`) | `layout::FORMAT` 2, first in each branch's record (TASK-165.3); each framed object's trailer ends with its frame's (TASK-141.2) | A daemon refuses a branch of any other format, older ones too, naming it, reading nothing else of it; the collector's pass stops, deleting nothing |
 | VM process and daemon (`extentd/wire.rs`) | No handshake. `BUILD` is optional: an older daemon's `EINVAL` is let be | Nothing refuses a VM process of another build: TASK-141.3 |
 | Guest and device (virtio) | Feature bits (doc-4) | Negotiated: a guest runs on a device of another build: TASK-141.3 |

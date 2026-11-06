@@ -10,3 +10,6 @@ at `out:` in `fxfs_dax_iomap_write`, mapping what moved and isn't mapped yet on 
 (e4b6b24d7). r338: debug kernel with move checks, 15 of 15 through torture, signature 0 times. r339:
 checks-dax, -delay, -small, crash-dax 6 of 6 each.
 **Reopen if:** Nothing in this form.
+
+**Since:** 2026-11-04, writable DAX deleted (37c331a6c, TASK-164): no store moves a block, so
+`moved` and the fix at `out:` are gone with the fault they fixed.

@@ -10,3 +10,7 @@ live, whose live bytes include the uploader's kept frees, and some victims' live
 are refused was chosen (see enospc-on-dead-space.md).
 **Reopen if:** Cleaning can always make progress against what a guest frees, for example with moves
 outside the open segment, or cleaning sized to what commits free.
+
+**Since:** 2026-11-05, local cleaning deleted (a31f82a98, TASK-165.8): the host no longer cleans
+(CLEAN_BELOW, CLEAN_PASS gone); acknowledged segments leave the store for the host's part cache
+(`Cache::adopt`), and the bucket's collector is the only cleaner. Moot.

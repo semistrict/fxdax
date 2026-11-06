@@ -13,3 +13,7 @@ in disk bytes, with commits, seals and cleaning never refused, a credit of at mo
 a commit's own writes, and the uploader's holdings left out (3ca2e731; the user accepted a 4x
 effective ceiling).
 **Reopen if:** Nothing in this form.
+
+**Since:** 2026-11-05, local cleaning deleted (a31f82a98, TASK-165.8): the 3x-capacity bound,
+cleaning's copies and `Usage::dead_bytes` are gone. Acknowledged segments leave the store for the
+host's part cache (`Cache::adopt`), and the bucket's collector is the only cleaner.

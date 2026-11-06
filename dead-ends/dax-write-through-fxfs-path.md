@@ -12,3 +12,7 @@ stayed correct under fxfs.dax_delay_us=200; only mechanism asserts failed.
 **Why it's dead:** Each write(2) drops its 2 MiB chunk, so reads map it all again.
 **Reopen if:** The write path invalidates only the written pages and maps them again from Fxfs's new
 blocks. TASK-118 notes that is close to what the window write path already does.
+
+**Since:** 2026-11-04, writable DAX deleted (37c331a6c, TASK-164): under copy-on-write DAX (doc-13)
+a write(2) or store makes its page private at the same window address, and writeback copies it into
+new extents Fxfs allocates, so nothing is dropped or mapped again for a write. Answered another way.

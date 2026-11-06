@@ -11,3 +11,8 @@ shared page cache are safe only because an extent never changes once a commit ha
 committed prefix would still need the same write protection before anything else could map it, so
 deferring the seal would not remove that cost. Doc-9 ranks this last of its levers.
 **Reopen if:** Doc-9's cheaper levers don't close the gap (its section 2, item 5).
+
+**Since:** 2026-11-04, writable DAX deleted (37c331a6c, TASK-164): copy-on-write DAX (doc-13) maps
+no open extent, so a seal changes nothing in the window and nothing is restaged or evacuated: the
+cost this was to save went another way. writable-dax.md keeps this as a way writable DAX could come
+back.

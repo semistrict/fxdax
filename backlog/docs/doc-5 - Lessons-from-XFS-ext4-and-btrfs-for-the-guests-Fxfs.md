@@ -3,7 +3,7 @@ id: doc-5
 title: 'Lessons from XFS, ext4 and btrfs for the guest''s Fxfs'
 type: other
 created_date: '2026-10-15 08:29'
-updated_date: '2026-10-15 08:29'
+updated_date: '2026-11-06 06:43'
 ---
 # Lessons from XFS, ext4 and btrfs for the guest's Fxfs
 
@@ -11,7 +11,7 @@ Read from Linux 7.3-rc3 (~/src/linux, fs/xfs, fs/ext4, fs/btrfs) on 2026-10-15, 
 
 ## Metadata: keep the directory-lock critical section short
 
-XFS does nothing special about the directory's i_rwsem: `xfs_vn_unlink` (xfs_iops.c:403) runs `xfs_remove` (xfs_inode.c:1912) under it. What runs there is short and never sleeps: lockless log reservation, ILOCKs, cached-buffer edits, and a commit into the CIL under a shared lock. In a 2-vCPU guest, a spinning i_rwsem waiter burns half the machine, so hold time is the lever. Fxfs's unlink holds the lock across transaction building, the commit mutex, journal serialization and skip-list apply.
+XFS does nothing special about the directory's i_rwsem: `xfs_vn_unlink` (xfs_iops.c:403) runs `xfs_remove` (xfs_inode.c:1912) under it. What runs there is short and never sleeps: lockless log reservation, ILOCKs, cached-buffer edits, and a commit into the CIL under a shared lock. In a 2-vCPU guest, a spinning i_rwsem waiter burns half the machine, so hold time is the lever. Fxfs's unlink held the lock (until doc-6's delayed unlinks, TASK-26.18.2) across transaction building, the commit mutex, journal serialization and skip-list apply.
 
 1. **Cheap, concurrent commits (CIL, xfs_log_cil.c).**
    - Shadow buffers are allocated and sized before any lock (:268, :1830-1835).
@@ -69,3 +69,5 @@ XFS does nothing special about the directory's i_rwsem: `xfs_vn_unlink` (xfs_iop
 ## VFS features missing in Fxfs (TASK-26.19)
 
 O_TMPFILE, fallocate, fiemap, fileattr, POSIX ACLs, remap_file_range, freeze/unfreeze, show_options, shutdown, `fs_flags` (FS_MGTIME, FS_ALLOW_IDMAP) and SB_I_VERSION, export_operations, shrinker hooks for cached objects, large folios, O_DIRECT, and MAP_SYNC.
+
+*As of 2026-11-06:* TASK-26.19 added all of these but shutdown and MAP_SYNC (guest/linux/fs/fxfs/super.c, data.c, dax.c).

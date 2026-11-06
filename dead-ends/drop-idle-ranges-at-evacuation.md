@@ -12,3 +12,5 @@ piece. 5000 ms: 1131/1039/990/957/948, 77 ranges dropped in all.
 files being read. A short limit drops ranges still in use, and a long one drops almost nothing.
 **Reopen if:** Dropping works at a page's grain, not a range's. That needs what
 evacuation-by-dropping-pages.md lacks.
+
+**Since:** 2026-11-04, writable DAX deleted (37c331a6c, TASK-164): evacuation is gone. Moot.

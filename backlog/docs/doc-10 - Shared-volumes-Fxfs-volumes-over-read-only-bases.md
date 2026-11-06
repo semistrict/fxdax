@@ -3,7 +3,7 @@ id: doc-10
 title: 'Shared volumes: Fxfs volumes over read-only bases'
 type: specification
 created_date: '2026-10-30 09:08'
-updated_date: '2026-11-06 01:09'
+updated_date: '2026-11-06 06:43'
 ---
 # Shared volumes: Fxfs volumes over read-only bases
 
@@ -43,11 +43,12 @@ Proposals, not yet confirmed: new mounts taking the latest generation, and untou
 A store fork already makes every volume private, with no `snapshot_volume`, and needs no store or
 device change. But the base's whole size lands on each cold mount:
 
-- Every mount opens every volume (`crates/fxfs/src/object_store/object_manager.rs:252`), loading
-  each layer's seek table and bloom filter.
+- Every mount opens every volume (`crates/fxfs/src/object_store/object_manager.rs:261`), loading
+  each layer's seek table and bloom filter. (Since TASK-136.2, not with `Options::lazy_volumes`,
+  below.)
 - Every mount scans the whole allocator tree into memory
-  (`crates/fxfs/src/object_store/allocator.rs:1051`).
-- Each volume's layers reserve 1.5 times their size (`object_store.rs:2043`), and each volume's
+  (`crates/fxfs/src/object_store/allocator.rs:1053`).
+- Each volume's layers reserve 1.5 times their size (`object_store.rs:2168`), and each volume's
   tree cache takes the whole `object_cache_items` budget.
 
 VM snapshots hide those mounts, up to the snapshot. Baking also ties a sandbox's root image to the
@@ -74,7 +75,8 @@ volume, so each repo has a native `st_dev` and `EXDEV`, and attaching needs no n
 - `struct fxfs_vfs_filesystem` holds what a device's superblocks share, and in Rust `Filesystem`,
   which the last unmount closes. A follower still mounts its default volume alone.
 - The DAX window is the device's. Each volume has its own table of files, as inode numbers collide
-  across volumes. An unmount with others staying drops its ranges and leaves evacuation running.
+  across volumes. An unmount with others staying drops its ranges and leaves the private pages'
+  budget worker running for them.
 - The filesystem freezes once all its superblocks are frozen, also when the last unfrozen one
   unmounts, and thaws with the first. No volume mounts while it is frozen (`EBUSY`).
 - Stores' tree caches share one budget. Over it, each cache gives up its oldest item in turn, so
@@ -189,14 +191,14 @@ sandbox's alternates can move to the latest and lose nothing.
 
 Built. `AttachBase` names a generation, pinned by an ordinary fork of the base's branch: existing
 collection applies, and sandboxes on one generation share one pin, one `ExtentStore` the daemon
-opens the first time any of them reads through to it. `READ` and read-only `MAP` of an extent of a
+opens the first time any of them reads through to it. `READ` and `MAP` of an extent of a
 branch in the fork's ancestry, and not the sandbox's own, go to it, by a lookup of the branch in the
 extent's ID (`Bases`, `crates/fxdax/src/extents.rs`). The extent cache is keyed by extent ID, so
 pages stay one copy. However many are attached, each costs a line and map entries until it is read.
 
 This changes doc-4's rule that an extent is the guest's or inherited, in the VM attachment, not the
 store core: `crates/extent_store` didn't change. The record is a file beside the store, in its
-directory or handle (`attached-bases`), which a fork copies before its commit, so that forks and
+directory (`attached-bases`), which a fork copies before its commit, so that forks and
 restored VMs keep it, and which goes with the store. A guest has no request that touches it.
 
 A guest names the extent IDs it reads, so everything reachable from an attached base is readable to
@@ -247,7 +249,7 @@ with them, and the first generation stays pinned.
 
 An in-place swap would replace a volume's base layers under the live mount on a fast-forward, so
 that those layers stop growing and old generations unpin. Part of it exists: `set_layers` already
-installs layers under readers (`crates/fxfs/src/object_store/flush.rs:357`), and a follower's change
+installs layers under readers (`crates/fxfs/src/object_store/flush.rs:362`), and a follower's change
 sets drop what the kernel caches and hold open files (doc-8), on read-only mounts. It would still
 need stable object IDs across generations, object ID ranges that publisher and sandboxes don't
 share, a record-level three-way check (`.git/index` and directory attributes conflict on nearly

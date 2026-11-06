@@ -11,3 +11,7 @@ suite (TASK-119.19, read-only map x commit, writable map x commit) and specs/ext
 (TASK-119.20) agree. The cause was in the guest: a fault leaving with its blocks moved and unmapped
 (e4b6b24d7).
 **Reopen if:** `commit_and_seal` stops holding `open` throughout.
+
+**Since:** 2026-11-04, writable DAX deleted (37c331a6c, TASK-164): `map_open`, `commit_and_seal`
+and specs/extent-open are gone; the window never maps an open extent (doc-13, invariant 1), so the
+race can't be posed.

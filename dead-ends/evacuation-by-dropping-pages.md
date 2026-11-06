@@ -12,3 +12,7 @@ already noted this before the attempt.
 dropped page makes its whole range be forgotten (see drop-idle-ranges-at-evacuation.md for the cost
 of that at a range's grain).
 **Since:** 2026-10-31 that lack was made up, and it still lost: evacuation-leaving-pages-absent.md.
+
+**Since:** 2026-11-04, writable DAX deleted (37c331a6c, TASK-164): evacuation is gone. dax.c now
+maps a page before use rather than read an unmapped one as a hole (guest/sim's
+unmapped-page-read-as-hole mutant). Moot.

@@ -11,3 +11,8 @@ and retried through the guest task's own fault. All 133 of r244's came from KVM'
 workers.
 **Reopen if:** Nothing in this form. scripts/dax-refusals.py (5a2a6a12b) fails a run only on a
 refused store no seal explains.
+
+**Since:** 2026-11-04, writable DAX deleted (37c331a6c, TASK-164): no seal makes a mapped page
+read-only under the guest any more. The window refuses a store only to a page it maps nothing at,
+or past `private_max` (doc-13), and scripts/dax-refusals.py now fails a run on any refused store a
+vCPU made, not a KVM worker's (TASK-150.16).

@@ -11,3 +11,5 @@ killed once in ~70 rounds. The check was dropped before landing, by the user's c
 page, taken for writable, before the next seal, and no check made one in those runs.
 **Reopen if:** A pause point holds the evacuation between gathering and MAP, so the window is forced
 rather than hoped for.
+
+**Since:** 2026-11-04, writable DAX deleted (37c331a6c, TASK-164): evacuation is gone. Moot.

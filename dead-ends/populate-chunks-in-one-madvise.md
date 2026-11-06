@@ -6,5 +6,5 @@ chunk would avoid the per-fault overhead.
 **Result:** It only moved the cost.
 **Why it's dead:** The time is in the host's allocation, memcg charge and zeroing of each page, not
 in the faults taking it. Doing that work on the MAP's path costs the same however it's called. It
-was moved off the path instead, by a spare chunk faulted in ahead of use (45112ca).
+was moved off the path instead, by a spare chunk faulted in ahead of use (2117ed3ae).
 **Reopen if:** Nothing in this form.

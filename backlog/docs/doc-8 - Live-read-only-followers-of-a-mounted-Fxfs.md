@@ -3,7 +3,7 @@ id: doc-8
 title: Live read-only followers of a mounted Fxfs
 type: specification
 created_date: '2026-10-17 22:17'
-updated_date: '2026-10-30 22:45'
+updated_date: '2026-11-06 06:41'
 ---
 # Live read-only followers of a mounted Fxfs
 
@@ -16,6 +16,11 @@ mutex fallback and SRCU (TASK-42.10), 2026-10-19. Tasks: TASK-42, in order: the 
 per-batch comparison, trace validation), the follower in Fxfs (42.4), the concurrency protocol
 under Shuttle (42.5, once 42.8 is done), extentd, doc-4 and Firecracker (42.3), the guest kernel
 (42.6), the guest torture test and measurements (42.7).
+
+*Frozen 2026-11-04* (docs/reviews/2026-11-04-first-principles.md, decision 4: no customer now):
+the code stays, tested and kept working through later changes, but nothing new is built for it.
+Copy-on-write DAX (doc-13) left a follower's window mapping sealed extents read-only, as before;
+local cleaning is gone (TASK-165.8), so nothing moves a view's extents but their upload.
 
 Other VMs on the host mount a store read-only while a VM has it mounted read-write, and follow
 it: they see what the writer commits, as it commits it, without remounting. This is the design
@@ -57,8 +62,8 @@ A commit seals every open extent (doc-4): what the writer wrote before it is imm
 The store as of commit N is its extent table and root at N, all of it sealed, and the journal up
 to N's sealed lengths. So a follower needs no fork and no forced commit: it needs the writer's
 frees after N kept while it may still read what they freed. ExtentStore already keeps freed
-extents for one other party, the uploader (`uploads.kept`, until its epoch is uploaded); a view
-is a second kind of party.
+extents for one other party, the uploader (`State::kept`, crates/extent_store/src/kept.rs, until
+its epoch is uploaded); a view is a second kind of party.
 
 Fxfs's journal replay ends at the first checksum mismatch (journal/reader.rs). A view returns
 nothing past commit N's sealed lengths, so a follower's replay ends exactly at commit N.
@@ -71,12 +76,13 @@ Built (TASK-42.2): `crates/extent_store/src/views.rs`, `Store::{view, read_view,
 
 - `Store::view()`: the branch as of its latest commit, its epoch and root. `View::advance()` moves
   it to the latest commit. Sealed extents never change and IDs are never reused, so a view copies
-  no extent table: an extent its commit holds is held still, as it was, wherever cleaning moved
-  it, or freed since and kept. A view refuses open extents, which no commit holds; extents of
-  later commits it doesn't tell from its own, as its follower never asks for them.
+  no extent table: an extent its commit holds is held still, as it was, wherever its data is now,
+  in the store or, acknowledged, in the bucket (TASK-165.8), or freed since and kept. A view
+  refuses open extents, which no commit holds; extents of later commits it doesn't tell from its
+  own, as its follower never asks for them.
 - A free of an extent sealed before is kept while a view older than the commit that freed it
-  lives, or a view pins it, or the uploader needs it: not deleted, its segment pieces still
-  counted live (so compaction leaves them). The kept bytes count as used (INFO, writes' room).
+  lives, or a view pins it, or the uploader needs it: not deleted, its data still read where it
+  is. The kept bytes count as used (INFO, writes' room).
 - What a commit's frees keep is decided as the commit is published to views, in one critical
   section: a view opened before is of an earlier commit, one opened after needs none of them.
   Until its commit, a free is undecided, and its data stays.
@@ -112,8 +118,8 @@ client}.rs`), doc-4's Followers.
 - OPEN takes a read-only flag: a connection opening a store another connection holds gets a view
   of it, rather than EBUSY; with no writer connected, a view of the store as of its last commit
   (a writer may open it meanwhile).
-- On a read-only connection, READ, MAP (read-only mappings only), ROOT and INFO are served from
-  the view; WRITE, COMMIT, FREE, FORK and RESIZE fail with EROFS. ADVANCE moves the view, and
+- On a read-only connection, READ, MAP, ROOT and INFO are served from the view; WRITE, COMMIT,
+  FREE, FORK and RESIZE fail with EROFS. ADVANCE moves the view, and
   PIN/UNPIN keep single extents (the graveyard).
 - The writer's commits notify its stores' read-only connections (`COMMITTED`, from a thread of
   each that waits on the store's publishes, `Store::newer`, never on its commits); the device

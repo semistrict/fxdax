@@ -5,3 +5,6 @@
 **Result:** It broke `dax.c`'s promise that a file's page stays at one window address. A page's place then lived in `moved`, `stale`, `relocated`, `regions` and the kernel's entries, and every path changing one had to keep the rest true. TASK-153 counts 13 bugs of that shape, ending with the read-fault livelock of TASK-152 (`8af34848c`), where a page at another address had to say shared. Regions filled under fsyncs, so evacuation was added to move pages back, which made it 83% of pgbench's MAPs (r364), and a wait of 83 s of 403 s for writes behind `file->sem` (r453).
 **Why it's dead:** The page's address had to mean two things: where the kernel maps it, and where its block is. Every saving in `write(2)` came back as background MAPs, and as races.
 **Reopen if:** A host MAP costs so little that it no longer matters where it is paid, or never: the point of the fixed address is that nothing has to track where a page is.
+
+**Since:** 2026-11-04, writable DAX deleted (37c331a6c, TASK-164): no store moves a page: a private
+page keeps its window address (doc-13, invariant 2).

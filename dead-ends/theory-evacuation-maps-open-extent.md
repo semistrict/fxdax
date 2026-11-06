@@ -13,3 +13,6 @@ failed round 1, and r221 with it passed 8 of 8. A review also found the host's `
 every mapping of the open extent, which makes evacuating an unsealed region look harmless there.
 **Reopen if:** A trace shows an evacuation's read-only map of an open extent itself losing data.
 open-map-invariant.md found such maps are routine and harmless.
+
+**Since:** 2026-11-04, writable DAX deleted (37c331a6c, TASK-164): evacuation is gone, and the
+window maps no open extent (doc-13, invariant 1). Moot.

@@ -12,3 +12,6 @@ as no seal sealed anything of the extent there, and the next seal seals it. What
 recording it open. With no write recording anything (`OpenExtents`), the retry DAX needs already
 exists: dax.c's `gate != seals` moves the blocks again.
 **Reopen if:** A store refuses writes to extents minted before a seal, which it doesn't know of.
+
+**Since:** 2026-11-04, writable DAX deleted (37c331a6c, TASK-164): `dax_map_write` and dax.c's gate
+are gone; DAX's data reaches the device as WRITEs at writeback, as other writes' do.

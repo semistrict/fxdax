@@ -13,3 +13,6 @@ files. TASK-101 landed the evacuation holding the semaphore for writing from gat
 placing (5183ab50d) instead.
 **Reopen if:** The writer lets go of its semaphore and leaves the gate before it waits, which is
 what TASK-112.5's back-off has to do.
+
+**Since:** 2026-11-04, writable DAX deleted (37c331a6c, TASK-164): evacuation and the gate are
+gone. Moot.

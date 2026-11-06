@@ -11,3 +11,6 @@ after it. The race suite (TASK-119.19) fails with that fix taken out, and specs/
 (TASK-119.20) holds with it. The cause was in the guest: a fault leaving with its blocks moved and
 unmapped (e4b6b24d7).
 **Reopen if:** ExtentStore::write stops holding `open` across its store write.
+
+**Since:** 2026-11-04, writable DAX deleted (37c331a6c, TASK-164): `map_open` and specs/extent-open
+are gone; the window never maps an open extent (doc-13, invariant 1), so the race can't be posed.

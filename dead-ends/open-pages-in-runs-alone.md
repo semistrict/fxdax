@@ -1,6 +1,6 @@
 # Allocating open extents' pages in runs, on the old free list
 
-**Tried:** 2026-10-29, TASK-131.1, branch wip-open-pages-runs (e3a56c44f, later 585a82004), r263 and
+**Tried:** 2026-10-29, TASK-131.1, tag archive/wip-open-pages-runs (e3a56c44f, later 585a82004), r263 and
 r264.
 **Idea:** Open extents' pages were allocated a page at a time, interleaving with every other extent
 allocating at once, so their physical runs came out short and each became a stage map.

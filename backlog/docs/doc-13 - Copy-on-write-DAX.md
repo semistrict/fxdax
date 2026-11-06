@@ -3,7 +3,7 @@ id: doc-13
 title: Copy-on-write DAX
 type: specification
 created_date: '2026-11-04 07:55'
-updated_date: '2026-11-04 16:33'
+updated_date: '2026-11-06 06:42'
 ---
 # Copy-on-write DAX: the window maps sealed extents only; a store gets a private copy
 
@@ -137,7 +137,9 @@ memory without asking other VMs anything.
 - **`COMMIT`** seals as before; it changes nothing in any window.
 - `WRITE`, `READ`, `FREE`, `MAP_MANY`, `MAP_AHEAD`, `UNMAP`, followers, snapshots unchanged, but
   for: a snapshot is refused while the device has a private page (the guest's freeze rebinds them
-  all, below), so a snapshot's window still maps only extents and zeros.
+  all, below), so a snapshot's window still maps only extents and zeros. *As built:* the guest's
+  freeze warns of private pages it couldn't rebind (`no snapshot`), but fxdax's Firecracker doesn't
+  check: it records each mapping's extent or zeros, not a private page's bytes.
 
 ## The host
 
@@ -146,12 +148,16 @@ memory without asking other VMs anything.
   source page in if it isn't, takes a page of the tenant's arena, copies (or zeros, for zeros),
   and maps it writable there: the window's `ptes` entry names the private page, its mapping still
   the source's. KVM's worker's writes are resolved as reads, as now, and the vCPU's own access
-  decides. On arm64, the write-protect fault reports the address, as now.
+  decides. On arm64, the write-protect fault reports the address, as now. *Done differently
+  (TASK-164.1):* a private page is the VM process's own memory, a memfd laid out as the window
+  (`dax::uffd::PrivateMemory`, `STAGE_PRIVATE`), not a page of the tenant's arena; `private_max`
+  is reserved against the tenant's arena as the window is made (OPEN_QUESTIONS.md).
 - **Private pages** are the device's: a source evicting its page skips them; a `MAP` or `UNMAP`
   over one frees it; the device's count and the tenant's are kept with them.
 - **What goes:** open extents' sources in windows (`Source::is_open`, the open extent's memory in
   `crate::cache`), the commit's sealing of windows' mappings (`commit_seal_ns`, `make_read_only`),
-  the open-page pin budget and its `ENOMEM` (`extentd/memory.rs`, `physmem::pin` for open extents),
+  the open-page pin budget and its `ENOMEM` (`extentd/memory.rs`, `physmem::pin` for open extents;
+  both stay, the tenants' limits and the reservation of `private_max`),
   asking guests to seal (`extentd/seals.rs`), writable `MAP`s, and `ExtentStore::open`'s mapped
   half (an extent open in memory, a VMO the window maps).
 - **What stays:** the window, its second stage and the VMM's userfaultfd stage, `MAP_MANY`,
@@ -254,7 +260,10 @@ Nothing new: the page cache's path already allocates at writeback (TASK-80).
   `ExtentAccess` (and `fxfs_dax_access`: every mapped piece is sealed), `Allocator::restage` and the
   staging extent's restaging (packing small files' blocks into shared extents at writeback is
   unchanged), `set_check_kept`, fxfs-posix's `dax_map_write`, `dax_begin_write`/`DaxWrite`,
-  `retrying_sealed`, fxfs-linux's `restage`. `extents_in` returns extents only.
+  `retrying_sealed`, fxfs-linux's `restage`. `extents_in` returns extents only. *As built:*
+  `ExtentAccess` and `enum fxfs_dax_access` stay, `Sealed` and `Open` alone: `extents_in` returns
+  each extent with whether it is still open, which the window may not map yet
+  (crates/fxfs/src/object_store/data_object_handle/dax.rs).
 
 ## Crash consistency and the fsync contract (doc-12 changes)
 
@@ -304,9 +313,10 @@ kernel's dax.c, Fxfs, the host, and the tests, simulator, specs, scripts and doc
   (`fxfs_dax_restage_work`, `fxfs_dax_region_open`, `fxfs_dax_grow*`, writable regions), write(2)
   through the staging region and lagging pages (`fxfs_dax_catch_up`, `fxfs_dax_lags`,
   `fxfs_dax_fall_behind`, `dax_writes_through`), held copies (`dax_fail_held`, `Kept::Held`), the
-  57 sites using errors to break the fault/semaphore/gate/seal cycle (`-EXDEV` retries,
-  `FXFS_DAX_MAX_DROPS`), `fxfs_dax_begin_write`/`end_write`, `fxfs_dax_any_open`, the seal
-  diagnostics (`dax_check_seals`, `dax_verify_seals`, `dax_check_moves`, the shadow's seal checks),
+  57 sites using errors to break the fault/semaphore/gate/seal cycle (`-EXDEV` retries;
+  `FXFS_DAX_MAX_DROPS` stays, bounding slices dropped), `fxfs_dax_begin_write`/`end_write`,
+  `fxfs_dax_any_open`, the seal diagnostics (`dax_check_seals`, `dax_verify_seals`,
+  `dax_check_moves`, the shadow's seal checks),
   and the fault injections for seals (`dax_fault_seals`, `dax_fault_seals_moved`).
 - **Kernel patches:** 0005 (a shared fault replacing a PMD's entry), 0008 (splitting a PMD entry a
   shared PTE fault replaces) and 0009 (a write's copy from kernel memory not stopped) serve writes
@@ -394,6 +404,8 @@ batch.*
    at writeback for files written once; `private_max`'s default.
 
 ## Subtasks to create under TASK-164
+
+*Created as TASK-164.1 to TASK-164.8, in this order.*
 
 1. **Host: copy-on-write DAX window pages** (`DAX_COW`, `private_max`, `MAP_ZEROS`, `PRIVATE`).
    AC: a store to a sealed or zero page gets a private copy at the same address; `MAP`/`UNMAP` free

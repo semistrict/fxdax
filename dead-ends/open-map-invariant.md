@@ -10,3 +10,6 @@ region mapped it writably; some were map_extents' fallback in a range's own spac
 for every mapping of it, so a read through either sees every store: no disagreement, no data lost.
 **Reopen if:** There is a narrower invariant. Telling an evacuation's maps from these needs the
 guest's side, as gather sees only sealed regions (`region->evacuate`).
+
+**Since:** 2026-11-04, writable DAX deleted (37c331a6c, TASK-164): the window maps no open extent:
+a MAP of one fails EPERM (doc-13, invariant 1), so no writable mapping exists to check against.

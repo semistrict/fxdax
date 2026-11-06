@@ -12,3 +12,5 @@ next write, so its evacuation MAP looked wasted. Waiting would skip those MAPs.
 evacuated. One MAP per written run is what the staging design costs, however late it is made.
 **Reopen if:** A workload shows pages evacuated and then rewritten within the delay. The batching
 effect is batched-evacuation.md.
+
+**Since:** 2026-11-04, writable DAX deleted (37c331a6c, TASK-164): evacuation is gone. Moot.

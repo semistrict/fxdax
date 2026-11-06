@@ -12,3 +12,6 @@ extents' maps are only ~15% of stage maps; the rest are cached extents'. Its uni
 it and fails without (AHEAD_PAGES = 0), so it does what it says.
 **Reopen if:** A workload's open extents grow page after page across commits, and open extents' maps
 are most of its stage maps.
+
+**Since:** 2026-11-04, writable DAX deleted (37c331a6c, TASK-164): the window maps no open extent
+(a MAP of one fails EPERM, doc-13), so open extents have no stage maps. Moot.

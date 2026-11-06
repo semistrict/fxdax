@@ -10,3 +10,7 @@ MB free). From run 2 the pool was full and writes mapped pages into ranges, 44-6
 once (accounts rows, history), which pruning can't free. A larger window delays the fall-back, no
 more. Moving cold pages out of small sealed regions costs the same MAPs.
 **Reopen if:** Something other than window size stops pages written once from pinning regions.
+
+**Since:** 2026-11-04, writable DAX deleted (37c331a6c, TASK-164): writes no longer fill regions
+with pages written once; the window maps sealed extents read-only, or zeros (doc-13). Moot as
+measured.
