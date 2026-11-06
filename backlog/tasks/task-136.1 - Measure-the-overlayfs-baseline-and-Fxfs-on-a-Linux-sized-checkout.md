@@ -4,7 +4,7 @@ title: Measure Fxfs on a Linux-sized checkout
 status: To Do
 assignee: []
 created_date: '2026-10-30 09:08'
-updated_date: '2026-10-31 16:04'
+updated_date: '2026-11-06 06:41'
 labels: []
 dependencies: []
 documentation:
@@ -34,3 +34,9 @@ The design makes claims about cost that nothing has measured yet. The numbers de
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+2026-11-06: branch t3/fxfs-shared-repo-overlays (worktree t3-7a447b3d, 11-01) has an unlanded start on this: the Linux-checkout shared-volume cost for doc-10, and an extentd watchdog log line saying why it kills a VM process. Start from it; the log line is small and worth landing alone.
+<!-- SECTION:NOTES:END -->
