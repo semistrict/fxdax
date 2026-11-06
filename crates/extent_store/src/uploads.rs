@@ -11,7 +11,8 @@ use crate::dir::File;
 use crate::framed::read_object;
 use crate::layout::{Change, Extents};
 use crate::segments::footer_last;
-use extent_frame::segment::Footer;
+use extent_frame::segment::{Footer, Location};
+use extent_remote::cache::Cache;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::io;
 use std::sync::Arc;
@@ -62,8 +63,8 @@ impl<F: File> Closed<F> {
 }
 
 /// fxdax: what a store keeps for its uploader: the bytes each commit wrote, until released; each
-/// segment closed, until taken once its commits are durable, and, until uploaded, the segment
-/// itself.
+/// segment closed, until taken once its commits are durable, and, until acknowledged, the segment
+/// itself; and the host's cache of objects, which what is acknowledged goes into (TASK-165.8).
 #[derive(Default)]
 pub(crate) struct Uploads {
     /// The bytes each commit not yet released wrote.
@@ -72,6 +73,11 @@ pub(crate) struct Uploads {
     closed: VecDeque<(u64, Footer)>,
     /// The segments closed and not yet uploaded, which stay until they are.
     unuploaded: BTreeSet<u64>,
+    /// The segments taken and not yet acknowledged, with where in the bucket the extents stored on
+    /// their own their footers name are.
+    own: BTreeMap<u64, Vec<(ExtentId, Location)>>,
+    /// The host's cache of the bucket's objects, if it has one.
+    pub cache: Option<Arc<Cache>>,
 }
 
 impl Uploads {
@@ -114,7 +120,9 @@ impl Uploads {
                 .front()
                 .is_some_and(|(number, footer)| footer_last(footer) <= durable && !framing(*number))
         {
-            taken.push(self.closed.pop_front().unwrap());
+            let (number, footer) = self.closed.pop_front().unwrap();
+            self.own.insert(number, footer.own().collect());
+            taken.push((number, footer));
         }
         taken
     }
@@ -124,9 +132,11 @@ impl Uploads {
         self.unreleased.retain(|committed, _| *committed > epoch);
     }
 
-    /// Segment `number` is uploaded: it may go once no extent is in it.
-    pub fn uploaded(&mut self, number: u64) {
+    /// Segment `number` is acknowledged: it goes into the host's cache, and with it the extents
+    /// stored on their own its footer names, whose places in the bucket it returns.
+    pub fn acknowledged(&mut self, number: u64) -> Vec<(ExtentId, Location)> {
         self.unuploaded.remove(&number);
+        self.own.remove(&number).unwrap_or_default()
     }
 
     /// Whether segment `number`, closed, is yet to be uploaded.

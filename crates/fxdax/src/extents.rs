@@ -912,8 +912,8 @@ impl ExtentStore {
         self.store.description().branch
     }
 
-    /// fxdax: the bytes the branch's files take of the host's disk: a write may be refused for
-    /// these, three times the capacity, as well as for what its extents hold (TASK-79.89).
+    /// fxdax: the bytes the branch's files take of the host's disk: what is not acknowledged in
+    /// the bucket yet, and the open segment (TASK-165.8).
     pub fn disk_bytes(&self) -> Result<u64> {
         Ok(self.store.usage().map_err(errno)?.disk_bytes)
     }
@@ -1027,7 +1027,20 @@ impl ExtentStore {
             {
                 let (location, len) = (remote.location.clone(), data.len() as u64);
                 let fetched = self.fetcher().read(extent.into(), location, offset, len);
-                let fetched = futures::executor::block_on(fetched).map_err(remote_errno)?;
+                let fetched = futures::executor::block_on(fetched).map_err(|failure| {
+                    match failure {
+                        // fxdax: a follower's of an extent its writer freed since its view's
+                        // commit, which the bucket's collector reclaimed: it is cut off, as one too
+                        // far behind its writer is (doc-8, decision 7; TASK-165.8).
+                        crate::remote::Failure::Remote(extent_remote::Error::Lost(ref lost))
+                            if self.following.is_some() =>
+                        {
+                            log::info!("fxdax: a follower's {extent:?} is gone: {lost}");
+                            Errno::ESTALE
+                        }
+                        failure => remote_errno(failure),
+                    }
+                })?;
                 data[..fetched.len()].copy_from_slice(&fetched);
                 data[fetched.len()..].fill(0);
                 Ok(())
@@ -1185,39 +1198,6 @@ impl ExtentStore {
     /// [`flush_turned`]: ExtentStore::flush_turned
     pub fn flush_turns(&self) -> u64 {
         self.flush_turns.load(std::sync::atomic::Ordering::Acquire)
-    }
-
-    /// fxdax: a count that moves with each change of the store's that may make cleaning it behind
-    /// its commits due ([`ExtentStore::cleaning_due`]): found without the store's state, which a
-    /// thread of a runtime's would wait for, and moved by none of its reads
-    /// (`extent_store::Store::cleaning_changes`, TASK-79.2).
-    pub fn cleaning_changes(&self) -> u64 {
-        self.store.cleaning_changes()
-    }
-
-    /// fxdax: whether cleaning the store behind its commits is due ([`host_store::cleaning_due`],
-    /// TASK-79.2): a follower's never is, which its writer cleans.
-    pub fn cleaning_due(&self) -> Result<bool> {
-        if self.following.is_some() {
-            return Ok(false);
-        }
-        host_store::cleaning_due(&self.store).map_err(errno)
-    }
-
-    /// fxdax: cleans the store behind its commits ([`host_store::clean_behind`], TASK-79.2). It
-    /// blocks on the store's I/O.
-    pub fn clean_behind(&self) -> Result<()> {
-        self.access().may_write()?;
-        host_store::clean_behind(&self.store).map_err(errno)
-    }
-
-    /// fxdax: the store's dead space (`extent_store::Usage::dead_bytes`, TASK-79.2): the bytes of
-    /// its segments' data no extent is in, which cleaning takes back, but those another branch may
-    /// hold extents in, as a fork's. What the commits left of it takes none of the guest's room;
-    /// what writes since the last commit wasted counts as used past the capacity's worth.
-    #[cfg(all(test, target_os = "linux"))]
-    pub(crate) fn dead_bytes(&self) -> Result<u64> {
-        Ok(self.store.usage().map_err(errno)?.dead_bytes)
     }
 
     fn commit_with(&self, root: Option<&[u8]>, durable: bool) -> Result<()> {
@@ -2181,6 +2161,39 @@ mod tests {
         drop(follower);
         write(&store, id(&store, 3), 0, &pattern(3, BLOCK)).unwrap();
         store.commit(None).unwrap();
+    }
+
+    /// TASK-165.8: a follower reads what its view's commit holds that the writer freed after it in
+    /// the bucket, the segment holding it having left the store once acknowledged there; and once
+    /// the bucket's collector has reclaimed it, which no later commit holds, the follower is cut
+    /// off (`ESTALE`), as one too far behind its writer is, rather than fail its guest (`EIO`).
+    #[test]
+    fn followers_are_cut_off_once_the_collector_reclaims_what_they_read() {
+        let (store, dir) = store(1 << 20);
+        in_bucket(&store);
+        let store = Arc::new(store);
+        let a = id(&store, 1);
+        write(&store, a, 0, &pattern(1, BLOCK)).unwrap();
+        store.commit(None).unwrap();
+        let follower = store.follow();
+        store.free(a).unwrap();
+        store.commit(None).unwrap();
+        let segments = dir.path().join("store/segments").join(format!("{:016x}", store.branch()));
+        assert_eq!(std::fs::read_dir(&segments).unwrap().count(), 0, "segments left in the store");
+        assert_eq!(read(&follower, a, 0, BLOCK), Ok(pattern(1, BLOCK)));
+        // Commits, each of a segment, until the uploader checkpoints the branch, which then holds
+        // the history the collector goes by: an extent written, and freed by the next.
+        for sequence in 2..2 + crate::remote::CHECKPOINT_EVERY {
+            write(&store, id(&store, sequence), 0, &pattern(sequence as u8, BLOCK)).unwrap();
+            store.commit(None).unwrap();
+            store.free(id(&store, sequence)).unwrap();
+        }
+        store.commit(None).unwrap();
+        let options = extent_remote::collector::Options { compact_below: 0.5, grace: 0 };
+        let collected = extent_remote::collector::collect(&**store.bucket(), 1, &options);
+        let report = futures::executor::block_on(collected).unwrap();
+        assert_eq!(report, extent_remote::collector::Report { deleted: 65, compacted: 0 });
+        assert_eq!(read(&follower, a, 0, BLOCK), Err(Errno::ESTALE));
     }
 
     /// A follower changes nothing: what would, it refuses with EROFS.

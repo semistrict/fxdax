@@ -132,16 +132,6 @@ pub struct Rules {
     pub recheck_after_waiting: bool,
     /// A write to an extent freed since it began is dropped as it finishes (TASK-79.1).
     pub drop_writes_to_freed_extents: bool,
-    /// A commit waits for cleaning's copies in progress, as for writes, so that the segment it
-    /// closes takes none after it (TASK-79.2).
-    pub commits_wait_for_copies: bool,
-    /// A copy of cleaning's becomes its extent's place, at the next commit, only if it is in the
-    /// open segment, whose footer names it then (TASK-79.2).
-    pub moves_into_the_open_segment: bool,
-    /// A write to an extent's raw file counts what it adds to the branch's files as it begins, as
-    /// a write to a segment does, which reserves its bytes: so that writes in progress together
-    /// take the files no further than their bound, as each counts the others' (TASK-79.89).
-    pub raw_files_count_as_writes_begin: bool,
     /// The uploader is given commits and closed segments only once they are durable.
     pub durable_only: bool,
     /// A commit is durable once its flush has synced it, not once a flush has taken it.
@@ -174,9 +164,6 @@ impl Rules {
         commit_waits_for_writes: true,
         recheck_after_waiting: true,
         drop_writes_to_freed_extents: true,
-        commits_wait_for_copies: true,
-        moves_into_the_open_segment: true,
-        raw_files_count_as_writes_begin: true,
         durable_only: true,
         durable_once_synced: true,
         close_waits_for_flushes: true,

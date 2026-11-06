@@ -118,19 +118,15 @@ fn workload(
             // Cleaning, which commits durably, or a commit, durable or only ordered, setting the
             // root or not.
             8..=11 => {
-                let clean = rng.random_bool(0.2);
-                let ordered = !clean && rng.random_bool(0.5);
-                let root =
-                    (!clean && rng.random_bool(0.5)).then(|| format!("root {}", epochs.len()));
+                let ordered = rng.random_bool(0.5);
+                let root = rng.random_bool(0.5).then(|| format!("root {}", epochs.len()));
                 if let Some(root) = &root {
                     model.root = root.clone().into_bytes();
                 }
                 epochs.push(model.clone());
                 open.clear();
                 let root = root.as_deref().map(str::as_bytes);
-                let result = if clean {
-                    store.clean(rng.random_range(0.1..0.9)).map(|_| ())
-                } else if ordered {
+                let result = if ordered {
                     store.commit_ordered(root)
                 } else {
                     store.commit(root)

@@ -119,6 +119,27 @@ impl Recovered {
                 self.capacity = capacity;
                 true
             }
+            Record::Acknowledged { segment, key, own } => {
+                let segment = SegmentId { branch, number: segment };
+                for entry in self.extents.values_mut() {
+                    if let Data::Pieces(pieces) = &entry.data
+                        && let [piece] = pieces[..]
+                        && piece.segment == segment
+                    {
+                        let location =
+                            Location { key: key.clone(), offset: piece.offset, len: entry.len };
+                        entry.data = Data::Remote(location);
+                    }
+                }
+                for (extent, location) in own {
+                    if let Some(entry) = self.extents.get_mut(&extent)
+                        && entry.data == Data::Own
+                    {
+                        entry.data = Data::Remote(location);
+                    }
+                }
+                true
+            }
             Record::Checkpoint(_) => false,
         }
     }
@@ -423,7 +444,7 @@ impl IndexLog {
     /// alone (TASK-160.15).
     pub fn let_go(&mut self, reaped: Vec<Reaped>) -> Vec<FileKey> {
         let mut released = Vec::new();
-        for Reaped { number, last, len } in reaped {
+        for Reaped { number, last, len, .. } in reaped {
             match last {
                 Some(last) if last > self.checkpointed || number.number == self.segment => {
                     self.uncovered.push((number, last, len))
@@ -606,7 +627,12 @@ mod tests {
     fn reaped_segments_go_once_a_checkpoint_covers_their_footers() {
         let dir = holding(&[]);
         let (mut index, mut tail) = IndexLog::open(&dir, BRANCH, &state(2)).unwrap();
-        let reaped = |number, last| Reaped { number: segment(number), last, len: 40 << 10 };
+        let reaped = |number, last| Reaped {
+            number: segment(number),
+            last,
+            len: 40 << 10,
+            acknowledged: None,
+        };
         // Closed by an earlier opening, and before the checkpoint it opened with.
         let released = index.let_go(vec![reaped(0, None), reaped(1, Some(2)), reaped(2, Some(3))]);
         assert_eq!(released, [FileKey::Segment(segment(0)), FileKey::Segment(segment(1))]);
@@ -629,7 +655,12 @@ mod tests {
         let dir = holding(&[]);
         let state = Recovered { epoch: 2, segment: 5, ..Recovered::default() };
         let (mut index, mut tail) = IndexLog::open(&dir, BRANCH, &state).unwrap();
-        let reaped = |number| Reaped { number: segment(number), last: Some(2), len: 4 << 10 };
+        let reaped = |number| Reaped {
+            number: segment(number),
+            last: Some(2),
+            len: 4 << 10,
+            acknowledged: None,
+        };
         assert_eq!(index.let_go(vec![reaped(4), reaped(5)]), [FileKey::Segment(segment(4))]);
         index.want_checkpoint();
         let appended = commit(&mut index, &mut tail, &dir, 3, &options(1 << 20));

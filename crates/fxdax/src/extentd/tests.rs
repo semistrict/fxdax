@@ -2071,12 +2071,11 @@ fn the_daemon_waits_for_uploads() {
     assert_eq!(uploaded(), Some(b"closed".to_vec()));
 }
 
-/// The extents the cleaning tests write: 16 of them a store's capacity.
+/// The extents `what_guests_free_the_collector_compacts` writes: 16 of them a store's capacity.
 const EXTENT: usize = 64 * BLOCK;
 
 /// Writes `store`'s extents `sequences`, of `EXTENT` bytes each, their own data, which does not
-/// compress: what of it no extent is in takes as much of the host's disk as it is, which cleaning
-/// counts (TASK-79.2).
+/// compress: what of it no extent is in takes as much of the host's disk as it is (TASK-79.2).
 fn write_extents(store: &RemoteExtentStore, sequences: std::ops::RangeInclusive<u64>) {
     for sequence in sequences {
         let extent = ExtentId { branch: store.branch(), sequence };
@@ -2107,51 +2106,22 @@ fn wait_for_uploader(path: &Path) {
     })
 }
 
-/// Waits for `bytes` to be in the files of the open segments of `branch` of the store at `path`
-/// (`open-segments/<branch>/<number>`, doc-7), as cleaning's copies write them, and returns what
-/// those hold then. It waits 10 s at most, ample for a pass, which begins within a turn of what
-/// made it due: so a daemon whose passes waited for the guest's next commit, which the tests make
-/// none of first, fails them rather than hangs them.
-fn wait_for_open_segments(path: &Path, branch: u64, bytes: u64) -> u64 {
-    let open = path.join("open-segments").join(format!("{branch:016x}"));
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    loop {
-        let entries = std::fs::read_dir(&open).unwrap();
-        let held = entries.map(|entry| entry.unwrap().metadata().unwrap().len()).sum();
-        if held >= bytes {
-            return held;
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "{held} bytes in the open segments, not {bytes}, 10 s on, no commit since"
-        );
-        std::thread::yield_now();
-    }
-}
-
-/// The dead space of the store at `path`, which a connection has open
-/// ([`ExtentStore::dead_bytes`]): the bytes of its segments' data no extent is in, which cleaning
-/// takes back, but those another branch may hold extents in, as a fork's.
-fn dead_bytes(path: &Path) -> u64 {
-    let connection = super::stores::table().writer(&super::stores::store_key(path)).unwrap();
-    connection.store().unwrap().dead_bytes().unwrap()
-}
-
-/// TASK-79.2: the daemon cleans a store behind its guest's commits. What the guest frees of what
-/// it committed, the store keeps for its uploader, until the uploader has uploaded the commit
-/// that freed it: let go of then, between the guest's commits, it is dead space, the host's to
-/// take back, which takes none of the guest's room, as the guest can neither make room for it nor
-/// know of it. Once it is past the capacity's worth, a pass copies what is live of the segments it
-/// is in, with no commit of the guest's, and the guest's next commit lets those segments go.
+/// TASK-165.8: what a guest frees of what it committed leaves the host's disk with the segments
+/// its uploader has acknowledged in the bucket, whose collector compacts it there: the daemon
+/// cleans no store behind its guest's commits, as it did (TASK-79.2). The store keeps what the
+/// guest frees for its uploader until the uploader has uploaded the commit that freed it, and it
+/// takes none of the guest's room. Once the store closes, its uploader checkpointing its branch,
+/// the collector deletes the segments no live extent is in, and compacts those the guest's live
+/// extents hold little of; the guest,
+/// connected again, reads them as written, where they moved, and writes on.
 #[test]
-fn stores_are_cleaned_behind_their_guests_commits() {
+fn what_guests_free_the_collector_compacts() {
     let extent_bytes = EXTENT as u64;
     host();
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("store");
     let (store, served) = connect(&path, 16 * extent_bytes);
     let branch = store.branch();
-    let info = || store.info().unwrap();
     // A segment of the capacity's worth, freed but its first extent; another of all but one of
     // what that left room for, freed but its first too, the last frees ordered.
     write_extents(&store, 1..=16);
@@ -2161,26 +2131,27 @@ fn stores_are_cleaned_behind_their_guests_commits() {
     store.commit(None).unwrap();
     free_extents(&store, 18..=31);
     store.commit_ordered(None).unwrap();
-    // 29 extents' worth no extent holds, 13 of them past the capacity's: the guest's room is what
-    // its two extents leave.
+    // 29 extents' worth no extent holds: the guest's room is what its two extents leave.
     wait_for_uploader(&path);
-    assert_eq!(dead_bytes(&path), 29 * extent_bytes);
-    assert_eq!(info().available, 14 * extent_bytes);
-    // The two extents live copied, no commit having come since: the dead space stays until one
-    // comes, and the guest's writes have their room meanwhile.
-    assert_eq!(wait_for_open_segments(&path, branch, 2 * extent_bytes), 2 * extent_bytes);
-    assert_eq!(dead_bytes(&path), 29 * extent_bytes);
-    assert_eq!(info().available, 14 * extent_bytes);
-    write(&store, ExtentId { branch, sequence: 32 }, 0, &pattern(32, 2 * EXTENT)).unwrap();
-    // The commit makes the copies their extents' places: the segments no extent is in any more
-    // go, and their dead space with them.
-    store.commit(None).unwrap();
-    assert_eq!(dead_bytes(&path), 0);
-    assert_eq!(info().available, 12 * extent_bytes);
+    let segments = path.join("segments").join(format!("{branch:016x}"));
+    assert_eq!(std::fs::read_dir(&segments).unwrap().count(), 0, "segments left in the store");
+    assert_eq!(store.info().unwrap().available, 14 * extent_bytes);
+    drop(store);
+    served.join().unwrap();
+
+    let bucket = super::stores::remote_bucket().unwrap();
+    let options = extent_remote::collector::Options { compact_below: 0.5, grace: 0 };
+    let collected = extent_remote::collector::collect(&*bucket, 1, &options);
+    let report = futures::executor::block_on(collected).unwrap();
+    assert_eq!(report, extent_remote::collector::Report { deleted: 2, compacted: 2 });
+    let (store, served) = connect(&path, 16 * extent_bytes);
     for sequence in [1, 17] {
         let extent = ExtentId { branch, sequence };
         assert_eq!(read(&store, extent, 0, EXTENT), Ok(crate::test_data::noise(sequence, EXTENT)));
     }
+    write(&store, ExtentId { branch, sequence: 32 }, 0, &pattern(32, 2 * EXTENT)).unwrap();
+    store.commit(None).unwrap();
+    assert_eq!(store.info().unwrap().available, 12 * extent_bytes);
     drop(store);
     served.join().unwrap();
 }
@@ -2602,8 +2573,7 @@ fn counting_followers_walks_no_extents() {
 /// took, each idle 10 s after: here each guest commits, ordered, again and again for a second.
 /// At once, the stores' flushes run on `FLUSHES` threads at most, and the 15 they share to sync
 /// their files on beside their own (`extent_store`'s `HELPERS`, which count as theirs, named as
-/// they are), and their passes of cleaning on `CLEANINGS`: the most of each seen at once, looking
-/// every millisecond, is no more. Once their commits are durable, the runtime keeps threads for
+/// they are): the most seen at once, looking every millisecond, is no more. Once their commits are durable, the runtime keeps threads for
 /// the requests that ran at once, not for the stores: 2 and a little over 2 for each guest
 /// committing (8 to 9 for 3 guests, 18 to 25 for 9, 58 to 70 for 33, whether 150, 300 or 600 stores
 /// were open, in a container of 15 processors), more under load, as a thread just done is not yet
@@ -2620,8 +2590,8 @@ fn hundreds_of_writers_flush_on_threads_they_share() {
     use std::sync::atomic::{AtomicBool, Ordering};
     const STORES: usize = 300;
     const WRITERS: usize = 8;
-    // The runtime's, and those flushing and cleaning.
-    const NAMES: [&str; 3] = ["extentd io", "extentd flush", "extentd clean"];
+    // The runtime's, and those flushing.
+    const NAMES: [&str; 2] = ["extentd io", "extentd flush"];
     host();
     super::raise_open_files_limit().unwrap();
     let dir = tempfile::tempdir_in("/var/tmp").unwrap();
@@ -2716,8 +2686,8 @@ fn hundreds_of_writers_flush_on_threads_they_share() {
         most.iter().sum::<usize>(),
         lags.len()
     );
-    let (flushing, cleaning) = (super::server::FLUSHES + 15, super::server::CLEANINGS);
-    assert!(most[1] <= flushing && most[2] <= cleaning, "{most:?} named {NAMES:?} at once");
+    let flushing = super::server::FLUSHES + 15;
+    assert!(most[1] <= flushing, "{most:?} named {NAMES:?} at once");
     assert!(kept[0] < STORES / 4, "{threads} threads kept: {kept:?} named {NAMES:?}, of {names:?}");
     // Four turns, however long the load made them.
     assert!(turns <= 4, "ordered commits durable {turns} turns after, {lag:?}");

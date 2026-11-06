@@ -74,7 +74,7 @@ const IN_FLIGHT: usize = (UPLOAD_BYTES / BATCH) as usize;
 const BATCH: u64 = 32 << 20;
 
 /// How many segments go between checkpoints.
-const CHECKPOINT_EVERY: u64 = 64;
+pub(crate) const CHECKPOINT_EVERY: u64 = 64;
 
 /// The most bytes of objects a host's uploads hold at once ([`UPLOADS`]).
 const UPLOAD_BYTES: u64 = 512 << 20;
@@ -974,7 +974,7 @@ impl Shared {
                 .map(|plan| plan.close(&mut chain))
                 .collect();
             // A commit since, and the snapshot is stale.
-            if !self.store.upload(chain, snapshot.epoch)? {
+            if !self.store.upload(chain, snapshot.epoch, self.options.cache.clone())? {
                 continue;
             }
             // The branch's capacity, if it says none, or another: the store's next commit sets it
@@ -1137,8 +1137,9 @@ impl Shared {
     }
 
     /// Acknowledges what the writer has uploaded: the commits of the segments it acknowledges are
-    /// uploaded, and the store's segments may go; then the forks they name are made, with a
-    /// checkpoint at them, which their children's recovery starts from.
+    /// uploaded, and the store's segments leave it, read in the bucket, into the host's cache if
+    /// it has one (TASK-165.8); then the forks they name are made, with a checkpoint at them, which
+    /// their children's recovery starts from.
     async fn acknowledged(
         &self,
         writer: &Writer<Bucket>,
@@ -1151,7 +1152,8 @@ impl Shared {
         blocking(|| {
             self.store.release(epoch)?;
             for segment in &acked {
-                self.store.uploaded(segment.number)?;
+                let key = extent_remote::layout::segment(writer.branch(), segment.seq);
+                self.store.acknowledged(segment.number, &key)?;
             }
             Ok::<_, Failure>(())
         })?;
@@ -1734,14 +1736,19 @@ mod tests {
     }
 
     /// A store's closed segments are the objects of its branch in the bucket, byte for byte, as
-    /// are its extents stored on their own (doc-7, decision 1): the uploader puts its files.
+    /// are its extents stored on their own (doc-7, decision 1): the uploader puts its files; and
+    /// once the bucket has acknowledged them, they leave the store whole, into the host's cache,
+    /// as those objects, which the store's reads read there with the bucket's gone (TASK-165.8).
     #[test]
     fn uploaded_segments_are_the_stores_files() {
         use extent_remote::layout::{self, Footer};
         let dir = tempfile::tempdir().unwrap();
         let store = ExtentStore::create(dir.path().join("store"), 1 << 30).unwrap();
-        let bucket = Arc::new(Bucket::new(Arc::new(InMemory::new()), ""));
-        store.attach_remote(bucket.clone(), 1, idle()).unwrap();
+        let memory = Arc::new(InMemory::new());
+        let bucket = Arc::new(Bucket::new(memory.clone(), ""));
+        let cache = Arc::new(Cache::open(&dir.path().join("cache"), 1 << 30, 0).unwrap());
+        let options = super::Options { cache: Some(cache.clone()), ..idle() };
+        store.attach_remote(bucket.clone(), 1, options).unwrap();
         let branch = store.branch();
         write(&store, 1, &pattern(1, BLOCK));
         write(&store, 2, &pattern(2, 4 << 20));
@@ -1778,11 +1785,10 @@ mod tests {
             .collect();
         segments.sort();
         assert_eq!(segments.len(), 2);
-        assert_eq!(segments, files("segments"));
         let mut own = objects(layout::extents(branch));
         own.sort();
         assert_eq!(own.len(), 1);
-        assert_eq!(own, files("extents"));
+        assert_eq!((files("segments"), files("extents")), (Vec::new(), Vec::new()));
         assert_eq!(
             uploaded(&bucket, branch),
             (
@@ -1790,6 +1796,24 @@ mod tests {
                 Some(b"two".to_vec())
             )
         );
+        futures::executor::block_on(async {
+            use futures::StreamExt as _;
+            use object_store::{ObjectStore as _, ObjectStoreExt as _};
+            for prefix in ["segments", "extents"] {
+                let prefix = object_store::path::Path::from(prefix);
+                for meta in memory.list(Some(&prefix)).collect::<Vec<_>>().await {
+                    memory.delete(&meta.unwrap().location).await.unwrap();
+                }
+            }
+        });
+        let written =
+            [(1, pattern(1, BLOCK)), (2, pattern(2, 4 << 20)), (3, pattern(3, 2 * BLOCK))];
+        for (sequence, data) in written {
+            let extent = ExtentId { branch, sequence };
+            let mut read = vec![0; data.len()];
+            store.read(extent, 0, &mut [crate::VolatileSliceMut::from(&mut read[..])]).unwrap();
+            assert!(read == data, "extent {sequence} reads other data");
+        }
     }
 
     /// fxdax: a byte the host's disk damaged in a file the uploader puts as it is, a sealed
@@ -2351,10 +2375,12 @@ mod tests {
         for commit in waiting {
             assert_eq!(commit.join().unwrap(), Ok(()));
         }
-        // The store's segments closed, framed: those of the commits waiting.
-        let closed =
-            std::fs::read_dir(dir.path().join("store/segments").join(format!("{branch:016x}")));
-        assert_eq!(closed.unwrap().count(), super::IN_FLIGHT);
+        // The store's segments closed, in the bucket: those of the commits waiting, and the
+        // writer's fence.
+        let prefix = extent_remote::layout::segments(branch);
+        let closed = futures::executor::block_on(extent_remote::Bucket::list(&*bucket, &prefix));
+        let closed = closed.unwrap();
+        assert_eq!(closed.len(), super::IN_FLIGHT + 1);
         store.wait_uploaded().unwrap();
         let (extents, _) = uploaded(&bucket, branch);
         let sequences: Vec<_> = extents.iter().map(|(sequence, _)| *sequence).collect();
@@ -2698,8 +2724,8 @@ mod tests {
     /// parent uploaded through it: it inherits the parent's extents rather than upload them again,
     /// and what either commits after is its own.
     /// TASK-160.10: a point's store, once attached, which alone says it is one, refuses all that
-    /// would change what it holds, with `EROFS`, whoever asks: writes, frees, commits, cleaning,
-    /// a resize, a writer taking it over. What changes none of its extents it
+    /// would change what it holds, with `EROFS`, whoever asks: writes, frees, commits, a resize,
+    /// a writer taking it over. What changes none of its extents it
     /// does: it forks, and is made public. Before, it refused none of these itself, and a resize
     /// of one grew it.
     #[test]
@@ -2726,7 +2752,6 @@ mod tests {
             ("free", point.free(extent)),
             ("commit", point.commit(Some(b"changed"))),
             ("commit_ordered", point.commit_ordered(None)),
-            ("clean_behind", point.clean_behind()),
             ("take_over", point.take_over()),
         ];
         for (what, result) in refused {

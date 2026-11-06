@@ -367,8 +367,8 @@ pub(crate) enum Change {
     WriteOwn { extent: ExtentId, len: u64 },
     /// The extent was freed.
     Free(ExtentId),
-    /// The extent's data was copied to the pieces, which replace its others: cleaning, or sealing
-    /// it in one run.
+    /// The extent's data was copied to the pieces, which replace its others: sealing it in one
+    /// run.
     Move { extent: ExtentId, pieces: Vec<Piece> },
     /// The extent's data was copied to its own file, sealing it at its length.
     MoveOwn { extent: ExtentId },
@@ -432,6 +432,14 @@ pub(crate) enum Record {
     /// fxdax: the capacity the branch was set to, after the commits before it, durably, though no
     /// commit came since, as a resize of a store no guest commits to (TASK-165.7).
     Capacity(u64),
+    /// fxdax: segment `segment` of the branch's was acknowledged in the bucket, at `key`: the
+    /// extents sealed in it, and those stored on their own its footer names, at their places
+    /// `own`, are the bucket's from now on, their files the host's cache's (TASK-165.8).
+    Acknowledged {
+        segment: u64,
+        key: String,
+        own: Vec<(ExtentId, Location)>,
+    },
 }
 
 /// A record's header: its payload's length, and its hash.
@@ -504,7 +512,9 @@ mod tests {
             .map(|record| match record {
                 Record::Delta(delta) => delta.epoch,
                 Record::Checkpoint(table) => Checkpoint::of_table(table).unwrap().epoch,
-                Record::Capacity(_) => unreachable!("no capacity recorded here"),
+                Record::Capacity(_) | Record::Acknowledged { .. } => {
+                    unreachable!("no capacity nor acknowledgement recorded here")
+                }
             })
             .collect()
     }

@@ -7,7 +7,7 @@
 //! CRC of its own (TASK-153.11): the store's reads, which the guest's and the extent cache's
 //! page-ins are (`Store::read`), the uploader's (`Store::read_kept`, and the segments it takes as
 //! they are, `Closed::bytes`), a follower's (`Store::read_view`), a fork's of what it inherited,
-//! and the copies of cleaning and of a seal. Of parts stored compressed and stored raw alike: a raw
+//! and the copies of a seal. Of parts stored compressed and stored raw alike: a raw
 //! part was read in place, unchecked, until TASK-153.11.
 
 mod common;
@@ -152,42 +152,6 @@ fn flipped_bytes_fail_the_reads_of_their_parts() {
     }
 }
 
-/// Cleaning copies no extent a flipped byte damaged to the open segment, where it would be framed
-/// under a CRC of its own: the cleaning fails, and the extent's reads fail still.
-#[test]
-fn cleaning_copies_no_flipped_byte() {
-    let options = Options { segment_size: 64 << 10, large_extent: 32 << 10, ..OPTIONS };
-    for compressed in [false, true] {
-        let dir = MemDir::new();
-        let store = create(&dir, options);
-        // 2 segments of 16 extents, of which one in each is kept.
-        let data = |sequence: u64| match compressed {
-            true => pattern(sequence as u8, BLOCK),
-            false => noise(sequence, BLOCK),
-        };
-        for sequence in 0..32 {
-            store.write(extent(sequence), 0, &data(sequence)).unwrap();
-            if sequence % 16 == 15 {
-                store.commit(None).unwrap();
-            }
-        }
-        for sequence in (0..32).filter(|sequence| sequence % 16 != 3) {
-            store.free(extent(sequence)).unwrap();
-        }
-        store.commit(None).unwrap();
-        let byte = stored(&dir, &store, extent(3), 7);
-        let encoding = if compressed { Encoding::Zstd } else { Encoding::Raw };
-        assert_eq!(byte.encoding, encoding);
-        flip(&dir, &byte);
-        drop(store);
-
-        let store = Store::open(dir.clone(), options).unwrap();
-        corrupt(store.clean(0.5).map(drop));
-        corrupt(store.read(extent(3), 0, &mut vec![0; BLOCK]));
-        store.read(extent(19), 0, &mut vec![0; BLOCK]).unwrap();
-    }
-}
-
 /// An open extent's piece in a segment closed between commits, framed, is read checked: a byte
 /// flipped there fails its reads, and the seal that would copy it to a file of its own.
 #[test]
@@ -220,7 +184,7 @@ fn closed_segments_with_flipped_bytes_are_not_taken() {
     for compressed in [false, true] {
         let dir = MemDir::new();
         let store = create(&dir, OPTIONS);
-        assert!(store.upload(Chain::new(BRANCH, 1, 0, None, 0), 0).unwrap());
+        assert!(store.upload(Chain::new(BRANCH, 1, 0, None, 0), 0, None).unwrap());
         let data = if compressed { pattern(1, 2 * MIB) } else { noise(1, 2 * MIB) };
         store.write(extent(1), 0, &data).unwrap();
         store.close_segment().unwrap();

@@ -7,8 +7,8 @@
 //! connection. A thread idle for a while goes. Requests block: on the store's disk, a page-in, a
 //! guest's acknowledgement, an upload a durable commit waits for. None waits for a request queued
 //! behind it, so a full pool delays requests, and deadlocks none. fxdax: and pools of their own
-//! for the work every store's flushes and cleaning do behind it (`server::flush_behind`,
-//! TASK-92.49), as many threads as do it at once, up to a bound, not one each.
+//! for the work every store's flushes do behind it (`server::flush_behind`, TASK-92.49), as many
+//! threads as do it at once, up to a bound, not one each.
 
 use std::collections::VecDeque;
 use std::sync::{Condvar, Mutex, OnceLock};

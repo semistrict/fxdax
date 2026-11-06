@@ -6,8 +6,8 @@
 //! its writer goes on (backlog doc-8, Store views; TASK-42.2).
 //!
 //! A commit seals every extent written before it, and an extent's ID is never used again, so the
-//! branch as of commit N is the extents it held then, each as it is still, wherever cleaning has
-//! moved its data since, and its root then. A view is no copy of the extent table: it is an epoch
+//! branch as of commit N is the extents it held then, each as it is still, wherever its data is
+//! now, here or in the bucket (TASK-165.8), and its root then. A view is no copy of the extent table: it is an epoch
 //! and a root, and reads through the store. What it needs kept is the extents freed since N: a
 //! free of an extent sealed before is kept while a view older than the free lives, or a view pins
 //! it ([`View::pin`], a follower's graveyard), and its data counts as used.

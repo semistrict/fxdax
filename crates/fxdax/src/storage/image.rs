@@ -11,8 +11,7 @@
 //! - Extents' I/O bypasses the host's page cache where the host filesystem allows (`O_DIRECT` on
 //!   Linux, `F_NOCACHE` on macOS).
 //! - Extents' I/O runs off Fxfs's executor threads (see `io`), which only await it, as do commits,
-//!   which sync the image, and cleaning, which runs after a commit once segments hold much freed
-//!   space.
+//!   which sync the image.
 //! - Flushing commits the store: a barrier, durable, which seals the extents written before it.
 //! - fxdax: the store's branch is kept in its bucket (see `kept`): its commits are uploaded behind
 //!   them, and closing the device waits for them to be.
@@ -132,8 +131,7 @@ impl ImageDevice {
     }
 
     /// Commits the store, setting its root to `root` if given, and does what follows a commit
-    /// ([`Kept::committed`]): cleans it if its segments hold much freed space, and collects its
-    /// bucket if that is due; off the executor's threads.
+    /// ([`Kept::committed`]): collects its bucket if that is due; off the executor's threads.
     async fn commit(&self, root: Option<Vec<u8>>) -> Result<(), Error> {
         let _writing = self.writes.write().await;
         let image = self.image.clone();

@@ -77,43 +77,23 @@
 //! store's footers are the writer's (`extent_frame::segment::Chain`): numbered on from where the
 //! chain is, each following the one before, their commits tagged with the writer's lease epoch,
 //! their extents of their own at the writer's keys; and it keeps each closed segment for the
-//! uploader until it is uploaded ([`Store::closed`], [`Store::uploaded`]). The uploader may have
+//! uploader until it is acknowledged in the bucket ([`Store::closed`], [`Store::acknowledged`]). The uploader may have
 //! it close its open segment between commits ([`Store::close_now`]): fxdax: framed holding none of
 //! the store's locks, as a commit's closing is, which the branch's closing and forks wait for.
 //!
-//! **Cleaning.** [`Store::clean`] copies the data of extents in the branch's segments mostly freed,
-//! which no other branch claims, to the open segment, and commits, which removes those segments.
-//! Extents stored on their own are never copied; their files are removed once they are freed.
-//! fxdax: [`Store::clean_behind`] copies so, one extent at a time, each copy a write in progress,
-//! which commits wait for, and commits nothing: the next commit makes the copies their extents'
-//! places, if they are as they were, and the copies in the open segment (TASK-79.2). It finds them
-//! as each segment names the sealed extents in it; and it is due ([`Store::cleaning_due`]) as what
-//! no extent is in takes enough of the host's disk in the segments it would take, framed,
-//! compressed, part by part, or any once what the branch's files take of the disk that no extent
-//! holds is past the capacity's worth. What writes since the last commit wasted, writing over what
-//! they wrote, or writing extents freed before the commit, counts as used once it is past the
-//! capacity's worth, which the commit takes back: a writer's that never commits.
-//! What the commits leave freed takes none of the branch's room, however much, being the host's
-//! to take back, behind the commits that come with the writer's writes, which the writer could
-//! neither make room for nor know of. What a fork holds of the branch's segments is not the
-//! branch's to take back.
-//!
-//! **The host's disk.** fxdax: what the branch's own files take of the host's disk, framed and
-//! compressed as they are, is bounded apart from the room (TASK-79.89): a write is refused
-//! ([`NoSpace`]) once they would take more than three times the capacity, less what the next
-//! commit takes back of them as cleaning's copies land, a capacity's worth at most, which the
-//! writes that commit comes with may take: refused, a guest whose commits come with writes
-//! (doc-4's `WRITE_COMMIT`, a DAX guest's extents mapped writably) could never commit again, and
-//! the copies, which wait for its commit, would never land. What an uploader keeps counts not
-//! towards it, as the disk it takes: the segments it has yet to upload, and what the frees it
-//! keeps take of the files, which the upload lag bound bounds, having commits wait rather than
-//! fail. So the branch's files take three to four times the capacity at most as each write
-//! begins, and what the upload lag bound lets its uploader keep. An honest writer's own come
-//! nowhere near it, cleaning taking back what no extent is in once it takes the capacity's worth;
-//! a writer freeing faster than cleaning takes back, whose files only cleaning's pace bounded
-//! across commits, is held to it. Commits and cleaning's copies are never refused: the files take
-//! more by what they copy, until the commits after take it back, and by the frames of the segments
-//! closed, which say what they hold.
+//! **The bucket.** fxdax: once its writer acknowledges a segment in the bucket
+//! ([`Store::acknowledged`], TASK-165.8), the extents sealed in it, and those stored on their own
+//! its footer names, held or kept, are the bucket's: read there ([`RemoteData`]), and their files
+//! leave the store, into the host's cache of the bucket's objects if the uploader gave one, the
+//! segment's once no write is in progress in it. Durably: the index records it after the commits
+//! durable so far. So the branch's files are what is not acknowledged yet, and the open segment:
+//! what the upload lag bound bounds, with the segment's room, and the cache's capacity. Nothing
+//! cleans the branch's segments here: what no extent is in leaves with them, the bucket's
+//! collector's to take back. What writes since the last commit wasted, writing over what they
+//! wrote, or writing extents freed before the commit, counts as used once it is past the
+//! capacity's worth, which the commit takes back: a writer's that never commits. What the commits
+//! leave freed takes none of the branch's room, however much, which the writer could neither make
+//! room for nor know of.
 //!
 //! **Views.** [`Store::view`] gives a [`View`] of the branch as of its latest commit, which a
 //! follower reads through ([`Store::read_view`]) while the writer goes on (doc-8, TASK-42.2): the
@@ -169,7 +149,7 @@ pub use segments::segment_closes;
 #[cfg(feature = "audit")]
 pub use state::AUDIT_FAILED;
 pub use store::{
-    Cleaned, DirHold, ForkCommitted, Info, NoSpace, Options, Rebuilt, RemoteData, Spent, Store,
+    DirHold, ForkCommitted, Info, NoSpace, Options, Rebuilt, RemoteData, Spent, Store,
     TooLong, TooSmall, Unaligned, Usage, Write,
 };
 pub use sync::Rules;

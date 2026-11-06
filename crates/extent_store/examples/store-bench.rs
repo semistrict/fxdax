@@ -22,12 +22,6 @@
 //!   each N MiB (32), as fxdax's uploader has the store do, while a guest writes a block and
 //!   commits, again and again, in a directory of the host's: how long the guest's writes and
 //!   commits take, the longest of them, and how long each closing takes (TASK-41.1).
-//! - `cleaning`: a branch of N extents of a block (400,000), in segments, the first four's of data
-//!   that does not compress: with three in eight of each segment's freed, which leaves cleaning
-//!   nothing to take; then with most of the first four's freed besides, which takes as much of the
-//!   host's disk as it is, as cleaning counts it: whether cleaning is due, how long a pass that
-//!   copies nothing holds the store, as extentd's does each time it is due, and how long a pass
-//!   copying them takes (TASK-79.2).
 //! - `burst`: a guest writing N MiB (256) of extents of 256 KiB after a commit, and committing,
 //!   in a directory of the host's: more than a segment and an extent hold, so that the open
 //!   segment fills between commits, and closes, again and again: how long the writes take, the
@@ -41,10 +35,6 @@
 //! The stores of all but `close-now`, `burst` and `durable` are in memory ([`MemDir`]), so that
 //! what is timed is the store's own work.
 
-#[path = "../tests/common/mod.rs"]
-mod common;
-
-use common::noise;
 use extent_store::{Description, Dir, HostDir, MemDir, Options, Store};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -216,68 +206,6 @@ fn close_now(mib: u64) {
     commits.print("the guest's commits");
 }
 
-/// The bytes of the host's disk that what is freed takes, of the segments cleaning takes, past
-/// which extentd's cleaning is due, the fraction of a segment its extents must hold for cleaning
-/// to leave it be, and the most a pass copies: `fxdax::host_store`'s.
-const CLEAN_PAST: u64 = 64 << 20;
-const CLEAN_BELOW: f64 = 0.5;
-const CLEAN_PASS: u64 = 64 << 20;
-
-fn cleaning(count: u64) {
-    let store = create(MemDir::new(), Options::default());
-    // The first four segments' blocks of data that does not compress, the rest of data that does.
-    let first = 4 * Options::default().segment_size / BLOCK as u64;
-    for sequence in 0..count {
-        let block = if sequence < first { noise(sequence, BLOCK) } else { data(sequence, BLOCK) };
-        store.write(extent(sequence), 0, &block).unwrap();
-        if sequence % 1000 == 999 {
-            store.commit(None).unwrap();
-        }
-    }
-    store.commit(None).unwrap();
-    let pass = |name: &str| {
-        let started = Instant::now();
-        let due = store.cleaning_due(CLEAN_PAST, CLEAN_BELOW).unwrap();
-        let checked = started.elapsed();
-        let started = Instant::now();
-        assert_eq!(store.clean_behind(CLEAN_BELOW, 0).unwrap(), 0);
-        let passed = started.elapsed();
-        let usage = store.usage().unwrap();
-        println!(
-            "{name}: {} segments, {} MiB dead; due: {due}, found in {:.1} µs; a pass copying \
-             nothing: {:.1} µs",
-            usage.segments,
-            usage.dead_bytes >> 20,
-            each(checked, 1),
-            each(passed, 1),
-        );
-    };
-    // Three blocks in eight of each segment's freed: each five eighths live.
-    for sequence in (0..count).filter(|sequence| sequence % 8 < 3) {
-        store.free(extent(sequence)).unwrap();
-    }
-    store.commit(None).unwrap();
-    pass("no segment to clean");
-    // Most of the first four segments' freed besides: seven eighths of each.
-    for sequence in (0..first).filter(|sequence| (3..7).contains(&(sequence % 8))) {
-        store.free(extent(sequence)).unwrap();
-    }
-    store.commit(None).unwrap();
-    pass("four segments to clean");
-    let started = Instant::now();
-    let copied = store.clean_behind(CLEAN_BELOW, CLEAN_PASS).unwrap();
-    let elapsed = started.elapsed();
-    store.commit(None).unwrap();
-    let usage = store.usage().unwrap();
-    println!(
-        "a pass: {} MiB copied in {:.1} ms; then {} segments, {} MiB dead",
-        copied >> 20,
-        elapsed.as_secs_f64() * 1e3,
-        usage.segments,
-        usage.dead_bytes >> 20
-    );
-}
-
 fn burst(mib: u64) {
     const EXTENT: usize = 256 << 10;
     let temp = tempfile::tempdir().unwrap();
@@ -339,12 +267,11 @@ fn main() {
         Some("lagging-view") => lagging_view(n(20_000)),
         Some("segments") => segments(n(2_000)),
         Some("close-now") => close_now(n(32)),
-        Some("cleaning") => cleaning(n(400_000)),
         Some("burst") => burst(n(256)),
         Some("durable") => durable(n(2)),
         _ => {
             eprintln!(
-                "usage: store-bench lagging-view|segments|close-now|cleaning|burst|durable [N]"
+                "usage: store-bench lagging-view|segments|close-now|burst|durable [N]"
             );
             std::process::exit(2);
         }

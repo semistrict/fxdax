@@ -254,7 +254,7 @@ fn frees_remove_files() {
 fn segments_close_framed_by_the_commits_flush() {
     let dir = MemDir::new();
     let store = create(dir.clone(), 1 << 20);
-    assert!(store.upload(WRITER, 0).unwrap());
+    assert!(store.upload(WRITER, 0, None).unwrap());
     for sequence in 0..17 {
         store.write(extent(sequence), 0, &pattern(sequence as u8, 0, BLOCK)).unwrap();
     }
@@ -297,8 +297,8 @@ fn uploads_keep_freed_data_until_released() {
     // Before uploading began: the uploader starts from the store's extents.
     let snapshot = store.snapshot().unwrap();
     assert_eq!((snapshot.epoch, snapshot.extents), (1, vec![(extent(1), BLOCK as u64)]));
-    assert!(!store.upload(WRITER, 0).unwrap());
-    assert!(store.upload(WRITER, 1).unwrap());
+    assert!(!store.upload(WRITER, 0, None).unwrap());
+    assert!(store.upload(WRITER, 1, None).unwrap());
     assert!(store.closed(usize::MAX).unwrap().is_empty());
 
     for sequence in 2..=16 {
@@ -343,13 +343,18 @@ fn uploads_keep_freed_data_until_released() {
     // Released, and their segments uploaded, they go with the next commit.
     store.release(3).unwrap();
     for closed in [writing, freeing] {
-        store.uploaded(closed.number).unwrap();
+        store.acknowledged(closed.number, &bucket_key(&closed)).unwrap();
     }
     assert_eq!(store.unreleased_bytes().unwrap(), 0);
     error_is(store.read_kept(extent(17), 0, &mut data), NoExtent(extent(17)));
     store.commit(None).unwrap();
     assert_eq!(dir.list(&of("extents", BRANCH)).unwrap(), Vec::<String>::new());
     assert!(dir.list(&of("segments", BRANCH)).unwrap().len() < segments);
+}
+
+/// fxdax: the key in the bucket of the object `closed`, a segment closed, is: its writer's.
+fn bucket_key(closed: &Closed<MemFile>) -> String {
+    format!("segments/{:016x}/{:016x}", closed.footer.branch, closed.footer.seq)
 }
 
 /// fxdax: where in the bucket an extent of `len` bytes is: at `offset` in the object at `key`.
@@ -364,7 +369,7 @@ fn bucket_location(key: &str, offset: u64, len: u64) -> Location {
 fn adopted_extents_are_held_without_their_data() {
     let dir = MemDir::new();
     let store = create(dir.clone(), 1 << 20);
-    assert!(store.upload(WRITER, store.epoch().unwrap()).unwrap());
+    assert!(store.upload(WRITER, store.epoch().unwrap(), None).unwrap());
     let location =
         bucket_location("segments/0000000000000007/0000000000000003", 8192, 3 * BLOCK as u64);
     store.adopt(extent(5), location.clone()).unwrap();
@@ -394,7 +399,7 @@ fn adopted_extents_are_held_without_their_data() {
     drop(store);
     let store = Store::open(dir.clone(), OPTIONS).unwrap();
     check(&store);
-    assert!(store.upload(WRITER, store.epoch().unwrap()).unwrap());
+    assert!(store.upload(WRITER, store.epoch().unwrap(), None).unwrap());
     store.free(extent(5)).unwrap();
     store.commit(None).unwrap();
     assert!(store.close_now().unwrap());
@@ -429,389 +434,6 @@ fn checkpoints() {
     for sequence in held {
         assert_eq!(read(&store, extent(sequence), 0, BLOCK), pattern(sequence as u8, 0, BLOCK));
     }
-}
-
-/// Cleaning copies the extents of segments mostly freed to the open segment, and removes them.
-fn cleaning<D: Dir>(dir: D, reopen: impl Fn(&D) -> D) {
-    let store = create(dir, 64 << 20);
-    // 8 segments of 16 extents.
-    for sequence in 0..128 {
-        store.write(extent(sequence), 0, &pattern(sequence as u8, 0, BLOCK)).unwrap();
-        if sequence % 16 == 15 {
-            store.commit(None).unwrap();
-        }
-    }
-    let full = store.usage().unwrap();
-    assert_eq!((full.segments, full.segment_bytes), (9, 128 * BLOCK as u64));
-    // Keep one extent in four in the first four segments, and every other in the rest.
-    let kept: Vec<u64> = (0..128)
-        .filter(|sequence| if *sequence < 64 { sequence % 4 == 0 } else { sequence % 2 == 0 })
-        .collect();
-    for sequence in (0..128).filter(|sequence| !kept.contains(sequence)) {
-        store.free(extent(sequence)).unwrap();
-    }
-    store.commit(None).unwrap();
-    assert_eq!(store.usage().unwrap().live_bytes, kept.len() as u64 * BLOCK as u64);
-
-    // The first four segments are a quarter live, and the others half.
-    let cleaned = store.clean(0.4).unwrap();
-    assert_eq!(cleaned.segments, 4);
-    assert_eq!(cleaned.bytes, 64 * BLOCK as u64);
-    assert_eq!(cleaned.copied, 16 * BLOCK as u64);
-    let usage = store.usage().unwrap();
-    assert_eq!(usage.segment_bytes, full.segment_bytes - cleaned.bytes + cleaned.copied);
-    assert_eq!(usage.live_bytes, kept.len() as u64 * BLOCK as u64);
-
-    let check = |store: &Store<D>| {
-        let held: Vec<u64> =
-            store.extents().unwrap().iter().map(|(extent, _)| extent.sequence).collect();
-        assert_eq!(held, kept);
-        for sequence in &kept {
-            assert_eq!(
-                read(store, extent(*sequence), 0, BLOCK),
-                pattern(*sequence as u8, 0, BLOCK)
-            );
-        }
-    };
-    check(&store);
-    let dir = reopen(store.dir());
-    drop(store);
-    let store = Store::open(dir, OPTIONS).unwrap();
-    check(&store);
-    assert_eq!(store.usage().unwrap().segment_bytes, usage.segment_bytes);
-}
-
-/// fxdax: cleaning behind the commits copies, and commits nothing: the next commit makes the
-/// copies their extents' places, which removes the segments cleaned, once durable (TASK-79.2). A
-/// pass copies so many bytes at most, those of the least live segments first, and none whose
-/// copies wait for a commit; and no pass is due until a commit has made those.
-#[test]
-fn cleaning_behind_the_commits() {
-    let dir = MemDir::new();
-    let store = create(dir.clone(), 64 << 20);
-    // 8 segments of 16 extents: of the first four, one extent in four kept, of the rest half. Of
-    // data that does not compress, so that what no extent is in takes as much of the disk.
-    for sequence in 0..128 {
-        store.write(extent(sequence), 0, &noise(sequence, BLOCK)).unwrap();
-        if sequence % 16 == 15 {
-            store.commit(None).unwrap();
-        }
-    }
-    let kept: Vec<u64> = (0..128)
-        .filter(|sequence| if *sequence < 64 { sequence % 4 == 0 } else { sequence % 2 == 0 })
-        .collect();
-    for sequence in (0..128).filter(|sequence| !kept.contains(sequence)) {
-        store.free(extent(sequence)).unwrap();
-    }
-    store.commit(None).unwrap();
-    let check = |store: &Store<MemDir>| {
-        for sequence in &kept {
-            let data = read(store, extent(*sequence), 0, BLOCK);
-            assert!(data == noise(*sequence, BLOCK), "{sequence}");
-        }
-    };
-    let epoch = store.epoch().unwrap();
-    // The four a quarter live hold 48 blocks no extent is in, which cleaning takes back; of the
-    // others, half live, it takes none.
-    assert!(store.cleaning_due(32 * BLOCK as u64, 0.4).unwrap());
-    assert!(!store.cleaning_due(48 * BLOCK as u64, 0.4).unwrap());
-    // Those of one of the four a quarter live.
-    assert_eq!(store.clean_behind(0.4, 4 * BLOCK as u64).unwrap(), 4 * BLOCK as u64);
-    assert_eq!(store.epoch().unwrap(), epoch);
-    assert!(!store.cleaning_due(0, 0.4).unwrap());
-    check(&store);
-    store.commit(None).unwrap();
-    assert_eq!(store.usage().unwrap().segments, 8);
-    // Those of the others, once.
-    assert_eq!(store.clean_behind(0.4, u64::MAX).unwrap(), 12 * BLOCK as u64);
-    assert_eq!(store.clean_behind(0.4, u64::MAX).unwrap(), 0);
-    store.commit(None).unwrap();
-    let usage = store.usage().unwrap();
-    // The four half live, the one the copies filled, which the commit closed, and the open one.
-    assert_eq!((usage.segments, usage.segment_bytes), (6, (128 - 64 + 16) * BLOCK as u64));
-    assert_eq!(usage.live_bytes, kept.len() as u64 * BLOCK as u64);
-    check(&store);
-    check(&reopened(store, &dir));
-}
-
-/// fxdax: cleaning is due for what it takes back alone: what no extent is in of the segments it
-/// would clean, not of those more than half live, which it leaves be. Else a pass would copy
-/// nothing, and cleaning stay due, pass after pass (TASK-79.2).
-#[test]
-fn cleaning_is_due_for_what_it_takes_back_alone() {
-    let store = create(MemDir::new(), 64 << 20);
-    // 4 segments of 16 blocks, 6 of each freed: five eighths live. Of data that does not
-    // compress, so that what no extent is in takes as much of the disk.
-    for sequence in 0..64 {
-        store.write(extent(sequence), 0, &noise(sequence, BLOCK)).unwrap();
-        if sequence % 16 == 15 {
-            store.commit(None).unwrap();
-        }
-    }
-    for sequence in (0..64).filter(|sequence| sequence % 16 < 6) {
-        store.free(extent(sequence)).unwrap();
-    }
-    store.commit(None).unwrap();
-    assert_eq!(store.usage().unwrap().dead_bytes, 24 * BLOCK as u64);
-    assert!(!store.cleaning_due(8 * BLOCK as u64, 0.5).unwrap());
-    // Three more of the first freed: less than half live, and 9 blocks to take back.
-    for sequence in 6..9 {
-        store.free(extent(sequence)).unwrap();
-    }
-    store.commit(None).unwrap();
-    assert!(store.cleaning_due(8 * BLOCK as u64, 0.5).unwrap());
-    assert!(!store.cleaning_due(9 * BLOCK as u64, 0.5).unwrap());
-    assert_eq!(store.clean_behind(0.5, u64::MAX).unwrap(), 7 * BLOCK as u64);
-    store.commit(None).unwrap();
-    assert!(!store.cleaning_due(0, 0.5).unwrap());
-    assert_eq!(store.usage().unwrap().dead_bytes, 18 * BLOCK as u64);
-}
-
-/// fxdax: cleaning is due for what it takes back of the host's disk: of the segments it would
-/// take, what their files take of what no extent is in, framed, compressed, which may be next to
-/// nothing of the data it is. Counted as that data, the zeros of a guest's files, freed, made it
-/// due as often as other data would, and the passes copied out what was live of segments taking
-/// next to none of the disk (TASK-79.2).
-#[test]
-fn cleaning_is_due_for_the_disk_it_takes_back() {
-    let due = |block: fn(u64) -> Vec<u8>| {
-        let store = create(MemDir::new(), 64 << 20);
-        // 4 segments of 16 blocks, three in four of each freed: 48 blocks no extent is in.
-        for sequence in 0..64 {
-            store.write(extent(sequence), 0, &block(sequence)).unwrap();
-            if sequence % 16 == 15 {
-                store.commit(None).unwrap();
-            }
-        }
-        for sequence in (0..64).filter(|sequence| sequence % 4 != 0) {
-            store.free(extent(sequence)).unwrap();
-        }
-        store.commit(None).unwrap();
-        assert_eq!(store.usage().unwrap().dead_bytes, 48 * BLOCK as u64);
-        store.cleaning_due(16 * BLOCK as u64, 0.5).unwrap()
-    };
-    assert!(due(|sequence| noise(sequence, BLOCK)));
-    assert!(!due(|_| vec![0; BLOCK]));
-}
-
-/// fxdax: a pass copies out first what takes back the most of the host's disk for what it copies:
-/// the segments whose live data is least for what no extent is in takes of their files. The least
-/// live first, a pass took the segments whose freed data, a guest's zeros, took next to none of
-/// the disk, and left cleaning due for those whose freed data took it, pass after pass (TASK-79.2).
-#[test]
-fn cleaning_takes_back_the_most_disk_for_what_it_copies_first() {
-    let store = create(MemDir::new(), 64 << 20);
-    // Two segments of 16 blocks: of zeros, two of them kept; of data that does not compress, four.
-    for sequence in 0..32 {
-        let block = if sequence < 16 { vec![0; BLOCK] } else { noise(sequence, BLOCK) };
-        store.write(extent(sequence), 0, &block).unwrap();
-        if sequence % 16 == 15 {
-            store.commit(None).unwrap();
-        }
-    }
-    for sequence in (2..16).chain(20..32) {
-        store.free(extent(sequence)).unwrap();
-    }
-    store.commit(None).unwrap();
-    // What the zeros' segment holds that no extent is in takes next to none of the disk; the
-    // other's, 12 blocks of it.
-    assert!(store.cleaning_due(10 * BLOCK as u64, 0.5).unwrap());
-    // A pass of four blocks: the other's, then none of the zeros'.
-    assert_eq!(store.clean_behind(0.5, 4 * BLOCK as u64).unwrap(), 4 * BLOCK as u64);
-    store.commit(None).unwrap();
-    assert!(!store.cleaning_due(10 * BLOCK as u64, 0.5).unwrap());
-    for sequence in 0..2 {
-        assert_eq!(read(&store, extent(sequence), 0, BLOCK), vec![0; BLOCK]);
-    }
-    for sequence in 16..20 {
-        assert!(read(&store, extent(sequence), 0, BLOCK) == noise(sequence, BLOCK), "{sequence}");
-    }
-}
-
-/// fxdax: what no extent is in of a segment takes of the host's disk is counted part by part, as
-/// framing compresses each part on its own: not as a share of the whole file, as large as that
-/// data's share of the segment's, which counted zeros freed beside data that does not compress as
-/// taking a share of that data's disk, and that data, freed, beside zeros, as taking no more than
-/// its share of a file the zeros take next to none of. So too once the branch opens again, its
-/// parts counted from its extents' pieces (TASK-79.2).
-#[test]
-fn cleaning_counts_the_disk_each_part_takes() {
-    const MIB: usize = 1 << 20;
-    // A segment of four parts, an extent of a part in each: the first kept, the others freed.
-    let due = |kept: fn(u64) -> Vec<u8>, freed: fn(u64) -> Vec<u8>, past: u64| {
-        let dir = MemDir::new();
-        let options = Options { segment_size: 4 << 20, large_extent: 8 << 20, ..OPTIONS };
-        let capacity = 64 << 20;
-        let description = Description { block_size: BLOCK as u32, capacity, branch: BRANCH };
-        let store = Store::create(dir.clone(), description, options).unwrap();
-        store.write(extent(0), 0, &kept(0)).unwrap();
-        for sequence in 1..4 {
-            store.write(extent(sequence), 0, &freed(sequence)).unwrap();
-        }
-        store.commit(None).unwrap();
-        for sequence in 1..4 {
-            store.free(extent(sequence)).unwrap();
-        }
-        store.commit(None).unwrap();
-        assert_eq!(store.usage().unwrap().dead_bytes, 3 * MIB as u64);
-        let due = store.cleaning_due(past, 0.5).unwrap();
-        drop(store);
-        let store = Store::open(dir, options).unwrap();
-        assert_eq!(store.cleaning_due(past, 0.5).unwrap(), due, "opened again");
-        due
-    };
-    // Zeros freed take next to none of the disk, though the data kept takes a quarter of the
-    // file's data and nearly all of the file.
-    assert!(!due(|sequence| noise(sequence, MIB), |_| vec![0; MIB], MIB as u64 / 2));
-    // Data that does not compress, freed, takes as much of the disk as it is: three parts of
-    // four, though as a share of the file, three quarters of three parts.
-    assert!(due(|_| vec![0; MIB], |sequence| noise(sequence, MIB), 5 * MIB as u64 / 2));
-}
-
-/// fxdax: cleaning finds the extents it copies out of the segments it takes as the segments name
-/// those sealed in them, not going through every extent the branch holds (TASK-79.2): after the
-/// branch opens again too.
-#[test]
-fn cleaning_finds_the_extents_sealed_in_its_segments() {
-    let dir = MemDir::new();
-    let store = create(dir.clone(), 64 << 20);
-    // Two segments of 16 blocks, three in four of each freed.
-    let churn = |store: &Store<MemDir>, branch| {
-        let extent = |sequence| ExtentId::new(branch, sequence);
-        for sequence in 0..32 {
-            store.write(extent(sequence), 0, &pattern(sequence as u8, 0, BLOCK)).unwrap();
-            if sequence % 16 == 15 {
-                store.commit(None).unwrap();
-            }
-        }
-        for sequence in (0..32).filter(|sequence| sequence % 4 != 0) {
-            store.free(extent(sequence)).unwrap();
-        }
-        store.commit(None).unwrap();
-    };
-    churn(&store, BRANCH);
-    let store = reopened(store, &dir);
-    assert_eq!(store.clean_behind(0.5, u64::MAX).unwrap(), 8 * BLOCK as u64);
-    store.commit(None).unwrap();
-    assert_eq!(store.usage().unwrap().segments, 1);
-}
-
-/// fxdax: cleaning is due once what no extent holds is past the capacity's worth, whatever the
-/// mark it is due past otherwise: a branch whose capacity is short of that mark has it taken
-/// back, its room what its extents leave it throughout (TASK-79.2).
-#[test]
-fn cleaning_is_due_once_garbage_is_past_the_capacity() {
-    let capacity = 64 * BLOCK as u64;
-    let store = create(MemDir::new(), capacity);
-    for cycle in 0..4 {
-        churn(&store, 16 * cycle);
-    }
-    // 240 KiB freed: within the capacity's worth, and short of the mark.
-    assert!(!store.cleaning_due(64 << 20, 0.5).unwrap());
-    churn(&store, 64);
-    assert_eq!(store.info().unwrap().available, capacity - 5 * BLOCK as u64);
-    assert!(store.cleaning_due(64 << 20, 0.5).unwrap());
-    assert_eq!(store.clean_behind(0.5, u64::MAX).unwrap(), 5 * BLOCK as u64);
-    store.commit(None).unwrap();
-    assert_eq!(store.usage().unwrap().dead_bytes, 0);
-    assert_eq!(store.info().unwrap().available, capacity - 5 * BLOCK as u64);
-    assert!(!store.cleaning_due(0, 0.5).unwrap());
-}
-
-/// fxdax: what no extent holds is past the capacity's worth for what it takes of the host's disk,
-/// as cleaning is due past its mark for, not for the bytes of data it is: zeros freed, past the
-/// capacity's worth as data, take next to none of the disk, and make cleaning due no more than
-/// short of it; data that does not compress, freed, takes as much of the disk as it is
-/// (TASK-79.2).
-#[test]
-fn garbage_is_past_the_capacity_for_the_disk_it_takes() {
-    let capacity = 64 * BLOCK as u64;
-    let store = create(MemDir::new(), capacity);
-    // Ten segments of zeros, each pinned by a block: 600 KiB freed, more than twice the capacity.
-    for first in (0..160).step_by(16) {
-        for sequence in first..first + 16 {
-            store.write(extent(sequence), 0, &[0; BLOCK]).unwrap();
-        }
-        store.commit(None).unwrap();
-        for sequence in first + 1..first + 16 {
-            store.free(extent(sequence)).unwrap();
-        }
-        store.commit(None).unwrap();
-    }
-    assert_eq!(store.usage().unwrap().dead_bytes, 150 * BLOCK as u64);
-    assert!(!store.cleaning_due(64 << 20, 0.5).unwrap());
-    // Five of data that does not compress: 300 KiB freed, past the capacity's worth of the disk.
-    for cycle in 10..15 {
-        churn(&store, 16 * cycle);
-    }
-    assert!(store.cleaning_due(64 << 20, 0.5).unwrap());
-}
-
-/// fxdax: what may make cleaning behind the commits due moves the branch's cleaning changes,
-/// which what cleans behind them finds before it looks whether a pass is due, holding the state:
-/// the uploader's release of what the commits freed, which makes it due with no commit after;
-/// and a write, a free, a commit, a closing between commits, a new capacity. Reads, and looks, do
-/// not: a branch only read is looked at once (TASK-79.2).
-#[test]
-fn cleaning_changes_move_with_what_may_make_cleaning_due() {
-    let capacity = 64 * BLOCK as u64;
-    let store = create(MemDir::new(), capacity);
-    assert!(store.upload(WRITER, 0).unwrap());
-    let moves = |change: &dyn Fn()| {
-        let before = store.cleaning_changes();
-        change();
-        store.cleaning_changes() != before
-    };
-    // 300 KiB freed, which the uploader keeps until it releases the commits that freed them.
-    for cycle in 0..5 {
-        churn(&store, 16 * cycle);
-    }
-    assert!(!store.cleaning_due(64 << 20, 0.5).unwrap());
-    assert!(moves(&|| store.release(store.epoch().unwrap()).unwrap()));
-    assert!(store.cleaning_due(64 << 20, 0.5).unwrap());
-
-    // Its copies wait for the next commit: a look finds it due no more.
-    assert!(store.clean_behind(0.5, u64::MAX).unwrap() > 0);
-    let moved = [
-        ("a read", moves(&|| assert!(read(&store, extent(0), 0, BLOCK) == noise(0, BLOCK)))),
-        ("a look", moves(&|| assert!(!store.cleaning_due(64 << 20, 0.5).unwrap()))),
-        ("what it holds", moves(&|| assert_eq!(store.info().unwrap().capacity, capacity))),
-        ("a write", moves(&|| store.write(extent(100), 0, &[1; BLOCK]).unwrap())),
-        (
-            "a write abandoned",
-            moves(&|| drop(in_flight(&store, extent(100), BLOCK as u64, &[2; BLOCK]))),
-        ),
-        ("a free", moves(&|| store.free(extent(100)).unwrap())),
-        ("a commit", moves(&|| store.commit(None).unwrap())),
-        ("a closing between commits", moves(&|| assert!(store.close_now().unwrap()))),
-        ("a new capacity", moves(&|| store.set_capacity(2 * capacity).unwrap())),
-    ];
-    assert_eq!(
-        moved,
-        [
-            ("a read", false),
-            ("a look", false),
-            ("what it holds", false),
-            ("a write", true),
-            ("a write abandoned", true),
-            ("a free", true),
-            ("a commit", true),
-            ("a closing between commits", true),
-            ("a new capacity", true),
-        ]
-    );
-}
-
-#[test]
-fn cleaning_in_memory() {
-    cleaning(MemDir::new(), MemDir::clone);
-}
-
-#[test]
-fn cleaning_on_the_host() {
-    let temp = tempfile::tempdir().unwrap();
-    let path = temp.path().to_owned();
-    cleaning(HostDir::new(&path, true).unwrap(), |dir| HostDir::new(dir.path(), true).unwrap());
 }
 
 /// The branch's state, as it holds it, which rebuilding it from its checkpoint and its closed
@@ -912,7 +534,7 @@ fn closed_segments_hold_the_branchs_history() {
     assert_eq!(segments(), 2);
     assert_eq!(store.rebuild().unwrap(), state);
 
-    // Full: 64 KiB of extents, freed and kept, moved by cleaning, adopted.
+    // Full: 64 KiB of extents, freed and kept, adopted.
     for sequence in 1..=40 {
         store.write(extent(sequence), 0, &pattern(sequence as u8, 0, BLOCK)).unwrap();
         if sequence % 3 == 0 {
@@ -924,7 +546,6 @@ fn closed_segments_hold_the_branchs_history() {
     store.free(extent(0)).unwrap();
     store.adopt(ExtentId::new(BRANCH + 9, 3), bucket_location("k", 0, BLOCK as u64)).unwrap();
     store.commit(None).unwrap();
-    store.clean(0.9).unwrap();
     let state = closed_state(&store);
     assert_eq!(store.rebuild().unwrap(), state);
     // A run's data is in its segment, framed, where its footer says.
@@ -1260,7 +881,7 @@ fn locating_parts_stored_compressed() {
 #[test]
 fn resizes_are_their_next_commits() {
     let store = create(MemDir::new(), 1 << 20);
-    assert!(store.upload(Chain::new(BRANCH, 3, 0, None, 0), 0).unwrap());
+    assert!(store.upload(Chain::new(BRANCH, 3, 0, None, 0), 0, None).unwrap());
     let capacity = |store: &Store<MemDir>| {
         store.close_now().unwrap();
         store.flush().unwrap();
@@ -1293,9 +914,10 @@ fn segments_close_for_the_writer_of_their_chain() {
     use extent_frame::segment::{Footer, Location, extent_key, tag};
     let dir = MemDir::new();
     let store = create(dir.clone(), 1 << 20);
-    let refused = store.upload(Chain::new(BRANCH + 1, 3, 5, Some((4, 3)), 100), 0).unwrap_err();
+    let refused =
+        store.upload(Chain::new(BRANCH + 1, 3, 5, Some((4, 3)), 100), 0, None).unwrap_err();
     assert_eq!(refused.to_string(), "branch 0x7 uploaded by a writer of branch 0x8");
-    assert!(store.upload(Chain::new(BRANCH, 3, 5, Some((4, 3)), 100), 0).unwrap());
+    assert!(store.upload(Chain::new(BRANCH, 3, 5, Some((4, 3)), 100), 0, None).unwrap());
     // Nothing committed since the last closing, nothing to close.
     assert!(!store.close_now().unwrap());
 
@@ -1354,7 +976,7 @@ fn segments_close_for_the_writer_of_their_chain() {
     store.release(3).unwrap();
     store.commit(None).unwrap();
     let held = store.usage().unwrap().segments;
-    store.uploaded(first.number).unwrap();
+    store.acknowledged(first.number, &bucket_key(&first)).unwrap();
     store.commit(None).unwrap();
     assert_eq!(store.usage().unwrap().segments, held - 1);
 }
@@ -1365,7 +987,7 @@ fn segments_close_for_the_writer_of_their_chain() {
 fn segments_closed_between_commits_hold_the_last_commits_state() {
     let dir = MemDir::new();
     let store = create(dir.clone(), 1 << 20);
-    assert!(store.upload(WRITER, 0).unwrap());
+    assert!(store.upload(WRITER, 0, None).unwrap());
     store.write(extent(1), 0, &pattern(1, 0, BLOCK)).unwrap();
     store.write(extent(2), 0, &pattern(2, 0, BLOCK)).unwrap();
     store.commit(None).unwrap();
@@ -1392,7 +1014,7 @@ fn segments_closed_between_commits_hold_the_last_commits_state() {
 #[test]
 fn closed_segments_are_taken_so_many_at_once() {
     let store = create(MemDir::new(), 1 << 20);
-    assert!(store.upload(WRITER, 0).unwrap());
+    assert!(store.upload(WRITER, 0, None).unwrap());
     for sequence in 1..=3 {
         store.write(extent(sequence), 0, &pattern(sequence as u8, 0, BLOCK)).unwrap();
         store.close_segment().unwrap();
@@ -1768,6 +1390,12 @@ fn framing(store: &Store<MemDir>) -> BTreeSet<String> {
     store.framing().into_iter().map(|number| format!("{number:016x}")).collect()
 }
 
+/// fxdax: the bytes of `store`'s segments' data no extent is in, no write being in progress.
+fn dead_bytes(store: &Store<MemDir>) -> u64 {
+    let usage = store.usage().unwrap();
+    usage.segment_bytes - usage.live_bytes
+}
+
 /// The bytes of data of each of the branch's segments in `dir`, `store`'s: open ones' raw files,
 /// closed ones' framed data. Not the framed file of a segment being framed behind what closed it,
 /// which may not be written yet, and whose raw file holds its data until its framing ends
@@ -1803,7 +1431,7 @@ fn segments_read_beside_the_store_skip_framed_files_being_written() {
     let dir = MemDir::new();
     let description = Description { block_size: BLOCK as u32, capacity: 64 << 20, branch: BRANCH };
     let store = Store::create(dir.clone(), description, SMALL_SEGMENTS).unwrap();
-    assert!(store.upload(WRITER, 0).unwrap());
+    assert!(store.upload(WRITER, 0, None).unwrap());
     let block = |sequence: u64| pattern(sequence as u8, 0, BLOCK);
     store.write(extent(96), 0, &block(96)).unwrap();
     store.commit(None).unwrap();
@@ -1851,7 +1479,7 @@ fn segments_closed_for_room_go_to_the_uploader_with_no_commit_after() {
     let dir = MemDir::new();
     let description = Description { block_size: BLOCK as u32, capacity: 64 << 20, branch: BRANCH };
     let store = Store::create(dir, description, SMALL_SEGMENTS).unwrap();
-    assert!(store.upload(WRITER, 0).unwrap());
+    assert!(store.upload(WRITER, 0, None).unwrap());
     let block = |sequence: u64| pattern(sequence as u8, 0, BLOCK);
     store.write(extent(0), 0, &block(0)).unwrap();
     store.commit(None).unwrap();
@@ -1872,48 +1500,6 @@ fn segments_closed_for_room_go_to_the_uploader_with_no_commit_after() {
     }
 }
 
-/// TASK-150.2: so with a segment holding a commit closed by cleaning, whose copies are made as
-/// writes are, with no commit in sight, as a commit waiting for its upload holds off its guest's.
-#[test]
-fn segments_cleaning_closed_for_room_go_to_the_uploader_with_no_commit_after() {
-    let dir = MemDir::new();
-    let description = Description { block_size: BLOCK as u32, capacity: 64 << 20, branch: BRANCH };
-    let store = Store::create(dir, description, SMALL_SEGMENTS).unwrap();
-    assert!(store.upload(WRITER, 0).unwrap());
-    let block = |sequence: u64| pattern(sequence as u8, 0, BLOCK);
-    let uploaded = |store: &Store<MemDir>| {
-        let epoch = store.epoch().unwrap();
-        for closed in store.closed(usize::MAX).unwrap() {
-            store.uploaded(closed.number).unwrap();
-        }
-        store.release(epoch).unwrap();
-    };
-    // Segments of a commit each, which frees leave most of what they hold live... at a third.
-    for round in 0..8 {
-        let extents = round * 32..(round + 1) * 32;
-        for sequence in extents.clone() {
-            store.write(extent(sequence), 0, &block(sequence)).unwrap();
-        }
-        store.commit(None).unwrap();
-        for sequence in extents.filter(|sequence| sequence % 3 != 0) {
-            store.free(extent(sequence)).unwrap();
-        }
-        store.commit(None).unwrap();
-        uploaded(&store);
-    }
-    store.close_now().unwrap();
-    uploaded(&store);
-    store.write(extent(1 << 20), 0, &block(7)).unwrap();
-    store.commit(None).unwrap();
-    let epoch = store.epoch().unwrap();
-
-    let copied = store.clean_behind(0.5, u64::MAX).unwrap();
-    assert!(copied > SEGMENT_LIMIT, "{copied} bytes copied");
-    store.flush().unwrap();
-    let lasts: Vec<u64> = store.closed(8).unwrap().iter().map(Closed::last).collect();
-    assert_eq!(lasts, [epoch]);
-}
-
 /// The open segment takes writes until it holds a segment and an extent, `Options::segment_size`
 /// and `Options::max_extent`, between commits: then the next goes to another, which no segment
 /// grows past, however much is written between commits (TASK-79.2). One holding no commit's data
@@ -1926,7 +1512,7 @@ fn segments_hold_a_segment_and_an_extent_at_most() {
     let dir = MemDir::new();
     let description = Description { block_size: BLOCK as u32, capacity: 64 << 20, branch: BRANCH };
     let store = Store::create(dir.clone(), description, SMALL_SEGMENTS).unwrap();
-    assert!(store.upload(WRITER, 0).unwrap());
+    assert!(store.upload(WRITER, 0, None).unwrap());
     let block = |sequence: u64| pattern(sequence as u8, 0, BLOCK);
     let check = |store: &Store<MemDir>, sequences: std::ops::Range<u64>| {
         for sequence in sequences {
@@ -2012,9 +1598,9 @@ fn rewrites_take_no_segment_past_a_segment_and_an_extent() {
 /// Rewrites of an open extent take room in segments, which no extent holds once the extent is
 /// sealed: past the capacity's worth, they count as used, until the commit sealing the extent
 /// takes them back, which is the writer's to make (TASK-79.2); then they are dead space, which
-/// takes no room, and which cleaning takes back. So a guest rewriting a block between commits
-/// takes twice its capacity of the host's disk at most until it commits; what each commit leaves,
-/// cleaning takes back, at its pace.
+/// takes no room, and which leaves the store with its segment, once acknowledged in the bucket
+/// (TASK-165.8). So a guest rewriting a block between commits takes twice its capacity of the
+/// host's disk at most until it commits.
 #[test]
 fn rewrites_past_the_capacity_count_as_used() {
     let capacity = 64 * BLOCK as u64;
@@ -2027,12 +1613,11 @@ fn rewrites_past_the_capacity_count_as_used() {
     error_is(store.write(extent(1), 0, &pattern(128, 0, BLOCK)), NoSpace);
     error_is(store.write(extent(2), 0, &pattern(2, 0, BLOCK)), NoSpace);
     assert_eq!(read(&store, extent(1), 0, BLOCK), pattern(127, 0, BLOCK));
-    // Sealed, the extent leaves them in a segment no extent holds but it, which cleaning removes.
+    // Sealed, the extent leaves them in a segment no extent holds but it, which takes none of the
+    // room: it leaves the store once acknowledged in the bucket (TASK-165.8).
     store.commit(None).unwrap();
-    assert_eq!(store.usage().unwrap().dead_bytes, 128 * BLOCK as u64);
+    assert_eq!(dead_bytes(&store), 128 * BLOCK as u64);
     assert_eq!(store.info().unwrap().available, capacity - BLOCK as u64);
-    store.clean(0.5).unwrap();
-    assert_eq!(store.usage().unwrap().dead_bytes, 0);
     store.write(extent(2), 0, &pattern(2, 0, BLOCK)).unwrap();
     assert_eq!(read(&store, extent(1), 0, BLOCK), pattern(127, 0, BLOCK));
 }
@@ -2085,10 +1670,10 @@ fn churn(store: &Store<MemDir>, first: u64) {
     store.commit(None).unwrap();
 }
 
-/// What the branch's segments hold that no extent is in, freed, is dead space until cleaning
-/// takes it back, which takes none of the branch's room, past the capacity's worth too: the
-/// host's to take back, which the branch's writer can't make room for (TASK-79.2). What a fork
-/// shares of it, the branch alone can't take back, nor counts.
+/// What the branch's segments hold that no extent is in, freed, is dead space until its segments
+/// leave the store, acknowledged in the bucket, which takes none of the branch's room, past the
+/// capacity's worth too: the bucket's collector's to take back, which the branch's writer can't
+/// make room for (TASK-79.2, TASK-165.8).
 #[test]
 fn freed_space_is_dead_space_taking_no_room() {
     let capacity = 64 * BLOCK as u64;
@@ -2097,11 +1682,11 @@ fn freed_space_is_dead_space_taking_no_room() {
         churn(&store, 16 * cycle);
     }
     // 240 KiB freed: within the capacity's worth.
-    assert_eq!(store.usage().unwrap().dead_bytes, 60 * BLOCK as u64);
+    assert_eq!(dead_bytes(&store), 60 * BLOCK as u64);
     assert_eq!(store.info().unwrap().available, capacity - 4 * BLOCK as u64);
     churn(&store, 64);
     // 300 KiB freed: past the capacity's worth.
-    assert_eq!(store.usage().unwrap().dead_bytes, 75 * BLOCK as u64);
+    assert_eq!(dead_bytes(&store), 75 * BLOCK as u64);
     assert_eq!(store.info().unwrap().available, capacity - 5 * BLOCK as u64);
     error_is(store.write(extent(100), 0, &vec![1; 60 * BLOCK]), NoSpace);
     store.write(extent(100), 0, &vec![1; 59 * BLOCK]).unwrap();
@@ -2110,49 +1695,10 @@ fn freed_space_is_dead_space_taking_no_room() {
     assert_eq!(store.info().unwrap().available, capacity - 5 * BLOCK as u64);
 }
 
-/// fxdax: what bounds the host's disk across commits, the dead space there taking none of the
-/// branch's room (TASK-79.2): cleaning behind the commits, due once what no extent holds takes
-/// more than the capacity's worth of the disk, a pass between commits, as the extent daemon
-/// cleans. A writer freeing
-/// all but a block of each segment it writes, as TASK-79.2 found one could, has the branch's
-/// segments hold no more than the capacity's worth and a commit's frees that no extent is in,
-/// besides its extents' data and cleaning's copies of it, which wait for the next commit.
-#[test]
-fn cleaning_between_commits_bounds_what_segments_hold() {
-    let capacity = 64 * BLOCK as u64;
-    let store = create(MemDir::new(), capacity);
-    let check = || {
-        let (usage, stored) = (store.usage().unwrap(), store.info().unwrap().used);
-        assert!(usage.dead_bytes <= capacity + 15 * BLOCK as u64, "{usage:?}");
-        assert!(usage.segment_bytes <= usage.dead_bytes + 2 * stored, "{usage:?}");
-    };
-    // Forty segments, each pinned by a block: 2.4 MiB freed, nine times the capacity, of data that
-    // does not compress, which takes as much of the host's disk.
-    for first in (0..640).step_by(16) {
-        for sequence in first..first + 16 {
-            store.write(extent(sequence), 0, &noise(sequence, BLOCK)).unwrap();
-        }
-        check();
-        store.commit(None).unwrap();
-        for sequence in first + 1..first + 16 {
-            store.free(extent(sequence)).unwrap();
-        }
-        store.commit(None).unwrap();
-        check();
-        if store.cleaning_due(64 << 20, 0.5).unwrap() {
-            store.clean_behind(0.5, 64 << 20).unwrap();
-            check();
-        }
-    }
-    for sequence in (0..640).step_by(16) {
-        assert!(read(&store, extent(sequence), 0, BLOCK) == noise(sequence, BLOCK), "{sequence}");
-    }
-}
-
 /// fxdax: what the branch's segments hold that no extent is in, freed, takes none of the room the
-/// branch's writes need, however much it is: it is the host's to take back, cleaning behind the
-/// commits, whose copies wait for the branch's next commit, which comes with its writer's next
-/// write. Here it gathers commit by commit, past twice the capacity (TASK-79.2).
+/// branch's writes need, however much it is: it leaves the store with its segments, acknowledged
+/// in the bucket, whose collector takes it back (TASK-165.8). Here it gathers commit by commit,
+/// past twice the capacity (TASK-79.2).
 #[test]
 fn dead_space_takes_none_of_the_room_writes_need() {
     let capacity = 64 * BLOCK as u64;
@@ -2161,15 +1707,12 @@ fn dead_space_takes_none_of_the_room_writes_need() {
     for cycle in 0..10 {
         churn(&store, 16 * cycle);
     }
-    assert_eq!(store.usage().unwrap().dead_bytes, 150 * BLOCK as u64);
+    assert_eq!(dead_bytes(&store), 150 * BLOCK as u64);
     assert_eq!(store.info().unwrap().available, capacity - 10 * BLOCK as u64);
-    // Cleaning copies the ten out, behind the commits.
-    assert!(store.cleaning_due(64 << 20, 0.5).unwrap());
-    assert_eq!(store.clean_behind(0.5, u64::MAX).unwrap(), 10 * BLOCK as u64);
-    // The write the next commit comes with, of all the room left.
+    // All the room left.
     store.write(extent(200), 0, &pattern(200, 0, 54 * BLOCK)).unwrap();
     store.commit(None).unwrap();
-    assert_eq!(store.usage().unwrap().dead_bytes, 0);
+    assert_eq!(dead_bytes(&store), 150 * BLOCK as u64);
     assert_eq!(store.info().unwrap().available, 0);
     error_is(store.write(extent(201), 0, &pattern(201, 0, BLOCK)), NoSpace);
     for sequence in (0..160).step_by(16) {
@@ -2180,38 +1723,36 @@ fn dead_space_takes_none_of_the_room_writes_need() {
 
 /// fxdax: an uploader keeps the frees of a guest writing and freeing files until it has uploaded
 /// the segments holding them, and lets go of them at once, the branch's dead space past twice its
-/// capacity of a sudden. Cleaning copies what is live of the segments out behind the commits; the
-/// guest's next write, which its next commit comes with (doc-4's `WRITE_COMMIT`), takes the room
-/// its extents leave it; and the commit makes the copies the extents' places, taking the dead
-/// space back. Counted as used past the capacity's worth, the dead space found that write, a
-/// journal write of Fxfs's, refused (`ENOSPC`), the store a tenth used: the guest's filesystem
-/// failed, and the commit that would have taken the dead space back never came (TASK-79.2).
+/// capacity of a sudden. Counted as used past the capacity's worth, the dead space found the
+/// guest's next write, a journal write of Fxfs's, refused (`ENOSPC`), the store a tenth used: the
+/// guest's filesystem failed (TASK-79.2). The segments, acknowledged, leave the store, what is
+/// live of them read in the bucket, and the dead space with them (TASK-165.8): the write takes
+/// the room the extents leave it.
 #[test]
 fn dead_space_the_uploader_lets_go_takes_none_of_the_room() {
     let capacity = 64 * BLOCK as u64;
     let store = create(MemDir::new(), capacity);
-    assert!(store.upload(WRITER, 0).unwrap());
+    assert!(store.upload(WRITER, 0, None).unwrap());
     // Ten segments, each pinned by one extent, what is freed in them kept for the uploader.
     for cycle in 0..10 {
         churn(&store, 16 * cycle);
     }
-    assert_eq!(store.usage().unwrap().dead_bytes, 0);
-    // Uploaded, and released: 600 KiB let go of at once, more than twice the capacity.
+    assert_eq!(dead_bytes(&store), 0);
+    // Acknowledged, and released: 600 KiB let go of at once, more than twice the capacity, with
+    // the segments.
     for closed in store.closed(usize::MAX).unwrap() {
-        store.uploaded(closed.number).unwrap();
+        store.acknowledged(closed.number, &bucket_key(&closed)).unwrap();
     }
     store.release(store.epoch().unwrap()).unwrap();
-    assert_eq!(store.usage().unwrap().dead_bytes, 150 * BLOCK as u64);
-    assert!(store.cleaning_due(64 << 20, 0.5).unwrap());
-    assert_eq!(store.clean_behind(0.5, u64::MAX).unwrap(), 10 * BLOCK as u64);
     // The write the next commit comes with, of all the room the extents leave.
     store.write(extent(200), 0, &pattern(200, 0, 54 * BLOCK)).unwrap();
     store.commit(None).unwrap();
-    assert_eq!(store.usage().unwrap().dead_bytes, 0);
+    assert_eq!(dead_bytes(&store), 0);
     assert_eq!(store.usage().unwrap().segments, 1);
     assert_eq!(store.info().unwrap().available, 0);
     for sequence in (0..160).step_by(16) {
-        assert!(read(&store, extent(sequence), 0, BLOCK) == noise(sequence, BLOCK), "{sequence}");
+        let place = store.place(extent(sequence)).unwrap();
+        assert!(matches!(place, Some(Place::Remote(_))), "{sequence} at {place:?}");
     }
     assert_eq!(read(&store, extent(200), 0, 54 * BLOCK), pattern(200, 0, 54 * BLOCK));
 }
@@ -2229,36 +1770,26 @@ fn data_files(dir: &MemDir) -> u64 {
     bytes
 }
 
-/// fxdax: the bytes of the frame of closed segment `name`: what its file takes past its data, its
-/// footer, table and trailer, which say what it holds (TASK-79.89).
-fn frame(dir: &MemDir, name: &str) -> u64 {
-    let file = dir.open(&format!("{}/{name}", of("segments", BRANCH)), true).unwrap();
-    let mut bytes = vec![0; file.size().unwrap() as usize];
-    file.read_at(&mut bytes, 0).unwrap();
-    (bytes.len() - extent_frame::data(&bytes).unwrap().len()) as u64
-}
-
 /// fxdax: a guest writing a segment of blocks of data that does not compress at each commit, and
 /// freeing all but two of them at the next, which pin the segment, until it lets go of them too,
-/// twenty-one commits later; a pass of cleaning behind each commit copying `pass` bytes at most,
-/// which the next commit makes the extents' places (TASK-79.89). Its extents hold less than its
-/// capacity. Returns how many of its writes were refused. Each refused write would have taken the
-/// branch's files past three times its capacity of the host's disk; and each commit leaves them
-/// within it, but for what no write counted, the frames of the segments closed and cleaning's
-/// copies, since they last were.
-fn churn_pinning(pass: u64) -> usize {
+/// twenty-one commits later; its uploader acknowledging each segment the store closes, and
+/// releasing each commit, as it goes. Each segment acknowledged leaves the store, its extents read
+/// in the bucket from then on: what the pins hold, and what the frees left, is the bucket's, whose
+/// collector takes it back (TASK-165.8). Once the uploader has caught up, the branch's files are
+/// none but its open segment's, which the commit that closed the last left empty. Before, they
+/// took what cleaning behind the commits had yet to take back, which writes were refused past
+/// three times the capacity for (TASK-79.89).
+#[test]
+fn acknowledged_segments_leave_a_churning_guests_files() {
     let capacity = 64 * BLOCK as u64;
-    let bound = 3 * capacity;
     let dir = MemDir::new();
     let store = create(dir.clone(), capacity);
-    let (mut live, mut refused) = (BTreeSet::new(), 0);
+    assert!(store.upload(WRITER, 0, None).unwrap());
+    let mut live = BTreeSet::new();
     let free = |live: &mut BTreeSet<u64>, sequence: u64| {
         store.free(extent(sequence)).unwrap();
         live.remove(&sequence);
     };
-    // What the files may take past the bound, which no write counted: the frames of the segments
-    // closed, and cleaning's copies, since they last took no more than it.
-    let (mut uncounted, mut closed) = (0, Vec::new());
     for cycle in 0..100 {
         let first = 16 * cycle;
         if cycle > 0 {
@@ -2272,103 +1803,36 @@ fn churn_pinning(pass: u64) -> usize {
             free(&mut live, pins + 1);
         }
         for sequence in first..first + 16 {
-            match store.write(extent(sequence), 0, &noise(sequence, BLOCK)) {
-                Ok(()) => drop(live.insert(sequence)),
-                Err(error) => {
-                    assert_eq!(error.downcast_ref::<NoSpace>(), Some(&NoSpace), "{error:?}");
-                    let files = data_files(&dir);
-                    assert!(files + BLOCK as u64 > bound, "refused with {files} bytes of files");
-                    refused += 1;
-                }
-            }
+            store.write(extent(sequence), 0, &noise(sequence, BLOCK)).unwrap();
+            live.insert(sequence);
         }
         store.commit(None).unwrap();
-        // Not those being framed, closed by a write for room, which the commit waited not for:
-        // counted once framed (TASK-189).
-        let framing = framing(&store);
-        let segments = dir.list(&of("segments", BRANCH)).unwrap();
-        let segments: Vec<_> =
-            segments.into_iter().filter(|name| !framing.contains(name)).collect();
-        for name in segments.iter().filter(|name| !closed.contains(*name)) {
-            uncounted += frame(&dir, name);
+        store.flush().unwrap();
+        for closed in store.closed(usize::MAX).unwrap() {
+            store.acknowledged(closed.number, &bucket_key(&closed)).unwrap();
         }
-        closed = segments;
-        let files = data_files(&dir);
-        assert!(files <= bound + uncounted, "{files} bytes of files, past {bound} and {uncounted}");
-        if files <= bound {
-            uncounted = 0;
-        }
-        if store.cleaning_due(64 << 20, 0.5).unwrap() {
-            uncounted += store.clean_behind(0.5, pass).unwrap();
-        }
+        store.release(store.epoch().unwrap()).unwrap();
+        assert_eq!(data_files(&dir), 0, "the files after cycle {cycle}");
     }
     for sequence in live {
-        assert!(read(&store, extent(sequence), 0, BLOCK) == noise(sequence, BLOCK), "{sequence}");
+        let place = store.place(extent(sequence)).unwrap();
+        assert!(matches!(place, Some(Place::Remote(_))), "{sequence} at {place:?}");
     }
-    refused
-}
-
-/// fxdax: a guest that frees faster than cleaning behind its commits takes back, a block a pass,
-/// has the branch's files take the host's disk past three times its capacity, its extents holding
-/// less than it: as far as cleaning lags its frees, as cleaning's pace alone bounded the files
-/// across commits. Its writes past the bound are refused (`ENOSPC`), until cleaning, or its own
-/// frees, take back enough (TASK-79.89).
-#[test]
-fn files_past_three_times_the_capacity_refuse_writes() {
-    assert_eq!(churn_pinning(BLOCK as u64), 637);
-}
-
-/// fxdax: the guest of `files_past_three_times_the_capacity_refuse_writes`, cleaned behind at the
-/// extent daemon's pace, a pass of 64 MiB behind each commit, is never refused: the bound is far
-/// from what an honest guest's files take (TASK-79.89).
-#[test]
-fn cleaning_at_its_pace_keeps_a_churning_guest_from_the_bound() {
-    assert_eq!(churn_pinning(64 << 20), 0);
-}
-
-/// fxdax: at the bound, the write a commit comes with (doc-4's `WRITE_COMMIT`, or a DAX guest's
-/// extents mapped writably, which its commits write first) is refused, until cleaning's copies
-/// wait for the commit: what the commit takes back of the files, as the copies land, counts as
-/// taken back for it, a capacity's worth at most. Refused, the guest could never commit again,
-/// and the copies, which wait for its commit, never land (TASK-79.89).
-#[test]
-fn the_write_a_commit_comes_with_takes_what_the_commit_takes_back() {
-    let capacity = 64 * BLOCK as u64;
-    let dir = MemDir::new();
-    let store = create(dir.clone(), capacity);
-    // Eleven segments, each pinned by one extent: 704 KiB of files, and their frames.
-    for cycle in 0..11 {
-        churn(&store, 16 * cycle);
-    }
-    assert!(data_files(&dir) > 11 * 16 * BLOCK as u64, "{} bytes of files", data_files(&dir));
-    // The write the next commit comes with, of an extent of its own: 17 blocks, past the bound.
-    let data = noise(200, 17 * BLOCK);
-    error_is(store.write(extent(200), 0, &data), NoSpace);
-    assert!(store.cleaning_due(64 << 20, 0.5).unwrap());
-    assert_eq!(store.clean_behind(0.5, u64::MAX).unwrap(), 11 * BLOCK as u64);
-    store.write(extent(200), 0, &data).unwrap();
-    store.commit(None).unwrap();
-    let usage = store.usage().unwrap();
-    assert_eq!((usage.segments, usage.segment_bytes, usage.dead_bytes), (1, 11 * BLOCK as u64, 0));
-    for sequence in (0..176).step_by(16) {
-        assert!(read(&store, extent(sequence), 0, BLOCK) == noise(sequence, BLOCK), "{sequence}");
-    }
-    assert!(read(&store, extent(200), 0, 17 * BLOCK) == data);
 }
 
 /// fxdax: an honest guest whose uploader lags (TASK-79.89): forty commits, each of sixteen blocks
 /// in segments and an extent of eight in a file of its own, of data that does not compress, all of
 /// it freed by the next, its extents holding a third of its capacity at most. The uploader keeps
-/// what the frees let go of until it releases their commits, and the segments until it uploads
-/// them, if it does as it goes (`uploads`): the branch's files take ten times the capacity, which
-/// the upload lag bound bounds, making commits wait (fxdax's `max_lag_bytes`), and none of it
-/// counts towards the bound on what the branch's own take. Once the uploader catches up, the
-/// next commit lets it all go.
-fn uploader_lagging(uploads: bool) {
+/// what the frees let go of until it releases their commits, and the segments until they are
+/// acknowledged in the bucket, if they are as they close (`acknowledges`): returns what the
+/// branch's files take then, which the upload lag bound bounds, making commits wait (fxdax's
+/// `max_lag_bytes`). Once the uploader catches up, the next commit lets it all go, the bucket
+/// holding what it kept (TASK-165.8).
+fn uploader_lagging(acknowledges: bool) -> u64 {
     let capacity = 64 * BLOCK as u64;
     let dir = MemDir::new();
     let store = create(dir.clone(), capacity);
-    assert!(store.upload(WRITER, 0).unwrap());
+    assert!(store.upload(WRITER, 0, None).unwrap());
     for cycle in 0..40 {
         let first = 17 * cycle;
         for sequence in first..first + 16 {
@@ -2380,33 +1844,37 @@ fn uploader_lagging(uploads: bool) {
             store.free(extent(sequence)).unwrap();
         }
         store.commit(None).unwrap();
-        if uploads {
+        if acknowledges {
             for closed in store.closed(usize::MAX).unwrap() {
-                store.uploaded(closed.number).unwrap();
+                store.acknowledged(closed.number, &bucket_key(&closed)).unwrap();
             }
         }
     }
     let files = data_files(&dir);
-    assert!(files > 10 * capacity, "{files} bytes of files");
     for closed in store.closed(usize::MAX).unwrap() {
-        store.uploaded(closed.number).unwrap();
+        store.acknowledged(closed.number, &bucket_key(&closed)).unwrap();
     }
     store.release(store.epoch().unwrap()).unwrap();
     store.commit(None).unwrap();
     assert_eq!(data_files(&dir), 0);
+    files
 }
 
-/// fxdax: `uploader_lagging`, its uploader uploading nothing, nor releasing anything (TASK-79.89).
+/// fxdax: `uploader_lagging`, its uploader acknowledging nothing, nor releasing anything: the
+/// branch's files take ten times the capacity, which no bound of the store's refuses writes for
+/// (TASK-79.89).
 #[test]
-fn what_an_uploader_keeps_counts_not_towards_the_bound() {
-    uploader_lagging(false);
+fn what_an_uploader_keeps_stays_until_acknowledged() {
+    let files = uploader_lagging(false);
+    assert!(files > 10 * 64 * BLOCK as u64, "{files} bytes of files");
 }
 
-/// fxdax: `uploader_lagging`, its uploader uploading the segments as the store closes them, and
-/// releasing nothing: the frees it keeps alone hold them (TASK-79.89).
+/// fxdax: `uploader_lagging`, its uploader acknowledging the segments as the store closes them,
+/// and releasing nothing: the frees it keeps, in the bucket, hold no file of the branch's
+/// (TASK-165.8).
 #[test]
-fn frees_an_uploader_keeps_count_not_towards_the_bound() {
-    uploader_lagging(true);
+fn frees_kept_in_segments_acknowledged_hold_no_file() {
+    assert_eq!(uploader_lagging(true), 0);
 }
 
 /// fxdax: a branch opened again in the same process lets go of the segments its last store set
@@ -2773,7 +2241,7 @@ fn places_of_extents() {
 #[test]
 fn releases_let_their_commits_go() {
     let store = create(MemDir::new(), 1 << 20);
-    assert!(store.upload(WRITER, 0).unwrap());
+    assert!(store.upload(WRITER, 0, None).unwrap());
     store.write(extent(1), 0, &[1; BLOCK]).unwrap();
     store.commit(None).unwrap();
     store.write(extent(2), 0, &[2; 2 * BLOCK]).unwrap();
@@ -2793,7 +2261,7 @@ fn uploads_started_with_commits_pending_take_only_durable_ones() {
     store.write(extent(1), 0, &[1; BLOCK]).unwrap();
     store.commit_ordered(None).unwrap();
     store.commit_ordered(None).unwrap();
-    assert!(store.upload(WRITER, store.epoch().unwrap()).unwrap());
+    assert!(store.upload(WRITER, store.epoch().unwrap(), None).unwrap());
     store.write(extent(2), 0, &[2; BLOCK]).unwrap();
     store.commit_ordered(None).unwrap();
     assert!(store.close_now().unwrap());
@@ -2806,7 +2274,7 @@ fn uploads_started_with_commits_pending_take_only_durable_ones() {
 #[test]
 fn closed_segments_know_their_last_commit() {
     let store = create(MemDir::new(), 1 << 20);
-    assert!(store.upload(WRITER, 0).unwrap());
+    assert!(store.upload(WRITER, 0, None).unwrap());
     store.write(extent(1), 0, &[1; BLOCK]).unwrap();
     store.commit(None).unwrap();
     store.write(extent(2), 0, &[2; BLOCK]).unwrap();
@@ -2834,28 +2302,12 @@ fn files_freed_between_commits_go_across_closings() {
     assert_eq!(dir.list(&of("open-extents", BRANCH)).unwrap(), Vec::<String>::new());
 }
 
-/// Cleaning a fraction of 1 takes the segments with any dead data, not those wholly live.
-#[test]
-fn cleaning_takes_no_wholly_live_segment() {
-    let store = create(MemDir::new(), 1 << 20);
-    for sequence in 1..=4 {
-        store.write(extent(sequence), 0, &pattern(sequence as u8, 0, 4 * BLOCK)).unwrap();
-    }
-    store.commit(None).unwrap();
-    store.close_segment().unwrap();
-    store.commit(None).unwrap();
-    assert_eq!(store.clean(1.0).unwrap().segments, 0);
-    store.free(extent(1)).unwrap();
-    store.commit(None).unwrap();
-    assert_eq!(store.clean(1.0).unwrap().segments, 1);
-}
-
 /// A commit lists an extent it wrote in two writes once, at its length: its segment's footer names
 /// it so, and the bytes it wrote count it so.
 #[test]
 fn commits_list_each_extent_written_once() {
     let store = create(MemDir::new(), 1 << 20);
-    assert!(store.upload(WRITER, 0).unwrap());
+    assert!(store.upload(WRITER, 0, None).unwrap());
     store.write(extent(1), 0, &[1; BLOCK]).unwrap();
     store.write(extent(1), BLOCK as u64, &[1; BLOCK]).unwrap();
     store.commit(None).unwrap();
@@ -2872,7 +2324,7 @@ fn commits_list_each_extent_written_once() {
 #[test]
 fn forks_give_their_commits_epoch() {
     let store = create(MemDir::new(), 1 << 20);
-    assert!(store.upload(WRITER, 0).unwrap());
+    assert!(store.upload(WRITER, 0, None).unwrap());
     store.write(extent(1), 0, &[1; BLOCK]).unwrap();
     store.commit(None).unwrap();
     let forked = Child { branch: BRANCH + 1, owner: 0, point: false };
@@ -2889,7 +2341,7 @@ fn empty_segments_close_not() {
     let options = Options { segment_age: std::time::Duration::ZERO, ..OPTIONS };
     let description = Description { block_size: BLOCK as u32, capacity: 1 << 20, branch: BRANCH };
     let store = Store::create(MemDir::new(), description, options).unwrap();
-    assert!(store.upload(WRITER, 0).unwrap());
+    assert!(store.upload(WRITER, 0, None).unwrap());
     store.commit(None).unwrap();
     store.commit(None).unwrap();
     assert_eq!(store.closed(usize::MAX).unwrap().len(), 0);

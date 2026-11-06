@@ -8,6 +8,14 @@
 
 # Decisions
 
+## Acknowledged segments leave the store, recorded in its index; nothing cleans a store but the bucket's collector (TASK-165.8, 2026-11-05)
+
+Once the uploader's writer acknowledges a segment (`Store::acknowledged`), its sealed extents, and those stored on their own its footer names, held or kept, are `Data::Remote` at their places in the bucket, and their files leave the store: renamed into the host's cache (`Cache::adopt`) if the uploader has one, else removed; the segment's once no write is in progress in it. `Store::clean`, `clean_behind`, `cleaning_due`, `cleaning_changes`, the bound of three times the capacity on the branch's files, `Usage::dead_bytes`, extentd's cleaning behind commits (`CLEANINGS`) and images' cleaning after commits are gone. Decided where doc-14 left it open:
+- **The acknowledgement is a record of the index** (`Record::Acknowledged { segment, key, own }`), written after the commits durable so far, which it makes durable first, so that the store opened again holds those extents in the bucket, not in files it removed. Local format 7 (TASK-165.7's) gains the record; no store of format 7 predates it. TASK-165.9 removes the index, and with it this record. *Instead:* leaving the files until the next checkpoint covers the change, which keeps a segment's worth more on disk per commit. *Undoing it:* `Record::Acknowledged`.
+- **A store with no uploader keeps everything**: unattached, nothing is acknowledged and nothing leaves; what its segments hold that no extent is in stays until no extent is in them. Every store has a bucket (TASK-165.6) and fxdax attaches an uploader to each it opens, so only extent_store's own tests and fxdaxctl's offline commands run so. *Instead:* local cleaning kept for unattached stores, a second cleaner doc-14 removes.
+- **A follower whose view's extent the collector reclaimed is cut off** (`ESTALE`): the fetch finds it `Lost`, which for a writer stays `EIO`. A follower reads what the host's cache holds of it until then, whatever the collector did.
+- **Local disk's bound is the uploader's lag bound, the open segment's room and the cache's capacity**, shown at the store's level (`acknowledged_segments_leave_a_churning_guests_files`, a guest freeing all but two blocks a segment as it goes: no file left after each acknowledgement), not under a guest VM, which GCE runs.
+
 ## Forks, points and deletion are the bucket's alone; a child's store is made, and takes its state, once the bucket has its record (TASK-165.7, 2026-11-05)
 
 A store's directory holds its branch alone. A fork is the parent's commit naming the child (`Store::commit_fork`), whose acknowledgement gives the child its record; a fork of a point, `branch::fork_point`; only then is the child's directory made, a store of its own (`host_store::fork`). Decided where doc-14 left it open:

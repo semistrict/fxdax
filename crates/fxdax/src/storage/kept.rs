@@ -70,14 +70,12 @@ impl Kept {
     /// What follows a commit of the store's: it fails once the uploader has, the branch another
     /// writer's or deleted, or its bucket out of reach for good, rather than the image go on as
     /// a branch no bucket has; it waits while more of its commits wait to be uploaded than the
-    /// lag's bound; the store is cleaned if its segments hold much freed space
-    /// ([`host_store::clean_after_commit`]); and the bucket's collector runs, if it is due.
+    /// lag's bound; and the bucket's collector runs, if it is due.
     pub fn committed(&self) -> anyhow::Result<()> {
         if let Some(failed) = self.remote.failed() {
             return Err(anyhow::Error::new(failed).context("the image's branch is not uploaded"));
         }
         self.remote.wait_lag(self.store.epoch()?)?;
-        host_store::clean_after_commit(&self.store)?;
         if let Some(collecting) = &self.collecting {
             collecting.after_commit();
         }

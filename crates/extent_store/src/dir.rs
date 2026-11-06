@@ -100,6 +100,12 @@ pub trait Dir: Send + Sync + 'static {
     /// fxdax: lets the claim go, once claimed ([`Dir::claim`]).
     fn unclaim(&self) {}
 
+    /// fxdax: the path on the host's file system of the file at `path`, if it is on it: what a
+    /// store's file leaving it for the host's cache of objects is renamed from (TASK-165.8).
+    fn host_path(&self, _path: &str) -> Option<PathBuf> {
+        None
+    }
+
     /// fxdax: whether the store may do I/O in the directory on threads of its own, alongside its
     /// callers': framing a closed segment off the commit that closed it (TASK-41), and syncing a
     /// flush's files at once (TASK-92.42). Without, its callers' threads do all of it, one
@@ -247,6 +253,10 @@ impl Dir for HostDir {
             })?);
         }
         Ok(names)
+    }
+
+    fn host_path(&self, path: &str) -> Option<PathBuf> {
+        Some(self.path.join(path))
     }
 
     fn sync_dir(&self, path: &str) -> io::Result<()> {

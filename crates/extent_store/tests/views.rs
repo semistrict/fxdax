@@ -6,7 +6,8 @@
 //! what they keep of its frees, and for how long, their pins, and their cutting off. Their
 //! concurrency with the writer is tests/shuttle/main.rs's.
 
-use extent_store::{CutOff, Description, MemDir, NotHeld, Options, Store, View};
+use extent_frame::segment::{Chain, Location};
+use extent_store::{CutOff, Description, MemDir, NotHeld, Options, RemoteData, Store, View};
 use std::time::Duration;
 use storage_device::{ExtentId, NoExtent};
 
@@ -78,8 +79,35 @@ fn store_bytes(store: &Store<MemDir>) -> u64 {
     store.extents().unwrap().iter().map(|(_, len)| len).sum()
 }
 
+/// fxdax: a view reads what its commit holds that the writer freed after it in the bucket, once
+/// the segment holding it is acknowledged there, and leaves the store: its read fails saying where
+/// in the bucket the data is ([`RemoteData`]), for the fetcher to read there, as the store's own
+/// do (TASK-165.8). What the uploader kept of the frees, the view keeps, as before.
+#[test]
+fn views_read_frees_acknowledged_in_the_bucket() {
+    let store = create(OPTIONS);
+    assert!(store.upload(Chain::new(BRANCH, 1, 0, None, 0), 0, None).unwrap());
+    write(&store, 1, 2);
+    store.commit(None).unwrap();
+    let view = store.view();
+    store.free(extent(1)).unwrap();
+    store.commit(None).unwrap();
+    assert!(store.close_now().unwrap());
+    store.flush().unwrap();
+    let closed = store.closed(usize::MAX).unwrap();
+    let keys: Vec<String> = (closed.iter())
+        .map(|closed| format!("segments/{:016x}/{:016x}", closed.footer.branch, closed.footer.seq))
+        .collect();
+    for (closed, key) in closed.iter().zip(&keys) {
+        store.acknowledged(closed.number, key).unwrap();
+    }
+    assert_eq!(store.usage().unwrap().segments, 1);
+    let location = Location { key: keys[0].clone(), offset: 0, len: 2 * BLOCK as u64 };
+    error_is(read(&store, &view, 1, 2), RemoteData { extent: extent(1), location });
+}
+
 /// A view reads the commit it is of, and its root, while the writer frees what it holds, in
-/// segments and in files of their own, writes more, cleans and commits.
+/// segments and in files of their own, writes more and commits.
 #[test]
 fn views_read_the_commit_they_are_of() {
     let store = create(OPTIONS);
@@ -95,7 +123,6 @@ fn views_read_the_commit_they_are_of() {
     store.free(extent(2)).unwrap();
     write(&store, 4, 3);
     store.commit(Some(b"two")).unwrap();
-    store.clean(0.99).unwrap();
     write(&store, 5, 1);
     store.commit(None).unwrap();
 
@@ -105,7 +132,7 @@ fn views_read_the_commit_they_are_of() {
     assert_eq!((view.epoch(), view.root()), (1, &b"one"[..]));
     // A view opened now is of the latest commit, and its root.
     let latest = store.view();
-    assert_eq!((latest.epoch(), latest.root()), (4, &b"two"[..]));
+    assert_eq!((latest.epoch(), latest.root()), (3, &b"two"[..]));
     assert_eq!(read(&store, &latest, 4, 3).unwrap(), pattern(4, 3));
 }
 
@@ -489,7 +516,7 @@ fn duplicates_are_views_of_their_own() {
 fn views_find_what_they_let_go_of_not_held() {
     let store = create(OPTIONS);
     let writer = extent_frame::segment::Chain::new(BRANCH, 1, 0, None, 0);
-    assert!(store.upload(writer, 0).unwrap());
+    assert!(store.upload(writer, 0, None).unwrap());
     write(&store, 1, 1);
     store.commit(None).unwrap();
     store.free(extent(1)).unwrap();

@@ -1509,63 +1509,24 @@ impl Drop for TransferArea {
 
 /// fxdax: makes `store`'s commits durable within [`FLUSH_EVERY`] of being ordered, until
 /// `stopped` says to stop: on the daemon's runtime, flushing on the threads every store's flushes
-/// share ([`FLUSHERS`]). And cleans the store behind them as it is due, a pass at a time, on those
-/// every store's passes share ([`CLEANERS`]), which commits nothing, so that its guest's commits
-/// wait for one extent's copy at most (TASK-79.2): until the last pass is done, holding the store.
-///
-/// It takes a thread only for work: to flush, or to look whether a pass is due, which
-/// holds the store's state, once the store changed as may make one due since it last looked
-/// ([`ExtentStore::cleaning_changes`]), or until a pass in progress ends: the guest's commits,
-/// writes and frees, a resize, and what comes between commits, the uploader's letting go of what
-/// a commit freed, which it keeps until it uploaded the commit, its closing of the open segment,
-/// a fork's letting go of what it shared. So a pass begins within a turn of what made it due, as
-/// when every turn looked, and the guest's next commit takes back what it copied. Looking only as
-/// the guest committed, what came after a commit waited for the next, whose copies the commit
-/// after took back: what the guest freed held the host's disk a commit longer, and for good if
-/// the guest committed but once more.
-/// Looking at every turn, every store open took a blocking thread at every turn, which hundreds
-/// of stores, their turns coming at once, kept as many of, each idle for a while after (TASK-34).
-/// And so did their flushes, every store's whose guest committed, and their passes, on the
-/// runtime's blocking threads (TASK-92.49): no more threads do them than [`FLUSHES`] and
-/// [`CLEANINGS`], the work beyond waiting its turn, holding none.
+/// share ([`FLUSHERS`]). It takes a thread only to flush. Looking at every turn, every store open
+/// took a blocking thread at every turn, which hundreds of stores, their turns coming at once,
+/// kept as many of, each idle for a while after (TASK-34). And so did their flushes, every
+/// store's whose guest committed, on the runtime's blocking threads (TASK-92.49): no more threads
+/// do them than [`FLUSHES`], the work beyond waiting its turn, holding none. What the guest frees
+/// leaves the host's disk with the segments acknowledged in the bucket, whose collector takes it
+/// back, not cleaned behind the guest's commits as it was (TASK-79.2, TASK-165.8).
 async fn flush_behind(store: Arc<ExtentStore>, mut stopped: tokio::sync::oneshot::Receiver<()>) {
-    let mut cleaning: Option<tokio::task::JoinHandle<()>> = None;
-    // The store's changes as of which a pass was found not due, or one began; none before the
-    // store is first looked at.
-    let mut looked = None;
     while tokio::time::timeout(FLUSH_EVERY, &mut stopped).await.is_err() {
-        // Found before the look, which then finds what they count.
-        let changes = store.cleaning_changes();
-        if !store.flush_pending() && looked == Some(changes) {
+        if !store.flush_pending() {
             store.flush_turned();
             continue;
         }
         let behind = store.clone();
-        let flushed = FLUSHERS.call(move || {
-            if behind.flush_pending() {
-                behind.flush()?;
-            }
-            behind.cleaning_due()
-        });
+        let flushed =
+            FLUSHERS.call(move || if behind.flush_pending() { behind.flush() } else { Ok(()) });
         match flushed.await {
-            Some(Ok(due)) => {
-                let idle = cleaning.as_ref().is_none_or(tokio::task::JoinHandle::is_finished);
-                if due && idle {
-                    let cleaned = store.clone();
-                    cleaning = Some(tokio::spawn(async move {
-                        let cleaning = cleaned.clone();
-                        match CLEANERS.call(move || cleaning.clean_behind()).await {
-                            Some(Ok(())) => {}
-                            Some(Err(err)) => log::error!("extentd: cleaning a store: {err:?}"),
-                            // fxdax: its panic logged, which went through the store (TASK-153.16).
-                            None => cleaned.fence(|| "a panic cleaning it".into()),
-                        }
-                    }));
-                }
-                // Due as a pass goes on, it is looked for again until that pass is done.
-                looked = (!due || idle).then_some(changes);
-                store.flush_turned();
-            }
+            Some(Ok(())) => store.flush_turned(),
             Some(Err(err)) => {
                 log::error!("extentd: making a store's commits durable: {err:?}");
                 break;
@@ -1577,15 +1538,9 @@ async fn flush_behind(store: Arc<ExtentStore>, mut stopped: tokio::sync::oneshot
             }
         }
     }
-    if let Some(cleaning) = cleaning
-        && let Err(err) = cleaning.await
-    {
-        log::error!("extentd: cleaning a store: {err}");
-    }
 }
 
-/// fxdax: how many threads every store's flushes, and its looks whether a pass of cleaning is
-/// due, run on, at most ([`flush_behind`], TASK-92.49): as many syncs at once as a host's disk
+/// fxdax: how many threads every store's flushes run on, at most ([`flush_behind`], TASK-92.49): as many syncs at once as a host's disk
 /// takes, those past them waiting a few milliseconds for their turn, holding no thread; and the
 /// 15 a flush of many files syncs them on beside its own, which every flush shares
 /// (`extent_store`'s `HELPERS`), 47 threads at most at once, those 15 none once idle. A
@@ -1596,18 +1551,9 @@ async fn flush_behind(store: Arc<ExtentStore>, mut stopped: tokio::sync::oneshot
 /// twice as long (`hundreds_of_writers_flush_on_threads_they_share`).
 pub(super) const FLUSHES: usize = 32;
 
-/// fxdax: how many threads every store's passes of cleaning run on, at most ([`flush_behind`],
-/// TASK-92.49): the host's work behind its guests, each pass copying what is live of a store's
-/// segments, which waits its turn.
-pub(super) const CLEANINGS: usize = 4;
-
 /// fxdax: the threads stores' flushes run on ([`FLUSHES`]).
 static FLUSHERS: std::sync::LazyLock<Pool> =
     std::sync::LazyLock::new(|| Pool::new("extentd flush", FLUSHES));
-
-/// fxdax: the threads stores' passes of cleaning run on ([`CLEANINGS`]).
-static CLEANERS: std::sync::LazyLock<Pool> =
-    std::sync::LazyLock::new(|| Pool::new("extentd clean", CLEANINGS));
 
 /// fxdax: tells the VM process at the other end of `sender` of each commit of its follower's
 /// store after the commit of `epoch` ([`COMMITTED`]): the latest, of each run of them; until

@@ -18,7 +18,6 @@ use crate::layout::{
 use crate::store::{Options, Usage};
 use anyhow::{Context as _, Error, anyhow, bail, ensure};
 use extent_frame::segment::{Chain, Child, Contents, Footer, epoch_of};
-use extent_frame::{PART, Stored};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::sync::Arc;
 use std::time::Instant;
@@ -55,31 +54,28 @@ struct Segment<F> {
     /// The writes to it in progress, and the bytes they reserved: neither live nor dead yet.
     writers: u64,
     pending: u64,
-    /// fxdax: the sealed extents the branch holds whose data is in it: what cleaning copies out of
-    /// it, found without going through every extent the branch holds (TASK-79.2).
+    /// fxdax: the sealed extents the branch holds whose data is in it: what is read in the bucket
+    /// once it is acknowledged there, found without going through every extent the branch holds
+    /// (TASK-165.8).
     sealed: HashSet<ExtentId>,
-    /// fxdax: what each part of its data holds, and takes of the host's disk once framed
-    /// (TASK-79.2).
-    parts: PartCounts,
-    /// fxdax: the bytes of its data, of extents freed, that an uploader keeps until it releases
-    /// the commits that freed them; and whether the uploader keeps it, closed, until it has
-    /// uploaded it (TASK-79.89).
-    for_uploader: u64,
-    uploading: bool,
+    /// fxdax: its key in the bucket, once its uploader's writer acknowledged it there: it leaves
+    /// the store for the host's cache of objects once no extent's data is in it here (TASK-165.8).
+    acknowledged: Option<String>,
 }
 
 impl<F> Segment<F> {
     fn new(phase: Phase<F>, live: u64) -> Self {
-        let (sealed, parts) = (HashSet::new(), PartCounts::default());
         let (len, size, writers, pending) = (0, 0, 0, 0);
-        let (for_uploader, uploading) = (0, false);
-        Self { phase, len, size, live, writers, pending, sealed, parts, for_uploader, uploading }
-    }
-
-    /// Counts the `len` bytes at `at` of its data as extents' data's or a write's in progress, if
-    /// `taken`, or as no more, part by part.
-    fn count(&mut self, at: u64, len: u64, taken: bool) {
-        self.parts.count(self.len, at, len, taken);
+        Self {
+            phase,
+            len,
+            size,
+            live,
+            writers,
+            pending,
+            sealed: HashSet::new(),
+            acknowledged: None,
+        }
     }
 
     /// A write of `len` bytes to it is done, `live` of them holding extents' data: returns
@@ -99,221 +95,22 @@ impl<F> Segment<F> {
             && self.writers == 0
     }
 
-    /// fxdax: the bytes of its data no extent is in, which the branch may take back, cleaning.
-    fn dead(&self) -> u64 {
-        self.len - self.live - self.pending
-    }
-
-    /// fxdax: the bytes of the host's disk its data no extent is in takes, as far as it knows
-    /// (TASK-79.2): once it closed, of the parts its file stores, each compressed on its own, as
-    /// much of each one's stored bytes as that data is of the part's ([`PartCounts`]), which a
-    /// guest's zeros, freed, take next to none of; open, being framed or set aside, as many as it
-    /// is, its file holding its data as it is.
-    fn dead_on_disk(&self) -> u64 {
-        match self.phase {
-            Phase::Closed { .. } if self.dead() > 0 => self.parts.dead_on_disk,
-            _ => self.dead(),
-        }
-    }
-
-    /// fxdax: the bytes of the host's disk its data an uploader keeps of extents freed takes
-    /// (TASK-79.89): once it closed, as much of each part's stored bytes as that data is of the
-    /// part's ([`PartCounts`]); open, being framed or set aside, as many as it is.
-    fn for_uploader_on_disk(&self) -> u64 {
-        match self.phase {
-            Phase::Closed { .. } => self.parts.for_uploader_on_disk,
-            _ => self.for_uploader,
-        }
-    }
-
-    /// fxdax: the bytes of the host's disk its file takes that its uploader, if any, does not keep
-    /// (TASK-79.89): none of one the uploader keeps until it has uploaded it; nor what it keeps of
-    /// extents freed. What the uploader keeps the upload lag bound bounds, which has commits wait
-    /// for the uploader, rather than fail.
-    fn file_bytes(&self) -> u64 {
-        if self.uploading {
-            return 0;
-        }
-        let kept = self.for_uploader_on_disk();
-        debug_assert!(kept <= self.size, "what the uploader keeps of it is in its file");
-        self.size.saturating_sub(kept)
-    }
-
-    /// fxdax: whether cleaning takes it, as far as it knows (TASK-79.2): not open, no write in
-    /// progress in it, its extents' data less than `live_fraction` of it, and sealed extents in
-    /// it, to copy out, after which it goes.
-    fn is_victim(&self, live_fraction: f64) -> bool {
-        !matches!(self.phase, Phase::Open(_))
-            && self.writers == 0
-            && !self.sealed.is_empty()
-            && (self.live as f64) < live_fraction * self.len as f64
-    }
-
-    /// fxdax: panics unless what it counts of itself, segment `number`, is what it holds (TASK-160.16): `pieces` of extents' data, of which those of extents freed the
-    /// uploader keeps are `for_uploader`, and the sealed extents `sealed`; and it is the
-    /// uploader's to keep until uploaded if `uploading`. What its parts hold, which writes in
-    /// progress take too, at unknown places, is what the pieces take of them once none is.
+    /// fxdax: panics unless what it counts of itself, segment `number`, is what it holds
+    /// (TASK-160.16): `pieces` of extents' data, and the sealed extents `sealed`.
     #[cfg(any(test, feature = "audit"))]
-    fn audit(
-        &self,
-        number: SegmentId,
-        pieces: &[Piece],
-        for_uploader: &[Piece],
-        sealed: &BTreeSet<ExtentId>,
-        uploading: bool,
-    ) {
+    fn audit(&self, number: SegmentId, pieces: &[Piece], sealed: &BTreeSet<ExtentId>) {
         for piece in pieces {
             assert!(piece.offset + piece.len <= self.len, "{piece:?} past {number:?}'s data");
         }
-        let parts = &self.parts;
-        let taken = parts.taken.iter().sum::<u64>();
-        assert_eq!(taken, self.live + self.pending, "what {number:?}'s parts hold, in all");
-        let (held, counted) = (part_bytes(pieces), &parts.taken);
-        let len = held.len().max(counted.len());
-        let (held, counted) = (padded(&held, len), padded(counted, len));
-        if self.writers == 0 {
-            assert_eq!(counted, held, "what {number:?}'s parts hold");
-        } else {
-            let within = held.iter().zip(&counted).all(|(held, counted)| held <= counted);
-            assert!(within, "what {number:?}'s parts hold, {counted:?}, short of {held:?}");
-        }
-        let kept: u64 = for_uploader.iter().map(|piece| piece.len).sum();
-        assert_eq!(self.for_uploader, kept, "what {number:?} keeps for the uploader");
-        let (kept, counted) = (part_bytes(for_uploader), &parts.for_uploader);
-        let len = kept.len().max(counted.len());
-        assert_eq!(padded(counted, len), padded(&kept, len), "what {number:?}'s parts keep");
-        let stored = 0..parts.stored.len() as u64;
-        let on_disk: u64 = stored.clone().map(|part| parts.dead_on_disk_of(self.len, part)).sum();
-        assert_eq!(parts.dead_on_disk, on_disk, "what {number:?}'s dead space takes of its file");
-        let kept: u64 = stored.map(|part| parts.for_uploader_on_disk_of(self.len, part)).sum();
-        assert_eq!(parts.for_uploader_on_disk, kept, "what {number:?} keeps takes of its file");
+        let live: u64 = pieces.iter().map(|piece| piece.len).sum();
+        assert_eq!(self.live, live, "the bytes of extents' data {number:?} holds");
+        assert!(self.writers > 0 || self.pending == 0, "{number:?}, pending, unwritten");
         let seated: BTreeSet<ExtentId> = self.sealed.iter().copied().collect();
         assert_eq!(&seated, sealed, "the extents sealed in {number:?}");
         if !matches!(self.phase, Phase::Closed { .. }) {
             assert_eq!(self.size, self.len, "{number:?}'s raw file, its data");
         }
-        assert_eq!(self.uploading, uploading, "{number:?}, kept for the uploader to upload");
     }
-}
-
-/// fxdax: a segment's data part by part, as framing stores it, each [`PART`] bytes of it
-/// compressed on its own: the bytes of each part that extents' data and writes in progress take,
-/// and once the segment is framed, the bytes of its file each part takes, so that what no extent
-/// is in counts for what it takes of the host's disk part by part (TASK-79.2). Within a part it
-/// takes as much of the part's stored bytes as it is of the part's data, which compressed it with
-/// what extents hold: how much of them each took, the frame does not say. The file's footer, table
-/// and trailer, which go with it once cleaning takes the segment, it does not count: they say what
-/// the segment holds, not what of it no extent is in.
-#[derive(Default)]
-struct PartCounts {
-    /// The bytes of each part that extents' data, or writes in progress, take; what no extent is
-    /// in, the rest.
-    taken: Vec<u64>,
-    /// The bytes of the framed file each part takes: its stored bytes, and those that align the
-    /// next's. None until the segment is framed.
-    stored: Vec<u64>,
-    /// What the parts' data no extent is in takes of their stored bytes, in all.
-    dead_on_disk: u64,
-    /// fxdax: the bytes of each part that extents freed take, which an uploader keeps; and what
-    /// they take of the parts' stored bytes, in all (TASK-79.89).
-    for_uploader: Vec<u64>,
-    for_uploader_on_disk: u64,
-}
-
-impl PartCounts {
-    /// Counts the `len` bytes at `at` of the segment's `data` bytes of data as taken, if `taken`,
-    /// or as taken no more.
-    fn count(&mut self, data: u64, at: u64, len: u64, taken: bool) {
-        self.taken.resize(self.taken.len().max(data.div_ceil(PART) as usize), 0);
-        for (part, bytes) in spans(at, len) {
-            let before = self.dead_on_disk_of(data, part);
-            let count = &mut self.taken[part as usize];
-            *count = if taken { *count + bytes } else { *count - bytes };
-            self.dead_on_disk = self.dead_on_disk - before + self.dead_on_disk_of(data, part);
-        }
-    }
-
-    /// fxdax: counts the `len` bytes at `at` of the segment's `data` bytes of data, of extents
-    /// freed, as an uploader's to keep, if `kept`, or no more (TASK-79.89).
-    fn count_for_uploader(&mut self, data: u64, at: u64, len: u64, kept: bool) {
-        let parts = data.div_ceil(PART) as usize;
-        self.for_uploader.resize(self.for_uploader.len().max(parts), 0);
-        for (part, bytes) in spans(at, len) {
-            let before = self.for_uploader_on_disk_of(data, part);
-            let count = &mut self.for_uploader[part as usize];
-            *count = if kept { *count + bytes } else { *count - bytes };
-            self.for_uploader_on_disk =
-                self.for_uploader_on_disk - before + self.for_uploader_on_disk_of(data, part);
-        }
-    }
-
-    /// The segment of `data` bytes of data is framed: `stored` says where in its file each part is
-    /// stored, the parts taking its first `stored_len` bytes.
-    fn framed(&mut self, data: u64, stored: &[Stored], stored_len: u64) {
-        debug_assert_eq!(stored.len() as u64, data.div_ceil(PART), "a part stored for each");
-        let ends = stored.iter().skip(1).map(|next| next.offset).chain([stored_len]);
-        self.stored = stored.iter().zip(ends).map(|(part, end)| end - part.offset).collect();
-        debug_assert!(self.taken.len() <= stored.len(), "no part counted past the data");
-        self.taken.resize(stored.len(), 0);
-        self.for_uploader.resize(stored.len(), 0);
-        let parts = 0..stored.len() as u64;
-        self.dead_on_disk = parts.clone().map(|part| self.dead_on_disk_of(data, part)).sum();
-        self.for_uploader_on_disk =
-            parts.map(|part| self.for_uploader_on_disk_of(data, part)).sum();
-    }
-
-    /// fxdax: what the data of part `part` that an uploader keeps takes of the part's stored bytes,
-    /// of the segment's `data` bytes: as much as it is of the part's data, rounded down, so that it
-    /// takes no more than the part does; none before the segment is framed (TASK-79.89).
-    fn for_uploader_on_disk_of(&self, data: u64, part: u64) -> u64 {
-        let Some(&stored) = self.stored.get(part as usize) else { return 0 };
-        let len = PART.min(data - part * PART);
-        let kept = self.for_uploader[part as usize];
-        (u128::from(kept) * u128::from(stored) / u128::from(len)) as u64
-    }
-
-    /// What the data of part `part` that no extent is in takes of the part's stored bytes, of the
-    /// segment's `data` bytes: as much as it is of the part's data, at least a byte if any; none
-    /// before the segment is framed.
-    fn dead_on_disk_of(&self, data: u64, part: u64) -> u64 {
-        let Some(&stored) = self.stored.get(part as usize) else { return 0 };
-        let len = PART.min(data - part * PART);
-        let dead = len - self.taken[part as usize];
-        (u128::from(dead) * u128::from(stored)).div_ceil(u128::from(len)) as u64
-    }
-}
-
-/// fxdax: the parts of a segment's data the `len` bytes at `at` of it are in, each with how many
-/// of them it holds.
-fn spans(at: u64, len: u64) -> impl Iterator<Item = (u64, u64)> {
-    let end = at + len;
-    (at / PART..end.div_ceil(PART))
-        .map(move |part| (part, end.min((part + 1) * PART) - at.max(part * PART)))
-}
-
-/// fxdax: the bytes of each part of a segment's data that `pieces` take, each counted as many
-/// times as they take it.
-#[cfg(any(test, feature = "audit"))]
-fn part_bytes(pieces: &[Piece]) -> Vec<u64> {
-    let mut parts = Vec::new();
-    for piece in pieces {
-        for (part, bytes) in spans(piece.offset, piece.len) {
-            if parts.len() <= part as usize {
-                parts.resize(part as usize + 1, 0);
-            }
-            parts[part as usize] += bytes;
-        }
-    }
-    parts
-}
-
-/// fxdax: `parts`, a count of each part of a segment's data, with those past the last it counts,
-/// to `len` of them, counted none.
-#[cfg(any(test, feature = "audit"))]
-fn padded(parts: &[u64], len: usize) -> Vec<u64> {
-    let mut parts = parts.to_vec();
-    parts.resize(parts.len().max(len), 0);
-    parts
 }
 
 /// The segments a branch tracks: those its extents' data is in, its own, taking writes or not,
@@ -354,13 +151,6 @@ pub(crate) struct Segments<F> {
     /// Whether a segment closed since the last commit, which syncs the directories of segments,
     /// the framed file's, and of open ones, the next's.
     closed_since: bool,
-    /// fxdax: the bytes of the segments' data no extent is in ([`Segment::dead`]).
-    dead: u64,
-    /// fxdax: the bytes of the host's disk that data takes ([`Segment::dead_on_disk`]).
-    dead_on_disk: u64,
-    /// fxdax: the bytes of the host's disk the files of the segments take
-    /// ([`Segment::file_bytes`], TASK-79.89).
-    file_bytes: u64,
     /// fxdax: the segments whose framings are running, each of which ends itself (TASK-153.8).
     framing: BTreeSet<SegmentId>,
     /// fxdax: the segments framed whose raw files are still there, each with the last commit its
@@ -369,47 +159,26 @@ pub(crate) struct Segments<F> {
     raw: Vec<(u64, SegmentId)>,
 }
 
-/// A segment cleaning takes: the bytes of its data, and of extents' data in it. fxdax: and the
-/// bytes of the host's disk what no extent is in takes of its file, which cleaning takes back
-/// ([`Segment::dead_on_disk`], TASK-79.2).
-pub(crate) struct Victim {
-    pub len: u64,
-    pub live: u64,
-    pub on_disk: u64,
-}
-
-impl Victim {
-    /// fxdax: how what cleaning it copies, for each byte of the host's disk it takes back, compares
-    /// with what cleaning `other` does: `Less` if it copies less (TASK-79.2). The ratios compared
-    /// multiplied out, which orders victims only as long as each takes back a byte at least, as
-    /// [`Segments::victims`] has them: one taking back none would be as costly as any other, and
-    /// a sort may panic on what is not an order.
-    pub fn cmp_cost(&self, other: &Victim) -> std::cmp::Ordering {
-        let cost = |victim: &Victim, of: &Victim| u128::from(victim.live) * u128::from(of.on_disk);
-        cost(self, other).cmp(&cost(other, self))
-    }
-}
-
 /// A segment the branch let go of, no extent being in it any more: its footer is the branch's
 /// history, until a checkpoint covers it, if the branch closed it since it was opened, after
-/// commit `last`; and the bytes of its data.
+/// commit `last`; and the bytes of its data. fxdax: and its key in the bucket, if acknowledged
+/// there, whose object its file is, which goes into the host's cache (TASK-165.8).
 pub(crate) struct Reaped {
     pub number: SegmentId,
     pub last: Option<u64>,
     pub len: u64,
+    pub acknowledged: Option<String>,
 }
 
 impl<F: File> Segments<F> {
     /// The segments of `branch`, opened as of commit `epoch`, holding `tracked`, the bytes of
     /// extents' data each holds, whose files must be there; and another, open, past whatever the
     /// branch's last one holds, whose file is made durable. At most `open_files` of their files
-    /// stay open between reads. fxdax: `pieces` are those of the branch's extents, which say where
-    /// in its own segments that data is, part by part ([`PartCounts`], TASK-79.2).
-    pub fn open<'a, D: Dir<File = F>>(
+    /// stay open between reads.
+    pub fn open<D: Dir<File = F>>(
         dir: &D,
         branch: u64,
         tracked: BTreeMap<SegmentId, u64>,
-        pieces: impl IntoIterator<Item = &'a Piece>,
         epoch: u64,
         open_files: usize,
     ) -> Result<Self, Error> {
@@ -422,32 +191,19 @@ impl<F: File> Segments<F> {
             let parts =
                 read_parts(&file)?.ok_or_else(|| anyhow!("{path} is not a whole framed file"))?;
             let closed = Phase::Closed { last: None };
-            let mut segment = Segment {
+            let segment = Segment {
                 len: parts.frame.data_len,
                 size: parts.frame.size(),
                 ..Segment::new(closed, live)
             };
-            segment.parts.framed(segment.len, &parts.stored, parts.frame.stored_len);
             segments.insert(id, segment);
         }
-        for piece in pieces {
-            let segment = segments.get_mut(&piece.segment).expect("a piece's segment is tracked");
-            segment.count(piece.offset, piece.len, true);
-        }
-        debug_assert!(
-            (segments.values())
-                .all(|segment| segment.parts.taken.iter().sum::<u64>() == segment.live),
-            "the pieces of the branch's extents hold what its segments hold"
-        );
         // Writes go to a new segment, past whatever the branch's last one holds.
         let own = list_numbers(dir, &branch_dir(SEGMENTS, branch))?;
         let open = SegmentId { branch, number: own.last().map_or(0, |last| last + 1) };
         let file = Arc::new(dir.create(&open_segment_path(open), true)?);
         dir.sync_dir(&branch_dir(OPEN_SEGMENTS, branch))?;
         segments.insert(open, Segment::new(Phase::Open(file), 0));
-        let dead = segments.values().map(Segment::dead).sum();
-        let dead_on_disk = segments.values().map(Segment::dead_on_disk).sum();
-        let file_bytes = segments.values().map(Segment::file_bytes).sum();
         Ok(Self {
             tracked: segments,
             empty: BTreeSet::new(),
@@ -459,9 +215,6 @@ impl<F: File> Segments<F> {
             files: Files::new(open_files),
             written: false,
             closed_since: false,
-            dead,
-            dead_on_disk,
-            file_bytes,
             framing: BTreeSet::new(),
             raw: Vec::new(),
         })
@@ -478,16 +231,9 @@ impl<F: File> Segments<F> {
         self.tracked[&self.open].len + len <= limit
     }
 
-    /// Changes segment `number` as `change` says, keeping count of the bytes no extent is in, and
-    /// fxdax: of what they take of the host's disk, of what its file takes of it, and of whether
-    /// it is empty.
+    /// Changes segment `number` as `change` says, keeping count of whether it is empty.
     fn change<T>(&mut self, number: SegmentId, change: impl FnOnce(&mut Segment<F>) -> T) -> T {
-        let segment = self.tracked.get_mut(&number).unwrap();
-        let (dead, on_disk, bytes) = (segment.dead(), segment.dead_on_disk(), segment.file_bytes());
-        let changed = change(segment);
-        self.dead = self.dead + segment.dead() - dead;
-        self.dead_on_disk = self.dead_on_disk + segment.dead_on_disk() - on_disk;
-        self.file_bytes = self.file_bytes + segment.file_bytes() - bytes;
+        let changed = change(self.tracked.get_mut(&number).unwrap());
         self.note(number);
         changed
     }
@@ -515,7 +261,6 @@ impl<F: File> Segments<F> {
             segment.size += len;
             segment.writers += 1;
             segment.pending += len;
-            segment.count(at, len, true);
             (open, file, at)
         })
     }
@@ -527,22 +272,16 @@ impl<F: File> Segments<F> {
         self.change(number, |segment| segment.done(len, len))
     }
 
-    /// A write of `len` bytes at `at` of segment `number` is done, and holds nothing: abandoned,
-    /// or to an extent freed since it began; what it wrote is dead space. Returns whether none is
-    /// in progress in the segment any more.
-    pub fn dropped(&mut self, number: SegmentId, at: u64, len: u64) -> bool {
-        self.change(number, |segment| {
-            segment.count(at, len, false);
-            segment.done(len, 0)
-        })
+    /// A write of `len` bytes to segment `number` is done, and holds nothing: abandoned, or to an
+    /// extent freed since it began; what it wrote is dead space. Returns whether none is in
+    /// progress in the segment any more.
+    pub fn dropped(&mut self, number: SegmentId, len: u64) -> bool {
+        self.change(number, |segment| segment.done(len, 0))
     }
 
     /// The data of `piece` is in its segment no more: freed, or moved.
     pub fn let_go(&mut self, piece: &Piece) {
-        self.change(piece.segment, |segment| {
-            segment.live -= piece.len;
-            segment.count(piece.offset, piece.len, false);
-        });
+        self.change(piece.segment, |segment| segment.live -= piece.len);
     }
 
     /// Appends `len` bytes of an extent's data, sealed in one run, to the open segment, which
@@ -557,69 +296,37 @@ impl<F: File> Segments<F> {
             segment.len += len;
             segment.size += len;
             segment.live += len;
-            segment.count(at, len, true);
             (file, at)
         })
     }
 
-    /// fxdax: the bytes of the host's disk that the segments' data no extent is in takes, which
-    /// cleaning may take back ([`Segment::dead_on_disk`], TASK-79.2).
-    pub fn dead_on_disk(&self) -> u64 {
-        self.dead_on_disk
-    }
-
-    /// fxdax: the bytes of the host's disk the files of the segments take
-    /// ([`Segment::file_bytes`], TASK-79.89).
-    pub fn file_bytes(&self) -> u64 {
-        self.file_bytes
-    }
-
-    /// fxdax: the bytes of the host's disk the files of the segments take that no extent is in
-    /// once the bytes of extents' data `moved` says of each are moved out of it,
-    /// which the next commit then lets go of: closed or set aside, no write in progress in them,
-    /// and not to be kept, as `keep` says, as reaping keeps them ([`Segments::reap`], TASK-79.89).
-    pub fn emptied_by(
-        &self,
-        moved: &BTreeMap<SegmentId, u64>,
-        keep: impl Fn(SegmentId) -> bool,
-    ) -> u64 {
-        let emptied = |(number, moved): (&SegmentId, &u64)| {
-            let segment = self.tracked.get(number)?;
-            let goes = matches!(segment.phase, Phase::Closed { .. } | Phase::Retired(_))
-                && segment.writers == 0
-                && segment.live == *moved
-                && !keep(*number);
-            goes.then(|| segment.file_bytes())
-        };
-        moved.iter().filter_map(emptied).sum()
-    }
-
-    /// fxdax: `piece`'s data, of an extent freed, is for the uploader to keep, if `kept`, or no
-    /// more, until it releases the commit that freed it: what it takes of the host's disk counts
-    /// not towards what the branch's files take (TASK-79.89).
-    pub fn keep_for_uploader(&mut self, piece: &Piece, kept: bool) {
-        self.change(piece.segment, |segment| {
-            let len = segment.len;
-            segment.parts.count_for_uploader(len, piece.offset, piece.len, kept);
-            segment.for_uploader = if kept {
-                segment.for_uploader + piece.len
-            } else {
-                segment.for_uploader - piece.len
-            };
-        });
-    }
-
-    /// fxdax: segment `number`, closed, is for the uploader to keep until it has
-    /// uploaded it, if `uploading`, or no more: what its file takes of the host's disk counts not
-    /// towards what the branch's files take meanwhile (TASK-79.89).
-    pub fn uploading(&mut self, number: SegmentId, uploading: bool) {
-        if self.tracked.contains_key(&number) {
-            self.change(number, |segment| segment.uploading = uploading);
+    /// fxdax: segment `number`, closed, is acknowledged in the bucket, at `key`, its object there
+    /// (TASK-165.8): the extents sealed in it, which it returns, are read there from now on, and it
+    /// leaves the store once no extent's data is in it here, the next reaping letting it go as
+    /// such ([`Reaped::acknowledged`]).
+    pub fn acknowledge(&mut self, number: SegmentId, key: &str) -> Vec<ExtentId> {
+        if !self.tracked.contains_key(&number) {
+            return Vec::new();
         }
+        self.change(number, |segment| {
+            segment.acknowledged = Some(key.to_owned());
+            segment.sealed.iter().copied().collect()
+        })
     }
 
-    /// fxdax: `extent`, sealed, holds `data` from now on: in the segments, if in any, which
-    /// cleaning may copy it out of (TASK-79.2).
+    /// fxdax: lets go of the segments acknowledged in the bucket no extent's data is in here any
+    /// more, which no write is in progress in, and returns their framed files' paths, with their
+    /// keys there: they leave the store for the host's cache (TASK-165.8).
+    pub fn reap_acknowledged(&mut self) -> Vec<(String, String)> {
+        let acknowledged = |number: &&SegmentId| self.tracked[*number].acknowledged.is_some();
+        let gone: BTreeSet<SegmentId> = self.empty.iter().filter(acknowledged).copied().collect();
+        (self.reap(|number| !gone.contains(&number)).into_iter())
+            .map(|reaped| (segment_path(reaped.number), reaped.acknowledged.unwrap()))
+            .collect()
+    }
+
+    /// fxdax: `extent`, sealed, holds `data` from now on: in the segments, if in any, which say so
+    /// once acknowledged in the bucket (TASK-165.8).
     pub fn place(&mut self, extent: ExtentId, data: &Data) {
         self.seat(extent, data, true);
     }
@@ -640,11 +347,6 @@ impl<F: File> Segments<F> {
                 sealed.remove(&extent);
             }
         }
-    }
-
-    /// Whether it tracks `segment`.
-    pub fn is_tracked(&self, segment: SegmentId) -> bool {
-        self.tracked.contains_key(&segment)
     }
 
     /// The writes to the open segment in progress.
@@ -770,18 +472,14 @@ impl<F: File> Segments<F> {
     }
 
     /// fxdax: segment `number`, closed and being framed, is in `framed` from now on, durable, its
-    /// raw file no more, which goes once the commits its footer names are ([`Segments::raw`]):
-    /// what no extent is in of it takes of the host's disk its share of its parts' stored bytes
-    /// from now on (TASK-79.2).
+    /// raw file no more, which goes once the commits its footer names are ([`Segments::raw`]).
     pub fn framed(&mut self, number: SegmentId, framed: Arc<Framed<F>>) {
-        let parts = &framed.parts;
         let mut closed = 0;
         self.change(number, |segment| {
             let Phase::Framing { last, .. } = segment.phase else {
                 unreachable!("{number:?}, framed, was being framed")
             };
             segment.size = framed.size();
-            segment.parts.framed(segment.len, &parts.stored, parts.frame.stored_len);
             segment.phase = Phase::Closed { last: Some(last) };
             closed = last;
         });
@@ -897,52 +595,15 @@ impl<F: File> Segments<F> {
         for number in dead {
             self.empty.remove(&number);
             let segment = self.tracked.remove(&number).unwrap();
-            debug_assert_eq!(segment.for_uploader, 0, "{number:?}, reaped, kept for the uploader");
-            self.dead -= segment.dead();
-            self.dead_on_disk -= segment.dead_on_disk();
-            self.file_bytes -= segment.file_bytes();
             self.files.remove(number);
             let last = match segment.phase {
                 Phase::Closed { last } => last,
                 _ => None,
             };
-            reaped.push(Reaped { number, last, len: segment.len });
+            let acknowledged = segment.acknowledged;
+            reaped.push(Reaped { number, last, len: segment.len, acknowledged });
         }
         reaped
-    }
-
-    /// The segments, but the open one, whose extents' data takes less than `live_fraction` of
-    /// them, which no write is in progress in: the bytes of each one's data, and of its extents', which
-    /// cleaning copies out. fxdax: of them, those holding sealed extents, which cleaning copies
-    /// out; and what each takes back of the host's disk, a byte at least, as some of each one's
-    /// data is no extent's, and each part of a file takes a byte at least, which keeps
-    /// [`Victim::cmp_cost`] an order (TASK-79.2).
-    pub fn victims(&self, live_fraction: f64) -> BTreeMap<SegmentId, Victim> {
-        (self.tracked.iter())
-            .filter(|(_, segment)| segment.is_victim(live_fraction))
-            .map(|(number, segment)| {
-                let (len, live, on_disk) = (segment.len, segment.live, segment.dead_on_disk());
-                debug_assert!(on_disk > 0, "{number:?}, which cleaning takes, takes back no disk");
-                (*number, Victim { len, live, on_disk })
-            })
-            .collect()
-    }
-
-    /// fxdax: the bytes of the host's disk that what no extent is in takes, of the segments
-    /// cleaning would take, as it knows them, which it takes back ([`Segments::victims`],
-    /// TASK-79.2): what their files take of it ([`Segment::dead_on_disk`]), not the bytes of data
-    /// it is, which framing may have compressed to next to nothing.
-    pub fn reclaimable(&self, live_fraction: f64) -> u64 {
-        (self.tracked.values())
-            .filter(|segment| segment.is_victim(live_fraction))
-            .map(Segment::dead_on_disk)
-            .sum()
-    }
-
-    /// fxdax: the sealed extents the branch holds in segment `number`, which cleaning copies out
-    /// of it, if it takes it (TASK-79.2).
-    pub fn sealed_in(&self, number: SegmentId) -> impl Iterator<Item = &ExtentId> {
-        self.tracked[&number].sealed.iter()
     }
 
     /// What the segments take: how many there are, the bytes of their data, of extents' data, and
@@ -953,7 +614,6 @@ impl<F: File> Segments<F> {
             segments: all().count() as u64,
             segment_bytes: all().map(|segment| segment.len).sum(),
             live_bytes: all().map(|segment| segment.live).sum(),
-            dead_bytes: self.dead,
             own_bytes: 0,
             disk_bytes: all().map(|segment| segment.size).sum(),
             kept_bytes: 0,
@@ -962,40 +622,30 @@ impl<F: File> Segments<F> {
     }
 
     /// fxdax: panics unless what it counts of the segments it tracks is what `recount` says they
-    /// hold, as the branch holds them, and `uploading` says the uploader keeps of them; and it
-    /// tracks every segment the branch holds extents in (TASK-160.16).
+    /// hold, as the branch holds them; and it tracks every segment the branch holds extents in
+    /// (TASK-160.16).
     #[cfg(any(test, feature = "audit"))]
-    pub fn audit(&self, recount: &Recount, uploading: impl Fn(SegmentId) -> bool) {
+    pub fn audit(&self, recount: &Recount) {
         let none = (Vec::new(), BTreeSet::new());
         for (number, segment) in &self.tracked {
             let (pieces, sealed) = recount.held.get(number).unwrap_or(&none);
-            let live: u64 = pieces.iter().map(|piece| piece.len).sum();
-            assert_eq!(segment.live, live, "the bytes of extents' data {number:?} holds");
-            assert!(segment.writers > 0 || segment.pending == 0, "{number:?}, pending, unwritten");
             assert_eq!(self.empty.contains(number), segment.is_empty(), "{number:?}, empty");
-            let for_uploader = recount.for_uploader.get(number).unwrap_or(&none.0);
-            segment.audit(*number, pieces, for_uploader, sealed, uploading(*number));
+            segment.audit(*number, pieces, sealed);
         }
         assert!(self.empty.iter().all(|number| self.tracked.contains_key(number)));
         for number in recount.held.keys() {
             assert!(self.tracked.contains_key(number), "{number:?}, held, untracked");
         }
-        let sum = |count: fn(&Segment<F>) -> u64| self.tracked.values().map(count).sum::<u64>();
-        assert_eq!(self.dead, sum(Segment::dead), "the bytes no extent is in");
-        assert_eq!(self.dead_on_disk, sum(Segment::dead_on_disk), "what they take of the disk");
-        assert_eq!(self.file_bytes, sum(Segment::file_bytes), "what the segments' files take");
     }
 }
 
 /// fxdax: what each segment holds, recounted from what the branch holds, for [`Segments::audit`]
 /// (TASK-160.16): the pieces of extents' data in it, of the extents the branch holds, open or
-/// sealed, of those it keeps, freed, and of cleaning's copies; the extents sealed in it; and the
-/// pieces in it of those it keeps for the uploader.
+/// sealed, and of those it keeps, freed; and the extents sealed in it.
 #[cfg(any(test, feature = "audit"))]
 #[derive(Default)]
 pub(crate) struct Recount {
     held: BTreeMap<SegmentId, (Vec<Piece>, BTreeSet<ExtentId>)>,
-    for_uploader: BTreeMap<SegmentId, Vec<Piece>>,
 }
 
 #[cfg(any(test, feature = "audit"))]
@@ -1012,20 +662,12 @@ impl Recount {
         }
     }
 
-    /// The branch keeps `entry`'s data, freed: for the uploader, if `for_uploader`.
-    pub fn keeps(&mut self, entry: &Extent, for_uploader: bool) {
+    /// The branch keeps `entry`'s data, freed.
+    pub fn keeps(&mut self, entry: &Extent) {
         let Data::Pieces(pieces) = &entry.data else { return };
         for piece in pieces {
             self.held.entry(piece.segment).or_default().0.push(*piece);
-            if for_uploader {
-                self.for_uploader.entry(piece.segment).or_default().push(*piece);
-            }
         }
-    }
-
-    /// Cleaning copied an extent's data to `piece`, which waits for the next commit.
-    pub fn copied(&mut self, piece: Piece) {
-        self.held.entry(piece.segment).or_default().0.push(piece);
     }
 }
 
@@ -1270,7 +912,6 @@ mod tests {
     use crate::dir::read_file;
     use crate::layout::create_branch_dirs;
     use crate::{MemDir, MemFile};
-    use extent_frame::Encoding;
 
     const BLOCK: u64 = 4096;
     const BRANCH: u64 = 7;
@@ -1282,7 +923,7 @@ mod tests {
     /// The segments of a branch with none closed, `open_files` of whose files stay open.
     fn opened(dir: &MemDir, open_files: usize) -> Segments<MemFile> {
         create_branch_dirs(dir, BRANCH).unwrap();
-        Segments::open(dir, BRANCH, BTreeMap::new(), [], 0, open_files).unwrap()
+        Segments::open(dir, BRANCH, BTreeMap::new(), 0, open_files).unwrap()
     }
 
     /// Writes a block of `byte`s to the open segment, which holds it, and returns its piece.
@@ -1366,7 +1007,7 @@ mod tests {
         for number in [0, 1] {
             dir.create(&segment_path(segment(number)), true).unwrap();
         }
-        let mut segments = Segments::open(&dir, BRANCH, BTreeMap::new(), [], 0, 64).unwrap();
+        let mut segments = Segments::open(&dir, BRANCH, BTreeMap::new(), 0, 64).unwrap();
         assert_eq!(segments.open_segment(), segment(2));
         let close = |segments: &mut Segments<MemFile>, epoch| {
             let footer = segments.close(&dir, epoch, 7).unwrap().footer;
@@ -1392,14 +1033,14 @@ mod tests {
         let dir = MemDir::new();
         let mut segments = opened(&dir, 64);
         // Written, its write abandoned: no extent is in it.
-        let (number, _, at) = segments.reserve(BLOCK);
-        segments.dropped(number, at, BLOCK);
+        let (number, ..) = segments.reserve(BLOCK);
+        segments.dropped(number, BLOCK);
         let empty = segments.close(&dir, 1, 0).unwrap();
         // Holding an extent.
         let held = write(&mut segments, 1);
         let holding = segments.close(&dir, 2, 0).unwrap();
         // A write in progress, which a closing between commits did not wait for.
-        let (writing, _, writing_at) = segments.reserve(BLOCK);
+        let (writing, ..) = segments.reserve(BLOCK);
         let unwritten = segments.close(&dir, 3, 0).unwrap();
         let reap = |segments: &mut Segments<MemFile>, keep: &[SegmentId]| {
             let reaped = segments.reap(|number| keep.contains(&number));
@@ -1416,13 +1057,13 @@ mod tests {
         let reaped: Vec<_> = reap(&mut segments, &[]);
         assert_eq!(reaped, [(segment(0), Some(1), BLOCK)]);
         segments.let_go(&held);
-        segments.dropped(writing, writing_at, BLOCK);
+        segments.dropped(writing, BLOCK);
         let reaped: Vec<_> = reap(&mut segments, &[]);
         assert_eq!(reaped, [(segment(1), Some(2), BLOCK), (segment(2), Some(3), BLOCK)]);
         for number in 0..3 {
-            assert!(!segments.is_tracked(segment(number)), "{number} tracked still");
+            assert!(!segments.tracked.contains_key(&segment(number)), "{number} tracked still");
         }
-        assert!(segments.is_tracked(segments.open_segment()));
+        assert!(segments.tracked.contains_key(&segments.open_segment()));
     }
 
     /// fxdax: a segment set aside, full, takes no more writes, which go to the next, and reads from
@@ -1449,33 +1090,6 @@ mod tests {
             .collect();
         assert_eq!(reaped, [(segment(0), None, BLOCK)]);
         assert_eq!(Arc::strong_count(&raw), 1);
-    }
-
-    /// fxdax: a segment's parts count what extents' data takes of each, of a piece across their
-    /// bounds what it takes of each it is in; and once the segment is framed, what no extent is
-    /// in takes of each part's stored bytes, and of the bytes that align the next's, as much as it
-    /// is of the part's data (TASK-79.2).
-    #[test]
-    fn parts_count_what_no_extent_is_in_part_by_part() {
-        let mut parts = PartCounts::default();
-        // Two parts and a half of data; a piece of a part and a half from the first's middle.
-        let data = 5 * PART / 2;
-        parts.count(data, PART / 2, 3 * PART / 2, true);
-        assert_eq!(parts.taken, [PART / 2, PART, 0]);
-        assert_eq!(parts.dead_on_disk, 0);
-        // Framed: the first part compressed to 1000 bytes, the next aligned after it, raw; the
-        // last compressed to 100.
-        let stored = |offset, len, encoding| Stored { offset, len, crc: 0, encoding };
-        let table = [
-            stored(0, 1000, Encoding::Zstd),
-            stored(4096, PART, Encoding::Raw),
-            stored(4096 + PART, 100, Encoding::Zstd),
-        ];
-        parts.framed(data, &table, 4096 + PART + 100);
-        // Half of the first part's 4096 bytes, none of the second's, all of the last's 100.
-        assert_eq!(parts.dead_on_disk, 2048 + 100);
-        parts.count(data, PART / 2, 3 * PART / 2, false);
-        assert_eq!(parts.dead_on_disk, 4096 + PART + 100);
     }
 
     /// A commit syncs the open segment's file if it was written since the last commit, keeping

@@ -25,12 +25,15 @@ impl Drop for KillOnDrop {
     }
 }
 
-/// A daemon serving in `dir`, and its socket.
+/// A daemon serving in `dir`, and its socket: its stores' branches in a file bucket there, which
+/// another process reads what they hold in once it has left their directories, uploaded
+/// (TASK-165.8).
 fn daemon(dir: &Path) -> (KillOnDrop, PathBuf) {
     let socket = dir.join("extentd.sock");
+    let bucket = format!("file://{}/", dir.canonicalize().unwrap().join("bucket").display());
     let daemon = Command::new(env!("CARGO_BIN_EXE_fxdax-extentd"))
         .arg(&socket)
-        .env("FXDAX_EXTENTD_REMOTE", "memory:///branches")
+        .env("FXDAX_EXTENTD_REMOTE", bucket)
         .env("FXDAX_EXTENTD_TOKEN", "1")
         .spawn()
         .unwrap();
