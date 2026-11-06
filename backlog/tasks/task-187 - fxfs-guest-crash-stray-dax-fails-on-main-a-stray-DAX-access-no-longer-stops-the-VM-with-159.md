@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-05 17:15'
-updated_date: '2026-11-05 19:22'
+updated_date: '2026-11-06 00:03'
 labels:
   - bug
   - dax
@@ -24,15 +24,15 @@ Found by TASK-165.6's GCE runs and reproduced on main at 75bd872ba (GCE r623, ro
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The cause named, with the run that shows it
-- [ ] #2 fxfs-guest-crash-stray-dax passes 20 of 20 rounds on GCE
+- [x] #1 The cause named, with the run that shows it
+- [x] #2 fxfs-guest-crash-stray-dax passes 20 of 20 rounds on GCE
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
 - [ ] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -74,4 +74,33 @@ The lift's wait is 2cb1d4c42. Verified locally: macOS workspace 2,135 of 2,135 a
 - the perf gate's forked-dax against r632's 0.573;
 - the control, 13db5c67c without COW, 20 rounds, FXDAX_FIRECRACKER_SECCOMP=log, from worktree t187-13db5c67c.
 Hosts fxdax-test-r645-t187, r646 and r648 were created before the login expired and were never used: delete them (scripts/test-gce.sh delete NAME) or let them go at their 8 h lifetime.
+
+GCE on 2b63f36db (rebased onto ef8223900, TASK-172 merged cleanly):
+- r645: fxfs-guest-crash-stray-dax 20 of 20, unjailed.
+- r646: 20 of 20, jailed.
+- r647, jailed: fxfs-guest-dax, fxfs-guest-checks-dax, fxfs-guest-crash-dax and fxfs-guest-pgbench-dax-forked pass. Their Firecracker logs have no EFAULT run, no give-up and no lift.
+- r648, the control at 13db5c67c without COW (FXDAX_FIRECRACKER_SECCOMP=log): 20 of 20, so the failures came in with COW.
+- r649, perf-gate-gce.sh single: every case passes; forked-dax 0.579 (dax-forked 823, 802, 816, 834, 870 against no-dax-forked median 1,421), still failing its 0.9, where r632 had 0.573.
+The perf-gate lead is wrong as stated: the forked VMs' 2^18+ restrictions for workers' writes (r647, r649: 1,009 log lines each) came with no failed KVM_RUN at all. Restricting costs the vCPU nothing there, and this task's lift changes don't touch the forked gap; KVM's asynchronous page faults, a worker round trip for each page not yet here, remain a suspect.
+Local runs on the rebased tree: macOS workspace 2,105 of 2,105 and Shuttle; Linux in Docker, fxdax 467 of 471 (the container's 4: no git, the grants tests' helper binary) and vmm 16 of 16. scripts/upstream-changes.py --check passes. The lift's wait is 94f404848. Firecracker's commits are on semistrict/firecracker branch fxdax-t187.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+A guest's stray DAX access is fatal again (exit 159). Two Firecracker faults that COW DAX brought out:
+- the vCPU signalled its exit before it sent its exit code, so the VMM could stop with Ok (exit 0);
+- any other exit ended a run of EFAULTs, so vCPU 0, which takes the device interrupts, never gave up (timeout).
+Fixed:
+- Firecracker ada4501c3: the vCPU sends its code first.
+- fxdax AccessFailures (Firecracker e64c4b283): one owner of the retry policy; a run ends only after 10 ms with no failure.
+- A lift walks only the restricted pages, and a failing vCPU waits up to 5 ms for its lift: 1 failed retry a store after a worker's write, where main has 357.
+Verified:
+- GCE stray-dax 20 of 20 unjailed (r645) and jailed (r646); the four DAX suites jailed (r647).
+- The control without COW, 20 of 20 (r648), shows when it started.
+- macOS, and Linux in Docker.
+- Red and green tests: dax::failures, a_stray_access_stays_refused_and_is_given_up_on, a_store_after_a_workers_write_waits_for_one_lift, test_exit_code_sent_before_the_exit_event.
+Not done:
+- DoD 1: the workspace on Linux ran in Docker (fxdax and vmm), not on GCE.
+- The forked pgbench gap: 0.579 in r649, unchanged, and not this retry loop.
+<!-- SECTION:FINAL_SUMMARY:END -->

@@ -1,11 +1,5 @@
 # Open questions
 
-## gcloud needs a fresh login; fxdax-test-r632 is still up (2026-11-05)
-
-gcloud's tokens expired mid-session ("Reauthentication failed. cannot prompt during non-interactive execution"), which only `gcloud auth login` fixes. Until then no GCE run, and `fxdax-test-r632` (us-east4-a, the perf gate's host) couldn't be deleted: it deletes itself 8 h after it was made, about 2026-11-05 23:15 UTC.
-**Recommended:** `gcloud auth login`; then `scripts/test-gce.sh delete fxdax-test-r632` if it's still there.
-**Until then:** unverified: dropping pgbench-ext4-dax-pmem's 8 GB image from the results (backed out, TASK-164.5's notes).
-
 ## The nightly needs GCP credentials in GitHub (2026-11-02)
 
 `.github/workflows/nightly.yml` never ran: its YAML didn't parse (fixed in a1e079306). Now it parses, it needs the repository's `GCP_WORKLOAD_IDENTITY_PROVIDER` and `GCP_SERVICE_ACCOUNT` secrets and its `FXDAX_GCE_PROJECT` and `FXDAX_NIGHTLY_BUCKET` variables, none of which is set. Granting GitHub access to the GCP project is yours.
