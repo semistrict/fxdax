@@ -3661,6 +3661,33 @@ fn restores_fork_anew_over_forks_left_unmade() {
     assert!(!crate::host_store::unmade(&restored), "the new fork is no store");
 }
 
+/// TASK-194: a restore into a store written since its snapshot's point, as the snapshotted VM's
+/// own store is once it resumed and wrote on, is refused: opened, its guest, of the snapshot's
+/// memory, would read extents freed since, and commit over what was written since.
+#[test]
+#[ignore = "TASK-194"]
+fn restores_refuse_a_store_written_since_its_point() {
+    host();
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("extentd.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    std::thread::spawn(move || serve(listener));
+    let path = dir.path().join("store");
+    let store = RemoteExtentStore::connect(&socket, &path, 1 << 24).unwrap();
+    let extent = ExtentId { branch: store.branch(), sequence: 1 };
+    write(&store, extent, 0, &pattern(8, BLOCK)).unwrap();
+    store.commit(Some(b"root")).unwrap();
+    let point = dir.path().join("point");
+    store.fork_quiescent(&point, store.branch() + 1).unwrap();
+    // The VM resumes, and goes on: what its snapshot holds it frees, and it commits anew.
+    store.free(extent).unwrap();
+    store.commit(Some(b"later")).unwrap();
+    drop(store);
+
+    let restored = RemoteExtentStore::connect_forked(&socket, &path, &point, 0, 0);
+    assert_eq!(restored.err().and_then(|err| err.errno()), Some(Errno::EEXIST));
+}
+
 /// What a store of the daemon's at `path` mints next, as its guest mints: from its writer's floor,
 /// or past what it minted.
 fn minted(store: &RemoteExtentStore) -> ExtentId {
