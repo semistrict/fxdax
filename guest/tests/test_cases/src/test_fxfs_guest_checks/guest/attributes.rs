@@ -80,6 +80,50 @@ pub(super) fn test_xattr_on_full_filesystem_is_refused() {
     fs::remove_file(&name).unwrap();
 }
 
+/// fxdax: on a full filesystem, a creation in a directory with a default ACL fails whole (ENOSPC,
+/// no name made) or makes its file or directory with the ACLs it inherits: they go in its
+/// creation's transaction (TASK-79.29), as ext4 sets them in its creation's handle. Set after it,
+/// in a transaction of their own as a setxattr's is (TASK-199), a creation whose ACLs then found no
+/// room stood without them, the access its directory gives refused and its mode not theirs.
+pub(super) fn test_inherited_acls_on_full_filesystem() {
+    let dir = Removed(path("inherits-full"));
+    fs::create_dir(&dir.0).unwrap();
+    let default = posix_acl(&[
+        (USER_OBJ, 6, UNDEFINED),
+        (USER, 6, 1234),
+        (GROUP_OBJ, 4, UNDEFINED),
+        (MASK, 6, UNDEFINED),
+        (OTHER, 4, UNDEFINED),
+    ]);
+    set_xattr(&dir.0, "system.posix_acl_default", &default);
+    let filler = Removed(path("filler"));
+    fill_until_enospc(&filler.0);
+    // Files and directories in turn, each inheriting the default ACL as its access ACL (masked
+    // by 0666 and 0777, which leave it as it is), a directory as its default ACL too.
+    let refused = (0..100_000).find(|n| {
+        let (name, made) = match n % 2 {
+            0 => (format!("{}/f{n}", dir.0), fs::File::create(format!("{}/f{n}", dir.0)).map(drop)),
+            _ => (format!("{}/d{n}", dir.0), fs::create_dir(format!("{}/d{n}", dir.0))),
+        };
+        match made {
+            Ok(()) => {
+                assert_eq!(get_xattr(&name, "system.posix_acl_access"), default, "{name}'s");
+                if n % 2 == 1 {
+                    assert_eq!(get_xattr(&name, "system.posix_acl_default"), default, "{name}'s");
+                }
+                false
+            }
+            Err(error) if error.raw_os_error() == Some(libc::ENOSPC) => {
+                let left = fs::symlink_metadata(&name).map(|meta| format!("{:o}", meta.mode()));
+                assert!(left.is_err(), "a creation refused (ENOSPC) left {name}, mode {left:?}");
+                true
+            }
+            Err(error) => panic!("creating {name}: {error}"),
+        }
+    });
+    refused.expect("a full filesystem took 100,000 creations");
+}
+
 /// A file or directory, removed as this goes, and synced, its room free again: if a check that
 /// filled the filesystem failed, for the checks after it.
 struct Removed(String);
@@ -214,16 +258,17 @@ pub(super) fn test_failed_write_inode_reported() {
     fs::remove_file(&name).unwrap();
 }
 
+// A POSIX ACL entry's tags, and the ID of those that name none.
+const USER_OBJ: u16 = 0x01;
+const USER: u16 = 0x02;
+const GROUP_OBJ: u16 = 0x04;
+const MASK: u16 = 0x10;
+const OTHER: u16 = 0x20;
+const UNDEFINED: u32 = u32::MAX;
+
 /// POSIX ACLs: set and read back, the mode following them, and a directory's default ACL
 /// inherited, in place of the umask, which applies without one.
 pub(super) fn test_acls() {
-    const USER_OBJ: u16 = 0x01;
-    const USER: u16 = 0x02;
-    const GROUP_OBJ: u16 = 0x04;
-    const MASK: u16 = 0x10;
-    const OTHER: u16 = 0x20;
-    const UNDEFINED: u32 = u32::MAX;
-
     fs::write(path("acl-file"), b"acl").unwrap();
     let access = posix_acl(&[
         (USER_OBJ, 6, UNDEFINED),

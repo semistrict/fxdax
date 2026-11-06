@@ -162,6 +162,7 @@ macro_rules! checks {
             // which the window's checks' counts, from the filesystem's opening, come after.
             xattr_on_full_filesystem_is_refused: All, 5 => test_xattr_on_full_filesystem_is_refused;
             xattrs_bounded: All, 8 => test_xattrs_bounded;
+            inherited_acls_on_full_filesystem: All, 5 => test_inherited_acls_on_full_filesystem;
             freeze: All, 3 => test_freeze;
             failed_thaw_thaws_on_retry: All, 3 => test_failed_thaw_thaws_on_retry;
             read_only_freezes: All, 3 => test_read_only_freezes;

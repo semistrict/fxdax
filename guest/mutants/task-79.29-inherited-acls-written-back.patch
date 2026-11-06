@@ -2,11 +2,15 @@
 # Copyright 2026 The fxdax Authors.
 #
 # Kernel: release
-# Killer: fxfs-guest-crash
+# Killer: fxfs-guest-checks inherited_acls_on_full_filesystem
 #
-# TASK-79.29: a created inode's inherited ACLs go with write_inode, not with its creation, which an
-# fsync of another inode makes durable without them: the crash test's inherit_acls, the host's
-# getxattr ENODATA (GCE r307). super.c, which guest/sim doesn't build.
+# TASK-79.29: a created inode's inherited ACLs set after its creation, not in its transaction.
+# Until TASK-199 (e08d882db) they went with write_inode, which an fsync of another inode made
+# durable without them: the crash test's inherit_acls, the host's getxattr ENODATA (GCE r307).
+# Since, a setxattr is a transaction of its own, made at once, which that fsync makes durable too:
+# the crash test passed 15 rounds of 15 with it in (GCE r795, 2026-11-06). What it still breaks:
+# on a full filesystem, the creation made and its ACLs refused (ENOSPC), the file left without
+# them, which inherited_acls_on_full_filesystem finds. super.c, which guest/sim doesn't build.
 
 --- a/guest/linux/fs/fxfs/super.c
 +++ b/guest/linux/fs/fxfs/super.c
