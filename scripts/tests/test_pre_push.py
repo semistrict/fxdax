@@ -55,7 +55,7 @@ class PrePushTest(unittest.TestCase):
         self.assertIn(f"{sha[:12]} has not passed scripts/dax-gate.sh", said)
 
     def test_driver_change_without_a_pass_is_refused(self):
-        sha = self.commit("guest/linux/drivers/virtio_extent/virtio_extent.c", "changed\n")
+        sha = self.commit("guest/linux/drivers/virtio_extent/driver.c", "changed\n")
         self.assertEqual(self.push(sha, self.main)[0], 1)
 
     def test_dax_change_that_passed_the_gate_is_pushed(self):

@@ -70,7 +70,7 @@ for part in "${parts[@]}"; do
             # Store's functions of views and what they keep, and its rules and guards of them:
             # the rest of store.rs is the store's own, which TASK-44.1's sweep covers
             # (cargo-mutants 27.1.0 lets a few of its field deletions through the filters).
-            store='Store<D>::(view|view_stats|view_extent|view_reader|read_view|locate_view|newer|cut_views|trim_kept|kept_bytes|read_kept)\b|views_|Reader::View|kept\('
+            store='Store<D>::(view|view_stats|view_extent|view_reader|read_view|locate_view|newer|cut_views|kept_for_views|read_kept)\b|views_|Reader::View|kept\('
             mutants views -p extent_store -f crates/extent_store/src/views.rs \
                 -f crates/extent_store/src/kept.rs -f crates/extent_store/src/store.rs \
                 -F "^crates/extent_store/src/(views|kept)\.rs:|$store" || result $? || status=1
