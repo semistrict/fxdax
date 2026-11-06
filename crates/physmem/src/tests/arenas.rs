@@ -664,3 +664,43 @@ fn pages_after_others_are_free_and_of_their_chunk() {
     drop(spare);
     assert_eq!(alloc_after(last).map(|page| page.frame()), None, "past the chunk");
 }
+
+/// fxdax TASK-149.17: an arena's object, which the extent daemon hands its tenant's VM processes
+/// to write, and the default's, which it hands them all to read, is sealed against shrinking,
+/// which would have the pages past its new end fault this process's own accesses (`SIGBUS`); and
+/// is its owner's alone to open anew, so that a process of another user, handed it read-only,
+/// can't reopen it to write through `/proc/self/fd`. One a process grew, as it may, still takes
+/// chunks, its pages as they were.
+#[cfg(target_os = "linux")]
+#[test]
+fn arenas_objects_are_sealed_and_their_owners() {
+    let arena = create_arena();
+    let page = alloc(arena, Wait::No).unwrap();
+    fill(&page, 0x3c);
+    // So that each object holds a chunk, which a shrink to nothing would take away.
+    let _default = alloc(ArenaId::DEFAULT, Wait::No).unwrap();
+    let fd = arena_fd(arena).unwrap();
+    for fd in [fd.as_raw_fd(), default_fd().as_raw_fd()] {
+        // SAFETY: Plain system calls, of descriptors the test holds.
+        unsafe {
+            let seals = libc::fcntl(fd, libc::F_GET_SEALS);
+            assert_eq!(seals & libc::F_SEAL_SHRINK, libc::F_SEAL_SHRINK, "seals {seals:#x}");
+            let mut stat: libc::stat = std::mem::zeroed();
+            assert_eq!(libc::fstat(fd, &mut stat), 0);
+            assert_eq!(stat.st_mode & 0o777, 0o600);
+            assert_eq!(libc::ftruncate(fd, 0), -1);
+            assert_eq!(std::io::Error::last_os_error().raw_os_error(), Some(libc::EPERM));
+        }
+    }
+    // Grown by a tebibyte, as a VM process handed it may.
+    // SAFETY: As above.
+    unsafe {
+        let mut stat: libc::stat = std::mem::zeroed();
+        assert_eq!(libc::fstat(fd.as_raw_fd(), &mut stat), 0);
+        assert_eq!(libc::ftruncate(fd.as_raw_fd(), stat.st_size + (1 << 40)), 0);
+    }
+    let more = alloc_pages(arena, 2 * chunk_pages());
+    fill(more.last().unwrap(), 0xc3);
+    assert_eq!(first_byte(&page), 0x3c);
+    assert_eq!(first_byte(more.last().unwrap()), 0xc3);
+}

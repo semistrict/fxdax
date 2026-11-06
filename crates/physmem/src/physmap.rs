@@ -119,13 +119,28 @@ unsafe impl Send for PhysMemory {}
 unsafe impl Sync for PhysMemory {}
 
 /// Creates an anonymous shared memory object.
+///
+/// fxdax: as the processes it is handed to may be hostile, a VM process escaped from its guest
+/// (TASK-149.17): sealed against shrinking, which one handed it to write could otherwise do, its
+/// pages past the new end then faulting this process's own accesses (`SIGBUS`), the extent daemon
+/// and every tenant's VMs with it; and its owner's alone to open anew (0600, where a memfd is
+/// anyone's), so that one handed it read-only, every VM process the default arena, can't reopen
+/// it to write through `/proc/self/fd`. It only grows ([`resize`]).
 #[cfg(target_os = "linux")]
 fn create_shared_memory() -> OwnedFd {
+    let flags = libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING;
     // SAFETY: The name is a valid C string.
-    let fd = unsafe { libc::memfd_create(c"fxdax-physical-memory".as_ptr(), libc::MFD_CLOEXEC) };
+    let fd = unsafe { libc::memfd_create(c"fxdax-physical-memory".as_ptr(), flags) };
     assert!(fd >= 0, "memfd_create: {}", std::io::Error::last_os_error());
     // SAFETY: `fd` was just created and is owned here.
-    unsafe { OwnedFd::from_raw_fd(fd) }
+    let fd = unsafe { OwnedFd::from_raw_fd(fd) };
+    // SAFETY: Seals and modes the object just made.
+    unsafe {
+        let sealed = libc::fcntl(fd.as_raw_fd(), libc::F_ADD_SEALS, libc::F_SEAL_SHRINK);
+        assert_eq!(sealed, 0, "seal an arena against shrinking: {}", errno());
+        assert_eq!(libc::fchmod(fd.as_raw_fd(), 0o600), 0, "mode an arena 0600: {}", errno());
+    }
+    fd
 }
 
 /// Creates an anonymous shared memory object.
@@ -182,12 +197,26 @@ impl ArenaObject {
     }
 }
 
-/// Sizes the shared memory object `fd` to `slots` chunks.
+/// Sizes the shared memory object `fd` to `slots` chunks, at least. fxdax: it only grows, sealed
+/// against shrinking on Linux ([`create_shared_memory`]): a process it was handed to, which may
+/// write it, may have grown it past that already, and may as it is grown here (TASK-149.17).
 fn resize(fd: &OwnedFd, slots: u64) {
     let size = (slots as usize * CHUNK_SIZE) as libc::off_t;
-    // SAFETY: Sizes an object of the caller's.
-    let status = unsafe { libc::ftruncate(fd.as_raw_fd(), size) };
-    assert_eq!(status, 0, "ftruncate an arena: {}", errno());
+    loop {
+        // SAFETY: A stat buffer the call fills, of an object of the caller's.
+        let mut stat: libc::stat = unsafe { std::mem::zeroed() };
+        assert_eq!(unsafe { libc::fstat(fd.as_raw_fd(), &mut stat) }, 0, "fstat an arena: {}", errno());
+        if stat.st_size >= size {
+            return;
+        }
+        // SAFETY: Sizes an object of the caller's.
+        if unsafe { libc::ftruncate(fd.as_raw_fd(), size) } == 0 {
+            return;
+        }
+        // Grown past `size` since it was looked at: a shrink, which the seal refuses.
+        let err = errno();
+        assert_eq!(err.raw_os_error(), Some(libc::EPERM), "ftruncate an arena: {err}");
+    }
 }
 
 impl PhysMemory {

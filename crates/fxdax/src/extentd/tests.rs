@@ -5634,3 +5634,5 @@ fn drains_give_up_past_their_bound() {
     );
     drop(connection);
 }
+/// TASK-149.17: a compromised VM process beside other tenants, checked against invariants.
+mod hostile;
