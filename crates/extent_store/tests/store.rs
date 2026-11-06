@@ -1076,6 +1076,33 @@ fn capacity_resizes() {
     assert_eq!(read(&store, extent(2), 0, 96 << 10), pattern(2, 0, 96 << 10));
 }
 
+/// fxdax: a framing writes its framed file back a MiB at a time as it writes it, so that its sync
+/// leaves little for the host's disk to write at once: a framed segment's whole data, synced at
+/// once, filled the disk's queue, which the syncs of a daemon's turns waited behind, up to a second
+/// under pgbench (GCE r728, TASK-165.9). Each commit's sync, of 16 KiB extents in the open
+/// segment, a MiB of them, writes back no more.
+#[test]
+fn framings_write_back_as_they_go() {
+    let dir = MemDir::new();
+    let options = Options { segment_size: 16 << 20, ..OPTIONS };
+    let description = Description { block_size: BLOCK as u32, capacity: 64 << 20, branch: BRANCH };
+    let store = Store::create(dir.clone(), description, options).unwrap();
+    let len = 16 << 10;
+    for sequence in 1..=512 {
+        store.write(extent(sequence), 0, &noise(sequence, len)).unwrap();
+        if sequence % 64 == 0 {
+            store.commit(None).unwrap();
+        }
+    }
+    store.close_segment().unwrap();
+    store.commit(None).unwrap();
+    store.closed(0).unwrap();
+    let framed = dir.open(&format!("{}/{:016x}", of("segments", BRANCH), 0), true).unwrap();
+    let size = framed.size().unwrap();
+    assert!(size > 8 << 20, "the framed segment holds 8 MiB of noise, not {size} bytes");
+    assert_eq!(dir.io().most_unwritten, 1 << 20);
+}
+
 /// The files the process has open.
 fn open_fds() -> usize {
     std::fs::read_dir("/dev/fd").unwrap().count()
@@ -1093,6 +1120,9 @@ fn closed_segments_keep_no_more_files_open_than_allowed() {
         store.write(extent(sequence), 0, &pattern(sequence as u8, 0, BLOCK)).unwrap();
         store.close_segment().unwrap();
         store.commit(None).unwrap();
+        // fxdax: framed, which no commit waits for: a segment being framed holds its raw file and
+        // log open till then (TASK-165.9).
+        settled(&store);
         open.push(open_fds());
     }
     assert_eq!(open[39], open[9], "{open:?}");

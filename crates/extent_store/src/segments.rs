@@ -744,6 +744,10 @@ impl<F: File> Unframed<F> {
     }
 }
 
+/// fxdax: the bytes of a framed file a framing writes back at a time ([`File::write_back`]): what
+/// a sync behind it, a daemon's turn's, waits for at most, as the host's disk writes them.
+pub(crate) const WRITTEN_BACK: usize = 1 << 20;
+
 /// fxdax: frames the `len` bytes of a closed segment's data, which its raw file `raw` holds, with
 /// `footer`, into the framed file at `path` in `dir`: counted in [`segment_closes`].
 fn frame_segment<D: Dir>(
@@ -761,7 +765,12 @@ fn frame_segment<D: Dir>(
     // Where the framed file is in its directory, not yet written: whole only once its framing
     // ends, which its store says ([`Store::framing`](crate::Store::framing), TASK-189).
     fail::fail_point!("segments::framing");
-    file.write_at(&bytes, 0)?;
+    // fxdax: a piece at a time, each written back before the next (TASK-165.9).
+    for (piece, written) in bytes.chunks(WRITTEN_BACK).enumerate() {
+        let offset = (piece * WRITTEN_BACK) as u64;
+        file.write_at(written, offset)?;
+        file.write_back(offset, written.len() as u64)?;
+    }
     let framed = Framed::new(Arc::new(file), extent_frame::Parts::of(&bytes)?);
     SEGMENT_CLOSES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let nanos = started.elapsed().as_nanos() as u64;

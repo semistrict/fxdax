@@ -36,6 +36,16 @@ pub trait File: Send + Sync + 'static {
     /// Writes `buf` at `offset`.
     fn write_at(&self, buf: &[u8], offset: u64) -> io::Result<()>;
 
+    /// fxdax: has the host write the `len` bytes at `offset` back to its disk, written through its
+    /// page cache, and waits for them; durable only once synced. A writer of a large file writes
+    /// it back so, a piece at a time, as it writes, that the sync after has little left: a sync of
+    /// a whole framed segment's data at once filled the disk's queue, which the syncs a daemon's
+    /// turn makes its guests' commits durable with waited behind, up to a second under pgbench
+    /// (GCE r728, TASK-165.9). A host that writes back as it pleases does nothing.
+    fn write_back(&self, _offset: u64, _len: u64) -> io::Result<()> {
+        Ok(())
+    }
+
     /// The file's size.
     fn size(&self) -> io::Result<u64>;
 
@@ -413,6 +423,25 @@ impl File for HostFile {
 
     fn write_at(&self, buf: &[u8], offset: u64) -> io::Result<()> {
         self.written().write_all_at(buf, offset)
+    }
+
+    fn write_back(&self, offset: u64, len: u64) -> io::Result<()> {
+        #[cfg(target_os = "linux")]
+        {
+            let flags = libc::SYNC_FILE_RANGE_WAIT_BEFORE
+                | libc::SYNC_FILE_RANGE_WRITE
+                | libc::SYNC_FILE_RANGE_WAIT_AFTER;
+            let (offset, len) = (offset as libc::off64_t, len as libc::off64_t);
+            // SAFETY: Writes back a range of an open file descriptor's file.
+            let done =
+                unsafe { libc::sync_file_range(self.written().as_raw_fd(), offset, len, flags) };
+            if done != 0 {
+                return Err(io::Error::last_os_error());
+            }
+        }
+        #[cfg(not(target_os = "linux"))]
+        let _ = (offset, len);
+        Ok(())
     }
 
     fn size(&self) -> io::Result<u64> {
