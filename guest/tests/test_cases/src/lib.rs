@@ -841,7 +841,6 @@ impl TestCase {
         self.test.timeout_secs()
     }
 
-    #[allow(dead_code)]
     pub fn name(&self) -> &'static str {
         self.name
     }

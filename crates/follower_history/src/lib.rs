@@ -393,6 +393,7 @@ mod tests {
     /// A read as of commits no model may show, its epochs at odds with the writer's syncs, finds
     /// what none holds, even of a name never written.
     #[test]
+    #[allow(clippy::reversed_empty_ranges)] // The empty range of models is the point.
     fn reads_no_model_may_show_fail() {
         let mut history = history();
         history.read(read_between(0, 5..=3, "b", None));

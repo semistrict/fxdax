@@ -143,8 +143,9 @@ enum Command {
         dir: PathBuf,
     },
     /// fxdax: a snapshot of the daemon's, its VM processes' and their guests' counters, as JSON if
-    /// `json` (TASK-111.4).
+    /// `json` (TASK-111.4). Read by `through`, which is Linux's alone.
     Stats {
+        #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
         json: bool,
     },
 }

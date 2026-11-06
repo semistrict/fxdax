@@ -234,7 +234,18 @@ mod tests {
         let root = tempdir::TempDir::new("sqlite-transactions").unwrap();
         for mode in Mode::ALL {
             for batch in [1, 100] {
-                transactions(root.path(), mode, 3, batch, |_, run| run());
+                // What each phase took, as the observer says: the measurement's.
+                let measured = transactions(root.path(), mode, 3, batch, |phase, run| {
+                    run();
+                    match phase {
+                        Phase::Commits => 1.0,
+                        Phase::Checkpoint => 2.0,
+                    }
+                });
+                assert_eq!(measured.commit_seconds, 1.0);
+                // A checkpoint is WAL's alone.
+                let checkpoint = (!matches!(mode, Mode::DeleteFull)).then_some(2.0);
+                assert_eq!(measured.checkpoint_seconds, checkpoint);
             }
         }
     }

@@ -6,6 +6,12 @@
 **Recommended:** a workload identity pool for `semistrict/fxdax` and a service account allowed to make and delete GCE instances and write the nightly bucket.
 **Until then:** each nightly fails at its auth step; TASK-69's runs stay manual.
 
+## Deleting `FileType::default_perm` and its test (2026-11-06)
+
+`crates/fxdax/src/node.rs`'s `FileType::default_perm` has been dead since TASK-96.1 (Fxfs's POSIX layer gives nodes without permissions of their own 0o755, 0o777 and 0o644 itself, `fxfs-posix/src/lib.rs`), kept under `#[allow(dead_code)]` with its test `default_permissions` "until the user decides on removing them". Deleting a test is yours.
+**Recommended:** delete both; the POSIX layer's own tests cover the defaults.
+**Until then:** they stay, the allow hiding nothing else.
+
 # Decisions
 
 Decisions made without you, still yours to confirm or overturn. Each is a line or two here; what else was possible and how to undo it are in the task named, under "Decision moved here from OPEN_QUESTIONS.md" in its notes, or in the doc named. Tell an agent which you confirm or overturn and its line leaves the file.
