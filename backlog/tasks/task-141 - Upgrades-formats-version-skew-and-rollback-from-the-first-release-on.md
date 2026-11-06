@@ -6,7 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-10-31 20:30'
-updated_date: '2026-11-06 00:44'
+updated_date: '2026-11-06 06:56'
 labels: []
 dependencies: []
 priority: high
@@ -43,4 +43,10 @@ Where it stands, at main dde8d58d3:
 
 <!-- SECTION:NOTES:BEGIN -->
 2026-11-05 triage (AGENTS.md, no migrations, 75bd872ba): rewritten from 'Upgrades: formats, version skew and rollback from the first release on'. TASK-141.1 rewritten to refusing Fxfs's version 60, 141.3 to refusing a peer of another wire format, 141.4 to the drain without N-1/N or rollback; doc-11 rewritten to the rule.
+
+Decision moved here from OPEN_QUESTIONS.md on 2026-11-06, as written there; the file keeps a line on it, pointing here, until the user confirms or overturns it.
+
+**TASK-141's upgrade plan rewritten to the no-migrations rule, its tasks kept as refusals (TASK-141, doc-11, 2026-11-05)**
+
+- **TASK-141.1 and 141.3 are rewritten to their inverses rather than closed**: 141.1, which asked that a release read and migrate the one before's formats, now asks that Fxfs refuse version 60, which it still reads (`EARLIEST_SUPPORTED_VERSION` 60, `LATEST_VERSION` 61 since 321fb94f2, though `allocator.rs` says they are equal); 141.3, which asked that daemon N serve VMM N-1, now asks that a VM process, daemon or guest of another wire format be refused, where today `BUILD`'s `EINVAL` is let be. 141.4 keeps the drain and SIGTERM's durable close, without N-1/N moves or rollback. doc-11's rules say the same. *Instead:* close all three as against the rule and file the refusals new. *Undoing it:* close 141.1 and 141.3 and drop their ACs.
 <!-- SECTION:NOTES:END -->

@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-05 20:44'
-updated_date: '2026-11-05 22:07'
+updated_date: '2026-11-06 06:56'
 labels: []
 dependencies: []
 references:
@@ -54,4 +54,10 @@ abd90f507 (on TASK-172's 9ff0b49bc, its per-part packages: part sim installs the
 CI 42114566873 on 9c5d9ef9a: test (sim) 7 min, all 47 sim tests; test (workspace) 18 min, against 42-52 min before (and two runs cancelled at 90). Every job green.
 
 AC3: the searches were already bounded at 20,000 seeds, failing 'no seed of 0..20000 needed the rule'. AC4: OPEN_QUESTIONS.md has the decision. upstream-changes --check passes.
+
+Decision moved here from OPEN_QUESTIONS.md on 2026-11-06, as written there; the file keeps a line on it, pointing here, until the user confirms or overturns it.
+
+**extent_remote's simulation runs in a CI part of its own, optimized with debug checks (TASK-188, 2026-11-05)**
+
+CI's workspace part ran extent_remote's `sim::` tests unoptimized: four rule tests' seed searches took 20 to 27 minutes each and the simulation 7,434 of the part's 10,500 test-seconds (GitHub run of land-h). Decided: **`scripts/test.sh` part `sim`**, a matrix entry of its own in ci.yml (with the common build tools alone, TASK-172's), runs every `sim::` test (`package(extent_remote) & test(/^sim::/)`), and the workspace part every test but those. **Built with a Cargo profile `sim`**, release with `debug-assertions` and `overflow-checks` on, not plain `--release`: the simulation exercises invariants written as `debug_assert`s (`Wal::push`'s "a log's segments follow") and arithmetic a release build would wrap silently. **Only the simulation moves:** the logs' other slow tests (fxdax::handover 408 s, extentd's followers tests 204-227 s, fxfs-posix's model and corrupt soaks 72-154 s, extent_store::crash 112 s) are fixed-count workloads, not open-ended searches, and leave the workspace part near 15 minutes of tests. **The seed searches keep their bound of 20,000 seeds**, which already fails naming the range. *Instead:* plain `--release` (quicker to build, loses the checks); moving the other soaks too (a release build of fxdax and fxfs-posix in the job, for minutes). *Undoing it:* the part's lines in scripts/test.sh, the matrix entry, and `[profile.sim]`.
 <!-- SECTION:NOTES:END -->

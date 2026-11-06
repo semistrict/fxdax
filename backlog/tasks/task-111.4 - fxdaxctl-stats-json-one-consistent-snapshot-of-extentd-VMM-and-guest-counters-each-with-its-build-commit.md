@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-10-28 01:25'
-updated_date: '2026-11-06 04:38'
+updated_date: '2026-11-06 06:56'
 labels: []
 dependencies: []
 parent_task_id: TASK-111
@@ -54,6 +54,17 @@ Implemented in b772af8da (fxdax, guest, doc-4, measurement) and vendor/firecrack
 Rebased 2026-11-06 onto origin/main 5f18867c5 (TASK-187, TASK-190, TASK-141.1 and others): fxdax 82e0eb8fc; vendor/firecracker 96cb97976 on the fork's e64c4b283 (branch fxdax-t1114; its Cargo.lock keeps fxdax's url, which the fork's 8b1a45e6a lacked). OPEN_QUESTIONS.md's conflict, both sides' decisions kept. Reruns: the device's tests (vmm extent::) 16/16, Linux arm64 Docker, built --locked; macOS workspace 2119/2119 and the shuttle parts; Linux Docker 2303/2310, the 6 known Docker-only failures (eu-stack stacks, grants as root) and extentd vm_processes_that_leave_replies_unread_are_let_go, which failed once under the full run's load (the daemon hung up while the test still sent its READs: its send unwrapped a broken pipe) and passed 40/40 alone. Supersedes the SHAs above (b772af8da, dcecf56a7).
 
 Rebased 2026-11-06 onto origin/main 6754d1469 (TASK-160.7's one table of request types): fxdax 7a0f88f44; vendor/firecracker unchanged, 96cb97976. STATS is a row of the driver's vext_types[] (vext_args_stats from req->offset, data out of data_len bytes, not writing the store), which replaces the four switches and the request_names array (whose resizing went with it); its sysfs loop runs to VIRTIO_EXTENT_T_LAST, 17, over a table of T_LAST + 1. Reruns: guest kernel built in Docker (arm64), check-guest.sh arm64 ok; the device's tests (vmm extent::) 16/16 --locked; Linux Docker fxdax 2304/2310, the 6 known Docker-only failures; GCE r682 (us-west2-a, Firecracker jailed) fxfs-guest-stats, fxfs-guest, fxfs-guest-dax passed, the snapshot's three builds 21a094a79, the VM's answer in 1.1 ms. Supersedes the SHAs above.
+
+Decision moved here from OPEN_QUESTIONS.md on 2026-11-06, as written there; the file keeps a line on it, pointing here, until the user confirms or overturns it.
+
+**One snapshot of extentd, VM processes and guests: the guest is asked through its device (TASK-111.4, TASK-111.5, 2026-11-05)**
+
+Guest counters never reached the host. Decided:
+- **The daemon asks; nothing pushes.** `GetSnapshot` (control API; `fxdaxctl stats [--json]`) sends each VM process that opened a store an ask (`STATS_ASK`); its device sets the configuration's new `stats_asked` and raises a configuration change (doc-4's `VIRTIO_EXTENT_F_STATS`, bit 11); the guest's driver answers from a work item with `STATS` (type 17), its data the text `/proc/fs/fxfs/TAG` shows plus `commit` (`/proc/fs/fxfs/build`), one show function writing both. The VM process says its stage counts just before forwarding (`STATS`, kind 31), so its numbers are as of the answer; the daemon reads its own counters once every VM answered or the wait (2 s default, 60 s most) is over, and reports each VM's answer delay. An answer answers earlier asks too. *Instead:* guests pushing periodically (no common moment); a page of counters the VMM reads (the counters are Rust and C atomics spread over the module). *Undoing it:* drop F_STATS, `STATS`/`STATS_ASK` and `GetSnapshot`.
+- **The guest's stats are its text, parsed by the daemon** into counters, `_hist` histograms and its build; unknown lines are logged and left out. *Instead:* a binary format both ends keep in step.
+- **`/metrics` doesn't ask VMs.** The per-VM gauges (TASK-111.5, labels `branch` and a new `connection` number telling a writer and its followers apart) show the window's mappings as the daemon has them and the VMM's installed runs as it last said (with each ACK and STAGE_COUNTS, `args[4]`); its budget comes with WINDOW (`args[2]`). A scrape stays free of VM round trips; a snapshot gives fresh ones. *Instead:* ask on each scrape. *Undoing it:* call the snapshot's ask from `render`.
+- **What the daemon reports of a connection lives in a `Report` the connection holds** (extentd/snapshot.rs), the metrics and snapshots holding it, never the connection, whose last holder closes its store (as `vm_builds` already avoided); each window's gauges are atomics of its own (`dax::Gauges`) that all windows' totals add up from.
+- **Followers' devices offer F_STATS too**, but no guest case runs a follower's answer (fxfs-guest-stats has one writer VM).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

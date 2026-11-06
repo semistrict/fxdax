@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-05 17:15'
-updated_date: '2026-11-06 02:22'
+updated_date: '2026-11-06 06:56'
 labels:
   - bug
   - dax
@@ -85,6 +85,16 @@ The perf-gate lead is wrong as stated: the forked VMs' 2^18+ restrictions for wo
 Local runs on the rebased tree: macOS workspace 2,105 of 2,105 and Shuttle; Linux in Docker, fxdax 467 of 471 (the container's 4: no git, the grants tests' helper binary) and vmm 16 of 16. scripts/upstream-changes.py --check passes. The lift's wait is 94f404848. Firecracker's commits are on semistrict/firecracker branch fxdax-t187.
 
 Checked on main, 2026-11-05 (code of dde8d58d3; 752515020 adds backlog only): GCE r690, the e2e suite jailed with the production seccomp filter, 15 of 15, fxfs-guest-crash-stray-dax and every DAX case among them; GCE r691, the Linux workspace, 2302 of 2303: a_stray_access_stays_refused_and_is_given_up_on passes, but this task's a_store_after_a_workers_write_waits_for_one_lift fails ('the worker's write went through': GCE's vm.max_map_count kept the test's zero pages installed, TASK-190). TASK-190's fix, 788e3b6b4, is on land-p, not main, so DoD #1 stays unchecked until it lands and a GCE workspace run passes. CI 42137709782 on dde8d58d3 green; macOS workspace 2118 of 2118 at 752515020.
+
+Decision moved here from OPEN_QUESTIONS.md on 2026-11-06, as written there; the file keeps a line on it, pointing here, until the user confirms or overturns it.
+
+**A vCPU's run of failed accesses ends only at a gap of 10 ms; a failure waits up to 5 ms for its lift (TASK-187, 2026-11-05)**
+
+A guest's stray DAX access never stopped its VM when the vCPU retrying it was the one taking the devices' interrupts: Firecracker ended a run of EFAULTs at any other exit, and the interrupt handlers' MMIO exits came between retries. Decided:
+- **fxdax's `AccessFailures`** decides for the VMM. A run ends only once a failure, or an exit, comes `IN_A_ROW` (10 ms) after its last failure, and the access is given up on after `PATIENCE` (1 s) of them, as before.
+- **`guest_access_failed`** waits for the fault threads' lifts for up to 5 ms, where it returned at once and the vCPU spun on EFAULT, 140 failed retries a store after a worker's write, 1 now.
+
+*Cost:* a healthy vCPU failing at least every 10 ms for a second is given up on, whatever it did between. Measured runs show a single EFAULT now and then. A vCPU blocks up to 5 ms on a fault thread that is slow to lift. *Instead:* compare the vCPU's RIP across failures (KVM_GET_REGS per failure, x86's alone), or count only exits KVM takes for the guest's interrupts. *Undoing it:* `AccessFailures::ran` ending the run at once; `LIFT_PATIENCE` zero.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

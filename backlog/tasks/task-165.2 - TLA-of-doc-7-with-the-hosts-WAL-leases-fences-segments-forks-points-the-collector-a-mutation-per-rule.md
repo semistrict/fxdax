@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-05 03:16'
-updated_date: '2026-11-05 13:26'
+updated_date: '2026-11-06 06:56'
 labels: []
 dependencies: []
 documentation:
@@ -66,6 +66,13 @@ Verification: scripts/check-tla.sh, all specs and the follower traces, alone on 
 DoD #1 not run: the only Rust change is doc comments on Rules, so the workspace and GCE runs were not repeated for it.
 
 TASK-175 to 180's rules (2026-11-05, on land-165): waysFromSeals (collector::behind: a live state not from a checkpoint of the lease's epoch keeps every moves back to the seal), movesTakenFirst (a checkpoint's create now lands in a step of its own; the writer takes its moves before it, or, without the rule, once answered), leasesByTakings (leases are [epoch, token, holder], the holder the session's gen; "staleTake" lets a taking's first record read be from before the deletion, the record read again after the lease), passesFencedStop (gc is a pass per lease epoch, "overlap" lets them run at once; a pass reads records as listings find them, GcRecords, until none is new), TASK-177 under newestCheckpoint (a deletion's recovery lists checkpoints, then goes on in a step of its own, Recovering, restarting when one came since), TASK-178 as the spec rule deletionsDoneByOthers (no Rules field). Mutations: NoWaysFromSeals (Task175.cfg's trace), NoMovesTakenFirst, NoLeasesByTakings, NoPassesFencedStop, NoNewestCheckpointInherited, NoDeletionsDoneByOthers; models as designed compact moves again (BucketCompaction), BucketForks takes stale, BucketOverlap is new. Found TASK-183 (two deletions at once, a fork segment landing between their recoveries: the second records the child after a pass let go of its origin), modelled fixed as deletionsFence, mutation NoDeletionsFence (BucketForks's first counterexample once deletions recovered in two steps). Verified: scripts/check-tla.sh, all specs and traces, exit 0 in 1035s (bucket's as designed 835s of it: BucketOverlap 313s, BucketForks 238s; mutations 2s each but NoWaysFromSeals 57s, NoRecordsRelisted 17s, NoPassesFencedStop 16s). BucketPoints with overlap was cut, past 223M states. cargo check -p extent_remote clean (doc lines only).
+
+Decision moved here from OPEN_QUESTIONS.md on 2026-11-06, as written there; the file keeps a line on it, pointing here, until the user confirms or overturns it.
+
+**The WAL is put after the branch by commits, not by segment links; what the TLA+ spec found (TASK-165.2, 2026-11-05)**
+
+`specs/bucket/Bucket.tla` found that doc-14's `wal::rebase` by segments (the WAL segments whose footers recovery read are acknowledged; the first other one must follow the fence's `after`) declares a WAL diverged, and the store refuses to open (`ESTALE`, its commits dropped by `take`), when the branch holds every one of its commits but a later writer's checkpoint covers them (recovery reads no footer a checkpoint covers), or when only an empty fence came after them (a takeover that crashed after fencing). Decided: by commits, as doc-7's recovery on the same host already is: the WAL keeps the commit it was stamped over (its base); if the branch's last commit after the fence is one of the WAL's, the WAL's segments to it are acknowledged; if it is that one or the base, the rest are restamped after the fence; otherwise the WAL diverged. `wal_follows` and `wal_after_fence` are those two conditions; doc-14 says so. *Instead:* keep segments and have state and checkpoints carry, per lease epoch, the last segment applied of it, so that a WAL of epoch e knows what of it is in the branch: an entry per takeover kept for ever, and the empty-fence case still diverging. *Undoing it:* doc-14's step 4 and the spec's `Opened`.
+The spec also found two holes in the collector, which it models fixed and which are tasks of their own, the code unchanged here: TASK-173 (a child recovered once, by its parent's state, though a record found on relisting names another origin) and TASK-174 (a deleted root's record dropped, then made again as a fork's child by its parent's slow writer; the spec keeps every record). It reproduced TASK-175, whose trace is now the mutation of its rule (`specs/bucket/mutations/NoWaysFromSeals.cfg`; above).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

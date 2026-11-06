@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-03 13:09'
-updated_date: '2026-11-06 02:22'
+updated_date: '2026-11-06 06:56'
 labels:
   - structure
 dependencies: []
@@ -50,6 +50,14 @@ How found / blind spot: the structure review (TASK-160); no test asked a volume'
 Runs: as TASK-160.24's (same batch); fxfs-linux type-checks in Lima. Not run: GCE guest cases (fxfs-guest-follow covers a -o ro mount of a writer's store).
 
 Verified on main, 2026-11-05 (code of dde8d58d3; 752515020 adds backlog only): GCE r691, the Linux workspace, 2302 of 2303, the one failure TASK-187's a_store_after_a_workers_write_waits_for_one_lift (TASK-190; its fix 788e3b6b4 is on land-p, not main); GCE r690, the e2e suite (--tag e2e, 15 cases) jailed with the production seccomp filter, 15 of 15; CI 42137709782 on dde8d58d3 green (workspace 2303 of 2303, sim, shuttle, clippy scripts, guest, guest-sim); macOS FXDAX_TEST_PARTS=workspace scripts/test.sh at 752515020, 2118 of 2118; scripts/upstream-changes.py --check at 752515020 passes. AC #1: FxFilesystem's options own read-only; Fxfs::new derives a volume's (fxfs-posix lib.rs:556); a_volume_is_read_only_as_it_or_its_filesystem_is passes in r691.
+
+Decision moved here from OPEN_QUESTIONS.md on 2026-11-06, as written there; the file keeps a line on it, pointing here, until the user confirms or overturns it.
+
+**A volume's read-only is derived from its filesystem's, at one place (TASK-160.26, 2026-11-05)**
+
+FxFilesystem's options own read-only. fxfs-posix's `Fxfs::new` makes a volume read-only if its mount asks or its filesystem is; the guest's `Filesystem` reads the filesystem's options rather than keeping a copy; its `flush_volume` checks the volume's, which refuses a flush of a volume mounted -o ro on a writable filesystem (it checked the filesystem's only). The guest's `ExtentDevice` writes nothing only as `Filesystem::open` says (`writing_nothing`), no longer also from DEVICE_READ_ONLY at `find`; `read_only()` is `follows()`, what that flag says.
+**Instead:** derive the filesystem's read-only from its device (`Device::is_read_only`) in `FxFilesystemBuilder::open`, which changes upstream code.
+**Undoing it:** the guest's field back, and `Fxfs::new` taking its argument as it is.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

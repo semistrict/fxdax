@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-05 03:16'
-updated_date: '2026-11-06 02:21'
+updated_date: '2026-11-06 06:56'
 labels: []
 dependencies: []
 documentation:
@@ -64,6 +64,16 @@ Structure: the class (three replays, three rules) is now impossible, because a f
 Verified 2026-11-05. macOS: FXDAX_TEST_PARTS='workspace shuttle' scripts/test.sh --no-fail-fast: workspace 2067/2067, Shuttle all parts green; clippy part green; upstream-changes.py --check green. The crash rounds (extent_store tests/crash, which compare rebuild with the live store) pass in the workspace run. Linux (Docker arm64, rust:1, nextest -p extent_store -p extent_remote -p fxdax): 844/852. The 8 failures are environment-only (eu-stack missing x3, grants ENOENT x3, build stamp) plus TASK-157's guests_forks_failing_at_each_step_harm_nothing, which passes alone (36 s). The simulation's rule tests stop at the same seeds as on main (records_listed: 5310, newest_checkpoints: 11464), so their 4-8 min runtimes predate this. Soak SIM_SOAK=10 of every holds test: one violation, stale_creates_landing_past_deletions seed 677 (the only one in 0..20000; main passes all 20000). It is a collector hole that this branch's changed trajectories reach: a fenced writer's late checkpoint names moved locations, so the collector deletes a moves hop the live writer still needs. Filed as TASK-175 with the trace; not fixed here.
 
 Verified on main, 2026-11-05 (code of dde8d58d3; 752515020 adds backlog only): GCE r691, the Linux workspace, 2302 of 2303, the one failure TASK-187's a_store_after_a_workers_write_waits_for_one_lift (TASK-190; its fix 788e3b6b4 is on land-p, not main); GCE r690, the e2e suite (--tag e2e, 15 cases) jailed with the production seccomp filter, 15 of 15; CI 42137709782 on dde8d58d3 green (workspace 2303 of 2303, sim, shuttle, clippy scripts, guest, guest-sim); macOS FXDAX_TEST_PARTS=workspace scripts/test.sh at 752515020, 2118 of 2118; scripts/upstream-changes.py --check at 752515020 passes. AC #1: State::apply (recovery.rs:160) and apply_contents are the only appliers of a footer; rg finds their callers in recovery, wal.rs and extent_store's rebuild (index.rs:326), the collector placing through Layered. AC #2: extents_sealed_and_freed_in_one_segment_are_spent_where_their_branch_is_taken and batches_free_what_a_commit_before_held pass in r691. AC #3: recovery's capacities_are_set_by_commits (a fork inherits, a point keeps, a checkpoint holds), remote's resizes_hold_where_their_branch_is_taken and extent_store's resizes_are_their_next_commits pass in r691. AC #4: layout::FORMAT is 2 (layout.rs:23); records_of_other_formats_are_refused passes in r691. AC #5: CI 42137709782's sim job; extent_store::crash's recovers_a_prefix_of_its_commits and forks_recover_prefixes_of_their_commits pass in r691; the workspace as above.
+
+Decision moved here from OPEN_QUESTIONS.md on 2026-11-06, as written there; the file keeps a line on it, pointing here, until the user confirms or overturns it.
+
+**One replay, capacity by commits: how (TASK-165.3, 2026-11-05)**
+
+- **A resize is the next commit's, not a commit of its own:** `Store::set_capacity` keeps the local record as before and has the next commit's segment footer carry the capacity. A resize that committed would seal the extents a guest has open, whose next writes would then be refused. *Instead:* a commit with no seals at each resize, once commits no longer seal what's open (the open segment's log, TASK-165.9). *Undoing it:* `Uncommitted::resize`.
+- **A store attaching to a branch whose state names no capacity, or another, restates its own with its next commit** (`Store::restate_capacity`), rather than in a segment of its own at attaching: attaching makes no more segments than before (fork tests name segments by number, TASK-157's). Until that commit, a host taking the branch elsewhere gives it the capacity it made its store with, as before. *Undoing it:* the diff's last plan commits the capacity (`Plan::commit`'s `capacity`), and the tests' segment numbers move by one.
+- **A batch's footer has a store's shape:** an extent its commits sealed and later freed is a free alone, one a commit sealed and freed itself is neither (`batch::Plan::contents`). So the simulation's footers are the store's, and its new check of spent IDs sees the rule the store's footers need. *Undoing it:* `Plan::contents` keeps every seal.
+- **A footer holds its segment's `Contents`, its extents of their own placed at its writer's keys by its place** (`Footer::own`): a footer naming its own extents elsewhere can't be made, and `Chain::admit` checks the place alone. *Undoing it:* the format, again.
+- **The local record keeps the capacity until the lineage goes** (TASK-165.7); the store's local checkpoints and `rebuild` don't carry it.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

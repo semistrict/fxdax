@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-03 13:09'
-updated_date: '2026-11-06 02:22'
+updated_date: '2026-11-06 06:56'
 labels:
   - structure
 dependencies: []
@@ -63,6 +63,16 @@ Verified: FXDAX_TEST_PARTS="clippy scripts guest" scripts/test.sh in Docker (rus
 GCE r605 (us-central1-a, release kernel, FXDAX_E2E_TEST by name, as the brief asked): test-e2e.sh asked the runner, which ran the three cases in registration order (checks-dax-small, checks-overrun, dax), all OK (74 s of 368 s, 4 s of 30 s, 2 s of 15 s); guest tests exit 0. Tag selections themselves checked against the old lists in Docker (above); no GCE run of a --tag suite yet.
 
 Verified on main, 2026-11-05 (code of dde8d58d3; 752515020 adds backlog only): GCE r691, the Linux workspace, 2302 of 2303, the one failure TASK-187's a_store_after_a_workers_write_waits_for_one_lift (TASK-190; its fix 788e3b6b4 is on land-p, not main); GCE r690, the e2e suite (--tag e2e, 15 cases) jailed with the production seccomp filter, 15 of 15; CI 42137709782 on dde8d58d3 green (workspace 2303 of 2303, sim, shuttle, clippy scripts, guest, guest-sim); macOS FXDAX_TEST_PARTS=workspace scripts/test.sh at 752515020, 2118 of 2118; scripts/upstream-changes.py --check at 752515020 passes. AC #1: GCE r690 ran the e2e suite by tag (FXDAX_E2E_TEST='--tag e2e'), the runner selecting its 15 cases, 15 of 15; scripts/tests/test_guest_tags.py passes in CI's scripts part (163 tests). AC #2: test_cases' every_case_is_in_a_suite, every_tag_selects_cases and a_selection_is_of_cases_named_and_tagged pass in CI 42137709782's guest job, host and guest halves.
+
+Decision moved here from OPEN_QUESTIONS.md on 2026-11-06, as written there; the file keeps a line on it, pointing here, until the user confirms or overturns it.
+
+**Guest test cases are selected by tags, the nightly runs 50 (TASK-160.29, 2026-11-05)**
+
+Every case is tagged with the suites it is in (`Tag`, guest/tests/test_cases/src/lib.rs); scripts pass `--tag SUITE` through `FXDAX_E2E_TEST` (or test-e2e.sh's arguments) and test-e2e.sh asks `runner list`. Each script's old list is now exactly its tag's selection; cases run in registration order, not each list's. Decided:
+- **`manual`** tags the 16 cases no suite runs (xfstests, 4 hours each; runner-deadlock, failing on purpose; profiles, lock_stat, nofsync and the bench's followed and fork measurements), so that "untagged" stays an error.
+- **The nightly** (`--tag nightly`) runs e2e's and kernel's cases plus crash-dax-daemon-killed, follow-remount(-dax) and the four script cases: 50, from 15. Left out: xfstests (hours), faults-dax (needs the debug kernel; soak-sanitized runs it), the measurements. The nightly still needs its GCP secrets (above).
+- **`FXDAX_E2E_TEST=all` is gone:** it ran runner-deadlock and other cases that skip, which now fail a run asking for them by name.
+**Undoing it:** a case's tags are a list beside its name; a suite is a variant of `Tag`.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

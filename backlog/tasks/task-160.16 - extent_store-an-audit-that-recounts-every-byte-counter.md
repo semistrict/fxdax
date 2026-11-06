@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-03 13:08'
-updated_date: '2026-11-04 03:44'
+updated_date: '2026-11-06 06:56'
 labels:
   - structure
 dependencies: []
@@ -66,6 +66,14 @@ Verification: macOS scripts/test.sh after the rebase: workspace 2057/2057, Shutt
 AC evidence: #1, every lock of the state goes through Locked and is audited as it is let go, in every test build (feature unification included); macOS scripts/test.sh is green with it. #2, the keep_for_uploader mutant fails 9 extent_store tests and 10 Shuttle tests, each on its first schedule; without the audit it fails none. DoD #2: scripts/upstream-changes.py --check exits 0. DoD #3: no upstream code changed. DoD #1 is open: Linux workspace 2228/2228 at 30049162f (GCE run5), but the Linux Shuttle and extent_store rerun after 588f44ade didn't run because gcloud's credentials expired (OPEN_QUESTIONS.md). The host fxdax-test-t16016-audit is still up, undeletable without a login.
 
 2026-11-03: Linux at main c0b423abc, after 383e9f512 (588f44ade rebased): GCE r531, workspace 2244/2244, Shuttle 61 and 7, the rest passing; macOS scripts/test.sh green as noted.
+
+Decision moved here from OPEN_QUESTIONS.md on 2026-11-06, as written there; the file keeps a line on it, pointing here, until the user confirms or overturns it.
+
+**The extent store's audit runs in every test build that links it (TASK-160.16, 2026-11-03)**
+
+`State::audit` recounts the ~15 byte counters from everything the branch holds each time its state's lock is let go, in builds with the `audit` feature. Decided: `shuttle` implies it, and `extent_store` turns it on for its own tests by a dev-dependency on itself. Cargo unifies features in one build, so a workspace test run (`cargo nextest run --workspace`, `scripts/test.sh`, GCE) audits the stores of fxdax's and the other crates' tests too: more checking, at the cost of a walk of every extent per critical section. Only branches holding at most 4,096 extents are audited (`AUDITED_EXTENTS`). Unbounded, fxdax's `counting_followers_walks_no_extents`, which writes a 32,768-extent base one extent at a time, ran past an hour on GCE. Release builds and the daemon never audit.
+**Instead:** `cfg(debug_assertions)`, which also audits debug daemons and guest tests, whose stores are large; or an opt-in each test calls, which misses the ones that don't.
+**Undoing it:** drop the self dev-dependency (the Shuttle and lib tests still audit), or `audit = []` and the `cfg`s.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

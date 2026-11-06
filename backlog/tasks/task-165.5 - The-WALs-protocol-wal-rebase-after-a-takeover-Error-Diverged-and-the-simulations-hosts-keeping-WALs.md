@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-05 03:16'
-updated_date: '2026-11-06 02:21'
+updated_date: '2026-11-06 06:56'
 labels: []
 dependencies:
   - TASK-165.2
@@ -80,6 +80,17 @@ Verified after the rebase (9c2d4e62e):
 Not rerun after the rebase: Linux in Docker; GCE never run.
 
 Verified on main, 2026-11-05 (code of dde8d58d3; 752515020 adds backlog only): GCE r691, the Linux workspace, 2302 of 2303, the one failure TASK-187's a_store_after_a_workers_write_waits_for_one_lift (TASK-190; its fix 788e3b6b4 is on land-p, not main); GCE r690, the e2e suite (--tag e2e, 15 cases) jailed with the production seccomp filter, 15 of 15; CI 42137709782 on dde8d58d3 green (workspace 2303 of 2303, sim, shuttle, clippy scripts, guest, guest-sim); macOS FXDAX_TEST_PARTS=workspace scripts/test.sh at 752515020, 2118 of 2118; scripts/upstream-changes.py --check at 752515020 passes. AC #1 and #2: wal's tests pass in r691: logs_wholly_landed_are_the_branchs, logs_landed_under_a_later_checkpoint_are_the_branchs, logs_partly_landed_go_on_after_the_fence, logs_landed_past_a_gap_are_stamped_again, logs_none_landed_are_stamped_again_whole, logs_another_writer_moved_on_from_diverge, logs_only_a_fence_came_after_go_on, empty_logs_go_on_from_the_branchs_end, segments_of_forks_alone_after_the_last_commit_are_taken_as_landed, acknowledged_segments_leave_the_log. AC #3 and #4: the simulation (profiles wals and forked_wals, the test_needs of wal_follows and wal_after_fence) passes in CI 42137709782's sim job on dde8d58d3, as in the release rule tests and soak recorded above.
+
+Decision moved here from OPEN_QUESTIONS.md on 2026-11-06, as written there; the file keeps a line on it, pointing here, until the user confirms or overturns it.
+
+**A host's WAL is placed by the guest's last commit through each segment; a fork's segment alone after the branch's last commit is taken as landed (TASK-165.5, 2026-11-05)**
+
+`extent_remote::Wal::rebase` puts a host's log after the branch's end by commits, as doc-14 and specs/bucket have it (`wal_follows`, `wal_after_fence`). Decided where they left it open:
+- **A segment making no commit, a fork's alone, is placed by the commit before it**, and of the places the branch's last commit matches the last is taken as landed. If the fork's segment didn't land, the fork, never acknowledged, is lost, as a fork whose host lost its disk is; the other way it would be made twice. *Instead:* look the fork's child up in the fenced state's forks (a checkpoint drops forks whose children were deleted, so a landed fork reads as not and is made again); or give every fork a commit of its own (a change to what a fork is, for steps 7 to 9 to decide). *Undoing it:* the `rposition` in `Wal::rebase`.
+- **The log's base after a rebase is the branch's last commit after the fence**, whichever commit decided how far it landed: what its segments stamped again follow, and what the guest goes on from.
+- **The simulation drops a diverged log at once and its writer goes on**, as `fxdaxctl take` would and as the spec does; fxdax maps `Error::Diverged` to `ESTALE`, though nothing returns it there before TASK-165.9.
+- **A session's open batch, the store's open segment, goes into the host's log when the session ends**, closed on its writer's chain, as reopening the store closes it (doc-14, step 3); with `Profile::restarts` (the `wals` profiles only) a host that crashes keeping its disk takes its branches back at once, as extentd does at boot, which puts the dead writer's creates between the new one's recovery and fence. Without it `wal_after_fence`'s first seed was 848, 70 s.
+- **The simulation checks each live branch's history since its newest checkpoint**: every commit applied after its parent (the spec's `HistoriesOwn`). Before, a commit applied twice left the branch's contents as they were and nothing saw it; `wal_after_fence`'s seeds find it so.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

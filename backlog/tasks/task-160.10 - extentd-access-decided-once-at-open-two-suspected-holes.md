@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-03 13:08'
-updated_date: '2026-11-03 17:37'
+updated_date: '2026-11-06 06:56'
 labels:
   - structure
 dependencies: []
@@ -56,6 +56,14 @@ Validation: macOS scripts/test.sh: clippy rules pass; workspace 2040 passed, 8 l
 GCE rerun after the resize split (94 tests: fxdaxctl, grants, control, tenants, bases binaries and every resize/capacity/point test): all passed. Host deleted.
 
 Rebased onto main past TASK-153.15 (seals): its ask_to_seal used is_follower() and arena_id() an Option, both folded into the commits that changed them (access().role, ArenaId). Each commit checked to compile on Linux. Rebased tree: GCE -p fxdax 2228/2228; guest fxfs-guest-host-seal, -migrate-tenant-dax, -snapshot-dax, -shared-volumes-dax OK; macOS -p fxdax 299/299. Seen once, not this change's: guest/tests' own script_run::tests::clones_do_as_the_model_says failed on 'umount: target is busy' (exit 32), passing on the next host and the earlier run: an intermittent race in the harness's test.
+
+Decision moved here from OPEN_QUESTIONS.md on 2026-11-06, as written there; the file keeps a line on it, pointing here, until the user confirms or overturns it.
+
+**What a store may be asked to do is the store's, fixed as it opens (TASK-160.10, 2026-11-03)**
+
+Two holes were real: ResizeStore grew a point (the daemon opened it without its remote, which alone says it is one), and a failed listing of a store's public markers opened a public base private and writable. Decided: `ExtentStore::access()` (`StoreAccess`: writer, follower or point, and public) is fixed once the store is open and attached, and its methods check it: what changes what it holds (write, free, commit, map writably, clean, take over) needs a writer's store that isn't public (`EROFS` for a follower or point, `EPERM` for a public base); a resize needs a writer's, public or not, as no fork shares a capacity, but a point's forks take its; forking, making public and attaching a base, which change no extent, need any but a follower's, so a point may still be made public or have a base attached. A public base now refuses writes at the store too, not only a VM's open of it. Resizing a closed store attaches its remote, as every other daemon open does, so it takes the branch's lease (`ESTALE` if a later placement holds it). EROFS maps to FAILED_PRECONDITION. A marker listing that fails fails the open with `EIO`, logged. The default tenant is a real `Tenant`, nameless and unregistered for limits, with a policy of its own (roots, names branches, follows public bases).
+**Instead:** keep each caller's checks and fix the two holes alone; or record point-ness locally, which would be a second copy of what the bucket's record says.
+**Undoing it:** `StoreAccess::may_write` lets public bases through; `stores::resize` back to `open_without_profile`.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-03 13:08'
-updated_date: '2026-11-03 19:43'
+updated_date: '2026-11-06 06:56'
 labels:
   - structure
 dependencies: []
@@ -54,6 +54,14 @@ Blind spot: errnos tested only for a handful of variants, on each side apart; th
 Validation: scripts/test.sh on macOS passes on the rebased tree (2059 workspace tests, Shuttle, follower, scripts). GCE, before the rebase: fxfs-guest, fxfs-guest-checks, fxfs-guest-checks-dax and xfstests-fxfs-guest pass (fxdax-test-t16021-errno); fxfs-guest-shared-volumes and -dax pass with the garbage manifest's EINVAL (errno2). After the rebase: the workspace passes on Linux, 2230 tests (errno3), and the guest kernel builds with fxfs-linux. The guest cases did not run there: main's new guest/tests self-test script_run::tests::clones_do_as_the_model_says failed first with 'umount: target is busy' on the host's loop mount (TASK-160.27's, nothing of this change's). The rerun (errno4) hung when gcloud's auth expired (OPEN_QUESTIONS.md). Put the bug back and saw it red: Displaced back to EIO fails each_uploader_failure_has_its_errno; dax_map_write returning Inconsistent again fails a_dax_write_sealed_on_every_try_gives_up_with_the_seal. The rebase brought extent_remote::Error::Format (TASK-141.2), which Failure::errno's exhaustive match refused to compile without: ENOTSUP. scripts/upstream-changes.py --check passes.
 
 A second rebase onto main (TASK-160.14's record kinds, TASK-160.10's store access) conflicted only in remote.rs's Failure::Other sites and OPEN_QUESTIONS.md; scripts/test.sh passes on it on macOS (2068 workspace tests; one run's extent_remote free_bytes_are_the_free_blocks_size missed by disk activity, passing alone and in the rerun). No Linux run of that tree: gcloud's login expired (OPEN_QUESTIONS.md).
+
+Decision moved here from OPEN_QUESTIONS.md on 2026-11-06, as written there; the file keeps a line on it, pointing here, until the user confirms or overturns it.
+
+**Corruption is EUCLEAN and EBADMSG, not EIO; one errno table for both VFSs (TASK-160.21, 160.12, 2026-11-03)**
+
+Fxfs raises `Inconsistent` and `IntegrityError` on purpose now (TASK-153.11, 153.13), and both VFSs said EIO for them. Decided, in the one table both now call (`fxfs_posix::errno`): `Inconsistent` is `EUCLEAN` and `IntegrityError` `EBADMSG`, ext4's and XFS's `EFSCORRUPTED` and `EFSBADCRC`, logged. No caller depends on EIO for them: fs/fxfs's C compares Fxfs's errnos only with ENOENT, ENOSPC, ENODATA, EXDEV, EBUSY, ESTALE and the like, and no guest or host test expects EIO of a corrupt image. The rest of the table, where the two had drifted or said EIO: `AlreadyBound` EBUSY, `OutOfRange` and `InvalidVersion` EINVAL (ext4's mount of features it lacks), `NoKey` ENOKEY and `InconsistentEncryptionPolicy` EXDEV (fscrypt's). An error is classified by its outermost Errno, else its outermost FxfsError, context first; Fxfs's `matches` (root cause) agrees but for an FxfsError added as context. What only looked like corruption no longer says it: a manifest that doesn't parse or names no base is `InvalidArgs` (EINVAL; the guest's garbage-manifest check said EIO, and says EINVAL now), changes after a failed batch of unlinks fail with EIO, and a DAX write giving up on seals gives the seal's error (EIO). On the host, the uploader's failures keep `extent_remote::Error` (`Failure::Remote`) and map in one place (`Failure::errno`): `Displaced` is EROFS, as `Fenced` is, where it was EIO; a branch of a newer format (`Format`, TASK-141.2) ENOTSUP, until the host is upgraded; object storage's `Lost` and `Corrupt` stay EIO, doc-4's table having no other status for a store failing to read.
+**Instead:** EIO for all corruption, as before (callers can't tell a bad disk from bad metadata); `EFSCORRUPTED` on the device's wire too (doc-4 would need a status).
+**Undoing it:** the two rows in `crates/fxfs-posix/src/errno.rs` (`of_fxfs`) and their test rows.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

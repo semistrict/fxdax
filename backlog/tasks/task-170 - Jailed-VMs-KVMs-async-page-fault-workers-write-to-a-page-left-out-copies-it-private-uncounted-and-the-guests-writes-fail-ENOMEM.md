@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-05 07:05'
-updated_date: '2026-11-05 10:18'
+updated_date: '2026-11-06 06:56'
 labels:
   - bug
   - dax
@@ -59,6 +59,12 @@ Decision recorded in OPEN_QUESTIONS.md: ENOMEM from PRIVATE stays an EIO in the 
 Verified. GCE r593, the fix, jailed under the production seccomp filter: pgbench-dax-forked passed all five 60 s runs (647-771 tps), fault-stores=2, no ENOMEM (r582/r591/r592 jailed without it: about 22,000, failing). checks-dax passed. The Linux workspace's dax:: tests (25), including the real-uffd worker_writes_copy_nothing_and_the_guests_stores_copy, and every Shuttle suite passed (fxdax's 59, the new left-out cases among them). r594, the fix, not jailed: both suites passed, fault-stores=16. macOS scripts/test.sh workspace+shuttle: 2,068/2,068 and every Shuttle suite. scripts/upstream-changes.py --check passes. Not run: the full Linux workspace (only dax:: on GCE); the change is confined to dax/uffd.rs, Linux-only, all of whose tests ran.
 
 GCE r584 on main c919610e7: Linux workspace 2249/2249; CI 41994971122; guest suites since: r583, r585 (jailed) pass.
+
+Decision moved here from OPEN_QUESTIONS.md on 2026-11-06, as written there; the file keeps a line on it, pointing here, until the user confirms or overturns it.
+
+**A PRIVATE refused with ENOMEM stays an EIO, not a wait (TASK-170, 2026-11-05)**
+
+GCE r582's pgbench saw `making 2 pages ... private: -12`, then EIO. doc-13 says the guest keeps under `private_max` and sends `PRIVATE` only within it, so ENOMEM there means the guest's and host's counts differ. That is a bug, here a KVM worker's write the host copied without being asked (TASK-170), and was fixed on the host. The guest still fails the write with EIO rather than throttling. *Instead:* throttle on ENOMEM as on its own budget. That would hide the next divergence as a stall that never gets room back. *Undoing it:* one branch in `fxfs_dax_dirty`'s failure path.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

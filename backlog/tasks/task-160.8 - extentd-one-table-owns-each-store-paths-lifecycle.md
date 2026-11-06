@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-03 13:08'
-updated_date: '2026-11-05 10:17'
+updated_date: '2026-11-06 06:56'
 labels:
   - structure
 dependencies: []
@@ -70,6 +70,14 @@ Review fixes (2026-11-05), each committed separately on task-160-8:
 - Tests: macOS workspace+shuttle EXIT=0 (2059/2059, fxdax shuttle 32/32). Linux in Docker: clippy disallowed_methods clean, shuttle 55/55. nextest -p fxdax: 453/462. Seven failures are environment-only (eu-stack x3, grants ENOENT x3, build stamp). Two are TASK-157's load flakes: guests_forks_failing_at_each_step_harm_nothing, and windows_share_bases_pages, which passed alone 5/5 and lives in extents.rs, which this branch doesn't change.
 
 GCE r584 on main c919610e7: Linux workspace 2249/2249 and every other part pass; macOS 2068/2068 + Shuttle on the landed stack; CI 41994971122; scripts/upstream-changes.py --check passes. Guest suites through extentd on main since: r583, r585, r593 jailed, all pass (r582's two failures were TASK-170/171, not this).
+
+Decision moved here from OPEN_QUESTIONS.md on 2026-11-06, as written there; the file keeps a line on it, pointing here, until the user confirms or overturns it.
+
+**A follower holds no entry in extentd's store table (TASK-160.8, 2026-11-04)**
+
+The task proposed every hold of a store as a value released on drop. Decided: a connection writing a store, and the daemon working on one, hold it so (`store_table::Hold`); a follower holds nothing in the table. The store connections have open is in the table as a weak reference, there while anything has it: its writer, its followers (through their `ExtentStore::following`), and the forks reading through to it as a base (`ExtentStore::open_bases`, in extents.rs), which a count of followers in the table wouldn't see. The table forgets it once nothing has it. As before, a store whose last follower drops it is closing as the table finds it gone, and a writer may open it then: its files' lock orders the two (`EBUSY` once it waited), not the table.
+**Instead:** a follower's hold counted in the entry, kept beside its store in the connection's phase, and one for each fork reading through to a base, which reaches into extents.rs.
+**Undoing it:** `Phase::Following` takes a hold, `Open::Followed` counts them, and its release forgets the store once the count is 0.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

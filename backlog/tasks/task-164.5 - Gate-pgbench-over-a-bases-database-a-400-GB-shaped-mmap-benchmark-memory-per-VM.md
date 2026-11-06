@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-04 07:58'
-updated_date: '2026-11-05 18:59'
+updated_date: '2026-11-06 06:56'
 labels: []
 dependencies: []
 parent_task_id: TASK-164
@@ -45,6 +45,12 @@ Cases and thresholds are in scripts/perf-gate-gce.sh and pgbench-gate.py (docs/m
 2026-11-05: GCE r632 (us-east4-a, nested, jailed under the production seccomp filter, TASK-172's budget) ran the gate to completion, each phase its own command (perf-gate-gce.sh PHASE..., 57bb570a1): single 2 h, of which 35 min fetching 11 GB of results (8 GB the pmem case's image), density 30 min. Recorded in docs/measurements/dax-cow-gate.md; thresholds set from it (13b11142a), none provisional now. The gate fails forked-dax (0.573, unjailed on the same host 0.570) and dax-density's decay (0.883).
 
 Bug found: fxfs-guest-pgbench-density's three VMs, running at once since this task's density change, booted from one root image, which each VM's boot made anew (mkfs.ext4) under those running on it: ext4 checksum failures, PostgreSQL stopped (first density attempt). Fixed in b902ece56: each pgbench VM its own image; density then passed. Blind spot: the density case never ran to completion before r632 (r580 was cut); the harness lets VMs a test runs at once share Vm's default image name. Look around: five other cases (daemon_lost, follow, follow_remount, follow_torture, fs_bench) name images per VM by hand; this is the sixth time. Structure: Vm::spawn_api should default to an image named after its VM, making the class impossible; not changed here because fxfs-guest-snapshot's migration bundles 'rootfs.ext4' by name (needs that suite run). Not done: dropping the pmem case's 8 GB image from the results (written, compiled, backed out untested when gcloud's credentials expired).
+
+Decision moved here from OPEN_QUESTIONS.md on 2026-11-06, as written there; the file keeps a line on it, pointing here, until the user confirms or overturns it.
+
+**The perf gate's thresholds: doc-13's for tps, r632's for the rest (TASK-164.5, 2026-11-05)**
+
+Set from the first complete run, GCE r632: `density-memory` 0.9 and `density-memory-mib` 2560 (measured 0.862, 2,361), `bigmap-read` 4.0 (5.76), `bigmap-written-memory` 1.5 (1.29), `bigmap-guest-cache` 0.05 (0.0); `dax` 0.95 and `forked-dax` 0.9 stay doc-13's expectations, so the gate fails on `forked-dax` (0.573) until TASK-164.6 closes the gap. *Instead:* `forked-dax` from the measurement too, which would pass a 43% loss doc-13 says shouldn't be; or the density gates at 0.8 and 768 MiB, which DAX is far from (it saves 14% a VM). *Undoing it:* DEFAULTS in scripts/pgbench-gate.py.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

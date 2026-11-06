@@ -6,7 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-11-05 03:16'
-updated_date: '2026-11-06 03:55'
+updated_date: '2026-11-06 06:56'
 labels: []
 dependencies:
   - TASK-165.3
@@ -64,4 +64,20 @@ Runs at 42e484d75 (with TASK-165.8): see TASK-165.8's notes. GCE suites still to
 Rebased onto main 752515020 (land-l landed): 8fa81ef66 (Data::Remote), bb8c0f4e2 and 42db93a24 (TASK-165.7), b447c610b (TASK-165.8); hashes above are before the rebase. At b447c610b: macOS FXDAX_TEST_PARTS="workspace shuttle sim" scripts/test.sh --no-fail-fast green (workspace 2027/2027, sim 47/47, shuttle 38+6+6+32+10+18); Linux extent_store+extent_remote+fxdax 834/840, failing only eu-stack (3) and grants ENOENT (3).
 
 GCE r701 (68b5f2a02): fxfs-guest-import failed, ENOTSUP: it forks a base imported offline, whose ExtentStore had no uploader. Fixed in ced9a66bb: ExtentStore::kept_in_bucket attaches an uploader to the store's described bucket before a fork or point where none is attached (followers excepted); host_store::fork still refuses a store with no uploader (forks_with_no_uploader_make_nothing). New tests: stores_made_of_images_fork_where_no_daemon_is (red with r701's error, then green), images_imported_where_no_daemon_is_fork_there (fxdaxctl import then fork, file bucket), stores_with_no_uploader_attach_one_to_fork (replaces stores_with_no_uploader_fork_nothing). Offline forkers checked: fxdaxctl fork/point (attach already), Storage::clone_to (images attached), daemon stores (attached at opening). Found meanwhile: a memory:// bucket loses what it acknowledged once its process exits (README and OPEN_QUESTIONS say so). Runs at ced9a66bb: macOS extent_store+extent_remote+fxdax 659/659; Linux 837/843, failing only eu-stack (3), grants ENOENT (3). r701's import case to rerun on GCE.
+
+Decision moved here from OPEN_QUESTIONS.md on 2026-11-06, as written there; the file keeps a line on it, pointing here, until the user confirms or overturns it.
+
+**Forks, points and deletion are the bucket's alone; a child's store is made, and takes its state, once the bucket has its record (TASK-165.7, 2026-11-05)**
+
+A store's directory holds its branch alone. A fork is the parent's commit naming the child (`Store::commit_fork`), whose acknowledgement gives the child its record; a fork of a point, `branch::fork_point`; only then is the child's directory made, a store of its own (`host_store::fork`). Decided where doc-14 left it open:
+- **The child's store takes the child's state at the fork** (`remote::take_branch`: every extent adopted at its location in the bucket, the capacity, the spent IDs, the root, the marker naming the fork's commit), so that it opens anywhere, attached or not, and reads what it inherited from the bucket or the host's cache. A fork costs a recovery (the checkpoint the writer just wrote) and a commit of every extent's place: O(extents), where the local lineage's was constant. Sharing the parent's state in memory (AC #1's last clause) needs the index gone, which is TASK-165.9's. *Instead:* an empty child that takes its state when first attached, which an unattached open would find empty. *Undoing it:* `make_child`'s `take_branch`.
+- **What a fork whose host dies, or whose cleanup fails, leaves in the bucket stands**: an orphan, a live branch no store holds, as doc-14's "the fork stands" has it. `fxdax-gc --branches` lists it and `--delete-branch` deletes it (`forks_orphaned_by_a_lost_host_keep_what_they_inherited_until_deleted`); fork_faults and restore_faults check that only the fork's child is ever one, and only of a fork that failed. Before, the fork's handle named the child, and deleting the handle finished it (TASK-79.78). *Instead:* a file in the fork's directory naming the child and its owner until the fork is made or deleted: a claim, which doc-14 removed. *Undoing it:* that file, written before the fork's commit, which `host_store::delete` would read.
+- **A fork needs its store's uploader**: a store with none forks nothing (`ENOTSUP`).
+- **A failed fork is deleted in the bucket by what its uploader knows**: the origin of the fork's segment, once the uploader took it (`Shared::forks`), else as a branch of its own (`Kind::Own`), so that a segment landing late finds it deleted. In memory alone: a host crashing loses it, and the fork stands.
+- **What fxdax keeps beside a store goes into its fork's directory at the fork** (`extents::inherit`): what is attached to it, the branches marked public, and `ancestry`, the branch and directory of each store it was forked from, nearest first, which `ExtentStore::ancestry` and the boot profile (in the base's directory, as before) read. A store made public after its forks were made is not public in them; before, the directory they shared made it so for every fork opened after. *Instead:* each fork reading its parents' directories, which outlive nothing now.
+- **An image's own file bucket is beside its directory**, `<image>.bucket`, which its clones' descriptions name, and which nothing removes: it holds the clones' branches once the image is deleted. The in-process collector runs for a `file:` bucket whose path ends `.bucket`. *Undoing it:* `OWN_BUCKET`.
+- **fxdaxctl's local commands keep a store's branch in the bucket its description names**, not `FXDAX_EXTENTD_REMOTE`'s, which they still require, with the token, to change an existing store.
+- **A directory with no description is no store** (`host_store::unmade`): what a store's making, or a fork's, left. Deleting it removes it; a restore over it removes it first. It replaces the failed fork's handle (TASK-79.84).
+
+TASK-186 (claim_origin's unordered read-then-write) is moot: no claim file is written. TASK-184's fix (each durable write beside a store a file of its own, `write_new`) stays for markers and fences.
 <!-- SECTION:NOTES:END -->

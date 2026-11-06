@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-03 13:08'
-updated_date: '2026-11-03 16:13'
+updated_date: '2026-11-06 06:56'
 labels:
   - structure
 dependencies: []
@@ -54,6 +54,14 @@ Claims re-checked on main after the format bump (3415eb074): the flags were an u
 Suspected bug: real until TASK-153.9. record_fork used to accept any existing record of an equal origin; since the bump it accepts only a record naming the fork's owner, which is random per fork. forks_and_forks_of_points_at_one_segment_take_no_records_of_each_other passes on main and is red with records_owned off: there both forks take the one record, and the loser's cleanup deletes the winner's branch. The class test makers_of_one_id_take_nothing_of_each_others covers every maker of a record against every other maker of another owner. Structure: the class is now one query (Record::is_child_of) behind one transition.
 
 Evidence: extent_remote suite 158/158, with every test_needs!/test_holds! profile; SIM_SOAK=25 of restores (points_restored_on_many_hosts_at_once) and forks_and_frees, 5,000 seeds each, pass; scripts/test.sh on macOS passes (2,057 workspace tests, Shuttle suites, scripts' tests); GCE fxdax-test-t16014-records (us-east1-b, deleted): workspace 2,228 passed, plus the Shuttle suites, and guest cases fxfs-guest-live-fork, -snapshot, -snapshot-dax, -snapshot-volumes, -snapshot-volumes-dax, -migrate-dax, -migrate-tenant-dax, 7/7; scripts/upstream-changes.py --check passes.
+
+Decision moved here from OPEN_QUESTIONS.md on 2026-11-06, as written there; the file keeps a line on it, pointing here, until the user confirms or overturns it.
+
+**A branch record's flags stay on the wire; it is decoded once into a kind (TASK-160.14, 2026-11-03)**
+
+A record's six flags (origin, forked, deleted, point, forking, claimed) were read as flags in four modules. Decided: they stay the bytes in the bucket, unchanged (FORMAT 1), and are decoded once into `record::Record { format, owner, kind, deleted }`, with `Kind` one of Root, Own, Fork, Point, Forking, Claim. Any other combination is refused as corrupt (52 of the 64). What a record allows is a query on it (`writable`, `is_child_of`, `may_drop`, `branch::lost_is_ok`), and every create or update of a record or a lease goes through one compare-and-swap loop, `branch::transition`. `branch::ForkedAt` is gone: `delete_fork` takes the `Kind` its child's record is or would be, and fxdax's claim holds that kind once its fork's segment goes. The suspected bug (a direct fork and a fork of a point at one segment, given one child ID, taking each other's records) was real until TASK-153.9's owners; a test now shows both that it no longer happens and that it does with `records_owned` off.
+**Instead:** put the enum itself on the wire (serde's tag), so that no illegal record can be written at all; but decoding already refuses them, and the flags are what doc-7 describes.
+**Undoing it:** fold `record.rs` back into `layout.rs` with public flags; nothing on the wire changes either way.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

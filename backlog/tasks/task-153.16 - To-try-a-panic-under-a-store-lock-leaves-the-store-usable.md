@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-02 01:59'
-updated_date: '2026-11-03 08:57'
+updated_date: '2026-11-06 06:56'
 labels: []
 dependencies: []
 parent_task_id: TASK-153
@@ -48,6 +48,14 @@ TESTS: fence::tests (3); extents::tests::a_panic_holding_a_lock_fences_the_store
 LOOKED AROUND: what's left is filed as TASK-149.24: the process-wide extent cache lock (a panic there poisons every tenant, so fencing one store can't help), Window::state shared with the connection's DaxWindow, the SecondStage's end_change/end_deferring run from Drop guards, followers sharing the writer's extent_store::Store (one panic each before they're fenced), and extent_store's own locks, left alone to stay clear of TASK-158.
 STRUCTURE: this is the structural fix TASK-150.20's notes asked for: the class (a std Mutex's poison turning one panic into a dead store) can no longer happen for a store's own locks, because the lock type has no way to lock without the fence.
 RESULTS: macOS scripts/test.sh exit 0 (2,014 of 2,014 workspace, Shuttle and scripts suites). GCE workspace (fxdax-test-t15316-ws2, us-west1-a): 2,175 of 2,175, the Shuttle suites too. upstream-changes.py --check passes. All hosts deleted.
+
+Decision moved here from OPEN_QUESTIONS.md on 2026-11-06, as written there; the file keeps a line on it, pointing here, until the user confirms or overturns it.
+
+**A panic through a store fences it: fail-stop, usable again once reopened (TASK-153.16, 2026-11-03)**
+
+A panic holding a store's lock poisoned it, and every later request of its guest panicked too (TASK-104, 105, 150.20; in `extent_store`, 79.1 and 79.80). Decided: the store is fenced. Every request after the panic fails with `EIO` without panicking, the guest's filesystem stops, and so does its VM. When the connection ends, the store is closed like a writer that left writes uncommitted: it is retired and its followers are cut off. The next open sees it as of its last commit, as after a crash. `crate::fence`: each `ExtentStore` lock can only be taken through the store's fence, and a guard dropped during a panic sets it. The daemon also fences a store when a request, flush or clean of it panics below the locks.
+**Instead:** (1) recover the lock's state: nothing proves it consistent across the store's 7 locks and the layers beneath them, even though the three instances happened to panic before changing anything. (2) Fence and reopen in place under the running guest: its filesystem holds the open extents a reopen would lose, and no protocol tells a writer's guest to remount, the way `ESTALE` tells a follower. (3) Turn poison into `EIO` lock by lock: a store whose `open` lock is poisoned would still map from its unpoisoned `dax` lock what the panic left half done.
+**Undoing it:** for (1), `StoreMutex::lock` takes `PoisonError::into_inner` and stops checking the fence. The daemon's fencing is in `serve_in_turn`, `Answer::drop` and `flush_behind`.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-05 06:37'
-updated_date: '2026-11-06 02:22'
+updated_date: '2026-11-06 06:56'
 labels:
   - guest-sim
 dependencies: []
@@ -78,6 +78,15 @@ Rebased on main 10f6159ab (TASK-160.24's moves, TASK-160.32's one mutant set):
 After the rebase: cargo nextest run -p fxfs -p fxfs-posix -p fxfs-sim-diff: 842 passed, 2 skipped. crates/fxfs-sim-diff/mutants.sh: task-149.29-tail-moved-though-zero and task-164.4-model-seal-forgets-late killed by fxfs-sim-diff the_models_past_drifts_from_fxfs (12 s each); the two 149.14.2 (Kernel: sim) found too. scripts/upstream-changes.py --check passes. macOS FXDAX_TEST_PARTS='workspace scripts' scripts/test.sh --no-fail-fast: 2135 passed (1 leaky: fxfs super_block::tests::test_mount_with_a_journal_that_starts_anywhere), 18 skipped; 160 python tests OK; mutants --check 17, 4 and 38 checked, 0 broken.
 
 Verified on main, 2026-11-05 (code of dde8d58d3; 752515020 adds backlog only): GCE r691, the Linux workspace, 2302 of 2303, the one failure TASK-187's a_store_after_a_workers_write_waits_for_one_lift (TASK-190; its fix 788e3b6b4 is on land-p, not main); GCE r690, the e2e suite (--tag e2e, 15 cases) jailed with the production seccomp filter, 15 of 15; CI 42137709782 on dde8d58d3 green (workspace 2303 of 2303, sim, shuttle, clippy scripts, guest, guest-sim); macOS FXDAX_TEST_PARTS=workspace scripts/test.sh at 752515020, 2118 of 2118; scripts/upstream-changes.py --check at 752515020 passes. AC #3: fxfs-sim-diff's the_models_past_drifts_from_fxfs and the_sims_model_does_as_fxfs_does pass in CI 42137709782's workspace job (2303 of 2303), and crates/fxfs-sim-diff/mutants.sh --check (4 checked, 0 broken) in its scripts job; both pass in r691 too, with fxfs-posix's a_writeback_paid_with_dirty_room_has_room_for_the_tail_its_growth_zeroes.
+
+Decision moved here from OPEN_QUESTIONS.md on 2026-11-06, as written there; the file keeps a line on it, pointing here, until the user confirms or overturns it.
+
+**guest/sim's model of Fxfs is checked against Fxfs by a Rust test that builds the model's C (TASK-149.29, 2026-11-05)**
+
+`crates/fxfs-sim-diff`: its build script compiles `guest/sim/fxfs/fxfs.c` as it is, with `cc`, over a shim of guest/sim's kernel of its own (`shim/`: libc memory, locks that never wait and fail the run if taken held, and kernel/device.c's extent store: lengths, seals, frees, no write to a sealed extent), and a proptest runs sequences of fxfs.h's calls on it and on fxfs-posix's `Fxfs` over a `FakeDevice`, comparing each file after each: size, bytes, every block whole through the extents, holes, sharing, and no extent open in Fxfs that the model says sealed. Operations run at the model's own `sim_point`s, as its locks allow, for the seal drift (seed 32826). It is a workspace crate, so CI's workspace part runs it on Linux and macOS, 64 sequences in about 15 seconds. Decided:
+- **The model's C, compiled into a Rust test, not a C driver of fxfs-posix.** fxfs-posix is async Rust with no C ABI outside the guest's fxfs-linux, which needs the kernel's runtime; the model is 840 lines of C needing a dozen kernel calls. *Instead:* a C ABI for fxfs-posix on the host (guest/sim/README.md's "Linking the real Fxfs"), more work, and a C harness without proptest's shrinking. *Undoing it:* delete the crate.
+- **A shim of its own, not guest/sim's**, which needs a kernel tree and Linux, so would run only in the guest-sim job. What it copies of kernel/device.c is the store's 60 lines; a drift there shows as a model that fails here alone. *Instead:* split kernel/device.c's store into a file both build. *Undoing it:* that split.
+- **Mutants of the model are guest/mutants', a kind of their own** where nothing of guest/sim's kills them: `Kernel: model`, `Killer: fxfs-sim-diff TEST`, a test of the crate's (`scripts/guest-mutants-gce.py --check` checks it names one). guest/sim's `mutants.sh` runs `Kernel: sim` alone, as before; `crates/fxfs-sim-diff/mutants.sh` runs every mutant that changes the model, and fails if one of `Kernel: model` lives; its `--check`, in scripts/test.sh's scripts part, that each applies. *Instead:* `Kernel: sim` and `Killer: none` with a comment, which says nothing kills them, and nothing would run them. *Undoing it:* the kind's two lines in guest-mutants-gce.py and the README's.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

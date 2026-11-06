@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-01 23:09'
-updated_date: '2026-11-03 12:30'
+updated_date: '2026-11-06 06:56'
 labels: []
 dependencies: []
 parent_task_id: TASK-153
@@ -80,6 +80,14 @@ Decided yes: Root gains journal_end, how far the journal was valid when a barrie
 - macOS scripts/test.sh at f6df179e5's rebase: 2,043 of 2,043, Shuttle suites, scripts' 135; after the rebase on 457d500b0, fxfs, fxfs-posix, storage_device and fxdax: 1,153 of 1,153. upstream-changes.py --check passes.
 - GCE fxdax-test-t153j-journal-end4 (guest kernel built from the source): workspace 2,208 of 2,208 and the Shuttle suites; Firecracker's vmm extent tests 14 of 14; guest cases 13 of 14, every crash case (crash, crash-dax, crash-dax-killed, crash-stray-dax) and checks, pgbench, docker among them. extent-guest failed: the driver selftest's new WRITE_ROOT step left its own root, which the test reads (the test working). The selftest puts its root back now, the test counts its extent; GCE fxdax-test-t153j-journal-end5: extent-guest passes. Every t153j host deleted.
 - Linux-only code (extentd, Firecracker) type-checked from macOS with zig cc for x86_64-linux-gnu after the first GCE run found two compile errors there.
+
+Decision moved here from OPEN_QUESTIONS.md on 2026-11-06, as written there; the file keeps a line on it, pointing here, until the user confirms or overturns it.
+
+**The journal's end is in the root, set by each sync's barrier (TASK-153.13)**
+
+A flip mid-journal read as its end, losing synced transactions unsaid. Decided: the root records how far the journal was written when a barrier set it (`Root::journal_end`), and a replay ending before there is refused as corrupt; past it, a torn tail is still a torn tail. A sync's barrier sets it: its journal write's `WRITE_COMMIT` carries the root (`WRITE_ROOT`, new on the wire), or its flush becomes a commit of the root. Cost: no request more; the root's ~50 bytes in the sync's request and the host's commit record; barriers setting roots take turns (they did at the device already). A synced write whose data the journal's checksums find damaged now refuses the mount, where it rolled the file back.
+**Instead:** a durable marker only on `sync`/`syncfs` (fsyncs unprotected), or an extra `COMMIT` per fsync (a round trip each), or no marker, leaving it to the host's CRCs, which bugs in ordering get past.
+**Undoing it:** drop the replay check; the root's field and `WRITE_ROOT` can stay unused.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

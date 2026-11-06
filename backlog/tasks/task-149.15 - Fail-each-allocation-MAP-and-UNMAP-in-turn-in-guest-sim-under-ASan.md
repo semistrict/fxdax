@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-01 16:53'
-updated_date: '2026-11-06 04:51'
+updated_date: '2026-11-06 06:56'
 labels: []
 dependencies: []
 parent_task_id: TASK-149
@@ -57,6 +57,16 @@ Findings in dax.c, each fixed with a scenario and a mutant, each mutant red:
 The sim's own: a failed mount went on; struct files and the model's extent refs leaked; ended tasks' stacks were kept until a run ended (GBs, OOM-killed); a sync's s_wb_err told twice; scenarios' unbounded waits for holds (sim_await now); cow_store_to_pinned_slice unpinned NULL. Five writeback mutants rewritten against fix 1 and 2, all still killed.
 
 Verified at 98e260378 (dax.c at 814b0ccc2): guest/sim/mutants.sh --check 37/0 broken, scripts/guest-mutants-gce.py --check 43/0; zloop.sh -s 3000: 0 of 6,000 seeded runs failed, every run of one passed (7m52 at -j14); sweep.sh: 36 runs, 13,680 calls each failed in turn, 0 failed (234 s at -j14); mutants.sh: every sim mutant killed but the six whose killer is none; crates/fxfs-sim-diff tests and its mutants.sh as before; macOS workspace (scripts/test.sh workspace) 2118/2118; GCE r700 (us-central1-b, jailed, seccomp real, guest kernel built on the host): fxfs-guest-dax, -checks-dax, -crash-dax, -pgbench-dax-forked pass, no unexplained refusals, host deleted; scripts/upstream-changes.py --check passes. Linux workspace not run (no Rust changed).
+
+Decision moved here from OPEN_QUESTIONS.md on 2026-11-06, as written there; the file keeps a line on it, pointing here, until the user confirms or overturns it.
+
+**guest/sim's sweep and file model: what a run may do once something failed (TASK-149.15, TASK-149.18, 2026-11-06)**
+
+- **TASK-149.18 is guest/sim's, as asked**: its invariants (every waiter woken, every acknowledged write durable, every object a file names held by the device) are guest/sim's; extent_remote's, which the task first named, are TASK-149.32 with its old criteria. *Undoing it:* move the criteria back.
+- **Once the sweep's call has failed, a test's expectations are void and the run goes on** (`sim_expect`), to the invariants and the end of the run (`sim_end`), rather than ending at the first one: what comes after a failure is where its bugs show. A run still going 300 s of virtual time after, every task asleep, at a pause point or a hold its test can't let go of, ends there, void. *Instead:* end every run at its first void expectation, which would skip the end's sync and unmount. *Undoing it:* `sim_unexpected` panicking.
+- **A writeback that fails loses what changed since the file was last durable, at once, as far as the file model knows**: copying on write, its pages are clean and private, and a rebind, a drop or a truncate shows what Fxfs holds whenever it comes, as the page cache's clean pages after a failed writeback may be dropped. The error is told by the next fsync and the next syncfs (`s_wb_err`, which the sim now keeps). A file whose writeback failed isn't compared, read(2) against Fxfs, at the end. *Instead:* have dax.c keep a failed writeback's pages dirty, so nothing is lost before an fsync tells, which no kernel filesystem does. *Undoing it:* `lost()` at the fsync's error alone.
+- **Every guest/sim run checks for leaks as it exits** (LeakSanitizer, `sim_prepare`), the sim freeing its own; zloop's seeds too. *Undoing it:* `detect_leaks=0` in lib.sh.
+- **A sweep's allocations are wider than `tests/failures`' odds**: fs/fxfs's, fs/dax.c's, and the XArrays' and pool's they use; the odds stay fs/fxfs's alone, so seeds run as they did. And the model of Fxfs fails a clone part way, a seal and a lookup, which only the sweep asks for.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

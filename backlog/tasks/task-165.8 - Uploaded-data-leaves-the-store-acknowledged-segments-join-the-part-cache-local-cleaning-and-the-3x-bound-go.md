@@ -6,7 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-11-05 03:16'
-updated_date: '2026-11-06 02:23'
+updated_date: '2026-11-06 06:56'
 labels: []
 dependencies:
   - TASK-165.4
@@ -51,4 +51,16 @@ Tests rewritten: rewrites_past_the_capacity_count_as_used, freed_space_is_dead_s
 Runs at 42e484d75: macOS FXDAX_TEST_PARTS="workspace shuttle sim" scripts/test.sh --no-fail-fast all green (workspace 2024/2024, sim 47/47, shuttle 38/38 + 6 + 6 + 32 + 10 + 18); SIM_SOAK=100 sim::everything passed (243 s); Linux (OrbStack rust:1) extent_store+extent_remote+fxdax 829/835, failing only eu-stack (3) and grants ENOENT (3). GCE not run (no credentials): forks, snapshots, volumes, migration and live fork guest suites must run there before landing.
 
 Rebased onto main 752515020 (land-l landed): 8fa81ef66 (Data::Remote), bb8c0f4e2 and 42db93a24 (TASK-165.7), b447c610b (TASK-165.8); hashes above are before the rebase. At b447c610b: macOS FXDAX_TEST_PARTS="workspace shuttle sim" scripts/test.sh --no-fail-fast green (workspace 2027/2027, sim 47/47, shuttle 38+6+6+32+10+18); Linux extent_store+extent_remote+fxdax 834/840, failing only eu-stack (3) and grants ENOENT (3).
+
+Decision moved here from OPEN_QUESTIONS.md on 2026-11-06, as written there; the file keeps a line on it, pointing here, until the user confirms or overturns it.
+
+**Acknowledged segments leave the store, recorded in its index; nothing cleans a store but the bucket's collector (TASK-165.8, 2026-11-05)**
+
+Once the uploader's writer acknowledges a segment (`Store::acknowledged`), its sealed extents, and those stored on their own its footer names, held or kept, are `Data::Remote` at their places in the bucket, and their files leave the store: renamed into the host's cache (`Cache::adopt`) if the uploader has one, else removed; the segment's once no write is in progress in it. `Store::clean`, `clean_behind`, `cleaning_due`, `cleaning_changes`, the bound of three times the capacity on the branch's files, `Usage::dead_bytes`, extentd's cleaning behind commits (`CLEANINGS`) and images' cleaning after commits are gone. Decided where doc-14 left it open:
+- **The acknowledgement is a record of the index** (`Record::Acknowledged { segment, key, own }`), written after the commits durable so far, which it makes durable first, so that the store opened again holds those extents in the bucket, not in files it removed. Local format 7 (TASK-165.7's) gains the record; no store of format 7 predates it. TASK-165.9 removes the index, and with it this record. *Instead:* leaving the files until the next checkpoint covers the change, which keeps a segment's worth more on disk per commit. *Undoing it:* `Record::Acknowledged`.
+- **A store with no uploader keeps everything**: unattached, nothing is acknowledged and nothing leaves; what its segments hold that no extent is in stays until no extent is in them. Every store has a bucket (TASK-165.6) and fxdax attaches an uploader to each it opens, so only extent_store's own tests and fxdaxctl's offline commands run so. *Instead:* local cleaning kept for unattached stores, a second cleaner doc-14 removes.
+- **A follower whose view's extent the collector reclaimed is cut off** (`ESTALE`): the fetch finds it `Lost`, which for a writer stays `EIO`. A follower reads what the host's cache holds of it until then, whatever the collector did.
+- **A store forked where no daemon serves it attaches an uploader to the bucket its description names** (`ExtentStore::kept_in_bucket`, as an image's is attached to its own): fxfs-guest-import forks a base it imported offline, which had none, and the fork failed (`ENOTSUP`, GCE r701). The rule stands where the fork is made (`host_store::fork` refuses a store with no uploader, `forks_with_no_uploader_make_nothing`); its callers attach one first. fxdaxctl's local `fork` attached one already. *Instead:* the guest case attaching it itself, which every other offline forker would have to remember.
+- **An in-memory bucket (`memory:///`) is its process's**: what it acknowledged has left the store, and is gone once the process exits. Tests across processes, and development across a daemon's restarts, use a file bucket (README, Multi-node only); handover's and fxdaxctl's import-then-fork tests do. *Instead:* keeping acknowledged data locally for memory buckets, a second behaviour for test buckets alone.
+- **Local disk's bound is the uploader's lag bound, the open segment's room and the cache's capacity**, shown at the store's level (`acknowledged_segments_leave_a_churning_guests_files`, a guest freeing all but two blocks a segment as it goes: no file left after each acknowledgement), not under a guest VM, which GCE runs.
 <!-- SECTION:NOTES:END -->

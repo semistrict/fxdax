@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-01 22:53'
-updated_date: '2026-11-03 14:16'
+updated_date: '2026-11-06 06:56'
 labels: []
 dependencies: []
 parent_task_id: TASK-153
@@ -61,6 +61,14 @@ Rebased onto main (752be3c27): the framing commit is 30b3bc3e2 (was 1477b7222 ab
 Rebased tree (on 752be3c27), macOS: workspace 2053 (2045 passed before an external SIGTERM ended the run; the 8 it cut short, plus the restore_faults suite, 11/11 alone), Shuttle 61, 7, 6, 21, 10, 18, scripts 135 OK.
 
 On main as a38829973 (a second rebase; 30b3bc3e2 and 1477b7222 above are that commit before it). Rebased again over TASK-153.15: clippy clean, fxdax 297/297 on macOS.
+
+Decision moved here from OPEN_QUESTIONS.md on 2026-11-06, as written there; the file keeps a line on it, pointing here, until the user confirms or overturns it.
+
+**A segment's framing ends itself (TASK-153.8, 2026-11-03)**
+
+Five bugs came from a framing being ended by whatever came next: a commit's flush, a flush with nothing to commit, `close_now`, closing the branch, or a fork (TASK-41.1, 79.69, 79.99, 92.16, 150.2). Decided: every framing now runs on its own thread, makes its file durable, and finishes itself under the store's state lock. Everything else only waits for it: a commit's flush waits for the segment that commit closed, the uploader for segments whose commits are durable, `close_now` for its own, and forks and closing the branch for all of them. A side effect: the raw file of a segment a commit closed now goes at the first flush or close after both its framing and its commits are durable, not with that commit's own flush.
+**Instead:** keep handing each framing to whatever comes after it, as before.
+**Undoing it:** revert a38829973.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

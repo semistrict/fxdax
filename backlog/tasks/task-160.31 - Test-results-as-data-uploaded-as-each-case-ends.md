@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-03 13:09'
-updated_date: '2026-11-06 02:22'
+updated_date: '2026-11-06 06:56'
 labels:
   - structure
 dependencies: []
@@ -57,6 +57,17 @@ Structure: fine; the seam between runner and scripts is now the outcome file, no
 Verified: Docker test.sh parts (clippy, scripts 159, test_cases 63+60, runner 4). GCE r605: three cases, each CASE/round-1.json (outcome, took/limit, commit, knobs with FXDAX_SEED for the checks cases, replay), summary.json status 0; guest tests exit 0. r606 (FXDAX_RESULTS_BUCKET, us-east1-b): host deleted after its first case landed; the last two finished within seconds first, so the driver found the host gone before fetching and got all three cases, logs and summary back from the bucket (status 0). r607: my wait timed out and deleted the host before any case ended; the bucket's run.json and summary (both cases unrun) came back. r608: FXDAX_E2E_ROUNDS=2, host deleted once checks-dax's round 1 landed: fetched checks-dax/round-1.json and round-1.log, summary 'stopped after round 1 of 2, which passed', fxfs-guest-dax not run, 'the run did not finish'; test-gce.sh exit 1 (AC #2). Outcomes say commit fc58056f1-dirty: the backlog notes I edited while the source was pushed. The bucket prefix used (gs://echophase-fxdax-bench/results-t1629) is deleted. Unrun: a failing case on GCE (failed_checks and a fate of killed are covered by unit tests only), the dax gate, the soak and the mutants script against real hosts.
 
 Verified on main, 2026-11-05 (code of dde8d58d3; 752515020 adds backlog only): GCE r691, the Linux workspace, 2302 of 2303, the one failure TASK-187's a_store_after_a_workers_write_waits_for_one_lift (TASK-190; its fix 788e3b6b4 is on land-p, not main); GCE r690, the e2e suite (--tag e2e, 15 cases) jailed with the production seccomp filter, 15 of 15; CI 42137709782 on dde8d58d3 green (workspace 2303 of 2303, sim, shuttle, clippy scripts, guest, guest-sim); macOS FXDAX_TEST_PARTS=workspace scripts/test.sh at 752515020, 2118 of 2118; scripts/upstream-changes.py --check at 752515020 passes. AC #1: r690 wrote e2e/CASE/round-1.json for each of its 15 cases (outcome, failed checks, knobs, commit, replay) and summary.json; scripts/guest-mutants-gce.py's fate(status, summary, killer) reads them; test_guest_results.py and the fate tests pass in CI's scripts part. AC #2: r608's host deleted mid-run kept checks-dax/round-1.json from the bucket, as recorded above; test_a_host_lost_mid_run_keeps_its_finished_cases passes in CI.
+
+Decision moved here from OPEN_QUESTIONS.md on 2026-11-06, as written there; the file keeps a line on it, pointing here, until the user confirms or overturns it.
+
+**Guest test results as data: names, knobs, replay, bucket (TASK-160.31, 2026-11-05)**
+
+Each round's outcome is `CASE/round-K.json` (the runner's `test --outcome`), not `outcome.json`, so that a soak's passing rounds keep theirs beside `round-K.log` once their directories go; the run's `run.json` (commit, knobs, rounds, cases) and `summary.json` sit beside the cases (`scripts/guest_results.py`). Decided where the task left it open:
+- **Knobs** are every `FXDAX_*` and `PJDFSTEST_*` test-e2e.sh is given, but those saying where it writes (`FXDAX_E2E_RESULTS`, `FXDAX_BENCH_RESULTS`, `FXDAX_COVERAGE`, `FXDAX_RESULTS_BUCKET`) and a kernel the host built (`FXDAX_GUEST_KERNEL` beside `FXDAX_GUEST_KERNEL_BUILD`); a case's own is `FXDAX_SEED`, from the `seed` file the checks and script cases already leave in their directory. **Replay** is `FXDAX_WORKSPACE_TESTS=0 FXDAX_E2E_TEST=CASE <knobs> scripts/test-gce.sh all`. *Instead:* each case declaring its knobs through `TestSetup` (touches every case, test_fxfs_guest_checks.rs among them, which TASK-160.30 is rewriting).
+- **Failed checks** are read from the checks guest's `FAILED: a, b` line (and an overrun's `FAILED: a, still …`). TASK-160.30 must keep that line, or give the runner the names another way.
+- **A mutant's fate:** killed if the summary has a case failed or timed out; a run failing otherwise (DAX refusals alone among them, as before) is BROKEN.
+- **Uploads:** `FXDAX_RESULTS_BUCKET` (new; also gives the host the storage scope) gets `run.json`, `summary.json`, `cases/CASE.tar.gz` after each round and `logs.tar.gz` at the end, under the run's prefix; test-gce.sh fetches them when the host gave back no summary. An upload that fails says so in e2e.log and the run goes on. The nightly sets it to `$FXDAX_NIGHTLY_BUCKET/results`.
+**Undoing it:** the formats are guest_results.py's and the runner's `outcome_json`; nothing else writes them.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

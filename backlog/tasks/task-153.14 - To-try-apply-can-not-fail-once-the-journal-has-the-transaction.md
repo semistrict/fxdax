@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-01 23:09'
-updated_date: '2026-11-03 12:30'
+updated_date: '2026-11-06 06:56'
 labels: []
 dependencies: []
 parent_task_id: TASK-153
@@ -52,6 +52,14 @@ Both buy going on writing on metadata already known wrong. No code change, so no
 Structure: the root cause is that apply can fail at all, which only a trust boundary at read (TASK-153.12) removes for corrupt images: a check of each record as it is read means memory never holds what apply would refuse.
 
 Verified: test_transaction_that_cannot_be_applied_stops_the_journal passes on macOS and GCE (in the suites above, TASK-153.13); no code changed.
+
+Decision moved here from OPEN_QUESTIONS.md on 2026-11-06, as written there; the file keeps a line on it, pointing here, until the user confirms or overturns it.
+
+**A transaction that fails to apply still stops the journal (TASK-153.14)**
+
+A live transaction whose apply fails (a corrupt image's allocator, or a bug) stops the journal: writes fail, reads go on, a remount replays without it. Decided to keep that: it is ext4's errors=remount-ro, and the failure means memory contradicts itself, which writing on would spread. Making apply unable to fail needs a dry run of every mutation against state the transaction's own earlier mutations change, or undo for each kind: a second apply to keep in step, to go on writing on metadata known to be wrong.
+**Instead:** check-then-apply under the writer's lock, failing only the transaction.
+**Undoing it:** nothing to undo; that is new work.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

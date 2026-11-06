@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-05 03:16'
-updated_date: '2026-11-06 02:21'
+updated_date: '2026-11-06 06:56'
 labels: []
 dependencies: []
 documentation:
@@ -66,6 +66,14 @@ Overlap with TASK-165.3: none in code (cache.rs, fetch.rs's cache calls and the 
 Runs (on ea319562e): macOS FXDAX_TEST_PARTS="workspace shuttle" scripts/test.sh --no-fail-fast: workspace 2082/2082, every Shuttle part passed. Linux in Docker (OrbStack, rust:1, arm64): cargo nextest run -p extent_remote -p fxdax: 636/644; the 8 failures are the environment's: eu-stack missing (stacks_name_where_threads_wait, both *_writes_its_stacks_on_sigquit), grants ENOENT (3), the build stamp, and seccomp's copy_on_write_windows_run_under_firecrackers_seccomp_filters, run against vendor/firecracker as this worktree has it checked out (a2db2b3b0, main's) rather than the d53645971 land-157 names. extent_remote whole on macOS on the refactor commit: 169/169. scripts/upstream-changes.py --check passes. Not done: GCE (DoD #1).
 
 Verified on main, 2026-11-05 (code of dde8d58d3; 752515020 adds backlog only): GCE r691, the Linux workspace, 2302 of 2303, the one failure TASK-187's a_store_after_a_workers_write_waits_for_one_lift (TASK-190; its fix 788e3b6b4 is on land-p, not main); GCE r690, the e2e suite (--tag e2e, 15 cases) jailed with the production seccomp filter, 15 of 15; CI 42137709782 on dde8d58d3 green (workspace 2303 of 2303, sim, shuttle, clippy scripts, guest, guest-sim); macOS FXDAX_TEST_PARTS=workspace scripts/test.sh at 752515020, 2118 of 2118; scripts/upstream-changes.py --check at 752515020 passes. AC #1: fetch's reads_after_a_restart_take_what_the_cache_kept and parts_torn_before_a_restart_are_fetched_again, cache's keeps_what_an_earlier_one_kept and crashes_at_each_change_leave_nothing_read_back_wrong pass in r691 (Linux, where filesystems_find_holes_but_apfs also passes). AC #2: adopts_whole_objects and adoptions_replace_what_is_kept pass in r691. AC #3: capacity_and_floor_hold_across_restarts and adoptions_past_the_capacity_or_the_floor_are_refused pass in r691.
+
+Decision moved here from OPEN_QUESTIONS.md on 2026-11-06, as written there; the file keeps a line on it, pointing here, until the user confirms or overturns it.
+
+**The part cache's index is rebuilt from its files, which describe themselves (TASK-165.4, 2026-11-05)**
+
+The cache is kept across restarts (doc-14). Decided: no index file. Each object's file holds its tail, which says where its parts are; a part is kept only with its tail, and the tail goes with its object's last part (it is read after them, and spared while a part is being written). `Cache::open` locks the directory (`flock`, one cache at a time), walks it, and keeps each file whose tail, at its end, passes its CRCs; its parts kept are those whose range is all data by `SEEK_DATA`/`SEEK_HOLE` (an evicted part is a punched hole), those shorter than a block (which no punch frees) checked against their CRCs there, and all of them on a filesystem that doesn't find a punched file's holes (APFS reports what a resize left as data once a hole is punched: a probe at open). Files of no object, links and empty directories go. Least recently used order after a restart is the files' modification times. Then it evicts to the capacity and the floor. Every read checks: `Cache::tail` against the tail's CRCs, `Cache::part` against the CRC the tail gives, dropping what fails, so a torn or lost write reads as not kept and is refetched (`cache::tests::crashes_at_each_change_leave_nothing_read_back_wrong` cuts every change at each point). `Cache::adopt` renames a whole framed object in; it returns false and leaves the file where it was if it can't fit.
+**Instead:** a durable index (a log of puts and evictions, synced), a second record of what the files already say, which a crash could leave disagreeing with them; or checking every part's CRC at start, reading the whole cache.
+**Undoing it:** `Cache::open`'s walk (`Files::walk`, `found`) is the one place; an index file would replace it.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

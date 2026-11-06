@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-03 13:08'
-updated_date: '2026-11-05 10:18'
+updated_date: '2026-11-06 06:56'
 labels:
   - structure
 dependencies:
@@ -56,6 +56,14 @@ Verified: kernel builds (arm64, Docker debian:trixie, scripts/build-guest-kernel
 GCE r571 (FXDAX_FIRECRACKER_SECCOMP=log, us-west1-b, us-west1-a full): fxfs-guest-dax, fxfs-guest-checks-dax, fxfs-guest-crash-dax and xfstests-fxfs-guest-dax all passed; the log filter logged pread64 alone (TASK-169).
 
 GCE r584 on main c919610e7: Linux workspace 2249/2249; CI 41994971122; guest suites since: r583, r585 (jailed) pass.
+
+Decision moved here from OPEN_QUESTIONS.md on 2026-11-06, as written there; the file keeps a line on it, pointing here, until the user confirms or overturns it.
+
+**What holds a file's data is an operations table of its inode's; fsync stays super.c's (TASK-160.2, 2026-11-04)**
+
+data.c drives resize, punch and clone for both kinds of regular file, over `struct fxfs_data_ops`, which each inode points to as it points to its i_fop and a_ops: the page cache's set as the inode is allocated (super.c), the window's as fxfs_dax_set_inode makes it a DAX inode. So guest/sim links data.c with dax.c alone, no page-cache code. fsync isn't data.c's: its data half is one call, `fxfs_dax_write_back`, and the rest the VFS's metadata syncs, which guest/sim would have to fake more of than it would test. The model of Fxfs fails only growths, not cuts, as Fxfs's cut borrows the room it needs.
+**Instead:** `IS_DAX(inode) ? &dax : &cache` in data.c, which would have guest/sim link a stub of the page cache's table; fsync in data.c, with the VFS's metadata syncs faked.
+**Undoing it:** fold `fxfs_data_ops` back into `IS_DAX` branches in super.c, and guest/sim's mount.c's copies back.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

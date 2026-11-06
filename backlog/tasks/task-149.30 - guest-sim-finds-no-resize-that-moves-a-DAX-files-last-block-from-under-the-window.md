@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-05 15:01'
-updated_date: '2026-11-05 22:31'
+updated_date: '2026-11-06 06:56'
 labels:
   - testing
 dependencies: []
@@ -52,6 +52,13 @@ Why: FXFS_SET_KEEP_TAIL affects Fxfs only on a cut (fxfs-posix lib.rs:1696, 'if 
 Written in the mutant's header (Killer: none, with the reason). Decision recorded in OPEN_QUESTIONS.md # Decisions.
 
 Verified: guest/sim mutants.sh --check (34 checked, 0 broken); zloop.sh -s 3000 passed; the full sim mutant run (fate none, as its header says; every other sim mutant killed); scripts/guest-mutants-gce.py --check (38, 0 broken); FXDAX_TEST_PARTS=scripts scripts/test.sh passed; scripts/upstream-changes.py --check passed. DoD 1 not run: no Rust changed, and GCE is unavailable (gcloud sign-in).
+
+Decision moved here from OPEN_QUESTIONS.md on 2026-11-06, as written there; the file keeps a line on it, pointing here, until the user confirms or overturns it.
+
+**Two mutants without killers since copy-on-write DAX: one equivalent, one killed in guest/sim (TASK-149.30, TASK-149.31, 2026-11-05)**
+
+- **`task-150.9-resize-moves-the-last-block` is equivalent copying on write**, and TASK-149.30 is closed with no killer, against its criteria, which asked for one. The flag it drops (`FXFS_SET_KEEP_TAIL`) changes only a cut to within a block, and `fxfs_dax_resize_begin` makes the last page private (zeroing past the new end through the window) before Fxfs cuts: nothing reads the moved block's old place through the window after. If a writeback and rebind come between, the block holds zeros past the end already, which Fxfs's `txn_zero_tail` leaves where it is. The mutant's header says so. *Instead:* a scenario that passes either way, which would kill nothing. *Undoing it:* reopen TASK-149.30 with a schedule this reasoning misses.
+- **`task-79.49-store-fails-on-pins` is killed in guest/sim, not by a guest check** as TASK-149.31's criteria asked (GCE is out until the sign-in above). guest/sim now pins a page as `get_user_pages` does, a reference to the page (`sim_pin_user_page`), which `fs/dax.c`'s busy-page checks already see; `cow_store_to_pinned_slice` is the removed guest check `slice_held`'s steps, and the mutant says `Kernel: sim`. What the sim can't show is GUP's own races (its fast walk, a pin taken as a mapping goes). *Instead:* a check in fxfs-guest-checks-dax, unrunnable now and minutes a round. *Undoing it:* the mutant back to `Kernel: release` with a guest check named as killer; the pin can stay.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

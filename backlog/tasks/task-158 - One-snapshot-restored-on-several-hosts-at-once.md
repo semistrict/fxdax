@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-02 02:53'
-updated_date: '2026-11-03 08:50'
+updated_date: '2026-11-06 06:56'
 labels: []
 dependencies: []
 priority: high
@@ -109,6 +109,14 @@ Verified:
 - The simulation: points_restored_on_many_hosts_at_once at SIM_SOAK=100 (20,000 seeds, release): no violation. Each of its rules turned off is found: points_need_refuse_writers, restores_need_points_read_after_their_records, restores_need_records_saying_they_are_being_made, collection_needs_abandoning_restores, collection_needs_records_listed_after_states.
 - scripts/upstream-changes.py --check: passes.
 - An earlier GCE run (fxdax-test-t158-wip) staged a tree mid-edit and didn't compile: no evidence either way, deleted. fxdax-test-r510 no longer existed.
+
+Decision moved here from OPEN_QUESTIONS.md on 2026-11-06, as written there; the file keeps a line on it, pointing here, until the user confirms or overturns it.
+
+**Bases fork on several hosts at once too, as points (TASK-158, 2026-11-03)**
+
+A snapshot's point now restores on any number of hosts at once. A fork of anything else, such as a base from `ImportImage`, is a commit on its branch, made by its writer, one host at a time. Decided: `ForkStoreRequest.point` (and `fxdaxctl point SRC DST`) makes a point of any store, once nothing is open, and each host forks a copy of it (`CreateStore` of its branch), as a snapshot's restores do. The base stays writable on its host; what it writes after needs a new point to reach forks. A point of a point is refused (`INVALID_ARGUMENT`). `docs/integrator-guide.md` says how.
+**Instead:** bases fork on one host at a time, and the guide says so.
+**Undoing it:** drop the field and `ExtentStore::point`'s use from `stores::fork`; nothing else depends on it.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

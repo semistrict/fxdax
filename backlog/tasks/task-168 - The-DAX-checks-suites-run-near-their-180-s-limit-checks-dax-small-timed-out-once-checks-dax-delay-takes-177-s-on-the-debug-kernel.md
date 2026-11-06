@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-04 09:18'
-updated_date: '2026-11-05 10:17'
+updated_date: '2026-11-06 06:56'
 labels: []
 dependencies: []
 priority: medium
@@ -58,6 +58,14 @@ Tests: guest/tests' unit tests in Lima: host half 60/60, guest half 57/57 as roo
 Structure: the class of bug, a suite outrunning one limit that named no check, is gone: a limit per check, the one table owning order, suites and budgets, which host and guest can't disagree on. Left of TASK-160.30: checks still share PID 1, a crash takes the rest.
 
 GCE r584 on main c919610e7: Linux workspace 2249/2249 and every other part pass; macOS 2068/2068 + Shuttle on the landed stack; CI 41994971122; scripts/upstream-changes.py --check passes. r564 (release) and r565 (debug), real filter: every checks suite at 16-21% of its limit; r583 on the landed stack: checks 61/291 s, -dax 73/373, -delay 73/373, -small 74/368, overrun 4/30. r565's one failure was KCSAN's lru_add name, reviewed in a4c7cdf06.
+
+Decision moved here from OPEN_QUESTIONS.md on 2026-11-06, as written there; the file keeps a line on it, pointing here, until the user confirms or overturns it.
+
+**A budget per guest check, its suite's limit their sum (TASK-168, 2026-11-05)**
+
+The checks suites ran under one fixed 180 s limit each, near it at times. Decided: each check has a budget in one table the host and guest share (`test_fxfs_guest_checks.rs`'s `checks!`): twice the most it took on the release kernel on GCE n2-standard-4 (r560's page cache, r563's DAX), at least 3 s. A check still running past its budget makes the guest dump its stacks, say `FAILED: <check>, still running after its budget of …` and reset the VM; the suite's limit is its checks' budgets plus 30 s, a backstop for a guest too stuck to. Budgets scale by the kernel's kind (`common::guest_kernel_slowness`: debug 1.5, measured at 1.37 at most; rust-checks and coverage 1.5, and KASAN 4, guessed), by 2 for object storage, and by `FXDAX_CHECKS_SCALE`. At this, the suites run at 16-21% of their limits (r564 release, r565 debug).
+**Instead:** suites split into more VMs, each under the old 180 s (a split that drifts as checks are added, naming no slow check); a check failing over its budget only once it ends (a hang still waits for the suite's limit).
+**Undoing it:** the budgets are numbers in the table; a check failing on its budget too often has its number raised, or `FXDAX_CHECKS_SCALE` set for a slower host.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

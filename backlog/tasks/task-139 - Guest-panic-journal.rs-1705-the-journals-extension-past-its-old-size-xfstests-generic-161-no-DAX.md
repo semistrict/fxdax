@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-10-31 16:32'
-updated_date: '2026-11-03 08:53'
+updated_date: '2026-11-06 06:56'
 labels:
   - bug
 dependencies: []
@@ -48,6 +48,14 @@ GCE r342, xfstests-fxfs-guest, generic/161, in writeback: 'fxfs: panicked at cra
 
 2026-11-03 (verification): the fixes on main (d7a6d46a4, e9482bc21, b963ed64a) hold: GCE 2026-11-03 at 33f235911 and again at 155c06bb0, xfstests generic/161 (and 164, 165) passed on xfstests-fxfs-guest and -dax.
 Structure: the journal's own transaction (make_room) is sized by constants (MAX_EXTENDED_PER_COMMIT, MAX_ZEROED_PER_COMMIT, CHUNK_SIZE > TRANSACTION_MAX_JOURNAL_USAGE) and pre_commit keeps room_for(transaction) + 2 chunks; with the default chunk that holds. Only a smaller JournalOptions::chunk_size (tests alone) breaks it. Not restructured: the asserts that caught it no longer panic (11c1c9731, TASK-60): the journal stops, the commit fails (EIO in a guest), and replay ends before the transaction. test_own_transaction_past_the_journal_stops_it, a chunk of a block under a zeroing slice, panicked at the 'past its size' assert before, and passes now, its image passing fsck.
+
+Decision moved here from OPEN_QUESTIONS.md on 2026-11-06, as written there; the file keeps a line on it, pointing here, until the user confirms or overturns it.
+
+**The journal's own transaction past its file stops the journal, not the kernel (TASK-60, TASK-139)**
+
+`make_room`'s asserts, that the journal's transaction extending its file fits within the old size and a chunk, now stop the journal (`Inner::terminate`) and fail the commit: the guest gets EIO and stays mounted, and replay ends before that transaction. With the default chunk the sizing holds, so the transaction wasn't rebuilt to fit the room it has.
+**Instead:** size the own transaction to the room left, which would keep the filesystem writable even then.
+**Undoing it:** restore the two `assert!`s in `Journal::make_room`.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

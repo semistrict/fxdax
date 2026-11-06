@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-03 13:09'
-updated_date: '2026-11-06 02:22'
+updated_date: '2026-11-06 06:56'
 labels:
   - structure
 dependencies: []
@@ -60,6 +60,14 @@ GCE (n2-standard-4, jailed Firecracker): r610 release, us-east4-a, 38691000f: al
 Structure: the class of bug, one check's crash or hang taking the rest and state leaking between checks, is gone: a check's process owns what it maps and opens, and one function owns resetting the rest.
 
 Verified on main, 2026-11-05 (code of dde8d58d3; 752515020 adds backlog only): GCE r691, the Linux workspace, 2302 of 2303, the one failure TASK-187's a_store_after_a_workers_write_waits_for_one_lift (TASK-190; its fix 788e3b6b4 is on land-p, not main); GCE r690, the e2e suite (--tag e2e, 15 cases) jailed with the production seccomp filter, 15 of 15; CI 42137709782 on dde8d58d3 green (workspace 2303 of 2303, sim, shuttle, clippy scripts, guest, guest-sim); macOS FXDAX_TEST_PARTS=workspace scripts/test.sh at 752515020, 2118 of 2118; scripts/upstream-changes.py --check at 752515020 passes. AC #1: GCE r690's fxfs-guest-checks-overrun (dde8d58d3, release, jailed) passed: its console has 'FAIL: crashes (3.94ms of 3.00s): killed by signal 7 (Bus error)', 'crashes: left fxfs.dax_fail_maps at 1000, set back to 0', 'FAIL: hangs (6.12s of 3.00s): still running after its budget: killed', 'hangs: left the filesystem frozen, thawed', 51 checks PASS after them and 'FAILED: crashes, hangs'. AC #2: unknown_names_fail and run_to's leftovers_are_killed and overruns_are_killed pass in CI 42137709782's guest job.
+
+Decision moved here from OPEN_QUESTIONS.md on 2026-11-06, as written there; the file keeps a line on it, pointing here, until the user confirms or overturns it.
+
+**Each guest check in a process of its own; the overrun suite runs the page cache's checks (TASK-160.30, 2026-11-05)**
+
+The guest agent (PID 1) ran every check of fxfs-guest-checks under catch_unwind, so a crash took the VM and the checks after it. Decided: the agent runs itself again per check (`FXDAX_CHECK` names it), in a process group of its own, to its budget; past it the guest's stacks are dumped and the group killed. Then, in one place (`guest::run::Guest::put_back`), it sets fxfs's writable module parameters back to what the guest booted with, thaws the filesystem and mounts it again if a check left it so, saying each, before waiting 10 s at most for the group; a group that outlives that resets the VM, as a hang did before. The host's verifies are now per check, in the table, and run for the checks FXDAX_CHECKS names too, where they ran only for a whole suite. fxfs-guest-checks-overrun now runs two checks made to fail (a SIGBUS, a write into a frozen filesystem) and then the whole page cache suite, about 60 s where it took 4 s, to show the rest pass after them.
+**Instead:** fork per check without exec (unsafe in a process with threads); the overrun suite with a few checks after the failing ones (cheaper, and shows less).
+**Undoing it:** `run_to` back to calling the body in-process; the overrun suite's `Suites::Failing` checks dropped.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

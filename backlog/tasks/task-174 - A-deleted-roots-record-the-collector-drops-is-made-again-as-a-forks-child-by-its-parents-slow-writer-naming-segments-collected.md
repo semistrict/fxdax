@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-05 07:38'
-updated_date: '2026-11-05 15:39'
+updated_date: '2026-11-06 06:56'
 labels: []
 dependencies: []
 priority: high
@@ -53,6 +53,12 @@ Simulation: a new action, usurp (a root takes a pending fork's child's ID and is
 Blind spot: the simulation's roots never took an ID a fork had named (contest only raced a fork whose segment never went), and no test had a writer pause between its lease read and its records. Class: usurp and the Gated bucket. Look around: TASK-177's restart on a parent's record found gone (recovery::unless_checkpointed) is reached now only if a record goes; its two tests run with records_kept off, so it stays covered. Other deletes of records: none; abandon_claim and abandon mark deleted, never remove. Structure: the record is the one owner of whether an ID is taken; never removing it makes the slow-writer race impossible for every kind, which is the fix.
 
 Verified 2026-11-05 at 10331f633 (collector-fixes). Simulation, release: every rule test (21, deletions_need_fences seed 4505, collection_needs_records_kept seed 1) and SIM_SOAK=100 of every holds test (20,000 seeds each, everything 30,000), 43/43 pass in 327 s. scripts/check-tla.sh, all specs and traces: exit 0; every bucket model holds (BucketForks 9,684,100 states 233 s, BucketPointsDeep 149 s), every mutation finds its violation (NoRecoveriesByOrigins 120 s, NoRecordsKept 5 s, NoDeletionsFence 2 s). macOS FXDAX_TEST_PARTS='workspace shuttle' scripts/test.sh --no-fail-fast: workspace 2112/2114, the two failures unrelated flakes under a load average of 53, each passing alone (fxdax fork_faults each_write_of_a_failed_forks_cleanup_going_wrong 7/7, filed TASK-184: claim.new shared by two writers; fxfs test_trim 3/3, filed TASK-185); shuttle part run alone, all pass. Linux (Docker, OrbStack, rust:1 arm64): cargo nextest run -p extent_remote -p extent_store 433/433 (572 s). scripts/upstream-changes.py --check: exit 0. Not run: GCE (scripts/test-gce.sh), so DoD #1 stays unchecked.
+
+Decision moved here from OPEN_QUESTIONS.md on 2026-11-06, as written there; the file keeps a line on it, pointing here, until the user confirms or overturns it.
+
+**The collector keeps every record, deleted roots' too (TASK-174, 2026-11-05)**
+
+A root that took the ID of a fork's child, and was deleted, lost its record to the collector; the fork's parent's writer, slow to record the fork, then made the child's record, naming the parent's segments the pass had reclaimed, and every pass after stopped. Decided: **`Rules::records_kept`**, no record goes, as deleted forks' children's already stayed (`Record::may_drop` is false). *Cost:* a record per branch ever made, small. *Instead:* drop a deleted root's record once no writer that could name its ID as a fork's child can still record, which needs a bound on how long a writer stalls, as doc-7 says of forks' records. TASK-177's restart, for a parent's record found gone, now guards only what would drop one; its tests run with the rule off. *Undoing it:* `Record::may_drop`'s rule.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

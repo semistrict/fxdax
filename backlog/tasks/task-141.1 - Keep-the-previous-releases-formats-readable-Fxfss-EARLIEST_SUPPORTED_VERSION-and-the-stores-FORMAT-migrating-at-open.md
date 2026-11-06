@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-10-31 20:30'
-updated_date: '2026-11-06 01:50'
+updated_date: '2026-11-06 06:56'
 labels: []
 dependencies: []
 parent_task_id: TASK-141
@@ -64,6 +64,13 @@ EARLIEST_SUPPORTED_VERSION is defined as LATEST_VERSION, so no bump can part the
 Tests: super_block.rs test_mount_of_the_previous_version_is_refused (super-block's version, journal checkpoint's, earliest_version = what layers of 60 make the journal record): InvalidVersion, message naming Version { major: 60, minor: 0 }, no device write or free, root unchanged; base.rs test_base_layers_of_older_versions_refused, test_base_manifests_refused (now also an earlier manifest version). All five red with EARLIEST_SUPPORTED_VERSION set back to 60 (mounted / opened). A layer test through a real store was tried: only stores needing a flush report versions to the journal, and that flush's compaction rewrites the empty older layer, so the earliest_version case writes the header.
 
 Runs: cargo nextest run -p fxfs -p fxfs-posix -p storage_device 890/890 (2 skipped); FXDAX_MODEL_CASES=1000 whatever_a_vfs_asks_reads_back_as_a_model_says passed (569 s; 1961 power cuts, 3518 replays); FXDAX_TEST_PARTS=workspace scripts/test.sh --no-fail-fast on macOS 2119/2119; scripts/test-linux.sh (Lima) workspace 2300/2304, the 4 failing in fxdax and failing on origin/main 752515020 too in the same Lima (5 there): builds_are_stamped_with_their_commit (Lima's copy has no git), copy_on_write_windows_run_under_firecrackers_seccomp_filters (worktree's vendor/firecracker checked out at a2db2b3, main pins e64c4b283), a_store_after_a_workers_write_waits_for_one_lift, windows_larger_than_the_map_count_read_whole (SIGKILL); scripts/upstream-changes.py --check passes. No GCE run.
+
+Decision moved here from OPEN_QUESTIONS.md on 2026-11-06, as written there; the file keeps a line on it, pointing here, until the user confirms or overturns it.
+
+**Fxfs refuses every version but its own; upstream's generic upgrade code stays, unreachable (TASK-141.1, 2026-11-05)**
+
+- **`EARLIEST_SUPPORTED_VERSION` is defined as `LATEST_VERSION`**, not set to 61, so that no bump can leave the two apart again. fxdax's own old-version code is deleted: `StoreInfoV52` and its migration to V61, `AllocatorInfoV59`/`V32` (dead since 60) and their test, the allocator's full compaction for older layers and its test, and base layers' exemption from upgrades (`earliest_writable_version`, `get_earliest_version_above`), whose test became one that a base layer of 60 is refused. *Instead:* also delete upstream's generic machinery for older versions (`FlushReason::UpgradeVersion` and the open-time upgrade, `OLD_KEY_SERIALIZATION_VERSION`'s and `AES_JOURNAL_ENCRYPTION_VERSION`'s readers, the bloom filter skip), all unreachable now; kept because it is upstream's, deleting it widens the diff `scripts/upstream-changes.py` syncs, and takes upstream's tests of it (`persistent_layer.rs`'s, `volume.rs`'s `test_flush_on_open_to_update_version`, which skips itself now). *Undoing it:* delete those, with their tests, in a commit of its own.
+- **A refusal is `FxfsError::InvalidVersion`**, its version named: the super-block's three checks (were plain messages, so EIO in the guest; now EINVAL, logged), a manifest of any version but the latest, a base's layer of any other at store open. A mount whose two super-blocks both fail keeps the first's error, with the second's as context, where it was a new message that lost both kinds. *Instead:* `Errno::ENOTSUP`, as `extent_store::Format` is on the host; kept EINVAL, the table's row for `InvalidVersion` since TASK-160.21. The host's `fxdax::Error::errno` still says nothing for Fxfs's `InvalidVersion` (it maps only `extent_store::Format`).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-01 23:09'
-updated_date: '2026-11-03 20:19'
+updated_date: '2026-11-06 06:56'
 labels: []
 dependencies: []
 parent_task_id: TASK-153
@@ -67,6 +67,14 @@ After the rebase onto 80c4bfdb3 (branch head 280425844): macOS scripts/test.sh, 
 On the final tree (rebased on 81e8869c5, extent_store only came in): fxfs and fxfs-posix nextest, 812 of 813 then 813 of 813; the one failure, the model test, unexplained and its output lost, is TASK-149.27. Not reproduced in 5,600 more sequences.
 
 Pushed at 704cdbead (rebased on 7dc85f28c, which brought the errno table: Inconsistent is EUCLEAN to the VFSs now): macOS scripts/test.sh 2,072 of 2,072, Shuttle suites and scripts' tests pass; upstream-changes.py --check passes.
+
+Decision moved here from OPEN_QUESTIONS.md on 2026-11-06, as written there; the file keeps a line on it, pointing here, until the user confirms or overturns it.
+
+**A layer's records cross one trust boundary, checked as they're read (TASK-153.12, 2026-11-03)**
+
+Layer records were trusted as read, then checked piecemeal where used. Decided: each item a layer file holds is checked as `take_item` reads it (`LayerKey::is_valid_item`), with the predicate the journal's mutations pass at replay (`ObjectValue::is_valid_for`, `ExtentValue::fits`; `AllocatorValue::is_valid_for` for the allocator's), and each key against the one before as an iterator advances (`follows`: after it, overlapping none). An item no layer may hold fails the read, a seek to it, fsck (`MalformedLayerFile`, also for keys out of order or overlapping, which fsck named on its own before) and the compaction meeting it. Cost, `layer_read_cost` on one GCE n2-standard-4 per comparison, three hosts agreeing to 1%: a scan 144.9 ns an item before, 157 with the item check (+8%), 165 with the order check too (+14%); seeks unchanged (1,050 to 1,200 ns either way). On an M-series Mac, under load, about +10%. Landed for both: without it, a record with checksums over its key, or keys overlapping, read back differently in 10 of 16 cases of `records_no_layer_may_hold_fail_what_reads_them`, with nothing saying so; the cost is on scans (compactions, fsck, a file's extents in turn), not on the seek every read starts with. Where the 12 ns of the item check go is unexplained: neither its two divisions (taken out, no change) nor, measured on arm64 only, the check alone (3 to 5 ns) account for it; moving the error paths out of line (`#[cold]`) wasn't measured, as gcloud's credentials expired. A seek still trusts order, as a binary search must: a key out of order may be missed by a point lookup, and only a scan finds it.
+**Instead:** (1) keep checking where records are used: piecemeal, and wrong data where no use checks; (2) drop the order check, saving 6%: merges then trust order unchecked; (3) a check function each tree gives its layers, as `merge_fn`: threads one through every layer's opening, where a default method on `LayerKey`, downcasting to the store's value type (`dyn Any`, resolved at compile time), needs nothing threaded.
+**Undoing it:** take the checks out of `take_item` and `take_next`; the predicates stay the journal's.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

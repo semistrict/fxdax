@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-03 13:09'
-updated_date: '2026-11-06 02:22'
+updated_date: '2026-11-06 06:56'
 labels:
   - structure
 dependencies: []
@@ -57,6 +57,14 @@ Runs (macOS): cargo nextest run -p fxfs -p fxfs-posix -p storage_device 887 of 8
 Other files still far from upstream, for a follow-up if wanted: allocator.rs +2744/-1201, journal.rs +1911/-313, persistent_layer.rs +823/-63, filesystem.rs +703/-588, object_store.rs +632/-351, super_block.rs +537/-83, reader.rs +537/-34.
 
 Verified on main, 2026-11-05 (code of dde8d58d3; 752515020 adds backlog only): GCE r691, the Linux workspace, 2302 of 2303, the one failure TASK-187's a_store_after_a_workers_write_waits_for_one_lift (TASK-190; its fix 788e3b6b4 is on land-p, not main); GCE r690, the e2e suite (--tag e2e, 15 cases) jailed with the production seccomp filter, 15 of 15; CI 42137709782 on dde8d58d3 green (workspace 2303 of 2303, sim, shuttle, clippy scripts, guest, guest-sim); macOS FXDAX_TEST_PARTS=workspace scripts/test.sh at 752515020, 2118 of 2118; scripts/upstream-changes.py --check at 752515020 passes. AC #1: data_object_handle/{dax,write_many,reflink,in_commits,tail,write_once,snapshot,testing}.rs and volume/{snapshot,base,lazy,testing}.rs on main; fxfs's 773 tests pass in r691, the same test set as before the move. AC #2: scripts/upstream-changes.py --check passes at 752515020; tail.rs keeps Fuchsia's header and citation.
+
+Decision moved here from OPEN_QUESTIONS.md on 2026-11-06, as written there; the file keeps a line on it, pointing here, until the user confirms or overturns it.
+
+**fxdax's additions to Fxfs's upstream files live in child modules, tests beside them (TASK-160.24, 2026-11-05)**
+
+data_object_handle.rs and volume.rs keep upstream's shape; fxdax's additions are child modules of them, impl blocks of their own (data_object_handle/{dax,write_many,reflink,in_commits,tail,write_once,snapshot}.rs, volume/{snapshot,base,lazy}.rs), each with its own tests. To reach upstream's test helpers, five of them became `pub(super)` (one line each), and the helpers fxdax's tests share went into `testing.rs` children. tail.rs keeps The Fuchsia Authors' header and cites upstream, as its zeroing is upstream's `grow`'s, moved; the rest are fxdax's own. Upstream diff: data_object_handle.rs +2276/-192 to +263/-178, volume.rs +1203/-146 to +47/-157.
+**Instead:** fxdax's tests in modules nested in upstream's `mod tests` (`data_object_handle/tests/*.rs`), which needs no `pub(super)` but puts tests apart from their code; or one `fxdax.rs` child per file.
+**Undoing it:** moving the impl blocks back; nothing outside the two files names the modules, as `ExtentAccess`, `FrozenPage` and `FAIL_COMMITS` are re-exported where they were.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

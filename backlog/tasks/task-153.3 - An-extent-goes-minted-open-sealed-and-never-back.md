@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-01 22:52'
-updated_date: '2026-11-03 02:21'
+updated_date: '2026-11-06 06:56'
 labels: []
 dependencies: []
 parent_task_id: TASK-153
@@ -94,6 +94,14 @@ RESULTS. sim: check.sh clean; zloop 3,000 at the mix 0 failed, 3,000 at 1,000 0 
 GCE, n2-standard-4: r477 (d559e9e78) checks-dax, -delay, -small, script-full-dax, xfstests OK; xfstests 16 of 650 failed, the known list, generic/129 passing now; write_times_add_up passes; no WARN, no unexplained refusals. r478 head (157417ad5) and r479 main side by side, pgbench-dax 4 rounds of 5 runs: 968 against 960 tps.
 
 2026-11-02: workspace at main passes on macOS (2,010 of 2,010, 1fc28f48c) and Linux (GCE r530, 2,169 of 2,169, Shuttle suites too).
+
+Decision moved here from OPEN_QUESTIONS.md on 2026-11-06, as written there; the file keeps a line on it, pointing here, until the user confirms or overturns it.
+
+**A device write to an extent not known to be open is taken, not refused (TASK-153.3)**
+
+The task's direction had such a write retry rather than reopen its extent. Decided: the store takes it, and nothing records the extent open, ever again: the open extents are those minted since the last seal (`OpenExtents`). Plain writers (multi_write, the journal, layer files) have no retry, where `SealedExtent` is EIO, and DAX's is dax.c's `gate != seals` already.
+**Instead:** refuse it in the guest's device, and give every writer a retry.
+**Undoing it:** a check in `write_with_opts`, and retries at each writer: `dead-ends/refusing-writes-to-extents-not-known-open.md` has why not.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

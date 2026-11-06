@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-01 23:09'
-updated_date: '2026-11-03 09:41'
+updated_date: '2026-11-06 06:56'
 labels: []
 dependencies: []
 parent_task_id: TASK-153
@@ -84,6 +84,26 @@ Every new test went red with the gap put back (raw parts read in place; `read_ob
 Found by reading `Source::locate`: raw parts were `Part::Data`, the same variant as raw files, so a framed file's raw part looked like bytes needing no check; every test of corruption used compressible data, or flipped bytes the fetcher checks (its raw parts are checked there). Structure: one variant now means unchecked bytes (raw files alone), and every framed part goes through `Packed::unpack`, the one place a CRC is checked on the local read path. The upload path read files with `read_whole`; `read_object` is what anything sending a file on as it is now uses. Searched for other `read_whole` users of extent data: segments.rs `close_left_open` checks the whole file (`extent_frame::data`); tests otherwise.
 
 Verification: macOS scripts/test.sh passes (workspace 2019/2019, Shuttle and the other suites all passing; clippy's rules). GCE (n2-standard-4, us-west1-a, scripts/test-gce.sh all fxdax-test-t15311-checksums): workspace 2178/2178, Shuttle suites passing, 14 of 14 guest cases OK; host deleted. Linux ran on GCE, as AGENTS.md has it, not Lima. scripts/upstream-changes.py --check passes; no upstream file changed, so no deviation to document. AC #1 left unchecked: the decision is that the guest reads no Fxfs checksums, so layer checksums aren't read.
+
+Decision moved here from OPEN_QUESTIONS.md on 2026-11-06, as written there; the file keeps a line on it, pointing here, until the user confirms or overturns it.
+
+**Corrupted file data: the host's checksums catch it (TASK-153.11)**
+
+A byte damaged in storage, by a bad disk or a bad upload, must make a read fail rather than return the wrong byte. Decided: rely on the host's CRC32C in `extent_frame`, confirm every host read path checks it, and close gaps there. The guest doesn't check.
+- Fxfs's own data checksums are read only at journal replay, as in Fuchsia's code, and DAX stores skip Fxfs's write path so have none.
+- Pages already in the DAX window are read straight from memory, so nothing can check them there.
+- Still uncovered: data on a host's disk before it's sealed, and pages already in memory.
+
+**Instead:** the guest checks too, costing reads on the fast path.
+**Undoing it:** adding guest checks later doesn't conflict with anything this does.
+
+Decision moved here from OPEN_QUESTIONS.md on 2026-11-06, as written there; the file keeps a line on it, pointing here, until the user confirms or overturns it.
+
+**A framed file's raw parts are read whole and checked, as compressed ones are (TASK-153.11)**
+
+A part zstd doesn't shrink is stored raw, and reads took its bytes in place, never checking its CRC: a flipped byte in an incompressible extent, local or a fork's base's, read back wrong, and cleaning and seals copied it under a CRC of its own. Decided: a raw part is read whole, checked, and kept with the parts unpacked lately, in the buffer it was read into. Measured (pagein-bench, M-series, 256 MiB, 3 pairs of runs): a raw part's page-in, which reads it whole anyway, +10-30 µs of CPU on about 185 µs; the CRC is 16 µs a MiB. A cleaning pass of 4 KiB raw extents (store-bench `cleaning`, in memory) 15 ms → 23-37 ms for 23 MiB, as each 4 KiB read reads its 1 MiB part. The uploader also checks every file it puts as it is (`read_object`): about 0.5 ms for a 32 MiB segment.
+**Instead:** a CRC per 4 KiB block in the table, a format change, so that small reads of raw parts read only their block.
+**Undoing it:** `Source::locate` back to `Part::Data` for raw parts of framed files.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

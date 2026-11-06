@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-03 13:09'
-updated_date: '2026-11-06 02:22'
+updated_date: '2026-11-06 06:56'
 labels:
   - structure
 dependencies: []
@@ -64,6 +64,14 @@ Structure: the bypasses were the class this removes: a method choosing its own t
 Runs (macOS): cargo nextest run -p fxfs -p fxfs-posix 821/821. Model hunts: FXDAX_MODEL_CASES=3000 passed (6402 cuts, 11582 of replays, 2335 s); with FXDAX_MODEL_WORKERS=1 passed (6242 cuts, 1272 s); FXDAX_MODEL_FAILURES=3000 passed (1645 requests failed, 838 operations failed, 10453 cuts, 1220 s); FXDAX_MODEL_CASES=3000 FXDAX_MODEL_FSCK=1 failed after 2015 s on a journal replay refused (journal finishes at 307150, written to 307200 before a barrier), deterministic, the same on origin/land-157: not this change, filed as TASK-182 with its sequence (passes without fsck after every transaction). mutants.sh: 16 of 17 caught, truncate-gives-up-on-its-tail not caught, as before; fsync- and rename-goes-ahead-of-unlinks re-made as edits of their rows, link-stays-in-graveyard re-made for its moved context. FXDAX_TEST_PARTS=workspace scripts/test.sh --no-fail-fast: 2070/2070. Not run: GCE (DoD #1's Linux half), scripts/upstream-changes.py --check.
 
 Verified on main, 2026-11-05 (code of dde8d58d3; 752515020 adds backlog only): GCE r691, the Linux workspace, 2302 of 2303, the one failure TASK-187's a_store_after_a_workers_write_waits_for_one_lift (TASK-190; its fix 788e3b6b4 is on land-p, not main); GCE r690, the e2e suite (--tag e2e, 15 cases) jailed with the production seccomp filter, 15 of 15; CI 42137709782 on dde8d58d3 green (workspace 2303 of 2303, sim, shuttle, clippy scripts, guest, guest-sim); macOS FXDAX_TEST_PARTS=workspace scripts/test.sh at 752515020, 2118 of 2118; scripts/upstream-changes.py --check at 752515020 passes. AC #1: Op::rules (fxfs-posix lib.rs:438) is the table, Fxfs::begin (lib.rs:1832) applies it; rg finds new_transaction only in Begun's maker and the queue's own batches. AC #2: each_operation_comes_after_the_unlinks_its_row_says, every_change_fails_once_a_batch_failed, lookups_count_links_queued_to_go, exchanges_count_links_queued_to_go, names_change_after_the_unlinks_queued, statfs_applies_what_is_queued and a_failed_batch_keeps_what_the_kernel_evicts pass in r691.
+
+Decision moved here from OPEN_QUESTIONS.md on 2026-11-06, as written there; the file keeps a line on it, pointing here, until the user confirms or overturns it.
+
+**Once a batch of queued unlinks failed, every change fails, the data's too (TASK-160.23, 2026-11-05)**
+
+A failed batch leaves Fxfs maybe holding names the kernel took for gone; changes then failed with EIO until a remount, but only those through `transaction_with`. Clone (`clone_range`), writes (`write`, `write_many`), the page cache's writeback (`write_dirty`), `allocate`, truncates (shrinking or not) and the writeback of extended attributes made their transactions elsewhere and went on. Decided: each operation's row says whether it changes what the filesystem holds (`Op::rules`' `changes`), and every one that does fails: those seven too. The filesystem fails stop, as ext4 does once its journal aborts, by one rule rather than a list of exceptions. A writeback refused leaves the room its dirty data reserved as one that fails does: the page cache's pages are no longer dirty either way. Not refused: lookups, readdir, reads, `sync`, `fsync`, `statfs` (making what's there durable, or reading it), `set_xattr`/`remove_xattr` (kept in memory, their writeback refused), `evict` (frees nothing once a batch failed, as before), and the queue's own batches, which bring Fxfs back to the kernel's view.
+**Instead:** leave data writes and cuts going: a file's data doesn't depend on its names, and a writeback refused loses what the page cache held; but what failed a batch is mostly the device, which fails them too.
+**Undoing it:** `false` in the `changes` column of the operations to let through, and `every_change_fails_once_a_batch_failed`'s list.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

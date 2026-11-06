@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-10-22 21:06'
-updated_date: '2026-11-06 03:30'
+updated_date: '2026-11-06 06:56'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -66,6 +66,15 @@ Measured (test_cases' measure: guest_boot_ns from the kernel log's 'Run ... as i
 Suites (r675, at e3c7ff7f3): DAX gate's six, pgbench-dax-forked, extent-guest (the selftest reads the window through direct_access, making part 0) pass; crash-stray-dax times out as TASK-187 (the stray load reaches the window, a part made for it, and the host refuses it, KVM_RUN EFAULT and on).
 Left: with no part made, boot to init still grows with the window: +47 ms for 2 GiB, +185 ms for 8 GiB (about 23 ms a GiB), and the same remainder was there before (174 ms overhead against 154 ms of memremap). Not the driver's (probe makes nothing now); a boot at loglevel 7 with initcall_debug would name it. Proposed as a follow-up, not filed.
 Structure: the class (work proportional to the window done whether or not it's used) is now bounded by use; the driver's window state is one struct, reached only through the dax_device. Decisions in OPEN_QUESTIONS.md. Dead ends updated (async probe, compound devmap).
+
+Decision moved here from OPEN_QUESTIONS.md on 2026-11-06, as written there; the file keeps a line on it, pointing here, until the user confirms or overturns it.
+
+**The DAX window's struct pages are made a memory section at a time, as dax_direct_access reaches them (TASK-92.8, 2026-11-05)**
+
+Made whole at probe, a 2 GiB window's took 153-157 ms of a ~495 ms boot to init and 32 MiB of the guest's memory (GCE r673). Decided:
+- **On demand, in the driver's direct_access**, synchronously, under the window's mutex, allocations NOFS (memalloc_nofs_save), as lib/test_hmm.c and nouveau call memremap_pages from paths holding mmap_lock. Fxfs and fs/dax.c reach window memory only through direct_access, so nothing changed outside the driver. *Instead:* Fxfs's window pools growing a part at a time, made by a worker ahead of need (no memory hotplug under a filesystem's locks, but the allocator, its waits and guest/sim all change); or a worker making the rest of the window after boot (boot saved, memory not). *Undoing it:* vext_window_make's call in direct_access, and one pgmap over the window at probe.
+- **A part is a memory section** (128 MiB on x86-64 and arm64), aligned to physical sections: hotplug maps a whole section's memmap on huge pages, and each part's making waits for an RCU grace period (mem_hotplug_begin), about 22 ms a part in r674 against 10 ms per 128 MiB made whole. *Instead:* 2 MiB subsections, finer memory but basepage vmemmap and a grace period each. *Undoing it:* PA_SECTION_SHIFT in vext_window_part.
+- **A kernel without FS_DAX takes no window** (F_DAX not offered): nothing would map it, and the window's memory is reached only through its dax_device now. *Undoing it:* the #if around F_DAX in vext_features, and a plain memremap for it.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

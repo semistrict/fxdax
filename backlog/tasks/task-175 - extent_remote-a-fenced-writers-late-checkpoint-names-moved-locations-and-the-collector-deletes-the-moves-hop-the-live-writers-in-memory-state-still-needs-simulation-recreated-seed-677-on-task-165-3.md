@@ -8,7 +8,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-05 07:46'
-updated_date: '2026-11-05 09:43'
+updated_date: '2026-11-06 06:56'
 labels:
   - remote
   - collector
@@ -73,6 +73,22 @@ Structure: the class is the collector's view of a branch being ahead, along move
 For the TLA+ spec (TASK-165.2): model each extent's way (its seal, then moves^1..moves^k, each object existing or not), each writer's own location of it (from the checkpoint it recovered from, moved forward only by its own checkpoints), checkpoints written by any writer as of its last acknowledged segment and landing at any later time (after a later writer took and fenced), the lease as (epoch, holder), and passes that compact (create moves^{k+1}) and delete. Safety: for every writer whose lease is still its taking and every extent it holds at moves^j, moves^j or moves^{j+1} exists (its read finds the extent). The rule that makes it hold: a pass keeps every moves^i, 1 <= i <= k, of each extent its state names at moves^k, unless that state's checkpoint was written by the lease's holder, the lease read after the checkpoint was listed; and a writer takes its checkpoint's moves before the checkpoint can land. With the first off, TLC should find seed 677's trace: e3 takes and recovers from C1, a pass compacts X, e1's late C2 names moves/X, a pass compacts moves/X and deletes X and moves/X, e3 reads X.
 
 Verified 2026-11-05 at 348d941e8. Simulation soak, release, SIM_SOAK=100 of every holds test (0..20000 each, everything 0..30000): 14/14 pass (it found seeds 210, 3953, 9030, 12424 and 13797 before TASK-177 to 180; main at 13db5c67c fails bases 1775 and stale 3953 at the same soak). Rule tests: every test_needs passes, collection_needs_records_listed_after_states on its own profile now (348d941e8). macOS FXDAX_TEST_PARTS='workspace shuttle' scripts/test.sh --no-fail-fast: workspace 2078/2079, the one failure that rule test before 348d941e8, passing alone after; shuttle part (run alone, as the script stops at the workspace's failure) all green. Linux (Docker, OrbStack, rust:1, arm64): cargo nextest run -p extent_remote -p extent_store 406/407, the same rule test, passing there after 348d941e8 (176 s). scripts/upstream-changes.py --check passes. Not run: GCE (scripts/test-gce.sh).
+
+Decision moved here from OPEN_QUESTIONS.md on 2026-11-06, as written there; the file keeps a line on it, pointing here, until the user confirms or overturns it.
+
+**Late checkpoints: the collector's ways to extents start at their seals (TASK-175, 2026-11-05)**
+
+A checkpoint landing after a branch's writer recovered it (the writer it took the branch from, fenced and unaware, checkpointing late) names extents further along their moves than the writer does. The collector kept the moves only from where the state it read names them, compacted them in turn and deleted them: the writer lost the extents. Reachable on main (a direct test, red at 13db5c67c); a fork's inherited extents, and a writer's own checkpoint before it took its moves, had the same hole. Decided:
+- **The way to an extent starts where it was sealed, every moves on it kept, unless the branch's newest checkpoint is by the writer holding its lease**, read after the checkpoints were listed; inherited extents' always (doc-7, Garbage collection, step 5). *Cost:* a lease GET per checkpointed branch per pass; moves compacted in turn stay while a branch's newest checkpoint isn't its lease holder's (until that writer's next one) or while forks without checkpoints of their own inherit through them.
+- **A writer names what its checkpoint moves where it went before it writes it**, only forward along the way.
+*Instead:* (1) a checkpoint counts only once a later footer names it: a format change, a fence rebasing on what it finds, recoveries reading an older checkpoint while the newest waits, forks no longer starting from the checkpoint at their fork; (2) a fence naming the checkpoint its writer recovered from: unsound (`dead-ends/fences-naming-their-checkpoints.md`); (3) keeping a moves a grace period after a pass last saw a state name what it is of: time, which doc-7 says correctness doesn't depend on.
+*Undoing it:* `Rules::ways_from_seals` and `moves_taken_first`'s code (collector.rs's `behind`, writer.rs's `take_moves`).
+
+The soak this was verified with, SIM_SOAK=100 of every holds test (TASK-165.3 had run 10), found four more holes, on main too: main's soak fails stale_placements seed 3953 (TASK-178's, the same failure) and bases_deleted_under_live_forks seed 1775 ("collector: lost: branches/2", TASK-177's kind). Each fixed as the protocol's other rules go, rather than by a structure of its own:
+- **A recovery that found no checkpoint of a branch, finding what it inherited instead lost, starts again if one has come** (TASK-177), as for a segment gone. *Instead:* keep a deleted parent's record while any child might recover from it: no bound on that.
+- **A deletion whose recovery of the branch fails, the record deleted since, is done** (TASK-178), as the collector takes it.
+- **A writer's lease is its taking, epoch and holder** (TASK-179). *Instead:* never remove a deleted branch's lease (an object per branch ever deleted), or take a missing lease only for a record read after it.
+- **A pass fenced by a later one stops without failing where it finds something lost** (TASK-180), as it stops before deleting. *Instead:* read the records again before recovering what a relisting found: narrower, and every relisting a round of GETs.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-01 22:53'
-updated_date: '2026-11-03 13:39'
+updated_date: '2026-11-06 06:56'
 labels: []
 dependencies: []
 parent_task_id: TASK-153
@@ -60,6 +60,14 @@ Simulation: action twins (two forks naming one child, both create_forked, the lo
 Verified: macOS scripts/test.sh at e8e186485: workspace 2051/2051, Shuttle 61, 7, 6, 21, 10, 18, scripts 135 OK; the extent_remote simulation 37/37. GCE fxdax-test-t1537-r1 (us-east4-a, n2-standard-4): Linux workspace 2215/2215 and the same Shuttle suites; its guest stage stopped at a test_cases host test (XFS loop umount busy, no fxdax code), so r2 ran the guest cases alone: fxfs-guest-dax, -live-fork, -migrate-dax, -migrate-tenant-dax, -snapshot, -snapshot-dax, -snapshot-volumes, -snapshot-volumes-dax, -suspend-dax all OK, test_cases 53/53. Both hosts deleted. scripts/upstream-changes.py --check passes.
 
 AC2: TASK-150.6 was fixed by this design's first half (spent runs in the branch's state and checkpoints), landed with TASK-158; its test extents_freed_are_spent_on_the_host_that_takes_their_branch was red without the spend (150.6's notes) and passes in this run.
+
+Decision moved here from OPEN_QUESTIONS.md on 2026-11-06, as written there; the file keeps a line on it, pointing here, until the user confirms or overturns it.
+
+**A branch's owner is who made it, not a tenant (TASK-153.9, 2026-11-03)**
+
+Every branch record now names an owner: a random number chosen by whoever made the branch, unique to that making, and the same in every copy of the record whoever writes it. A fork's host picks its child's owner when it claims the child, and the fork's footer carries it. Two forks naming one child no longer both win, and a fork's cleanup deletes only its own child (TASK-79.82, AC1). Decided: the owner says who made the branch, not which tenant it belongs to. Tenants stay authorized per host by their directory and the VM manager's `CreateStore` (TASK-154).
+**Instead:** put the tenant's name in the record, and let a tenant's `OPEN_FORK_FROM` take a point it owns by naming it, which would spare the VM manager a `CreateStore` before a restore on another host. But nothing makes a tenant name mean the same on every host, and it would bring back the tenant-named-branch check that TASK-150.4 removed.
+**Undoing it:** a `tenant` field next to `owner`, set by `CreateStore` and passed down from parent to fork, plus a check in `extentd/server.rs`'s `open`.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

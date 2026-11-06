@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-01 22:53'
-updated_date: '2026-11-03 13:39'
+updated_date: '2026-11-06 06:56'
 labels: []
 dependencies: []
 parent_task_id: TASK-153
@@ -52,6 +52,14 @@ Decided: keep the declaration in the key, and make it exact. A separate declarat
 Implemented, as planned. Kind::Extent's seq is no longer optional (keys of before TASK-79.3 read as Unknown); Pass::may_land decides for segments and extents alike from the branch's end and epoch, the one place keys' epochs and numbers are read; orphan() is gone. Rule extent_keys_name_segments: off, the collector goes by the branch's next sequence number; extents_ahead_of_their_segments_need_keys_naming_them reads Lost with it off, the extent gone ahead of its segment (the simulation's guests commit extents in their minted order, so no profile reaches it: a unit test shows it). dead-ends/collector-in-flight-declarations.md records why a separate declaration is not worth it. OPEN_QUESTIONS.md # Decisions.
 
 Verified: macOS scripts/test.sh at e8e186485: workspace 2051/2051, Shuttle 61, 7, 6, 21, 10, 18, scripts 135 OK; the extent_remote simulation 37/37. GCE fxdax-test-t1537-r1 (us-east4-a, n2-standard-4): Linux workspace 2215/2215 and the same Shuttle suites; its guest stage stopped at a test_cases host test (XFS loop umount busy, no fxdax code), so r2 ran the guest cases alone: fxfs-guest-dax, -live-fork, -migrate-dax, -migrate-tenant-dax, -snapshot, -snapshot-dax, -snapshot-volumes, -snapshot-volumes-dax, -suspend-dax all OK, test_cases 53/53. Both hosts deleted. scripts/upstream-changes.py --check passes.
+
+Decision moved here from OPEN_QUESTIONS.md on 2026-11-06, as written there; the file keeps a line on it, pointing here, until the user confirms or overturns it.
+
+**Writers declare what's in flight in their keys (TASK-153.7, 2026-11-03)**
+
+The collector decides whether an unreferenced object may still be needed from its key. An extent's key names the writer that uploaded it and the segment that will name it. Decided: keep that key as the writer's declaration, and make it exact. Keys always name their segment now (old keys without one are no longer read), and one function, `Pass::may_land`, decides for segments and extents alike.
+**Instead:** a separate declaration object or lease field. It would have to land before the objects it covers and be read after the listing, it needs garbage-collecting itself, and it says nothing the key doesn't (`dead-ends/collector-in-flight-declarations.md`).
+**Undoing it:** nothing to undo; a declaration object would be added alongside.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

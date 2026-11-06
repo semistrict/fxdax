@@ -5,7 +5,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-03 13:08'
-updated_date: '2026-11-06 02:22'
+updated_date: '2026-11-06 06:56'
 labels:
   - structure
 dependencies: []
@@ -67,6 +67,14 @@ Runs: macOS FXDAX_TEST_PARTS='workspace shuttle' scripts/test.sh: all pass (work
 GCE r600 (us-west1-b, n2-standard-4, jailed, FXDAX_WORKSPACE_TESTS=0, the tree of bcd1c9b4d before formatting): fxfs-guest-dax, fxfs-guest-checks-dax-small (69 s of 368), fxfs-guest-crash-dax, fxfs-guest-bigmap-dax (143 s of 3600), fxfs-guest-migrate-tenant-dax: 5/5 OK, no unexplained refusals, no cores. Not run: fxfs-guest-checks-dax and pgbench-dax-forked (the regression being bisected elsewhere).
 
 Verified on main, 2026-11-05 (code of dde8d58d3; 752515020 adds backlog only): GCE r691, the Linux workspace, 2302 of 2303, the one failure TASK-187's a_store_after_a_workers_write_waits_for_one_lift (TASK-190; its fix 788e3b6b4 is on land-p, not main); GCE r690, the e2e suite (--tag e2e, 15 cases) jailed with the production seccomp filter, 15 of 15; CI 42137709782 on dde8d58d3 green (workspace 2303 of 2303, sim, shuttle, clippy scripts, guest, guest-sim); macOS FXDAX_TEST_PARTS=workspace scripts/test.sh at 752515020, 2118 of 2118; scripts/upstream-changes.py --check at 752515020 passes. AC #1: Dax (dax.rs:1160) holds the window and its zeros, no map of its own; extents.rs's Mapped and Maps are gone. AC #2: fxdax's Shuttle suite 59 of 59 in CI 42137709782's shuttle job, dax::uffd's remapped_stores_race_frees_randomly and _by_pct among them. AC #3: rg finds no CORKED, cork or uncork in crates/fxdax. AC #4: extentd::wire's sends_of_a_batch_arrive_in_the_order_made passes in r691. r690's DAX suites, jailed, pass.
+
+Decision moved here from OPEN_QUESTIONS.md on 2026-11-06, as written there; the file keeps a line on it, pointing here, until the user confirms or overturns it.
+
+**A window's mappings carry no K: a source says what it is (TASK-160.11, 2026-11-05)**
+
+The task proposed that the window's `Mapping` carry `Dax`'s `K`, so that the store's second map could go. Decided: no `K` at all. Once writable DAX went, `K` (extents.rs's `Mapped`) held the source's identity, which the window's by-source index already has, and the extent a snapshot records, which the source, a cached extent, knows itself: `Source::origin` says it (an extent's ID, or zeros, replacing `is_zeros`), and `Dax::mappings` builds `WindowMapping`s from the window's own map. `Dax` is no longer generic, nor is `Window`.
+**Instead:** `Window<K>`, generic through `DaxWindow`, the cache's window list (`Source::mapped`) and the userfaultfd stage, for a value the source already holds.
+**Undoing it:** a field on `Mapping` and a type parameter on `Window`; `Source::origin` would stay for zeros.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

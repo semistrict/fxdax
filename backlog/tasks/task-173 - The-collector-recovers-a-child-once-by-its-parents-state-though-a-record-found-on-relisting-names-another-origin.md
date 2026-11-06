@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-05 07:38'
-updated_date: '2026-11-05 15:39'
+updated_date: '2026-11-06 06:56'
 labels: []
 dependencies: []
 priority: high
@@ -54,6 +54,12 @@ Blind spot: the simulation's IDs are always fresh, so no restore ever named a fo
 Look around: the other maps of the collector keyed by branch alone are records (one per key, right) and Pass::branches, now per recovery; branch::delete recovers by the record's origin alone, which is right, the record being the branch. Structure: the bug was a key too narrow; keying recoveries by (branch, origin) makes that class impossible, nothing else needed.
 
 Verified 2026-11-05 at 10331f633 (collector-fixes). Simulation, release: every rule test (21, deletions_need_fences seed 4505, collection_needs_records_kept seed 1) and SIM_SOAK=100 of every holds test (20,000 seeds each, everything 30,000), 43/43 pass in 327 s. scripts/check-tla.sh, all specs and traces: exit 0; every bucket model holds (BucketForks 9,684,100 states 233 s, BucketPointsDeep 149 s), every mutation finds its violation (NoRecoveriesByOrigins 120 s, NoRecordsKept 5 s, NoDeletionsFence 2 s). macOS FXDAX_TEST_PARTS='workspace shuttle' scripts/test.sh --no-fail-fast: workspace 2112/2114, the two failures unrelated flakes under a load average of 53, each passing alone (fxdax fork_faults each_write_of_a_failed_forks_cleanup_going_wrong 7/7, filed TASK-184: claim.new shared by two writers; fxfs test_trim 3/3, filed TASK-185); shuttle part run alone, all pass. Linux (Docker, OrbStack, rust:1 arm64): cargo nextest run -p extent_remote -p extent_store 433/433 (572 s). scripts/upstream-changes.py --check: exit 0. Not run: GCE (scripts/test-gce.sh), so DoD #1 stays unchecked.
+
+Decision moved here from OPEN_QUESTIONS.md on 2026-11-06, as written there; the file keeps a line on it, pointing here, until the user confirms or overturns it.
+
+**The collector recovers a branch by each origin it is named by (TASK-173, 2026-11-05)**
+
+A child the collector recovered by its parent's state, that fork refused because a restore of a point took the child's ID first, was not recovered again by the record of the restore's origin found on relisting, and what that origin needed went. Decided: **`Rules::recoveries_by_origins`**, the collector keys what it recovered by branch and origin, recovering a branch once by each origin its record or a parent's state names, and whether a segment or extent may yet land goes by every recovery of the branch. *Cost:* a refused fork's child is recovered twice in that pass, the state's way kept too. *Instead:* trust the record over the state, dropping the state's recovery when a record comes: what the state's recovery read may already be all the pass keeps of the parent, and the state's fork is never the child's then; keeping both is simpler and only keeps more. The simulation's restores now name pending forks' children (`restores_taking_forks_ids`), but no seed of 0..20,000 reaches the rule's window; the direct test and specs/bucket's `NoRecoveriesByOrigins` show it needed. *Undoing it:* `Live::recovered`'s by-origin arm.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
