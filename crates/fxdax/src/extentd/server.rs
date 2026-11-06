@@ -1120,11 +1120,23 @@ impl Connection {
                 // fxdax: a snapshot's, whose window maps extents and zeros alone, the guest's
                 // freeze having rebound its private pages, whose bytes no extent holds (backlog
                 // doc-13).
-                if *quiescent && store.private_pages()? > 0 {
+                // Each refusal says why, as the VMM's error can't (TASK-92.14).
+                let private = if *quiescent { store.private_pages()? } else { 0 };
+                if private > 0 {
+                    log::warn!(
+                        "extentd: a snapshot's point at {} refused: the window has {private} \
+                         private pages",
+                        path.display()
+                    );
                     return Err(Errno::EBUSY);
                 }
                 let forked =
                     if *quiescent { store.point(path, *branch) } else { store.fork(path, *branch) };
+                if let Err(err) = &forked
+                    && err.errno() == Some(Errno::EBUSY)
+                {
+                    log::warn!("extentd: forking to {} refused: {err:#}", path.display());
+                }
                 forked.map_err(|err| {
                     stores::errno_of(format_args!("forking to {}", path.display()), err)
                 })?;

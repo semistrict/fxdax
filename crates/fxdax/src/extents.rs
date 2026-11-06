@@ -1591,7 +1591,8 @@ impl ExtentStore {
         }
         let _opening = self.opening.write(&self.fence)?;
         if !self.is_quiescent()? {
-            return Err(Errno::EBUSY.into());
+            let open = "an extent written since the last commit is open";
+            return Err(Error::new(anyhow::Error::new(Errno::EBUSY).context(open)));
         }
         self.make_durable()?;
         failpoint!("fork::durable");
