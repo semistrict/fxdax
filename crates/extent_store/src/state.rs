@@ -71,8 +71,9 @@ pub(crate) struct State<F> {
     /// fxdax: the extents views refuse, sealed after their commits.
     pub sealed: Sealed,
     /// Whether a commit failed, after which the store's state may differ from what its files say,
-    /// so it does nothing more.
-    pub failed: bool,
+    /// so it does nothing more. fxdax: and why, the first failure's error, which what it refuses
+    /// says (TASK-165.9: a framing's failure, which no flush waits for, failed a later call).
+    pub failed: Option<String>,
     /// Whether it was closed ([`Store::close`](crate::Store::close)): it reads what it holds, and
     /// changes nothing.
     pub closed: bool,
@@ -144,8 +145,23 @@ impl<F: File> State<F> {
         change: impl FnOnce(&mut Self) -> Result<T, Error>,
     ) -> Result<T, Error> {
         let changed = change(self);
-        self.failed |= changed.is_err();
+        if let Err(error) = &changed {
+            self.fail(error);
+        }
         changed
+    }
+
+    /// fxdax: fails the store, for `error`, unless it failed before ([`State::failed`]).
+    pub fn fail(&mut self, error: &Error) {
+        self.failed.get_or_insert_with(|| format!("{error:#}"));
+    }
+
+    /// fxdax: fails, saying why, if the store failed ([`State::failed`]).
+    pub fn still_whole(&self) -> Result<(), Error> {
+        match &self.failed {
+            Some(cause) => Err(anyhow::anyhow!("the extent store failed: {cause}")),
+            None => Ok(()),
+        }
     }
 
     /// `extent`'s entry, which `reader` may read: of what the store holds, or keeps, if not the
@@ -361,7 +377,7 @@ const AUDITED_EXTENTS: usize = 4096;
 /// locks it again, which a lock poisoned would panic in, aborting as the audit's panic unwinds.
 #[cfg(any(test, feature = "audit"))]
 fn audited<F: File>(guard: MutexGuard<'_, State<F>>) -> MutexGuard<'_, State<F>> {
-    if guard.failed || std::thread::panicking() || guard.extents.len() > AUDITED_EXTENTS {
+    if guard.failed.is_some() || std::thread::panicking() || guard.extents.len() > AUDITED_EXTENTS {
         return guard;
     }
     let audit = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| guard.audit()));

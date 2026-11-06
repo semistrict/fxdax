@@ -2536,12 +2536,11 @@ fn commits_failing_part_way_fail_the_store() {
         for budget in [Some(0), None] {
             dir.fail_after(budget);
             let failure = |result: Result<(), anyhow::Error>| result.unwrap_err().to_string();
-            assert_eq!(failure(store.commit(None)), "the extent store failed");
-            assert_eq!(
-                failure(store.read(extent(1), 0, &mut [0; BLOCK])),
-                "the extent store failed"
-            );
-            assert_eq!(failure(store.epoch().map(drop)), "the extent store failed");
+            // fxdax: saying why (TASK-165.9).
+            let failed = "the extent store failed: the file system crashed";
+            assert_eq!(failure(store.commit(None)), failed);
+            assert_eq!(failure(store.read(extent(1), 0, &mut [0; BLOCK])), failed);
+            assert_eq!(failure(store.epoch().map(drop)), failed);
         }
     }
 }
@@ -2559,8 +2558,9 @@ fn logs_failing_in_their_flushes_fail_the_store() {
     let failure = |result: Result<(), anyhow::Error>| result.unwrap_err().to_string();
     assert_eq!(failure(store.flush()), "committing the extent store");
     dir.fail_after(None);
-    assert_eq!(failure(store.commit(None)), "the extent store failed");
-    assert_eq!(failure(store.flush()), "the extent store failed");
+    let failed = "the extent store failed: committing the extent store: the file system crashed";
+    assert_eq!(failure(store.commit(None)), failed);
+    assert_eq!(failure(store.flush()), failed);
 }
 
 /// Parts stored compressed are unpacked once while they are kept unpacked, the 32 read last.

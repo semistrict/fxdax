@@ -337,7 +337,8 @@ fn framing_ended<F: File>(
         Ok(framed) => state.segments.framed(number, framed),
         Err(error) => {
             log::error!("extent store: framing segment {number:?}: {error:#}");
-            state.failed = true;
+            let error = error.context(format!("framing segment {number:?}"));
+            state.fail(&error);
             state.segments.framing_failed(number, format!("{error:#}"));
         }
     }
@@ -606,7 +607,7 @@ impl<D: Dir> Recovering<D> {
                 point: fenced.is_none(),
                 kept: KeptExtents::default(),
                 sealed: Sealed::default(),
-                failed: false,
+                failed: None,
                 closed: false,
                 deferred: Vec::new(),
                 framing: Framing::default(),
@@ -849,7 +850,7 @@ impl<D: Dir> Store<D> {
 
     fn state(&self) -> Result<Locked<'_, D::File>, Error> {
         let state = self.lock();
-        ensure!(!state.failed, "the extent store failed");
+        state.still_whole()?;
         Ok(state)
     }
 
@@ -861,7 +862,7 @@ impl<D: Dir> Store<D> {
     /// `state`, to change, as found again after waiting, its lock let go of meanwhile: unless the
     /// store failed, or the branch closed, since (TASK-83).
     fn still_writable<'a>(&self, state: Locked<'a, D::File>) -> Result<Locked<'a, D::File>, Error> {
-        ensure!(!state.failed, "the extent store failed");
+        state.still_whole()?;
         ensure!(!state.closed, "branch {:#x} is closed", self.branch);
         ensure!(!state.point, "branch {:#x} is a point, which nothing writes", self.branch);
         Ok(state)
@@ -894,7 +895,7 @@ impl<D: Dir> Store<D> {
             }
             state.closed = true;
             // Their raw files, of commits durable, go as a flush's would.
-            let raw = match state.failed {
+            let raw = match state.failed.is_some() {
                 false => state.segments.raw(self.durability.lock().unwrap().durable()),
                 true => Vec::new(),
             };
@@ -1675,7 +1676,7 @@ impl<D: Dir> Store<D> {
         });
         // fxdax: as before it waited, which let the state go meanwhile (TASK-83).
         if rules().recheck_after_waiting {
-            ensure!(!state.failed, "the extent store failed");
+            state.still_whole()?;
             if state.closed {
                 return Ok(None);
             }
@@ -1715,14 +1716,13 @@ impl<D: Dir> Store<D> {
             let framer = move |()| {
                 let mut state = Locked::new(shared.lock().unwrap());
                 while let Some(unframed) = state.framing.queue.pop_front() {
-                    let failed = state.failed;
+                    // fxdax: none once the store failed, a segment before it among what failed,
+                    // saying so (TASK-165.9).
+                    let whole = state.still_whole();
                     drop(state);
                     let number = unframed.number();
                     let started = Instant::now();
-                    let framed = match failed {
-                        false => unframed.frame(&*dir),
-                        true => Err(anyhow!("a segment before it failed to frame")),
-                    };
+                    let framed = whole.and_then(|()| unframed.frame(&*dir));
                     timings::framed(started.elapsed());
                     state = Locked::new(shared.lock().unwrap());
                     framing_ended(&mut state, number, framed);
@@ -1739,10 +1739,7 @@ impl<D: Dir> Store<D> {
         while let Some(unframed) = state.framing.queue.pop_front() {
             let number = unframed.number();
             let started = Instant::now();
-            let framed = match state.failed {
-                false => unframed.frame(&*self.dir),
-                true => Err(anyhow!("a segment before it failed to frame")),
-            };
+            let framed = state.still_whole().and_then(|()| unframed.frame(&*self.dir));
             timings::framed(started.elapsed());
             framing_ended(state, number, framed);
         }
@@ -1871,8 +1868,9 @@ impl<D: Dir> Store<D> {
             }
         };
         if let Err(err) = base.write(&*self.dir, after) {
-            self.lock().failed = true;
-            return Err(err.context("recording an acknowledgement"));
+            let err = err.context("recording an acknowledgement");
+            self.lock().fail(&err);
+            return Err(err);
         }
         let (leaving, raw) = {
             let mut state = self.state()?;
@@ -1934,8 +1932,9 @@ impl<D: Dir> Store<D> {
             None => self.durability.lock().unwrap().durable(),
             Some(Batch { last, mut commits }) => {
                 if let Err(error) = self.make_durable(logs, &mut commits, phases) {
-                    self.lock().failed = true;
-                    return Err(error.context("committing the extent store"));
+                    let error = error.context("committing the extent store");
+                    self.lock().fail(&error);
+                    return Err(error);
                 }
                 self.durability.lock().unwrap().finish(last);
                 // The files the commits let go of go, once they are durable; fxdax: those of the

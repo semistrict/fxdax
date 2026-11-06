@@ -768,8 +768,11 @@ fn failing_during_a_commit() {
     writer.join().unwrap();
     assert!(flusher.join().unwrap().is_err(), "a flush failing succeeded");
     let committed = committer.join().unwrap().map_err(|error| error.to_string());
+    // Saying why: the flush's failure (TASK-165.9).
+    let failed = "the extent store failed: committing the extent store: syncing extents' data: \
+                  the file system crashed";
     assert!(
-        committed == Err("the extent store failed".to_owned()),
+        committed == Err(failed.to_owned()),
         "a commit went on over a store that failed: {committed:?}"
     );
 }
