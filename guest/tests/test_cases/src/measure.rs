@@ -7,7 +7,8 @@
 //! memory then; the host says, on its standard error, the test's log, the host's memory then, as
 //! `memory: vm=VM phase=PHASE NAME=VALUE...`, which scripts/pgbench-gate.py reads, and answers
 //! `ok` once the test lets the guest go on. VM 0 is none: the host before the first VM boots.
-//! Every value is in bytes, but for counts' (`pages`, `faults`, `total`):
+//! Every value is in bytes, but for counts' (`pages`, `faults`, `total`) and times' (`_ns`, in
+//! nanoseconds):
 //!
 //! - `host_used`: the host's memory not available (/proc/meminfo's MemTotal less MemAvailable):
 //!   what the VMs, the daemon and all else hold, each page once, its page cache left out;
@@ -19,7 +20,12 @@
 //!   hold, every tenant's extents' pages (`extentd_memory_bytes`), the pages the windows map, its
 //!   faults, and any gauge of private pages it keeps (copy-on-write DAX's, TASK-164.1);
 //! - `guest_*`: what the guest said of itself: its memory (/proc/meminfo), faults (/proc/vmstat),
-//!   and its Fxfs's counts of copy-on-write DAX's private pages (`guest_fxfs_*`).
+//!   and its Fxfs's counts of copy-on-write DAX's private pages (`guest_fxfs_*`); fxdax: how long
+//!   its kernel took from its start to running init (`guest_boot_ns`, the kernel log's record of
+//!   it); the struct pages its kernel made after it booted, its DAX windows' (`guest_memmap`,
+//!   /proc/vmstat's nr_memmap_pages); and of its extent devices' DAX windows, their length, how
+//!   much of it has struct pages, and the time making them took (`guest_window`,
+//!   `guest_window_made`, `guest_window_made_ns`, each device's `window` in sysfs) (TASK-92.8).
 
 use macros::{guest, host};
 use std::collections::BTreeMap;
@@ -276,6 +282,13 @@ mod guest {
         .collect();
         said.push(format!("guest_faults={}", count("pgfault")));
         said.push(format!("guest_major_faults={}", count("pgmajfault")));
+        said.push(format!("guest_memmap={}", count("nr_memmap_pages") * page_size()));
+        if let Some(boot) = boot_ns() {
+            said.push(format!("guest_boot_ns={boot}"));
+        }
+        for (name, value) in windows() {
+            said.push(format!("guest_{name}={value}"));
+        }
         // fxdax: what its Fxfs counts of copy-on-write DAX's private pages, if it is mounted
         // (/proc/fs/fxfs/<tag>, the first's).
         let stats = fs::read_dir("/proc/fs/fxfs").ok().and_then(|mut dir| dir.find_map(Result::ok));
@@ -287,6 +300,40 @@ mod guest {
             }
         }
         said.join(" ")
+    }
+
+    fn page_size() -> u64 {
+        // SAFETY: A plain system call.
+        unsafe { nix::libc::sysconf(nix::libc::_SC_PAGESIZE) as u64 }
+    }
+
+    /// How long the kernel took from its start to running init, as its log's record of it says,
+    /// if the log still has it: `PRIORITY,SEQUENCE,MICROSECONDS,FLAGS;Run INIT as init process`.
+    fn boot_ns() -> Option<u64> {
+        crate::kernel_log::records().iter().find_map(|record| {
+            let (header, message) = record.split_once(';')?;
+            if !(message.starts_with("Run ") && message.trim_end().ends_with(" as init process")) {
+                return None;
+            }
+            Some(header.split(',').nth(2)?.parse::<u64>().ok()? * 1000)
+        })
+    }
+
+    /// The extent devices' DAX windows, all told: `window`, `window_made` and `window_made_ns`,
+    /// each as its devices' `window` attributes say, as lines of `NAME VALUE`.
+    fn windows() -> BTreeMap<String, u64> {
+        let mut windows = BTreeMap::new();
+        let devices = fs::read_dir("/sys/bus/virtio/drivers/virtio_extent").into_iter().flatten();
+        for device in devices.flatten() {
+            let Ok(window) = fs::read_to_string(device.path().join("window")) else { continue };
+            for line in window.lines() {
+                let Some((name, value)) = line.split_once(' ') else { continue };
+                let value: u64 = value.parse().unwrap_or_else(|_| panic!("window: {line:?}"));
+                let name = if name == "len" { "window".to_owned() } else { format!("window_{name}") };
+                *windows.entry(name).or_default() += value;
+            }
+        }
+        windows
     }
 }
 

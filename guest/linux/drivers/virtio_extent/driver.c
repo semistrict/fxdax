@@ -62,6 +62,8 @@ struct vext_window {
 	/* Its memory, mapped in the kernel. */
 	void *kaddr;
 	struct dax_device *dax;
+	/* How much of it has struct pages, and the time making them took (TASK-92.8). */
+	atomic64_t made, made_ns;
 };
 
 struct virtio_extent {
@@ -686,11 +688,26 @@ static ssize_t completions_show(struct device *dev, struct device_attribute *att
 }
 static DEVICE_ATTR_RO(completions);
 
+/*
+ * fxdax: the `window` attribute: the DAX window's length, 0 if the device has none, how much of it
+ * has struct pages, and the time making them took (TASK-92.8).
+ */
+static ssize_t window_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	struct virtio_extent *vext = dev_to_virtio(dev)->priv;
+	struct vext_window *window = &vext->window;
+
+	return sysfs_emit(buf, "len %llu\nmade %lld\nmade_ns %lld\n", window->len,
+			  atomic64_read(&window->made), atomic64_read(&window->made_ns));
+}
+static DEVICE_ATTR_RO(window);
+
 static struct attribute *vext_attrs[] = {
 	&dev_attr_requests.attr,
 	&dev_attr_request_ns.attr,
 	&dev_attr_queues.attr,
 	&dev_attr_completions.attr,
+	&dev_attr_window.attr,
 	NULL,
 };
 
@@ -766,6 +783,7 @@ static int vext_map_window_dax(struct device *dev, struct vext_window *window,
 			       const struct virtio_shm_region *region)
 {
 	struct dev_pagemap *pgmap = devm_kzalloc(dev, sizeof(*pgmap), GFP_KERNEL);
+	u64 start = ktime_get_ns(), took;
 	struct dax_device *dax;
 	void *kaddr;
 
@@ -780,6 +798,7 @@ static int vext_map_window_dax(struct device *dev, struct vext_window *window,
 	kaddr = devm_memremap_pages(dev, pgmap);
 	if (IS_ERR(kaddr))
 		return PTR_ERR(kaddr);
+	took = ktime_get_ns() - start;
 	dax = alloc_dax(window, &vext_dax_ops);
 	if (IS_ERR(dax))
 		return PTR_ERR(dax);
@@ -788,6 +807,8 @@ static int vext_map_window_dax(struct device *dev, struct vext_window *window,
 		.len = region->len,
 		.kaddr = kaddr,
 		.dax = dax,
+		.made = ATOMIC64_INIT(region->len),
+		.made_ns = ATOMIC64_INIT(took),
 	};
 	return devm_add_action_or_reset(dev, vext_put_dax, dax);
 }
