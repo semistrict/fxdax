@@ -1081,7 +1081,7 @@ impl Allocator {
 
     /// fxdax: `discarded`, the extents named by what replay read of the journal but discarded,
     /// which a replay after may read again, settles when what the mount found dead may be freed
-    /// (`extent_table::FreeAfter::Settling`).
+    /// (`extent_table::ExtentTable::settle_replay`).
     pub async fn on_replay_complete(
         self: &Arc<Self>,
         discarded: &HashSet<ExtentId>,
@@ -1129,10 +1129,10 @@ impl Allocator {
             }
             assert_eq!(std::mem::replace(&mut inner.opened, true), false);
         }
-        // Those dying when the tree was last compacted are freed now, as no transaction since
-        // can allocate in them, and so is what replay found dead, unless what it discarded names
-        // it, when it waits for the journal to record the discard, and the mount's flush frees it
-        // (`Journal::flush_for_frees`).
+        // What the mount found dead is freed now, unless what replay discarded names it, however it
+        // died, when it waits for the journal to record the discard, and the mount's flush frees it
+        // (`Journal::flush_for_frees`): the rest at once, as a full device's mount needs its room
+        // to renew the journal's tail first.
         if !filesystem.options().read_only {
             self.free_dead(&*filesystem.device(), 0, false)
                 .await

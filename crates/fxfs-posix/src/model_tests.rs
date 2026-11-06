@@ -2795,3 +2795,65 @@ fn a_cut_with_fsck_after_every_transaction_replays_as_far_as_its_barrier() {
     let setting = Setting::awkward(12436301060589371142, ROOMY).with_graveyard_of_seed();
     setting.with_fsck_each(true).holds(ops);
 }
+
+/// The hunt's sequence of CI run 42196106048: a power cut during the replay of a power cut left a
+/// journal whose replay read an extent the device doesn't hold, and failed the mount.
+#[test]
+fn a_cut_during_a_replay_leaves_a_journal_that_replays() {
+    let ops = vec![
+        Op::Symlink(0),
+        Op::Unlink(0),
+        Op::Open(0),
+        Op::Compact,
+        Op::Open(0),
+        Op::Read { file: 0, at: 4294963247, len: 4096 },
+        Op::Fill { file: 8, page: 18, pages: 745, stride: 1, byte: 119 },
+        Op::UnlinkLater(1),
+        Op::Unlink(1),
+        Op::Read { file: 14, at: 118784, len: 7754 },
+        Op::Open(8),
+        Op::Write { file: 8, at: 61440, len: 50, byte: 40 },
+        Op::Crash,
+        Op::Clone { from: 7, to: 9, page: 1048576, pages: 7, to_page: 2251799813685238 },
+        Op::Write { file: 13, at: 2096015, len: 4096, byte: 23 },
+        Op::Create(0),
+        Op::Create(16),
+        Op::Symlink(4),
+        Op::Read { file: 0, at: 9223372036854775522, len: 4096 },
+        Op::SetXattr { file: 5, name: 0, len: 37, byte: 105 },
+        Op::FillWhileCompacting { file: 5, page: 42, pages: 10, byte: 189, flushing: true },
+    ];
+    Setting::awkward(8160502985120782900, ROOMY).with_graveyard_of_seed().holds(ops);
+}
+
+/// A full device's mount renews the journal's tail before the flush that records what its replay
+/// discarded, which needs the room of what the mount found dead: freeing none of it before that
+/// flush, rather than only what the transactions discarded name, left a cut that mounted no more
+/// ("reallocating the journal's tail ... No space"). Found by the hunt of TASK-210.
+#[test]
+fn a_full_device_mounts_with_the_room_of_what_it_found_dead() {
+    let ops = vec![
+        Op::Create(0),
+        Op::Unlink(0),
+        Op::Create(2),
+        Op::Create(0),
+        Op::Fill { file: 0, page: 38, pages: 807, stride: 2, byte: 0 },
+        Op::Create(0),
+        Op::Compact,
+        Op::Create(0),
+        Op::Create(0),
+        Op::Create(0),
+        Op::Create(0),
+        Op::Create(0),
+        Op::Fill { file: 1, page: 26, pages: 1272, stride: 1, byte: 0 },
+        Op::Fill { file: 1, page: 13, pages: 44, stride: 1, byte: 0 },
+        Op::Write { file: 6, at: 4294963241, len: 4072, byte: 121 },
+        Op::Fill { file: 5, page: 51, pages: 1090, stride: 2, byte: 216 },
+        Op::FillWhileCompacting { file: 2, page: 37, pages: 23, byte: 249, flushing: true },
+        Op::Write { file: 7, at: 56047, len: 6514, byte: 3 },
+        Op::SetXattr { file: 7, name: 0, len: 7198, byte: 121 },
+        Op::Truncate { file: 3, size: 4294964062 },
+        Op::Truncate { file: 3, size: 28672 },
+    ];
+    Setting::awkward(4758196049501471983, TIGHT).with_graveyard_of_seed().holds(ops);
+}
