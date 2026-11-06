@@ -873,8 +873,10 @@ impl<D: Dir> Store<D> {
         // gone, before another store may open the branch.
         let mut flushing = rules().close_waits_for_flushes.then(|| self.flushing.lock().unwrap());
         let flushed = match &mut flushing {
-            _ if !self.flush_pending() => Ok(()),
+            Some(_) if !self.flush_pending() => Ok(()),
             Some(flushing) => self.flush_locked(flushing),
+            // With the rule off, as if the commits a flush in flight took were durable.
+            None if !self.durability.lock().unwrap().queued() => Ok(()),
             None => self.flush(),
         };
         drop(flushing);
@@ -1990,10 +1992,12 @@ impl<D: Dir> Store<D> {
         }
     }
 
-    /// fxdax: whether commits are waiting for [`Store::flush`] to make them durable: ordered, and
-    /// not taken by a flush in flight.
+    /// fxdax: whether commits ordered are not durable yet, which [`Store::flush`] makes durable:
+    /// waiting for a flush to take them, or taken by one in flight, which a flush waits for. Those
+    /// taken counted not, a daemon's turn finding none took commits for durable that weren't,
+    /// a flush of the uploader's in flight (TASK-165.9).
     pub fn flush_pending(&self) -> bool {
-        self.durability.lock().unwrap().queued()
+        self.durability.lock().unwrap().pending()
     }
 
     /// Reads `buf.len()` bytes at `offset` in `extent`, as `locate` finds them.

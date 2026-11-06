@@ -1042,7 +1042,9 @@ impl ExtentStore {
                     base.read_stored(extent, at, data)?;
                 }
                 Some(_) => {}
-                None if !self.read_cached(extent, at, data)? => self.read_stored(extent, at, data)?,
+                None if !self.read_cached(extent, at, data)? => {
+                    self.read_stored(extent, at, data)?
+                }
                 None => {}
             }
             scatter(buffers, done, data);
@@ -1259,7 +1261,8 @@ impl ExtentStore {
         self.make_durable()
     }
 
-    /// Whether commits are waiting for [`ExtentStore::flush`].
+    /// Whether commits ordered are not durable yet: waiting for [`ExtentStore::flush`], or taken
+    /// by a flush in flight, which it waits for.
     pub fn flush_pending(&self) -> bool {
         self.store.flush_pending()
     }
@@ -1670,9 +1673,8 @@ impl ExtentStore {
     /// was taken of does, written nothing since, and a fork of the point that wrote nothing: what
     /// a VM restored from a snapshot at the point may run on, its memory the point's (TASK-194).
     pub fn holds_what(&self, other: &ExtentStore) -> Result<bool> {
-        let held = |store: &Store<HostDir>| -> anyhow::Result<_> {
-            Ok((store.root()?, store.extents()?))
-        };
+        let held =
+            |store: &Store<HostDir>| -> anyhow::Result<_> { Ok((store.root()?, store.extents()?)) };
         Ok(held(&self.store).map_err(errno)? == held(&other.store).map_err(errno)?)
     }
 

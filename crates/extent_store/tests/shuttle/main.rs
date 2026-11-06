@@ -1086,6 +1086,29 @@ fn serving_during_a_flush() {
     check_flushed(&reopened, "the branch opened again");
 }
 
+/// One run of a flush, an uploader's, of a commit only ordered, stalled at its barrier, as a
+/// daemon's turn looks whether commits wait to be made durable (`Store::flush_pending`): the commit
+/// the flush took waits until it ends, not durable meanwhile. Pending only while no flush had taken
+/// it, the daemon's turn, finding none, told the guest of it as durable, and a daemon killed then
+/// lost it (GCE r717's crash-dax-daemon-killed, TASK-165.9).
+fn pending_during_a_flush() {
+    let dir = Stalling::new();
+    let description = Description { block_size: BLOCK as u32, capacity: 1 << 20, branch: BRANCH };
+    let store = Arc::new(Store::create(dir.clone(), description, OPTIONS).unwrap());
+    store.write(extent(1), 0, &pattern(1, BLOCK)).unwrap();
+    store.commit_ordered(None).unwrap();
+    dir.arm(Op::Barrier, "");
+    let flushing = {
+        let store = store.clone();
+        thread::spawn(move || store.flush().unwrap())
+    };
+    dir.wait_until_stalled();
+    assert!(store.flush_pending(), "a commit a flush in flight took is not pending");
+    dir.let_go(Ok(()));
+    flushing.join().unwrap();
+    assert!(!store.flush_pending(), "a commit made durable is pending");
+}
+
 /// Reads extents 1 and 2 of a store [`serving_during_a_flush`] wrote, through `store`, which must
 /// be as written.
 fn check_flushed(store: &Store<Stalling>, failure: &str) {
@@ -1108,6 +1131,11 @@ fn config() -> Config {
 /// Runs random schedules of `test`.
 fn randomly(test: fn()) {
     Runner::new(RandomScheduler::new(runs()), config()).run(test);
+}
+
+#[test]
+fn flushes_in_flight_keep_their_commits_pending() {
+    randomly(pending_during_a_flush);
 }
 
 #[test]

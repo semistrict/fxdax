@@ -65,6 +65,12 @@ impl<T> Durability<T> {
         !self.queue.is_empty()
     }
 
+    /// Whether commits ordered are not durable yet: waiting for a flush to take them, or taken by
+    /// one in flight.
+    pub fn pending(&self) -> bool {
+        self.ordered > self.durable
+    }
+
     /// The epoch of the last commit durable.
     pub fn durable(&self) -> u64 {
         self.durable
@@ -278,6 +284,11 @@ mod tests {
         durability.finish(batch.last);
         assert_eq!((durability.durable(), durability.taken()), (2, 2));
         assert!(durability.queued());
+        // Pending, taken or not, until durable.
+        let batch = durability.take().unwrap();
+        assert!(!durability.queued() && durability.pending());
+        durability.finish(batch.last);
+        assert!(!durability.pending());
     }
 
     /// A commit is ordered after the one before it, or not at all.
