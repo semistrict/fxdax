@@ -1815,6 +1815,24 @@ impl<D: Dir> Store<D> {
         Ok(closed)
     }
 
+    /// fxdax: puts the write-ahead log after the branch's end as a writer taking it again found
+    /// it, `fenced` (doc-7, Fencing; TASK-204): the segments of it that landed are acknowledged,
+    /// the rest stamped anew in memory, for the writer to take again, and the open segment's footer
+    /// goes on from them. As opening the store does, live: what the guest committed stays the
+    /// store's. Fails `Diverged` if another writer's commits moved the branch past the log.
+    pub fn rebase(&self, fenced: &Fenced) -> Result<(), Error> {
+        let landed = {
+            let mut state = self.state()?;
+            let (landed, chain) = state.wal.rebase(fenced)?;
+            state.segments.set_chain(chain);
+            landed
+        };
+        for number in landed {
+            self.acknowledged(number)?;
+        }
+        Ok(())
+    }
+
     /// fxdax: the extents `moved` says the collector moved, from where to where, as the uploader's
     /// writer names them where they went before its checkpoint lands (`Writer::following`): those
     /// the store reads in the bucket, held or kept, are named there too, if it names them on their

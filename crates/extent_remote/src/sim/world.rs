@@ -190,6 +190,11 @@ struct Host {
 /// A branch's writer on a host, and its guest.
 struct Session {
     id: u64,
+    /// The fencing token of the placement it is.
+    token: u64,
+    /// Whether its guest is one a writer before it had, displaced, which takes the branch again
+    /// keeping it (TASK-204).
+    kept: bool,
     writer: Option<Arc<SimWriter>>,
     tasks: Vec<AbortHandle>,
     guest: Guest,
@@ -563,6 +568,7 @@ impl World {
                         self.acknowledge(host, branch, session, writer);
                     }
                 }
+                Err(Error::Displaced) => self.retake(host, branch, session),
                 Err(_) => self.end(host, branch, session),
             },
             Event::Acked { host, branch, session, result, head } => match result {
@@ -587,6 +593,7 @@ impl World {
                         }
                     }
                 }
+                Err(Error::Displaced) => self.retake(host, branch, session),
                 Err(_) => self.end(host, branch, session),
             },
             Event::Failed { host, branch, session, error } => {
@@ -737,6 +744,23 @@ impl World {
         found.writer.clone()
     }
 
+    /// A session's writer displaced, an earlier writer's segment landed late where its own went,
+    /// takes the branch again on its host, as a store's uploader does (TASK-204): a session of the
+    /// same placement, its guest kept, whose writer puts the log, the guest's commits its writer
+    /// took and those since, after the branch's end.
+    fn retake(&mut self, host: usize, branch: u64, session: u64) {
+        let sessions = &mut self.hosts[host].sessions;
+        if !sessions.get(&branch).is_some_and(|found| found.id == session) {
+            return;
+        }
+        let mut ended = sessions.remove(&branch).unwrap();
+        let (guest, token) = (std::mem::take(&mut ended.guest), ended.token);
+        self.stop(host, branch, ended);
+        self.start_session(host, branch, Some(token));
+        let found = self.hosts[host].sessions.get_mut(&branch).unwrap();
+        (found.guest, found.kept) = (guest, true);
+    }
+
     /// Ends a session: its guest stops.
     fn end(&mut self, host: usize, branch: u64, session: u64) {
         let sessions = &mut self.hosts[host].sessions;
@@ -767,10 +791,16 @@ impl World {
             return;
         }
         let fenced = writer.fenced();
+        let kept = self.hosts[host].sessions[&branch].kept;
         let wals = &mut self.hosts[host].wals;
         let mut wal = wals.remove(&branch).unwrap_or_else(|| Wal::new(fenced.last_commit));
         let landed = match wal.rebase(&fenced) {
             Ok(landed) => landed,
+            // A writer taking the branch again refuses, as the store does: its guest goes.
+            Err(Error::Diverged) if kept => {
+                self.hosts[host].wals.insert(branch, wal);
+                return self.end(host, branch, session);
+            }
             Err(Error::Diverged) => {
                 wal = Wal::new(fenced.last_commit);
                 Vec::new()
@@ -809,6 +839,18 @@ impl World {
                 Ok(seq) => self.upload(host, branch, session, writer.clone(), seq),
                 Err(_) => return self.end(host, branch, session),
             }
+        }
+        // A guest kept goes on from its last commit, which the log, put after the branch's end,
+        // ends with, or the branch does: none lost.
+        let found = &self.hosts[host].sessions[&branch];
+        if found.kept {
+            let guest = found.guest.head;
+            if head != guest {
+                self.violation(format!(
+                    "branch {branch:x}, taken again, holds {head:?}, its guest's last {guest:?}"
+                ));
+            }
+            return;
         }
         let (held, _) = self.expected(head);
         let found = self.hosts[host].sessions.get_mut(&branch).unwrap();
@@ -1113,6 +1155,8 @@ impl World {
         let token = token.unwrap_or(holder);
         let started = Session {
             id: session,
+            token,
+            kept: false,
             writer: None,
             tasks: Vec::new(),
             guest: Guest::default(),

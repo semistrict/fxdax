@@ -331,20 +331,16 @@ mod tests {
     /// over from a writer still uploading, two segments of it in flight, the second landing past the
     /// fence, where the store's first goes, commits on.
     #[test]
-    #[ignore = "TASK-204"]
     fn takeovers_of_writers_still_uploading_keep_their_guests() {
         use extent_remote::{Batch, Commit, Writer};
         let dir = tempfile::tempdir().unwrap();
         let bucket = Arc::new(Bucket::new(Arc::new(InMemory::new()), ""));
-        let store =
-            kept_in(dir.path().join("store"), (1 << 30, None), &bucket.clone(), idle()).unwrap();
-        let branch = store.branch();
-        // The writer before, of another placement, its two segments in flight.
+        let (branch, token) =
+            (crate::host_store::new_branch(), crate::host_store::token().unwrap());
+        // The writer before, its two segments in flight.
         let before = futures::executor::block_on(async {
             branch::create(&*bucket, branch, 1).await.unwrap();
-            Writer::open(bucket.clone(), branch, 10, crate::host_store::token().unwrap())
-                .await
-                .unwrap()
+            Writer::open(bucket.clone(), branch, 10, token).await.unwrap()
         });
         let mut seqs = Vec::new();
         for tag in [1, 2] {
@@ -352,16 +348,23 @@ mod tests {
             let objects = Batch::from(commit).close(&mut before.chain()).frame();
             seqs.push(before.add_segment(objects).unwrap());
         }
-        // The store takes the branch over, fencing it after the first writer's fence.
-        // The second lands, past the fence, void; the first finds the fence at its place.
+        // A store takes the branch over, opening, its fence after the writer's.
+        let path = dir.path().join("store");
+        made_for(&path, branch, &bucket);
+        let store = reopened(&path, idle()).unwrap();
+        // The second lands, past the fence, void, where the store's first goes; the first finds
+        // the fence at its place.
         futures::executor::block_on(async {
             before.upload(seqs[1]).await.unwrap();
             assert_eq!(before.upload(seqs[0]).await, Err(extent_remote::Error::Fenced));
         });
+        // The store's writer, displaced, takes the branch again, and its commit is the branch's.
         write(&store, 1, &pattern(1, BLOCK));
+        let epoch = store.remote().unwrap().status().unwrap().lease.unwrap().epoch;
         let committed = store.commit(Some(b"after"));
-        let failed = store.remote().unwrap().failed();
-        assert_eq!((committed, failed), (Ok(()), None));
+        let remote = store.remote().unwrap();
+        assert_eq!((committed, remote.failed()), (Ok(()), None));
+        assert_eq!(remote.status().unwrap().lease.unwrap().epoch, epoch + 1);
         let after = (vec![(1, pattern(1, BLOCK))], Some(b"after".to_vec()));
         assert_eq!(uploaded(&bucket, branch), after);
     }

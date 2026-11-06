@@ -36,10 +36,13 @@
 //! child's store is made only then, opening it recovering the child from the bucket. A fork that
 //! fails before is deleted in the bucket, as the fork's alone ([`Remote::unfork`]).
 //!
-//! Every failure of its writer's stops the uploader for good, and the commits waiting for uploads
-//! fail with it from then on: its writer fenced, its branch deleted, or an earlier writer's segment
-//! found where its next goes (`extent_remote::Error::Displaced`). Only opening the store anew takes
-//! the branch again.
+//! A writer displaced, an earlier writer's segment found where its next goes, landed late past its
+//! fence (`extent_remote::Error::Displaced`), has the uploader take the branch again, the guest
+//! kept (doc-7, Fencing; TASK-204): a writer of a lease of its own, the store's write-ahead log put
+//! after the branch's end ([`Store::rebase`]), as opening the store does. Every other failure of
+//! its writer's stops the uploader for good, and the commits waiting for uploads fail with it from
+//! then on: its writer fenced, by a later writer, its branch deleted, or the log diverged, another
+//! writer's commits past it. Only opening the store anew takes the branch again then.
 
 use crate::{Dir, DirHold, File, Opening, Recovering, Store, read_object};
 use event_listener::{Event, Listener as _};
@@ -230,6 +233,7 @@ pub fn open<D: Dir>(
     let shared = Arc::new(Shared {
         store: std::sync::OnceLock::new(),
         writer: Default::default(),
+        token: Default::default(),
         point: Default::default(),
         forks: Default::default(),
         progress: Mutex::new(Progress::default()),
@@ -283,8 +287,10 @@ pub struct Remote<D: Dir> {
 struct Shared<D: Dir> {
     /// The store, once opened.
     store: std::sync::OnceLock<Arc<Store<D>>>,
-    /// The branch's writer, once it took the branch.
-    writer: std::sync::OnceLock<Arc<Writer<Bucket>>>,
+    /// The branch's writer, once it took the branch, and as it takes it again (TASK-204).
+    writer: Mutex<Option<Arc<Writer<Bucket>>>>,
+    /// The fencing token its writers take the branch's lease with, once one did.
+    token: std::sync::OnceLock<u64>,
     /// The point the store is of, if it is one.
     point: std::sync::OnceLock<Point>,
     /// The origins of the forks of the segments the uploader took, by their children: what a fork
@@ -479,7 +485,8 @@ impl<D: Dir> Remote<D> {
             true => Some(Ok(())),
             false => progress.failed.clone().map(Err),
         })?;
-        match shared.writer.get() {
+        let writer = shared.writer.lock().unwrap().clone();
+        match writer {
             Some(writer) if writer.refused(child) => {
                 Err(extent_remote::Error::ChildTaken(child).into())
             }
@@ -654,7 +661,7 @@ impl<D: Dir> Shared<D> {
             Err(err) => return started.send(Err(err)).unwrap(),
         };
         // A point's store has nothing to upload.
-        let Some(writer) = writer else {
+        let Some(mut writer) = writer else {
             while !self.progress.lock().unwrap().stop {
                 self.wake.notified().await;
             }
@@ -680,7 +687,13 @@ impl<D: Dir> Shared<D> {
                 let gathered = blocking(|| self.gather(&writer, &mut in_flight, close || stop));
                 let gathered = match gathered {
                     Ok(gathered) => gathered,
-                    Err(err) => return self.fail(&writer, err),
+                    Err(err) => match self.after(err, &bucket).await {
+                        Ok(taken) => {
+                            (writer, in_flight, more) = (taken, InFlight::default(), true);
+                            continue;
+                        }
+                        Err(err) => return self.fail(&writer, err),
+                    },
                 };
                 // Done with once closed; the segments the store had closed taking the room, it
                 // closes the next time.
@@ -715,7 +728,13 @@ impl<D: Dir> Shared<D> {
                 Err(err) => Err(err.into()),
             };
             if let Err(err) = acked {
-                return self.fail(&writer, err);
+                match self.after(err, &bucket).await {
+                    Ok(taken) => {
+                        (writer, in_flight, more) = (taken, InFlight::default(), true);
+                        continue;
+                    }
+                    Err(err) => return self.fail(&writer, err),
+                }
             }
             segments += 1;
             if segments % CHECKPOINT_EVERY == 0
@@ -794,29 +813,73 @@ impl<D: Dir> Shared<D> {
         };
         let writer = Arc::new(writer.uploading_within(self.uploads.clone()));
         let opening = Opening { state: writer.state(), fenced: Some(writer.fenced()), cache };
-        let store = Arc::new(blocking(|| recovering.open(options, opening))?);
-        // The store names what it reads in the bucket where the writer's checkpoints move it, as
-        // the writer does (TASK-195).
-        let following = Arc::downgrade(&store);
+        let store = blocking(|| recovering.open(options, opening))?;
+        let _ = self.store.set(Arc::new(store));
+        let _ = self.token.set(token);
+        self.took(&writer, token);
+        Ok(Some(writer))
+    }
+
+    /// `writer` took the branch, with the fencing token `token`: the store names what it reads in
+    /// the bucket where the writer's checkpoints move it, as the writer does (TASK-195); the
+    /// branch's commits are uploaded, its forks made, and what the store's write-ahead log holds
+    /// after them is the uploader's to upload.
+    fn took(&self, writer: &Arc<Writer<Bucket>>, token: u64) {
+        let following = Arc::downgrade(self.store());
         writer.following(move |moved| {
             let Some(store) = following.upgrade() else { return };
             if let Err(err) = store.moved(moved) {
                 log::warn!("fxdax: following the collector's moves: {err:#}");
             }
         });
-        let _ = self.store.set(store);
-        let _ = self.writer.set(writer.clone());
+        *self.writer.lock().unwrap() = Some(writer.clone());
         let lease = Lease { token, epoch: writer.epoch(), taken: SystemTime::now() };
         let mut progress = self.progress.lock().unwrap();
         (progress.next_sequence, progress.lease) = (writer.chain().next_sequence(), Some(lease));
-        // The branch's commits are uploaded, its forks made; what its write-ahead log holds after
-        // them is the uploader's to upload.
         if let Some(last) = writer.state().last_commit {
             progress.uploaded_through(epoch_of(last));
             progress.forked_through(epoch_of(last));
         }
         drop(progress);
-        Ok(Some(writer))
+        self.changed.notify(usize::MAX);
+    }
+
+    /// What uploading goes on with after `err`: if its writer was displaced, an earlier writer's
+    /// segment, landed late past its fence, where its own was to go, a writer taking the branch
+    /// again ([`Shared::retake`]); else `err`, which stops it.
+    async fn after(
+        &self,
+        err: Failure,
+        bucket: &Arc<Bucket>,
+    ) -> Result<Arc<Writer<Bucket>>, Failure> {
+        match err {
+            Failure::Remote(extent_remote::Error::Displaced) => self.retake(bucket).await,
+            err => Err(err),
+        }
+    }
+
+    /// Takes the branch again, its writer displaced (doc-7, Fencing; TASK-204): a writer of a lease
+    /// of its own fences the branch past every segment landed, and the store's write-ahead log goes
+    /// after the branch's end ([`Store::rebase`]), what of it landed acknowledged, the rest stamped
+    /// anew, which the new writer uploads. The guest's commits wait for it, none lost: the late
+    /// segment follows none of the branch's, void, and the branch's last commit is the store's own
+    /// or the one its log goes on from. Fails as opening a store does: `Diverged` if another
+    /// writer's commits moved the branch past the log, fenced if a later writer has it.
+    async fn retake(&self, bucket: &Arc<Bucket>) -> Result<Arc<Writer<Bucket>>, Failure> {
+        let store = self.store().clone();
+        let branch = store.description().branch;
+        let record = record(bucket, branch).await?.ok_or(extent_remote::Error::NoBranch)?;
+        let recovered = extent_remote::recover(&**bucket, branch, record.origin()).await?;
+        let token = *self.token.get().expect("a writer took the branch before");
+        let holder = rand::random();
+        let writer =
+            Writer::open_recovered(bucket.clone(), record, recovered, holder, token).await?;
+        let writer = Arc::new(writer.uploading_within(self.uploads.clone()));
+        let fenced = writer.fenced();
+        blocking(|| store.rebase(&fenced))?;
+        log::warn!("fxdax: branch {branch:x} displaced, taken again at epoch {}", writer.epoch());
+        self.took(&writer, token);
+        Ok(writer)
     }
 
     /// Opens the store of `branch` as a point, whose record is `record`: its state, which never
@@ -1052,7 +1115,7 @@ mod tests {
             store.commit(None).unwrap();
         }
         let shared = &remote.shared;
-        let writer = shared.writer.get().unwrap().clone();
+        let writer = shared.writer.lock().unwrap().clone().unwrap();
         let mut in_flight = InFlight::default();
         let mut taken = Vec::new();
         while shared.gather(&writer, &mut in_flight, true).unwrap().took {

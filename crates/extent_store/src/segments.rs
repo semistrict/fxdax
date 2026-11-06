@@ -374,6 +374,13 @@ impl<F: File> Segments<F> {
         log.clone()
     }
 
+    /// fxdax: has the footers of the segments closed from now on stamped by `chain`, the chain of
+    /// a writer that took the branch again, after the write-ahead log's last segment stamped anew
+    /// (`Store::rebase`, TASK-204).
+    pub fn set_chain(&mut self, chain: Chain) {
+        self.chain = chain;
+    }
+
     /// fxdax: the bytes of segment `number`'s data.
     pub fn len(&self, number: SegmentId) -> u64 {
         self.tracked.get(&number).map_or(0, |segment| segment.len)

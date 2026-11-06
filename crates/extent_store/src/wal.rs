@@ -41,8 +41,9 @@ use crate::layout::{
 use crate::segments::{fold, footer_last, segment_footer};
 use anyhow::{Context as _, Error, anyhow};
 use extent_frame::segment::{Chain, Contents, Footer, epoch_of, writer_of};
+use extent_remote::wal::Fenced;
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
 
 /// The file of the WAL's base.
@@ -368,6 +369,28 @@ impl Queue {
             taken.push(&*queued);
         }
         taken
+    }
+
+    /// Puts the queue after the branch's end, as a writer taking the branch again found it,
+    /// `fenced`, by commits (`extent_remote::Wal::rebase`): returns the numbers of its segments
+    /// that landed, the first, to be acknowledged; the rest are stamped anew, to be taken again,
+    /// and the chain after the last of them, which the open segment's footer goes on from.
+    /// `Diverged` if another writer's commits moved the branch past it.
+    pub fn rebase(&mut self, fenced: &Fenced) -> Result<(Vec<u64>, Chain), extent_remote::Error> {
+        let queued = self.segments.iter().map(|queued| (queued.footer.clone(), queued.number));
+        let mut wal = extent_remote::Wal::of(self.base, queued);
+        let landed = wal.rebase(fenced)?.into_iter().map(|(_, number)| number).collect();
+        let mut chain = fenced.chain;
+        let stamped: BTreeMap<u64, &Footer> =
+            wal.segments().map(|(footer, number)| (*number, footer)).collect();
+        for queued in &mut self.segments {
+            let Some(&footer) = stamped.get(&queued.number) else { continue };
+            chain = chain.admit(footer).expect("a log rebased follows the writer's chain");
+            queued.restamped |= *footer != queued.footer;
+            queued.footer = footer.clone();
+            queued.taken = false;
+        }
+        Ok((landed, chain))
     }
 
     /// The first segment, if any.
