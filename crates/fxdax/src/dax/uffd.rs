@@ -2449,6 +2449,74 @@ mod tests {
             assert_eq!(libc::munmap(memory, ps), 0);
         }
     }
+
+    /// fxdax: on a window that copies on write, a write to a page installed here, write-protected,
+    /// is a store, whichever thread makes it: the page is made private, the write made there, as
+    /// KVM's worker writes only pages not here, a load of a page here taking no fault. A test of a
+    /// worker's write must keep its page from here: `a_store_after_a_workers_write_waits_for_one_lift`
+    /// mapped zeros, which a host's `vm.max_map_count` past OrbStack's kept installed (GCE r691).
+    #[test]
+    fn writes_to_pages_here_are_stores_whoever_makes_them() {
+        use crate::dax::Source as _;
+        let ps = page_size() as usize;
+        // SAFETY: Maps anonymous memory, which this test owns.
+        let memory = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                ps,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+                -1,
+                0,
+            )
+        };
+        assert_ne!(memory, libc::MAP_FAILED);
+        let base = memory as usize;
+        // SAFETY: Only the test uses the memory, which outlives the window.
+        let stage = unsafe { UffdSecondStage::in_process(base, ps as u64, None) }.unwrap();
+        let copying = crate::dax::CopyOnWrite::reserve(crate::pages::ArenaId::DEFAULT, 1).unwrap();
+        let (mut dax, window) =
+            Dax::in_host_memory_copying(stage.clone(), Some(copying)).unwrap();
+        // In memory as it is mapped, so installed here at once.
+        let file = TestSource::filled(1, 9);
+        dax.map(0, &file.source(), 0, ps as u64);
+        let installed = stage.pages.lock().unwrap().pages[0].mapped.map(|mapped| mapped.installed);
+        assert_eq!(installed, Some(true));
+        let mut pipe = [0; 2];
+        // SAFETY: Creates a pipe, which the test closes.
+        assert_eq!(unsafe { libc::pipe(pipe.as_mut_ptr()) }, 0);
+        let read_into = move |base: usize| -> std::result::Result<(), i32> {
+            // SAFETY: Writes a byte to the pipe, and reads one into the window's memory.
+            unsafe {
+                assert_eq!(libc::write(pipe[1], [7u8].as_ptr().cast(), 1), 1);
+                match libc::read(pipe[0], base as *mut libc::c_void, 1) {
+                    1 => Ok(()),
+                    _ => Err(std::io::Error::last_os_error().raw_os_error().unwrap()),
+                }
+            }
+        };
+
+        // No thread of this process is the guest's.
+        let worker = std::thread::spawn(move || read_into(base)).join().unwrap();
+        assert_eq!(worker, Ok(()));
+        assert_eq!(window.private_pages(), 1);
+        // SAFETY: The window's page, private now, which nothing else accesses.
+        let page = unsafe { std::slice::from_raw_parts(base as *const u8, ps) };
+        assert_eq!(page[0], 7);
+        assert!(page[1..].iter().all(|&byte| byte == 9), "the private page holds other data");
+        let mut shared = 0;
+        // SAFETY: The extent's page is in memory while its lock is held.
+        file.each_present(0..1, &mut |_, frame| shared = unsafe { *frame.as_ptr() });
+        assert_eq!(shared, 9, "the write reached the extent's page");
+
+        drop(dax);
+        // SAFETY: Closes the pipe and unmaps the memory, which nothing uses any more.
+        unsafe {
+            libc::close(pipe[0]);
+            libc::close(pipe[1]);
+            assert_eq!(libc::munmap(memory, ps), 0);
+        }
+    }
     /// The lines of /proc/self/maps of the mappings in the `len` bytes at `base`.
     fn mappings_within(base: usize, len: usize) -> Vec<String> {
         let maps = std::fs::read_to_string("/proc/self/maps").unwrap();

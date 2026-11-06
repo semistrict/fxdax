@@ -950,6 +950,14 @@ fn a_stray_access_stays_refused_and_is_given_up_on() {
 /// makes the page private. A store failed once, then, or twice where the fault thread was slow to
 /// lift: 357 times while the VMM retried at once and a lift walked every page of the window, 140
 /// once a lift walked the pages restricted alone (printed, with the time the stores took).
+///
+/// The pages are a sealed extent's, not in memory, which the window maps without installing them
+/// here, as a forked VM's are: a page here, write-protected, takes a write as a store, whoever's
+/// (`dax::uffd`'s `writes_to_pages_here_are_stores_whoever_makes_them`). They were zeros once,
+/// which the window installs as it maps them: here only past the stage's budget of runs, which
+/// the host's `vm.max_map_count` sets. 262,144 on OrbStack left them out; GCE's 1,048,576 kept
+/// them, and the first worker's write made its page private (GCE r691). A run of failures is by
+/// the test's clock, a microsecond a failure: a loaded host may take a run's 10 ms between two.
 #[test]
 fn a_store_after_a_workers_write_waits_for_one_lift() {
     use crate::{AccessFailures, Failure};
@@ -964,20 +972,33 @@ fn a_store_after_a_workers_write_waits_for_one_lift() {
     let size = (PAGES * ps) as u64;
     // SAFETY: The memory is the test's, and outlives the store.
     unsafe { store.create_dax_window_in_host_memory(memory, size, None, STORES as u64) }.unwrap();
-    futures::executor::block_on(store.map_zeros_async(0, size)).unwrap();
+    let extent = ExtentId { branch: store.branch(), sequence: 1 };
+    write(&store, extent, 0, &pattern(5, ps)).unwrap();
+    store.commit(None).unwrap();
+    // Whatever of it the write left in memory evicted, so that mapping it installs nothing.
+    crate::cache::evict_least_used(None, |_| false);
+    // Every 64th page, as a forked guest's stores are spread over its window.
+    let offset = |page: usize| page * 64 * ps;
+    for page in 0..STORES {
+        store.map(extent, 0, ps as u64, offset(page) as u64).unwrap();
+    }
     let base = memory.as_ptr() as usize;
+    let told = crate::describe_windows(Some(base));
+    let pages = "0 pages installed, 0 left out, 0 private, 0 withheld, 0 restricted";
+    assert!(told.contains(pages), "the pages stored to are here: {told}");
     crate::guest_thread_started();
     let (mut failed, start) = (0u64, std::time::Instant::now());
+    let mut now = start;
     for page in 0..STORES {
-        // Every 64th page, as a forked guest's stores are spread over its window.
-        let addr = base + page * 64 * ps;
+        let addr = base + offset(page);
         let worker = std::thread::spawn(move || kernel_store(addr));
         assert_eq!(worker.join().unwrap(), Err(libc::EFAULT), "the worker's write went through");
         let mut failures = AccessFailures::default();
         while let Err(errno) = kernel_store(addr) {
             assert_eq!(errno, libc::EFAULT);
             failed += 1;
-            let retry = failures.failed(std::time::Instant::now());
+            now += std::time::Duration::from_micros(1);
+            let retry = failures.failed(now);
             assert!(matches!(retry, Failure::Retry { ended: None }), "{retry:?}");
         }
     }
@@ -992,6 +1013,11 @@ fn a_store_after_a_workers_write_waits_for_one_lift() {
     let pages = format!("{STORES} private, 0 withheld, 0 restricted (0 for workers' writes)");
     assert!(told.contains(&pages), "{told}");
     assert!(failed <= 2 * STORES as u64, "{failed} retries failed");
+    // SAFETY: The window's last page stored to, private now, which nothing else accesses.
+    let last = unsafe { std::slice::from_raw_parts((base + offset(STORES - 1)) as *const u8, ps) };
+    let mut stored = pattern(5, ps);
+    stored[0] = 0x77;
+    assert!(last == &stored[..], "the private page holds other data");
 
     drop(store);
     served.join().unwrap();
