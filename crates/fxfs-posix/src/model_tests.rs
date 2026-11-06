@@ -2857,3 +2857,18 @@ fn a_full_device_mounts_with_the_room_of_what_it_found_dead() {
     ];
     Setting::awkward(4758196049501471983, TIGHT).with_graveyard_of_seed().holds(ops);
 }
+
+/// A full device, unmounted cleanly, mounts again: replay's metadata reservation found less free
+/// than it asked of the device the sequence had filled (TASK-211). Found by the hunt of TASK-210.
+#[test]
+fn a_full_device_unmounted_cleanly_mounts_again() {
+    let ops = vec![
+        Op::Create(2),
+        Op::Create(0),
+        Op::Fill { file: 5, page: 0, pages: 1329, stride: 2, byte: 0 },
+        Op::Fill { file: 0, page: 0, pages: 1885, stride: 2, byte: 0 },
+        Op::Fill { file: 0, page: 0, pages: 45, stride: 1, byte: 0 },
+        Op::Punch { file: 0, page: 0, pages: 1 },
+    ];
+    Setting::awkward(0, TIGHT).with_graveyard_of_seed().holds(ops);
+}

@@ -182,7 +182,7 @@ use crate::serialized_types::{
 use anyhow::{Context, Error, anyhow, bail, ensure};
 use async_trait::async_trait;
 use either::Either::{Left, Right};
-use extent_table::{Applied, ExtentTable, Loading, Records, Recount};
+use extent_table::{Applied, Dropped, ExtentTable, Loading, Records, Recount};
 use fprint::TypeFingerprint;
 use fuchsia_async as fasync;
 use fuchsia_inspect::HistogramProperty;
@@ -2144,14 +2144,20 @@ impl JournalingObject for Allocator {
             let mut inner = self.inner.lock();
             let data_owner = inner.data_owner(owner_object_id);
             inner.owner_bytes.entry(data_owner).or_default().uncommitted_allocated_bytes -= len;
+            // fxdax: the extent's data may have been written: it dies, unless a shared extent's
+            // other allocations keep it, which then takes the range, as one allocated
+            // (`ExtentTable::drop_allocation`). What it takes is the reservation's, as a commit
+            // takes it; the rest goes back. Given back, it was taken twice: the next allocation in
+            // the extent counted it again, and a full device's mount then found less free than its
+            // filesystem had held (TASK-211).
+            let Dropped { records, kept } =
+                inner.extents.drop_allocation(&device_range, data_owner);
             if let Some(reservation) = transaction.allocator_reservation {
                 let res_owner = reservation.owner_object_id();
-                inner.add_reservation(res_owner, len);
-                reservation.release_reservation(res_owner, len);
+                inner.add_reservation(res_owner, len - kept);
+                reservation.release_reservation(res_owner, len - kept);
+                reservation.commit(kept);
             }
-            // fxdax: the extent's data may have been written: it dies, unless a shared extent's
-            // other allocations keep it (`ExtentTable::drop_allocation`).
-            let records = inner.extents.drop_allocation(&device_range, data_owner);
             self.record(records);
         }
     }
@@ -4223,6 +4229,49 @@ mod tests {
             .await
             .expect("allocate failed");
         (transaction, range)
+    }
+
+    /// fxdax: a shared allocation dropped leaves its range of the staging extent taken, as the
+    /// extent is written once and the next allocation in it starts past it: the extent takes it from
+    /// the drop on, and it isn't free for another to take, whether the transaction had a
+    /// reservation of its own or not. Given back, a reservation took it, and the next commit in the
+    /// extent took it again: the filesystem held more than the device, and its next mount couldn't
+    /// reserve its metadata (TASK-211).
+    #[fuchsia::test]
+    async fn test_a_shared_allocation_dropped_stays_taken() {
+        for reserved in [false, true] {
+            let (fs, allocator) = test_fs().await;
+            let bs = fs.block_size().get();
+            let reservation = allocator.clone().reserve(Some(99), 4 << 20).expect("reserve failed");
+            let options = Options {
+                allocator_reservation: reserved.then_some(&reservation),
+                ..Default::default()
+            };
+            let mut dropped =
+                fs.root_store().new_transaction(lock_keys![], options).await.expect("new failed");
+            let first = allocator.allocate_shared(&mut dropped, 99, bs).await.expect("allocate");
+            let options = Options {
+                allocator_reservation: reserved.then_some(&reservation),
+                ..Default::default()
+            };
+            let mut committed =
+                fs.root_store().new_transaction(lock_keys![], options).await.expect("new failed");
+            let second = allocator.allocate_shared(&mut committed, 99, bs).await.expect("allocate");
+            assert_eq!(second, ExtentRange::new(first.extent, bs..2 * bs));
+            // Whatever is free, a reservation takes.
+            let free = allocator.get_disk_bytes() - allocator.get_used_bytes().0;
+            let rest = allocator.clone().reserve(None, free).expect("reserve failed");
+            let held = || {
+                let (used, disk) = (allocator.get_used_bytes().0, allocator.get_disk_bytes());
+                assert!(used <= disk, "{used} bytes held of {disk}, reserved: {reserved}");
+            };
+            drop(dropped);
+            held();
+            committed.commit().await.expect("commit failed");
+            held();
+            drop((rest, reservation));
+            fs.close().await.expect("close failed");
+        }
     }
 
     /// Commits a transaction deallocating `range` of a store.

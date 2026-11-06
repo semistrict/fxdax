@@ -14,10 +14,13 @@
 //! - Pending ([`ExtentState::Pending`]), minted by `stage` for shared allocations, none of which
 //!   has committed: the staging extent, or one transactions not yet committed have allocated in.
 //!   Each of those pins it, as being the staging extent does. `commit` makes it allocated. It dies
-//!   with its last pin, taking nothing, as nothing records it: as `drop_allocation` drops it, or
-//!   as `stage` replaces it as the staging extent.
+//!   with its last pin, as nothing records it: as `drop_allocation` drops it, or as `stage`
+//!   replaces it as the staging extent. It takes as far as the allocations dropped in it reached,
+//!   as an allocated one does (see below).
 //! - Allocated ([`ExtentState::Allocated`]), by `commit` or `load`: alive, with some of it
-//!   allocated. It reaches as far as its last range, allocated or not, and each range allocated is
+//!   allocated. It reaches as far as its last range, allocated, deallocated or dropped (a shared
+//!   allocation `drop_allocation` drops leaves its range taken, as an extent is written once, and
+//!   the next allocation in it starts past it: TASK-211), and each range allocated is
 //!   referenced by one file's extents, or by more (reflinks). `commit` allocates more of it, and
 //!   `recount` changes the references to it, which leaves it allocated while some of it is. Once
 //!   `recount` deallocates the last of it, it is empty if pins hold it, as a shared one's still
@@ -121,8 +124,9 @@ pub(super) struct ExtentTable {
 #[derive(Debug)]
 enum ExtentState {
     /// Shared, with no allocation in it committed yet. `pins` hold it: one while it is the staging
-    /// extent, and one for each allocation in it of a transaction not yet committed.
-    Pending { pins: NonZero<usize> },
+    /// extent, and one for each allocation in it of a transaction not yet committed. It takes
+    /// `size` bytes: as far as allocations dropped in it reached.
+    Pending { pins: NonZero<usize>, size: u64 },
     /// Alive, with some of it allocated; and, if it is shared, held by `pins`, as above.
     Allocated { info: ExtentInfo, pins: usize },
     /// Alive, and shared, with nothing of it allocated, as `pins` hold it. It dies once they go, to
@@ -145,13 +149,23 @@ impl ExtentState {
         }
     }
 
-    /// The bytes the extent takes: as far as its last range, allocated or not; pending, none.
+    /// The bytes the extent takes: as far as its last range, allocated or not, or dropped.
     fn size(&self) -> u64 {
         match self {
-            ExtentState::Pending { .. } => 0,
             ExtentState::Allocated { info, .. } => info.size,
-            ExtentState::Empty { size, .. } => *size,
+            ExtentState::Pending { size, .. } | ExtentState::Empty { size, .. } => *size,
         }
+    }
+
+    /// Has the extent take as far as `end`, if it doesn't: returns how many bytes more it takes.
+    fn reach(&mut self, end: u64) -> u64 {
+        let size = match self {
+            ExtentState::Allocated { info, .. } => &mut info.size,
+            ExtentState::Pending { size, .. } | ExtentState::Empty { size, .. } => size,
+        };
+        let more = end.saturating_sub(*size);
+        *size += more;
+        more
     }
 
     /// The bytes of the extent allocated.
@@ -165,7 +179,7 @@ impl ExtentState {
     /// How many pins hold the extent.
     fn pins(&self) -> usize {
         match self {
-            ExtentState::Pending { pins } | ExtentState::Empty { pins, .. } => pins.get(),
+            ExtentState::Pending { pins, .. } | ExtentState::Empty { pins, .. } => pins.get(),
             ExtentState::Allocated { pins, .. } => *pins,
         }
     }
@@ -173,7 +187,7 @@ impl ExtentState {
     /// Adds a pin.
     fn pin(&mut self) {
         match self {
-            ExtentState::Pending { pins } | ExtentState::Empty { pins, .. } => {
+            ExtentState::Pending { pins, .. } | ExtentState::Empty { pins, .. } => {
                 *pins = pins.saturating_add(1)
             }
             ExtentState::Allocated { pins, .. } => *pins += 1,
@@ -339,6 +353,17 @@ pub(super) struct Recount {
     pub(super) died: Option<u64>,
 }
 
+/// What dropping an allocation did (`ExtentTable::drop_allocation`).
+#[must_use]
+#[derive(Debug)]
+pub(super) struct Dropped {
+    pub(super) records: Records,
+    /// The bytes of the range its extent takes from now on, which it didn't: those of a shared
+    /// extent that lives on. Those are as allocated, until the extent dies; the rest are free, at
+    /// once or once the extent is freed.
+    pub(super) kept: u64,
+}
+
 /// The extents the allocator's tree holds, as a mount finds them (`ExtentTable::load`).
 #[derive(Default)]
 pub(super) struct Loading(HashMap<ExtentId, Loaded>);
@@ -440,7 +465,7 @@ impl ExtentTable {
             None => Records::default(),
         };
         let extent = self.mint(branch, device);
-        self.extents.insert(extent, ExtentState::Pending { pins: NonZero::<usize>::MIN });
+        self.extents.insert(extent, ExtentState::Pending { pins: NonZero::<usize>::MIN, size: 0 });
         self.staging = Some(Staging { extent, owner_object_id, next: 0 });
         records
     }
@@ -478,7 +503,7 @@ impl ExtentTable {
         };
         let (mut info, mut pins) = match self.extents.remove(&extent) {
             None => (new(0), 0),
-            Some(ExtentState::Pending { pins }) => (new(0), pins.get()),
+            Some(ExtentState::Pending { pins, size }) => (new(size), pins.get()),
             Some(ExtentState::Empty { size, pins, .. }) => (new(size), pins.get()),
             Some(ExtentState::Allocated { mut info, pins }) => {
                 info.allocated = info.allocated.saturating_add(len.get());
@@ -586,10 +611,20 @@ impl ExtentTable {
     /// Drops the allocation of `range` for `owner_object_id`, of a transaction that dropped. The
     /// extent's data may have been written: it dies, as far as the range, to be freed at once,
     /// which the next flush seals. A shared extent's other allocations, and staging, keep it until
-    /// they go.
-    pub(super) fn drop_allocation(&mut self, range: &ExtentRange, owner_object_id: u64) -> Records {
+    /// they go, and it takes the range meanwhile, as it does a range allocated: an extent is written
+    /// once, and its next allocation starts past it (TASK-211).
+    pub(super) fn drop_allocation(&mut self, range: &ExtentRange, owner_object_id: u64) -> Dropped {
         if self.is_pinned(range.extent) {
-            return self.unpin(range.extent);
+            let state = self.extents.get_mut(&range.extent).expect("a pinned extent is held");
+            let before = state.size();
+            self.alive_bytes += state.reach(range.range.end);
+            let records = self.unpin(range.extent);
+            // Dead with its last pin, it takes nothing alive: what it took is freed with it.
+            let kept = match self.extents.contains_key(&range.extent) {
+                true => range.range.end.saturating_sub(before.max(range.range.start)),
+                false => 0,
+            };
+            return Dropped { records, kept };
         }
         // Branch 0's extents are those no allocator mints, which aren't freed.
         if range.extent.branch != 0 {
@@ -600,7 +635,7 @@ impl ExtentTable {
                 owner_object_id,
             });
         }
-        Records::default()
+        Dropped { records: Records::default(), kept: 0 }
     }
 
     /// Drops a pin of `extent`, if pins hold it. Once none do, a pending one dies, as no
@@ -614,7 +649,9 @@ impl ExtentTable {
         };
         match state {
             ExtentState::Allocated { pins, .. } => *pins = pins.saturating_sub(1),
-            ExtentState::Pending { pins } | ExtentState::Empty { pins, .. } if pins.get() > 1 => {
+            ExtentState::Pending { pins, .. } | ExtentState::Empty { pins, .. }
+                if pins.get() > 1 =>
+            {
                 *pins = NonZero::new(pins.get() - 1).unwrap()
             }
             ExtentState::Pending { .. } => self.die(extent, FreeAfter::Now),
@@ -1105,8 +1142,10 @@ mod tests {
         assert_eq!(table.alive().collect::<Vec<_>>(), [(staging, OWNER, 0)]);
         table.check();
 
-        // Dropped, the third allocation leaves staging to hold it.
-        assert!(table.drop_allocation(&third, OWNER).0.is_empty());
+        // Dropped, the third allocation leaves staging to hold it, which takes its range.
+        let dropped = table.drop_allocation(&third, OWNER);
+        assert!(dropped.records.0.is_empty());
+        assert_eq!((dropped.kept, table.alive_bytes()), (BS, 3 * BS));
         assert!(table.is_alive(staging));
         assert!(table.dead_extents().is_empty());
         table.check();
@@ -1116,15 +1155,16 @@ mod tests {
         let (next, records) = table.stage(DEFAULT_BRANCH, OWNER, BS, &device);
         let spare = ExtentId::new(DEFAULT_BRANCH, staging.sequence + 1);
         assert_eq!(next, ExtentRange::new(spare, 0..BS));
-        assert_eq!(records.0, [removed(staging, 2 * BS)]);
+        assert_eq!(records.0, [removed(staging, 3 * BS)]);
         assert!(!table.is_alive(staging));
         assert_eq!(table.extent_size(staging, &device), None);
-        assert_eq!(table.dead_extents(), [(staging, FreeAfter::Flush(40), 2 * BS, OWNER)]);
+        assert_eq!(table.dead_extents(), [(staging, FreeAfter::Flush(40), 3 * BS, OWNER)]);
         table.check();
     }
 
     /// A staging extent that no allocation committed in dies once nothing pins it, unrecorded, and
-    /// taking nothing, to be freed at once, as its data may have been written.
+    /// taking what the allocations dropped in it reached, to be freed at once, as its data may have
+    /// been written.
     #[fuchsia::test]
     async fn a_staging_extent_nothing_committed_in_dies_unrecorded() {
         let device = FakeDevice::new(64, BS as u32);
@@ -1132,9 +1172,12 @@ mod tests {
         let (range, records) = table.stage(DEFAULT_BRANCH, OWNER, BS, &device);
         assert!(records.0.is_empty());
         let staging = range.extent;
-        assert!(table.drop_allocation(&range, OWNER).0.is_empty());
+        let dropped = table.drop_allocation(&range, OWNER);
+        assert!(dropped.records.0.is_empty());
+        assert_eq!(dropped.kept, BS);
         assert!(table.is_pinned(staging));
         assert!(table.dead_extents().is_empty());
+        assert_eq!(table.alive_bytes(), BS);
         table.check();
 
         // Sealed, it is replaced by the next shared allocation's.
@@ -1143,9 +1186,42 @@ mod tests {
         assert_ne!(next.extent, staging);
         assert!(records.0.is_empty());
         assert!(!table.is_pinned(staging));
-        assert_eq!(table.dead_extents(), [(staging, FreeAfter::Now, 0, INVALID_OBJECT_ID)]);
-        assert_eq!(table.dead_bytes(), 0);
+        assert_eq!(table.dead_extents(), [(staging, FreeAfter::Now, BS, INVALID_OBJECT_ID)]);
+        assert_eq!((table.alive_bytes(), table.dead_bytes()), (0, BS));
         table.check();
+    }
+
+    /// An allocation dropped in a shared extent that lives on leaves its range taken, as the extent
+    /// is written once and its next allocation starts past it: the extent takes it from then on,
+    /// once, whichever of its allocations commits or drops first. Given back, the range was taken
+    /// twice: a full device's filesystem held more than the device, and its next mount found too
+    /// little free to reserve its metadata (TASK-211).
+    #[fuchsia::test]
+    async fn a_shared_extent_takes_what_was_dropped_in_it_once() {
+        let device = FakeDevice::new(64, BS as u32);
+        for drop_first in [true, false] {
+            let mut table = ExtentTable::default();
+            let (first, _) = table.stage(DEFAULT_BRANCH, OWNER, 2 * BS, &device);
+            let (second, _) = table.stage(DEFAULT_BRANCH, OWNER, BS, &device);
+            assert_eq!(second, ExtentRange::new(first.extent, 2 * BS..3 * BS));
+            let kept = if drop_first {
+                let dropped = table.drop_allocation(&first, OWNER);
+                assert!(dropped.records.0.is_empty());
+                assert_eq!(table.alive_bytes(), 2 * BS);
+                commit(&mut table, &second, Applied::Live(10));
+                dropped.kept
+            } else {
+                commit(&mut table, &second, Applied::Live(10));
+                // The second's commit took the extent as far as its end, the first's range too.
+                assert_eq!(table.alive_bytes(), 3 * BS);
+                table.drop_allocation(&first, OWNER).kept
+            };
+            assert_eq!(kept, if drop_first { 2 * BS } else { 0 });
+            assert_eq!(table.alive().collect::<Vec<_>>(), [(first.extent, OWNER, BS)]);
+            assert_eq!(table.extent_size(first.extent, &device), Some(STAGING_SIZE));
+            assert_eq!(table.alive_bytes(), 3 * BS);
+            table.check();
+        }
     }
 
     /// An extent a dropped transaction allocated dies, as far as it was allocated, to be freed at
@@ -1155,10 +1231,11 @@ mod tests {
         let device = FakeDevice::new(64, BS as u32);
         let mut table = ExtentTable::default();
         let extent = table.mint(DEFAULT_BRANCH, &device);
-        let records = table.drop_allocation(&ExtentRange::new(extent, 0..2 * BS), OWNER);
-        assert!(records.0.is_empty());
+        let dropped = table.drop_allocation(&ExtentRange::new(extent, 0..2 * BS), OWNER);
+        assert!(dropped.records.0.is_empty());
+        assert_eq!(dropped.kept, 0);
         let unminted = ExtentRange::new(ExtentId::new(0, 7), 0..BS);
-        assert!(table.drop_allocation(&unminted, OWNER).0.is_empty());
+        assert!(table.drop_allocation(&unminted, OWNER).records.0.is_empty());
         assert_eq!(table.dead_extents(), [(extent, FreeAfter::Now, 2 * BS, OWNER)]);
         assert_eq!(table.dead_bytes(), 2 * BS);
         table.check();

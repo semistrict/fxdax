@@ -715,6 +715,18 @@ impl FxFilesystem {
                 Err(error) => Err(error),
             }
         };
+        // fxdax: with nothing in flight, what the filesystem holds, its metadata reservation
+        // included, which the next mount reserves again, fits in the device: one holding more
+        // counted bytes it didn't hold, and its next mount fails (TASK-211).
+        if let Ok(Some(_)) = &sync_status {
+            let allocator = self.allocator();
+            let (used, disk) = (allocator.get_used_bytes().0, allocator.get_disk_bytes());
+            debug_assert!(
+                used <= disk,
+                "the filesystem holds {used} bytes of a device of {disk}: {}",
+                allocator.owner_bytes_debug()
+            );
+        }
         match &sync_status {
             Ok(None) => {}
             Ok(checkpoint) => info!(
