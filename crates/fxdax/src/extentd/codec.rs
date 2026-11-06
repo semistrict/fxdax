@@ -418,7 +418,7 @@ impl<'a> Request<'a> {
                     }
                     false => (Data::Inline(&payload[..]), &[][..]),
                 };
-                if !has(WRITE_ROOT) && !root.is_empty() {
+                if (!has(WRITE_ROOT) && !root.is_empty()) || root.len() > MAX_ROOT {
                     return Err(Errno::EINVAL);
                 }
                 let after = has(WRITE_COMMIT)
@@ -456,6 +456,10 @@ impl<'a> Request<'a> {
                 let root = has(COMMIT_ROOT).then_some(&payload[..]);
                 if root.is_none() {
                     nothing()?;
+                }
+                // fxdax: no more than a root holds (TASK-149.17).
+                if root.is_some_and(|root| root.len() > MAX_ROOT) {
+                    return Err(Errno::EINVAL);
                 }
                 let commit = if has(COMMIT_DURABLE) { Commit::Durable } else { Commit::Ordered };
                 Request::Commit { commit, root }

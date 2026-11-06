@@ -198,6 +198,12 @@ pub(crate) const BUILD: u32 = 28;
 // 29 was the guest's answer to an ask to seal, writable DAX's (TASK-153.15), not reused.
 /// fxdax: the most bytes a [`BUILD`]'s commit has.
 pub(crate) const MAX_BUILD: usize = 64;
+/// fxdax: the most bytes a root holds ([`COMMIT_ROOT`], [`WRITE_ROOT`]), `EINVAL` past it: the
+/// extent device's (doc-4's `max_root`, Firecracker's `MAX_ROOT`), which a guest's root is within
+/// (TASK-149.17). A VM process's was as large as a payload, 64 MiB, which its store kept, and wrote
+/// with its commits, and which each `ROOT` copied into its reply, uncounted: 16 of them at once
+/// held 768 MiB.
+pub(crate) const MAX_ROOT: usize = 4096;
 /// fxdax: makes the `args[1]` bytes of the window at `args[0]` private now, as stores to each page
 /// would, mapped writable, for the guest ahead of its accesses: doc-4's `PRIVATE` (backlog
 /// doc-13). `ENOMEM`, none made private, past the window's private pages; `EINVAL` of a

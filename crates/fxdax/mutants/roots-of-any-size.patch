@@ -1,0 +1,15 @@
+# A COMMIT's root as large as a payload is taken, which each ROOT then copies into its reply,
+# uncounted by the connection's room: 768 MiB held of 16 (TASK-149.17).
+# Kind: memory
+# Killer: extentd::tests::hostile::what_requests_hold_is_within_the_room
+--- a/crates/fxdax/src/extentd/codec.rs
++++ b/crates/fxdax/src/extentd/codec.rs
+@@ -427,7 +427,7 @@
+                     nothing()?;
+                 }
+                 // fxdax: no more than a root holds (TASK-149.17).
+-                if root.is_some_and(|root| root.len() > MAX_ROOT) {
++                if root.is_some_and(|root| root.len() > MAX_PAYLOAD as usize) {
+                     return Err(Errno::EINVAL);
+                 }
+                 let commit = if has(COMMIT_DURABLE) { Commit::Durable } else { Commit::Ordered };
