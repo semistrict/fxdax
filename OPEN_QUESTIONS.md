@@ -49,6 +49,7 @@ Decisions made without you, still yours to confirm or overturn. Each is a line o
 - **A restore maps its snapshot's window again in one request, `MAP_MANY` (32), eagerly,** not a `MAP` each; mapping lazily on faults was measured and given up (dead-ends/lazy-restore-of-window-mappings.md). TASK-92.14, 2026-11-05.
 - **A VM process, its daemon and its device each say a version and refuse another:** `wire::VERSION` in OPEN's `args[4]` and its reply's, which a fingerprint test ties to the wire; every request required (`BUILD`, `TRANSFER`); `VIRTIO_EXTENT_VERSION` first in the device's configuration, its features no negotiation (a driver takes every one offered), a snapshot of another protocol refused; the driver's test sets its version by `virtio_extent.version`. The control API's "v1 only grows" is left as it is. TASK-141.3, 2026-11-05.
 - **SIGTERM drains the daemon:** VMs still connected are cut off at once; within `FXDAX_EXTENTD_DRAIN` (60 s), exit 1 past it; done once no uploader runs, each connection's last commits uploaded with its store still open (TASK-192 says why not at close). TASK-141.4, 2026-11-05.
+- **A restore opens a store already at its path only if it holds what the point does** (root and extents: the snapshotted store unwritten since, or a fork an earlier restore left unwritten); any other is refused with `EEXIST` and left as it is, not forked afresh over, which would throw away what its VM wrote. TASK-194, 2026-11-06.
 
 ## DAX
 

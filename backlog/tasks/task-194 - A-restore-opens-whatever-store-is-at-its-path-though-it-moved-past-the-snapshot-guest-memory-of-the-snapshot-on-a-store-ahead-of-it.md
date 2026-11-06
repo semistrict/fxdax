@@ -3,10 +3,11 @@ id: TASK-194
 title: >-
   A restore opens whatever store is at its path, though it moved past the
   snapshot: guest memory of the snapshot on a store ahead of it
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-11-06 06:43'
-updated_date: '2026-11-06 06:52'
+updated_date: '2026-11-06 07:24'
 labels:
   - bug
   - restore
@@ -42,3 +43,19 @@ Legitimate cases must keep working: a snapshot taken, then the VM stopped withou
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. ExtentStore::holds_what: same root and extents (lengths, ancestors' included) as another store, from extent_store's snapshot.
+2. stores::at_point: the restore's point (kept open, or taken as fork_from takes it) compared with the store already at the path; EEXIST, logged, otherwise, nothing changed.
+3. Connection::open_held: for ForkFrom with a store at the path (not unmade), check before taking over or opening it to write.
+4. Tests: restores_refuse_a_store_written_since_its_point un-ignored (and the store left as it was); restores_open_stores_still_at_their_point (the snapshotted store unwritten, a retried restore over an unwritten fork, then refused once written).
+5. docs/integrator-guide.md: what path_on_host a restore may name.
+<!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Decision: refuse (EEXIST), not fork afresh: a fresh fork over the path would delete what the VM wrote since; the test filed with the task expected EEXIST. Compared by state (root and extents), not epochs: the point's Origin.at is a bucket segment number, not a store's local epoch, and a fork's first epoch is a store-format detail; equal state is what the guest's memory needs. Red without the check (both tests), green with it; extentd's restore, snapshot and point tests 40/40 (Linux Docker).
+<!-- SECTION:NOTES:END -->
