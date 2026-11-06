@@ -112,7 +112,6 @@ int fxfs_device_submit(struct fxfs_device *dev, const struct fxfs_device_op *op,
 	r->req.flags = op->flags;
 	r->req.id = (struct vext_id) { op->branch, op->sequence };
 	r->req.offset = op->offset;
-	r->req.len = op->len;
 	r->req.data = op->data;
 	r->req.data_len = op->len;
 	r->req.root = op->root;

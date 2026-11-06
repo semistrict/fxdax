@@ -539,7 +539,7 @@ int virtio_extent_submit(struct virtio_extent *vext, struct vext_request *req)
 		sim_panic("request %u", req->type);
 	req->status = extent && extent->held ? 0 : -ENOENT;
 	if (extent && extent->held)
-		host_store_read(extent->store_offset + req->offset, req->data, req->len);
+		host_store_read(extent->store_offset + req->offset, req->data, req->data_len);
 	req->done(req);
 	return 0;
 }

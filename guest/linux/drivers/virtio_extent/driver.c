@@ -178,21 +178,6 @@ bool virtio_extent_read_only(struct virtio_extent *vext)
 }
 EXPORT_SYMBOL_GPL(virtio_extent_read_only);
 
-/* Whether `req` would write a read-only device's store, which it refuses. */
-static bool vext_writes(const struct vext_request *req)
-{
-	switch (req->type) {
-	case VIRTIO_EXTENT_T_WRITE:
-	case VIRTIO_EXTENT_T_FREE:
-	case VIRTIO_EXTENT_T_COMMIT:
-	case VIRTIO_EXTENT_T_RESIZED:
-	case VIRTIO_EXTENT_T_PRIVATE:
-		return true;
-	default:
-		return false;
-	}
-}
-
 /* Describes `len` bytes of `buf`, kmalloc'd or vmalloc'd, in `sgt`, a page at a time if need be. */
 static int vext_map_data(struct sg_table *sgt, void *buf, size_t len)
 {
@@ -223,136 +208,160 @@ static int vext_map_data(struct sg_table *sgt, void *buf, size_t len)
 	return 0;
 }
 
-/* The length of the root a WRITE's commit sets (WRITE_ROOT), after its data: 0 if none. */
-static u32 vext_root_len(struct vext_request *req)
+static struct virtio_extent_id vext_wire_id(struct vext_id id)
 {
-	if (req->type == VIRTIO_EXTENT_T_WRITE && req->flags & VIRTIO_EXTENT_WRITE_ROOT)
-		return req->root_len;
-	return 0;
+	return (struct virtio_extent_id) { cpu_to_le64(id.branch), cpu_to_le64(id.sequence) };
 }
 
-/* The arguments' length for a request of `type`, or a -errno for an unknown type. */
-static int vext_args(struct vext_request *req)
+/*
+ * The encoders of requests' arguments, into req->args, given the lengths of the data and the root
+ * the request carries: the arguments' length.
+ */
+static u32 vext_args_io(struct vext_request *req, u32 data_len, u32 root_len)
 {
-	switch (req->type) {
-	case VIRTIO_EXTENT_T_READ:
-	case VIRTIO_EXTENT_T_WRITE:
-		req->args.io = (struct virtio_extent_io) {
-			.id = { cpu_to_le64(req->id.branch), cpu_to_le64(req->id.sequence) },
-			.offset = cpu_to_le64(req->offset),
-			.len = cpu_to_le32(req->len),
-			.root_len = cpu_to_le32(vext_root_len(req)),
-		};
-		return sizeof(req->args.io);
-	case VIRTIO_EXTENT_T_FREE:
-	case VIRTIO_EXTENT_T_PIN:
-	case VIRTIO_EXTENT_T_UNPIN:
-		req->args.id = (struct virtio_extent_id) {
-			cpu_to_le64(req->id.branch), cpu_to_le64(req->id.sequence)
-		};
-		return sizeof(req->args.id);
-	case VIRTIO_EXTENT_T_MAP:
-		req->args.map = (struct virtio_extent_map) {
-			.id = { cpu_to_le64(req->id.branch), cpu_to_le64(req->id.sequence) },
-			.offset = cpu_to_le64(req->offset),
-			.len = cpu_to_le64(req->len),
-			.window_offset = cpu_to_le64(req->window_offset),
-		};
-		return sizeof(req->args.map);
-	case VIRTIO_EXTENT_T_UNMAP:
-		req->args.unmap = (struct virtio_extent_unmap) {
-			.window_offset = cpu_to_le64(req->window_offset),
-			.len = cpu_to_le64(req->len),
-		};
-		return sizeof(req->args.unmap);
-	case VIRTIO_EXTENT_T_PRIVATE:
-		req->args.private = (struct virtio_extent_private) {
-			.window_offset = cpu_to_le64(req->window_offset),
-			.len = cpu_to_le64(req->len),
-		};
-		return sizeof(req->args.private);
-	case VIRTIO_EXTENT_T_COMMIT:
-		req->args.commit = (struct virtio_extent_commit) {
-			.root_len = cpu_to_le32(req->flags & VIRTIO_EXTENT_COMMIT_ROOT ?
-							req->data_len : 0),
-		};
-		return sizeof(req->args.commit);
-	case VIRTIO_EXTENT_T_ROOT:
-	case VIRTIO_EXTENT_T_INFO:
-	case VIRTIO_EXTENT_T_FREEZE:
-	case VIRTIO_EXTENT_T_ADVANCE:
-		return 0;
-	case VIRTIO_EXTENT_T_LET_GO:
-		req->args.epoch = (struct virtio_extent_epoch) {
-			.epoch = cpu_to_le64(req->offset),
-		};
-		return sizeof(req->args.epoch);
-	case VIRTIO_EXTENT_T_RESIZED:
-		req->args.resized = (struct virtio_extent_resized) {
-			.capacity = cpu_to_le64(req->offset),
-		};
-		return sizeof(req->args.resized);
-	default:
-		return -EINVAL;
-	}
+	req->args.io = (struct virtio_extent_io) {
+		.id = vext_wire_id(req->id),
+		.offset = cpu_to_le64(req->offset),
+		.len = cpu_to_le32(data_len),
+		.root_len = cpu_to_le32(root_len),
+	};
+	return sizeof(req->args.io);
 }
 
-/* The length of the data the device reads (`out`) or writes for `req`. */
-static void vext_data_len(struct vext_request *req, size_t *out, size_t *in)
+static u32 vext_args_id(struct vext_request *req, u32 data_len, u32 root_len)
 {
-	*out = 0;
-	*in = 0;
-	switch (req->type) {
-	case VIRTIO_EXTENT_T_READ:
-		*in = req->len;
-		break;
-	case VIRTIO_EXTENT_T_WRITE:
-		*out = req->len;
-		break;
-	case VIRTIO_EXTENT_T_COMMIT:
-		if (req->flags & VIRTIO_EXTENT_COMMIT_ROOT)
-			*out = req->data_len;
-		break;
-	case VIRTIO_EXTENT_T_FREE:
-		if (req->flags & VIRTIO_EXTENT_FREE_MANY)
-			*out = req->data_len;
-		break;
-	case VIRTIO_EXTENT_T_MAP:
-		if (req->flags & VIRTIO_EXTENT_MAP_MANY)
-			*out = req->data_len;
-		break;
-	case VIRTIO_EXTENT_T_ROOT:
-	case VIRTIO_EXTENT_T_INFO:
-	case VIRTIO_EXTENT_T_ADVANCE:
-		*in = req->data_len;
-		break;
-	}
+	req->args.id = vext_wire_id(req->id);
+	return sizeof(req->args.id);
+}
+
+static u32 vext_args_map(struct vext_request *req, u32 data_len, u32 root_len)
+{
+	req->args.map = (struct virtio_extent_map) {
+		.id = vext_wire_id(req->id),
+		.offset = cpu_to_le64(req->offset),
+		.len = cpu_to_le64(req->len),
+		.window_offset = cpu_to_le64(req->window_offset),
+	};
+	return sizeof(req->args.map);
+}
+
+static u32 vext_args_unmap(struct vext_request *req, u32 data_len, u32 root_len)
+{
+	req->args.unmap = (struct virtio_extent_unmap) {
+		.window_offset = cpu_to_le64(req->window_offset),
+		.len = cpu_to_le64(req->len),
+	};
+	return sizeof(req->args.unmap);
+}
+
+static u32 vext_args_private(struct vext_request *req, u32 data_len, u32 root_len)
+{
+	req->args.private = (struct virtio_extent_private) {
+		.window_offset = cpu_to_le64(req->window_offset),
+		.len = cpu_to_le64(req->len),
+	};
+	return sizeof(req->args.private);
+}
+
+/* A COMMIT's data is the root it sets. */
+static u32 vext_args_commit(struct vext_request *req, u32 data_len, u32 root_len)
+{
+	req->args.commit = (struct virtio_extent_commit) { .root_len = cpu_to_le32(data_len) };
+	return sizeof(req->args.commit);
+}
+
+static u32 vext_args_resized(struct vext_request *req, u32 data_len, u32 root_len)
+{
+	req->args.resized = (struct virtio_extent_resized) { .capacity = cpu_to_le64(req->offset) };
+	return sizeof(req->args.resized);
+}
+
+static u32 vext_args_epoch(struct vext_request *req, u32 data_len, u32 root_len)
+{
+	req->args.epoch = (struct virtio_extent_epoch) { .epoch = cpu_to_le64(req->offset) };
+	return sizeof(req->args.epoch);
+}
+
+/* Which way a request's data goes: to the device, which reads it, or from it, which writes it. */
+enum vext_way { VEXT_NO_DATA, VEXT_OUT, VEXT_IN };
+
+/*
+ * fxdax: what a request of a type carries after its header, a row per type, its whole wire
+ * contract (TASK-160.7): its arguments, which `args` encodes, if it has any; its data, the
+ * request's `data_len` bytes, which go `data`'s way, if the request has the flag `data_if`, or
+ * always if that is 0; and a root after its data, the request's `root_len` bytes, if it has the
+ * flag `root_if`. And its name, its counters' in sysfs, and whether it writes the store, which a
+ * read-only device refuses.
+ */
+static const struct vext_type {
+	const char *name;
+	u32 (*args)(struct vext_request *req, u32 data_len, u32 root_len);
+	enum vext_way data;
+	u32 data_if;
+	u32 root_if;
+	bool writes;
+} vext_types[VIRTIO_EXTENT_T_LAST + 1] = {
+	[VIRTIO_EXTENT_T_READ] = { "read", vext_args_io, VEXT_IN },
+	[VIRTIO_EXTENT_T_WRITE] = { "write", vext_args_io, VEXT_OUT,
+				    .root_if = VIRTIO_EXTENT_WRITE_ROOT, .writes = true },
+	[VIRTIO_EXTENT_T_FREE] = { "free", vext_args_id, VEXT_OUT, VIRTIO_EXTENT_FREE_MANY,
+				   .writes = true },
+	[VIRTIO_EXTENT_T_MAP] = { "map", vext_args_map, VEXT_OUT, VIRTIO_EXTENT_MAP_MANY },
+	[VIRTIO_EXTENT_T_UNMAP] = { "unmap", vext_args_unmap },
+	[VIRTIO_EXTENT_T_COMMIT] = { "commit", vext_args_commit, VEXT_OUT,
+				     VIRTIO_EXTENT_COMMIT_ROOT, .writes = true },
+	[VIRTIO_EXTENT_T_ROOT] = { "root", NULL, VEXT_IN },
+	[VIRTIO_EXTENT_T_INFO] = { "info", NULL, VEXT_IN },
+	[VIRTIO_EXTENT_T_RESIZED] = { "resized", vext_args_resized, .writes = true },
+	[VIRTIO_EXTENT_T_FREEZE] = { "freeze" },
+	[VIRTIO_EXTENT_T_ADVANCE] = { "advance", NULL, VEXT_IN },
+	[VIRTIO_EXTENT_T_LET_GO] = { "let_go", vext_args_epoch },
+	[VIRTIO_EXTENT_T_PIN] = { "pin", vext_args_id },
+	[VIRTIO_EXTENT_T_UNPIN] = { "unpin", vext_args_id },
+	/* 15 was writable DAX's SEALED: no type. */
+	[VIRTIO_EXTENT_T_PRIVATE] = { "private", vext_args_private, .writes = true },
+};
+
+/* The row of `req`'s type, or NULL if it has none. */
+static const struct vext_type *vext_type(const struct vext_request *req)
+{
+	if (req->type > VIRTIO_EXTENT_T_LAST || !vext_types[req->type].name)
+		return NULL;
+	return &vext_types[req->type];
+}
+
+/* Whether `req` has `flag`, which none is had always. */
+static bool vext_has(const struct vext_request *req, u32 flag)
+{
+	return !flag || req->flags & flag;
 }
 
 int virtio_extent_submit(struct virtio_extent *vext, struct vext_request *req)
 {
+	const struct vext_type *type = vext_type(req);
 	struct scatterlist hdr, args, root, resp, *sgs[5];
 	unsigned int out_sgs = 0, in_sgs = 0, descs;
+	u32 args_len, data_len, root_len;
 	struct vext_queue *queue;
-	size_t out_len, in_len;
 	unsigned long flags;
-	int args_len, err;
+	int err;
 
+	if (!type)
+		return -EINVAL;
 	/* fxdax: a follower's filesystem writes nothing: a write here is its bug (doc-8, testing 1). */
-	if (WARN_ON_ONCE(virtio_extent_read_only(vext) && vext_writes(req)))
+	if (WARN_ON_ONCE(type->writes && virtio_extent_read_only(vext)))
 		return -EROFS;
 	/* fxdax: it has no queues then. */
 	if (READ_ONCE(vext->closed))
 		return -ESHUTDOWN;
-	args_len = vext_args(req);
-	if (args_len < 0)
-		return args_len;
-	vext_data_len(req, &out_len, &in_len);
-	if (out_len + in_len > 0 && !req->data)
+	data_len = type->data && vext_has(req, type->data_if) ? req->data_len : 0;
+	root_len = type->root_if && req->flags & type->root_if ? req->root_len : 0;
+	if (data_len && !req->data)
 		return -EINVAL;
 	/* The root is in one piece: kmalloc'd. */
-	if (vext_root_len(req) && (!req->root || is_vmalloc_addr(req->root)))
+	if (root_len && (!req->root || is_vmalloc_addr(req->root)))
 		return -EINVAL;
+	args_len = type->args ? type->args(req, data_len, root_len) : 0;
 	req->hdr = (struct virtio_extent_req) {
 		.type = cpu_to_le32(req->type),
 		.flags = cpu_to_le32(req->flags),
@@ -360,26 +369,27 @@ int virtio_extent_submit(struct virtio_extent *vext, struct vext_request *req)
 	};
 	req->resp.status = 0;
 	memset(&req->data_sgt, 0, sizeof(req->data_sgt));
+	if (data_len) {
+		err = vext_map_data(&req->data_sgt, req->data, data_len);
+		if (err)
+			return err;
+	}
 
+	/* What the device reads: the header, arguments, data and root; then what it writes. */
 	sg_init_one(&hdr, &req->hdr, sizeof(req->hdr));
 	sgs[out_sgs++] = &hdr;
 	if (args_len) {
 		sg_init_one(&args, &req->args, args_len);
 		sgs[out_sgs++] = &args;
 	}
-	if (out_len + in_len > 0) {
-		err = vext_map_data(&req->data_sgt, req->data, out_len + in_len);
-		if (err)
-			return err;
-		if (out_len)
-			sgs[out_sgs++] = req->data_sgt.sgl;
-		else
-			sgs[out_sgs + in_sgs++] = req->data_sgt.sgl;
-	}
-	if (vext_root_len(req)) {
-		sg_init_one(&root, req->root, vext_root_len(req));
+	if (data_len && type->data == VEXT_OUT)
+		sgs[out_sgs++] = req->data_sgt.sgl;
+	if (root_len) {
+		sg_init_one(&root, req->root, root_len);
 		sgs[out_sgs++] = &root;
 	}
+	if (data_len && type->data == VEXT_IN)
+		sgs[out_sgs + in_sgs++] = req->data_sgt.sgl;
 	sg_init_one(&resp, &req->resp, sizeof(req->resp));
 	sgs[out_sgs + in_sgs++] = &resp;
 
@@ -606,29 +616,18 @@ out:
 	return err;
 }
 
-static const char *const request_names[] = {
-	[VIRTIO_EXTENT_T_READ] = "read",     [VIRTIO_EXTENT_T_WRITE] = "write",
-	[VIRTIO_EXTENT_T_FREE] = "free",     [VIRTIO_EXTENT_T_MAP] = "map",
-	[VIRTIO_EXTENT_T_UNMAP] = "unmap",   [VIRTIO_EXTENT_T_COMMIT] = "commit",
-	[VIRTIO_EXTENT_T_ROOT] = "root",     [VIRTIO_EXTENT_T_INFO] = "info",
-	[VIRTIO_EXTENT_T_RESIZED] = "resized",
-	[VIRTIO_EXTENT_T_FREEZE] = "freeze", [VIRTIO_EXTENT_T_ADVANCE] = "advance",
-	[VIRTIO_EXTENT_T_LET_GO] = "let_go", [VIRTIO_EXTENT_T_PIN] = "pin",
-	[VIRTIO_EXTENT_T_UNPIN] = "unpin",  [VIRTIO_EXTENT_T_PRIVATE] = "private",
-};
-
 /*
  * Shows `counters`, one per request type, each on a line of its own after the type's name. fxdax:
- * not the types no longer used, which have none.
+ * not the numbers no type has (vext_types).
  */
 static ssize_t request_counters_show(char *buf, atomic64_t *counters)
 {
 	ssize_t len = 0;
 	int type;
 
-	for (type = VIRTIO_EXTENT_T_READ; type <= VIRTIO_EXTENT_T_LAST; type++) {
-		if (request_names[type])
-			len += sysfs_emit_at(buf, len, "%s %lld\n", request_names[type],
+	for (type = 0; type <= VIRTIO_EXTENT_T_LAST; type++) {
+		if (vext_types[type].name)
+			len += sysfs_emit_at(buf, len, "%s %lld\n", vext_types[type].name,
 					     atomic64_read(&counters[type]));
 	}
 	return len;

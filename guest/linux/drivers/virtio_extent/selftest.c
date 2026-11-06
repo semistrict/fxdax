@@ -138,7 +138,8 @@ static void run(struct vext_selftest *st)
 	for (i = 0; i < EXTENTS; i++) {
 		fill(bufs[i], len, i);
 		reqs[i] = (struct vext_request) {
-			.type = VIRTIO_EXTENT_T_WRITE, .id = EXTENT(i), .len = len, .data = bufs[i],
+			.type = VIRTIO_EXTENT_T_WRITE, .id = EXTENT(i), .data = bufs[i],
+			.data_len = len,
 		};
 	}
 	err = submit_all(vext, reqs, EXTENTS);
@@ -166,7 +167,8 @@ static void run(struct vext_selftest *st)
 	for (i = 0; i < EXTENTS; i++) {
 		memset(bufs[i], 0, len);
 		reqs[i] = (struct vext_request) {
-			.type = VIRTIO_EXTENT_T_READ, .id = EXTENT(i), .len = len, .data = bufs[i],
+			.type = VIRTIO_EXTENT_T_READ, .id = EXTENT(i), .data = bufs[i],
+			.data_len = len,
 		};
 	}
 	err = submit_all(vext, reqs, EXTENTS);
@@ -179,12 +181,13 @@ static void run(struct vext_selftest *st)
 		FAIL("READ: %d", err);
 
 	/* The commit sealed them. */
-	err = CALL(.type = VIRTIO_EXTENT_T_WRITE, .id = EXTENT(0), .len = len, .data = bufs[0]);
+	err = CALL(.type = VIRTIO_EXTENT_T_WRITE, .id = EXTENT(0), .data = bufs[0],
+		   .data_len = len);
 	if (err != -EPERM)
 		FAIL("WRITE of a sealed extent: %d", err);
 	fill(bufs[0], len, EXTENTS);
 	err = CALL(.type = VIRTIO_EXTENT_T_WRITE, .flags = VIRTIO_EXTENT_WRITE_BARRIER,
-		   .id = EXTENT(EXTENTS), .len = len, .data = bufs[0]);
+		   .id = EXTENT(EXTENTS), .data_len = len, .data = bufs[0]);
 	if (err)
 		FAIL("WRITE with a barrier: %d", err);
 	/* fxdax: a WRITE's commit sets the root after its data. */
@@ -192,7 +195,7 @@ static void run(struct vext_selftest *st)
 		root[0] = 'F';
 		err = CALL(.type = VIRTIO_EXTENT_T_WRITE,
 			   .flags = VIRTIO_EXTENT_WRITE_COMMIT | VIRTIO_EXTENT_WRITE_ROOT,
-			   .id = EXTENT(EXTENTS + 1), .len = len, .data = bufs[1],
+			   .id = EXTENT(EXTENTS + 1), .data_len = len, .data = bufs[1],
 			   .root = root, .root_len = sizeof(ROOT) - 1);
 		if (err)
 			FAIL("WRITE with a commit setting the root: %d", err);
@@ -232,7 +235,7 @@ static void run(struct vext_selftest *st)
 	err = CALL(.type = VIRTIO_EXTENT_T_FREE, .id = EXTENT(2));
 	if (err)
 		FAIL("FREE: %d", err);
-	err = CALL(.type = VIRTIO_EXTENT_T_READ, .id = EXTENT(2), .len = len, .data = bufs[1]);
+	err = CALL(.type = VIRTIO_EXTENT_T_READ, .id = EXTENT(2), .data_len = len, .data = bufs[1]);
 	if (err != -ENOENT)
 		FAIL("READ of a freed extent: %d", err);
 	err = CALL(.type = VIRTIO_EXTENT_T_INFO, .data = info, .data_len = sizeof(*info));

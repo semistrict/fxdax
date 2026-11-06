@@ -259,18 +259,20 @@ struct vext_request {
 	/* READ, WRITE, FREE, MAP, PIN, UNPIN: the extent. */
 	struct vext_id id;
 	/*
-	 * READ, WRITE, MAP: where in the extent. MAP, UNMAP, PRIVATE: how much, and where in the
-	 * window.
+	 * READ, WRITE, MAP: where in the extent. MAP, UNMAP, PRIVATE: how much (len), and where in
+	 * the window.
 	 * RESIZED: the capacity asked (offset). LET_GO: the epoch (offset).
 	 */
 	u64 offset;
 	u64 len;
 	u64 window_offset;
 	/*
-	 * The data: READ's buffer, of len bytes; WRITE's data, of len bytes; COMMIT's root, of
-	 * data_len bytes, with VIRTIO_EXTENT_COMMIT_ROOT; ROOT's buffer, of max_root bytes and a
-	 * struct virtio_extent_root_len after them; INFO's struct virtio_extent_info; ADVANCE's
-	 * struct virtio_extent_epoch.
+	 * The data, of data_len bytes: READ's buffer; WRITE's data; COMMIT's root, with
+	 * VIRTIO_EXTENT_COMMIT_ROOT; FREE's further extents, with VIRTIO_EXTENT_FREE_MANY; MAP's
+	 * further maps, with VIRTIO_EXTENT_MAP_MANY; ROOT's buffer, of max_root bytes and a struct
+	 * virtio_extent_root_len after them; INFO's struct virtio_extent_info; ADVANCE's struct
+	 * virtio_extent_epoch. fxdax: READ's and WRITE's length too: one length for all data
+	 * (TASK-160.7).
 	 */
 	void *data;
 	u32 data_len;
