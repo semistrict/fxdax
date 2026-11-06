@@ -10,8 +10,8 @@
 
 --- a/guest/linux/fs/fxfs/dax.c
 +++ b/guest/linux/fs/fxfs/dax.c
-@@ -2843,7 +2843,6 @@
- 	end = iocb->ki_pos + iov_iter_count(from);
+@@ -3009,7 +3009,6 @@
+ 	fxfs_dax_write_follows(file, iocb->ki_pos, end);
  	/* The ranges the file's end moves into, mapped as large as they need. */
  	if (end > old_size) {
 -		WRITE_ONCE(file->growing, end);

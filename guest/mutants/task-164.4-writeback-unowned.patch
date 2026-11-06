@@ -14,24 +14,26 @@
 
 --- a/guest/linux/fs/fxfs/dax.c
 +++ b/guest/linux/fs/fxfs/dax.c
-@@ -2404,20 +2404,6 @@
- 	if (newly && !fxfs_dax_take_private(dax, newly)) {
+@@ -2534,21 +2534,8 @@
  		err = -ENOBUFS;
  		goto unreserve;
--	}
+ 	}
 -	if (newly) {
 -		/* The pages private already, those others' iomaps made so meanwhile too, stay so. */
 -		err = fxfs_device_private(dax->dev, fxfs_dax_page_offset(range, first),
--					  (u64)pages << PAGE_SHIFT);
+-					  (u64)(pages + ahead) << PAGE_SHIFT);
 -		atomic64_inc(&dax->privates);
 -		if (err) {
 -			pr_warn_ratelimited("fxfs: making %lu pages at %llx of the window private: %d\n",
--					    pages, fxfs_dax_page_offset(range, first), err);
--			atomic_long_sub(newly, &dax->private);
+-					    pages + ahead, fxfs_dax_page_offset(range, first), err);
+-			atomic_long_sub(newly + beyond, &dax->private);
 -			wake_up_all(&dax->budget_wait);
 -			err = -EIO;
 -			goto unreserve;
 -		}
- 	}
++	if (newly)
+ 		WRITE_ONCE(range->file->dirtied, jiffies);
+-	}
  	made = fxfs_dax_pages_dirty(range->state, first, pages);
- 	/* Others' iomaps, holding the semaphore shared too, may have counted some meanwhile. */
+ 	if (ahead) {
+ 		ahead_made = fxfs_dax_pages_private_ahead(range->state, first + pages, ahead);

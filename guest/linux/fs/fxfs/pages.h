@@ -61,6 +61,14 @@ long fxfs_dax_pages_rebind(struct fxfs_dax_pages *pages, unsigned long first, un
 struct fxfs_dax_change fxfs_dax_pages_dirty(struct fxfs_dax_pages *pages, unsigned long first,
 					    unsigned long n);
 /*
+ * fxdax: a write's PRIVATE made them private ahead of its stores, clean (TASK-164.10): each
+ * private. How many it made so, others' iomaps beside it making some so meanwhile;
+ * fxfs_dax_pages_would_dirty's private says what it would, before. Each mapped, none unwritten.
+ * With the file's semaphore held shared or more.
+ */
+long fxfs_dax_pages_private_ahead(struct fxfs_dax_pages *pages, unsigned long first,
+				  unsigned long n);
+/*
  * Writeback's swap: every dirty page is clean, private still, and in `set` (FXFS_DAX_PAGES bits,
  * as many as a range has pages at most), the writeback set: how many.
  */
@@ -98,6 +106,12 @@ unsigned long fxfs_dax_pages_mapped_run(const struct fxfs_dax_pages *pages, unsi
 					unsigned long last);
 /* Whether page `page` maps zeros and was never written: a hole, or past the file's end. */
 bool fxfs_dax_pages_unwritten(const struct fxfs_dax_pages *pages, unsigned long page);
+/*
+ * fxdax: where the run of pages from `first` that a PRIVATE may make private ahead of a write
+ * ends, up to `last`: each mapped, and not unwritten, a hole's zeros (TASK-164.10).
+ */
+unsigned long fxfs_dax_pages_aheadable_run(const struct fxfs_dax_pages *pages, unsigned long first,
+					   unsigned long last);
 /* Where the run of pages from `first` unwritten as it is, or written, ends, up to `last`. */
 unsigned long fxfs_dax_pages_unwritten_run(const struct fxfs_dax_pages *pages,
 					   unsigned long first, unsigned long last);

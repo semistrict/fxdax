@@ -11,7 +11,7 @@
 
 --- a/guest/linux/fs/fxfs/dax.c
 +++ b/guest/linux/fs/fxfs/dax.c
-@@ -2460,8 +2460,10 @@
+@@ -2623,8 +2623,10 @@
  		return PTR_ERR(range);
  	start = fxfs_dax_chunk_start(range);
  	if (range->region || start + ((loff_t)range->pages << PAGE_SHIFT) <= pos) {
@@ -23,8 +23,8 @@
  	}
  	first = (pos - start) >> PAGE_SHIFT;
  	end = min_t(loff_t, end, start + ((loff_t)min(range->pages, first + dax->iomap_pages) <<
-@@ -2843,7 +2845,6 @@
- 	end = iocb->ki_pos + iov_iter_count(from);
+@@ -3009,7 +3011,6 @@
+ 	fxfs_dax_write_follows(file, iocb->ki_pos, end);
  	/* The ranges the file's end moves into, mapped as large as they need. */
  	if (end > old_size) {
 -		WRITE_ONCE(file->growing, end);

@@ -173,6 +173,21 @@ struct fxfs_dax_change fxfs_dax_pages_dirty(struct fxfs_dax_pages *pages, unsign
 	return made;
 }
 
+long fxfs_dax_pages_private_ahead(struct fxfs_dax_pages *pages, unsigned long first,
+				  unsigned long n)
+{
+	unsigned long page;
+	long made = 0;
+
+	if (!fxfs_dax_pages_within(pages, first, n))
+		return 0;
+	WARN_ONCE(fxfs_dax_pages_aheadable_run(pages, first, first + n) < first + n,
+		  "fxfs: pages %lu+%lu made private ahead, not all mapped and written", first, n);
+	for (page = first; page < first + n; page++)
+		made += !test_and_set_bit(page, pages->private);
+	return made;
+}
+
 unsigned long fxfs_dax_pages_swap(struct fxfs_dax_pages *pages, unsigned long *set)
 {
 	unsigned long word, swapped = 0;
@@ -283,6 +298,19 @@ unsigned long fxfs_dax_pages_unwritten_run(const struct fxfs_dax_pages *pages,
 	     page++)
 		;
 	return min(page, last);
+}
+
+unsigned long fxfs_dax_pages_aheadable_run(const struct fxfs_dax_pages *pages, unsigned long first,
+					   unsigned long last)
+{
+	unsigned long page;
+
+	last = min(last, pages->nr);
+	for (page = first; page < last; page++) {
+		if (!test_bit(page, pages->mapped) || fxfs_dax_pages_unwritten(pages, page))
+			break;
+	}
+	return page;
 }
 
 unsigned long fxfs_dax_pages_next_rebindable(const struct fxfs_dax_pages *pages,

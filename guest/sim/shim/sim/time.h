@@ -13,5 +13,8 @@ void fsleep(unsigned long us);
 #define jiffies (ktime_get_ns() / (NSEC_PER_SEC / HZ))
 static inline unsigned long msecs_to_jiffies(unsigned int ms) { return ms; }
 static inline unsigned long usecs_to_jiffies(unsigned int us) { return DIV_ROUND_UP(us, 1000); }
+/* As the kernel's jiffies.h has them, the wrap taken care of. */
+#define time_after(a, b) ((long)((b) - (a)) < 0)
+#define time_before(a, b) time_after(b, a)
 
 #endif

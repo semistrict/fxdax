@@ -6,26 +6,26 @@
 #
 # TASK-164.4, doc-13: a rebind under the file's semaphore shared: a write(2) dirties and stores to a
 # page between the rebind's look and its MAP, which replaces it with the extent's.
-# cow_rebind_against_write; fxfs_dax_map_pages' lockdep assertion fails first, in every scenario
+# cow_rebind_against_write; fxfs_dax_rebind_range's lockdep assertion fails first, in every scenario
 # that rebinds.
 
 --- a/guest/linux/fs/fxfs/dax.c
 +++ b/guest/linux/fs/fxfs/dax.c
-@@ -2124,7 +2124,7 @@
- 	if (!atomic_long_read(&file->private_pages))
- 		return 0;
- 	mutex_lock(&file->wb_lock);
--	down_write(&file->sem);
-+	down_read(&file->sem);
- 	/* A volume going (fxfs_dax_remove_volume) stops the worker first. */
- 	volume = READ_ONCE(file->volume);
- 	xa_for_each(&file->ranges, chunk, range) {
-@@ -2148,7 +2148,7 @@
+@@ -2249,7 +2249,7 @@
+ 
+ 	while (atomic_long_read(&file->private_pages) && atomic_long_read(&dax->private) > target) {
+ 		mutex_lock(&file->wb_lock);
+-		down_write(&file->sem);
++		down_read(&file->sem);
+ 		/* A volume going (fxfs_dax_remove_volume) stops the worker first. */
+ 		volume = READ_ONCE(file->volume);
+ 		range = volume ? xa_find(&file->ranges, &chunk, ULONG_MAX, XA_PRESENT) : NULL;
+@@ -2261,7 +2261,7 @@
+ 			else
  				rebound += done;
  		}
- 	}
--	up_write(&file->sem);
-+	up_read(&file->sem);
- 	mutex_unlock(&file->wb_lock);
- 	atomic64_add(rebound, &dax->rebound);
- 	return rebound;
+-		up_write(&file->sem);
++		up_read(&file->sem);
+ 		mutex_unlock(&file->wb_lock);
+ 		if (!range || chunk == ULONG_MAX)
+ 			break;

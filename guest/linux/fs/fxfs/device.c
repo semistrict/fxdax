@@ -38,6 +38,9 @@ struct fxfs_device {
 	atomic64_t map_requests;
 	/* fxdax: the PRIVATE requests, and the bytes they made private (doc-13). */
 	atomic64_t privates, private_bytes;
+	/* fxdax: what they took, and each (TASK-164.10). */
+	atomic64_t private_ns;
+	struct fxfs_hist private_hist;
 };
 
 struct fxfs_device_request {
@@ -271,6 +274,7 @@ int fxfs_device_map_zeros(struct fxfs_device *dev, u64 window_offset, u64 len)
 int fxfs_device_private(struct fxfs_device *dev, u64 window_offset, u64 len)
 {
 	struct vext_request *req = kzalloc(sizeof(*req), GFP_NOFS);
+	u64 began, took;
 	int err;
 
 	if (!req)
@@ -278,8 +282,12 @@ int fxfs_device_private(struct fxfs_device *dev, u64 window_offset, u64 len)
 	req->type = VIRTIO_EXTENT_T_PRIVATE;
 	req->len = len;
 	req->window_offset = window_offset;
+	began = ktime_get_ns();
 	err = virtio_extent_call(dev->vext, req);
+	took = ktime_get_ns() - began;
 	atomic64_inc(&dev->privates);
+	atomic64_add(took, &dev->private_ns);
+	fxfs_hist_add(&dev->private_hist, took);
 	if (!err)
 		atomic64_add(len, &dev->private_bytes);
 	kfree(req);
@@ -399,6 +407,8 @@ void fxfs_device_show_stats(struct fxfs_device *dev, struct seq_file *m)
 	seq_printf(m, "window_unmaps %lld\nwindow_unmaps_ns %lld\n", atomic64_read(&dev->unmaps),
 		   atomic64_read(&dev->unmap_ns));
 	fxfs_hist_show(m, "window_unmaps", &dev->unmap_hist);
-	seq_printf(m, "window_privates %lld\nwindow_private_bytes %lld\n",
-		   atomic64_read(&dev->privates), atomic64_read(&dev->private_bytes));
+	seq_printf(m, "window_privates %lld\nwindow_private_bytes %lld\nwindow_privates_ns %lld\n",
+		   atomic64_read(&dev->privates), atomic64_read(&dev->private_bytes),
+		   atomic64_read(&dev->private_ns));
+	fxfs_hist_show(m, "window_privates", &dev->private_hist);
 }

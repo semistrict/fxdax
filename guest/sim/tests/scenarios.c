@@ -1243,7 +1243,11 @@ static void cow_truncate_held(void)
  */
 static void cow_private_failed(void)
 {
-	static const u64 pages[] = { 2, 5 };
+	/*
+	 * The store's page before the write's: the write, tried again where it failed, follows on
+	 * from itself, and makes the pages after it private ahead (TASK-164.10).
+	 */
+	static const u64 pages[] = { 5, 2 };
 	u64 freed, reserved, round = 1;
 	size_t i;
 	int err;
@@ -1352,6 +1356,85 @@ static void cow_writeback_counts_again(void)
 	      "the fsync returned without the second chunk's write, before it began");
 }
 
+/* Writes `page` of cow_target whole by write(2), its round `round`, the rest as cow_file has it. */
+static void cow_write_whole(u64 page, u64 round)
+{
+	loff_t at = page * PAGE_SIZE;
+
+	memcpy(cow_expected + at, &round, sizeof(round));
+	check(sim_write(cow_target, at, cow_expected + at, PAGE_SIZE) == PAGE_SIZE,
+	      "a write of page %llu", page);
+	WRITE_ONCE(cow_round[page], round);
+}
+
+/*
+ * TASK-164.10: that write(2)s following on from each other, as a log's are, make pages private
+ * ahead of them, more as more follow, in the PRIVATE of the write that needs one, and that those
+ * after take none: 128 pages written in order, none private as they begin, take four PRIVATEs (the
+ * first write, then 16, 64 and the 44 left ahead), where each took its own. A write elsewhere,
+ * following on from nothing, makes none ahead. What the pages made private ahead held, they hold,
+ * and the file is as written. Red with nothing made private ahead: 128 PRIVATEs.
+ */
+static void cow_writes_ahead(void)
+{
+	u64 privates, ahead, page;
+
+	cow_mapped_file(COW_PAGES);
+	wait_for(sim_spawn("rebinder", cow_rebind_now, NULL));
+	check(!sim_device_private(), "%llu pages private before the writes", sim_device_private());
+	privates = sim_dax_stat(mount, "dax_privates");
+	ahead = sim_dax_stat(mount, "dax_private_ahead_pages");
+	for (page = 0; page < COW_PAGES; page++)
+		cow_write_whole(page, 1);
+	check(sim_dax_stat(mount, "dax_privates") - privates == 4,
+	      "%llu PRIVATEs for %d pages written in order",
+	      sim_dax_stat(mount, "dax_privates") - privates, COW_PAGES);
+	check(sim_dax_stat(mount, "dax_private_ahead_pages") - ahead == 16 + 64 + 44,
+	      "%llu pages made private ahead", sim_dax_stat(mount, "dax_private_ahead_pages") - ahead);
+	cow_check_file("after writes in order", COW_PAGES * PAGE_SIZE);
+	wait_for(sim_spawn("rebinder", cow_rebind_now, NULL));
+	privates = sim_dax_stat(mount, "dax_privates");
+	ahead = sim_dax_stat(mount, "dax_private_ahead_pages");
+	cow_write_whole(40, 2);
+	cow_write_whole(7, 2);
+	check(sim_dax_stat(mount, "dax_privates") - privates == 2, "%llu PRIVATEs for two writes apart",
+	      sim_dax_stat(mount, "dax_privates") - privates);
+	check(sim_dax_stat(mount, "dax_private_ahead_pages") == ahead,
+	      "%llu pages made private ahead of writes apart",
+	      sim_dax_stat(mount, "dax_private_ahead_pages") - ahead);
+	check(sim_device_private() == 2, "%llu pages private", sim_device_private());
+	cow_check_file("after writes apart", COW_PAGES * PAGE_SIZE);
+}
+
+/*
+ * TASK-164.10: that a rebind maps a range's private pages back in one request, however many runs
+ * they are: every other page of 64 written, out of order (none made private ahead), and written
+ * back, 32 runs of a page, are rebound by one MAP_MANY, where each run took a MAP of its own. Every
+ * page private is freed, and the file holds what was written. Red with a MAP a run: 32 requests.
+ */
+static void cow_rebinds_map_ranges_at_once(void)
+{
+	u64 requests, freed, page;
+
+	cow_mapped_file(64);
+	wait_for(sim_spawn("rebinder", cow_rebind_now, NULL));
+	check(!sim_device_private(), "%llu pages private before the writes", sim_device_private());
+	/* The first half up, then the second down: none follows on, from the file's making either. */
+	for (page = 0; page < 64; page += 2)
+		cow_write_whole(page < 32 ? page : 94 - page, 1);
+	check(sim_device_private() == 32, "%llu pages private", sim_device_private());
+	check(!sim_fsync(cow_target), "the fsync");
+	requests = sim_device_map_requests();
+	freed = sim_device_private_freed();
+	wait_for(sim_spawn("rebinder", cow_rebind_now, NULL));
+	check(sim_device_map_requests() - requests == 1, "%llu requests rebound 32 runs of a range",
+	      sim_device_map_requests() - requests);
+	check(sim_device_private_freed() - freed == 32, "%llu private pages freed",
+	      sim_device_private_freed() - freed);
+	check(!sim_device_private(), "%llu pages private after the rebind", sim_device_private());
+	cow_check_file("after the rebind", 64 * PAGE_SIZE);
+}
+
 static const struct {
 	const char *name;
 	void (*run)(void);
@@ -1391,6 +1474,8 @@ static const struct {
 	COW_SCENARIO(cow_private_failed),
 	COW_SCENARIO(cow_store_to_pinned_slice),
 	COW_SCENARIO(cow_writeback_counts_again),
+	SCENARIO(cow_writes_ahead),
+	SCENARIO(cow_rebinds_map_ranges_at_once),
 };
 
 static void scenario(void *arg)
