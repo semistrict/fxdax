@@ -1,0 +1,150 @@
+#!/usr/bin/env bpftrace
+// Copyright 2026 The fxdax Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+//
+// Where an extent device request's time goes on its host, outside the daemon and the VM process's
+// own work (TASK-164.11.1): the VMM's threads', the daemon's and the vCPUs' waits to run once
+// woken, who wakes whom, the vCPUs' exits by reason and how long each took the host, how long a
+// halted vCPU slept and whether the host's halt polling caught its wakeup, and how long an
+// interrupt waited for its vCPU to run again. Run alongside guest tests with
+// FXDAX_HOST_TRACE=scripts/extent-transport.bt (scripts/lib/test-linux-host.sh), which keeps
+// what it prints, its maps, in RESULTS/host-trace.txt as it ends. Of every VM the host runs
+// meanwhile: a case of one VM at a time measures that VM, a forked case its base's too.
+
+BEGIN
+{
+	@start = nsecs;
+}
+
+// The threads that serve a request: Firecracker's (fc_*: vCPUs, the extent device's workers),
+// the VM process's daemon client and DAX fault threads, and the daemon's (extentd *).
+tracepoint:sched:sched_wakeup
+/strncmp(args.comm, "fc_", 3) == 0 || strncmp(args.comm, "extentd", 7) == 0 ||
+ strncmp(args.comm, "dax", 3) == 0/
+{
+	@woken[args.pid] = nsecs;
+	@wakes[comm, args.comm] = count();
+}
+
+tracepoint:sched:sched_switch
+/@woken[args.next_pid]/
+{
+	@runqueue_us[args.next_comm] = hist((nsecs - @woken[args.next_pid]) / 1000);
+	delete(@woken[args.next_pid]);
+}
+
+// A vCPU's exits: by reason (VMX's numbers: 1 an interrupt, 12 HLT, 30 an I/O port, 32 WRMSR,
+// 48 an EPT violation, 49 an EPT misconfiguration, MMIO), and the host's time from each to the
+// vCPU's next entry, a HLT's its sleep.
+tracepoint:kvm:kvm_exit
+{
+	@exits[args.exit_reason] = count();
+	@exited[tid] = nsecs;
+	@reason[tid] = args.exit_reason;
+}
+
+tracepoint:kvm:kvm_entry
+/@exited[tid]/
+{
+	@exit_us[@reason[tid]] = hist((nsecs - @exited[tid]) / 1000);
+	delete(@exited[tid]);
+	delete(@reason[tid]);
+}
+
+// The exits KVM returns to the VMM for, by reason (6 MMIO, 2 an I/O port), and the MMIO writes
+// it serves itself, a queue's notify among them (ioeventfd).
+tracepoint:kvm:kvm_userspace_exit
+{
+	@userspace_exits[args.reason] = count();
+}
+
+tracepoint:kvm:kvm_fast_mmio
+{
+	@fast_mmio = count();
+}
+
+// An interrupt accepted for a vCPU, to its next entry: its delivery, the vCPU woken if halted.
+tracepoint:kvm:kvm_apic_accept_irq
+/!@accepted[args.apicid]/
+{
+	@accepted[args.apicid] = nsecs;
+}
+
+tracepoint:kvm:kvm_entry
+/@accepted[args.vcpu_id]/
+{
+	@interrupt_to_entry_us = hist((nsecs - @accepted[args.vcpu_id]) / 1000);
+	delete(@accepted[args.vcpu_id]);
+}
+
+// A halted vCPU woken: how long it was halted, and whether halt polling caught it (waited 0).
+tracepoint:kvm:kvm_vcpu_wakeup
+{
+	@halted_us[args.waited ? "slept" : "polled"] = hist(args.ns / 1000);
+}
+
+// The VM process's daemon client, which makes the window's stage operations, a PRIVATE's run
+// among them (TASK-164.11.2): its system calls' times, an ioctl's by command (userfaultfd's
+// UFFDIO_REGISTER 0xc020aa00, UFFDIO_WAKE 0x8010aa02, UFFDIO_COPY 0xc028aa03, UFFDIO_WRITEPROTECT
+// 0xc018aa06; KVM_PRE_FAULT_MEMORY 0xc040aed5).
+tracepoint:syscalls:sys_enter_ioctl
+/comm == "extentd client"/
+{
+	@ioctl_at[tid] = nsecs;
+	@ioctl_cmd[tid] = args.cmd;
+}
+
+tracepoint:syscalls:sys_exit_ioctl
+/@ioctl_at[tid]/
+{
+	$us = (nsecs - @ioctl_at[tid]) / 1000;
+	@client_ioctl_us[@ioctl_cmd[tid]] = hist($us);
+	@client_ioctl_total_us[@ioctl_cmd[tid]] = sum($us);
+	delete(@ioctl_at[tid]);
+	delete(@ioctl_cmd[tid]);
+}
+
+tracepoint:syscalls:sys_enter_mmap, tracepoint:syscalls:sys_enter_munmap,
+tracepoint:syscalls:sys_enter_mprotect, tracepoint:syscalls:sys_enter_madvise,
+tracepoint:syscalls:sys_enter_pread64, tracepoint:syscalls:sys_enter_sendmsg,
+tracepoint:syscalls:sys_enter_recvmsg, tracepoint:syscalls:sys_enter_write,
+tracepoint:syscalls:sys_enter_read
+/comm == "extentd client"/
+{
+	@syscall_at[tid] = nsecs;
+}
+
+tracepoint:syscalls:sys_exit_mmap, tracepoint:syscalls:sys_exit_munmap,
+tracepoint:syscalls:sys_exit_mprotect, tracepoint:syscalls:sys_exit_madvise,
+tracepoint:syscalls:sys_exit_pread64, tracepoint:syscalls:sys_exit_sendmsg,
+tracepoint:syscalls:sys_exit_recvmsg, tracepoint:syscalls:sys_exit_write,
+tracepoint:syscalls:sys_exit_read
+/@syscall_at[tid]/
+{
+	$us = (nsecs - @syscall_at[tid]) / 1000;
+	@client_syscall_us[probe] = hist($us);
+	@client_syscall_total_us[probe] = sum($us);
+	delete(@syscall_at[tid]);
+}
+
+// The host's TLB flushes, by reason (0 a task switch, 1 a remote shootdown, 2 a local
+// shootdown, 3 a local mm shootdown, 4 a remote send IPI), and by whom.
+tracepoint:tlb:tlb_flush
+{
+	@tlb_flushes[args.reason] = count();
+	@tlb_flushes_by[comm] = count();
+}
+
+END
+{
+	clear(@ioctl_at);
+	clear(@ioctl_cmd);
+	clear(@syscall_at);
+	printf("seconds traced: %d\n", (nsecs - @start) / 1000000000);
+	clear(@woken);
+	clear(@exited);
+	clear(@reason);
+	clear(@accepted);
+	clear(@start);
+}

@@ -96,6 +96,10 @@ host_need() {
                         "linux-tools-$(uname -r)" > /dev/null
                 fi
                 ;;
+            bpftrace)
+                command -v bpftrace > /dev/null ||
+                    apt-get -o DPkg::Lock::Timeout=600 install -y -qq bpftrace > /dev/null
+                ;;
             *)
                 pin=$(host_pin "$tool")
                 if [[ "$(host_version "$tool" 2> /dev/null)" != "$tool $pin" ]]; then

@@ -7,7 +7,9 @@
 # workspace's tests (unless FXDAX_WORKSPACE_TESTS=0; FXDAX_TEST_ARGS, split at
 # spaces, are cargo nextest's arguments, such as a filter), then fxdax's guest
 # tests (unless FXDAX_GUEST_TESTS=0; scripts/test-e2e.sh; TESTs name them),
-# whose DAX window takes KVM's faults through userfaultfd. With FXDAX_GUEST_KERNEL_BUILD set
+# whose DAX window takes KVM's faults through userfaultfd. With FXDAX_HOST_TRACE, a bpftrace
+# script of SOURCE's traces the host as the guest tests run, its maps in RESULTS/host-trace.txt
+# (scripts/extent-transport.bt, TASK-164.11.1). With FXDAX_GUEST_KERNEL_BUILD set
 # (release; debug: lockdep, KCSAN, DEBUG_ATOMIC_SLEEP; kasan: KASAN, KFENCE, lockdep; or coverage:
 # gcov of fs/fxfs, which leaves coverage/ in the results, scripts/guest-coverage.py), the guest
 # tests run on a guest kernel it builds from the source (scripts/build-guest-kernel.sh), not
@@ -98,11 +100,22 @@ if [[ -n ${FXDAX_RESULTS_BUCKET:-} ]]; then
     command -v gcloud > /dev/null || snap install google-cloud-cli --classic > /dev/null ||
         echo "no gcloud: the guest tests' results stay here alone" >&2
 fi
+tracer=
+if [[ -n ${FXDAX_HOST_TRACE:-} ]]; then
+    host_need bpftrace
+    bpftrace -q -o "$results/host-trace.txt" "$repo/$FXDAX_HOST_TRACE" 2> "$results/host-trace.log" &
+    tracer=$!
+fi
 e2e_status=0
 FXDAX_E2E_RESULTS="$results/e2e" \
     FXDAX_RESULTS_BUCKET="${FXDAX_RESULTS_BUCKET:+${FXDAX_RESULTS_BUCKET%/}/e2e}" \
     "$repo/scripts/test-e2e.sh" "$@" > "$results/e2e.log" 2>&1 || e2e_status=$?
 echo "guest tests: exit $e2e_status" >&2
+# The tracer prints its maps as it is interrupted.
+if [[ -n $tracer ]]; then
+    kill -INT "$tracer"
+    wait "$tracer" || echo "host trace: exit $? ($results/host-trace.log)" >&2
+fi
 for core in "$cores"/core.*; do
     [[ -f $core ]] || continue
     echo "guest tests: a process crashed: $core.stacks.txt" >&2
