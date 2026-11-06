@@ -102,6 +102,7 @@ Decisions made without you, still yours to confirm or overturn. Each is a line o
 - **xfstests' known failures less generic/225, 564 and 798,** which pass with DAX and without since copy-on-write DAX. TASK-44.15, 2026-11-06.
 - **Each guest check runs in a process of its own;** the overrun suite runs the page cache's checks after two made to fail. TASK-160.30, 2026-11-05.
 - **A budget per guest check,** a suite's limit their sum plus 30 s. TASK-168, 2026-11-05.
+- **fxfs-guest-soak:** a soak round is a runner round, its state kept by the run outside the results (/var/tmp, not tmpfs /tmp); stores are checked by a guest on each, not the host's fsck (which would take the branch's lease); its daemons are built with failpoints; a store whose upload the failpoint failed may see EIO (remote.rs stops its uploader for good); no bucket latency on file buckets until TASK-208; the cache's growth is reported, not failed on. TASK-67, 2026-11-06.
 
 ## Repository
 
