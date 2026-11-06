@@ -6,7 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-11-05 03:16'
-updated_date: '2026-11-06 02:23'
+updated_date: '2026-11-06 03:55'
 labels: []
 dependencies:
   - TASK-165.3
@@ -62,4 +62,6 @@ Runs: macOS extent_store+extent_remote+fxdax 671/671 (HEAD of step 2), step 1 al
 Runs at 42e484d75 (with TASK-165.8): see TASK-165.8's notes. GCE suites still to run before landing: forks, snapshots, volumes, migration, live fork.
 
 Rebased onto main 752515020 (land-l landed): 8fa81ef66 (Data::Remote), bb8c0f4e2 and 42db93a24 (TASK-165.7), b447c610b (TASK-165.8); hashes above are before the rebase. At b447c610b: macOS FXDAX_TEST_PARTS="workspace shuttle sim" scripts/test.sh --no-fail-fast green (workspace 2027/2027, sim 47/47, shuttle 38+6+6+32+10+18); Linux extent_store+extent_remote+fxdax 834/840, failing only eu-stack (3) and grants ENOENT (3).
+
+GCE r701 (68b5f2a02): fxfs-guest-import failed, ENOTSUP: it forks a base imported offline, whose ExtentStore had no uploader. Fixed in ced9a66bb: ExtentStore::kept_in_bucket attaches an uploader to the store's described bucket before a fork or point where none is attached (followers excepted); host_store::fork still refuses a store with no uploader (forks_with_no_uploader_make_nothing). New tests: stores_made_of_images_fork_where_no_daemon_is (red with r701's error, then green), images_imported_where_no_daemon_is_fork_there (fxdaxctl import then fork, file bucket), stores_with_no_uploader_attach_one_to_fork (replaces stores_with_no_uploader_fork_nothing). Offline forkers checked: fxdaxctl fork/point (attach already), Storage::clone_to (images attached), daemon stores (attached at opening). Found meanwhile: a memory:// bucket loses what it acknowledged once its process exits (README and OPEN_QUESTIONS say so). Runs at ced9a66bb: macOS extent_store+extent_remote+fxdax 659/659; Linux 837/843, failing only eu-stack (3), grants ENOENT (3). r701's import case to rerun on GCE.
 <!-- SECTION:NOTES:END -->
