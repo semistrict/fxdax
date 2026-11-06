@@ -334,7 +334,8 @@ static UPLOADERS: std::sync::LazyLock<tokio::sync::watch::Sender<usize>> =
     std::sync::LazyLock::new(|| tokio::sync::watch::channel(0).0);
 
 /// fxdax: how many stores' uploaders run in this process, as it changes: what an extent daemon's
-/// drain waits to see none of (TASK-141.4).
+/// drain waits to see none of (TASK-141.4): Linux's alone, as the daemon is.
+#[cfg(target_os = "linux")]
 pub(crate) fn uploaders() -> tokio::sync::watch::Receiver<usize> {
     UPLOADERS.subscribe()
 }
