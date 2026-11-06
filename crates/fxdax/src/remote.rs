@@ -3112,20 +3112,32 @@ mod tests {
         assert_eq!(forks, [(child, 2, false)]);
     }
 
-    /// TASK-165.7: a fork is the bucket's: a store with no uploader forks nothing (`ENOTSUP`),
-    /// committing nothing, and leaving nothing at the fork's path. Before, it forked here, and its
-    /// child took a record of its own once attached, uploading what it inherited.
+    /// TASK-165.7: a fork is the bucket's, made by the store's uploader: a store with none, opened
+    /// where no daemon serves it, attaches one to the bucket its description names to fork
+    /// (`ExtentStore::kept_in_bucket`), which then keeps its branch there. The bucket has the
+    /// parent's commit naming the child, and the child's record; the child holds what the parent
+    /// did. Before, it forked nothing (`ENOTSUP`, GCE r701's fxfs-guest-import).
     #[test]
-    fn stores_with_no_uploader_fork_nothing() {
+    fn stores_with_no_uploader_attach_one_to_fork() {
         let dir = tempfile::tempdir().unwrap();
         let parent = ExtentStore::create(dir.path().join("parent"), 1 << 30).unwrap();
-        write(&parent, 1, &pattern(1, BLOCK));
+        let extent = write(&parent, 1, &pattern(1, BLOCK));
         parent.commit(Some(b"root")).unwrap();
-        let epoch = parent.committed().unwrap();
+        assert!(parent.remote().is_none());
         let path = dir.path().join("child");
-        let forked = parent.fork(&path, parent.branch() + 1).map_err(|err| err.errno());
-        let refused = (forked, path.exists(), parent.committed());
-        assert_eq!(refused, (Err(Some(crate::Errno::ENOTSUP)), false, Ok(epoch)));
+        let child = parent.branch() + 1;
+        parent.fork(&path, child).unwrap();
+        assert!(parent.remote().is_some());
+        let bucket = parent.bucket().clone();
+        let record = futures::executor::block_on(extent_remote::branch::record(&*bucket, child));
+        let origin = record.unwrap().unwrap().origin().map(|origin| origin.parent);
+        assert_eq!(origin, Some(parent.branch()));
+        drop(parent);
+        let forked = ExtentStore::open(&path).unwrap();
+        assert_eq!(forked.root().unwrap(), b"root");
+        let mut read = vec![0; BLOCK];
+        forked.read(extent, 0, &mut [crate::VolatileSliceMut::from(&mut read[..])]).unwrap();
+        assert_eq!(read, pattern(1, BLOCK));
     }
 
     /// TASK-165.7: a fork whose host crashed as its segment uploaded leaves no store of its child

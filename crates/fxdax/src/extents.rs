@@ -189,6 +189,9 @@ pub struct ExtentStore {
     /// fxdax: the uploader of the store's branch to object storage, if it has one: durable
     /// commits are uploaded ones then (doc-4's `COMMIT_DURABLE`).
     remote: std::sync::OnceLock<crate::remote::Remote>,
+    /// fxdax: held as a fork attaches the uploader of a store that has none
+    /// ([`ExtentStore::kept_in_bucket`]), so that two at once attach one.
+    attaching: StoreMutex<()>,
     /// fxdax: what records the store's page-ins for its base's boot profile, if it is a fork of a
     /// base that has none yet, and what writes it at the window's end, which closing stops early.
     profiling: Option<(Arc<Recorder>, std::sync::mpsc::Sender<()>)>,
@@ -560,6 +563,7 @@ impl ExtentStore {
             bases: Default::default(),
             dax: StoreMutex::new("dax", None),
             remote: Default::default(),
+            attaching: StoreMutex::new("attaching", ()),
             opening: StoreRwLock::new("opening", ()),
             following: None,
             committed: event_listener::Event::new(),
@@ -588,6 +592,7 @@ impl ExtentStore {
             bases: self.bases.clone(),
             dax: StoreMutex::new("dax", None),
             remote: Default::default(),
+            attaching: StoreMutex::new("attaching", ()),
             opening: StoreRwLock::new("opening", ()),
             following: Some(following),
             committed: event_listener::Event::new(),
@@ -817,11 +822,40 @@ impl ExtentStore {
         self.remote.set(remote).map_err(|_| had())
     }
 
+    /// fxdax: keeps the store's branch in the bucket its description names, if nothing does yet,
+    /// as a fork needs, which is the bucket's alone, made by the store's uploader (TASK-165.7):
+    /// attaches an uploader there, as an image's is attached to its own (`storage::kept`), taking
+    /// the branch's lease as the host's copy never placed takes it where this process is no
+    /// host's daemon (`host_store::token`). A store a daemon serves has its uploader from its
+    /// opening; one opened elsewhere, as a base an import made is before it is forked for a guest
+    /// (fxdax's fxfs-guest-import), had none, and its fork failed (`ENOTSUP`, GCE r701). Once
+    /// attached, it stays so. A follower's is its writer's: it attaches nothing, and forks
+    /// nothing.
+    fn kept_in_bucket(&self) -> Result<(), Error> {
+        if self.following.is_some() || self.remote.get().is_some() {
+            return Ok(());
+        }
+        let _attaching = self.attaching.lock(&self.fence)?;
+        if self.remote.get().is_some() {
+            return Ok(());
+        }
+        let attached = host_store::token().and_then(|token| {
+            let options = crate::remote::Options { token, ..Default::default() };
+            self.attach_remote(self.bucket.clone(), rand::random(), options)
+        });
+        attached.map_err(|failure| {
+            let errno = remote_errno(failure.clone());
+            let kept = "keeping the store's branch in the bucket its description names";
+            Error::new(anyhow::Error::new(failure).context(errno).context(kept))
+        })
+    }
+
     /// fxdax: forks the store, as of its last commit, made durable first: `branch`, a new branch
     /// holding what it holds, whose store is a new directory at `path`, which
     /// [`ExtentStore::open`] opens: `EEXIST` if anything is at `path`. The fork is made in the
-    /// bucket alone, by the store's uploader ([`ExtentStore::attach_remote`]; `ENOTSUP` without
-    /// one): a commit naming the child, whose acknowledgement gives the child its record,
+    /// bucket alone, by the store's uploader, which keeps its branch in the bucket its
+    /// description names, attached here if the store has none ([`ExtentStore::kept_in_bucket`]):
+    /// a commit naming the child, whose acknowledgement gives the child its record,
     /// inheriting the store's extents rather than copies (doc-7, Forks). The child's store is made
     /// then, taking the child's state from the bucket, its extents read from there, or the host's
     /// cache (`host_store::fork`, TASK-165.7). A fork that fails is deleted in the bucket, as the
@@ -835,6 +869,7 @@ impl ExtentStore {
     /// A fork of a point commits nothing in object storage: its child's record is the fork, which
     /// fails with `ENOENT` once the point is deleted (`Remote::forked`).
     pub fn fork(&self, path: impl AsRef<Path>, branch: u64) -> Result<(), Error> {
+        self.kept_in_bucket()?;
         self.access().may_manage()?;
         self.make_durable()?;
         failpoint!("fork::durable");
@@ -1469,6 +1504,7 @@ impl ExtentStore {
 
     /// fxdax: forks the store as [`ExtentStore::fork_quiescent`] says, a point if `point`.
     fn fork_at_rest(&self, path: &Path, branch: u64, point: bool) -> Result<(), Error> {
+        self.kept_in_bucket()?;
         let access = self.access();
         access.may_manage()?;
         // A point of a point would name the same state: its forks fork the point itself.

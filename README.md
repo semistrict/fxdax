@@ -307,7 +307,11 @@ cut off neither takes a branch back nor deletes it from under a later one
 (`FXDAX_EXTENTD_TOKEN`, not 0), and refuses to start without them: there is no
 single-node mode. Tests and development use an in-memory bucket
 (`memory:///NAME`), or one in a directory of the host's (`file:///DIR`), which
-outlives the daemon and is shared with fxdaxctl and fxdax-gc. fxdaxctl, without the daemon, changes existing stores'
+outlives the daemon and is shared with fxdaxctl and fxdax-gc. What a bucket has
+acknowledged leaves the store's directory (TASK-165.8): an in-memory bucket is
+its process's, and what left for it is gone once that process exits, so a store
+used by more than one process, or across a daemon's restarts, needs a file or
+cloud bucket. fxdaxctl, without the daemon, changes existing stores'
 branches on the same terms, and makes new stores (`take`, `import`) anywhere.
 
 ### `vendor/firecracker`: the VMM

@@ -21,7 +21,7 @@ const HOST: [(&str, &str); 2] =
 struct Fxdaxctl {
     /// The daemon's control socket, and the daemon, which goes with this.
     daemon: Option<(PathBuf, KillOnDrop)>,
-    env: Vec<(&'static str, &'static str)>,
+    env: Vec<(&'static str, String)>,
 }
 
 impl Fxdaxctl {
@@ -33,8 +33,9 @@ impl Fxdaxctl {
 
     /// fxdaxctl acting on stores itself, with `env`, and nothing else of its kind, in its
     /// environment.
-    fn with_env(env: &[(&'static str, &'static str)]) -> Self {
-        Self { daemon: None, env: env.to_vec() }
+    fn with_env(env: &[(&'static str, &str)]) -> Self {
+        let env = env.iter().map(|&(name, value)| (name, value.to_owned())).collect();
+        Self { daemon: None, env }
     }
 
     /// fxdaxctl acting through a daemon of its own, serving in `dir`, a host as tests have it
@@ -54,7 +55,7 @@ impl Fxdaxctl {
         if let Some((control, _)) = &self.daemon {
             command.env("FXDAX_EXTENTD_GRPC", control);
         }
-        command.envs(self.env.iter().copied());
+        command.envs(self.env.iter().map(|(name, value)| (name, value)));
         let output = command.output().expect("running fxdaxctl failed");
         match output.status.success() {
             true => Ok(String::from_utf8(output.stdout).unwrap()),
@@ -200,6 +201,49 @@ fn stores_open_elsewhere_are_left_alone_through_the_daemon() {
     let dir = tempfile::tempdir().unwrap();
     let fxdaxctl = Fxdaxctl::through_daemon(dir.path(), &[]);
     stores_open_elsewhere_are_left_alone(fxdaxctl, dir.path(), "EBUSY (errno 16)");
+}
+
+/// fxdaxctl imports an image where no daemon is, into a store keeping its branch in the host's
+/// bucket, and forks it there too, as fxfs-guest-import forks the base it imports for its guest:
+/// the fork is the bucket's (TASK-165.7), made by the uploader the store, opened there, keeps its
+/// branch with. The fork holds the image's file, read from the bucket; the base is as it was. The
+/// host's bucket is a file bucket: what the import uploaded has left the store, which a bucket in
+/// the import's memory would have taken with it (TASK-165.8).
+#[test]
+fn images_imported_where_no_daemon_is_fork_there() {
+    use futures::executor::block_on;
+    use fxdax::import::testing::{Entry, Kind, layer};
+    use fxdax::{Filesystem, Storage};
+    let dir = tempfile::tempdir().unwrap();
+    let bucket = format!("file://{}/", dir.path().canonicalize().unwrap().join("bucket").display());
+    let fxdaxctl =
+        Fxdaxctl::with_env(&[("FXDAX_EXTENTD_REMOTE", &bucket), ("FXDAX_EXTENTD_TOKEN", "1")]);
+    let image = dir.path().join("layer.tar");
+    std::fs::write(&image, layer(&[Entry::new("hello", Kind::File(b"hello\n"))]).unwrap()).unwrap();
+    let (base, fork) = (dir.path().join("base"), dir.path().join("fork"));
+    let run = |args: &[&dyn AsRef<Path>]| {
+        let args: Vec<&Path> = args.iter().map(|arg| arg.as_ref()).collect();
+        fxdaxctl.run(&args)
+    };
+    run(&[&"import", &base, &"67108864", &image]).unwrap();
+    let printed = run(&[&"fork", &base, &fork]).unwrap();
+    let branch = u64::from_str_radix(printed.trim(), 16).unwrap();
+    assert_eq!(ExtentStore::open(&fork).unwrap().branch(), branch);
+    // The file `hello` of the store at `path`, as its filesystem has it.
+    let hello = |path: &Path| {
+        block_on(async {
+            let fs = Filesystem::mount(Storage::open(path).unwrap()).await.unwrap();
+            let (file, _) = fs.root().lookup(b"hello").await.unwrap();
+            let mut read = vec![0; 16];
+            let len = file.read(0, &mut read).await.unwrap();
+            read.truncate(len);
+            drop(file);
+            fs.close().await.unwrap();
+            read
+        })
+    };
+    assert_eq!(hello(&fork), b"hello\n");
+    assert_eq!(hello(&base), b"hello\n");
 }
 
 /// Every command through the daemon: a store imported, made a public base, grown, forked, synced

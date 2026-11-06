@@ -737,6 +737,27 @@ fn deep_images_make_stores_on_a_daemons_thread() {
     })
 }
 
+/// A store made of an image where no extent daemon is, as `fxdaxctl import` makes one, forks once
+/// opened there too, as fxfs-guest-import forks the base it imports for its guest: the fork is
+/// the bucket's alone (TASK-165.7), made by the store's uploader, which keeps its branch in the
+/// bucket its description names, its own beside it, as an image's does. Opened so, it had none,
+/// and the fork failed (`ENOTSUP`, GCE r701). The fork holds the image's files, read from the
+/// bucket, and the base is as it was.
+#[test]
+fn stores_made_of_images_fork_where_no_daemon_is() {
+    let dir = tempfile::tempdir().unwrap();
+    let layout = dir.path().join("image");
+    let image = layer(&[Entry::new("etc/motd", Kind::File(b"forked\n"))]).unwrap();
+    oci_layout(&layout, "fork:1", &[image]).unwrap();
+    let base = dir.path().join("base");
+    block_on(fxdax::import::store(&base, STORAGE_SIZE, &layout, Some("fork:1"))).unwrap();
+    let manifest = store_manifest(&base);
+    let fork = dir.path().join("fork");
+    fxdax::ExtentStore::open(&base).unwrap().fork(&fork, 0x1405).unwrap();
+    assert_eq!(store_manifest(&fork), manifest);
+    assert_eq!(store_manifest(&base), manifest);
+}
+
 /// Runs fxdaxctl with `args`, and returns whether it succeeded, and what it printed to stderr.
 fn fxdaxctl(args: &[&str]) -> (bool, String) {
     let output = std::process::Command::new(env!("CARGO_BIN_EXE_fxdaxctl")).args(args).output();

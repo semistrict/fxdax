@@ -216,7 +216,9 @@ pub(crate) fn unmade(path: &Path) -> bool {
 /// (`crate::remote::take_branch`): every extent of it there, at its location there, read from
 /// there, or the host's cache. `prepare` writes what the caller keeps beside the store into its
 /// directory first, before its description, which makes it a store. A fork of a store with no
-/// uploader fails with `ENOTSUP`, making nothing.
+/// uploader fails with `ENOTSUP`, making nothing: its callers attach one first, an image's
+/// (`storage::kept`), and an extent store's opened where no daemon serves it
+/// (`ExtentStore::kept_in_bucket`).
 ///
 /// The caller names the child: a fork to a child whose ID another branch has in the bucket fails
 /// with `EEXIST`, making nothing; and so does one whose child's ID another branch took as it was
@@ -394,6 +396,20 @@ mod tests {
     use super::*;
 
     const MIB: u64 = 1 << 20;
+
+    /// TASK-165.7: a fork is the bucket's, made by the store's uploader: given none, it forks
+    /// nothing (`ENOTSUP`), committing nothing, and leaves nothing at the fork's path.
+    #[test]
+    fn forks_with_no_uploader_make_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = create(&dir.path().join("store"), MIB, 3).unwrap().store;
+        let epoch = store.epoch().unwrap();
+        let path = dir.path().join("fork");
+        let child = Child { branch: 4, owner: 1, point: false };
+        let forked = fork(&store, None, &path, child, |_| Ok(()), ()).map_err(|err| err.errno());
+        let refused = (forked, path.exists(), store.epoch().unwrap());
+        assert_eq!(refused, (Err(Some(Errno::ENOTSUP)), false, epoch));
+    }
 
     /// TASK-165.6: a store made on a host of fxdax's system names the host's bucket; one made
     /// elsewhere, a file bucket of its own, beside its directory, where its branch is kept: its
