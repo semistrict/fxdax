@@ -4,8 +4,9 @@ title: Crash soak rounds that kill extentd and drop uploads before host loss
 status: To Do
 assignee: []
 created_date: '2026-10-21 19:54'
-updated_date: '2026-10-31 22:17'
-labels: []
+updated_date: '2026-11-06 06:52'
+labels:
+  - sandbox
 dependencies: []
 priority: high
 ordinal: 176000

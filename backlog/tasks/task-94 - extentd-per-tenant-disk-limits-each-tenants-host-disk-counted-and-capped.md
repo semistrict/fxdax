@@ -4,6 +4,7 @@ title: 'extentd: per-tenant disk limits: each tenant''s host disk counted, and c
 status: To Do
 assignee: []
 created_date: '2026-10-24 12:29'
+updated_date: '2026-11-06 06:51'
 labels: []
 dependencies: []
 references:
@@ -39,3 +40,9 @@ Sharing makes counting a decision, to be made with the user before implementing:
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+2026-11-06 tidy: two premises above changed since. TASK-165.7 (67740ed72): a store's directory holds its branch alone, and a fork's child is a store of its own, its new data in its own directory, no longer written into the base's (no Lineage). TASK-165.8 (a31f82a98): local cleaning and its dead space (TASK-79.89) are gone; a store keeps on local disk only what its uploader hasn't had acknowledged (bounded by the lag bound, 1 GiB by default) and its open segment, and acknowledged data goes to the host's part cache, shared by every tenant and bounded by its capacity. So what a tenant can take of a host's disk is its stores' unacknowledged segments, about the lag bound each, and its use of the shared cache: the counting rule for shared data (this task's open decision) now applies to the cache. AC #3's 'once cleaning reclaims it' reads 'once it leaves local disk'.
+<!-- SECTION:NOTES:END -->

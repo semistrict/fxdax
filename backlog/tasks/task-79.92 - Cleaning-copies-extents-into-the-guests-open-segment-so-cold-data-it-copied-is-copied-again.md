@@ -3,9 +3,10 @@ id: TASK-79.92
 title: >-
   Cleaning copies extents into the guest's open segment, so cold data it copied
   is copied again
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-10-23 19:35'
+updated_date: '2026-11-06 06:50'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -33,3 +34,15 @@ Found fixing TASK-79.90 (r5/regress). A pass copies the live extents of mostly-d
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Moot after TASK-165.8 (a31f82a98): local cleaning is deleted (Store::clean, clean_behind, cleaning's copies and the moves_into_the_open_segment rule are gone: rg finds none in crates/ at f81174090). Acknowledged segments leave the store for the host's part cache; the bucket's collector, which compacts into objects of its own, is the only cleaner.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Closed as moot: TASK-165.8 deleted local cleaning, whose copies into the open segment this was about; the bucket's collector is the only cleaner.
+<!-- SECTION:FINAL_SUMMARY:END -->

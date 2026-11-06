@@ -4,7 +4,7 @@ title: 'fxdax: one module for a store directory''s local records'
 status: To Do
 assignee: []
 created_date: '2026-11-03 13:08'
-updated_date: '2026-11-05 16:24'
+updated_date: '2026-11-06 06:51'
 labels:
   - structure
 dependencies: []
@@ -37,4 +37,6 @@ remote-*, fence-*, origin-*, public-*, attached-bases and the boot profile each 
 
 <!-- SECTION:NOTES:BEGIN -->
 TASK-184 (2026-11-05): remote.rs's durable writes (markers, fences, claims) now share one helper, write_new, whose new file is the write's own ({name}.new-{random}); a shared {name}.new let two writers of one file at once truncate or remove each other's (ENOENT). The one durable write this task asks for must do the same: extents.rs's write_bases still writes {BASES_FILE}.new, which two ATTACHes of one store at once would share, and record_base reads, then writes, the list (a lost attachment); extent_store host.rs's describe has {DESCRIPTION}.new, which two deletions of one handle at once share. The read-then-write writers of a child's claim are TASK-186.
+
+2026-11-06 tidy, the records at f81174090: origin-* files went with claims (TASK-165.7, 67740ed72); a fork now writes ancestry (extents.rs:1822, ANCESTRY_FILE, by extents::inherit), so the records are remote-* and fence-* (remote.rs:86, 92), public-* (extents.rs:1878), attached-bases (extents.rs:1762), ancestry and the boot profile. TASK-165.9 removes remote.rs's marker (remote-*); the rest stays fxdax's.
 <!-- SECTION:NOTES:END -->

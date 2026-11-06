@@ -4,9 +4,11 @@ title: 'extent_store: the uploader''s holds with one owner, acknowledged in one 
 status: To Do
 assignee: []
 created_date: '2026-11-03 13:08'
+updated_date: '2026-11-06 06:51'
 labels:
   - structure
-dependencies: []
+dependencies:
+  - TASK-165.9
 parent_task_id: TASK-160
 priority: medium
 type: task
@@ -31,3 +33,9 @@ Segments not yet uploaded are owned by Uploads.unuploaded and mirrored by hand i
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+2026-11-06 tidy: depends on TASK-165.9, which moves the uploader into extent_store. Since TASK-165.8, Store::acknowledged(number, key) (crates/extent_store/src/store.rs:1643) replaces Store::uploaded, but an acknowledgement is still that and Store::release(epoch) (store.rs:1160), two calls; Uploads keeps unuploaded (crates/extent_store/src/uploads.rs:131-137).
+<!-- SECTION:NOTES:END -->

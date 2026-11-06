@@ -6,10 +6,11 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-10-22 14:46'
-updated_date: '2026-10-23 03:10'
+updated_date: '2026-11-06 06:51'
 labels:
   - review-2026-10-21
-dependencies: []
+dependencies:
+  - TASK-165.9
 priority: medium
 type: enhancement
 ordinal: 264000
@@ -39,4 +40,6 @@ TASK-28.6 built checkpoint::Table so that a host resuming a large branch from ob
 
 <!-- SECTION:NOTES:BEGIN -->
 Round 1 (review-r1): extent_remote's fetcher looks extents up in a checkpoint by the blocks of its table, read as its parts (Fetcher::lookup over checkpoint::Table), and object::range is gone; a test counts one lookup. AC #1 is not met: no host calls Fetcher::lookup yet. Hosts' writers recover a branch's state whole, because the attach diff, take's adopt of every extent and Writer::checkpoint need every extent, and a taken branch's reads use the writer's in-memory state. Left: the writer's state keeps its checkpoint as a checkpoint::Table under an overlay of the footers after it, recovery reads the checkpoint's tail rather than its entries, and a host that took a branch (fxdax remote::Fetcher::offset/read via Writer::location) finds extents by block. That changes Writer::checkpoint and recovery, which the TASK-91.2 session was working in.
+
+2026-11-06 tidy: depends on TASK-165.9: what is left (a writer's state keeping its checkpoint as a Table, recovery reading its tail) is the recovery TASK-165.9 replaces. Since TASK-165.8 an acknowledged extent is Data::Remote at its Location, read through the fetcher with no lookup; since TASK-165.7 a fork's child adopts every extent at its location (remote::take_branch), reading the checkpoint whole.
 <!-- SECTION:NOTES:END -->

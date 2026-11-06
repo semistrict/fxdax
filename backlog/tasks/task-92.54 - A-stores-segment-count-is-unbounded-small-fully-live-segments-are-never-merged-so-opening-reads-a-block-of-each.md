@@ -3,9 +3,10 @@ id: TASK-92.54
 title: >-
   A store's segment count is unbounded: small fully-live segments are never
   merged, so opening reads a block of each
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-10-23 23:09'
+updated_date: '2026-11-06 06:50'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -33,3 +34,15 @@ Left by TASK-92.16 (accepted by the user 2026-10-23). Commits no longer scan eve
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Moot after TASK-165.8 (a31f82a98): a store attached to an uploader keeps only the closed segments not yet acknowledged in the bucket, whose count the uploader's lag bound bounds (4,096 commits, 1 GiB); acknowledged ones leave the store (Segments::reap_acknowledged, crates/extent_store/src/segments.rs:320), so the count no longer grows with a store's age, and opening reads a block of each of those alone (segments.rs:186-191). A store with no uploader keeps everything, but only extent_store's own tests and fxdaxctl's offline commands run so. Small segments in the bucket are the collector's to compact.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Closed as moot: since TASK-165.8 a host store keeps only unacknowledged segments, bounded by the uploader's lag, so their count and the open's reads no longer grow with the store's age.
+<!-- SECTION:FINAL_SUMMARY:END -->

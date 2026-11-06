@@ -6,10 +6,11 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-10-22 18:22'
-updated_date: '2026-10-23 18:01'
-labels: []
+updated_date: '2026-11-06 06:52'
+labels:
+  - sandbox
 dependencies: []
-priority: high
+priority: medium
 ordinal: 265000
 ---
 
@@ -34,4 +35,6 @@ Round 4 (sandbox team, 2026-10-22, at b2f11cf): TASK-91.1/91.9 hold (no 'is seal
 Round 5 (a8e2e02, 2026-10-23, five runs): object store off the critical path (25 ms and 0 ms match; lag bounded, stalls 0, commit wait <0.6 s a run); nodax 1,293 to 1,095 tps at 25 ms (3.7x their runtime by run 5); no 'is sealed', no PANIC, no DAX collapse in 20 runs. Open: DAX falls 27-31% over five runs (TASK-91.10), nodax WRITE time grows with the store (TASK-91.11), the load gap (TASK-91.4), TASK-91.5-91.8; TASK-91.3 closed; TASK-91.2 open for sync/unmount's durable wait in the seal.
 
 Round 6 (sandbox team, 'why the load is slow and why DAX is slower', 66d56a4, 2026-10-23, GCE n2-standard-16 at 25 ms; experiments fsync=off, synchronous_commit=off, 8 GiB window). No-DAX load: 206 fsync commits at ~41 ms, 6.34 of 8.37 s closing segments in the commit; fsync=off 12.4 s = their runtime. DAX load: the 2 GiB window fills (62,455 MAPs, 55,436 range MAPs, 56,568 full); 8 GiB: 10,008 MAPs, 16.3 s. DAX runs: ~82k MAPs a run at ~490 us guest-side, stores held by seals 15-16 s; synchronous_commit=off: no DAX 3.7-4.2k tps, DAX 1.6-1.9k. 8 GiB window still 'full' 49-110k a run with 2.37 GB free and ~30k regions. Per MAP: extentd 59 us, VMM 216 us, guest 259-490 us, VMM reply thread 92-165 us host system time; guest spins up to 100 us (VEXT_SPIN_NS), 25-47% of guest samples in virtio_extent_call/try_wait_for_completion; 134,886 MMIO exits in the DAX load. No-DAX writes 13 GB to the device a 60 s run (121,391 WRITEs, ~107 KB each); __pv_queued_spin_lock_slowpath 20-42% of guest samples without DAX. Asks 1-9 filed as TASK-91.12-91.18, and in TASK-91.4/91.10.
+
+2026-11-06 tidy: priority high to medium, as its open subtasks are (91.5 and 91.8 medium, 91.15 low).
 <!-- SECTION:NOTES:END -->

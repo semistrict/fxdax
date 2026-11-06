@@ -1,9 +1,10 @@
 ---
 id: TASK-70
 title: Documented VMM exit statuses per failure kind
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-10-21 19:54'
+updated_date: '2026-11-06 06:50'
 labels: []
 dependencies: []
 priority: medium
@@ -22,3 +23,15 @@ extentd loss exits 158; a blocking store call on a reply thread now panics the V
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+2026-11-06 tidy: done by 6a6dea10b (2026-10-31): README.md's 'How a VM process exits' documents every status a VM process exits with, by failure kind and whose it is: 0, 1, 2, 148-157, 158 ExtentdLost (storage) and 159 AccessRefused (the guest), and SIGABRT for a panic. Checked against Firecracker's FcExitCode at vendor/firecracker 96cb97976 (src/vmm/src/lib.rs:185-209) on 2026-11-06.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Done by 6a6dea10b: README's 'How a VM process exits' table names each exit status by failure kind, storage loss (158) apart from the guest (159) and from VMM bugs; it matches FcExitCode at vendor/firecracker 96cb97976.
+<!-- SECTION:FINAL_SUMMARY:END -->

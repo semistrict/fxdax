@@ -4,11 +4,11 @@ title: 'cargo-mutants sweep of fxdax''s own crates, its surviving mutants triage
 status: To Do
 assignee: []
 created_date: '2026-10-18 04:06'
-updated_date: '2026-11-06 00:48'
+updated_date: '2026-11-06 06:51'
 labels: []
 dependencies: []
 parent_task_id: TASK-44
-priority: medium
+priority: low
 ordinal: 13500
 ---
 
@@ -59,4 +59,6 @@ extent_store (2026-10-19, pushed b42422d): the GCE sweep (docs/measurements/gce-
 2026-10-23 audit: back to To Do, mutation sweeps stopped by the user on 2026-10-19. AC3 met (scripts/mutants.sh, scripts/mutants-gce.sh). AC1 partial: extent_store and extent_remote reports in docs/measurements (2026-10-19), extent_frame's in these notes only, fxdax shards 0-1 done (shard 1 stopped at 312 mutants), 2-3 partial, 4-5 not run. AC2: extent_store's 19 follow-ups not filed, fxdax's triage not started.
 
 TASK-44.19 does the same by hand for the guest's C (dax.c, device.c), which cargo-mutants can't.
+
+2026-11-06 tidy: priority to low: whole mutation sweeps were stopped by the user on 2026-10-19 (dead-ends/full-cargo-mutants-sweep.md); TASK-92.40 is what would make resuming TASK-44.1 cheaper.
 <!-- SECTION:NOTES:END -->

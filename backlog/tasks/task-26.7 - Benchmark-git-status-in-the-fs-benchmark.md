@@ -4,7 +4,7 @@ title: 'Benchmark: git status in the fs benchmark'
 status: To Do
 assignee: []
 created_date: '2026-10-13 19:54'
-updated_date: '2026-11-06 00:48'
+updated_date: '2026-11-06 06:51'
 labels: []
 milestone: m-3
 dependencies: []
@@ -13,6 +13,7 @@ documentation:
     backlog/docs/doc-2 -
     Guest-owned-metadata-Fxfs-in-the-guest-kernel-over-a-virtio-extent-store.md
 parent_task_id: TASK-26
+priority: medium
 type: task
 ordinal: 43000
 ---

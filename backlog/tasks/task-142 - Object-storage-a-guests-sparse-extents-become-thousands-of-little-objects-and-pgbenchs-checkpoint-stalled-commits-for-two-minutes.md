@@ -6,10 +6,10 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-10-31 21:45'
-updated_date: '2026-10-31 22:32'
+updated_date: '2026-11-06 06:51'
 labels: []
 dependencies: []
-priority: high
+priority: medium
 ordinal: 492000
 ---
 
@@ -36,4 +36,6 @@ GCE r353, non-DAX pgbench, jailed, in GCS: at pg_ctl stop 1.2 GiB waited to uplo
 
 <!-- SECTION:NOTES:BEGIN -->
 2026-10-31: OWN_AT_ONCE 32, GCE r355, non-DAX pgbench jailed in GCS: pg_ctl stop 8.4 s (failed at 60 s), no write blocked (over 100 s), the oldest upload 14.7 s behind (224 s), one stall. AC1 holds; AC2, by the bytes an extent holds rather than its reach, is open.
+
+2026-11-06 tidy: priority high to medium: AC #1, the stall, is met (r355); AC #2 is a cost question.
 <!-- SECTION:NOTES:END -->

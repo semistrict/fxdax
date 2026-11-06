@@ -6,11 +6,12 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-10-31 22:15'
+updated_date: '2026-11-06 06:51'
 labels:
   - sandbox
   - performance
 dependencies: []
-priority: high
+priority: low
 ordinal: 496000
 ---
 
@@ -26,3 +27,9 @@ Measured at 5151882, which has none of the work since cc4f61cf0. Overlay/no DAX/
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+2026-11-06 tidy: priority high to low: TASK-146.1 was parked by the user on 2026-11-03 (the sandbox team happy with performance and integrating), and with writable DAX deleted (37c331a6c) a write(2) makes no window MAP; what a first store's PRIVATE round trip costs write(2) is TASK-92.24's.
+<!-- SECTION:NOTES:END -->

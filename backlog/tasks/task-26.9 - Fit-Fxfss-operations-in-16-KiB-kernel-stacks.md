@@ -4,6 +4,7 @@ title: Fit Fxfs's operations in 16 KiB kernel stacks
 status: To Do
 assignee: []
 created_date: '2026-10-13 22:13'
+updated_date: '2026-11-06 06:51'
 labels: []
 milestone: m-3
 dependencies: []
@@ -12,6 +13,7 @@ documentation:
     backlog/docs/doc-3 -
     TASK-26.1-spike-porting-Fxfs-into-the-guests-Linux-kernel.md
 parent_task_id: TASK-26
+priority: low
 ordinal: 45000
 ---
 
@@ -34,3 +36,9 @@ Linux kernel threads have 16 KiB of stack on x86-64 and arm64, and the system ca
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+2026-11-06 tidy: priority low: the guest kernel runs with 64 KiB stacks (guest/linux/patches/0002-stack-size.patch, which names this task), so nothing overflows meanwhile; this task is what would let that patch go.
+<!-- SECTION:NOTES:END -->

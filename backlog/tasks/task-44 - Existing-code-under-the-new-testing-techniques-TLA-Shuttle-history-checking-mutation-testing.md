@@ -6,6 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-10-18 04:05'
+updated_date: '2026-11-06 06:52'
 labels: []
 dependencies: []
 priority: high
@@ -29,3 +30,9 @@ TASK-42 (followers) brought testing techniques the project hadn't used: TLA+ spe
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+2026-11-06 tidy: TASK-149 (testing ranked by how likely it is to find bugs) is where testing work is ranked and filed now; this task keeps its open subtasks (44.1, 44.5, 44.7, 44.15, 44.16) and takes no new ones.
+<!-- SECTION:NOTES:END -->

@@ -4,14 +4,14 @@ title: 'Mutation sweeps build and test unoptimized, with full debuginfo'
 status: To Do
 assignee: []
 created_date: '2026-10-22 21:06'
-updated_date: '2026-11-06 00:47'
+updated_date: '2026-11-06 06:51'
 labels:
   - review-2026-10-21
 dependencies: []
 references:
   - docs/reviews/2026-10-21-main.md
 parent_task_id: TASK-92
-priority: medium
+priority: low
 type: enhancement
 ordinal: 315000
 ---
@@ -43,4 +43,6 @@ Found by the 2026-10-21 review of main at 6a0a3f8 (severity medium): docs/review
 
 <!-- SECTION:NOTES:BEGIN -->
 2026-11-05 triage: description brought to dde8d58d3: Cargo.toml has [profile.sim] since ebe4f4682 (TASK-188), which the sweeps don't use; mutants.sh's line numbers moved.
+
+2026-11-06 tidy: priority to low: whole mutation sweeps were stopped by the user on 2026-10-19 (dead-ends/full-cargo-mutants-sweep.md); TASK-92.40 is what would make resuming TASK-44.1 cheaper.
 <!-- SECTION:NOTES:END -->

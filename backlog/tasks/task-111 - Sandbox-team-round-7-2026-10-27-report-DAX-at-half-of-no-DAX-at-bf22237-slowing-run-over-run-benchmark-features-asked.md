@@ -3,9 +3,10 @@ id: TASK-111
 title: >-
   Sandbox team, round 7 (2026-10-27 report): DAX at half of no DAX at bf22237,
   slowing run over run; benchmark features asked
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-10-28 00:28'
+updated_date: '2026-11-06 06:50'
 labels: []
 dependencies: []
 priority: high
@@ -32,3 +33,15 @@ Benchmark features they ask for, so they can stop being our benchmark loop: (1) 
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+2026-11-06 tidy: all eight subtasks are Done (111.1 to 111.8), one per ask of the report: (1) one entry point (111.2), (2) CI thresholds (111.3; the perf gate, TASK-164.5), (3) one snapshot (111.4, fxdaxctl stats --json), (4) the window's and the VMM's mapping gauges (111.5), (5) latency distributions (111.6), (7) System.map and an unstripped vmlinux (111.8), (9) build stamps (111.7). What the report asked that no subtask did is in tasks of its own: (4)'s pinned and idle cache entries per store, TASK-72; (6) tracepoints, TASK-44.16; (8) frame pointers, TASK-92.39 (Done). The DAX-against-no-DAX gap it reported is TASK-164.6's perf gate now.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Closed: every ask of the sandbox team's round 7 is a Done subtask (111.1-111.8) or a task of its own (TASK-72, TASK-44.16, TASK-92.39); the DAX gap it measured is TASK-164.6's.
+<!-- SECTION:FINAL_SUMMARY:END -->

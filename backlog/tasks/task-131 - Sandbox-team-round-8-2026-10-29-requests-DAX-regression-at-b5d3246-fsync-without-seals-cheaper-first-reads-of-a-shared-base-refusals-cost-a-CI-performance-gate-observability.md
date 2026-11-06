@@ -7,11 +7,12 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-10-29 21:13'
+updated_date: '2026-11-06 06:51'
 labels:
   - sandbox
   - performance
 dependencies: []
-priority: high
+priority: medium
 ordinal: 471000
 ---
 
@@ -27,3 +28,9 @@ Their report: DAX sharing works for them (each added VM ~285 MB of host memory a
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+2026-11-06 tidy: priority high to medium: the sandbox team is happy with performance and integrating (the user, 2026-11-03, TASK-146.1); base first reads against today's DAX are TASK-164.6's gate meanwhile.
+<!-- SECTION:NOTES:END -->

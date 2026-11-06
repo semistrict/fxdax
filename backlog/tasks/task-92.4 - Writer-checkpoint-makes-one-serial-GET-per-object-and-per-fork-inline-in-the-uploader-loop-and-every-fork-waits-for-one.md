@@ -6,10 +6,11 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-10-22 21:06'
-updated_date: '2026-11-06 00:46'
+updated_date: '2026-11-06 06:51'
 labels:
   - review-2026-10-21
-dependencies: []
+dependencies:
+  - TASK-165.9
 references:
   - docs/reviews/2026-10-21-main.md
 parent_task_id: TASK-92
@@ -55,4 +56,6 @@ Found by the 2026-10-21 review of main at 6a0a3f8 (severity high): docs/reviews/
 On main (4896b828b): Writer::record_forks and the checkpoint's reads of forks' records run RECORDS_AT_ONCE (32) at once (buffer_unordered); test forks_records_are_made_and_read_a_few_at_once (SimBucket: 65 forks, 32 requests waiting at once, acknowledging and checkpointing; serially 1). The reopened writer still re-creates every child's record (32 at a time now). Verified at 3364435c6 (the batch): macOS extent_remote and fxdax 371 passed; Linux workspace on GCE r264 1965 of 1965; guest suites on GCE r263 (release), fxfs-guest-dax, -checks-dax, -crash-dax, -checks-dax-small, -checks-dax-delay, -pgbench-dax 2 rounds each passed (pgbench-dax 1051.6 -> 863.4, 997.4 -> 889.5 tps).
 
 2026-11-05 triage: description brought to dde8d58d3: the per-object moves probes (431717757) and the serial fork-record reads (4896b828b) are fixed; the title and what's left restated.
+
+2026-11-06 tidy: depends on TASK-165.9 (its description says to measure after TASK-165.7, landed on main, and 165.9, which reworks the uploader and recovery this measures).
 <!-- SECTION:NOTES:END -->

@@ -4,7 +4,7 @@ title: 'Guest-owned metadata, milestone 1: guest Fxfs on a local extent store'
 status: To Do
 assignee: []
 created_date: '2026-10-13 19:53'
-updated_date: '2026-11-06 00:47'
+updated_date: '2026-11-06 06:54'
 labels: []
 milestone: m-3
 dependencies: []
@@ -12,6 +12,7 @@ documentation:
   - >-
     backlog/docs/doc-2 -
     Guest-owned-metadata-Fxfs-in-the-guest-kernel-over-a-virtio-extent-store.md
+priority: medium
 type: feature
 ordinal: 36000
 ---
@@ -24,9 +25,9 @@ Metadata operations over virtio-fs are 8-55x slower than ext4 in the guest under
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Fxfs runs in a Firecracker guest's kernel over the extent-store device, served by the host's extent daemon, and passes the fxdax guest tests' filesystem checks
+- [x] #1 Fxfs runs in a Firecracker guest's kernel over the extent-store device, served by the host's extent daemon, and passes the fxdax guest tests' filesystem checks
 - [ ] #2 Metadata workloads and git status measured on GCE against ext4 in the guest, within 2x
-- [ ] #3 The write path (DAX with commit barriers, or WRITE requests) is decided from measurements and recorded in doc-2
+- [x] #3 The write path (DAX with commit barriers, or WRITE requests) is decided from measurements and recorded in doc-2
 <!-- AC:END -->
 
 ## Definition of Done
@@ -40,4 +41,6 @@ Metadata operations over virtio-fs are 8-55x slower than ext4 in the guest under
 
 <!-- SECTION:NOTES:BEGIN -->
 2026-11-05 triage: AC #1 named libkrun, removed in 5ba394977 (TASK-40); now Firecracker's guest and the extent daemon.
+
+2026-11-06 tidy: AC #1 met: Fxfs runs in Firecracker guests' kernels over the extent device, served by fxdax-extentd, and passes the guest suites' filesystem checks: GCE r690 on main ran fxfs-guest-dax, fxfs-guest-checks-dax (-delay, -small), the crash suites, pgbench-dax and docker-dax, 15 of 15 (TASK-164's notes); r700 the DAX suites jailed (TASK-149.15). AC #3 met: the write path was decided on 2026-11-04 from the first-principles review's measurements (copy-on-write DAX, data written by WRITE requests at writeback, doc-13, TASK-164), and doc-2's status note records it (2026-11-06). AC #2 open: git status isn't in the benchmark yet (TASK-26.7).
 <!-- SECTION:NOTES:END -->

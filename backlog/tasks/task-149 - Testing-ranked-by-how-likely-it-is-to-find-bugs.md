@@ -4,7 +4,7 @@ title: Testing ranked by how likely it is to find bugs
 status: To Do
 assignee: []
 created_date: '2026-11-01 06:13'
-updated_date: '2026-11-06 02:22'
+updated_date: '2026-11-06 06:52'
 labels: []
 dependencies: []
 priority: high
@@ -44,4 +44,6 @@ The graveyard reap that lost a store (r380): blind spot: a window too narrow for
 r394 (7082ef35d plus the SIGTERM, script and bound fixes; xfstests passing on both, 14 and 16 known failures) failed scripts/dax-refusals.py: one unexplained refusal of 55 in xfstests-fxfs-guest-dax: a store at window offset 0x20b85000 to extent 1099511631341 'read-only; open in the window; in the store: 0x2f000 bytes, open', mapped read-only 0x50000 bytes from 0x20b36000 1.2 ms before, the next page refused as nothing mapped at once after. TASK-99's signature: an open extent mapped read-only that the guest stored to. The guest went on; TASK-99's stopped the VM. r389 had none, and nothing in dax.c changed between them, so a rare race, not yet diagnosed. Results kept in /tmp/fxdax-r394-xfstests.
 
 2026-11-05: TASK-149.29 done (fxfs-sim-diff in CI 42137709782's workspace job; it found a model drift and a real Fxfs bug, both fixed). AC #1 open: 17 subtasks are To Do (149.2, 4, 10 to 20, 22, 24, 25, 27).
+
+2026-11-06 tidy: testing tasks that belong here but are no subtask of it (the backlog CLI can't move a task under a parent, and making them again would renumber them): TASK-67 (crash soak rounds that kill extentd or drop uploads before a host is lost), TASK-78 (the guest suites against real Azure Blob Storage), TASK-151 (closed_segments_files_close_least_lately_read_first flaky, as TASK-149.27 is another), and TASK-44's open ones (44.1, 44.5, 44.7, 44.15, 44.16). Rank them among the subtasks by ordinal, as this task's description says.
 <!-- SECTION:NOTES:END -->

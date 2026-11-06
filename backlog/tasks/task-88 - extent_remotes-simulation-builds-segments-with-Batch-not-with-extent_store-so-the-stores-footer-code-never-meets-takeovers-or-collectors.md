@@ -6,10 +6,11 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-10-22 13:26'
-updated_date: '2026-11-06 00:47'
+updated_date: '2026-11-06 06:51'
 labels:
   - review-2026-10-21
-dependencies: []
+dependencies:
+  - TASK-165.9
 priority: medium
 type: task
 ordinal: 262000
@@ -41,4 +42,6 @@ Each session would need an extent_store Store of its own, attached as fxdax's re
 
 <!-- SECTION:NOTES:BEGIN -->
 2026-11-05 triage: description brought to dde8d58d3: TASK-165.3 made one footer shape and one replay, leaving two producers of Contents; extent_store now depends on extent_remote, so the simulation can't build a Store from extent_remote.
+
+2026-11-06 tidy: depends on TASK-165.9, which moves the uploader into extent_store and deletes the attach's diff: where its description says to do this.
 <!-- SECTION:NOTES:END -->
