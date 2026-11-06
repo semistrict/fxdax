@@ -1469,6 +1469,48 @@ static void cow_writes_ahead(void)
 	cow_check_file("after writes apart", COW_PAGES * PAGE_SIZE);
 }
 
+/* Writes the page `arg` of cow_target whole, its round 2. */
+static void cow_write_round_two(void *arg)
+{
+	cow_write_whole((uintptr_t)arg, 2);
+}
+
+/*
+ * TASK-164.11: that a write(2) has the pages it writes made private before it takes the inode's
+ * lock, which the file's other writes take: its PRIVATE held on its way to the host
+ * (sim_device_hold), a write to another page of the file, one private already, ends meanwhile;
+ * then the first, which took the one PRIVATE, made before its lock, its iomap asking none. A
+ * forked pgbench's writes waited for others' PRIVATEs as long as the PRIVATEs took (GCE r806: 37
+ * of their 63 s). Red with the PRIVATE made under the lock, by the write's iomap: the second write
+ * waits for the first's PRIVATE.
+ */
+static void cow_writes_private_before_the_lock(void)
+{
+	struct task_struct *first, *second;
+	u64 privates, before;
+
+	cow_mapped_file(COW_PAGES);
+	wait_for(sim_spawn("rebinder", cow_rebind_now, NULL));
+	cow_write_whole(60, 1);
+	privates = sim_dax_stat(mount, "dax_privates");
+	before = sim_dax_stat(mount, "dax_private_before_pages");
+	sim_device_hold(VIRTIO_EXTENT_T_PRIVATE);
+	first = sim_spawn("first", cow_write_round_two, (void *)10UL);
+	sim_await(sim_device_held(), "no PRIVATE held");
+	second = sim_spawn("second", cow_write_round_two, (void *)60UL);
+	sim_await(READ_ONCE(cow_round[60]) == 2,
+		  "a write to a private page waited for another write's PRIVATE");
+	sim_device_release();
+	wait_for(first);
+	wait_for(second);
+	check(sim_dax_stat(mount, "dax_privates") - privates == 1, "%llu PRIVATEs for one page",
+	      sim_dax_stat(mount, "dax_privates") - privates);
+	check(sim_dax_stat(mount, "dax_private_before_pages") - before == 1,
+	      "%llu pages made private before the lock",
+	      sim_dax_stat(mount, "dax_private_before_pages") - before);
+	cow_check_file("after the writes", COW_PAGES * PAGE_SIZE);
+}
+
 /*
  * TASK-164.10: that a rebind maps a range's private pages back in one request, however many runs
  * they are: every other page of 64 written, out of order (none made private ahead), and written
@@ -1539,6 +1581,7 @@ static const struct {
 	COW_SCENARIO(cow_store_to_pinned_slice),
 	COW_SCENARIO(cow_writeback_counts_again),
 	SCENARIO(cow_writes_ahead),
+	SCENARIO(cow_writes_private_before_the_lock),
 	SCENARIO(cow_rebinds_map_ranges_at_once),
 };
 

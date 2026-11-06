@@ -25,6 +25,7 @@
 #define I_DIRTY_DATASYNC (1 << 1)
 #define I_DIRTY_PAGES (1 << 2)
 #define I_FREEING (1 << 5)
+#define IOCB_APPEND (1 << 4)
 #define IOCB_NOWAIT (1 << 7)
 #define IOCB_ATOMIC (1 << 9)
 #define PAGECACHE_TAG_DIRTY XA_MARK_0

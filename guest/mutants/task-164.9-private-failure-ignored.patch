@@ -11,19 +11,15 @@
 
 --- a/guest/linux/fs/fxfs/dax.c
 +++ b/guest/linux/fs/fxfs/dax.c
-@@ -2684,15 +2684,7 @@
+@@ -2714,9 +2714,9 @@
+ 					  (u64)(pages + ahead) << PAGE_SHIFT);
+ 		atomic64_inc(&dax->privates);
  		if (err) {
- 			pr_warn_ratelimited("fxfs: making %lu pages at %llx of the window private: %d\n",
- 					    pages + ahead, fxfs_dax_page_offset(range, first), err);
--			atomic_long_sub(newly + beyond, &dax->private);
--			wake_up_all(&dax->budget_wait);
--			/*
--			 * fxdax: ENOMEM as ENOMEM, the guest's request's memory not found, not EIO
--			 * (TASK-44.15); the host's refusal is EIO already (fxfs_device_private).
--			 */
--			if (err != -ENOMEM)
--				err = -EIO;
+-			err = fxfs_dax_private_failed(dax, fxfs_dax_page_offset(range, first),
+-						      pages + ahead, newly + beyond, err);
 -			goto unreserve;
++			pr_warn_ratelimited("fxfs: making %lu pages at %llx of the window private: %d\n",
++					    pages + ahead, fxfs_dax_page_offset(range, first), err);
 +			err = 0;
  		}
  		WRITE_ONCE(range->file->dirtied, jiffies);

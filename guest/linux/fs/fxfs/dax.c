@@ -415,6 +415,8 @@ struct fxfs_dax {
 	 * a slice to try again, and what comes after.
 	 */
 	atomic64_t writes, write_ns, write_lock_ns, write_setup_ns, write_fault_in_ns, write_rw_ns;
+	/* fxdax: a write's time making its pages private before its lock (TASK-164.11). */
+	atomic64_t write_private_ns;
 	atomic64_t write_begin_ns, write_end_ns, write_retry_ns, write_tail_ns;
 	struct fxfs_hist write_hist;
 	/* fxdax: what each fault of a mapping took (TASK-111.6). */
@@ -467,8 +469,11 @@ struct fxfs_dax {
 	 * dirtied pages (TASK-164.2, TASK-164.9).
 	 */
 	atomic64_t writebacks, written, rebound, throttled, seals_made, privates;
-	/* fxdax: the pages PRIVATEs made private ahead of writes (TASK-164.10). */
-	atomic64_t private_ahead;
+	/*
+	 * fxdax: the pages PRIVATEs made private ahead of writes (TASK-164.10), and before writes
+	 * took their inodes' locks (TASK-164.11).
+	 */
+	atomic64_t private_ahead, private_before;
 	/*
 	 * fxdax: MAPs the device refused as of an open extent (-EPERM), which Fxfs had taken for
 	 * sealed: none is meant to be asked for (doc-13's invariant 1), a tripwire the checks read.
@@ -2631,6 +2636,22 @@ static int fxfs_dax_throttle(struct fxfs_dax *dax, unsigned int *waits)
 }
 
 /*
+ * fxdax: a PRIVATE of `pages` pages at `offset` of the window failed with `err`: the `counted`
+ * pages counted private for it given back, and the error its write fails with: ENOMEM as ENOMEM,
+ * the guest's request's memory not found, not EIO (TASK-44.15); the host's refusal is EIO already
+ * (fxfs_device_private).
+ */
+static int fxfs_dax_private_failed(struct fxfs_dax *dax, u64 offset, unsigned long pages,
+				   long counted, int err)
+{
+	pr_warn_ratelimited("fxfs: making %lu pages at %llx of the window private: %d\n", pages,
+			    offset, err);
+	atomic_long_sub(counted, &dax->private);
+	wake_up_all(&dax->budget_wait);
+	return err == -ENOMEM ? err : -EIO;
+}
+
+/*
  * fxdax: the dirtying transition (doc-13), the one way a page joins its file's dirty set:
  * `range`'s `pages` pages from `first`, a write's (a fault's, a write(2)'s or zeroing's), about to
  * be stored to. Each not dirty yet gets room in Fxfs for its writeback (a fault without it fails
@@ -2693,16 +2714,8 @@ static int fxfs_dax_dirty(struct inode *inode, struct fxfs_dax_range *range, uns
 					  (u64)(pages + ahead) << PAGE_SHIFT);
 		atomic64_inc(&dax->privates);
 		if (err) {
-			pr_warn_ratelimited("fxfs: making %lu pages at %llx of the window private: %d\n",
-					    pages + ahead, fxfs_dax_page_offset(range, first), err);
-			atomic_long_sub(newly + beyond, &dax->private);
-			wake_up_all(&dax->budget_wait);
-			/*
-			 * fxdax: ENOMEM as ENOMEM, the guest's request's memory not found, not EIO
-			 * (TASK-44.15); the host's refusal is EIO already (fxfs_device_private).
-			 */
-			if (err != -ENOMEM)
-				err = -EIO;
+			err = fxfs_dax_private_failed(dax, fxfs_dax_page_offset(range, first),
+						      pages + ahead, newly + beyond, err);
 			goto unreserve;
 		}
 		WRITE_ONCE(range->file->dirtied, jiffies);
@@ -3092,17 +3105,33 @@ static void fxfs_dax_show_write_times(struct seq_file *m, struct fxfs_dax *dax)
 	s64 fault_in = atomic64_read(&dax->write_fault_in_ns);
 	s64 retry = atomic64_read(&dax->write_retry_ns), tail = atomic64_read(&dax->write_tail_ns);
 	s64 lock = atomic64_read(&dax->write_lock_ns);
+	s64 private = atomic64_read(&dax->write_private_ns);
 
-	seq_printf(m, "dax_writes %lld\ndax_writes_ns %lld\ndax_write_lock_ns %lld\n",
-		   atomic64_read(&dax->writes), atomic64_read(&dax->write_ns), lock);
+	seq_printf(m, "dax_writes %lld\ndax_writes_ns %lld\ndax_write_private_ns %lld\n",
+		   atomic64_read(&dax->writes), atomic64_read(&dax->write_ns), private);
+	seq_printf(m, "dax_write_lock_ns %lld\n", lock);
 	seq_printf(m, "dax_write_setup_ns %lld\ndax_write_fault_in_ns %lld\n", setup, fault_in);
 	/* Read apart, as writes go on: a difference may come out below zero by a little. */
 	seq_printf(m, "dax_write_begin_ns %lld\ndax_write_copy_ns %lld\ndax_write_end_ns %lld\n",
 		   begin, max_t(s64, 0, rw - begin - end), end);
 	seq_printf(m, "dax_write_retry_ns %lld\ndax_write_tail_ns %lld\n", retry, tail);
 	seq_printf(m, "dax_write_other_ns %lld\n",
-		   max_t(s64, 0, atomic64_read(&dax->write_ns) - lock - setup - fault_in - rw -
-			 retry - tail));
+		   max_t(s64, 0, atomic64_read(&dax->write_ns) - private - lock - setup - fault_in -
+			 rw - retry - tail));
+}
+
+/*
+ * fxdax: whether a write(2) at `pos` follows on from `file`'s last, beginning where it ended or
+ * within its last FXFS_DAX_FOLLOWS bytes, as a log's appends do (fxfs_dax_write_follows). Under the
+ * inode's write lock as it is decided; read without it ahead of the lock, a guess
+ * (fxfs_dax_private_before).
+ */
+static bool fxfs_dax_follows_on(struct fxfs_dax_file *file, loff_t pos)
+{
+	loff_t write_pos = READ_ONCE(file->write_pos), write_end = READ_ONCE(file->write_end);
+
+	return write_end > 0 && pos >= max(write_pos, write_end - (loff_t)FXFS_DAX_FOLLOWS) &&
+	       pos <= write_end;
 }
 
 /*
@@ -3115,14 +3144,101 @@ static void fxfs_dax_show_write_times(struct seq_file *m, struct fxfs_dax *dax)
  */
 static void fxfs_dax_write_follows(struct fxfs_dax_file *file, loff_t pos, loff_t end)
 {
-	loff_t from = max(file->write_pos, file->write_end - (loff_t)FXFS_DAX_FOLLOWS);
 	unsigned int ahead = 0;
 
-	if (file->write_end > 0 && pos >= from && pos <= file->write_end)
+	if (fxfs_dax_follows_on(file, pos))
 		ahead = clamp(2 * file->ahead, FXFS_DAX_AHEAD_FIRST, FXFS_DAX_AHEAD_MOST);
 	WRITE_ONCE(file->ahead, ahead);
-	file->write_pos = pos;
-	file->write_end = end;
+	WRITE_ONCE(file->write_pos, pos);
+	WRITE_ONCE(file->write_end, end);
+}
+
+/*
+ * fxdax: makes the pages of `inode`'s chunk `chunk` from `pos` to `end` that a write(2) is about
+ * to store to private, clean, as a PRIVATE ahead of a write does (fxfs_dax_dirty): those of a
+ * range of the file's own already, mapped and written, if there is room for them below where the
+ * budget's worker begins. Holding the inode's invalidate lock and the file's semaphore shared, as
+ * a fault's iomap does, not the inode's lock (fxfs_dax_private_before). 0, or the PRIVATE's
+ * failure, as fxfs_dax_dirty fails it: -ENOMEM if the guest had no memory for it, else -EIO.
+ */
+static int fxfs_dax_private_chunk_before(struct inode *inode, pgoff_t chunk, loff_t pos,
+					 loff_t end)
+{
+	struct fxfs_dax_file *file = fxfs_dax_file(inode);
+	struct fxfs_dax *dax = fxfs_dax_of(inode);
+	struct fxfs_dax_range *range;
+	unsigned long first, last;
+	long newly, made;
+	loff_t start;
+	int err = 0;
+
+	filemap_invalidate_lock_shared(inode->i_mapping);
+	down_read(&file->sem);
+	range = xa_load(&file->ranges, chunk);
+	/* A slice's chunk is mapped again as a range of its own by the write's iomap. */
+	if (!range || range->region)
+		goto out;
+	start = fxfs_dax_chunk_start(range);
+	first = (pos - start) >> PAGE_SHIFT;
+	last = min_t(unsigned long, range->pages, DIV_ROUND_UP(end - start, PAGE_SIZE));
+	if (first >= last)
+		goto out;
+	last = fxfs_dax_pages_aheadable_run(range->state, first, last);
+	if (first >= last)
+		goto out;
+	newly = fxfs_dax_pages_would_dirty(range->state, first, last - first).private;
+	if (!newly || atomic_long_read(&dax->private) + newly >
+			      dax->private_max - dax->private_max / 8 ||
+	    !fxfs_dax_take_private(dax, newly))
+		goto out;
+	/* The pages private already, those others' iomaps made so meanwhile too, stay so. */
+	err = fxfs_device_private(dax->dev, fxfs_dax_page_offset(range, first),
+				  (u64)(last - first) << PAGE_SHIFT);
+	atomic64_inc(&dax->privates);
+	if (err) {
+		err = fxfs_dax_private_failed(dax, fxfs_dax_page_offset(range, first), last - first,
+					      newly, err);
+		goto out;
+	}
+	made = fxfs_dax_pages_private_ahead(range->state, first, last - first);
+	atomic64_add(made, &dax->private_before);
+	/* Others' iomaps, holding the semaphore shared too, may have counted some meanwhile. */
+	if (newly > made)
+		atomic_long_sub(newly - made, &dax->private);
+	atomic_long_add(made, &file->private_pages);
+	WRITE_ONCE(file->dirtied, jiffies);
+out:
+	up_read(&file->sem);
+	filemap_invalidate_unlock_shared(inode->i_mapping);
+	return err;
+}
+
+/*
+ * fxdax: makes the pages a write(2) of `count` bytes at `pos` stores to private before it takes the
+ * inode's lock (fxfs_dax_private_chunk_before), as a fault makes its page private without it: a
+ * write's PRIVATE, a round trip to the host of half a millisecond nested, held the lock, and the
+ * file's other writes waited for it as long as the PRIVATEs took (TASK-164.11; a forked pgbench
+ * on GCE, r802: 160 s of waits for 163 s of PRIVATEs). Its iomap, under the lock, finds them
+ * private and asks for nothing. What it leaves, as a chunk not mapped yet, the file's end moving,
+ * no room below the budget's worker, or rebinding meanwhile, the iomap makes private as before; a
+ * PRIVATE failed fails the write, as the iomap's would (fxfs_dax_dirty). Not a write that follows
+ * on from the file's last, a log's, whose iomap's PRIVATE takes the pages its next writes reach
+ * too (fxfs_dax_write_ahead), which one made here would leave it none to ask.
+ */
+static int fxfs_dax_private_before(struct inode *inode, loff_t pos, size_t count)
+{
+	loff_t end = min_t(loff_t, pos + count, i_size_read(inode)), next;
+	int err = 0;
+
+	if (fxfs_dax_follows_on(fxfs_dax_file(inode), pos))
+		return 0;
+	for (; !err && pos < end; pos = next) {
+		pgoff_t chunk = pos >> FXFS_DAX_SHIFT;
+
+		next = min_t(loff_t, end, (loff_t)(chunk + 1) << FXFS_DAX_SHIFT);
+		err = fxfs_dax_private_chunk_before(inode, chunk, pos, next);
+	}
+	return err;
 }
 
 /*
@@ -3151,6 +3267,13 @@ static ssize_t fxfs_dax_write_iter(struct kiocb *iocb, struct iov_iter *from)
 	if (iocb->ki_flags & IOCB_NOWAIT)
 		return -EAGAIN;
 	began = lap = ktime_get_ns();
+	/* An append's place is the file's end, which only the lock holds still. */
+	if (!(iocb->ki_flags & IOCB_APPEND)) {
+		err = fxfs_dax_private_before(inode, iocb->ki_pos, iov_iter_count(from));
+		if (err)
+			return err;
+	}
+	fxfs_dax_lap(&dax->write_private_ns, &lap);
 	inode_lock(inode);
 	fxfs_dax_lap(&dax->write_lock_ns, &lap);
 	old_size = i_size_read(inode);
@@ -3544,7 +3667,8 @@ void fxfs_dax_show_stats(struct fxfs_dax *dax, struct seq_file *m)
 	seq_printf(m, "dax_seals %lld\ndax_privates %lld\ndax_open_maps %lld\n",
 		   atomic64_read(&dax->seals_made), atomic64_read(&dax->privates),
 		   atomic64_read(&dax->open_maps));
-	seq_printf(m, "dax_private_ahead_pages %lld\n", atomic64_read(&dax->private_ahead));
+	seq_printf(m, "dax_private_ahead_pages %lld\ndax_private_before_pages %lld\n",
+		   atomic64_read(&dax->private_ahead), atomic64_read(&dax->private_before));
 	seq_printf(m, "dax_unsealed_inodes %ld\n", atomic_long_read(&dax->unsealed));
 	fxfs_dax_show_write_times(m, dax);
 	fxfs_hist_show(m, "dax_write", &dax->write_hist);
