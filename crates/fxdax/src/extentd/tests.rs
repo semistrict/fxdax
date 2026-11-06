@@ -1275,6 +1275,25 @@ fn snapshots_hold_the_daemons_vm_processes_and_guests_stats() {
     assert_eq!(unsafe { libc::munmap(memory.as_ptr().cast(), 2 * ps) }, 0);
 }
 
+/// fxdax TASK-198: a snapshot that gives up on a VM process's answer forgets its ask, so that a
+/// VM process whose guest never answers, as one paused (its device asking it all the same), holds
+/// none of them: it held each, one more a snapshot, for as long as it lived, which a scraper
+/// polling GetSnapshot grew without end.
+#[test]
+fn asks_given_up_on_are_forgotten() {
+    host();
+    let dir = tempfile::tempdir().unwrap();
+    let (silent, served) = connect(&dir.path().join("silent"), 1 << 24);
+    silent.on_stats_asked(|_| true);
+    for _ in 0..3 {
+        let taken = snapshot(std::time::Duration::from_millis(10)).join().unwrap();
+        assert!(taken.vms[0].answered.is_none(), "{:?}", taken.vms[0]);
+    }
+    assert_eq!(super::snapshot::asks_waiting(), [0]);
+    drop(silent);
+    served.join().unwrap();
+}
+
 /// How long a test's snapshot waits for answers that come, none of its VM processes silent.
 const WAIT: std::time::Duration = std::time::Duration::from_secs(10);
 

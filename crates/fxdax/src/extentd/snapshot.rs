@@ -168,8 +168,11 @@ pub(crate) async fn take(wait: Duration) -> Snapshot {
         let vm = match tokio::time::timeout_at(deadline, answer).await {
             Ok(Ok(vm)) => Some(vm),
             // Not answered in time, or its connection went without answering: as the daemon has
-            // it.
-            Ok(Err(_)) | Err(_) => report.vm(),
+            // it, the ask forgotten.
+            Ok(Err(_)) | Err(_) => {
+                report.forget(ask);
+                report.vm()
+            }
         };
         vms.extend(vm);
     }
@@ -257,6 +260,12 @@ static REPORTS: Mutex<Vec<Weak<Report>>> = Mutex::new(Vec::new());
 
 /// The connections' numbers, given in turn ([`Report::id`]).
 static IDS: AtomicU64 = AtomicU64::new(0);
+
+/// How many asks each connection's VM process has yet to answer, in the order they were made.
+#[cfg(test)]
+pub(super) fn asks_waiting() -> Vec<usize> {
+    reports().iter().map(|report| report.asked.lock().unwrap().len()).collect()
+}
 
 /// The reports there are now, in the order their connections were made.
 fn reports() -> Vec<Arc<Report>> {
@@ -352,9 +361,17 @@ impl Report {
         self.asked.lock().unwrap().push(Asked { ask, at, answered });
         if let Err(err) = sender.send(Told::Stats { ask }.encode(), Vec::new(), &[]) {
             log::warn!("extentd: asking a VM process for its stats: {err}");
+            self.forget(ask);
             return None;
         }
         Some(answer)
+    }
+
+    /// Forgets ask `ask`, which its asker no longer waits for an answer to: a VM process that never
+    /// answers, as one whose guest is paused, which its device asks all the same, holds none of
+    /// the asks given up on, which grew one a snapshot for as long as it lived.
+    fn forget(&self, ask: u64) {
+        self.asked.lock().unwrap().retain(|asked| asked.ask != ask);
     }
 
     /// Its VM process answered ask `ask` ([`super::wire::STATS`]), and those before it, with its
