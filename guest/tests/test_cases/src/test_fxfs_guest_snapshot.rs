@@ -29,6 +29,16 @@
 //! through a mapping made before it, which the restored window maps again), writes its own file,
 //! which mints extents of its store's branch, and remounts.
 //!
+//! fxdax TASK-92.14: before the snapshot, the guest maps a file of `PIECES` pages, each an extent
+//! of its own, read in from a mount before, so that the window maps each page apart (with a DAX
+//! window), and reads it; frozen, it holds no private page. Restored, the mapping reads the same.
+//! The host says how long each restore (`/snapshot/load`) took, which maps the window's mappings
+//! again. The mapping is writable, and every eighth page stored to through it before the freeze:
+//! frozen, the guest counts no private page nor dirty one, nor does the host hold one, which a
+//! snapshot's point requires. KVM's worker, writing for the guest's loads through the mapping,
+//! once left the host a private page or two the guest never counted, and the snapshot was refused
+//! (TASK-191). Restored, the mapping and the file read what was stored.
+//!
 //! fxfs-guest-snapshot-volumes(-dax): a VM with `VOLUMES` volumes mounted on one device freezes,
 //! suspends, thaws and uses each (TASK-136.2). Mounted first, with nothing in the journal, the
 //! default volume reads the device fewer times than there are volumes: the rest stay closed.
@@ -133,6 +143,46 @@ const MAPPED_LEN: usize = 64 << 10;
 #[cfg_attr(feature = "host", allow(dead_code))]
 fn mapped_pattern() -> Vec<u8> {
     (0..MAPPED_LEN).map(|i| (i % 251) as u8).collect()
+}
+
+/// The pages of the file whose pages are each an extent of their own (TASK-92.14): many window
+/// mappings, as a zygote's are.
+#[cfg_attr(feature = "host", allow(dead_code))]
+const PIECES: usize = 1024;
+
+/// What the file of `PIECES` pages holds at its page `page`.
+#[cfg_attr(feature = "host", allow(dead_code))]
+fn piece(page: usize) -> Vec<u8> {
+    (0..4096).map(|i| ((page * 7 + i) % 253) as u8).collect()
+}
+
+/// What the file of `PIECES` pages holds as written.
+#[cfg_attr(feature = "host", allow(dead_code))]
+fn pieces() -> Vec<u8> {
+    (0..PIECES).flat_map(piece).collect()
+}
+
+/// Whether the guest stores to page `page` of the file of `PIECES` pages, through its mapping,
+/// before the freeze: every eighth (TASK-191).
+#[cfg_attr(feature = "host", allow(dead_code))]
+fn piece_stored(page: usize) -> bool {
+    page % 8 == 3
+}
+
+/// What the guest stores at the start of page `page` of the file of `PIECES` pages.
+#[cfg_attr(feature = "host", allow(dead_code))]
+fn stored(page: usize) -> [u8; 8] {
+    (page as u64 | 0x5a5a_0000_0000_0000).to_le_bytes()
+}
+
+/// What the file of `PIECES` pages holds once stored to.
+#[cfg_attr(feature = "host", allow(dead_code))]
+fn pieces_stored() -> Vec<u8> {
+    let mut pieces = pieces();
+    for page in (0..PIECES).filter(|&page| piece_stored(page)) {
+        pieces[page * 4096..page * 4096 + 8].copy_from_slice(&stored(page));
+    }
+    pieces
 }
 
 #[host]
@@ -376,11 +426,17 @@ mod host {
                 });
                 restored.push(firecracker);
             }
-            // All at once: no restore of one point waits for another's.
+            // All at once: no restore of one point waits for another's. fxdax: each timed, as it
+            // maps the window's mappings again before the VM resumes (TASK-92.14).
             std::thread::scope(|scope| {
-                let loading: Vec<_> = (restored.iter().zip(&loads))
-                    .map(|(firecracker, load)| {
-                        scope.spawn(move || firecracker.request("PUT", "/snapshot/load", load))
+                let loading: Vec<_> = (restored.iter().zip(&loads).zip(self.restores(phase)))
+                    .map(|((firecracker, load), name)| {
+                        scope.spawn(move || {
+                            let start = std::time::Instant::now();
+                            firecracker.request("PUT", "/snapshot/load", load)?;
+                            eprintln!("{name}: restored in {:?}", start.elapsed());
+                            anyhow::Ok(())
+                        })
                     })
                     .collect();
                 for load in loading {
@@ -466,6 +522,7 @@ mod host {
                 assert_eq!(read_file(&fs, "before"), BEFORE, "store {name}: before");
                 assert_eq!(read_file(&fs, "who"), name.as_bytes(), "store {name}: who");
                 assert_eq!(read_file(&fs, "after").len(), 4 << 20, "store {name}: after");
+                assert!(read_file(&fs, "pieces") == pieces_stored(), "store {name}: pieces");
             }
             TestOutcome::Pass
         }
@@ -587,11 +644,16 @@ mod guest {
         format!("{MNT}/{RO_VOLUME}")
     }
 
+    /// What the filesystem says of itself as `name`, a count, since it opened.
+    fn stat(name: &str) -> Option<u64> {
+        let stats = fs::read_to_string("/proc/fs/fxfs/extents").unwrap();
+        let line = stats.lines().find_map(|line| line.strip_prefix(name)?.strip_prefix(' '));
+        line.map(|count| count.parse().unwrap())
+    }
+
     /// How many reads of the device the filesystem made since it opened.
     fn device_reads() -> u64 {
-        let stats = fs::read_to_string("/proc/fs/fxfs/extents").unwrap();
-        let line = stats.lines().find_map(|line| line.strip_prefix("device_reads "));
-        line.expect("device_reads").parse().unwrap()
+        stat("device_reads").expect("device_reads")
     }
 
     /// A connection to the host on `PORT`.
@@ -635,6 +697,44 @@ mod guest {
         panic!("every connection to the host was reset");
     }
 
+    /// Writes the file of `PIECES` pages at `path`, each page an extent of its own: written alone,
+    /// last first, and made durable before the next, so that no two follow one another on the
+    /// device, whose window maps each apart (TASK-92.14).
+    fn write_pieces(path: &str) {
+        use std::os::unix::fs::FileExt;
+        let file = fs::File::create(path).unwrap();
+        for page in (0..PIECES).rev() {
+            file.write_all_at(&piece(page), (page * 4096) as u64).unwrap();
+            file.sync_data().unwrap();
+        }
+    }
+
+    /// Maps the file of `PIECES` pages at `path`, shared and writable, which stays mapped; reads
+    /// it, so that the window maps each of its pages (TASK-92.14), KVM's worker writing for the
+    /// loads; and stores to every eighth page through it (TASK-191).
+    fn map_pieces(path: &str) -> &'static [u8] {
+        let len = PIECES * 4096;
+        let file = fs::OpenOptions::new().read(true).write(true).open(path).unwrap();
+        let map = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                len,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_SHARED,
+                file.as_raw_fd(),
+                0,
+            )
+        };
+        assert_ne!(map, libc::MAP_FAILED, "mmap: {}", std::io::Error::last_os_error());
+        // SAFETY: the mapping, never unmapped.
+        let mapped = unsafe { std::slice::from_raw_parts_mut(map as *mut u8, len) };
+        assert!(mapped == &pieces()[..], "the pieces' mapping before the snapshot");
+        for page in (0..PIECES).filter(|&page| piece_stored(page)) {
+            mapped[page * 4096..page * 4096 + 8].copy_from_slice(&stored(page));
+        }
+        mapped
+    }
+
     /// Maps the `MAPPED_LEN` bytes of `path`, shared and read-only, which stays mapped.
     fn map(path: &str) -> &'static [u8] {
         let file = fs::File::open(path).unwrap();
@@ -663,6 +763,11 @@ mod guest {
                 eprintln!("{reads} reads, with {volumes} volumes closed");
                 assert!(reads < volumes as u64, "{reads} reads with {volumes} volumes");
             }
+            // Read in again by the next mount, a DAX file, mapped through the window.
+            write_pieces(&format!("{MNT}/pieces"));
+            unmount();
+            mount();
+            let mapped_pieces = map_pieces(&format!("{MNT}/pieces"));
             for volume in 0..volumes {
                 fs::create_dir(at(volume)).unwrap();
             }
@@ -690,7 +795,17 @@ mod guest {
                     mount_volume(FXFS_DEFAULT, MNT, libc::MS_REMOUNT | libc::MS_RDONLY)
                 }
             }
+            let counts = || (stat("dax_private_pages"), stat("dax_dirty_pages"));
+            eprintln!("before the freeze: (private, dirty) pages {:?}", counts());
             freeze(volumes, FIFREEZE);
+            // Frozen, the window holds no private page, its dirty pages written back and every
+            // one rebound, which a snapshot's fork requires (backlog doc-13; TASK-92.14).
+            let (private, dirty) = counts();
+            assert_eq!(
+                (private.unwrap_or(0), dirty.unwrap_or(0)),
+                (0, 0),
+                "frozen with private and dirty pages"
+            );
             {
                 let mut host = connect();
                 host.write_all(b"frozen\n").unwrap();
@@ -730,6 +845,13 @@ mod guest {
             assert!(mapped == &mapped_pattern()[..], "the mapping after the restore");
             // SAFETY: the mapping `map` made, which nothing uses any more.
             assert_eq!(unsafe { libc::munmap(mapped.as_ptr() as *mut _, MAPPED_LEN) }, 0);
+            // Through the mapping, which the window maps again, and read.
+            let written = pieces_stored();
+            assert!(mapped_pieces == &written[..], "{name}: the pieces' mapping after the restore");
+            assert!(fs::read(format!("{MNT}/pieces")).unwrap() == written, "{name}: pieces read");
+            // SAFETY: the mapping `map_pieces` made, which nothing uses any more.
+            let len = mapped_pieces.len();
+            assert_eq!(unsafe { libc::munmap(mapped_pieces.as_ptr() as *mut _, len) }, 0);
             fs::write(format!("{MNT}/who"), &name).unwrap();
             eprintln!("{name}: wrote");
             // New extents, of the restored store's branch.
@@ -743,6 +865,7 @@ mod guest {
             mount();
             assert_eq!(fs::read(format!("{MNT}/who")).unwrap(), name.as_bytes());
             assert_eq!(fs::read(format!("{MNT}/after")).unwrap(), after);
+            assert!(fs::read(format!("{MNT}/pieces")).unwrap() == pieces_stored(), "{name}: pieces");
             mount_volumes(volumes);
             for volume in 0..volumes {
                 assert_eq!(fs::read(format!("{}/who", at(volume))).unwrap(), name.as_bytes());
