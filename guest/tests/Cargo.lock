@@ -1147,7 +1147,6 @@ dependencies = [
  "fxfs",
  "log",
  "rustc-hash",
- "storage_device",
 ]
 
 [[package]]
@@ -2579,7 +2578,6 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "clap",
- "macros",
  "nix 0.29.0",
  "serde_json",
  "tempdir",

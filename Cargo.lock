@@ -1032,7 +1032,6 @@ dependencies = [
  "follower_history",
  "fuchsia-async",
  "fuchsia-sync",
- "futures",
  "fxfs",
  "shuttle",
  "storage_device",

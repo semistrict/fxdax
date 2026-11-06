@@ -682,7 +682,6 @@ dependencies = [
  "fxfs",
  "log",
  "rustc-hash",
- "storage_device",
 ]
 
 [[package]]

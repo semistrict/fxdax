@@ -28,7 +28,6 @@ follower.workspace = true
 follower_history.workspace = true
 fuchsia-async.workspace = true
 fuchsia-sync.workspace = true
-futures.workspace = true
 fxfs.workspace = true
 shuttle = { workspace = true, optional = true }
 storage_device.workspace = true

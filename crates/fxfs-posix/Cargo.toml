@@ -16,12 +16,12 @@ futures.workspace = true
 fxfs.workspace = true
 log.workspace = true
 rustc-hash.workspace = true
-storage_device.workspace = true
 
 [dev-dependencies]
 fuchsia.workspace = true
 proptest.workspace = true
 rand.workspace = true
+storage_device.workspace = true
 storage_units.workspace = true
 
 [lints]
