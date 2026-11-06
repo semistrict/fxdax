@@ -82,6 +82,14 @@ the VM.
 
 If a restore fails with `ENOENT` although the copy from step 2 exists, the snapshot was deleted.
 
+Name a `path_on_host` where no store is yet: the restore forks the point there. A store already
+there is opened only if it holds exactly what the point does: the store the snapshot was taken
+of, if its VM wrote nothing after the snapshot, or the fork an earlier restore of this snapshot
+made there, if that VM wrote nothing. Any other store there, such as the snapshotted VM's own
+store once it resumed and wrote on, fails the restore with `EEXIST` and is left as it is: its
+guest, running from the snapshot's memory, would corrupt it (TASK-194). Without
+`extent_overrides`, `path_on_host` is the snapshotted VM's own store.
+
 ### 4. When this host won't restore that snapshot any more
 
 ```

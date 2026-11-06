@@ -708,6 +708,32 @@ pub(super) async fn fork_from(
     }
 }
 
+/// fxdax: `Ok` if `store`, at a restore's `path` already, holds what the point at `from` does
+/// ([`ExtentStore::holds_what`]), the point taken from the bucket, of `branch` and `capacity`
+/// bytes, as [`fork_from`] takes it: the store the snapshot was taken of, written nothing since,
+/// or a fork of the point an earlier restore made, its VM having written nothing (TASK-194).
+/// `EEXIST` otherwise, logged: its guest, of the snapshot's memory, would read extents freed since
+/// and commit over what was written since. Nothing of the store is changed.
+pub(super) async fn at_point(
+    from: &Path,
+    branch: u64,
+    capacity: u64,
+    path: &Path,
+    store: &ExtentStore,
+) -> Result<(), Errno> {
+    let (point, _) = point(from, branch, capacity).await?;
+    if store.holds_what(&point.store)? {
+        return Ok(());
+    }
+    log::warn!(
+        "extentd: refusing a restore from {} into {}: written since its point, it holds another \
+         state than the snapshot's",
+        from.display(),
+        path.display()
+    );
+    Err(Errno::EEXIST)
+}
+
 /// fxdax: forks the point at `from` to `path`, as [`fork_from`] does, once: and says when the
 /// point was opened. A point whose fork fails is let go of ([`let_go_failed`]).
 async fn fork_point(

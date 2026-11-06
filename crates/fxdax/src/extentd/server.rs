@@ -1404,23 +1404,37 @@ impl Connection {
         how: &codec::Opening,
     ) -> Result<Arc<ExtentStore>, Errno> {
         let arena = self.arena();
+        // fxdax: a restore's store there already, which the snapshot was taken of or an earlier
+        // restore forked, holds the point's state, or is refused, as it is (TASK-194).
+        let mut there = None;
+        if let codec::Opening::ForkFrom { from, branch, capacity } = how
+            && path.exists()
+            && !crate::host_store::unmade(path)
+        {
+            let store = match hold.instance() {
+                Some((store, _)) => store,
+                None => Arc::new(open_store(path, None, Some(arena))?),
+            };
+            stores::at_point(from, *branch, *capacity, path, &store).await?;
+            there = Some(store);
+        }
         if let Some(store) = stores::take_over(hold, arena)? {
             return Ok(store);
         }
-        let opened = match how {
+        let store = match (there, how) {
+            (Some(store), _) => store,
             // fxdax: or where a store's making was left unmade, its host crashing, which is no
             // store: removed first, as deleting it would (TASK-79.84).
-            codec::Opening::ForkFrom { from, branch, capacity }
-                if !path.exists() || crate::host_store::unmade(path) =>
-            {
+            (None, codec::Opening::ForkFrom { from, branch, capacity }) => {
                 stores::removed_if_unmade(path)?;
                 stores::fork_from(from, *branch, *capacity, path).await?;
-                open_store(path, None, Some(arena))
+                Arc::new(open_store(path, None, Some(arena))?)
             }
-            codec::Opening::Create(capacity) => open_store(path, Some(*capacity), Some(arena)),
-            _ => open_store(path, None, Some(arena)),
+            (None, codec::Opening::Create(capacity)) => {
+                Arc::new(open_store(path, Some(*capacity), Some(arena))?)
+            }
+            (None, _) => Arc::new(open_store(path, None, Some(arena))?),
         };
-        let store = Arc::new(opened?);
         hold.open(&store)?;
         Ok(store)
     }

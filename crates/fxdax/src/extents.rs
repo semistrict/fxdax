@@ -1599,6 +1599,16 @@ impl ExtentStore {
         self.fork_durable(path, branch, point, None)
     }
 
+    /// fxdax: whether the store holds what `other` does, as of their last commits: the same root,
+    /// and the same extents, of the same lengths, its ancestors' among them. As a store a point
+    /// was taken of does, written nothing since, and a fork of the point that wrote nothing: what
+    /// a VM restored from a snapshot at the point may run on, its memory the point's (TASK-194).
+    pub fn holds_what(&self, other: &ExtentStore) -> Result<bool> {
+        let (ours, theirs) = (self.store.snapshot().map_err(errno)?, other.store.snapshot());
+        let theirs = theirs.map_err(errno)?;
+        Ok(ours.root == theirs.root && ours.extents == theirs.extents)
+    }
+
     /// Whether nothing is open: no extent written since the last commit, which a fork of the
     /// store as of that commit would not hold; as with its guest's filesystem frozen, a point a
     /// snapshot of its VM is taken at.

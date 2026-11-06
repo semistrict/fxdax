@@ -3683,7 +3683,6 @@ fn restores_fork_anew_over_forks_left_unmade() {
 /// own store is once it resumed and wrote on, is refused: opened, its guest, of the snapshot's
 /// memory, would read extents freed since, and commit over what was written since.
 #[test]
-#[ignore = "TASK-194"]
 fn restores_refuse_a_store_written_since_its_point() {
     host();
     let dir = tempfile::tempdir().unwrap();
@@ -3704,6 +3703,53 @@ fn restores_refuse_a_store_written_since_its_point() {
 
     let restored = RemoteExtentStore::connect_forked(&socket, &path, &point, 0, 0);
     assert_eq!(restored.err().and_then(|err| err.errno()), Some(Errno::EEXIST));
+    // Nothing of it changed: opened, it is as the VM left it.
+    let store = RemoteExtentStore::connect(&socket, &path, 1 << 24).unwrap();
+    assert_eq!((store.root(), read(&store, extent, 0, BLOCK).ok()), (Ok(b"later".to_vec()), None));
+}
+
+/// TASK-194: what a restore may open, a store there already holding what its point does: the store
+/// its snapshot was taken of, written nothing since, as a VM stopped without resuming leaves it;
+/// and a fork of the point an earlier restore made, its VM having written nothing, retried. Once
+/// that fork is written, a restore into it is refused too.
+#[test]
+fn restores_open_stores_still_at_their_point() {
+    host();
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("extentd.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    std::thread::spawn(move || serve(listener));
+    let path = dir.path().join("store");
+    let store = RemoteExtentStore::connect(&socket, &path, 1 << 24).unwrap();
+    let extent = ExtentId { branch: store.branch(), sequence: 1 };
+    write(&store, extent, 0, &pattern(8, BLOCK)).unwrap();
+    store.commit(Some(b"root")).unwrap();
+    let point = dir.path().join("point");
+    store.fork_quiescent(&point, store.branch() + 1).unwrap();
+    drop(store);
+    let restore = |into: &Path| RemoteExtentStore::connect_forked(&socket, into, &point, 0, 0);
+    let at_point = |store: &RemoteExtentStore| {
+        (store.root().ok(), read(store, extent, 0, BLOCK).ok())
+    };
+    let state = (Some(b"root".to_vec()), Some(pattern(8, BLOCK)));
+
+    // The snapshotted VM's own store, written nothing since its point.
+    let restored = restore(&path).unwrap();
+    assert_eq!(at_point(&restored), state);
+    drop(restored);
+
+    // A fork an earlier restore made, its VM gone before it wrote anything, restored into again.
+    let fork = dir.path().join("fork");
+    let restored = restore(&fork).unwrap();
+    let branch = restored.branch();
+    drop(restored);
+    let restored = restore(&fork).unwrap();
+    assert_eq!((restored.branch(), at_point(&restored)), (branch, state.clone()));
+    // Its VM writes on, and goes: restored into once more, it is refused.
+    write(&restored, minted(&restored), 0, &pattern(9, BLOCK)).unwrap();
+    restored.commit(Some(b"later")).unwrap();
+    drop(restored);
+    assert_eq!(restore(&fork).err().and_then(|err| err.errno()), Some(Errno::EEXIST));
 }
 
 /// What a store of the daemon's at `path` mints next, as its guest mints: from its writer's floor,
