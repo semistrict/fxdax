@@ -6,7 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-10-22 21:06'
-updated_date: '2026-11-04 07:34'
+updated_date: '2026-11-06 00:48'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -21,11 +21,11 @@ ordinal: 306000
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-Changes::add records only the directory (follower.rs:141-147), drop_cached bumps its generation (follow.rs:153-156; super.c:2305-2315), and d_revalidate fails older stamps without a re-lookup (281-285). One create, unlink or rename invalidates every cached child, and d_invalidate frees subdirectories' cached subtrees. Follower stat and walk loops pay µs re-lookups under the fill barrier instead of ~100 ns dcache hits, tens of ms per batch at 10k names, unlike the FUSE and NFS precedent cited (276-279).
+At dde8d58d3: Changes::add records only the directory for a child's keys (crates/fxfs/src/follower.rs:121-163, the Child arms at 147-153), drop_cached bumps its generation for each changed directory (guest/rust/fxfs-linux/src/follow.rs:144-166; fxfs_vfs_drop_entries, guest/linux/fs/fxfs/super.c:2999-3010), and d_revalidate fails older stamps without a re-lookup (fxfs_vfs_d_revalidate, super.c:357-366). One create, unlink or rename invalidates every cached child, and d_invalidate frees subdirectories' cached subtrees. Follower stat and walk loops pay µs re-lookups under the fill barrier instead of ~100 ns dcache hits, tens of ms per batch at 10k names, unlike the FUSE and NFS precedent its comment cites (super.c:357-361).
 
-Where: crates/fxfs/src/follower.rs:104-105, crates/fxfs/src/follower.rs:141-147, guest/rust/fxfs-linux/src/follow.rs:153-156, guest/linux/fs/fxfs/super.c:244-257, guest/linux/fs/fxfs/super.c:276-285, guest/linux/fs/fxfs/super.c:2305-2315.
+Where: crates/fxfs/src/follower.rs:121-163, guest/rust/fxfs-linux/src/follow.rs:144-166, guest/linux/fs/fxfs/super.c:357-366, 2999-3010.
 
-Found by the 2026-10-21 review of main at 6a0a3f8 (severity medium): docs/reviews/2026-10-21-main.md, 'Performance issues', has its evidence and a suggested fix. On main at 4432a7e: Still present. Changes::add records only the directory for Child keys (crates/fxfs/src/follower.rs:141-147). drop_cached calls fxfs_vfs_drop_entries per changed directory (guest/rust/fxfs-linux/src/follow.rs:153-156), which bumps the directory's gen (guest/linux/fs/fxfs/super.c:2307-2318). d_revalidate only compares d_time to gen and does no re-lookup (super.c:281-285). Not tracked. TASK-42.6 AC#2 specifies this generation design and is not a fix. Related: TASK-42.6, TASK-42.5.
+Found by the 2026-10-21 review of main at 6a0a3f8 (severity medium): docs/reviews/2026-10-21-main.md, 'Performance issues', has its evidence and a suggested fix. TASK-42.6 AC#2 specifies this generation design and is not a fix. Related: TASK-42.6, TASK-42.5.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria
@@ -45,4 +45,6 @@ Found by the 2026-10-21 review of main at 6a0a3f8 (severity medium): docs/review
 
 <!-- SECTION:NOTES:BEGIN -->
 Frozen 2026-11-04 by the user: followers and the standalone store layer have no customer now; resumed after read-only DAX (TASK-164) and the storage collapse (TASK-165) land (docs/reviews/2026-11-04-first-principles.md, section 6).
+
+2026-11-05 triage: citations brought to dde8d58d3; still frozen.
 <!-- SECTION:NOTES:END -->

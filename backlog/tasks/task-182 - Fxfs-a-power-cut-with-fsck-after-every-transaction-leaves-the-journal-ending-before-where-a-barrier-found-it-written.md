@@ -3,10 +3,10 @@ id: TASK-182
 title: >-
   Fxfs: a power cut with fsck after every transaction leaves the journal ending
   before where a barrier found it written
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-11-05 10:00'
-updated_date: '2026-11-05 10:01'
+updated_date: '2026-11-06 00:45'
 labels:
   - bug
   - journal
@@ -25,9 +25,9 @@ Reproduce: in crates/fxfs-posix/src/model_tests.rs, Setting::awkward(12436301060
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The sequence pinned as a model test, failing before the fix
-- [ ] #2 Its cause named: the journal, or the fsck hook
-- [ ] #3 The fsck hunt (FXDAX_MODEL_CASES=3000 FXDAX_MODEL_FSCK=1) passes
+- [x] #1 The sequence pinned as a model test, failing before the fix
+- [x] #2 Its cause named: the journal, or the fsck hook
+- [x] #3 The fsck hunt (FXDAX_MODEL_CASES=3000 FXDAX_MODEL_FSCK=1) passes
 <!-- AC:END -->
 
 ## Definition of Done
@@ -36,3 +36,15 @@ Reproduce: in crates/fxfs-posix/src/model_tests.rs, Setting::awkward(12436301060
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+2026-11-05 triage: fixed on main by 61acf7e40 (TASK-160.25's branch; its notes, '## TASK-182'): the journal, not the fsck hook. A sync's barrier follows a flush of whole blocks, whose last may begin a record going on in a block the cut lost; replay stopped at that record's start (307150), short of the end the barrier recorded (307200), and refused. Replay now compares Root::journal_end with the end of the last block it read, or where it discarded a transaction (crates/fxfs/src/object_store/journal.rs:1002). Pinned: crates/fxfs-posix/src/model_tests.rs:2785, a_cut_with_fsck_after_every_transaction_replays_as_far_as_its_barrier, red before and green after (160.25's notes); FXDAX_MODEL_CASES=3000 FXDAX_MODEL_FSCK=1 34 of 34 (6,827 s, 160.25's notes). Re-run here on main dde8d58d3, macOS: the pinned test passes (18.5 s).
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Fixed by 61acf7e40: replay measures the journal's end a barrier recorded against the last block it read, not where its last whole record ended; the pinned model test a_cut_with_fsck_after_every_transaction_replays_as_far_as_its_barrier was red before and is green (re-run on dde8d58d3, macOS), and the fsck hunt at 3,000 cases passed 34 of 34 (TASK-160.25's notes). GCE not run.
+<!-- SECTION:FINAL_SUMMARY:END -->

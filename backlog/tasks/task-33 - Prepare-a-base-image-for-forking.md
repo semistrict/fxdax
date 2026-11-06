@@ -4,6 +4,7 @@ title: Prepare a base image for forking
 status: To Do
 assignee: []
 created_date: '2026-10-17 15:26'
+updated_date: '2026-11-06 00:48'
 labels:
   - performance
   - forks
@@ -15,7 +16,7 @@ ordinal: 102000
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-Children forked from a base image mount whatever state the base was left in: Fxfs's LSM layers as they are, possibly a journal to replay, the store's segment open. Each of a few hundred children then pays the same replay and reads the same uncompacted layers at mount. A step that readies an image once, before it is forked many times, makes each child's mount cheaper. Scope: the disk image (the guest's Fxfs on the store, extent_store, fxdax-branch or extentd tooling).
+Children forked from a base image mount whatever state the base was left in: Fxfs's LSM layers as they are, possibly a journal to replay, the store's segment open. Each of a few hundred children then pays the same replay and reads the same uncompacted layers at mount. A step that readies an image once, before it is forked many times, makes each child's mount cheaper. Scope: the disk image (the guest's Fxfs on the store, extent_store, fxdaxctl or extentd tooling (fxdax-branch became fxdaxctl, 52b6ba3e5)).
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria

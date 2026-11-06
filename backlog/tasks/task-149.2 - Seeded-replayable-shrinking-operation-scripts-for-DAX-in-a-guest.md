@@ -5,7 +5,7 @@ status: To Do
 assignee:
   - '@claude'
 created_date: '2026-11-01 06:13'
-updated_date: '2026-11-05 03:05'
+updated_date: '2026-11-06 00:46'
 labels: []
 dependencies: []
 parent_task_id: TASK-149
@@ -18,7 +18,7 @@ ordinal: 503000
 <!-- SECTION:DESCRIPTION:BEGIN -->
 Most bugs are in DAX, where random_ops runs but failures take hours to pin down: no operation script to replay and no shrinking, and few failures combined. This brings the model test's method to a real guest, on top of TASK-44.15's oracle: scripts of mmap, DAX writes, reads through mappings of the same file, fork, truncate, a nearly full disk and VM kills, generated on the host from a seed.
 
-At 9f81f6018 (writable DAX deleted, 37c331a6c): the past bugs AC5 named went with writable DAX: TASK-140's livelock (its mutant guest/sim/mutants/task-140-read-only-slice.patch, deleted) and the moved-unmapped mutants (no page moves now). Copy-on-write DAX's own are in guest/sim/mutants: unmapped-page-read-as-hole (a load reading zeros where read(2) reads a write's bytes) and the task-164.4-* writeback mutants, such as task-164.4-protect-by-entries (a fault's writable PTE left across a writeback, then a store the host refuses).
+At 9f81f6018 (writable DAX deleted, 37c331a6c): the past bugs AC5 named went with writable DAX: TASK-140's livelock (its mutant task-140-read-only-slice.patch, deleted) and the moved-unmapped mutants (no page moves now). Copy-on-write DAX's own are in guest/mutants (one set since b7653f781, each patch's header naming its killer and kernel): unmapped-page-read-as-hole (a load reading zeros where read(2) reads a write's bytes) and the task-164.4-* writeback mutants, such as task-164.4-protect-by-entries (a fault's writable PTE left across a writeback, then a store the host refuses).
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria
@@ -27,7 +27,7 @@ At 9f81f6018 (writable DAX deleted, 37c331a6c): the past bugs AC5 named went wit
 - [ ] #2 A failing script shrinks to a smaller one that still fails, in a VM
 - [ ] #3 Scripts combine mappings, fork, a nearly full disk and a VM killed at a random point
 - [ ] #4 Each file is checked against a model, after a kill as after a clean stop
-- [ ] #5 Reintroducing a past copy-on-write DAX bug (guest/sim/mutants/unmapped-page-read-as-hole.patch, or task-164.4-protect-by-entries.patch) fails in a VM, shrunk
+- [ ] #5 Reintroducing a past copy-on-write DAX bug (guest/mutants/unmapped-page-read-as-hole.patch, or task-164.4-protect-by-entries.patch) fails in a VM, shrunk
 <!-- AC:END -->
 
 ## Definition of Done
@@ -55,4 +55,6 @@ Deviations: ENOSPC does not always leave the model unchanged: fxfs_vfs_remap_fil
 Unknown until GCE: whether 180 s holds a script, whether a script that refuses on Fxfs comes from LEFT = 1 MiB on the 64 MiB volume (a run refused nothing fails, kind 'nothing refused'), and whether replays reproduce: a timing bug may not, and then the report says it isn't shrunk.
 
 Handed back 2026-11-02 (triage): steps 1-3 on main (7bbc99422, 73d396b24, 6d787c3aa, e2a22e24b), fxfs-guest-script* pass on GCE r429. Left: step 4, kill the VM at a random line, remount, check each file against the model (AC3's kill, AC4); step 5, a past DAX bug or mutant failing on GCE and shrinking (AC5). TASK-149.16 depends on it.
+
+2026-11-05 triage: the mutants it names moved from guest/sim/mutants to guest/mutants (b7653f781).
 <!-- SECTION:NOTES:END -->

@@ -6,7 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-10-22 21:06'
-updated_date: '2026-11-05 03:04'
+updated_date: '2026-11-06 00:45'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -21,13 +21,13 @@ ordinal: 299000
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-At 9f81f6018, after writable DAX was deleted (37c331a6c), what is left of this is the write path's.
+At dde8d58d3, after writable DAX was deleted (37c331a6c) and a range's page state went into pages.c (bda2e53a0), what is left of this is the write path's.
 
-The read side was fixed by 69f13ff2b (2026-10-25): fxfs_dax_iomap_read takes file->sem once on a cache hit and holds it through its iomap (guest/linux/fs/fxfs/dax.c:1798-1830); fxfs_dax_use_range takes dax->lock only when the range isn't already last on the LRU (dax.c:1544-1552); fxfs_dax_released wakes only when wq_has_sleeper (dax.c:924-930), and runs only when a range's last user goes (fxfs_dax_put_range, dax.c:1634-1638). The write path's dev->lock went with the gate: fxfs_device_store_begin and fxfs_device_store_end were deleted with writable DAX (37c331a6c).
+The read side was fixed by 69f13ff2b (2026-10-25): fxfs_dax_iomap_read takes file->sem once on a cache hit and holds it through its iomap (guest/linux/fs/fxfs/dax.c:1780-1874); fxfs_dax_use_range takes dax->lock only when the range isn't already last on the LRU (dax.c:1524-1532); fxfs_dax_released wakes only when wq_has_sleeper (dax.c:908-914), and runs only when a range's last user goes (fxfs_dax_put_range, dax.c:1614-1618). The write path's dev->lock went with the gate: fxfs_device_store_begin and fxfs_device_store_end were deleted with writable DAX (37c331a6c).
 
-Left, on every write iomap (fxfs_dax_iomap_write, dax.c:2496-2560): fxfs_dax_get_range takes file->sem shared to look the range up (dax.c:1570-1573) and fxfs_dax_map_missing takes it again, held until fxfs_dax_iomap_end (dax.c:1767-1790, 2669-2690); fxfs_dax_use_range may take dax->lock. For pages not dirty yet, fxfs_dax_dirty (dax.c:2421-2480) reserves in Fxfs and adds to the global atomics dax->dirty and dax->private (fxfs_dax_take_private, dax.c:2361); and for pages not private yet, it sends PRIVATE, a device round trip (fxfs_device_private, guest/linux/fs/fxfs/device.c:273), counted in dax->privates. With writers on several vCPUs, these cache lines bounce on each first write to a page; that case is unmeasured, as is the PRIVATE round trip's share of write(2).
+Left, on every write iomap (fxfs_dax_iomap_write, dax.c:2455-2517): fxfs_dax_get_range takes file->sem shared to look the range up (dax.c:1540-1612, the semaphore at 1550-1554, dax->lock at 1590) and fxfs_dax_map_missing takes it again (dax.c:1747-1775), held until fxfs_dax_iomap_end (dax.c:2626-2653, released at 2644); fxfs_dax_use_range may take dax->lock. For pages not dirty yet, fxfs_dax_dirty (dax.c:2384-2443) reserves in Fxfs and adds to the global atomics dax->dirty (2433) and dax->private (fxfs_dax_take_private, dax.c:2330-2343); and for pages not private yet, it sends PRIVATE, a device round trip (dax.c:2413; fxfs_device_private, guest/linux/fs/fxfs/device.c:273), counted in dax->privates (2415). With writers on several vCPUs, these cache lines bounce on each first write to a page; that case is unmeasured, as is the PRIVATE round trip's share of write(2).
 
-Where: guest/linux/fs/fxfs/dax.c:1544-1552, 1560-1632, 1767-1790, 2361, 2421-2480, 2496-2560, 2669-2690; guest/linux/fs/fxfs/device.c:273.
+Where: guest/linux/fs/fxfs/dax.c:908-914, 1524-1532, 1540-1612, 1747-1775, 2330-2343, 2384-2443, 2455-2517, 2626-2653; guest/linux/fs/fxfs/device.c:273.
 
 Found by the 2026-10-21 review of main at 6a0a3f8 (severity medium): docs/reviews/2026-10-21-main.md, 'Performance issues', has its evidence and a suggested fix. Related: TASK-79.12, TASK-26.18, TASK-26.15.
 <!-- SECTION:DESCRIPTION:END -->
@@ -44,3 +44,9 @@ Found by the 2026-10-21 review of main at 6a0a3f8 (severity medium): docs/review
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+2026-11-05 triage: citations brought to dde8d58d3 (dax.c moved by f22c9459e, bda2e53a0 and 311f7b08b).
+<!-- SECTION:NOTES:END -->

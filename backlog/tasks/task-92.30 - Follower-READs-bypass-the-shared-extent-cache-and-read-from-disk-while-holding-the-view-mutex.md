@@ -6,7 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-10-22 21:06'
-updated_date: '2026-11-04 07:34'
+updated_date: '2026-11-06 00:48'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -21,11 +21,11 @@ ordinal: 305000
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-read_cached returns false for followers (extents.rs:998-1000), so each READ holds following.view across read_view, an O_DIRECT pread or a 1 MiB unpack (1029-1034; store.rs:2601-2610). Yet follower MAPs already use the cache after a view check (1436-1453). N followers of a pgbench writer each pay 50-150 µs of disk per READ instead of a 1-2 µs copy, and their READs and ADVANCE serialize behind it.
+At dde8d58d3: read_cached returns false for followers (crates/fxdax/src/extents.rs:939-942), so each READ holds following.view across the store's read_view, a disk read or an unpack (read_stored, extents.rs:970-978; Store::read_view, crates/extent_store/src/store.rs:2191-2200). Yet follower MAPs already use the cache after a view check (extents.rs:1335-1340). N followers of a pgbench writer each pay 50-150 µs of disk per READ instead of a 1-2 µs copy, and their READs and ADVANCE serialize behind it.
 
-Where: crates/fxdax/src/extents.rs:998-1000, crates/fxdax/src/extents.rs:1029-1034, crates/fxdax/src/extents.rs:1436-1453, crates/extent_store/src/store.rs:1605-1618, crates/extent_store/src/store.rs:2601-2610.
+Where: crates/fxdax/src/extents.rs:939-942, 970-978, 1335-1340; crates/extent_store/src/store.rs:2191-2200.
 
-Found by the 2026-10-21 review of main at 6a0a3f8 (severity medium): docs/reviews/2026-10-21-main.md, 'Performance issues', has its evidence and a suggested fix. On main at 4432a7e: Still present. read_cached returns false for followers (crates/fxdax/src/extents.rs:939-942). read_stored then holds following.view.lock() across store.read_view, the disk read or unpack (extents.rs:970-976). The follower MAP path already checks view_extent under the view and then uses the cache (extents.rs:1386-1390). Not tracked. Related: TASK-32, TASK-42.3, TASK-79.7.
+Found by the 2026-10-21 review of main at 6a0a3f8 (severity medium): docs/reviews/2026-10-21-main.md, 'Performance issues', has its evidence and a suggested fix. Related: TASK-32, TASK-42.3, TASK-79.7.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria
@@ -45,4 +45,6 @@ Found by the 2026-10-21 review of main at 6a0a3f8 (severity medium): docs/review
 
 <!-- SECTION:NOTES:BEGIN -->
 Frozen 2026-11-04 by the user: followers and the standalone store layer have no customer now; resumed after read-only DAX (TASK-164) and the storage collapse (TASK-165) land (docs/reviews/2026-11-04-first-principles.md, section 6).
+
+2026-11-05 triage: citations brought to dde8d58d3; still frozen.
 <!-- SECTION:NOTES:END -->

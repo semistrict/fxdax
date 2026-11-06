@@ -3,11 +3,11 @@ id: TASK-160.15
 title: >-
   extent_store and extent_remote: one footer replay; rebuild disagrees about
   spent extents
-status: To Do
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-03 13:08'
-updated_date: '2026-11-03 18:50'
+updated_date: '2026-11-06 00:45'
 labels:
   - structure
 dependencies: []
@@ -26,7 +26,7 @@ Footers are replayed three times (remote recovery, local rebuild, delta replay).
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
 - [x] #1 Rebuilt reports spent; a test (write, free before the commit, commit, close, rebuild) agrees with the live store, red before
-- [ ] #2 One replay used by both crates
+- [x] #2 One replay used by both crates
 <!-- AC:END -->
 
 ## Definition of Done
@@ -56,4 +56,12 @@ Blind spot: Rebuilt had no spent field, and the crash rounds rebuilt only right 
 AC #2 (one replay) not done. The three differ on purpose: remote spends only extents it held before the segment, takes the max next_sequence, and has its own continuity rule and layers; local rebuild anchors on the checkpoint's segment; delta replay reads Changes, not footers. TASK-153.7/.8/.9 are changing the footer format in both crates now. Deferred (OPEN_QUESTIONS.md decision): unify after 153.x lands, choosing one rule for each difference.
 
 AC #1 done and verified: rebuilding_spends_what_the_store_spends was red before (rebuild spent 1..4, store 1), now green, as are the crash rounds that compare spent (macOS; Linux workspace 2228/2228 at 30049162f). AC #2, one replay, is open (see the decision in OPEN_QUESTIONS.md), so back to To Do for it.
+
+2026-11-05 triage: AC #2 done by TASK-165.3's f3f6b616f (and a8ca6cb26, 530248363): one replay, extent_remote::recovery::State::apply (continuity) and State::apply_contents (crates/extent_remote/src/recovery.rs:167, 177), over Places, used by recovery, writers, points, deletion, the collector's layers, and extent_store's rebuild (crates/extent_store/src/index.rs:298-310, Replayed), whose own footer replay was deleted; extent_store depends on extent_remote. One spending rule (every free of a branch's own extents spends it) replaced the differences this task's notes listed. Delta replay reads deltas, not footers, and goes with the index in TASK-165.9. Verified: TASK-165.3's notes (macOS workspace 2067/2067, Linux Docker); re-run here on main dde8d58d3, macOS: rebuilding_spends_what_the_store_spends, closed_segments_hold_the_branchs_history, recovery_and_rebuilding_start_from_the_newest_whole_checkpoint, and the crash rounds (recovers_a_prefix_of_its_commits, forks_recover_prefixes_of_their_commits) pass.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+AC #1 by 0a676729d (Rebuilt reports spent; footers free only what a commit held). AC #2 by TASK-165.3 (f3f6b616f): one replay of footers, State::apply/apply_contents, for every reader of a branch in both crates, extent_store's rebuild included. Verified by 165.3's macOS and Linux runs and, on dde8d58d3, the rebuild tests and crash rounds on macOS. GCE not run.
+<!-- SECTION:FINAL_SUMMARY:END -->

@@ -4,7 +4,7 @@ title: 'cargo-mutants sweep of fxdax''s own crates, its surviving mutants triage
 status: To Do
 assignee: []
 created_date: '2026-10-18 04:06'
-updated_date: '2026-10-24 21:31'
+updated_date: '2026-11-06 00:48'
 labels: []
 dependencies: []
 parent_task_id: TASK-44
@@ -15,7 +15,7 @@ ordinal: 13500
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-Mutation testing of the existing code, the cheapest of the techniques: cargo-mutants (sourcefrog/cargo-mutants, MIT) rewrites the code a mutation at a time and runs the tests against each; a mutant no test kills is code the tests don't check. fxdax's own crates: extent_frame, extent_store, extent_remote, fxdax (not the vendored Fuchsia ones, whose tests are upstream's). store.rs has 2,300 lines and one inline unit test (more in crates/extent_store/tests); extent_remote's collector has none of its own.
+Mutation testing of the existing code, the cheapest of the techniques: cargo-mutants (sourcefrog/cargo-mutants, MIT) rewrites the code a mutation at a time and runs the tests against each; a mutant no test kills is code the tests don't check. fxdax's own crates: extent_frame, extent_store, extent_remote, fxdax (not the vendored Fuchsia ones, whose tests are upstream's). At dde8d58d3, extent_store's store.rs has 2,495 lines and 6 inline unit tests (more in crates/extent_store/tests); extent_remote's collector has 32 of its own (crates/extent_remote/src/collector.rs:659-).
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria

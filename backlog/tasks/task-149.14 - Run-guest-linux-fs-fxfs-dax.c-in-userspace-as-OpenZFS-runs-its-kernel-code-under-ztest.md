@@ -6,7 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-11-01 06:38'
-updated_date: '2026-11-05 03:05'
+updated_date: '2026-11-06 00:45'
 labels: []
 dependencies: []
 parent_task_id: TASK-149
@@ -19,7 +19,7 @@ ordinal: 500
 <!-- SECTION:DESCRIPTION:BEGIN -->
 Most fixes (about 72% of 231 recent ones) are in DAX and the guest kernel, and dax.c can only run in a VM, on GCE, so its failures take hours to pin down and nothing shrinks them. OpenZFS builds its kernel code into a userspace library, libzpool, with a fake kernel underneath, and ztest stresses it in parallel, killing itself with SIGKILL as a power cut, reopening the same pool, and running on every push through zloop.sh (~/src/zfs: cmd/ztest.c, scripts/zloop.sh). Measured: dax.c is 5,259 lines making 229 distinct kernel calls, 38 of them MM and 27 VFS. User-Mode Linux can't do this: FS_DAX needs ZONE_DEVICE, which needs memory hotplug UML lacks, and it is x86-only. The code under test stays real and the kernel beneath it is fake, so locks become scheduling points, giving seeded interleavings in C, which Shuttle can't reach. Real page tables and fs/dax.c are simulated, so guests remain the check of what the shim gets wrong. Rank: above TASK-149.2 if the spike works, as its script generator then drives this too.
 
-At 9f81f6018 (writable DAX deleted, 37c331a6c): dax.c is 3,968 lines and moves no page, so the fault check (the AC on faulting again) is reset only by something other than a fault unmapping a page: a rebind's MAP over it (fxfs_dax_rebind, guest/linux/fs/fxfs/dax.c:2168), an UNMAP of a range (fxfs_dax_drop_pinned, dax.c:1647), a truncate or punch. A writeback's write-protect (fxfs_dax_protect, dax.c:2054-2069) makes the next store fault, not a load. The sim still counts faults in one global, sim_mm_faults (guest/sim/kernel/mm.c:459, 479), read by tests/read_mappings_stay.c alone. Patch 0010 still exists (guest/linux/patches/0010-dax-read-replaces-no-entry-naming-its-page.patch).
+At dde8d58d3 (writable DAX deleted, 37c331a6c; resize, punch and clone driven from data.c since f22c9459e; a range's page state owned by pages.c since bda2e53a0): dax.c is 3,937 lines and moves no page, so the fault check (AC #7) is reset only by something other than a fault unmapping a page: a rebind's MAP over it (fxfs_dax_rebind, guest/linux/fs/fxfs/dax.c:2142-2175), an UNMAP of a range (fxfs_dax_drop_pinned, dax.c:1627-1672), a truncate or punch (fxfs_data_resize and fxfs_data_punch, guest/linux/fs/fxfs/data.c:31, 60). A writeback's write-protect (fxfs_dax_protect, dax.c:2034-2050) makes the next store fault, not a load. The sim still counts faults in one global, sim_mm_faults (guest/sim/kernel/mm.c:468, counted at 488 and 553), read by guest/sim/tests/read_mappings_stay.c alone (44, 54). Patch 0010 still exists (guest/linux/patches/0010-dax-read-replaces-no-entry-naming-its-page.patch).
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria
@@ -29,7 +29,7 @@ At 9f81f6018 (writable DAX deleted, 37c331a6c): dax.c is 3,968 lines and moves n
 - [x] #3 Locks are scheduling points of a seeded scheduler, and the same seed replays the same interleaving
 - [x] #4 Stores carry a generation, so a stale or zero read is caught, as ztest's txg stamps catch temporal incursions
 - [x] #5 Reintroducing a past DAX bug (a moved-unmapped mutant) fails
-- [ ] #6 It runs in CI on every push, as zloop does
+- [x] #6 It runs in CI on every push, as zloop does
 - [ ] #7 Every scenario and seed checks that a load faults again on a page its mapping already held only after something other than a fault unmapped it (a rebind's MAP over it, an UNMAP, a truncate or punch), counted per mapping and page in guest/sim/kernel/mm.c
 - [ ] #8 With patch 0010 taken out, interleave fails the fault check above, with no scenario written for it
 <!-- AC:END -->
@@ -73,4 +73,6 @@ pmd_over_stale_index on real kernels, r425, r427, r429, r451: no PMD ever mapped
 Fault budget, from TASK-152. The read-fault livelock was invisible here: each fault succeeded, so no WARN, no wrong byte, no fault going round 256 times, and the sim has no cost model. Only read_mappings_stay reads sim_mm_faults, in one scenario. Count faults per mapping and page in kernel/mm.c, reset by a move or by unmap_mapping_pages from anything but a fault, and fail the run past one.
 
 Handed back 2026-11-02 (triage): AC6 met: ci.yml's guest-sim job runs zloop.sh -s 3000 on every push to main, passing (runs 41513855862, 41562059405). Left: AC7, count faults per mapping and page in guest/sim/kernel/mm.c (one global sim_mm_faults now), reset by a move or a non-fault unmap, failing past one; AC8, red with patch 0010 out; DoD3.
+
+2026-11-05 triage: AC #6 checked: .github/workflows/ci.yml's guest-sim job (ci.yml:116-140), run on every push to main, runs guest/sim/mutants.sh --check and guest/sim/zloop.sh -s 3000; it passed in CI run 42135112053 on c82e2be51. Description's citations brought to dde8d58d3 (dax.c moved by f22c9459e and bda2e53a0).
 <!-- SECTION:NOTES:END -->

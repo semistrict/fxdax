@@ -4,6 +4,7 @@ title: 'Mutation sweeps build and test unoptimized, with full debuginfo'
 status: To Do
 assignee: []
 created_date: '2026-10-22 21:06'
+updated_date: '2026-11-06 00:47'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -18,11 +19,11 @@ ordinal: 315000
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-There is no [profile.*] in Cargo.toml, none in .cargo/mutants.toml, and no --profile in mutants.sh:63-64, 71-73, so every mutant runs at opt-level 0 with full DWARF. Meanwhile the CPU-bound simulation runs 200 to 20,000 seeds per test (sim/mod.rs:55-75), and timeouts scale from that slow baseline. The extent_remote sweep did 569 of 611 mutants in 7 h at about 4 min each, with 17 timeouts costing about 1.9 h.
+At dde8d58d3. Cargo.toml has one profile now, sim (Cargo.toml:146-153: release with debug assertions and overflow checks, TASK-188, ebe4f4682), which scripts/test.sh's sim part builds extent_remote's simulation with (scripts/test.sh:45-56). The mutation sweeps don't use it: .cargo/mutants.toml sets only exclude_globs and exclude_re, and scripts/mutants.sh's cargo mutants call (mutants.sh:78) passes no --profile or --cargo-profile, so every mutant builds at opt-level 0 with full DWARF. Meanwhile the CPU-bound simulation runs 200 seeds per profile test and up to 20,000 per rule test (crates/extent_remote/src/sim/mod.rs:55-74), whose seed searches took 20 to 27 minutes each unoptimized (TASK-188), and timeouts scale from that slow baseline. The extent_remote sweep did 569 of 611 mutants in 7 h at about 4 min each, with 17 timeouts costing about 1.9 h.
 
-Where: scripts/mutants.sh:63-64, scripts/mutants.sh:71-73, .cargo/mutants.toml:1-10, crates/extent_remote/src/sim/mod.rs:55-75.
+Where: scripts/mutants.sh:78, .cargo/mutants.toml:1-11, Cargo.toml:146-153, crates/extent_remote/src/sim/mod.rs:55-74.
 
-Found by the 2026-10-21 review of main at 6a0a3f8 (severity medium): docs/reviews/2026-10-21-main.md, 'Performance issues', has its evidence and a suggested fix. On main at 4432a7e: Still present. Cargo.toml has no [profile.*], and .cargo/mutants.toml sets only exclude_globs/exclude_re with no profile. scripts/mutants.sh's cargo mutants calls pass no --profile (mutants.sh:63-64, 71-73). Not tracked. TASK-44.1's notes record the sweep being stopped as too slow (~4 min per extent_remote mutant). Related: TASK-44.1, TASK-44.5, TASK-79.63.
+Found by the 2026-10-21 review of main at 6a0a3f8 (severity medium): docs/reviews/2026-10-21-main.md, 'Performance issues', has its evidence and a suggested fix. TASK-44.1's notes record the sweep being stopped as too slow (~4 min per extent_remote mutant). Related: TASK-44.1, TASK-44.5, TASK-79.63, TASK-188.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria
@@ -37,3 +38,9 @@ Found by the 2026-10-21 review of main at 6a0a3f8 (severity medium): docs/review
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+2026-11-05 triage: description brought to dde8d58d3: Cargo.toml has [profile.sim] since ebe4f4682 (TASK-188), which the sweeps don't use; mutants.sh's line numbers moved.
+<!-- SECTION:NOTES:END -->

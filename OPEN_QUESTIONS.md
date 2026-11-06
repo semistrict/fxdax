@@ -8,6 +8,10 @@
 
 # Decisions
 
+## TASK-141's upgrade plan rewritten to the no-migrations rule, its tasks kept as refusals (TASK-141, doc-11, 2026-11-05)
+
+- **TASK-141.1 and 141.3 are rewritten to their inverses rather than closed**: 141.1, which asked that a release read and migrate the one before's formats, now asks that Fxfs refuse version 60, which it still reads (`EARLIEST_SUPPORTED_VERSION` 60, `LATEST_VERSION` 61 since 321fb94f2, though `allocator.rs` says they are equal); 141.3, which asked that daemon N serve VMM N-1, now asks that a VM process, daemon or guest of another wire format be refused, where today `BUILD`'s `EINVAL` is let be. 141.4 keeps the drain and SIGTERM's durable close, without N-1/N moves or rollback. doc-11's rules say the same. *Instead:* close all three as against the rule and file the refusals new. *Undoing it:* close 141.1 and 141.3 and drop their ACs.
+
 ## Two mutants without killers since copy-on-write DAX: one equivalent, one killed in guest/sim (TASK-149.30, TASK-149.31, 2026-11-05)
 
 - **`task-150.9-resize-moves-the-last-block` is equivalent copying on write**, and TASK-149.30 is closed with no killer, against its criteria, which asked for one. The flag it drops (`FXFS_SET_KEEP_TAIL`) changes only a cut to within a block, and `fxfs_dax_resize_begin` makes the last page private (zeroing past the new end through the window) before Fxfs cuts: nothing reads the moved block's old place through the window after. If a writeback and rebind come between, the block holds zeros past the end already, which Fxfs's `txn_zero_tail` leaves where it is. The mutant's header says so. *Instead:* a scenario that passes either way, which would kill nothing. *Undoing it:* reopen TASK-149.30 with a schedule this reasoning misses.
