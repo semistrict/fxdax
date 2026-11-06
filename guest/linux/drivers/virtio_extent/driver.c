@@ -21,6 +21,7 @@
 #include <linux/mutex.h>
 #include <linux/sched.h>
 #include <linux/sched/clock.h>
+#include <linux/sched/mm.h>
 #include <linux/slab.h>
 #include <linux/spinlock.h>
 #include <linux/virtio.h>
@@ -55,14 +56,30 @@ struct vext_queue {
 /*
  * fxdax: the device's DAX window, its shared memory region, as the pages of a dax_device, which
  * mappings of files map (fs/fxfs/dax.c).
+ *
+ * Its struct pages are made a part at a time, as dax_direct_access first reaches a part
+ * (TASK-92.8). Made whole as the device was probed, a 2 GiB window's took a third of the guest's
+ * boot, and 32 MiB of its memory (64 bytes a page), most of which a guest never maps: Fxfs hands
+ * the window's space out first fit, from its start and from its middle (fs/fxfs/dax.c). A part is
+ * a memory section of the window, or what of one it covers: hotplug maps a whole section's struct
+ * pages on huge pages, and each making waits for an RCU grace period (mem_hotplug_begin).
+ * Nothing reaches the window's memory but through dax_direct_access, so no page is used before it
+ * has a struct page.
  */
 struct vext_window {
 	phys_addr_t phys;
 	u64 len;
-	/* Its memory, mapped in the kernel. */
+	/* Its memory, mapped in the kernel, where each part's making maps it (the direct map). */
 	void *kaddr;
 	struct dax_device *dax;
-	/* How much of it has struct pages, and the time making them took (TASK-92.8). */
+	/* Its parts' pages, the first's section the window's first; their node's. */
+	struct dev_pagemap *parts;
+	unsigned int nr_parts;
+	int nid;
+	/* Which parts have struct pages, which `lock` serializes the making of. */
+	unsigned long *made_parts;
+	struct mutex lock;
+	/* How much of it has struct pages, and the time making them took. */
 	atomic64_t made, made_ns;
 };
 
@@ -735,19 +752,79 @@ static void vext_read_config(struct virtio_extent *vext)
 }
 
 #if IS_ENABLED(CONFIG_FS_DAX)
-/* The window's memory at page `pgoff` of it, up to `nr_pages` of it, as virtio_fs's. */
+/* The window's part holding its byte at `offset`. */
+static unsigned int vext_window_part(const struct vext_window *window, u64 offset)
+{
+	return ((window->phys + offset) >> PA_SECTION_SHIFT) - (window->phys >> PA_SECTION_SHIFT);
+}
+
+/* Makes the struct pages of the window's part `part`, with its lock held: 0, or a -errno. */
+static int vext_window_make_part(struct vext_window *window, unsigned int part)
+{
+	struct dev_pagemap *pgmap = &window->parts[part];
+	u64 start = ktime_get_ns();
+	unsigned int nofs;
+	void *kaddr;
+
+	/* Its allocations reclaim nothing of a filesystem, whose locks the caller may hold. */
+	nofs = memalloc_nofs_save();
+	kaddr = memremap_pages(pgmap, window->nid);
+	memalloc_nofs_restore(nofs);
+	if (IS_ERR(kaddr))
+		return PTR_ERR(kaddr);
+	WARN_ON_ONCE(kaddr != window->kaddr + (pgmap->range.start - window->phys));
+	atomic64_add(range_len(&pgmap->range), &window->made);
+	atomic64_add(ktime_get_ns() - start, &window->made_ns);
+	/* Pairs with vext_window_make's test_bit_acquire: a part seen made has its pages. */
+	smp_mb__before_atomic();
+	set_bit(part, window->made_parts);
+	return 0;
+}
+
+/*
+ * Makes the struct pages of the window's parts holding its `len` bytes from `offset`, if they
+ * have none yet: 0, or a -errno. Sleeps, if it makes one.
+ */
+static int vext_window_make(struct vext_window *window, u64 offset, u64 len)
+{
+	unsigned int part = vext_window_part(window, offset);
+	unsigned int last = vext_window_part(window, offset + len - 1);
+	int err = 0;
+
+	for (; part <= last && !err; part++) {
+		if (test_bit_acquire(part, window->made_parts))
+			continue;
+		mutex_lock(&window->lock);
+		if (!test_bit(part, window->made_parts))
+			err = vext_window_make_part(window, part);
+		mutex_unlock(&window->lock);
+	}
+	return err;
+}
+
+/*
+ * The window's memory at page `pgoff` of it, up to `nr_pages` of it, as virtio_fs's. fxdax: their
+ * struct pages made first, if they have none (TASK-92.8): the caller may sleep.
+ */
 static long vext_dax_direct_access(struct dax_device *dax_dev, pgoff_t pgoff, long nr_pages,
 				   enum dax_access_mode mode, void **kaddr, unsigned long *pfn)
 {
 	struct vext_window *window = dax_get_private(dax_dev);
 	phys_addr_t offset = PFN_PHYS(pgoff);
-	long max_nr_pages = window->len / PAGE_SIZE - pgoff;
+	long pages = min_t(long, nr_pages, window->len / PAGE_SIZE - pgoff);
+	int err;
 
+	might_sleep();
+	if (pages <= 0)
+		return pages;
+	err = vext_window_make(window, offset, PFN_PHYS(pages));
+	if (err)
+		return err;
 	if (kaddr)
 		*kaddr = window->kaddr + offset;
 	if (pfn)
 		*pfn = PHYS_PFN(window->phys + offset);
-	return min(nr_pages, max_nr_pages);
+	return pages;
 }
 
 static int vext_dax_zero_page_range(struct dax_device *dax_dev, pgoff_t pgoff, size_t nr_pages)
@@ -775,41 +852,58 @@ static void vext_put_dax(void *data)
 	put_dax(dax);
 }
 
+/* Lets the window's made parts go, after its dax_device: unbinding, nothing uses them. */
+static void vext_window_unmake(void *data)
+{
+	struct vext_window *window = data;
+	unsigned int part;
+
+	for_each_set_bit(part, window->made_parts, window->nr_parts)
+		memunmap_pages(&window->parts[part]);
+}
+
 /*
- * Maps the window, `region`, as pages a dax_device hands out, which mappings of files can map: 0,
- * or a -errno.
+ * Sets the window up, `region`, as pages a dax_device hands out, which mappings of files can map,
+ * their struct pages made as they are reached: 0, or a -errno.
  */
 static int vext_map_window_dax(struct device *dev, struct vext_window *window,
 			       const struct virtio_shm_region *region)
 {
-	struct dev_pagemap *pgmap = devm_kzalloc(dev, sizeof(*pgmap), GFP_KERNEL);
-	u64 start = ktime_get_ns(), took;
+	u64 end = region->addr + region->len;
 	struct dax_device *dax;
-	void *kaddr;
+	unsigned int part;
+	int err;
 
-	if (!pgmap)
+	window->phys = region->addr;
+	window->len = region->len;
+	/* Where memremap_pages maps each part of a pgmap of FS_DAX's. */
+	window->kaddr = __va(region->addr);
+	window->nid = dev_to_node(dev);
+	window->nr_parts = vext_window_part(window, region->len - 1) + 1;
+	window->parts = devm_kcalloc(dev, window->nr_parts, sizeof(*window->parts), GFP_KERNEL);
+	window->made_parts = devm_bitmap_zalloc(dev, window->nr_parts, GFP_KERNEL);
+	if (!window->parts || !window->made_parts)
 		return -ENOMEM;
-	pgmap->type = MEMORY_DEVICE_FS_DAX;
-	pgmap->range = (struct range) {
-		.start = region->addr,
-		.end = region->addr + region->len - 1,
-	};
-	pgmap->nr_range = 1;
-	kaddr = devm_memremap_pages(dev, pgmap);
-	if (IS_ERR(kaddr))
-		return PTR_ERR(kaddr);
-	took = ktime_get_ns() - start;
+	mutex_init(&window->lock);
+	for (part = 0; part < window->nr_parts; part++) {
+		u64 section = (region->addr >> PA_SECTION_SHIFT) + part;
+		struct dev_pagemap *pgmap = &window->parts[part];
+
+		pgmap->type = MEMORY_DEVICE_FS_DAX;
+		pgmap->range = (struct range) {
+			.start = max_t(u64, region->addr, section << PA_SECTION_SHIFT),
+			.end = min_t(u64, end, (section + 1) << PA_SECTION_SHIFT) - 1,
+		};
+		pgmap->nr_range = 1;
+	}
+	/* Released after the dax_device's put, below: no direct access is left then. */
+	err = devm_add_action_or_reset(dev, vext_window_unmake, window);
+	if (err)
+		return err;
 	dax = alloc_dax(window, &vext_dax_ops);
 	if (IS_ERR(dax))
 		return PTR_ERR(dax);
-	*window = (struct vext_window) {
-		.phys = region->addr,
-		.len = region->len,
-		.kaddr = kaddr,
-		.dax = dax,
-		.made = ATOMIC64_INIT(region->len),
-		.made_ns = ATOMIC64_INIT(took),
-	};
+	window->dax = dax;
 	return devm_add_action_or_reset(dev, vext_put_dax, dax);
 }
 
@@ -818,7 +912,6 @@ static int vext_map_window(struct virtio_extent *vext)
 {
 	struct virtio_device *vdev = vext->vdev;
 	struct virtio_shm_region region;
-	int err;
 
 	if (!virtio_has_feature(vdev, VIRTIO_EXTENT_F_DAX))
 		return 0;
@@ -831,10 +924,7 @@ static int vext_map_window(struct virtio_extent *vext)
 		dev_err(&vdev->dev, "the DAX window's memory is in use\n");
 		return -EBUSY;
 	}
-	err = vext_map_window_dax(&vdev->dev, &vext->window, &region);
-	if (err)
-		vext->window = (struct vext_window) {};
-	return err;
+	return vext_map_window_dax(&vdev->dev, &vext->window, &region);
 }
 #endif
 
