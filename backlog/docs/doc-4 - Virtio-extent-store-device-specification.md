@@ -81,14 +81,29 @@ Settled in a design review on 2026-10-13:
   over MMIO in fxdax's Firecracker.
 - **Byte order:** every field is little-endian.
 
+### Version
+
+The configuration's first field, `version`, is the device's protocol version, `VIRTIO_EXTENT_VERSION`,
+1 (TASK-141.3). A change to any request, flag, feature, configuration field or what it means makes a
+new one: fxdax migrates nothing (AGENTS.md), so a driver and a device of different versions refuse
+each other rather than serve with what both happen to know. The driver reads `version` first, as it
+probes, and refuses a device of another, naming both (`-EPROTONOSUPPORT`). No version moves it.
+A VMM restoring a snapshot refuses one whose device was of another version: its guest's driver goes
+on as of that one.
+
 ### Features
+
+The features are no negotiation: they say what the device is configured as, a writer or a
+follower, with a window or not. A driver takes every feature the device offers; the device refuses
+its activation otherwise (`DEVICE_NEEDS_RESET`, both named in the VMM's log), and the driver fails
+its probe on seeing so after `DRIVER_OK`.
 
 | Bit | Name | Meaning |
 |---:|---|---|
 | 0 | `VIRTIO_EXTENT_F_DAX` | Shared memory region 0 is a DAX window, which maps sealed extents and zeros, read-only, and copies on write (Shared memory): `MAP`, `UNMAP` and `PRIVATE` work, `MAP` takes `MAP_ZEROS`, and the configuration holds `private_max`. |
 | 2 | `VIRTIO_EXTENT_F_WRITE_COMMIT` | `WRITE` takes `WRITE_COMMIT`: a commit follows the write. |
 | 3 | `VIRTIO_EXTENT_F_RESIZE` | The configuration holds `capacity` and `asked`, which change while the device runs (Resizing); the guest answers a shrink with `RESIZED`. |
-| 4 | `VIRTIO_EXTENT_F_FREEZE` | `FREEZE` works, and `INFO` says the `branch` (Snapshots). |
+| 4 | `VIRTIO_EXTENT_F_FREEZE` | `FREEZE` works (Snapshots). |
 | 5 | `VIRTIO_EXTENT_F_READ_ONLY` | The device follows a store another VM writes, read-only (Followers): `ADVANCE`, `LET_GO`, `PIN` and `UNPIN` work, and the configuration holds `committed`, which changes while the device runs. Excludes `WRITE_COMMIT` and `RESIZE`. With `DAX`, its window copies nothing: a store to it is refused, `PRIVATE` and `MAP_ZEROS` fail with `EINVAL`, and `private_max` is 0. |
 | 6 | `VIRTIO_EXTENT_F_FREE_MANY` | `FREE` takes `FREE_MANY`: its data names more extents to free (TASK-41). Excludes `READ_ONLY`. |
 | 7 | `VIRTIO_EXTENT_F_MAP_MANY` | `MAP` takes `MAP_MANY`: its data holds more maps (TASK-91.4). Needs `DAX`. |
@@ -104,6 +119,7 @@ Bits 1, 9 and 10 were `DAX_WRITE`, `SEAL` and `DAX_COW` (copy on write beside wr
 
 ```c
 struct virtio_extent_config {
+	le32 version;             /* VIRTIO_EXTENT_VERSION, 1: first in every version (Version) */
 	u8 tag[36];               /* the filesystem's name, NUL-padded: the mount's source */
 	le32 num_request_queues;  /* at least 1 */
 	le32 block_size;          /* 4096: the alignment of offsets and lengths */
@@ -360,13 +376,14 @@ struct virtio_extent_info {
 	le64 available;    /* bytes it can still take */
 	le64 next_sequence; /* one more than the highest sequence number the branch has written */
 	le64 sequence_floor; /* the lowest sequence number the guest may mint from */
-	le64 branch;       /* F_FREEZE: the branch the guest mints extents of */
+	le64 branch;       /* the branch the guest mints extents of */
 };
 ```
 
-A driver without `F_FREEZE` gives room for the fields before `branch`, which the device writes
-alone. With it, the guest takes its branch from `INFO`, not the configuration, which the driver
-read as it bound the device: a VM restored from a snapshot has a branch of its own (Snapshots).
+The driver gives room for all of it (`EINVAL` otherwise: before TASK-141.3, a driver without
+`F_FREEZE` had the fields before `branch` alone). The guest takes its branch from `INFO`, not the
+configuration, which the driver read as it bound the device: a VM restored from a snapshot has a
+branch of its own (Snapshots).
 
 For `statfs`, and for the guest's own count of what it may write.
 
