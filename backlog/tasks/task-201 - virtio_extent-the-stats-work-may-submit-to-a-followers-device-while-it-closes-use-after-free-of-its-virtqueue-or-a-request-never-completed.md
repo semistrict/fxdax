@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-06 06:51'
-updated_date: '2026-11-06 09:40'
+updated_date: '2026-11-06 09:41'
 labels:
   - guest
   - virtio_extent
@@ -71,6 +71,11 @@ Test: none can make the old race fail on demand, as allowed by the brief. The wi
 Blind spot: the stats work (TASK-111.4) added a second submitter outside the filesystem's lifetime, which close's ordering assumed was the only one; no test asks for stats while a follower closes. Look around: no other submitter outside the filesystem exists (selftest runs only via sysfs while bound).
 
 Verified: check-guest.sh arm64 ok; GCE r762 as above.
+
+Decision moved here from OPEN_QUESTIONS.md (2026-11-06):
+## The driver's queues close under their locks before a reset, and the stats work is flushed between (TASK-201, 2026-11-06)
+
+`virtio_extent_submit` checked `closed` once, unlocked, before adding to a queue that a reset might free meanwhile. Decided: each queue has a `closed` its lock guards, read under the lock a request is added under; a reset (`vext_reset_prepare`, for `virtio_extent_close` and unbinding) closes every queue, flushes the stats work, then resets, so no request reaches a queue being reset or freed, and the stats work's request in flight is answered by the live device. Queues keep their locks across a reopen (initialized once, their number fixed at probe). No test makes the old race fail on demand: the window was between a lockless load and `virtqueue_add_sgs`, which now share one critical section, so no delay can be put inside it; a knob before the lock would pass on the old code too. *Instead:* the task's ordering alone (closed set, flush, reset), which leaves the unlocked check relying on the flush for its ordering. *Undoing it:* the per-queue flag and `vext_close_queues`.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

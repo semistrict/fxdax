@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-06 06:50'
-updated_date: '2026-11-06 09:40'
+updated_date: '2026-11-06 09:41'
 labels:
   - guest
   - fxfs
@@ -86,6 +86,11 @@ Blind spot: nothing failed a thaw: guest/sim doesn't build super.c, fxfs-linux h
 Look around: the leave path, which froze the filesystem as its last unfrozen volume left, now never freezes one frozen already, and thaws a frozen filesystem whose last volume leaves before closing it (only reachable after an emergency thaw of read-only superblocks, TASK-202's limit). Step 3 (recording) is reachable only after a restore whose branch is new; it isn't injected by a check (fxfs-guest-snapshot's restores take it, passing). Structure: the class (C and Rust disagreeing on frozen) is closed by C deciding nothing on failure and Rust keeping its own step state; noted in OPEN_QUESTIONS.md.
 
 Verified: macOS workspace green; Linux Docker (privileged) 2221/2225, the 4 Docker-only failures known on main; check-guest.sh arm64 ok; upstream-changes.py --check ok; GCE us-west1-b jailed, r762: workspace 2225/2225, fxfs-guest-checks, -checks-dax, -checks-dax-small, fxfs-guest, -dax, -snapshot-dax, -suspend-dax, -migrate-dax, -stats, -follow-remount, -suspend-read-only-volume, -suspend-remounted-read-only all pass.
+
+Decision moved here from OPEN_QUESTIONS.md (2026-11-06):
+## A read-only superblock's freeze reaches its filesystem through freeze_super and thaw_super; a thaw that fails leaves the filesystem frozen (TASK-200, TASK-202, 2026-11-06)
+
+The VFS freezes a read-only superblock without calling `freeze_fs`, so a filesystem with one never froze, and its VM was never snapshotted. Decided: **Fxfs's `freeze_super` and `thaw_super` call the VFS's, then settle a read-only superblock's state with its filesystem** (`fxfs_vfs_settle_frozen`, under s_umount): the filesystem freezes once every superblock, read-only ones included, is frozen, as doc-10 says. Each superblock records whether its filesystem counts it frozen (`fxfs_vfs_info::frozen`), so `volumes_frozen` can't drift or wrap (a WARN if it would). A volume remounted read-only is synced first, as ext4's and XFS's are, since the VFS freezes a read-only superblock without syncing it. A filesystem opened read-only, frozen, tells the device and closes it, and holds nothing else (nothing of its writes). A follower's read-only superblocks aren't counted: its device can't be snapshotted, and freezing it would stop its batches. *Instead:* counting writable superblocks alone (simpler, but a filesystem whose every superblock is read-only, such as one remounted read-only, could then never freeze); or freezing a filesystem with no writable superblock at once, which would refuse writable mounts until a thaw. *Limit:* an emergency thaw (sysrq j, `do_thaw_all`) calls no filesystem's thaw_super: a read-only superblock it thaws stays counted frozen until it is frozen and thawed again, remounted writable, or unmounted, the last of which thaws the filesystem as it goes. **A thaw that fails leaves the filesystem frozen** in C as the VFS leaves the superblock, and Rust's thaw goes on, at the next call, from the step that failed (`Frozen`: telling the device, renewing the journal's tail, recording it), never repeating one done. *Undoing it:* drop the two `super_operations`, and `Frozen` for the `Option<Task>` it was.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-06 06:47'
-updated_date: '2026-11-06 09:39'
+updated_date: '2026-11-06 09:41'
 labels:
   - guest
   - fxfs
@@ -96,6 +96,13 @@ Bug back (GCE r763, old fxfs-posix and write_inode, injections and checks kept):
 Look around: setattr's failures in the flusher (chmod, chown, utimes with EIO) were the same blind spot, fixed by the same re-dirtying, which failed_write_inode_reported covers. fileattr_set and the resize path write attributes synchronously and return their errors already. Structure: the class (in-memory state outliving the failure of its writeback) is gone for xattrs; for the kernel's own inode attributes the VFS keeps the state, and re-dirtying keeps it until durable. Coverage not rerun.
 
 Verified: macOS workspace (scripts/test.sh workspace) 2032/2033 then the one failing test (my first version of the full-filesystem unit test, assuming a small inline xattr couldn't fit) fixed and passing; Linux Docker (privileged) 2221/2225, the 4 Docker-only failures known on main (build stamp, three socket grants); guest/tests harness 135/135; check-guest.sh arm64 ok; upstream-changes.py --check ok; GCE (us-west1-b, jailed): r762 workspace 2225/2225 (run d), fxfs-guest-checks, -checks-dax, -checks-dax-small all pass (run c), fxfs-guest, -dax, -snapshot-dax, -suspend-dax, -migrate-dax, -stats, -follow-remount pass (run a).
+
+Decision moved here from OPEN_QUESTIONS.md (2026-11-06):
+## Extended attributes are written through, each set in a transaction of its own; write_inode keeps a failed inode dirty (TASK-199, 2026-11-06)
+
+An xattr or ACL change lived in fxfs-posix's memory (`Fxfs::xattrs`) until the kernel wrote the inode back: a writeback that failed (a full filesystem's NoSpace, a device's EIO), as the flusher's or sync's that nothing reports, left the inode clean, the next fsync returned 0, and eviction dropped the change; and the map grew without bound. Decided: **`set_xattr` and `remove_xattr` commit at once**, as ext4's setxattr journals its change: a set's transaction reserves its room (`Op::SetXattr`, `Room::Reserved`) and fails NoSpace on a full filesystem, which setxattr returns (ENOSPC); a removal borrows its room (`Op::RemoveXattr`, `Room::Borrowed`), as what frees does. Nothing is pending, so nothing is unbounded and nothing is lost at eviction; `write_inode` writes the kernel's attributes alone (fxfs_write_inode is `setattr`). A new object's inherited ACLs too large to keep inline are written in its creation's transaction (fxfs's `set_extended_attribute_impl`, public), where they were pending. **The guest's write_inode marks a failed inode dirty again**, so the next writeback retries it and every fsync reports the failure until it is durable. A set or removal is refused once a batch of queued unlinks failed, as every change is (the TASK-160.23 entry no longer lists them as not refused). *Instead:* the task's suggestion, keeping the pending map with room reserved as each change is made (as TASK-80 reserves dirty pages') and a byte bound per volume, plus fsync reporting failed writebacks: three mechanisms for what one transaction does. Cost: a setxattr is a transaction (and, for a value over 256 bytes, a write of its blocks), not a map insert; fs-bench's setxattr measured the map. *Undoing it:* the map, its writeback in `write_inode`, and a reservation and bound for it.
+
+A failed batch leaves Fxfs maybe holding names the kernel took for gone; changes then failed with EIO until a remount, but only those through `transaction_with`. Clone (`clone_range`), writes (`write`, `write_many`), the page cache's writeback (`write_dirty`), `allocate`, truncates (shrinking or not) and the writeback of extended attributes made their transactions elsewhere and went on. Decided: each operation's row says whether it changes what the filesystem holds (`Op::rules`' `changes`), and every one that does fails: those seven too. The filesystem fails stop, as ext4 does once its journal aborts, by one rule rather than a list of exceptions. A writeback refused leaves the room its dirty data reserved as one that fails does: the page cache's pages are no longer dirty either way. Not refused: lookups, readdir, reads, `sync`, `fsync`, `statfs` (making what's there durable, or reading it), `evict` (frees nothing once a batch failed, as before), and the queue's own batches, which bring Fxfs back to the kernel's view.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
