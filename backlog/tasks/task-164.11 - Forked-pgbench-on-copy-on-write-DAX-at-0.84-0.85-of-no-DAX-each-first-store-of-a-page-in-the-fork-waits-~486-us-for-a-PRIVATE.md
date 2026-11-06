@@ -6,6 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-11-06 04:48'
+updated_date: '2026-11-06 06:27'
 labels:
   - performance
   - dax
@@ -33,3 +34,9 @@ After TASK-164.10 the perf gate's forked-dax is 0.836 (GCE r650: 1,217 against 1
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+2026-11-06: the user accepted ~0.84 (OPEN_QUESTIONS; the gate's forked-dax is 0.8), so this is later work, its AC (0.9) a goal, not the gate. The two options that needn't add complexity are subtasks of their own: TASK-164.11.1 (the VMM's request path, ~165 us of every request) and TASK-164.11.2 (a page made private without an mmap over its run, ~135 us a run). Left here, unmeasured: the private pages' pre-fault off the critical path, private_max against the density gate, the window's fragmentation.
+<!-- SECTION:NOTES:END -->

@@ -365,6 +365,13 @@ private.
   should match `fxfs-guest-pgbench` (1,736 tps against DAX's 1,012). Files read in pay a host fault
   for each page's first store (~54-110 µs nested) and nothing after; fsync is the no-DAX path's,
   with no write-protect at the seal (58 µs of extentd's 126 a commit today) and no evacuation.
+- **Measured, and accepted (the user, 2026-11-06):** pgbench on a fork of a base's database runs at
+  0.836 and 0.854 of no DAX (GCE r650, TASK-164.10), not the 0.9-1.0 expected here: each page's first
+  store in the fork is a `PRIVATE`, ~486 µs nested a request (the daemon 83 µs, the VM process's run
+  of the pages 135, the request's way through the VMM the rest), and the database, 164k pages
+  rewritten every ~5 minutes, is more than `private_max` keeps. The perf gate's `forked-dax` is 0.8
+  since. What could cut it further, the VMM's request path and a page made private without
+  replacing its mapping, is TASK-164.11's, for later.
 - **Reads:** unchanged; files written in this mount read through the page cache until evicted.
 - **Memory per VM:** guest page cache for created files (balloon free-page reporting returns what
   they free, Firecracker's balloon has it), private pages ≤ `private_max` on the host, shared

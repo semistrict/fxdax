@@ -17,7 +17,7 @@ import script
 
 gate = script.load("pgbench-gate")
 
-THRESHOLDS = {"decay": 0.9, "dax": 0.95, "forked-dax": 0.9, "static-dax": 0.0, "density": 0.9,
+THRESHOLDS = {"decay": 0.9, "dax": 0.95, "forked-dax": 0.8, "static-dax": 0.0, "density": 0.9,
               "density-memory": 0.9, "density-memory-mib": 2560.0, "bigmap-read": 4.0,
               "bigmap-guest-cache": 0.05, "bigmap-written-memory": 1.5}
 MIB = 1 << 20
@@ -238,15 +238,15 @@ class PgbenchGate(unittest.TestCase):
             "fxfs-guest-pgbench": log([1000, 1000, 1000]),
             "fxfs-guest-pgbench-dax": log([960, 950, 940]),
             "fxfs-guest-pgbench-forked": log([800, 800, 800]),
-            "fxfs-guest-pgbench-dax-forked": log([700, 720, 710]),
+            "fxfs-guest-pgbench-dax-forked": log([620, 640, 630]),
         }))
         self.assertEqual(gate.gates(measured, THRESHOLDS), [
             least("decay", "no-dax", 1.0, 0.9, True),
             least("decay", "dax", 0.9792, 0.9, True),
             least("decay", "no-dax-forked", 1.0, 0.9, True),
-            least("decay", "dax-forked", 1.0143, 0.9, True),
+            least("decay", "dax-forked", 1.0161, 0.9, True),
             least("dax", "dax", 0.95, 0.95, True),
-            least("forked-dax", "dax-forked", 0.8875, 0.9, False),
+            least("forked-dax", "dax-forked", 0.7875, 0.8, False),
         ])
 
     def test_the_host_s_memory_is_read_as_said(self):

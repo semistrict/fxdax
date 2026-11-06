@@ -65,14 +65,16 @@ Don't measure memory with `FXDAX_GUEST_HUGE_PAGES=2M`: a huge-page pool is never
 ## Thresholds
 
 `FXDAX_GATE_<NAME>` overrides each (dashes as underscores). Copy-on-write DAX's were first guesses,
-set from the first run, r632 (below): `dax` and `forked-dax` hold doc-13's expectations; the rest
-are r632's numbers with room for a nested host's noise (the user, 2026-11-04: density targets come
-from measurement).
+set from the first run, r632 (below): `dax` holds doc-13's expectation; `forked-dax` the user's
+decision (2026-11-06) that doc-13's one host round trip a page's first store, measured at 0.836 and
+0.854 of no DAX (r650, TASK-164.10), is acceptable, its threshold 0.8 for a nested host's noise; the
+rest are r632's numbers with room for that noise (the user, 2026-11-04: density targets come from
+measurement).
 
 | Gate | Of | Bound | Default | r632 |
 |---|---|---|---|---|
 | `dax` | median tps of `dax` against `no-dax`, database made in the run | at least | 0.95 | 0.995 |
-| `forked-dax` | the same, `dax-forked` against `no-dax-forked` (doc-13 expects 0.9-1.0) | at least | 0.9 | 0.573 |
+| `forked-dax` | the same, `dax-forked` against `no-dax-forked` (doc-13 expected 0.9-1.0; r650 0.836, the user accepted 0.84, 2026-11-06) | at least | 0.8 | 0.573 |
 | `density-memory` | each DAX density case's host memory per added VM against no DAX's | at most | 0.9 | 0.862 |
 | `density-memory-mib` | each DAX density case's host memory per added VM, MiB | at most | 2560 | 2361 |
 | `bigmap-read` | each DAX bigmap case's cold random read MiB/s against no DAX's | at least | 4.0 | 5.76 |
@@ -85,7 +87,10 @@ from measurement).
 
 ## Runs
 
-### r650, 2026-11-06: single phase, jailed, nested; `forked-dax` 0.836 (fails 0.9), from r649's 0.579
+### r650, 2026-11-06: single phase, jailed, nested; `forked-dax` 0.836, from r649's 0.579
+
+It failed the 0.9 then in force; the user took it, 2026-11-06, and the threshold is 0.8 since. A rerun of
+the forked pair on the same host, at 170662bad: 0.854 (1,216 against 1,424).
 
 GCE `fxdax-test-r650-tperf`, n2-standard-4 (nested, Cascade Lake), us-east4-a, release guest
 kernel, every Firecracker jailed. At fedc14fd5 with TASK-164.10's changes uncommitted (their
@@ -101,7 +106,7 @@ phase wasn't run.
 | no-dax-forked | 1208, 1387, 1455, 1460, 1471 | 1455 |
 | dax-forked | 1175, 1257, 1177, 1308, 1217 | 1217 |
 
-Gates: `dax` 0.999, `static-dax` 1.23, `decay` 1.00-1.22, **`forked-dax` 0.836 (fails 0.9)**,
+Gates: `dax` 0.999, `static-dax` 1.23, `decay` 1.00-1.22, **`forked-dax` 0.836** (0.9 then),
 `bigmap-read` 5.13, `bigmap-guest-cache` 0.0, `bigmap-written-memory` 1.32. bigmap with DAX: cold
 reads 86.6 MiB/s (no DAX 16.9), stores 3,139/s, p50 315 us.
 

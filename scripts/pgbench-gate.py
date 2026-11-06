@@ -29,15 +29,18 @@ round-K/CASE/log.txt), each directory's rounds after the last's:
 It writes them, and the gates, as JSON, and fails unless every gate passes. Each gate's value is at
 least its threshold, or at most for those marked so. Copy-on-write DAX's were set from the first
 run measured, GCE r632 (docs/measurements/dax-cow-gate.md): from its numbers, but for `dax` and
-`forked-dax`, which hold doc-13's expectations.
+`forked-dax`: `dax` holds doc-13's expectation, `forked-dax` the user's decision (2026-11-06) that
+copy-on-write DAX's one host round trip a page's first store, measured 0.836 and 0.854 (r650), is
+acceptable, with room for noise.
 
 - decay: each guest Fxfs pgbench case's last run of its first VM against its first run (the
   sandbox team saw ~21% lost over five), at least DECAY;
 - dax: DAX against no DAX, each case's median run of its first VM: a database made
   in the run is files created in the mount, which take the page cache's path (doc-13), at least
   DAX;
-- forked-dax: DAX against no DAX on a base's database, as `dax`: a fault on the host
-  for each page's first store, nothing after (doc-13 expects 0.9 to 1), at least FORKED_DAX;
+- forked-dax: DAX against no DAX on a base's database, as `dax`: a round trip to the host for
+  each page's first store, nothing after (doc-13 expected 0.9 to 1; 0.84-0.85 measured and
+  accepted, TASK-164.10), at least FORKED_DAX;
 - static-dax: DAX against ext4 with DAX on pmem, as `dax`: the gap to a static DAX device, at least
   STATIC_DAX, by default 0, reported and not gated;
 - density: of one daemon serving many VMs, the first round that had more than one, its last VM's
@@ -123,7 +126,8 @@ PERCENTILES = (50, 90, 99)
 DEFAULTS = {
     "decay": 0.9,
     "dax": 0.95,
-    "forked-dax": 0.9,
+    # The user's decision (2026-11-06): 0.836 and 0.854 measured (r650), with room for noise.
+    "forked-dax": 0.8,
     "static-dax": 0.0,
     "density": 0.9,
     # Set from r632 (0.86, 2,361 MiB, 5.76, 0.0, 1.29), with room for a nested host's noise.
