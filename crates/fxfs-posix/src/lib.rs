@@ -1656,11 +1656,19 @@ impl<P: Platform> Fxfs<P> {
     /// the graveyard's tombstones of the objects unlinked done, so that their room is free once
     /// it returns: a write right after `rm` and `sync` found it full, the graveyard waiting
     /// GRAVEYARD_BATCH_DELAY still; and a write that finds it full syncs to make room (TASK-80).
+    ///
+    /// fxdax: it ends with a flush of the device, durable as the platform has it, whatever the
+    /// journal's sync asked of it: the journal counts itself durable as far as any flush took it,
+    /// an fsync's too, which is ordered alone, and asks the device nothing once it is; so that a
+    /// sync after fsyncs, finding nothing more, returned with their commits not yet durable, which
+    /// a lost host lost (TASK-67). Where the journal's own flush was durable, this one finds
+    /// nothing left to make so.
     pub async fn sync(&self) -> Result<(), Error> {
         self.begin(Op::Sync, None).await?;
         self.filesystem.graveyard().flush().await;
         let _durable = self.platform.durable();
-        self.filesystem.sync(SyncOptions { flush_device: true, ..Default::default() }).await
+        self.filesystem.sync(SyncOptions { flush_device: true, ..Default::default() }).await?;
+        self.filesystem.device().flush().await
     }
 
     /// fxdax: makes what the filesystem holds survive a crash of the guest, in order, before what

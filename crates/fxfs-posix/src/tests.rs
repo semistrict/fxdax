@@ -696,3 +696,69 @@ async fn every_change_fails_once_a_batch_failed() {
     let changes: Vec<Op> = EVERY_OP.into_iter().filter(|op| !reads.contains(op)).collect();
     assert_eq!(refused, changes);
 }
+
+/// fxdax: a platform whose syncs' durability is counted, as the guest's device has it: commits
+/// made while a sync wants durability (`Platform::durable`) are durable, the others ordered alone.
+struct Durably(Arc<std::sync::atomic::AtomicUsize>);
+
+/// While it lives, a sync wants the device's commits durable.
+struct WantsDurable(Arc<std::sync::atomic::AtomicUsize>);
+
+impl Drop for WantsDurable {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+impl Platform for Durably {
+    const KEEPS_DIRECTORY_TIMES: bool = false;
+
+    type Durable = WantsDurable;
+
+    fn durable(&self) -> WantsDurable {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        WantsDurable(self.0.clone())
+    }
+
+    fn spawn_urgent(&self, future: impl Future<Output = ()> + Send + 'static) {
+        fasync::Task::spawn(future).detach();
+    }
+}
+
+/// fxdax: a sync ends with a durable commit of the device, whatever the journal had flushed: an
+/// fsync's flush of it is ordered alone, and a sync after it, finding the journal flushed as far,
+/// asked the device nothing, and returned with the fsync's commit not yet durable, which a lost
+/// host lost (fxfs-guest-soak, TASK-67: syncfs returned for files a lost host's successor didn't
+/// have).
+#[fuchsia::test]
+async fn syncs_make_what_fsyncs_ordered_durable() {
+    let wanted = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let durable_barriers = Arc::new(AtomicU64::new(0));
+    let mut device = FakeDevice::new(16384, 4096);
+    let (counted, counting) = (wanted.clone(), durable_barriers.clone());
+    device.set_op_callback(move |op| {
+        let barrier = matches!(op, storage_device::fake_device::Op::Flush)
+            || matches!(op, storage_device::fake_device::Op::PostBarrier);
+        if barrier && counted.load(Ordering::SeqCst) > 0 {
+            counting.fetch_add(1, Ordering::SeqCst);
+        }
+        Ok(())
+    });
+    let filesystem = FxFilesystem::new_empty(DeviceHolder::new(device)).await.expect("formatting");
+    let root_volume = root_volume((*filesystem).clone()).await.expect("the root volume");
+    let volume = root_volume.new_volume("test", NewChildStoreOptions::default()).await.unwrap();
+    let root = volume.root_directory_object_id();
+    let fs = Fxfs::new((*filesystem).clone(), volume, false, Durably(wanted));
+    for round in 0..3u8 {
+        let name = format!("file-{round}");
+        let ino = fs.create(root, name.as_bytes(), FILE, 0, 0, 0, &[]).await.unwrap()[0].ino;
+        fs.write(ino, 0, &[round; 8192]).await.unwrap();
+        fs.fsync().await.unwrap();
+        let before = durable_barriers.load(Ordering::SeqCst);
+        fs.sync().await.unwrap();
+        assert!(
+            durable_barriers.load(Ordering::SeqCst) > before,
+            "round {round}: the sync after an fsync made nothing durable"
+        );
+    }
+}
