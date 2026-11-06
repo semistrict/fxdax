@@ -1,11 +1,11 @@
 ---
 id: TASK-160.32
 title: 'One set of DAX mutants, each naming its killer'
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-03 13:09'
-updated_date: '2026-11-05 16:01'
+updated_date: '2026-11-06 02:22'
 labels:
   - structure
 dependencies: []
@@ -25,15 +25,15 @@ At 9f81f6018, writable DAX's deletion (37c331a6c) took eleven of guest-mutants-g
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 One mutant set
-- [ ] #2 Each mutant's fate is its named killer
+- [x] #1 One mutant set
+- [x] #2 Each mutant's fate is its named killer
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -57,4 +57,12 @@ Killers found by running each mutant against every sim one-run test and scenario
 GCE fxdax-test-r625 (us-west1-b), through guest-mutants-gce.py as the gate calls it, FXDAX_E2E_ROUNDS=3, release: inherited_acls_written_back killed (fxfs-guest-crash, ENODATA at the host's getxattr). resize_moves_the_last_block MISSED (append_stopped_short_in_a_page alone 3 rounds; then fxfs-guest-checks-dax whole, 1 round): killed by nothing since copying on write -> none, TASK-149.30. fault_ignores_fatal_signals MISSED (window_held_killed alone 3 rounds; checks-dax-small whole 1 round): equivalent, the no-room loop is bounded (FXFS_DAX_NO_ROOM_WAITS) and its wait killable -> none. store_fails_on_pins MISSED (checks-dax whole, 3 rounds): its killer slice_held went with writable DAX -> none, TASK-149.31. Each run's guest kernel recompiled fs/fxfs with the patch (guest-kernel.log), commit -dirty. Host deleted. So the GCE half now runs one mutant (inherited ACLs): the rest the sim kills in seconds or nothing can.
 
 Verified: guest/sim/mutants.sh --check (33 sim patches) and a full run (27 killed, 5 none, exit 0); scripts/guest-mutants-gce.py --check (36); FXDAX_TEST_PARTS=scripts scripts/test.sh (160 tests OK). Not run: dax-gate.sh end to end (its two halves were); lib.rs's test-module edit (a_selection_is_of_cases_named_and_tagged) is uncompiled: the guest test crate builds on Linux only, and the GCE host built the runner (lib, not tests). Structure: the bug class here was mutants decaying silently (a patch still applying but testing something else, a killer gone with its code); named killers make both visible as MISSED/BROKEN rather than a kill by whatever failed first.
+
+Verified on main, 2026-11-05 (code of dde8d58d3; 752515020 adds backlog only): GCE r691, the Linux workspace, 2302 of 2303, the one failure TASK-187's a_store_after_a_workers_write_waits_for_one_lift (TASK-190; its fix 788e3b6b4 is on land-p, not main); GCE r690, the e2e suite (--tag e2e, 15 cases) jailed with the production seccomp filter, 15 of 15; CI 42137709782 on dde8d58d3 green (workspace 2303 of 2303, sim, shuttle, clippy scripts, guest, guest-sim); macOS FXDAX_TEST_PARTS=workspace scripts/test.sh at 752515020, 2118 of 2118; scripts/upstream-changes.py --check at 752515020 passes. AC #1: guest/mutants holds the one set (38 patches and its README), guest/sim/mutants is gone; every patch has a '# Killer:' header (rg --files-without-match finds only README.md). AC #2: guest/sim/mutants.sh's full run (27 killed, 5 none) and r625's GCE run as recorded above; CI 42137709782: guest-sim's 'The mutants apply' step, and mutants --check 17, 4 and 38 checked, 0 broken, in the scripts part; a_selection_is_of_cases_named_and_tagged, left uncompiled before, passes in its guest job.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+One mutant set, guest/mutants, each patch's header naming its kernel and killer; the sim's mutants run first, GCE's only what needs a real kernel, killed only by their named killer. On main: 4b6580817, b7653f781, b0caea65d. Verified: the full sim run and GCE r625 as noted; CI 42137709782 (mutants --check, guest-sim, the guest job).
+<!-- SECTION:FINAL_SUMMARY:END -->

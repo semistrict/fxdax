@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-04 07:34'
-updated_date: '2026-11-05 03:18'
+updated_date: '2026-11-06 02:22'
 labels: []
 dependencies:
   - TASK-164
@@ -26,7 +26,7 @@ Decided by the user on 2026-11-04 (docs/reviews/2026-11-04-first-principles.md, 
 <!-- AC:BEGIN -->
 - [x] #1 A design doc, with what goes and the format change
 - [ ] #2 One engine, one replay, the workspace and guest suites passing, the seam's tests kept as tests of the bucket protocol
-- [ ] #3 A TLA+ spec of the doc-7 protocol with mutations
+- [x] #3 A TLA+ spec of the doc-7 protocol with mutations
 <!-- AC:END -->
 
 ## Definition of Done
@@ -50,4 +50,6 @@ The rest per the subtasks, after TASK-164 and TASK-160.8 for steps 7 to 9.
 
 <!-- SECTION:NOTES:BEGIN -->
 Design: doc-14 (2026-11-04). Inputs: review section 2, doc-7, the code of extent_store, extent_remote, remote.rs, extents.rs's fork path. Seam bugs classified into four classes the design removes (doc-14, Why). Steps: TASK-165.1 to 165.10. Decisions: OPEN_QUESTIONS.md, "Local disk as the bucket's WAL and cache: how".
+
+2026-11-05: TASK-165.3, 165.4, 165.5 and 165.6 done on main (GCE r691 and r690, CI 42137709782, macOS workspace 2118 of 2118 at 752515020). AC #3 met: specs/bucket's Bucket.tla (TASK-165.2, done) models doc-7 with the WAL; check-tla.sh 11 of 11 models hold and 32 of 32 mutations give their counterexamples (TASK-165.5's run after its rebase), 43 of 43 at 752515020's triage. AC #2 open: TASK-165.7 to 165.10 are To Do (the local lineage, cleaning and index still there).
 <!-- SECTION:NOTES:END -->

@@ -1,11 +1,11 @@
 ---
 id: TASK-160.11
 title: 'fxdax: a window''s mappings in one map'
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-03 13:08'
-updated_date: '2026-11-05 08:37'
+updated_date: '2026-11-06 02:22'
 labels:
   - structure
 dependencies: []
@@ -29,17 +29,17 @@ Proposal: the window's mappings are the one map. A source says what its pages ar
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 One map per window
-- [ ] #2 dax shuttle tests pass
-- [ ] #3 Deferral is the RemoteStage's: no thread-local, and a window's change is made under its lock
-- [ ] #4 Stage operations' IDs reach the VM process in the order given
+- [x] #1 One map per window
+- [x] #2 dax shuttle tests pass
+- [x] #3 Deferral is the RemoteStage's: no thread-local, and a window's change is made under its lock
+- [x] #4 Stage operations' IDs reach the VM process in the order given
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -65,4 +65,12 @@ Design (90a62d342, bcd1c9b4d):
 Runs: macOS FXDAX_TEST_PARTS='workspace shuttle' scripts/test.sh: all pass (workspace 2068/2068; fxdax Shuttle 32/32, the userfaultfd models being Linux-only; the other crates' Shuttle suites pass). Linux (Docker, arm64): cargo nextest -p fxdax 456/463, the 7 failures the known environment ones (eu-stack x3, grants ENOENT x3, build stamp); seccomp test passes; Shuttle 55/55. The intermediate commit 90a62d342 alone: dax/extents/extentd unit tests 194/194, Shuttle 55/55.
 
 GCE r600 (us-west1-b, n2-standard-4, jailed, FXDAX_WORKSPACE_TESTS=0, the tree of bcd1c9b4d before formatting): fxfs-guest-dax, fxfs-guest-checks-dax-small (69 s of 368), fxfs-guest-crash-dax, fxfs-guest-bigmap-dax (143 s of 3600), fxfs-guest-migrate-tenant-dax: 5/5 OK, no unexplained refusals, no cores. Not run: fxfs-guest-checks-dax and pgbench-dax-forked (the regression being bisected elsewhere).
+
+Verified on main, 2026-11-05 (code of dde8d58d3; 752515020 adds backlog only): GCE r691, the Linux workspace, 2302 of 2303, the one failure TASK-187's a_store_after_a_workers_write_waits_for_one_lift (TASK-190; its fix 788e3b6b4 is on land-p, not main); GCE r690, the e2e suite (--tag e2e, 15 cases) jailed with the production seccomp filter, 15 of 15; CI 42137709782 on dde8d58d3 green (workspace 2303 of 2303, sim, shuttle, clippy scripts, guest, guest-sim); macOS FXDAX_TEST_PARTS=workspace scripts/test.sh at 752515020, 2118 of 2118; scripts/upstream-changes.py --check at 752515020 passes. AC #1: Dax (dax.rs:1160) holds the window and its zeros, no map of its own; extents.rs's Mapped and Maps are gone. AC #2: fxdax's Shuttle suite 59 of 59 in CI 42137709782's shuttle job, dax::uffd's remapped_stores_race_frees_randomly and _by_pct among them. AC #3: rg finds no CORKED, cork or uncork in crates/fxdax. AC #4: extentd::wire's sends_of_a_batch_arrive_in_the_order_made passes in r691. r690's DAX suites, jailed, pass.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+One map per window (Dax lost K and its second map); a window's change is held back by its RemoteStage under the window's lock, the thread-local cork gone; stage IDs given under the queue's lock, in wire order. On main: 065f54f3e, 92ff6fc16. Verified: GCE r691 (workspace 2302 of 2303, the failure TASK-190's), CI 42137709782, macOS workspace 2118 of 2118 at 752515020; fxdax Shuttle 59 of 59 in CI; GCE r690's jailed DAX suites.
+<!-- SECTION:FINAL_SUMMARY:END -->

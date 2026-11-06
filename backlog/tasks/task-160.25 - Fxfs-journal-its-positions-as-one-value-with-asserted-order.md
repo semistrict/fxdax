@@ -1,11 +1,11 @@
 ---
 id: TASK-160.25
 title: 'Fxfs journal: its positions as one value with asserted order'
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-03 13:09'
-updated_date: '2026-11-05 12:44'
+updated_date: '2026-11-06 02:22'
 labels:
   - structure
 dependencies: []
@@ -23,15 +23,15 @@ The journal on a write-once device needs its own transaction, make_room, renew_t
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 JournalPosition with asserted order
-- [ ] #2 Journal tests and model crash hunts pass with the asserts on
+- [x] #1 JournalPosition with asserted order
+- [x] #2 Journal tests and model crash hunts pass with the asserts on
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -85,4 +85,12 @@ The bugs the task names (TASK-139, 60, 26.6.1, 149.3, 153.13) came from position
 ## TASK-182, found by TASK-160.23's fsck hunt (its task is on that branch, not this one), fixed here: fe1c465b8
 The pinned sequence fails on this branch as on main, with no JournalPosition assert firing: the mismatch is between Root::journal_end, set before the cut, and what replay after it finds, which no in-memory position spans. Cause: a sync's barrier follows a flush of whole blocks, which may go past the sync's padding into blocks of later transactions; flush() records that write's end. A record begun in its last block and going on in the next, which the cut lost, stops replay at the record's start (307150), short of the end recorded (307200): refused, though the record's transaction was never whole, nor acknowledged. Replay now compares journal_end with the end of the block it read last (the reader verified it), or with where it discarded a transaction if it did, as before. Red then green: model test a_cut_with_fsck_after_every_transaction_replays_as_far_as_its_barrier. FXDAX_MODEL_CASES=3000 FXDAX_MODEL_FSCK=1: 34 of 34 (6,827 s). journal tests 84 of 84, test_a_journal_ending_before_its_synced_end_is_refused among them. Not the same cause as TASK-176 (test_trim's unlocked fsck).
 After the rebase on origin/main (c919610e7) and these fixes: cargo nextest run -p fxfs -p fxfs-posix -p storage_device, 885 of 885.
+
+Verified on main, 2026-11-05 (code of dde8d58d3; 752515020 adds backlog only): GCE r691, the Linux workspace, 2302 of 2303, the one failure TASK-187's a_store_after_a_workers_write_waits_for_one_lift (TASK-190; its fix 788e3b6b4 is on land-p, not main); GCE r690, the e2e suite (--tag e2e, 15 cases) jailed with the production seccomp filter, 15 of 15; CI 42137709782 on dde8d58d3 green (workspace 2303 of 2303, sim, shuttle, clippy scripts, guest, guest-sim); macOS FXDAX_TEST_PARTS=workspace scripts/test.sh at 752515020, 2118 of 2118; scripts/upstream-changes.py --check at 752515020 passes. AC #1: journal/position.rs on main, its 15 tests (13 should_panic, one per order broken) pass in r691. AC #2: r691 is a debug build (asserts on): fxfs's 79 journal tests and fxfs-posix's model tests (a_cut_with_fsck_after_every_transaction_replays_as_far_as_its_barrier among them) pass; the 3000-case and fsck model hunts with the asserts are recorded above. test_trim's flake was TASK-176, closed with this.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+The journal's 13 positions are one JournalPosition whose methods debug-assert their orders; the run-of-sequences extent record judged not worth a prototype. On main: 8c27464ac (and 61acf7e40, TASK-182's replay fix, found by the same hunts). Verified: position and journal tests in GCE r691 (workspace 2302 of 2303, the failure TASK-190's), CI 42137709782, macOS workspace 2118 of 2118 at 752515020; model hunts as noted.
+<!-- SECTION:FINAL_SUMMARY:END -->

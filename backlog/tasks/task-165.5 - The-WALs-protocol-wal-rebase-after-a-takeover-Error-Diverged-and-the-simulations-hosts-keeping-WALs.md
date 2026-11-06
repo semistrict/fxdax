@@ -3,11 +3,11 @@ id: TASK-165.5
 title: >-
   The WAL's protocol: wal::rebase after a takeover, Error::Diverged, and the
   simulation's hosts keeping WALs
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-05 03:16'
-updated_date: '2026-11-05 19:18'
+updated_date: '2026-11-06 02:21'
 labels: []
 dependencies:
   - TASK-165.2
@@ -26,17 +26,17 @@ doc-14, step 5. A host's closed segments not yet acknowledged replace remote.rs'
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 extent_remote::wal::rebase (Wal::rebase) takes what the writer found at the branch's end, recovered and fenced, and a WAL's footers and base: by commits (doc-14 as TASK-165.2 changed it), drops the segments to the branch's last commit after the fence if it is one of the WAL's, restamps the rest on the writer's chain (own extents at the new keys) if it is one of the WAL's or its base, and otherwise fails with Error::Diverged
-- [ ] #2 Unit tests: WAL wholly landed, partly landed, landed past a gap (void), none landed, another writer moved on, empty WAL
-- [ ] #3 The simulation's hosts keep WALs of stamped segments, lost or kept at a crash, and every open on a host with one runs wal::rebase; all profiles pass
-- [ ] #4 Rules gains wal_follows and wal_after_fence, each turned off by a test_needs! that finds a violation
+- [x] #1 extent_remote::wal::rebase (Wal::rebase) takes what the writer found at the branch's end, recovered and fenced, and a WAL's footers and base: by commits (doc-14 as TASK-165.2 changed it), drops the segments to the branch's last commit after the fence if it is one of the WAL's, restamps the rest on the writer's chain (own extents at the new keys) if it is one of the WAL's or its base, and otherwise fails with Error::Diverged
+- [x] #2 Unit tests: WAL wholly landed, partly landed, landed past a gap (void), none landed, another writer moved on, empty WAL
+- [x] #3 The simulation's hosts keep WALs of stamped segments, lost or kept at a crash, and every open on a host with one runs wal::rebase; all profiles pass
+- [x] #4 Rules gains wal_follows and wal_after_fence, each turned off by a test_needs! that finds a violation
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -78,4 +78,12 @@ Verified after the rebase (9c2d4e62e):
 - check-tla.sh, bucket spec by model name: 11/11 models hold, 32/32 mutations give their counterexamples (NoWalFollows: NoAckedLost; NoWalAfterFence: HistoriesOwn). In parts: the first run of all 43 was stopped at the 2-hour background limit after Bucket, BucketCompaction and BucketForks had passed (load average 13-17: BucketForks 4531 s, 681 s before); the rest by name in three runs.
 - macOS FXDAX_TEST_PARTS='workspace shuttle' scripts/test.sh --no-fail-fast: exit 0, workspace 2146/2146, shuttle parts green.
 Not rerun after the rebase: Linux in Docker; GCE never run.
+
+Verified on main, 2026-11-05 (code of dde8d58d3; 752515020 adds backlog only): GCE r691, the Linux workspace, 2302 of 2303, the one failure TASK-187's a_store_after_a_workers_write_waits_for_one_lift (TASK-190; its fix 788e3b6b4 is on land-p, not main); GCE r690, the e2e suite (--tag e2e, 15 cases) jailed with the production seccomp filter, 15 of 15; CI 42137709782 on dde8d58d3 green (workspace 2303 of 2303, sim, shuttle, clippy scripts, guest, guest-sim); macOS FXDAX_TEST_PARTS=workspace scripts/test.sh at 752515020, 2118 of 2118; scripts/upstream-changes.py --check at 752515020 passes. AC #1 and #2: wal's tests pass in r691: logs_wholly_landed_are_the_branchs, logs_landed_under_a_later_checkpoint_are_the_branchs, logs_partly_landed_go_on_after_the_fence, logs_landed_past_a_gap_are_stamped_again, logs_none_landed_are_stamped_again_whole, logs_another_writer_moved_on_from_diverge, logs_only_a_fence_came_after_go_on, empty_logs_go_on_from_the_branchs_end, segments_of_forks_alone_after_the_last_commit_are_taken_as_landed, acknowledged_segments_leave_the_log. AC #3 and #4: the simulation (profiles wals and forked_wals, the test_needs of wal_follows and wal_after_fence) passes in CI 42137709782's sim job on dde8d58d3, as in the release rule tests and soak recorded above.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+extent_remote::wal: a host's WAL put after the branch's end by commits after a takeover (Wal::rebase), Error::Diverged otherwise; the simulation's hosts keep WALs; Rules wal_follows and wal_after_fence. On main: b999349ca, 1fcd9168e, ab7ec8079, 644fae50d, 05ed233af. Verified: wal's ten unit tests in GCE r691 (workspace 2302 of 2303, the failure TASK-190's); the sim in CI 42137709782; earlier soak and check-tla.sh as noted; macOS workspace 2118 of 2118 at 752515020.
+<!-- SECTION:FINAL_SUMMARY:END -->

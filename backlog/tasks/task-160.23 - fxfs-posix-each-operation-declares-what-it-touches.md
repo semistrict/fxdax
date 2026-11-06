@@ -1,11 +1,11 @@
 ---
 id: TASK-160.23
 title: 'fxfs-posix: each operation declares what it touches'
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-03 13:09'
-updated_date: '2026-11-05 10:40'
+updated_date: '2026-11-06 02:22'
 labels:
   - structure
 dependencies: []
@@ -25,15 +25,15 @@ At 9f81f6018: dax_map_write and dax_update_size, which the review listed among t
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 One entry per operation
-- [ ] #2 The TASK-79.21 cases as tests
+- [x] #1 One entry per operation
+- [x] #2 The TASK-79.21 cases as tests
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -62,4 +62,12 @@ ACs: #1, the table (Op::rules). #2, the TASK-79.21 cases as tests of the class: 
 Structure: the bypasses were the class this removes: a method choosing its own transaction maker skipped the gate. Now no transaction is made but through a Begun, so no change can miss its row; a new Op won't compile without a row, nor without a case in the tests' call.
 
 Runs (macOS): cargo nextest run -p fxfs -p fxfs-posix 821/821. Model hunts: FXDAX_MODEL_CASES=3000 passed (6402 cuts, 11582 of replays, 2335 s); with FXDAX_MODEL_WORKERS=1 passed (6242 cuts, 1272 s); FXDAX_MODEL_FAILURES=3000 passed (1645 requests failed, 838 operations failed, 10453 cuts, 1220 s); FXDAX_MODEL_CASES=3000 FXDAX_MODEL_FSCK=1 failed after 2015 s on a journal replay refused (journal finishes at 307150, written to 307200 before a barrier), deterministic, the same on origin/land-157: not this change, filed as TASK-182 with its sequence (passes without fsck after every transaction). mutants.sh: 16 of 17 caught, truncate-gives-up-on-its-tail not caught, as before; fsync- and rename-goes-ahead-of-unlinks re-made as edits of their rows, link-stays-in-graveyard re-made for its moved context. FXDAX_TEST_PARTS=workspace scripts/test.sh --no-fail-fast: 2070/2070. Not run: GCE (DoD #1's Linux half), scripts/upstream-changes.py --check.
+
+Verified on main, 2026-11-05 (code of dde8d58d3; 752515020 adds backlog only): GCE r691, the Linux workspace, 2302 of 2303, the one failure TASK-187's a_store_after_a_workers_write_waits_for_one_lift (TASK-190; its fix 788e3b6b4 is on land-p, not main); GCE r690, the e2e suite (--tag e2e, 15 cases) jailed with the production seccomp filter, 15 of 15; CI 42137709782 on dde8d58d3 green (workspace 2303 of 2303, sim, shuttle, clippy scripts, guest, guest-sim); macOS FXDAX_TEST_PARTS=workspace scripts/test.sh at 752515020, 2118 of 2118; scripts/upstream-changes.py --check at 752515020 passes. AC #1: Op::rules (fxfs-posix lib.rs:438) is the table, Fxfs::begin (lib.rs:1832) applies it; rg finds new_transaction only in Begun's maker and the queue's own batches. AC #2: each_operation_comes_after_the_unlinks_its_row_says, every_change_fails_once_a_batch_failed, lookups_count_links_queued_to_go, exchanges_count_links_queued_to_go, names_change_after_the_unlinks_queued, statfs_applies_what_is_queued and a_failed_batch_keeps_what_the_kernel_evicts pass in r691.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+fxfs-posix's operations begin from one table (Op::rules via Fxfs::begin): drains, the failed-batch gate, metadata room and truncate guards; the seven bypasses now gated. On main: 1927329cd, 3c1efb2f1. Verified: the TASK-79.21 cases as tests in GCE r691 (workspace 2302 of 2303, the failure TASK-190's), CI 42137709782, macOS workspace 2118 of 2118 at 752515020.
+<!-- SECTION:FINAL_SUMMARY:END -->

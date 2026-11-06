@@ -3,11 +3,11 @@ id: TASK-181
 title: >-
   fxfs test_trim: the live filesystem's truncate to 0 failed with NoSpace once,
   its post-commit hook made longer
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-05 09:56'
-updated_date: '2026-11-05 10:59'
+updated_date: '2026-11-06 02:22'
 labels:
   - bug
   - flaky
@@ -31,9 +31,9 @@ Found while settling TASK-176 (2026-11-05, macOS, branch task-160-25 on origin/m
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -55,4 +55,12 @@ test_trim's device is 16 MiB (32768 blocks of 512 bytes), not 8.
 - Red at 8 MiB: 4 of 300 NoSpace with 4 jobs at once, the same with and without TASK-176's fix (4 of 300 each), 6 of 500 in another run; and the diagnostic's 4 of 57.
 - Green at 16 MiB: 500 of 500 (4 jobs at once, 125 each, during a model hunt).
 Not run: GCE (Linux).
+
+Verified on main, 2026-11-05 (code of dde8d58d3; 752515020 adds backlog only): GCE r691, the Linux workspace, 2302 of 2303, the one failure TASK-187's a_store_after_a_workers_write_waits_for_one_lift (TASK-190; its fix 788e3b6b4 is on land-p, not main); GCE r690, the e2e suite (--tag e2e, 15 cases) jailed with the production seccomp filter, 15 of 15; CI 42137709782 on dde8d58d3 green (workspace 2303 of 2303, sim, shuttle, clippy scripts, guest, guest-sim); macOS FXDAX_TEST_PARTS=workspace scripts/test.sh at 752515020, 2118 of 2118; scripts/upstream-changes.py --check at 752515020 passes. test_trim passes in r691 (Linux) and in the macOS run.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+test_trim's second-pass truncate failed NoSpace because its fxdax-sized object nearly filled upstream's 8 MiB device; the test's doing, not Fxfs's. The device is 16 MiB now. On main: d949b41e5. Verified: red 4 of 300 at 8 MiB, 500 of 500 at 16 MiB under load, as noted; test_trim in GCE r691 (workspace 2302 of 2303, the failure TASK-190's), CI 42137709782, macOS workspace 2118 of 2118 at 752515020.
+<!-- SECTION:FINAL_SUMMARY:END -->

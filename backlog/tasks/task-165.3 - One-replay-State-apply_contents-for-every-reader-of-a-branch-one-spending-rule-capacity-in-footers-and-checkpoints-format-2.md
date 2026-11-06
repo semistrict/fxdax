@@ -3,11 +3,11 @@ id: TASK-165.3
 title: >-
   One replay: State::apply_contents for every reader of a branch; one spending
   rule; capacity in footers and checkpoints (format 2)
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-05 03:16'
-updated_date: '2026-11-05 07:47'
+updated_date: '2026-11-06 02:21'
 labels: []
 dependencies: []
 documentation:
@@ -25,18 +25,18 @@ doc-14, step 3; TASK-160.15 AC #2. Footers are replayed three times with differe
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 extent_remote has one function applying a segment's contents to a branch's state, used by recovery, the writer, the collector and extent_store's rebuild; no other code applies a footer
-- [ ] #2 One spending rule: every free of the branch's own extents in a footer spends it; a test (seal and free within one segment, recover elsewhere) agrees with the live store
-- [ ] #3 Capacity is branch state set by commits (Contents, Footer, State, checkpoints); a resize recovers elsewhere; a fork inherits it; a point never changes it
-- [ ] #4 layout::FORMAT is 2 and objects of any other format are refused with Error::Format, older ones too
-- [ ] #5 The simulation, the crash rounds (which compare rebuild with the live store) and the workspace pass
+- [x] #1 extent_remote has one function applying a segment's contents to a branch's state, used by recovery, the writer, the collector and extent_store's rebuild; no other code applies a footer
+- [x] #2 One spending rule: every free of the branch's own extents in a footer spends it; a test (seal and free within one segment, recover elsewhere) agrees with the live store
+- [x] #3 Capacity is branch state set by commits (Contents, Footer, State, checkpoints); a resize recovers elsewhere; a fork inherits it; a point never changes it
+- [x] #4 layout::FORMAT is 2 and objects of any other format are refused with Error::Format, older ones too
+- [x] #5 The simulation, the crash rounds (which compare rebuild with the live store) and the workspace pass
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -62,4 +62,12 @@ Tests red before: remote.rs extents_sealed_and_freed_in_one_segment_are_spent_wh
 Structure: the class (three replays, three rules) is now impossible, because a footer has one applier. Overlap: remote.rs (diff/take/restate, 3 tests) and extent_store segments/state/store; nothing in extentd, specs or guest.
 
 Verified 2026-11-05. macOS: FXDAX_TEST_PARTS='workspace shuttle' scripts/test.sh --no-fail-fast: workspace 2067/2067, Shuttle all parts green; clippy part green; upstream-changes.py --check green. The crash rounds (extent_store tests/crash, which compare rebuild with the live store) pass in the workspace run. Linux (Docker arm64, rust:1, nextest -p extent_store -p extent_remote -p fxdax): 844/852. The 8 failures are environment-only (eu-stack missing x3, grants ENOENT x3, build stamp) plus TASK-157's guests_forks_failing_at_each_step_harm_nothing, which passes alone (36 s). The simulation's rule tests stop at the same seeds as on main (records_listed: 5310, newest_checkpoints: 11464), so their 4-8 min runtimes predate this. Soak SIM_SOAK=10 of every holds test: one violation, stale_creates_landing_past_deletions seed 677 (the only one in 0..20000; main passes all 20000). It is a collector hole that this branch's changed trajectories reach: a fenced writer's late checkpoint names moved locations, so the collector deletes a moves hop the live writer still needs. Filed as TASK-175 with the trace; not fixed here.
+
+Verified on main, 2026-11-05 (code of dde8d58d3; 752515020 adds backlog only): GCE r691, the Linux workspace, 2302 of 2303, the one failure TASK-187's a_store_after_a_workers_write_waits_for_one_lift (TASK-190; its fix 788e3b6b4 is on land-p, not main); GCE r690, the e2e suite (--tag e2e, 15 cases) jailed with the production seccomp filter, 15 of 15; CI 42137709782 on dde8d58d3 green (workspace 2303 of 2303, sim, shuttle, clippy scripts, guest, guest-sim); macOS FXDAX_TEST_PARTS=workspace scripts/test.sh at 752515020, 2118 of 2118; scripts/upstream-changes.py --check at 752515020 passes. AC #1: State::apply (recovery.rs:160) and apply_contents are the only appliers of a footer; rg finds their callers in recovery, wal.rs and extent_store's rebuild (index.rs:326), the collector placing through Layered. AC #2: extents_sealed_and_freed_in_one_segment_are_spent_where_their_branch_is_taken and batches_free_what_a_commit_before_held pass in r691. AC #3: recovery's capacities_are_set_by_commits (a fork inherits, a point keeps, a checkpoint holds), remote's resizes_hold_where_their_branch_is_taken and extent_store's resizes_are_their_next_commits pass in r691. AC #4: layout::FORMAT is 2 (layout.rs:23); records_of_other_formats_are_refused passes in r691. AC #5: CI 42137709782's sim job; extent_store::crash's recovers_a_prefix_of_its_commits and forks_recover_prefixes_of_their_commits pass in r691; the workspace as above.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+One replay of a branch's history (State::apply, apply_contents) for recovery, writers, the collector and extent_store's rebuild; one spending rule; capacity as branch state set by commits; format 2, others refused. On main: 530248363, a8ca6cb26, f3f6b616f, b5ce4aa87, 064701057, a007a3dee. Verified: its tests pass in GCE r691 (workspace 2302 of 2303, the failure TASK-190's), the sim in CI 42137709782, macOS workspace 2118 of 2118 at 752515020, GCE r690 15 of 15. The soak's collector hole went to TASK-175 (Done).
+<!-- SECTION:FINAL_SUMMARY:END -->

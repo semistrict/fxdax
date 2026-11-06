@@ -1,11 +1,11 @@
 ---
 id: TASK-165.4
 title: The part cache survives restarts and adopts whole local objects
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-05 03:16'
-updated_date: '2026-11-05 08:52'
+updated_date: '2026-11-06 02:21'
 labels: []
 dependencies: []
 documentation:
@@ -23,16 +23,16 @@ doc-14, step 4. Once local disk holds no full copy, a host's bases live in the p
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Parts kept before a restart are read after it without a GET; the index is rebuilt from the files (their tails), each part checked against its CRC as it is read, a bad one dropped and refetched
-- [ ] #2 Cache::adopt takes a whole framed object from a local file on the same filesystem (a rename), evictable from then on like any fetched part
-- [ ] #3 Capacity and the free-space floor hold across restarts and adoptions (tests)
+- [x] #1 Parts kept before a restart are read after it without a GET; the index is rebuilt from the files (their tails), each part checked against its CRC as it is read, a bad one dropped and refetched
+- [x] #2 Cache::adopt takes a whole framed object from a local file on the same filesystem (a rename), evictable from then on like any fetched part
+- [x] #3 Capacity and the free-space floor hold across restarts and adoptions (tests)
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -64,4 +64,12 @@ Structure: the old cache keyed parts with no object, so a part could outlive its
 Overlap with TASK-165.3: none in code (cache.rs, fetch.rs's cache calls and the restart tests only; one line each in extentd/stores.rs and remote.rs's test for Cache::new -> Cache::open). OPEN_QUESTIONS.md gets a decision entry, which 165.3 may also edit.
 
 Runs (on ea319562e): macOS FXDAX_TEST_PARTS="workspace shuttle" scripts/test.sh --no-fail-fast: workspace 2082/2082, every Shuttle part passed. Linux in Docker (OrbStack, rust:1, arm64): cargo nextest run -p extent_remote -p fxdax: 636/644; the 8 failures are the environment's: eu-stack missing (stacks_name_where_threads_wait, both *_writes_its_stacks_on_sigquit), grants ENOENT (3), the build stamp, and seccomp's copy_on_write_windows_run_under_firecrackers_seccomp_filters, run against vendor/firecracker as this worktree has it checked out (a2db2b3b0, main's) rather than the d53645971 land-157 names. extent_remote whole on macOS on the refactor commit: 169/169. scripts/upstream-changes.py --check passes. Not done: GCE (DoD #1).
+
+Verified on main, 2026-11-05 (code of dde8d58d3; 752515020 adds backlog only): GCE r691, the Linux workspace, 2302 of 2303, the one failure TASK-187's a_store_after_a_workers_write_waits_for_one_lift (TASK-190; its fix 788e3b6b4 is on land-p, not main); GCE r690, the e2e suite (--tag e2e, 15 cases) jailed with the production seccomp filter, 15 of 15; CI 42137709782 on dde8d58d3 green (workspace 2303 of 2303, sim, shuttle, clippy scripts, guest, guest-sim); macOS FXDAX_TEST_PARTS=workspace scripts/test.sh at 752515020, 2118 of 2118; scripts/upstream-changes.py --check at 752515020 passes. AC #1: fetch's reads_after_a_restart_take_what_the_cache_kept and parts_torn_before_a_restart_are_fetched_again, cache's keeps_what_an_earlier_one_kept and crashes_at_each_change_leave_nothing_read_back_wrong pass in r691 (Linux, where filesystems_find_holes_but_apfs also passes). AC #2: adopts_whole_objects and adoptions_replace_what_is_kept pass in r691. AC #3: capacity_and_floor_hold_across_restarts and adoptions_past_the_capacity_or_the_floor_are_refused pass in r691.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+The part cache keeps framed objects described by their tails, survives restarts (index rebuilt from the files, parts CRC-checked, bad ones dropped and refetched) and adopts whole local objects by rename. On main: be493fd48, 3e5a3b430, 2300a6b83. Verified: its restart, adoption, capacity and crash tests pass in GCE r691 (workspace 2302 of 2303, the failure TASK-190's); macOS workspace 2118 of 2118 at 752515020; CI 42137709782.
+<!-- SECTION:FINAL_SUMMARY:END -->

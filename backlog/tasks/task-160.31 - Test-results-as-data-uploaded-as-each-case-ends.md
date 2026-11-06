@@ -1,11 +1,11 @@
 ---
 id: TASK-160.31
 title: 'Test results as data, uploaded as each case ends'
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-03 13:09'
-updated_date: '2026-11-05 10:24'
+updated_date: '2026-11-06 02:22'
 labels:
   - structure
 dependencies: []
@@ -23,15 +23,15 @@ A mutant's fate is a grep for ': failed in round ' (any failure kills); replay k
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 outcome.json per case; fate() reads it
-- [ ] #2 A host killed mid-run keeps its finished cases
+- [x] #1 outcome.json per case; fate() reads it
+- [x] #2 A host killed mid-run keeps its finished cases
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -55,4 +55,12 @@ Blind spot: the drivers grepped e2e.log for ': failed in round ', which each cha
 Structure: fine; the seam between runner and scripts is now the outcome file, not log text.
 
 Verified: Docker test.sh parts (clippy, scripts 159, test_cases 63+60, runner 4). GCE r605: three cases, each CASE/round-1.json (outcome, took/limit, commit, knobs with FXDAX_SEED for the checks cases, replay), summary.json status 0; guest tests exit 0. r606 (FXDAX_RESULTS_BUCKET, us-east1-b): host deleted after its first case landed; the last two finished within seconds first, so the driver found the host gone before fetching and got all three cases, logs and summary back from the bucket (status 0). r607: my wait timed out and deleted the host before any case ended; the bucket's run.json and summary (both cases unrun) came back. r608: FXDAX_E2E_ROUNDS=2, host deleted once checks-dax's round 1 landed: fetched checks-dax/round-1.json and round-1.log, summary 'stopped after round 1 of 2, which passed', fxfs-guest-dax not run, 'the run did not finish'; test-gce.sh exit 1 (AC #2). Outcomes say commit fc58056f1-dirty: the backlog notes I edited while the source was pushed. The bucket prefix used (gs://echophase-fxdax-bench/results-t1629) is deleted. Unrun: a failing case on GCE (failed_checks and a fate of killed are covered by unit tests only), the dax gate, the soak and the mutants script against real hosts.
+
+Verified on main, 2026-11-05 (code of dde8d58d3; 752515020 adds backlog only): GCE r691, the Linux workspace, 2302 of 2303, the one failure TASK-187's a_store_after_a_workers_write_waits_for_one_lift (TASK-190; its fix 788e3b6b4 is on land-p, not main); GCE r690, the e2e suite (--tag e2e, 15 cases) jailed with the production seccomp filter, 15 of 15; CI 42137709782 on dde8d58d3 green (workspace 2303 of 2303, sim, shuttle, clippy scripts, guest, guest-sim); macOS FXDAX_TEST_PARTS=workspace scripts/test.sh at 752515020, 2118 of 2118; scripts/upstream-changes.py --check at 752515020 passes. AC #1: r690 wrote e2e/CASE/round-1.json for each of its 15 cases (outcome, failed checks, knobs, commit, replay) and summary.json; scripts/guest-mutants-gce.py's fate(status, summary, killer) reads them; test_guest_results.py and the fate tests pass in CI's scripts part. AC #2: r608's host deleted mid-run kept checks-dax/round-1.json from the bucket, as recorded above; test_a_host_lost_mid_run_keeps_its_finished_cases passes in CI.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Results as data: each round writes CASE/round-K.json, the run summary.json, uploaded to the run's bucket prefix as each case ends; fate(), the gate and the soak read them. On main: d50fc61a3. Verified: GCE r690's outcome files; r606 and r608 with hosts deleted mid-run; CI 42137709782.
+<!-- SECTION:FINAL_SUMMARY:END -->

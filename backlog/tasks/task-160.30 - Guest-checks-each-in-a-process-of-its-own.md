@@ -1,11 +1,11 @@
 ---
 id: TASK-160.30
 title: Guest checks each in a process of its own
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-03 13:09'
-updated_date: '2026-11-05 09:47'
+updated_date: '2026-11-06 02:22'
 labels:
   - structure
 dependencies: []
@@ -23,15 +23,15 @@ About 90 checks run in PID 1 under catch_unwind: a crash takes the VM, so checks
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A check that SIGBUSes or hangs fails by name, the rest pass
-- [ ] #2 FXDAX_CHECKS=nope fails
+- [x] #1 A check that SIGBUSes or hangs fails by name, the rest pass
+- [x] #2 FXDAX_CHECKS=nope fails
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -58,4 +58,12 @@ Tests: guest tests' unit tests in Docker (Linux, aarch64, root): host half 62/62
 GCE (n2-standard-4, jailed Firecracker): r610 release, us-east4-a, 38691000f: all 5 suites OK: checks 58 of 291 s, -dax 66 of 373 s, -delay 67 of 373 s, -small 68 of 368 s, overrun 61 of 297 s. In the overrun suite: 'FAIL: crashes (3.67ms of 3.00s): killed by signal 7 (Bus error)', 'crashes: left fxfs.dax_fail_maps at 1000, set back to 0', 'FAIL: hangs (6.27s of 3.00s): still running after its budget: killed', 'hangs: left the filesystem frozen, thawed', and the 51 page cache checks PASS after them. The host reported a dash core: run_to's own unit test (kill -BUS $$), which test-e2e.sh runs on the host; fixed in 07cb7b9d6 (ulimit -c 0). r611 debug, us-east4-a: every check of every suite passed in the guest (51, 73, 73, 71); checks and overrun OK (77 of 421 s, 84 of 430 s; crashes and hangs as in r610, hangs 8.44 s of 4.50 s). -dax, -delay and -small failed on console KCSAN reports: fxfs_vfs_read_folios / lru_gen_add_folio, _find_next_bit (fxfs_dax_pages_would_dirty) / fxfs_dax_pages_dirty, __lruvec_stat_mod_folio / fxfs_vfs_page_mkwrite. r613 debug on the base origin/land-157 (490faad2c), the DAX suites: the same reports (-delay lru_gen_add_folio, -small pages_dirty twice), so land-157's, not this change's. The pages_dirty race is inside mmap_write, a write fault against write(2) on pages.c's dirty bitmap (TASK-160.4), unlocked in fxfs_dax_pages_weight. r612 release, us-west1-b, 07cb7b9d6: no core; checks, -delay, -small and overrun OK. -dax failed on stores_under_rebinds alone ('no page rebound in 2007041 rounds'), main's known regression, and the checks after it passed.
 
 Structure: the class of bug, one check's crash or hang taking the rest and state leaking between checks, is gone: a check's process owns what it maps and opens, and one function owns resetting the rest.
+
+Verified on main, 2026-11-05 (code of dde8d58d3; 752515020 adds backlog only): GCE r691, the Linux workspace, 2302 of 2303, the one failure TASK-187's a_store_after_a_workers_write_waits_for_one_lift (TASK-190; its fix 788e3b6b4 is on land-p, not main); GCE r690, the e2e suite (--tag e2e, 15 cases) jailed with the production seccomp filter, 15 of 15; CI 42137709782 on dde8d58d3 green (workspace 2303 of 2303, sim, shuttle, clippy scripts, guest, guest-sim); macOS FXDAX_TEST_PARTS=workspace scripts/test.sh at 752515020, 2118 of 2118; scripts/upstream-changes.py --check at 752515020 passes. AC #1: GCE r690's fxfs-guest-checks-overrun (dde8d58d3, release, jailed) passed: its console has 'FAIL: crashes (3.94ms of 3.00s): killed by signal 7 (Bus error)', 'crashes: left fxfs.dax_fail_maps at 1000, set back to 0', 'FAIL: hangs (6.12s of 3.00s): still running after its budget: killed', 'hangs: left the filesystem frozen, thawed', 51 checks PASS after them and 'FAILED: crashes, hangs'. AC #2: unknown_names_fail and run_to's leftovers_are_killed and overruns_are_killed pass in CI 42137709782's guest job.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Each guest check runs in a process of its own to its budget, its state put back in one place (Guest::put_back); a crash or hang fails it by name and the rest run; unknown FXDAX_CHECKS names fail. On main: c6d21c763, 095a1b719, 8a804c8ea. Verified: GCE r690's overrun case (crashes and hangs fail by name, 51 pass) and the four checks suites 15 of 15; CI 42137709782's guest job.
+<!-- SECTION:FINAL_SUMMARY:END -->

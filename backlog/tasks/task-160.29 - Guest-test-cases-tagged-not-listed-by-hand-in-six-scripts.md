@@ -1,11 +1,11 @@
 ---
 id: TASK-160.29
 title: 'Guest test cases tagged, not listed by hand in six scripts'
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-03 13:09'
-updated_date: '2026-11-05 10:24'
+updated_date: '2026-11-06 02:22'
 labels:
   - structure
 dependencies: []
@@ -23,15 +23,15 @@ What runs is listed by hand in test-e2e.sh, test-guest-kernel.sh, dax-gate.sh, g
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Cases tagged; scripts take tags
-- [ ] #2 A unit test fails an untagged case
+- [x] #1 Cases tagged; scripts take tags
+- [x] #2 A unit test fails an untagged case
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -61,4 +61,12 @@ Structure: fine as it is now; one owner of where a case runs, the case's registr
 Verified: FXDAX_TEST_PARTS="clippy scripts guest" scripts/test.sh in Docker (rust:1, root): clippy clean, 159 script tests, test_cases host 63/63, guest 60/60, runner 4/4.
 
 GCE r605 (us-central1-a, release kernel, FXDAX_E2E_TEST by name, as the brief asked): test-e2e.sh asked the runner, which ran the three cases in registration order (checks-dax-small, checks-overrun, dax), all OK (74 s of 368 s, 4 s of 30 s, 2 s of 15 s); guest tests exit 0. Tag selections themselves checked against the old lists in Docker (above); no GCE run of a --tag suite yet.
+
+Verified on main, 2026-11-05 (code of dde8d58d3; 752515020 adds backlog only): GCE r691, the Linux workspace, 2302 of 2303, the one failure TASK-187's a_store_after_a_workers_write_waits_for_one_lift (TASK-190; its fix 788e3b6b4 is on land-p, not main); GCE r690, the e2e suite (--tag e2e, 15 cases) jailed with the production seccomp filter, 15 of 15; CI 42137709782 on dde8d58d3 green (workspace 2303 of 2303, sim, shuttle, clippy scripts, guest, guest-sim); macOS FXDAX_TEST_PARTS=workspace scripts/test.sh at 752515020, 2118 of 2118; scripts/upstream-changes.py --check at 752515020 passes. AC #1: GCE r690 ran the e2e suite by tag (FXDAX_E2E_TEST='--tag e2e'), the runner selecting its 15 cases, 15 of 15; scripts/tests/test_guest_tags.py passes in CI's scripts part (163 tests). AC #2: test_cases' every_case_is_in_a_suite, every_tag_selects_cases and a_selection_is_of_cases_named_and_tagged pass in CI 42137709782's guest job, host and guest halves.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Each guest case is tagged with its suites; runner list --tag selects them and every script runs by tag; a unit test fails an untagged case. On main: aad1ba65b. Verified: GCE r690 by --tag e2e, 15 of 15; the tag tests in CI 42137709782's guest job; GCE r691 (workspace 2302 of 2303, the failure TASK-190's), CI 42137709782, macOS workspace 2118 of 2118 at 752515020.
+<!-- SECTION:FINAL_SUMMARY:END -->

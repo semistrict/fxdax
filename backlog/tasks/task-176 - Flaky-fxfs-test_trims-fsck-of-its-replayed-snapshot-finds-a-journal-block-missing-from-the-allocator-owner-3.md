@@ -3,11 +3,11 @@ id: TASK-176
 title: >-
   Flaky: fxfs test_trim's fsck of its replayed snapshot finds a journal block
   missing from the allocator (owner 3)
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-05 08:17'
-updated_date: '2026-11-05 10:59'
+updated_date: '2026-11-06 02:22'
 labels:
   - bug
   - flaky
@@ -31,9 +31,9 @@ Seen twice on 2026-11-05 on branch task-160-25 (TASK-160.25), on macOS under loa
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -65,4 +65,12 @@ Upstream's test has the same no_lock (it's upstream's code); fxdax compacts soon
 ## Looked around
 data_object_handle.rs's four overwrite tests checked their live filesystem without the lock in the test body, nothing holding commits off, so the flush task could compact during the check: they take the lock now. filesystem.rs's FsckAfterEveryTransaction runs as a post-commit hook, so it holds the commit mutex: no_lock is right there. The NoSpace that showed up in the stress runs is TASK-181, at the same rate with and without this fix.
 Not run: GCE (Linux).
+
+Verified on main, 2026-11-05 (code of dde8d58d3; 752515020 adds backlog only): GCE r691, the Linux workspace, 2302 of 2303, the one failure TASK-187's a_store_after_a_workers_write_waits_for_one_lift (TASK-190; its fix 788e3b6b4 is on land-p, not main); GCE r690, the e2e suite (--tag e2e, 15 cases) jailed with the production seccomp filter, 15 of 15; CI 42137709782 on dde8d58d3 green (workspace 2303 of 2303, sim, shuttle, clippy scripts, guest, guest-sim); macOS FXDAX_TEST_PARTS=workspace scripts/test.sh at 752515020, 2118 of 2118; scripts/upstream-changes.py --check at 752515020 passes. test_trim and fsck's test_a_check_while_compacting_finds_nothing pass in r691 (Linux) and in the macOS run.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+test_trim's fscks of the filesystems it mounts (replayed from the snapshot, remounted for the trim) ran without their lock while those filesystems compacted; they take it now, as do the overwrite tests. Pre-existing, not TASK-160.25's. On main: 254177bba (and d949b41e5, TASK-181). Verified: 500 of 500 stress runs under load as noted; test_trim and test_a_check_while_compacting_finds_nothing in GCE r691 (workspace 2302 of 2303, the failure TASK-190's), CI 42137709782, macOS workspace 2118 of 2118 at 752515020.
+<!-- SECTION:FINAL_SUMMARY:END -->

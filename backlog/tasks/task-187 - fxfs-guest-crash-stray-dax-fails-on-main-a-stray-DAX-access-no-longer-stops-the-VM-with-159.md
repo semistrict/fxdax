@@ -3,11 +3,11 @@ id: TASK-187
 title: >-
   fxfs-guest-crash-stray-dax fails on main: a stray DAX access no longer stops
   the VM with 159
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-05 17:15'
-updated_date: '2026-11-06 00:03'
+updated_date: '2026-11-06 02:22'
 labels:
   - bug
   - dax
@@ -83,24 +83,12 @@ GCE on 2b63f36db (rebased onto ef8223900, TASK-172 merged cleanly):
 - r649, perf-gate-gce.sh single: every case passes; forked-dax 0.579 (dax-forked 823, 802, 816, 834, 870 against no-dax-forked median 1,421), still failing its 0.9, where r632 had 0.573.
 The perf-gate lead is wrong as stated: the forked VMs' 2^18+ restrictions for workers' writes (r647, r649: 1,009 log lines each) came with no failed KVM_RUN at all. Restricting costs the vCPU nothing there, and this task's lift changes don't touch the forked gap; KVM's asynchronous page faults, a worker round trip for each page not yet here, remain a suspect.
 Local runs on the rebased tree: macOS workspace 2,105 of 2,105 and Shuttle; Linux in Docker, fxdax 467 of 471 (the container's 4: no git, the grants tests' helper binary) and vmm 16 of 16. scripts/upstream-changes.py --check passes. The lift's wait is 94f404848. Firecracker's commits are on semistrict/firecracker branch fxdax-t187.
+
+Checked on main, 2026-11-05 (code of dde8d58d3; 752515020 adds backlog only): GCE r690, the e2e suite jailed with the production seccomp filter, 15 of 15, fxfs-guest-crash-stray-dax and every DAX case among them; GCE r691, the Linux workspace, 2302 of 2303: a_stray_access_stays_refused_and_is_given_up_on passes, but this task's a_store_after_a_workers_write_waits_for_one_lift fails ('the worker's write went through': GCE's vm.max_map_count kept the test's zero pages installed, TASK-190). TASK-190's fix, 788e3b6b4, is on land-p, not main, so DoD #1 stays unchecked until it lands and a GCE workspace run passes. CI 42137709782 on dde8d58d3 green; macOS workspace 2118 of 2118 at 752515020.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
 
 <!-- SECTION:FINAL_SUMMARY:BEGIN -->
-A guest's stray DAX access is fatal again (exit 159). Two Firecracker faults that COW DAX brought out:
-- the vCPU signalled its exit before it sent its exit code, so the VMM could stop with Ok (exit 0);
-- any other exit ended a run of EFAULTs, so vCPU 0, which takes the device interrupts, never gave up (timeout).
-Fixed:
-- Firecracker ada4501c3: the vCPU sends its code first.
-- fxdax AccessFailures (Firecracker e64c4b283): one owner of the retry policy; a run ends only after 10 ms with no failure.
-- A lift walks only the restricted pages, and a failing vCPU waits up to 5 ms for its lift: 1 failed retry a store after a worker's write, where main has 357.
-Verified:
-- GCE stray-dax 20 of 20 unjailed (r645) and jailed (r646); the four DAX suites jailed (r647).
-- The control without COW, 20 of 20 (r648), shows when it started.
-- macOS, and Linux in Docker.
-- Red and green tests: dax::failures, a_stray_access_stays_refused_and_is_given_up_on, a_store_after_a_workers_write_waits_for_one_lift, test_exit_code_sent_before_the_exit_event.
-Not done:
-- DoD 1: the workspace on Linux ran in Docker (fxdax and vmm), not on GCE.
-- The forked pgbench gap: 0.579 in r649, unchanged, and not this retry loop.
+A guest's stray DAX access is fatal again (exit 159). Two Firecracker faults that copy-on-write DAX brought out: the vCPU signalled its exit before it sent its code (exit 0), and any other exit ended a run of EFAULTs, so vCPU 0 never gave up (timeout). Fixed: Firecracker ada4501c3 (the code sent first); fxdax's AccessFailures, one owner of the retry policy, a run ending only after 10 ms with no failure (fa55ce5c8, vendor/firecracker 4c45f1345); a lift walking only the restricted pages (ee806303a) and a failing vCPU waiting up to 5 ms for its lift (9a8cb5bb6). Verified: stray-dax 20 of 20 unjailed (r645) and jailed (r646), the DAX suites jailed (r647), the control without COW 20 of 20 (r648); GCE r690 on main 15 of 15. Not done: DoD #1, r691's one failure is this task's a_store_after_a_workers_write_waits_for_one_lift, whose fix (TASK-190, 788e3b6b4) is not on main yet. The forked pgbench gap, 0.579 in r649, is not this retry loop (TASK-164.6).
 <!-- SECTION:FINAL_SUMMARY:END -->

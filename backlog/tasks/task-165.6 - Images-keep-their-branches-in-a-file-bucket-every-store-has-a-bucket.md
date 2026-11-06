@@ -1,11 +1,11 @@
 ---
 id: TASK-165.6
 title: 'Images keep their branches in a file:// bucket: every store has a bucket'
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-05 03:16'
-updated_date: '2026-11-05 23:47'
+updated_date: '2026-11-06 02:21'
 labels: []
 dependencies:
   - TASK-165.1
@@ -24,16 +24,16 @@ doc-14, step 6. Storage's images (the fxdax CLI's, mounted by Storage::open, als
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A store's description names its bucket; Storage::create makes an image whose branch is in a file bucket, and clone_to forks it there
-- [ ] #2 Storage runs the collector in-process after commits, as it cleans now; tests/storage.rs and the filesystem tests pass
-- [ ] #3 No code opens a store without a bucket (host_store, storage)
+- [x] #1 A store's description names its bucket; Storage::create makes an image whose branch is in a file bucket, and clone_to forks it there
+- [x] #2 Storage runs the collector in-process after commits, as it cleans now; tests/storage.rs and the filesystem tests pass
+- [x] #3 No code opens a store without a bucket (host_store, storage)
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -68,4 +68,12 @@ Runs: macOS FXDAX_TEST_PARTS='workspace shuttle' scripts/test.sh: green (workspa
 Overlap: TASK-165.5 (remote.rs: Remote::failed added, block_on pub(crate), 3 test lines take Opened's store). Collector work (TASK-173/174/183): Collector's public API only. TASK-165.7 must move an image's bucket out of <image>/bucket once the local lineage no longer keeps the image's directory as long as its clones.
 
 CI 42119298585 (land-l, rebased on ef8223900): control imports_images and imports_that_fail_leave_no_store failed with EIO on Linux: extentd's import opens the store an image made right after the image drops, and found its branch open ('branch 0x... is open'). Cause, this task's: the uploader's task said it stopped before it let go of its Arc of the store, so Remote::drop could return with the store open; images had no uploader before. Blind spot: nothing opened a store again in the same process the moment its uploader stopped, and the window is a few instructions wide, so only a slower host hit it. Fix 332dac890: the task drops its store before saying so; images_dropped_let_go_of_their_stores holds the task past its signal (failpoint remote::stopped), red without the fix with CI's error, green with. Looked around: fxdax's other threads signalling completion let go of what they hold first (FnOnce consumed) or hold nothing a reopen needs. Not Linux- or user-specific: a timing race. Runs: Linux in Docker non-root, TMPDIR=/mnt/tmp: both import tests and the image tests pass (15 extentd window tests need /dev/userfaultfd, which the container doesn't give a non-root user); Linux root 696/703 (eu-stack x3, grants x3, build stamp); macOS fxdax and extent_store 521/521.
+
+Verified on main, 2026-11-05 (code of dde8d58d3; 752515020 adds backlog only): GCE r691, the Linux workspace, 2302 of 2303, the one failure TASK-187's a_store_after_a_workers_write_waits_for_one_lift (TASK-190; its fix 788e3b6b4 is on land-p, not main); GCE r690, the e2e suite (--tag e2e, 15 cases) jailed with the production seccomp filter, 15 of 15; CI 42137709782 on dde8d58d3 green (workspace 2303 of 2303, sim, shuttle, clippy scripts, guest, guest-sim); macOS FXDAX_TEST_PARTS=workspace scripts/test.sh at 752515020, 2118 of 2118; scripts/upstream-changes.py --check at 752515020 passes. AC #1: storage::kept's images_keep_their_branches_in_a_file_bucket_of_their_own and clones_are_forks_in_their_images_bucket, extent_store::host's stores_and_their_forks_name_their_bucket and host_store's stores_name_their_hosts_bucket_or_one_of_their_own pass in r691. AC #2: commits_start_the_collector, the_collector_reclaims_what_images_freed, images_in_a_hosts_bucket_are_not_collected_here, tests/storage.rs (fxdax::storage) and fxdax::filesystem pass in r691; r690's guest cases, images among them, 15 of 15, fxfs-guest-crash-stray-dax now passing (TASK-187). AC #3: rg on main: every ExtentStore::create/open in fxdax's non-test code goes through host_store::create/open (extents.rs), which returns Opened with its bucket, open_host refusing a store naming none (older_stores_are_refused_by_their_format passes in r691); control's imports_images and imports_that_fail_leave_no_store pass in r691.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Every store names its bucket: images keep their branches in a file bucket of their own, clones fork there, Storage runs that bucket's collector in-process; no store opens without a bucket. On main: 779984c84, 05fd8f69f, 91144850c (the uploader letting go of its store, CI 42119298585). Verified: its tests and tests/storage.rs in GCE r691 (workspace 2302 of 2303, the failure TASK-190's), GCE r690 15 of 15, CI 42137709782, macOS workspace 2118 of 2118 at 752515020.
+<!-- SECTION:FINAL_SUMMARY:END -->
