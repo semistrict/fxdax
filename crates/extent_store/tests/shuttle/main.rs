@@ -548,6 +548,10 @@ fn racing() {
     store.commit(None).expect("a write raced a commit");
     store.close_segment().unwrap();
     store.commit(None).expect("a write raced a commit");
+    // The framings the closings began end first, as no commit waits for them (TASK-165.9): a
+    // failure found below unwinds with no framer holding the store's locks, which Shuttle, a task
+    // panicking, can't wait for, and aborts.
+    store.closed(0).expect("a write raced a commit");
     for (sequence, blocks) in WRITES {
         let mut data = vec![0; blocks * BLOCK];
         store.read(extent(sequence), 0, &mut data).expect("a write raced a commit");
