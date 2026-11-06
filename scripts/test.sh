@@ -4,11 +4,12 @@
 # found in the LICENSE file.
 
 # Run clippy's rules (clippy.toml), the test suite, extent_remote's simulation, the concurrency
-# tests under Shuttle, the scripts' tests (scripts/tests) and the mutant runners' checks, and on
-# Linux the guest tests' own tests (guest/tests, both halves): what CI runs, a part a job.
+# tests under Shuttle, the scripts' tests (scripts/tests) and the mutant runners' checks, the Go
+# client's (go/), and on Linux the guest tests' own tests (guest/tests, both halves): what CI runs,
+# a part a job.
 # Arguments are passed to the suite's and the simulation's `cargo nextest run`. FXDAX_TEST_PARTS
 # names the parts to run, separated by spaces (default: all of clippy, workspace, sim, shuttle,
-# scripts, and guest on Linux).
+# scripts, go, and guest on Linux).
 #
 # Unicode tests compare against the Unicode Character Database, which is
 # downloaded and checksummed on first use.
@@ -29,7 +30,7 @@ echo "$SHA256  $zip" | shasum -a 256 -c - >/dev/null
 # keep, rather than the terminal they have none of: an abort said nothing else (TASK-100).
 export LIBC_FATAL_STDERR_=1
 
-parts="clippy workspace sim shuttle scripts"
+parts="clippy workspace sim shuttle scripts go"
 [[ $(uname) != Linux ]] || parts+=" guest"
 parts=${FXDAX_TEST_PARTS:-$parts}
 part() { # name: whether FXDAX_TEST_PARTS has it
@@ -80,6 +81,21 @@ if part scripts; then
     "$root/crates/fxfs-sim-diff/mutants.sh" --check
     "$root/crates/fxdax/mutants.sh" --check
     "$root/scripts/guest-mutants-gce.py" --check
+fi
+# The Go client of the daemon's control API (TASK-219): its generated code as the .proto generates
+# it, its tests, and on Linux its tests against the daemon itself, built from this tree.
+if part go; then
+    "$root/go/generate.sh" --check
+    unformatted=$(gofmt -l "$root/go")
+    [[ -z $unformatted ]] || { echo "not gofmt'd: $unformatted" >&2; exit 1; }
+    go -C "$root/go" vet -tags extentd ./...
+    if [[ $(uname) == Linux ]]; then
+        cargo build --manifest-path "$root/Cargo.toml" -p fxdax --bin fxdax-extentd
+        FXDAX_EXTENTD="${CARGO_TARGET_DIR:-$root/target}/debug/fxdax-extentd" \
+            go -C "$root/go" test -tags extentd ./...
+    else
+        go -C "$root/go" test ./...
+    fi
 fi
 # The guest tests' own tests, the host's half and the guest's, which build on Linux alone: their
 # harness's (guest/tests/test_cases/src/vm.rs, script_vm.rs, the runner's) and the guest agent's,

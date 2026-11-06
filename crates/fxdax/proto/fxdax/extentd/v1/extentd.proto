@@ -73,6 +73,9 @@ syntax = "proto3";
 
 package fxdax.extentd.v1;
 
+// Its Go package, go/extentd/v1, generated from this file (go/generate.sh, TASK-219).
+option go_package = "github.com/semistrict/fxdax/go/extentd/v1;extentdv1";
+
 // The extent daemon's control API.
 service Extentd {
   // Makes an empty store: of a new branch; or of a branch kept in the daemon's bucket, which the

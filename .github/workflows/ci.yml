@@ -23,8 +23,10 @@ jobs:
         # The workspace's suite, a quarter of an hour of tests; extent_remote's simulation, whose
         # seed searches took most of an hour in the suite's unoptimized build, an optimized build of
         # its own (TASK-188); the Shuttle suites, each built with its crate's feature, a build of
-        # their own; the guest tests' own, a workspace of their own; the rest, minutes.
-        parts: [workspace, sim, shuttle, clippy scripts, guest]
+        # their own; the guest tests' own, a workspace of their own; the Go client, its generated
+        # code checked against the .proto, and its tests against the daemon, which it builds
+        # (TASK-219); the rest, minutes.
+        parts: [workspace, sim, shuttle, clippy scripts, guest, go]
         # What a part's tests run beyond what every part builds with: Coccinelle, whose rules the
         # scripts' tests check; xfsprogs, for the guest tests' own of reflinks. Coccinelle and its
         # OCaml are three quarters of the downloads: every part fetching them, a slow mirror (57
@@ -57,6 +59,13 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-nextest
+      # Go's latest: go/generate.sh's buf may want a newer Go than go.mod, which `go run` would
+      # fetch.
+      - uses: actions/setup-go@v7
+        if: matrix.parts == 'go'
+        with:
+          go-version: stable
+          cache-dependency-path: go/go.sum
       - uses: actions/cache@v6
         with:
           path: |

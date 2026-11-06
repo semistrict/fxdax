@@ -256,7 +256,8 @@ laid out as its window is, at most `private_max` of them, which the daemon
 reserves against the tenant's memory as the window is made.
 The host's VM manager drives the daemon
 through a gRPC control API on a Unix socket of its own (`FXDAX_EXTENTD_GRPC`;
-`crates/fxdax/proto/fxdax/extentd/v1/extentd.proto`, TASK-43.3): it makes,
+`crates/fxdax/proto/fxdax/extentd/v1/extentd.proto`, TASK-43.3; in Go,
+`github.com/semistrict/fxdax/go/extentd/v1`, TASK-219): it makes,
 imports, forks, places, syncs, resizes and deletes stores, and grants tenants
 (TASK-43.4). Grant returns a tenant's own VM socket, for the VM manager to
 bind-mount into the tenant's jails; a connection's tenant is the socket it came

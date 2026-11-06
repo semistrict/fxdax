@@ -4,6 +4,15 @@ For whoever writes the VM manager, the trusted service on each host that talks t
 daemon and starts Firecracker. `crates/fxdax/proto/fxdax/extentd/v1/extentd.proto` is the reference
 for every call named here.
 
+A VM manager in Go uses the Go package fxdax generates from it, `go/extentd/v1` (TASK-219): its
+messages and stubs, and `NewClient`, which connects to the control socket and has a failed call's
+error carry the daemon's errno (`errors.Is(err, syscall.ENOENT)`). Take it from the commit the
+daemon is built from, so that the two agree:
+
+```sh
+go get github.com/semistrict/fxdax/go@<fxdax commit>
+```
+
 The VM manager is trusted. VM processes are not: treat one as compromised, and everything here
 follows from that.
 

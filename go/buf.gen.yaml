@@ -1,0 +1,16 @@
+# Copyright 2026 The fxdax Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+# What go/generate.sh generates from the extent daemon's .proto: the Go package extentdv1, its
+# messages and its gRPC client and server, with the generators go.mod pins (its `tool`s).
+version: v2
+inputs:
+  - directory: ../crates/fxdax/proto
+plugins:
+  - local: [go, tool, protoc-gen-go]
+    out: .
+    opt: module=github.com/semistrict/fxdax/go
+  - local: [go, tool, protoc-gen-go-grpc]
+    out: .
+    opt: module=github.com/semistrict/fxdax/go

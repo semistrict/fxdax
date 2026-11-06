@@ -51,7 +51,7 @@ SPDX = re.compile(r"SPDX-License-Identifier: (.+?)\s*(\*/)?$", re.MULTILINE)
 YEAR = re.compile(r"Copyright (\d{4}) The Fuchsia Authors")
 
 # The files with headers: code, and the guest kernel's build files.
-SUFFIXES = (".rs", ".c", ".h", ".sh", ".py", ".patch")
+SUFFIXES = (".rs", ".go", ".c", ".h", ".sh", ".py", ".patch")
 BUILD_FILES = ("Makefile", "Kconfig")
 
 
@@ -69,7 +69,7 @@ def files():
 
 
 def marker(path):
-    return "//" if path.endswith((".rs", ".c", ".h")) else "#"
+    return "//" if path.endswith((".rs", ".go", ".c", ".h")) else "#"
 
 
 def leading(path, text):
