@@ -15,7 +15,7 @@ mod common;
 use common::noise;
 use extent_frame::segment::Chain;
 use extent_frame::{Corrupt, Encoding, PART, Parts};
-use extent_store::{Description, Dir, File as _, Lineage, MemDir, Options, Place, Store};
+use extent_store::{Description, Dir, File as _, MemDir, Options, Place, Store};
 use storage_device::ExtentId;
 
 const BLOCK: usize = 4096;
@@ -149,27 +149,6 @@ fn flipped_bytes_fail_the_reads_of_their_parts() {
         let mut read = vec![0; data.len()];
         store.read(extent, 0, &mut read).unwrap();
         assert!(read == data, "{extent:?}, flipped back");
-    }
-}
-
-/// A byte flipped in its parent's file fails a fork's reads of what it inherited.
-#[test]
-fn flipped_bytes_fail_a_forks_reads_of_what_it_inherited() {
-    let dir = MemDir::new();
-    let store = holding(&dir);
-    let child = BRANCH + 1;
-    store.fork(child).unwrap();
-    let bytes: Vec<_> = (contents().into_iter())
-        .map(|(extent, data, _)| (extent, stored(&dir, &store, extent, data.len() as u64 / 2)))
-        .collect();
-    drop(store);
-    for (_, byte) in &bytes {
-        flip(&dir, byte);
-    }
-    let lineage = Lineage::open(dir.clone(), OPTIONS).unwrap();
-    let fork = lineage.open_branch(child).unwrap();
-    for (extent, data, _) in contents() {
-        corrupt(fork.read(extent, 0, &mut vec![0; data.len()]));
     }
 }
 

@@ -5,12 +5,14 @@
 //! The file system a store lives in: a directory of the host's ([`HostDir`]), or of memory
 //! ([`MemDir`](crate::MemDir)), which can simulate crashes.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::OpenOptions;
 use std::io;
 use std::os::fd::{AsRawFd, RawFd};
 use std::os::unix::fs::{FileExt, OpenOptionsExt as _};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 /// A file of a store.
 pub trait File: Send + Sync + 'static {
@@ -88,6 +90,16 @@ pub trait Dir: Send + Sync + 'static {
     /// Lets the directory go, once taken ([`Dir::take`]).
     fn let_go(&self) {}
 
+    /// fxdax: claims the directory's store for one store open in this process: what refuses a
+    /// second opening of it, or its deletion while open, at once, rather than wait for itself
+    /// (TASK-165.7). A directory no other opening sees claims nothing.
+    fn claim(&self) -> io::Result<()> {
+        Ok(())
+    }
+
+    /// fxdax: lets the claim go, once claimed ([`Dir::claim`]).
+    fn unclaim(&self) {}
+
     /// fxdax: whether the store may do I/O in the directory on threads of its own, alongside its
     /// callers': framing a closed segment off the commit that closed it (TASK-41), and syncing a
     /// flush's files at once (TASK-92.42). Without, its callers' threads do all of it, one
@@ -152,15 +164,16 @@ pub struct HostDir {
     direct: bool,
     /// Whether the last extents' file opened bypasses it.
     bypassing: AtomicBool,
-    /// The directory, open, for `barrier`.
-    handle: std::fs::File,
+    /// The directory, open, for `barrier`, and for the `flock` taking it, which outlives this
+    /// while other takings of it in the process do ([`Dir::take`]).
+    handle: Arc<std::fs::File>,
 }
 
 impl HostDir {
     /// The directory at `path`, which exists. Its extents' files bypass the host's page cache if
     /// `direct` and the host's file system allows.
     pub fn new(path: &Path, direct: bool) -> io::Result<Self> {
-        let handle = std::fs::File::open(path)?;
+        let handle = Arc::new(std::fs::File::open(path)?);
         Ok(Self { path: path.to_owned(), direct, bypassing: AtomicBool::new(false), handle })
     }
 
@@ -248,34 +261,60 @@ impl Dir for HostDir {
         }
     }
 
-    /// Takes the directory with an exclusive `flock` of it, which the open directory holds until
-    /// it is let go, or closed, as when the process exits.
+    /// Takes the directory with an exclusive `flock` of it, which a descriptor of the directory's
+    /// of the process's holds until the process lets it go, or exits. fxdax: the process's
+    /// takings of it share that, counted, each `HostDir` of it taking it once: what is taken in
+    /// this process another opening of it here shares, as a store's uploader stopping, which
+    /// holds it ([`Store::hold_dir`](crate::Store::hold_dir)), and its store's next opening do;
+    /// which store is open here, its claim says ([`Dir::claim`], TASK-165.7).
     fn take(&self) -> io::Result<()> {
-        let deadline = std::time::Instant::now() + TAKE_WAIT;
-        loop {
-            // SAFETY: Plain system call on the directory's descriptor.
-            if unsafe { libc::flock(self.handle.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
-                return Ok(());
-            }
-            let err = io::Error::last_os_error();
-            if err.kind() != io::ErrorKind::WouldBlock {
-                return Err(err);
-            }
-            if std::time::Instant::now() >= deadline {
-                return Err(io::Error::new(
-                    io::ErrorKind::WouldBlock,
-                    "another process has the store's branches open",
-                ));
-            }
-            std::thread::sleep(std::time::Duration::from_millis(20));
+        let id = self.id()?;
+        let mut taken = TAKEN.lock().unwrap();
+        if let Some((count, _)) = taken.get_mut(&id) {
+            *count += 1;
+            return Ok(());
         }
+        // Its descriptor, which holds the `flock` while any taking in the process does.
+        take_from_others(&self.handle)?;
+        taken.insert(id, (1, self.handle.clone()));
+        Ok(())
     }
 
     fn let_go(&self) {
+        let id = match self.id() {
+            Ok(id) => id,
+            Err(err) => {
+                return log::warn!("extent store: letting {} go: {err}", self.path.display());
+            }
+        };
+        let mut taken = TAKEN.lock().unwrap();
+        let Some((count, _)) = taken.get_mut(&id) else { return };
+        *count -= 1;
+        if *count > 0 {
+            return;
+        }
+        let (_, lock) = taken.remove(&id).unwrap();
         // SAFETY: Plain system call on the directory's descriptor.
-        if unsafe { libc::flock(self.handle.as_raw_fd(), libc::LOCK_UN) } != 0 {
+        if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_UN) } != 0 {
             let err = io::Error::last_os_error();
             log::warn!("extent store: unlocking {}: {err}", self.path.display());
+        }
+    }
+
+    fn claim(&self) -> io::Result<()> {
+        if !CLAIMED.lock().unwrap().insert(self.id()?) {
+            return Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "this process has the store open",
+            ));
+        }
+        Ok(())
+    }
+
+    fn unclaim(&self) {
+        match self.id() {
+            Ok(id) => drop(CLAIMED.lock().unwrap().remove(&id)),
+            Err(err) => log::warn!("extent store: unclaiming {}: {err}", self.path.display()),
         }
     }
 
@@ -289,6 +328,48 @@ impl Dir for HostDir {
             let _ = &self.handle;
             Ok(())
         }
+    }
+}
+
+/// fxdax: the directories this process has taken ([`Dir::take`]), by their devices and inodes:
+/// how many takings of each, and the descriptor holding the `flock`.
+static TAKEN: Mutex<BTreeMap<DirId, (usize, Arc<std::fs::File>)>> = Mutex::new(BTreeMap::new());
+
+/// fxdax: the directories whose stores this process has open ([`Dir::claim`]).
+static CLAIMED: Mutex<BTreeSet<DirId>> = Mutex::new(BTreeSet::new());
+
+/// A directory's device and inode, which name it however a path names it.
+type DirId = (u64, u64);
+
+impl HostDir {
+    /// The directory's device and inode.
+    fn id(&self) -> io::Result<DirId> {
+        use std::os::unix::fs::MetadataExt as _;
+        let metadata = self.handle.metadata()?;
+        Ok((metadata.dev(), metadata.ino()))
+    }
+}
+
+/// Takes the directory through `lock`, a descriptor of it, against other processes' takings of it,
+/// waiting a while for them to let it go ([`Dir::take`]).
+fn take_from_others(lock: &std::fs::File) -> io::Result<()> {
+    let deadline = std::time::Instant::now() + TAKE_WAIT;
+    loop {
+        // SAFETY: Plain system call on the directory's descriptor.
+        if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+            return Ok(());
+        }
+        let err = io::Error::last_os_error();
+        if err.kind() != io::ErrorKind::WouldBlock {
+            return Err(err);
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "another process has the store's branches open",
+            ));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
     }
 }
 

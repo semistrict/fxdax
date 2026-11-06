@@ -151,9 +151,6 @@ pub struct Rules {
     /// Closing a branch waits for every segment being framed, whatever closed it, a commit no
     /// flush took or one that failed among them (TASK-41.1, TASK-79.99).
     pub close_waits_for_framings: bool,
-    /// A fork waits for the segments being framed, which its child reads from their framed files
-    /// (TASK-41.1).
-    pub forks_wait_for_framings: bool,
     /// A segment closed is framed at once, and its framing ends itself, whatever closed it: a
     /// closing for want of room waits for no commit after it, which may never come, to frame it,
     /// as a commit an uploader waits for is in it (TASK-150.2, TASK-153.8).
@@ -168,9 +165,6 @@ pub struct Rules {
     pub views_refuse_later_extents: bool,
     /// A view reads, of the frees kept, only those after its commit, and those it pins.
     pub views_hold_their_commit: bool,
-    /// Openings, forks and deletions of a branch being forked or deleted wait until that is done,
-    /// rather than fail, and lists of the branches wait for every fork and deletion in flight.
-    pub wait_for_forks_and_deletions: bool,
 }
 
 impl Rules {
@@ -187,14 +181,12 @@ impl Rules {
         durable_once_synced: true,
         close_waits_for_flushes: true,
         close_waits_for_framings: true,
-        forks_wait_for_framings: true,
         framings_end_themselves: true,
         keep_frees_for_views: true,
         keep_pins: true,
         decide_at_publish: true,
         views_refuse_later_extents: true,
         views_hold_their_commit: true,
-        wait_for_forks_and_deletions: true,
     };
 }
 

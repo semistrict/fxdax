@@ -216,12 +216,6 @@ impl<K: Copy + Eq + Hash, F: File> Files<K, F> {
             self.by_use.remove(&used);
         }
     }
-
-    /// Closes them all.
-    pub(crate) fn clear(&mut self) {
-        self.files.clear();
-        self.by_use.clear();
-    }
 }
 
 /// A file of extents' data, open.

@@ -4,20 +4,18 @@
 
 //! The store. See the crate's docs.
 
-use crate::dir::{Dir, File, not_found};
+use crate::dir::{Dir, File, not_found, read_file};
 use crate::durability::{Batch, Durability, Syncs};
-use crate::framed::{Aligned, Framed, Packed, Part, Source, read_aligned};
+use crate::framed::{Aligned, Framed, Packed, Part, Source, Unpacked, read_aligned};
 use crate::index::{
-    Appended, IndexLog, IndexTail, IndexWrite, Recovered, rebuild, recover, start_fork,
+    Appended, IndexLog, IndexTail, IndexWrite, Recovered, rebuild, recover, write_checkpoint,
 };
 use crate::kept::{Kept, KeptExtents};
-use crate::layers::Layer;
 use crate::layout::{
-    BranchRecord, Change, Checkpoint, Data, Delta, Description, Extent, FileKey, OPEN_EXTENTS,
-    Origin, Piece, Place, SegmentId, add_piece, branch_dir, extent_path, list_numbers,
-    open_extent_path,
+    Change, Checkpoint, DESCRIPTION, Data, Delta, Description, EXTENTS, Extent, FileKey, INDEX,
+    OPEN_EXTENTS, OPEN_SEGMENTS, Piece, Place, Record, SEGMENTS, SegmentId, StoreFile, add_piece,
+    branch_dir, create_branch_dirs, encode, extent_path, files_of, list_numbers, open_extent_path,
 };
-use crate::lineage::Lineage;
 use crate::segments::{Segments, Unframed, Victim, close_left_open};
 use crate::state::{
     Copied, Gate, Locked, OwnFiles, Placement, Reader, Space, State, Uncommitted, Unreferenced,
@@ -40,22 +38,16 @@ use storage_device::{ExtentId, NoExtent, OtherBranch, SealedExtent};
 #[error("the extent store is full")]
 pub struct NoSpace;
 
-/// fxdax: the context of a fork's failure once its commit was made ([`Store::fork`]): the store
-/// has not the child, but the commit stands, the segment it ends naming the fork in its footer,
-/// which what keeps the branch's segments elsewhere, as an uploader does, may have taken, and
-/// whose fork it makes there, so that the child is to be deleted there as a fork made is
-/// (TASK-79.82).
+/// fxdax: the context of a fork's failure once its commit was made ([`Store::commit_fork`]): the
+/// commit stands, the segment it ends naming the fork in its footer, which what keeps the branch's
+/// segments elsewhere, as an uploader does, may have taken, and whose fork it makes there, so that
+/// the child is to be deleted there as a fork made is (TASK-79.82).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 #[error("the fork to branch {child:#x} failed once its commit was made")]
 pub struct ForkCommitted {
     /// The fork's child.
     pub child: u64,
 }
-
-/// fxdax: the error of a fork to a branch the store has ([`Store::fork`]), which makes nothing.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
-#[error("the store has a branch {0:#x}")]
-pub struct HasBranch(pub u64);
 
 /// The error of a capacity smaller than what the store holds: its extents' bytes, and those that
 /// writes in progress may add.
@@ -192,14 +184,6 @@ pub struct Usage {
     pub kept_for_views: u64,
 }
 
-/// fxdax: what an open branch holds in memory of its own (TASK-31): its extents' entries over the
-/// state it shares with its parent and its forks, and the segments it tracks.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Footprint {
-    pub entries: usize,
-    pub segments: usize,
-}
-
 /// What cleaning did.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Cleaned {
@@ -210,17 +194,20 @@ pub struct Cleaned {
     pub copied: u64,
 }
 
-/// A branch of an extent store, open. See the crate's docs.
+/// An extent store, open. See the crate's docs.
 pub struct Store<D: Dir> {
-    lineage: Arc<Lineage<D>>,
+    /// Its directory, which its framings share.
+    dir: Arc<D>,
+    block_size: u32,
     branch: u64,
-    /// Its opening of the branch, which closing it ends.
-    token: u64,
-    /// The branch the branch was forked from, if it is a fork.
-    parent: Option<u64>,
-    /// The layer its index is over, its parent's state at the fork, if its index holds what it
-    /// changed over it (TASK-31).
-    origin: Option<Arc<Layer>>,
+    /// fxdax: the URL of the bucket its branch is kept in, if its description names one.
+    bucket: Option<String>,
+    /// Its directory, taken for this process ([`Dir::take`]), and claimed for its opening
+    /// ([`Dir::claim`]): closing it lets go of both, but of the taking what holds it still
+    /// ([`Store::hold_dir`]).
+    opened: Mutex<Option<(Claim<D>, Arc<Taken<D>>)>>,
+    /// The parts of its files read lately, unpacked.
+    unpacked: Unpacked,
     options: Options,
     /// fxdax: shared with the framings of its segments, each of which ends itself in it, on a
     /// thread of its own (TASK-153.8).
@@ -253,10 +240,29 @@ struct Cleanable {
     copies: Vec<(ExtentId, Extent)>,
 }
 
-/// What a fork's commit froze: the branch's state as of it, and where it was.
-struct Forked {
-    layer: Arc<Layer>,
-    origin: Origin,
+/// A store's directory, taken for this process ([`Dir::take`]): let go of once dropped.
+struct Taken<D: Dir>(Arc<D>);
+
+impl<D: Dir> Drop for Taken<D> {
+    fn drop(&mut self) {
+        self.0.let_go();
+    }
+}
+
+/// fxdax: a store's directory, claimed for its opening in this process ([`Dir::claim`]): let go of
+/// once dropped.
+struct Claim<D: Dir>(Arc<D>);
+
+impl<D: Dir> Drop for Claim<D> {
+    fn drop(&mut self) {
+        self.0.unclaim();
+    }
+}
+
+/// fxdax: a hold of a store's directory, taken for this process until it is dropped
+/// ([`Store::hold_dir`]).
+pub struct DirHold<D: Dir> {
+    _taken: Arc<Taken<D>>,
 }
 
 /// What a commit ordered but not yet durable leaves for the flush that makes it durable.
@@ -368,80 +374,77 @@ fn framing_ended<F: File>(
 }
 
 impl<D: Dir> Store<D> {
-    /// Makes a new, empty store in `dir`, which is empty, of one branch, as `description`
-    /// describes, and opens that branch.
+    /// Makes a new, empty store in `dir`, which holds no store, as `description` describes, and
+    /// opens it.
     pub fn create(dir: D, description: Description, options: Options) -> Result<Self, Error> {
-        Lineage::create(dir, description, options)?.open_branch(description.branch)
+        Self::create_kept(dir, description, None, options)
+    }
+
+    /// fxdax: makes a new store as [`Store::create`] does, whose description names `bucket`, the
+    /// URL of the bucket its branch is kept in, if given ([`Store::bucket`]). The description is
+    /// made last: until it is durable, the directory is no store.
+    pub fn create_kept(
+        dir: D,
+        description: Description,
+        bucket: Option<&str>,
+        options: Options,
+    ) -> Result<Self, Error> {
+        let Description { block_size, capacity, branch } = description;
+        ensure!(
+            block_size.is_power_of_two() && block_size as usize <= crate::framed::ALIGNMENT,
+            "bad block size {block_size}"
+        );
+        ensure!(capacity >= block_size as u64, "the store is smaller than a block");
+        dir.take().context("taking the store's directory")?;
+        let made = || -> Result<(), Error> {
+            for path in [SEGMENTS, EXTENTS, INDEX, OPEN_SEGMENTS, OPEN_EXTENTS] {
+                dir.create_dir(path).with_context(|| format!("creating {path}"))?;
+            }
+            create_branch_dirs(&dir, branch)?;
+            write_checkpoint(&dir, branch, 0, &Recovered { capacity, ..Default::default() })?;
+            let file = dir.create(DESCRIPTION, false)?;
+            let bucket = bucket.map(str::to_owned);
+            file.write_at(StoreFile { block_size, branch, bucket }.text().as_bytes(), 0)?;
+            file.sync()?;
+            dir.sync_dir("")?;
+            dir.barrier()?;
+            Ok(())
+        };
+        let made = made();
+        dir.let_go();
+        made?;
+        Self::open(dir, options)
     }
 
     /// Opens the store in `dir`, recovering it as it was at its last commit that is durable, and
-    /// its first branch.
+    /// removes the files of extents' data no extent is in: what commits that weren't durable
+    /// wrote, or that were to go once the commits that let them go were. It fails while another
+    /// process has it open ([`Dir::take`]), or this one ([`Dir::claim`]).
     pub fn open(dir: D, options: Options) -> Result<Self, Error> {
-        let lineage = Lineage::open(dir, options)?;
-        let first = lineage.first();
-        lineage.open_branch(first)
-    }
-
-    /// Opens `branch` of `lineage`, whose record is `record`: its own state, over its parent's at
-    /// the fork if it is a fork whose index holds what it changed over that (TASK-31); or, at a
-    /// fork's first opening, its parent's at the fork alone, which its index then holds it changed
-    /// nothing over. That state is a layer the fork shares with its parent and its parent's other
-    /// forks of the same point, which the lineage holds: opening a fork reads and writes what it
-    /// changed, whatever its parent holds.
-    pub(crate) fn open_in(
-        lineage: Arc<Lineage<D>>,
-        branch: u64,
-        token: u64,
-        record: BranchRecord,
-    ) -> Result<Self, Error> {
-        let dir = &lineage.dir;
-        let origin = match record.over_parent() {
-            Some(_) => Some(
-                lineage.base(branch).ok_or_else(|| anyhow!("branch {branch:#x} has no base"))?,
-            ),
-            None => None,
+        dir.take().context("taking the store's directory")?;
+        let dir = Arc::new(dir);
+        // Dropped, as an opening that fails drops them, they let the directory go.
+        let taken = Arc::new(Taken(dir.clone()));
+        dir.claim().context("taking the store's directory")?;
+        let claim = Claim(dir.clone());
+        let StoreFile { block_size, branch, bucket } = {
+            let file = dir.open(DESCRIPTION, false).context("opening the store's description")?;
+            let text = String::from_utf8(read_file(&file)?).context("reading the description")?;
+            StoreFile::parse(&text)?
         };
-        let recovered = match (record.resolved, &origin) {
-            (true, _) => recover(dir, branch, origin.clone())?,
-            (false, Some(origin)) => {
-                let state = start_fork(dir, branch, origin)?;
-                lineage.resolved(branch, token)?;
-                state
-            }
-            (false, None) => bail!("branch {branch:#x} is no fork, and has no index"),
-        };
-        let Recovered { epoch, next_sequence, root, extents, spent, .. } = recovered;
+        let recovered = recover(&*dir, branch)?;
+        remove_unheld(&*dir, branch, &recovered)?;
+        let Recovered { epoch, next_sequence, root, capacity, extents, spent, .. } = recovered;
         // Footers of commits not recovered, which were not durable, are no footers: the commits
         // after this epoch are others.
-        close_left_open(dir, branch, epoch)?;
-        // fxdax: the raw files of the extents the branch's last store had open, which no commit
-        // made durable refers to: those of writes abandoned, or of a store that failed, which
-        // opening the store would have removed (TASK-79.5). The extents may be written anew.
-        for sequence in list_numbers(dir, &branch_dir(OPEN_EXTENTS, branch))? {
-            dir.remove(&open_extent_path(ExtentId::new(branch, sequence)))?;
-        }
+        close_left_open(&*dir, branch, epoch)?;
 
-        // The segments it tracks, with the bytes of extents' data each holds: those of the
-        // extents it holds over its origin, and of its origin's it hides, which it holds otherwise
-        // than its origin does; and its own extents' files. They must be there. Of the rest, it
-        // holds what its origin does.
-        let base_live = |segment| origin.as_ref().map_or(0, |origin| origin.live(segment));
+        // The segments it holds extents' data in, with the bytes of it each holds, and its own
+        // extents' files. They must be there.
         let mut tracked: BTreeMap<SegmentId, u64> = BTreeMap::new();
-        let mut stored = origin.as_ref().map_or(0, |origin| origin.stored());
+        let (mut stored, mut own_stored) = (0, 0);
         let mut own_sizes = HashMap::new();
-        for (_, entry) in extents.shadowed() {
-            stored -= entry.len;
-            if let Data::Pieces(pieces) = &entry.data {
-                for piece in pieces {
-                    let live =
-                        tracked.entry(piece.segment).or_insert_with(|| base_live(piece.segment));
-                    *live -= piece.len;
-                }
-            }
-        }
-        // fxdax: its own extents are all over its origin, which holds those it inherited.
-        let mut own_stored = 0;
-        for (extent, entry) in extents.changed() {
+        for (extent, entry) in &extents {
             stored += entry.len;
             if extent.branch == branch {
                 own_stored += entry.len;
@@ -449,10 +452,7 @@ impl<D: Dir> Store<D> {
             match &entry.data {
                 Data::Pieces(pieces) => {
                     for piece in pieces {
-                        let live = tracked
-                            .entry(piece.segment)
-                            .or_insert_with(|| base_live(piece.segment));
-                        *live += piece.len;
+                        *tracked.entry(piece.segment).or_default() += piece.len;
                     }
                 }
                 Data::Own => {
@@ -464,53 +464,37 @@ impl<D: Dir> Store<D> {
                 Data::Remote(_) => {}
             }
         }
-        // Those it holds nothing in, all of its origin's extents in them hidden, it let go of.
-        tracked.retain(|_, live| *live > 0);
-        let options = lineage.options;
-        // fxdax: where in its own segments its extents' data is, part by part (TASK-79.2).
-        let pieces = extents.changed().flat_map(|(_, entry)| match &entry.data {
+        // fxdax: where in its segments its extents' data is, part by part (TASK-79.2).
+        let pieces = extents.values().flat_map(|entry| match &entry.data {
             Data::Pieces(pieces) => &pieces[..],
             _ => &[],
         });
-        let mut segments = Segments::open(dir, branch, tracked, pieces, epoch, options.open_files)?;
-        // fxdax: those its forks hold extents in; and the sealed extents in each, which cleaning
-        // copies out, of those it holds over its origin, if any, as no other is in its own
-        // segments (TASK-79.2).
-        segments.share(|number| lineage.shared(branch, FileKey::Segment(number)));
-        for (extent, entry) in extents.changed() {
+        let mut segments =
+            Segments::open(&*dir, branch, tracked, pieces, epoch, options.open_files)?;
+        // fxdax: the sealed extents in each, which cleaning copies out (TASK-79.2).
+        for (extent, entry) in &extents {
             segments.place(*extent, &entry.data);
         }
         let open_segment = segments.open_segment();
 
-        // A new index file, with a checkpoint of what was recovered, which replaces the others but
-        // those forks need.
+        // A new index file, with a checkpoint of what was recovered, which replaces the others.
         let segment = open_segment.number;
-        let state = Recovered { epoch, next_sequence, root, segment, extents, spent };
-        let pinned = || lineage.pinned(branch);
-        let (index, tail) = IndexLog::open(dir, branch, &state, origin.as_ref(), pinned)?;
-        let Recovered { root, mut extents, spent, .. } = state;
-        let mut holdings = extents.holdings();
-        holdings.own.insert(FileKey::Segment(open_segment));
-        lineage.recovered(branch, epoch, &holdings);
-        // A branch whose index holds all it holds shares in memory what its forks inherited of it,
-        // the latest of it, holding over that what it changed since.
-        if origin.is_none()
-            && let Some(layer) = lineage.latest_layer_of(branch)
-        {
-            extents.rebase(layer);
-        }
+        let state = Recovered { epoch, next_sequence, root, segment, capacity, extents, spent };
+        let (index, tail) = IndexLog::open(&*dir, branch, &state)?;
+        let Recovered { root, extents, spent, .. } = state;
 
         let views = Views::new(epoch, &root);
         Ok(Self {
-            lineage,
+            dir,
+            block_size,
             branch,
-            token,
-            parent: record.origin.map(|origin| origin.parent),
-            origin,
+            bucket,
+            opened: Mutex::new(Some((claim, taken))),
+            unpacked: Unpacked::default(),
             options,
             state: Arc::new(Mutex::new(State {
                 extents,
-                space: Space::new(record.capacity, stored, own_stored),
+                space: Space::new(capacity, stored, own_stored),
                 epoch,
                 root,
                 next_sequence,
@@ -541,11 +525,10 @@ impl<D: Dir> Store<D> {
     /// say: as of the last commit a closed segment holds, if one does (doc-7: a branch's history is
     /// in its segments).
     pub fn rebuild(&self) -> Result<Rebuilt, Error> {
-        let state = rebuild(&self.lineage.dir, self.branch, self.origin.clone())?;
+        let state = rebuild(&*self.dir, self.branch)?;
         let mut extents: Vec<_> = state
             .extents
             .iter()
-            .into_iter()
             .map(|(extent, entry)| (*extent, entry.len, place_of(entry)))
             .collect();
         extents.sort_by_key(|(extent, ..)| *extent);
@@ -575,80 +558,27 @@ impl<D: Dir> Store<D> {
         let mut extents: Vec<_> = state
             .extents
             .iter()
-            .into_iter()
             .map(|(extent, entry)| (*extent, entry.len, place_of(entry)))
             .collect();
         extents.sort_by_key(|(extent, ..)| *extent);
         Ok(extents)
     }
 
-    /// The store's branches.
-    pub fn lineage(&self) -> &Arc<Lineage<D>> {
-        &self.lineage
+    /// fxdax: the URL of the bucket its branch is kept in, as its description names it: every
+    /// store in a host's directory names one ([`crate::create_host`]); none, one of memory's
+    /// (TASK-165.6).
+    pub fn bucket(&self) -> Option<&str> {
+        self.bucket.as_deref()
     }
 
-    /// Forks the branch: a new branch, `child`, holding what this one holds once its open extents
-    /// are sealed, and none of its own yet, which [`Lineage::open_branch`] opens. A barrier, which
-    /// commits durably; then it takes the same time and space whatever the branch holds: the child
-    /// inherits the extents, in this branch's files and those it inherited, rather than copies,
-    /// and, in memory, the branch's state as of the fork, a layer it shares with the branch, which
-    /// goes on over it, and with the branch's other forks of the same point (TASK-31). Returns the
-    /// epoch of the fork's commit, which ends the segment that names the fork. A fork to a branch
-    /// the store has fails, committing nothing. fxdax: one that fails once its commit was made
-    /// fails with [`ForkCommitted`]: the store has not the child, but the commit's segment names
-    /// it, as a host crashing then would leave it. Its footer names the child's owner as 0: a
-    /// fork no host claimed, which object storage keeps no record of but its parent's.
-    pub fn fork(&self, child: u64) -> Result<u64, Error> {
-        self.fork_with(Child { branch: child, owner: 0, point: false }, || Ok(()))
-    }
-
-    /// fxdax: forks the branch as [`Store::fork`] does, calling `before` once the child is
-    /// reserved, before the fork's commit: as no other fork, opening or deletion of the child here
-    /// comes between them, to claim the child where else it is kept, as an uploader does
-    /// (TASK-79.82). A fork whose `before` fails commits nothing. The commits of the branch wait
-    /// for `before`, as they do for the fork's own. The segment's footer names the child, its
-    /// owner, which every record of it in object storage names, and whether it is a point: a name
-    /// of the branch's state there, which nothing writes (doc-7, Points).
-    pub fn fork_with(
-        &self,
-        forked: Child,
-        before: impl FnOnce() -> Result<(), Error>,
-    ) -> Result<u64, Error> {
-        let child = forked.branch;
-        let committing = self.committing.lock().unwrap();
-        // fxdax: the child reserved before the commit that names it: else a fork to a branch the
-        // store has would fail once its footer, durable, named the branch again, from another
-        // point, which the uploader uploads, and the branch's writers in object storage find
-        // forked twice, failing for ever (TASK-79.78).
-        let forking = self.lineage.forking(child)?;
-        before()?;
-        failpoint!("fork::claimed");
-        // At the end of its segment, which the commit closes, and whose footer names it (doc-7,
-        // Forks).
-        self.writable()?.segments.close_for_fork(forked);
-        let forked = self.commit_locked(&committing, None, true)?;
-        let Forked { layer, origin } = forked.expect("a fork's commit freezes the branch's state");
-        // fxdax: from here on the commit stands, naming the fork, though the fork fails: a failure
-        // says so, so that what else keeps the branch's segments deletes the child there too
-        // (TASK-79.82).
-        let made = || -> Result<u64, Error> {
-            failpoint!("fork::committed");
-            self.flush()?;
-            failpoint!("fork::flushed");
-            // fxdax: and the segments closed between commits framed, from whose framed files the
-            // child reads what it inherited of them (TASK-41.1).
-            let mut state = self.state()?;
-            if rules().forks_wait_for_framings {
-                state = self.framed(state);
-            }
-            let capacity = state.space.capacity();
-            drop(state);
-            let epoch = origin.epoch;
-            self.lineage.fork(forking, origin, capacity, layer)?;
-            failpoint!("fork::recorded");
-            Ok(epoch)
-        };
-        made().context(ForkCommitted { child })
+    /// fxdax: holds the store's directory taken for this process until what it returns is dropped,
+    /// as the store open does: for what outlives the store's closing and still writes in the
+    /// directory, as its uploader does as it stops (TASK-129). Fails once it is closed.
+    pub fn hold_dir(&self) -> Result<DirHold<D>, Error> {
+        let opened = self.opened.lock().unwrap();
+        let (_, taken) =
+            opened.as_ref().ok_or_else(|| anyhow!("branch {:#x} is closed", self.branch))?;
+        Ok(DirHold { _taken: taken.clone() })
     }
 
     /// fxdax: commits, durably, a commit whose segment's footer names `child`, a fork of the
@@ -659,7 +589,7 @@ impl<D: Dir> Store<D> {
     pub fn commit_fork(&self, child: Child) -> Result<u64, Error> {
         let committing = self.committing.lock().unwrap();
         self.writable()?.segments.close_for_fork(child);
-        self.commit_locked(&committing, None, false)?;
+        self.commit_locked(&committing, None)?;
         let epoch = self.lock().epoch;
         let made = || -> Result<u64, Error> {
             failpoint!("fork::committed");
@@ -670,20 +600,15 @@ impl<D: Dir> Store<D> {
         made().context(ForkCommitted { child: child.branch })
     }
 
-    /// The branch the branch was forked from, if it is a fork.
-    pub fn parent(&self) -> Option<u64> {
-        self.parent
-    }
-
     /// The store's directory.
     pub fn dir(&self) -> &D {
-        &self.lineage.dir
+        &self.dir
     }
 
-    /// The branch, as its user sees it.
+    /// The store, as its user sees it.
     pub fn description(&self) -> Description {
         Description {
-            block_size: self.lineage.block_size,
+            block_size: self.block_size,
             capacity: self.lock().space.capacity(),
             branch: self.branch,
         }
@@ -708,10 +633,7 @@ impl<D: Dir> Store<D> {
 
     /// `state`, to change, as found again after waiting, its lock let go of meanwhile: unless the
     /// store failed, or the branch closed, since (TASK-83).
-    fn still_writable<'a>(
-        &self,
-        state: Locked<'a, D::File>,
-    ) -> Result<Locked<'a, D::File>, Error> {
+    fn still_writable<'a>(&self, state: Locked<'a, D::File>) -> Result<Locked<'a, D::File>, Error> {
         ensure!(!state.failed, "the extent store failed");
         ensure!(!state.closed, "branch {:#x} is closed", self.branch);
         Ok(state)
@@ -748,7 +670,7 @@ impl<D: Dir> Store<D> {
             };
             drop(state);
             self.remove(raw);
-            self.lineage.closed(self.branch, self.token);
+            drop(self.opened.lock().unwrap().take());
         }
         flushed
     }
@@ -756,7 +678,7 @@ impl<D: Dir> Store<D> {
     /// Fails unless I/O of `len` bytes at `offset` in an extent is aligned to blocks, and ends
     /// within the most an extent holds.
     pub fn check_io(&self, offset: u64, len: u64) -> Result<(), Error> {
-        let block_size = self.lineage.block_size as u64;
+        let block_size = self.block_size as u64;
         if !offset.is_multiple_of(block_size) || !len.is_multiple_of(block_size) || len == 0 {
             bail!(Unaligned { offset, len });
         }
@@ -772,12 +694,7 @@ impl<D: Dir> Store<D> {
         state: &mut State<D::File>,
         number: SegmentId,
     ) -> Result<Source<D::File>, Error> {
-        // Another branch's, which it inherited: the lineage's, which its branches share, one file
-        // open for all the forks of a base reading it (TASK-34).
-        if number.branch != self.branch {
-            return Ok(Source::Framed(self.lineage.segment_file(number)?));
-        }
-        state.segments.source(&self.lineage.dir, number)
+        state.segments.source(&*self.dir, number)
     }
 
     /// The file `extent`'s data is in, stored on its own: raw while it is open, framed once sealed.
@@ -788,7 +705,7 @@ impl<D: Dir> Store<D> {
     ) -> Result<Source<D::File>, Error> {
         match state.uncommitted.placement(extent) {
             Some(Placement::Own(file)) => Ok(Source::Raw(file.clone())),
-            _ => Ok(Source::Framed(state.own_files.file(&self.lineage.dir, extent)?)),
+            _ => Ok(Source::Framed(state.own_files.file(&*self.dir, extent)?)),
         }
     }
 
@@ -943,7 +860,7 @@ impl<D: Dir> Store<D> {
     /// the extent while it was open, which the next commit's flush removes. It makes way, so that
     /// the extent may be written anew before that flush (TASK-79.5).
     fn create_raw(&self, extent: ExtentId) -> Result<D::File, Error> {
-        let (dir, path) = (&self.lineage.dir, open_extent_path(extent));
+        let (dir, path) = (&*self.dir, open_extent_path(extent));
         let created = match dir.create(&path, true) {
             Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {
                 dir.remove(&path).and_then(|()| dir.create(&path, true))
@@ -973,9 +890,8 @@ impl<D: Dir> Store<D> {
                 false => state.deferred.push(unframed),
             }
         } else {
-            state.segments.retire(&self.lineage.dir)?;
+            state.segments.retire(&*self.dir)?;
             state.index.set_aside(full.number);
-            self.lineage.claim(self.branch, [FileKey::Segment(state.segments.open_segment())]);
         }
         Ok(())
     }
@@ -995,7 +911,7 @@ impl<D: Dir> Store<D> {
         state.space.unreserve(write.grows);
         let extent = write.extent;
         let end = write.extent_offset + write.len;
-        let entry = state.extents.get_or_insert_with(extent, || Extent {
+        let entry = state.extents.entry(extent).or_insert_with(|| Extent {
             len: 0,
             data: if write.segment.is_some() { Data::Pieces(Vec::new()) } else { Data::Own },
         });
@@ -1104,7 +1020,7 @@ impl<D: Dir> Store<D> {
     ) -> Result<Vec<Part<D::File>>, Error> {
         let end = offset + len;
         let held_end = end.min(entry.len).max(offset);
-        let unpacked = &self.lineage.unpacked;
+        let unpacked = &self.unpacked;
         let mut parts = Vec::new();
         match &entry.data {
             Data::Own => {
@@ -1167,7 +1083,7 @@ impl<D: Dir> Store<D> {
     /// A part of a framed file, unpacked from `stored`, its stored bytes and any after them, read
     /// from its file, checked against its CRC; reads of it find it unpacked for a while.
     pub fn unpack(&self, part: &Packed<D::File>, stored: Aligned) -> Result<Arc<Aligned>, Error> {
-        part.unpack(stored, &self.lineage.unpacked)
+        part.unpack(stored, &self.unpacked)
     }
 
     /// Frees `extent`, which may be open, if the store holds it.
@@ -1186,13 +1102,12 @@ impl<D: Dir> Store<D> {
         }
         state.space.removed(entry.len, extent.branch == self.branch);
         state.uncommitted.push(Change::Free(extent));
-        state.track(&entry);
         // A sealed one's data stays until the uploader has what it needs of it, and until the
         // commit that frees it decides whether views keep it. fxdax: an open one's goes at once:
         // no commit held it, so that no reader needs it, and what it took of segments is dead
         // space, counted so (TASK-79.2). Of a file of its own it has none, which its seal would
-        // have made, but its raw file, which goes with the next commit: the lineage has nothing to
-        // let go of, which would take the file the extent's next opening seals at that path
+        // have made, but its raw file, which goes with the next commit: nothing else of it to let
+        // go of, which would take the file the extent's next opening seals at that path
         // (TASK-79.1). What it took of either its writer wasted, until the next commit
         // (TASK-79.2).
         if placement.is_none() {
@@ -1255,7 +1170,7 @@ impl<D: Dir> Store<D> {
     pub fn snapshot(&self) -> Result<Snapshot, Error> {
         let state = self.state()?;
         let mut extents: Vec<_> =
-            state.extents.iter().into_iter().map(|(extent, entry)| (*extent, entry.len)).collect();
+            state.extents.iter().map(|(extent, entry)| (*extent, entry.len)).collect();
         extents.sort();
         let (root, capacity) = (state.root.clone(), state.space.capacity());
         Ok(Snapshot { epoch: state.epoch, extents, root, capacity })
@@ -1323,17 +1238,15 @@ impl<D: Dir> Store<D> {
     /// order: doc-4's `COMMIT` without `COMMIT_DURABLE`.
     pub fn commit_ordered(&self, root: Option<&[u8]>) -> Result<(), Error> {
         let committing = self.committing.lock().unwrap();
-        self.commit_locked(&committing, root, false).map(drop)
+        self.commit_locked(&committing, root)
     }
 
-    /// Commits, as [`Store::commit_ordered`] does; and, if `fork`, freezes the branch's state as of
-    /// the commit, which a fork of it inherits (TASK-31).
+    /// Commits, as [`Store::commit_ordered`] does, holding `_committing`.
     fn commit_locked(
         &self,
         _committing: &MutexGuard<'_, ()>,
         root: Option<&[u8]>,
-        fork: bool,
-    ) -> Result<Option<Forked>, Error> {
+    ) -> Result<(), Error> {
         let mut state = self.writable()?;
         // It includes the writes in progress, which may be to extents it seals: what they write
         // must be in them, not after. New ones wait for it.
@@ -1346,20 +1259,14 @@ impl<D: Dir> Store<D> {
         }
         // From its first seal on, the state runs ahead of the files: a commit failing part way
         // fails the store.
-        let committed = state.failing(|state| self.commit_in(state, root, fork));
+        let committed = state.failing(|state| self.commit_in(state, root));
         committed.context("committing the extent store")
     }
 
-    /// The steps of the next commit, which sets `root`, if any, and, if `fork`, freezes the
-    /// branch's state as of it, in their order: each takes what those before it leave.
-    fn commit_in(
-        &self,
-        state: &mut State<D::File>,
-        root: Option<&[u8]>,
-        fork: bool,
-    ) -> Result<Option<Forked>, Error> {
+    /// The steps of the next commit, which sets `root`, if any, in their order: each takes what
+    /// those before it leave.
+    fn commit_in(&self, state: &mut State<D::File>, root: Option<&[u8]>) -> Result<(), Error> {
         let epoch = state.epoch + 1;
-        self.unshare(state);
         self.make_moves(state);
         let sealing = self.seal_open(state)?;
         self.publish(state, epoch, root, &sealing);
@@ -1382,46 +1289,24 @@ impl<D: Dir> Store<D> {
         state.segments.take_syncs(&mut syncs);
         // The segments none of its extents' data is in any more, by this commit, if not before:
         // the branch lets them go; those it closed, once a checkpoint covers their footers. fxdax:
-        // but those the uploader has yet to upload, which are the branch's own (TASK-85).
+        // but those the uploader has yet to upload (TASK-85).
         let uploads = &state.uploads;
         let reaped = state.segments.reap(|segment| uploader_keeps(uploads, self.branch, segment));
         let released = state.index.let_go(reaped);
-        state.unreferenced.released.extend(released);
-        let appended = self.append_record(state, epoch, root, changes);
+        state.unreferenced.doomed.extend(released.iter().flat_map(FileKey::paths));
+        let appended = self.append_record(state, epoch, root, capacity, changes);
         state.unreferenced.doomed.extend(appended.replaced);
-        state.unreferenced.released.extend(appended.covered);
-        let Unreferenced { doomed, released } = state.unreferenced.take();
-        self.lineage.release(self.branch, epoch, released);
+        state.unreferenced.doomed.extend(appended.covered.iter().flat_map(FileKey::paths));
+        let Unreferenced { doomed } = state.unreferenced.take();
         state.epoch = epoch;
         if let Some(root) = root {
             state.root = root.to_vec();
         }
-        let forked = fork.then(|| {
-            let layer = state.extents.freeze(self.origin.as_ref(), &state.root);
-            // fxdax: the fork holds what is in them, and what is freed in them: no dead space the
-            // branch can take back alone, nor counts (TASK-79.2).
-            state.segments.share(|number| layer.holds(FileKey::Segment(number)));
-            let origin = Origin {
-                parent: self.branch,
-                epoch,
-                next_sequence: state.next_sequence,
-                index: state.index.number(),
-            };
-            Forked { layer, origin }
-        });
         // Queued while the state is locked, so that commits queue in their order.
         let pending = Pending { syncs, write: appended.write, doomed, closed };
         self.durability.lock().unwrap().push(epoch, pending);
         self.changed(state);
-        Ok(forked)
-    }
-
-    /// fxdax: takes the branch's own segments that forks held for its alone again, once they let
-    /// go of what they held in them, or were deleted (TASK-79.2): what is freed in them is then
-    /// dead space, which counts, and which cleaning takes back.
-    fn unshare(&self, state: &mut State<D::File>) {
-        let shared = |segment| self.lineage.shared(self.branch, FileKey::Segment(segment));
-        state.segments.unshare(self.lineage.unshared(), shared);
+        Ok(())
     }
 
     /// Holds new writes back ([`Store::begin_write`]) while the writes in progress are `busy`, as
@@ -1508,18 +1393,18 @@ impl<D: Dir> Store<D> {
         state: &mut State<D::File>,
         epoch: u64,
         root: Option<&[u8]>,
+        capacity: Option<u64>,
         changes: Vec<Change>,
     ) -> Appended {
         let next_sequence = state.next_sequence;
-        let delta = Delta { epoch, next_sequence, root: root.map(<[u8]>::to_vec), changes };
+        let root_set = root.map(<[u8]>::to_vec);
+        let delta = Delta { epoch, next_sequence, root: root_set, capacity, changes };
         let checkpoint = || {
             let (root, segment) = (root.unwrap_or(&state.root), state.segments.open_segment());
-            let (extents, origin) = (&state.extents, self.origin.as_ref());
-            let spent = (self.branch, &state.spent);
-            Checkpoint::of(epoch, next_sequence, root, segment.number, extents, origin, spent)
+            let rest = (root, segment.number, state.space.capacity());
+            Checkpoint::of(epoch, next_sequence, rest, &state.extents, (self.branch, &state.spent))
         };
-        let pinned = || self.lineage.pinned(self.branch);
-        state.index.append(delta, checkpoint, &self.options, pinned)
+        state.index.append(delta, checkpoint, &self.options)
     }
 
     /// Seals `extent`, which a commit seals, in one run in the open segment, or in a file of its
@@ -1534,7 +1419,7 @@ impl<D: Dir> Store<D> {
             // (TASK-79.5). Opening the store removes it, failing here.
             if let Some(Placement::Own(_)) = state.uncommitted.placement(extent) {
                 let path = open_extent_path(extent);
-                if let Err(err) = self.lineage.dir.remove(&path) {
+                if let Err(err) = self.dir.remove(&path) {
                     log::warn!("extent store: failed to remove {path}: {err}");
                 }
             }
@@ -1605,8 +1490,7 @@ impl<D: Dir> Store<D> {
         /// The bytes framed at once.
         const CHUNK: u64 = 16 * extent_frame::PART;
         let path = extent_path(extent);
-        let file =
-            self.lineage.dir.create(&path, true).with_context(|| format!("creating {path}"))?;
+        let file = self.dir.create(&path, true).with_context(|| format!("creating {path}"))?;
         let mut packer = extent_frame::Packer::new();
         let mut data = Aligned::new(len.min(CHUNK) as usize);
         for at in (0..len).step_by(CHUNK as usize) {
@@ -1620,7 +1504,6 @@ impl<D: Dir> Store<D> {
         file.write_at(&tail, end)?;
         let parts = extent_frame::Parts::of_suffix(&tail)?;
         let framed = Arc::new(Framed::new(Arc::new(file), parts));
-        self.lineage.claim(self.branch, [FileKey::Own(extent)]);
         state.own_files.sealed(extent, framed);
         Ok(())
     }
@@ -1633,8 +1516,7 @@ impl<D: Dir> Store<D> {
         state: &mut State<D::File>,
         epoch: u64,
     ) -> Result<Unframed<D::File>, Error> {
-        let unframed = state.segments.close(&self.lineage.dir, epoch, state.next_sequence)?;
-        self.lineage.claim(self.branch, [FileKey::Segment(state.segments.open_segment())]);
+        let unframed = state.segments.close(&*self.dir, epoch, state.next_sequence)?;
         if let Some(uploads) = &mut state.uploads {
             uploads.closed_segment(unframed.number().number, unframed.footer.clone());
             // fxdax: what its file takes is the uploader's to keep until it has uploaded it, which
@@ -1718,12 +1600,11 @@ impl<D: Dir> Store<D> {
     fn frame_behind(&self, state: &mut State<D::File>, unframed: Unframed<D::File>) {
         let number = unframed.number();
         state.segments.framing_begun(number);
-        let unframed = match self.lineage.dir.concurrent() {
+        let unframed = match self.dir.concurrent() {
             true => {
-                let (lineage, shared, idle) =
-                    (self.lineage.clone(), self.state.clone(), self.idle.clone());
+                let (dir, shared, idle) = (self.dir.clone(), self.state.clone(), self.idle.clone());
                 spawn_or_return(unframed, move |unframed| {
-                    let framed = unframed.frame(&lineage.dir);
+                    let framed = unframed.frame(&*dir);
                     framing_ended(&mut Locked::new(shared.lock().unwrap()), number, framed);
                     idle.notify_all();
                 })
@@ -1731,7 +1612,7 @@ impl<D: Dir> Store<D> {
             false => Some(unframed),
         };
         if let Some(unframed) = unframed {
-            framing_ended(state, number, unframed.frame(&self.lineage.dir));
+            framing_ended(state, number, unframed.frame(&*self.dir));
             self.idle.notify_all();
         }
     }
@@ -1740,7 +1621,7 @@ impl<D: Dir> Store<D> {
     /// which opening the store removes.
     fn remove(&self, paths: impl IntoIterator<Item = String>) {
         for path in paths {
-            if let Err(err) = self.lineage.dir.remove(&path)
+            if let Err(err) = self.dir.remove(&path)
                 && !not_found(&err)
             {
                 log::warn!("extent store: failed to remove {path}: {err}");
@@ -1761,10 +1642,7 @@ impl<D: Dir> Store<D> {
 
     /// fxdax: `state`, once no segment is being framed ([`Store::frame_behind`]), which it let go
     /// of meanwhile.
-    fn framed<'a>(
-        &self,
-        mut state: Locked<'a, D::File>,
-    ) -> Locked<'a, D::File> {
+    fn framed<'a>(&self, mut state: Locked<'a, D::File>) -> Locked<'a, D::File> {
         while !state.segments.framings().is_empty() {
             state = state.wait(&self.idle);
         }
@@ -1793,7 +1671,7 @@ impl<D: Dir> Store<D> {
             let file = self.segment_file(state, segment)?.file().clone();
             let mut own = Vec::with_capacity(footer.contents.own.len());
             for (extent, location) in footer.own() {
-                let file = state.own_files.file(&self.lineage.dir, extent)?;
+                let file = state.own_files.file(&*self.dir, extent)?;
                 own.push((location.key, file.file.clone()));
             }
             closed.push(Closed { number, footer, file, own });
@@ -1834,9 +1712,7 @@ impl<D: Dir> Store<D> {
                     return Err(error.context("committing the extent store"));
                 }
                 self.durability.lock().unwrap().finish(last);
-                // The files of extents' data no branch holds extents in go, once the commits that
-                // let them go are durable.
-                self.lineage.durable(self.branch, last);
+                // The files the commits let go of go, once they are durable.
                 self.remove(commits.into_iter().flat_map(|pending| pending.doomed));
                 last
             }
@@ -1864,9 +1740,9 @@ impl<D: Dir> Store<D> {
         for pending in commits.iter_mut() {
             syncs.extend(std::mem::take(&mut pending.syncs));
         }
-        syncs.sync(&self.lineage.dir)?;
-        tail.write(&self.lineage.dir, commits.iter().map(|pending| &pending.write))?;
-        self.lineage.dir.barrier()?;
+        syncs.sync(&*self.dir)?;
+        tail.write(&*self.dir, commits.iter().map(|pending| &pending.write))?;
+        self.dir.barrier()?;
         Ok(())
     }
 
@@ -1928,16 +1804,13 @@ impl<D: Dir> Store<D> {
     /// fxdax: a count that moves with each change of the branch's that may make cleaning behind
     /// its commits due ([`Store::cleaning_due`]): its commits, its writes done and its frees, its
     /// uploader's releases of what its commits freed, its closings between commits, a new
-    /// capacity; and with each time a branch let go of files another made, as a fork deleted does
-    /// of the segments it shared with the branch. Found without the branch's state, and moved by
-    /// none of its reads, nor by looking whether cleaning is due: so that what cleans behind the
-    /// commits looks, holding the state, only once it moved, as soon as it did, and a branch only
-    /// read is looked at once (TASK-79.2).
+    /// capacity. Found without the branch's state, and moved by none of its reads, nor by looking
+    /// whether cleaning is due: so that what cleans behind the commits looks, holding the state,
+    /// only once it moved, as soon as it did, and a branch only read is looked at once (TASK-79.2).
     pub fn cleaning_changes(&self) -> u64 {
         // Each counted holding the state, after what it counts, which a look then takes: a look
-        // begun once the count is found moved finds what moved it. And the lineage's, holding
-        // its ledger, which the look reads again.
-        self.changes.load(Ordering::Relaxed) + self.lineage.unshared()
+        // begun once the count is found moved finds what moved it.
+        self.changes.load(Ordering::Relaxed)
     }
 
     /// fxdax: whether cleaning behind the commits is due ([`Store::clean_behind`]): what no extent
@@ -1950,11 +1823,10 @@ impl<D: Dir> Store<D> {
     /// would, though they took next to none of the disk, and the passes copied out what was live
     /// beside them, to take back next to nothing.
     pub fn cleaning_due(&self, past: u64, live_fraction: f64) -> Result<bool, Error> {
-        let mut state = self.writable()?;
+        let state = self.writable()?;
         if !state.uncommitted.copies().is_empty() {
             return Ok(false);
         }
-        self.unshare(&mut state);
         let reclaimable = state.segments.reclaimable(live_fraction);
         Ok(reclaimable > past || reclaimable > 0 && state.garbage_past_capacity())
     }
@@ -1985,11 +1857,9 @@ impl<D: Dir> Store<D> {
     /// guest's zeros, took next to none of it, and left cleaning due for the others, pass after
     /// pass.
     fn cleanable(&self, live_fraction: f64, most: u64) -> Result<Cleanable, Error> {
-        let mut state = self.writable()?;
-        self.unshare(&mut state);
+        let state = self.writable()?;
         let state = &*state;
-        let shared = |segment| self.lineage.shared(self.branch, FileKey::Segment(segment));
-        let victims = state.segments.victims(live_fraction, shared);
+        let victims = state.segments.victims(live_fraction);
         let mut most_back: Vec<(&SegmentId, &Victim)> = victims.iter().collect();
         most_back.sort_by(|(number, victim), (other_number, other)| {
             victim.cmp_cost(other).then(number.cmp(other_number))
@@ -2123,22 +1993,31 @@ impl<D: Dir> Store<D> {
         Ok(())
     }
 
-    /// Sets the most bytes the branch's extents may hold, durably: the branch's record holds it
-    /// from now on, and the next commit sets it in the branch's state, as its segment's footer
-    /// says. It may grow it, or shrink it no lower than what the extents hold, with what writes in
-    /// progress may add ([`TooSmall`]).
+    /// Sets the most bytes the branch's extents may hold, durably: the index holds it from now on,
+    /// after the commits made so far, which it makes durable first; and the next commit sets it in
+    /// the branch's state, as its delta and its segment's footer say (TASK-165.3, TASK-165.7). It
+    /// may grow it, or shrink it no lower than what the extents hold, with what writes in progress
+    /// may add ([`TooSmall`]).
     pub fn set_capacity(&self, capacity: u64) -> Result<(), Error> {
-        let mut state = self.writable()?;
-        let block_size = self.lineage.block_size as u64;
-        ensure!(capacity >= block_size, "a capacity of {capacity} is less than a block");
-        state.space.check_capacity(capacity)?;
-        // Held while the record changes, so that no write grows past the capacity meanwhile.
-        self.lineage.set_capacity(self.branch, self.token, capacity)?;
-        state.space.set_capacity(capacity);
-        // fxdax: and the branch's in object storage, as of the next commit (TASK-165.3).
-        state.uncommitted.resize(capacity);
-        self.changed(&state);
-        Ok(())
+        let mut tail = self.flushing.lock().unwrap();
+        {
+            let mut state = self.writable()?;
+            let block_size = self.block_size as u64;
+            ensure!(capacity >= block_size, "a capacity of {capacity} is less than a block");
+            state.space.check_capacity(capacity)?;
+            state.space.set_capacity(capacity);
+            // fxdax: and the branch's in object storage, as of the next commit (TASK-165.3).
+            state.uncommitted.resize(capacity);
+            self.changed(&state);
+        }
+        // After the commits before it, which a crash keeps with it, or with none of it.
+        self.flush_locked(&mut tail)?;
+        let record = IndexWrite::Delta(encode(&Record::Capacity(capacity)));
+        let written = tail.write(&*self.dir, [&record]).and_then(|()| Ok(self.dir.barrier()?));
+        if written.is_err() {
+            self.lock().failed = true;
+        }
+        written.context("recording the capacity")
     }
 
     /// fxdax: has the next commit set the branch's capacity, as it is, in the branch's state as
@@ -2270,16 +2149,33 @@ impl<D: Dir> Store<D> {
         Ok(extents)
     }
 
-    /// fxdax: what the branch holds in memory of its own (TASK-31).
-    pub fn footprint(&self) -> Result<Footprint, Error> {
-        let state = self.state()?;
-        Ok(Footprint { entries: state.extents.own_entries(), segments: state.segments.tracked() })
-    }
-
     /// The last epoch committed.
     pub fn epoch(&self) -> Result<u64, Error> {
         Ok(self.state()?.epoch)
     }
+}
+
+/// Removes the files of `branch`'s extents' data in `dir` no extent of `recovered`, its state, is
+/// in: what commits that weren't durable wrote, or that were to go once the commits that let them
+/// go were; and the raw files of extents open, which no commit made durable refers to, and which
+/// are framed once sealed.
+fn remove_unheld<D: Dir>(dir: &D, branch: u64, recovered: &Recovered) -> Result<(), Error> {
+    let held = files_of(&recovered.extents);
+    for kind in [SEGMENTS, EXTENTS, OPEN_SEGMENTS, OPEN_EXTENTS] {
+        for number in list_numbers(dir, &branch_dir(kind, branch))? {
+            let file = match kind {
+                SEGMENTS | OPEN_SEGMENTS => Some(FileKey::Segment(SegmentId { branch, number })),
+                EXTENTS => Some(FileKey::Own(ExtentId::new(branch, number))),
+                _ => None,
+            };
+            if !file.is_some_and(|file| held.contains(&file)) {
+                let path = format!("{}/{:016x}", branch_dir(kind, branch), number);
+                dir.remove(&path).with_context(|| format!("removing {path}"))?;
+            }
+        }
+    }
+    dir.barrier()?;
+    Ok(())
 }
 
 // fxdax: commits only ordered are made durable before the store goes, which would otherwise

@@ -869,8 +869,9 @@ impl ExtentStore {
     /// a placement cut off takes no branch back from the one after it (`ESTALE`), and its commits
     /// fail once a later one takes it (`EROFS`).
     pub fn place(path: impl AsRef<Path>, token: u64) -> Result<(), Error> {
-        let (dir, branch) = extent_store::resolve_host(path.as_ref()).map_err(Error::new)?;
-        crate::remote::place(&dir, branch, token).map_err(Error::new)
+        let path = path.as_ref();
+        let branch = extent_store::host_branch(path).map_err(Error::new)?;
+        crate::remote::place(path, branch, token).map_err(Error::new)
     }
 
     /// fxdax: deletes the store at `path`, which nothing has open: with `bucket`, its branch

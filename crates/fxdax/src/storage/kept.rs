@@ -48,7 +48,7 @@ impl Kept {
     fn attached(opened: Opened) -> anyhow::Result<Self> {
         let Opened { store, bucket } = opened;
         let store = Arc::new(store);
-        let url = store.lineage().bucket().unwrap_or_default().to_owned();
+        let url = store.bucket().unwrap_or_default().to_owned();
         let options = remote::Options { token: host_store::token()?, ..Default::default() };
         let remote = Remote::attach(store.clone(), bucket.clone(), rand::random(), options)
             .with_context(|| format!("keeping branch {:x} in {url}", store.description().branch))?;

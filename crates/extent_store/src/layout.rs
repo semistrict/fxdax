@@ -6,14 +6,15 @@
 
 use crate::dir::Dir;
 use anyhow::{Context as _, Error, anyhow, bail, ensure};
-use serde::{Deserialize, Serialize};
 use extent_frame::segment::Location;
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use storage_device::ExtentId;
 
 /// The first line of a store's description: its format. fxdax: 6 names the bucket a host's store
 /// keeps its branches in (TASK-165.6); 7 places an extent whose data is in the bucket by its
-/// location there (TASK-165.8). A store of another format is refused ([`Format`]): nothing reads,
+/// location there (TASK-165.8), and holds one branch, whose capacity its index holds, no branch
+/// records (TASK-165.7). A store of another format is refused ([`Format`]): nothing reads,
 /// converts or upgrades it.
 pub(crate) const FORMAT: &str = "fxdax extent store 7";
 
@@ -26,9 +27,8 @@ pub struct Format {
     pub found: String,
 }
 
-/// A branch of a store, as its user sees it: the size of the blocks extents are read and written
-/// in, which is the store's, the most bytes the branch's extents may hold, and the branch, whose
-/// extents its user mints.
+/// A store, as its user sees it: the size of the blocks extents are read and written in, the most
+/// bytes its extents may hold, and its branch, whose extents its user mints.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Description {
     pub block_size: u32,
@@ -36,14 +36,13 @@ pub struct Description {
     pub branch: u64,
 }
 
-/// The store's description, its `store` file: its format, block size, and first branch, which
-/// opening the store, rather than one of its branches, opens; and fxdax: the URL of the bucket its
-/// branches are kept in, which every store in a host's directory names (`create_host`, TASK-165.6),
-/// and a store of memory's need not.
+/// The store's description, its `store` file: its format, block size, and branch; and fxdax: the
+/// URL of the bucket its branch is kept in, which every store in a host's directory names
+/// (`create_host`, TASK-165.6), and a store of memory's need not.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct StoreFile {
     pub block_size: u32,
-    pub first: u64,
+    pub branch: u64,
     pub bucket: Option<String>,
 }
 
@@ -73,93 +72,19 @@ impl StoreFile {
         let fields = fields(text, FORMAT)?;
         Ok(Self {
             block_size: number(&fields, "block_size")?.try_into().context("bad block_size")?,
-            first: number(&fields, "branch")?,
+            branch: number(&fields, "branch")?,
             bucket: fields.get("bucket").cloned(),
         })
     }
 
     pub(crate) fn text(&self) -> String {
         let bucket = self.bucket.as_ref().map_or(String::new(), |url| format!("bucket {url}\n"));
-        format!("{FORMAT}\nblock_size {}\nbranch {}\n{bucket}", self.block_size, self.first)
-    }
-}
-
-/// Where a branch was forked from: its parent, and the parent's epoch, next sequence number and
-/// index file as of the fork.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct Origin {
-    pub parent: u64,
-    pub epoch: u64,
-    pub next_sequence: u64,
-    pub index: u64,
-}
-
-/// A branch's record, its newest `branches/<branch>.<version>` file.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct BranchRecord {
-    pub capacity: u64,
-    pub origin: Option<Origin>,
-    /// Whether its state, a fork's, is in its own index yet, or still its parent's at the fork.
-    pub resolved: bool,
-    /// Whether its index, a fork's, holds what it changed over its parent's state at the fork,
-    /// rather than all it holds (TASK-31); forks before it was, opened, hold all.
-    pub layered: bool,
-    pub deleted: bool,
-}
-
-/// The first line of a branch's record.
-const RECORD: &str = "fxdax extent store branch";
-
-impl BranchRecord {
-    pub(crate) fn parse(text: &str) -> Result<Self, Error> {
-        let fields = fields(text, RECORD)?;
-        let origin = match fields.get("parent") {
-            None => None,
-            Some(parent) => {
-                let numbers: Vec<u64> = parent
-                    .split(' ')
-                    .map(|number| number.parse().context("bad parent"))
-                    .collect::<Result<_, _>>()?;
-                let [parent, epoch, next_sequence, index] = numbers[..] else {
-                    bail!("bad parent {parent:?}");
-                };
-                Some(Origin { parent, epoch, next_sequence, index })
-            }
-        };
-        let flag = |key| Ok::<_, Error>(number(&fields, key)? != 0);
-        ensure!(fields.contains_key("end"), "a torn record");
-        Ok(Self {
-            capacity: number(&fields, "capacity")?,
-            origin,
-            resolved: flag("resolved")?,
-            // Not in records written before forks were layered.
-            layered: fields.contains_key("layered") && flag("layered")?,
-            deleted: flag("deleted")?,
-        })
-    }
-
-    /// Where it was forked from, if its state is over its parent's at the fork: a fork's not yet
-    /// opened, or whose index holds what it changed over it.
-    pub(crate) fn over_parent(&self) -> Option<Origin> {
-        self.origin.filter(|_| self.layered || !self.resolved)
-    }
-
-    pub(crate) fn text(&self) -> String {
-        let parent = self.origin.map_or(String::new(), |origin| {
-            let Origin { parent, epoch, next_sequence, index } = origin;
-            format!("parent {parent} {epoch} {next_sequence} {index}\n")
-        });
-        format!(
-            "{RECORD}\ncapacity {}\n{parent}resolved {}\nlayered {}\ndeleted {}\nend .\n",
-            self.capacity, self.resolved as u8, self.layered as u8, self.deleted as u8
-        )
+        format!("{FORMAT}\nblock_size {}\nbranch {}\n{bucket}", self.block_size, self.branch)
     }
 }
 
 /// The description's file.
 pub(crate) const DESCRIPTION: &str = "store";
-/// The directory of branches' records.
-pub(crate) const BRANCHES: &str = "branches";
 /// The directory of segments, a directory for each branch's.
 pub(crate) const SEGMENTS: &str = "segments";
 /// The directory of extents stored on their own, a directory for each branch's.
@@ -209,21 +134,10 @@ pub(crate) fn index_path(branch: u64, number: u64) -> String {
     format!("{}/{number:016x}", branch_dir(INDEX, branch))
 }
 
-/// The path of `branch`'s record's `version`.
-pub(crate) fn record_path(branch: u64, version: u64) -> String {
-    format!("{BRANCHES}/{branch:016x}.{version:016x}")
-}
-
 /// The number in a file's name: a segment's, an index file's, an extent's sequence number, or a
 /// branch's directory's.
 pub(crate) fn parse_number(name: &str) -> Option<u64> {
     (name.len() == 16).then(|| u64::from_str_radix(name, 16).ok()).flatten()
-}
-
-/// The branch and version of a record's file's name.
-pub(crate) fn parse_record_name(name: &str) -> Option<(u64, u64)> {
-    let (branch, version) = name.split_once('.')?;
-    Some((parse_number(branch)?, parse_number(version)?))
 }
 
 /// The numbers of the files in `path`, in order.
@@ -301,7 +215,10 @@ pub(crate) struct Extent {
     pub data: Data,
 }
 
-/// A file of extents' data, which the branches holding extents in it claim.
+/// A branch's extents, by their IDs.
+pub(crate) type Extents = HashMap<ExtentId, Extent>;
+
+/// A file of extents' data.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) enum FileKey {
     Segment(SegmentId),
@@ -314,14 +231,6 @@ impl FileKey {
         match self {
             Self::Segment(segment) => [segment_path(*segment), open_segment_path(*segment)],
             Self::Own(extent) => [extent_path(*extent), open_extent_path(*extent)],
-        }
-    }
-
-    /// fxdax: the branch that made it, among whose files it is.
-    pub(crate) fn branch(&self) -> u64 {
-        match self {
-            Self::Segment(segment) => segment.branch,
-            Self::Own(extent) => extent.branch,
         }
     }
 }
@@ -346,17 +255,16 @@ pub(crate) fn files_of<'a>(
 }
 
 /// A branch's index as of an epoch, whose extents are all sealed, and the number of the segment
-/// open then, whose footer, and those of the segments closed after it, follow it. A fork's, over
-/// its parent's state at the fork, holds the extents it holds otherwise, and those of its parent's
-/// it holds no longer, `gone` (TASK-31).
+/// open then, whose footer, and those of the segments closed after it, follow it. fxdax: and the
+/// branch's capacity as of it (TASK-165.7).
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct Checkpoint {
     pub epoch: u64,
     pub next_sequence: u64,
     pub root: Vec<u8>,
     pub segment: u64,
+    pub capacity: u64,
     pub extents: Vec<(ExtentId, Extent)>,
-    pub gone: Vec<ExtentId>,
     /// fxdax: the runs of the branch's own extents it froze once sealed, which it writes no more
     /// (`Spent`, TASK-79.6): each's first, and its end, past its last.
     pub spent: Vec<(ExtentId, u64)>,
@@ -369,15 +277,13 @@ struct Rest {
     next_sequence: u64,
     root: Vec<u8>,
     segment: u64,
+    capacity: u64,
 }
 
 /// fxdax: what begins the key of an extent's place in a checkpoint's table, if its data is in the
 /// bucket: then its key there, its offset there the row's (TASK-165.8). Keys there look as the
 /// store's own paths do.
 const BUCKET: &str = "bucket:";
-/// The key of a row of a fork's checkpoint's table naming an extent of its parent's it holds no
-/// longer.
-const GONE: &str = "gone";
 /// fxdax: the key of a row of a checkpoint's table naming a run of its branch's extents it freed
 /// once sealed: the run's first, and, as its offset, its end (TASK-79.6). Checkpoints only a
 /// branch's own store reads hold them, not object storage's.
@@ -401,9 +307,6 @@ impl Checkpoint {
             };
             entries.push(((extent.branch, extent.sequence), key, offset, entry.len));
         }
-        for extent in &self.gone {
-            entries.push(((extent.branch, extent.sequence), GONE.to_owned(), 0, 0));
-        }
         for (first, end) in &self.spent {
             entries.push(((first.branch, first.sequence), SPENT.to_owned(), *end, 0));
         }
@@ -413,6 +316,7 @@ impl Checkpoint {
             next_sequence: self.next_sequence,
             root: self.root.clone(),
             segment: self.segment,
+            capacity: self.capacity,
         };
         let rest = bincode::serialize(&rest).expect("checkpoints serialize");
         let rows = entries.iter().map(|(id, key, offset, len)| (*id, key.as_str(), *offset, *len));
@@ -422,16 +326,11 @@ impl Checkpoint {
     /// The checkpoint whose table is `bytes`.
     pub(crate) fn of_table(bytes: &[u8]) -> Result<Self, Error> {
         let (footer, rows) = extent_frame::table::decode(bytes)?;
-        let Rest { epoch, next_sequence, root, segment } =
+        let Rest { epoch, next_sequence, root, segment, capacity } =
             bincode::deserialize(&footer.rest).context("a checkpoint's state")?;
-        let (mut extents, mut gone, mut spent) =
-            (Vec::with_capacity(rows.len()), Vec::new(), Vec::new());
+        let (mut extents, mut spent) = (Vec::with_capacity(rows.len()), Vec::new());
         for row in rows {
             let extent = ExtentId::new(row.id.0, row.id.1);
-            if row.key == GONE {
-                gone.push(extent);
-                continue;
-            }
             if row.key == SPENT {
                 spent.push((extent, row.offset));
                 continue;
@@ -455,7 +354,7 @@ impl Checkpoint {
             };
             extents.push((extent, Extent { len: row.len, data }));
         }
-        Ok(Self { epoch, next_sequence, root, segment, extents, gone, spent })
+        Ok(Self { epoch, next_sequence, root, segment, capacity, extents, spent })
     }
 }
 
@@ -505,6 +404,9 @@ pub(crate) struct Delta {
     pub next_sequence: u64,
     /// The root the commit set, if it set one.
     pub root: Option<Vec<u8>>,
+    /// fxdax: the capacity it set, if it set one: a resize is ordered with the commits, as it is
+    /// in object storage (TASK-165.3, TASK-165.7).
+    pub capacity: Option<u64>,
     pub changes: Vec<Change>,
 }
 
@@ -527,6 +429,9 @@ pub enum Place {
 pub(crate) enum Record {
     Checkpoint(Vec<u8>),
     Delta(Delta),
+    /// fxdax: the capacity the branch was set to, after the commits before it, durably, though no
+    /// commit came since, as a resize of a store no guest commits to (TASK-165.7).
+    Capacity(u64),
 }
 
 /// A record's header: its payload's length, and its hash.
@@ -577,6 +482,7 @@ mod tests {
             epoch,
             next_sequence: 9,
             root: Some(b"root".to_vec()),
+            capacity: Some(1 << 20),
             changes: vec![
                 Change::Write {
                     extent: ExtentId::new(1, 2),
@@ -598,6 +504,7 @@ mod tests {
             .map(|record| match record {
                 Record::Delta(delta) => delta.epoch,
                 Record::Checkpoint(table) => Checkpoint::of_table(table).unwrap().epoch,
+                Record::Capacity(_) => unreachable!("no capacity recorded here"),
             })
             .collect()
     }
@@ -674,17 +581,17 @@ mod tests {
             next_sequence: 7,
             root: b"root".to_vec(),
             segment: 4,
+            capacity: 1 << 30,
             extents: vec![
                 (ExtentId::new(1, 2), run(3, 4096, 8192)),
                 (ExtentId::new(1, 5), Extent { len: 1 << 20, data: Data::Own }),
                 (ExtentId::new(2, 1), Extent { len: 4096, data: Data::Remote(remote) }),
             ],
-            gone: vec![ExtentId::new(1, 3)],
             spent: vec![(ExtentId::new(1, 0), 2), (ExtentId::new(1, 6), 9)],
         };
         let table = checkpoint.table().unwrap();
         assert_eq!(Checkpoint::of_table(&table).unwrap(), checkpoint);
-        assert_eq!(extent_frame::Frame::of(&table).unwrap().data_len, 6 * 36);
+        assert_eq!(extent_frame::Frame::of(&table).unwrap().data_len, 5 * 36);
         let open = Extent { len: 8192, data: Data::Pieces(vec![]) };
         let unsealed = Checkpoint { extents: vec![(ExtentId::new(1, 9), open)], ..checkpoint };
         assert!(unsealed.table().is_err());
@@ -692,7 +599,7 @@ mod tests {
 
     #[test]
     fn descriptions() {
-        let file = StoreFile { block_size: 4096, first: u64::MAX, bucket: None };
+        let file = StoreFile { block_size: 4096, branch: u64::MAX, bucket: None };
         assert_eq!(StoreFile::parse(&file.text()).unwrap(), file);
         // fxdax: a host's store names its bucket (TASK-165.6).
         let bucket = Some("file:///images/a/bucket".to_owned());
@@ -705,33 +612,6 @@ mod tests {
             assert_eq!(found, older);
         }
         assert!(StoreFile::parse(&format!("{FORMAT}\nblock_size 4096\n")).is_err());
-
-        let origin = Origin { parent: 3, epoch: 9, next_sequence: 12, index: 2 };
-        for record in [
-            BranchRecord {
-                capacity: 1 << 30,
-                origin: None,
-                resolved: true,
-                layered: false,
-                deleted: false,
-            },
-            BranchRecord {
-                capacity: 7,
-                origin: Some(origin),
-                resolved: false,
-                layered: true,
-                deleted: true,
-            },
-        ] {
-            assert_eq!(BranchRecord::parse(&record.text()).unwrap(), record);
-            let text = record.text();
-            // Torn.
-            assert!(BranchRecord::parse(&text[..text.len() - 3]).is_err());
-        }
-        // Written before forks were layered: a fork opened holds all it holds.
-        let old = "fxdax extent store branch\ncapacity 7\nparent 3 9 12 2\nresolved 1\ndeleted 0\nend .\n";
-        let record = BranchRecord::parse(old).unwrap();
-        assert!(!record.layered && record.over_parent().is_none());
     }
 
     #[test]
@@ -741,8 +621,6 @@ mod tests {
         let segment = SegmentId { branch: 0xb, number: 77 };
         assert_eq!(segment_path(segment), "segments/000000000000000b/000000000000004d");
         assert_eq!(index_path(0xb, 2), "index/000000000000000b/0000000000000002");
-        assert_eq!(record_path(0xb, 1), "branches/000000000000000b.0000000000000001");
-        assert_eq!(parse_record_name("000000000000000b.0000000000000001"), Some((0xb, 1)));
         assert_eq!(parse_number("000000000000004d"), Some(77));
         assert_eq!(parse_number("77"), None);
     }

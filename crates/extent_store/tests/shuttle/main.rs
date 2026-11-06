@@ -33,8 +33,7 @@
 //! the branch's files take of the host's disk, too, of which one is refused (TASK-79.89). And the
 //! guest's requests are served while a commit's flush writes its checkpoint, stalling (TASK-92.56).
 //!
-//! So are a lineage's branches, while a fork's or a deletion's I/O stalls (lineage.rs); and the
-//! crash tests' rounds, the store framing segments and syncing flushes on threads of its own while
+//! So are the crash tests' rounds, the store framing segments and syncing flushes on threads of its own while
 //! their workloads go on, crashing as those interleave, on schedules seeded by the rounds
 //! (crash.rs).
 //!
@@ -44,7 +43,7 @@
 
 #![cfg(feature = "shuttle")]
 
-use extent_frame::segment::Chain;
+use extent_frame::segment::{Chain, Child};
 use extent_store::{
     Description, Dir as _, File as _, MemDir, NoSpace, Options, Rules, Store, set_rules,
 };
@@ -58,7 +57,6 @@ use std::sync::Arc;
 use storage_device::{ExtentId, NoExtent};
 
 mod crash;
-mod lineage;
 mod stalling;
 
 use stalling::{Op, Stalling};
@@ -203,8 +201,8 @@ fn run_with(Run { steps, follow, uploading, cleaning }: Run) {
     // What the store holds as of each commit, by epoch, the writer's record.
     let history = Arc::new(Mutex::new(vec![Holds::new()]));
     let written = Arc::new(AtomicBool::new(false));
-    // The fork's commit, and what the store held at it, which its child holds.
-    let forked = Arc::new(Mutex::new(None::<(u64, Holds)>));
+    // The fork's commit, which the segment naming the fork ends at.
+    let forked = Arc::new(Mutex::new(None::<u64>));
 
     let writer = {
         let (store, history, written, forked) =
@@ -225,8 +223,8 @@ fn run_with(Run { steps, follow, uploading, cleaning }: Run) {
                     Step::Commit { .. } | Step::Fork => {
                         match *step {
                             Step::Fork => {
-                                let epoch = store.fork(CHILD).unwrap();
-                                *forked.lock().unwrap() = Some((epoch, holds.clone()));
+                                let child = Child { branch: CHILD, owner: 0, point: false };
+                                *forked.lock().unwrap() = Some(store.commit_fork(child).unwrap());
                             }
                             Step::Commit { durable: true } => store.commit(None).unwrap(),
                             _ => store.commit_ordered(None).unwrap(),
@@ -356,7 +354,7 @@ fn run_with(Run { steps, follow, uploading, cleaning }: Run) {
                     // A fork's ends at the fork, as the fork's commit closed it (doc-7, Forks).
                     if !closed.footer.contents.forks.is_empty() {
                         let fork = loop {
-                            if let Some((epoch, _)) = *forked.lock().unwrap() {
+                            if let Some(epoch) = *forked.lock().unwrap() {
                                 break epoch;
                             }
                             thread::yield_now();
@@ -492,17 +490,6 @@ fn run_with(Run { steps, follow, uploading, cleaning }: Run) {
     }
     let held: Vec<_> = store.extents().unwrap().into_iter().map(|(extent, _)| extent).collect();
     assert_eq!(held, holds.keys().copied().collect::<Vec<_>>());
-
-    // The fork holds what the store held at the fork, though the store freed some since.
-    let (_, forked) = forked.lock().unwrap().clone().expect("the writer forked");
-    let child = store.lineage().open_branch(CHILD).unwrap();
-    let held: Vec<_> = child.extents().unwrap().into_iter().map(|(extent, _)| extent).collect();
-    assert_eq!(held, forked.keys().copied().collect::<Vec<_>>());
-    for (extent, data) in &forked {
-        let mut read = vec![0; data.len()];
-        child.read(*extent, 0, &mut read).unwrap();
-        assert!(&read == data, "{extent:?} reads other data in the fork than was written");
-    }
 
     // Crashed, at any of these points, the store recovers at least what the uploader took.
     let taken = *taken.lock().unwrap();
@@ -673,7 +660,7 @@ fn cleaning_during_a_fork() {
     let forker = {
         let store = store.clone();
         thread::spawn(move || {
-            let epoch = store.fork(CHILD).unwrap();
+            let epoch = store.commit_fork(Child { branch: CHILD, owner: 0, point: false }).unwrap();
             store.commit(None).unwrap();
             epoch
         })
@@ -1077,10 +1064,10 @@ fn closing_during_a_framing() {
     let closing = spawn_closing(&store);
     dir.wait_until_stalled();
     let reopening = {
-        let store = store.clone();
+        let (store, dir) = (store.clone(), dir.clone());
         thread::spawn(move || {
             store.close().unwrap();
-            let reopened = store.lineage().open_branch(BRANCH);
+            let reopened = Store::open(dir, OPTIONS);
             let reopened = reopened.expect("a closing between commits raced the branch's closing");
             check_framed(&reopened, "a closing between commits raced the branch's closing");
         })
@@ -1114,31 +1101,19 @@ fn closing_after_a_failed_flush() {
     // Failing too, unless the flush took every commit, and nothing was left to flush.
     drop(store.close());
     let failure = "a framing raced the branch's closing after a failed flush";
-    let reopened = store.lineage().open_branch(BRANCH);
+    let reopened = Store::open(dir.clone(), OPTIONS);
     let reopened = reopened.unwrap_or_else(|error| panic!("{failure}: {error:#}"));
     // What was durable: the first commit, extent 1's.
     assert_eq!(reopened.epoch().unwrap(), 1, "{failure}: commits not durable recovered");
     check_framed(&reopened, failure);
-}
-
-/// One run of a fork while a closing between commits frames the segment, which stalls
-/// (TASK-41.1): the fork waits for it, so that its child, which inherits the extent in it, reads it
-/// from its framed file, whole.
-fn forking_during_a_framing() {
-    let (dir, store) = framing_stalls();
-    let closing = spawn_closing(&store);
-    dir.wait_until_stalled();
-    let forking = {
-        let store = store.clone();
-        thread::spawn(move || {
-            store.fork(CHILD).unwrap();
-            let child = store.lineage().open_branch(CHILD).unwrap();
-            check_framed(&child, "a fork raced a closing between commits");
-        })
-    };
-    dir.let_go(Ok(()));
-    closing.join().unwrap();
-    forking.join().unwrap();
+    // Writing on, it closes segments of its own, numbered past those it found, framed where no
+    // framing of the store before frames them still, making files of their numbers.
+    for sequence in 5..8 {
+        let written = reopened.write(extent(sequence), 0, &pattern(sequence as u8, 3 * BLOCK));
+        written.unwrap_or_else(|error| panic!("{failure}: {error:#}"));
+        let committed = reopened.commit(None);
+        committed.unwrap_or_else(|error| panic!("{failure}: {error:#}"));
+    }
 }
 
 /// A store of the branch, segments laid out as [`ROLLING`] says, whose open segment, its first,
@@ -1183,9 +1158,8 @@ fn serving_during_a_framing_for_room() {
     dir.let_go(Ok(()));
     store.commit(None).unwrap();
     check_rolled(&store, 5, "a read once a closing for room framed");
-    let lineage = store.lineage().clone();
     drop(store);
-    check_rolled(&lineage.open_branch(BRANCH).unwrap(), 5, "the branch opened again");
+    check_rolled(&Store::open(dir, OPTIONS).unwrap(), 5, "the branch opened again");
 }
 
 /// One run of the branch closing while the framing of a segment a write closed for want of room
@@ -1196,10 +1170,10 @@ fn closing_during_a_framing_for_room() {
     store.write(extent(5), 0, &pattern(5, 2 * BLOCK)).unwrap();
     dir.wait_until_stalled();
     let reopening = {
-        let store = store.clone();
+        let (store, dir) = (store.clone(), dir.clone());
         thread::spawn(move || {
             store.close().unwrap();
-            let reopened = store.lineage().open_branch(BRANCH).unwrap();
+            let reopened = Store::open(dir, OPTIONS).unwrap();
             check_rolled(&reopened, 1, "a closing for room raced the branch's closing");
             let mut read = vec![0; BLOCK];
             let error = reopened.read(extent(2), 0, &mut read).expect_err("an extent not sealed");
@@ -1270,9 +1244,8 @@ fn serving_during_a_checkpoint() {
     dir.let_go(Ok(()));
     committing.join().unwrap();
     store.flush().unwrap();
-    let lineage = store.lineage().clone();
     drop(store);
-    let reopened = lineage.open_branch(BRANCH).unwrap();
+    let reopened = Store::open(dir, options).unwrap();
     assert_eq!(reopened.epoch().unwrap(), 2, "the commits made durable were not");
     check_checkpointed(&reopened, "the branch opened again");
 }
@@ -1410,12 +1383,6 @@ fn closing_after_a_failed_flush_by_pct() {
 }
 
 #[test]
-fn forking_during_a_framing_by_pct() {
-    set_rules(Rules::ALL);
-    Runner::new(PctScheduler::new(3, runs()), config()).run(forking_during_a_framing);
-}
-
-#[test]
 fn requests_served_during_a_framing_for_room_by_pct() {
     set_rules(Rules::ALL);
     Runner::new(PctScheduler::new(3, runs()), config()).run(serving_during_a_framing_for_room);
@@ -1474,14 +1441,12 @@ fn replay() {
             "durable_once_synced" => rules.durable_once_synced = false,
             "close_waits_for_flushes" => rules.close_waits_for_flushes = false,
             "close_waits_for_framings" => rules.close_waits_for_framings = false,
-            "forks_wait_for_framings" => rules.forks_wait_for_framings = false,
             "framings_end_themselves" => rules.framings_end_themselves = false,
             "keep_frees_for_views" => rules.keep_frees_for_views = false,
             "keep_pins" => rules.keep_pins = false,
             "decide_at_publish" => rules.decide_at_publish = false,
             "views_refuse_later_extents" => rules.views_refuse_later_extents = false,
             "views_hold_their_commit" => rules.views_hold_their_commit = false,
-            "wait_for_forks_and_deletions" => rules.wait_for_forks_and_deletions = false,
             other => panic!("SHUTTLE_RULES_OFF names no rule {other:?}"),
         }
     }
@@ -1506,23 +1471,9 @@ fn replay() {
         Ok("serving_during_a_framing") => serving_during_a_framing,
         Ok("closing_during_a_framing") => closing_during_a_framing,
         Ok("closing_after_a_failed_flush") => closing_after_a_failed_flush,
-        Ok("forking_during_a_framing") => forking_during_a_framing,
         Ok("serving_during_a_framing_for_room") => serving_during_a_framing_for_room,
         Ok("closing_during_a_framing_for_room") => closing_during_a_framing_for_room,
         Ok("uploading_what_a_closing_for_room_closed") => uploading_what_a_closing_for_room_closed,
-        Ok("deleting_stalled_marking") => lineage::deleting_stalled_marking,
-        Ok("deleting_stalled_removing_its_index") => lineage::deleting_stalled_removing_its_index,
-        Ok("forking_stalled") => lineage::forking_stalled,
-        Ok("first_opening_stalled") => lineage::first_opening_stalled,
-        Ok("capacity_change_stalled") => lineage::capacity_change_stalled,
-        Ok("openings_and_deletions_during_a_deletion") => {
-            lineage::openings_and_deletions_during_a_deletion
-        }
-        Ok("forks_to_one_branch") => lineage::forks_to_one_branch,
-        Ok("forks_to_a_branch_being_forked") => lineage::forks_to_a_branch_being_forked,
-        Ok("listing_during_a_deletion") => lineage::listing_during_a_deletion,
-        Ok("listing_during_a_forks_commit") => lineage::listing_during_a_forks_commit,
-        Ok("reading_while_an_opening_stalls") => lineage::reading_while_an_opening_stalls,
         _ => run,
     };
     Runner::new(scheduler, config()).run(scenario);
@@ -1707,14 +1658,6 @@ fn needs_closes_to_wait_for_framings_after_a_failed_flush() {
 fn needs_framings_to_end_themselves() {
     let rules = Rules { framings_end_themselves: false, ..Rules::ALL };
     fails_without(rules, &["no commit's segment"], uploading_what_a_closing_for_room_closed);
-}
-
-/// A fork while a closing between commits frames a segment: the child, reading the extent it
-/// inherited in it, finds no framed file, or one not yet whole.
-#[test]
-fn needs_forks_to_wait_for_framings() {
-    let rules = Rules { forks_wait_for_framings: false, ..Rules::ALL };
-    fails_without(rules, &["a fork raced a closing between commits"], forking_during_a_framing);
 }
 
 /// Frees not kept for views: a view's read of an extent its commit holds finds it gone, or, the

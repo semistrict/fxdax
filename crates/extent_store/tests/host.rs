@@ -2,12 +2,12 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-//! Stores in directories of the host's: their forks' handles, deleting them, and taking a store's
-//! directory for one process at a time (TASK-44.1).
+//! Stores in directories of the host's: a store a directory, of one branch (TASK-165.7), deleting
+//! them, and taking a store's directory for one process at a time (TASK-44.1), and once in it.
 
 use extent_store::{
-    Description, Dir, File as _, HostDir, Options, create_host, delete_host, fork_host,
-    host_bucket, open_host, resolve_host,
+    Description, Dir, File as _, HostDir, Options, create_host, delete_host, host_branch,
+    host_bucket, open_host,
 };
 use std::path::Path;
 use storage_device::ExtentId;
@@ -31,81 +31,78 @@ fn create(path: &Path) -> extent_store::Store<HostDir> {
     create_host(path, description, "memory:///host", false, OPTIONS).unwrap()
 }
 
-/// A store's directory resolves to it and its first branch; a fork's handle, to the store's
-/// directory and the fork; relative handles too.
+/// fxdax: a host's store names its branch, and the bucket it is kept in (TASK-165.6), which its
+/// description says, opened or not.
 #[test]
-fn handles_resolve_to_their_store_and_branch() {
+fn stores_name_their_branch_and_bucket() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("store");
     let store = create(&path);
-    let canonical = path.canonicalize().unwrap();
-    assert_eq!(resolve_host(&path).unwrap(), (canonical.clone(), BRANCH));
-    fork_host(&store, &dir.path().join("fork"), BRANCH + 1).unwrap();
-    assert_eq!(resolve_host(&dir.path().join("fork")).unwrap(), (canonical.clone(), BRANCH + 1));
-    // In the working directory, its parent named by no path.
-    std::env::set_current_dir(dir.path()).unwrap();
-    fork_host(&store, Path::new("relative"), BRANCH + 2).unwrap();
-    assert_eq!(resolve_host(Path::new("relative")).unwrap(), (canonical, BRANCH + 2));
-}
-
-/// fxdax: a host's store names the bucket its branches are kept in, which its forks share, read
-/// through their handles too (TASK-165.6).
-#[test]
-fn stores_and_their_forks_name_their_bucket() {
-    let dir = tempfile::tempdir().unwrap();
-    let (path, fork) = (dir.path().join("store"), dir.path().join("fork"));
-    let store = create(&path);
-    fork_host(&store, &fork, BRANCH + 1).unwrap();
-    assert_eq!(store.lineage().bucket(), Some("memory:///host"));
-    for named in [&path, &fork] {
-        assert_eq!(host_bucket(named).unwrap().as_deref(), Some("memory:///host"));
-    }
+    assert_eq!(store.bucket(), Some("memory:///host"));
+    assert_eq!(host_bucket(&path).unwrap().as_deref(), Some("memory:///host"));
+    assert_eq!(host_branch(&path).unwrap(), BRANCH);
     drop(store);
-    let forked = open_host(&fork, false, OPTIONS).unwrap();
-    assert_eq!(forked.lineage().bucket(), Some("memory:///host"));
+    let opened = open_host(&path, false, OPTIONS).unwrap();
+    assert_eq!((opened.bucket(), opened.description().branch), (Some("memory:///host"), BRANCH));
 }
 
-/// Deleting a fork removes its handle; the store, its directory, once its last branch goes.
+/// A store is opened once in a process, as in all: a second opening, and a deletion, of one open
+/// fail at once, rather than wait for the process itself (TASK-165.7).
 #[test]
-fn deleting_forks_and_stores() {
+fn stores_open_once() {
     let dir = tempfile::tempdir().unwrap();
-    let (path, fork) = (dir.path().join("store"), dir.path().join("fork"));
+    let path = dir.path().join("store");
+    let store = create(&path);
+    let started = std::time::Instant::now();
+    let again = open_host(&path, false, OPTIONS).err().expect("opened twice");
+    assert_eq!(
+        format!("{again:#}"),
+        "taking the store's directory: this process has the store open"
+    );
+    assert!(delete_host(&path, |_| Ok(())).is_err(), "deleted an open store");
+    assert!(started.elapsed() < std::time::Duration::from_secs(1), "waited for itself");
+    drop(store);
+    drop(open_host(&path, false, OPTIONS).unwrap());
+}
+
+/// Deleting a store removes its directory, whole, once `before` deleted its branch elsewhere.
+#[test]
+fn deleting_stores() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("store");
     let store = create(&path);
     store.write(ExtentId::new(BRANCH, 1), 0, &[1; BLOCK]).unwrap();
     store.commit(None).unwrap();
-    fork_host(&store, &fork, BRANCH + 1).unwrap();
     drop(store);
-    delete_host(&path, OPTIONS).unwrap();
-    assert!(path.exists(), "the fork holds what it shares of it");
+    let deleted = std::cell::Cell::new(None);
+    delete_host(&path, |branch| Ok(deleted.set(Some(branch)))).unwrap();
+    assert_eq!((deleted.get(), path.exists()), (Some(BRANCH), false));
     assert!(open_host(&path, false, OPTIONS).is_err(), "the deleted store opened");
-    let forked = open_host(&fork, false, OPTIONS).unwrap();
-    let mut data = vec![0; BLOCK];
-    forked.read(ExtentId::new(BRANCH, 1), 0, &mut data).unwrap();
-    assert_eq!(data, [1; BLOCK]);
-    drop(forked);
-    delete_host(&fork, OPTIONS).unwrap();
-    assert!(!fork.exists() && !path.exists());
 }
 
-/// A directory is taken by one opening of it at a time: another waits for it to be let go, and
-/// takes it then.
+/// A directory is taken by one process at a time: a taking waits for another's to be let go, and
+/// takes it then. Another's is a `flock` of the directory here, through a descriptor of its own, as
+/// another process's is.
 #[test]
 fn directories_are_taken_one_at_a_time() {
+    use std::os::fd::AsRawFd as _;
     let dir = tempfile::tempdir().unwrap();
-    let first = HostDir::new(dir.path(), false).unwrap();
-    let second = HostDir::new(dir.path(), false).unwrap();
-    first.take().unwrap();
+    let others = std::fs::File::open(dir.path()).unwrap();
+    // SAFETY: Plain system call on the directory's descriptor.
+    assert_eq!(unsafe { libc::flock(others.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) }, 0);
+    let ours = HostDir::new(dir.path(), false).unwrap();
     std::thread::scope(|scope| {
-        // Let go once the second is waiting: well within the wait, and after its first try.
+        // Let go once ours is waiting: well within the wait, and after its first try.
         scope.spawn(|| {
             std::thread::sleep(std::time::Duration::from_millis(200));
-            first.let_go();
+            // SAFETY: Plain system call on the directory's descriptor.
+            assert_eq!(unsafe { libc::flock(others.as_raw_fd(), libc::LOCK_UN) }, 0);
         });
         let waiting = std::time::Instant::now();
-        second.take().expect("taken once let go");
+        ours.take().expect("taken once let go");
         assert!(waiting.elapsed() >= std::time::Duration::from_millis(150), "taken while held");
     });
-    second.let_go();
+    ours.let_go();
 }
 
 /// A file removed is gone.

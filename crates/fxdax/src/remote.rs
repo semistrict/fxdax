@@ -41,7 +41,6 @@
 //! the branch again.
 
 use crate::faults::failpoint;
-use anyhow::Context as _;
 use event_listener::{Event, Listener as _};
 use extent_remote::batch;
 use extent_remote::cache::Cache;
@@ -120,19 +119,10 @@ fn write_new(dir: &Path, name: &str, bytes: &[u8]) -> std::io::Result<PathBuf> {
 
 /// The name of a new file of the file `name`'s ([`write_new`]): one of its own for each write, so
 /// that two writers of one file at once each write their own (TASK-184). A shared one, either
-/// truncated the other's or removed it from under its rename. Named for the file, so that what a
-/// crash leaves goes with it ([`unmark`]).
+/// truncated the other's or removed it from under its rename. What a crash leaves goes with the
+/// store's directory, the branch's alone (TASK-165.7).
 fn new_file(name: &str) -> String {
-    format!("{name}{NEW}{:016x}", rand::random::<u64>())
-}
-
-/// What a new file's name has between its file's name and its own part ([`new_file`]).
-const NEW: &str = ".new-";
-
-/// Whether `file`, a name in a store's directory, is the file `name` or a new file of it
-/// ([`new_file`]).
-fn is_of(file: &str, name: &str) -> bool {
-    file.strip_prefix(name).is_some_and(|rest| rest.is_empty() || rest.starts_with(NEW))
+    format!("{name}.new-{:016x}", rand::random::<u64>())
 }
 
 /// Places the store directory `dir`'s copy of `branch` (TASK-39.7): records, durably, the fencing
@@ -222,30 +212,6 @@ impl Host {
         let token = host_token().map_err(|err| err.to_string())?;
         Ok(Self { bucket, token })
     }
-}
-
-/// Removes the marker and fencing token of `branch`, deleted, from the store directory `dir`, and
-/// their new files a crash left before they went in place ([`new_file`]): failing with the file it
-/// could not remove.
-pub(crate) fn unmark(dir: &Path, branch: u64) -> anyhow::Result<()> {
-    let names = [marker(branch), fence(branch)];
-    let listed = match std::fs::read_dir(dir) {
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        listed => listed.with_context(|| format!("listing {}", dir.display()))?,
-    };
-    for entry in listed {
-        let file = entry.with_context(|| format!("listing {}", dir.display()))?.file_name();
-        let of = |file: &str| names.iter().any(|name| is_of(file, name));
-        if !file.to_str().is_some_and(of) {
-            continue;
-        }
-        let path = dir.join(file);
-        match std::fs::remove_file(&path) {
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-            removed => removed.with_context(|| format!("removing {}", path.display()))?,
-        }
-    }
-    Ok(())
 }
 
 /// Why uploading stopped, or a branch could not be uploaded to: the error as it was, typed, which
@@ -551,7 +517,7 @@ impl Remote {
         options: Options,
     ) -> Result<Self, Failure> {
         let fetcher = Fetcher::new(bucket.clone(), options.cache.clone());
-        let dir = store.lineage().hold_dir()?;
+        let dir = store.hold_dir()?;
         let shared = Arc::new(Shared {
             store,
             fetcher,
@@ -571,7 +537,8 @@ impl Remote {
             uploader.run(uploads, holder, started).await;
             // The store let go of before the uploader says it stopped: so that dropping this
             // returns with nothing of the uploader's holding the store open, which the process may
-            // open again at once, as extentd does a store an image it imported made (TASK-165.6).
+            // open again at once (`extent_store::Dir::claim` refusing a second opening), as
+            // extentd does a store an image it imported made (TASK-165.6).
             drop(uploader);
             let _ = stop.send(());
             fail::fail_point!("remote::stopped");
@@ -3387,31 +3354,6 @@ mod tests {
         let gave = at_once(dir.path(), marked(dir.path(), 1), marked(dir.path(), 2));
         assert_eq!(gave, (Ok(true), Some(Ok(true)), vec![marker(3)]));
         assert_eq!(super::Marker::new(dir.path(), 3).read().unwrap(), [1]);
-    }
-
-    /// What a crash leaves of a branch's files beside its store, their new files among them, goes
-    /// as the branch is deleted, and nothing of another branch's.
-    #[test]
-    fn unmarking_removes_new_files_a_crash_left() {
-        use super::{fence, marker, new_file, unmark};
-        let dir = tempfile::tempdir().unwrap();
-        let names = |branch| [marker(branch), fence(branch)];
-        for name in names(3).into_iter().chain(names(4)) {
-            std::fs::write(dir.path().join(&name), "").unwrap();
-            std::fs::write(dir.path().join(new_file(&name)), "").unwrap();
-        }
-        unmark(dir.path(), 3).unwrap();
-        let left = std::fs::read_dir(dir.path()).unwrap();
-        let mut left: Vec<_> =
-            left.map(|entry| entry.unwrap().file_name().into_string().unwrap()).collect();
-        left.sort();
-        let (kept, new): (Vec<_>, Vec<_>) =
-            left.into_iter().partition(|name| !name.contains(".new-"));
-        let mut expected = names(4).to_vec();
-        expected.sort();
-        assert_eq!(kept, expected);
-        assert_eq!(new.len(), 2, "{new:?}");
-        assert!(new.iter().all(|name| name.contains("0000000000000004.new-")), "{new:?}");
     }
 
     /// The record of a branch no fork made, its store's own, of no parent, but for its owner

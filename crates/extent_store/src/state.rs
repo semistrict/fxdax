@@ -16,9 +16,8 @@ use crate::durability::Syncs;
 use crate::framed::{Files, Framed};
 use crate::index::IndexLog;
 use crate::kept::{Kept, KeptExtents};
-use crate::layers::Extents;
 use crate::layout::{
-    Change, Data, EXTENTS, Extent, FileKey, Piece, SegmentId, branch_dir, extent_path,
+    Change, Data, EXTENTS, Extent, Extents, FileKey, Piece, SegmentId, branch_dir, extent_path,
 };
 #[cfg(any(test, feature = "audit"))]
 use crate::segments::Recount;
@@ -38,8 +37,7 @@ use storage_device::{ExtentId, NoExtent};
 
 /// An open branch's state. See the module's docs.
 pub(crate) struct State<F> {
-    /// Its extents: over the state it shares with its parent at the fork and its forks, if any
-    /// (TASK-31).
+    /// Its extents.
     pub extents: Extents,
     /// The room they take.
     pub space: Space,
@@ -130,16 +128,6 @@ impl<F: File> State<F> {
         }
     }
 
-    /// Tracks the segments of `entry`'s data, as the branch lets it go: those it inherited and held
-    /// as the state it shares holds them, it holds otherwise from now on.
-    pub fn track(&mut self, entry: &Extent) {
-        let Data::Pieces(pieces) = &entry.data else { return };
-        let base = self.extents.base();
-        for piece in pieces {
-            self.segments.track(piece.segment, || base.map_or(0, |base| base.live(piece.segment)));
-        }
-    }
-
     /// Lets the data of `extent`, freed, go.
     pub fn forget(&mut self, extent: ExtentId, entry: Extent) {
         self.sealed.forget(extent);
@@ -151,7 +139,7 @@ impl<F: File> State<F> {
             }
             Data::Own => {
                 self.own_files.forget(extent);
-                self.unreferenced.released.push(FileKey::Own(extent));
+                self.unreferenced.doomed.extend(FileKey::Own(extent).paths());
             }
             Data::Remote(_) => {}
         }
@@ -309,7 +297,7 @@ const AUDITED_EXTENTS: usize = 4096;
 /// locks it again, which a lock poisoned would panic in, aborting as the audit's panic unwinds.
 #[cfg(any(test, feature = "audit"))]
 fn audited<F: File>(guard: MutexGuard<'_, State<F>>) -> MutexGuard<'_, State<F>> {
-    if guard.failed || std::thread::panicking() || guard.extents.most() > AUDITED_EXTENTS {
+    if guard.failed || std::thread::panicking() || guard.extents.len() > AUDITED_EXTENTS {
         return guard;
     }
     let audit = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| guard.audit()));
@@ -351,7 +339,7 @@ impl<F: File> State<F> {
     /// says, it checks only as far as what it holds bounds them.
     pub fn audit(&self) {
         let branch = self.segments.open_segment().branch;
-        let held = self.extents.iter();
+        let held: Vec<_> = self.extents.iter().collect();
         self.space.audit(branch, &held, self.gate.is_writing());
         self.uncommitted.audit(&self.extents);
         self.kept.audit();
@@ -381,7 +369,7 @@ impl<F: File> State<F> {
         }
         let uploads = &self.uploads;
         let uploading = |segment| uploader_keeps(uploads, branch, segment);
-        self.segments.audit(&recount, self.extents.base(), uploading);
+        self.segments.audit(&recount, uploading);
         self.own_files.audit(&own_files, &own_for_uploader);
     }
 }
@@ -985,12 +973,12 @@ pub(crate) fn uploader_keeps(uploads: &Option<Uploads>, branch: u64, segment: Se
 /// ([`Lineage::release`](crate::Lineage::release)).
 #[derive(Default)]
 pub(crate) struct Unreferenced {
-    /// Raw files whose extents were sealed from them, or freed, and index files a checkpoint
-    /// replaced; fxdax: and the raw files of segments closed between commits, framed: no other
-    /// branch holds them, so they wait for the branch's commits alone, in its queue of them, and
-    /// are forgotten with a failed store's, as its next opening removes what nothing refers to.
+    /// Raw files whose extents were sealed from them, or freed, files of extents' data no extent
+    /// is in any more, and index files a checkpoint replaced; fxdax: and the raw files of segments
+    /// closed between commits, framed: they wait for the branch's commits, in its queue of them,
+    /// and are forgotten with a failed store's, as its next opening removes what nothing refers
+    /// to.
     pub doomed: Vec<String>,
-    pub released: Vec<FileKey>,
 }
 
 impl Unreferenced {

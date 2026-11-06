@@ -9,8 +9,7 @@
 
 use crate::dir::File;
 use crate::framed::read_object;
-use crate::layers::Extents;
-use crate::layout::Change;
+use crate::layout::{Change, Extents};
 use crate::segments::footer_last;
 use extent_frame::segment::Footer;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};

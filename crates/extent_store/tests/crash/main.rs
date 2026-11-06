@@ -17,7 +17,7 @@
 mod rounds;
 
 use extent_store::MemDir;
-use rounds::{FORK_ROUNDS, ROUNDS, forking, recovering, same, twice};
+use rounds::{ROUNDS, recovering, same, twice};
 
 /// fxdax: each round runs twice, at once, and its two runs' crashes leave the same directories,
 /// and they end with the same: a round is a function of its seed alone, so that a round that failed
@@ -32,17 +32,4 @@ fn recovers_a_prefix_of_its_commits() {
     }
     // The crashes hit commits as well as what came between them.
     assert!(crashes_mid_commit > ROUNDS / 10, "{crashes_mid_commit} crashes in commits");
-}
-
-/// A parent and its fork, which inherited its extents, run workloads by turns and crash, and each
-/// recovers a prefix of its own commits, whatever the other freed; or the fork is opened only
-/// after the crash, and holds what its parent held at the fork, whatever its parent freed and
-/// cleaned since. fxdax: each round runs twice, and leaves the same directories, as of
-/// [`recovers_a_prefix_of_its_commits`] (TASK-79.79).
-#[test]
-fn forks_recover_prefixes_of_their_commits() {
-    for round in 0..FORK_ROUNDS {
-        let (first, second) = twice(|| forking(round, MemDir::serial()));
-        same(round, &first, &second);
-    }
 }

@@ -8,7 +8,7 @@
 //! crash tests run them in a serial directory ([`MemDir::serial`]); the Shuttle tests with the
 //! store's threads, on schedules of Shuttle's seeded by the rounds (tests/shuttle/crash.rs).
 
-use extent_store::{Description, Dir as _, File as _, Lineage, MemDir, Options, Store};
+use extent_store::{Description, Dir as _, File as _, MemDir, Options, Store};
 use rand::rngs::StdRng;
 use rand::{RngExt as _, SeedableRng as _};
 use std::collections::{BTreeMap, BTreeSet};
@@ -18,8 +18,6 @@ const BLOCK: usize = 4096;
 const BRANCH: u64 = 3;
 /// How many recovering rounds the tests run.
 pub const ROUNDS: u64 = 300;
-/// How many forks' rounds they run: a third as many, each running workloads on two branches.
-pub const FORK_ROUNDS: u64 = ROUNDS / 3;
 const STEPS: usize = 200;
 
 /// Small segments, large extents and index files, so that workloads make many of each.
@@ -303,67 +301,4 @@ fn rebuilds(round: u64, store: &Store<MemDir>) {
     assert_eq!(rebuilt.root, store.root().unwrap(), "round {round}");
     assert_eq!(rebuilt.next_sequence, store.info().unwrap().next_sequence, "round {round}");
     assert_eq!(rebuilt.spent, store.spent().unwrap(), "round {round}");
-}
-
-/// The epoch `store` recovered, which must be one of `epochs` from `durable` on, and what it holds
-/// must be what that epoch began with.
-fn check(round: u64, name: &str, store: &Store<MemDir>, epochs: &[Model], durable: usize) {
-    let epoch = store.epoch().unwrap() as usize;
-    assert!(
-        (durable..epochs.len()).contains(&epoch),
-        "round {round}: {name} recovered epoch {epoch}, of {durable}..{}",
-        epochs.len()
-    );
-    assert_eq!(contents(store), epochs[epoch], "round {round}: {name}'s epoch {epoch} differs");
-}
-
-/// Round `round` of the forks' rounds, its store in `dir`: a parent and its fork, which inherited
-/// its extents, run workloads by turns, and crash, and each recovers a prefix of its own commits,
-/// whatever the other freed; or the fork is opened only after the crash, and holds what its parent
-/// held at the fork, whatever its parent freed and cleaned since. Returns the directories it left.
-pub fn forking(round: u64, dir: MemDir) -> Left {
-    const CHILD: u64 = BRANCH + 1;
-    let mut rng = StdRng::seed_from_u64(round);
-    let description = Description { block_size: BLOCK as u32, capacity: 4 << 20, branch: BRANCH };
-    let parent = Store::create(dir.clone(), description, OPTIONS).unwrap();
-    let mut parent_epochs = vec![Model::default()];
-    let (_, held) = workload(&mut rng, &parent, &mut parent_epochs, Model::default(), 0);
-    // The fork commits, durably, what the parent held, which the child starts from.
-    parent_epochs.push(held.clone());
-    parent.fork(CHILD).unwrap();
-    let lineage = parent.lineage().clone();
-    let opened = rng.random_bool(0.5);
-    let child = opened.then(|| lineage.open_branch(CHILD).unwrap());
-    let mut child_epochs = vec![held.clone()];
-    let (mut parent_durable, mut child_durable) = (parent_epochs.len() - 1, 0);
-    // What each holds, committed or not, from turn to turn.
-    let (mut parent_held, mut child_held) = (held.clone(), held);
-
-    dir.fail_after(Some(rng.random_range(0..1200)));
-    for turn in 0..6 {
-        let (store, epochs, durable, held) = match (turn % 2, &child) {
-            (0, _) => (&parent, &mut parent_epochs, &mut parent_durable, &mut parent_held),
-            (_, Some(child)) => (child, &mut child_epochs, &mut child_durable, &mut child_held),
-            (_, None) => continue,
-        };
-        let (last_durable, now) = workload(&mut rng, store, epochs, held.clone(), *durable);
-        *durable = last_durable;
-        *held = now;
-        if dir.has_failed() {
-            break;
-        }
-    }
-    drop((parent, child, lineage));
-
-    let crashed = dir.crash(round);
-    let mut left = vec![("its crash", digest(&crashed))];
-    let lineage = Lineage::open(crashed.clone(), OPTIONS)
-        .unwrap_or_else(|e| panic!("round {round}: the store doesn't open: {e:?}"));
-    let parent = lineage.open_branch(BRANCH).unwrap();
-    check(round, "the parent", &parent, &parent_epochs, parent_durable);
-    let child = lineage.open_branch(CHILD).unwrap();
-    check(round, "the child", &child, &child_epochs, child_durable);
-    drop((parent, child, lineage));
-    left.push(("its last directory", digest(&crashed)));
-    left
 }

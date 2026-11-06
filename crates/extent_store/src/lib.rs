@@ -7,14 +7,14 @@
 //! extent-store device of a VM's host.
 //!
 //! Extents are written once: from their first write until the next commit, which seals them. They
-//! are freed whole. A store holds branches ([`Lineage`]): each a filesystem, opened as a [`Store`]
-//! of its own, which mints its extents' IDs under its branch, and reads any branch's it holds. A
-//! store's directory holds, as doc-7 lays a lineage out in object storage:
+//! are freed whole. A store holds one branch, a filesystem, which mints its extents' IDs under its
+//! branch; it may hold extents of other branches' too, whose data is in the bucket, as a fork's
+//! inherited ones are (doc-7). fxdax: forks, points and deletion are the bucket's (doc-14,
+//! TASK-165.7): the store makes nothing of them but the commit that names a fork
+//! ([`Store::commit_fork`]). A store's directory holds:
 //!
-//! - `store`, its description: its format, block size, and first branch, which opening the store
-//!   opens;
-//! - `branches/<branch>.<version>`: each branch's record, its newest version whole: its capacity,
-//!   the branch and point it was forked from, and whether it is deleted;
+//! - `store`, its description: its format, block size, branch, and the bucket its branch is kept
+//!   in;
 //! - `segments/<branch>/<n>`: the branch's extents' data, in segments (doc-7, Segments): open
 //!   extents' pieces, as they were written, and sealed extents in one 4 KiB-aligned run each. A
 //!   segment is written raw while it is open, in `open-segments/<branch>/<n>`. It closes at a
@@ -34,29 +34,14 @@
 //!   fxdax: or with no room left in the open segment, in files of their own, framed so; written raw
 //!   in `open-extents/<branch>/<sequence>` until sealed, if large from their first write;
 //! - `index/<branch>/<n>`: the branch's index, which maps its extents to their data, with its
-//!   root, its one mutable record, and its next sequence number: a checkpoint, a table in the
-//!   format of checkpoints in object storage (`extent_frame::table`), then the changes (deltas)
-//!   each commit made since, each a record checked by its hash.
+//!   root, its one mutable record, its capacity, and its next sequence number: a checkpoint, a
+//!   table in the format of checkpoints in object storage (`extent_frame::table`), then the changes
+//!   (deltas) each commit made since, each a record checked by its hash.
 //!
-//! **Forks.** [`Store::fork`] seals the branch's open extents with a commit, then records a new
-//! branch, whose state is its parent's at the fork, over which its index holds what it changes
-//! (TASK-31): a fork takes the same time and space whatever the branch holds, and so does its
-//! opening. In memory, the parent's state at the fork is a layer, which the fork, the parent's
-//! other forks of the same point, and the parent, which goes on over it, share: one copy, whatever
-//! the number of forks; opening the store reads each index file forks are over once, for all of
-//! them. Each branch holds claims on the files its extents' data is in: its own, and, through the
-//! layer it is over, those it inherited, but for those it let go of; a file goes once no branch
-//! holds it, and the commits that let it go are durable. A parent keeps its index files as of its
-//! forks while they live, and the states it was over itself, up its line. A branch's record
-//! changes by writing its next version, durably, then removing the last, with no lock held: only
-//! the branch's store, or its deletion, changes it, and openings, forks and deletions of a branch
-//! being forked or deleted wait until that is done, as do the lists of branches.
-//! In directories of the host's ([`open_host`]), a fork's own directory is a handle naming the
-//! store and the branch; a process shares a store between the branches of it it opens. Stores and
-//! forks are deleted with [`delete_host`], which lets their extents go but for what other branches
-//! hold: a store whose forks live keeps its directory, holding what they share of it, which no
-//! longer opens, and which goes with the last of them (TASK-39.4). Removing a store's directory
-//! otherwise (`rm -rf`) while forks of it live is not supported, as they hold their data in it.
+//! A store is opened by one process at a time ([`Dir::take`]), and once in it. Stores in
+//! directories of the host's are made, opened and deleted with [`create_host`], [`open_host`] and
+//! [`delete_host`], which removes the directory whole, once what else keeps the branch, as a
+//! bucket does, deleted it.
 //!
 //! **Commits.** A commit is a barrier: it seals the extents written before it, copying each whose
 //! pieces are not one run in the open segment into one there, or into a file of its own if it is
@@ -70,10 +55,10 @@
 //! takes what the checkpoint holds; its flush makes its file and encodes it there, holding none of
 //! the store's locks but its own, so that writes do not wait for that (TASK-92.56).
 //!
-//! **Recovery.** Opening a branch reads the newest index file of its whose checkpoint is whole, and
-//! the deltas after it that are whole and follow on, which is the branch as of a commit. Commits
-//! not durable leave at most a torn delta, which ends the index, and data and files no branch
-//! claims, which opening the store removes. A segment left open, or closed by a commit not
+//! **Recovery.** Opening a store reads the newest index file whose checkpoint is whole, and the
+//! deltas after it that are whole and follow on, which is the branch as of a commit. Commits not
+//! durable leave at most a torn delta, which ends the index, and data and files no extent is in,
+//! which opening the store removes. A segment left open, or closed by a commit not
 //! durable, is closed again with no footer, from its raw file, which goes once that is durable.
 //! fxdax: a closed segment's raw file goes only once the commits its footer names are durable, so
 //! that one closed by a commit not durable has it still, holding what the commits durable wrote,
@@ -146,9 +131,9 @@
 //! ([`MemDir`]), which simulates crashes for tests.
 //!
 //! **Concurrency tests.** With the `shuttle` feature the store's locks are Shuttle's, whose
-//! scheduler chooses every interleaving of its writers, closer, flusher and uploader, and of a
-//! lineage's branches while a fork's or a deletion's I/O stalls; and the rules its concurrency
-//! relies on ([`Rules`]) can be turned off to see the tests fail (tests/shuttle/).
+//! scheduler chooses every interleaving of its writers, closer, flusher and uploader; and the
+//! rules its concurrency relies on ([`Rules`]) can be turned off to see the tests fail
+//! (tests/shuttle/).
 
 /// fxdax: a step of a protocol, which the failpoint of its name fails (the `fail` crate's,
 /// TASK-44.10): the function it is in returns an error there, or whatever a test set the failpoint
@@ -160,17 +145,13 @@ macro_rules! failpoint {
     };
 }
 
-mod branch_records;
 mod dir;
 mod durability;
 mod framed;
 mod host;
 mod index;
 mod kept;
-mod layers;
 mod layout;
-mod ledger;
-mod lineage;
 mod mem;
 mod segments;
 mod state;
@@ -181,20 +162,16 @@ mod views;
 
 pub use dir::{Dir, File, HostDir, HostFile, bypass_page_cache};
 pub use framed::{Aligned, Packed, Part, read_object, read_whole, unpacks};
-pub use host::{
-    Taken, create_host, delete_host, delete_host_with, fail_fork, fork_failed, fork_host,
-    fork_host_with, host_bucket, is_handle, open_host, resolve_host,
-};
+pub use host::{create_host, delete_host, host_branch, host_bucket, open_host};
 pub use layout::{Description, Format, Place};
-pub use lineage::{DirHold, Lineage};
 pub use mem::{Io, MemDir, MemFile};
 pub use segments::segment_closes;
-pub use store::{
-    Cleaned, Footprint, ForkCommitted, HasBranch, Info, NoSpace, Options, Rebuilt, RemoteData, Spent, Store,
-    TooLong, TooSmall, Unaligned, Usage, Write,
-};
 #[cfg(feature = "audit")]
 pub use state::AUDIT_FAILED;
+pub use store::{
+    Cleaned, DirHold, ForkCommitted, Info, NoSpace, Options, Rebuilt, RemoteData, Spent, Store,
+    TooLong, TooSmall, Unaligned, Usage, Write,
+};
 pub use sync::Rules;
 #[cfg(feature = "shuttle")]
 pub use sync::{rules, set_rules};

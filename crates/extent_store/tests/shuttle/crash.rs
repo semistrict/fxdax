@@ -21,7 +21,7 @@ mod rounds;
 
 use super::config;
 use extent_store::{MemDir, Rules, set_rules};
-use rounds::{FORK_ROUNDS, ROUNDS, forking, recovering, same, twice};
+use rounds::{ROUNDS, recovering, same, twice};
 use shuttle::Runner;
 use shuttle::scheduler::RandomScheduler;
 use std::sync::{Arc, Mutex};
@@ -58,22 +58,4 @@ fn crashes_recover_prefixes_of_their_commits_concurrently() {
     // I/O, a framing's or a flush's syncs, as well as the workload's.
     assert!(crashes_mid_commit > ROUNDS / 10, "{crashes_mid_commit} crashes in commits");
     assert!(crashes_elsewhere > ROUNDS / 30, "{crashes_elsewhere} crashes in the store's threads");
-}
-
-#[test]
-fn forks_recover_prefixes_of_their_commits_concurrently() {
-    set_rules(Rules::ALL);
-    let mut crashes_elsewhere = 0;
-    for round in 0..FORK_ROUNDS {
-        let ((first, elsewhere), (second, _)) = twice(|| {
-            concurrently(round, |round, dir| (forking(round, dir.clone()), dir.failed_elsewhere()))
-        });
-        same(round, &first, &second);
-        crashes_elsewhere += elsewhere as u64;
-    }
-    // The crashes hit the store's own threads' I/O, as well as the workloads'.
-    assert!(
-        crashes_elsewhere > FORK_ROUNDS / 30,
-        "{crashes_elsewhere} crashes in the store's threads"
-    );
 }

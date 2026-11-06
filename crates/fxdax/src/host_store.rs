@@ -120,7 +120,7 @@ fn bucket_named(host: Option<String>, path: &Path) -> anyhow::Result<String> {
 /// a store's directory, where no host's bucket was ([`bucket_named`]), its own or that of the
 /// store it was forked from, which its forks share.
 pub(crate) fn keeps_own_bucket(store: &Store<HostDir>) -> bool {
-    let url = store.lineage().bucket().unwrap_or_default();
+    let url = store.bucket().unwrap_or_default();
     url.starts_with("file:") && url.trim_end_matches('/').ends_with(OWN_BUCKET)
 }
 
@@ -145,7 +145,7 @@ impl Opened {
     /// `store`, opened, with the bucket its description names, as every host's store's does
     /// (`extent_store::create_host`).
     fn of(store: Store<HostDir>) -> anyhow::Result<Self> {
-        let named = store.lineage().bucket().map(str::to_owned);
+        let named = store.bucket().map(str::to_owned);
         let url = named
             .ok_or_else(|| anyhow::anyhow!("{} names no bucket", store.dir().path().display()))?;
         let bucket = bucket(&url).with_context(|| format!("opening the bucket {url}"))?;
@@ -213,6 +213,8 @@ pub(crate) fn open(path: &Path) -> anyhow::Result<Opened> {
 
 /// Whether `path` is a directory a store's making, or a fork's, left unmade, its host crashing:
 /// no store, as its description, made last, is not there; deleting it finishes it ([`delete`]).
+// The extent daemon's (Linux).
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub(crate) fn unmade(path: &Path) -> bool {
     path.is_dir() && !path.join("store").exists()
 }
@@ -338,7 +340,7 @@ fn make_child(
 ) -> anyhow::Result<()> {
     prepare(path)?;
     let capacity = parent.description().capacity;
-    let url = parent.lineage().bucket().map(str::to_owned);
+    let url = parent.bucket().map(str::to_owned);
     let url =
         url.ok_or_else(|| anyhow::anyhow!("{} names no bucket", parent.dir().path().display()))?;
     let description = Description { block_size: BLOCK_SIZE, capacity, branch };
@@ -373,10 +375,11 @@ pub(crate) fn delete(
 }
 
 /// Deletes the store at `path` as [`delete`] does, `elsewhere` deleting its branch where else it
-/// is kept, given the store's directory and the branch: once the branch is found open nowhere
-/// here, before it goes here, so that a deletion that stopped partway, the host crashing or
-/// `elsewhere` failing, leaves the store still, which deleting again finishes, never a branch kept
-/// elsewhere alone.
+/// is kept, given the store's directory and the branch: once the store is found open nowhere here,
+/// before it goes here (`extent_store::delete_host`), so that a deletion that stopped partway, the
+/// host crashing or `elsewhere` failing, leaves the store still, which deleting again finishes,
+/// never a branch kept elsewhere alone. What a store's making, or a fork's, left unmade, which is
+/// no store, goes, `elsewhere` called for nothing.
 pub(crate) fn delete_with(
     path: &Path,
     elsewhere: impl Fn(&Path, u64) -> Result<(), crate::remote::Failure>,
@@ -384,23 +387,11 @@ pub(crate) fn delete_with(
     if !path.exists() {
         return Err(Errno::ENOENT.into());
     }
-    // What a store's making, or a fork's, left, or a deletion that stopped once its description
-    // went: no store, nor any branch's.
-    if unmade(path) {
-        let removed = std::fs::remove_dir_all(path);
-        return removed.with_context(|| format!("removing {}", path.display())).map_err(Error::new);
-    }
-    let elsewhere = |dir: &Path, branch| -> Result<(), crate::remote::Failure> {
+    let deleting = |branch| -> anyhow::Result<()> {
         failpoint!("delete::elsewhere");
-        elsewhere(dir, branch)
+        Ok(elsewhere(path, branch)?)
     };
-    extent_store::delete_host_with(
-        path,
-        options(),
-        |dir, branch| Ok(elsewhere(dir, branch)?),
-        |dir, branch| crate::remote::unmark(dir, branch),
-    )
-    .map_err(|err| {
+    extent_store::delete_host(path, deleting).map_err(|err| {
         // Its errno, if deleting the branch elsewhere failed with one: `ESTALE` for a branch a
         // later placement holds.
         let failure = err.chain().find_map(|cause| cause.downcast_ref::<crate::remote::Failure>());
@@ -630,39 +621,4 @@ mod tests {
         assert!(!path.exists());
     }
 
-    /// TASK-79.71: a store's deletion that stopped as it removed the records of its branch's
-    /// placement and uploads from its directory, its branch deleted, is finished by deleting
-    /// again, which leaves nothing. Here the marker of its uploads is a directory, which removing it
-    /// as a file fails on, until it is the file it was again, as the deletion stopped left it.
-    #[test]
-    fn deletions_stopped_at_a_branchs_records_finish() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("store");
-        drop(create(&path, MIB, 3).unwrap());
-        crate::ExtentStore::place(&path, 9).unwrap();
-        let memory = Arc::new(object_store::memory::InMemory::new());
-        let bucket = Arc::new(extent_remote::store::Store::new(memory, ""));
-        let store = crate::ExtentStore::open(&path).unwrap();
-        let block = [7; BLOCK_SIZE as usize];
-        let extent = crate::ExtentId { branch: 3, sequence: 0 };
-        store.write(extent, 0, &[crate::VolatileSlice::from(&block[..])]).unwrap();
-        store.commit(None).unwrap();
-        store.attach_remote(bucket.clone(), 1, crate::remote::Options::default()).unwrap();
-        drop(store);
-        let marker = path.join("remote-0000000000000003");
-        // The marker's next, half written, its host crashing before it went in place: it goes
-        // with the directory (TASK-184).
-        std::fs::write(path.join("remote-0000000000000003.new-00000000000000ab"), "1").unwrap();
-        let marked = std::fs::read(&marker).unwrap();
-        std::fs::remove_file(&marker).unwrap();
-        std::fs::create_dir(&marker).unwrap();
-        let stopped = delete(&path, Some(&bucket), token).map_err(|err| err.to_string());
-        assert_eq!(stopped, Err(format!("removing {}", marker.canonicalize().unwrap().display())));
-        std::fs::remove_dir(&marker).unwrap();
-        std::fs::write(&marker, marked).unwrap();
-        let resumed = delete(&path, Some(&bucket), token).map_err(|err| err.to_string());
-        assert_eq!((resumed, path.exists()), (Ok(()), false));
-        let record = futures::executor::block_on(extent_remote::branch::record(&*bucket, 3));
-        assert_eq!(record.unwrap().map(|record| record.deleted), Some(true));
-    }
 }
