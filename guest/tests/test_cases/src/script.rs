@@ -15,6 +15,13 @@
 //! This holds no system calls: [`Model`] says what an operation should come to, the guest's
 //! `script_run` does it, and [`shrink`] and [`shrink_failure`] take the running of a script as an
 //! argument, so that all of it is tested on any host.
+//!
+//! fxdax: the wide mix ([`WIDE`], TASK-44.15) adds what a VFS asks of a file beyond those: ranges
+//! cloned and copied, zeroed and allocated, msyncs and fdatasyncs, stores through mappings made for
+//! them, private ones too, O_DIRECT, a file's page cache dropped, and a file closed, evicted and
+//! opened again. The model says each operation's outcome, its errno too, as the VFS's own checks
+//! decide it ([`Model::clone_range`], [`Model::copy_range`]), and a reference filesystem in the
+//! same guest holds the model to the kernel (`differential`).
 
 use std::fmt;
 
@@ -44,6 +51,20 @@ const CHECK_EVERY: usize = 256;
 /// Of the operations, one in this many has a clone after it, and a store in a child.
 const CLONE_ONE_IN: u64 = 32;
 const FORK_ONE_IN: u64 = 16;
+/// fxdax: the most pages an O_DIRECT read or write takes.
+const DIRECT_PAGES: u64 = 4;
+
+/// fxdax: errnos the model says, as Linux numbers them (asm-generic/errno-base.h), which this
+/// crate's builds on any host agree on.
+pub mod errno {
+    pub const EINVAL: i32 = 22;
+    pub const ENOSPC: i32 = 28;
+    pub const ENOMEM: i32 = 12;
+}
+
+/// fxdax: what an operation came to, or should: how many bytes it did (written, stored, read,
+/// cloned or copied; 0 for an operation that says none), or the errno it failed with.
+pub type Outcome = Result<u64, i32>;
 
 /// The kind of failure a script's run saw, which a shrink keeps: the same bug may show at another
 /// operation of a shorter script, but it should show the same way.
@@ -66,7 +87,21 @@ pub mod kind {
     pub const DIED: &str = "died";
     /// The VM ran out of time.
     pub const HANG: &str = "hang";
+    /// fxdax: the reference filesystem doesn't do as the model says: the model's mistake, or the
+    /// kernel's, not the filesystem's under test (`differential`).
+    pub const REFERENCE_DIFFERS: &str = "reference differs";
+    /// fxdax: the filesystems' timestamps changed otherwise, in ways not allowed (`differential`).
+    pub const TIMES_DIFFER: &str = "times differ";
+    /// fxdax: on a DAX mount, no file read in again was DAX: the run looked at the page cache.
+    pub const NEVER_DAX: &str = "never DAX";
+    /// fxdax: no time compared changed on either filesystem: the comparison looked at nothing.
+    pub const NO_TIMES: &str = "no times changed";
 }
+
+/// fxdax: what a line of a guest's saying how the filesystems' times differed starts with
+/// (`differential`), and what one allowed says before why.
+pub const TIMES: &str = "times: ";
+pub const ALLOWED: &str = " (allowed: ";
 
 /// xorshift64*, as the random checks need no more.
 pub struct Rng(u64);
@@ -130,6 +165,38 @@ pub enum Op {
     Clone { from: usize, to: usize },
     /// Every file read whole, through read(2) and its mapping, and checked.
     Check,
+    /// fxdax: FICLONERANGE of `len` bytes, or to the source's end if 0, at `from_place` of `from`,
+    /// onto `to_place` of `to`, which may be the same file: the offsets and length rounded down to
+    /// blocks if `aligned`, as most are, and the rest refused, as the VFS refuses them.
+    CloneRange {
+        from: usize,
+        from_place: Place,
+        to: usize,
+        to_place: Place,
+        len: u64,
+        aligned: bool,
+    },
+    /// fxdax: copy_file_range of `len` bytes, as many calls as it takes.
+    Copy { from: usize, from_place: Place, to: usize, to_place: Place, len: u64 },
+    /// fxdax: fallocate's FALLOC_FL_ZERO_RANGE, the size kept or grown to the range's end.
+    Zero { file: usize, place: Place, len: u64, keep_size: bool },
+    /// fxdax: fallocate's allocation, which leaves the bytes as they were, the size kept or grown.
+    Allocate { file: usize, place: Place, len: u64, keep_size: bool },
+    /// fxdax: msync(MS_SYNC) of the kept mapping's pages around `len` bytes at `place`.
+    Msync { file: usize, place: Place, len: u64 },
+    /// fxdax: fdatasync.
+    Fdatasync { file: usize },
+    /// fxdax: stores within the file's size through a mapping made for them and gone after:
+    /// shared, or `private`, whose stores the file never sees.
+    MapStore { file: usize, place: Place, len: u64, data: u64, private: bool },
+    /// fxdax: an O_DIRECT write, or read, of `pages` pages at the page `place` falls in.
+    Direct { file: usize, place: Place, pages: u64, data: u64, write: bool },
+    /// fxdax: the file's page cache dropped (POSIX_FADV_DONTNEED), what the kept mapping maps too.
+    Drop { file: usize },
+    /// fxdax: the file closed, its kept mapping gone, its inode evicted, and the file opened and
+    /// mapped again: on a DAX mount, a file read in again once its writes are sealed is DAX, its
+    /// stores copying on write, where one created and kept open stays in the page cache.
+    Reopen { file: usize },
 }
 
 /// What a script's operations are drawn from.
@@ -140,12 +207,16 @@ pub struct Mix {
     pub files: usize,
     pub clones: bool,
     pub forks: bool,
+    /// fxdax: whether the operations are drawn from the wide mix's, [`wide_op`]'s, too.
+    pub wide: bool,
 }
 
 /// `random_ops`'s.
-pub const ONE_FILE: Mix = Mix { ops: 3000, files: 1, clones: false, forks: false };
+pub const ONE_FILE: Mix = Mix { ops: 3000, files: 1, clones: false, forks: false, wide: false };
 /// `fxfs-guest-script`'s.
-pub const SEVERAL_FILES: Mix = Mix { ops: 3000, files: 3, clones: true, forks: true };
+pub const SEVERAL_FILES: Mix = Mix { ops: 3000, files: 3, clones: true, forks: true, wide: false };
+/// fxdax: `fxfs-guest-fsx`'s (TASK-44.15).
+pub const WIDE: Mix = Mix { wide: true, ..SEVERAL_FILES };
 
 /// Where an operation goes: anywhere, or near a chunk's end, a page's, or the file's.
 fn place(rng: &mut Rng) -> Place {
@@ -170,14 +241,15 @@ pub fn generate(seed: u64, mix: Mix) -> Vec<Op> {
         let place = place(&mut rng);
         let len = 1 + rng.next(LONGEST);
         let data = rng.next(u64::MAX);
-        script.push(match rng.next(17) {
+        script.push(match rng.next(if mix.wide { WIDE_KINDS } else { 17 }) {
             0..=4 => Op::Write { file, place, len, data },
             5..=8 => Op::Store { file, place, len, data, child: false },
             9..=11 => Op::Read { file, place, len },
             12 => Op::Truncate { file, size: rng.next(MAX) },
             13 => Op::Punch { file, place, len },
+            14 | 15 => Op::Fsync { file },
             16 => Op::Append { file, len, data },
-            _ => Op::Fsync { file },
+            kind => wide_op(&mut rng, mix, kind, file, place, len, data),
         });
         if mix.clones && rng.next(CLONE_ONE_IN) == 0 {
             let from = rng.next(mix.files as u64) as usize;
@@ -195,6 +267,53 @@ pub fn generate(seed: u64, mix: Mix) -> Vec<Op> {
         }
     }
     script
+}
+
+/// fxdax: the kinds of operation the wide mix draws from, one each: [`generate`]'s 17 first, in
+/// their proportions, then [`wide_op`]'s.
+const WIDE_KINDS: u64 = 32;
+
+/// fxdax: the wide mix's operation of `kind`, one of [`generate`]'s draws past its own 17, on
+/// `file` at `place`, of `len` bytes of `data`'s, as [`generate`] drew them: ranges cloned and copied
+/// twice as often as the rest, between any two files, a file and itself too.
+fn wide_op(
+    rng: &mut Rng,
+    mix: Mix,
+    kind: u64,
+    file: usize,
+    place: Place,
+    len: u64,
+    data: u64,
+) -> Op {
+    let other = |rng: &mut Rng| rng.next(mix.files as u64) as usize;
+    match kind {
+        17 | 18 => {
+            let (to, to_place) = (other(rng), self::place(rng));
+            // A clone to the source's end, one in four; three in four of whole blocks.
+            let len = if rng.next(4) == 0 { 0 } else { len };
+            let aligned = rng.next(4) != 0;
+            Op::CloneRange { from: file, from_place: place, to, to_place, len, aligned }
+        }
+        19 | 20 => Op::Copy {
+            from: file,
+            from_place: place,
+            to: other(rng),
+            to_place: self::place(rng),
+            len,
+        },
+        21 => Op::Zero { file, place, len, keep_size: rng.next(2) == 0 },
+        22 => Op::Allocate { file, place, len, keep_size: rng.next(2) == 0 },
+        23 => Op::Msync { file, place, len },
+        24 => Op::Fdatasync { file },
+        25 | 26 => Op::MapStore { file, place, len, data, private: kind == 26 },
+        27 | 28 => {
+            let pages = 1 + rng.next(DIRECT_PAGES);
+            Op::Direct { file, place, pages, data, write: kind == 27 }
+        }
+        29 => Op::Drop { file },
+        30 => Op::Reopen { file },
+        _ => Op::Truncate { file, size: rng.next(MAX) },
+    }
 }
 
 /// `DROP_VAR`'s value: what isn't in `kept`, indices of a script of `len` operations, in order.
@@ -230,14 +349,215 @@ pub fn kept(drops: &str, len: usize) -> Result<Vec<usize>, String> {
 /// What an operation comes to on the files as the model has them.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Step {
-    Write { file: usize, at: u64, data: Vec<u8> },
-    Store { file: usize, at: u64, data: Vec<u8>, child: bool },
-    Read { file: usize, at: u64, len: u64 },
-    Truncate { file: usize, size: u64 },
-    Punch { file: usize, at: u64, len: u64 },
-    Fsync { file: usize },
-    Clone { from: usize, to: usize },
+    Write {
+        file: usize,
+        at: u64,
+        data: Vec<u8>,
+    },
+    Store {
+        file: usize,
+        at: u64,
+        data: Vec<u8>,
+        child: bool,
+    },
+    Read {
+        file: usize,
+        at: u64,
+        len: u64,
+    },
+    Truncate {
+        file: usize,
+        size: u64,
+    },
+    Punch {
+        file: usize,
+        at: u64,
+        len: u64,
+    },
+    Fsync {
+        file: usize,
+    },
+    Clone {
+        from: usize,
+        to: usize,
+    },
     Check,
+    /// fxdax: the wide mix's.
+    CloneRange {
+        from: usize,
+        src: u64,
+        to: usize,
+        dst: u64,
+        len: u64,
+    },
+    Copy {
+        from: usize,
+        src: u64,
+        to: usize,
+        dst: u64,
+        len: u64,
+    },
+    Zero {
+        file: usize,
+        at: u64,
+        len: u64,
+        keep_size: bool,
+    },
+    Allocate {
+        file: usize,
+        at: u64,
+        len: u64,
+        keep_size: bool,
+    },
+    /// Of the kept mapping's pages from `at`'s, `at` a page's start, `len` bytes on.
+    Msync {
+        file: usize,
+        at: u64,
+        len: u64,
+    },
+    Fdatasync {
+        file: usize,
+    },
+    MapStore {
+        file: usize,
+        at: u64,
+        data: Vec<u8>,
+        private: bool,
+    },
+    /// At a page's start, of whole pages.
+    DirectWrite {
+        file: usize,
+        at: u64,
+        data: Vec<u8>,
+    },
+    DirectRead {
+        file: usize,
+        at: u64,
+        len: u64,
+    },
+    Drop {
+        file: usize,
+    },
+    Reopen {
+        file: usize,
+    },
+}
+
+impl Step {
+    /// fxdax: what kind of operation it is, as differences between filesystems are counted.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Step::Write { .. } => "write",
+            Step::Store { child: false, .. } => "store",
+            Step::Store { child: true, .. } => "store by a child",
+            Step::Read { .. } => "read",
+            Step::Truncate { .. } => "truncate",
+            Step::Punch { .. } => "punch",
+            Step::Fsync { .. } => "fsync",
+            Step::Clone { .. } => "clone",
+            Step::Check => "check",
+            Step::CloneRange { .. } => "clone range",
+            Step::Copy { .. } => "copy",
+            Step::Zero { keep_size: false, .. } => "zero range",
+            Step::Zero { keep_size: true, .. } => "zero range, size kept",
+            Step::Allocate { keep_size: false, .. } => "allocate",
+            Step::Allocate { keep_size: true, .. } => "allocate, size kept",
+            Step::Msync { .. } => "msync",
+            Step::Fdatasync { .. } => "fdatasync",
+            Step::MapStore { private: false, .. } => "store through a new mapping",
+            Step::MapStore { private: true, .. } => "store through a private mapping",
+            Step::DirectWrite { .. } => "direct write",
+            Step::DirectRead { .. } => "direct read",
+            Step::Drop { .. } => "drop the page cache",
+            Step::Reopen { .. } => "reopen",
+        }
+    }
+
+    /// fxdax: what `file` is to it, as differences between filesystems are counted.
+    pub fn role(&self, file: usize) -> Role {
+        match *self {
+            Step::Clone { from, to }
+            | Step::CloneRange { from, to, .. }
+            | Step::Copy { from, to, .. } => match (file == from, file == to) {
+                (true, true) => Role::Its,
+                (false, true) => Role::Destination,
+                (true, false) => Role::Source,
+                (false, false) => Role::Other,
+            },
+            Step::Write { file: its, .. }
+            | Step::Store { file: its, .. }
+            | Step::Read { file: its, .. }
+            | Step::Truncate { file: its, .. }
+            | Step::Punch { file: its, .. }
+            | Step::Fsync { file: its }
+            | Step::Zero { file: its, .. }
+            | Step::Allocate { file: its, .. }
+            | Step::Msync { file: its, .. }
+            | Step::Fdatasync { file: its }
+            | Step::MapStore { file: its, .. }
+            | Step::DirectWrite { file: its, .. }
+            | Step::DirectRead { file: its, .. }
+            | Step::Drop { file: its }
+            | Step::Reopen { file: its }
+                if its == file =>
+            {
+                Role::Its
+            }
+            _ => Role::Other,
+        }
+    }
+
+    /// fxdax: the file whose bytes or size it changes, if it changes one: a clone's or a copy's
+    /// destination.
+    pub fn changes(&self) -> Option<usize> {
+        match *self {
+            Step::Write { file, .. }
+            | Step::Store { file, .. }
+            | Step::Truncate { file, .. }
+            | Step::Punch { file, .. }
+            | Step::Zero { file, .. }
+            | Step::Allocate { file, .. }
+            | Step::MapStore { file, private: false, .. }
+            | Step::DirectWrite { file, .. } => Some(file),
+            Step::Clone { to, .. } | Step::CloneRange { to, .. } | Step::Copy { to, .. } => {
+                Some(to)
+            }
+            _ => None,
+        }
+    }
+
+    /// fxdax: the bytes it changes, as the model has the files before it: the file, the range,
+    /// and for a clone's or a copy's, where in which file the first came from.
+    pub fn reach(&self, model: &Model) -> Option<Reach> {
+        let size = |file: usize| model.files[file].len() as u64;
+        let (file, start, end, source) = match *self {
+            Step::Write { file, at, ref data }
+            | Step::Store { file, at, ref data, .. }
+            | Step::MapStore { file, at, ref data, private: false }
+            | Step::DirectWrite { file, at, ref data } => (file, at, at + data.len() as u64, None),
+            Step::Truncate { file, size: to } => {
+                (file, to.min(size(file)), to.max(size(file)), None)
+            }
+            Step::Punch { file, at, len }
+            | Step::Zero { file, at, len, .. }
+            | Step::Allocate { file, at, len, .. } => (file, at, at + len, None),
+            Step::Clone { from, to } => (to, 0, size(from).next_multiple_of(PAGE), Some((from, 0))),
+            Step::CloneRange { from, src, to, dst, len } => {
+                let len = if len == 0 { size(from).saturating_sub(src) } else { len };
+                (to, dst, dst + len.next_multiple_of(PAGE), Some((from, src)))
+            }
+            Step::Copy { from, src, to, dst, len } => (to, dst, dst + len, Some((from, src))),
+            _ => return None,
+        };
+        Some(Reach { file, start, end, source })
+    }
+
+    /// fxdax: whether its timestamps are its own to say: not a store's through a shared mapping,
+    /// whose times change at a write fault, which comes as the filesystem's cache has the page,
+    /// written back or not, which filesystems differ in.
+    pub fn says_its_times(&self) -> bool {
+        !matches!(self, Step::Store { .. } | Step::MapStore { private: false, .. })
+    }
 }
 
 impl fmt::Display for Step {
@@ -256,7 +576,66 @@ impl fmt::Display for Step {
             Step::Fsync { file } => write!(f, "fsync file {file}"),
             Step::Clone { from, to } => write!(f, "clone file {from} onto file {to}"),
             Step::Check => write!(f, "read the whole files"),
+            Step::CloneRange { from, src, to, dst, len } => {
+                write!(f, "clone {len:#x} at {src:#x} of file {from} onto {dst:#x} of file {to}")
+            }
+            Step::Copy { from, src, to, dst, len } => {
+                write!(f, "copy {len:#x} at {src:#x} of file {from} to {dst:#x} of file {to}")
+            }
+            Step::Zero { file, at, len, keep_size } => {
+                let kept = if *keep_size { ", the size kept" } else { "" };
+                write!(f, "zero {len:#x} at {at:#x} of file {file}{kept}")
+            }
+            Step::Allocate { file, at, len, keep_size } => {
+                let kept = if *keep_size { ", the size kept" } else { "" };
+                write!(f, "allocate {len:#x} at {at:#x} of file {file}{kept}")
+            }
+            Step::Msync { file, at, len } => write!(f, "msync {len:#x} at {at:#x} of file {file}"),
+            Step::Fdatasync { file } => write!(f, "fdatasync file {file}"),
+            Step::MapStore { file, at, data, private } => {
+                let how = if *private { "a private" } else { "a new" };
+                write!(f, "store {:#x} at {at:#x} of file {file} through {how} mapping", data.len())
+            }
+            Step::DirectWrite { file, at, data } => {
+                write!(f, "direct write {:#x} at {at:#x} of file {file}", data.len())
+            }
+            Step::DirectRead { file, at, len } => {
+                write!(f, "direct read {len:#x} at {at:#x} of file {file}")
+            }
+            Step::Drop { file } => write!(f, "drop file {file}'s page cache"),
+            Step::Reopen { file } => write!(f, "reopen file {file}"),
         }
+    }
+}
+
+/// fxdax: the bytes a step changes ([`Step::reach`]): `start` to `end` of `file`, and where the
+/// first came from, a clone's or a copy's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Reach {
+    pub file: usize,
+    pub start: u64,
+    pub end: u64,
+    pub source: Option<(usize, u64)>,
+}
+
+/// fxdax: what a file is to a step: the one it's on, a clone's or a copy's source or destination,
+/// or another.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Role {
+    Its,
+    Source,
+    Destination,
+    Other,
+}
+
+impl fmt::Display for Role {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Role::Its => "its file",
+            Role::Source => "its source",
+            Role::Destination => "its destination",
+            Role::Other => "another file",
+        })
     }
 }
 
@@ -302,10 +681,167 @@ impl Model {
             Op::Fsync { file } => Step::Fsync { file },
             Op::Clone { from, to } => Step::Clone { from, to },
             Op::Check => Step::Check,
+            Op::CloneRange { from, from_place, to, to_place, len, aligned } => {
+                let block = |at: u64| if aligned { at / PAGE * PAGE } else { at };
+                let (src, len) = (block(from_place.resolve(self.size(from))), block(len));
+                let mut dst = block(to_place.resolve(self.size(to)));
+                // A clone to the source's end, which may be all of it, lands where the file it
+                // makes is no longer than a file may be.
+                if len == 0 {
+                    let whole = self.size(from).saturating_sub(src);
+                    dst = block(dst.min(MOST.saturating_sub(whole)));
+                }
+                Step::CloneRange { from, src, to, dst, len }
+            }
+            Op::Copy { from, from_place, to, to_place, len } => {
+                let src = from_place.resolve(self.size(from));
+                Step::Copy { from, src, to, dst: to_place.resolve(self.size(to)), len }
+            }
+            Op::Zero { file, place, len, keep_size } => {
+                Step::Zero { file, at: place.resolve(self.size(file)), len, keep_size }
+            }
+            Op::Allocate { file, place, len, keep_size } => {
+                Step::Allocate { file, at: place.resolve(self.size(file)), len, keep_size }
+            }
+            Op::Msync { file, place, len } => {
+                let at = place.resolve(self.size(file));
+                Step::Msync { file, at: at / PAGE * PAGE, len: len + at % PAGE }
+            }
+            Op::Fdatasync { file } => Step::Fdatasync { file },
+            Op::MapStore { file, place, len, data, private } => {
+                let Step::Store { file, at, data, .. } =
+                    self.resolve(&Op::Store { file, place, len, data, child: false })
+                else {
+                    unreachable!("a store resolves to a store")
+                };
+                Step::MapStore { file, at, data, private }
+            }
+            Op::Direct { file, place, pages, data, write } => {
+                let at = place.resolve(self.size(file)) / PAGE * PAGE;
+                let len = pages * PAGE;
+                match write {
+                    true => Step::DirectWrite { file, at, data: bytes(data, len) },
+                    false => Step::DirectRead { file, at, len },
+                }
+            }
+            Op::Drop { file } => Step::Drop { file },
+            Op::Reopen { file } => Step::Reopen { file },
         }
     }
 
+    /// fxdax: what `step` should come to, done whole: what it does, or the errno it fails with.
+    pub fn outcome(&self, step: &Step) -> Outcome {
+        let read = |file: usize, at: u64, len: u64| len.min(self.size(file).saturating_sub(at));
+        match *step {
+            Step::Write { ref data, .. } | Step::DirectWrite { ref data, .. } => {
+                Ok(data.len() as u64)
+            }
+            Step::Store { ref data, .. } | Step::MapStore { ref data, .. } => Ok(data.len() as u64),
+            Step::Read { file, at, len } | Step::DirectRead { file, at, len } => {
+                Ok(read(file, at, len))
+            }
+            Step::Clone { from, to } => self.clone_range(from, 0, to, 0, 0),
+            Step::CloneRange { from, src, to, dst, len } => {
+                self.clone_range(from, src, to, dst, len)
+            }
+            Step::Copy { from, src, to, dst, len } => self.copy_range(from, src, to, dst, len),
+            _ => Ok(0),
+        }
+    }
+
+    /// fxdax: does what `step` does, done whole, as [`Model::outcome`] says it comes to.
+    pub fn apply(&mut self, step: &Step) {
+        match *step {
+            Step::Write { file, at, ref data }
+            | Step::Store { file, at, ref data, .. }
+            | Step::MapStore { file, at, ref data, private: false }
+            | Step::DirectWrite { file, at, ref data } => self.write(file, at, data),
+            Step::Truncate { file, size } => self.truncate(file, size),
+            Step::Punch { file, at, len } => self.punch(file, at, len),
+            Step::Clone { from, to } => self.apply_clone(from, 0, to, 0, step),
+            Step::CloneRange { from, src, to, dst, .. } | Step::Copy { from, src, to, dst, .. } => {
+                self.apply_clone(from, src, to, dst, step)
+            }
+            Step::Zero { file, at, len, keep_size } => {
+                self.punch(file, at, len);
+                self.grow(file, at + len, keep_size);
+            }
+            Step::Allocate { file, at, len, keep_size } => self.grow(file, at + len, keep_size),
+            _ => {}
+        }
+    }
+
+    /// Of a clone or a copy, `step`: the bytes its outcome says, from `src` of `from` to `dst` of
+    /// `to`, read before any is written, as a file and itself never overlap.
+    fn apply_clone(&mut self, from: usize, src: u64, to: usize, dst: u64, step: &Step) {
+        if let Ok(count @ 1..) = self.outcome(step) {
+            let bytes = self.files[from][src as usize..(src + count) as usize].to_vec();
+            self.write(to, dst, &bytes);
+        }
+    }
+
+    /// Makes `file` `end` bytes long if it is shorter, unless the size is kept.
+    fn grow(&mut self, file: usize, end: u64, keep_size: bool) {
+        if !keep_size && end > self.size(file) {
+            self.truncate(file, end);
+        }
+    }
+
+    /// fxdax: what FICLONERANGE of `len` bytes, or to the source's end if 0, at `src` of `from` onto
+    /// `dst` of `to` comes to, as the VFS checks it before a filesystem sees it, with no flags
+    /// (fs/remap_range.c: generic_remap_file_range_prep, generic_remap_checks,
+    /// generic_remap_check_len; and ioctl_file_clone): the bytes it clones, or EINVAL. FICLONE is
+    /// one of the whole file, to 0. Blocks are pages, as Fxfs's, ext4's and XFS's are here.
+    pub fn clone_range(&self, from: usize, src: u64, to: usize, dst: u64, len: u64) -> Outcome {
+        let (size_in, size_out) = (self.size(from), self.size(to));
+        // Zero is to the source's end, which may be nothing to clone.
+        let len = match len {
+            0 if src == size_in => return Ok(0),
+            0 if src > size_in => return Err(errno::EINVAL),
+            0 => size_in - src,
+            len => len,
+        };
+        if !src.is_multiple_of(PAGE) || !dst.is_multiple_of(PAGE) || src >= size_in {
+            return Err(errno::EINVAL);
+        }
+        let count = len.min(size_in - src);
+        // To the source's end, its last block is taken whole; otherwise only whole blocks.
+        let (count, blocks) = if src + count == size_in {
+            (count, size_in.next_multiple_of(PAGE) - src)
+        } else {
+            let count = count / PAGE * PAGE;
+            (count, count)
+        };
+        if from == to && dst + blocks > src && dst < src + blocks {
+            return Err(errno::EINVAL);
+        }
+        // Shortened, and nothing asked that it may be.
+        if count != len {
+            return Err(errno::EINVAL);
+        }
+        // A partial block can't replace part of one of the destination's.
+        if !count.is_multiple_of(PAGE) && dst + count < size_out {
+            return Err(errno::EINVAL);
+        }
+        Ok(count)
+    }
+
+    /// fxdax: what copy_file_range of `len` bytes at `src` of `from` to `dst` of `to` comes to, as
+    /// the VFS checks it (fs/read_write.c: generic_copy_file_checks), however many calls it takes:
+    /// what lies within the source, or EINVAL for ranges of one file that overlap.
+    pub fn copy_range(&self, from: usize, src: u64, to: usize, dst: u64, len: u64) -> Outcome {
+        let count = len.min(self.size(from).saturating_sub(src));
+        if from == to && dst + count > src && dst < src + count {
+            return Err(errno::EINVAL);
+        }
+        Ok(count)
+    }
+
+    /// Writes `data` at `at` of `file`: nothing, if it's empty, which grows no file.
     pub fn write(&mut self, file: usize, at: u64, data: &[u8]) {
+        if data.is_empty() {
+            return;
+        }
         let (at, end) = (at as usize, at as usize + data.len());
         let bytes = &mut self.files[file];
         if bytes.len() < end {
@@ -326,29 +862,64 @@ impl Model {
         }
     }
 
-    /// Whether the VFS refuses to clone `from` onto `to`: a partial block at the source's end
-    /// can't replace part of a block of the destination's (generic_remap_check_len).
-    pub fn clone_is_invalid(&self, from: usize, to: usize) -> bool {
-        let (source, destination) = (self.size(from), self.size(to));
-        source % PAGE != 0 && source < destination
-    }
-
     /// FICLONE of `from` onto `to`: what `to` holds past the source's end stays.
     pub fn clone_file(&mut self, from: usize, to: usize) {
-        let source = std::mem::take(&mut self.files[from]);
-        self.write(to, 0, &source);
-        self.files[from] = source;
+        self.apply(&Step::Clone { from, to });
+    }
+
+    /// What `step`, refused for lack of room or memory, left of `file`: `got`, what it reads now.
+    /// An operation of many transactions stands as far as it got (fxfs_vfs_remap_file_range,
+    /// fxfs_dax_punch_begin). Takes `got` for `file`'s if `step` could have reached it: a write
+    /// nothing, as one that writes any says how much; a whole file's clone its blocks in order,
+    /// a size between; any other, each byte as it was or as the step done whole leaves it, and a
+    /// size between those. An O_DIRECT write is the last kind: it may fail having written some of
+    /// its blocks, iomap's saying the error, not what it wrote (iomap_dio_complete; ext4 on a full
+    /// disk, refusals_are_adopted_by_the_reference). Fails saying how it couldn't.
+    pub fn stopped_short(&mut self, step: &Step, file: usize, got: &[u8]) -> Result<(), String> {
+        let before = &self.files[file];
+        let reached = |what: String| format!("file {file} {what} after `{step}` stopped short");
+        match *step {
+            Step::Write { .. } if got != &before[..] => {
+                let first = got.iter().zip(before).position(|(a, b)| a != b);
+                let first =
+                    first.map_or("past the end of either".to_owned(), |at| format!("{at:#x}"));
+                let (got, was) = (got.len(), before.len());
+                Err(reached(format!("is {got:#x} bytes long, was {was:#x}, differing at {first}")))
+            }
+            Step::Write { .. } => Ok(()),
+            Step::Clone { from, to } => {
+                assert_eq!(to, file, "a clone changes its destination alone");
+                self.clone_stopped_short(from, to, got)
+            }
+            _ => {
+                let mut whole = self.clone();
+                whole.apply(step);
+                let after = &whole.files[file];
+                let (shortest, longest) =
+                    (before.len().min(after.len()), before.len().max(after.len()));
+                if !(shortest..=longest).contains(&got.len()) {
+                    return Err(reached(format!("is {:#x} bytes long", got.len())));
+                }
+                let byte = |bytes: &[u8], at: usize| bytes.get(at).copied().unwrap_or(0);
+                let wrong = (0..got.len())
+                    .find(|&at| got[at] != byte(before, at) && got[at] != byte(after, at));
+                if let Some(at) = wrong {
+                    let (was, would) = (byte(before, at), byte(after, at));
+                    return Err(reached(format!(
+                        "reads {:#x} at {at:#x}, neither {was:#x}, as it was, nor {would:#x}",
+                        got[at]
+                    )));
+                }
+                self.files[file] = got.to_vec();
+                Ok(())
+            }
+        }
     }
 
     /// What a clone refused for lack of room left: a clone is many transactions, and what it got
     /// to stands (fxfs_vfs_remap_file_range), its blocks in order, which `got`, `to` as it reads
     /// now, says the extent of. Fails with the size if that's no size the clone could have reached.
-    pub fn clone_stopped_short(
-        &mut self,
-        from: usize,
-        to: usize,
-        got: &[u8],
-    ) -> Result<(), String> {
+    fn clone_stopped_short(&mut self, from: usize, to: usize, got: &[u8]) -> Result<(), String> {
         let (before, source) = (self.files[to].len(), self.files[from].clone());
         let reached = got.len();
         if !(before..=before.max(source.len())).contains(&reached) {
@@ -367,25 +938,6 @@ impl Model {
         }
         self.files[to].resize(reached, 0);
         self.files[to][..end].copy_from_slice(&source[..end]);
-        Ok(())
-    }
-
-    /// What a punch refused for lack of room left: the partial blocks at its ends are zeroed before
-    /// the rest goes (fxfs_dax_punch_begin), so each of its bytes may be as it was or a zero, which
-    /// `got`, what the range `at` of `file` reads now, says. Fails with the offset of a byte that's
-    /// neither.
-    pub fn punch_stopped_short(&mut self, file: usize, at: u64, got: &[u8]) -> Result<(), String> {
-        for (i, &byte) in got.iter().enumerate() {
-            let held = &mut self.files[file][at as usize + i];
-            if byte != *held && byte != 0 {
-                let offset = at + i as u64;
-                return Err(format!(
-                    "file {file} at {offset:#x} reads {byte:#x} after a punch stopped short, not \
-                     {held:#x} or a zero"
-                ));
-            }
-            *held = byte;
-        }
         Ok(())
     }
 }
@@ -422,10 +974,10 @@ impl Failure {
         self.kind == other.kind
     }
 
-    /// Whether a shorter script could fail this way: not by being refused nothing, which only the
-    /// whole of one is held to.
+    /// Whether a shorter script could fail this way: not by being refused nothing, nor by no file
+    /// being DAX, nor by no time changing, which only the whole of one is held to.
     pub fn shrinks(&self) -> bool {
-        self.kind != kind::NOTHING_REFUSED
+        ![kind::NOTHING_REFUSED, kind::NEVER_DAX, kind::NO_TIMES].contains(&self.kind.as_str())
     }
 }
 
@@ -531,24 +1083,24 @@ mod tests {
                 Op::Fsync { .. } => "fsync",
                 Op::Clone { .. } => "clone",
                 Op::Check => "check",
+                Op::CloneRange { len: 0, .. } => "clone to the end",
+                Op::CloneRange { aligned: true, .. } => "clone range",
+                Op::CloneRange { aligned: false, .. } => "clone range, unaligned",
+                Op::Copy { .. } => "copy",
+                Op::Zero { .. } => "zero",
+                Op::Allocate { .. } => "allocate",
+                Op::Msync { .. } => "msync",
+                Op::Fdatasync { .. } => "fdatasync",
+                Op::MapStore { private: false, .. } => "map store",
+                Op::MapStore { private: true, .. } => "private store",
+                Op::Direct { write: true, .. } => "direct write",
+                Op::Direct { write: false, .. } => "direct read",
+                Op::Drop { .. } => "drop",
+                Op::Reopen { .. } => "reopen",
             };
             *counts.entry(kind).or_insert(0) += 1;
         }
         counts
-    }
-
-    /// Applies what `step` comes to, as a run that nothing refuses does.
-    fn apply(model: &mut Model, step: &Step) {
-        match step {
-            Step::Write { file, at, data } => model.write(*file, *at, data),
-            Step::Store { file, at, data, .. } => model.write(*file, *at, data),
-            Step::Truncate { file, size } => model.truncate(*file, *size),
-            Step::Punch { file, at, len } => model.punch(*file, *at, *len),
-            Step::Clone { from, to } if !model.clone_is_invalid(*from, *to) => {
-                model.clone_file(*from, *to)
-            }
-            _ => {}
-        }
     }
 
     #[test]
@@ -657,18 +1209,25 @@ mod tests {
     /// store past a file's end.
     #[test]
     fn any_subset_of_a_script_resolves() {
-        let script = generate(11, SEVERAL_FILES);
-        for keep_one_in in [2, 3, 7, 50] {
-            let mut rng = Rng::new(keep_one_in);
-            let mut model = Model::new(SEVERAL_FILES.files);
-            for op in script.iter().filter(|_| rng.next(keep_one_in) == 0) {
-                let step = model.resolve(op);
-                if let Step::Store { file, at, data, .. } = &step {
-                    assert!(*at as usize + data.len() <= model.files[*file].len(), "{step}");
+        for (mix, seed) in [(SEVERAL_FILES, 11), (WIDE, 11), (WIDE, 12)] {
+            let script = generate(seed, mix);
+            for keep_one_in in [1, 2, 3, 7, 50] {
+                let mut rng = Rng::new(keep_one_in);
+                let mut model = Model::new(mix.files);
+                for op in script.iter().filter(|_| rng.next(keep_one_in) == 0) {
+                    let step = model.resolve(op);
+                    if let Step::Store { file, at, data, .. }
+                    | Step::MapStore { file, at, data, .. } = &step
+                    {
+                        assert!(*at as usize + data.len() <= model.files[*file].len(), "{step}");
+                    }
+                    if let Step::DirectWrite { at, .. } | Step::DirectRead { at, .. } = &step {
+                        assert_eq!(at % PAGE, 0, "{step}");
+                    }
+                    model.apply(&step);
+                    let longest = model.files.iter().map(Vec::len).max().unwrap() as u64;
+                    assert!(longest <= MOST, "{step} made a file of {longest:#x} bytes");
                 }
-                apply(&mut model, &step);
-                let longest = model.files.iter().map(Vec::len).max().unwrap() as u64;
-                assert!(longest <= MOST, "{step} made a file of {longest:#x} bytes");
             }
         }
     }
@@ -689,7 +1248,7 @@ mod tests {
                 assert_eq!(data[..], its_own[..data.len()], "{op:?}");
                 written += 1;
             }
-            apply(&mut whole, &step);
+            whole.apply(&step);
         }
         assert_eq!(written, 1077);
     }
@@ -731,14 +1290,205 @@ mod tests {
         assert_eq!(model.files[0], vec![1; PAGE as usize]);
     }
 
+    /// FICLONE is FICLONERANGE of the whole file, onto 0.
     #[test]
     fn a_clone_of_a_partial_block_within_the_destination_is_invalid() {
-        let model = Model { files: vec![vec![1; 5000], vec![2; 9000], vec![3; 5000]] };
-        assert!(model.clone_is_invalid(0, 1));
-        assert!(!model.clone_is_invalid(0, 2));
-        assert!(!model.clone_is_invalid(1, 0));
+        let model = Model { files: vec![vec![1; 5000], vec![2; 9000], vec![3; 5000], vec![]] };
+        let clone = |from, to| model.outcome(&Step::Clone { from, to });
+        assert_eq!(clone(0, 1), Err(errno::EINVAL));
+        assert_eq!(clone(0, 2), Ok(5000));
+        assert_eq!(clone(1, 0), Ok(9000));
+        assert_eq!(clone(3, 0), Ok(0));
         let aligned = Model { files: vec![vec![1; 4096], vec![2; 9000]] };
-        assert!(!aligned.clone_is_invalid(0, 1));
+        assert_eq!(aligned.outcome(&Step::Clone { from: 0, to: 1 }), Ok(4096));
+    }
+
+    /// The VFS's checks of a range's clone (generic_remap_checks and the rest), each refusal.
+    #[test]
+    fn a_range_clone_is_refused_as_the_vfs_refuses_it() {
+        let page = PAGE;
+        let model = Model { files: vec![vec![1; 3 * 4096 + 100], vec![2; 2 * 4096]] };
+        let clone = |src, dst, len| model.clone_range(0, src, 1, dst, len);
+        // Whole blocks within both.
+        assert_eq!(clone(page, 0, page), Ok(page));
+        // Starts off a block.
+        assert_eq!(clone(100, 0, page), Err(errno::EINVAL));
+        assert_eq!(clone(0, 100, page), Err(errno::EINVAL));
+        // A length of part of a block, short of the source's end.
+        assert_eq!(clone(0, 0, 100), Err(errno::EINVAL));
+        // Past the source's end, though it starts within it.
+        assert_eq!(clone(3 * page, 0, page), Err(errno::EINVAL));
+        // From its end or past it.
+        assert_eq!(clone(4 * page, 0, page), Err(errno::EINVAL));
+        // To the source's end: its partial block, into the middle of the destination, refused;
+        // onto its end, or past it, taken.
+        assert_eq!(clone(3 * page, 0, 100), Err(errno::EINVAL));
+        assert_eq!(clone(3 * page, page, 100), Err(errno::EINVAL));
+        assert_eq!(clone(3 * page, 2 * page, 100), Ok(100));
+        assert_eq!(clone(3 * page, 5 * page, 0), Ok(100));
+        assert_eq!(clone(2 * page, 2 * page, 0), Ok(page + 100));
+        // Zero is to the end: from the end, nothing, past it, refused.
+        assert_eq!(clone(3 * page + 100, 0, 0), Ok(0));
+        assert_eq!(clone(4 * page, 0, 0), Err(errno::EINVAL));
+    }
+
+    /// Ranges of one file overlapping, by the blocks a clone takes: a partial last one whole.
+    #[test]
+    fn a_range_cloned_onto_itself_overlapping_is_refused() {
+        let model = Model { files: vec![vec![1; 5000]] };
+        let clone = |src, dst, len| model.clone_range(0, src, 0, dst, len);
+        assert_eq!(clone(0, PAGE, 0), Err(errno::EINVAL));
+        assert_eq!(clone(0, 2 * PAGE, 0), Ok(5000));
+        assert_eq!(clone(PAGE, 0, 0), Err(errno::EINVAL));
+        assert_eq!(clone(0, 0, PAGE), Err(errno::EINVAL));
+    }
+
+    /// A clone writes what it takes where it lands, growing the destination, and leaves the rest.
+    #[test]
+    fn a_range_clone_lands_and_grows_its_destination() {
+        let source: Vec<u8> = (0..2 * PAGE + 10).map(|at| at as u8).collect();
+        let mut model = Model { files: vec![source.clone(), vec![7; PAGE as usize]] };
+        let step = Step::CloneRange { from: 0, src: PAGE, to: 1, dst: 2 * PAGE, len: 0 };
+        assert_eq!(model.outcome(&step), Ok(PAGE + 10));
+        model.apply(&step);
+        let held =
+            [vec![7; PAGE as usize], vec![0; PAGE as usize], source[PAGE as usize..].to_vec()];
+        assert_eq!(model.files[1], held.concat());
+        assert_eq!(model.files[0], source);
+        // Refused, it leaves both.
+        let refused = Step::CloneRange { from: 0, src: 1, to: 1, dst: 0, len: PAGE };
+        assert_eq!(model.outcome(&refused), Err(errno::EINVAL));
+        model.apply(&refused);
+        assert_eq!(model.files[1], held.concat());
+    }
+
+    /// The VFS's checks of a copy (generic_copy_file_checks): shortened to the source's end, and
+    /// refused overlapping within a file.
+    #[test]
+    fn a_copy_is_shortened_and_refused_as_the_vfs_has_it() {
+        let mut model = Model { files: vec![(0..100).collect(), vec![9; 10]] };
+        assert_eq!(model.copy_range(0, 10, 1, 50, 20), Ok(20));
+        assert_eq!(model.copy_range(0, 90, 1, 0, 20), Ok(10));
+        assert_eq!(model.copy_range(0, 100, 1, 0, 20), Ok(0));
+        assert_eq!(model.copy_range(0, 200, 1, 0, 20), Ok(0));
+        assert_eq!(model.copy_range(0, 10, 0, 20, 20), Err(errno::EINVAL));
+        assert_eq!(model.copy_range(0, 30, 0, 20, 20), Err(errno::EINVAL));
+        assert_eq!(model.copy_range(0, 10, 0, 30, 20), Ok(20));
+        // Past the source's end, what overlaps is nothing.
+        assert_eq!(model.copy_range(0, 100, 0, 50, 20), Ok(0));
+        model.apply(&Step::Copy { from: 0, src: 95, to: 1, dst: 12, len: 20 });
+        let held = [vec![9; 10], vec![0; 2], (95..100).collect()].concat();
+        assert_eq!(model.files[1], held);
+    }
+
+    /// A zeroed range and an allocated one grow the file to their ends unless the size is kept;
+    /// zeroing past the end zeroes nothing.
+    #[test]
+    fn ranges_zeroed_and_allocated_grow_unless_the_size_is_kept() {
+        let mut model = Model { files: vec![vec![5; 100]] };
+        model.apply(&Step::Zero { file: 0, at: 90, len: 20, keep_size: true });
+        assert_eq!(model.files[0], [vec![5; 90], vec![0; 10]].concat());
+        model.apply(&Step::Zero { file: 0, at: 10, len: 5, keep_size: false });
+        assert_eq!(model.files[0].len(), 100);
+        assert_eq!(model.files[0][10..15], [0; 5]);
+        model.apply(&Step::Zero { file: 0, at: 200, len: 5, keep_size: false });
+        assert_eq!(model.files[0].len(), 205);
+        model.apply(&Step::Allocate { file: 0, at: 300, len: 5, keep_size: true });
+        assert_eq!(model.files[0].len(), 205);
+        model.apply(&Step::Allocate { file: 0, at: 300, len: 5, keep_size: false });
+        assert_eq!(model.files[0].len(), 305);
+        assert_eq!(model.files[0][205..], [0; 100]);
+    }
+
+    /// Reads, direct ones too, read what the file has of their range.
+    #[test]
+    fn a_reads_outcome_is_what_lies_within_the_file() {
+        let model = Model { files: vec![vec![1; 5000]] };
+        assert_eq!(model.outcome(&Step::Read { file: 0, at: 4000, len: 4096 }), Ok(1000));
+        assert_eq!(model.outcome(&Step::DirectRead { file: 0, at: 8192, len: 4096 }), Ok(0));
+        assert_eq!(model.outcome(&Step::Truncate { file: 0, size: 1 }), Ok(0));
+    }
+
+    /// The wide mix's places resolve as its operations need: direct I/O and msyncs at pages' starts,
+    /// aligned clones in whole blocks, a clone to the end landing where the file it makes fits.
+    #[test]
+    fn wide_operations_resolve_to_what_they_need() {
+        let mut model = Model { files: vec![vec![1; 3 * PAGE as usize + 7], vec![]] };
+        let direct =
+            Op::Direct { file: 0, place: Place::At(5000), pages: 2, data: 1, write: false };
+        assert_eq!(model.resolve(&direct), Step::DirectRead { file: 0, at: PAGE, len: 2 * PAGE });
+        let msync = Op::Msync { file: 0, place: Place::At(5000), len: 10 };
+        assert_eq!(model.resolve(&msync), Step::Msync { file: 0, at: PAGE, len: 10 + 904 });
+        let clone = |len, aligned| Op::CloneRange {
+            from: 0,
+            from_place: Place::At(PAGE + 3),
+            to: 1,
+            to_place: Place::At(MAX - 10),
+            len,
+            aligned,
+        };
+        assert_eq!(
+            model.resolve(&clone(PAGE + 5, true)),
+            Step::CloneRange { from: 0, src: PAGE, to: 1, dst: MAX - PAGE, len: PAGE }
+        );
+        assert_eq!(
+            model.resolve(&clone(PAGE + 5, false)),
+            Step::CloneRange { from: 0, src: PAGE + 3, to: 1, dst: MAX - 10, len: PAGE + 5 }
+        );
+        model.files[0] = vec![1; MOST as usize];
+        let Step::CloneRange { dst, len: 0, .. } = model.resolve(&clone(0, true)) else {
+            panic!("a clone to the end")
+        };
+        assert_eq!(dst, PAGE);
+        let store =
+            Op::MapStore { file: 0, place: Place::At(MOST + 5), len: 10, data: 1, private: true };
+        let Step::MapStore { at, data, private: true, .. } = model.resolve(&store) else {
+            panic!("a private store")
+        };
+        assert_eq!((at, data.len()), (MAX - 1, 10));
+    }
+
+    /// The wide mix: of 3000, half again as many kinds as random_ops', in their proportions, the
+    /// clones and stores by a child as fxfs-guest-script's, and none of its own lost to another.
+    #[test]
+    fn the_wide_mix_adds_to_several_files() {
+        let script = generate(1, WIDE);
+        let expected = BTreeMap::from([
+            ("allocate", 91),
+            ("append", 94),
+            ("check", 11),
+            ("clone", 85),
+            ("clone range", 103),
+            ("clone range, unaligned", 41),
+            ("clone to the end", 41),
+            ("copy", 180),
+            ("direct read", 103),
+            ("direct write", 94),
+            ("drop", 92),
+            ("fdatasync", 90),
+            ("fork", 197),
+            ("fsync", 179),
+            ("map store", 103),
+            ("msync", 95),
+            ("private store", 91),
+            ("punch", 78),
+            ("read", 279),
+            ("reopen", 103),
+            ("store", 359),
+            ("truncate", 198),
+            ("write", 501),
+            ("zero", 85),
+        ]);
+        assert_eq!(tally(&script), expected);
+        let onto_itself = |op: &Op| matches!(op, Op::Copy { from, to, .. } if from == to);
+        assert_eq!(script.iter().filter(|op| onto_itself(op)).count(), 57);
+    }
+
+    /// The mixes before the wide one are as they were: the wide mix draws its own only when asked.
+    #[test]
+    fn the_wide_mix_leaves_the_others_scripts_as_they_were() {
+        assert_eq!(generate(1, Mix { wide: false, ..WIDE }), generate(1, SEVERAL_FILES));
+        assert_ne!(generate(1, WIDE), generate(1, SEVERAL_FILES));
     }
 
     #[test]
@@ -771,16 +1521,61 @@ mod tests {
     #[test]
     fn a_punch_stopped_short_holds_its_zeros() {
         let mut model = Model { files: vec![vec![7; 10]] };
-        assert_eq!(model.punch_stopped_short(0, 2, &[0, 0, 7, 7, 0]), Ok(()));
+        let punch = Step::Punch { file: 0, at: 2, len: 5 };
+        assert_eq!(model.stopped_short(&punch, 0, &[7, 7, 0, 0, 7, 7, 0, 7, 7, 7]), Ok(()));
         assert_eq!(model.files[0], [7, 7, 0, 0, 7, 7, 0, 7, 7, 7]);
     }
 
     #[test]
     fn a_punch_stopped_short_finds_a_byte_it_cant_have_left() {
         let mut model = Model { files: vec![vec![7; 10]] };
+        let punch = Step::Punch { file: 0, at: 2, len: 5 };
         assert_eq!(
-            model.punch_stopped_short(0, 2, &[0, 9]),
-            Err("file 0 at 0x3 reads 0x9 after a punch stopped short, not 0x7 or a zero".to_owned())
+            model.stopped_short(&punch, 0, &[7, 7, 0, 9, 7, 7, 7, 7, 7, 7]),
+            Err(
+                "file 0 reads 0x9 at 0x3, neither 0x7, as it was, nor 0x0 after `punch 0x5 at 0x2 \
+                 of file 0` stopped short"
+                    .to_owned()
+            )
+        );
+        // Bytes past what it could reach, or a size it couldn't: the file outside the range is
+        // the model's.
+        assert_eq!(
+            model.stopped_short(&punch, 0, &[0; 10]),
+            Err(
+                "file 0 reads 0x0 at 0x0, neither 0x7, as it was, nor 0x7 after `punch 0x5 at 0x2 \
+                 of file 0` stopped short"
+                    .to_owned()
+            )
+        );
+        assert_eq!(
+            model.stopped_short(&punch, 0, &[7; 9]),
+            Err("file 0 is 0x9 bytes long after `punch 0x5 at 0x2 of file 0` stopped short"
+                .to_owned())
+        );
+    }
+
+    /// A growth stopped short is any size between, zeros past what the file was.
+    #[test]
+    fn a_growth_stopped_short_is_of_a_size_between() {
+        let mut model = Model { files: vec![vec![7; 10]] };
+        let zero = Step::Zero { file: 0, at: 5, len: 20, keep_size: false };
+        let got = [vec![7; 5], vec![0; 10]].concat();
+        assert_eq!(model.stopped_short(&zero, 0, &got), Ok(()));
+        assert_eq!(model.files[0], got);
+    }
+
+    /// A write that fails wrote nothing: one that writes any says how much.
+    #[test]
+    fn a_refused_write_leaves_the_file_as_it_was() {
+        let mut model = Model { files: vec![vec![7; 10]] };
+        let write = Step::Write { file: 0, at: 5, data: vec![1; 10] };
+        assert_eq!(model.stopped_short(&write, 0, &[7; 10]), Ok(()));
+        assert_eq!(
+            model.stopped_short(&write, 0, &[[7; 5], [1; 5]].concat()),
+            Err("file 0 is 0xa bytes long, was 0xa, differing at 0x5 after `write 0xa at 0x5 of file \
+                 0` stopped short"
+                .to_owned())
         );
     }
 

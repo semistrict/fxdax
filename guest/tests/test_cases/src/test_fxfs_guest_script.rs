@@ -60,41 +60,6 @@ mod host {
         })
     }
 
-    fn read(fs: &Filesystem, name: &str) -> anyhow::Result<Vec<u8>> {
-        block_on(async {
-            let (file, attr) = fs.root().lookup(name.as_bytes()).await?;
-            let mut buf = vec![0; attr.size as usize];
-            let count = file.read(0, &mut buf).await?;
-            buf.truncate(count);
-            Ok(buf)
-        })
-    }
-
-    /// Whether each file of the image at `path` is as its model, its fsck passing, or else how
-    /// not.
-    fn stored_as_modelled(path: &Path) -> Option<Failure> {
-        let failed =
-            |kind: &str, what: String| Some(Failure { op: None, kind: kind.to_owned(), what });
-        let fs = Storage::open(path).map_err(anyhow::Error::from).and_then(|storage| {
-            block_on(async { Ok(Filesystem::mount(storage.check().await?).await?) })
-        });
-        let fs = match fs {
-            Ok(fs) => fs,
-            Err(err) => return failed(kind::FSCK, format!("{err:#}")),
-        };
-        for n in 0..SEVERAL_FILES.files {
-            let same = read(&fs, &file(n)).and_then(|read_| Ok(read_ == read(&fs, &model(n))?));
-            match same {
-                Ok(true) => {}
-                Ok(false) => {
-                    return failed(kind::STORED_DIFFERS, format!("{} is not as modelled", file(n)));
-                }
-                Err(err) => return failed(kind::STORED_DIFFERS, format!("{}: {err:#}", file(n))),
-            }
-        }
-        None
-    }
-
     /// How the run in `dir`, which said `stdout`, failed, if it did.
     fn verdict(dir: &Path, stdout: &[u8]) -> Option<Failure> {
         let output = String::from_utf8_lossy(stdout);
@@ -105,7 +70,8 @@ mod host {
             let what = format!("it said {output:?}");
             return Some(Failure { op: None, kind: kind::DIED.to_owned(), what });
         }
-        stored_as_modelled(&dir.join("fxdax.img")).or_else(|| {
+        let files: Vec<_> = (0..SEVERAL_FILES.files).map(|n| (file(n), model(n))).collect();
+        script_vm::stored_as_modelled(&dir.join("fxdax.img"), &files).or_else(|| {
             crate::vm::complaints(&dir.join("console.txt")).err().map(|err| Failure {
                 op: None,
                 kind: kind::COMPLAINT.to_owned(),
@@ -172,7 +138,7 @@ mod guest {
     use super::*;
     use crate::Test;
     use crate::script::{Failure, SEVERAL_FILES, kind};
-    use crate::script_run::{self, Run};
+    use crate::script_run::{self, Options, Run};
     use crate::test_fxfs_guest_checks::guest::{evict, mount, path, seed};
     use nix::libc;
     use std::fs;
@@ -190,7 +156,7 @@ mod guest {
             let seed = seed();
             let (script, len) = script_run::from_env(seed, SEVERAL_FILES);
             let names: Vec<String> = (0..SEVERAL_FILES.files).map(|n| path(&file(n))).collect();
-            let mut run = Run::new(&names, self.full);
+            let mut run = Run::new(&names, Options { full: self.full, ..Options::default() });
             if self.full {
                 script_run::fill(&path(BALLAST), LEFT);
             }

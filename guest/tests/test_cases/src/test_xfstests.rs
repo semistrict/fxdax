@@ -44,7 +44,11 @@ mod host {
     );
 
     /// Tests that fail for what Fxfs here doesn't do, which any other failure isn't.
-    const KNOWN_FAILURES: [&str; 21] = [
+    /// fxdax: no longer generic/225 (DAX appends' reserved blocks, in FIEMAP), 564 (past a DAX
+    /// mount's s_maxbytes) and 798 (cachestat, DAX's no page cache), which passed with DAX and
+    /// without once DAX copied on write, the files a mount makes in the page cache till read in
+    /// again (GCE r695, r696, TASK-44.15).
+    const KNOWN_FAILURES: [&str; 18] = [
         // An extent store reserves nothing, so fallocate leaves no unwritten extents, which they
         // look for with FIEMAP (`fxfs_vfs_fallocate`).
         "generic/009",
@@ -54,9 +58,6 @@ mod host {
         "generic/568",
         "generic/796",
         "generic/797",
-        // DAX appends reserve blocks ahead of them (TASK-92.58), which FIEMAP shows in what the
-        // file's writes then skipped: "an allocated extent where a hole should be".
-        "generic/225",
         // A heuristic of how few extents a reflinked file's data takes, which the allocator
         // makes it pass or not (r348, r352); its data is right either way.
         "generic/301",
@@ -64,9 +65,6 @@ mod host {
         // Offsets in a DAX file's last chunk, past the mount's s_maxbytes: EFBIG.
         "generic/303",
         "generic/525",
-        "generic/564",
-        // What cachestat counts is the page cache, which DAX has none of.
-        "generic/798",
         // FIEMAP doesn't say which extents a reflink shares (TASK-143).
         "generic/372",
         "generic/414",

@@ -33,7 +33,7 @@ pub(super) fn test_random_ops() {
         fs::write(path(RANDOM_OPS_HISTORY), format!("seed {seed}\n{}\n", done.join("\n"))).unwrap();
         fs::File::open(path(RANDOM_OPS_HISTORY)).unwrap().sync_all().unwrap();
     };
-    let mut run = Run::new(std::slice::from_ref(&name), false);
+    let mut run = Run::new(std::slice::from_ref(&name), script_run::Options::default());
     if let Err(failure) = run.script(&script, len) {
         history(&run.done);
         run.fail(seed, &failure);

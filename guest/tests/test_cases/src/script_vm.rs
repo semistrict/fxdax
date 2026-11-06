@@ -87,6 +87,12 @@ impl Replays<'_> {
         })
     }
 
+    /// fxdax: replays the script with `drops` dropped once, in the test's directory's `replay`:
+    /// how it failed, if it did. A guest's own shrink is confirmed so, from a boot.
+    pub fn replay(&self, drops: &str) -> anyhow::Result<Option<Failure>> {
+        self.attempt(&self.test_setup.tmp_dir.join("replay"), drops)
+    }
+
     /// Shrinks the script that failed with `failure` and says the smallest that failed the same
     /// way, in the test's directory too, `shrunk.txt`, by the directory of its VM, `shrunk`.
     pub fn report(&self, failure: &Failure) -> String {
@@ -143,6 +149,39 @@ impl Replays<'_> {
         }
         said
     }
+}
+
+/// Whether each file of `files`, a name and its model's, in the image at `path` is as its model,
+/// the image's fsck passing, or else how not: what the host's Fxfs reads of what a script's guest
+/// left in the store.
+pub fn stored_as_modelled(path: &Path, files: &[(String, String)]) -> Option<Failure> {
+    use futures::executor::block_on;
+    use fxdax::{Filesystem, Storage};
+    let read = |fs: &Filesystem, name: &str| -> anyhow::Result<Vec<u8>> {
+        block_on(async {
+            let (file, attr) = fs.root().lookup(name.as_bytes()).await?;
+            let mut buf = vec![0; attr.size as usize];
+            let count = file.read(0, &mut buf).await?;
+            buf.truncate(count);
+            Ok(buf)
+        })
+    };
+    let failed = |kind: &str, what: String| Some(Failure { op: None, kind: kind.to_owned(), what });
+    let fs = Storage::open(path).map_err(anyhow::Error::from).and_then(|storage| {
+        block_on(async { Ok(Filesystem::mount(storage.check().await?).await?) })
+    });
+    let fs = match fs {
+        Ok(fs) => fs,
+        Err(err) => return failed(kind::FSCK, format!("{err:#}")),
+    };
+    for (file, model) in files {
+        match read(&fs, file).and_then(|read_| Ok(read_ == read(&fs, model)?)) {
+            Ok(true) => {}
+            Ok(false) => return failed(kind::STORED_DIFFERS, format!("{file} is not as modelled")),
+            Err(err) => return failed(kind::STORED_DIFFERS, format!("{file}: {err:#}")),
+        }
+    }
+    None
 }
 
 /// What a run that ran out of `timeout` failed with.

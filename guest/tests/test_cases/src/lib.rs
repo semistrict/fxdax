@@ -73,12 +73,19 @@ use test_fxfs_guest_checks::{PAGE_CACHE_CHECKS, TestFxfsGuestChecks};
 mod test_fxfs_guest_script;
 #[cfg(any(feature = "host", target_os = "linux"))]
 use test_fxfs_guest_script::TestFxfsGuestScript;
+#[cfg(any(feature = "host", target_os = "linux"))]
+mod test_fxfs_guest_fsx;
+#[cfg(any(feature = "host", target_os = "linux"))]
+use test_fxfs_guest_fsx::TestFxfsGuestFsx;
 
 // The scripts of operations of fxfs-guest-checks' random_ops and fxfs-guest-script: what they are,
 // the guest's running of them, and the host's replays of them in VMs.
 pub mod script;
 #[cfg(all(feature = "guest", target_os = "linux"))]
 mod script_run;
+// fxdax: a script on two filesystems at once, step by step (TASK-44.15).
+#[cfg(all(feature = "guest", target_os = "linux"))]
+mod differential;
 #[cfg(feature = "host")]
 mod script_vm;
 
@@ -541,13 +548,7 @@ pub fn test_cases() -> Vec<TestCase> {
         #[cfg(any(feature = "host", target_os = "linux"))]
         TestCase::new(
             "fxfs-guest-checks-dax-delay",
-            &[
-                Tag::E2e,
-                Tag::Kernel,
-                Tag::Nightly,
-                Tag::DaxGate,
-                Tag::SoakChecks,
-            ],
+            &[Tag::E2e, Tag::Kernel, Tag::Nightly, Tag::DaxGate, Tag::SoakChecks],
             Box::new(TestFxfsGuestChecks { dax: true, delay: true, ..PAGE_CACHE_CHECKS }),
         ),
         #[cfg(any(feature = "host", target_os = "linux"))]
@@ -586,6 +587,31 @@ pub fn test_cases() -> Vec<TestCase> {
             "fxfs-guest-script-full-dax",
             &[Tag::Nightly],
             Box::new(TestFxfsGuestScript { dax: true, full: true }),
+        ),
+        // fxdax: fsx-style scripts on Fxfs and ext4 in one guest (TASK-44.15).
+        #[cfg(any(feature = "host", target_os = "linux"))]
+        TestCase::new(
+            "fxfs-guest-fsx",
+            &[Tag::Kernel, Tag::Nightly, Tag::SoakChecks],
+            Box::new(TestFxfsGuestFsx { dax: false, delay: false, faults: false }),
+        ),
+        #[cfg(any(feature = "host", target_os = "linux"))]
+        TestCase::new(
+            "fxfs-guest-fsx-dax",
+            &[Tag::Kernel, Tag::Nightly, Tag::SoakChecks],
+            Box::new(TestFxfsGuestFsx { dax: true, delay: false, faults: false }),
+        ),
+        #[cfg(any(feature = "host", target_os = "linux"))]
+        TestCase::new(
+            "fxfs-guest-fsx-delay-dax",
+            &[Tag::Nightly, Tag::SoakChecks],
+            Box::new(TestFxfsGuestFsx { dax: true, delay: true, faults: false }),
+        ),
+        #[cfg(any(feature = "host", target_os = "linux"))]
+        TestCase::new(
+            "fxfs-guest-fsx-faults-dax",
+            &[Tag::SoakSanitized],
+            Box::new(TestFxfsGuestFsx { dax: true, delay: false, faults: true }),
         ),
         TestCase::new(
             "fxfs-guest-dax",
