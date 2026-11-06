@@ -2039,10 +2039,20 @@ MODULE_PARM_DESC(dax_stray, "`load N` or `store N`: access byte N of the window,
  */
 static unsigned int fxfs_dax_rebind_every;
 
-/* fxdax: a writeback's pages of a range: the dirty set it swapped out. */
+/*
+ * fxdax: a writeback's pages of a range: the dirty set it swapped out, and those of it that Fxfs
+ * had no memory to write, which it keeps (TASK-207).
+ */
 struct fxfs_dax_batch {
 	struct fxfs_dax_range *range;
 	unsigned long pages[BITS_TO_LONGS(FXFS_DAX_PAGES)];
+	unsigned long kept[BITS_TO_LONGS(FXFS_DAX_PAGES)];
+};
+
+/* fxdax: the pages one part of a writeback's run writes: `end - page` from `page` of a range's. */
+struct fxfs_dax_run_part {
+	size_t batch;
+	unsigned long page, end;
 };
 
 /*
@@ -2066,17 +2076,39 @@ static int fxfs_dax_write_run(struct fxfs *fs, u64 ino, const struct fxfs_write_
 }
 
 /*
+ * fxdax: what a run of a writeback's, its `n` parts' pages `run` of `batch`'s, came to as Fxfs
+ * wrote it with `err`: an error whose pages are lost, as the page cache's are after an I/O error;
+ * or 0, if it wrote them, or had no memory to, which keeps them, in their batches' `kept`, `*kept`
+ * counting them, for a writeback later to write (TASK-207).
+ */
+static int fxfs_dax_ran(struct fxfs_dax_batch *batch, const struct fxfs_dax_run_part *run,
+			size_t n, int err, unsigned long *kept)
+{
+	size_t i;
+
+	if (err != -ENOMEM)
+		return err;
+	for (i = 0; i < n; i++) {
+		bitmap_set(batch[run[i].batch].kept, run[i].page, run[i].end - run[i].page);
+		*kept += run[i].end - run[i].page;
+	}
+	return 0;
+}
+
+/*
  * fxdax: has Fxfs write the `nr` ranges' pages `batch`, of `inode`, from the window, where stores
  * made them private, to new extents, as the page cache's writeback writes folios
  * (fxfs_vfs_writepages): FXFS_DAX_WRITEBACK_RUN pages a call at most, each with the room its
  * dirtying reserved, up to the file's end. Fxfs copies them into its transfer buffer, checksums
  * that, and commits after the bytes; a store meanwhile reaches the copy or not, its page dirty
- * again either way. `parts` has room for FXFS_DAX_WRITEBACK_RUN. The first error, the rest written
- * still.
+ * again either way. `parts` and `run` have room for FXFS_DAX_WRITEBACK_RUN. The first error of a
+ * run whose pages are lost, the rest written still; a run Fxfs had no memory for keeps its pages,
+ * `*kept` of them (fxfs_dax_run_failed).
  */
 static int fxfs_dax_write_pages(struct fxfs_dax *dax, struct inode *inode,
 				struct fxfs_dax_batch *batch, size_t nr,
-				struct fxfs_write_part *parts)
+				struct fxfs_write_part *parts, struct fxfs_dax_run_part *run_parts,
+				unsigned long *kept)
 {
 	struct fxfs *fs = fxfs_vfs_fs(inode->i_sb);
 	loff_t size = i_size_read(inode);
@@ -2101,18 +2133,24 @@ static int fxfs_dax_write_pages(struct fxfs_dax *dax, struct inode *inode,
 						fxfs_dax_page_offset(range, page) >> PAGE_SHIFT,
 						end - page, DAX_ACCESS, &kaddr, NULL);
 			/* Past the file's end, as a write that copied nothing there leaves: nothing. */
-			if (pos < size && had >= (long)(end - page))
+			if (pos < size && had >= (long)(end - page)) {
+				run_parts[n] = (struct fxfs_dax_run_part) {
+					.batch = i, .page = page, .end = end,
+				};
 				parts[n++] = (struct fxfs_write_part) {
 					.offset = pos,
 					.data = kaddr,
 					.len = min_t(loff_t, (loff_t)(end - page) << PAGE_SHIFT,
 						     size - pos),
 				};
-			else if (pos < size)
+			} else if (pos < size) {
 				err = err ?: -EIO;
+			}
 			run += end - page;
 			if (run == FXFS_DAX_WRITEBACK_RUN) {
 				ran = fxfs_dax_write_run(fs, inode->i_ino, parts, n, run);
+				/* Every run's kept, whatever came before. */
+				ran = fxfs_dax_ran(batch, run_parts, n, ran, kept);
 				err = err ?: ran;
 				n = 0;
 				run = 0;
@@ -2121,6 +2159,7 @@ static int fxfs_dax_write_pages(struct fxfs_dax *dax, struct inode *inode,
 	}
 	ran = fxfs_dax_write_run(fs, inode->i_ino, parts, n, run);
 	dax_read_unlock(id);
+	ran = fxfs_dax_ran(batch, run_parts, n, ran, kept);
 	return err ?: ran;
 }
 
@@ -2154,6 +2193,38 @@ static void fxfs_dax_protect(struct address_space *mapping, const struct fxfs_da
 }
 
 /*
+ * fxdax: a writeback's pages Fxfs had no memory to write (`batch`'s `kept`), dirty again in their
+ * file's dirty set, their room reserved again, which the writeback took (fxfs_write_many), what
+ * there is of it, so that a writeback later writes them (TASK-207). Clean, as the page cache's
+ * after an I/O error, they were lost: the private pages read as written, and a clone, which takes
+ * the store's blocks, a rebind or an eviction brought back the blocks they replaced (GCE r699).
+ * With the writeback lock held, which keeps their ranges from rebinding meanwhile. How many it
+ * made dirty: not those a truncate or an UNMAP took meanwhile, nor those a store dirtied again.
+ */
+static unsigned long fxfs_dax_keep(struct inode *inode, struct fxfs_dax_batch *batch, size_t nr)
+{
+	struct fxfs_dax_file *file = fxfs_dax_file(inode);
+	unsigned long made = 0;
+	unsigned int nofs;
+	size_t i;
+
+	down_write(&file->sem);
+	for (i = 0; i < nr; i++)
+		made += fxfs_dax_pages_redirty(batch[i].range->state, batch[i].kept);
+	fxfs_dax_count(fxfs_dax_of(inode), file, 0, made);
+	up_write(&file->sem);
+	if (!made)
+		return 0;
+	nofs = memalloc_nofs_save();
+	fxfs_reserve_dirty_what_fits(fxfs_vfs_fs(inode->i_sb), inode->i_ino,
+				     (u64)made << PAGE_SHIFT);
+	memalloc_nofs_restore(nofs);
+	/* For the flusher's writepages, as fxfs_dax_dirty marks it. */
+	__mark_inode_dirty(inode, I_DIRTY_PAGES);
+	return made;
+}
+
+/*
  * fxdax: the writeback transition (doc-13): writes back `inode`'s dirty pages, as fsync, msync,
  * sync, the flusher (writepages), the budget, an UNMAP of a range, a size's change and eviction
  * need, from dax.c's dirty set alone. Under its file's semaphore held for writing, so that no
@@ -2165,7 +2236,9 @@ static void fxfs_dax_protect(struct address_space *mapping, const struct fxfs_da
  * and the set's bytes are written to new extents, which Fxfs allocates now, committing after them
  * (fxfs_dax_write_pages). Swapped under the semaphore shared, a fault between its iomap and its PTE
  * left a writable PTE to a page the set took, which a rebind then lost the stores of. Fxfs takes a
- * file's size as its writeback writes its pages, as the page cache's.
+ * file's size as its writeback writes its pages, as the page cache's. fxdax: pages Fxfs had no
+ * memory to write stay dirty if `keep` (fxfs_dax_keep, TASK-207), the writeback failing ENOMEM;
+ * an I/O error's are clean, the file's error set, as the page cache's.
  */
 /* fxdax: how many of `file`'s ranges hold dirty pages: with its semaphore held, shared at least. */
 static size_t fxfs_dax_dirty_ranges(struct fxfs_dax_file *file)
@@ -2179,12 +2252,14 @@ static size_t fxfs_dax_dirty_ranges(struct fxfs_dax_file *file)
 	return dirty;
 }
 
-int fxfs_dax_write_back(struct inode *inode)
+static int fxfs_dax_write_back_keeping(struct inode *inode, bool keep)
 {
 	struct fxfs_dax_file *file = fxfs_dax_file(inode);
 	struct fxfs_dax *dax = fxfs_dax_of(inode);
 	struct fxfs_dax_batch *batch = NULL;
 	struct fxfs_write_part *parts = NULL;
+	struct fxfs_dax_run_part *run_parts = NULL;
+	unsigned long kept = 0;
 	struct fxfs_dax_range *range;
 	unsigned long chunk;
 	size_t nr = 0, most, now, i;
@@ -2203,7 +2278,8 @@ int fxfs_dax_write_back(struct inode *inode)
 	if (!atomic_long_read(&file->dirty_pages))
 		goto out;
 	parts = kmalloc_array(FXFS_DAX_WRITEBACK_RUN, sizeof(*parts), GFP_NOFS);
-	if (!parts) {
+	run_parts = kmalloc_array(FXFS_DAX_WRITEBACK_RUN, sizeof(*run_parts), GFP_NOFS);
+	if (!parts || !run_parts) {
 		err = -ENOMEM;
 		goto out;
 	}
@@ -2243,6 +2319,7 @@ int fxfs_dax_write_back(struct inode *inode)
 		/* Kept, mapped, while the writeback reads it: no reclaim, no drop. */
 		atomic_inc(&range->users);
 		pages += fxfs_dax_pages_swap(range->state, batch[nr].pages);
+		bitmap_zero(batch[nr].kept, FXFS_DAX_PAGES);
 		nr++;
 	}
 	fxfs_dax_count(dax, file, 0, -pages);
@@ -2250,20 +2327,39 @@ int fxfs_dax_write_back(struct inode *inode)
 	fxfs_dax_protect(inode->i_mapping, batch, nr);
 	/* Before it reads its ranges' window pages, which nothing may free (pause points). */
 	fxfs_dax_pause_file(FXFS_DAX_STEP_WRITEBACK, inode->i_ino);
-	err = fxfs_dax_write_pages(dax, inode, batch, nr, parts);
+	err = fxfs_dax_write_pages(dax, inode, batch, nr, parts, run_parts, &kept);
+	if (kept && !keep) {
+		err = err ?: -ENOMEM;
+		kept = 0;
+	} else if (kept) {
+		kept = fxfs_dax_keep(inode, batch, nr);
+	}
 	for (i = 0; i < nr; i++)
 		fxfs_dax_put_range(dax, batch[i].range);
 	atomic64_inc(&dax->writebacks);
-	atomic64_add(pages, &dax->written);
-	/* As the page cache's writeback: the pages are clean, the error the file's (fsync's). */
+	atomic64_add(pages - kept, &dax->written);
+	/*
+	 * As the page cache's writeback: what an I/O error stopped is clean, the error the file's
+	 * (fsync's, syncfs's). What Fxfs had no memory for is dirty still (TASK-207), and this
+	 * writeback says so, ENOMEM, the file's error not set: the next writes it.
+	 */
 	if (err)
 		mapping_set_error(inode->i_mapping, err);
+	if (kept)
+		err = err ?: -ENOMEM;
 out:
 	mutex_unlock(&file->wb_lock);
+	kfree(run_parts);
 	kfree(parts);
 	kvfree(batch);
 	return err;
 }
+
+int fxfs_dax_write_back(struct inode *inode)
+{
+	return fxfs_dax_write_back_keeping(inode, true);
+}
+
 
 /*
  * fxdax: the rebinding transition (doc-13): rebinds `file`'s clean private pages, those in no dirty
@@ -2534,11 +2630,11 @@ static int fxfs_dax_throttle(struct fxfs_dax *dax, unsigned int *waits)
  * page is private, whenever its store lands. A fault's store lands after its iomap_end, maybe after
  * a writeback has taken its page, moved its block, and had Fxfs free the old one: the host copying
  * the page at the store, as it would, copied the zeros the window reads there then (guest/sim,
- * seed 2802 at 1,000 operations). A failed PRIVATE fails the write, -EIO, or -ENOMEM if it found
- * no memory, nothing dirty, the room given back; what the host made private of it stays so,
- * uncounted until a write makes it dirty, or a MAP or UNMAP frees it. With the file's semaphore held shared, which the caller holds until
- * the store or the copy is done (fxfs_dax_iomap_end): no writeback swaps the page out, nor a rebind
- * maps over it, meanwhile.
+ * seed 2802 at 1,000 operations). A failed PRIVATE fails the write, -EIO, or -ENOMEM if the guest
+ * found no memory for its request, nothing dirty, the room given back; what the host made private
+ * of it stays so, uncounted until a write makes it dirty, or a MAP or UNMAP frees it. With the
+ * file's semaphore held shared, which the caller holds until the store or the copy is done
+ * (fxfs_dax_iomap_end): no writeback swaps the page out, nor a rebind maps over it, meanwhile.
  *
  * A PRIVATE takes `ahead` pages more, after them, private and clean, if there is room for them
  * below where the budget's worker begins (fxfs_dax_take_private), and the write's own pages need
@@ -2590,7 +2686,10 @@ static int fxfs_dax_dirty(struct inode *inode, struct fxfs_dax_range *range, uns
 					    pages + ahead, fxfs_dax_page_offset(range, first), err);
 			atomic_long_sub(newly + beyond, &dax->private);
 			wake_up_all(&dax->budget_wait);
-			/* fxdax: ENOMEM as ENOMEM, the request's memory not found (TASK-44.15). */
+			/*
+			 * fxdax: ENOMEM as ENOMEM, the guest's request's memory not found, not EIO
+			 * (TASK-44.15); the host's refusal is EIO already (fxfs_device_private).
+			 */
 			if (err != -ENOMEM)
 				err = -EIO;
 			goto unreserve;
@@ -3827,6 +3926,10 @@ bool fxfs_dax_set_inode(struct inode *inode, bool created)
 	return true;
 }
 
+/* fxdax: how often, and how far apart, an eviction tries again a writeback that found no memory. */
+#define FXFS_DAX_EVICT_TRIES 100
+#define FXFS_DAX_EVICT_WAIT_MS 10
+
 /*
  * Detaches `inode`, which the kernel evicts, from its file, whose ranges stay mapped for the next
  * inode read in for it, its dirty pages written back first: unless no name links it, when they go.
@@ -3837,13 +3940,25 @@ void fxfs_dax_evict(struct inode *inode)
 	struct fxfs_dax *dax = fxfs_dax_of(inode);
 	struct fxfs_dax_range *range;
 	unsigned long chunk;
+	unsigned int tries;
 	bool forgotten;
 	int err;
 
 	if (!dax || !IS_DAX(inode) || !file)
 		return;
 	if (inode->i_nlink) {
+		/*
+		 * fxdax: what Fxfs had no memory for stays dirty (TASK-207), which no writeback
+		 * finds once the inode is gone: tried again, a while, then given up on, as an I/O
+		 * error's are.
+		 */
 		err = fxfs_dax_write_back(inode);
+		for (tries = 0; err == -ENOMEM && tries < FXFS_DAX_EVICT_TRIES; tries++) {
+			msleep(FXFS_DAX_EVICT_WAIT_MS);
+			err = fxfs_dax_write_back(inode);
+		}
+		if (err == -ENOMEM)
+			err = fxfs_dax_write_back_keeping(inode, false);
 		if (err)
 			pr_warn("fxfs: writing back ino %lu as it is evicted: %d\n", inode->i_ino, err);
 	} else {

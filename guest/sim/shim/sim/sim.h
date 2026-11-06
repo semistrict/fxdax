@@ -203,6 +203,11 @@ void fxfs_sim_fail(unsigned int odds);
  * does. Whether a write waits so now.
  */
 void fxfs_sim_hold_commits(bool hold);
+/*
+ * fxdax: as fxfs_set_fail_commits (fxfs.dax_fail_commits), the next `count` writebacks failing
+ * before their commits with `err`, a -errno: ENOMEM, Fxfs finding no memory (TASK-207).
+ */
+void fxfs_sim_fail_commits_with(u64 count, int err);
 bool fxfs_sim_commit_held(void);
 /*
  * Has a seal wait while `hold` between its beginning, when Fxfs takes no extent minted before it for

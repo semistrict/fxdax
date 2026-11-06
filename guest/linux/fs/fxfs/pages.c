@@ -202,6 +202,20 @@ unsigned long fxfs_dax_pages_swap(struct fxfs_dax_pages *pages, unsigned long *s
 	return swapped;
 }
 
+unsigned long fxfs_dax_pages_redirty(struct fxfs_dax_pages *pages, const unsigned long *set)
+{
+	unsigned long word, made = 0;
+
+	fxfs_dax_pages_check(pages, 0, pages->nr);
+	for (word = 0; word < BITS_TO_LONGS(pages->nr); word++) {
+		unsigned long back = set[word] & pages->private[word] & ~pages->dirty[word];
+
+		pages->dirty[word] |= back;
+		made += hweight_long(back);
+	}
+	return made;
+}
+
 struct fxfs_dax_change fxfs_dax_pages_cut(struct fxfs_dax_pages *pages, unsigned long first,
 					  unsigned long n)
 {

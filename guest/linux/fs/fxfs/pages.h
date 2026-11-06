@@ -74,6 +74,12 @@ long fxfs_dax_pages_private_ahead(struct fxfs_dax_pages *pages, unsigned long fi
  */
 unsigned long fxfs_dax_pages_swap(struct fxfs_dax_pages *pages, unsigned long *set);
 /*
+ * fxdax: a writeback that Fxfs had no memory for gives back `set`, of its writeback set: each page
+ * of it private still dirty again, as before the swap, those a store dirtied again meanwhile
+ * dirty already (TASK-207). How many it made dirty.
+ */
+unsigned long fxfs_dax_pages_redirty(struct fxfs_dax_pages *pages, const unsigned long *set);
+/*
  * A truncate's MAP of zeros over them, past the file's end: zeros, their private pages freed by
  * the host, their dirty pages dropped. What it took.
  */

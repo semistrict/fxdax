@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: GPL-2.0
+# Copyright 2026 The fxdax Authors.
+#
+# Kernel: sim
+# Killer: scenarios cow_private_failed
+#
+# TASK-44.15: a PRIVATE the guest found no memory to ask for fails its write EIO, which says data
+# was lost, not ENOMEM (fxfs-guest-fsx-faults-dax, GCE r698). cow_private_failed: the write whose
+# request couldn't be allocated.
+
+--- a/guest/linux/fs/fxfs/dax.c
++++ b/guest/linux/fs/fxfs/dax.c
+@@ -2564,8 +2564,7 @@
+ 			 * fxdax: ENOMEM as ENOMEM, the guest's request's memory not found, not EIO
+ 			 * (TASK-44.15); the host's refusal is EIO already (fxfs_device_private).
+ 			 */
+-			if (err != -ENOMEM)
+-				err = -EIO;
++			err = -EIO;
+ 			goto unreserve;
+ 		}
+ 	}

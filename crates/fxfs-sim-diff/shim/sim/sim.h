@@ -132,6 +132,8 @@ void fxfs_sim_free(struct fxfs *fs);
 void fxfs_sim_stats(u64 *written, u64 *frees, u64 *failed);
 void fxfs_sim_fail(unsigned int odds);
 void fxfs_sim_hold_commits(bool hold);
+/* fxdax: the next `count` writebacks failing before their commits with `err` (TASK-207). */
+void fxfs_sim_fail_commits_with(u64 count, int err);
 bool fxfs_sim_commit_held(void);
 void fxfs_sim_hold_seals(bool hold);
 bool fxfs_sim_seal_held(void);

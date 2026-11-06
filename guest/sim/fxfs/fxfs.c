@@ -731,8 +731,12 @@ struct written {
 	struct block block;
 };
 
-/* How many of fxfs_write_many's next transactions fail as they commit (fxfs_set_fail_commits). */
+/*
+ * How many of fxfs_write_many's next transactions fail as they commit (fxfs_set_fail_commits), and
+ * with what.
+ */
 static u64 writebacks_to_fail;
+static int writebacks_fail_with = -EIO;
 
 /*
  * The guest's fault injection (TASK-164.2): the next `count` writebacks fail with EIO, their bytes
@@ -740,7 +744,13 @@ static u64 writebacks_to_fail;
  */
 void fxfs_set_fail_commits(u64 count)
 {
+	fxfs_sim_fail_commits_with(count, -EIO);
+}
+
+void fxfs_sim_fail_commits_with(u64 count, int err)
+{
 	writebacks_to_fail = count;
+	writebacks_fail_with = err;
 }
 
 /* Whether writeback's commits wait (fxfs_sim_hold_commits), and the one waiting, of file held_ino. */
@@ -800,6 +810,7 @@ int fxfs_write_many(struct fxfs *fs, u64 ino, const struct fxfs_write_part *part
 	size_t i, n = 0, total = 0;
 	u64 page, end = 0, store, first = 0;
 	bool writes_last = false, fail;
+	int err;
 
 	/* The room, taken first, whatever the writes come to, as fxfs-posix's write_dirty takes it. */
 	mutex_lock(&fs->lock);
@@ -869,9 +880,11 @@ int fxfs_write_many(struct fxfs *fs, u64 ino, const struct fxfs_write_part *part
 	sim_point("writeback's commit");
 	mutex_lock(&fs->lock);
 	fail = sim_sweep_fails("writeback's commit", __FILE__, __LINE__);
+	err = -EIO;
 	if (!fail && writebacks_to_fail) {
 		writebacks_to_fail--;
 		fail = true;
+		err = writebacks_fail_with;
 	}
 	if (fail) {
 		/*
@@ -887,7 +900,7 @@ int fxfs_write_many(struct fxfs *fs, u64 ino, const struct fxfs_write_part *part
 		mutex_unlock(&fs->lock);
 		mutex_unlock(&file->lock);
 		kfree(pages);
-		return -EIO;
+		return err;
 	}
 	written += n;
 	for (i = 0; i < n; i++) {

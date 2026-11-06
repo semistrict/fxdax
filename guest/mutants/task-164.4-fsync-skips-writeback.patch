@@ -11,7 +11,7 @@
 
 --- a/guest/linux/fs/fxfs/dax.c
 +++ b/guest/linux/fs/fxfs/dax.c
-@@ -2093,17 +2093,9 @@
+@@ -2168,17 +2168,9 @@
  	long pages = 0;
  	int err = 0;
  
@@ -28,5 +28,5 @@
 -	if (!atomic_long_read(&file->dirty_pages))
 -		goto out;
  	parts = kmalloc_array(FXFS_DAX_WRITEBACK_RUN, sizeof(*parts), GFP_NOFS);
- 	if (!parts) {
- 		err = -ENOMEM;
+ 	run_parts = kmalloc_array(FXFS_DAX_WRITEBACK_RUN, sizeof(*run_parts), GFP_NOFS);
+ 	if (!parts || !run_parts) {

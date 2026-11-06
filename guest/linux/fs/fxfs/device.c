@@ -291,6 +291,16 @@ int fxfs_device_private(struct fxfs_device *dev, u64 window_offset, u64 len)
 	if (!err)
 		atomic64_add(len, &dev->private_bytes);
 	kfree(req);
+	/*
+	 * fxdax: the host's ENOMEM, past private_max, is the guest's count and the host's apart,
+	 * which the guest keeps from by sending PRIVATE only within it (doc-13): EIO, not a want of
+	 * memory to wait out (TASK-170). The guest's own, above, ENOMEM (TASK-44.15).
+	 */
+	if (err == -ENOMEM) {
+		pr_warn_ratelimited("fxfs: the host refused %llu bytes at %llx of the window private: past private_max\n",
+				    len, window_offset);
+		err = -EIO;
+	}
 	return err;
 }
 

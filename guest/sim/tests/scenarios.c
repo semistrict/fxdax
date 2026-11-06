@@ -1237,7 +1237,7 @@ static void cow_truncate_held(void)
  * the host doesn't (TASK-164.9): the file's pages rebound, mapping its sealed extent, a write(2) to
  * page 2 and a store to page 5, each with the device failing its PRIVATE, fail (-EIO, the fault's
  * SIGBUS), dirtying nothing, reserving nothing; tried again, they succeed; and a write to page 3
- * whose PRIVATE found no memory fails ENOMEM. A page dirtied without
+ * whose PRIVATE the guest found no memory for fails ENOMEM, one the host had no room for EIO. A page dirtied without
  * its PRIVATE is the window's mapping of an old block, which a writeback may move and Fxfs free
  * before its store comes (cow_writeback_before_store): the host, which this one makes refuse a
  * store to a page no PRIVATE made private, as the oracle of the rule, would have copied zeros.
@@ -1276,18 +1276,61 @@ static void cow_private_failed(void)
 		cow_put(pages[i], round, mapped);
 	}
 	/*
-	 * fxdax: a PRIVATE the guest's device had no memory for fails the write ENOMEM, as an
-	 * allocation's failure does, not EIO, which says data is lost (GCE r698, TASK-44.15).
+	 * fxdax: a PRIVATE the guest had no memory to ask for fails the write ENOMEM, as an
+	 * allocation's failure does, not EIO, which says data is lost (GCE r698, TASK-44.15); one the
+	 * host refused for want of room, past private_max, the guest's count and the host's apart,
+	 * EIO (TASK-170). Neither dirties the page nor keeps room for it.
 	 */
-	reserved = fxfs_sim_reserved(mount->info->fs, file_inode(cow_target)->i_ino);
-	sim_device_fail_with(VIRTIO_EXTENT_T_PRIVATE, 0, 1, -ENOMEM);
-	err = (int)sim_write(cow_target, 3 * PAGE_SIZE, &round, sizeof(round));
-	check(err == -ENOMEM, "a write whose PRIVATE had no memory: %d", err);
-	check(fxfs_sim_reserved(mount->info->fs, file_inode(cow_target)->i_ino) == reserved,
-	      "a write whose PRIVATE had no memory left room reserved");
-	cow_check(3, false, "after its PRIVATE had no memory");
+	for (i = 0; i < 2; i++) {
+		bool guest = !i;
+
+		reserved = fxfs_sim_reserved(mount->info->fs, file_inode(cow_target)->i_ino);
+		if (guest)
+			sim_alloc_fail(0, 1);
+		else
+			sim_device_fail_with(VIRTIO_EXTENT_T_PRIVATE, 0, 1, -ENOMEM);
+		err = (int)sim_write(cow_target, 3 * PAGE_SIZE, &round, sizeof(round));
+		check(err == (guest ? -ENOMEM : -EIO), "a write whose PRIVATE %s: %d",
+		      guest ? "the guest had no memory for" : "the host had no room for", err);
+		check(fxfs_sim_reserved(mount->info->fs, file_inode(cow_target)->i_ino) == reserved,
+		      "a write whose PRIVATE found no memory left room reserved");
+		cow_check(3, false, "after its PRIVATE found no memory");
+	}
 	cow_put(3, round, false);
 	cow_check_file("after PRIVATEs failed", 8 * PAGE_SIZE);
+}
+
+/*
+ * fxdax: that a writeback Fxfs finds no memory for (TASK-207) fails its fsync ENOMEM, Fxfs holding
+ * the file as it was, and keeps its pages dirty, their room reserved again: a rebind, which maps
+ * the file's sealed extents over its clean private pages, leaves them as written, and the next
+ * fsync writes them. Clean, as an I/O error's, the rebind brought back the blocks they replaced,
+ * and a clone, which takes the store's, carried those (fxfs-guest-fsx-faults-dax, GCE r699).
+ */
+static void cow_writeback_found_no_memory(void)
+{
+	static char old[8 * PAGE_SIZE], got[8 * PAGE_SIZE];
+	struct fxfs *fs = mount->info->fs;
+	u64 page;
+	int err;
+
+	cow_mapped_file(8);
+	memcpy(old, cow_expected, sizeof(old));
+	cow_put_pages(0, 7, 1);
+	fxfs_sim_fail_commits_with(1, -ENOMEM);
+	err = sim_fsync(cow_target);
+	check(err == -ENOMEM, "an fsync whose writeback found no memory: %d", err);
+	fxfs_sim_read(fs, file_inode(cow_target)->i_ino, 0, got, sizeof(got));
+	check(!memcmp(got, old, sizeof(got)), "a writeback that found no memory changed the file in Fxfs");
+	check(fxfs_sim_reserved(fs, file_inode(cow_target)->i_ino) == 8 * PAGE_SIZE,
+	      "a writeback that found no memory left %llu bytes of room reserved for its 8 pages",
+	      fxfs_sim_reserved(fs, file_inode(cow_target)->i_ino));
+	wait_for(sim_spawn("rebinder", cow_rebind_now, NULL));
+	for (page = 0; page < 8; page++)
+		cow_check(page, page % 2, "after a writeback that found no memory, and a rebind");
+	cow_check_file("written back after one found no memory", 8 * PAGE_SIZE);
+	fxfs_sim_read(fs, file_inode(cow_target)->i_ino, 0, got, sizeof(got));
+	check(!memcmp(got, cow_expected, sizeof(got)), "Fxfs doesn't hold what was written");
 }
 
 static bool cow_pinned_stored;
@@ -1477,6 +1520,7 @@ static const struct {
 	COW_SCENARIO(cow_rebind_skips_dirty),
 	COW_SCENARIO(cow_rebind_against_write),
 	COW_SCENARIO(cow_commit_failed),
+	COW_SCENARIO(cow_writeback_found_no_memory),
 	COW_SCENARIO(cow_reclaim_during_writeback),
 	COW_SCENARIO(cow_writeback_during_fault),
 	COW_SCENARIO(cow_fsync_during_writeback),

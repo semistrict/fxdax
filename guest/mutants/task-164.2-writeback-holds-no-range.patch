@@ -10,8 +10,8 @@
 
 --- a/guest/linux/fs/fxfs/dax.c
 +++ b/guest/linux/fs/fxfs/dax.c
-@@ -2089,7 +2089,7 @@
- 	struct fxfs_write_part *parts = NULL;
+@@ -2164,7 +2164,7 @@
+ 	unsigned long kept = 0;
  	struct fxfs_dax_range *range;
  	unsigned long chunk;
 -	size_t nr = 0, most, now, i;
@@ -19,21 +19,21 @@
  	long pages = 0;
  	int err = 0;
  
-@@ -2142,8 +2142,6 @@
+@@ -2218,8 +2218,6 @@
  		if (!fxfs_dax_range_dirty(range))
  			continue;
  		batch[nr].range = range;
 -		/* Kept, mapped, while the writeback reads it: no reclaim, no drop. */
 -		atomic_inc(&range->users);
  		pages += fxfs_dax_pages_swap(range->state, batch[nr].pages);
+ 		bitmap_zero(batch[nr].kept, FXFS_DAX_PAGES);
  		nr++;
+@@ -2236,8 +2234,6 @@
+ 	} else if (kept) {
+ 		kept = fxfs_dax_keep(inode, batch, nr);
  	}
-@@ -2153,8 +2151,6 @@
- 	/* Before it reads its ranges' window pages, which nothing may free (pause points). */
- 	fxfs_dax_pause_file(FXFS_DAX_STEP_WRITEBACK, inode->i_ino);
- 	err = fxfs_dax_write_pages(dax, inode, batch, nr, parts);
 -	for (i = 0; i < nr; i++)
 -		fxfs_dax_put_range(dax, batch[i].range);
  	atomic64_inc(&dax->writebacks);
- 	atomic64_add(pages, &dax->written);
- 	/* As the page cache's writeback: the pages are clean, the error the file's (fsync's). */
+ 	atomic64_add(pages - kept, &dax->written);
+ 	/*
