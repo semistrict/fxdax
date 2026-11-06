@@ -75,8 +75,7 @@ impl ObjectStore {
         let needs_flush = object_manager.needs_flush(self.store_object_id);
         // If we don't need to do anything for the stated flush purpose, do nothing.
         if (reason == FlushReason::Journal(ForceMajor::False) && !needs_flush)
-            || (reason == FlushReason::UpgradeVersion
-                && self.earliest_writable_version() == LATEST_VERSION)
+            || (reason == FlushReason::UpgradeVersion && earliest_version == LATEST_VERSION)
             || (reason == FlushReason::EncryptedMutations
                 && self.store_info().unwrap().encrypted_mutations_object_id == INVALID_OBJECT_ID)
         {

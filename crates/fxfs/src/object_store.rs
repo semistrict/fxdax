@@ -40,8 +40,7 @@ pub mod volume;
 
 pub use data_object_handle::{
     DataObjectHandle, DataObjectState, DirectWriter, ExtentAccess, FileExtent, FrozenPage,
-    FsverityStateInner,
-    RangeType,
+    FsverityStateInner, RangeType,
 };
 pub use directory::Directory;
 pub use object_record::{ChildValue, DirType, ObjectDescriptor, PosixAttributes, Timestamp};
@@ -70,8 +69,8 @@ use crate::object_store::transaction::{
     Operation, Options, Transaction, WriteGuard, lock_keys,
 };
 use crate::serialized_types::{
-    AES_JOURNAL_ENCRYPTION_VERSION, DEFAULT_MAX_SERIALIZED_RECORD_SIZE, Migrate, Version,
-    Versioned, VersionedLatest, migrate_to_version,
+    AES_JOURNAL_ENCRYPTION_VERSION, DEFAULT_MAX_SERIALIZED_RECORD_SIZE, EARLIEST_SUPPORTED_VERSION,
+    Version, Versioned, VersionedLatest,
 };
 use anyhow::{Context, Error, anyhow, bail, ensure};
 use async_trait::async_trait;
@@ -182,51 +181,6 @@ pub struct StoreInfoV61 {
     /// fxdax: the branches of the extents the base layers, and the data they name, are in. The
     /// allocator holds none of them.
     pub base_branches: Vec<u64>,
-}
-
-#[derive(
-    Clone, Debug, Default, PartialEq, Serialize, Deserialize, TypeFingerprint, Versioned, Migrate,
-)]
-#[migrate_to_version(StoreInfoV61)]
-pub struct StoreInfoV52 {
-    /// The globally unique identifier for the associated object store. If unset, will be all zero.
-    guid: [u8; 16],
-
-    /// The last used object ID.  Note that this field is not accurate in memory; ObjectStore's
-    /// last_object_id field is the one to use in that case.  Technically, this might not be the
-    /// last object ID used for the latest transaction that created an object because we use this at
-    /// the point of creating the object but before we commit the transaction.  Transactions can
-    /// then get committed in an arbitrary order (or not at all).
-    last_object_id: LastObjectIdInfo,
-
-    /// Object ids for layers.  TODO(https://fxbug.dev/42178036): need a layer of indirection here
-    /// so we can support snapshots.
-    pub layers: Vec<u64>,
-
-    /// The object ID for the root directory.
-    root_directory_object_id: u64,
-
-    /// The object ID for the graveyard.
-    graveyard_directory_object_id: u64,
-
-    /// The number of live objects in the store.  This should *not* be trusted; it can be invalid
-    /// due to filesystem inconsistencies.
-    object_count: u64,
-
-    /// The (wrapped) key that encrypted mutations should use.
-    mutations_key: Option<FxfsKeyV49>,
-
-    /// Mutations for the store are encrypted using a stream cipher.  To decrypt the mutations, we
-    /// need to know the offset in the cipher stream to start it.
-    mutations_cipher_offset: u64,
-
-    /// If we have to flush the store whilst we do not have the key, we need to write the encrypted
-    /// mutations to an object. This is the object ID of that file if it exists.
-    pub encrypted_mutations_object_id: u64,
-
-    /// A directory for storing internal files in a directory structure. Holds INVALID_OBJECT_ID
-    /// when the directory doesn't yet exist.
-    internal_directory_object_id: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TypeFingerprint)]
@@ -2194,9 +2148,19 @@ impl ObjectStore {
                 .into_iter()
                 .map(|layer| BaseLayerObject::new(fs.device(), block_size, layer))
                 .collect::<Result<Vec<_>, _>>()?;
-            store.tree.append_open_layers(
-                layers_from_handles(handles).await.context("Failed to read base layers")?,
-            );
+            let base_layers =
+                layers_from_handles(handles).await.context("Failed to read base layers")?;
+            // A mount checks the versions of the filesystem's own layers (the super-block's
+            // `earliest_version`), not those of a base's, which another filesystem wrote.
+            for layer in &base_layers {
+                let version = layer.get_version();
+                ensure!(
+                    version >= EARLIEST_SUPPORTED_VERSION,
+                    anyhow!(FxfsError::InvalidVersion)
+                        .context(format!("Base layer of unsupported version {version}"))
+                );
+            }
+            store.tree.append_open_layers(base_layers);
         }
 
         fs.object_manager().update_reservation(
@@ -2567,12 +2531,6 @@ impl ObjectStore {
     /// fxdax: how many layers of a base the store's tree has, at its bottom.
     pub(crate) fn base_layer_count(&self) -> usize {
         self.store_info.lock().as_ref().map_or(0, |info| info.base_layers.len())
-    }
-
-    /// fxdax: the earliest version of the layers a compaction can rewrite: the tree's, but for
-    /// those of a base.
-    pub fn earliest_writable_version(&self) -> Version {
-        self.tree.get_earliest_version_above(self.base_layer_count())
     }
 
     /// fxdax: what describes the store to a filesystem that reads its extents (backlog doc-10): a

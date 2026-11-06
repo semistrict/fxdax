@@ -548,16 +548,8 @@ impl<'tree, K: MergeableKey, V: Value> LSMTree<K, V> {
 
     /// Returns the earliest version used by a layer in the tree.
     pub fn get_earliest_version(&self) -> Version {
-        self.get_earliest_version_above(0)
-    }
-
-    /// fxdax: the earliest version any struct in the tree uses, leaving out its `bottom` lowest
-    /// layers.
-    pub fn get_earliest_version_above(&self, bottom: usize) -> Version {
         let mut earliest_version = LATEST_VERSION;
-        let layers = self.layer_set().layers;
-        let above = layers.len().saturating_sub(bottom);
-        for layer in layers.into_iter().take(above) {
+        for layer in self.layer_set().layers {
             let layer_version = layer.get_version();
             if layer_version < earliest_version {
                 earliest_version = layer_version;

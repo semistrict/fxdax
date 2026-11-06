@@ -14,7 +14,9 @@ use crate::object_store::transaction::{Options, lock_keys};
 use crate::object_store::{
     HandleOptions, LockKey, MAX_MANIFEST_SIZE, ObjectDescriptor, ObjectStore, StoreInfo,
 };
-use crate::serialized_types::{LATEST_VERSION, Version, VersionedLatest};
+use crate::serialized_types::{
+    EARLIEST_SUPPORTED_VERSION, LATEST_VERSION, Version, VersionedLatest,
+};
 use anyhow::{Context, Error, anyhow, bail, ensure};
 use std::sync::Arc;
 
@@ -57,7 +59,14 @@ impl RootVolume {
         let mut reader = manifest;
         // fxdax: a manifest that doesn't parse is an argument wrong, as one that names no base.
         let version = Version::deserialize_from(&mut reader).context(FxfsError::InvalidArgs)?;
-        ensure!(version <= LATEST_VERSION, FxfsError::InvalidVersion);
+        // Of the latest version alone, as no other is read (`EARLIEST_SUPPORTED_VERSION`): nor,
+        // then, are its layers of another, a store of the latest version writing its own in it and
+        // refusing a base's of any other.
+        ensure!(
+            (EARLIEST_SUPPORTED_VERSION..=LATEST_VERSION).contains(&version),
+            anyhow!(FxfsError::InvalidVersion)
+                .context(format!("Manifest of unsupported version {version}"))
+        );
         let mut info = StoreInfo::deserialize_from_version(&mut reader, version)
             .context("Failed to deserialize manifest")
             .context(FxfsError::InvalidArgs)?;
@@ -450,10 +459,11 @@ mod tests {
         base.close().await.expect("Close failed");
     }
 
-    /// A base's layers of an older version are no reason for a volume over it to compact: none
-    /// would rewrite them.
+    /// A base's layer of an older version is refused as the volume over it opens, the version
+    /// named, as a mount refuses the filesystem's own: nothing is migrated (AGENTS.md), and a
+    /// mount checks only the versions of the filesystem's own layers.
     #[fuchsia::test]
-    async fn test_base_layers_of_older_versions_stay() {
+    async fn test_base_layers_of_older_versions_refused() {
         const OLDER: Version = Version { major: LATEST_VERSION.major - 1, minor: 0 };
         let (base, _manifest) = published(0).await;
         let root = root_volume(base.clone()).await.expect("root_volume failed");
@@ -495,13 +505,15 @@ mod tests {
 
         let (filesystem, _reads) = over(&base).await;
         let root = root_volume(filesystem.clone()).await.expect("root_volume failed");
-        let over = root.new_volume_over_base("repo", &manifest).await.expect("over_base failed");
-        assert_eq!(over.tree.get_earliest_version(), OLDER);
-        assert_eq!(over.earliest_writable_version(), LATEST_VERSION);
-        let flushes = over.counters.lock().num_flushes;
-        over.flush_with_reason(FlushReason::UpgradeVersion).await.expect("flush failed");
-        assert_eq!(over.counters.lock().num_flushes, flushes);
-        std::mem::drop((over, root));
+        let error = root
+            .new_volume_over_base("repo", &manifest)
+            .await
+            .err()
+            .expect("a base of an older version opened");
+        assert!(FxfsError::InvalidVersion.matches(&error), "{error:?}");
+        let named = format!("Base layer of unsupported version {OLDER}");
+        assert!(format!("{error:#}").contains(&named), "{error:#}");
+        std::mem::drop(root);
         filesystem.close().await.expect("Close failed");
         base.close().await.expect("Close failed");
     }
@@ -579,16 +591,17 @@ mod tests {
 
         let (filesystem, _reads) = over(&base).await;
         let root = root_volume(filesystem.clone()).await.expect("root_volume failed");
-        // Of a later format.
-        let mut later = Vec::new();
-        Version { major: LATEST_VERSION.major + 1, minor: 0 }
-            .serialize_into(&mut later)
-            .expect("serialize failed");
-        later.extend_from_slice(&manifest[later.len()..]);
-        assert_eq!(
-            error(root.new_volume_over_base("repo", &later).await),
-            FxfsError::InvalidVersion
-        );
+        // Of a later format, or an earlier one.
+        for major in [LATEST_VERSION.major + 1, LATEST_VERSION.major - 1] {
+            let mut other = Vec::new();
+            Version { major, minor: 0 }.serialize_into(&mut other).expect("serialize failed");
+            other.extend_from_slice(&manifest[other.len()..]);
+            assert_eq!(
+                error(root.new_volume_over_base("repo", &other).await),
+                FxfsError::InvalidVersion,
+                "{major}"
+            );
+        }
         // Of no base at all.
         let mut empty = Vec::new();
         StoreInfo::default().serialize_with_version(&mut empty).expect("serialize failed");

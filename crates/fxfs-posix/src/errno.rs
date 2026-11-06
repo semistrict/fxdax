@@ -223,7 +223,7 @@ const fn of_fxfs(error: &FxfsError, call: Call) -> (Errno, Reported) {
         FxfsError::InvalidArgs => (Errno::EINVAL, Logged),
         FxfsError::TooBig if xattr => (Errno::E2BIG, Expected),
         FxfsError::TooBig => (Errno::EFBIG, Logged),
-        // A format later than this Fxfs's: as ext4's mount of features it lacks.
+        // A format other than this Fxfs's, older or later: as ext4's mount of features it lacks.
         FxfsError::InvalidVersion => (Errno::EINVAL, Logged),
         FxfsError::JournalFlushError => (Errno::EIO, Logged),
         FxfsError::NotSupported => (Errno::ENOTSUP, Logged),

@@ -17,7 +17,7 @@
 // below). fxdax snapshots (volume snapshots that share their source's layers and extents) deviate
 // from upstream too: allocations are recorded under a store's current data owner, which a snapshot
 // changes; a snapshot freezes the source's owner, whose extents the stores sharing them never
-// deallocate one by one, and which is deleted once no store shares it (AllocatorInfoV59, the
+// deallocate one by one, and which is deleted once no store shares it (AllocatorInfoV60, the
 // Snapshot mutation, `deallocate`, `is_shared`, `frozen_ranges`). A base's extents, which a store
 // reads and the allocator never holds, are treated likewise (`add_base_branches`, backlog doc-10).
 
@@ -146,13 +146,11 @@
 //!
 //! - the journal asks for a major compaction, as the metadata reservation runs low;
 //! - an owner marked for deletion has had its extents freed, so that its records, which may be much
-//!   of the tree, go at once;
-//! - a layer is of an older version, which it writes again in the latest, as upstream's do. There
-//!   is none yet: a mount reads no version older than the latest (`EARLIEST_SUPPORTED_VERSION` is
-//!   `LATEST_VERSION`). A bump of the latest that leaves `EARLIEST_SUPPORTED_VERSION` where it is
-//!   would leave older layers that a mount still reads, which only this writes again: the
-//!   filesystem asks only stores to upgrade theirs (`FlushReason::UpgradeVersion`), and flushes the
-//!   allocator only for the journal (`FlushReason::Journal`).
+//!   of the tree, go at once.
+//!
+//! None merges all for a layer of an older version, which upstream's, merging all, write again in
+//! the latest: there is none, as a mount refuses a filesystem of any version but the latest
+//! (`EARLIEST_SUPPORTED_VERSION` is `LATEST_VERSION`, as nothing is migrated).
 //!
 //! The tree's layers are the allocator's own: snapshots share stores' layers, not these.
 mod extent_table;
@@ -179,8 +177,7 @@ use crate::object_store::{
 use crate::range::RangeExt;
 use crate::round::round_div;
 use crate::serialized_types::{
-    DEFAULT_MAX_SERIALIZED_RECORD_SIZE, LATEST_VERSION, Migrate, Version, Versioned,
-    VersionedLatest, migrate_to_version,
+    DEFAULT_MAX_SERIALIZED_RECORD_SIZE, LATEST_VERSION, Version, Versioned, VersionedLatest,
 };
 use anyhow::{Context, Error, anyhow, bail, ensure};
 use async_trait::async_trait;
@@ -609,32 +606,6 @@ pub struct AllocatorInfoV60 {
     /// fxdax: the extents that died before the compaction that wrote this, and that the device
     /// might hold, as it might not have their frees, which a mount repeats.
     pub dying: Vec<ExtentId>,
-}
-
-#[derive(Debug, Default, Clone, Deserialize, Serialize, TypeFingerprint, Versioned, Migrate)]
-pub struct AllocatorInfoV59 {
-    pub layers: Vec<u64>,
-    pub allocated_bytes: BTreeMap<u64, u64>,
-    pub marked_for_deletion: HashSet<u64>,
-    pub limit_bytes: BTreeMap<u64, u64>,
-    pub data_owners: BTreeMap<u64, u64>,
-    pub frozen_owners: BTreeMap<u64, u64>,
-    pub shared_owners: BTreeMap<u64, Vec<u64>>,
-}
-
-#[derive(Debug, Default, Clone, Deserialize, Serialize, TypeFingerprint, Versioned, Migrate)]
-#[migrate_to_version(AllocatorInfoV59)]
-pub struct AllocatorInfoV32 {
-    /// Holds the set of layer file object_id for the LSM tree (newest first).
-    pub layers: Vec<u64>,
-    /// Maps from owner_object_id to bytes allocated.
-    pub allocated_bytes: BTreeMap<u64, u64>,
-    /// Set of owner_object_id that we should ignore if found in layer files.  For now, this should
-    /// always be empty on-disk because we always do full compactions.
-    pub marked_for_deletion: HashSet<u64>,
-    /// The limit for the number of allocates bytes per `owner_object_id` whereas the value. If
-    /// there is no limit present here for an `owner_object_id` assume it is max u64.
-    pub limit_bytes: BTreeMap<u64, u64>,
 }
 
 /// fxdax: the info holds the extents dying, as many as freeing files leaves between compactions,
@@ -2332,12 +2303,10 @@ impl<'a> Flusher<'a> {
 
         // fxdax: the compaction merges the newer layers, as an object store's does, unless it is to
         // merge them all (see "Compactions"): a major compaction, which gives back what removals
-        // took; one that filters out the allocations of owners freed, which older layers hold too;
-        // or one that writes layers of older versions again, for any reason, as the filesystem
-        // asks only stores to upgrade theirs.
-        let full_compaction = reason == FlushReason::Journal(ForceMajor::True)
-            || !freed_owners.is_empty()
-            || self.allocator.tree.get_earliest_version() < LATEST_VERSION;
+        // took, or one that filters out the allocations of owners freed, which older layers hold
+        // too.
+        let full_compaction =
+            reason == FlushReason::Journal(ForceMajor::True) || !freed_owners.is_empty();
         let (layer_set, layers_to_keep) =
             tree::layers_to_merge(&self.allocator.tree, full_compaction, 0);
         let total_len = layer_set.sum_len();
@@ -2484,18 +2453,14 @@ mod tests {
     };
     use crate::fsck::fsck;
     use crate::hooks::Hooks;
-    use crate::lsm_tree::layer_from_handle;
-    use crate::lsm_tree::persistent_layer::PersistentLayerWriter;
     use crate::lsm_tree::skip_list_layer::SkipListLayer;
-    use crate::lsm_tree::types::{
-        FuzzyHash as _, Item, ItemRef, LayerIterator, LayerKey as _, LayerWriter as _,
-    };
+    use crate::lsm_tree::types::{FuzzyHash as _, Item, ItemRef, LayerIterator, LayerKey as _};
     use crate::lsm_tree::{LSMTree, Query};
     use crate::object_handle::{ObjectHandle, ReadObjectHandle, WriteObjectHandle};
     use crate::object_store::allocator::merge::merge;
     use crate::object_store::allocator::{
         Allocator, AllocatorKey, AllocatorValue, CoalescingIterator, EXTENT_HASH_BUCKET_SIZE,
-        Flusher, STAGING_SIZE,
+        STAGING_SIZE,
     };
     use crate::object_store::extent::MIN_BLOCK_SIZE;
     use crate::object_store::journal::{DEFAULT_RECLAIM_SIZE, JournalOptions};
@@ -2504,10 +2469,10 @@ mod tests {
     };
     use crate::object_store::volume::{RootVolume, root_volume};
     use crate::object_store::{
-        DataObjectHandle, DirectWriter, Directory, HandleOptions, LockKey, NewChildStoreOptions,
-        ObjectStore, tree,
+        DataObjectHandle, Directory, HandleOptions, LockKey, NewChildStoreOptions, ObjectStore,
+        tree,
     };
-    use crate::serialized_types::{LATEST_VERSION, Version, Versioned};
+    use crate::serialized_types::{LATEST_VERSION, Versioned};
     use crate::testing;
     use bincode::Options as _;
     use fuchsia_async as fasync;
@@ -2519,35 +2484,6 @@ mod tests {
     use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
     use storage_device::fake_device::{DEFAULT_BRANCH, FakeDevice, Op};
     use storage_device::{Device, DeviceHolder, ExtentId, ExtentRange};
-
-    /// fxdax: the allocator information of images before snapshots is read as it was, with no
-    /// snapshots, and minting from the start.
-    #[test]
-    fn allocator_info_migrates_from_version_32() {
-        use crate::object_store::allocator::{AllocatorInfo, AllocatorInfoV32};
-        use crate::serialized_types::{Version, VersionedLatest};
-        let old = AllocatorInfoV32 {
-            layers: vec![7, 8],
-            allocated_bytes: [(10, 4096)].into(),
-            marked_for_deletion: [11].into(),
-            limit_bytes: [(10, 1 << 20)].into(),
-        };
-        let mut serialized = Vec::new();
-        old.serialize_into(&mut serialized).expect("serialize failed");
-        let info = AllocatorInfo::deserialize_from_version(
-            &mut std::io::Cursor::new(serialized),
-            Version { major: 58, minor: 0 },
-        )
-        .expect("deserialize failed");
-        assert_eq!(info.layers, vec![7, 8]);
-        assert_eq!(info.allocated_bytes, [(10, 4096)].into());
-        assert_eq!(info.marked_for_deletion, [11].into());
-        assert_eq!(info.limit_bytes, [(10, 1 << 20)].into());
-        assert!(info.data_owners.is_empty());
-        assert!(info.frozen_owners.is_empty());
-        assert!(info.shared_owners.is_empty());
-        assert_eq!(info.next_sequence, 0);
-    }
 
     #[test]
     fn test_allocator_key_is_range_based() {
@@ -2858,7 +2794,8 @@ mod tests {
         const STORE_OBJECT_ID: u64 = 99;
         let floor = Arc::new(std::sync::atomic::AtomicU64::new(0));
         let device = FakeDevice::new(4096, 4096).calm().with_sequence_floor(floor.clone());
-        let fs = FxFilesystem::new_empty(DeviceHolder::new(device)).await.expect("new_empty failed");
+        let fs =
+            FxFilesystem::new_empty(DeviceHolder::new(device)).await.expect("new_empty failed");
         fs.close().await.expect("close failed");
         let device = fs.take_device().await;
         device.reopen(false);
@@ -4250,7 +4187,8 @@ mod tests {
     async fn test_a_mount_leaves_a_compaction_nothing_of_the_numbers_it_sought() {
         let floor = Arc::new(std::sync::atomic::AtomicU64::new(0));
         let device = FakeDevice::new(4096, 4096).calm().with_sequence_floor(floor.clone());
-        let fs = FxFilesystem::new_empty(DeviceHolder::new(device)).await.expect("new_empty failed");
+        let fs =
+            FxFilesystem::new_empty(DeviceHolder::new(device)).await.expect("new_empty failed");
         fs.close().await.expect("close failed");
         let device = fs.take_device().await;
         device.reopen(false);
@@ -4864,60 +4802,6 @@ mod tests {
             .expect("flush failed");
         fsck(fs.clone()).await.expect("fsck failed");
         assert_eq!(allocator.info().layers.len(), 1);
-        fs.close().await.expect("close failed");
-    }
-
-    /// fxdax: a compaction merges all the allocator's layers while any is of an older version,
-    /// which it writes again in the latest, as upstream's compactions, which always merge all, do.
-    /// No mount opens such a layer yet (see "Compactions"): the test writes one.
-    #[fuchsia::test]
-    async fn test_compaction_merges_layers_of_older_versions() {
-        const OLDER: Version = Version { major: LATEST_VERSION.major - 1, minor: 0 };
-        let (fs, _store, file) = tiered_fs(FxFilesystemBuilder::new()).await;
-        let allocator = fs.allocator();
-        zero_block(&file, 0).await;
-        allocator.flush().await.expect("flush failed");
-        fsck(fs.clone()).await.expect("fsck failed");
-        assert_eq!(allocator.info().layers.len(), 2);
-
-        // The oldest layer, empty, of an older version, behind the base, which a compaction of the
-        // newer layers would keep, written as a compaction writes one.
-        let root_store = fs.root_store();
-        let options = Flusher::txn_options(fs.object_manager().metadata_reservation());
-        let mut transaction =
-            root_store.new_transaction(lock_keys![], options).await.expect("new failed");
-        let handle = ObjectStore::create_object(
-            &root_store,
-            &mut transaction,
-            HandleOptions { skip_journal_checks: true, ..Default::default() },
-            None,
-        )
-        .await
-        .expect("create_object failed");
-        transaction.commit().await.expect("commit failed");
-        PersistentLayerWriter::<_, AllocatorKey, AllocatorValue>::new_with_version(
-            DirectWriter::new(&handle, options).await,
-            0,
-            fs.block_size(),
-            OLDER,
-        )
-        .await
-        .expect("writer failed")
-        .complete()
-        .await
-        .expect("complete failed");
-        let object_id = handle.object_id();
-        allocator.tree.append_open_layers(vec![
-            layer_from_handle(handle, None).await.expect("layer_from_handle failed"),
-        ]);
-        allocator.inner.lock().info.layers.push(object_id);
-        assert_eq!(allocator.tree.get_earliest_version(), OLDER);
-
-        zero_block(&file, 2).await;
-        allocator.flush().await.expect("flush failed");
-        fsck(fs.clone()).await.expect("fsck failed");
-        assert_eq!(allocator.info().layers.len(), 1);
-        assert_eq!(allocator.tree.get_earliest_version(), LATEST_VERSION);
         fs.close().await.expect("close failed");
     }
 

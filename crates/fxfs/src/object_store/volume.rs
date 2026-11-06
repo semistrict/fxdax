@@ -147,7 +147,7 @@ impl RootVolume {
         // If the layer files are out of date, kick off a full compaction in the background.
         if let Some(scope_guard) = self.filesystem.scope().active_guard()
             && !self.filesystem.options().read_only
-            && store.earliest_writable_version() != LATEST_VERSION
+            && store.tree().get_earliest_version() != LATEST_VERSION
         {
             let keys = lock_keys![LockKey::flush(store_object_id)];
             let guard = self

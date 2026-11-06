@@ -461,8 +461,12 @@ impl SuperBlockManager {
             read(device.clone(), block_size, SuperBlockInstance::A),
             read(device.clone(), block_size, SuperBlockInstance::B)
         ) {
+            // fxdax: the first's error, whose kind it keeps (`FxfsError::InvalidVersion` for a
+            // filesystem of another version), with the second's.
             (Err(e1), Err(e2)) => {
-                bail!("Failed to load both superblocks due to {:?}\nand\n{:?}", e1, e2)
+                return Err(
+                    e1.context(format!("Failed to load both superblocks; the other: {e2:?}"))
+                );
             }
             (Ok(result), Err(_)) => result,
             (Err(_), Ok(result)) => result,
@@ -638,25 +642,33 @@ impl SuperBlockHeader {
                 anyhow!(FxfsError::Inconsistent).context("Bad journal checkpoint")
             );
 
+            // fxdax: each refusal is `FxfsError::InvalidVersion`, as a layer's of a later version
+            // is, so that a mount of a filesystem of any version but the latest says so. Nothing is
+            // migrated (AGENTS.md): `EARLIEST_SUPPORTED_VERSION` is the latest.
             if super_block_version < EARLIEST_SUPPORTED_VERSION {
-                bail!("Unsupported SuperBlock version: {:?}", super_block_version);
+                bail!(
+                    anyhow!(FxfsError::InvalidVersion).context(format!(
+                        "Unsupported SuperBlock version: {:?}",
+                        super_block_version
+                    ))
+                );
             }
 
             // NOTE: It is possible that data was written to the journal with an old version
             // but no compaction ever happened, so the journal version could potentially be older
             // than the layer file versions.
             if super_block_header.journal_checkpoint.version < EARLIEST_SUPPORTED_VERSION {
-                bail!(
+                bail!(anyhow!(FxfsError::InvalidVersion).context(format!(
                     "Unsupported JournalCheckpoint version: {:?}",
                     super_block_header.journal_checkpoint.version
-                );
+                )));
             }
 
             if super_block_header.earliest_version < EARLIEST_SUPPORTED_VERSION {
-                bail!(
+                bail!(anyhow!(FxfsError::InvalidVersion).context(format!(
                     "Filesystem contains struct with unsupported version: {:?}",
                     super_block_header.earliest_version
-                );
+                )));
             }
 
             cursor.position() as usize
@@ -933,6 +945,7 @@ mod tests {
         SuperBlockInstance, SuperBlockManager, SuperBlockRecord, UuidWrapper, compact_root_parent,
         write,
     };
+    use crate::errors::FxfsError;
     use crate::filesystem::{FxFilesystem, OpenFxFilesystem, SyncOptions};
     use crate::object_handle::ReadObjectHandle;
     use crate::object_store::journal::JournalCheckpoint;
@@ -943,7 +956,7 @@ mod tests {
         AttributeId, DataObjectHandle, HandleOptions, ObjectHandle, ObjectKey, ObjectStore,
         ObjectValue,
     };
-    use crate::serialized_types::{LATEST_VERSION, Versioned, VersionedLatest};
+    use crate::serialized_types::{LATEST_VERSION, Version, Versioned, VersionedLatest};
     use anyhow::bail;
     use std::io::Write;
     use std::sync::Arc;
@@ -952,6 +965,7 @@ mod tests {
     use storage_device::fake_device::{FakeDevice, Op};
     use storage_device::{Device, DeviceHolder, ExtentId, ExtentRange};
     use storage_units::BlockSize;
+    use test_case::test_case;
 
     // We require 512kiB each for A/B super-blocks, 256kiB for the journal (128kiB before flush)
     // and compactions require double the layer size to complete.
@@ -1582,8 +1596,6 @@ mod tests {
     /// a block that doesn't verify, which panicked replay's end.
     #[fuchsia::test]
     async fn test_mount_with_a_journal_that_starts_anywhere() {
-        use crate::errors::FxfsError;
-
         let device = DeviceHolder::new(FakeDevice::new(TEST_DEVICE_BLOCK_COUNT, 4096));
         let fs = FxFilesystem::new_empty(device).await.expect("new_empty failed");
         for _ in 0..64 {
@@ -1824,5 +1836,102 @@ mod tests {
             .await
             .expect("save failed");
         assert_eq!(*manager.next_instance.lock(), SuperBlockInstance::B);
+    }
+
+    /// fxdax: what of a filesystem's super-blocks says the version before the latest.
+    #[derive(Clone, Copy, Debug)]
+    enum Says {
+        /// Their own.
+        SuperBlock,
+        /// Their journal's.
+        Journal,
+        /// The earliest of its layers', which the journal records as it compacts.
+        Layers,
+    }
+
+    /// fxdax: a filesystem whose super-blocks say the version before the latest (60, as of 61), of
+    /// their own, their journal's or the earliest of its layers', is refused at mount, the version
+    /// named, and nothing of it written: nothing is migrated (AGENTS.md), so a mount reads no
+    /// version but the latest.
+    #[test_case(Says::SuperBlock; "of the super-block")]
+    #[test_case(Says::Journal; "of the journal")]
+    #[test_case(Says::Layers; "of the layers")]
+    #[fuchsia::test]
+    async fn test_mount_of_the_previous_version_is_refused(says: Says) {
+        const PREVIOUS: Version = Version { major: LATEST_VERSION.major - 1, minor: 0 };
+        // Writes and frees, once armed: a mount flushes the device before it reads anything, which
+        // changes nothing.
+        let armed = Arc::new(AtomicBool::new(false));
+        let written = Arc::new(AtomicU64::new(0));
+        let mut device = FakeDevice::new(TEST_DEVICE_BLOCK_COUNT, 4096);
+        let (counting, counted) = (armed.clone(), written.clone());
+        device.set_op_callback(move |op| {
+            if counting.load(Ordering::Relaxed) && matches!(op, Op::Write | Op::Free) {
+                counted.fetch_add(1, Ordering::Relaxed);
+            }
+            Ok(())
+        });
+        let fs =
+            FxFilesystem::new_empty(DeviceHolder::new(device)).await.expect("new_empty failed");
+        fs.close().await.expect("close failed");
+        let device = fs.take_device().await;
+        device.reopen(false);
+
+        let (mut header, mut reader) =
+            SuperBlockHeader::read_header((*device).clone(), SuperBlockInstance::A)
+                .await
+                .expect("read failed");
+        let mut records = Vec::new();
+        loop {
+            match reader.next_item().await.expect("a record") {
+                SuperBlockRecord::End => break,
+                record => records.push(record),
+            }
+        }
+        let mut bytes = SUPER_BLOCK_MAGIC.to_vec();
+        match says {
+            Says::SuperBlock => {
+                PREVIOUS.serialize_into(&mut bytes).unwrap();
+                header.serialize_into(&mut bytes).unwrap();
+            }
+            Says::Journal => {
+                header.journal_checkpoint.version = PREVIOUS;
+                header.serialize_with_version(&mut bytes).unwrap();
+            }
+            Says::Layers => {
+                header.earliest_version = PREVIOUS;
+                header.serialize_with_version(&mut bytes).unwrap();
+            }
+        }
+        for record in &records {
+            record.serialize_into(&mut bytes).unwrap();
+        }
+        SuperBlockRecord::End.serialize_into(&mut bytes).unwrap();
+        let mut writer = JournalWriter::new(BlockSize::SIZE_4KIB, 0);
+        writer.write_all(&bytes).unwrap();
+        writer.pad_to_block().unwrap();
+        {
+            let mut buf = device.allocate_buffer(writer.flushable_bytes()).await;
+            writer.take_flushable(buf.as_mut());
+            for instance in [SuperBlockInstance::A, SuperBlockInstance::B] {
+                write_raw_super_block(&device, instance, buf.as_ref()).await;
+            }
+        }
+
+        let raw = (*device).clone();
+        let root = raw.root().await.expect("root failed");
+        armed.store(true, Ordering::Relaxed);
+        let error = FxFilesystem::open(device).await.map(drop).expect_err("mounted");
+        assert!(FxfsError::InvalidVersion.matches(&error), "{error:?}");
+        let named = match says {
+            Says::SuperBlock => "Unsupported SuperBlock version",
+            Says::Journal => "Unsupported JournalCheckpoint version",
+            Says::Layers => "Filesystem contains struct with unsupported version",
+        };
+        let named = format!("{named}: {PREVIOUS:?}");
+        assert!(format!("{error:#}").contains(&named), "{error:#}");
+        assert_eq!(written.load(Ordering::Relaxed), 0);
+        raw.reopen(false);
+        assert_eq!(raw.root().await.expect("root failed"), root);
     }
 }

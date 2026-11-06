@@ -2,21 +2,22 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-// Fuchsia's `src/storage/fxfs/src/serialized_types/types.rs`. fxdax snapshots (volume snapshots
-// that share their source's layers and extents) deviate from upstream here: version 59 adds
-// AllocatorInfoV59. Version 60, the earliest supported, locates data in extents of an extent store
-// rather than at device offsets (backlog doc-4): the types that hold locations are V60, and nothing
-// older converts to them. AllocatorInfoV60 adds the sequence number the allocator mints extents
-// from, and the extents dying when the allocator's tree was compacted, which a mount frees again.
-// Version 61 adds StoreInfoV61: layers of a base, and the branches of its extents (backlog doc-10).
+// Fuchsia's `src/storage/fxfs/src/serialized_types/types.rs`. fxdax deviates from upstream here:
+// it never migrates (AGENTS.md), so every format change is breaking, and the only version a mount
+// reads is the latest (`EARLIEST_SUPPORTED_VERSION` is `LATEST_VERSION`); the table lists no type a
+// version before the latest used. Version 60 locates data in extents of an extent store rather
+// than at device offsets (backlog doc-4): the types that hold locations are V60. AllocatorInfoV60
+// adds snapshots' owners, the sequence number the allocator mints extents from, and the extents
+// dying when the allocator's tree was compacted, which a mount frees again. Version 61 adds
+// StoreInfoV61: layers of a base, and the branches of its extents (backlog doc-10).
 
 use crate::blob_metadata::{BlobMetadata, BlobMetadataV53};
 use crate::lsm_tree::{
     PersistentLayerHeader, PersistentLayerHeaderV39, PersistentLayerInfo, PersistentLayerInfoV39,
 };
 use crate::object_store::allocator::{
-    AllocatorInfo, AllocatorInfoV32, AllocatorInfoV59, AllocatorInfoV60, AllocatorKey,
-    AllocatorKeyV60, AllocatorValue, AllocatorValueV32,
+    AllocatorInfo, AllocatorInfoV60, AllocatorKey, AllocatorKeyV60, AllocatorValue,
+    AllocatorValueV32,
 };
 use crate::object_store::journal::super_block::{
     SuperBlockHeader, SuperBlockHeaderV32, SuperBlockRecord, SuperBlockRecordV60,
@@ -28,7 +29,7 @@ use crate::object_store::object_record::{
 use crate::object_store::transaction::{Mutation, MutationV60};
 use crate::object_store::{
     EncryptedMutations, EncryptedMutationsV49, EncryptedTransaction, EncryptedTransactionV60,
-    StoreInfo, StoreInfoV52, StoreInfoV61,
+    StoreInfo, StoreInfoV61,
 };
 use crate::serialized_types::{Version, Versioned, VersionedLatest, versioned_type};
 use std::collections::BTreeMap;
@@ -56,7 +57,9 @@ pub const OLD_KEY_SERIALIZATION_VERSION: Version = Version { major: 57, minor: 0
 /// 3) The SuperBlockHeader version (below) should also be set to the new LATEST_VERSION.
 ///
 /// Also check the constant version numbers above for any code cleanup that can happen.
-pub const EARLIEST_SUPPORTED_VERSION: Version = Version { major: 60, minor: 0 };
+///
+/// fxdax: the latest, whatever it is: every change is breaking, as no format is migrated.
+pub const EARLIEST_SUPPORTED_VERSION: Version = LATEST_VERSION;
 
 // From this version forward, the journal encryption uses AES-256-XTS instead of Chacha20, as well
 // as chunking the mutations together for a transaction.
@@ -120,8 +123,6 @@ macro_rules! versioned_types {
 versioned_types! {
     AllocatorInfo {
         60.. => AllocatorInfoV60,
-        59.. => AllocatorInfoV59,
-        32.. => AllocatorInfoV32,
     }
     AllocatorKey {
         60.. => AllocatorKeyV60,
@@ -158,7 +159,6 @@ versioned_types! {
     }
     StoreInfo {
         61.. => StoreInfoV61,
-        52.. => StoreInfoV52,
     }
     SuperBlockHeader {
         32.. => SuperBlockHeaderV32,
