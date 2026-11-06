@@ -40,7 +40,7 @@ use fxfs::object_store::{
     StoreObjectHandle, Timestamp,
 };
 use rustc_hash::{FxHashMap, FxHashSet};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::future::Future;
 use std::ops::Range;
 use std::pin::pin;
@@ -372,8 +372,10 @@ enum Op {
     Grow,
     /// `setattr`'s change of the rest of the inode's attributes.
     SetAttr,
-    /// `write_inode`'s writeback of extended attributes.
-    WriteXattrs,
+    /// `set_xattr`: refused on a full filesystem, as ext4's setxattr is (TASK-199).
+    SetXattr,
+    /// `remove_xattr`, which frees what the attribute held.
+    RemoveXattr,
     Sync,
     Fsync,
     Statfs,
@@ -459,7 +461,8 @@ impl Op {
             Op::Cut =>          (Nothing, true,  Borrowed,       false),
             Op::Grow =>         (Nothing, true,  Reserved,       false),
             Op::SetAttr =>      (Nothing, true,  Borrowed,       false),
-            Op::WriteXattrs =>  (Nothing, true,  Reserved,       false),
+            Op::SetXattr =>     (Nothing, true,  Reserved,       false),
+            Op::RemoveXattr =>  (Nothing, true,  Borrowed,       false),
             Op::Sync =>         (All,     false, NoTransactions, false),
             Op::Fsync =>        (All,     false, NoTransactions, false),
             Op::Statfs =>       (All,     false, NoTransactions, false),
@@ -514,10 +517,6 @@ pub struct Fxfs<P: Platform> {
     /// fxdax: the room reserved for the page cache's dirty data, by file, as it dirties it,
     /// which its writeback writes it with (`write_dirty`, TASK-80).
     dirty: DirtyReservation,
-    /// The changes to inodes' extended attributes not yet written back: values set, or `None`,
-    /// removed. As the kernel keeps an inode's attributes, and writes them back with them
-    /// (`write_inode`), as ext4's journal does.
-    xattrs: Mutex<FxHashMap<u64, BTreeMap<Vec<u8>, Option<Vec<u8>>>>>,
     /// Unlinks queued (doc-6).
     delayed: Delayed,
     /// fxdax: fsyncs, and those another's sync covered (`fsync`).
@@ -560,7 +559,6 @@ impl<P: Platform> Fxfs<P> {
             platform,
             directories: Mutex::new(FxHashMap::default()),
             files: Mutex::new(FxHashMap::default()),
-            xattrs: Mutex::new(FxHashMap::default()),
             delayed: Delayed::default(),
         }
     }
@@ -912,8 +910,8 @@ impl<P: Platform> Fxfs<P> {
     /// Creates `name` in the directory `dir`, as `mode` says: a directory, or a file, which may be
     /// a special file (as Starnix and fxdax make them), owned by `uid` and `gid`. fxdax: with the
     /// extended attributes `xattrs`, names and values, in its transaction, as the ACLs it inherits:
-    /// written back after, a crash could keep the new object without them (TASK-79.29). Those too
-    /// large to keep inline in its record are written back with it (`write_inode`), as before.
+    /// written back after, a crash could keep the new object without them (TASK-79.29); those too
+    /// large to keep inline in its record too, in an attribute of the object (TASK-199).
     pub async fn create(
         &self,
         dir: u64,
@@ -949,7 +947,6 @@ impl<P: Platform> Fxfs<P> {
             child.update_attributes(&mut transaction, Some(&attributes), None).await?;
             child.object_id()
         };
-        let mut later = Vec::new();
         for &(name, value) in xattrs {
             ensure!(name.len() <= MAX_XATTR_NAME_SIZE, FxfsError::TooBig);
             ensure!(value.len() <= MAX_XATTR_VALUE_SIZE, FxfsError::TooBig);
@@ -962,14 +959,18 @@ impl<P: Platform> Fxfs<P> {
                     ),
                 );
             } else {
-                later.push((name, value));
+                let mode = SetExtendedAttributeMode::Create;
+                self.handle(ino)
+                    .set_extended_attribute_impl(
+                        name.to_vec(),
+                        value.to_vec(),
+                        mode,
+                        &mut transaction,
+                    )
+                    .await?;
             }
         }
-        let attrs = self.commit_new(transaction, ino, dir.object_id()).await?;
-        for (name, value) in later {
-            self.change_xattr(ino, name, Some(value.to_vec()));
-        }
-        Ok(attrs)
+        self.commit_new(transaction, ino, dir.object_id()).await
     }
 
     /// Creates the symlink `name` in the directory `dir`, to `target`, owned by `uid` and `gid`.
@@ -1213,70 +1214,14 @@ impl<P: Platform> Fxfs<P> {
 
     /// The value of the extended attribute `name` of the object `ino`.
     pub async fn get_xattr(&self, ino: u64, name: &[u8]) -> Result<Vec<u8>, Error> {
-        match self.pending_xattr(ino, name) {
-            Some(Some(value)) => Ok(value),
-            Some(None) => bail!(FxfsError::NotFound),
-            None => self.handle(ino).get_extended_attribute(name.to_vec()).await,
-        }
-    }
-
-    /// The change to `ino`'s extended attribute `name` not yet written back, if any.
-    fn pending_xattr(&self, ino: u64, name: &[u8]) -> Option<Option<Vec<u8>>> {
-        self.xattrs.lock().unwrap().get(&ino)?.get(name).cloned()
-    }
-
-    /// Whether `ino` has the extended attribute `name`, as the kernel has it.
-    async fn has_xattr(&self, ino: u64, name: &[u8]) -> Result<bool, Error> {
-        if let Some(pending) = self.pending_xattr(ino, name) {
-            return Ok(pending.is_some());
-        }
-        let key = ObjectKey::extended_attribute(ino, name.to_vec());
-        Ok(self.volume.tree().find(&key).await?.is_some())
-    }
-
-    /// Records a change to `ino`'s extended attribute `name`, which `write_inode` writes back.
-    fn change_xattr(&self, ino: u64, name: &[u8], value: Option<Vec<u8>>) {
-        self.xattrs.lock().unwrap().entry(ino).or_default().insert(name.to_vec(), value);
-    }
-
-    /// Writes back the changes to `ino`'s extended attributes, each pending until it is written,
-    /// so that what reads them meanwhile finds it (TASK-79.51); one that fails, and those after
-    /// it, are written back next time.
-    async fn write_xattrs(&self, ino: u64) -> Result<(), Error> {
-        let Some(changes) = self.xattrs.lock().unwrap().get(&ino).cloned() else {
-            return Ok(());
-        };
-        self.begin(Op::WriteXattrs, None).await?;
-        let handle = self.handle(ino);
-        for (name, value) in changes {
-            let written = match value.clone() {
-                Some(value) => {
-                    let mode = SetExtendedAttributeMode::Set;
-                    handle.set_extended_attribute(name.clone(), value, mode).await
-                }
-                None => match handle.remove_extended_attribute(name.clone()).await {
-                    // Set and removed before either was written back.
-                    Err(error) if FxfsError::NotFound.matches(&error) => Ok(()),
-                    removed => removed,
-                },
-            };
-            written?;
-            // Unless changed again meanwhile, which is written back next time.
-            let mut xattrs = self.xattrs.lock().unwrap();
-            if let Some(pending) = xattrs.get_mut(&ino) {
-                if pending.get(&name) == Some(&value) {
-                    pending.remove(&name);
-                }
-                if pending.is_empty() {
-                    xattrs.remove(&ino);
-                }
-            }
-        }
-        Ok(())
+        self.handle(ino).get_extended_attribute(name.to_vec()).await
     }
 
     /// Sets the extended attribute `name` of the object `ino` to `value`: creating it, replacing
-    /// it, or either, as `mode` says. Written back with the inode (`write_inode`).
+    /// it, or either, as `mode` says. fxdax: in a transaction of its own, as ext4's setxattr
+    /// journals it, refused (NoSpace) on a filesystem without the room: kept in memory until the
+    /// kernel wrote back the inode, a change the filesystem had no room for was lost behind
+    /// fsync's 0, and changes took the kernel's memory without bound (TASK-199).
     pub async fn set_xattr(
         &self,
         ino: u64,
@@ -1284,39 +1229,26 @@ impl<P: Platform> Fxfs<P> {
         value: &[u8],
         mode: SetExtendedAttributeMode,
     ) -> Result<(), Error> {
-        // What Fxfs would refuse, refused now.
-        ensure!(name.len() <= MAX_XATTR_NAME_SIZE, FxfsError::TooBig);
-        ensure!(value.len() <= MAX_XATTR_VALUE_SIZE, FxfsError::TooBig);
-        match mode {
-            SetExtendedAttributeMode::Create if self.has_xattr(ino, name).await? => {
-                bail!(FxfsError::AlreadyExists)
-            }
-            SetExtendedAttributeMode::Replace if !self.has_xattr(ino, name).await? => {
-                bail!(FxfsError::NotFound)
-            }
-            _ => {}
-        }
-        self.change_xattr(ino, name, Some(value.to_vec()));
+        let begun = self.begin(Op::SetXattr, None).await?;
+        let mut transaction = begun.transaction(&[ino]).await?;
+        let (name, value) = (name.to_vec(), value.to_vec());
+        self.handle(ino).set_extended_attribute_impl(name, value, mode, &mut transaction).await?;
+        transaction.commit().await?;
         Ok(())
     }
 
     /// The names of the object `ino`'s extended attributes.
     pub async fn list_xattrs(&self, ino: u64) -> Result<Vec<Vec<u8>>, Error> {
-        let mut names = self.handle(ino).list_extended_attributes().await?;
-        if let Some(changes) = self.xattrs.lock().unwrap().get(&ino) {
-            names.retain(|name| !changes.contains_key(name));
-            let set = changes.iter().filter(|(_, value)| value.is_some());
-            names.extend(set.map(|(name, _)| name.clone()));
-        }
-        Ok(names)
+        self.handle(ino).list_extended_attributes().await
     }
 
-    /// Removes the extended attribute `name` of the object `ino`. Written back with the inode
-    /// (`write_inode`).
+    /// Removes the extended attribute `name` of the object `ino`, in a transaction of its own,
+    /// which borrows its room: it frees what the attribute held. Fails with NotFound if it has
+    /// none of that name.
     pub async fn remove_xattr(&self, ino: u64, name: &[u8]) -> Result<(), Error> {
-        ensure!(self.has_xattr(ino, name).await?, FxfsError::NotFound);
-        self.change_xattr(ino, name, None);
-        Ok(())
+        let begun = self.begin(Op::RemoveXattr, None).await?;
+        let handle = self.handle(ino);
+        handle.remove_extended_attribute_with_options(name.to_vec(), begun.options()).await
     }
 
     /// fxdax: how many records the volume's tree caches (its objects', names' and data's): what
@@ -1346,11 +1278,6 @@ impl<P: Platform> Fxfs<P> {
                 "inode {ino} evicted with the room of {dirty} bytes of dirty data reserved"
             );
             self.dirty.release(ino, dirty);
-        }
-        // An inode is written back before it is evicted, unless no name links it.
-        let changes = self.xattrs.lock().unwrap().remove(&ino);
-        if changes.is_some() && !unlinked {
-            log::error!("inode {ino} evicted with extended attributes not written back");
         }
         if unlinked {
             // Its unlink may be queued still: its object goes once the unlink is made.
@@ -1671,14 +1598,8 @@ impl<P: Platform> Fxfs<P> {
         Ok(())
     }
 
-    /// Sets the attributes of the object `ino` that `set` says.
-    /// Writes back what the kernel keeps of the inode `ino`: the attributes `set` says, and the
-    /// changes to its extended attributes.
-    pub async fn write_inode(&self, ino: u64, set: &SetAttr) -> Result<(), Error> {
-        self.setattr(ino, set).await?;
-        self.write_xattrs(ino).await
-    }
-
+    /// Sets the attributes of the object `ino` that `set` says: what the kernel keeps of its
+    /// inode, as it writes it back (`write_inode`), and a change of its size.
     pub async fn setattr(&self, ino: u64, set: &SetAttr) -> Result<(), Error> {
         if set.valid & SET_SIZE != 0 {
             if self.attr(ino).await?.mode & S_IFMT != S_IFREG {

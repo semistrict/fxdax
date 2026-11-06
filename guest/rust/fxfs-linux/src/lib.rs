@@ -701,21 +701,9 @@ pub unsafe extern "C" fn fxfs_statfs(fs: *const Fxfs, statfs: *mut StatFs) -> c_
 ///
 /// `fs` is mounted, and `set` readable.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn fxfs_setattr(fs: *const Fxfs, ino: u64, set: *const SetAttr) -> c_int {
-    // SAFETY: As the caller promises.
-    match unsafe { block_on((*fs).setattr(ino, &*set)) } {
-        Ok(()) => 0,
-        Err(error) => -errno(&error),
-    }
-}
-
-/// # Safety
-///
-/// `fs` is mounted, and `set` readable.
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn fxfs_write_inode(fs: *const Fxfs, ino: u64, set: *const SetAttr) -> c_int {
     // SAFETY: As the caller promises.
-    match unsafe { block_on((*fs).write_inode(ino, &*set)) } {
+    match unsafe { block_on((*fs).setattr(ino, &*set)) } {
         Ok(()) => 0,
         Err(error) => -errno(&error),
     }

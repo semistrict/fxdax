@@ -9,6 +9,8 @@
 // written (raw and preallocated, or overwrite extents none of whose blocks read is written) read
 // zeros if the store doesn't hold them. `multi_write_packed` packs small writes into the staging
 // extent, which other small writes share (`Allocator::allocate_shared`): a guest's writeback.
+// Extended attributes are set in a transaction of the caller's (`set_extended_attribute_impl`,
+// public), and removed with the room it chooses (`remove_extended_attribute_with_options`).
 
 use crate::checksum::{Checksum, Checksums};
 use crate::errors::FxfsError;
@@ -1988,7 +1990,10 @@ impl<S: HandleOwner> StoreObjectHandle<S> {
         Ok(())
     }
 
-    async fn set_extended_attribute_impl(
+    /// fxdax: public, to set an extended attribute in a transaction of the caller's: a new
+    /// object's, which its ACLs are made in with it (fxfs-posix's `create`), or one whose room
+    /// the caller chooses.
+    pub async fn set_extended_attribute_impl(
         &self,
         name: Vec<u8>,
         value: Vec<u8>,
@@ -2106,6 +2111,16 @@ impl<S: HandleOwner> StoreObjectHandle<S> {
     }
 
     pub async fn remove_extended_attribute(&self, name: Vec<u8>) -> Result<(), Error> {
+        self.remove_extended_attribute_with_options(name, Options::default()).await
+    }
+
+    /// fxdax: `remove_extended_attribute`, its transaction's room as `options` say: borrowed, as
+    /// what frees space works on a full filesystem (fxfs-posix's `remove_xattr`).
+    pub async fn remove_extended_attribute_with_options(
+        &self,
+        name: Vec<u8>,
+        options: Options<'_>,
+    ) -> Result<(), Error> {
         let store = self.store();
         let tree = store.tree();
         let object_key = ObjectKey::extended_attribute(self.object_id(), name);
@@ -2115,7 +2130,7 @@ impl<S: HandleOwner> StoreObjectHandle<S> {
         // we take a lock and make a transaction before we do so we don't race with other
         // operations.
         let keys = lock_keys![LockKey::object(store.store_object_id(), self.object_id())];
-        let mut transaction = store.new_transaction(keys, Options::default()).await?;
+        let mut transaction = store.new_transaction(keys, options).await?;
 
         let attribute_to_delete = tree
             .find_map(&object_key, |item| match item.value {

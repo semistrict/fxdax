@@ -364,12 +364,6 @@ pub(super) fn test_write_killed() {
     fs::remove_file(&name).unwrap();
 }
 
-/// fxdax: a fault injection counting down, `name`, has run out.
-fn assert_injected(name: &str) {
-    let left = fs::read_to_string(format!("/sys/module/fxfs/parameters/{name}")).unwrap();
-    assert_eq!(left.trim(), "0", "{name} never failed anything");
-}
-
 /// fxdax: a chunk of a file in pieces, which its range's own space maps in one request: that
 /// request fails having mapped the first (fxfs.dax_fail_map_many), and the pieces are mapped
 /// one by one; and that fails too at the second (fxfs.dax_fail_fallbacks), the range left with

@@ -66,14 +66,26 @@ pub(crate) fn mount() {
 
 /// Mounts the image with the kernel's Fxfs, if it can.
 fn try_mount() -> std::io::Result<()> {
+    mount_with(0)
+}
+
+/// Mounts the image with the kernel's Fxfs, with the mount's `flags`, such as `MS_RDONLY`; or, with
+/// `MS_REMOUNT`, mounts it again so.
+fn mount_with(flags: libc::c_ulong) -> std::io::Result<()> {
     fs::create_dir_all(MNT).unwrap();
     let source = CString::new(TAG).unwrap();
     let target = CString::new(MNT).unwrap();
     let fstype = CString::new("fxfs").unwrap();
     let ret = unsafe {
-        libc::mount(source.as_ptr(), target.as_ptr(), fstype.as_ptr(), 0, std::ptr::null())
+        libc::mount(source.as_ptr(), target.as_ptr(), fstype.as_ptr(), flags, std::ptr::null())
     };
     if ret == 0 { Ok(()) } else { Err(std::io::Error::last_os_error()) }
+}
+
+/// fxdax: a fault injection counting down, `name`, has run out.
+fn assert_injected(name: &str) {
+    let left = fs::read_to_string(format!("{PARAMS}/{name}")).unwrap();
+    assert_eq!(left.trim(), "0", "{name} never failed anything");
 }
 
 /// Unmounts the image.
@@ -150,11 +162,15 @@ fn stats() -> std::collections::BTreeMap<String, u64> {
 }
 
 fn set_xattr(path: &str, name: &str, value: &[u8]) {
+    try_set_xattr(path, name, value).unwrap_or_else(|error| panic!("setxattr: {error}"));
+}
+
+fn try_set_xattr(path: &str, name: &str, value: &[u8]) -> std::io::Result<()> {
     let (path, name) = (CString::new(path).unwrap(), CString::new(name).unwrap());
     let ret = unsafe {
         libc::setxattr(path.as_ptr(), name.as_ptr(), value.as_ptr().cast(), value.len(), 0)
     };
-    assert_eq!(ret, 0, "setxattr: {}", std::io::Error::last_os_error());
+    if ret == 0 { Ok(()) } else { Err(std::io::Error::last_os_error()) }
 }
 
 fn get_xattr(path: &str, name: &str) -> Vec<u8> {

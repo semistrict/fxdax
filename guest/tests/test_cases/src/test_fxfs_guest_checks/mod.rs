@@ -157,6 +157,11 @@ macro_rules! checks {
             log_writes: All, 21 => test_log_writes;
             acls: All, 3 => test_acls;
             xattrs_read_as_written_back: All, 3 => test_xattrs_read_as_written_back;
+            failed_write_inode_reported: All, 3 => test_failed_write_inode_reported;
+            // They fill the filesystem, then remove what they filled it with; one remounts it,
+            // which the window's checks' counts, from the filesystem's opening, come after.
+            xattr_on_full_filesystem_is_refused: All, 5 => test_xattr_on_full_filesystem_is_refused;
+            xattrs_bounded: All, 8 => test_xattrs_bounded;
             freeze: All, 3 => test_freeze;
             show_options: All, 3 => test_show_options(dax);
             write_removes_privileges: All, 3 => test_write_removes_privileges;

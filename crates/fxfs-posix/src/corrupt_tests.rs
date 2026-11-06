@@ -53,6 +53,7 @@ use fxfs::object_store::{ExtentMode, ExtentValue, NewChildStoreOptions, StoreOpt
 use rand::rngs::StdRng;
 use rand::{RngExt as _, SeedableRng as _};
 use std::alloc::{GlobalAlloc, Layout, System};
+use std::collections::BTreeMap;
 use std::collections::{BTreeSet, HashMap};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::panic::AssertUnwindSafe;
@@ -375,7 +376,6 @@ async fn populate(fs: &Fxfs<Tested>, root: u64, round: u8) {
     fs.set_xattr(attributed, b"large", &[round; 8192], SetExtendedAttributeMode::Set)
         .await
         .expect("set_xattr");
-    fs.write_inode(attributed, &SetAttr::default()).await.expect("write_inode");
     fs.symlink(dir, b"link", b"somewhere/else", 0, 0).await.expect("symlink");
     fs.link(fragments, root, &name("hard"), false).await.expect("link");
     fs.rename(dir, b"sparse", sparse, root, &name("renamed"), None).await.expect("rename");

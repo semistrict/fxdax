@@ -210,12 +210,7 @@ int fxfs_getattr(struct fxfs *fs, u64 ino, struct fxfs_attr *attr);
 int fxfs_attr_of_open(struct fxfs *fs, u64 ino, struct fxfs_attr *attr);
 /* fxdax: how far the journal is written: every commit moves it, all of it applied. */
 u64 fxfs_journal_offset(struct fxfs *fs);
-/* Sets the attributes `set` says. */
-int fxfs_setattr(struct fxfs *fs, u64 ino, const struct fxfs_setattr *set);
-/*
- * Writes back what the kernel keeps of inode `ino`: the attributes `set` says, and the changes to
- * its extended attributes, which fxfs_setxattr and fxfs_removexattr record.
- */
+/* Writes back what the kernel keeps of inode `ino`: the attributes `set` says. */
 int fxfs_write_inode(struct fxfs *fs, u64 ino, const struct fxfs_setattr *set);
 
 /* The attributes of `name` in directory `dir`: -ENOENT if there is none. */
@@ -345,7 +340,7 @@ ssize_t fxfs_read_into(struct fxfs *fs, u64 ino, u64 offset, const struct fxfs_r
 		       size_t count);
 /*
  * Writes the `len` bytes of `buf` to file `ino` at `offset`, growing the file if it ends before
- * them. The file's times are the kernel's to set (fxfs_setattr).
+ * them. The file's times are the kernel's to set (fxfs_write_inode).
  */
 int fxfs_write(struct fxfs *fs, u64 ino, u64 offset, const void *buf, size_t len);
 
@@ -430,8 +425,8 @@ ssize_t fxfs_dax_extents(struct fxfs *fs, u64 ino, u64 offset, u64 len,
 /*
  * Extended attributes of inode `ino`, by their full names (`user.x`): getxattr(2)'s and
  * listxattr(2)'s semantics, ssize_t results as theirs (the length, or with `size` 0 the length
- * needed, or -ERANGE), and setxattr(2)'s flags. Changes are written back with the inode
- * (fxfs_write_inode).
+ * needed, or -ERANGE), and setxattr(2)'s flags. A change is made at once, in a transaction of its
+ * own: -ENOSPC if the filesystem has no room for it (TASK-199).
  */
 ssize_t fxfs_getxattr(struct fxfs *fs, u64 ino, const char *name, size_t len, void *buf,
 		      size_t size);

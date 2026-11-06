@@ -1015,7 +1015,7 @@ impl World {
             self.model.dirs.retain(|dir| *dir != ino);
             self.model.dir_xattrs.remove(&ino);
             let times = SetAttr { valid: SET_MTIME, mtime_ns: 1, ..SetAttr::default() };
-            let written = self.fs.write_inode(ino, &times).await;
+            let written = self.fs.setattr(ino, &times).await;
             self.unless_full(written, "a directory's times")?;
         }
         if self.model.links(ino) == 0 && !self.model.open.contains(&ino) {
@@ -1631,20 +1631,26 @@ impl World {
                 self.journaled_for(extents, journaled)?;
                 self.planned(&plan, punched).await?;
             }
+            // Each set made at once, or refused if the filesystem has no room for it, as the
+            // model then has it unchanged; a removal, which frees, works on a full one (TASK-199).
             Op::SetXattr { file, name, len, byte } => {
                 let Some(ino) = self.model.file(file) else { return Ok(()) };
                 let value = vec![byte; len];
                 let mode = SetExtendedAttributeMode::Set;
                 let set = self.fs.set_xattr(ino, &xattr_of(name), &value, mode).await;
-                set.map_err(|e| format!("set_xattr: {e:#}"))?;
-                self.write_xattrs(ino, name, Some(value)).await?;
+                if self.unless_full(set, "set_xattr")?.is_some() {
+                    let data = self.model.files.get_mut(&ino).expect("a file");
+                    data.xattrs.insert(name, value);
+                }
+                self.check(&self.model, ino).await?;
             }
             Op::RemoveXattr { file, name } => {
                 let Some(ino) = self.model.file(file) else { return Ok(()) };
                 if self.model.files[&ino].xattrs.contains_key(&name) {
                     let removed = self.fs.remove_xattr(ino, &xattr_of(name)).await;
                     removed.map_err(|e| format!("remove_xattr: {e:#}"))?;
-                    self.write_xattrs(ino, name, None).await?;
+                    self.model.files.get_mut(&ino).expect("a file").xattrs.remove(&name);
+                    self.check(&self.model, ino).await?;
                 }
             }
             Op::SetDirXattr { dir, name, len, byte } => {
@@ -1652,11 +1658,7 @@ impl World {
                 let value = vec![byte; len];
                 let mode = SetExtendedAttributeMode::Set;
                 let set = self.fs.set_xattr(dir, &xattr_of(name), &value, mode).await;
-                set.map_err(|e| format!("set_xattr: {e:#}"))?;
-                let written = self.fs.write_inode(dir, &SetAttr::default()).await;
-                if self.unless_full(written, "write_inode")?.is_none() {
-                    self.fs.xattrs.lock().unwrap().remove(&dir);
-                } else {
+                if self.unless_full(set, "set_xattr")?.is_some() {
                     self.model.dir_xattrs.entry(dir).or_default().insert(name, value);
                 }
             }
@@ -1765,27 +1767,6 @@ impl World {
         }
         self.model.files.insert(plan.ino, data);
         self.check(&self.model, plan.ino).await
-    }
-
-    /// Writes back the change of `ino`'s extended attribute `name` to `value`, as the kernel's
-    /// writeback of its inode does. One the filesystem has no room for it drops, as the model does.
-    async fn write_xattrs(
-        &mut self,
-        ino: u64,
-        name: u8,
-        value: Option<Vec<u8>>,
-    ) -> Result<(), String> {
-        let written = self.fs.write_inode(ino, &SetAttr::default()).await;
-        if self.unless_full(written, "write_inode")?.is_none() {
-            self.fs.xattrs.lock().unwrap().remove(&ino);
-        } else {
-            let xattrs = &mut self.model.files.get_mut(&ino).expect("a file").xattrs;
-            match value {
-                Some(value) => xattrs.insert(name, value),
-                None => xattrs.remove(&name),
-            };
-        }
-        self.check(&self.model, ino).await
     }
 }
 

@@ -450,9 +450,7 @@ impl Real {
                 FAIL_COMMITS.store(0, Ordering::Relaxed);
                 written.map_err(failed)
             }
-            Call::WriteInode { file, set } => {
-                fs.write_inode(inos[*file], set).await.map_err(failed)
-            }
+            Call::WriteInode { file, set } => fs.setattr(inos[*file], set).await.map_err(failed),
             Call::Clone { src, offset, len, dst, dst_offset, size } => {
                 let range = *offset..offset + len;
                 let cloned = fs.clone_range(inos[*src], range, inos[*dst], *dst_offset, *size);

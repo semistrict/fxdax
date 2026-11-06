@@ -218,7 +218,7 @@ static void fxfs_vfs_update_attr(struct inode *inode, const struct fxfs_attr *at
 
 /*
  * Writes what the kernel keeps of `inode` to Fxfs: its mode, owner and times, and with
- * FXFS_SET_SIZE in `valid`, its size; and the changes to its extended attributes.
+ * FXFS_SET_SIZE in `valid`, its size.
  */
 int fxfs_vfs_write_attr(struct inode *inode, u32 valid)
 {
@@ -463,8 +463,9 @@ static struct posix_acl *fxfs_vfs_get_acl(struct inode *inode, int type, bool rc
 }
 
 /*
- * Stores `acl`, or removes it if NULL, as `inode`'s ACL of `type`: written back with the inode,
- * which it marks dirty, as its other extended attributes are.
+ * Stores `acl`, or removes it if NULL, as `inode`'s ACL of `type`: in Fxfs at once, as its other
+ * extended attributes are (fxfs_setxattr), -ENOSPC if it has no room for it; and marks the inode
+ * dirty, its change time to write back.
  */
 static int fxfs_vfs_store_acl(struct inode *inode, struct posix_acl *acl, int type)
 {
@@ -2385,15 +2386,34 @@ static void fxfs_vfs_evict_inode(struct inode *inode)
 	memalloc_nofs_restore(nofs);
 }
 
-/* Writes back the attributes the kernel keeps (fxfs_vfs_write_attr). */
+/*
+ * fxdax: fault injection (TASK-199): the next write-back of the inode this numbers fails (-EIO),
+ * and it is 0 again; 0, none.
+ */
+static unsigned long fxfs_vfs_fail_write_inode;
+module_param_named(fail_write_inode, fxfs_vfs_fail_write_inode, ulong, 0644);
+MODULE_PARM_DESC(fail_write_inode, "Fail the next write-back of this inode's attributes (fault injection)");
+
+/*
+ * Writes back the attributes the kernel keeps (fxfs_vfs_write_attr). fxdax: failing, the inode is
+ * dirty again, for the next write-back to retry, and the next fsync to report until one works: the
+ * VFS took it for clean before the call, and the flusher's and sync's, which nothing reports, left
+ * the next fsync nothing to write and 0 to return, the change lost at eviction (TASK-199).
+ */
 static int fxfs_vfs_write_inode(struct inode *inode, struct writeback_control *wbc)
 {
-	/* fxdax: a DAX file's dirty pages first, which Fxfs takes its size from (doc-13). */
-	int err = fxfs_dax_write_back(inode);
+	unsigned long ino = inode->i_ino;
+	int err;
 
-	if (err)
-		return err;
-	return fxfs_vfs_write_attr(inode, 0);
+	if (READ_ONCE(fxfs_vfs_fail_write_inode) == ino &&
+	    cmpxchg(&fxfs_vfs_fail_write_inode, ino, 0) == ino)
+		err = -EIO;
+	else
+		/* fxdax: a DAX file's dirty pages first, which Fxfs takes its size from (doc-13). */
+		err = fxfs_dax_write_back(inode) ?: fxfs_vfs_write_attr(inode, 0);
+	if (err && !(READ_ONCE(inode->i_state) & (I_WILL_FREE | I_FREEING)))
+		mark_inode_dirty_sync(inode);
+	return err;
 }
 
 static int fxfs_vfs_sync_fs(struct super_block *sb, int wait)

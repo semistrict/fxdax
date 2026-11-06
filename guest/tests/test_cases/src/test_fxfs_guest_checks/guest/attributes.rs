@@ -51,6 +51,169 @@ pub(super) fn test_xattrs_read_as_written_back() {
     fs::remove_file(&name).unwrap();
 }
 
+/// fxdax: a full filesystem refuses an extended attribute it has no room for (ENOSPC), as ext4's
+/// does, rather than keep it in memory and lose it behind fsync's 0 as its writeback fails: small
+/// ones, which take only the journal's room, set until one is refused, which isn't there; each set
+/// before it durable, read back remounted, as is one set once there is room again (TASK-199).
+pub(super) fn test_xattr_on_full_filesystem_is_refused() {
+    let name = path("xattr-full");
+    fs::write(&name, b"x").unwrap();
+    let filler = Removed(path("filler"));
+    fill_until_enospc(&filler.0);
+    let attribute = |n: usize| format!("user.x{n}");
+    let refused = (0..100_000).find(|n| match try_set_xattr(&name, &attribute(*n), b"1") {
+        Ok(()) => false,
+        Err(error) if error.raw_os_error() == Some(libc::ENOSPC) => true,
+        Err(error) => panic!("setxattr {}: {error}", attribute(*n)),
+    });
+    let refused = refused.expect("a full filesystem took 100,000 extended attributes");
+    assert_eq!(get_xattr_errno(&name, &attribute(refused)), Some(libc::ENODATA), "refused");
+    drop(filler);
+    set_xattr(&name, "user.after", b"2");
+    fs::File::open(&name).unwrap().sync_all().unwrap();
+    unmount();
+    mount();
+    for n in 0..refused {
+        assert_eq!(get_xattr(&name, &attribute(n)), b"1", "{} of {refused}", attribute(n));
+    }
+    assert_eq!(get_xattr(&name, "user.after"), b"2");
+    fs::remove_file(&name).unwrap();
+}
+
+/// A file or directory, removed as this goes, and synced, its room free again: if a check that
+/// filled the filesystem failed, for the checks after it.
+struct Removed(String);
+
+impl Drop for Removed {
+    fn drop(&mut self) {
+        // Not a panic, which in a panic's unwinding would abort before the first said why.
+        let path = std::path::Path::new(&self.0);
+        let removed = if path.is_dir() { fs::remove_dir_all(path) } else { fs::remove_file(path) };
+        if let Err(error) = removed {
+            eprintln!("removing {}: {error}", self.0);
+        }
+        unsafe { libc::sync() };
+    }
+}
+
+/// The errno of getxattr(2) of `name` of `path`, which fails: `None` if it doesn't.
+fn get_xattr_errno(path: &str, name: &str) -> Option<i32> {
+    let (path, name) = (CString::new(path).unwrap(), CString::new(name).unwrap());
+    let mut value = [0u8; 16];
+    let len = unsafe {
+        libc::getxattr(path.as_ptr(), name.as_ptr(), value.as_mut_ptr().cast(), value.len())
+    };
+    (len < 0).then(|| std::io::Error::last_os_error().raw_os_error().unwrap())
+}
+
+/// A file, `name`, written until the filesystem is full, a MiB at a time, then a page: what fitted
+/// durable.
+fn fill_until_enospc(name: &str) {
+    let mut file = fs::File::create(name).unwrap();
+    for block in [vec![0x5a; 1 << 20], vec![0x5a; 4096]] {
+        loop {
+            match file.write_all(&block) {
+                Ok(()) => {}
+                Err(error) if error.raw_os_error() == Some(libc::ENOSPC) => break,
+                Err(error) => panic!("filling {name}: {error}"),
+            }
+        }
+    }
+    file.sync_all().unwrap();
+}
+
+/// fxdax: extended attributes set keep none of the kernel's memory: setxattrs of names of their
+/// own, 64,000 bytes each (Fxfs's most), until twice the guest's memory or the filesystem is full,
+/// end with the OOM killer not run, each written as it is set, and refused (ENOSPC) once the
+/// filesystem is full, which its 256 MiB are first. Kept in memory until written back, they took
+/// the kernel's without bound, which no OOM kill frees (TASK-199).
+pub(super) fn test_xattrs_bounded() {
+    let memory = meminfo("MemTotal") * 1024;
+    let killed = vmstat("oom_kill");
+    let dir = Removed(path("xattrs-bounded"));
+    fs::create_dir(&dir.0).unwrap();
+    let value = vec![0xa5; 64000];
+    let (mut set, mut refused) = (0u64, false);
+    let enospc = |error: &std::io::Error| error.raw_os_error() == Some(libc::ENOSPC);
+    // Fewer than the 448 an object holds too large to keep inline.
+    'files: for n in 0.. {
+        let file = format!("{}/f{n}", dir.0);
+        match fs::write(&file, b"") {
+            Ok(()) => {}
+            Err(error) if enospc(&error) => {
+                refused = true;
+                break;
+            }
+            Err(error) => panic!("creating {file}, after {set} bytes: {error}"),
+        }
+        for attribute in 0..400 {
+            match try_set_xattr(&file, &format!("user.big{attribute}"), &value) {
+                Ok(()) => set += value.len() as u64,
+                Err(error) if enospc(&error) => {
+                    refused = true;
+                    break 'files;
+                }
+                Err(error) => panic!("setxattr, after {set} bytes: {error}"),
+            }
+            if set >= 2 * memory {
+                break 'files;
+            }
+        }
+    }
+    assert_eq!(vmstat("oom_kill"), killed, "OOM kills, after {set} bytes of extended attributes");
+    assert!(
+        refused,
+        "{set} bytes of extended attributes set, of {memory} bytes' memory, none refused"
+    );
+}
+
+/// `name`'s count in /proc/meminfo.
+fn meminfo(name: &str) -> u64 {
+    let meminfo = fs::read_to_string("/proc/meminfo").unwrap();
+    let line = meminfo.lines().find_map(|line| line.strip_prefix(&format!("{name}:")));
+    line.unwrap().trim().trim_end_matches(" kB").parse().unwrap()
+}
+
+/// `name`'s count in /proc/vmstat.
+fn vmstat(name: &str) -> u64 {
+    let vmstat = fs::read_to_string("/proc/vmstat").unwrap();
+    let line = vmstat.lines().find_map(|line| line.strip_prefix(&format!("{name} ")));
+    line.unwrap().parse().unwrap()
+}
+
+/// fxdax: an inode whose writeback failed, as sync's or the flusher's, whose errors nothing
+/// reports, stays dirty: the next fsync writes it back, or fails as it does, until it is durable
+/// (fxfs.fail_write_inode). The VFS took it for clean, and the fsync after found nothing to write:
+/// 0, and a chmod lost at the next eviction (TASK-199).
+pub(super) fn test_failed_write_inode_reported() {
+    let name = path("write-inode-failed");
+    fs::write(&name, b"x").unwrap();
+    fs::File::open(&name).unwrap().sync_all().unwrap();
+    let ino = fs::metadata(&name).unwrap().ino();
+    fs::set_permissions(&name, fs::Permissions::from_mode(0o600)).unwrap();
+    {
+        let _fail = Param::set("fail_write_inode", &ino.to_string());
+        unsafe { libc::sync() };
+        assert_injected("fail_write_inode");
+    }
+    fs::File::open(&name).unwrap().sync_all().unwrap();
+    unmount();
+    mount();
+    assert_eq!(fs::metadata(&name).unwrap().permissions().mode() & 0o777, 0o600);
+    // And an fsync's own writeback, failing, fails it.
+    fs::set_permissions(&name, fs::Permissions::from_mode(0o640)).unwrap();
+    {
+        let _fail = Param::set("fail_write_inode", &ino.to_string());
+        let failed = fs::File::open(&name).unwrap().sync_all().unwrap_err();
+        assert_eq!(failed.raw_os_error(), Some(libc::EIO), "{failed}");
+    }
+    fs::File::open(&name).unwrap().sync_all().unwrap();
+    unmount();
+    mount();
+    assert_eq!(fs::metadata(&name).unwrap().permissions().mode() & 0o777, 0o640);
+    fs::remove_file(&name).unwrap();
+}
+
 /// POSIX ACLs: set and read back, the mode following them, and a directory's default ACL
 /// inherited, in place of the umask, which applies without one.
 pub(super) fn test_acls() {

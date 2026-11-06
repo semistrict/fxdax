@@ -883,9 +883,7 @@ impl Node {
         };
         volume
             .run(move |fxfs| async move {
-                fxfs.set_xattr(ino, &name, &value, mode).await.map_err(xattr_errno)?;
-                // Written back at once, as the host's VFS keeps no inode to write it back with.
-                fxfs.write_inode(ino, &Default::default()).await.map_err(xattr_errno)
+                fxfs.set_xattr(ino, &name, &value, mode).await.map_err(xattr_errno)
             })
             .await
     }
@@ -905,10 +903,9 @@ impl Node {
         let volume = self.volume()?;
         let (ino, name) = (self.ino(), name.to_vec());
         volume
-            .run(move |fxfs| async move {
-                fxfs.remove_xattr(ino, &name).await.map_err(xattr_errno)?;
-                fxfs.write_inode(ino, &Default::default()).await.map_err(xattr_errno)
-            })
+            .run(
+                move |fxfs| async move { fxfs.remove_xattr(ino, &name).await.map_err(xattr_errno) },
+            )
             .await
     }
 }

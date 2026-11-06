@@ -3,7 +3,8 @@
 // found in the LICENSE file.
 
 //! fxdax: the queued unlinks of doc-6 (TASK-79.21), on a fake device: what the kernel's calls find
-//! of them. Unlinks are queued as the guest's VFS queues them, which nothing on the host does.
+//! of them. Unlinks are queued as the guest's VFS queues them, which nothing on the host does. And
+//! what else a VFS's calls find: extended attributes made at once (TASK-199), a volume's read-only.
 
 use super::*;
 use fxfs::filesystem::FxFilesystemBuilder;
@@ -429,6 +430,100 @@ async fn a_files_last_bytes_read_back_after_a_remount() {
     fs.stop_delayed().await.unwrap();
 }
 
+/// fxdax: an extended attribute set or removed is in Fxfs at once, in a transaction of its own,
+/// as ext4's setxattr journals it: no writeback of the inode (`write_inode`) is waited for, which
+/// lost a change it failed to write behind fsync's 0 (TASK-199). A new object's, inline or not, are
+/// made in its creation's transaction.
+#[fuchsia::test]
+async fn xattrs_are_made_at_once() {
+    use SetExtendedAttributeMode::{Create, Replace, Set};
+    let device = DeviceHolder::new(FakeDevice::new(16384, 4096));
+    let filesystem = FxFilesystem::new_empty(device).await.expect("formatting");
+    let volumes = root_volume((*filesystem).clone()).await.expect("the root volume");
+    let volume = volumes.new_volume("test", NewChildStoreOptions::default()).await.unwrap();
+    let root = volume.root_directory_object_id();
+    let fs = Fxfs::new((*filesystem).clone(), volume, false, Tested);
+    let large = vec![7; 8192];
+    let inherited: &[(&[u8], &[u8])] = &[(b"user.inherited", &large), (b"user.inline", b"i")];
+    let ino = fs.create(root, b"f", FILE, 0, 0, 0, inherited).await.unwrap()[0].ino;
+    fs.set_xattr(ino, b"user.small", b"s", Set).await.unwrap();
+    fs.set_xattr(ino, b"user.large", &large, Set).await.unwrap();
+    fs.set_xattr(ino, b"user.small", b"t", Replace).await.unwrap();
+    fs.set_xattr(ino, b"user.gone", b"g", Create).await.unwrap();
+    fs.remove_xattr(ino, b"user.gone").await.unwrap();
+    let exists = fs.set_xattr(ino, b"user.small", b"u", Create).await.unwrap_err();
+    assert!(FxfsError::AlreadyExists.matches(&exists), "{exists:#}");
+    let missing = fs.set_xattr(ino, b"user.none", b"n", Replace).await.unwrap_err();
+    assert!(FxfsError::NotFound.matches(&missing), "{missing:#}");
+    let removed = fs.remove_xattr(ino, b"user.gone").await.unwrap_err();
+    assert!(FxfsError::NotFound.matches(&removed), "{removed:#}");
+    fs.sync().await.unwrap();
+    // Closed with no inode written back, as an unmount evicts none: each change is made already.
+    fs.stop_delayed().await.unwrap();
+    fs.close().await;
+    drop(volumes);
+    filesystem.close().await.expect("closing");
+    let device = filesystem.take_device().await;
+    device.reopen(false);
+
+    let filesystem = FxFilesystemBuilder::new().open(device).await.expect("opening");
+    let volumes = root_volume((*filesystem).clone()).await.expect("the root volume");
+    let volume = volumes.volume("test", StoreOptions::default()).await.unwrap();
+    let fs = Fxfs::new((*filesystem).clone(), volume, false, Tested);
+    let mut names = fs.list_xattrs(ino).await.unwrap();
+    names.sort();
+    let expected: [&[u8]; 4] = [b"user.inherited", b"user.inline", b"user.large", b"user.small"];
+    assert_eq!(names, expected.map(<[u8]>::to_vec));
+    assert_eq!(fs.get_xattr(ino, b"user.inherited").await.unwrap(), large);
+    assert_eq!(fs.get_xattr(ino, b"user.inline").await.unwrap(), b"i");
+    assert_eq!(fs.get_xattr(ino, b"user.large").await.unwrap(), large);
+    assert_eq!(fs.get_xattr(ino, b"user.small").await.unwrap(), b"t");
+    fs.stop_delayed().await.unwrap();
+    fs.close().await;
+    drop(volumes);
+    filesystem.close().await.expect("closing");
+}
+
+/// fxdax: a full filesystem refuses an extended attribute it has no room for (NoSpace), as ext4
+/// does, where one kept in memory was lost as its writeback failed; what it refused it hasn't; and
+/// it removes one, which frees what it held, as an unlink does (TASK-199).
+#[fuchsia::test]
+async fn a_full_filesystem_refuses_xattrs_and_removes_them() {
+    let (fs, root) = volume().await;
+    let ino = fs.new_file(root, b"attributed").await;
+    let large = vec![7; 32768];
+    fs.set_xattr(ino, b"user.large", &large, SetExtendedAttributeMode::Set).await.unwrap();
+    let filler = fs.new_file(root, b"filler").await;
+    let mut at = 0;
+    for len in [1 << 20, 4096] {
+        loop {
+            match fs.write(filler, at, &vec![1; len]).await {
+                Ok(()) => at += len as u64,
+                Err(error) if FxfsError::NoSpace.matches(&error) => break,
+                Err(error) => panic!("filling: {error:#}"),
+            }
+        }
+    }
+    // Small ones, which take only the journal's room, until there is none.
+    let mode = SetExtendedAttributeMode::Set;
+    let name = |n: usize| format!("user.small{n}").into_bytes();
+    let mut refused = None;
+    for n in 0..100_000 {
+        if let Err(error) = fs.set_xattr(ino, &name(n), b"s", mode).await {
+            refused = Some((n, error));
+            break;
+        }
+    }
+    let (refused, error) = refused.expect("a full filesystem took 100,000 extended attributes");
+    assert!(FxfsError::NoSpace.matches(&error), "{error:#}");
+    let missing = fs.get_xattr(ino, &name(refused)).await.unwrap_err();
+    assert!(FxfsError::NotFound.matches(&missing), "{missing:#}");
+    fs.remove_xattr(ino, b"user.large").await.unwrap();
+    let names = fs.list_xattrs(ino).await.unwrap();
+    assert_eq!(names.len(), refused, "{refused} set, then user.large removed");
+    fs.stop_delayed().await.unwrap();
+}
+
 /// A volume is read-only if mounted so, or if its filesystem is, whatever its mount says: the
 /// filesystem owns read-only, and its volumes derive theirs from it (TASK-160.26). The guest's
 /// `flush_volume` of a volume mounted -o ro on a writable filesystem checked the filesystem's.
@@ -456,7 +551,7 @@ async fn a_volume_is_read_only_as_it_or_its_filesystem_is() {
 }
 
 /// Every operation of the table (`Op::rules`), as `call` asks it.
-const EVERY_OP: [Op; 23] = [
+const EVERY_OP: [Op; 24] = [
     Op::Lookup,
     Op::Readdir,
     Op::AttrByHandle,
@@ -476,15 +571,16 @@ const EVERY_OP: [Op; 23] = [
     Op::Cut,
     Op::Grow,
     Op::SetAttr,
-    Op::WriteXattrs,
+    Op::SetXattr,
+    Op::RemoveXattr,
     Op::Sync,
     Op::Fsync,
     Op::Statfs,
 ];
 
 /// What every operation of the table's tests finds: in the root, `q` and `q2` link the file `q`;
-/// `f` and `g` are files of a page each; `d` a directory, and `e` one with the file `h` in it.
-/// Nothing is queued.
+/// `f` and `g` are files of a page each, `g` with the extended attribute `user.b`; `d` a
+/// directory, and `e` one with the file `h` in it. Nothing is queued.
 struct Objects {
     fs: Fxfs<Tested>,
     root: u64,
@@ -504,6 +600,7 @@ async fn objects() -> Objects {
     for ino in [f, g] {
         fs.write(ino, 0, &[b'a'; 4096]).await.unwrap();
     }
+    fs.set_xattr(g, b"user.b", b"b", SetExtendedAttributeMode::Set).await.unwrap();
     let (d, e) = (fs.new_dir(root, b"d").await, fs.new_dir(root, b"e").await);
     let h = fs.new_file(e, b"h").await;
     Objects { fs, root, q, f, g, d, e, h }
@@ -537,10 +634,8 @@ async fn call(objects: &Objects, op: Op) -> Result<(), Error> {
         Op::SetAttr => {
             fs.setattr(f, &SetAttr { valid: SET_MODE, mode: FILE, ..SetAttr::default() }).await
         }
-        Op::WriteXattrs => {
-            fs.set_xattr(f, b"user.a", b"a", SetExtendedAttributeMode::Set).await?;
-            fs.write_inode(f, &SetAttr::default()).await
-        }
+        Op::SetXattr => fs.set_xattr(f, b"user.a", b"a", SetExtendedAttributeMode::Set).await,
+        Op::RemoveXattr => fs.remove_xattr(g, b"user.b").await,
         Op::Sync => fs.sync().await,
         Op::Fsync => fs.fsync().await,
         Op::Statfs => fs.statfs().await.map(drop),
