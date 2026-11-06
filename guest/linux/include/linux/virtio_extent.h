@@ -14,6 +14,17 @@
 #define VIRTIO_ID_EXTENT 0x4658 /* "FX" */
 
 /*
+ * fxdax: the device's protocol version, its configuration's first field, which no version moves
+ * (fxdax's TASK-141.3): a change to any of its requests, flags, features, configuration or what
+ * they mean makes a new one. The driver refuses a device of another at probe, naming both, as
+ * fxdax's rule has every format refuse another, rather than serve it with what both happen to
+ * know. The features say what the device is configured as, not what it can do: the driver takes
+ * every one the device offers, and the device refuses its activation otherwise. Firecracker's
+ * device's is VIRTIO_EXTENT_VERSION in vendor/firecracker's virtio/extent/mod.rs.
+ */
+#define VIRTIO_EXTENT_VERSION 1
+
+/*
  * Shared memory region 0 is a DAX window, and MAP and UNMAP work. fxdax: the window copies on write
  * (fxdax's doc-13): it maps sealed extents and zeros alone, read-only, and a store to one of its
  * pages gives the device a private page holding what the page held, at the same address, until a
@@ -31,9 +42,9 @@
  */
 #define VIRTIO_EXTENT_F_RESIZE 3
 /*
- * FREEZE tells the device the filesystem is frozen, or thawed, and INFO says the branch the
- * guest mints extents of: a snapshot of the VM is taken frozen, and a VM restored from it, whose
- * store is a fork of its own, learns its branch as its filesystem thaws (fxdax's TASK-39.1).
+ * FREEZE tells the device the filesystem is frozen, or thawed: a snapshot of the VM is taken
+ * frozen, and a VM restored from it, whose store is a fork of its own, learns its branch, which
+ * INFO says, as its filesystem thaws (fxdax's TASK-39.1).
  */
 #define VIRTIO_EXTENT_F_FREEZE 4
 /*
@@ -131,6 +142,8 @@
 #define VIRTIO_EXTENT_FREEZE_FROZEN (1 << 0)
 
 struct virtio_extent_config {
+	/* fxdax: VIRTIO_EXTENT_VERSION, first in every version. */
+	__le32 version;
 	__u8 tag[36];
 	__le32 num_request_queues;
 	__le32 block_size;

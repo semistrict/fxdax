@@ -756,6 +756,32 @@ static struct attribute *vext_attrs[] = {
 
 static const struct attribute_group vext_attr_group = { .attrs = vext_attrs };
 
+/*
+ * fxdax: the protocol version this driver speaks (TASK-141.3): VIRTIO_EXTENT_VERSION. Another,
+ * set for a test, has it refuse the device as it would a device of another version.
+ */
+static uint vext_version = VIRTIO_EXTENT_VERSION;
+module_param_named(version, vext_version, uint, 0444);
+MODULE_PARM_DESC(version, "The device protocol version this driver speaks: for tests alone");
+
+/*
+ * fxdax: 0 if the device is of the protocol version this driver speaks (TASK-141.3); otherwise
+ * -EPROTONOSUPPORT, both versions logged. Read first, as nothing else of the configuration may
+ * mean, in another version, what it does in this one.
+ */
+static int vext_check_version(struct virtio_device *vdev)
+{
+	u32 version;
+
+	virtio_cread_le(vdev, struct virtio_extent_config, version, &version);
+	if (version == vext_version)
+		return 0;
+	dev_err(&vdev->dev,
+		"the device is of protocol version %u, this driver of %u: refused, as a driver of another build is\n",
+		version, vext_version);
+	return -EPROTONOSUPPORT;
+}
+
 static void vext_read_config(struct virtio_extent *vext)
 {
 	struct virtio_device *vdev = vext->vdev;
@@ -961,6 +987,9 @@ static int vext_probe(struct virtio_device *vdev)
 	struct virtio_extent *vext;
 	int err;
 
+	err = vext_check_version(vdev);
+	if (err)
+		return err;
 	vext = devm_kzalloc(&vdev->dev, sizeof(*vext), GFP_KERNEL);
 	if (!vext)
 		return -ENOMEM;
@@ -983,12 +1012,23 @@ static int vext_probe(struct virtio_device *vdev)
 	vext->config.max_segments = min(vext->config.max_segments,
 					virtqueue_get_vring_size(vext->queues[0].vq) - 3);
 	virtio_device_ready(vdev);
-
-	err = sysfs_create_group(&vdev->dev.kobj, &vext_attr_group);
-	if (!err)
-		err = vext_selftest_add(vext, vdev);
+	/*
+	 * fxdax: the device activates as it takes DRIVER_OK, and asks for a reset if it can't: as it
+	 * refuses a driver that didn't take every feature it offers (TASK-141.3). It serves nothing
+	 * then, which the driver would wait for for good.
+	 */
+	if (vdev->config->get_status(vdev) & VIRTIO_CONFIG_S_NEEDS_RESET) {
+		dev_err(&vdev->dev, "the device refused its activation, which the VMM's log says why\n");
+		err = -ENODEV;
+	} else {
+		err = sysfs_create_group(&vdev->dev.kobj, &vext_attr_group);
+		if (!err) {
+			err = vext_selftest_add(vext, vdev);
+			if (err)
+				sysfs_remove_group(&vdev->dev.kobj, &vext_attr_group);
+		}
+	}
 	if (err) {
-		sysfs_remove_group(&vdev->dev.kobj, &vext_attr_group);
 		virtio_reset_device(vdev);
 		vdev->config->del_vqs(vdev);
 		return err;

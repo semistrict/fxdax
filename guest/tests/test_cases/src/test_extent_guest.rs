@@ -16,6 +16,16 @@ use macros::{guest, host};
 
 pub struct TestExtentGuest;
 
+/// fxdax TASK-141.3: the driver refuses a device of another protocol version at probe, naming both:
+/// here the device is of this build's, and the driver is told it speaks the next
+/// (`virtio_extent.version`), as a guest of another build would. No device is bound, and the
+/// kernel's log says why. Before, the device's configuration said no version, and a driver of any
+/// build served it.
+pub struct TestExtentGuestOtherVersion;
+
+/// The version the driver is told it speaks: the device's, this build's, and one more.
+const OTHER_VERSION: (u32, u32) = (1, 2);
+
 /// The root the driver's self-test commits.
 #[cfg_attr(feature = "guest", allow(dead_code))]
 const ROOT: &[u8] = b"fxdax extent store self-test";
@@ -58,6 +68,30 @@ mod host {
             TestOutcome::Pass
         }
     }
+
+    impl Test for TestExtentGuestOtherVersion {
+        fn should_run(&self) -> ShouldRun {
+            fxdax_guest_should_run()
+        }
+
+        fn start_vm(self: Box<Self>, test_setup: TestSetup) -> anyhow::Result<()> {
+            let store = test_setup.tmp_dir.join("extents");
+            let mut vm = Vm::new(2, 512)?;
+            vm.guest_kernel()?;
+            vm.extent_store("extents", &store, 64 << 20, 64 << 20)?;
+            let param = format!("virtio_extent.version={}", OTHER_VERSION.1);
+            vm.module_param(&std::ffi::CString::new(param)?);
+            vm.enter(&setup_rootfs(&test_setup)?, &test_setup.test_case)
+        }
+
+        fn check(self: Box<Self>, stdout: Vec<u8>, _test_setup: TestSetup) -> TestOutcome {
+            let output = String::from_utf8(stdout).unwrap();
+            if output != "OK\n" {
+                return TestOutcome::Fail(format!("expected exactly \"OK\\n\", got {output:?}"));
+            }
+            TestOutcome::Pass
+        }
+    }
 }
 
 #[guest]
@@ -82,6 +116,26 @@ mod guest {
             fs::write(&selftest, "1").unwrap();
             assert_eq!(fs::read_to_string(&selftest).unwrap(), "ok\n");
             let _ = ROOT;
+            println!("OK");
+        }
+    }
+
+    impl Test for TestExtentGuestOtherVersion {
+        fn in_guest(self: Box<Self>) {
+            let bound: Vec<_> = fs::read_dir(DRIVER)
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+                .filter(|name| name.starts_with("virtio"))
+                .collect();
+            assert_eq!(bound, Vec::<String>::new(), "the driver took a device of another version");
+            let (device, driver) = OTHER_VERSION;
+            let refused = format!(
+                "the device is of protocol version {device}, this driver of {driver}: refused, as \
+                 a driver of another build is"
+            );
+            let records = crate::kernel_log::records();
+            let said: Vec<_> = records.iter().filter(|record| record.contains(&refused)).collect();
+            assert_eq!(said.len(), 1, "the kernel's log: {records:#?}");
             println!("OK");
         }
     }
