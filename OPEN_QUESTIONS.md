@@ -8,6 +8,14 @@
 
 # Decisions
 
+## guest/sim's sweep and file model: what a run may do once something failed (TASK-149.15, TASK-149.18, 2026-11-06)
+
+- **TASK-149.18 is guest/sim's, as asked**: its invariants (every waiter woken, every acknowledged write durable, every object a file names held by the device) are guest/sim's; extent_remote's, which the task first named, are TASK-149.32 with its old criteria. *Undoing it:* move the criteria back.
+- **Once the sweep's call has failed, a test's expectations are void and the run goes on** (`sim_expect`), to the invariants and the end of the run (`sim_end`), rather than ending at the first one: what comes after a failure is where its bugs show. A run still going 300 s of virtual time after, every task asleep, at a pause point or a hold its test can't let go of, ends there, void. *Instead:* end every run at its first void expectation, which would skip the end's sync and unmount. *Undoing it:* `sim_unexpected` panicking.
+- **A writeback that fails loses what changed since the file was last durable, at once, as far as the file model knows**: copying on write, its pages are clean and private, and a rebind, a drop or a truncate shows what Fxfs holds whenever it comes, as the page cache's clean pages after a failed writeback may be dropped. The error is told by the next fsync and the next syncfs (`s_wb_err`, which the sim now keeps). A file whose writeback failed isn't compared, read(2) against Fxfs, at the end. *Instead:* have dax.c keep a failed writeback's pages dirty, so nothing is lost before an fsync tells, which no kernel filesystem does. *Undoing it:* `lost()` at the fsync's error alone.
+- **Every guest/sim run checks for leaks as it exits** (LeakSanitizer, `sim_prepare`), the sim freeing its own; zloop's seeds too. *Undoing it:* `detect_leaks=0` in lib.sh.
+- **A sweep's allocations are wider than `tests/failures`' odds**: fs/fxfs's, fs/dax.c's, and the XArrays' and pool's they use; the odds stay fs/fxfs's alone, so seeds run as they did. And the model of Fxfs fails a clone part way, a seal and a lookup, which only the sweep asks for.
+
 ## Acknowledged segments leave the store, recorded in its index; nothing cleans a store but the bucket's collector (TASK-165.8, 2026-11-05)
 
 Once the uploader's writer acknowledges a segment (`Store::acknowledged`), its sealed extents, and those stored on their own its footer names, held or kept, are `Data::Remote` at their places in the bucket, and their files leave the store: renamed into the host's cache (`Cache::adopt`) if the uploader has one, else removed; the segment's once no write is in progress in it. `Store::clean`, `clean_behind`, `cleaning_due`, `cleaning_changes`, the bound of three times the capacity on the branch's files, `Usage::dead_bytes`, extentd's cleaning behind commits (`CLEANINGS`) and images' cleaning after commits are gone. Decided where doc-14 left it open:
