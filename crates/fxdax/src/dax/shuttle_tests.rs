@@ -325,15 +325,18 @@ impl SecondStage for FakeStage {
         }
     }
 
-    /// fxdax: the page at `offset` a private page, in place of what was there, holding the page's
-    /// at `from`, or zeros.
-    fn make_private(&self, offset: u64, from: Option<PhysLocation>) {
-        let bytes = from.map_or_else(|| vec![0; page_size() as usize], page_bytes);
+    /// fxdax: the pages from `offset` private pages, in place of what was there, each holding the
+    /// page's at its `from`, or zeros.
+    fn make_private(&self, offset: u64, from: &[Option<PhysLocation>]) {
         let mut fake = self.0.lock().unwrap();
-        let number = fake.private.keys().next_back().map_or(0, |last| last + 1);
-        fake.private.insert(number, bytes);
-        if let Some(Frame::Private(was)) = fake.pages.insert(offset, Frame::Private(number)) {
-            panic!("{offset:#x} made private over private page {was}");
+        for (at, from) in from.iter().enumerate() {
+            let offset = offset + at as u64 * page_size();
+            let bytes = from.map_or_else(|| vec![0; page_size() as usize], page_bytes);
+            let number = fake.private.keys().next_back().map_or(0, |last| last + 1);
+            fake.private.insert(number, bytes);
+            if let Some(Frame::Private(was)) = fake.pages.insert(offset, Frame::Private(number)) {
+                panic!("{offset:#x} made private over private page {was}");
+            }
         }
     }
 }

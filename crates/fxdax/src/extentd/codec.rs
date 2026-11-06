@@ -606,6 +606,8 @@ pub(crate) enum Made {
     Ack { id: u64, counts: StageCounts },
     /// fxdax: [`STAGE_COUNTS`] (TASK-91.16).
     Counts(StageCounts),
+    /// fxdax: [`STAGE_PRIVATE_COUNTS`] (TASK-164.10).
+    PrivateCounts(PrivateCosts),
 }
 
 /// fxdax: what a VM process says of its window's second stage, as [`STAGE_COUNTS`] says it.
@@ -631,16 +633,21 @@ impl StageCounts {
     }
 }
 
+/// fxdax: what a VM process's runs of private pages cost it so far, as [`STAGE_PRIVATE_COUNTS`]
+/// says it: how many, their pages, their nanoseconds.
+pub(crate) type PrivateCosts = [u64; 3];
+
 impl Made {
     pub fn encode(&self) -> Header {
         match *self {
             Made::Ack { id, counts } => Header::new(ACK, id).with_args(&counts.args()),
             Made::Counts(counts) => Header::new(STAGE_COUNTS, 0).with_args(&counts.args()),
+            Made::PrivateCounts(counts) => Header::new(STAGE_PRIVATE_COUNTS, 0).with_args(&counts),
         }
     }
 
-    /// What `message` says: `EINVAL` unless it is an [`ACK`] or a [`STAGE_COUNTS`], of no flags,
-    /// payload or descriptors.
+    /// What `message` says: `EINVAL` unless it is an [`ACK`], a [`STAGE_COUNTS`] or a
+    /// [`STAGE_PRIVATE_COUNTS`], of no flags, payload or descriptors.
     pub fn decode(message: &Message) -> Result<Self, Errno> {
         let Header { kind, flags, id, args, status, .. } = message.header;
         if flags != 0 || status != 0 || !message.payload.is_empty() || !message.fds.is_empty() {
@@ -650,6 +657,7 @@ impl Made {
         match kind {
             ACK => Ok(Made::Ack { id, counts }),
             STAGE_COUNTS => Ok(Made::Counts(counts)),
+            STAGE_PRIVATE_COUNTS => Ok(Made::PrivateCounts([args[0], args[1], args[2]])),
             _ => Err(Errno::EINVAL),
         }
     }
@@ -1386,6 +1394,8 @@ mod tests {
         assert_eq!(ack, Header::new(ACK, 4).with_args(&[1, 2, 3, 4, 5]));
         let asked = Told::Stats { ask: 6 }.encode();
         assert_eq!(asked, Header::new(STATS_ASK, 0).with_args(&[6]));
+        let private = Made::PrivateCounts([1, 64, 5]).encode();
+        assert_eq!(private, Header::new(STAGE_PRIVATE_COUNTS, 0).with_args(&[1, 64, 5]));
     }
 
     proptest! {
@@ -1416,7 +1426,8 @@ mod tests {
             }
             let counts = StageCounts { costs: [a, b, c, d], installed: e };
             let other = StageCounts { costs: [b, c, d, e], installed: a };
-            for made in [Made::Ack { id, counts }, Made::Counts(other)] {
+            let made = [Made::Ack { id, counts }, Made::Counts(other), Made::PrivateCounts([c, d, e])];
+            for made in made {
                 let message = Message { header: made.encode(), payload: vec![], fds: vec![] };
                 prop_assert_eq!(Made::decode(&message), Ok(made));
             }
@@ -1514,7 +1525,7 @@ mod tests {
     fn the_wire_is_its_version() {
         /// The version, and the fingerprint of the wire it is. A change to the wire is a new
         /// version, both changed together, never the fingerprint alone.
-        const WIRE: (u64, u64) = (1, 0xf969_c721_1dd7_f01d);
+        const WIRE: (u64, u64) = (2, 0x5291_562e_414e_597a);
         let fingerprint = fingerprint();
         assert_eq!(
             (VERSION, fingerprint),
@@ -1583,7 +1594,8 @@ mod tests {
             StageCounts { costs: [1, 2, 3, 4], installed: 5 },
             StageCounts { costs: [5, 6, 7, 8], installed: 9 },
         );
-        for made in [Made::Ack { id: 2, counts }, Made::Counts(other)] {
+        let private = Made::PrivateCounts([1, 64, 5]);
+        for made in [Made::Ack { id: 2, counts }, Made::Counts(other), private] {
             header(&mut hashed, made.encode());
         }
         let opened = Opened { branch: 3, arena: ArenaId(6), epoch: 12, max_map_count: Some(65530) };

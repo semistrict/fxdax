@@ -1574,44 +1574,68 @@ impl<H: HostMemory> SecondStage for UffdSecondStage<H> {
         }
     }
 
-    /// fxdax: the page at `offset` is private from now on (backlog doc-13): its private memory
-    /// filled with the bytes of the page at `from`, its source's, or zeros, then mapped in place of
-    /// what was there, as the memory around it is, with which it merges (see the module docs):
-    /// accessible as soon as it is mapped, as nothing about it faults any more.
-    fn make_private(&self, offset: u64, from: Option<crate::pages::PhysLocation>) {
-        let (addr, len) = self.addr(offset, page_size());
+    /// fxdax: the pages from `offset` on are private from now on (backlog doc-13), one for each of
+    /// `from`: their private memory filled with the bytes of each one's page at `from`, its
+    /// source's, or zeros, then mapped in place of what was there, as the memory around them is,
+    /// with which it merges (see the module docs): accessible as soon as they are mapped, as
+    /// nothing about them faults any more.
+    ///
+    /// The run at once (TASK-164.10): one fill, one map, registration and wake, one pre-fault,
+    /// where a page each took them all, a `PRIVATE`'s pages 65 us each nested, the VM process's
+    /// receiving thread a fifth of a CPU in the kernel under a forked pgbench (GCE r649). And a run
+    /// with no page installed, withheld or restricted maps nothing: the memory there is its private
+    /// memory, accessible and registered for missing faults, as a page left out is, which its
+    /// filling makes the page's; the map over it unmapped it only to map it again, as
+    /// the pages a guest writes and never read, a database's log's, are.
+    fn make_private(&self, offset: u64, from: &[Option<crate::pages::PhysLocation>]) {
+        let page_size = page_size() as usize;
+        let (addr, len) = self.addr(offset, (from.len() * page_size) as u64);
         let private = self.private.get().expect("a private page of a window that doesn't copy");
         let mut bytes = vec![0u8; len];
-        if let Some(from) = from {
-            // The source's page stays as it is until this is made, as it takes access away from
-            // the page installed here: the daemon frees the page only once it is acknowledged.
-            let (fd, _) = self.memories.fd(from.arena).expect("a window's page is of its arenas");
-            read_at(fd, &mut bytes, from.offset);
+        for (page, from) in bytes.chunks_mut(page_size).zip(from) {
+            if let Some(from) = from {
+                // The source's page stays as it is until this is made, as it takes access away
+                // from the page installed here: the daemon frees the page only once it is
+                // acknowledged.
+                let (fd, _) =
+                    self.memories.fd(from.arena).expect("a window's page is of its arenas");
+                read_at(fd, page, from.offset);
+            }
         }
-        let at = self.page_range(addr, len).start;
+        let range = self.page_range(addr, len);
         let record = |pages: &mut Pages| {
-            Self::took(&self.taken.overwritten, pages.any_installed(at..at + 1));
-            let again = pages.pages[at].private;
-            pages.update(at..at + 1, |pages| {
-                let page = &mut pages[0];
-                (page.mapped, page.restricted, page.private) = (None, false, true);
+            Self::took(&self.taken.overwritten, pages.any_installed(range.clone()));
+            let changes = &pages.pages[range.clone()];
+            let again = changes.iter().any(|page| page.private);
+            // As a fault saw it, before the change gives back what was withheld.
+            let in_place = changes.iter().all(|page| {
+                !page.withheld
+                    && !page.restricted
+                    && !page.mapped.is_some_and(|mapped| mapped.installed)
             });
-            again
+            pages.update(range.clone(), |pages| {
+                for page in pages {
+                    (page.mapped, page.restricted, page.private) = (None, false, true);
+                }
+            });
+            (again, in_place)
         };
-        let made = self.change(addr, len, record, |again| {
+        let made = self.change(addr, len, record, |(again, in_place)| {
             // The window makes a page private once, until a change of it ends it.
-            assert!(!again, "DAX window offset {offset:#x} made private again");
+            assert!(!again, "DAX window offset {offset:#x}, {len:#x} bytes, made private again");
             let (memory, writable) = (self.base_memory(addr), libc::PROT_READ | libc::PROT_WRITE);
             let view = private.view + offset as usize;
             if rules().private_filled_before_mapped {
                 self.host.fill(view, &bytes);
             }
-            self.host.map(addr, len, writable, memory);
-            self.host.register(addr, len, UFFDIO_REGISTER_MODE_MISSING);
+            if !in_place {
+                self.host.map(addr, len, writable, memory);
+                self.host.register(addr, len, UFFDIO_REGISTER_MODE_MISSING);
+            }
             if !rules().private_filled_before_mapped {
                 self.host.fill(view, &bytes);
             }
-            // What faulted on it meanwhile finds it now.
+            // What faulted on them meanwhile finds them now.
             self.host.wake(addr, len);
         });
         if made && let Some(prefault) = &self.prefault {

@@ -72,7 +72,7 @@ impl Header {
 /// another, naming both. Where it is said, `args[4]` of an `OPEN` and of its reply, with the
 /// [`Header`]'s layout, [`OPEN`]'s and [`REPLY`]'s kinds and a reply's status, is what no version
 /// moves. `the_wire_is_its_version` (codec.rs) fails on a change to the wire without a new one.
-pub(crate) const VERSION: u64 = 1;
+pub(crate) const VERSION: u64 = 2;
 
 // Requests, from a VM process. A reply ([`REPLY`]) answers each, but for [`ACK`].
 
@@ -224,6 +224,12 @@ pub(crate) const MAX_STATS: usize = 64 << 10;
 /// second stage apiece (TASK-92.14). A request of its own rather than a flag of `MAP`'s, as
 /// [`FREE_MANY`] is: a daemon older than it refuses it (`EINVAL`).
 pub(crate) const MAP_MANY: u32 = 32;
+/// fxdax: of the stage operations the VM process has made of the connection's, the runs of private
+/// pages it made, each at once, `args[0]`, the pages they made, `args[1]`, and the nanoseconds
+/// they took it, `args[2]`, so far (`Stats::stage_private_runs`, TASK-164.10): said once
+/// [`STAGE_COUNTS_EVERY`] has passed since it last said, as it makes them, and as it closes the
+/// connection. Nothing replies.
+pub(crate) const STAGE_PRIVATE_COUNTS: u32 = 33;
 /// fxdax: how long a VM process's stage operations go uncounted at most while it makes them
 /// ([`STAGE_COUNTS`]): within a sample of the daemon's stats file (`FXDAX_EXTENTD_STATS`).
 pub(crate) const STAGE_COUNTS_EVERY: std::time::Duration = std::time::Duration::from_millis(500);
@@ -781,6 +787,35 @@ impl Receiver {
         Ok(taken.into_iter().flatten().collect())
     }
 
+    /// fxdax: takes the private pages that follow the stage operation `first`, a private page's,
+    /// already waiting whole in the socket, each the next page on from the last: a `PRIVATE`'s
+    /// pages, which the daemon's window makes in one change (TASK-164.10). Returns what each of
+    /// the run holds, `first`'s first, for the VM process to make at once, its memory changed once
+    /// for the run rather than once a page. Up to 63 messages more, as [`Self::take_change`]
+    /// takes them; `first`'s ID becomes the last's, whose acknowledgement is of every ID before
+    /// it. Of another operation, it takes nothing.
+    pub fn take_privates(
+        &mut self,
+        first: &mut Stage,
+    ) -> io::Result<Vec<Option<crate::pages::PhysLocation>>> {
+        let StageOp::Private { offset, from } = first.op else { return Ok(Vec::new()) };
+        let page_size = crate::pages::page_size();
+        let (mut next_offset, mut id) = (offset.checked_add(page_size), first.id);
+        let mut run = vec![from];
+        run.extend(self.take_waiting(|next| {
+            let next = Stage::decode(next).ok()?;
+            match next.op {
+                StageOp::Private { offset, from } if Some(offset) == next_offset => {
+                    (next_offset, id) = (offset.checked_add(page_size), next.id);
+                    Some(from)
+                }
+                _ => None,
+            }
+        })?);
+        first.id = id;
+        Ok(run)
+    }
+
     /// fxdax: receives the messages already read or waiting whole in the socket, up to 63, as long
     /// as `take` takes each, in order, none with a payload or descriptors: a read of the socket's,
     /// at most, that waits for nothing. Bounded, so that what is made of them together, and
@@ -1080,6 +1115,65 @@ mod tests {
                 assert_eq!(receiver.receive(|| 0).unwrap().unwrap().header, after.encode());
             }
         }
+    }
+
+    fn private(id: u64, offset: u64, from: Option<u64>) -> Stage {
+        let arena = crate::pages::ArenaId(0);
+        let from = from.map(|offset| crate::pages::PhysLocation { arena, offset });
+        Stage { id, op: StageOp::Private { offset, from } }
+    }
+
+    /// fxdax TASK-164.10: a private page takes the private pages that follow it on, each the next
+    /// page, whatever each holds, a run the VM process makes at once, up to the first that isn't:
+    /// one not the next page, one of another kind; the run's ID the last's. Of another operation,
+    /// nothing is taken as a run.
+    #[test]
+    fn private_pages_take_the_run_after_them() {
+        let ps = crate::pages::page_size();
+        let other = [
+            private(5, 8 * ps, Some(0)),
+            private(5, 3 * ps, Some(0)),
+            unmap(5, 4 * ps, ps),
+            mapped(5, 4 * ps, ps),
+        ];
+        for after in other {
+            let ((sender, _), (_, mut receiver)) = pair();
+            let sent = [private(2, 2 * ps, None), private(3, 3 * ps, Some(7 * ps)), after];
+            for stage in sent {
+                sender.send(stage.encode(), &[], &[]).unwrap();
+            }
+            let mut first = private(1, ps, Some(ps));
+            let froms = receiver.take_privates(&mut first).unwrap();
+            let location = |offset| {
+                Some(crate::pages::PhysLocation { arena: crate::pages::ArenaId(0), offset })
+            };
+            assert_eq!(froms, [location(ps), None, location(7 * ps)]);
+            assert_eq!(first, private(3, ps, Some(ps)), "the run's ID is its last's");
+            assert_eq!(receiver.receive(|| 0).unwrap().unwrap().header, after.encode());
+        }
+        let ((sender, _), (_, mut receiver)) = pair();
+        sender.send(private(2, 2 * ps, None).encode(), &[], &[]).unwrap();
+        let mut first = unmap(1, ps, ps);
+        assert_eq!(receiver.take_privates(&mut first).unwrap(), []);
+        assert_eq!(first, unmap(1, ps, ps));
+        let next = receiver.receive(|| 0).unwrap().unwrap().header;
+        assert_eq!(next, private(2, 2 * ps, None).encode());
+    }
+
+    /// fxdax TASK-164.10: a run of private pages takes 63 more at most, as a change does.
+    #[test]
+    fn private_runs_bound_the_work_taken_from_the_socket() {
+        let ps = crate::pages::page_size();
+        let ((sender, _), (_, mut receiver)) = pair();
+        for id in 1..=100 {
+            sender.send(private(id, id * ps, None).encode(), &[], &[]).unwrap();
+        }
+        let header = receiver.receive(|| 0).unwrap().unwrap().header;
+        let mut stage = Stage::decode(&header).unwrap();
+        assert_eq!(receiver.take_privates(&mut stage).unwrap().len(), 64);
+        assert_eq!(stage, private(64, ps, None));
+        let header = receiver.receive(|| 0).unwrap().unwrap().header;
+        assert_eq!(header, private(65, 65 * ps, None).encode());
     }
 
     #[test]

@@ -438,6 +438,10 @@ impl Extentd for Control {
             fault_waits: _,
             // And the windows' runs of pages (TASK-131.1).
             stage_segments: _,
+            // And the runs of private pages they made (TASK-164.10).
+            stage_private_runs: _,
+            stage_private_pages: _,
+            stage_private_ns: _,
         } = crate::stats::stats();
         use extent_remote::store::{Request, Upload};
         let bucket = stores::remote_bucket().map_err(status)?.stats();
@@ -780,6 +784,9 @@ impl Client {
             fault_refusals: 0,
             fault_waits: 0,
             stage_segments: 0,
+            stage_private_runs: 0,
+            stage_private_pages: 0,
+            stage_private_ns: 0,
         })
     }
 

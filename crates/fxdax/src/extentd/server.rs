@@ -511,16 +511,25 @@ fn receive(
                 // fxdax: what the stage operations cost, counted before what waits for them goes
                 // on (TASK-91.16). What says so malformed, nothing replies to: it is dropped, as
                 // what isn't said (TASK-160.9).
-                Ok(Some(message)) if [ACK, STAGE_COUNTS].contains(&message.header.kind) => {
+                Ok(Some(message))
+                    if [ACK, STAGE_COUNTS, STAGE_PRIVATE_COUNTS].contains(&message.header.kind) =>
+                {
                     match Made::decode(&message) {
                         Ok(Made::Ack { id, counts }) => {
                             connection.report.stage_counted(counts);
                             connection.peer.acks.acked(id)
                         }
                         Ok(Made::Counts(counts)) => connection.report.stage_counted(counts),
+                        Ok(Made::PrivateCounts(counts)) => {
+                            connection.report.private_counted(counts)
+                        }
                         Err(errno) => log::warn!(
                             "extentd: a VM process's malformed {}, dropped ({errno:?}): {:?}",
-                            if message.header.kind == ACK { "ACK" } else { "STAGE_COUNTS" },
+                            match message.header.kind {
+                                ACK => "ACK",
+                                STAGE_COUNTS => "STAGE_COUNTS",
+                                _ => "STAGE_PRIVATE_COUNTS",
+                            },
                             message.header,
                         ),
                     }
@@ -2196,8 +2205,13 @@ impl SecondStage for RemoteStage {
         self.send(StageOp::Mapped { offset, len });
     }
 
-    fn make_private(&self, offset: u64, from: Option<crate::pages::PhysLocation>) {
-        self.send(StageOp::Private { offset, from });
+    /// fxdax: a page an operation, which the VM process takes together, consecutive, and makes as
+    /// a run (`wire::Receiver::take_privates`, TASK-164.10).
+    fn make_private(&self, offset: u64, from: &[Option<crate::pages::PhysLocation>]) {
+        let page_size = crate::pages::page_size();
+        for (at, &from) in from.iter().enumerate() {
+            self.send(StageOp::Private { offset: offset + at as u64 * page_size, from });
+        }
     }
 }
 

@@ -109,13 +109,14 @@ pub trait SecondStage: Send + Sync {
         }
     }
 
-    /// fxdax: makes the page at `offset` private (backlog doc-13), in place of what is mapped
-    /// there, if anything: a page of the stage's own memory, holding the bytes of the page at
-    /// `from`, the source's, which stays in memory until the change is made, or zeros, mapped
-    /// writable: the only memory of a window a store changes. An unmap or a map over it ends it.
-    /// Only a window that copies on write makes one, and only a stage of such a window need know
-    /// how.
-    fn make_private(&self, offset: u64, from: Option<PhysLocation>) {
+    /// fxdax: makes the pages from `offset` on private (backlog doc-13), one for each of `from`, in
+    /// place of what is mapped there, if anything: each a page of the stage's own memory, holding
+    /// the bytes of the page at its `from`, the source's, which stays in memory until the change
+    /// is made, or zeros, mapped writable: the only memory of a window a store changes. An unmap
+    /// or a map over one ends it. Only a window that copies on write makes them, and only a stage
+    /// of such a window need know how. A run at once, as a `PRIVATE` makes them, so that a stage
+    /// may change its memory once for the run rather than once a page (TASK-164.10).
+    fn make_private(&self, offset: u64, from: &[Option<PhysLocation>]) {
         unimplemented!("{offset:#x} made private ({from:?}) in a stage that doesn't copy");
     }
 }
@@ -790,7 +791,7 @@ impl Window {
                 state.remove_pte(offset);
             }
             state.insert_private(offset);
-            self.map_private(offset, held);
+            self.map_private(offset, vec![held]);
             return Ok(waited);
         }
     }
@@ -814,17 +815,22 @@ impl Window {
         }
     }
 
-    /// fxdax: maps a private page at `offset` (backlog doc-13), writable, in place of what was
-    /// mapped there: in the second stage, its own memory, holding what `held` says, or zeros
-    /// ([`SecondStage::make_private`]); or, without a stage, anonymous memory of this process.
-    fn map_private(&self, offset: u64, held: Option<Held>) {
+    /// fxdax: maps private pages from `offset` on (backlog doc-13), one for each of `held`,
+    /// writable, in place of what was mapped there: in the second stage, its own memory, holding
+    /// what each `held` says, or zeros, the run at once ([`SecondStage::make_private`]); or,
+    /// without a stage, anonymous memory of this process.
+    fn map_private(&self, offset: u64, held: Vec<Option<Held>>) {
         match &self.translation {
             Translation::Stage(stage) => {
-                let from = held.map(|held| match held {
-                    Held::At(location) => location,
-                    Held::Bytes(_) => unreachable!("a stage's private page held as bytes"),
-                });
-                stage.make_private(offset, from);
+                let from: Vec<Option<PhysLocation>> = (held.into_iter())
+                    .map(|held| {
+                        held.map(|held| match held {
+                            Held::At(location) => location,
+                            Held::Bytes(_) => unreachable!("a stage's private page held as bytes"),
+                        })
+                    })
+                    .collect();
+                stage.make_private(offset, &from);
             }
             Translation::Host { base } => {
                 let ps = page_size() as usize;
@@ -835,11 +841,14 @@ impl Window {
                 );
                 // SAFETY: Anonymous memory over the window's reservation, which only the guest, a
                 // test, accesses: zeros.
-                let addr = unsafe { libc::mmap(at, ps, prot, flags, -1, 0) };
-                assert_eq!(addr, at, "map a private page: {}", std::io::Error::last_os_error());
-                if let Some(Held::Bytes(bytes)) = held {
-                    // SAFETY: The page just mapped, `ps` bytes, as `bytes` are.
-                    unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), at.cast(), ps) };
+                let addr = unsafe { libc::mmap(at, ps * held.len(), prot, flags, -1, 0) };
+                assert_eq!(addr, at, "map private pages: {}", std::io::Error::last_os_error());
+                for (page, held) in held.into_iter().enumerate() {
+                    if let Some(Held::Bytes(bytes)) = held {
+                        // SAFETY: A page just mapped, `ps` bytes, as `bytes` are.
+                        let to = unsafe { at.cast::<u8>().add(page * ps) };
+                        unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), to, ps) };
+                    }
                 }
             }
         }
@@ -851,6 +860,14 @@ impl Window {
     /// rather than a host fault each. `ENOMEM`, nothing made private, if they would take the
     /// window past its private pages; `EINVAL` for a window that doesn't copy on write, a range
     /// not within it, or one with a page mapped nothing at, none made private.
+    ///
+    /// The pages are made in one change of the second stage, each run of them at once
+    /// ([`SecondStage::make_private`]), where each was a change of its own once, the VM process
+    /// changing its memory once a page: three of a `PRIVATE`'s pages took it some 200 us, nested,
+    /// of the 470 a forked pgbench's `write(2)` spent asking (TASK-164.10, GCE r649). Their
+    /// sources' pages are brought in first; then, holding the lock, each page not private yet is
+    /// made so, of what is mapped there then, if its source's page is still in memory; one evicted
+    /// meanwhile is brought in again, and made private in a change after.
     async fn make_private(&self, offset: u64, len: u64) -> Result<()> {
         let copying = self.copy_on_write.as_ref().ok_or(Errno::EINVAL)?;
         self.check_range(offset, len)?;
@@ -867,13 +884,74 @@ impl Window {
                 return Err(Errno::ENOMEM);
             }
         }
-        for at in pages {
-            // Past the bound, room taken by stores meanwhile.
-            if let Err(errno) = self.copy(at).await {
-                return Err(if errno == Errno::EACCES { Errno::ENOMEM } else { errno });
+        loop {
+            // The sources' pages of those not private yet, as mapped now.
+            let wanted: Vec<(Arc<dyn Source>, u64)> = {
+                let state = self.state.lock().unwrap();
+                (pages.clone())
+                    .filter(|at| !state.private.contains(at))
+                    .filter_map(|at| {
+                        let (start, mapping) = state.mapping_at(at)?;
+                        let zeros = mapping.source.origin() == Origin::Zeros;
+                        (!zeros).then(|| (mapping.source.clone(), mapping.page + (at - start) / ps))
+                    })
+                    .collect()
+            };
+            for (source, page) in wanted {
+                source.bring_in(page).await?;
+            }
+            let mut state = self.state.lock().unwrap();
+            let _change = self.change();
+            // The runs made private, each mapped as one, whatever comes of the rest.
+            let mut runs: Vec<(u64, Vec<Option<Held>>)> = Vec::new();
+            let mut evicted = false;
+            let made = (|| {
+                for at in pages.clone() {
+                    if state.private.contains(&at) {
+                        continue;
+                    }
+                    // Unmapped meanwhile, by the guest's UNMAP, as a store's fault finds it.
+                    let (source, page) = (state.mapping_at(at))
+                        .map(|(start, mapping)| {
+                            (mapping.source.clone(), mapping.page + (at - start) / ps)
+                        })
+                        .ok_or(Errno::ENOENT)?;
+                    // Past the bound, room taken by stores meanwhile.
+                    if state.private.len() as u64 >= copying.most {
+                        return Err(Errno::ENOMEM);
+                    }
+                    let mut held = None;
+                    if source.origin() != Origin::Zeros {
+                        source.each_present(page..page + 1, &mut |_, frame| {
+                            held = Some(self.private_bytes(frame));
+                        });
+                        // Evicted since it was brought in: brought in again.
+                        if held.is_none() {
+                            evicted = true;
+                            continue;
+                        }
+                    }
+                    if state.ptes.contains_key(&at) {
+                        state.remove_pte(at);
+                    }
+                    state.insert_private(at);
+                    match runs.last_mut() {
+                        Some((first, run)) if *first + run.len() as u64 * ps == at => {
+                            run.push(held)
+                        }
+                        _ => runs.push((at, vec![held])),
+                    }
+                }
+                Ok(())
+            })();
+            for (first, run) in runs {
+                self.map_private(first, run);
+            }
+            made?;
+            if !evicted {
+                return Ok(());
             }
         }
-        Ok(())
     }
 
     /// fxdax: the private pages it holds (backlog doc-13): none unless it copies on write.
@@ -1659,6 +1737,8 @@ pub(crate) mod tests {
         pages: std::sync::Mutex<BTreeMap<u64, PhysLocation>>,
         private: std::sync::Mutex<BTreeMap<u64, Option<PhysLocation>>>,
         mapped: std::sync::Mutex<Vec<(u64, u64)>>,
+        /// fxdax: the runs of pages made private together, by offset and how many.
+        runs: std::sync::Mutex<Vec<(u64, u64)>>,
     }
 
     impl Recorded {
@@ -1716,11 +1796,14 @@ pub(crate) mod tests {
             self.mapped.lock().unwrap().push((offset, len));
         }
 
-        fn make_private(&self, offset: u64, from: Option<PhysLocation>) {
-            // In place of what is mapped there.
-            self.pages.lock().unwrap().remove(&offset);
-            let before = self.private.lock().unwrap().insert(offset, from);
-            assert!(before.is_none(), "{offset:#x} made private twice");
+        fn make_private(&self, offset: u64, from: &[Option<PhysLocation>]) {
+            self.runs.lock().unwrap().push((offset, from.len() as u64));
+            for (at, from) in Self::each_page(offset, from.len() as u64 * page_size()).zip(from) {
+                // In place of what is mapped there.
+                self.pages.lock().unwrap().remove(&at);
+                let before = self.private.lock().unwrap().insert(at, *from);
+                assert!(before.is_none(), "{at:#x} made private twice");
+            }
         }
     }
 
@@ -2069,8 +2152,11 @@ pub(crate) mod tests {
         assert_eq!(private(ps, 2 * ps), Ok(()));
         let (read, written) = (Protection::Read, Protection::ReadWrite);
         assert_eq!(stage.pages(), [(0, read), (1, written), (2, written), (3, read)]);
+        // TASK-164.10: the two pages a run the stage makes at once.
+        assert_eq!(*stage.runs.lock().unwrap(), [(ps, 2)]);
         assert_eq!(private(ps, 2 * ps), Ok(()));
         assert_eq!(window.private_pages(), 2);
+        assert_eq!(*stage.runs.lock().unwrap(), [(ps, 2)]);
         assert_eq!(private(0, ps), Ok(()));
         assert_eq!(private(3 * ps, ps), Err(Errno::ENOMEM));
         assert_eq!(private(4 * ps, ps), Err(Errno::EINVAL));

@@ -1434,7 +1434,8 @@ fn two_processes_map_the_same_pages() {
 const CHILD_CONNECTION: &str = "FXDAX_EXTENTD_TEST_CONNECTION";
 
 /// A VM process, for [`vm_processes_tell_the_daemon_what_their_windows_cost`]: changes its window
-/// five times, each a stage operation, and closes its store; then prints what they cost it.
+/// six times, each a stage operation, a page made private the last, and closes its store; then
+/// prints what they cost it.
 #[test]
 #[ignore = "run by vm_processes_tell_the_daemon_what_their_windows_cost"]
 fn child_changes_its_window() {
@@ -1463,9 +1464,12 @@ fn child_changes_its_window() {
     store.unmap(0, ps).unwrap();
     // Mapped anew, with its page in memory, which the window maps at once.
     store.map(extent, 0, ps, 0).unwrap();
+    // fxdax: made private, a run of a page, over the page installed (TASK-164.10).
+    store.make_private(0, ps).unwrap();
     let [ops, ns, overwritten, left_out] = store.stage_counts().costs;
+    let [runs, pages, private_ns] = store.private_counts();
     drop(store);
-    println!("STAGE {ops} {ns} {overwritten} {left_out}");
+    println!("STAGE {ops} {ns} {overwritten} {left_out} {runs} {pages} {private_ns}");
 }
 
 /// TASK-91.16: what its VM processes' changes to their windows cost them, which they make, the
@@ -1496,18 +1500,23 @@ fn vm_processes_tell_the_daemon_what_their_windows_cost() {
         .find_map(|line| line.strip_prefix("STAGE "))
         .unwrap_or_else(|| panic!("the child changed nothing: {stdout}"));
     let said: Vec<u64> = stage.split(' ').map(|count| count.parse().unwrap()).collect();
-    let [ops, ns, overwritten, left_out] = said[..] else {
-        panic!("not four counts: {stage}");
+    let [ops, ns, overwritten, left_out, runs, pages, private_ns] = said[..] else {
+        panic!("not seven counts: {stage}");
     };
-    assert_eq!(ops, 5, "{stdout}");
-    // fxdax: the unmap alone took access away, from the page the load faulted in (TASK-91.16).
-    assert_eq!((overwritten, left_out), (0, 1), "{stdout}");
+    assert_eq!(ops, 6, "{stdout}");
+    // fxdax: the unmap took access away, from the page the load faulted in (TASK-91.16); the
+    // private page from the page mapped anew.
+    assert_eq!((overwritten, left_out), (1, 1), "{stdout}");
+    assert_eq!((runs, pages), (1, 1), "{stdout}");
     // Once the daemon is done with the connection, which the child closed.
     served.join().unwrap();
     let counted = crate::stats::stats().since(&before);
     assert_eq!((counted.stage_ops, counted.stage_ns), (ops, ns));
     let taken = (counted.stage_overwrites, counted.stage_leave_outs);
     assert_eq!(taken, (overwritten, left_out));
+    // fxdax: and the runs of private pages, as the VM process told them (TASK-164.10).
+    let private = (counted.stage_private_runs, counted.stage_private_pages);
+    assert_eq!((private, counted.stage_private_ns), ((runs, pages), private_ns));
     // fxdax: the daemon's maps of pages, one a page: the fault's, and the map's anew, of the page
     // in memory by then (TASK-108.1).
     let ps = page_size();
@@ -3237,7 +3246,7 @@ fn forks_to_stores_there_already_fail_with_eexist() {
 /// it makes, naming the store, what that holds stays unreadable to it.
 #[test]
 fn requests_attach_nothing() {
-    use super::wire::{ACK, Header, REPLY, STAGE_COUNTS};
+    use super::wire::{ACK, Header, REPLY, STAGE_COUNTS, STAGE_PRIVATE_COUNTS};
     use std::os::unix::ffi::OsStrExt;
     host();
     let dir = tempfile::tempdir().unwrap();
@@ -3252,7 +3261,8 @@ fn requests_attach_nothing() {
     drop(store);
     let vm = RemoteExtentStore::connect(&socket, dir.path().join("vm"), 1 << 20).unwrap();
     // But those nothing replies to.
-    for kind in (0..REPLY).filter(|kind| ![ACK, STAGE_COUNTS].contains(kind)) {
+    for kind in (0..REPLY).filter(|kind| ![ACK, STAGE_COUNTS, STAGE_PRIVATE_COUNTS].contains(kind))
+    {
         for (branch, sequence) in [(extent.branch, 1), (0, 0)] {
             let header = Header::new(kind, 0).with_args(&[branch, sequence, 0, 4096]);
             let _ = vm.call(header, base.as_os_str().as_bytes(), &[]);

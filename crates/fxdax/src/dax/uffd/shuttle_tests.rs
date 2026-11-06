@@ -134,22 +134,27 @@ impl HostMemory for ModelMemory {
         model.pages.retain(|at, _| !(addr..addr + len).contains(at));
     }
 
+    /// fxdax: a page or a run of them (TASK-164.10).
     fn fill(&self, addr: usize, bytes: &[u8]) {
+        let page_size = page_size() as usize;
         let mut model = self.0.lock().unwrap();
-        let page = model.pages[&addr];
-        let registered = page.registered & UFFDIO_REGISTER_MODE_MISSING != 0;
-        let Some((fd, at)) = page.file.filter(|_| registered) else {
-            drop(model);
-            panic!("filled {addr:#x}, which isn't registered for missing faults");
-        };
-        if !model.unfilled(&page) {
-            drop(model);
-            panic!("filled {addr:#x} twice");
+        for (at, bytes) in (addr..).step_by(page_size).zip(bytes.chunks(page_size)) {
+            let page = model.pages[&at];
+            let registered = page.registered & UFFDIO_REGISTER_MODE_MISSING != 0;
+            let Some((fd, offset)) = page.file.filter(|_| registered) else {
+                drop(model);
+                panic!("filled {at:#x}, which isn't registered for missing faults");
+            };
+            if !model.unfilled(&page) {
+                drop(model);
+                panic!("filled {at:#x} twice");
+            }
+            model.filled.insert(offset);
+            // SAFETY: Writes `bytes` to the private memory, whose page it is.
+            let written =
+                unsafe { libc::pwrite(fd, bytes.as_ptr().cast(), bytes.len(), offset as _) };
+            assert_eq!(written, bytes.len() as isize, "{}", std::io::Error::last_os_error());
         }
-        model.filled.insert(at);
-        // SAFETY: Writes `bytes` to the private memory, whose page it is.
-        let written = unsafe { libc::pwrite(fd, bytes.as_ptr().cast(), bytes.len(), at as _) };
-        assert_eq!(written, bytes.len() as isize, "{}", std::io::Error::last_os_error());
     }
 
     fn punch(&self, fd: RawFd, offset: u64, len: usize) {
@@ -196,8 +201,9 @@ impl SecondStage for Telling {
         self.stage.window_mapped(offset, len);
     }
 
-    fn make_private(&self, offset: u64, from: Option<PhysLocation>) {
-        self.change(offset, page_size(), true, || self.stage.make_private(offset, from));
+    fn make_private(&self, offset: u64, from: &[Option<PhysLocation>]) {
+        let len = from.len() as u64 * page_size();
+        self.change(offset, len, true, || self.stage.make_private(offset, from));
     }
 
     /// Every page of the range read-only once it is made, mapped or not: its private pages gone.
@@ -285,7 +291,19 @@ impl Remapping {
                 }
                 Op::Mapped(offset, len) => self.stage.window_mapped(offset, len),
                 Op::Map(offset, phys, len) => self.stage.map(offset, phys, len),
-                Op::Private(offset, from) => self.stage.make_private(offset, from),
+                // fxdax: with the private pages following it on, a run at once, as the VM process
+                // takes them (`wire::Receiver::take_privates`, TASK-164.10).
+                Op::Private(offset, from) => {
+                    let mut run = vec![from];
+                    while let Some(&Op::Private(next, from)) = ops.peek() {
+                        if next != offset + run.len() as u64 * ps {
+                            break;
+                        }
+                        run.push(from);
+                        ops.next();
+                    }
+                    self.stage.make_private(offset, &run);
+                }
             }
         }
     }
@@ -304,8 +322,10 @@ impl SecondStage for Remapping {
         self.make(Op::Mapped(offset, len));
     }
 
-    fn make_private(&self, offset: u64, from: Option<PhysLocation>) {
-        self.make(Op::Private(offset, from));
+    fn make_private(&self, offset: u64, from: &[Option<PhysLocation>]) {
+        for (at, &from) in from.iter().enumerate() {
+            self.make(Op::Private(offset + at as u64 * page_size(), from));
+        }
     }
 
     fn begin_change(&self) {
@@ -999,6 +1019,120 @@ fn needs_private_pages_filled_before_mapped() {
     *RULES.lock().unwrap() = Rules { private_filled_before_mapped: false, ..Rules::ALL };
     fails_with("a page of zeros faulted in", || {
         Runner::new(PctScheduler::new(3, runs(10 * RUNS)), config()).run(private_pages_race_loads);
+    });
+}
+
+/// fxdax TASK-164.10: a `PRIVATE`'s pages are made at once: a run of pages installed, as the
+/// window installs a mapping's pages in memory as it maps them, maps its private memory over the
+/// run in one `mmap`, where each page took one; a run none of whose pages is installed, a
+/// mapping's whose pages came into memory only for the `PRIVATE`, maps nothing, its memory the
+/// private memory already, which filling it makes the pages'. Each page reads what it copied, and
+/// takes a store without a fault. Red with a map a page (four `mmap`s, then four more).
+fn private_runs_map_at_once() {
+    let ps = page_size();
+    let (memory, stage, mut dax) = modelled_copying(8);
+    let (installed, not_in_memory) =
+        (TestSource::filled(4, SEALED).source(), TestSource::anonymous(4).source());
+    dax.map(0, &installed, 0, 4 * ps);
+    dax.map(4 * ps, &not_in_memory, 0, 4 * ps);
+    let window = dax.window.clone();
+    let base = 64 * ps as usize;
+    let guest = HostGuest { memory: memory.clone(), stage, window: window.clone(), base };
+    let maps = || memory.0.lock().unwrap().maps;
+    let before = maps();
+    future::block_on(window.make_private(0, 4 * ps)).unwrap();
+    assert_eq!(maps() - before, 1, "a run of pages installed");
+    future::block_on(window.make_private(4 * ps, 4 * ps)).unwrap();
+    assert_eq!(maps() - before, 1, "a run with none installed");
+    assert_eq!(window.private_pages(), 8);
+    assert_eq!(guest.writable(), (0..8).map(|page| page * ps).collect::<Vec<_>>());
+    for page in 0..8 {
+        let held = if page < 4 { SEALED } else { 0 };
+        match guest.access(page * ps, Access::Read, None) {
+            Outcome::Made(read) => assert_eq!(read, held, "page {page}"),
+            _ => panic!("a load of private page {page} faulted, or failed"),
+        }
+        match guest.access(page * ps, Access::Write, Some(STORED)) {
+            Outcome::Made(read) => assert_eq!(read, STORED, "page {page}"),
+            _ => panic!("a store to private page {page} faulted, or failed"),
+        }
+    }
+}
+
+#[test]
+fn private_runs_map_at_once_once() {
+    Runner::new(RandomScheduler::new(1), config()).run(private_runs_map_at_once);
+}
+
+/// fxdax TASK-164.10: a vCPU loads from the pages of a run that a window copying on write makes
+/// private at once, as `PRIVATE` does, through the VM process's taking of the run together
+/// ([`Remapping`]): each load reads the extent's bytes, from its page or its copy, whether the
+/// run's pages were installed, a load having faulted one in, or not; and every page of the run
+/// is writable here at the end.
+fn private_runs_race_loads() {
+    let ps = page_size();
+    let memory = ModelMemory::default();
+    let base = 64 * ps as usize;
+    // SAFETY: The model changes no memory.
+    let stage = unsafe {
+        UffdSecondStage::with_host(
+            base,
+            2 * ps,
+            memory.clone(),
+            Memories::InProcess,
+            None,
+            usize::MAX,
+        )
+    }
+    .unwrap();
+    stage.copy_on_write().unwrap();
+    let telling = Arc::new(Telling { stage: stage.clone(), memory: memory.clone() });
+    let remapping = Arc::new(Remapping { stage: telling, held: Default::default() });
+    let (mut dax, _) = super::super::tests::copying(2, 2, Some(remapping));
+    let sealed = TestSource::filled(2, SEALED).source();
+    dax.map(0, &sealed, 0, 2 * ps);
+    let window = dax.window.clone();
+    let guest = Arc::new(HostGuest { memory, stage, window: window.clone(), base });
+    let loading = guest.clone();
+    let loads = thread::spawn(move || {
+        for offset in [ps, 0, ps] {
+            let read = 'load: {
+                for _ in 0..ATTEMPTS {
+                    match loading.access(offset, Access::Read, None) {
+                        Outcome::Made(read) => break 'load read,
+                        Outcome::Faulted(fault) => future::block_on(fault).unwrap(),
+                        Outcome::Failed => thread::yield_now(),
+                    }
+                }
+                panic!("a load never completed");
+            };
+            assert_eq!(read, SEALED, "a load read other bytes");
+            thread::yield_now();
+        }
+    });
+    future::block_on(window.make_private(0, 2 * ps)).unwrap();
+    loads.join().unwrap();
+    assert_eq!(window.private_pages(), 2);
+    assert_eq!(guest.writable(), [0, ps], "the private pages aren't writable here");
+}
+
+#[test]
+fn private_runs_race_loads_by_pct() {
+    Runner::new(PctScheduler::new(3, runs(RUNS)), config()).run(private_runs_race_loads);
+}
+
+#[test]
+fn private_runs_race_loads_randomly() {
+    Runner::new(RandomScheduler::new(runs(RUNS)), config()).run(private_runs_race_loads);
+}
+
+/// fxdax: a run's private memory mapped in place of its pages before it is filled: a load
+/// meanwhile finds it unfilled, and not yet registered.
+#[test]
+fn needs_private_runs_filled_before_mapped() {
+    *RULES.lock().unwrap() = Rules { private_filled_before_mapped: false, ..Rules::ALL };
+    fails_with("a page of zeros faulted in", || {
+        Runner::new(PctScheduler::new(3, runs(10 * RUNS)), config()).run(private_runs_race_loads);
     });
 }
 

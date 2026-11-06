@@ -7,8 +7,8 @@
 
 pub(crate) use super::codec::Opening;
 use super::codec::{
-    Advanced, Area, Data, Encoded, Fault, Info, Made, Opened, ReadInto, Request, StageCounts,
-    StageOp, Told, stream_bytes,
+    Advanced, Area, Data, Encoded, Fault, Info, Made, Opened, PrivateCosts, ReadInto, Request,
+    StageCounts, StageOp, Told, stream_bytes,
 };
 use super::wire::*;
 use crate::dax::Faults;
@@ -571,6 +571,13 @@ impl RemoteExtentStore {
         self.client.stage_counts()
     }
 
+    /// fxdax: the runs of private pages this process made of the store's window so far, their
+    /// pages and nanoseconds, which it tells the daemon ([`STAGE_PRIVATE_COUNTS`]).
+    #[cfg(test)]
+    pub(super) fn private_counts(&self) -> PrivateCosts {
+        self.client.stage_counts.private()
+    }
+
     /// fxdax: the runs of pages its window keeps installed at most, once it is created.
     #[cfg(test)]
     pub(super) fn window_budget(&self) -> Option<usize> {
@@ -831,6 +838,7 @@ impl Client {
             pages * MAPPING_BYTES
         };
         let mut told = std::time::Instant::now();
+        let mut told_private = told;
         loop {
             let message = match receiver.receive(mappings) {
                 Ok(Some(message)) => message,
@@ -886,16 +894,20 @@ impl Client {
                     break;
                 }
             };
-            let anew = match receiver.take_change(&mut stage) {
-                Ok(anew) => anew,
+            let taken = match stage.op {
+                StageOp::Private { .. } => receiver.take_privates(&mut stage).map(Taken::Privates),
+                _ => receiver.take_change(&mut stage).map(Taken::Anew),
+            };
+            let taken = match taken {
+                Ok(taken) => taken,
                 Err(err) => {
                     log::error!("receiving a change to the window: {err}");
                     break;
                 }
             };
             let start = std::time::Instant::now();
-            let made = self.make(stage.op, &anew);
-            self.stage_counts.count_since(start);
+            let made = self.make(stage.op, &taken);
+            self.stage_counts.count_since(start, &stage.op, &taken);
             if let Err(err) = made {
                 log::error!("making the extent daemon's change to the window: {err}");
                 break;
@@ -912,6 +924,18 @@ impl Client {
                 break;
             }
             told = std::time::Instant::now();
+            // fxdax: the runs of private pages, said as often, apart (TASK-164.10).
+            if told.duration_since(told_private) >= STAGE_COUNTS_EVERY {
+                let private = self.stage_counts.private();
+                if private[0] != 0
+                    && let Err(err) =
+                        self.sender.send(Made::PrivateCounts(private).encode(), &[], &[])
+                {
+                    log::error!("telling the extent daemon of the private pages made: {err}");
+                    break;
+                }
+                told_private = told;
+            }
         }
         // The requests waiting fail, as do those made from now on.
         self.waiting.lock().unwrap().take();
@@ -928,13 +952,20 @@ impl Client {
     }
 
     /// fxdax: tells the daemon what the stage operations made so far cost, if any were made
-    /// ([`STAGE_COUNTS`]).
+    /// ([`STAGE_COUNTS`]), and its runs of private pages, if any ([`STAGE_PRIVATE_COUNTS`]).
     fn tell_stage_counts(&self) {
         let counts = self.stage_counts();
         if counts.costs[0] == 0 {
             return;
         }
-        let told = self.sender.send(Made::Counts(counts).encode(), &[], &[]);
+        let private = self.stage_counts.private();
+        let told =
+            (self.sender.send(Made::Counts(counts).encode(), &[], &[])).and_then(
+                |()| match private[0] {
+                    0 => Ok(()),
+                    _ => self.sender.send(Made::PrivateCounts(private).encode(), &[], &[]),
+                },
+            );
         // A daemon gone counts nothing more.
         if let Err(err) = told
             && !self.lost.load(Ordering::Acquire)
@@ -965,20 +996,29 @@ impl Client {
         self.request(&Request::Stats { ask, guest })
     }
 
-    /// Makes the stage operation `op` to the window; or, an unmap, with what follows it within
-    /// what it unmaps, `anew`, as [`Receiver::take_change`] takes them, at once (TASK-91.16).
-    fn make(&self, op: StageOp, anew: &[crate::dax::Anew]) -> std::io::Result<()> {
+    /// Makes the stage operation `op` to the window, with what was taken after it, at once: an
+    /// unmap with what follows it within what it unmaps, as [`Receiver::take_change`] takes them
+    /// (TASK-91.16); fxdax: a private page with those following it on, the run
+    /// [`Receiver::take_privates`] takes (TASK-164.10).
+    fn make(&self, op: StageOp, taken: &Taken) -> std::io::Result<()> {
         let stage = self.stage.get().ok_or_else(|| std::io::Error::other("no window"))?;
-        match op {
-            StageOp::Unmap { offset, len } if !anew.is_empty() => stage.remap(offset, len, anew),
-            StageOp::Map { offset, phys, len } => stage.map(offset, phys, len),
-            StageOp::Unmap { offset, len } => stage.unmap(offset, len),
-            StageOp::Mapped { offset, len } => stage.window_mapped(offset, len),
+        match (op, taken) {
+            (StageOp::Unmap { offset, len }, Taken::Anew(anew)) if !anew.is_empty() => {
+                stage.remap(offset, len, anew)
+            }
+            (StageOp::Map { offset, phys, len }, _) => stage.map(offset, phys, len),
+            (StageOp::Unmap { offset, len }, _) => stage.unmap(offset, len),
+            (StageOp::Mapped { offset, len }, _) => stage.window_mapped(offset, len),
             // fxdax: refused, as the daemon's error, of a window that doesn't copy.
-            StageOp::Private { .. } if !stage.copying() => {
+            (StageOp::Private { .. }, _) if !stage.copying() => {
                 return Err(std::io::Error::other("a private page of a window that doesn't copy"));
             }
-            StageOp::Private { offset, from } => stage.make_private(offset, from),
+            (StageOp::Private { offset, .. }, Taken::Privates(run)) => {
+                stage.make_private(offset, run)
+            }
+            (StageOp::Private { offset, from }, Taken::Anew(_)) => {
+                stage.make_private(offset, &[from])
+            }
         }
         Ok(())
     }
@@ -1014,23 +1054,51 @@ impl Waiting {
     }
 }
 
+/// fxdax: what the receiving thread took with a stage operation, to make with it at once.
+enum Taken {
+    /// An unmap's maps anew within it ([`Receiver::take_change`]), none for another operation.
+    Anew(Vec<crate::dax::Anew>),
+    /// A private page's run, its own first ([`Receiver::take_privates`]).
+    Privates(Vec<Option<crate::pages::PhysLocation>>),
+}
+
 /// fxdax: the stage operations a VM process made of a window, and the nanoseconds they took, as
-/// [`STAGE_COUNTS`] tells them: the receiving thread counts them, which makes them.
+/// [`STAGE_COUNTS`] tells them: the receiving thread counts them, which makes them. Of those, the
+/// runs of private pages, the pages, and their nanoseconds (TASK-164.10).
 #[derive(Default)]
 struct StageCosts {
     ops: AtomicU64,
     ns: AtomicU64,
+    private_runs: AtomicU64,
+    private_pages: AtomicU64,
+    private_ns: AtomicU64,
 }
 
 impl StageCosts {
-    /// Counts an operation made since `start`.
-    fn count_since(&self, start: std::time::Instant) {
+    /// Counts an operation, `op` with what was `taken` with it, made since `start`.
+    fn count_since(&self, start: std::time::Instant, op: &StageOp, taken: &Taken) {
+        let ns = start.elapsed().as_nanos() as u64;
         self.ops.fetch_add(1, Ordering::Relaxed);
-        self.ns.fetch_add(start.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        self.ns.fetch_add(ns, Ordering::Relaxed);
+        if let StageOp::Private { .. } = op {
+            let pages = match taken {
+                Taken::Privates(run) => run.len() as u64,
+                Taken::Anew(_) => 1,
+            };
+            self.private_runs.fetch_add(1, Ordering::Relaxed);
+            self.private_pages.fetch_add(pages, Ordering::Relaxed);
+            self.private_ns.fetch_add(ns, Ordering::Relaxed);
+        }
     }
 
     fn counts(&self) -> [u64; 2] {
         [self.ops.load(Ordering::Relaxed), self.ns.load(Ordering::Relaxed)]
+    }
+
+    /// The runs of private pages, as [`STAGE_PRIVATE_COUNTS`] says them.
+    fn private(&self) -> PrivateCosts {
+        let load = |counter: &AtomicU64| counter.load(Ordering::Relaxed);
+        [load(&self.private_runs), load(&self.private_pages), load(&self.private_ns)]
     }
 }
 

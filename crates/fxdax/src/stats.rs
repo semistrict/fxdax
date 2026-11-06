@@ -91,6 +91,14 @@ pub struct Stats {
     /// short runs as its pages are short of each other; fewer, as the pages are apart in physical
     /// memory (TASK-131.1).
     pub stage_segments: u64,
+    /// fxdax: of the VM processes' stage operations (`stage_ops`), the runs of private pages they
+    /// made, each at once (`dax::SecondStage::make_private`), as they told the daemon
+    /// (`extentd::wire::STAGE_COUNTS`, TASK-164.10).
+    pub stage_private_runs: u64,
+    /// The private pages those runs made.
+    pub stage_private_pages: u64,
+    /// The nanoseconds they took the VM processes.
+    pub stage_private_ns: u64,
 }
 
 /// The counters, in the order of [`Stats`]' fields.
@@ -123,10 +131,13 @@ pub(crate) enum Counter {
     FaultRefusals,
     FaultWaits,
     StageSegments,
+    StagePrivateRuns,
+    StagePrivatePages,
+    StagePrivateNs,
 }
 
 /// The counters [`Counter`] names, which this module keeps.
-const COUNTED: usize = 27;
+const COUNTED: usize = 30;
 
 /// The counters a snapshot holds: those it keeps, and the extent store's.
 const COUNTERS: usize = COUNTED + 3;
@@ -183,6 +194,9 @@ pub fn stats() -> Stats {
         fault_refusals: count(Counter::FaultRefusals),
         fault_waits: count(Counter::FaultWaits),
         stage_segments: count(Counter::StageSegments),
+        stage_private_runs: count(Counter::StagePrivateRuns),
+        stage_private_pages: count(Counter::StagePrivatePages),
+        stage_private_ns: count(Counter::StagePrivateNs),
     }
 }
 
@@ -220,6 +234,9 @@ impl Stats {
             self.fault_refusals,
             self.fault_waits,
             self.stage_segments,
+            self.stage_private_runs,
+            self.stage_private_pages,
+            self.stage_private_ns,
         ]
     }
 
@@ -257,6 +274,9 @@ impl Stats {
             fault_refusals: word(27),
             fault_waits: word(28),
             stage_segments: word(29),
+            stage_private_runs: word(30),
+            stage_private_pages: word(31),
+            stage_private_ns: word(32),
         }
     }
 
@@ -301,6 +321,9 @@ impl Stats {
             "fault-refusals",
             "fault-waits",
             "stage-segments",
+            "stage-private-runs",
+            "stage-private-pages",
+            "stage-private-ns",
         ];
         std::array::from_fn(|at| (names[at], words[at]))
     }
