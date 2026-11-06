@@ -2903,9 +2903,11 @@ mod tests {
         write(&store, extent, 0, &pattern(5, len)).unwrap();
         let window = store.create_dax_window(len as u64, None).unwrap();
         committed_here(&store);
-        // Its segment closed, compressed in parts, the extent 300 KiB into the first.
+        // Its segment closed, compressed in parts, the extent 300 KiB into the first: framed, which
+        // no commit waits for (TASK-165.9).
         store.store.close_segment().unwrap();
         committed_here(&store);
+        store.store.closed(0).unwrap();
         store.map(extent, 0, len as u64, 0).unwrap();
         let counted = stats::stats();
         // From its end, so that nothing is read ahead.

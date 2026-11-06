@@ -45,6 +45,11 @@ impl Stalling {
         Self { dir: MemDir::new(), stall: Arc::new((Mutex::new(Stall::default()), Condvar::new())) }
     }
 
+    /// The directory as a crash would leave it ([`MemDir::crash`]).
+    pub(crate) fn crash(&self, seed: u64) -> MemDir {
+        self.dir.crash(seed)
+    }
+
     /// Has the next call of `op` on `path` stall.
     pub(crate) fn arm(&self, op: Op, path: &str) {
         self.stall.0.lock().unwrap().at = Some((op, path.to_owned()));

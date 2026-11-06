@@ -43,7 +43,7 @@
 use extent_frame::segment::{Chain, Child, Footer};
 use extent_remote::wal::Fenced;
 use extent_store::{
-    Description, File as _, MemDir, Opening, Options, RemoteData, Rules, Store, set_rules,
+    Description, Dir, File as _, MemDir, Opening, Options, RemoteData, Rules, Store, set_rules,
 };
 use shuttle::scheduler::{PctScheduler, RandomScheduler, ReplayScheduler};
 use shuttle::sync::Mutex;
@@ -266,7 +266,7 @@ fn run_with(Run { steps, follow }: Run) {
                             assert!(
                                 recovered >= epoch,
                                 "uploaded commit {epoch} before durable: a crash recovered \
-                                 {recovered}"
+                                 {recovered}, seed {seed}"
                             );
                         }
                         *taken.lock().unwrap() = epoch;
@@ -879,16 +879,14 @@ fn check_framed(store: &Store<Stalling>, failure: &str) {
 
 /// One run of a guest's requests while a closing between commits frames the open segment, which
 /// stalls (TASK-41.1): the store serves its writes, reads and commits meanwhile, holding none of
-/// its locks as it frames, as a commit's closing does not; fxdax: a commit's durability waits for
-/// the framings of the segments closed before it, which a crash must find whole (TASK-165.9).
-/// Shuttle, whose waits that can't end are deadlocks it reports, finds so.
+/// its locks as it frames, as a commit's closing does not. Shuttle, whose waits that can't end are
+/// deadlocks it reports, finds so.
 fn serving_during_a_framing() {
     let (dir, store) = framing_stalls();
     let closing = spawn_closing(&store);
     dir.wait_until_stalled();
     store.write(extent(2), 0, &pattern(2, BLOCK)).unwrap();
     check_framed(&store, "a read while a closing between commits frames");
-    // fxdax: ordered; durable once the segments closed before it are framed (TASK-165.9).
     store.commit_ordered(None).unwrap();
     dir.let_go(Ok(()));
     closing.join().unwrap();
@@ -917,36 +915,34 @@ fn closing_during_a_framing() {
     reopening.join().unwrap();
 }
 
-/// One run of a flush failing, as the framing of the segment its first commit closed, which
-/// stalls, fails, while those of the segments its later commits closed, and a commit after it took
-/// them, go on (TASK-79.99): the flush waits for each it took before it says it failed, and the
-/// branch's closing for the rest, so that another store, opening the branch, frames their segments
-/// again from their raw files only once nothing else frames them. Since framings are one queue
-/// (TASK-165.9), those after the failed one fail with it, framing nothing: no schedule fails
-/// without `close_waits_for_framings` here, which [`closing_during_a_framing`] shows needed.
-fn closing_after_a_failed_flush() {
+/// One run of the framing of the segment a commit closed, which stalls, failing, while those of
+/// the segments later commits closed wait behind it (TASK-79.99): the branch's closing waits for
+/// each, so that another store, opening the branch, frames their segments again from their raw
+/// files only once nothing else frames them. Framings are one queue (TASK-165.9): those after the
+/// failed one fail with it, framing nothing. A flush waits for no framing: the commits it made
+/// durable while the first stalled, their records in the logs of the segments they were made in,
+/// the opening recovers; the commit after, which no flush took before the store failed, not.
+fn closing_after_a_failed_framing() {
     let (dir, store) = framing_stalls();
     // Each commit fills the open segment, and closes it: the first, whose framing stalls.
     store.write(extent(2), 0, &pattern(2, 2 * BLOCK)).unwrap();
     store.commit_ordered(None).unwrap();
     store.write(extent(3), 0, &pattern(3, 3 * BLOCK)).unwrap();
     store.commit_ordered(None).unwrap();
-    let flushing = {
-        let store = store.clone();
-        thread::spawn(move || store.flush().expect_err("a flush whose framing failed"))
-    };
+    store.flush().unwrap();
     store.write(extent(4), 0, &pattern(4, 3 * BLOCK)).unwrap();
     store.commit_ordered(None).unwrap();
     dir.wait_until_stalled();
     dir.let_go(Err(std::io::Error::other("the disk failed")));
-    drop(flushing.join().unwrap());
-    // Failing too, unless the flush took every commit, and nothing was left to flush.
-    drop(store.close());
-    let failure = "a framing raced the branch's closing after a failed flush";
+    // The framings end, failing, and the store with them.
+    let error = store.closed(usize::MAX).map(|_| ()).expect_err("a framing failed");
+    drop(error);
+    store.close().expect_err("a store whose framing failed closed with its commits durable");
+    let failure = "a framing raced the branch's closing after a failed framing";
     let reopened = Store::open(dir.clone(), OPTIONS);
     let reopened = reopened.unwrap_or_else(|error| panic!("{failure}: {error:#}"));
-    // What was durable: the first commit, extent 1's.
-    assert_eq!(reopened.epoch().unwrap(), 1, "{failure}: commits not durable recovered");
+    // What was durable: the commits the flush took, extents 1 to 3's.
+    assert_eq!(reopened.epoch().unwrap(), 3, "{failure}: other commits than durable recovered");
     check_framed(&reopened, failure);
     // Writing on, it closes segments of its own, numbered past those it found, framed where no
     // framing of the store before frames them still, making files of their numbers.
@@ -1109,9 +1105,34 @@ fn pending_during_a_flush() {
     assert!(!store.flush_pending(), "a commit made durable is pending");
 }
 
+/// One run of a flush, as a daemon's turn makes its guests' commits durable, while the framing of
+/// the segment a closing between commits, the uploader's, closed stalls, as on a slow disk: the
+/// flush waits for no framing, its commits' records going to the logs of the segments they were
+/// made in (TASK-165.9). Waiting for framings held the daemon's turns up past their 50 ms, and a
+/// daemon killed meanwhile lost commits its guest was told were durable (GCE r719's
+/// crash-dax-daemon-killed); Shuttle, whose waits that can't end are deadlocks it reports, finds a
+/// flush that waits. A crash then recovers both commits, closing both segments again from their
+/// logs, the one being framed and the open one.
+fn flushing_during_a_framing() {
+    let (dir, store) = framing_stalls();
+    let closing = spawn_closing(&store);
+    dir.wait_until_stalled();
+    store.write(extent(2), 0, &pattern(2, BLOCK)).unwrap();
+    store.commit_ordered(None).unwrap();
+    store.flush().unwrap();
+    assert!(!store.flush_pending(), "a commit flushed during a framing is pending");
+    for seed in 0..4 {
+        let crashed = Store::open(dir.crash(seed), OPTIONS).unwrap();
+        assert_eq!(crashed.epoch().unwrap(), 2, "a crash during a framing lost a commit flushed");
+        check_flushed(&crashed, "a crash during a framing");
+    }
+    dir.let_go(Ok(()));
+    closing.join().unwrap();
+}
+
 /// Reads extents 1 and 2 of a store [`serving_during_a_flush`] wrote, through `store`, which must
 /// be as written.
-fn check_flushed(store: &Store<Stalling>, failure: &str) {
+fn check_flushed<D: Dir>(store: &Store<D>, failure: &str) {
     for sequence in 1..=2 {
         let mut read = vec![0; BLOCK];
         let reading = store.read(extent(sequence), 0, &mut read);
@@ -1136,6 +1157,11 @@ fn randomly(test: fn()) {
 #[test]
 fn flushes_in_flight_keep_their_commits_pending() {
     randomly(pending_during_a_flush);
+}
+
+#[test]
+fn flushes_wait_for_no_framing() {
+    randomly(flushing_during_a_framing);
 }
 
 #[test]
@@ -1211,9 +1237,9 @@ fn closing_during_a_framing_by_pct() {
 }
 
 #[test]
-fn closing_after_a_failed_flush_by_pct() {
+fn closing_after_a_failed_framing_by_pct() {
     set_rules(Rules::ALL);
-    Runner::new(PctScheduler::new(3, runs()), config()).run(closing_after_a_failed_flush);
+    Runner::new(PctScheduler::new(3, runs()), config()).run(closing_after_a_failed_framing);
 }
 
 #[test]
@@ -1293,8 +1319,9 @@ fn replay() {
         Ok("failing_during_a_commit") => failing_during_a_commit,
         Ok("closing_during_a_commit") => closing_during_a_commit,
         Ok("serving_during_a_framing") => serving_during_a_framing,
+        Ok("flushing_during_a_framing") => flushing_during_a_framing,
         Ok("closing_during_a_framing") => closing_during_a_framing,
-        Ok("closing_after_a_failed_flush") => closing_after_a_failed_flush,
+        Ok("closing_after_a_failed_framing") => closing_after_a_failed_framing,
         Ok("serving_during_a_framing_for_room") => serving_during_a_framing_for_room,
         Ok("closing_during_a_framing_for_room") => closing_during_a_framing_for_room,
         Ok("uploading_what_a_closing_for_room_closed") => uploading_what_a_closing_for_room_closed,

@@ -10,8 +10,8 @@ use crate::framed::{Aligned, Framed, Packed, Part, Source, Unpacked, read_aligne
 use crate::kept::{Kept, KeptExtents};
 use crate::layout::{
     Change, DESCRIPTION, Data, Description, EXTENTS, Extent, Extents, FileKey, KINDS, OPEN_EXTENTS,
-    Piece, Place, SegmentId, StoreFile, add_piece, branch_dir, create_branch_dirs, encode,
-    extent_path, files_of, list_numbers, open_extent_path, segment_path,
+    Piece, Place, SEGMENTS, SegmentId, StoreFile, add_piece, branch_dir, create_branch_dirs,
+    encode, extent_path, files_of, list_numbers, open_extent_path, segment_path,
 };
 use crate::segments::{Reaped, Segments, Unframed, footer_last};
 use crate::state::{
@@ -201,9 +201,9 @@ pub struct Store<D: Dir> {
     /// When its commits are durable: those ordered that no flush has taken yet, oldest first, for
     /// [`Store::flush`] to make durable, and the last that is.
     durability: Mutex<Durability<Pending<D::File>>>,
-    /// Held by a flush: commits become durable in order. fxdax: and the log of the open segment
-    /// they last appended their records to, where the next go if it is still open (TASK-165.9).
-    flushing: Mutex<SegmentLog<D::File>>,
+    /// Held by a flush: commits become durable in order. fxdax: and the logs flushes append
+    /// records to, of the open segment, and of those closed since whose commits wait (TASK-165.9).
+    flushing: Mutex<Logs<D::File>>,
     /// fxdax: the base of its write-ahead log, written as segments are acknowledged, before their
     /// files leave (TASK-165.9).
     base: Mutex<BaseFile>,
@@ -247,9 +247,9 @@ pub struct DirHold<D: Dir> {
 struct Pending<F> {
     /// The files whose data it refers to, and the directories whose entries changed, to sync.
     syncs: Syncs<F>,
-    /// fxdax: its record, its contents, and the open segment it is to be appended to the log of,
-    /// unless that segment closed by then, its framed file then holding it (TASK-165.9).
-    record: Option<(SegmentId, Vec<u8>)>,
+    /// fxdax: its record, its contents, and the segment it is to be appended to the log of, the
+    /// one it was made in, open, or closed since (TASK-165.9).
+    record: (SegmentId, Vec<u8>),
     /// The files of the branch's alone it made unreferenced ([`Unreferenced::doomed`]): they go
     /// once it is durable.
     doomed: Vec<String>,
@@ -257,10 +257,10 @@ struct Pending<F> {
     /// there if they are the objects there: they leave for the host's cache with its flush
     /// (TASK-165.8).
     leaving: Vec<(String, Option<String>)>,
-    /// fxdax: the segment it closed, if any, being framed: it is durable once that is, which its
-    /// flush waits for, its data being in it (TASK-153.8).
-    closed: Option<SegmentId>,
 }
+
+/// fxdax: the logs a flush appends commits' records to, by their segments ([`Store::flush`]).
+type Logs<F> = BTreeMap<SegmentId, SegmentLog<F>>;
 
 /// A write in progress (see [`Store::begin_write`]): its data goes to `file()` at `offset()`.
 /// Dropping it before it is finished abandons it.
@@ -570,7 +570,8 @@ impl<D: Dir> Recovering<D> {
         if restate {
             uncommitted.resize(capacity);
         }
-        let log = SegmentLog::new(segments.open_segment(), segments.open_log());
+        let open = segments.open_segment();
+        let log = BTreeMap::from([(open, SegmentLog::new(segments.open_log()))]);
         #[cfg(any(test, feature = "audit"))]
         let replay = {
             let lengths = extents.iter().map(|(extent, entry)| (*extent, entry.len)).collect();
@@ -897,7 +898,7 @@ impl<D: Dir> Store<D> {
                 true => Vec::new(),
             };
             drop(state);
-            self.remove(raw);
+            self.remove_raw(raw)?;
             drop(self.opened.lock().unwrap().take());
         }
         flushed
@@ -1418,7 +1419,7 @@ impl<D: Dir> Store<D> {
         for unframed in std::mem::take(&mut state.deferred) {
             self.frame_behind(state, unframed);
         }
-        let closed = self.close_if_due(state, epoch)?;
+        self.close_if_due(state, epoch)?;
         // What its flush syncs, after the closing, whose directories its flush must sync: the
         // framed file's entry is durable before its raw file goes.
         let mut syncs = Syncs::default();
@@ -1438,9 +1439,9 @@ impl<D: Dir> Store<D> {
         }
         let Unreferenced { doomed } = state.unreferenced.take();
         state.epoch = epoch;
-        let record = (closed != Some(segment)).then(|| (segment, encode(contents)));
+        let record = (segment, encode(contents));
         // Queued while the state is locked, so that commits queue in their order.
-        let pending = Pending { syncs, record, doomed, leaving, closed };
+        let pending = Pending { syncs, record, doomed, leaving };
         self.durability.lock().unwrap().push(epoch, pending);
         Ok(())
     }
@@ -1868,7 +1869,7 @@ impl<D: Dir> Store<D> {
             self.lock().failed = true;
             return Err(err.context("recording an acknowledgement"));
         }
-        let leaving = {
+        let (leaving, raw) = {
             let mut state = self.state()?;
             let state = &mut *state;
             let queued = state.wal.acknowledge(number).expect("the first, as found");
@@ -1889,30 +1890,34 @@ impl<D: Dir> Store<D> {
                     Reaped::Acknowledged(number, key) => leaving.push((segment_path(number), key)),
                 }
             }
-            leaving
+            // fxdax: and the raw files and logs of the segments framed whose commits are durable,
+            // as those acknowledged are, which no flush may come to remove (TASK-165.9).
+            let raw = state.segments.raw(self.durability.lock().unwrap().durable());
+            (leaving, raw)
         };
+        self.remove_raw(raw)?;
         leave(&*self.dir, self.cache.as_deref(), leaving);
         Ok(())
     }
 
     /// fxdax: makes the commits ordered so far durable, in order, as few syncs as they need
-    /// together: their data, then their records in the open segment's log, then the files they
-    /// made unreferenced go; and the raw files and logs of the segments framed whose commits are
-    /// durable.
+    /// together: their data, then their records in the logs of the segments they were made in,
+    /// then the files they made unreferenced go; and the raw files and logs of the segments framed
+    /// whose commits are durable. It waits for no framing (TASK-165.9).
     pub fn flush(&self) -> Result<(), Error> {
         self.flush_locked(&mut self.flushing.lock().unwrap())
     }
 
-    /// [`Store::flush`], holding `flushing`, and so `log`, the open segment's log as the last
-    /// flush left it.
-    fn flush_locked(&self, log: &mut SegmentLog<D::File>) -> Result<(), Error> {
+    /// [`Store::flush`], holding `flushing`, and so `logs`, those of the open segment and of the
+    /// segments closed since that the last flush left.
+    fn flush_locked(&self, logs: &mut Logs<D::File>) -> Result<(), Error> {
         // A store that failed makes nothing more durable.
         drop(self.state()?);
         let batch = self.durability.lock().unwrap().take();
         let durable = match batch {
             None => self.durability.lock().unwrap().durable(),
             Some(Batch { last, mut commits }) => {
-                if let Err(error) = self.make_durable(log, last, &mut commits) {
+                if let Err(error) = self.make_durable(logs, &mut commits) {
                     self.lock().failed = true;
                     return Err(error.context("committing the extent store"));
                 }
@@ -1931,47 +1936,58 @@ impl<D: Dir> Store<D> {
         // fxdax: and the raw files and logs of the segments framed, whose footers name commits
         // durable now (TASK-153.8).
         let raw = self.state()?.segments.raw(durable);
+        self.remove_raw(raw)
+    }
+
+    /// fxdax: removes `raw`, the raw files and logs of segments framed, once their framed files'
+    /// entries are durable, which an opening reads their commits from then: their framings synced
+    /// the files, and no flush waits for a framing to sync their directory (TASK-165.9).
+    fn remove_raw(&self, raw: Vec<String>) -> Result<(), Error> {
+        if raw.is_empty() {
+            return Ok(());
+        }
+        self.dir.sync_dir(&branch_dir(SEGMENTS, self.branch))?;
+        self.dir.barrier()?;
         self.remove(raw);
         Ok(())
     }
 
-    /// Makes `commits`, a flush's, the last `last`, durable, in order: once every segment closed
-    /// by then is framed, those holding their data among them, their data and the open segment's
-    /// log's entries; then their records in that log, at `log`, those of the segments closed since
-    /// held by their framed files; but for the files they made unreferenced. fxdax: no commit is
-    /// durable before every segment closed before it is framed, so that a log closed again by an
-    /// opening is the write-ahead log's last (`wal`'s docs, TASK-165.9).
+    /// Makes `commits`, a flush's, durable, in order: their data, then their records in the logs
+    /// of the segments they were made in, open, or closed since; but for the files they made
+    /// unreferenced. fxdax: it waits for no framing, those of segments the uploader closes between
+    /// commits among them, which held up the turns a daemon makes its guests' commits durable in
+    /// (TASK-165.9): an opening closes a segment whose framed file isn't whole again from its log.
     fn make_durable(
         &self,
-        log: &mut SegmentLog<D::File>,
-        last: u64,
+        logs: &mut Logs<D::File>,
         commits: &mut [Pending<D::File>],
     ) -> Result<(), Error> {
-        // What closed by now, and the open segment, with its log, as of one moment.
-        let (framing, open) = {
-            let state = self.lock();
-            let open = state.segments.open_segment();
-            let mut framing = state.segments.framing_through(last);
-            framing.extend(commits.iter().filter_map(|pending| pending.closed));
-            let records = commits.iter().filter_map(|pending| pending.record.as_ref());
-            framing.extend(records.map(|(segment, _)| *segment).filter(|segment| *segment != open));
-            if log.segment != open {
-                *log = SegmentLog::new(open, state.segments.open_log());
-            }
-            (framing, open)
-        };
-        // fxdax: framed and synced by their framings, which end themselves, waited for holding no
-        // lock (TASK-153.8).
-        self.wait_for_framings(framing)?;
         let mut syncs = Syncs::default();
         for pending in commits.iter_mut() {
             syncs.extend(std::mem::take(&mut pending.syncs));
         }
         syncs.sync(&*self.dir)?;
-        let records = commits.iter().filter_map(|pending| pending.record.as_ref());
-        let records = records.filter(|(segment, _)| *segment == open);
-        log.append(records.map(|(_, record)| record.as_slice()))?;
+        // Each segment's records, in the commits' order, appended and synced at once.
+        let mut at = 0;
+        while at < commits.len() {
+            let segment = commits[at].record.0;
+            let run =
+                commits[at..].iter().take_while(|pending| pending.record.0 == segment).count();
+            let log = match logs.entry(segment) {
+                std::collections::btree_map::Entry::Occupied(log) => log.into_mut(),
+                std::collections::btree_map::Entry::Vacant(vacant) => {
+                    let file = self.lock().segments.log_file(&*self.dir, segment)?;
+                    let end = file.size()?;
+                    vacant.insert(SegmentLog::at(file, end))
+                }
+            };
+            log.append(commits[at..at + run].iter().map(|pending| pending.record.1.as_slice()))?;
+            at += run;
+        }
         self.dir.barrier()?;
+        // The logs of segments closed since go: no commit made in them is still to come.
+        let open = self.lock().segments.open_segment();
+        logs.retain(|segment, _| *segment == open);
         Ok(())
     }
 

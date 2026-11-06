@@ -249,6 +249,7 @@ fn frees_remove_files() {
     }
     store.write(extent(16), 0, &pattern(16, 0, 32 << 10)).unwrap();
     store.commit(None).unwrap();
+    settled(&store);
     // The first segment, closed, and the next, open.
     let segments = || {
         let count = |kind| dir.list(&of(kind, BRANCH)).unwrap().len();
@@ -452,9 +453,18 @@ type Held = (u64, Vec<u8>, u64, Vec<(ExtentId, u64, Place)>, extent_frame::spent
 fn closed_state<D: Dir>(store: &Store<D>) -> Held {
     store.close_segment().unwrap();
     store.commit(None).unwrap();
+    settled(store);
     let next_sequence = store.info().unwrap().next_sequence;
     let (epoch, root) = (store.epoch().unwrap(), store.root().unwrap());
     (epoch, root, next_sequence, store.places().unwrap(), store.spent().unwrap())
+}
+
+/// fxdax: `store` once the segments its commits closed are framed, and the raw files and logs of
+/// those whose commits are durable are gone: as a flush after their framings leaves it, none of
+/// which a flush waits for (TASK-165.9).
+fn settled<D: Dir>(store: &Store<D>) {
+    store.closed(0).unwrap();
+    store.flush().unwrap();
 }
 
 /// What `store`, of `dir`, holds once opened again, its write-ahead log's footers replayed
@@ -587,6 +597,7 @@ fn closed_segments_hold_the_branchs_history() {
     let before = segments();
     store.write(extent(50), 0, &pattern(50, 0, BLOCK)).unwrap();
     store.commit(None).unwrap();
+    settled(&store);
     assert_eq!(segments(), before + 1);
 
     // At a fork.
@@ -839,6 +850,7 @@ fn locating_parts_stored_compressed() {
     store.write(extent(2), 0, &noise(2, 16 * BLOCK)).unwrap();
     store.close_segment().unwrap();
     store.commit(None).unwrap();
+    settled(&store);
     let kinds = |extent| -> Vec<&'static str> {
         (store.locate(extent, 4 * BLOCK as u64, 2 * BLOCK as u64).unwrap().iter())
             .map(|part| match part {
@@ -1237,6 +1249,7 @@ fn durable_commits_keep_the_open_segments_pages_cached() {
     }
     store.close_segment().unwrap();
     store.commit(None).unwrap();
+    settled(&store);
     assert_eq!(dir.drops(), BTreeMap::from([("segments".to_owned(), 1)]));
 }
 
@@ -1580,6 +1593,7 @@ fn rewrites_take_no_segment_past_a_segment_and_an_extent() {
     }
     assert_eq!(read(&store, extent(1), 0, 2 * BLOCK), pattern(63, 0, 2 * BLOCK));
     store.commit(None).unwrap();
+    settled(&store);
     assert_eq!(read(&store, extent(1), 0, 2 * BLOCK), pattern(63, 0, 2 * BLOCK));
     assert_eq!(store.place(extent(1)).unwrap(), Some(Place::Own));
     // The four it filled: three set aside, gone; the last closed by the commit.
@@ -1804,6 +1818,7 @@ fn acknowledged_segments_leave_a_churning_guests_files() {
         for closed in store.closed(usize::MAX).unwrap() {
             store.acknowledged(closed.number).unwrap();
         }
+        settled(&store);
         assert_eq!(data_files(&dir), 0, "the files after cycle {cycle}");
     }
     for sequence in live {
@@ -2119,6 +2134,7 @@ fn eight_segments(open_files: usize) -> (MemDir, Store<MemDir>) {
         store.close_segment().unwrap();
         store.commit(None).unwrap();
     }
+    settled(&store);
     (dir, store)
 }
 

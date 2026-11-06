@@ -16,7 +16,7 @@ use storage_device::ExtentId;
 /// The first line of a store's description: its format. fxdax: 6 names the bucket a host's store
 /// keeps its branches in (TASK-165.6); 7 places an extent whose data is in the bucket by its
 /// location there (TASK-165.8), and holds one branch, no branch records (TASK-165.7); 8 has no
-/// index: its branch is the bucket's, its write-ahead log and the open segment's log of its
+/// index: its branch is the bucket's, its write-ahead log and its segments' logs of their
 /// commits, and its description names its capacity until a commit sets one, and its placement's
 /// fencing token, if placed (TASK-165.9). A store of another format is refused ([`Format`]):
 /// nothing reads, converts or upgrades it.
@@ -383,7 +383,7 @@ pub(crate) fn decode<R: serde::de::DeserializeOwned>(bytes: &[u8]) -> (Vec<R>, u
 mod tests {
     use super::*;
 
-    /// The record of a commit of `epoch`'s, as an open segment's log holds it (TASK-165.9).
+    /// The record of a commit of `epoch`'s, as a segment's log holds it (TASK-165.9).
     fn commit(epoch: u64) -> Contents {
         Contents {
             commits: vec![extent_frame::segment::tag(3, epoch)],

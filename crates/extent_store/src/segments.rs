@@ -30,10 +30,11 @@ enum Phase<F> {
     Open { raw: Arc<F>, log: Arc<F> },
     /// fxdax: closed by commit `last`, its data being framed off the commit, on a thread of its
     /// own, which ends the framing itself ([`Segments::framed`], TASK-153.8): read from its raw
-    /// file, which stays open, until then.
-    Framing { raw: Arc<F>, last: u64 },
+    /// file, which stays open, until then; its commits' records still appended to its log by the
+    /// flushes that make them durable, which wait for no framing (TASK-165.9).
+    Framing { raw: Arc<F>, log: Arc<F>, last: u64 },
     /// fxdax: its framing failed, which failed the store: read from its raw file, which stays.
-    Failed { raw: Arc<F>, error: String },
+    Failed { raw: Arc<F>, log: Arc<F>, error: String },
     /// Closed, a segment of the write-ahead log until acknowledged in the bucket. Its framed file,
     /// if open, is among those kept open (`Segments::files`).
     Closed,
@@ -156,6 +157,9 @@ pub(crate) struct Segments<F> {
     files: Files<SegmentId, F>,
     /// Whether the open segment was written since the last commit, which syncs it.
     written: bool,
+    /// fxdax: the raw files of the segments closed since the last commit, written since the one
+    /// before, which the next commit's flush syncs (TASK-165.9).
+    closed_unsynced: Vec<Arc<F>>,
     /// Whether a segment closed since the last commit, which syncs the directories of segments,
     /// the framed file's, and of open ones, the next's.
     closed_since: bool,
@@ -219,6 +223,7 @@ impl<F: File> Segments<F> {
             chain,
             files: Files::new(open_files),
             written: false,
+            closed_unsynced: Vec::new(),
             closed_since: false,
             framing: BTreeSet::new(),
             raw: Vec::new(),
@@ -381,6 +386,18 @@ impl<F: File> Segments<F> {
         self.chain = chain;
     }
 
+    /// fxdax: the log of segment `number`'s commits, open or closed since, which a flush appends
+    /// their records to: there until its raw file goes, once it is framed and they are durable
+    /// ([`Segments::raw`]).
+    pub fn log_file<D: Dir<File = F>>(&self, dir: &D, number: SegmentId) -> Result<Arc<F>, Error> {
+        match self.tracked.get(&number).map(|segment| &segment.phase) {
+            Some(
+                Phase::Open { log, .. } | Phase::Framing { log, .. } | Phase::Failed { log, .. },
+            ) => Ok(log.clone()),
+            _ => Ok(Arc::new(dir.open(&log_path(number), false)?)),
+        }
+    }
+
     /// fxdax: the bytes of segment `number`'s data.
     pub fn len(&self, number: SegmentId) -> u64 {
         self.tracked.get(&number).map_or(0, |segment| segment.len)
@@ -442,15 +459,17 @@ impl<F: File> Segments<F> {
             std::mem::replace(&mut self.window, Window::starting(number.branch, epoch + 1));
         let footer = self.chain.close(window.contents(vec![self.chain.tag(epoch)], next_sequence));
         let segment = self.tracked.get_mut(&number).unwrap();
-        let raw = match &segment.phase {
-            Phase::Open { raw, .. } => raw.clone(),
+        let (raw, log) = match &segment.phase {
+            Phase::Open { raw, log } => (raw.clone(), log.clone()),
             _ => unreachable!("the open segment is open"),
         };
-        segment.phase = Phase::Framing { raw: raw.clone(), last: epoch };
+        segment.phase = Phase::Framing { raw: raw.clone(), log, last: epoch };
         let len = segment.len;
-        // What was written to it since the last commit is durable once framed: its framing syncs
-        // its framed file, which the flush of the commit that closed it waits for.
-        self.written = false;
+        // What was written to it since the last commit, the next flush syncs, before it appends
+        // the records of the commits in it to its log (TASK-165.9).
+        if std::mem::take(&mut self.written) {
+            self.closed_unsynced.push(raw.clone());
+        }
         self.tracked.insert(next, Segment::new(phase, 0));
         self.open = next;
         self.opened = Instant::now();
@@ -510,10 +529,10 @@ impl<F: File> Segments<F> {
     /// from its raw file, which stays.
     pub fn framing_failed(&mut self, number: SegmentId, error: String) {
         let segment = self.tracked.get_mut(&number).expect("a segment being framed is tracked");
-        let Phase::Framing { raw, .. } = &segment.phase else {
+        let Phase::Framing { raw, log, .. } = &segment.phase else {
             unreachable!("{number:?}, whose framing failed, was being framed")
         };
-        segment.phase = Phase::Failed { raw: raw.clone(), error };
+        segment.phase = Phase::Failed { raw: raw.clone(), log: log.clone(), error };
         self.framing.remove(&number);
     }
 
@@ -540,15 +559,6 @@ impl<F: File> Segments<F> {
     /// fxdax: the segments whose framings are running.
     pub fn framings(&self) -> &BTreeSet<SegmentId> {
         &self.framing
-    }
-
-    /// fxdax: the segments whose framings are running whose footers name no commit past `epoch`.
-    pub fn framing_through(&self, epoch: u64) -> Vec<SegmentId> {
-        let through = |number: &&SegmentId| match self.tracked[*number].phase {
-            Phase::Framing { last, .. } => last <= epoch,
-            _ => false,
-        };
-        self.framing.iter().filter(through).copied().collect()
     }
 
     /// fxdax: the paths of the raw files, and logs, of the segments framed whose footers name no
@@ -598,6 +608,9 @@ impl<F: File> Segments<F> {
                 unreachable!("the open segment is open")
             };
             syncs.cached(raw.clone());
+        }
+        for raw in self.closed_unsynced.drain(..) {
+            syncs.cached(raw);
         }
         if std::mem::take(&mut self.closed_since) {
             for kind in [SEGMENTS, OPEN_SEGMENTS, LOGS] {
@@ -1136,7 +1149,8 @@ mod tests {
 
     /// A commit syncs the open segment's file if it was written since the last commit, keeping
     /// its pages cached (TASK-92.23), and the directories of segments and of open ones if one
-    /// closed, whose data its framed file holds.
+    /// closed; fxdax: and the raw file of one closed, if written since, which its commits' records
+    /// name the data of (TASK-165.9).
     #[test]
     fn only_written_open_segments_are_synced() {
         let dir = MemDir::new();
@@ -1158,7 +1172,7 @@ mod tests {
             branch_dir(OPEN_SEGMENTS, BRANCH),
             branch_dir(SEGMENTS, BRANCH),
         ];
-        assert_eq!(syncs(&mut segments), ((0, 0), dirs));
+        assert_eq!(syncs(&mut segments), ((0, 1), dirs));
         segments.append(BLOCK);
         assert_eq!(syncs(&mut segments), ((0, 1), vec![]));
     }
