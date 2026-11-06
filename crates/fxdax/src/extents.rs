@@ -3595,6 +3595,60 @@ mod tests {
         }
     }
 
+    /// A source whose reads fail with `cause`.
+    struct FailingSource(&'static str);
+
+    impl cache::Contents for FailingSource {
+        fn read<'a>(
+            &'a self,
+            _offset: u64,
+            _buf: &'a mut [u8],
+        ) -> futures::future::BoxFuture<'a, std::result::Result<(), anyhow::Error>> {
+            let cause = self.0;
+            Box::pin(async move { Err(anyhow::anyhow!(cause).context("fetching a part")) })
+        }
+    }
+
+    /// What this process logs, kept: for tests of what a failure says.
+    struct Kept(Mutex<Vec<String>>);
+
+    impl log::Log for Kept {
+        fn enabled(&self, _: &log::Metadata) -> bool {
+            true
+        }
+
+        fn log(&self, record: &log::Record) {
+            self.0.lock().unwrap().push(record.args().to_string());
+        }
+
+        fn flush(&self) {}
+    }
+
+    /// fxdax: a page-in that fails says why, where the daemon logs it: what its read failed with,
+    /// not EIO alone, which was all a soak's checking daemon said of an extent of a store its
+    /// index placed in the bucket and that could not be read (TASK-217, GCE r757 round 40).
+    #[test]
+    fn failed_page_ins_say_why() {
+        static KEPT: Kept = Kept(Mutex::new(Vec::new()));
+        log::set_logger(&KEPT).unwrap();
+        log::set_max_level(log::LevelFilter::Error);
+        let extent = Arc::new(CachedExtent::new(
+            ArenaId::DEFAULT,
+            ExtentId { branch: 7, sequence: 9 },
+            Box::new(FailingSource("no such object at segments/7/1")),
+            READ_AHEAD,
+        ));
+        let mut data = vec![0; BLOCK];
+        assert_eq!(extent.read(0, &mut data), Err(Errno::EIO));
+        let logged = KEPT.0.lock().unwrap().clone();
+        assert!(
+            logged
+                .iter()
+                .any(|line| line.contains("fetching a part: no such object at segments/7/1")),
+            "{logged:?}"
+        );
+    }
+
     /// A store holding `data` in one sealed extent, and the generation at `path` that pins it: the
     /// extent, and the store's ancestry as the generation has it.
     fn generation(path: &Path, data: &[u8]) -> (ExtentId, Vec<u64>) {

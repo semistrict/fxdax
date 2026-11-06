@@ -314,6 +314,23 @@ fn let_go_least_used(
     idle.into_iter().take(excess).filter_map(|(_, key)| extents.remove(&key)).collect()
 }
 
+/// A page-in found no pages of its arena to read into.
+#[derive(Debug, thiserror::Error)]
+#[error("no pages to read into")]
+struct NoPages;
+
+/// The errno a page-in that failed with `error` fails its readers with: `ENOENT` for an extent
+/// the store doesn't hold, `ENOMEM` for want of pages, `EIO` for the rest.
+fn read_errno(error: &anyhow::Error) -> Errno {
+    if error.downcast_ref::<NoExtent>().is_some() {
+        Errno::ENOENT
+    } else if error.downcast_ref::<NoPages>().is_some() {
+        Errno::ENOMEM
+    } else {
+        Errno::EIO
+    }
+}
+
 /// What a cached extent's pages are read from: its contents, in parts.
 pub(crate) trait Contents: Send + Sync {
     /// Reads its bytes at `offset` into `buf`: a future, which a read that waits, as a fetch from
@@ -605,9 +622,12 @@ impl CachedExtent {
                     }
                 }
             }
-            Err(errno) => {
+            Err(error) => {
+                // What the read failed with, not its errno alone, which said nothing of why
+                // (TASK-217).
+                let errno = read_errno(&error);
                 log::error!(
-                    "fxdax: reading {:?} at {:#x}: {errno:?}",
+                    "fxdax: reading {:?} at {:#x}: {errno:?}: {error:#}",
                     self.extent,
                     pages.start * ps
                 );
@@ -626,11 +646,14 @@ impl CachedExtent {
     /// The pages `pages` of the extent, read in: pages of its arena, consecutive where they can be
     /// (`physmem::alloc_run`), so that a window maps them in as few runs as can be (TASK-108.1),
     /// and read into in place if they are, else copied into.
-    async fn read_pages(&self, pages: Range<u64>) -> Result<Vec<physmem::Page>> {
+    async fn read_pages(
+        &self,
+        pages: Range<u64>,
+    ) -> std::result::Result<Vec<physmem::Page>, anyhow::Error> {
         let ps = page_size();
         let count = (pages.end - pages.start) as usize;
         let frames = physmem::alloc_run(self.arena, count, physmem::Wait::Yes)
-            .map_err(|_| Errno::ENOMEM)?;
+            .map_err(|_| anyhow::Error::new(NoPages))?;
         let offset = pages.start * ps;
         let len = count * ps as usize;
         // What of it the extent holds; past it, zeros.
@@ -654,9 +677,7 @@ impl CachedExtent {
             }
             result
         };
-        result.map_err(|error| {
-            if error.downcast_ref::<NoExtent>().is_some() { Errno::ENOENT } else { Errno::EIO }
-        })?;
+        result?;
         Ok(frames)
     }
 
