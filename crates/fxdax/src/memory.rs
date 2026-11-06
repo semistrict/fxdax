@@ -131,9 +131,68 @@ impl<'a> From<&'a mut [u8]> for VolatileSliceMut<'a> {
     }
 }
 
+/// fxdax: copies `data` into `buffers`, taken as one run of bytes, from byte `at` of it, as far
+/// as they go: how many bytes it copied. What a read copies out a piece at a time (TASK-149.17).
+pub fn scatter(buffers: &mut [VolatileSliceMut], mut at: usize, mut data: &[u8]) -> usize {
+    let mut copied = 0;
+    for buffer in buffers {
+        if data.is_empty() {
+            break;
+        }
+        if at >= buffer.len() {
+            at -= buffer.len();
+            continue;
+        }
+        let len = (buffer.len() - at).min(data.len());
+        buffer.subslice(at, len).expect("within the buffer").copy_from(&data[..len]);
+        (data, copied, at) = (&data[len..], copied + len, 0);
+    }
+    copied
+}
+
+/// fxdax: copies the bytes of `buffers`, taken as one run, from byte `at` of it, into `dst`, as
+/// many as fit: how many bytes it copied. What a write copies in a piece at a time (TASK-149.17).
+pub fn gather(buffers: &[VolatileSlice], mut at: usize, mut dst: &mut [u8]) -> usize {
+    let mut copied = 0;
+    for buffer in buffers {
+        if dst.is_empty() {
+            break;
+        }
+        if at >= buffer.len() {
+            at -= buffer.len();
+            continue;
+        }
+        let len = (buffer.len() - at).min(dst.len());
+        buffer.subslice(at, len).expect("within the buffer").copy_to(&mut dst[..len]);
+        (dst, copied, at) = (&mut dst[len..], copied + len, 0);
+    }
+    copied
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// fxdax TASK-149.17: buffers are copied into and out of as one run of their bytes, from any
+    /// byte of it, a piece at a time, as many as there are.
+    #[test]
+    fn buffers_are_one_run_of_bytes() {
+        let (first, second, third) = (*b"abc", *b"", *b"defgh");
+        let buffers = [&first[..], &second[..], &third[..]].map(VolatileSlice::from);
+        let mut out = [0u8; 4];
+        assert_eq!(gather(&buffers, 2, &mut out), 4);
+        assert_eq!(&out, b"cdef");
+        assert_eq!(gather(&buffers, 6, &mut out), 2);
+        assert_eq!(&out[..2], b"gh");
+        assert_eq!(gather(&buffers, 8, &mut out), 0);
+
+        let (mut first, mut second) = ([0u8; 3], [0u8; 5]);
+        let mut buffers = [VolatileSliceMut::from(&mut first[..]), VolatileSliceMut::from(&mut second[..])];
+        assert_eq!(scatter(&mut buffers, 1, b"wxyz"), 4);
+        assert_eq!(scatter(&mut buffers, 6, b"0123"), 2);
+        assert_eq!(scatter(&mut buffers, 8, b"!"), 0);
+        assert_eq!((&first, &second), (b"\0wx", b"yz\x0001"));
+    }
 
     #[test]
     fn copies_and_subslices() {

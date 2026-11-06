@@ -31,7 +31,7 @@ use crate::error::{Errno, Error, Result};
 use crate::faults::failpoint;
 use crate::fence::{Fence, Held, StoreMutex, StoreRwLock};
 use crate::host_store;
-use crate::memory::{VolatileSlice, VolatileSliceMut};
+use crate::memory::{VolatileSlice, VolatileSliceMut, gather, scatter};
 use crate::pages::{Arena, ArenaId, page_size};
 use crate::profile::{self, Recorder};
 use crate::stats::{self, Counter};
@@ -449,6 +449,12 @@ impl ExtentStore {
 
     /// The most bytes an extent holds (doc-4's `max_extent`).
     pub const MAX_EXTENT: u64 = 64 << 20;
+
+    /// fxdax: the most bytes of its own a read or a write holds as it copies, whatever its length
+    /// (TASK-149.17): which a VM process names, so that a connection of the extent daemon's held
+    /// a copy of each of its requests' whole lengths, as many as it serves at once, past what the
+    /// protocol bounds of it.
+    pub const PIECE: usize = 1 << 20;
 
     /// A new store at `path`, which must not exist, holding at most `capacity` bytes, with a branch
     /// of its own. fxdax: kept in this host's bucket, or, where this is no host of fxdax's system, a
@@ -989,27 +995,33 @@ impl ExtentStore {
         offset: u64,
         buffers: &mut [VolatileSliceMut],
     ) -> Result<()> {
-        let len = buffers.iter().map(VolatileSliceMut::len).sum();
+        let len = buffers.iter().map(VolatileSliceMut::len).sum::<usize>();
         stats::add(Counter::Reads, 1);
         stats::add(Counter::ReadBytes, len as u64);
         // fxdax: nothing a panic went through is read (`crate::fence`).
         self.fence.check()?;
-        let mut data = vec![0; len];
-        match self.base_holding(extent)? {
-            Some((base, _)) if !base.read_cached(extent, offset, &mut data)? => {
-                base.read_stored(extent, offset, &mut data)?;
+        let base = self.base_holding(extent)?;
+        // fxdax: a piece at a time, as the extent daemon's memory holds no more of a request
+        // (TASK-149.17); once at least, as a read of nothing finds whether the extent is there.
+        let mut piece = vec![0; len.min(Self::PIECE)];
+        let mut done = 0;
+        loop {
+            let data = &mut piece[..(len - done).min(Self::PIECE)];
+            let at = offset.checked_add(done as u64).ok_or(Errno::EINVAL)?;
+            match &base {
+                Some((base, _)) if !base.read_cached(extent, at, data)? => {
+                    base.read_stored(extent, at, data)?;
+                }
+                Some(_) => {}
+                None if !self.read_cached(extent, at, data)? => self.read_stored(extent, at, data)?,
+                None => {}
             }
-            Some(_) => {}
-            None if !self.read_cached(extent, offset, &mut data)? => {
-                self.read_stored(extent, offset, &mut data)?;
+            scatter(buffers, done, data);
+            done += data.len();
+            if done == len {
+                return Ok(());
             }
-            None => {}
         }
-        let mut at = 0;
-        for buffer in buffers {
-            at += buffer.copy_from(&data[at..]);
-        }
-        Ok(())
     }
 
     /// fxdax: reads `extent`'s bytes at `offset` from the extent cache, if it is sealed: which pages
@@ -1112,14 +1124,15 @@ impl ExtentStore {
     /// branch's, and open (`WRITE`).
     pub fn write(&self, extent: ExtentId, offset: u64, buffers: &[VolatileSlice]) -> Result<()> {
         self.access().may_write()?;
-        let len = buffers.iter().map(VolatileSlice::len).sum();
+        let len = buffers.iter().map(VolatileSlice::len).sum::<usize>();
         let _opening = self.opening.read(&self.fence)?;
-        let mut data = vec![0; len];
-        let mut at = 0;
-        for buffer in buffers {
-            at += buffer.copy_to(&mut data[at..]);
-        }
-        self.store.write(extent.into(), offset, &data).map_err(errno)
+        // fxdax: from `buffers` to the store's file, a piece at a time, as the extent daemon's
+        // memory holds no more of a request (TASK-149.17).
+        let fill = |at: u64, piece: &mut [u8]| {
+            gather(buffers, at as usize, piece);
+        };
+        let written = self.store.write_with(extent.into(), offset, len as u64, Self::PIECE, fill);
+        written.map_err(errno)
     }
 
     /// Frees `extent`, if the store holds it (`FREE`).

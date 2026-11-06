@@ -565,7 +565,7 @@ fn receive(
 /// it is told of, which the protocol's bound on stream data leaves room for (TASK-79.16). And, its
 /// window's, a reply to `MAPPINGS` (TASK-79.43), as many mappings as the window may hold, which
 /// [`Peer::room`] leaves room for besides.
-const QUEUED_ROOM: u64 = 16 << 20;
+pub(super) const QUEUED_ROOM: u64 = 16 << 20;
 
 impl Connection {
     /// fxdax: whether its VM process, should it live on, reaches pages still: those its window has

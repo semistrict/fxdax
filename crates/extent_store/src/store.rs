@@ -1803,10 +1803,31 @@ impl<D: Dir> Store<D> {
 
     /// Writes `data` at `offset` in `extent` (see `begin_write`).
     pub fn write(&self, extent: ExtentId, offset: u64, data: &[u8]) -> Result<(), Error> {
-        let write = self.begin_write(extent, offset, data.len() as u64)?;
-        let mut aligned = Aligned::new(data.len());
-        aligned.as_mut_slice().copy_from_slice(data);
-        write.file().write_at(aligned.as_slice(), write.offset())?;
+        let fill = |at: u64, buf: &mut [u8]| buf.copy_from_slice(&data[at as usize..][..buf.len()]);
+        self.write_with(extent, offset, data.len() as u64, data.len(), fill)
+    }
+
+    /// fxdax: writes `len` bytes at `offset` in `extent`, as [`Store::write`] does, one write, but
+    /// `piece` bytes at a time at most, each of which `fill(at, buf)` fills with the bytes at `at`
+    /// of them: so that what a write holds of memory is a piece, whatever its length, which a VM
+    /// process names (TASK-149.17).
+    pub fn write_with(
+        &self,
+        extent: ExtentId,
+        offset: u64,
+        len: u64,
+        piece: usize,
+        mut fill: impl FnMut(u64, &mut [u8]),
+    ) -> Result<(), Error> {
+        let write = self.begin_write(extent, offset, len)?;
+        let mut aligned = Aligned::new((len as usize).min(piece.max(1)));
+        let mut at = 0;
+        while at < len {
+            let buf = &mut aligned.as_mut_slice()[..(len - at).min(piece as u64) as usize];
+            fill(at, buf);
+            write.file().write_at(buf, write.offset() + at)?;
+            at += buf.len() as u64;
+        }
         write.finish();
         Ok(())
     }
