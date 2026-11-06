@@ -919,6 +919,10 @@ struct World {
     root: u64,
     model: Model,
     tally: Rc<Tally>,
+    /// Whether a power cut kept some of what its device was written since a barrier, and lost
+    /// some: the journal's records of what a shared extent took, while what was written to it is
+    /// there, which Fxfs can't count until the device says how far each extent reaches (TASK-213).
+    cut: bool,
 }
 
 /// Runs fsck, and says what it found.
@@ -962,7 +966,7 @@ impl World {
         let root = volume.root_directory_object_id();
         let platform = Seeded { workers: setting.workers };
         let fs = Box::new(Fxfs::new((*filesystem).clone(), volume, false, platform));
-        Self { setting, filesystem, _hooks, fs, root, model: Model::new(root), tally }
+        Self { setting, filesystem, _hooks, fs, root, model: Model::new(root), tally, cut: false }
     }
 
     /// Mounts what `device` holds, or replays it: what `model` should say.
@@ -982,7 +986,7 @@ impl World {
         drop(volumes);
         let platform = Seeded { workers: setting.workers };
         let fs = Box::new(Fxfs::new((*filesystem).clone(), volume, false, platform));
-        Ok(Self { setting, filesystem, _hooks, fs, root, model, tally })
+        Ok(Self { setting, filesystem, _hooks, fs, root, model, tally, cut: false })
     }
 
     /// Unmounts, as a guest's `umount` does, leaving the device.
@@ -1235,7 +1239,31 @@ impl World {
         self.holds(&self.model).await?;
         self.fs.sync().await.map_err(|e| format!("sync: {e:#}"))?;
         self.holds_nothing_else(&self.model).await?;
+        if !self.cut {
+            self.counts_what_its_device_holds().await?;
+        }
         checked(&self.filesystem).await
+    }
+
+    /// Checks that Fxfs counts each extent the device holds as far as the device holds it, those
+    /// waiting to be freed too: what an allocation that dropped wrote of a shared extent, which a
+    /// mount counted only as far as the allocations that committed in it, held more than Fxfs
+    /// counted (TASK-213).
+    async fn counts_what_its_device_holds(&self) -> Result<(), String> {
+        let (device, allocator) = (self.filesystem.device(), self.filesystem.allocator());
+        allocator.freed().await.map_err(|e| format!("freeing: {e:#}"))?;
+        let longer: Vec<_> = (device.extents().into_iter())
+            .filter(|extent| extent.branch == device.branch())
+            .filter_map(|extent| {
+                let held = device.extent_len(extent)?;
+                let counted = allocator.extent_counted(extent);
+                (held > counted).then_some((extent, held, counted))
+            })
+            .collect();
+        match longer.len() {
+            0 => Ok(()),
+            count => Err(format!("{count} extents held further than counted: {longer:?}")),
+        }
     }
 
     /// Checks that the volume holds no object but `model`'s, and only what's open and no name
@@ -1318,11 +1346,12 @@ impl World {
     /// it wouldn't.
     async fn remount(mut self) -> Result<Self, String> {
         self.model.open.clone().into_iter().for_each(|ino| self.close(ino));
-        let (setting, root) = (self.setting, self.root);
+        let (setting, root, cut) = (self.setting, self.root, self.cut);
         let (model, tally) = (self.model.clone(), self.tally.clone());
         let device = self.unmount().await?;
         device.reopen(false);
         let mut world = Self::mount(setting, device, root, model, tally).await?;
+        world.cut = cut;
         world.settle();
         Ok(world)
     }
@@ -1333,7 +1362,8 @@ impl World {
         self.fs.sync().await.map_err(|e| format!("sync: {e:#}"))?;
         let device = self.filesystem.device().snapshot().map_err(|e| format!("snapshot: {e:#}"))?;
         let (model, tally) = (self.model.clone().cut(), self.tally.clone());
-        let replayed = Self::mount(self.setting, device, self.root, model, tally).await?;
+        let mut replayed = Self::mount(self.setting, device, self.root, model, tally).await?;
+        replayed.cut = self.cut;
         replayed.check_all().await?;
         replayed.unmount().await.map(drop)
     }
@@ -1812,6 +1842,7 @@ impl Past {
         let setting = self.setting;
         let mut world =
             World::mount(setting, device, root, Model::new(root), tally.clone()).await?;
+        world.cut = true;
         second_cuts.stop();
         checked(&world.filesystem).await?;
         world.holds_no_orphans().await?;
@@ -1847,7 +1878,8 @@ impl Past {
             tally.second_cuts.set(tally.second_cuts.get() + 1);
             let device = DeviceHolder::new(device);
             let again = World::mount(setting, device, root, held.clone(), tally.clone()).await;
-            let again = again.map_err(|e| format!("cut during its replay: {e}"))?;
+            let mut again = again.map_err(|e| format!("cut during its replay: {e}"))?;
+            again.cut = true;
             again.check_all().await.map_err(|e| format!("cut during its replay: {e}"))?;
             again.unmount().await?;
         }

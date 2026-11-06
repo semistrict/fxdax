@@ -179,6 +179,12 @@ pub trait Device: Send + Sync {
         unreachable!();
     }
 
+    /// fxdax: how far `extent` is written, the end of its furthest write, if the device holds it.
+    /// (Only implemented for testing devices.)
+    fn extent_len(&self, _extent: ExtentId) -> Option<u64> {
+        unreachable!();
+    }
+
     /// Returns a snapshot of the device.
     fn snapshot(&self) -> Result<DeviceHolder, Error> {
         bail!("Not supported");

@@ -1053,6 +1053,10 @@ impl Device for FakeDevice {
         extents
     }
 
+    fn extent_len(&self, extent: ExtentId) -> Option<u64> {
+        self.inner.lock().extents.get(&extent).map(|data| data.len() as u64)
+    }
+
     fn snapshot(&self) -> Result<DeviceHolder, Error> {
         self.fork(self.branch)
     }

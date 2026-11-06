@@ -702,6 +702,10 @@ impl FxFilesystem {
         assert_eq!(self.closed.swap(true, Ordering::SeqCst), false);
         debug_assert_not_too_long!(self.graveyard.wait_for_reap());
         debug_assert_not_too_long!(self.background_tasks.clone().cancel());
+        // fxdax: what dropped allocations left in shared extents, which the next mount counts.
+        if !self.options().read_only && self.journal().image_builder_mode().is_none() {
+            self.allocator().record_reaches().await?;
+        }
         self.journal.stop_compactions().await;
         let sync_status = if self.journal().image_builder_mode().is_some()
             || self.options().read_only
@@ -783,6 +787,11 @@ impl FxFilesystem {
 
     pub async fn sync(&self, options: SyncOptions<'_>) -> Result<(), Error> {
         let wait_for_frees = options.flush_device && !options.background_frees;
+        // fxdax: what dropped allocations left in shared extents, before the barrier that seals it:
+        // boxed, as an allocation short of room syncs, and this commits a transaction.
+        if !self.options.read_only {
+            Box::pin(self.allocator().record_reaches()).await?;
+        }
         self.journal.sync(options).await?;
         if wait_for_frees {
             self.allocator().freed().await.context("Failed to free dead extents")?;

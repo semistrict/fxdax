@@ -886,6 +886,35 @@ impl ExtentTable {
         self.extents.get(&extent)?.owner()
     }
 
+    /// Has the extent of `range` reach as far as its end, if it is alive: an allocation of it that
+    /// dropped took it, which the extent keeps, as it is written once (`drop_allocation`), and
+    /// `AllocatorMutation::Reach` records. Returns the range's record, counted 0, which sizes the
+    /// extent as a mount loads it. One not alive takes nothing of it: dead, it goes whole.
+    pub(super) fn reach(&mut self, range: &ExtentRange) -> Records {
+        let mut records = Records::default();
+        let Some(state) = self.extents.get_mut(&range.extent).filter(|state| state.is_alive())
+        else {
+            return records;
+        };
+        let owner_object_id = state.owner().expect("an extent alive has an owner");
+        self.alive_bytes += state.reach(range.range.end);
+        records.add_count(range.extent, range.range.clone(), 0, owner_object_id);
+        records
+    }
+
+    /// The bytes the table counts `extent` taking, in whatever state, dead and not yet freed too:
+    /// the staging extent, while it is open, as far as it may yet reach.
+    pub(super) fn counted(&self, extent: ExtentId, device: &dyn Device) -> u64 {
+        let open = self.staging.as_ref().is_some_and(|staging| staging.extent == extent)
+            && device.is_open(extent);
+        if open {
+            return STAGING_SIZE;
+        }
+        let dead = self.dead.iter().chain(&self.freeing).filter(|dead| dead.extent == extent);
+        let dead = dead.map(|dead| dead.size).max().unwrap_or(0);
+        self.extents.get(&extent).map_or(0, ExtentState::size).max(dead)
+    }
+
     /// Whether `extent` is alive.
     pub(super) fn is_alive(&self, extent: ExtentId) -> bool {
         self.extents.get(&extent).is_some_and(ExtentState::is_alive)

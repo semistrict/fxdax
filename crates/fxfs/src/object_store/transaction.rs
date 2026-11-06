@@ -235,6 +235,15 @@ pub enum AllocatorMutationV60 {
         owner_object_id: u64,
         delta: i64,
     },
+    /// fxdax: `device_range`, of a shared extent alive, which an allocation of `owner_object_id`
+    /// that dropped took, and the extent keeps, as it is written once (TASK-211): the extent
+    /// reaches as far as its end, with the range counted 0 (the allocator's "Shared extents"). A
+    /// drop writes nothing of its own; this records it, so that a mount sizes the extent as far as
+    /// the device holds it (TASK-213). Added last, as `Snapshot`.
+    Reach {
+        device_range: ExtentRange,
+        owner_object_id: u64,
+    },
 }
 
 pub type UpdateMutationsKey = UpdateMutationsKeyV49;

@@ -633,6 +633,10 @@ impl Journal {
                 return valid_device_range(device_range, block_size)
                     && *owner_object_id != INVALID_OBJECT_ID;
             }
+            Mutation::Allocator(AllocatorMutation::Reach { device_range, owner_object_id }) => {
+                return valid_device_range(device_range, block_size)
+                    && *owner_object_id != INVALID_OBJECT_ID;
+            }
             Mutation::Allocator(AllocatorMutation::Reference {
                 device_range,
                 owner_object_id,

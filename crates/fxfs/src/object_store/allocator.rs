@@ -771,6 +771,10 @@ struct Inner {
     /// tree never holds, nor does `extents`. In memory: only their stores touch those extents.
     base_branches: HashSet<u64>,
 
+    /// fxdax: the ranges of shared extents that allocations which dropped took, with their owners,
+    /// which the journal doesn't yet record (`record_reaches`, TASK-213).
+    unrecorded_reaches: Vec<(ExtentRange, u64)>,
+
     /// Tracks the number of allocations of size 1,2,...63,>=64.
     allocation_size_histogram: [u64; 64],
 }
@@ -943,6 +947,7 @@ impl Allocator {
                 unattributed_reserved_bytes: 0,
                 extents: ExtentTable::default(),
                 base_branches: HashSet::new(),
+                unrecorded_reaches: Vec::new(),
                 allocation_size_histogram: [0; 64],
             }),
             counters: Mutex::new(AllocatorCounters::default()),
@@ -1356,6 +1361,13 @@ impl Allocator {
         self.allocate_in(transaction, owner_object_id, len.min(STAGED_MAX), true).await
     }
 
+    /// fxdax: the bytes the allocator counts `extent` taking, alive or pending, which the device
+    /// mustn't hold more of: for the staging extent, while it is open, as far as it may yet reach.
+    pub fn extent_counted(&self, extent: ExtentId) -> u64 {
+        let device = self.filesystem.upgrade().unwrap().device();
+        self.inner.lock().extents.counted(extent, &*device)
+    }
+
     /// fxdax: how far `extent` reaches, as allocated, or for the staging extent, while it is open,
     /// may yet be.
     pub fn extent_size(&self, extent: ExtentId) -> Option<u64> {
@@ -1550,6 +1562,47 @@ impl Allocator {
         let mutation = AllocatorMutation::Allocate { device_range, owner_object_id };
         transaction.add(self.object_id(), Mutation::Allocator(mutation));
         Ok(())
+    }
+
+    /// fxdax: records the ranges of shared extents alive that allocations which dropped took
+    /// (`AllocatorMutation::Reach`), in transactions of their own: before a sync, whose barrier
+    /// seals what was written there with nothing in the journal to say how far the extent reaches.
+    /// A mount counted such an extent only as far as its allocations that committed, short of what
+    /// the device holds (TASK-213). A transaction that drops gives its ranges back to record.
+    pub async fn record_reaches(&self) -> Result<(), Error> {
+        /// Reaches a transaction records at most: a few bytes of the journal each.
+        const REACHES_A_TRANSACTION: usize = 256;
+        let filesystem = self.filesystem.upgrade().unwrap();
+        loop {
+            let reaches: Vec<_> = {
+                let mut inner = self.inner.lock();
+                let Inner { unrecorded_reaches, extents, .. } = &mut *inner;
+                unrecorded_reaches.retain(|(range, _)| extents.is_alive(range.extent));
+                let at_most = unrecorded_reaches.len().min(REACHES_A_TRANSACTION);
+                unrecorded_reaches.drain(..at_most).collect()
+            };
+            if reaches.is_empty() {
+                return Ok(());
+            }
+            let options = Options {
+                skip_journal_checks: true,
+                borrow_metadata_space: true,
+                ..Default::default()
+            };
+            let mut transaction =
+                match filesystem.root_store().new_transaction(lock_keys![], options).await {
+                    Ok(transaction) => transaction,
+                    Err(error) => {
+                        self.inner.lock().unrecorded_reaches.extend(reaches);
+                        return Err(error.context("recording what dropped allocations took"));
+                    }
+                };
+            for (device_range, owner_object_id) in reaches {
+                let reach = AllocatorMutation::Reach { device_range, owner_object_id };
+                transaction.add(self.object_id(), Mutation::Allocator(reach));
+            }
+            transaction.commit().await.context("recording what dropped allocations took")?;
+        }
     }
 
     /// Sets the limits for an owner object in terms of usage.
@@ -2106,6 +2159,10 @@ impl JournalingObject for Allocator {
                 let records = inner.recount(&device_range, delta, context)?;
                 self.record(records);
             }
+            Mutation::Allocator(AllocatorMutation::Reach { device_range, .. }) => {
+                let records = self.inner.lock().extents.reach(&device_range);
+                self.record(records);
+            }
             Mutation::Allocator(AllocatorMutation::Deallocate { device_range, .. }) => {
                 let mut inner = self.inner.lock();
                 // `deallocate` leaves out the extents frozen owners hold, so the extent is the
@@ -2158,7 +2215,18 @@ impl JournalingObject for Allocator {
                 reservation.release_reservation(res_owner, len - kept);
                 reservation.commit(kept);
             }
+            // What the extent took, nothing records: the next sync does (`record_reaches`).
+            if kept > 0 {
+                inner.unrecorded_reaches.push((device_range, owner_object_id));
+            }
             self.record(records);
+        } else if let Mutation::Allocator(AllocatorMutation::Reach {
+            device_range,
+            owner_object_id,
+        }) = mutation
+        {
+            // Its transaction dropped: the next sync records it again.
+            self.inner.lock().unrecorded_reaches.push((device_range, owner_object_id));
         }
     }
 
@@ -4283,6 +4351,44 @@ mod tests {
             .expect("new failed");
         fs.allocator().deallocate(&mut transaction, 99, range).await.expect("deallocate failed");
         transaction.commit().await.expect("commit failed");
+    }
+
+    /// fxdax: a shared allocation dropped leaves its range of the staging extent written, which the
+    /// extent takes while it lives (TASK-211): after a remount too, as the device holds it. Taken
+    /// only as far as its last allocation that committed, the filesystem held less than its device
+    /// did, which a full device's compactions, which its metadata reservation promises room,
+    /// would find (TASK-213). The journal records it at the next sync, which a mount replays, or a
+    /// compaction keeps.
+    #[fuchsia::test]
+    async fn test_a_shared_extent_takes_what_was_dropped_in_it_after_a_remount() {
+        for compacted in [false, true] {
+            let (fs, _) = test_fs().await;
+            let bs = fs.block_size().get();
+            let write = async |fs: &OpenFxFilesystem, range: &ExtentRange| {
+                let device = fs.device();
+                let mut buffer = device.allocate_buffer(range.len() as usize).await;
+                buffer.as_mut().fill(1);
+                device.write(range.extent, range.range.start, buffer.as_ref()).await
+            };
+            let (committed, first) = shared_allocation(&fs).await;
+            write(&fs, &first).await.expect("write failed");
+            committed.commit().await.expect("commit failed");
+            let (dropped, second) = shared_allocation(&fs).await;
+            assert_eq!(second, ExtentRange::new(first.extent, bs..2 * bs));
+            write(&fs, &second).await.expect("write failed");
+            drop(dropped);
+            if compacted {
+                flush_device(&fs).await;
+                fs.journal().force_compact().await.expect("compaction failed");
+            }
+            fs.close().await.expect("close failed");
+            let device = fs.take_device().await;
+            device.reopen(false);
+            let fs = FxFilesystemBuilder::new().open(device).await.expect("open failed");
+            let allocator = fs.allocator();
+            assert_eq!(allocator.extent_size(first.extent), Some(2 * bs), "{compacted}");
+            fs.close().await.expect("close failed");
+        }
     }
 
     async fn flush_device(fs: &OpenFxFilesystem) {

@@ -12,6 +12,12 @@
 **Recommended:** delete both; the POSIX layer's own tests cover the defaults.
 **Until then:** they stay, the allow hiding nothing else.
 
+## A device request for how far extents are written, for a mount after a power cut (2026-11-06)
+
+After a power cut a staging extent can hold data whose commits the journal lost, as doc-4 allows: a mount counts it only as far as its durable commits, up to 2 MiB short each, which breaks the room a full device's metadata reservation promises (TASK-214). Nothing Fxfs writes can close it; the device has to say how long the extents minted since the last barrier are. That's a protocol change (doc-4, the guest driver, Firecracker, extentd), so it's yours to approve.
+**Recommended:** a request returning the lengths of named extents, asked at mount of the extents minted since the root's last barrier, which the root would record.
+**Until then:** after a cut, up to 2 MiB a volume's staging extent stays uncounted until the extent dies; the model's length oracle runs only on filesystems no cut touched.
+
 # Decisions
 
 Decisions made without you, still yours to confirm or overturn. Each is a line or two here; what else was possible and how to undo it are in the task named, under "Decision moved here from OPEN_QUESTIONS.md" in its notes, or in the doc named. Tell an agent which you confirm or overturn and its line leaves the file.
@@ -78,6 +84,7 @@ Decisions made without you, still yours to confirm or overturn. Each is a line o
 - **The journal's end is in the root,** set by each sync's barrier; a replay ending before it is refused. TASK-153.13.
 - **A transaction that fails to apply still stops the journal** (ext4's errors=remount-ro). TASK-153.14.
 - **The journal's own transaction past its file stops the journal, not the kernel.** TASK-139.
+- **What a dropped shared allocation left in its extent is journaled at the next sync** (`AllocatorMutation::Reach`, added last to V60 without a version bump, as `Reference` was), so a mount sizes the extent from it. TASK-213, 2026-11-06.
 - **Truncate on a full disk: every growth takes one path that zeroes the tail.** TASK-150.19.
 - **A volume's read-only is derived from its filesystem's, at one place.** TASK-160.26, 2026-11-05.
 - **fxdax's additions to Fxfs's upstream files live in child modules,** tests beside them. TASK-160.24, 2026-11-05.
