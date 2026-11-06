@@ -255,6 +255,25 @@ impl Faults {
         (rng.next(Self::ONE_IN) == 0).then(|| 1 + rng.next(Self::NTH))
     }
 
+    /// fxdax: whether the kernel has fault injection, a task's fail-nth (a debug kernel's).
+    pub fn available() -> bool {
+        std::path::Path::new("/proc/thread-self/fail-nth").exists()
+    }
+
+    /// fxdax: makes `call` with its `nth` allocation that may fail failing; and whether it failed
+    /// one, as it may make fewer.
+    pub fn failing<T>(
+        &self,
+        nth: u64,
+        call: impl FnOnce() -> io::Result<T>,
+    ) -> (io::Result<T>, bool) {
+        Self::fail_nth(nth);
+        let made = call();
+        let failed = Self::left() == 0;
+        Self::fail_nth(0);
+        (made, failed)
+    }
+
     /// Makes `call`, the `index`th call of operation `op`, with the allocation `nth` says
     /// failing; and whether it failed one.
     fn during<T>(
@@ -263,13 +282,10 @@ impl Faults {
         index: u64,
         call: impl FnOnce() -> io::Result<T>,
     ) -> (io::Result<T>, bool) {
-        let Some(nth) = self.nth(op, index) else { return (call(), false) };
-        Self::fail_nth(nth);
-        let made = call();
-        // Not reached, it would fail an allocation after.
-        let failed = Self::left() == 0;
-        Self::fail_nth(0);
-        (made, failed)
+        match self.nth(op, index) {
+            Some(nth) => self.failing(nth, call),
+            None => (call(), false),
+        }
     }
 
     /// Through the file opened as the injection was set up, whose reads and writes allocate

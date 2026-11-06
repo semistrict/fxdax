@@ -1,0 +1,24 @@
+# SPDX-License-Identifier: GPL-2.0
+# Copyright 2026 The fxdax Authors.
+#
+# Kernel: debug
+# Killer: fxfs-guest-checks writeback_out_of_memory
+#
+# TASK-212: a page cache writeback Fxfs had no memory for leaves its folios clean, as an I/O
+# error's: dropped, the file reads what the store held before (TASK-207's, of DAX's private
+# pages). writeback_out_of_memory: the debug kernel's fault injection fails each of an fsync's
+# allocations in turn, and the file's clean pages dropped differ.
+
+--- a/guest/linux/fs/fxfs/super.c
++++ b/guest/linux/fs/fxfs/super.c
+@@ -1813,9 +1813,7 @@
+ 		fxfs_dax_written(run->inode);
+ 	} else if (run->reserved)
+ 		fxfs_release_dirty(fs, run->inode->i_ino, run->reserved);
+-	if (err == -ENOMEM)
+-		fxfs_vfs_keep(run);
+-	else if (err)
++	if (err)
+ 		mapping_set_error(run->inode->i_mapping, err);
+ 	for (i = 0; i < run->count; i++)
+ 		folio_end_writeback(run->folios[i]);

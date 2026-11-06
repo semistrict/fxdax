@@ -1746,6 +1746,11 @@ struct fxfs_vfs_run {
 	struct folio *folios[FXFS_IO_MAX / PAGE_SIZE];
 	/* Their data, as much of each as is before the file's end, if any is. */
 	struct fxfs_write_part parts[FXFS_IO_MAX / PAGE_SIZE];
+	/* fxdax: each part's folio, and its pages, `first` to `last`, exclusive (TASK-212). */
+	struct fxfs_vfs_run_piece {
+		struct folio *folio;
+		unsigned long first, last;
+	} pieces[FXFS_IO_MAX / PAGE_SIZE];
 	unsigned int count, nr_parts;
 	size_t len;
 	/* fxdax: the bytes of the pages it writes whose room is reserved, which pays for them. */
@@ -1753,9 +1758,47 @@ struct fxfs_vfs_run {
 };
 
 /*
+ * fxdax: of a run Fxfs had no memory to write, its parts' pages dirty again, in their folios'
+ * states and their folios, their room reserved again, what there is of it (the failed
+ * fxfs_write_many took it), so that a writeback later writes them (TASK-212): clean, as an I/O
+ * error's, they were lost, the store holding what they replaced, which a read after their eviction
+ * read, as copy-on-write DAX's private pages were (TASK-207). Before their writeback ends, which a
+ * truncation waits for, so that none comes between. A folio with no state, which its state found
+ * no memory for, is dirty whole, as a store dirties one.
+ */
+static void fxfs_vfs_keep(struct fxfs_vfs_run *run)
+{
+	struct inode *inode = run->inode;
+	size_t bytes = 0;
+	unsigned int i;
+
+	for (i = 0; i < run->nr_parts; i++) {
+		struct fxfs_vfs_run_piece *piece = &run->pieces[i];
+		struct fxfs_vfs_folio_state *state = folio_get_private(piece->folio);
+		unsigned long page;
+
+		if (state) {
+			unsigned long *reserved = fxfs_vfs_reserved_bits(state, piece->folio);
+
+			spin_lock(&state->lock);
+			bitmap_set(fxfs_vfs_dirty_bits(state), piece->first,
+				   piece->last - piece->first);
+			for (page = piece->first; page < piece->last; page++)
+				if (!__test_and_set_bit(page, reserved))
+					bytes += PAGE_SIZE;
+			spin_unlock(&state->lock);
+		}
+		filemap_dirty_folio(inode->i_mapping, piece->folio);
+	}
+	if (bytes)
+		fxfs_reserve_dirty_what_fits(fxfs_vfs_fs(inode->i_sb), inode->i_ino, bytes);
+}
+
+/*
  * Writes `run`'s folios, and ends their writeback. fxdax: with the room reserved for them, which
  * is released with what the writes left of it, or, if it writes nothing, the file's end before
- * them, unused.
+ * them, unused. What an I/O error stopped is clean, the error the file's, as any filesystem's;
+ * what Fxfs had no memory to write is dirty still, and the run fails ENOMEM (fxfs_vfs_keep).
  */
 static int fxfs_vfs_write_run(struct fxfs_vfs_run *run)
 {
@@ -1770,11 +1813,12 @@ static int fxfs_vfs_write_run(struct fxfs_vfs_run *run)
 		fxfs_dax_written(run->inode);
 	} else if (run->reserved)
 		fxfs_release_dirty(fs, run->inode->i_ino, run->reserved);
-	for (i = 0; i < run->count; i++) {
-		if (err)
-			mapping_set_error(run->inode->i_mapping, err);
+	if (err == -ENOMEM)
+		fxfs_vfs_keep(run);
+	else if (err)
+		mapping_set_error(run->inode->i_mapping, err);
+	for (i = 0; i < run->count; i++)
 		folio_end_writeback(run->folios[i]);
-	}
 	run->count = 0;
 	run->nr_parts = 0;
 	run->len = 0;
@@ -1847,6 +1891,10 @@ static int fxfs_vfs_writepages(struct address_space *mapping, struct writeback_c
 				err = err ?: run_err;
 			}
 			if (to > from) {
+				run->pieces[run->nr_parts] = (struct fxfs_vfs_run_piece){
+					.folio = folio, .first = from >> PAGE_SHIFT,
+					.last = DIV_ROUND_UP(to, PAGE_SIZE),
+				};
 				run->parts[run->nr_parts++] = (struct fxfs_write_part){
 					.offset = pos + from, .data = folio_address(folio) + from,
 					.len = to - from,

@@ -224,6 +224,7 @@ macro_rules! checks {
             large_folios: PageCache, 3 => test_large_folios;
             scattered_writeback: PageCache, 3 => test_scattered_writeback;
             partial_writeback: PageCache, 3 => test_partial_writeback;
+            writeback_out_of_memory: PageCache, 20 => test_writeback_out_of_memory;
             // Of a small window, which it fills.
             window_held_killed: SmallDax, 4 => test_window_held_killed;
             // Last: it fills the filesystem, then removes what it filled it with.
@@ -322,13 +323,14 @@ mod tests {
     #[test]
     fn suites_run_their_checks_in_order() {
         assert_eq!(
-            last(&PAGE_CACHE, 7),
+            last(&PAGE_CACHE, 8),
             [
                 "random_ops",
                 "torture",
                 "large_folios",
                 "scattered_writeback",
                 "partial_writeback",
+                "writeback_out_of_memory",
                 "enospc",
                 "unbind_waits_for_unmount",
             ]

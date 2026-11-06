@@ -127,3 +127,64 @@ pub(super) fn test_partial_writeback() {
     assert!(fs::read(&name).unwrap() == expected, "the file differs from what was written");
     fs::remove_file(&name).unwrap();
 }
+
+/// fxdax: a page cache writeback that finds no memory keeps what it was to write (TASK-212): of a
+/// file's 16 pages written, its fsync with each of its first 64 allocations that may fail failing in
+/// turn (the debug kernel's fault injection, /proc/thread-self/fail-nth), the fsync failing ENOMEM
+/// or not at all; then the file's clean pages dropped (POSIX_FADV_DONTNEED, drop_caches), which a
+/// writeback that left them clean lost, the store holding the round before, as TASK-207 found of
+/// DAX; then synced and evicted, which reads what was written. Said, and passed, on a kernel
+/// without fault injection: the debug kernel's suites run it (soak-sanitized).
+pub(super) fn test_writeback_out_of_memory() {
+    use std::os::unix::fs::FileExt;
+    const PAGES: usize = 16;
+    const NTH: u64 = 64;
+    if !script_run::Faults::available() {
+        eprintln!(
+            "writeback_out_of_memory: no fault injection here (FXDAX_GUEST_KERNEL_BUILD=debug)"
+        );
+        return;
+    }
+    let faults = script_run::Faults::set_up(0);
+    let name = path("writeback-out-of-memory");
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(&name)
+        .unwrap();
+    let mut failed = 0;
+    for nth in 1..=NTH {
+        let data: Vec<u8> = (0..PAGES * 4096).map(|at| (at as u64 * 31 + nth) as u8).collect();
+        file.write_all_at(&data, 0).unwrap();
+        let (synced, fired) = faults.failing(nth, || file.sync_all());
+        if let Err(err) = &synced {
+            assert_eq!(
+                err.raw_os_error(),
+                Some(libc::ENOMEM),
+                "allocation {nth} failing: the fsync: {err}"
+            );
+        }
+        failed += u64::from(fired);
+        assert_eq!(
+            unsafe { libc::posix_fadvise(file.as_raw_fd(), 0, 0, libc::POSIX_FADV_DONTNEED) },
+            0
+        );
+        fs::write("/proc/sys/vm/drop_caches", b"1").unwrap();
+        let mut got = vec![0; data.len()];
+        file.read_exact_at(&mut got, 0).unwrap();
+        let first = got.iter().zip(&data).position(|(a, b)| a != b);
+        assert_eq!(
+            first, None,
+            "allocation {nth} failing, the fsync {synced:?}: the file dropped differs"
+        );
+        file.sync_all().unwrap();
+        evict(&name);
+        file.read_exact_at(&mut got, 0).unwrap();
+        assert!(got == data, "allocation {nth} failing: the file evicted, synced again, differs");
+    }
+    eprintln!("writeback_out_of_memory: {failed} of {NTH} fsyncs had an allocation fail");
+    assert!(failed > 0, "no allocation of an fsync's failed");
+    fs::remove_file(&name).unwrap();
+}
