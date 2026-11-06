@@ -107,12 +107,12 @@ void sim_device_check_unmounted(void);
 /* How many of the window's pages UNMAPs that failed kept. */
 u64 sim_device_kept(void);
 /*
- * Has the next MAP wait on its way to the host, others running meanwhile, until released: the
- * pages of the MAP held, or 0 if none is.
+ * Has the next request of `type` (VIRTIO_EXTENT_T_MAP or _PRIVATE) wait on its way to the host,
+ * others running meanwhile, until released: the pages of the request held, or 0 if none is.
  */
-void sim_device_hold_map(void);
-u64 sim_device_held_map(void);
-void sim_device_release_map(void);
+void sim_device_hold(u32 type);
+u64 sim_device_held(void);
+void sim_device_release(void);
 /* Logs every MAP and UNMAP of a window page. */
 void sim_device_watch(u64 page);
 /* Logs what a window page, or a task's address, maps now. */

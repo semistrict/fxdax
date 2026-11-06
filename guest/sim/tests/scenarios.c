@@ -921,12 +921,12 @@ static void cow_rebind_against_write(void)
 	for (way = 0; way < ARRAY_SIZE(ways); way++) {
 		wait_for(sim_spawn("rebinder", cow_rebind_now, NULL));
 		cow_mapped_file(8);
-		sim_device_hold_map();
+		sim_device_hold(VIRTIO_EXTENT_T_MAP);
 		rebinder = sim_spawn("rebinder", cow_rebind_now, NULL);
-		sim_await(sim_device_held_map(), "no MAP held");
+		sim_await(sim_device_held(), "no MAP held");
 		other = sim_spawn("other", ways[way], (void *)1UL);
 		msleep(50);
-		sim_device_release_map();
+		sim_device_release();
 		wait_for(rebinder);
 		wait_for(other);
 		cow_check(3, way == 1, "after a rebind's MAP was on its way");
@@ -1202,7 +1202,7 @@ static void cow_second_file(void *arg)
 
 /*
  * That the budget counts a private page until the host has freed it. A truncate's MAP of zeros over
- * 48 dirty private pages held on its way (sim_device_hold_map), a second file's write takes the
+ * 48 dirty private pages held on its way (sim_device_hold), a second file's write takes the
  * room among the 64 private_max allows: counted free as the MAP began, as an UNMAP's were, the 48
  * and the write's were on the host at once, which refused a store past private_max (interleave's
  * seed 90, a range's UNMAP). Counted till it ends, the write waits for the budget.
@@ -1218,12 +1218,12 @@ static void cow_truncate_held(void)
 	memcpy(first_page, cow_expected, PAGE_SIZE);
 	cow_put_pages(8, pages - 1, 1);
 	first = cow_target;
-	sim_device_hold_map();
+	sim_device_hold(VIRTIO_EXTENT_T_MAP);
 	truncater = sim_spawn("truncater", cow_truncate_to_a_page, first);
-	sim_await(sim_device_held_map(), "no MAP held");
+	sim_await(sim_device_held(), "no MAP held");
 	second = sim_spawn("second", cow_second_file, (void *)24UL);
 	msleep(50);
-	sim_device_release_map();
+	sim_device_release();
 	wait_for(truncater);
 	wait_for(second);
 	check(sim_device_private_most() <= COW_PRIVATE_MAX, "%llu private pages",

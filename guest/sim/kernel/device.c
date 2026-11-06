@@ -14,8 +14,8 @@
  * the guest makes every page private before a store can reach it (window_store).
  *
  * Requests complete in place, each a scheduling point: no queues, no interrupts, no async faults,
- * none of the host's own concurrency, and no latency but what the clock is told, or a MAP a test
- * holds back (sim_device_hold_map).
+ * none of the host's own concurrency, and no latency but what the clock is told, or a MAP or
+ * PRIVATE a test holds back (sim_device_hold).
  */
 
 #include <sim/sim.h>
@@ -441,31 +441,39 @@ static int do_private(u64 window_offset, u64 len)
 	return 0;
 }
 
-/* Whether a test holds the next MAP back, and the pages of the one it holds, if any. */
+/*
+ * Whether a test holds the next request of type `hold_type` back, and the pages of the one it
+ * holds, if any.
+ */
 static bool hold_next;
+static u32 hold_type;
 static u64 holding;
 
-void sim_device_hold_map(void)
+void sim_device_hold(u32 type)
 {
+	hold_type = type;
 	hold_next = true;
 }
 
-u64 sim_device_held_map(void)
+u64 sim_device_held(void)
 {
 	return holding;
 }
 
-/* Lets the MAP held go, or the hold go, if no MAP came to it, as a sweep's failure may have it. */
-void sim_device_release_map(void)
+/*
+ * Lets the request held go, or the hold go, if no request came to it, as a sweep's failure may
+ * have it.
+ */
+void sim_device_release(void)
 {
 	hold_next = false;
 	holding = 0;
 }
 
-/* Holds `req`, a MAP, on its way to the host, if a test asked, until the test releases it. */
-static void hold_map(const struct vext_request *req)
+/* Holds `req` on its way to the host, if a test asked for its type, until the test releases it. */
+static void hold(const struct vext_request *req)
 {
-	if (!hold_next)
+	if (!hold_next || req->type != hold_type)
 		return;
 	hold_next = false;
 	holding = req->len >> PAGE_SHIFT;
@@ -585,7 +593,7 @@ int virtio_extent_call(struct virtio_extent *vext, struct vext_request *req)
 	}
 	switch (req->type) {
 	case VIRTIO_EXTENT_T_MAP:
-		hold_map(req);
+		hold(req);
 		device.map_requests++;
 		err = do_map(req);
 		break;
@@ -594,6 +602,7 @@ int virtio_extent_call(struct virtio_extent *vext, struct vext_request *req)
 		err = 0;
 		break;
 	case VIRTIO_EXTENT_T_PRIVATE:
+		hold(req);
 		err = do_private(req->window_offset, req->len);
 		break;
 	default:
