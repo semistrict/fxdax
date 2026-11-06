@@ -85,6 +85,31 @@ from measurement).
 
 ## Runs
 
+### r650, 2026-11-06: single phase, jailed, nested; `forked-dax` 0.836 (fails 0.9), from r649's 0.579
+
+GCE `fxdax-test-r650-tperf`, n2-standard-4 (nested, Cascade Lake), us-east4-a, release guest
+kernel, every Firecracker jailed. At fedc14fd5 with TASK-164.10's changes uncommitted (their
+commits 08e2083ff and 5633ca4eb): a `PRIVATE`'s pages made as one run in the VM process, pages
+made private ahead of a log's writes, rebinds a range at a time in one `MAP_MANY`. The density
+phase wasn't run.
+
+| Case | Runs | Median |
+|---|---|---|
+| no-dax | 1415, 1421, 1469, 1455, 1439 | 1439 |
+| dax | 1430, 1426, 1464, 1437, 1439 | 1437 |
+| ext4-dax-pmem | 1156, 1121, 1164, 1183, 1183 | 1164 |
+| no-dax-forked | 1208, 1387, 1455, 1460, 1471 | 1455 |
+| dax-forked | 1175, 1257, 1177, 1308, 1217 | 1217 |
+
+Gates: `dax` 0.999, `static-dax` 1.23, `decay` 1.00-1.22, **`forked-dax` 0.836 (fails 0.9)**,
+`bigmap-read` 5.13, `bigmap-guest-cache` 0.0, `bigmap-written-memory` 1.32. bigmap with DAX: cold
+reads 86.6 MiB/s (no DAX 16.9), stores 3,139/s, p50 315 us.
+
+What dax-forked's second run spent, against r649's (TASK-164.10's notes): write(2)s 21.9 s a
+minute (68.8), 6.6 s of it for the inode's lock (31.9); `PRIVATE`s 26,068 (62,146), 486 us each
+guest-side, the daemon's part 85 us and the VM process's run of ~4 pages 137 us; rebinds' `MAP`
+requests 655 (27,886); the vCPUs 84% busy (76%), no DAX's 91%.
+
 ### r632, 2026-11-05: jailed, nested; fails `forked-dax` and `decay` of `dax-density`
 
 GCE `fxdax-test-r632`, n2-standard-4 (nested, Cascade Lake), us-east4-a. Every Firecracker in its

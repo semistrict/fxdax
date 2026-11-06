@@ -59,6 +59,8 @@ Decisions made without you, still yours to confirm or overturn. Each is a line o
 - **A window's mappings carry no K:** a source says what it is (`Source::origin`). TASK-160.11, 2026-11-05.
 - **The window's struct pages are made a memory section at a time,** in the driver's `direct_access`; a kernel without FS_DAX takes no window. TASK-92.8, 2026-11-05.
 - **What holds a file's data is an operations table of its inode's;** fsync stays super.c's. TASK-160.2, 2026-11-04.
+- **A `PRIVATE`'s pages are one change of the window, made by the VM process as a run** (one mmap, none where nothing is installed); **a write(2) following on from its file's last makes 16 to 64 pages ahead private**; **a rebind maps a range's runs in one `MAP_MANY`, a range at a time, the files dirtied longest ago first.** TASK-164.10, 2026-11-05.
+- **A write by any thread not the guest's, on a window that copies on write, resolves as a load** and restricts the page for KVM's worker: no worker makes a page private, a guest making its pages private before it stores. TASK-191, 2026-11-06.
 - **The perf gate's thresholds:** doc-13's for tps (`forked-dax` 0.9, failing until TASK-164.6), r632's for the rest. TASK-164.5, 2026-11-05.
 
 ## Fxfs
