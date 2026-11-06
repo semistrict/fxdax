@@ -1336,7 +1336,8 @@ fn needs_frees_kept() {
 #[test]
 fn needs_closes_to_wait_for_writers() {
     let rules = Rules { close_waits_for_writers: false, ..Rules::ALL };
-    fails_without(rules, &["other data than was written"], run);
+    // Caught by a reader or by a view, whichever reads it first.
+    fails_without(rules, &["other data than was written", "reads other data"], run);
 }
 
 /// Commits sealing extents writes in progress write to: what they write lands after the seal, in

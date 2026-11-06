@@ -382,6 +382,65 @@ mod tests {
         compacted_twice(true);
     }
 
+    /// TASK-195: so does a fork's store read what it inherited, its parent deleted: it names the
+    /// extents where its own writer's checkpoints move them, from the parent's segment, compacted
+    /// into moves, then into moves of moves, the segment and the first moves gone.
+    #[test]
+    fn forks_read_what_they_inherited_compacted_twice() {
+        const EXTENT: usize = 64 * BLOCK;
+        let dir = tempfile::tempdir().unwrap();
+        let bucket = Arc::new(Bucket::new(Arc::new(InMemory::new()), ""));
+        let options = extent_remote::collector::Options { compact_below: 0.5, grace: 0 };
+        let collect = |holder| {
+            let pass = extent_remote::collector::collect(&*bucket, holder, &options);
+            futures::executor::block_on(pass).unwrap()
+        };
+        // The parent's segment, of extents 1 to 16, which don't compress, freed but 1 to 3; its
+        // fork, which inherits them there; and the parent deleted.
+        let path = dir.path().join("parent");
+        let parent = kept_in(&path, (16 * EXTENT as u64, None), &bucket, idle()).unwrap();
+        let branch = parent.branch();
+        for sequence in 1..=16 {
+            write(&parent, sequence, &noise(sequence, EXTENT));
+        }
+        parent.commit(None).unwrap();
+        for sequence in 4..=16 {
+            parent.free(ExtentId { branch, sequence }).unwrap();
+        }
+        parent.commit(None).unwrap();
+        let child = dir.path().join("child");
+        parent.fork(&child, branch + 1).unwrap();
+        drop(parent);
+        crate::host_store::delete(&path, Some(&bucket), crate::host_store::token).unwrap();
+        // The fork's store, open all along: the segment compacted, 1 to 3 in its moves.
+        let child = reopened(&child, idle()).unwrap();
+        assert_eq!(collect(1).compacted, 1);
+        // It frees 2 and 3, and its writer checkpoints, naming 1 in the moves.
+        child.free(ExtentId { branch, sequence: 2 }).unwrap();
+        child.free(ExtentId { branch, sequence: 3 }).unwrap();
+        for _ in 0..extent_store::upload::CHECKPOINT_EVERY {
+            child.commit(None).unwrap();
+        }
+        // The segment goes, no state naming it there; the moves are compacted, then go too.
+        collect(3);
+        collect(4);
+        let keys: Vec<String> =
+            futures::executor::block_on(extent_remote::Bucket::list(&*bucket, ""))
+                .unwrap()
+                .into_iter()
+                .map(|meta| meta.key)
+                .filter(|key| key.starts_with("moves/") || key.starts_with("segments/"))
+                .collect();
+        let once = format!("moves/segments/{branch:016x}/");
+        let twice = format!("moves/moves/segments/{branch:016x}/");
+        assert!(keys.iter().any(|key| key.starts_with(&twice)), "{keys:?}");
+        assert!(!keys.iter().any(|key| key.starts_with(&once)), "{keys:?}");
+        let mut data = vec![0; EXTENT];
+        let extent = ExtentId { branch, sequence: 1 };
+        let read = child.read(extent, 0, &mut [crate::VolatileSliceMut::from(&mut data[..])]);
+        assert_eq!(read.map(|()| data == noise(1, EXTENT)), Ok(true));
+    }
+
     /// [`extents_compacted_twice_read_where_the_store_names_them`], with the host's cache if
     /// `cached`.
     fn compacted_twice(cached: bool) {
