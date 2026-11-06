@@ -64,6 +64,17 @@ pub fn guest_kernel_slowness() -> anyhow::Result<f64> {
     }
 }
 
+/// fxdax: says in the round's log what the daemon named `name` the test spawned ([`spawn_daemon`])
+/// kept in its stats file, how long its commits waited to be made durable among it: a passing
+/// round's directory, and the file in it, doesn't outlive the run (TASK-165.9).
+pub fn say_daemon_stats(test_setup: &TestSetup, name: &str) {
+    let path = test_setup.tmp_dir.join(format!("{name}-stats.txt"));
+    match fs::read_to_string(&path) {
+        Ok(kept) => kept.lines().for_each(|line| eprintln!("{name} stats: {line}")),
+        Err(err) => eprintln!("{name} stats: reading {}: {err}", path.display()),
+    }
+}
+
 /// An extent daemon of the test's own, FXDAX_EXTENTD_BIN, serving at `socket`, and its control API
 /// beside it ([`control`]), once this returns, with `env` in its environment, and `memory` bytes of
 /// memory if given (its default, 1 GiB, otherwise), logging to `<name>.log` in the test's directory.

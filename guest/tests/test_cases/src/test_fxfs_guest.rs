@@ -425,6 +425,9 @@ mod host {
                     let other = test_setup.tmp_dir.join("after-the-stray");
                     fxdax::extentd::RemoteExtentStore::connect(socket, other, 1 << 24).unwrap();
                 }
+                if self.daemon_killed {
+                    crate::common::say_daemon_stats(&test_setup, "extentd");
+                }
                 // The store as the crash left it, for a failure to be looked into: checking it
                 // recovers it, and mounting it replays its journal.
                 crate::common::copy_store(&path, &test_setup.tmp_dir.join("extents-at-crash"))

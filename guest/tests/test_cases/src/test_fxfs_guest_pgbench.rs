@@ -546,6 +546,7 @@ RUN apk add --no-cache postgresql postgresql-contrib perf e2fsprogs
                 let running = self.start(&served, role, vm, load_memory()?, None)?;
                 running.finish().with_context(|| format!("VM {} of {}", vm + 1, vms()))?;
             }
+            crate::common::say_daemon_stats(test_setup, "extentd");
             Ok(())
         }
 
