@@ -567,6 +567,7 @@ impl Run {
             }
             Step::Read { file, at, len } => {
                 let (handle, mut got) = (&self.files[*file], vec![0u8; *len as usize]);
+                touch(got.as_mut_ptr(), got.len());
                 match self.call(|| handle.read_at(&mut got, *at)) {
                     Ok(n) => got.truncate(n),
                     Err(err) => return self.failed(step, "pread", err),
@@ -642,6 +643,7 @@ impl Run {
             Step::DirectRead { file, at, len } => {
                 let direct = self.open_direct(*file)?;
                 let buffer = Mapping::of(-1, 0, *len as usize, libc::MAP_PRIVATE).expect("mmap");
+                touch(buffer.bytes, *len as usize);
                 let call = || {
                     counted(unsafe {
                         libc::pread(
@@ -1076,6 +1078,15 @@ fn open(name: &str, empty: bool) -> fs::File {
     let mut options = fs::OpenOptions::new();
     options.create(empty).truncate(empty).read(true).write(true);
     options.open(name).unwrap_or_else(|err| panic!("open {name}: {err}"))
+}
+
+/// fxdax: faults in the `len` bytes at `bytes`, a call's buffer, before the call: the kernel's copy
+/// to a page of it not there faults it in, and a fault whose allocation fault injection failed is
+/// the call's EFAULT, which is no filesystem's (GCE r783).
+fn touch(bytes: *mut u8, len: usize) {
+    for at in (0..len).step_by(PAGE as usize) {
+        unsafe { bytes.add(at).write_volatile(0) };
+    }
 }
 
 /// Stores `data` at `mapped`.
