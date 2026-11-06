@@ -42,6 +42,8 @@ pub(crate) enum Request<'a> {
     FreeMany { first: ExtentId, rest: Cow<'a, [ExtentId]> },
     /// [`MAP`]: the mapping into the window.
     Map(WindowMapping),
+    /// fxdax: [`MAP_MANY`]: the mappings into the window, in order, one at least.
+    MapMany(Cow<'a, [WindowMapping]>),
     /// [`UNMAP`].
     Unmap { window_offset: u64, len: u64 },
     /// [`COMMIT`], completing as `commit` says, setting the root to `root` if given.
@@ -191,7 +193,7 @@ fn known_flags(kind: u32) -> Result<u32, Errno> {
         FORK => FORK_QUIESCENT,
         STATS => STATS_GUEST,
         FREE | FREE_MANY | UNMAP | ROOT | INFO | WINDOW | RESIZED | MAPPINGS | ADVANCE | LET_GO
-        | PIN | UNPIN | TRANSFER | BUILD | PRIVATE => 0,
+        | PIN | UNPIN | TRANSFER | BUILD | PRIVATE | MAP_MANY => 0,
         _ => return Err(Errno::EINVAL),
     })
 }
@@ -206,6 +208,7 @@ impl<'a> Request<'a> {
             Request::Free(_) => FREE,
             Request::FreeMany { .. } => FREE_MANY,
             Request::Map(_) => MAP,
+            Request::MapMany(_) => MAP_MANY,
             Request::Unmap { .. } => UNMAP,
             Request::Commit { .. } => COMMIT,
             Request::Root => ROOT,
@@ -301,6 +304,7 @@ impl<'a> Request<'a> {
                 }
                 MappingContents::Zeros => message(MAP_ZEROS, [0, 0, 0, *len, *window_offset]),
             },
+            Request::MapMany(mappings) => message(0, [0; 5]).carrying(mappings_payload(mappings)),
             Request::Unmap { window_offset, len } => message(0, [*window_offset, *len, 0, 0, 0]),
             Request::Commit { commit, root } => {
                 let flags = flag(root.is_some(), COMMIT_ROOT)
@@ -428,6 +432,11 @@ impl<'a> Request<'a> {
                 };
                 Request::Map(WindowMapping { window_offset: args[4], len: args[3], contents })
             }
+            // fxdax: one mapping at least (TASK-92.14).
+            MAP_MANY => match mappings(payload)? {
+                mappings if mappings.is_empty() => return Err(Errno::EINVAL),
+                mappings => Request::MapMany(Cow::Owned(mappings)),
+            },
             UNMAP => {
                 nothing()?;
                 Request::Unmap { window_offset: args[0], len: args[1] }
@@ -828,7 +837,8 @@ impl Advanced {
     }
 }
 
-/// `mappings`, as a reply to [`MAPPINGS`] carries them: each [`MAPPING_BYTES`].
+/// `mappings`, as a reply to [`MAPPINGS`], or a [`MAP_MANY`], carries them: each
+/// [`MAPPING_BYTES`].
 pub(crate) fn mappings_payload(mappings: &[WindowMapping]) -> Vec<u8> {
     (mappings.iter())
         .flat_map(|mapping| {
@@ -844,8 +854,8 @@ pub(crate) fn mappings_payload(mappings: &[WindowMapping]) -> Vec<u8> {
         .collect()
 }
 
-/// The mappings a reply to [`MAPPINGS`] carries, `payload`: `EINVAL` unless whole ones, of flags
-/// known.
+/// The mappings a reply to [`MAPPINGS`], or a [`MAP_MANY`], carries, `payload`: `EINVAL` unless
+/// whole ones, of flags known.
 pub(crate) fn mappings(payload: &[u8]) -> Result<Vec<WindowMapping>, Errno> {
     let (mappings, []) = payload.as_chunks::<{ MAPPING_BYTES as usize }>() else {
         return Err(Errno::EINVAL);
@@ -943,6 +953,14 @@ mod tests {
             Request::FreeMany { first: extent, rest: Cow::Borrowed(&fields.extents[..]) },
             map(MappingContents::Extent { extent: other, offset: a }),
             map(MappingContents::Zeros),
+            Request::MapMany(Cow::Owned(vec![
+                WindowMapping {
+                    window_offset: d,
+                    len: e,
+                    contents: MappingContents::Extent { extent: other, offset: a },
+                },
+                WindowMapping { window_offset: a, len: b, contents: MappingContents::Zeros },
+            ])),
             Request::Unmap { window_offset: a, len: b },
             Request::Commit { commit, root: one.then_some(&fields.data[..]) },
             Request::Root,
@@ -971,9 +989,10 @@ mod tests {
     }
 
     /// Every kind of request.
-    const KINDS: [u32; 23] = [
+    const KINDS: [u32; 24] = [
         OPEN, READ, WRITE, FREE, MAP, UNMAP, COMMIT, ROOT, INFO, WINDOW, FAULT, FORK, RESIZED,
         MAPPINGS, ADVANCE, LET_GO, PIN, UNPIN, TRANSFER, FREE_MANY, BUILD, PRIVATE, STATS,
+        MAP_MANY,
     ];
 
     /// `request`, as its receiver receives it: of ID `id`.
@@ -1126,6 +1145,11 @@ mod tests {
         refused(Header::new(RESIZED, 1).with_args(&[4096, 2]), b"", vec![]);
         refused(Header { status: -1, ..Header::new(INFO, 1) }, b"", vec![]);
         refused(Header::new(FREE_MANY, 1).with_args(&[1, 1]), &[0; EXTENT_ID_BYTES + 8], vec![]);
+        // fxdax: no mapping, part of one, or one of flags unknown (TASK-92.14).
+        refused(Header::new(MAP_MANY, 1), b"", vec![]);
+        refused(Header::new(MAP_MANY, 1), &[0; MAPPING_BYTES as usize - 8], vec![]);
+        let unknown = [0u64, 4096, 1, 1, 0, 1].map(u64::to_le_bytes).concat();
+        refused(Header::new(MAP_MANY, 1), &unknown, vec![]);
         let write = Header::new(WRITE, 1).with_args(&[1, 1, 0, 0, 8]);
         refused(write.with_flags(WRITE_COMMIT | WRITE_ROOT), b"data", vec![]);
         let transfer = Header::new(WRITE, 1).with_args(&[1, 1, 0, 0, 8]);
@@ -1227,6 +1251,18 @@ mod tests {
                 }),
                 header(MAP, MAP_ZEROS, &[0, 0, 0, 4, 5]),
                 vec![],
+            ),
+            (
+                Request::MapMany(Cow::Owned(vec![
+                    WindowMapping {
+                        window_offset: 5,
+                        len: 4,
+                        contents: MappingContents::Extent { extent, offset: 3 },
+                    },
+                    WindowMapping { window_offset: 6, len: 4, contents: MappingContents::Zeros },
+                ])),
+                header(MAP_MANY, 0, &[]),
+                [5u64, 4, 7, 9, 3, 0, 6, 4, 0, 0, 0, MAPPING_ZEROS].map(u64::to_le_bytes).concat(),
             ),
             (
                 Request::Commit { commit: Commit::Durable, root: Some(&b"r"[..]) },

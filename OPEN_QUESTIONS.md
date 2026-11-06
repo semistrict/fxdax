@@ -8,6 +8,10 @@
 
 # Decisions
 
+## A restore maps its snapshot's window in one request of its own, MAP_MANY, eagerly (TASK-92.14, 2026-11-05)
+
+The VMM mapped a snapshot's window mappings again one `MAP` at a time before the VM resumed, a round trip and a change of the window each. Decided: **a daemon request of its own, `MAP_MANY` (32)**, whose payload is the mappings as `MAPPINGS`' reply has them; the daemon maps them all in one change of the window (one lock, the ranges anew told the VM process in runs, the pages in memory installed in runs across mappings). The VMM sends the whole map at once, in payload-bounded chunks (1.4 million mappings each). **Eager, not lazy on fault:** of a 1,280-mapping restore's 14-23 ms, the installs a lazy restore would skip are 3.6-5.5 ms, and each would come back as a fault after resume (dead-ends/lazy-restore-of-window-mappings.md). *Instead:* a flag on `MAP` (a daemon older than it would map the first and ignore the rest, as `FREE_MANY`'s reasoning says); pipelining `MAP`s without waiting (round trips overlap, but a change and a decode per mapping stay). *Undoing it:* `Request::MapMany` and the VMM's `map_again` back to a loop of `MAP`s.
+
 ## guest/sim's sweep and file model: what a run may do once something failed (TASK-149.15, TASK-149.18, 2026-11-06)
 
 - **TASK-149.18 is guest/sim's, as asked**: its invariants (every waiter woken, every acknowledged write durable, every object a file names held by the device) are guest/sim's; extent_remote's, which the task first named, are TASK-149.32 with its old criteria. *Undoing it:* move the criteria back.

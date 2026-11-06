@@ -204,6 +204,13 @@ pub(crate) const STATS_GUEST: u32 = 1 << 0;
 /// fxdax: the most bytes of a guest's stats a [`STATS`] carries, many times what the guest's
 /// Fxfs says (a few KiB).
 pub(crate) const MAX_STATS: usize = 64 << 10;
+/// fxdax: maps each mapping the payload holds, as a reply to [`MAPPINGS`] has them, in order,
+/// each as [`MAP`] would, in one change of the window: the first that fails fails the request,
+/// those before it mapped. A VM restored from a snapshot maps its window's mappings again so, the
+/// whole window in a request, where a `MAP` each took a round trip and a change of the window's
+/// second stage apiece (TASK-92.14). A request of its own rather than a flag of `MAP`'s, as
+/// [`FREE_MANY`] is: a daemon older than it refuses it (`EINVAL`).
+pub(crate) const MAP_MANY: u32 = 32;
 /// fxdax: how long a VM process's stage operations go uncounted at most while it makes them
 /// ([`STAGE_COUNTS`]): within a sample of the daemon's stats file (`FXDAX_EXTENTD_STATS`).
 pub(crate) const STAGE_COUNTS_EVERY: std::time::Duration = std::time::Duration::from_millis(500);

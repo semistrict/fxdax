@@ -120,6 +120,24 @@ pub trait SecondStage: Send + Sync {
     }
 }
 
+/// fxdax: one of the mappings [`Dax::map_many`] makes: `len` bytes at the window's `offset`, of
+/// `source`'s bytes from its byte `from`, a page's multiple, or zeros, with no source (TASK-92.14).
+pub(crate) struct DaxMapping {
+    pub offset: u64,
+    pub len: u64,
+    pub source: Option<(Arc<dyn Source>, u64)>,
+}
+
+/// fxdax: one of the mappings [`Window::map_many`] makes: `len` bytes at the window's `offset`, of
+/// `source`'s pages from its page `page`.
+#[derive(Clone, Copy)]
+struct Piece<'a> {
+    offset: u64,
+    len: u64,
+    source: &'a Arc<dyn Source>,
+    page: u64,
+}
+
 /// fxdax: what a window's change makes of a range it unmapped ([`SecondStage::remap`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Anew {
@@ -899,13 +917,7 @@ impl Window {
         private: Private,
     ) {
         let end = offset + len;
-        self.unmap_ptes(state, offset, end, private);
-        let forgotten = state.forget(offset, end);
-        let first = !state.by_source.contains_key(&source_identity(source));
-        state.insert(offset, Mapping { end, source: source.clone(), page });
-        if first {
-            source.mapped(self);
-        }
+        let forgotten = self.place(state, offset, source, page, len, private);
         if let Some(stage) = self.stage() {
             stage.window_mapped(offset, len);
         }
@@ -913,6 +925,60 @@ impl Window {
         // fault. fxdax: but where a private page stays.
         self.install(state, offset, end);
         self.unmapped(state, forgotten);
+    }
+
+    /// fxdax: maps each of `pieces`, in order, as [`Window::map_as`] maps the guest's `MAP`, in
+    /// one change of the second stage: the ranges mapped anew told it in runs of them consecutive
+    /// in the window, then their pages in memory mapped, in runs across the pieces, where a `MAP`
+    /// each made a change of its own, of a run at least (TASK-92.14). What a snapshot's window
+    /// held is mapped again so, as its VM is restored.
+    fn map_many(self: &Arc<Self>, pieces: &[Piece<'_>]) {
+        let mut state = self.state.lock().unwrap();
+        let _change = self.change();
+        let mut anew: Vec<Range<u64>> = Vec::new();
+        for &Piece { offset, source, page, len } in pieces {
+            let forgotten = self.place(&mut state, offset, source, page, len, Private::Free);
+            self.unmapped(&state, forgotten);
+            match anew.last_mut() {
+                Some(run) if run.end == offset => run.end += len,
+                _ => anew.push(offset..offset + len),
+            }
+        }
+        if let Some(stage) = self.stage() {
+            for run in &anew {
+                stage.window_mapped(run.start, run.end - run.start);
+            }
+        }
+        let mut pages = Vec::new();
+        for run in &anew {
+            self.present(&mut state, run.start, run.end, &mut pages);
+        }
+        self.map_pages(&pages);
+    }
+
+    /// fxdax: puts the mapping of `len` bytes of `source`'s pages from `page` at `offset` in the
+    /// window's map, in place of what was mapped there and the pages it had there, the private
+    /// pages among them going or staying as `private` says; and returns the sources of the
+    /// mappings it replaced, to tell of ([`Window::unmapped`]). The stage is told of nothing it
+    /// maps anew, nor are its pages mapped, which is for its caller to do.
+    fn place(
+        self: &Arc<Self>,
+        state: &mut WindowState,
+        offset: u64,
+        source: &Arc<dyn Source>,
+        page: u64,
+        len: u64,
+        private: Private,
+    ) -> Vec<Arc<dyn Source>> {
+        let end = offset + len;
+        self.unmap_ptes(state, offset, end, private);
+        let forgotten = state.forget(offset, end);
+        let first = !state.by_source.contains_key(&source_identity(source));
+        state.insert(offset, Mapping { end, source: source.clone(), page });
+        if first {
+            source.mapped(self);
+        }
+        forgotten
     }
 
     /// Maps zeros, `zeros`, read-only, at the window's ranges that map `source`, by its identity,
@@ -1012,10 +1078,23 @@ impl Window {
     /// of pages consecutive in the window and in an arena's object, each one change of the second
     /// stage.
     fn install(&self, state: &mut WindowState, start: u64, end: u64) {
+        let mut pages = Vec::new();
+        self.present(state, start, end, &mut pages);
+        self.map_pages(&pages);
+    }
+
+    /// Adds to `pages`, in order, the pages in memory of the mappings of `start..end` where
+    /// nothing is mapped, each its offset in the window and where it is, which it takes as mapped
+    /// from now on: those [`Window::map_pages`] is to map.
+    fn present(
+        &self,
+        state: &mut WindowState,
+        start: u64,
+        end: u64,
+        pages: &mut Vec<(u64, PhysLocation)>,
+    ) {
         let ps = page_size();
         let staged = self.stage().is_some();
-        // The pages to map, in order: their offsets, and where they are.
-        let mut pages: Vec<(u64, PhysLocation)> = Vec::new();
         for mapping_start in state.overlapping(start, end) {
             let mapping = &state.mappings[&mapping_start];
             let (from, to) = (start.max(mapping_start), end.min(mapping.end));
@@ -1039,6 +1118,12 @@ impl Window {
                 pages.push((offset, location));
             }
         }
+    }
+
+    /// Maps `pages`, as [`Window::present`] found them, in order: in runs of pages consecutive in
+    /// the window and in an arena's object, each one change of the second stage.
+    fn map_pages(&self, pages: &[(u64, PhysLocation)]) {
+        let ps = page_size();
         // fxdax: the runs of pages consecutive in the window, which the maps below are made of
         // (`stage_segments`, TASK-131.1).
         let segments = 1 + pages.windows(2).filter(|pair| pair[0].0 + ps != pair[1].0).count();
@@ -1046,7 +1131,7 @@ impl Window {
             crate::stats::add(crate::stats::Counter::StageSegments, segments as u64);
         }
         let mut run: Option<(u64, PhysLocation, u64)> = None;
-        for (offset, location) in pages {
+        for &(offset, location) in pages {
             match &mut run {
                 Some((at, first, len))
                     if *at + *len == offset
@@ -1285,6 +1370,22 @@ impl Dax {
     /// Maps zeros, read-only, at `len` bytes of the window at `offset`, as [`Dax::map`] does.
     pub fn map_zeros(&mut self, offset: u64, len: u64) {
         self.window.map_as(offset, &self.zeros, 0, len, Private::Free);
+    }
+
+    /// fxdax: maps each of `mappings`, in order, as [`Dax::map`] would, or zeros, as
+    /// [`Dax::map_zeros`] would, where it names no source, in one change of the second stage
+    /// (TASK-92.14).
+    pub fn map_many(&mut self, mappings: &[DaxMapping]) {
+        let pieces: Vec<Piece<'_>> = (mappings.iter())
+            .map(|DaxMapping { offset, len, source }| {
+                let (source, page) = match source {
+                    Some((source, from)) => (source, from / page_size()),
+                    None => (&self.zeros, 0),
+                };
+                Piece { offset: *offset, len: *len, source, page }
+            })
+            .collect();
+        self.window.map_many(&pieces);
     }
 
     /// Unmaps `len` bytes of the window at `offset`: the guest's `UNMAP`.

@@ -478,10 +478,18 @@ impl RemoteExtentStore {
         super::codec::mappings(&payload).map_err(|_| Errno::EIO)
     }
 
-    /// Maps `mapping`, one of a snapshot's [`window_mappings`](RemoteExtentStore::window_mappings),
-    /// again, at the same offset in the window: its extent's bytes, or zeros (`MAP`).
-    pub fn map_again(&self, mapping: &WindowMapping) -> Result<()> {
-        self.client.request_blocking(&Request::Map(*mapping)).map(drop)
+    /// fxdax: maps `mappings`, a snapshot's [`window_mappings`](RemoteExtentStore::window_mappings),
+    /// again, each at the same offset in the window, its extent's bytes or zeros, in order, the
+    /// first that fails failing the call, those before it mapped: in as few requests as their
+    /// payloads hold (`MAP_MANY`), each one change of the window, rather than a `MAP` each, a round
+    /// trip and a change apiece (TASK-92.14).
+    pub fn map_many(&self, mappings: &[WindowMapping]) -> Result<()> {
+        let most = (MAX_PAYLOAD / MAPPING_BYTES) as usize;
+        for mappings in mappings.chunks(most) {
+            let map = Request::MapMany(Cow::Borrowed(mappings));
+            self.client.request_blocking(&map)?;
+        }
+        Ok(())
     }
 
     /// Maps `len` bytes at `offset` in `extent`, sealed, into the window at `window_offset`,

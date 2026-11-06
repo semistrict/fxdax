@@ -26,7 +26,7 @@
 //! names, so that no commit changes anything in a window.
 
 use crate::cache::{self, CachedExtent};
-use crate::dax::{Dax, DaxWindow, SecondStage, Source};
+use crate::dax::{Dax, DaxMapping, DaxWindow, SecondStage, Source};
 use crate::error::{Errno, Error, Result};
 use crate::faults::failpoint;
 use crate::fence::{Fence, Held, StoreMutex, StoreRwLock};
@@ -1383,10 +1383,29 @@ impl ExtentStore {
         len: u64,
         window_offset: u64,
     ) -> Result<()> {
-        {
-            let dax = self.dax.lock(&self.fence)?;
-            dax.as_ref().ok_or(Errno::ENOSYS)?.check_range(window_offset, len)?;
+        let (cached, within) = self.mapped_of(extent, offset, len, window_offset)?;
+        let mut dax = self.dax.lock(&self.fence)?;
+        let dax = dax.as_mut().ok_or(Errno::ENOSYS)?;
+        if within > 0 {
+            dax.map(window_offset, &cached, offset, within);
         }
+        if len > within {
+            dax.map_zeros(window_offset + within, len - within);
+        }
+        Ok(())
+    }
+
+    /// What a `MAP` of `len` bytes at `offset` in `extent` into the window at `window_offset`
+    /// maps, checked: the extent's cached pages, and how many of the bytes they hold, those within
+    /// the extent; zeros the rest.
+    fn mapped_of(
+        &self,
+        extent: ExtentId,
+        offset: u64,
+        len: u64,
+        window_offset: u64,
+    ) -> Result<(Arc<dyn Source>, u64)> {
+        self.dax_range_checked(window_offset, len)?;
         // fxdax: a base's is of the cache's one copy of it.
         let base = self.base_holding(extent)?;
         let extent_len = match (&base, &self.following) {
@@ -1412,16 +1431,74 @@ impl ExtentStore {
             Some((base, _)) => base.cached(extent, extent_len)?,
             None => self.cached(extent, extent_len)?,
         };
-        let mut dax = self.dax.lock(&self.fence)?;
-        let dax = dax.as_mut().ok_or(Errno::ENOSYS)?;
         let within = end.min(extent_len.next_multiple_of(page_size())).max(offset);
-        if within > offset {
-            dax.map(window_offset, &cached, offset, within - offset);
+        Ok((cached, within - offset))
+    }
+
+    /// fxdax: maps each of `mappings`, in order, as [`ExtentStore::map`] or
+    /// [`ExtentStore::map_zeros_at`] would, in one change of the window (`MAP_MANY`): the first
+    /// that fails fails the call, those before it mapped. A snapshot's window's mappings
+    /// ([`ExtentStore::window_mappings`]) are mapped again so as its VM is restored, where a `MAP`
+    /// each took a change of their own (TASK-92.14).
+    pub fn map_many(&self, mappings: &[WindowMapping]) -> Result<()> {
+        let start = std::time::Instant::now();
+        // What each maps, as far as the first that fails.
+        let mut pieces = Vec::new();
+        let mut failed = None;
+        for (at, mapping) in mappings.iter().enumerate() {
+            let WindowMapping { window_offset, len, contents } = *mapping;
+            let mapped = match contents {
+                MappingContents::Extent { extent, offset } => {
+                    self.mapped_of(extent, offset, len, window_offset).map(|(cached, within)| {
+                        if within > 0 {
+                            let source = Some((cached, offset));
+                            pieces.push(DaxMapping { offset: window_offset, len: within, source });
+                        }
+                        if len > within {
+                            let (offset, len) = (window_offset + within, len - within);
+                            pieces.push(DaxMapping { offset, len, source: None });
+                        }
+                    })
+                }
+                MappingContents::Zeros => self.dax_range_checked(window_offset, len).map(|()| {
+                    pieces.push(DaxMapping { offset: window_offset, len, source: None });
+                }),
+            };
+            if let Err(errno) = mapped {
+                failed = Some((at, errno));
+                break;
+            }
         }
-        if end > within {
-            dax.map_zeros(window_offset + (within - offset), end - within);
+        self.dax.lock(&self.fence)?.as_mut().ok_or(Errno::ENOSYS)?.map_many(&pieces);
+        // Each recorded as its own MAP would have it, the one that failed too, but zeros'.
+        let tried = failed.map_or(mappings.len(), |(at, _)| at + 1);
+        let mut changes = self.changes.lock(&self.fence)?;
+        let mut maps = 0;
+        for (at, mapping) in mappings[..tried].iter().enumerate() {
+            let result = match failed {
+                Some((failed, errno)) if failed == at => Err(errno),
+                _ => Ok(()),
+            };
+            let change = match mapping.contents {
+                MappingContents::Extent { extent, offset } => {
+                    maps += 1;
+                    Change::Map { extent, offset, result }
+                }
+                MappingContents::Zeros if result.is_ok() => Change::Zeros,
+                MappingContents::Zeros => continue,
+            };
+            changes.record(mapping.window_offset, mapping.len, change);
         }
-        Ok(())
+        stats::add(Counter::Maps, maps);
+        stats::add_since(Counter::MapNs, start);
+        failed.map_or(Ok(()), |(_, errno)| Err(errno))
+    }
+
+    /// Checks the DAX window's range for a mapping of `len` bytes at `window_offset`: `ENOSYS`
+    /// without a window.
+    fn dax_range_checked(&self, window_offset: u64, len: u64) -> Result<()> {
+        let dax = self.dax.lock(&self.fence)?;
+        dax.as_ref().ok_or(Errno::ENOSYS)?.check_range(window_offset, len)
     }
 
     /// Maps zeros, read-only, at `len` bytes of the DAX window at `window_offset`, as a mapping a
@@ -1436,8 +1513,8 @@ impl ExtentStore {
     }
 
     /// The DAX window's mappings, in order: what a snapshot of the VM records, to map them again
-    /// where it is restored, at the same offsets, with [`ExtentStore::map`] and
-    /// [`ExtentStore::map_zeros_at`]. Without a window, none.
+    /// where it is restored, at the same offsets, with [`ExtentStore::map_many`]. Without a
+    /// window, none.
     pub fn window_mappings(&self) -> Result<Vec<WindowMapping>> {
         let dax = self.dax.lock(&self.fence)?;
         Ok(dax.as_ref().map_or_else(Vec::new, Dax::mappings))

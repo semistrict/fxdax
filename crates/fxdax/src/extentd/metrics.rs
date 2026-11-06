@@ -59,7 +59,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 /// The kinds of request metrics are kept of, and their names.
-const KINDS: [(u32, &str); 22] = [
+const KINDS: [(u32, &str); 23] = [
     (OPEN, "open"),
     (READ, "read"),
     (WRITE, "write"),
@@ -84,6 +84,8 @@ const KINDS: [(u32, &str); 22] = [
     (PRIVATE, "private"),
     // fxdax: TASK-111.4.
     (STATS, "stats"),
+    // fxdax: TASK-92.14.
+    (MAP_MANY, "map_many"),
 ];
 
 /// The upper bounds of the requests' duration histograms' buckets, in seconds: from what the

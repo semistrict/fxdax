@@ -868,7 +868,7 @@ fn failpoint(kind: u32) -> Option<&'static str> {
     Some(match kind {
         READ => "extentd::read",
         WRITE => "extentd::write",
-        MAP => "extentd::map",
+        MAP | MAP_MANY => "extentd::map",
         UNMAP => "extentd::unmap",
         COMMIT => "extentd::commit",
         FREE | FREE_MANY => "extentd::free",
@@ -1099,6 +1099,8 @@ impl Connection {
                     store.map(extent, offset, *len, *window_offset)
                 }
             },
+            // fxdax: in one change of the window (TASK-92.14).
+            Request::MapMany(mappings) => store.map_many(mappings),
             Request::Mappings => {
                 *payload = codec::mappings_payload(&store.window_mappings()?);
                 Ok(())

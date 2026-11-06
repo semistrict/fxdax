@@ -1924,7 +1924,7 @@ fn snapshots_restore_into_forks_of_their_point() {
         len: ps as u64,
         contents: crate::MappingContents::Zeros,
     };
-    store.map_again(&zeros).unwrap();
+    store.map_many(&[zeros]).unwrap();
     write(&store, open, 0, &pattern(2, ps)).unwrap();
     let point = dir.path().join("point");
     assert_eq!(store.fork_quiescent(&point, store.branch() + 1), Err(Errno::EBUSY));
@@ -1963,9 +1963,7 @@ fn snapshots_restore_into_forks_of_their_point() {
             // SAFETY: As above.
             unsafe { restored.create_dax_window_in_host_memory(memory, 4 * ps as u64, None, 1) }
                 .unwrap();
-            for mapping in &mappings {
-                restored.map_again(mapping).unwrap();
-            }
+            restored.map_many(&mappings).unwrap();
             assert_eq!(restored.window_mappings().unwrap(), mappings);
             for (page, bytes) in [0, 2, 3].into_iter().zip(&snapshotted) {
                 assert!(window(memory)[page * ps..][..ps] == bytes[..], "page {page} differs");
@@ -1989,6 +1987,204 @@ fn snapshots_restore_into_forks_of_their_point() {
     let forked = RemoteExtentStore::connect_forked(&socket, dir.path().join("c"), &point, 0, 0);
     let root = forked.map(|store| store.root()).map_err(|error| error.errno());
     assert_eq!(root, Ok(Ok(b"root".to_vec())));
+}
+
+/// TASK-92.14: a restored VM's window maps its snapshot's mappings again in one request, one
+/// change of the window, where a MAP each took a round trip and a change apiece: `PAGES` mappings,
+/// each a page of an extent of its own, and runs of zeros between, as a zygote's chunks have them.
+/// Restored both ways, each window reads what the snapshot's did; the MAPs' restore and the
+/// `MAP_MANY`'s are timed, for the task's notes.
+#[test]
+fn snapshots_map_their_windows_again_in_one_request() {
+    const PAGES: usize = 1024;
+    host();
+    let ps = page_size() as usize;
+    let window_pages = 2 * PAGES;
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("extentd.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    std::thread::spawn(move || serve(listener));
+
+    let store = RemoteExtentStore::connect(&socket, dir.path().join("store"), 1 << 26).unwrap();
+    let memory = memory(window_pages);
+    // SAFETY: The memory is the test's, and outlives the store.
+    unsafe { store.create_dax_window_in_host_memory(memory, (window_pages * ps) as u64, None, 1) }
+        .unwrap();
+    let extent = |page: usize| ExtentId { branch: store.branch(), sequence: 1 + page as u64 };
+    for page in 0..PAGES {
+        write(&store, extent(page), 0, &pattern(page as u8, ps)).unwrap();
+    }
+    store.commit(None).unwrap();
+    // Each extent's page at an even page of the window, last first; zeros at every fourth odd one.
+    let mut mapped = Vec::new();
+    for page in (0..PAGES).rev() {
+        let at = (2 * page * ps) as u64;
+        mapped.push(crate::WindowMapping {
+            window_offset: at,
+            len: ps as u64,
+            contents: crate::MappingContents::Extent { extent: extent(page), offset: 0 },
+        });
+        if page % 4 == 0 {
+            let zeros = crate::MappingContents::Zeros;
+            mapped.push(crate::WindowMapping {
+                window_offset: at + ps as u64,
+                len: ps as u64,
+                contents: zeros,
+            });
+        }
+    }
+    store.map_many(&mapped).unwrap();
+    let point = dir.path().join("point");
+    store.fork_quiescent(&point, store.branch() + 1).unwrap();
+    let mappings = store.window_mappings().unwrap();
+    assert_eq!(mappings.len(), PAGES + PAGES / 4);
+    // The bytes the window's mappings map, in order: the pages between them map nothing, which
+    // the window refuses an access to.
+    let window = |memory: NonNull<u8>| -> Vec<u8> {
+        (mappings.iter())
+            .flat_map(|mapping| {
+                let (at, len) = (mapping.window_offset as usize, mapping.len as usize);
+                // SAFETY: As above.
+                unsafe { std::slice::from_raw_parts(memory.as_ptr().add(at), len) }.to_vec()
+            })
+            .collect()
+    };
+    let snapshotted = window(memory);
+    assert_eq!(&snapshotted[..ps], &pattern(0, ps)[..]);
+    assert_eq!(&snapshotted[ps..2 * ps], &vec![0; ps][..]);
+    assert_eq!(&snapshotted[2 * ps..3 * ps], &pattern(1, ps)[..]);
+
+    let restore = |name: &str, each: bool| {
+        let restored =
+            RemoteExtentStore::connect_forked(&socket, dir.path().join(name), &point, 0, 0)
+                .unwrap();
+        let memory = super::tests::memory(window_pages);
+        // SAFETY: As above.
+        unsafe {
+            restored.create_dax_window_in_host_memory(memory, (window_pages * ps) as u64, None, 1)
+        }
+        .unwrap();
+        let (maps, map_manys) = (served("map"), served("map_many"));
+        let [ops, ops_ns, ..] = restored.stage_counts().costs;
+        let start = std::time::Instant::now();
+        if each {
+            // As restores did before: a MAP each.
+            for &crate::WindowMapping { window_offset, len, contents } in &mappings {
+                match contents {
+                    crate::MappingContents::Extent { extent, offset } => {
+                        restored.map(extent, offset, len, window_offset).unwrap();
+                    }
+                    crate::MappingContents::Zeros => {
+                        let zeros = restored.map_zeros_async(window_offset, len);
+                        futures::executor::block_on(zeros).unwrap();
+                    }
+                }
+            }
+        } else {
+            restored.map_many(&mappings).unwrap();
+        }
+        let took = start.elapsed();
+        assert_eq!(restored.window_mappings().unwrap(), mappings);
+        assert!(window(memory) == snapshotted, "{name}: the restored window differs");
+        let [ops_then, ops_ns_then, ..] = restored.stage_counts().costs;
+        let counted = (served("map") - maps, served("map_many") - map_manys, ops_then - ops);
+        eprintln!(
+            "{name}: {} mappings in {took:?}, {counted:?} (MAPs, MAP_MANYs, stage operations), \
+             the VM process's stage operations {:?} of it",
+            mappings.len(),
+            std::time::Duration::from_nanos(ops_ns_then - ops_ns),
+        );
+        (restored, counted)
+    };
+    let (_each, each) = restore("each", true);
+    let (_at_once, at_once) = restore("at-once", false);
+    assert_eq!((each.0, each.1), (mappings.len() as u64, 0));
+    assert_eq!((at_once.0, at_once.1), (0, 1));
+    // The ranges mapped anew told the VM process in runs, not one each, and the pages' maps
+    // in runs across mappings, where their pages follow one another.
+    assert!(at_once.2 < each.2, "{at_once:?} against {each:?}");
+}
+
+/// TASK-92.14: a VM whose guest stored to its window, its pages private, is snapshotted once its
+/// freeze has written them back and rebound them (backlog doc-13): refused before, as no extent
+/// holds their bytes; and restored, its window reads what the guest stored, mapped again in one
+/// request.
+#[test]
+fn snapshots_after_private_pages_are_rebound_restore_their_bytes() {
+    const PAGES: usize = 8;
+    host();
+    let ps = page_size() as usize;
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("extentd.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    std::thread::spawn(move || serve(listener));
+
+    let store = RemoteExtentStore::connect(&socket, dir.path().join("store"), 1 << 24).unwrap();
+    let memory = memory(PAGES);
+    let size = (PAGES * ps) as u64;
+    // SAFETY: The memory is the test's, and outlives the store.
+    unsafe { store.create_dax_window_in_host_memory(memory, size, None, PAGES as u64) }.unwrap();
+    assert!(store.copies_on_write());
+    crate::guest_thread_started();
+    let extent = |sequence: u64| ExtentId { branch: store.branch(), sequence };
+    let file = extent(1);
+    write(&store, file, 0, &pattern(1, PAGES * ps)).unwrap();
+    store.commit(None).unwrap();
+    store.map(file, 0, size, 0).unwrap();
+    // The guest's stores, to every other page, and its file's page past them zeros.
+    let stored = |page: usize| pattern(0x80 | page as u8, ps);
+    for page in (0..PAGES).step_by(2) {
+        // SAFETY: The window's page, which the store makes private.
+        unsafe {
+            std::ptr::copy_nonoverlapping(stored(page).as_ptr(), memory.as_ptr().add(page * ps), ps)
+        };
+    }
+    // SAFETY: As above.
+    let window = || unsafe { std::slice::from_raw_parts(memory.as_ptr(), PAGES * ps).to_vec() };
+    let expected: Vec<u8> = (0..PAGES)
+        .flat_map(|page| match page % 2 {
+            0 => stored(page),
+            _ => pattern(1, PAGES * ps)[page * ps..][..ps].to_vec(),
+        })
+        .collect();
+    assert!(window() == expected, "the stores didn't reach the window");
+    let point = dir.path().join("point");
+    assert_eq!(store.fork_quiescent(&point, store.branch() + 1), Err(Errno::EBUSY));
+
+    // The freeze: each page stored to written back, to an extent of its own, sealed, and mapped
+    // over the private page, which goes.
+    let mut rebound = Vec::new();
+    for page in (0..PAGES).step_by(2) {
+        let written = extent(2 + page as u64);
+        let bytes = window()[page * ps..][..ps].to_vec();
+        write(&store, written, 0, &bytes).unwrap();
+        rebound.push(crate::WindowMapping {
+            window_offset: (page * ps) as u64,
+            len: ps as u64,
+            contents: crate::MappingContents::Extent { extent: written, offset: 0 },
+        });
+    }
+    store.commit(None).unwrap();
+    store.map_many(&rebound).unwrap();
+    assert!(window() == expected, "rebinding changed the window");
+    store.fork_quiescent(&point, store.branch() + 1).unwrap();
+    let mappings = store.window_mappings().unwrap();
+    assert_eq!(mappings.len(), PAGES);
+
+    let restored =
+        RemoteExtentStore::connect_forked(&socket, dir.path().join("restored"), &point, 0, 0)
+            .unwrap();
+    let restored_memory = super::tests::memory(PAGES);
+    // SAFETY: As above.
+    unsafe { restored.create_dax_window_in_host_memory(restored_memory, size, None, PAGES as u64) }
+        .unwrap();
+    let map_manys = served("map_many");
+    restored.map_many(&mappings).unwrap();
+    assert_eq!(served("map_many") - map_manys, 1);
+    // SAFETY: As above.
+    let restored_window =
+        unsafe { std::slice::from_raw_parts(restored_memory.as_ptr(), PAGES * ps).to_vec() };
+    assert!(restored_window == expected, "the restored window lost the guest's stores");
 }
 
 /// TASK-39.1: a VM restored on another host than its snapshot's, whose point it doesn't have, takes
@@ -4668,11 +4864,41 @@ fn whatever_a_vm_process_says_harms_no_other() {
     const LAST: u64 = 0x1a57;
     /// The ID of a restore's `OPEN`.
     const RESTORE: u64 = 0x7e57;
-    const KINDS: [u32; 32] = [
-        OPEN, READ, WRITE, FREE, MAP, UNMAP, COMMIT, ROOT, INFO, WINDOW, FAULT, ACK, FORK, RESIZED,
+    const KINDS: [u32; 33] = [
+        OPEN,
+        READ,
+        WRITE,
+        FREE,
+        MAP,
+        UNMAP,
+        COMMIT,
+        ROOT,
+        INFO,
+        WINDOW,
+        FAULT,
+        ACK,
+        FORK,
+        RESIZED,
         // fxdax: and 29 and 107, writable DAX's asks to seal and their answers, retired.
-        MAPPINGS, ADVANCE, LET_GO, PIN, UNPIN, TRANSFER, FREE_MANY, STAGE_COUNTS, BUILD, 29,
-        PRIVATE, REPLY, STAGE_MAP, STAGE_UNMAP, CAPACITY, 107, 14, 0xffff_ffff,
+        MAPPINGS,
+        ADVANCE,
+        LET_GO,
+        PIN,
+        UNPIN,
+        TRANSFER,
+        FREE_MANY,
+        STAGE_COUNTS,
+        BUILD,
+        29,
+        PRIVATE,
+        REPLY,
+        STAGE_MAP,
+        STAGE_UNMAP,
+        CAPACITY,
+        107,
+        14,
+        0xffff_ffff,
+        MAP_MANY,
     ];
     let wait = std::time::Duration::from_secs(60);
 
@@ -4765,6 +4991,24 @@ fn whatever_a_vm_process_says_harms_no_other() {
         (sequence(), page(), length(), page(), 0u32..4).prop_map(|(extent, at, len, to, flags)| {
             (MAP, flags, 0, [OWN_BRANCH, extent, at, len, to], Vec::new())
         }),
+        // fxdax: of extents or zeros, some (TASK-92.14).
+        proptest::collection::vec((sequence(), page(), length(), page(), any::<bool>()), 1..4)
+            .prop_map(|maps| {
+                let mappings: Vec<crate::WindowMapping> = (maps.into_iter())
+                    .map(|(sequence, at, len, to, zeros)| crate::WindowMapping {
+                        window_offset: to,
+                        len,
+                        contents: match zeros {
+                            true => crate::MappingContents::Zeros,
+                            false => crate::MappingContents::Extent {
+                                extent: ExtentId { branch: OWN_BRANCH, sequence },
+                                offset: at,
+                            },
+                        },
+                    })
+                    .collect();
+                (MAP_MANY, 0, 0, [0; 5], super::codec::mappings_payload(&mappings))
+            }),
         (page(), length()).prop_map(|(at, len)| (UNMAP, 0, 0, [at, len, 0, 0, 0], Vec::new())),
         (page(), 0u32..4).prop_map(|(at, flags)| (FAULT, flags, 0, [at, 0, 0, 0, 0], Vec::new())),
         // fxdax: of a window that copies on write, or not (backlog doc-13).
