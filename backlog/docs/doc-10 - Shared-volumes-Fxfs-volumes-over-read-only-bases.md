@@ -3,7 +3,7 @@ id: doc-10
 title: 'Shared volumes: Fxfs volumes over read-only bases'
 type: specification
 created_date: '2026-10-30 09:08'
-updated_date: '2026-11-01 01:06'
+updated_date: '2026-11-06 01:09'
 ---
 # Shared volumes: Fxfs volumes over read-only bases
 
@@ -101,7 +101,8 @@ Base layers:
 - stay at the bottom of the tree, out of every compaction's merge, forced major ones included
   (`tree::layers_to_merge`). Tombstones survive above them: `major_iter` runs only when
   `layers_to_keep` is empty.
-- count towards no metadata reservation, and no version upgrade: nothing could rewrite them.
+- count towards no metadata reservation: nothing could rewrite them. They are of the latest
+  version, as their manifest is, or the store doesn't open (`FxfsError::InvalidVersion`, TASK-141.1).
 - hold extents the allocator's table never holds. The allocator notes `base_branches` in memory as a
   store opens, so that its extents are never deallocated, always shared and never referenced, and
   fsck leaves them out. No allocator record or mutation changed.
@@ -172,10 +173,11 @@ What running the publisher in a sandbox asks of it:
   chain of throwaway forks spreads a generation over a growing list of branches to route. Generations
   fork sideways off one store, which `MakePublic` with `generation` leaves writable. A generation
   pins that whole store, so scratch files stay out of it.
-- **The Fxfs format is a contract between VMs.** `EARLIEST_SUPPORTED_VERSION` is 60 and
-  `LATEST_VERSION` 61. A layer of a newer version fails to open on an older kernel, which a VM
-  snapshot keeps alive, and a breaking change strands every generation. Publishers stay on the oldest
-  kernel in use.
+- **The Fxfs format is a contract between VMs.** `EARLIEST_SUPPORTED_VERSION` is `LATEST_VERSION`,
+  61: nothing is migrated (AGENTS.md), so a kernel takes a manifest, and opens base layers, of its own
+  version alone, older and newer refused (TASK-141.1). Every format change strands every generation,
+  which a kernel of the new version must publish again; until then publishers and the VMs over their
+  bases stay on one kernel.
 - **The maintenance scripts keep Git's rules,** which the feature can't: no pruning, or alternates
   lose objects (`gc.auto` 0); no full `git repack -a -d`, which rewrites packs so generations stop
   sharing extents; the owner and index rules above; a stable mount path.

@@ -3,7 +3,7 @@ id: doc-11
 title: Upgrading fxdax in production
 type: other
 created_date: '2026-10-31 20:30'
-updated_date: '2026-11-06 00:44'
+updated_date: '2026-11-06 01:09'
 ---
 # Upgrading fxdax in production (TASK-141)
 
@@ -13,7 +13,7 @@ AGENTS.md's rule, the user's (2026-11-05): **no migrations, ever**. A format cha
 
 | Layer | How it is versioned | What a mismatch does today |
 |---|---|---|
-| Fxfs format (guest kernel, `crates/fxfs`) | `LATEST_VERSION` 61, `EARLIEST_SUPPORTED_VERSION` 60 (`serialized_types/types.rs`) | A version-60 filesystem still mounts and is upgraded: against the rule, TASK-141.1 |
+| Fxfs format (guest kernel, `crates/fxfs`) | `LATEST_VERSION` 61; `EARLIEST_SUPPORTED_VERSION` is `LATEST_VERSION` (`serialized_types/types.rs`) | A filesystem of any other version is refused at mount, its version named (`FxfsError::InvalidVersion`, `EINVAL` in the guest), writing nothing; so are a manifest, and a base's layers, of another (TASK-141.1) |
 | Store files (`extent_store`) | `FORMAT`, "fxdax extent store 6" (6 names the bucket, TASK-165.6), matched exactly | Refused, opened or deleted, by its format (`extent_store::Format`, `ENOTSUP`) |
 | Branches in a bucket (`extent_remote`) | `layout::FORMAT` 2, first in each branch's record (TASK-165.3); each framed object's trailer ends with its frame's (TASK-141.2) | A daemon refuses a branch of any other format, older ones too, naming it, reading nothing else of it; the collector's pass stops, deleting nothing |
 | VM process and daemon (`extentd/wire.rs`) | No handshake. `BUILD` is optional: an older daemon's `EINVAL` is let be | Nothing refuses a VM process of another build: TASK-141.3 |
@@ -47,7 +47,7 @@ An in-place handover (the old daemon passing its memory objects and connections 
 
 ## What makes this true: tests
 
-- **Refusals.** Each format's reader refuses another, by a test: `host_store.rs`'s `older_stores_are_refused_by_their_format`, `record.rs`'s `records_of_other_formats_are_refused`, `collector.rs`'s `passes_stop_at_branches_of_newer_formats`; Fxfs's version 60 (TASK-141.1); the wire's and the device's (TASK-141.3).
+- **Refusals.** Each format's reader refuses another, by a test: `host_store.rs`'s `older_stores_are_refused_by_their_format`, `record.rs`'s `records_of_other_formats_are_refused`, `collector.rs`'s `passes_stop_at_branches_of_newer_formats`; `super_block.rs`'s `test_mount_of_the_previous_version_is_refused` and `base.rs`'s `test_base_layers_of_older_versions_refused` and `test_base_manifests_refused` for Fxfs's (TASK-141.1); the wire's and the device's (TASK-141.3).
 - **A drain rehearsal.** Nightly, `scripts/migrate-gce.sh` moves a VM off a host and back, both of one build (TASK-141.4).
 
 No golden stores of earlier releases and no skew matrix: what they would test, the rule refuses.
