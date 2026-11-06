@@ -12,7 +12,7 @@ use crate::dir::{Dir, File, not_found};
 use crate::durability::Syncs;
 use crate::framed::{Aligned, Files, Framed, Source, read_frame, read_parts, read_whole};
 use crate::layout::{
-    Change, Data, Extent, Extents, OPEN_SEGMENTS, Piece, SEGMENTS, SegmentId, branch_dir,
+    Change, Data, Extents, OPEN_SEGMENTS, Piece, SEGMENTS, SegmentId, branch_dir,
     held_frees, list_numbers, open_segment_path, segment_path,
 };
 use crate::store::{Options, Usage};
@@ -135,6 +135,8 @@ pub(crate) struct Segments<F> {
     opened: Instant,
     /// Whether the next commit closes it, whatever it holds.
     close_wanted: bool,
+    /// The forks the next commit makes at its end, which close the open segment.
+    forking: Vec<Child>,
     /// What the commits since it opened changed, which its footer records.
     window: Window,
     /// fxdax: the chain of the footers' writer, the writer of the branch in object storage, if an
@@ -210,7 +212,8 @@ impl<F: File> Segments<F> {
             open,
             opened: Instant::now(),
             close_wanted: false,
-            window: Window::starting(epoch + 1),
+            forking: Vec::new(),
+            window: Window::starting(branch, epoch + 1),
             chain: Chain::new(branch, 0, open.number, None, 0),
             files: Files::new(open_files),
             written: false,
@@ -359,29 +362,40 @@ impl<F: File> Segments<F> {
         self.close_wanted = true;
     }
 
-    /// Has the next commit close the open segment, at the fork of `child`, which its footer
-    /// names (doc-7, Forks): with its owner, and whether it is a point (doc-7, Points).
+    /// Has the next commit fork `child` at its end, which its contents name, and close the open
+    /// segment, whose footer names the fork (doc-7, Forks): with its owner, and whether it is a
+    /// point (doc-7, Points).
     pub fn close_for_fork(&mut self, child: Child) {
         self.close_wanted = true;
-        self.window.forks.push(child);
+        self.forking.push(child);
     }
 
-    /// Whether the open segment holds commits up to `epoch`, the last, or forks, which closing it
-    /// records.
+    /// Whether the open segment holds commits up to `epoch`, the last, which closing it records.
     pub fn has_commits(&self, epoch: u64) -> bool {
-        self.window.first <= epoch || !self.window.forks.is_empty()
+        self.window.first <= epoch
     }
 
-    /// Records what a commit changed, `changes`, and its root and the branch's capacity, if it
-    /// set them, in the open segment's footer to be: `extents` the branch's extents as of it.
+    /// Records commit `epoch`, which changed `changes`, and set its root and the branch's
+    /// capacity, if it set them, `extents` the branch's extents as of it, its extents sealed in
+    /// the open segment or in files of their own, `next_sequence` the branch's next sequence
+    /// number: its contents, as the chain tags it, which it returns, fold into the open segment's
+    /// footer to be ([`Window`]), with the forks it makes ([`Segments::close_for_fork`]).
     pub fn record(
         &mut self,
+        epoch: u64,
         changes: &[Change],
-        root: Option<&[u8]>,
-        capacity: Option<u64>,
+        (root, capacity): (Option<&[u8]>, Option<u64>),
         extents: &Extents,
-    ) {
-        self.window.commit(changes, root, capacity, extents);
+        next_sequence: u64,
+    ) -> Result<Contents, Error> {
+        let mut contents = commit_contents(self.open, changes, extents)?;
+        contents.commits = vec![self.chain.tag(epoch)];
+        contents.root = root.map(<[u8]>::to_vec);
+        contents.capacity = capacity;
+        contents.next_sequence = next_sequence;
+        contents.forks = std::mem::take(&mut self.forking);
+        self.window.fold(&contents);
+        Ok(contents)
     }
 
     /// Whether the open segment is to close, as `options` say, once no write is in progress in
@@ -409,21 +423,11 @@ impl<F: File> Segments<F> {
         next_sequence: u64,
     ) -> Result<Unframed<F>, Error> {
         let number = self.open;
-        let (extents, own) = self.window.places(number)?;
         let next = SegmentId { number: number.number + 1, ..number };
         let file = Arc::new(dir.create(&open_segment_path(next), true)?);
         // Nothing fails from here on.
-        let window = std::mem::replace(&mut self.window, Window::starting(epoch + 1));
-        let footer = self.chain.close(Contents {
-            commits: vec![self.chain.tag(epoch)],
-            extents,
-            own,
-            frees: window.freed.into_iter().collect(),
-            root: window.root,
-            next_sequence,
-            forks: window.forks,
-            capacity: window.capacity,
-        });
+        let window = std::mem::replace(&mut self.window, Window::starting(number.branch, epoch + 1));
+        let footer = self.chain.close(window.contents(vec![self.chain.tag(epoch)], next_sequence));
         let segment = self.tracked.get_mut(&number).unwrap();
         let raw = match &segment.phase {
             Phase::Open(raw) => raw.clone(),
@@ -450,11 +454,7 @@ impl<F: File> Segments<F> {
     /// the chain, as this one, which has none, would have. Nothing changes if it fails.
     pub fn retire<D: Dir<File = F>>(&mut self, dir: &D) -> Result<(), Error> {
         let number = self.open;
-        let window = &self.window;
-        debug_assert!(
-            window.touched.is_empty() && window.forks.is_empty(),
-            "{number:?}, set aside, holds a commit's data or a fork"
-        );
+        debug_assert!(self.window.is_empty(), "{number:?}, set aside, holds a commit's data or a fork");
         let next = SegmentId { number: number.number + 1, ..number };
         let file = Arc::new(dir.create(&open_segment_path(next), true)?);
         let segment = self.tracked.get_mut(&number).unwrap();
@@ -649,6 +649,9 @@ pub(crate) struct Recount {
 }
 
 #[cfg(any(test, feature = "audit"))]
+use crate::layout::Extent;
+
+#[cfg(any(test, feature = "audit"))]
 impl Recount {
     /// The branch holds `extent` as `entry` says, sealed if `sealed`, or open.
     pub fn holds(&mut self, extent: ExtentId, entry: &Extent, sealed: bool) {
@@ -727,100 +730,138 @@ fn frame_segment<D: Dir>(
     Ok(Arc::new(framed))
 }
 
-/// What the commits since a segment opened changed: the extents they sealed, adopted or moved,
-/// which the branch holds still, those they freed, and the root. Applying it to the branch's state
-/// as of any of those commits gives its state as of the last.
+/// What commit `changes` made, as the footer of `segment`, the open segment, names it: the extents
+/// it sealed or moved, which the branch holds as of it, `extents`, each in one run of `segment`
+/// or in a file of its own, the branch's, by its sequence number; and of its frees, those of
+/// extents a commit held, which the store spent, if its own: so that the footer's readers spend
+/// all it frees, as the store did (TASK-160.15). Those of extents written in it, open, it frees
+/// not: no commit held them, nor names them, and the store writes them again. Those held
+/// elsewhere, in the bucket, it names not. The rest of its contents are its caller's.
+fn commit_contents(
+    segment: SegmentId,
+    changes: &[Change],
+    extents: &Extents,
+) -> Result<Contents, Error> {
+    let held = held_frees(changes);
+    let (mut touched, mut frees) = (BTreeSet::new(), BTreeSet::new());
+    for change in changes {
+        match change {
+            Change::Write { extent, .. }
+            | Change::WriteOwn { extent, .. }
+            | Change::Adopt { extent, .. }
+            | Change::Move { extent, .. }
+            | Change::MoveOwn { extent } => {
+                touched.insert(*extent);
+            }
+            Change::Free(extent) => {
+                touched.remove(extent);
+                if held.contains(extent) {
+                    frees.insert(*extent);
+                }
+            }
+        }
+    }
+    let mut contents = Contents { frees: frees.into_iter().collect(), ..Contents::default() };
+    for extent in touched {
+        let entry = extents.get(&extent).expect("touched and held");
+        match &entry.data {
+            Data::Pieces(pieces) => {
+                let [piece] = pieces[..] else { bail!("{extent:?} is not sealed in one run") };
+                ensure!(piece.segment == segment, "{extent:?} is sealed in another segment");
+                contents.extents.push((extent, piece.offset, entry.len));
+            }
+            Data::Own => {
+                ensure!(extent.branch == segment.branch, "{extent:?} is another branch's");
+                contents.own.push((extent.sequence, entry.len));
+            }
+            Data::Remote(_) => {}
+        }
+    }
+    Ok(contents)
+}
+
+/// What the commits since a segment opened made, as its footer says: their contents
+/// ([`commit_contents`]) folded, each over those before, so that applying it to the branch's state
+/// as of any of those commits gives its state as of the last. fxdax: one fold, of the commits as
+/// they are made and of the records of a segment's log of them alike (TASK-165.9).
 #[derive(Default)]
 struct Window {
     /// Its first commit's epoch.
     first: u64,
-    /// The extents its commits sealed, adopted or moved, which the branch holds as of its last, as
-    /// they were then: a segment closed between commits holds what they made, not what came after.
-    touched: BTreeMap<ExtentId, Extent>,
-    freed: BTreeSet<ExtentId>,
+    /// The branch whose extents are stored on their own.
+    branch: u64,
+    /// The extents its commits sealed, which the branch holds as of its last, where they sealed
+    /// them: in a run of its segment's data, at an offset, of a length, or on their own, of a
+    /// length.
+    sealed: BTreeMap<ExtentId, (Option<u64>, u64)>,
+    /// The extents they freed.
+    frees: BTreeSet<ExtentId>,
+    /// The root and capacity they set last, if any did, and the forks at their ends.
     root: Option<Vec<u8>>,
-    /// The branches forked at its end.
-    forks: Vec<Child>,
-    /// fxdax: the branch's capacity, as the last of its commits to set it set it (TASK-165.3).
     capacity: Option<u64>,
+    forks: Vec<Child>,
 }
 
 impl Window {
-    fn starting(first: u64) -> Self {
-        Self { first, ..Self::default() }
+    fn starting(branch: u64, first: u64) -> Self {
+        Self { first, branch, ..Self::default() }
     }
 
-    /// Records what a commit changed, `extents` the branch's extents as of it. fxdax: of its frees,
-    /// those of extents a commit held, which the store spent, if its own: so that the footer's
-    /// readers spend all it frees, as the store did (TASK-160.15). Those of extents written in it,
-    /// open, it frees not: no commit held them, nor names them, and the store writes them again.
-    fn commit(
-        &mut self,
-        changes: &[Change],
-        root: Option<&[u8]>,
-        capacity: Option<u64>,
-        extents: &Extents,
-    ) {
-        let held = held_frees(changes);
-        let mut touched = BTreeSet::new();
-        for change in changes {
-            match change {
-                Change::Write { extent, .. }
-                | Change::WriteOwn { extent, .. }
-                | Change::Adopt { extent, .. }
-                | Change::Move { extent, .. }
-                | Change::MoveOwn { extent } => {
-                    touched.insert(*extent);
-                }
-                Change::Free(extent) => {
-                    touched.remove(extent);
-                    self.touched.remove(extent);
-                    if held.contains(extent) {
-                        self.freed.insert(*extent);
-                    }
-                }
-            }
-        }
-        for extent in touched {
-            // Held as of it, though freed before it, or in it: freed while open, and written anew
-            // (TASK-79.1). It is no free of the footer's, which readers apply after its extents.
-            self.freed.remove(&extent);
-            self.touched.insert(extent, extents.get(&extent).expect("touched and held").clone());
-        }
-        if let Some(root) = root {
-            self.root = Some(root.to_vec());
-        }
-        if capacity.is_some() {
-            self.capacity = capacity;
-        }
+    /// Whether its commits made nothing.
+    fn is_empty(&self) -> bool {
+        self.sealed.is_empty()
+            && self.frees.is_empty()
+            && self.root.is_none()
+            && self.capacity.is_none()
+            && self.forks.is_empty()
     }
 
-    /// Where the extents its commits touched are, as the footer of `segment`, the segment it is
-    /// of, names them: each sealed in one run of `segment`, or in a file of its own, which the
-    /// footer's chain names at its writer's key; those held elsewhere, a checkpoint names.
-    fn places(&self, segment: SegmentId) -> Result<Places, Error> {
+    /// Folds `commit`'s contents over those of the commits before it: its frees take out what
+    /// they sealed, and are the footer's; what it seals is no free of the footer's, though freed
+    /// before, as readers apply its frees after its extents (TASK-79.1).
+    fn fold(&mut self, commit: &Contents) {
+        for extent in &commit.frees {
+            self.sealed.remove(extent);
+            self.frees.insert(*extent);
+        }
+        let own = commit.own.iter().map(|&(sequence, len)| {
+            (ExtentId::new(self.branch, sequence), (None, len))
+        });
+        let runs = commit.extents.iter().map(|&(extent, offset, len)| (extent, (Some(offset), len)));
+        for (extent, sealed) in runs.chain(own).collect::<Vec<_>>() {
+            self.frees.remove(&extent);
+            self.sealed.insert(extent, sealed);
+        }
+        if commit.root.is_some() {
+            self.root.clone_from(&commit.root);
+        }
+        if commit.capacity.is_some() {
+            self.capacity = commit.capacity;
+        }
+        self.forks.extend_from_slice(&commit.forks);
+    }
+
+    /// The footer's contents, of `commits`, naming `next_sequence`.
+    fn contents(self, commits: Vec<u64>, next_sequence: u64) -> Contents {
         let (mut extents, mut own) = (Vec::new(), Vec::new());
-        for (extent, entry) in &self.touched {
-            match &entry.data {
-                Data::Pieces(pieces) => {
-                    let [piece] = pieces[..] else { bail!("{extent:?} is not sealed in one run") };
-                    ensure!(piece.segment == segment, "{extent:?} is sealed in another segment");
-                    extents.push((*extent, piece.offset, entry.len));
-                }
-                Data::Own => {
-                    ensure!(extent.branch == segment.branch, "{extent:?} is another branch's");
-                    own.push((extent.sequence, entry.len));
-                }
-                Data::Remote(_) => {}
+        for (extent, (offset, len)) in self.sealed {
+            match offset {
+                Some(offset) => extents.push((extent, offset, len)),
+                None => own.push((extent.sequence, len)),
             }
         }
-        Ok((extents, own))
+        Contents {
+            commits,
+            extents,
+            own,
+            frees: self.frees.into_iter().collect(),
+            root: self.root,
+            next_sequence,
+            forks: self.forks,
+            capacity: self.capacity,
+        }
     }
 }
-
-/// Where a footer's extents are: runs in its segment, at an offset, of a length; and files of
-/// their own, the branch's, by their sequence numbers, of a length.
-type Places = (Vec<(ExtentId, u64, u64)>, Vec<(u64, u64)>);
 
 /// The store's epoch of the last commit of the segment whose footer is `footer`.
 pub(crate) fn footer_last(footer: &Footer) -> u64 {

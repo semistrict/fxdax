@@ -1229,7 +1229,8 @@ impl<D: Dir> Store<D> {
             uploads.record(epoch, &changes, &state.extents);
         }
         // The open segment's footer records them, before the segment closes.
-        state.segments.record(&changes, root, capacity, &state.extents);
+        let next_sequence = state.next_sequence;
+        state.segments.record(epoch, &changes, (root, capacity), &state.extents, next_sequence)?;
         // fxdax: with the rule off, the closings for room since the last commit are framed only
         // now, by a commit that may never come (TASK-150.2).
         for unframed in std::mem::take(&mut state.deferred) {
