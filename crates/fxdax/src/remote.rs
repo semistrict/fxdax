@@ -328,6 +328,17 @@ impl Default for Options {
     }
 }
 
+/// fxdax: how many stores' uploaders run in this process ([`Remote`]): until each, its store closed,
+/// has uploaded what its store made durable, and stopped.
+static UPLOADERS: std::sync::LazyLock<tokio::sync::watch::Sender<usize>> =
+    std::sync::LazyLock::new(|| tokio::sync::watch::channel(0).0);
+
+/// fxdax: how many stores' uploaders run in this process, as it changes: what an extent daemon's
+/// drain waits to see none of (TASK-141.4).
+pub(crate) fn uploaders() -> tokio::sync::watch::Receiver<usize> {
+    UPLOADERS.subscribe()
+}
+
 /// A store's uploader. Dropping it uploads what the store made durable, then stops.
 pub struct Remote {
     shared: Arc<Shared>,
@@ -532,6 +543,7 @@ impl Remote {
         let (started, start) = std::sync::mpsc::channel();
         let (stop, stopped) = std::sync::mpsc::channel();
         let (uploader, uploads) = (shared.clone(), bucket.clone());
+        UPLOADERS.send_modify(|running| *running += 1);
         // A task, not a thread of its own (TASK-34).
         RUNTIME.spawn(async move {
             uploader.run(uploads, holder, started).await;
@@ -540,6 +552,7 @@ impl Remote {
             // open again at once (`extent_store::Dir::claim` refusing a second opening), as
             // extentd does a store an image it imported made (TASK-165.6).
             drop(uploader);
+            UPLOADERS.send_modify(|running| *running -= 1);
             let _ = stop.send(());
             fail::fail_point!("remote::stopped");
         });

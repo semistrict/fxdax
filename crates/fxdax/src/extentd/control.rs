@@ -19,6 +19,7 @@ use proto::extentd_server::{Extentd, ExtentdServer};
 use proto::*;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use tonic::codegen::http;
 use tonic::{Code, Request, Response, Status};
 
 /// The API's messages and services, generated from its .proto.
@@ -70,7 +71,7 @@ pub fn serve_control(
         CONTROL_SERVING.store(true, std::sync::atomic::Ordering::Release);
         tonic::transport::Server::builder()
             .add_service(health)
-            .add_service(ExtentdServer::new(control))
+            .add_service(Drained(ExtentdServer::new(control)))
             .serve_with_incoming(incoming)
             .await
             .map_err(std::io::Error::other)
@@ -108,6 +109,51 @@ fn snapshot_response(snapshot: super::snapshot::Snapshot) -> GetSnapshotResponse
         counters: snapshot.counters.into_iter().collect(),
         gauges: named(&snapshot.gauges),
         vms: vms.collect(),
+    }
+}
+
+/// fxdax: the API's calls in flight, which a drain waits for, refusing more (TASK-141.4).
+pub(super) static CALLS: super::drain::Work = super::drain::Work::new();
+
+/// fxdax: the API's service, `S`, its calls counted in [`CALLS`] until they are answered, and
+/// refused (`UNAVAILABLE`) as the daemon drains (TASK-141.4): what a call does is done once it is
+/// answered, as none streams. The health service's calls are not, as its watches never end.
+#[derive(Clone)]
+struct Drained<S>(S);
+
+impl<S: tonic::server::NamedService> tonic::server::NamedService for Drained<S> {
+    const NAME: &'static str = S::NAME;
+}
+
+impl<S, B, Answer> tower::Service<http::Request<B>> for Drained<S>
+where
+    S: tower::Service<http::Request<B>, Response = http::Response<Answer>>,
+    S::Future: Send + 'static,
+    S::Error: Send + 'static,
+    Answer: Default + Send + 'static,
+{
+    type Response = S::Response;
+    type Error = S::Error;
+    type Future = futures::future::BoxFuture<'static, Result<S::Response, S::Error>>;
+
+    fn poll_ready(
+        &mut self,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), Self::Error>> {
+        self.0.poll_ready(cx)
+    }
+
+    fn call(&mut self, request: http::Request<B>) -> Self::Future {
+        let Some(call) = CALLS.begin() else {
+            let refused = Status::unavailable("the extent daemon drains, as it is about to exit");
+            return Box::pin(std::future::ready(Ok(refused.into_http())));
+        };
+        let answered = self.0.call(request);
+        Box::pin(async move {
+            let answered = answered.await;
+            drop(call);
+            answered
+        })
     }
 }
 

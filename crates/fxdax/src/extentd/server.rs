@@ -95,6 +95,8 @@ pub(super) const ACCEPT_AGAIN: std::time::Duration = std::time::Duration::from_m
 /// it would leave every VM process that connects to it unserved, a tenant's socket bound still
 /// (TASK-79.35).
 fn serve_as(listener: UnixListener, tenant: impl Fn() -> Result<Arc<Tenant>, Errno>) {
+    // fxdax: until the daemon drains, which shuts it down (TASK-141.4); dropped before it.
+    let _accepting = Accepting::new(&listener);
     let mut failing = false;
     loop {
         match listener.accept() {
@@ -117,6 +119,43 @@ fn serve_as(listener: UnixListener, tenant: impl Fn() -> Result<Arc<Tenant>, Err
                 std::thread::sleep(ACCEPT_AGAIN);
             }
         }
+    }
+}
+
+/// fxdax: the descriptors of the listeners of the VM sockets served ([`serve_as`]), the daemon's
+/// own and its tenants', which a drain shuts down ([`stop_accepting`], TASK-141.4). Each is there
+/// while its listener lives ([`Accepting`]): not a descriptor of its own, which a daemon with as
+/// many files open as it may would have none of (TASK-79.35).
+static ACCEPTING: Mutex<Vec<std::os::fd::RawFd>> = Mutex::new(Vec::new());
+
+/// fxdax: a VM socket's listener served, in [`ACCEPTING`] until dropped, before the listener is:
+/// shut down at once if the daemon drains, as it may have as it came.
+struct Accepting(std::os::fd::RawFd);
+
+impl Accepting {
+    fn new(listener: &UnixListener) -> Self {
+        use std::os::fd::AsRawFd;
+        let mut accepting = ACCEPTING.lock().unwrap();
+        if super::drain::draining() {
+            super::shut_down(listener.as_fd());
+        }
+        accepting.push(listener.as_raw_fd());
+        Self(listener.as_raw_fd())
+    }
+}
+
+impl Drop for Accepting {
+    fn drop(&mut self) {
+        ACCEPTING.lock().unwrap().retain(|fd| *fd != self.0);
+    }
+}
+
+/// fxdax: has every VM socket served take no more connections, as the daemon drains (TASK-141.4):
+/// their listeners shut down, their accepts failing (`EINVAL`), and connecting refused.
+pub(super) fn stop_accepting() {
+    for &fd in ACCEPTING.lock().unwrap().iter() {
+        // SAFETY: Its listener lives while it is there: its `Accepting` takes it out first.
+        super::shut_down(unsafe { std::os::fd::BorrowedFd::borrow_raw(fd) });
     }
 }
 
@@ -305,6 +344,7 @@ pub(crate) fn serve_connection(stream: UnixStream, tenant: Arc<Tenant>) {
 /// Starts serving the VM process at the other end of `stream`, as [`serve_connection`] does, on
 /// the daemon's runtime: no thread of its own. What it returns says when it is done.
 /// fxdax: one of a tenant past [`MAX_CONNECTIONS`] it closes at once.
+/// fxdax: one coming as the daemon drains it closes at once (TASK-141.4).
 fn start_connection(stream: UnixStream, tenant: Arc<Tenant>) -> mpsc::Receiver<()> {
     let (done, finished) = mpsc::channel();
     let Some(counted) = Counted::new(&tenant.memory) else {
@@ -313,22 +353,25 @@ fn start_connection(stream: UnixStream, tenant: Arc<Tenant>) -> mpsc::Receiver<(
         );
         return finished;
     };
-    CONNECTIONS.fetch_add(1, Ordering::Relaxed);
+    let Some(connected) = CONNECTIONS.begin() else {
+        log::warn!("extentd: refusing a VM process's connection: the daemon drains");
+        return finished;
+    };
     IO.spawn(async move {
         run_connection(stream, tenant).await;
-        CONNECTIONS.fetch_sub(1, Ordering::Relaxed);
-        drop(counted);
+        drop((connected, counted));
         let _ = done.send(());
     });
     finished
 }
 
-/// The VM processes connected, served or being let go of (`metrics`).
-static CONNECTIONS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+/// The VM processes connected, served or being let go of (`metrics`), until their stores are
+/// closed: which a drain waits for (TASK-141.4).
+pub(super) static CONNECTIONS: super::drain::Work = super::drain::Work::new();
 
 /// How many VM processes are connected.
 pub(super) fn connections() -> usize {
-    CONNECTIONS.load(Ordering::Relaxed)
+    CONNECTIONS.count()
 }
 
 /// Receives the VM process's messages, serving its requests ([`receive`]), until it is gone; then,
@@ -374,7 +417,9 @@ async fn run_connection(stream: UnixStream, tenant: Arc<Tenant>) {
             let (gone, mut went) = tokio::sync::oneshot::channel();
             IO.spawn(receive(connection.clone(), receiver, gone));
             // fxdax: its process gone, so is it, whoever it left the socket's end to, as a child,
-            // which would hold its store open for good (TASK-79.101).
+            // which would hold its store open for good (TASK-79.101). And as the daemon drains,
+            // its VM told so, as at the daemon's exit, and its store closed as a connection going
+            // closes it (TASK-141.4).
             let ended = tokio::select! {
                 ended = &mut went => ended,
                 exited = peer.exited() => {
@@ -382,6 +427,10 @@ async fn run_connection(stream: UnixStream, tenant: Arc<Tenant>) {
                         Ok(()) => peer.sender.shutdown(),
                         Err(err) => log::error!("extentd: waiting for a VM process to exit: {err}"),
                     }
+                    went.await
+                }
+                () = super::drain::started() => {
+                    peer.sender.shutdown();
                     went.await
                 }
             };
@@ -415,6 +464,14 @@ async fn run_connection(stream: UnixStream, tenant: Arc<Tenant>) {
     if let Some((stop, behind)) = behind {
         drop(stop);
         let _ = behind.await;
+    }
+    // fxdax: and in the bucket, as the daemon drains, the open segment's commits too, which a
+    // store closed leaves for the next to open it to upload (TASK-141.4).
+    if super::drain::draining()
+        && let (Some(_), Some(store)) = (connection.hold(), connection.store())
+        && let Err(errno) = stores::uploaded(store).await
+    {
+        log::error!("extentd: uploading a store's last commits as the daemon drains: {errno}");
     }
     let finished = tokio::task::spawn_blocking(move || finish_connection(connection));
     if let Err(err) = finished.await {
@@ -862,6 +919,19 @@ impl Drop for Connection {
     }
 }
 
+/// fxdax: refuses the [`OPEN`] of `header`, of a VM process of another wire version, its connection
+/// opening nothing (TASK-141.3): logged, naming both versions, and replied to with
+/// `EPROTONOSUPPORT` and the daemon's version.
+fn refuse_version(header: &Header, answer: Answer) {
+    log::error!(
+        "extentd: refusing a VM process of wire version {}: this daemon's is {VERSION}, and a VM \
+         process and a daemon of different wire formats don't serve each other",
+        codec::version(header)
+    );
+    let reply = codec::with_version(answer.reply_header());
+    answer.send(Err(Errno::EPROTONOSUPPORT), reply, Vec::new(), Vec::new());
+}
+
 /// fxdax: the failpoint of requests of `kind`, if they have one (TASK-44.10).
 #[cfg(feature = "failpoints")]
 fn failpoint(kind: u32) -> Option<&'static str> {
@@ -919,19 +989,6 @@ impl Connection {
     /// its reply is queued ([`Answer`]). Past them, `QuotaExceeded`: the VM process broke the
     /// protocol, and is let go, rather than held without end in the daemon's memory.
     fn within_bounds(&self, header: &Header) -> std::io::Result<()> {
-/// fxdax: refuses the [`OPEN`] of `header`, of a VM process of another wire version, its connection
-/// opening nothing (TASK-141.3): logged, naming both versions, and replied to with
-/// `EPROTONOSUPPORT` and the daemon's version.
-fn refuse_version(header: &Header, answer: Answer) {
-    log::error!(
-        "extentd: refusing a VM process of wire version {}: this daemon's is {VERSION}, and a VM \
-         process and a daemon of different wire formats don't serve each other",
-        codec::version(header)
-    );
-    let reply = codec::with_version(answer.reply_header());
-    answer.send(Err(Errno::EPROTONOSUPPORT), reply, Vec::new(), Vec::new());
-}
-
         // fxdax: nor what its stage operations cost, which it says unasked (TASK-91.16).
         if header.kind == ACK || header.kind == STAGE_COUNTS {
             return Ok(());
@@ -984,6 +1041,7 @@ fn refuse_version(header: &Header, answer: Answer) {
             Ok(request)
         });
         match request {
+            Err(Errno::EPROTONOSUPPORT) => refuse_version(&message.header, answer),
             Err(errno) => refuse(answer, errno),
             Ok(Request::Fault(fault)) => serve_future(turn, self.fault(fault, answer)),
             // fxdax: as a fault, which waits for its pages to be brought in (backlog doc-13).
@@ -1041,7 +1099,6 @@ fn refuse_version(header: &Header, answer: Answer) {
     }
 
     /// Serves `request`, and replies, as `answer` owes.
-            Err(Errno::EPROTONOSUPPORT) => refuse_version(&message.header, answer),
     fn serve(&self, request: &Request<'_>, answer: Answer) {
         let mut reply = answer.reply_header();
         let mut payload = Vec::new();

@@ -36,8 +36,14 @@
 //! user, or as root. The tenants' sockets go in the directory `FXDAX_EXTENTD_TENANTS` names, or
 //! `tenants` beside the control socket, each mode 0660 from the first. The control socket serves
 //! the standard gRPC health service too (`grpc.health.v1.Health`, TASK-48): SERVING while the
-//! daemon accepts VM processes, NOT_SERVING as it starts and as it stops. SIGTERM stops it: once
-//! the health service reports so, it exits.
+//! daemon accepts VM processes, NOT_SERVING as it starts and as it stops.
+//!
+//! SIGTERM drains it, and it exits (`fxdax::extentd::drain`, TASK-141.4): once the health service
+//! reports NOT_SERVING, it takes no more VM processes nor control calls (`UNAVAILABLE`), closes
+//! every VM process's connection, whose VM goes as at the daemon's exit, and closes their stores,
+//! durable, and the rest it has open, and waits for their uploads: within `FXDAX_EXTENTD_DRAIN`
+//! seconds (60 by default), exiting 0; past them, it logs what is left and exits 1. A host is
+//! upgraded so, its VMs moved off or stopped first (`docs/upgrading-a-host.md`).
 //!
 //! With `FXDAX_EXTENTD_METRICS` naming an address (`HOST:PORT`), the daemon serves its metrics
 //! there, over HTTP, at `/metrics`, in Prometheus' text format (`fxdax::extentd::metrics`,
@@ -63,7 +69,8 @@ fn main() -> anyhow::Result<()> {
     fxdax::faults::from_seed().map_err(anyhow::Error::msg)?;
     // fxdax: before any thread is started, which SIGQUIT would end otherwise (TASK-44.13).
     fxdax::stacks::on_sigquit().context("handling SIGQUIT")?;
-    stop_on_sigterm().context("handling SIGTERM")?;
+    let drain = fxdax::extentd::drain::bound().map_err(anyhow::Error::msg)?;
+    drain_on_sigterm(drain).context("handling SIGTERM")?;
     fxdax::extentd::raise_open_files_limit().context("raising the limit of open files")?;
     // A host of the multi-node system: the bucket and this host's placement token named.
     fxdax::remote::Host::from_env().map_err(anyhow::Error::msg)?;
@@ -106,14 +113,18 @@ fn main() -> anyhow::Result<()> {
         })?;
     }
     fxdax::extentd::serve(listener);
-    Ok(())
+    // Serving stops only as the daemon drains, whose thread exits the process once it has
+    // (`drain_on_sigterm`): not here, its stores still closing.
+    loop {
+        std::thread::park();
+    }
 }
 
-/// Stops the daemon on SIGTERM, as an orchestrator stops it: its health service reports it no
-/// longer serving (TASK-48), then it exits. SIGTERM is blocked in every thread but one, made here
-/// first, which waits for it.
+/// Drains the daemon on SIGTERM, as an orchestrator stops it, within `bound`, and exits
+/// (`fxdax::extentd::drain`, TASK-141.4): 0 once it drained, 1 past its bound. SIGTERM is blocked
+/// in every thread but one, made here first, which waits for it.
 #[cfg(target_os = "linux")]
-fn stop_on_sigterm() -> std::io::Result<()> {
+fn drain_on_sigterm(bound: std::time::Duration) -> std::io::Result<()> {
     // SAFETY: A signal set, filled by the calls below.
     let mut set: libc::sigset_t = unsafe { std::mem::zeroed() };
     // SAFETY: Plain calls on a signal set this function owns, and on the calling thread's mask,
@@ -137,9 +148,18 @@ fn stop_on_sigterm() -> std::io::Result<()> {
             );
             return;
         }
-        log::info!("extentd: stopping, on SIGTERM");
-        fxdax::extentd::stop_serving();
-        std::process::exit(0);
+        log::info!("extentd: draining, on SIGTERM, within {}s", bound.as_secs());
+        let began = std::time::Instant::now();
+        match fxdax::extentd::drain::drain(bound) {
+            Ok(()) => {
+                log::info!("extentd: drained in {:.1?}: every store closed", began.elapsed());
+                std::process::exit(0);
+            }
+            Err(left) => {
+                log::error!("extentd: not drained within {}s: {left}", bound.as_secs());
+                std::process::exit(1);
+            }
+        }
     })?;
     Ok(())
 }

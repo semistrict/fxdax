@@ -5507,3 +5507,66 @@ fn sockets_are_not_bound_over_another() {
     UnixStream::connect(&socket).unwrap();
     assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
 }
+
+/// TASK-141.4: a drain closes every VM process's connection, its VM told its daemon went, and its
+/// store, closed, opens elsewhere; the daemon's VM socket and its tenants' take no more
+/// connections, refused, their threads serving them returning; and the control API takes no more
+/// calls. Before, nothing drained: the daemon exited with all of them as they were.
+#[test]
+fn drains_close_every_connection_and_take_no_more() {
+    host();
+    let dir = tempfile::tempdir().unwrap();
+    let vms = dir.path().join("vms");
+    std::fs::create_dir(&vms).unwrap();
+    let (socket, tenant_socket) = (dir.path().join("extentd.sock"), dir.path().join("tenant.sock"));
+    let listener = UnixListener::bind(&socket).unwrap();
+    let serving = std::thread::spawn(move || serve(listener));
+    let tenant = super::server::Tenant::new("tenant", &vms).unwrap();
+    let listener = UnixListener::bind(&tenant_socket).unwrap();
+    let serving_tenant = std::thread::spawn(move || super::server::serve_tenant(listener, tenant));
+
+    let (path, tenant_path) = (dir.path().join("store"), vms.join("store"));
+    let store = RemoteExtentStore::connect(&socket, &path, 1 << 24).unwrap();
+    let tenants = RemoteExtentStore::connect(&tenant_socket, &tenant_path, 1 << 24).unwrap();
+    let (told, lost) = std::sync::mpsc::channel();
+    for (name, store) in [("store", &store), ("tenant's", &tenants)] {
+        let told = told.clone();
+        store.on_daemon_lost(move || told.send(name).unwrap());
+    }
+    let extent = ExtentId { branch: store.branch(), sequence: 1 };
+    write(&store, extent, 0, &pattern(1, BLOCK)).unwrap();
+    store.commit_ordered(Some(b"drained")).unwrap();
+
+    assert_eq!(super::drain::drain(std::time::Duration::from_secs(60)), Ok(()));
+    let mut told: Vec<_> = lost.try_iter().collect();
+    told.sort();
+    assert_eq!(told, ["store", "tenant's"]);
+    assert_eq!(write(&store, extent, 0, &pattern(2, BLOCK)), Err(Errno::EIO));
+    serving.join().unwrap();
+    serving_tenant.join().unwrap();
+    for socket in [&socket, &tenant_socket] {
+        let refused = UnixStream::connect(socket).err().map(|err| err.kind());
+        assert_eq!(refused, Some(std::io::ErrorKind::ConnectionRefused), "{}", socket.display());
+    }
+    assert!(super::control::CALLS.begin().is_none(), "a control call began, drained");
+    drop((store, tenants));
+    // Closed, durable, as of its last commit, though only ordered.
+    let closed = ExtentStore::open(&path).unwrap();
+    assert_eq!(closed.root(), Ok(b"drained".to_vec()));
+}
+
+/// TASK-141.4: a drain gives up past its bound, saying what is left: here, a connection that never
+/// goes.
+#[test]
+fn drains_give_up_past_their_bound() {
+    host();
+    let connection = super::server::CONNECTIONS.begin().unwrap();
+    let left = super::drain::drain(std::time::Duration::from_millis(100));
+    let left = left.err().expect("a drain gave up");
+    assert_eq!(left, super::drain::Left { connections: 1, calls: 0, uploaders: 0 });
+    assert_eq!(
+        left.to_string(),
+        "1 VM processes' connections, 0 control calls and 0 stores' uploaders left"
+    );
+    drop(connection);
+}

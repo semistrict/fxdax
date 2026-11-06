@@ -22,6 +22,12 @@ follows from that.
 Grants don't survive a restart of the daemon. After one, call `Grant` again, and bind-mount the new
 socket.
 
+## Upgrading the daemon
+
+Upgrade a host's daemon and Firecracker by draining the host: move its VMs off, then SIGTERM the
+daemon, which closes every store before it exits. `docs/upgrading-a-host.md` is the runbook, and
+says what a format change refuses.
+
 ## Restoring a snapshot, on any number of hosts at once
 
 A snapshot's point is immutable. Any number of hosts read it, and none writes it: it has no lease, a

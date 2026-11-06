@@ -347,6 +347,17 @@ async fn close_point(point: Option<Point>) {
     let _ = closed.await;
 }
 
+/// fxdax: closes every point kept open for forks, as the daemon drains (TASK-141.4), each under the
+/// daemon's hold of its path, once the forks forking it are done, as [`let_go_when_idle`] closes
+/// one: those it takes no hold of, logged, are closed past the drain's bound, if at all.
+pub(super) async fn close_points() {
+    for key in table().points() {
+        if let Err(errno) = hold(&key).await {
+            log::warn!("extentd: closing the point at {}: {errno}", key.display());
+        }
+    }
+}
+
 /// fxdax: closes `point`, kept open at `key`, once none has forked it for [`LINGER`], under the
 /// daemon's hold of its path, so that no fork opens it anew as it closes; unless something closed
 /// it before, as a connection's opening it does, which this then leaves to it.
@@ -426,7 +437,7 @@ impl Close for Forked {
 
 /// Returns once every commit of `store` ordered so far is durable and uploaded: its flush on a
 /// blocking thread, which holds it meanwhile, the wait for its uploads holding none.
-async fn uploaded<S>(store: &Arc<S>) -> Result<(), Errno>
+pub(super) async fn uploaded<S>(store: &Arc<S>) -> Result<(), Errno>
 where
     S: Borrow<ExtentStore> + Send + Sync + 'static,
 {

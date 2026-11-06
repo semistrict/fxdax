@@ -93,6 +93,7 @@
 pub(crate) mod client;
 mod codec;
 pub mod control;
+pub mod drain;
 mod grants;
 pub mod logging;
 pub mod memory;
@@ -122,12 +123,26 @@ static REPORTED: std::sync::LazyLock<tokio::sync::watch::Sender<bool>> =
     std::sync::LazyLock::new(|| tokio::sync::watch::channel(false).0);
 
 /// Says the daemon stops serving, as it is about to exit: once the control API's health service, if
-/// it serves, reports so to its callers.
+/// it serves, reports so to its callers. fxdax: the first of a drain's steps ([`drain::drain`]).
 pub fn stop_serving() {
     SERVING.send_replace(false);
     if control::is_serving() {
         let mut reported = REPORTED.subscribe();
         let _ = futures::executor::block_on(reported.wait_for(|serving| !*serving));
+    }
+}
+
+/// fxdax: shuts `listener`, a listening socket's descriptor, down, which takes no more connections: its accepts fail
+/// with `EINVAL`, those of every descriptor of it, which stop serving it (`server::serve_as`),
+/// and connecting to it is refused. As a tenant's grant is revoked, and the daemon drains.
+pub(crate) fn shut_down(listener: std::os::fd::BorrowedFd<'_>) {
+    use std::os::fd::AsRawFd;
+    // SAFETY: A plain system call on a descriptor borrowed, open.
+    if unsafe { libc::shutdown(listener.as_raw_fd(), libc::SHUT_RDWR) } != 0 {
+        log::warn!(
+            "extentd: shutting a VM socket's listener down: {}",
+            std::io::Error::last_os_error()
+        );
     }
 }
 

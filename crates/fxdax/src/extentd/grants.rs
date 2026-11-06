@@ -103,14 +103,7 @@ impl Grants {
             log::warn!("extentd: removing {}: {err}", grant.socket.display());
         }
         // Its thread's accept fails with `EINVAL`, and it stops.
-        use std::os::fd::AsRawFd;
-        // SAFETY: Plain system call on the listener's descriptor, which `grant` keeps open.
-        if unsafe { libc::shutdown(grant.listener.as_raw_fd(), libc::SHUT_RDWR) } != 0 {
-            log::warn!(
-                "extentd: shutting tenant {name}'s socket down: {}",
-                std::io::Error::last_os_error()
-            );
-        }
+        super::shut_down(std::os::fd::AsFd::as_fd(&grant.listener));
         Ok(())
     }
 }

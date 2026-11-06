@@ -380,7 +380,7 @@ fn stacks_on_sigquit(child: &mut std::process::Child, waiting: &str) -> String {
 fn the_daemon_writes_its_stacks_on_sigquit() {
     let dir = tempfile::tempdir().unwrap();
     let (_, mut child) = daemon(dir.path(), &[], std::process::Stdio::piped());
-    let stacks = stacks_on_sigquit(&mut child.0, "stop_on_sigterm");
+    let stacks = stacks_on_sigquit(&mut child.0, "drain_on_sigterm");
     assert_eq!(child.0.try_wait().unwrap(), None, "SIGQUIT stopped the daemon:\n{stacks}");
     // SAFETY: Signals the daemon this test started.
     assert_eq!(unsafe { libc::kill(child.0.id() as i32, libc::SIGTERM) }, 0);

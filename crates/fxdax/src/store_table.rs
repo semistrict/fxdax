@@ -382,6 +382,13 @@ impl<C, S, P> StoreTable<C, S, P> {
             .collect()
     }
 
+    /// fxdax: the keys of the stores a point is kept open of (TASK-141.4).
+    pub fn points(&self) -> Vec<PathBuf> {
+        let mut inner = self.inner.lock().unwrap();
+        let points = inner.entries.iter_mut().filter_map(|(key, entry)| entry.point().map(|_| key));
+        points.cloned().collect()
+    }
+
     /// How many stores connections write.
     pub fn writers(&self) -> usize {
         let inner = self.inner.lock().unwrap();
