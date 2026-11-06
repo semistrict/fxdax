@@ -166,6 +166,14 @@ impl Vm {
         });
         if window != 0 {
             device["dax_window_size"] = window.into();
+            // fxdax: the window's private pages at most, FXDAX_DAX_PRIVATE_MAX if set; the
+            // device's default otherwise, half its pages (TASK-164.11).
+            if let Some(most) =
+                std::env::var("FXDAX_DAX_PRIVATE_MAX").ok().filter(|m| !m.is_empty())
+            {
+                let most: u64 = most.parse().expect("FXDAX_DAX_PRIVATE_MAX is a count of pages");
+                device["dax_private_max"] = most.into();
+            }
         }
         push(&mut self.config["extent"], device);
     }
