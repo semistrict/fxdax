@@ -1253,7 +1253,7 @@ mod guest {
     use super::*;
     use crate::Test;
     use crate::script::{self, Op, SEVERAL_FILES};
-    use crate::script_run::Run;
+    use crate::script_run::{Options, Run};
     use crate::soak::{self, BASE_FILES, KEPT_RUNS, Load, WRITERS};
     use nix::libc;
     use std::collections::BTreeSet;
@@ -1570,7 +1570,7 @@ mod guest {
             let seed = soak::mix(seed, script);
             println!("fsx script {seed}");
             let ops = script::generate(seed, SEVERAL_FILES);
-            let mut run = Run::new(&names, false);
+            let mut run = Run::new(&names, Options::default());
             for (index, op) in ops.iter().enumerate() {
                 if Instant::now() >= deadline {
                     break;
