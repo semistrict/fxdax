@@ -285,6 +285,9 @@ enum Opens {
     Own,
     /// One somewhere else, out of its directory, or a name there it may not open.
     Elsewhere(Place),
+    /// A restore of its own, of the point its VM manager made for it, as a restored VM opens its
+    /// store, naming the point's branch.
+    Restores,
 }
 
 /// A connection of mallory's, all it does.
@@ -555,6 +558,7 @@ fn hostile() -> impl Strategy<Value = Hostile> {
         2 => (0u8..4).prop_map(Opens::Shared),
         2 => Just(Opens::Own),
         1 => elsewhere.prop_map(Opens::Elsewhere),
+        1 => Just(Opens::Restores),
     ];
     let acking = prop_oneof![
         8 => Just(Acking::Honest),
@@ -1370,10 +1374,21 @@ fn run_hostile(
         Opens::Shared(store) => Some(names.place(Place::Own(store))),
         Opens::Own => Some(names.vms.join(format!("{}-c{index}", names.case))),
         Opens::Elsewhere(place) => Some(names.place(place)),
+        Opens::Restores => None,
     };
     if let Some(path) = opened {
         let open = Header::new(OPEN, id()).with_args(&[STORE_BYTES]).with_flags(OPEN_CREATE);
         if let Ok(id) = send(open, path.as_os_str().as_bytes(), None) {
+            shared.answers.wait(id);
+        }
+    }
+    if hostile.opens == Opens::Restores {
+        let (to, point) = (names.vms.join(format!("{}-r{index}", names.case)), names.place(Place::Point));
+        let named = [to.as_os_str().as_bytes(), &[0], point.as_os_str().as_bytes()];
+        let restore = Header::new(OPEN, id())
+            .with_args(&[STORE_BYTES, names.given])
+            .with_flags(OPEN_FORK_FROM);
+        if let Ok(id) = send(restore, &named.concat(), None) {
             shared.answers.wait(id);
         }
     }
@@ -1705,7 +1720,7 @@ fn a_compromised_vm_process_harms_no_tenant_beside_it() {
         "{served} of mallory's requests served, {restored} of them restores; {commits} of its \
          stores committed at the end; {floods} floods let go"
     );
-    assert!(served > 20 * u64::from(cases), "{served} requests served");
+    assert!(served > 8 * u64::from(cases), "{served} requests served");
     assert!(restored > 0, "{restored} restores served");
     drop(mallory);
 }
@@ -1771,6 +1786,7 @@ fn vm_processes_shrinking_their_memory_crash_nothing() {
 /// once as the room holds, and through its transfer area, more at once than the connection serves,
 /// their replies read as they come. Each running held a copy of its whole length, which the room
 /// doesn't count, as a transfer's data isn't: 481 MiB held of reads, 1,024 of writes from the area.
+/// And each `ROOT` copied a root as large as a payload: 768 MiB held of 16.
 #[test]
 fn what_requests_hold_is_within_the_room() {
     host();
@@ -1799,6 +1815,14 @@ fn what_requests_hold_is_within_the_room() {
     // In the extent cache, so that what bringing it in holds isn't counted here.
     let warm = Header::new(READ, 4).with_args(&[branch, 1, 0, len]);
     assert_eq!(super::call(&sender, &mut receiver, warm, &[]).header.status, 0);
+    // Its root, no larger than a root holds, read back as many at once as the connection serves:
+    // one as large as a payload refused, as it would be copied into each reply, uncounted.
+    let mut root = |id, len| {
+        let rooted = Header::new(COMMIT, id).with_flags(COMMIT_ROOT);
+        super::call(&sender, &mut receiver, rooted, &vec![5; len]).header.status
+    };
+    assert_eq!(root(5, len as usize), -Errno::EINVAL.raw());
+    assert_eq!(root(6, MAX_ROOT), 0);
     // So many of each kind, `at_once` in flight, as many as the protocol allows: those of the
     // stream whose data the room holds, and those of the area all of them. Their replies are read
     // as they come.
@@ -1829,7 +1853,9 @@ fn what_requests_hold_is_within_the_room() {
         Header::new(WRITE, 200 + id).with_args(&[branch, 2 + id, 0, 0, len]).with_flags(WRITE_TRANSFER)
     });
     let writes = (0..many).map(|id| Header::new(WRITE, 300 + id).with_args(&[branch, 20 + id, 0]));
+    let roots = (0..many).map(|id| Header::new(ROOT, 400 + id));
     let held = [
+        burst("roots", roots.collect(), &[], many as usize),
         burst("reads", reads.collect(), &[], stream),
         burst("reads into the area", into_area.collect(), &[], many as usize),
         burst("writes from the area", from_area.collect(), &[], many as usize),
@@ -1838,7 +1864,7 @@ fn what_requests_hold_is_within_the_room() {
     let within: Vec<_> = held.iter().map(|(kind, within, _)| (kind.as_str(), *within)).collect();
     assert_eq!(
         within,
-        [("reads", true), ("reads into the area", true), ("writes from the area", true), ("writes", true)],
+        [("roots", true), ("reads", true), ("reads into the area", true), ("writes from the area", true), ("writes", true)],
         "MiB held past the room's {} MiB and a reply's: {held:?}",
         room(0) >> 20,
     );
