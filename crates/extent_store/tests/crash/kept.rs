@@ -16,8 +16,10 @@ use extent_remote::fetch::{Budget, Limits};
 use extent_remote::store::Store as Bucket;
 use extent_store::upload::{self, Remote, Runtime};
 use extent_store::{Description, MemDir, Recovering, RemoteData, Store};
+use object_store::memory::InMemory;
 use rand::rngs::StdRng;
 use rand::{RngExt as _, SeedableRng as _};
+use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -31,10 +33,12 @@ pub const CUT_ROUNDS: u64 = 30;
 /// What the bucket's URL is to the store's description; the rounds hand the uploader the bucket.
 const URL: &str = "memory:///kept";
 
-/// A host's: its stores' uploaders' runtime, and the bucket their branches are kept in.
+/// A host's: its stores' uploaders' runtime, and the bucket their branches are kept in, as it
+/// reaches it: since its last crash, a copy of what the bucket held then ([`Host::crash`]).
 struct Host {
     runtime: tokio::runtime::Runtime,
-    bucket: Arc<Bucket>,
+    bucket: RefCell<Arc<Bucket>>,
+    memory: RefCell<Arc<InMemory>>,
 }
 
 impl Host {
@@ -44,8 +48,34 @@ impl Host {
             .enable_all()
             .build()
             .unwrap();
-        let memory = Arc::new(object_store::memory::InMemory::new());
-        Self { runtime, bucket: Arc::new(Bucket::new(memory, "")) }
+        let memory = Arc::new(InMemory::new());
+        let bucket = Arc::new(Bucket::new(memory.clone(), ""));
+        Self { runtime, bucket: RefCell::new(bucket), memory: RefCell::new(memory) }
+    }
+
+    /// The bucket, as the host reaches it now.
+    fn bucket(&self) -> Arc<Bucket> {
+        self.bucket.borrow().clone()
+    }
+
+    /// The host crashes: what it had going reaches the bucket no more, as a dead host's work does
+    /// not, but its writes landed so far. Its stores and uploaders, which go on until dropped,
+    /// write to what it reached before; what opens on it from now on reaches a copy of that, as
+    /// it is now.
+    fn crash(&self) {
+        let before = self.memory.borrow().clone();
+        let copy = Arc::new(InMemory::new());
+        self.runtime.block_on(async {
+            use futures::StreamExt as _;
+            use object_store::{ObjectStore as _, ObjectStoreExt as _};
+            for meta in before.list(None).collect::<Vec<_>>().await {
+                let location = meta.unwrap().location;
+                let bytes = before.get(&location).await.unwrap().bytes().await.unwrap();
+                copy.put(&location, bytes.into()).await.unwrap();
+            }
+        });
+        *self.bucket.borrow_mut() = Arc::new(Bucket::new(copy.clone(), ""));
+        *self.memory.borrow_mut() = copy;
     }
 
     /// The store `recovering` recovered, opened by an uploader uploading every `interval`, as
@@ -61,7 +91,7 @@ impl Host {
             uploads: Budget::new(Limits::UNBOUNDED),
         };
         let options = upload::Options { interval, ..upload::Options::default() };
-        upload::open(recovering, OPTIONS, self.bucket.clone(), (holder, options), &runtime)
+        upload::open(recovering, OPTIONS, self.bucket(), (holder, options), &runtime)
     }
 
     /// What `store` holds, its extents whose data is in the bucket read there.
@@ -72,7 +102,8 @@ impl Host {
             if let Err(err) = store.read(extent, 0, &mut data) {
                 let RemoteData { location, .. } =
                     err.downcast_ref::<RemoteData>().cloned().unwrap_or_else(|| panic!("{err:#}"));
-                let read = extent_remote::fetch::read(&self.bucket, extent, &location);
+                let bucket = self.bucket();
+                let read = extent_remote::fetch::read(&bucket, extent, &location);
                 data = self.runtime.block_on(read).unwrap();
             }
             extents.insert(extent, data);
@@ -109,7 +140,9 @@ fn crashed(host: &Host, round: u64, rng: &mut StdRng, interval: Duration) -> Cra
     let (durable, _) = workload(rng, &store, &mut epochs, Model::default(), first);
     let acknowledged = remote.last_uploaded() as usize;
     let dir = dir.crash(round);
-    // The host is gone: its uploader, which stops at the store's failure, and its store.
+    host.crash();
+    // The host is gone: its uploader, which stops at the store's failure, or uploads what it
+    // has left where none sees it, and its store.
     drop(remote);
     drop(store);
     Crashed { dir, epochs, durable, acknowledged, first }
@@ -132,9 +165,11 @@ fn reopened(
         .unwrap_or_else(|err| panic!("round {round}: the store doesn't open: {err}"));
     let epochs = &crashed.epochs;
     let epoch = store.epoch().unwrap() as usize;
+    let Crashed { durable, acknowledged, .. } = crashed;
     assert!(
         (least..epochs.len()).contains(&epoch),
-        "round {round}: opened at epoch {epoch}, of {least}..{}",
+        "round {round}: opened at epoch {epoch}, of {least}..{}, {durable} durable, \
+         {acknowledged} acknowledged",
         epochs.len()
     );
     assert_eq!(host.contents(&store), epochs[epoch], "round {round}: at epoch {epoch}");

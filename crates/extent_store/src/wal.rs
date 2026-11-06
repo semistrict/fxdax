@@ -169,9 +169,15 @@ pub(crate) fn recover<D: Dir>(dir: &D, branch: u64) -> Result<Recovered, Error> 
             true => whole_footer(dir, segment, left(number))?,
             false => None,
         };
+        // A log's commits the base acknowledged are the bucket's: its framed file left, its raw
+        // data and log a crash brought back, it holds nothing of the log's.
+        let after_base = |records: &[Contents]| {
+            let last = records.iter().rev().find_map(|record| record.commits.last().copied());
+            last.is_some_and(|last| base.is_none_or(|base| epoch_of(last) > epoch_of(base)))
+        };
         match footer {
             Some(footer) => whole.push((footer, number)),
-            None if raw.contains(&number) && !log_records(dir, segment)?.is_empty() => {
+            None if raw.contains(&number) && after_base(&log_records(dir, segment)?) => {
                 torn = Some(number);
                 break;
             }
@@ -521,6 +527,30 @@ mod tests {
         assert_eq!(recovered.segments[0].0, footer);
         assert_eq!(recovered.segments[1].0.after, Some((footer.seq, footer.epoch)));
         assert_eq!(recovered.segments[1].0.contents.commits, [tag(2, 2)]);
+    }
+
+    /// A segment the base acknowledged, its framed file gone, as acknowledging it removed it, but
+    /// its raw data and log a crash brought back, holds nothing of the log's: the whole segment
+    /// after it is kept, not taken to follow one closed again, and dropped with the durable
+    /// commits it holds (found by the kept crash rounds, TASK-165.9).
+    #[test]
+    fn segments_acknowledged_brought_back_are_no_logs() {
+        let dir = MemDir::new();
+        create_branch_dirs(&dir, BRANCH).unwrap();
+        left_open(&dir, 0, 1, &[commit(1, 1, 0)]);
+        recover(&dir, BRANCH).unwrap();
+        left_open(&dir, 1, 1, &[commit(2, 2, 0)]);
+        let framed = recover(&dir, BRANCH).unwrap().segments;
+        assert_eq!(framed.iter().map(|(_, number)| *number).collect::<Vec<_>>(), [0, 1]);
+        // Segment 0 acknowledged: the base names its commit, and its framed file went; a crash
+        // brought back its raw data and log, whose removals were not durable.
+        BaseFile::read(&dir).unwrap().0.write(&dir, Some(tag(2, 1))).unwrap();
+        dir.remove(&segment_path(segment(0))).unwrap();
+        left_open(&dir, 0, 1, &[commit(1, 1, 0)]);
+        let recovered = recover(&dir, BRANCH).unwrap();
+        assert_eq!(recovered.segments, framed[1..]);
+        assert_eq!(files(&dir, SEGMENTS), [1]);
+        assert_eq!((files(&dir, OPEN_SEGMENTS), files(&dir, LOGS)), (vec![], vec![]));
     }
 
     /// The queue gives the uploader the segments that are framed, whose commits are durable, in
