@@ -189,18 +189,29 @@ pub struct Options {
     pub seeks: bool,
 }
 
-/// fxdax: the kernel's fault injection (failslab and fail_page_alloc, a debug kernel's, as
-/// fxfs-guest-faults-dax sets them up: TASK-44.10) for the calls a run makes on its files alone,
-/// one allocation in a hundred of theirs failing, whatever else the task does unharmed.
+/// fxdax: the kernel's fault injection (failslab and fail_page_alloc, a debug kernel's: TASK-44.10)
+/// for the calls a run makes on its files alone, as a seed says: of a script of `seed`, which of
+/// each operation's calls fails which of its allocations, so that a replay of the script, or of a
+/// part of it, fails the same (TASK-44.15). Not by the attributes' probability, which the kernel's
+/// own random numbers decide, nor their interval, counted across all a task's calls since boot,
+/// but by `fail-nth`, the task's own: the Nth allocation the call makes that may fail, fails
+/// (lib/fault-inject.c's `should_fail_ex`; Documentation/fault-injection/fault-injection.rst).
 #[derive(Clone, Copy)]
-pub struct Faults(());
+pub struct Faults {
+    seed: u64,
+}
 
 impl Faults {
     const DEBUGFS: &str = "/sys/kernel/debug";
     const KINDS: [&str; 2] = ["failslab", "fail_page_alloc"];
+    /// One call in this many has one of its allocations fail.
+    const ONE_IN: u64 = 16;
+    /// The allocation that fails is one of its first this many.
+    const NTH: u64 = 8;
 
-    /// Sets the injection up, failing only the tasks that ask.
-    pub fn set_up() -> Self {
+    /// Sets the injection up, failing nothing the attributes would choose, for the scripts of
+    /// `seed` to choose what fails.
+    pub fn set_up(seed: u64) -> Self {
         let debugfs = CString::new(Self::DEBUGFS).unwrap();
         let fstype = c"debugfs";
         let mounted = unsafe {
@@ -215,34 +226,71 @@ impl Faults {
             });
         };
         for kind in Self::KINDS {
-            set(kind, "task-filter", "Y");
-            set(kind, "interval", "1");
-            set(kind, "times", "-1");
+            set(kind, "probability", "0");
             set(kind, "verbose", "0");
+            // Allocations that may sleep too, as a call's are.
             set(kind, "ignore-gfp-wait", "N");
-            set(kind, "probability", "1");
         }
         // Not the pages of the task's own memory (__GFP_HIGHMEM), which a call faults in.
         set("fail_page_alloc", "ignore-gfp-highmem", "Y");
         set("fail_page_alloc", "min-order", "0");
-        Self(())
+        // Opened now, nothing armed: an open allocates, and one after a call that didn't reach
+        // the allocation fail-nth said was that allocation, and failed (GCE r780).
+        let fail_nth =
+            fs::OpenOptions::new().read(true).write(true).open("/proc/thread-self/fail-nth");
+        FAIL_NTH.set(fail_nth.expect("fail-nth")).expect("fault injection set up once");
+        Self { seed }
     }
 
-    /// Makes `call` with this task's allocations failing as the injection says.
-    fn during<T>(&self, call: impl FnOnce() -> io::Result<T>) -> io::Result<T> {
-        Self::fail("1");
+    /// The faults of the scripts of another seed, as set up already.
+    pub fn of(self, seed: u64) -> Self {
+        Self { seed }
+    }
+
+    /// Which of the allocations of the `call`th call of operation `op` fails, if one does: a
+    /// function of the seed and the two alone.
+    fn nth(&self, op: usize, call: u64) -> Option<u64> {
+        let mut rng =
+            script::Rng::new(self.seed ^ (op as u64).rotate_left(24) ^ call.rotate_left(48));
+        (rng.next(Self::ONE_IN) == 0).then(|| 1 + rng.next(Self::NTH))
+    }
+
+    /// Makes `call`, the `index`th call of operation `op`, with the allocation `nth` says
+    /// failing; and whether it failed one.
+    fn during<T>(
+        &self,
+        op: usize,
+        index: u64,
+        call: impl FnOnce() -> io::Result<T>,
+    ) -> (io::Result<T>, bool) {
+        let Some(nth) = self.nth(op, index) else { return (call(), false) };
+        Self::fail_nth(nth);
         let made = call();
-        Self::fail("0");
-        made
+        // Not reached, it would fail an allocation after.
+        let failed = Self::left() == 0;
+        Self::fail_nth(0);
+        (made, failed)
     }
 
-    /// Sets whether this task's allocations fail, which writing "0" itself may, failing.
-    fn fail(value: &str) {
-        while let Err(err) = fs::write("/proc/thread-self/make-it-fail", value) {
-            assert_eq!(err.raw_os_error(), Some(libc::ENOMEM), "make-it-fail: {err}");
-        }
+    /// Through the file opened as the injection was set up, whose reads and writes allocate
+    /// nothing, as an open would.
+    fn fail_nth(nth: u64) {
+        let file = FAIL_NTH.get().expect("fault injection set up");
+        file.write_all_at(nth.to_string().as_bytes(), 0).expect("fail-nth");
+    }
+
+    /// What is left to count of the task's fail-nth: 0 once it failed one.
+    fn left() -> u64 {
+        let mut left = [0u8; 16];
+        let file = FAIL_NTH.get().expect("fault injection set up");
+        let n = file.read_at(&mut left, 0).expect("fail-nth");
+        let left = std::str::from_utf8(&left[..n]).expect("fail-nth's count");
+        left.trim().parse().expect("fail-nth's count")
     }
 }
+
+/// fxdax: the agent's /proc/thread-self/fail-nth, the task's that runs the scripts (Faults).
+static FAIL_NTH: std::sync::OnceLock<fs::File> = std::sync::OnceLock::new();
 
 /// A script's files, as a run has them.
 pub struct Run {
@@ -254,6 +302,10 @@ pub struct Run {
     pub(crate) model: Model,
     options: Options,
     faults: Option<Faults>,
+    /// fxdax: the operation being done, and how many of its calls fault injection has seen, and
+    /// how many failed (Faults).
+    calls: Cell<(usize, u64)>,
+    pub injected: Cell<u64>,
     /// fxdax: each file's times after the step before.
     times: Vec<Times>,
     /// Each operation done, as it was resolved, and what the filesystem refused of it.
@@ -280,6 +332,7 @@ impl Run {
         let names = names.to_vec();
         let (done, refused, dax, faults) = (Vec::new(), 0, 0, None);
         let (touches, differed) = (Vec::new(), Cell::new(None));
+        let (calls, injected) = (Cell::new((0, 0)), Cell::new(0));
         Self {
             names,
             files,
@@ -288,6 +341,8 @@ impl Run {
             model,
             options,
             faults,
+            calls,
+            injected,
             times,
             done,
             refused,
@@ -317,6 +372,7 @@ impl Run {
         let failure = |(kind, what): Failed| Failure { op: Some(index), kind, what };
         let step = self.model.resolve(op);
         let expected = self.model.outcome(&step);
+        self.calls.set((index, 0));
         let reach = step.reach(&self.model);
         self.done.push(step.to_string());
         let refused = self.refused;
@@ -431,10 +487,12 @@ impl Run {
 
     /// Makes `call`, one of the run's calls on its files, under fault injection if the run has it.
     fn call<T>(&self, call: impl FnOnce() -> io::Result<T>) -> io::Result<T> {
-        match &self.faults {
-            Some(faults) => faults.during(call),
-            None => call(),
-        }
+        let Some(faults) = &self.faults else { return call() };
+        let (op, index) = self.calls.get();
+        self.calls.set((op, index + 1));
+        let (made, failed) = faults.during(op, index, call);
+        self.injected.set(self.injected.get() + u64::from(failed));
+        made
     }
 
     /// What `step`'s call failing with `err` comes to: a refusal, if the filesystem may refuse
@@ -1234,6 +1292,23 @@ pub(crate) mod tests {
             "\nwhat changed byte 0x32 of file 0:\n2: clone file 1 onto file 0\n  its byte 0x32 of \
              file 1's, before it:\n0: write 0x2000 at 0x0 of file 1"
         );
+    }
+
+    /// fxdax: which call of which operation fault injection fails is the seed's alone, so that a
+    /// replay, or a shrink's try without some operations, fails the same of those left: one call
+    /// in Faults::ONE_IN, one of its first Faults::NTH allocations.
+    #[test]
+    fn faults_are_the_seeds() {
+        let (faults, other) = (Faults { seed: 7 }, Faults { seed: 8 });
+        let nths = |faults: Faults| -> Vec<Option<u64>> {
+            (0..3000).flat_map(|op| (0..4).map(move |call| faults.nth(op, call))).collect()
+        };
+        assert_eq!(nths(faults), nths(Faults { seed: 7 }));
+        assert_ne!(nths(faults), nths(other));
+        let chosen: Vec<u64> = nths(faults).into_iter().flatten().collect();
+        assert_eq!(chosen.len(), 752);
+        assert!(chosen.iter().all(|nth| (1..=Faults::NTH).contains(nth)));
+        assert_eq!(faults.of(8).nth(5, 1), other.nth(5, 1));
     }
 
     /// fxdax: a hole SEEK_DATA skips must read as zeros: the model holding data there fails.

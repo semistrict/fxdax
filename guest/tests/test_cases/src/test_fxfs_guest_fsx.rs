@@ -20,7 +20,9 @@
 //! fxfs-guest-fsx-dax with a DAX window, -delay-dax with delays injected at the DAX protocol's
 //! racing steps (fxfs.dax_delay_us), and -faults-dax, on the debug kernel, with the Fxfs half's
 //! calls failing their allocations (`script_run::Faults`): ENOMEM a refusal, its operation's
-//! effects within what it could have reached, and ext4's file then made Fxfs's.
+//! effects within what it could have reached, and ext4's file then made Fxfs's. Which call fails
+//! which allocation is the script's seed's, by operation, so that a replay, and a shrink's tries,
+//! fail the same.
 
 use macros::{guest, host};
 
@@ -384,7 +386,7 @@ mod guest {
             );
             let mut subject = Run::new(&names(&|name| path(name)), options);
             if let Some(faults) = faults {
-                subject.inject(faults);
+                subject.inject(faults.of(seed));
             }
             Differential::new(seed, reference, subject)
         }
@@ -455,8 +457,8 @@ mod guest {
         fn in_guest(self: Box<Self>) {
             mount();
             mount_reference();
-            let faults = self.faults.then(Faults::set_up);
             let (first, drops) = (seed(), std::env::var(script::DROP_VAR).unwrap_or_default());
+            let faults = self.faults.then(|| Faults::set_up(first));
             let secs = Duration::from_secs(super::secs(SECS, DEFAULT_SECS));
             let shrink = Duration::from_secs(super::secs(SHRINK_SECS, DEFAULT_SHRINK_SECS));
             let deadline = Instant::now() + secs;
