@@ -90,11 +90,11 @@ measurement).
 ### r650, 2026-11-06: single phase, jailed, nested; `forked-dax` 0.836, from r649's 0.579
 
 It failed the 0.9 then in force; the user took it, 2026-11-06, and the threshold is 0.8 since. A rerun of
-the forked pair on the same host, at 170662bad: 0.854 (1,216 against 1,424).
+the forked pair on the same host, at 968ab1048: 0.854 (1,216 against 1,424).
 
 GCE `fxdax-test-r650-tperf`, n2-standard-4 (nested, Cascade Lake), us-east4-a, release guest
 kernel, every Firecracker jailed. At fedc14fd5 with TASK-164.10's changes uncommitted (their
-commits 08e2083ff and 5633ca4eb): a `PRIVATE`'s pages made as one run in the VM process, pages
+commits db814fe00 and 1a26248d1): a `PRIVATE`'s pages made as one run in the VM process, pages
 made private ahead of a log's writes, rebinds a range at a time in one `MAP_MANY`. The density
 phase wasn't run.
 
