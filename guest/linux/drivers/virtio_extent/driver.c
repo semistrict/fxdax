@@ -8,7 +8,8 @@
  * queue's interrupt completes them, calling each one's `done`. A submitter waits for room when
  * the queue is full. The DAX window, if the device has one, is memremapped, so that the guest's
  * Fxfs reads extents mapped into it in place: as pages of a dax_device, with FS_DAX, as
- * virtio_fs_setup_dax makes its cache window, which files map (fs/fxfs/dax.c).
+ * virtio_fs_setup_dax makes its cache window, which files map (fs/fxfs/dax.c). fxdax: without
+ * FS_DAX, the driver takes no window: nothing would map it.
  */
 
 #include <linux/completion.h>
@@ -51,6 +52,18 @@ struct vext_queue {
 	atomic64_t interrupts, polled;
 } ____cacheline_aligned_in_smp;
 
+/*
+ * fxdax: the device's DAX window, its shared memory region, as the pages of a dax_device, which
+ * mappings of files map (fs/fxfs/dax.c).
+ */
+struct vext_window {
+	phys_addr_t phys;
+	u64 len;
+	/* Its memory, mapped in the kernel. */
+	void *kaddr;
+	struct dax_device *dax;
+};
+
 struct virtio_extent {
 	struct virtio_device *vdev;
 	/*
@@ -60,11 +73,8 @@ struct virtio_extent {
 	struct vext_queue *queues;
 	unsigned int nr_queues;
 	struct vext_config config;
-	void *window;
-	phys_addr_t window_phys;
-	u64 window_len;
-	/* The window's dax_device, with FS_DAX. */
-	struct dax_device *dax;
+	/* fxdax: its DAX window, if it has one (F_DAX, with FS_DAX). */
+	struct vext_window window;
 	atomic64_t unique;
 	/* The requests the device has taken, by type. */
 	atomic64_t requests[VIRTIO_EXTENT_T_LAST + 1];
@@ -123,16 +133,10 @@ const struct vext_config *virtio_extent_config(struct virtio_extent *vext)
 }
 EXPORT_SYMBOL_GPL(virtio_extent_config);
 
-void *virtio_extent_window(struct virtio_extent *vext, u64 *len)
+struct dax_device *virtio_extent_dax(struct virtio_extent *vext, u64 *window_len)
 {
-	*len = vext->window_len;
-	return vext->window;
-}
-EXPORT_SYMBOL_GPL(virtio_extent_window);
-
-struct dax_device *virtio_extent_dax(struct virtio_extent *vext)
-{
-	return vext->dax;
+	*window_len = vext->window.len;
+	return vext->window.dax;
 }
 EXPORT_SYMBOL_GPL(virtio_extent_dax);
 
@@ -718,14 +722,14 @@ static void vext_read_config(struct virtio_extent *vext)
 static long vext_dax_direct_access(struct dax_device *dax_dev, pgoff_t pgoff, long nr_pages,
 				   enum dax_access_mode mode, void **kaddr, unsigned long *pfn)
 {
-	struct virtio_extent *vext = dax_get_private(dax_dev);
+	struct vext_window *window = dax_get_private(dax_dev);
 	phys_addr_t offset = PFN_PHYS(pgoff);
-	long max_nr_pages = vext->window_len / PAGE_SIZE - pgoff;
+	long max_nr_pages = window->len / PAGE_SIZE - pgoff;
 
 	if (kaddr)
-		*kaddr = vext->window + offset;
+		*kaddr = window->kaddr + offset;
 	if (pfn)
-		*pfn = PHYS_PFN(vext->window_phys + offset);
+		*pfn = PHYS_PFN(window->phys + offset);
 	return min(nr_pages, max_nr_pages);
 }
 
@@ -754,12 +758,16 @@ static void vext_put_dax(void *data)
 	put_dax(dax);
 }
 
-/* Maps the window as pages a dax_device hands out, which mappings of files can map. */
-static int vext_map_window_dax(struct virtio_extent *vext, struct virtio_shm_region *region)
+/*
+ * Maps the window, `region`, as pages a dax_device hands out, which mappings of files can map: 0,
+ * or a -errno.
+ */
+static int vext_map_window_dax(struct device *dev, struct vext_window *window,
+			       const struct virtio_shm_region *region)
 {
-	struct device *dev = &vext->vdev->dev;
 	struct dev_pagemap *pgmap = devm_kzalloc(dev, sizeof(*pgmap), GFP_KERNEL);
 	struct dax_device *dax;
+	void *kaddr;
 
 	if (!pgmap)
 		return -ENOMEM;
@@ -769,16 +777,20 @@ static int vext_map_window_dax(struct virtio_extent *vext, struct virtio_shm_reg
 		.end = region->addr + region->len - 1,
 	};
 	pgmap->nr_range = 1;
-	vext->window = devm_memremap_pages(dev, pgmap);
-	if (IS_ERR(vext->window))
-		return PTR_ERR(vext->window);
-	dax = alloc_dax(vext, &vext_dax_ops);
+	kaddr = devm_memremap_pages(dev, pgmap);
+	if (IS_ERR(kaddr))
+		return PTR_ERR(kaddr);
+	dax = alloc_dax(window, &vext_dax_ops);
 	if (IS_ERR(dax))
 		return PTR_ERR(dax);
-	vext->dax = dax;
+	*window = (struct vext_window) {
+		.phys = region->addr,
+		.len = region->len,
+		.kaddr = kaddr,
+		.dax = dax,
+	};
 	return devm_add_action_or_reset(dev, vext_put_dax, dax);
 }
-#endif
 
 /* Maps the DAX window, if the device has one. */
 static int vext_map_window(struct virtio_extent *vext)
@@ -798,18 +810,12 @@ static int vext_map_window(struct virtio_extent *vext)
 		dev_err(&vdev->dev, "the DAX window's memory is in use\n");
 		return -EBUSY;
 	}
-	vext->window_phys = region.addr;
-	vext->window_len = region.len;
-#if IS_ENABLED(CONFIG_FS_DAX)
-	err = vext_map_window_dax(vext, &region);
-#else
-	vext->window = devm_memremap(&vdev->dev, region.addr, region.len, MEMREMAP_WB);
-	err = PTR_ERR_OR_ZERO(vext->window);
-#endif
+	err = vext_map_window_dax(&vdev->dev, &vext->window, &region);
 	if (err)
-		vext->window = NULL;
+		vext->window = (struct vext_window) {};
 	return err;
 }
+#endif
 
 static int vext_probe(struct virtio_device *vdev)
 {
@@ -824,9 +830,11 @@ static int vext_probe(struct virtio_device *vdev)
 	spin_lock_init(&vext->changed_lock);
 	mutex_init(&vext->open_lock);
 	vext_read_config(vext);
+#if IS_ENABLED(CONFIG_FS_DAX)
 	err = vext_map_window(vext);
 	if (err)
 		return err;
+#endif
 	err = vext_find_queues(vext);
 	if (err)
 		return err;
@@ -850,7 +858,7 @@ static int vext_probe(struct virtio_device *vdev)
 	dev_info(&vdev->dev, "extent store \"%s\", branch %llx, %u request queue%s%s%s\n",
 		 vext->config.tag, vext->config.branch, vext->nr_queues,
 		 vext->nr_queues == 1 ? "" : "s",
-		 vext->window ? ", with a DAX window copying on write" : "",
+		 vext->window.dax ? ", with a DAX window copying on write" : "",
 		 virtio_extent_read_only(vext) ? ", following its writer read-only" : "");
 	return 0;
 }
@@ -1015,7 +1023,9 @@ static const struct virtio_device_id vext_ids[] = {
 };
 
 static const unsigned int vext_features[] = {
+#if IS_ENABLED(CONFIG_FS_DAX)
 	VIRTIO_EXTENT_F_DAX,
+#endif
 	VIRTIO_EXTENT_F_WRITE_COMMIT,
 	VIRTIO_EXTENT_F_RESIZE,
 	VIRTIO_EXTENT_F_FREEZE,

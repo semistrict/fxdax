@@ -558,14 +558,9 @@ const struct vext_config *virtio_extent_config(struct virtio_extent *vext)
 	return &vext->config;
 }
 
-void *virtio_extent_window(struct virtio_extent *vext, u64 *len)
+struct dax_device *virtio_extent_dax(struct virtio_extent *vext, u64 *window_len)
 {
-	*len = vext->window_len;
-	return vext->window;
-}
-
-struct dax_device *virtio_extent_dax(struct virtio_extent *vext)
-{
+	*window_len = vext->window_len;
 	return vext->dax;
 }
 

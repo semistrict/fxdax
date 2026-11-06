@@ -7,6 +7,7 @@
 
 #include <linux/atomic.h>
 #include <linux/completion.h>
+#include <linux/dax.h>
 #include <linux/device.h>
 #include <linux/mutex.h>
 #include <linux/slab.h>
@@ -88,6 +89,26 @@ static bool matches(const u8 *buf, size_t len, int extent)
 	return true;
 }
 
+/*
+ * fxdax: whether the DAX window, read in place through its dax_device, as Fxfs reads it, holds
+ * extent 1's `len` bytes at its start, and zeros after them, to `mapped`.
+ */
+static bool window_holds(struct dax_device *dax, size_t len, size_t mapped)
+{
+	long pages = DIV_ROUND_UP(mapped, PAGE_SIZE);
+	bool holds = false;
+	void *window;
+	int id;
+
+	if (!IS_ENABLED(CONFIG_FS_DAX))
+		return false;
+	id = dax_read_lock();
+	if (dax_direct_access(dax, 0, pages, DAX_ACCESS, &window, NULL) == pages)
+		holds = matches(window, len, 1) && !memchr_inv(window + len, 0, mapped - len);
+	dax_read_unlock(id);
+	return holds;
+}
+
 #define FAIL(...)                                                         \
 	do {                                                              \
 		snprintf(st->result, sizeof(st->result), __VA_ARGS__); \
@@ -105,7 +126,7 @@ static void run(struct vext_selftest *st)
 	u8 *bufs[EXTENTS] = { NULL };
 	u8 *root = NULL;
 	u64 next, used, window_len;
-	u8 *window;
+	struct dax_device *dax;
 	int i, err;
 
 	reqs = kcalloc(EXTENTS, sizeof(*reqs), GFP_KERNEL);
@@ -218,14 +239,14 @@ static void run(struct vext_selftest *st)
 	}
 
 	/* Read in place, with no copy, through the DAX window. */
-	window = virtio_extent_window(vext, &window_len);
-	if (window) {
+	dax = virtio_extent_dax(vext, &window_len);
+	if (dax) {
 		size_t mapped = ALIGN(len, config->map_alignment);
 
 		err = CALL(.type = VIRTIO_EXTENT_T_MAP, .id = EXTENT(1), .len = mapped);
 		if (err)
 			FAIL("MAP: %d", err);
-		if (!matches(window, len, 1) || memchr_inv(window + len, 0, mapped - len))
+		if (!window_holds(dax, len, mapped))
 			FAIL("the DAX window doesn't hold extent 1");
 		err = CALL(.type = VIRTIO_EXTENT_T_UNMAP, .len = mapped);
 		if (err)
@@ -246,7 +267,7 @@ static void run(struct vext_selftest *st)
 	if (err)
 		FAIL("COMMIT: %d", err);
 
-	snprintf(st->result, sizeof(st->result), "ok%s", window ? "" : ", without DAX");
+	snprintf(st->result, sizeof(st->result), "ok%s", dax ? "" : ", without DAX");
 out:
 	for (i = 0; i < EXTENTS; i++)
 		kfree(bufs[i]);

@@ -323,10 +323,12 @@ int virtio_extent_submit(struct virtio_extent *vext, struct vext_request *req);
 /* Submits `req` and waits for the device to complete it, returning its status. */
 int virtio_extent_call(struct virtio_extent *vext, struct vext_request *req);
 
-/* The DAX window, mapped in the kernel, and its length, or NULL if the device has none. */
-void *virtio_extent_window(struct virtio_extent *vext, u64 *len);
-/* The DAX window's dax_device, with FS_DAX, or NULL. */
-struct dax_device *virtio_extent_dax(struct virtio_extent *vext);
+/*
+ * The DAX window's dax_device, with FS_DAX, through which its memory is reached
+ * (dax_direct_access), and the window's length; or NULL if the device has none. fxdax: one
+ * accessor of the window, its memory reached no other way (TASK-92.8).
+ */
+struct dax_device *virtio_extent_dax(struct virtio_extent *vext, u64 *window_len);
 /* fxdax: the most private pages the device's DAX window holds at once (F_DAX), or 0. */
 u64 virtio_extent_private_max(struct virtio_extent *vext);
 /* Whether a WRITE may carry WRITE_COMMIT (F_WRITE_COMMIT). */

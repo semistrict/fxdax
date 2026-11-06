@@ -196,10 +196,9 @@ struct dax_device *fxfs_device_dax(struct fxfs_device *dev, u64 *window_len)
 {
 	const struct vext_config *config = virtio_extent_config(dev->vext);
 
-	if (config->block_size != PAGE_SIZE ||
-	    config->map_alignment > PAGE_SIZE || !virtio_extent_window(dev->vext, window_len))
+	if (config->block_size != PAGE_SIZE || config->map_alignment > PAGE_SIZE)
 		return NULL;
-	return virtio_extent_dax(dev->vext);
+	return virtio_extent_dax(dev->vext, window_len);
 }
 
 /*
