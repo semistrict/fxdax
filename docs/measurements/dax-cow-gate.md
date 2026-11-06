@@ -87,6 +87,42 @@ measurement).
 
 ## Runs
 
+### r792-r794, 2026-11-06: the test daemons with a part cache (TASK-164.12); the full gate passes
+
+The test daemons had no part cache, which production's daemon keeps on the host's disk
+(`FXDAX_EXTENTD_CACHE`, doc-7): r790's fork paged what it inherited in from the bucket a ranged GET
+at a time. Since TASK-164.12 each keeps one (guest/tests/test_cases/src/common.rs's `part_cache`,
+scripts/test-e2e.sh's), unless `FXDAX_EXTENTD_CACHE` says otherwise, empty for none. GCE
+n2-standard-4 (nested, Cascade Lake), main 76d2c39cf (vendor/firecracker 3d1e01bd2) with that
+change, release guest kernel, every Firecracker jailed.
+
+The forked pair alone first, as r790's: on `fxdax-test-r792-cache` (us-east4-a) at the gate's
+25 ms, no-dax-forked 1217, 1353, 1458, 1506, 1510, dax-forked 1181, 1266, 1185, 1303, 1238:
+`forked-dax` 0.849, `decay` 1.049, 26 ranged GETs (r790: 57,466); on `fxdax-test-r793-cache`
+(us-central1-a) at 0 ms, `forked-dax` 0.864, `decay` 1.080, 16 ranged GETs (r790's rerun: 115,900).
+
+Then the full gate (r794): the single phase on r792, the density phase on r793, the gate phase over
+both. Every case passed, every gate:
+
+| Case | Runs | Median |
+|---|---|---|
+| no-dax | 1440, 1450, 1502, 1519, 1488 | 1488 |
+| dax | 1414, 1421, 1467, 1466, 1449 | 1449 |
+| ext4-dax-pmem | 1189, 1202, 1224, 1261, 1246 | 1224 |
+| no-dax-forked | 1208, 1384, 1450, 1459, 1503 | 1450 |
+| dax-forked | 1163, 1221, 1188, 1287, 1211 | 1211 |
+| no-dax-density (3 VMs, 2 runs) | 865, 957 / 968, 946 / 922, 951 | |
+| dax-density (3 VMs, 2 runs) | 923, 974 / 1026, 986 / 974, 962 | |
+
+Gates: `forked-dax` 0.836, `dax` 0.974, `static-dax` 1.18, `decay` 1.03-1.24 (dax-forked 1.04),
+`density` 1.03 and 1.02, `density-memory` 0.847 (no DAX 2,476.8 MiB a VM added, DAX 2,097.4; first
+VMs 3,103.3 and 2,564.4), `density-memory-mib` 2,097.4, `bigmap-read` 5.52 (93.6 against 16.9
+MiB/s), `bigmap-guest-cache` 0.0, `bigmap-written-memory` 1.32 (bigmap with DAX: 2,850 stores/s,
+p50 347 us, p99 467, max 1,015; msync 1.12 s).
+
+dax-forked's daemon: 126,148 page-ins, 11 of them ranged GETs, the rest from the part cache; a
+PRIVATE request 247 us on average (79.6 s over 321,910; r790: 6.4 ms over 160,488).
+
 ### r790 and r791, 2026-11-06: the full gate on main ccbe81d0e, jailed, nested; fails `forked-dax` and `decay` of `dax-forked`
 
 GCE n2-standard-4 (nested, Cascade Lake): the single phase on `fxdax-test-r790-gate` (us-east4-a),

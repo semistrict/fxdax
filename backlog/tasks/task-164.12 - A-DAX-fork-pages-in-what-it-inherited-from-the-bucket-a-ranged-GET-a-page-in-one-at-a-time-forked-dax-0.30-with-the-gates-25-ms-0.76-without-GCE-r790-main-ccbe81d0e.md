@@ -4,9 +4,10 @@ title: >-
   A DAX fork pages in what it inherited from the bucket, a ranged GET a page-in,
   one at a time: forked-dax 0.30 with the gate's 25 ms, 0.76 without (GCE r790,
   main ccbe81d0e)
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-11-06 13:47'
+updated_date: '2026-11-06 15:52'
 labels:
   - performance
   - dax
@@ -26,8 +27,8 @@ The perf gate's full run on main ccbe81d0e (docs/measurements/dax-cow-gate.md, r
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Where a DAX fork's page-ins of inherited data go measured: how many GETs, of what sizes, how many at once, what the part cache and the extent cache keep and evict
-- [ ] #2 forked-dax at least 0.8 and decay of dax-forked at least 0.9 in the perf gate's single phase, with its default 25 ms bucket latency, jailed, on GCE
+- [x] #1 Where a DAX fork's page-ins of inherited data go measured: how many GETs, of what sizes, how many at once, what the part cache and the extent cache keep and evict
+- [x] #2 forked-dax at least 0.8 and decay of dax-forked at least 0.9 in the perf gate's single phase, with its default 25 ms bucket latency, jailed, on GCE
 <!-- AC:END -->
 
 ## Definition of Done
@@ -36,3 +37,13 @@ The perf gate's full run on main ccbe81d0e (docs/measurements/dax-cow-gate.md, r
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+2026-11-06, the cause: the test daemons had no part cache, which production's daemon keeps on the host's disk (FXDAX_EXTENTD_CACHE, doc-7). Without one, the daemon paged what a fork inherited in from the bucket a page-in at a time, every page-in a ranged GET (r790: get-range 57,466 against 57,327 page-ins at 25 ms; 115,900 against 116,056 at 0 ms), one at a time, 56-72 KB each (4.1 GB over 57,466 GETs at 25 ms, 6.5 GB over 115,900 at 0 ms), nothing kept: the extent cache holds what's mapped, and without a part cache what it evicts is fetched again. The forked pair rerun with a part cache sized as production sizes it (unbounded, CACHE_FLOOR's 4 GiB free), jailed, nested, main 76d2c39cf: r792 (us-east4-a, the gate's 25 ms) no-dax-forked 1217, 1353, 1458, 1506, 1510, dax-forked 1181, 1266, 1185, 1303, 1238, forked-dax 0.849, decay 1.049, 26 ranged GETs; r793 (us-central1-a, 0 ms) no-dax-forked 941, 1101, 1174, 1157, 1144, dax-forked 922, 1003, 973, 989, 996, forked-dax 0.864, decay 1.080, 16 ranged GETs. A PRIVATE request 242 us on average at 25 ms (r790: 6.4 ms).
+
+The fix, as the user decided for a cache that brings forked-dax to 0.8: the test daemons default to a part cache, as they default to a file bucket. guest/tests/test_cases/src/common.rs's spawn_daemon gives each case's daemon <name>-cache in the test's directory (part_cache), scripts/test-e2e.sh its own daemon a directory of its own, removed on exit, unless FXDAX_EXTENTD_CACHE is set, empty for none; scripts/lib/gce.sh's fetch leaves *-cache on the host. Test: common::tests::daemons_keep_a_part_cache_unless_told_otherwise (Docker, with latency_is_added_to_local_buckets_alone: 2 passed), which fails without the default (its first assertion). guest/tests/Cargo.lock brought up to date with extent_store's humantime, hyper and reqwest, which cargo adds at every build.
+
+The full perf gate with it (r794: single on r792, density on r793, the gate phase over both), every case and every gate passing: forked-dax 0.836 (dax-forked 1163, 1221, 1188, 1287, 1211 against no-dax-forked's 1450 median), decay of dax-forked 1.04, dax 0.974, density-memory 0.847, density-memory-mib 2,097.4, bigmap-read 5.52; dax-forked's daemon 126,148 page-ins, 11 ranged GETs. docs/measurements/dax-cow-gate.md has it.
+<!-- SECTION:NOTES:END -->
