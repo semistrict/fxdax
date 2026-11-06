@@ -1531,6 +1531,44 @@ mod tests {
         assert_eq!(root, Some(b"second".to_vec()));
     }
 
+    /// doc-7, Fencing: a writer whose create fails on an earlier writer's segment, landed late where
+    /// its own was to go, takes the branch again, which keeps its guest. A store taking a branch
+    /// over from a writer still uploading, two segments of it in flight, the second landing past the
+    /// fence, where the store's first goes, commits on.
+    #[test]
+    #[ignore = "TASK-204"]
+    fn takeovers_of_writers_still_uploading_keep_their_guests() {
+        use extent_remote::{Batch, Commit, Writer};
+        let dir = tempfile::tempdir().unwrap();
+        let bucket = Arc::new(Bucket::new(Arc::new(InMemory::new()), ""));
+        let store = ExtentStore::create(dir.path().join("store"), 1 << 30).unwrap();
+        let branch = store.branch();
+        // The writer before, of another placement, its two segments in flight.
+        let before = futures::executor::block_on(async {
+            branch::create(&*bucket, branch, 1).await.unwrap();
+            Writer::open(bucket.clone(), branch, 10, 0).await.unwrap()
+        });
+        let mut seqs = Vec::new();
+        for tag in [1, 2] {
+            let commit = Commit { tag, ..Commit::default() };
+            let objects = Batch::from(commit).close(&mut before.chain()).frame();
+            seqs.push(before.add_segment(objects).unwrap());
+        }
+        // The store takes the branch over, fencing it after the first writer's fence.
+        store.attach_remote(bucket.clone(), 11, idle()).unwrap();
+        // The second lands, past the fence, void; the first finds the fence at its place.
+        futures::executor::block_on(async {
+            before.upload(seqs[1]).await.unwrap();
+            assert_eq!(before.upload(seqs[0]).await, Err(extent_remote::Error::Fenced));
+        });
+        write(&store, 1, &pattern(1, BLOCK));
+        let committed = store.commit(Some(b"after"));
+        let failed = store.remote().unwrap().failed();
+        assert_eq!((committed, failed), (Ok(()), None));
+        let after = (vec![(1, pattern(1, BLOCK))], Some(b"after".to_vec()));
+        assert_eq!(uploaded(&bucket, branch), after);
+    }
+
     /// The store names an extent its uploader acknowledged where it was sealed, its segment's key
     /// (`Store::acknowledged`), for as long as it holds it, whatever its writer's checkpoints name
     /// it at since. The collector keeps the moves on an extent's way from where the branch's newest
