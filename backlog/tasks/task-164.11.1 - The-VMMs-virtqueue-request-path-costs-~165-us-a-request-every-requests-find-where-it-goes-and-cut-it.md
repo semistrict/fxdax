@@ -4,9 +4,10 @@ title: >-
   The VMM's virtqueue request path costs ~165 us a request, every request's:
   find where it goes and cut it
 status: To Do
-assignee: []
+assignee:
+  - '@claude'
 created_date: '2026-11-06 06:26'
-updated_date: '2026-11-06 06:30'
+updated_date: '2026-11-06 23:19'
 labels:
   - performance
   - dax
@@ -36,3 +37,9 @@ Measured on GCE r650 (n2-standard-4, nested, jailed), pgbench on a fork with DAX
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+2026-11-06, measured with scripts/extent-transport.bt (FXDAX_HOST_TRACE, test-linux-host.sh), GCE r800-r803, nested, jailed, forked pgbench with DAX. A PRIVATE takes the guest 527 us (r802, traced): the VM process waits 282 us for the daemon's reply (daemon 66 us, the stage run 116, ~100 the messages between them), the other ~245 us are the transport's and the guest's. Seen from the host: an MMIO exit 8-32 us of its time (5.3M in r800; 1.73M of r802's 2.68M went to the VMM, the rest in-kernel), the interrupt's handling two of those to the VMM (virtio-mmio's status read and ACK, which no MSI spares: the PCI transport has no shared memory regions, which the window is), a HLT, then the wakeup (an interrupt to the vCPU's entry 4-32 us); the threads' waits to run 1-4 us mostly, the daemon's extentd io threads' with a tail past 16 us. Tried: halt polling in the guest (cpuidle_haltpoll.force=1, r801: forked-dax 0.826, the halts last 128-512 us, past its window) and a guest spinning for a PRIVATE's reply (virtio_extent.spin_ns=600000, r803: 0.843, a PRIVATE 432 us from 463): neither moved forked-dax past noise. AC1 partly: each host hop measured as above; the VMM's own part (worker pop to completion, outside the daemon's wait) not apart, its served times logged at Info as the worker stops, inside the jail that results leave out. No longer needed for TASK-164.11's 0.9 (r807: 0.912 with fewer PRIVATEs, made before the inode's lock); left as later work.
+<!-- SECTION:NOTES:END -->

@@ -87,6 +87,47 @@ measurement).
 
 ## Runs
 
+### r800-r807, 2026-11-06: where a fork's PRIVATE goes, and forked-dax past 0.9 (TASK-164.11)
+
+GCE n2-standard-4 (nested, Cascade Lake), `fxdax-test-r800-trace` and `fxdax-test-r801-haltpoll`
+(us-east4-a), main 58937524e and its changes, release guest kernel, every Firecracker jailed.
+
+**Where a PRIVATE goes** (r802: dax-forked alone, under scripts/extent-transport.bt, whose tracing
+cost the pair little: r800 0.832 traced, r794 0.836 not). A PRIVATE takes the guest 527 us; the VM
+process waits 282 us for the daemon's reply, of which the daemon's own work is 66 us, the stage run,
+the VM process making the run private, 116 (mmap 25 us on average, 64-128 us over pages installed,
+whose TLBs every vCPU flushes; KVM_PRE_FAULT_MEMORY 20; UFFDIO_COPY 10; pread, UFFDIO_REGISTER,
+munmap, mprotect a few each), and ~100 us the messages between them. The other ~245 us are the
+transport's and the guest's: an MMIO exit costs 8-32 us of the host's time (5.3M of them in r800),
+of which the interrupt's handling takes two to the VMM (virtio-mmio's status read and ACK), a HLT
+and the wakeup; the threads' waits to run are 1-4 us mostly. Neither halt polling in the guest
+(`cpuidle_haltpoll.force=1`, r801: 0.826) nor a guest spinning for a PRIVATE's reply
+(`virtio_extent.spin_ns=600000`, r803: 0.843, a PRIVATE 432 us from 463) moved forked-dax.
+
+**What it cost the fork**: not a PRIVATE's time alone but its count, and the inode's lock it held.
+A window kept a quarter of its pages private at most (512 MiB of 2 GiB), the pgbench accounts
+table's 640 MiB not, so pages went back to their extents and their next stores asked again: 309,608
+PRIVATEs (r802), and a write(2)'s PRIVATE held the inode's lock, which the file's other writes
+waited for as long as the PRIVATEs took (160 s of lock waits for 163 s of PRIVATEs).
+
+| Run | Change | no-dax-forked | dax-forked | forked-dax | PRIVATEs | Lock waits |
+|---|---|---|---|---|---|---|
+| r800 | none (traced) | 1388 | 1156 | 0.832 | | |
+| r804 | `private_max` half the window | 1442 | 1315 | 0.912 | 108,006 | 37.5 s |
+| r806 | the same, full gate | 1448 | 1293 | 0.893 | 107,222 | 36.9 s |
+| r807 | and a write's PRIVATE before its lock, full gate | 1425 | 1300 | 0.912 | 108,688 | 7.4 s |
+
+The density phase with half the window private (r805): `density-memory` 0.823, 2,256 MiB a VM
+added (r794: 2,097); r806 0.771 and 2,200.5; r807 0.811 and 2,164.0.
+
+r807, the full gate: every case and every gate passes. no-dax 1406, 1410, 1473, 1440, 1437; dax
+1406, 1409, 1472, 1460, 1430; ext4-dax-pmem median 1157; no-dax-forked 1215, 1383, 1425, 1438,
+1444; dax-forked 1203, 1328, 1300, 1442, 1296. Gates: `forked-dax` 0.912, `dax` 0.995, `static-dax`
+1.24, `decay` 0.99-1.19, `density` 0.99 and 1.01, `density-memory` 0.811 (no DAX 2,668.7 MiB a VM
+added, DAX 2,164.0), `density-memory-mib` 2,164.0, `bigmap-read` 5.15, `bigmap-guest-cache` 0.0,
+`bigmap-written-memory` 1.31. dax-forked's write(2)s: 108.5 s, 65.5 of them making pages private
+before the lock, 7.4 waiting for it.
+
 ### r792-r794, 2026-11-06: the test daemons with a part cache (TASK-164.12); the full gate passes
 
 The test daemons had no part cache, which production's daemon keeps on the host's disk
