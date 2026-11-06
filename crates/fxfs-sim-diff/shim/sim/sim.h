@@ -113,6 +113,8 @@ static inline void msleep(unsigned int ms)
  */
 void sim_point(const char *what);
 u64 sim_random(void);
+/* guest/sim's sweep (kernel/sweep.c): no call fails here, as the comparison with Fxfs has none. */
+bool sim_sweep_fails(const char *what, const char *file, int line);
 
 /* The extent store under the model, as guest/sim's kernel/device.c has it. */
 void sim_device_new_extent(u64 sequence, u64 size);

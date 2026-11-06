@@ -89,7 +89,8 @@ def mutants():
 
 def runs():
     """What a header may name as a killer: the guest's cases, its checks suites' checks, the
-    simulator's tests, the scenarios of its tests/scenarios, and crates/fxfs-sim-diff's tests."""
+    simulator's tests, the scenarios of its tests/scenarios, either swept, and
+    crates/fxfs-sim-diff's tests."""
     scenarios = (SIM / "tests" / "scenarios.c").read_text()
     return {
         "cases": set(re.findall(r'TestCase::new\(\s*"([a-z0-9-]+)"', CASES.read_text())),
@@ -114,6 +115,9 @@ def unsound(each, known):
             return f"its killer {' '.join(each.killer)!r} is no test of crates/fxfs-sim-diff"
         return None
     if not each.real:
+        # The sweep of a run of one (guest/sim/sweep.sh): the run's own name follows.
+        if test == "sweep" and arguments:
+            test, *arguments = arguments
         if test not in known["sim"]:
             return f"its killer {test!r} is no test of guest/sim's"
         if test == "scenarios" and (len(arguments) != 1 or arguments[0] not in known["scenarios"]):

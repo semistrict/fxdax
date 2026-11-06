@@ -243,6 +243,18 @@ u64 sim_device_length(u64 sequence)
 	return find_extent(sequence)->length;
 }
 
+bool sim_device_holds(u64 sequence, u64 page)
+{
+	struct extent *extent = find_extent(sequence);
+
+	return extent->held && page < extent->length;
+}
+
+bool sim_sweep_fails(const char *what, const char *file, int line)
+{
+	return false;
+}
+
 void sim_device_seal(void)
 {
 	size_t i;
