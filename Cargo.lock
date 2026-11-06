@@ -1367,6 +1367,7 @@ dependencies = [
  "io-uring",
  "libc",
  "log",
+ "memchr",
  "object_store",
  "physmem",
  "proptest",

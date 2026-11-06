@@ -4,8 +4,9 @@
 
 # Hunts for bugs the seeds CI replays on every push don't reach (TASK-160.28): each night, guest/sim's
 # zloop over 20,000 seeds of interleave and failures it hasn't run, from a first seed that moves
-# with the run's number, and fxfs-posix's model and corruption tests at 50 times their cases, from
-# seeds of the run's own. CPU alone, no secrets. What failed is kept, a run's artifact, with how to
+# with the run's number, fxfs-posix's model and corruption tests at 50 times their cases, and
+# extentd's compromised VM process beside other tenants at 160 times its (TASK-149.17), from seeds
+# of the run's own. CPU alone, no secrets. What failed is kept, a run's artifact, with how to
 # run it again; an open bug's failure, as guest/sim/known-failures and crates/fxfs-posix/known-panics
 # list them, doesn't fail a hunt.
 name: Hunt
@@ -26,6 +27,10 @@ on:
         required: false
       posix:
         description: "fxfs-posix's tests too"
+        type: boolean
+        default: true
+      extentd:
+        description: "extentd's compromised VM process too"
         type: boolean
         default: true
 
@@ -147,4 +152,76 @@ jobs:
         if: always()
         with:
           name: posix-${{ matrix.shard }}
+          path: hunt
+
+  # TASK-149.17: a_compromised_vm_process_harms_no_tenant_beside_it, at 160 times CI's 48 cases, a
+  # quarter a shard, from proptest seeds of the run's own; its cases unshrunk past two minutes, as the
+  # test bounds shrinking, each failure saying its case. Linux, as extentd is, with userfaultfd.
+  extentd:
+    name: extentd hostile (${{ matrix.shard }} of 4)
+    if: github.event_name == 'schedule' || inputs.extentd
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+    env:
+      FXDAX_HOSTILE_CASES: 1920
+    steps:
+      # With vendor/firecracker, whose seccompiler fxdax's tests build with (TASK-149.28).
+      - uses: actions/checkout@v7
+        with:
+          submodules: true
+      - name: Install the build's tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler libclang-dev clang libseccomp-dev
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+      - uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: hunt-extentd-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: hunt-extentd-${{ runner.os }}-
+      # As CI's test job: DAX's tests take faults through /dev/userfaultfd, and the tests' stores
+      # want the root disk's room.
+      - name: Let the tests use userfaultfd, and give their files room
+        run: |
+          sudo setfacl -m "u:$USER:rw" /dev/userfaultfd
+          sudo mkdir -p /mnt/tmp
+          sudo chown "$USER" /mnt/tmp
+          echo TMPDIR=/mnt/tmp >> "$GITHUB_ENV"
+      - name: Build
+        run: cargo nextest run -p fxdax --lib --no-run
+      - name: The compromised VM process, at 160 times its cases
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          export PROPTEST_RNG_SEED=$(( (GITHUB_RUN_NUMBER - 1) * 4 + SHARD + 1 ))
+          test='extentd::tests::hostile::a_compromised_vm_process_harms_no_tenant_beside_it'
+          again="PROPTEST_RNG_SEED=$PROPTEST_RNG_SEED FXDAX_HOSTILE_CASES=$FXDAX_HOSTILE_CASES"
+          mkdir -p hunt
+          echo "# At $GITHUB_SHA: $again cargo nextest run -p fxdax --lib -E 'test(=$test)'" > hunt/replay
+          status=0
+          cargo nextest run -p fxdax --lib -E "test(=$test)" > hunt/nextest.log 2>&1 || status=$?
+          # What failed alone: a failing case's output is its every connection's log.
+          grep -E '^ *(PASS|FAIL|SIG[A-Z]+|ABORT|TIMEOUT) |Fail\(Reason|bytes held, of at most|Summary' \
+            hunt/nextest.log | cut -c1-2000 || true
+          {
+            echo "### extentd hostile: $again"
+            echo '```'
+            grep -E '^ *(PASS|FAIL|SIG[A-Z]+|ABORT|TIMEOUT) |bytes held, of at most|Summary' hunt/nextest.log || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit $status
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: extentd-${{ matrix.shard }}
           path: hunt

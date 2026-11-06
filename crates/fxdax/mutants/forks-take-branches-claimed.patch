@@ -1,0 +1,17 @@
+# A fork claims its branch in the bucket and takes it whatever the claim says: a VM process forks
+# its store to another tenant's branch, whose writer's commits, and its own, then fail (TASK-79.82).
+# Kind: commits wedged
+# Killer: extentd::tests::hostile::a_compromised_vm_process_harms_no_tenant_beside_it
+--- a/crates/fxdax/src/host_store.rs
++++ b/crates/fxdax/src/host_store.rs
+@@ -249,9 +249,7 @@
+     let claim = || -> anyhow::Result<()> {
+         before()?;
+         let Some(remote) = remote else { return Ok(()) };
+-        if !remote.claim(child)? {
+-            return Err(taken());
+-        }
++        let _ = remote.claim(child)?;
+         claimed.set(true);
+         Ok(())
+     };

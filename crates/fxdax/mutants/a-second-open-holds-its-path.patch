@@ -1,0 +1,38 @@
+# Two OPENs of one connection at once both go on, and the second's store, which the connection
+# can't have, is let go of but for its path, which stays held until the daemon restarts
+# (TASK-150.5).
+# Kind: path held
+# Killer: extentd::tests::hostile::a_compromised_vm_process_harms_no_tenant_beside_it
+--- a/crates/fxdax/src/extentd/server.rs
++++ b/crates/fxdax/src/extentd/server.rs
+@@ -850,9 +850,14 @@
+     /// The connection has `store` from now on, as `opened` says: [`Phase::Writing`] or
+     /// [`Phase::Following`]. Checked without the phase's lock, which a panic would poison.
+     fn opened(self, store: Arc<ExtentStore>, opened: Phase) {
+-        assert!(self.0.store.set(store).is_ok(), "a connection opened a second store");
++        if self.0.store.set(store).is_err() {
++            if let Phase::Writing(hold) = opened {
++                std::mem::forget(hold);
++            }
++            return;
++        }
+         let was = std::mem::replace(&mut *self.0.phase.lock().unwrap(), opened);
+-        assert!(matches!(was, Phase::Opening), "a connection opened a store not opening one");
++        let _ = was;
+     }
+ }
+ 
+@@ -1301,11 +1306,11 @@
+     fn opening(&self) -> Result<Opening<'_>, Errno> {
+         let mut phase = self.phase.lock().unwrap();
+         match *phase {
+-            Phase::Unopened => {
++            Phase::Unopened | Phase::Opening => {
+                 *phase = Phase::Opening;
+                 Ok(Opening(self))
+             }
+-            Phase::Opening | Phase::Writing(_) | Phase::Following => Err(Errno::EBUSY),
++            Phase::Writing(_) | Phase::Following => Err(Errno::EBUSY),
+         }
+     }
+ 

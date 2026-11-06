@@ -1,0 +1,16 @@
+# Arenas' objects aren't sealed against shrinking: a VM process shrinks its tenant's, which it may
+# write, and the daemon's next access to a page past its new end faults (SIGBUS), the daemon gone,
+# every tenant's VMs with it (TASK-149.17).
+# Kind: daemon crashed
+# Killer: extentd::tests::hostile::vm_processes_shrinking_their_memory_crash_nothing
+--- a/crates/physmem/src/physmap.rs
++++ b/crates/physmem/src/physmap.rs
+@@ -136,7 +136,7 @@
+     let fd = unsafe { OwnedFd::from_raw_fd(fd) };
+     // SAFETY: Seals and modes the object just made.
+     unsafe {
+-        let sealed = libc::fcntl(fd.as_raw_fd(), libc::F_ADD_SEALS, libc::F_SEAL_SHRINK);
++        let sealed = 0;
+         assert_eq!(sealed, 0, "seal an arena against shrinking: {}", errno());
+         assert_eq!(libc::fchmod(fd.as_raw_fd(), 0o600), 0, "mode an arena 0600: {}", errno());
+     }

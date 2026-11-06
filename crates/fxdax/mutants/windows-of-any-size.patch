@@ -1,0 +1,26 @@
+# A window of any size a VM process names makes the daemon room for its replies: a window of 2^60
+# bytes voids the connection's memory bound (TASK-150.3).
+# Kind: memory
+# Killer: extentd::tests::hostile::a_compromised_vm_process_harms_no_tenant_beside_it
+--- a/crates/fxdax/src/extentd/codec.rs
++++ b/crates/fxdax/src/extentd/codec.rs
+@@ -441,9 +441,6 @@
+             WINDOW => {
+                 nothing()?;
+                 // fxdax: past it, the daemon's room for its VM process's replies (TASK-150.3).
+-                if args[0] > MAX_WINDOW {
+-                    return Err(Errno::EINVAL);
+-                }
+                 // fxdax: some private pages, no more than the window's, or none (backlog doc-13).
+                 let private_max = (args[1] != 0).then_some(args[1]);
+                 if args[1] > args[0] / crate::pages::page_size() {
+--- a/crates/fxdax/src/extentd/server.rs
++++ b/crates/fxdax/src/extentd/server.rs
+@@ -1849,7 +1849,6 @@
+     /// Its window is of `size` bytes, whose mappings, a page each at most, a reply to `MAPPINGS`
+     /// holds (TASK-79.43).
+     fn set_window(&self, size: u64) {
+-        assert!(size <= MAX_WINDOW, "a window past the most the daemon makes room for");
+         let mappings = size / crate::pages::page_size() * MAPPING_BYTES;
+         self.mappings.store(mappings, Ordering::Relaxed);
+     }

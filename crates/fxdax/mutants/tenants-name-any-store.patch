@@ -1,0 +1,15 @@
+# A tenant's VM processes name stores anywhere, not in its directory alone (TASK-43.4): another
+# tenant's store it closed opens for them.
+# Kind: another tenant's
+# Killer: extentd::tests::hostile::a_compromised_vm_process_harms_no_tenant_beside_it
+--- a/crates/fxdax/src/extentd/server.rs
++++ b/crates/fxdax/src/extentd/server.rs
+@@ -272,7 +272,7 @@
+     /// `EACCES` unless it is where they name stores ([`Stores`]).
+     fn holds(&self, path: &Path) -> Result<(), Errno> {
+         let held = match &self.policy.stores {
+-            Stores::Dir(dir) => in_dir(path, dir),
++            Stores::Dir(_) => true,
+             Stores::Roots(Some(roots)) => roots.iter().any(|root| in_dir(path, root)),
+             Stores::Roots(None) => true,
+         };

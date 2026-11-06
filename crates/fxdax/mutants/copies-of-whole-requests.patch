@@ -1,0 +1,16 @@
+# A read or a write copies its whole length at once, a copy the connection's room doesn't count, as
+# many as the connection serves at once: 1 GiB held of a connection's writes from its transfer
+# area, against a room of 272 MiB (TASK-149.17).
+# Kind: memory
+# Killer: extentd::tests::hostile::what_requests_hold_is_within_the_room
+--- a/crates/fxdax/src/extents.rs
++++ b/crates/fxdax/src/extents.rs
+@@ -446,7 +446,7 @@
+     /// (TASK-149.17): which a VM process names, so that a connection of the extent daemon's held
+     /// a copy of each of its requests' whole lengths, as many as it serves at once, past what the
+     /// protocol bounds of it.
+-    pub const PIECE: usize = 1 << 20;
++    pub const PIECE: usize = usize::MAX;
+ 
+     /// A new store at `path`, which must not exist, holding at most `capacity` bytes, with a branch
+     /// of its own. fxdax: kept in this host's bucket, or, where this is no host of fxdax's system, a
