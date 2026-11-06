@@ -750,8 +750,13 @@ enum NotHere {
 /// made: it must end, or the worker faults for good. fxdax: on a window that copies on write it
 /// fails, its page restricted to reads, since taken as a load, never a store (TASK-191).
 fn worker_writes(guest: &HostGuest) {
+    worker_writes_at(guest, 0);
+}
+
+/// KVM's worker's write at `offset`, as [`worker_writes`] makes it.
+fn worker_writes_at(guest: &HostGuest, offset: u64) {
     for _ in 0..ATTEMPTS {
-        match guest.access_by(WORKER, 0, Access::Write, None) {
+        match guest.access_by(WORKER, offset, Access::Write, None) {
             Outcome::Faulted(fault) => future::block_on(fault).unwrap(),
             Outcome::Failed | Outcome::Made(_) => return,
         }
@@ -1213,6 +1218,48 @@ fn needs_private_runs_filled_before_mapped() {
     fails_with("a page of zeros faulted in", || {
         Runner::new(PctScheduler::new(3, runs(10 * RUNS)), config()).run(private_runs_race_loads);
     });
+}
+
+/// fxdax: a guest's store to a page not here, on a window that copies on write, installs nothing
+/// after it: the page is made private, a fault either way, and the pages after it stay as they
+/// were, not here. The probe of the next page, which once came of every write to a page not here,
+/// installed it read-only for a moment, once the faulting thread was woken to store on to it,
+/// which a thread of the host's died of (SIGSEGV, 3 runs in 500 of
+/// snapshots_after_private_pages_are_rebound_restore_their_bytes). Red with the probe back: page 1
+/// installed. A worker's write still probes, for a run of loads.
+fn stores_to_pages_not_here_install_nothing_after_them() {
+    let ps = page_size();
+    let (memory, stage, mut dax) = modelled_copying(4);
+    guest_thread(VCPU);
+    // Not in memory as it is mapped: not here until a fault.
+    let file = TestSource::anonymous(4).source();
+    dax.map(0, &file, 0, 4 * ps);
+    let window = dax.window.clone();
+    let base = 64 * ps as usize;
+    let guest = HostGuest { memory, stage: stage.clone(), window: window.clone(), base };
+    let installed = |page: usize| {
+        let pages = stage.pages.lock().unwrap();
+        pages.pages[page].mapped.is_some_and(|mapped| mapped.installed)
+    };
+    match guest.access(0, Access::Write, Some(STORED)) {
+        Outcome::Faulted(fault) => future::block_on(fault).unwrap(),
+        _ => panic!("a store to a page not here was made, or failed"),
+    }
+    assert_eq!(window.private_pages(), 1);
+    assert!(!installed(1), "the store's fault installed the page after it");
+    match guest.access(0, Access::Write, Some(STORED)) {
+        Outcome::Made(read) => assert_eq!(read, STORED),
+        _ => panic!("a store to a private page faulted, or failed"),
+    }
+    // A worker's write, a load's, of page 2, maps page 3 ahead.
+    worker_writes_at(&guest, 2 * ps);
+    assert!(installed(3), "a worker's write mapped nothing ahead");
+}
+
+#[test]
+fn stores_to_pages_not_here_install_nothing_after_them_once() {
+    Runner::new(RandomScheduler::new(1), config())
+        .run(stores_to_pages_not_here_install_nothing_after_them);
 }
 
 /// fxdax: what a vCPU stores to a private page in [`private_pages_go_with_their_unmaps`].

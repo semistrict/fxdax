@@ -1310,9 +1310,16 @@ impl<H: HostMemory> UffdSecondStage<H> {
         // after it are mapped read-only, the next read in if need be, so that stores to them fault
         // as stores, which dirty runs of pages, and loads do not fault at all. Past the file, or
         // the window, there is nothing to map. fxdax: a probe, whose page the guest may not map,
-        // which the window refuses then without telling of it as of the guest's access.
+        // which the window refuses then without telling of it as of the guest's access. fxdax: on
+        // a window that copies on write, a worker's write alone, which a run of loads makes: a
+        // guest's store there takes a private page whether its page is here or not, a fault
+        // either way, and the probe, made once the faulting thread is woken, installed the pages
+        // after it read-only for a moment (`install`) as that thread stored on to them, which a
+        // vCPU's VMM retries and a thread of the host's dies of: SIGSEGV in
+        // snapshots_after_private_pages_are_rebound_restore_their_bytes, 3 runs in 500.
         let next = offset + page_size as u64;
-        if !reinstalled && !store && access == Access::Write && next < window.size() {
+        let probes = !self.copying() || for_worker;
+        if probes && !reinstalled && !store && access == Access::Write && next < window.size() {
             match window.probe(next).await {
                 Ok(()) | Err(Errno::ENOENT | Errno::EINVAL) => {}
                 Err(err) => log::warn!("mapping DAX window offset {next:#x} ahead: {err}"),
