@@ -17,6 +17,11 @@
 After a power cut a staging extent can hold data whose commits the journal lost, as doc-4 allows: a mount counts it only as far as its durable commits, up to 2 MiB short each, which breaks the room a full device's metadata reservation promises (TASK-214). Nothing Fxfs writes can close it; the device has to say how long the extents minted since the last barrier are. That's a protocol change (doc-4, the guest driver, Firecracker, extentd), so it's yours to approve.
 **Recommended:** a request returning the lengths of named extents, asked at mount of the extents minted since the root's last barrier, which the root would record.
 **Until then:** after a cut, up to 2 MiB a volume's staging extent stays uncounted until the extent dies; the model's length oracle runs only on filesystems no cut touched.
+## gcloud needs signing in again, for TASK-67's runs (2026-11-06)
+
+This Mac's gcloud token for ramon@echophase.com expired mid-run ("Reauthentication failed. cannot prompt during non-interactive execution"), and there are no application-default credentials. Signing in is yours: `gcloud auth login`.
+**Recommended:** sign in, then fetch r757's rounds from `gs://echophase-fxdax-bench/soak67-results/` (its host, fxdax-test-r757-soak67 in us-east1-c, ran on detached and uploads each round itself), and run the soak against GCS (r758/r759 left, TASK-67's notes say how).
+**Until then:** r757's results are unread here; its host deletes itself at its 8 h max run duration; the GCS soak hasn't run.
 
 # Decisions
 

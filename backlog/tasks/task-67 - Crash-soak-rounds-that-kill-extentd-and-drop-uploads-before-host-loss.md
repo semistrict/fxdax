@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-10-21 19:54'
-updated_date: '2026-11-06 13:01'
+updated_date: '2026-11-06 14:53'
 labels:
   - sandbox
 dependencies: []
@@ -53,4 +53,16 @@ Decisions moved here from OPEN_QUESTIONS.md (2026-11-06):
 - A store whose upload the failpoint failed may fail its guest's calls with EIO, the guest giving up: remote.rs stops a store's uploader for good on any writer failure, its commits failing until the store is attached again; the soak finds those stores from the daemons' logs and holds every other store to no error. Checked anyway after: every acknowledged write there once the checking daemon attaches it again.
 - No bucket latency on a file bucket until TASK-208 (its reads panic in object_store's throttle).
 - The cache's bytes are reported each round, not failed on: by design it fills its filesystem to 4 GiB free (CACHE_FLOOR), holding copies of objects the collector deleted until evicted. Growth failures are for the stores, the bucket and the daemons' peak memory: past twice rounds 3-6's most and a slack (1 GiB, 2 GiB, 512 MiB).
+
+Runs (2026-11-06), all n2-standard-8, us-east1-c (us-central1 out of CPU quota), jailed (FXDAX_FIRECRACKER_JAIL=1), production seccomp filter, file bucket, release guest kernel built on the host:
+- r750 (8 rounds of 60 s loads): rounds 1-2 passed; round 3 (host lost at 18 s) lost files syncfs had acknowledged: TASK-67.1, fixed.
+- r751: round 1, a pgbench VM's umount EBUSY: pg_ctl stop returns before the postmaster exits (harness, fixed: wait for its processes).
+- r752: round 1, the base's VM: the wait counted the postmaster's zombie, which the guest agent as init never reaps (harness, fixed).
+- r753: rounds 1 passed; round 2, every store opened by daemons with FXDAX_REMOTE_LATENCY_MS failed EIO: TASK-208, filed (extent_remote); file buckets get no latency until then.
+- r754: rounds 1-2 passed (round 2: reforks, VM crashes, an upload failed, host lost at 141 s: TASK-67.1's fix held); round 3, fsx's fsync EIO on the store whose upload was failed, as designed (harness, fixed: errors allowed on that store alone).
+- r755: rounds 1-8 passed (32 min of rounds: daemon killed, uploads failed, VM crashes, reforks); round 9, a VM booted again after the daemon was killed failed to open its store: TASK-67.2, fixed.
+- r756 (with the Linux workspace: 2223/2223 and its other parts): rounds 1-4 passed; round 5, PostgreSQL's client WARNING on the console of the store whose upload was failed, taken for the kernel's complaint (harness, fixed: PostgreSQL's stderr kept off the console).
+- r757 (55 rounds, 7 h limit), started 12:53Z: running detached when this Mac's gcloud sign-in expired at 14:53Z (OPEN_QUESTIONS.md); its rounds are in gs://echophase-fxdax-bench/soak67-results/run-*/e2e, unread. Not yet the 3 h asked.
+Measures so far (r755, rounds 1-8): bucket 0.41, 0.93, 1.25, 1.62, 1.73, 1.09, 1.38, 1.48 GB (bounded); stores 0.5-2.3 MB, 73 MB while a failed upload's store held its data; loaded daemons' peak RSS 1.45-1.93 GB; checking daemon's 0.85-2.18 GB, levelling once writers keep KEPT_RUNS runs; cache 1.3, 2.4, 3.2, 4.4, 5.4, 5.8, 6.8, 7.9 GB, about 1 GB a round, bounded only by 4 GiB left free on its filesystem.
+Not yet run: the soak against GCS (the real-bucket runs, ccbe81d0e, found GCS works); r758 and r759 are left for it.
 <!-- SECTION:NOTES:END -->
