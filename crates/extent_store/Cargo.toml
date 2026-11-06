@@ -9,9 +9,11 @@ publish = false
 [dependencies]
 anyhow.workspace = true
 bincode.workspace = true
+event-listener.workspace = true
 extent_frame.workspace = true
 extent_remote.workspace = true
 fail = "0.5.1"
+futures.workspace = true
 libc.workspace = true
 log.workspace = true
 rand.workspace = true
@@ -20,12 +22,14 @@ serde.workspace = true
 shuttle = { workspace = true, optional = true }
 storage_device.workspace = true
 thiserror.workspace = true
+tokio.workspace = true
 
 [dev-dependencies]
 # Its own tests audit the store's counts (the `audit` feature).
 extent_store = { path = ".", features = ["audit"] }
 # And set its failpoints (TASK-189).
 fail = { version = "0.5.1", features = ["failpoints"] }
+object_store.workspace = true
 tempfile.workspace = true
 
 [lints]

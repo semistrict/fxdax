@@ -53,12 +53,13 @@ fn stores_through_the_control_api() {
             own: 64 << 10,
             inherited: 0,
             committed: 1,
-            // Closed, it uploads nothing now.
-            uploading: false,
-            lease_token: 0,
-            lease_epoch: 0,
-            lease_taken_unix_ms: 0,
-            uploaded: 0,
+            // Closed, the stat opens it, as the daemon opens any store, taking its branch's lease
+            // after its making's and its VM's (TASK-165.9): what it committed, uploaded.
+            uploading: true,
+            lease_token: 1,
+            lease_epoch: 3,
+            lease_taken_unix_ms: stat.lease_taken_unix_ms,
+            uploaded: 1,
             pending_upload_bytes: 0,
             oldest_pending_ms: 0,
         }

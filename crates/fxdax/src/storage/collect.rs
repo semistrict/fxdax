@@ -108,7 +108,8 @@ impl Collecting {
             state.idle = Some(running.join().unwrap());
         }
         let mut collector = Collector::new(Options { grace: 0, ..OPTIONS });
-        let collected = crate::remote::block_on(collector.collect(&*self.bucket, rand::random()));
+        let collected =
+            extent_store::upload::block_on(collector.collect(&*self.bucket, rand::random()));
         collected.unwrap().unwrap()
     }
 }
@@ -125,7 +126,7 @@ impl Drop for Collecting {
 /// A pass of `collector` over `bucket`, as a holder no other pass is: what it did, or why it
 /// failed, logged. Nothing it could not read it deleted: the next pass tries again.
 fn pass(collector: &mut Collector, bucket: &Bucket) {
-    match crate::remote::block_on(collector.collect(bucket, rand::random())) {
+    match extent_store::upload::block_on(collector.collect(bucket, rand::random())) {
         Ok(Ok(Report { deleted, compacted })) => {
             log::info!(
                 "fxdax: an image's bucket collected: deleted {deleted}, compacted {compacted}"

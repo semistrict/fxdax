@@ -25,13 +25,6 @@ fn host() {
     }
 }
 
-/// Keeps `store`'s branch in the bucket its description names, the daemon's, as forking it needs
-/// (TASK-165.7): a store made here, not through the daemon, which attaches those it opens.
-fn kept(store: &ExtentStore) {
-    let options = crate::remote::Options { token: 1, ..Default::default() };
-    store.attach_remote(store.bucket().clone(), rand::random(), options).unwrap();
-}
-
 /// A daemon serving one connection, on a thread, and its client, of the store at `path`.
 fn connect(path: &Path, capacity: u64) -> (RemoteExtentStore, JoinHandle<()>) {
     let (client, server) = UnixStream::pair().unwrap();
@@ -238,7 +231,11 @@ fn keeps_branches_in_the_buckets_their_stores_name() {
     let path = dir.path().join("image");
     let url = format!("file://{}/", dir.path().canonicalize().unwrap().join("bucket").display());
     let branch = crate::host_store::new_branch();
-    drop(crate::host_store::create_in(&path, 1 << 20, branch, &url).unwrap());
+    let keeping = crate::host_store::keeping().unwrap();
+    let made =
+        crate::host_store::create_unmade(&path, 1 << 20, branch, Some(&url), keeping).unwrap();
+    made.made().unwrap();
+    drop(made);
     let (store, served) = connect(&path, 1 << 20);
     let extent = ExtentId { branch, sequence: 1 };
     write(&store, extent, 0, &pattern(1, 2 * BLOCK)).unwrap();
@@ -1389,7 +1386,6 @@ fn two_processes_map_the_same_pages() {
         let extent = ExtentId { branch: store.branch(), sequence: 1 };
         store.write(extent, 0, &[VolatileSlice::from(&pattern(9, ps)[..])]).unwrap();
         store.commit(None).unwrap();
-        kept(&store);
         store.fork(&child, extent.branch + 1).unwrap();
         extent
     };
@@ -1684,7 +1680,6 @@ fn two_vm_processes(name: &str, env: &[&str]) -> TwoVmProcesses {
         let extent = ExtentId { branch: store.branch(), sequence: 1 };
         store.write(extent, 0, &[VolatileSlice::from(&pattern(9, ps)[..])]).unwrap();
         store.commit(None).unwrap();
-        kept(&store);
         store.fork(&child, extent.branch + 1).unwrap();
         extent
     };
@@ -1848,9 +1843,10 @@ fn vm_processes_that_leave_their_sockets_to_children_are_gone() {
         .spawn()
         .unwrap();
     let stdout = std::io::BufReader::new(process.stdout.take().unwrap());
-    let child = stdout.lines().map(Result::unwrap).find_map(|line| {
-        line.strip_prefix("CHILD ").map(|pid| KilledOnDrop(pid.parse().unwrap()))
-    });
+    let child = stdout
+        .lines()
+        .map(Result::unwrap)
+        .find_map(|line| line.strip_prefix("CHILD ").map(|pid| KilledOnDrop(pid.parse().unwrap())));
     let _child = child.expect("the VM process left no child");
     assert!(process.wait().unwrap().success());
     drop(connect_once_free(&socket, &store));
@@ -1969,8 +1965,7 @@ fn snapshots_restore_into_forks_of_their_point() {
     let point_branch = store.branch() + 1;
     store.fork_quiescent(&point, point_branch).unwrap();
     let mappings = store.window_mappings().unwrap();
-    let extent =
-        |extent, offset| crate::MappingContents::Extent { extent, offset };
+    let extent = |extent, offset| crate::MappingContents::Extent { extent, offset };
     assert_eq!(
         mappings,
         [
@@ -2425,7 +2420,12 @@ fn earlier_placements_open_no_stores() {
     store.commit(Some(b"placed at 5")).unwrap();
     drop(store);
 
-    ExtentStore::create_for_branch(&earlier, 1 << 24, branch).unwrap();
+    // A copy of the branch's made here, not opened, which would take its lease: placed before.
+    std::fs::create_dir(&earlier).unwrap();
+    let description =
+        extent_store::Description { block_size: BLOCK as u32, capacity: 1 << 24, branch };
+    extent_store::create_host(&earlier, description, "memory:///branches", true).unwrap();
+    extent_store::made_host(&earlier).unwrap();
     ExtentStore::place(&earlier, 3).unwrap();
     let refused = RemoteExtentStore::connect(&socket, &earlier, 1 << 24);
     assert_eq!(refused.err().and_then(|error| error.errno()), Some(Errno::ESTALE));
@@ -2900,7 +2900,8 @@ fn serves_hundreds_of_forks_of_a_base() {
     assert!(after.threads < 64, "{} threads: {:?}", after.threads, thread_names());
     // Each fork's: the connection's two ends here, and the client's, with its kernel's memory, its
     // arena and the default one, read-only (TASK-79.17); its store's directory, its own since
-    // TASK-165.7, its index and open segment. And the base's, which it is attached to.
+    // TASK-165.7, its open segment and its commit log (TASK-165.9). And the base's, which it is
+    // attached to.
     let opened = after.files - before.files;
     assert!(opened <= 10 * FORKS + 64, "{opened} files for {FORKS} forks");
     assert!(resident < 1 << 20, "{resident} bytes a fork");
@@ -2933,7 +2934,6 @@ fn counting_followers_walks_no_extents() {
             base.commit(None).unwrap();
         }
     }
-    kept(&base);
     let forks: Vec<_> = (1..=FORKS)
         .map(|n| {
             let fork = dir.path().join(format!("fork-{n}"));
@@ -3295,7 +3295,6 @@ fn stores_worked_on_here_read_no_boot_profile() {
     let extent = ExtentId { branch: store.branch(), sequence: 1 };
     store.write(extent, 0, &[VolatileSlice::from(&pattern(7, ps)[..])]).unwrap();
     store.commit(None).unwrap();
-    kept(&store);
     store.fork(&fork, extent.branch + 1).unwrap();
     drop(store);
     // The base's profile, as its first fork to boot recorded it.
@@ -4387,7 +4386,8 @@ fn faults_waiting_for_object_storage_hold_up_no_request() {
     .unwrap();
     let memory = memory(FAULTS);
     // SAFETY: The memory is the test's, and outlives the store.
-    unsafe { ours.create_dax_window_in_host_memory(memory, (FAULTS * ps) as u64, None, 1) }.unwrap();
+    unsafe { ours.create_dax_window_in_host_memory(memory, (FAULTS * ps) as u64, None, 1) }
+        .unwrap();
     for n in 0..FAULTS {
         let extent = ExtentId { branch, sequence: n as u64 + 1 };
         ours.map(extent, 0, ps as u64, (n * ps) as u64).unwrap();
@@ -4680,7 +4680,6 @@ fn vm_processes_of_no_tenant_write_no_public_base() {
     let forked = store.branch() + 1;
     drop(store);
     let opened = ExtentStore::open(&base).unwrap();
-    kept(&opened);
     opened.fork(&fork, forked).unwrap();
     drop(opened);
     let refused = RemoteExtentStore::connect(&socket, &base, 1 << 24);
@@ -5238,8 +5237,7 @@ fn whatever_a_vm_process_says_harms_no_other() {
             }
         ),
     ];
-    let message =
-        prop_oneof![12 => plausible, 4 => anything, 2 => opening, 1 => reading_theirs];
+    let message = prop_oneof![12 => plausible, 4 => anything, 2 => opening, 1 => reading_theirs];
     let last_words = prop_oneof![
         Just(LastWords::Nothing),
         Just(LastWords::PartOfAHeader),
@@ -5344,7 +5342,10 @@ fn whatever_a_vm_process_says_harms_no_other() {
                 // SAFETY: Sizes and seals it.
                 unsafe {
                     assert_eq!(libc::ftruncate(fd.as_raw_fd(), TRANSFER_BYTES as i64), 0);
-                    assert_eq!(libc::fcntl(fd.as_raw_fd(), libc::F_ADD_SEALS, libc::F_SEAL_SHRINK), 0);
+                    assert_eq!(
+                        libc::fcntl(fd.as_raw_fd(), libc::F_ADD_SEALS, libc::F_SEAL_SHRINK),
+                        0
+                    );
                 }
                 let area = Header::new(TRANSFER, 3).with_args(&[TRANSFER_BYTES]);
                 sender.send(area, &[], &[fd.as_fd()]).unwrap();

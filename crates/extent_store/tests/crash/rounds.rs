@@ -14,19 +14,18 @@ use rand::{RngExt as _, SeedableRng as _};
 use std::collections::{BTreeMap, BTreeSet};
 use storage_device::{ExtentId, SealedExtent};
 
-const BLOCK: usize = 4096;
-const BRANCH: u64 = 3;
+pub const BLOCK: usize = 4096;
+pub const BRANCH: u64 = 3;
 /// How many recovering rounds the tests run.
 pub const ROUNDS: u64 = 300;
 const STEPS: usize = 200;
 
 /// Small segments, large extents and index files, so that workloads make many of each.
-const OPTIONS: Options = Options {
+pub const OPTIONS: Options = Options {
     max_extent: 64 << 20,
     segment_size: 48 << 10,
     segment_age: std::time::Duration::from_secs(3600),
     large_extent: 24 << 10,
-    checkpoint_after: 2 << 10,
     open_files: 3,
     view_lag: None,
     view_kept_bytes: None,
@@ -34,9 +33,9 @@ const OPTIONS: Options = Options {
 
 /// What a store holds: its extents' contents, and its root.
 #[derive(Clone, Default, PartialEq, Eq)]
-struct Model {
-    extents: BTreeMap<ExtentId, Vec<u8>>,
-    root: Vec<u8>,
+pub struct Model {
+    pub extents: BTreeMap<ExtentId, Vec<u8>>,
+    pub root: Vec<u8>,
 }
 
 impl std::fmt::Debug for Model {
@@ -65,7 +64,7 @@ fn random_data(rng: &mut StdRng, most: usize) -> Vec<u8> {
 /// commit began with, and returns the epoch of the last commit made durable, and what the store
 /// holds then, committed or not. The commits after `durable` may be ordered only, as a workload
 /// before this one may have ended on such commits.
-fn workload(
+pub fn workload(
     rng: &mut StdRng,
     store: &Store<MemDir>,
     epochs: &mut Vec<Model>,
@@ -126,11 +125,7 @@ fn workload(
                 epochs.push(model.clone());
                 open.clear();
                 let root = root.as_deref().map(str::as_bytes);
-                let result = if ordered {
-                    store.commit_ordered(root)
-                } else {
-                    store.commit(root)
-                };
+                let result = if ordered { store.commit_ordered(root) } else { store.commit(root) };
                 if result.is_ok() && !ordered {
                     durable = epochs.len() - 1;
                 }
@@ -259,14 +254,10 @@ pub fn recovering(round: u64, dir: MemDir) -> (Left, bool) {
         assert_eq!(error.downcast_ref::<SealedExtent>(), Some(&SealedExtent(extent)));
     }
 
-    // Its closed segments' footers are its history up to their last commit, none past it.
-    let rebuilt = store.rebuild().unwrap();
-    assert!(rebuilt.epoch <= epoch as u64, "round {round}: footers past epoch {epoch}");
-
-    // It carries on, and crashing again after a flush keeps what it committed. Its footers since
-    // its newest checkpoint, the open segment closed by a last commit of what it wrote since,
-    // say what it holds, and spent: the frees of extents freed while open among them
-    // (TASK-160.15).
+    // It carries on, and crashing again after a flush keeps what it committed. Its write-ahead
+    // log's footers, the open segment closed by a last commit of what it wrote since, say what
+    // it holds, and spent: the frees of extents freed while open among them (TASK-160.15), which
+    // the store's audit replays at each closing (TASK-165.9).
     let recovered = epochs[epoch].clone();
     let mut epochs = vec![recovered.clone()];
     let (_, model) = workload(&mut rng, &store, &mut epochs, recovered, 0);
@@ -286,15 +277,10 @@ pub fn recovering(round: u64, dir: MemDir) -> (Left, bool) {
     (left, mid_commit)
 }
 
-/// Checks that `store`'s checkpoint and footers, its open segment closed by a commit, say what it
-/// holds as of that commit: its extents, its root, its next sequence number, and what it spent.
+/// Checks that `store`'s footers, its open segment closed by a commit, say what it holds as of that
+/// commit: its extents, its root, and what it spent, which its audit asserts as it closes it
+/// (TASK-165.9's AC #5).
 fn rebuilds(round: u64, store: &Store<MemDir>) {
     store.close_segment().unwrap();
     store.commit(None).unwrap_or_else(|e| panic!("round {round}: a commit failed: {e:?}"));
-    let rebuilt = store.rebuild().unwrap();
-    assert_eq!(rebuilt.epoch, store.epoch().unwrap(), "round {round}");
-    assert_eq!(rebuilt.extents, store.places().unwrap(), "round {round}");
-    assert_eq!(rebuilt.root, store.root().unwrap(), "round {round}");
-    assert_eq!(rebuilt.next_sequence, store.info().unwrap().next_sequence, "round {round}");
-    assert_eq!(rebuilt.spent, store.spent().unwrap(), "round {round}");
 }

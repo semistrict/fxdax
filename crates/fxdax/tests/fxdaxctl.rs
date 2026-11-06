@@ -247,13 +247,16 @@ fn images_imported_where_no_daemon_is_fork_there() {
 }
 
 /// Every command through the daemon: a store imported, made a public base, grown, forked, synced
-/// to object storage, its fork's branch taken to a new store placed after it, and deleted.
+/// to object storage, its fork's branch taken to a new store placed after it, and deleted. The
+/// daemon's bucket a file bucket, which the stores it left open from here: what it acknowledged
+/// has left them (TASK-165.9).
 #[cfg(target_os = "linux")]
 #[test]
 fn commands_through_the_daemon() {
     use fxdax::import::testing::{Entry, Kind, layer};
     let dir = tempfile::tempdir().unwrap();
-    let env = [("FXDAX_EXTENTD_REMOTE", "memory:///branches"), ("FXDAX_EXTENTD_TOKEN", "1")];
+    let bucket = format!("file://{}/", dir.path().canonicalize().unwrap().join("bucket").display());
+    let env = [("FXDAX_EXTENTD_REMOTE", bucket.as_str()), ("FXDAX_EXTENTD_TOKEN", "1")];
     let fxdaxctl = Fxdaxctl::through_daemon(dir.path(), &env);
     let image = dir.path().join("layer.tar");
     std::fs::write(&image, layer(&[Entry::new("hello", Kind::File(b"hello\n"))]).unwrap()).unwrap();
@@ -279,7 +282,11 @@ fn commands_through_the_daemon() {
     let base = ExtentStore::open(&base).unwrap();
     assert_eq!(base.info().unwrap().capacity, 134217728);
     assert!(base.is_public());
-    assert_eq!(format!("{:x}", ExtentStore::open(&fork).unwrap().branch()), branch);
+    // The fork's store names its branch, which deleting the store that took it deleted in the
+    // bucket: it opens no more (TASK-165.9: opening takes the branch's lease).
+    assert_eq!(format!("{:x}", extent_store::host_branch(&fork).unwrap()), branch);
+    let refused = ExtentStore::open(&fork).err().and_then(|err| err.errno());
+    assert_eq!(refused, Some(fxdax::Errno::EROFS));
 }
 
 /// fxdax TASK-111.4: `stats --json` prints one snapshot through the daemon: its build and

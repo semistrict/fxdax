@@ -55,15 +55,14 @@ pub(crate) struct ImageDevice {
 
 impl ImageDevice {
     /// Makes a new image at `dir`, which must not exist, holding at most `capacity` bytes, of
-    /// `branch` ([`Kept::create`]), and its device, whose writes, frees and commits go through
-    /// `writes`.
+    /// `branch`, whole if `whole` ([`Kept::create`]), and its device, whose writes, frees and
+    /// commits go through `writes`.
     pub fn create(
         dir: &Path,
-        capacity: u64,
-        branch: u64,
+        (capacity, branch, whole): (u64, u64, bool),
         writes: Arc<WriteGate>,
     ) -> Result<Self, Error> {
-        Self::new(Kept::create(dir, capacity, branch)?, writes)
+        Self::new(Kept::create(dir, capacity, branch, whole)?, writes)
     }
 
     /// The device of the image at `dir`, or of the clone whose handle `dir` is, whose writes,
@@ -331,7 +330,8 @@ mod tests {
     fn device(capacity: u64) -> (ImageDevice, PathBuf, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
         let image = dir.path().join("image");
-        (ImageDevice::create(&image, capacity, BRANCH, Default::default()).unwrap(), image, dir)
+        let made = (capacity, BRANCH, true);
+        (ImageDevice::create(&image, made, Default::default()).unwrap(), image, dir)
     }
 
     fn extent(sequence: u64) -> ExtentId {

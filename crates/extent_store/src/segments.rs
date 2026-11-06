@@ -5,15 +5,15 @@
 //! A branch's segments (see the crate's docs): those it tracks, each where it is in its life
 //! ([`Phase`]), with the bytes of extents' data it holds; the open segment's closing, its footer
 //! of what the commits since it opened changed, each footer following the one before; fxdax: a
-//! closed segment's data framed, with its footer, off the commit that closed it; and the segments
-//! a crash left open, closed again.
+//! closed segment's data framed, with its footer, off the commit that closed it, its log of the
+//! commits in it going with its raw data (TASK-165.9).
 
-use crate::dir::{Dir, File, not_found};
+use crate::dir::{Dir, File};
 use crate::durability::Syncs;
-use crate::framed::{Aligned, Files, Framed, Source, read_frame, read_parts, read_whole};
+use crate::framed::{Aligned, Files, Framed, Source, read_parts};
 use crate::layout::{
-    Change, Data, Extents, OPEN_SEGMENTS, Piece, SEGMENTS, SegmentId, branch_dir,
-    held_frees, list_numbers, open_segment_path, segment_path,
+    Change, Data, EXTENTS, Extents, LOGS, OPEN_SEGMENTS, Piece, SEGMENTS, SegmentId, branch_dir,
+    extent_path, held_frees, log_path, open_segment_path, segment_path,
 };
 use crate::store::{Options, Usage};
 use anyhow::{Context as _, Error, anyhow, bail, ensure};
@@ -25,17 +25,18 @@ use storage_device::ExtentId;
 
 /// Where a segment the branch tracks is in its life.
 enum Phase<F> {
-    /// Taking writes, in its raw file.
-    Open(Arc<F>),
+    /// Taking writes, in its raw file; fxdax: its commits recorded in its log, which the flushes
+    /// append to (TASK-165.9).
+    Open { raw: Arc<F>, log: Arc<F> },
     /// fxdax: closed by commit `last`, its data being framed off the commit, on a thread of its
     /// own, which ends the framing itself ([`Segments::framed`], TASK-153.8): read from its raw
     /// file, which stays open, until then.
     Framing { raw: Arc<F>, last: u64 },
     /// fxdax: its framing failed, which failed the store: read from its raw file, which stays.
     Failed { raw: Arc<F>, error: String },
-    /// Closed: the epoch of its footer's last commit, if the branch closed it since it was opened.
-    /// Its framed file, if open, is among those kept open (`Segments::files`).
-    Closed { last: Option<u64> },
+    /// Closed, a segment of the write-ahead log until acknowledged in the bucket. Its framed file,
+    /// if open, is among those kept open (`Segments::files`).
+    Closed,
     /// fxdax: set aside, full, though it held no commit's data: what writes since the last commit
     /// wrote to it is in its raw file, which no footer names, nor framing frames, and which goes
     /// once the next commit has copied the extents in it out (TASK-79.2).
@@ -59,8 +60,9 @@ struct Segment<F> {
     /// (TASK-165.8).
     sealed: HashSet<ExtentId>,
     /// fxdax: its key in the bucket, once its uploader's writer acknowledged it there: it leaves
-    /// the store for the host's cache of objects once no extent's data is in it here (TASK-165.8).
-    acknowledged: Option<String>,
+    /// the store for the host's cache of objects once no extent's data is in it here (TASK-165.8),
+    /// if the object there is its framed file, not stamped anew after a takeover (TASK-165.9).
+    acknowledged: Option<Option<String>>,
 }
 
 impl<F> Segment<F> {
@@ -88,11 +90,15 @@ impl<F> Segment<F> {
     }
 
     /// Whether reaping lets it go: no extent's data is in it, nor write in progress, and it takes
-    /// none, closed or set aside.
+    /// none, set aside, or closed and acknowledged in the bucket: the write-ahead log holds the
+    /// rest (TASK-165.9).
     fn is_empty(&self) -> bool {
-        matches!(self.phase, Phase::Closed { .. } | Phase::Retired(_))
-            && self.live == 0
-            && self.writers == 0
+        let done = match self.phase {
+            Phase::Closed => self.acknowledged.is_some(),
+            Phase::Retired(_) => true,
+            _ => false,
+        };
+        done && self.live == 0 && self.writers == 0
     }
 
     /// fxdax: panics unless what it counts of itself, segment `number`, is what it holds
@@ -107,7 +113,7 @@ impl<F> Segment<F> {
         assert!(self.writers > 0 || self.pending == 0, "{number:?}, pending, unwritten");
         let seated: BTreeSet<ExtentId> = self.sealed.iter().copied().collect();
         assert_eq!(&seated, sealed, "the extents sealed in {number:?}");
-        if !matches!(self.phase, Phase::Closed { .. }) {
+        if !matches!(self.phase, Phase::Closed) {
             assert_eq!(self.size, self.len, "{number:?}'s raw file, its data");
         }
     }
@@ -155,33 +161,30 @@ pub(crate) struct Segments<F> {
     closed_since: bool,
     /// fxdax: the segments whose framings are running, each of which ends itself (TASK-153.8).
     framing: BTreeSet<SegmentId>,
-    /// fxdax: the segments framed whose raw files are still there, each with the last commit its
-    /// footer names: a raw file goes once that commit is durable, so that an opening finding it not
-    /// durable frames the segment again from it ([`close_left_open`], TASK-92.16).
+    /// fxdax: the segments framed whose raw files and logs are still there, each with the last
+    /// commit its footer names: they go once that commit is durable, so that an opening finding it
+    /// not durable closes the segment again from them (`wal::recover`, TASK-92.16, TASK-165.9).
     raw: Vec<(u64, SegmentId)>,
 }
 
-/// A segment the branch let go of, no extent being in it any more: its footer is the branch's
-/// history, until a checkpoint covers it, if the branch closed it since it was opened, after
-/// commit `last`; and the bytes of its data. fxdax: and its key in the bucket, if acknowledged
-/// there, whose object its file is, which goes into the host's cache (TASK-165.8).
-pub(crate) struct Reaped {
-    pub number: SegmentId,
-    pub last: Option<u64>,
-    pub len: u64,
-    pub acknowledged: Option<String>,
+/// A segment the branch let go of, no extent being in it any more: set aside, its raw file going;
+/// or fxdax: acknowledged in the bucket, its key there if its file is the object there, which goes
+/// into the host's cache (TASK-165.8).
+pub(crate) enum Reaped {
+    Retired(SegmentId),
+    Acknowledged(SegmentId, Option<String>),
 }
 
 impl<F: File> Segments<F> {
-    /// The segments of `branch`, opened as of commit `epoch`, holding `tracked`, the bytes of
-    /// extents' data each holds, whose files must be there; and another, open, past whatever the
-    /// branch's last one holds, whose file is made durable. At most `open_files` of their files
-    /// stay open between reads.
+    /// The segments of `branch`, opened as of commit `epoch`: those of its write-ahead log,
+    /// `tracked`, each with the bytes of extents' data it holds, whose files must be there; and
+    /// another, open, `next`, past them, whose raw file and log are made, their entries durable.
+    /// Its footer, and those after it, `chain` stamps. At most `open_files` of their files stay
+    /// open between reads.
     pub fn open<D: Dir<File = F>>(
         dir: &D,
-        branch: u64,
-        tracked: BTreeMap<SegmentId, u64>,
-        epoch: u64,
+        (branch, tracked): (u64, BTreeMap<SegmentId, u64>),
+        (epoch, next, chain): (u64, u64, Chain),
         open_files: usize,
     ) -> Result<Self, Error> {
         let mut segments = BTreeMap::new();
@@ -192,20 +195,19 @@ impl<F: File> Segments<F> {
             // fxdax: its trailer and table, a block, not its footer (TASK-92.16).
             let parts =
                 read_parts(&file)?.ok_or_else(|| anyhow!("{path} is not a whole framed file"))?;
-            let closed = Phase::Closed { last: None };
             let segment = Segment {
                 len: parts.frame.data_len,
                 size: parts.frame.size(),
-                ..Segment::new(closed, live)
+                ..Segment::new(Phase::Closed, live)
             };
             segments.insert(id, segment);
         }
-        // Writes go to a new segment, past whatever the branch's last one holds.
-        let own = list_numbers(dir, &branch_dir(SEGMENTS, branch))?;
-        let open = SegmentId { branch, number: own.last().map_or(0, |last| last + 1) };
-        let file = Arc::new(dir.create(&open_segment_path(open), true)?);
-        dir.sync_dir(&branch_dir(OPEN_SEGMENTS, branch))?;
-        segments.insert(open, Segment::new(Phase::Open(file), 0));
+        let open = SegmentId { branch, number: next };
+        let phase = create_open(dir, open)?;
+        for kind in [OPEN_SEGMENTS, LOGS] {
+            dir.sync_dir(&branch_dir(kind, branch))?;
+        }
+        segments.insert(open, Segment::new(phase, 0));
         Ok(Self {
             tracked: segments,
             empty: BTreeSet::new(),
@@ -214,7 +216,7 @@ impl<F: File> Segments<F> {
             close_wanted: false,
             forking: Vec::new(),
             window: Window::starting(branch, epoch + 1),
-            chain: Chain::new(branch, 0, open.number, None, 0),
+            chain,
             files: Files::new(open_files),
             written: false,
             closed_since: false,
@@ -256,7 +258,7 @@ impl<F: File> Segments<F> {
     pub fn reserve(&mut self, len: u64) -> (SegmentId, Arc<F>, u64) {
         let open = self.open;
         self.change(open, |segment| {
-            let Phase::Open(file) = &segment.phase else {
+            let Phase::Open { raw: file, .. } = &segment.phase else {
                 unreachable!("the open segment is open")
             };
             let (file, at) = (file.clone(), segment.len);
@@ -292,7 +294,7 @@ impl<F: File> Segments<F> {
     pub fn append(&mut self, len: u64) -> (Arc<F>, u64) {
         self.written = true;
         self.change(self.open, |segment| {
-            let Phase::Open(file) = &segment.phase else {
+            let Phase::Open { raw: file, .. } = &segment.phase else {
                 unreachable!("the open segment is open")
             };
             let (file, at) = (file.clone(), segment.len);
@@ -303,29 +305,18 @@ impl<F: File> Segments<F> {
         })
     }
 
-    /// fxdax: segment `number`, closed, is acknowledged in the bucket, at `key`, its object there
-    /// (TASK-165.8): the extents sealed in it, which it returns, are read there from now on, and it
-    /// leaves the store once no extent's data is in it here, the next reaping letting it go as
-    /// such ([`Reaped::acknowledged`]).
-    pub fn acknowledge(&mut self, number: SegmentId, key: &str) -> Vec<ExtentId> {
+    /// fxdax: segment `number`, closed, is acknowledged in the bucket, its object there at `key`
+    /// if its framed file is that object (TASK-165.8): the extents sealed in it, which it returns,
+    /// are read there from now on, and it leaves the store once no extent's data is in it here,
+    /// the next reaping letting it go as such ([`Reaped::Acknowledged`]).
+    pub fn acknowledge(&mut self, number: SegmentId, key: Option<&str>) -> Vec<ExtentId> {
         if !self.tracked.contains_key(&number) {
             return Vec::new();
         }
         self.change(number, |segment| {
-            segment.acknowledged = Some(key.to_owned());
+            segment.acknowledged = Some(key.map(str::to_owned));
             segment.sealed.iter().copied().collect()
         })
-    }
-
-    /// fxdax: lets go of the segments acknowledged in the bucket no extent's data is in here any
-    /// more, which no write is in progress in, and returns their framed files' paths, with their
-    /// keys there: they leave the store for the host's cache (TASK-165.8).
-    pub fn reap_acknowledged(&mut self) -> Vec<(String, String)> {
-        let acknowledged = |number: &&SegmentId| self.tracked[*number].acknowledged.is_some();
-        let gone: BTreeSet<SegmentId> = self.empty.iter().filter(acknowledged).copied().collect();
-        (self.reap(|number| !gone.contains(&number)).into_iter())
-            .map(|reaped| (segment_path(reaped.number), reaped.acknowledged.unwrap()))
-            .collect()
     }
 
     /// fxdax: `extent`, sealed, holds `data` from now on: in the segments, if in any, which say so
@@ -375,6 +366,26 @@ impl<F: File> Segments<F> {
         self.window.first <= epoch
     }
 
+    /// fxdax: the log of the open segment's commits (TASK-165.9).
+    pub fn open_log(&self) -> Arc<F> {
+        let Phase::Open { log, .. } = &self.tracked[&self.open].phase else {
+            unreachable!("the open segment is open")
+        };
+        log.clone()
+    }
+
+    /// fxdax: the bytes of segment `number`'s data.
+    pub fn len(&self, number: SegmentId) -> u64 {
+        self.tracked.get(&number).map_or(0, |segment| segment.len)
+    }
+
+    /// fxdax: the bytes of the extents the open segment's commits sealed, in its data and in
+    /// files of their own: what of the write-ahead log it holds, which closing it uploads, and not
+    /// the writes no commit sealed yet, which no upload takes (TASK-165.9).
+    pub fn open_bytes(&self) -> u64 {
+        self.window.sealed.values().map(|(_, len)| len).sum()
+    }
+
     /// Records commit `epoch`, which changed `changes`, and set its root and the branch's
     /// capacity, if it set them, `extents` the branch's extents as of it, its extents sealed in
     /// the open segment or in files of their own, `next_sequence` the branch's next sequence
@@ -406,12 +417,6 @@ impl<F: File> Segments<F> {
         open.writers == 0 && (open.len >= options.segment_size || old || self.close_wanted)
     }
 
-    /// fxdax: stamps the footers with `chain` from now on, an uploader's writer's
-    /// ([`Store::upload`](crate::Store::upload)).
-    pub fn set_chain(&mut self, chain: Chain) {
-        self.chain = chain;
-    }
-
     /// Closes the open segment, after commit `epoch`, the branch's next sequence number
     /// `next_sequence`: its footer, of what the commits since it opened changed, stamped by the
     /// chain, after its data, to be framed in a file of its own, as object storage keeps segments;
@@ -424,13 +429,14 @@ impl<F: File> Segments<F> {
     ) -> Result<Unframed<F>, Error> {
         let number = self.open;
         let next = SegmentId { number: number.number + 1, ..number };
-        let file = Arc::new(dir.create(&open_segment_path(next), true)?);
+        let phase = create_open(dir, next)?;
         // Nothing fails from here on.
-        let window = std::mem::replace(&mut self.window, Window::starting(number.branch, epoch + 1));
+        let window =
+            std::mem::replace(&mut self.window, Window::starting(number.branch, epoch + 1));
         let footer = self.chain.close(window.contents(vec![self.chain.tag(epoch)], next_sequence));
         let segment = self.tracked.get_mut(&number).unwrap();
         let raw = match &segment.phase {
-            Phase::Open(raw) => raw.clone(),
+            Phase::Open { raw, .. } => raw.clone(),
             _ => unreachable!("the open segment is open"),
         };
         segment.phase = Phase::Framing { raw: raw.clone(), last: epoch };
@@ -438,7 +444,7 @@ impl<F: File> Segments<F> {
         // What was written to it since the last commit is durable once framed: its framing syncs
         // its framed file, which the flush of the commit that closed it waits for.
         self.written = false;
-        self.tracked.insert(next, Segment::new(Phase::Open(file), 0));
+        self.tracked.insert(next, Segment::new(phase, 0));
         self.open = next;
         self.opened = Instant::now();
         self.close_wanted = false;
@@ -454,14 +460,19 @@ impl<F: File> Segments<F> {
     /// the chain, as this one, which has none, would have. Nothing changes if it fails.
     pub fn retire<D: Dir<File = F>>(&mut self, dir: &D) -> Result<(), Error> {
         let number = self.open;
-        debug_assert!(self.window.is_empty(), "{number:?}, set aside, holds a commit's data or a fork");
+        debug_assert!(
+            self.window.is_empty(),
+            "{number:?}, set aside, holds a commit's data or a fork"
+        );
         let next = SegmentId { number: number.number + 1, ..number };
-        let file = Arc::new(dir.create(&open_segment_path(next), true)?);
+        let phase = create_open(dir, next)?;
         let segment = self.tracked.get_mut(&number).unwrap();
-        let Phase::Open(raw) = &segment.phase else { unreachable!("the open segment is open") };
+        let Phase::Open { raw, .. } = &segment.phase else {
+            unreachable!("the open segment is open")
+        };
         segment.phase = Phase::Retired(raw.clone());
         self.note(number);
-        self.tracked.insert(next, Segment::new(Phase::Open(file), 0));
+        self.tracked.insert(next, Segment::new(phase, 0));
         self.open = next;
         self.opened = Instant::now();
         // What it holds, the next commit copies to the open segment: nothing of it is to be
@@ -480,7 +491,7 @@ impl<F: File> Segments<F> {
                 unreachable!("{number:?}, framed, was being framed")
             };
             segment.size = framed.size();
-            segment.phase = Phase::Closed { last: Some(last) };
+            segment.phase = Phase::Closed;
             closed = last;
         });
         self.files.insert(number, framed);
@@ -533,14 +544,16 @@ impl<F: File> Segments<F> {
         self.framing.iter().filter(through).copied().collect()
     }
 
-    /// fxdax: the paths of the raw files of the segments framed whose footers name no commit past
-    /// `durable`, the last durable, which may go: an opening reads their framed files (TASK-153.8).
+    /// fxdax: the paths of the raw files, and logs, of the segments framed whose footers name no
+    /// commit past `durable`, the last durable, which may go: an opening reads their framed files
+    /// (TASK-153.8, TASK-165.9).
     pub fn raw(&mut self, durable: u64) -> Vec<String> {
         let (going, staying) = std::mem::take(&mut self.raw)
             .into_iter()
             .partition::<Vec<_>, _>(|(last, _)| *last <= durable);
         self.raw = staying;
-        going.into_iter().map(|(_, number)| open_segment_path(number)).collect()
+        let paths = |(_, number)| [open_segment_path(number), log_path(number)];
+        going.into_iter().flat_map(paths).collect()
     }
 
     /// The file of segment `number`, opened in `dir` if it isn't: the raw file
@@ -552,13 +565,13 @@ impl<F: File> Segments<F> {
     ) -> Result<Source<F>, Error> {
         let segment = self.tracked.get(&number).ok_or_else(|| anyhow!("no segment {number:?}"))?;
         match &segment.phase {
-            Phase::Open(raw)
+            Phase::Open { raw, .. }
             | Phase::Framing { raw, .. }
             | Phase::Failed { raw, .. }
             | Phase::Retired(raw) => {
                 return Ok(Source::Raw(raw.clone()));
             }
-            Phase::Closed { .. } => {}
+            Phase::Closed => {}
         }
         if let Some(framed) = self.files.get(number) {
             return Ok(Source::Framed(framed));
@@ -571,37 +584,34 @@ impl<F: File> Segments<F> {
     /// Adds to `syncs` what the next commit's flush syncs of the segments': the open segment's
     /// file, if it was written since the last commit, keeping its pages in the host's page cache,
     /// as they go with it once it is framed and removed (TASK-92.23); and if one closed since, the
-    /// directories of segments and of open ones.
+    /// directories of segments, of open ones and of their logs.
     pub fn take_syncs(&mut self, syncs: &mut Syncs<F>) {
         if std::mem::take(&mut self.written) {
-            let Phase::Open(file) = &self.tracked[&self.open].phase else {
+            let Phase::Open { raw, .. } = &self.tracked[&self.open].phase else {
                 unreachable!("the open segment is open")
             };
-            syncs.cached(file.clone());
+            syncs.cached(raw.clone());
         }
         if std::mem::take(&mut self.closed_since) {
-            for kind in [SEGMENTS, OPEN_SEGMENTS] {
+            for kind in [SEGMENTS, OPEN_SEGMENTS, LOGS] {
                 syncs.dir(branch_dir(kind, self.open.branch));
             }
         }
     }
 
-    /// Lets go of the segments no extent's data is in any more, closed or set aside, which no
-    /// write is in progress in, but those `keep` says to keep, and returns them.
-    pub fn reap(&mut self, keep: impl Fn(SegmentId) -> bool) -> Vec<Reaped> {
-        let dead: Vec<SegmentId> =
-            self.empty.iter().filter(|number| !keep(**number)).copied().collect();
+    /// Lets go of the segments no extent's data is in any more, set aside, or closed and
+    /// acknowledged in the bucket, which no write is in progress in, and returns them.
+    pub fn reap(&mut self) -> Vec<Reaped> {
+        let dead: Vec<SegmentId> = self.empty.iter().copied().collect();
         let mut reaped = Vec::with_capacity(dead.len());
         for number in dead {
             self.empty.remove(&number);
             let segment = self.tracked.remove(&number).unwrap();
             self.files.remove(number);
-            let last = match segment.phase {
-                Phase::Closed { last } => last,
-                _ => None,
-            };
-            let acknowledged = segment.acknowledged;
-            reaped.push(Reaped { number, last, len: segment.len, acknowledged });
+            reaped.push(match segment.acknowledged {
+                Some(key) => Reaped::Acknowledged(number, key),
+                None => Reaped::Retired(number),
+            });
         }
         reaped
     }
@@ -692,8 +702,17 @@ impl<F: File> Unframed<F> {
 
     /// Frames it in its framed file in `dir`, made durable with its entry and the directory of
     /// raw files', and returns that: the commit that closed it, whose data is in it, is durable
-    /// once it is, and its raw file may go once the commits its footer names are too.
+    /// once it is, and its raw file may go once the commits its footer names are too. fxdax: the
+    /// files of the extents stored on their own its footer names are durable first, so that a
+    /// framed file a crash leaves whole names none torn (TASK-165.9).
     pub fn frame<D: Dir<File = F>>(self, dir: &D) -> Result<Arc<Framed<F>>, Error> {
+        let mut own = self.footer.own().peekable();
+        if own.peek().is_some() {
+            for (extent, _) in own {
+                dir.open(&extent_path(extent), true)?.sync()?;
+            }
+            dir.sync_dir(&branch_dir(EXTENTS, self.number.branch))?;
+        }
         let footer = self.footer.encode();
         let framed = frame_segment(dir, &segment_path(self.number), &self.raw, self.len, &footer)?;
         framed.file.sync()?;
@@ -748,7 +767,6 @@ fn commit_contents(
         match change {
             Change::Write { extent, .. }
             | Change::WriteOwn { extent, .. }
-            | Change::Adopt { extent, .. }
             | Change::Move { extent, .. }
             | Change::MoveOwn { extent } => {
                 touched.insert(*extent);
@@ -824,10 +842,12 @@ impl Window {
             self.sealed.remove(extent);
             self.frees.insert(*extent);
         }
-        let own = commit.own.iter().map(|&(sequence, len)| {
-            (ExtentId::new(self.branch, sequence), (None, len))
-        });
-        let runs = commit.extents.iter().map(|&(extent, offset, len)| (extent, (Some(offset), len)));
+        let own = commit
+            .own
+            .iter()
+            .map(|&(sequence, len)| (ExtentId::new(self.branch, sequence), (None, len)));
+        let runs =
+            commit.extents.iter().map(|&(extent, offset, len)| (extent, (Some(offset), len)));
         for (extent, sealed) in runs.chain(own).collect::<Vec<_>>() {
             self.frees.remove(&extent);
             self.sealed.insert(extent, sealed);
@@ -863,6 +883,27 @@ impl Window {
     }
 }
 
+/// fxdax: the contents of a segment of `branch`'s whose commits' contents are `commits`, in order,
+/// as its footer names them: their last commit, and the largest next sequence number they name
+/// (TASK-165.9). The one fold of a segment's commits ([`Window`]), of a log of them as of the
+/// commits as they are made.
+pub(crate) fn fold(branch: u64, commits: &[Contents]) -> Contents {
+    let mut window = Window::starting(branch, 0);
+    for commit in commits {
+        window.fold(commit);
+    }
+    let last = commits.last().map_or(Vec::new(), |last| last.commits.clone());
+    let next_sequence = commits.iter().map(|commit| commit.next_sequence).max().unwrap_or(0);
+    window.contents(last, next_sequence)
+}
+
+/// fxdax: the phase of a new open segment, `segment`, whose raw file and log it makes in `dir`.
+fn create_open<D: Dir>(dir: &D, segment: SegmentId) -> Result<Phase<D::File>, Error> {
+    let raw = Arc::new(dir.create(&open_segment_path(segment), true)?);
+    let log = Arc::new(dir.create(&log_path(segment), false)?);
+    Ok(Phase::Open { raw, log })
+}
+
 /// The store's epoch of the last commit of the segment whose footer is `footer`.
 pub(crate) fn footer_last(footer: &Footer) -> u64 {
     footer.contents.commits.last().map_or(0, |tag| epoch_of(*tag))
@@ -875,62 +916,6 @@ pub(crate) fn segment_footer(bytes: &[u8]) -> Result<Option<Footer>, Error> {
         return Ok(None);
     }
     Ok(Some(Footer::decode(bytes).context("a segment's footer")?))
-}
-
-/// Closes `branch`'s segments left open, whose data its state as of `epoch` may need, and those
-/// closed whose footers name commits after it, which were not durable: framed anew, with no
-/// footer, from their raw files, which go once that is durable, so that a crash meanwhile leaves
-/// the next opening a raw file whole. fxdax: a closed segment's raw file goes only once its framed
-/// file and the commits its footer names are durable, with a commit after them (TASK-92.16): so
-/// one whose footer names a commit not durable has its raw file still, holding what the durable
-/// commits wrote to it, which their flushes synced; what its framed file holds besides is of
-/// commits lost. And one whose footer names durable commits alone, closed between commits, may
-/// have a framed file torn, or not durable, a crash, or a failure, having stopped its framing
-/// before its sync: it is framed anew unless whole, and made durable before its raw file goes
-/// (TASK-79.33). Those whose raw files are gone it reads not.
-pub(crate) fn close_left_open<D: Dir>(dir: &D, branch: u64, epoch: u64) -> Result<(), Error> {
-    for number in list_numbers(dir, &branch_dir(OPEN_SEGMENTS, branch))? {
-        let segment = SegmentId { branch, number };
-        let (path, raw_path) = (segment_path(segment), open_segment_path(segment));
-        // Closed for good if its framed file is whole, in its data too, its footer naming durable
-        // commits alone: by a commit made durable, or a closing between commits
-        // ([`Store::close_now`]). One an opening before framed again, with no footer, is framed
-        // again, its raw file being there still.
-        let closed = match dir.open(&path, true) {
-            Ok(file) => {
-                let durable = read_frame(&file)?.is_some_and(|(_, footer)| {
-                    matches!(segment_footer(&footer),
-                        Ok(Some(footer)) if footer_last(&footer) <= epoch)
-                });
-                let whole = durable && extent_frame::data(&read_whole(&file)?).is_ok();
-                if whole {
-                    file.sync()?;
-                }
-                whole
-            }
-            Err(err) if not_found(&err) => false,
-            Err(err) => return Err(err.into()),
-        };
-        if !closed {
-            let raw = dir.open(&raw_path, true)?;
-            let mut data = Aligned::new(raw.size()? as usize);
-            raw.read_cached(data.as_mut_slice(), 0)?;
-            match dir.remove(&path) {
-                Err(err) if !not_found(&err) => return Err(err.into()),
-                _ => {}
-            }
-            let file = dir.create(&path, true)?;
-            file.write_at(&extent_frame::framed(data.as_slice(), &[]), 0)?;
-            file.sync()?;
-        }
-        dir.sync_dir(&branch_dir(SEGMENTS, branch))?;
-        dir.barrier()?;
-        match dir.remove(&raw_path) {
-            Err(err) if !not_found(&err) => return Err(err.into()),
-            _ => {}
-        }
-    }
-    Ok(())
 }
 
 /// fxdax: the segments this process's stores closed, and the nanoseconds closing them took.
@@ -951,6 +936,7 @@ pub fn segment_closes() -> (u64, u64) {
 mod tests {
     use super::*;
     use crate::dir::read_file;
+    use crate::framed::read_whole;
     use crate::layout::create_branch_dirs;
     use crate::{MemDir, MemFile};
 
@@ -964,7 +950,8 @@ mod tests {
     /// The segments of a branch with none closed, `open_files` of whose files stay open.
     fn opened(dir: &MemDir, open_files: usize) -> Segments<MemFile> {
         create_branch_dirs(dir, BRANCH).unwrap();
-        Segments::open(dir, BRANCH, BTreeMap::new(), 0, open_files).unwrap()
+        let chain = Chain::new(BRANCH, 0, 0, None, 0);
+        Segments::open(dir, (BRANCH, BTreeMap::new()), (0, 0, chain), open_files).unwrap()
     }
 
     /// Writes a block of `byte`s to the open segment, which holds it, and returns its piece.
@@ -1037,18 +1024,18 @@ mod tests {
         drop(unframed);
     }
 
-    /// Footers are numbered as their segments are, each following the last closed since the
-    /// branch was opened; given a writer's chain, numbered on from it, each following the one
-    /// before, for its writer, the next sequence number they name its floor at least.
+    /// Footers are stamped by the writer's chain the segments opened with, numbered on from it,
+    /// each following the one before, of its writer's epoch, the next sequence number they name
+    /// its floor at least; the segments are numbered on from the number they opened with, whatever
+    /// the chain's (TASK-165.9).
     #[test]
-    fn footers_chain_from_the_segments_numbers_then_their_writers() {
+    fn footers_chain_from_their_writers_chain() {
         use extent_frame::segment::tag;
         let dir = MemDir::new();
         create_branch_dirs(&dir, BRANCH).unwrap();
-        for number in [0, 1] {
-            dir.create(&segment_path(segment(number)), true).unwrap();
-        }
-        let mut segments = Segments::open(&dir, BRANCH, BTreeMap::new(), 0, 64).unwrap();
+        let chain = Chain::new(BRANCH, 3, 5, Some((4, 3)), 100);
+        let segments = Segments::open(&dir, (BRANCH, BTreeMap::new()), (0, 2, chain), 64);
+        let mut segments = segments.unwrap();
         assert_eq!(segments.open_segment(), segment(2));
         let close = |segments: &mut Segments<MemFile>, epoch| {
             let footer = segments.close(&dir, epoch, 7).unwrap().footer;
@@ -1060,17 +1047,16 @@ mod tests {
                 footer.contents.next_sequence,
             )
         };
-        assert_eq!(close(&mut segments, 1), (2, 0, None, vec![tag(0, 1)], 7));
-        assert_eq!(close(&mut segments, 2), (3, 0, Some((2, 0)), vec![tag(0, 2)], 7));
-        segments.set_chain(Chain::new(BRANCH, 3, 5, Some((4, 3)), 100));
         assert_eq!(close(&mut segments, 3), (5, 3, Some((4, 3)), vec![tag(3, 3)], 100));
         assert_eq!(close(&mut segments, 4), (6, 3, Some((5, 3)), vec![tag(3, 4)], 100));
+        assert_eq!(segments.open_segment(), segment(4));
     }
 
-    /// Reaping lets go of the closed segments no extent's data is in any more, which no write is in
-    /// progress in: not the open segment, nor one being framed, nor those kept.
+    /// Reaping lets go of the closed segments acknowledged in the bucket no extent's data is in any
+    /// more, which no write is in progress in: not the open segment, nor one being framed, nor one
+    /// the write-ahead log holds, not yet acknowledged (TASK-165.9).
     #[test]
-    fn reaping_keeps_open_framing_and_held_segments() {
+    fn reaping_keeps_open_framing_and_unacknowledged_segments() {
         let dir = MemDir::new();
         let mut segments = opened(&dir, 64);
         // Written, its write abandoned: no extent is in it.
@@ -1083,24 +1069,29 @@ mod tests {
         // A write in progress, which a closing between commits did not wait for.
         let (writing, ..) = segments.reserve(BLOCK);
         let unwritten = segments.close(&dir, 3, 0).unwrap();
-        let reap = |segments: &mut Segments<MemFile>, keep: &[SegmentId]| {
-            let reaped = segments.reap(|number| keep.contains(&number));
-            reaped.into_iter().map(|reaped| (reaped.number, reaped.last, reaped.len)).collect()
+        let reap = |segments: &mut Segments<MemFile>| {
+            let reaped = segments.reap().into_iter();
+            reaped
+                .map(|reaped| match reaped {
+                    Reaped::Acknowledged(number, key) => (number, key),
+                    Reaped::Retired(number) => panic!("{number:?} set aside"),
+                })
+                .collect::<Vec<_>>()
         };
-        // Being framed, they stay.
-        let reaped: Vec<_> = reap(&mut segments, &[]);
-        assert_eq!(reaped, []);
         for (number, unframed) in [(0, empty), (1, holding), (2, unwritten)] {
             segments.framed(segment(number), unframed.frame(&dir).unwrap());
         }
-        let reaped: Vec<_> = reap(&mut segments, &[segment(0)]);
-        assert_eq!(reaped, []);
-        let reaped: Vec<_> = reap(&mut segments, &[]);
-        assert_eq!(reaped, [(segment(0), Some(1), BLOCK)]);
+        // Not acknowledged, they stay.
+        assert_eq!(reap(&mut segments), []);
+        for number in 0..3 {
+            let key = (number != 1).then_some("key");
+            segments.acknowledge(segment(number), key);
+        }
+        assert_eq!(reap(&mut segments), [(segment(0), Some("key".to_owned()))]);
         segments.let_go(&held);
         segments.dropped(writing, BLOCK);
-        let reaped: Vec<_> = reap(&mut segments, &[]);
-        assert_eq!(reaped, [(segment(1), Some(2), BLOCK), (segment(2), Some(3), BLOCK)]);
+        let reaped = reap(&mut segments);
+        assert_eq!(reaped, [(segment(1), None), (segment(2), Some("key".to_owned()))]);
         for number in 0..3 {
             assert!(!segments.tracked.contains_key(&segment(number)), "{number} tracked still");
         }
@@ -1124,12 +1115,15 @@ mod tests {
         assert_eq!(write(&mut segments, 2).segment, segment(1));
         // Its phase holds its raw file open, as this does.
         assert_eq!(Arc::strong_count(&raw), 2);
-        assert_eq!(segments.reap(|_| false).len(), 0);
+        assert_eq!(segments.reap().len(), 0);
         segments.let_go(&first);
-        let reaped: Vec<_> = (segments.reap(|_| false).into_iter())
-            .map(|reaped| (reaped.number, reaped.last, reaped.len))
+        let reaped: Vec<_> = (segments.reap().into_iter())
+            .map(|reaped| match reaped {
+                Reaped::Retired(number) => number,
+                Reaped::Acknowledged(number, _) => panic!("{number:?} acknowledged"),
+            })
             .collect();
-        assert_eq!(reaped, [(segment(0), None, BLOCK)]);
+        assert_eq!(reaped, [segment(0)]);
         assert_eq!(Arc::strong_count(&raw), 1);
     }
 
@@ -1152,7 +1146,11 @@ mod tests {
         assert_eq!(syncs(&mut segments), ((0, 0), vec![]));
         write(&mut segments, 2);
         segments.close(&dir, 1, 0).unwrap();
-        let dirs = vec![branch_dir(OPEN_SEGMENTS, BRANCH), branch_dir(SEGMENTS, BRANCH)];
+        let dirs = vec![
+            branch_dir(LOGS, BRANCH),
+            branch_dir(OPEN_SEGMENTS, BRANCH),
+            branch_dir(SEGMENTS, BRANCH),
+        ];
         assert_eq!(syncs(&mut segments), ((0, 0), dirs));
         segments.append(BLOCK);
         assert_eq!(syncs(&mut segments), ((0, 1), vec![]));

@@ -2,169 +2,18 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-//! fxdax's own: a store's branch kept in object storage (backlog doc-7, Uploads; TASK-28.5).
-//!
-//! An uploader takes the branch's lease, uploads what the store holds that the branch doesn't, a
-//! segment of one commit closed on its writer's chain (`extent_frame::segment::Chain`), and then,
-//! behind the store, the segments the store closes, their footers stamped by the chain from there
-//! on, as they are, each with the extents of its own it names first: a closed local segment is the
-//! object (doc-7, decision 1). The store closes a segment when it fills or ages, at a fork, and
-//! when the uploader asks, within an interval of the commits it makes durable. Once a segment is
-//! acknowledged, the data of the extents its commits freed may go from the store, and commits
-//! waiting to be durable (`COMMIT_DURABLE`) complete.
-//!
-//! A store of a point has no uploader's work to do (doc-7, Points): a point's state never changes,
-//! so that attaching one takes no lease, recovers its state from the bucket, and takes it into the
-//! store if it holds nothing, and nothing the store does goes to the bucket but its forks' records
-//! ([`Remote::forked`], `extent_remote::branch::fork_point`). Any number of hosts hold one at once,
-//! each forking it, and none stale.
-//!
-//! The segments uploading, and the store's directory's marker naming them, are kept together
-//! ([`InFlight`]): the marker names every segment that may land, before its upload goes, so that
-//! the store opened again knows the branch's last commit for its own. A fork the store makes is a
-//! fork of the branch once the segment its commit ends is acknowledged, which gives the child its
-//! record, and checkpointed ([`Remote::forked`]): only then is the child's store made, its state
-//! taken from the bucket ([`take_branch`]), so that no store here holds a child the bucket has no
-//! record of (TASK-165.7). A fork that fails before is deleted in the bucket, as the fork's alone
-//! ([`Remote::unfork`]): one whose host crashed stands, its segment landing, as the bucket's
-//! protocol has it, or never was, the disk lost.
-//!
-//! What a host holds to upload is bounded, however far behind its stores are (TASK-79.19): a
-//! store's segments upload [`IN_FLIGHT`] at once, the rest staying in the store meanwhile, each
-//! object read only as its upload goes, within a budget the host's stores share ([`UPLOADS`]); and
-//! what a store holds that its branch doesn't goes in segments of a [`BATCH`] at most.
-//!
-//! Every failure of its writer's stops the uploader for good, and the commits waiting for uploads
-//! fail with it from then on: its writer fenced, its branch deleted, or an earlier writer's segment
-//! found where its next goes (`extent_remote::Error::Displaced`), which leaves the segments the
-//! store closed numbered for a place the branch no longer has. Only attaching the store anew takes
-//! the branch again.
+//! fxdax's own: what a host keeps its stores' branches in object storage with (backlog doc-7;
+//! TASK-28.5): its configuration ([`Host`], [`host_token`]), the runtime its stores' uploaders and
+//! fetches run on and their budgets ([`runtime`], [`Fetcher`]), and the errno of each failure
+//! ([`errno`]). The uploader is extent_store's (`extent_store::upload`, TASK-165.9).
 
-use crate::faults::failpoint;
-use event_listener::{Event, Listener as _};
-use extent_remote::batch;
 use extent_remote::cache::Cache;
 use extent_remote::fetch::{self, Budget, Limits, Priority};
-use extent_remote::layout::{Child, Footer, Location, Origin, epoch_of};
-use extent_remote::record::{Kind, Record};
+use extent_remote::layout::Location;
 use extent_remote::store::Store as Bucket;
-use extent_remote::{Body, Objects, State, Writer, branch};
-use extent_store::{File as _, HostDir, HostFile, Snapshot, Store, read_object};
-use futures::future::{BoxFuture, Either, FutureExt as _};
-use futures::stream::FuturesOrdered;
-use futures::{StreamExt as _, TryStreamExt as _};
-use std::collections::{BTreeSet, VecDeque};
-use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime};
+use extent_store::upload::{Failure, Runtime, UPLOAD_BYTES};
+use std::sync::Arc;
 use storage_device::ExtentId;
-
-/// The size from which an extent is stored on its own (doc-7).
-const LARGE: u64 = 4 << 20;
-
-/// How many of a store's segments upload at once: as many of a segment's size ([`BATCH`]) as the
-/// host's uploads may hold at once ([`UPLOAD_BYTES`]), so that a store catching up uploads as many
-/// at once as the host's budget lets it, about ten keeping 1 GB/s going with PUTs of 0.35 s, and
-/// holds no more of its segments' files open for them (TASK-79.19).
-const IN_FLIGHT: usize = (UPLOAD_BYTES / BATCH) as usize;
-
-/// The most bytes of extents a segment of what a store holds that its branch doesn't holds, those
-/// stored on their own included, but for one extent alone that is more: a store's segment's size
-/// (`extent_store::Options::segment_size`).
-const BATCH: u64 = 32 << 20;
-
-/// How many segments go between checkpoints.
-pub(crate) const CHECKPOINT_EVERY: u64 = 64;
-
-/// The most bytes of objects a host's uploads hold at once ([`UPLOADS`]).
-const UPLOAD_BYTES: u64 = 512 << 20;
-
-/// The file in a store's directory that names the last commit of a branch of the store it uploaded,
-/// and those it is uploading ([`Marker`]): a branch whose last commit is none of them, another host
-/// moved on.
-fn marker(branch: u64) -> String {
-    format!("remote-{branch:016x}")
-}
-
-/// The file in a store's directory that holds the fencing token of its copy of a branch of it
-/// ([`place`]).
-fn fence(branch: u64) -> String {
-    format!("fence-{branch:016x}")
-}
-
-/// Writes `bytes` to the file `name` in the directory `dir`, durably, whole or not at all: to a new
-/// file of its own ([`write_new`]), then renamed over it, the directory synced. Of two writes at
-/// once, the one renamed last stays.
-fn write_durably(dir: &Path, name: &str, bytes: &[u8]) -> std::io::Result<()> {
-    let new = write_new(dir, name, bytes)?;
-    std::fs::rename(&new, dir.join(name)).inspect_err(|_| drop(std::fs::remove_file(&new)))?;
-    std::fs::File::open(dir)?.sync_all()
-}
-
-/// Writes `bytes` to a new file of the file `name`'s in the directory `dir` ([`new_file`]), synced,
-/// and returns its path: what goes in place of the file, whole ([`write_durably`]). It goes again
-/// if the write fails.
-fn write_new(dir: &Path, name: &str, bytes: &[u8]) -> std::io::Result<PathBuf> {
-    let new = dir.join(new_file(name));
-    let written = || -> std::io::Result<()> {
-        let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&new)?;
-        std::io::Write::write_all(&mut file, bytes)?;
-        file.sync_all()
-    };
-    written().inspect_err(|_| drop(std::fs::remove_file(&new)))?;
-    // Where a test has another writer of the file write it meanwhile (TASK-184).
-    fail::fail_point!("remote::written");
-    Ok(new)
-}
-
-/// The name of a new file of the file `name`'s ([`write_new`]): one of its own for each write, so
-/// that two writers of one file at once each write their own (TASK-184). A shared one, either
-/// truncated the other's or removed it from under its rename. What a crash leaves goes with the
-/// store's directory, the branch's alone (TASK-165.7).
-fn new_file(name: &str) -> String {
-    format!("{name}.new-{:016x}", rand::random::<u64>())
-}
-
-/// Places the store directory `dir`'s copy of `branch` (TASK-39.7): records, durably, the fencing
-/// token its writer takes the branch's lease with from then on, the boot ID of the placement it is,
-/// which a later placement's exceeds. A writer takes the lease only with a token as high as the
-/// last writer's: a placement cut off takes no branch back from the one after it. A copy never
-/// placed takes it with 0.
-pub(crate) fn place(dir: &Path, branch: u64, token: u64) -> std::io::Result<()> {
-    write_durably(dir, &fence(branch), format!("{token}\n").as_bytes())
-}
-
-/// Runs `future` to its end on a runtime of its own, as what is called from no runtime's task
-/// does.
-pub(crate) fn block_on<F: std::future::Future>(future: F) -> Result<F::Output, Failure> {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|err| Failure::local(err, "a runtime"))?;
-    Ok(runtime.block_on(future))
-}
-
-/// Deletes `branch` in `bucket` (`extent_remote::branch::delete`), as the placement whose fencing
-/// token is `token`: its writer stops at its next acknowledgement, no writer takes it again, and
-/// the collector reclaims what no other branch inherited from it, as its forks' branches live on
-/// (TASK-39.4). Deleting it again does nothing. A later placement's branch, whose token is higher,
-/// is not deleted (`extent_remote::Error::Stale`, TASK-45.1). A store's directory holds a branch
-/// only once the bucket has its record (TASK-165.7), so that the branch it names is its own.
-pub fn delete_branch(bucket: &Bucket, branch: u64, token: u64) -> Result<(), Failure> {
-    Ok(block_on(branch::delete(bucket, branch, rand::random(), token))??)
-}
-
-/// The fencing token of the copy of `branch` in the store directory `dir`: its placement's
-/// ([`place`]), if it was placed.
-pub(crate) fn placed_token(dir: &Path, branch: u64) -> Result<Option<u64>, Failure> {
-    let path = dir.join(fence(branch));
-    match std::fs::read_to_string(&path) {
-        Ok(text) => (text.trim().parse().map(Some))
-            .map_err(|err| Failure::local(err, path.display().to_string())),
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(err) => Err(Failure::local(err, format!("reading {}", path.display()))),
-    }
-}
 
 /// The fencing token of this host's placement, `FXDAX_EXTENTD_TOKEN`, which the system's control
 /// plane gives it, and which the copies of stores here that were never placed ([`place`]) take
@@ -181,9 +30,7 @@ pub fn host_token() -> Result<u64, Failure> {
         Ok(token) if !token.is_empty() => match token.parse() {
             Ok(0) => Err(missing()),
             Ok(token) => Ok(token),
-            Err(err) => {
-                Err(Failure::local(err, format!("FXDAX_EXTENTD_TOKEN {token:?}")))
-            }
+            Err(err) => Err(Failure::local(err, format!("FXDAX_EXTENTD_TOKEN {token:?}"))),
         },
         _ => Err(missing()),
     }
@@ -214,77 +61,29 @@ impl Host {
     }
 }
 
-/// Why uploading stopped, or a branch could not be uploaded to: the error as it was, typed, which
-/// [`Failure::errno`] maps to its errno, in the one place.
-#[derive(Clone, Debug, thiserror::Error)]
-pub enum Failure {
-    /// What object storage's protocol found of the branch, as `extent_remote` says it: another
-    /// writer took it (`Fenced`, `Displaced`), it was deleted, a later placement holds it
-    /// (`Stale`, TASK-39.7), another branch has a fork's child's ID (`ChildTaken`, TASK-79.82), or
-    /// what it needs is gone or corrupt.
-    #[error(transparent)]
-    Remote(#[from] extent_remote::Error),
-    /// The point a store is of was deleted: it forks no more, and its forks live on.
-    #[error("the point was deleted")]
-    PointDeleted,
-    /// This host's own: its files, a runtime, the uploader gone, as the error says.
-    #[error("{0:#}")]
-    Local(Arc<anyhow::Error>),
-}
-
-impl Failure {
-    /// This host's failure, saying `message`.
-    pub(crate) fn msg(message: impl std::fmt::Display + std::fmt::Debug + Send + Sync + 'static) -> Self {
-        Self::Local(Arc::new(anyhow::Error::msg(message)))
-    }
-
-    /// This host's failure of `what`, with `error`.
-    pub(crate) fn local(
-        error: impl std::error::Error + Send + Sync + 'static,
-        what: impl std::fmt::Display + Send + Sync + 'static,
-    ) -> Self {
-        Self::Local(Arc::new(anyhow::Error::new(error).context(what)))
-    }
-
-    /// The errno of the failure, as doc-4 and doc-7 have them: a branch this writer lost, to
-    /// another writer or deleted, or one nothing writes, is one the store takes no more commits for
-    /// (`EROFS`); one a later placement holds, which a placement cut off takes back no more, or
-    /// one another writer moved on from this host's write-ahead log, which the store opens no more
-    /// until `fxdaxctl take` drops it, `ESTALE`; a branch, or a point, gone, `ENOENT`; a fork's child's ID taken, `EEXIST`; a branch
-    /// of a newer format, `ENOTSUP`. None for what the store failed to read or write, here or in
-    /// object storage, which is the caller's `EIO`, logged.
-    pub(crate) fn errno(&self) -> Option<crate::Errno> {
-        use crate::Errno;
-        use extent_remote::Error;
-        match self {
-            Self::Remote(Error::Fenced | Error::Displaced | Error::Deleted | Error::Point) => {
-                Some(Errno::EROFS)
-            }
-            Self::Remote(Error::Stale | Error::Diverged) => Some(Errno::ESTALE),
-            Self::Remote(Error::NoBranch) | Self::PointDeleted => Some(Errno::ENOENT),
-            Self::Remote(Error::ChildTaken(_)) => Some(Errno::EEXIST),
-            // A branch of a newer format than this host reads, until it is upgraded (doc-11).
-            Self::Remote(Error::Format { .. }) => Some(Errno::ENOTSUP),
-            Self::Remote(Error::Lost(_) | Error::Corrupt(_) | Error::Read(_)) | Self::Local(_) => {
-                None
-            }
+/// The errno of `failure`, as doc-4 and doc-7 have them: a branch this writer lost, to another
+/// writer or deleted, or one nothing writes, is one the store takes no more commits for (`EROFS`);
+/// one a later placement holds, which a placement cut off takes back no more, or one another
+/// writer moved on from this host's write-ahead log, which the store opens no more until
+/// `fxdaxctl take` drops it, `ESTALE`; a branch, or a point, gone, `ENOENT`; a fork's child's ID
+/// taken, `EEXIST`; a branch of a newer format, `ENOTSUP`. None for what the store failed to read
+/// or write, here or in object storage, which is the caller's `EIO`, logged.
+pub(crate) fn errno(failure: &Failure) -> Option<crate::Errno> {
+    use crate::Errno;
+    use extent_remote::Error;
+    match failure {
+        Failure::Remote(Error::Fenced | Error::Displaced | Error::Deleted | Error::Point) => {
+            Some(Errno::EROFS)
         }
+        Failure::Remote(Error::Stale | Error::Diverged) => Some(Errno::ESTALE),
+        Failure::Remote(Error::NoBranch) | Failure::PointDeleted => Some(Errno::ENOENT),
+        Failure::Remote(Error::ChildTaken(_)) => Some(Errno::EEXIST),
+        // A branch of a newer format than this host reads, until it is upgraded (doc-11).
+        Failure::Remote(Error::Format { .. }) => Some(Errno::ENOTSUP),
+        Failure::Remote(Error::Lost(_) | Error::Corrupt(_) | Error::Read(_))
+        | Failure::Local(_) => None,
     }
 }
-
-/// Failures are the same as they say, this host's own as their errors' messages do.
-impl PartialEq for Failure {
-    fn eq(&self, other: &Self) -> bool {
-        match (self, other) {
-            (Self::Remote(error), Self::Remote(other)) => error == other,
-            (Self::PointDeleted, Self::PointDeleted) => true,
-            (Self::Local(error), Self::Local(other)) => format!("{error:#}") == format!("{other:#}"),
-            (Self::Remote(_) | Self::PointDeleted | Self::Local(_), _) => false,
-        }
-    }
-}
-
-impl Eq for Failure {}
 
 impl From<crate::faults::Failpoint> for Failure {
     fn from(failpoint: crate::faults::Failpoint) -> Self {
@@ -292,85 +91,16 @@ impl From<crate::faults::Failpoint> for Failure {
     }
 }
 
-impl From<anyhow::Error> for Failure {
-    fn from(error: anyhow::Error) -> Self {
-        Self::Local(Arc::new(error))
-    }
+/// The runtime the host's stores' uploaders run on, and the budget of their uploads.
+pub fn runtime() -> Runtime {
+    Runtime { handle: RUNTIME.handle().clone(), uploads: UPLOADS.clone() }
 }
-
-/// How an uploader uploads, and where a store's reads keep what they fetch.
-#[derive(Clone, Debug)]
-pub struct Options {
-    /// How long durable commits wait at most before they are uploaded.
-    pub interval: Duration,
-    /// How many commits may wait to be uploaded: the next waits, while object storage is out of
-    /// reach, rather than the lag grow without bound (doc-7, decision 3).
-    pub max_lag: u64,
-    /// How many bytes the commits waiting to be uploaded may have written, likewise: what the local
-    /// disk holds until uploaded.
-    pub max_lag_bytes: u64,
-    /// Where the parts of objects fetched are kept: the host's cache, which its stores share.
-    pub cache: Option<Arc<Cache>>,
-    /// The fencing token of a store's copy never placed ([`place`]): its host's placement's, as
-    /// [`host_token`] has it.
-    pub token: u64,
-}
-
-impl Default for Options {
-    fn default() -> Self {
-        Self {
-            interval: Duration::from_secs(1),
-            max_lag: 4096,
-            max_lag_bytes: 1 << 30,
-            cache: None,
-            token: 0,
-        }
-    }
-}
-
-/// fxdax: how many stores' uploaders run in this process ([`Remote`]): until each, its store closed,
-/// has uploaded what its store made durable, and stopped.
-static UPLOADERS: std::sync::LazyLock<tokio::sync::watch::Sender<usize>> =
-    std::sync::LazyLock::new(|| tokio::sync::watch::channel(0).0);
 
 /// fxdax: how many stores' uploaders run in this process, as it changes: what an extent daemon's
 /// drain waits to see none of (TASK-141.4): Linux's alone, as the daemon is.
 #[cfg(target_os = "linux")]
 pub(crate) fn uploaders() -> tokio::sync::watch::Receiver<usize> {
-    UPLOADERS.subscribe()
-}
-
-/// A store's uploader. Dropping it uploads what the store made durable, then stops.
-pub struct Remote {
-    shared: Arc<Shared>,
-    /// The bucket the store's branch is kept in.
-    bucket: Arc<Bucket>,
-    /// Says the uploader stopped, once it has.
-    stopped: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
-    /// fxdax: the store's directory, held taken for this process until the uploader stopped, last
-    /// of its fields to go: the store closes first, its last commit the uploader's to upload as it
-    /// stops, writing the branch's marker in the directory, which another process, a crash test's
-    /// copy, took once the store let it go (TASK-129).
-    _dir: extent_store::DirHold<HostDir>,
-}
-
-struct Shared {
-    store: Arc<Store<HostDir>>,
-    fetcher: Arc<Fetcher>,
-    /// The branch's writer, once it took the branch.
-    writer: std::sync::OnceLock<Arc<Writer<Bucket>>>,
-    /// The point the store is of, if it is one, once attached.
-    point: std::sync::OnceLock<Point>,
-    /// The origins of the forks of the segments the uploader took, by their children: what a fork
-    /// that fails deletes its child by (TASK-165.7).
-    forks: Mutex<std::collections::BTreeMap<u64, Origin>>,
-    progress: Mutex<Progress>,
-    /// Notified as the progress changes: what waits for uploads listens to it, blocking or not
-    /// (TASK-43.6).
-    changed: Event,
-    /// Wakes the uploader: a commit waits, or it is to stop.
-    wake: tokio::sync::Notify,
-    options: Options,
+    extent_store::upload::uploaders()
 }
 
 /// The GETs of extents' data a host has in flight: one connection to object storage gives roughly
@@ -404,25 +134,12 @@ static RUNTIME: std::sync::LazyLock<tokio::runtime::Runtime> = std::sync::LazyLo
         .expect("the remotes' runtime")
 });
 
-/// Runs `work`, which blocks on the store's disk, on the remotes' runtime: on its thread, which
-/// hands its other tasks to another meanwhile.
-#[allow(clippy::disallowed_methods, reason = "the work waits on the disk alone")]
-fn blocking<T>(work: impl FnOnce() -> T) -> T {
-    tokio::task::block_in_place(work)
-}
-
-/// Reads the extents a store holds whose data is in object storage ([`Store::adopt`]), at their
+/// Reads the extents a store holds whose data is in object storage (`extent_store::Store::adopt`), at their
 /// locations there, as the store names them, on the remotes' runtime, which their uploads use too,
 /// under the host's budget of GETs.
 pub struct Fetcher {
     runtime: tokio::runtime::Handle,
     parts: Arc<fetch::Fetcher<Bucket>>,
-}
-
-/// A point a store holds ([`Shared::start_point`]): its branch, and what its record names.
-struct Point {
-    branch: u64,
-    origin: Origin,
 }
 
 impl Fetcher {
@@ -453,993 +170,6 @@ impl Fetcher {
     }
 }
 
-#[derive(Default)]
-struct Progress {
-    /// The last epoch uploaded.
-    uploaded: u64,
-    /// The last epoch uploaded whose forks are made in object storage: their children have their
-    /// records, and a checkpoint at them, which their recovery starts from.
-    forked: u64,
-    /// Why uploading stopped, if it did.
-    failed: Option<Failure>,
-    /// Whether a commit waits to be uploaded: the next batch goes now.
-    wanted: bool,
-    /// How many commits waited for the lag to shrink.
-    stalls: u64,
-    /// The lowest sequence number the guest may mint: its writer's epoch's range (doc-7).
-    next_sequence: u64,
-    stop: bool,
-    /// The branch's lease, once its writer took it.
-    lease: Option<Lease>,
-    /// The store's latest commits not uploaded, as the uploader saw them, and when it did: the
-    /// first is when the oldest commit waiting was seen first (TASK-50.5).
-    seen: std::collections::VecDeque<(u64, SystemTime)>,
-}
-
-/// A branch's lease, as its writer took it: with its placement's fencing token, of the epoch, and
-/// when.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Lease {
-    /// The fencing token of the placement that took it.
-    pub token: u64,
-    /// Its epoch: one more than the lease's before.
-    pub epoch: u64,
-    /// When the writer took it.
-    pub taken: SystemTime,
-}
-
-/// What a store's uploader has done, and has left to do (TASK-50.5).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct UploadStatus {
-    /// Its branch's lease, once taken.
-    pub lease: Option<Lease>,
-    /// The epoch of the store's latest commit uploaded.
-    pub uploaded: u64,
-    /// The bytes of its commits not yet uploaded.
-    pub pending_bytes: u64,
-    /// When the uploader first saw the oldest commit not yet uploaded, if one is not: within its
-    /// interval of when the commit was made.
-    pub oldest_pending: Option<SystemTime>,
-    /// How many commits waited for the lag to shrink ([`Remote::stalls`]).
-    pub stalls: u64,
-}
-
-impl Progress {
-    /// Notes the store's commits through `epoch` uploaded.
-    fn uploaded_through(&mut self, epoch: u64) {
-        self.uploaded = self.uploaded.max(epoch);
-        while self.seen.front().is_some_and(|(seen, _)| *seen <= self.uploaded) {
-            self.seen.pop_front();
-        }
-    }
-
-    /// Notes the forks of the store's commits through `epoch`, uploaded, made in object storage.
-    fn forked_through(&mut self, epoch: u64) {
-        self.forked = self.forked.max(epoch);
-    }
-}
-
-impl Remote {
-    /// Uploads `store`'s branch to `bucket` as `options` say, as `holder` of its lease, which must
-    /// differ from every other taking's. Returns once the branch holds what the store does.
-    pub fn attach(
-        store: Arc<Store<HostDir>>,
-        bucket: Arc<Bucket>,
-        holder: u64,
-        options: Options,
-    ) -> Result<Self, Failure> {
-        let fetcher = Fetcher::new(bucket.clone(), options.cache.clone());
-        let dir = store.hold_dir()?;
-        let shared = Arc::new(Shared {
-            store,
-            fetcher,
-            writer: Default::default(),
-            point: Default::default(),
-            forks: Default::default(),
-            progress: Mutex::new(Progress::default()),
-            changed: Event::new(),
-            wake: tokio::sync::Notify::new(),
-            options,
-        });
-        let (started, start) = std::sync::mpsc::channel();
-        let (stop, stopped) = std::sync::mpsc::channel();
-        let (uploader, uploads) = (shared.clone(), bucket.clone());
-        UPLOADERS.send_modify(|running| *running += 1);
-        // A task, not a thread of its own (TASK-34).
-        RUNTIME.spawn(async move {
-            uploader.run(uploads, holder, started).await;
-            // The store let go of before the uploader says it stopped: so that dropping this
-            // returns with nothing of the uploader's holding the store open, which the process may
-            // open again at once (`extent_store::Dir::claim` refusing a second opening), as
-            // extentd does a store an image it imported made (TASK-165.6).
-            drop(uploader);
-            UPLOADERS.send_modify(|running| *running -= 1);
-            let _ = stop.send(());
-            fail::fail_point!("remote::stopped");
-        });
-        match start.recv() {
-            Ok(Ok(())) => {
-                Ok(Self { shared, bucket, stopped: Mutex::new(Some(stopped)), _dir: dir })
-            }
-            Ok(Err(err)) => {
-                let _ = stopped.recv();
-                Err(err)
-            }
-            Err(_) => Err(Failure::msg("the uploader stopped")),
-        }
-    }
-
-    /// Waits until the commits up to `epoch` are uploaded and acknowledged.
-    pub fn wait_uploaded(&self, epoch: u64) -> Result<(), Failure> {
-        let shared = &self.shared;
-        if shared.ask(epoch, false)? {
-            return Ok(());
-        }
-        shared.wait(|progress| shared.reached(progress, epoch, false))
-    }
-
-    /// Returns once the commits up to `epoch` are uploaded and acknowledged, as
-    /// [`Remote::wait_uploaded`] does: a future, which holds no thread while it waits, as for a
-    /// sync that object storage keeps waiting (TASK-43.6).
-    pub fn uploaded(
-        &self,
-        epoch: u64,
-    ) -> impl std::future::Future<Output = Result<(), Failure>> + Send + use<> {
-        let shared = self.shared.clone();
-        async move {
-            if shared.ask(epoch, false)? {
-                return Ok(());
-            }
-            loop {
-                let changed = {
-                    let progress = shared.progress.lock().unwrap();
-                    if let Some(reached) = shared.reached(&progress, epoch, false) {
-                        return reached;
-                    }
-                    shared.changed.listen()
-                };
-                changed.await;
-            }
-        }
-    }
-
-    /// What the uploader has done, and has left to do.
-    pub fn status(&self) -> Result<UploadStatus, Failure> {
-        let shared = &self.shared;
-        shared.observe()?;
-        let pending_bytes = shared.store.unreleased_bytes()?;
-        let progress = shared.progress.lock().unwrap();
-        Ok(UploadStatus {
-            lease: progress.lease,
-            uploaded: progress.uploaded,
-            pending_bytes,
-            oldest_pending: progress.seen.front().map(|(_, seen)| *seen),
-            stalls: progress.stalls,
-        })
-    }
-
-    /// Waits, if more commits wait to be uploaded than `Options::max_lag`, with `epoch`'s, or they
-    /// wrote more than `Options::max_lag_bytes`, until they no longer do.
-    pub fn wait_lag(&self, epoch: u64) -> Result<(), Failure> {
-        let (shared, epoch) = (&self.shared, epoch.saturating_sub(self.shared.options.max_lag));
-        if shared.ask(epoch, true)? {
-            return Ok(());
-        }
-        shared.wait(|progress| shared.reached(progress, epoch, true))
-    }
-
-    /// Makes the fork the store made of its branch with its commit `epoch`
-    /// ([`Store::commit_fork`]) a fork of the branch in object storage, once the commits up to the
-    /// fork are uploaded: the segment the fork's commit ends names `child`, whose record the
-    /// acknowledgement makes, naming the branch and the segment as its origin, and a checkpoint at
-    /// the fork is where its recovery starts. `child`'s ID may be another branch's by then, which
-    /// took it after [`Remote::child_free`] found it free (`extent_remote::Error::ChildTaken`): the
-    /// fork failed, and the uploader goes on.
-    ///
-    /// A fork of a point commits nothing: the child's record is the fork, and fails if the point
-    /// was deleted ([`Failure::PointDeleted`]; `branch::fork_point`).
-    pub fn forked(&self, epoch: u64, child: Child) -> Result<(), Failure> {
-        failpoint!("remote::forked");
-        let shared = &self.shared;
-        if let Some(point) = shared.point.get() {
-            let (of, origin) = (point.branch, point.origin);
-            let forking = branch::fork_point(&*self.bucket, child.branch, of, origin, child.owner);
-            return match block_on(forking)? {
-                Err(extent_remote::Error::Deleted) => Err(Failure::PointDeleted),
-                forked => Ok(forked?),
-            };
-        }
-        let child = child.branch;
-        // Its commit's segment uploads now, if it is not yet uploaded.
-        shared.ask(epoch, false)?;
-        shared.wait(|progress| match progress.forked >= epoch {
-            true => Some(Ok(())),
-            false => progress.failed.clone().map(Err),
-        })?;
-        match shared.writer.get() {
-            Some(writer) if writer.refused(child) => {
-                Err(extent_remote::Error::ChildTaken(child).into())
-            }
-            _ => Ok(()),
-        }
-    }
-
-    /// Deletes `child` in object storage, a fork the store made that [`Remote::forked`] failed to
-    /// make: its segment may land after all, its writer taken over before acknowledging it, and the
-    /// branch's next writer gives the child a record then, which would keep what it inherited for
-    /// ever, no store holding it. Deleted first, it gets a record saying so, which the segment
-    /// landing finds (TASK-79.78). Only a branch the fork made is deleted, its record naming the
-    /// fork's owner: one of another's, which took the child's ID, is left as it is (TASK-79.82). As
-    /// the fork's segment gave the child its origin, if the uploader took it; or of no parent, if
-    /// it never did. Its copy was never placed: it is deleted as this host's placement
-    /// (`Options::token`).
-    pub fn unfork(&self, child: Child) -> Result<(), Failure> {
-        let origin = self.shared.forks.lock().unwrap().get(&child.branch).copied();
-        let forked = match (origin, child.point) {
-            (None, _) => Kind::Own,
-            (Some(origin), true) => Kind::Point(origin),
-            (Some(origin), false) => Kind::Fork(origin),
-        };
-        let (holder, token) = (rand::random(), self.shared.options.token);
-        let deleting =
-            branch::delete_fork(&*self.bucket, child.branch, forked, child.owner, holder, token);
-        if !block_on(deleting)?? {
-            log::warn!(
-                "fxdax: leaving branch {:x} in object storage, another's: a fork to its ID failed \
-                 here",
-                child.branch
-            );
-        }
-        Ok(())
-    }
-
-    /// Whether `child`'s ID is free in object storage for a fork the store is making of its
-    /// branch, before the fork's commit: unless another branch has it, as a guest may give any,
-    /// whose record its parent's writers, finding it another's, would fail on for ever. One GET of
-    /// the child's record.
-    pub fn child_free(&self, child: u64) -> Result<bool, Failure> {
-        let found = block_on(branch::record(&*self.bucket, child))??;
-        failpoint!("remote::child_free");
-        Ok(found.is_none())
-    }
-
-    /// Whether the store holds a point: nothing it does goes to object storage but its forks'
-    /// records.
-    pub fn is_point(&self) -> bool {
-        self.shared.point.get().is_some()
-    }
-
-    /// The lowest sequence number the store's guest may mint extents' IDs from, which the writer's
-    /// epoch gives: no writer of the branch before minted from there.
-    pub fn next_sequence(&self) -> u64 {
-        self.shared.progress.lock().unwrap().next_sequence
-    }
-
-    /// The bucket the store's branch is kept in.
-    pub(crate) fn bucket(&self) -> &Bucket {
-        &self.bucket
-    }
-
-    /// What reads the extents the store holds whose data is in object storage.
-    pub fn fetcher(&self) -> Arc<Fetcher> {
-        self.shared.fetcher.clone()
-    }
-
-    /// How many commits waited for the lag to shrink.
-    pub fn stalls(&self) -> u64 {
-        self.shared.progress.lock().unwrap().stalls
-    }
-
-    /// Why uploading stopped, if it did: the store's commits are its branch's no more.
-    pub fn failed(&self) -> Option<Failure> {
-        self.shared.progress.lock().unwrap().failed.clone()
-    }
-}
-
-impl Drop for Remote {
-    fn drop(&mut self) {
-        self.shared.progress.lock().unwrap().stop = true;
-        self.shared.changed.notify(usize::MAX);
-        self.shared.wake.notify_one();
-        if let Some(stopped) = self.stopped.get_mut().unwrap().take() {
-            let _ = stopped.recv();
-        }
-    }
-}
-
-impl Shared {
-    /// Notes the store's latest commit, if it isn't uploaded, as seen now.
-    fn observe(&self) -> Result<(), Failure> {
-        let epoch = self.store.epoch()?;
-        let mut progress = self.progress.lock().unwrap();
-        let newer = progress.seen.back().is_none_or(|(seen, _)| *seen < epoch);
-        if epoch > progress.uploaded && newer {
-            progress.seen.push_back((epoch, SystemTime::now()));
-        }
-        Ok(())
-    }
-
-    /// Whether the commits up to `epoch` are uploaded and acknowledged, and, if `stall`, the bytes
-    /// waiting within `Options::max_lag_bytes`: if not, asks the uploader for them, counting a
-    /// stall if `stall`.
-    fn ask(&self, epoch: u64, stall: bool) -> Result<bool, Failure> {
-        self.observe()?;
-        let mut progress = self.progress.lock().unwrap();
-        if self.within(progress.uploaded, epoch, stall)? {
-            return Ok(true);
-        }
-        progress.wanted = true;
-        if stall {
-            progress.stalls += 1;
-            log::warn!(
-                "fxdax: commits wait for object storage: {} not uploaded",
-                epoch.saturating_sub(progress.uploaded)
-            );
-        }
-        drop(progress);
-        self.wake.notify_one();
-        Ok(false)
-    }
-
-    /// What waiting for `epoch` as [`Shared::ask`] says finds in `progress`: done, or failed, or,
-    /// if nothing yet, `None`.
-    fn reached(&self, progress: &Progress, epoch: u64, stall: bool) -> Option<Result<(), Failure>> {
-        match self.within(progress.uploaded, epoch, stall) {
-            Ok(true) => Some(Ok(())),
-            Ok(false) => progress.failed.clone().map(Err),
-            Err(err) => Some(Err(err)),
-        }
-    }
-
-    /// Whether, `uploaded` up to, the commits up to `epoch` are, and, if `stall`, the bytes
-    /// waiting within `Options::max_lag_bytes`: bytes only bound how far commits go ahead, not when
-    /// one is durable.
-    fn within(&self, uploaded: u64, epoch: u64, stall: bool) -> Result<bool, Failure> {
-        let max_bytes = self.options.max_lag_bytes;
-        Ok(uploaded >= epoch && (!stall || self.store.unreleased_bytes()? <= max_bytes))
-    }
-
-    /// Waits, blocking, until `reached` finds in the progress what it waits for, done or failed.
-    fn wait(
-        &self,
-        reached: impl Fn(&Progress) -> Option<Result<(), Failure>>,
-    ) -> Result<(), Failure> {
-        loop {
-            let changed = {
-                let progress = self.progress.lock().unwrap();
-                if let Some(reached) = reached(&progress) {
-                    return reached;
-                }
-                self.changed.listen()
-            };
-            changed.wait();
-        }
-    }
-
-    async fn run(
-        &self,
-        bucket: Arc<Bucket>,
-        holder: u64,
-        started: std::sync::mpsc::Sender<Result<(), Failure>>,
-    ) {
-        let interval = self.options.interval;
-        let writer = match self.start(&bucket, holder).await {
-            Ok(Some(writer)) => {
-                let writer = Arc::new(writer);
-                let _ = self.writer.set(writer.clone());
-                started.send(Ok(())).unwrap();
-                writer
-            }
-            // A point's store has nothing to upload.
-            Ok(None) => {
-                started.send(Ok(())).unwrap();
-                while !self.progress.lock().unwrap().stop {
-                    self.wake.notified().await;
-                }
-                return;
-            }
-            Err(err) => return started.send(Err(err)).unwrap(),
-        };
-        let mut segments = 0;
-        let mut in_flight = InFlight::new(self.marker());
-        // Whether the next gather closes the store's open segment: for a commit waiting for its
-        // upload, or a fork, or as the interval is up; and whether the last took segments, after
-        // which the store may hold more closed, which the next takes, closing none for them
-        // (TASK-92.15).
-        let (mut close, mut more) = (false, false);
-        loop {
-            if let Err(err) = self.observe() {
-                return self.fail(&writer, err);
-            }
-            let stop = {
-                let mut progress = self.progress.lock().unwrap();
-                close |= std::mem::take(&mut progress.wanted);
-                progress.stop
-            };
-            if (close || more || stop) && in_flight.len() < IN_FLIGHT {
-                let gathered = blocking(|| self.gather(&writer, &mut in_flight, close || stop));
-                let gathered = match gathered {
-                    Ok(gathered) => gathered,
-                    Err(err) => return self.fail(&writer, err),
-                };
-                // Done with once closed; the segments the store had closed taking the room, it
-                // closes the next time.
-                close &= !gathered.closed;
-                more = gathered.took;
-                if more {
-                    continue;
-                }
-                if stop && in_flight.is_empty() {
-                    // A checkpoint on clean shutdown (doc-7, Checkpoints).
-                    if let Err(err) = writer.checkpoint().await {
-                        log::warn!("fxdax: checkpointing branch {:x}: {err}", writer.branch());
-                    }
-                    return self.fail(&writer, Failure::msg("the uploader stopped"));
-                }
-            }
-            let woken = tokio::time::timeout(interval, self.wake.notified());
-            if in_flight.is_empty() {
-                close |= woken.await.is_err();
-                continue;
-            }
-            let uploaded =
-                match futures::future::select(in_flight.next(), std::pin::pin!(woken)).await {
-                    Either::Left((uploaded, _)) => uploaded.expect("an upload in flight"),
-                    Either::Right((woken, _)) => {
-                        close |= woken.is_err();
-                        continue;
-                    }
-                };
-            let acked = match uploaded {
-                Ok(()) => self.acknowledged(&writer, &mut in_flight).await,
-                Err(err) => Err(err.into()),
-            };
-            if let Err(err) = acked {
-                return self.fail(&writer, err);
-            }
-            segments += 1;
-            if segments % CHECKPOINT_EVERY == 0
-                && let Err(err) = writer.checkpoint().await
-            {
-                log::warn!("fxdax: checkpointing branch {:x}: {err}", writer.branch());
-            }
-        }
-    }
-
-    /// Stops uploading, for `err`: commits waiting for uploads, and forks, fail with it.
-    fn fail(&self, writer: &Writer<Bucket>, err: Failure) {
-        let mut progress = self.progress.lock().unwrap();
-        if !progress.stop {
-            log::error!("fxdax: uploading branch {:x}: {err}", writer.branch());
-        }
-        progress.failed = Some(err);
-        self.changed.notify(usize::MAX);
-    }
-
-    /// Takes the branch, and uploads what the store holds that it doesn't: unless the branch moved
-    /// on elsewhere since the store last uploaded to it. A store that holds nothing takes what the
-    /// branch holds, as a fork's child does, whose store is made only once the bucket has its
-    /// record (TASK-165.7).
-    ///
-    /// What the store does is decided twice ([`Shared::plan`]). Before the lease, from the
-    /// branch's state then, so that a store plainly stale fences no writer; it changes nothing
-    /// then. Then from the state the writer recovers once it holds the lease, which another writer
-    /// may have committed to in between: what the store takes, and what it uploads, is that
-    /// state's. A store whose branch moved on in between refuses then, having fenced that writer,
-    /// whose commits acknowledged stay the branch's: two hosts attaching the branch at once. The
-    /// writer recovers it on from the state found before, reading only the segments since
-    /// (TASK-92.6). A point has no writer, which it returns none for ([`Shared::start_point`]).
-    async fn start(
-        &self,
-        bucket: &Arc<Bucket>,
-        holder: u64,
-    ) -> Result<Option<Writer<Bucket>>, Failure> {
-        bucket.probed(holder).await.map_err(Failure::msg)?;
-        let branch = self.store.description().branch;
-        let ours = self.marker().read()?;
-        let held = blocking(|| self.store.snapshot())?;
-        let found = match record(bucket, branch).await? {
-            None => {
-                failpoint!("remote::create_branch");
-                branch::create(&**bucket, branch, rand::random()).await?;
-                None
-            }
-            Some(record) if record.is_point() => {
-                self.start_point(bucket, branch, record, &held).await?;
-                return Ok(None);
-            }
-            Some(record) => {
-                let recovered = extent_remote::recover(&**bucket, branch, record.origin()).await?;
-                Self::plan(&recovered.state, &ours, &held)?;
-                Some((record, recovered))
-            }
-        };
-        let token = self.token(branch)?;
-        // Its state, once it holds the lease, recovered on from what was found before.
-        let writer = match found {
-            None => Writer::open(bucket.clone(), branch, holder, token).await?,
-            Some((record, recovered)) => {
-                Writer::open_recovered(bucket.clone(), record, recovered, holder, token).await?
-            }
-        };
-        let writer = writer.uploading_within(UPLOADS.clone());
-        let remote = writer.state();
-        match Self::plan(&remote, &ours, &held)? {
-            Plan::Diff => {}
-            Plan::Take => blocking(|| take(&self.store, &remote))?,
-            Plan::Claim => blocking(|| self.marker().write(remote.last_commit, []))?,
-        }
-        let lease = Lease { token, epoch: writer.epoch(), taken: SystemTime::now() };
-        {
-            let mut progress = self.progress.lock().unwrap();
-            (progress.next_sequence, progress.lease) =
-                (writer.chain().next_sequence(), Some(lease));
-        }
-        // What the store holds that the branch doesn't, as of a commit after which the store
-        // closes its segments for this writer: in segments of their own, if it changes anything,
-        // closed on the writer's chain, which then stamps the store's footers, which follow them.
-        loop {
-            let snapshot = blocking(|| self.store.snapshot())?;
-            let mut chain = writer.chain();
-            let tag = chain.tag(snapshot.epoch);
-            // Their footers stamped, their data read only once the store takes the chain, as
-            // they upload.
-            let segments: Vec<Footer> = (Self::diff(&remote, &snapshot, tag).into_iter())
-                .map(|plan| plan.close(&mut chain))
-                .collect();
-            // A commit since, and the snapshot is stale.
-            if !self.store.upload(chain, snapshot.epoch, self.options.cache.clone())? {
-                continue;
-            }
-            // The branch's capacity, if it says none, or another: the store's next commit sets it
-            // (TASK-165.3).
-            if remote.capacity != Some(snapshot.capacity) {
-                blocking(|| self.store.restate_capacity())?;
-            }
-            // What it holds is durable before it is uploaded.
-            blocking(|| self.store.flush())?;
-            if !segments.is_empty() {
-                self.send(&writer, tag, segments).await?;
-            }
-            // It made no fork.
-            let mut progress = self.progress.lock().unwrap();
-            progress.uploaded_through(snapshot.epoch);
-            progress.forked_through(snapshot.epoch);
-            return Ok(Some(writer));
-        }
-    }
-
-    /// Attaches the store of `branch`, a point whose record is `record`, holding `held`: reads what
-    /// it names, a state that never changes, takes it into the store if it holds nothing, and fails
-    /// if it holds anything else. No lease: every commit the store makes is its own, and uploaded
-    /// as far as anything waiting for that goes.
-    async fn start_point(
-        &self,
-        bucket: &Arc<Bucket>,
-        branch: u64,
-        record: Record,
-        held: &Snapshot,
-    ) -> Result<(), Failure> {
-        if record.deleted {
-            return Err(Failure::PointDeleted);
-        }
-        let Kind::Point(origin) = record.kind else {
-            return Err(Failure::msg(format!("branch {branch:x} is no point")));
-        };
-        let state = extent_remote::recover(&**bucket, branch, Some(origin)).await?.state;
-        if !Self::holds(&state, held) {
-            if !held.extents.is_empty() || !held.root.is_empty() {
-                return Err(Failure::msg(format!(
-                    "the store of point {branch:x} holds another state"
-                )));
-            }
-            blocking(|| take(&self.store, &state))?;
-        }
-        let _ = self.point.set(Point { branch, origin });
-        let mut progress = self.progress.lock().unwrap();
-        progress.uploaded_through(u64::MAX);
-        progress.forked_through(u64::MAX);
-        Ok(())
-    }
-
-    /// What a store whose marker names `ours`, holding `held`, does with its branch, whose state is
-    /// `state`: it uploads what it holds that the branch doesn't if the branch's last commit is one
-    /// it names, or the branch has none; it takes what the branch holds if it holds nothing and
-    /// names no commit; it claims the branch's last commit as its own if it names none, its marker
-    /// lost, but holds what the branch holds, extents and root, as a store does that took the
-    /// branch, or a fork's child, its host crashing before the marker named the commit: it has
-    /// nothing to upload, so reverts nothing. Otherwise the branch moved on elsewhere since the
-    /// store last uploaded to it, and the store is stale.
-    fn plan(state: &State, ours: &[u64], held: &Snapshot) -> Result<Plan, Failure> {
-        let empty = held.extents.is_empty() && held.root.is_empty();
-        match state.last_commit {
-            None => Ok(Plan::Diff),
-            Some(last) if ours.contains(&last) => Ok(Plan::Diff),
-            Some(_) if ours.is_empty() && empty => Ok(Plan::Take),
-            Some(_) if ours.is_empty() && Self::holds(state, held) => Ok(Plan::Claim),
-            Some(last) => Err(Failure::msg(format!(
-                "branch {:x} moved on elsewhere (commit {last:#x}): its store here is stale",
-                state.branch
-            ))),
-        }
-    }
-
-    /// Whether a store holding `held` holds what `state` does, extents and root.
-    fn holds(state: &State, held: &Snapshot) -> bool {
-        let extents = state.extents.iter().map(|(extent, location)| (*extent, location.len));
-        extents.eq(held.extents.iter().copied())
-            && state.root.as_deref().unwrap_or_default() == held.root
-    }
-
-    /// The segments, planned, that make `remote`, the branch's state, hold what `snapshot`, the
-    /// store's, does: the extents the store holds that the branch doesn't, a [`BATCH`] of them at
-    /// most in each, those of [`LARGE`] bytes or more stored on their own; the last makes the
-    /// commit, tagged `tag`, which frees those the branch holds that the store doesn't, and sets
-    /// the store's root, if the branch's differs. None if nothing differs. A crash before the last
-    /// is uploaded leaves the branch with extents its root does not reach, its last commit as it
-    /// was: the store attaching again uploads the rest.
-    fn diff(remote: &State, snapshot: &Snapshot, tag: u64) -> Vec<batch::Plan> {
-        let added: Vec<_> = (snapshot.extents.iter())
-            .filter(|(extent, _)| !remote.extents.contains_key(extent))
-            .copied()
-            .collect();
-        let held: BTreeSet<ExtentId> = snapshot.extents.iter().map(|(extent, _)| *extent).collect();
-        let frees: Vec<_> =
-            remote.extents.keys().filter(|extent| !held.contains(extent)).copied().collect();
-        let differs = remote.root.as_deref() != Some(&snapshot.root[..]);
-        let root = (differs && !snapshot.root.is_empty()).then(|| snapshot.root.clone());
-        if added.is_empty() && frees.is_empty() && root.is_none() {
-            return Vec::new();
-        }
-        let mut plans = Vec::new();
-        let mut plan = batch::Plan::default();
-        for (extent, len) in added {
-            if plan.bytes() > 0 && plan.bytes() + len > BATCH {
-                plans.push(std::mem::take(&mut plan));
-            }
-            match len >= LARGE && extent.branch == remote.branch {
-                true => plan.seal_own(extent.sequence, len),
-                false => plan.seal(extent, len),
-            }
-        }
-        plan.commit(tag, frees, root, None);
-        plans.push(plan);
-        plans
-    }
-
-    /// Adds the segments the store closed whose commits are durable to the writer, to be uploaded
-    /// as they are, after those uploading (`in_flight`), as many as may upload at once with them:
-    /// the rest stay in the store, unread, until those are uploaded. If `close`, the store closes
-    /// its open segment first if fewer wait: for a commit waiting for its upload, a fork, the
-    /// interval up, or the uploader stopping; for no other, as the commits no one waits for wait
-    /// in it for those, rather than each go in a segment of its own (TASK-92.15).
-    fn gather(
-        &self,
-        writer: &Arc<Writer<Bucket>>,
-        in_flight: &mut InFlight,
-        close: bool,
-    ) -> Result<Gathered, Failure> {
-        failpoint!("remote::gather");
-        let room = IN_FLIGHT.saturating_sub(in_flight.len());
-        // What a waiter wants is durable; then closed, if fewer segments wait than may upload, and
-        // what the closing closed durable too.
-        self.store.flush()?;
-        let mut closed = self.store.closed(room)?;
-        let closing = close && closed.len() < room;
-        if closing {
-            self.store.close_now()?;
-            self.store.flush()?;
-            closed.extend(self.store.closed(room - closed.len())?);
-        }
-        let mut segments = Vec::with_capacity(closed.len());
-        for closed in closed {
-            let tag = closed.tag();
-            let forks: Vec<u64> =
-                closed.footer.contents.forks.iter().map(|forked| forked.branch).collect();
-            let own = closed.own.iter().map(|(key, file)| Ok((key.clone(), stored(file)?)));
-            let own = own.collect::<Result<_, Failure>>()?;
-            let objects = Objects { footer: closed.footer, segment: stored(&closed.file)?, own };
-            let seq = writer.add_segment(objects)?;
-            // Where each fork it ends is, which a fork failing deletes its child by.
-            let origin = Origin { parent: writer.branch(), at: seq };
-            self.forks.lock().unwrap().extend(forks.iter().map(|&child| (child, origin)));
-            segments.push(Uploading { seq, number: closed.number, tag, forks: !forks.is_empty() });
-        }
-        let took = !segments.is_empty();
-        in_flight.upload(writer, segments)?;
-        Ok(Gathered { took, closed: closing })
-    }
-
-    /// Acknowledges what the writer has uploaded: the commits of the segments it acknowledges are
-    /// uploaded, and the store's segments leave it, read in the bucket, into the host's cache if
-    /// it has one (TASK-165.8); then the forks they name are made, with a checkpoint at them, which
-    /// their children's recovery starts from.
-    async fn acknowledged(
-        &self,
-        writer: &Writer<Bucket>,
-        in_flight: &mut InFlight,
-    ) -> Result<(), Failure> {
-        let through = writer.acknowledge().await?;
-        failpoint!("remote::acknowledged");
-        let acked = blocking(|| in_flight.acknowledged(through, writer.last_commit()))?;
-        let Some(epoch) = acked.last().map(Uploading::epoch) else { return Ok(()) };
-        blocking(|| {
-            self.store.release(epoch)?;
-            for segment in &acked {
-                let key = extent_remote::layout::segment(writer.branch(), segment.seq);
-                self.store.acknowledged(segment.number, &key)?;
-            }
-            Ok::<_, Failure>(())
-        })?;
-        failpoint!("remote::released");
-        let forks = acked.iter().any(|segment| segment.forks);
-        {
-            let mut progress = self.progress.lock().unwrap();
-            progress.uploaded_through(epoch);
-            if !forks {
-                progress.forked_through(epoch);
-            }
-        }
-        self.changed.notify(usize::MAX);
-        if forks {
-            // Their children have their records, which the acknowledgement made: the checkpoint
-            // makes the forks.
-            writer.checkpoint().await?;
-            failpoint!("remote::checkpointed");
-            self.progress.lock().unwrap().forked_through(epoch);
-            self.changed.notify(usize::MAX);
-        }
-        Ok(())
-    }
-
-    /// Uploads `segments`, those the commit tagged `tag` ends, planned and closed on the writer's
-    /// chain, as many at once as the store's do, each reading the extents it holds from the store
-    /// as it goes, which keeps for its uploader what commits free meanwhile; and acknowledges them,
-    /// the marker naming the commit while they upload.
-    async fn send(
-        &self,
-        writer: &Writer<Bucket>,
-        tag: u64,
-        segments: Vec<Footer>,
-    ) -> Result<(), Failure> {
-        let acked = writer.last_commit();
-        blocking(|| self.marker().write(acked, [tag]))?;
-        let store = self.store.clone();
-        let read: batch::Read = Arc::new(move |extent, data| {
-            let read = blocking(|| store.read_kept(extent, 0, data));
-            read.map_err(|err| std::io::Error::other(format!("{extent:?}: {err:#}")))
-        });
-        let seqs = (segments.into_iter())
-            .map(|footer| writer.add_segment(batch::objects(footer, read.clone())))
-            .collect::<Result<Vec<_>, _>>()?;
-        let uploads = futures::stream::iter(seqs).map(|seq| writer.upload(seq));
-        uploads.buffer_unordered(IN_FLIGHT).try_collect::<()>().await?;
-        writer.acknowledge().await?;
-        blocking(|| self.marker().write(writer.last_commit(), []))
-    }
-
-    /// The marker of the store's branch.
-    fn marker(&self) -> Marker {
-        Marker::new(self.store.dir().path(), self.store.description().branch)
-    }
-
-    /// The fencing token of the store's copy of `branch` ([`place`]): `Options::token` if it was
-    /// never placed.
-    fn token(&self, branch: u64) -> Result<u64, Failure> {
-        let placed = placed_token(self.store.dir().path(), branch)?;
-        Ok(placed.unwrap_or(self.options.token))
-    }
-}
-
-/// The record of `branch`, if it has one: a fork of a point its host crashed in the middle of, its
-/// record saying so, finished first, which fails if the point was deleted. So the store takes no
-/// state of a fork not made.
-async fn record(bucket: &Bucket, branch: u64) -> Result<Option<Record>, Failure> {
-    let found = branch::record(bucket, branch).await?;
-    let Some(point) = found.as_ref().filter(|record| !record.deleted).and_then(Record::forking)
-    else {
-        return Ok(found);
-    };
-    branch::finish_point_fork(bucket, branch, point).await?;
-    Ok(branch::record(bucket, branch).await?)
-}
-
-/// Takes `branch`, as `bucket` holds it, into `store`, which holds nothing, as its own: a fork's
-/// child, made once the bucket has its record (`host_store::fork`, TASK-165.7). Its writer, when
-/// the store is attached, finds the branch as the store holds it, which needs no upload. No lease
-/// is taken: the store takes the branch's state as of now, changing nothing in the bucket.
-pub(crate) fn take_branch(
-    store: &Store<HostDir>,
-    bucket: &Bucket,
-    branch: u64,
-) -> Result<(), Failure> {
-    let state = block_on(async {
-        let found = record(bucket, branch).await?;
-        let found = found.filter(|record| !record.deleted).ok_or(extent_remote::Error::NoBranch)?;
-        Ok::<_, Failure>(extent_remote::recover(bucket, branch, found.origin()).await?.state)
-    })??;
-    take(store, &state)
-}
-
-/// Takes what the branch holds, `state`, into `store`, which holds nothing: a branch opened on a
-/// host without it, or a fork's child. The store holds the branch's extents, whose data stays in
-/// object storage, at their locations there, read as the guest reads it ([`Fetcher`]), and has its
-/// capacity, if it has one (TASK-165.3); its marker names the branch's last commit, its own.
-fn take(store: &Store<HostDir>, state: &extent_remote::State) -> Result<(), Failure> {
-    if let Some(capacity) = state.capacity {
-        store.set_capacity(capacity)?;
-    }
-    for (extent, location) in &state.extents {
-        store.adopt(*extent, location.clone())?;
-    }
-    store.spend(&state.spent)?;
-    store.commit(Some(state.root.as_deref().unwrap_or_default()))?;
-    Marker::new(store.dir().path(), state.branch).write(state.last_commit, [])
-}
-
-/// The bytes of `file`, a segment's the store closed or an extent's of its own it names, read only
-/// as its upload goes, and checked: a byte the host's disk damaged is not uploaded under the CRC
-/// it fails (`read_object`, TASK-153.11).
-fn stored(file: &Arc<HostFile>) -> Result<Body, Failure> {
-    let size = file.size().map_err(|err| Failure::local(err, "a file to upload"))?;
-    let file = file.clone();
-    Ok(Body::new(size, move || blocking(|| read_object(&*file))))
-}
-
-/// What a gather did ([`Shared::gather`]).
-struct Gathered {
-    /// Whether it took segments the store closed: the store may have closed more meanwhile.
-    took: bool,
-    /// Whether it closed the store's open segment, as asked: what was committed before is in the
-    /// segments the store closed, taken, or to be taken next.
-    closed: bool,
-}
-
-/// What attaching a store does with its branch ([`Shared::plan`]).
-enum Plan {
-    /// Uploads what the store holds that the branch doesn't.
-    Diff,
-    /// Takes what the branch holds into the store, which holds nothing.
-    Take,
-    /// Names the branch's last commit in the store's marker, which was lost, as its own: the store
-    /// holds what the branch holds.
-    Claim,
-}
-
-/// The marker of a branch of a store, in the store's directory ([`marker`]): the commits it names,
-/// by their tags, the last uploaded (`-` for none) and those uploading.
-struct Marker {
-    dir: PathBuf,
-    branch: u64,
-}
-
-impl Marker {
-    fn new(dir: &Path, branch: u64) -> Self {
-        Self { dir: dir.to_owned(), branch }
-    }
-
-    /// The commits it names: the last uploaded, and those uploading; none if there is no marker.
-    fn read(&self) -> Result<Vec<u64>, Failure> {
-        let path = self.dir.join(marker(self.branch));
-        let text = match std::fs::read_to_string(&path) {
-            Ok(text) => text,
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-            Err(err) => return Err(Failure::local(err, format!("reading {}", path.display()))),
-        };
-        text.split_whitespace()
-            .filter(|word| *word != "-")
-            .map(|word| u64::from_str_radix(word, 16))
-            .collect::<Result<_, _>>()
-            .map_err(|err| Failure::local(err, path.display().to_string()))
-    }
-
-    /// Names `acked`, the last commit uploaded, if any, and `uploading`, durably.
-    fn write(
-        &self,
-        acked: Option<u64>,
-        uploading: impl IntoIterator<Item = u64>,
-    ) -> Result<(), Failure> {
-        let mut text = acked.map_or("-".to_owned(), |tag| format!("{tag:x}"));
-        for tag in uploading {
-            text += &format!(" {tag:x}");
-        }
-        text.push('\n');
-        let written = write_durably(&self.dir, &marker(self.branch), text.as_bytes());
-        written.map_err(|err| Failure::local(err, "recording the upload"))
-    }
-}
-
-/// A segment uploading: its number in the branch, and in the store; the tag of the store's commit
-/// it ends with; and whether forks are made at its end.
-struct Uploading {
-    seq: u64,
-    number: u64,
-    tag: u64,
-    forks: bool,
-}
-
-impl Uploading {
-    /// The store's epoch of the commit it ends with.
-    fn epoch(&self) -> u64 {
-        epoch_of(self.tag)
-    }
-}
-
-/// The segments uploading, in order, the futures of their uploads, and the marker naming them: it
-/// names every segment that may land before any upload goes, and an acknowledgement takes exactly
-/// the segments the writer acknowledged.
-struct InFlight {
-    marker: Marker,
-    segments: VecDeque<Uploading>,
-    uploads: FuturesOrdered<BoxFuture<'static, Result<(), extent_remote::Error>>>,
-}
-
-impl InFlight {
-    fn new(marker: Marker) -> Self {
-        Self { marker, segments: VecDeque::new(), uploads: FuturesOrdered::new() }
-    }
-
-    /// Uploads `segments`, which `writer` took, after those uploading: once the marker names them
-    /// with every one uploading, the last uploaded being `writer`'s last commit. No upload goes if
-    /// the marker cannot be written. A fork's child has no store here until its record is in the
-    /// bucket (TASK-165.7), so its segment marks nothing of the child's.
-    fn upload(
-        &mut self,
-        writer: &Arc<Writer<Bucket>>,
-        segments: Vec<Uploading>,
-    ) -> Result<(), Failure> {
-        if segments.is_empty() {
-            return Ok(());
-        }
-        let tags = self.tags().chain(segments.iter().map(|segment| segment.tag));
-        self.marker.write(writer.last_commit(), tags)?;
-        failpoint!("remote::marked");
-        for segment in segments {
-            let (writer, seq) = (writer.clone(), segment.seq);
-            self.uploads.push_back(async move { writer.upload(seq).await }.boxed());
-            self.segments.push_back(segment);
-        }
-        Ok(())
-    }
-
-    /// The next upload done, in order.
-    fn next(
-        &mut self,
-    ) -> impl Future<Output = Option<Result<(), extent_remote::Error>>> + Unpin + '_ {
-        self.uploads.next()
-    }
-
-    /// The segments the writer acknowledged, `through` the last, which uploads no more: the marker
-    /// names, from then on, `last_commit`, the branch's last, and those still uploading.
-    fn acknowledged(
-        &mut self,
-        through: Option<u64>,
-        last_commit: Option<u64>,
-    ) -> Result<Vec<Uploading>, Failure> {
-        let taken = |segment: &&Uploading| through.is_some_and(|through| segment.seq <= through);
-        let count = self.segments.iter().take_while(taken).count();
-        let acked: Vec<_> = self.segments.drain(..count).collect();
-        if !acked.is_empty() {
-            self.marker.write(last_commit, self.tags())?;
-        }
-        Ok(acked)
-    }
-
-    /// The tags of the segments uploading.
-    fn tags(&self) -> impl Iterator<Item = u64> + '_ {
-        self.segments.iter().map(|segment| segment.tag)
-    }
-
-    /// How many uploads are in flight.
-    fn len(&self) -> usize {
-        self.uploads.len()
-    }
-
-    fn is_empty(&self) -> bool {
-        self.uploads.is_empty()
-    }
-}
-
 #[cfg(test)]
 mod fork_faults;
 
@@ -1459,9 +189,61 @@ mod tests {
 
     const BLOCK: usize = ExtentStore::BLOCK_SIZE as usize;
 
+    /// The URL `bucket` is this process's by, made so if it is none's yet: a memory bucket of its
+    /// own, by its address, which the stores the tests make in it name (TASK-165.9).
+    pub(super) fn url_of(bucket: &Arc<Bucket>) -> String {
+        let url = format!("memory:///remote-tests-{:p}", Arc::as_ptr(bucket));
+        crate::host_store::use_bucket(&url, bucket.clone());
+        url
+    }
+
+    /// A new store at `path`, of `capacity` bytes, of `branch`, a new one if none, its branch kept
+    /// in `bucket`, its uploader uploading as `keeping` says.
+    pub(super) fn kept_in(
+        path: impl AsRef<std::path::Path>,
+        (capacity, branch): (u64, Option<u64>),
+        bucket: &Arc<Bucket>,
+        keeping: extent_store::upload::Options,
+    ) -> Result<ExtentStore, crate::Error> {
+        let branch = branch.unwrap_or_else(crate::host_store::new_branch);
+        ExtentStore::create_kept_with(path, capacity, branch, &url_of(bucket), keeping)
+    }
+
+    /// Has the store at `path` name `bucket` as the bucket its branch is kept in: a host restarted
+    /// whose stores reach the bucket otherwise than before, as the fault tests' do (TASK-165.9).
+    /// A store whose host died before it described it names nothing.
+    pub(super) fn naming(path: &std::path::Path, bucket: &Arc<Bucket>) {
+        let description = path.join("store");
+        let text = match std::fs::read_to_string(&description) {
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return,
+            text => text.unwrap(),
+        };
+        let named: String = (text.lines())
+            .map(|line| match line.starts_with("bucket ") {
+                true => format!("bucket {}\n", url_of(bucket)),
+                false => format!("{line}\n"),
+            })
+            .collect();
+        std::fs::write(&description, named).unwrap();
+    }
+
+    /// The store at `path`, opened, its uploader uploading as `keeping` says.
+    pub(super) fn reopened(
+        path: impl AsRef<std::path::Path>,
+        keeping: extent_store::upload::Options,
+    ) -> Result<ExtentStore, crate::Error> {
+        ExtentStore::open_with(
+            path,
+            crate::extents::Opening { keeping, ..crate::extents::Opening::here()? },
+        )
+    }
+
     /// Uploads only when a commit waits.
-    pub(super) fn idle() -> super::Options {
-        super::Options { interval: Duration::from_secs(3600), ..super::Options::default() }
+    /// How this process's stores keep their branches ([`crate::host_store::keeping`]), but
+    /// uploading nothing until a commit waits for it, or the hour is up.
+    pub(super) fn idle() -> extent_store::upload::Options {
+        let keeping = crate::host_store::keeping().unwrap();
+        extent_store::upload::Options { interval: Duration::from_secs(3600), ..keeping }
     }
 
     pub(super) fn pattern(seed: u8, len: usize) -> Vec<u8> {
@@ -1494,13 +276,13 @@ mod tests {
     #[test]
     fn uploads_what_the_store_makes_durable() {
         let dir = tempfile::tempdir().unwrap();
-        let store = ExtentStore::create(dir.path().join("store"), 1 << 30).unwrap();
+        let bucket = Arc::new(Bucket::new(Arc::new(InMemory::new()), "branches"));
+        let store =
+            kept_in(dir.path().join("store"), (1 << 30, None), &bucket.clone(), idle()).unwrap();
         let branch = store.branch();
         write(&store, 1, &pattern(1, BLOCK));
         store.commit(Some(b"first")).unwrap();
-        let bucket = Arc::new(Bucket::new(Arc::new(InMemory::new()), "branches"));
         // What it held before is uploaded on attaching.
-        store.attach_remote(bucket.clone(), 1, idle()).unwrap();
         assert_eq!(
             uploaded(&bucket, branch),
             (vec![(1, pattern(1, BLOCK))], Some(b"first".to_vec()))
@@ -1525,8 +307,7 @@ mod tests {
 
         // Opened again, the store's uploader finds the branch as it left it.
         drop(store);
-        let store = ExtentStore::open(dir.path().join("store")).unwrap();
-        store.attach_remote(bucket.clone(), 2, idle()).unwrap();
+        let store = reopened(dir.path().join("store"), idle()).unwrap();
         // Its guest mints from the second writer's range.
         let info = store.info().unwrap();
         assert_eq!(info.sequence_floor, 2 << extent_remote::EPOCH_SHIFT);
@@ -1555,12 +336,15 @@ mod tests {
         use extent_remote::{Batch, Commit, Writer};
         let dir = tempfile::tempdir().unwrap();
         let bucket = Arc::new(Bucket::new(Arc::new(InMemory::new()), ""));
-        let store = ExtentStore::create(dir.path().join("store"), 1 << 30).unwrap();
+        let store =
+            kept_in(dir.path().join("store"), (1 << 30, None), &bucket.clone(), idle()).unwrap();
         let branch = store.branch();
         // The writer before, of another placement, its two segments in flight.
         let before = futures::executor::block_on(async {
             branch::create(&*bucket, branch, 1).await.unwrap();
-            Writer::open(bucket.clone(), branch, 10, 0).await.unwrap()
+            Writer::open(bucket.clone(), branch, 10, crate::host_store::token().unwrap())
+                .await
+                .unwrap()
         });
         let mut seqs = Vec::new();
         for tag in [1, 2] {
@@ -1569,7 +353,6 @@ mod tests {
             seqs.push(before.add_segment(objects).unwrap());
         }
         // The store takes the branch over, fencing it after the first writer's fence.
-        store.attach_remote(bucket.clone(), 11, idle()).unwrap();
         // The second lands, past the fence, void; the first finds the fence at its place.
         futures::executor::block_on(async {
             before.upload(seqs[1]).await.unwrap();
@@ -1603,9 +386,8 @@ mod tests {
         };
         // One segment, of extents 1 to 16, which don't compress, freed but 1 to 3; the store
         // closing checkpoints it.
-        let store = ExtentStore::create(&path, 16 * EXTENT as u64).unwrap();
+        let store = kept_in(&path, (16 * EXTENT as u64, None), &bucket.clone(), idle()).unwrap();
         let branch = store.branch();
-        store.attach_remote(bucket.clone(), 1, idle()).unwrap();
         for sequence in 1..=16 {
             write(&store, sequence, &noise(sequence, EXTENT));
         }
@@ -1620,8 +402,7 @@ mod tests {
 
         // Its writer then frees 2 and 3 and checkpoints, naming 1 in the moves, which hold a third
         // of what they did.
-        let store = ExtentStore::open(&path).unwrap();
-        store.attach_remote(bucket.clone(), 2, idle()).unwrap();
+        let store = reopened(&path, idle()).unwrap();
         store.free(ExtentId { branch, sequence: 2 }).unwrap();
         store.free(ExtentId { branch, sequence: 3 }).unwrap();
         store.commit(None).unwrap();
@@ -1651,8 +432,7 @@ mod tests {
             assert_eq!(read(&bucket, held, location).await, Ok(noise(1, EXTENT)));
         });
 
-        let store = ExtentStore::open(&path).unwrap();
-        store.attach_remote(bucket.clone(), 3, idle()).unwrap();
+        let store = reopened(&path, idle()).unwrap();
         let mut data = vec![0; EXTENT];
         let read = store.read(extent, 0, &mut [crate::VolatileSliceMut::from(&mut data[..])]);
         assert_eq!(read.map(|()| data == noise(1, EXTENT)), Ok(true));
@@ -1672,57 +452,51 @@ mod tests {
         })
     }
 
-    /// TASK-79.19: what a store holds that its branch doesn't, attaching, goes in segments of a
-    /// batch at most each, its extents stored on their own counted, rather than in one holding it
-    /// all; the last makes the commit, and sets the root. Its writer's fence goes first.
+    /// TASK-165.9: a store whose bucket was out of reach holds its commits in its write-ahead log,
+    /// segments the commits closed, which upload once it is in reach again, in order, each the
+    /// object its file is, after the writer's fence; what the commits made, and the root, the
+    /// branch has then. (Before, a store attaching uploaded what its branch lacked in batches.)
     #[test]
-    fn attaches_upload_what_the_branch_lacks_in_batches() {
+    fn logs_caught_up_upload_in_order() {
         let dir = tempfile::tempdir().unwrap();
-        let store = ExtentStore::create(dir.path().join("store"), 1 << 30).unwrap();
+        let gated = Arc::new(Gated::new());
+        let bucket = Arc::new(Bucket::new(gated.clone(), ""));
+        let store = kept_in(dir.path().join("store"), (1 << 30, None), &bucket, idle()).unwrap();
         let branch = store.branch();
-        let large = super::BATCH / super::LARGE + 2;
+        gated.shut.store(true, std::sync::atomic::Ordering::Relaxed);
         let mut written = Vec::new();
-        for sequence in 1..=large {
-            let data = pattern(sequence as u8, super::LARGE as usize);
+        for sequence in 1..=3 {
+            let data = pattern(sequence as u8, 2 * BLOCK);
             write(&store, sequence, &data);
             written.push((sequence, data));
+            store.commit_ordered(Some(format!("root {sequence}").as_bytes())).unwrap();
         }
-        write(&store, large + 1, &pattern(0, BLOCK));
-        written.push((large + 1, pattern(0, BLOCK)));
-        store.commit(Some(b"before")).unwrap();
-        let bucket = Arc::new(Bucket::new(Arc::new(InMemory::new()), ""));
-        store.attach_remote(bucket.clone(), 1, idle()).unwrap();
-
+        store.flush().unwrap();
+        // Out of reach: the store holds what it committed, the bucket nothing of it.
+        let behind = Arc::new(Bucket::new(gated.store.clone(), ""));
+        assert_eq!(uploaded(&behind, branch), (vec![], None));
+        gated.shut.store(false, std::sync::atomic::Ordering::Relaxed);
+        store.wait_uploaded().unwrap();
         let footers = footers(&bucket, branch);
-        let [fence, first, last] = &footers[..] else {
-            panic!("{} segments: {footers:?}", footers.len())
-        };
-        assert_eq!(fence.contents, extent_remote::layout::Contents::default());
-        let bytes = |footer: &extent_remote::layout::Footer| {
-            let held: u64 = footer.contents.extents.iter().map(|(_, _, len)| len).sum();
-            held + footer.own().map(|(_, location)| location.len).sum::<u64>()
-        };
-        assert_eq!(bytes(first), super::BATCH);
-        assert_eq!(bytes(last), 2 * super::LARGE + BLOCK as u64);
-        assert_eq!((first.contents.commits.len(), &first.contents.root), (0, &None));
-        let before = Some(b"before".to_vec());
-        assert_eq!((last.contents.commits.len(), &last.contents.root), (1, &before));
-        assert_eq!(uploaded(&bucket, branch), (written, Some(b"before".to_vec())));
+        let commits: Vec<_> = footers.iter().map(|footer| footer.contents.commits.len()).collect();
+        assert_eq!(commits, [0, 1], "the fence, then the segment of the commits");
+        assert_eq!(uploaded(&bucket, branch), (written, Some(b"root 3".to_vec())));
     }
 
     /// A store whose commit, of more bytes than `options` let wait, is in a segment closed for want
     /// of room, as a closing that beats the uploader leaves it: with no commit to come, as one in
     /// the lag's wait holds its guest's seal, and holds back every other. And the commit's epoch.
     fn closed_for_room(
-        options: super::Options,
-    ) -> (tempfile::TempDir, Arc<extent_store::Store<extent_store::HostDir>>, super::Remote, u64)
-    {
+        options: extent_store::upload::Options,
+    ) -> (tempfile::TempDir, crate::host_store::Opened, u64) {
         const EXTENT: usize = 1 << 20;
         let dir = tempfile::tempdir().unwrap();
-        let store = crate::host_store::create(&dir.path().join("store"), 1 << 30, 7).unwrap().store;
-        let store = Arc::new(store);
         let bucket = Arc::new(Bucket::new(Arc::new(InMemory::new()), ""));
-        let remote = super::Remote::attach(store.clone(), bucket, 1, options).unwrap();
+        let path = dir.path().join("store");
+        let opened =
+            crate::host_store::create_unmade(&path, 1 << 30, 7, Some(&url_of(&bucket)), options);
+        let opened = opened.unwrap();
+        let store = &opened.store;
         store.write(super::ExtentId::new(7, 1), 0, &pattern(1, EXTENT)).unwrap();
         store.commit_ordered(None).unwrap();
         let epoch = store.epoch().unwrap();
@@ -1731,7 +505,7 @@ mod tests {
             let extent = super::ExtentId::new(7, sequence);
             store.write(extent, 0, &pattern(sequence as u8, EXTENT)).unwrap();
         }
-        (dir, store, remote, epoch)
+        (dir, opened, epoch)
     }
 
     /// TASK-150.2: a commit stalled on the bytes waiting (`Options::max_lag_bytes`) ends though
@@ -1739,59 +513,23 @@ mod tests {
     /// end, as the commit, or its guest, have none to come: an uploader's own flush ends it.
     #[test]
     fn commits_stalled_on_the_lag_end_with_their_segment_closed_for_room() {
-        let (_dir, store, remote, epoch) =
-            closed_for_room(super::Options { max_lag_bytes: BLOCK as u64, ..idle() });
+        let lag = extent_store::upload::Options { max_lag_bytes: BLOCK as u64, ..idle() };
+        let (_dir, crate::host_store::Opened { store, remote, .. }, epoch) = closed_for_room(lag);
         let stalled = std::sync::Arc::new(remote);
         let waiting = stalled.clone();
         let (ended, end) = std::sync::mpsc::channel();
         std::thread::spawn(move || ended.send(waiting.wait_lag(epoch)).unwrap());
         assert_eq!(end.recv_timeout(Duration::from_secs(30)), Ok(Ok(())));
-        assert_eq!(store.unreleased_bytes().unwrap(), 0);
+        assert_eq!(store.wal_bytes().unwrap(), 0);
     }
 
     /// TASK-150.2: so does a sync of the store's commits, or anything else waiting for their upload.
     #[test]
     fn uploads_waited_for_end_with_their_segment_closed_for_room() {
-        let (_dir, _store, remote, epoch) = closed_for_room(idle());
+        let (_dir, crate::host_store::Opened { remote, .. }, epoch) = closed_for_room(idle());
         let (ended, end) = std::sync::mpsc::channel();
         std::thread::spawn(move || ended.send(remote.wait_uploaded(epoch)).unwrap());
         assert_eq!(end.recv_timeout(Duration::from_secs(30)), Ok(Ok(())));
-    }
-
-    /// TASK-79.19: a gather takes no more of the segments the store closed than may upload at once,
-    /// with those uploading; the rest it leaves in the store, until those it took are uploaded.
-    #[test]
-    fn gathers_take_what_may_upload_at_once() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = crate::host_store::create(&dir.path().join("store"), 1 << 30, 7).unwrap().store;
-        let store = Arc::new(store);
-        let bucket = Arc::new(Bucket::new(Arc::new(InMemory::new()), ""));
-        let remote = super::Remote::attach(store.clone(), bucket.clone(), 1, idle()).unwrap();
-        // Each commit closes its segment.
-        let closed = 2 * super::IN_FLIGHT + 1;
-        for sequence in 1..=closed as u64 {
-            let extent = super::ExtentId::new(7, sequence);
-            store.write(extent, 0, &pattern(sequence as u8, BLOCK)).unwrap();
-            store.close_segment().unwrap();
-            store.commit(None).unwrap();
-        }
-        let shared = &remote.shared;
-        let writer = shared.writer.get().unwrap().clone();
-        let mut in_flight = super::InFlight::new(shared.marker());
-        let mut taken = Vec::new();
-        while shared.gather(&writer, &mut in_flight, true).unwrap().took {
-            taken.push(in_flight.len());
-            super::RUNTIME.block_on(async {
-                while let Some(uploaded) = in_flight.next().await {
-                    uploaded.unwrap();
-                }
-                shared.acknowledged(&writer, &mut in_flight).await.unwrap();
-            });
-        }
-        assert_eq!(taken, [super::IN_FLIGHT, super::IN_FLIGHT, 1]);
-        let (extents, _) = uploaded(&bucket, 7);
-        let sequences: Vec<_> = extents.iter().map(|(sequence, _)| *sequence).collect();
-        assert_eq!(sequences, (1..=closed as u64).collect::<Vec<_>>());
     }
 
     /// A store's uploader holds its directory taken until it stops, after the store closed: the
@@ -1811,9 +549,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("store");
         let branch = crate::host_store::new_branch();
-        let store = Arc::new(crate::host_store::create(&path, 1 << 30, branch).unwrap().store);
-        let bucket = Arc::new(Bucket::new(Arc::new(InMemory::new()), ""));
-        let remote = super::Remote::attach(store.clone(), bucket, 1, idle()).unwrap();
+        let opened = crate::host_store::create(&path, 1 << 30, branch, idle()).unwrap();
+        let crate::host_store::Opened { store, remote, .. } = opened;
         assert!(!free(&path), "taken while the store is open");
         store.close().unwrap();
         assert!(!free(&path), "taken while its uploader runs");
@@ -1838,8 +575,13 @@ mod tests {
         let objects = Arc::new(ThrottledStore::new(InMemory::new(), config));
         let bucket = Arc::new(Bucket::new(objects, ""));
         let dir = tempfile::tempdir().unwrap();
-        let store = ExtentStore::create(dir.path().join("store"), 2 * WRITTEN).unwrap();
-        store.attach_remote(bucket, 1, super::Options::default()).unwrap();
+        let store = kept_in(
+            dir.path().join("store"),
+            (2 * WRITTEN, None),
+            &bucket,
+            extent_store::upload::Options::default(),
+        )
+        .unwrap();
         let data = noise(1, EXTENT);
         let (started, mut waited) = (std::time::Instant::now(), Duration::ZERO);
         for sequence in 1..=WRITTEN / EXTENT as u64 {
@@ -1870,12 +612,12 @@ mod tests {
     fn uploaded_segments_are_the_stores_files() {
         use extent_remote::layout::{self, Footer};
         let dir = tempfile::tempdir().unwrap();
-        let store = ExtentStore::create(dir.path().join("store"), 1 << 30).unwrap();
         let memory = Arc::new(InMemory::new());
         let bucket = Arc::new(Bucket::new(memory.clone(), ""));
         let cache = Arc::new(Cache::open(&dir.path().join("cache"), 1 << 30, 0).unwrap());
-        let options = super::Options { cache: Some(cache.clone()), ..idle() };
-        store.attach_remote(bucket.clone(), 1, options).unwrap();
+        let options = extent_store::upload::Options { cache: Some(cache.clone()), ..idle() };
+        let store =
+            kept_in(dir.path().join("store"), (1 << 30, None), &bucket.clone(), options).unwrap();
         let branch = store.branch();
         write(&store, 1, &pattern(1, BLOCK));
         write(&store, 2, &pattern(2, 4 << 20));
@@ -1950,9 +692,9 @@ mod tests {
     fn files_with_flipped_bytes_are_not_uploaded() {
         use extent_remote::layout;
         let dir = tempfile::tempdir().unwrap();
-        let store = ExtentStore::create(dir.path().join("store"), 1 << 30).unwrap();
         let bucket = Arc::new(Bucket::new(Arc::new(InMemory::new()), ""));
-        store.attach_remote(bucket.clone(), 1, idle()).unwrap();
+        let store =
+            kept_in(dir.path().join("store"), (1 << 30, None), &bucket.clone(), idle()).unwrap();
         let branch = store.branch();
         // Stored on its own, raw, as it doesn't compress.
         let extent = write(&store, 1, &noise(1, 4 << 20));
@@ -1976,12 +718,17 @@ mod tests {
     #[test]
     fn durable_commits_fail_once_another_takes_the_branch() {
         let dir = tempfile::tempdir().unwrap();
-        let store = ExtentStore::create(dir.path().join("store"), 1 << 30).unwrap();
         let bucket = Arc::new(Bucket::new(Arc::new(InMemory::new()), ""));
-        store.attach_remote(bucket.clone(), 1, idle()).unwrap();
+        let store =
+            kept_in(dir.path().join("store"), (1 << 30, None), &bucket.clone(), idle()).unwrap();
         write(&store, 1, &pattern(1, BLOCK));
         store.commit(None).unwrap();
-        let other = extent_remote::Writer::open(bucket.clone(), store.branch(), 2, 0);
+        let other = extent_remote::Writer::open(
+            bucket.clone(),
+            store.branch(),
+            2,
+            crate::host_store::token().unwrap(),
+        );
         futures::executor::block_on(other).unwrap();
         write(&store, 2, &pattern(2, BLOCK));
         assert_eq!(store.commit(None), Err(crate::Errno::EROFS));
@@ -1995,40 +742,35 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let bucket = Arc::new(Bucket::new(Arc::new(InMemory::new()), ""));
         let (first_path, second_path) = (dir.path().join("first"), dir.path().join("second"));
-        let first = ExtentStore::create(&first_path, 1 << 30).unwrap();
+        let first = kept_in(&first_path, (1 << 30, None), &bucket.clone(), idle()).unwrap();
         let branch = first.branch();
         ExtentStore::place(&first_path, 1).unwrap();
-        first.attach_remote(bucket.clone(), 1, idle()).unwrap();
         write(&first, 1, &pattern(1, BLOCK));
         first.commit(Some(b"first")).unwrap();
 
         // The branch moves to another host, a later placement, while the first still runs.
-        ExtentStore::create_for_branch(&second_path, 1 << 30, branch).unwrap();
+        drop(kept_in(&second_path, (1 << 30, Some(branch)), &bucket, idle()).unwrap());
         ExtentStore::place(&second_path, 2).unwrap();
-        let second = ExtentStore::open(&second_path).unwrap();
-        second.attach_remote(bucket.clone(), 2, idle()).unwrap();
+        let second = reopened(&second_path, idle()).unwrap();
         assert_eq!(second.root(), Ok(b"first".to_vec()));
         write(&first, 2, &pattern(2, BLOCK));
         assert_eq!(first.commit(None), Err(crate::Errno::EROFS));
         drop((first, second));
 
         // The first, restarted, takes it back no more: its token is the earlier.
-        let stale = ExtentStore::open(&first_path).unwrap();
-        let refused = stale.attach_remote(bucket.clone(), 3, idle());
-        assert_eq!(refused.err(), Some(super::Failure::Remote(extent_remote::Error::Stale)));
-        drop(stale);
+        let refused = reopened(&first_path, idle()).err().and_then(|err| err.errno());
+        assert_eq!(refused, Some(crate::Errno::ESTALE));
         let lease = futures::executor::block_on(extent_remote::Bucket::get(
             &*bucket,
             &extent_remote::layout::lease(branch),
         ));
         let lease: extent_remote::layout::Lease =
             extent_remote::layout::decode(&lease.unwrap().bytes).unwrap();
-        assert_eq!((lease.holder, lease.token), (2, 2));
+        assert_eq!(lease.token, 2);
 
         // Placed later still, it does.
         ExtentStore::place(&first_path, 3).unwrap();
-        let later = ExtentStore::open(&first_path).unwrap();
-        later.attach_remote(bucket.clone(), 4, idle()).unwrap();
+        let later = reopened(&first_path, idle()).unwrap();
         assert_eq!(later.root(), Ok(b"first".to_vec()));
     }
 
@@ -2040,18 +782,16 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let bucket = Arc::new(Bucket::new(Arc::new(InMemory::new()), ""));
         let (first_path, second_path) = (dir.path().join("first"), dir.path().join("second"));
-        let first = ExtentStore::create(&first_path, 1 << 30).unwrap();
+        let first = kept_in(&first_path, (1 << 30, None), &bucket.clone(), idle()).unwrap();
         let branch = first.branch();
         ExtentStore::place(&first_path, 1).unwrap();
-        first.attach_remote(bucket.clone(), 1, idle()).unwrap();
         write(&first, 1, &pattern(1, BLOCK));
         first.commit(Some(b"first")).unwrap();
         drop(first);
         // The branch moves to another host, a later placement.
-        ExtentStore::create_for_branch(&second_path, 1 << 30, branch).unwrap();
+        drop(kept_in(&second_path, (1 << 30, Some(branch)), &bucket, idle()).unwrap());
         ExtentStore::place(&second_path, 2).unwrap();
-        let second = ExtentStore::open(&second_path).unwrap();
-        second.attach_remote(bucket.clone(), 2, idle()).unwrap();
+        let second = reopened(&second_path, idle()).unwrap();
 
         let refused = ExtentStore::delete(&first_path, Some(&bucket));
         assert_eq!(refused.err().and_then(|err| err.errno()), Some(crate::Errno::ESTALE));
@@ -2074,9 +814,9 @@ mod tests {
     fn unplaced_copies_take_their_hosts_token() {
         let dir = tempfile::tempdir().unwrap();
         let bucket = Arc::new(Bucket::new(Arc::new(InMemory::new()), ""));
-        let store = ExtentStore::create(dir.path().join("store"), 1 << 30).unwrap();
-        let options = super::Options { token: 9, ..idle() };
-        store.attach_remote(bucket.clone(), 1, options).unwrap();
+        let options = extent_store::upload::Options { token: 9, ..idle() };
+        let store =
+            kept_in(dir.path().join("store"), (1 << 30, None), &bucket.clone(), options).unwrap();
         let lease = futures::executor::block_on(extent_remote::Bucket::get(
             &*bucket,
             &extent_remote::layout::lease(store.branch()),
@@ -2085,15 +825,56 @@ mod tests {
         assert_eq!(lease.token, 9);
     }
 
-    /// TASK-39.7: waiting for uploads returns once every commit so far is in the branch, and
-    /// refuses a store without a remote.
+    /// TASK-165.9: a store whose bucket acknowledged commits of its branch, opened where the
+    /// bucket has no such branch, deleted or another bucket, refuses (`ENOENT`), rather than make
+    /// the branch anew without them.
+    #[test]
+    fn stores_whose_bucket_lacks_their_branch_refuse() {
+        let dir = tempfile::tempdir().unwrap();
+        let bucket = Arc::new(Bucket::new(Arc::new(InMemory::new()), ""));
+        let path = dir.path().join("store");
+        let store = kept_in(&path, (1 << 30, None), &bucket, idle()).unwrap();
+        write(&store, 1, &pattern(1, BLOCK));
+        store.commit(Some(b"acknowledged")).unwrap();
+        drop(store);
+        let other = Arc::new(Bucket::new(Arc::new(InMemory::new()), ""));
+        naming(&path, &other);
+        let refused = reopened(&path, idle()).err().and_then(|err| err.errno());
+        assert_eq!(refused, Some(crate::Errno::ENOENT));
+        // Its own bucket named again, it opens as it was.
+        naming(&path, &bucket);
+        assert_eq!(reopened(&path, idle()).unwrap().root(), Ok(b"acknowledged".to_vec()));
+    }
+
+    /// TASK-192: a store dropped uploads what it committed, its open segment's commits too, as
+    /// `extent_store::upload`'s docs say: its uploader closes the open segment, uploads it and
+    /// stops, before the store closes. Before, the store closed first, and its uploader found the
+    /// open segment's commits it could no longer close.
+    #[test]
+    fn dropped_stores_upload_their_open_segments_commits() {
+        let dir = tempfile::tempdir().unwrap();
+        let bucket = Arc::new(Bucket::new(Arc::new(InMemory::new()), ""));
+        let store =
+            kept_in(dir.path().join("store"), (1 << 30, None), &bucket.clone(), idle()).unwrap();
+        let branch = store.branch();
+        write(&store, 1, &pattern(1, BLOCK));
+        store.commit_ordered(Some(b"ordered")).unwrap();
+        // Not uploaded yet: the uploader waits an hour, unless asked.
+        assert_eq!(uploaded(&bucket, branch), (vec![], None));
+        drop(store);
+        assert_eq!(
+            uploaded(&bucket, branch),
+            (vec![(1, pattern(1, BLOCK))], Some(b"ordered".to_vec()))
+        );
+    }
+
+    /// TASK-39.7: waiting for uploads returns once every commit so far is in the branch.
     #[test]
     fn waits_for_uploads() {
         let dir = tempfile::tempdir().unwrap();
         let bucket = Arc::new(Bucket::new(Arc::new(InMemory::new()), ""));
-        let store = ExtentStore::create(dir.path().join("store"), 1 << 30).unwrap();
-        assert_eq!(store.wait_uploaded(), Err(crate::Errno::ENOTSUP));
-        store.attach_remote(bucket.clone(), 1, idle()).unwrap();
+        let store =
+            kept_in(dir.path().join("store"), (1 << 30, None), &bucket.clone(), idle()).unwrap();
         write(&store, 1, &pattern(1, BLOCK));
         store.commit_ordered(Some(b"ordered")).unwrap();
         // Not uploaded yet: the uploader waits an hour, unless asked.
@@ -2406,12 +1187,13 @@ mod tests {
     /// While object storage is out of reach, commits go on until the lag reaches its bound, as
     /// `options` set it, two commits of a block each, then wait; they go on once it is in reach
     /// again.
-    fn waits_at_the_lag_bound(options: super::Options) {
+    fn waits_at_the_lag_bound(options: extent_store::upload::Options) {
         let dir = tempfile::tempdir().unwrap();
-        let store = Arc::new(ExtentStore::create(dir.path().join("store"), 1 << 30).unwrap());
         let gated = Arc::new(Gated::new());
         let bucket = Arc::new(Bucket::new(gated.clone(), ""));
-        store.attach_remote(bucket.clone(), 1, options).unwrap();
+        let store = Arc::new(
+            kept_in(dir.path().join("store"), (1 << 30, None), &bucket.clone(), options).unwrap(),
+        );
         gated.shut.store(true, std::sync::atomic::Ordering::Relaxed);
         for sequence in 1..=2 {
             write(&store, sequence, &pattern(sequence as u8, BLOCK));
@@ -2440,10 +1222,11 @@ mod tests {
     #[test]
     fn segments_upload_at_once() {
         let dir = tempfile::tempdir().unwrap();
-        let store = Arc::new(ExtentStore::create(dir.path().join("store"), 1 << 30).unwrap());
         let gated = Arc::new(Gated::new());
         let bucket = Arc::new(Bucket::new(gated.clone(), ""));
-        store.attach_remote(bucket.clone(), 1, idle()).unwrap();
+        let store = Arc::new(
+            kept_in(dir.path().join("store"), (1 << 30, None), &bucket.clone(), idle()).unwrap(),
+        );
         gated.hold.send_replace(Hold::Segments);
         let commits: Vec<_> = (1..=3)
             .map(|sequence| {
@@ -2473,14 +1256,15 @@ mod tests {
     #[test]
     fn uploads_done_close_no_segment_for_commits_no_one_waits_for() {
         let dir = tempfile::tempdir().unwrap();
-        let store = Arc::new(ExtentStore::create(dir.path().join("store"), 1 << 30).unwrap());
-        let branch = store.branch();
         let gated = Arc::new(Gated::new());
         let bucket = Arc::new(Bucket::new(gated.clone(), ""));
-        store.attach_remote(bucket.clone(), 1, idle()).unwrap();
+        let store = Arc::new(
+            kept_in(dir.path().join("store"), (1 << 30, None), &bucket.clone(), idle()).unwrap(),
+        );
+        let branch = store.branch();
         // The writer's fence is segment 0; the commits' are 1 to 4.
         gated.hold.send_replace(Hold::SegmentsFrom(1));
-        let waiting: Vec<_> = (1..=super::IN_FLIGHT as u64)
+        let waiting: Vec<_> = (1..=extent_store::upload::IN_FLIGHT as u64)
             .map(|sequence| {
                 let committing = store.clone();
                 let commit = std::thread::spawn(move || {
@@ -2491,7 +1275,7 @@ mod tests {
                 commit
             })
             .collect();
-        let ordered = super::IN_FLIGHT as u64 + 1;
+        let ordered = extent_store::upload::IN_FLIGHT as u64 + 1;
         write(&store, ordered, &pattern(ordered as u8, BLOCK));
         store.commit_ordered(None).unwrap();
         // The first lands alone: its commit is acknowledged; then the rest.
@@ -2507,7 +1291,7 @@ mod tests {
         let prefix = extent_remote::layout::segments(branch);
         let closed = futures::executor::block_on(extent_remote::Bucket::list(&*bucket, &prefix));
         let closed = closed.unwrap();
-        assert_eq!(closed.len(), super::IN_FLIGHT + 1);
+        assert_eq!(closed.len(), extent_store::upload::IN_FLIGHT + 1);
         store.wait_uploaded().unwrap();
         let (extents, _) = uploaded(&bucket, branch);
         let sequences: Vec<_> = extents.iter().map(|(sequence, _)| *sequence).collect();
@@ -2520,15 +1304,26 @@ mod tests {
     /// their uploads, are all in the branch, which another host's empty store takes, losing the
     /// lag's commits at most; and writes on. In the objects of `store` under `prefix`.
     fn survives_its_hosts_loss(store: Arc<dyn object_store::ObjectStore>, prefix: &str) {
+        use extent_remote::layout;
         use std::sync::atomic::Ordering::Relaxed;
         let dir = tempfile::tempdir().unwrap();
         let gated = Arc::new(Gated::over(store.clone()));
         let max_lag = 2;
-        let options =
-            super::Options { interval: Duration::from_millis(1), max_lag, ..Default::default() };
-        let lost = Arc::new(ExtentStore::create(dir.path().join("lost"), 1 << 30).unwrap());
+        let options = extent_store::upload::Options {
+            interval: Duration::from_millis(1),
+            max_lag,
+            ..Default::default()
+        };
+        let lost = Arc::new(
+            kept_in(
+                dir.path().join("lost"),
+                (1 << 30, None),
+                &Arc::new(Bucket::new(gated.clone(), prefix)),
+                options,
+            )
+            .unwrap(),
+        );
         let branch = lost.branch();
-        lost.attach_remote(Arc::new(Bucket::new(gated.clone(), prefix)), 1, options).unwrap();
         write(&lost, 1, &pattern(1, BLOCK));
         lost.commit(Some(b"durable")).unwrap();
         gated.shut.store(true, Relaxed);
@@ -2549,15 +1344,21 @@ mod tests {
         }
         assert!(!waiting.is_finished(), "a commit past the lag went on");
         // The uploader goes on, cut off: it closes the store's open segment, for the commit
-        // waiting or as its interval runs out, writing to the host's disk, and takes what it
-        // holds to upload, the waiting commit last, as its marker then names. Only from then on
-        // does nothing write to the disk, the uploads refused, never acknowledged: lost sooner,
-        // the disk would go as the uploader writes to it, which runs on, forgotten.
+        // waiting, writing to the host's disk, and takes the segment framed, the waiting commit
+        // last, to upload. Only from then on does nothing write to the disk, the uploads refused,
+        // never acknowledged: lost sooner, the disk would go as the uploader writes to it, which
+        // runs on, forgotten (TASK-165.9: the write-ahead log's segments, before a marker).
         let last = lost.committed().unwrap();
-        let marker = super::Marker::new(&dir.path().join("lost"), branch);
-        while !marker.read().unwrap().iter().any(|&tag| super::epoch_of(tag) == last) {
-            // Returned, the commit waiting says the uploader failed, whose marker never will.
-            assert!(!waiting.is_finished(), "the commit waiting returned, its upload not begun");
+        let segments = dir.path().join("lost").join(format!("segments/{branch:016x}"));
+        let framed = || -> Vec<u64> {
+            let files = std::fs::read_dir(&segments).into_iter().flatten();
+            let bytes = files.filter_map(|file| std::fs::read(file.unwrap().path()).ok());
+            let footers = bytes.filter_map(|bytes| layout::footer::<layout::Footer>(&bytes).ok());
+            footers.flat_map(|footer| footer.contents.commits).collect()
+        };
+        while !framed().iter().any(|&tag| extent_remote::layout::epoch_of(tag) == last) {
+            // Returned, the commit waiting says the uploader failed, which never framed it.
+            assert!(!waiting.is_finished(), "the commit waiting returned, its segment not framed");
             std::thread::yield_now();
         }
         // The host is lost: its store and uploader, forgotten, never reach object storage again,
@@ -2567,9 +1368,9 @@ mod tests {
         std::fs::remove_dir_all(dir.path().join("lost")).unwrap();
 
         let bucket = Arc::new(Bucket::new(store, prefix));
-        let taken = ExtentStore::create_for_branch(dir.path().join("taken"), 1 << 30, branch);
-        let taken = taken.unwrap();
-        taken.attach_remote(bucket.clone(), 2, idle()).unwrap();
+        let taken =
+            kept_in(dir.path().join("taken"), (1 << 30, Some(branch)), &bucket.clone(), idle())
+                .unwrap();
         assert_eq!(taken.root(), Ok(b"durable".to_vec()));
         let mut data = vec![0; BLOCK];
         let durable = ExtentId { branch, sequence: 1 };
@@ -2605,9 +1406,9 @@ mod tests {
     fn extents_freed_and_written_anew_survive_recovery() {
         let dir = tempfile::tempdir().unwrap();
         let bucket = Arc::new(Bucket::new(Arc::new(InMemory::new()), ""));
-        let lost = ExtentStore::create(dir.path().join("lost"), 1 << 30).unwrap();
+        let lost =
+            kept_in(dir.path().join("lost"), (1 << 30, None), &bucket.clone(), idle()).unwrap();
         let branch = lost.branch();
-        lost.attach_remote(bucket.clone(), 1, idle()).unwrap();
         let extent = write(&lost, 1, &pattern(1, BLOCK));
         lost.free(extent).unwrap();
         write(&lost, 1, &pattern(2, BLOCK));
@@ -2615,9 +1416,8 @@ mod tests {
         // The host is lost, what it committed in object storage.
         std::mem::forget(lost);
 
-        let taken = ExtentStore::create_for_branch(dir.path().join("taken"), 1 << 30, branch);
-        let taken = taken.unwrap();
-        taken.attach_remote(bucket, 2, idle()).unwrap();
+        let taken =
+            kept_in(dir.path().join("taken"), (1 << 30, Some(branch)), &bucket, idle()).unwrap();
         let mut data = vec![0; BLOCK];
         taken.read(extent, 0, &mut [crate::VolatileSliceMut::from(&mut data[..])]).unwrap();
         assert!(data == pattern(2, BLOCK), "the extent read back is not its second write");
@@ -2633,9 +1433,9 @@ mod tests {
         use extent_remote::store::Request;
         let dir = tempfile::tempdir().unwrap();
         let bucket = Arc::new(Bucket::new(Arc::new(InMemory::new()), ""));
-        let lost = ExtentStore::create(dir.path().join("lost"), 1 << 30).unwrap();
+        let lost =
+            kept_in(dir.path().join("lost"), (1 << 30, None), &bucket.clone(), idle()).unwrap();
         let branch = lost.branch();
-        lost.attach_remote(bucket.clone(), 1, idle()).unwrap();
         // Its writer's fence, then a segment of a MiB for each commit, uploaded as it is durable.
         for sequence in 1..=4 {
             write(&lost, sequence, &noise(sequence, 1 << 20));
@@ -2644,10 +1444,10 @@ mod tests {
         // The host is lost, its uploader stopping where it is, with no checkpoint.
         std::mem::forget(lost);
 
-        let taken = ExtentStore::create_for_branch(dir.path().join("taken"), 1 << 30, branch);
-        let taken = taken.unwrap();
         let before = bucket.stats();
-        taken.attach_remote(bucket.clone(), 2, idle()).unwrap();
+        let taken =
+            kept_in(dir.path().join("taken"), (1 << 30, Some(branch)), &bucket.clone(), idle())
+                .unwrap();
         let after = bucket.stats();
         let asked: Vec<_> = (Request::ALL.iter())
             .map(|&request| (request.name(), after.requests(request) - before.requests(request)))
@@ -2703,14 +1503,21 @@ mod tests {
     #[test]
     fn commits_wait_at_the_lag_bound() {
         let interval = Duration::from_millis(1);
-        waits_at_the_lag_bound(super::Options { interval, max_lag: 2, ..Default::default() });
+        waits_at_the_lag_bound(extent_store::upload::Options {
+            interval,
+            max_lag: 2,
+            ..Default::default()
+        });
     }
 
     #[test]
     fn commits_wait_at_the_lag_bound_in_bytes() {
         let interval = Duration::from_millis(1);
-        let options =
-            super::Options { interval, max_lag_bytes: 2 * BLOCK as u64, ..Default::default() };
+        let options = extent_store::upload::Options {
+            interval,
+            max_lag_bytes: 2 * BLOCK as u64,
+            ..Default::default()
+        };
         waits_at_the_lag_bound(options);
     }
 
@@ -2720,18 +1527,18 @@ mod tests {
     fn opens_branches_elsewhere() {
         let dir = tempfile::tempdir().unwrap();
         let bucket = Arc::new(Bucket::new(Arc::new(InMemory::new()), ""));
-        let first = ExtentStore::create(dir.path().join("first"), 1 << 30).unwrap();
+        let first =
+            kept_in(dir.path().join("first"), (1 << 30, None), &bucket.clone(), idle()).unwrap();
         let branch = first.branch();
-        first.attach_remote(bucket.clone(), 1, idle()).unwrap();
         let large = pattern(2, 4 << 20);
         write(&first, 1, &pattern(1, BLOCK));
         write(&first, 2, &large);
         first.commit(Some(b"root")).unwrap();
         drop(first);
 
-        let second = ExtentStore::create_for_branch(dir.path().join("second"), 1 << 30, branch);
-        let second = second.unwrap();
-        second.attach_remote(bucket.clone(), 2, idle()).unwrap();
+        let second =
+            kept_in(dir.path().join("second"), (1 << 30, Some(branch)), &bucket.clone(), idle())
+                .unwrap();
         assert_eq!(second.root(), Ok(b"root".to_vec()));
         let mut data = vec![0; 4 << 20];
         let extent = ExtentId { branch, sequence: 2 };
@@ -2743,12 +1550,15 @@ mod tests {
         second.commit(None).unwrap();
         drop(second);
 
-        let stale = ExtentStore::open(dir.path().join("first")).unwrap();
-        let refused = stale.attach_remote(bucket.clone(), 3, idle());
-        assert!(
-            matches!(refused, Err(super::Failure::Local(ref err)) if err.to_string().contains("moved on")),
-            "{refused:?}"
-        );
+        // fxdax: the first, opened again, its write-ahead log empty, takes the branch as it is
+        // (TASK-165.9): before, a store that held the branch refused once it moved on.
+        let first = reopened(dir.path().join("first"), idle()).unwrap();
+        assert_eq!(first.root(), Ok(b"root".to_vec()));
+        let mut data = vec![0; BLOCK];
+        let extent = ExtentId { branch, sequence };
+        first.read(extent, 0, &mut [crate::VolatileSliceMut::from(&mut data[..])]).unwrap();
+        assert_eq!(data, pattern(3, BLOCK));
+        drop(first);
         let (extents, root) = uploaded(&bucket, branch);
         assert_eq!(
             extents.iter().map(|(sequence, _)| *sequence).collect::<Vec<_>>(),
@@ -2757,50 +1567,52 @@ mod tests {
         assert_eq!(root, Some(b"root".to_vec()));
     }
 
-    /// Attaches `store` to the objects of `memory` through a [`Gated`] store holding the write of
-    /// its branch's lease, in a thread of its own: once the write waits, runs `meanwhile`, then lets
-    /// it go. Returns the store, and what attaching it gave.
-    fn attach_racing(
-        store: ExtentStore,
-        memory: &Arc<InMemory>,
-        holder: u64,
+    /// Opens the store at `path`, whose bucket's objects `gated` reaches, the write of its branch's
+    /// lease held until `meanwhile` ran.
+    fn open_racing(
+        path: std::path::PathBuf,
+        gated: &Arc<Gated>,
+        branch: u64,
         meanwhile: impl FnOnce(),
-    ) -> (ExtentStore, Result<(), super::Failure>) {
-        let gated = Arc::new(Gated::over(memory.clone()));
-        let lease = extent_remote::layout::lease(store.branch());
-        gated.hold.send_replace(Hold::Key(lease));
-        let bucket = Arc::new(Bucket::new(gated.clone(), ""));
-        let attaching = std::thread::spawn(move || {
-            let attached = store.attach_remote(bucket, holder, idle());
-            (store, attached)
-        });
+    ) -> Result<ExtentStore, crate::Error> {
+        gated.hold.send_replace(Hold::Key(extent_remote::layout::lease(branch)));
+        let opening = std::thread::spawn(move || reopened(path, idle()));
         gated.wait_held(1);
         meanwhile();
         gated.hold.send_replace(Hold::Nothing);
-        attaching.join().unwrap()
+        opening.join().unwrap()
     }
 
-    /// TASK-79.4: an empty store attaching takes the branch as of its lease, not as of what it
-    /// found before: the commit another writer made meanwhile, which frees the extent the branch
-    /// held before and writes another, is the branch's, and the store's.
+    /// The directory of a store of `branch` at `path`, its branch kept in `bucket`, made whole, and
+    /// not opened: what opening takes the branch into, as the bucket holds it.
+    fn made_for(path: &std::path::Path, branch: u64, bucket: &Arc<Bucket>) {
+        std::fs::create_dir(path).unwrap();
+        let description =
+            extent_store::Description { block_size: BLOCK as u32, capacity: 1 << 30, branch };
+        extent_store::create_host(path, description, &url_of(bucket), true).unwrap();
+        extent_store::made_host(path).unwrap();
+    }
+
+    /// TASK-79.4: a store opening takes the branch as of its lease, not as of what it found
+    /// before: the commit another writer made meanwhile, which frees the extent the branch held
+    /// before and writes another, is the branch's, and the store's.
     #[test]
     fn takes_take_what_the_branch_holds_once_leased() {
         let dir = tempfile::tempdir().unwrap();
-        let memory = Arc::new(InMemory::new());
-        let bucket = Arc::new(Bucket::new(memory.clone(), ""));
-        let first = ExtentStore::create(dir.path().join("first"), 1 << 30).unwrap();
+        let gated = Arc::new(Gated::new());
+        let bucket = Arc::new(Bucket::new(gated.clone(), ""));
+        let first = kept_in(dir.path().join("first"), (1 << 30, None), &bucket, idle()).unwrap();
         let branch = first.branch();
-        first.attach_remote(bucket.clone(), 1, idle()).unwrap();
         let before = write(&first, 1, &pattern(1, BLOCK));
         first.commit(Some(b"before")).unwrap();
 
-        let empty = ExtentStore::create_for_branch(dir.path().join("second"), 1 << 30, branch);
-        let (second, attached) = attach_racing(empty.unwrap(), &memory, 2, || {
+        made_for(&dir.path().join("second"), branch, &bucket);
+        let second = open_racing(dir.path().join("second"), &gated, branch, || {
             write(&first, 2, &pattern(2, BLOCK));
             first.free(before).unwrap();
             first.commit(Some(b"meanwhile")).unwrap();
         });
-        assert_eq!(attached, Ok(()));
+        let second = second.unwrap();
         assert_eq!(second.root(), Ok(b"meanwhile".to_vec()));
         let mut data = vec![0; BLOCK];
         let written = ExtentId { branch, sequence: 2 };
@@ -2812,45 +1624,69 @@ mod tests {
         );
     }
 
-    /// TASK-79.4: a store attaching whose last commit was the branch's before its lease, but is not
-    /// once it holds it, another writer having committed meanwhile, refuses: the commit is the
-    /// branch's, not undone by what the store holds.
+    /// TASK-79.4, TASK-165.9: a store whose write-ahead log holds commits the branch moved past
+    /// refuses to open (`ESTALE`), those commits never acknowledged: before its lease is taken, its
+    /// log diverged as recovery first finds the branch; and once it holds it, another writer having
+    /// committed between the two (`wal_follows`), having fenced that writer, whose commits stay the
+    /// branch's. `ExtentStore::take` drops the log, and opens the store as the branch is.
     #[test]
     fn stores_whose_branch_moved_on_before_their_lease_refuse() {
         let dir = tempfile::tempdir().unwrap();
-        let memory = Arc::new(InMemory::new());
-        let bucket = Arc::new(Bucket::new(memory.clone(), ""));
-        let first = ExtentStore::create(dir.path().join("first"), 1 << 30).unwrap();
+        let memory: Arc<dyn object_store::ObjectStore> = Arc::new(InMemory::new());
+        let gated = Arc::new(Gated::over(memory.clone()));
+        let bucket = Arc::new(Bucket::new(gated.clone(), ""));
+        // The first host's, through a gate of its own.
+        let dying = Arc::new(Gated::over(memory));
+        let lost = dir.path().join("lost");
+        let first =
+            kept_in(&lost, (1 << 30, None), &Arc::new(Bucket::new(dying.clone(), "")), idle());
+        let first = first.unwrap();
         let branch = first.branch();
-        first.attach_remote(bucket.clone(), 1, idle()).unwrap();
         write(&first, 1, &pattern(1, BLOCK));
         first.commit(Some(b"before")).unwrap();
+        // A commit its log holds, durable on its disk alone, as its host dies: restarted with its
+        // disk as it was, reaching the bucket again; what it had going does nothing more.
+        write(&first, 2, &pattern(2, BLOCK));
+        first.commit_ordered(Some(b"local")).unwrap();
+        first.flush().unwrap();
+        let path = dir.path().join("first");
+        restart(&lost, &path);
+        dying.sever();
         drop(first);
-        // The branch moves to another host, which takes it.
-        let taken = ExtentStore::create_for_branch(dir.path().join("taken"), 1 << 30, branch);
-        let taken = taken.unwrap();
-        taken.attach_remote(bucket.clone(), 2, idle()).unwrap();
+        naming(&path, &bucket);
 
-        let stale = ExtentStore::open(dir.path().join("first")).unwrap();
-        let info = taken.info().unwrap();
-        let sequence = info.next_sequence.max(info.sequence_floor);
-        let (_, refused) = attach_racing(stale, &memory, 3, || {
-            write(&taken, sequence, &pattern(2, BLOCK));
+        // The branch moves to another host, which takes it, as the bucket has it.
+        let taken = kept_in(dir.path().join("taken"), (1 << 30, Some(branch)), &bucket, idle());
+        let taken = taken.unwrap();
+        assert_eq!(taken.root(), Ok(b"before".to_vec()));
+        // Its writer's fence moved the branch past no commit: the first's log follows it still.
+        let opened = open_racing(path.clone(), &gated, branch, || {
+            let info = taken.info().unwrap();
+            let sequence = info.next_sequence.max(info.sequence_floor);
+            write(&taken, sequence, &pattern(3, BLOCK));
             taken.commit(Some(b"meanwhile")).unwrap();
         });
-        assert!(
-            matches!(refused, Err(super::Failure::Local(ref err)) if err.to_string().contains("moved on")),
-            "{refused:?}"
-        );
+        assert_eq!(opened.err().and_then(|err| err.errno()), Some(crate::Errno::ESTALE));
+        // The writer that committed meanwhile was fenced, its commit the branch's.
         let (extents, root) = uploaded(&bucket, branch);
-        assert_eq!(extents, [(1, pattern(1, BLOCK)), (sequence, pattern(2, BLOCK))]);
+        assert_eq!(extents.len(), 2);
         assert_eq!(root, Some(b"meanwhile".to_vec()));
+        drop(taken);
+        // Plainly diverged now, before the lease.
+        assert_eq!(
+            reopened(&path, idle()).err().and_then(|err| err.errno()),
+            Some(crate::Errno::ESTALE)
+        );
+        // Taken, its log dropped: the store holds the branch as it is, its local commit lost.
+        ExtentStore::take(&path, 1 << 30, branch, None).unwrap();
+        let first = reopened(&path, idle()).unwrap();
+        assert_eq!(first.root(), Ok(b"meanwhile".to_vec()));
     }
 
     /// A fork of a store kept in object storage is a fork of its branch there, recorded once the
     /// parent uploaded through it: it inherits the parent's extents rather than upload them again,
     /// and what either commits after is its own.
-    /// TASK-160.10: a point's store, once attached, which alone says it is one, refuses all that
+    /// TASK-160.10: a point's store, which its bucket says is one, refuses all that
     /// would change what it holds, with `EROFS`, whoever asks: writes, frees, commits, a resize,
     /// a writer taking it over. What changes none of its extents it
     /// does: it forks, and is made public. Before, it refused none of these itself, and a resize
@@ -2859,17 +1695,15 @@ mod tests {
     fn points_refuse_what_would_change_them() {
         let dir = tempfile::tempdir().unwrap();
         let bucket = Arc::new(Bucket::new(Arc::new(InMemory::new()), ""));
-        let source = ExtentStore::create(dir.path().join("source"), 1 << 30).unwrap();
-        source.attach_remote(bucket.clone(), 1, idle()).unwrap();
+        let source =
+            kept_in(dir.path().join("source"), (1 << 30, None), &bucket.clone(), idle()).unwrap();
         let extent = write(&source, 1, &pattern(1, BLOCK));
         source.commit(Some(b"root")).unwrap();
         let path = dir.path().join("point");
         source.point(&path, source.branch() + 1).unwrap();
         drop(source);
 
-        let point = ExtentStore::open(&path).unwrap();
-        assert_eq!(point.access().role, crate::StoreRole::Writer, "unattached, it can't know");
-        point.attach_remote(bucket.clone(), 2, idle()).unwrap();
+        let point = reopened(&path, idle()).unwrap();
         assert_eq!(point.access().role, crate::StoreRole::Point);
         let capacity = point.info().unwrap().capacity;
         let own = ExtentId { branch: point.branch(), sequence: 1 };
@@ -2894,8 +1728,8 @@ mod tests {
     fn forks_inherit_their_parents_extents() {
         let dir = tempfile::tempdir().unwrap();
         let bucket = Arc::new(Bucket::new(Arc::new(InMemory::new()), ""));
-        let parent = ExtentStore::create(dir.path().join("parent"), 1 << 30).unwrap();
-        parent.attach_remote(bucket.clone(), 1, idle()).unwrap();
+        let parent =
+            kept_in(dir.path().join("parent"), (1 << 30, None), &bucket.clone(), idle()).unwrap();
         let large = pattern(2, 4 << 20);
         let small = write(&parent, 1, &pattern(1, BLOCK));
         let own = write(&parent, 2, &large);
@@ -2932,8 +1766,7 @@ mod tests {
                 .collect::<Vec<_>>()
         };
 
-        let forked = ExtentStore::open(dir.path().join("child")).unwrap();
-        forked.attach_remote(bucket.clone(), 2, idle()).unwrap();
+        let forked = reopened(dir.path().join("child"), idle()).unwrap();
         let state =
             futures::executor::block_on(recover(&*bucket, child, Some(origin))).unwrap().state;
         assert_eq!(inherited(&state), [small.sequence, own.sequence]);
@@ -2967,8 +1800,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let gated = Arc::new(Gated::new());
         let bucket = Arc::new(Bucket::new(gated.clone(), ""));
-        let parent = Arc::new(ExtentStore::create(dir.path().join("parent"), 1 << 30).unwrap());
-        parent.attach_remote(bucket.clone(), 1, idle()).unwrap();
+        let parent = Arc::new(
+            kept_in(dir.path().join("parent"), (1 << 30, None), &bucket.clone(), idle()).unwrap(),
+        );
         let branch = parent.branch();
         write(&parent, 1, &pattern(1, BLOCK));
         parent.commit(Some(b"root")).unwrap();
@@ -3000,8 +1834,7 @@ mod tests {
         assert_eq!(later.join().unwrap(), Ok(()));
         fork.join().unwrap().unwrap();
 
-        let forked = ExtentStore::open(dir.path().join("child")).unwrap();
-        assert_eq!(forked.attach_remote(bucket.clone(), 2, idle()), Ok(()));
+        let forked = reopened(dir.path().join("child"), idle()).unwrap();
         assert_eq!(forked.root(), Ok(b"root".to_vec()));
     }
 
@@ -3014,9 +1847,9 @@ mod tests {
         for checkpointed in [false, true] {
             let dir = tempfile::tempdir().unwrap();
             let bucket = Arc::new(Bucket::new(Arc::new(InMemory::new()), ""));
-            let first = ExtentStore::create(dir.path().join("first"), 1 << 30).unwrap();
+            let first = kept_in(dir.path().join("first"), (1 << 30, None), &bucket.clone(), idle())
+                .unwrap();
             let branch = first.branch();
-            first.attach_remote(bucket.clone(), 1, idle()).unwrap();
             let sealed = write(&first, 1, &pattern(1, BLOCK));
             first.commit(Some(b"root")).unwrap();
             first.free(sealed).unwrap();
@@ -3030,9 +1863,8 @@ mod tests {
                 std::mem::forget(first);
             }
 
-            let taken = ExtentStore::create_for_branch(dir.path().join("taken"), 1 << 30, branch);
-            let taken = taken.unwrap();
-            taken.attach_remote(bucket, 2, idle()).unwrap();
+            let taken = kept_in(dir.path().join("taken"), (1 << 30, Some(branch)), &bucket, idle())
+                .unwrap();
             let data = pattern(3, BLOCK);
             let again = [crate::VolatileSlice::from(&data[..])];
             assert_eq!(taken.write(sealed, 0, &again), Err(crate::Errno::EPERM), "{checkpointed}");
@@ -3047,9 +1879,9 @@ mod tests {
     fn extents_sealed_and_freed_in_one_segment_are_spent_where_their_branch_is_taken() {
         let dir = tempfile::tempdir().unwrap();
         let bucket = Arc::new(Bucket::new(Arc::new(InMemory::new()), ""));
-        let first = ExtentStore::create(dir.path().join("first"), 1 << 30).unwrap();
+        let first =
+            kept_in(dir.path().join("first"), (1 << 30, None), &bucket.clone(), idle()).unwrap();
         let branch = first.branch();
-        first.attach_remote(bucket.clone(), 1, idle()).unwrap();
         let sealed = write(&first, 1, &pattern(1, BLOCK));
         first.commit_ordered(Some(b"root")).unwrap();
         first.free(sealed).unwrap();
@@ -3066,9 +1898,8 @@ mod tests {
         // Its host lost: the branch's state is its footers'.
         std::mem::forget(first);
 
-        let taken = ExtentStore::create_for_branch(dir.path().join("taken"), 1 << 30, branch);
-        let taken = taken.unwrap();
-        taken.attach_remote(bucket, 2, idle()).unwrap();
+        let taken =
+            kept_in(dir.path().join("taken"), (1 << 30, Some(branch)), &bucket, idle()).unwrap();
         assert_eq!(taken.write(sealed, 0, &again), Err(crate::Errno::EPERM));
     }
 
@@ -3081,9 +1912,9 @@ mod tests {
         for checkpointed in [false, true] {
             let dir = tempfile::tempdir().unwrap();
             let bucket = Arc::new(Bucket::new(Arc::new(InMemory::new()), ""));
-            let first = ExtentStore::create(dir.path().join("first"), 1 << 30).unwrap();
+            let first = kept_in(dir.path().join("first"), (1 << 30, None), &bucket.clone(), idle())
+                .unwrap();
             let branch = first.branch();
-            first.attach_remote(bucket.clone(), 1, idle()).unwrap();
             let recovered = || {
                 let recovered = recover(&*bucket, branch, None);
                 futures::executor::block_on(recovered).unwrap().state.capacity
@@ -3101,9 +1932,9 @@ mod tests {
                 std::mem::forget(first);
             }
 
-            let taken = ExtentStore::create_for_branch(dir.path().join("taken"), 1 << 30, branch);
-            let taken = taken.unwrap();
-            taken.attach_remote(bucket.clone(), 2, idle()).unwrap();
+            let taken =
+                kept_in(dir.path().join("taken"), (1 << 30, Some(branch)), &bucket.clone(), idle())
+                    .unwrap();
             assert_eq!(taken.info().unwrap().capacity, 3 << 29, "{checkpointed}");
             taken.set_capacity(1 << 31).unwrap();
             taken.commit(None).unwrap();
@@ -3120,9 +1951,9 @@ mod tests {
         use extent_remote::bucket::PutMode;
         let dir = tempfile::tempdir().unwrap();
         let bucket = Arc::new(Bucket::new(Arc::new(InMemory::new()), ""));
-        let first = ExtentStore::create(dir.path().join("first"), 1 << 30).unwrap();
+        let first =
+            kept_in(dir.path().join("first"), (1 << 30, None), &bucket.clone(), idle()).unwrap();
         let branch = first.branch();
-        first.attach_remote(bucket.clone(), 1, idle()).unwrap();
         write(&first, 1, &pattern(1, BLOCK));
         first.commit(Some(b"root")).unwrap();
         drop(first);
@@ -3138,45 +1969,17 @@ mod tests {
         };
         let before = listed();
 
-        let taken = ExtentStore::create_for_branch(dir.path().join("taken"), 1 << 30, branch);
-        let refused = taken.unwrap().attach_remote(bucket.clone(), 2, idle());
+        let taken = kept_in(dir.path().join("taken"), (1 << 30, Some(branch)), &bucket, idle());
+        let refused = taken.err().unwrap();
         let format = extent_remote::layout::FORMAT;
         let named = format!(
             "branch {branch:x} is of format {}, which this reader, of format {format}, doesn't \
              read",
             format + 1
         );
-        assert_eq!(refused.as_ref().map_err(ToString::to_string), Err(named));
-        let newer = extent_remote::Error::Format { branch, format: format + 1 };
-        assert_eq!(refused, Err(super::Failure::Remote(newer)));
+        assert!(format!("{refused:#}").contains(&named), "{refused:#}");
+        assert_eq!(refused.errno(), Some(crate::Errno::ENOTSUP));
         assert_eq!(listed(), before, "a branch of a newer format was written to");
-    }
-
-    /// TASK-79.20: a store that took its branch, its host crashing before its marker named the
-    /// branch's last commit, holds what the branch holds: attaching again, the branch is its own
-    /// still, and its marker names the commit again.
-    #[test]
-    fn takes_whose_marker_was_lost_attach_again() {
-        let dir = tempfile::tempdir().unwrap();
-        let bucket = Arc::new(Bucket::new(Arc::new(InMemory::new()), ""));
-        let first = ExtentStore::create(dir.path().join("first"), 1 << 30).unwrap();
-        let branch = first.branch();
-        first.attach_remote(bucket.clone(), 1, idle()).unwrap();
-        write(&first, 1, &pattern(1, BLOCK));
-        first.commit(Some(b"root")).unwrap();
-        drop(first);
-        let path = dir.path().join("taken");
-        let taken = ExtentStore::create_for_branch(&path, 1 << 30, branch).unwrap();
-        taken.attach_remote(bucket.clone(), 2, idle()).unwrap();
-        drop(taken);
-        let marker = path.join(super::marker(branch));
-        let named = std::fs::read_to_string(&marker).unwrap();
-        std::fs::remove_file(&marker).unwrap();
-
-        let taken = ExtentStore::open(&path).unwrap();
-        assert_eq!(taken.attach_remote(bucket.clone(), 3, idle()), Ok(()));
-        assert_eq!(std::fs::read_to_string(&marker).unwrap(), named);
-        assert_eq!(taken.root(), Ok(b"root".to_vec()));
     }
 
     /// Forks `parent`, attached to `bucket`, to `child`, whose handle is at `path`, the parent
@@ -3193,24 +1996,6 @@ mod tests {
         futures::executor::block_on(branch::record(&**bucket, child)).unwrap().unwrap()
     }
 
-    /// TASK-79.20: so does a fork's child whose marker was lost, its host crashing once its store
-    /// took the child's state, before the marker named the fork's commit: its store holds what its
-    /// branch inherited.
-    #[test]
-    fn forks_whose_marker_was_lost_attach() {
-        let dir = tempfile::tempdir().unwrap();
-        let bucket = Arc::new(Bucket::new(Arc::new(InMemory::new()), ""));
-        let parent = ExtentStore::create(dir.path().join("parent"), 1 << 30).unwrap();
-        parent.attach_remote(bucket.clone(), 1, idle()).unwrap();
-        let child = parent.branch() + 1;
-        forked(&parent, &bucket, &dir.path().join("child"), child);
-        std::fs::remove_file(dir.path().join("child").join(super::marker(child))).unwrap();
-
-        let forked = ExtentStore::open(dir.path().join("child")).unwrap();
-        assert_eq!(forked.attach_remote(bucket.clone(), 2, idle()), Ok(()));
-        assert_eq!(forked.root(), Ok(b"root".to_vec()));
-    }
-
     /// TASK-79.78: a fork to a child it made before, as a fork retried to another path, fails
     /// having made nothing, the bucket having the child's record: no commit of the parent's names
     /// the child again, from another point, which its writers, finding the child forked twice,
@@ -3219,8 +2004,8 @@ mod tests {
     fn forks_to_a_child_forked_before_make_nothing() {
         let dir = tempfile::tempdir().unwrap();
         let bucket = Arc::new(Bucket::new(Arc::new(InMemory::new()), ""));
-        let parent = ExtentStore::create(dir.path().join("parent"), 1 << 30).unwrap();
-        parent.attach_remote(bucket.clone(), 1, idle()).unwrap();
+        let parent =
+            kept_in(dir.path().join("parent"), (1 << 30, None), &bucket.clone(), idle()).unwrap();
         let child = parent.branch() + 1;
         forked(&parent, &bucket, &dir.path().join("child"), child);
         let again = dir.path().join("again");
@@ -3231,40 +2016,11 @@ mod tests {
         assert_eq!(errno, Err(Some(crate::Errno::EEXIST)));
         drop(parent);
 
-        let parent = ExtentStore::open(dir.path().join("parent")).unwrap();
-        assert_eq!(parent.attach_remote(bucket.clone(), 2, idle()), Ok(()));
+        let parent = reopened(dir.path().join("parent"), idle()).unwrap();
         let parents = futures::executor::block_on(recover(&*bucket, parent.branch(), None));
         let forks = parents.unwrap().state.forks;
         let forks: Vec<_> = forks.iter().map(|fork| (fork.child, fork.at, fork.point)).collect();
         assert_eq!(forks, [(child, 2, false)]);
-    }
-
-    /// TASK-165.7: a fork is the bucket's, made by the store's uploader: a store with none, opened
-    /// where no daemon serves it, attaches one to the bucket its description names to fork
-    /// (`ExtentStore::kept_in_bucket`), which then keeps its branch there. The bucket has the
-    /// parent's commit naming the child, and the child's record; the child holds what the parent
-    /// did. Before, it forked nothing (`ENOTSUP`, GCE r701's fxfs-guest-import).
-    #[test]
-    fn stores_with_no_uploader_attach_one_to_fork() {
-        let dir = tempfile::tempdir().unwrap();
-        let parent = ExtentStore::create(dir.path().join("parent"), 1 << 30).unwrap();
-        let extent = write(&parent, 1, &pattern(1, BLOCK));
-        parent.commit(Some(b"root")).unwrap();
-        assert!(parent.remote().is_none());
-        let path = dir.path().join("child");
-        let child = parent.branch() + 1;
-        parent.fork(&path, child).unwrap();
-        assert!(parent.remote().is_some());
-        let bucket = parent.bucket().clone();
-        let record = futures::executor::block_on(extent_remote::branch::record(&*bucket, child));
-        let origin = record.unwrap().unwrap().origin().map(|origin| origin.parent);
-        assert_eq!(origin, Some(parent.branch()));
-        drop(parent);
-        let forked = ExtentStore::open(&path).unwrap();
-        assert_eq!(forked.root().unwrap(), b"root");
-        let mut read = vec![0; BLOCK];
-        forked.read(extent, 0, &mut [crate::VolatileSliceMut::from(&mut read[..])]).unwrap();
-        assert_eq!(read, pattern(1, BLOCK));
     }
 
     /// TASK-165.7: a fork whose host crashed as its segment uploaded leaves no store of its child
@@ -3295,14 +2051,18 @@ mod tests {
         // Its fork goes on unseen, in a copy of the bucket only it reaches, as a dead host's.
         gated.sever();
         gated.shut.store(false, std::sync::atomic::Ordering::Relaxed);
-        let next = extent_remote::Writer::open(bucket.clone(), branch, 3, 0);
+        let next = extent_remote::Writer::open(
+            bucket.clone(),
+            branch,
+            3,
+            crate::host_store::token().unwrap(),
+        );
         futures::executor::block_on(next).unwrap();
         let record = futures::executor::block_on(branch::record(&*bucket, child)).unwrap();
         let origin = extent_remote::layout::Origin { parent: branch, at: 2 };
         assert_eq!(record.map(|record| record.origin()), Some(Some(origin)));
-        let taken = ExtentStore::create_for_branch(dir.path().join("taken"), 1 << 30, child);
+        let taken = kept_in(dir.path().join("taken"), (1 << 30, Some(child)), &bucket, idle());
         let taken = taken.unwrap();
-        assert_eq!(taken.attach_remote(bucket.clone(), 4, idle()), Ok(()));
         assert_eq!(taken.root(), Ok(b"root".to_vec()));
         let mut data = vec![0; BLOCK];
         let extent = ExtentId { branch, sequence: 1 };
@@ -3373,11 +2133,18 @@ mod tests {
             let memory: Arc<dyn object_store::ObjectStore> = Arc::new(InMemory::new());
             let (gated, next) = (Gated::over(memory.clone()), Gated::over(memory.clone()));
             let (gated, next) = (Arc::new(gated), Arc::new(next));
-            let parent = Arc::new(ExtentStore::create(dir.join("parent"), 1 << 30).unwrap());
-            parent.attach_remote(Arc::new(Bucket::new(gated.clone(), "")), 1, idle()).unwrap();
+            let parent = Arc::new(
+                kept_in(
+                    dir.join("parent"),
+                    (1 << 30, None),
+                    &Arc::new(Bucket::new(gated.clone(), "")),
+                    idle(),
+                )
+                .unwrap(),
+            );
             let branch = parent.branch();
             write(&parent, 1, &pattern(1, BLOCK));
-            write(&parent, Self::OWN, &pattern(2, super::LARGE as usize));
+            write(&parent, Self::OWN, &pattern(2, (4 << 20) as usize));
             parent.commit(Some(b"root")).unwrap();
             let forking = extent_remote::layout::segment(branch, 2);
             gated.hold.send_replace(Hold::Key(forking.clone()));
@@ -3390,7 +2157,12 @@ mod tests {
             gated.wait_held(1);
             let taking = {
                 let bucket = Arc::new(Bucket::new(next.clone(), ""));
-                let taking = extent_remote::Writer::open(bucket, branch, 3, 0);
+                let taking = extent_remote::Writer::open(
+                    bucket,
+                    branch,
+                    3,
+                    crate::host_store::token().unwrap(),
+                );
                 std::thread::spawn(move || futures::executor::block_on(taking).map(drop))
             };
             next.wait_held(1);
@@ -3472,54 +2244,6 @@ mod tests {
         assert_eq!(failed.record().map(unowned), Some(live));
     }
 
-    /// TASK-184: two writers of one file of a store's directory at once each write a new file of
-    /// their own, the second writing while the first has written its own and not yet put it in
-    /// place, as two writes of a marker. Sharing one, the second truncated the first's and removed
-    /// it, or renamed it, from under it: the uploader's write failed (`ENOENT`), stopping its
-    /// uploads. (Its cases of a fork's claim went with claims, TASK-165.7.)
-    #[test]
-    fn writers_of_one_file_at_once_each_write_their_own() {
-        use super::marker;
-        type Wrote = Result<bool, String>;
-        /// What `first` gives, and `second`, which writes as `first` has written its new file;
-        /// and what is left in `dir`.
-        fn at_once(
-            dir: &std::path::Path,
-            first: impl FnOnce() -> Wrote,
-            second: impl FnOnce() -> Wrote + Send + 'static,
-        ) -> (Wrote, Option<Wrote>, Vec<String>) {
-            let (second, gave) = (Mutex::new(Some(second)), Arc::new(Mutex::new(None)));
-            let guard = {
-                let gave = gave.clone();
-                // Once: the second's own new file passes here too.
-                fail::FailGuard::with_callback("remote::written", move || {
-                    let second = second.lock().unwrap().take();
-                    if let Some(second) = second {
-                        *gave.lock().unwrap() = Some(second());
-                    }
-                })
-                .unwrap()
-            };
-            let first = first();
-            drop(guard);
-            let left = std::fs::read_dir(dir).unwrap();
-            let mut left: Vec<_> =
-                left.map(|entry| entry.unwrap().file_name().into_string().unwrap()).collect();
-            left.sort();
-            (first, gave.lock().unwrap().take(), left)
-        }
-
-        // Two writes of a marker: the one renamed last stays.
-        let dir = tempfile::tempdir().unwrap();
-        let marked = |dir: &std::path::Path, tag: u64| {
-            let marker = super::Marker::new(dir, 3);
-            move || marker.write(Some(tag), []).map(|()| true).map_err(|err| err.to_string())
-        };
-        let gave = at_once(dir.path(), marked(dir.path(), 1), marked(dir.path(), 2));
-        assert_eq!(gave, (Ok(true), Some(Ok(true)), vec![marker(3)]));
-        assert_eq!(super::Marker::new(dir.path(), 3).read().unwrap(), [1]);
-    }
-
     /// The record of a branch no fork made, its store's own, of no parent, but for its owner
     /// ([`unowned`]).
     fn own_record() -> extent_remote::record::Record {
@@ -3535,8 +2259,7 @@ mod tests {
     /// The store of another branch, `branch`, at `path`, attached to `bucket`, holding an extent
     /// and a root: what a guest may name as its fork's child.
     fn others(path: &std::path::Path, bucket: &Arc<Bucket>, branch: u64) -> ExtentStore {
-        let others = ExtentStore::create_for_branch(path, 1 << 30, branch).unwrap();
-        others.attach_remote(bucket.clone(), 2, idle()).unwrap();
+        let others = kept_in(path, (1 << 30, Some(branch)), &bucket.clone(), idle()).unwrap();
         write(&others, 1, &pattern(3, BLOCK));
         others.commit(Some(b"other")).unwrap();
         others
@@ -3567,8 +2290,8 @@ mod tests {
     fn forks_to_a_branch_the_bucket_has_fail_with_eexist() {
         let dir = tempfile::tempdir().unwrap();
         let bucket = Arc::new(Bucket::new(Arc::new(InMemory::new()), ""));
-        let parent = ExtentStore::create(dir.path().join("parent"), 1 << 30).unwrap();
-        parent.attach_remote(bucket.clone(), 1, idle()).unwrap();
+        let parent =
+            kept_in(dir.path().join("parent"), (1 << 30, None), &bucket.clone(), idle()).unwrap();
         let other = parent.branch() + 1;
         let others = others(&dir.path().join("other"), &bucket, other);
         write(&parent, 1, &pattern(1, BLOCK));
@@ -3594,8 +2317,15 @@ mod tests {
         gated: &Arc<Gated>,
         path: &std::path::Path,
     ) -> (u64, u64, Forking) {
-        let parent = Arc::new(ExtentStore::create(dir.join("parent"), 1 << 30).unwrap());
-        parent.attach_remote(Arc::new(Bucket::new(gated.clone(), "")), 1, idle()).unwrap();
+        let parent = Arc::new(
+            kept_in(
+                dir.join("parent"),
+                (1 << 30, None),
+                &Arc::new(Bucket::new(gated.clone(), "")),
+                idle(),
+            )
+            .unwrap(),
+        );
         let branch = parent.branch();
         write(&parent, 1, &pattern(1, BLOCK));
         parent.commit(Some(b"root")).unwrap();
@@ -3639,8 +2369,7 @@ mod tests {
 
         let record = futures::executor::block_on(branch::record(&*bucket, child)).unwrap();
         assert_eq!((record.map(unowned), live(&others, &bucket)), (Some(own_record()), lives()));
-        let parent = ExtentStore::open(dir.path().join("parent")).unwrap();
-        assert_eq!(parent.attach_remote(bucket.clone(), 3, idle()), Ok(()));
+        let parent = reopened(dir.path().join("parent"), idle()).unwrap();
         parent.commit(Some(b"later")).unwrap();
         assert_eq!(parent.wait_uploaded(), Ok(()));
     }
@@ -3654,8 +2383,8 @@ mod tests {
     fn forks_failed_once_committed_leave_their_child_no_branch() {
         let dir = tempfile::tempdir().unwrap();
         let bucket = Arc::new(Bucket::new(Arc::new(InMemory::new()), ""));
-        let parent = ExtentStore::create(dir.path().join("parent"), 1 << 30).unwrap();
-        parent.attach_remote(bucket.clone(), 1, idle()).unwrap();
+        let parent =
+            kept_in(dir.path().join("parent"), (1 << 30, None), &bucket.clone(), idle()).unwrap();
         write(&parent, 1, &pattern(1, BLOCK));
         parent.commit(Some(b"root")).unwrap();
         let child = parent.branch() + 1;
@@ -3683,55 +2412,6 @@ mod tests {
         assert_eq!(forked, Err(unflushed));
     }
 
-    /// A marker names the last commit uploaded, or none, and those uploading, and reads back so;
-    /// with none written, it names nothing.
-    #[test]
-    fn markers_name_what_was_uploaded_and_what_uploads() {
-        let dir = tempfile::tempdir().unwrap();
-        let marker = super::Marker::new(dir.path(), 7);
-        let text = || std::fs::read_to_string(dir.path().join(super::marker(7))).unwrap();
-        assert_eq!(marker.read(), Ok(vec![]));
-        marker.write(None, []).unwrap();
-        assert_eq!((text(), marker.read()), ("-\n".to_owned(), Ok(vec![])));
-        marker.write(Some(0x1a), [0x1b, 0x2c]).unwrap();
-        assert_eq!((text(), marker.read()), ("1a 1b 2c\n".to_owned(), Ok(vec![0x1a, 0x1b, 0x2c])));
-    }
-
-    /// The marker names every segment uploading, those before too, before any of their uploads
-    /// goes; an acknowledgement takes every segment through the writer's last acknowledged, and the
-    /// marker names, from then on, the branch's last commit and those still uploading. One that
-    /// takes none leaves the marker as it was.
-    #[test]
-    fn segments_uploading_are_marked_until_acknowledged() {
-        let dir = tempfile::tempdir().unwrap();
-        let bucket = Arc::new(Bucket::new(Arc::new(InMemory::new()), ""));
-        let writer = futures::executor::block_on(async {
-            branch::create(&*bucket, 7, 0).await.unwrap();
-            extent_remote::Writer::open(bucket.clone(), 7, 1, 0).await.unwrap()
-        });
-        let writer = Arc::new(writer);
-        let path = dir.path().join(super::marker(7));
-        let text = || std::fs::read_to_string(&path).unwrap();
-        let mut in_flight = super::InFlight::new(super::Marker::new(dir.path(), 7));
-        let uploading =
-            |seq, tag| super::Uploading { seq, number: seq + 10, tag, forks: false };
-        in_flight.upload(&writer, vec![uploading(3, 0x13)]).unwrap();
-        assert_eq!((text(), in_flight.len()), ("- 13\n".to_owned(), 1));
-        in_flight.upload(&writer, vec![uploading(4, 0x14), uploading(5, 0x15)]).unwrap();
-        assert_eq!((text(), in_flight.len()), ("- 13 14 15\n".to_owned(), 3));
-
-        assert!(in_flight.acknowledged(None, None).unwrap().is_empty());
-        let acked = in_flight.acknowledged(Some(4), Some(0x14)).unwrap();
-        let acked: Vec<_> = acked.iter().map(|segment| (segment.seq, segment.number)).collect();
-        assert_eq!(acked, [(3, 13), (4, 14)]);
-        assert_eq!(text(), "14 15\n");
-        std::fs::write(&path, "kept\n").unwrap();
-        assert!(in_flight.acknowledged(Some(4), Some(0x14)).unwrap().is_empty());
-        assert_eq!(text(), "kept\n");
-        // Their uploads are in flight still, which the run loop finishes.
-        assert_eq!(in_flight.len(), 3);
-    }
-
     /// A store of a branch taken elsewhere keeps what it reads from the bucket in the host's cache,
     /// and reads it there next.
     #[test]
@@ -3739,19 +2419,19 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let memory = Arc::new(InMemory::new());
         let bucket = Arc::new(Bucket::new(memory.clone(), ""));
-        let first = ExtentStore::create(dir.path().join("first"), 1 << 30).unwrap();
+        let cache = Arc::new(Cache::open(&dir.path().join("cache"), 1 << 30, 0).unwrap());
+        let options = extent_store::upload::Options { cache: Some(cache.clone()), ..idle() };
+        let first =
+            kept_in(dir.path().join("first"), (1 << 30, None), &bucket.clone(), idle()).unwrap();
         let branch = first.branch();
-        first.attach_remote(bucket.clone(), 1, idle()).unwrap();
         let data = pattern(2, 2 << 20);
         let extent = write(&first, 1, &data);
         first.commit(None).unwrap();
         drop(first);
 
-        let cache = Arc::new(Cache::open(&dir.path().join("cache"), 1 << 30, 0).unwrap());
-        let second = ExtentStore::create_for_branch(dir.path().join("second"), 1 << 30, branch);
-        let second = second.unwrap();
-        let options = super::Options { cache: Some(cache.clone()), ..idle() };
-        second.attach_remote(bucket.clone(), 2, options).unwrap();
+        let second =
+            kept_in(dir.path().join("second"), (1 << 30, Some(branch)), &bucket.clone(), options)
+                .unwrap();
         let read = || {
             let mut read = vec![0; 2 << 20];
             second.read(extent, 0, &mut [crate::VolatileSliceMut::from(&mut read[..])]).unwrap();

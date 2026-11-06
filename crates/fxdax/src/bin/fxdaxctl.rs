@@ -258,15 +258,11 @@ impl Command {
         }
         match self {
             Self::Take { dir, capacity, branch, token } => {
-                ExtentStore::create_for_branch(&dir, capacity, branch)?;
-                if let Some(token) = token {
-                    ExtentStore::place(&dir, token)?;
-                }
+                ExtentStore::take(&dir, capacity, branch, token)?;
             }
             Self::Place { dir, token } => ExtentStore::place(&dir, token)?,
             Self::Sync { dir } => {
                 let store = ExtentStore::open(&dir)?;
-                attach(&store)?;
                 store.wait_uploaded()?;
             }
             Self::Import { dir, capacity, image, reference } => {
@@ -276,7 +272,6 @@ impl Command {
             }
             Self::Fork { src, dst, point } => {
                 let store = ExtentStore::open(&src)?;
-                attach(&store)?;
                 let branch = rand::random::<u64>().max(1);
                 if point {
                     store.point(&dst, branch)?;
@@ -292,9 +287,8 @@ impl Command {
             Self::Drop { dir } => ExtentStore::delete(&dir, None)?,
             Self::Resize { dir, capacity } => {
                 let store = ExtentStore::open(&dir)?;
-                // Attached, which says whether it is a point, whose capacity changes nowhere
+                // Opened, it says whether it is a point, whose capacity changes nowhere
                 // (TASK-160.10).
-                attach(&store)?;
                 if capacity < store.info()?.capacity {
                     bail!(
                         "shrinking a store needs its guest to agree: resize it through the \
@@ -439,12 +433,4 @@ fn main() -> anyhow::Result<()> {
         Some(socket) => command.through(socket.as_ref()),
         None => command.locally(),
     }
-}
-
-/// Keeps `store`'s branch in the bucket its description names, as this host's placement.
-fn attach(store: &ExtentStore) -> anyhow::Result<()> {
-    let token = fxdax::remote::host_token()?;
-    let options = fxdax::remote::Options { token, ..Default::default() };
-    store.attach_remote(store.bucket().clone(), rand::random(), options)?;
-    Ok(())
 }

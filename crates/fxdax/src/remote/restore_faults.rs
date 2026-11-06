@@ -11,7 +11,7 @@
 //! point; every other host restores it still; and nothing is left once everything is deleted.
 
 use super::fork_faults::{self, Leftover, MISHAPS, commit, host, options};
-use super::tests::{Gated, Mishap, restart};
+use super::tests::{Gated, Mishap, kept_in, naming, reopened, restart};
 use crate::faults::RESTORE_STEPS;
 use crate::{Errno, ExtentId, ExtentStore, StoreRole};
 use extent_remote::layout::{self, Kind};
@@ -101,9 +101,9 @@ impl Hosts {
         for disk in &disks {
             std::fs::create_dir(disk).unwrap();
         }
-        let source = ExtentStore::create(disks[0].join("parent"), 1 << 30).unwrap();
-        source.attach_remote(reached(0), rand::random(), options()).unwrap();
-        let lens = [fork_faults::BLOCK, super::LARGE as usize];
+        let source = kept_in(disks[0].join("parent"), (1 << 30, None), &reached(0), options());
+        let source = source.unwrap();
+        let lens = [fork_faults::BLOCK, 4 << 20];
         let held = commit(&source, 1, &lens, b"root");
         let point = crate::host_store::new_branch();
         source.point(disks[0].join("point"), point).unwrap();
@@ -121,10 +121,9 @@ impl Hosts {
         for (host, disk) in disks.iter().enumerate() {
             let path = copy_at(host, disk);
             let copy = match host {
-                0 => ExtentStore::open(&path).unwrap(),
-                _ => ExtentStore::create_for_branch(&path, 1 << 30, point).unwrap(),
+                0 => reopened(&path, options()).unwrap(),
+                _ => kept_in(&path, (1 << 30, Some(point)), &reached(host), options()).unwrap(),
             };
-            copy.attach_remote(reached(host), rand::random(), options()).unwrap();
             assert_eq!(copy.access().role, StoreRole::Point, "host {host} holds no point");
             copies.push(Some(Arc::new(copy)));
         }
@@ -170,8 +169,8 @@ impl Hosts {
         let mut held = self.held.clone();
         held.sort();
         assert!(read == held, "{case}: fork {child:x} holds other extents");
-        let store = ExtentStore::open(path).unwrap();
-        store.attach_remote(self.bucket.clone(), rand::random(), options()).unwrap();
+        naming(path, &self.bucket);
+        let store = reopened(path, options()).unwrap();
         assert_eq!(store.root(), Ok(b"root".to_vec()), "{case}");
         let own = commit(&store, 5, &[fork_faults::BLOCK], b"child");
         assert_eq!(store.wait_uploaded(), Ok(()), "{case}");
@@ -295,10 +294,10 @@ impl Hosts {
         if dead {
             self.copies[host] = None;
             self.disks[host] = self.restarted();
-            let copy = ExtentStore::open(copy_at(host, &self.disks[host])).unwrap();
-            let attached = copy.attach_remote(self.bucket.clone(), rand::random(), options());
-            match attached {
-                Ok(()) => self.copies[host] = Some(Arc::new(copy)),
+            let path = copy_at(host, &self.disks[host]);
+            naming(&path, &self.bucket);
+            match reopened(&path, options()) {
+                Ok(copy) => self.copies[host] = Some(Arc::new(copy)),
                 Err(err) => {
                     assert!(self.deleted.load(Ordering::SeqCst), "{case}: the copy: {err}");
                 }
@@ -321,10 +320,8 @@ impl Hosts {
         let handle = self.disks[host].join("child");
         let told = forked.is_ok() && !self.dead.load(Ordering::SeqCst);
         let opened = || {
-            let store = ExtentStore::open(&handle).map_err(|err| err.to_string())?;
-            store
-                .attach_remote(self.bucket.clone(), rand::random(), options())
-                .map_err(|err| err.to_string())
+            naming(&handle, &self.bucket);
+            reopened(&handle, options()).map(drop).map_err(|err| err.to_string())
         };
         if told || handle.exists() && leftover == Leftover::Opened && opened().is_ok() {
             self.children.lock().unwrap().push((child, handle.clone()));

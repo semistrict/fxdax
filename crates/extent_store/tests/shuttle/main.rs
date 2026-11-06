@@ -40,8 +40,11 @@
 
 #![cfg(feature = "shuttle")]
 
-use extent_frame::segment::{Chain, Child};
-use extent_store::{Description, File as _, MemDir, Options, RemoteData, Rules, Store, set_rules};
+use extent_frame::segment::{Chain, Child, Footer};
+use extent_remote::wal::Fenced;
+use extent_store::{
+    Description, File as _, MemDir, Opening, Options, RemoteData, Rules, Store, set_rules,
+};
 use shuttle::scheduler::{PctScheduler, RandomScheduler, ReplayScheduler};
 use shuttle::sync::Mutex;
 use shuttle::sync::atomic::{AtomicBool, Ordering};
@@ -65,13 +68,12 @@ const OPTIONS: Options = Options {
     segment_size: 3 * BLOCK as u64,
     segment_age: std::time::Duration::from_secs(3600),
     large_extent: 4 * BLOCK as u64,
-    checkpoint_after: 4 << 10,
     open_files: 2,
     view_lag: None,
     view_kept_bytes: None,
 };
 /// The chain of a writer of the branch in object storage, whose segments the store closes.
-const WRITER: Chain = Chain::new(BRANCH, 1, 0, None, 0);
+const WRITER: Chain = Chain::new(BRANCH, 0, 0, None, 0);
 
 /// The schedules each test runs, randomly and by PCT: some seconds; `SHUTTLE_SOAK` multiplies them.
 fn runs() -> usize {
@@ -133,40 +135,38 @@ enum Follow {
     Reopen,
 }
 
-/// A run of the writer, the closer and a follower: the writer's steps, how the follower follows,
-/// and whether an uploader runs with them.
+/// A run of the writer, the closer, the uploader and a follower: the writer's steps, and how the
+/// follower follows.
 #[derive(Clone, Copy)]
 struct Run {
     steps: &'static [Step],
     follow: Follow,
-    uploading: bool,
 }
 
 /// The writer, the closer, the uploader and a follower.
-const RUN: Run = Run { steps: STEPS, follow: Follow::Advance, uploading: true };
+const RUN: Run = Run { steps: STEPS, follow: Follow::Advance };
 
 /// One run: the writer, the closer, the uploader and a follower, then the checks.
 fn run() {
     run_with(RUN);
 }
 
-/// One run without the uploader, which keeps frees too, so that only views keep them.
+/// One run of the writer, the closer, the uploader and a follower: fxdax: the uploader
+/// acknowledging what it takes, the bucket keeps nothing of the frees past their segments'
+/// acknowledgements, so that views alone keep them then (TASK-165.9).
 fn following() {
-    run_with(Run { uploading: false, ..RUN });
+    run_with(RUN);
 }
 
-/// One run without the uploader, its follower reopening its view.
+/// One run as [`following`]'s, its follower reopening its view.
 fn reopening() {
-    run_with(Run { uploading: false, follow: Follow::Reopen, ..RUN });
+    run_with(Run { follow: Follow::Reopen, ..RUN });
 }
 
-fn run_with(Run { steps, follow, uploading }: Run) {
+fn run_with(Run { steps, follow }: Run) {
     let dir = MemDir::new();
     let description = Description { block_size: BLOCK as u32, capacity: 1 << 20, branch: BRANCH };
     let store = Arc::new(Store::create(dir.clone(), description, OPTIONS).unwrap());
-    if uploading {
-        assert!(store.upload(WRITER, 0, None).unwrap());
-    }
     // What the store holds as of each commit, by epoch, the writer's record.
     let history = Arc::new(Mutex::new(vec![Holds::new()]));
     let written = Arc::new(AtomicBool::new(false));
@@ -222,7 +222,7 @@ fn run_with(Run { steps, follow, uploading }: Run) {
     // uploaded, which the store reads in the bucket once acknowledged there.
     let taken = Arc::new(Mutex::new(0));
     let bucket = Bucket::default();
-    let uploader = uploading.then(|| {
+    let uploader = {
         let (store, dir, history, written, taken, forked, bucket) = (
             store.clone(),
             dir.clone(),
@@ -260,23 +260,8 @@ fn run_with(Run { steps, follow, uploading }: Run) {
                     // and the host crashing now, the store recovers at least the commit.
                     let after = *taken.lock().unwrap();
                     for epoch in after + 1..=last {
-                        let (before, holds) = (held(epoch - 1), held(epoch));
-                        for (extent, data) in &holds {
-                            if before.get(extent) == Some(data) {
-                                continue;
-                            }
-                            let mut read = vec![0; data.len()];
-                            let kept = |read: &mut [u8]| store.read_kept(*extent, 0, read);
-                            bucket.read(&mut read, kept).unwrap_or_else(|error| {
-                                panic!("{extent:?} of commit {epoch}: {error:#}")
-                            });
-                            assert!(
-                                &read == data,
-                                "{extent:?} of commit {epoch} reads other data than was written"
-                            );
-                        }
                         for seed in [epoch, epoch + 100] {
-                            let crashed = Store::open(dir.crash(seed), OPTIONS).unwrap();
+                            let crashed = bucket.reopen(dir.crash(seed));
                             let recovered = crashed.epoch().unwrap();
                             assert!(
                                 recovered >= epoch,
@@ -290,6 +275,7 @@ fn run_with(Run { steps, follow, uploading }: Run) {
                     let data = extent_frame::data(&closed.bytes().unwrap()).unwrap();
                     let own: BTreeMap<_, _> = closed.own_bytes().unwrap().into_iter().collect();
                     bucket.put(bucket_key(&closed), data.to_vec());
+                    bucket.acknowledge(closed.footer.clone());
                     for (key, bytes) in &own {
                         bucket.put(key.clone(), extent_frame::data(bytes).unwrap().to_vec());
                     }
@@ -302,16 +288,11 @@ fn run_with(Run { steps, follow, uploading }: Run) {
                         (extent, location.len, data)
                     });
                     // Each extent its footer names, as its last commit left it: in it, or in a
-                    // file of its own, and for the uploader, though freed since.
+                    // file of its own of the write-ahead log, though freed since (TASK-165.9).
                     for (extent, len, uploaded) in in_segment.chain(on_their_own) {
-                        let mut data = vec![0; len as usize];
-                        let kept = |read: &mut [u8]| store.read_kept(extent, 0, read);
-                        bucket.read(&mut data, kept).unwrap_or_else(|error| {
-                            panic!("{extent:?} of commit {last}: {error:#}")
-                        });
                         assert!(
-                            Some(&data) == holds.get(&extent) && uploaded == data,
-                            "{extent:?} of commit {last} reads other data than was written"
+                            Some(&uploaded) == holds.get(&extent) && uploaded.len() as u64 == len,
+                            "{extent:?} of commit {last} uploads other data than was written"
                         );
                     }
                     // A fork's ends at the fork, as the fork's commit closed it (doc-7, Forks).
@@ -327,10 +308,9 @@ fn run_with(Run { steps, follow, uploading }: Run) {
                             "a fork's segment ends after the fork: at commit {last}, of {fork}"
                         );
                     }
-                    // Uploaded: the commits it holds are released, whose frees its extents' own
-                    // files may be of, and it may go.
-                    store.release(last).unwrap();
-                    store.acknowledged(closed.number, &bucket_key(&closed)).unwrap();
+                    // Uploaded: acknowledged, the frees of its commits, whose extents' own files it
+                    // may name, are the bucket's, and it may go.
+                    store.acknowledged(closed.number).unwrap();
                 }
                 if done {
                     return;
@@ -338,7 +318,7 @@ fn run_with(Run { steps, follow, uploading }: Run) {
                 thread::yield_now();
             }
         })
-    });
+    };
 
     // A follower (TASK-42.2): reads, through a view, every extent the commit it is of holds, as
     // the writer recorded it, though freed since; advances; and pins an extent the writer frees
@@ -439,9 +419,7 @@ fn run_with(Run { steps, follow, uploading }: Run) {
 
     writer.join().unwrap();
     closer.join().unwrap();
-    if let Some(uploader) = uploader {
-        uploader.join().unwrap();
-    }
+    uploader.join().unwrap();
     follower.join().unwrap();
 
     // The store holds what the writer's last commit left, and nothing it freed.
@@ -457,7 +435,7 @@ fn run_with(Run { steps, follow, uploading }: Run) {
     // Crashed, at any of these points, the store recovers at least what the uploader took.
     let taken = *taken.lock().unwrap();
     for seed in 0..4 {
-        let crashed = Store::open(dir.crash(seed), OPTIONS).unwrap();
+        let crashed = bucket.reopen(dir.crash(seed));
         let epoch = crashed.epoch().unwrap();
         assert!(epoch >= taken, "crash {seed}: recovered commit {epoch}, uploaded {taken}");
     }
@@ -468,13 +446,34 @@ fn run_with(Run { steps, follow, uploading }: Run) {
 }
 
 /// fxdax: what the uploader uploaded, as far as the store's reads need it once their data is in
-/// the bucket: each object's data, unframed, by its key (TASK-165.8).
+/// the bucket: each object's data, unframed, by its key (TASK-165.8); and the footers the uploader
+/// acknowledged, in order, the branch's history there, which a crash's store opens as of
+/// (TASK-165.9).
 #[derive(Clone, Default)]
-struct Bucket(Arc<Mutex<BTreeMap<String, Vec<u8>>>>);
+struct Bucket(Arc<Mutex<BTreeMap<String, Vec<u8>>>>, Arc<Mutex<Vec<Footer>>>);
 
 impl Bucket {
     fn put(&self, key: String, data: Vec<u8>) {
         self.0.lock().unwrap().insert(key, data);
+    }
+
+    /// The segment whose footer is `footer` is acknowledged: the branch's from now on.
+    fn acknowledge(&self, footer: Footer) {
+        self.1.lock().unwrap().push(footer);
+    }
+
+    /// The store in `dir`, opened as the bucket holds its branch: its acknowledged footers
+    /// replayed, its writer's chain after them.
+    fn reopen(&self, dir: MemDir) -> Store<MemDir> {
+        let (mut state, mut chain) = (extent_remote::State::new(BRANCH), WRITER);
+        for footer in self.1.lock().unwrap().iter() {
+            assert!(state.apply(footer), "the footers acknowledged follow each other");
+            chain = chain.admit(footer).unwrap();
+        }
+        let last = state.last_commit;
+        let fenced = Fenced { recovered: last, last_commit: last, chain };
+        let opening = Opening { state, fenced: Some(fenced), cache: None };
+        Store::recover(dir).unwrap().open(OPTIONS, opening).unwrap()
     }
 
     /// `read`, a read of an extent from its start into `buf`; or, its data being in the bucket,
@@ -513,7 +512,6 @@ fn bucket_key<F>(closed: &extent_store::Closed<F>) -> String {
 fn racing() {
     let description = Description { block_size: BLOCK as u32, capacity: 1 << 20, branch: BRANCH };
     let store = Arc::new(Store::create(MemDir::new(), description, OPTIONS).unwrap());
-    assert!(store.upload(WRITER, 0, None).unwrap());
     // Extents of one block, in segments, and of four, in a file of its own.
     const WRITES: [(u64, usize); 3] = [(1, 1), (2, 4), (3, 1)];
     let writer = {
@@ -573,7 +571,6 @@ fn rolling_over() {
     let dir = MemDir::new();
     let description = Description { block_size: BLOCK as u32, capacity: 1 << 20, branch: BRANCH };
     let store = Arc::new(Store::create(dir.clone(), description, ROLLING).unwrap());
-    assert!(store.upload(WRITER, 0, None).unwrap());
     const EXTENTS: u64 = 6;
     let writer = {
         let store = store.clone();
@@ -701,10 +698,6 @@ fn uploading_during_flushes() {
     let uploader = {
         let store = store.clone();
         thread::spawn(move || {
-            // A commit between the snapshot and the start, and the uploader starts again.
-            while !store.upload(WRITER, store.epoch().unwrap(), None).unwrap() {
-                thread::yield_now();
-            }
             store.close_now().unwrap();
             for closed in store.closed(usize::MAX).unwrap() {
                 let crashed = Store::open(dir.crash(closed.last()), OPTIONS).unwrap();
@@ -886,17 +879,20 @@ fn check_framed(store: &Store<Stalling>, failure: &str) {
 
 /// One run of a guest's requests while a closing between commits frames the open segment, which
 /// stalls (TASK-41.1): the store serves its writes, reads and commits meanwhile, holding none of
-/// its locks as it frames, as a commit's closing does not. Shuttle, whose waits that can't end are
-/// deadlocks it reports, finds so.
+/// its locks as it frames, as a commit's closing does not; fxdax: a commit's durability waits for
+/// the framings of the segments closed before it, which a crash must find whole (TASK-165.9).
+/// Shuttle, whose waits that can't end are deadlocks it reports, finds so.
 fn serving_during_a_framing() {
     let (dir, store) = framing_stalls();
     let closing = spawn_closing(&store);
     dir.wait_until_stalled();
     store.write(extent(2), 0, &pattern(2, BLOCK)).unwrap();
     check_framed(&store, "a read while a closing between commits frames");
-    store.commit(None).unwrap();
+    // fxdax: ordered; durable once the segments closed before it are framed (TASK-165.9).
+    store.commit_ordered(None).unwrap();
     dir.let_go(Ok(()));
     closing.join().unwrap();
+    store.flush().unwrap();
     check_framed(&store, "a read once a closing between commits framed");
 }
 
@@ -925,7 +921,9 @@ fn closing_during_a_framing() {
 /// stalls, fails, while those of the segments its later commits closed, and a commit after it took
 /// them, go on (TASK-79.99): the flush waits for each it took before it says it failed, and the
 /// branch's closing for the rest, so that another store, opening the branch, frames their segments
-/// again from their raw files only once nothing else frames them.
+/// again from their raw files only once nothing else frames them. Since framings are one queue
+/// (TASK-165.9), those after the failed one fail with it, framing nothing: no schedule fails
+/// without `close_waits_for_framings` here, which [`closing_during_a_framing`] shows needed.
 fn closing_after_a_failed_flush() {
     let (dir, store) = framing_stalls();
     // Each commit fills the open segment, and closes it: the first, whose framing stalls.
@@ -1035,7 +1033,6 @@ fn uploading_what_a_closing_for_room_closed() {
     let dir = MemDir::new();
     let description = Description { block_size: BLOCK as u32, capacity: 1 << 20, branch: BRANCH };
     let store = Arc::new(Store::create(dir, description, ROLLING).unwrap());
-    assert!(store.upload(WRITER, 0, None).unwrap());
     store.write(extent(1), 0, &pattern(1, BLOCK)).unwrap();
     store.commit(None).unwrap();
     // As an uploader gathers for a commit waiting for it: what is closed, closing the rest.
@@ -1061,42 +1058,37 @@ fn uploading_what_a_closing_for_room_closed() {
     assert_eq!(taken, [1], "no commit's segment reached the uploader");
 }
 
-/// One run of a guest's requests while the flush of a commit whose record is a checkpoint writes
-/// it, and the creation of the index file it begins stalls, as on a slow disk (TASK-92.56): the
-/// commit took what it holds, holding the store's state, and its flush makes its file and encodes
-/// it holding none of the store's locks but its own. So the store serves its writes, reads and
-/// commits meanwhile, which a commit doing that, holding the state, held up 89-143 ms of a load's;
-/// Shuttle, whose waits that can't end are deadlocks it reports, finds so. Both commits are
-/// durable after, in their order.
-fn serving_during_a_checkpoint() {
+/// One run of a guest's requests while the flush of a commit, its record appended to the open
+/// segment's log, stalls at its barrier, as on a slow disk: a flush holds none of the store's locks
+/// but its own as it makes commits durable (TASK-92.56, TASK-165.9). So the store serves its
+/// writes, reads and commits meanwhile; Shuttle, whose waits that can't end are deadlocks it
+/// reports, finds so. Both commits are durable after, in their order.
+fn serving_during_a_flush() {
     let dir = Stalling::new();
     let description = Description { block_size: BLOCK as u32, capacity: 1 << 20, branch: BRANCH };
-    // A checkpoint at each commit.
-    let options = Options { checkpoint_after: 0, ..OPTIONS };
-    let store = Arc::new(Store::create(dir.clone(), description, options).unwrap());
+    let store = Arc::new(Store::create(dir.clone(), description, OPTIONS).unwrap());
     store.write(extent(1), 0, &pattern(1, BLOCK)).unwrap();
-    // Index file 0 is the store's creation's, 1 its opening's: the commit's checkpoint begins 2.
-    dir.arm(Op::Create, &format!("index/{BRANCH:016x}/{:016x}", 2));
+    dir.arm(Op::Barrier, "");
     let committing = {
         let store = store.clone();
         thread::spawn(move || store.commit(None).unwrap())
     };
     dir.wait_until_stalled();
     store.write(extent(2), 0, &pattern(2, BLOCK)).unwrap();
-    check_checkpointed(&store, "a read while a checkpoint is written");
+    check_flushed(&store, "a read while a flush syncs");
     store.commit_ordered(None).unwrap();
     dir.let_go(Ok(()));
     committing.join().unwrap();
     store.flush().unwrap();
     drop(store);
-    let reopened = Store::open(dir, options).unwrap();
+    let reopened = Store::open(dir, OPTIONS).unwrap();
     assert_eq!(reopened.epoch().unwrap(), 2, "the commits made durable were not");
-    check_checkpointed(&reopened, "the branch opened again");
+    check_flushed(&reopened, "the branch opened again");
 }
 
-/// Reads extents 1 and 2 of a store [`serving_during_a_checkpoint`] wrote, through `store`, which
-/// must be as written.
-fn check_checkpointed(store: &Store<Stalling>, failure: &str) {
+/// Reads extents 1 and 2 of a store [`serving_during_a_flush`] wrote, through `store`, which must
+/// be as written.
+fn check_flushed(store: &Store<Stalling>, failure: &str) {
     for sequence in 1..=2 {
         let mut read = vec![0; BLOCK];
         let reading = store.read(extent(sequence), 0, &mut read);
@@ -1216,9 +1208,9 @@ fn uploads_of_what_a_closing_for_room_closed_by_pct() {
 }
 
 #[test]
-fn requests_served_during_a_checkpoint_by_pct() {
+fn requests_served_during_a_flush_by_pct() {
     set_rules(Rules::ALL);
-    Runner::new(PctScheduler::new(3, runs()), config()).run(serving_during_a_checkpoint);
+    Runner::new(PctScheduler::new(3, runs()), config()).run(serving_during_a_flush);
 }
 
 #[test]
@@ -1248,14 +1240,11 @@ fn replay() {
             "commit_waits_for_writes" => rules.commit_waits_for_writes = false,
             "recheck_after_waiting" => rules.recheck_after_waiting = false,
             "drop_writes_to_freed_extents" => rules.drop_writes_to_freed_extents = false,
-            "durable_only" => rules.durable_only = false,
-            "durable_once_synced" => rules.durable_once_synced = false,
             "close_waits_for_flushes" => rules.close_waits_for_flushes = false,
             "close_waits_for_framings" => rules.close_waits_for_framings = false,
             "framings_end_themselves" => rules.framings_end_themselves = false,
             "keep_frees_for_views" => rules.keep_frees_for_views = false,
             "keep_pins" => rules.keep_pins = false,
-            "decide_at_publish" => rules.decide_at_publish = false,
             "views_refuse_later_extents" => rules.views_refuse_later_extents = false,
             "views_hold_their_commit" => rules.views_hold_their_commit = false,
             other => panic!("SHUTTLE_RULES_OFF names no rule {other:?}"),
@@ -1347,7 +1336,7 @@ fn needs_frees_kept() {
 #[test]
 fn needs_closes_to_wait_for_writers() {
     let rules = Rules { close_waits_for_writers: false, ..Rules::ALL };
-    fails_without(rules, &["reads other data"], run);
+    fails_without(rules, &["other data than was written"], run);
 }
 
 /// Commits sealing extents writes in progress write to: what they write lands after the seal, in
@@ -1388,19 +1377,6 @@ fn needs_writes_to_freed_extents_dropped() {
     fails_without(rules, &expected, freeing_during_a_write);
 }
 
-#[test]
-fn needs_durable_commits_only() {
-    fails_without(Rules { durable_only: false, ..Rules::ALL }, &["before durable"], run);
-}
-
-/// Commits a flush has taken counted durable before it syncs them: an uploader beginning meanwhile
-/// takes a segment of commits a crash then loses.
-#[test]
-fn needs_commits_durable_once_synced() {
-    let rules = Rules { durable_once_synced: false, ..Rules::ALL };
-    fails_without(rules, &["before durable"], uploading_during_flushes);
-}
-
 /// The branch closing while a flush is in flight, as if nothing were left to flush: a crash then
 /// loses commits made before it closed.
 #[test]
@@ -1416,17 +1392,6 @@ fn needs_closes_to_wait_for_flushes() {
 fn needs_closes_to_wait_for_framings() {
     let rules = Rules { close_waits_for_framings: false, ..Rules::ALL };
     fails_without(rules, &["raced the branch's closing"], closing_during_a_framing);
-}
-
-/// The branch's closing, after a failed flush, not waiting for the framings of the flush's later
-/// commits, and of those it didn't take (TASK-79.99): another store, opening the branch, frames
-/// their segments again meanwhile, from their raw files, and finds a framed file made, or its own
-/// removed. Every framing counted, whatever closed it, the closing waits for each, as it does for
-/// one between commits (TASK-153.8).
-#[test]
-fn needs_closes_to_wait_for_framings_after_a_failed_flush() {
-    let rules = Rules { close_waits_for_framings: false, ..Rules::ALL };
-    fails_without(rules, &["after a failed flush"], closing_after_a_failed_flush);
 }
 
 /// A closing for want of room framed only by the next commit, as its end was driven by what came
@@ -1450,14 +1415,6 @@ fn needs_frees_kept_for_views() {
 fn needs_pins_kept() {
     let rules = Rules { keep_pins: false, ..Rules::ALL };
     fails_without(rules, &["a view's read of pinned"], following);
-}
-
-/// What a commit's frees keep decided apart from its publishing: a view opening between the two,
-/// as of the commit before, finds an extent it holds freed and gone.
-#[test]
-fn needs_frees_decided_as_commits_are_published() {
-    let rules = Rules { decide_at_publish: false, ..Rules::ALL };
-    fails_without(rules, &["a view's read of"], reopening);
 }
 
 /// Views reading frees kept for others from before their commits: a follower, reading what its

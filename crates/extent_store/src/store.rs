@@ -7,28 +7,26 @@
 use crate::dir::{Dir, File, not_found, read_file};
 use crate::durability::{Batch, Durability, Syncs};
 use crate::framed::{Aligned, Framed, Packed, Part, Source, Unpacked, read_aligned};
-use crate::index::{
-    Appended, IndexLog, IndexTail, IndexWrite, Recovered, rebuild, recover, write_checkpoint,
-};
 use crate::kept::{Kept, KeptExtents};
 use crate::layout::{
-    Change, Checkpoint, DESCRIPTION, Data, Delta, Description, EXTENTS, Extent, FileKey, INDEX,
-    OPEN_EXTENTS, OPEN_SEGMENTS, Piece, Place, Record, SEGMENTS, SegmentId, StoreFile, add_piece,
-    branch_dir, create_branch_dirs, encode, extent_path, files_of, list_numbers, open_extent_path,
-    segment_path,
+    Change, DESCRIPTION, Data, Description, EXTENTS, Extent, Extents, FileKey, KINDS, OPEN_EXTENTS,
+    Piece, Place, SegmentId, StoreFile, add_piece, branch_dir, create_branch_dirs, encode,
+    extent_path, files_of, list_numbers, open_extent_path, segment_path,
 };
-use crate::segments::{Segments, Unframed, close_left_open};
+use crate::segments::{Reaped, Segments, Unframed, footer_last};
 use crate::state::{
-    Gate, Locked, OwnFiles, Placement, Reader, Space, State, Uncommitted, Unreferenced,
-    uploader_keeps,
+    Framing, Gate, Locked, OwnFiles, Placement, Reader, Space, State, Uncommitted, Unreferenced,
 };
 use crate::sync::{Condvar, Mutex, MutexGuard, rules, spawn_or_return};
-use crate::uploads::{Closed, Snapshot, Uploads};
+use crate::uploads::Closed;
 use crate::views::{Limits, Sealed, View, Views};
+use crate::wal::{BaseFile, Queue, Queued, Recovered, SegmentLog};
 use anyhow::{Context as _, Error, anyhow, bail, ensure};
-use extent_frame::segment::{Chain, Child, Location};
+use extent_frame::segment::{Chain, Child, Contents, Footer, Location, epoch_of};
 use extent_remote::cache::Cache;
-use std::collections::{BTreeMap, HashMap};
+use extent_remote::recovery::{Places, Seal};
+use extent_remote::wal::{Fenced, Wal};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io;
 use std::sync::Arc;
 use std::time::Duration;
@@ -107,9 +105,6 @@ pub struct Options {
     /// The size from which an extent is stored in a file of its own: one sealed at that length or
     /// more.
     pub large_extent: u64,
-    /// The bytes of deltas an index file holds after which a commit starts another, with a
-    /// checkpoint.
-    pub checkpoint_after: u64,
     /// How many segments' files the store keeps open between reads.
     pub open_files: usize,
     /// fxdax: how long a view ([`Store::view`]) may lag behind the commits after its own before
@@ -137,7 +132,6 @@ impl Default for Options {
             segment_size: 32 << 20,
             segment_age: Duration::from_secs(60),
             large_extent: 4 << 20,
-            checkpoint_after: 16 << 20,
             open_files: 64,
             view_lag: None,
             view_kept_bytes: None,
@@ -154,7 +148,9 @@ pub struct Info {
     pub used: u64,
     /// The bytes it can still take.
     pub available: u64,
-    /// One more than the highest sequence number of the store's branch's extents, freed or not.
+    /// One more than the highest sequence number of the store's branch's extents, freed or not
+    /// since it opened; and, as it opened, of those it held. fxdax: those freed before, the
+    /// writer's floor is past, each opening's writer minting past its own (doc-7, Fencing).
     pub next_sequence: u64,
     /// fxdax: of the bytes its extents hold, those of the extents its branch wrote, rather than
     /// inherited from the branches it was forked from, which may share them still (TASK-49).
@@ -205,10 +201,15 @@ pub struct Store<D: Dir> {
     /// When its commits are durable: those ordered that no flush has taken yet, oldest first, for
     /// [`Store::flush`] to make durable, and the last that is.
     durability: Mutex<Durability<Pending<D::File>>>,
-    /// Held by a flush: commits become durable in order. fxdax: and where their records go in the
-    /// index, which each flush writes after the last's, a checkpoint made and encoded only then,
-    /// holding no other lock (TASK-92.56).
-    flushing: Mutex<IndexTail<D::File>>,
+    /// Held by a flush: commits become durable in order. fxdax: and the log of the open segment
+    /// they last appended their records to, where the next go if it is still open (TASK-165.9).
+    flushing: Mutex<SegmentLog<D::File>>,
+    /// fxdax: the base of its write-ahead log, written as segments are acknowledged, before their
+    /// files leave (TASK-165.9).
+    base: Mutex<BaseFile>,
+    /// fxdax: the host's cache of the bucket's objects, if it has one: what the bucket acknowledged
+    /// of the store's goes into it (TASK-165.8).
+    cache: Option<Arc<Cache>>,
     /// Notified when the open segment has no write in progress, and when it closed: what
     /// [`Store::close_now`] and the writes it holds up wait for; fxdax: and as each framing of a
     /// segment ends, which flushes, the uploader, forks and the branch's closing wait for.
@@ -246,14 +247,16 @@ pub struct DirHold<D: Dir> {
 struct Pending<F> {
     /// The files whose data it refers to, and the directories whose entries changed, to sync.
     syncs: Syncs<F>,
-    /// Its record in the index.
-    write: IndexWrite,
+    /// fxdax: its record, its contents, and the open segment it is to be appended to the log of,
+    /// unless that segment closed by then, its framed file then holding it (TASK-165.9).
+    record: Option<(SegmentId, Vec<u8>)>,
     /// The files of the branch's alone it made unreferenced ([`Unreferenced::doomed`]): they go
     /// once it is durable.
     doomed: Vec<String>,
     /// fxdax: the files of the segments acknowledged in the bucket it let go of, with their keys
-    /// there: they leave for the host's cache once it is durable (TASK-165.8).
-    leaving: Vec<(String, String)>,
+    /// there if they are the objects there: they leave for the host's cache with its flush
+    /// (TASK-165.8).
+    leaving: Vec<(String, Option<String>)>,
     /// fxdax: the segment it closed, if any, being framed: it is durable once that is, which its
     /// flush waits for, its data being in it (TASK-153.8).
     closed: Option<SegmentId>,
@@ -304,20 +307,6 @@ impl<D: Dir> Drop for Write<'_, D> {
     }
 }
 
-/// A branch's state, rebuilt from its newest checkpoint and the footers of its closed segments
-/// after it ([`Store::rebuild`]): as of its last commit a closed segment holds, if one does.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Rebuilt {
-    pub epoch: u64,
-    pub root: Vec<u8>,
-    pub next_sequence: u64,
-    /// The extents, with their lengths and where they are, in order.
-    pub extents: Vec<(ExtentId, u64, Place)>,
-    /// fxdax: the sequence numbers of its own extents it freed once sealed, which it writes no
-    /// more ([`Store::spent`], TASK-160.15).
-    pub spent: extent_frame::spent::Spent,
-}
-
 /// Where `entry`'s data is.
 fn place_of(entry: &Extent) -> Place {
     match &entry.data {
@@ -353,75 +342,192 @@ fn framing_ended<F: File>(
     }
 }
 
-impl<D: Dir> Store<D> {
-    /// Makes a new, empty store in `dir`, which holds no store, as `description` describes, and
-    /// opens it.
-    pub fn create(dir: D, description: Description, options: Options) -> Result<Self, Error> {
-        Self::create_kept(dir, description, None, options)
+/// fxdax: the file a store's directory holds until its maker made it whole, which opening it
+/// refuses ([`Unmade`]): written before its description, removed once whole ([`Store::made`]), as
+/// an import fills it, so that a maker dying part way leaves no store that opens (TASK-196).
+pub(crate) const UNMADE: &str = "unmade";
+
+/// fxdax: the error of opening a store whose maker never made it whole ([`UNMADE`], TASK-196).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("the store was never made whole: its maker stopped part way")]
+pub struct Unmade;
+
+/// fxdax: what the bucket holds of the branch a store opens (doc-14, Opening a store;
+/// TASK-165.9): its state, as recovery found it once its writer held its lease and fenced it,
+/// where the writer found its end ([`Fenced`]), which the store's write-ahead log is put after,
+/// and its writer's chain there, which stamps the store's footers from then on; or, for a point,
+/// its state alone, which nothing writes. And the host's cache of the bucket's objects, if it has
+/// one, which what the bucket acknowledged of the store's goes into.
+pub struct Opening {
+    pub state: extent_remote::State,
+    pub fenced: Option<Fenced>,
+    pub cache: Option<Arc<Cache>>,
+}
+
+impl Opening {
+    /// The opening of `branch`, which the bucket holds nothing of: no commit of it there, and a
+    /// writer's chain from its first segment, of lease epoch 0. Its store's write-ahead log
+    /// follows only if it never had anything acknowledged ([`extent_remote::Error::Diverged`]):
+    /// a store of the store's own tests, of a bucket it never reaches.
+    pub fn new(branch: u64) -> Self {
+        let chain = Chain::new(branch, 0, 0, None, 0);
+        let fenced = Fenced { recovered: None, last_commit: None, chain };
+        Self { state: extent_remote::State::new(branch), fenced: Some(fenced), cache: None }
+    }
+}
+
+/// fxdax: a store's directory, taken for this process and claimed for its opening, its write-ahead
+/// log recovered from it ([`Store::recover`]), to be opened as what the bucket holds of its branch
+/// says ([`Recovering::open`]): its branch's writer takes the lease meanwhile, and recovers it.
+pub struct Recovering<D: Dir> {
+    dir: Arc<D>,
+    taken: Arc<Taken<D>>,
+    claim: Claim<D>,
+    file: StoreFile,
+    wal: Recovered,
+}
+
+impl<D: Dir> Recovering<D> {
+    /// The branch.
+    pub fn branch(&self) -> u64 {
+        self.file.branch
     }
 
-    /// fxdax: makes a new store as [`Store::create`] does, whose description names `bucket`, the
-    /// URL of the bucket its branch is kept in, if given ([`Store::bucket`]). The description is
-    /// made last: until it is durable, the directory is no store.
-    pub fn create_kept(
-        dir: D,
-        description: Description,
-        bucket: Option<&str>,
-        options: Options,
-    ) -> Result<Self, Error> {
-        let Description { block_size, capacity, branch } = description;
-        ensure!(
-            block_size.is_power_of_two() && block_size as usize <= crate::framed::ALIGNMENT,
-            "bad block size {block_size}"
-        );
-        ensure!(capacity >= block_size as u64, "the store is smaller than a block");
-        dir.take().context("taking the store's directory")?;
-        let made = || -> Result<(), Error> {
-            for path in [SEGMENTS, EXTENTS, INDEX, OPEN_SEGMENTS, OPEN_EXTENTS] {
-                dir.create_dir(path).with_context(|| format!("creating {path}"))?;
+    /// The URL of the bucket its branch is kept in, if its description names one.
+    pub fn bucket(&self) -> Option<&str> {
+        self.file.bucket.as_deref()
+    }
+
+    /// The fencing token of its placement, if it was placed (TASK-39.7).
+    pub fn token(&self) -> Option<u64> {
+        self.file.token
+    }
+
+    /// The branch's commit its write-ahead log goes on from: the last the bucket acknowledged of
+    /// its commits, if it acknowledged any.
+    pub fn base(&self) -> Option<u64> {
+        self.wal.base
+    }
+
+    /// The write-ahead log, as its directory holds it: stamped as it was.
+    fn wal(&self) -> Wal<u64> {
+        Wal::of(self.wal.base, self.wal.segments.iter().cloned())
+    }
+
+    /// Whether its write-ahead log holds nothing.
+    pub fn is_empty(&self) -> bool {
+        self.wal.segments.is_empty()
+    }
+
+    /// Whether its write-ahead log follows the branch whose end a writer found as `fenced` says:
+    /// unless the branch moved on from it ([`extent_remote::Error::Diverged`]). What a store asks
+    /// of the branch as recovery found it before taking its lease, so that a store plainly stale
+    /// fences no writer.
+    pub fn follows(&self, fenced: &Fenced) -> bool {
+        self.wal().rebase(fenced).is_ok()
+    }
+
+    /// Drops its write-ahead log, the commits it holds never acknowledged lost: what `fxdaxctl
+    /// take` does of a store whose log diverged (doc-14, Opening a store). Its base goes with it:
+    /// an empty log follows any branch.
+    pub fn drop_wal(&mut self) -> Result<(), Error> {
+        let dir = &*self.dir;
+        for (footer, number) in std::mem::take(&mut self.wal.segments) {
+            let segment = SegmentId { branch: self.file.branch, number };
+            self.remove_files([segment_path(segment)], &footer);
+        }
+        dir.barrier()?;
+        self.wal.base = None;
+        Ok(())
+    }
+
+    /// Removes the files at `paths`, and those of the extents stored on their own `footer` names.
+    fn remove_files(&self, paths: impl IntoIterator<Item = String>, footer: &Footer) {
+        let own = footer.own().map(|(extent, _)| extent_path(extent));
+        for path in paths.into_iter().chain(own) {
+            if let Err(err) = self.dir.remove(&path)
+                && !not_found(&err)
+            {
+                log::warn!("extent store: failed to remove {path}: {err}");
             }
-            create_branch_dirs(&dir, branch)?;
-            write_checkpoint(&dir, branch, 0, &Recovered { capacity, ..Default::default() })?;
-            let file = dir.create(DESCRIPTION, false)?;
-            let bucket = bucket.map(str::to_owned);
-            file.write_at(StoreFile { block_size, branch, bucket }.text().as_bytes(), 0)?;
-            file.sync()?;
-            dir.sync_dir("")?;
-            dir.barrier()?;
-            Ok(())
-        };
-        let made = made();
-        dir.let_go();
-        made?;
-        Self::open(dir, options)
+        }
     }
 
-    /// Opens the store in `dir`, recovering it as it was at its last commit that is durable, and
-    /// removes the files of extents' data no extent is in: what commits that weren't durable
-    /// wrote, or that were to go once the commits that let them go were. It fails while another
-    /// process has it open ([`Dir::take`]), or this one ([`Dir::claim`]).
-    pub fn open(dir: D, options: Options) -> Result<Self, Error> {
-        dir.take().context("taking the store's directory")?;
-        let dir = Arc::new(dir);
-        // Dropped, as an opening that fails drops them, they let the directory go.
-        let taken = Arc::new(Taken(dir.clone()));
-        dir.claim().context("taking the store's directory")?;
-        let claim = Claim(dir.clone());
-        let StoreFile { block_size, branch, bucket } = {
-            let file = dir.open(DESCRIPTION, false).context("opening the store's description")?;
-            let text = String::from_utf8(read_file(&file)?).context("reading the description")?;
-            StoreFile::parse(&text)?
+    /// Opens the store as `opening` says the bucket holds its branch (doc-14, Opening a store):
+    /// its write-ahead log put after the branch's end, by its commits, those of its segments that
+    /// landed acknowledged, their files into the host's cache, and the rest stamped anew on the
+    /// writer's chain ([`Wal::rebase`]), its base written first; or refused, if the branch moved
+    /// on from it ([`extent_remote::Error::Diverged`]). The branch's state is the bucket's, its
+    /// extents there, with the log's segments' footers applied over it, their extents here; and
+    /// another segment opens, past them. A point's store holds its state alone, and no log.
+    pub fn open(self, options: Options, opening: Opening) -> Result<Store<D>, Error> {
+        let Self { dir, taken, claim, file, wal: recovered } = self;
+        let StoreFile { block_size, branch, bucket, capacity, .. } = file;
+        let Opening { state, fenced, cache } = opening;
+        ensure!(state.branch == branch, "branch {branch:#x} opened as {:#x}", state.branch);
+        // Stamped as the directory holds them: those the rebase stamps anew upload so.
+        let stamped: BTreeMap<u64, Footer> =
+            recovered.segments.iter().map(|(footer, number)| (*number, footer.clone())).collect();
+        let mut wal = Wal::of(recovered.base, recovered.segments);
+        let mut base_file = recovered.base_file;
+        let (landed, chain) = match &fenced {
+            Some(fenced) => {
+                let landed = wal.rebase(fenced)?;
+                base_file.write(&*dir, wal.base())?;
+                // Its footers from now on follow those stamped anew.
+                let mut chain = fenced.chain;
+                for (footer, _) in wal.segments() {
+                    chain = chain.admit(footer).expect("a log rebased follows the writer's chain");
+                }
+                (landed, chain)
+            }
+            None => {
+                ensure!(wal.is_empty(), "the store of point {branch:#x} holds commits of its own");
+                (Vec::new(), Chain::new(branch, 0, 0, None, 0))
+            }
         };
-        let recovered = recover(&*dir, branch)?;
-        remove_unheld(&*dir, branch, &recovered)?;
-        let Recovered { epoch, next_sequence, root, capacity, extents, spent, .. } = recovered;
-        // Footers of commits not recovered, which were not durable, are no footers: the commits
-        // after this epoch are others.
-        close_left_open(&*dir, branch, epoch)?;
+        // What landed is the bucket's: into the host's cache, as an acknowledgement's files go.
+        let mut leaving = Vec::new();
+        for (footer, number) in landed {
+            let segment = SegmentId { branch, number };
+            let key = extent_remote::layout::segment(branch, footer.seq);
+            leaving.push((segment_path(segment), Some(key)));
+            leaving.extend(footer.own().map(|(extent, at)| (extent_path(extent), Some(at.key))));
+        }
+        leave(&*dir, cache.as_deref(), leaving);
+
+        // The branch: the bucket's state, the log's footers applied over it.
+        let mut replay = state.placed(|extents| Local {
+            extents: (extents.into_iter())
+                .map(|(extent, at)| (extent, Extent { len: at.len, data: Data::Remote(at) }))
+                .collect(),
+            segment: SegmentId { branch, number: 0 },
+        });
+        let mut named_own = BTreeSet::new();
+        for (footer, number) in wal.segments() {
+            replay.extents.segment = SegmentId { branch, number: *number };
+            replay.apply_contents(footer.seq, footer.epoch, &footer.contents);
+            named_own.extend(footer.own().map(|(extent, _)| extent));
+        }
+        let head = wal.head().or(replay.last_commit);
+        let epoch = head.map_or(0, epoch_of);
+        let restate = replay.capacity.is_none() && fenced.is_some();
+        let capacity = replay.capacity.unwrap_or(capacity);
+        let extent_remote::State { extents: Local { extents, .. }, root, spent, .. } = replay;
+        // Past every extent of its own the branch holds: fxfs looks for what a crash left below
+        // it (`Allocator::open`). Not the footers' next sequence, which their writers stamped
+        // past their own floors (`Chain::close`), the next floor being the uploader's to say.
+        let own = extents.keys().filter(|extent| extent.branch == branch);
+        let next_sequence = own.map(|extent| extent.sequence + 1).max().unwrap_or(0);
+        let root = root.unwrap_or_default();
+        remove_unheld(&*dir, branch, &extents, &named_own)?;
 
         // The segments it holds extents' data in, with the bytes of it each holds, and its own
         // extents' files. They must be there.
         let mut tracked: BTreeMap<SegmentId, u64> = BTreeMap::new();
+        for (_, number) in wal.segments() {
+            tracked.insert(SegmentId { branch, number: *number }, 0);
+        }
         let (mut stored, mut own_stored) = (0, 0);
         let mut own_sizes = HashMap::new();
         for (extent, entry) in &extents {
@@ -444,22 +550,37 @@ impl<D: Dir> Store<D> {
                 Data::Remote(_) => {}
             }
         }
-        let mut segments = Segments::open(&*dir, branch, tracked, epoch, options.open_files)?;
+        let opened = (epoch, recovered.next, chain);
+        let mut segments = Segments::open(&*dir, (branch, tracked), opened, options.open_files)?;
         // fxdax: the sealed extents in each, read in the bucket once it is acknowledged there
         // (TASK-165.8).
         for (extent, entry) in &extents {
             segments.place(*extent, &entry.data);
         }
-        let open_segment = segments.open_segment();
-
-        // A new index file, with a checkpoint of what was recovered, which replaces the others.
-        let segment = open_segment.number;
-        let state = Recovered { epoch, next_sequence, root, segment, capacity, extents, spent };
-        let (index, tail) = IndexLog::open(&*dir, branch, &state)?;
-        let Recovered { root, extents, spent, .. } = state;
-
+        let mut queued = Vec::new();
+        for (footer, number) in wal.segments() {
+            let restamped = stamped.get(number) != Some(footer);
+            let own: u64 = footer.contents.own.iter().map(|(_, len)| len).sum();
+            let bytes = segments.len(SegmentId { branch, number: *number }) + own;
+            queued.push(Queued::new(*number, footer.clone(), restamped, bytes));
+        }
+        let mut uncommitted = Uncommitted::default();
+        // fxdax: a branch saying no capacity has the store's, which its next commit sets in it
+        // (TASK-165.3).
+        if restate {
+            uncommitted.resize(capacity);
+        }
+        let log = SegmentLog::new(segments.open_segment(), segments.open_log());
+        #[cfg(any(test, feature = "audit"))]
+        let replay = {
+            let lengths = extents.iter().map(|(extent, entry)| (*extent, entry.len)).collect();
+            let mut replay = crate::state::Replay::of(branch, crate::state::Lengths(lengths));
+            (replay.root, replay.spent) = (Some(root.clone()), spent.clone());
+            replay.capacity = (!restate).then_some(capacity);
+            replay
+        };
         let views = Views::new(epoch, &root);
-        Ok(Self {
+        Ok(Store {
             dir,
             block_size,
             branch,
@@ -474,45 +595,175 @@ impl<D: Dir> Store<D> {
                 root,
                 next_sequence,
                 spent,
-                uncommitted: Uncommitted::default(),
+                uncommitted,
                 gate: Gate::default(),
                 segments,
                 own_files: OwnFiles::new(branch, own_sizes, options.open_files),
-                index,
                 unreferenced: Unreferenced::default(),
-                uploads: None,
+                wal: Queue::new(wal.base(), queued),
+                point: fenced.is_none(),
                 kept: KeptExtents::default(),
                 sealed: Sealed::default(),
                 failed: false,
                 closed: false,
                 deferred: Vec::new(),
+                framing: Framing::default(),
+                #[cfg(any(test, feature = "audit"))]
+                replay,
             })),
             committing: Mutex::new(()),
             durability: Mutex::new(Durability::new(epoch)),
-            flushing: Mutex::new(tail),
+            flushing: Mutex::new(log),
+            base: Mutex::new(base_file),
+            cache,
             idle: Arc::new(Condvar::new()),
             views,
         })
     }
+}
 
-    /// The branch's state as its newest checkpoint and the footers of its closed segments after it
-    /// say: as of the last commit a closed segment holds, if one does (doc-7: a branch's history is
-    /// in its segments).
-    pub fn rebuild(&self) -> Result<Rebuilt, Error> {
-        let state = rebuild(&*self.dir, self.branch)?;
-        let mut extents: Vec<_> = state
-            .extents
-            .iter()
-            .map(|(extent, entry)| (*extent, entry.len, place_of(entry)))
-            .collect();
-        extents.sort_by_key(|(extent, ..)| *extent);
-        Ok(Rebuilt {
-            epoch: state.epoch,
-            root: state.root,
-            next_sequence: state.next_sequence,
-            extents,
-            spent: state.spent,
-        })
+/// fxdax: a branch's extents as a replay of the footers of its write-ahead log places them over
+/// the bucket's ([`Recovering::open`]): sealed in one run of `segment`, the segment applied, or in
+/// files of their own.
+struct Local {
+    extents: Extents,
+    segment: SegmentId,
+}
+
+impl Places for Local {
+    fn seal(&mut self, extent: ExtentId, seal: Seal) {
+        let entry = match seal {
+            Seal::Run(Location { offset, len, .. }) => {
+                let piece = Piece { segment: self.segment, offset, extent_offset: 0, len };
+                Extent { len, data: Data::Pieces(vec![piece]) }
+            }
+            Seal::Own(location) => Extent { len: location.len, data: Data::Own },
+        };
+        self.extents.insert(extent, entry);
+    }
+
+    fn free(&mut self, extent: ExtentId) {
+        self.extents.remove(&extent);
+    }
+}
+
+/// fxdax: the files at the paths of `leaving` leave a store's directory `dir`, the objects in the
+/// bucket at their keys, if given: into the host's cache, `cache`, if it takes them, the file
+/// renamed; or removed (TASK-165.8). What fails to leave is logged, and removed, the bucket
+/// holding it.
+fn leave<D: Dir>(dir: &D, cache: Option<&Cache>, leaving: Vec<(String, Option<String>)>) {
+    for (path, key) in leaving {
+        let adopted = match (cache, key, dir.host_path(&path)) {
+            (Some(cache), Some(key), Some(from)) => {
+                cache.adopt(&key, &from).unwrap_or_else(|err| {
+                    log::warn!("extent store: {path} into the cache, as {key}: {err}");
+                    false
+                })
+            }
+            _ => false,
+        };
+        if !adopted
+            && let Err(err) = dir.remove(&path)
+            && !not_found(&err)
+        {
+            log::warn!("extent store: failed to remove {path}: {err}");
+        }
+    }
+}
+
+impl<D: Dir> Store<D> {
+    /// fxdax: makes a new store's directory in `dir`, which holds no store, as `description`
+    /// describes, its description naming `bucket`, the URL of the bucket its branch is kept in,
+    /// if given ([`Store::bucket`]); unmade until its maker says it is whole ([`Store::made`]).
+    /// The description is made last: until it is durable, the directory is no store either. Its
+    /// branch is the bucket's, which opening it takes ([`Store::recover`]).
+    pub fn make(dir: &D, description: Description, bucket: Option<&str>) -> Result<(), Error> {
+        let Description { block_size, capacity, branch } = description;
+        ensure!(
+            block_size.is_power_of_two() && block_size as usize <= crate::framed::ALIGNMENT,
+            "bad block size {block_size}"
+        );
+        ensure!(capacity >= block_size as u64, "the store is smaller than a block");
+        dir.take().context("taking the store's directory")?;
+        let made = || -> Result<(), Error> {
+            for path in KINDS {
+                dir.create_dir(path).with_context(|| format!("creating {path}"))?;
+            }
+            create_branch_dirs(dir, branch)?;
+            dir.create(UNMADE, false)?.sync()?;
+            let file = dir.create(DESCRIPTION, false)?;
+            let bucket = bucket.map(str::to_owned);
+            let text = StoreFile { block_size, branch, bucket, capacity, token: None }.text();
+            file.write_at(text.as_bytes(), 0)?;
+            file.sync()?;
+            dir.sync_dir("")?;
+            dir.barrier()?;
+            Ok(())
+        };
+        let made = made();
+        dir.let_go();
+        made
+    }
+
+    /// fxdax: the store is whole, as its maker made it: the file saying it is not goes, durably
+    /// ([`UNMADE`], TASK-196). Its next openings open it.
+    pub fn made(&self) -> Result<(), Error> {
+        match self.dir.remove(UNMADE) {
+            Err(err) if !not_found(&err) => return Err(err.into()),
+            _ => {}
+        }
+        self.dir.sync_dir("")?;
+        Ok(self.dir.barrier()?)
+    }
+
+    /// fxdax: makes a new store in `dir` as [`Store::make`] does, whole, kept nowhere, and opens
+    /// it: one whose branch the bucket holds nothing of ([`Opening::new`]), as the store's own
+    /// tests' are.
+    pub fn create(dir: D, description: Description, options: Options) -> Result<Self, Error> {
+        Self::make(&dir, description, None)?;
+        let store = Self::recover_unmade(dir)?.open(options, Opening::new(description.branch))?;
+        store.made()?;
+        Ok(store)
+    }
+
+    /// fxdax: opens the store in `dir`, whose branch the bucket holds nothing of
+    /// ([`Opening::new`]), as the store's own tests' is: refused if its write-ahead log had
+    /// anything acknowledged.
+    pub fn open(dir: D, options: Options) -> Result<Self, Error> {
+        let recovering = Self::recover(dir)?;
+        let branch = recovering.branch();
+        recovering.open(options, Opening::new(branch))
+    }
+
+    /// Takes the store in `dir` for this process ([`Dir::take`]), and claims it for an opening
+    /// ([`Dir::claim`]), and recovers its write-ahead log ([`crate::wal`]), to be opened as the
+    /// bucket holds its branch ([`Recovering::open`]). Fails while another process has it open, or
+    /// this one; and with [`Unmade`] if its maker never made it whole (TASK-196).
+    pub fn recover(dir: D) -> Result<Recovering<D>, Error> {
+        match dir.open(UNMADE, false) {
+            Ok(_) => return Err(Unmade.into()),
+            Err(err) if not_found(&err) => {}
+            Err(err) => return Err(err.into()),
+        }
+        Self::recover_unmade(dir)
+    }
+
+    /// Recovers the store in `dir` as [`Store::recover`] does, unmade or not: its maker's
+    /// opening.
+    pub fn recover_unmade(dir: D) -> Result<Recovering<D>, Error> {
+        dir.take().context("taking the store's directory")?;
+        let dir = Arc::new(dir);
+        // Dropped, as an opening that fails drops them, they let the directory go.
+        let taken = Arc::new(Taken(dir.clone()));
+        dir.claim().context("taking the store's directory")?;
+        let claim = Claim(dir.clone());
+        let file = {
+            let file = dir.open(DESCRIPTION, false).context("opening the store's description")?;
+            let text = String::from_utf8(read_file(&file)?).context("reading the description")?;
+            StoreFile::parse(&text)?
+        };
+        let wal = crate::wal::recover(&*dir, file.branch)?;
+        Ok(Recovering { dir, taken, claim, file, wal })
     }
 
     /// fxdax: the sequence numbers of the branch's own extents it freed once sealed, which it
@@ -610,6 +861,7 @@ impl<D: Dir> Store<D> {
     fn still_writable<'a>(&self, state: Locked<'a, D::File>) -> Result<Locked<'a, D::File>, Error> {
         ensure!(!state.failed, "the extent store failed");
         ensure!(!state.closed, "branch {:#x} is closed", self.branch);
+        ensure!(!state.point, "branch {:#x} is a point, which nothing writes", self.branch);
         Ok(state)
     }
 
@@ -847,7 +1099,6 @@ impl<D: Dir> Store<D> {
         if state.segments.fits(len, self.options.segment_limit()) {
             return Ok(());
         }
-        let full = state.segments.open_segment();
         if state.segments.has_commits(state.epoch) {
             let unframed = self.close_open_segment(state, state.epoch)?;
             match rules().framings_end_themselves {
@@ -856,7 +1107,6 @@ impl<D: Dir> Store<D> {
             }
         } else {
             state.segments.retire(&*self.dir)?;
-            state.index.set_aside(full.number);
         }
         Ok(())
     }
@@ -1067,7 +1317,9 @@ impl<D: Dir> Store<D> {
         // (TASK-79.2).
         if placement.is_none() {
             state.segments.displace(extent, &entry.data);
-            let uploader = state.uploads.is_some() && rules().keep_frees;
+            // fxdax: for the bucket, until the commit that frees it is acknowledged there, as the
+            // segment holding its seal is by then (TASK-165.9).
+            let uploader = rules().keep_frees;
             let freed = state.epoch + 1;
             state.kept.insert(extent, Kept { entry, freed, uploader });
             return Ok(());
@@ -1085,98 +1337,10 @@ impl<D: Dir> Store<D> {
         Ok(())
     }
 
-    /// fxdax: holds `extent`, sealed, whose data is in the bucket, at `location`: reads of it fail
-    /// with [`RemoteData`], and the store's user reads it from there. A branch kept in object
-    /// storage, opened where its data is not, holds its extents so.
-    pub fn adopt(&self, extent: ExtentId, location: Location) -> Result<(), Error> {
-        let mut state = self.writable()?;
-        ensure!(!state.extents.contains_key(&extent), "the store holds {extent:?}");
-        let len = location.len;
-        state.extents.insert(extent, Extent { len, data: Data::Remote(location.clone()) });
-        state.space.added(len, extent.branch == self.branch);
-        if extent.branch == self.branch {
-            state.next_sequence = state.next_sequence.max(extent.sequence + 1);
-        }
-        state.uncommitted.push(Change::Adopt { extent, location });
-        // Footers name no extent whose data is elsewhere: a checkpoint does.
-        state.index.want_checkpoint();
-        Ok(())
-    }
-
-    /// fxdax: spends what `spent` says of the store's branch, as its commits would have: its
-    /// extents freed where else it is kept, which a store taking it there knows of by this alone,
-    /// and writes no more (TASK-150.6). Its next commit keeps it, in a checkpoint.
-    pub fn spend(&self, spent: &extent_frame::spent::Spent) -> Result<(), Error> {
-        let mut state = self.writable()?;
-        for (start, end) in spent.runs() {
-            state.spent.insert_run(start, end);
-        }
-        state.index.want_checkpoint();
-        Ok(())
-    }
-
-    /// fxdax: what the store holds as of now.
-    pub fn snapshot(&self) -> Result<Snapshot, Error> {
-        let state = self.state()?;
-        let mut extents: Vec<_> =
-            state.extents.iter().map(|(extent, entry)| (*extent, entry.len)).collect();
-        extents.sort();
-        let (root, capacity) = (state.root.clone(), state.space.capacity());
-        Ok(Snapshot { epoch: state.epoch, extents, root, capacity })
-    }
-
-    /// fxdax: from now on, keeps for an uploader the segments it closes, until acknowledged
-    /// ([`Store::closed`], [`Store::acknowledged`]), their footers, stamped by `chain`, the chain of
-    /// the uploader's writer of the branch, from where it is, saying what each commit changed; and
-    /// the data of the extents its commits free, and the bytes they write
-    /// ([`Store::unreleased_bytes`]), until released ([`Store::release`]): unless a commit came
-    /// since `epoch`, the snapshot's the uploader starts from. Returns whether it does. What is
-    /// acknowledged goes into `cache`, the host's cache of the bucket's objects, if given, and
-    /// leaves the store (TASK-165.8).
-    pub fn upload(
-        &self,
-        chain: Chain,
-        epoch: u64,
-        cache: Option<Arc<Cache>>,
-    ) -> Result<bool, Error> {
-        ensure!(
-            chain.branch() == self.branch,
-            "branch {:#x} uploaded by a writer of branch {:#x}",
-            self.branch,
-            chain.branch()
-        );
-        let mut state = self.state()?;
-        if state.epoch != epoch {
-            return Ok(false);
-        }
-        state.uploads.get_or_insert_with(Uploads::default).cache = cache;
-        state.segments.set_chain(chain);
-        Ok(true)
-    }
-
-    /// fxdax: lets the data of the extents the commits up to `epoch` freed go: the uploader has
-    /// what it needs of them, having taken ([`Store::closed`]) the segments holding those commits,
-    /// whose footers may name those extents' own files. Their files go with the commit after.
-    pub fn release(&self, epoch: u64) -> Result<(), Error> {
-        let mut state = self.state()?;
-        let state = &mut *state;
-        let Some(uploads) = &mut state.uploads else { return Ok(()) };
-        uploads.release(epoch);
-        state.release_kept(epoch);
-        state.trim_kept(&self.views.keeping(), state.epoch);
-        Ok(())
-    }
-
-    /// fxdax: the bytes the commits not yet released wrote: what the uploader has yet to upload.
-    pub fn unreleased_bytes(&self) -> Result<u64, Error> {
-        let state = self.state()?;
-        Ok(state.uploads.as_ref().map_or(0, Uploads::unreleased_bytes))
-    }
-
-    /// fxdax: reads `buf.len()` bytes at `offset` in `extent`, held, or freed and kept for the
-    /// uploader.
+    /// fxdax: reads `buf.len()` bytes at `offset` in `extent`, held, or freed and kept: for views,
+    /// or for the bucket, until the commit that freed it is acknowledged there (TASK-165.9).
     pub fn read_kept(&self, extent: ExtentId, offset: u64, buf: &mut [u8]) -> Result<(), Error> {
-        self.read_into_entry(extent, offset, buf, Reader::Uploader)
+        self.read_into_entry(extent, offset, buf, Reader::Kept)
     }
 
     /// Commits what was written and freed since the last commit, and `root`, if given, as the
@@ -1225,12 +1389,28 @@ impl<D: Dir> Store<D> {
         let sealing = self.seal_open(state)?;
         self.publish(state, epoch, root, &sealing);
         let (changes, capacity) = (state.uncommitted.take(), state.uncommitted.take_capacity());
-        if let Some(uploads) = &mut state.uploads {
-            uploads.record(epoch, &changes, &state.extents);
+        // The open segment's footer records them, before the segment closes; fxdax: and its log,
+        // unless it closes with them (TASK-165.9).
+        let (segment, next_sequence) = (state.segments.open_segment(), state.next_sequence);
+        let changed = (root, capacity);
+        let contents =
+            state.segments.record(epoch, &changes, changed, &state.extents, next_sequence)?;
+        if let Some(root) = root {
+            state.root = root.to_vec();
         }
-        // The open segment's footer records them, before the segment closes.
-        let next_sequence = state.next_sequence;
-        state.segments.record(epoch, &changes, (root, capacity), &state.extents, next_sequence)?;
+        self.committed(state, epoch, segment, &contents)
+    }
+
+    /// fxdax: what follows commit `epoch`, whose contents are `contents`, recorded in `segment`,
+    /// the open segment, in the state: the closings for room it frames, the open segment closed if
+    /// it is due, the segments it let go of, and what its flush makes durable, queued.
+    fn committed(
+        &self,
+        state: &mut State<D::File>,
+        epoch: u64,
+        segment: SegmentId,
+        contents: &Contents,
+    ) -> Result<(), Error> {
         // fxdax: with the rule off, the closings for room since the last commit are framed only
         // now, by a commit that may never come (TASK-150.2).
         for unframed in std::mem::take(&mut state.deferred) {
@@ -1242,29 +1422,23 @@ impl<D: Dir> Store<D> {
         let mut syncs = Syncs::default();
         state.own_files.take_syncs(&mut syncs);
         state.segments.take_syncs(&mut syncs);
-        // The segments none of its extents' data is in any more, by this commit, if not before:
-        // the branch lets them go; those it closed, once a checkpoint covers their footers. fxdax:
-        // but those the uploader has yet to upload (TASK-85).
-        let uploads = &state.uploads;
-        let reaped = state.segments.reap(|segment| uploader_keeps(uploads, self.branch, segment));
-        // fxdax: those acknowledged in the bucket leave, their footers the bucket's (TASK-165.8).
-        let (acknowledged, reaped): (Vec<_>, Vec<_>) =
-            reaped.into_iter().partition(|reaped| reaped.acknowledged.is_some());
-        let leaving = (acknowledged.into_iter())
-            .map(|reaped| (segment_path(reaped.number), reaped.acknowledged.unwrap()))
-            .collect();
-        let released = state.index.let_go(reaped);
-        state.unreferenced.doomed.extend(released.iter().flat_map(FileKey::paths));
-        let appended = self.append_record(state, epoch, root, capacity, changes);
-        state.unreferenced.doomed.extend(appended.replaced);
-        state.unreferenced.doomed.extend(appended.covered.iter().flat_map(FileKey::paths));
+        // The segments none of its extents' data is in any more, set aside, or acknowledged in
+        // the bucket: their files go once it is durable, those of the bucket's into the host's
+        // cache (TASK-165.8).
+        let mut leaving = Vec::new();
+        for reaped in state.segments.reap() {
+            match reaped {
+                Reaped::Retired(number) => {
+                    state.unreferenced.doomed.extend(FileKey::Segment(number).paths());
+                }
+                Reaped::Acknowledged(number, key) => leaving.push((segment_path(number), key)),
+            }
+        }
         let Unreferenced { doomed } = state.unreferenced.take();
         state.epoch = epoch;
-        if let Some(root) = root {
-            state.root = root.to_vec();
-        }
+        let record = (closed != Some(segment)).then(|| (segment, encode(contents)));
         // Queued while the state is locked, so that commits queue in their order.
-        let pending = Pending { syncs, write: appended.write, doomed, leaving, closed };
+        let pending = Pending { syncs, record, doomed, leaving, closed };
         self.durability.lock().unwrap().push(epoch, pending);
         Ok(())
     }
@@ -1309,17 +1483,10 @@ impl<D: Dir> Store<D> {
         let published = root.unwrap_or(&state.root).to_vec();
         let limits =
             Limits { lag: self.options.view_lag, kept_bytes: self.options.view_kept_bytes };
-        let keeping = if rules().decide_at_publish {
-            let kept = &mut state.kept;
-            let keeping =
-                self.views.publish(epoch, &published, limits, |keeping| kept.views_bytes(keeping));
-            state.trim_kept(&keeping, epoch);
-            keeping
-        } else {
-            state.trim_kept(&self.views.keeping(), epoch);
-            let kept = &mut state.kept;
-            self.views.publish(epoch, &published, limits, |keeping| kept.views_bytes(keeping))
-        };
+        let kept = &mut state.kept;
+        let keeping =
+            self.views.publish(epoch, &published, limits, |keeping| kept.views_bytes(keeping));
+        state.trim_kept(&keeping, epoch);
         // What it sealed, as views older than it, if any lives, must refuse; what all of them
         // were sealed by is theirs.
         state.sealed.published(keeping.oldest(), sealing, epoch);
@@ -1340,31 +1507,6 @@ impl<D: Dir> Store<D> {
         let number = unframed.number();
         self.frame_behind(state, unframed);
         Ok(Some(number))
-    }
-
-    /// Appends commit `epoch`'s record, of `changes` and `root`, if it sets one, to the index:
-    /// its delta, or, if one is due, a checkpoint of the branch as of it, in a new file, which
-    /// replaces the last once the commit is durable. fxdax: what the checkpoint holds is taken
-    /// here, holding the state; its flush makes its file and encodes it there, holding the flushes'
-    /// lock alone, so that writes wait for neither, as they did for 89-143 ms of a load's commits
-    /// (TASK-92.56).
-    fn append_record(
-        &self,
-        state: &mut State<D::File>,
-        epoch: u64,
-        root: Option<&[u8]>,
-        capacity: Option<u64>,
-        changes: Vec<Change>,
-    ) -> Appended {
-        let next_sequence = state.next_sequence;
-        let root_set = root.map(<[u8]>::to_vec);
-        let delta = Delta { epoch, next_sequence, root: root_set, capacity, changes };
-        let checkpoint = || {
-            let (root, segment) = (root.unwrap_or(&state.root), state.segments.open_segment());
-            let rest = (root, segment.number, state.space.capacity());
-            Checkpoint::of(epoch, next_sequence, rest, &state.extents, (self.branch, &state.spent))
-        };
-        state.index.append(delta, checkpoint, &self.options)
     }
 
     /// Seals `extent`, which a commit seals, in one run in the open segment, or in a file of its
@@ -1477,9 +1619,12 @@ impl<D: Dir> Store<D> {
         epoch: u64,
     ) -> Result<Unframed<D::File>, Error> {
         let unframed = state.segments.close(&*self.dir, epoch, state.next_sequence)?;
-        if let Some(uploads) = &mut state.uploads {
-            uploads.closed_segment(unframed.number().number, unframed.footer.clone());
-        }
+        #[cfg(any(test, feature = "audit"))]
+        state.closed(&unframed.footer);
+        // fxdax: a segment of the write-ahead log from now on, until acknowledged (TASK-165.9).
+        let own: u64 = unframed.footer.contents.own.iter().map(|(_, len)| len).sum();
+        let bytes = state.segments.len(unframed.number()) + own;
+        state.wal.push(unframed.number().number, unframed.footer.clone(), bytes);
         Ok(unframed)
     }
 
@@ -1554,23 +1699,47 @@ impl<D: Dir> Store<D> {
     /// ([`Dir::concurrent`], TASK-79.79), or if the host refuses a thread, rather than panic
     /// through the store's locks, which the caller holds (TASK-79.80).
     fn frame_behind(&self, state: &mut State<D::File>, unframed: Unframed<D::File>) {
-        let number = unframed.number();
-        state.segments.framing_begun(number);
-        let unframed = match self.dir.concurrent() {
-            true => {
-                let (dir, shared, idle) = (self.dir.clone(), self.state.clone(), self.idle.clone());
-                spawn_or_return(unframed, move |unframed| {
-                    let framed = unframed.frame(&*dir);
-                    framing_ended(&mut Locked::new(shared.lock().unwrap()), number, framed);
-                    idle.notify_all();
-                })
-            }
-            false => Some(unframed),
-        };
-        if let Some(unframed) = unframed {
-            framing_ended(state, number, unframed.frame(&*self.dir));
-            self.idle.notify_all();
+        state.segments.framing_begun(unframed.number());
+        // fxdax: one framer at a time, in the order the segments closed, so that a framed file a
+        // crash leaves whole follows those before it whole too (`wal`'s docs, TASK-165.9).
+        state.framing.queue.push_back(unframed);
+        if std::mem::replace(&mut state.framing.running, true) {
+            return;
         }
+        if self.dir.concurrent() {
+            let (dir, shared, idle) = (self.dir.clone(), self.state.clone(), self.idle.clone());
+            let framer = move |()| {
+                let mut state = Locked::new(shared.lock().unwrap());
+                while let Some(unframed) = state.framing.queue.pop_front() {
+                    let failed = state.failed;
+                    drop(state);
+                    let number = unframed.number();
+                    let framed = match failed {
+                        false => unframed.frame(&*dir),
+                        true => Err(anyhow!("a segment before it failed to frame")),
+                    };
+                    state = Locked::new(shared.lock().unwrap());
+                    framing_ended(&mut state, number, framed);
+                    idle.notify_all();
+                }
+                state.framing.running = false;
+            };
+            if spawn_or_return((), framer).is_none() {
+                return;
+            }
+        }
+        // On the caller's thread, holding the state, as before TASK-41, if the directory's I/O is
+        // its callers' alone, or the host refuses a thread: no framer runs meanwhile.
+        while let Some(unframed) = state.framing.queue.pop_front() {
+            let number = unframed.number();
+            let framed = match state.failed {
+                false => unframed.frame(&*self.dir),
+                true => Err(anyhow!("a segment before it failed to frame")),
+            };
+            framing_ended(state, number, framed);
+        }
+        state.framing.running = false;
+        self.idle.notify_all();
     }
 
     /// fxdax: removes the files at `paths`, as nothing refers to them: logging what it can't,
@@ -1596,6 +1765,15 @@ impl<D: Dir> Store<D> {
         ours.map(|segment| segment.number).collect()
     }
 
+    /// fxdax: the last commit whose segments the uploader may take: the last durable. A segment of
+    /// commits a crash may lose here, acknowledged in the bucket, would leave the branch past the
+    /// write-ahead log the store opens with, which its opening reads as diverged (`ESTALE`), the
+    /// commits its own (TASK-165.9). The uploader flushes before it takes them, but for commits
+    /// made between.
+    fn uploadable(&self) -> u64 {
+        self.durability.lock().unwrap().durable()
+    }
+
     /// fxdax: `state`, once no segment is being framed ([`Store::frame_behind`]), which it let go
     /// of meanwhile.
     fn framed<'a>(&self, mut state: Locked<'a, D::File>) -> Locked<'a, D::File> {
@@ -1605,24 +1783,26 @@ impl<D: Dir> Store<D> {
         state
     }
 
-    /// fxdax: the segments closed and not yet taken whose commits are durable, oldest first,
-    /// `limit` of them at most, for the uploader, which has them until it says they are uploaded
-    /// ([`Store::uploaded`]): the rest it takes later, their files not opened meanwhile. fxdax:
-    /// those being framed among them it waits for, holding no lock: each framing ends itself,
-    /// whatever comes next, which may be nothing, as after a write that closed one for want of room
-    /// (TASK-150.2, TASK-153.8).
+    /// fxdax: the segments of the write-ahead log not yet taken, oldest first, `limit` of them at
+    /// most, for the uploader, which has them until it says they are acknowledged
+    /// ([`Store::acknowledged`]): the rest it takes later, their files not opened meanwhile. Only
+    /// those whose commits are durable ([`Store::uploadable`]). Those being framed it waits for,
+    /// holding no lock: each framing ends itself, whatever comes next, which may be nothing, as
+    /// after a write that closed one for want of room (TASK-150.2, TASK-153.8).
     pub fn closed(&self, limit: usize) -> Result<Vec<Closed<D::File>>, Error> {
-        let framing = self.state()?.segments.framing_through(self.uploadable());
+        let framing = self.state()?.segments.framings().clone();
         self.wait_for_framings(framing)?;
         let mut state = self.state()?;
         let state = &mut *state;
-        let Some(uploads) = &mut state.uploads else { return Ok(Vec::new()) };
         // fxdax: and framed: its framed file is what is uploaded.
         let segments = &state.segments;
         let framing = |number| segments.is_framing(SegmentId { branch: self.branch, number });
-        let taken = uploads.take_closed(self.uploadable(), framing, limit);
+        let taken: Vec<(u64, Footer, bool)> = (state.wal.take(self.uploadable(), framing, limit))
+            .into_iter()
+            .map(|queued| (queued.number, queued.footer.clone(), queued.restamped))
+            .collect();
         let mut closed = Vec::with_capacity(taken.len());
-        for (number, footer) in taken {
+        for (number, footer, restamped) in taken {
             let segment = SegmentId { branch: self.branch, number };
             let file = self.segment_file(state, segment)?.file().clone();
             let mut own = Vec::with_capacity(footer.contents.own.len());
@@ -1630,80 +1810,78 @@ impl<D: Dir> Store<D> {
                 let file = state.own_files.file(&*self.dir, extent)?;
                 own.push((location.key, file.file.clone()));
             }
-            closed.push(Closed { number, footer, file, own });
+            closed.push(Closed { number, footer, file, own, restamped });
         }
         Ok(closed)
     }
 
-    /// fxdax: segment `number`, which [`Store::closed`] gave, is acknowledged in the bucket, at
-    /// `key`, its object there: the extents sealed in it, and those stored on their own its footer
-    /// names, are read there from now on ([`RemoteData`]), and their files leave the store for the
-    /// host's cache, or go: the extents' own files, and the segment's, once no extent's data is in
-    /// it here (TASK-165.8). Durably first: the index records it after the commits durable so far,
-    /// which it makes durable first, so that the store opened again finds them in the bucket.
-    pub fn acknowledged(&self, number: u64, key: &str) -> Result<(), Error> {
-        let mut tail = self.flushing.lock().unwrap();
-        self.flush_locked(&mut tail)?;
-        let (record, leaving) = {
+    /// fxdax: segment `number`, which [`Store::closed`] gave, the first of the write-ahead log, is
+    /// acknowledged in the bucket: the extents sealed in it, and those stored on their own its
+    /// footer names, are read there from now on ([`RemoteData`]), and their files leave the store
+    /// for the host's cache, or go: the extents' own files, and the segment's, once no extent's
+    /// data is in it here (TASK-165.8). The frees of its commits are the bucket's to keep. The
+    /// log's base, its last commit from now on, is durable first, so that the store opened again
+    /// puts what is left of the log after the branch (TASK-165.9).
+    pub fn acknowledged(&self, number: u64) -> Result<(), Error> {
+        let mut base = self.base.lock().unwrap();
+        let after = {
+            let state = self.state()?;
+            match state.wal.first() {
+                Some(queued) if queued.number == number => {
+                    queued.footer.contents.commits.last().copied().or(state.wal.base())
+                }
+                _ => bail!("segment {number:#x} is not the first of the write-ahead log"),
+            }
+        };
+        if let Err(err) = base.write(&*self.dir, after) {
+            self.lock().failed = true;
+            return Err(err.context("recording an acknowledgement"));
+        }
+        let leaving = {
             let mut state = self.state()?;
             let state = &mut *state;
-            let Some(uploads) = &mut state.uploads else { return Ok(()) };
-            let own = uploads.acknowledged(number);
+            let queued = state.wal.acknowledge(number).expect("the first, as found");
+            let footer = &queued.footer;
+            state.release_kept(footer_last(footer));
+            state.trim_kept(&self.views.keeping(), state.epoch);
+            let key = extent_remote::layout::segment(self.branch, footer.seq);
+            let own: Vec<_> = footer.own().collect();
             let segment = SegmentId { branch: self.branch, number };
-            let mut leaving = state.acknowledge(segment, key, &own);
-            leaving.extend(state.segments.reap_acknowledged());
-            (Record::Acknowledged { segment: number, key: key.to_owned(), own }, leaving)
+            let mut leaving = state.acknowledge(segment, (&key, !queued.restamped), &own);
+            // Those no extent's data is in here any more leave now; those set aside, with the
+            // next commit's flush.
+            for reaped in state.segments.reap() {
+                match reaped {
+                    Reaped::Retired(number) => {
+                        state.unreferenced.doomed.extend(FileKey::Segment(number).paths());
+                    }
+                    Reaped::Acknowledged(number, key) => leaving.push((segment_path(number), key)),
+                }
+            }
+            leaving
         };
-        let record = IndexWrite::Delta(encode(&record));
-        let written = tail.write(&*self.dir, [&record]).and_then(|()| Ok(self.dir.barrier()?));
-        if written.is_err() {
-            self.lock().failed = true;
-        }
-        written.context("recording an acknowledgement")?;
-        drop(tail);
-        self.leave(leaving);
+        leave(&*self.dir, self.cache.as_deref(), leaving);
         Ok(())
     }
 
-    /// fxdax: the files at the paths of `leaving` leave the store, the objects at their keys in
-    /// the bucket: into the host's cache, if the uploader gave one and it takes them, the file
-    /// renamed; or removed (TASK-165.8). What fails to leave is logged, and removed, the bucket
-    /// holding it.
-    fn leave(&self, leaving: Vec<(String, String)>) {
-        if leaving.is_empty() {
-            return;
-        }
-        let cache = self.lock().uploads.as_ref().and_then(|uploads| uploads.cache.clone());
-        for (path, key) in leaving {
-            let adopted = match (&cache, self.dir.host_path(&path)) {
-                (Some(cache), Some(from)) => cache.adopt(&key, &from),
-                _ => Ok(false),
-            };
-            match adopted {
-                Ok(true) => continue,
-                Ok(false) => {}
-                Err(err) => log::warn!("extent store: {path} into the cache, as {key}: {err}"),
-            }
-            self.remove([path]);
-        }
-    }
-
     /// fxdax: makes the commits ordered so far durable, in order, as few syncs as they need
-    /// together: their data, then their records in the index, then the files they made
-    /// unreferenced go; and the raw files of the segments framed whose commits are durable.
+    /// together: their data, then their records in the open segment's log, then the files they
+    /// made unreferenced go; and the raw files and logs of the segments framed whose commits are
+    /// durable.
     pub fn flush(&self) -> Result<(), Error> {
         self.flush_locked(&mut self.flushing.lock().unwrap())
     }
 
-    /// [`Store::flush`], holding `flushing`, and so `tail`, where the index's next record goes.
-    fn flush_locked(&self, tail: &mut IndexTail<D::File>) -> Result<(), Error> {
+    /// [`Store::flush`], holding `flushing`, and so `log`, the open segment's log as the last
+    /// flush left it.
+    fn flush_locked(&self, log: &mut SegmentLog<D::File>) -> Result<(), Error> {
         // A store that failed makes nothing more durable.
         drop(self.state()?);
         let batch = self.durability.lock().unwrap().take();
         let durable = match batch {
             None => self.durability.lock().unwrap().durable(),
             Some(Batch { last, mut commits }) => {
-                if let Err(error) = self.make_durable(tail, &mut commits) {
+                if let Err(error) = self.make_durable(log, last, &mut commits) {
                     self.lock().failed = true;
                     return Err(error.context("committing the extent store"));
                 }
@@ -1715,35 +1893,53 @@ impl<D: Dir> Store<D> {
                     self.remove(pending.doomed);
                     leaving.extend(pending.leaving);
                 }
-                self.leave(leaving);
+                leave(&*self.dir, self.cache.as_deref(), leaving);
                 last
             }
         };
-        // fxdax: and the raw files of the segments framed, whose footers name commits durable now
-        // (TASK-153.8).
+        // fxdax: and the raw files and logs of the segments framed, whose footers name commits
+        // durable now (TASK-153.8).
         let raw = self.state()?.segments.raw(durable);
         self.remove(raw);
         Ok(())
     }
 
-    /// Makes `commits`, a flush's, durable, in order: once the segments they closed are framed,
-    /// their data, then their records in the index, at `tail`; but for the files they made
-    /// unreferenced.
+    /// Makes `commits`, a flush's, the last `last`, durable, in order: once every segment closed
+    /// by then is framed, those holding their data among them, their data and the open segment's
+    /// log's entries; then their records in that log, at `log`, those of the segments closed since
+    /// held by their framed files; but for the files they made unreferenced. fxdax: no commit is
+    /// durable before every segment closed before it is framed, so that a log closed again by an
+    /// opening is the write-ahead log's last (`wal`'s docs, TASK-165.9).
     fn make_durable(
         &self,
-        tail: &mut IndexTail<D::File>,
+        log: &mut SegmentLog<D::File>,
+        last: u64,
         commits: &mut [Pending<D::File>],
     ) -> Result<(), Error> {
-        // fxdax: the segments the commits closed, holding their data, framed and synced by their
-        // framings, which end themselves, waited for holding no lock (TASK-153.8).
-        let closed = commits.iter().filter_map(|pending| pending.closed);
-        self.wait_for_framings(closed)?;
+        // What closed by now, and the open segment, with its log, as of one moment.
+        let (framing, open) = {
+            let state = self.lock();
+            let open = state.segments.open_segment();
+            let mut framing = state.segments.framing_through(last);
+            framing.extend(commits.iter().filter_map(|pending| pending.closed));
+            let records = commits.iter().filter_map(|pending| pending.record.as_ref());
+            framing.extend(records.map(|(segment, _)| *segment).filter(|segment| *segment != open));
+            if log.segment != open {
+                *log = SegmentLog::new(open, state.segments.open_log());
+            }
+            (framing, open)
+        };
+        // fxdax: framed and synced by their framings, which end themselves, waited for holding no
+        // lock (TASK-153.8).
+        self.wait_for_framings(framing)?;
         let mut syncs = Syncs::default();
         for pending in commits.iter_mut() {
             syncs.extend(std::mem::take(&mut pending.syncs));
         }
         syncs.sync(&*self.dir)?;
-        tail.write(&*self.dir, commits.iter().map(|pending| &pending.write))?;
+        let records = commits.iter().filter_map(|pending| pending.record.as_ref());
+        let records = records.filter(|(segment, _)| *segment == open);
+        log.append(records.map(|(_, record)| record.as_slice()))?;
         self.dir.barrier()?;
         Ok(())
     }
@@ -1769,16 +1965,6 @@ impl<D: Dir> Store<D> {
     /// not taken by a flush in flight.
     pub fn flush_pending(&self) -> bool {
         self.durability.lock().unwrap().queued()
-    }
-
-    /// fxdax: the epoch of the last commit the uploader may take, and of the last commit of the
-    /// segments closed it may take: the last durable.
-    fn uploadable(&self) -> u64 {
-        if !rules().durable_only {
-            return u64::MAX;
-        }
-        let durability = self.durability.lock().unwrap();
-        if rules().durable_once_synced { durability.durable() } else { durability.taken() }
     }
 
     /// Reads `buf.len()` bytes at `offset` in `extent`, as `locate` finds them.
@@ -1833,40 +2019,40 @@ impl<D: Dir> Store<D> {
         Ok(())
     }
 
-    /// Sets the most bytes the branch's extents may hold, durably: the index holds it from now on,
-    /// after the commits made so far, which it makes durable first; and the next commit sets it in
-    /// the branch's state, as its delta and its segment's footer say (TASK-165.3, TASK-165.7). It
-    /// may grow it, or shrink it no lower than what the extents hold, with what writes in progress
-    /// may add ([`TooSmall`]).
+    /// Sets the most bytes the branch's extents may hold, durably: fxdax: a commit of its own,
+    /// which seals nothing, and takes none of what changed since the last commit, the next's, so
+    /// that the extents a guest has open stay open (TASK-165.9); ordered with the others, as its
+    /// segment's footer says (TASK-165.3). It may grow it, or shrink it no lower than what the
+    /// extents hold, with what writes in progress may add ([`TooSmall`]).
     pub fn set_capacity(&self, capacity: u64) -> Result<(), Error> {
-        let mut tail = self.flushing.lock().unwrap();
+        let committing = self.committing.lock().unwrap();
         {
             let mut state = self.writable()?;
             let block_size = self.block_size as u64;
             ensure!(capacity >= block_size, "a capacity of {capacity} is less than a block");
             state.space.check_capacity(capacity)?;
-            state.space.set_capacity(capacity);
-            // fxdax: and the branch's in object storage, as of the next commit (TASK-165.3).
-            state.uncommitted.resize(capacity);
+            let committed = state.failing(|state| {
+                state.space.set_capacity(capacity);
+                state.uncommitted.take_capacity();
+                let epoch = state.epoch + 1;
+                self.publish(state, epoch, None, &[]);
+                let (segment, next_sequence) = (state.segments.open_segment(), state.next_sequence);
+                let changed = (None, Some(capacity));
+                let contents =
+                    state.segments.record(epoch, &[], changed, &state.extents, next_sequence)?;
+                self.committed(state, epoch, segment, &contents)
+            });
+            committed.context("committing the capacity")?;
         }
-        // After the commits before it, which a crash keeps with it, or with none of it.
-        self.flush_locked(&mut tail)?;
-        let record = IndexWrite::Delta(encode(&Record::Capacity(capacity)));
-        let written = tail.write(&*self.dir, [&record]).and_then(|()| Ok(self.dir.barrier()?));
-        if written.is_err() {
-            self.lock().failed = true;
-        }
-        written.context("recording the capacity")
+        drop(committing);
+        self.flush()
     }
 
-    /// fxdax: has the next commit set the branch's capacity, as it is, in the branch's state as
-    /// object storage keeps it, its segment's footer saying so: for an uploader whose branch says
-    /// none there, or another (TASK-165.3).
-    pub fn restate_capacity(&self) -> Result<(), Error> {
-        let mut state = self.writable()?;
-        let capacity = state.space.capacity();
-        state.uncommitted.resize(capacity);
-        Ok(())
+    /// fxdax: the bytes of its write-ahead log not yet acknowledged in the bucket, those the open
+    /// segment's commits sealed included: what the uploader's lag bounds (TASK-165.9).
+    pub fn wal_bytes(&self) -> Result<u64, Error> {
+        let state = self.state()?;
+        Ok(state.wal.bytes() + state.segments.open_bytes())
     }
 
     /// The root as of the last commit: empty if none set one.
@@ -1994,23 +2180,26 @@ impl<D: Dir> Store<D> {
     }
 }
 
-/// Removes the files of `branch`'s extents' data in `dir` no extent of `recovered`, its state, is
-/// in: what commits that weren't durable wrote, or that were to go once the commits that let them
-/// go were; and the raw files of extents open, which no commit made durable refers to, and which
-/// are framed once sealed.
-fn remove_unheld<D: Dir>(dir: &D, branch: u64, recovered: &Recovered) -> Result<(), Error> {
-    let held = files_of(&recovered.extents);
-    for kind in [SEGMENTS, EXTENTS, OPEN_SEGMENTS, OPEN_EXTENTS] {
+/// Removes the files of extents stored on their own of `branch`'s in `dir` that neither `extents`
+/// holds nor a footer of its write-ahead log names, `named`: what commits that weren't durable
+/// wrote, or that were to go once the commits that let them go were; and the raw files of extents
+/// open, which no commit made durable refers to, and which are framed once sealed. Its write-ahead
+/// log's recovery removed what of segments it holds not ([`crate::wal::recover`]).
+fn remove_unheld<D: Dir>(
+    dir: &D,
+    branch: u64,
+    extents: &Extents,
+    named: &BTreeSet<ExtentId>,
+) -> Result<(), Error> {
+    let held = files_of(extents);
+    for (kind, own) in [(EXTENTS, true), (OPEN_EXTENTS, false)] {
         for number in list_numbers(dir, &branch_dir(kind, branch))? {
-            let file = match kind {
-                SEGMENTS | OPEN_SEGMENTS => Some(FileKey::Segment(SegmentId { branch, number })),
-                EXTENTS => Some(FileKey::Own(ExtentId::new(branch, number))),
-                _ => None,
-            };
-            if !file.is_some_and(|file| held.contains(&file)) {
-                let path = format!("{}/{:016x}", branch_dir(kind, branch), number);
-                dir.remove(&path).with_context(|| format!("removing {path}"))?;
+            let extent = ExtentId::new(branch, number);
+            if own && (held.contains(&FileKey::Own(extent)) || named.contains(&extent)) {
+                continue;
             }
+            let path = format!("{}/{:016x}", branch_dir(kind, branch), number);
+            dir.remove(&path).with_context(|| format!("removing {path}"))?;
         }
     }
     dir.barrier()?;

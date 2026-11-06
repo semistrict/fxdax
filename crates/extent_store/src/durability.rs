@@ -70,9 +70,8 @@ impl<T> Durability<T> {
         self.durable
     }
 
-    /// The epoch of the last commit a flush took, which may not be durable yet: what
-    /// [`Rules::durable_once_synced`](crate::Rules::durable_once_synced) turned off has the
-    /// uploader take as durable.
+    /// The epoch of the last commit a flush took, which may not be durable yet.
+    #[cfg(test)]
     pub fn taken(&self) -> u64 {
         self.ordered - self.queue.len() as u64
     }

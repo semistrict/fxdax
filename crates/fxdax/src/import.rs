@@ -77,9 +77,15 @@ async fn make_store<F: Future<Output = anyhow::Result<()>>>(
     capacity: u64,
     fill: impl FnOnce(Storage) -> F,
 ) -> Result<(), Error> {
-    let storage = Storage::create(path, capacity)?;
+    // fxdax: what an import its process died in left, unmade, is no store: made anew (TASK-196).
+    if Storage::is_unmade(path) {
+        Storage::delete(path)?;
+    }
+    let storage = Storage::create_unmade(path, capacity)?;
     let unfinished = Unfinished(path);
     fill(storage).await.map_err(Error::new)?;
+    // Whole once filled, and closed: until then, its making's dying leaves no store.
+    Storage::made(path)?;
     unfinished.finish();
     Ok(())
 }
@@ -945,7 +951,6 @@ mod tests {
     /// every import to the path after failed with `EEXIST` (`ImportImage`'s ALREADY_EXISTS),
     /// which a caller that retries an import its daemon's restart cut off takes for the store.
     #[test]
-    #[ignore = "TASK-196"]
     fn a_store_whose_importer_died_is_made_anew() {
         use crate::import::testing::{Entry, Kind, layer};
         use std::io::BufRead as _;

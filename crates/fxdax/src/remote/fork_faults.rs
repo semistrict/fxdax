@@ -22,7 +22,7 @@
 //! which jumps at each writer, on from 1 << 40, its branches random; never counted from nothing, as
 //! the extents of `remote`'s other tests are, which no store's are.
 
-use super::tests::{Gated, Mishap, idle, pattern, restart, uploaded};
+use super::tests::{Gated, Mishap, idle, kept_in, naming, pattern, reopened, restart, uploaded};
 use crate::faults::{CLEANUP_STEPS, FORK_STEPS, plan};
 use crate::{Errno, ExtentId, ExtentStore, VolatileSlice, VolatileSliceMut};
 use extent_remote::layout::{self, Kind};
@@ -115,8 +115,8 @@ pub(super) fn read(store: &ExtentStore, extent: ExtentId, len: usize) -> Vec<u8>
 }
 
 /// Options of a store of this host's or another's.
-pub(super) fn options() -> super::Options {
-    super::Options { token: TOKEN, ..idle() }
+pub(super) fn options() -> extent_store::upload::Options {
+    extent_store::upload::Options { token: TOKEN, ..idle() }
 }
 
 /// Mints `extents` of `store`'s, of those lengths, with data from `seed`, and commits them, the
@@ -157,22 +157,20 @@ impl World {
         let gated = Arc::new(Gated::over(memory));
         let reached = Arc::new(Bucket::new(gated.clone(), ""));
 
-        let other = ExtentStore::create(temp.path().join("other"), 1 << 30).unwrap();
-        other.attach_remote(bucket.clone(), rand::random(), options()).unwrap();
+        let other =
+            kept_in(temp.path().join("other"), (1 << 30, None), &bucket, options()).unwrap();
         let other_held = commit(&other, 9, &[BLOCK], b"other");
 
         let path = host.join("parent");
-        let parent = ExtentStore::create(&path, 1 << 30).unwrap();
+        let parent = kept_in(&path, (1 << 30, None), &reached, options()).unwrap();
         let branch = parent.branch();
-        parent.attach_remote(reached.clone(), rand::random(), options()).unwrap();
         let mut held = commit(&parent, 1, &[BLOCK], b"first");
         parent.wait_uploaded().unwrap();
         let floor = parent.info().unwrap().sequence_floor;
         drop(parent);
-        let parent = ExtentStore::open(&path).unwrap();
-        parent.attach_remote(reached, rand::random(), options()).unwrap();
+        let parent = reopened(&path, options()).unwrap();
         assert!(parent.info().unwrap().sequence_floor > floor, "a writer's floor jumps");
-        held.extend(commit(&parent, 2, &[2 * BLOCK, super::LARGE as usize], b"root"));
+        held.extend(commit(&parent, 2, &[2 * BLOCK, 4 << 20], b"root"));
         parent.wait_uploaded().unwrap();
         Self {
             temp,
@@ -261,10 +259,8 @@ impl World {
 
     /// Opens the store at `path`, and takes its branch.
     fn open(&self, path: &Path) -> Result<ExtentStore, String> {
-        let store = ExtentStore::open(path).map_err(|err| err.to_string())?;
-        let attached = store.attach_remote(self.bucket.clone(), rand::random(), options());
-        attached.map_err(|err| err.to_string())?;
-        Ok(store)
+        naming(path, &self.bucket);
+        reopened(path, options()).map_err(|err| err.to_string())
     }
 
     /// Whether `store`, a fork of the parent, reads what the parent held at the fork, whose root
@@ -594,7 +590,7 @@ fn each_write_of_a_fork_meeting_the_collector() {
 /// on its way, there unacknowledged, and acknowledged, its child's record given; and its child's
 /// store made.
 const FAILING_FOR_CLEANUPS: [&str; 5] =
-    ["fork::committed", "remote::marked", "writer::uploaded", "writer::checkpoint", "fork::made"];
+    ["fork::committed", "writer::upload", "writer::uploaded", "writer::checkpoint", "fork::made"];
 
 /// A failed fork's cleanup failing, or its host dying, at each step, or a write of it going wrong,
 /// leaves nothing here, and in the bucket what stands, as an orphan, which an operator deletes.
@@ -639,8 +635,7 @@ fn forks_orphaned_by_a_lost_host_keep_what_they_inherited_until_deleted() {
     assert!(world.dead.load(Ordering::SeqCst), "the host lives");
 
     let moved = world.temp.path().join("moved");
-    let parent = ExtentStore::create_for_branch(&moved, 1 << 30, world.branch).unwrap();
-    parent.attach_remote(world.bucket.clone(), rand::random(), options()).unwrap();
+    let parent = kept_in(&moved, (1 << 30, Some(world.branch)), &world.bucket, options()).unwrap();
     assert!(world.record(world.child).is_some_and(|record| !record.deleted), "no orphan");
     let state = block_on(extent_remote::recover(&*world.bucket, world.branch, None));
     let key = state.unwrap().state.extents[&large.into()].key.clone();

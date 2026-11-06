@@ -161,8 +161,8 @@ pub use error::{Errno, Error, Result};
 #[cfg(target_os = "linux")]
 pub use extentd::RemoteExtentStore;
 pub use extents::{
-    Commit, ExtentId, ExtentInfo, ExtentStore, MappingContents, OpenBase, StoreAccess, StoreBytes,
-    StoreRole, WindowMapping, WriteBarriers,
+    Commit, ExtentId, ExtentInfo, ExtentStore, MappingContents, OpenBase, Opening, StoreAccess,
+    StoreBytes, StoreRole, WindowMapping, WriteBarriers,
 };
 pub use filesystem::{Filesystem, Node, Options};
 pub use image::{Compactions, Image, TreeCompactions};

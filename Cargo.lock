@@ -907,12 +907,15 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "bincode",
+ "event-listener",
  "extent_frame",
  "extent_remote",
  "extent_store",
  "fail",
+ "futures",
  "libc",
  "log",
+ "object_store",
  "rand 0.10.3",
  "rapidhash",
  "serde",
@@ -920,6 +923,7 @@ dependencies = [
  "storage_device",
  "tempfile",
  "thiserror",
+ "tokio",
 ]
 
 [[package]]

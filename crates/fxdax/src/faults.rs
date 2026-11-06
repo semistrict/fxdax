@@ -29,14 +29,13 @@ pub(crate) use failpoint;
 /// in the bucket, its commit naming the child, then, on the uploader's side, its segment's upload
 /// and acknowledgement, which gives the child its record, and the checkpoint that makes it; then
 /// the child's store made, taking its state from the bucket (TASK-165.7).
-pub const FORK_STEPS: [&str; 20] = [
+pub const FORK_STEPS: [&str; 19] = [
     "fork::durable",
     "remote::child_free",
     "fork::committed",
     "fork::flushed",
     "remote::forked",
     "remote::gather",
-    "remote::marked",
     "writer::upload",
     "writer::uploaded",
     "writer::acknowledge",

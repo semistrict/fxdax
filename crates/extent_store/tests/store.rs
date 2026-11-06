@@ -8,9 +8,10 @@ mod common;
 
 use common::noise;
 use extent_frame::segment::{Chain, Child, Contents, Location};
+use extent_remote::wal::Fenced;
 use extent_store::{
-    Closed, Description, Dir, File as _, HostDir, MemDir, MemFile, NoSpace, Options, Part, Place,
-    RemoteData, Spent, Store, TooLong, TooSmall,
+    Closed, Description, Dir, File as _, HostDir, MemDir, MemFile, NoSpace, Opening, Options, Part,
+    Place, RemoteData, Spent, Store, TooLong, TooSmall,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -27,14 +28,14 @@ const OPTIONS: Options = Options {
     segment_size: 64 << 10,
     segment_age: std::time::Duration::from_secs(3600),
     large_extent: 32 << 10,
-    checkpoint_after: 4 << 10,
     open_files: 2,
     view_lag: None,
     view_kept_bytes: None,
 };
 
-/// The chain of a writer of the branch in object storage, whose segments the store closes.
-const WRITER: Chain = Chain::new(BRANCH, 1, 0, None, 0);
+/// The chain of a writer of the branch in object storage, whose segments the store closes: that of
+/// a store opened where the bucket holds nothing of its branch (`Opening::new`).
+const WRITER: Chain = Chain::new(BRANCH, 0, 0, None, 0);
 
 fn extent(sequence: u64) -> ExtentId {
     ExtentId::new(BRANCH, sequence)
@@ -53,6 +54,29 @@ fn pattern(seed: u8, offset: usize, len: usize) -> Vec<u8> {
 fn create<D: Dir>(dir: D, capacity: u64) -> Store<D> {
     let description = Description { block_size: BLOCK as u32, capacity, branch: BRANCH };
     Store::create(dir, description, OPTIONS).unwrap()
+}
+
+/// fxdax: the store in `dir`, opened where the bucket holds `state` of its branch, its writer's
+/// chain `chain` (TASK-165.9).
+fn opened_on(dir: MemDir, state: extent_remote::State, chain: Chain) -> Store<MemDir> {
+    let last = state.last_commit;
+    let fenced = Fenced { recovered: last, last_commit: last, chain };
+    let opening = Opening { state, fenced: Some(fenced), cache: None };
+    Store::recover_unmade(dir).unwrap().open(OPTIONS, opening).unwrap()
+}
+
+/// fxdax: a new store in `dir`, of `capacity` bytes, made whole, opened as [`opened_on`] opens it.
+fn created_on(
+    dir: MemDir,
+    capacity: u64,
+    state: extent_remote::State,
+    chain: Chain,
+) -> Store<MemDir> {
+    let description = Description { block_size: BLOCK as u32, capacity, branch: BRANCH };
+    Store::make(&dir, description, None).unwrap();
+    let store = opened_on(dir, state, chain);
+    store.made().unwrap();
+    store
 }
 
 fn read<D: Dir>(store: &Store<D>, extent: ExtentId, offset: u64, len: usize) -> Vec<u8> {
@@ -214,7 +238,7 @@ fn capacity() {
 }
 
 /// Freed extents' files, and segments whose extents are all freed, are removed once the frees are
-/// committed.
+/// committed, and fxdax: their segments acknowledged in the bucket (TASK-165.9).
 #[test]
 fn frees_remove_files() {
     let dir = MemDir::new();
@@ -237,13 +261,19 @@ fn frees_remove_files() {
     for sequence in 0..=16 {
         store.free(extent(sequence)).unwrap();
     }
-    // Not until the frees are committed.
+    // fxdax: not until the frees are committed, and the segment is acknowledged in the bucket,
+    // the write-ahead log keeping it until then (TASK-165.9).
     assert_eq!(segments(), (1, 1));
     assert_eq!(dir.list(&of("extents", BRANCH)).unwrap().len(), 1);
     store.commit(None).unwrap();
+    assert_eq!(segments(), (1, 1));
+    assert_eq!(dir.list(&of("extents", BRANCH)).unwrap().len(), 1);
+    error_is(store.read(extent(16), 0, &mut [0; BLOCK]), NoExtent(extent(16)));
+    let closed = closed_one(&store);
+    store.acknowledged(closed.number).unwrap();
+    store.commit(None).unwrap();
     assert_eq!(segments(), (0, 1));
     assert_eq!(dir.list(&of("extents", BRANCH)).unwrap(), Vec::<String>::new());
-    error_is(store.read(extent(16), 0, &mut [0; BLOCK]), NoExtent(extent(16)));
 }
 
 /// fxdax: a commit that fills the open segment closes it, and leaves its framing to a thread of
@@ -254,7 +284,6 @@ fn frees_remove_files() {
 fn segments_close_framed_by_the_commits_flush() {
     let dir = MemDir::new();
     let store = create(dir.clone(), 1 << 20);
-    assert!(store.upload(WRITER, 0, None).unwrap());
     for sequence in 0..17 {
         store.write(extent(sequence), 0, &pattern(sequence as u8, 0, BLOCK)).unwrap();
     }
@@ -265,6 +294,7 @@ fn segments_close_framed_by_the_commits_flush() {
     let reads = || (0..17).map(|sequence| read(&store, extent(sequence), 0, BLOCK));
     let written: Vec<_> = (0..17).map(|sequence| pattern(sequence as u8, 0, BLOCK)).collect();
     assert_eq!(reads().collect::<Vec<_>>(), written);
+    // Not the uploader's until its commit is durable (TASK-165.9).
     assert!(store.closed(usize::MAX).unwrap().is_empty());
 
     store.flush().unwrap();
@@ -284,21 +314,17 @@ fn closed_one(store: &Store<MemDir>) -> Closed<MemFile> {
     closed
 }
 
-/// fxdax: an uploader takes the segments closed once their commits are durable, whose footers say
-/// what the commits wrote, with its lengths, freed, and set as the root; and reads the data of
-/// extents freed since, whose files stay until it releases them.
+/// fxdax: the uploader takes the segments of the write-ahead log once their commits are durable,
+/// whose footers say what the commits wrote, with its lengths, freed, and set as the root; the
+/// data of extents freed since stays in the log's files, which the uploader reads, until the
+/// segments are acknowledged (TASK-165.9).
 #[test]
-fn uploads_keep_freed_data_until_released() {
+fn the_write_ahead_log_keeps_freed_data_until_acknowledged() {
     use extent_frame::segment::{Location, extent_key};
     let dir = MemDir::new();
     let store = create(dir.clone(), 1 << 20);
     store.write(extent(1), 0, &pattern(1, 0, BLOCK)).unwrap();
     store.commit(None).unwrap();
-    // Before uploading began: the uploader starts from the store's extents.
-    let snapshot = store.snapshot().unwrap();
-    assert_eq!((snapshot.epoch, snapshot.extents), (1, vec![(extent(1), BLOCK as u64)]));
-    assert!(!store.upload(WRITER, 0, None).unwrap());
-    assert!(store.upload(WRITER, 1, None).unwrap());
     assert!(store.closed(usize::MAX).unwrap().is_empty());
 
     for sequence in 2..=16 {
@@ -312,15 +338,17 @@ fn uploads_keep_freed_data_until_released() {
     let writing = closed_one(&store);
     let written: Vec<_> =
         writing.footer.contents.extents.iter().map(|&(extent, _, len)| (extent, len)).collect();
-    // The segment opened before uploading began holds what the commit before it wrote too.
     let blocks: Vec<_> = (1..=16).map(|sequence| (extent(sequence), BLOCK as u64)).collect();
     assert_eq!(written, blocks);
-    let own =
-        Location { key: extent_key(1, writing.footer.seq, extent(17)), offset: 0, len: 32 << 10 };
+    let own = Location {
+        key: extent_key(WRITER.epoch(), writing.footer.seq, extent(17)),
+        offset: 0,
+        len: 32 << 10,
+    };
     assert_eq!(writing.footer.own().collect::<Vec<_>>(), [(extent(17), own)]);
     let (frees, root) = (&writing.footer.contents.frees, &writing.footer.contents.root);
     assert_eq!((frees.clone(), root.clone()), (vec![], Some(b"root".to_vec())));
-    assert_eq!(store.unreleased_bytes().unwrap(), 15 * BLOCK as u64 + (32 << 10));
+    assert_eq!(store.wal_bytes().unwrap(), 16 * BLOCK as u64 + (32 << 10));
 
     for sequence in 1..=17 {
         store.free(extent(sequence)).unwrap();
@@ -329,32 +357,24 @@ fn uploads_keep_freed_data_until_released() {
     assert!(store.close_now().unwrap());
     let freeing = closed_one(&store);
     assert_eq!(freeing.footer.contents.frees, (1..=17).map(extent).collect::<Vec<_>>());
-    // Freed, and kept: the uploader reads them, the store's users don't.
+    // Freed: the store's users read them not, the log holds them, which the uploader reads.
     error_is(store.read(extent(17), 0, &mut [0; BLOCK]), NoExtent(extent(17)));
-    let mut data = vec![0; 32 << 10];
-    store.read_kept(extent(17), 0, &mut data).unwrap();
-    assert_eq!(data, pattern(17, 0, 32 << 10));
-    store.read_kept(extent(3), 0, &mut data[..BLOCK]).unwrap();
-    assert_eq!(&data[..BLOCK], pattern(3, 0, BLOCK));
+    let [(_, own_bytes)] = &writing.own_bytes().unwrap()[..] else { panic!("no extent's own") };
+    assert_eq!(extent_frame::data(own_bytes).unwrap(), pattern(17, 0, 32 << 10));
+    let data = extent_frame::data(&writing.bytes().unwrap()).unwrap();
+    assert_eq!(&data[2 * BLOCK..3 * BLOCK], &pattern(3, 0, BLOCK)[..]);
     store.commit(None).unwrap();
     assert_eq!(dir.list(&of("extents", BRANCH)).unwrap().len(), 1);
     let segments = dir.list(&of("segments", BRANCH)).unwrap().len();
 
-    // Released, and their segments uploaded, they go with the next commit.
-    store.release(3).unwrap();
+    // Acknowledged, they go.
     for closed in [writing, freeing] {
-        store.acknowledged(closed.number, &bucket_key(&closed)).unwrap();
+        store.acknowledged(closed.number).unwrap();
     }
-    assert_eq!(store.unreleased_bytes().unwrap(), 0);
-    error_is(store.read_kept(extent(17), 0, &mut data), NoExtent(extent(17)));
+    assert_eq!(store.wal_bytes().unwrap(), 0);
     store.commit(None).unwrap();
     assert_eq!(dir.list(&of("extents", BRANCH)).unwrap(), Vec::<String>::new());
     assert!(dir.list(&of("segments", BRANCH)).unwrap().len() < segments);
-}
-
-/// fxdax: the key in the bucket of the object `closed`, a segment closed, is: its writer's.
-fn bucket_key(closed: &Closed<MemFile>) -> String {
-    format!("segments/{:016x}/{:016x}", closed.footer.branch, closed.footer.seq)
 }
 
 /// fxdax: where in the bucket an extent of `len` bytes is: at `offset` in the object at `key`.
@@ -362,29 +382,19 @@ fn bucket_location(key: &str, offset: u64, len: u64) -> Location {
     Location { key: key.to_owned(), offset, len }
 }
 
-/// fxdax: a store holds extents whose data is in the bucket: committed and recovered like others,
-/// and freed so, but read from the bucket, at their locations there, which a read's error names
-/// (TASK-165.8).
+/// fxdax: a store holds the extents the bucket holds of its branch as of its opening: recovered
+/// there, read there, at their locations there, which a read's error names, and freed like others
+/// (TASK-165.8, TASK-165.9).
 #[test]
-fn adopted_extents_are_held_without_their_data() {
+fn extents_the_bucket_holds_are_held_without_their_data() {
     let dir = MemDir::new();
-    let store = create(dir.clone(), 1 << 20);
-    assert!(store.upload(WRITER, store.epoch().unwrap(), None).unwrap());
     let location =
         bucket_location("segments/0000000000000007/0000000000000003", 8192, 3 * BLOCK as u64);
-    store.adopt(extent(5), location.clone()).unwrap();
     let other = bucket_location("extents/0000000000000008/1.2.9", 0, BLOCK as u64);
-    store.adopt(ExtentId::new(BRANCH + 1, 9), other).unwrap();
-    assert!(store.adopt(extent(5), bucket_location("k", 0, BLOCK as u64)).is_err());
-    store.commit(None).unwrap();
-    // Not uploaded again: a checkpoint names them, no footer.
-    assert!(store.close_now().unwrap());
-    let adopting = closed_one(&store);
-    assert_eq!(
-        (adopting.footer.contents.extents.len(), adopting.footer.contents.own.len()),
-        (0, 0)
-    );
-    assert_eq!(store.unreleased_bytes().unwrap(), 0);
+    let mut state = extent_remote::State::new(BRANCH);
+    state.extents.insert(extent(5), location.clone());
+    state.extents.insert(ExtentId::new(BRANCH + 1, 9), other);
+    state.next_sequence = 6;
     let check = |store: &Store<MemDir>| {
         assert_eq!(store.extent(extent(5)).unwrap(), Some((3 * BLOCK as u64, false)));
         let remote = RemoteData { extent: extent(5), location: location.clone() };
@@ -395,11 +405,11 @@ fn adopted_extents_are_held_without_their_data() {
         // Sealed.
         error_is(store.write(extent(5), 0, &[0; BLOCK]), SealedExtent(extent(5)));
     };
+    let store = created_on(dir.clone(), 1 << 20, state.clone(), WRITER);
     check(&store);
     drop(store);
-    let store = Store::open(dir.clone(), OPTIONS).unwrap();
+    let store = opened_on(dir, state, WRITER);
     check(&store);
-    assert!(store.upload(WRITER, store.epoch().unwrap(), None).unwrap());
     store.free(extent(5)).unwrap();
     store.commit(None).unwrap();
     assert!(store.close_now().unwrap());
@@ -407,10 +417,10 @@ fn adopted_extents_are_held_without_their_data() {
     error_is(store.read(extent(5), 0, &mut [0; BLOCK]), NoExtent(extent(5)));
 }
 
-/// Commits append deltas to the index, which a checkpoint in a new file replaces once they are
-/// many.
+/// fxdax: commits append their records to the open segment's log, its alone, and the store opened
+/// again holds them all (TASK-165.9).
 #[test]
-fn checkpoints() {
+fn commits_reopen_from_their_logs() {
     let dir = MemDir::new();
     let store = create(dir.clone(), 64 << 20);
     for sequence in 0..200 {
@@ -420,12 +430,10 @@ fn checkpoints() {
         }
         store.commit(Some(format!("root {sequence}").as_bytes())).unwrap();
     }
-    assert_eq!(dir.list(&of("index", BRANCH)).unwrap().len(), 1);
-    let first_index = dir.list(&of("index", BRANCH)).unwrap();
+    assert_eq!(dir.list(&of("logs", BRANCH)).unwrap().len(), 1);
     drop(store);
     let store = Store::open(dir.clone(), OPTIONS).unwrap();
-    assert_ne!(dir.list(&of("index", BRANCH)).unwrap(), first_index);
-    assert_eq!(dir.list(&of("index", BRANCH)).unwrap().len(), 1);
+    assert_eq!(dir.list(&of("logs", BRANCH)).unwrap().len(), 1);
     assert_eq!(store.root().unwrap(), b"root 199");
     assert_eq!(store.epoch().unwrap(), 200);
     let held: Vec<u64> =
@@ -436,27 +444,37 @@ fn checkpoints() {
     }
 }
 
-/// The branch's state, as it holds it, which rebuilding it from its checkpoint and its closed
-/// segments' footers must give once its open segment is closed.
-fn closed_state<D: Dir>(store: &Store<D>) -> extent_store::Rebuilt {
+/// What a store holds as of its last commit, as its users see it: its epoch, root and next
+/// sequence number, its extents with their lengths and where they are, and what it spent.
+type Held = (u64, Vec<u8>, u64, Vec<(ExtentId, u64, Place)>, extent_frame::spent::Spent);
+
+/// What `store` holds ([`Held`]), its open segment closed by a commit.
+fn closed_state<D: Dir>(store: &Store<D>) -> Held {
     store.close_segment().unwrap();
     store.commit(None).unwrap();
-    extent_store::Rebuilt {
-        epoch: store.epoch().unwrap(),
-        root: store.root().unwrap(),
-        next_sequence: store.info().unwrap().next_sequence,
-        extents: store.places().unwrap(),
-        spent: store.spent().unwrap(),
-    }
+    let next_sequence = store.info().unwrap().next_sequence;
+    let (epoch, root) = (store.epoch().unwrap(), store.root().unwrap());
+    (epoch, root, next_sequence, store.places().unwrap(), store.spent().unwrap())
+}
+
+/// What `store`, of `dir`, holds once opened again, its write-ahead log's footers replayed
+/// (TASK-165.9): what [`closed_state`] said.
+fn reopened_state(store: Store<MemDir>, dir: &MemDir) -> (Held, Store<MemDir>) {
+    let store = reopened(store, dir);
+    let next_sequence = store.info().unwrap().next_sequence;
+    let (epoch, root) = (store.epoch().unwrap(), store.root().unwrap());
+    let held = (epoch, root, next_sequence, store.places().unwrap(), store.spent().unwrap());
+    (held, store)
 }
 
 /// fxdax: an extent freed while open, which no commit held, is not spent: the store writes it
-/// again, and so does the branch its footers rebuild, which spends those freed once sealed alone,
-/// as the store does (TASK-160.15). One sealed, and freed by a later commit of the same segment,
-/// is spent, though no footer names it held.
+/// again, and so does the store opened again, its write-ahead log's footers spending those freed
+/// once sealed alone, as the store does (TASK-160.15, TASK-165.9). One sealed, and freed by a
+/// later commit of the same segment, is spent, though no footer names it held.
 #[test]
-fn rebuilding_spends_what_the_store_spends() {
-    let store = create(MemDir::new(), 1 << 20);
+fn reopening_spends_what_the_store_spends() {
+    let dir = MemDir::new();
+    let store = create(dir.clone(), 1 << 20);
     for (sequence, len) in [(1, BLOCK), (2, BLOCK), (3, 40 << 10)] {
         store.write(extent(sequence), 0, &pattern(sequence as u8, 0, len)).unwrap();
     }
@@ -467,8 +485,11 @@ fn rebuilding_spends_what_the_store_spends() {
     // Sealed, then freed.
     store.free(extent(1)).unwrap();
     let state = closed_state(&store);
-    assert_eq!(state.spent.runs().collect::<Vec<_>>(), [(1, 2)]);
-    assert_eq!(store.rebuild().unwrap(), state);
+    assert_eq!(state.4.runs().collect::<Vec<_>>(), [(1, 2)]);
+    let (reopened, store) = reopened_state(store, &dir);
+    // Its next sequence past what it holds, none: those freed, its next writer's floor is past.
+    let (epoch, root, _, places, spent) = state;
+    assert_eq!(reopened, (epoch, root, 0, places, spent));
     for sequence in [2, 3] {
         store.write(extent(sequence), 0, &pattern(9, 0, BLOCK)).unwrap();
     }
@@ -516,7 +537,8 @@ fn sealed_extents_are_one_run_each() {
 }
 
 /// Segments close when full, when old, when asked to, and at a fork, their footers after their
-/// data; and the branch's state is its checkpoint and its closed segments' footers.
+/// data; and the branch's state is the replay of its write-ahead log's footers, which the store
+/// opened again holds (TASK-165.9), and which its audit checks at each closing.
 #[test]
 fn closed_segments_hold_the_branchs_history() {
     let dir = MemDir::new();
@@ -532,9 +554,10 @@ fn closed_segments_hold_the_branchs_history() {
     // Asked to.
     let state = closed_state(&store);
     assert_eq!(segments(), 2);
-    assert_eq!(store.rebuild().unwrap(), state);
+    let (reopened, store) = reopened_state(store, &dir);
+    assert_eq!(reopened, state);
 
-    // Full: 64 KiB of extents, freed and kept, adopted.
+    // Full: 64 KiB of extents, freed and kept.
     for sequence in 1..=40 {
         store.write(extent(sequence), 0, &pattern(sequence as u8, 0, BLOCK)).unwrap();
         if sequence % 3 == 0 {
@@ -544,12 +567,12 @@ fn closed_segments_hold_the_branchs_history() {
     }
     assert!(segments() > 2, "no segment filled");
     store.free(extent(0)).unwrap();
-    store.adopt(ExtentId::new(BRANCH + 9, 3), bucket_location("k", 0, BLOCK as u64)).unwrap();
     store.commit(None).unwrap();
     let state = closed_state(&store);
-    assert_eq!(store.rebuild().unwrap(), state);
+    let (reopened, store) = reopened_state(store, &dir);
+    assert_eq!(reopened, state);
     // A run's data is in its segment, framed, where its footer says.
-    let (_, _, place) = state.extents.iter().find(|(id, ..)| *id == extent(40)).unwrap();
+    let (_, _, place) = state.3.iter().find(|(id, ..)| *id == extent(40)).unwrap();
     let Place::Run { number, offset, .. } = *place else { panic!("{place:?}") };
     let file = dir.open(&format!("{}/{number:016x}", of("segments", BRANCH)), true).unwrap();
     let mut bytes = vec![0; extent_store::File::size(&file).unwrap() as usize];
@@ -565,46 +588,13 @@ fn closed_segments_hold_the_branchs_history() {
     store.write(extent(50), 0, &pattern(50, 0, BLOCK)).unwrap();
     store.commit(None).unwrap();
     assert_eq!(segments(), before + 1);
-    assert_eq!(store.rebuild().unwrap().extents, store.places().unwrap());
 
     // At a fork.
     store.write(extent(51), 0, &pattern(51, 0, BLOCK)).unwrap();
     store.commit_fork(Child { branch: BRANCH + 1, owner: 0, point: false }).unwrap();
-    assert_eq!(store.rebuild().unwrap().extents, store.places().unwrap());
-}
-
-/// A branch rebuilt from a checkpoint the index wrote since, and the footers after it, is the
-/// branch; footers of closed segments no extent is in go once a checkpoint covers them.
-#[test]
-fn checkpoints_cover_closed_segments() {
-    let dir = MemDir::new();
-    let options = Options { checkpoint_after: 1 << 10, ..OPTIONS };
-    let store = Store::create(
-        dir.clone(),
-        Description { block_size: BLOCK as u32, capacity: 64 << 20, branch: BRANCH },
-        options,
-    )
-    .unwrap();
-    for round in 0..6 {
-        for sequence in round * 20..(round + 1) * 20 {
-            store.write(extent(sequence), 0, &pattern(sequence as u8, 0, BLOCK)).unwrap();
-            store.commit(None).unwrap();
-        }
-        // The rounds before last freed: their segments hold no extent.
-        if round > 0 {
-            for sequence in (round - 1) * 20..round * 20 {
-                store.free(extent(sequence)).unwrap();
-            }
-        }
-        let state = closed_state(&store);
-        assert_eq!(store.rebuild().unwrap(), state, "round {round}");
-    }
-    // Only the last rounds' segments, and the open one, are left.
-    assert!(dir.list(&of("segments", BRANCH)).unwrap().len() <= 4);
-    drop(store);
-    let store = Store::open(dir, options).unwrap();
-    let state = closed_state(&store);
-    assert_eq!(store.rebuild().unwrap(), state);
+    let places = store.places().unwrap();
+    let (reopened, _) = reopened_state(store, &dir);
+    assert_eq!(reopened.3, places);
 }
 
 /// A branch with closed segments, and one not, reopens in a directory of the host's, whose
@@ -623,12 +613,11 @@ fn closed_segments_reopen_on_the_host() {
     let store = Store::open(open(), OPTIONS).unwrap();
     assert_eq!(read(&store, extent(1), 0, 3 * BLOCK), pattern(1, 0, 3 * BLOCK));
     assert_eq!(read(&store, extent(2), 0, BLOCK), pattern(2, 0, BLOCK));
-    // As of the checkpoint opening wrote, past the closed segment's footer.
-    let rebuilt = store.rebuild().unwrap();
-    assert!(rebuilt.epoch > state.epoch);
-    assert_eq!((rebuilt.epoch, rebuilt.extents), (store.epoch().unwrap(), store.places().unwrap()));
+    assert!(store.epoch().unwrap() > state.0);
     let state = closed_state(&store);
-    assert_eq!(store.rebuild().unwrap(), state);
+    drop(store);
+    let store = Store::open(open(), OPTIONS).unwrap();
+    assert_eq!(closed_state(&store).3, state.3);
 }
 
 /// Closed segments and sealed extents are stored compressed, but for parts that do not compress,
@@ -697,11 +686,12 @@ fn compressible_data_takes_less_disk() {
     assert!(usage.disk_bytes * 4 < held, "{usage:?}");
 }
 
-/// A segment's raw file goes only once the commit closing it is durable: a crash before leaves the
-/// branch as of the commits before, its data read from the raw file, which opening it closes again,
-/// with no footer.
+/// fxdax: a segment a commit closes is that commit's record once framed, its framing having made
+/// its framed file, which holds the commit's data, durable: a crash after leaves the branch as of
+/// that commit, though no flush made it durable, the framed file read, its raw file gone once
+/// opened (TASK-165.9). Before, a crash closes it again from its log (`wal`'s tests).
 #[test]
-fn segments_closed_by_commits_not_durable_close_again() {
+fn segments_closed_by_commits_are_their_records_once_framed() {
     for seed in 0..16 {
         let dir = MemDir::serial();
         let store = create(dir.clone(), 64 << 20);
@@ -712,12 +702,11 @@ fn segments_closed_by_commits_not_durable_close_again() {
         store.commit_ordered(Some(b"two")).unwrap();
         let crashed = dir.crash(seed);
         drop(store);
-        let store = Store::open(crashed, OPTIONS).unwrap();
-        assert_eq!(store.root().unwrap(), b"one", "seed {seed}");
+        let store = Store::open(crashed.clone(), OPTIONS).unwrap();
+        assert_eq!(store.root().unwrap(), b"two", "seed {seed}");
         assert_eq!(read(&store, extent(1), 0, 3 * BLOCK), pattern(1, 0, 3 * BLOCK));
-        assert_eq!(store.extents().unwrap(), vec![(extent(1), 3 * BLOCK as u64)]);
-        let rebuilt = store.rebuild().unwrap();
-        assert_eq!((rebuilt.root, rebuilt.extents), (b"one".to_vec(), store.places().unwrap()));
+        assert_eq!(read(&store, extent(2), 0, BLOCK), pattern(2, 0, BLOCK));
+        assert_eq!(crashed.list(&of("open-segments", BRANCH)).unwrap(), ["0000000000000002"]);
     }
 }
 
@@ -806,12 +795,13 @@ fn segments_closed_between_commits_survive_failures_framing_them() {
     }
 }
 
-/// fxdax: a segment closed between commits keeps its raw file until a commit after it is durable,
-/// with the commits its footer names: so that the branch's next opening, a crash having lost them,
-/// finds it, and closes it again, with no footer; and reads no segment whose raw file is gone
-/// (TASK-92.16).
+/// fxdax: a segment closed between commits keeps its raw file and log until a commit after it is
+/// durable, with the commits its footer names, though its framed file, durable once framed, holds
+/// them (TASK-92.16, TASK-165.9): a crash then leaves the branch as of its last commit, its
+/// framed file read, whose footer names it.
 #[test]
 fn segments_closed_between_commits_keep_their_raw_files_until_a_commit_after_is_durable() {
+    use extent_frame::segment::{Footer, tag};
     let path = |kind| format!("{}/{:016x}", of(kind, BRANCH), 0);
     for seed in 0..16 {
         let dir = MemDir::serial();
@@ -823,15 +813,18 @@ fn segments_closed_between_commits_keep_their_raw_files_until_a_commit_after_is_
         assert!(store.close_now().unwrap());
         let crashed = dir.crash(seed);
         assert!(dir.open(&path("open-segments"), true).is_ok(), "seed {seed}: the raw file went");
+        assert!(dir.open(&path("logs"), false).is_ok(), "seed {seed}: the log went");
         store.commit(None).unwrap();
         assert!(dir.open(&path("open-segments"), true).is_err(), "seed {seed}: the raw file stays");
+        assert!(dir.open(&path("logs"), false).is_err(), "seed {seed}: the log stays");
         drop(store);
         let store = Store::open(crashed.clone(), OPTIONS).unwrap();
-        assert_eq!(store.epoch().unwrap(), 1, "seed {seed}");
-        assert_eq!(read(&store, extent(1), 0, BLOCK), pattern(1, 0, BLOCK));
+        assert_eq!(store.epoch().unwrap(), 2, "seed {seed}");
+        assert_eq!(read(&store, extent(2), 0, BLOCK), pattern(2, 0, BLOCK));
         let framed = extent_store::read_whole(&crashed.open(&path("segments"), true).unwrap());
         let footer = extent_frame::footer(&framed.unwrap()).unwrap().to_vec();
-        assert_eq!(footer, b"", "seed {seed}: its footer names commits lost");
+        let footer = Footer::decode(&footer).unwrap();
+        assert_eq!(footer.contents.commits, [tag(0, 2)], "seed {seed}");
     }
 }
 
@@ -875,49 +868,57 @@ fn locating_parts_stored_compressed() {
     assert_eq!(read(&store, extent(2), 0, 16 * BLOCK), noise(2, 16 * BLOCK));
 }
 
-/// fxdax: a resize is the next commit's, which a segment's footer says, as object storage keeps
-/// the branch's capacity: the last resize of its commits', or none if none resized it; and so is
-/// a restatement of the capacity as it is (TASK-165.3).
+/// fxdax: a resize is a commit of its own, which seals nothing, a segment's footer saying it, as
+/// object storage keeps the branch's capacity: the last resize of its commits', or none if none
+/// resized it (TASK-165.3, TASK-165.9). The extents open stay open.
 #[test]
-fn resizes_are_their_next_commits() {
+fn resizes_are_commits_of_their_own() {
     let store = create(MemDir::new(), 1 << 20);
-    assert!(store.upload(Chain::new(BRANCH, 3, 0, None, 0), 0, None).unwrap());
     let capacity = |store: &Store<MemDir>| {
         store.close_now().unwrap();
         store.flush().unwrap();
         closed_one(store).footer.contents.capacity
     };
+    store.write(extent(1), 0, &pattern(1, 0, BLOCK)).unwrap();
+    let epoch = store.epoch().unwrap();
     store.set_capacity(2 << 20).unwrap();
     store.set_capacity(3 << 20).unwrap();
-    store.commit(None).unwrap();
+    assert_eq!(store.epoch().unwrap(), epoch + 2);
+    // Open still: written on, sealed by a commit.
+    assert_eq!(store.extent(extent(1)).unwrap(), Some((BLOCK as u64, true)));
+    store.write(extent(1), BLOCK as u64, &pattern(1, BLOCK, BLOCK)).unwrap();
     assert_eq!(capacity(&store), Some(3 << 20));
     store.commit(None).unwrap();
     assert_eq!(capacity(&store), None);
-    store.commit(None).unwrap();
     store.set_capacity(4 << 20).unwrap();
-    store.commit(None).unwrap();
     assert_eq!(capacity(&store), Some(4 << 20));
-    assert_eq!(store.snapshot().unwrap().capacity, 4 << 20);
-    // Restated, for an uploader whose branch says another.
-    store.restate_capacity().unwrap();
-    store.commit(None).unwrap();
-    assert_eq!(capacity(&store), Some(4 << 20));
+    assert_eq!(store.info().unwrap().capacity, 4 << 20);
+    assert_eq!(read(&store, extent(1), 0, 2 * BLOCK), pattern(1, 0, 2 * BLOCK));
 }
 
-/// fxdax: given a writer's chain, the store closes its segments for the writer, as object storage
-/// keeps them: numbered on from where the chain is, each following the one before, its commits
-/// tagged with the writer's epoch, its extents of their own at the writer's keys; and keeps each,
-/// once its commits are durable, for the uploader, until it is uploaded. The chain of another
-/// branch's writer it refuses.
+/// fxdax: opened by a writer, the store closes its segments for the writer, as object storage
+/// keeps them: numbered on from where the writer's chain is, each following the one before, its
+/// commits tagged with the writer's epoch, its extents of their own at the writer's keys; and
+/// keeps each, once its commits are durable, for the uploader, until it is uploaded. Opened as
+/// another branch's, it refuses.
 #[test]
 fn segments_close_for_the_writer_of_their_chain() {
     use extent_frame::segment::{Footer, Location, extent_key, tag};
     let dir = MemDir::new();
-    let store = create(dir.clone(), 1 << 20);
+    let state = extent_remote::State::new(BRANCH);
+    let store =
+        created_on(dir.clone(), 1 << 20, state, Chain::new(BRANCH, 3, 5, Some((4, 3)), 100));
+    drop(store);
+    let other = extent_remote::State::new(BRANCH + 1);
+    let opening = Opening::new(BRANCH + 1);
     let refused =
-        store.upload(Chain::new(BRANCH + 1, 3, 5, Some((4, 3)), 100), 0, None).unwrap_err();
-    assert_eq!(refused.to_string(), "branch 0x7 uploaded by a writer of branch 0x8");
-    assert!(store.upload(Chain::new(BRANCH, 3, 5, Some((4, 3)), 100), 0, None).unwrap());
+        Store::recover(dir.clone()).unwrap().open(OPTIONS, Opening { state: other, ..opening });
+    assert_eq!(refused.err().unwrap().to_string(), "branch 0x7 opened as 0x8");
+    let store = opened_on(
+        dir.clone(),
+        extent_remote::State::new(BRANCH),
+        Chain::new(BRANCH, 3, 5, Some((4, 3)), 100),
+    );
     // Nothing committed since the last closing, nothing to close.
     assert!(!store.close_now().unwrap());
 
@@ -946,7 +947,8 @@ fn segments_close_for_the_writer_of_their_chain() {
                 root: Some(b"one".to_vec()),
                 next_sequence: 100,
                 forks: vec![],
-                capacity: None,
+                // Its first commit sets its capacity, which the bucket said none of.
+                capacity: Some(1 << 20),
             },
         }
     );
@@ -973,10 +975,9 @@ fn segments_close_for_the_writer_of_their_chain() {
     // Freed, its extents' data goes once released, but the segment stays until uploaded.
     store.free(extent(1)).unwrap();
     store.commit(None).unwrap();
-    store.release(3).unwrap();
     store.commit(None).unwrap();
     let held = store.usage().unwrap().segments;
-    store.acknowledged(first.number, &bucket_key(&first)).unwrap();
+    store.acknowledged(first.number).unwrap();
     store.commit(None).unwrap();
     assert_eq!(store.usage().unwrap().segments, held - 1);
 }
@@ -987,7 +988,6 @@ fn segments_close_for_the_writer_of_their_chain() {
 fn segments_closed_between_commits_hold_the_last_commits_state() {
     let dir = MemDir::new();
     let store = create(dir.clone(), 1 << 20);
-    assert!(store.upload(WRITER, 0, None).unwrap());
     store.write(extent(1), 0, &pattern(1, 0, BLOCK)).unwrap();
     store.write(extent(2), 0, &pattern(2, 0, BLOCK)).unwrap();
     store.commit(None).unwrap();
@@ -1014,7 +1014,6 @@ fn segments_closed_between_commits_hold_the_last_commits_state() {
 #[test]
 fn closed_segments_are_taken_so_many_at_once() {
     let store = create(MemDir::new(), 1 << 20);
-    assert!(store.upload(WRITER, 0, None).unwrap());
     for sequence in 1..=3 {
         store.write(extent(sequence), 0, &pattern(sequence as u8, 0, BLOCK)).unwrap();
         store.close_segment().unwrap();
@@ -1299,24 +1298,22 @@ fn reads_of_raw_files_go_through_the_page_cache() {
     let view = store.view();
     assert_eq!(of_raw_files(dir.cached()), BTreeMap::new());
     assert!(read(&store, extent(1), 0, BLOCK) == pattern(1, 0, BLOCK));
-    let mut kept = vec![0; BLOCK];
-    store.read_kept(extent(1), 0, &mut kept).unwrap();
-    assert!(kept == pattern(1, 0, BLOCK));
     let mut viewed = vec![0; BLOCK];
     store.read_view(&view, extent(1), 0, &mut viewed).unwrap();
     assert!(viewed == pattern(1, 0, BLOCK));
     assert!(read(&store, extent(2), 0, large) == pattern(2, 0, large));
     assert_eq!(of_raw_files(dir.direct()), BTreeMap::new());
-    let kinds = [("open-extents", large), ("open-segments", 3 * BLOCK)];
+    let kinds = [("open-extents", large), ("open-segments", 2 * BLOCK)];
     let cached = BTreeMap::from(kinds.map(|(kind, bytes)| (kind.to_owned(), bytes as u64)));
     assert_eq!(of_raw_files(dir.cached()), cached);
 }
 
-/// fxdax: a branch opening again reads of its closed segments but a block of each whose extents it
-/// holds, its trailer and table, which say how much data it holds: not the footers of those whose
-/// commits are durable, which it needs not close again, their raw files gone (TASK-92.16).
+/// fxdax: a branch opening again reads of the segments of its write-ahead log their tails alone:
+/// each's trailer and footer, which the replay of its footers needs, and its trailer and table,
+/// which say how much data it holds, three blocks; none of their data, their raw files gone, their
+/// commits durable (TASK-92.16, TASK-165.9).
 #[test]
-fn branches_open_reading_a_block_of_each_closed_segment() {
+fn branches_open_reading_the_tails_of_their_logs_segments() {
     let dir = Counting::new();
     let store = create(dir.clone(), 1 << 20);
     for sequence in 0..16 {
@@ -1329,7 +1326,7 @@ fn branches_open_reading_a_block_of_each_closed_segment() {
     let segments_read = || dir.read().get("segments").copied().unwrap_or(0);
     assert_eq!(segments_read(), 0);
     let store = Store::open(dir.clone(), OPTIONS).unwrap();
-    assert_eq!(segments_read(), 16 * BLOCK as u64);
+    assert_eq!(segments_read(), 16 * 3 * BLOCK as u64);
     assert_eq!(store.extents().unwrap().len(), 16);
 }
 
@@ -1390,10 +1387,11 @@ fn framing(store: &Store<MemDir>) -> BTreeSet<String> {
     store.framing().into_iter().map(|number| format!("{number:016x}")).collect()
 }
 
-/// fxdax: the bytes of `store`'s segments' data no extent is in, no write being in progress.
+/// fxdax: the bytes of `store`'s segments' data no extent is in, no write being in progress, and
+/// of the frees it keeps for the bucket alone, until acknowledged there (TASK-165.9).
 fn dead_bytes(store: &Store<MemDir>) -> u64 {
     let usage = store.usage().unwrap();
-    usage.segment_bytes - usage.live_bytes
+    usage.segment_bytes - usage.live_bytes + usage.kept_bytes - usage.kept_for_views
 }
 
 /// The bytes of data of each of the branch's segments in `dir`, `store`'s: open ones' raw files,
@@ -1431,7 +1429,6 @@ fn segments_read_beside_the_store_skip_framed_files_being_written() {
     let dir = MemDir::new();
     let description = Description { block_size: BLOCK as u32, capacity: 64 << 20, branch: BRANCH };
     let store = Store::create(dir.clone(), description, SMALL_SEGMENTS).unwrap();
-    assert!(store.upload(WRITER, 0, None).unwrap());
     let block = |sequence: u64| pattern(sequence as u8, 0, BLOCK);
     store.write(extent(96), 0, &block(96)).unwrap();
     store.commit(None).unwrap();
@@ -1479,7 +1476,6 @@ fn segments_closed_for_room_go_to_the_uploader_with_no_commit_after() {
     let dir = MemDir::new();
     let description = Description { block_size: BLOCK as u32, capacity: 64 << 20, branch: BRANCH };
     let store = Store::create(dir, description, SMALL_SEGMENTS).unwrap();
-    assert!(store.upload(WRITER, 0, None).unwrap());
     let block = |sequence: u64| pattern(sequence as u8, 0, BLOCK);
     store.write(extent(0), 0, &block(0)).unwrap();
     store.commit(None).unwrap();
@@ -1512,7 +1508,6 @@ fn segments_hold_a_segment_and_an_extent_at_most() {
     let dir = MemDir::new();
     let description = Description { block_size: BLOCK as u32, capacity: 64 << 20, branch: BRANCH };
     let store = Store::create(dir.clone(), description, SMALL_SEGMENTS).unwrap();
-    assert!(store.upload(WRITER, 0, None).unwrap());
     let block = |sequence: u64| pattern(sequence as u8, 0, BLOCK);
     let check = |store: &Store<MemDir>, sequences: std::ops::Range<u64>| {
         for sequence in sequences {
@@ -1556,7 +1551,7 @@ fn segments_hold_a_segment_and_an_extent_at_most() {
 /// commit's data, and so no footer: the branch is still its newest checkpoint and the footers of
 /// its closed segments after it (TASK-79.2).
 #[test]
-fn segments_set_aside_leave_the_branch_its_checkpoint_and_footers() {
+fn segments_set_aside_leave_the_branch_its_footers() {
     let dir = MemDir::new();
     let description = Description { block_size: BLOCK as u32, capacity: 64 << 20, branch: BRANCH };
     let store = Store::create(dir.clone(), description, SMALL_SEGMENTS).unwrap();
@@ -1565,10 +1560,9 @@ fn segments_set_aside_leave_the_branch_its_checkpoint_and_footers() {
         store.write(extent(sequence), 0, &pattern(sequence as u8, 0, BLOCK)).unwrap();
     }
     assert_eq!(dir.list(&of("segments", BRANCH)).unwrap(), Vec::<String>::new());
-    store.close_segment().unwrap();
-    store.commit(None).unwrap();
-    let rebuilt = store.rebuild().unwrap();
-    assert_eq!((rebuilt.epoch, rebuilt.extents), (1, store.places().unwrap()));
+    let state = closed_state(&store);
+    assert_eq!(state.0, 1);
+    assert_eq!(reopened_state(store, &dir).0, state);
 }
 
 /// An extent written again and again between commits takes no segment past a segment and an
@@ -1732,22 +1726,22 @@ fn dead_space_takes_none_of_the_room_writes_need() {
 fn dead_space_the_uploader_lets_go_takes_none_of_the_room() {
     let capacity = 64 * BLOCK as u64;
     let store = create(MemDir::new(), capacity);
-    assert!(store.upload(WRITER, 0, None).unwrap());
-    // Ten segments, each pinned by one extent, what is freed in them kept for the uploader.
+    // Ten segments, each pinned by one extent, what is freed in them kept for the bucket.
     for cycle in 0..10 {
         churn(&store, 16 * cycle);
     }
-    assert_eq!(dead_bytes(&store), 0);
+    assert_eq!(dead_bytes(&store), 150 * BLOCK as u64);
     // Acknowledged, and released: 600 KiB let go of at once, more than twice the capacity, with
     // the segments.
     for closed in store.closed(usize::MAX).unwrap() {
-        store.acknowledged(closed.number, &bucket_key(&closed)).unwrap();
+        store.acknowledged(closed.number).unwrap();
     }
-    store.release(store.epoch().unwrap()).unwrap();
     // The write the next commit comes with, of all the room the extents leave.
     store.write(extent(200), 0, &pattern(200, 0, 54 * BLOCK)).unwrap();
     store.commit(None).unwrap();
-    assert_eq!(dead_bytes(&store), 0);
+    // But the frees of the last churn's commit, its segment open still, kept until the bucket
+    // acknowledges it, their data there.
+    assert_eq!(dead_bytes(&store), 15 * BLOCK as u64);
     assert_eq!(store.usage().unwrap().segments, 1);
     assert_eq!(store.info().unwrap().available, 0);
     for sequence in (0..160).step_by(16) {
@@ -1784,7 +1778,6 @@ fn acknowledged_segments_leave_a_churning_guests_files() {
     let capacity = 64 * BLOCK as u64;
     let dir = MemDir::new();
     let store = create(dir.clone(), capacity);
-    assert!(store.upload(WRITER, 0, None).unwrap());
     let mut live = BTreeSet::new();
     let free = |live: &mut BTreeSet<u64>, sequence: u64| {
         store.free(extent(sequence)).unwrap();
@@ -1809,9 +1802,8 @@ fn acknowledged_segments_leave_a_churning_guests_files() {
         store.commit(None).unwrap();
         store.flush().unwrap();
         for closed in store.closed(usize::MAX).unwrap() {
-            store.acknowledged(closed.number, &bucket_key(&closed)).unwrap();
+            store.acknowledged(closed.number).unwrap();
         }
-        store.release(store.epoch().unwrap()).unwrap();
         assert_eq!(data_files(&dir), 0, "the files after cycle {cycle}");
     }
     for sequence in live {
@@ -1832,7 +1824,6 @@ fn uploader_lagging(acknowledges: bool) -> u64 {
     let capacity = 64 * BLOCK as u64;
     let dir = MemDir::new();
     let store = create(dir.clone(), capacity);
-    assert!(store.upload(WRITER, 0, None).unwrap());
     for cycle in 0..40 {
         let first = 17 * cycle;
         for sequence in first..first + 16 {
@@ -1846,15 +1837,14 @@ fn uploader_lagging(acknowledges: bool) -> u64 {
         store.commit(None).unwrap();
         if acknowledges {
             for closed in store.closed(usize::MAX).unwrap() {
-                store.acknowledged(closed.number, &bucket_key(&closed)).unwrap();
+                store.acknowledged(closed.number).unwrap();
             }
         }
     }
     let files = data_files(&dir);
     for closed in store.closed(usize::MAX).unwrap() {
-        store.acknowledged(closed.number, &bucket_key(&closed)).unwrap();
+        store.acknowledged(closed.number).unwrap();
     }
-    store.release(store.epoch().unwrap()).unwrap();
     store.commit(None).unwrap();
     assert_eq!(data_files(&dir), 0);
     files
@@ -1975,22 +1965,21 @@ fn writes_finishing_after_their_extents_free_are_dropped() {
 
 /// Extents freed while open, and written anew, are held by the commit that seals them: the footer
 /// of its segment names them among the extents it seals, in the segment or in files of their own,
-/// and not among those it frees, which readers of footers apply after those, rebuilding the branch
-/// here or in object storage (TASK-79.1).
+/// and not among those it frees, which readers of footers apply after those, the store opened
+/// again or object storage (TASK-79.1).
 #[test]
 fn footers_hold_extents_freed_open_and_written_anew() {
-    let store = create(MemDir::new(), 1 << 20);
+    let dir = MemDir::new();
+    let store = create(dir.clone(), 1 << 20);
     let lens = [BLOCK, 40 << 10];
     for (sequence, len) in (1..).zip(lens) {
         store.write(extent(sequence), 0, &pattern(1, 0, len)).unwrap();
         store.free(extent(sequence)).unwrap();
         store.write(extent(sequence), 0, &pattern(2, 0, len)).unwrap();
     }
-    store.close_segment().unwrap();
-    store.commit(None).unwrap();
-    let places = store.places().unwrap();
-    assert_eq!(places.len(), 2);
-    assert_eq!(store.rebuild().unwrap().extents, places);
+    let state = closed_state(&store);
+    assert_eq!(state.3.len(), 2);
+    assert_eq!(reopened_state(store, &dir).0, state);
 }
 
 /// A write in flight to an extent freed meanwhile, written again in the open segment as it was
@@ -2237,31 +2226,39 @@ fn places_of_extents() {
     );
 }
 
-/// fxdax: a release lets the commits up to its epoch go, and not those after it.
+/// fxdax: the uploader's lag counts the bytes of the write-ahead log's segments not yet
+/// acknowledged, their data and their extents of their own, the open segment's included:
+/// acknowledged, they count no more (TASK-165.9).
 #[test]
-fn releases_let_their_commits_go() {
+fn the_lag_counts_the_logs_bytes_not_acknowledged() {
     let store = create(MemDir::new(), 1 << 20);
-    assert!(store.upload(WRITER, 0, None).unwrap());
-    store.write(extent(1), 0, &[1; BLOCK]).unwrap();
+    for (sequence, len) in [(1, BLOCK), (2, 2 * BLOCK), (3, 40 << 10)] {
+        store.write(extent(sequence), 0, &vec![sequence as u8; len]).unwrap();
+        store.close_segment().unwrap();
+        store.commit(None).unwrap();
+    }
+    assert_eq!(store.wal_bytes().unwrap(), 3 * BLOCK as u64 + (40 << 10));
+    let closed = store.closed(usize::MAX).unwrap();
+    store.acknowledged(closed[0].number).unwrap();
+    assert_eq!(store.wal_bytes().unwrap(), 2 * BLOCK as u64 + (40 << 10));
+    // In order only.
+    assert!(store.acknowledged(closed[2].number).is_err());
+    // The open segment's, committed in it, and on their own.
+    store.write(extent(4), 0, &[4; BLOCK]).unwrap();
+    store.write(extent(5), 0, &[5; 40 << 10]).unwrap();
     store.commit(None).unwrap();
-    store.write(extent(2), 0, &[2; 2 * BLOCK]).unwrap();
-    store.commit(None).unwrap();
-    store.write(extent(3), 0, &[3; 4 * BLOCK]).unwrap();
-    store.commit(None).unwrap();
-    assert_eq!(store.unreleased_bytes().unwrap(), 7 * BLOCK as u64);
-    store.release(2).unwrap();
-    assert_eq!(store.unreleased_bytes().unwrap(), 4 * BLOCK as u64);
+    assert_eq!(store.wal_bytes().unwrap(), 3 * BLOCK as u64 + (80 << 10));
 }
 
 /// fxdax: an uploader starting while commits wait to be made durable takes no segment of the
-/// commits after it until they are.
+/// commits after it until they are: a crash may lose them here, which the bucket would hold
+/// (TASK-165.9).
 #[test]
 fn uploads_started_with_commits_pending_take_only_durable_ones() {
     let store = create(MemDir::new(), 1 << 20);
     store.write(extent(1), 0, &[1; BLOCK]).unwrap();
     store.commit_ordered(None).unwrap();
     store.commit_ordered(None).unwrap();
-    assert!(store.upload(WRITER, store.epoch().unwrap(), None).unwrap());
     store.write(extent(2), 0, &[2; BLOCK]).unwrap();
     store.commit_ordered(None).unwrap();
     assert!(store.close_now().unwrap());
@@ -2274,7 +2271,6 @@ fn uploads_started_with_commits_pending_take_only_durable_ones() {
 #[test]
 fn closed_segments_know_their_last_commit() {
     let store = create(MemDir::new(), 1 << 20);
-    assert!(store.upload(WRITER, 0, None).unwrap());
     store.write(extent(1), 0, &[1; BLOCK]).unwrap();
     store.commit(None).unwrap();
     store.write(extent(2), 0, &[2; BLOCK]).unwrap();
@@ -2307,12 +2303,11 @@ fn files_freed_between_commits_go_across_closings() {
 #[test]
 fn commits_list_each_extent_written_once() {
     let store = create(MemDir::new(), 1 << 20);
-    assert!(store.upload(WRITER, 0, None).unwrap());
     store.write(extent(1), 0, &[1; BLOCK]).unwrap();
     store.write(extent(1), BLOCK as u64, &[1; BLOCK]).unwrap();
     store.commit(None).unwrap();
-    assert_eq!(store.unreleased_bytes().unwrap(), 2 * BLOCK as u64);
     assert!(store.close_now().unwrap());
+    assert_eq!(store.wal_bytes().unwrap(), 2 * BLOCK as u64);
     let written = closed_one(&store).footer.contents.extents;
     assert_eq!(
         written.iter().map(|&(extent, _, len)| (extent, len)).collect::<Vec<_>>(),
@@ -2324,7 +2319,6 @@ fn commits_list_each_extent_written_once() {
 #[test]
 fn forks_give_their_commits_epoch() {
     let store = create(MemDir::new(), 1 << 20);
-    assert!(store.upload(WRITER, 0, None).unwrap());
     store.write(extent(1), 0, &[1; BLOCK]).unwrap();
     store.commit(None).unwrap();
     let forked = Child { branch: BRANCH + 1, owner: 0, point: false };
@@ -2341,7 +2335,6 @@ fn empty_segments_close_not() {
     let options = Options { segment_age: std::time::Duration::ZERO, ..OPTIONS };
     let description = Description { block_size: BLOCK as u32, capacity: 1 << 20, branch: BRANCH };
     let store = Store::create(MemDir::new(), description, options).unwrap();
-    assert!(store.upload(WRITER, 0, None).unwrap());
     store.commit(None).unwrap();
     store.commit(None).unwrap();
     assert_eq!(store.closed(usize::MAX).unwrap().len(), 0);
@@ -2447,19 +2440,6 @@ fn io_ends_within_the_most_an_extent_holds() {
     assert_eq!(store.extents().unwrap(), [(extent(1), MAX_EXTENT)]);
 }
 
-/// Checkpoints come as the index's deltas grow, not only as segments close.
-#[test]
-fn deltas_make_checkpoints() {
-    let dir = MemDir::new();
-    let store = create(dir.clone(), 1 << 20);
-    let index = dir.list(&of("index", BRANCH)).unwrap();
-    for sequence in 1..=100 {
-        store.write(extent(sequence), 0, &[1; BLOCK]).unwrap();
-        store.commit(None).unwrap();
-    }
-    assert_ne!(dir.list(&of("index", BRANCH)).unwrap(), index);
-}
-
 /// What is read past an extent's end, or where nothing was written, reads as zeros, whatever the
 /// buffer held.
 #[test]
@@ -2475,27 +2455,6 @@ fn reads_past_an_extents_end_are_zeros() {
     let mut data = vec![0xff; 3 * BLOCK];
     store.read(extent(1), 0, &mut data).unwrap();
     assert_eq!(data, [vec![0; BLOCK], vec![1; BLOCK], vec![0; BLOCK]].concat());
-}
-
-/// A record of the index damaged after it was written is not one: the store opens as of the
-/// commit before it.
-#[test]
-fn damaged_index_records_are_none() {
-    let dir = MemDir::new();
-    let store = create(dir.clone(), 1 << 20);
-    store.commit(Some(b"one")).unwrap();
-    store.commit(Some(b"two")).unwrap();
-    drop(store);
-    let index = of("index", BRANCH);
-    let name = dir.list(&index).unwrap().pop().unwrap();
-    let file = dir.open(&format!("{index}/{name}"), false).unwrap();
-    let mut bytes = vec![0; file.size().unwrap() as usize];
-    file.read_at(&mut bytes, 0).unwrap();
-    // The last record's root, its last bytes: "two" as "twp".
-    let at = bytes.windows(3).rposition(|window| window == b"two").unwrap();
-    file.write_at(b"twp", at as u64).unwrap();
-    let store = Store::open(dir, OPTIONS).unwrap();
-    assert_eq!(store.root().unwrap(), b"one");
 }
 
 /// A commit that fails part way, which leaves the store's state ahead of its files, fails the store:
@@ -2541,23 +2500,15 @@ fn commits_failing_part_way_fail_the_store() {
     }
 }
 
-/// fxdax: a commit whose record is a checkpoint takes what it holds, holding the branch's state;
-/// its flush makes the index file it begins, and encodes it there, holding none of the store's
-/// locks but its own, so that writes do not wait for that (TASK-92.56). Ordered, the commit made
-/// no file; its flush failing to make it fails the store, as a flush failing does, its state ahead
-/// of its files. A crash before it leaves the store as of the commit before.
+/// fxdax: an ordered commit's record waits for its flush, which appends it to the open segment's
+/// log: a crash before leaves the store as of the commit before; its flush failing fails the
+/// store, as a flush failing does, its state ahead of its files (TASK-165.9).
 #[test]
-fn checkpoints_failing_in_their_flushes_fail_the_store() {
+fn logs_failing_in_their_flushes_fail_the_store() {
     let dir = MemDir::new();
-    let description = Description { block_size: BLOCK as u32, capacity: 1 << 20, branch: BRANCH };
-    // A checkpoint at each commit.
-    let options = Options { checkpoint_after: 0, ..OPTIONS };
-    let store = Store::create(dir.clone(), description, options).unwrap();
-    let index = dir.list(&of("index", BRANCH)).unwrap();
+    let store = create(dir.clone(), 1 << 20);
     store.commit_ordered(Some(b"ordered")).unwrap();
-    let listed = dir.list(&of("index", BRANCH)).unwrap();
-    assert_eq!(listed, index, "a commit made the file of its checkpoint");
-    assert_eq!(Store::open(dir.crash(0), options).unwrap().epoch().unwrap(), 0);
+    assert_eq!(Store::open(dir.crash(0), OPTIONS).unwrap().epoch().unwrap(), 0);
     dir.fail_after(Some(0));
     let failure = |result: Result<(), anyhow::Error>| result.unwrap_err().to_string();
     assert_eq!(failure(store.flush()), "committing the extent store");
@@ -2603,12 +2554,13 @@ fn parts_read_again_are_unpacked_once() {
 fn stores_tell_their_own_bytes_from_those_inherited() {
     let parent = BRANCH + 1;
     let dir = MemDir::new();
-    let store = create(dir.clone(), 1 << 20);
+    let mut state = extent_remote::State::new(BRANCH);
     for (sequence, blocks) in [(1, 2), (2, 3)] {
         let key = "segments/0000000000000008/0000000000000001";
         let location = bucket_location(key, sequence * 8 * BLOCK as u64, blocks * BLOCK as u64);
-        store.adopt(ExtentId::new(parent, sequence), location).unwrap();
+        state.extents.insert(ExtentId::new(parent, sequence), location);
     }
+    let store = created_on(dir.clone(), 1 << 20, state.clone(), WRITER);
     store.write(extent(1), 0, &[3; BLOCK]).unwrap();
     store.write(extent(2), 0, &[4; 40 << 10]).unwrap();
     store.free(ExtentId::new(parent, 1)).unwrap();
@@ -2621,5 +2573,5 @@ fn stores_tell_their_own_bytes_from_those_inherited() {
     let block = BLOCK as u64;
     assert_eq!(bytes(&store), (block, 3 * block));
     drop(store);
-    assert_eq!(bytes(&Store::open(dir, OPTIONS).unwrap()), (block, 3 * block));
+    assert_eq!(bytes(&opened_on(dir, state, WRITER)), (block, 3 * block));
 }

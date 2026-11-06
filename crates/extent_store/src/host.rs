@@ -9,27 +9,68 @@
 
 use crate::dir::{Dir as _, HostDir};
 use crate::layout::{DESCRIPTION, Description, StoreFile};
-use crate::store::{Options, Store};
+use crate::store::{Store, UNMADE};
 use anyhow::{Context as _, Error};
 use std::path::Path;
 
-/// Opens the store at `path`.
-pub fn open_host(path: &Path, direct: bool, options: Options) -> Result<Store<HostDir>, Error> {
-    Store::open(HostDir::new(path, direct)?, options)
-}
-
 /// Makes a new store at `path`, which must be a directory holding no store, as `description`
-/// describes, and opens it. fxdax: its description names `bucket`, the URL of the bucket its
-/// branch is kept in, as every host's store's does (TASK-165.6). Its description is made last:
-/// until it is durable, the directory is no store, whatever else is in it.
+/// describes. fxdax: its description names `bucket`, the URL of the bucket its branch is kept in,
+/// as every host's store's does (TASK-165.6); it is unmade until its maker says it is whole
+/// ([`Store::made`], TASK-196). Its description is made last: until it is durable, the directory
+/// is no store, whatever else is in it. Opening it takes its branch in the bucket
+/// ([`Store::recover`], `crate::upload`).
 pub fn create_host(
     path: &Path,
     description: Description,
     bucket: &str,
     direct: bool,
-    options: Options,
-) -> Result<Store<HostDir>, Error> {
-    Store::create_kept(HostDir::new(path, direct)?, description, Some(bucket), options)
+) -> Result<(), Error> {
+    Store::make(&HostDir::new(path, direct)?, description, Some(bucket))
+}
+
+/// fxdax: the store at `path` is whole, as its maker made it ([`Store::made`], TASK-196): the file
+/// saying it is not goes, durably, its maker having let it go.
+pub fn made_host(path: &Path) -> Result<(), Error> {
+    match std::fs::remove_file(path.join(UNMADE)) {
+        Err(err) if err.kind() != std::io::ErrorKind::NotFound => {
+            return Err(Error::new(err).context(format!("making {} whole", path.display())));
+        }
+        _ => {}
+    }
+    std::fs::File::open(path)?.sync_all()?;
+    Ok(())
+}
+
+/// fxdax: whether `path` is a directory a store's making left unmade, its maker stopping part
+/// way: no store, which deleting finishes (TASK-79.84, TASK-196). Its description, made last of
+/// its directory, is not there; or it says it was never made whole ([`Store::made`]).
+pub fn unmade_host(path: &Path) -> bool {
+    path.is_dir() && (!path.join(DESCRIPTION).exists() || path.join(UNMADE).exists())
+}
+
+/// fxdax: places the store at `path` (TASK-39.7): records, durably, in its description, the
+/// fencing token its writer takes its branch's lease with from then on, the boot ID of the
+/// placement it is, which a later placement's exceeds. A writer takes the lease only with a token
+/// as high as the last writer's: a placement cut off takes no branch back from the one after it.
+/// A store never placed takes it with its host's (TASK-165.9: the token is the description's).
+pub fn place_host(path: &Path, token: u64) -> Result<(), Error> {
+    let mut file = store_file(path)?;
+    file.token = Some(token);
+    let new = path.join(format!("{DESCRIPTION}.new"));
+    let written = || -> std::io::Result<()> {
+        let mut new_file = std::fs::File::create(&new)?;
+        std::io::Write::write_all(&mut new_file, file.text().as_bytes())?;
+        new_file.sync_all()?;
+        std::fs::rename(&new, path.join(DESCRIPTION))?;
+        std::fs::File::open(path)?.sync_all()
+    };
+    written().with_context(|| format!("placing {}", path.display()))
+}
+
+/// fxdax: the fencing token of the placement of the store at `path`, if it was placed
+/// ([`place_host`]).
+pub fn host_token(path: &Path) -> Result<Option<u64>, Error> {
+    Ok(store_file(path)?.token)
 }
 
 /// Deletes the store at `path`, which no store has open: `before` goes once that is found so, with
@@ -197,6 +238,7 @@ fn store_file(store: &Path) -> Result<StoreFile, Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{HostDir, Options};
     use anyhow::anyhow;
     use removals::Change;
     use std::cell::RefCell;
@@ -244,12 +286,20 @@ mod tests {
         STEPS.with_borrow_mut(|steps| std::mem::take(&mut steps.taken))
     }
 
+    /// The store at `path`, opened where the bucket holds nothing of its branch.
+    fn open(path: &Path) -> Result<Store<HostDir>, Error> {
+        Store::open(HostDir::new(path, true)?, Options::default())
+    }
+
     /// A store at `store` in `temp`, holding an extent: its path.
     fn stored(temp: &Path) -> PathBuf {
         let path = temp.join("store");
         std::fs::create_dir(&path).unwrap();
         let description = Description { block_size: BLOCK as u32, capacity: 1 << 20, branch: 3 };
-        let store = create_host(&path, description, BUCKET, true, Options::default()).unwrap();
+        create_host(&path, description, BUCKET, true).unwrap();
+        let store = Store::recover_unmade(HostDir::new(&path, true).unwrap()).unwrap();
+        let store = store.open(Options::default(), crate::Opening::new(3)).unwrap();
+        store.made().unwrap();
         store.write(ExtentId::new(3, 0), 0, &[7; BLOCK]).unwrap();
         store.commit(None).unwrap();
         path
@@ -263,7 +313,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let path = stored(temp.path());
         std::fs::rename(path.join(DESCRIPTION), path.join("store.deleted")).unwrap();
-        std::fs::remove_dir_all(path.join(crate::layout::INDEX)).unwrap();
+        std::fs::remove_dir_all(path.join(crate::layout::LOGS)).unwrap();
         delete_host(&path, |_| Err(anyhow!("called"))).unwrap();
         assert!(!path.exists());
 
@@ -281,16 +331,13 @@ mod tests {
     fn deletions_delete_their_branch_elsewhere_first() {
         let temp = tempfile::tempdir().unwrap();
         let path = stored(temp.path());
-        let open = open_host(&path, true, Options::default()).unwrap();
+        let opened = open(&path).unwrap();
         let refused = delete_host(&path, |_| Err(anyhow!("called")));
         assert!(refused.is_err() && path.join(DESCRIPTION).exists(), "{refused:?}");
-        drop(open);
+        drop(opened);
         let stopped = delete_host(&path, |branch| Err(anyhow!("stopped at {branch}")));
         assert_eq!(stopped.map_err(|err| err.to_string()), Err("stopped at 3".to_owned()));
-        assert!(
-            open_host(&path, true, Options::default()).is_ok(),
-            "a store stopped opens no more"
-        );
+        assert!(open(&path).is_ok(), "a store stopped opens no more");
         let called = std::cell::Cell::new(None);
         delete_host(&path, |branch| Ok(called.set(Some(branch)))).unwrap();
         assert_eq!((called.get(), path.exists()), (Some(3), false));

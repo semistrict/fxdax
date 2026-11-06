@@ -31,7 +31,8 @@ impl Error {
     }
 
     /// The errno that caused the error, if one did: `ENOTSUP` for a store of another format, an
-    /// older one included, which is refused (`extent_store::Format`, TASK-165.6).
+    /// older one included, which is refused (`extent_store::Format`, TASK-165.6); `ENOENT` for one
+    /// its maker never made whole, which is no store (`extent_store::Unmade`, TASK-196).
     pub fn errno(&self) -> Option<Errno> {
         // An errno added as context is found by downcasting the error, not its causes.
         let errno = self.0.downcast_ref::<Errno>().copied();
@@ -42,6 +43,11 @@ impl Error {
                     .chain()
                     .any(|cause| cause.is::<extent_store::Format>())
                     .then_some(Errno::ENOTSUP)
+            })
+            .or_else(|| {
+                (self.0.chain())
+                    .any(|cause| cause.is::<extent_store::Unmade>())
+                    .then_some(Errno::ENOENT)
             })
     }
 
@@ -55,6 +61,34 @@ impl Error {
                 .is_some_and(|err| err.kind() == std::io::ErrorKind::WouldBlock)
         })
     }
+}
+
+/// fxdax: an uploader's failure, or an opening's (`extent_store::upload`): its errno, as fxdax's
+/// `remote` maps it, as context; this host's own as the error it is, whose causes say its errno.
+impl From<extent_store::upload::Failure> for Error {
+    fn from(failure: extent_store::upload::Failure) -> Self {
+        use extent_store::upload::Failure;
+        match failure {
+            Failure::Local(error) => Self(
+                std::sync::Arc::try_unwrap(error)
+                    .unwrap_or_else(|error| anyhow::anyhow!("{error:#}")),
+            ),
+            failure => {
+                let errno = crate::remote::errno(&failure);
+                let error = anyhow::Error::new(failure);
+                Self(match errno {
+                    Some(errno) => error.context(errno),
+                    None => error,
+                })
+            }
+        }
+    }
+}
+
+/// fxdax: `failure` as [`Error`] has it, for what returns `anyhow`'s: its causes, or its errno as
+/// context, say its errno once it is an [`Error`] again.
+pub(crate) fn anyhow_of(failure: extent_store::upload::Failure) -> anyhow::Error {
+    Error::from(failure).0
 }
 
 impl From<crate::faults::Failpoint> for Error {

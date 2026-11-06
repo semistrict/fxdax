@@ -17,6 +17,8 @@ pub(crate) enum Op {
     Create,
     Open,
     SyncDir,
+    /// fxdax: a barrier, of the whole directory, its path "" (TASK-165.9).
+    Barrier,
 }
 
 #[derive(Default)]
@@ -114,6 +116,7 @@ impl Dir for Stalling {
     }
 
     fn barrier(&self) -> io::Result<()> {
+        self.pass(Op::Barrier, "")?;
         self.dir.barrier()
     }
 }

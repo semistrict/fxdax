@@ -13,7 +13,6 @@
 mod common;
 
 use common::noise;
-use extent_frame::segment::Chain;
 use extent_frame::{Corrupt, Encoding, PART, Parts};
 use extent_store::{Description, Dir, File as _, MemDir, Options, Place, Store};
 use storage_device::ExtentId;
@@ -28,7 +27,6 @@ const OPTIONS: Options = Options {
     segment_size: 4 << 20,
     segment_age: std::time::Duration::from_secs(3600),
     large_extent: 8 << 20,
-    checkpoint_after: 4 << 10,
     open_files: 2,
     view_lag: None,
     view_kept_bytes: None,
@@ -134,7 +132,6 @@ fn flipped_bytes_fail_the_reads_of_their_parts() {
         let view = store.view();
         let mut block = vec![0; BLOCK];
         corrupt(store.read(extent, offset, &mut block));
-        corrupt(store.read_kept(extent, offset, &mut block));
         corrupt(store.read_view(&view, extent, offset, &mut block));
         corrupt(store.read(extent, 0, &mut vec![0; data.len()]));
         // Its first block is in another part, whole.
@@ -184,7 +181,6 @@ fn closed_segments_with_flipped_bytes_are_not_taken() {
     for compressed in [false, true] {
         let dir = MemDir::new();
         let store = create(&dir, OPTIONS);
-        assert!(store.upload(Chain::new(BRANCH, 1, 0, None, 0), 0, None).unwrap());
         let data = if compressed { pattern(1, 2 * MIB) } else { noise(1, 2 * MIB) };
         store.write(extent(1), 0, &data).unwrap();
         store.close_segment().unwrap();

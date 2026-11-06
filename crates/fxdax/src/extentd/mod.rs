@@ -43,7 +43,7 @@
 //!   `block_in_place`.
 //! - **Files.** A store keeps its own segments' and extents' files open, the most
 //!   `extent_store::Options::open_files` of each (64) but for those reads use: a fork, which writes
-//!   little, few; and its index file, and the open segment's. The files of the segments a fork
+//!   little, few; and its open segment's, and its commit log. The files of the segments a fork
 //!   inherited are its store's, which every fork of it shares, the most 64 open but for those in
 //!   use (`extent_store::Lineage`). A VM process's connection is two sockets here.
 //! - **Memory.** A fork holds what it changed over its base, and the segments it tracks: its base's

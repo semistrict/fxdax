@@ -85,13 +85,35 @@ impl Storage {
     /// is kept in a file bucket of its own, in its directory, which its clones share; or, on a host
     /// of fxdax's system, in the host's bucket (`FXDAX_EXTENTD_REMOTE`).
     pub fn create(path: impl AsRef<Path>, size: u64) -> Result<Self, Error> {
-        let path = path.as_ref();
+        Self::make(path.as_ref(), size, true)
+    }
+
+    /// fxdax: a new image at `path`, as [`Storage::create`] makes it, unmade until its maker says
+    /// it is whole ([`Storage::made`]): what opens it before, or after its maker died part way,
+    /// finds no store (TASK-196). As an import makes one, filling it first.
+    pub fn create_unmade(path: impl AsRef<Path>, size: u64) -> Result<Self, Error> {
+        Self::make(path.as_ref(), size, false)
+    }
+
+    /// fxdax: the image at `path`, made by [`Storage::create_unmade`] and closed since, is whole.
+    pub fn made(path: impl AsRef<Path>) -> Result<(), Error> {
+        extent_store::made_host(path.as_ref()).map_err(Error::new)
+    }
+
+    /// fxdax: whether `path` is what a making of an image, or of a store, left unmade, its maker
+    /// dying part way: no store, which deleting finishes (TASK-196).
+    pub fn is_unmade(path: impl AsRef<Path>) -> bool {
+        host_store::unmade(path.as_ref())
+    }
+
+    /// A new image at `path`, as [`Storage::create`] makes it, whole if `whole`.
+    fn make(path: &Path, size: u64, whole: bool) -> Result<Self, Error> {
         if size < Self::BLOCK_SIZE as u64 {
             return Err(Error::msg("the image is smaller than a block"));
         }
         let writes = Arc::new(WriteGate::default());
-        let device = ImageDevice::create(path, size, host_store::new_branch(), writes.clone())
-            .map_err(Error::new)?;
+        let made = (size, host_store::new_branch(), whole);
+        let device = ImageDevice::create(path, made, writes.clone()).map_err(Error::new)?;
         Ok(Self::image(path.to_owned(), writes, device))
     }
 
