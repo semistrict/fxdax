@@ -1708,6 +1708,9 @@ fn a_compromised_vm_process_harms_no_tenant_beside_it() {
             prop_assert_eq!(write(&bob, later, 0, &marked(BOB_MARK, 2 + case, BLOCK)), Ok(()));
             prop_assert_eq!(bob.commit(None), Ok(()));
             prop_assert_eq!(read(&bob, later, 0, BLOCK), Ok(marked(BOB_MARK, 2 + case, BLOCK)));
+            // Freed, so that his store holds no more than a case's, however many cases run.
+            prop_assert_eq!(bob.free(later), Ok(()));
+            prop_assert_eq!(bob.commit(None), Ok(()));
             prop_assert_eq!(PANICS.load(Ordering::Relaxed), 0);
             Ok(())
         })
