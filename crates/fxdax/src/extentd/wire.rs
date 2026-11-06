@@ -72,7 +72,7 @@ impl Header {
 /// another, naming both. Where it is said, `args[4]` of an `OPEN` and of its reply, with the
 /// [`Header`]'s layout, [`OPEN`]'s and [`REPLY`]'s kinds and a reply's status, is what no version
 /// moves. `the_wire_is_its_version` (codec.rs) fails on a change to the wire without a new one.
-pub(crate) const VERSION: u64 = 2;
+pub(crate) const VERSION: u64 = 3;
 
 // Requests, from a VM process. A reply ([`REPLY`]) answers each, but for [`ACK`].
 
