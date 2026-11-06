@@ -4,7 +4,7 @@
 # Killer: extentd::tests::hostile::what_requests_hold_is_within_the_room
 --- a/crates/fxdax/src/extentd/codec.rs
 +++ b/crates/fxdax/src/extentd/codec.rs
-@@ -427,7 +427,7 @@
+@@ -458,7 +458,7 @@
                      nothing()?;
                  }
                  // fxdax: no more than a root holds (TASK-149.17).

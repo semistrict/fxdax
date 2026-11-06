@@ -4,7 +4,7 @@
 # Killer: extentd::tests::hostile::a_compromised_vm_process_harms_no_tenant_beside_it
 --- a/crates/fxdax/src/extentd/server.rs
 +++ b/crates/fxdax/src/extentd/server.rs
-@@ -1273,7 +1273,7 @@
+@@ -1313,7 +1313,7 @@
      /// it says ([`Opened`]): its tenant's arena, and the default one, read-only (TASK-43); the
      /// default tenant's as any other's (TASK-79.17).
      fn memories(&self) -> [std::os::fd::BorrowedFd<'_>; 2] {

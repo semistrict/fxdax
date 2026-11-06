@@ -5,7 +5,7 @@
 # Killer: extentd::tests::hostile::what_requests_hold_is_within_the_room
 --- a/crates/fxdax/src/extents.rs
 +++ b/crates/fxdax/src/extents.rs
-@@ -446,7 +446,7 @@
+@@ -454,7 +454,7 @@
      /// (TASK-149.17): which a VM process names, so that a connection of the extent daemon's held
      /// a copy of each of its requests' whole lengths, as many as it serves at once, past what the
      /// protocol bounds of it.

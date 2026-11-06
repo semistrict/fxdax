@@ -4,7 +4,7 @@
 # Killer: extentd::tests::hostile::a_compromised_vm_process_harms_no_tenant_beside_it
 --- a/crates/fxdax/src/extentd/codec.rs
 +++ b/crates/fxdax/src/extentd/codec.rs
-@@ -441,9 +441,6 @@
+@@ -476,9 +476,6 @@
              WINDOW => {
                  nothing()?;
                  // fxdax: past it, the daemon's room for its VM process's replies (TASK-150.3).
