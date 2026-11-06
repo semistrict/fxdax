@@ -1,17 +1,30 @@
-# A fork claims its branch in the bucket and takes it whatever the claim says: a VM process forks
-# its store to another tenant's branch, whose writer's commits, and its own, then fail (TASK-79.82).
+# A fork takes its branch ID whatever has it in the bucket: neither the look that it is free nor
+# its child's record refuses another's: a VM process forks its store to another tenant's branch,
+# whose writer's commits then fail (TASK-79.82, TASK-165.7).
 # Kind: commits wedged
 # Killer: extentd::tests::hostile::a_compromised_vm_process_harms_no_tenant_beside_it
 --- a/crates/fxdax/src/host_store.rs
 +++ b/crates/fxdax/src/host_store.rs
-@@ -249,9 +249,7 @@
-     let claim = || -> anyhow::Result<()> {
-         before()?;
-         let Some(remote) = remote else { return Ok(()) };
--        if !remote.claim(child)? {
--            return Err(taken());
--        }
-+        let _ = remote.claim(child)?;
-         claimed.set(true);
-         Ok(())
+@@ -274,9 +274,7 @@
+             .context(format!("forking to branch {branch:x}: the point was deleted")),
+         err => anyhow::anyhow!("forking branch {branch:x}: {err}"),
      };
+-    if !remote.child_free(branch).map_err(|err| Error::new(failed(err)))? {
+-        return Err(Error::new(taken(branch)));
+-    }
++    let _ = remote.child_free(branch).map_err(|err| Error::new(failed(err)))?;
+     let made = match remote.is_point() {
+         true => {
+             drop(held);
+--- a/crates/extent_remote/src/branch.rs
++++ b/crates/extent_remote/src/branch.rs
+@@ -149,8 +149,7 @@
+     let recorded = change(bucket, child.branch, Start::Create, |found| match found {
+         None => Ok(Step::Write(record, true)),
+         // Deleted before it got its record, perhaps.
+-        Some(found) if found.is_child_of(record.owner) || found.deleted => Ok(Step::Stop(false)),
+-        Some(_) => Err(Error::ChildTaken(child.branch)),
++        Some(_) => Ok(Step::Stop(false)),
+     })
+     .await?;
+     if recorded {

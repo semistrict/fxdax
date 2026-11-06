@@ -484,7 +484,7 @@ fn message() -> BoxedStrategy<Said> {
                 said(FORK, flags, [branch, Is(0), Is(0), Is(0), Is(0)], Payload::Path(Place::Own(store)))
             }),
         3 => (place(), prop_oneof![Just(0), Just(OPEN_CREATE), Just(OPEN_READ_ONLY)]).prop_map(|(at, flags)| {
-            said(OPEN, flags, [Is(STORE_BYTES), Is(0), Is(0), Is(0), Is(0)], Payload::Path(at))
+            said(OPEN, flags, [Is(STORE_BYTES), Is(0), Is(0), Is(0), Is(VERSION)], Payload::Path(at))
         }),
         // Forks of its own store to anywhere it names.
         1 => (place(), 0u32..2).prop_map(|(to, flags)| {
@@ -493,7 +493,7 @@ fn message() -> BoxedStrategy<Said> {
         // Restores, of points of any branch it names, from anywhere.
         1 => ((0u8..4).prop_map(Place::Own), prop_oneof![2 => Just(Place::Nothing), 3 => place()], prop_oneof![Just(Alice), Just(Bob), Just(Given)])
             .prop_map(|(to, from, branch)| {
-                said(OPEN, OPEN_FORK_FROM, [Is(STORE_BYTES), branch, Is(0), Is(0), Is(0)], Payload::ForkFrom(to, from))
+                said(OPEN, OPEN_FORK_FROM, [Is(STORE_BYTES), branch, Is(0), Is(0), Is(VERSION)], Payload::ForkFrom(to, from))
             }),
     ];
     // The protocol's own: acknowledgements forged, what its stage operations cost, its build, a
@@ -1377,7 +1377,7 @@ fn run_hostile(
         Opens::Restores => None,
     };
     if let Some(path) = opened {
-        let open = Header::new(OPEN, id()).with_args(&[STORE_BYTES]).with_flags(OPEN_CREATE);
+        let open = Header::new(OPEN, id()).with_args(&[STORE_BYTES, 0, 0, 0, VERSION]).with_flags(OPEN_CREATE);
         if let Ok(id) = send(open, path.as_os_str().as_bytes(), None) {
             shared.answers.wait(id);
         }
@@ -1386,7 +1386,7 @@ fn run_hostile(
         let (to, point) = (names.vms.join(format!("{}-r{index}", names.case)), names.place(Place::Point));
         let named = [to.as_os_str().as_bytes(), &[0], point.as_os_str().as_bytes()];
         let restore = Header::new(OPEN, id())
-            .with_args(&[STORE_BYTES, names.given])
+            .with_args(&[STORE_BYTES, names.given, 0, 0, VERSION])
             .with_flags(OPEN_FORK_FROM);
         if let Ok(id) = send(restore, &named.concat(), None) {
             shared.answers.wait(id);
@@ -1725,6 +1725,9 @@ fn a_compromised_vm_process_harms_no_tenant_beside_it() {
     );
     assert!(served > 8 * u64::from(cases), "{served} requests served");
     assert!(restored > 0, "{restored} restores served");
+    // And its stores open and commit: a VM process the daemon refused every opening of would pass
+    // the rest, as one of another wire version did (TASK-141.3).
+    assert!(commits > 0, "{commits} of its stores committed");
     drop(mallory);
 }
 

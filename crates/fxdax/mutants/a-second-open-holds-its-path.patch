@@ -5,24 +5,27 @@
 # Killer: extentd::tests::hostile::a_compromised_vm_process_harms_no_tenant_beside_it
 --- a/crates/fxdax/src/extentd/server.rs
 +++ b/crates/fxdax/src/extentd/server.rs
-@@ -850,9 +850,14 @@
-     /// The connection has `store` from now on, as `opened` says: [`Phase::Writing`] or
+@@ -888,10 +888,16 @@
      /// [`Phase::Following`]. Checked without the phase's lock, which a panic would poison.
-     fn opened(self, store: Arc<ExtentStore>, opened: Phase) {
+     fn opened(self, path: &Path, store: Arc<ExtentStore>, opened: Phase) {
+         let follower = matches!(opened, Phase::Following);
+-        self.0.report.opened(store_key(path), store.branch(), follower);
 -        assert!(self.0.store.set(store).is_ok(), "a connection opened a second store");
++        let branch = store.branch();
 +        if self.0.store.set(store).is_err() {
 +            if let Phase::Writing(hold) = opened {
 +                std::mem::forget(hold);
 +            }
 +            return;
 +        }
++        self.0.report.opened(store_key(path), branch, follower);
          let was = std::mem::replace(&mut *self.0.phase.lock().unwrap(), opened);
 -        assert!(matches!(was, Phase::Opening), "a connection opened a store not opening one");
 +        let _ = was;
      }
  }
  
-@@ -1301,11 +1306,11 @@
+@@ -1341,11 +1347,11 @@
      fn opening(&self) -> Result<Opening<'_>, Errno> {
          let mut phase = self.phase.lock().unwrap();
          match *phase {
