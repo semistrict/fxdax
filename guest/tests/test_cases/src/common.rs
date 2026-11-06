@@ -109,6 +109,11 @@ pub fn spawn_daemon(
         fs::create_dir_all(&cache)?;
         command.env("FXDAX_EXTENTD_CACHE", cache);
     }
+    // And what serving cost it, how long its commits waited to be made durable among it, in a
+    // file it rewrites as it goes, which a daemon killed leaves (TASK-165.9).
+    if !named("FXDAX_EXTENTD_STATS") {
+        command.env("FXDAX_EXTENTD_STATS", test_setup.tmp_dir.join(format!("{name}-stats.txt")));
+    }
     let daemon = command.envs(env.iter().copied()).stderr(log).spawn()?;
     test_setup.register_cleanup_pid(daemon.id());
     let deadline = Instant::now() + Duration::from_secs(30);

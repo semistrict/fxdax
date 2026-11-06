@@ -25,6 +25,65 @@ pub(crate) struct Durability<T> {
     /// The commits no flush has taken yet, oldest first: the last of those ordered. Those between
     /// them and the last durable, a flush has taken, and is making durable.
     queue: VecDeque<T>,
+    /// fxdax: when each commit not yet durable was ordered, oldest first: how long each waits to
+    /// be made durable, [`Lags`], is measured from then.
+    ordered_at: VecDeque<std::time::Instant>,
+}
+
+/// fxdax: how long commits waited, from being ordered, which a daemon answers a guest's `COMMIT`
+/// on, until a flush made them durable, in this process: so many, the longest, and so many within
+/// each power of two of milliseconds, the first those within one (TASK-165.9: doc-2's requirement
+/// 11 bounds it, at 50 ms of extentd's turns).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Lags {
+    pub count: u64,
+    pub max_us: u64,
+    /// Bucket `i`: within 2^i ms (`i` 0: within 1 ms), the last all beyond.
+    pub buckets: [u64; LAG_BUCKETS],
+}
+
+/// How many buckets [`Lags`] has: the last, beyond 2^14 ms, some 16 s.
+pub const LAG_BUCKETS: usize = 16;
+
+impl Lags {
+    /// The lag `fraction` of the commits were made durable within, as the upper bound of its
+    /// bucket, in milliseconds: none, if no commit was.
+    pub fn quantile_ms(&self, fraction: f64) -> Option<u64> {
+        let wanted = (self.count as f64 * fraction).ceil() as u64;
+        let mut seen = 0;
+        for (bucket, count) in self.buckets.iter().enumerate() {
+            seen += count;
+            if seen >= wanted.max(1) && self.count > 0 {
+                return Some(1 << bucket);
+            }
+        }
+        None
+    }
+
+    fn record(&mut self, lag: std::time::Duration) {
+        let us = lag.as_micros() as u64;
+        self.count += 1;
+        let ms = us.div_ceil(1000).max(1);
+        let bucket = (u64::BITS - (ms - 1).leading_zeros()) as usize;
+        self.buckets[bucket.min(LAG_BUCKETS - 1)] += 1;
+        if us > self.max_us {
+            self.max_us = us;
+            // The longest yet, past extentd's turn: said as it happens, which a daemon killed
+            // leaves in its log.
+            if us > 50_000 {
+                log::warn!("extent store: a commit durable {lag:?} after it was ordered");
+            }
+        }
+    }
+}
+
+/// [`Lags`] of this process's stores.
+static LAGS: std::sync::Mutex<Lags> =
+    std::sync::Mutex::new(Lags { count: 0, max_us: 0, buckets: [0; LAG_BUCKETS] });
+
+/// fxdax: how long this process's stores' commits waited to be made durable ([`Lags`]).
+pub fn durability_lags() -> Lags {
+    *LAGS.lock().unwrap()
 }
 
 /// The commits a flush takes, oldest first, and the epoch of the last.
@@ -36,7 +95,7 @@ pub(crate) struct Batch<T> {
 impl<T> Durability<T> {
     /// A branch's, whose commits up to `epoch` are durable: as opened.
     pub fn new(epoch: u64) -> Self {
-        Self { ordered: epoch, durable: epoch, queue: VecDeque::new() }
+        Self { ordered: epoch, durable: epoch, queue: VecDeque::new(), ordered_at: VecDeque::new() }
     }
 
     /// Orders `commit`, of `epoch`, the next.
@@ -44,6 +103,7 @@ impl<T> Durability<T> {
         assert_eq!(epoch, self.ordered + 1, "commits are ordered in turn");
         self.ordered = epoch;
         self.queue.push_back(commit);
+        self.ordered_at.push_back(std::time::Instant::now());
     }
 
     /// Takes the commits ordered that no flush has taken, if any, for a flush to make durable.
@@ -57,6 +117,12 @@ impl<T> Durability<T> {
     /// The commits up to `last`, a flush's, are durable.
     pub fn finish(&mut self, last: u64) {
         debug_assert!(last > self.durable && last <= self.ordered, "flushes finish in order");
+        let now = std::time::Instant::now();
+        let mut lags = LAGS.lock().unwrap();
+        for _ in self.durable..last {
+            let ordered = self.ordered_at.pop_front().expect("a commit ordered is timed");
+            lags.record(now - ordered);
+        }
         self.durable = last;
     }
 
@@ -289,6 +355,20 @@ mod tests {
         assert!(!durability.queued() && durability.pending());
         durability.finish(batch.last);
         assert!(!durability.pending());
+    }
+
+    /// Lags count each commit within the least power of two of milliseconds holding it, the
+    /// longest exactly; their quantiles are those buckets' bounds.
+    #[test]
+    fn lags_are_counted_in_powers_of_two_of_milliseconds() {
+        let mut lags = Lags::default();
+        for ms in [0, 1, 2, 3, 40, 70] {
+            lags.record(std::time::Duration::from_millis(ms));
+        }
+        assert_eq!((lags.count, lags.max_us), (6, 70_000));
+        assert_eq!(lags.buckets[..8], [2, 1, 1, 0, 0, 0, 1, 1]);
+        assert_eq!((lags.quantile_ms(0.5), lags.quantile_ms(0.99)), (Some(2), Some(128)));
+        assert_eq!(Lags::default().quantile_ms(0.99), None);
     }
 
     /// A commit is ordered after the one before it, or not at all.

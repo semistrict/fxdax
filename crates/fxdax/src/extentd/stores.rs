@@ -1247,7 +1247,26 @@ fn watch_stats(bucket: std::sync::Weak<extent_remote::store::Store>) {
 /// `NAME=COUNT` after `daemon:`.
 fn daemon_line() -> String {
     let named = crate::stats::stats().named().map(|(name, count)| format!("{name}={count}"));
-    format!("daemon: {}", named.join(" "))
+    // fxdax: and how long its stores' commits waited to be made durable (TASK-165.9): each
+    // bucket of `extent_store::Lags` a count of its own, within its bound, the last beyond.
+    let lags = extent_store::durability_lags();
+    let quantile = |fraction| lags.quantile_ms(fraction).unwrap_or(0);
+    let last = extent_store::LAG_BUCKETS - 1;
+    let bucket = |(bucket, count): (usize, &u64)| match bucket == last {
+        false => format!("durable_lag_le_{}ms={count}", 1u64 << bucket),
+        true => format!("durable_lag_gt_{}ms={count}", 1u64 << (bucket - 1)),
+    };
+    let buckets: Vec<String> = lags.buckets.iter().enumerate().map(bucket).collect();
+    format!(
+        "daemon: {} durable_lag_count={} durable_lag_max_us={} durable_lag_p50_ms={} \
+         durable_lag_p99_ms={} {}",
+        named.join(" "),
+        lags.count,
+        lags.max_us,
+        quantile(0.5),
+        quantile(0.99),
+        buckets.join(" ")
+    )
 }
 
 /// fxdax: replaces `file` with `lines`, whole: a reader finds the old lines or the new.

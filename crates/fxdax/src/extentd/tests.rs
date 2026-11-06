@@ -306,8 +306,17 @@ fn keeps_object_storage_and_follower_stats() {
     let counts = (followers[0].1, followers[1].1, followers[4].1);
     assert_eq!(counts, (1, 1, 2 * BLOCK as u64), "{kept}");
     let daemon = fields(&kept, 2, "daemon").unwrap();
-    let names: Vec<_> = daemon.iter().map(|(name, _)| name.as_str()).collect();
-    assert_eq!(names, crate::stats::stats().named().map(|(name, _)| name), "{kept}");
+    let names: Vec<_> = daemon.iter().map(|(name, _)| name.to_owned()).collect();
+    // Its counters, then how long its stores' commits waited to be made durable (TASK-165.9).
+    let mut expected: Vec<String> =
+        crate::stats::stats().named().map(|(name, _)| name.to_owned()).into();
+    let lags =
+        ["durable_lag_count", "durable_lag_max_us", "durable_lag_p50_ms", "durable_lag_p99_ms"];
+    expected.extend(lags.map(str::to_owned));
+    expected.extend((0..15).map(|bucket| format!("durable_lag_le_{}ms", 1 << bucket)));
+    expected.push("durable_lag_gt_16384ms".to_owned());
+    assert_eq!(names, expected, "{kept}");
+    assert_eq!(count(&daemon, "durable_lag_count"), Some(3), "{kept}");
     // The three commits, each a COMMIT request: a request's time holds its commit's, which
     // holds its phases'.
     let requests = fields(&kept, 3, "requests").unwrap();

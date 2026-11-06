@@ -127,6 +127,7 @@ macro_rules! failpoint {
 
 mod dir;
 mod durability;
+pub use durability::{LAG_BUCKETS, Lags, durability_lags};
 mod framed;
 mod host;
 mod kept;
