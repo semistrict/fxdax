@@ -1217,30 +1217,36 @@ impl<S: HandleOwner> Directory<S> {
     }
 
     /// fxdax: removes `name`, which the caller knows links `object_id`, a file, symlink or special
-    /// file, as `replace_child` unlinks it, without looking the name up, in a directory whose
-    /// `names_are_keys`: and returns whether it was the object's last name, which puts the object
-    /// in the graveyard (`ObjectStore::txn_tombstone_unlinked` may take it out again). The times of
-    /// the directory and of the object are left be, which the caller keeps, as the guest kernel
-    /// writes them back.
+    /// file, as `replace_child` unlinks it, without looking the name up where `names_are_keys`:
+    /// and returns whether it was the object's last name, which puts the object in the graveyard
+    /// (`ObjectStore::txn_tombstone_unlinked` may take it out again). The times of the directory
+    /// and of the object are left be, which the caller keeps, as the guest kernel writes them
+    /// back: in a directory whose names fold case or are encrypted too, whose unlinks went through
+    /// `replace_child`, which timed them as they applied, after what the kernel wrote back since
+    /// (TASK-149.36).
     ///
-    /// Requires transaction locks on `object_id`, and on |self| or its names
-    /// (`Transaction::change_names_unlocked`).
+    /// Requires transaction locks on `object_id`, and on |self|, or on its names where they are
+    /// its keys (`Transaction::change_names_unlocked`).
     pub async fn txn_remove_known_child(
         &self,
         transaction: &mut Transaction<'_>,
         name: &str,
         object_id: u64,
     ) -> Result<bool, Error> {
-        ensure!(
-            self.names_are_keys(),
-            anyhow!(FxfsError::InvalidArgs).context("A name removed unlooked-up must be its key")
-        );
+        let key = if self.names_are_keys() {
+            ObjectKey::child(self.object_id(), name, self.dir_type())
+        } else {
+            let entry = self.lookup_ext(name).await?.ok_or(FxfsError::NotFound)?;
+            ensure!(
+                entry.object_id == object_id,
+                anyhow!(FxfsError::Inconsistent)
+                    .context(format!("{name} links {}, not {object_id}", entry.object_id))
+            );
+            entry.key
+        };
         transaction.add(
             self.store().store_object_id(),
-            Mutation::replace_or_insert_object(
-                ObjectKey::child(self.object_id(), name, self.dir_type()),
-                ObjectValue::None,
-            ),
+            Mutation::replace_or_insert_object(key, ObjectValue::None),
         );
         self.store().adjust_refs(transaction, object_id, -1).await
     }
@@ -3254,9 +3260,10 @@ mod tests {
         fs.close().await.expect("Close failed");
     }
 
-    /// fxdax: a name removed by its key, unlooked-up: the object's other names stay, its last
-    /// puts it in the graveyard, and the times are left be. A directory whose names aren't their
-    /// keys refuses.
+    /// fxdax: a name the caller knows the object of removed, by its key, unlooked-up, or in a
+    /// directory whose names aren't their keys, looked up, in any case it folds to: the object's
+    /// other names stay, its last puts it in the graveyard, and the times are left be. A name
+    /// linking another object is refused (TASK-149.36).
     #[fuchsia::test]
     async fn test_txn_remove_known_child() {
         let device = DeviceHolder::new(FakeDevice::new(8192, TEST_DEVICE_BLOCK_SIZE));
@@ -3280,42 +3287,72 @@ mod tests {
         store.adjust_refs(&mut transaction, file_oid, 1).await.expect("adjust_refs failed");
         transaction.commit().await.expect("commit failed");
         casefold.set_casefold(true).await.expect("set_casefold failed");
+        let keys = lock_keys![
+            LockKey::object(store_id, casefold.object_id()),
+            LockKey::object(store_id, file_oid)
+        ];
+        let mut transaction =
+            store.new_transaction(keys, Options::default()).await.expect("new_transaction failed");
+        casefold
+            .insert_child(&mut transaction, "Foo", file_oid, ObjectDescriptor::File)
+            .await
+            .expect("insert_child failed");
+        store.adjust_refs(&mut transaction, file_oid, 1).await.expect("adjust_refs failed");
+        transaction.commit().await.expect("commit failed");
         assert!(dir.names_are_keys());
         assert!(!casefold.names_are_keys());
-        let before = dir.get_properties().await.expect("get_properties failed");
+        let before = [
+            dir.get_properties().await.expect("get_properties failed"),
+            casefold.get_properties().await.expect("get_properties failed"),
+        ];
 
-        let keys = lock_keys![LockKey::object(store_id, file_oid)];
-        for (name, last) in [("foo", false), ("bar", true)] {
+        let error = {
+            let keys = lock_keys![
+                LockKey::object(store_id, casefold.object_id()),
+                LockKey::object(store_id, dir.object_id())
+            ];
             let mut transaction = store
-                .new_transaction(keys.clone(), Options::default())
+                .new_transaction(keys, Options::default())
                 .await
                 .expect("new_transaction failed");
-            transaction.change_names_unlocked(store_id, dir.object_id());
+            casefold
+                .txn_remove_known_child(&mut transaction, "foo", dir.object_id())
+                .await
+                .expect_err("removed a name linking another object")
+        };
+        assert!(FxfsError::Inconsistent.matches(&error), "{error:?}");
+        for (directory, name, last) in
+            [(&dir, "foo", false), (&dir, "bar", false), (&casefold, "foo", true)]
+        {
+            let keys = lock_keys![
+                LockKey::object(store_id, file_oid),
+                LockKey::object(store_id, directory.object_id())
+            ];
+            let mut transaction = store
+                .new_transaction(keys, Options::default())
+                .await
+                .expect("new_transaction failed");
             assert_eq!(
-                dir.txn_remove_known_child(&mut transaction, name, file_oid)
+                directory
+                    .txn_remove_known_child(&mut transaction, name, file_oid)
                     .await
                     .expect("txn_remove_known_child failed"),
                 last
             );
             transaction.commit().await.expect("commit failed");
-            assert_eq!(dir.lookup(name).await.expect("lookup failed"), None);
+            assert_eq!(directory.lookup(name).await.expect("lookup failed"), None);
         }
+        assert_eq!(casefold.lookup("FOO").await.expect("lookup failed"), None);
         assert_eq!(store.graveyard_count(), 1);
         let graveyard_entry =
             ObjectKey::graveyard_entry(store.graveyard_directory_object_id(), file_oid);
         assert!(store.tree().find(&graveyard_entry).await.expect("find failed").is_some());
-        let after = dir.get_properties().await.expect("get_properties failed");
-        assert_eq!(after.modification_time, before.modification_time);
-        assert_eq!(after.change_time, before.change_time);
+        for (directory, before) in [&dir, &casefold].into_iter().zip(before) {
+            let after = directory.get_properties().await.expect("get_properties failed");
+            assert_eq!(after.modification_time, before.modification_time);
+            assert_eq!(after.change_time, before.change_time);
+        }
 
-        let mut transaction =
-            store.new_transaction(keys, Options::default()).await.expect("new_transaction failed");
-        let error = casefold
-            .txn_remove_known_child(&mut transaction, "foo", file_oid)
-            .await
-            .expect_err("removed a casefolded name by key");
-        assert!(FxfsError::InvalidArgs.matches(&error), "{error:?}");
-        std::mem::drop(transaction);
         std::mem::drop(file);
         store.tombstone_object(file_oid, Options::default(), None).await.expect("tombstone failed");
         fsck(fs.clone()).await.expect("fsck failed");

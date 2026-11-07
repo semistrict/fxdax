@@ -308,6 +308,11 @@ struct Data {
     size: u64,
     pages: BTreeMap<u64, Arc<Vec<u8>>>,
     allocated: BTreeSet<u64>,
+    /// Of those, the last page, if its tail past the file's end may be written anew, which takes
+    /// it out of `allocated`, and the model can't say whether: a truncate's zeroing of what it
+    /// held, which a full filesystem leaves undone, as a cut may, and then the growth after zeroes
+    /// it. Fxfs says which (`World::settle_tail`).
+    unsettled: Option<u64>,
 }
 
 impl Data {
@@ -332,7 +337,13 @@ impl Data {
             self.pages.retain(|page, _| page * PAGE < size);
             self.allocated.retain(|page| page * PAGE < size);
             if let Some(last) = self.pages.get_mut(&(size / PAGE)) {
-                Arc::make_mut(last)[(size % PAGE) as usize..].fill(0);
+                let tail = &mut Arc::make_mut(last)[(size % PAGE) as usize..];
+                // What it held there is zeroed by a write of the block anew, which Fxfs makes
+                // as every write, unless it has no room.
+                if tail.iter().any(|byte| *byte != 0) && self.allocated.contains(&(size / PAGE)) {
+                    self.unsettled = Some(size / PAGE);
+                }
+                tail.fill(0);
             }
         }
         self.size = size;
@@ -1955,13 +1966,32 @@ impl World {
     }
 
     /// Takes what Fxfs records as allocated of file `ino` for the model's, after an operation
-    /// that may have stopped short: it must be some of `allowed`.
+    /// that may have stopped short: it must be some of `allowed`. Its last page's tail, which the
+    /// model zeroed, Fxfs may not have yet (`Data::unsettled`).
     async fn adopt_allocated(&mut self, ino: u64, allowed: &BTreeSet<u64>) -> Result<(), String> {
         let allocated = self.allocated(ino).await?;
         if let Some(page) = allocated.difference(allowed).next() {
             return Err(format!("{ino} has page {page} allocated, of {} allowed", allowed.len()));
         }
-        self.model.files.get_mut(&ino).expect("a file").allocated = allocated;
+        let data = self.model.files.get_mut(&ino).expect("a file");
+        let last = data.size / PAGE;
+        data.unsettled = (data.size % PAGE != 0 && allocated.contains(&last)).then_some(last);
+        data.allocated = allocated;
+        Ok(())
+    }
+
+    /// Takes what Fxfs says of file `ino`'s last page, if the model can't say whether its tail was
+    /// written anew (`Data::unsettled`), while it can't: until the file ends past it, or before.
+    async fn settle_tail(&mut self, ino: u64) -> Result<(), String> {
+        let Some(page) = self.model.files[&ino].unsettled else { return Ok(()) };
+        let allocated = self.allocated(ino).await?.contains(&page);
+        let data = self.model.files.get_mut(&ino).expect("a file");
+        if !allocated {
+            data.allocated.remove(&page);
+        }
+        if !data.allocated.contains(&page) || data.size.div_ceil(PAGE) != page + 1 {
+            data.unsettled = None;
+        }
         Ok(())
     }
 
@@ -2109,6 +2139,7 @@ impl World {
                 self.model.files.get_mut(&ino).expect("a file").truncate(size);
             }
             self.model.nodes.get_mut(&ino).expect("a node").written();
+            self.settle_tail(ino).await?;
             self.check(&self.model, ino).await?;
         }
         Ok(())
@@ -2358,11 +2389,8 @@ impl World {
                 let queued = self.fs.unlink_later(dir, &name_of(at), entry.ino()).await;
                 queued.map_err(|e| format!("unlink_later: {e:#}"))?;
                 self.model.names.remove(&(dir, at));
+                // Applied later, it leaves the times to the VFS, as the guest's keeps them.
                 self.model.queued.push(Queued { place: (dir, at), entry });
-                // Applied later, it may leave the times to the VFS, as the guest's keeps them.
-                self.model.nodes.get_mut(&dir).expect("a directory").written();
-                let node = self.model.nodes.get_mut(&entry.ino()).expect("a node");
-                node.ctime = node.ctime.no_earlier();
                 self.forget(entry).await?;
             }
             Op::Rename(from, to) if self.model.may_rename(from, to) => {
@@ -2433,6 +2461,7 @@ impl World {
                 }
                 self.model.nodes.get_mut(&ino).expect("a node").written();
                 self.check(&self.model, ino).await?;
+                self.settle_tail(ino).await?;
                 self.holds_extents(ino).await?;
             }
             Op::Fill { .. } | Op::Clone { .. } | Op::CloneToEnd { .. } => {
@@ -2502,6 +2531,7 @@ impl World {
                 }
                 self.model.nodes.get_mut(&ino).expect("a node").written();
                 self.check(&self.model, ino).await?;
+                self.settle_tail(ino).await?;
                 self.holds_extents(ino).await?;
             }
             Op::Punch { .. } => {
@@ -2535,6 +2565,7 @@ impl World {
                 }
                 self.model.nodes.get_mut(&ino).expect("a node").written();
                 self.check(&self.model, ino).await?;
+                self.settle_tail(ino).await?;
                 self.holds_extents(ino).await?;
             }
             // Each set made at once, or refused if the filesystem has no room for it, as the
@@ -2650,6 +2681,8 @@ impl World {
     async fn refused_whole(&self, ino: u64, done: Result<(), Error>) -> Result<(), String> {
         match done {
             Err(error) if FxfsError::NotSupported.matches(&error) => {}
+            // A full filesystem refuses the transaction first.
+            Err(error) if FxfsError::NoSpace.matches(&error) => {}
             done => return Err(format!("a clone of what an allocation made: {done:?}")),
         }
         self.check(&self.model, ino).await?;
@@ -2881,6 +2914,7 @@ impl World {
             self.adopt_allocated(plan.ino, &allowed).await?;
         }
         self.check(&self.model, plan.ino).await?;
+        self.settle_tail(plan.ino).await?;
         self.holds_extents(plan.ino).await
     }
 }
@@ -4106,4 +4140,58 @@ fn names_of_every_spelling_fold_and_list() {
         Op::Remount,
     ]);
     Setting::awkward(0, ROOMY).holds(ops);
+}
+
+/// An allocation over pages a fill wrote, cut into its first page by a truncate: zeroing what the
+/// page held past the new end writes it anew, as every write is, which takes it out of what the
+/// allocation made, where the model had it stay. The model's mistake, not Fxfs's: found by the
+/// default run of the model test once TASK-149.36 was merged, its seed kept.
+#[test]
+fn a_truncate_into_an_allocation_over_written_pages() {
+    let ops = vec![
+        Op::Symlink(1),
+        Op::Create(0),
+        Op::FillWhileCompacting { file: 0, page: 0, pages: 13, byte: 1, flushing: false },
+        Op::Allocate { file: 0, at: 0, len: 49153 },
+        Op::Truncate { file: 0, size: 1 },
+    ];
+    Setting::awkward(0, ROOMY).with_graveyard_of_seed().holds(ops);
+}
+
+/// A name's unlink queued in a directory that folds case leaves the directory's times to the VFS,
+/// as one in any other directory does: applied after a setattr of the directory's mtime, it timed
+/// the directory as it applied, over what was set. Found by a hunt (TASK-149.36), its seed kept.
+#[test]
+fn an_unlink_queued_in_a_casefolded_directory_leaves_its_times() {
+    let mtime = Op::SetAttr { node: 0, change: Change { valid: SET_MTIME, mtime: 0, ..CHANGE } };
+    let ops = vec![
+        Op::Casefold { dir: 0, folds: true },
+        Op::Create(18),
+        Op::UnlinkLater(0),
+        mtime,
+        Op::SetAttr { node: 0, change: Change { valid: 0, ..CHANGE } },
+    ];
+    Setting::awkward(0, ROOMY).with_graveyard_of_seed().holds(ops);
+}
+
+/// A clone of what an allocation made, on a full filesystem, is refused, whichever it says first:
+/// that it has no room, or that it won't share the blocks. Found by a hunt (TASK-149.36), its
+/// seed kept, as what fills the device depends on it.
+#[test]
+fn a_clone_of_an_allocation_on_a_full_filesystem_is_refused() {
+    let ops = vec![
+        Op::Create(0),
+        Op::Fill { file: 0, page: 4, pages: 39, stride: 1, byte: 0 },
+        Op::Symlink(0),
+        Op::Tmpfile(0),
+        Op::SetXattr { file: 0, name: 0, len: 63984, byte: 0 },
+        Op::Fill { file: 0, page: 43, pages: 2175, stride: 2, byte: 0 },
+        Op::Write { file: 0, at: 0, len: 8193, byte: 0 },
+        Op::Allocate { file: 1, at: 0, len: 249857 },
+        Op::Fill { file: 0, page: 2, pages: 805, stride: 2, byte: 0 },
+        Op::Crash,
+        Op::Punch { file: 0, page: 0, pages: 1 },
+        Op::Clone { from: 7, to: 14, page: 0, pages: 1, to_page: 0 },
+    ];
+    Setting::awkward(0, TIGHT).with_graveyard_of_seed().holds(ops);
 }
