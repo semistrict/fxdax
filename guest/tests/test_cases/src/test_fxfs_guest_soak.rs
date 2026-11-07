@@ -376,14 +376,9 @@ mod host {
             if std::env::var_os("FXDAX_EXTENTD_FAILPOINTS").is_none() {
                 plan.upload_fails_after = None;
             }
-            // No latency added to a real bucket, until TASK-216: on GCS, 1000 ms more had a
-            // crashed VM's store, draining its uploads as it closed, refuse the VM booted again
-            // (EBUSY); a real bucket is as far as it is, as main's pgbench cases have it too
-            // (a66f2d996). A file bucket answers late as the plan says, its reads no longer
-            // panicking under FXDAX_REMOTE_LATENCY_MS (TASK-208).
-            if paths.bucket_dir.is_none() {
-                plan.latency_ms = 0;
-            }
+            // Latency is added to every bucket the plan names: a file bucket's reads take it since
+            // TASK-208, and a real bucket's crashed VM's store, draining its uploads, refuses the VM
+            // booted again no more since TASK-216.
             Ok(Self {
                 root: setup_rootfs(setup)?,
                 setup,
