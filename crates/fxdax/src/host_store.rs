@@ -270,9 +270,9 @@ pub(crate) fn unmade(path: &Path) -> bool {
 /// store's uploader, uploads the store's commit naming the child ([`Store::commit_fork`]), whose
 /// acknowledgement gives the child its record, inheriting the store's extents rather than copies;
 /// `held`, given, is let go of once that commit is made, before its upload goes. Only then is the
-/// child's store made, at `path`, taking the child's state from the bucket
-/// (`extent_store::upload::take_branch`): every extent of it there, at its location there, read from
-/// there, or the host's cache. `prepare` writes what the caller keeps beside the store into its
+/// child's store made, at `path`, holding nothing of its own: opening it recovers the child's
+/// state from the bucket, as any store's opening does (TASK-165.9), every extent of it there, at
+/// its location there, read from there, or the host's cache. `prepare` writes what the caller keeps beside the store into its
 /// directory first, before its description, which makes it a store. A fork of a store with no
 /// uploader fails with `ENOTSUP`, making nothing: its callers attach one first, an image's
 /// (`storage::kept`), and an extent store's opened where no daemon serves it

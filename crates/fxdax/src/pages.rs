@@ -2,10 +2,12 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-//! The process's physical memory (`physmem`), which cached extents' pages, open extents', and the
-//! pages DAX windows map, are of: host shared memory, in arenas, each its own object (a memfd on
-//! Linux), which a process given an arena's object maps the arena's pages from (TASK-43). As an
-//! arena runs out, its relief evicts cached extents' clean pages (`crate::cache`).
+//! The process's physical memory (`physmem`), which the pages of cached sealed extents
+//! (`crate::cache`) and the zeros DAX windows map are of: host shared memory, in arenas, each its
+//! own object (a memfd on Linux), which a process given an arena's object maps the arena's pages
+//! from (TASK-43). As an arena runs out, its relief evicts cached extents' pages. Open extents are
+//! written to their stores' segments (`extent_store`), and a window's private pages, copy-on-write
+//! DAX's, are of its VM's memory (`crate::dax`): neither is of it.
 //!
 //! Its size is set once, with [`configure`], before its first page is allocated, or is the
 //! default.

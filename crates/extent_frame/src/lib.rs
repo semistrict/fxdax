@@ -36,7 +36,7 @@ pub const TRAILER: u64 = 8 + 8 + 8 + 4 + 4 + 8;
 
 /// The format of the frames this crate writes and reads, the last byte of [`MAGIC`], as a digit:
 /// a frame says its format, and a reader of an older one names it rather than call it corrupt
-/// (doc-11, rule 3; TASK-141.2).
+/// (doc-11, rule 1; TASK-141.2).
 pub const FORMAT: u8 = 1;
 
 /// An object's last bytes: the frame's [`FORMAT`] after them.

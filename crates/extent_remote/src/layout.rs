@@ -17,7 +17,7 @@ pub use extent_frame::segment::{
 
 /// fxdax: the format of a branch's objects, which its record says first
 /// ([`Record::format`](crate::record::Record::format)): a reader refuses a branch of any other,
-/// newer or older, naming it, and reads none of it (doc-11, rule 3; TASK-141.2). 2: a footer holds
+/// newer or older, naming it, and reads none of it (doc-11, rule 1; TASK-141.2). 2: a footer holds
 /// its segment's [`Contents`], with the capacity its commits set, and a checkpoint the branch's
 /// capacity (TASK-165.3); nothing reads 1's, as nothing keeps any (AGENTS.md).
 pub const FORMAT: u32 = 2;

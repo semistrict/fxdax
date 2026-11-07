@@ -48,9 +48,9 @@ impl Kept {
         Self::opened(opened)
     }
 
-    /// The image at `dir`, or the clone whose handle `dir` is: its uploader takes its branch's
-    /// lease as a copy never placed takes it where this process is no host's daemon
-    /// ([`host_store::keeping`]).
+    /// The image at `dir`, or the clone at `dir`, a store of its own holding its branch alone
+    /// (TASK-165.7): its uploader takes its branch's lease as a copy never placed takes it where
+    /// this process is no host's daemon ([`host_store::keeping`]).
     pub fn open(dir: &Path) -> anyhow::Result<Self> {
         let keeping = host_store::keeping().map_err(anyhow_of)?;
         Self::opened(host_store::open(dir, keeping).map_err(anyhow_of)?)

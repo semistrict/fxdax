@@ -82,8 +82,9 @@ impl Storage {
 
     /// A new image at `path`, which must not exist, holding at most `size` bytes. It holds nothing
     /// until the filesystem writes to it, and must be formatted before it is mounted. Its branch
-    /// is kept in a file bucket of its own, in its directory, which its clones share; or, on a host
-    /// of fxdax's system, in the host's bucket (`FXDAX_EXTENTD_REMOTE`).
+    /// is kept in a file bucket of its own, beside its directory (`<image>.bucket`), which its
+    /// clones share and which outlives it; or, on a host of fxdax's system, in the host's bucket
+    /// (`FXDAX_EXTENTD_REMOTE`).
     pub fn create(path: impl AsRef<Path>, size: u64) -> Result<Self, Error> {
         Self::make(path.as_ref(), size, true)
     }

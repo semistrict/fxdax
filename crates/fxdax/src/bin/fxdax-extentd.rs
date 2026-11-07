@@ -9,10 +9,12 @@
 //! fxdax-extentd SOCKET [MEMORY_BYTES]
 //! ```
 //!
-//! MEMORY_BYTES is how much memory its kernel takes at most, for the extents it caches, and the
-//! open extents VMs map writably: the kernel's default otherwise (1 GiB). Out of it, or past a
-//! limit the control API sets, the daemon evicts the cached pages read longest ago, and fails what
-//! it cannot make room for with ENOMEM, rather than stop (TASK-50.3). A VMM's extent device
+//! MEMORY_BYTES is how much memory its kernel takes at most, for the sealed extents it caches,
+//! whose pages VMs' DAX windows map read-only: the kernel's default otherwise (1 GiB). A store's
+//! private pages, which copy-on-write DAX gives a VM's stores, are of the VM's memory, not of it
+//! (backlog doc-13). Out of it, or past a limit the control API sets, the daemon evicts the cached
+//! extents asked for longest ago, and fails what it cannot make room for with ENOMEM, rather than
+//! stop (TASK-50.3). A VMM's extent device
 //! connects to the socket its configuration names (fxdax's Firecracker's `extentd_socket`).
 //!
 //! It runs as a host of fxdax's multi-node system: `FXDAX_EXTENTD_REMOTE` names the bucket its
