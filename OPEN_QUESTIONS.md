@@ -6,18 +6,17 @@
 **Recommended:** a workload identity pool for `semistrict/fxdax` and a service account allowed to make and delete GCE instances and write the nightly bucket.
 **Until then:** each nightly fails at its auth step; TASK-69's runs stay manual.
 
-## Deleting `FileType::default_perm` and its test (2026-11-06)
-
-`crates/fxdax/src/node.rs`'s `FileType::default_perm` has been dead since TASK-96.1 (Fxfs's POSIX layer gives nodes without permissions of their own 0o755, 0o777 and 0o644 itself, `fxfs-posix/src/lib.rs`), kept under `#[allow(dead_code)]` with its test `default_permissions` "until the user decides on removing them". Deleting a test is yours.
-**Recommended:** delete both; the POSIX layer's own tests cover the defaults.
-**Until then:** they stay, the allow hiding nothing else.
-
-## A device request for how far extents are written, for a mount after a power cut (2026-11-06)
-
-After a power cut a staging extent can hold data whose commits the journal lost, as doc-4 allows: a mount counts it only as far as its durable commits, up to 2 MiB short each, which breaks the room a full device's metadata reservation promises (TASK-214). Nothing Fxfs writes can close it; the device has to say how long the extents minted since the last barrier are. That's a protocol change (doc-4, the guest driver, Firecracker, extentd), so it's yours to approve.
-**Recommended:** a request returning the lengths of named extents, asked at mount of the extents minted since the root's last barrier, which the root would record.
-**Until then:** after a cut, up to 2 MiB a volume's staging extent stays uncounted until the extent dies; the model's length oracle runs only on filesystems no cut touched.
 # Decisions
+
+## A tenant's connections share a room, 8 GiB a tenant by default (TASK-149.35, 2026-11-07)
+
+The protocol bounds what the daemon holds of a VM process's requests per connection (`server::Peer::room`, 272 MiB without a window), but a tenant has up to `MAX_CONNECTIONS` (1,024), so one tenant, within the protocol, could have the daemon hold ~272 GiB of its requests' data at once, every tenant's daemon with it. Decided:
+- **A room per tenant** (`memory::InFlight`, `DEFAULT_TENANT_ROOM` = 8 GiB), shared by its connections: a request's stream data, and what the daemon has queued for a VM process, counted in it. A request past the room **waits** at admission, before its payload is read, holding no thread, until what the tenant holds leaves room; with nothing held, it goes on, so a request as large as the room is served. Not let go, as a connection past its own room is: it keeps within its own room, and the tenant's other VM processes take theirs.
+- **Why wait, not EAGAIN or let-go:** the stream carries requests that must be served (a guest's I/O); letting the connection go would kill a VM for its neighbours' load, and EAGAIN has no place in the wire here. A healthy tenant's VMs move most data through their transfer areas (256 KiB a slot, 8 a connection), which no room counts; only large WRITEs and READ replies through the stream count.
+- **Why 8 GiB:** a host's density case (300 forks of a base, TASK-112) held 16 MiB of a tenant's stream data at most; 8 GiB is ~30 VM processes each keeping a full 272 MiB connection room, which happens only writing back-to-back 64 MiB extents through the stream. Measured: 8 flooding connections of one tenant held 64 MiB against a 64 MiB room (the test's small setting), where without the bound they held 2,132 MiB; a second tenant flooding alongside was served throughout.
+- **Configurable** per tenant or daemon-wide through the control API (`SetTenantRoom`, `memory::set_room`), as the memory limits are (`SetMemoryLimit`): a tenant's holds for it alive now and granted later; without a tenant, it sets every tenant's whose own isn't set. Floor is a payload (64 MiB), under which a request couldn't be held.
+- *Instead:* fewer connections a tenant, or a smaller per-connection room — both cut a healthy tenant's throughput; or a count of connections rather than bytes — doesn't bound what each holds. *Undoing it:* `set_room(None, Some(u64::MAX))`, or the `take().await` in `Connection::within_bounds`.
+
 
 Decisions made without you, still yours to confirm or overturn. Each is a line or two here; what else was possible and how to undo it are in the task named, under "Decision moved here from OPEN_QUESTIONS.md" in its notes, or in the doc named. Tell an agent which you confirm or overturn and its line leaves the file.
 
@@ -42,6 +41,7 @@ Decisions made without you, still yours to confirm or overturn. Each is a line o
 - **Corrupted data is caught by the host's CRCs alone,** not checked in the guest (TASK-153.11); **a framed file's raw parts are read whole and checked**, as compressed ones are (TASK-153.11).
 - **The extent store's audit runs in every test build linking it,** for branches of at most 4,096 extents. TASK-160.16, 2026-11-03.
 - **A panic through a store fences it:** `EIO` until reopened, as after a crash. TASK-153.16, 2026-11-03.
+- **doc-12's "durable within 50 ms" becomes a 50 ms median and a separate bound on what a daemon crash may lose,** which tests check; the worst tail is perf work. The user's decision, 2026-11-06 (TASK-221); the TASK-165.9 agent applies it to doc-12 and its test.
 
 ## The daemon and the VM process
 
@@ -57,12 +57,14 @@ Decisions made without you, still yours to confirm or overturn. Each is a line o
 - **SIGTERM drains the daemon:** VMs still connected are cut off at once; within `FXDAX_EXTENTD_DRAIN` (60 s), exit 1 past it; done once no uploader runs, each connection's last commits uploaded with its store still open (TASK-192 says why not at close). TASK-141.4, 2026-11-05.
 - **A restore opens a store already at its path only if it holds what the point does** (root and extents: the snapshotted store unwritten since, or a fork an earlier restore left unwritten); any other is refused with `EEXIST` and left as it is, not forked afresh over, which would throw away what its VM wrote. TASK-194, 2026-11-06.
 - **The Go client is a module of its own, `github.com/semistrict/fxdax/go`, versioned by fxdax's commits** (pseudo-versions; no tags cut): its package `extentd/v1` (`extentdv1`) generated by buf from the .proto, no protoc, whose version every generated file would name; buf pinned in `go/generate.sh` (`go run`), the generators by go.mod's `tool`s, protoc-gen-go so with the runtime it generates for. `NewClient` wraps the stubs: the socket dialed whatever its path, the health service, a failed call's errno found by `errors.Is`/`errors.As` (`syscall.Errno`, Linux's numbers). *Instead:* the module at the repo root (go.mod there), tags `go/vX.Y.Z`, or stubs alone. *Undoing it:* move or delete `go/`, drop `go_package` from the .proto. TASK-219, 2026-11-06.
+- **A tenant's in-flight data is bounded per tenant too:** its connections share one room, configurable. The user's decision, 2026-11-06 (TASK-149.35); another agent implements it.
 
 ## DAX
 
 - **The host's copy-on-write protocol:** no flag on `WINDOW` (`args[1]` the private pages); retired numbers not reused; every map read-only. TASK-164.7, 2026-11-04.
 - **Private pages are the VM process's memory** (a memfd laid out as the window), not the tenant's arena: a tenant's limit no longer bounds them, `private_max` does. TASK-164.1 and doc-13, 2026-11-04.
 - **A PRIVATE refused with ENOMEM stays an EIO,** not a wait. TASK-170, 2026-11-05. The host's refusal, that is: one the guest found no memory to ask for fails ENOMEM (`fxfs_device_private` tells them apart). TASK-44.15, 2026-11-06.
+- **A snapshot is refused while the window holds a private page,** by the store itself (`ExtentStore` point, quiescent fork and `window_mappings`: `EBUSY`, how many said), not the daemon's dispatch alone; not by failing the guest's freeze, whose device is told frozen before the rebind. TASK-203, 2026-11-07.
 - **A writeback Fxfs had no memory for keeps its pages dirty,** their room reserved again, failing ENOMEM without setting the file's error; an I/O error's pages are lost as TASK-149.15 has it; an eviction gives them up after a second of tries. doc-13's writeback, step 4. The page cache's writeback likewise keeps such folios dirty (TASK-212, 2026-11-06). *Instead:* the file marked failed, every later fsync failing, which loses data for a transient error. TASK-207, 2026-11-06.
 - **A window's mappings carry no K:** a source says what it is (`Source::origin`). TASK-160.11, 2026-11-05.
 - **The window's struct pages are made a memory section at a time,** in the driver's `direct_access`; a kernel without FS_DAX takes no window. TASK-92.8, 2026-11-05.
@@ -92,6 +94,8 @@ Decisions made without you, still yours to confirm or overturn. Each is a line o
 - **Truncate on a full disk: every growth takes one path that zeroes the tail.** TASK-150.19.
 - **A volume's read-only is derived from its filesystem's, at one place.** TASK-160.26, 2026-11-05.
 - **fxdax's additions to Fxfs's upstream files live in child modules,** tests beside them. TASK-160.24, 2026-11-05.
+- **After a power cut a staging extent may stay uncounted, up to 2 MiB a volume, until it dies:** no device request for extents' lengths, as not worth a protocol change now. The user's decision, 2026-11-06 (TASK-214, Low).
+- **The staging extent's ranges in flight stay counted twice for a while** (alive and uncommitted), erring safe: ENOSPC a little early. The user's decision, 2026-11-06 (TASK-211).
 - **A change of one of a node's mode, owner and group keeps the others,** filled from its attributes where it has no POSIX attributes (a new volume's root), in fxfs-posix's `setattr`, guest's too; and **a directory's setuid and setgid survive a chown,** as Linux's. TASK-222, 2026-11-07.
 
 ## FUSE
@@ -114,7 +118,9 @@ Decisions made without you, still yours to confirm or overturn. Each is a line o
 - **Each guest check runs in a process of its own;** the overrun suite runs the page cache's checks after two made to fail. TASK-160.30, 2026-11-05.
 - **A budget per guest check,** a suite's limit their sum plus 30 s. TASK-168, 2026-11-05.
 - **fxfs-guest-soak:** a soak round is a runner round, its state kept by the run outside the results (/var/tmp, not tmpfs /tmp); stores are checked by a guest on each, not the host's fsck (which would take the branch's lease); its daemons are built with failpoints; a store whose upload the failpoint failed may see EIO (remote.rs stops its uploader for good); no bucket latency on file buckets until TASK-208; the cache's growth is reported, not failed on. TASK-67, 2026-11-06.
+- **The GCE quota stays at 32.** The user's decision, 2026-11-06.
 
 ## Repository
 
 - **Unmerged branches became `archive/<branch>` tags, not deleted** (2026-11-02): 50 local, 5 on GitHub, untouched for two days and checked out nowhere. *Instead:* delete them, losing their commits once the reflog expires. *Undoing it:* `git branch <name> archive/<name>`, then delete the tag.
+- **`FileType::default_perm` and its test `default_permissions` deleted,** dead since TASK-96.1. The user's decision, 2026-11-06.

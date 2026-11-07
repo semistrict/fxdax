@@ -6,11 +6,12 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-11-06 14:01'
+updated_date: '2026-11-07 03:00'
 labels:
   - bug
   - fxfs
 dependencies: []
-priority: medium
+priority: low
 type: bug
 ordinal: 652000
 ---
@@ -33,3 +34,9 @@ Found by TASK-213's check (2026-11-06). The model's new oracle, that Fxfs counts
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+The user's decision, 2026-11-06: leave it. After a power cut, up to 2 MiB a volume's staging extent stays uncounted, freed when the extent dies; not worth a device protocol change now. Recorded in OPEN_QUESTIONS.md under Fxfs.
+<!-- SECTION:NOTES:END -->

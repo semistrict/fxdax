@@ -3,7 +3,7 @@ id: doc-4
 title: Virtio extent-store device specification
 type: specification
 created_date: '2026-10-13 22:18'
-updated_date: '2026-11-06 06:39'
+updated_date: '2026-11-07 03:00'
 ---
 # The virtio extent-store device
 
@@ -539,8 +539,11 @@ had in its memory, so the snapshot is taken at a point nothing is open:
   `READ`, `MAP` of sealed extents and `UNMAP` go on. It tells the device with `FREEZE` and
   `FREEZE_FROZEN`. Freezing writes back every dirty page and maps every private page back to the
   extent that now holds it, so that the window maps extents and zeros alone. A VMM refuses to
-  snapshot a device whose guest isn't frozen. (fxdax's Firecracker does not check the window for
-  private pages: it records what each mapping was copied from, not a private page's bytes.)
+  snapshot a device whose guest isn't frozen, and the host refuses the snapshot's point while the
+  window holds a private page, whose bytes no extent holds (`EBUSY`; fxdax's extent store, saying
+  how many in the daemon's log, TASK-203): the guest's freeze couldn't rebind it, as when a
+  writeback found no memory. fxdax's Firecracker takes the point before it records the window's
+  mappings, so a refused snapshot leaves nothing behind.
 - **The snapshot** holds the device's state, its window's place in guest memory and what each
   mapping of the window maps (an extent's bytes, or zeros), and a point of the store: the host
   forks the store, as of its last commit, which with nothing open is all the guest wrote.

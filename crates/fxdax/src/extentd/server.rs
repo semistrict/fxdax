@@ -28,6 +28,19 @@ use std::sync::{Arc, Condvar, Mutex, OnceLock, PoisonError, Weak, mpsc};
 /// for one of them, then, on the threads every connection shares ([`Pool`]).
 const WORKERS: usize = 8;
 
+/// fxdax: how many of a connection's faults and `PRIVATE`s the daemon resolves at once (TASK-149.34),
+/// each paging in what it waits for: a part of an extent, a MiB, and the two after it if it reads
+/// on (`cache::PARTS_AHEAD`), each part's frames of its tenant's memory held until its read, or
+/// fetch from the bucket, answers. A fault waiting for the pager holds no worker (TASK-92.20), so
+/// as many paged in at once as the VM process kept faults in flight, 4,096 at most
+/// (`MAX_REQUESTS`): 256 faults on cold extents held 258 MiB of the tenant's memory, and 123 MiB
+/// of the heap as their fetches answered; 66 and 39 now. Those past it wait their turn, holding
+/// nothing. A guest
+/// faults as many pages at once as it has threads faulting: its vCPUs, and on x86 KVM's
+/// asynchronous page faults' workers, 64 a vCPU queued at most; resolving 64 at once, each a part
+/// from object storage in 30 to 100 ms, pages in hundreds of MiB a second for it.
+pub(super) const PAGE_INS: usize = 64;
+
 /// The runtime that receives every connection's requests, and works behind their stores
 /// (TASK-34): a few threads, whatever the number of connections, as each waits for its VM process
 /// mostly. A thread that received a request serves it, out of the runtime, which another thread
@@ -222,6 +235,9 @@ struct Memory {
     public: std::os::fd::OwnedFd,
     /// fxdax: how many connections the tenant's VM processes have ([`MAX_CONNECTIONS`]).
     connections: Arc<std::sync::atomic::AtomicUsize>,
+    /// fxdax: what its connections have the daemon hold of its VM processes' requests together,
+    /// within the room they share (TASK-149.35).
+    in_flight: Arc<super::memory::InFlight>,
 }
 
 impl Memory {
@@ -230,7 +246,8 @@ impl Memory {
         let public = reopen_read_only(crate::pages::physical_memory())?;
         let arena = crate::pages::Arena::new();
         let memory = crate::pages::arena_memory(arena.id()).expect("a new arena");
-        Ok(Self { arena, memory, public, connections: Default::default() })
+        let (connections, in_flight) = Default::default();
+        Ok(Self { arena, memory, public, connections, in_flight })
     }
 }
 
@@ -308,6 +325,12 @@ impl Tenant {
         self.memory.arena.id()
     }
 
+    /// fxdax: what its connections have the daemon hold of its VM processes' requests, within the
+    /// room they share (TASK-149.35).
+    pub(super) fn in_flight(&self) -> &Arc<super::memory::InFlight> {
+        &self.memory.in_flight
+    }
+
     /// Whether its VM processes may name the store at `path`, whichever way `path` names it:
     /// `EACCES` unless it is where they name stores ([`Stores`]).
     fn holds(&self, path: &Path) -> Result<(), Errno> {
@@ -379,7 +402,8 @@ pub(super) fn connections() -> usize {
 async fn run_connection(stream: UnixStream, tenant: Arc<Tenant>) {
     let sender = match stream.try_clone().and_then(|clone| {
         clone.set_nonblocking(true)?;
-        AsyncSender::new(clone)
+        // fxdax: what it queues held in its tenant's room too (TASK-149.35).
+        AsyncSender::counting(clone, tenant.in_flight().clone())
     }) {
         Ok(sender) => Arc::new(sender),
         Err(err) => {
@@ -410,6 +434,7 @@ async fn run_connection(stream: UnixStream, tenant: Arc<Tenant>) {
         requests: Mutex::new(Requests::default()),
         drained: Arc::new(event_listener::Event::new()),
         report: snapshot::Report::new(&peer.sender),
+        page_ins: tokio::sync::Semaphore::new(PAGE_INS),
         _alive: alive,
     });
     match AsyncReceiver::new(stream) {
@@ -507,7 +532,7 @@ fn receive(
     Box::pin(async move {
         let mut ended = Ended::Closed;
         loop {
-            match receiver.receive(|header| connection.within_bounds(header)).await {
+            match receiver.receive(|header| connection.clone().within_bounds(*header)).await {
                 // fxdax: what the stage operations cost, counted before what waits for them goes
                 // on (TASK-91.16). What says so malformed, nothing replies to: it is dropped, as
                 // what isn't said (TASK-160.9).
@@ -740,6 +765,8 @@ impl Answer {
         let bytes = stream_bytes(&header);
         if bytes > 0 {
             self.connection.requests.lock().unwrap().stream_bytes -= bytes;
+            // fxdax: and its tenant's, which its reply's bytes are counted in as they're queued.
+            self.connection.tenant.in_flight().sub(bytes);
         }
         if let Err(err) = self.connection.peer.sender.send(reply, payload, &fds) {
             log::warn!("extentd: replying to a VM process: {err}");
@@ -865,6 +892,8 @@ pub(super) struct Connection {
     /// fxdax: what the daemon reports of its VM process (TASK-111.4): its store, its build, what
     /// it says of its window's second stage, and its answers to asks for its stats.
     report: Arc<snapshot::Report>,
+    /// fxdax: its faults and `PRIVATE`s resolving, [`PAGE_INS`] at most (TASK-149.34).
+    page_ins: tokio::sync::Semaphore,
     /// What says, as it drops, that the connection has: its last field, dropped after its store,
     /// window and open extents, and its hold of its store's path (TASK-79.34).
     _alive: tokio::sync::oneshot::Sender<std::convert::Infallible>,
@@ -996,21 +1025,29 @@ impl Connection {
     /// ([`MAX_REQUESTS`]), and their stream data ([`MAX_STREAM_BYTES`]), with what the connection
     /// has queued for the VM process, in its room ([`Peer::room`]). Counted in, a request's, until
     /// its reply is queued ([`Answer`]). Past them, `QuotaExceeded`: the VM process broke the
-    /// protocol, and is let go, rather than held without end in the daemon's memory.
-    fn within_bounds(&self, header: &Header) -> std::io::Result<()> {
+    /// protocol, and is let go, rather than held without end in the daemon's memory. fxdax: and its
+    /// stream data in the room its tenant's connections share, waiting, before its payload is read,
+    /// until what they hold leaves room for it (TASK-149.35, [`super::memory::InFlight`]).
+    async fn within_bounds(self: Arc<Self>, header: Header) -> std::io::Result<()> {
         // fxdax: nor what its stage operations cost, which it says unasked (TASK-91.16).
-        if header.kind == ACK || header.kind == STAGE_COUNTS {
+        if [ACK, STAGE_COUNTS, STAGE_PRIVATE_COUNTS].contains(&header.kind) {
             return Ok(());
         }
-        let bytes = stream_bytes(header);
-        let mut requests = self.requests.lock().unwrap();
-        let in_flight = requests.in_flight();
-        let held = requests.stream_bytes + bytes + self.peer.sender.queued();
-        if in_flight >= MAX_REQUESTS || held > self.peer.room() {
-            let what = format!("{} requests, and {held} bytes, in flight", in_flight + 1);
-            return Err(std::io::Error::new(std::io::ErrorKind::QuotaExceeded, what));
+        let bytes = stream_bytes(&header);
+        {
+            let requests = self.requests.lock().unwrap();
+            let in_flight = requests.in_flight();
+            let held = requests.stream_bytes + bytes + self.peer.sender.queued();
+            if in_flight >= MAX_REQUESTS || held > self.peer.room() {
+                let what = format!("{} requests, and {held} bytes, in flight", in_flight + 1);
+                return Err(std::io::Error::new(std::io::ErrorKind::QuotaExceeded, what));
+            }
         }
-        requests.stream_bytes += bytes;
+        // Admitted one at a time, as its messages are received, so nothing came in meanwhile.
+        if bytes > 0 {
+            self.tenant.in_flight().take(bytes).await;
+        }
+        self.requests.lock().unwrap().stream_bytes += bytes;
         Ok(())
     }
 
@@ -1197,19 +1234,9 @@ impl Connection {
             Request::Unpin(extent) => store.unpin(*extent),
             // Authorized, as every path a request names ([`Connection::serve_in_turn`]).
             Request::Fork { path, branch, quiescent } => {
-                // fxdax: a snapshot's, whose window maps extents and zeros alone, the guest's
-                // freeze having rebound its private pages, whose bytes no extent holds (backlog
-                // doc-13).
-                // Each refusal says why, as the VMM's error can't (TASK-92.14).
-                let private = if *quiescent { store.private_pages()? } else { 0 };
-                if private > 0 {
-                    log::warn!(
-                        "extentd: a snapshot's point at {} refused: the window has {private} \
-                         private pages",
-                        path.display()
-                    );
-                    return Err(Errno::EBUSY);
-                }
+                // fxdax: a snapshot's point, refused while the window holds private pages, whose
+                // bytes no extent holds (ExtentStore::point, TASK-203). Each refusal says why
+                // here, as the VMM's error can't (TASK-92.14).
                 let forked =
                     if *quiescent { store.point(path, *branch) } else { store.fork(path, *branch) };
                 if let Err(err) = &forked
@@ -1274,6 +1301,8 @@ impl Connection {
         let Fault { offset, access, page, .. } = fault;
         let faulted = async {
             let window = self.window.lock().unwrap().clone().ok_or(Errno::EBADF)?;
+            // fxdax: in its turn, as what it pages in holds memory (TASK-149.34).
+            let _turn = self.page_ins.acquire().await.map_err(|_| Errno::EIO)?;
             window.fault(offset, access).await
         };
         let faulted = faulted.await;
@@ -1311,6 +1340,8 @@ impl Connection {
     async fn make_private(self: Arc<Self>, window_offset: u64, len: u64, answer: Answer) {
         let made = async {
             let window = self.window.lock().unwrap().clone().ok_or(Errno::EBADF)?;
+            // fxdax: in its turn, as a fault's, as it pages in what it copies (TASK-149.34).
+            let _turn = self.page_ins.acquire().await.map_err(|_| Errno::EIO)?;
             window.make_private(window_offset, len).await
         };
         let made = made.await;

@@ -1527,8 +1527,19 @@ impl ExtentStore {
 
     /// The DAX window's mappings, in order: what a snapshot of the VM records, to map them again
     /// where it is restored, at the same offsets, with [`ExtentStore::map_many`]. Without a
-    /// window, none.
+    /// window, none. fxdax: `EBUSY` while the window holds private pages, which no mapping names
+    /// the bytes of, as a snapshot's point is refused then (TASK-203).
     pub fn window_mappings(&self) -> Result<Vec<WindowMapping>> {
+        let dax = self.dax.lock(&self.fence)?;
+        match dax.as_ref() {
+            Some(dax) if dax.private_pages() > 0 => Err(Errno::EBUSY),
+            dax => Ok(dax.map_or_else(Vec::new, Dax::mappings)),
+        }
+    }
+
+    /// fxdax: the DAX window's mappings, as [`ExtentStore::window_mappings`] has them, its private
+    /// pages or not: what a log says of a page.
+    fn mapped(&self) -> Result<Vec<WindowMapping>> {
         let dax = self.dax.lock(&self.fence)?;
         Ok(dax.as_ref().map_or_else(Vec::new, Dax::mappings))
     }
@@ -1551,7 +1562,7 @@ impl ExtentStore {
     /// fxdax: what the window maps at `window_offset`, and the extent's state here and in the
     /// store, said for a log.
     fn describe_mapping(&self, window_offset: u64) -> String {
-        let Ok(mappings) = self.window_mappings() else {
+        let Ok(mappings) = self.mapped() else {
             return "the store is fenced".into();
         };
         let mapping = mappings.into_iter().find(|mapping| {
@@ -1592,8 +1603,22 @@ impl ExtentStore {
         self.fork_at_rest(path.as_ref(), branch, true)
     }
 
-    /// fxdax: forks the store as [`ExtentStore::fork_quiescent`] says, a point if `point`.
+    /// fxdax: forks the store as [`ExtentStore::fork_quiescent`] says, a point if `point`. Not
+    /// while its window holds private pages (`EBUSY`), whose bytes are the VM's, held by no
+    /// extent: a fork, a snapshot's point, would name their sources, and a VM restored from it
+    /// read their old bytes (TASK-203, backlog doc-13). The guest's freeze writes them back and
+    /// rebinds them first; one it couldn't, as a writeback that found no memory leaves (TASK-207)
+    /// or a rebind refused, it says it left. Checked before the fork's lock, which no write of the
+    /// window's private pages takes: with its VM paused, as a snapshot has it, none comes after.
     fn fork_at_rest(&self, path: &Path, branch: u64, point: bool) -> Result<(), Error> {
+        let private = self.private_pages()?;
+        if private > 0 {
+            let refused = format!(
+                "the DAX window holds {private} private pages, whose bytes no extent holds: \
+                 freeze the guest's filesystem, which rebinds them"
+            );
+            return Err(Error::new(anyhow::Error::new(Errno::EBUSY).context(refused)));
+        }
         self.kept_in_bucket()?;
         let access = self.access();
         access.may_manage()?;
@@ -3918,5 +3943,47 @@ mod tests {
         let follower = Arc::new(store).follow();
         let following = follower.create_copying_dax_window(ps, None, 1);
         assert_eq!(following.err().and_then(|error| error.errno()), Some(Errno::EROFS));
+    }
+
+    /// TASK-203: a store whose window holds a private page makes no point nor quiescent fork of
+    /// itself, and lists no mappings of its window, which would name the page's source, not its
+    /// bytes, as a snapshot of the VM would record them: `EBUSY`, saying how many. Rebound to an
+    /// extent of its bytes, as the guest's freeze does, both are made (a VM restored reads them:
+    /// extentd's snapshots_after_private_pages_are_rebound_restore_their_bytes).
+    #[test]
+    fn a_window_holding_private_pages_takes_no_snapshot() {
+        let (store, dir) = store(1 << 24);
+        in_bucket(&store);
+        let ps = page_size();
+        let window = store.create_copying_dax_window(4 * ps, None, 2).unwrap();
+        let (sealed, rebound) = (id(&store, 1), id(&store, 2));
+        write(&store, sealed, 0, &pattern(1, BLOCK)).unwrap();
+        store.commit(None).unwrap();
+        store.map(sealed, 0, ps, 0).unwrap();
+        block_on(window.fault(0, Access::Write)).unwrap();
+        // SAFETY: The page is mapped, private, and nothing else accesses it.
+        unsafe { *window.host_base() = 0xee };
+        assert_eq!(store.private_pages(), Ok(1));
+        let point = dir.path().join("point");
+        let refused = store.point(&point, store.branch() + 1).unwrap_err();
+        assert_eq!(refused.errno(), Some(Errno::EBUSY));
+        assert!(format!("{refused:#}").contains("holds 1 private pages"), "{refused:#}");
+        let forked = store.fork_quiescent(dir.path().join("fork"), store.branch() + 2);
+        assert_eq!(forked.err().and_then(|error| error.errno()), Some(Errno::EBUSY));
+        assert_eq!(store.window_mappings(), Err(Errno::EBUSY));
+
+        // The freeze's rebind: the page's bytes written to an extent, sealed, mapped over it.
+        let mut bytes = pattern(1, ps as usize);
+        bytes[0] = 0xee;
+        write(&store, rebound, 0, &bytes).unwrap();
+        store.commit(None).unwrap();
+        store.map(rebound, 0, ps, 0).unwrap();
+        assert_eq!(store.private_pages(), Ok(0));
+        let contents = MappingContents::Extent { extent: rebound, offset: 0 };
+        assert_eq!(
+            store.window_mappings(),
+            Ok(vec![WindowMapping { window_offset: 0, len: ps, contents }])
+        );
+        store.point(&point, store.branch() + 1).unwrap();
     }
 }

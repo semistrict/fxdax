@@ -523,6 +523,15 @@ impl Extentd for Control {
         reply(memory::set_limit(tenant.as_deref(), bytes).map(|()| SetMemoryLimitResponse {}))
     }
 
+    async fn set_tenant_room(
+        &self,
+        request: Request<SetTenantRoomRequest>,
+    ) -> Result<Response<SetTenantRoomResponse>, Status> {
+        let SetTenantRoomRequest { tenant, bytes } = request.into_inner();
+        let tenant = Some(tenant).filter(|tenant| !tenant.is_empty());
+        reply(memory::set_room(tenant.as_deref(), bytes).map(|()| SetTenantRoomResponse {}))
+    }
+
     async fn shrink_memory(
         &self,
         request: Request<ShrinkMemoryRequest>,
@@ -719,6 +728,14 @@ impl Client {
             SetMemoryLimitRequest { tenant: tenant.unwrap_or_default().to_owned(), bytes };
         let what = format!("limiting the memory of {}", tenant.unwrap_or("every tenant"));
         self.call(what, |mut c| async move { c.set_memory_limit(request).await }).map(drop)
+    }
+
+    /// fxdax: sets the room the connections of the tenant `tenant`, or of every tenant without one,
+    /// share to `bytes`, or to the default without them (`SetTenantRoom`, TASK-149.35).
+    pub fn set_tenant_room(&self, tenant: Option<&str>, bytes: Option<u64>) -> Result<(), crate::Error> {
+        let request = SetTenantRoomRequest { tenant: tenant.unwrap_or_default().to_owned(), bytes };
+        let what = format!("setting the room of {}", tenant.unwrap_or("every tenant"));
+        self.call(what, |mut c| async move { c.set_tenant_room(request).await }).map(drop)
     }
 
     /// Evicts pages until the tenant `tenant`, or the daemon without one, holds at most `target`

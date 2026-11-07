@@ -1,0 +1,15 @@
+# A connection's faults and PRIVATEs page in as many at once as it keeps in flight, each part's
+# frames of its tenant's memory held until its fetch answers: 258 MiB of 256 faults (TASK-149.34).
+# Kind: memory
+# Killer: extentd::tests::hostile::page_ins_in_flight_are_bounded
+--- a/crates/fxdax/src/extentd/server.rs
++++ b/crates/fxdax/src/extentd/server.rs
+@@ -434,7 +434,7 @@
+         requests: Mutex::new(Requests::default()),
+         drained: Arc::new(event_listener::Event::new()),
+         report: snapshot::Report::new(&peer.sender),
+-        page_ins: tokio::sync::Semaphore::new(PAGE_INS),
++        page_ins: tokio::sync::Semaphore::new(tokio::sync::Semaphore::MAX_PERMITS),
+         _alive: alive,
+     });
+     match AsyncReceiver::new(stream) {

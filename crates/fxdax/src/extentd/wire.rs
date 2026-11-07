@@ -381,6 +381,9 @@ pub(crate) struct AsyncSender {
     queue: Mutex<Queue>,
     /// How many bytes the queue holds, which the socket has not taken (TASK-79.16).
     queued: std::sync::atomic::AtomicU64,
+    /// fxdax: where those bytes are counted too, if anywhere: the room its tenant's connections
+    /// share (TASK-149.35).
+    counted: Option<std::sync::Arc<super::memory::InFlight>>,
     runtime: tokio::runtime::Handle,
 }
 
@@ -423,11 +426,52 @@ impl Queued {
 
 impl AsyncSender {
     /// Sends through `stream`, which the caller made non-blocking, on the runtime it is made on.
+    #[cfg(test)]
     pub fn new(stream: UnixStream) -> io::Result<Self> {
+        Self::made(stream, None)
+    }
+
+    /// fxdax: sends through `stream` as [`AsyncSender::new`] does, the bytes it queues counted in
+    /// `counted` too, as long as they are queued (TASK-149.35).
+    pub fn counting(
+        stream: UnixStream,
+        counted: std::sync::Arc<super::memory::InFlight>,
+    ) -> io::Result<Self> {
+        Self::made(stream, Some(counted))
+    }
+
+    fn made(
+        stream: UnixStream,
+        counted: Option<std::sync::Arc<super::memory::InFlight>>,
+    ) -> io::Result<Self> {
         let stream =
             tokio::io::unix::AsyncFd::with_interest(stream, tokio::io::Interest::WRITABLE)?;
         let runtime = tokio::runtime::Handle::current();
-        Ok(Self { stream, queue: Mutex::default(), queued: Default::default(), runtime })
+        let queued = Default::default();
+        Ok(Self { stream, queue: Mutex::default(), queued, counted, runtime })
+    }
+
+    /// fxdax: `bytes` more queued.
+    fn queue_more(&self, bytes: u64) {
+        self.queued.fetch_add(bytes, std::sync::atomic::Ordering::Relaxed);
+        if let Some(counted) = &self.counted {
+            counted.add(bytes);
+        }
+    }
+
+    /// fxdax: `bytes` fewer queued: all of them, without `bytes`.
+    fn queue_less(&self, bytes: Option<u64>) {
+        use std::sync::atomic::Ordering::Relaxed;
+        let bytes = match bytes {
+            Some(bytes) => {
+                self.queued.fetch_sub(bytes, Relaxed);
+                bytes
+            }
+            None => self.queued.swap(0, Relaxed),
+        };
+        if let Some(counted) = &self.counted {
+            counted.sub(bytes);
+        }
     }
 
     /// How many bytes of what was sent through it its socket has not taken yet.
@@ -519,7 +563,7 @@ impl AsyncSender {
             queued.header = message.header;
             return Ok(());
         }
-        self.queued.fetch_add(message.left(), std::sync::atomic::Ordering::Relaxed);
+        self.queue_more(message.left());
         queue.messages.push_back((message, fds));
         Ok(())
     }
@@ -545,7 +589,7 @@ impl AsyncSender {
             Err(err) => {
                 queue.failed = Some(err.kind());
                 queue.messages.clear();
-                self.queued.store(0, std::sync::atomic::Ordering::Relaxed);
+                self.queue_less(None);
             }
         }
     }
@@ -576,7 +620,7 @@ impl AsyncSender {
             };
             drop(parts);
             drop(fds);
-            self.queued.fetch_sub(sent as u64, std::sync::atomic::Ordering::Relaxed);
+            self.queue_less(Some(sent as u64));
             let mut left = sent;
             while left > 0 {
                 let (message, _) = queue.messages.front_mut().expect("bytes sent of a message");
@@ -621,7 +665,7 @@ impl AsyncSender {
         queue.failed = Some(err.kind());
         queue.draining = false;
         let dropped = std::mem::take(&mut queue.messages);
-        self.queued.store(0, std::sync::atomic::Ordering::Relaxed);
+        self.queue_less(None);
         drop(queue);
         drop(dropped);
     }
@@ -634,6 +678,13 @@ impl AsyncSender {
         {
             log::warn!("extentd: shutting a VM process's connection down: {err}");
         }
+    }
+}
+
+/// fxdax: what it has queued, gone with it, is held no more where it was counted (TASK-149.35).
+impl Drop for AsyncSender {
+    fn drop(&mut self) {
+        self.queue_less(None);
     }
 }
 
@@ -931,9 +982,9 @@ impl AsyncReceiver {
     /// The next message, or `None` once the other end has closed the connection, as
     /// [`Receiver::receive`] gives it, a payload of [`MAX_PAYLOAD`] at most: if `admit`, given its
     /// header, admits it, before its payload is read (TASK-79.16).
-    pub async fn receive(
+    pub async fn receive<F: std::future::Future<Output = io::Result<()>>>(
         &mut self,
-        admit: impl FnOnce(&Header) -> io::Result<()>,
+        admit: impl FnOnce(&Header) -> F,
     ) -> io::Result<Option<Message>> {
         let mut header = Header::default();
         let mut fds = Vec::new();
@@ -956,7 +1007,7 @@ impl AsyncReceiver {
         if header.len > MAX_PAYLOAD + size_of::<Header>() as u64 {
             return Err(io::Error::new(io::ErrorKind::InvalidData, "a message too large"));
         }
-        admit(&header)?;
+        admit(&header).await?;
         let mut payload = vec![0; header.len as usize];
         let mut at = 0;
         while at < payload.len() {

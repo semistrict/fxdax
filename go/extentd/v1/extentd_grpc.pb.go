@@ -107,6 +107,7 @@ const (
 	Extentd_Grant_FullMethodName          = "/fxdax.extentd.v1.Extentd/Grant"
 	Extentd_Revoke_FullMethodName         = "/fxdax.extentd.v1.Extentd/Revoke"
 	Extentd_SetMemoryLimit_FullMethodName = "/fxdax.extentd.v1.Extentd/SetMemoryLimit"
+	Extentd_SetTenantRoom_FullMethodName  = "/fxdax.extentd.v1.Extentd/SetTenantRoom"
 	Extentd_ShrinkMemory_FullMethodName   = "/fxdax.extentd.v1.Extentd/ShrinkMemory"
 )
 
@@ -186,6 +187,11 @@ type ExtentdClient interface {
 	// would take more fails, with ENOMEM, which the VM's guest sees as an I/O error, and the daemon
 	// goes on. A limit under what is held holds as pages are freed: ShrinkMemory frees them now.
 	SetMemoryLimit(ctx context.Context, in *SetMemoryLimitRequest, opts ...grpc.CallOption) (*SetMemoryLimitResponse, error)
+	// Sets the room a tenant's VM processes' connections share (TASK-149.35): what of their
+	// requests the daemon holds at once, their data in the stream and what it queued for them, which
+	// each connection's own room bounds too. A request past it waits for room. By default 8 GiB a
+	// tenant, which a tenant's VMs reach only writing large extents through the stream, back to back.
+	SetTenantRoom(ctx context.Context, in *SetTenantRoomRequest, opts ...grpc.CallOption) (*SetTenantRoomResponse, error)
 	// Evicts clean pages, of extents asked for longest ago first, until the memory a tenant, or the
 	// daemon, holds is at most a target, or none is left to evict: as the host's memory runs low.
 	ShrinkMemory(ctx context.Context, in *ShrinkMemoryRequest, opts ...grpc.CallOption) (*ShrinkMemoryResponse, error)
@@ -369,6 +375,16 @@ func (c *extentdClient) SetMemoryLimit(ctx context.Context, in *SetMemoryLimitRe
 	return out, nil
 }
 
+func (c *extentdClient) SetTenantRoom(ctx context.Context, in *SetTenantRoomRequest, opts ...grpc.CallOption) (*SetTenantRoomResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SetTenantRoomResponse)
+	err := c.cc.Invoke(ctx, Extentd_SetTenantRoom_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *extentdClient) ShrinkMemory(ctx context.Context, in *ShrinkMemoryRequest, opts ...grpc.CallOption) (*ShrinkMemoryResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ShrinkMemoryResponse)
@@ -455,6 +471,11 @@ type ExtentdServer interface {
 	// would take more fails, with ENOMEM, which the VM's guest sees as an I/O error, and the daemon
 	// goes on. A limit under what is held holds as pages are freed: ShrinkMemory frees them now.
 	SetMemoryLimit(context.Context, *SetMemoryLimitRequest) (*SetMemoryLimitResponse, error)
+	// Sets the room a tenant's VM processes' connections share (TASK-149.35): what of their
+	// requests the daemon holds at once, their data in the stream and what it queued for them, which
+	// each connection's own room bounds too. A request past it waits for room. By default 8 GiB a
+	// tenant, which a tenant's VMs reach only writing large extents through the stream, back to back.
+	SetTenantRoom(context.Context, *SetTenantRoomRequest) (*SetTenantRoomResponse, error)
 	// Evicts clean pages, of extents asked for longest ago first, until the memory a tenant, or the
 	// daemon, holds is at most a target, or none is left to evict: as the host's memory runs low.
 	ShrinkMemory(context.Context, *ShrinkMemoryRequest) (*ShrinkMemoryResponse, error)
@@ -518,6 +539,9 @@ func (UnimplementedExtentdServer) Revoke(context.Context, *RevokeRequest) (*Revo
 }
 func (UnimplementedExtentdServer) SetMemoryLimit(context.Context, *SetMemoryLimitRequest) (*SetMemoryLimitResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method SetMemoryLimit not implemented")
+}
+func (UnimplementedExtentdServer) SetTenantRoom(context.Context, *SetTenantRoomRequest) (*SetTenantRoomResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SetTenantRoom not implemented")
 }
 func (UnimplementedExtentdServer) ShrinkMemory(context.Context, *ShrinkMemoryRequest) (*ShrinkMemoryResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ShrinkMemory not implemented")
@@ -849,6 +873,24 @@ func _Extentd_SetMemoryLimit_Handler(srv interface{}, ctx context.Context, dec f
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Extentd_SetTenantRoom_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetTenantRoomRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ExtentdServer).SetTenantRoom(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Extentd_SetTenantRoom_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ExtentdServer).SetTenantRoom(ctx, req.(*SetTenantRoomRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _Extentd_ShrinkMemory_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(ShrinkMemoryRequest)
 	if err := dec(in); err != nil {
@@ -941,6 +983,10 @@ var Extentd_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "SetMemoryLimit",
 			Handler:    _Extentd_SetMemoryLimit_Handler,
+		},
+		{
+			MethodName: "SetTenantRoom",
+			Handler:    _Extentd_SetTenantRoom_Handler,
 		},
 		{
 			MethodName: "ShrinkMemory",

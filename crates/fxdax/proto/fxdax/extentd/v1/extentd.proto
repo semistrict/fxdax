@@ -148,6 +148,11 @@ service Extentd {
   // would take more fails, with ENOMEM, which the VM's guest sees as an I/O error, and the daemon
   // goes on. A limit under what is held holds as pages are freed: ShrinkMemory frees them now.
   rpc SetMemoryLimit(SetMemoryLimitRequest) returns (SetMemoryLimitResponse);
+  // Sets the room a tenant's VM processes' connections share (TASK-149.35): what of their
+  // requests the daemon holds at once, their data in the stream and what it queued for them, which
+  // each connection's own room bounds too. A request past it waits for room. By default 8 GiB a
+  // tenant, which a tenant's VMs reach only writing large extents through the stream, back to back.
+  rpc SetTenantRoom(SetTenantRoomRequest) returns (SetTenantRoomResponse);
   // Evicts clean pages, of extents asked for longest ago first, until the memory a tenant, or the
   // daemon, holds is at most a target, or none is left to evict: as the host's memory runs low.
   rpc ShrinkMemory(ShrinkMemoryRequest) returns (ShrinkMemoryResponse);
@@ -529,6 +534,19 @@ message SetMemoryLimitRequest {
 
 // The limit is set.
 message SetMemoryLimitResponse {}
+
+// Sets the room of a tenant's connections.
+message SetTenantRoomRequest {
+  // The tenant whose room to set, alive now or granted later, until it is set again; empty for
+  // every tenant's whose own isn't set, the default tenant's with them.
+  string tenant = 1;
+  // The room, in bytes, a payload's most, 64 MiB, at least (INVALID_ARGUMENT otherwise); absent,
+  // every tenant's, or for every tenant the default.
+  optional uint64 bytes = 2;
+}
+
+// The room is set.
+message SetTenantRoomResponse {}
 
 // Evicts pages toward a target.
 message ShrinkMemoryRequest {
