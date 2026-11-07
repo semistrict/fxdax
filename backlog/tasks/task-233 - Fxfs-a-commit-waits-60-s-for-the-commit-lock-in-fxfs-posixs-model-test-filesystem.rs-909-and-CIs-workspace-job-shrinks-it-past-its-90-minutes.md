@@ -3,11 +3,11 @@ id: TASK-233
 title: >-
   Fxfs: a commit waits 60 s for the commit lock in fxfs-posix's model test
   (filesystem.rs:909), and CI's workspace job shrinks it past its 90 minutes
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-07 16:49'
-updated_date: '2026-11-07 17:25'
+updated_date: '2026-11-07 18:00'
 labels:
   - fxfs
   - bug
@@ -25,9 +25,9 @@ Found by CI run 42383533320 (land-h6), whose test (workspace) job was cancelled 
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The stall pinned: a test replaying the case (or a smaller one) fails on main
-- [ ] #2 Its root cause found and fixed, the pinned test passing
-- [ ] #3 A failing model-test case reports within CI's time: shrinking bounded, so a stall's 60 s per iteration can't outrun the job
+- [x] #1 The stall pinned: a test replaying the case (or a smaller one) fails on main
+- [x] #2 Its root cause found and fixed, the pinned test passing
+- [x] #3 A failing model-test case reports within CI's time: shrinking bounded, so a stall's 60 s per iteration can't outrun the job
 <!-- AC:END -->
 
 ## Definition of Done
@@ -56,4 +56,12 @@ Why CI hung, not failed: each shrink iteration of the case waited the 60 s befor
 Pinned: a_commit_making_room_in_the_journal_syncs_without_committing (8 operations): red without the fix (60.4 s, filesystem.rs:916's panic), green with it (0.9 s).
 
 Verified: the model test 3,000 cases with the fix in Docker (6 runs of 500, all pass); fxfs, fxfs-posix, follower_sim, fxdax on macOS 1,183 of 1,183; Shuttle part; fxfs-linux type-checked for the guest's target (scripts/build-guest-sysroot.sh, cargo check --release); mutant a-sync-holding-commits-records-reaches (the sync's holding_commits ignored), found by the pinned test in 87 s; upstream-changes.py --check passes.
+
+Landed: main 29a17f3c3 (land-h7), CI 42396272299 green.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Fixed a deadlock the model test found as CI's workspace job timed out: since TASK-213 every sync committed a transaction recording reaches, and a sync can run while its own task holds the commit lock (an allocation for the journal's room during a commit, short of room; the guest's freeze), so it waited for itself. Syncs made holding the commit lock (Transaction/SyncOptions::holding_commits) now record no reaches, left to the next sync. The model test's shrinking is bounded (10 min) so a stall reports within CI. Verified: pinned test red (60 s stall) then green, mutant found by it, 3,000 model cases clean, fxfs/fxfs-posix/follower_sim/fxdax and Shuttle pass, the guest crate type-checks, CI green on land-h7 and main.
+<!-- SECTION:FINAL_SUMMARY:END -->
