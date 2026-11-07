@@ -330,6 +330,7 @@ impl DaxWindow {
 
     /// fxdax: its gauges, which follow its mappings as they change, and fall to nothing as it
     /// goes: one window's of what [`live`] counts of them all (TASK-111.5).
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     pub(crate) fn gauges(&self) -> Arc<Gauges> {
         self.0.state.lock().unwrap().gauges.clone()
     }

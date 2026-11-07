@@ -73,6 +73,7 @@ pub async fn store(
 /// fxdax: makes a store at `path` as [`store`] does, its branch kept as `keeping` says: as the
 /// extent daemon's stores keep theirs, with the host's cache of the bucket's objects, which what
 /// the bucket acknowledged of the image goes into, and the import's check reads (TASK-237).
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub(crate) async fn store_keeping(
     path: impl AsRef<Path>,
     capacity: u64,
