@@ -5,8 +5,9 @@
 # The guest suites, as production runs them: on a disposable GCE host with nested KVM
 # (scripts/test-gce.sh), Firecracker in its jailer under its seccomp filter, and branches kept in
 # real object storage. The nightly suite (`runner list --tag nightly`): the default suite's cases
-# and the guest kernel's, which it lacked (followers, snapshots, volumes, pjdfstest), and the
-# others cheap on a release kernel (TASK-160.29). Needs the repository's GCP_WORKLOAD_IDENTITY_PROVIDER and GCP_SERVICE_ACCOUNT
+# and the guest kernel's, which it lacked (followers, snapshots, volumes, pjdfstest), the
+# others cheap on a release kernel (TASK-160.29), and xfstests' generic/quick with DAX and without,
+# its known failures checked (TASK-149.20.1). Needs the repository's GCP_WORKLOAD_IDENTITY_PROVIDER and GCP_SERVICE_ACCOUNT
 # secrets, and its FXDAX_GCE_PROJECT and FXDAX_NIGHTLY_BUCKET (gs://bucket/prefix) variables.
 name: Nightly
 

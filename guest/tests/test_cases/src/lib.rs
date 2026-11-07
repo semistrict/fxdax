@@ -184,7 +184,7 @@ tags! {
     /// scripts/test-guest-kernel.sh's: the guest kernel's Fxfs, as its every feature is used.
     Kernel = "kernel",
     /// The nightly's (.github/workflows/nightly.yml), as production runs them: e2e's and
-    /// kernel's, and every other case cheap enough on a release kernel.
+    /// kernel's, every other case cheap enough on a release kernel, and xfstests.
     Nightly = "nightly",
     /// scripts/dax-gate.sh's suites, rounds of each, on its first host.
     DaxGate = "dax-gate",
@@ -206,7 +206,7 @@ tags! {
     /// scripts/bench.sh's cases unless FXDAX_BENCH_CASES says others.
     Bench = "bench",
     /// In no suite, run by name alone: measurements of one thing (a profile, a lock's
-    /// contention, a fork's), xfstests (hours), and runner-deadlock, which fails on purpose.
+    /// contention, a fork's), and runner-deadlock, which fails on purpose.
     Manual = "manual",
 }
 
@@ -242,10 +242,16 @@ pub fn test_cases() -> Vec<TestCase> {
             &[Tag::Kernel, Tag::Nightly],
             Box::new(TestPjdfstest { dax: true }),
         ),
-        TestCase::new("xfstests-fxfs-guest", &[Tag::Manual], Box::new(TestXfstests { dax: false })),
+        // fxdax: the kernel's own filesystem suite, nightly, its known failures checked each
+        // night: in no suite, it ran only when someone named it (TASK-149.20.1).
+        TestCase::new(
+            "xfstests-fxfs-guest",
+            &[Tag::Nightly],
+            Box::new(TestXfstests { dax: false }),
+        ),
         TestCase::new(
             "xfstests-fxfs-guest-dax",
-            &[Tag::Manual],
+            &[Tag::Nightly],
             Box::new(TestXfstests { dax: true }),
         ),
         TestCase::new(

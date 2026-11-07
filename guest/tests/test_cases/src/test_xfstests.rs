@@ -49,8 +49,11 @@ mod host {
     /// fxdax: no longer generic/225 (DAX appends' reserved blocks, in FIEMAP), 564 (past a DAX
     /// mount's s_maxbytes) and 798 (cachestat, DAX's no page cache), which passed with DAX and
     /// without once DAX copied on write, the files a mount makes in the page cache till read in
-    /// again (GCE r695, r696, TASK-44.15).
-    const KNOWN_FAILURES: [&str; 18] = [
+    /// again (GCE r695, r696, TASK-44.15); nor generic/303 and 525 (offsets past a DAX mount's
+    /// s_maxbytes, EFBIG), 372 (one of FIEMAP's shared extents, TASK-143) and 401 (readdir's
+    /// d_type of a device, fifo or socket, TASK-144), which passed with DAX and without on main
+    /// d7a36088b, the first run of the nightly's (GCE r960, TASK-149.20.1).
+    const KNOWN_FAILURES: [&str; 14] = [
         // An extent store reserves nothing, so fallocate leaves no unwritten extents, which they
         // look for with FIEMAP (`fxfs_vfs_fallocate`).
         "generic/009",
@@ -64,16 +67,10 @@ mod host {
         // makes it pass or not (r348, r352); its data is right either way.
         "generic/301",
         "generic/302",
-        // Offsets in a DAX file's last chunk, past the mount's s_maxbytes: EFBIG.
-        "generic/303",
-        "generic/525",
         // FIEMAP doesn't say which extents a reflink shares (TASK-143).
-        "generic/372",
         "generic/414",
         "generic/578",
         "generic/702",
-        // readdir's d_type of a device, fifo or socket is a file's (TASK-144).
-        "generic/401",
         // Fxfs has no parent pointers, so a directory's handle can't be reconnected (TASK-145).
         "generic/467",
         "generic/477",
