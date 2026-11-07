@@ -1,0 +1,2262 @@
+{
+  "host": "nested",
+  "tps": {
+    "no-dax": [
+      [
+        [
+          1384.720206,
+          1420.492186,
+          1471.234594,
+          1448.479035,
+          1455.383935
+        ]
+      ]
+    ],
+    "dax": [
+      [
+        [
+          1443.040329,
+          1445.448177,
+          1462.731348,
+          1470.547794,
+          1466.006649
+        ]
+      ]
+    ],
+    "ext4-dax-pmem": [
+      [
+        [
+          1154.718244,
+          1132.555639,
+          1154.965573,
+          1168.413022,
+          1177.668458
+        ]
+      ]
+    ],
+    "no-dax-forked": [
+      [
+        [
+          1195.830406,
+          1354.600153,
+          1427.668243,
+          1456.092501,
+          1418.657842
+        ]
+      ]
+    ],
+    "dax-forked": [
+      [
+        [
+          886.409056,
+          744.007454,
+          826.285533,
+          783.845638,
+          834.654783
+        ]
+      ]
+    ],
+    "no-dax-density": [
+      [
+        [
+          1207.198875,
+          1210.825992
+        ],
+        [
+          1217.58963,
+          1217.482033
+        ],
+        [
+          1169.888142,
+          1196.518058
+        ]
+      ]
+    ],
+    "dax-density": [
+      [
+        [
+          888.975454,
+          780.672715
+        ],
+        [
+          954.425296,
+          782.168198
+        ],
+        [
+          945.51847,
+          779.182164
+        ]
+      ]
+    ]
+  },
+  "gates": [
+    {
+      "gate": "decay",
+      "case": "no-dax",
+      "value": 1.051,
+      "threshold": 0.9,
+      "bound": "at least",
+      "passed": true
+    },
+    {
+      "gate": "decay",
+      "case": "dax",
+      "value": 1.0159,
+      "threshold": 0.9,
+      "bound": "at least",
+      "passed": true
+    },
+    {
+      "gate": "decay",
+      "case": "no-dax-forked",
+      "value": 1.1863,
+      "threshold": 0.9,
+      "bound": "at least",
+      "passed": true
+    },
+    {
+      "gate": "decay",
+      "case": "dax-forked",
+      "value": 0.9416,
+      "threshold": 0.9,
+      "bound": "at least",
+      "passed": true
+    },
+    {
+      "gate": "decay",
+      "case": "no-dax-density",
+      "value": 1.003,
+      "threshold": 0.9,
+      "bound": "at least",
+      "passed": true
+    },
+    {
+      "gate": "density",
+      "case": "no-dax-density",
+      "value": 0.9787,
+      "threshold": 0.9,
+      "bound": "at least",
+      "passed": true
+    },
+    {
+      "gate": "decay",
+      "case": "dax-density",
+      "value": 0.8782,
+      "threshold": 0.9,
+      "bound": "at least",
+      "passed": false
+    },
+    {
+      "gate": "density",
+      "case": "dax-density",
+      "value": 1.033,
+      "threshold": 0.9,
+      "bound": "at least",
+      "passed": true
+    },
+    {
+      "gate": "dax",
+      "case": "dax",
+      "value": 1.0098,
+      "threshold": 0.95,
+      "bound": "at least",
+      "passed": true
+    },
+    {
+      "gate": "forked-dax",
+      "case": "dax-forked",
+      "value": 0.5824,
+      "threshold": 0.9,
+      "bound": "at least",
+      "passed": false
+    },
+    {
+      "gate": "static-dax",
+      "case": "dax",
+      "value": 1.2665,
+      "threshold": 0.0,
+      "bound": "at least",
+      "passed": true
+    },
+    {
+      "gate": "density-memory",
+      "case": "dax-density",
+      "value": 0.8799,
+      "threshold": 0.9,
+      "bound": "at most",
+      "passed": true
+    },
+    {
+      "gate": "density-memory-mib",
+      "case": "dax-density",
+      "value": 2455.2,
+      "threshold": 2560.0,
+      "bound": "at most",
+      "passed": true
+    },
+    {
+      "gate": "bigmap-read",
+      "case": "bigmap-dax",
+      "value": 5.5621,
+      "threshold": 4.0,
+      "bound": "at least",
+      "passed": true
+    },
+    {
+      "gate": "bigmap-guest-cache",
+      "case": "bigmap-dax",
+      "value": 0.0,
+      "threshold": 0.05,
+      "bound": "at most",
+      "passed": true
+    },
+    {
+      "gate": "bigmap-written-memory",
+      "case": "bigmap-dax",
+      "value": 1.2363,
+      "threshold": 1.5,
+      "bound": "at most",
+      "passed": true
+    }
+  ],
+  "latency": {
+    "no-dax": [
+      [
+        [
+          {
+            "device_reads": {
+              "count": 979,
+              "p50_us": 524.288,
+              "p90_us": 2097.152,
+              "p99_us": 4194.304
+            },
+            "device_writes": {
+              "count": 134796,
+              "p50_us": 524.288,
+              "p90_us": 524.288,
+              "p99_us": 2097.152
+            },
+            "device_commits": {
+              "count": 56041,
+              "p50_us": 524.288,
+              "p90_us": 524.288,
+              "p99_us": 1048.576
+            },
+            "seal_waits": {
+              "count": 56041,
+              "p50_us": 1.024,
+              "p90_us": 131.072,
+              "p99_us": 1048.576
+            },
+            "seals": {
+              "count": 56041,
+              "p50_us": 524.288,
+              "p90_us": 524.288,
+              "p99_us": 1048.576
+            },
+            "writes_held_by_seals": {
+              "count": 8717,
+              "p50_us": 524.288,
+              "p90_us": 1048.576,
+              "p99_us": 2097.152
+            },
+            "window_map_requests": {
+              "count": 0,
+              "p50_us": null,
+              "p90_us": null,
+              "p99_us": null
+            },
+            "window_unmaps": {
+              "count": 0,
+              "p50_us": null,
+              "p90_us": null,
+              "p99_us": null
+            }
+          },
+          {
+            "device_reads": {
+              "count": 1051,
+              "p50_us": 524.288,
+              "p90_us": 2097.152,
+              "p99_us": 4194.304
+            },
+            "device_writes": {
+              "count": 147325,
+              "p50_us": 524.288,
+              "p90_us": 524.288,
+              "p99_us": 2097.152
+            },
+            "device_commits": {
+              "count": 56517,
+              "p50_us": 524.288,
+              "p90_us": 524.288,
+              "p99_us": 1048.576
+            },
+            "seal_waits": {
+              "count": 56517,
+              "p50_us": 1.024,
+              "p90_us": 262.144,
+              "p99_us": 1048.576
+            },
+            "seals": {
+              "count": 56517,
+              "p50_us": 524.288,
+              "p90_us": 524.288,
+              "p99_us": 1048.576
+            },
+            "writes_held_by_seals": {
+              "count": 14408,
+              "p50_us": 524.288,
+              "p90_us": 1048.576,
+              "p99_us": 2097.152
+            },
+            "window_map_requests": {
+              "count": 0,
+              "p50_us": null,
+              "p90_us": null,
+              "p99_us": null
+            },
+            "window_unmaps": {
+              "count": 0,
+              "p50_us": null,
+              "p90_us": null,
+              "p99_us": null
+            }
+          },
+          {
+            "device_reads": {
+              "count": 1099,
+              "p50_us": 524.288,
+              "p90_us": 2097.152,
+              "p99_us": 4194.304
+            },
+            "device_writes": {
+              "count": 148771,
+              "p50_us": 524.288,
+              "p90_us": 524.288,
+              "p99_us": 2097.152
+            },
+            "device_commits": {
+              "count": 59343,
+              "p50_us": 524.288,
+              "p90_us": 524.288,
+              "p99_us": 1048.576
+            },
+            "seal_waits": {
+              "count": 59343,
+              "p50_us": 1.024,
+              "p90_us": 262.144,
+              "p99_us": 1048.576
+            },
+            "seals": {
+              "count": 59343,
+              "p50_us": 524.288,
+              "p90_us": 524.288,
+              "p99_us": 1048.576
+            },
+            "writes_held_by_seals": {
+              "count": 13511,
+              "p50_us": 524.288,
+              "p90_us": 1048.576,
+              "p99_us": 2097.152
+            },
+            "window_map_requests": {
+              "count": 0,
+              "p50_us": null,
+              "p90_us": null,
+              "p99_us": null
+            },
+            "window_unmaps": {
+              "count": 0,
+              "p50_us": null,
+              "p90_us": null,
+              "p99_us": null
+            }
+          },
+          {
+            "device_reads": {
+              "count": 1118,
+              "p50_us": 524.288,
+              "p90_us": 2097.152,
+              "p99_us": 4194.304
+            },
+            "device_writes": {
+              "count": 145628,
+              "p50_us": 524.288,
+              "p90_us": 524.288,
+              "p99_us": 2097.152
+            },
+            "device_commits": {
+              "count": 57760,
+              "p50_us": 524.288,
+              "p90_us": 524.288,
+              "p99_us": 1048.576
+            },
+            "seal_waits": {
+              "count": 57760,
+              "p50_us": 1.024,
+              "p90_us": 262.144,
+              "p99_us": 1048.576
+            },
+            "seals": {
+              "count": 57760,
+              "p50_us": 524.288,
+              "p90_us": 524.288,
+              "p99_us": 1048.576
+            },
+            "writes_held_by_seals": {
+              "count": 13697,
+              "p50_us": 524.288,
+              "p90_us": 1048.576,
+              "p99_us": 2097.152
+            },
+            "window_map_requests": {
+              "count": 0,
+              "p50_us": null,
+              "p90_us": null,
+              "p99_us": null
+            },
+            "window_unmaps": {
+              "count": 0,
+              "p50_us": null,
+              "p90_us": null,
+              "p99_us": null
+            }
+          },
+          {
+            "device_reads": {
+              "count": 1030,
+              "p50_us": 524.288,
+              "p90_us": 2097.152,
+              "p99_us": 4194.304
+            },
+            "device_writes": {
+              "count": 145888,
+              "p50_us": 524.288,
+              "p90_us": 524.288,
+              "p99_us": 2097.152
+            },
+            "device_commits": {
+              "count": 58035,
+              "p50_us": 524.288,
+              "p90_us": 524.288,
+              "p99_us": 1048.576
+            },
+            "seal_waits": {
+              "count": 58035,
+              "p50_us": 1.024,
+              "p90_us": 262.144,
+              "p99_us": 1048.576
+            },
+            "seals": {
+              "count": 58035,
+              "p50_us": 524.288,
+              "p90_us": 524.288,
+              "p99_us": 1048.576
+            },
+            "writes_held_by_seals": {
+              "count": 13607,
+              "p50_us": 524.288,
+              "p90_us": 1048.576,
+              "p99_us": 2097.152
+            },
+            "window_map_requests": {
+              "count": 0,
+              "p50_us": null,
+              "p90_us": null,
+              "p99_us": null
+            },
+            "window_unmaps": {
+              "count": 0,
+              "p50_us": null,
+              "p90_us": null,
+              "p99_us": null
+            }
+          }
+        ]
+      ]
+    ],
+    "dax": [
+      [
+        [
+          {
+            "device_reads": {
+              "count": 1034,
+              "p50_us": 524.288,
+              "p90_us": 2097.152,
+              "p99_us": 4194.304
+            },
+            "device_writes": {
+              "count": 142886,
+              "p50_us": 524.288,
+              "p90_us": 524.288,
+              "p99_us": 2097.152
+            },
+            "device_commits": {
+              "count": 58947,
+              "p50_us": 524.288,
+              "p90_us": 524.288,
+              "p99_us": 1048.576
+            },
+            "seal_waits": {
+              "count": 58947,
+              "p50_us": 1.024,
+              "p90_us": 131.072,
+              "p99_us": 524.288
+            },
+            "seals": {
+              "count": 58947,
+              "p50_us": 524.288,
+              "p90_us": 524.288,
+              "p99_us": 1048.576
+            },
+            "writes_held_by_seals": {
+              "count": 9913,
+              "p50_us": 524.288,
+              "p90_us": 1048.576,
+              "p99_us": 2097.152
+            },
+            "window_map_requests": {
+              "count": 0,
+              "p50_us": null,
+              "p90_us": null,
+              "p99_us": null
+            },
+            "window_unmaps": {
+              "count": 0,
+              "p50_us": null,
+              "p90_us": null,
+              "p99_us": null
+            },
+            "dax_write": {
+              "count": 0,
+              "p50_us": null,
+              "p90_us": null,
+              "p99_us": null
+            },
+            "dax_faults": {
+              "count": 0,
+              "p50_us": null,
+              "p90_us": null,
+              "p99_us": null
+            }
+          },
+          {
+            "device_reads": {
+              "count": 1059,
+              "p50_us": 524.288,
+              "p90_us": 2097.152,
+              "p99_us": 4194.304
+            },
+            "device_writes": {
+              "count": 151527,
+              "p50_us": 524.288,
+              "p90_us": 524.288,
+              "p99_us": 2097.152
+            },
+            "device_commits": {
+              "count": 58056,
+              "p50_us": 524.288,
+              "p90_us": 524.288,
+              "p99_us": 1048.576
+            },
+            "seal_waits": {
+              "count": 58056,
+              "p50_us": 1.024,
+              "p90_us": 262.144,
+              "p99_us": 1048.576
+            },
+            "seals": {
+              "count": 58056,
+              "p50_us": 524.288,
+              "p90_us": 524.288,
+              "p99_us": 1048.576
+            },
+            "writes_held_by_seals": {
+              "count": 14343,
+              "p50_us": 524.288,
+              "p90_us": 1048.576,
+              "p99_us": 2097.152
+            },
+            "window_map_requests": {
+              "count": 0,
+              "p50_us": null,
+              "p90_us": null,
+              "p99_us": null
+            },
+            "window_unmaps": {
+              "count": 0,
+              "p50_us": null,
+              "p90_us": null,
+              "p99_us": null
+            },
+            "dax_write": {
+              "count": 0,
+              "p50_us": null,
+              "p90_us": null,
+              "p99_us": null
+            },
+            "dax_faults": {
+              "count": 0,
+              "p50_us": null,
+              "p90_us": null,
+              "p99_us": null
+            }
+          },
+          {
+            "device_reads": {
+              "count": 1104,
+              "p50_us": 524.288,
+              "p90_us": 2097.152,
+              "p99_us": 4194.304
+            },
+            "device_writes": {
+              "count": 147668,
+              "p50_us": 524.288,
+              "p90_us": 524.288,
+              "p99_us": 2097.152
+            },
+            "device_commits": {
+              "count": 58926,
+              "p50_us": 524.288,
+              "p90_us": 524.288,
+              "p99_us": 1048.576
+            },
+            "seal_waits": {
+              "count": 58926,
+              "p50_us": 1.024,
+              "p90_us": 262.144,
+              "p99_us": 1048.576
+            },
+            "seals": {
+              "count": 58926,
+              "p50_us": 524.288,
+              "p90_us": 524.288,
+              "p99_us": 1048.576
+            },
+            "writes_held_by_seals": {
+              "count": 12041,
+              "p50_us": 524.288,
+              "p90_us": 1048.576,
+              "p99_us": 2097.152
+            },
+            "window_map_requests": {
+              "count": 0,
+              "p50_us": null,
+              "p90_us": null,
+              "p99_us": null
+            },
+            "window_unmaps": {
+              "count": 0,
+              "p50_us": null,
+              "p90_us": null,
+              "p99_us": null
+            },
+            "dax_write": {
+              "count": 0,
+              "p50_us": null,
+              "p90_us": null,
+              "p99_us": null
+            },
+            "dax_faults": {
+              "count": 0,
+              "p50_us": null,
+              "p90_us": null,
+              "p99_us": null
+            }
+          },
+          {
+            "device_reads": {
+              "count": 1061,
+              "p50_us": 524.288,
+              "p90_us": 2097.152,
+              "p99_us": 4194.304
+            },
+            "device_writes": {
+              "count": 149132,
+              "p50_us": 524.288,
+              "p90_us": 524.288,
+              "p99_us": 2097.152
+            },
+            "device_commits": {
+              "count": 58933,
+              "p50_us": 524.288,
+              "p90_us": 524.288,
+              "p99_us": 1048.576
+            },
+            "seal_waits": {
+              "count": 58933,
+              "p50_us": 1.024,
+              "p90_us": 262.144,
+              "p99_us": 1048.576
+            },
+            "seals": {
+              "count": 58933,
+              "p50_us": 524.288,
+              "p90_us": 524.288,
+              "p99_us": 1048.576
+            },
+            "writes_held_by_seals": {
+              "count": 12635,
+              "p50_us": 524.288,
+              "p90_us": 1048.576,
+              "p99_us": 2097.152
+            },
+            "window_map_requests": {
+              "count": 0,
+              "p50_us": null,
+              "p90_us": null,
+              "p99_us": null
+            },
+            "window_unmaps": {
+              "count": 0,
+              "p50_us": null,
+              "p90_us": null,
+              "p99_us": null
+            },
+            "dax_write": {
+              "count": 0,
+              "p50_us": null,
+              "p90_us": null,
+              "p99_us": null
+            },
+            "dax_faults": {
+              "count": 0,
+              "p50_us": null,
+              "p90_us": null,
+              "p99_us": null
+            }
+          },
+          {
+            "device_reads": {
+              "count": 1134,
+              "p50_us": 524.288,
+              "p90_us": 2097.152,
+              "p99_us": 4194.304
+            },
+            "device_writes": {
+              "count": 148756,
+              "p50_us": 524.288,
+              "p90_us": 524.288,
+              "p99_us": 2097.152
+            },
+            "device_commits": {
+              "count": 58851,
+              "p50_us": 524.288,
+              "p90_us": 524.288,
+              "p99_us": 1048.576
+            },
+            "seal_waits": {
+              "count": 58851,
+              "p50_us": 1.024,
+              "p90_us": 262.144,
+              "p99_us": 524.288
+            },
+            "seals": {
+              "count": 58851,
+              "p50_us": 524.288,
+              "p90_us": 524.288,
+              "p99_us": 1048.576
+            },
+            "writes_held_by_seals": {
+              "count": 12757,
+              "p50_us": 524.288,
+              "p90_us": 1048.576,
+              "p99_us": 2097.152
+            },
+            "window_map_requests": {
+              "count": 0,
+              "p50_us": null,
+              "p90_us": null,
+              "p99_us": null
+            },
+            "window_unmaps": {
+              "count": 0,
+              "p50_us": null,
+              "p90_us": null,
+              "p99_us": null
+            },
+            "dax_write": {
+              "count": 0,
+              "p50_us": null,
+              "p90_us": null,
+              "p99_us": null
+            },
+            "dax_faults": {
+              "count": 0,
+              "p50_us": null,
+              "p90_us": null,
+              "p99_us": null
+            }
+          }
+        ]
+      ]
+    ],
+    "no-dax-forked": [
+      [
+        [
+          {
+            "device_reads": {
+              "count": 63812,
+              "p50_us": 524.288,
+              "p90_us": 1048.576,
+              "p99_us": 2097.152
+            },
+            "device_writes": {
+              "count": 116594,
+              "p50_us": 524.288,
+              "p90_us": 524.288,
+              "p99_us": 1048.576
+            },
+            "device_commits": {
+              "count": 50260,
+              "p50_us": 524.288,
+              "p90_us": 524.288,
+              "p99_us": 1048.576
+            },
+            "seal_waits": {
+              "count": 50260,
+              "p50_us": 1.024,
+              "p90_us": 32.768,
+              "p99_us": 524.288
+            },
+            "seals": {
+              "count": 50260,
+              "p50_us": 524.288,
+              "p90_us": 524.288,
+              "p99_us": 1048.576
+            },
+            "writes_held_by_seals": {
+              "count": 5957,
+              "p50_us": 524.288,
+              "p90_us": 1048.576,
+              "p99_us": 2097.152
+            },
+            "window_map_requests": {
+              "count": 0,
+              "p50_us": null,
+              "p90_us": null,
+              "p99_us": null
+            },
+            "window_unmaps": {
+              "count": 0,
+              "p50_us": null,
+              "p90_us": null,
+              "p99_us": null
+            }
+          },
+          {
+            "device_reads": {
+              "count": 1072,
+              "p50_us": 524.288,
+              "p90_us": 2097.152,
+              "p99_us": 4194.304
+            },
+            "device_writes": {
+              "count": 140652,
+              "p50_us": 524.288,
+              "p90_us": 524.288,
+              "p99_us": 2097.152
+            },
+            "device_commits": {
+              "count": 54087,
+              "p50_us": 524.288,
+              "p90_us": 524.288,
+              "p99_us": 1048.576
+            },
+            "seal_waits": {
+              "count": 54087,
+              "p50_us": 1.024,
+              "p90_us": 262.144,
+              "p99_us": 1048.576
+            },
+            "seals": {
+              "count": 54087,
+              "p50_us": 524.288,
+              "p90_us": 524.288,
+              "p99_us": 1048.576
+            },
+            "writes_held_by_seals": {
+              "count": 12994,
+              "p50_us": 524.288,
+              "p90_us": 1048.576,
+              "p99_us": 2097.152
+            },
+            "window_map_requests": {
+              "count": 0,
+              "p50_us": null,
+              "p90_us": null,
+              "p99_us": null
+            },
+            "window_unmaps": {
+              "count": 0,
+              "p50_us": null,
+              "p90_us": null,
+              "p99_us": null
+            }
+          },
+          {
+            "device_reads": {
+              "count": 1095,
+              "p50_us": 524.288,
+              "p90_us": 2097.152,
+              "p99_us": 4194.304
+            },
+            "device_writes": {
+              "count": 143125,
+              "p50_us": 524.288,
+              "p90_us": 524.288,
+              "p99_us": 2097.152
+            },
+            "device_commits": {
+              "count": 57031,
+              "p50_us": 524.288,
+              "p90_us": 524.288,
+              "p99_us": 1048.576
+            },
+            "seal_waits": {
+              "count": 57031,
+              "p50_us": 1.024,
+              "p90_us": 262.144,
+              "p99_us": 1048.576
+            },
+            "seals": {
+              "count": 57031,
+              "p50_us": 524.288,
+              "p90_us": 524.288,
+              "p99_us": 1048.576
+            },
+            "writes_held_by_seals": {
+              "count": 12677,
+              "p50_us": 524.288,
+              "p90_us": 1048.576,
+              "p99_us": 2097.152
+            },
+            "window_map_requests": {
+              "count": 0,
+              "p50_us": null,
+              "p90_us": null,
+              "p99_us": null
+            },
+            "window_unmaps": {
+              "count": 0,
+              "p50_us": null,
+              "p90_us": null,
+              "p99_us": null
+            }
+          },
+          {
+            "device_reads": {
+              "count": 1077,
+              "p50_us": 524.288,
+              "p90_us": 2097.152,
+              "p99_us": 4194.304
+            },
+            "device_writes": {
+              "count": 147002,
+              "p50_us": 524.288,
+              "p90_us": 524.288,
+              "p99_us": 2097.152
+            },
+            "device_commits": {
+              "count": 58205,
+              "p50_us": 524.288,
+              "p90_us": 524.288,
+              "p99_us": 1048.576
+            },
+            "seal_waits": {
+              "count": 58205,
+              "p50_us": 1.024,
+              "p90_us": 262.144,
+              "p99_us": 524.288
+            },
+            "seals": {
+              "count": 58205,
+              "p50_us": 524.288,
+              "p90_us": 524.288,
+              "p99_us": 1048.576
+            },
+            "writes_held_by_seals": {
+              "count": 13127,
+              "p50_us": 524.288,
+              "p90_us": 1048.576,
+              "p99_us": 2097.152
+            },
+            "window_map_requests": {
+              "count": 0,
+              "p50_us": null,
+              "p90_us": null,
+              "p99_us": null
+            },
+            "window_unmaps": {
+              "count": 0,
+              "p50_us": null,
+              "p90_us": null,
+              "p99_us": null
+            }
+          },
+          {
+            "device_reads": {
+              "count": 1077,
+              "p50_us": 524.288,
+              "p90_us": 2097.152,
+              "p99_us": 4194.304
+            },
+            "device_writes": {
+              "count": 144433,
+              "p50_us": 524.288,
+              "p90_us": 524.288,
+              "p99_us": 2097.152
+            },
+            "device_commits": {
+              "count": 56764,
+              "p50_us": 524.288,
+              "p90_us": 524.288,
+              "p99_us": 1048.576
+            },
+            "seal_waits": {
+              "count": 56764,
+              "p50_us": 1.024,
+              "p90_us": 262.144,
+              "p99_us": 1048.576
+            },
+            "seals": {
+              "count": 56764,
+              "p50_us": 524.288,
+              "p90_us": 524.288,
+              "p99_us": 1048.576
+            },
+            "writes_held_by_seals": {
+              "count": 13096,
+              "p50_us": 524.288,
+              "p90_us": 1048.576,
+              "p99_us": 2097.152
+            },
+            "window_map_requests": {
+              "count": 0,
+              "p50_us": null,
+              "p90_us": null,
+              "p99_us": null
+            },
+            "window_unmaps": {
+              "count": 0,
+              "p50_us": null,
+              "p90_us": null,
+              "p99_us": null
+            }
+          }
+        ]
+      ]
+    ],
+    "dax-forked": [
+      [
+        [
+          {
+            "device_reads": {
+              "count": 613,
+              "p50_us": 524.288,
+              "p90_us": 2097.152,
+              "p99_us": 4194.304
+            },
+            "device_writes": {
+              "count": 67931,
+              "p50_us": 524.288,
+              "p90_us": 524.288,
+              "p99_us": 2097.152
+            },
+            "device_commits": {
+              "count": 33272,
+              "p50_us": 524.288,
+              "p90_us": 524.288,
+              "p99_us": 1048.576
+            },
+            "seal_waits": {
+              "count": 33272,
+              "p50_us": 1.024,
+              "p90_us": 1.024,
+              "p99_us": 1.024
+            },
+            "seals": {
+              "count": 33272,
+              "p50_us": 524.288,
+              "p90_us": 524.288,
+              "p99_us": 1048.576
+            },
+            "writes_held_by_seals": {
+              "count": 127,
+              "p50_us": 524.288,
+              "p90_us": 2097.152,
+              "p99_us": 4194.304
+            },
+            "window_map_requests": {
+              "count": 16552,
+              "p50_us": 524.288,
+              "p90_us": 524.288,
+              "p99_us": 1048.576
+            },
+            "window_unmaps": {
+              "count": 131,
+              "p50_us": 1048.576,
+              "p90_us": 1048.576,
+              "p99_us": 2097.152
+            },
+            "dax_write": {
+              "count": 59884,
+              "p50_us": 1048.576,
+              "p90_us": 2097.152,
+              "p99_us": 4194.304
+            },
+            "dax_faults": {
+              "count": 0,
+              "p50_us": null,
+              "p90_us": null,
+              "p99_us": null
+            }
+          },
+          {
+            "device_reads": {
+              "count": 552,
+              "p50_us": 524.288,
+              "p90_us": 2097.152,
+              "p99_us": 4194.304
+            },
+            "device_writes": {
+              "count": 61868,
+              "p50_us": 524.288,
+              "p90_us": 1048.576,
+              "p99_us": 4194.304
+            },
+            "device_commits": {
+              "count": 29634,
+              "p50_us": 524.288,
+              "p90_us": 524.288,
+              "p99_us": 2097.152
+            },
+            "seal_waits": {
+              "count": 29634,
+              "p50_us": 1.024,
+              "p90_us": 1.024,
+              "p99_us": 131.072
+            },
+            "seals": {
+              "count": 29634,
+              "p50_us": 524.288,
+              "p90_us": 524.288,
+              "p99_us": 2097.152
+            },
+            "writes_held_by_seals": {
+              "count": 232,
+              "p50_us": 2097.152,
+              "p90_us": 4194.304,
+              "p99_us": 67108.864
+            },
+            "window_map_requests": {
+              "count": 34662,
+              "p50_us": 524.288,
+              "p90_us": 524.288,
+              "p99_us": 524.288
+            },
+            "window_unmaps": {
+              "count": 124,
+              "p50_us": 1048.576,
+              "p90_us": 2097.152,
+              "p99_us": 2097.152
+            },
+            "dax_write": {
+              "count": 67869,
+              "p50_us": 1048.576,
+              "p90_us": 2097.152,
+              "p99_us": 4194.304
+            },
+            "dax_faults": {
+              "count": 0,
+              "p50_us": null,
+              "p90_us": null,
+              "p99_us": null
+            }
+          },
+          {
+            "device_reads": {
+              "count": 668,
+              "p50_us": 524.288,
+              "p90_us": 2097.152,
+              "p99_us": 4194.304
+            },
+            "device_writes": {
+              "count": 72890,
+              "p50_us": 524.288,
+              "p90_us": 1048.576,
+              "p99_us": 4194.304
+            },
+            "device_commits": {
+              "count": 35151,
+              "p50_us": 524.288,
+              "p90_us": 524.288,
+              "p99_us": 1048.576
+            },
+            "seal_waits": {
+              "count": 35151,
+              "p50_us": 1.024,
+              "p90_us": 1.024,
+              "p99_us": 131.072
+            },
+            "seals": {
+              "count": 35151,
+              "p50_us": 524.288,
+              "p90_us": 524.288,
+              "p99_us": 1048.576
+            },
+            "writes_held_by_seals": {
+              "count": 234,
+              "p50_us": 2097.152,
+              "p90_us": 4194.304,
+              "p99_us": 16777.216
+            },
+            "window_map_requests": {
+              "count": 34506,
+              "p50_us": 524.288,
+              "p90_us": 524.288,
+              "p99_us": 524.288
+            },
+            "window_unmaps": {
+              "count": 73,
+              "p50_us": 1048.576,
+              "p90_us": 2097.152,
+              "p99_us": 4194.304
+            },
+            "dax_write": {
+              "count": 60606,
+              "p50_us": 1048.576,
+              "p90_us": 2097.152,
+              "p99_us": 4194.304
+            },
+            "dax_faults": {
+              "count": 0,
+              "p50_us": null,
+              "p90_us": null,
+              "p99_us": null
+            }
+          },
+          {
+            "device_reads": {
+              "count": 551,
+              "p50_us": 524.288,
+              "p90_us": 2097.152,
+              "p99_us": 4194.304
+            },
+            "device_writes": {
+              "count": 63297,
+              "p50_us": 524.288,
+              "p90_us": 1048.576,
+              "p99_us": 4194.304
+            },
+            "device_commits": {
+              "count": 30558,
+              "p50_us": 524.288,
+              "p90_us": 524.288,
+              "p99_us": 1048.576
+            },
+            "seal_waits": {
+              "count": 30558,
+              "p50_us": 1.024,
+              "p90_us": 1.024,
+              "p99_us": 262.144
+            },
+            "seals": {
+              "count": 30558,
+              "p50_us": 524.288,
+              "p90_us": 524.288,
+              "p99_us": 1048.576
+            },
+            "writes_held_by_seals": {
+              "count": 242,
+              "p50_us": 2097.152,
+              "p90_us": 4194.304,
+              "p99_us": 16777.216
+            },
+            "window_map_requests": {
+              "count": 33280,
+              "p50_us": 524.288,
+              "p90_us": 524.288,
+              "p99_us": 524.288
+            },
+            "window_unmaps": {
+              "count": 113,
+              "p50_us": 1048.576,
+              "p90_us": 2097.152,
+              "p99_us": 2097.152
+            },
+            "dax_write": {
+              "count": 72358,
+              "p50_us": 1048.576,
+              "p90_us": 2097.152,
+              "p99_us": 4194.304
+            },
+            "dax_faults": {
+              "count": 0,
+              "p50_us": null,
+              "p90_us": null,
+              "p99_us": null
+            }
+          },
+          {
+            "device_reads": {
+              "count": 688,
+              "p50_us": 524.288,
+              "p90_us": 2097.152,
+              "p99_us": 4194.304
+            },
+            "device_writes": {
+              "count": 72453,
+              "p50_us": 524.288,
+              "p90_us": 1048.576,
+              "p99_us": 4194.304
+            },
+            "device_commits": {
+              "count": 35123,
+              "p50_us": 524.288,
+              "p90_us": 1048.576,
+              "p99_us": 2097.152
+            },
+            "seal_waits": {
+              "count": 35123,
+              "p50_us": 1.024,
+              "p90_us": 1.024,
+              "p99_us": 131.072
+            },
+            "seals": {
+              "count": 35123,
+              "p50_us": 524.288,
+              "p90_us": 1048.576,
+              "p99_us": 2097.152
+            },
+            "writes_held_by_seals": {
+              "count": 224,
+              "p50_us": 1048.576,
+              "p90_us": 4194.304,
+              "p99_us": 8388.608
+            },
+            "window_map_requests": {
+              "count": 33388,
+              "p50_us": 524.288,
+              "p90_us": 524.288,
+              "p99_us": 1048.576
+            },
+            "window_unmaps": {
+              "count": 41,
+              "p50_us": 1048.576,
+              "p90_us": 2097.152,
+              "p99_us": 4194.304
+            },
+            "dax_write": {
+              "count": 49588,
+              "p50_us": 1048.576,
+              "p90_us": 2097.152,
+              "p99_us": 4194.304
+            },
+            "dax_faults": {
+              "count": 0,
+              "p50_us": null,
+              "p90_us": null,
+              "p99_us": null
+            }
+          }
+        ]
+      ]
+    ],
+    "no-dax-density": [
+      [
+        [
+          {
+            "device_reads": {
+              "count": 74031,
+              "p50_us": 524.288,
+              "p90_us": 1048.576,
+              "p99_us": 4194.304
+            },
+            "device_writes": {
+              "count": 119795,
+              "p50_us": 524.288,
+              "p90_us": 524.288,
+              "p99_us": 2097.152
+            },
+            "device_commits": {
+              "count": 51626,
+              "p50_us": 524.288,
+              "p90_us": 524.288,
+              "p99_us": 1048.576
+            },
+            "seal_waits": {
+              "count": 51626,
+              "p50_us": 1.024,
+              "p90_us": 65.536,
+              "p99_us": 524.288
+            },
+            "seals": {
+              "count": 51626,
+              "p50_us": 524.288,
+              "p90_us": 524.288,
+              "p99_us": 1048.576
+            },
+            "writes_held_by_seals": {
+              "count": 6413,
+              "p50_us": 524.288,
+              "p90_us": 1048.576,
+              "p99_us": 2097.152
+            },
+            "window_map_requests": {
+              "count": 0,
+              "p50_us": null,
+              "p90_us": null,
+              "p99_us": null
+            },
+            "window_unmaps": {
+              "count": 0,
+              "p50_us": null,
+              "p90_us": null,
+              "p99_us": null
+            }
+          },
+          {
+            "device_reads": {
+              "count": 69975,
+              "p50_us": 524.288,
+              "p90_us": 2097.152,
+              "p99_us": 4194.304
+            },
+            "device_writes": {
+              "count": 133202,
+              "p50_us": 524.288,
+              "p90_us": 524.288,
+              "p99_us": 2097.152
+            },
+            "device_commits": {
+              "count": 51600,
+              "p50_us": 524.288,
+              "p90_us": 524.288,
+              "p99_us": 2097.152
+            },
+            "seal_waits": {
+              "count": 51600,
+              "p50_us": 1.024,
+              "p90_us": 262.144,
+              "p99_us": 1048.576
+            },
+            "seals": {
+              "count": 51600,
+              "p50_us": 524.288,
+              "p90_us": 524.288,
+              "p99_us": 2097.152
+            },
+            "writes_held_by_seals": {
+              "count": 11479,
+              "p50_us": 524.288,
+              "p90_us": 1048.576,
+              "p99_us": 2097.152
+            },
+            "window_map_requests": {
+              "count": 0,
+              "p50_us": null,
+              "p90_us": null,
+              "p99_us": null
+            },
+            "window_unmaps": {
+              "count": 0,
+              "p50_us": null,
+              "p90_us": null,
+              "p99_us": null
+            }
+          }
+        ],
+        [
+          {
+            "device_reads": {
+              "count": 73106,
+              "p50_us": 524.288,
+              "p90_us": 1048.576,
+              "p99_us": 2097.152
+            },
+            "device_writes": {
+              "count": 120449,
+              "p50_us": 524.288,
+              "p90_us": 524.288,
+              "p99_us": 2097.152
+            },
+            "device_commits": {
+              "count": 52005,
+              "p50_us": 524.288,
+              "p90_us": 524.288,
+              "p99_us": 1048.576
+            },
+            "seal_waits": {
+              "count": 52005,
+              "p50_us": 1.024,
+              "p90_us": 32.768,
+              "p99_us": 524.288
+            },
+            "seals": {
+              "count": 52005,
+              "p50_us": 524.288,
+              "p90_us": 524.288,
+              "p99_us": 1048.576
+            },
+            "writes_held_by_seals": {
+              "count": 6519,
+              "p50_us": 524.288,
+              "p90_us": 1048.576,
+              "p99_us": 2097.152
+            },
+            "window_map_requests": {
+              "count": 0,
+              "p50_us": null,
+              "p90_us": null,
+              "p99_us": null
+            },
+            "window_unmaps": {
+              "count": 0,
+              "p50_us": null,
+              "p90_us": null,
+              "p99_us": null
+            }
+          },
+          {
+            "device_reads": {
+              "count": 74616,
+              "p50_us": 524.288,
+              "p90_us": 2097.152,
+              "p99_us": 4194.304
+            },
+            "device_writes": {
+              "count": 132919,
+              "p50_us": 524.288,
+              "p90_us": 524.288,
+              "p99_us": 2097.152
+            },
+            "device_commits": {
+              "count": 51654,
+              "p50_us": 524.288,
+              "p90_us": 524.288,
+              "p99_us": 2097.152
+            },
+            "seal_waits": {
+              "count": 51654,
+              "p50_us": 1.024,
+              "p90_us": 262.144,
+              "p99_us": 1048.576
+            },
+            "seals": {
+              "count": 51654,
+              "p50_us": 524.288,
+              "p90_us": 524.288,
+              "p99_us": 2097.152
+            },
+            "writes_held_by_seals": {
+              "count": 10986,
+              "p50_us": 524.288,
+              "p90_us": 1048.576,
+              "p99_us": 4194.304
+            },
+            "window_map_requests": {
+              "count": 0,
+              "p50_us": null,
+              "p90_us": null,
+              "p99_us": null
+            },
+            "window_unmaps": {
+              "count": 0,
+              "p50_us": null,
+              "p90_us": null,
+              "p99_us": null
+            }
+          }
+        ],
+        [
+          {
+            "device_reads": {
+              "count": 71069,
+              "p50_us": 524.288,
+              "p90_us": 1048.576,
+              "p99_us": 2097.152
+            },
+            "device_writes": {
+              "count": 115483,
+              "p50_us": 524.288,
+              "p90_us": 524.288,
+              "p99_us": 2097.152
+            },
+            "device_commits": {
+              "count": 49753,
+              "p50_us": 524.288,
+              "p90_us": 524.288,
+              "p99_us": 1048.576
+            },
+            "seal_waits": {
+              "count": 49753,
+              "p50_us": 1.024,
+              "p90_us": 65.536,
+              "p99_us": 524.288
+            },
+            "seals": {
+              "count": 49753,
+              "p50_us": 524.288,
+              "p90_us": 524.288,
+              "p99_us": 1048.576
+            },
+            "writes_held_by_seals": {
+              "count": 6240,
+              "p50_us": 524.288,
+              "p90_us": 1048.576,
+              "p99_us": 2097.152
+            },
+            "window_map_requests": {
+              "count": 0,
+              "p50_us": null,
+              "p90_us": null,
+              "p99_us": null
+            },
+            "window_unmaps": {
+              "count": 0,
+              "p50_us": null,
+              "p90_us": null,
+              "p99_us": null
+            }
+          },
+          {
+            "device_reads": {
+              "count": 72019,
+              "p50_us": 524.288,
+              "p90_us": 2097.152,
+              "p99_us": 4194.304
+            },
+            "device_writes": {
+              "count": 131331,
+              "p50_us": 524.288,
+              "p90_us": 1048.576,
+              "p99_us": 2097.152
+            },
+            "device_commits": {
+              "count": 50384,
+              "p50_us": 524.288,
+              "p90_us": 524.288,
+              "p99_us": 2097.152
+            },
+            "seal_waits": {
+              "count": 50384,
+              "p50_us": 1.024,
+              "p90_us": 262.144,
+              "p99_us": 1048.576
+            },
+            "seals": {
+              "count": 50384,
+              "p50_us": 524.288,
+              "p90_us": 524.288,
+              "p99_us": 2097.152
+            },
+            "writes_held_by_seals": {
+              "count": 11920,
+              "p50_us": 524.288,
+              "p90_us": 1048.576,
+              "p99_us": 2097.152
+            },
+            "window_map_requests": {
+              "count": 0,
+              "p50_us": null,
+              "p90_us": null,
+              "p99_us": null
+            },
+            "window_unmaps": {
+              "count": 0,
+              "p50_us": null,
+              "p90_us": null,
+              "p99_us": null
+            }
+          }
+        ]
+      ]
+    ],
+    "dax-density": [
+      [
+        [
+          {
+            "device_reads": {
+              "count": 615,
+              "p50_us": 524.288,
+              "p90_us": 2097.152,
+              "p99_us": 4194.304
+            },
+            "device_writes": {
+              "count": 68341,
+              "p50_us": 524.288,
+              "p90_us": 524.288,
+              "p99_us": 2097.152
+            },
+            "device_commits": {
+              "count": 33477,
+              "p50_us": 524.288,
+              "p90_us": 524.288,
+              "p99_us": 1048.576
+            },
+            "seal_waits": {
+              "count": 33477,
+              "p50_us": 1.024,
+              "p90_us": 1.024,
+              "p99_us": 2.048
+            },
+            "seals": {
+              "count": 33477,
+              "p50_us": 524.288,
+              "p90_us": 524.288,
+              "p99_us": 1048.576
+            },
+            "writes_held_by_seals": {
+              "count": 117,
+              "p50_us": 524.288,
+              "p90_us": 2097.152,
+              "p99_us": 4194.304
+            },
+            "window_map_requests": {
+              "count": 16686,
+              "p50_us": 524.288,
+              "p90_us": 524.288,
+              "p99_us": 1048.576
+            },
+            "window_unmaps": {
+              "count": 130,
+              "p50_us": 1048.576,
+              "p90_us": 2097.152,
+              "p99_us": 2097.152
+            },
+            "dax_write": {
+              "count": 60296,
+              "p50_us": 1048.576,
+              "p90_us": 2097.152,
+              "p99_us": 4194.304
+            },
+            "dax_faults": {
+              "count": 0,
+              "p50_us": null,
+              "p90_us": null,
+              "p99_us": null
+            }
+          },
+          {
+            "device_reads": {
+              "count": 576,
+              "p50_us": 524.288,
+              "p90_us": 2097.152,
+              "p99_us": 4194.304
+            },
+            "device_writes": {
+              "count": 65133,
+              "p50_us": 524.288,
+              "p90_us": 1048.576,
+              "p99_us": 4194.304
+            },
+            "device_commits": {
+              "count": 31237,
+              "p50_us": 524.288,
+              "p90_us": 524.288,
+              "p99_us": 2097.152
+            },
+            "seal_waits": {
+              "count": 31237,
+              "p50_us": 1.024,
+              "p90_us": 1.024,
+              "p99_us": 131.072
+            },
+            "seals": {
+              "count": 31237,
+              "p50_us": 524.288,
+              "p90_us": 524.288,
+              "p99_us": 2097.152
+            },
+            "writes_held_by_seals": {
+              "count": 232,
+              "p50_us": 1048.576,
+              "p90_us": 4194.304,
+              "p99_us": 4194.304
+            },
+            "window_map_requests": {
+              "count": 34355,
+              "p50_us": 524.288,
+              "p90_us": 524.288,
+              "p99_us": 524.288
+            },
+            "window_unmaps": {
+              "count": 122,
+              "p50_us": 1048.576,
+              "p90_us": 2097.152,
+              "p99_us": 2097.152
+            },
+            "dax_write": {
+              "count": 69004,
+              "p50_us": 1048.576,
+              "p90_us": 2097.152,
+              "p99_us": 4194.304
+            },
+            "dax_faults": {
+              "count": 0,
+              "p50_us": null,
+              "p90_us": null,
+              "p99_us": null
+            }
+          }
+        ],
+        [
+          {
+            "device_reads": {
+              "count": 654,
+              "p50_us": 524.288,
+              "p90_us": 2097.152,
+              "p99_us": 4194.304
+            },
+            "device_writes": {
+              "count": 72326,
+              "p50_us": 524.288,
+              "p90_us": 524.288,
+              "p99_us": 2097.152
+            },
+            "device_commits": {
+              "count": 35439,
+              "p50_us": 524.288,
+              "p90_us": 524.288,
+              "p99_us": 1048.576
+            },
+            "seal_waits": {
+              "count": 35439,
+              "p50_us": 1.024,
+              "p90_us": 1.024,
+              "p99_us": 1.024
+            },
+            "seals": {
+              "count": 35439,
+              "p50_us": 524.288,
+              "p90_us": 524.288,
+              "p99_us": 1048.576
+            },
+            "writes_held_by_seals": {
+              "count": 132,
+              "p50_us": 524.288,
+              "p90_us": 2097.152,
+              "p99_us": 4194.304
+            },
+            "window_map_requests": {
+              "count": 16502,
+              "p50_us": 262.144,
+              "p90_us": 524.288,
+              "p99_us": 2097.152
+            },
+            "window_unmaps": {
+              "count": 139,
+              "p50_us": 1048.576,
+              "p90_us": 2097.152,
+              "p99_us": 4194.304
+            },
+            "dax_write": {
+              "count": 65813,
+              "p50_us": 1048.576,
+              "p90_us": 1048.576,
+              "p99_us": 2097.152
+            },
+            "dax_faults": {
+              "count": 0,
+              "p50_us": null,
+              "p90_us": null,
+              "p99_us": null
+            }
+          },
+          {
+            "device_reads": {
+              "count": 599,
+              "p50_us": 524.288,
+              "p90_us": 2097.152,
+              "p99_us": 4194.304
+            },
+            "device_writes": {
+              "count": 66392,
+              "p50_us": 524.288,
+              "p90_us": 1048.576,
+              "p99_us": 4194.304
+            },
+            "device_commits": {
+              "count": 31680,
+              "p50_us": 524.288,
+              "p90_us": 524.288,
+              "p99_us": 2097.152
+            },
+            "seal_waits": {
+              "count": 31680,
+              "p50_us": 1.024,
+              "p90_us": 1.024,
+              "p99_us": 131.072
+            },
+            "seals": {
+              "count": 31680,
+              "p50_us": 524.288,
+              "p90_us": 524.288,
+              "p99_us": 2097.152
+            },
+            "writes_held_by_seals": {
+              "count": 230,
+              "p50_us": 1048.576,
+              "p90_us": 2097.152,
+              "p99_us": 8388.608
+            },
+            "window_map_requests": {
+              "count": 34227,
+              "p50_us": 524.288,
+              "p90_us": 524.288,
+              "p99_us": 524.288
+            },
+            "window_unmaps": {
+              "count": 113,
+              "p50_us": 1048.576,
+              "p90_us": 2097.152,
+              "p99_us": 2097.152
+            },
+            "dax_write": {
+              "count": 66842,
+              "p50_us": 1048.576,
+              "p90_us": 2097.152,
+              "p99_us": 4194.304
+            },
+            "dax_faults": {
+              "count": 0,
+              "p50_us": null,
+              "p90_us": null,
+              "p99_us": null
+            }
+          }
+        ],
+        [
+          {
+            "device_reads": {
+              "count": 654,
+              "p50_us": 524.288,
+              "p90_us": 2097.152,
+              "p99_us": 4194.304
+            },
+            "device_writes": {
+              "count": 71813,
+              "p50_us": 524.288,
+              "p90_us": 524.288,
+              "p99_us": 2097.152
+            },
+            "device_commits": {
+              "count": 35188,
+              "p50_us": 524.288,
+              "p90_us": 524.288,
+              "p99_us": 1048.576
+            },
+            "seal_waits": {
+              "count": 35188,
+              "p50_us": 1.024,
+              "p90_us": 1.024,
+              "p99_us": 1.024
+            },
+            "seals": {
+              "count": 35188,
+              "p50_us": 524.288,
+              "p90_us": 524.288,
+              "p99_us": 1048.576
+            },
+            "writes_held_by_seals": {
+              "count": 139,
+              "p50_us": 524.288,
+              "p90_us": 2097.152,
+              "p99_us": 4194.304
+            },
+            "window_map_requests": {
+              "count": 16505,
+              "p50_us": 262.144,
+              "p90_us": 524.288,
+              "p99_us": 2097.152
+            },
+            "window_unmaps": {
+              "count": 137,
+              "p50_us": 1048.576,
+              "p90_us": 2097.152,
+              "p99_us": 4194.304
+            },
+            "dax_write": {
+              "count": 65092,
+              "p50_us": 1048.576,
+              "p90_us": 1048.576,
+              "p99_us": 2097.152
+            },
+            "dax_faults": {
+              "count": 0,
+              "p50_us": null,
+              "p90_us": null,
+              "p99_us": null
+            }
+          },
+          {
+            "device_reads": {
+              "count": 573,
+              "p50_us": 524.288,
+              "p90_us": 2097.152,
+              "p99_us": 4194.304
+            },
+            "device_writes": {
+              "count": 65526,
+              "p50_us": 524.288,
+              "p90_us": 1048.576,
+              "p99_us": 4194.304
+            },
+            "device_commits": {
+              "count": 31395,
+              "p50_us": 524.288,
+              "p90_us": 524.288,
+              "p99_us": 2097.152
+            },
+            "seal_waits": {
+              "count": 31395,
+              "p50_us": 1.024,
+              "p90_us": 1.024,
+              "p99_us": 65.536
+            },
+            "seals": {
+              "count": 31395,
+              "p50_us": 524.288,
+              "p90_us": 524.288,
+              "p99_us": 2097.152
+            },
+            "writes_held_by_seals": {
+              "count": 244,
+              "p50_us": 1048.576,
+              "p90_us": 4194.304,
+              "p99_us": 33554.432
+            },
+            "window_map_requests": {
+              "count": 33850,
+              "p50_us": 524.288,
+              "p90_us": 524.288,
+              "p99_us": 524.288
+            },
+            "window_unmaps": {
+              "count": 114,
+              "p50_us": 1048.576,
+              "p90_us": 2097.152,
+              "p99_us": 2097.152
+            },
+            "dax_write": {
+              "count": 67020,
+              "p50_us": 1048.576,
+              "p90_us": 2097.152,
+              "p99_us": 4194.304
+            },
+            "dax_faults": {
+              "count": 0,
+              "p50_us": null,
+              "p90_us": null,
+              "p99_us": null
+            }
+          }
+        ]
+      ]
+    ]
+  },
+  "memory": {
+    "no-dax-density": {
+      "vms": 3,
+      "first_vm_mib": 3769.8,
+      "per_added_vm_mib": 2790.3,
+      "host_used_mib": [
+        1607.3,
+        5377.1,
+        8163.6,
+        10957.7
+      ],
+      "vmm_pss_mib": [
+        1026.1,
+        1026.0,
+        1023.4
+      ],
+      "vmm_anon_mib": [
+        1021.9,
+        1021.8,
+        1019.2
+      ],
+      "vmm_shmem_mib": [
+        1.0,
+        1.0,
+        1.0
+      ],
+      "extentd_memory_mib": [
+        2142.0,
+        3454.0,
+        4780.0
+      ],
+      "guest_used_mib": [
+        494.8,
+        500.2,
+        493.4
+      ],
+      "guest_cached_mib": [
+        813.4,
+        808.1,
+        817.2
+      ],
+      "extentd_window_private_pages": [
+        0,
+        0,
+        0
+      ]
+    },
+    "dax-density": {
+      "vms": 3,
+      "first_vm_mib": 3058.0,
+      "per_added_vm_mib": 2455.2,
+      "host_used_mib": [
+        1909.6,
+        4967.6,
+        7403.2,
+        9878.1
+      ],
+      "vmm_pss_mib": [
+        1478.6,
+        1509.6,
+        1497.3
+      ],
+      "vmm_anon_mib": [
+        773.6,
+        792.9,
+        793.3
+      ],
+      "vmm_shmem_mib": [
+        701.8,
+        713.5,
+        700.8
+      ],
+      "extentd_memory_mib": [
+        1694.0,
+        2556.0,
+        3408.0
+      ],
+      "guest_used_mib": [
+        559.5,
+        556.6,
+        551.7
+      ],
+      "guest_cached_mib": [
+        547.1,
+        563.1,
+        563.1
+      ],
+      "extentd_window_private_pages": [
+        103201,
+        216025,
+        327516
+      ]
+    }
+  },
+  "bigmap": {
+    "bigmap-no-dax": {
+      "file_bytes": 4294967296.0,
+      "read_cold_mib_s": 16.519,
+      "read_cold_faults_per_page": 1.0,
+      "read_cold_major_faults_per_page": 1.0,
+      "read_warm_mib_s": 22.803,
+      "write_pages": 52428.0,
+      "write_pages_s": 5201.962,
+      "write_faults_per_page": 1.009,
+      "write_major_faults_per_page": 0.819,
+      "store_p50_us": 214.34,
+      "store_p99_us": 517.15,
+      "store_max_us": 72114.762,
+      "msync_s": 0.431,
+      "guest_cache_share": 0.197,
+      "host_read_mib": 4650.3,
+      "host_written_mib": 104.9,
+      "written_memory_per_byte": 0.512,
+      "host_used_mib": {
+        "mounted": 179.0,
+        "read-cold": 4829.4,
+        "read-warm": 4832.4,
+        "written": 4937.2,
+        "synced": 4969.3,
+        "end": 5216.6
+      },
+      "vmm_pss_mib": {
+        "mounted": 118.7,
+        "read-cold": 991.5,
+        "read-warm": 991.5,
+        "written": 997.0,
+        "synced": 997.3,
+        "end": 997.4
+      },
+      "extentd_memory_mib": {
+        "base": 2.0,
+        "mounted": 280.0,
+        "read-cold": 4168.0,
+        "read-warm": 4168.0,
+        "written": 4168.0,
+        "synced": 4168.0,
+        "end": 4474.0
+      },
+      "extentd_window_private_pages": {
+        "base": 0,
+        "mounted": 0,
+        "read-cold": 0,
+        "read-warm": 0,
+        "written": 0,
+        "synced": 0,
+        "end": 0
+      }
+    },
+    "bigmap-dax": {
+      "file_bytes": 4294967296.0,
+      "read_cold_mib_s": 91.881,
+      "read_cold_faults_per_page": 0.002,
+      "read_cold_major_faults_per_page": 0.0,
+      "read_warm_mib_s": 19557.818,
+      "write_pages": 52428.0,
+      "write_pages_s": 3132.023,
+      "write_faults_per_page": 1.009,
+      "write_major_faults_per_page": 0.0,
+      "store_p50_us": 324.007,
+      "store_p99_us": 464.482,
+      "store_max_us": 2782.828,
+      "msync_s": 1.089,
+      "guest_cache_share": 0.0,
+      "host_read_mib": 3754.3,
+      "host_written_mib": 253.2,
+      "written_memory_per_byte": 1.2363,
+      "host_used_mib": {
+        "mounted": 503.2,
+        "read-cold": 4257.6,
+        "read-warm": 4253.9,
+        "written": 4507.1,
+        "synced": 4649.2,
+        "end": 4659.3
+      },
+      "vmm_pss_mib": {
+        "mounted": 341.2,
+        "read-cold": 2407.5,
+        "read-warm": 2407.5,
+        "written": 2517.0,
+        "synced": 2533.4,
+        "end": 2533.4
+      },
+      "extentd_memory_mib": {
+        "base": 2.0,
+        "mounted": 276.0,
+        "read-cold": 4168.0,
+        "read-warm": 4168.0,
+        "written": 4168.0,
+        "synced": 4168.0,
+        "end": 4168.0
+      },
+      "extentd_window_private_pages": {
+        "base": 0,
+        "mounted": 0,
+        "read-cold": 0,
+        "read-warm": 0,
+        "written": 52428,
+        "synced": 52428,
+        "end": 52428
+      }
+    }
+  }
+}

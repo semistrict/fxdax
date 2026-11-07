@@ -3,7 +3,7 @@ id: doc-7
 title: 'Object storage: how the host keeps branches in S3 and GCS'
 type: specification
 created_date: '2026-10-17 01:31'
-updated_date: '2026-11-07 13:15'
+updated_date: '2026-11-07 17:47'
 ---
 # Object storage: how the host keeps branches in S3 and GCS
 
@@ -72,8 +72,11 @@ checkpoints and segments' footers, and lineage is in the bucket alone.
   fill, so all data on disk and in the bucket is compressed, and memory holds it uncompressed.
   Reads decompress the parts they touch, a host fetches each part with one GET of its stored
   bytes, and its cache keeps them as stored.
-- **Measured** on GCE against GCS and against file buckets: docs/measurements
-  (real-bucket-guest-suites-2026-11-06.md; TASK-165.10's before and after the restructure).
+- **Measured** on GCE against GCS and against file buckets (docs/measurements/
+  real-bucket-guest-suites-2026-11-06.md), and against main before the restructure
+  (docs/measurements/restructure-before-after-2026-11-07.md): the perf gate the same or better,
+  forked DAX 58% faster and a VM 557 MiB cheaper; forks 12 ms; a cold host's page-ins of a fork's
+  data slower than reading it from local files was (TASK-225).
 
 ## Decisions
 

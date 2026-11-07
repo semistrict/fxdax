@@ -3,7 +3,7 @@ id: doc-14
 title: 'Local disk as the bucket''s write-ahead log and cache: one storage engine'
 type: specification
 created_date: '2026-11-05 03:13'
-updated_date: '2026-11-07 13:15'
+updated_date: '2026-11-07 17:47'
 ---
 # Local disk as the bucket's write-ahead log and cache: one storage engine
 
@@ -288,8 +288,10 @@ The child's directory is made once its record exists; opening it is opening a st
 waited for its record before too (`Remote::forked`), so a fork's latency changes by the child's
 recovery: its state is read from the bucket, the checkpoint the parent's writer wrote as the fork
 was acknowledged and the footers after it, and taken by the child, O(extents) of the parent at the
-fork, not shared in memory with the parent's. TASK-165.10's measurements (docs/measurements)
-have what that costs.
+fork, not shared in memory with the parent's. Measured (TASK-165.10,
+docs/measurements/restructure-before-after-2026-11-07.md): forks 12 ms against 18 ms before the
+restructure and 26 ms before step 9, opens 7.6 ms against 19.4; a cold host's first read of a
+fork's data slower, fetched where it was read from local files (TASK-225).
 
 ## Capacity, spent, room
 

@@ -1,0 +1,242 @@
+===== r914
+-- bench-fork-fxfs-guest-dax-warm
+   fork-mount             median 3.5 min 3.1 max 3.6
+   fork-read-usr          median 0.7 min 0.7 max 3.0
+   fork-reread-usr        median 0.1 min 0.1 max 0.1
+   fork-pg-start          median 0.3 min 0.3 max 0.3
+   fork-pgbench-select    median 22869.8 min 19114.8 max 27093.2
+   extentd-fetched-bytes  0.0, 0.0, 0.0
+   extentd-page-ins       1739.0, 12.0, 12.0
+   extentd-page-in-bytes  623996928.0, 69632.0, 69632.0
+   extentd-faults         4194.0, 0.0, 0.0
+   extentd-fault-ns       1149459832.0, 0.0, 0.0
+   extentd-maps           701.0, 701.0, 701.0
+   extentd-map-ns         24466995.0, 59108004.0, 59867057.0
+   extentd-prefetches     0.0, 1732.0, 1732.0
+   extentd-reads          19884.0, 19884.0, 19884.0
+   guest-read-ms          4419.014, 3489.871, 3156.776
+   guest-map-ms           154.045, 306.258, 305.402
+-- bench-fork-fxfs-guest-dax-cold
+   fork-mount             median 2.5 min 2.4 max 2.5
+   fork-read-usr          median 3.1 min 3.1 max 3.2
+   fork-reread-usr        median 0.1 min 0.1 max 0.1
+   fork-pg-start          median 0.3 min 0.3 max 0.3
+   fork-pgbench-select    median 18624.2 min 18504.2 max 18690.0
+   extentd-fetched-bytes  0.0, 0.0, 0.0
+   extentd-page-ins       1740.0, 1740.0, 1740.0
+   extentd-page-in-bytes  626372608.0, 626372608.0, 626372608.0
+   extentd-faults         4216.0, 4208.0, 3994.0
+   extentd-fault-ns       1237669745.0, 1239416013.0, 1242807374.0
+   extentd-maps           701.0, 701.0, 701.0
+   extentd-map-ns         22874297.0, 20354119.0, 23984057.0
+   extentd-prefetches     0.0, 0.0, 0.0
+   extentd-reads          15757.0, 15757.0, 15757.0
+   guest-read-ms          3834.466, 3666.143, 3537.98
+   guest-map-ms           162.528, 156.48, 155.423
+-- bench-fork-fxfs-guest-warm
+   fork-mount             median 2.6 min 2.5 max 2.8
+   fork-read-usr          median 2.8 min 2.8 max 3.6
+   fork-reread-usr        median 0.0 min 0.0 max 0.0
+   fork-pg-start          median 0.3 min 0.3 max 0.3
+   fork-pgbench-select    median 21335.3 min 21214.5 max 21536.5
+   extentd-fetched-bytes  0.0, 0.0, 0.0
+   extentd-page-ins       1745.0, 12.0, 12.0
+   extentd-page-in-bytes  625500160.0, 69632.0, 69632.0
+   extentd-faults         0.0, 0.0, 0.0
+   extentd-fault-ns       0.0, 0.0, 0.0
+   extentd-maps           0.0, 0.0, 0.0
+   extentd-map-ns         0.0, 0.0, 0.0
+   extentd-prefetches     0.0, 1738.0, 1738.0
+   extentd-reads          35291.0, 35736.0, 35828.0
+   guest-read-ms          9631.925, 7124.748, 7364.592
+   guest-map-ms           0.0, 0.0, 0.0
+-- bench-fork-fxfs-guest-dax-profiled
+   fork-mount             median 2.9 min 2.9 max 3.0
+   fork-read-usr          median 0.7 min 0.7 max 0.7
+   fork-reread-usr        median 0.1 min 0.1 max 0.1
+   fork-pg-start          median 0.3 min 0.3 max 0.3
+   fork-pgbench-select    median 27468.3 min 26412.1 max 27553.9
+   extentd-fetched-bytes  0.0, 0.0, 0.0
+   extentd-page-ins       1778.0, 1778.0, 1778.0
+   extentd-page-in-bytes  630145024.0, 630145024.0, 630145024.0
+   extentd-faults         0.0, 0.0, 0.0
+   extentd-fault-ns       0.0, 0.0, 0.0
+   extentd-maps           714.0, 714.0, 714.0
+   extentd-map-ns         59697695.0, 57696225.0, 58631065.0
+   extentd-prefetches     1772.0, 1772.0, 1772.0
+   extentd-reads          19884.0, 19884.0, 19884.0
+   guest-read-ms          3076.01, 3015.697, 3244.445
+   guest-map-ms           312.551, 305.781, 304.254
+  object-store: get=357 get-range=59 head=0 list=203 create=3096 update=21 overwrite=0 delete=1 up-segments=460219691 up-extents=415391339 up-checkpoints=1660675 up-moves=0 up-other=1550 down=1627104
+   open: 32 x 19.39 ms
+   fork: 14 x 18.32 ms
+   fault: 4228 x 0.27 ms
+   read: 167286 x 0.02 ms
+   map: 2216 x 0.07 ms
+   commit: 89 x 1.40 ms
+   fxfs-guest-snapshot-dax []
+   fxfs-guest-migrate-dax []
+   fxfs-guest-live-fork []
+   fxfs-guest-live-fork pass
+   fxfs-guest-snapshot-dax pass
+   fxfs-guest-migrate-dax pass
+   bench-fork-fxfs-guest-dax-warm report
+   bench-fork-fxfs-guest-dax-cold report
+   bench-fork-fxfs-guest-warm report
+   bench-fork-fxfs-guest-dax-profiled report
+===== r910
+-- bench-fork-fxfs-guest-dax-warm
+-- bench-fork-fxfs-guest-dax-cold
+   fork-mount             median 2.8 min 2.8 max 3.2
+   fork-read-usr          median 3.3 min 3.2 max 3.3
+   fork-reread-usr        median 0.1 min 0.1 max 0.1
+   fork-pg-start          median 0.3 min 0.3 max 0.3
+   fork-pgbench-select    median 18335.2 min 18281.4 max 23787.4
+   extentd-fetched-bytes  628224000.0, 628224000.0, 628224000.0
+   extentd-page-ins       1728.0, 1728.0, 1728.0
+   extentd-page-in-bytes  20480.0, 20480.0, 20480.0
+   extentd-faults         4192.0, 4236.0, 4088.0
+   extentd-fault-ns       1264154055.0, 1306955467.0, 1282420584.0
+   extentd-maps           714.0, 714.0, 714.0
+   extentd-map-ns         25183549.0, 22985302.0, 27783004.0
+   extentd-prefetches     0.0, 0.0, 0.0
+   extentd-reads          17805.0, 17805.0, 17805.0
+   guest-read-ms          4362.448, 4411.484, 4263.189
+   guest-map-ms           163.255, 175.522, 175.446
+-- bench-fork-fxfs-guest-warm
+   fork-mount             median 2.6 min 2.6 max 2.7
+   fork-read-usr          median 3.0 min 2.8 max 3.6
+   fork-reread-usr        median 0.0 min 0.0 max 0.0
+   fork-pg-start          median 0.3 min 0.3 max 0.3
+   fork-pgbench-select    median 20664.3 min 16767.2 max 20835.6
+   extentd-fetched-bytes  623144960.0, 49152.0, 49152.0
+   extentd-page-ins       1751.0, 12.0, 12.0
+   extentd-page-in-bytes  20480.0, 20480.0, 20480.0
+   extentd-faults         0.0, 0.0, 0.0
+   extentd-fault-ns       0.0, 0.0, 0.0
+   extentd-maps           0.0, 0.0, 0.0
+   extentd-map-ns         0.0, 0.0, 0.0
+   extentd-prefetches     0.0, 1745.0, 1745.0
+   extentd-reads          35843.0, 35603.0, 35559.0
+   guest-read-ms          10619.639, 7250.192, 7255.838
+   guest-map-ms           0.0, 0.0, 0.0
+-- bench-fork-fxfs-guest-dax-profiled
+   fork-mount             median 3.6 min 3.1 max 3.7
+   fork-read-usr          median 0.8 min 0.8 max 0.8
+   fork-reread-usr        median 0.1 min 0.1 max 0.1
+   fork-pg-start          median 0.3 min 0.3 max 0.3
+   fork-pgbench-select    median 26514.8 min 26471.4 max 26704.4
+   extentd-fetched-bytes  626487296.0, 626487296.0, 626491392.0
+   extentd-page-ins       1769.0, 1769.0, 1769.0
+   extentd-page-in-bytes  20480.0, 20480.0, 16384.0
+   extentd-faults         0.0, 0.0, 0.0
+   extentd-fault-ns       0.0, 0.0, 0.0
+   extentd-maps           710.0, 710.0, 710.0
+   extentd-map-ns         58440101.0, 62549804.0, 63417634.0
+   extentd-prefetches     1763.0, 1763.0, 1763.0
+   extentd-reads          17836.0, 17836.0, 17836.0
+   guest-read-ms          4252.685, 4896.798, 3740.289
+   guest-map-ms           327.147, 319.506, 331.834
+  object-store: get=334 get-range=1307 head=0 list=192 create=2399 update=17 overwrite=0 delete=1 up-segments=336379724 up-extents=324738964 up-checkpoints=1247080 up-moves=0 up-other=1238 down=230302793
+   open: 24 x 10.85 ms
+   fork: 11 x 26.28 ms
+   fault: 2521 x 0.05 ms
+   read: 107980 x 0.03 ms
+   map: 3214 x 0.07 ms
+   commit: 113 x 4.95 ms
+   fxfs-guest-snapshot-dax ['45.700094ms', '47.277832ms']
+   fxfs-guest-migrate-dax ['50.212869ms']
+   fxfs-guest-live-fork []
+   fxfs-guest-live-fork pass
+   fxfs-guest-snapshot-dax pass
+   fxfs-guest-migrate-dax pass
+   bench-fork-fxfs-guest-dax-warm skip
+   bench-fork-fxfs-guest-dax-cold report
+   bench-fork-fxfs-guest-warm report
+   bench-fork-fxfs-guest-dax-profiled report
+===== r911
+-- bench-fork-fxfs-guest-dax-warm
+   fork-mount             median 2.6 min 2.6 max 3.2
+   fork-read-usr          median 0.8 min 0.8 max 3.5
+   fork-reread-usr        median 0.1 min 0.1 max 0.1
+   fork-pg-start          median 0.3 min 0.3 max 0.3
+   fork-pgbench-select    median 24486.2 min 24316.6 max 27201.5
+   extentd-fetched-bytes  628281344.0, 49152.0, 49152.0
+   extentd-page-ins       1771.0, 12.0, 12.0
+   extentd-page-in-bytes  20480.0, 20480.0, 20480.0
+   extentd-faults         4304.0, 0.0, 0.0
+   extentd-fault-ns       1411251496.0, 0.0, 0.0
+   extentd-maps           703.0, 703.0, 703.0
+   extentd-map-ns         19754300.0, 61560746.0, 60180464.0
+   extentd-prefetches     0.0, 1765.0, 1765.0
+   extentd-reads          17837.0, 17837.0, 17837.0
+   guest-read-ms          5370.93, 2790.16, 2904.988
+   guest-map-ms           169.07, 308.351, 311.081
+-- bench-fork-fxfs-guest-dax-cold
+   fork-mount             median 3.1 min 2.8 max 3.3
+   fork-read-usr          median 3.6 min 3.6 max 3.6
+   fork-reread-usr        median 0.1 min 0.1 max 0.1
+   fork-pg-start          median 0.3 min 0.3 max 0.3
+   fork-pgbench-select    median 19042.8 min 18502.7 max 24055.5
+   extentd-fetched-bytes  625647616.0, 625647616.0, 625647616.0
+   extentd-page-ins       1778.0, 1778.0, 1778.0
+   extentd-page-in-bytes  20480.0, 20480.0, 20480.0
+   extentd-faults         4124.0, 4184.0, 4140.0
+   extentd-fault-ns       1650704953.0, 1620817257.0, 1648409311.0
+   extentd-maps           699.0, 699.0, 699.0
+   extentd-map-ns         21751561.0, 21665630.0, 20542473.0
+   extentd-prefetches     0.0, 0.0, 0.0
+   extentd-reads          17836.0, 17836.0, 17836.0
+   guest-read-ms          5709.201, 5883.178, 5904.19
+   guest-map-ms           159.472, 164.377, 161.795
+-- bench-fork-fxfs-guest-warm
+   fork-mount             median 2.6 min 2.2 max 2.8
+   fork-read-usr          median 2.8 min 2.8 max 3.8
+   fork-reread-usr        median 0.0 min 0.0 max 0.0
+   fork-pg-start          median 0.3 min 0.3 max 0.3
+   fork-pgbench-select    median 21523.9 min 20968.3 max 21627.5
+   extentd-fetched-bytes  622952448.0, 53248.0, 49152.0
+   extentd-page-ins       1731.0, 12.0, 12.0
+   extentd-page-in-bytes  20480.0, 16384.0, 20480.0
+   extentd-faults         0.0, 0.0, 0.0
+   extentd-fault-ns       0.0, 0.0, 0.0
+   extentd-maps           0.0, 0.0, 0.0
+   extentd-map-ns         0.0, 0.0, 0.0
+   extentd-prefetches     0.0, 1724.0, 1724.0
+   extentd-reads          35626.0, 35753.0, 35547.0
+   guest-read-ms          10995.749, 7064.924, 6512.894
+   guest-map-ms           0.0, 0.0, 0.0
+-- bench-fork-fxfs-guest-dax-profiled
+   fork-mount             median 2.9 min 2.4 max 3.0
+   fork-read-usr          median 0.8 min 0.8 max 0.8
+   fork-reread-usr        median 0.1 min 0.1 max 0.1
+   fork-pg-start          median 0.3 min 0.3 max 0.3
+   fork-pgbench-select    median 27121.7 min 23896.4 max 27469.7
+   extentd-fetched-bytes  627642368.0, 627642368.0, 627642368.0
+   extentd-page-ins       1755.0, 1755.0, 1755.0
+   extentd-page-in-bytes  20480.0, 20480.0, 20480.0
+   extentd-faults         0.0, 0.0, 0.0
+   extentd-fault-ns       0.0, 0.0, 0.0
+   extentd-maps           713.0, 713.0, 713.0
+   extentd-map-ns         58137310.0, 60283760.0, 60120813.0
+   extentd-prefetches     1749.0, 1749.0, 1749.0
+   extentd-reads          15789.0, 15789.0, 15789.0
+   guest-read-ms          3622.628, 3071.457, 3282.84
+   guest-map-ms           310.283, 309.445, 318.586
+  object-store: get=400 get-range=2352 head=0 list=206 create=3242 update=21 overwrite=0 delete=1 up-segments=460109982 up-extents=431767292 up-checkpoints=1716475 up-moves=0 up-other=1550 down=446306690
+   open: 32 x 7.63 ms
+   fork: 14 x 12.04 ms
+   fault: 6849 x 0.22 ms
+   read: 161432 x 0.03 ms
+   map: 5422 x 0.06 ms
+   commit: 143 x 2.41 ms
+   fxfs-guest-snapshot-dax ['33.375481ms', '38.675362ms']
+   fxfs-guest-migrate-dax ['28.591226ms']
+   fxfs-guest-live-fork []
+   fxfs-guest-live-fork pass
+   fxfs-guest-snapshot-dax pass
+   fxfs-guest-migrate-dax pass
+   bench-fork-fxfs-guest-dax-warm report
+   bench-fork-fxfs-guest-dax-cold report
+   bench-fork-fxfs-guest-warm report
+   bench-fork-fxfs-guest-dax-profiled report
