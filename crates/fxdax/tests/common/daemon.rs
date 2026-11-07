@@ -163,6 +163,26 @@ impl Daemon {
         Ok(self.runtime.block_on(self.client.shrink_memory(request))?.into_inner().bytes)
     }
 
+    /// Limits the disk of `tenant`, or of every tenant, to `bytes`, or lifts the limit (TASK-94).
+    pub fn set_disk_limit(
+        &mut self,
+        tenant: Option<&str>,
+        bytes: Option<u64>,
+    ) -> Result<(), tonic::Status> {
+        let request = SetDiskLimitRequest { tenant: tenant.unwrap_or_default().to_owned(), bytes };
+        self.runtime.block_on(self.client.set_disk_limit(request)).map(drop)
+    }
+
+    /// What the disk of `tenant`, or of every tenant, takes, counted now, and its limit.
+    pub fn tenant_disk(
+        &mut self,
+        tenant: Option<&str>,
+    ) -> Result<(u64, Option<u64>), tonic::Status> {
+        let request = GetTenantDiskRequest { tenant: tenant.unwrap_or_default().to_owned() };
+        let response = self.runtime.block_on(self.client.get_tenant_disk(request))?.into_inner();
+        Ok((response.bytes, response.limit_bytes))
+    }
+
     pub fn stats(&mut self) -> GetStatsResponse {
         self.runtime.block_on(self.client.get_stats(GetStatsRequest {})).unwrap().into_inner()
     }

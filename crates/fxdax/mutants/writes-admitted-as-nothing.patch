@@ -1,0 +1,16 @@
+# A write is admitted as nothing: a tenant's disk counts none of what its VM processes write until
+# a walk of its directory finds it, every 10 s, so that between walks they write past its limit
+# as fast as the disk takes it (TASK-94).
+# Kind: disk
+# Killer: extentd::tests::hostile::a_tenant_filling_its_disk_leaves_others_committing
+--- a/crates/fxdax/src/extentd/server.rs
++++ b/crates/fxdax/src/extentd/server.rs
+@@ -1224,7 +1224,7 @@
+                     }
+                 };
+                 // fxdax: within its tenant's disk (TASK-94).
+-                let _admitted = self.tenant.admit_to_disk(data.len() as u64)?;
++                let _admitted = self.tenant.admit_to_disk(0)?;
+                 store.write_with_barriers(*extent, *offset, &[data], *barriers)
+             }
+             Request::Free(extent) => store.free(*extent),
