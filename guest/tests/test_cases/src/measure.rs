@@ -15,6 +15,10 @@
 //! - `vmm_rss`, `vmm_pss`, `vmm_anon` and `vmm_shmem`: the VM process's resident memory, its
 //!   proportional share of it, and of that its anonymous memory (the guest's RAM it touched) and
 //!   its shared memory (the daemon's pages its DAX window maps) (/proc/PID/smaps_rollup);
+//! - `vmm_maps`: the VM process's mappings (/proc/PID/maps's lines), which its DAX window's runs
+//!   take against the host's vm.max_map_count (TASK-227);
+//! - `host_kvm_page_tables`: KVM's page tables for its guests, the host's (/proc/meminfo's
+//!   SecPageTables), which a DAX window's pages mapped take (TASK-227);
 //! - `extentd_pss`: the daemon process's share of its own;
 //! - `extentd_*`: some of the daemon's metrics (fxdax::extentd::metrics): the bytes its arenas
 //!   hold, every tenant's extents' pages (`extentd_memory_bytes`), the pages the windows map, its
@@ -103,8 +107,12 @@ mod host {
             guest: &str,
         ) -> anyhow::Result<()> {
             let mut line = format!("memory: vm={vm} phase={phase} host_used={}", host_used()?);
-            if let Some(vmm) = vmm {
-                let vmm = rollup(vmm).context("the VM process's memory")?;
+            let host = meminfo(&std::fs::read_to_string("/proc/meminfo")?);
+            if let Some(tables) = host.get("SecPageTables") {
+                write!(line, " host_kvm_page_tables={tables}")?;
+            }
+            if let Some(pid) = vmm {
+                let vmm = rollup(pid).context("the VM process's memory")?;
                 for (name, field) in [
                     ("vmm_rss", "Rss"),
                     ("vmm_pss", "Pss"),
@@ -115,6 +123,9 @@ mod host {
                         vmm.get(field).with_context(|| format!("no {field} in smaps_rollup"))?;
                     write!(line, " {name}={bytes}")?;
                 }
+                let maps = std::fs::read_to_string(format!("/proc/{pid}/maps"))
+                    .context("the VM process's mappings")?;
+                write!(line, " vmm_maps={}", maps.lines().count())?;
             }
             let daemon = rollup(self.daemon).context("the daemon's memory")?;
             write!(line, " extentd_pss={}", daemon.get("Pss").context("no Pss in smaps_rollup")?)?;
