@@ -36,8 +36,8 @@ use fxfs::object_store::transaction::{LockKey, LockKeys, Mutation, Options, Tran
 use fxfs::object_store::{
     AttributeId, AttributeKey, DataObjectHandle, Directory, ExtentAccess, FileExtent,
     HandleOptions, MAX_INLINE_XATTR_SIZE, MAX_XATTR_NAME_SIZE, MAX_XATTR_VALUE_SIZE,
-    ObjectDescriptor, ObjectKey, ObjectKind, ObjectStore, ObjectValue, SetExtendedAttributeMode,
-    StoreObjectHandle, Timestamp,
+    ObjectDescriptor, ObjectKey, ObjectKind, ObjectStore, ObjectValue, PosixAttributes,
+    SetExtendedAttributeMode, StoreObjectHandle, Timestamp,
 };
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::collections::BTreeSet;
@@ -696,14 +696,11 @@ impl<P: Platform> Fxfs<P> {
             }
             ObjectKind::Graveyard => bail!(FxfsError::NotFound),
         };
+        let kind = node_type(kind_bits, attributes.posix_attributes.as_ref());
         let (mode, uid, gid, rdev) = match attributes.posix_attributes {
-            // A file's mode may say it is a special file: a FIFO, socket or device.
-            Some(posix) if kind_bits == S_IFREG && posix.mode & S_IFMT != 0 => {
-                (posix.mode, posix.uid, posix.gid, posix.rdev)
-            }
-            Some(posix) => (kind_bits | posix.mode & !S_IFMT, posix.uid, posix.gid, posix.rdev),
-            None if kind_bits == S_IFDIR => (S_IFDIR | 0o755, 0, 0, 0),
-            None if kind_bits == S_IFLNK => (S_IFLNK | 0o777, 0, 0, 0),
+            Some(posix) => (kind | posix.mode & !S_IFMT, posix.uid, posix.gid, posix.rdev),
+            None if kind == S_IFDIR => (S_IFDIR | 0o755, 0, 0, 0),
+            None if kind == S_IFLNK => (S_IFLNK | 0o777, 0, 0, 0),
             None => (S_IFREG | 0o644, 0, 0, 0),
         };
         Ok(Attr {
@@ -1839,6 +1836,16 @@ fn file_type(descriptor: &ObjectDescriptor) -> u32 {
         ObjectDescriptor::Directory => S_IFDIR,
         ObjectDescriptor::Symlink => S_IFLNK,
         _ => S_IFREG,
+    }
+}
+
+/// The `S_IFMT` bits of a node whose kind of object has `kind_bits` and whose POSIX attributes are
+/// `posix`, if it has any: the one place a node's type is decided. A file's mode may say it is a
+/// special file, a FIFO, a socket or a device, as Starnix and fxdax make them.
+fn node_type(kind_bits: u32, posix: Option<&PosixAttributes>) -> u32 {
+    match posix {
+        Some(posix) if kind_bits == S_IFREG && posix.mode & S_IFMT != 0 => posix.mode & S_IFMT,
+        _ => kind_bits,
     }
 }
 
