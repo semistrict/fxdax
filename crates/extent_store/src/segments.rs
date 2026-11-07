@@ -751,7 +751,7 @@ impl<F: File> Unframed<F> {
         }
         dir.barrier()?;
         phases.took(framing::DIRS, synced);
-        timings::framed(phases);
+        timings::framed(self.number, phases);
         Ok(framed)
     }
 }

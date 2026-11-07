@@ -1262,6 +1262,10 @@ fn daemon_line() -> String {
     let timed = [
         timed_fields("flush", &timings.flushes, &extent_store::FLUSH_PHASES),
         timed_fields("framing", &timings.framings, &extent_store::FRAMING_PHASES),
+        vec![
+            format!("own_sync_max_us={}", timings.own_sync_max_us),
+            format!("raw_sync_max_us={}", timings.raw_sync_max_us),
+        ],
     ]
     .concat();
     format!(

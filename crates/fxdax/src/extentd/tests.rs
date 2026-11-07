@@ -326,6 +326,7 @@ fn keeps_object_storage_and_follower_stats() {
             expected.extend(phases.iter().map(|phase| format!("{kind}_{which}_{phase}_us")));
         }
     }
+    expected.extend(["own_sync_max_us", "raw_sync_max_us"].map(str::to_owned));
     assert_eq!(names, expected, "{kept}");
     assert_eq!(count(&daemon, "durable_lag_count"), Some(3), "{kept}");
     // The three commits, each a COMMIT request: a request's time holds its commit's, which

@@ -15,6 +15,7 @@ use anyhow::{Context as _, Error};
 use std::collections::{BTreeSet, HashSet, VecDeque};
 use std::io;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// A branch's commits, as they become durable: each `T`, what a flush needs of it, from the time
 /// it is ordered until a flush takes it.
@@ -196,6 +197,17 @@ impl Drop for Helpers {
     }
 }
 
+/// fxdax: what [`Syncs::sync_files`] synced: so many files whose pages leave the host's page
+/// cache, the extents stored on their own, and so many whose pages stay, segments' raw files; and
+/// how long the longest of each took.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FileSyncs {
+    pub files: usize,
+    pub cached: usize,
+    pub longest_file_us: u64,
+    pub longest_cached_us: u64,
+}
+
 /// What a flush makes durable of the commits it takes: the files their data is in, and the
 /// directories whose entries they changed.
 pub(crate) struct Syncs<F> {
@@ -244,17 +256,32 @@ impl<F: File> Syncs<F> {
         self.sync_dirs(dir)
     }
 
-    /// fxdax: syncs the files, as [`Syncs::sync`] does first.
-    pub fn sync_files<D: Dir<File = F>>(&self, dir: &D) -> Result<(), Error> {
+    /// fxdax: syncs the files, as [`Syncs::sync`] does first; returns how many of each kind, and
+    /// how long the longest of each took (TASK-165.9).
+    pub fn sync_files<D: Dir<File = F>>(&self, dir: &D) -> Result<FileSyncs, Error> {
         let sync: fn(&F) -> io::Result<()> = F::sync;
         let sync_cached: fn(&F) -> io::Result<()> = F::sync_cached;
         let mut seen = HashSet::new();
-        let files: Vec<_> = (self.files.iter().map(|file| (file, sync)))
-            .chain(self.cached.iter().map(|file| (file, sync_cached)))
-            .filter(|(file, _)| seen.insert(Arc::as_ptr(file)))
+        let files: Vec<_> = (self.files.iter().map(|file| (file, sync, false)))
+            .chain(self.cached.iter().map(|file| (file, sync_cached, true)))
+            .filter(|(file, _, _)| seen.insert(Arc::as_ptr(file)))
             .collect();
+        let longest = [AtomicU64::new(0), AtomicU64::new(0)];
         let most = if dir.concurrent() { AT_ONCE } else { 1 };
-        at_once(&files, most, |(file, sync)| sync(file).context("syncing extents' data"))
+        at_once(&files, most, |(file, sync, cached)| {
+            let started = std::time::Instant::now();
+            sync(file).context("syncing extents' data")?;
+            let took = started.elapsed().as_micros() as u64;
+            longest[usize::from(*cached)].fetch_max(took, Ordering::Relaxed);
+            Ok(())
+        })?;
+        let cached = files.iter().filter(|(_, _, cached)| *cached).count();
+        Ok(FileSyncs {
+            files: files.len() - cached,
+            cached,
+            longest_file_us: longest[0].load(Ordering::Relaxed),
+            longest_cached_us: longest[1].load(Ordering::Relaxed),
+        })
     }
 
     /// fxdax: syncs the directories, as [`Syncs::sync`] does after the files.

@@ -73,6 +73,14 @@ pub fn say_daemon_stats(test_setup: &TestSetup, name: &str) {
         Ok(kept) => kept.lines().for_each(|line| eprintln!("{name} stats: {line}")),
         Err(err) => eprintln!("{name} stats: reading {}: {err}", path.display()),
     }
+    // And its stores' warnings, of flushes and framings past extentd's turn among them, in its
+    // log, as the stats file, gone with a round's directory that passed.
+    let log = test_setup.tmp_dir.join(format!("{name}.log"));
+    let warned = fs::read_to_string(&log).unwrap_or_default();
+    let warned = warned.lines().filter(|line| line.contains("WARN extent_store"));
+    for line in warned.take(200) {
+        eprintln!("{name} log: {line}");
+    }
 }
 
 /// An extent daemon of the test's own, FXDAX_EXTENTD_BIN, serving at `socket`, and its control API
