@@ -143,6 +143,8 @@ Decisions made without you, still yours to confirm or overturn. Each is a line o
 - **Guest cases are selected by tags;** `manual` for those no suite runs; the nightly runs 50. TASK-160.29, 2026-11-05.
 - **Guest test results as data** (`round-K.json`, `run.json`, `summary.json`, uploads to `FXDAX_RESULTS_BUCKET`). TASK-160.31, 2026-11-05.
 - **fsx against ext4 in one guest:** the model is the oracle of bytes and errnos, ext4 held to it as Fxfs is; ext4 says which times a step changes, compared (`differential::ALLOWED` empty); a clone on ext4 is a copy of what the model's VFS rules say it takes; failures shrunk in the guest, replayed once from a boot; -faults-dax in soak-sanitized alone. TASK-44.15, 2026-11-06.
+- **fsx's reference ext4 mounts `nodelalloc`;** a far step's outcome is each filesystem's own (by its largest file, `Options::largest`), not compared across them; host XFS runs skip writes from faulting buffers (its iomap's stale bytes); a write from a file's own mapping writes the same bytes or bytes apart, never overlapping ones, whose copy is memcpy's, undefined (the guest's x86 copy and the host's arm64 copy differed, GCE r868). TASK-149.16, 2026-11-07.
+- **Fxfs's DAX mappings aren't `VM_MIXEDMAP`,** so a fork copies none of their PTEs; mremap's and mprotect's batching filed (TASK-149.42). TASK-149.16, 2026-11-07.
 - **xfstests' known failures less generic/225, 564 and 798,** which pass with DAX and without since copy-on-write DAX. TASK-44.15, 2026-11-06.
 - **Each guest check runs in a process of its own;** the overrun suite runs the page cache's checks after two made to fail. TASK-160.30, 2026-11-05.
 - **A budget per guest check,** a suite's limit their sum plus 30 s. TASK-168, 2026-11-05.
