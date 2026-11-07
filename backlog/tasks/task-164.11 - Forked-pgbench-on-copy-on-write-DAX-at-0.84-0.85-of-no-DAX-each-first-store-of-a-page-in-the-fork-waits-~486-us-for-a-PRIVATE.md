@@ -3,11 +3,11 @@ id: TASK-164.11
 title: >-
   Forked pgbench on copy-on-write DAX at 0.84-0.85 of no DAX: each first store
   of a page in the fork waits ~486 us for a PRIVATE
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-06 04:48'
-updated_date: '2026-11-06 23:23'
+updated_date: '2026-11-07 00:31'
 labels:
   - performance
   - dax
@@ -26,14 +26,14 @@ After TASK-164.10 the perf gate's forked-dax is 0.836 (GCE r650: 1,217 against 1
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 forked-dax 0.9 or better in the perf gate's single phase on GCE, the density gate still passing
+- [x] #1 forked-dax 0.9 or better in the perf gate's single phase on GCE, the density gate still passing
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -57,4 +57,12 @@ Changes: (1) vendor/firecracker b7c332c52: private_max half the window's pages b
 Measured (docs/measurements/dax-cow-gate.md): r804, half the window private: forked-dax 0.912, PRIVATEs 108,006; r805 its density phase: density-memory 0.823, 2,256 MiB a VM added. r806 full gate, half alone: 0.893. r807 full gate, both: forked-dax 0.912 (dax-forked 1203, 1328, 1300, 1442, 1296 against no-dax-forked's 1425 median), dax 0.995, density-memory 0.811, density-memory-mib 2,164.0, every gate passing; lock waits 7.4 s from 37. Checks: guest/sim zloop (every test, 3,000 seeds each of interleave and failures, 0 failed), the full sweep (41 runs, 16,142 calls failed in turn, 0 failed), mutants.sh (35 killed, 6 none; three re-cut against fxfs_dax_private_failed), guest-mutants-gce.py --check (46), the fork's extent device and config tests (Docker; the 8 worker tests that fail there fail without the change too, EIO opening the store in the container), upstream-changes.py --check.
 
 Not of this task: the fork's extent worker tests (vendor/firecracker, vmm --lib extent) fail 8 of 21 on main as here, EIO opening a store from a daemon of their own (store_of), in Docker and on GCE r800 alike, with private_max's change taken out too; CI doesn't run them.
+
+Validation: macOS FXDAX_TEST_PARTS='workspace scripts' scripts/test.sh, 2051 tests and 162 script tests passed; Linux by land-p3's CI and the guest suites on GCE (dax-gate at c69b387a0: fxfs-guest-dax, checks-dax, -delay, -small, crash-dax, -killed 5 rounds each; pgbench-dax-forked, probes a map 45 us, a write(2) 113 us; every mutant killed or none); scripts/upstream-changes.py --check passes; the changes are fxdax's own code, marked fxdax where it sits beside upstream's.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+forked-dax 0.912 in the full perf gate on GCE (r807), every gate passing (dax 0.995, density-memory 0.811, 2,164 MiB a VM added), from 0.83 (r800). Measured first (scripts/extent-transport.bt): a PRIVATE's transport is nested exits, which halt polling and spinning didn't change; the gap was how many PRIVATEs there were and the inode's lock they held. Changes: private_max half the window's pages by default (vendor/firecracker b7c332c52; PRIVATEs 309,608 to 108,006); a write(2) makes its pages private before taking the inode's lock (dax.c; lock waits 37 s to 7.4 s); and a bug the new schedule found, a range whose MAPs failed part way left pages mapped, now UNMAPped whole. Tests: the fork's private_max test, guest/sim cow_writes_private_before_the_lock and range_map_failed_part_way, each red without; zloop, sweep and mutants pass; dax-gate passed at c69b387a0. TASK-164.11.1 and .2, a PRIVATE's latency, stay open as later work.
+<!-- SECTION:FINAL_SUMMARY:END -->

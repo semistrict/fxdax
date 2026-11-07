@@ -3,10 +3,10 @@ id: TASK-164
 title: >-
   Copy-on-write DAX: the window maps sealed extents read-only; a store gets a
   private page, allocated at writeback
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-11-04 07:34'
-updated_date: '2026-11-06 18:51'
+updated_date: '2026-11-07 00:31'
 labels: []
 dependencies: []
 priority: high
@@ -29,9 +29,9 @@ Decided by the user on 2026-11-04 (docs/reviews/2026-11-04-first-principles.md, 
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Notes
@@ -46,4 +46,12 @@ Decided by the user on 2026-11-04 (docs/reviews/2026-11-04-first-principles.md, 
 2026-11-06, AC2 checked against the full perf gate on main ccbe81d0e (GCE r790, r791, jailed; docs/measurements/dax-cow-gate.md): writes at no-DAX speed met (dax 0.976, created files in the page cache); base reads at today's DAX speed met as bigmap-read gates them (cold reads 5.32x no DAX's, 88.9 against 16.7 MiB/s; the comparison with pre-deletion DAX can't be run, TASK-164.6); the DAX and crash suites pass (r647, r650, r651); but the prototype's forked pgbench fails its gate, 0.304 (TASK-164.12: a fork's inherited data paged in from the bucket a ranged GET at a time since TASK-165.8). AC2 stays open until TASK-164.6 passes.
 
 2026-11-06: AC2 met. The DAX and crash suites pass in the dax-gate at dde984800 (fxfs-guest-dax, checks-dax, -delay, -small, crash-dax, crash-dax-killed, 5 rounds each). The perf gate, r794: writes at no-DAX speed (dax 0.974) and base reads past DAX's former speed (bigmap-read 5.52x no DAX's, the gate that stands for 'today's DAX' since writable DAX was deleted; TASK-164.6). TASK-164.11 stays open, later work.
+
+2026-11-07: every subtask done but TASK-164.11.1 and TASK-164.11.2, later work on a PRIVATE's latency (OPEN_QUESTIONS.md). The perf gate passes in full with forked-dax 0.912 (r807), the dax-gate at c69b387a0. Validation: macOS FXDAX_TEST_PARTS='workspace scripts' scripts/test.sh, 2051 tests and 162 script tests passed; Linux by land-p3's CI and the guest suites on GCE (dax-gate at c69b387a0: fxfs-guest-dax, checks-dax, -delay, -small, crash-dax, -killed 5 rounds each; pgbench-dax-forked, probes a map 45 us, a write(2) 113 us; every mutant killed or none); scripts/upstream-changes.py --check passes; the changes are fxdax's own code, marked fxdax where it sits beside upstream's.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Copy-on-write DAX is the only DAX: the window maps sealed extents read-only, a store gets a private page, allocated at writeback (doc-13), writable DAX deleted. Its perf gate passes in full on GCE (r807: forked-dax 0.912, dax 0.995, density-memory 0.811, bigmap-read 5.15), its dax-gate at c69b387a0. TASK-164.11.1 and .2, a PRIVATE's latency, are left as later work.
+<!-- SECTION:FINAL_SUMMARY:END -->

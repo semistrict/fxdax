@@ -3,11 +3,11 @@ id: TASK-164.10
 title: >-
   Forked pgbench on copy-on-write DAX at 0.58 of no DAX: each write's PRIVATE a
   round trip, each of its pages a stage operation of its own
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-06 00:14'
-updated_date: '2026-11-06 13:47'
+updated_date: '2026-11-07 00:31'
 labels:
   - performance
   - dax
@@ -28,14 +28,14 @@ The perf gate's forked-dax (docs/measurements/dax-cow-gate.md) is 0.573 (r632) a
 <!-- AC:BEGIN -->
 - [x] #1 Where the forked case's time goes measured, with counters where they were missing (the guest's PRIVATE time, the VMM's private stage operations)
 - [x] #2 The cause named and fixed, with tests
-- [ ] #3 The gate's single phase run on GCE: forked-dax before and after, 0.9 or better
+- [x] #3 The gate's single phase run on GCE: forked-dax before and after, 0.9 or better
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -74,4 +74,12 @@ Decision moved here from OPEN_QUESTIONS.md (2026-11-06): The perf gate's forked-
 - **A `PRIVATE`'s pages are one change of the window, and the VM process makes a run of consecutive private pages at once** (`wire::Receiver::take_privates`, `SecondStage::make_private` of a run), as it makes an unmap with its maps at once (TASK-91.16); the wire still carries a page an operation. A run with no page installed, withheld or restricted maps nothing: its memory is already the private memory, which filling makes the pages'. *Instead:* an operation of a run on the wire, with its pages' sources in a payload, which the receiver's batching refuses. *Undoing it:* `take_privates` and the window's run.
 - **A write(2) that follows on from its file's last (begins within it or where it ended) makes pages ahead of it private** in the `PRIVATE` it needs anyway, 16 pages at first, doubling to 64, within the range, only pages mapped and written, and only below seven eighths of `private_max`, as readahead grows. Pages made so are private and clean, rebound as any. *Cost:* up to 64 pages copied that the log may never write, the last of a segment. *Instead:* doc-13's stage 5 left open whether to; a fixed run, or the whole range at a first write, which a table's random writes would take too. *Undoing it:* `FXFS_DAX_AHEAD_MOST` 0.
 - **A rebind maps a range's every run in one `MAP_MANY`**, from one look at the file's extents, **and takes the writeback lock and the semaphore a range at a time**, stopping once the target is met; **the budget rebinds the files dirtied longest ago first** (`dirtied`, jiffies), where it went by inode number. *Instead:* a page-level least-recently-dirtied order (a clock a page), more memory and code for a table's uniform random writes, which no order helps. *Undoing it:* `fxfs_dax_rebind`'s loop back to one hold, and the sort.
+
+2026-11-07: AC3 met with TASK-164.11's changes: forked-dax 0.912 in the perf gate's full run on GCE (r807; before, r650: 0.836). Validation: macOS FXDAX_TEST_PARTS='workspace scripts' scripts/test.sh, 2051 tests and 162 script tests passed; Linux by land-p3's CI and the guest suites on GCE (dax-gate at c69b387a0: fxfs-guest-dax, checks-dax, -delay, -small, crash-dax, -killed 5 rounds each; pgbench-dax-forked, probes a map 45 us, a write(2) 113 us; every mutant killed or none); scripts/upstream-changes.py --check passes; the changes are fxdax's own code, marked fxdax where it sits beside upstream's.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+A write's PRIVATE in one round trip with its pages made private ahead, and a PRIVATE's pages one run of the stage (TASK-164.10's changes) took forked-dax from 0.58 to 0.84 (r650); with TASK-164.12's part cache and TASK-164.11's private_max and PRIVATEs before the inode's lock, 0.912 in the full perf gate (r807), every gate passing.
+<!-- SECTION:FINAL_SUMMARY:END -->
