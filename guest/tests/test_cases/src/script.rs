@@ -233,6 +233,13 @@ pub enum Op {
     /// a write copies as memcpy does, its result undefined: the guest's x86 copy wrote bytes of a
     /// line before it read them, which the source at 17 bytes on from them held (GCE r868).
     WriteFromMapping { file: usize, place: Place, len: u64, by: u64 },
+    /// fxdax: the kept mapping read through, whole, so that each page the file has is mapped, then
+    /// made read-only (mprotect) and writable again, all of it, whose PTEs the kernel changes in
+    /// batches, then stored to within the file (TASK-149.42): to a page only read, as it comes,
+    /// whose store must fault, which makes it private.
+    ProtectKept { file: usize, place: Place, len: u64, data: u64 },
+    /// fxdax: as [`Op::ProtectKept`], the kept mapping moved (mremap), its PTEs with it.
+    MoveKept { file: usize, place: Place, len: u64, data: u64 },
 }
 
 /// fxdax: the calls of [`Op::Limit`].
@@ -400,13 +407,13 @@ const FAR: [u64; 6] = [
     1 << 50,
 ];
 
-/// fxdax: a hostile operation (TASK-149.16), of [`Op`]'s last nine, its arguments drawn here, or a
-/// range of a file cloned or copied onto itself, overlapping.
+/// fxdax: a hostile operation (TASK-149.16), of [`Op`]'s last eleven, its arguments drawn here, or
+/// a range of a file cloned or copied onto itself, overlapping.
 fn hostile_op(rng: &mut Rng, mix: Mix) -> Op {
     let file = rng.next(mix.files as u64) as usize;
     let place = place(rng);
     let (len, data) = (1 + rng.next(LONGEST), rng.next(u64::MAX));
-    match rng.next(12) {
+    match rng.next(14) {
         0 | 1 => {
             const CALLS: [Limit; 9] = [
                 Limit::WritePastI64,
@@ -445,6 +452,8 @@ fn hostile_op(rng: &mut Rng, mix: Mix) -> Op {
             let by = if rng.next(4) == 0 { 0 } else { rng.next(2 * len) };
             Op::WriteFromMapping { file, place, len, by }
         }
+        12 => Op::ProtectKept { file, place, len, data },
+        13 => Op::MoveKept { file, place, len, data },
         // A range cloned or copied onto itself, overlapping, or just not, unaligned as it comes.
         _ => {
             let shift = rng.next(2 * len + 1) as i64 - len as i64;
@@ -655,6 +664,17 @@ pub enum Step {
         dst: u64,
         len: u64,
     },
+    /// Of the store after, at `at`, within the file.
+    ProtectKept {
+        file: usize,
+        at: u64,
+        data: Vec<u8>,
+    },
+    MoveKept {
+        file: usize,
+        at: u64,
+        data: Vec<u8>,
+    },
 }
 
 impl Step {
@@ -705,6 +725,8 @@ impl Step {
             Step::TruncateRacing { .. } => "truncate racing a store",
             Step::FaultingWrite { .. } => "write from a faulting buffer",
             Step::WriteFromMapping { .. } => "write from its own mapping",
+            Step::ProtectKept { .. } => "mprotect the kept mapping",
+            Step::MoveKept { .. } => "move the kept mapping",
         }
     }
 
@@ -742,6 +764,8 @@ impl Step {
             | Step::TruncateRacing { file: its, .. }
             | Step::FaultingWrite { file: its, .. }
             | Step::WriteFromMapping { file: its, .. }
+            | Step::ProtectKept { file: its, .. }
+            | Step::MoveKept { file: its, .. }
                 if its == file =>
             {
                 Role::Its
@@ -764,6 +788,8 @@ impl Step {
             | Step::DirectWrite { file, .. }
             | Step::MapFixed { file, .. }
             | Step::Mremap { file, .. }
+            | Step::ProtectKept { file, .. }
+            | Step::MoveKept { file, .. }
             | Step::Madvise { file, remove: true, .. }
             | Step::TruncateRacing { file, .. }
             | Step::FaultingWrite { file, .. }
@@ -786,6 +812,8 @@ impl Step {
             | Step::DirectWrite { file, at, ref data }
             | Step::MapFixed { file, at, ref data, .. }
             | Step::Mremap { file, at, ref data }
+            | Step::ProtectKept { file, at, ref data }
+            | Step::MoveKept { file, at, ref data }
             | Step::FaultingWrite { file, at, ref data, .. } => {
                 (file, at, at + data.len() as u64, None)
             }
@@ -826,6 +854,8 @@ impl Step {
                 | Step::MapStore { private: false, .. }
                 | Step::MapFixed { .. }
                 | Step::Mremap { .. }
+                | Step::ProtectKept { .. }
+                | Step::MoveKept { .. }
                 | Step::TruncateRacing { .. }
         )
     }
@@ -917,6 +947,17 @@ impl fmt::Display for Step {
             Step::WriteFromMapping { file, src, dst, len } => {
                 write!(f, "write {len:#x} at {dst:#x} of file {file} from its mapping at {src:#x}")
             }
+            Step::ProtectKept { file, at, data } => write!(
+                f,
+                "read file {file}'s kept mapping, make it read-only and writable again, and store \
+                 {:#x} at {at:#x}",
+                data.len()
+            ),
+            Step::MoveKept { file, at, data } => write!(
+                f,
+                "read file {file}'s kept mapping, move it, and store {:#x} at {at:#x}",
+                data.len()
+            ),
         }
     }
 }
@@ -1092,6 +1133,14 @@ impl Model {
                 let apart = if dst == src { u64::MAX } else { src - dst };
                 Step::WriteFromMapping { file, src, dst, len: len.min(size - src).min(apart) }
             }
+            Op::ProtectKept { file, place, len, data } => {
+                let (at, data) = self.within(file, place, len, data);
+                Step::ProtectKept { file, at, data }
+            }
+            Op::MoveKept { file, place, len, data } => {
+                let (at, data) = self.within(file, place, len, data);
+                Step::MoveKept { file, at, data }
+            }
         }
     }
 
@@ -1133,6 +1182,8 @@ impl Model {
             }
             Step::MapFixed { ref data, .. }
             | Step::Mremap { ref data, .. }
+            | Step::ProtectKept { ref data, .. }
+            | Step::MoveKept { ref data, .. }
             | Step::TruncateRacing { ref data, .. } => Ok(data.len() as u64),
             Step::Madvise { odd: true, .. } => Err(errno::EINVAL),
             Step::FaultingWrite { good: 0, .. } => Err(errno::EFAULT),
@@ -1160,9 +1211,10 @@ impl Model {
                 self.grow(file, at + len, keep_size);
             }
             Step::Allocate { file, at, len, keep_size } => self.grow(file, at + len, keep_size),
-            Step::MapFixed { file, at, ref data, .. } | Step::Mremap { file, at, ref data } => {
-                self.write(file, at, data)
-            }
+            Step::MapFixed { file, at, ref data, .. }
+            | Step::Mremap { file, at, ref data }
+            | Step::ProtectKept { file, at, ref data }
+            | Step::MoveKept { file, at, ref data } => self.write(file, at, data),
             Step::Madvise { file, at, len, remove: true, odd: false } => {
                 self.punch(file, at, len.next_multiple_of(PAGE))
             }
@@ -1553,6 +1605,8 @@ mod tests {
                 Op::TruncateRacing { .. } => "truncate racing",
                 Op::FaultingWrite { .. } => "faulting write",
                 Op::WriteFromMapping { .. } => "write from mapping",
+                Op::ProtectKept { .. } => "protect kept",
+                Op::MoveKept { .. } => "move kept",
             };
             *counts.entry(kind).or_insert(0) += 1;
         }
@@ -1676,6 +1730,8 @@ mod tests {
                     | Step::MapStore { file, at, data, .. }
                     | Step::MapFixed { file, at, data, .. }
                     | Step::Mremap { file, at, data }
+                    | Step::ProtectKept { file, at, data }
+                    | Step::MoveKept { file, at, data }
                     | Step::TruncateRacing { file, at, data, .. } = &step
                     {
                         assert!(*at as usize + data.len() <= model.files[*file].len(), "{step}");
@@ -1963,40 +2019,42 @@ mod tests {
     fn the_hostile_mix_adds_to_the_wide_one() {
         let script = generate(1, HOSTILE);
         let expected = BTreeMap::from([
-            ("allocate", 105),
+            ("allocate", 111),
             ("append", 80),
             ("check", 11),
-            ("clone", 91),
-            ("clone range", 140),
-            ("clone range, unaligned", 59),
-            ("clone to the end", 45),
-            ("copy", 223),
-            ("direct read", 103),
-            ("direct write", 106),
-            ("dontneed", 37),
-            ("drop", 95),
-            ("far", 54),
-            ("faulting write", 129),
-            ("fdatasync", 78),
+            ("clone", 93),
+            ("clone range", 120),
+            ("clone range, unaligned", 65),
+            ("clone to the end", 42),
+            ("copy", 205),
+            ("direct read", 95),
+            ("direct write", 121),
+            ("dontneed", 28),
+            ("drop", 94),
+            ("far", 46),
+            ("faulting write", 108),
+            ("fdatasync", 94),
             ("fixed map store", 55),
-            ("fork", 177),
-            ("fsync", 193),
-            ("limit", 123),
-            ("map oddly", 73),
-            ("map store", 95),
+            ("fork", 179),
+            ("fsync", 190),
+            ("limit", 110),
+            ("map oddly", 62),
+            ("map store", 97),
+            ("move kept", 56),
             ("msync", 99),
-            ("private store", 108),
-            ("punch", 86),
-            ("read", 267),
-            ("remapped store", 66),
-            ("remove", 33),
-            ("reopen", 106),
-            ("store", 342),
-            ("truncate", 196),
-            ("truncate racing", 62),
-            ("write", 461),
-            ("write from mapping", 67),
-            ("zero", 96),
+            ("private store", 80),
+            ("protect kept", 54),
+            ("punch", 95),
+            ("read", 277),
+            ("remapped store", 48),
+            ("remove", 24),
+            ("reopen", 90),
+            ("store", 357),
+            ("truncate", 184),
+            ("truncate racing", 52),
+            ("write", 475),
+            ("write from mapping", 55),
+            ("zero", 94),
         ]);
         assert_eq!(tally(&script), expected);
         assert_eq!(generate(1, Mix { hostile: false, ..HOSTILE }), generate(1, WIDE));

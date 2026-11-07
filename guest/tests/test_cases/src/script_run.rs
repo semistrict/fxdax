@@ -758,6 +758,9 @@ impl Run {
                 self.check_around(*file, *at, data.len() as u64).map_err(came_to(outcome))?;
                 Ok(outcome)
             }
+            Step::ProtectKept { file, at, data } | Step::MoveKept { file, at, data } => {
+                self.remap_kept(step, *file, *at, data)
+            }
             // The mapping's bytes are what the model has, before the write.
             Step::WriteFromMapping { file, src, dst, len } => {
                 let from = unsafe { self.maps[*file].bytes.add(*src as usize) };
@@ -1055,6 +1058,44 @@ impl Run {
             self.differs_at(file, at);
             return Err(differs(format!("file {file}'s mapping moved differs at {at:#x}")));
         }
+        Ok(Ok(stored as u64))
+    }
+
+    /// fxdax: reads all `file` holds through the kept mapping, so that each of its pages is
+    /// mapped, checked against the model; then makes the mapping read-only and writable again
+    /// (mprotect), or moves it (mremap), as `step` says, the kernel changing its PTEs in batches;
+    /// then stores `data` at `at` through it, maybe to a page only read, whose store must fault and
+    /// make it private (TASK-149.42). The mprotects and the move not under fault injection: a
+    /// mapping left read-only would kill the next store's process, and the PTEs they change are
+    /// the point, not the calls' refusals.
+    fn remap_kept(
+        &mut self,
+        step: &Step,
+        file: usize,
+        at: u64,
+        data: &[u8],
+    ) -> Result<Outcome, Failed> {
+        let model = &self.model.files[file];
+        let through = self.maps[file].slice(0, model.len());
+        if let Some(off) = through.iter().zip(model).position(|(a, b)| a != b) {
+            self.differs_at(file, off as u64);
+            return Err(differs(format!("file {file}'s mapping differs at {off:#x}")));
+        }
+        if let Step::MoveKept { .. } = step {
+            let kept = std::mem::replace(&mut self.maps[file], Mapping::none());
+            let len = kept.len;
+            self.maps[file] = kept.moved(len).map_err(|err| errno("mremap", &err))?;
+        } else {
+            let (bytes, len) = (self.maps[file].bytes, self.maps[file].len);
+            for prot in [libc::PROT_READ, libc::PROT_READ | libc::PROT_WRITE] {
+                if unsafe { libc::mprotect(bytes.cast(), len, prot) } != 0 {
+                    return Err(errno("mprotect", &io::Error::last_os_error()));
+                }
+            }
+        }
+        let mapped = unsafe { self.maps[file].bytes.add(at as usize) };
+        let stored = self.store_through(mapped, data, false)?;
+        self.model.write(file, at, &data[..stored]);
         Ok(Ok(stored as u64))
     }
 
