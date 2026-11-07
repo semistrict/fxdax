@@ -5,20 +5,19 @@
 
 # Run the branches' tests against Azurite, Azure Blob Storage's emulator
 # (github.com/Azure/Azurite, MIT), on this machine (TASK-46): start it in a
-# container (podman, or docker), create a container of blobs with a request
-# signed with the emulator's well-known key, run the Azure tests (ignored in the
-# workspace's run), and stop it. Arguments are passed to cargo nextest.
+# container (docker, or podman: scripts/lib/containers.sh), create a container of
+# blobs with a request signed with the emulator's well-known key, run the Azure
+# tests (ignored in the workspace's run), and stop it. CI's object-stores job runs
+# it (TASK-149.20). Arguments are passed to cargo nextest.
 #
 # FXDAX_AZURITE_IMAGE names its image (by default Microsoft's,
-# mcr.microsoft.com/azure-storage/azurite).
+# mcr.microsoft.com/azure-storage/azurite, at the version tested).
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
-image="${FXDAX_AZURITE_IMAGE:-mcr.microsoft.com/azure-storage/azurite}"
-engine="$(command -v podman || command -v docker)" || {
-    echo "neither podman nor docker is here to run Azurite" >&2
-    exit 1
-}
+image="${FXDAX_AZURITE_IMAGE:-mcr.microsoft.com/azure-storage/azurite:3.37.0}"
+source "$root/scripts/lib/containers.sh"
+engine="$(container_engine)"
 
 # On the emulator's own port, which clients configured for the emulator reach (object_store's
 # AZURE_STORAGE_USE_EMULATOR names no other).
@@ -41,7 +40,7 @@ export AZURE_STORAGE_USE_EMULATOR=true AZURE_STORAGE_ACCOUNT_NAME="$account"
 export AZURE_STORAGE_ACCOUNT_KEY="$key"
 
 # Up once it answers anything.
-curl -s --retry 60 --retry-connrefused --retry-delay 1 -o /dev/null "$endpoint?comp=list"
+curl -s --retry 60 --retry-all-errors --retry-delay 1 -o /dev/null "$endpoint?comp=list"
 
 # The container, made with a request signed as Shared Key authorization signs it.
 container=fxdax

@@ -150,6 +150,40 @@ jobs:
 
   # vendor/firecracker only goes forward: b781ff302 took main's back to before F_SEAL, and nothing
   # here builds Firecracker to notice (TASK-166).
+  # The tests over real object stores, which the workspace's run ignores as they need a server:
+  # RustFS's S3 (Apache-2.0) and Azurite's Azure Blob Storage (MIT), each in a container, as
+  # scripts/test-rustfs.sh and scripts/test-azurite.sh start them. Nothing ran them until
+  # TASK-149.20, which found `fxdaxctl take` of a new copy at a later placement refused there.
+  object-stores:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      # With vendor/firecracker, a path dependency of the workspace's, which Cargo reads.
+      - uses: actions/checkout@v7
+        with:
+          submodules: true
+      # libseccomp, which Firecracker's seccompiler links, a dependency of fxdax's tests.
+      - name: Install the build's tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang libseccomp-dev
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+      - uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-${{ runner.os }}-object-stores-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-${{ runner.os }}-object-stores-
+      - name: The S3 tests, against RustFS
+        run: scripts/test-rustfs.sh --no-fail-fast
+      - name: The Azure tests, against Azurite
+        run: scripts/test-azurite.sh --no-fail-fast
+
   firecracker-forward:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
