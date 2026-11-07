@@ -86,6 +86,35 @@ impl Fxfs<Tested> {
     }
 }
 
+/// fxdax: a node's mode, owner and group are changed one at a time as together: the others keep
+/// what they were. A new volume's root directory has no POSIX attributes of its own, whose
+/// defaults its attributes give, and which Fxfs makes of the fields a change gives, the rest 0: a
+/// chown of it alone left it mode 000, which a FUSE mount of a new store refused its owner
+/// (TASK-222). So for the root, and for a file that has them.
+#[fuchsia::test]
+async fn mode_owner_and_group_change_one_at_a_time() {
+    let changes = [
+        (SetAttr { valid: SET_MODE, mode: S_IFDIR | 0o700, ..SetAttr::default() }, (0o700, 0, 0)),
+        (SetAttr { valid: SET_UID, uid: 7, ..SetAttr::default() }, (0o755, 7, 0)),
+        (SetAttr { valid: SET_GID, gid: 8, ..SetAttr::default() }, (0o755, 0, 8)),
+    ];
+    for (change, (perm, uid, gid)) in changes {
+        let (fs, root) = volume().await;
+        let before = fs.attr(root).await.unwrap();
+        assert_eq!((before.mode, before.uid, before.gid), (S_IFDIR | 0o755, 0, 0));
+        fs.setattr(root, &change).await.unwrap();
+        let after = fs.attr(root).await.unwrap();
+        assert_eq!((after.mode, after.uid, after.gid), (S_IFDIR | perm, uid, gid), "{change:?}");
+
+        let file = fs.create(root, b"f", S_IFREG | 0o755, 0, 0, 0, &[]).await.unwrap()[0].ino;
+        let change = SetAttr { mode: S_IFREG | perm, ..change };
+        fs.setattr(file, &change).await.unwrap();
+        let after = fs.attr(file).await.unwrap();
+        assert_eq!((after.mode, after.uid, after.gid), (S_IFREG | perm, uid, gid), "{change:?}");
+        fs.stop_delayed().await.unwrap();
+    }
+}
+
 /// An unlink no others join goes by itself: it holds its room, and its place in the journal, for
 /// no sync.
 #[fuchsia::test]

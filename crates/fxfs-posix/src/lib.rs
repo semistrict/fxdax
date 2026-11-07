@@ -1627,7 +1627,7 @@ impl<P: Platform> Fxfs<P> {
             }
         }
         let flag = |bit: u32| set.valid & bit != 0;
-        let attributes = fio::MutableNodeAttributes {
+        let mut attributes = fio::MutableNodeAttributes {
             mode: flag(SET_MODE).then_some(set.mode),
             uid: flag(SET_UID).then_some(set.uid),
             gid: flag(SET_GID).then_some(set.gid),
@@ -1640,6 +1640,17 @@ impl<P: Platform> Fxfs<P> {
             // `update_attributes` does: an inode's writeback on a full filesystem failed (TASK-82).
             let begun = self.begin(Op::SetAttr, None).await?;
             let mut transaction = begun.transaction(&[ino]).await?;
+            // fxdax: the mode, owner and group not changed keep what they were. Fxfs keeps them
+            // together, in a node's POSIX attributes, which it makes of the fields given, the rest
+            // 0, for a node that has none, as a new volume's root directory hasn't, whose
+            // defaults `attr` gives: a chown of it alone left it mode 000 (TASK-222).
+            let posix = [attributes.mode, attributes.uid, attributes.gid];
+            if posix.iter().any(Option::is_some) && posix.iter().any(Option::is_none) {
+                let now = self.attr_after(&transaction, ino).await?;
+                attributes.mode.get_or_insert(now.mode);
+                attributes.uid.get_or_insert(now.uid);
+                attributes.gid.get_or_insert(now.gid);
+            }
             let ctime = if flag(SET_CTIME) {
                 Timestamp::from_nanos(set.ctime_ns)
             } else {
