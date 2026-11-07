@@ -3,10 +3,10 @@ id: TASK-165.8
 title: >-
   Uploaded data leaves the store: acknowledged segments join the part cache;
   local cleaning and the 3x bound go
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-11-05 03:16'
-updated_date: '2026-11-06 06:56'
+updated_date: '2026-11-07 20:20'
 labels: []
 dependencies:
   - TASK-165.4
@@ -26,17 +26,17 @@ doc-14, step 8. Two cleaners (Store::clean_behind and the collector) and a bound
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 An acknowledged segment and its own extents move into the part cache (Cache::adopt) and their extents are read through the fetcher; nothing else of them stays in the store
-- [ ] #2 Store::clean, clean_behind, cleaning_due, the files bound and their callers (host_store, extentd's cleaning behind commits) are gone; the extentd cleaning tests assert the collector compacting what a guest freed
-- [ ] #3 Views read extents freed after their commit from the WAL or the bucket, and a view whose extent the collector reclaimed is cut off (a test)
-- [ ] #4 Local disk stays within the lag bound, the open segment's room and the cache's capacity under a churning guest (a test)
+- [x] #1 An acknowledged segment and its own extents move into the part cache (Cache::adopt) and their extents are read through the fetcher; nothing else of them stays in the store
+- [x] #2 Store::clean, clean_behind, cleaning_due, the files bound and their callers (host_store, extentd's cleaning behind commits) are gone; the extentd cleaning tests assert the collector compacting what a guest freed
+- [x] #3 Views read extents freed after their commit from the WAL or the bucket, and a view whose extent the collector reclaimed is cut off (a test)
+- [x] #4 Local disk stays within the lag bound, the open segment's room and the cache's capacity under a churning guest (a test)
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Notes
@@ -63,4 +63,17 @@ Once the uploader's writer acknowledges a segment (`Store::acknowledged`), its s
 - **A store forked where no daemon serves it attaches an uploader to the bucket its description names** (`ExtentStore::kept_in_bucket`, as an image's is attached to its own): fxfs-guest-import forks a base it imported offline, which had none, and the fork failed (`ENOTSUP`, GCE r701). The rule stands where the fork is made (`host_store::fork` refuses a store with no uploader, `forks_with_no_uploader_make_nothing`); its callers attach one first. fxdaxctl's local `fork` attached one already. *Instead:* the guest case attaching it itself, which every other offline forker would have to remember.
 - **An in-memory bucket (`memory:///`) is its process's**: what it acknowledged has left the store, and is gone once the process exits. Tests across processes, and development across a daemon's restarts, use a file bucket (README, Multi-node only); handover's and fxdaxctl's import-then-fork tests do. *Instead:* keeping acknowledged data locally for memory buckets, a second behaviour for test buckets alone.
 - **Local disk's bound is the uploader's lag bound, the open segment's room and the cache's capacity**, shown at the store's level (`acknowledged_segments_leave_a_churning_guests_files`, a guest freeing all but two blocks a segment as it goes: no file left after each acknowledgement), not under a guest VM, which GCE runs.
+
+Checked against main (3bdec3934; landed with TASK-165.9, c9207e5d4), 2026-11-07:
+- AC #1: an acknowledged segment's file and its own extents' leave the store into the host's part cache, renamed (Cache::adopt), or are removed if the cache can't take them (extent_store store.rs, leave; Store::acknowledged), and their extents read through the fetcher (Data::Remote, RemoteData): uploaded_segments_are_the_stores_files (fxdax remote.rs: the store's files leave whole into the cache; reads served from the cache with the bucket's objects deleted), frees_kept_in_segments_acknowledged_hold_no_file (extent_store tests/store.rs). TASK-165.9 replaced Record::Acknowledged with the WAL's base, written durably before an acknowledged file leaves (doc-14, Decisions). The perf gate after the restructure shows it on a guest's host: a VM 557 MiB cheaper with DAX than before it, the daemon's memory 928-988 MiB against 1,694-3,408 (docs/measurements/restructure-before-after-2026-11-07.md).
+- AC #2: Store::clean, clean_behind, cleaning_due, FILES_PER_CAPACITY and extentd's CLEANINGS are gone from the code (none found on main); what_guests_free_the_collector_compacts (fxdax extentd tests: no segment left locally once uploaded, the collector compacting what the guest freed, extents read where they moved).
+- AC #3: views_read_frees_acknowledged_in_the_bucket (extent_store tests/views.rs), followers_are_cut_off_once_the_collector_reclaims_what_they_read (fxdax extents.rs: ESTALE after a pass of the collector).
+- AC #4: acknowledged_segments_leave_a_churning_guests_files (extent_store tests/store.rs: no data file left after each acknowledgement over 100 cycles of a churning, pinning writer); and under churning guests, fxfs-guest-soak (TASK-67), which measures the host's stores' bytes after every round and fails if they grow past twice the warm rounds' most (STORES.grown, since d91fccc05): GCE r895 on main 101eeb943, 2 rounds of 5 VMs (writers, pgbench, fsx; VMs and the daemon killed, 250 ms bucket latency), passed, the stores 98,304 bytes after round 2 against 594 MB in the bucket and 1.25 GB in the cache; r831 (28 rounds, host and cache losses with the collector compacting) and r832 (main, 13 rounds) none failing (TASK-217's notes). The extent_store crash rounds (tests/crash, MemDir, a WAL and a memory bucket) pass on main: 0 of 5 failed in the batch's run.
+DoD: Linux workspace, sim, Shuttle and guest parts in CI 42401937262 (main 9bbf94459) green; macOS workspace 2103/2103 on that tree; the guest suites on GCE r910-r914 and r895; scripts/upstream-changes.py --check passes on main; no upstream file changed.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Acknowledged segments and their own extents leave the store for the host's part cache, read through the fetcher; local cleaning, the 3x files bound and extentd's cleaning behind commits are gone, the collector the only cleaner; views read frees from the WAL or the bucket and are cut off once the collector reclaims them; local disk stays within its bounds under churning guests. Verified against main: the tests named in the notes, the soak's per-round bound on the stores' bytes (r895: 98 KB of stores after 2 rounds), CI 42401937262 and the restructure's measurements.
+<!-- SECTION:FINAL_SUMMARY:END -->
