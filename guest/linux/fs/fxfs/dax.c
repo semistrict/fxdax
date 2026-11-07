@@ -3891,7 +3891,9 @@ void fxfs_dax_start(struct fxfs_dax *dax)
  * fxdax: the filesystem frozen, durably, its writers stopped and their pages written back as the
  * VFS synced it: every private page is rebound, mapping its extent's page, sealed now, so that the
  * snapshot's window holds extents and zeros alone, as the device has it (doc-13). Those it can't,
- * warned of: the device refuses the snapshot.
+ * as a writeback that found no memory leaves dirty (TASK-207) or a rebind refused, warned of: the
+ * host refuses the snapshot's point while the window holds any (EBUSY, the extent daemon saying
+ * how many: ExtentStore::point, TASK-203), and the VM goes on as it was.
  */
 void fxfs_dax_frozen(struct fxfs_dax *dax)
 {

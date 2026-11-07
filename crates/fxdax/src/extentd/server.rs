@@ -1197,19 +1197,9 @@ impl Connection {
             Request::Unpin(extent) => store.unpin(*extent),
             // Authorized, as every path a request names ([`Connection::serve_in_turn`]).
             Request::Fork { path, branch, quiescent } => {
-                // fxdax: a snapshot's, whose window maps extents and zeros alone, the guest's
-                // freeze having rebound its private pages, whose bytes no extent holds (backlog
-                // doc-13).
-                // Each refusal says why, as the VMM's error can't (TASK-92.14).
-                let private = if *quiescent { store.private_pages()? } else { 0 };
-                if private > 0 {
-                    log::warn!(
-                        "extentd: a snapshot's point at {} refused: the window has {private} \
-                         private pages",
-                        path.display()
-                    );
-                    return Err(Errno::EBUSY);
-                }
+                // fxdax: a snapshot's point, refused while the window holds private pages, whose
+                // bytes no extent holds (ExtentStore::point, TASK-203). Each refusal says why
+                // here, as the VMM's error can't (TASK-92.14).
                 let forked =
                     if *quiescent { store.point(path, *branch) } else { store.fork(path, *branch) };
                 if let Err(err) = &forked
