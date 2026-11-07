@@ -187,6 +187,8 @@ pub struct Tenant {
     name: String,
     policy: Policy,
     memory: Memory,
+    /// fxdax: the host's disk its directory takes, a granted tenant's (TASK-94).
+    disk: Option<Arc<super::disk::Disk>>,
 }
 
 /// fxdax: what a tenant's VM processes may do (TASK-160.10), which its connections hold them to.
@@ -293,15 +295,18 @@ pub(super) fn default_tenant() -> Result<Arc<Tenant>, Errno> {
         log::error!("extentd: the default tenant's memory: {err}");
         Errno::EIO
     })?;
-    let tenant = Tenant { name: String::new(), policy: Policy::default_tenant(), memory };
+    let (name, policy, disk) = (String::new(), Policy::default_tenant(), None);
+    let tenant = Tenant { name, policy, memory, disk };
     Ok(DEFAULT.get_or_init(|| Arc::new(tenant)).clone())
 }
 
 impl Tenant {
     /// A new tenant named `name`, granted, whose stores are in `dir`, with an arena of its own.
     pub fn new(name: impl Into<String>, dir: impl AsRef<Path>) -> std::io::Result<Arc<Self>> {
-        let policy = Policy::granted(dir.as_ref().canonicalize()?);
-        let tenant = Arc::new(Self { name: name.into(), policy, memory: Memory::new()? });
+        let (name, dir) = (name.into(), dir.as_ref().canonicalize()?);
+        let disk = Some(super::disk::Disk::new(&name, &dir));
+        let policy = Policy::granted(dir);
+        let tenant = Arc::new(Self { name, policy, memory: Memory::new()?, disk });
         super::memory::register(&tenant);
         Ok(tenant)
     }
@@ -329,6 +334,19 @@ impl Tenant {
     /// room they share (TASK-149.35).
     pub(super) fn in_flight(&self) -> &Arc<super::memory::InFlight> {
         &self.memory.in_flight
+    }
+
+    /// fxdax: the host's disk its directory takes, a granted tenant's (TASK-94): the default
+    /// tenant has none.
+    pub fn disk(&self) -> Option<&Arc<super::disk::Disk>> {
+        self.disk.as_ref()
+    }
+
+    /// fxdax: admits a write of `bytes` more of its disk, within its limit and every tenant's,
+    /// until the write is done, what it returns dropped (TASK-94): `ENOSPC` otherwise. The default
+    /// tenant's, uncounted, always.
+    fn admit_to_disk(&self, bytes: u64) -> Result<Option<super::disk::Admitted>, Errno> {
+        self.disk.as_ref().map(|disk| disk.admit(bytes)).transpose()
     }
 
     /// Whether its VM processes may name the store at `path`, whichever way `path` names it:
@@ -733,8 +751,11 @@ impl Answer {
         let header = self.request;
         if let Err(errno) = result {
             // A full store: which request found it so, and how full: of its extents' bytes, or
-            // of the host's disk, which it may fill far from its capacity (TASK-79.105).
+            // of the host's disk, which it may fill far from its capacity (TASK-79.105). fxdax:
+            // not its tenant's disk at its limit, which says so itself (TASK-94).
+            let tenant_full = self.connection.tenant.disk().is_some_and(|disk| disk.is_full());
             if errno == Errno::ENOSPC
+                && !tenant_full
                 && let Some(store) = self.connection.store()
             {
                 let used = store.info().map(|info| (info.used, info.capacity));
@@ -1202,6 +1223,8 @@ impl Connection {
                         self.transfer.get().ok_or(Errno::EINVAL)?.slice(at, len)?
                     }
                 };
+                // fxdax: within its tenant's disk (TASK-94).
+                let _admitted = self.tenant.admit_to_disk(data.len() as u64)?;
                 store.write_with_barriers(*extent, *offset, &[data], *barriers)
             }
             Request::Free(extent) => store.free(*extent),
@@ -1234,6 +1257,8 @@ impl Connection {
             Request::Unpin(extent) => store.unpin(*extent),
             // Authorized, as every path a request names ([`Connection::serve_in_turn`]).
             Request::Fork { path, branch, quiescent } => {
+                // fxdax: a store made, within its tenant's disk (TASK-94).
+                let _admitted = self.tenant.admit_to_disk(super::disk::STORE_MADE)?;
                 // fxdax: a snapshot's point, refused while the window holds private pages, whose
                 // bytes no extent holds (ExtentStore::point, TASK-203). Each refusal says why
                 // here, as the VMM's error can't (TASK-92.14).
@@ -1421,6 +1446,12 @@ impl Connection {
         }
         let opening = self.opening()?;
         let hold = stores::hold_to_write(&store_key(path), self.this.clone()).await?;
+        // fxdax: a store it makes, within its tenant's disk (TASK-94).
+        let makes = matches!(how, codec::Opening::Create(_) | codec::Opening::ForkFrom { .. });
+        let _admitted = match makes && !path.exists() {
+            true => self.tenant.admit_to_disk(super::disk::STORE_MADE)?,
+            false => None,
+        };
         // Closed before its hold lets its path go, if it fails here.
         let store = self.open_held(path, &hold, &how).await?;
         // A VM process opens no store to write that its writer may not write
