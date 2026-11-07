@@ -387,10 +387,13 @@ mod guest {
     }
 
     impl TestFxfsGuestFsx {
-        /// A script's two runs, ext4's and Fxfs's, on files made anew.
+        /// A script's two runs, ext4's and Fxfs's, on files made anew (`script_run::made_anew`):
+        /// a shrink's, each try, as a boot's.
         fn differential(&self, seed: u64, faults: Option<Faults>) -> Differential {
             let names = |dir: &dyn Fn(&str) -> String| -> Vec<String> {
-                (0..HOSTILE.files).map(|n| dir(&file(n))).collect()
+                let names: Vec<String> = (0..HOSTILE.files).map(|n| dir(&file(n))).collect();
+                script_run::made_anew(&names);
+                names
             };
             let options = Options { seeks: true, ..Options::default() };
             let reference = Run::new(

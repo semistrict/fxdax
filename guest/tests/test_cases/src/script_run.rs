@@ -889,9 +889,7 @@ impl Run {
     fn far_file(&mut self) -> io::Result<libc::c_int> {
         if self.far.is_none() {
             let name = format!("{}-far", self.names[0]);
-            let mut options = fs::OpenOptions::new();
-            options.create(true).truncate(true).read(true).write(true);
-            options.open(&name)?.sync_all()?;
+            open(&name, true).sync_all()?;
             fs::write("/proc/sys/vm/drop_caches", b"2")?;
             self.far = Some(fs::OpenOptions::new().read(true).write(true).open(&name)?);
         }
@@ -1532,6 +1530,21 @@ fn unexpected(step: &Step, outcome: Outcome, expected: Outcome) -> Failed {
     }
 }
 
+/// fxdax: unlinks the files `names`, those there are, for a run to make anew, inodes of their own,
+/// as a boot's run of a script does. A run makes a file there is empty, which keeps its inode, and
+/// with it what the filesystem made of it: on a DAX mount, a file read in again is DAX, where one
+/// made in a run isn't till it is (`Step::Reopen`). A shrink's run of a script, in the guest that
+/// ran it, took an earlier run's DAX inode, and failed where a replay from a boot didn't (GCE
+/// r930). Not every run's: a full filesystem may have no room for a new inode.
+pub fn made_anew(names: &[String]) {
+    for name in names {
+        match fs::remove_file(name) {
+            Err(err) if err.kind() != io::ErrorKind::NotFound => panic!("unlink {name}: {err}"),
+            _ => {}
+        }
+    }
+}
+
 /// Opens `name`, read and written, made empty if `empty`.
 fn open(name: &str, empty: bool) -> fs::File {
     let mut options = fs::OpenOptions::new();
@@ -1784,6 +1797,22 @@ pub(crate) mod tests {
             .collect();
         assert_eq!(outcomes, [Ok(0), Ok(0x149c), Ok(0x19eb)]);
         assert_hold(&names, &run.model);
+    }
+
+    /// fxdax: files made anew are a run's own, not an earlier run's made empty, whose inodes keep
+    /// what the filesystem made of them: its mode, here.
+    #[test]
+    fn files_made_anew_are_not_an_earlier_runs() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = TempDir::new("script").unwrap();
+        let names = names(dir.path(), ONE_FILE);
+        drop(Run::new(&names, Options::default()));
+        fs::set_permissions(&names[0], fs::Permissions::from_mode(0o600)).unwrap();
+        made_anew(&names);
+        made_anew(&names);
+        drop(Run::new(&names, Options::default()));
+        let mode = fs::metadata(&names[0]).unwrap().permissions().mode() & 0o777;
+        assert_ne!(mode, 0o600, "the earlier run's file, made empty");
     }
 
     /// fxdax: hostile steps, each, on ext4: what each comes to, and what the files hold after.
