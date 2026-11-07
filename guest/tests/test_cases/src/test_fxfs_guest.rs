@@ -406,7 +406,7 @@ mod host {
             let window = match self.dax {
                 _ if self.stray => STRAY_WINDOW,
                 false => 0,
-                true => WINDOW,
+                true => crate::common::dax_window(crate::common::Window::Small(WINDOW))?,
             };
             // fxdax: on a daemon of its own, which goes on running till its test's end otherwise.
             let daemon = if self.daemon_killed {

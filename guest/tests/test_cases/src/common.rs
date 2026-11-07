@@ -103,6 +103,49 @@ pub fn check_durable_median(test_setup: &TestSetup, name: &str) -> anyhow::Resul
     Ok(())
 }
 
+/// fxdax: the most bytes a DAX window has, the extent daemon's (`extentd::wire::MAX_WINDOW`): what
+/// it keeps for a window grows with the pages it maps, which it bounds so (TASK-150.3).
+pub const MAX_DAX_WINDOW: u64 = 64 << 30;
+
+/// fxdax: a case's DAX window: as large as the data, the host's memory ([`Window::Large`]), or a
+/// size of the case's own, which a small window's cases have, to have it fill
+/// ([`Window::Small`]); `FXDAX_DAX_WINDOW_MIB`'s, if set, for every case (TASK-227).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Window {
+    Large,
+    Small(u64),
+}
+
+/// fxdax: the bytes of a case's DAX window `window` asks for ([`Window`]): the window is address
+/// space, not memory, the daemon's pages it maps one copy whatever the windows' sizes, as
+/// virtio-pmem maps a whole image; its guest makes struct pages for what it reaches alone
+/// (TASK-92.8), and its VM process keeps changes for those pages alone (TASK-227).
+pub fn dax_window(window: Window) -> anyhow::Result<u64> {
+    let given = std::env::var("FXDAX_DAX_WINDOW_MIB").ok();
+    let meminfo = std::fs::read_to_string("/proc/meminfo")?;
+    window_bytes(window, given.as_deref(), &meminfo)
+}
+
+/// fxdax: [`dax_window`]'s bytes, of `window`, `given` FXDAX_DAX_WINDOW_MIB's, and the host's
+/// /proc/meminfo, `meminfo`: its MemTotal, rounded down to a window's 2 MiB, at most
+/// [`MAX_DAX_WINDOW`].
+fn window_bytes(window: Window, given: Option<&str>, meminfo: &str) -> anyhow::Result<u64> {
+    const ALIGNMENT: u64 = 2 << 20;
+    if let Some(mib) = given.filter(|mib| !mib.is_empty()) {
+        return Ok(mib.parse::<u64>().context("FXDAX_DAX_WINDOW_MIB")? << 20);
+    }
+    match window {
+        Window::Small(bytes) => Ok(bytes),
+        Window::Large => {
+            let line = (meminfo.lines().find(|line| line.starts_with("MemTotal:")))
+                .context("/proc/meminfo has no MemTotal")?;
+            let kib: u64 =
+                (line.split_whitespace().nth(1)).context("MemTotal has no value")?.parse()?;
+            Ok(((kib << 10) / ALIGNMENT * ALIGNMENT).min(MAX_DAX_WINDOW))
+        }
+    }
+}
+
 /// An extent daemon of the test's own, FXDAX_EXTENTD_BIN, serving at `socket`, and its control API
 /// beside it ([`control`]), once this returns, with `env` in its environment, and `memory` bytes of
 /// memory if given (its default, 1 GiB, otherwise), logging to `<name>.log` in the test's directory.
@@ -263,6 +306,23 @@ mod tests {
         assert_eq!(cache(Some("/nvme/cache"), None), None);
         assert_eq!(cache(None, Some("")), None);
         assert_eq!(cache(None, Some("/nvme/cache")), None);
+    }
+
+    /// TASK-227: a case's DAX window is the host's memory, rounded down to 2 MiB, at most a
+    /// window's 64 GiB, unless it is a small window's case; FXDAX_DAX_WINDOW_MIB sets every case's.
+    #[test]
+    fn windows_are_as_large_as_the_hosts_memory() {
+        let host = |kib: u64| format!("MemTotal:       {kib} kB\nMemFree:  1 kB\n");
+        let (gib, mib) = (1 << 30, 1 << 20);
+        let large = |kib| window_bytes(Window::Large, None, &host(kib)).unwrap();
+        assert_eq!(large(32_853_144), 31 * gib + 338 * mib);
+        assert_eq!(large(256 << 20), MAX_DAX_WINDOW);
+        let small = Window::Small(64 * mib);
+        assert_eq!(window_bytes(small, None, &host(1 << 25)).unwrap(), 64 * mib);
+        assert_eq!(window_bytes(small, Some("8192"), &host(1 << 25)).unwrap(), 8 * gib);
+        assert_eq!(window_bytes(Window::Large, Some("1024"), &host(1 << 25)).unwrap(), gib);
+        assert_eq!(window_bytes(Window::Large, Some(""), &host(4 << 20)).unwrap(), 4 * gib);
+        assert!(window_bytes(Window::Large, None, "MemFree: 1 kB\n").is_err());
     }
 
     /// TASK-165.12: a test's daemon keeps its stats beside its log, where the run's summary reads

@@ -85,7 +85,7 @@ mod host {
     /// The volumes' sizes, their images sparse, and the DAX window's.
     const IMAGE_SIZE: u64 = 256 << 20;
     const REFERENCE_SIZE: u64 = 256 << 20;
-    const WINDOW: u64 = 1 << 29;
+    const WINDOW: crate::common::Window = crate::common::Window::Large;
     /// What one script may take on both, on a release kernel, and a run besides its scripts.
     const SCRIPT: Duration = Duration::from_secs(120);
     const SETUP: Duration = Duration::from_secs(60);
@@ -246,7 +246,7 @@ mod host {
             Self::create_images(&test_setup)?;
             let mut vm = Vm::new(2, 1024)?;
             vm.guest_kernel()?;
-            let window = if self.dax { WINDOW } else { 0 };
+            let window = if self.dax { crate::common::dax_window(WINDOW)? } else { 0 };
             vm.extent_store("fxdax", &test_setup.tmp_dir.join("fxdax.img"), IMAGE_SIZE, window)?;
             let device = vm.disk("reference", &test_setup.tmp_dir.join("ext4.img"))?;
             vm.env(&CString::new(format!("{REFERENCE}={device}"))?);

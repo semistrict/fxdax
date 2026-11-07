@@ -43,7 +43,7 @@ mod host {
 
     const CONTAINERFILE: &str = "FROM fedora:43\nRUN dnf install -y git strace && dnf clean all\n";
     const CAPACITY: u64 = 1 << 30;
-    const WINDOW: u64 = 1 << 28;
+    const WINDOW: crate::common::Window = crate::common::Window::Large;
 
     impl TestFxfsGuestSharedVolumes {
         fn run(&self, test_setup: &TestSetup) -> anyhow::Result<()> {
@@ -51,7 +51,7 @@ mod host {
             let extentd: PathBuf =
                 std::env::var_os("FXDAX_EXTENTD").context("FXDAX_EXTENTD not set")?.into();
             let control = control(&extentd)?;
-            let window = if self.dax { WINDOW } else { 0 };
+            let window = if self.dax { crate::common::dax_window(WINDOW)? } else { 0 };
             let root = setup_rootfs(test_setup)?;
             let vms = Vms::new(test_setup, root, extentd, CAPACITY, window);
             let publisher = dir.join("publisher");
