@@ -3,11 +3,11 @@ id: TASK-165.9
 title: >-
   One recovery: no index; the open segment's commit log; opening by lease,
   bucket recovery and the WAL; the uploader in extent_store
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-05 03:17'
-updated_date: '2026-11-07 06:17'
+updated_date: '2026-11-07 09:25'
 labels: []
 dependencies:
   - TASK-165.5
@@ -27,18 +27,18 @@ doc-14, step 9. The last of the second engine: the local index (checkpoints and 
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A commit is durable locally when the flush has synced the open segment and appended its record to the open segment's log; index.rs and the delta codec are gone
-- [ ] #2 Opening a store takes the lease, recovers the branch, closes a segment left open from its log, and rebases the WAL; a diverged WAL refuses (ESTALE) until fxdaxctl take drops it
-- [ ] #3 remote.rs keeps only the host's configuration, budgets, runtime and errno mapping; the uploader is extent_store's; Marker, InFlight, Plan, diff, take, adopt, spend and snapshot are gone
-- [ ] #4 The crash rounds recover a prefix at least as late as the last durable commit with the disk, and at least as late as the last acknowledged without it; Shuttle scenarios cover the uploader acknowledging while commits, closes and views race
-- [ ] #5 The audit feature asserts at every close that the live state equals the replay of the segment's footer over the state before it
+- [x] #1 A commit is durable locally when the flush has synced the open segment and appended its record to the open segment's log; index.rs and the delta codec are gone
+- [x] #2 Opening a store takes the lease, recovers the branch, closes a segment left open from its log, and rebases the WAL; a diverged WAL refuses (ESTALE) until fxdaxctl take drops it
+- [x] #3 remote.rs keeps only the host's configuration, budgets, runtime and errno mapping; the uploader is extent_store's; Marker, InFlight, Plan, diff, take, adopt, spend and snapshot are gone
+- [x] #4 The crash rounds recover a prefix at least as late as the last durable commit with the disk, and at least as late as the last acknowledged without it; Shuttle scenarios cover the uploader acknowledging while commits, closes and views race
+- [x] #5 The audit feature asserts at every close that the live state equals the replay of the segment's footer over the state before it
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -110,4 +110,12 @@ GCE daemon-killed and the durability lag (2026-11-06/07):
 - The lag measured on GCE (main's numbers with the measurement cherry-picked): flushes timed phase by phase, framings too (3e51ca08c, 32b56c7c7, 497529b27; slow ones logged, and the guest cases say their daemon's stats and warnings in the round log, 10ecb4c83). The tail was the flushes syncing segments' raw files just closed while their framings wrote the same data (981d28456: a flush waits for those framings instead, only for segments closed with data written since the commit before). Also: framings write back a MiB at a time (584d54e24, framings_write_back_as_they_go) and sync own extents several at once (1917cc681); a failed store says why (4ba694a53); recovery drops a torn framed file left without its raw data and log (65152ed2d, segments_torn_without_raw_data_or_log_go, found by the cut-openings crash rounds).
 - Final numbers (E, 5fc750a30): pgbench max lag 0.55-0.79 s against main's 0.41-0.72 s, same zone (r742, r732), median check passing; daemon-killed 5/5 jailed rounds passing, max lag 61-97 ms against main's 60-81 ms (r743, r733). Main itself fails daemon-killed's old strict check (r733): its check now allows a file found short or empty only if its fsync returned within doc-12's crash bound, 500 ms (211d65896, 9f1e060be); doc-12, doc-2 and doc-7 restate the promise as a 50 ms median and that crash bound (TASK-221, the user's decision). The rest of the tail is TASK-221's.
 - GCE runs: r720/r721 didn't build (a Linux-only line, fixed in the measurement commit); r722/r727 main; r724/r726 the tree before the framing fix; r725, r728-r731, r734-r743 after.
+
+Verified: CI 42352682020 on land-9 (the tree landed as c9207e5d4) green, its Linux workspace job among them; macOS workspace 2079/2079 (scripts/test.sh, main at c9207e5d4); scripts/upstream-changes.py --check passes; GCE r742 (pgbench, median check) and r743 (daemon-killed, 5 jailed rounds) pass.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+One recovery: the index and its delta codec are gone; a commit is durable once its data is synced and its record appended to the log of the segment it was made in; opening takes the lease, recovers the branch, closes torn segments again from their logs (cutting what follows a log lacking its last commits) and rebases the WAL; the uploader is extent_store::upload. Fixed on the way: TASK-195, 196, 204, 192, 208 (its throttle), in-flight flushes counted pending, a flush that waited for every framing, and recovery bugs the crash rounds found. The durability lag matches main's on daemon-killed and nearly on pgbench (E: 0.55-0.79 s against 0.41-0.72 s); the rest is TASK-221. Verified by the crash rounds, Shuttle, the sim, CI 42352682020, macOS workspace and GCE r742/r743.
+<!-- SECTION:FINAL_SUMMARY:END -->

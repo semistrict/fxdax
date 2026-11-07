@@ -3,11 +3,11 @@ id: TASK-196
 title: >-
   A daemon killed mid-ImportImage leaves a half-imported store that opens, and
   every import to its path after says ALREADY_EXISTS
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-06 06:46'
-updated_date: '2026-11-06 12:13'
+updated_date: '2026-11-07 09:26'
 labels:
   - review-2026-11-06
   - extentd
@@ -34,16 +34,16 @@ Not fixed in the review: the fix changes how a store directory says it is whole 
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A store whose import was killed mid-fill does not open as a store: Storage::open, ExtentStore::open and extentd's opens refuse it
-- [ ] #2 ImportImage and CreateStore to a path an import or create left unmade remove what was left and make the store anew, as ForkFrom already does
-- [ ] #3 a_store_whose_importer_died_is_made_anew passes on macOS and Linux with its #[ignore] removed, and goes red with the fix reverted
+- [x] #1 A store whose import was killed mid-fill does not open as a store: Storage::open, ExtentStore::open and extentd's opens refuse it
+- [x] #2 ImportImage and CreateStore to a path an import or create left unmade remove what was left and make the store anew, as ForkFrom already does
+- [x] #3 a_store_whose_importer_died_is_made_anew passes on macOS and Linux with its #[ignore] removed, and goes red with the fix reverted
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -56,4 +56,12 @@ Taken into TASK-165.9's opening path (the user, 2026-11-06). A store directory s
 
 <!-- SECTION:NOTES:BEGIN -->
 Fixed in 1597b18aa with TASK-165.9 (as the user asked): Store::make writes the 'unmade' marker before anything else, made() removes it once the maker filled the store (an import once it synced, a create at once); Store::recover, Storage::open, ExtentStore::open and extentd refuse an unmade store (extent_store::Unmade, ENOENT); ImportImage and CreateStore remove what an import or create left unmade and make it anew (stores.rs removed_if_unmade). a_store_whose_importer_died_is_made_anew is un-ignored and passes; stores_unmade_open_not (host_store) and stores_unmade_refuse_to_open (extent_store) cover the refusals. Left for its closing with TASK-165.9.
+
+Verified: CI 42352682020 on land-9 (landed as c9207e5d4) green, Linux workspace included; macOS workspace 2079/2079 (scripts/test.sh at c9207e5d4); scripts/upstream-changes.py --check passes. a_store_whose_importer_died_is_made_anew (crates/fxdax/src/import.rs) runs un-ignored in both.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+A store says it is whole last: Store::make writes 'unmade' first and made() removes it; Storage::open, ExtentStore::open and extentd refuse an unmade store (ENOENT), and ImportImage and CreateStore remove one and make it anew. Landed with TASK-165.9; a_store_whose_importer_died_is_made_anew passes un-ignored. Verified by CI 42352682020 and the macOS workspace.
+<!-- SECTION:FINAL_SUMMARY:END -->
