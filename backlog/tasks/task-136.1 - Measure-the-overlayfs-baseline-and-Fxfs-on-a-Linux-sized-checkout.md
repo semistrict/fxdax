@@ -1,11 +1,11 @@
 ---
 id: TASK-136.1
 title: Measure Fxfs on a Linux-sized checkout
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-10-30 09:08'
-updated_date: '2026-11-07 09:36'
+updated_date: '2026-11-07 11:13'
 labels: []
 dependencies: []
 documentation:
@@ -31,7 +31,7 @@ The design makes claims about cost that nothing has measured yet. The numbers de
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
 - [x] #2 scripts/upstream-changes.py --check passes
 - [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
@@ -70,4 +70,12 @@ Verification: GCE r870 passed linux-checkout-{ext4,fxfs,fxfs-dax}. macOS scripts
 - Cold read in a fresh VM: Fxfs DAX 5.6 s against pmem 8.8 s. A sandbox over the base: 34-35 s.
 - Host memory after one read: pmem RSS 2,478 MiB (588 MiB anon). DAX RSS 2,318 MiB (626 MiB anon, 843 MiB shared).
 - Hosts r871 and r872 were deleted after the login. r873 (r871's rerun) was deleted by the user for CPUs.
+
+Validation at the close: land-r1 870f3de7c is on main, rebased onto c9207e5d4 (TASK-165.9). CI 42360840152 was green on it, Linux workspace and guest parts included. macOS scripts/test.sh clippy+workspace+scripts passed: 2080/2080 and 173/173. Unmeasured: fxfs-guest-shared-volumes(-dax) and fxfs-guest-bigmap(-dax) haven't run on GCE with the refactored shared_volumes.rs and measure.rs (r871 was stopped by gcloud's expired login; the user deleted r873, in us-central1-a after a fallback, for quota). The linux-checkout Fxfs cases exercise the same Vms, run_consumer and Requests::serve paths, passing in r870 and r872 before the rebase. The shared-volume cases are in the kernel and nightly suites, so the next run of either covers them.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Measured a Linux-sized checkout (v6.18: 91,166 files, 1.83 GB) on ext4 (virtio-blk and virtio-pmem with DAX) and on the guest's Fxfs with and without DAX, and shared as a volume over a read-only base. linux-checkout-{ext4,ext4-pmem,fxfs,fxfs-dax} (tag manual) time clone, checkout, git status cold and warm, and a full-tree read cold and warm. They measure host and guest memory per VM through crate::measure (Requests::serve), disk per store, the overlay's first open, 256 mounts and a reboot. scripts/linux-checkout-report.py makes the tables. Also landed: the extentd watchdog's log line (Silence, tested) and Filesystem::metadata. GCE r870 (1 GiB window): the overlay adds nothing a status or write sees; first open 60 ms; 1.7 MiB of disk and 1.2 MiB of memory per added checkout; a status's 130-185 MiB of metadata is per sandbox; DAX keeps about 1.6 GB of a read tree out of each VM but never warms with a window smaller than the tree. GCE r872 (8 GiB window, 6 GiB of daemon memory): the warm reread takes 751-801 ms on Fxfs DAX against 712-729 ms on ext4-pmem, TASK-227's baseline; cold in a fresh VM 5.6 s against 8.8 s. Results in doc-10's Proof and docs/measurements/linux-checkout-2026-11-07.md. Verified by GCE r870 and r872 (all cases passed), macOS 2080/2080 and CI 42360840152. Not run: the shared-volume and bigmap guest cases on the refactored helpers (see notes).
+<!-- SECTION:FINAL_SUMMARY:END -->
