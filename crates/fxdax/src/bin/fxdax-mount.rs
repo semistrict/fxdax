@@ -7,11 +7,14 @@
 //! filesystem is.
 //!
 //! ```sh
-//! fxdax-mount [--allow-other] STORE MOUNTPOINT
+//! fxdax-mount [--allow-other] [--new CAPACITY] STORE MOUNTPOINT
 //! ```
 //!
 //! STORE is a store's directory, whose filesystem's `default` volume is mounted at MOUNTPOINT, a
-//! directory. Mounted, it prints MOUNTPOINT on standard output, and serves the filesystem until
+//! directory. With `--new`, STORE, which must not exist, is made a new store of CAPACITY bytes, its
+//! filesystem empty, as a scratch filesystem's or a test's (CI's pjdfstest, TASK-149.38): its
+//! branch kept in a file bucket in its directory, or in the host's bucket on a host of fxdax's
+//! system (`FXDAX_EXTENTD_REMOTE`), as `fxdax::Storage::create` keeps it. Mounted, it prints MOUNTPOINT on standard output, and serves the filesystem until
 //! it is unmounted: by `umount` or `fusermount3 -u`, or lazily on SIGINT or SIGTERM, once nothing
 //! uses it. Then it closes the filesystem, writing back what is dirty, and exits 0.
 //!
@@ -33,13 +36,18 @@ fn main() -> anyhow::Result<()> {
     fxdax::stacks::on_sigquit().context("handling SIGQUIT")?;
     let stop = fxdax::signals::Signals::block(&[libc::SIGINT, libc::SIGTERM])
         .context("handling SIGINT and SIGTERM")?;
-    const USAGE: &str = "usage: fxdax-mount [--allow-other] STORE MOUNTPOINT";
+    const USAGE: &str = "usage: fxdax-mount [--allow-other] [--new CAPACITY] STORE MOUNTPOINT";
     let mut options = fxdax::fuse::MountOptions::new();
-    let mut paths = Vec::new();
-    for arg in std::env::args_os().skip(1) {
+    let (mut paths, mut new) = (Vec::new(), None);
+    let mut args = std::env::args_os().skip(1);
+    while let Some(arg) = args.next() {
         match arg.to_str() {
             Some("--allow-other") => {
                 options.allow_other(true);
+            }
+            Some("--new") => {
+                let capacity = args.next().and_then(|capacity| capacity.to_str()?.parse().ok());
+                new = Some(capacity.with_context(|| format!("--new CAPACITY, in bytes? {USAGE}"))?);
             }
             Some(flag) if flag.starts_with("--") => anyhow::bail!("{flag}? {USAGE}"),
             _ => paths.push(std::path::PathBuf::from(arg)),
@@ -47,10 +55,20 @@ fn main() -> anyhow::Result<()> {
     }
     let [store, mountpoint] = <[_; 2]>::try_from(paths).map_err(|_| anyhow::anyhow!(USAGE))?;
 
-    let storage =
-        fxdax::Storage::open(&store).with_context(|| format!("opening {}", store.display()))?;
-    let fs = futures::executor::block_on(fxdax::Filesystem::mount(storage))
-        .with_context(|| format!("mounting {}'s filesystem", store.display()))?;
+    let fs = match new {
+        Some(capacity) => {
+            let storage = fxdax::Storage::create(&store, capacity)
+                .with_context(|| format!("making {}", store.display()))?;
+            futures::executor::block_on(fxdax::Filesystem::format(storage))
+                .with_context(|| format!("formatting {}", store.display()))?
+        }
+        None => {
+            let storage = fxdax::Storage::open(&store)
+                .with_context(|| format!("opening {}", store.display()))?;
+            futures::executor::block_on(fxdax::Filesystem::mount(storage))
+                .with_context(|| format!("mounting {}'s filesystem", store.display()))?
+        }
+    };
     let mount = options
         .mount(fs, &mountpoint)
         .with_context(|| format!("mounting it at {}", mountpoint.display()))?;
