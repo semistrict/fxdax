@@ -51,7 +51,7 @@ mod host {
     use std::path::Path;
 
     const CAPACITY: u64 = 256 << 20;
-    const WINDOW: u64 = 64 << 20;
+    const WINDOW: crate::common::Window = crate::common::Window::Small(64 << 20);
 
     /// The image's layers, bottom first: the lower gzipped, as images' usually are.
     fn layers() -> anyhow::Result<Vec<Vec<u8>>> {
@@ -123,7 +123,7 @@ mod host {
 
             let mut vm = Vm::new(2, 512)?;
             vm.guest_kernel()?;
-            let window = if self.dax { WINDOW } else { 0 };
+            let window = if self.dax { crate::common::dax_window(WINDOW)? } else { 0 };
             vm.extent_store("extents", &dir.join("extents"), CAPACITY, window)?;
             vm.enter(&setup_rootfs(&test_setup)?, &test_setup.test_case)
         }

@@ -140,16 +140,19 @@ mod host {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::{Duration, Instant};
 
-    /// The stores' capacity, and the fork's VM's DAX window if it has one, as the sandbox team's.
+    /// The stores' capacity, as the sandbox team's.
     const CAPACITY: u64 = 16 << 30;
-    const WINDOW: u64 = 2 << 30;
     /// The ext4 images' size: the database's, its WAL's and the runs' history's, with room.
     const PMEM_SIZE: u64 = 8 << 30;
 
-    /// The fork's VM's DAX window: FXDAX_PGBENCH_WINDOW_MIB's, or [`WINDOW`]. The sandbox team's
-    /// runs decay more in 8 GiB than in 2.
+    /// The fork's VM's DAX window: FXDAX_PGBENCH_WINDOW_MIB's, or a large one, the host's memory
+    /// (`crate::common::dax_window`, TASK-227); 2 GiB before, the sandbox team's, whose runs
+    /// decayed more in 8 GiB than in 2.
     fn window() -> anyhow::Result<u64> {
-        Ok(setting("FXDAX_PGBENCH_WINDOW_MIB", WINDOW >> 20)? << 20)
+        match std::env::var("FXDAX_PGBENCH_WINDOW_MIB") {
+            Ok(mib) => Ok(mib.parse::<u64>()? << 20),
+            Err(_) => crate::common::dax_window(crate::common::Window::Large),
+        }
     }
 
     /// The VMs' vCPUs: FXDAX_PGBENCH_VCPUS, or 2.
@@ -653,7 +656,10 @@ RUN apk add --no-cache postgresql postgresql-contrib perf e2fsprogs
                 let report = test_setup.tmp_dir.join("perf-kvm.txt");
                 let text = std::fs::read_to_string(&report).unwrap_or_default();
                 if !text.contains("fxfs_") {
-                    return TestOutcome::Fail(format!("{}: no Fxfs symbol: {text}", report.display()));
+                    return TestOutcome::Fail(format!(
+                        "{}: no Fxfs symbol: {text}",
+                        report.display()
+                    ));
                 }
             }
             TestOutcome::Pass

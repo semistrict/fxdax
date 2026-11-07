@@ -77,7 +77,7 @@ mod host {
 
     /// Each store's capacity, and its VM's DAX window, memory and vCPUs.
     const CAPACITY: u64 = 4 << 30;
-    const WINDOW: u64 = 512 << 20;
+    const WINDOW: crate::common::Window = crate::common::Window::Large;
     const MEMORY_MIB: u32 = 1024;
     const VCPUS: u8 = 2;
     /// The memory each daemon's kernel takes at most.
@@ -454,7 +454,13 @@ mod host {
         fn boot(&self, name: &str, store: &Path, env: &[String]) -> anyhow::Result<Firecracker> {
             let mut vm = Vm::new(VCPUS, MEMORY_MIB)?;
             vm.guest_kernel()?;
-            vm.extent_store_served(TAG, store, CAPACITY, WINDOW, &self.paths.socket);
+            vm.extent_store_served(
+                TAG,
+                store,
+                CAPACITY,
+                crate::common::dax_window(WINDOW)?,
+                &self.paths.socket,
+            );
             for var in env {
                 vm.env(&CString::new(var.as_str())?);
             }

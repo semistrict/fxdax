@@ -79,7 +79,7 @@ mod host {
 
     /// The bytes of each filesystem, and of its DAX window if it has one.
     const SIZE: u64 = 4 << 30;
-    const WINDOW: u64 = 1 << 30;
+    const WINDOW: crate::common::Window = crate::common::Window::Large;
 
     impl Test for TestXfstests {
         fn should_run(&self) -> ShouldRun {
@@ -97,7 +97,7 @@ mod host {
         fn start_vm(self: Box<Self>, test_setup: TestSetup) -> anyhow::Result<()> {
             let mut vm = Vm::new(4, 4096)?;
             vm.guest_kernel()?;
-            let window = if self.dax { WINDOW } else { 0 };
+            let window = if self.dax { crate::common::dax_window(WINDOW)? } else { 0 };
             vm.extent_store("extents", &test_setup.tmp_dir.join("extents"), SIZE, window)?;
             vm.extent_store("scratch", &test_setup.tmp_dir.join("scratch"), SIZE, window)?;
             // Check's arguments, separated by commas: a kernel's command line carries them.

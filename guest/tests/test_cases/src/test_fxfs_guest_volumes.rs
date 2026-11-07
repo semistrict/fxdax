@@ -38,7 +38,7 @@ mod host {
     use std::path::Path;
 
     const CAPACITY: u64 = 256 << 20;
-    const WINDOW: u64 = 64 << 20;
+    const WINDOW: crate::common::Window = crate::common::Window::Small(64 << 20);
     const VOLUMES: [&str; 4] = ["default", "a", "b", "c"];
 
     /// Makes the store at `path`, with `VOLUMES`, empty.
@@ -81,7 +81,12 @@ mod host {
             format(&path)?;
             let mut vm = Vm::new(2, 512)?;
             vm.guest_kernel()?;
-            vm.extent_store("extents", &path, CAPACITY, if self.dax { WINDOW } else { 0 })?;
+            vm.extent_store(
+                "extents",
+                &path,
+                CAPACITY,
+                if self.dax { crate::common::dax_window(WINDOW)? } else { 0 },
+            )?;
             vm.enter(&setup_rootfs(&test_setup)?, &test_setup.test_case)
         }
 

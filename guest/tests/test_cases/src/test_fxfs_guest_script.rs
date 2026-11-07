@@ -50,7 +50,7 @@ mod host {
     /// Sizes of the volume, whose image is sparse, and the room the guest leaves on the small one.
     const IMAGE_SIZE: u64 = 256 << 20;
     const SMALL_IMAGE_SIZE: u64 = 64 << 20;
-    const WINDOW: u64 = 1 << 29;
+    const WINDOW: crate::common::Window = crate::common::Window::Large;
 
     fn create_image(path: &Path, size: u64) -> anyhow::Result<()> {
         block_on(async {
@@ -111,7 +111,12 @@ mod host {
             create_image(&image, size)?;
             let mut vm = Vm::new(2, 512)?;
             vm.guest_kernel()?;
-            vm.extent_store("fxdax", &image, size, if self.dax { WINDOW } else { 0 })?;
+            vm.extent_store(
+                "fxdax",
+                &image,
+                size,
+                if self.dax { crate::common::dax_window(WINDOW)? } else { 0 },
+            )?;
             let seed = seed();
             eprintln!("{}: seed {seed} (FXDAX_SEED={seed} replays it)", test_setup.test_case);
             std::fs::write(test_setup.tmp_dir.join("seed"), seed.to_string())?;

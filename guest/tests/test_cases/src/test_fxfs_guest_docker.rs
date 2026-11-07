@@ -32,7 +32,7 @@ mod host {
     use std::path::Path;
 
     const CAPACITY: u64 = 4 << 30;
-    const WINDOW: u64 = 1 << 30;
+    const WINDOW: crate::common::Window = crate::common::Window::Large;
 
     /// Docker's static binaries, as download.docker.com packs them.
     const DOCKER: [&str; 8] = [
@@ -147,7 +147,7 @@ mod host {
 
             let mut vm = Vm::new(2, 2048)?;
             vm.guest_kernel()?;
-            vm.extent_store("root", &store, CAPACITY, WINDOW)?;
+            vm.extent_store("root", &store, CAPACITY, crate::common::dax_window(WINDOW)?)?;
             vm.fxfs_root("root");
             vm.enter(&dir.join("rootfs"), &test_setup.test_case)
         }
