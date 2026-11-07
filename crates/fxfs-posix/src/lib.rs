@@ -626,11 +626,29 @@ impl<P: Platform> Fxfs<P> {
         transaction.commit().await.map(drop)
     }
 
-    /// Allocates the blocks of the file `ino` within `range`, growing the file if they are past
-    /// its end (fallocate, with no flags).
+    /// Makes the file `ino` at least `range.end` bytes long (fallocate, with no flags), as the
+    /// guest's fallocate does (`fxfs_data_fallocate`): NoSpace if the filesystem hasn't room for
+    /// the range beyond what the file holds already, but no blocks set aside, which an extent store
+    /// can't do, each write taking new ones (copy-on-write); blocks not written read as zeros.
+    ///
+    /// fxdax: not Fxfs's preallocation (`DataObjectHandle::allocate`), whose overwrite extents the
+    /// first write to them replaced, copy-on-write, the attribute still saying it had some, which
+    /// fsck refuses (MissingOverwriteExtents): the host's fallocate alone made them, the guest's
+    /// never (TASK-149.39).
     pub async fn allocate(&self, ino: u64, range: Range<u64>) -> Result<(), Error> {
         self.begin(Op::Allocate, None).await?;
-        self.file(ino).await?.allocate(range).await
+        ensure!(range.start < range.end, FxfsError::InvalidArgs);
+        let attr = self.attr(ino).await?;
+        ensure!(attr.mode & S_IFMT == S_IFREG, FxfsError::NotFile);
+        // Not `statfs`, which comes after every queued unlink, as this doesn't (`Op::rules`).
+        let usage = self.usage();
+        let room = (usage.free_blocks * usage.block_size).saturating_add(attr.blocks * 512);
+        ensure!(range.end - range.start <= room, FxfsError::NoSpace);
+        if range.end > attr.size {
+            let grow = SetAttr { valid: SET_SIZE, size: range.end, ..SetAttr::default() };
+            self.setattr(ino, &grow).await?;
+        }
+        Ok(())
     }
 
     /// fxdax: the attributes of the object `ino`, for a file handle (open_by_handle_at, NFS):
@@ -1720,15 +1738,20 @@ impl<P: Platform> Fxfs<P> {
     /// The filesystem's usage, what was unlinked gone from it (TASK-79.21).
     pub async fn statfs(&self) -> Result<StatFs, Error> {
         self.begin(Op::Statfs, None).await?;
+        Ok(self.usage())
+    }
+
+    /// The filesystem's usage as it is, what queued unlinks will free still used.
+    fn usage(&self) -> StatFs {
         let block_size = self.filesystem.block_size().get();
         let blocks = self.filesystem.device().block_count();
         let used = self.filesystem.allocator().get_used_bytes().0 / block_size;
-        Ok(StatFs {
+        StatFs {
             block_size,
             blocks,
             free_blocks: blocks.saturating_sub(used),
             files: self.volume.object_count(),
-        })
+        }
     }
 
     /// The directory `ino`'s handle: the inode's, opened if it isn't yet.

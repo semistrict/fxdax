@@ -12,7 +12,9 @@
 // journal and super-blocks) do once per block; preallocation can limit the extents it allocates
 // to a length (`preallocate_range_in_extents_of`). Files in overwrite mode are written
 // copy-on-write (see `StoreObjectHandle::multi_overwrite`), so preallocating doesn't guarantee
-// space. What splits an operation across commits is the room its transaction says it has left
+// space; and a write replacing a file's last overwrite extent leaves its attribute's
+// `has_overwrite_extents` set, which fsck refuses (MissingOverwriteExtents), so nothing of fxdax's
+// preallocates a file's data with `allocate`: fallocate grows the file alone (TASK-149.39). What splits an operation across commits is the room its transaction says it has left
 // (`Transaction::room`), not a count of mutations: `allocate`, `preallocate_range`.
 
 use crate::errors::FxfsError;
