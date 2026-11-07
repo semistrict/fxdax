@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-10-30 09:08'
-updated_date: '2026-11-07 07:45'
+updated_date: '2026-11-07 09:36'
 labels: []
 dependencies: []
 documentation:
@@ -63,4 +63,11 @@ The design makes claims about cost that nothing has measured yet. The numbers de
 - Not done: r872, the rerun with a 4 GiB window and 6 GiB of daemon memory for the warm DAX case, and r871 (shared-volumes and bigmap guest cases on the refactored helpers). gcloud's credentials expired and need gcloud auth login (OPEN_QUESTIONS). No change to crates/extent_store, extent_remote, remote.rs or stores.rs was needed.
 
 Verification: GCE r870 passed linux-checkout-{ext4,fxfs,fxfs-dax}. macOS scripts/test.sh clippy+workspace: 2053/2053 passed. scripts/tests: 172 passed. upstream-changes --check passed. fxdax unit tests a_silence_says_which_limit_it_passed and volume_metadata pass on Linux (aarch64 container). After rebasing onto main 394fe7535, fxdax and test_cases check clean on macOS and Linux. Landing candidate: land-r1 2e91b42af, CI run 42352478087. Linux workspace DoD waits on that CI run. Kept In Progress for r871 and r872.
+
+2026-11-07, GCE r872 (the user's ask: TASK-227's target). linux-checkout-ext4-pmem was added: the same checkout on an 8 GiB ext4 image on virtio-pmem, mounted dax=always (checked in /proc/mounts). All four cases ran on one n2-standard-8 with an 8 GiB window and 6 GiB of daemon memory, and all passed.
+- Warm full-tree reread, checkout VM / fresh VM: ext4-pmem 729 / 712 ms, Fxfs DAX 801 / 751 ms (5-10% slower), sandboxes 759-781 ms. ext4 on virtio-blk 763 / 766 ms, Fxfs 858 / 791 ms.
+- The gap to pmem matches Fxfs's gap to ext4 without DAX, and is within the spread between VMs. Inferred, not profiled: it is most likely Fxfs's per-file open and lookup cost, not the DAX mapping.
+- Cold read in a fresh VM: Fxfs DAX 5.6 s against pmem 8.8 s. A sandbox over the base: 34-35 s.
+- Host memory after one read: pmem RSS 2,478 MiB (588 MiB anon). DAX RSS 2,318 MiB (626 MiB anon, 843 MiB shared).
+- Hosts r871 and r872 were deleted after the login. r873 (r871's rerun) was deleted by the user for CPUs.
 <!-- SECTION:NOTES:END -->

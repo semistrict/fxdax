@@ -260,10 +260,249 @@ in one pack, and the working tree read whole is 1.54 GB.
   (1.5 GB) is larger than the window and the daemon's arenas (1 GiB each), so a read in order
   evicts each page before it comes round again. A cold read is slow on Fxfs either way: 18-38 s
   against ext4's 12-20 s. That is one reader thread, with what the daemon couldn't hold served from
-  its part cache. The rerun with a 4 GiB window and 6 GiB of daemon memory (r872,
-  `FXDAX_LINUX_CHECKOUT_WINDOW`, `FXDAX_LINUX_CHECKOUT_EXTENTD_MEMORY`) is still to be done: gcloud's
-  credentials expired before it ran.
+  its part cache. r872, below, reran it with both larger than the tree.
 - **The volume's metadata is small:** 18.9 MB of layers, 1,557-1,560 allocator records and a
   600-byte manifest, with or without DAX. The Lima run's 91,727 records without DAX don't reproduce.
 - **Not explained:** after the checkout VM, the daemon's PSS is 937-959 MiB while its arenas hold
   2-6 MiB.
+
+# r872: a window larger than the tree, against ext4 with DAX on virtio-pmem
+
+TASK-227's target, set by the user: Fxfs DAX's warm reread of the tree as fast as ext4 with DAX on
+Firecracker's virtio-pmem, or faster. r872 ran all four cases one after the other on one
+n2-standard-8 in us-central1-b, a different host from r870's. The source was the same tree plus
+`linux-checkout-ext4-pmem`. The settings were `FXDAX_LINUX_CHECKOUT_WINDOW=8589934592` (an 8 GiB
+window) and `FXDAX_LINUX_CHECKOUT_EXTENTD_MEMORY=6442450944` (6 GiB of daemon memory). ext4-pmem
+uses an 8 GiB image as a writable virtio-pmem device, mounted `dax=always`, which the case checks in
+/proc/mounts. The raw output is in [r872/](linux-checkout-2026-11-07/r872/). Each figure is one run.
+
+**The warm reread, the target:**
+
+| | ext4, pmem, DAX | Fxfs, DAX | Fxfs / ext4-pmem | ext4, virtio-blk | Fxfs |
+|---|---|---|---|---|---|
+| Checkout VM | 729.0 ms | 800.6 ms | 1.10 | 762.7 ms | 857.6 ms |
+| Fresh VM | 711.7 ms | 750.8 ms | 1.05 | 766.4 ms | 790.9 ms |
+| Sandboxes over the shared base | | 759.3-781.0 ms | 1.07-1.10 | | 802 ms-1.03 s |
+
+Fxfs DAX is 5-10% slower than ext4 on pmem. That is about as far as Fxfs without DAX is from
+ext4 on virtio-blk (3-12%), and within the spread between VMs of one case: a warm status varies
+by 50-100 ms between VMs. What lies between them is therefore most likely Fxfs's cost per file,
+91k opens and their lookups, and not the DAX mapping, which is warm in both. This is inferred from
+the non-DAX comparison; no profile was taken. With the window and the daemon's memory larger than
+the tree, DAX gets warm: 0.75-0.80 s, against r870's 26-44 s with 1 GiB each.
+
+**Other results:**
+- **Cold, Fxfs DAX beats pmem when the daemon holds the base.** A fresh VM's cold read takes
+  5.64 s against ext4-pmem's 8.81 s (ext4 on virtio-blk: 20.1 s). A sandbox over the shared base
+  takes 34-35 s instead: its reads go through the attached generation, which the daemon's memory
+  doesn't hold warm the way it holds the publisher's own store.
+- **Host memory per VM after one read is comparable.** ext4-pmem: RSS 2,478 MiB, of it 588 MiB anon
+  and the rest the image's pages, shared through the host's page cache. Fxfs DAX: RSS 2,318 MiB, of
+  it 626 MiB anon and 843 MiB of the daemon's shared pages.
+- Writing the checkout: ext4-pmem 26.8 + 0.5 s, ext4 19.5 + 3.1 s, Fxfs DAX 58.6 + 0.6 s.
+
+### The checkout
+
+|  | ext4 | ext4-pmem | fxfs | fxfs-dax |
+|---|---|---|---|---|
+| tracked-files | 91,166 files | 91,166 files | 91,166 files | 91,166 files |
+| volume-files | 91,192 files | 91,192 files | 91,192 files | 91,192 files |
+| volume-directories | 6,059 directories | 6,059 directories | 6,059 directories | 6,059 directories |
+| volume-bytes | 1,831,129,545 bytes | 1,831,129,545 bytes | 1,831,129,545 bytes | 1,831,129,545 bytes |
+| git-bytes | 295,822,513 bytes | 295,822,513 bytes | 295,822,513 bytes | 295,822,513 bytes |
+| read-bytes | 1,535,304,277 bytes | 1,535,304,277 bytes | 1,535,304,277 bytes | 1,535,304,277 bytes |
+| manifest |  |  | 600 bytes | 600 bytes |
+| volume-layers |  |  | 18,907,136 bytes | 18,907,136 bytes |
+| volume-allocator-records |  |  | 1,558 records | 1,557 records |
+
+### Checking it out, and opening it in a fresh VM
+
+|  | ext4 checkout | ext4-pmem checkout | fxfs checkout | fxfs-dax checkout | ext4 reopened | ext4-pmem reopened | fxfs reopened | fxfs-dax reopened |
+|---|---|---|---|---|---|---|---|---|
+| mkfs | 512.6 ms | 611.5 ms |  |  |  |  |  |  |
+| default-mount |  |  | 89.5 ms | 85.9 ms |  |  | 104.3 ms | 102.7 ms |
+| mount | 66.6 ms | 23.1 ms |  |  | 84.7 ms | 32.7 ms | 25.6 ms | 25.7 ms |
+| clone | 13.98 s | 13.26 s | 13.39 s | 12.98 s |  |  |  |  |
+| checkout | 19.49 s | 26.77 s | 59.22 s | 58.60 s |  |  |  |  |
+| sync | 3.05 s | 489.3 ms | 871.6 ms | 609.2 ms |  |  |  |  |
+| status-cold | 435.8 ms | 417.9 ms | 974.3 ms | 1.03 s | 819.9 ms | 661.7 ms | 933.3 ms | 1.06 s |
+| status-warm | 180.1 ms | 182.3 ms | 224.8 ms | 230.4 ms | 286.4 ms | 227.7 ms | 283.4 ms | 210.7 ms |
+| status-synced | 175.4 ms | 173.6 ms | 268.8 ms | 264.8 ms | 197.2 ms | 253.8 ms | 272.2 ms | 247.0 ms |
+| status-warm-again | 178.0 ms | 173.7 ms | 238.5 ms | 227.3 ms | 255.8 ms | 181.9 ms | 213.1 ms | 273.6 ms |
+| read-cold | 13.26 s | 8.66 s | 37.38 s | 15.59 s | 20.13 s | 8.81 s | 43.36 s | 5.64 s |
+| read-warm | 762.7 ms | 729.0 ms | 857.6 ms | 800.6 ms | 766.4 ms | 711.7 ms | 790.9 ms | 750.8 ms |
+| publish |  |  | 1.42 s | 1.57 s |  |  |  |  |
+
+### Shared, a volume over the published base
+
+|  | fxfs | fxfs-dax |
+|---|---|---|
+| sandbox attach | 25.5 ms - 32.2 ms | 27.3 ms - 29.9 ms |
+| sandbox import | 31.3 ms - 32.8 ms | 33.4 ms - 43.5 ms |
+| sandbox mount | 1.9 ms - 2.6 ms | 1.5 ms - 2.8 ms |
+| sandbox status-cold | 906.0 ms - 1.10 s | 987.3 ms - 1.24 s |
+| sandbox status-warm | 208.8 ms - 291.3 ms | 262.4 ms - 278.1 ms |
+| sandbox status-synced | 275.8 ms - 291.4 ms | 246.2 ms - 262.2 ms |
+| sandbox status-warm-again | 211.5 ms - 240.1 ms | 201.4 ms - 241.2 ms |
+| sandbox read-cold | 41.86 s - 46.35 s | 33.95 s - 34.79 s |
+| sandbox read-warm | 802.3 ms - 1.03 s | 759.3 ms - 781.0 ms |
+| sandbox first-overwrite | 1.8 ms - 1.9 ms | 2.0 ms - 2.0 ms |
+| sandbox first-create | 1.8 ms - 2.1 ms | 2.0 ms - 2.3 ms |
+| sandbox status-after-writes | 646.6 ms - 660.3 ms | 566.0 ms - 575.2 ms |
+| hundreds import-median | 9.8 ms | 10.2 ms |
+| hundreds import-max | 32.3 ms | 32.2 ms |
+| hundreds mount-median | 0.6 ms | 0.7 ms |
+| hundreds mount-max | 1.2 ms | 1.5 ms |
+| hundreds status-cold | 930.1 ms | 1.00 s |
+| hundreds status-warm | 216.8 ms | 282.7 ms |
+| hundreds status-synced | 248.9 ms | 243.7 ms |
+| hundreds first-overwrite | 3.4 ms | 3.8 ms |
+| hundreds first-create | 2.1 ms | 2.0 ms |
+| hundreds unmount-all | 7.12 s | 7.23 s |
+| rebooted default-mount | 122.7 ms | 123.2 ms |
+| rebooted mount | 12.1 ms | 11.2 ms |
+| rebooted status-cold | 937.4 ms | 980.6 ms |
+| rebooted status-warm | 275.7 ms | 258.3 ms |
+| rebooted mount-others-median | 10.3 ms | 10.1 ms |
+| rebooted mount-others-max | 16.3 ms | 15.0 ms |
+| rebooted unmount-all | 7.51 s | 7.26 s |
+
+### Memory, MiB
+
+| ext4: phase | guest used | VM RSS | VM anon | VM shmem | extentd PSS | extentd arenas |
+|---|---|---|---|---|---|---|
+| checkout-booted-pinned | 186 | 238 | 234 | 0 | 23 | 0 |
+| checkout-checked-out | 425 | 2,924 | 2,920 | 0 | 23 | 0 |
+| checkout-checked-out-pinned | 271 | 2,924 | 2,920 | 0 | 23 | 0 |
+| checkout-status | 383 | 2,926 | 2,923 | 0 | 23 | 0 |
+| checkout-read | 376 | 2,933 | 2,930 | 0 | 23 | 0 |
+| checkout-read-pinned | 338 | 2,933 | 2,930 | 0 | 23 | 0 |
+| reopened-booted-pinned | 191 | 243 | 240 | 0 | 23 | 0 |
+| reopened-mounted | 195 | 243 | 240 | 0 | 23 | 0 |
+| reopened-status | 314 | 444 | 440 | 0 | 23 | 0 |
+| reopened-read | 340 | 2,113 | 2,110 | 0 | 23 | 0 |
+| reopened-read-pinned | 218 | 2,113 | 2,110 | 0 | 23 | 0 |
+
+| ext4-pmem: phase | guest used | VM RSS | VM anon | VM shmem | extentd PSS | extentd arenas |
+|---|---|---|---|---|---|---|
+| checkout-booted-pinned | 317 | 437 | 363 | 0 | 23 | 0 |
+| checkout-checked-out | 484 | 3,135 | 976 | 0 | 23 | 0 |
+| checkout-checked-out-pinned | 323 | 3,135 | 976 | 0 | 23 | 0 |
+| checkout-status | 428 | 3,141 | 982 | 0 | 23 | 0 |
+| checkout-read | 385 | 3,151 | 986 | 0 | 23 | 0 |
+| checkout-read-pinned | 357 | 3,151 | 986 | 0 | 23 | 0 |
+| reopened-booted-pinned | 325 | 368 | 362 | 0 | 23 | 0 |
+| reopened-mounted | 322 | 368 | 362 | 0 | 23 | 0 |
+| reopened-status | 422 | 651 | 549 | 0 | 23 | 0 |
+| reopened-read | 378 | 2,478 | 588 | 0 | 23 | 0 |
+| reopened-read-pinned | 352 | 2,478 | 588 | 0 | 23 | 0 |
+
+| fxfs: phase | guest used | VM RSS | VM anon | VM shmem | extentd PSS | extentd arenas |
+|---|---|---|---|---|---|---|
+| checkout-booted-pinned | 190 | 244 | 241 | 0 | 33 | 4 |
+| checkout-checked-out | 526 | 2,896 | 2,891 | 1 | 890 | 2 |
+| checkout-checked-out-pinned | 339 | 2,896 | 2,891 | 1 | 890 | 2 |
+| checkout-status | 429 | 2,898 | 2,892 | 1 | 1,039 | 126 |
+| checkout-read | 464 | 2,904 | 2,899 | 1 | 2,771 | 1,814 |
+| checkout-read-pinned | 375 | 2,904 | 2,899 | 1 | 2,771 | 1,814 |
+| reopened-booted-pinned | 211 | 249 | 245 | 0 | 2,806 | 1,814 |
+| reopened-mounted | 209 | 251 | 247 | 0 | 2,810 | 1,818 |
+| reopened-status | 355 | 407 | 402 | 1 | 2,824 | 1,832 |
+| reopened-read | 444 | 2,119 | 2,114 | 1 | 2,825 | 1,832 |
+| reopened-read-pinned | 307 | 2,119 | 2,114 | 1 | 2,825 | 1,832 |
+| sandbox-0-booted-pinned | 199 | 246 | 243 | 0 | 2,824 | 1,832 |
+| sandbox-0-mounted | 197 | 249 | 245 | 0 | 2,830 | 1,838 |
+| sandbox-0-status | 336 | 405 | 401 | 0 | 2,986 | 1,978 |
+| sandbox-0-read | 436 | 2,130 | 2,126 | 1 | 4,697 | 3,666 |
+| sandbox-0-read-pinned | 273 | 2,130 | 2,126 | 1 | 4,697 | 3,666 |
+| sandbox-0-written-pinned | 316 | 2,141 | 2,137 | 1 | 4,713 | 3,666 |
+| sandbox-1-booted-pinned | 202 | 251 | 248 | 0 | 4,712 | 3,666 |
+| sandbox-1-mounted | 200 | 253 | 250 | 0 | 4,712 | 3,666 |
+| sandbox-1-status | 344 | 420 | 416 | 0 | 4,712 | 3,666 |
+| sandbox-1-read | 435 | 2,131 | 2,127 | 0 | 4,712 | 3,666 |
+| sandbox-1-read-pinned | 295 | 2,131 | 2,127 | 0 | 4,712 | 3,666 |
+| sandbox-1-written-pinned | 324 | 2,141 | 2,138 | 0 | 4,724 | 3,666 |
+| sandbox-2-booted-pinned | 193 | 251 | 248 | 0 | 4,724 | 3,666 |
+| sandbox-2-mounted | 199 | 253 | 250 | 0 | 4,724 | 3,666 |
+| sandbox-2-status | 342 | 421 | 417 | 0 | 4,724 | 3,666 |
+| sandbox-2-read | 441 | 2,139 | 2,135 | 0 | 4,726 | 3,666 |
+| sandbox-2-read-pinned | 245 | 2,139 | 2,135 | 0 | 4,726 | 3,666 |
+| sandbox-2-written-pinned | 263 | 2,146 | 2,141 | 0 | 4,740 | 3,666 |
+| hundreds-booted-pinned | 197 | 249 | 245 | 0 | 4,739 | 3,666 |
+| hundreds-mounted-pinned | 506 | 547 | 544 | 0 | 4,739 | 3,666 |
+| hundreds-status | 662 | 722 | 718 | 0 | 4,740 | 3,666 |
+| hundreds-written-pinned | 533 | 727 | 723 | 0 | 4,740 | 3,666 |
+| rebooted-booted-pinned | 195 | 255 | 251 | 0 | 4,739 | 3,666 |
+| rebooted-mounted | 201 | 256 | 252 | 0 | 4,739 | 3,666 |
+| rebooted-status | 348 | 424 | 420 | 0 | 4,740 | 3,666 |
+| rebooted-status-pinned | 245 | 453 | 449 | 0 | 4,740 | 3,666 |
+| rebooted-mounted-all-pinned | 549 | 658 | 654 | 0 | 4,740 | 3,666 |
+
+| fxfs-dax: phase | guest used | VM RSS | VM anon | VM shmem | extentd PSS | extentd arenas |
+|---|---|---|---|---|---|---|
+| checkout-booted-pinned | 187 | 343 | 340 | 0 | 37 | 8 |
+| checkout-checked-out | 512 | 3,009 | 3,004 | 1 | 968 | 6 |
+| checkout-checked-out-pinned | 313 | 3,009 | 3,004 | 1 | 968 | 6 |
+| checkout-status | 434 | 3,022 | 3,007 | 6 | 1,113 | 136 |
+| checkout-read | 434 | 4,696 | 3,009 | 842 | 2,002 | 1,830 |
+| checkout-read-pinned | 443 | 4,696 | 3,009 | 842 | 2,002 | 1,830 |
+| reopened-booted-pinned | 207 | 352 | 348 | 0 | 2,847 | 1,830 |
+| reopened-mounted | 213 | 354 | 350 | 0 | 2,851 | 1,834 |
+| reopened-status | 383 | 695 | 532 | 80 | 2,786 | 1,848 |
+| reopened-read | 419 | 2,318 | 626 | 843 | 2,023 | 1,848 |
+| reopened-read-pinned | 372 | 2,318 | 626 | 843 | 2,023 | 1,848 |
+| sandbox-0-booted-pinned | 191 | 342 | 338 | 0 | 2,865 | 1,848 |
+| sandbox-0-mounted | 191 | 344 | 341 | 0 | 2,867 | 1,850 |
+| sandbox-0-status | 365 | 541 | 527 | 5 | 3,007 | 1,994 |
+| sandbox-0-read | 412 | 2,323 | 638 | 841 | 3,888 | 3,688 |
+| sandbox-0-read-pinned | 356 | 2,323 | 638 | 841 | 3,888 | 3,688 |
+| sandbox-0-written-pinned | 394 | 2,328 | 643 | 841 | 3,904 | 3,688 |
+| sandbox-1-booted-pinned | 206 | 342 | 338 | 0 | 4,744 | 3,688 |
+| sandbox-1-mounted | 205 | 344 | 340 | 0 | 4,744 | 3,688 |
+| sandbox-1-status | 361 | 530 | 513 | 7 | 4,738 | 3,688 |
+| sandbox-1-read | 410 | 2,333 | 645 | 842 | 3,908 | 3,688 |
+| sandbox-1-read-pinned | 351 | 2,333 | 645 | 842 | 3,908 | 3,688 |
+| sandbox-1-written-pinned | 393 | 2,338 | 650 | 842 | 3,912 | 3,688 |
+| sandbox-2-booted-pinned | 187 | 346 | 343 | 0 | 4,754 | 3,688 |
+| sandbox-2-mounted | 196 | 349 | 345 | 0 | 4,755 | 3,688 |
+| sandbox-2-status | 372 | 543 | 526 | 7 | 4,748 | 3,688 |
+| sandbox-2-read | 411 | 2,337 | 649 | 842 | 3,915 | 3,688 |
+| sandbox-2-read-pinned | 352 | 2,337 | 649 | 842 | 3,915 | 3,688 |
+| sandbox-2-written-pinned | 400 | 2,344 | 657 | 842 | 3,925 | 3,688 |
+| hundreds-booted-pinned | 199 | 341 | 338 | 0 | 4,767 | 3,688 |
+| hundreds-mounted-pinned | 502 | 643 | 640 | 0 | 4,769 | 3,688 |
+| hundreds-status | 674 | 833 | 816 | 7 | 4,762 | 3,688 |
+| hundreds-written-pinned | 522 | 852 | 834 | 7 | 4,762 | 3,688 |
+| rebooted-booted-pinned | 198 | 349 | 345 | 0 | 4,769 | 3,688 |
+| rebooted-mounted | 196 | 350 | 346 | 0 | 4,769 | 3,688 |
+| rebooted-status | 359 | 543 | 527 | 7 | 4,762 | 3,688 |
+| rebooted-status-pinned | 256 | 550 | 533 | 7 | 4,762 | 3,688 |
+| rebooted-mounted-all-pinned | 545 | 802 | 785 | 7 | 4,762 | 3,688 |
+
+### The host's disk, MiB
+
+| ext4: after | bucket | ext4.img | extentd-cache |
+|---|---|---|---|
+| checkout | 0.0 | 2,195.0 | 0.0 |
+| reopened | 0.0 | 2,195.0 | 0.0 |
+
+| ext4-pmem: after | bucket | ext4.img | extentd-cache |
+|---|---|---|---|
+| checkout | 0.0 | 2,161.9 | 0.0 |
+| reopened | 0.0 | 2,231.1 | 0.0 |
+
+| fxfs: after | bucket | extentd-cache | generation | publisher | publisher.bucket | sandbox-0 | sandbox-1 | sandbox-2 | hundreds |
+|---|---|---|---|---|---|---|---|---|---|
+| checkout | 0.0 | 722.3 | 0.1 | 0.2 | 700.6 |  |  |  |  |
+| sandbox-0 | 1.6 | 724.0 | 0.1 | 0.2 | 701.0 | 0.1 |  |  |  |
+| sandbox-1 | 3.2 | 725.6 | 0.1 | 0.2 | 701.1 | 0.1 | 0.1 |  |  |
+| sandbox-2 | 4.9 | 727.2 | 0.1 | 0.2 | 701.3 | 0.1 | 0.1 | 0.1 |  |
+| hundreds | 9.0 | 731.3 | 0.1 | 0.2 | 701.5 | 0.1 | 0.1 | 0.1 | 0.2 |
+
+| fxfs-dax: after | bucket | extentd-cache | generation | publisher | publisher.bucket | sandbox-0 | sandbox-1 | sandbox-2 | hundreds |
+|---|---|---|---|---|---|---|---|---|---|
+| checkout | 0.0 | 722.0 | 0.1 | 0.2 | 699.6 |  |  |  |  |
+| sandbox-0 | 1.6 | 723.6 | 0.1 | 0.2 | 699.9 | 0.1 |  |  |  |
+| sandbox-1 | 3.3 | 725.2 | 0.1 | 0.2 | 700.1 | 0.1 | 0.1 |  |  |
+| sandbox-2 | 4.9 | 726.8 | 0.1 | 0.2 | 700.2 | 0.1 | 0.1 | 0.1 |  |
+| hundreds | 9.1 | 730.9 | 0.1 | 0.2 | 700.4 | 0.1 | 0.1 | 0.1 | 0.2 |

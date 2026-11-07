@@ -6,12 +6,6 @@
 **Recommended:** a workload identity pool for `semistrict/fxdax` and a service account allowed to make and delete GCE instances and write the nightly bucket.
 **Until then:** each nightly fails at its auth step; TASK-69's runs stay manual.
 
-## gcloud needs `gcloud auth login` again (2026-11-07)
-
-gcloud's credentials expired during TASK-136.1 ("Reauthentication failed. cannot prompt during non-interactive execution"). Only you can log in again.
-**Needed:** `gcloud auth login`. After that, rerun r872: `FXDAX_GCE_ZONE=us-central1-b FXDAX_GCE_MACHINE=n2-standard-8 FXDAX_WORKSPACE_TESTS=0 FXDAX_LINUX_CHECKOUT_WINDOW=4294967296 FXDAX_LINUX_CHECKOUT_EXTENTD_MEMORY=6442450944 FXDAX_E2E_TEST="linux-checkout-ext4 linux-checkout-fxfs linux-checkout-fxfs-dax" scripts/test-gce.sh`. Also rerun r871's guest cases, which cover the refactored shared_volumes.rs: `fxfs-guest-shared-volumes(-dax)` and `fxfs-guest-bigmap(-dax)`.
-**Until then:** fxdax-test-r871-t1361 (us-east1-c) and fxdax-test-r872-t1361 (us-central1-b) sit idle until their 8 h lifetime deletes them. Every GCE run fails.
-
 # Decisions
 
 ## A tenant's connections share a room, 8 GiB a tenant by default (TASK-149.35, 2026-11-07)
@@ -121,7 +115,7 @@ Decisions made without you, still yours to confirm or overturn. Each is a line o
 - **Two mutants without killers since copy-on-write DAX:** `task-150.9-resize-moves-the-last-block` equivalent (TASK-149.30 closed without one); `task-79.49-store-fails-on-pins` killed in guest/sim, not by a guest check (TASK-149.31). 2026-11-05.
 - **extent_remote's simulation is a CI part of its own,** built with Cargo profile `sim` (release with debug checks). TASK-188, 2026-11-05.
 - **CI runs scripts/test.sh, a part a job;** open bugs' failures are listed in known-failures files, not failed on; a nightly `hunt.yml`. TASK-160.27, 2026-11-03.
-- **A Linux-sized checkout is measured by `linux-checkout-{ext4,fxfs,fxfs-dax}`, tagged `manual`,** not the old branch's `fxfs-guest-linux-checkout(-dax)`. ext4 joined it as the baseline, since overlayfs was dropped. A measurement suite would be the other choice; the cases take 1.5-9 min each on GCE. *Undoing it:* rename the cases in guest/tests/test_cases/src/lib.rs. TASK-136.1, 2026-11-07.
+- **A Linux-sized checkout is measured by `linux-checkout-{ext4,ext4-pmem,fxfs,fxfs-dax}`, tagged `manual`,** not the old branch's `fxfs-guest-linux-checkout(-dax)`. ext4 joined it as the baseline, since overlayfs was dropped. A measurement suite would be the other choice; the cases take 1.5-9 min each on GCE. *Undoing it:* rename the cases in guest/tests/test_cases/src/lib.rs. TASK-136.1, 2026-11-07.
 - **Guest cases are selected by tags;** `manual` for those no suite runs; the nightly runs 50. TASK-160.29, 2026-11-05.
 - **Guest test results as data** (`round-K.json`, `run.json`, `summary.json`, uploads to `FXDAX_RESULTS_BUCKET`). TASK-160.31, 2026-11-05.
 - **fsx against ext4 in one guest:** the model is the oracle of bytes and errnos, ext4 held to it as Fxfs is; ext4 says which times a step changes, compared (`differential::ALLOWED` empty); a clone on ext4 is a copy of what the model's VFS rules say it takes; failures shrunk in the guest, replayed once from a boot; -faults-dax in soak-sanitized alone. TASK-44.15, 2026-11-06.

@@ -3,7 +3,7 @@ id: doc-10
 title: 'Shared volumes: Fxfs volumes over read-only bases'
 type: specification
 created_date: '2026-10-30 09:08'
-updated_date: '2026-11-07 07:34'
+updated_date: '2026-11-07 09:36'
 ---
 # Shared volumes: Fxfs volumes over read-only bases
 
@@ -319,8 +319,10 @@ What the numbers ask of the design:
   tree, a second read of the whole tree took 26-44 s against 0.6 s without DAX. A read in order
   evicts each page before it is read again. Sizing of the window and the arenas belongs in the
   attach design: a sandbox attaching hundreds of repos rereads only some of them, but those must
-  fit. A rerun with a 4 GiB window and 6 GiB of daemon memory is still due, to show the warm case
-  (TASK-136.1).
+  fit. With an 8 GiB window and 6 GiB of daemon memory (r872), the warm reread took 0.75-0.80 s,
+  sandboxes included. ext4 with DAX on virtio-pmem, TASK-227's mark, took 0.71-0.73 s, so Fxfs is
+  5-10% slower, about as far as Fxfs without DAX is from ext4. A fresh VM's cold read took 5.6 s
+  against pmem's 8.8 s. A sandbox's took 34-35 s, its reads going through the attached generation.
 - **Metadata is the per-sandbox cost to cut.** A Linux-sized status costs each sandbox 130-185 MiB
   of guest metadata, with or without DAX, against 1.2 MiB for a checkout mounted and idle. That
   moves "Metadata across VMs", below, from unmeasured to the largest cost left per sandbox.
