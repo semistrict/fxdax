@@ -93,6 +93,7 @@
 pub(crate) mod client;
 mod codec;
 pub mod control;
+pub mod disk;
 pub mod drain;
 mod grants;
 pub mod logging;
