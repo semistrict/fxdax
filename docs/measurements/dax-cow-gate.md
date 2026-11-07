@@ -92,15 +92,26 @@ measurement).
 
 ## Runs
 
-### r884, 2026-11-07: the forked pair with a window as large as the data (TASK-227)
+### r903, 2026-11-07: the full gate with windows as large as the data (TASK-227); every gate passes
 
-The fork's window the host's memory, 15.6 GiB (16,760,438,784 bytes) where it was 2 GiB, and its
-private pages 1 GiB at most whatever the window's size (vendor/firecracker 4079fbc85), where they
-were half the window's: the same 262,144 pages at 2 GiB. On `fxdax-test-r884-c` (us-east1-b,
-n2-standard-4, nested, jailed, release guest kernel), TASK-227's branch before its rebase
-(80b95495b): no-dax-forked 1087, 1282, 1389, 1421, 1348; dax-forked 1167, 1303, 1313, 1383, 1274.
-`forked-dax` 0.967 (r807: 0.912), `decay` 1.24 and 1.09; dax-forked's PRIVATEs 108,983 (r807:
-108,688). The density and bigmap phases were not rerun: a window's size costs no memory the guest
+The pgbench cases' windows the host's memory, 15.6 GiB (16,760,438,784 bytes), where they were 2
+GiB, and a writer's private pages 1 GiB at most whatever the window's size (vendor/firecracker
+4079fbc85), where they were half the window's: the same 262,144 pages at 2 GiB. On
+`fxdax-test-r884-c` (us-east1-b, n2-standard-4, nested, Cascade Lake, jailed, release guest kernel),
+land-w1 dfdcd2507 on main 4bf0e45fd (land-xk's extent_store), vendor/firecracker 99c2b05c5; the
+density and gate phases on 5a7f72999, the same code with backlog changes.
+
+Single: no-dax 1377, 1417, 1481, 1450, 1448; dax 1365, 1414, 1469, 1419, 1407; ext4-dax-pmem median
+1108; no-dax-forked 1021, 1292, 1389, 1445, 1447; dax-forked 1202, 1302, 1325, 1449, 1318. Gates:
+`dax` 0.977, `forked-dax` 0.949 (r807: 0.912), `static-dax` 1.28, `decay` 1.03-1.42, `density` 1.06
+and 1.01, `density-memory` 0.782 (r807: 0.811; no DAX 2,570.4 MiB a VM added, DAX 2,011.1),
+`density-memory-mib` 2,011.1 (r807: 2,164.0), `bigmap-read` 4.81, `bigmap-guest-cache` 0.0,
+`bigmap-written-memory` 1.20. The density VMs' daemon memory 912-968 MiB (no DAX's 2,036-4,760),
+each VM's window mapping 940-945 MiB of it.
+
+Before it, r884 ran the forked pair alone on TASK-227's branch before its rebase (80b95495b):
+no-dax-forked 1087, 1282, 1389, 1421, 1348; dax-forked 1167, 1303, 1313, 1383, 1274; `forked-dax`
+0.967, dax-forked's PRIVATEs 108,983 (r807: 108,688). A window's size costs no memory the guest
 doesn't reach (TASK-227's r881 and r882: an 8 and a 64 GiB window booted in 997 ms, their struct
 pages 30 MiB, their VM processes 4.6 GB, 16.6k mappings and 9.1 MiB of KVM's page tables each).
 
