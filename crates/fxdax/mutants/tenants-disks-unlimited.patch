@@ -1,0 +1,16 @@
+# A tenant's disk limit holds nothing: its VM processes' writes are admitted whatever its disk
+# takes, so one tenant fills the host's disk, every tenant's stores with it, its stores' capacities
+# alone bounding it, and it makes as many as it likes (TASK-94).
+# Kind: disk
+# Killer: extentd::tests::hostile::a_tenant_filling_its_disk_leaves_others_committing
+--- a/crates/fxdax/src/extentd/disk.rs
++++ b/crates/fxdax/src/extentd/disk.rs
+@@ -169,7 +169,7 @@
+         if !take(&USED, TOTAL_LIMIT.load(Ordering::Relaxed)) {
+             return Err(self.refuse());
+         }
+-        if !take(&self.used, self.limit.load(Ordering::Relaxed)) {
++        if !take(&self.used, NONE) {
+             USED.fetch_sub(bytes, Ordering::SeqCst);
+             return Err(self.refuse());
+         }

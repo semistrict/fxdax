@@ -1,0 +1,16 @@
+# A walk of a tenant's directory forgets the writes not done as it began, which it may not find
+# in its files yet: each recount, as a refusal asks for, admits the tenant as many more bytes
+# again, past its limit (TASK-94; the hostile proptest found it, mallory 2 MiB past).
+# Kind: disk
+# Killer: extentd::disk::tests::writes_not_done_stay_counted_across_walks
+--- a/crates/fxdax/src/extentd/disk.rs
++++ b/crates/fxdax/src/extentd/disk.rs
+@@ -202,7 +202,7 @@
+         let writing = self.writing.load(Ordering::SeqCst);
+         let walked = walk(&self.dir);
+         // Only admissions add to it meanwhile.
+-        let delta = (walked + writing).wrapping_sub(before);
++        let delta = walked.wrapping_sub(before);
+         self.used.fetch_add(delta, Ordering::SeqCst);
+         USED.fetch_add(delta, Ordering::SeqCst);
+     }
