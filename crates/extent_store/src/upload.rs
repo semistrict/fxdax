@@ -336,6 +336,9 @@ struct Progress {
     /// The lowest sequence number the guest may mint: its writer's epoch's range (doc-7).
     next_sequence: u64,
     stop: bool,
+    /// Whether, stopping, it stops at once: uploading nothing more, its uploads in flight given up
+    /// on, no checkpoint written ([`Remote::cut_short`]).
+    cut: bool,
     /// The branch's lease, once its writer took it.
     lease: Option<Lease>,
     /// The store's latest commits not uploaded, as the uploader saw them, and when it did: the
@@ -558,6 +561,28 @@ impl<D: Dir> Remote<D> {
     pub fn failed(&self) -> Option<Failure> {
         self.shared.progress.lock().unwrap().failed.clone()
     }
+
+    /// What has the uploader, once it stops, or as it is stopping, stop at once (TASK-216): as a
+    /// writer opening the store again here waits for it, which the store's write-ahead log keeps
+    /// what it hadn't uploaded for, and whose opening uploads it. Stopped so, its uploads in flight
+    /// are given up on, as a crashed host's are, landing or not, and its writer writes no
+    /// checkpoint. Its uploader gone, it does nothing. Stopping as dropping it does otherwise, it
+    /// uploads all its store made durable first, which takes as long as the bucket takes.
+    pub fn cut_short(&self) -> impl Fn() + Send + Sync + 'static {
+        let shared = Arc::downgrade(&self.shared);
+        move || {
+            let Some(shared) = shared.upgrade() else { return };
+            shared.progress.lock().unwrap().cut = true;
+            shared.wake.notify_one();
+        }
+    }
+
+    /// Has the uploader, stopping, upload all its store made durable first, as it does unless
+    /// cut short ([`Remote::cut_short`]): for a store another writer took over, as it was, its
+    /// uploader going on, whose going later no writer waits for.
+    pub fn drain_on_stop(&self) {
+        self.shared.progress.lock().unwrap().cut = false;
+    }
 }
 
 impl<D: Dir> Drop for Remote<D> {
@@ -678,11 +703,16 @@ impl<D: Dir> Shared<D> {
             if let Err(err) = self.observe() {
                 return self.fail(&writer, err);
             }
-            let stop = {
+            let (stop, cut) = {
                 let mut progress = self.progress.lock().unwrap();
                 close |= std::mem::take(&mut progress.wanted);
-                progress.stop
+                (progress.stop, progress.cut)
             };
+            // Cut short (TASK-216): what it has in flight, and what it would have taken, the
+            // store's log keeps, for the store's next opening.
+            if stop && cut {
+                return self.fail(&writer, Failure::msg("the uploader stopped, cut short"));
+            }
             if (close || more || stop) && in_flight.len() < IN_FLIGHT {
                 let gathered = blocking(|| self.gather(&writer, &mut in_flight, close || stop));
                 let gathered = match gathered {

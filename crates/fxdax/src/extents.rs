@@ -701,7 +701,19 @@ impl ExtentStore {
         }
         let window = self.dax.lock(&self.fence)?.take();
         drop(window);
+        // fxdax: its uploader goes on, its going no writer's to wait for (TASK-216).
+        if let Some(remote) = &self.remote {
+            remote.drain_on_stop();
+        }
         Ok(())
+    }
+
+    /// fxdax: what has its uploader, once it stops, stop at once, uploading nothing more, which
+    /// its write-ahead log keeps for its next opening (TASK-216): what extentd has a writer that
+    /// waits for its going connection's store to close call. None for a store with no uploader.
+    pub fn cut_short(&self) -> Option<crate::store_table::Wanted> {
+        let remote = self.remote.as_ref()?;
+        Some(std::sync::Arc::new(remote.cut_short()))
     }
 
     /// fxdax: cuts the store's followers off: their reads, advances and pins fail with `ESTALE`

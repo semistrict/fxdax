@@ -1431,6 +1431,11 @@ impl Connection {
         let flushed = store.clone();
         self.start_behind(move |stopped| flush_behind(flushed, stopped));
         let branch = store.branch();
+        // fxdax: should its VM process go, and a writer wait for its store to close, the store's
+        // uploader stops at once rather than upload what it holds first (TASK-216).
+        if let Some(cut_short) = store.cut_short() {
+            hold.when_wanted(cut_short);
+        }
         opening.opened(path, store, Phase::Writing(Arc::new(hold)));
         Ok(branch)
     }

@@ -4233,6 +4233,63 @@ fn childs_opened_during_their_forks_wait_for_them() {
     drop((child_store, store));
 }
 
+/// TASK-216: a VM booted again on the store its VM crashed out of opens it at once, while what
+/// that store's uploader had in flight waits on the bucket: the uploader of a store whose
+/// connection went stops as the new writer waits for it, without uploading the rest, which the
+/// store's write-ahead log keeps and the new opening uploads. Before, the going connection's store
+/// was closed as any store is, its uploader uploading all it held first, and the new opening,
+/// waiting at most `CLOSING_WAIT` for that, failed `EBUSY` (fxfs-guest-soak on GCS, GCE r758
+/// round 14, every bucket request 1000 ms late).
+#[test]
+fn stores_whose_vm_went_open_again_while_their_uploads_wait() {
+    use std::sync::Arc;
+    host();
+    let ps = page_size() as usize;
+    let gated = Arc::new(GatedReads::new());
+    super::stores::use_bucket(extent_remote::store::Store::new(gated.clone(), "branches"));
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("extentd.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    std::thread::spawn(move || serve(listener));
+    let path = dir.path().join("store");
+    let store = RemoteExtentStore::connect(&socket, &path, 1 << 24).unwrap();
+    let branch = store.branch();
+    let write = |store: &RemoteExtentStore, sequence: u64| {
+        let extent = ExtentId { branch, sequence };
+        let data = pattern(sequence as u8, ps);
+        store.write(extent, 0, &[VolatileSlice::from(&data[..])]).unwrap();
+    };
+    write(&store, 1);
+    store.commit(None).unwrap();
+    wait_uploaded(&path).unwrap();
+    // The next segment's upload, held: the bucket out of reach for what the store has in flight.
+    let segments = format!("branches/{}", extent_remote::layout::segments(branch));
+    gated.hold_next_write(&segments);
+    write(&store, 2);
+    store.commit_ordered(None).unwrap();
+    // The VM goes, its connection with it, its store's uploader uploading what it held.
+    drop(store);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while gated.writes_waiting() == 0 {
+        assert!(std::time::Instant::now() < deadline, "the going store's upload was never held");
+        std::thread::yield_now();
+    }
+    // A VM booted again opens it, at once, and reads what the first committed.
+    let asked = std::time::Instant::now();
+    let again = RemoteExtentStore::connect(&socket, &path, 1 << 24);
+    let took = asked.elapsed();
+    let again = again.unwrap_or_else(|err| panic!("opening again, after {took:?}: {err:#}"));
+    assert!(took < super::stores::CLOSING_WAIT / 2, "opening again took {took:?}");
+    let mut data = vec![0; ps];
+    let extent = ExtentId { branch, sequence: 2 };
+    again.read(extent, 0, &mut [VolatileSliceMut::from(&mut data[..])]).unwrap();
+    assert!(data == pattern(2, ps), "the store opened again reads other data");
+    // What it opened with lands in the bucket, with the commit the first left in its log.
+    again.commit(None).unwrap();
+    gated.let_held_write_go();
+    drop(again);
+}
+
 /// An object store in memory whose reads wait while they are held ([`GatedReads::hold`]): what
 /// makes a page-in's fetch from object storage wait as long as a test needs. And whose writes
 /// under a prefix wait while it is held ([`GatedReads::hold_writes`]).
@@ -4246,6 +4303,10 @@ struct GatedReads {
     held_writes: tokio::sync::watch::Sender<Option<String>>,
     /// The writes waiting.
     writes_waiting: std::sync::atomic::AtomicUsize,
+    /// The prefix of the keys whose next write alone waits, until let go, if any
+    /// ([`GatedReads::hold_next_write`]); and whether the one held is let go.
+    next_write: std::sync::Mutex<Option<String>>,
+    next_write_going: tokio::sync::watch::Sender<bool>,
 }
 
 impl std::fmt::Display for GatedReads {
@@ -4262,7 +4323,21 @@ impl GatedReads {
             waiting: Default::default(),
             held_writes: tokio::sync::watch::channel(None).0,
             writes_waiting: Default::default(),
+            next_write: Default::default(),
+            next_write_going: tokio::sync::watch::channel(false).0,
         }
+    }
+
+    /// Holds the next write of a key beginning with `prefix`, and no other after it, until
+    /// [`GatedReads::let_held_write_go`]: what one writer has in flight, which those after it don't
+    /// wait behind.
+    fn hold_next_write(&self, prefix: &str) {
+        self.next_write_going.send_replace(false);
+        *self.next_write.lock().unwrap() = Some(prefix.to_owned());
+    }
+
+    fn let_held_write_go(&self) {
+        self.next_write_going.send_replace(true);
     }
 
     /// Holds the writes of keys beginning with `prefix` from now on, if any, or lets them go.
@@ -4296,6 +4371,17 @@ impl object_store::ObjectStore for GatedReads {
         let holds = |prefix: &Option<String>| {
             prefix.as_ref().is_some_and(|prefix| location.as_ref().starts_with(prefix.as_str()))
         };
+        let next = {
+            let mut next = self.next_write.lock().unwrap();
+            let holds_next = holds(&next);
+            holds_next.then(|| next.take())
+        };
+        if next.is_some() {
+            let mut going = self.next_write_going.subscribe();
+            self.writes_waiting.fetch_add(1, Ordering::Relaxed);
+            let _ = going.wait_for(|going| *going).await;
+            self.writes_waiting.fetch_sub(1, Ordering::Relaxed);
+        }
         if holds(&self.held_writes.borrow()) {
             let mut held = self.held_writes.subscribe();
             self.writes_waiting.fetch_add(1, Ordering::Relaxed);
