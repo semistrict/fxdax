@@ -3,7 +3,7 @@ id: doc-13
 title: Copy-on-write DAX
 type: specification
 created_date: '2026-11-04 07:55'
-updated_date: '2026-11-06 09:35'
+updated_date: '2026-11-07 03:00'
 ---
 # Copy-on-write DAX: the window maps sealed extents only; a store gets a private copy
 
@@ -137,9 +137,12 @@ memory without asking other VMs anything.
 - **`COMMIT`** seals as before; it changes nothing in any window.
 - `WRITE`, `READ`, `FREE`, `MAP_MANY`, `MAP_AHEAD`, `UNMAP`, followers, snapshots unchanged, but
   for: a snapshot is refused while the device has a private page (the guest's freeze rebinds them
-  all, below), so a snapshot's window still maps only extents and zeros. *As built:* the guest's
-  freeze warns of private pages it couldn't rebind (`no snapshot`), but fxdax's Firecracker doesn't
-  check: it records each mapping's extent or zeros, not a private page's bytes.
+  all, below), so a snapshot's window still maps only extents and zeros. *As built:* the store
+  refuses a snapshot's point (`EBUSY`, saying how many), and the window's mappings, while its window
+  holds a private page (`ExtentStore::point`, `window_mappings`, TASK-203): fxdax's Firecracker
+  takes the point first, so its snapshot fails before anything is made, and the VM goes on as it
+  was. The guest's freeze warns of the private pages it couldn't rebind (`no snapshot`): those a
+  writeback that found no memory kept dirty (TASK-207), or a rebind refused.
 
 ## The host
 
@@ -236,7 +239,8 @@ as XFS writes back both files first; the destination's pages in the range are dr
 and mapped again from the clone's extents.
 
 **Freeze** writes everything back, commits durably (sealing), and rebinds every private page: the
-snapshot's window holds extents and zeros only. Thaw changes nothing.
+snapshot's window holds extents and zeros only, and with a private page left the store refuses the
+snapshot's point (above). Thaw changes nothing.
 
 **`MAP_PRIVATE` stores** are the kernel's: an anonymous guest page, copied from the window
 (`dax_fault_cow_page`). **Long-term pins** stay refused.
