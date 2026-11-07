@@ -1370,6 +1370,14 @@ impl<H: HostMemory> UffdSecondStage<H> {
             }
             resolved => resolved,
         };
+        // fxdax: failed as what resolves the window's faults went, the daemon: the VM process is
+        // stopping, ExtentdLost, as its device was told, and its faulting thread waits for that,
+        // which aborting would beat, the VM dying of SIGABRT, where a VM whose daemon goes exits
+        // 158 (doc-12; fxfs-guest-soak, GCE r830 round 27; TASK-231).
+        if resolved.is_err() && window.lost() {
+            log::warn!("DAX window fault at offset {offset:#x} unresolved: the extent daemon went");
+            std::future::pending::<()>().await;
+        }
         if let Err(err) = resolved {
             let why =
                 format!("unresolved DAX window fault at offset {offset:#x} ({access:?}): {err}");
@@ -2092,6 +2100,65 @@ mod tests {
         drop(dax);
         // SAFETY: Unmaps the memory, which nothing uses any more.
         assert_eq!(unsafe { libc::munmap(memory, 2 * ps) }, 0);
+    }
+
+    use futures::future::BoxFuture;
+
+    /// A window whose faults fail with EIO, as its daemon's connection's do once the daemon went,
+    /// lost, or not.
+    struct Failing {
+        lost: bool,
+    }
+
+    impl Faults for Failing {
+        fn size(&self) -> u64 {
+            page_size()
+        }
+
+        fn fault(&self, _: u64, _: Access) -> BoxFuture<'_, Result<()>> {
+            Box::pin(std::future::ready(Err(Errno::EIO)))
+        }
+
+        fn fault_page(&self, _: u64, _: Access) -> BoxFuture<'_, Result<()>> {
+            Box::pin(std::future::ready(Err(Errno::EIO)))
+        }
+
+        fn probe(&self, _: u64) -> BoxFuture<'_, Result<()>> {
+            Box::pin(std::future::ready(Err(Errno::EIO)))
+        }
+
+        fn lost(&self) -> bool {
+            self.lost
+        }
+    }
+
+    /// fxdax TASK-231: a fault its window fails as its daemon goes waits for the VM process to
+    /// stop, as it does then, ExtentdLost, rather than abort it: aborted, the VM died of SIGABRT,
+    /// a VM of fxfs-guest-soak's (GCE r830 round 27), where a VM whose daemon goes exits 158.
+    #[test]
+    fn faults_failed_as_their_daemon_goes_wait() {
+        let ps = page_size() as usize;
+        // SAFETY: Maps anonymous memory, which this test owns.
+        let memory = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                ps,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+                -1,
+                0,
+            )
+        };
+        assert_ne!(memory, libc::MAP_FAILED);
+        let base = memory as usize;
+        // SAFETY: Only the test uses the memory, which outlives the stage.
+        let stage = unsafe { UffdSecondStage::in_process(base, ps as u64, None) }.unwrap();
+        let window = Failing { lost: true };
+        let fault = stage.resolve_through(&window, base, Access::Read, false, false, 0);
+        assert!(futures::FutureExt::now_or_never(fault).is_none(), "the fault returned");
+        drop(stage);
+        // SAFETY: Unmaps the memory, which nothing uses any more.
+        assert_eq!(unsafe { libc::munmap(memory, ps) }, 0);
     }
 
     /// fxdax TASK-79.8: a second stage let go of maps nothing from then on, and no change the

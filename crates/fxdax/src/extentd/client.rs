@@ -589,6 +589,12 @@ impl RemoteExtentStore {
         self.client.stage.get().map(|stage| stage.budget())
     }
 
+    /// fxdax: whether its daemon went, closing the connection: what fails from then on fails for
+    /// that (TASK-231).
+    pub fn daemon_lost(&self) -> bool {
+        self.client.lost.load(Ordering::Acquire)
+    }
+
     /// Has `lost` called once the daemon goes, closing the connection: at once if it went already.
     /// Nothing the store asks is served from then on, its window's faults included, and it doesn't
     /// connect again: a VMM stops its VM, which can't go on, visibly to its host (TASK-50.2).
@@ -942,14 +948,21 @@ impl Client {
                 told_private = told;
             }
         }
+        // The daemon went, unless the store closed the connection itself: no request is served,
+        // nor the window's faults, from now on, and the VM can't go on. Said before the requests
+        // waiting fail, so that what their failures do knows why, as the window's faults do,
+        // which wait for the VM process to stop then rather than abort it (TASK-231).
+        let lost = !self.closing.load(Ordering::Acquire);
+        if lost {
+            self.lost.store(true, Ordering::Release);
+        }
         // The requests waiting fail, as do those made from now on.
         self.waiting.lock().unwrap().take();
         self.room.notify_all();
-        // The daemon went, unless the store closed the connection itself: no request is served,
-        // nor the window's faults, from now on, and the VM can't go on.
-        if !self.closing.load(Ordering::Acquire) {
+        // Where a test has what the failing requests do come first (TASK-231).
+        fail::fail_point!("client::requests_failed");
+        if lost {
             log::error!("the extent daemon went: the store's requests fail from now on");
-            self.lost.store(true, Ordering::Release);
             if let Some(lost) = self.on_lost.get() {
                 lost();
             }
@@ -1295,5 +1308,9 @@ impl Faults for RemoteFaults {
 
     fn probe(&self, offset: u64) -> BoxFuture<'_, Result<()>> {
         self.fault_with(Fault { offset, access: Access::Read, page: true, probe: true })
+    }
+
+    fn lost(&self) -> bool {
+        self.client.lost.load(Ordering::Acquire)
     }
 }

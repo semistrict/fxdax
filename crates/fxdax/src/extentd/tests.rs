@@ -3436,6 +3436,48 @@ fn window_mappings_past_a_messages_payload_arrive() {
     answering.join().unwrap();
 }
 
+/// fxdax: a request its daemon's going failed finds the daemon gone: the connection is lost before
+/// what waits on it fails, so that what a failure makes of it, as the VM process's faults do, can
+/// tell a daemon gone from a refusal (TASK-231). A VM whose daemon died with a fault in flight
+/// aborted (SIGABRT), the fault's EIO taken for the daemon's refusal, where it exits ExtentdLost
+/// (158): fxfs-guest-soak, GCE r830 round 27.
+#[test]
+fn requests_failed_by_the_daemons_going_find_it_gone() {
+    use super::wire::*;
+    use std::os::fd::AsFd;
+    let ps = page_size();
+    let (client, daemon) = UnixStream::pair().unwrap();
+    let answering = std::thread::spawn(move || {
+        let (sender, mut receiver) =
+            (Sender::new(daemon.try_clone().unwrap()), Receiver::new(daemon));
+        let (own, public) = (memfd(ps), memfd(ps));
+        while let Ok(Some(request)) = receiver.receive(|| 0) {
+            let mut reply = Header::new(REPLY, request.header.id);
+            let mut fds = Vec::new();
+            match request.header.kind {
+                OPEN => {
+                    reply.args = opened_args(7);
+                    fds = vec![own.as_fd(), public.as_fd()];
+                }
+                BUILD | TRANSFER => {}
+                // The daemon goes as it is asked to read, answering nothing.
+                _ => return,
+            }
+            sender.send(reply, &[], &fds).unwrap();
+        }
+    });
+    let store = RemoteExtentStore::over(client, Path::new("store"), Opening::Create(1 << 20));
+    let store = store.unwrap();
+    // What the failed request does comes before the rest of the connection's end.
+    let _slow = fail::FailGuard::new("client::requests_failed", "sleep(200)").unwrap();
+    let mut data = vec![0; ps as usize];
+    let extent = ExtentId { branch: 7, sequence: 1 };
+    let read = store.read(extent, 0, &mut [VolatileSliceMut::from(&mut data[..])]);
+    assert_eq!(read, Err(crate::Errno::EIO));
+    assert!(store.daemon_lost(), "the read failed, its daemon not yet lost");
+    answering.join().unwrap();
+}
+
 /// A VM process's connection to the daemon at `socket`, made by hand, as one that keeps to no
 /// protocol makes it: its store at `path` opened, created with `capacity` bytes, and its branch.
 fn raw_connection(
