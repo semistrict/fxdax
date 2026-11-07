@@ -4,7 +4,7 @@
 # Killer: extentd::tests::hostile::a_compromised_vm_process_harms_no_tenant_beside_it
 --- a/crates/fxdax/src/extentd/server.rs
 +++ b/crates/fxdax/src/extentd/server.rs
-@@ -312,7 +312,7 @@
+@@ -324,7 +324,7 @@
      /// `EACCES` unless it is where they name stores ([`Stores`]).
      fn holds(&self, path: &Path) -> Result<(), Errno> {
          let held = match &self.policy.stores {

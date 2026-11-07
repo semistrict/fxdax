@@ -16,7 +16,7 @@
                  if args[1] > args[0] / crate::pages::page_size() {
 --- a/crates/fxdax/src/extentd/server.rs
 +++ b/crates/fxdax/src/extentd/server.rs
-@@ -1858,7 +1858,6 @@
+@@ -1877,7 +1877,6 @@
      /// Its window is of `size` bytes, whose mappings, a page each at most, a reply to `MAPPINGS`
      /// holds (TASK-79.43).
      fn set_window(&self, size: u64) {
