@@ -200,6 +200,11 @@ fn inherited_acl(owner: u16, mask: u16, other: u16) -> Vec<u8> {
 /// fxdax: the line the killed crash test's guest says where it would reset its VM, at which the
 /// host kills the VM's process (TASK-119.6).
 const KILL_ME: &str = "kill me";
+
+/// fxdax: what the crash test's guest says before [`KILL_ME`], and the milliseconds since its
+/// writers began, when it asked to be killed (TASK-165.9).
+const KILLING: &str = "killing at ";
+
 /// fxdax: what the guest says before its stray access ([`TestFxfsGuest::crash_stray`]).
 const STRAY: &str = "stray ";
 
@@ -248,27 +253,62 @@ mod host {
     /// The store's capacity: room for the crash test's unnamed file too.
     const CAPACITY: u64 = 128 << 20;
 
+    /// fxdax: how long before the kill a file's fsync may have returned for it to be found short
+    /// or empty, as one its daemon killed lost, its creation durable, its data not: two of
+    /// extentd's turns, in which it makes the commits it ordered, and answered, durable (doc-12;
+    /// main's lag up to some 60 ms, GCE r733).
+    const LOST_WITHIN_MS: u128 = 100;
+
     /// The files whose fsync the guest says returned, its writer and index, as `output` says.
     fn synced_files(output: &str) -> Vec<(u8, usize)> {
+        synced(output).map(|(file, _)| file).collect()
+    }
+
+    /// The files whose fsync the guest says returned, and when, in milliseconds since its writers
+    /// began, if it says ([`since_writers_began`]).
+    fn synced(output: &str) -> impl Iterator<Item = ((u8, usize), Option<u128>)> + '_ {
         (output.lines())
             .filter_map(|line| line.strip_prefix("synced "))
             // A line the VM stopped in the middle of: of a file a line before names too.
             .filter_map(|file| {
-                let (writer, index) = file.split_once(' ')?;
-                Some((writer.parse().ok()?, index.parse().ok()?))
+                let mut words = file.split(' ');
+                let (writer, index) = (words.next()?.parse().ok()?, words.next()?.parse().ok()?);
+                // fxdax: and when, unless cut short (TASK-165.9).
+                let at = match (words.next(), words.next()) {
+                    (Some("at"), Some(at)) => at.strip_suffix("ms").and_then(|at| at.parse().ok()),
+                    _ => None,
+                };
+                Some(((writer, index), at))
             })
-            .collect()
+    }
+
+    /// fxdax: the files whose fsync returned within [`LOST_WITHIN_MS`] before the guest asked to be
+    /// killed, as `output` says: those a daemon killed may lose, short or empty.
+    fn synced_at_the_kill(output: &str) -> std::collections::BTreeSet<(u8, usize)> {
+        let killing = output.lines().find_map(|line| line.strip_prefix(KILLING)?.strip_suffix("ms"));
+        let Some(killing) = killing.and_then(|at| at.parse::<u128>().ok()) else {
+            return std::collections::BTreeSet::new();
+        };
+        let recent = |at: u128| at + LOST_WITHIN_MS >= killing;
+        synced(output).filter(|(_, at)| at.is_some_and(recent)).map(|(file, _)| file).collect()
     }
 
     /// fxdax: of the files each writer's fsync returned for, in its order, those that stayed, with
     /// what was written, followed by those lost: a commit stays only with those before it (doc-12:
-    /// up to 50 ms of them go with a daemon). Returns how many went.
-    fn assert_kept_prefix(fs: &Filesystem, synced: &[(u8, usize)]) -> usize {
+    /// up to 50 ms of them go with a daemon). One lost may be there, short or empty, its creation
+    /// durable, its data not, if its fsync returned just before the kill (`recent`, TASK-165.9).
+    /// Returns how many went.
+    fn assert_kept_prefix(
+        fs: &Filesystem,
+        synced: &[(u8, usize)],
+        recent: &std::collections::BTreeSet<(u8, usize)>,
+    ) -> usize {
+        let stayed = |writer, index| kept(fs, writer, index, recent.contains(&(writer, index)));
         let mut lost = 0;
         for &(writer, index) in synced {
             let earlier_lost = (synced.iter())
-                .any(|&(other, before)| other == writer && before < index && !kept(fs, other, before));
-            if kept(fs, writer, index) {
+                .any(|&(other, before)| other == writer && before < index && !stayed(other, before));
+            if stayed(writer, index) {
                 assert!(!earlier_lost, "writer {writer}'s file {index} stayed, an earlier one lost");
             } else {
                 lost += 1;
@@ -277,7 +317,9 @@ mod host {
         lost
     }
 
-    fn kept(fs: &Filesystem, writer: u8, index: usize) -> bool {
+    /// Whether writer `writer`'s file `index` is there, as written: not if it isn't there, nor, if
+    /// `recent` ([`assert_kept_prefix`]), if it holds what was written cut short.
+    fn kept(fs: &Filesystem, writer: u8, index: usize, recent: bool) -> bool {
         let name = format!("synced-{writer}-{index}");
         let Ok((file, attr)) = block_on(fs.root().lookup(name.as_bytes())) else {
             return false;
@@ -285,7 +327,11 @@ mod host {
         let mut contents = vec![0; attr.size as usize];
         let read = block_on(file.read(0, &mut contents)).unwrap();
         contents.truncate(read);
-        assert!(contents == durable(writer, index), "{name} holds other data");
+        let written = durable(writer, index);
+        if recent && contents.len() < written.len() && written.starts_with(&contents) {
+            return false;
+        }
+        assert!(contents == written, "{name} holds other data");
         true
     }
 
@@ -295,6 +341,18 @@ mod host {
     fn lines_cut_short_name_no_synced_file() {
         let output = "synced 1 2\nsynced 3\nsynced 3 x\nreboot: Restarting system\nsynced 4 5";
         assert_eq!(synced_files(output), vec![(1, 2), (4, 5)]);
+    }
+
+    /// fxdax: the files whose fsync returned within [`LOST_WITHIN_MS`] before the guest asked to be
+    /// killed, as it says, are those a daemon killed may leave short; none if it says not when, or
+    /// a line cut short says not when (TASK-165.9).
+    #[test]
+    fn files_synced_just_before_the_kill_are_recent() {
+        let output = "synced 1 7 at 1000ms\nsynced 2 3 at 1150ms\nsynced 1 8 at 1201ms\n\
+                      synced 2 4 at 125\nkilling at 1300ms\nkill me";
+        assert_eq!(synced_files(output), vec![(1, 7), (2, 3), (1, 8), (2, 4)]);
+        assert_eq!(synced_at_the_kill(output), [(1, 8)].into());
+        assert_eq!(synced_at_the_kill("synced 1 7 at 1000ms\nkill me"), [].into());
     }
 
     /// Asserts `fs` holds each of the files `synced` names whole, as its writer wrote it.
@@ -436,7 +494,7 @@ mod host {
                 let fs = block_on(Filesystem::mount(storage)).unwrap();
                 // fxdax: the rest of the test's checks count on what was told of being there.
                 if self.daemon_killed {
-                    let lost = assert_kept_prefix(&fs, &synced);
+                    let lost = assert_kept_prefix(&fs, &synced, &synced_at_the_kill(&output));
                     eprintln!("{lost} of {} files told of went with the daemon", synced.len());
                     block_on(fs.close()).unwrap();
                     return TestOutcome::Pass;
@@ -1073,6 +1131,14 @@ mod guest {
         }
     }
 
+    /// fxdax: when the crash test's writers began ([`since_writers_began`]).
+    static WRITERS_BEGAN: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+
+    /// fxdax: the milliseconds since the crash test's writers began.
+    fn since_writers_began() -> u128 {
+        WRITERS_BEGAN.get().expect("the writers began").elapsed().as_millis()
+    }
+
     /// Whether the crash test's writers wait, as its guest stores through a mapping (TASK-79.11).
     static PAUSED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
@@ -1085,7 +1151,7 @@ mod guest {
             file.write_all(&durable(writer, index)).unwrap();
             file.sync_all().unwrap();
             fs::File::open(MNT).unwrap().sync_all().unwrap();
-            report_out(&format!("synced {writer} {index}"));
+            report_out(&format!("synced {writer} {index} at {}ms", since_writers_began()));
             // Unsynced changes beside them, which the filesystem may hold or not.
             fs::write(format!("{MNT}/pending-{writer}-{index}"), pattern(5000, writer)).unwrap();
             if index % 3 == 0 {
@@ -1270,6 +1336,8 @@ mod guest {
         }
         // fxdax: unless its process is to be killed, whose host the guest asks to (TASK-119.6).
         let stopper = (!killed).then(Stopper::fork);
+        // fxdax: what the writers say is timed from here, as the VM's stop is (TASK-165.9).
+        WRITERS_BEGAN.get_or_init(std::time::Instant::now);
         std::thread::spawn(|| fsync_files(1));
         std::thread::spawn(|| fsync_files(2));
         std::thread::spawn(|| rewrite(0));
@@ -1298,7 +1366,12 @@ mod guest {
                 let access = stray.then(|| stray_access(crash_ms));
                 match &access {
                     Some(access) => writeln!(stdout, "{STRAY}{access}").unwrap(),
-                    None => writeln!(stdout, "{KILL_ME}").unwrap(),
+                    None => {
+                        // fxdax: when, for the files synced just before, which a daemon killed may
+                        // lose ([`synced_at`], TASK-165.9).
+                        writeln!(stdout, "{KILLING}{}ms", since_writers_began()).unwrap();
+                        writeln!(stdout, "{KILL_ME}").unwrap();
+                    }
                 }
                 stdout.flush().unwrap();
                 drop(stdout);
