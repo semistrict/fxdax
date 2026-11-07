@@ -90,6 +90,14 @@ const S_IFMT: u32 = 0o170000;
 const S_IFDIR: u32 = 0o040000;
 const S_IFREG: u32 = 0o100000;
 const S_IFLNK: u32 = 0o120000;
+#[cfg(test)]
+const S_IFIFO: u32 = 0o010000;
+#[cfg(test)]
+const S_IFCHR: u32 = 0o020000;
+#[cfg(test)]
+const S_IFBLK: u32 = 0o060000;
+#[cfg(test)]
+const S_IFSOCK: u32 = 0o140000;
 
 /// An inode's attributes: `struct fxfs_attr`.
 #[repr(C)]
@@ -742,7 +750,10 @@ impl<P: Platform> Fxfs<P> {
 
     /// Calls `emit` for the entries of the directory `dir` from `start` on, with each one's name,
     /// inode and type (as `S_IFMT` bits of a mode), until it returns false. fxdax: a follower's
-    /// under its fill barrier (`reading`), as of one state.
+    /// under its fill barrier (`reading`), as of one state. A file's type is its record's, which
+    /// says whether it is a special file: its entry says only that it is a file, and a FIFO's was
+    /// listed as a regular file (`DT_REG`), which `find -type p` and `ls` take a listing's word
+    /// for. (TASK-149.36: entries that said a node's type would spare the lookup.)
     pub async fn readdir(
         &self,
         dir: u64,
@@ -764,13 +775,32 @@ impl<P: Platform> Fxfs<P> {
         };
         let mut at = 0;
         while let Some((name, ino, descriptor)) = entries.get() {
-            if at >= skip && Some(name) != after && !emit(name, ino, file_type(descriptor)) {
-                break;
+            if at >= skip && Some(name) != after {
+                let kind = match descriptor {
+                    ObjectDescriptor::File => self.file_type(ino).await?,
+                    descriptor => file_type(descriptor),
+                };
+                if !emit(name, ino, kind) {
+                    break;
+                }
             }
             at += 1;
             entries.advance().await?;
         }
         Ok(())
+    }
+
+    /// The type of the file `ino`, as `S_IFMT` bits: a regular file's, or a special file's. One
+    /// whose record went since its entry was read, as a batch of unlinks applied meanwhile may
+    /// have tombstoned it, is a regular file's, as its entry says.
+    async fn file_type(&self, ino: u64) -> Result<u32, Error> {
+        let object = self.volume.tree().find(&ObjectKey::object(ino)).await?;
+        Ok(match object.map(|item| item.value) {
+            Some(ObjectValue::Object { attributes, .. }) => {
+                node_type(S_IFREG, attributes.posix_attributes.as_ref())
+            }
+            _ => S_IFREG,
+        })
     }
 
     /// Reads up to `buf.len()` bytes of the file `ino` at `offset`, returning how many it read:
@@ -1830,7 +1860,8 @@ fn utf8_name(name: &[u8]) -> Result<&str, Error> {
         .map_err(|_| anyhow!(FxfsError::InvalidArgs).context("Fxfs's names are UTF-8"))
 }
 
-/// The `S_IFMT` bits of objects `descriptor` describes.
+/// The `S_IFMT` bits of objects `descriptor` describes, as far as it says: a file may be a special
+/// file, which its record says (`node_type`).
 fn file_type(descriptor: &ObjectDescriptor) -> u32 {
     match descriptor {
         ObjectDescriptor::Directory => S_IFDIR,
