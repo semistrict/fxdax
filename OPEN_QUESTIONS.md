@@ -8,6 +8,16 @@
 
 # Decisions
 
+## A tenant's connections share a room, 8 GiB a tenant by default (TASK-149.35, 2026-11-07)
+
+The protocol bounds what the daemon holds of a VM process's requests per connection (`server::Peer::room`, 272 MiB without a window), but a tenant has up to `MAX_CONNECTIONS` (1,024), so one tenant, within the protocol, could have the daemon hold ~272 GiB of its requests' data at once, every tenant's daemon with it. Decided:
+- **A room per tenant** (`memory::InFlight`, `DEFAULT_TENANT_ROOM` = 8 GiB), shared by its connections: a request's stream data, and what the daemon has queued for a VM process, counted in it. A request past the room **waits** at admission, before its payload is read, holding no thread, until what the tenant holds leaves room; with nothing held, it goes on, so a request as large as the room is served. Not let go, as a connection past its own room is: it keeps within its own room, and the tenant's other VM processes take theirs.
+- **Why wait, not EAGAIN or let-go:** the stream carries requests that must be served (a guest's I/O); letting the connection go would kill a VM for its neighbours' load, and EAGAIN has no place in the wire here. A healthy tenant's VMs move most data through their transfer areas (256 KiB a slot, 8 a connection), which no room counts; only large WRITEs and READ replies through the stream count.
+- **Why 8 GiB:** a host's density case (300 forks of a base, TASK-112) held 16 MiB of a tenant's stream data at most; 8 GiB is ~30 VM processes each keeping a full 272 MiB connection room, which happens only writing back-to-back 64 MiB extents through the stream. Measured: 8 flooding connections of one tenant held 64 MiB against a 64 MiB room (the test's small setting), where without the bound they held 2,132 MiB; a second tenant flooding alongside was served throughout.
+- **Configurable** per tenant or daemon-wide through the control API (`SetTenantRoom`, `memory::set_room`), as the memory limits are (`SetMemoryLimit`): a tenant's holds for it alive now and granted later; without a tenant, it sets every tenant's whose own isn't set. Floor is a payload (64 MiB), under which a request couldn't be held.
+- *Instead:* fewer connections a tenant, or a smaller per-connection room — both cut a healthy tenant's throughput; or a count of connections rather than bytes — doesn't bound what each holds. *Undoing it:* `set_room(None, Some(u64::MAX))`, or the `take().await` in `Connection::within_bounds`.
+
+
 Decisions made without you, still yours to confirm or overturn. Each is a line or two here; what else was possible and how to undo it are in the task named, under "Decision moved here from OPEN_QUESTIONS.md" in its notes, or in the doc named. Tell an agent which you confirm or overturn and its line leaves the file.
 
 ## Storage: the bucket, the WAL and the store
