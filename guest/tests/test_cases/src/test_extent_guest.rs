@@ -61,10 +61,16 @@ mod host {
                 .expect("open the extent store");
             assert_eq!(store.root().unwrap(), ROOT);
             let info = store.info().unwrap();
-            // 34 extents of two blocks written, of which two were freed: the last, a write
-            // whose commit set the root (WRITE_ROOT), by the self-test, its root put back.
+            // 34 extents of two blocks written, sequences 0 to 33, of which two were freed: the
+            // last, a write whose commit set the root (WRITE_ROOT), by the self-test, its root put
+            // back.
             assert_eq!(info.used, 32 * 2 * 4096);
-            assert_eq!(info.next_sequence, 34);
+            // fxdax: a store opened says one past the highest of its extents it holds, 32, where
+            // fxfs looks for orphans below (TASK-165.9's one recovery; before, its footers'
+            // stamp, one past the highest written). The freed 33 is minted no more: its writer
+            // mints from its floor, past every number an earlier writer minted.
+            assert_eq!(info.next_sequence, 33);
+            assert!(info.sequence_floor > 33, "the floor, {}, is past 33", info.sequence_floor);
             TestOutcome::Pass
         }
     }

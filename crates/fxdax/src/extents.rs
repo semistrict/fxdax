@@ -66,7 +66,10 @@ pub struct ExtentInfo {
     pub used: u64,
     /// The bytes it can still take.
     pub available: u64,
-    /// One more than the highest sequence number the store's branch has written.
+    /// One more than the highest sequence number of the extents the store's branch holds, as of
+    /// its opening, and of those written since: where fxfs looks for orphans below. A number
+    /// freed past it is minted no more, its writer minting from [`Info::sequence_floor`]
+    /// (TASK-165.9).
     pub next_sequence: u64,
     /// fxdax: the lowest sequence number the guest may mint from: its writer's range's start, with
     /// a remote (doc-7, Fencing), past which the store need hold nothing.
