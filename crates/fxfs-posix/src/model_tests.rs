@@ -48,8 +48,9 @@
 //! sets reads back, and what Fxfs takes from the clock is no earlier than the operation that took
 //! it began; what the VFS keeps, a file's data's times, moves no earlier (`Time`). Names are as
 //! long as a name may be, of many bytes a character, in directories that fold case; a readdir
-//! goes on after the name it left off at while names come and go. Files are allocated as well as
-//! written, and nodes are FIFOs, sockets and devices too. `statfs` counts at least what the model
+//! goes on after the name it left off at while names come and go. Files grow by fallocate as well as by
+//! writes, which sets nothing aside on an extent store, and nodes are FIFOs, sockets and devices
+//! too. `statfs` counts at least what the model
 //! must take.
 
 use super::*;
@@ -300,19 +301,11 @@ impl Node {
     }
 }
 
-/// A file's model: its size, the pages written, which holes aren't, and those an allocation made
-/// (`Op::Allocate`) and nothing wrote since, which Fxfs records as to be written in place, and
-/// won't share: it writes them anew all the same, as it writes everything (backlog doc-4).
+/// A file's model: its size, and the pages written, which holes aren't.
 #[derive(Clone, Debug, Default)]
 struct Data {
     size: u64,
     pages: BTreeMap<u64, Arc<Vec<u8>>>,
-    allocated: BTreeSet<u64>,
-    /// Of those, the last page, if its tail past the file's end may be written anew, which takes
-    /// it out of `allocated`, and the model can't say whether: a truncate's zeroing of what it
-    /// held, which a full filesystem leaves undone, as a cut may, and then the growth after zeroes
-    /// it. Fxfs says which (`World::settle_tail`).
-    unsettled: Option<u64>,
 }
 
 impl Data {
@@ -322,7 +315,6 @@ impl Data {
             let here = at + done as u64;
             let within = (here % PAGE) as usize;
             let len = (PAGE as usize - within).min(bytes.len() - done);
-            self.allocated.remove(&(here / PAGE));
             let page = self.pages.entry(here / PAGE).or_default();
             let page = Arc::make_mut(page);
             page.resize(PAGE as usize, 0);
@@ -335,24 +327,16 @@ impl Data {
     fn truncate(&mut self, size: u64) {
         if size < self.size {
             self.pages.retain(|page, _| page * PAGE < size);
-            self.allocated.retain(|page| page * PAGE < size);
             if let Some(last) = self.pages.get_mut(&(size / PAGE)) {
-                let tail = &mut Arc::make_mut(last)[(size % PAGE) as usize..];
-                // What it held there is zeroed by a write of the block anew, which Fxfs makes
-                // as every write, unless it has no room.
-                if tail.iter().any(|byte| *byte != 0) && self.allocated.contains(&(size / PAGE)) {
-                    self.unsettled = Some(size / PAGE);
-                }
-                tail.fill(0);
+                Arc::make_mut(last)[(size % PAGE) as usize..].fill(0);
             }
         }
         self.size = size;
     }
 
-    /// What an allocation of `range` makes of this: the file reaches its end, and its pages are
-    /// allocated.
+    /// What an allocation of `range` makes of this (fallocate): the file reaches its end, and
+    /// nothing is set aside, which an extent store's copy-on-write can't, as the guest's doesn't.
     fn allocate(&mut self, range: Range<u64>) {
-        self.allocated.extend(range.start / PAGE..range.end.div_ceil(PAGE));
         self.size = self.size.max(range.end);
     }
 
@@ -364,7 +348,6 @@ impl Data {
             }
             None => self.punch(run.pages.clone()),
         }
-        self.allocated.retain(|page| !run.pages.contains(page));
         self.size = self.size.max(run.pages.end * PAGE);
     }
 
@@ -379,9 +362,9 @@ impl Data {
         punched.iter().for_each(|page| drop(self.pages.remove(page)));
     }
 
-    /// How many extents `pages` holds at most: nothing of its holes counts, but what's allocated.
+    /// How many extents `pages` holds at most: nothing of its holes counts.
     fn extents_in(&self, pages: Range<u64>) -> u64 {
-        (self.pages.range(pages.clone()).count() + self.allocated.range(pages).count()) as u64
+        self.pages.range(pages).count() as u64
     }
 
     fn read(&self, at: u64, len: usize) -> Vec<u8> {
@@ -1155,12 +1138,11 @@ impl Model {
         pages + nodes.map(|(_, node)| node.xattr_blocks()).sum::<u64>()
     }
 
-    /// The blocks the node `ino` counts as its own: the pages of a file written or allocated, and
-    /// what its extended attributes take, of which a clone's are its own too.
+    /// The blocks the node `ino` counts as its own: the pages of a file written, and what its
+    /// extended attributes take, of which a clone's are its own too.
     fn blocks_of(&self, ino: u64) -> u64 {
         let pages = self.files.get(&ino).map_or(0, |data| {
-            let written = data.pages.keys().filter(|page| *page * PAGE < data.size);
-            written.chain(&data.allocated).collect::<BTreeSet<_>>().len() as u64
+            data.pages.keys().filter(|page| *page * PAGE < data.size).count() as u64
         });
         pages + self.nodes[&ino].xattr_blocks()
     }
@@ -1171,12 +1153,6 @@ impl Model {
             S_IFLNK => SYMLINK_TARGET.len() as u64,
             _ => 0,
         }
-    }
-
-    /// Whether a clone of the pages `pages` of `src` is refused: Fxfs shares no block it records
-    /// as written in place, as it records what an allocation made.
-    fn clone_refused(&self, src: u64, pages: Range<u64>) -> bool {
-        self.files[&src].allocated.range(pages).next().is_some()
     }
 
     /// What a power cut leaves of this: what's open closes, and what no name links goes.
@@ -1896,9 +1872,9 @@ impl World {
         Ok(())
     }
 
-    /// The pages of file `ino` whose blocks Fxfs records as written in place, as it records what
-    /// an allocation made.
-    async fn allocated(&self, ino: u64) -> Result<BTreeSet<u64>, String> {
+    /// The pages of file `ino` whose blocks Fxfs records as written in place, as its preallocation
+    /// made them: none, since nothing of fxdax's preallocates, its writes copy-on-write.
+    async fn written_in_place(&self, ino: u64) -> Result<BTreeSet<u64>, String> {
         let failed = |e: Error| format!("the extents of {ino}: {e:#}");
         let layer_set = self.fs.volume.tree().layer_set();
         let mut merger = layer_set.merger();
@@ -1930,26 +1906,42 @@ impl World {
         Ok(pages)
     }
 
-    /// Checks the extents of file `ino` against the model: what Fxfs records as allocated, and what
-    /// a DAX window would map, which is every page written, and nothing else: what an allocation
-    /// left unwritten isn't on the device.
+    /// Checks the extents of file `ino` against the model, after each operation, not only when
+    /// fsck runs: none written in place, nor its data's record saying it has any, which an
+    /// allocation made, fsck refusing the flag once copy-on-write writes replaced them all
+    /// (TASK-149.39); and what a DAX window would map, which is every page written, and nothing
+    /// else.
     async fn holds_extents(&self, ino: u64) -> Result<(), String> {
         let data = &self.model.files[&ino];
-        let differ = |what: &str, got: &BTreeSet<u64>, expected: &BTreeSet<u64>| {
-            let (more, fewer) = (got.difference(expected), expected.difference(got));
-            let (more, fewer): (Vec<_>, Vec<_>) = (more.take(8).collect(), fewer.take(8).collect());
-            Err(format!("{ino} has pages {more:?} {what}, and not {fewer:?}"))
-        };
-        let allocated = self.allocated(ino).await?;
-        if allocated != data.allocated {
-            return differ("allocated", &allocated, &data.allocated);
+        let in_place = self.written_in_place(ino).await?;
+        if let Some(page) = in_place.first() {
+            return Err(format!(
+                "{ino} has {} pages written in place, from {page}",
+                in_place.len()
+            ));
+        }
+        let record = self.fs.volume.tree().find(&data_key(ino)).await;
+        let record =
+            record.map_err(|e| format!("the data of {ino}: {e:#}"))?.map(|item| item.value);
+        if let Some(ObjectValue::Attribute { has_overwrite_extents: true, .. }) = record {
+            return Err(format!("{ino}'s data says it has extents written in place"));
         }
         let mapped = self.mapped(ino, 0..data.size.div_ceil(PAGE)).await?;
         let written = data.pages.keys().copied().filter(|page| page * PAGE < data.size).collect();
         if mapped != written {
-            return differ("mapped", &mapped, &written);
+            let (more, fewer) = (mapped.difference(&written), written.difference(&mapped));
+            let (more, fewer): (Vec<_>, Vec<_>) = (more.take(8).collect(), fewer.take(8).collect());
+            return Err(format!("{ino} has pages {more:?} mapped, and not {fewer:?}"));
         }
         Ok(())
+    }
+
+    /// The room an allocation of file `ino` has, as Fxfs counts it: what's free, and what the file
+    /// takes already, which it writes anew (`Fxfs::allocate`).
+    async fn room(&self, ino: u64) -> Result<u64, String> {
+        let usage = self.fs.usage();
+        let attr = self.fs.attr(ino).await.map_err(|e| format!("attr of {ino}: {e:#}"))?;
+        Ok((usage.free_blocks * usage.block_size).saturating_add(attr.blocks * 512))
     }
 
     /// The pages of file `ino` in `pages` that a DAX window would map: those a block holds.
@@ -1963,48 +1955,6 @@ impl World {
             .iter()
             .flat_map(|e| e.offset / PAGE..(e.offset + e.len).div_ceil(PAGE))
             .collect())
-    }
-
-    /// Takes what Fxfs records as allocated of file `ino` for the model's, after an operation
-    /// that may have stopped short: it must be some of `allowed`. Its last page's tail, which the
-    /// model zeroed, Fxfs may not have yet (`Data::unsettled`).
-    async fn adopt_allocated(&mut self, ino: u64, allowed: &BTreeSet<u64>) -> Result<(), String> {
-        let allocated = self.allocated(ino).await?;
-        if let Some(page) = allocated.difference(allowed).next() {
-            return Err(format!("{ino} has page {page} allocated, of {} allowed", allowed.len()));
-        }
-        let data = self.model.files.get_mut(&ino).expect("a file");
-        let last = data.size / PAGE;
-        data.unsettled = (data.size % PAGE != 0 && allocated.contains(&last)).then_some(last);
-        data.allocated = allocated;
-        Ok(())
-    }
-
-    /// Takes what Fxfs says of file `ino`'s last page, if the model can't say whether its tail was
-    /// written anew (`Data::unsettled`), while it can't: until the file ends past it, or before.
-    async fn settle_tail(&mut self, ino: u64) -> Result<(), String> {
-        let Some(page) = self.model.files[&ino].unsettled else { return Ok(()) };
-        let allocated = self.allocated(ino).await?.contains(&page);
-        let data = self.model.files.get_mut(&ino).expect("a file");
-        if !allocated {
-            data.allocated.remove(&page);
-        }
-        if !data.allocated.contains(&page) || data.size.div_ceil(PAGE) != page + 1 {
-            data.unsettled = None;
-        }
-        Ok(())
-    }
-
-    /// `adopt_allocated` of every file, each allowed what `allowed` says.
-    async fn adopt_all_allocated(
-        &mut self,
-        allowed: &BTreeMap<u64, BTreeSet<u64>>,
-    ) -> Result<(), String> {
-        let none = BTreeSet::new();
-        for ino in self.model.files.keys().copied().collect::<Vec<_>>() {
-            self.adopt_allocated(ino, allowed.get(&ino).unwrap_or(&none)).await?;
-        }
-        Ok(())
     }
 
     /// Reads `count` more names of the readdir `cursor`, and checks them: each is there, as the
@@ -2139,25 +2089,31 @@ impl World {
                 self.model.files.get_mut(&ino).expect("a file").truncate(size);
             }
             self.model.nodes.get_mut(&ino).expect("a node").written();
-            self.settle_tail(ino).await?;
             self.check(&self.model, ino).await?;
         }
         Ok(())
     }
 
-    /// Checks that the device holds no extent Fxfs doesn't know, a sync having freed what's dead,
-    /// as what a mount reaped of a compaction cut short is: what a crash orphaned, freed by a
-    /// mount, takes room Fxfs doesn't count otherwise.
-    async fn holds_no_orphans(&self) -> Result<(), String> {
+    /// Syncs until nothing waits to be freed: the graveyard's trims, of what a truncate a cut
+    /// stopped short left, among it.
+    async fn lets_go(&self) -> Result<(), String> {
         // A sync starts what it lets die being freed, and what dies meanwhile waits for the next.
         let allocator = self.filesystem.allocator();
         loop {
             self.fs.sync().await.map_err(|e| format!("sync: {e:#}"))?;
             allocator.freed().await.map_err(|e| format!("freeing: {e:#}"))?;
             if !allocator.has_dead_extents() {
-                break;
+                return Ok(());
             }
         }
+    }
+
+    /// Checks that the device holds no extent Fxfs doesn't know, a sync having freed what's dead,
+    /// as what a mount reaped of a compaction cut short is: what a crash orphaned, freed by a
+    /// mount, takes room Fxfs doesn't count otherwise.
+    async fn holds_no_orphans(&self) -> Result<(), String> {
+        self.lets_go().await?;
+        let allocator = self.filesystem.allocator();
         let device = self.filesystem.device();
         let known = self.filesystem.allocator().extents();
         let (branch, held) = (device.branch(), device.extents());
@@ -2461,7 +2417,6 @@ impl World {
                 }
                 self.model.nodes.get_mut(&ino).expect("a node").written();
                 self.check(&self.model, ino).await?;
-                self.settle_tail(ino).await?;
                 self.holds_extents(ino).await?;
             }
             Op::Fill { .. } | Op::Clone { .. } | Op::CloneToEnd { .. } => {
@@ -2475,13 +2430,9 @@ impl World {
                         let size = self.model.files[&plan.ino].size.max(end * PAGE);
                         let size = plan.size.unwrap_or(size);
                         let range = page * PAGE..(page + end - to_page) * PAGE;
-                        let refused = self.model.clone_refused(src, page..page + end - to_page);
                         let dst_offset = to_page * PAGE;
                         let cloned = self.fs.clone_range(src, range, plan.ino, dst_offset, size);
                         let cloned = cloned.await.map(drop);
-                        if refused {
-                            return self.refused_whole(plan.ino, cloned).await;
-                        }
                         let replaced = self.model.files[&plan.ino].extents_in(to_page..end);
                         self.journaled_for(plan.runs.len() as u64 + replaced, journaled)?;
                         cloned
@@ -2531,7 +2482,6 @@ impl World {
                 }
                 self.model.nodes.get_mut(&ino).expect("a node").written();
                 self.check(&self.model, ino).await?;
-                self.settle_tail(ino).await?;
                 self.holds_extents(ino).await?;
             }
             Op::Punch { .. } => {
@@ -2547,25 +2497,17 @@ impl World {
                 let Some(ino) = self.model.file(file) else { return Ok(()) };
                 let range = at.min(LARGEST - len)..at.min(LARGEST - len) + len;
                 let allocated = self.fs.allocate(ino, range.clone()).await;
-                let mut data = self.model.files[&ino].clone();
+                // Room only grows meanwhile, as what was freed is, but for a block the growth
+                // takes, zeroing what the file's last held past its end anew.
+                let room = self.room(ino).await? + PAGE;
                 if self.unless_full(allocated, "allocate")?.is_some() {
-                    data.allocate(range);
-                    self.model.files.insert(ino, data);
-                } else {
-                    // Refused, it may have allocated some of the range, and grown the file to its
-                    // end first: nothing else.
-                    let size = self.fs.attr(ino).await.map_err(|e| format!("attr: {e:#}"))?.size;
-                    let mut allowed = data.clone();
-                    allowed.allocate(range);
-                    if size == allowed.size {
-                        data.size = size;
+                    if len > room {
+                        return Err(format!("{ino} allocated {len} bytes, past the room, {room}"));
                     }
-                    self.model.files.insert(ino, data);
-                    self.adopt_allocated(ino, &allowed.allocated).await?;
+                    self.model.files.get_mut(&ino).expect("a file").allocate(range);
                 }
                 self.model.nodes.get_mut(&ino).expect("a node").written();
                 self.check(&self.model, ino).await?;
-                self.settle_tail(ino).await?;
                 self.holds_extents(ino).await?;
             }
             // Each set made at once, or refused if the filesystem has no room for it, as the
@@ -2674,19 +2616,6 @@ impl World {
         }
         self.renamed(dir, &[], now);
         self.holds_node(&self.model, &attr)
-    }
-
-    /// Checks that `done`, a clone of what Fxfs won't share, was refused, leaving `ino`, which it
-    /// was to clone to, as it was.
-    async fn refused_whole(&self, ino: u64, done: Result<(), Error>) -> Result<(), String> {
-        match done {
-            Err(error) if FxfsError::NotSupported.matches(&error) => {}
-            // A full filesystem refuses the transaction first.
-            Err(error) if FxfsError::NoSpace.matches(&error) => {}
-            done => return Err(format!("a clone of what an allocation made: {done:?}")),
-        }
-        self.check(&self.model, ino).await?;
-        self.holds_extents(ino).await
     }
 
     /// Sets or removes the extended attribute `name` of `ino` as `change` says, and checks what it
@@ -2899,22 +2828,17 @@ impl World {
         Ok(())
     }
 
-    /// Takes `plan` for done, as `done` says, or for what got done before it stopped short, of
-    /// which what's allocated stays allocated, or isn't any more.
+    /// Takes `plan` for done, as `done` says, or for what got done before it stopped short.
     async fn planned(&mut self, plan: &Plan, done: Result<(), Error>) -> Result<(), String> {
         let mut data = self.model.files[&plan.ino].clone();
         self.model.nodes.get_mut(&plan.ino).expect("a node").written();
         if self.unless_full(done, "a plan")?.is_some() {
             data.follow(plan);
-            self.model.files.insert(plan.ino, data);
         } else {
-            let allowed = data.allocated.clone();
             data = self.stopped_short(data, plan).await?;
-            self.model.files.insert(plan.ino, data);
-            self.adopt_allocated(plan.ino, &allowed).await?;
         }
+        self.model.files.insert(plan.ino, data);
         self.check(&self.model, plan.ino).await?;
-        self.settle_tail(plan.ino).await?;
         self.holds_extents(plan.ino).await
     }
 }
@@ -2969,8 +2893,6 @@ impl Past {
         let (first, last) = (self.durable[op], (op + 1).min(self.states.len() - 1));
         let mut differs = Vec::new();
         let mut held = None;
-        // What any of them allocated, of which an allocation cut short leaves some.
-        let mut allocated: BTreeMap<u64, BTreeSet<u64>> = BTreeMap::new();
         for state in (first..=last).rev() {
             let mut candidates = self.states[state].cuts();
             if let Some(short) = self.stopped_short(&world, state, ops).await {
@@ -2981,9 +2903,6 @@ impl Past {
                 candidates.extend(worked.map(Model::cut));
             }
             for candidate in candidates {
-                for (ino, data) in &candidate.files {
-                    allocated.entry(*ino).or_default().extend(&data.allocated);
-                }
                 if held.is_none() {
                     match world.holds(&candidate).await {
                         Ok(()) => held = Some(candidate),
@@ -2997,8 +2916,6 @@ impl Past {
         };
         world.holds_nothing_else(&held).await?;
         world.model = held.clone();
-        world.adopt_all_allocated(&allocated).await?;
-        let held = world.model.clone();
         if self.states[first..=last].iter().any(|state| !state.unlinked().is_empty()) {
             tally.cuts_of_the_unlinked.set(tally.cuts_of_the_unlinked.get() + 1);
         }
@@ -3008,7 +2925,9 @@ impl Past {
             let again = World::mount(setting, device, root, held.clone(), tally.clone()).await;
             let mut again = again.map_err(|e| format!("cut during its replay: {e}"))?;
             again.cut = true;
-            again.adopt_all_allocated(&allocated).await?;
+            // As the replay it cut was: what a truncate cut short left to trim, the graveyard
+            // trims after the mount, the file counting its blocks until then.
+            again.lets_go().await.map_err(|e| format!("cut during its replay: {e}"))?;
             again.check_all().await.map_err(|e| format!("cut during its replay: {e}"))?;
             again.unmount().await?;
         }
@@ -4033,14 +3952,20 @@ fn a_full_device_unmounted_cleanly_mounts_again() {
     Setting::awkward(0, TIGHT).with_graveyard_of_seed().holds(ops);
 }
 
-/// A file allocated part of a block grows: zeroing what the block held past the file's end read the
-/// block from its extent, which an allocation that wrote nothing left off the device, and failed
-/// (EIO, "no extent"). Found by the model's allocations (TASK-149.36), at once with a power cut,
-/// which a truncate after shows too.
+/// fallocate grows a file and sets nothing aside: what it covers reads as zeros and takes no
+/// blocks, and what's written over it after, or cut, reads back, with nothing written in place.
+/// Fxfs's preallocation made extents written in place, which copy-on-write writes replaced, its
+/// record still saying it had some, which fsck refuses: the FUSE fuzzer's case (TASK-149.39), a
+/// byte allocated at 28672, a write from 28469 over it. Before, growing a file allocated part of
+/// a block failed EIO, its tail read from an extent nothing wrote (TASK-149.36), at once with a
+/// power cut, which these seeds keep.
 #[test]
-fn a_file_allocated_part_of_a_block_grows() {
+fn an_allocation_grows_a_file_setting_nothing_aside() {
     let ops = vec![
         Op::Create(0),
+        Op::Allocate { file: 0, at: 28672, len: 1 },
+        Op::Write { file: 0, at: 28469, len: 204, byte: 1 },
+        Op::Sync,
         Op::Allocate { file: 0, at: 0, len: 1 },
         Op::Truncate { file: 0, size: 4096 },
         Op::Allocate { file: 0, at: 8192, len: 4097 },
@@ -4142,12 +4067,11 @@ fn names_of_every_spelling_fold_and_list() {
     Setting::awkward(0, ROOMY).holds(ops);
 }
 
-/// An allocation over pages a fill wrote, cut into its first page by a truncate: zeroing what the
-/// page held past the new end writes it anew, as every write is, which takes it out of what the
-/// allocation made, where the model had it stay. The model's mistake, not Fxfs's: found by the
-/// default run of the model test once TASK-149.36 was merged, its seed kept.
+/// An allocation over pages a fill wrote changes nothing of them, and a truncate into the first
+/// zeroes what it held past the new end, writing it anew. Found by the default run once
+/// TASK-149.36 was merged, when allocations still made extents written in place, its seed kept.
 #[test]
-fn a_truncate_into_an_allocation_over_written_pages() {
+fn an_allocation_over_written_pages_changes_nothing() {
     let ops = vec![
         Op::Symlink(1),
         Op::Create(0),
@@ -4174,11 +4098,12 @@ fn an_unlink_queued_in_a_casefolded_directory_leaves_its_times() {
     Setting::awkward(0, ROOMY).with_graveyard_of_seed().holds(ops);
 }
 
-/// A clone of what an allocation made, on a full filesystem, is refused, whichever it says first:
-/// that it has no room, or that it won't share the blocks. Found by a hunt (TASK-149.36), its
-/// seed kept, as what fills the device depends on it.
+/// Allocations on a filesystem filling up are refused past its room, what's free and what the file
+/// takes, and taken within it, and clones over what they grew share what they clone. Found by a
+/// hunt (TASK-149.36) when an allocation's blocks couldn't be shared, its seed kept, as what fills
+/// the device depends on it.
 #[test]
-fn a_clone_of_an_allocation_on_a_full_filesystem_is_refused() {
+fn allocations_on_a_full_filesystem_take_only_the_room() {
     let ops = vec![
         Op::Create(0),
         Op::Fill { file: 0, page: 4, pages: 39, stride: 1, byte: 0 },
@@ -4192,6 +4117,31 @@ fn a_clone_of_an_allocation_on_a_full_filesystem_is_refused() {
         Op::Crash,
         Op::Punch { file: 0, page: 0, pages: 1 },
         Op::Clone { from: 7, to: 14, page: 0, pages: 1, to_page: 0 },
+        Op::Allocate { file: 0, at: 0, len: TIGHT * PAGE },
+        Op::Allocate { file: 1, at: 1 << 40, len: 4096 },
     ];
     Setting::awkward(0, TIGHT).with_graveyard_of_seed().holds(ops);
+}
+
+/// A replay cut during the replay of a cut finishes the trim of a truncate the cut stopped short,
+/// as the replay it cut does, before a node's blocks are counted: a truncate of a thousand extents
+/// frees them through the graveyard, after the mount, and the blocks were counted before. Found
+/// by the default run (TASK-149.36), its seed kept, as what fails and is cut depends on it.
+#[test]
+fn a_cut_during_a_replay_counts_blocks_once_trimmed() {
+    let ops = vec![
+        Op::Remount,
+        Op::Create(0),
+        Op::Fill { file: 2, page: 14, pages: 2084, stride: 2, byte: 130 },
+        Op::Write { file: 9, at: 9223372036854760149, len: 4096, byte: 109 },
+        Op::Sync,
+        Op::Symlink(4),
+        Op::Sync,
+        Op::Clone { from: 5, to: 7, page: 513, pages: 1, to_page: 274877906946 },
+        Op::Sync,
+        Op::Compact,
+        Op::Truncate { file: 4, size: 61582 },
+    ];
+    let setting = Setting::awkward(1273004606570409581, ROOMY).with_graveyard_of_seed().failing();
+    assert_eq!(setting.run(ops, Rc::default()), Ok(()), "{setting:?}");
 }
