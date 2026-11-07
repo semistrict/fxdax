@@ -35,6 +35,7 @@ use crate::memory::{VolatileSlice, VolatileSliceMut, gather, scatter};
 use crate::pages::{Arena, ArenaId, page_size};
 use crate::profile::{self, Recorder};
 use crate::stats::{self, Counter};
+use crate::store_dir;
 use extent_store::{HostDir, NoSpace, NotHeld, Spent, Store, TooLong, TooSmall, Unaligned};
 use std::collections::HashMap;
 use std::path::Path;
@@ -184,7 +185,7 @@ pub struct ExtentStore {
     dax: StoreMutex<Option<Dax>>,
     /// fxdax: the arenas of physical memory its extents' pages are of (TASK-43).
     arenas: Arenas,
-    /// fxdax: the stores it was forked from, nearest first, as of the forks ([`ANCESTRY_FILE`]).
+    /// fxdax: the stores it was forked from, nearest first, as of the forks ([`store_dir::ancestry`]).
     forked_from: Arc<Vec<(u64, std::path::PathBuf)>>,
     /// fxdax: the uploader of the store's branch to object storage, which opened it, taking its
     /// lease, or holds its point: durable commits are uploaded ones (doc-4's `COMMIT_DURABLE`).
@@ -586,7 +587,7 @@ impl ExtentStore {
         keeping: extent_store::upload::Options,
     ) -> Result<Self, Error> {
         let path = path.as_ref();
-        let public = public_branches(path)?;
+        let public = store_dir::public_branches(path)?;
         let branch = extent_store::host_branch(path).map_err(Error::new)?;
         let arena = arena.filter(|_| !public.contains(&branch));
         Self::open_with(path, Opening { arena, profiled: false, keeping })
@@ -602,14 +603,14 @@ impl ExtentStore {
     }
 
     /// The store `opened` at `path`, opened as `opening` says, of whose branch and those it was
-    /// forked from the branches `public` are public ([`public_branches`]).
+    /// forked from the branches `public` are public ([`store_dir::public_branches`]).
     fn new(path: &Path, opened: host_store::Opened, opening: Opening) -> Result<Self, Error> {
         cache::relieve_pressure();
-        let public = public_branches(path)?;
+        let public = store_dir::public_branches(path)?;
         let host_store::Opened { store, bucket, remote } = opened;
         let Opening { arena, profiled, keeping } = opening;
         let arenas = Arenas { own: arena, public: Arc::new(public) };
-        let forked_from = Arc::new(forked_from(path).unwrap_or_default());
+        let forked_from = Arc::new(store_dir::ancestry(path)?);
         let fetcher = crate::remote::Fetcher::new(bucket.clone(), keeping.cache.clone());
         let profiling = profiled.then(|| Self::profile(&store, &arenas, &forked_from, &fetcher));
         Ok(Self {
@@ -700,7 +701,19 @@ impl ExtentStore {
         }
         let window = self.dax.lock(&self.fence)?.take();
         drop(window);
+        // fxdax: its uploader goes on, its going no writer's to wait for (TASK-216).
+        if let Some(remote) = &self.remote {
+            remote.drain_on_stop();
+        }
         Ok(())
+    }
+
+    /// fxdax: what has its uploader, once it stops, stop at once, uploading nothing more, which
+    /// its write-ahead log keeps for its next opening (TASK-216): what extentd has a writer that
+    /// waits for its going connection's store to close call. None for a store with no uploader.
+    pub fn cut_short(&self) -> Option<crate::store_table::Wanted> {
+        let remote = self.remote.as_ref()?;
+        Some(std::sync::Arc::new(remote.cut_short()))
     }
 
     /// fxdax: cuts the store's followers off: their reads, advances and pins fail with `ESTALE`
@@ -891,7 +904,9 @@ impl ExtentStore {
         let child = extent_remote::layout::Child { branch, owner: rand::random(), point };
         // fxdax: what is attached to it stays attached to the fork, a restored VM's too; and what
         // is public of it, and what it was forked from.
-        let inherited = |to: &Path| inherit(&self.path, self.branch(), &self.forked_from, to);
+        let inherited = |to: &Path| -> anyhow::Result<()> {
+            Ok(store_dir::inherit(&self.path, self.branch(), &self.forked_from, to)?)
+        };
         // A follower's uploader is its writer's, which forks nothing of it.
         let remote = self.remote.as_ref().ok_or(Errno::EROFS)?;
         host_store::fork(&self.store, remote, path, child, inherited, opening)
@@ -1724,17 +1739,7 @@ impl ExtentStore {
     }
 
     fn mark_public(&self, branches: &[u64]) -> Result<()> {
-        for public in branches {
-            let marker = self.store.dir().path().join(public_marker(*public));
-            std::fs::File::create(&marker).and_then(|file| file.sync_all()).map_err(|err| {
-                log::error!("fxdax: marking branch {public:x} public: {err}");
-                Errno::EIO
-            })?;
-        }
-        std::fs::File::open(self.store.dir().path()).and_then(|dir| dir.sync_all()).map_err(|err| {
-            log::error!("fxdax: marking branches public: {err}");
-            Errno::EIO
-        })
+        store_dir::mark_public(self.store.dir().path(), branches)
     }
 
     /// fxdax: the store's branch, and those it inherited from, nearest first.
@@ -1749,7 +1754,7 @@ impl ExtentStore {
     /// already, it does nothing. The guest has no part in this (backlog doc-10).
     pub fn attach_base(&self, base: &Path, branches: &[u64]) -> Result<()> {
         self.access().may_manage()?;
-        record_base(&self.path, base, branches)?;
+        store_dir::attach(&self.path, base, branches)?;
         self.bases.add(self.routed(branches), base);
         Ok(())
     }
@@ -1765,7 +1770,7 @@ impl ExtentStore {
     /// when first read: however many are attached, they cost it nothing until then.
     pub fn open_bases(&self, open: OpenBase) -> Result<()> {
         let _ = self.bases.open.set(open);
-        for (branches, base) in recorded_bases(&self.path)? {
+        for (branches, base) in store_dir::attached(&self.path)? {
             self.bases.add(self.routed(&branches), &base);
         }
         Ok(())
@@ -1912,151 +1917,6 @@ impl Bases {
         opened.dedup();
         opened.len()
     }
-}
-
-/// fxdax: the name of the file in a store's directory recording what is attached
-/// to it: a line of each's branches, in hexadecimal, comma-separated, and path.
-const BASES_FILE: &str = "attached-bases";
-
-/// fxdax: what is recorded as attached to the store at `path` ([`BASES_FILE`]).
-pub(crate) fn recorded_bases(path: &Path) -> Result<Vec<(Vec<u64>, std::path::PathBuf)>> {
-    let text = match std::fs::read_to_string(path.join(BASES_FILE)) {
-        Ok(text) => text,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(err) => {
-            log::error!("fxdax: reading what is attached to {}: {err}", path.display());
-            return Err(Errno::EIO);
-        }
-    };
-    text.lines()
-        .map(|line| {
-            let parsed = line.split_once(' ').and_then(|(branches, base)| {
-                let branches = branches.split(',').map(|branch| u64::from_str_radix(branch, 16));
-                Some((branches.collect::<std::result::Result<_, _>>().ok()?, base.into()))
-            });
-            parsed.ok_or_else(|| {
-                log::error!("fxdax: {} says {line:?} is attached", path.display());
-                Errno::EIO
-            })
-        })
-        .collect()
-}
-
-/// fxdax: records `base`, of `branches`, as attached to the store at `path`, durably, unless it is.
-pub(crate) fn record_base(path: &Path, base: &Path, branches: &[u64]) -> Result<()> {
-    let recorded = recorded_bases(path)?;
-    if recorded.iter().any(|(_, recorded)| recorded == base) {
-        return Ok(());
-    }
-    let mut text = std::fs::read_to_string(path.join(BASES_FILE)).unwrap_or_default();
-    let branches: Vec<String> = branches.iter().map(|branch| format!("{branch:x}")).collect();
-    text.push_str(&format!(
-        "{} {}
-",
-        branches.join(","),
-        base.display()
-    ));
-    write_bases(path, &text)
-}
-
-/// fxdax: replaces what the store at `path` records as attached with `text`, whole or not at all.
-fn write_bases(path: &Path, text: &str) -> Result<()> {
-    let new = path.join(format!("{BASES_FILE}.new"));
-    let written = std::fs::write(&new, text)
-        .and_then(|()| std::fs::File::open(&new)?.sync_all())
-        .and_then(|()| std::fs::rename(&new, path.join(BASES_FILE)))
-        .and_then(|()| std::fs::File::open(path)?.sync_all());
-    written.map_err(|err| {
-        log::error!("fxdax: recording what is attached to {}: {err}", path.display());
-        Errno::EIO
-    })
-}
-
-/// fxdax: the name of the file in a store's directory naming the stores it was forked from,
-/// nearest first: a line of each's branch, in hexadecimal, and directory, as of the fork. A fork's
-/// directory is its own, its branch alone in it (TASK-165.7): what it inherited of what fxdax keeps
-/// beside a store it keeps of its own ([`inherit`]).
-const ANCESTRY_FILE: &str = "ancestry";
-
-/// fxdax: the stores the store at `path` was forked from, nearest first ([`ANCESTRY_FILE`]): none,
-/// if it is no fork.
-fn forked_from(path: &Path) -> anyhow::Result<Vec<(u64, std::path::PathBuf)>> {
-    let text = match std::fs::read_to_string(path.join(ANCESTRY_FILE)) {
-        Ok(text) => text,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(err) => {
-            log::error!("fxdax: reading what {} was forked from: {err}", path.display());
-            return Err(err.into());
-        }
-    };
-    let line = |line: &str| -> Option<(u64, std::path::PathBuf)> {
-        let (branch, dir) = line.split_once(' ')?;
-        Some((u64::from_str_radix(branch, 16).ok()?, dir.into()))
-    };
-    text.lines()
-        .map(|text| line(text).ok_or_else(|| anyhow::anyhow!("{}: {text:?}", path.display())))
-        .collect()
-}
-
-/// fxdax: what a fork of the store at `from`, of `branch`, forked from `forked_from` itself,
-/// inherits of what fxdax keeps beside it, into the directory at `to`, its child's, before the
-/// child's store is made there: what is attached to it, which stays attached to the fork, a
-/// restored VM's too; the branches marked public, its own and those it inherited from, whose pages
-/// the fork's are of the default arena for; and what it was forked from, it nearest (TASK-165.7).
-fn inherit(
-    from: &Path,
-    branch: u64,
-    forked_from: &[(u64, std::path::PathBuf)],
-    to: &Path,
-) -> anyhow::Result<()> {
-    match std::fs::read_to_string(from.join(BASES_FILE)) {
-        Ok(text) => write_bases(to, &text)?,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-        Err(err) => return Err(err.into()),
-    }
-    for public in public_branches(from)? {
-        std::fs::File::create(to.join(public_marker(public)))?.sync_all()?;
-    }
-    let from = from.canonicalize()?;
-    let mut text = format!("{branch:x} {}\n", from.display());
-    for (branch, dir) in forked_from {
-        text += &format!("{branch:x} {}\n", dir.display());
-    }
-    let new = to.join(format!("{ANCESTRY_FILE}.new"));
-    std::fs::write(&new, text)?;
-    std::fs::File::open(&new)?.sync_all()?;
-    std::fs::rename(&new, to.join(ANCESTRY_FILE))?;
-    std::fs::File::open(to)?.sync_all()?;
-    Ok(())
-}
-
-/// fxdax: the name of the file in a store's directory that marks `branch` public.
-fn public_marker(branch: u64) -> String {
-    format!("public-{branch:016x}")
-}
-
-/// fxdax: the branches of the store in `dir` marked public; `EIO`, logged, if its directory can't
-/// be listed, as with as many files open as the process may: read as none, a public base would
-/// open private, its writer's (TASK-160.10).
-fn public_branches(dir: &Path) -> Result<std::collections::BTreeSet<u64>> {
-    let listed = || -> std::io::Result<_> {
-        fail::fail_point!("extents::public_branches", |_| {
-            Err(std::io::Error::from_raw_os_error(libc::EMFILE))
-        });
-        let mut public = std::collections::BTreeSet::new();
-        for entry in std::fs::read_dir(dir)? {
-            let name = entry?.file_name();
-            let marked = name.to_str().and_then(|name| name.strip_prefix("public-"));
-            if let Some(branch) = marked.and_then(|branch| u64::from_str_radix(branch, 16).ok()) {
-                public.insert(branch);
-            }
-        }
-        Ok(public)
-    };
-    listed().map_err(|err| {
-        log::error!("fxdax: listing {} for public branches: {err}", dir.display());
-        Errno::EIO
-    })
 }
 
 /// How many threads read a boot profile's units into the cache at once.
@@ -3770,7 +3630,7 @@ mod tests {
         assert_eq!(write(&store, extent, 0, &[0; BLOCK]), Err(Errno::EPERM));
         // Attaching it again changes nothing.
         store.attach_base(&base, &ancestry).unwrap();
-        assert_eq!(recorded_bases(&dir.path().join("store")).unwrap().len(), 1);
+        assert_eq!(store_dir::attached(&dir.path().join("store")).unwrap().len(), 1);
     }
 
     /// doc-10: VMs mapping a base share its pages: the cache's one copy, for the attached and for

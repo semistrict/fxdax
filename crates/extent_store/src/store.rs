@@ -15,7 +15,8 @@ use crate::layout::{
 };
 use crate::segments::{Reaped, Segments, Unframed, footer_last};
 use crate::state::{
-    Framing, Gate, Locked, OwnFiles, Placement, Reader, Space, State, Uncommitted, Unreferenced,
+    Framing, Gate, Life, Locked, OwnFiles, Placement, Readable, Reader, Space, Standing, State,
+    Uncommitted, Unreferenced, Writable,
 };
 use crate::sync::{Condvar, Mutex, MutexGuard, rules, spawn_or_return};
 use crate::timings::{self, Flush, flush};
@@ -607,8 +608,7 @@ impl<D: Dir> Recovering<D> {
                 point: fenced.is_none(),
                 kept: KeptExtents::default(),
                 sealed: Sealed::default(),
-                failed: None,
-                closed: false,
+                standing: Standing::Open,
                 deferred: Vec::new(),
                 framing: Framing::default(),
                 #[cfg(any(test, feature = "audit"))]
@@ -848,24 +848,15 @@ impl<D: Dir> Store<D> {
         Locked::new(self.state.lock().unwrap())
     }
 
-    fn state(&self) -> Result<Locked<'_, D::File>, Error> {
-        let state = self.lock();
-        state.still_whole()?;
-        Ok(state)
+    /// The state, to read: unless the store failed ([`Readable`], TASK-160.19).
+    fn state(&self) -> Result<Readable<'_, D::File>, Error> {
+        Readable::check(self.lock(), self.branch)
     }
 
-    /// The state, to change: unless the branch is closed.
-    fn writable(&self) -> Result<Locked<'_, D::File>, Error> {
-        self.still_writable(self.lock())
-    }
-
-    /// `state`, to change, as found again after waiting, its lock let go of meanwhile: unless the
-    /// store failed, or the branch closed, since (TASK-83).
-    fn still_writable<'a>(&self, state: Locked<'a, D::File>) -> Result<Locked<'a, D::File>, Error> {
-        state.still_whole()?;
-        ensure!(!state.closed, "branch {:#x} is closed", self.branch);
-        ensure!(!state.point, "branch {:#x} is a point, which nothing writes", self.branch);
-        Ok(state)
+    /// The state, to change: unless the store failed, or the branch is closed, or a point
+    /// ([`Writable`]), checked again by its waits, which let it go meanwhile (TASK-83).
+    fn writable(&self) -> Result<Writable<'_, D::File>, Error> {
+        Writable::check(self.lock(), self.branch)
     }
 
     /// Closes the branch, once the commits only ordered are durable, those a flush in flight is
@@ -884,7 +875,7 @@ impl<D: Dir> Store<D> {
         };
         drop(flushing);
         let mut state = self.lock();
-        if !state.closed {
+        if !state.standing.is_closed() {
             // fxdax: once no segment is being framed, whatever closed it, a commit no flush took
             // or one that failed among them, which another store, opening the branch, would frame
             // again meanwhile from its raw file (TASK-41.1, TASK-79.99): each framing ends itself,
@@ -893,9 +884,9 @@ impl<D: Dir> Store<D> {
             if rules().close_waits_for_framings {
                 state = self.framed(state);
             }
-            state.closed = true;
+            state.standing.close();
             // Their raw files, of commits durable, go as a flush's would.
-            let raw = match state.failed.is_some() {
+            let raw = match state.standing.failed() {
                 false => state.segments.raw(self.durability.lock().unwrap().durable()),
                 true => Vec::new(),
             };
@@ -959,12 +950,8 @@ impl<D: Dir> Store<D> {
         if extent.branch != self.branch {
             bail!(OtherBranch(extent));
         }
-        let mut state = self.writable()?;
         // Not while a commit, or a closing between commits, waits for the writes in progress.
-        while state.gate.is_held() {
-            state = state.wait(&self.idle);
-        }
-        let state = self.still_writable(state)?;
+        let state = self.writable()?.wait_while(&self.idle, |state| state.gate.is_held())?;
         self.begin_write_locked(state, extent, offset, len)
     }
 
@@ -999,43 +986,45 @@ impl<D: Dir> Store<D> {
         }
     }
 
-    /// fxdax: fails unless `extent`, the branch's, may be opened, as a write opens it, by `state`:
-    /// unless it is open, or never sealed by the branch, held or freed ([`Spent`], TASK-79.6).
-    fn check_opens(state: &State<D::File>, extent: ExtentId) -> Result<(), Error> {
-        if state.uncommitted.is_open(extent) {
-            return Ok(());
+    /// fxdax: fails unless `extent`, the branch's, whose life in `state` is `life`, may be opened,
+    /// as a write opens it: unless it is open, or never sealed by the branch, held or freed
+    /// ([`Spent`], TASK-79.6). One kept, freed, is spent if it was the branch's own.
+    fn check_opens(state: &State<D::File>, life: &Life<'_>, extent: ExtentId) -> Result<(), Error> {
+        match life {
+            Life::Open(_) | Life::Unknown => Ok(()),
+            Life::Held(_) => bail!(SealedExtent(extent)),
+            Life::Spent => bail!(Spent(extent)),
+            Life::Kept(_) if state.spent.contains(extent.sequence) => bail!(Spent(extent)),
+            Life::Kept(_) => Ok(()),
         }
-        if state.extents.get(&extent).is_some() {
-            bail!(SealedExtent(extent));
-        }
-        if state.spent.contains(extent.sequence) {
-            bail!(Spent(extent));
-        }
-        Ok(())
     }
 
     /// Begins a write, as [`Store::begin_write`] says, with `state`, writable, held, and no commit
     /// holding writes back.
     fn begin_write_locked(
         &self,
-        mut state: Locked<'_, D::File>,
+        mut state: Writable<'_, D::File>,
         extent: ExtentId,
         offset: u64,
         len: u64,
     ) -> Result<Write<'_, D>, Error> {
         let end = offset + len;
-        let current = state.extents.get(&extent).map(|entry| entry.len);
-        Self::check_opens(&state, extent)?;
-        let grows = end.saturating_sub(current.unwrap_or(0));
-        let to_segment = match state.uncommitted.placement(extent) {
-            Some(placement) => matches!(placement, Placement::Segment),
-            None => end < self.options.large_extent,
-        };
-        // fxdax: what it writes over, in a segment, takes room too (TASK-79.2), as the writes
-        // that finished left the extent: not its holes (TASK-160.16).
-        let overwrites = match state.extents.get(&extent).map(|entry| &entry.data) {
-            Some(Data::Pieces(pieces)) if to_segment => covered(pieces, offset, end),
-            _ => 0,
+        let (grows, to_segment, overwrites) = {
+            let life = state.life(extent);
+            Self::check_opens(&state, &life, extent)?;
+            let current = life.held();
+            let grows = end.saturating_sub(current.map_or(0, |entry| entry.len));
+            let to_segment = match state.uncommitted.placement(extent) {
+                Some(placement) => matches!(placement, Placement::Segment),
+                None => end < self.options.large_extent,
+            };
+            // fxdax: what it writes over, in a segment, takes room too (TASK-79.2), as the writes
+            // that finished left the extent: not its holes (TASK-160.16).
+            let overwrites = match current.map(|entry| &entry.data) {
+                Some(Data::Pieces(pieces)) if to_segment => covered(pieces, offset, end),
+                _ => 0,
+            };
+            (grows, to_segment, overwrites)
         };
         state.check_room(grows, overwrites)?;
         if to_segment {
@@ -1373,13 +1362,9 @@ impl<D: Dir> Store<D> {
     ) -> Result<(), Error> {
         let mut state = self.writable()?;
         // It includes the writes in progress, which may be to extents it seals: what they write
-        // must be in them, not after. New ones wait for it.
+        // must be in them, not after. New ones wait for it, checked again after (TASK-83).
         if rules().commit_waits_for_writes {
-            state = self.hold_writes(state, |state| state.gate.is_writing());
-            // fxdax: as before it waited, which let the state go meanwhile (TASK-83).
-            if rules().recheck_after_waiting {
-                state = self.still_writable(state)?;
-            }
+            state = state.hold_writes_while(&self.idle, |state| state.gate.is_writing())?;
         }
         // From its first seal on, the state runs ahead of the files: a commit failing part way
         // fails the store.
@@ -1446,23 +1431,6 @@ impl<D: Dir> Store<D> {
         let pending = Pending { syncs, record, doomed, leaving };
         self.durability.lock().unwrap().push(epoch, pending);
         Ok(())
-    }
-
-    /// Holds new writes back ([`Store::begin_write`]) while the writes in progress are `busy`, as
-    /// a commit, or a closing between commits, waits for them, and returns the state once they
-    /// are not: which its caller finds again, as it let it go meanwhile.
-    fn hold_writes<'a>(
-        &self,
-        mut state: Locked<'a, D::File>,
-        busy: impl Fn(&State<D::File>) -> bool,
-    ) -> Locked<'a, D::File> {
-        state.gate.hold();
-        while busy(&state) {
-            state = state.wait(&self.idle);
-        }
-        state.gate.release();
-        self.idle.notify_all();
-        state
     }
 
     /// Seals the extents open, as a commit does, each in one run, or a file of its own if large
@@ -1668,18 +1636,15 @@ impl<D: Dir> Store<D> {
         let _committing = self.committing.lock().unwrap();
         let state = self.state()?;
         // Closed, it changes nothing: its last segment closes when it is next opened.
-        if state.closed || !state.segments.has_commits(state.epoch) {
+        if state.standing.is_closed() || !state.segments.has_commits(state.epoch) {
             return Ok(None);
         }
-        let mut state = self.hold_writes(state, |state| {
+        let mut state = state.hold_writes_while(&self.idle, |state| {
             rules().close_waits_for_writers && state.segments.open_writers() > 0
-        });
-        // fxdax: as before it waited, which let the state go meanwhile (TASK-83).
-        if rules().recheck_after_waiting {
-            state.still_whole()?;
-            if state.closed {
-                return Ok(None);
-            }
+        })?;
+        // fxdax: and closed while it waited, as before (TASK-83).
+        if state.standing.is_closed() {
+            return Ok(None);
         }
         let epoch = state.epoch;
         let unframed = state.failing(|state| self.close_open_segment(state, epoch));
@@ -1718,7 +1683,7 @@ impl<D: Dir> Store<D> {
                 while let Some(unframed) = state.framing.queue.pop_front() {
                     // fxdax: none once the store failed, a segment before it among what failed,
                     // saying so (TASK-165.9).
-                    let whole = state.still_whole();
+                    let whole = state.standing.whole();
                     drop(state);
                     let number = unframed.number();
                     let framed = whole.and_then(|()| unframed.frame(&*dir));
@@ -1736,7 +1701,7 @@ impl<D: Dir> Store<D> {
         // its callers' alone, or the host refuses a thread: no framer runs meanwhile.
         while let Some(unframed) = state.framing.queue.pop_front() {
             let number = unframed.number();
-            let framed = state.still_whole().and_then(|()| unframed.frame(&*self.dir));
+            let framed = state.standing.whole().and_then(|()| unframed.frame(&*self.dir));
             framing_ended(state, number, framed);
         }
         state.framing.running = false;
@@ -2230,8 +2195,9 @@ impl<D: Dir> Store<D> {
     /// holds it.
     pub fn extent(&self, extent: ExtentId) -> Result<Option<(u64, bool)>, Error> {
         let state = self.state()?;
-        let open = state.uncommitted.is_open(extent);
-        Ok(state.extents.get(&extent).map(|entry| (entry.len, open)))
+        let life = state.life(extent);
+        let open = matches!(life, Life::Open(_));
+        Ok(life.held().map(|entry| (entry.len, open)))
     }
 
     /// fxdax: whether an extent is open: written since the last commit, which seals it.

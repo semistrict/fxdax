@@ -547,7 +547,7 @@ pub(super) async fn attach(
         if !path.exists() {
             return Err(Errno::ENOENT);
         }
-        crate::extents::record_base(&path, &base, &ancestry)
+        crate::store_dir::attach(&path, &base, &ancestry)
     })
     .await
 }

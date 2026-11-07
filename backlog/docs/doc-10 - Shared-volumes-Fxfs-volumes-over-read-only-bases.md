@@ -3,13 +3,14 @@ id: doc-10
 title: 'Shared volumes: Fxfs volumes over read-only bases'
 type: specification
 created_date: '2026-10-30 09:08'
-updated_date: '2026-11-06 06:43'
+updated_date: '2026-11-07 09:36'
 ---
 # Shared volumes: Fxfs volumes over read-only bases
 
-Status, 2026-10-31. Built: the guest's mounts of volumes (TASK-136.2), volumes over base layers in
+Status, 2026-11-07. Built: the guest's mounts of volumes (TASK-136.2), volumes over base layers in
 Fxfs (TASK-136.3), attaching a base to a store (TASK-136.5), and publishing from a sandbox and
-importing in another (TASK-136.4), which the test `fxfs-guest-shared-volumes` runs with Git. Not
+importing in another (TASK-136.4), which the test `fxfs-guest-shared-volumes` runs with Git.
+Measured on a Linux-sized checkout, against ext4 (TASK-136.1): see Proof below. Not
 built: the sandbox manager's part, lookups that attach (TASK-136.6), and moving to a newer generation
 (TASK-136.7). Work: TASK-136.
 It sits on top of the filesystem and is separate from TASK-96, the abstract extent store split. Idea
@@ -53,6 +54,10 @@ device change. But the base's whole size lands on each cold mount:
 
 VM snapshots hide those mounts, up to the snapshot. Baking also ties a sandbox's root image to the
 base's lineage, or takes a second boot device per base.
+
+One checkout is cheap to bake. Linux's volume has 18.9 MB of layers and 1,557 allocator records
+(Proof). The argument rests on the hundreds: baking 256 such checkouts would put about 400,000
+records into every mount's allocator scan and 4.8 GB of layers into every store.
 
 ## The model
 
@@ -258,15 +263,80 @@ still name, and a format change. Publishers updating one volume in place keep th
 
 ## Proof
 
-On a Linux-sized checkout: mount time, first `git status`, first write, and memory per sandbox, and
-the same with hundreds of repos mounted at once (TASK-136.1). There is no overlayfs comparison:
-Ramon dropped it on 2026-10-31. Results go here.
+Measured on 2026-11-07 (TASK-136.1, GCE r870). The cases are `linux-checkout-ext4`,
+`linux-checkout-fxfs` and `linux-checkout-fxfs-dax`
+(guest/tests/test_cases/src/test_linux_checkout.rs). They run by name, and
+`scripts/linux-checkout-report.py` turns their output into tables. Everything, with the raw output,
+is in `docs/measurements/linux-checkout-2026-11-07.md`. There is no overlayfs comparison: Ramon
+dropped it on 2026-10-31. ext4 on virtio-blk is the baseline instead.
+
+- **Host:** an n2-standard-8 (Cascade Lake, 32 GB), Ubuntu 7.0.0-1011-gcp, nested KVM.
+- **Guest:** fxdax's kernel, 6.18.54 of amzn2023 with the series, x86_64, release, with 4 vCPUs and
+  4 GiB. Its own extent daemon has its default 1 GiB of memory, and the DAX window is 1 GiB.
+- **Checkout:** Linux v6.18 at one commit: 91,166 tracked files, 6,059 directories and 1.83 GB, of
+  which `.git`, one pack, is 296 MB.
+
+| | ext4 | Fxfs | Fxfs, DAX |
+|---|---|---|---|
+| Clone, without checkout | 12.7 s | 11.8 s | 11.6 s |
+| Checkout, then `sync` | 16.8 + 4.1 s | 48.2 + 0.4 s | 47.6 + 0.5 s |
+| `git status`, cold, in a fresh VM | 0.68 s | 0.83 s | 1.02 s |
+| `git status`, warm | 0.13-0.18 s | 0.17-0.23 s | 0.15-0.26 s |
+| Tree read whole (1.54 GB), cold, in a fresh VM | 19.5 s | 36.7 s | 18.7 s |
+| The same, warm | 0.58 s | 0.63 s | 25.6 s |
+| VM anon after that read | 2,100 MiB | 2,114 MiB | 511 MiB, and 451 MiB shared |
+
+A sandbox's checkout over the published base, three sandboxes in turn, then 256 in one VM:
+
+| | Fxfs | Fxfs, DAX |
+|---|---|---|
+| First open: attach, import, mount | 21-25, 32-36, 1.5-1.8 ms | 21-24, 33-35, 1.5-1.6 ms |
+| First `git status`, cold | 0.76-0.92 s | 0.83-1.13 s |
+| First write to a file of the base, fsync | 2.5-2.9 ms | 7.7-9.5 ms |
+| First new file, fsync | 1.8-2.4 ms | 1.9-2.4 ms |
+| Disk per added checkout | 1.7 MiB | 1.7 MiB |
+| Guest memory per checkout mounted, 256 mounted | 1.21 MiB | 1.22 MiB |
+| The same, booted again and all mounted | 1.18 MiB | 1.16 MiB |
+| With 256 mounted: import, mount, median | 8.7, 0.4 ms | 8.9, 0.4 ms |
+| A status's metadata, guest memory | 130-153 MiB | 165-185 MiB |
+
+- The first `git status` lstats all 91,166 files and opens none but `.gitignore`s, with and without
+  DAX. So a Linux-sized index carries over, as the 200-file one does (TASK-136.4).
+- The volume has 18.9 MB of layers, 1,557-1,560 allocator records and a 600-byte manifest. Its base
+  takes 706-711 MiB in the bucket, compressed. A sandbox's writes, its status and its read add
+  1.6 MiB to the bucket and 0.1 MiB to its store.
+- The overlay costs nothing a status or a write can see: a sandbox does what a fresh VM on the
+  publisher's own store does.
+- Volumes closed after a reboot hold nothing: the booted VM's memory is the same as one with none.
+
+What the numbers ask of the design:
+
+- **The model stands.** A first open takes about 60 ms, statuses and writes cost what they cost on
+  an unshared volume, and an added checkout costs 1.7 MiB of disk.
+- **Size the DAX window, and the daemon's memory, to what a sandbox rereads.** DAX is what keeps a
+  read checkout out of the VM's memory: 0.5 GB of anon against 2.1 GB, with the shared pages
+  counted once across sandboxes. But with a window and arenas of 1 GiB, smaller than the 1.5 GB
+  tree, a second read of the whole tree took 26-44 s against 0.6 s without DAX. A read in order
+  evicts each page before it is read again. Sizing of the window and the arenas belongs in the
+  attach design: a sandbox attaching hundreds of repos rereads only some of them, but those must
+  fit. With an 8 GiB window and 6 GiB of daemon memory (r872), the warm reread took 0.75-0.80 s,
+  sandboxes included. ext4 with DAX on virtio-pmem, TASK-227's mark, took 0.71-0.73 s, so Fxfs is
+  5-10% slower, about as far as Fxfs without DAX is from ext4. A fresh VM's cold read took 5.6 s
+  against pmem's 8.8 s. A sandbox's took 34-35 s, its reads going through the attached generation.
+- **Metadata is the per-sandbox cost to cut.** A Linux-sized status costs each sandbox 130-185 MiB
+  of guest metadata, with or without DAX, against 1.2 MiB for a checkout mounted and idle. That
+  moves "Metadata across VMs", below, from unmeasured to the largest cost left per sandbox.
+- **Expiring idle mounts is what keeps hundreds affordable.** 256 checkouts mounted take 300 MiB of
+  guest memory and as much of the host's, 1.2 MiB each, and closed ones take nothing. TASK-136.6's
+  expiry reclaims exactly that.
+- **Not the sandbox's cost:** writing the checkout takes Fxfs 2.3 times what it takes ext4 (48.6 s
+  against 20.9 s for 91k files). A publisher pays that once per generation.
 
 ## Open questions
 
 - **Metadata across VMs.** Only file data shares through DAX. Layer blocks are copied into each
-  guest, which matters when `git status` stats a large tree. Two ways to share more, neither
-  measured: warm a zygote before snapshotting it, which relies on Firecracker's private mapping of
+  guest, which matters when `git status` stats a large tree: on Linux's, 130-185 MiB a sandbox
+  (Proof). Two ways to share more, neither tried: warm a zygote before snapshotting it, which relies on Firecracker's private mapping of
   the memory file, unchecked here; and map base layers through the DAX window, as
   `LayerObject::as_slice` allows, if layers' block sizes permit.
 - **Pinned generations.** How long they stay while a sandbox store outlives its use of them, and

@@ -857,6 +857,57 @@ pub(crate) mod tests {
         });
     }
 
+    /// TASK-208: the latency every request to `bucket` waits, FXDAX_REMOTE_LATENCY_MS, set before
+    /// it was made.
+    const LATE: u64 = 5;
+
+    /// TASK-208: a bucket made under FXDAX_REMOTE_LATENCY_MS, `bucket`, does what every bucket
+    /// must, its requests each [`LATE`] ms late, one after another.
+    async fn conforms_late(bucket: &Store) {
+        let started = std::time::Instant::now();
+        crate::bucket::conformance(bucket, "conformance").await;
+        let requests: u64 = bucket.stats().requests.iter().sum();
+        let took = started.elapsed();
+        assert!(
+            took >= std::time::Duration::from_millis(requests * LATE),
+            "{requests} requests took {took:?}"
+        );
+    }
+
+    /// TASK-208: sets FXDAX_REMOTE_LATENCY_MS to [`LATE`].
+    fn late() {
+        // SAFETY: nextest runs each test in a process of its own, whose other threads don't read
+        // the environment yet.
+        unsafe { std::env::set_var("FXDAX_REMOTE_LATENCY_MS", LATE.to_string()) };
+    }
+
+    /// TASK-208: under FXDAX_REMOTE_LATENCY_MS, a bucket in memory conforms, late.
+    #[test]
+    fn memory_buckets_conform_late() {
+        late();
+        let bucket = Store::from_url("memory:///late").unwrap();
+        runtime().block_on(conforms_late(&bucket));
+    }
+
+    /// TASK-208: under FXDAX_REMOTE_LATENCY_MS, a bucket of files conforms, late: its reads, which
+    /// object_store's throttle panicked on (`unimplemented!`), as well as its writes.
+    #[test]
+    fn file_buckets_conform_late() {
+        late();
+        let dir = tempfile::tempdir().unwrap();
+        runtime().block_on(conforms_late(&file(dir.path())));
+    }
+
+    /// TASK-208: under FXDAX_REMOTE_LATENCY_MS, a bucket over S3 conforms, late.
+    #[test]
+    fn s3_buckets_conform_late() {
+        late();
+        runtime().block_on(async {
+            let server = S3Server::start(None);
+            conforms_late(&s3(&server, "conformance", &Client::DEFAULT)).await;
+        });
+    }
+
     /// `len` bytes that do not compress, from a xorshift generator seeded with `seed`.
     fn noise(len: usize, mut seed: u64) -> Vec<u8> {
         (0..len)

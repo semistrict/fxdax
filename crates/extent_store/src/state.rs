@@ -70,13 +70,9 @@ pub(crate) struct State<F> {
     pub kept: KeptExtents,
     /// fxdax: the extents views refuse, sealed after their commits.
     pub sealed: Sealed,
-    /// Whether a commit failed, after which the store's state may differ from what its files say,
-    /// so it does nothing more. fxdax: and why, the first failure's error, which what it refuses
-    /// says (TASK-165.9: a framing's failure, which no flush waits for, failed a later call).
-    pub failed: Option<String>,
-    /// Whether it was closed ([`Store::close`](crate::Store::close)): it reads what it holds, and
-    /// changes nothing.
-    pub closed: bool,
+    /// fxdax: where the store is in its life: open, closed, or failed, and why ([`Standing`],
+    /// TASK-160.19), which its guards read ([`Guarded`]).
+    pub standing: Standing,
     /// fxdax: the segments closed for want of room since the last commit, which the next frames,
     /// with the rule that framings end themselves off alone (TASK-150.2's shape, TASK-153.8).
     pub deferred: Vec<Unframed<F>>,
@@ -137,6 +133,33 @@ pub(crate) enum Reader {
     View { epoch: u64, since: u64, pinned: bool },
 }
 
+/// fxdax: where an extent is in its life, as the store's state has it, found in one place
+/// ([`State::life`], TASK-160.18), which readers and writers decide by.
+pub(crate) enum Life<'a> {
+    /// Written since the last commit, which seals it: its entry, as the writes that finished left
+    /// it, if one did.
+    Open(Option<&'a Extent>),
+    /// Sealed, and held.
+    Held(&'a Extent),
+    /// Freed by a commit, and kept: for the bucket, views or pins ([`Kept`]).
+    Kept(&'a Kept),
+    /// Sealed once, and freed, and not kept: its number the branch writes no more (TASK-79.6).
+    Spent,
+    /// Neither opened nor sealed here.
+    Unknown,
+}
+
+impl Life<'_> {
+    /// Its entry, if the store holds it: open or sealed.
+    pub fn held(&self) -> Option<&Extent> {
+        match self {
+            Life::Open(entry) => *entry,
+            Life::Held(entry) => Some(entry),
+            Life::Kept(_) | Life::Spent | Life::Unknown => None,
+        }
+    }
+}
+
 impl<F: File> State<F> {
     /// Runs `change`, which changes the state ahead of the files it writes: failing part way, it
     /// leaves the state other than the files say, and fails the store, which does nothing more.
@@ -151,16 +174,23 @@ impl<F: File> State<F> {
         changed
     }
 
-    /// fxdax: fails the store, for `error`, unless it failed before ([`State::failed`]).
+    /// fxdax: fails the store, for `error`, unless it failed before ([`Standing::fail`]).
     pub fn fail(&mut self, error: &Error) {
-        self.failed.get_or_insert_with(|| format!("{error:#}"));
+        self.standing.fail(error);
     }
 
-    /// fxdax: fails, saying why, if the store failed ([`State::failed`]).
-    pub fn still_whole(&self) -> Result<(), Error> {
-        match &self.failed {
-            Some(cause) => Err(anyhow::anyhow!("the extent store failed: {cause}")),
-            None => Ok(()),
+    /// fxdax: where `extent` is in its life ([`Life`], TASK-160.18).
+    pub fn life(&self, extent: ExtentId) -> Life<'_> {
+        let open = self.uncommitted.is_open(extent);
+        match self.extents.get(&extent) {
+            Some(entry) if open => Life::Open(Some(entry)),
+            Some(entry) => Life::Held(entry),
+            None if open => Life::Open(None),
+            None => match self.kept.get(&extent) {
+                Some(kept) => Life::Kept(kept),
+                None if self.spent.contains(extent.sequence) => Life::Spent,
+                None => Life::Unknown,
+            },
         }
     }
 
@@ -168,12 +198,13 @@ impl<F: File> State<F> {
     /// store's own; a view's, of what its commits hold (not open, not sealed after its commit, not
     /// freed before the one it holds since), or it pins. Fails with `NoExtent` otherwise.
     pub fn entry_for(&self, extent: ExtentId, reader: Reader) -> Result<Extent, Error> {
+        let life = self.life(extent);
         if let Reader::View { epoch, .. } = reader
-            && (self.sealed.after(extent, epoch) || self.uncommitted.is_open(extent))
+            && (matches!(life, Life::Open(_)) || self.sealed.after(extent, epoch))
         {
             bail!(NoExtent(extent));
         }
-        let kept = |kept: &&Kept| match reader {
+        let readable = |kept: &Kept| match reader {
             Reader::Store => false,
             Reader::Kept => true,
             // Freed by a commit after the one the view holds since, which held it; or pinned.
@@ -181,14 +212,16 @@ impl<F: File> State<F> {
                 pinned || kept.freed > since || !rules().views_hold_their_commit
             }
         };
-        match (self.extents.get(&extent), self.kept.get(&extent)) {
-            (Some(entry), _) => Ok(entry.clone()),
-            (None, Some(held)) if kept(&held) => Ok(held.entry.clone()),
+        match life {
+            Life::Open(Some(entry)) | Life::Held(entry) => Ok(entry.clone()),
+            Life::Kept(kept) if readable(kept) => Ok(kept.entry.clone()),
             // Kept for another, freed before what the view holds: what it let go of.
-            (None, Some(_)) if matches!(reader, Reader::View { .. }) => {
+            Life::Kept(_) if matches!(reader, Reader::View { .. }) => {
                 Err(Error::new(NoExtent(extent)).context(NotHeld(extent)))
             }
-            _ => bail!(NoExtent(extent)),
+            Life::Open(None) | Life::Kept(_) | Life::Spent | Life::Unknown => {
+                bail!(NoExtent(extent))
+            }
         }
     }
 
@@ -321,6 +354,167 @@ impl<F: File> State<F> {
     }
 }
 
+/// fxdax: where a store is in its life, one value (TASK-160.19): open; closed
+/// ([`Store::close`](crate::Store::close)), when it reads what it holds, and changes nothing; or
+/// failed, its state ahead of its files, when it does nothing more, saying why: the first
+/// failure's error (TASK-165.9: a framing's failure, which no flush waits for, failed a later
+/// call), and whether it was closed too, as a failed store is closed all the same.
+#[derive(Default)]
+pub(crate) enum Standing {
+    #[default]
+    Open,
+    Closed,
+    Failed {
+        cause: String,
+        closed: bool,
+    },
+}
+
+impl Standing {
+    /// Fails it, for `error`, unless it failed before.
+    pub fn fail(&mut self, error: &Error) {
+        let closed = self.is_closed();
+        if !self.failed() {
+            *self = Standing::Failed { cause: format!("{error:#}"), closed };
+        }
+    }
+
+    /// Closes it: returns whether it was not closed before, failed or not.
+    pub fn close(&mut self) -> bool {
+        match self {
+            Standing::Open => *self = Standing::Closed,
+            Standing::Failed { closed, .. } if !*closed => *closed = true,
+            Standing::Closed | Standing::Failed { .. } => return false,
+        }
+        true
+    }
+
+    pub fn failed(&self) -> bool {
+        matches!(self, Standing::Failed { .. })
+    }
+
+    pub fn is_closed(&self) -> bool {
+        matches!(self, Standing::Closed | Standing::Failed { closed: true, .. })
+    }
+
+    /// Fails, saying why, if the store failed.
+    pub fn whole(&self) -> Result<(), Error> {
+        match self {
+            Standing::Failed { cause, .. } => {
+                Err(anyhow::anyhow!("the extent store failed: {cause}"))
+            }
+            Standing::Open | Standing::Closed => Ok(()),
+        }
+    }
+}
+
+/// fxdax: what a [`Guarded`] state holds to, checked as it is taken and again after each of its
+/// waits (TASK-160.19).
+pub(crate) trait Holds {
+    /// Fails unless `state`, of branch `branch`, holds to it.
+    fn check<F: File>(state: &State<F>, branch: u64) -> Result<(), Error>;
+}
+
+/// fxdax: a store not failed: what reading takes ([`Readable`]).
+pub(crate) struct Whole;
+
+impl Holds for Whole {
+    fn check<F: File>(state: &State<F>, _branch: u64) -> Result<(), Error> {
+        state.standing.whole()
+    }
+}
+
+/// fxdax: a store not failed, nor closed, its branch no point: what changing it takes
+/// ([`Writable`]).
+pub(crate) struct Changeable;
+
+impl Holds for Changeable {
+    fn check<F: File>(state: &State<F>, branch: u64) -> Result<(), Error> {
+        state.standing.whole()?;
+        anyhow::ensure!(!state.standing.is_closed(), "branch {branch:#x} is closed");
+        anyhow::ensure!(!state.point, "branch {branch:#x} is a point, which nothing writes");
+        Ok(())
+    }
+}
+
+/// fxdax: the state, locked, as `H` holds it to (TASK-160.19): made only by checking it, and
+/// checked again by each of its waits, which let the lock go meanwhile, so that no caller goes on
+/// after waiting as if the store couldn't have failed, or closed, since (TASK-83). With the rule
+/// `recheck_after_waiting` off, as a Shuttle test has it to show it needed, its waits check
+/// nothing.
+pub(crate) struct Guarded<'a, F: File, H> {
+    state: Locked<'a, F>,
+    branch: u64,
+    holds: std::marker::PhantomData<H>,
+}
+
+/// fxdax: the state of a store not failed ([`Whole`]).
+pub(crate) type Readable<'a, F> = Guarded<'a, F, Whole>;
+
+/// fxdax: the state of a store to change ([`Changeable`]).
+pub(crate) type Writable<'a, F> = Guarded<'a, F, Changeable>;
+
+impl<'a, F: File, H: Holds> Guarded<'a, F, H> {
+    /// `state`, of branch `branch`, if it holds to `H`.
+    pub fn check(state: Locked<'a, F>, branch: u64) -> Result<Self, Error> {
+        H::check(&state, branch)?;
+        Ok(Self { state, branch, holds: std::marker::PhantomData })
+    }
+
+    /// Waits for `condvar` while `busy` says so of the state, letting it go meanwhile, and returns
+    /// it, checked again.
+    pub fn wait_while(
+        mut self,
+        condvar: &Condvar,
+        busy: impl Fn(&State<F>) -> bool,
+    ) -> Result<Self, Error> {
+        let branch = self.branch;
+        while busy(&self.state) {
+            self.state = self.state.wait(condvar);
+        }
+        self.checked_again(branch)
+    }
+
+    /// Holds new writes back ([`Gate`]) while `busy` says so of the state, waiting for `condvar`
+    /// as [`Guarded::wait_while`] does, then lets them go on, and returns it, checked again: as a
+    /// commit, or a closing between commits, waits for the writes in progress.
+    pub fn hold_writes_while(
+        mut self,
+        condvar: &Condvar,
+        busy: impl Fn(&State<F>) -> bool,
+    ) -> Result<Self, Error> {
+        let branch = self.branch;
+        self.state.gate.hold();
+        while busy(&self.state) {
+            self.state = self.state.wait(condvar);
+        }
+        self.state.gate.release();
+        condvar.notify_all();
+        self.checked_again(branch)
+    }
+
+    fn checked_again(self, branch: u64) -> Result<Self, Error> {
+        if !rules().recheck_after_waiting {
+            return Ok(self);
+        }
+        Self::check(self.state, branch)
+    }
+}
+
+impl<F: File, H> Deref for Guarded<'_, F, H> {
+    type Target = State<F>;
+
+    fn deref(&self) -> &State<F> {
+        &self.state
+    }
+}
+
+impl<F: File, H> DerefMut for Guarded<'_, F, H> {
+    fn deref_mut(&mut self) -> &mut State<F> {
+        &mut self.state
+    }
+}
+
 /// fxdax: the state, locked, which the builds of the tests audit as they let it go, waiting or
 /// done ([`State::audit`], TASK-160.16): so that whatever changed it, its counts are found right
 /// before anything else reads them. Unless the store failed, which changes nothing more, its
@@ -377,7 +571,8 @@ const AUDITED_EXTENTS: usize = 4096;
 /// locks it again, which a lock poisoned would panic in, aborting as the audit's panic unwinds.
 #[cfg(any(test, feature = "audit"))]
 fn audited<F: File>(guard: MutexGuard<'_, State<F>>) -> MutexGuard<'_, State<F>> {
-    if guard.failed.is_some() || std::thread::panicking() || guard.extents.len() > AUDITED_EXTENTS {
+    if guard.standing.failed() || std::thread::panicking() || guard.extents.len() > AUDITED_EXTENTS
+    {
         return guard;
     }
     let audit = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| guard.audit()));
@@ -909,5 +1104,33 @@ impl Unreferenced {
     /// Those of the commit: from now on, the next's.
     pub fn take(&mut self) -> Self {
         std::mem::take(self)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// fxdax: a store's standing: closing says whether it was open; failing keeps its first cause,
+    /// and whether it was closed, closed or failed in either order; a failed store refuses, saying
+    /// why, and closes all the same, once (TASK-160.19).
+    #[test]
+    fn standings_fail_and_close_in_either_order() {
+        let mut standing = Standing::default();
+        assert!(standing.whole().is_ok() && !standing.is_closed());
+        assert!(standing.close());
+        assert!(!standing.close());
+        standing.fail(&anyhow::anyhow!("the disk failed"));
+        standing.fail(&anyhow::anyhow!("later"));
+        assert!(standing.is_closed() && standing.failed());
+        let refused = standing.whole().unwrap_err().to_string();
+        assert_eq!(refused, "the extent store failed: the disk failed");
+
+        let mut standing = Standing::default();
+        standing.fail(&anyhow::anyhow!("the disk failed"));
+        assert!(!standing.is_closed());
+        assert!(standing.close());
+        assert!(!standing.close());
+        assert!(standing.is_closed() && standing.failed());
     }
 }

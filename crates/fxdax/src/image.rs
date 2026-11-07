@@ -13,11 +13,13 @@ use crate::error::{Errno, Error};
 use crate::executor::{Executor, assert_not_on_executor};
 use crate::filesystem::{Filesystem, Options};
 use crate::storage::{Kind, Storage, clone_image};
-use crate::volume::{Unmount, Volume};
+use crate::volume::{HostFxfs, Unmount, Volume};
 use fxfs::errors::FxfsError;
 use fxfs::filesystem::{FxFilesystemBuilder, OpenFxFilesystem, SyncOptions};
-use fxfs::lsm_tree::LSMTree;
-use fxfs::lsm_tree::types::{MergeableKey, Value};
+use fxfs::lsm_tree::types::{ItemRef, LayerIterator, MergeableKey, Value};
+use fxfs::lsm_tree::{LSMTree, Query};
+use fxfs::object_store::allocator::merge::filter_tombstones;
+use fxfs::object_store::allocator::{Allocator, AllocatorValue};
 use fxfs::object_store::volume::{RootVolume, root_volume};
 use fxfs::object_store::{NewChildStoreOptions, StoreOptions};
 use std::collections::HashSet;
@@ -107,6 +109,48 @@ impl std::ops::Add for TreeCompactions {
             time: self.time + other.time,
         }
     }
+}
+
+/// What a volume's metadata takes of its image ([`Filesystem::metadata`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct VolumeMetadata {
+    /// The size of the layers of the volume's tree, which what its journal holds yet is in none of.
+    pub layer_bytes: u64,
+    /// The records of the volume's extents in the allocator's tree, which every mount of the image
+    /// scans whole.
+    pub allocator_records: u64,
+}
+
+impl VolumeMetadata {
+    /// What the volume `fxfs` serves takes.
+    pub(crate) async fn of(fxfs: &HostFxfs) -> Result<Self, anyhow::Error> {
+        let filesystem = fxfs.filesystem();
+        let store_id = fxfs.volume_id();
+        let store = filesystem.object_manager().store(store_id).ok_or(FxfsError::NotFound)?;
+        let layer_set = store.tree().layer_set();
+        let layers = layer_set.layers.iter().filter_map(|layer| layer.handle());
+        let allocator_records = allocator_records(&filesystem.allocator(), store_id).await?;
+        Ok(Self { layer_bytes: layers.map(|layer| layer.get_size()).sum(), allocator_records })
+    }
+}
+
+/// The records in `allocator`'s tree of the extents of the store `store_id`, shared ones too.
+async fn allocator_records(allocator: &Allocator, store_id: u64) -> Result<u64, anyhow::Error> {
+    let mut owners = allocator.shared_owners(store_id);
+    owners.push(allocator.data_owner(store_id));
+    let layer_set = allocator.tree().layer_set();
+    let mut merger = layer_set.merger();
+    let mut records = filter_tombstones(merger.query(Query::FullScan).await?).await?;
+    let mut count = 0;
+    while let Some(ItemRef { value, .. }) = records.get() {
+        if matches!(value, AllocatorValue::Abs { owner_object_id, .. }
+            if owners.contains(owner_object_id))
+        {
+            count += 1;
+        }
+        records.advance().await?;
+    }
+    Ok(count)
 }
 
 impl Image {

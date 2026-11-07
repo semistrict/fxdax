@@ -5,7 +5,7 @@
 //! Tests of images and their volumes: filesystems of their own on one image.
 
 use futures::executor::block_on;
-use fxdax::{Errno, Filesystem, Image, Owner, RenameFlags, Storage};
+use fxdax::{Errno, Filesystem, Image, Owner, RenameFlags, Storage, VolumeMetadata};
 
 const OWNER: Owner = Owner { uid: 1000, gid: 100 };
 
@@ -45,6 +45,36 @@ fn create_and_list_volumes() {
         assert_eq!(missing.errno(), Some(Errno::ENOENT));
         let mounted = image.open_volume("a").await.expect_err("mounted a volume twice");
         assert_eq!(mounted.errno(), Some(Errno::EBUSY));
+        a.unmount().await.unwrap();
+        b.unmount().await.unwrap();
+        image.close().await.unwrap().check().await.unwrap();
+    })
+}
+
+/// A volume's metadata is its own: layers once the journal is compacted, and a record of the
+/// allocator's for each extent.
+#[test]
+fn volume_metadata() {
+    block_on(async {
+        let image = format().await;
+        let a = image.create_volume("a").await.unwrap();
+        let b = image.create_volume("b").await.unwrap();
+        assert_eq!(
+            a.metadata().await.unwrap(),
+            VolumeMetadata { layer_bytes: 0, allocator_records: 0 }
+        );
+
+        write_file(&a, b"file", &[1; 1 << 20]).await;
+        let (file, _) = a.root().lookup(b"file").await.unwrap();
+        file.fsync().await.unwrap();
+        image.compact().await.unwrap();
+
+        let written = a.metadata().await.unwrap();
+        assert_eq!(written.allocator_records, 1);
+        assert!(written.layer_bytes > 0, "{written:?}");
+        assert_eq!(b.metadata().await.unwrap().allocator_records, 0);
+
+        drop(file);
         a.unmount().await.unwrap();
         b.unmount().await.unwrap();
         image.close().await.unwrap().check().await.unwrap();

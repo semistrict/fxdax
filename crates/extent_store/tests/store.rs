@@ -1415,6 +1415,9 @@ fn durable_commits_keep_the_open_segments_pages_cached_on_the_host() {
     assert_eq!(cached_pages(&path("open-segments")), (8 * BLOCK).div_ceil(page_size()));
     store.close_segment().unwrap();
     store.commit(None).unwrap();
+    // Framed, on a thread of its own, which no commit waits for, nothing written since the commit
+    // before (TASK-165.9): its framing's sync lets the pages go.
+    settled(&store);
     assert_eq!(cached_pages(&path("segments")), 0);
 }
 

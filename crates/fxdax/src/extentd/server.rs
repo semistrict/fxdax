@@ -1431,6 +1431,11 @@ impl Connection {
         let flushed = store.clone();
         self.start_behind(move |stopped| flush_behind(flushed, stopped));
         let branch = store.branch();
+        // fxdax: should its VM process go, and a writer wait for its store to close, the store's
+        // uploader stops at once rather than upload what it holds first (TASK-216).
+        if let Some(cut_short) = store.cut_short() {
+            hold.when_wanted(cut_short);
+        }
         opening.opened(path, store, Phase::Writing(Arc::new(hold)));
         Ok(branch)
     }
@@ -1793,6 +1798,13 @@ impl Acks {
         since.map_or(std::time::Duration::ZERO, |since| now.saturating_duration_since(since))
     }
 
+    /// fxdax: what the watchdog finds of the VM process's acknowledgements as it looks, at `now`:
+    /// [`Acks::unanswered`], then [`Acks::behind`], which goes by what that found.
+    fn look(&self, now: std::time::Instant) -> Silence {
+        let silent = self.unanswered(now);
+        Silence { silent, behind: self.behind(now) }
+    }
+
     fn close(&self) {
         let kept = {
             let mut state = self.state.lock().unwrap();
@@ -1800,6 +1812,36 @@ impl Acks {
             std::mem::take(&mut state.kept)
         };
         drop(kept);
+    }
+}
+
+/// fxdax: what the watchdog found of a VM process's acknowledgements as it looked
+/// ([`Acks::look`]): how long it has acknowledged nothing ([`Acks::unanswered`]) and how long the
+/// operation it waits for has been unacknowledged ([`Acks::behind`]). Said as the daemon lets one
+/// go, it tells the two limits apart: one that stopped, and one acknowledging too slowly to catch
+/// up (TASK-136.1).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Silence {
+    silent: std::time::Duration,
+    behind: std::time::Duration,
+}
+
+impl Silence {
+    /// Whether it is past [`UNRESPONSIVE`] silent, or [`BEHIND`] behind: the VM process is to be
+    /// let go.
+    fn unresponsive(self) -> bool {
+        self.silent >= UNRESPONSIVE || self.behind >= BEHIND
+    }
+}
+
+impl std::fmt::Display for Silence {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let Self { silent, behind } = self;
+        write!(
+            f,
+            "silent for {silent:?} (of {UNRESPONSIVE:?} allowed), behind for {behind:?} (of \
+             {BEHIND:?} allowed)"
+        )
     }
 }
 
@@ -1910,10 +1952,11 @@ impl Peer {
         }
     }
 
-    /// Whether it has acknowledged no operation for [`UNRESPONSIVE`], with one taking access away
-    /// unacknowledged, or left one so for [`BEHIND`], as of `now`, and is to be let go.
-    fn unresponsive(&self, now: std::time::Instant) -> bool {
-        self.acks.unanswered(now) >= UNRESPONSIVE || self.acks.behind(now) >= BEHIND
+    /// How it has been silent, if it has acknowledged no operation for [`UNRESPONSIVE`], with one
+    /// taking access away unacknowledged, or left one so for [`BEHIND`], as of `now`, and is to be
+    /// let go.
+    fn unresponsive(&self, now: std::time::Instant) -> Option<Silence> {
+        Some(self.acks.look(now)).filter(|silence| silence.unresponsive())
     }
 
     /// Returns once its process has exited, holding no thread, its memory gone, and its mappings
@@ -2162,11 +2205,15 @@ async fn watch() {
     loop {
         every.tick().await;
         let now = std::time::Instant::now();
-        let unresponsive: Vec<_> =
-            PEERS.lock().unwrap().iter().filter(|peer| peer.unresponsive(now)).cloned().collect();
+        let unresponsive: Vec<_> = (PEERS.lock().unwrap().iter())
+            .filter_map(|peer| Some((peer.clone(), peer.unresponsive(now)?)))
+            .collect();
         // Let go without holding the VM processes connected, which every page freed takes.
-        for peer in unresponsive {
-            peer.let_go(format_args!("stopped answering stage operations"));
+        for (peer, silence) in unresponsive {
+            let queued = peer.sender.queued();
+            peer.let_go(format_args!(
+                "stopped answering stage operations: {silence}, {queued} bytes queued for it"
+            ));
         }
     }
 }
@@ -2248,7 +2295,7 @@ impl SecondStage for RemoteStage {
 
 #[cfg(test)]
 mod acks_tests {
-    use super::{Acks, BEHIND};
+    use super::{Acks, BEHIND, Silence};
     use std::sync::Arc;
 
     /// The ID of the next stage operation sent, which takes access to pages away if `taking`.
@@ -2324,6 +2371,39 @@ mod acks_tests {
         assert_eq!(acks.unanswered(at(61)), std::time::Duration::ZERO);
         assert_eq!(acks.behind(at(61)), std::time::Duration::ZERO);
         acks.acked(next);
+    }
+
+    /// What the watchdog says as it lets a VM process go tells the two limits apart: one silent,
+    /// and one acknowledging all along that stays behind (TASK-136.1: a publisher was let go
+    /// `silent for 0ns, behind for 60s`, which no log said before).
+    #[test]
+    fn a_silence_says_which_limit_it_passed() {
+        let acks = Acks::default();
+        let start = std::time::Instant::now();
+        let at = |seconds| start + std::time::Duration::from_secs(seconds);
+        let first = next(&acks, true);
+        (0..100).for_each(|_| {
+            next(&acks, true);
+        });
+        let none = std::time::Duration::ZERO;
+        assert_eq!(acks.look(at(0)), Silence { silent: none, behind: none });
+        for second in 1..60 {
+            acks.acked(first + second);
+            assert!(!acks.look(at(second)).unresponsive());
+        }
+        acks.acked(first + 60);
+        let behind = acks.look(at(60));
+        assert!(behind.unresponsive());
+        assert_eq!(
+            behind.to_string(),
+            "silent for 0ns (of 5s allowed), behind for 60s (of 60s allowed)"
+        );
+        let silent = acks.look(at(66));
+        assert!(silent.unresponsive());
+        assert_eq!(
+            silent.to_string(),
+            "silent for 6s (of 5s allowed), behind for 66s (of 60s allowed)"
+        );
     }
 
     /// TASK-79.9: what the watchdog finds unacknowledged counts from when it first found it so,

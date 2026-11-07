@@ -146,8 +146,8 @@ struct Inner<C, S, P> {
 /// A key's entry: who holds its store, and what is open of it meanwhile.
 enum Entry<C, S, P> {
     /// A connection writes it, from its `OPEN` on: its store, once open, which followers may follow
-    /// too.
-    Writer { connection: Weak<C>, store: Instance<S> },
+    /// too; and what to call as a writer waits for it, going ([`Hold::when_wanted`]).
+    Writer { connection: Weak<C>, store: Instance<S>, wanted: Option<Wanted> },
     /// The daemon holds it, to work on it, over what is open of it, which stays.
     Daemon(Open<S, P>),
     /// None holds it: what is open of it, never [`Open::Nothing`].
@@ -162,6 +162,11 @@ enum Open<S, P> {
     /// A point kept open for forks (TASK-92.5).
     Point(P),
 }
+
+/// What a connection holding a store has done as a writer waits for it to let the store go, its
+/// VM process gone (TASK-216): a callback of its own, which outlives the connection, as letting
+/// the store go comes after its last reference does.
+pub(crate) type Wanted = Arc<dyn Fn() + Send + Sync>;
 
 /// The store connections have open, a writer's or followers', while one of them has it: retired
 /// once its writer went with writes uncommitted, which neither a writer nor a follower opens then.
@@ -193,8 +198,9 @@ enum Claimed<C, P> {
 enum Refused<C> {
     /// A connection not going writes it: `EBUSY`.
     Busy(Arc<C>),
-    /// A connection going holds it, or the daemon, which lets it go soon.
-    Wait(Option<Arc<C>>),
+    /// A connection going holds it, or the daemon, which lets it go soon; and what a going
+    /// connection has called as a writer waits for it, if anything.
+    Wait(Option<Arc<C>>, Option<Wanted>),
 }
 
 /// A store held, by a connection writing it or by the daemon working on it, which nothing else
@@ -253,11 +259,11 @@ impl<C: Writer, S, P> Entry<C, S, P> {
     /// connection going, or the daemon, which let it go soon.
     fn holder(&self) -> Option<Refused<C>> {
         match self {
-            Entry::Writer { connection, .. } => Some(match connection.upgrade() {
+            Entry::Writer { connection, wanted, .. } => Some(match connection.upgrade() {
                 Some(writer) if !writer.going() => Refused::Busy(writer),
-                going => Refused::Wait(going),
+                going => Refused::Wait(going, wanted.clone()),
             }),
-            Entry::Daemon(_) => Some(Refused::Wait(None)),
+            Entry::Daemon(_) => Some(Refused::Wait(None, None)),
             Entry::Unheld(_) => None,
         }
     }
@@ -306,7 +312,7 @@ impl<C: Writer, S, P> Inner<C, S, P> {
                 return Ok(Claimed::Writer(writer));
             }
             (Some(Refused::Busy(writer)), _) if !rules().one_holder => Some(writer),
-            (Some(Refused::Wait(going)), _) if !rules().one_holder => going,
+            (Some(Refused::Wait(going, _)), _) if !rules().one_holder => going,
             (Some(refused), _) => return Err(refused),
             (None, _) => None,
         };
@@ -315,11 +321,17 @@ impl<C: Writer, S, P> Inner<C, S, P> {
             Claim::Writer(connection) => {
                 let connection = connection.clone();
                 match open {
-                    Open::Followed(store) => (Entry::Writer { connection, store }, None),
-                    Open::Point(point) => {
-                        (Entry::Writer { connection, store: Instance::none() }, Some(point))
+                    Open::Followed(store) => {
+                        (Entry::Writer { connection, store, wanted: None }, None)
                     }
-                    Open::Nothing => (Entry::Writer { connection, store: Instance::none() }, None),
+                    Open::Point(point) => {
+                        let store = Instance::none();
+                        (Entry::Writer { connection, store, wanted: None }, Some(point))
+                    }
+                    Open::Nothing => {
+                        let store = Instance::none();
+                        (Entry::Writer { connection, store, wanted: None }, None)
+                    }
                 }
             }
             Claim::Daemon | Claim::DaemonOrWriter => (Entry::Daemon(open), None),
@@ -514,19 +526,24 @@ impl<C: Writer, S, P> StoreTable<C, S, P> {
         deadline: Option<Instant>,
     ) -> Result<Result<Claimed<C, P>, EventListener>, Errno> {
         let mut inner = self.inner.lock().unwrap();
-        let (tried, refused) = match inner.claim(key, claim) {
-            Ok(claimed) => (Ok(Ok(claimed)), None),
-            Err(Refused::Wait(going))
+        let (tried, refused, wanted) = match inner.claim(key, claim) {
+            Ok(claimed) => (Ok(Ok(claimed)), None, None),
+            Err(Refused::Wait(going, wanted))
                 if deadline.is_none_or(|deadline| Instant::now() < deadline) =>
             {
                 let released = inner.waiting.entry(key.to_owned()).or_default().listen();
-                (Ok(Err(released)), going)
+                (Ok(Err(released)), going, wanted)
             }
-            Err(Refused::Wait(going)) => (Err(Errno::EBUSY), going),
-            Err(Refused::Busy(writer)) => (Err(Errno::EBUSY), Some(writer)),
+            Err(Refused::Wait(going, _)) => (Err(Errno::EBUSY), going, None),
+            Err(Refused::Busy(writer)) => (Err(Errno::EBUSY), Some(writer), None),
         };
         drop(inner);
         drop(refused);
+        // A writer waiting for a going connection has it hurry (TASK-216), without the lock, as
+        // what it calls may take it.
+        if let (Some(wanted), Claim::Writer(_)) = (wanted, claim) {
+            wanted();
+        }
         tried
     }
 
@@ -607,6 +624,16 @@ impl<C, S, P> Hold<'_, C, S, P> {
                 Ok(())
             }
             _ => Err(Errno::EBUSY),
+        }
+    }
+
+    /// Has `wanted` called as a writer waits for it to let the store go, its connection going
+    /// (TASK-216): a writer's hold alone, whose connection's store, closing, may take as long as
+    /// its bucket. Nothing for the daemon's.
+    pub fn when_wanted(&self, wanted: Wanted) {
+        let mut inner = self.table.inner.lock().unwrap();
+        if let Some(Entry::Writer { wanted: slot, .. }) = inner.entries.get_mut(&self.key) {
+            *slot = Some(wanted);
         }
     }
 
