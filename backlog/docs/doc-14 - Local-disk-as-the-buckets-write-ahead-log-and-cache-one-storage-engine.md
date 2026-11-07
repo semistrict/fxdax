@@ -3,7 +3,7 @@ id: doc-14
 title: 'Local disk as the bucket''s write-ahead log and cache: one storage engine'
 type: specification
 created_date: '2026-11-05 03:13'
-updated_date: '2026-11-06 12:09'
+updated_date: '2026-11-07 13:15'
 ---
 # Local disk as the bucket's write-ahead log and cache: one storage engine
 
@@ -14,6 +14,12 @@ format changes, how each concern lives in doc-7's protocol alone, the one replay
 local-filesystem bucket, how the tests carry over and how the risky parts are checked, and the
 landable steps (TASK-165.1 to 165.10). Decisions taken here are also in OPEN_QUESTIONS.md under
 `# Decisions`.
+
+**Status, 2026-11-07:** implemented. Steps 1 to 9 are on main (TASK-165.9 landed in c9207e5d4);
+this doc was brought to the code then (TASK-165.10): what it describes is what main does, and the
+*Before* columns say what went. doc-7 describes the host as it is. The decisions taken on the way
+are under Decisions, below; the lines removed and added, by module, are in TASK-165's notes and in
+What went.
 
 ## Why
 
@@ -55,19 +61,26 @@ points, records, checkpoints, deletion and cleaning are doc-7's alone.
 
 ## What local disk holds afterwards
 
-Per store directory (one branch):
+Per store directory (one branch, `<b>` its ID; `extent_store::layout`):
 
 | Path | What | Lives until |
 |---|---|---|
-| `store` | the description: format (6), block size, the branch, the bucket's URL, the placement's fencing token | the store is deleted |
-| `open/<n>` | the open segment's data, raw: pieces of open extents and the runs commits sealed | it closes and its framed file is synced |
-| `open/<n>.log` | the commits sealed in it: one record per commit (its `Contents`, below), each hashed, appended and synced by the flush that makes the commit durable | as above |
-| `open-extents/<sequence>` | large open extents (`Options::large_extent`), raw | sealed |
-| `wal/<seq>` | a closed segment, framed, its footer stamped by the writer's chain: the object `segments/<branch>/<seq>` byte for byte | acknowledged, then moved into the part cache |
-| `wal/<seq>.<sequence>` | its extents stored on their own, framed: the objects `extents/<branch>/<epoch>.<seq>.<sequence>` | likewise |
+| `store` | the description (`layout::FORMAT`, local format 8): block size, the branch, the bucket's URL, the placement's fencing token, the capacity a store takes before a commit of its branch sets one | the store is deleted |
+| `unmade` | a marker `Store::make` writes before anything else, which its maker removes once the store is whole; opening refuses a store holding it (TASK-196) | the store is whole |
+| `open-segments/<b>/<n>` | the open segment's data, raw: pieces of open extents and the runs commits sealed | it closes and its framed file is synced |
+| `logs/<b>/<n>` | the commits made in it: one record per commit (its `Contents`, below), each hashed, appended and synced by the flush that makes the commit durable, whether the segment is open or being framed | as above |
+| `open-extents/<b>/<sequence>` | large open extents (`Options::large_extent`), raw | sealed |
+| `segments/<b>/<n>` | a closed segment, framed, numbered locally, its footer stamped by the writer's chain as it closed: the object `segments/<branch>/<seq>` byte for byte, but for a rebase's restamping, which is in memory, the upload restamping the bytes (`extent_frame::restamp`) | acknowledged, then moved into the part cache |
+| `extents/<b>/<sequence>` | its extents stored on their own, framed: the objects `extents/<branch>/<epoch>.<seq>.<sequence>` | likewise |
+| `wal` | the WAL's base, the commit its first segment was stamped over: two 4 KiB slots, written durably before what an acknowledgement let go of leaves (`wal::BASE`) | the store is deleted |
+
+Beside them, fxdax's own records of the store (`fxdax::store_dir`, TASK-160.13): what is attached
+to it, what it was forked from (`ancestry`), the branches marked public (`public-<b>`) and boot
+profiles, each written whole and synced. An image's own file bucket is beside its directory,
+`<image>.bucket`, which its clones share and which outlives it (Decisions).
 
 Per host (`FXDAX_EXTENTD_CACHE`), shared by every store: `fxdax-parts/<key>`, the part cache
-(`extent_remote::cache`), now kept across restarts, and taking whole objects in (`adopt`).
+(`extent_remote::cache`), kept across restarts and taking whole objects in (`Cache::adopt`).
 
 Gone from a store's directory: `branches/`, `segments/`, `extents/`, `index/`, `open-segments/`,
 handles naming another store's directory, `store.new`/`store.deleted`, and remote.rs's
@@ -75,60 +88,66 @@ handles naming another store's directory, `store.new`/`store.deleted`, and remot
 
 The host's disk is bounded by the lag bound (`Options::max_lag_bytes`, what the WAL holds: commits
 stall there, doc-7 decision 3), the open segment's room (the store's capacity plus what rewrites
-before a commit waste, the rule `state::Space` keeps today), and the cache's capacity and floor.
+before a commit waste, the rule `state::Space` keeps), and the cache's capacity and floor.
 Local dead space no longer exists, so the bound of three times the capacity (TASK-79.89) and local
 cleaning go.
 
-*Implemented 2026-11-06 (TASK-165.9), differing in names, not in kind:* the description `store`,
-format 8, with the capacity a store takes before a commit of its branch sets one; `unmade`, a marker
-`Store::make` writes before anything else and its maker removes once the store is whole, which
-opening refuses (TASK-196); per branch, `open-segments/<b>/<n>` (raw) and `logs/<b>/<n>` (the open
-segment's log), `segments/<b>/<n>` (the WAL's framed segments, numbered locally, their footers
-stamped by the chain as they closed; a rebase restamps them in memory, and the upload restamps the
-bytes, `extent_frame::restamp`), `extents/<b>/<sequence>` (own extents, framed); and `wal`, the
-WAL's base, two 4 KiB slots, written durably before what an acknowledgement let go of leaves.
+*Implemented 2026-11-06 (TASK-165.9), differing from the design in names, not in kind:* the
+design's `open/<n>`, `open/<n>.log` and `wal/<seq>` are the table's `open-segments/`, `logs/` and
+`segments/`, kept per branch; the design had no `unmade`, nor the WAL's base in a file of its own.
 OPEN_QUESTIONS.md says why each.
 
-## What goes
+## What went
 
-Lines are code without tests, as of 9f81f6018; rough.
+Lines are code without unit tests (a file's lines before its `#[cfg(test)]` module), at 9f81f6018,
+where the design counted them, and on main at 213504c4b, after step 9. The estimate is the
+design's. Other work changed some of these files meanwhile (TASK-160's refactors, TASK-149's FUSE,
+TASK-154's tenants), counted in the second figure too; TASK-165's notes have the counts of the
+TASK-165.1-165.9 commits alone.
 
-| Module | Lines | Fate |
-|---|---|---|
-| `extent_store/src/lineage.rs` | 573 | goes: no lineage |
-| `extent_store/src/branch_records.rs` | 428 | goes: records are the bucket's |
-| `extent_store/src/layers.rs` | 430 | goes: forks share state through `extent_remote::recovery::Layers` |
-| `extent_store/src/ledger.rs` | 447 | goes: no file is claimed by several branches |
-| `extent_store/src/index.rs` | 564 | goes: no index; the open segment's log replaces deltas, the bucket's checkpoints replace local ones |
-| `extent_store/src/host.rs` | 411 | goes but for opening and making a store directory (~100) |
-| `extent_store/src/uploads.rs` | 140 | goes: the WAL replaces it |
-| `extent_store/src/kept.rs` | 208 | mostly goes (~150): nothing keeps freed data for an uploader; views keep what they pin |
-| `extent_store/src/layout.rs` | 546 | ~300 go: `BranchRecord`, `Origin`, the local `Checkpoint`, `Change`, `Delta`, the record codec |
-| `extent_store/src/segments.rs` | 1,367 | ~500 go: cleaning (`victims`, `reclaimable`, `place`/`displace`), sharing (`share`, `unshare`, `track`, `Inherited`), `reap`, dead-disk accounting |
-| `extent_store/src/state.rs` | 987 | ~400 go: garbage and the 3x bound, kept frees, `Unreferenced`'s file keys |
-| `extent_store/src/store.rs` | 2,304 | ~1,100 go: `fork*`, `rebuild`, `clean*`, `adopt`, `spend`, `snapshot`, `upload`, `release`, `read_kept`, lineage plumbing, `make_moves`, index appends |
-| `fxdax/src/remote.rs` | 1,681 | ~1,300 go: `Marker`, `InFlight`, `Claim`/`Forked` and their files, `Plan`, `diff`, `take`, `take_parent`, `record`, `start_point`; the uploader loop (~400) moves to extent_store |
-| `fxdax/src/extents.rs` | (part) | ~120 go: `fork_durable`'s claims, disclaims and unforks, `copy_bases` stays |
+| Module | 9f81f6018 | Estimate | main | What happened |
+|---|---|---|---|---|
+| `extent_store/src/lineage.rs` | 574 | goes | gone | no lineage |
+| `extent_store/src/branch_records.rs` | 428 | goes | gone | records are the bucket's |
+| `extent_store/src/layers.rs` | 430 | goes | gone | a child recovers its state from the bucket (`extent_remote::recovery::Layers` within one recovery) |
+| `extent_store/src/ledger.rs` | 447 | goes | gone | no file is claimed by several branches |
+| `extent_store/src/index.rs` | 564 | goes | gone | no index: the open segment's log replaces deltas, the bucket's checkpoints local ones |
+| `extent_store/src/host.rs` | 411 | ~100 stay | 237 | making, opening, placing and deleting a store directory, `unmade` (TASK-196) |
+| `extent_store/src/uploads.rs` | 141 | goes | 55 | a closed segment for the uploader (`Closed`) |
+| `extent_store/src/kept.rs` | 208 | ~150 go | 219 | stays: frees are kept until acknowledged, so that a view or a rebase reads them (Decisions) |
+| `extent_store/src/layout.rs` | 546 | ~300 go | 381 | 165 went: `BranchRecord`, `Origin`, the local `Checkpoint`, `Change`, `Delta`, the record codec; the commit log's records came |
+| `extent_store/src/segments.rs` | 1,367 | ~500 go | 979 | 388 went: cleaning, sharing, dead-disk accounting |
+| `extent_store/src/state.rs` | 988 | ~400 go | 1,109 | garbage, the 3x bound and `Unreferenced`'s file keys went; one replay over the branch's state, `Life` and `Standing` (TASK-160.18, 160.19) came |
+| `extent_store/src/store.rs` | 2,304 | ~1,100 go | 2,316 | `fork*`, `rebuild`, `clean*`, `adopt`, `spend`, `snapshot`, `upload`, `release`, lineage plumbing went; opening by recovery, `rebase`, the WAL's leaving into the cache, framings as one queue and flush timings came |
+| `extent_store/src/wal.rs`, `upload.rs`, `timings.rs` | 0 | ~1.3k come, with the file bucket and the cache | 469, 1,112, 160 | the WAL's recovery and base; the uploader, moved from remote.rs; flush timings |
+| `fxdax/src/remote.rs` | 1,687 | ~1,300 go, ~400 move | 178 | 1,509 went: `Marker`, `InFlight`, `Claim`/`Forked` and their files, `Plan`, `diff`, `take`, `take_parent`, `record`, `start_point`; the uploader moved to `extent_store::upload` |
+| `fxdax/src/extents.rs` | (part) | ~120 go | | `fork_durable`'s claims, disclaims and unforks went, `fork_durable` now a call of `host_store::fork`; `copy_bases` went too (TASK-165.7): what is attached to a store stays attached to its fork by what the fork's directory inherits (`store_dir::inherit`) |
+| `fxdax/src/host_store.rs` | 191 | | 443 | every store's bucket, forks in the bucket, `unmade` |
+| `extent_remote` `local.rs`, `wal.rs`, `cache.rs` | 0, 0, 316 | | 212, 147, 905 | the file bucket; `Wal::rebase`; the part cache kept across restarts and adopting objects |
 
-About 5.4k lines of extent_store's code and 1.3k of remote.rs's go; about 1.3k come (the WAL, the
-open segment's log, the store directory, the uploader moved, the file bucket, the cache's
-persistence). Of the tests, `tests/lineage.rs`, `tests/shuttle/lineage.rs`, `tests/host.rs` and
-the lineage, cleaning and uploader cases of `tests/store.rs` (about 2.5k lines) go or are
-rewritten against the bucket (Tests, below).
+extent_store's code went from 10,757 lines to 9,580 (1,177 fewer; the design's estimate was 4.1k
+fewer, 5.4k going and 1.3k coming), its `tests/` from 7,779 to 5,930; remote.rs from 1,687 to 178.
+extent_store lost less than estimated because what replaced the index and the lineage (one
+recovery from the bucket and the WAL, framings as one queue, crash-tested opening) is larger than
+the design guessed, and kept frees stayed. Of the tests, `tests/lineage.rs` and
+`tests/shuttle/lineage.rs` went; `tests/store.rs`' lineage, cleaning and uploader cases went or
+became tests against the bucket (Tests, below).
 
 **What stays in extent_store:** the write path (open extents, sealing into one run at a commit,
 segments rolling over between commits, framing on a thread of its own: segments.rs, the open half
 of state.rs and store.rs), group durability (`durability.rs`), reads of local framed files
 (`framed.rs`), the `Dir` abstraction and `MemDir`'s crash simulation, Shuttle's `sync.rs`, views
-(`views.rs`), room accounting. It now depends on `extent_remote`.
+(`views.rs`), room accounting. It now depends on `extent_remote`, and holds the uploader
+(`upload.rs`) and the WAL (`wal.rs`).
 
 ## The one replay
 
 A segment's footer is `Contents` stamped with the chain's place (`extent_frame::segment`). The
-one replay is `extent_remote::recovery::State::apply(key, &Footer)`, split into the continuity
-check (doc-7, Fencing: a footer not following the last applied is void) and
-`State::apply_contents(key, &Contents)`, which does the rest: seals at their locations, frees,
-spends, root, next sequence, capacity, forks. Every reader of a branch's history uses it:
+one replay is `extent_remote::recovery::State::apply(&mut self, &Footer) -> bool`, split into the
+continuity check (doc-7, Fencing: a footer not following the last applied is void, and `apply`
+returns false) and `State::apply_contents(&mut self, seq, epoch, &Contents)`, which does the rest,
+the segment's number and its writer's epoch placing what it seals: seals at their locations,
+frees, spends, root, next sequence, capacity, forks. Every reader of a branch's history uses it:
 
 - recovery of a branch (`recover`, `recover_on`, `state_at`), and so the writer, the collector,
   `branch::delete`, points;
@@ -152,7 +171,7 @@ Each of TASK-160.15's differences gets one rule:
 
 The open segment's log is not a second replay: its records are each commit's `Contents`, and
 folding them (concatenating lists, the last root, the largest next sequence, the last capacity) is
-the footer's contents, which `Window::commit` computes today in memory. A segment's commits seal
+the footer's contents, which the open segment's `Window` computes in memory as commits are made. A segment's commits seal
 each extent once and free it at most once after, so applying the folded contents equals applying
 the commits in turn.
 
@@ -201,7 +220,10 @@ the commits in turn.
    did not land, never acknowledged, is lost, rather than made twice). The WAL's base is then the
    branch's last commit after the fence.
 5. The branch's state is the recovery's, the WAL's footers applied over it. The guest mints from the
-   writer's floor (`Chain::next_sequence`).
+   writer's floor (`Remote::next_sequence`, the writer's epoch's range). The store's next sequence
+   on opening is one past the highest of its own extents it holds, where fxfs looks for orphans
+   below (`Allocator::open`), not the footers' stamp, which their writers stamped past their
+   floors.
 
 What made a stale store refuse before, the marker naming which commits were its own, is the WAL
 itself: every segment that may land is a WAL file, stamped and synced before its PUT (TASK-79.72's
@@ -215,12 +237,15 @@ rule), and nothing else can land in the writer's name.
   syncs it: the commits are durable locally (doc-7, Uploads, step 2). No index.
 - **The open segment closes** when full, at its age (the upload interval), when asked (a sync, a
   fork, a commit waiting to be durable, stopping), as now; its framing, on a thread of its own,
-  stamps its footer with the writer's chain and syncs it into `wal/`, then its raw file and log go.
-- **The uploader** (moved from remote.rs into extent_store, `drain.rs`) hands WAL segments to the
+  stamps its footer with the writer's chain and syncs it into `segments/`, then its raw file and log
+  go.
+- **The uploader** (moved from remote.rs into extent_store, `upload.rs`) hands WAL segments to the
   writer (`Writer::add_segment`), uploads them within the host's budget, acknowledges them in order
   after a lease read, and then moves each acknowledged file into the part cache (`Cache::adopt`, a
-  rename on the same filesystem), its own extents with it. `COMMIT_DURABLE` completes as now.
-  Checkpoints are the writer's, every 64 segments and at forks, as now.
+  rename on the same filesystem; `store.rs`'s `leave`), its own extents with it, or removes it if
+  the cache can't take it. `COMMIT_DURABLE` completes as now. Checkpoints are the writer's, every
+  64 segments (`upload::CHECKPOINT_EVERY`), on clean shutdown, and as an acknowledgement carries
+  forks: the checkpoint makes them.
 - **Lag:** `wait_lag` and `wait_uploaded` keep their meaning; the bytes the lag counts are the WAL's.
 
 *Implemented 2026-11-06 (TASK-165.9):* the uploader is `extent_store::upload`; framings are one
@@ -238,21 +263,21 @@ An extent's place is one of: in the open segment (raw, its pieces), in a WAL seg
 file), or in the bucket (a `Location`). Bucket places are read by the host's fetcher, from the part
 cache, which holds what was acknowledged here whole, and by ranged GETs otherwise
 (`extent_remote::fetch`). `Store::read` reads the first two; the third returns the location, which
-`crate::cache` fetches as it does for taken stores today (`RemoteData`). Moves the collector made are
-followed by the fetcher, as now.
+`crate::cache` fetches (`extent_store::RemoteData`). Moves the collector made are followed by the
+fetcher.
 
 ## Forks, points, deletion: only in the bucket
 
-| Operation | Today | Afterwards |
+| Operation | Before (went) | Now |
 |---|---|---|
 | Make a store | local lineage + `branch::create` at attach | `branch::create` (a root), then the directory |
 | Open | local index replay, then attach: marker, `Plan`, `diff`, `take` | Opening a store, above |
 | Take elsewhere (`fxdaxctl take`) | an empty store adopting every extent, a local checkpoint, a marker | a directory naming the branch; opening it |
-| Fork | `Remote::claim` (a GET and a claim file), a local fork (record, layers, handle), then `Remote::forked` waits for the record | a GET of the child's record (taken: `EEXIST`), a commit whose segment names the child (`Footer::forks`), then waiting for its acknowledgement and the child's record (`record_forks`); then the child's directory |
+| Fork | `Remote::claim` (a GET and a claim file), a local fork (record, layers, handle), then `Remote::forked` waits for the record | a GET of the child's record (taken: `EEXIST`, `Remote::child_free`), a commit whose segment names the child (`Store::commit_fork`, `Footer::forks`), then waiting for its acknowledgement and the child's record (`Remote::forked`, the writer's `record_forks`); then the child's directory (`host_store::fork`) |
 | Fork of a point | a claim, a local fork of the point's copy, `branch::fork_point` | `branch::fork_point`, then the child's directory |
 | Point | a fork to a point | a fork to a point (the record says `point`) |
-| Open a child | local layers over the parent's index | recovery from the bucket: the parent's state at the fork, shared in memory (`Layers`, the host's `Checkpoints` cache seeded with the writer's checkpoint at the fork) |
-| A fork failing | disclaim, `fail_fork`, `unfork` (`delete_branch`), handle deletion | `ChildTaken`: nothing made, nothing to delete. Fenced before the acknowledgement: `branch::delete_fork(child, owner)`, so a segment landing late gives the child a deleted record |
+| Open a child | local layers over the parent's index | opening a store: recovery of the child from the bucket, the parent's state at the fork read from the parent's checkpoint and footers, then flattened into the child's own state, O(extents) (Decisions) |
+| A fork failing | disclaim, `fail_fork`, `unfork` (`delete_branch`), handle deletion | `ChildTaken`: nothing made, nothing to delete. Failing once its commit was made (its upload or the child's directory failing): `Remote::unfork`, which stays, deleting the fork's alone, `branch::delete_fork(bucket, child, forked, owner, holder, token)`, so a segment landing late gives the child a deleted record; the directory goes |
 | A host crashing mid-fork | claim files, markers, `take_parent` | the fork is in the WAL; it lands and is recorded by the next writer (the fork stands, as `forks_whose_answers_are_lost_stand` already expects), or the disk is lost and it never was |
 | Delete | `delete_host` (claims, handles, lineage), `branch::delete` | `branch::delete` with the token, then the directory |
 | Place | `fence-<branch>` | the token in `store` |
@@ -260,16 +285,18 @@ followed by the fetcher, as now.
 | Clean | `Store::clean_behind` and the collector | the collector |
 
 The child's directory is made once its record exists; opening it is opening a store. Every fork
-already waits for its record today (`Remote::forked`), so a fork's latency doesn't change but for
-the child's recovery, which, on the fork's host, reads the checkpoint the writer just wrote from
-memory.
+waited for its record before too (`Remote::forked`), so a fork's latency changes by the child's
+recovery: its state is read from the bucket, the checkpoint the parent's writer wrote as the fork
+was acknowledged and the footers after it, and taken by the child, O(extents) of the parent at the
+fork, not shared in memory with the parent's. TASK-165.10's measurements (docs/measurements)
+have what that costs.
 
 ## Capacity, spent, room
 
 - **Capacity** becomes branch state (`State::capacity`, set by `Contents::capacity`, in
-  checkpoints): resizes are ordered with commits, a fork inherits its parent's, a point never
-  changes. Today it is in the local record only, so a branch taken elsewhere has the capacity its
-  taker gives it.
+  checkpoints): resizes are ordered with commits, each a commit of its own, a fork inherits its
+  parent's, a point never changes. It was in the local record only, so a branch taken elsewhere
+  had the capacity its taker gave it.
 - **Spent** IDs are the replay's, one rule (above): TASK-150.6's local-only spent set goes.
 - **Room:** a write is refused (`NoSpace`) when the branch's live bytes and its uncommitted writes
   would pass its capacity, and what rewrites before a commit waste counts once past a capacity's
@@ -294,15 +321,17 @@ inode, modification time and size), and writes by rename. Creates are `LocalFile
 `Store::from_url` takes it like any URL, so stats, probing and the latency throttle apply.
 
 **Images** (`Storage`, the fxdax CLI's) keep their branches in a file bucket named in their
-description, which their clones share; their collector runs in-process after commits, as their
-cleaning does now (TASK-165.6).
+description, `<image>.bucket` beside the image, which their clones share and which outlives it;
+their collector runs in-process after commits (`storage::collect`, TASK-165.6), only for an
+image's own bucket.
 
 ## Format changes and compatibility
 
 - Footers and checkpoints gain the capacity; `layout::FORMAT` becomes 2, and a reader refuses
   objects of other formats, older ones too (`Error::Format`).
-- Local stores: a new format (6), described above. Today's stores are not opened, and nothing
-  converts them.
+- Local stores: a new format, 6 at TASK-165.6, 7 at TASK-165.7 and 8 at TASK-165.9, described
+  above (`extent_store::layout::FORMAT`, "fxdax extent store 8"). Stores of another format are not
+  opened, and nothing converts them.
 
 No migration: nothing uses fxdax yet (AGENTS.md).
 
@@ -358,9 +387,9 @@ moves, the moves compacted and deleted under the live writer), whose trace is no
 branch at once, the second recording a never-acknowledged fork's child after a pass let go of its
 origin), which it models fixed (`deletionsFence`: a deletion fences the end it recovered to).
 
-**The seam's tests become tests of the bucket protocol:**
+**The seam's tests became tests of the bucket protocol:**
 
-| Today | Count | Afterwards |
+| Before | Count | Now |
 |---|---|---|
 | remote.rs, uploads (segments are the files, batches, gathers, flipped bytes, lag, stalls) | 17 | extent_store tests over a memory bucket, unchanged in what they assert; `attaches_upload_what_the_branch_lacks_in_batches` becomes a WAL caught up after an outage |
 | remote.rs, markers (`markers_name_*`, `segments_uploading_are_marked_*`, `*_marker_was_lost_*`) | 5 | the WAL's: a segment is a synced WAL file before its PUT; reopening with segments in flight, landed or not, at each point (`wal::rebase` unit tests and the simulation) |
@@ -402,6 +431,41 @@ its own tests. 1 to 5 change nothing a guest sees and don't wait for TASK-164; 6
 
 Out of scope: the serial commit log over parallel data (a SlateDB-style manifest, review section
 2), which this makes smaller to do; merging small objects in the collector.
+
+## Decisions
+
+Taken on the way, each in OPEN_QUESTIONS.md under `# Decisions` with what else was possible:
+
+- **A child takes its state in O(extents), not shared in memory** (TASK-165.7): a fork's child's
+  store is made once its record exists, and opening it recovers its state from the bucket and
+  flattens it, rather than sharing the parent's state in memory as layers did. A fork of a base
+  with many extents pays for them once, at the child's opening; nothing ties the child's state to
+  its parent's after.
+- **`Record::Acknowledged`** (TASK-165.8): acknowledged segments leave the store for the host's part
+  cache, which the index recorded (`Record::Acknowledged`) until TASK-165.9 removed the index; the
+  WAL's base (`wal`) records it since, written durably before an acknowledged file leaves. A store
+  with no uploader kept everything; since TASK-165.9 every store opened has one.
+- **`<image>.bucket`** (TASK-165.6, 165.7): an image's own file bucket is beside its directory,
+  named for it, not inside it, as its clones keep their branches there and outlive it; it is never
+  removed with the image. A directory with no description is no store.
+- **`Remote::unfork` stays:** a fork failing after its commit was made deletes the fork's child in
+  the bucket, the fork's alone (`branch::delete_fork`), so that its segment, landing late, makes
+  nothing (TASK-79.78).
+- **One recovery** (TASK-165.9, local format 8): see OPEN_QUESTIONS.md's line, which lists each of
+  its choices (the open segment's log, the WAL's base, framings as one queue, frees kept until
+  acknowledged, the next sequence on opening, a resize a commit of its own).
+
+**The user accepted TASK-165.9's trade-offs:**
+
+- *2026-11-07:* TASK-165.9 lands with its local-durability lag's tail above main's (pgbench's
+  maximum 1.0-2.0 s against main's 0.41-0.77 s; the daemon-killed case's 165-288 ms against
+  60-81 ms): its fixes (TASK-195, 204, 196, 192, 208), the one recovery path and the crash tests'
+  findings are worth more. The tail is TASK-221's, before TASK-224's fsync waiting for local
+  durability is worth enabling.
+- *2026-11-06:* doc-12's "durable within 50 ms" becomes a 50 ms median, which the pgbench cases
+  check (`durable_lag_within_50ms`), and a separate bound on what a daemon crash may lose, 500 ms,
+  which the daemon-killed crash test checks (`CRASH_LOSS_BOUND_MS`, TASK-221); the worst tail is
+  performance work.
 
 ## Where this meets other work
 

@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-04 07:34'
-updated_date: '2026-11-06 06:56'
+updated_date: '2026-11-07 13:16'
 labels: []
 dependencies:
   - TASK-164
@@ -73,4 +73,16 @@ The user chose the direction (review of 2026-11-04, decision 2); doc-14 decides 
 - **Steps 7 and 8 land in one batch**, so that main never has forks on one host reading their base back from the bucket.
 - **A fork has no claim file:** its child's ID is checked with one GET; a fork whose answer a crash lost stands if its segment landed (the parent's next writer records it) and never was if the disk went with it; a fork fenced before its acknowledgement deletes its child by its owner (`branch::delete_fork`).
 - **Images keep their branches in a file bucket named in their description**, their clones sharing it, their collector in-process (TASK-165.6).
+
+Lines removed and added (TASK-165.10, 2026-11-07), against doc-14's estimates. Code is a file's lines before its #[cfg(test)] module, as doc-14 counted at 9f81f6018; main is 213504c4b. Other work changed some of these files meanwhile (TASK-160's refactors, TASK-149's FUSE, TASK-154's tenants); the commit counts below are the TASK-165.1-165.9 commits' alone.
+
+By module, code at 9f81f6018 -> main (doc-14's estimate):
+- extent_store lineage.rs 574 -> gone (goes); branch_records.rs 428 -> gone (goes); layers.rs 430 -> gone (goes); ledger.rs 447 -> gone (goes); index.rs 564 -> gone (goes).
+- extent_store host.rs 411 -> 237 (~100 stay); uploads.rs 141 -> 55 (goes; Closed, a segment for the uploader, stays); kept.rs 208 -> 219 (~150 go; stayed: frees kept until acknowledged); layout.rs 546 -> 381 (~300 go; 165 went); segments.rs 1,367 -> 979 (~500 go; 388 went); state.rs 988 -> 1,109 (~400 go; garbage, the 3x bound and file keys went, one replay, Life and Standing came); store.rs 2,304 -> 2,316 (~1,100 go; fork*, rebuild, clean*, adopt, spend, snapshot, upload, release and lineage plumbing went, opening by recovery, rebase, leaving into the cache, framings as one queue, timings came).
+- extent_store new: wal.rs 469, upload.rs 1,112 (moved from remote.rs), timings.rs 160 (doc-14: ~1.3k come, with the file bucket and the cache).
+- extent_store src: code 10,757 -> 9,580 (-1,177; doc-14: -4.1k, 5.4k going and 1.3k coming); with unit tests 13,315 -> 11,259; tests/ 7,779 -> 5,930 (tests/lineage.rs 280 and tests/shuttle/lineage.rs 489 gone, tests/store.rs 3,744 -> 2,627).
+- fxdax remote.rs code 1,687 -> 178 (~1,300 go, ~400 move; 1,509 went), with its tests 4,215 -> 2,597; host_store.rs 191 -> 443; extents.rs: fork_durable's claims, disclaims and unforks went, and copy_bases (doc-14 said it stays).
+- extent_remote: local.rs 0 -> 212 (file bucket), wal.rs 0 -> 147 (Wal::rebase), cache.rs 316 -> 905 (kept across restarts, adopt), recovery.rs 500 -> 670.
+
+TASK-165.1-165.9 commits (git log --grep 'TASK-165\.[1-9]' 9f81f6018..213504c4b, --numstat, code and tests): extent_store +6,466 -11,096 (src +5,181 -7,797; tests/ +1,285 -3,299); fxdax +3,803 -4,839 (remote.rs +953 -2,913, host_store.rs +690 -532, extents.rs +576 -598, storage/kept.rs +383 -36); extent_remote +4,073 -809 (cache.rs +1,589 -333, wal.rs +447, local.rs +259, recovery.rs +272 -107); extent_frame +152 -125. In all about 2.4k lines fewer, against the review's 7-8k: one recovery from the bucket and the WAL, crash-tested at each write, and the part cache's persistence are larger than doc-14 guessed, and kept frees stayed. The review's section 2 is marked done (docs/reviews/2026-11-04-first-principles.md); doc-14's What went has the table.
 <!-- SECTION:NOTES:END -->

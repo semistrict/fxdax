@@ -53,6 +53,19 @@ bucket. At least 13 bugs at that seam (79.4, 79.5, 79.20, 79.39, 79.71, 79.72, 7
 - **TLA+ of doc-7 once smaller:** the random scheduler can't reach 79.18 or 79.3; followers,
   specified first, have had no bugs since 10-24.
 
+**Done, 2026-11-07 (TASK-165, doc-14; TASK-165.10):** the first and third. Local disk is the
+bucket's write-ahead log and part cache: no local lineage, records, layers, ledger, index, local
+cleaning, markers or claim files; forks, points, records, checkpoints and cleaning are the bucket's
+protocol alone; one replay (`State::apply_contents`) and one recovery. specs/bucket/Bucket.tla
+models the protocol with the WAL (TASK-165.2). Lines, at 9f81f6018 and on main 213504c4b, with
+unit tests: extent_store's `src` 13,315 to 11,259 (code alone 10,757 to 9,580), its `tests/` 7,779
+to 5,930; remote.rs 4,215 to 2,597 (code alone 1,687 to 178). The TASK-165.1-165.9 commits added
+6,466 lines to extent_store and removed 11,096, added 3,803 to fxdax and removed 4,839, and added
+4,073 to extent_remote (the file bucket, the WAL's rebase, the part cache kept across restarts) and
+removed 809: about 2.4k fewer in all, against the 7-8k estimated, as one recovery from the bucket
+and the WAL, crash-tested, is larger than guessed. TASK-165's notes have the counts by module and
+docs/measurements the perf gate before and after. The second, a serial commit log, is not done.
+
 ## 3. Window state with three owners, and a userspace page cache built for Zircon
 
 extentd keeps two maps of a window (Dax, WindowState) and the VMM a third (uffd::Pages); every

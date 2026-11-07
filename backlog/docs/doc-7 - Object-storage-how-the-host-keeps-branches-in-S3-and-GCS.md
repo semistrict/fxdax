@@ -3,14 +3,18 @@ id: doc-7
 title: 'Object storage: how the host keeps branches in S3 and GCS'
 type: specification
 created_date: '2026-10-17 01:31'
-updated_date: '2026-11-07 02:53'
+updated_date: '2026-11-07 13:15'
 ---
 # Object storage: how the host keeps branches in S3 and GCS
 
 Status: agreed design, 2026-10-16; the protocol (layout, fencing, forks, collection) settled by its
 simulation (TASK-28.1, `crates/extent_remote`), 2026-10-17. It turns doc-2's milestone 3 (m-5) into a
 plan, from a survey of open-source systems that keep data in object storage (below). Tasks: TASK-28
-and its subtasks.
+and its subtasks. *Rewritten 2026-11-07 (TASK-165.10)* for the host as it is since TASK-165 (doc-14):
+a branch lives in the bucket alone; a host keeps, on local disk, its stores' write-ahead logs, of
+what the bucket doesn't have yet, and its part cache, of copies of what it does; opening a store is
+one recovery, from the bucket and the log. No local lineage, local checkpoint, index or marker is
+left, and what this document said of them is gone from it; doc-14 says what went and why.
 
 doc-2 settled what milestone 3 must give:
 
@@ -20,68 +24,56 @@ doc-2 settled what milestone 3 must give:
   service (13);
 - memory and NVMe caches, both disposable (14).
 
-This document says how. Where it differs from doc-2's sketch, it says so.
+This document says how. Where it differs from doc-2's sketch, it says so: the index is the bucket's
+checkpoints and segments' footers, and lineage is in the bucket alone.
 
-## Where it stands (2026-10-17)
+## Where it stands (2026-11-07)
 
-- **The protocol** is `crates/extent_remote`: writers, readers, branch records and forks, the
-  collector (`fxdax-gc`), checkpoints as block-indexed tables, and `object_store` behind it (S3,
-  GCS; RustFS in `scripts/test-rustfs.sh`). Its simulation (Testing) checks it.
-- **Hosts** keep stores' branches with `fxdax::remote` (TASK-28.5): `extentd` attaches each store
-  it opens to the bucket `FXDAX_EXTENTD_REMOTE` names. The uploader has the store close its open
-  segment within an interval of the commits it makes durable, and PUTs the store's closed segments,
-  and the extents of their own they name, as they are, up to 32 at once, acknowledged in order;
-  commits stall at a lag bound in commits and in bytes. Only the snapshot an uploader starts from,
-  of what the store holds that the branch doesn't, is read back from the store.
-- **Opening elsewhere and forks** (TASK-28.7): an empty store of a branch (`fxdaxctl take`)
-  takes it on attaching, holding its extents without their data, which is fetched as it is read; a
-  store whose branch another host moved on refuses. `ExtentStore::fork` (`fxdaxctl fork`)
-  forks a store's branch in the bucket once its commits are uploaded, the child inheriting its
-  extents. `extentd`'s `OPEN` names a path, not a branch: `fxdaxctl` makes the store first.
+- **The protocol** is `crates/extent_remote`: writers, readers, branch records and forks, points,
+  the collector (`fxdax-gc`), checkpoints as block-indexed tables, the WAL's rebase (`Wal::rebase`),
+  and `object_store` behind it (S3, GCS, Azure Blob Storage; RustFS in `scripts/test-rustfs.sh`),
+  or a directory of the host's (`file:///DIR`, `extent_remote::local`). Its simulation and a TLA+
+  spec check it (Testing).
+- **Every store has a bucket**, which its description names (TASK-165.6): on a host of fxdax's
+  system, the host's (`FXDAX_EXTENTD_REMOTE`); an image of the fxdax CLI's, or a test's, a file
+  bucket of its own beside its directory (`<image>.bucket`), which its clones share. A store's
+  directory holds one branch.
+- **On the host** (doc-14, `crates/extent_store`): the guest's writes go to the store's open
+  segment, raw, and each commit's record to the segment's log, synced by the flush that makes the
+  commit durable; a segment closes when full, at the upload interval (1 s), when a commit waits for
+  its upload, at a fork, or as the uploader stops, and is framed on a thread of its own, its footer
+  stamped by the writer's chain. Closed segments are the store's **write-ahead log** (WAL): each
+  the very object it will be in the bucket, synced before its PUT. The **uploader**
+  (`extent_store::upload`) PUTs them, and the extents of their own they name, up to 16 of a store's
+  at once (`IN_FLIGHT`, 512 MiB of the host's upload budget over 32 MiB segments) and 64 requests
+  for the host, acknowledges them in order after a read of the lease, and moves each acknowledged
+  file into the host's **part cache** (`Cache::adopt`), or removes it. Commits stall at a lag bound
+  in commits (4,096) and in bytes of WAL (1 GiB).
+- **Opening a store**, here or anywhere, the first time or after a crash, is one recovery (doc-14,
+  Opening a store): its writer takes the branch's lease with the placement's token, recovers the
+  branch from the bucket and fences its end; a segment left open is closed again from its log; the
+  WAL is put after the branch's end by its commits (Recovery on the same host). An empty store of
+  a branch (`fxdaxctl take`) takes it so, holding its extents without their data, which is
+  fetched as it is read.
+- **Forks, points and deletion** are the bucket's alone (TASK-165.7): a fork is a commit of the
+  parent's naming the child, whose acknowledgement gives the child its record; the child's
+  directory is made only then, and opening it recovers the child from the bucket (Forks).
 - **Reading** (TASK-28.9): by 1 MiB parts of objects, each checked against the CRC its object
-  carries; one GET per part however many reads want it; a host's GETs bounded (64, 64 MiB), demand
-  before read-ahead; parts kept in a sparse cache of their own (`FXDAX_EXTENTD_CACHE`), evicted by
-  punching holes, with a floor of free space; read-ahead doubling along sequential reads.
-- **Local forks** (TASK-28.2): a local store is a lineage of branches, laid out as the bucket lays
-  one out (`segments/<branch>/`, `extents/<branch>/`, `index/<branch>/`, a record per branch). A
-  fork writes the child's record and nothing else; the child's state is its parent's at the fork,
-  over which its index holds what it changes (TASK-31): in memory, a layer the parent's forks of
-  that point share with the parent, one copy, and opening a fork reads and writes what it changed,
-  whatever its parent holds. Each branch claims the files its extents are in, those it inherited
-  through the layer it is over; a file goes once no branch claims it. A parent keeps its index
-  files as of its forks while they live. A clone's or fork's directory is a handle naming the
-  store's, which must stay where it is while the fork lives. Forks are deleted through
-  `extent_store::delete_host` (`Storage::delete`, `fxdaxctl delete`), which drops their claims,
-  and so is a store once no fork of it is left; removing a store's directory (`rm -rf`) while forks
-  of it live is not supported. (Settled with the user on 2026-10-17: a store per lineage, over
-  independent directories and forks that copy every file.)
-- **Local segments and checkpoints** (TASK-28.3, 28.6): sealed extents are one 4 KiB-aligned run
-  each; a segment closes when full, old, asked (the uploader), or at a fork, with its footer after
-  its data, framed as bucket objects are (`extent_frame`); a branch is its newest checkpoint and
-  the footers after it, locally as in the bucket. Local checkpoints are tables in the bucket's
-  format (`extent_frame::table`). A closed local segment is the object uploaded,
-  byte for byte (TASK-29.2, decision 1): the footer is the bucket's. The uploader gives the store
-  its writer's lease epoch, the segment number to go on from and the segment to follow
-  (`extent_store::Footing`), and the store numbers and chains its segments so, tags their commits
-  with the writer's epoch, names its extents of their own at the writer's keys, and keeps each
-  closed segment until it is uploaded. *Added 2026-11-03 (TASK-153.8):* whatever closes a
-  segment, a commit, a write finding no room, the uploader between commits or a fork, its framing
-  runs on a thread of its own and ends itself, the segment's framed file synced and its raw file
-  going once the commits its footer names are durable: a commit's flush, the uploader's take, a
-  fork and the branch's closing only wait for it. A local checkpoint names the segment open then, whose
-  footer and those after it follow it; extents held without their data (taken from the bucket)
-  are named by a checkpoint, which adopting them makes the next commit write. A store's segment
-  may close between commits, when the uploader asks, once no write is in progress in it.
+  carries; one GET per part however many reads want it; a host's GETs bounded (64 requests,
+  64 MiB), demand before read-ahead; parts kept in the host's part cache
+  (`FXDAX_EXTENTD_CACHE`), across restarts, read least recently evicted first by punching holes,
+  with a floor of free space; read-ahead doubling along sequential reads, to 16 parts (Reading).
 - **Compression** (TASK-29, settled with the user on 2026-10-17): every object holding data, a
-  local closed segment or sealed extent and every object in the bucket alike, is framed by
-  `extent_frame` in parts of 1 MiB, each compressed with zstd (level 1) on its own, or raw where
-  that is no smaller, at 4 KiB-aligned offsets, with a table of where each is stored. A local
-  segment is written raw while open (`open-segments/`), and framed when it closes; an extent of
-  its own, raw until sealed (`open-extents/`). Guests never map store files: DAX windows map
-  extentd's memory, which reads fill, so all data on disk and in the bucket is compressed, and
-  memory holds it uncompressed. Reads decompress the parts they touch, a host's fetches each
-  part with one GET of its stored bytes, and its cache keeps them as stored.
-- **Not yet:** GCS end to end on GCE with read throughput (TASK-28.11), which needs a bucket.
+  WAL segment or extent and every object in the bucket alike, is framed by `extent_frame` in parts
+  of 1 MiB, each compressed with zstd (level 1) on its own, or raw where that is no smaller, at
+  4 KiB-aligned offsets, with a table of where each is stored. A segment is written raw while open
+  (`open-segments/`), and framed when it closes; an extent of its own, raw until sealed
+  (`open-extents/`). Guests never map store files: DAX windows map extentd's memory, which reads
+  fill, so all data on disk and in the bucket is compressed, and memory holds it uncompressed.
+  Reads decompress the parts they touch, a host fetches each part with one GET of its stored
+  bytes, and its cache keeps them as stored.
+- **Measured** on GCE against GCS and against file buckets: docs/measurements
+  (real-bucket-guest-suites-2026-11-06.md; TASK-165.10's before and after the restructure).
 
 ## Decisions
 
@@ -89,7 +81,10 @@ Settled with the user on 2026-10-16:
 
 1. **One format, locally and remotely.** The local extent store (TASK-26.10) keeps segments in the
    format they are uploaded in. A closed local segment is byte for byte the object uploaded, so an
-   upload is a PUT of the file, and the NVMe cache is the same files, sparse.
+   upload is a PUT of the file. *Revised 2026-11-06 (TASK-165.8, 165.9):* the closed segments are
+   the WAL, and once acknowledged a segment's file leaves the store for the host's part cache,
+   whose files are sparse copies of objects (Reading); a segment restamped by a rebase is restamped
+   in memory, and its upload restamps the bytes (`extent_frame::restamp`).
 2. **The client is the `object_store` crate** (Apache-2.0/MIT), for S3 and GCS, and Azure Blob
    Storage (*added 2026-10-19, TASK-46:* `az://container/prefix`, its conditional writes If-None-Match
    and If-Match on ETags, credentials from `AZURE_*`).
@@ -104,8 +99,10 @@ Settled with the user on 2026-10-16:
    as high, so a host cut off takes no branch back from the placement after it (`ESTALE`). A
    store's copy on a host carries its placement's token (`fxdaxctl place`, `take … TOKEN`). Before
    a clean stop, the system waits for a store's uploads (`fxdaxctl sync`, the extent daemon's control API's `SyncStore`).
-5. **A fork is local at once, and remote once the parent's fork point is uploaded.** The child's
-   `branches/` record is created only after the parent's uploads reach the fork point.
+5. **A fork is made once the parent's fork point is uploaded.** The child's `branches/` record is
+   created only after the parent's uploads reach the fork point. *Revised 2026-11-05 (TASK-165.7):*
+   it was local at once, a record in the parent's local lineage; there is no local fork now, and the
+   child's store is made once its record exists (Forks).
 6. **Forks are of a branch's head only.** No snapshots or forks of past points, for now.
    *Refined 2026-11-02 (TASK-158):* a fork at a point in time is a point: a record naming a place in
    its parent (Points).
@@ -129,8 +126,10 @@ Settled with the user on 2026-10-16:
    (`extent_remote::local`): `object_store`'s `LocalFileSystem`, which refuses conditional updates,
    with them added under a `flock` of the bucket's; every bucket runs one conformance suite
    (`bucket::conformance`).
-10. **Branches come first.** The store learns O(1) forks (doc-2's milestone 2 part) before uploads,
-   because the remote layout needs lineage from the start.
+10. **Branches come first.** The store learned O(1) forks (doc-2's milestone 2 part) before uploads,
+   because the remote layout needs lineage from the start. *Since TASK-165.7* lineage is the
+   bucket's alone: a fork is O(1) in the bucket, a record and the parent's commit, and the child's
+   opening recovers its state, O(extents) of the parent at the fork (doc-14, Decisions).
 
 ## Layout
 
@@ -152,10 +151,11 @@ and its frees, and a branch's history can be rebuilt from its segments alone. A 
 
 Numbers are fixed-width hex, so listings sort.
 
-**Formats** *(added 2026-11-03, TASK-141.2; doc-11, rule 3).* A branch's record says first the
-format of its objects (`layout::FORMAT`, now 1), so that a reader of any format reads it before the
-rest: one of a newer format is refused (`Error::Format`, naming the branch and the format) before
-anything else of the branch is read or written. Every reader of a branch reads its record first: a
+**Formats** *(added 2026-11-03, TASK-141.2; doc-11, rule 1).* A branch's record says first the
+format of its objects (`layout::FORMAT`, now 2: footers and checkpoints hold the capacity,
+TASK-165.3), so that a reader of any format reads it before the rest: one of another format, newer
+or older, is refused (`Error::Format`, naming the branch and the format) before anything else of
+the branch is read or written. Every reader of a branch reads its record first: a
 writer taking it, a host attaching it, the collector, whose pass stops, deleting nothing in a
 bucket it can't read. Every framed object (segments, extents on their own, checkpoints, moves)
 ends with its frame's format, the last byte of its trailer's magic (`fxdaxob1`), which a reader of
@@ -201,19 +201,16 @@ from the first plan, of per-extent CRCs per 64 KiB in the footer: CRCs of the ob
 with nothing (compaction recomputes them for what it copies, from data it checked), need no entry
 per extent in checkpoints, and match what a host fetches.*
 
-**Changes to the local store.** Today a segment holds pieces of open extents as they were written,
-and only the index knows what is where (TASK-26.10).
-
-- An extent whose pieces are not one run at its seal (rewritten ranges, interleaved `WRITE`s) is
-  copied into one run then. The pieces it leaves are dead bytes, which compaction drops.
-- Whether an extent is stored on its own is decided by its sealed length, not by its first write.
-- A segment closes when full or when it reaches an age, once no write is in progress in it and the
-  commit sealing its last extents is made. Its footer is appended then, and it is uploaded.
-- A local file is removed only once the commit that made it unreferenced is uploaded. Today `flush`
-  removes it as soon as that commit is durable locally, which would lose an extent freed before its
-  upload.
-- The local index (checkpoints and per-commit deltas) stays, for local crash recovery between
-  uploads. Checkpoints are written in the remote format (below).
+**On the host** *(rewritten 2026-11-07; doc-14).* A store's open segment holds pieces of open
+extents as they were written, raw, and its log the commits made in it, each the `Contents` its
+footer will hold. A commit seals the extents written before it, each copied into one run in the
+open segment if its pieces are not one already (the pieces left are dead bytes, gone with the
+segment's raw file), or into a file of its own if large; whether an extent is stored on its own is
+decided by its sealed length. A segment closes once no write is in progress in it and the commit
+sealing its last extents is made; its framing writes the footer, stamped by the writer's chain,
+and syncs the framed file into the WAL, and its raw file and log go once that is durable. Nothing
+the bucket has not acknowledged leaves the host: a free's data stays (`extent_store::kept`) until
+the commit freeing it is acknowledged.
 
 ## Checkpoints
 
@@ -223,8 +220,10 @@ loading the whole index. It also holds the root, the next sequence, the last seg
 forks, and each segment's live bytes, which compaction reads. (The simulation keeps it as one
 record; TASK-28.6 gives it this format.)
 
-A writer writes one every so many segments or bytes of footers, on clean shutdown, and at a fork,
-recording there where the collector moved extents, and dropping forks whose children were deleted.
+A writer writes one every 64 segments (`upload::CHECKPOINT_EVERY`), on clean shutdown, and as an
+acknowledgement carries forks, which the checkpoint makes, recording there where the collector
+moved extents, and dropping forks whose children were deleted (32 children's records read at most
+a checkpoint, in turn: TASK-92.4).
 It names the extents moved where they went itself before it writes the checkpoint, only forward
 along their ways (another checkpoint of its own may have taken them further): so a checkpoint of
 the writer holding the lease names no extent further along its moves than the writer does, which the
@@ -287,7 +286,8 @@ The lease says who should write a branch; the dense, create-only segments and th
   resolved by reading the object back: if it holds what was written, the create succeeded. Lease
   updates name who took the lease, so they are recognised the same way.
 - **Extents of their own** carry their uploader's epoch in their key, so writers of different epochs
-  never write the same key; multipart uploads cannot be conditional.
+  never write the same key: each is a create-only PUT, and none is a multipart upload, which could
+  not be conditional (an extent is 64 MiB at most).
 - **Startup** probes that the store honours conditional creates and updates, and refuses to run if
   not.
 
@@ -298,28 +298,40 @@ Each branch's commits go through:
 1. **Ordered:** `COMMIT` completes (doc-4).
 2. **Durable locally:** within 50 ms at the median, and doc-12's crash bound at most (TASK-221).
 3. **Closed:** the segment is full or old enough (the lag's time bound).
-4. **Uploaded:** segments and extents of their own upload in parallel (single PUTs up to 64 MiB,
-   multipart for larger extents), extents before the segments that name them.
+4. **Uploaded:** segments and extents of their own upload in parallel, each a single create-only
+   PUT (an extent is 64 MiB at most; no multipart upload), extents before the segments that name
+   them, up to 16 segments of a store at once within the host's upload budget (64 requests,
+   512 MiB).
 5. **Acknowledged:** once every segment before it is uploaded too, and a read of the lease after
-   shows it still the writer's (Fencing). Then `COMMIT_DURABLE` waiters up to it complete, and local
-   files it made unreferenced go.
+   shows it still the writer's (Fencing). Then `COMMIT_DURABLE` waiters up to it complete, the WAL's
+   base moves past it, durably, and its files leave the store for the host's part cache.
 
 Invariants: what is uploaded never exceeds what is durable locally; a branch's committed segments are
 a contiguous prefix; an object is uploaded before anything that names it.
 
-**The lag** is bounded in bytes (by the NVMe budget) and in time. Segments close early and uploads
-speed up from half of either bound; at the bound, commits stall (decision 3). Uploads retry forever
-with backoff, and the host reports a branch that is falling behind.
+**The lag** is bounded in commits (`Options::max_lag`, 4,096) and in bytes of WAL
+(`Options::max_lag_bytes`, 1 GiB, what local disk holds until uploaded), and a durable commit waits
+at most the upload interval (1 s) before its segment closes for the uploader; at either bound,
+commits stall (decision 3). A request object storage fails is retried, from 50 ms, doubling, to
+5 s apart (`extent_remote::store`), an ambiguous one resolved by reading back (Fencing); the host
+reports each store's upload progress (`UploadStatus`: what is not yet acknowledged, and since when).
+A writer displaced by a late segment takes the branch again (Fencing); any other failure of its
+writer's stops the uploader, and its commits waiting to be durable fail.
 
-**Recovery on the same host** opens the local store as now, takes the branch, and commits again
-the local commits past the last the branch holds, if it holds the local ones up to there; local
-files are still there, since nothing unuploaded was removed. If another host took the branch on
-meanwhile, the local suffix is dropped and the local files are a cache. Extents committed again are
-uploaded under the new writer's epoch; the collector can tell they are garbage, if they are freed,
-only once a later writer takes the branch.
+**Recovery on the same host** *(rewritten 2026-11-07; doc-14, Opening a store)* is opening the
+store: its writer takes the branch and fences it; a segment left open is closed again from the
+whole records of its log, writes after the last durable commit dropped; and the WAL is put after
+the branch's end by its commits (`Wal::rebase`). If the branch's last commit is one of the WAL's,
+the WAL's segments to it landed: acknowledged now, into the cache. If it is the WAL's base, or the
+last the WAL's segments landed to, the rest are restamped on the new chain after the fence and
+upload as any closed segment: the guest keeps every commit made durable here. Otherwise another
+writer's commits moved the branch on, and the store refuses to open (`Diverged`, `ESTALE`) until
+`fxdaxctl take` drops its WAL, losing what its guest was never promised. Extents committed again
+are uploaded under the new writer's epoch, at its keys.
 
-**Opening on another host** takes the lease, fences, loads the newest checkpoint's footer and index
-and the footers after it, and serves the guest from an empty cache.
+**Opening on another host** is the same with an empty WAL, which never diverges: it takes the
+lease, fences, recovers the newest checkpoint and the footers after it, and serves the guest from
+the host's part cache, fetching what it lacks.
 
 ## Forks
 
@@ -330,8 +342,8 @@ and the footers after it, and serves the guest from an empty cache.
   forks in the state it recovers, or the parent's deletion. A child gets no record for a fork whose
   segment never made it into the branch.
 - **Owners** *(added 2026-11-03, TASK-153.9).* Every record names its branch's owner: a number
-  its maker chose at random, unique to that making. A fork's host chooses its child's as it claims
-  the child, and the fork's footer names it, so that whoever writes the child's record, the fork's
+  its maker chose at random, unique to that making. A fork's host chooses its child's as it makes
+  the fork's commit, and the fork's footer names it, so that whoever writes the child's record, the fork's
   host, the parent's writers or the parent's deletion, writes the same bytes; a plain branch's is
   its creator's. A record is a fork's if it names the fork's owner: a fork's deletion deletes no
   other, and two forks naming one child, neither's segment landing, both taking a record of their
@@ -357,8 +369,17 @@ and the footers after it, and serves the guest from an empty cache.
   ID the fork's guest named and was deleted, naming what the collector reclaimed (TASK-174).
   Collecting them needs a bound on how long a writer can stall; they are small, and their number
   is bounded by the branches made.
-- This replaced `copy_store`, which forked by copying every file: locally, a fork is a record in
-  its parent's store (Where it stands).
+- **On the host** *(since TASK-165.7, 165.9)*, a fork is the bucket's alone: the parent's store
+  commits the fork, which closes its segment (`Store::commit_fork`); the fork waits for the
+  segment's acknowledgement and the child's record (`Remote::forked`); only then is the child's
+  directory made, a store holding nothing of its own, whose opening recovers the child from the
+  bucket, its extents read from the parent's objects there or the host's cache
+  (`host_store::fork`). A child whose ID another branch has fails with `EEXIST`, making nothing. A
+  fork failing once its commit was made is deleted in the bucket, as the fork's alone
+  (`Remote::unfork`, `branch::delete_fork`), so that its segment, landing late, makes nothing, and
+  its directory goes; its host crashing part way leaves a directory with no store, which deleting
+  finishes, and a fork that stands or never was, as the bucket has it. This replaced `copy_store`,
+  which forked by copying every file, and then local lineage, a record in the parent's store.
 
 ## Points
 
@@ -401,11 +422,11 @@ that finds C. The danger is a pass that finds neither, or takes P for deleted wi
   it never listed: a fork after a state it read inherits what that state holds or a later object;
   a fork before it, that state names.
 
-**A host dying** at any step leaves a claim, as any fork's does (Forks), naming the point: opening
-what it left finishes the fork, or fails once the point is gone; deleting it gives it a deleted
-record, which a dead host's create landing late finds, and its update, being conditional, fails.
-With its disk lost too, C stays a record being made, holding what P holds, until the collector gives
-it up, once P goes, or an operator deletes it.
+**A host dying** at any step leaves C's record being made, or made, and a directory with no store,
+which deleting removes (Forks): a record made stands as a fork's orphan, for
+`fxdax-gc --delete-branch` (TASK-165.7); one being made holds what P holds until the collector gives
+it up, once P goes, or an operator deletes it. A dead host's create landing late finds a deleted
+record, and its update, being conditional, fails.
 
 **A failed fork's claim.** The deletion of a fork whose child has no record makes one, live, in case a
 later placement holds the child. That its parent has a segment of that number proves nothing: it may
@@ -423,23 +444,36 @@ its moves stay for as long as it lives, as it has no writer to record them in a 
 
 ## Reading
 
-- **The pager must not block on a fetch.** Page-ins call a synchronous `ExtentSource::read` on two
-  threads; with object storage behind it, a 50 ms GET would hold one of them. The source becomes
-  asynchronous.
-- **One fetch scheduler per host:** parts of 1 MiB of objects' data, keyed by (object, part), each
-  fetched by its stored bytes, which the object's table says where are; concurrent
-  misses on a part share one GET; misses go before read-ahead; about 64 GETs in flight within a
-  memory budget. Bodies are streamed into place (`get_opts`, not `get_ranges`, whose 10-way fan-out is
-  fixed).
-- **The NVMe cache** is the local store's own files: sparse copies of segments and extents at their
-  real offsets, their parts as stored (compressed), filled by fetches and emptied by punching
-  holes. Uploaded segments are already
-  there. Pinned until uploaded; evicted by CLOCK over parts, keeping 10% of the disk free. Every read
-  from NVMe or object storage is checked against the footer's CRCs; a mismatch refetches once, then
-  fails with `EIO`.
-- **Read-ahead** doubles from 1 MiB to 8 MiB along sequential misses in an object, and takes a
-  segment's neighbouring parts, since extents committed together are read together. Profiles of
-  what a branch reads at boot, replayed on resume, can come later.
+- **The pager does not block on a fetch.** A page-in reads through the store, on the pager's
+  threads: an extent in the open segment or the WAL from its file, one the bucket holds
+  (`extent_store::RemoteData`) through the host's fetcher, asynchronously (`crate::cache`), so that
+  a GET holds no thread while it waits.
+- **One fetch scheduler per host** (`extent_remote::fetch`): parts of 1 MiB of objects' data, keyed
+  by (object, part), each fetched by its stored bytes, which the object's table says where are;
+  concurrent misses on a part share one GET; misses go before read-ahead; 64 GETs in flight at
+  most, within 64 MiB, for the host's fetchers together. Bodies are streamed into place
+  (`get_opts`, not `get_ranges`, whose 10-way fan-out is fixed). An extent the collector moved is
+  read where it went. Every part is checked against its CRC; one that fails is read again, once,
+  by its object's tail fetched anew, then fails with `EIO`.
+- **The part cache** (`extent_remote::cache`, `FXDAX_EXTENTD_CACHE`), one per host, shared by its
+  stores: sparse copies of objects at their keys (`fxdax-parts/<key>`), their tails and the parts
+  kept, as stored (compressed), at their real offsets, filled by fetches and by acknowledged WAL
+  files moved in whole (`Cache::adopt`), and emptied by punching holes. It keeps no index file:
+  opening it rebuilds what it keeps from its files' tails, each checked, so a host's restart
+  refetches nothing it had (TASK-165.4). The parts read least recently go first (a clock of uses,
+  `by_use`), an object's tail with its last part, to keep within its capacity (extentd: unbounded)
+  and a floor of the filesystem's space free (extentd: 4 GiB, `CACHE_FLOOR`). It holds copies of
+  what the bucket has, never data the bucket lacks. Without a cache (`FXDAX_EXTENTD_CACHE` empty),
+  every page-in of an extent in the bucket is a GET.
+- **Read-ahead** follows each object's reads (1,024 objects at most): along sequential reads its
+  window doubles, from 1 part to 16 (`fetch::AHEAD`), and a read out of sequence starts it again at
+  1; the parts read ahead go into the cache, and are read only where a cache is. Profiles of what
+  a branch reads at boot are recorded and replayed into the extent cache as a fork boots
+  (`fxdax::profile`).
+- **Not yet** (TASK-225): a host whose cache holds none of a fork's data, one forking another
+  host's base or a fresh host after a host's loss, pages it in as a host without a cache did
+  (r812, docs/measurements/real-bucket-guest-suites-2026-11-06.md): a ranged GET a page-in, one
+  after another as the guest makes them, again after each eviction from the extent cache.
 
 ## Garbage collection
 
