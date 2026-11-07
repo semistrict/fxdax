@@ -109,6 +109,8 @@ const (
 	Extentd_SetMemoryLimit_FullMethodName = "/fxdax.extentd.v1.Extentd/SetMemoryLimit"
 	Extentd_SetTenantRoom_FullMethodName  = "/fxdax.extentd.v1.Extentd/SetTenantRoom"
 	Extentd_ShrinkMemory_FullMethodName   = "/fxdax.extentd.v1.Extentd/ShrinkMemory"
+	Extentd_SetDiskLimit_FullMethodName   = "/fxdax.extentd.v1.Extentd/SetDiskLimit"
+	Extentd_GetTenantDisk_FullMethodName  = "/fxdax.extentd.v1.Extentd/GetTenantDisk"
 )
 
 // ExtentdClient is the client API for Extentd service.
@@ -195,6 +197,15 @@ type ExtentdClient interface {
 	// Evicts clean pages, of extents asked for longest ago first, until the memory a tenant, or the
 	// daemon, holds is at most a target, or none is left to evict: as the host's memory runs low.
 	ShrinkMemory(ctx context.Context, in *ShrinkMemoryRequest, opts ...grpc.CallOption) (*ShrinkMemoryResponse, error)
+	// Limits the host's disk a tenant takes, or every tenant together (TASK-94): what is in its
+	// directory, its stores' files, each file once, the host's part cache no tenant's. Past a
+	// tenant's limit, its VMs' writes, and the stores they make, fail with ENOSPC, which the VM's
+	// guest sees as a full disk, and the daemon and other tenants' writes go on; past the total, any
+	// tenant's do. Commits go on, and what leaves the disk (uploaded, freed, a store deleted) lets
+	// the tenant write again. A limit under what is taken holds as data leaves.
+	SetDiskLimit(ctx context.Context, in *SetDiskLimitRequest, opts ...grpc.CallOption) (*SetDiskLimitResponse, error)
+	// What the host's disk a tenant takes, or every tenant together, counted now, and its limit.
+	GetTenantDisk(ctx context.Context, in *GetTenantDiskRequest, opts ...grpc.CallOption) (*GetTenantDiskResponse, error)
 }
 
 type extentdClient struct {
@@ -395,6 +406,26 @@ func (c *extentdClient) ShrinkMemory(ctx context.Context, in *ShrinkMemoryReques
 	return out, nil
 }
 
+func (c *extentdClient) SetDiskLimit(ctx context.Context, in *SetDiskLimitRequest, opts ...grpc.CallOption) (*SetDiskLimitResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SetDiskLimitResponse)
+	err := c.cc.Invoke(ctx, Extentd_SetDiskLimit_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *extentdClient) GetTenantDisk(ctx context.Context, in *GetTenantDiskRequest, opts ...grpc.CallOption) (*GetTenantDiskResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetTenantDiskResponse)
+	err := c.cc.Invoke(ctx, Extentd_GetTenantDisk_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // ExtentdServer is the server API for Extentd service.
 // All implementations must embed UnimplementedExtentdServer
 // for forward compatibility.
@@ -479,6 +510,15 @@ type ExtentdServer interface {
 	// Evicts clean pages, of extents asked for longest ago first, until the memory a tenant, or the
 	// daemon, holds is at most a target, or none is left to evict: as the host's memory runs low.
 	ShrinkMemory(context.Context, *ShrinkMemoryRequest) (*ShrinkMemoryResponse, error)
+	// Limits the host's disk a tenant takes, or every tenant together (TASK-94): what is in its
+	// directory, its stores' files, each file once, the host's part cache no tenant's. Past a
+	// tenant's limit, its VMs' writes, and the stores they make, fail with ENOSPC, which the VM's
+	// guest sees as a full disk, and the daemon and other tenants' writes go on; past the total, any
+	// tenant's do. Commits go on, and what leaves the disk (uploaded, freed, a store deleted) lets
+	// the tenant write again. A limit under what is taken holds as data leaves.
+	SetDiskLimit(context.Context, *SetDiskLimitRequest) (*SetDiskLimitResponse, error)
+	// What the host's disk a tenant takes, or every tenant together, counted now, and its limit.
+	GetTenantDisk(context.Context, *GetTenantDiskRequest) (*GetTenantDiskResponse, error)
 	mustEmbedUnimplementedExtentdServer()
 }
 
@@ -545,6 +585,12 @@ func (UnimplementedExtentdServer) SetTenantRoom(context.Context, *SetTenantRoomR
 }
 func (UnimplementedExtentdServer) ShrinkMemory(context.Context, *ShrinkMemoryRequest) (*ShrinkMemoryResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ShrinkMemory not implemented")
+}
+func (UnimplementedExtentdServer) SetDiskLimit(context.Context, *SetDiskLimitRequest) (*SetDiskLimitResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SetDiskLimit not implemented")
+}
+func (UnimplementedExtentdServer) GetTenantDisk(context.Context, *GetTenantDiskRequest) (*GetTenantDiskResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetTenantDisk not implemented")
 }
 func (UnimplementedExtentdServer) mustEmbedUnimplementedExtentdServer() {}
 func (UnimplementedExtentdServer) testEmbeddedByValue()                 {}
@@ -909,6 +955,42 @@ func _Extentd_ShrinkMemory_Handler(srv interface{}, ctx context.Context, dec fun
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Extentd_SetDiskLimit_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetDiskLimitRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ExtentdServer).SetDiskLimit(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Extentd_SetDiskLimit_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ExtentdServer).SetDiskLimit(ctx, req.(*SetDiskLimitRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Extentd_GetTenantDisk_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetTenantDiskRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ExtentdServer).GetTenantDisk(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Extentd_GetTenantDisk_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ExtentdServer).GetTenantDisk(ctx, req.(*GetTenantDiskRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // Extentd_ServiceDesc is the grpc.ServiceDesc for Extentd service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -991,6 +1073,14 @@ var Extentd_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ShrinkMemory",
 			Handler:    _Extentd_ShrinkMemory_Handler,
+		},
+		{
+			MethodName: "SetDiskLimit",
+			Handler:    _Extentd_SetDiskLimit_Handler,
+		},
+		{
+			MethodName: "GetTenantDisk",
+			Handler:    _Extentd_GetTenantDisk_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
