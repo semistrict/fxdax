@@ -4,11 +4,11 @@ title: >-
   Guest Fxfs keeps a directory's entries with its inode, and a read's iomap
   reads no clock: the last ~5% of the Linux checkout's warm reread against ext4
   on virtio-pmem
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-07 11:30'
-updated_date: '2026-11-07 14:01'
+updated_date: '2026-11-07 14:39'
 labels: []
 dependencies: []
 references:
@@ -50,9 +50,9 @@ Work in progress on branch t227-prof:
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -77,4 +77,19 @@ r920 (GCE fxdax-test-r881-b, one release kernel, fs/fxfs rebuilt per mutant; scr
 - task-230-rename-keeps-listing (fxfs_vfs_rename drops for an exchange alone): line 75, after b's rename to b2.
 - task-230-exchange-keeps-listing (fxfs_vfs_rename drops for a rename alone): line 103, listed-too's c linking e's inode after RENAME_EXCHANGE.
 fxfs_vfs_mknod's drop moved to its top before r920, where it doesn't break task-79.29's mutant's context; scripts/guest-mutants-gce.py --check: 51 checked, 0 broken, on main 7d332b5f2 too. r905 and r906 ran with it after fxfs_vfs_new_gid, the same drop before any change.
+
+Validation: CI 42379606164 green on land-w2 97e094823 (workspace, guest, sim, shuttle, firecracker, go, clippy scripts with guest-mutants-gce.py --check, guest-sim); upstream-changes.py --check passes on main 97e094823. TASK-230 changes no crate of the workspace (guest/linux/fs/fxfs, guest/tests, guest/mutants): the macOS workspace isn't rerun; it passed 2088/2088 on land-w1's code. Its changes are fxdax's own glue (fs/fxfs), no upstream Fuchsia source.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Two costs off the guest's Fxfs DAX reads, the last of TASK-227's gap to ext4 on virtio-pmem.
+
+- A read's iomap no longer reads the clock: only a write(2)'s, which dax_write_begin_ns and dax_write_end_ns time, does. That was 1-2% of the Linux tree's warm reread (r901, r902).
+- A directory's whole listing is kept with its inode while the kernel caches it (fxfs_vfs_dir_listing), as ext4's directory blocks are in the page cache. A read from the start takes it instead of a merger over the LSM tree's layers, record decoding and a 32 KiB cursor buffer. It is kept by a read of all of it under the directory's shared lock, dropped as any change of its names begins (each holding the lock exclusively) and at eviction; a follower keeps none.
+
+Measured on GCE: the tree's 6,059 directories walk warm in 62 ms, from 108 (pmem 83), and the warm reread takes 495 ms, from 555, against pmem's 530 (0.93x, r904, r905).
+
+Verified: the check listings_follow_changes; mutants of the create, unlink, rename and exchange drops, each killed by it (r920); fxfs-guest-checks (and -dax, -dax-small), pjdfstest-fxfs-guest (and -dax), xfstests-fxfs-guest-dax (r906); CI 42379606164.
+<!-- SECTION:FINAL_SUMMARY:END -->
