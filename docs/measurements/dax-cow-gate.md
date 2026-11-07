@@ -28,6 +28,11 @@ each under it, the density run reusing the single run's builds on the host.
 - DAX copies on write, the only DAX since writable DAX was deleted (2026-11-04,
   dead-ends/writable-dax.md): the `-dax` cases are copy-on-write DAX's, and the `-dax-cow` cases
   and `fxfs.dax_cow` are gone.
+- The pgbench cases' DAX windows are as large as the data, the host's memory at most 64 GiB
+  (`common::dax_window`, TASK-227; 2 GiB before), `FXDAX_PGBENCH_WINDOW_MIB` or
+  `FXDAX_DAX_WINDOW_MIB` setting another; a window is address space, and a writer's private pages
+  are 1 GiB at most whatever its size (`private_max`, doc-13), which the daemon reserves against
+  the tenant's memory. bigmap's window is twice its file, as before.
 - `FXDAX_PERF_GATE_VMS` (3) and `FXDAX_PERF_GATE_DENSITY_RUNS` (2): the density run's VMs and each
   one's runs.
 - One case alone: `FXDAX_WORKSPACE_TESTS=0 FXDAX_E2E_TEST=fxfs-guest-bigmap-dax
@@ -86,6 +91,18 @@ measurement).
 (0.51-0.61x).
 
 ## Runs
+
+### r884, 2026-11-07: the forked pair with a window as large as the data (TASK-227)
+
+The fork's window the host's memory, 15.6 GiB (16,760,438,784 bytes) where it was 2 GiB, and its
+private pages 1 GiB at most whatever the window's size (vendor/firecracker 4079fbc85), where they
+were half the window's: the same 262,144 pages at 2 GiB. On `fxdax-test-r884-c` (us-east1-b,
+n2-standard-4, nested, jailed, release guest kernel), TASK-227's branch before its rebase
+(80b95495b): no-dax-forked 1087, 1282, 1389, 1421, 1348; dax-forked 1167, 1303, 1313, 1383, 1274.
+`forked-dax` 0.967 (r807: 0.912), `decay` 1.24 and 1.09; dax-forked's PRIVATEs 108,983 (r807:
+108,688). The density and bigmap phases were not rerun: a window's size costs no memory the guest
+doesn't reach (TASK-227's r881 and r882: an 8 and a 64 GiB window booted in 997 ms, their struct
+pages 30 MiB, their VM processes 4.6 GB, 16.6k mappings and 9.1 MiB of KVM's page tables each).
 
 ### r800-r807, 2026-11-06: where a fork's PRIVATE goes, and forked-dax past 0.9 (TASK-164.11)
 
