@@ -11,7 +11,8 @@ the zones ("zones", default us-east4-a alone, which a listing filtered by region
 those with no room for a host ("exhausted"), and the regions out of quota ("quota"), how the next create goes ("create": "made", the host made as asked; "taken", made at
 once by another run, whose maker label is "winner", and which this create then finds there; or
 "ambiguous", made as asked though the create reports an error), which listings and copies fail
-("failing": "instances", "disks", "zones", "scp"), and the status SSH ends with ("ssh"). A host is
+("failing": "instances", "disks", "zones", "scp"), the status SSH ends with ("ssh"), and what it
+prints ("ssh_out", nothing by default). A host is
 found by its zone, as gcloud's describe and delete find one, and by its name alone in a listing;
 described as JSON, it is its name and zone. scp writes, where it copies to here, an archive of one
 file, fetched, which names what it copied; and keeps what it copies to a host in uploaded/, by its
@@ -64,6 +65,7 @@ def main(argv):
     instances, disks = state.setdefault("instances", {}), state.setdefault("disks", [])
     command, args = tuple(words[:3]), words[3:]
     if words[:2] == ["compute", "ssh"]:
+        print(state.get("ssh_out", ""), end="")
         sys.exit(state.get("ssh", 0))
     elif words[:2] == ["compute", "scp"]:
         if "scp" in state.get("failing", []):

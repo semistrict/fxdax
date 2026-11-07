@@ -185,11 +185,21 @@ gce_remote() {
 #
 # Usage: gce_remote_detached NAME COMMAND...
 gce_remote_detached() {
-    local name=$1 job status= listed
+    local name=$1 job
     shift
     job="\$HOME/$name.job"
     gce_remote "mkdir -p $job && rm -f $job/status && setsid nohup bash -c \
         $(printf %q "$*; echo \$? > $job/status") > $job/log 2>&1 < /dev/null &" || return
+    gce_remote_wait "$name"
+}
+
+# gce_remote_wait waits for the job NAME gce_remote_detached started, as it does: for one whose
+# waiter was stopped, too.
+#
+# Usage: gce_remote_wait NAME
+gce_remote_wait() {
+    local name=$1 job status= listed
+    job="\$HOME/$name.job"
     while [[ -z $status ]]; do
         sleep 30
         status=$(gce_remote "cat $job/status 2>/dev/null" 2> /dev/null) || status=

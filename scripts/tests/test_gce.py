@@ -473,6 +473,18 @@ class Jobs(unittest.TestCase):
         )
         self.assertEqual(project.calls(), ["compute ssh fxdax-test-x"])
 
+    def test_a_job_whose_waiter_was_stopped_is_waited_for_again(self):
+        # Every SSH prints what the job's status file and log hold: its status, 3.
+        project = Project({"instances": {"fxdax-test-x": host("earlier")}, "ssh_out": "3\n"})
+        self.assertEqual(
+            project.run(
+                "sleep() { :; }\n"
+                "status=0; gce_remote_wait job || status=$?; echo status $status"
+            ),
+            (0, "3\nstatus 3\n", ""),
+        )
+        self.assertEqual(project.calls(), ["compute ssh fxdax-test-x"] * 2)
+
     def fetch(self, state):
         """Runs `gce_fetch run-x` on a project as `state` has it, with the host: its status, its
         errors, the files then in the results, and the calls of gcloud."""
