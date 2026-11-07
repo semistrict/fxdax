@@ -3,10 +3,10 @@ id: TASK-165.7
 title: >-
   Forks, points and deletion only in the bucket: no local lineage, layers,
   ledger, branch records, handles or claims
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-11-05 03:16'
-updated_date: '2026-11-06 06:56'
+updated_date: '2026-11-07 21:29'
 labels: []
 dependencies:
   - TASK-165.3
@@ -29,17 +29,17 @@ doc-14, step 7. The local lineage and remote.rs's claim, marker and take_parent 
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A fork, a fork of a point, a point and a deletion go through extent_remote::branch and the parent's commit alone; the child's directory is made once its record exists, and opening it recovers from the bucket, sharing the parent's state in memory on the fork's host
-- [ ] #2 extent_store's lineage.rs, layers.rs, ledger.rs, branch_records.rs and host.rs's handles are gone, and remote.rs's Claim, origin-* files, take_parent and unfork
-- [ ] #3 remote.rs's fork tests, fork_faults.rs, restore_faults.rs and the extentd fork and restore tests pass rewritten as doc-14's table says; each removed test is listed in the notes with what replaced it
-- [ ] #4 A fork of a 10 GiB base on GCE is timed before and after, and recorded in docs/measurements
+- [x] #1 A fork, a fork of a point, a point and a deletion go through extent_remote::branch and the parent's commit alone; the child's directory is made once its record exists, and opening it recovers the child's state from the bucket and takes it as its own, O(extents) of the parent at the fork, rather than sharing the parent's state in memory: a child tied to nothing of its parent's but the bucket opens anywhere, attached or not, and sharing in memory needed the index TASK-165.9 removed (decided 2026-11-05, doc-14 Decisions)
+- [x] #2 extent_store's lineage.rs, layers.rs, ledger.rs, branch_records.rs and host.rs's handles are gone, and remote.rs's Claim, origin-* files, take_parent and unfork
+- [x] #3 remote.rs's fork tests, fork_faults.rs, restore_faults.rs and the extentd fork and restore tests pass rewritten as doc-14's table says; each removed test is listed in the notes with what replaced it
+- [x] #4 A fork of a 10 GiB base on GCE is timed before and after, and recorded in docs/measurements
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Notes
@@ -80,4 +80,19 @@ A store's directory holds its branch alone. A fork is the parent's commit naming
 - **A directory with no description is no store** (`host_store::unmade`): what a store's making, or a fork's, left. Deleting it removes it; a restore over it removes it first. It replaces the failed fork's handle (TASK-79.84).
 
 TASK-186 (claim_origin's unordered read-then-write) is moot: no claim file is written. TASK-184's fix (each durable write beside a store a file of its own, `write_new`) stays for markers and fences.
+
+Closing, 2026-11-07 (main d9b29dbd9; landed with TASK-165.8 and 165.9, c9207e5d4):
+- AC #1 rewritten to the decision made (doc-14, Decisions; this task's 2026-11-05 decision): a child takes its state from the bucket as its store opens, O(extents), not sharing the parent's in memory. On main: host_store::fork (the parent's commit naming the child, Remote::forked waiting for its acknowledgement and record, then make_child) and a point's fork through branch::fork_point; the child's store recovers as any store opens (TASK-165.9, Store::recover); deletion through branch::delete. Tests: forks_whose_host_crashed_stand_once_their_segment_lands (remote.rs), forks_orphaned_by_a_lost_host_keep_what_they_inherited_until_deleted (fork_faults.rs), stores_open_once and deleting_stores (extent_store tests/host.rs).
+- AC #2: extent_store's lineage.rs, layers.rs, ledger.rs and branch_records.rs are gone, and host.rs holds no handle (a directory holds one branch); remote.rs has no Claim, origin-* file, take_parent or unfork (the fork's deletion in the bucket, for a fork that failed after its commit, is extent_store::upload's Remote::unfork, branch::delete_fork). remote.rs's code went from 1,687 lines to 178 (TASK-165's notes).
+- AC #3: the rewritten tests and those removed, each with what replaced it, are listed above (Tests deleted, Tests added, Tests rewritten); fork_faults.rs and restore_faults.rs pass on main (macOS workspace 2103/2103; CI 42401937262).
+- AC #4: GCE r970 (scripts/fork-time-gce.sh, land-x4), docs/measurements/fork-of-a-10-gib-base-2026-11-07.md: a 10 GiB base (2,560 random 4 MiB files) imported through the daemon, forked five times on main before the restructure (aee7cad93) and after (3bdec3934), on one host: a fork 27-29 ms after against 33-35 ms (the first 43 ms against 142 ms); the fork's first open 29-31 ms against 11-12 ms, its state recovered from the bucket, O(extents); fork and first open 56-60 ms against 45-47 ms. Found by it: an import inside extentd keeps nothing in the daemon's part cache (Storage's uploader has none, host_store::keeping) and its check of the filesystem it made reads the image back from the bucket: 6.8 GB downloaded for the 11 GB uploaded, the import 221 s against 119 + 54 s pre-restructure; reported to the user, not filed yet.
+DoD: the macOS workspace and CI 42401937262 on main; the guest suites on GCE (r910-r914, r970); scripts/upstream-changes.py --check passes on main; no upstream file changed.
+
+The import finding above is filed as TASK-237 (Medium), 2026-11-07.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Forks, points and deletion are the bucket's alone: a fork is the parent's commit naming the child, the child's store made once its record exists, recovering its state from the bucket as it opens (O(extents), the decision AC #1 now states); local lineage, layers, ledger, branch records, handles and claims are gone. A fork of a 10 GiB base on GCE (r970): 27-29 ms against 33-35 ms before the restructure, its first open 29-31 ms against 11-12 ms (docs/measurements/fork-of-a-10-gib-base-2026-11-07.md). Verified by the tests named in the notes, CI 42401937262 and the macOS workspace on main.
+<!-- SECTION:FINAL_SUMMARY:END -->
