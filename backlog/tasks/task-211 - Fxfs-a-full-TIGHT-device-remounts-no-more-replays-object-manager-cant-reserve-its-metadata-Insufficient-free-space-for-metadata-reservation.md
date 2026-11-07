@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-06 11:43'
-updated_date: '2026-11-06 12:39'
+updated_date: '2026-11-07 03:00'
 labels:
   - bug
   - fxfs
@@ -70,6 +70,8 @@ ExtentTable::drop_allocation: when the extent lives on (pinned by staging or by 
 - macOS: cargo nextest run -p fxfs -p fxfs-posix 849 of 849; whatever_a_vfs_asks FXDAX_MODEL_CASES=1000: passed (2,097 cuts, 3,812 of replays, 482 s); with FXDAX_MODEL_FSCK=1: passed (2,094 cuts, 3,906 of replays, 938 s).
 - Linux (Docker arm64, rust:1): the same suite 849 of 849; hunt 1,000 cases passed (2,101 cuts, 3,627 of replays, 406 s); fsck hunt passed (2,142 cuts, 3,834 of replays, 769 s). With the close check in, every case of these hunts checked that its filesystem held no more than its device.
 - scripts/upstream-changes.py --check passes. Workspace suite and GCE not run (DoD #1 open); the change is in fxfs alone.
+
+The user's decision, 2026-11-06, on the design point above: leave the staging double count. While ranges of one staging extent are in flight, a commit past them counts them twice for a while (alive and uncommitted). That errs safe, ENOSPC slightly early, so staging won't count its ranges as it hands them out. Recorded in OPEN_QUESTIONS.md under Fxfs.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
