@@ -29,7 +29,6 @@ pub const FATTR_ATIME: u32 = 1 << 4;
 pub const FATTR_MTIME: u32 = 1 << 5;
 pub const FATTR_ATIME_NOW: u32 = 1 << 7;
 pub const FATTR_MTIME_NOW: u32 = 1 << 8;
-pub const FATTR_KILL_SUIDGID: u32 = 1 << 11;
 
 // `OpenOut::open_flags`.
 /// Keep the file's cached data as it is opened.
@@ -48,11 +47,7 @@ pub const ASYNC_DIO: u64 = 1 << 15;
 pub const PARALLEL_DIROPS: u64 = 1 << 18;
 pub const MAX_PAGES: u64 = 1 << 22;
 pub const CACHE_SYMLINKS: u64 = 1 << 23;
-pub const HANDLE_KILLPRIV_V2: u64 = 1 << 28;
 pub const INIT_EXT: u64 = 1 << 30;
-
-/// `WriteIn::write_flags`: clear setuid and setgid.
-pub const WRITE_KILL_SUIDGID: u32 = 1 << 2;
 
 // `SetxattrIn::flags`, setxattr(2)'s.
 pub const XATTR_CREATE: u32 = 1;
