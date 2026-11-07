@@ -3986,7 +3986,6 @@ mod tests {
     #[test]
     fn a_window_holding_private_pages_takes_no_snapshot() {
         let (store, dir) = store(1 << 24);
-        in_bucket(&store);
         let ps = page_size();
         let window = store.create_copying_dax_window(4 * ps, None, 2).unwrap();
         let (sealed, rebound) = (id(&store, 1), id(&store, 2));
