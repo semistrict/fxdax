@@ -6,7 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-11-07 02:30'
-updated_date: '2026-11-07 03:24'
+updated_date: '2026-11-07 06:17'
 labels: []
 dependencies: []
 documentation:
@@ -55,4 +55,13 @@ Measured gap of TASK-165.9 against main, after its framing fixes (2026-11-06):
 - pgbench, same zone (us-central1-b), max lag from ordered to durable: main (r732) 0.41-0.72 s, 0-24 commits a round past 512 ms; TASK-165.9 at 32b56c7c7 (r730) 0.93-1.40 s, 130-290 past 512 ms; at 1917cc681 (r734, a framing's own extents synced several at once) 1.07-1.97 s. p50 bucket 32-64 ms both, p99 128 ms both. Slow flushes spend their time syncing data files (up to 1.25 s); framings spend up to 0.83 s syncing the extents stored on their own their footers name (main's framings sync none), up to 1.4 s writing.
 - daemon-killed: main (r733) max 60-61 ms; TASK-165.9 (r735, r736) max 165-288 ms. Each round has two slow flushes. r736's logging (497529b27) says what: the flush after the uploader closes the first segment syncs that closed segment's raw file (closed_unsynced, 148-157 ms; 2 raw files, 0 own extents), megabytes written in a burst since the last commit (the guest's DAX store through a mapping, at about 1 s), while the framer writes and syncs the same data into the framed file (175-196 ms: write 46-156 ms, sync 36-99 ms): the same data written back twice at once. The second slow flush is the next turn waiting behind it (wait 91-101 ms). Main relies on the framing for that data instead.
 - Under way: GCE r737-r739, pgbench in one zone at once: TASK-165.9's head, and two measurement variants (no own-extent syncs in framings; framings written in one piece), to tell which of them makes the tail.
+
+Variants measured, 2026-11-07, pgbench and pgbench-dax, 3 jailed rounds each, max lag from ordered to durable (per round):
+- main, us-central1-b (r732): 0.41-0.72 s; commits past 512 ms 0-24 a round. main, us-east1-b (r727): 0.47-0.77 s.
+- A, TASK-165.9 head 9f1e060be (framings' own extents synced several at once, framings written back a MiB at a time), us-central1-b (r737): 1.13-1.90 s; us-east1-b (r741): 1.13-1.88 s.
+- B, A without the framings' own-extent syncs (unsafe, measurement only), us-central1-b (r738): 1.03-1.56 s.
+- C, A with framings written in one piece (measurement only), us-east4-a (r740): 1.25-2.09 s.
+- E, 981d28456 (TASK-165.9 as it lands, 5fc750a30): a flush waits for the framings of the segments closed with data written since the commit before, rather than sync their raw files too, us-central1-b (r742): 0.55-0.79 s, past 512 ms 7-83 a round; the median check passes. daemon-killed with E (r743): max 61-97 ms, against main's 60-81 ms (r733, r727), 5 jailed rounds passing.
+Cause found: the flushes of extentd's turns synced the raw files of segments just closed while their framings wrote the same data into the framed files: the same data written back twice at once (r737's logged slow flushes: the longest raw-file syncs 450-810 ms; own extents' longest in 9 of 439). Neither the framings' own-extent syncs (B) nor their writing back as they go (C) made the tail. What remains with E: pgbench's tail a little above main's (0.55-0.79 s against 0.41-0.77 s), the flushes' data syncs up to 0.3-0.4 s, waits behind the uploader's flush up to 0.36 s; main has the same tail in kind.
+TASK-224 (an option for fsync to wait for local durability, with group commit and crash recovery from the local store) turns this lag into fsync latency: TASK-221's tail fix comes before TASK-224 is worth enabling.
 <!-- SECTION:NOTES:END -->
