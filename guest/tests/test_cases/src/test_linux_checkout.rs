@@ -30,9 +30,11 @@
 //! dropping the guest's caches. In no suite, for what it takes: each case runs by name
 //! (`FXDAX_E2E_TEST=linux-checkout-fxfs-dax scripts/test-gce.sh`), and
 //! scripts/linux-checkout-report.py makes tables of what they said. FXDAX_LINUX_CHECKOUT_WINDOW
-//! sets the DAX window's bytes (1 GiB), and FXDAX_LINUX_CHECKOUT_EXTENTD_MEMORY the daemon's (its
-//! default, 1 GiB): each smaller than the tree, a read of it whole finds nothing of it still there
-//! the second time. ext4's disk, and its pmem device, is an 8 GiB image file, the host's page cache
+//! sets the DAX window's bytes (as large as the data, [`crate::common::dax_window`]), and
+//! FXDAX_LINUX_CHECKOUT_EXTENTD_MEMORY the daemon's ([`crate::common::DAEMON_MEMORY`]): each
+//! larger than the tree, its warm reread finds it all still there, as ext4's finds the host's page
+//! cache; a window or memory smaller than the tree, 1 GiB, finds nothing of it the second time
+//! (GCE r870 and r881: 25.6 s against 600 ms, TASK-227). ext4's disk, and its pmem device, is an 8 GiB image file, the host's page cache
 //! holding what it has of it: a virtio-pmem device maps the file into the guest whole.
 
 use macros::{guest, host};
@@ -71,7 +73,9 @@ const DEVICE: &str = "FXDAX_LINUX_CHECKOUT_DEVICE";
 #[host]
 mod host {
     use super::*;
-    use crate::common::{control, fxdax_guest_should_run, setup_rootfs, spawn_daemon};
+    use crate::common::{
+        Window, control, dax_window, fxdax_guest_should_run, setup_rootfs, spawn_daemon,
+    };
     use crate::measure::{HostMemory, metrics_address};
     use crate::shared_volumes::host::{Vms, format, next_generation};
     use crate::vm::{Vm, without_kernel_lines};
@@ -96,7 +100,6 @@ RUN git clone --bare --depth 1 --branch v6.18 https://github.com/torvalds/linux 
     /// Enough for what `REPOS` volumes take, which the test measures.
     const MEMORY_MIB: u32 = 4096;
     const CAPACITY: u64 = 8 << 30;
-    const WINDOW: u64 = 1 << 30;
 
     /// The bytes the variable `name` says, if set, as a count.
     fn bytes(name: &str) -> anyhow::Result<Option<u64>> {
@@ -167,7 +170,10 @@ RUN git clone --bare --depth 1 --branch v6.18 https://github.com/torvalds/linux 
             let memory = HostMemory::new(daemon.id(), metrics);
             memory.say(0, "before", None, "")?;
             let window = match self.on {
-                Checkout::FxfsDax => bytes("FXDAX_LINUX_CHECKOUT_WINDOW")?.unwrap_or(WINDOW),
+                Checkout::FxfsDax => match bytes("FXDAX_LINUX_CHECKOUT_WINDOW")? {
+                    Some(window) => window,
+                    None => dax_window(Window::Large)?,
+                },
                 Checkout::Ext4 | Checkout::Ext4Pmem | Checkout::Fxfs => 0,
             };
             let mut vms = Vms::new(test_setup, root, extentd, CAPACITY, window);
