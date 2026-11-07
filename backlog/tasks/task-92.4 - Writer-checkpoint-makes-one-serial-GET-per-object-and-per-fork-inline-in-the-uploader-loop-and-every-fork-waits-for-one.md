@@ -3,10 +3,10 @@ id: TASK-92.4
 title: >-
   Writer::checkpoint follows every extent's moves serially, inline in the
   uploader loop, and a reopened writer re-makes every fork's record
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-10-22 21:06'
-updated_date: '2026-11-06 06:51'
+updated_date: '2026-11-07 13:02'
 labels:
   - review-2026-10-21
 dependencies:
@@ -39,15 +39,15 @@ Found by the 2026-10-21 review of main at 6a0a3f8 (severity high): docs/reviews/
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A measurement or a test shows the cost before the change (requests, copies, lock hold or time on the workload named)
-- [ ] #2 The change removes or bounds it, shown by the same measurement, and the macOS and Linux (GCE) suites pass
+- [x] #1 A measurement or a test shows the cost before the change (requests, copies, lock hold or time on the workload named)
+- [x] #2 The change removes or bounds it, shown by the same measurement, and the macOS and Linux (GCE) suites pass
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Notes
@@ -58,4 +58,12 @@ On main (4896b828b): Writer::record_forks and the checkpoint's reads of forks' r
 2026-11-05 triage: description brought to dde8d58d3: the per-object moves probes (431717757) and the serial fork-record reads (4896b828b) are fixed; the title and what's left restated.
 
 2026-11-06 tidy: depends on TASK-165.9 (its description says to measure after TASK-165.7, landed on main, and 165.9, which reworks the uploader and recovery this measures).
+
+Measured after TASK-165.7 and 165.9 (2026-11-06): what was left of the three. (1) The checkpoint read every live fork child's record each time, and since 165.9 every acknowledgement carrying forks takes a checkpoint (extent_store/src/upload.rs, acknowledged: the checkpoint makes the forks), so a storm of N forks read N^2/2 records: 128 forks, 128 records a checkpoint, about 8,256 across the storm. Test checkpoints_read_a_few_forks_records_at_most (SimBucket, 128 forks): red before, 128 records read by one checkpoint against 32. Fixed in 0908fa7c6: a checkpoint reads RECORDS_AT_ONCE (32) children's records at most, in turn after the last it looked at (Inner.looked), so about 4,000 across the storm; a deleted child's fork goes within ceil(N/32) checkpoints. (2) Following moves: a cached lookup per extent after MovesMaps::read's listing, a GET only for each hop of an extent the collector moved; not a cost on a fork storm, left. (3) A reopened writer's recorded set starts empty (writer.rs:238), so its first acknowledgement re-creates every acknowledged fork's child record, a failed create and a GET each, 32 at once: once per takeover, not per checkpoint, left. The checkpoint every CHECKPOINT_EVERY (64) segments stays inline in the uploader loop; with (1) its cost no longer grows with the forks. Verified (landed as land-xk, 4bf0e45fd): macOS full suite (clippy, workspace 2086/2086, sim, Shuttle, scripts); CI 42363963416 green; GCE r894: workspace 2305/2305, sim 48/48, Shuttle 36/36, default guest suite 15/16 (extent-guest's next_sequence expectation, fixed in 101eeb943); GCE r895: extent-guest 2/2, fxfs-guest-soak 2/2. scripts/upstream-changes.py --check passes on main 0879c8272.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+A fork storm's checkpoints were quadratic: each read every fork child's record (128 forks: 128 a checkpoint, ~8,256 across the storm). A checkpoint now reads 32 at most, in turn, ~4,000 across it; shown by checkpoints_read_a_few_forks_records_at_most, red before (128 against 32). The cached moves following and a reopened writer's one-off re-creation of records (32 at once) were measured as not growing per checkpoint and left. Verified by macOS and CI suites and GCE r894/r895.
+<!-- SECTION:FINAL_SUMMARY:END -->

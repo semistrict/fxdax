@@ -4,7 +4,7 @@ title: 'fxdax: one module for a store directory''s local records'
 status: Done
 assignee: []
 created_date: '2026-11-03 13:08'
-updated_date: '2026-11-07 10:00'
+updated_date: '2026-11-07 13:02'
 labels:
   - structure
 dependencies: []
@@ -28,9 +28,9 @@ remote-*, fence-*, origin-*, public-*, attached-bases and the boot profile each 
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Notes
@@ -41,6 +41,8 @@ TASK-184 (2026-11-05): remote.rs's durable writes (markers, fences, claims) now 
 2026-11-06 tidy, the records at f81174090: origin-* files went with claims (TASK-165.7, 67740ed72); a fork now writes ancestry (extents.rs:1822, ANCESTRY_FILE, by extents::inherit), so the records are remote-* and fence-* (remote.rs:86, 92), public-* (extents.rs:1878), attached-bases (extents.rs:1762), ancestry and the boot profile. TASK-165.9 removes remote.rs's marker (remote-*); the rest stays fxdax's.
 
 Done on batch-x1, 2026-11-07, against main 00e541868. Of the records named, remote-*, fence-* and origin-* went with TASK-165.9 (a store's bucket, lease and origin are its description's and the bucket's now). What was left, attached-bases, ancestry, public-* and the boot profiles, is store_dir's (crates/fxdax/src/store_dir.rs): write (the one durable write: NAME.new written and synced, renamed over NAME, the directory synced), mark (empty markers, each synced, then the directory), read (missing is none; unreadable is EIO, logged), lines (each line parsed; one that isn't is EIO, logged), with typed records attached/attach, ancestry, public_branches/mark_public and inherit. extents.rs's two copies of write-then-rename (write_bases, inherit's ancestry), mark_public's own syncs and the three ways of read errors (EIO logged, anyhow logged, unwrap_or_default for the ancestry) are gone: an unreadable ancestry now fails the opening with EIO, as an unreadable attached-bases and public listing did. profile::Recorder::write writes through store_dir::write, synced (it renamed an unsynced file before). Tests: records_read_back_as_written, forks_inherit_their_stores_records; fxdax 309/309 on macOS (forks_record_and_replay_their_bases_boot_profile, the attach and public tests among them); Linux (Docker) fxdax and extent_store 674/681, the 7 failing those that fail in every container (stamping, grants, SIGQUIT stacks, thread stacks), clippy clean.
+
+Verified (landed as land-xk, 4bf0e45fd): macOS full suite (scripts/test.sh: clippy, workspace 2086/2086, sim, every Shuttle part, scripts; again on main 0879c8272: workspace 2079/2079, Shuttle 36/36 twice, sim 48/48, crash rounds 0 of 5 failed); CI 42363963416 green (Linux workspace, sim, Shuttle, scripts, guest); GCE r894 on land-x1: workspace 2305/2305, sim 48/48, Shuttle 36/36, default guest suite 15/16, the one failure extent-guest's next_sequence expectation (33 since TASK-165.9's one recovery, not a lost write), fixed in 101eeb943; GCE r895 on main plus that fix: extent-guest 2/2 rounds, fxfs-guest-soak 2/2 rounds (round 2 with 250 ms latency on its file bucket and the daemon killed). scripts/upstream-changes.py --check passes on main 0879c8272. No upstream file changed by the batch beyond what upstream-changes.py records.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

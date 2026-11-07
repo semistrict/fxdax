@@ -4,7 +4,7 @@ title: 'extent_store: a store''s open, closed and failed state as one value'
 status: Done
 assignee: []
 created_date: '2026-11-03 13:08'
-updated_date: '2026-11-07 09:46'
+updated_date: '2026-11-07 13:02'
 labels:
   - structure
 dependencies: []
@@ -28,15 +28,17 @@ failed and closed are booleans; a store fails three ways; close_between_commits 
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Notes
 
 <!-- SECTION:NOTES:BEGIN -->
 Done on batch-x1, 2026-11-07, against main 00e541868 (165.9 had made failed an Option<String> carrying the first failure's cause, 4ba694a53). State::standing: Standing { Open, Closed, Failed { cause, closed } } replaces failed and closed; point stays the branch's own property. Guarded<'a, F, H: Holds> over Locked, Readable (Whole: not failed) and Writable (Changeable: not failed, not closed, no point), made only by Guarded::check and checked again after each of their waits (wait_while; hold_writes_while, which holds the write gate as a commit or a closing between commits does), unless the Shuttle rule recheck_after_waiting is off. Store::state and Store::writable return them; still_writable and hold_writes are gone, so a caller that waits holds a guard checked again, or a bare Locked that promises nothing (the waits for framings, which need no promise). close_between_commits keeps its own case, a store closed meanwhile closing nothing, after its guard's re-check. Tests: standings_fail_and_close_in_either_order; extent_store 159/159; Shuttle 2x36/36 (needs_rechecks_after_waiting_for_failures still red with the rule off); crash rounds 5/5; sim 48/48.
+
+Verified (landed as land-xk, 4bf0e45fd): macOS full suite (scripts/test.sh: clippy, workspace 2086/2086, sim, every Shuttle part, scripts; again on main 0879c8272: workspace 2079/2079, Shuttle 36/36 twice, sim 48/48, crash rounds 0 of 5 failed); CI 42363963416 green (Linux workspace, sim, Shuttle, scripts, guest); GCE r894 on land-x1: workspace 2305/2305, sim 48/48, Shuttle 36/36, default guest suite 15/16, the one failure extent-guest's next_sequence expectation (33 since TASK-165.9's one recovery, not a lost write), fixed in 101eeb943; GCE r895 on main plus that fix: extent-guest 2/2 rounds, fxfs-guest-soak 2/2 rounds (round 2 with 250 ms latency on its file bucket and the daemon killed). scripts/upstream-changes.py --check passes on main 0879c8272. No upstream file changed by the batch beyond what upstream-changes.py records.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
