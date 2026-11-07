@@ -1,0 +1,12 @@
+diff --git a/crates/fxfs-posix/src/lib.rs b/crates/fxfs-posix/src/lib.rs
+--- a/crates/fxfs-posix/src/lib.rs
++++ b/crates/fxfs-posix/src/lib.rs
+@@ -767,7 +767,7 @@
+         };
+         let mut at = 0;
+         while let Some((name, ino, descriptor)) = entries.get() {
+-            if at >= skip && Some(name) != after {
++            if at >= skip {
+                 let kind = match descriptor {
+                     ObjectDescriptor::File => self.file_type(ino).await?,
+                     descriptor => file_type(descriptor),

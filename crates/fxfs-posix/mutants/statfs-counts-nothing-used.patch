@@ -1,0 +1,12 @@
+diff --git a/crates/fxfs-posix/src/lib.rs b/crates/fxfs-posix/src/lib.rs
+--- a/crates/fxfs-posix/src/lib.rs
++++ b/crates/fxfs-posix/src/lib.rs
+@@ -1745,7 +1745,7 @@
+         Ok(StatFs {
+             block_size,
+             blocks,
+-            free_blocks: blocks.saturating_sub(used),
++            free_blocks: blocks,
+             files: self.volume.object_count(),
+         })
+     }

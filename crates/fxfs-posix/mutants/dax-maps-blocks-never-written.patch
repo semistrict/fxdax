@@ -1,0 +1,13 @@
+diff --git a/crates/fxfs/src/object_store/data_object_handle/dax.rs b/crates/fxfs/src/object_store/data_object_handle/dax.rs
+--- a/crates/fxfs/src/object_store/data_object_handle/dax.rs
++++ b/crates/fxfs/src/object_store/data_object_handle/dax.rs
+@@ -98,7 +98,8 @@
+     range: Range<u64>,
+     block_size: u64,
+ ) -> Vec<Range<u64>> {
+-    let ExtentMode::OverwritePartial(bitmap) = mode else { return vec![range] };
++    let ExtentMode::OverwritePartial(_) = mode else { return vec![range] };
++    let bitmap = bit_vec::BitVec::from_elem(((key.end - key.start) / block_size) as usize, true);
+     let mut parts: Vec<Range<u64>> = Vec::new();
+     let mut block = (range.start - key.start) / block_size;
+     while key.start + block * block_size < range.end {

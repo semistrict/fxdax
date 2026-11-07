@@ -1,0 +1,12 @@
+diff --git a/crates/fxfs/src/object_store/store_object_handle.rs b/crates/fxfs/src/object_store/store_object_handle.rs
+--- a/crates/fxfs/src/object_store/store_object_handle.rs
++++ b/crates/fxfs/src/object_store/store_object_handle.rs
+@@ -2015,7 +2015,7 @@
+         transaction: &mut Transaction<'_>,
+     ) -> Result<(), Error> {
+         ensure!(name.len() <= MAX_XATTR_NAME_SIZE, FxfsError::TooBig);
+-        ensure!(value.len() <= MAX_XATTR_VALUE_SIZE, FxfsError::TooBig);
++        ensure!(value.len() < MAX_XATTR_VALUE_SIZE, FxfsError::TooBig);
+         let tree = self.store().tree();
+         let object_key = ObjectKey::extended_attribute(self.object_id(), name);
+ 

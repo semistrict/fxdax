@@ -1,0 +1,12 @@
+diff --git a/crates/fxfs-posix/src/lib.rs b/crates/fxfs-posix/src/lib.rs
+--- a/crates/fxfs-posix/src/lib.rs
++++ b/crates/fxfs-posix/src/lib.rs
+@@ -1650,7 +1650,7 @@
+             mode: flag(SET_MODE).then_some(set.mode),
+             uid: flag(SET_UID).then_some(set.uid),
+             gid: flag(SET_GID).then_some(set.gid),
+-            access_time: flag(SET_ATIME).then_some(set.atime_ns),
++            access_time: None,
+             modification_time: flag(SET_MTIME).then_some(set.mtime_ns),
+             ..Default::default()
+         };

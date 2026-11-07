@@ -1,0 +1,12 @@
+diff --git a/crates/fxfs-posix/src/lib.rs b/crates/fxfs-posix/src/lib.rs
+--- a/crates/fxfs-posix/src/lib.rs
++++ b/crates/fxfs-posix/src/lib.rs
+@@ -698,7 +698,7 @@
+         };
+         let kind = node_type(kind_bits, attributes.posix_attributes.as_ref());
+         let (mode, uid, gid, rdev) = match attributes.posix_attributes {
+-            Some(posix) => (kind | posix.mode & !S_IFMT, posix.uid, posix.gid, posix.rdev),
++            Some(posix) => (kind | posix.mode & !S_IFMT, posix.uid, posix.gid, 0),
+             None if kind == S_IFDIR => (S_IFDIR | 0o755, 0, 0, 0),
+             None if kind == S_IFLNK => (S_IFLNK | 0o777, 0, 0, 0),
+             None => (S_IFREG | 0o644, 0, 0, 0),
