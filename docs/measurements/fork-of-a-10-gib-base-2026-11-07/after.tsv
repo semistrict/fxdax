@@ -1,0 +1,13 @@
+import	0	221.322
+sync	0	0.029
+stat	0	0.029
+fork	1	0.043
+stat	1	0.029
+fork	2	0.027
+stat	2	0.029
+fork	3	0.028
+stat	3	0.031
+fork	4	0.027
+stat	4	0.030
+fork	5	0.029
+stat	5	0.031
