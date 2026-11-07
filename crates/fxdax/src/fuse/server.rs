@@ -743,6 +743,9 @@ fn push_dirent(reply: &mut Vec<u8>, entry: &DirEntry, next_offset: u64, dirent_l
 }
 
 #[cfg(test)]
+mod fuzz_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use futures::executor::block_on;

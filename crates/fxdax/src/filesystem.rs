@@ -50,7 +50,7 @@ const WRITE_CHUNK: usize = 1 << 20;
 
 /// `name`, a name of a directory's: valid, which `.`, `..`, and those holding `/` or NUL are not,
 /// and in UTF-8, as Fxfs keeps names.
-fn valid_name(name: &[u8]) -> Result<String> {
+pub(crate) fn valid_name(name: &[u8]) -> Result<String> {
     if name.len() > NAME_MAX {
         return Err(Errno::ENAMETOOLONG);
     }
