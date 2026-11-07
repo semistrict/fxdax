@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-07 05:20'
-updated_date: '2026-11-07 07:47'
+updated_date: '2026-11-07 08:28'
 labels:
   - testing
   - fxfs
@@ -84,6 +84,12 @@ After the merge into worktree-fuse (2026-11-07), the default run found the model
 7. Oracle: a clone of allocated blocks on a full device says ENOSPC before EOPNOTSUPP (the transaction is reserved first), changing nothing either way: taken as a refusal, the destination held unchanged (pinned a_clone_of_an_allocation_on_a_full_filesystem_is_refused).
 
 Seeding: the model tests build their Config from Config::default(), whose rng_seed is RngSeed::Random, from the OS's entropy, each run, unless PROPTEST_RNG_SEED fixes it: every default run tries 96 new sequences.
+
+Merged with 4497a6bec (TASK-149.39: fallocate grows the file and sets nothing aside): the model's Allocate grows the file (Data::allocate), sets nothing aside, holds blocks to what writes take, and is held to the room Fxfs counts (free blocks and the file's own, `Fxfs::allocate`): one accepted past it, give or take the block a growth's tail zeroing takes, fails. Gone with preallocation: Data.allocated and unsettled, settle_tail, adopt_allocated, clone refusals of allocated blocks, and the mutants the-tail-is-read-from-its-extent, dax-maps-blocks-never-written and allocate-sets-the-size-to-its-end, which the model can't reach any more. New: holds_extents fails any extent written in place and any data record saying it has some, after every data operation (not only when fsck runs); mutants allocate-preallocates (TASK-149.39's bug back), allocate-shrinks-to-its-end, allocate-ignores-the-room. Pinned tests turned to what is true now: an_allocation_grows_a_file_setting_nothing_aside (with the fuzzer's case: a byte allocated at 28672, a write from 28469), an_allocation_over_written_pages_changes_nothing, allocations_on_a_full_filesystem_take_only_the_room (an allocation of the whole device refused). The tail.rs and dax.rs fixes stay, still right for preallocated extents images hold and for DataObjectHandle::allocate's own callers (none of fxdax's): their fxfs unit tests, which call it, keep them (OPEN_QUESTIONS entry rewritten).
+
+Blind spot, why the model never hit MissingOverwriteExtents though it ran fsck: (1) fsck ran only at a sequence's end, after crashes and in cut checks, and the flag is wrong only while no overwrite extent is left: a write had to replace every block an allocation made, and nothing after (a truncate, which drops the flag with the extents, or another allocation) set it right again before the check. (2) The generator made that rare: allocations of 1 to 64 pages or thousands, at offsets drawn apart from the writes', which are 1 to 3 pages, so a write covering all of an allocation came seldom. (3) Most of all: the model's own oracle saw writes take blocks out of overwrite mode (the extents it compared), and I took that for Fxfs's design ("writes end allocated mode") and taught it to the model, without asking what else in Fxfs recorded overwrite mode and whether it stayed true: an oracle fitted to what it observed instead of holding an invariant of it. The model now checks the record's flag and the extents after every data operation, so a write that leaves either fails at once.
+
+Also found while merging: a cut during the replay of a cut left a truncate of a thousand extents to the graveyard's trim, which runs after the mount, the file counting its blocks until then, and the second replay was counted before syncing: it now syncs until nothing waits to be freed first (lets_go), as the first replay does; pinned a_cut_during_a_replay_counts_blocks_once_trimmed (the default run's seed). Held to the first replay's full orphan check, such replays hold extents Fxfs doesn't know: TASK-149.41, with the reproduction.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
