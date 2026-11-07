@@ -3,7 +3,7 @@ id: doc-15
 title: 'What the tests exclude, and why'
 type: specification
 created_date: '2026-11-07 13:38'
-updated_date: '2026-11-07 13:38'
+updated_date: '2026-11-07 20:19'
 ---
 # What the tests exclude, and why (TASK-149.20, 2026-11-07)
 
@@ -45,16 +45,16 @@ Verdicts: **kept** (still justified, reason named), **fixed** (stale: runs again
 | guest/sim/known-failures | none | — |
 | crates/fxfs-posix/known-panics | none | — |
 | guest pjdfstest `FXFS_SKIPPED` | none | — |
-| xfstests `KNOWN_FAILURES` (18): no unwritten extents (009, 092, 094, 255, 568, 796, 797); reflink extent heuristic (301, 302); EFBIG past a DAX mount's s_maxbytes (303, 525); FIEMAP shared extents (372, 414, 578, 702: TASK-143, open); d_type of specials (401: TASK-144, open); no parent pointers (467, 477: TASK-145, open) | each under a comment saying why | kept; **fixed**: a listed failure that runs and passes now fails the case (but 301 and 302, which pass or not), so the list can't keep a test it no longer needs. **Filed** TASK-149.20.1: xfstests is in no suite |
+| xfstests `KNOWN_FAILURES` (14): no unwritten extents (009, 092, 094, 255, 568, 796, 797); reflink extent heuristic (301, 302); FIEMAP shared extents (414, 578, 702: TASK-143, open); no parent pointers (467, 477: TASK-145, open) | each under a comment saying why | kept; **fixed**: a listed failure that runs and passes now fails the case (but 301 and 302, which pass or not), so the list can't keep a test it no longer needs. It caught 303, 525, 372 and 401 passing, now out (TASK-144 closed). **Fixed** TASK-149.20.1: xfstests runs nightly |
 
 ## Guest cases and checks
 
 | What | Why | Verdict |
 |---|---|---|
-| 20 cases tagged Manual only: xfstests ×2, linux-checkout ×4, pgbench profile/locks/nofsync ×4, runner-deadlock, bench-* ×9 | Measurements, hours-long, or failing on purpose (`Tag::Manual`) | kept but xfstests: **filed** TASK-149.20.1 |
+| 18 cases tagged Manual only: linux-checkout ×4, pgbench profile/locks/nofsync ×4, runner-deadlock, bench-* ×9 | Measurements, or failing on purpose (`Tag::Manual`) | kept; xfstests ×2 moved to the nightly (TASK-149.20.1) |
 | `ShouldRun::No`: no Firecracker/kernel/daemon named; pjdfstest without its pin; fsx-faults off the debug kernel (it runs in soak-sanitized); fs-bench without iterations; runner-deadlock unless asked; stats without fxdaxctl | Each says why | kept |
 | fxfs-guest-checks: `Dax`/`LargeDax`/`SmallDax` checks | Of a window | kept |
-| fxfs-guest-checks: `PageCache` alone: large_folios, scattered_writeback, partial_writeback, writeback_out_of_memory ("Files on DAX are in no page cache") | Stale premise: copying on write, a DAX mount's new files are in the page cache till read in again | **filed** TASK-149.20.3 (needs GCE) |
+| fxfs-guest-checks: `PageCache` alone: large_folios, scattered_writeback, partial_writeback, writeback_out_of_memory ("Files on DAX are in no page cache") | Stale premise: copying on write, a DAX mount's new files are in the page cache till read in again | **fixed** TASK-149.20.3: they run in every suite, their files kept the page cache's; GCE r960, r961 |
 | `test_short_copy` (the task's example) | Runs in every suite (`All`) | — |
 | `if dax` branches in checks (files.rs, seals.rs, follow) | Add DAX's own steps; skip none | — |
 
@@ -63,7 +63,7 @@ Verdicts: **kept** (still justified, reason named), **fixed** (stale: runs again
 | Switch | What it turns off | Verdict |
 |---|---|---|
 | `FXDAX_WORKSPACE_TESTS=0`, `FXDAX_GUEST_TESTS=0` | Which halves a GCE run runs; a run's choice | kept |
-| `FXDAX_NO_UNSHARE=1` (GCE hosts) | The runner's buildah unshare isolation, as buildah's re-execution fails there | kept, **filed** TASK-149.20.6 |
+| `FXDAX_NO_UNSHARE=1` (GCE hosts) | The runner's buildah unshare isolation, as buildah's re-execution fails there (as root it nests user namespaces till memfd_create's name limit) | **fixed** TASK-149.20.6: root unshares the network itself; unset on the hosts; a case needing a network bucket shares the host's |
 | `FXDAX_CHECKS`, `FXDAX_CHECK`, `FXDAX_XFSTESTS`, `SIM_OFF` | Select what runs, for debugging | kept |
 
 ## Mutants with no killer (guest/mutants, `Killer: none`)
@@ -72,5 +72,5 @@ Verdicts: **kept** (still justified, reason named), **fixed** (stale: runs again
 |---|---|---|
 | task-79.49-fault-ignores-fatal-signals, task-79.28-range-too-small, task-150.9-resize-moves-the-last-block, task-153.1-fault-limit, task-164.4-truncate-unwritten | Equivalent, each says how | kept |
 | patch-0012-invalidate-unmaps-after | Said no why in its header (guest/sim/README.md had it: equivalent copying on write) | **fixed**: its header says why |
-| task-44.19-map-to-unlocked | Out of every oracle's reach: a region's put unmapping less than the host maps | kept, **filed** TASK-149.20.4 (the oracle) |
+| task-44.19-map-to-unlocked | Out of every oracle's reach: a region's put unmapping less than the host maps | **fixed** TASK-149.20.4: killed by guest/sim's region_maps_at_once and sim_device_check_unmapped |
 | fxdax, fxfs-posix, fxfs-sim-diff, guest/sim mutants | Each names its killer (their --check fails on none) | — |

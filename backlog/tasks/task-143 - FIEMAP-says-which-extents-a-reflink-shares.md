@@ -4,6 +4,7 @@ title: FIEMAP says which extents a reflink shares
 status: To Do
 assignee: []
 created_date: '2026-10-31 22:07'
+updated_date: '2026-11-07 20:19'
 labels: []
 dependencies: []
 priority: low
@@ -27,3 +28,9 @@ generic/372, 414, 578 and 702 expect FIEMAP_EXTENT_SHARED, which fxfs_vfs_fiemap
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+2026-11-07 (TASK-149.20.1): generic/372 passes with DAX and without (GCE r960, r963) and is out of KNOWN_FAILURES. 414, 578 and 702 still fail, so this stays open.
+<!-- SECTION:NOTES:END -->
