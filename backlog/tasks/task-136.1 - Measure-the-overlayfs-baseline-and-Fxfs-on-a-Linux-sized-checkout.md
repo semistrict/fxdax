@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-10-30 09:08'
-updated_date: '2026-11-07 07:34'
+updated_date: '2026-11-07 07:45'
 labels: []
 dependencies: []
 documentation:
@@ -24,16 +24,16 @@ The design makes claims about cost that nothing has measured yet. The numbers de
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The results are recorded in doc-10, with the kernel, host and checkout they came from
-- [ ] #2 A repeatable test in the repository measures mount time, first `git status`, first write and memory per sandbox for Fxfs on a Linux-sized checkout, and the same with hundreds of repos mounted at once
-- [ ] #3 The test also records the checkout's Fxfs volume layer bytes and allocator records
+- [x] #1 The results are recorded in doc-10, with the kernel, host and checkout they came from
+- [x] #2 A repeatable test in the repository measures mount time, first `git status`, first write and memory per sandbox for Fxfs on a Linux-sized checkout, and the same with hundreds of repos mounted at once
+- [x] #3 The test also records the checkout's Fxfs volume layer bytes and allocator records
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
 - [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -61,4 +61,6 @@ The design makes claims about cost that nothing has measured yet. The numbers de
 - Unexplained: the daemon's PSS is 937-959 MiB after the checkout VM, with 2-6 MiB in its arenas.
 - Landed from t3/fxfs-shared-repo-overlays: the watchdog's log line (Silence, a_silence_says_which_limit_it_passed) and shared_volumes.rs plus Filesystem::metadata. Added: the ext4 case, cold/warm/full-read steps, host memory per VM through crate::measure (Requests::serve), disk per store, and scripts/linux-checkout-report.py with its test.
 - Not done: r872, the rerun with a 4 GiB window and 6 GiB of daemon memory for the warm DAX case, and r871 (shared-volumes and bigmap guest cases on the refactored helpers). gcloud's credentials expired and need gcloud auth login (OPEN_QUESTIONS). No change to crates/extent_store, extent_remote, remote.rs or stores.rs was needed.
+
+Verification: GCE r870 passed linux-checkout-{ext4,fxfs,fxfs-dax}. macOS scripts/test.sh clippy+workspace: 2053/2053 passed. scripts/tests: 172 passed. upstream-changes --check passed. fxdax unit tests a_silence_says_which_limit_it_passed and volume_metadata pass on Linux (aarch64 container). After rebasing onto main 394fe7535, fxdax and test_cases check clean on macOS and Linux. Landing candidate: land-r1 2e91b42af, CI run 42352478087. Linux workspace DoD waits on that CI run. Kept In Progress for r871 and r872.
 <!-- SECTION:NOTES:END -->
