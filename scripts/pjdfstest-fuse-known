@@ -1,0 +1,8 @@
+# Copyright 2026 The fxdax Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+#
+# pjdfstest's failures on FUSE mounts of new stores that open bugs explain, which
+# scripts/pjdfstest-fuse.py lets be (TASK-149.38): a line each, the task, then the failure, a file of
+# pjdfstest's tests (chmod/00.t, the whole file) or one of its tests (chmod/00.t:31). The line goes
+# with the bug's fix: the script fails once a listed failure passes in both runs.
