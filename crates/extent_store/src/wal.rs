@@ -44,7 +44,7 @@ use crate::layout::{
     list_numbers, log_path, open_segment_path, segment_path,
 };
 use crate::segments::{fold, footer_last, segment_footer};
-use anyhow::{Context as _, Error, anyhow};
+use anyhow::{Context as _, Error};
 use extent_frame::segment::{Chain, Contents, Footer, epoch_of, writer_of};
 use extent_remote::wal::Fenced;
 use serde::{Deserialize, Serialize};
@@ -272,7 +272,9 @@ pub(crate) fn recover<D: Dir>(dir: &D, branch: u64) -> Result<Recovered, Error> 
 
 /// The footer of `segment`'s framed file, if it is whole: checked whole, data and all, if `left`,
 /// its raw data and log still there, as its framing may have stopped part way; else whole, its
-/// framing having made it durable before they went. Synced, if checked.
+/// framing having made it durable before they went, or not whole, a crash cutting short its
+/// removal, as holding nothing durable, after its raw data and log went (TASK-165.9). Synced, if
+/// checked.
 fn whole_footer<D: Dir>(dir: &D, segment: SegmentId, left: bool) -> Result<Option<Footer>, Error> {
     let path = segment_path(segment);
     let file = dir.open(&path, true)?;
@@ -281,7 +283,7 @@ fn whole_footer<D: Dir>(dir: &D, segment: SegmentId, left: bool) -> Result<Optio
         None => None,
     };
     if !left {
-        return footer.map(Some).ok_or_else(|| anyhow!("{path} is not a whole framed file"));
+        return Ok(footer);
     }
     let whole = footer.is_some() && extent_frame::data(&read_whole(&file)?).is_ok();
     if whole {
@@ -649,6 +651,21 @@ mod tests {
         assert_eq!(footer.contents.commits, [tag(2, 1)]);
         assert_eq!(files(&dir, SEGMENTS), [0]);
         assert_eq!((files(&dir, OPEN_SEGMENTS), files(&dir, LOGS)), (vec![], vec![]));
+    }
+
+    /// A segment whose framed file isn't whole, its raw data and log gone, as a crash part way
+    /// through removing it leaves, it holding nothing durable, goes, rather than refusing the
+    /// store: its raw data and log go otherwise only once it is framed whole (found by the crash
+    /// rounds cutting openings, TASK-165.9).
+    #[test]
+    fn segments_torn_without_raw_data_or_log_go() {
+        let dir = MemDir::new();
+        let framed = framed_three(&dir);
+        let torn = dir.create(&segment_path(segment(3)), true).unwrap();
+        torn.write_at(&[9; 100], 0).unwrap();
+        let recovered = recover(&dir, BRANCH).unwrap();
+        assert_eq!(recovered.segments, framed);
+        assert_eq!(files(&dir, SEGMENTS), [0, 1, 2]);
     }
 
     /// The queue gives the uploader the segments that are framed, whose commits are durable, in
