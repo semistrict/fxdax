@@ -2910,7 +2910,7 @@ MODULE_PARM_DESC(dax_fail_commits, "Fail the next this many write_many transacti
 static int fxfs_dax_iomap_begin(struct inode *inode, loff_t pos, loff_t length,
 				unsigned int flags, struct iomap *iomap, struct iomap *srcmap)
 {
-	u64 began = ktime_get_ns();
+	u64 began;
 	int err;
 
 	/*
@@ -2929,10 +2929,16 @@ static int fxfs_dax_iomap_begin(struct inode *inode, loff_t pos, loff_t length,
 		/* fxdax: a follower's filesystem is read-only: nothing writes. */
 		if (WARN_ON_ONCE(fxfs_vfs_follows(inode->i_sb)))
 			return -EROFS;
-		/* fxdax: its pages made private and dirty, nothing moved (doc-13). */
+		/*
+		 * fxdax: its pages made private and dirty, nothing moved (doc-13). A write(2)'s timed,
+		 * and no other iomap's: a read's two clock reads, for nothing, were 1-2% of a 91k-file
+		 * tree's warm reread (GCE r901, r902, TASK-230).
+		 */
+		if (flags & (IOMAP_FAULT | IOMAP_ZERO))
+			return fxfs_dax_iomap_write(inode, pos, length, flags, iomap);
+		began = ktime_get_ns();
 		err = fxfs_dax_iomap_write(inode, pos, length, flags, iomap);
-		if (!(flags & (IOMAP_FAULT | IOMAP_ZERO)))
-			atomic64_add(ktime_get_ns() - began, &fxfs_dax_of(inode)->write_begin_ns);
+		atomic64_add(ktime_get_ns() - began, &fxfs_dax_of(inode)->write_begin_ns);
 		return err;
 	}
 	err = fxfs_dax_iomap_read(inode, pos, length, flags, iomap);
@@ -2956,7 +2962,7 @@ static int fxfs_dax_iomap_end(struct inode *inode, loff_t pos, loff_t length, ss
 	struct fxfs_dax *dax = fxfs_dax_of(inode);
 	struct fxfs_dax_file *file = fxfs_dax_file(inode);
 	bool written_by_write = (flags & IOMAP_WRITE) && !(flags & (IOMAP_FAULT | IOMAP_ZERO));
-	u64 began = ktime_get_ns();
+	u64 began = written_by_write ? ktime_get_ns() : 0;
 
 	if (!(flags & (IOMAP_WRITE | IOMAP_ZERO))) {
 		if (iomap->private)
