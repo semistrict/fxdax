@@ -4,11 +4,11 @@ title: >-
   DAX windows as large as the data: decouple private_max from the window's size
   and default windows to large, measuring the guest's struct pages and the VM
   process's mappings
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-07 08:14'
-updated_date: '2026-11-07 13:02'
+updated_date: '2026-11-07 14:00'
 labels: []
 dependencies: []
 priority: high
