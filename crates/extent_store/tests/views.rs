@@ -6,7 +6,7 @@
 //! what they keep of its frees, and for how long, their pins, and their cutting off. Their
 //! concurrency with the writer is tests/shuttle/main.rs's.
 
-use extent_frame::segment::{Chain, Location};
+use extent_frame::segment::Location;
 use extent_store::{CutOff, Description, MemDir, NotHeld, Options, RemoteData, Store, View};
 use std::time::Duration;
 use storage_device::{ExtentId, NoExtent};
@@ -20,7 +20,6 @@ const OPTIONS: Options = Options {
     segment_size: 64 << 10,
     segment_age: Duration::from_secs(3600),
     large_extent: 32 << 10,
-    checkpoint_after: 4 << 10,
     open_files: 2,
     view_lag: None,
     view_kept_bytes: None,
@@ -86,7 +85,6 @@ fn store_bytes(store: &Store<MemDir>) -> u64 {
 #[test]
 fn views_read_frees_acknowledged_in_the_bucket() {
     let store = create(OPTIONS);
-    assert!(store.upload(Chain::new(BRANCH, 1, 0, None, 0), 0, None).unwrap());
     write(&store, 1, 2);
     store.commit(None).unwrap();
     let view = store.view();
@@ -98,8 +96,8 @@ fn views_read_frees_acknowledged_in_the_bucket() {
     let keys: Vec<String> = (closed.iter())
         .map(|closed| format!("segments/{:016x}/{:016x}", closed.footer.branch, closed.footer.seq))
         .collect();
-    for (closed, key) in closed.iter().zip(&keys) {
-        store.acknowledged(closed.number, key).unwrap();
+    for closed in &closed {
+        store.acknowledged(closed.number).unwrap();
     }
     assert_eq!(store.usage().unwrap().segments, 1);
     let location = Location { key: keys[0].clone(), offset: 0, len: 2 * BLOCK as u64 };
@@ -164,7 +162,9 @@ fn kept_frees_go_once_views_advance_or_drop() {
     drop(other);
     store.commit(None).unwrap();
     assert_eq!(kept(&store), 0);
-    assert_eq!(store.usage().unwrap().kept_bytes, 0);
+    // fxdax: kept still for the bucket, until the segments holding them are acknowledged there
+    // (TASK-165.9).
+    assert_eq!(store.usage().unwrap().kept_bytes, 4 * BLOCK as u64);
 }
 
 /// What views keep takes room as writes in progress do: it is used, and not available.
@@ -515,8 +515,6 @@ fn duplicates_are_views_of_their_own() {
 #[test]
 fn views_find_what_they_let_go_of_not_held() {
     let store = create(OPTIONS);
-    let writer = extent_frame::segment::Chain::new(BRANCH, 1, 0, None, 0);
-    assert!(store.upload(writer, 0, None).unwrap());
     write(&store, 1, 1);
     store.commit(None).unwrap();
     store.free(extent(1)).unwrap();

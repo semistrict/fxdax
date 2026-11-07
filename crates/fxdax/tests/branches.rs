@@ -30,11 +30,10 @@ fn branch(url: &str, args: &[&str]) -> String {
     String::from_utf8(output.stdout).unwrap().trim().to_owned()
 }
 
-/// The store at `path`, keeping its branch in `bucket`.
-fn attached(path: &Path, bucket: &Arc<Bucket>) -> ExtentStore {
-    let store = ExtentStore::open(path).unwrap();
-    store.attach_remote(bucket.clone(), rand::random(), Default::default()).unwrap();
-    store
+/// The store at `path`, which keeps its branch in the bucket its description names, opened as a
+/// copy never placed here takes it, as the first placement (TASK-165.9).
+fn attached(path: &Path) -> ExtentStore {
+    ExtentStore::open(path).unwrap()
 }
 
 fn read(store: &ExtentStore, extent: ExtentId, len: usize) -> Vec<u8> {
@@ -54,8 +53,10 @@ fn rustfs_forks_and_takes_branches() {
     let dir = tempfile::tempdir().unwrap();
     let path = |name: &str| dir.path().join(name);
 
-    let parent = ExtentStore::create(path("parent"), 1 << 30).unwrap();
-    parent.attach_remote(bucket.clone(), rand::random(), Default::default()).unwrap();
+    // Made by fxdaxctl, naming the bucket at `url`.
+    let made = format!("{:x}", rand::random::<u64>().max(1));
+    branch(&url, &["take", path("parent").to_str().unwrap(), &(1u64 << 30).to_string(), &made]);
+    let parent = attached(&path("parent"));
     let data = pattern(7, 5 << 20);
     let extent = ExtentId { branch: parent.branch(), sequence: 1 };
     parent.write(extent, 0, &[VolatileSlice::from(&data[..])]).unwrap();
@@ -69,13 +70,13 @@ fn rustfs_forks_and_takes_branches() {
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let record = runtime.block_on(extent_remote::branch::record(&*bucket, child_branch));
     assert_eq!(record.unwrap().unwrap().origin().map(|origin| origin.parent), Some(parent_branch));
-    let forked = attached(&path("child"), &bucket);
+    let forked = attached(&path("child"));
     assert_eq!(forked.branch(), child_branch);
     assert_eq!(read(&forked, extent, data.len()), data);
     drop(forked);
 
     branch(&url, &["take", path("elsewhere").to_str().unwrap(), &(1u64 << 30).to_string(), &child]);
-    let elsewhere = attached(&path("elsewhere"), &bucket);
+    let elsewhere = attached(&path("elsewhere"));
     assert_eq!(elsewhere.root().unwrap(), b"root");
     assert_eq!(read(&elsewhere, extent, data.len()), data);
 
@@ -111,7 +112,10 @@ fn rustfs_places_and_syncs_stores() {
     let dir = tempfile::tempdir().unwrap();
     let path = |name: &str| dir.path().join(name).to_str().unwrap().to_owned();
 
-    let store = ExtentStore::create(path("first"), 1 << 30).unwrap();
+    // Made by fxdaxctl, naming the bucket at `url`.
+    let made = format!("{:x}", rand::random::<u64>().max(1));
+    branch(&url, &["take", &path("first"), &(1u64 << 30).to_string(), &made]);
+    let store = ExtentStore::open(path("first")).unwrap();
     let branch_id = store.branch();
     let extent = ExtentId { branch: branch_id, sequence: 1 };
     store.write(extent, 0, &[VolatileSlice::from(&pattern(3, 1 << 20)[..])]).unwrap();
@@ -130,7 +134,7 @@ fn rustfs_places_and_syncs_stores() {
     assert!(stale.contains("a later placement holds the branch"), "{stale}");
     branch(&url, &["place", &path("earlier"), "6"]);
     branch(&url, &["sync", &path("earlier")]);
-    let later = attached(Path::new(&path("earlier")), &bucket);
+    let later = attached(Path::new(&path("earlier")));
     assert_eq!(later.root().unwrap(), b"synced");
     assert_eq!(read(&later, extent, 1 << 20), pattern(3, 1 << 20));
 }

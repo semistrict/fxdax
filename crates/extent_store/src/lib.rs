@@ -127,9 +127,9 @@ macro_rules! failpoint {
 
 mod dir;
 mod durability;
+pub use durability::{LAG_BUCKETS, Lags, durability_lags};
 mod framed;
 mod host;
-mod index;
 mod kept;
 mod layout;
 mod mem;
@@ -137,23 +137,30 @@ mod segments;
 mod state;
 mod store;
 mod sync;
+mod timings;
+pub use timings::{FLUSH_PHASES, FRAMING_PHASES, Phases, Timed, Timings, timings};
+pub mod upload;
 mod uploads;
 mod views;
+mod wal;
 
 pub use dir::{Dir, File, HostDir, HostFile, bypass_page_cache};
 pub use framed::{Aligned, Packed, Part, read_object, read_whole, unpacks};
-pub use host::{create_host, delete_host, host_branch, host_bucket, open_host};
+pub use host::{
+    create_host, delete_host, host_branch, host_bucket, host_token, made_host, place_host,
+    unmade_host,
+};
 pub use layout::{Description, Format, Place};
 pub use mem::{Io, MemDir, MemFile};
 pub use segments::segment_closes;
 #[cfg(feature = "audit")]
 pub use state::AUDIT_FAILED;
 pub use store::{
-    DirHold, ForkCommitted, Info, NoSpace, Options, Rebuilt, RemoteData, Spent, Store,
-    TooLong, TooSmall, Unaligned, Usage, Write,
+    DirHold, ForkCommitted, Info, NoSpace, Opening, Options, Recovering, RemoteData, Spent, Store,
+    TooLong, TooSmall, Unaligned, Unmade, Usage, Write,
 };
 pub use sync::Rules;
 #[cfg(feature = "shuttle")]
 pub use sync::{rules, set_rules};
-pub use uploads::{Closed, Snapshot};
+pub use uploads::Closed;
 pub use views::{CutOff, NotHeld, View, ViewStats};

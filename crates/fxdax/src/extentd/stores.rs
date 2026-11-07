@@ -21,6 +21,7 @@
 //! a follower opens it until they are gone.
 
 use super::server::Connection;
+use crate::extents::Opening;
 use crate::pages::Arena;
 use crate::store_requests::{self, Capacity, Close};
 use crate::store_table::{self, StoreTable, Writer as _};
@@ -467,12 +468,15 @@ pub(super) fn open_store(
     arena: Option<&Arc<Arena>>,
 ) -> Result<ExtentStore, Errno> {
     let arena = arena.cloned();
-    let opening = arena.clone();
-    let store = attached(path, || match capacity {
-        Some(capacity) if !path.exists() => {
-            ExtentStore::create_in(path, capacity, crate::host_store::new_branch(), opening)
+    let own = arena.clone();
+    let store = attached(path, |keeping| {
+        let opening = Opening { arena: own, profiled: true, keeping };
+        match capacity {
+            Some(capacity) if !path.exists() => {
+                ExtentStore::create_with(path, capacity, crate::host_store::new_branch(), opening)
+            }
+            _ => ExtentStore::open_with(path, opening),
         }
-        _ => ExtentStore::open_in(path, opening),
     })?;
     // fxdax: a fork attached to it opens when first read through to.
     store.open_bases(Arc::new(move |base| self::base(base, arena.as_ref())))?;
@@ -504,7 +508,9 @@ fn base(path: &Path, arena: Option<&Arc<Arena>>) -> Result<Arc<ExtentStore>, Err
     if !path.exists() {
         return Err(Errno::ENOENT);
     }
-    let store = Arc::new(attached(path, || ExtentStore::open_base(path, arena.cloned()))?);
+    let opened =
+        attached(path, |keeping| ExtentStore::open_base_with(path, arena.cloned(), keeping));
+    let store = Arc::new(opened?);
     hold.open(&store)?;
     Ok(store)
 }
@@ -546,28 +552,30 @@ pub(super) async fn attach(
     .await
 }
 
-/// The store at `path`, as `open` opens it, keeping its branch in the bucket its description
-/// names: the daemon's, for the stores it made, or another's, as an image's file bucket, for one
-/// it serves (TASK-165.6).
+/// The store at `path`, as `open` opens it with the daemon's uploader's options ([`keeping`]),
+/// keeping its branch in the bucket its description names: the daemon's, for the stores it made,
+/// or another's, as an image's file bucket, for one it serves (TASK-165.6). Its opening takes the
+/// branch's lease (TASK-165.9).
 fn attached(
     path: &Path,
-    open: impl FnOnce() -> Result<ExtentStore, crate::Error>,
+    open: impl FnOnce(extent_store::upload::Options) -> Result<ExtentStore, crate::Error>,
 ) -> Result<ExtentStore, Errno> {
     // The daemon's own first, which the stores naming it share (`host_store::bucket`).
     remote_bucket()?;
-    let store = open().map_err(|err| errno_of(format_args!("opening {}", path.display()), err))?;
-    let bucket = store.bucket().clone();
+    let keeping = keeping()?;
+    open(keeping).map_err(|err| errno_of(format_args!("opening {}", path.display()), err))
+}
+
+/// How the daemon's stores' uploaders keep their branches in their buckets: with this host's
+/// placement's token, for a copy never placed; the host's cache of the bucket's objects; and the
+/// upload interval ([`upload_interval`]).
+fn keeping() -> Result<extent_store::upload::Options, Errno> {
     let token = crate::remote::host_token().map_err(|err| {
         log::error!("extentd: {err}");
         Errno::EINVAL
     })?;
     let (cache, interval) = (remote_cache()?, upload_interval());
-    let options = crate::remote::Options { cache, token, interval, ..Default::default() };
-    if let Err(err) = store.attach_remote(bucket, rand::random(), options) {
-        log::warn!("extentd: keeping branch {:x} in object storage: {err}", store.branch());
-        return Err(err.errno().unwrap_or(Errno::EIO));
-    }
-    Ok(store)
+    Ok(extent_store::upload::Options { cache, token, interval, ..Default::default() })
 }
 
 /// How long the stores' durable commits wait at most before they upload: the uploader's default;
@@ -577,13 +585,15 @@ fn upload_interval() -> std::time::Duration {
     if UPLOADS_WHEN_ASKED.load(std::sync::atomic::Ordering::Relaxed) {
         return std::time::Duration::MAX;
     }
-    crate::remote::Options::default().interval
+    extent_store::upload::Options::default().interval
 }
 
 /// The store at `path` as the daemon opens it to work on it, not a VM: its pages of the default
 /// arena, which reads no boot profile into the cache ([`ExtentStore::open_without_profile`]).
 fn open_here(path: &Path) -> Result<ExtentStore, Errno> {
-    attached(path, || ExtentStore::open_without_profile(path))
+    attached(path, |keeping| {
+        ExtentStore::open_with(path, Opening { arena: None, profiled: false, keeping })
+    })
 }
 
 /// The errno of `err`, which doing `what` failed with: its own; `EBUSY` if it gave up waiting for
@@ -613,13 +623,18 @@ pub(super) async fn create(
     blocking(move || {
         // Let go of once the work is done, though the call may give up on it before.
         let _held = held;
+        // fxdax: what a making its host died in left, unmade, is no store: made anew (TASK-196).
+        removed_if_unmade(&path)?;
         if path.exists() {
             return Err(Errno::EEXIST);
         }
         let branch =
             branch.filter(|branch| *branch != 0).unwrap_or_else(crate::host_store::new_branch);
-        let created = ExtentStore::create_for_branch(&path, capacity, branch);
-        drop(created.map_err(|err| errno_of(format_args!("creating {}", path.display()), err))?);
+        let created = attached(&path, |keeping| {
+            let opening = Opening { arena: None, profiled: false, keeping };
+            ExtentStore::create_with(&path, capacity, branch, opening)
+        });
+        drop(created?);
         if let Some(token) = token {
             ExtentStore::place(&path, token)
                 .map_err(|err| errno_of(format_args!("placing {}", path.display()), err))?;
@@ -640,32 +655,36 @@ pub(super) async fn import(
     let held = hold(&path).await?;
     blocking(move || {
         let _held = held;
+        // fxdax: what an import its host died in left, unmade, is no store: made anew
+        // (TASK-196).
+        removed_if_unmade(&path)?;
         if path.exists() {
             return Err(Errno::EEXIST);
         }
         let made = crate::import::store(&path, capacity, &image, reference.as_deref());
         futures::executor::block_on(made)
             .map_err(|err| errno_of(format_args!("importing {}", image.display()), err))?;
-        let store = ExtentStore::open(&path)
-            .map_err(|err| errno_of(format_args!("opening {}", path.display()), err))?;
-        Ok(store.branch())
+        Ok(open_here(&path)?.branch())
     })
     .await
 }
 
 /// The store at `path`, or, if it doesn't exist, one of `branch`, of `capacity` bytes, taken from
 /// the daemon's bucket: what the branch holds there.
+/// fxdax: a store of `branch` there whose write-ahead log another writer's commits moved its branch
+/// past is opened as the branch is, the log dropped (`ExtentStore::take_with`, TASK-165.9).
 fn take_store(path: &Path, branch: u64, capacity: u64) -> Result<ExtentStore, Errno> {
-    if !path.exists() {
-        if branch == 0 {
-            return Err(Errno::ENOENT);
-        }
-        let created = ExtentStore::create_for_branch(path, capacity, branch);
-        drop(created.map_err(|err| {
-            errno_of(format_args!("taking branch {branch:x} to {}", path.display()), err)
-        })?);
+    if !path.exists() && branch == 0 {
+        return Err(Errno::ENOENT);
     }
-    open_here(path)
+    let branch = match branch {
+        0 => extent_store::host_branch(path).map_err(|_| Errno::ENOENT)?,
+        branch => branch,
+    };
+    attached(path, |keeping| {
+        let opening = Opening { arena: None, profiled: false, keeping };
+        ExtentStore::take_with(path, (capacity, branch, None), opening)
+    })
 }
 
 /// Removes what a store's making, or a fork's, left at `path`, unmade, its host crashing
@@ -991,8 +1010,7 @@ pub(super) async fn make_public(path: PathBuf, generation: bool) -> Result<(), E
     let held = hold_alone(&path).await?;
     blocking(move || {
         let _held = held;
-        let store = ExtentStore::open_without_profile(&path)
-            .map_err(|err| errno_of(format_args!("opening {}", path.display()), err))?;
+        let store = open_here(&path)?;
         if generation { store.make_generation_public() } else { store.make_public() }
     })
     .await
@@ -1012,7 +1030,7 @@ pub(super) struct StoreState {
     /// The epoch of its latest commit.
     pub committed: u64,
     /// What its uploader has done and has left to do, if its commits upload now.
-    pub upload: Option<crate::remote::UploadStatus>,
+    pub upload: Option<extent_store::upload::UploadStatus>,
 }
 
 /// What `store` is, and holds; `open` if a connection has it open.
@@ -1046,8 +1064,7 @@ pub(super) async fn stat(path: PathBuf) -> Result<StoreState, Errno> {
         if !path.exists() {
             return Err(Errno::ENOENT);
         }
-        let store = ExtentStore::open_without_profile(&path)
-            .map_err(|err| errno_of(format_args!("opening {}", path.display()), err))?;
+        let store = open_here(&path)?;
         state_of(&store, false)
     })
     .await
@@ -1073,7 +1090,7 @@ fn open_instances() -> Vec<Arc<ExtentStore>> {
 
 /// The branches of the stores open for connections whose commits upload now, and what their
 /// uploaders have left to do (`metrics`, TASK-91.3).
-pub(super) fn upload_statuses() -> Vec<(u64, crate::remote::UploadStatus)> {
+pub(super) fn upload_statuses() -> Vec<(u64, extent_store::upload::UploadStatus)> {
     (open_instances().iter())
         .filter_map(|store| Some((store.branch(), store.upload_status().ok()??)))
         .collect()
@@ -1129,7 +1146,7 @@ pub(super) fn uploads_when_asked() {
 pub(super) fn use_bucket(bucket: extent_remote::store::Store) {
     let bucket = Arc::new(bucket);
     let host = crate::remote::Host::from_env().expect("the daemon's host");
-    crate::host_store::use_bucket(&host.bucket, bucket.clone()).unwrap();
+    crate::host_store::use_bucket(&host.bucket, bucket.clone());
     assert!(BUCKET.set(bucket.clone()).is_ok(), "the daemon has its bucket already");
     watch_stats(Arc::downgrade(&bucket));
 }
@@ -1230,7 +1247,55 @@ fn watch_stats(bucket: std::sync::Weak<extent_remote::store::Store>) {
 /// `NAME=COUNT` after `daemon:`.
 fn daemon_line() -> String {
     let named = crate::stats::stats().named().map(|(name, count)| format!("{name}={count}"));
-    format!("daemon: {}", named.join(" "))
+    // fxdax: and how long its stores' commits waited to be made durable (TASK-165.9): each
+    // bucket of `extent_store::Lags` a count of its own, within its bound, the last beyond.
+    let lags = extent_store::durability_lags();
+    let quantile = |fraction| lags.quantile_ms(fraction).unwrap_or(0);
+    let last = extent_store::LAG_BUCKETS - 1;
+    let bucket = |(bucket, count): (usize, &u64)| match bucket == last {
+        false => format!("durable_lag_le_{}ms={count}", 1u64 << bucket),
+        true => format!("durable_lag_gt_{}ms={count}", 1u64 << (bucket - 1)),
+    };
+    let buckets: Vec<String> = lags.buckets.iter().enumerate().map(bucket).collect();
+    // And where it went: how long its flushes and framings took, phase by phase.
+    let timings = extent_store::timings();
+    let timed = [
+        timed_fields("flush", &timings.flushes, &extent_store::FLUSH_PHASES),
+        timed_fields("framing", &timings.framings, &extent_store::FRAMING_PHASES),
+        vec![
+            format!("own_sync_max_us={}", timings.own_sync_max_us),
+            format!("raw_sync_max_us={}", timings.raw_sync_max_us),
+        ],
+    ]
+    .concat();
+    format!(
+        "daemon: {} durable_lag_count={} durable_lag_max_us={} durable_lag_p50_ms={} \
+         durable_lag_p99_ms={} durable_lag_within_50ms={} {} {}",
+        named.join(" "),
+        lags.count,
+        lags.max_us,
+        quantile(0.5),
+        quantile(0.99),
+        lags.within_turn,
+        buckets.join(" "),
+        timed.join(" ")
+    )
+}
+
+/// fxdax: `timed`, of `kind`, as `NAME=COUNT` fields: so many, so many slow, the slowest's
+/// phases, by `names`, and each phase's longest (TASK-165.9).
+fn timed_fields<const N: usize>(
+    kind: &str,
+    timed: &extent_store::Timed<N>,
+    names: &[&str; N],
+) -> Vec<String> {
+    let mut fields =
+        vec![format!("{kind}_count={}", timed.count), format!("{kind}_slow={}", timed.slow)];
+    for (which, phases) in [("slowest", &timed.slowest), ("max", &timed.max)] {
+        let named = names.iter().zip(phases.us);
+        fields.extend(named.map(|(phase, us)| format!("{kind}_{which}_{phase}_us={us}")));
+    }
+    fields
 }
 
 /// fxdax: replaces `file` with `lines`, whole: a reader finds the old lines or the new.

@@ -14,9 +14,11 @@
 //! close, and sync a flush's files at once, while the workload goes on: on Shuttle's schedules,
 //! seeded by the rounds, so that each is still a function of its seed (tests/shuttle/crash.rs).
 
+mod kept;
 mod rounds;
 
 use extent_store::MemDir;
+use kept::{CUT_ROUNDS, KEPT_ROUNDS, cut, kept};
 use rounds::{ROUNDS, recovering, same, twice};
 
 /// fxdax: each round runs twice, at once, and its two runs' crashes leave the same directories,
@@ -32,4 +34,28 @@ fn recovers_a_prefix_of_its_commits() {
     }
     // The crashes hit commits as well as what came between them.
     assert!(crashes_mid_commit > ROUNDS / 10, "{crashes_mid_commit} crashes in commits");
+}
+
+/// fxdax: a store keeping its branch in a bucket, crashing as its uploader uploads, recovers from
+/// the bucket alone at least what its uploader acknowledged, and from its disk at least what it
+/// made durable (TASK-165.9's AC #4).
+#[test]
+fn recovers_from_its_bucket_with_and_without_its_disk() {
+    let (mut uploaded, mut ahead) = (0, 0);
+    for round in 0..KEPT_ROUNDS {
+        let (acknowledged, local) = kept(round);
+        (uploaded, ahead) = (uploaded + acknowledged as u64, ahead + local as u64);
+    }
+    // The crashes hit uploads under way, and stores whose disks held more than the bucket.
+    assert!(uploaded > KEPT_ROUNDS / 4, "{uploaded} rounds acknowledged a commit");
+    assert!(ahead > KEPT_ROUNDS / 10, "{ahead} rounds held commits the bucket lacked");
+}
+
+/// fxdax: a store's opening cut by a crash at each of its writes in turn leaves what opens again
+/// to at least what the store made durable (TASK-165.9).
+#[test]
+fn openings_cut_at_each_write_open_again() {
+    let writes: u64 = (0..CUT_ROUNDS).map(cut).sum();
+    // The openings write: a segment closed again, the WAL's base, a restated capacity.
+    assert!(writes > CUT_ROUNDS, "{writes} writes in {CUT_ROUNDS} openings");
 }

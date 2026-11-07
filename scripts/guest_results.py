@@ -15,7 +15,9 @@ A run's results directory (test-e2e.sh's FXDAX_E2E_RESULTS) holds:
   knobs, its own among them (FXDAX_SEED), and the command that replays it;
 - summary.json: each case's outcome, its last round's (`unrun` before it starts, `running` between
   rounds), the cases that failed, and the run's exit status once it ended (null before), rewritten
-  as each round ends.
+  as each round ends; and what each extent daemon downloaded against what it read (`daemons`, a
+  case's; `daemon`, the run's), from its stats file (FXDAX_EXTENTD_STATS: the run's
+  extentd-stats.txt, a case's daemon's NAME-stats.txt in its directory).
 
 With FXDAX_RESULTS_BUCKET naming a prefix of a bucket (gs://bucket/prefix), each round's case, the
 summary and, as the run ends, its logs are uploaded there as they are written, so that a host lost
@@ -71,8 +73,35 @@ def rounds_of(results, case):
     return [json.loads(f.read_text()) for _, f in numbered]
 
 
+def daemon_bytes(path):
+    """What the extent daemon whose stats file is `path` downloaded from its bucket against what it
+    read, as its last counts say (`object-store:`'s `down`, `daemon:`'s `fetched-bytes`, page-ins of
+    the bucket's data through its part cache, and `page-in-bytes`, of its store's): None if it
+    says none (TASK-165.12)."""
+    last = {}
+    for line in path.read_text(errors="replace").splitlines():
+        kind, _, counts = line.partition(": ")
+        if kind in ("object-store", "daemon"):
+            last[kind] = dict(word.split("=", 1) for word in counts.split() if "=" in word)
+    try:
+        return {"daemon": path.name.removesuffix("-stats.txt"),
+                "downloaded": int(last["object-store"]["down"]),
+                "bucket_read": int(last["daemon"]["fetched-bytes"]),
+                "store_read": int(last["daemon"]["page-in-bytes"])}
+    except (KeyError, ValueError):
+        return None
+
+
+def daemons_of(directory):
+    """What each extent daemon whose stats file is in `directory`, or below it, downloaded against
+    what it read ([`daemon_bytes`])."""
+    found = (daemon_bytes(path) for path in sorted(directory.rglob("*-stats.txt")))
+    return [each for each in found if each]
+
+
 def case_summary(results, case, rounds):
-    """How `case` went, from its rounds' outcomes."""
+    """How `case` went, from its rounds' outcomes, and what its extent daemons downloaded and
+    read."""
     ran = rounds_of(results, case)
     if not ran:
         return {"case": case, "outcome": "unrun", "round": 0, "rounds_passed": 0}
@@ -88,6 +117,7 @@ def case_summary(results, case, rounds):
         "failed_checks": last["failed_checks"],
         "reason": last["reason"],
         "replay": last["replay"],
+        "daemons": daemons_of(results / case),
     }
 
 
@@ -95,12 +125,14 @@ def summarize(results, status=None):
     """Rewrites `results`' summary.json, of its rounds so far, and the exit status `status`."""
     run = json.loads((results / "run.json").read_text())
     cases = [case_summary(results, case, run["rounds"]) for case in run["cases"]]
+    stats = results / "extentd-stats.txt"
     summary = {
         "commit": run["commit"],
         "rounds": run["rounds"],
         "status": status,
         "failed": [each["case"] for each in cases if each["outcome"] in FAILED],
         "cases": cases,
+        "daemon": daemon_bytes(stats) if stats.exists() else None,
         "knobs": run["knobs"],
     }
     write(results / "summary.json", summary)
@@ -184,8 +216,24 @@ def load(results):
     return json.loads(path.read_text()) if path.exists() else None
 
 
+def size(count):
+    """`count` bytes, in SI units."""
+    for unit, scale in (("GB", 10**9), ("MB", 10**6), ("kB", 10**3)):
+        if count >= scale:
+            return f"{count / scale:.1f} {unit}"
+    return f"{count} B"
+
+
+def said(daemon):
+    """What `daemon` downloaded against what it read ([`daemon_bytes`]), as a line says it."""
+    return (f"{daemon['daemon']}: downloaded {size(daemon['downloaded'])} for "
+            f"{size(daemon['bucket_read'])} read of its bucket's, "
+            f"{size(daemon['store_read'])} of its store's")
+
+
 def report(summary):
-    """How each case of `summary` went, a line each, and a replay's under a failure's."""
+    """How each case of `summary` went, a line each, a replay's under a failure's, and what each of
+    its extent daemons downloaded against what it read; then the run's daemon's."""
     rounds = summary["rounds"]
     lines = []
     for each in summary["cases"]:
@@ -204,6 +252,9 @@ def report(summary):
             lines.append(f"{case}: stopped after round {round_} of {rounds}, which passed")
         else:
             lines.append(f"{case}: not run")
+        lines.extend(f"  {said(daemon)}" for daemon in each.get("daemons", []))
+    if summary.get("daemon"):
+        lines.append(f"the run's {said(summary['daemon'])}")
     status = summary["status"]
     lines.append("the run did not finish" if status is None else f"the run ended with {status}")
     return lines

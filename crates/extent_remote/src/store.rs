@@ -526,6 +526,29 @@ pub(crate) mod tests {
         assert!(took >= std::time::Duration::from_millis(100), "two requests took {took:?}");
     }
 
+    /// TASK-208: so does a file bucket's, its reads whole and ranged as well as its writes:
+    /// object_store's throttle takes a stream, not the file `LocalFileSystem` gives, which it
+    /// panicked on (`unimplemented!`), every read of every pgbench case's bucket.
+    #[test]
+    fn file_buckets_wait_the_latency_set() {
+        // SAFETY: nextest runs each test in a process of its own, whose other threads don't read
+        // the environment yet.
+        unsafe { std::env::set_var("FXDAX_REMOTE_LATENCY_MS", "50") };
+        let dir = tempfile::tempdir().unwrap();
+        let url = format!("file://{}/", dir.path().canonicalize().unwrap().display());
+        let store = Store::from_url(&url).unwrap();
+        let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
+        let start = std::time::Instant::now();
+        runtime.block_on(async {
+            store.put("a", vec![1, 2, 3, 4], PutMode::Create).await.unwrap();
+            assert_eq!(store.get("a").await.unwrap().bytes, vec![1, 2, 3, 4]);
+            let range = ByteRange::Bounded(1..3);
+            assert_eq!(store.get_range("a", range).await.unwrap(), vec![2, 3]);
+        });
+        let took = start.elapsed();
+        assert!(took >= std::time::Duration::from_millis(150), "three requests took {took:?}");
+    }
+
     /// A store counts its requests by kind, failed ones too, and the bytes it uploads, by kind of
     /// object, and downloads.
     #[test]

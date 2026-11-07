@@ -71,6 +71,9 @@ pub struct Io {
     pub read: u64,
     pub written: u64,
     pub opened: u64,
+    /// fxdax: the most bytes a file held written, but neither written back ([`File::write_back`])
+    /// nor synced since, at any time: what a sync of it would have had to write (TASK-165.9).
+    pub most_unwritten: u64,
 }
 
 #[derive(Clone, Default)]
@@ -80,6 +83,8 @@ struct Inode {
     durable: Vec<u8>,
     /// The writes since the last sync, in order: their offsets and data.
     writes: Vec<(usize, Vec<u8>)>,
+    /// fxdax: the bytes written since the last write-back of any of its range, or sync.
+    unwritten: u64,
 }
 
 #[derive(Clone)]
@@ -230,7 +235,10 @@ impl MemDir {
                     }
                 }
             }
-            inodes.insert(*inode, Inode { durable: data.clone(), data, writes: Vec::new() });
+            inodes.insert(
+                *inode,
+                Inode { durable: data.clone(), data, writes: Vec::new(), unwritten: 0 },
+            );
         }
         let crashed = Fs {
             inodes,
@@ -342,6 +350,15 @@ impl File for MemFile {
         }
         inode.data[offset..offset + buf.len()].copy_from_slice(buf);
         inode.writes.push((offset, buf.to_vec()));
+        inode.unwritten += buf.len() as u64;
+        let unwritten = inode.unwritten;
+        fs.io.most_unwritten = fs.io.most_unwritten.max(unwritten);
+        Ok(())
+    }
+
+    fn write_back(&self, _offset: u64, _len: u64) -> io::Result<()> {
+        let mut fs = self.fs.lock().unwrap();
+        fs.inodes.get_mut(&self.inode).unwrap().unwritten = 0;
         Ok(())
     }
 
@@ -355,6 +372,7 @@ impl File for MemFile {
         let inode = fs.inodes.get_mut(&self.inode).unwrap();
         inode.durable = inode.data.clone();
         inode.writes.clear();
+        inode.unwritten = 0;
         Ok(())
     }
 

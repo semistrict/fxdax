@@ -3,7 +3,7 @@ id: doc-12
 title: The fsync durability contract
 type: other
 created_date: '2026-10-31 22:17'
-updated_date: '2026-11-06 06:43'
+updated_date: '2026-11-07 02:53'
 ---
 # What an acknowledged fsync survives (TASK-66)
 
@@ -22,8 +22,16 @@ recovery.
 | Stage | What it means | When |
 |---|---|---|
 | Ordered | `COMMIT` returned: extentd has it, in order: its data in the store's files, its commit record in extentd's memory (`Pending`, `Store::commit_locked`) | as `fsync` returns |
-| Durable locally | the data synced, then the record written and synced (`Store::make_durable`) | within 50 ms |
+| Durable locally | the data synced, then the record written and synced (`Store::make_durable`) | within 50 ms at the median; the crash bound at most (below) |
 | Uploaded | in object storage, a contiguous prefix, the lease still the writer's | the lag (below) |
+
+*Revised 2026-11-06 (TASK-221):* "within 50 ms" is the **median**: extentd makes the commits
+ordered durable every 50 ms, a flush behind the host's disk at worst, which under pgbench takes up to
+0.4-0.7 s on main, longer with TASK-165.9 (extentd's `durable_lag_*` stats). That tail is
+performance work, not a broken promise. What a daemon crash may lose is bounded apart: **the crash
+bound, 500 ms**, set from the daemon-killed case's longest lags (main 60-81 ms, TASK-165.9 up to
+288 ms, GCE r722-r735), and tightened as the tail is. The daemon-killed test holds extentd to it
+(`CRASH_LOSS_BOUND_MS`), and the pgbench cases to the median (`durable_lag_within_50ms`).
 
 A guest's **fsync, fdatasync, msync and O_SYNC** wait for *ordered*. **sync, syncfs, unmount and
 freeze** ask for `COMMIT_DURABLE`, and wait for *durable locally*, and with a remote, for *uploaded*.
@@ -39,8 +47,8 @@ it stays within the bound.
 |---|---|---|---|
 | Guest crash or panic, VM reset | kept | kept | fxfs-guest-crash, -crash-dax; guest/sim's `cow_crash_between_bytes_and_commit` (a commit held after its bytes) |
 | VMM killed (SIGKILL) | kept | kept | fxfs-guest-crash-dax-killed |
-| extentd killed | up to 50 ms may go, its records unwritten; a prefix stays. The VM exits 158 | kept | fxfs-guest-crash-dax-daemon-killed (1 of 296 files told of went, GCE r342), fxfs-guest-daemon-lost |
-| Host reboot or kernel crash, disk kept | up to 50 ms may go; a prefix stays | kept | **nothing: no test loses a host's page cache (TASK-67)** |
+| extentd killed | what was ordered within the crash bound (500 ms) may go, its records unwritten; a prefix stays, a file whose fsync returned in that time found short or empty at worst. The VM exits 158 | kept | fxfs-guest-crash-dax-daemon-killed (1 of 296 files told of went, GCE r342), fxfs-guest-daemon-lost |
+| Host reboot or kernel crash, disk kept | what was ordered within the crash bound may go; a prefix stays | kept | **nothing: no test loses a host's page cache (TASK-67)** |
 | Host lost, disk with it, with a remote | the unuploaded lag goes; a prefix stays | kept | the simulation (doc-7, `crashes_anywhere`); **no guest test (TASK-67)** |
 | Host lost, without a remote | everything goes | everything goes | not a recovery case: a store with no remote, or whose bucket is a file bucket beside it (an image's, `<image>.bucket`), lives on one disk; extentd refuses to start without a remote (`FXDAX_EXTENTD_REMOTE`, TASK-45) |
 
@@ -67,7 +75,7 @@ to. The README lists the rest ("How a VM process exits").
 
 ## Not promised
 
-- That an fsync survives extentd or the host going within 50 ms of returning. An application that
+- That an fsync survives extentd or the host going within the crash bound (500 ms) of returning. An application that
   needs that must `syncfs`, which costs a round trip to the disk, and to object storage with a
   remote.
 - Anything of what the lag holds, across the loss of a host.

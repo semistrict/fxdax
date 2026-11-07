@@ -228,26 +228,44 @@ impl Packer {
     /// The object's last bytes, which follow those [`Packer::push`] returned: `footer`, the table,
     /// and the trailer.
     pub fn finish(self, footer: &[u8]) -> Vec<u8> {
-        let mut bytes = footer.to_vec();
-        let table = bytes.len();
-        for stored in &self.stored {
-            bytes.extend_from_slice(&stored.offset.to_le_bytes());
-            bytes.extend_from_slice(&(stored.len as u32).to_le_bytes());
-            bytes.extend_from_slice(&stored.crc.to_le_bytes());
-            bytes.push(match stored.encoding {
-                Encoding::Raw => 0,
-                Encoding::Zstd => 1,
-            });
-        }
-        bytes.extend_from_slice(&self.data_len.to_le_bytes());
-        bytes.extend_from_slice(&self.end.to_le_bytes());
-        bytes.extend_from_slice(&(footer.len() as u64).to_le_bytes());
-        bytes.extend_from_slice(&crc(footer).to_le_bytes());
-        // The table's CRC covers the lengths and the footer's CRC before it.
-        bytes.extend_from_slice(&crc(&bytes[table..]).to_le_bytes());
-        bytes.extend_from_slice(&MAGIC);
-        bytes
+        tail(&self.stored, self.data_len, self.end, footer)
     }
+}
+
+/// The last bytes of an object of `data_len` bytes of data, whose parts are `stored`, ending at
+/// `end`: `footer`, the table, and the trailer.
+fn tail(stored: &[Stored], data_len: u64, end: u64, footer: &[u8]) -> Vec<u8> {
+    let mut bytes = footer.to_vec();
+    let table = bytes.len();
+    for stored in stored {
+        bytes.extend_from_slice(&stored.offset.to_le_bytes());
+        bytes.extend_from_slice(&(stored.len as u32).to_le_bytes());
+        bytes.extend_from_slice(&stored.crc.to_le_bytes());
+        bytes.push(match stored.encoding {
+            Encoding::Raw => 0,
+            Encoding::Zstd => 1,
+        });
+    }
+    bytes.extend_from_slice(&data_len.to_le_bytes());
+    bytes.extend_from_slice(&end.to_le_bytes());
+    bytes.extend_from_slice(&(footer.len() as u64).to_le_bytes());
+    bytes.extend_from_slice(&crc(footer).to_le_bytes());
+    // The table's CRC covers the lengths and the footer's CRC before it.
+    bytes.extend_from_slice(&crc(&bytes[table..]).to_le_bytes());
+    bytes.extend_from_slice(&MAGIC);
+    bytes
+}
+
+/// fxdax: the whole object `object`, of `footer` in place of its own: its parts as they are, stored
+/// where they are, then a tail anew, so that its data reads as it did, nothing unpacked or packed
+/// again. What a host's write-ahead log uploads of a segment its writer's chain stamped anew after
+/// a takeover (doc-14, Opening a store; TASK-165.9). Fails if `object` is not a whole object.
+pub fn restamp(object: &[u8], footer: &[u8]) -> Result<Vec<u8>, Corrupt> {
+    let frame = Frame::of(object)?;
+    let stored = frame.stored_in(object)?;
+    let mut bytes = object[..frame.stored_len as usize].to_vec();
+    bytes.extend_from_slice(&tail(&stored, frame.data_len, frame.stored_len, footer));
+    Ok(bytes)
 }
 
 /// The bytes of an object of `data` and `footer`.
@@ -575,6 +593,23 @@ mod tests {
 
     /// Parts that zstd does not shrink are stored raw: incompressible data costs the table, and
     /// nothing more.
+    /// fxdax: an object restamped holds its parts where they were, read as they were, and the
+    /// footer it was given; what isn't a whole object is refused (TASK-165.9).
+    #[test]
+    fn restamped_objects_keep_their_parts() {
+        let data = [pattern(2 * PART), random(PART / 3)].concat();
+        let object = framed(&data, b"footer of the first writer");
+        let restamped = restamp(&object, b"a later writer's").unwrap();
+        assert_eq!(restamped, framed(&data, b"a later writer's"));
+        assert_eq!(footer(&restamped).unwrap(), b"a later writer's");
+        let (before, after) = (Parts::of(&object).unwrap(), Parts::of(&restamped).unwrap());
+        assert_eq!((after.stored, after.frame.data_len), (before.stored, before.frame.data_len));
+        assert_eq!(super::data(&restamped).unwrap(), data);
+        let empty = framed(&[], b"one");
+        assert_eq!(restamp(&empty, b"two").unwrap(), framed(&[], b"two"));
+        assert!(restamp(&object[..object.len() - 1], b"cut short").is_err());
+    }
+
     #[test]
     fn incompressible_data_costs_its_table() {
         let data = random(2 * PART + 4096);

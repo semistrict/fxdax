@@ -266,7 +266,7 @@ pub fn render() -> String {
     }
 
     let uploads = super::stores::upload_statuses();
-    let series: [(&str, &str, &str, fn(&crate::remote::UploadStatus) -> String); 3] = [
+    let series: [(&str, &str, &str, fn(&extent_store::upload::UploadStatus) -> String); 3] = [
         (
             "upload_pending_bytes",
             "gauge",

@@ -4,9 +4,11 @@ title: >-
   A store reads an extent where its segment was acknowledged; the collector,
   keeping moves only from where the lease holder's checkpoint names it, deletes
   the first moves of an extent compacted twice: EIO on a live branch
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-11-06 06:45'
+updated_date: '2026-11-06 13:04'
 labels:
   - storage
   - collector
@@ -35,3 +37,13 @@ Found by the storage review of 2026-11-06. Since TASK-165.8 (a31f82a98) a store 
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Taken into TASK-165.9 (the user, 2026-11-06). How its design resolves it: the uploader moves into extent_store and holds both the branch's writer and the store, so one owner keeps the store's locations with the writer's. Writer::checkpoint gains a hook where it takes the collector's moves (take_moves, before the checkpoint lands under moves_taken_first): the uploader has the store name every extent it holds there too (Store::moved: Data::Remote of held and kept extents, forward along their ways only, layout::further), so the store never names an extent further back than the lease holder's newest checkpoint, which is what the collector keeps moves from (collector.rs behind / Pass::new). Followers read the same store state (views), so they follow. Forks' children have no taken copy any more: a child's store opens by recovery from the bucket, which names its extents as the newest checkpoint does, and its own uploader keeps them so after. Points have no writer and no checkpoints of their own here: left as they are, noted. The simulation gets a host reader holding locations as a store does (set at acknowledgement, moved only by the writer's checkpoint hook), checked readable after each pass, with a rule (stores_follow_moves) whose mutation shows the fix needed. Lands right after TASK-165.9's design commit, on task-165-9.
+
+Fixed in 3402efc60 on task-165-9, after TASK-165.9's design (872d739e7). Writer::following: a writer tells what follows the collector's moves with it of the extents its checkpoints record as moved, as take_moves names them (before the checkpoint lands, with moves_taken_first); the uploader has the store follow (Store::moved, State::moved: held extents' Data::Remote and kept ones', forward along their ways only, layout::further), from the store's opening and each retake. AC #1: extents_compacted_twice_read_where_the_store_names_them, un-ignored and rewritten for the new opening: one store open all along, its writer checkpointing as every CHECKPOINT_EVERY segments, the collector compacting the segment, the store freeing, checkpointing, the collector compacting the moves and deleting the segment and the first moves; the store and a follower of it read the extent, with the host's cache and without; with the hook off the store's read is EIO. AC #2: the simulation's hosts keep their stores' names (set as their writers open, extended at each acknowledgement, moved only by Writer::following), checked readable with the writers' own; rule stores_follow_moves (extent_remote Rules, simulation only: specs/bucket models the writer's state, not a store's names), sim::stores_need_to_follow_moves finds a store's name lost with it off (seed 2: 'branch b's store: lost ... in segments/.../1'); the 48 sim tests pass with it on. AC #3: a follower reads through its writer's store, in the test; a fork's child opens by the same upload::open and its own writer follows the same way: the test's fork, tried, kept the first moves alive for the child and so could not show the parent's case, and is not in it. Decision line in OPEN_QUESTIONS.md (Storage).
+
+AC #3, then: forks_read_what_they_inherited_compacted_twice (a fork made, its parent deleted, its store open across the two compactions and its own writer's checkpoint) passes, EIO with the hook off; committed with the Shuttle test's wider expectation.
+<!-- SECTION:NOTES:END -->

@@ -3,7 +3,7 @@ id: doc-14
 title: 'Local disk as the bucket''s write-ahead log and cache: one storage engine'
 type: specification
 created_date: '2026-11-05 03:13'
-updated_date: '2026-11-05 14:49'
+updated_date: '2026-11-06 12:09'
 ---
 # Local disk as the bucket's write-ahead log and cache: one storage engine
 
@@ -78,6 +78,16 @@ stall there, doc-7 decision 3), the open segment's room (the store's capacity pl
 before a commit waste, the rule `state::Space` keeps today), and the cache's capacity and floor.
 Local dead space no longer exists, so the bound of three times the capacity (TASK-79.89) and local
 cleaning go.
+
+*Implemented 2026-11-06 (TASK-165.9), differing in names, not in kind:* the description `store`,
+format 8, with the capacity a store takes before a commit of its branch sets one; `unmade`, a marker
+`Store::make` writes before anything else and its maker removes once the store is whole, which
+opening refuses (TASK-196); per branch, `open-segments/<b>/<n>` (raw) and `logs/<b>/<n>` (the open
+segment's log), `segments/<b>/<n>` (the WAL's framed segments, numbered locally, their footers
+stamped by the chain as they closed; a rebase restamps them in memory, and the upload restamps the
+bytes, `extent_frame::restamp`), `extents/<b>/<sequence>` (own extents, framed); and `wal`, the
+WAL's base, two 4 KiB slots, written durably before what an acknowledgement let go of leaves.
+OPEN_QUESTIONS.md says why each.
 
 ## What goes
 
@@ -212,6 +222,15 @@ rule), and nothing else can land in the writer's name.
   rename on the same filesystem), its own extents with it. `COMMIT_DURABLE` completes as now.
   Checkpoints are the writer's, every 64 segments and at forks, as now.
 - **Lag:** `wait_lag` and `wait_uploaded` keep their meaning; the bytes the lag counts are the WAL's.
+
+*Implemented 2026-11-06 (TASK-165.9):* the uploader is `extent_store::upload`; framings are one
+queue, in closing order; a segment goes to the uploader once framed and its commits durable; a
+capacity change is a commit of its own; recovery keeps the WAL's whole framed segments to the first
+not whole whose log holds commits, which it closes again, those after it holding no durable commit
+going first, durably (found by the crash test cutting openings at each write); an opening whose WAL
+base names commits the bucket acknowledged, where the bucket has no such branch, refuses
+(`NoBranch`, `ENOENT`). `COMMIT_DURABLE` still waits for the upload and its acknowledgement, as
+above: the real-GCS fdatasync latency (TASK-165.11) is that wait, which this does not change.
 
 ## Reads
 

@@ -22,11 +22,11 @@
 
 use crate::error::{Errno, Error};
 use crate::faults::failpoint;
-use crate::remote::{Failure, Remote};
 use anyhow::Context as _;
 use extent_remote::layout::Child;
 use extent_remote::store::Store as Bucket;
-use extent_store::{Description, HostDir, Options, Store};
+use extent_store::upload::{self, Failure, Remote};
+use extent_store::{Description, HostDir, Options, Recovering, Store};
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -70,14 +70,13 @@ pub(crate) fn bucket(url: &str) -> anyhow::Result<Arc<Bucket>> {
     Ok(bucket)
 }
 
-/// Makes `bucket` this process's of `url`, before any store naming it opens, as the extent daemon's
-/// tests do its own, which they put themselves in front of: fails if the process has one already.
-#[cfg(all(test, target_os = "linux"))]
-pub(crate) fn use_bucket(url: &str, bucket: Arc<Bucket>) -> anyhow::Result<()> {
+/// Makes `bucket` this process's of `url`, before any store naming it opens, as the tests do the
+/// buckets they put themselves in front of; unless it is already, the same.
+#[cfg(test)]
+pub(crate) fn use_bucket(url: &str, bucket: Arc<Bucket>) {
     let mut buckets = BUCKETS.lock().unwrap();
-    anyhow::ensure!(!buckets.contains_key(url), "this process has the bucket {url} already");
-    buckets.insert(url.to_owned(), bucket);
-    Ok(())
+    let had = buckets.entry(url.to_owned()).or_insert_with(|| bucket.clone());
+    assert!(Arc::ptr_eq(had, &bucket), "this process has another bucket at {url}");
 }
 
 /// The URL of the bucket a store made at `path`, a directory, keeps its branches in: this host's,
@@ -122,26 +121,30 @@ pub(crate) fn token() -> Result<u64, Failure> {
     }
 }
 
-/// A store opened, with the bucket its description names, which its branch is kept in.
+/// How a store this process opens where no host's daemon serves it keeps its branch in its bucket:
+/// its uploader's options, as a copy never placed takes its branch's lease here ([`token`]).
+pub(crate) fn keeping() -> Result<upload::Options, Failure> {
+    Ok(upload::Options { token: token()?, ..Default::default() })
+}
+
+/// A store opened ([`open`]), with the bucket its description names, which its branch is kept in,
+/// and its uploader, which took the branch's lease, or holds its point (TASK-165.9).
 pub(crate) struct Opened {
-    pub store: Store<HostDir>,
+    pub store: Arc<Store<HostDir>>,
     pub bucket: Arc<Bucket>,
+    pub remote: Remote<HostDir>,
 }
 
 impl Opened {
-    /// `store`, opened, with the bucket its description names, as every host's store's does
-    /// (`extent_store::create_host`).
-    fn of(store: Store<HostDir>) -> anyhow::Result<Self> {
-        let named = store.bucket().map(str::to_owned);
-        let url = named
-            .ok_or_else(|| anyhow::anyhow!("{} names no bucket", store.dir().path().display()))?;
-        let bucket = bucket(&url).with_context(|| format!("opening the bucket {url}"))?;
-        Ok(Self { store, bucket })
+    /// The store, whose maker made it whole (TASK-196): opening it opens it from now on.
+    pub fn made(&self) -> anyhow::Result<()> {
+        self.store.made()
     }
 }
 
-/// The bucket the store at `path` names, if its description is there: as deleting it, or what of it a deletion that stopped left, goes by. A store of
-/// another format is refused (`extent_store::Format`).
+/// The bucket the store at `path` names, if its description is there: as deleting it, or what of
+/// it a deletion that stopped left, goes by. A store of another format is refused
+/// (`extent_store::Format`).
 pub(crate) fn bucket_at(path: &Path) -> anyhow::Result<Option<Arc<Bucket>>> {
     match extent_store::host_bucket(path) {
         Ok(Some(url)) => Ok(Some(bucket(&url)?)),
@@ -158,34 +161,43 @@ fn options() -> Options {
 
 /// Makes a new store at `path`, which must not exist, holding at most `capacity` bytes, of
 /// `branch`, kept in this host's bucket, or a file bucket of its own ([`bucket_for`]), and opens
-/// it. Its directory entry is as durable as it is. A store that is not made whole is removed;
-/// what is at `path` already is left as it is.
-pub(crate) fn create(path: &Path, capacity: u64, branch: u64) -> anyhow::Result<Opened> {
-    make(path, capacity, branch, None)
-}
-
-/// Makes a new store at `path` as [`create`] does, kept in the bucket at `bucket`.
-#[cfg(test)]
-pub(crate) fn create_in(
+/// it, its uploader as `keeping` says ([`open`]): whole, as made. Its directory entry is as
+/// durable as it is. A store that is not made whole is removed; what is at `path` already is left
+/// as it is.
+pub(crate) fn create(
     path: &Path,
     capacity: u64,
     branch: u64,
-    bucket: &str,
-) -> anyhow::Result<Opened> {
-    make(path, capacity, branch, Some(bucket))
+    keeping: upload::Options,
+) -> Result<Opened, Failure> {
+    let opened = create_unmade(path, capacity, branch, None, keeping)?;
+    opened.made()?;
+    Ok(opened)
 }
 
 /// Makes a new store at `path` as [`create`] does, kept in the bucket at `bucket`, if given, or
-/// else at [`bucket_for`]'s.
-fn make(path: &Path, capacity: u64, branch: u64, bucket: Option<&str>) -> anyhow::Result<Opened> {
-    std::fs::create_dir(path).with_context(|| format!("creating {}", path.display()))?;
-    let made = || -> anyhow::Result<Opened> {
+/// else at [`bucket_for`]'s; unmade until its maker says it is whole ([`Opened::made`]), as an
+/// import does once filled (TASK-196): opened before, it refuses (`extent_store::Unmade`), and
+/// [`unmade`] says it is no store.
+pub(crate) fn create_unmade(
+    path: &Path,
+    capacity: u64,
+    branch: u64,
+    bucket: Option<&str>,
+    keeping: upload::Options,
+) -> Result<Opened, Failure> {
+    std::fs::create_dir(path)
+        .map_err(|err| Failure::local(err, format!("creating {}", path.display())))?;
+    let made = || -> Result<Opened, Failure> {
         let description = Description { block_size: BLOCK_SIZE, capacity, branch };
         let bucket = bucket.map_or_else(|| bucket_for(path), |bucket| Ok(bucket.to_owned()))?;
-        let store = extent_store::create_host(path, description, &bucket, DIRECT, options())?;
+        extent_store::create_host(path, description, &bucket, DIRECT)?;
         let parent = path.parent().filter(|parent| !parent.as_os_str().is_empty());
-        std::fs::File::open(parent.unwrap_or(Path::new(".")))?.sync_all()?;
-        Opened::of(store)
+        let synced = std::fs::File::open(parent.unwrap_or(Path::new(".")))
+            .and_then(|parent| parent.sync_all());
+        synced.map_err(|err| Failure::local(err, "syncing a store's parent"))?;
+        let recovering = Store::recover_unmade(host_dir(path)?)?;
+        opened(recovering, keeping)
     };
     made().inspect_err(|_| {
         // Leave nothing half made behind.
@@ -193,17 +205,63 @@ fn make(path: &Path, capacity: u64, branch: u64, bucket: Option<&str>) -> anyhow
     })
 }
 
-/// Opens the store at `path` as of its last commit, with the bucket it names.
-pub(crate) fn open(path: &Path) -> anyhow::Result<Opened> {
-    Opened::of(extent_store::open_host(path, DIRECT, options())?)
+/// Opens the store at `path` as of its last commit, with the bucket it names: its uploader, as
+/// `keeping` says, takes its branch's lease, with the token its placement names or `keeping`'s,
+/// and recovers it, the store's write-ahead log put after its end (`extent_store::upload::open`,
+/// TASK-165.9). Fails as that does: a log another writer's commits moved past (`ESTALE`), a branch
+/// deleted (`ENOENT`) or a later placement's (`ESTALE`); and a store never made whole (`Unmade`).
+pub(crate) fn open(path: &Path, keeping: upload::Options) -> Result<Opened, Failure> {
+    let recovering = Store::recover(host_dir(path)?)?;
+    opened(recovering, keeping)
+}
+
+/// The directory of the store at `path`.
+fn host_dir(path: &Path) -> Result<HostDir, Failure> {
+    HostDir::new(path, DIRECT).map_err(|err| Failure::local(err, format!("{}", path.display())))
+}
+
+/// Opens the store at `path` as [`open`] does, its write-ahead log dropped if another writer's
+/// commits moved its branch past it (`extent_remote::Error::Diverged`): what `fxdaxctl take` does
+/// of a store that refuses to open so, the commits the log held, never acknowledged, lost (doc-14,
+/// Opening a store; doc-7, Recovery on the same host).
+pub(crate) fn take(path: &Path, keeping: upload::Options) -> Result<Opened, Failure> {
+    match open(path, keeping.clone()) {
+        Err(Failure::Remote(extent_remote::Error::Diverged)) => {
+            let mut recovering = Store::recover(host_dir(path)?)?;
+            log::warn!(
+                "fxdax: dropping {}'s write-ahead log: another writer moved branch {:x} past it",
+                path.display(),
+                recovering.branch()
+            );
+            recovering.drop_wal()?;
+            opened(recovering, keeping)
+        }
+        opened => opened,
+    }
+}
+
+/// The store `recovering` recovered, opened with its uploader as `keeping` says.
+fn opened(recovering: Recovering<HostDir>, keeping: upload::Options) -> Result<Opened, Failure> {
+    let url = recovering.bucket().map(str::to_owned);
+    let path = || recovering_path(&recovering);
+    let url = url.ok_or_else(|| Failure::msg(format!("{} names no bucket", path())))?;
+    let bucket = bucket(&url).with_context(|| format!("opening the bucket {url}"))?;
+    let runtime = crate::remote::runtime();
+    let holding = (rand::random(), keeping);
+    let (store, remote) = upload::open(recovering, options(), bucket.clone(), holding, &runtime)?;
+    Ok(Opened { store, bucket, remote })
+}
+
+/// The path of the directory `recovering` is of, for what fails of it.
+fn recovering_path(recovering: &Recovering<HostDir>) -> String {
+    format!("branch {:x}'s store", recovering.branch())
 }
 
 /// Whether `path` is a directory a store's making, or a fork's, left unmade, its host crashing:
-/// no store, as its description, made last, is not there; deleting it finishes it ([`delete`]).
-// The extent daemon's (Linux).
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+/// no store, as its description, made last, is not there, or it was never made whole
+/// (`extent_store::unmade_host`, TASK-196); deleting it finishes it ([`delete`]).
 pub(crate) fn unmade(path: &Path) -> bool {
-    path.is_dir() && !path.join("store").exists()
+    extent_store::unmade_host(path)
 }
 
 /// Forks `store`, as of its last commit, made durable first, to `child`, a new branch holding what
@@ -213,7 +271,7 @@ pub(crate) fn unmade(path: &Path) -> bool {
 /// acknowledgement gives the child its record, inheriting the store's extents rather than copies;
 /// `held`, given, is let go of once that commit is made, before its upload goes. Only then is the
 /// child's store made, at `path`, taking the child's state from the bucket
-/// (`crate::remote::take_branch`): every extent of it there, at its location there, read from
+/// (`extent_store::upload::take_branch`): every extent of it there, at its location there, read from
 /// there, or the host's cache. `prepare` writes what the caller keeps beside the store into its
 /// directory first, before its description, which makes it a store. A fork of a store with no
 /// uploader fails with `ENOTSUP`, making nothing: its callers attach one first, an image's
@@ -231,19 +289,12 @@ pub(crate) fn unmade(path: &Path) -> bool {
 /// once the point is deleted (`Remote::forked`).
 pub(crate) fn fork<H>(
     store: &Store<HostDir>,
-    remote: Option<&Remote>,
+    remote: &Remote<HostDir>,
     path: &Path,
     child: Child,
     prepare: impl FnOnce(&Path) -> anyhow::Result<()>,
     held: H,
 ) -> Result<(), Error> {
-    let branch = child.branch;
-    let Some(remote) = remote else {
-        let refused = format!(
-            "forking to branch {branch:x}: a fork is the bucket's, and the store has no uploader"
-        );
-        return Err(Error::new(anyhow::Error::new(Errno::ENOTSUP).context(refused)));
-    };
     std::fs::create_dir(path).map_err(|err| match err.kind() {
         std::io::ErrorKind::AlreadyExists => {
             Error::new(anyhow::Error::new(err).context(Errno::EEXIST))
@@ -261,7 +312,7 @@ pub(crate) fn fork<H>(
 /// Forks `store` to `child` as [`fork`] does, into the directory at `path`, made empty.
 fn fork_in<H>(
     store: &Store<HostDir>,
-    remote: &Remote,
+    remote: &Remote<HostDir>,
     path: &Path,
     child: Child,
     prepare: impl FnOnce(&Path) -> anyhow::Result<()>,
@@ -297,7 +348,7 @@ fn fork_in<H>(
     };
     let made = made.and_then(|()| {
         failpoint!("fork::recorded");
-        make_child(store, remote, path, branch, prepare)
+        make_child(store, path, branch, prepare)
             .with_context(|| format!("forking to branch {branch:x}: making its store"))?;
         failpoint!("fork::made");
         Ok(())
@@ -317,12 +368,11 @@ fn taken(branch: u64) -> anyhow::Error {
 }
 
 /// Makes the store of `branch`, a fork of `parent`'s branch the bucket has the record of, in the
-/// directory at `path`, made empty: `prepare` writes into it first; then the store, of the parent's
-/// capacity, naming the parent's bucket, taking what the bucket its uploader, `remote`, keeps the
-/// branch in holds of the child.
+/// directory at `path`, made empty: `prepare` writes into it first; then the store's directory, of
+/// the parent's capacity, naming the parent's bucket, whole. It holds nothing of its own: opening
+/// it recovers the child from the bucket, as any store's opening does (TASK-165.9).
 fn make_child(
     parent: &Store<HostDir>,
-    remote: &Remote,
     path: &Path,
     branch: u64,
     prepare: impl FnOnce(&Path) -> anyhow::Result<()>,
@@ -333,8 +383,8 @@ fn make_child(
     let url =
         url.ok_or_else(|| anyhow::anyhow!("{} names no bucket", parent.dir().path().display()))?;
     let description = Description { block_size: BLOCK_SIZE, capacity, branch };
-    let store = extent_store::create_host(path, description, &url, DIRECT, options())?;
-    crate::remote::take_branch(&store, remote.bucket(), branch)?;
+    extent_store::create_host(path, description, &url, DIRECT)?;
+    extent_store::made_host(path)?;
     let parent = path.parent().filter(|parent| !parent.as_os_str().is_empty());
     std::fs::File::open(parent.unwrap_or(Path::new(".")))?.sync_all()?;
     Ok(())
@@ -355,9 +405,9 @@ pub(crate) fn delete(
     // As this copy's placement, or this host's, deletes it: not from under a later one (`ESTALE`).
     delete_with(path, |dir, branch| match bucket {
         Some(bucket) => {
-            let placed = crate::remote::placed_token(dir, branch)?;
+            let placed = extent_store::host_token(dir)?;
             let token = placed.map_or_else(&token, Ok)?;
-            crate::remote::delete_branch(bucket, branch, token)
+            extent_store::upload::delete_branch(bucket, branch, token)
         }
         None => Ok(()),
     })
@@ -371,7 +421,7 @@ pub(crate) fn delete(
 /// no store, goes, `elsewhere` called for nothing.
 pub(crate) fn delete_with(
     path: &Path,
-    elsewhere: impl Fn(&Path, u64) -> Result<(), crate::remote::Failure>,
+    elsewhere: impl Fn(&Path, u64) -> Result<(), Failure>,
 ) -> Result<(), Error> {
     if !path.exists() {
         return Err(Errno::ENOENT.into());
@@ -383,8 +433,8 @@ pub(crate) fn delete_with(
     extent_store::delete_host(path, deleting).map_err(|err| {
         // Its errno, if deleting the branch elsewhere failed with one: `ESTALE` for a branch a
         // later placement holds.
-        let failure = err.chain().find_map(|cause| cause.downcast_ref::<crate::remote::Failure>());
-        match failure.and_then(crate::remote::Failure::errno) {
+        let failure = err.chain().find_map(|cause| cause.downcast_ref::<Failure>());
+        match failure.and_then(crate::remote::errno) {
             Some(errno) => Error::new(err.context(errno)),
             None => Error::new(err),
         }
@@ -397,18 +447,23 @@ mod tests {
 
     const MIB: u64 = 1 << 20;
 
-    /// TASK-165.7: a fork is the bucket's, made by the store's uploader: given none, it forks
-    /// nothing (`ENOTSUP`), committing nothing, and leaves nothing at the fork's path.
+    /// TASK-196: a store its maker never made whole is no store: it refuses to open, and
+    /// [`unmade`] says so, which deleting it, or making it anew, goes by; once made, it opens.
     #[test]
-    fn forks_with_no_uploader_make_nothing() {
+    fn stores_unmade_open_not() {
         let dir = tempfile::tempdir().unwrap();
-        let store = create(&dir.path().join("store"), MIB, 3).unwrap().store;
-        let epoch = store.epoch().unwrap();
-        let path = dir.path().join("fork");
-        let child = Child { branch: 4, owner: 1, point: false };
-        let forked = fork(&store, None, &path, child, |_| Ok(()), ()).map_err(|err| err.errno());
-        let refused = (forked, path.exists(), store.epoch().unwrap());
-        assert_eq!(refused, (Err(Some(Errno::ENOTSUP)), false, epoch));
+        let path = dir.path().join("store");
+        drop(create_unmade(&path, MIB, 3, None, keeping().unwrap()).unwrap());
+        assert!(unmade(&path));
+        let refused = open(&path, keeping().unwrap()).err().unwrap();
+        let Failure::Local(refused) = refused else { panic!("{refused}") };
+        assert_eq!(refused.downcast_ref::<extent_store::Unmade>(), Some(&extent_store::Unmade));
+        extent_store::made_host(&path).unwrap();
+        assert!(!unmade(&path));
+        assert_eq!(
+            open(&path, keeping().unwrap()).map(|opened| opened.store.description().branch).ok(),
+            Some(3)
+        );
     }
 
     /// TASK-165.6: a store made on a host of fxdax's system names the host's bucket; one made
@@ -428,12 +483,9 @@ mod tests {
 
         // Where no host's bucket is, as in this test's process.
         let (made, fork) = (dir.path().join("made"), dir.path().join("fork"));
-        let Opened { store, bucket } = create(&made, MIB, 3).unwrap();
-        let store = Arc::new(store);
-        let options = crate::remote::Options { token: 1, ..Default::default() };
-        let remote = Remote::attach(store.clone(), bucket.clone(), 1, options).unwrap();
+        let Opened { store, bucket, remote } = create(&made, MIB, 3, keeping().unwrap()).unwrap();
         let child = Child { branch: 4, owner: 1, point: false };
-        super::fork(&store, Some(&remote), &fork, child, |_| Ok(()), ()).unwrap();
+        super::fork(&store, &remote, &fork, child, |_| Ok(()), ()).unwrap();
         let own = dir.path().canonicalize().unwrap().join("made.bucket");
         let url = format!("file://{}/", own.display());
         for named in [&made, &fork] {
@@ -458,7 +510,7 @@ mod tests {
     fn older_stores_are_refused_by_their_format() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("store");
-        drop(create(&path, MIB, 3).unwrap());
+        drop(create(&path, MIB, 3, keeping().unwrap()).unwrap());
         let description = path.join("store");
         let text = std::fs::read_to_string(&description).unwrap();
         let older: String = std::iter::once("fxdax extent store 5")
@@ -468,7 +520,8 @@ mod tests {
         std::fs::write(&description, older).unwrap();
 
         let format = extent_store::Format { found: "fxdax extent store 5".to_owned() };
-        let refused = open(&path).err().unwrap();
+        let refused = open(&path, keeping().unwrap()).err().unwrap();
+        let Failure::Local(refused) = refused else { panic!("{refused}") };
         assert_eq!(refused.downcast_ref::<extent_store::Format>(), Some(&format), "{refused:#}");
         let refused = crate::Storage::open(&path).err().unwrap();
         assert_eq!(refused.errno(), Some(Errno::ENOTSUP), "{refused:#}");

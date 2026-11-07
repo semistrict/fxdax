@@ -546,7 +546,8 @@ RUN apk add --no-cache postgresql postgresql-contrib perf e2fsprogs
                 let running = self.start(&served, role, vm, load_memory()?, None)?;
                 running.finish().with_context(|| format!("VM {} of {}", vm + 1, vms()))?;
             }
-            Ok(())
+            crate::common::say_daemon_stats(test_setup, "extentd");
+            crate::common::check_durable_median(test_setup, "extentd")
         }
 
         /// fxdax: the VMs of a density case (TASK-164.5), each on a fork of the base, booted one

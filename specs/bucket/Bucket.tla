@@ -559,7 +559,10 @@ Fencing(s) == ~s.fenced \/ s.seq <= s.top
 \* of them, acknowledged; the rest restamped after the fence, if the branch's last commit is one
 \* of the WAL's or the commit the WAL started from (walFollows), as the branch is after the fence
 \* (walAfterFence); otherwise the WAL diverged, and is dropped. The commit the WAL started from,
-\* its first segment's commit's parent, the WAL keeps.
+\* its first segment's commit's parent, the WAL keeps. The store keeps the restamped footers in
+\* memory alone (TASK-165.9): a crash after finds them stamped as before, which the next opening
+\* restamps by the same commits, its own chain, and Max2 with a later floor, to what this would
+\* have: so the WAL here holds them restamped.
 Opened(h, b, s) ==
     LET floor == IF R("epochSequences") THEN <<s.epoch, 0>> ELSE <<0, 0>>
         next == Max2(s.st.next, floor)

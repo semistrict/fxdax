@@ -10,11 +10,13 @@
 //! durable commits, reads.
 
 use crate::dir::{Dir, File};
+use crate::layout::SegmentId;
 use crate::sync::{Mutex, thread};
 use anyhow::{Context as _, Error};
 use std::collections::{BTreeSet, HashSet, VecDeque};
 use std::io;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// A branch's commits, as they become durable: each `T`, what a flush needs of it, from the time
 /// it is ordered until a flush takes it.
@@ -25,6 +27,69 @@ pub(crate) struct Durability<T> {
     /// The commits no flush has taken yet, oldest first: the last of those ordered. Those between
     /// them and the last durable, a flush has taken, and is making durable.
     queue: VecDeque<T>,
+    /// fxdax: when each commit not yet durable was ordered, oldest first: how long each waits to
+    /// be made durable, [`Lags`], is measured from then.
+    ordered_at: VecDeque<std::time::Instant>,
+}
+
+/// fxdax: how long commits waited, from being ordered, which a daemon answers a guest's `COMMIT`
+/// on, until a flush made them durable, in this process: so many, the longest, and so many within
+/// each power of two of milliseconds, the first those within one (TASK-165.9: doc-2's requirement
+/// 11 bounds it, at 50 ms of extentd's turns).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Lags {
+    pub count: u64,
+    pub max_us: u64,
+    /// fxdax: those within extentd's turn, 50 ms: doc-12's median holds while they are half of
+    /// them at least (TASK-221).
+    pub within_turn: u64,
+    /// Bucket `i`: within 2^i ms (`i` 0: within 1 ms), the last all beyond.
+    pub buckets: [u64; LAG_BUCKETS],
+}
+
+/// How many buckets [`Lags`] has: the last, beyond 2^14 ms, some 16 s.
+pub const LAG_BUCKETS: usize = 16;
+
+impl Lags {
+    /// The lag `fraction` of the commits were made durable within, as the upper bound of its
+    /// bucket, in milliseconds: none, if no commit was.
+    pub fn quantile_ms(&self, fraction: f64) -> Option<u64> {
+        let wanted = (self.count as f64 * fraction).ceil() as u64;
+        let mut seen = 0;
+        for (bucket, count) in self.buckets.iter().enumerate() {
+            seen += count;
+            if seen >= wanted.max(1) && self.count > 0 {
+                return Some(1 << bucket);
+            }
+        }
+        None
+    }
+
+    fn record(&mut self, lag: std::time::Duration) {
+        let us = lag.as_micros() as u64;
+        self.count += 1;
+        let ms = us.div_ceil(1000).max(1);
+        let bucket = (u64::BITS - (ms - 1).leading_zeros()) as usize;
+        self.buckets[bucket.min(LAG_BUCKETS - 1)] += 1;
+        self.within_turn += u64::from(us <= 50_000);
+        if us > self.max_us {
+            self.max_us = us;
+            // The longest yet, past extentd's turn: said as it happens, which a daemon killed
+            // leaves in its log.
+            if us > 50_000 {
+                log::warn!("extent store: a commit durable {lag:?} after it was ordered");
+            }
+        }
+    }
+}
+
+/// [`Lags`] of this process's stores.
+static LAGS: std::sync::Mutex<Lags> =
+    std::sync::Mutex::new(Lags { count: 0, max_us: 0, within_turn: 0, buckets: [0; LAG_BUCKETS] });
+
+/// fxdax: how long this process's stores' commits waited to be made durable ([`Lags`]).
+pub fn durability_lags() -> Lags {
+    *LAGS.lock().unwrap()
 }
 
 /// The commits a flush takes, oldest first, and the epoch of the last.
@@ -36,7 +101,7 @@ pub(crate) struct Batch<T> {
 impl<T> Durability<T> {
     /// A branch's, whose commits up to `epoch` are durable: as opened.
     pub fn new(epoch: u64) -> Self {
-        Self { ordered: epoch, durable: epoch, queue: VecDeque::new() }
+        Self { ordered: epoch, durable: epoch, queue: VecDeque::new(), ordered_at: VecDeque::new() }
     }
 
     /// Orders `commit`, of `epoch`, the next.
@@ -44,6 +109,7 @@ impl<T> Durability<T> {
         assert_eq!(epoch, self.ordered + 1, "commits are ordered in turn");
         self.ordered = epoch;
         self.queue.push_back(commit);
+        self.ordered_at.push_back(std::time::Instant::now());
     }
 
     /// Takes the commits ordered that no flush has taken, if any, for a flush to make durable.
@@ -57,6 +123,12 @@ impl<T> Durability<T> {
     /// The commits up to `last`, a flush's, are durable.
     pub fn finish(&mut self, last: u64) {
         debug_assert!(last > self.durable && last <= self.ordered, "flushes finish in order");
+        let now = std::time::Instant::now();
+        let mut lags = LAGS.lock().unwrap();
+        for _ in self.durable..last {
+            let ordered = self.ordered_at.pop_front().expect("a commit ordered is timed");
+            lags.record(now - ordered);
+        }
         self.durable = last;
     }
 
@@ -65,14 +137,19 @@ impl<T> Durability<T> {
         !self.queue.is_empty()
     }
 
+    /// Whether commits ordered are not durable yet: waiting for a flush to take them, or taken by
+    /// one in flight.
+    pub fn pending(&self) -> bool {
+        self.ordered > self.durable
+    }
+
     /// The epoch of the last commit durable.
     pub fn durable(&self) -> u64 {
         self.durable
     }
 
-    /// The epoch of the last commit a flush took, which may not be durable yet: what
-    /// [`Rules::durable_once_synced`](crate::Rules::durable_once_synced) turned off has the
-    /// uploader take as durable.
+    /// The epoch of the last commit a flush took, which may not be durable yet.
+    #[cfg(test)]
     pub fn taken(&self) -> u64 {
         self.ordered - self.queue.len() as u64
     }
@@ -125,9 +202,23 @@ impl Drop for Helpers {
     }
 }
 
+/// fxdax: what [`Syncs::sync_files`] synced: so many files whose pages leave the host's page
+/// cache, the extents stored on their own, and so many whose pages stay, segments' raw files; and
+/// how long the longest of each took.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FileSyncs {
+    pub files: usize,
+    pub cached: usize,
+    pub longest_file_us: u64,
+    pub longest_cached_us: u64,
+}
+
 /// What a flush makes durable of the commits it takes: the files their data is in, and the
 /// directories whose entries they changed.
 pub(crate) struct Syncs<F> {
+    /// fxdax: the segments whose framings it waits for, their framed files what makes the data
+    /// written to them since the last commit before they closed durable (TASK-165.9).
+    framings: Vec<SegmentId>,
     files: Vec<Arc<F>>,
     /// fxdax: those of them written and synced again and again, as the open segment's raw file
     /// is, which keep their pages in the host's page cache ([`File::sync_cached`]).
@@ -137,7 +228,7 @@ pub(crate) struct Syncs<F> {
 
 impl<F> Default for Syncs<F> {
     fn default() -> Self {
-        Self { files: Vec::new(), cached: Vec::new(), dirs: BTreeSet::new() }
+        Self { framings: Vec::new(), files: Vec::new(), cached: Vec::new(), dirs: BTreeSet::new() }
     }
 }
 
@@ -158,8 +249,19 @@ impl<F: File> Syncs<F> {
         self.dirs.insert(path);
     }
 
+    /// fxdax: waits for segment `number`'s framing, done by then or not.
+    pub fn framing(&mut self, number: SegmentId) {
+        self.framings.push(number);
+    }
+
+    /// fxdax: the segments whose framings it waits for.
+    pub fn framings(&self) -> &[SegmentId] {
+        &self.framings
+    }
+
     /// Syncs what `other` does, too.
     pub fn extend(&mut self, other: Syncs<F>) {
+        self.framings.extend(other.framings);
         self.files.extend(other.files);
         self.cached.extend(other.cached);
         self.dirs.extend(other.dirs);
@@ -169,16 +271,42 @@ impl<F: File> Syncs<F> {
     /// fxdax: [`AT_ONCE`] of the files at a time, then of the directories (TASK-92.42); one at a
     /// time, if the directory's I/O is its callers' alone ([`Dir::concurrent`], TASK-79.79).
     pub fn sync<D: Dir<File = F>>(&self, dir: &D) -> Result<(), Error> {
-        let most = if dir.concurrent() { AT_ONCE } else { 1 };
+        self.sync_files(dir)?;
+        self.sync_dirs(dir)
+    }
+
+    /// fxdax: syncs the files, as [`Syncs::sync`] does first; returns how many of each kind, and
+    /// how long the longest of each took (TASK-165.9).
+    pub fn sync_files<D: Dir<File = F>>(&self, dir: &D) -> Result<FileSyncs, Error> {
         let sync: fn(&F) -> io::Result<()> = F::sync;
         let sync_cached: fn(&F) -> io::Result<()> = F::sync_cached;
         let mut seen = HashSet::new();
-        let files: Vec<_> = (self.files.iter().map(|file| (file, sync)))
-            .chain(self.cached.iter().map(|file| (file, sync_cached)))
-            .filter(|(file, _)| seen.insert(Arc::as_ptr(file)))
+        let files: Vec<_> = (self.files.iter().map(|file| (file, sync, false)))
+            .chain(self.cached.iter().map(|file| (file, sync_cached, true)))
+            .filter(|(file, _, _)| seen.insert(Arc::as_ptr(file)))
             .collect();
-        at_once(&files, most, |(file, sync)| sync(file).context("syncing extents' data"))?;
+        let longest = [AtomicU64::new(0), AtomicU64::new(0)];
+        let most = if dir.concurrent() { AT_ONCE } else { 1 };
+        at_once(&files, most, |(file, sync, cached)| {
+            let started = std::time::Instant::now();
+            sync(file).context("syncing extents' data")?;
+            let took = started.elapsed().as_micros() as u64;
+            longest[usize::from(*cached)].fetch_max(took, Ordering::Relaxed);
+            Ok(())
+        })?;
+        let cached = files.iter().filter(|(_, _, cached)| *cached).count();
+        Ok(FileSyncs {
+            files: files.len() - cached,
+            cached,
+            longest_file_us: longest[0].load(Ordering::Relaxed),
+            longest_cached_us: longest[1].load(Ordering::Relaxed),
+        })
+    }
+
+    /// fxdax: syncs the directories, as [`Syncs::sync`] does after the files.
+    pub fn sync_dirs<D: Dir<File = F>>(&self, dir: &D) -> Result<(), Error> {
         let dirs: Vec<&String> = self.dirs.iter().collect();
+        let most = if dir.concurrent() { AT_ONCE } else { 1 };
         at_once(&dirs, most, |path| dir.sync_dir(path).with_context(|| format!("syncing {path}")))
     }
 
@@ -279,6 +407,26 @@ mod tests {
         durability.finish(batch.last);
         assert_eq!((durability.durable(), durability.taken()), (2, 2));
         assert!(durability.queued());
+        // Pending, taken or not, until durable.
+        let batch = durability.take().unwrap();
+        assert!(!durability.queued() && durability.pending());
+        durability.finish(batch.last);
+        assert!(!durability.pending());
+    }
+
+    /// Lags count each commit within the least power of two of milliseconds holding it, the
+    /// longest exactly; their quantiles are those buckets' bounds; and those within extentd's
+    /// turn, 50 ms, exactly.
+    #[test]
+    fn lags_are_counted_in_powers_of_two_of_milliseconds() {
+        let mut lags = Lags::default();
+        for ms in [0, 1, 2, 3, 40, 50, 51, 70] {
+            lags.record(std::time::Duration::from_millis(ms));
+        }
+        assert_eq!((lags.count, lags.max_us, lags.within_turn), (8, 70_000, 6));
+        assert_eq!(lags.buckets[..8], [2, 1, 1, 0, 0, 0, 3, 1]);
+        assert_eq!((lags.quantile_ms(0.5), lags.quantile_ms(0.99)), (Some(4), Some(128)));
+        assert_eq!(Lags::default().quantile_ms(0.99), None);
     }
 
     /// A commit is ordered after the one before it, or not at all.

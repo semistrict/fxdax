@@ -2,46 +2,37 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-//! fxdax: what a store keeps for its uploader, which uploads its branch to object storage as a
-//! writer of it (doc-7): the segments the store closed, their footers stamped by the writer's
-//! chain (`extent_frame::segment::Chain`), which say what each commit changed, and the bytes each
-//! commit wrote, which bound the uploader's lag; and what the uploader starts from.
+//! fxdax: a segment of the store's write-ahead log, for its uploader to upload ([`Closed`]).
 
 use crate::dir::File;
 use crate::framed::read_object;
-use crate::layout::{Change, Extents};
 use crate::segments::footer_last;
-use extent_frame::segment::{Footer, Location};
-use extent_remote::cache::Cache;
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use extent_frame::segment::Footer;
 use std::io;
 use std::sync::Arc;
-use storage_device::ExtentId;
-
-/// fxdax: what a store held when its uploader began: its extents, with their lengths, root and
-/// capacity, as of `epoch`.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Snapshot {
-    pub epoch: u64,
-    pub extents: Vec<(ExtentId, u64)>,
-    pub root: Vec<u8>,
-    pub capacity: u64,
-}
 
 /// fxdax: a segment the store closed, for its uploader to upload: its footer, its file, framed,
-/// and the files of the extents stored on their own its footer names, by their keys.
+/// and the files of the extents stored on their own its footer names, by their keys; and whether
+/// its writer's chain stamped it anew after a takeover, which its framed file says not
+/// (TASK-165.9).
 pub struct Closed<F> {
     /// Its number in the store.
     pub number: u64,
     pub footer: Footer,
     pub file: Arc<F>,
     pub own: Vec<(String, Arc<F>)>,
+    pub restamped: bool,
 }
 
 impl<F: File> Closed<F> {
-    /// The segment's bytes: the object it is, checked ([`read_object`]).
+    /// The segment's bytes: the object it is, checked ([`read_object`]), with its footer, stamped
+    /// anew if it was (`extent_frame::restamp`).
     pub fn bytes(&self) -> io::Result<Vec<u8>> {
-        read_object(&*self.file)
+        let object = read_object(&*self.file)?;
+        if !self.restamped {
+            return Ok(object);
+        }
+        extent_frame::restamp(&object, &self.footer.encode()).map_err(io::Error::other)
     }
 
     /// The bytes of the files of its extents stored on their own, by their keys, checked.
@@ -59,93 +50,5 @@ impl<F: File> Closed<F> {
     pub fn tag(&self) -> u64 {
         let commits = &self.footer.contents.commits;
         *commits.last().expect("a segment the store closed names its last commit")
-    }
-}
-
-/// fxdax: what a store keeps for its uploader: the bytes each commit wrote, until released; each
-/// segment closed, until taken once its commits are durable, and, until acknowledged, the segment
-/// itself; and the host's cache of objects, which what is acknowledged goes into (TASK-165.8).
-#[derive(Default)]
-pub(crate) struct Uploads {
-    /// The bytes each commit not yet released wrote.
-    unreleased: BTreeMap<u64, u64>,
-    /// The segments closed and not yet taken, oldest first, by their numbers, with their footers.
-    closed: VecDeque<(u64, Footer)>,
-    /// The segments closed and not yet uploaded, which stay until they are.
-    unuploaded: BTreeSet<u64>,
-    /// The segments taken and not yet acknowledged, with where in the bucket the extents stored on
-    /// their own their footers name are.
-    own: BTreeMap<u64, Vec<(ExtentId, Location)>>,
-    /// The host's cache of the bucket's objects, if it has one.
-    pub cache: Option<Arc<Cache>>,
-}
-
-impl Uploads {
-    /// Keeps the bytes commit `epoch`, whose changes are `changes`, wrote: the lengths as of it,
-    /// which `extents`, the branch's, say, of the extents it wrote, an extent written in writes one
-    /// after another once.
-    pub fn record(&mut self, epoch: u64, changes: &[Change], extents: &Extents) {
-        let (mut bytes, mut last) = (0, None);
-        for change in changes {
-            if let Change::Write { extent, .. } | Change::WriteOwn { extent, .. } = change
-                && last != Some(*extent)
-            {
-                // Freed since, if not held: the commit frees it too.
-                bytes += extents.get(extent).map_or(0, |entry| entry.len);
-                last = Some(*extent);
-            }
-        }
-        self.unreleased.insert(epoch, bytes);
-    }
-
-    /// Keeps segment `number`, closed, whose footer is `footer`, until uploaded.
-    pub fn closed_segment(&mut self, number: u64, footer: Footer) {
-        self.closed.push_back((number, footer));
-        self.unuploaded.insert(number);
-    }
-
-    /// The segments closed not yet taken whose commits are durable, up to `durable`, oldest first,
-    /// by their numbers, with their footers, `limit` of them at most: up to the first `framing`
-    /// says is being framed, whose framed file is what is uploaded.
-    pub fn take_closed(
-        &mut self,
-        durable: u64,
-        framing: impl Fn(u64) -> bool,
-        limit: usize,
-    ) -> Vec<(u64, Footer)> {
-        let mut taken = Vec::new();
-        while taken.len() < limit
-            && self
-                .closed
-                .front()
-                .is_some_and(|(number, footer)| footer_last(footer) <= durable && !framing(*number))
-        {
-            let (number, footer) = self.closed.pop_front().unwrap();
-            self.own.insert(number, footer.own().collect());
-            taken.push((number, footer));
-        }
-        taken
-    }
-
-    /// The commits up to `epoch` are released: the uploader has what it needs of them.
-    pub fn release(&mut self, epoch: u64) {
-        self.unreleased.retain(|committed, _| *committed > epoch);
-    }
-
-    /// Segment `number` is acknowledged: it goes into the host's cache, and with it the extents
-    /// stored on their own its footer names, whose places in the bucket it returns.
-    pub fn acknowledged(&mut self, number: u64) -> Vec<(ExtentId, Location)> {
-        self.unuploaded.remove(&number);
-        self.own.remove(&number).unwrap_or_default()
-    }
-
-    /// Whether segment `number`, closed, is yet to be uploaded.
-    pub fn holds(&self, number: u64) -> bool {
-        self.unuploaded.contains(&number)
-    }
-
-    /// The bytes the commits not yet released wrote.
-    pub fn unreleased_bytes(&self) -> u64 {
-        self.unreleased.values().sum()
     }
 }

@@ -132,10 +132,6 @@ pub struct Rules {
     pub recheck_after_waiting: bool,
     /// A write to an extent freed since it began is dropped as it finishes (TASK-79.1).
     pub drop_writes_to_freed_extents: bool,
-    /// The uploader is given commits and closed segments only once they are durable.
-    pub durable_only: bool,
-    /// A commit is durable once its flush has synced it, not once a flush has taken it.
-    pub durable_once_synced: bool,
     /// Closing a branch waits for a flush in flight to finish.
     pub close_waits_for_flushes: bool,
     /// Closing a branch waits for every segment being framed, whatever closed it, a commit no
@@ -149,8 +145,6 @@ pub struct Rules {
     pub keep_frees_for_views: bool,
     /// A free of an extent a view pins keeps its data while it does.
     pub keep_pins: bool,
-    /// What a commit's frees keep is decided as the commit is published to views, at once.
-    pub decide_at_publish: bool,
     /// A view refuses extents sealed after its commit.
     pub views_refuse_later_extents: bool,
     /// A view reads, of the frees kept, only those after its commit, and those it pins.
@@ -164,14 +158,11 @@ impl Rules {
         commit_waits_for_writes: true,
         recheck_after_waiting: true,
         drop_writes_to_freed_extents: true,
-        durable_only: true,
-        durable_once_synced: true,
         close_waits_for_flushes: true,
         close_waits_for_framings: true,
         framings_end_themselves: true,
         keep_frees_for_views: true,
         keep_pins: true,
-        decide_at_publish: true,
         views_refuse_later_extents: true,
         views_hold_their_commit: true,
     };

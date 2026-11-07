@@ -3,9 +3,11 @@ id: TASK-196
 title: >-
   A daemon killed mid-ImportImage leaves a half-imported store that opens, and
   every import to its path after says ALREADY_EXISTS
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-11-06 06:46'
+updated_date: '2026-11-06 12:13'
 labels:
   - review-2026-11-06
   - extentd
@@ -43,3 +45,15 @@ Not fixed in the review: the fix changes how a store directory says it is whole 
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+Taken into TASK-165.9's opening path (the user, 2026-11-06). A store directory says it is whole only once it is: create_host writes an 'unmade' marker, durably, before the description; its maker removes it, durably, once the store is whole (CreateStore at once; an import once its image is filled and synced). Opening (extent_store's recovery) refuses a marked store; host_store::unmade reports it; extentd's ImportImage and CreateStore remove what an import or create left unmade and make it anew, as ForkFrom does. Un-ignore a_store_whose_importer_died_is_made_anew; check it red with the fix reverted.
+<!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Fixed in 1597b18aa with TASK-165.9 (as the user asked): Store::make writes the 'unmade' marker before anything else, made() removes it once the maker filled the store (an import once it synced, a create at once); Store::recover, Storage::open, ExtentStore::open and extentd refuse an unmade store (extent_store::Unmade, ENOENT); ImportImage and CreateStore remove what an import or create left unmade and make it anew (stores.rs removed_if_unmade). a_store_whose_importer_died_is_made_anew is un-ignored and passes; stores_unmade_open_not (host_store) and stores_unmade_refuse_to_open (extent_store) cover the refusals. Left for its closing with TASK-165.9.
+<!-- SECTION:NOTES:END -->

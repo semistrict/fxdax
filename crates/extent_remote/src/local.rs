@@ -23,9 +23,9 @@ use futures::{StreamExt as _, TryStreamExt as _};
 use object_store::local::LocalFileSystem;
 use object_store::path::Path;
 use object_store::{
-    CopyOptions, GetOptions, GetResult, ListResult, MultipartUpload, ObjectMeta, ObjectStore,
-    ObjectStoreExt as _, PutMode, PutMultipartOptions, PutOptions, PutPayload, PutResult,
-    RenameOptions, Result, UpdateVersion,
+    CopyOptions, GetOptions, GetResult, GetResultPayload, ListResult, MultipartUpload, ObjectMeta,
+    ObjectStore, ObjectStoreExt as _, PutMode, PutMultipartOptions, PutOptions, PutPayload,
+    PutResult, RenameOptions, Result, UpdateVersion,
 };
 use std::fmt;
 use std::ops::Range;
@@ -142,8 +142,16 @@ impl ObjectStore for Local {
         self.files.put_multipart_opts(location, opts).await
     }
 
+    /// As a stream of the bytes asked for, read from the file as it goes, not the file itself,
+    /// which `LocalFileSystem` gives: object_store's throttle, which FXDAX_REMOTE_LATENCY_MS puts
+    /// before a bucket, takes streams alone, and panicked on the file (TASK-208).
     async fn get_opts(&self, location: &Path, options: GetOptions) -> Result<GetResult> {
-        self.files.get_opts(location, options).await
+        let result = self.files.get_opts(location, options).await?;
+        let GetResult { meta, range, attributes, extensions, .. } = &result;
+        let (meta, range, attributes, extensions) =
+            (meta.clone(), range.clone(), attributes.clone(), extensions.clone());
+        let payload = GetResultPayload::Stream(result.into_stream());
+        Ok(GetResult { payload, meta, range, attributes, extensions })
     }
 
     async fn get_ranges(

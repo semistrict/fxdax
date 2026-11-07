@@ -64,13 +64,55 @@ pub fn guest_kernel_slowness() -> anyhow::Result<f64> {
     }
 }
 
+/// fxdax: says in the round's log what the daemon named `name` the test spawned ([`spawn_daemon`])
+/// kept in its stats file, how long its commits waited to be made durable among it: a passing
+/// round's directory, and the file in it, doesn't outlive the run (TASK-165.9).
+pub fn say_daemon_stats(test_setup: &TestSetup, name: &str) {
+    let path = test_setup.tmp_dir.join(format!("{name}-stats.txt"));
+    match fs::read_to_string(&path) {
+        Ok(kept) => kept.lines().for_each(|line| eprintln!("{name} stats: {line}")),
+        Err(err) => eprintln!("{name} stats: reading {}: {err}", path.display()),
+    }
+    // And its stores' warnings, of flushes and framings past extentd's turn among them, in its
+    // log, as the stats file, gone with a round's directory that passed.
+    let log = test_setup.tmp_dir.join(format!("{name}.log"));
+    let warned = fs::read_to_string(&log).unwrap_or_default();
+    let warned = warned.lines().filter(|line| line.contains("WARN extent_store"));
+    for line in warned.take(200) {
+        eprintln!("{name} log: {line}");
+    }
+}
+
+/// fxdax: fails unless the daemon named `name` the test spawned made half its stores' commits
+/// durable within extentd's turn, 50 ms, at least, as its stats file says: doc-12's median
+/// (`durable_lag_within_50ms`, TASK-221).
+pub fn check_durable_median(test_setup: &TestSetup, name: &str) -> anyhow::Result<()> {
+    let path = test_setup.tmp_dir.join(format!("{name}-stats.txt"));
+    let kept = fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
+    let daemon = kept.lines().find_map(|line| line.strip_prefix("daemon: "));
+    let daemon = daemon.context("no daemon line")?;
+    let field = |name: &str| -> anyhow::Result<u64> {
+        let value = daemon.split(' ').find_map(|field| field.strip_prefix(name)?.strip_prefix('='));
+        Ok(value.with_context(|| format!("no {name}"))?.parse()?)
+    };
+    let (count, within) = (field("durable_lag_count")?, field("durable_lag_within_50ms")?);
+    anyhow::ensure!(
+        2 * within >= count,
+        "{within} of {count} commits durable within 50 ms: doc-12's median is 50 ms"
+    );
+    Ok(())
+}
+
 /// An extent daemon of the test's own, FXDAX_EXTENTD_BIN, serving at `socket`, and its control API
 /// beside it ([`control`]), once this returns, with `env` in its environment, and `memory` bytes of
 /// memory if given (its default, 1 GiB, otherwise), logging to `<name>.log` in the test's directory.
 /// fxdax: it keeps what its stores read from their bucket in a part cache of its own,
 /// `<name>-cache` in the test's directory, as production's daemon keeps it on the host's disk
 /// (`FXDAX_EXTENTD_CACHE`, doc-7), unless `env` or this process says otherwise, empty for none: one
-/// daemon at a time has a cache's directory (TASK-164.12).
+/// daemon at a time has a cache's directory (TASK-164.12). And it keeps what it did in
+/// `<name>-stats.txt` beside its log, unless `env` names a file (`FXDAX_EXTENTD_STATS`): what it
+/// downloaded against what it read, which the run's summary says (scripts/guest_results.py,
+/// TASK-165.12).
 pub fn spawn_daemon(
     test_setup: &TestSetup,
     socket: &Path,
@@ -82,8 +124,11 @@ pub fn spawn_daemon(
 
     let bin = std::env::var_os("FXDAX_EXTENTD_BIN").context("FXDAX_EXTENTD_BIN")?;
     let log = fs::File::create(test_setup.tmp_dir.join(format!("{name}.log")))?;
-    // A host keeps stores in a bucket, `env`'s or this process's, or one in its memory, as of
-    // placement 1, unless one is named.
+    // A host keeps stores in a bucket, `env`'s or this process's, or a file bucket of its own in
+    // the test's directory, as of placement 1, unless one is named. Not one in its memory: the
+    // cases open the stores it made in processes of their own, after it, which keep a store's
+    // branch in the bucket its description names, and opening one whose branch the bucket lacks,
+    // its commits acknowledged, is refused (TASK-165.9), as scripts/test-e2e.sh's daemon's.
     let named = |var: &str| {
         env.iter().any(|(given, value)| *given == var && !value.is_empty())
             || std::env::var_os(var).is_some_and(|value| !value.is_empty())
@@ -94,7 +139,8 @@ pub fn spawn_daemon(
         command.arg(memory.to_string());
     }
     if !named("FXDAX_EXTENTD_REMOTE") {
-        command.env("FXDAX_EXTENTD_REMOTE", format!("memory:///{name}"));
+        let bucket = test_setup.tmp_dir.join(format!("{name}.bucket"));
+        command.env("FXDAX_EXTENTD_REMOTE", format!("file://{}/", bucket.display()));
     }
     if !named("FXDAX_EXTENTD_TOKEN") {
         command.env("FXDAX_EXTENTD_TOKEN", "1");
@@ -104,6 +150,10 @@ pub fn spawn_daemon(
     if let Some(cache) = part_cache(given, ours.as_deref(), &test_setup.tmp_dir, name) {
         fs::create_dir_all(&cache)?;
         command.env("FXDAX_EXTENTD_CACHE", cache);
+    }
+    let given = env.iter().any(|(var, _)| *var == "FXDAX_EXTENTD_STATS");
+    if let Some(stats) = stats_file(given, &test_setup.tmp_dir, name) {
+        command.env("FXDAX_EXTENTD_STATS", stats);
     }
     let daemon = command.envs(env.iter().copied()).stderr(log).spawn()?;
     test_setup.register_cleanup_pid(daemon.id());
@@ -132,6 +182,14 @@ fn part_cache(
     name: &str,
 ) -> Option<PathBuf> {
     (given.is_none() && ours.is_none()).then(|| dir.join(format!("{name}-cache")))
+}
+
+/// fxdax: the stats file a test's daemon `name` keeps what it did in, `<name>-stats.txt` in `dir`,
+/// the test's directory, beside its log, unless `env` names one (`given`): what the run's summary
+/// reads of each daemon, its downloads against its reads (scripts/guest_results.py, TASK-165.12).
+/// Not this process's, which scripts/test-e2e.sh's own daemon alone has, its file the run's.
+fn stats_file(given: bool, dir: &Path, name: &str) -> Option<PathBuf> {
+    (!given).then(|| dir.join(format!("{name}-stats.txt")))
 }
 
 /// Gives the extent daemon's socket at `socket`, its user's alone (TASK-155), to the user of the
@@ -205,5 +263,17 @@ mod tests {
         assert_eq!(cache(Some("/nvme/cache"), None), None);
         assert_eq!(cache(None, Some("")), None);
         assert_eq!(cache(None, Some("/nvme/cache")), None);
+    }
+
+    /// TASK-165.12: a test's daemon keeps its stats beside its log, where the run's summary reads
+    /// them, unless its environment names a file, as pgbench's daemons' does.
+    #[test]
+    fn daemons_keep_their_stats_beside_their_logs() {
+        let dir = Path::new("/tmp/case");
+        assert_eq!(
+            stats_file(false, dir, "extentd"),
+            Some(PathBuf::from("/tmp/case/extentd-stats.txt"))
+        );
+        assert_eq!(stats_file(true, dir, "extentd"), None);
     }
 }

@@ -17,6 +17,8 @@ pub(crate) enum Op {
     Create,
     Open,
     SyncDir,
+    /// fxdax: a barrier, of the whole directory, its path "" (TASK-165.9).
+    Barrier,
 }
 
 #[derive(Default)]
@@ -41,6 +43,11 @@ pub(crate) struct Stalling {
 impl Stalling {
     pub(crate) fn new() -> Self {
         Self { dir: MemDir::new(), stall: Arc::new((Mutex::new(Stall::default()), Condvar::new())) }
+    }
+
+    /// The directory as a crash would leave it ([`MemDir::crash`]).
+    pub(crate) fn crash(&self, seed: u64) -> MemDir {
+        self.dir.crash(seed)
     }
 
     /// Has the next call of `op` on `path` stall.
@@ -114,6 +121,7 @@ impl Dir for Stalling {
     }
 
     fn barrier(&self) -> io::Result<()> {
+        self.pass(Op::Barrier, "")?;
         self.dir.barrier()
     }
 }

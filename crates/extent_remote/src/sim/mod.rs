@@ -113,6 +113,7 @@ fn one() {
             "extent_keys_name_segments" => rules.extent_keys_name_segments = false,
             "ways_from_seals" => rules.ways_from_seals = false,
             "moves_taken_first" => rules.moves_taken_first = false,
+            "stores_follow_moves" => rules.stores_follow_moves = false,
             "leases_by_takings" => rules.leases_by_takings = false,
             "passes_fenced_stop" => rules.passes_fenced_stop = false,
             "recoveries_by_origins" => rules.recoveries_by_origins = false,
@@ -252,6 +253,10 @@ test_holds!(forks_with_children_opening, children());
 test_needs!(collection_needs_candidates_first, candidates_first, collected());
 
 test_needs!(collection_needs_forks_from_states, forks_from_states, collected());
+
+// A host's store naming what it reads where it was acknowledged, the collector deleting that and
+// the moves after, compacted again, which its writer's checkpoints followed (TASK-195).
+test_needs!(stores_need_to_follow_moves, stores_follow_moves, collected());
 
 /// Case 4: takeovers while the writer before is still uploading. Case 9: a stale writer
 /// recreating what the collector deleted.

@@ -228,7 +228,7 @@ fn status(errno: Errno) -> Status {
 /// The reply to a call that did, or failed with an errno.
 /// What StatStore says of a store that is and holds `state`.
 fn stat_response(state: stores::StoreState) -> StatStoreResponse {
-    let upload = state.upload.unwrap_or(crate::remote::UploadStatus {
+    let upload = state.upload.unwrap_or(extent_store::upload::UploadStatus {
         lease: None,
         uploaded: 0,
         pending_bytes: 0,

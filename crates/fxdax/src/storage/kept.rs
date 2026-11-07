@@ -12,11 +12,11 @@
 //! host's bucket's is the host's.
 
 use super::collect::{self, Collecting};
-use crate::error::Error;
+use crate::error::{Error, anyhow_of};
 use crate::host_store::{self, Opened};
-use crate::remote::{self, Remote};
-use anyhow::Context as _;
+use crate::remote;
 use extent_remote::layout::Child;
+use extent_store::upload::Remote;
 use extent_store::{HostDir, Store};
 use std::path::Path;
 use std::sync::Arc;
@@ -24,8 +24,11 @@ use std::sync::Arc;
 /// An image's store, its branch kept in its bucket. See the module docs.
 pub(crate) struct Kept {
     store: Arc<Store<HostDir>>,
-    /// The branch's uploader: dropped, it uploads what the store made durable, then stops.
-    remote: Remote,
+    /// The branch's uploader, which opened the store: dropped, it closes the store's open segment,
+    /// uploads what the store made durable, then stops (TASK-192).
+    remote: Remote<HostDir>,
+    /// What reads the store's extents whose data is in the bucket.
+    fetcher: Arc<remote::Fetcher>,
     /// The bucket's collector in this process, if it is the image's own, which no host's collector
     /// collects.
     collecting: Option<Arc<Collecting>>,
@@ -33,28 +36,34 @@ pub(crate) struct Kept {
 
 impl Kept {
     /// Makes a new image at `dir`, which must not exist, holding at most `capacity` bytes, of
-    /// `branch` ([`host_store::create`]).
-    pub fn create(dir: &Path, capacity: u64, branch: u64) -> anyhow::Result<Self> {
-        Self::attached(host_store::create(dir, capacity, branch)?)
+    /// `branch` ([`host_store::create`]): whole if `whole`, or else unmade until its maker says it
+    /// is ([`host_store::create_unmade`], TASK-196), as an import's, once filled.
+    pub fn create(dir: &Path, capacity: u64, branch: u64, whole: bool) -> anyhow::Result<Self> {
+        let keeping = host_store::keeping().map_err(anyhow_of)?;
+        let opened = host_store::create_unmade(dir, capacity, branch, None, keeping);
+        let opened = opened.map_err(anyhow_of)?;
+        if whole {
+            opened.made()?;
+        }
+        Self::opened(opened)
     }
 
-    /// The image at `dir`, or the clone whose handle `dir` is.
+    /// The image at `dir`, or the clone whose handle `dir` is: its uploader takes its branch's
+    /// lease as a copy never placed takes it where this process is no host's daemon
+    /// ([`host_store::keeping`]).
     pub fn open(dir: &Path) -> anyhow::Result<Self> {
-        Self::attached(host_store::open(dir)?)
+        let keeping = host_store::keeping().map_err(anyhow_of)?;
+        Self::opened(host_store::open(dir, keeping).map_err(anyhow_of)?)
     }
 
-    /// `opened`, its branch taken in its bucket, as a copy never placed takes it where this
-    /// process is no host's daemon ([`host_store::token`]).
-    fn attached(opened: Opened) -> anyhow::Result<Self> {
-        let Opened { store, bucket } = opened;
-        let store = Arc::new(store);
+    /// `opened`, its branch taken in its bucket.
+    fn opened(opened: Opened) -> anyhow::Result<Self> {
+        let Opened { store, bucket, remote } = opened;
         let url = store.bucket().unwrap_or_default().to_owned();
-        let options = remote::Options { token: host_store::token()?, ..Default::default() };
-        let remote = Remote::attach(store.clone(), bucket.clone(), rand::random(), options)
-            .with_context(|| format!("keeping branch {:x} in {url}", store.description().branch))?;
+        let fetcher = remote::Fetcher::new(bucket.clone(), None);
         let own = host_store::keeps_own_bucket(&store);
         let collecting = own.then(|| collect::of(&url, &bucket));
-        Ok(Self { store, remote, collecting })
+        Ok(Self { store, remote, fetcher, collecting })
     }
 
     pub fn store(&self) -> &Arc<Store<HostDir>> {
@@ -64,7 +73,7 @@ impl Kept {
     /// What reads the store's extents whose data is in the bucket, as a clone's inherited extents
     /// are (TASK-165.7).
     pub fn fetcher(&self) -> Arc<remote::Fetcher> {
-        self.remote.fetcher()
+        self.fetcher.clone()
     }
 
     /// What follows a commit of the store's: it fails once the uploader has, the branch another
@@ -93,7 +102,7 @@ impl Kept {
     /// fork's commit is made.
     pub fn fork<H>(&self, path: &Path, held: H) -> Result<(), Error> {
         let child = Child { branch: host_store::new_branch(), owner: rand::random(), point: false };
-        host_store::fork(&self.store, Some(&self.remote), path, child, |_| Ok(()), held)
+        host_store::fork(&self.store, &self.remote, path, child, |_| Ok(()), held)
     }
 
     /// The bucket's collector in this process, if it is the image's own.
@@ -148,7 +157,7 @@ mod tests {
     /// The extents `branch`'s state in `bucket` holds, by their lengths, those it inherited too,
     /// and its root.
     fn kept(bucket: &Bucket, branch: u64) -> (BTreeMap<ExtentId, u64>, Vec<u8>) {
-        let recovered = crate::remote::block_on(async {
+        let recovered = extent_store::upload::block_on(async {
             let record = extent_remote::branch::record(bucket, branch).await?;
             extent_remote::recover(bucket, branch, record.and_then(|record| record.origin())).await
         });
@@ -159,8 +168,8 @@ mod tests {
 
     /// The extents `image`'s store holds, by their lengths, and its root.
     fn held(image: &Kept) -> (BTreeMap<ExtentId, u64>, Vec<u8>) {
-        let snapshot = image.store().snapshot().unwrap();
-        (snapshot.extents.into_iter().collect(), snapshot.root)
+        let store = image.store();
+        (store.extents().unwrap().into_iter().collect(), store.root().unwrap())
     }
 
     /// The bytes of the files of the bucket in the directory `dir`.
@@ -270,7 +279,8 @@ mod tests {
         let scenario = fail::FailScenario::setup();
         fail::cfg("remote::stopped", "sleep(500)").unwrap();
         drop(Storage::create(&path, SIZE).unwrap());
-        let reopened = host_store::open(&path).map(|opened| opened.store.description().branch);
+        let reopened = host_store::open(&path, host_store::keeping().unwrap())
+            .map(|opened| opened.store.description().branch);
         scenario.teardown();
         let branch = reopened.map_err(|err| format!("{err:#}"));
         assert_eq!(branch.map(|_| ()), Ok(()));
@@ -282,7 +292,9 @@ mod tests {
     fn images_in_a_hosts_bucket_are_not_collected_here() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("store");
-        drop(host_store::create_in(&path, SIZE, 7, "memory:///host").unwrap());
+        let keeping = host_store::keeping().unwrap();
+        let made = host_store::create_unmade(&path, SIZE, 7, Some("memory:///host"), keeping);
+        made.unwrap().made().unwrap();
         let image = Kept::open(&path).unwrap();
         assert!(image.collecting().is_none());
         image.store().write(ExtentId::new(7, 1), 0, &[1; 4096]).unwrap();
@@ -298,7 +310,7 @@ mod tests {
     fn the_collector_reclaims_what_images_freed() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("image");
-        let image = Kept::create(&path, SIZE, 7).unwrap();
+        let image = Kept::create(&path, SIZE, 7, true).unwrap();
         let extent = |sequence| ExtentId::new(7, sequence);
         // Each stored on its own, in its bucket: 5 MiB, past the size for it.
         let data = crate::test_data::noise(1, 5 * MIB);

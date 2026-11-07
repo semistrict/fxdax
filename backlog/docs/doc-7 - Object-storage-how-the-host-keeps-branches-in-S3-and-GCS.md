@@ -3,7 +3,7 @@ id: doc-7
 title: 'Object storage: how the host keeps branches in S3 and GCS'
 type: specification
 created_date: '2026-10-17 01:31'
-updated_date: '2026-11-05 14:03'
+updated_date: '2026-11-07 02:53'
 ---
 # Object storage: how the host keeps branches in S3 and GCS
 
@@ -279,6 +279,10 @@ The lease says who should write a branch; the dense, create-only segments and th
   or a create fails on a segment of a later epoch. It answers `EROFS` from then on (doc-4) and its
   VMM stops the guest. A create that fails on an earlier writer's segment, landed late where its own
   was to go, means its later segments are void: it takes the branch again, which keeps its guest.
+  *Implemented 2026-11-06 (TASK-204):* the store's uploader (`extent_store::upload`) takes a lease
+  of its own, fences the branch past the late segment, and puts the store's write-ahead log after
+  the branch's end (`Store::rebase`), as opening the store does; a log another writer's commits
+  moved past still fails (`Diverged`, `ESTALE`), and a later writer's segment still fences it.
 - **An ambiguous create** (an error after the object landed, retried into a failed condition) is
   resolved by reading the object back: if it holds what was written, the create succeeded. Lease
   updates name who took the lease, so they are recognised the same way.
@@ -292,7 +296,7 @@ The lease says who should write a branch; the dense, create-only segments and th
 Each branch's commits go through:
 
 1. **Ordered:** `COMMIT` completes (doc-4).
-2. **Durable locally:** within 50 ms, as now.
+2. **Durable locally:** within 50 ms at the median, and doc-12's crash bound at most (TASK-221).
 3. **Closed:** the segment is full or old enough (the lag's time bound).
 4. **Uploaded:** segments and extents of their own upload in parallel (single PUTs up to 64 MiB,
    multipart for larger extents), extents before the segments that name them.

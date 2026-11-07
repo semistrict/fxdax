@@ -5,7 +5,9 @@
 //! What a store keeps in its directory. See the crate's docs.
 
 use crate::dir::Dir;
-use anyhow::{Context as _, Error, anyhow, bail, ensure};
+use anyhow::{Context as _, Error, anyhow, ensure};
+#[cfg(test)]
+use extent_frame::segment::Contents;
 use extent_frame::segment::Location;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap, HashSet};
@@ -13,10 +15,12 @@ use storage_device::ExtentId;
 
 /// The first line of a store's description: its format. fxdax: 6 names the bucket a host's store
 /// keeps its branches in (TASK-165.6); 7 places an extent whose data is in the bucket by its
-/// location there (TASK-165.8), and holds one branch, whose capacity its index holds, no branch
-/// records (TASK-165.7). A store of another format is refused ([`Format`]): nothing reads,
-/// converts or upgrades it.
-pub(crate) const FORMAT: &str = "fxdax extent store 7";
+/// location there (TASK-165.8), and holds one branch, no branch records (TASK-165.7); 8 has no
+/// index: its branch is the bucket's, its write-ahead log and its segments' logs of their
+/// commits, and its description names its capacity until a commit sets one, and its placement's
+/// fencing token, if placed (TASK-165.9). A store of another format is refused ([`Format`]):
+/// nothing reads, converts or upgrades it.
+pub(crate) const FORMAT: &str = "fxdax extent store 8";
 
 /// fxdax: the error of a store whose description is of another format than [`FORMAT`], an older
 /// one included: refused, as nothing reads it.
@@ -38,12 +42,17 @@ pub struct Description {
 
 /// The store's description, its `store` file: its format, block size, and branch; and fxdax: the
 /// URL of the bucket its branch is kept in, which every store in a host's directory names
-/// (`create_host`, TASK-165.6), and a store of memory's need not.
+/// (`create_host`, TASK-165.6), and a store of memory's need not; the capacity its branch has
+/// until a commit sets one, as a branch made for it, or taken into it, says none; and the fencing
+/// token of its placement, if it was placed (TASK-39.7), which takes the branch's lease
+/// (TASK-165.9).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct StoreFile {
     pub block_size: u32,
     pub branch: u64,
     pub bucket: Option<String>,
+    pub capacity: u64,
+    pub token: Option<u64>,
 }
 
 /// The fields of a text of lines of `key value`, after its first, which is `first`.
@@ -70,16 +79,27 @@ impl StoreFile {
             return Err(Format { found: found.to_owned() }.into());
         }
         let fields = fields(text, FORMAT)?;
+        let token = fields.contains_key("token").then(|| number(&fields, "token")).transpose()?;
         Ok(Self {
             block_size: number(&fields, "block_size")?.try_into().context("bad block_size")?,
             branch: number(&fields, "branch")?,
             bucket: fields.get("bucket").cloned(),
+            capacity: number(&fields, "capacity")?,
+            token,
         })
     }
 
     pub(crate) fn text(&self) -> String {
-        let bucket = self.bucket.as_ref().map_or(String::new(), |url| format!("bucket {url}\n"));
-        format!("{FORMAT}\nblock_size {}\nbranch {}\n{bucket}", self.block_size, self.branch)
+        let Self { block_size, branch, bucket, capacity, token } = self;
+        let mut text = format!("{FORMAT}\nblock_size {block_size}\nbranch {branch}\n");
+        text += &format!("capacity {capacity}\n");
+        if let Some(url) = bucket {
+            text += &format!("bucket {url}\n");
+        }
+        if let Some(token) = token {
+            text += &format!("token {token}\n");
+        }
+        text
     }
 }
 
@@ -89,15 +109,16 @@ pub(crate) const DESCRIPTION: &str = "store";
 pub(crate) const SEGMENTS: &str = "segments";
 /// The directory of extents stored on their own, a directory for each branch's.
 pub(crate) const EXTENTS: &str = "extents";
-/// The directory of the index's files, a directory for each branch's.
-pub(crate) const INDEX: &str = "index";
+/// fxdax: the directory of the open segments' logs, a directory for each branch's: the commits each
+/// holds, appended and synced by the flushes that make them durable (TASK-165.9).
+pub(crate) const LOGS: &str = "logs";
 /// The directory of open segments' files, raw, a directory for each branch's.
 pub(crate) const OPEN_SEGMENTS: &str = "open-segments";
 /// The directory of the files of open extents stored on their own, raw, a directory for each
 /// branch's.
 pub(crate) const OPEN_EXTENTS: &str = "open-extents";
 
-/// The directory of `branch`'s files of `kind` (`SEGMENTS`, `EXTENTS`, `INDEX`).
+/// The directory of `branch`'s files of `kind` (`SEGMENTS`, `EXTENTS`, `LOGS`, ...).
 pub(crate) fn branch_dir(kind: &'static str, branch: u64) -> String {
     format!("{kind}/{branch:016x}")
 }
@@ -129,13 +150,13 @@ pub(crate) fn extent_path(extent: ExtentId) -> String {
     format!("{}/{:016x}", branch_dir(EXTENTS, extent.branch), extent.sequence)
 }
 
-/// The path of `branch`'s index file `number`.
-pub(crate) fn index_path(branch: u64, number: u64) -> String {
-    format!("{}/{number:016x}", branch_dir(INDEX, branch))
+/// fxdax: the path of the log of the commits of a segment, while it is open (TASK-165.9).
+pub(crate) fn log_path(segment: SegmentId) -> String {
+    format!("{}/{:016x}", branch_dir(LOGS, segment.branch), segment.number)
 }
 
-/// The number in a file's name: a segment's, an index file's, an extent's sequence number, or a
-/// branch's directory's.
+/// The number in a file's name: a segment's, a log's, an extent's sequence number, or a branch's
+/// directory's.
 pub(crate) fn parse_number(name: &str) -> Option<u64> {
     (name.len() == 16).then(|| u64::from_str_radix(name, 16).ok()).flatten()
 }
@@ -150,9 +171,12 @@ pub(crate) fn list_numbers<D: Dir>(dir: &D, path: &str) -> Result<Vec<u64>, Erro
     Ok(numbers)
 }
 
-/// Creates `branch`'s directories of segments, extents and index files, where it has none.
+/// The directories of a store's files, each a directory for each branch's.
+pub(crate) const KINDS: [&str; 5] = [SEGMENTS, EXTENTS, LOGS, OPEN_SEGMENTS, OPEN_EXTENTS];
+
+/// Creates `branch`'s directories of segments, extents, logs and open files, where it has none.
 pub(crate) fn create_branch_dirs<D: Dir>(dir: &D, branch: u64) -> Result<(), Error> {
-    for kind in [SEGMENTS, EXTENTS, INDEX, OPEN_SEGMENTS, OPEN_EXTENTS] {
+    for kind in KINDS {
         let path = branch_dir(kind, branch);
         match dir.create_dir(&path) {
             Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {}
@@ -208,6 +232,18 @@ pub(crate) enum Data {
     Remote(Location),
 }
 
+impl Data {
+    /// fxdax: if in the bucket, named at `to`, where the collector moved it, if it is named on its
+    /// way there (`extent_remote::layout::further`, TASK-195).
+    pub fn follow(&mut self, to: &Location) {
+        if let Data::Remote(at) = self
+            && extent_remote::layout::further(&at.key, &to.key)
+        {
+            *at = to.clone();
+        }
+    }
+}
+
 /// An extent: its length, the end of its furthest write, and where its data is.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Extent {
@@ -254,112 +290,8 @@ pub(crate) fn files_of<'a>(
     files
 }
 
-/// A branch's index as of an epoch, whose extents are all sealed, and the number of the segment
-/// open then, whose footer, and those of the segments closed after it, follow it. fxdax: and the
-/// branch's capacity as of it (TASK-165.7).
-#[derive(Debug, PartialEq, Eq)]
-pub(crate) struct Checkpoint {
-    pub epoch: u64,
-    pub next_sequence: u64,
-    pub root: Vec<u8>,
-    pub segment: u64,
-    pub capacity: u64,
-    pub extents: Vec<(ExtentId, Extent)>,
-    /// fxdax: the runs of the branch's own extents it froze once sealed, which it writes no more
-    /// (`Spent`, TASK-79.6): each's first, and its end, past its last.
-    pub spent: Vec<(ExtentId, u64)>,
-}
-
-/// A checkpoint's state but for its extents, its table's footer holds.
-#[derive(Serialize, Deserialize)]
-struct Rest {
-    epoch: u64,
-    next_sequence: u64,
-    root: Vec<u8>,
-    segment: u64,
-    capacity: u64,
-}
-
-/// fxdax: what begins the key of an extent's place in a checkpoint's table, if its data is in the
-/// bucket: then its key there, its offset there the row's (TASK-165.8). Keys there look as the
-/// store's own paths do.
-const BUCKET: &str = "bucket:";
-/// fxdax: the key of a row of a checkpoint's table naming a run of its branch's extents it freed
-/// once sealed: the run's first, and, as its offset, its end (TASK-79.6). Checkpoints only a
-/// branch's own store reads hold them, not object storage's.
-const SPENT: &str = "spent";
-
-impl Checkpoint {
-    /// Its table, in doc-7's format, as checkpoints in object storage are (`extent_frame::table`):
-    /// each extent in one run of a segment, or a file of its own, or elsewhere.
-    pub(crate) fn table(&self) -> Result<Vec<u8>, Error> {
-        let mut entries = Vec::with_capacity(self.extents.len());
-        for (extent, entry) in &self.extents {
-            let (key, offset) = match &entry.data {
-                Data::Pieces(pieces) => match pieces[..] {
-                    [piece] if piece.extent_offset == 0 && piece.len == entry.len => {
-                        (segment_path(piece.segment), piece.offset)
-                    }
-                    _ => bail!("{extent:?} is not sealed in one run"),
-                },
-                Data::Own => (extent_path(*extent), 0),
-                Data::Remote(location) => (format!("{BUCKET}{}", location.key), location.offset),
-            };
-            entries.push(((extent.branch, extent.sequence), key, offset, entry.len));
-        }
-        for (first, end) in &self.spent {
-            entries.push(((first.branch, first.sequence), SPENT.to_owned(), *end, 0));
-        }
-        entries.sort_by_key(|(id, ..)| *id);
-        let rest = Rest {
-            epoch: self.epoch,
-            next_sequence: self.next_sequence,
-            root: self.root.clone(),
-            segment: self.segment,
-            capacity: self.capacity,
-        };
-        let rest = bincode::serialize(&rest).expect("checkpoints serialize");
-        let rows = entries.iter().map(|(id, key, offset, len)| (*id, key.as_str(), *offset, *len));
-        Ok(extent_frame::table::encode(rows, rest))
-    }
-
-    /// The checkpoint whose table is `bytes`.
-    pub(crate) fn of_table(bytes: &[u8]) -> Result<Self, Error> {
-        let (footer, rows) = extent_frame::table::decode(bytes)?;
-        let Rest { epoch, next_sequence, root, segment, capacity } =
-            bincode::deserialize(&footer.rest).context("a checkpoint's state")?;
-        let (mut extents, mut spent) = (Vec::with_capacity(rows.len()), Vec::new());
-        for row in rows {
-            let extent = ExtentId::new(row.id.0, row.id.1);
-            if row.key == SPENT {
-                spent.push((extent, row.offset));
-                continue;
-            }
-            let data = if let Some(key) = row.key.strip_prefix(BUCKET) {
-                Data::Remote(Location { key: key.to_owned(), offset: row.offset, len: row.len })
-            } else if row.key == extent_path(extent) {
-                Data::Own
-            } else {
-                let segment = (row.key.strip_prefix(SEGMENTS).and_then(|rest| {
-                    let (branch, number) = rest.strip_prefix('/')?.split_once('/')?;
-                    Some(SegmentId { branch: parse_number(branch)?, number: parse_number(number)? })
-                }))
-                .ok_or_else(|| anyhow!("a checkpoint names {:?}", row.key))?;
-                Data::Pieces(vec![Piece {
-                    segment,
-                    offset: row.offset,
-                    extent_offset: 0,
-                    len: row.len,
-                }])
-            };
-            extents.push((extent, Extent { len: row.len, data }));
-        }
-        Ok(Self { epoch, next_sequence, root, segment, capacity, extents, spent })
-    }
-}
-
-/// A change an epoch made to the index.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// A change a commit makes to the branch, which the next commit records.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Change {
     /// A piece of the extent's data was written to a segment.
     Write { extent: ExtentId, piece: Piece },
@@ -372,8 +304,6 @@ pub(crate) enum Change {
     Move { extent: ExtentId, pieces: Vec<Piece> },
     /// The extent's data was copied to its own file, sealing it at its length.
     MoveOwn { extent: ExtentId },
-    /// fxdax: the store holds the extent, sealed, whose data is in the bucket, at `location`.
-    Adopt { extent: ExtentId, location: Location },
 }
 
 /// fxdax: of `changes`, an epoch's, the extents it freed that a commit held: but those written in
@@ -397,19 +327,6 @@ pub(crate) fn held_frees(changes: &[Change]) -> HashSet<ExtentId> {
     freed
 }
 
-/// An epoch's changes to the index, which a commit records.
-#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct Delta {
-    pub epoch: u64,
-    pub next_sequence: u64,
-    /// The root the commit set, if it set one.
-    pub root: Option<Vec<u8>>,
-    /// fxdax: the capacity it set, if it set one: a resize is ordered with the commits, as it is
-    /// in object storage (TASK-165.3, TASK-165.7).
-    pub capacity: Option<u64>,
-    pub changes: Vec<Change>,
-}
-
 /// Where an extent's data is, as a store's user sees it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Place {
@@ -423,25 +340,6 @@ pub enum Place {
     Pieces,
 }
 
-/// A record of an index file, which holds a checkpoint, its table ([`Checkpoint::table`]), and the
-/// deltas of the epochs after it.
-#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) enum Record {
-    Checkpoint(Vec<u8>),
-    Delta(Delta),
-    /// fxdax: the capacity the branch was set to, after the commits before it, durably, though no
-    /// commit came since, as a resize of a store no guest commits to (TASK-165.7).
-    Capacity(u64),
-    /// fxdax: segment `segment` of the branch's was acknowledged in the bucket, at `key`: the
-    /// extents sealed in it, and those stored on their own its footer names, at their places
-    /// `own`, are the bucket's from now on, their files the host's cache's (TASK-165.8).
-    Acknowledged {
-        segment: u64,
-        key: String,
-        own: Vec<(ExtentId, Location)>,
-    },
-}
-
 /// A record's header: its payload's length, and its hash.
 const HEADER: usize = 4 + 8;
 
@@ -452,8 +350,8 @@ fn hash(payload: &[u8]) -> u64 {
     rapidhash::rapidhash_seeded(payload, SEED ^ payload.len() as u64)
 }
 
-/// `record`, as an index file holds it.
-pub(crate) fn encode(record: &Record) -> Vec<u8> {
+/// `record`, as a log holds it: its header, then its payload.
+pub(crate) fn encode<R: Serialize>(record: &R) -> Vec<u8> {
     let payload = bincode::serialize(record).expect("records serialize");
     let len = u32::try_from(payload.len()).expect("a record is under 4 GiB");
     let mut bytes = Vec::with_capacity(HEADER + payload.len());
@@ -464,7 +362,7 @@ pub(crate) fn encode(record: &Record) -> Vec<u8> {
 }
 
 /// The records at the start of `bytes` that are whole and intact, and how many bytes they take.
-pub(crate) fn decode(bytes: &[u8]) -> (Vec<Record>, usize) {
+pub(crate) fn decode<R: serde::de::DeserializeOwned>(bytes: &[u8]) -> (Vec<R>, usize) {
     let mut records = Vec::new();
     let mut at = 0;
     while let Some(header) = bytes.get(at..at + HEADER) {
@@ -485,57 +383,41 @@ pub(crate) fn decode(bytes: &[u8]) -> (Vec<Record>, usize) {
 mod tests {
     use super::*;
 
-    fn delta(epoch: u64) -> Record {
-        Record::Delta(Delta {
-            epoch,
-            next_sequence: 9,
+    /// The record of a commit of `epoch`'s, as a segment's log holds it (TASK-165.9).
+    fn commit(epoch: u64) -> Contents {
+        Contents {
+            commits: vec![extent_frame::segment::tag(3, epoch)],
+            extents: vec![(ExtentId::new(1, 2), 4096, 8192)],
+            frees: vec![ExtentId::new(1, 1)],
             root: Some(b"root".to_vec()),
+            next_sequence: 9,
             capacity: Some(1 << 20),
-            changes: vec![
-                Change::Write {
-                    extent: ExtentId::new(1, 2),
-                    piece: Piece {
-                        segment: SegmentId { branch: 1, number: 3 },
-                        offset: 4096,
-                        extent_offset: 0,
-                        len: 8192,
-                    },
-                },
-                Change::Free(ExtentId::new(1, 1)),
-            ],
-        })
+            ..Contents::default()
+        }
     }
 
-    fn epochs(records: &[Record]) -> Vec<u64> {
-        records
-            .iter()
-            .map(|record| match record {
-                Record::Delta(delta) => delta.epoch,
-                Record::Checkpoint(table) => Checkpoint::of_table(table).unwrap().epoch,
-                Record::Capacity(_) | Record::Acknowledged { .. } => {
-                    unreachable!("no capacity nor acknowledgement recorded here")
-                }
-            })
-            .collect()
+    fn epochs(records: &[Contents]) -> Vec<u64> {
+        let last = |record: &Contents| extent_frame::segment::epoch_of(record.commits[0]);
+        records.iter().map(last).collect()
     }
 
     #[test]
     fn records_decode_until_one_is_torn() {
-        let bytes = [encode(&delta(1)), encode(&delta(2)), encode(&delta(3))].concat();
-        let (records, len) = decode(&bytes);
+        let bytes = [encode(&commit(1)), encode(&commit(2)), encode(&commit(3))].concat();
+        let (records, len) = decode::<Contents>(&bytes);
         assert_eq!(epochs(&records), vec![1, 2, 3]);
         assert_eq!(len, bytes.len());
 
-        let second = encode(&delta(1)).len();
+        let second = encode(&commit(1)).len();
         // Torn in the third record, or a byte of it changed.
-        let (records, len) = decode(&bytes[..bytes.len() - 1]);
+        let (records, len) = decode::<Contents>(&bytes[..bytes.len() - 1]);
         assert_eq!((epochs(&records), len), (vec![1, 2], 2 * second));
         let mut changed = bytes.clone();
         changed[2 * second + HEADER + 1] ^= 1;
-        assert_eq!(epochs(&decode(&changed).0), vec![1, 2]);
+        assert_eq!(epochs(&decode::<Contents>(&changed).0), vec![1, 2]);
         // Zeros past the records, as a file that grew holds.
         let zeros = [bytes.clone(), vec![0; 4096]].concat();
-        assert_eq!(decode(&zeros), (decode(&bytes).0, bytes.len()));
+        assert_eq!(decode::<Contents>(&zeros), (decode(&bytes).0, bytes.len()));
     }
 
     /// fxdax: pieces one right after another, in the extent and so in the segment, are one,
@@ -572,56 +454,31 @@ mod tests {
         }
     }
 
-    /// Checkpoints are tables, in doc-7's format, of sealed extents.
-    #[test]
-    fn checkpoints_are_tables() {
-        let run = |number, offset, len| Extent {
-            len,
-            data: Data::Pieces(vec![Piece {
-                segment: SegmentId { branch: 1, number },
-                offset,
-                extent_offset: 0,
-                len,
-            }]),
-        };
-        let key = "segments/0000000000000002/0000000000000004".to_owned();
-        let remote = Location { key, offset: 8192, len: 4096 };
-        let checkpoint = Checkpoint {
-            epoch: 9,
-            next_sequence: 7,
-            root: b"root".to_vec(),
-            segment: 4,
-            capacity: 1 << 30,
-            extents: vec![
-                (ExtentId::new(1, 2), run(3, 4096, 8192)),
-                (ExtentId::new(1, 5), Extent { len: 1 << 20, data: Data::Own }),
-                (ExtentId::new(2, 1), Extent { len: 4096, data: Data::Remote(remote) }),
-            ],
-            spent: vec![(ExtentId::new(1, 0), 2), (ExtentId::new(1, 6), 9)],
-        };
-        let table = checkpoint.table().unwrap();
-        assert_eq!(Checkpoint::of_table(&table).unwrap(), checkpoint);
-        assert_eq!(extent_frame::Frame::of(&table).unwrap().data_len, 5 * 36);
-        let open = Extent { len: 8192, data: Data::Pieces(vec![]) };
-        let unsealed = Checkpoint { extents: vec![(ExtentId::new(1, 9), open)], ..checkpoint };
-        assert!(unsealed.table().is_err());
-    }
-
     #[test]
     fn descriptions() {
-        let file = StoreFile { block_size: 4096, branch: u64::MAX, bucket: None };
+        let file = StoreFile {
+            block_size: 4096,
+            branch: u64::MAX,
+            bucket: None,
+            capacity: 1,
+            token: None,
+        };
         assert_eq!(StoreFile::parse(&file.text()).unwrap(), file);
-        // fxdax: a host's store names its bucket (TASK-165.6).
+        // fxdax: a host's store names its bucket (TASK-165.6), and a placed one its placement's
+        // token (TASK-165.9).
         let bucket = Some("file:///images/a/bucket".to_owned());
-        let kept = StoreFile { bucket, ..file.clone() };
+        let kept = StoreFile { bucket, token: Some(7), ..file.clone() };
         assert_eq!(StoreFile::parse(&kept.text()).unwrap(), kept);
-        // fxdax: older formats are refused, by their format (TASK-165.6).
-        for older in ["fxdax extent store 2", "fxdax extent store 5", "fxdax extent store 6"] {
+        // fxdax: older formats are refused, by their format (TASK-165.6), the index's last
+        // (TASK-165.9).
+        for older in ["fxdax extent store 2", "fxdax extent store 6", "fxdax extent store 7"] {
             let refused = StoreFile::parse(&format!("{older}\nblock_size 4096\nbranch 1\n"));
             let found = refused.unwrap_err().downcast::<Format>().unwrap().found;
             assert_eq!(found, older);
         }
-        assert!(StoreFile::parse(&format!("{FORMAT}\nblock_size 4096\n")).is_err());
+        let capacity = "capacity 4096\n";
+        assert!(StoreFile::parse(&format!("{FORMAT}\nblock_size 4096\n{capacity}")).is_err());
+        assert!(StoreFile::parse(&format!("{FORMAT}\nblock_size 4096\nbranch 1\n")).is_err());
     }
 
     #[test]
@@ -630,7 +487,7 @@ mod tests {
         assert_eq!(extent_path(extent), "extents/000000000000000b/000000000000005a");
         let segment = SegmentId { branch: 0xb, number: 77 };
         assert_eq!(segment_path(segment), "segments/000000000000000b/000000000000004d");
-        assert_eq!(index_path(0xb, 2), "index/000000000000000b/0000000000000002");
+        assert_eq!(log_path(segment), "logs/000000000000000b/000000000000004d");
         assert_eq!(parse_number("000000000000004d"), Some(77));
         assert_eq!(parse_number("77"), None);
     }

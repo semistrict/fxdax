@@ -49,6 +49,13 @@ impl<T> Wal<T> {
         Self { base, segments: VecDeque::new() }
     }
 
+    /// fxdax: the log a host's disk held, after `base`, of `segments`, in order, stamped as they
+    /// were, which needn't follow each other: what follows the branch is the log's commits, and
+    /// [`Wal::rebase`] stamps it anew (TASK-165.9).
+    pub fn of(base: Option<u64>, segments: impl IntoIterator<Item = (Footer, T)>) -> Self {
+        Self { base, segments: segments.into_iter().collect() }
+    }
+
     /// The branch's last commit before its first segment.
     pub fn base(&self) -> Option<u64> {
         self.base

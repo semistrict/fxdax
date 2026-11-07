@@ -3,7 +3,7 @@ id: doc-2
 title: 'Guest-owned metadata: Fxfs in the guest kernel over a virtio extent store'
 type: specification
 created_date: '2026-10-13 19:53'
-updated_date: '2026-11-06 06:52'
+updated_date: '2026-11-07 02:53'
 ---
 # Guest-owned metadata: Fxfs in the guest kernel over a virtio extent store
 
@@ -59,6 +59,8 @@ Settled in a design review on 2026-10-13.
 2. **Durability is POSIX with ordering preserved.** A crash may lose a suffix of recent history, but the
    filesystem always recovers to a prefix of it. fsync keeps its ordering guarantees, but need not wait
    for the change to be durable.
+   *Revised 2026-11-06 (TASK-221):* how recent: durable locally within 50 ms at the median, and a
+   daemon or host crash loses at most what was ordered within doc-12's crash bound (500 ms).
 3. **Size is unbounded.** Metadata is cached in guest memory and can be evicted and read back. It is not
    held resident whole.
 4. **The filesystem runs in the guest kernel,** for ext4-speed metadata and so that file pages can be

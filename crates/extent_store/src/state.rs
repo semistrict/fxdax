@@ -6,15 +6,15 @@
 //! epoch and root, and an owner of each part of the rest, which keeps that part's invariants: the
 //! room its extents take ([`Space`]), what it changed since its last commit ([`Uncommitted`]), the
 //! gate writes pass ([`Gate`]), its segments ([`Segments`]), its extents' own files
-//! ([`OwnFiles`]), its index ([`IndexLog`]), what its next commit makes unreferenced
-//! ([`Unreferenced`]); fxdax: what it keeps for its uploader ([`Uploads`]), the frees it keeps
-//! ([`KeptExtents`]), and what views refuse ([`Sealed`]). fxdax: the state locked ([`Locked`]),
-//! which the builds of the tests audit as it lets it go ([`State::audit`], TASK-160.16).
+//! ([`OwnFiles`]), what its next commit makes unreferenced ([`Unreferenced`]); fxdax: its
+//! write-ahead log's segments not yet acknowledged in the bucket ([`Queue`], TASK-165.9), the
+//! frees it keeps ([`KeptExtents`]), and what views refuse ([`Sealed`]). fxdax: the state locked
+//! ([`Locked`]), which the builds of the tests audit as it lets it go ([`State::audit`],
+//! TASK-160.16).
 
 use crate::dir::{Dir, File};
 use crate::durability::Syncs;
 use crate::framed::{Files, Framed};
-use crate::index::IndexLog;
 use crate::kept::{Kept, KeptExtents};
 use crate::layout::{
     Change, Data, EXTENTS, Extent, Extents, FileKey, Piece, SegmentId, branch_dir, extent_path,
@@ -26,8 +26,8 @@ use crate::segments::{Segments, Unframed};
 use crate::store::covered;
 use crate::store::{Info, NoSpace, TooSmall};
 use crate::sync::{Condvar, MutexGuard, rules};
-use crate::uploads::Uploads;
 use crate::views::{Keeping, NotHeld, Sealed};
+use crate::wal::Queue;
 use anyhow::{Error, bail};
 use extent_frame::segment::Location;
 use extent_frame::spent::Spent;
@@ -59,35 +59,81 @@ pub(crate) struct State<F> {
     pub segments: Segments<F>,
     /// The files of its extents stored on their own.
     pub own_files: OwnFiles<F>,
-    /// The index the next commit appends its record to.
-    pub index: IndexLog,
     /// The files the next commit makes unreferenced.
     pub unreferenced: Unreferenced,
-    /// fxdax: what an uploader takes, if one does.
-    pub uploads: Option<Uploads>,
+    /// fxdax: its write-ahead log's segments not yet acknowledged in the bucket, which the
+    /// uploader takes (TASK-165.9).
+    pub wal: Queue,
+    /// fxdax: whether it holds a point, which nothing writes (doc-7, Points).
+    pub point: bool,
     /// fxdax: the extents freed whose data stays.
     pub kept: KeptExtents,
     /// fxdax: the extents views refuse, sealed after their commits.
     pub sealed: Sealed,
     /// Whether a commit failed, after which the store's state may differ from what its files say,
-    /// so it does nothing more.
-    pub failed: bool,
+    /// so it does nothing more. fxdax: and why, the first failure's error, which what it refuses
+    /// says (TASK-165.9: a framing's failure, which no flush waits for, failed a later call).
+    pub failed: Option<String>,
     /// Whether it was closed ([`Store::close`](crate::Store::close)): it reads what it holds, and
     /// changes nothing.
     pub closed: bool,
     /// fxdax: the segments closed for want of room since the last commit, which the next frames,
     /// with the rule that framings end themselves off alone (TASK-150.2's shape, TASK-153.8).
     pub deferred: Vec<Unframed<F>>,
+    /// fxdax: the framings to run, one at a time, in the order their segments closed
+    /// (TASK-165.9).
+    pub framing: Framing<F>,
+    /// fxdax: the branch as the replay of its footers has it, from its opening on, in the builds
+    /// of the tests ([`Replay`], TASK-165.9).
+    #[cfg(any(test, feature = "audit"))]
+    pub replay: Replay,
 }
 
-/// Whom a read is for: the store's own, of what it holds; the uploader's, of what it holds or
-/// keeps; or a view's, as of the commit of `epoch`, of what that commit and those since `since`
+/// fxdax: a branch as the one replay of its segments' footers has it, the bucket's and its
+/// write-ahead log's from its store's opening on, its extents by their lengths: which the state,
+/// as of each commit that closes a segment, must hold, the audit asserts (TASK-165.9's AC #5).
+#[cfg(any(test, feature = "audit"))]
+pub(crate) type Replay = extent_remote::State<Lengths>;
+
+/// fxdax: the lengths of a branch's extents, as a replay of its footers places them ([`Replay`]).
+#[cfg(any(test, feature = "audit"))]
+#[derive(Default)]
+pub(crate) struct Lengths(pub BTreeMap<ExtentId, u64>);
+
+#[cfg(any(test, feature = "audit"))]
+impl extent_remote::recovery::Places for Lengths {
+    fn seal(&mut self, extent: ExtentId, seal: extent_remote::recovery::Seal) {
+        let (extent_remote::recovery::Seal::Run(at) | extent_remote::recovery::Seal::Own(at)) =
+            seal;
+        self.0.insert(extent, at.len);
+    }
+
+    fn free(&mut self, extent: ExtentId) {
+        self.0.remove(&extent);
+    }
+}
+
+/// fxdax: the segments closed whose framings are yet to run, in the order they closed, and whether
+/// a framer runs them, one after another (`wal`'s docs, TASK-165.9).
+pub(crate) struct Framing<F> {
+    pub queue: std::collections::VecDeque<Unframed<F>>,
+    pub running: bool,
+}
+
+impl<F> Default for Framing<F> {
+    fn default() -> Self {
+        Self { queue: std::collections::VecDeque::new(), running: false }
+    }
+}
+
+/// Whom a read is for: the store's own, of what it holds; of what it holds or keeps, freed, for
+/// views or for the bucket ([`Store::read_kept`](crate::Store::read_kept)); or a view's, as of the commit of `epoch`, of what that commit and those since `since`
 /// held, which the store holds or keeps, and of what it pins, if `pinned`: decided in the critical
 /// section that locates it.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Reader {
     Store,
-    Uploader,
+    Kept,
     View { epoch: u64, since: u64, pinned: bool },
 }
 
@@ -99,8 +145,23 @@ impl<F: File> State<F> {
         change: impl FnOnce(&mut Self) -> Result<T, Error>,
     ) -> Result<T, Error> {
         let changed = change(self);
-        self.failed |= changed.is_err();
+        if let Err(error) = &changed {
+            self.fail(error);
+        }
         changed
+    }
+
+    /// fxdax: fails the store, for `error`, unless it failed before ([`State::failed`]).
+    pub fn fail(&mut self, error: &Error) {
+        self.failed.get_or_insert_with(|| format!("{error:#}"));
+    }
+
+    /// fxdax: fails, saying why, if the store failed ([`State::failed`]).
+    pub fn still_whole(&self) -> Result<(), Error> {
+        match &self.failed {
+            Some(cause) => Err(anyhow::anyhow!("the extent store failed: {cause}")),
+            None => Ok(()),
+        }
     }
 
     /// `extent`'s entry, which `reader` may read: of what the store holds, or keeps, if not the
@@ -114,7 +175,7 @@ impl<F: File> State<F> {
         }
         let kept = |kept: &&Kept| match reader {
             Reader::Store => false,
-            Reader::Uploader => true,
+            Reader::Kept => true,
             // Freed by a commit after the one the view holds since, which held it; or pinned.
             Reader::View { since, pinned, .. } => {
                 pinned || kept.freed > since || !rules().views_hold_their_commit
@@ -148,23 +209,37 @@ impl<F: File> State<F> {
         }
     }
 
+    /// fxdax: the extents `moved` says the collector moved, from where to where, held or kept, named
+    /// where they went, if they are named on their way there ([`Store::moved`](crate::Store::moved)).
+    pub fn moved(&mut self, moved: &[(ExtentId, Location, Location)]) {
+        for (extent, _, to) in moved {
+            if let Some(entry) = self.extents.get_mut(extent) {
+                entry.data.follow(to);
+            }
+            self.kept.moved(*extent, to);
+        }
+    }
+
     /// fxdax: segment `segment`, closed, is acknowledged in the bucket, at `key`, and the extents
     /// stored on their own its footer names are at `own` there (TASK-165.8): its extents sealed in
     /// it, and those stored on their own, held or kept, are the bucket's from now on, read there,
-    /// and their files leave the store for the host's cache. Returns those that leave now, by
-    /// their paths, with their keys in the bucket: the extents' own files; the segment's leaves
-    /// once no extent's data is in it here, which writes since the last commit may be
-    /// ([`Reaped::acknowledged`](crate::segments::Reaped)).
+    /// and their files leave the store, for the host's cache if `cached`, its framed file being
+    /// the object at `key`. Returns those that leave now, by their paths, with their keys in the
+    /// bucket, if into the cache: the extents' own files, those no extent holds nor keeps any more
+    /// too, which the segment kept for the bucket (TASK-165.9); the segment's leaves once no
+    /// extent's data is in it here, which writes since the last commit may be
+    /// ([`Reaped::Acknowledged`](crate::segments::Reaped)).
     pub fn acknowledge(
         &mut self,
         segment: SegmentId,
-        key: &str,
+        (key, cached): (&str, bool),
         own: &[(ExtentId, Location)],
-    ) -> Vec<(String, String)> {
+    ) -> Vec<(String, Option<String>)> {
         let in_bucket = |len, piece: &Piece| {
             Data::Remote(Location { key: key.to_owned(), offset: piece.offset, len })
         };
-        for extent in self.segments.acknowledge(segment, key) {
+        let cached_key = |key: &str| cached.then(|| key.to_owned());
+        for extent in self.segments.acknowledge(segment, cached_key(key).as_deref()) {
             let entry =
                 self.extents.get_mut(&extent).expect("an extent sealed in a segment is held");
             let Data::Pieces(pieces) = &entry.data else {
@@ -182,7 +257,10 @@ impl<F: File> State<F> {
             {
                 entry.data = Data::Remote(location.clone());
                 self.own_files.forget(*extent);
-                leaving.push((extent_path(*extent), location.key.clone()));
+                leaving.push((extent_path(*extent), cached_key(&location.key)));
+            } else if self.kept.get(extent).is_none_or(|kept| kept.entry.data != Data::Own) {
+                // Freed, and kept no more, or since an opening: the file the bucket needed alone.
+                leaving.push((extent_path(*extent), None));
             }
         }
         let own: HashMap<ExtentId, &Location> =
@@ -207,7 +285,7 @@ impl<F: File> State<F> {
                 Data::Pieces(pieces) => self.segments.let_go(&pieces[0]),
                 Data::Own => {
                     self.own_files.forget(extent);
-                    leaving.push((extent_path(extent), own[&extent].key.clone()));
+                    leaving.push((extent_path(extent), cached_key(&own[&extent].key)));
                 }
                 Data::Remote(_) => unreachable!("kept, placed in the bucket again"),
             }
@@ -221,8 +299,8 @@ impl<F: File> State<F> {
         self.space.check(grows, self.kept.for_views(), wasted)
     }
 
-    /// fxdax: the uploader needs the frees of the commits up to `epoch` no more: trims let them go
-    /// once views need them no more either.
+    /// fxdax: the bucket needs the frees of the commits up to `epoch` no more, acknowledged there:
+    /// trims let them go once views need them no more either.
     pub fn release_kept(&mut self, epoch: u64) {
         self.kept.release(epoch);
     }
@@ -299,7 +377,7 @@ const AUDITED_EXTENTS: usize = 4096;
 /// locks it again, which a lock poisoned would panic in, aborting as the audit's panic unwinds.
 #[cfg(any(test, feature = "audit"))]
 fn audited<F: File>(guard: MutexGuard<'_, State<F>>) -> MutexGuard<'_, State<F>> {
-    if guard.failed || std::thread::panicking() || guard.extents.len() > AUDITED_EXTENTS {
+    if guard.failed.is_some() || std::thread::panicking() || guard.extents.len() > AUDITED_EXTENTS {
         return guard;
     }
     let audit = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| guard.audit()));
@@ -328,6 +406,26 @@ fn audited<F: File>(guard: MutexGuard<'_, State<F>>) -> MutexGuard<'_, State<F>>
 /// fxdax: the audit of the state's counts, in the builds of the tests (TASK-160.16).
 #[cfg(any(test, feature = "audit"))]
 impl<F: File> State<F> {
+    /// fxdax: the replay ([`Replay`]) applies `footer`, of a segment just closed; and, if the
+    /// state holds nothing open nor changed since its last commit, which the footer names last,
+    /// panics unless the state is what the replay says: its extents and their lengths, its root,
+    /// what it spent and its capacity (TASK-165.9's AC #5).
+    pub fn closed(&mut self, footer: &extent_frame::segment::Footer) {
+        self.replay.apply_contents(footer.seq, footer.epoch, &footer.contents);
+        if !self.uncommitted.is_empty() {
+            return;
+        }
+        let lengths: BTreeMap<ExtentId, u64> =
+            self.extents.iter().map(|(extent, entry)| (*extent, entry.len)).collect();
+        assert_eq!(lengths, self.replay.extents.0, "the extents, as the footers say");
+        let root = self.replay.root.as_deref().unwrap_or_default();
+        assert_eq!(self.root, root, "the root, as the footers say");
+        assert_eq!(self.spent, self.replay.spent, "the IDs spent, as the footers say");
+        if let Some(capacity) = self.replay.capacity {
+            assert_eq!(self.space.capacity(), capacity, "the capacity, as the footers say");
+        }
+    }
+
     /// Recounts each count the state keeps on as it changes from what it holds, and panics,
     /// saying which, unless they agree: the bytes its extents hold ([`Space`]); what writes since
     /// the last commit wrote over ([`Uncommitted`]); what each segment it tracks holds
@@ -572,6 +670,12 @@ impl<F> Uncommitted<F> {
         !self.open.is_empty()
     }
 
+    /// fxdax: whether nothing changed since the last commit: no extent open, no free.
+    #[cfg(any(test, feature = "audit"))]
+    pub fn is_empty(&self) -> bool {
+        self.open.is_empty() && self.changes.is_empty() && self.capacity.is_none()
+    }
+
     /// Opens `extent`, whose data goes as `placement` says: returns the opening's number.
     pub fn open(&mut self, extent: ExtentId, placement: Placement<F>) -> u64 {
         self.openings += 1;
@@ -791,22 +895,13 @@ impl<F: File> OwnFiles<F> {
     }
 }
 
-/// fxdax: whether `branch`'s uploader, if `uploads` say it has one, keeps `segment`, the branch's
-/// own, which it has yet to upload: the branch lets go of it no sooner (TASK-85).
-pub(crate) fn uploader_keeps(uploads: &Option<Uploads>, branch: u64, segment: SegmentId) -> bool {
-    segment.branch == branch
-        && uploads.as_ref().is_some_and(|uploads| uploads.holds(segment.number))
-}
-
 /// What a branch's next commit makes unreferenced: files of the branch's, which it removes once it
 /// is durable.
 #[derive(Default)]
 pub(crate) struct Unreferenced {
-    /// Raw files whose extents were sealed from them, or freed, files of extents' data no extent
-    /// is in any more, and index files a checkpoint replaced; fxdax: and the raw files of segments
-    /// closed between commits, framed: they wait for the branch's commits, in its queue of them,
-    /// and are forgotten with a failed store's, as its next opening removes what nothing refers
-    /// to.
+    /// Raw files whose extents were sealed from them, or freed, and files of extents' data no
+    /// extent is in any more: they wait for the branch's commits, in its queue of them, and are
+    /// forgotten with a failed store's, as its next opening removes what nothing refers to.
     pub doomed: Vec<String>,
 }
 
