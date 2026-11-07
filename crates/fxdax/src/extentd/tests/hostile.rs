@@ -34,8 +34,10 @@
 //!   store reads, writes and commits.
 //!
 //! What it found is pinned beside it: VM processes shrinking the memory they are given crashed the
-//! daemon ([`vm_processes_shrinking_their_memory_crash_nothing`]); and requests held copies of
-//! their whole lengths past the connection's room ([`what_requests_hold_is_within_the_room`]).
+//! daemon ([`vm_processes_shrinking_their_memory_crash_nothing`]); requests held copies of
+//! their whole lengths past the connection's room ([`what_requests_hold_is_within_the_room`]);
+//! and a connection's faults paged in as many parts at once as it kept faults in flight
+//! ([`page_ins_in_flight_are_bounded`], TASK-149.34), which mallory's floods of page-ins do here.
 //! `crates/fxdax/mutants.sh` puts back a bug of each kind it exists to find, and sees it fail.
 
 use super::super::client::RemoteExtentStore;
@@ -70,6 +72,8 @@ const ALICE_MARK: [u8; 8] = *b"ALICE\xa1\x1c\xe5";
 const BOB_MARK: [u8; 8] = *b"BOB\xb0\xb0\xb0\xb0\x0b";
 /// The ID of the request that ends what a connection of mallory's says, which it waits for.
 const LAST: u64 = u64::MAX - 1;
+/// The extents of the point mallory's VM manager made for it, a MiB each.
+const GIVEN_EXTENTS: u64 = 12;
 /// The extent a flood reads, its own, and how much of it each read asks for.
 const FLOOD_EXTENT: u64 = 0xf100d;
 const FLOOD_READ: u64 = 1 << 20;
@@ -237,11 +241,14 @@ enum Abuse {
     Scribble { which: u8, at: u64 },
 }
 
-/// What mallory does next: says something, or abuses its memory.
+/// What mallory does next: says something, or abuses its memory; or floods the daemon with
+/// page-ins (TASK-149.34): the given point's extents, a MiB each, cold, a page of each mapped and
+/// faulted at once, `times` over, as many faults in flight as it says.
 #[derive(Clone, Debug)]
 enum Act {
     Say(Said),
     Abuse(Abuse),
+    PageIns { times: u8 },
 }
 
 /// How mallory acknowledges the stage operations it is sent.
@@ -538,7 +545,11 @@ fn act() -> impl Strategy<Value = Act> {
             .prop_map(|(which, at, len)| Abuse::Punch { which, at, len }),
         (which(), at()).prop_map(|(which, at)| Abuse::Scribble { which, at }),
     ];
-    prop_oneof![30 => message().prop_map(Act::Say), 1 => abuse.prop_map(Act::Abuse)]
+    prop_oneof![
+        30 => message().prop_map(Act::Say),
+        1 => abuse.prop_map(Act::Abuse),
+        1 => (1u8..8).prop_map(|times| Act::PageIns { times }),
+    ]
 }
 
 fn hostile() -> impl Strategy<Value = Hostile> {
@@ -992,6 +1003,8 @@ struct Names {
     bob: PathBuf,
     bobs: u64,
     given: u64,
+    /// Mallory's tenant's arena, whose cached pages a flood of page-ins evicts first.
+    arena: ArenaId,
 }
 
 impl Names {
@@ -1208,6 +1221,8 @@ struct Seen {
     /// What each of its `OPEN`s named, and how it was answered: what its last commit's failure
     /// says.
     opens: Vec<(PathBuf, u32, i32)>,
+    /// The extents its floods of page-ins mapped, to fault on.
+    flooded: u64,
 }
 
 /// What both of a connection's threads share: what it sent, by ID, and what was answered.
@@ -1222,6 +1237,8 @@ struct Shared {
     writer: std::sync::atomic::AtomicBool,
     /// The paths its `OPEN`s named, by their IDs.
     paths: Mutex<HashMap<u64, PathBuf>>,
+    /// The IDs of the `MAP`s of its floods of page-ins.
+    flooding: Mutex<BTreeSet<u64>>,
     /// The largest window it was granted, as `LIMIT` was raised for it.
     granted: AtomicU64,
 }
@@ -1312,6 +1329,9 @@ fn receive(
             if let Some(request) = request.filter(|request| request.kind == OPEN) {
                 let path = shared.paths.lock().unwrap().get(&header.id).cloned().unwrap_or_default();
                 seen.opens.push((path, request.flags, header.status));
+            }
+            if header.status == 0 && shared.flooding.lock().unwrap().contains(&header.id) {
+                seen.flooded += 1;
             }
             shared.answers.answer(header.id, header.status);
             if header.id == LAST && stop_at_last {
@@ -1417,18 +1437,48 @@ fn run_hostile(
         }
     }
     let window = Header::new(WINDOW, id()).with_args(&[hostile.window.0, hostile.window.1]);
-    let _ = send(window, &[], None);
+    let window = send(window, &[], None);
     if let Some(area) = hostile.area {
         let transfer = Header::new(TRANSFER, id()).with_args(&[area_len(area)]);
         let _ = send(transfer, &[], area_fd(area, &shared.memories));
     }
-    start.wait();
     let ps = page_size();
+    // A flood of page-ins (TASK-149.34): its extents cold, mapped, if its store is a restore of the
+    // point, and faulted on, `times` over, all at once, its replies left to come.
+    let page_in = |id: &mut dyn FnMut() -> u64, times: u8| {
+        super::super::super::cache::evict_least_used(Some(names.arena), |_| false);
+        for sequence in 1..=GIVEN_EXTENTS {
+            let at = (sequence - 1) * ps;
+            let mapped = Header::new(MAP, id()).with_args(&[names.given, sequence, 0, ps, at]);
+            shared.flooding.lock().unwrap().insert(mapped.id);
+            let _ = send(mapped, &[], None);
+        }
+        for _ in 0..times {
+            for sequence in 1..=GIVEN_EXTENTS {
+                let at = (sequence - 1) * ps;
+                let faulted = Header::new(FAULT, id()).with_args(&[at]).with_flags(FAULT_PAGE);
+                let _ = send(faulted, &[], None);
+            }
+        }
+    };
+    // A restore of the point floods it with page-ins at once, as a restored VM's first faults do.
+    if hostile.opens == Opens::Restores {
+        // Once its window is, which its MAPs, served beside it, may otherwise come before.
+        if let Ok(window) = window {
+            shared.answers.wait(window);
+        }
+        page_in(&mut id, 2);
+    }
+    start.wait();
     for act in &hostile.acts {
         let said = match act {
             Act::Say(said) => said,
             Act::Abuse(abused) => {
                 abuse(*abused, &shared.memories);
+                continue;
+            }
+            Act::PageIns { times } => {
+                page_in(&mut id, *times);
                 continue;
             }
         };
@@ -1565,9 +1615,13 @@ fn a_compromised_vm_process_harms_no_tenant_beside_it() {
     write(&bob, bobs, 0, &marked(BOB_MARK, 1, BLOCK)).unwrap();
     bob.commit(None).unwrap();
     // A snapshot in the bucket, of a branch mallory's VM manager makes a point of in its directory.
+    // Its extents a MiB each, which mallory's floods of page-ins page in (TASK-149.34).
     let given = RemoteExtentStore::connect(&bob_socket, dir.path().join("given"), STORE_BYTES).unwrap();
     let given_branch = given.branch();
-    write(&given, ExtentId { branch: given_branch, sequence: 1 }, 0, &[0x88; BLOCK]).unwrap();
+    for sequence in 1..=GIVEN_EXTENTS {
+        let extent = ExtentId { branch: given_branch, sequence };
+        write(&given, extent, 0, &vec![0x88; 1 << 20]).unwrap();
+    }
     given.commit(Some(b"given")).unwrap();
     drop(given);
     let point = vms.join("point");
@@ -1615,6 +1669,7 @@ fn a_compromised_vm_process_harms_no_tenant_beside_it() {
     let numbered = AtomicU64::new(0);
     let (served, restored, floods) = (AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0));
     let commits = AtomicU64::new(0);
+    let flooded = AtomicU64::new(0);
     let strategy = (
         proptest::collection::vec(hostile(), 1..=3),
         proptest::collection::vec(alice_op(), 0..32),
@@ -1630,6 +1685,7 @@ fn a_compromised_vm_process_harms_no_tenant_beside_it() {
                 bob: bob_path.clone(),
                 bobs: bob.branch(),
                 given: given_branch,
+                arena: mallory.arena(),
             });
             *CASE.lock().unwrap() = format!("case {case}: {hostiles:#?}");
             // As much as the heap may hold, the rooms of mallory's connections raised as their
@@ -1679,6 +1735,7 @@ fn a_compromised_vm_process_harms_no_tenant_beside_it() {
                     floods.fetch_add(1, Ordering::Relaxed);
                 }
                 served.fetch_add(seen.served, Ordering::Relaxed);
+                flooded.fetch_add(seen.flooded, Ordering::Relaxed);
                 restored.fetch_add(seen.restored, Ordering::Relaxed);
             }
             // Every memory it was given, read whole, holds nothing of theirs.
@@ -1752,15 +1809,20 @@ fn a_compromised_vm_process_harms_no_tenant_beside_it() {
     // and floods are let go.
     let (served, restored, floods, commits) =
         (served.into_inner(), restored.into_inner(), floods.into_inner(), commits.into_inner());
+    let flooded = flooded.into_inner();
     println!(
         "{served} of mallory's requests served, {restored} of them restores; {commits} of its \
-         stores committed at the end; {floods} floods let go"
+         stores committed at the end; {floods} floods let go; {} extents cold, flooded with \
+         page-ins",
+        flooded,
     );
     assert!(served > 8 * u64::from(cases), "{served} requests served");
     assert!(restored > 0, "{restored} restores served");
     // And its stores open and commit: a VM process the daemon refused every opening of would pass
     // the rest, as one of another wire version did (TASK-141.3).
     assert!(commits > 0, "{commits} of its stores committed");
+    // And its floods of page-ins page in cold extents.
+    assert!(flooded > 0, "{flooded} extents flooded with page-ins");
     drop(mallory);
 }
 
@@ -1906,5 +1968,138 @@ fn what_requests_hold_is_within_the_room() {
         [("roots", true), ("reads", true), ("reads into the area", true), ("writes from the area", true), ("writes", true)],
         "MiB held past the room's {} MiB and a reply's: {held:?}",
         room(0) >> 20,
+    );
+}
+
+/// TASK-149.34: the page-ins a connection's faults keep in flight, each a part of a cold extent
+/// read into its tenant's memory, the part's frames held until its fetch from the bucket answers,
+/// are bounded by the connection, not by how many faults it has in flight, as a fault holds no
+/// worker while it waits for the pager (TASK-92.20). Here faults on a page of each of 256 extents
+/// of a MiB, the snapshot's point of another host's, all in the bucket alone, whose reads are held.
+#[test]
+fn page_ins_in_flight_are_bounded() {
+    use crate::{ExtentStore, VolatileSlice};
+    const EXTENTS: u64 = 256;
+    const MIB: u64 = 1 << 20;
+    host();
+    let gated = Arc::new(super::GatedReads::new());
+    super::super::stores::use_bucket(extent_remote::store::Store::new(gated.clone(), "branches"));
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("extentd.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    std::thread::spawn(move || serve(listener));
+    // A point of the extents, made here, restored on another host, which has them in the bucket
+    // alone.
+    let (path, point) = (dir.path().join("store"), dir.path().join("point"));
+    let branch = {
+        let store = ExtentStore::create(&path, 1 << 30).unwrap();
+        let branch = store.branch();
+        for sequence in 1..=EXTENTS {
+            let data = super::pattern(sequence as u8, MIB as usize);
+            store.write(ExtentId { branch, sequence }, 0, &[VolatileSlice::from(&data[..])]).unwrap();
+        }
+        store.commit(None).unwrap();
+        branch
+    };
+    let store = RemoteExtentStore::connect(&socket, &path, 1 << 30).unwrap();
+    store.fork_quiescent(&point, branch + 1).unwrap();
+    drop(store);
+    let elsewhere = dir.path().join("elsewhere");
+    std::fs::create_dir(&elsewhere).unwrap();
+    let restored = elsewhere.join("store");
+    let forked = RemoteExtentStore::connect_forked(
+        &socket,
+        &restored,
+        elsewhere.join("point"),
+        branch + 1,
+        1 << 30,
+    );
+    drop(forked.unwrap());
+
+    let (sender, receiver, _stream, _) = super::raw_connection(&socket, &restored, 1 << 30);
+    let sender = Arc::new(sender);
+    // Its replies, by ID, the stage operations before them acknowledged.
+    let (replied, replies) = std::sync::mpsc::channel();
+    let acking = sender.clone();
+    std::thread::spawn(move || {
+        let mut receiver = receiver;
+        while let Ok(Some(message)) = receiver.receive(|| u64::MAX) {
+            let header = message.header;
+            if header.kind == REPLY {
+                let _ = replied.send((header.id, header.status));
+            } else if header.flags & STAGE_ACK != 0 {
+                let _ = acking.send(Header::new(ACK, header.id), &[], &[]);
+            }
+        }
+    });
+    // The replies as they come, in any order, by ID.
+    let answered = std::cell::RefCell::new(HashMap::new());
+    let answer = |id| loop {
+        if let Some(status) = answered.borrow_mut().remove(&id) {
+            break status;
+        }
+        let (replied, status) =
+            replies.recv_timeout(WAIT).unwrap_or_else(|_| panic!("no reply to request {id}"));
+        answered.borrow_mut().insert(replied, status);
+    };
+    sender.send(Header::new(WINDOW, 2).with_args(&[EXTENTS * MIB, 1]), &[], &[]).unwrap();
+    assert_eq!(answer(2), 0);
+    for sequence in 1..=EXTENTS {
+        let mapped = Header::new(MAP, 2 + sequence)
+            .with_args(&[branch, sequence, 0, MIB, (sequence - 1) * MIB]);
+        sender.send(mapped, &[], &[]).unwrap();
+        assert_eq!(answer(2 + sequence), 0, "MAP {sequence}");
+    }
+    let arena = super::super::server::default_tenant().unwrap().arena();
+    // What so many requests at once, all of them in flight, hold of the tenant's memory as their
+    // page-ins wait for the bucket, and of the heap as their fetches answer: each a part, cold.
+    let burst = |what: &str, headers: Vec<Header>| {
+        super::super::super::cache::evict_least_used(Some(arena), |_| false);
+        let (held, frames) = (HELD.load(Ordering::Relaxed), physmem::arena_bytes(arena));
+        gated.hold(true);
+        let ids: Vec<u64> = headers.iter().map(|header| header.id).collect();
+        for header in headers {
+            sender.send(header, &[], &[]).unwrap();
+        }
+        // Until no more page-ins begin.
+        let mut paging = 0;
+        for _ in 0..50 {
+            std::thread::park_timeout(Duration::from_millis(200));
+            let now = physmem::arena_bytes(arena).saturating_sub(frames);
+            if now == paging && gated.waiting() > 0 {
+                break;
+            }
+            paging = now;
+        }
+        let heap = HELD.load(Ordering::Relaxed).saturating_sub(held) as u64;
+        let peak = peak_while(|| {
+            gated.hold(false);
+            for id in &ids {
+                assert_eq!(answer(*id), 0, "{what} {id}");
+            }
+        });
+        (what.to_owned(), paging >> 20, heap.max(peak) >> 20)
+    };
+    let faults = (1..=EXTENTS).map(|sequence| {
+        let at = (sequence - 1) * MIB;
+        Header::new(FAULT, 1000 + sequence).with_args(&[at]).with_flags(FAULT_PAGE)
+    });
+    // A page of each, through the stream.
+    let reads = (1..=EXTENTS).map(|sequence| {
+        Header::new(READ, 2000 + sequence).with_args(&[branch, sequence, 0, page_size()])
+    });
+    let held = [burst("faults", faults.collect()), burst("reads", reads.collect())];
+    // A connection's page-ins, each a part and those it reads ahead, as many at once as it
+    // resolves; and the heap within its room.
+    let paged = (super::super::server::PAGE_INS as u64 * (1 + super::super::super::cache::PARTS_AHEAD)
+        * extent_frame::PART) >> 20;
+    let room = room(EXTENTS * MIB) >> 20;
+    println!("MiB of the tenant's memory and of the heap held: {held:?}");
+    let within: Vec<_> =
+        held.iter().map(|(what, paging, heap)| (what.as_str(), *paging <= paged, *heap <= room)).collect();
+    assert_eq!(
+        within,
+        [("faults", true, true), ("reads", true, true)],
+        "MiB of the tenant's memory and of the heap held, past {paged} and {room}: {held:?}"
     );
 }

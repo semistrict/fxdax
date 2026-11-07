@@ -122,7 +122,7 @@ static TRIM_AT: AtomicUsize = AtomicUsize::new(0);
 pub(crate) const PAGER_THREADS: usize = 6;
 
 /// How many parts after those a reader reading on asks for are read ahead of its requests.
-const PARTS_AHEAD: u64 = 2;
+pub(crate) const PARTS_AHEAD: u64 = 2;
 
 static EXTENT_CACHE: OnceLock<ExtentCache> = OnceLock::new();
 

@@ -28,6 +28,19 @@ use std::sync::{Arc, Condvar, Mutex, OnceLock, PoisonError, Weak, mpsc};
 /// for one of them, then, on the threads every connection shares ([`Pool`]).
 const WORKERS: usize = 8;
 
+/// fxdax: how many of a connection's faults and `PRIVATE`s the daemon resolves at once (TASK-149.34),
+/// each paging in what it waits for: a part of an extent, a MiB, and the two after it if it reads
+/// on (`cache::PARTS_AHEAD`), each part's frames of its tenant's memory held until its read, or
+/// fetch from the bucket, answers. A fault waiting for the pager holds no worker (TASK-92.20), so
+/// as many paged in at once as the VM process kept faults in flight, 4,096 at most
+/// (`MAX_REQUESTS`): 256 faults on cold extents held 258 MiB of the tenant's memory, and 123 MiB
+/// of the heap as their fetches answered; 66 and 39 now. Those past it wait their turn, holding
+/// nothing. A guest
+/// faults as many pages at once as it has threads faulting: its vCPUs, and on x86 KVM's
+/// asynchronous page faults' workers, 64 a vCPU queued at most; resolving 64 at once, each a part
+/// from object storage in 30 to 100 ms, pages in hundreds of MiB a second for it.
+pub(super) const PAGE_INS: usize = 64;
+
 /// The runtime that receives every connection's requests, and works behind their stores
 /// (TASK-34): a few threads, whatever the number of connections, as each waits for its VM process
 /// mostly. A thread that received a request serves it, out of the runtime, which another thread
@@ -410,6 +423,7 @@ async fn run_connection(stream: UnixStream, tenant: Arc<Tenant>) {
         requests: Mutex::new(Requests::default()),
         drained: Arc::new(event_listener::Event::new()),
         report: snapshot::Report::new(&peer.sender),
+        page_ins: tokio::sync::Semaphore::new(PAGE_INS),
         _alive: alive,
     });
     match AsyncReceiver::new(stream) {
@@ -865,6 +879,8 @@ pub(super) struct Connection {
     /// fxdax: what the daemon reports of its VM process (TASK-111.4): its store, its build, what
     /// it says of its window's second stage, and its answers to asks for its stats.
     report: Arc<snapshot::Report>,
+    /// fxdax: its faults and `PRIVATE`s resolving, [`PAGE_INS`] at most (TASK-149.34).
+    page_ins: tokio::sync::Semaphore,
     /// What says, as it drops, that the connection has: its last field, dropped after its store,
     /// window and open extents, and its hold of its store's path (TASK-79.34).
     _alive: tokio::sync::oneshot::Sender<std::convert::Infallible>,
@@ -1264,6 +1280,8 @@ impl Connection {
         let Fault { offset, access, page, .. } = fault;
         let faulted = async {
             let window = self.window.lock().unwrap().clone().ok_or(Errno::EBADF)?;
+            // fxdax: in its turn, as what it pages in holds memory (TASK-149.34).
+            let _turn = self.page_ins.acquire().await.map_err(|_| Errno::EIO)?;
             window.fault(offset, access).await
         };
         let faulted = faulted.await;
@@ -1301,6 +1319,8 @@ impl Connection {
     async fn make_private(self: Arc<Self>, window_offset: u64, len: u64, answer: Answer) {
         let made = async {
             let window = self.window.lock().unwrap().clone().ok_or(Errno::EBADF)?;
+            // fxdax: in its turn, as a fault's, as it pages in what it copies (TASK-149.34).
+            let _turn = self.page_ins.acquire().await.map_err(|_| Errno::EIO)?;
             window.make_private(window_offset, len).await
         };
         let made = made.await;
