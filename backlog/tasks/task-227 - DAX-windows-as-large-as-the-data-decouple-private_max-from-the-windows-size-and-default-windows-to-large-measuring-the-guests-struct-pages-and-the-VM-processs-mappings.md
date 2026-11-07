@@ -7,6 +7,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-11-07 08:14'
+updated_date: '2026-11-07 08:16'
 labels: []
 dependencies: []
 priority: high
@@ -34,6 +35,7 @@ TASK-136.1 (r870) shows the cost of a small window: a 1.54 GB tree reread throug
 - [ ] #2 Windows default to large (e.g. the host's memory or a configured maximum), in the VMM and the tests, and a 64 GiB or larger window boots and runs the DAX suites
 - [ ] #3 Measured on GCE: guest struct-page memory, VM-process mappings and boot time against window size (1, 8, 64 GiB and more), and the Linux checkout's warm reread with a window larger than the tree
 - [ ] #4 README, doc-13 and the perf gate updated
+- [ ] #5 Target (the user, 2026-11-07): the Linux checkout's warm full-tree reread on Fxfs DAX is as fast as ext4 on Firecracker's virtio-pmem (mounted -o dax) or faster, same host, same VM size; both measured in the same run (linux-checkout cases, TASK-136.1)
 <!-- AC:END -->
 
 ## Definition of Done
