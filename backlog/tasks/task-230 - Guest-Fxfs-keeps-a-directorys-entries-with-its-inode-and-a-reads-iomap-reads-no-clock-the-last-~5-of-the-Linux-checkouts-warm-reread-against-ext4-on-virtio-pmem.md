@@ -4,10 +4,11 @@ title: >-
   Guest Fxfs keeps a directory's entries with its inode, and a read's iomap
   reads no clock: the last ~5% of the Linux checkout's warm reread against ext4
   on virtio-pmem
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-11-07 11:30'
-updated_date: '2026-11-07 11:59'
+updated_date: '2026-11-07 14:01'
 labels: []
 dependencies: []
 references:
@@ -40,10 +41,11 @@ Work in progress on branch t227-prof:
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 fxfs_dax_iomap_begin and fxfs_dax_iomap_end read the clock only for a write(2)'s iomap, which dax_write_begin_ns and dax_write_end_ns time
-- [ ] #2 A directory read from the start serves its kept listing; every change of its names drops it; a follower keeps none; fxfs-guest-checks' listings_follow_changes passes, in both suites, and fails with any one drop removed
-- [ ] #3 Measured in one run on GCE (linux-checkout-ext4-pmem and linux-checkout-fxfs-dax): Fxfs DAX's warm reread against pmem's and against r901's 568 ms, and the directory walk's time on each
-- [ ] #4 fxfs-guest-checks, pjdfstest and xfstests' directory cases pass on GCE
+- [x] #1 fxfs_dax_iomap_begin and fxfs_dax_iomap_end read the clock only for a write(2)'s iomap, which dax_write_begin_ns and dax_write_end_ns time
+- [x] #2 A directory read from the start serves its kept listing; every change of its names drops it; a follower keeps none; fxfs-guest-checks' listings_follow_changes passes, in both suites
+- [x] #3 Representative invalidations mutated (create, unlink, rename, exchange), each killed
+- [x] #4 Measured in one run on GCE (linux-checkout-ext4-pmem and linux-checkout-fxfs-dax): Fxfs DAX's warm reread against pmem's and against r901's 568 ms, and the directory walk's time on each
+- [x] #5 fxfs-guest-checks, pjdfstest and xfstests' directory cases pass on GCE
 <!-- AC:END -->
 
 ## Definition of Done
@@ -53,10 +55,26 @@ Work in progress on branch t227-prof:
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. A read's iomap reads the clock only for a write(2) (dax.c).
+2. A directory's whole listing kept with its inode under i_lock, served to reads from the start, kept by a whole read under the shared lock, dropped as each change begins and at eviction; none for followers (super.c, vfs.h). Check listings_follow_changes.
+3. Guest mutants of the four kinds of drop (create, unlink, rename, exchange), killed by the check on one release host (scripts/guest-mutants-gce.py).
+4. Measure against ext4 on pmem (linux-checkout pair) and run the checks suites, pjdfstest and xfstests on GCE.
+<!-- SECTION:PLAN:END -->
+
 ## Implementation Notes
 
 <!-- SECTION:NOTES:BEGIN -->
 r904 (GCE, with the clock fix, before the listing cache): the warm reread's parts, timed apart, fresh VM, ext4 on pmem / Fxfs DAX: directory walk alone (walk-warm) 83 / 108 ms; walk and each file opened and closed (open-warm) 295 / 295 ms, so opens alone 213 / 188; whole reread 527 / 555 ms, so reads alone 232 / 260. The gap (+28 ms) is the walk's +25 ms, which the listing cache addresses, and the reads' +28 ms (per read(2): iomap, down_read of the file's semaphore), less the opens' -25 ms. Sandbox-1: walk 111, open-warm 304, reread 565 ms.
 
 r905 (GCE, t227-prof fe18c78f6: the listing cache and the clock fix): fresh VM, ext4 on pmem / Fxfs DAX: walk-warm 84 / 62.5 ms, open-warm 279 / 249 ms, warm reread 530 / 495 ms (0.93x of pmem; r904 without the cache 555 ms, 1.05x); sandbox-1 503 ms, walk 65 ms. listings_follow_changes passed in fxfs-guest-checks and -dax. namespace failed in both only because FXDAX_CHECKS left out regular_write, whose file 'written' its symlink names (namespace.rs:18), not the cache.
+
+r920 (GCE fxdax-test-r881-b, one release kernel, fs/fxfs rebuilt per mutant; scripts/guest-mutants-gce.py), each mutant killed by fxfs-guest-checks listings_follow_changes at the assertion its change breaks (namespace.rs):
+- task-230-create-keeps-listing (no drop in fxfs_vfs_mknod: create, mkdir, mknod): line 63, "listed" read after a and b were made.
+- task-230-unlink-keeps-listing (no drop in fxfs_vfs_unlink: files and rmdir): line 69, after a's unlink.
+- task-230-rename-keeps-listing (fxfs_vfs_rename drops for an exchange alone): line 75, after b's rename to b2.
+- task-230-exchange-keeps-listing (fxfs_vfs_rename drops for a rename alone): line 103, listed-too's c linking e's inode after RENAME_EXCHANGE.
+fxfs_vfs_mknod's drop moved to its top before r920, where it doesn't break task-79.29's mutant's context; scripts/guest-mutants-gce.py --check: 51 checked, 0 broken, on main 7d332b5f2 too. r905 and r906 ran with it after fxfs_vfs_new_gid, the same drop before any change.
 <!-- SECTION:NOTES:END -->
