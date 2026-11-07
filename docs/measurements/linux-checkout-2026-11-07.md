@@ -294,8 +294,17 @@ the tree, DAX gets warm: 0.75-0.80 s, against r870's 26-44 s with 1 GiB each.
 **Other results:**
 - **Cold, Fxfs DAX beats pmem when the daemon holds the base.** A fresh VM's cold read takes
   5.64 s against ext4-pmem's 8.81 s (ext4 on virtio-blk: 20.1 s). A sandbox over the shared base
-  takes 34-35 s instead: its reads go through the attached generation, which the daemon's memory
-  doesn't hold warm the way it holds the publisher's own store.
+  took 34-35 s instead. *Corrected (TASK-229):* this said the daemon's memory didn't hold the
+  attached generation warm. It did: in later runs (r888) the second and third sandboxes paged
+  nothing in and still took 26-30 s. The time was the guest's MAPs. Fxfs counts no size for a
+  base's extents (the publisher's allocator does), and the guest's DAX refused to make a file of
+  an extent of unknown size a slice of the extent's region, so each of the 91k files was a range
+  of its own with a MAP of its own: 91,072 MAP requests, 19.6 s of a 27 s cold read, against a
+  fresh VM's 1,005 (r940). With such an extent sliced too (TASK-229), a sandbox's cold read takes
+  5.7-5.8 s against a fresh VM's 4.9 s, the same 1,006 MAPs (r941). The first sandbox on a
+  generation still pages it into the daemon (2,089 page-ins, 1.8 GB; 14.5 s): the daemon serves a
+  base's extents from the base's store (`ExtentStore::base_holding`), whose pages the publisher's
+  store's, which the daemon held, don't stand in for.
 - **Host memory per VM after one read is comparable.** ext4-pmem: RSS 2,478 MiB, of it 588 MiB anon
   and the rest the image's pages, shared through the host's page cache. Fxfs DAX: RSS 2,318 MiB, of
   it 626 MiB anon and 843 MiB of the daemon's shared pages.
