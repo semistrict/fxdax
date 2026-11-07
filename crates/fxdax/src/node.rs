@@ -89,18 +89,6 @@ impl FileType {
     pub fn dirent_type(self) -> u8 {
         (self.mode_bits() >> 12) as u8
     }
-
-    /// The permissions of a node that has none of its own, such as the root directory of a new
-    /// volume. fxdax: unused since Fxfs's POSIX layer gives such nodes these (TASK-96.1); kept,
-    /// with its test, until the user decides on removing them.
-    #[allow(dead_code)]
-    pub(crate) fn default_perm(self) -> u16 {
-        match self {
-            Self::Directory => 0o755,
-            Self::Symlink => 0o777,
-            _ => 0o644,
-        }
-    }
 }
 
 /// A node's attributes.
@@ -255,13 +243,5 @@ mod tests {
     #[test]
     fn inodes_are_their_numbers() {
         assert_eq!(u64::from(Inode::from(7)), 7);
-    }
-
-    /// Nodes without permissions of their own get these.
-    #[test]
-    fn default_permissions() {
-        let perms = [FileType::Directory, FileType::Symlink, FileType::File, FileType::Fifo]
-            .map(FileType::default_perm);
-        assert_eq!(perms, [0o755, 0o777, 0o644, 0o644]);
     }
 }
