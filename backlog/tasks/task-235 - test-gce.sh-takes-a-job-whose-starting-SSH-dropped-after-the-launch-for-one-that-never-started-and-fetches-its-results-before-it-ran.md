@@ -3,11 +3,11 @@ id: TASK-235
 title: >-
   test-gce.sh takes a job whose starting SSH dropped after the launch for one
   that never started, and fetches its results before it ran
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-07 18:37'
-updated_date: '2026-11-07 20:24'
+updated_date: '2026-11-07 23:52'
 labels: []
 dependencies: []
 references:
@@ -35,9 +35,9 @@ But the starting SSH can fail after the job launched: r942's connection timed ou
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -54,4 +54,19 @@ But the starting SSH can fail after the job launched: r942's connection timed ou
 scripts/tests: test_gce.py 37 tests pass, every script test passes (191) (python3 -m unittest discover -s scripts/tests). Red without the fix: a_job_whose_starting_connection_dropped_is_waited_for returned 255 with nothing waited for. a_job_that_did_not_start_is_not_waited_for passes, its calls one SSH more (the look for the pid), still 255 and no wait. No GCE run needed (the user, 2026-11-07).
 
 Correction, before landing: r943 (fxdax-test-r942-b, this branch's first version) left no pid file. The start was `mkdir && rm -f status pid && setsid ... & echo $! > pid`, where `&` backgrounded the whole list, so the pid was written before its directory existed or removed by the rm after. The launch and its pid are now grouped alone in the background: `mkdir && rm && { setsid ... & echo $! > pid; }`. The fake-only tests couldn't see it, as the fake ran no command. fake_gcloud now runs an SSH's command in a local shell (ssh_run), and two tests run the start for real: a_job_keeps_its_pid_and_is_waited_for and a_job_whose_starting_connection_dropped_is_waited_for (red ungrouped: no pid, status 1, and 255). 37 test_gce tests and all 191 script tests pass.
+
+Landed in 878aa8848 (land-all3, with land-w4; CI 42420161055 green, its scripts part running test_gce.py). It changes scripts alone; upstream-changes.py --check passes on main 4fe1dd081.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+test-gce.sh took a job whose starting SSH dropped after the launch for one that never started, and fetched its results at once while it ran on (r942).
+
+gce_remote_detached now keeps the job's pid as it launches (~/RUN.job/pid). After a failed starting SSH it looks for that pid over a fresh connection: it waits for the job if the pid is there, and returns the start's status if not. The launch and its pid are grouped alone in the background. The first version's ungrouped `&` also backgrounded the mkdir and rm, so r943 found no pid.
+
+fake_gcloud can now run an SSH's command in a local shell (ssh_run) and give each call its own status (ssh_calls). Verified by:
+- a_job_keeps_its_pid_and_is_waited_for and a_job_whose_starting_connection_dropped_is_waited_for, both red on the ungrouped start;
+- a_job_that_did_not_start_is_not_waited_for, which still passes;
+- all 191 script tests, and CI 42420161055.
+<!-- SECTION:FINAL_SUMMARY:END -->

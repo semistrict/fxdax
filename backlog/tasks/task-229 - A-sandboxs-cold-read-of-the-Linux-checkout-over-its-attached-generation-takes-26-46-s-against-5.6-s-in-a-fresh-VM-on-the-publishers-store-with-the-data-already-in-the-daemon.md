@@ -4,11 +4,11 @@ title: >-
   A sandbox's cold read of the Linux checkout over its attached generation takes
   26-46 s, against 5.6 s in a fresh VM on the publisher's store, with the data
   already in the daemon
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-07 10:46'
-updated_date: '2026-11-07 20:16'
+updated_date: '2026-11-07 23:52'
 labels: []
 dependencies: []
 references:
@@ -45,9 +45,9 @@ Open: the time split per VM (MAPs, their latency, guest faults, the layered volu
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -69,6 +69,8 @@ Sim: base_extents_sliced (fxfs_sim_extent_sizes_unknown): eight one-page files o
 r941 (the fix): fresh VM 4.88 s; sandbox-1 5.80 s (1.19x), sandbox-2 5.71 s (1.17x), each 1,006 MAP requests and 90,853 slices as the fresh VM; sandbox-0, first on the generation, 14.5 s, paging the generation in (2,089 page-ins, 1.8 GB): TASK-234. The window maps 515k pages against the fresh VM's 402k, the zeros past each extent's end within its 2 MiB region, the same 798 MB of the daemon's memory (vmm_shmem); host_used grew 152 MB over the read (r888 before the fix: 180 MB; fresh VM 53 MB).
 
 r942 (GCE fxdax-test-r942-b, task-229 0a80c997c): fxfs-guest-checks-dax, -checks-dax-small, -shared-volumes-dax, -snapshot-dax, -snapshot-volumes-dax, -follow-dax, -follow-torture-dax, fxfs-guest-dax, fxfs-guest-crash-dax and pjdfstest-fxfs-guest-dax passed. xfstests-fxfs-guest-dax failed only as main does: no test failed but its known ones, and four of KNOWN_FAILURES passed (generic/303, 525, 372, 401); r943 ran it on main f94a37dbe without this change and found the same four passing, the same 12 failing. The list is land-r2's (TASK-136.1's agent, the user 2026-11-07). r942's starting SSH dropped after its launch and its results were fetched early (TASK-235); its results were fetched again with test-gce.sh resume. The local copies of r940-r943 went with a reboot of this machine; their numbers are those recorded here.
+
+Landed in 878aa8848 (land-all3, with land-w3; CI 42420161055 green, its workspace job Linux's; TASK-229 changes no workspace crate: guest/linux/fs/fxfs, guest/sim, docs). upstream-changes.py --check passes on main 4fe1dd081; dax.c's change is fxdax's own code, no upstream source.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
