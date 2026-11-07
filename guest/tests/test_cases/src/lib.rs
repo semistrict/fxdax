@@ -52,6 +52,9 @@ mod test_fxfs_guest_import;
 use test_fxfs_guest_import::TestFxfsGuestImport;
 mod test_fxfs_guest_shared_volumes;
 use test_fxfs_guest_shared_volumes::TestFxfsGuestSharedVolumes;
+// fxdax: what a checkout the size of Linux's costs, shared and not (TASK-136.1).
+mod test_linux_checkout;
+use test_linux_checkout::{Checkout, TestLinuxCheckout};
 mod test_fxfs_guest_volumes;
 use test_fxfs_guest_volumes::TestFxfsGuestVolumes;
 mod test_fxfs_guest_docker;
@@ -294,6 +297,21 @@ pub fn test_cases() -> Vec<TestCase> {
             "fxfs-guest-shared-volumes-dax",
             &[Tag::Kernel, Tag::Nightly],
             Box::new(TestFxfsGuestSharedVolumes { dax: true }),
+        ),
+        TestCase::new(
+            "linux-checkout-ext4",
+            &[Tag::Manual],
+            Box::new(TestLinuxCheckout { on: Checkout::Ext4 }),
+        ),
+        TestCase::new(
+            "linux-checkout-fxfs",
+            &[Tag::Manual],
+            Box::new(TestLinuxCheckout { on: Checkout::Fxfs }),
+        ),
+        TestCase::new(
+            "linux-checkout-fxfs-dax",
+            &[Tag::Manual],
+            Box::new(TestLinuxCheckout { on: Checkout::FxfsDax }),
         ),
         TestCase::new(
             "fxfs-guest-pgbench",
@@ -798,6 +816,8 @@ mod common;
 
 #[cfg(feature = "host")]
 pub mod rootfs;
+
+mod shared_volumes;
 
 #[cfg(feature = "host")]
 pub mod vm;
