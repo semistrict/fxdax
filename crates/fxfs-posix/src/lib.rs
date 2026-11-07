@@ -1590,15 +1590,7 @@ impl<P: Platform> Fxfs<P> {
                     // What the kernel says a name links, which it needn't look up where the name
                     // is its key, leaving the times of the inode and the directory, which the
                     // kernel writes back with them.
-                    let last_name = if directory.names_are_keys() {
-                        directory.txn_remove_known_child(&mut transaction, name, *ino).await?
-                    } else {
-                        let replaced =
-                            replace_child(&mut transaction, None, (directory, name)).await?;
-                        check_replaced(&replaced, Some(*ino))?;
-                        matches!(replaced, ReplacedChild::Object(_))
-                    };
-                    if last_name {
+                    if directory.txn_remove_known_child(&mut transaction, name, *ino).await? {
                         last_names.push(*ino);
                     }
                 }
