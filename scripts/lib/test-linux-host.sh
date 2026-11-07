@@ -30,6 +30,11 @@ host_need cargo-nextest
 status=0
 host_record > "$results/host.txt"
 
+# scripts/test.sh's parts but the Go client's, which CI's go job runs: these hosts have no Go
+# (go.mod wants 1.26, newer than Ubuntu's), and the part, added by TASK-219, failed every run here
+# with exit 127, the parts after it unrun (2026-11-07, TASK-222's run).
+export FXDAX_TEST_PARTS=${FXDAX_TEST_PARTS:-clippy workspace sim shuttle scripts guest firecracker}
+
 if [[ ${FXDAX_WORKSPACE_TESTS:-1} != 0 ]]; then
     echo "== fxdax tests" >&2
     read -ra test_args <<< "${FXDAX_TEST_ARGS:-}"
