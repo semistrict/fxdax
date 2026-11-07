@@ -940,7 +940,11 @@ impl ExtentStore {
     ) -> Result<Self, Error> {
         let path = path.as_ref();
         if !path.exists() {
-            let keeping = opening.keeping.clone();
+            // fxdax: its lease taken as it is made with the token of the placement it is given,
+            // not this host's: a new copy placed later took no branch from an earlier placement
+            // (`ESTALE`), the lease taken before the placement was recorded (TASK-149.20).
+            let token = token.unwrap_or(opening.keeping.token);
+            let keeping = extent_store::upload::Options { token, ..opening.keeping.clone() };
             drop(host_store::create(path, capacity, branch, keeping)?);
         } else if extent_store::host_branch(path).map_err(Error::new)? != branch {
             let refused = format!("{} holds another branch than {branch:x}", path.display());

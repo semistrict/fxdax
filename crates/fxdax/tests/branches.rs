@@ -2,8 +2,11 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-//! fxdaxctl over a real S3 server: `scripts/test-rustfs.sh` starts RustFS and runs this with
-//! `FXDAX_S3_URL` naming a bucket of it, and the `AWS_*` variables to reach it.
+//! fxdaxctl's branches in a bucket: a file bucket in a test's directory, in every run, and a real
+//! S3 server's, ignored but by `scripts/test-rustfs.sh`, which starts RustFS and runs those with
+//! `FXDAX_S3_URL` naming a bucket of it, and the `AWS_*` variables to reach it. Each S3 test was
+//! that alone until TASK-149.20, which found `fxdaxctl take` of a new copy at a later placement
+//! refused (`ESTALE`): nothing ran them.
 
 use extent_remote::store::Store as Bucket;
 use fxdax::{ExtentId, ExtentStore, VolatileSlice, VolatileSliceMut};
@@ -42,13 +45,33 @@ fn read(store: &ExtentStore, extent: ExtentId, len: usize) -> Vec<u8> {
     data
 }
 
-/// A store forked with fxdaxctl is a fork of its branch in the bucket, and a branch taken with
-/// it onto another host's empty store is read there from the bucket; deleted with it, the fork
-/// goes, and then its parent.
+/// The URL of the S3 bucket `FXDAX_S3_URL` names.
+fn s3_url() -> String {
+    std::env::var("FXDAX_S3_URL").expect("FXDAX_S3_URL names the bucket to use")
+}
+
+/// A file bucket in `dir`, and its URL.
+fn file_bucket(dir: &tempfile::TempDir) -> String {
+    format!("file://{}", dir.path().display())
+}
+
 #[test]
-#[ignore]
+fn forks_and_takes_branches() {
+    let bucket = tempfile::tempdir().unwrap();
+    forks_and_takes_branches_in(&file_bucket(&bucket));
+}
+
+#[test]
+#[ignore = "needs an S3 bucket: scripts/test-rustfs.sh"]
 fn rustfs_forks_and_takes_branches() {
-    let url = std::env::var("FXDAX_S3_URL").expect("FXDAX_S3_URL names the bucket to use");
+    forks_and_takes_branches_in(&s3_url());
+}
+
+/// A store forked with fxdaxctl is a fork of its branch in the bucket at `url`, and a branch taken
+/// with it onto another host's empty store is read there from the bucket; deleted with it, the
+/// fork goes, and then its parent.
+fn forks_and_takes_branches_in(url: &str) {
+    let url = url.to_owned();
     let bucket = Arc::new(Bucket::from_url(&url).unwrap());
     let dir = tempfile::tempdir().unwrap();
     let path = |name: &str| dir.path().join(name);
@@ -101,13 +124,23 @@ fn branch_fails(url: &str, args: &[&str]) -> String {
     String::from_utf8_lossy(&output.stderr).into_owned()
 }
 
-/// TASK-39.7: `fxdaxctl sync` returns once a store's commits are in the bucket; a store's copy
-/// placed earlier than the placement that took its branch last takes it no more, and placed later,
-/// does.
 #[test]
-#[ignore]
+fn places_and_syncs_stores() {
+    let bucket = tempfile::tempdir().unwrap();
+    places_and_syncs_stores_in(&file_bucket(&bucket));
+}
+
+#[test]
+#[ignore = "needs an S3 bucket: scripts/test-rustfs.sh"]
 fn rustfs_places_and_syncs_stores() {
-    let url = std::env::var("FXDAX_S3_URL").expect("FXDAX_S3_URL names the bucket to use");
+    places_and_syncs_stores_in(&s3_url());
+}
+
+/// TASK-39.7: `fxdaxctl sync` returns once a store's commits are in the bucket at `url`; a store's
+/// copy placed earlier than the placement that took its branch last takes it no more, and placed
+/// later, does.
+fn places_and_syncs_stores_in(url: &str) {
+    let url = url.to_owned();
     let bucket = Arc::new(Bucket::from_url(&url).unwrap());
     let dir = tempfile::tempdir().unwrap();
     let path = |name: &str| dir.path().join(name).to_str().unwrap().to_owned();
@@ -129,10 +162,13 @@ fn rustfs_places_and_syncs_stores() {
 
     let capacity = (1u64 << 30).to_string();
     let hex = format!("{branch_id:x}");
-    branch(&url, &["take", &path("earlier"), &capacity, &hex, "3"]);
-    let stale = branch_fails(&url, &["sync", &path("earlier")]);
+    // Refused as it takes the branch's lease, which a later placement holds, leaving nothing
+    // (TASK-165.9: before, it took the branch and its sync was refused); taken placed later, its
+    // lease taken with that placement's token as it is made (TASK-149.20).
+    let stale = branch_fails(&url, &["take", &path("earlier"), &capacity, &hex, "3"]);
     assert!(stale.contains("a later placement holds the branch"), "{stale}");
-    branch(&url, &["place", &path("earlier"), "6"]);
+    assert!(!Path::new(&path("earlier")).exists());
+    branch(&url, &["take", &path("earlier"), &capacity, &hex, "6"]);
     branch(&url, &["sync", &path("earlier")]);
     let later = attached(Path::new(&path("earlier")));
     assert_eq!(later.root().unwrap(), b"synced");
