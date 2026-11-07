@@ -2,12 +2,14 @@
 # Copyright 2026 The fxdax Authors.
 #
 # Kernel: release
-# Killer: fxfs-guest-checks-dax cow_fork_after_a_split_pmd
+# Killer: fxfs-guest-checks-dax
 #
 # TASK-149.16: Fxfs's DAX mappings VM_MIXEDMAP again, which a fork copies the PTEs of, a large
 # folio's as one, all writable if any is: a chunk read in whole, its PMD split by a store, then
 # read page by page, gave a child writable PTEs of pages no PRIVATE had made the VM's, and its
 # store to one the host refused till the VM went down (GCE r861, fxfs-guest-fsx-faults-dax).
+# cow_fork_after_a_split_pmd's run goes down with it, which names no check: the suite is the
+# killer (GCE r867, the check alone, AccessRefused).
 
 --- a/guest/linux/fs/fxfs/dax.c
 +++ b/guest/linux/fs/fxfs/dax.c

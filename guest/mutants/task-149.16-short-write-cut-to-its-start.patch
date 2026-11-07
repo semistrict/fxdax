@@ -1,0 +1,24 @@
+# SPDX-License-Identifier: GPL-2.0
+# Copyright 2026 The fxdax Authors.
+#
+# Kernel: release
+# Killer: fxfs-guest-fsx-dax
+#
+# TASK-149.16: a DAX write past the file's end that stops short, its source faulting partway,
+# cuts the file back to its size before the write, losing what it wrote, where it should leave it
+# as long as it wrote. fxfs-guest-fsx-dax's appends from buffers that fault, checked at once
+# (check_around), find the size and bytes gone; the guest shrinks what fails. Not TASK-133's resize
+# taken away, which is equivalent since copy-on-write DAX: Fxfs takes a DAX file's size from the
+# inode as its pages are written back (fxfs_vfs_write_inode; GCE r867, the mutant missed).
+
+--- a/guest/linux/fs/fxfs/dax.c
++++ b/guest/linux/fs/fxfs/dax.c
+@@ -3371,7 +3371,7 @@
+ 	 * leaves it as it was, wherever it began past the end.
+ 	 */
+ 	if (iocb->ki_pos < end && end > old_size) {
+-		err = fxfs_data_resize(inode, done ? max(old_size, iocb->ki_pos) : old_size, NULL, NULL);
++		err = fxfs_data_resize(inode, old_size, NULL, NULL);
+ 		if (err && !done)
+ 			ret = err;
+ 	}
