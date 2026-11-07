@@ -57,27 +57,17 @@ impl RemoteExtentStore {
     pub const MAX_STATS: usize = MAX_STATS;
 
     /// The store at `store` that the daemon listening at `socket` serves, created with `capacity`
-    /// bytes if it doesn't exist.
+    /// bytes if it doesn't exist ([`DaemonConnection::open`]).
     pub fn connect(
         socket: impl AsRef<Path>,
         store: impl AsRef<Path>,
         capacity: u64,
     ) -> Result<Self, Error> {
-        let stream = UnixStream::connect(socket.as_ref()).map_err(|err| {
-            Error::new(anyhow::Error::new(err).context(format!(
-                "connecting to the extent daemon at {}",
-                socket.as_ref().display()
-            )))
-        })?;
-        Self::over(stream, store.as_ref(), Opening::Create(capacity))
+        DaemonConnection::connect(socket)?.open(store, capacity)
     }
 
     /// The store at `store` that the daemon listening at `socket` serves, forked from the store at
-    /// `from` if it doesn't exist: of a VM restored from a snapshot, whose store point `from` is
-    /// (TASK-39.1). fxdax: the daemon opens it once for the restores of one snapshot, and keeps it
-    /// open for them (TASK-92.5). A point that doesn't exist is taken from the daemon's bucket, a
-    /// store of its branch, `from_branch`, of `capacity` bytes: the snapshot's restored on another
-    /// host.
+    /// `from` if it doesn't exist ([`DaemonConnection::open_forked`]).
     pub fn connect_forked(
         socket: impl AsRef<Path>,
         store: impl AsRef<Path>,
@@ -85,47 +75,25 @@ impl RemoteExtentStore {
         from_branch: u64,
         capacity: u64,
     ) -> Result<Self, Error> {
-        let stream = UnixStream::connect(socket.as_ref()).map_err(|err| {
-            Error::new(anyhow::Error::new(err).context(format!(
-                "connecting to the extent daemon at {}",
-                socket.as_ref().display()
-            )))
-        })?;
-        let from = from.as_ref().to_owned();
-        let opening = Opening::ForkFrom { from, branch: from_branch, capacity };
-        Self::over(stream, store.as_ref(), opening)
+        DaemonConnection::connect(socket)?.open_forked(store, from, from_branch, capacity)
     }
 
     /// fxdax: a follower of the store at `store` that the daemon listening at `socket` serves
-    /// (backlog doc-8): read-only, as of the latest commit of its writer, another VM's, which goes
-    /// on, or of the store as of its last commit, if no VM writes it; and which it moves to the
-    /// writer's latest as it advances ([`RemoteExtentStore::advance`]).
+    /// ([`DaemonConnection::open_read_only`]).
     pub fn connect_read_only(
         socket: impl AsRef<Path>,
         store: impl AsRef<Path>,
     ) -> Result<Self, Error> {
-        let stream = UnixStream::connect(socket.as_ref()).map_err(|err| {
-            Error::new(anyhow::Error::new(err).context(format!(
-                "connecting to the extent daemon at {}",
-                socket.as_ref().display()
-            )))
-        })?;
-        Self::over(stream, store.as_ref(), Opening::ReadOnly)
+        DaemonConnection::connect(socket)?.open_read_only(store)
     }
 
-    /// The store at `store`, served over `stream`. fxdax: by a daemon of this VM process's wire
-    /// version alone, which takes every request there is (TASK-141.3): one of another, or that
-    /// refuses any of what opening asks, the connection is closed on, failing.
+    /// The store at `store`, served over `stream` ([`DaemonConnection::opening`]).
+    #[cfg(test)]
     pub(crate) fn over(stream: UnixStream, store: &Path, opening: Opening) -> Result<Self, Error> {
-        let client = Client::start(stream).map_err(Error::new)?;
-        let opened = Self::open(client.clone(), store, opening);
-        if opened.is_err() {
-            client.sender.shutdown();
-        }
-        opened.map_err(|err| err.context(format!("opening the extent store at {}", store.display())))
+        DaemonConnection::over(stream)?.opening(store, opening)
     }
 
-    /// Opens the store at `store` over `client`'s connection ([`RemoteExtentStore::over`]): its
+    /// Opens the store at `store` over `client`'s connection ([`DaemonConnection::opening`]): its
     /// `OPEN`, the VM process's build, and its transfer area.
     fn open(client: Arc<Client>, store: &Path, opening: Opening) -> Result<Self, Error> {
         let read_only = matches!(opening, Opening::ReadOnly);
@@ -598,13 +566,10 @@ impl RemoteExtentStore {
     /// Has `lost` called once the daemon goes, closing the connection: at once if it went already.
     /// Nothing the store asks is served from then on, its window's faults included, and it doesn't
     /// connect again: a VMM stops its VM, which can't go on, visibly to its host (TASK-50.2).
+    /// [`DaemonConnection::on_lost`] says it before the store opens, so that a daemon going as it
+    /// opens is told of too (TASK-232). Called once, of the store and its connection.
     pub fn on_daemon_lost(&self, lost: impl Fn() + Send + Sync + 'static) {
-        if self.client.on_lost.set(Box::new(lost)).is_err() {
-            panic!("on_daemon_lost called twice");
-        }
-        if self.client.lost.load(Ordering::Acquire) {
-            (self.client.on_lost.get().unwrap())();
-        }
+        self.client.on_lost(Box::new(lost));
     }
 
     /// Creates the store's window in the `size` bytes of this process's memory at `base`, which
@@ -672,8 +637,106 @@ impl Drop for RemoteExtentStore {
         self.faults.get_mut().unwrap().take();
         // fxdax: what the window's changes cost, all of it, which the daemon counts (TASK-91.16).
         self.client.tell_stage_counts();
-        self.client.closing.store(true, Ordering::Release);
-        self.client.sender.shutdown();
+        self.client.close();
+    }
+}
+
+/// fxdax: a VM process's connection to its extent daemon, which opens a store over it, once: a
+/// [`RemoteExtentStore`]. What the VM process does once the daemon goes is said of it before the
+/// store opens ([`DaemonConnection::on_lost`]), so that a daemon going as it opens the store, as
+/// one killed while the store recovers from its bucket does, is told of as one going later is,
+/// rather than as the open's failure (TASK-232).
+pub struct DaemonConnection {
+    /// Its client, until a store opened over it takes it.
+    client: Option<Arc<Client>>,
+}
+
+impl DaemonConnection {
+    /// A connection to the daemon listening at `socket`.
+    pub fn connect(socket: impl AsRef<Path>) -> Result<Self, Error> {
+        let stream = UnixStream::connect(socket.as_ref()).map_err(|err| {
+            Error::new(anyhow::Error::new(err).context(format!(
+                "connecting to the extent daemon at {}",
+                socket.as_ref().display()
+            )))
+        })?;
+        Self::over(stream)
+    }
+
+    /// A connection to the daemon at the other end of `stream`.
+    pub(crate) fn over(stream: UnixStream) -> Result<Self, Error> {
+        Ok(Self { client: Some(Client::start(stream).map_err(Error::new)?) })
+    }
+
+    /// Has `lost` called once the daemon goes, closing the connection: at once if it went already;
+    /// before what was asked of it then fails, a store's open included. Nothing is served from then
+    /// on, a store's window's faults included, and it doesn't connect again: a VMM stops its VM,
+    /// which can't go on, visibly to its host (TASK-50.2), as it creates the VM too (TASK-232).
+    /// Called once, of the connection and its store ([`RemoteExtentStore::on_daemon_lost`]).
+    pub fn on_lost(&self, lost: impl Fn() + Send + Sync + 'static) {
+        self.client().on_lost(Box::new(lost));
+    }
+
+    /// The store at `store`, created with `capacity` bytes if it doesn't exist.
+    pub fn open(self, store: impl AsRef<Path>, capacity: u64) -> Result<RemoteExtentStore, Error> {
+        self.opening(store.as_ref(), Opening::Create(capacity))
+    }
+
+    /// The store at `store`, forked from the store at `from` if it doesn't exist: of a VM restored
+    /// from a snapshot, whose store point `from` is (TASK-39.1). fxdax: the daemon opens it once
+    /// for the restores of one snapshot, and keeps it open for them (TASK-92.5). A point that
+    /// doesn't exist is taken from the daemon's bucket, a store of its branch, `from_branch`, of
+    /// `capacity` bytes: the snapshot's restored on another host.
+    pub fn open_forked(
+        self,
+        store: impl AsRef<Path>,
+        from: impl AsRef<Path>,
+        from_branch: u64,
+        capacity: u64,
+    ) -> Result<RemoteExtentStore, Error> {
+        let from = from.as_ref().to_owned();
+        self.opening(store.as_ref(), Opening::ForkFrom { from, branch: from_branch, capacity })
+    }
+
+    /// fxdax: a follower of the store at `store` (backlog doc-8): read-only, as of the latest
+    /// commit of its writer, another VM's, which goes on, or of the store as of its last commit, if
+    /// no VM writes it; and which it moves to the writer's latest as it advances
+    /// ([`RemoteExtentStore::advance`]).
+    pub fn open_read_only(self, store: impl AsRef<Path>) -> Result<RemoteExtentStore, Error> {
+        self.opening(store.as_ref(), Opening::ReadOnly)
+    }
+
+    /// The store at `store`, opened as `opening` says. fxdax: by a daemon of this VM process's
+    /// wire version alone, which takes every request there is (TASK-141.3): one of another, or
+    /// that refuses any of what opening asks, the connection is closed on, failing; and one that
+    /// goes as the store opens fails it saying so (TASK-232).
+    pub(crate) fn opening(
+        mut self,
+        store: &Path,
+        opening: Opening,
+    ) -> Result<RemoteExtentStore, Error> {
+        let client = self.client.take().expect("a connection opens one store");
+        RemoteExtentStore::open(client.clone(), store, opening).map_err(|err| {
+            let err = match client.lost.load(Ordering::Acquire) {
+                true => err.context("the extent daemon went"),
+                false => err,
+            };
+            client.close();
+            err.context(format!("opening the extent store at {}", store.display()))
+        })
+    }
+
+    fn client(&self) -> &Client {
+        self.client.as_ref().expect("a connection opens one store")
+    }
+}
+
+impl Drop for DaemonConnection {
+    /// Closes it, if no store was opened over it.
+    fn drop(&mut self) {
+        if let Some(client) = self.client.take() {
+            client.close();
+        }
     }
 }
 
@@ -739,10 +802,10 @@ struct Client {
     /// ([`RemoteExtentStore::on_committed`]).
     committed: AtomicU64,
     on_committed: OnceLock<Box<dyn Fn(u64) + Send + Sync>>,
-    /// Whether the store is closing the connection itself, as it drops.
+    /// Whether the VM process is closing the connection itself ([`Client::close`]).
     closing: std::sync::atomic::AtomicBool,
     /// Whether the daemon went, closing the connection, and what is told of it
-    /// ([`RemoteExtentStore::on_daemon_lost`], TASK-50.2).
+    /// ([`DaemonConnection::on_lost`], TASK-50.2).
     lost: std::sync::atomic::AtomicBool,
     on_lost: OnceLock<Box<dyn Fn() + Send + Sync>>,
 }
@@ -768,6 +831,22 @@ impl Client {
         let receiving = client.clone();
         crate::thread::spawn("extentd client", move || receiving.receive(Receiver::new(stream)))?;
         Ok(client)
+    }
+
+    /// Has `lost` called once the daemon goes ([`DaemonConnection::on_lost`]).
+    fn on_lost(&self, lost: Box<dyn Fn() + Send + Sync>) {
+        if self.on_lost.set(lost).is_err() {
+            panic!("told twice what to do once the extent daemon goes");
+        }
+        if self.lost.load(Ordering::Acquire) {
+            (self.on_lost.get().unwrap())();
+        }
+    }
+
+    /// Closes the connection itself: its end is no daemon's going.
+    fn close(&self) {
+        self.closing.store(true, Ordering::Release);
+        self.sender.shutdown();
     }
 
     /// Sends `request`, encoded ([`Request::encode`]), and returns its reply.
@@ -948,25 +1027,25 @@ impl Client {
                 told_private = told;
             }
         }
-        // The daemon went, unless the store closed the connection itself: no request is served,
-        // nor the window's faults, from now on, and the VM can't go on. Said before the requests
-        // waiting fail, so that what their failures do knows why, as the window's faults do,
-        // which wait for the VM process to stop then rather than abort it (TASK-231).
-        let lost = !self.closing.load(Ordering::Acquire);
-        if lost {
+        // The daemon went, unless the VM process closed the connection itself: no request is
+        // served, nor the window's faults, from now on, and the VM can't go on. Said before the
+        // requests waiting fail, so that what their failures do knows why, as the window's faults
+        // do, which wait for the VM process to stop then rather than abort it (TASK-231); and told
+        // of then too, so that a VMM stops its VM for it, rather than for what fails, a store's
+        // open as its VM is created among them (TASK-232).
+        if !self.closing.load(Ordering::Acquire) {
             self.lost.store(true, Ordering::Release);
-        }
-        // The requests waiting fail, as do those made from now on.
-        self.waiting.lock().unwrap().take();
-        self.room.notify_all();
-        // Where a test has what the failing requests do come first (TASK-231).
-        fail::fail_point!("client::requests_failed");
-        if lost {
             log::error!("the extent daemon went: the store's requests fail from now on");
             if let Some(lost) = self.on_lost.get() {
                 lost();
             }
         }
+        // The requests waiting fail, as do those made from now on.
+        self.waiting.lock().unwrap().take();
+        self.room.notify_all();
+        // Where a test has what the failing requests do come before the rest of the connection's
+        // end (TASK-231, TASK-232).
+        fail::fail_point!("client::requests_failed");
     }
 
     /// fxdax: tells the daemon what the stage operations made so far cost, if any were made

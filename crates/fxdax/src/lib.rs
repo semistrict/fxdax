@@ -160,7 +160,7 @@ pub use dax::uffd::{describe_windows, guest_access_failed, guest_thread_started}
 pub use dax::{Access, DaxWindow, SecondStage};
 pub use error::{Errno, Error, Result};
 #[cfg(target_os = "linux")]
-pub use extentd::RemoteExtentStore;
+pub use extentd::{DaemonConnection, RemoteExtentStore};
 pub use extents::{
     Commit, ExtentId, ExtentInfo, ExtentStore, MappingContents, OpenBase, Opening, StoreAccess,
     StoreBytes, StoreRole, WindowMapping, WriteBarriers,

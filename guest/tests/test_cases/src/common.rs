@@ -243,7 +243,7 @@ fn stats_file(given: bool, dir: &Path, name: &str) -> Option<PathBuf> {
 /// Gives the extent daemon's socket at `socket`, its user's alone (TASK-155), to the user of the
 /// jails Firecracker runs in, if it does: scripts/test-e2e.sh's FXDAX_FIRECRACKER_JAIL. Each
 /// jailed Firecracker here uses the default tenant's socket, as production's use a tenant's.
-fn give_to_the_jail(socket: &Path) -> anyhow::Result<()> {
+pub fn give_to_the_jail(socket: &Path) -> anyhow::Result<()> {
     let id = |name: &str| -> anyhow::Result<Option<u32>> {
         let Ok(value) = std::env::var(name) else { return Ok(None) };
         Ok(Some(value.parse().with_context(|| format!("{name} is not a number"))?))

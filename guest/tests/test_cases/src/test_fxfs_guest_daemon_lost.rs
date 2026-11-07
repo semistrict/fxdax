@@ -6,7 +6,11 @@
 //! two VMs, on stores a daemon of the test's own serves, write files and fault their pages in
 //! through the DAX window; each tells the host once it is at it, and the host kills the daemon.
 //! Each VM's Firecracker exits, within `BOUND`, with status 158 (`ExtentdLost`), which its host
-//! process sees: no vCPU waits for ever on a DAX fault the daemon would have served.
+//! process sees: no vCPU waits for ever on a DAX fault the daemon would have served. And a third
+//! VM's daemon goes as the VM is created, opening its store: a daemon of the test's own, which
+//! takes the VM process's connection and its `OPEN`, and closes it, answering nothing, as one
+//! killed while the store recovers from its bucket does. Its Firecracker exits 158 too, not 1, as
+//! a VM whose store failed to open does (TASK-232, fxfs-guest-soak's GCE r831 round 29).
 
 use macros::{guest, host};
 
@@ -19,10 +23,10 @@ const PORT: u32 = 5053;
 #[host]
 mod host {
     use super::*;
-    use crate::common::{fxdax_guest_should_run, setup_rootfs, spawn_daemon};
+    use crate::common::{fxdax_guest_should_run, give_to_the_jail, setup_rootfs, spawn_daemon};
     use crate::vm::{Firecracker, Vm};
     use crate::{ShouldRun, Test, TestOutcome, TestSetup};
-    use std::io::{BufRead, BufReader};
+    use std::io::{BufRead, BufReader, Read};
     use std::os::unix::net::UnixListener;
     use std::os::unix::process::ExitStatusExt;
     use std::path::{Path, PathBuf};
@@ -66,9 +70,33 @@ mod host {
         vm.spawn_api(root, &test_setup.test_case, name, &Vm::api_socket(name))
     }
 
+    /// Waits for the VM `name`, of `firecracker`, to exit, as it does within `BOUND` of its
+    /// daemon's going, at `gone`: ExtentdLost.
+    fn exits_lost(name: &str, mut firecracker: Firecracker, gone: Instant) -> anyhow::Result<()> {
+        while firecracker.running()? {
+            if gone.elapsed() > BOUND {
+                let console = firecracker.kill()?;
+                anyhow::bail!(
+                    "{name}'s VM runs still {BOUND:?} after its daemon went: see {}",
+                    console.display()
+                );
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let (status, console) = firecracker.wait()?;
+        anyhow::ensure!(
+            status.code() == Some(EXTENTD_LOST),
+            "{name}'s VM exited {status} (signal {:?}), not {EXTENTD_LOST}: see {}",
+            status.signal(),
+            console.display()
+        );
+        Ok(())
+    }
+
     impl TestFxfsGuestDaemonLost {
         fn run(&self, test_setup: &TestSetup) -> anyhow::Result<()> {
             let root = setup_rootfs(test_setup)?;
+            self.lost_opening(test_setup, &root)?;
             let extentd = socket("extentd.sock");
             let mut daemon = spawn_daemon(test_setup, &extentd, "extentd", &[], None)?;
             let mut vms = Vec::new();
@@ -86,26 +114,25 @@ mod host {
             daemon.kill()?;
             let killed = Instant::now();
             daemon.wait()?;
-            for (name, mut firecracker, _) in vms {
-                while firecracker.running()? {
-                    if killed.elapsed() > BOUND {
-                        let console = firecracker.kill()?;
-                        anyhow::bail!(
-                            "{name}'s VM runs still {BOUND:?} after its daemon was killed: see {}",
-                            console.display()
-                        );
-                    }
-                    std::thread::sleep(Duration::from_millis(10));
-                }
-                let (status, console) = firecracker.wait()?;
-                anyhow::ensure!(
-                    status.code() == Some(EXTENTD_LOST),
-                    "{name}'s VM exited {status} (signal {:?}), not {EXTENTD_LOST}: see {}",
-                    status.signal(),
-                    console.display()
-                );
+            for (name, firecracker, _) in vms {
+                exits_lost(name, firecracker, killed)?;
             }
             Ok(())
+        }
+
+        /// A VM whose daemon, the test's own, goes as the VM opens its store, as it is created:
+        /// it takes the VM process's connection, waits for its `OPEN`, and closes it.
+        fn lost_opening(&self, test_setup: &TestSetup, root: &Path) -> anyhow::Result<()> {
+            let extentd = socket("opening.sock");
+            let listener = UnixListener::bind(&extentd)?;
+            give_to_the_jail(&extentd)?;
+            let mut firecracker =
+                boot(test_setup, root, "opening", &extentd, &socket("opening.vsock"))?;
+            let mut connection = firecracker.accept(&listener)?;
+            let mut open = [0; 1];
+            anyhow::ensure!(connection.read(&mut open)? == 1, "the VM process sent no OPEN");
+            drop((connection, listener));
+            exits_lost("opening", firecracker, Instant::now())
         }
     }
 

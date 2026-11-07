@@ -3478,6 +3478,40 @@ fn requests_failed_by_the_daemons_going_find_it_gone() {
     answering.join().unwrap();
 }
 
+/// fxdax: a daemon going as a store opens over its connection is told of, as what was said of the
+/// connection before the open says ([`DaemonConnection::on_lost`]), before the open fails, which
+/// says why: a VMM stops its VM ExtentdLost (158) then, as for a daemon going later, rather than
+/// for the open's failure. A VM booted again as its daemon was killed exited 1, its store
+/// recovering from a bucket slowed a second a request: fxfs-guest-soak, GCE r831 round 29
+/// (TASK-232). Red with the connection's end told of after the open failed, which the failpoint
+/// holding the end shows.
+#[test]
+fn daemons_going_as_stores_open_are_told_of_first() {
+    use super::client::DaemonConnection;
+    use super::wire::*;
+    let (client, daemon) = UnixStream::pair().unwrap();
+    let going = std::thread::spawn(move || {
+        let open = Receiver::new(daemon).receive(|| 0).unwrap().unwrap();
+        // The daemon goes as it opens the store, answering nothing.
+        assert_eq!(open.header.kind, OPEN);
+    });
+    let connection = DaemonConnection::over(client).unwrap();
+    let happened = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let told = happened.clone();
+    connection.on_lost(move || told.lock().unwrap().push("daemon lost"));
+    // What the connection's end does after failing what waits on it comes after the open fails.
+    let _slow = fail::FailGuard::new("client::requests_failed", "sleep(200)").unwrap();
+    let opened = connection.open(Path::new("store"), 1 << 20);
+    happened.lock().unwrap().push("open failed");
+    let err = opened.err().expect("the store opened, its daemon gone");
+    assert_eq!(
+        format!("{err:#}"),
+        "opening the extent store at store: the extent daemon went: EIO (errno 5)"
+    );
+    assert_eq!(*happened.lock().unwrap(), ["daemon lost", "open failed"]);
+    going.join().unwrap();
+}
+
 /// A VM process's connection to the daemon at `socket`, made by hand, as one that keeps to no
 /// protocol makes it: its store at `path` opened, created with `capacity` bytes, and its branch.
 fn raw_connection(
