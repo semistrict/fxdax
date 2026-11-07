@@ -17,12 +17,11 @@
 //!   them, and closing the device waits for them to be.
 
 use super::gate::WriteGate;
-use super::io::{Io, Op};
+use super::io::{Done, Io, IoFile, Op};
 use super::kept::Kept;
 use anyhow::{Context, Error, bail};
 use async_trait::async_trait;
-use extent_store::{Aligned, Description, HostDir, Part, Store};
-use std::os::fd::{AsRawFd, RawFd};
+use extent_store::{Aligned, Description, HostDir, HostFile, Part, Store};
 use std::path::Path;
 use std::sync::Arc;
 use storage_device::buffer::{BufferFuture, BufferRef, MutableBufferRef};
@@ -100,31 +99,56 @@ impl ImageDevice {
         self.store.dir().is_direct()
     }
 
-    /// Transfers `len` bytes at `offset` in `fd`'s file to or from memory at `addr`, as `op`
-    /// makes operations of them: the first `needed` of them, and the rest as far as the file goes.
-    async fn transfer(
+    /// Reads `len` bytes at `offset` in `file`: the first `needed` of them, and the rest as far as
+    /// the file goes. The I/O reads into a buffer of its own, which it gives back: the caller's
+    /// memory is never the host's, which a future leaked would leave it (TASK-24).
+    async fn read_file(
         &self,
-        fd: RawFd,
-        addr: usize,
+        file: &Arc<HostFile>,
         len: usize,
         needed: usize,
         offset: u64,
-        op: impl Fn(usize, usize, u64) -> Op,
-    ) -> Result<(), Error> {
+    ) -> Result<Aligned, Error> {
+        let mut read: Option<Aligned> = None;
         let mut done = 0;
         while done < needed {
-            let operation = op(addr + done, len - done, offset + done as u64);
-            // SAFETY: The file is open as long as the caller holds it, which it does for the
-            // operation, and the buffer is the caller's for the operation, which the future waits
-            // for even if it is dropped.
-            match unsafe { self.io.run(fd, operation) }.await {
-                Ok(0) => bail!("the image's file ended at {:#x}", offset + done as u64),
+            let at = offset + done as u64;
+            let op = Op::Read { len: len - done, offset: at };
+            let Done { result, buffer } = self.io.run(file.clone() as IoFile, op).await;
+            let transferred = match result {
+                Ok(0) => bail!("the image's file ended at {at:#x}"),
+                Ok(transferred) => transferred,
+                Err(err) => return Err(Error::new(err).context(format!("I/O at {at:#x}"))),
+            };
+            match &mut read {
+                // Read whole, as it is but for a short read.
+                None if transferred >= needed => return Ok(buffer),
+                None => read = Some(buffer),
+                Some(read) => read.as_mut_slice()[done..done + transferred]
+                    .copy_from_slice(&buffer.as_slice()[..transferred]),
+            }
+            done += transferred;
+        }
+        Ok(read.unwrap_or_else(|| Aligned::new(len)))
+    }
+
+    /// Writes `data` at `offset` in `file`, from a buffer of the I/O's own, as `read_file` reads.
+    async fn write_file(
+        &self,
+        file: &Arc<HostFile>,
+        data: BufferRef<'_>,
+        offset: u64,
+    ) -> Result<(), Error> {
+        let mut done = 0;
+        while done < data.len() {
+            let at = offset + done as u64;
+            let mut owned = Aligned::new(data.len() - done);
+            data.subslice(done..).copy_to_slice(owned.as_mut_slice());
+            let op = Op::Write { data: owned, offset: at };
+            match self.io.run(file.clone() as IoFile, op).await.result {
+                Ok(0) => bail!("the image's file took nothing at {at:#x}"),
                 Ok(transferred) => done += transferred,
-                Err(err) => {
-                    return Err(
-                        Error::new(err).context(format!("I/O at {:#x}", offset + done as u64))
-                    );
-                }
+                Err(err) => return Err(Error::new(err).context(format!("I/O at {at:#x}"))),
             }
         }
         Ok(())
@@ -190,33 +214,17 @@ impl Device for ImageDevice {
                 // in-process image's, which imports, host tools and tests use; guests' reads are
                 // extentd's, through the store's.
                 Part::Data { file, offset, len, .. } => {
-                    let mut part = buffer.reborrow().subslice_mut(at..at + len as usize);
-                    let addr = part.as_mut_ptr() as usize;
-                    self.transfer(
-                        file.as_raw_fd(),
-                        addr,
-                        len as usize,
-                        len as usize,
-                        offset,
-                        |addr, len, offset| Op::Read { addr, len, offset },
-                    )
-                    .await?;
-                    at += len as usize;
+                    let len = len as usize;
+                    let read = self.read_file(&file, len, len, offset).await?;
+                    buffer.reborrow().subslice_mut(at..at + len).copy_from_slice(read.as_slice());
+                    at += len;
                 }
                 // Its stored bytes, in whole blocks, to check and unpack.
                 Part::Packed { part, skip, len } => {
                     let range = part.read_range();
-                    let mut stored = Aligned::new((range.end - range.start) as usize);
-                    let addr = stored.as_mut_slice().as_mut_ptr() as usize;
-                    self.transfer(
-                        part.file.as_raw_fd(),
-                        addr,
-                        stored.as_slice().len(),
-                        part.stored.len as usize,
-                        range.start,
-                        |addr, len, offset| Op::Read { addr, len, offset },
-                    )
-                    .await?;
+                    let read_len = (range.end - range.start) as usize;
+                    let needed = part.stored.len as usize;
+                    let stored = self.read_file(&part.file, read_len, needed, range.start).await?;
                     let bytes = self.store.unpack(&part, stored)?;
                     let (skip, len) = (skip as usize, len as usize);
                     let mut part = buffer.reborrow().subslice_mut(at..at + len);
@@ -265,16 +273,7 @@ impl Device for ImageDevice {
             let store = self.store.clone();
             unblock(move || store.wait_until_writes_resume()).await?;
         };
-        let (addr, len) = (buffer.as_ptr() as usize, buffer.len());
-        self.transfer(
-            write.file().as_raw_fd(),
-            addr,
-            len,
-            len,
-            write.offset(),
-            |addr, len, offset| Op::Write { addr, len, offset },
-        )
-        .await?;
+        self.write_file(write.file(), buffer, write.offset()).await?;
         write.finish();
         Ok(())
     }
