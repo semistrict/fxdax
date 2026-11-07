@@ -19,6 +19,7 @@ rustc-hash.workspace = true
 
 [dev-dependencies]
 fuchsia.workspace = true
+fxfs-unicode.workspace = true
 proptest.workspace = true
 rand.workspace = true
 storage_device.workspace = true
