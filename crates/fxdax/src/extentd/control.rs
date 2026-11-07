@@ -10,6 +10,7 @@
 //! the runtime's blocking threads, so that many calls waiting, syncs while object storage is slow,
 //! keep no other call waiting.
 
+use super::disk;
 use super::grants::Grants;
 use super::memory;
 use super::stores;
@@ -541,6 +542,25 @@ impl Extentd for Control {
         let shrunk = stores::blocking(move || memory::shrink(tenant.as_deref(), target_bytes));
         reply(shrunk.await.map(|bytes| ShrinkMemoryResponse { bytes }))
     }
+
+    async fn set_disk_limit(
+        &self,
+        request: Request<SetDiskLimitRequest>,
+    ) -> Result<Response<SetDiskLimitResponse>, Status> {
+        let SetDiskLimitRequest { tenant, bytes } = request.into_inner();
+        let tenant = Some(tenant).filter(|tenant| !tenant.is_empty());
+        reply(disk::set_limit(tenant.as_deref(), bytes).map(|()| SetDiskLimitResponse {}))
+    }
+
+    async fn get_tenant_disk(
+        &self,
+        request: Request<GetTenantDiskRequest>,
+    ) -> Result<Response<GetTenantDiskResponse>, Status> {
+        let tenant = Some(request.into_inner().tenant).filter(|tenant| !tenant.is_empty());
+        let counted = stores::blocking(move || disk::count(tenant.as_deref()));
+        let response = |(bytes, limit_bytes)| GetTenantDiskResponse { bytes, limit_bytes };
+        reply(counted.await.map(response))
+    }
 }
 
 /// A client of a daemon's control API that blocks, for callers without a runtime of their own:
@@ -748,6 +768,27 @@ impl Client {
         let what = format!("shrinking the memory of {}", tenant.unwrap_or("the daemon"));
         let response = self.call(what, |mut c| async move { c.shrink_memory(request).await })?;
         Ok(response.bytes)
+    }
+
+    /// fxdax: limits the disk of the tenant `tenant`, or of every tenant without one, to `bytes`,
+    /// or lifts the limit without them (`SetDiskLimit`, TASK-94).
+    pub fn set_disk_limit(
+        &self,
+        tenant: Option<&str>,
+        bytes: Option<u64>,
+    ) -> Result<(), crate::Error> {
+        let request = SetDiskLimitRequest { tenant: tenant.unwrap_or_default().to_owned(), bytes };
+        let what = format!("limiting the disk of {}", tenant.unwrap_or("every tenant"));
+        self.call(what, |mut c| async move { c.set_disk_limit(request).await }).map(drop)
+    }
+
+    /// fxdax: what the disk of the tenant `tenant`, or of every tenant without one, takes, counted
+    /// now, in bytes, and its limit, if it has one (`GetTenantDisk`, TASK-94).
+    pub fn tenant_disk(&self, tenant: Option<&str>) -> Result<(u64, Option<u64>), crate::Error> {
+        let request = GetTenantDiskRequest { tenant: tenant.unwrap_or_default().to_owned() };
+        let what = format!("counting the disk of {}", tenant.unwrap_or("every tenant"));
+        let response = self.call(what, |mut c| async move { c.get_tenant_disk(request).await })?;
+        Ok((response.bytes, response.limit_bytes))
     }
 
     /// fxdax: what the daemon, its VM processes and their guests counted, as of one moment, each

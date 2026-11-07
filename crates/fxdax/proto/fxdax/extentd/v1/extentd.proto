@@ -156,6 +156,15 @@ service Extentd {
   // Evicts clean pages, of extents asked for longest ago first, until the memory a tenant, or the
   // daemon, holds is at most a target, or none is left to evict: as the host's memory runs low.
   rpc ShrinkMemory(ShrinkMemoryRequest) returns (ShrinkMemoryResponse);
+  // Limits the host's disk a tenant takes, or every tenant together (TASK-94): what is in its
+  // directory, its stores' files, each file once, the host's part cache no tenant's. Past a
+  // tenant's limit, its VMs' writes, and the stores they make, fail with ENOSPC, which the VM's
+  // guest sees as a full disk, and the daemon and other tenants' writes go on; past the total, any
+  // tenant's do. Commits go on, and what leaves the disk (uploaded, freed, a store deleted) lets
+  // the tenant write again. A limit under what is taken holds as data leaves.
+  rpc SetDiskLimit(SetDiskLimitRequest) returns (SetDiskLimitResponse);
+  // What the host's disk a tenant takes, or every tenant together, counted now, and its limit.
+  rpc GetTenantDisk(GetTenantDiskRequest) returns (GetTenantDiskResponse);
 }
 
 // Makes an empty store.
@@ -560,4 +569,32 @@ message ShrinkMemoryRequest {
 message ShrinkMemoryResponse {
   // The bytes held: above the target if nothing more could be evicted.
   uint64 bytes = 1;
+}
+
+// Limits the disk of a tenant, or of every tenant.
+message SetDiskLimitRequest {
+  // The tenant whose disk to limit, alive now or granted later, until its limit is set again;
+  // empty for every tenant's together. A tenant revoked and granted again while its earlier VMs
+  // run has the limit for each of its directories.
+  string tenant = 1;
+  // The limit, in bytes; absent, none.
+  optional uint64 bytes = 2;
+}
+
+// The limit is set.
+message SetDiskLimitResponse {}
+
+// Asks what a tenant's disk takes.
+message GetTenantDiskRequest {
+  // The tenant, alive (NOT_FOUND otherwise); empty for every tenant together.
+  string tenant = 1;
+}
+
+// What a tenant's disk takes.
+message GetTenantDiskResponse {
+  // The bytes of the filesystem's blocks its directories' files take, as `du -sx` counts them,
+  // with what writes admitted add as the count is made.
+  uint64 bytes = 1;
+  // Its limit, if it has one.
+  optional uint64 limit_bytes = 2;
 }

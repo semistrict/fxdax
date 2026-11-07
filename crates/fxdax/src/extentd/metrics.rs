@@ -41,6 +41,10 @@
 //!   (TASK-50.3); `fxdax_extentd_tenant_memory_bytes{tenant}` and
 //!   `fxdax_extentd_tenant_memory_limit_bytes{tenant}`: each tenant's alive, by a hash of its name
 //!   (`super::memory::label`), not the name.
+//! - `fxdax_extentd_disk_bytes` and `fxdax_extentd_disk_limit_bytes`: the host's disk every
+//!   tenant's directory takes together, as last counted, and its limit, if any (TASK-94);
+//!   `fxdax_extentd_tenant_disk_bytes{tenant}` and `fxdax_extentd_tenant_disk_limit_bytes{tenant}`:
+//!   each tenant's alive, by a hash of its name (`super::disk`).
 //! - `fxdax_extentd_upload_pending_bytes{branch}`, `fxdax_extentd_upload_oldest_pending_seconds
 //!   {branch}` and `fxdax_extentd_upload_stalls_total{branch}`: for each open store whose commits
 //!   upload, its commits' bytes not yet uploaded, how long the oldest of them has waited, and how
@@ -257,6 +261,26 @@ pub fn render() -> String {
             let _ = writeln!(out, "{name}{{tenant=\"{}\"}} {limit}", tenant.label);
         }
     }
+    // fxdax: their disks' (TASK-94).
+    let tenants = super::disk::tenants();
+    let name = "fxdax_extentd_tenant_disk_bytes";
+    let _ = writeln!(
+        out,
+        "# HELP {name} The host's disk a tenant's directory takes, as last counted, by its name's \
+         hash."
+    );
+    let _ = writeln!(out, "# TYPE {name} gauge");
+    for tenant in &tenants {
+        let _ = writeln!(out, "{name}{{tenant=\"{}\"}} {}", tenant.label, tenant.bytes);
+    }
+    let name = "fxdax_extentd_tenant_disk_limit_bytes";
+    let _ = writeln!(out, "# HELP {name} The limit of a tenant's disk, by its name's hash.");
+    let _ = writeln!(out, "# TYPE {name} gauge");
+    for tenant in &tenants {
+        if let Some(limit) = tenant.limit {
+            let _ = writeln!(out, "{name}{{tenant=\"{}\"}} {limit}", tenant.label);
+        }
+    }
 
     for (name, value) in crate::stats::stats().named() {
         let name = format!("fxdax_extentd_{}_total", name.replace('-', "_"));
@@ -327,7 +351,8 @@ pub fn render() -> String {
 }
 
 /// The daemon's gauges, as of now, each with its name, without `fxdax_extentd_`, and what it is:
-/// what its metrics and snapshots report (TASK-111.4). The memory's limit only if it has one.
+/// what its metrics and snapshots report (TASK-111.4). The memory's limit only if it has one, and
+/// the disk's.
 pub(super) fn gauges() -> Vec<(&'static str, &'static str, u64)> {
     let (entries, live) = (crate::cache::entries(), crate::dax::live());
     let mut gauges = vec![
@@ -365,6 +390,12 @@ pub(super) fn gauges() -> Vec<(&'static str, &'static str, u64)> {
     ];
     if let Some(limit) = physmem::total_cap() {
         gauges.push(("memory_limit_bytes", "The limit of every tenant's memory.", limit));
+    }
+    // fxdax: TASK-94.
+    let disk = super::disk::total();
+    gauges.push(("disk_bytes", "The host's disk every tenant's directory takes.", disk));
+    if let Some(limit) = super::disk::total_limit() {
+        gauges.push(("disk_limit_bytes", "The limit of every tenant's disk together.", limit));
     }
     gauges
 }

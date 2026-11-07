@@ -313,6 +313,32 @@ daemon a cgroup of its own whose `memory.max` holds `MEMORY_BYTES` and its heap
 memory.max under that is met by the cgroup's OOM killer, not by eviction:
 lower `MEMORY_BYTES` or the total limit instead.
 
+**The host's disk.** A tenant takes what is in its directory, the one its VM
+processes name stores in: its stores' open segments and their logs, their
+write-ahead logs' segments not yet acknowledged in the bucket, their own
+extents, each file's blocks once, as `du -sx` counts them (TASK-94). One rule
+for what is shared: a file is the tenant's whose directory holds it, and one in
+no tenant's directory is no tenant's. A fork's directory holds what the fork
+wrote, its base's data being in the bucket, read through the host's part cache
+(`FXDAX_EXTENTD_CACHE`), which is no tenant's: copies of objects any tenant
+reads, bounded by its own capacity and floor, evicting to keep within them. The
+daemon walks a tenant's directory as it is granted, every 10 s, soon after a
+write of it is refused, and as `GetTenantDisk` asks, and counts each write it
+admits between walks. The control API limits, at runtime, the disk of each
+tenant and of every tenant together (`SetDiskLimit`, none by default): past a
+tenant's limit its VMs' writes, and the stores they make, fail with `ENOSPC`,
+which the guest sees as a full disk; the daemon goes on, and other tenants'
+writes do. Its commits go on, and what leaves its disk, uploaded or freed, or a
+store deleted, lets it write again. `/metrics` shows each tenant's disk, by the
+hash of its name, as memory. A filesystem's directory quota would not do it: it
+refuses whichever write of the directory comes past it, a store framing a closed
+segment, which fails the store, or a flush appending a commit's record, rather
+than the guest's next write, which the daemon refuses before the store takes
+any of it; and it is the host's setup, of a filesystem that has them, which the
+daemon can't make as it grants tenants. Set a tenant's limit above what its
+stores need at once: each holds about the lag bound (1 GiB) not yet uploaded,
+and its open segment.
+
 **Multi-node only.** A branch's durable copy is in a bucket, and hosts hold
 copies of it, whose placements fence each other with their tokens: a placement
 cut off neither takes a branch back nor deletes it from under a later one
