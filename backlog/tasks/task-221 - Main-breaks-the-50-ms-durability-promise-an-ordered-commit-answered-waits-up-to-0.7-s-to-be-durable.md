@@ -6,6 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-11-07 02:30'
+updated_date: '2026-11-07 03:24'
 labels: []
 dependencies: []
 documentation:
@@ -46,3 +47,12 @@ The daemon-killed test's check (TASK-165.9, 211d65896) now lets a file be found 
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Measured gap of TASK-165.9 against main, after its framing fixes (2026-11-06):
+- pgbench, same zone (us-central1-b), max lag from ordered to durable: main (r732) 0.41-0.72 s, 0-24 commits a round past 512 ms; TASK-165.9 at 32b56c7c7 (r730) 0.93-1.40 s, 130-290 past 512 ms; at 1917cc681 (r734, a framing's own extents synced several at once) 1.07-1.97 s. p50 bucket 32-64 ms both, p99 128 ms both. Slow flushes spend their time syncing data files (up to 1.25 s); framings spend up to 0.83 s syncing the extents stored on their own their footers name (main's framings sync none), up to 1.4 s writing.
+- daemon-killed: main (r733) max 60-61 ms; TASK-165.9 (r735, r736) max 165-288 ms. Each round has two slow flushes. r736's logging (497529b27) says what: the flush after the uploader closes the first segment syncs that closed segment's raw file (closed_unsynced, 148-157 ms; 2 raw files, 0 own extents), megabytes written in a burst since the last commit (the guest's DAX store through a mapping, at about 1 s), while the framer writes and syncs the same data into the framed file (175-196 ms: write 46-156 ms, sync 36-99 ms): the same data written back twice at once. The second slow flush is the next turn waiting behind it (wait 91-101 ms). Main relies on the framing for that data instead.
+- Under way: GCE r737-r739, pgbench in one zone at once: TASK-165.9's head, and two measurement variants (no own-extent syncs in framings; framings written in one piece), to tell which of them makes the tail.
+<!-- SECTION:NOTES:END -->
