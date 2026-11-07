@@ -1,0 +1,12 @@
+diff --git a/crates/fxfs-posix/src/lib.rs b/crates/fxfs-posix/src/lib.rs
+--- a/crates/fxfs-posix/src/lib.rs
++++ b/crates/fxfs-posix/src/lib.rs
+@@ -987,7 +987,7 @@
+         } else {
+             // fxdax: its entry says which special file it is, if it is one, as its mode does; the
+             // directory's times are the kernel's, which writes them back with it.
+-            let descriptor = ObjectDescriptor::of_file(Some(mode));
++            let descriptor = ObjectDescriptor::File;
+             let times = !P::KEEPS_DIRECTORY_TIMES;
+             let child = dir.create_child_node(&mut transaction, name, descriptor, times).await?;
+             child.update_attributes(&mut transaction, Some(&attributes), None).await?;

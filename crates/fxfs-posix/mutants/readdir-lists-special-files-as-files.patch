@@ -1,12 +1,13 @@
 diff --git a/crates/fxfs-posix/src/lib.rs b/crates/fxfs-posix/src/lib.rs
 --- a/crates/fxfs-posix/src/lib.rs
 +++ b/crates/fxfs-posix/src/lib.rs
-@@ -769,7 +769,7 @@
+@@ -813,7 +813,8 @@
+         let mut at = 0;
          while let Some((name, ino, descriptor)) = entries.get() {
              if at >= skip && Some(name) != after {
-                 let kind = match descriptor {
--                    ObjectDescriptor::File => self.file_type(ino).await?,
-+                    ObjectDescriptor::File => S_IFREG,
-                     descriptor => file_type(descriptor),
-                 };
-                 if !emit(name, ino, kind) {
+-                if !emit(name, ino, file_type(descriptor)) {
++                let kind = if descriptor.is_file() { S_IFREG } else { file_type(descriptor) };
++                if !emit(name, ino, kind) {
+                     break;
+                 }
+             }
