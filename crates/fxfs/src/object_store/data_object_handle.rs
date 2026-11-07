@@ -1726,19 +1726,6 @@ impl<S: HandleOwner> DataObjectHandle<S> {
         Ok(())
     }
 
-    async fn read_and_decrypt(
-        &self,
-        extent: ExtentId,
-        extent_offset: u64,
-        file_offset: u64,
-        buffer: MutableBufferRef<'_>,
-        key_id: u64,
-    ) -> Result<(), Error> {
-        self.handle
-            .read_and_decrypt(self.attribute_id, extent, extent_offset, file_offset, buffer, key_id)
-            .await
-    }
-
     /// Truncates a file to a given size (growing/shrinking as required).
     ///
     /// Nb: Most code will want to call truncate() instead. This method is used

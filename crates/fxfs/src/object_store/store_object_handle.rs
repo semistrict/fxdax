@@ -981,6 +981,20 @@ impl<S: HandleOwner> StoreObjectHandle<S> {
         buf: MutableBufferRef<'_>,
         _guard: &ReadGuard<'_>,
     ) -> Result<(), Error> {
+        self.read_aligned_locked(attribute_id, offset, buf).await
+    }
+
+    /// fxdax: `read_aligned_unchecked`, by a caller whose transaction locks the object, which
+    /// keeps its extents as they are: read as every read is, holes and blocks allocated and never
+    /// written, which the device doesn't hold (backlog doc-4), as zeros. What a file's last block
+    /// holds past its end is read so (`txn_zero_tail`): read from its extent alone, a block an
+    /// allocation left unwritten failed the growth that zeroes it (TASK-149.36).
+    pub(crate) async fn read_aligned_locked(
+        &self,
+        attribute_id: AttributeId,
+        offset: u64,
+        buf: MutableBufferRef<'_>,
+    ) -> Result<(), Error> {
         if buf.is_empty() {
             return Ok(());
         }

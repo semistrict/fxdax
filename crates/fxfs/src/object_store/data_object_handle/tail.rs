@@ -4,18 +4,15 @@
 
 // Of Fuchsia's `src/storage/fxfs/src/object_store/data_object_handle.rs`, a child of it: zeroing
 // what a file's last block holds past its end, upstream inline in `grow`, as every way a file
-// grows does, and a truncate, which leaves it there (TASK-139, TASK-150.19, TASK-153.4).
+// grows does, and a truncate, which leaves it there (TASK-139, TASK-150.19, TASK-153.4). The block
+// is read as every read reads, not from its extent with upstream's `read_and_decrypt`, gone with
+// it (TASK-149.36).
 
 use super::DataObjectHandle;
-use crate::errors::FxfsError;
-use crate::lsm_tree::Query;
-use crate::lsm_tree::types::{ItemRef, LayerIterator};
 use crate::object_handle::{ObjectHandle, ReadObjectHandle};
-use crate::object_store::extent_record::ExtentValue;
-use crate::object_store::object_record::{AttributeKey, ObjectKey, ObjectKeyData, ObjectValue};
+use crate::object_store::HandleOwner;
 use crate::object_store::transaction::Transaction;
-use crate::object_store::{Extent, HandleOwner};
-use anyhow::{Error, ensure};
+use anyhow::Error;
 use std::ops::Range;
 
 impl<S: HandleOwner> DataObjectHandle<S> {
@@ -29,63 +26,28 @@ impl<S: HandleOwner> DataObjectHandle<S> {
         transaction: &mut Transaction<'a>,
         size: u64,
     ) -> Result<bool, Error> {
-        let store = self.store();
         let block_size = self.block_size();
         if block_size.is_aligned(size) {
             return Ok(false);
         }
-        let layer_set = store.tree.layer_set();
-        let mut merger = layer_set.merger();
-        let aligned_size = block_size.align_down(size);
-        let iter = merger
-            .query(Query::FullRange(&ObjectKey::attribute(
-                self.object_id(),
-                self.attribute_id(),
-                AttributeKey::Extent(Extent::search_key_from_offset(aligned_size)),
-            )))
-            .await?;
-        if let Some(ItemRef {
-            key:
-                ObjectKey {
-                    object_id,
-                    data: ObjectKeyData::Attribute(attribute_id, AttributeKey::Extent(extent_key)),
-                },
-            value: ObjectValue::Extent(ExtentValue::Some { extent, extent_offset, key_id, .. }),
-            ..
-        }) = iter.get()
-        {
-            if *object_id == self.object_id()
-                && *attribute_id == self.attribute_id()
-                && extent_key.start <= aligned_size
-            {
-                let device_offset = extent_offset
-                    .checked_add(aligned_size - extent_key.start)
-                    .ok_or(FxfsError::Inconsistent)?;
-                ensure!(block_size.is_aligned(device_offset), FxfsError::Inconsistent);
-                let mut buf = self.allocate_buffer(block_size.get() as usize).await;
-                // In the case that this extent is in OverwritePartial mode, there is a
-                // possibility that the last block is allocated, but not initialized yet, in
-                // which case we don't actually need to bother zeroing out the tail. However,
-                // it's not strictly incorrect to change uninitialized data, so we skip the
-                // check and blindly do it to keep it simpler here.
-                self.read_and_decrypt(*extent, device_offset, aligned_size, buf.as_mut(), *key_id)
-                    .await?;
-                let mut past = buf.subslice_mut((size % block_size) as usize..buf.len());
-                if past.to_vec().iter().all(|&byte| byte == 0) {
-                    return Ok(false);
-                }
-                past.fill(0);
-                self.multi_write(
-                    transaction,
-                    *attribute_id,
-                    &[aligned_size..aligned_size + block_size],
-                    buf.as_mut(),
-                )
-                .await?;
-                return Ok(true);
-            }
+        let last = block_size.align_down(size);
+        let mut buf = self.allocate_buffer(block_size.get() as usize).await;
+        // As every read reads it: a hole, and a block allocated and never written, which the
+        // device doesn't hold, as zeros (TASK-149.36).
+        self.handle.read_aligned_locked(self.attribute_id(), last, buf.as_mut()).await?;
+        let mut past = buf.subslice_mut((size % block_size) as usize..buf.len());
+        if past.to_vec().iter().all(|&byte| byte == 0) {
+            return Ok(false);
         }
-        Ok(false)
+        past.fill(0);
+        self.multi_write(
+            transaction,
+            self.attribute_id(),
+            &[last..last + block_size],
+            buf.as_mut(),
+        )
+        .await?;
+        Ok(true)
     }
 
     /// fxdax: makes the file `size` bytes long if it is shorter, in `transaction`, which writes
@@ -160,5 +122,27 @@ impl<S: HandleOwner> DataObjectHandle<S> {
             transaction.commit().await?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::object_handle::WriteObjectHandle;
+    use crate::object_store::data_object_handle::tests::test_filesystem_and_object_with_key;
+
+    /// fxdax: a file allocated part of a block grows: the block, which nothing wrote, isn't on the
+    /// device, and reads as zeros, so the growth has nothing to zero. Read from its extent, the
+    /// growth failed, "no extent" (TASK-149.36).
+    #[fuchsia::test]
+    async fn test_a_file_allocated_part_of_a_block_grows() {
+        let (fs, object) = test_filesystem_and_object_with_key(None, false).await;
+        // Past what small files share of an extent (the staging extent), so that the allocation
+        // takes extents of its own, which nothing wrote.
+        let end = (1 << 20) + 1;
+        object.allocate(0..end).await.expect("allocate failed");
+        object.truncate(end + 1).await.expect("truncate failed");
+        let contents = object.contents(usize::MAX).await.expect("contents failed");
+        assert_eq!(contents[..], vec![0; end as usize + 1][..]);
+        fs.close().await.expect("close failed");
     }
 }
