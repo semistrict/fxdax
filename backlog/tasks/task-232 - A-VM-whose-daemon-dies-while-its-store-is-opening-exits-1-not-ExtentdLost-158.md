@@ -3,9 +3,11 @@ id: TASK-232
 title: >-
   A VM whose daemon dies while its store is opening exits 1, not ExtentdLost
   (158)
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-11-07 13:25'
+updated_date: '2026-11-07 13:41'
 labels:
   - bug
 dependencies: []
@@ -32,3 +34,14 @@ Found by fxfs-guest-soak (TASK-67) on GCS, GCE r831 round 29 (run FXDAX_SEED=130
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. fxdax client: DaemonConnection, a connection before its store opens, whose on_lost is said before OPEN; RemoteExtentStore::connect* open over one. The connection's end tells on_lost before the requests waiting fail, so a VMM exits 158 before the open's failure reaches it; an open failed by the daemon's going says 'the extent daemon went'.
+2. Test first: extentd::tests::daemons_going_as_stores_open_are_told_of_first (hand daemon taking the OPEN and going; failpoint client::requests_failed holding the end).
+3. vendor/firecracker (fork branch land-k5 on fxdax-v1.16.1): device.rs connects, registers exit 158, then opens (boot, restore, follower reopen).
+4. Guest case fxfs-guest-daemon-lost: a third VM whose daemon (the test's own) takes its OPEN and closes; Firecracker exits 158. Red on the old VMM, green on land-k5, on GCE r833, jailed.
+5. AC #3: fxfs-guest-soak's load_problems already accepts only 0/kill/158 (158 when lossy) for a VM: no change.
+6. Linux Docker + macOS fxdax tests, FC extent tests, upstream-changes.py --check; push land-k5 (fxdax and fork) and run CI.
+<!-- SECTION:PLAN:END -->
