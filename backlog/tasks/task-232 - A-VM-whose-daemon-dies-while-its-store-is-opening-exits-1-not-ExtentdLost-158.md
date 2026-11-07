@@ -3,11 +3,11 @@ id: TASK-232
 title: >-
   A VM whose daemon dies while its store is opening exits 1, not ExtentdLost
   (158)
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-07 13:25'
-updated_date: '2026-11-07 14:39'
+updated_date: '2026-11-07 15:21'
 labels:
   - bug
 dependencies: []
@@ -30,9 +30,9 @@ Found by fxfs-guest-soak (TASK-67) on GCS, GCE r831 round 29 (run FXDAX_SEED=130
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -51,3 +51,9 @@ Found by fxfs-guest-soak (TASK-67) on GCS, GCE r831 round 29 (run FXDAX_SEED=130
 <!-- SECTION:NOTES:BEGIN -->
 land-k5 ac2e7e1d7 (fork land-k5 7d0a0970e on 99c2b05c5): CI 42379721997 green, all 11 jobs. AC#1: extentd::tests::daemons_going_as_stores_open_are_told_of_first red before (['open failed'] against ['daemon lost', 'open failed']), green after; the open fails 'opening the extent store at store: the extent daemon went: EIO (errno 5)'. AC#2: fxfs-guest-daemon-lost's third VM (its daemon the test's own, taking the OPEN and closing), jailed, on GCE r833: red on the old VMM (fork 05dd8e3df: "opening's VM exited exit status: 1 (signal None), not 158", Firecracker 'Cannot create extent-store device ... exit_code=1'), green on land-k5 (OK 1/1; 'extent device extents: the extent daemon went; stopping the VM'). AC#3: fxfs-guest-soak's load_problems already accepts only 0, a kill, or 158 when lossy (r831 round 29 failed on the 1): unchanged. fxdax 315/315 on macOS before the rebase; Linux Docker extentd/uffd (163) and VMM extent tests (23) after it.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+A VM whose daemon dies as its store opens stops ExtentdLost (158), not 1: DaemonConnection has what the daemon's going does said before OPEN, and the connection's end tells of it before the requests waiting fail; an open failed so says the daemon went. The VMM (fork 7d0a0970e) connects, registers exit 158, then opens. Verified: daemons_going_as_stores_open_are_told_of_first red before, green after; fxfs-guest-daemon-lost's new third VM, jailed on GCE r833, exited 1 on the old VMM and 158 on land-k5; land-k5 CI 42379721997 and land-hk5 CI 42382617461 green (workspace on Linux), fxdax 315/315 on macOS, scripts/upstream-changes.py --check passing. Landed on main as land-hk5 dd5916063.
+<!-- SECTION:FINAL_SUMMARY:END -->
