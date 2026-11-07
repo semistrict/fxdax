@@ -91,6 +91,7 @@ commit 0007-dax-say-why-a-fault-fails.patch
 commit 0010-dax-read-replaces-no-entry-naming-its-page.patch
 commit 0011-dax-a-folio-put-for-good-keeps-no-share-count.patch
 commit 0012-dax-invalidate-unmaps-under-entry-lock.patch
+commit 0013-mprotect-writable-batches-alike-in-dirtiness.patch
 rm -f "$index"
 kgit reset -q --hard "$series"
 rm -f "$out"/patches/*.patch

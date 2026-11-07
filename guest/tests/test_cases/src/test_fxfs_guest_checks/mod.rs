@@ -218,6 +218,8 @@ macro_rules! checks {
             cow_commit_after_bytes: Dax, 3 => test_cow_commit_after_bytes;
             cow_created_in_page_cache: Dax, 3 => test_cow_created_in_page_cache;
             cow_fork_after_a_split_pmd: Dax, 3 => test_cow_fork_after_a_split_pmd;
+            cow_mremap_after_a_split_pmd: Dax, 3 => test_cow_mremap_after_a_split_pmd;
+            cow_mprotect_after_a_split_pmd: Dax, 3 => test_cow_mprotect_after_a_split_pmd;
             rebind_against_loads_and_stores: Dax, 3 => test_rebind_against_loads_and_stores;
             stores_under_rebinds: Dax, 5 => test_stores_under_rebinds;
             // Of files in the page cache, which a DAX mount's created files are too, copying on

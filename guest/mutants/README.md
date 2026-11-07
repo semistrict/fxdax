@@ -1,8 +1,9 @@
 # guest/mutants: past bugs of the guest's Fxfs, put back
 
 Each `*.patch` takes a fix away from the guest's code (`guest/linux/fs/fxfs`, the kernel's
-`fs/dax.c` as `guest/linux/patches` leave it, or `guest/sim`'s model of Fxfs), so that a run with it
-in shows whether the test that should find the bug still does. One set, whether the simulator or a
+`fs/dax.c` as `guest/linux/patches` leave it, a patch of that series, left out of
+`scripts/build-guest-kernel.sh`'s, or `guest/sim`'s model of Fxfs), so that a run with it in shows
+whether the test that should find the bug still does. One set, whether the simulator or a
 real kernel finds the bug (TASK-160.32). Picked by hand from the code's history, so not a fair sample
 of its bugs.
 

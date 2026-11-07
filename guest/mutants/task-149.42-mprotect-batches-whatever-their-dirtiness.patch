@@ -1,0 +1,23 @@
+# SPDX-License-Identifier: GPL-2.0
+# Copyright 2026 The fxdax Authors.
+#
+# Kernel: release
+# Killer: fxfs-guest-checks-dax
+#
+# TASK-149.42: the guest kernel without guest/linux/patches' 0013, mprotect's batches made writable
+# again taking PTEs whatever their dirtiness: a chunk mapped 2 MiB at once, split by a store and
+# read page by page, made read-only and writable again, had all its PTEs made writable for the one
+# stored to, and a store to a page no PRIVATE had made the VM's went to the host, which refused it
+# till the VM went down (GCE r932, cow_mprotect_after_a_split_pmd). The run goes down, naming no
+# check: the suite is the killer.
+
+--- a/scripts/build-guest-kernel.sh
++++ b/scripts/build-guest-kernel.sh
+@@ -91,7 +91,6 @@
+ commit 0010-dax-read-replaces-no-entry-naming-its-page.patch
+ commit 0011-dax-a-folio-put-for-good-keeps-no-share-count.patch
+ commit 0012-dax-invalidate-unmaps-under-entry-lock.patch
+-commit 0013-mprotect-writable-batches-alike-in-dirtiness.patch
+ rm -f "$index"
+ kgit reset -q --hard "$series"
+ rm -f "$out"/patches/*.patch

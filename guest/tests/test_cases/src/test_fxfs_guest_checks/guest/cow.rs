@@ -36,6 +36,24 @@ impl CowMapping {
     fn msync(&self) {
         assert_eq!(unsafe { libc::msync(self.addr, self.len, libc::MS_SYNC) }, 0);
     }
+
+    /// fxdax: mprotect of all of it to `prot`.
+    fn protect(&self, prot: libc::c_int) {
+        let protected = unsafe { libc::mprotect(self.addr, self.len, prot) };
+        assert_eq!(protected, 0, "mprotect: {}", std::io::Error::last_os_error());
+    }
+
+    /// fxdax: moves it (mremap), its page tables with it, to where a reservation of its size was.
+    fn moved(&mut self) {
+        let prot = libc::PROT_NONE;
+        let flags = libc::MAP_PRIVATE | libc::MAP_ANONYMOUS;
+        let to = unsafe { libc::mmap(std::ptr::null_mut(), self.len, prot, flags, -1, 0) };
+        assert_ne!(to, libc::MAP_FAILED, "mmap: {}", std::io::Error::last_os_error());
+        let flags = libc::MREMAP_MAYMOVE | libc::MREMAP_FIXED;
+        let moved = unsafe { libc::mremap(self.addr, self.len, self.len, flags, to) };
+        assert_eq!(moved, to, "mremap: {}", std::io::Error::last_os_error());
+        self.addr = moved;
+    }
 }
 
 impl Drop for CowMapping {
@@ -95,53 +113,116 @@ pub(super) fn test_cow_store_persists() {
     fs::remove_file(&name).unwrap();
 }
 
-/// fxdax: copying on write (doc-13), a fork after a chunk mapped whole, read in 2 MiB at once, so
-/// that its window's pages are one large folio, the mapping split by a store to one of them, and
-/// the chunk read again, page by page: the child's store to a page it only read faults, which
-/// makes the page private, as the parent's would (TASK-149.16). Fork copies a large folio's PTEs
-/// as one, all writable if any is (6.18's copy_present_ptes, FPB_MERGE_WRITE), of a mapping it
-/// copies at all: a VM_MIXEDMAP one, as Fxfs's were. The child stored, unfaulted, to a page no
-/// PRIVATE had made the VM's, which the host refused, again and again, till the VM went down
-/// (GCE r861, fxfs-guest-fsx-faults-dax; r866).
-pub(super) fn test_cow_fork_after_a_split_pmd() {
+/// fxdax: a file of two chunks read in sealed, DAX, mapped shared, each chunk read through the
+/// mapping 2 MiB at once, so that its window's pages are one large folio, then a store to the
+/// second page, which splits the first chunk's PMD, and the file read again, page by page: each
+/// page's PTE read-only but the one stored to, all of one folio (TASK-149.16, TASK-149.42).
+struct SplitChunk {
+    name: String,
+    file: fs::File,
+    map: CowMapping,
+    data: Vec<u8>,
+    /// The private pages after the store.
+    private: u64,
+}
+
+impl SplitChunk {
     const PAGE: usize = 4096;
     const SIZE: usize = 4 << 20;
-    // A page the parent only reads, the second chunk's mapping whole too, as in r861's.
-    const CHILDS: usize = 435 * PAGE + 0x9bf;
-    let name = path("cow-fork-after-split");
-    let mut data: Vec<u8> = (0..SIZE).map(|i| (i % 251) as u8 + 1).collect();
-    fs::write(&name, &data).unwrap();
-    read_in_sealed(&name);
-    let file = fs::OpenOptions::new().read(true).write(true).open(&name).unwrap();
-    let map = CowMapping::new(&file, SIZE);
-    let huge = stats()["dax_huge_maps"];
-    assert!(map.bytes()[..] == data[..], "the file as mapped differs from what was written");
-    assert!(stats()["dax_huge_maps"] > huge, "no fault mapped a PMD's 2 MiB: {:?}", stats());
-    let private = || stats()["dax_private_pages"];
-    let before = private();
-    map.bytes()[PAGE + 100] = 0xee;
-    data[PAGE + 100] = 0xee;
-    assert_eq!(private(), before + 1, "private pages after a store to a PMD's page");
-    // Page by page now, the PMD split: each page's PTE read-only, but the one stored to.
-    assert!(map.bytes()[..] == data[..], "the file read again, page by page");
+    /// A page the store left read-only, as r861's child stored to.
+    const READ_ONLY: usize = 435 * Self::PAGE + 0x9bf;
+
+    fn new(name: &str) -> Self {
+        let name = path(name);
+        let mut data: Vec<u8> = (0..Self::SIZE).map(|i| (i % 251) as u8 + 1).collect();
+        fs::write(&name, &data).unwrap();
+        read_in_sealed(&name);
+        let file = fs::OpenOptions::new().read(true).write(true).open(&name).unwrap();
+        let map = CowMapping::new(&file, Self::SIZE);
+        let huge = stats()["dax_huge_maps"];
+        assert!(map.bytes()[..] == data[..], "the file as mapped differs from what was written");
+        assert!(stats()["dax_huge_maps"] > huge, "no fault mapped a PMD's 2 MiB: {:?}", stats());
+        let before = Self::private();
+        map.bytes()[Self::PAGE + 100] = 0xee;
+        data[Self::PAGE + 100] = 0xee;
+        assert_eq!(Self::private(), before + 1, "private pages after a store to a PMD's page");
+        // Page by page now, the PMD split: each page's PTE read-only, but the one stored to.
+        assert!(map.bytes()[..] == data[..], "the file read again, page by page");
+        Self { name, file, map, data, private: before + 1 }
+    }
+
+    fn private() -> u64 {
+        stats()["dax_private_pages"]
+    }
+
+    /// Stores to the page left read-only through the mapping, as it is now, from this process:
+    /// the store must fault, which makes the page private.
+    fn store_to_read_only(&mut self, how: &str) {
+        self.map.bytes()[Self::READ_ONLY] = 0xcd;
+        self.data[Self::READ_ONLY] = 0xcd;
+        assert_eq!(Self::private(), self.private + 1, "private pages after the store {how}");
+    }
+
+    /// The mapping holds what was stored, and so does the file, evicted.
+    fn finish(self) {
+        let Self { name, file, map, data, .. } = self;
+        assert!(map.bytes()[..] == data[..], "the mapping after the stores");
+        drop(map);
+        drop(file);
+        evict(&name);
+        assert!(fs::read(&name).unwrap() == data, "{name} evicted");
+        fs::remove_file(&name).unwrap();
+    }
+}
+
+/// fxdax: copying on write (doc-13), a fork after a chunk mapped whole and split (SplitChunk): the
+/// child's store to a page it only read faults, which makes the page private, as the parent's
+/// would (TASK-149.16). Fork copies a large folio's PTEs as one, all writable if any is (6.18's
+/// copy_present_ptes, FPB_MERGE_WRITE), of a mapping it copies at all: a VM_MIXEDMAP one, as
+/// Fxfs's were. The child stored, unfaulted, to a page no PRIVATE had made the VM's, which the host
+/// refused, again and again, till the VM went down (GCE r861, fxfs-guest-fsx-faults-dax; r866).
+pub(super) fn test_cow_fork_after_a_split_pmd() {
+    let mut chunk = SplitChunk::new("cow-fork-after-split");
     let child = unsafe { libc::fork() };
     assert!(child >= 0, "fork: {}", std::io::Error::last_os_error());
     if child == 0 {
         unsafe {
-            (map.addr.cast::<u8>().add(CHILDS)).write_volatile(0xcd);
+            (chunk.map.addr.cast::<u8>().add(SplitChunk::READ_ONLY)).write_volatile(0xcd);
             libc::_exit(0);
         }
     }
     let status = wait_for_child(child, std::time::Duration::from_secs(10));
     assert!(libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0, "the child: {status:#x}");
-    data[CHILDS] = 0xcd;
-    assert_eq!(private(), before + 2, "private pages after the child's store");
-    assert!(map.bytes()[..] == data[..], "the mapping after the child's store");
-    drop(map);
-    drop(file);
-    evict(&name);
-    assert!(fs::read(&name).unwrap() == data, "{name} evicted");
-    fs::remove_file(&name).unwrap();
+    chunk.data[SplitChunk::READ_ONLY] = 0xcd;
+    assert_eq!(SplitChunk::private(), chunk.private + 1, "private pages after the child's store");
+    chunk.finish();
+}
+
+/// fxdax: copying on write (doc-13), the mapping of a chunk mapped whole and split (SplitChunk)
+/// made read-only (mprotect) and writable again: a store to a page only read faults, which makes
+/// the page private (TASK-149.42). mprotect batches a large folio's PTEs, their write bits alike,
+/// their dirty bits not (6.18's change_pte_range, FPB_RESPECT_WRITE, soft-dirty unset as the
+/// guest builds no MEM_SOFT_DIRTY), clears them collecting the dirty bits into the first's
+/// (modify_prot_start_ptes, get_and_clear_full_ptes), and makes the batch writable, writable
+/// again, if that one is dirty (can_change_shared_pte_writable): all of them, for one stored to.
+pub(super) fn test_cow_mprotect_after_a_split_pmd() {
+    let mut chunk = SplitChunk::new("cow-mprotect-after-split");
+    chunk.map.protect(libc::PROT_READ);
+    chunk.map.protect(libc::PROT_READ | libc::PROT_WRITE);
+    chunk.store_to_read_only("after mprotect");
+    chunk.finish();
+}
+
+/// fxdax: copying on write (doc-13), the mapping of a chunk mapped whole and split (SplitChunk)
+/// moved (mremap), its PTEs with it: a store to a page only read faults, which makes the page
+/// private (TASK-149.42). mremap moves a large folio's PTEs in batches whose write bits are alike
+/// (6.18's move_ptes, mremap_folio_pte_batch's FPB_RESPECT_WRITE), each batch set as its first
+/// with the batch's dirty and young bits (get_and_clear_ptes, set_ptes): none made writable.
+pub(super) fn test_cow_mremap_after_a_split_pmd() {
+    let mut chunk = SplitChunk::new("cow-mremap-after-split");
+    chunk.map.moved();
+    chunk.store_to_read_only("after mremap");
+    chunk.finish();
 }
 
 /// fxdax: copying on write, per page (doc-13, the 400 GB case at small scale): of a large file

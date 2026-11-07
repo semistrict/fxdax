@@ -1,0 +1,48 @@
+# SPDX-License-Identifier: GPL-2.0
+# Copyright 2026 The fxdax Authors.
+mm/mprotect: a writable batch of a shared mapping's PTEs is of PTEs alike in dirtiness
+
+change_pte_range batches a large folio's PTEs alike in their write and
+soft-dirty bits, not their dirty bits; modify_prot_start_ptes collects
+the batch's dirty bits into its first PTE, and making a shared mapping
+writable again (MM_CP_TRY_CHANGE_WRITABLE) makes the whole batch
+writable if that one is dirty (can_change_shared_pte_writable). One PTE
+stored to makes its folio's clean PTEs writable too, which a filesystem
+that needs a write fault for each page may not have had: fxdax's DAX
+pages are made the VM's own one at a time, at their write faults, and a
+store through a clean PTE so made writable went to a page the host had
+not given the VM, which refused it until the VM went down (fxdax
+TASK-149.42). With MEM_SOFT_DIRTY unset, as the guest's is, soft-dirty
+splits no batch. A batch made writable takes PTEs alike in dirtiness
+too, so that each is decided as it was before 6.17's batching.
+
+diff --git a/mm/mprotect.c b/mm/mprotect.c
+--- a/mm/mprotect.c
++++ b/mm/mprotect.c
+@@ -298,7 +298,7 @@
+ 		nr_ptes = 1;
+ 		oldpte = ptep_get(pte);
+ 		if (pte_present(oldpte)) {
+-			const fpb_t flags = FPB_RESPECT_SOFT_DIRTY | FPB_RESPECT_WRITE;
++			fpb_t flags = FPB_RESPECT_SOFT_DIRTY | FPB_RESPECT_WRITE;
+ 			int max_nr_ptes = (end - addr) >> PAGE_SHIFT;
+ 			struct folio *folio = NULL;
+ 			struct page *page;
+@@ -323,6 +323,17 @@
+ 				}
+ 			}
+ 
++			/*
++			 * A shared mapping's PTE is made writable here if it is
++			 * dirty (can_change_shared_pte_writable), which the batch's
++			 * first stands for once modify_prot_start_ptes collects
++			 * their dirty bits into it: a batch takes PTEs alike in
++			 * that too, so that a clean one, whose page the filesystem
++			 * may yet need a write fault for, stays write-protected.
++			 */
++			if ((cp_flags & MM_CP_TRY_CHANGE_WRITABLE) &&
++			    (vma->vm_flags & VM_SHARED))
++				flags |= FPB_RESPECT_DIRTY;
+ 			nr_ptes = mprotect_folio_pte_batch(folio, pte, oldpte, max_nr_ptes, flags);
+ 
+ 			oldpte = modify_prot_start_ptes(vma, addr, pte, nr_ptes);
