@@ -183,10 +183,12 @@ impl Test for TestFxfsGuestChecks {
     fn start_vm(self: Box<Self>, test_setup: TestSetup) -> anyhow::Result<()> {
         let image = test_setup.tmp_dir.join("fxdax.img");
         create_image(&image)?;
+        // fxdax: a window as large as the data, or a small one's, that fills (-small); either
+        // FXDAX_DAX_WINDOW_MIB's if set (TASK-227).
         let window = match (self.dax, self.small_window) {
             (false, _) => 0,
-            (true, false) => 1 << 29,
-            (true, true) => 32 << 20,
+            (true, false) => crate::common::dax_window(crate::common::Window::Large)?,
+            (true, true) => crate::common::dax_window(crate::common::Window::Small(32 << 20))?,
         };
         let mut vm = Vm::new(2, 512)?;
         vm.guest_kernel()?;

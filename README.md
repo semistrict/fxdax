@@ -41,6 +41,20 @@ extent store             crates/extent_store: segments, large extents' files,
   commit, and once a commit seals those, maps the pages back to them, sharing
   them again. Files a mount creates go through the guest's page cache until
   their inodes are next read in.
+- **Sizing (TASK-227):** the window is address space, not memory: size it to
+  the data, as virtio-pmem maps a whole image. A page the daemon holds is one
+  copy however many windows map it, and a window costs for what its guest
+  reaches alone: the guest's struct pages, the VM process's state, its
+  mappings and KVM's page tables are the same through 8 GiB and 64 GiB windows
+  (GCE r881, r882). A window is 64 GiB at most (`MAX_WINDOW`, which bounds what
+  the daemon keeps for it). `private_max` is memory, reserved against the
+  tenant's: 1 GiB unless configured (`dax_private_max`), whatever the window's
+  size. The daemon's memory (`MEMORY_BYTES`) is what keeps a VM's rereads
+  fast, as a host's page cache keeps a pmem image's: a Linux tree's warm
+  reread through an 8 GiB window took 13.15 s with the daemon's default 1 GiB,
+  600 ms with 8 GiB, against ext4's 586 ms from its guest's page cache. The
+  guest tests' windows are the host's memory (at most 64 GiB) and their daemons
+  8 GiB, unless a case says.
 - **Hypervisor mirror:** the daemon maps pages at the window's addresses, and
   the VM process maps the same pages of the daemon's physical memory (memfds)
   into the host memory KVM follows for the window, keeping it in step with

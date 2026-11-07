@@ -85,7 +85,11 @@ mod host {
             let mut vm = Vm::new(2, 512)?;
             vm.guest_kernel()?;
             vm.root_image(&format!("{name}.rootfs.ext4"));
-            let window = if self.test.dax { 1 << 28 } else { 0 };
+            let window = if self.test.dax {
+                crate::common::dax_window(crate::common::Window::Large)?
+            } else {
+                0
+            };
             if read_only {
                 vm.extent_store_following_served("extents", self.store, window, self.extentd);
             } else {
