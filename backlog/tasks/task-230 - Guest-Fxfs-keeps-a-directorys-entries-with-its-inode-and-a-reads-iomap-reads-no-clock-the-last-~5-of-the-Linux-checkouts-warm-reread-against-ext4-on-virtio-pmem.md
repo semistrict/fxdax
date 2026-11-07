@@ -7,6 +7,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-11-07 11:30'
+updated_date: '2026-11-07 11:59'
 labels: []
 dependencies: []
 references:
@@ -51,3 +52,11 @@ Work in progress on branch t227-prof:
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+r904 (GCE, with the clock fix, before the listing cache): the warm reread's parts, timed apart, fresh VM, ext4 on pmem / Fxfs DAX: directory walk alone (walk-warm) 83 / 108 ms; walk and each file opened and closed (open-warm) 295 / 295 ms, so opens alone 213 / 188; whole reread 527 / 555 ms, so reads alone 232 / 260. The gap (+28 ms) is the walk's +25 ms, which the listing cache addresses, and the reads' +28 ms (per read(2): iomap, down_read of the file's semaphore), less the opens' -25 ms. Sandbox-1: walk 111, open-warm 304, reread 565 ms.
+
+r905 (GCE, t227-prof fe18c78f6: the listing cache and the clock fix): fresh VM, ext4 on pmem / Fxfs DAX: walk-warm 84 / 62.5 ms, open-warm 279 / 249 ms, warm reread 530 / 495 ms (0.93x of pmem; r904 without the cache 555 ms, 1.05x); sandbox-1 503 ms, walk 65 ms. listings_follow_changes passed in fxfs-guest-checks and -dax. namespace failed in both only because FXDAX_CHECKS left out regular_write, whose file 'written' its symlink names (namespace.rs:18), not the cache.
+<!-- SECTION:NOTES:END -->
