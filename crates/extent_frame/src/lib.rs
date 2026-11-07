@@ -699,7 +699,7 @@ mod tests {
     /// stored raw and compressed, the median of 9 rounds over 64 MiB. `cargo nextest run
     /// -p extent_frame --release --run-ignored only bench_checking_parts --no-capture`.
     #[test]
-    #[ignore]
+    #[ignore = "a benchmark (TASK-153.11): --run-ignored only, in release"]
     fn bench_checking_parts() {
         let len = 64 * PART;
         for (kind, data) in [("raw", random(len)), ("compressed", pattern(len))] {

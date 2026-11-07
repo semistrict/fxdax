@@ -3259,7 +3259,7 @@ mod read_cost {
     }
 
     #[fuchsia::test]
-    #[ignore]
+    #[ignore = "a benchmark (TASK-153.12): --run-ignored only, in release"]
     async fn layer_read_cost() {
         let items = items();
         let object = Arc::new(FakeObject::new());

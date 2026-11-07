@@ -31,7 +31,7 @@ fn timed(calls: u64, mut call: impl FnMut()) -> f64 {
 }
 
 #[test]
-#[ignore]
+#[ignore = "a benchmark: --run-ignored only, in release"]
 fn hot_paths() {
     let temp = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
     let description = Description { block_size: BLOCK as u32, capacity: 4 << 30, branch: BRANCH };

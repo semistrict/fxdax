@@ -1848,7 +1848,7 @@ mod tests {
     /// held. `cargo nextest run -p extent_remote --run-ignored only bench_passes_over_many_forks
     /// --no-capture`, in a process of its own, which nextest gives each test.
     #[test]
-    #[ignore]
+    #[ignore = "a benchmark (TASK-92.7): --run-ignored only, alone"]
     fn bench_passes_over_many_forks() {
         use crate::layout::{Contents, Segment};
         use crate::writer::Objects;

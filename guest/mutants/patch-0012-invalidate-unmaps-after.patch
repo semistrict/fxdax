@@ -6,6 +6,10 @@
 #
 # Patch 0012, TASK-150.21: an invalidation puts an entry's folio with its pages mapped still, a
 # PMD's split under a PTE of it (fs/dax.c's WARN in dax_folio_put).
+# Killed by guest/sim's pmd_entry_invalidated_mapped on writable DAX, which went with it.
+# Equivalent copying on write: no write says its pages are new, which invalidates, and a range's
+# release unmaps (dax_layout_busy_page_range) under the invalidate lock before it invalidates
+# (guest/sim/README.md; TASK-149.20 moved the why here).
 
 --- a/fs/dax.c
 +++ b/fs/dax.c

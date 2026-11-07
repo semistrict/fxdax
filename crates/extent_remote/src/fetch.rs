@@ -1810,7 +1810,7 @@ mod tests {
     /// about a third. `cargo nextest run -p extent_remote --run-ignored only
     /// bench_sequential_reads --no-capture`.
     #[test]
-    #[ignore]
+    #[ignore = "a benchmark (TASK-92.21): --run-ignored only, alone"]
     fn bench_sequential_reads() {
         const LEN: u64 = 64 * PART;
         // Each 1 KiB a run of a byte, then noise: about a third of it compresses away.
@@ -2244,7 +2244,7 @@ mod tests {
     /// object's tail, from the cache. `cargo nextest run -p extent_remote --run-ignored only
     /// bench_reads_of_the_cache_on_a_runtime --no-capture`.
     #[test]
-    #[ignore]
+    #[ignore = "a benchmark (TASK-92.21): --run-ignored only, alone"]
     fn bench_reads_of_the_cache_on_a_runtime() {
         const PARTS: u64 = 64;
         let data = noise(PARTS * PART);
@@ -2286,7 +2286,7 @@ mod tests {
     /// host's fetchers share cost their reads shows. `cargo nextest run -p extent_remote --release
     /// --run-ignored only bench_reads_of_parts_in_memory_by_a_hosts_fetchers --no-capture`.
     #[test]
-    #[ignore]
+    #[ignore = "a benchmark (TASK-92.21): --run-ignored only, in release"]
     fn bench_reads_of_parts_in_memory_by_a_hosts_fetchers() {
         const PARTS: u64 = 16;
         const FETCHERS: u64 = 8;

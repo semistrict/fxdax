@@ -705,7 +705,7 @@ mod tests {
     /// many MB/s, and how long the commits waited for the lag, in all.
     /// `cargo nextest run -p fxdax --run-ignored only bench_sustained_uploads --no-capture`.
     #[test]
-    #[ignore]
+    #[ignore = "a benchmark: --run-ignored only, alone"]
     fn bench_sustained_uploads() {
         use object_store::throttle::{ThrottleConfig, ThrottledStore};
         const WRITTEN: u64 = 4 << 30;
@@ -1631,7 +1631,7 @@ mod tests {
     /// As `branches_survive_their_hosts_loss`, in the bucket FXDAX_S3_URL names: RustFS's
     /// (scripts/test-rustfs.sh), or GCS's, from a GCE host.
     #[test]
-    #[ignore]
+    #[ignore = "needs an S3 bucket: scripts/test-rustfs.sh, CI's object-stores job"]
     fn rustfs_branches_survive_their_hosts_loss() {
         let url = std::env::var("FXDAX_S3_URL").expect("FXDAX_S3_URL names the bucket to use");
         let (store, prefix) = extent_remote::store::object_store_at(&url).unwrap();

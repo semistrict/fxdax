@@ -1399,7 +1399,7 @@ mod tests {
     /// cache's lock. `cargo nextest run -p extent_remote --run-ignored only
     /// bench_reads_while_parts_are_kept --no-capture`.
     #[test]
-    #[ignore]
+    #[ignore = "a benchmark (TASK-92.21): --run-ignored only, alone"]
     fn bench_reads_while_parts_are_kept() {
         const PUTS: u64 = 2048;
         let dir = tempfile::tempdir().unwrap();

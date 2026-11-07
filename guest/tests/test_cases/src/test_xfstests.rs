@@ -8,7 +8,9 @@
 //! are, which xfstests knows, so its image takes fxfs for virtiofs, and a test's scratch filesystem
 //! is emptied rather than made anew.
 //!
-//! Some tests run and fail for what Fxfs here doesn't do ([`KNOWN_FAILURES`]), each said why.
+//! Some tests run and fail for what Fxfs here doesn't do ([`KNOWN_FAILURES`]), each said why; one
+//! of them that runs and passes fails the case, so that the list keeps no test it no longer needs
+//! (TASK-149.20).
 
 use macros::{guest, host};
 
@@ -77,6 +79,10 @@ mod host {
         "generic/477",
     ];
 
+    /// Of [`KNOWN_FAILURES`], those that pass or not as the allocator places a reflinked file's
+    /// data: none fails the case by passing.
+    const SOMETIMES: [&str; 2] = ["generic/301", "generic/302"];
+
     /// The bytes of each filesystem, and of its DAX window if it has one.
     const SIZE: u64 = 4 << 30;
     const WINDOW: crate::common::Window = crate::common::Window::Large;
@@ -108,14 +114,111 @@ mod host {
 
         fn check(self: Box<Self>, stdout: Vec<u8>, _test_setup: TestSetup) -> TestOutcome {
             let stdout = String::from_utf8_lossy(&stdout);
-            let failures = stdout.lines().find_map(|line| line.strip_prefix("Failures: "));
-            let passed = match failures {
-                Some(failures) => {
-                    failures.split_whitespace().all(|test| KNOWN_FAILURES.contains(&test))
-                }
-                None => stdout.lines().any(|line| line.starts_with("Passed all ")),
-            };
-            if passed { TestOutcome::Pass } else { TestOutcome::Fail(stdout.to_string()) }
+            match verdict(&stdout, &KNOWN_FAILURES, &SOMETIMES) {
+                Ok(()) => TestOutcome::Pass,
+                Err(why) => TestOutcome::Fail(format!("{why}\n{stdout}")),
+            }
+        }
+    }
+
+    /// Whether xfstests' `check` says, in `stdout`, that no test failed but those of `known`, and
+    /// that each of `known` it ran failed, but those of `sometimes`: one that passed is to go from
+    /// the list (TASK-149.20). Or why not.
+    pub(super) fn verdict(stdout: &str, known: &[&str], sometimes: &[&str]) -> Result<(), String> {
+        let listed = |prefix: &str| -> Option<Vec<&str>> {
+            let line = stdout.lines().find_map(|line| line.strip_prefix(prefix))?;
+            Some(line.split_whitespace().collect())
+        };
+        let failures = match listed("Failures: ") {
+            Some(failures) => failures,
+            None if stdout.lines().any(|line| line.starts_with("Passed all ")) => Vec::new(),
+            None => {
+                return Err("xfstests' check said neither what failed nor that all passed".into());
+            }
+        };
+        let unknown: Vec<_> = failures.iter().filter(|test| !known.contains(test)).collect();
+        if !unknown.is_empty() {
+            return Err(format!("failed, not known to: {unknown:?}"));
+        }
+        let ran = listed("Ran: ").unwrap_or_default();
+        let passed: Vec<_> = (known.iter())
+            .filter(|test| {
+                ran.contains(test) && !failures.contains(test) && !sometimes.contains(test)
+            })
+            .collect();
+        if !passed.is_empty() {
+            return Err(format!(
+                "known to fail, and passed: take them from KNOWN_FAILURES: {passed:?}"
+            ));
+        }
+        Ok(())
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::verdict;
+
+        const KNOWN: [&str; 3] = ["generic/009", "generic/301", "generic/401"];
+        const SOMETIMES: [&str; 1] = ["generic/301"];
+
+        #[test]
+        fn known_failures_pass() {
+            let stdout = "Ran: generic/001 generic/009 generic/401\nFailures: generic/009 generic/401\n\
+                          Failed 2 of 3 tests\n";
+            assert_eq!(verdict(stdout, &KNOWN, &SOMETIMES), Ok(()));
+        }
+
+        #[test]
+        fn known_failures_not_run_pass() {
+            let stdout =
+                "Ran: generic/001 generic/009\nFailures: generic/009\nFailed 1 of 2 tests\n";
+            assert_eq!(verdict(stdout, &KNOWN, &SOMETIMES), Ok(()));
+            assert_eq!(
+                verdict("Ran: generic/001\nPassed all 1 tests\n", &KNOWN, &SOMETIMES),
+                Ok(())
+            );
+        }
+
+        #[test]
+        fn other_failures_fail() {
+            let stdout = "Ran: generic/001 generic/009\nFailures: generic/001 generic/009\n";
+            assert_eq!(
+                verdict(stdout, &KNOWN, &SOMETIMES),
+                Err(r#"failed, not known to: ["generic/001"]"#.into())
+            );
+        }
+
+        #[test]
+        fn known_failures_that_pass_fail() {
+            let stdout =
+                "Ran: generic/009 generic/401\nFailures: generic/009\nFailed 1 of 2 tests\n";
+            assert_eq!(
+                verdict(stdout, &KNOWN, &SOMETIMES),
+                Err(r#"known to fail, and passed: take them from KNOWN_FAILURES: ["generic/401"]"#
+                    .into())
+            );
+            let stdout = "Ran: generic/009 generic/401\nPassed all 2 tests\n";
+            assert_eq!(
+                verdict(stdout, &KNOWN, &SOMETIMES),
+                Err(r#"known to fail, and passed: take them from KNOWN_FAILURES: ["generic/009", "generic/401"]"#.into())
+            );
+        }
+
+        #[test]
+        fn known_failures_that_sometimes_pass_pass_either_way() {
+            let stdout = "Ran: generic/301\nPassed all 1 tests\n";
+            assert_eq!(verdict(stdout, &KNOWN, &SOMETIMES), Ok(()));
+            let stdout = "Ran: generic/301\nFailures: generic/301\nFailed 1 of 1 tests\n";
+            assert_eq!(verdict(stdout, &KNOWN, &SOMETIMES), Ok(()));
+        }
+
+        #[test]
+        fn a_check_that_said_nothing_fails() {
+            let said = verdict("check: exit status: 1\n", &KNOWN, &SOMETIMES);
+            assert_eq!(
+                said,
+                Err("xfstests' check said neither what failed nor that all passed".into())
+            );
         }
     }
 }

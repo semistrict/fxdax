@@ -989,7 +989,7 @@ pub(crate) mod tests {
     /// own: 32 objects of 16 MiB uploaded at once to the S3 server in memory, by each in turn,
     /// 25 times, then their median. Run with `--run-ignored only --no-capture`, in release.
     #[test]
-    #[ignore]
+    #[ignore = "a benchmark (TASK-205): --run-ignored only, in release"]
     fn client_throughput() {
         const OBJECTS: usize = 32;
         const SIZE: usize = 16 << 20;
@@ -1054,7 +1054,7 @@ pub(crate) mod tests {
     /// The same over a real S3 server: `scripts/test-rustfs.sh` starts RustFS and runs this with
     /// `FXDAX_S3_URL` naming a bucket of it, and the `AWS_*` variables to reach it.
     #[test]
-    #[ignore]
+    #[ignore = "needs an S3 bucket: scripts/test-rustfs.sh, CI's object-stores job"]
     fn rustfs() {
         over_a_real_store(&std::env::var("FXDAX_S3_URL").expect("FXDAX_S3_URL names the bucket"));
     }
@@ -1064,7 +1064,7 @@ pub(crate) mod tests {
     /// credentials. Then 32 objects of 8 MiB uploaded at once, which a host's upstream below
     /// 9 MB/s took longer to carry than `object_store`'s 30 s: each lands at its first attempt.
     #[test]
-    #[ignore]
+    #[ignore = "needs a GCS bucket and its credentials: FXDAX_GCS_URL (TASK-205)"]
     fn gcs() {
         let url = std::env::var("FXDAX_GCS_URL").expect("FXDAX_GCS_URL names the bucket");
         over_a_real_store(&url);
@@ -1095,7 +1095,7 @@ pub(crate) mod tests {
     /// `scripts/test-azurite.sh` starts it and runs this with `FXDAX_AZURE_URL` naming a container
     /// of it, and the `AZURE_*` variables to reach it.
     #[test]
-    #[ignore]
+    #[ignore = "needs Azurite: scripts/test-azurite.sh, CI's object-stores job"]
     fn azurite() {
         let url = std::env::var("FXDAX_AZURE_URL").expect("FXDAX_AZURE_URL names the container");
         over_a_real_store(&url);

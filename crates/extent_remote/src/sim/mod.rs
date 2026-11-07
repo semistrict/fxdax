@@ -82,7 +82,7 @@ fn weights(change: impl FnOnce(&mut Weights)) -> Profile {
 /// `SIM_SEEDS` seeds (1 by default) from `SIM_SEED` of one profile, as `SIM_PROFILE` says, with
 /// the rules `SIM_OFF` names (separated by commas) off, to debug them.
 #[test]
-#[ignore]
+#[ignore = "debugs one seed (SIM_SEED, SIM_PROFILE, SIM_OFF): the sim part runs the soaks"]
 fn one() {
     let seed = std::env::var("SIM_SEED").map_or(0, |seed| seed.parse().unwrap());
     let mut rules = Rules::ALL;
