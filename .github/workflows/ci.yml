@@ -25,10 +25,12 @@ jobs:
         # its own (TASK-188); the Shuttle suites, each built with its crate's feature, a build of
         # their own; the guest tests' own, a workspace of their own; the Go client, its generated
         # code checked against the .proto, and its tests against the daemon, which it builds
-        # (TASK-219); the rest, minutes.
-        parts: [workspace, sim, shuttle, clippy scripts, guest, go]
+        # (TASK-219); the VMM's own that fxdax adds to, vendor/firecracker's workspace, which ran
+        # on GCE alone and broke unseen there (TASK-220); the rest, minutes.
+        parts: [workspace, sim, shuttle, clippy scripts, guest, go, firecracker]
         # What a part's tests run beyond what every part builds with: Coccinelle, whose rules the
-        # scripts' tests check; xfsprogs, for the guest tests' own of reflinks. Coccinelle and its
+        # scripts' tests check; xfsprogs, for the guest tests' own of reflinks; libclang, which the
+        # VMM's userfaultfd-sys builds its bindings with (bindgen). Coccinelle and its
         # OCaml are three quarters of the downloads: every part fetching them, a slow mirror (57
         # kB/s) took 40 minutes of the workspace's 90 (run 42089880804, TASK-172).
         include:
@@ -36,6 +38,8 @@ jobs:
             packages: coccinelle
           - parts: guest
             packages: xfsprogs
+          - parts: firecracker
+            packages: libclang-dev
     env:
       FXDAX_TEST_PARTS: ${{ matrix.parts }}
     steps:
@@ -48,7 +52,8 @@ jobs:
         # elfutils' eu-stack and sqlite3, which tests run, as on the GCE hosts
         # (scripts/lib/linux-host-setup.sh); libseccomp, which Firecracker's seccompiler links; and
         # the part's own (matrix.packages). No protoc, which protox stands in for
-        # (crates/fxdax/build.rs), nor libclang, which no bindgen of either workspace needs.
+        # (crates/fxdax/build.rs), nor libclang, which no bindgen of fxdax's workspace or the guest
+        # tests' needs: the VMM's alone, its part's own.
         run: |
           sudo apt-get update
           sudo apt-get install -y clang elfutils sqlite3 libseccomp-dev ${{ matrix.packages }}
@@ -73,7 +78,8 @@ jobs:
             ~/.cargo/git
             target
             guest/tests/target
-          key: cargo-${{ runner.os }}-${{ matrix.parts }}-${{ hashFiles('Cargo.lock', 'guest/tests/Cargo.lock') }}
+            vendor/firecracker/build/cargo_target
+          key: cargo-${{ runner.os }}-${{ matrix.parts }}-${{ hashFiles('Cargo.lock', 'guest/tests/Cargo.lock', 'vendor/firecracker/Cargo.lock') }}
           restore-keys: cargo-${{ runner.os }}-${{ matrix.parts }}-
       # The guest's half for its own target too, as the guest agent is built (scripts/test-e2e.sh):
       # its tests run on the host's in scripts/test.sh.

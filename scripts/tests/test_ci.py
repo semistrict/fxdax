@@ -13,9 +13,11 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 CI = ROOT / ".github" / "workflows" / "ci.yml"
+TEST_SH = ROOT / "scripts" / "test.sh"
 # The packages only some parts' tests run, and the parts: Coccinelle's spatch, which the scripts'
-# tests run (test_cocci_guest.py); mkfs.xfs, which the guest tests' own do.
-OWN = {"coccinelle": {"clippy scripts"}, "xfsprogs": {"guest"}}
+# tests run (test_cocci_guest.py); mkfs.xfs, which the guest tests' own do; libclang, which the
+# VMM's build needs (userfaultfd-sys's bindgen).
+OWN = {"coccinelle": {"clippy scripts"}, "xfsprogs": {"guest"}, "libclang-dev": {"firecracker"}}
 
 
 def job():
@@ -43,7 +45,8 @@ class Ci(unittest.TestCase):
     def test_each_part_installs_its_own_tools_alone(self):
         installed = packages()
         self.assertEqual(sorted(installed), sorted(["workspace", "sim", "shuttle",
-                                                    "clippy scripts", "guest", "go"]))
+                                                    "clippy scripts", "guest", "go",
+                                                    "firecracker"]))
         for package, users in OWN.items():
             self.assertEqual({part for part, has in installed.items() if package in has}, users,
                              package)
@@ -53,8 +56,37 @@ class Ci(unittest.TestCase):
             self.assertLessEqual({"clang", "elfutils", "sqlite3", "libseccomp-dev"}, has, part)
 
     def test_no_build_needs_protoc_or_libclang(self):
-        """What lets the job install neither: the gRPC API compiled by protox, not protoc, and no
-        bindgen, which loads libclang, in either workspace. One that comes needs them back."""
+        """What lets the job install neither but in the firecracker part: the gRPC API compiled by
+        protox, not protoc, and no bindgen, which loads libclang, in fxdax's workspace or the guest
+        tests'. One that comes needs them back. The VMM's has it, its part's own libclang's why."""
         self.assertIn("protox::compile", (ROOT / "crates/fxdax/build.rs").read_text())
         for lock in [ROOT / "Cargo.lock", ROOT / "guest/tests/Cargo.lock"]:
             self.assertNotIn('name = "bindgen"', lock.read_text(), lock)
+        self.assertIn('name = "bindgen"', (ROOT / "vendor/firecracker/Cargo.lock").read_text())
+
+    def test_each_part_is_one_test_sh_runs(self):
+        """Each part of the matrix is one scripts/test.sh runs (`part NAME`): a part it hasn't runs
+        nothing, and passes."""
+        script = TEST_SH.read_text()
+        for part in parts():
+            for name in part.split():
+                self.assertIn(f"if part {name}; then", script, part)
+
+    def test_the_vmms_own_tests_run_with_a_bucket(self):
+        """TASK-220: the firecracker part runs the VMM's extent device's tests and its vCPUs'
+        exits', from vendor/firecracker, each extent test's daemon a host's, its stores' branches in
+        a bucket in memory: with none named, every store's opening fails EIO, which 8 of its 21
+        did, run by nothing but scripts/test-e2e.sh on GCE. And the cache keeps its builds."""
+        script = TEST_SH.read_text()
+        body = re.search(r"^if part firecracker; then\n(.*?)^fi$", script,
+                         re.MULTILINE | re.DOTALL).group(1)
+        self.assertIn('cd "$root/vendor/firecracker"', body)
+        self.assertIn("FXDAX_EXTENTD_REMOTE=memory:///", body)
+        self.assertIn("FXDAX_EXTENTD_TOKEN=1", body)
+        self.assertIn("cargo nextest run -p vmm --lib", body)
+        self.assertIn("--features fxdax", body)
+        self.assertIn("test(/extent::/)", body)
+        self.assertIn("vendor/firecracker/build/cargo_target", job())
+        self.assertIn("'vendor/firecracker/Cargo.lock'", job())
+        e2e = (ROOT / "scripts" / "test-e2e.sh").read_text()
+        self.assertIn('FXDAX_TEST_PARTS=firecracker "$root/scripts/test.sh"', e2e)

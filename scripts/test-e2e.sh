@@ -170,13 +170,9 @@ fi
 # its repository and commit as they build.
 guest_target="$(uname -m)-unknown-linux-musl"
 (cd "$harness" && cargo test -q -p test_cases --features guest)
-# The VMM's extent device, which no other suite reaches (TASK-79.102): its tests' store has a
-# remote in memory, as their EIO without one says. And its vCPUs' exits, fxdax's, which ran
-# nowhere: how one giving up on an access tells of it, and that its exit code is sent before the
-# VMM is told to read it (TASK-187).
-(cd "$firecracker_dir" && FXDAX_EXTENTD_REMOTE=memory:///vmm FXDAX_EXTENTD_TOKEN=1 \
-    cargo test -q -p vmm --lib --features fxdax -- extent:: vcpu::tests::efaults_ \
-    vcpu::tests::test_exit_code_)
+# The VMM's extent device's tests, and its vCPUs' exits', fxdax's, which no other suite reaches
+# (TASK-79.102, TASK-187): scripts/test.sh's firecracker part, which CI runs too (TASK-220).
+FXDAX_TEST_PARTS=firecracker "$root/scripts/test.sh"
 (cd "$harness" && cargo build -q --target "$guest_target" -p guest-agent)
 export FXDAX_GUEST_AGENT="$harness/target/$guest_target/debug/guest-agent"
 socket="$results/extentd.sock"
