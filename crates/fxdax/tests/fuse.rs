@@ -565,8 +565,8 @@ fn directories() {
         let (fifo, attr) = entry(&client.call(MKNOD, dir, fifo).await.ok());
         assert_eq!(attr.mode, 0o010644);
 
-        // `.`, `..`, then the entries, each with the offset of the next; Fxfs's entries tell
-        // directories, symlinks and files apart, and no other type.
+        // `.`, `..`, then the entries, each with the offset of the next, of their types: a FIFO's
+        // too, which Fxfs's entries alone don't tell from a file's (TASK-149.36).
         let handle = client.opendir(dir).await;
         let listed: Vec<_> = client
             .readdir(dir, handle, 0, 4096)
@@ -578,7 +578,7 @@ fn directories() {
             (b".", dir, 1, 4),
             (b"..", root_ino, 2, 4),
             (b"a-file", file, 3, 8),
-            (b"fifo", fifo, 4, 8),
+            (b"fifo", fifo, 4, 1),
             (b"link", link, 5, 10),
         ];
         assert_eq!(

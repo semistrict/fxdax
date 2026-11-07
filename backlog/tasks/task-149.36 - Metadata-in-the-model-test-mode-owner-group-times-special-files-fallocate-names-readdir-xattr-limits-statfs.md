@@ -3,9 +3,11 @@ id: TASK-149.36
 title: >-
   Metadata in the model test: mode, owner, group, times, special files,
   fallocate, names, readdir, xattr limits, statfs
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-11-07 05:20'
+updated_date: '2026-11-07 06:29'
 labels:
   - testing
   - fxfs
@@ -24,18 +26,58 @@ TASK-222's FUSE mount found fxfs-posix's setattr zeroing a node's mode when one 
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Sequences change random subsets of mode, uid, gid, atime and mtime on any node, the root and directories included, and every check holds each node's mode, uid, gid and rdev to the model, across remounts and power cuts
-- [ ] #2 Times are checked as Linux keeps them where Fxfs promises it: a set time reads back; writes, truncations and changes of a directory's names move mtime and ctime no earlier than before
-- [ ] #3 Sequences make FIFOs, sockets and character and block devices with rdev, which read back as made, and fallocate files, the model holding the size and zeroed bytes
-- [ ] #4 Names include 255-byte and multibyte UTF-8 names, some directories casefold, and readdir is also read resumed after a name, with names removed and added between its reads, each name listed once
-- [ ] #5 Extended attributes include empty values, values near the largest Fxfs takes, and more names
-- [ ] #6 statfs is held to what the model's files and xattrs must at least take
-- [ ] #7 Each new kind of operation is shown to find a bug: a mutant of the code it reaches, red, recorded in the notes; the fxfs-posix suite passes
+- [x] #1 Sequences change random subsets of mode, uid, gid, atime and mtime on any node, the root and directories included, and every check holds each node's mode, uid, gid and rdev to the model, across remounts and power cuts
+- [x] #2 Times are checked as Linux keeps them where Fxfs promises it: a set time reads back; writes, truncations and changes of a directory's names move mtime and ctime no earlier than before
+- [x] #3 Sequences make FIFOs, sockets and character and block devices with rdev, which read back as made, and fallocate files, the model holding the size and zeroed bytes
+- [x] #4 Names include 255-byte and multibyte UTF-8 names, some directories casefold, and readdir is also read resumed after a name, with names removed and added between its reads, each name listed once
+- [x] #5 Extended attributes include empty values, values near the largest Fxfs takes, and more names
+- [x] #6 statfs is held to what the model's files and xattrs must at least take
+- [x] #7 Each new kind of operation is shown to find a bug: a mutant of the code it reaches, red, recorded in the notes; the fxfs-posix suite passes
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
 - [ ] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Model every node's attributes (Node: mode, uid, gid, rdev, times as Time::Is/Since, xattrs) from the root's defaults; check them on every lookup, readdir and file check, and st_blocks exactly.
+2. New ops: Make (FIFO, socket, char/block devices, files and dirs with owners and permissions), SetAttr (random subsets of mode/uid/gid/atime/mtime/ctime on any node, the root first), Allocate (fallocate; Data.allocated, checked against Fxfs's overwrite extents and what a DAX window maps), ReadSome/ReadOn (readdir resumed after a name, Cursor), Casefold, BadName (non-UTF-8 names refused), NodeXattr (set/create/replace/remove on any node), Statfs.
+3. Names in two alphabets (SPELLINGS): letters, other cases, ß/SS, an ignorable character, 255-byte ASCII and multibyte; casefolding directories fold them (FOLDED, Model::spelled).
+4. xattr lengths: empty, around the inline limit, kilobytes, around and past MAX_XATTR_VALUE_SIZE; 255-byte names.
+5. statfs held to the model's blocks at least (distinct page Arcs, xattrs outside records) and its objects.
+6. Keep cuts, remounts, tiny devices and failing devices working: had_it_worked, stopped_short and cut candidates relax times and adopt what's allocated.
+7. Fix what it finds, per AGENTS.md; mutants under crates/fxfs-posix/mutants; hunts with FXDAX_MODEL_CASES.
+<!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+What the model test checks now (crates/fxfs-posix/src/model_tests.rs, module docs): every node's mode, owner, group, rdev, times and xattrs (Node), the root's from Fxfs's defaults, at every lookup, readdir and file check, and st_blocks exactly (written and allocated pages, xattrs kept outside their records); new ops Make, SetAttr, Allocate, ReadSome/ReadOn, Casefold, BadName, NodeXattr, Statfs; names in two alphabets (SPELLINGS: letters, A, B+ZWNJ, Straße/STRASSE, 255-byte ASCII, 255-byte multibyte), casefolding directories folding them (FOLDED via fxfs_unicode::casefold_cmp); xattr values empty, 254..258, KiB, 63984..64001, a 255-byte name; statfs at least the distinct page blocks and outside xattr blocks, and the objects; what each file has allocated (Fxfs's overwrite extents) and what a DAX window maps (dax_extents == pages written).
+
+Times, decided after reading Platform::KEEPS_DIRECTORY_TIMES and the host (crates/fxdax/src/filesystem.rs sets data times with setattr after writes): the model runs the host's platform (false), so Fxfs times directories' names, links, renames and ctimes itself: those are held Since(the clock before the op), and a set time Is() exactly; a file's data times (writes, truncates, clones, punches, allocations) and queued unlinks' are the VFS's: no earlier than before (Time::no_earlier). Set times are kept in the past so that "no earlier" holds. The guest's platform (true) is left to TASK-149.40.
+
+Bugs found, each fixed in a commit of its own:
+
+1. readdir listed FIFOs, sockets and devices as regular files (56fdf6b12, on the refactor 288541fd2). Found: the first run, [Make FIFO] on any seed. Blind spot: every node the model made was S_IFREG, and readdir's types were compared with the entry kinds the model invented, never with what attr says; the host's FUSE entries() even collapsed every other type to File, and its test fuse::directories asserted DT_REG for a FIFO. Class test: the model's readdirs (holds_names, read_on) compare each listed type with the node's type; red with the bug back (mutant readdir-lists-special-files-as-files: every_cut_of_a_short_sequence and tests::readdir_lists_special_files_as_what_they_are). Look around: the host's entries() mapped specials to File (fixed, fuse test corrected to DT_FIFO); the guest passes the mode to fs_umode_to_dtype (fine once the mode is right); link and exchange take descriptors only to name entries (fine). Structure: two readers of a node's type (attr_of, readdir via the descriptor) became one, node_type, refactored first (288541fd2). Architectural: Fxfs's child records say only file/dir/symlink, so readdir now looks up each file's record; entries saying the type (a new ObjectDescriptor, a format change) would spare it: recorded in OPEN_QUESTIONS.md for the user.
+
+2. fallocate of part of a block, then any growth of the file, failed EIO "no extent" (9796f1ad7). Found: the first hunt, [Create, Allocate {0, 1}] then a cut; reproduced without cuts (allocate 0..1, truncate up). Blind spot: no randomized test ever called Fxfs::allocate; upstream's tail zeroing reads the block straight from its extent ("not strictly incorrect to change uninitialized data"), which a block device allows and fxdax's write-once extents (doc-4) don't: an allocated block nothing wrote isn't on the device. Class test: Allocate in random and short sequences, with every growth path after it; red with the bug back (mutant the-tail-is-read-from-its-extent: a_file_allocated_part_of_a_block_grows, tail::tests::test_a_file_allocated_part_of_a_block_grows). Look around: readers of a file's blocks that bypass the read path's unwritten rule: align_buffer reads through read_aligned (fine); journal and super-block readers read no file data; DAX extents_in handed the window blocks an allocation left unwritten: bug 3. Structure: the tail now reads through the one read path (StoreObjectHandle::read_aligned_locked, what read_aligned_unchecked delegates to), and DataObjectHandle::read_and_decrypt, its last use gone, went: a file's blocks are read in one place.
+
+3. A DAX window would map blocks an allocation left unwritten (c90116747). Found looking around bug 2. Blind spot: dax_extents were never compared with the data. Class test: holds_extents checks after every data op and at check_all that the pages a window maps are exactly the pages written; red with the bug back (mutant dax-maps-blocks-never-written: a_file_allocated_part_of_a_block_grows, dax::tests::test_extents_in_leaves_out_what_an_allocation_left_unwritten). Guest DAX of fallocated files isn't run on GCE here.
+
+Not bugs, as Fxfs means them (the model learned them): an xattr kept outside its record stays there however short (upstream's set_extended_attribute_impl), so st_blocks counts its block; writes, clones and punches end a page's overwrite (allocated) mode, as fxdax writes everything anew; a refused allocation may leave the file grown to the range's end (Fxfs commits the size first; decision in OPEN_QUESTIONS.md); an xattr replace of a missing name on a full device says ENOSPC before ENODATA (the transaction is reserved first), changing nothing either way: the model takes either. Oracle bugs fixed on the way: a partial fill of zeros told from holes by whether a block holds the page.
+
+Mutants (crates/fxfs-posix/mutants, mutants.sh -c 96, all red; the first test to fail): setattr-zeroes-what-it-isnt-given (the_roots_attributes_change_as_any_nodes), setattr-loses-the-atime (a_device_that_fails_loses_nothing_durable), a-create-leaves-its-directorys-times (a_clone_to_its_own_end_past_a_partial_block_holds), readdir-lists-special-files-as-files (every_cut_of_a_short_sequence), special-files-lose-their-device (a_device_that_fails_loses_nothing_durable), readdir-lists-the-name-it-resumes-after (names_of_every_spelling_fold_and_list), names-are-made-lossy (a_device_that_fails_loses_nothing_durable), statfs-counts-nothing-used (a_clone_to_its_own_end_past_a_partial_block_holds), allocate-sets-the-size-to-its-end (whatever_a_vfs_asks_reads_back_as_a_model_says), the-tail-is-read-from-its-extent and dax-maps-blocks-never-written (a_file_allocated_part_of_a_block_grows), xattrs-refuse-the-largest-value (not caught by the first run: 64000 exactly was rare; the generator now picks it and 64001 alone, and the_roots_attributes_change_as_any_nodes sets both: red), an-xattr-made-replaces-one-there (tests::xattrs_are_made_at_once), a-directory-folds-case-once-reopened (names_of_every_spelling_fold_and_list). mutants.sh --check: 31 checked, 0 broken.
+
+Validation (macOS): cargo nextest run -p fxfs-posix 80/80 (whatever_a_vfs_asks_reads_back_as_a_model_says 40 s at 96 cases, 41.8 s before); -p fxfs 781/781; -p fxdax 305/306 before the FUSE test that asserted the old bug was corrected, then fuse 17/17. Hunts: FXDAX_MODEL_CASES 3 x 700 (5,765 cuts, 389 refused), 300 with FXDAX_MODEL_WORKERS, FXDAX_MODEL_EVERY_CUT=150 (7,170 cuts at 494 barriers), FXDAX_MODEL_FAILURES=400 (102 operations failed): all pass; an earlier 1,500-case hunt found the xattr-replace ENOSPC order after 750 s (oracle widened, above). scripts/upstream-changes.py --check passes. Not run: the GCE workspace and guest cases (DoD 1): fxfs-posix readdir and fxfs tail.rs, dax.rs and store_object_handle.rs reach the guest kernel; guest/rust/fxfs-linux does not build for the host (its linux-rt lang items).
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+The fxfs-posix model test holds every node's attributes as Linux's VFS sees them (mode, owner, group, rdev, times, xattrs, st_blocks), from the root's defaults, across cuts, remounts, tiny and failing devices, with new operations for special files, setattr, fallocate, readdirs going on after a name, casefolding, bad names, xattr modes and limits, and statfs. It found three bugs, each fixed in a commit of its own with a test red before: readdir listed FIFOs, sockets and devices as regular files (now taken from each file's record, one node_type; host FUSE listing fixed too); fallocate of part of a block then any growth failed EIO (the tail zeroing now reads through the one read path); a DAX window would map blocks an allocation left unwritten (extents_in now leaves them out). 15 mutants, all red. Verified on macOS (fxfs-posix 80/80, fxfs 781/781, FUSE tests, hunts of 2,100 + 300 + 150 + 400 sequences); the GCE run is still to do.
+<!-- SECTION:FINAL_SUMMARY:END -->

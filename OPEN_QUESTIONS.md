@@ -97,6 +97,9 @@ Decisions made without you, still yours to confirm or overturn. Each is a line o
 - **After a power cut a staging extent may stay uncounted, up to 2 MiB a volume, until it dies:** no device request for extents' lengths, as not worth a protocol change now. The user's decision, 2026-11-06 (TASK-214, Low).
 - **The staging extent's ranges in flight stay counted twice for a while** (alive and uncommitted), erring safe: ENOSPC a little early. The user's decision, 2026-11-06 (TASK-211).
 - **A change of one of a node's mode, owner and group keeps the others,** filled from its attributes where it has no POSIX attributes (a new volume's root), in fxfs-posix's `setattr`, guest's too; and **a directory's setuid and setgid survive a chown,** as Linux's. TASK-222, 2026-11-07.
+- **readdir takes a file's type from its record,** a tree lookup per file listed, so that FIFOs, sockets and devices are listed as what they are, not as regular files: Fxfs's entries say only file, directory or symlink. *Instead:* entries saying a node's type (a new `ObjectDescriptor` and child record format), which spares the lookups; or `DT_UNKNOWN` for every file, which moves them to userspace. *Undoing it:* `Fxfs::readdir`'s `file_type`. TASK-149.36, 2026-11-07.
+- **An allocation (fallocate) refused for room may leave the file grown to the range's end, and some of it allocated:** Fxfs commits the size in its first transaction, as ext4 grows a file as far as it allocated; the model holds it to that or nothing. *Instead:* all or nothing, which Fxfs's commits in pieces don't make. TASK-149.36, 2026-11-07.
+- **What an allocation made reads, maps and is zeroed as a hole until written:** the tail's zeroing reads its block as every read does, and a DAX window maps none of it (`extents_in`); a clone of it is refused whole (EOPNOTSUPP), as before. TASK-149.36, 2026-11-07.
 
 ## FUSE
 
@@ -110,6 +113,7 @@ Decisions made without you, still yours to confirm or overturn. Each is a line o
 - **guest/sim's model of Fxfs is checked by a Rust test building its C** (`crates/fxfs-sim-diff`), its mutants a kind of their own (`Kernel: model`). TASK-149.29, 2026-11-05.
 - **Two mutants without killers since copy-on-write DAX:** `task-150.9-resize-moves-the-last-block` equivalent (TASK-149.30 closed without one); `task-79.49-store-fails-on-pins` killed in guest/sim, not by a guest check (TASK-149.31). 2026-11-05.
 - **extent_remote's simulation is a CI part of its own,** built with Cargo profile `sim` (release with debug checks). TASK-188, 2026-11-05.
+- **fxfs-posix's model holds every node's attributes as Linux's VFS sees them,** the host's VFS (`KEEPS_DIRECTORY_TIMES` false; the guest's, which times directories itself, isn't modelled): times Fxfs takes from the clock no earlier than the operation began, those the VFS keeps (a file's data's) no earlier than before; casefolding set by `Directory::set_casefold` on empty directories, which no VFS can ask for (no `chattr +F` in the guest or the host). TASK-149.36, 2026-11-07.
 - **CI runs scripts/test.sh, a part a job;** open bugs' failures are listed in known-failures files, not failed on; a nightly `hunt.yml`. TASK-160.27, 2026-11-03.
 - **Guest cases are selected by tags;** `manual` for those no suite runs; the nightly runs 50. TASK-160.29, 2026-11-05.
 - **Guest test results as data** (`round-K.json`, `run.json`, `summary.json`, uploads to `FXDAX_RESULTS_BUCKET`). TASK-160.31, 2026-11-05.

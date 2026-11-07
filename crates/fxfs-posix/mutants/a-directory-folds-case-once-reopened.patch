@@ -1,0 +1,12 @@
+diff --git a/crates/fxfs/src/object_store/directory.rs b/crates/fxfs/src/object_store/directory.rs
+--- a/crates/fxfs/src/object_store/directory.rs
++++ b/crates/fxfs/src/object_store/directory.rs
+@@ -241,7 +241,7 @@
+             );
+         }
+         transaction.add(self.store().store_object_id(), Mutation::ObjectStore(mutation));
+-        transaction.commit_with_callback(|_| *self.dir_type.lock() = dir_type).await?;
++        transaction.commit().await?;
+         Ok(())
+     }
+ 

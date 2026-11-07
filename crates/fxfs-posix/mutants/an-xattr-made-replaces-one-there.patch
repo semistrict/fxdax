@@ -1,0 +1,12 @@
+diff --git a/crates/fxfs/src/object_store/store_object_handle.rs b/crates/fxfs/src/object_store/store_object_handle.rs
+--- a/crates/fxfs/src/object_store/store_object_handle.rs
++++ b/crates/fxfs/src/object_store/store_object_handle.rs
+@@ -2036,7 +2036,7 @@
+                 None => (false, None),
+             };
+             match mode {
+-                SetExtendedAttributeMode::Create if found => {
++                SetExtendedAttributeMode::Create if found && false => {
+                     bail!(FxfsError::AlreadyExists)
+                 }
+                 SetExtendedAttributeMode::Replace if !found => {

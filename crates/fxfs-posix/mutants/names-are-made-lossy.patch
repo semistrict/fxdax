@@ -1,0 +1,12 @@
+diff --git a/crates/fxfs-posix/src/lib.rs b/crates/fxfs-posix/src/lib.rs
+--- a/crates/fxfs-posix/src/lib.rs
++++ b/crates/fxfs-posix/src/lib.rs
+@@ -941,7 +941,7 @@
+         gid: u32,
+         xattrs: &[(&[u8], &[u8])],
+     ) -> Result<[Attr; 2], Error> {
+-        let name = utf8_name(name)?;
++        let name = &*String::from_utf8_lossy(name);
+         let begun = self.begin(Op::Create, None).await?;
+         let dir = self.directory(dir).await?;
+         let mut transaction = begun.transaction(&[dir.object_id()]).await?;

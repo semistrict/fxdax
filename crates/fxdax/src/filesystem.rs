@@ -766,11 +766,8 @@ impl Node {
             .run(move |fxfs| async move {
                 let mut entries = Vec::new();
                 let listed = fxfs.readdir(dir, ReaddirStart::Index(0), |name, ino, kind| {
-                    let file_type = match FileType::from_mode(kind) {
-                        Some(FileType::Directory) => FileType::Directory,
-                        Some(FileType::Symlink) => FileType::Symlink,
-                        _ => FileType::File,
-                    };
+                    // Fxfs's types are those a mode may have.
+                    let file_type = FileType::from_mode(kind).unwrap_or(FileType::File);
                     entries.push(DirEntry { inode: Inode(ino), file_type, name: name.into() });
                     true
                 });

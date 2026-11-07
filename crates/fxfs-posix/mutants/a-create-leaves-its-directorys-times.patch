@@ -1,0 +1,12 @@
+diff --git a/crates/fxfs-posix/src/lib.rs b/crates/fxfs-posix/src/lib.rs
+--- a/crates/fxfs-posix/src/lib.rs
++++ b/crates/fxfs-posix/src/lib.rs
+@@ -958,7 +958,7 @@
+             child.object_id()
+         } else {
+             // fxdax: the directory's times are the kernel's, which writes them back with it.
+-            let child = if P::KEEPS_DIRECTORY_TIMES {
++            let child = if !P::KEEPS_DIRECTORY_TIMES {
+                 dir.create_child_file_untimed(&mut transaction, name).await?
+             } else {
+                 dir.create_child_file(&mut transaction, name).await?

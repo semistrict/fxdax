@@ -41,16 +41,29 @@
 //! A cut closes them, and leaves nothing of them: no object, no entry in the graveyard, no extent.
 //! Only what a VFS would ask is asked: `Model::may_rename` and `Op::Link` say what it refuses, and
 //! files unlink as a guest's do, queued (`Op::UnlinkLater`), which a cut may find not yet done.
+//!
+//! Every node's attributes are the model's too, as Linux's VFS sees them (`Node`): its type and
+//! mode, owner, group, device number, times and extended attributes, the root's from the defaults
+//! Fxfs gives a node it made none for. Times are checked as far as Fxfs keeps them: what a setattr
+//! sets reads back, and what Fxfs takes from the clock is no earlier than the operation that took
+//! it began; what the VFS keeps, a file's data's times, moves no earlier (`Time`). Names are as
+//! long as a name may be, of many bytes a character, in directories that fold case; a readdir
+//! goes on after the name it left off at while names come and go. Files are allocated as well as
+//! written, and nodes are FIFOs, sockets and devices too. `statfs` counts at least what the model
+//! must take.
 
 use super::*;
 use fxfs::filesystem::{FlushReason, ForceMajor, FxFilesystemBuilder};
 use fxfs::fsck::{FsckOptions, fsck_with_options};
 use fxfs::hooks::Hooks;
+use fxfs::lsm_tree::Query;
+use fxfs::lsm_tree::types::{ItemRef, LayerIterator};
 use fxfs::object_store::graveyard::Graveyard;
 use fxfs::object_store::journal::JournalOptions;
+use fxfs::object_store::object_record::ObjectKeyData;
 use fxfs::object_store::transaction::TRANSACTION_MAX_JOURNAL_USAGE;
 use fxfs::object_store::volume::root_volume;
-use fxfs::object_store::{NewChildStoreOptions, StoreOptions};
+use fxfs::object_store::{Extent, ExtentMode, ExtentValue, NewChildStoreOptions, StoreOptions};
 use proptest::prelude::*;
 use proptest::test_runner::{Config, TestRunner};
 use rand::rngs::StdRng;
@@ -58,6 +71,7 @@ use rand::{RngExt as _, SeedableRng as _};
 use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
+use std::sync::LazyLock;
 use std::sync::atomic::AtomicU32;
 use std::sync::mpsc;
 use std::time::Duration;
@@ -67,15 +81,29 @@ use storage_device::fake_device::{Crashes, FakeDevice, Op as DeviceOp};
 const PAGE: u64 = 4096;
 const FILE: u32 = S_IFREG | 0o644;
 const DIR: u32 = S_IFDIR | 0o755;
+const SYMLINK: u32 = S_IFLNK | 0o777;
+/// What of a mode isn't its type: its permissions, and fxdax's attribute flags (chattr), which it
+/// keeps above the kernel's 16 bits (`Attr::mode`).
+const PERMISSIONS: u32 = 0o7777 | 0xf << 16;
+/// What a setattr may change but a file's size: what the kernel writes back of its inode.
+const SET_ANY: u32 = SET_MODE | SET_UID | SET_GID | SET_ATIME | SET_MTIME | SET_CTIME;
 /// The largest size a file may have.
 const LARGEST: u64 = i64::MAX as u64;
 /// The whole pages a file may have.
 const PAGES_AT_MOST: u64 = LARGEST / PAGE;
-/// The names a sequence uses in a directory: few, so that they meet.
+/// The names a sequence uses in a directory, of each spelling: few, so that they meet.
 const NAMES: usize = 6;
 /// The directories a name may be in, of those there are: it's `name / NAMES`th, the root first, so
 /// that a name of less than `NAMES` is in the root whatever there is, and sequences shrink to it.
 const DIRS: usize = 4;
+/// The spellings of names (`SPELLINGS`): letters, as `name / (NAMES * DIRS)` says, and more.
+const ALPHABETS: usize = 2;
+/// The extended attributes' names a sequence uses (`xattr_of`).
+const XATTR_NAMES: u8 = 12;
+/// The readdirs a sequence keeps going on with (`Cursor`).
+const CURSORS: usize = 4;
+/// What `Op::BadName` asks for: names Fxfs's, which are UTF-8, can't be.
+const BAD_NAMES: [&[u8]; 4] = [b"\xff", b"a\xc0\xafb", b"\xed\xa0\x80", b"\xf4\x90\x80\x80"];
 /// The objects of a volume with nothing in it: its root directory and its graveyard.
 const BARE_OBJECTS: u64 = 2;
 /// What the journal may take during what crosses extents, for each, and whatever else is going on:
@@ -121,12 +149,165 @@ const SHORT: usize = 6;
 /// its operations, and each extension of its file: a few transactions.
 const SHORT_RECLAIM: u64 = 16 << 10;
 
-/// A file's model: its size, the pages written, which holes aren't, and its extended attributes.
+/// What a node's time is known to be: what a setattr set it to, or one Fxfs took from the clock,
+/// or the VFS may have, no earlier than this, and no later than now.
+#[derive(Clone, Copy, Debug)]
+enum Time {
+    Is(u64),
+    Since(u64),
+}
+
+impl Time {
+    /// What it is once something may have moved it to now, or not: no earlier.
+    fn no_earlier(self) -> Self {
+        match self {
+            Time::Is(time) | Time::Since(time) => Time::Since(time),
+        }
+    }
+
+    /// Whether `got` is what it is, `now` being now.
+    fn holds(self, got: u64, now: u64) -> bool {
+        match self {
+            Time::Is(time) => got == time,
+            Time::Since(time) => time <= got && got <= now,
+        }
+    }
+}
+
+/// Now, as Fxfs takes it for a node's times.
+fn clock() -> u64 {
+    Timestamp::now().as_nanos()
+}
+
+/// A node's model but for a file's data: its attributes, as Linux's VFS sees them, and its
+/// extended attributes.
+#[derive(Clone, Debug)]
+struct Node {
+    /// Its type, permissions and attribute flags.
+    mode: u32,
+    uid: u32,
+    gid: u32,
+    rdev: u64,
+    atime: Time,
+    mtime: Time,
+    ctime: Time,
+    xattrs: BTreeMap<u8, Vec<u8>>,
+    /// Of those, the ones Fxfs keeps outside its record, in an attribute of their own: once one is,
+    /// it stays there, however short (`set_extended_attribute_impl`).
+    outside: BTreeSet<u8>,
+}
+
+impl Node {
+    /// One made no earlier than `made`, its times Fxfs's.
+    fn new(mode: u32, uid: u32, gid: u32, rdev: u64, made: u64) -> Self {
+        let made = Time::Since(made);
+        let (atime, mtime, ctime) = (made, made, made);
+        let (xattrs, outside) = (BTreeMap::new(), BTreeSet::new());
+        Self { mode, uid, gid, rdev, atime, mtime, ctime, xattrs, outside }
+    }
+
+    /// Its extended attribute `name` set to `value`, or removed, if there's none: its status
+    /// changes, which the VFS times.
+    fn set_xattr(&mut self, name: u8, value: Option<Vec<u8>>) {
+        match value {
+            Some(value) => {
+                if value.len() > MAX_INLINE_XATTR_SIZE {
+                    self.outside.insert(name);
+                }
+                self.xattrs.insert(name, value);
+            }
+            None => {
+                self.xattrs.remove(&name);
+                self.outside.remove(&name);
+            }
+        }
+        self.ctime = self.ctime.no_earlier();
+    }
+
+    fn kind(&self) -> u32 {
+        self.mode & S_IFMT
+    }
+
+    /// The blocks its extended attributes take: those Fxfs keeps outside its record take theirs.
+    fn xattr_blocks(&self) -> u64 {
+        let outside = self.outside.iter().map(|name| self.xattrs[name].len() as u64);
+        outside.map(|len| len.div_ceil(PAGE)).sum()
+    }
+
+    /// Its status changed, no earlier than `now`: a link to it came or went, or it moved.
+    fn changed(&mut self, now: u64) {
+        self.ctime = Time::Since(now);
+    }
+
+    /// A directory whose names changed no earlier than `now`, which Fxfs times, as the host's VFS
+    /// leaves it to (`Platform::KEEPS_DIRECTORY_TIMES`).
+    fn renamed(&mut self, now: u64) {
+        (self.mtime, self.ctime) = (Time::Since(now), Time::Since(now));
+    }
+
+    /// Its data changed, or may have, whose times the VFS keeps, by a setattr: no earlier.
+    fn written(&mut self) {
+        (self.mtime, self.ctime) = (self.mtime.no_earlier(), self.ctime.no_earlier());
+    }
+
+    /// What a setattr of `set` no earlier than `now` makes of it: its status changes with any of
+    /// it, at the time `set` says, if it says one.
+    fn set(&mut self, set: &SetAttr, now: u64) {
+        let given = |bit| set.valid & bit != 0;
+        if given(SET_MODE) {
+            self.mode = set.mode;
+        }
+        if given(SET_UID) {
+            self.uid = set.uid;
+        }
+        if given(SET_GID) {
+            self.gid = set.gid;
+        }
+        if given(SET_ATIME) {
+            self.atime = Time::Is(set.atime_ns);
+        }
+        if given(SET_MTIME) {
+            self.mtime = Time::Is(set.mtime_ns);
+        }
+        if given(SET_ANY) {
+            self.ctime = if given(SET_CTIME) { Time::Is(set.ctime_ns) } else { Time::Since(now) };
+        }
+    }
+
+    /// Checks `attr`, Fxfs's attributes of this node, `now` being now.
+    fn holds(&self, attr: &Attr, now: u64) -> Result<(), String> {
+        let ino = attr.ino;
+        if (attr.mode, attr.uid, attr.gid) != (self.mode, self.uid, self.gid) {
+            return Err(format!(
+                "{ino} is mode {:o}, owner {}, group {}, not {:o}, {}, {}",
+                attr.mode, attr.uid, attr.gid, self.mode, self.uid, self.gid
+            ));
+        }
+        if attr.rdev != self.rdev {
+            return Err(format!("{ino} is device {}, not {}", attr.rdev, self.rdev));
+        }
+        let times = [
+            ("atime", self.atime, attr.atime_ns),
+            ("mtime", self.mtime, attr.mtime_ns),
+            ("ctime", self.ctime, attr.ctime_ns),
+        ];
+        for (name, time, got) in times {
+            if !time.holds(got, now) {
+                return Err(format!("{ino}'s {name} is {got}, not {time:?}, now {now}"));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// A file's model: its size, the pages written, which holes aren't, and those an allocation made
+/// (`Op::Allocate`) and nothing wrote since, which Fxfs records as to be written in place, and
+/// won't share: it writes them anew all the same, as it writes everything (backlog doc-4).
 #[derive(Clone, Debug, Default)]
 struct Data {
     size: u64,
     pages: BTreeMap<u64, Arc<Vec<u8>>>,
-    xattrs: BTreeMap<u8, Vec<u8>>,
+    allocated: BTreeSet<u64>,
 }
 
 impl Data {
@@ -136,6 +317,7 @@ impl Data {
             let here = at + done as u64;
             let within = (here % PAGE) as usize;
             let len = (PAGE as usize - within).min(bytes.len() - done);
+            self.allocated.remove(&(here / PAGE));
             let page = self.pages.entry(here / PAGE).or_default();
             let page = Arc::make_mut(page);
             page.resize(PAGE as usize, 0);
@@ -148,11 +330,19 @@ impl Data {
     fn truncate(&mut self, size: u64) {
         if size < self.size {
             self.pages.retain(|page, _| page * PAGE < size);
+            self.allocated.retain(|page| page * PAGE < size);
             if let Some(last) = self.pages.get_mut(&(size / PAGE)) {
                 Arc::make_mut(last)[(size % PAGE) as usize..].fill(0);
             }
         }
         self.size = size;
+    }
+
+    /// What an allocation of `range` makes of this: the file reaches its end, and its pages are
+    /// allocated.
+    fn allocate(&mut self, range: Range<u64>) {
+        self.allocated.extend(range.start / PAGE..range.end.div_ceil(PAGE));
+        self.size = self.size.max(range.end);
     }
 
     /// Makes `run` what a plan says, the file reaching its end.
@@ -163,6 +353,7 @@ impl Data {
             }
             None => self.punch(run.pages.clone()),
         }
+        self.allocated.retain(|page| !run.pages.contains(page));
         self.size = self.size.max(run.pages.end * PAGE);
     }
 
@@ -177,9 +368,9 @@ impl Data {
         punched.iter().for_each(|page| drop(self.pages.remove(page)));
     }
 
-    /// How many extents `pages` holds at most: nothing of its holes counts.
+    /// How many extents `pages` holds at most: nothing of its holes counts, but what's allocated.
     fn extents_in(&self, pages: Range<u64>) -> u64 {
-        self.pages.range(pages).count() as u64
+        (self.pages.range(pages.clone()).count() + self.allocated.range(pages).count()) as u64
     }
 
     fn read(&self, at: u64, len: usize) -> Vec<u8> {
@@ -203,21 +394,14 @@ enum Entry {
     File(u64),
     Symlink(u64),
     Dir(u64),
+    /// A FIFO, a socket or a device, which has no data.
+    Special(u64),
 }
 
 impl Entry {
     fn ino(self) -> u64 {
         match self {
-            Entry::File(ino) | Entry::Symlink(ino) | Entry::Dir(ino) => ino,
-        }
-    }
-
-    /// Its type, as `readdir` says it.
-    fn kind(self) -> u32 {
-        match self {
-            Entry::File(_) => S_IFREG,
-            Entry::Symlink(_) => S_IFLNK,
-            Entry::Dir(_) => S_IFDIR,
+            Entry::File(ino) | Entry::Symlink(ino) | Entry::Dir(ino) | Entry::Special(ino) => ino,
         }
     }
 }
@@ -266,25 +450,124 @@ enum Op {
     Open(usize),
     /// Lets go of the `index`th of what's open, as the kernel evicts it if it can.
     Close(usize),
-    Write { file: usize, at: u64, len: usize, byte: u8 },
+    Write {
+        file: usize,
+        at: u64,
+        len: usize,
+        byte: u8,
+    },
     /// Whole pages, every `stride`th of `pages`, in as few transactions as hold them, as writeback
     /// writes them.
-    Fill { file: usize, page: u64, pages: u64, stride: u64, byte: u8 },
+    Fill {
+        file: usize,
+        page: u64,
+        pages: u64,
+        stride: u64,
+        byte: u8,
+    },
     /// Whole pages, a transaction each, as a compaction runs, which commits racing a super-block
     /// fall on either side of, and if `flushing`, with the volume's store flushed after each, as
     /// an encrypted store flushes itself when it must: as can its end.
-    FillWhileCompacting { file: usize, page: u64, pages: u64, byte: u8, flushing: bool },
-    Read { file: usize, at: u64, len: usize },
-    Truncate { file: usize, size: u64 },
-    Punch { file: usize, page: u64, pages: u64 },
-    Clone { from: usize, to: usize, page: u64, pages: u64, to_page: u64 },
+    FillWhileCompacting {
+        file: usize,
+        page: u64,
+        pages: u64,
+        byte: u8,
+        flushing: bool,
+    },
+    Read {
+        file: usize,
+        at: u64,
+        len: usize,
+    },
+    Truncate {
+        file: usize,
+        size: u64,
+    },
+    Punch {
+        file: usize,
+        page: u64,
+        pages: u64,
+    },
+    Clone {
+        from: usize,
+        to: usize,
+        page: u64,
+        pages: u64,
+        to_page: u64,
+    },
     /// A clone to the source's end, wherever in a block that is, as the VFS lets one: the block's
     /// taken whole, with the size where it ends. It may not end before the destination's size.
-    CloneToEnd { from: usize, to: usize, page: u64, to_page: u64 },
-    SetXattr { file: usize, name: u8, len: usize, byte: u8 },
-    RemoveXattr { file: usize, name: u8 },
+    CloneToEnd {
+        from: usize,
+        to: usize,
+        page: u64,
+        to_page: u64,
+    },
+    SetXattr {
+        file: usize,
+        name: u8,
+        len: usize,
+        byte: u8,
+    },
+    RemoveXattr {
+        file: usize,
+        name: u8,
+    },
     /// What the attributes of the `dir`th directory are, which it takes through the graveyard.
-    SetDirXattr { dir: usize, name: u8, len: usize, byte: u8 },
+    SetDirXattr {
+        dir: usize,
+        name: u8,
+        len: usize,
+        byte: u8,
+    },
+    /// An extended attribute of the `node`th node (`Model::node`), as `change` says.
+    NodeXattr {
+        node: usize,
+        name: u8,
+        change: XattrChange,
+    },
+    /// A node as mknod, mkdir or open's O_CREAT makes it, as `make` says.
+    Make {
+        name: usize,
+        make: Make,
+    },
+    /// What a VFS's setattr changes of the `node`th node (`Model::node`), as `change` says.
+    SetAttr {
+        node: usize,
+        change: Change,
+    },
+    /// fallocate, with no flags: the blocks of `len` bytes at `at`, the file growing to their end.
+    Allocate {
+        file: usize,
+        at: u64,
+        len: u64,
+    },
+    /// A readdir of the `dir`th directory from its start, `count` names of it, which it goes on
+    /// with (`Op::ReadOn`).
+    ReadSome {
+        dir: usize,
+        count: usize,
+    },
+    /// A readdir going on, the `cursor`th, after the last name it read, for `count` more.
+    ReadOn {
+        cursor: usize,
+        count: usize,
+    },
+    /// The `dir`th directory made to fold case, or not to, if it has no names, as `chattr +F` may
+    /// make an ext4 directory: Fxfs keeps the flag in its record.
+    Casefold {
+        dir: usize,
+        folds: bool,
+    },
+    /// Names that can't be Fxfs's, which are UTF-8, asked of the `dir`th directory: `BAD_NAMES`'s
+    /// `name`th. Nothing changes.
+    BadName {
+        dir: usize,
+        name: usize,
+    },
+    /// statfs, which counts at least what the model takes.
+    Statfs,
     Sync,
     Fsync,
     Compact,
@@ -293,16 +576,112 @@ enum Op {
     Crash,
 }
 
+/// What `Op::NodeXattr` does: sets a value, makes it only where there's none, replaces only one
+/// there is, or removes one there is. Refused otherwise, it changes nothing.
+#[derive(Clone, Copy, Debug)]
+enum XattrChange {
+    Set { len: usize, byte: u8 },
+    Create { len: usize, byte: u8 },
+    Replace { len: usize, byte: u8 },
+    Remove,
+}
+
+impl XattrChange {
+    /// The value it sets, if it sets one.
+    fn value(self) -> Option<Vec<u8>> {
+        match self {
+            XattrChange::Set { len, byte }
+            | XattrChange::Create { len, byte }
+            | XattrChange::Replace { len, byte } => Some(vec![byte; len]),
+            XattrChange::Remove => None,
+        }
+    }
+}
+
+/// What `Op::Make` makes: a node of the type `kind` names (`KINDS`), with the permissions and
+/// attribute flags `permissions`, owned by `uid` and `gid`, and if it's a device, `rdev`.
+#[derive(Clone, Copy, Debug)]
+struct Make {
+    kind: usize,
+    permissions: u32,
+    uid: u32,
+    gid: u32,
+    rdev: u32,
+}
+
+/// The types of node `Op::Make` makes.
+const KINDS: [u32; 6] = [S_IFREG, S_IFDIR, S_IFIFO, S_IFSOCK, S_IFCHR, S_IFBLK];
+
+impl Make {
+    /// A file, as `Op::Create` makes it.
+    const FILE: Make = Make { kind: 0, permissions: FILE & PERMISSIONS, uid: 0, gid: 0, rdev: 0 };
+    /// A directory, as `Op::Mkdir` makes it.
+    const DIR: Make = Make { kind: 1, permissions: DIR & PERMISSIONS, uid: 0, gid: 0, rdev: 0 };
+
+    /// Its mode.
+    fn mode(&self) -> u32 {
+        KINDS[self.kind % KINDS.len()] | self.permissions
+    }
+
+    /// Its device number: a device's alone has one.
+    fn rdev(&self) -> u64 {
+        match self.mode() & S_IFMT {
+            S_IFCHR | S_IFBLK => self.rdev.into(),
+            _ => 0,
+        }
+    }
+
+    /// Its entry, as `ino`.
+    fn entry(&self, ino: u64) -> Entry {
+        match self.mode() & S_IFMT {
+            S_IFREG => Entry::File(ino),
+            S_IFDIR => Entry::Dir(ino),
+            _ => Entry::Special(ino),
+        }
+    }
+}
+
+/// What `Op::SetAttr` changes, of what `valid` says (`SET_*`): `permissions` with the node's type.
+#[derive(Clone, Copy, Debug)]
+struct Change {
+    valid: u32,
+    permissions: u32,
+    uid: u32,
+    gid: u32,
+    atime: u64,
+    mtime: u64,
+    ctime: u64,
+}
+
+impl Change {
+    /// What a VFS asks of Fxfs for it, of a node of type `kind`: no change of a symlink's mode,
+    /// which is always the same.
+    fn set_attr(&self, kind: u32) -> SetAttr {
+        let modes = if kind == S_IFLNK { 0 } else { SET_MODE };
+        SetAttr {
+            valid: self.valid & (SET_ANY & !SET_MODE | modes),
+            mode: kind | self.permissions,
+            uid: self.uid,
+            gid: self.gid,
+            size: 0,
+            atime_ns: self.atime,
+            mtime_ns: self.mtime,
+            ctime_ns: self.ctime,
+        }
+    }
+}
+
 impl Op {
     /// What this makes of a file's pages, if it does so in many transactions and can be done of
     /// what `model` has.
     fn plan(&self, model: &Model) -> Option<Plan> {
         match *self {
             Op::Fill { file, page, pages, stride, byte } => {
-                let bytes = Some(Arc::new(vec![byte; PAGE as usize]));
+                // A page each, as each takes a block of its own (`Model::blocks_at_least`).
+                let bytes = || Some(Arc::new(vec![byte; PAGE as usize]));
                 let pages = (page..page + pages).step_by(stride as usize);
                 let runs =
-                    pages.map(|page| Run { pages: page..page + 1, bytes: bytes.clone() }).collect();
+                    pages.map(|page| Run { pages: page..page + 1, bytes: bytes() }).collect();
                 Some(Plan { ino: model.file(file)?, runs, size: None })
             }
             Op::FillWhileCompacting { file, page, pages, byte, .. } => {
@@ -373,9 +752,83 @@ fn clone_pages() -> impl Strategy<Value = u64> {
     ]
 }
 
-/// A name, mostly the root's, of those there are (`DIRS`).
+/// A name, mostly the root's, of those there are (`DIRS`), mostly a letter (`SPELLINGS`).
 fn name() -> impl Strategy<Value = usize> {
-    prop_oneof![3 => 0..NAMES, 1 => 0..NAMES * DIRS]
+    prop_oneof![3 => 0..NAMES, 1 => 0..NAMES * DIRS, 1 => 0..NAMES * DIRS * ALPHABETS]
+}
+
+/// A node, by `Model::node`: the root, as often as any other.
+fn node() -> impl Strategy<Value = usize> {
+    prop_oneof![1 => Just(0usize), 4 => 1usize..32]
+}
+
+/// An owner or a group: root's, a user's, nobody's, or the last one may be.
+fn id() -> impl Strategy<Value = u32> {
+    prop_oneof![Just(0u32), 1u32..2000, Just(65534), Just(u32::MAX - 1)]
+}
+
+/// Permissions, setuid, setgid and sticky too, and fxdax's attribute flags (`PERMISSIONS`).
+fn permissions() -> impl Strategy<Value = u32> {
+    (0u32..0o10000, 0u32..16).prop_map(|(permissions, flags)| permissions | flags << 16)
+}
+
+/// A time a setattr sets, in the past, so that what the clock moves it to comes after: the epoch,
+/// a second's edges, and this century's.
+fn time() -> impl Strategy<Value = u64> {
+    prop_oneof![Just(0u64), 0u64..3_000_000_000, (1u64 << 59)..(1 << 60)]
+}
+
+fn make() -> impl Strategy<Value = Make> {
+    (0..KINDS.len(), permissions(), id(), id(), any::<u32>())
+        .prop_map(|(kind, permissions, uid, gid, rdev)| Make { kind, permissions, uid, gid, rdev })
+}
+
+/// What a setattr changes: any of a node's attributes but its size, or none.
+fn change() -> impl Strategy<Value = Change> {
+    let bits = [SET_MODE, SET_UID, SET_GID, SET_ATIME, SET_MTIME, SET_CTIME];
+    let valid = (0u32..1 << bits.len()).prop_map(move |chosen| {
+        bits.iter().enumerate().filter(|(i, _)| chosen & 1 << i != 0).map(|(_, bit)| bit).sum()
+    });
+    (valid, permissions(), id(), id(), time(), time(), time()).prop_map(
+        |(valid, permissions, uid, gid, atime, mtime, ctime)| Change {
+            valid,
+            permissions,
+            uid,
+            gid,
+            atime,
+            mtime,
+            ctime,
+        },
+    )
+}
+
+/// How much an allocation asks for: a few pages, or more than a small device has.
+fn allocation() -> impl Strategy<Value = u64> {
+    prop_oneof![3 => 1u64..(64 * PAGE), 1 => (4096 * PAGE)..(8192 * PAGE)]
+}
+
+/// The length of an extended attribute's value: none, a few bytes, about what Fxfs keeps in its
+/// record, kilobytes, or about the most it takes, or more, which it refuses.
+fn xattr_len() -> impl Strategy<Value = usize> {
+    let inline = MAX_INLINE_XATTR_SIZE;
+    prop_oneof![
+        1 => Just(0usize),
+        3 => 1usize..64,
+        1 => inline - 2..=inline + 2,
+        2 => 1024usize..8192,
+        1 => MAX_XATTR_VALUE_SIZE - 16..MAX_XATTR_VALUE_SIZE,
+        1 => Just(MAX_XATTR_VALUE_SIZE),
+        1 => Just(MAX_XATTR_VALUE_SIZE + 1),
+    ]
+}
+
+fn xattr_change() -> impl Strategy<Value = XattrChange> {
+    prop_oneof![
+        (xattr_len(), any::<u8>()).prop_map(|(len, byte)| XattrChange::Set { len, byte }),
+        (xattr_len(), any::<u8>()).prop_map(|(len, byte)| XattrChange::Create { len, byte }),
+        (xattr_len(), any::<u8>()).prop_map(|(len, byte)| XattrChange::Replace { len, byte }),
+        Just(XattrChange::Remove),
+    ]
 }
 
 /// What a short sequence does: few pages at a time, leaning on what ends in a barrier, so that a
@@ -413,6 +866,13 @@ fn short_op() -> impl Strategy<Value = Op> {
             .prop_map(|(file, name, len, byte)| Op::SetXattr { file, name, len, byte }),
         1 => (0usize..DIRS, 0u8..3, 1024usize..8192, any::<u8>())
             .prop_map(|(dir, name, len, byte)| Op::SetDirXattr { dir, name, len, byte }),
+        1 => (node(), 0u8..XATTR_NAMES, xattr_change())
+            .prop_map(|(node, name, change)| Op::NodeXattr { node, name, change }),
+        2 => (name(), make()).prop_map(|(name, make)| Op::Make { name, make }),
+        2 => (node(), change()).prop_map(|(node, change)| Op::SetAttr { node, change }),
+        1 => (file(), 0u64..(64 << 10), 1u64..(16 * PAGE))
+            .prop_map(|(file, at, len)| Op::Allocate { file, at, len }),
+        1 => (0usize..DIRS, any::<bool>()).prop_map(|(dir, folds)| Op::Casefold { dir, folds }),
         2 => Just(Op::Sync),
         2 => Just(Op::Fsync),
         3 => Just(Op::Compact),
@@ -456,11 +916,22 @@ fn op() -> impl Strategy<Value = Op> {
         ),
         1 => (file(), file(), clone_page(), clone_page())
             .prop_map(|(from, to, page, to_page)| Op::CloneToEnd { from, to, page, to_page }),
-        1 => (file(), 0u8..3, prop_oneof![1usize..64, 1024usize..8192], any::<u8>())
+        1 => (file(), 0u8..XATTR_NAMES, xattr_len(), any::<u8>())
             .prop_map(|(file, name, len, byte)| Op::SetXattr { file, name, len, byte }),
-        1 => (file(), 0u8..3).prop_map(|(file, name)| Op::RemoveXattr { file, name }),
-        1 => (0usize..DIRS, 0u8..3, prop_oneof![1usize..64, 1024usize..8192], any::<u8>())
+        1 => (file(), 0u8..XATTR_NAMES).prop_map(|(file, name)| Op::RemoveXattr { file, name }),
+        1 => (0usize..DIRS, 0u8..XATTR_NAMES, xattr_len(), any::<u8>())
             .prop_map(|(dir, name, len, byte)| Op::SetDirXattr { dir, name, len, byte }),
+        1 => (node(), 0u8..XATTR_NAMES, xattr_change())
+            .prop_map(|(node, name, change)| Op::NodeXattr { node, name, change }),
+        2 => (name(), make()).prop_map(|(name, make)| Op::Make { name, make }),
+        2 => (node(), change()).prop_map(|(node, change)| Op::SetAttr { node, change }),
+        1 => (file(), offset(), allocation())
+            .prop_map(|(file, at, len)| Op::Allocate { file, at, len }),
+        1 => (0usize..DIRS, 0usize..8).prop_map(|(dir, count)| Op::ReadSome { dir, count }),
+        2 => (0usize..CURSORS, 0usize..8).prop_map(|(cursor, count)| Op::ReadOn { cursor, count }),
+        1 => (0usize..DIRS, any::<bool>()).prop_map(|(dir, folds)| Op::Casefold { dir, folds }),
+        1 => (0usize..DIRS, 0..BAD_NAMES.len()).prop_map(|(dir, name)| Op::BadName { dir, name }),
+        1 => Just(Op::Statfs),
         1 => Just(Op::Sync),
         1 => Just(Op::Fsync),
         1 => Just(Op::Compact),
@@ -481,11 +952,13 @@ struct Queued {
 struct Model {
     /// The directories there are, the root first.
     dirs: Vec<u64>,
-    /// What each directory's names link.
+    /// Of those, the ones that fold case.
+    casefold: BTreeSet<u64>,
+    /// What each directory's names link, by `SPELLINGS`.
     names: BTreeMap<(u64, usize), Entry>,
     files: BTreeMap<u64, Data>,
-    /// The extended attributes of directories that have any.
-    dir_xattrs: BTreeMap<u64, BTreeMap<u8, Vec<u8>>>,
+    /// The attributes of every node there is, and of some that went.
+    nodes: BTreeMap<u64, Node>,
     /// What's held open: what no name links, of these, is in the graveyard.
     open: BTreeSet<u64>,
     /// Of those, the tmpfiles no name has linked yet, which alone a VFS lets a link name with none
@@ -498,12 +971,15 @@ struct Model {
 }
 
 impl Model {
-    fn new(root: u64) -> Self {
+    /// A new volume's, whose root is `root`, made no earlier than `made`: Fxfs gives it no
+    /// attributes of its own, and gives it defaults (`Fxfs::attr`).
+    fn new(root: u64, made: u64) -> Self {
         Self {
             dirs: vec![root],
+            casefold: BTreeSet::new(),
             names: BTreeMap::new(),
             files: BTreeMap::new(),
-            dir_xattrs: BTreeMap::new(),
+            nodes: BTreeMap::from([(root, Node::new(DIR, 0, 0, 0, made))]),
             open: BTreeSet::new(),
             linkable: BTreeSet::new(),
             queued: Vec::new(),
@@ -517,20 +993,51 @@ impl Model {
         (!files.is_empty()).then(|| files[index % files.len()])
     }
 
-    /// What the `index`th of the files and symlinks there are is linked as, if there are any: a
-    /// tmpfile, as what it is, by the time it's linked.
+    /// What the `index`th of the files, symlinks and special files there are is linked as, if
+    /// there are any: a tmpfile, as what it is, by the time it's linked.
     fn linked_as(&self, index: usize) -> Option<Entry> {
-        let symlinks = self.names.values().filter(|entry| matches!(entry, Entry::Symlink(_)));
-        let symlinks: BTreeMap<u64, Entry> = symlinks.map(|entry| (entry.ino(), *entry)).collect();
+        let others = |entry: &&Entry| matches!(entry, Entry::Symlink(_) | Entry::Special(_));
+        let others = self.names.values().filter(others);
+        let others: BTreeMap<u64, Entry> = others.map(|entry| (entry.ino(), *entry)).collect();
         let mut entries: Vec<Entry> = self.files.keys().map(|ino| Entry::File(*ino)).collect();
-        entries.extend(symlinks.values());
+        entries.extend(others.values());
         entries.sort_by_key(|entry| entry.ino());
         (!entries.is_empty()).then(|| entries[index % entries.len()])
     }
 
-    /// Which directory `name` is in, and which of its names it is.
+    /// The ino of the `index`th node there is: the root first, then every other, in order, but
+    /// directories gone and held open.
+    fn node(&self, index: usize) -> u64 {
+        let named = self.names.values().map(|entry| entry.ino());
+        let others: BTreeSet<u64> = named.chain(self.files.keys().copied()).collect();
+        match index {
+            0 => self.dirs[0],
+            _ if others.is_empty() => self.dirs[0],
+            _ => *others.iter().nth((index - 1) % others.len()).expect("a node"),
+        }
+    }
+
+    /// The type of `ino`, as Linux has it.
+    fn kind(&self, ino: u64) -> u32 {
+        self.nodes[&ino].kind()
+    }
+
+    /// Which directory `name` is in, and which of its names it is (`SPELLINGS`): its spelling, or
+    /// in a directory that folds case, one it has that folds as it does.
     fn place(&self, name: usize) -> (u64, usize) {
-        (self.dirs[name / NAMES % self.dirs.len()], name % NAMES)
+        let dir = self.dirs[name / NAMES % DIRS % self.dirs.len()];
+        let at = name / (NAMES * DIRS) % ALPHABETS * NAMES + name % NAMES;
+        (dir, self.spelled(dir, at))
+    }
+
+    /// The name `dir` has that `at` names: `at`, or in a directory that folds case, one it has
+    /// that folds as `at` does.
+    fn spelled(&self, dir: u64, at: usize) -> usize {
+        if !self.casefold.contains(&dir) {
+            return at;
+        }
+        let mut names = self.names_in(dir).map(|(name, _)| name);
+        names.find(|name| FOLDED[*name] == FOLDED[at]).unwrap_or(at)
     }
 
     fn entry(&self, name: usize) -> Option<Entry> {
@@ -615,17 +1122,59 @@ impl Model {
         self.open.iter().copied().filter(|ino| self.links(*ino) == 0).collect()
     }
 
+    /// The nodes there are but the root: those a name links, and those held open.
+    fn held(&self) -> BTreeSet<u64> {
+        let inos = self.names.values().map(|entry| entry.ino()).chain(self.open.iter().copied());
+        inos.chain(self.files.keys().copied()).collect()
+    }
+
     /// How many objects a volume with this in it has.
     fn objects(&self) -> u64 {
-        let inos = self.names.values().map(|entry| entry.ino()).chain(self.open.iter().copied());
-        let inos: BTreeSet<u64> = inos.chain(self.files.keys().copied()).collect();
-        BARE_OBJECTS + inos.len() as u64
+        BARE_OBJECTS + self.held().len() as u64
+    }
+
+    /// How many blocks this takes at least: a page of a file each, but those a clone shares, which
+    /// share it in the model too, and what extended attributes take (`Node::xattr_blocks`).
+    fn blocks_at_least(&self) -> u64 {
+        let pages = self.files.values().flat_map(|data| data.pages.values().map(Arc::as_ptr));
+        let pages = pages.collect::<BTreeSet<_>>().len() as u64;
+        let held = self.held();
+        let nodes =
+            self.nodes.iter().filter(|(ino, _)| held.contains(ino) || **ino == self.dirs[0]);
+        pages + nodes.map(|(_, node)| node.xattr_blocks()).sum::<u64>()
+    }
+
+    /// The blocks the node `ino` counts as its own: the pages of a file written or allocated, and
+    /// what its extended attributes take, of which a clone's are its own too.
+    fn blocks_of(&self, ino: u64) -> u64 {
+        let pages = self.files.get(&ino).map_or(0, |data| {
+            let written = data.pages.keys().filter(|page| *page * PAGE < data.size);
+            written.chain(&data.allocated).collect::<BTreeSet<_>>().len() as u64
+        });
+        pages + self.nodes[&ino].xattr_blocks()
+    }
+
+    /// The size of `ino`, a symlink or a special file: what a symlink says.
+    fn size_of(&self, ino: u64) -> u64 {
+        match self.kind(ino) {
+            S_IFLNK => SYMLINK_TARGET.len() as u64,
+            _ => 0,
+        }
+    }
+
+    /// Whether a clone of the pages `pages` of `src` is refused: Fxfs shares no block it records
+    /// as written in place, as it records what an allocation made.
+    fn clone_refused(&self, src: u64, pages: Range<u64>) -> bool {
+        self.files[&src].allocated.range(pages).next().is_some()
     }
 
     /// What a power cut leaves of this: what's open closes, and what no name links goes.
     fn cut(mut self) -> Self {
         let linked: BTreeSet<u64> = self.names.values().map(|entry| entry.ino()).collect();
         self.files.retain(|ino, _| linked.contains(ino));
+        let root = self.dirs[0];
+        self.nodes.retain(|ino, _| linked.contains(ino) || *ino == root);
+        self.casefold.retain(|dir| self.dirs.contains(dir));
         self.open.clear();
         self.linkable.clear();
         self.queued.clear();
@@ -923,6 +1472,21 @@ struct World {
     /// some: the journal's records of what a shared extent took, while what was written to it is
     /// there, which Fxfs can't count until the device says how far each extent reaches (TASK-213).
     cut: bool,
+    /// The readdirs going on (`Op::ReadOn`), until the filesystem remounts.
+    cursors: Vec<Cursor>,
+}
+
+/// A readdir of a directory going on, as the kernel's goes on after the name it left off at
+/// (`ReaddirStart::After`): each name it lists is there as it lists it, and listed once, and once
+/// it ends, it has listed every name that was there all along.
+#[derive(Debug)]
+struct Cursor {
+    dir: u64,
+    /// The last name it listed, if any.
+    after: Option<Vec<u8>>,
+    listed: BTreeSet<Vec<u8>>,
+    /// The names there since it began.
+    stayed: BTreeSet<Vec<u8>>,
 }
 
 /// Runs fsck, and says what it found.
@@ -937,8 +1501,33 @@ pub(super) async fn checked(filesystem: &fxfs::filesystem::OpenFxFilesystem) -> 
     done.map(drop).map_err(|e| format!("fsck: {e:#}: {:?}", issues.lock().unwrap()))
 }
 
-fn name_of(name: usize) -> Vec<u8> {
-    vec![b'a' + name as u8]
+/// The names of a directory, by `Model::place`'s `at`: letters, then names in another case, or
+/// that fold as another does (ß as ss, and a character Unicode ignores), and as long as a name may
+/// be, of one byte a character or many.
+static SPELLINGS: LazyLock<Vec<String>> = LazyLock::new(|| {
+    let mut names: Vec<String> = (b'a'..b'a' + NAMES as u8).map(|c| char::from(c).into()).collect();
+    names.extend([
+        "A".into(),
+        "B\u{200c}".into(),
+        "Straße".into(),
+        "STRASSE".into(),
+        "L".repeat(255),
+        format!("{}{}end", "É".repeat(64), "🦀".repeat(31)),
+    ]);
+    assert_eq!(names.len(), NAMES * ALPHABETS);
+    names
+});
+
+/// Of each of `SPELLINGS`, the first that folds as it does: what a directory that folds case
+/// takes for one name.
+static FOLDED: LazyLock<Vec<usize>> = LazyLock::new(|| {
+    let folds = |a: &str, b: &str| fxfs_unicode::casefold_cmp(a, b) == std::cmp::Ordering::Equal;
+    let first = |name: &String| SPELLINGS.iter().position(|other| folds(name, other));
+    SPELLINGS.iter().map(|name| first(name).expect("itself")).collect()
+});
+
+fn name_of(at: usize) -> Vec<u8> {
+    SPELLINGS[at].as_bytes().to_vec()
 }
 
 /// The bytes of `run`, a page a fill writes.
@@ -946,8 +1535,14 @@ fn written(run: &Run) -> &[u8] {
     run.bytes.as_ref().expect("written")
 }
 
+/// The name of the extended attribute `name`: a few letters, or a namespace's, or as long as one
+/// may be.
 fn xattr_of(name: u8) -> Vec<u8> {
-    vec![b'x', b'a' + name]
+    match name {
+        0..3 => vec![b'x', b'a' + name],
+        11 => [b"user.".as_slice(), &[b'n'; MAX_XATTR_NAME_SIZE - 5]].concat(),
+        _ => format!("user.{name}").into_bytes(),
+    }
 }
 
 impl World {
@@ -960,13 +1555,16 @@ impl World {
         let device = DeviceHolder::new(setting.device(crashes, faults));
         let (builder, _hooks) = setting.builder();
         let filesystem = builder.format(true).open(device).await.expect("formatting");
+        let made = clock();
         let volumes = root_volume((*filesystem).clone()).await.expect("the root volume");
         let volume =
             volumes.new_volume("test", NewChildStoreOptions::default()).await.expect("the volume");
         let root = volume.root_directory_object_id();
         let platform = Seeded { workers: setting.workers };
         let fs = Box::new(Fxfs::new((*filesystem).clone(), volume, false, platform));
-        Self { setting, filesystem, _hooks, fs, root, model: Model::new(root), tally, cut: false }
+        let model = Model::new(root, made);
+        let (cut, cursors) = (false, Vec::new());
+        Self { setting, filesystem, _hooks, fs, root, model, tally, cut, cursors }
     }
 
     /// Mounts what `device` holds, or replays it: what `model` should say.
@@ -986,7 +1584,8 @@ impl World {
         drop(volumes);
         let platform = Seeded { workers: setting.workers };
         let fs = Box::new(Fxfs::new((*filesystem).clone(), volume, false, platform));
-        Ok(Self { setting, filesystem, _hooks, fs, root, model, tally, cut: false })
+        let (cut, cursors) = (false, Vec::new());
+        Ok(Self { setting, filesystem, _hooks, fs, root, model, tally, cut, cursors })
     }
 
     /// Unmounts, as a guest's `umount` does, leaving the device.
@@ -1023,10 +1622,13 @@ impl World {
         let ino = entry.ino();
         if let Entry::Dir(_) = entry {
             self.model.dirs.retain(|dir| *dir != ino);
-            self.model.dir_xattrs.remove(&ino);
+            self.model.casefold.remove(&ino);
             let times = SetAttr { valid: SET_MTIME, mtime_ns: 1, ..SetAttr::default() };
+            let now = clock();
             let written = self.fs.setattr(ino, &times).await;
-            self.unless_full(written, "a directory's times")?;
+            if self.unless_full(written, "a directory's times")?.is_some() {
+                self.model.nodes.get_mut(&ino).expect("a node").set(&times, now);
+            }
         }
         if self.model.links(ino) == 0 && !self.model.open.contains(&ino) {
             self.evict_unlinked(ino);
@@ -1077,19 +1679,8 @@ impl World {
         if attr.nlink != links {
             return Err(format!("{ino} has {} links, not {links}", attr.nlink));
         }
-        let mut names = self.fs.list_xattrs(ino).await.map_err(|e| format!("xattrs: {e:#}"))?;
-        names.sort();
-        let expected: Vec<Vec<u8>> = data.xattrs.keys().map(|name| xattr_of(*name)).collect();
-        if names != expected {
-            return Err(format!("{ino} has the xattrs {names:?}, not {expected:?}"));
-        }
-        for (name, value) in &data.xattrs {
-            let got = self.fs.get_xattr(ino, &xattr_of(*name)).await;
-            let got = got.map_err(|e| format!("xattr {name} of {ino}: {e:#}"))?;
-            if got != *value {
-                return Err(format!("xattr {name} of {ino} isn't what was set"));
-            }
-        }
+        self.holds_node(model, &attr)?;
+        self.holds_xattrs(model, ino).await?;
         let mut places: Vec<u64> = data.pages.keys().map(|page| page * PAGE).collect();
         places.push(data.size.saturating_sub(2 * PAGE));
         places.sort_unstable();
@@ -1143,6 +1734,11 @@ impl World {
                 if at + PAGE > size || got != read.len() || read != *expected {
                     return Ok(data);
                 }
+                // A page of zeros reads as a hole does: which it is, whether a block holds it says.
+                let mapped = || async { self.mapped(ino, page..page + 1).await };
+                if *expected == hole && mapped().await?.is_empty() == run.bytes.is_some() {
+                    return Ok(data);
+                }
                 data.put(&Run { pages: page..page + 1, bytes: run.bytes.clone() });
             }
             let reached = run.pages.end.min(size / PAGE);
@@ -1157,17 +1753,26 @@ impl World {
     }
 
     /// Checks what the directory `dir` holds against `model`, and what its names link: their
-    /// types, each by lookup too, its links, and what a symlink says.
+    /// types, each by lookup too, as any spelling of it, and every other spelling found not to be
+    /// there, its links, attributes, extended attributes, and what a symlink says.
     async fn holds_names(&self, model: &Model, dir: u64) -> Result<(), String> {
+        let folds = Directory::open(&self.fs.volume, dir).await;
+        let folds = folds.map_err(|e| format!("opening {dir}: {e:#}"))?.dir_type().is_casefold();
+        if folds != model.casefold.contains(&dir) {
+            return Err(format!("{dir} folds case: {folds}"));
+        }
         // A lookup finds no name queued to go, though its record is there until the readdir below
         // applies what is queued in the directory: a lookup applies only what its name's inode
         // waits for (TASK-92.26).
-        for &Queued { place: (in_dir, name), .. } in &model.queued {
-            if in_dir == dir && !model.names.contains_key(&(dir, name)) {
-                match self.fs.lookup(dir, &name_of(name)).await {
-                    Err(error) if errno(&error) == Errno::ENOENT => {}
-                    found => return Err(format!("{name} in {dir}, gone, was found: {found:?}")),
-                }
+        for at in 0..SPELLINGS.len() {
+            let expected = model.names.get(&(dir, model.spelled(dir, at))).map(|entry| entry.ino());
+            let found = match self.fs.lookup(dir, &name_of(at)).await {
+                Ok(attr) => Some(attr.ino),
+                Err(error) if errno(&error) == Errno::ENOENT => None,
+                Err(error) => return Err(format!("lookup of {at} in {dir}: {error:#}")),
+            };
+            if found != expected {
+                return Err(format!("{at} in {dir} is {found:?}, not {expected:?}"));
             }
         }
         let mut found = Vec::new();
@@ -1177,20 +1782,15 @@ impl World {
         });
         listed.await.map_err(|e| format!("readdir of {dir}: {e:#}"))?;
         found.sort();
-        let names: Vec<(Vec<u8>, u64, u32)> = model
+        let mut names: Vec<(Vec<u8>, u64, u32)> = model
             .names_in(dir)
-            .map(|(name, entry)| (name_of(name), entry.ino(), entry.kind()))
+            .map(|(name, entry)| (name_of(name), entry.ino(), model.kind(entry.ino())))
             .collect();
+        names.sort();
         if found != names {
             return Err(format!("{dir} holds {found:?}, not {names:?}"));
         }
-        for (name, value) in model.dir_xattrs.get(&dir).into_iter().flatten() {
-            let got = self.fs.get_xattr(dir, &xattr_of(*name)).await;
-            let got = got.map_err(|e| format!("xattr {name} of {dir}: {e:#}"))?;
-            if got != *value {
-                return Err(format!("xattr {name} of {dir} isn't what was set"));
-            }
-        }
+        self.holds_xattrs(model, dir).await?;
         let mut sub_dirs = 0;
         for (name, entry) in model.names_in(dir) {
             let attr = self.fs.lookup(dir, &name_of(name)).await;
@@ -1198,6 +1798,7 @@ impl World {
             if attr.ino != entry.ino() {
                 return Err(format!("{name} in {dir} is {}, not {entry:?}", attr.ino));
             }
+            self.holds_node(model, &attr)?;
             match entry {
                 Entry::File(_) => {}
                 Entry::Symlink(ino) => {
@@ -1206,19 +1807,208 @@ impl World {
                     if target != SYMLINK_TARGET {
                         return Err(format!("{ino} says {target:?}"));
                     }
-                    if attr.nlink != model.links(ino) {
-                        let links = model.links(ino);
-                        return Err(format!("{ino} has {} links, not {links}", attr.nlink));
-                    }
                 }
                 Entry::Dir(_) => sub_dirs += 1,
+                Entry::Special(_) => {}
+            }
+            if let Entry::Symlink(ino) | Entry::Special(ino) = entry {
+                if attr.nlink != model.links(ino) {
+                    let links = model.links(ino);
+                    return Err(format!("{ino} has {} links, not {links}", attr.nlink));
+                }
+                if attr.size != model.size_of(ino) {
+                    return Err(format!("{ino} has {} bytes", attr.size));
+                }
+                self.holds_xattrs(model, ino).await?;
             }
         }
         let attr = self.fs.attr(dir).await.map_err(|e| format!("attr of {dir}: {e:#}"))?;
         if attr.nlink != 2 + sub_dirs {
             return Err(format!("{dir} has {} links with {sub_dirs} subdirectories", attr.nlink));
         }
+        self.holds_node(model, &attr)
+    }
+
+    /// Checks `attr`, the attributes Fxfs has of a node, against `model`'s, and the blocks it says
+    /// the node takes.
+    fn holds_node(&self, model: &Model, attr: &Attr) -> Result<(), String> {
+        let node = model.nodes.get(&attr.ino).ok_or(format!("{} has no model", attr.ino))?;
+        node.holds(attr, clock())?;
+        let blocks = model.blocks_of(attr.ino) * (PAGE / 512);
+        if attr.blocks != blocks {
+            return Err(format!(
+                "{} takes {} blocks of 512 bytes, not {blocks}",
+                attr.ino, attr.blocks
+            ));
+        }
         Ok(())
+    }
+
+    /// Checks the extended attributes of the node `ino` against `model`'s: their names, and what
+    /// each holds.
+    async fn holds_xattrs(&self, model: &Model, ino: u64) -> Result<(), String> {
+        let xattrs = &model.nodes.get(&ino).ok_or(format!("{ino} has no model"))?.xattrs;
+        let mut names = self.fs.list_xattrs(ino).await.map_err(|e| format!("xattrs: {e:#}"))?;
+        names.sort();
+        let mut expected: Vec<Vec<u8>> = xattrs.keys().map(|name| xattr_of(*name)).collect();
+        expected.sort();
+        if names != expected {
+            return Err(format!("{ino} has the xattrs {names:?}, not {expected:?}"));
+        }
+        for (name, value) in xattrs {
+            let got = self.fs.get_xattr(ino, &xattr_of(*name)).await;
+            let got = got.map_err(|e| format!("xattr {name} of {ino}: {e:#}"))?;
+            if got != *value {
+                return Err(format!("xattr {name} of {ino} is {} bytes, not those set", got.len()));
+            }
+        }
+        Ok(())
+    }
+
+    /// Checks that statfs counts what `model` takes at least, unless a cut left the device holding
+    /// what Fxfs can't count (`cut`).
+    async fn holds_statfs(&self, model: &Model) -> Result<(), String> {
+        if self.cut {
+            return Ok(());
+        }
+        let stat = self.fs.statfs().await.map_err(|e| format!("statfs: {e:#}"))?;
+        if (stat.block_size, stat.blocks) != (PAGE, self.setting.blocks) {
+            return Err(format!("statfs says {stat:?} of a device of {}", self.setting.blocks));
+        }
+        let used = stat.blocks.checked_sub(stat.free_blocks).ok_or(format!("{stat:?}"))?;
+        let (least, objects) = (model.blocks_at_least(), model.objects());
+        if used < least || stat.files < objects {
+            return Err(format!(
+                "statfs says {stat:?}, of at least {least} blocks, {objects} files"
+            ));
+        }
+        Ok(())
+    }
+
+    /// The pages of file `ino` whose blocks Fxfs records as written in place, as it records what
+    /// an allocation made.
+    async fn allocated(&self, ino: u64) -> Result<BTreeSet<u64>, String> {
+        let failed = |e: Error| format!("the extents of {ino}: {e:#}");
+        let layer_set = self.fs.volume.tree().layer_set();
+        let mut merger = layer_set.merger();
+        let first = AttributeKey::Extent(Extent::search_key_from_offset(0));
+        let first = ObjectKey::attribute(ino, AttributeId::DATA, first);
+        let mut extents = merger.query(Query::FullRange(&first)).await.map_err(failed)?;
+        let mut pages = BTreeSet::new();
+        while let Some(ItemRef {
+            key:
+                ObjectKey {
+                    object_id,
+                    data: ObjectKeyData::Attribute(attribute, AttributeKey::Extent(extent)),
+                },
+            value: ObjectValue::Extent(value),
+            ..
+        }) = extents.get()
+            && *object_id == ino
+            && *attribute == AttributeId::DATA
+        {
+            if let ExtentValue::Some {
+                mode: ExtentMode::Overwrite | ExtentMode::OverwritePartial(_),
+                ..
+            } = value
+            {
+                pages.extend(extent.start / PAGE..extent.end.div_ceil(PAGE));
+            }
+            extents.advance().await.map_err(failed)?;
+        }
+        Ok(pages)
+    }
+
+    /// Checks the extents of file `ino` against the model: what Fxfs records as allocated, and what
+    /// a DAX window would map, which is every page written, and nothing else: what an allocation
+    /// left unwritten isn't on the device.
+    async fn holds_extents(&self, ino: u64) -> Result<(), String> {
+        let data = &self.model.files[&ino];
+        let differ = |what: &str, got: &BTreeSet<u64>, expected: &BTreeSet<u64>| {
+            let (more, fewer) = (got.difference(expected), expected.difference(got));
+            let (more, fewer): (Vec<_>, Vec<_>) = (more.take(8).collect(), fewer.take(8).collect());
+            Err(format!("{ino} has pages {more:?} {what}, and not {fewer:?}"))
+        };
+        let allocated = self.allocated(ino).await?;
+        if allocated != data.allocated {
+            return differ("allocated", &allocated, &data.allocated);
+        }
+        let mapped = self.mapped(ino, 0..data.size.div_ceil(PAGE)).await?;
+        let written = data.pages.keys().copied().filter(|page| page * PAGE < data.size).collect();
+        if mapped != written {
+            return differ("mapped", &mapped, &written);
+        }
+        Ok(())
+    }
+
+    /// The pages of file `ino` in `pages` that a DAX window would map: those a block holds.
+    async fn mapped(&self, ino: u64, pages: Range<u64>) -> Result<BTreeSet<u64>, String> {
+        if pages.is_empty() {
+            return Ok(BTreeSet::new());
+        }
+        let extents = self.fs.dax_extents(ino, pages.start * PAGE..pages.end * PAGE).await;
+        let extents = extents.map_err(|e| format!("the DAX extents of {ino}: {e:#}"))?;
+        Ok(extents
+            .iter()
+            .flat_map(|e| e.offset / PAGE..(e.offset + e.len).div_ceil(PAGE))
+            .collect())
+    }
+
+    /// Takes what Fxfs records as allocated of file `ino` for the model's, after an operation
+    /// that may have stopped short: it must be some of `allowed`.
+    async fn adopt_allocated(&mut self, ino: u64, allowed: &BTreeSet<u64>) -> Result<(), String> {
+        let allocated = self.allocated(ino).await?;
+        if let Some(page) = allocated.difference(allowed).next() {
+            return Err(format!("{ino} has page {page} allocated, of {} allowed", allowed.len()));
+        }
+        self.model.files.get_mut(&ino).expect("a file").allocated = allocated;
+        Ok(())
+    }
+
+    /// `adopt_allocated` of every file, each allowed what `allowed` says.
+    async fn adopt_all_allocated(
+        &mut self,
+        allowed: &BTreeMap<u64, BTreeSet<u64>>,
+    ) -> Result<(), String> {
+        let none = BTreeSet::new();
+        for ino in self.model.files.keys().copied().collect::<Vec<_>>() {
+            self.adopt_allocated(ino, allowed.get(&ino).unwrap_or(&none)).await?;
+        }
+        Ok(())
+    }
+
+    /// Reads `count` more names of the readdir `cursor`, and checks them: each is there, as the
+    /// model has it, and listed once. Whether it got to the end, which then has listed every name
+    /// that stayed.
+    async fn read_on(&self, cursor: &mut Cursor, count: usize) -> Result<bool, String> {
+        let (dir, mut got, mut more) = (cursor.dir, Vec::new(), false);
+        let start = match &cursor.after {
+            Some(name) => ReaddirStart::After(name),
+            None => ReaddirStart::Index(0),
+        };
+        let read = self.fs.readdir(dir, start, |name, ino, kind| {
+            more = got.len() == count;
+            if !more {
+                got.push((name.as_bytes().to_vec(), ino, kind));
+            }
+            !more
+        });
+        read.await.map_err(|e| format!("readdir of {dir} after {:?}: {e:#}", cursor.after))?;
+        for (name, ino, kind) in got {
+            let mut names = self.model.names_in(dir);
+            let entry = names.find(|(at, _)| name_of(*at) == name).map(|(_, entry)| entry.ino());
+            if entry != Some(ino) || kind != self.model.kind(ino) {
+                return Err(format!("{dir} lists {name:?} as {ino}, of kind {kind:o}: {entry:?}"));
+            }
+            if !cursor.listed.insert(name.clone()) {
+                return Err(format!("{dir} lists {name:?} again"));
+            }
+            cursor.after = Some(name);
+        }
+        if !more && let Some(missed) = cursor.stayed.difference(&cursor.listed).next() {
+            return Err(format!("{dir}, listed to its end, never listed {missed:?}"));
+        }
+        Ok(!more)
     }
 
     /// Checks the names there are and each file against `model`.
@@ -1243,6 +2033,10 @@ impl World {
     /// Checks everything, then fsck.
     async fn check_all(&self) -> Result<(), String> {
         self.holds(&self.model).await?;
+        for ino in self.model.files.keys() {
+            self.holds_extents(*ino).await?;
+        }
+        self.holds_statfs(&self.model).await?;
         self.fs.sync().await.map_err(|e| format!("sync: {e:#}"))?;
         self.holds_nothing_else(&self.model).await?;
         if !self.cut {
@@ -1314,6 +2108,7 @@ impl World {
             if self.unless_full(grown, "growing")?.is_some() {
                 self.model.files.get_mut(&ino).expect("a file").truncate(size);
             }
+            self.model.nodes.get_mut(&ino).expect("a node").written();
             self.check(&self.model, ino).await?;
         }
         Ok(())
@@ -1395,6 +2190,7 @@ impl World {
             self.settle();
             let (names, dirs) = (self.model.names.clone(), self.model.dirs.len());
             let done = self.act(op).await;
+            self.keep_cursors();
             let done = done.and_then(|()| self.keeps_the_order_of(op, &names));
             let done = match done {
                 Ok(()) => self.moved_whole(op, &names, dirs).await,
@@ -1409,6 +2205,18 @@ impl World {
             }
             Err(error) => (None, Err(error)),
         }
+    }
+
+    /// Keeps the readdirs going on of the directories there are, which have kept the names they
+    /// had all along.
+    fn keep_cursors(&mut self) {
+        let model = &self.model;
+        self.cursors.retain_mut(|cursor| {
+            let names: BTreeSet<Vec<u8>> =
+                model.names_in(cursor.dir).map(|(at, _)| name_of(at)).collect();
+            cursor.stayed.retain(|name| names.contains(name));
+            model.dirs.contains(&cursor.dir)
+        });
     }
 
     /// Checks that what `op` did, which found `names`, came after every unlink queued, if it had
@@ -1450,13 +2258,27 @@ impl World {
     async fn unlink(&mut self, name: usize) -> Result<(), String> {
         let entry = self.model.entry(name).expect("looked up");
         let (dir, at) = self.model.place(name);
+        let now = clock();
         let gone = self.fs.unlink(dir, &name_of(at), entry.ino()).await;
         if self.is_refused_as_not_empty(Some(entry), &gone)? {
             return Ok(());
         }
         gone.map_err(|e| format!("unlink: {e:#}"))?;
         self.model.names.remove(&(dir, at));
+        self.renamed(dir, &[entry], now);
         self.forget(entry).await
+    }
+
+    /// What a change of the names of `dir`, no earlier than `now`, makes of the times of the
+    /// directory, and of `changed`, the nodes it linked or unlinked: a directory's status alone
+    /// changes with the name it's linked as.
+    fn renamed(&mut self, dir: u64, changed: &[Entry], now: u64) {
+        self.model.nodes.get_mut(&dir).expect("a directory").renamed(now);
+        for entry in changed {
+            if !matches!(entry, Entry::Dir(_)) || self.model.links(entry.ino()) > 0 {
+                self.model.nodes.get_mut(&entry.ino()).expect("a node").changed(now);
+            }
+        }
     }
 
     /// Whether `done` was refused for replacing or removing `entry`, a directory with names in
@@ -1480,16 +2302,10 @@ impl World {
 
     /// Does `op`, any but a remount, and checks what it changed.
     async fn act(&mut self, op: &Op) -> Result<(), String> {
+        let now = clock();
         match *op {
             Op::Create(name) if self.model.entry(name).is_none() => {
-                let (dir, at) = self.model.place(name);
-                let made = self.fs.create(dir, &name_of(at), FILE, 0, 0, 0, &[]).await;
-                let Some([attr, _]) = self.unless_full(made, "create")? else { return Ok(()) };
-                if attr.ctime_ns < attr.mtime_ns {
-                    return Err(format!("a new file's ctime is before its mtime: {attr:?}"));
-                }
-                self.model.names.insert((dir, at), Entry::File(attr.ino));
-                self.model.files.insert(attr.ino, Data::default());
+                self.make(name, &Make::FILE, now).await?;
             }
             Op::Symlink(name) if self.model.entry(name).is_none() => {
                 let (dir, at) = self.model.place(name);
@@ -1499,13 +2315,15 @@ impl World {
                     return Err(format!("a new symlink's ctime is before its mtime: {attr:?}"));
                 }
                 self.model.names.insert((dir, at), Entry::Symlink(attr.ino));
+                self.model.nodes.insert(attr.ino, Node::new(SYMLINK, 0, 0, 0, now));
+                self.renamed(dir, &[], now);
+                self.holds_node(&self.model, &attr)?;
             }
             Op::Mkdir(name) if self.model.entry(name).is_none() => {
-                let (dir, at) = self.model.place(name);
-                let made = self.fs.create(dir, &name_of(at), DIR, 0, 0, 0, &[]).await;
-                let Some([attr, _]) = self.unless_full(made, "mkdir")? else { return Ok(()) };
-                self.model.names.insert((dir, at), Entry::Dir(attr.ino));
-                self.model.dirs.push(attr.ino);
+                self.make(name, &Make::DIR, now).await?;
+            }
+            Op::Make { name, make } if self.model.entry(name).is_none() => {
+                self.make(name, &make, now).await?;
             }
             Op::Link(file, name) if self.model.entry(name).is_none() => {
                 let Some(entry) = self.model.linked_as(file) else { return Ok(()) };
@@ -1519,10 +2337,12 @@ impl World {
                 let Some([attr, _]) = self.unless_full(linked, "link")? else { return Ok(()) };
                 self.model.linkable.remove(&ino);
                 self.model.names.insert((dir, at), entry);
+                self.renamed(dir, &[entry], now);
                 if attr.nlink != self.model.links(ino) {
                     let links = self.model.links(ino);
                     return Err(format!("{ino} has {} links, not {links}", attr.nlink));
                 }
+                self.holds_node(&self.model, &attr)?;
             }
             Op::Unlink(name) if self.model.entry(name).is_some() => self.unlink(name).await?,
             Op::UnlinkLater(name) if self.model.entry(name).is_some() => {
@@ -1539,6 +2359,10 @@ impl World {
                 queued.map_err(|e| format!("unlink_later: {e:#}"))?;
                 self.model.names.remove(&(dir, at));
                 self.model.queued.push(Queued { place: (dir, at), entry });
+                // Applied later, it may leave the times to the VFS, as the guest's keeps them.
+                self.model.nodes.get_mut(&dir).expect("a directory").written();
+                let node = self.model.nodes.get_mut(&entry.ino()).expect("a node");
+                node.ctime = node.ctime.no_earlier();
                 self.forget(entry).await?;
             }
             Op::Rename(from, to) if self.model.may_rename(from, to) => {
@@ -1556,6 +2380,8 @@ impl World {
                 }
                 self.model.names.remove(&src);
                 self.model.names.insert(dst, entry);
+                self.renamed(src.0, &[entry], now);
+                self.renamed(dst.0, replaced.as_slice(), now);
                 if let Some(replaced) = replaced {
                     self.forget(replaced).await?;
                 }
@@ -1567,17 +2393,22 @@ impl World {
                 if self.unless_full(exchanged, "exchange")?.is_none() {
                     return Ok(());
                 }
-                let (a, b) = (self.model.entry(a), self.model.entry(b));
-                self.model.names.insert(first, b.expect("looked up"));
-                self.model.names.insert(second, a.expect("looked up"));
+                let (a, b) = (self.model.entry(a).expect("looked up"), self.model.entry(b));
+                let b = b.expect("looked up");
+                self.model.names.insert(first, b);
+                self.model.names.insert(second, a);
+                self.renamed(first.0, &[a, b], now);
+                self.renamed(second.0, &[], now);
             }
             Op::Tmpfile(name) => {
                 let dir = self.model.place(name).0;
                 let made = self.fs.tmpfile(dir, FILE, 0, 0).await;
                 let Some(attr) = self.unless_full(made, "tmpfile")? else { return Ok(()) };
                 self.model.files.insert(attr.ino, Data::default());
+                self.model.nodes.insert(attr.ino, Node::new(FILE, 0, 0, 0, now));
                 self.model.open.insert(attr.ino);
                 self.model.linkable.insert(attr.ino);
+                self.holds_node(&self.model, &attr)?;
             }
             Op::Open(index) => {
                 let subdirs = self.model.dirs[1..].iter();
@@ -1600,7 +2431,9 @@ impl World {
                 if self.unless_full(written, "write")?.is_some() {
                     self.model.files.get_mut(&ino).expect("a file").write(at, &bytes);
                 }
+                self.model.nodes.get_mut(&ino).expect("a node").written();
                 self.check(&self.model, ino).await?;
+                self.holds_extents(ino).await?;
             }
             Op::Fill { .. } | Op::Clone { .. } | Op::CloneToEnd { .. } => {
                 let Some(plan) = op.plan(&self.model) else { return Ok(()) };
@@ -1613,9 +2446,13 @@ impl World {
                         let size = self.model.files[&plan.ino].size.max(end * PAGE);
                         let size = plan.size.unwrap_or(size);
                         let range = page * PAGE..(page + end - to_page) * PAGE;
+                        let refused = self.model.clone_refused(src, page..page + end - to_page);
                         let dst_offset = to_page * PAGE;
                         let cloned = self.fs.clone_range(src, range, plan.ino, dst_offset, size);
                         let cloned = cloned.await.map(drop);
+                        if refused {
+                            return self.refused_whole(plan.ino, cloned).await;
+                        }
                         let replaced = self.model.files[&plan.ino].extents_in(to_page..end);
                         self.journaled_for(plan.runs.len() as u64 + replaced, journaled)?;
                         cloned
@@ -1663,7 +2500,9 @@ impl World {
                 if cut.is_some() {
                     self.model.files.get_mut(&ino).expect("a file").truncate(size);
                 }
+                self.model.nodes.get_mut(&ino).expect("a node").written();
                 self.check(&self.model, ino).await?;
+                self.holds_extents(ino).await?;
             }
             Op::Punch { .. } => {
                 let Some(plan) = op.plan(&self.model) else { return Ok(()) };
@@ -1674,37 +2513,98 @@ impl World {
                 self.journaled_for(extents, journaled)?;
                 self.planned(&plan, punched).await?;
             }
+            Op::Allocate { file, at, len } => {
+                let Some(ino) = self.model.file(file) else { return Ok(()) };
+                let range = at.min(LARGEST - len)..at.min(LARGEST - len) + len;
+                let allocated = self.fs.allocate(ino, range.clone()).await;
+                let mut data = self.model.files[&ino].clone();
+                if self.unless_full(allocated, "allocate")?.is_some() {
+                    data.allocate(range);
+                    self.model.files.insert(ino, data);
+                } else {
+                    // Refused, it may have allocated some of the range, and grown the file to its
+                    // end first: nothing else.
+                    let size = self.fs.attr(ino).await.map_err(|e| format!("attr: {e:#}"))?.size;
+                    let mut allowed = data.clone();
+                    allowed.allocate(range);
+                    if size == allowed.size {
+                        data.size = size;
+                    }
+                    self.model.files.insert(ino, data);
+                    self.adopt_allocated(ino, &allowed.allocated).await?;
+                }
+                self.model.nodes.get_mut(&ino).expect("a node").written();
+                self.check(&self.model, ino).await?;
+                self.holds_extents(ino).await?;
+            }
             // Each set made at once, or refused if the filesystem has no room for it, as the
             // model then has it unchanged; a removal, which frees, works on a full one (TASK-199).
             Op::SetXattr { file, name, len, byte } => {
                 let Some(ino) = self.model.file(file) else { return Ok(()) };
-                let value = vec![byte; len];
-                let mode = SetExtendedAttributeMode::Set;
-                let set = self.fs.set_xattr(ino, &xattr_of(name), &value, mode).await;
-                if self.unless_full(set, "set_xattr")?.is_some() {
-                    let data = self.model.files.get_mut(&ino).expect("a file");
-                    data.xattrs.insert(name, value);
-                }
-                self.check(&self.model, ino).await?;
+                self.change_xattr(ino, name, XattrChange::Set { len, byte }).await?;
             }
             Op::RemoveXattr { file, name } => {
                 let Some(ino) = self.model.file(file) else { return Ok(()) };
-                if self.model.files[&ino].xattrs.contains_key(&name) {
-                    let removed = self.fs.remove_xattr(ino, &xattr_of(name)).await;
-                    removed.map_err(|e| format!("remove_xattr: {e:#}"))?;
-                    self.model.files.get_mut(&ino).expect("a file").xattrs.remove(&name);
-                    self.check(&self.model, ino).await?;
+                if self.model.nodes[&ino].xattrs.contains_key(&name) {
+                    self.change_xattr(ino, name, XattrChange::Remove).await?;
                 }
             }
             Op::SetDirXattr { dir, name, len, byte } => {
                 let dir = self.model.dirs[dir % self.model.dirs.len()];
-                let value = vec![byte; len];
-                let mode = SetExtendedAttributeMode::Set;
-                let set = self.fs.set_xattr(dir, &xattr_of(name), &value, mode).await;
-                if self.unless_full(set, "set_xattr")?.is_some() {
-                    self.model.dir_xattrs.entry(dir).or_default().insert(name, value);
+                self.change_xattr(dir, name, XattrChange::Set { len, byte }).await?;
+            }
+            Op::NodeXattr { node, name, change } => {
+                self.change_xattr(self.model.node(node), name, change).await?;
+            }
+            Op::SetAttr { node, change } => {
+                let ino = self.model.node(node);
+                let set = change.set_attr(self.model.kind(ino));
+                self.fs.setattr(ino, &set).await.map_err(|e| format!("setattr: {e:#}"))?;
+                self.model.nodes.get_mut(&ino).expect("a node").set(&set, now);
+                let attr = self.fs.attr(ino).await.map_err(|e| format!("attr of {ino}: {e:#}"))?;
+                self.holds_node(&self.model, &attr)?;
+            }
+            Op::ReadSome { dir, count } => {
+                let dir = self.model.dirs[dir % self.model.dirs.len()];
+                let names = self.model.names_in(dir).map(|(at, _)| name_of(at)).collect();
+                let (after, listed) = (None, BTreeSet::new());
+                let mut cursor = Cursor { dir, after, listed, stayed: names };
+                if !self.read_on(&mut cursor, count).await? {
+                    if self.cursors.len() == CURSORS {
+                        self.cursors.remove(0);
+                    }
+                    self.cursors.push(cursor);
                 }
             }
+            Op::ReadOn { cursor, count } if !self.cursors.is_empty() => {
+                let at = cursor % self.cursors.len();
+                let mut cursor = self.cursors.remove(at);
+                if !self.read_on(&mut cursor, count).await? {
+                    self.cursors.insert(at, cursor);
+                }
+            }
+            Op::Casefold { dir, folds } => {
+                let dir = self.model.dirs[dir % self.model.dirs.len()];
+                if self.model.names_in(dir).next().is_some() {
+                    return Ok(());
+                }
+                // Its names queued to go, gone.
+                self.fs.drain_all().await.map_err(|e| format!("draining: {e:#}"))?;
+                let directory = self.fs.directory(dir).await.map_err(|e| format!("{e:#}"))?;
+                let set = directory.set_casefold(folds).await;
+                if self.unless_full(set, "casefold")?.is_some() {
+                    match folds {
+                        true => drop(self.model.casefold.insert(dir)),
+                        false => drop(self.model.casefold.remove(&dir)),
+                    }
+                }
+                self.holds_names(&self.model, dir).await?;
+            }
+            Op::BadName { dir, name } => {
+                let dir = self.model.dirs[dir % self.model.dirs.len()];
+                self.refuses_bad_name(dir, BAD_NAMES[name % BAD_NAMES.len()]).await?;
+            }
+            Op::Statfs => self.holds_statfs(&self.model).await?,
             Op::Sync => self.fs.sync().await.map_err(|e| format!("sync: {e:#}"))?,
             Op::Fsync => self.fs.fsync().await.map_err(|e| format!("fsync: {e:#}"))?,
             Op::Compact => {
@@ -1717,73 +2617,239 @@ impl World {
         Ok(())
     }
 
+    /// Makes `name` as `make` says, no earlier than `now`, and checks what it made, and what of
+    /// its directory changed.
+    async fn make(&mut self, name: usize, make: &Make, now: u64) -> Result<(), String> {
+        let (dir, at) = self.model.place(name);
+        let (mode, rdev) = (make.mode(), make.rdev());
+        let made = self.fs.create(dir, &name_of(at), mode, rdev, make.uid, make.gid, &[]).await;
+        let Some([attr, _]) = self.unless_full(made, "create")? else { return Ok(()) };
+        if attr.ctime_ns < attr.mtime_ns {
+            return Err(format!("a new node's ctime is before its mtime: {attr:?}"));
+        }
+        let entry = make.entry(attr.ino);
+        self.model.names.insert((dir, at), entry);
+        self.model.nodes.insert(attr.ino, Node::new(mode, make.uid, make.gid, rdev, now));
+        match entry {
+            Entry::File(ino) => drop(self.model.files.insert(ino, Data::default())),
+            Entry::Dir(ino) => {
+                self.model.dirs.push(ino);
+                // A directory folds case as the one it's made in does.
+                if self.model.casefold.contains(&dir) {
+                    self.model.casefold.insert(ino);
+                }
+            }
+            Entry::Symlink(_) | Entry::Special(_) => {}
+        }
+        self.renamed(dir, &[], now);
+        self.holds_node(&self.model, &attr)
+    }
+
+    /// Checks that `done`, a clone of what Fxfs won't share, was refused, leaving `ino`, which it
+    /// was to clone to, as it was.
+    async fn refused_whole(&self, ino: u64, done: Result<(), Error>) -> Result<(), String> {
+        match done {
+            Err(error) if FxfsError::NotSupported.matches(&error) => {}
+            done => return Err(format!("a clone of what an allocation made: {done:?}")),
+        }
+        self.check(&self.model, ino).await?;
+        self.holds_extents(ino).await
+    }
+
+    /// Sets or removes the extended attribute `name` of `ino` as `change` says, and checks what it
+    /// found: a value longer than Fxfs takes, or one a change needs there, or not, refused,
+    /// changing nothing; and as anything that grows, a set refused on a full filesystem.
+    async fn change_xattr(
+        &mut self,
+        ino: u64,
+        name: u8,
+        change: XattrChange,
+    ) -> Result<(), String> {
+        let key = xattr_of(name);
+        let held = self.model.nodes[&ino].xattrs.contains_key(&name);
+        let value = change.value();
+        let done = match (change, &value) {
+            (XattrChange::Remove, _) => self.fs.remove_xattr(ino, &key).await,
+            (_, Some(value)) => {
+                let mode = match change {
+                    XattrChange::Create { .. } => SetExtendedAttributeMode::Create,
+                    XattrChange::Replace { .. } => SetExtendedAttributeMode::Replace,
+                    _ => SetExtendedAttributeMode::Set,
+                };
+                self.fs.set_xattr(ino, &key, value, mode).await
+            }
+            (_, None) => unreachable!("a value to set"),
+        };
+        let refusal = match (change, held) {
+            _ if value.as_ref().is_some_and(|value| value.len() > MAX_XATTR_VALUE_SIZE) => {
+                Some(FxfsError::TooBig)
+            }
+            (XattrChange::Create { .. }, true) => Some(FxfsError::AlreadyExists),
+            (XattrChange::Replace { .. } | XattrChange::Remove, false) => Some(FxfsError::NotFound),
+            _ => None,
+        };
+        let done = match (refusal, done) {
+            (Some(refusal), Err(error)) if refusal.matches(&error) => None,
+            // A full filesystem refuses the transaction before the change, which changes nothing
+            // either way.
+            (Some(_), Err(error)) if FxfsError::NoSpace.matches(&error) => None,
+            (Some(refusal), done) => {
+                return Err(format!("{change:?} of {name} of {ino}, not {refusal:?}: {done:?}"));
+            }
+            (None, done) if value.is_none() => Some(done.map_err(|e| format!("remove: {e:#}"))?),
+            (None, done) => self.unless_full(done, "set_xattr")?,
+        };
+        if done.is_some() {
+            self.model.nodes.get_mut(&ino).expect("a node").set_xattr(name, value);
+        }
+        self.holds_xattrs(&self.model, ino).await
+    }
+
+    /// Checks that `name`, which Fxfs's names can't be, is no name in `dir`, and can't be made
+    /// one: nothing of it changes.
+    async fn refuses_bad_name(&self, dir: u64, name: &[u8]) -> Result<(), String> {
+        let invalid = |what: &str, done: Result<(), Error>| match done {
+            Err(error) if errno(&error) == Errno::EINVAL => Ok(()),
+            done => Err(format!("{what} of {name:?} in {dir}: {done:?}")),
+        };
+        match self.fs.lookup(dir, name).await {
+            Err(error) if errno(&error) == Errno::ENOENT => {}
+            found => return Err(format!("lookup of {name:?} in {dir}: {found:?}")),
+        }
+        invalid("create", self.fs.create(dir, name, FILE, 0, 0, 0, &[]).await.map(drop))?;
+        invalid("mkdir", self.fs.create(dir, name, DIR, 0, 0, 0, &[]).await.map(drop))?;
+        invalid("symlink", self.fs.symlink(dir, name, SYMLINK_TARGET, 0, 0).await.map(drop))?;
+        if let Some((at, entry)) = self.model.names_in(dir).next() {
+            if !matches!(entry, Entry::Dir(_)) {
+                let linked = self.fs.link(entry.ino(), dir, name, false).await;
+                invalid("link", linked.map(drop))?;
+            }
+            let ino = entry.ino();
+            let renamed = self.fs.rename(dir, &name_of(at), ino, dir, name, None).await;
+            invalid("rename", renamed.map(drop))?;
+        }
+        self.holds_names(&self.model, dir).await
+    }
+
     /// `model`, had `op`, which failed, worked: this filesystem says what a name it made links.
     async fn had_it_worked(&self, model: &Model, op: &Op) -> Option<Model> {
         let mut model = model.clone();
+        // What times it moved, it moved to no earlier.
+        let touch = |model: &mut Model, ino: u64| model.nodes.get_mut(&ino).map(Node::written);
         if let Some(plan) = op.plan(&model) {
             model.files.get_mut(&plan.ino)?.follow(&plan);
+            touch(&mut model, plan.ino);
             return Some(model);
         }
         match *op {
-            Op::Create(name) | Op::Symlink(name) | Op::Mkdir(name) => {
+            Op::Create(name) | Op::Symlink(name) | Op::Mkdir(name) | Op::Make { name, .. } => {
                 let (dir, at) = model.place(name);
                 let ino = self.fs.lookup(dir, &name_of(at)).await.ok()?.ino;
-                let entry = match op {
-                    Op::Create(_) => Entry::File(ino),
-                    Op::Symlink(_) => Entry::Symlink(ino),
-                    _ => Entry::Dir(ino),
+                let make = match *op {
+                    Op::Make { make, .. } => make,
+                    Op::Mkdir(_) => Make::DIR,
+                    _ => Make::FILE,
+                };
+                let (entry, mode) = match op {
+                    Op::Symlink(_) => (Entry::Symlink(ino), SYMLINK),
+                    _ => (make.entry(ino), make.mode()),
                 };
                 model.names.insert((dir, at), entry);
+                model.nodes.insert(ino, Node::new(mode, make.uid, make.gid, make.rdev(), 0));
+                touch(&mut model, dir);
                 match entry {
                     Entry::File(_) => drop(model.files.insert(ino, Data::default())),
-                    Entry::Symlink(_) => {}
-                    Entry::Dir(_) => model.dirs.push(ino),
+                    Entry::Dir(_) => {
+                        model.dirs.push(ino);
+                        if model.casefold.contains(&dir) {
+                            model.casefold.insert(ino);
+                        }
+                    }
+                    Entry::Symlink(_) | Entry::Special(_) => {}
                 }
             }
             Op::Link(file, name) => {
                 let entry = model.linked_as(file)?;
-                model.names.insert(model.place(name), entry);
+                let place = model.place(name);
+                model.names.insert(place, entry);
+                touch(&mut model, place.0);
+                touch(&mut model, entry.ino());
             }
             Op::Unlink(name) | Op::UnlinkLater(name) => {
-                let entry = model.names.remove(&model.place(name))?;
+                let place = model.place(name);
+                let entry = model.names.remove(&place)?;
                 model.dirs.retain(|dir| *dir != entry.ino());
                 if model.links(entry.ino()) == 0 {
                     model.files.remove(&entry.ino());
                 }
+                touch(&mut model, place.0);
+                touch(&mut model, entry.ino());
             }
             Op::Rename(from, to) => {
-                let entry = model.names.remove(&model.place(from))?;
-                if let Some(replaced) = model.names.insert(model.place(to), entry) {
+                let (src, dst) = (model.place(from), model.place(to));
+                let entry = model.names.remove(&src)?;
+                touch(&mut model, entry.ino());
+                if let Some(replaced) = model.names.insert(dst, entry) {
                     model.dirs.retain(|dir| *dir != replaced.ino());
                     if model.links(replaced.ino()) == 0 {
                         model.files.remove(&replaced.ino());
                     }
+                    touch(&mut model, replaced.ino());
                 }
+                touch(&mut model, src.0);
+                touch(&mut model, dst.0);
             }
             Op::Exchange(a, b) => {
                 let (first, second) = (model.entry(a)?, model.entry(b)?);
-                model.names.insert(model.place(a), second);
-                model.names.insert(model.place(b), first);
+                let (a, b) = (model.place(a), model.place(b));
+                model.names.insert(a, second);
+                model.names.insert(b, first);
+                for ino in [a.0, b.0, first.ino(), second.ino()] {
+                    touch(&mut model, ino);
+                }
             }
             Op::Write { file, at, len, byte } => {
                 let ino = model.file(file)?;
                 model.files.get_mut(&ino)?.write(at.min(LARGEST - len as u64), &vec![byte; len]);
+                touch(&mut model, ino);
             }
             Op::Truncate { file, size } => {
                 let ino = model.file(file)?;
                 model.files.get_mut(&ino)?.truncate(size);
+                touch(&mut model, ino);
+            }
+            Op::Allocate { file, at, len } => {
+                let ino = model.file(file)?;
+                let at = at.min(LARGEST - len);
+                model.files.get_mut(&ino)?.allocate(at..at + len);
+                touch(&mut model, ino);
             }
             Op::SetXattr { file, name, len, byte } => {
                 let ino = model.file(file)?;
-                model.files.get_mut(&ino)?.xattrs.insert(name, vec![byte; len]);
+                model.nodes.get_mut(&ino)?.set_xattr(name, Some(vec![byte; len]));
             }
             Op::RemoveXattr { file, name } => {
                 let ino = model.file(file)?;
-                model.files.get_mut(&ino)?.xattrs.remove(&name);
+                model.nodes.get_mut(&ino)?.set_xattr(name, None);
             }
             Op::SetDirXattr { dir, name, len, byte } => {
                 let dir = model.dirs[dir % model.dirs.len()];
-                model.dir_xattrs.entry(dir).or_default().insert(name, vec![byte; len]);
+                model.nodes.get_mut(&dir)?.set_xattr(name, Some(vec![byte; len]));
+            }
+            Op::NodeXattr { node, name, change } => {
+                let ino = model.node(node);
+                model.nodes.get_mut(&ino)?.set_xattr(name, change.value());
+            }
+            Op::SetAttr { node, change } => {
+                let node = model.nodes.get_mut(&model.node(node))?;
+                node.set(&change.set_attr(node.kind()), 0);
+            }
+            Op::Casefold { dir, folds } => {
+                let dir = model.dirs[dir % model.dirs.len()];
+                match folds {
+                    true => drop(model.casefold.insert(dir)),
+                    false => drop(model.casefold.remove(&dir)),
+                }
             }
             _ => return None,
         }
@@ -1800,16 +2866,22 @@ impl World {
         Ok(())
     }
 
-    /// Takes `plan` for done, as `done` says, or for what got done before it stopped short.
+    /// Takes `plan` for done, as `done` says, or for what got done before it stopped short, of
+    /// which what's allocated stays allocated, or isn't any more.
     async fn planned(&mut self, plan: &Plan, done: Result<(), Error>) -> Result<(), String> {
         let mut data = self.model.files[&plan.ino].clone();
+        self.model.nodes.get_mut(&plan.ino).expect("a node").written();
         if self.unless_full(done, "a plan")?.is_some() {
             data.follow(plan);
+            self.model.files.insert(plan.ino, data);
         } else {
+            let allowed = data.allocated.clone();
             data = self.stopped_short(data, plan).await?;
+            self.model.files.insert(plan.ino, data);
+            self.adopt_allocated(plan.ino, &allowed).await?;
         }
-        self.model.files.insert(plan.ino, data);
-        self.check(&self.model, plan.ino).await
+        self.check(&self.model, plan.ino).await?;
+        self.holds_extents(plan.ino).await
     }
 }
 
@@ -1833,6 +2905,7 @@ impl Past {
         let data = before.files.remove(&plan.ino)?;
         let short = world.stopped_short(data, &plan).await.ok()?;
         before.files.insert(plan.ino, short);
+        before.nodes.get_mut(&plan.ino)?.written();
         Some(before)
     }
 
@@ -1854,7 +2927,7 @@ impl Past {
         let device = DeviceHolder::new(device.record_crashes(second_cuts.clone()));
         let setting = self.setting;
         let mut world =
-            World::mount(setting, device, root, Model::new(root), tally.clone()).await?;
+            World::mount(setting, device, root, Model::new(root, 0), tally.clone()).await?;
         world.cut = true;
         second_cuts.stop();
         checked(&world.filesystem).await?;
@@ -1862,6 +2935,8 @@ impl Past {
         let (first, last) = (self.durable[op], (op + 1).min(self.states.len() - 1));
         let mut differs = Vec::new();
         let mut held = None;
+        // What any of them allocated, of which an allocation cut short leaves some.
+        let mut allocated: BTreeMap<u64, BTreeSet<u64>> = BTreeMap::new();
         for state in (first..=last).rev() {
             let mut candidates = self.states[state].cuts();
             if let Some(short) = self.stopped_short(&world, state, ops).await {
@@ -1872,6 +2947,9 @@ impl Past {
                 candidates.extend(worked.map(Model::cut));
             }
             for candidate in candidates {
+                for (ino, data) in &candidate.files {
+                    allocated.entry(*ino).or_default().extend(&data.allocated);
+                }
                 if held.is_none() {
                     match world.holds(&candidate).await {
                         Ok(()) => held = Some(candidate),
@@ -1884,6 +2962,9 @@ impl Past {
             return Err(format!("holds none of states {first} to {last}: {differs:?}"));
         };
         world.holds_nothing_else(&held).await?;
+        world.model = held.clone();
+        world.adopt_all_allocated(&allocated).await?;
+        let held = world.model.clone();
         if self.states[first..=last].iter().any(|state| !state.unlinked().is_empty()) {
             tally.cuts_of_the_unlinked.set(tally.cuts_of_the_unlinked.get() + 1);
         }
@@ -1893,10 +2974,10 @@ impl Past {
             let again = World::mount(setting, device, root, held.clone(), tally.clone()).await;
             let mut again = again.map_err(|e| format!("cut during its replay: {e}"))?;
             again.cut = true;
+            again.adopt_all_allocated(&allocated).await?;
             again.check_all().await.map_err(|e| format!("cut during its replay: {e}"))?;
             again.unmount().await?;
         }
-        world.model = held;
         world.grow_to_pages().await.map_err(|e| format!("past a file's end: {e}"))?;
         for next in ops[op..].iter().take(GOES_ON_FOR) {
             world = world.step(next).await.map_err(|e| format!("going on with {next:?}: {e}"))?;
@@ -2916,4 +3997,113 @@ fn a_full_device_unmounted_cleanly_mounts_again() {
         Op::Punch { file: 0, page: 0, pages: 1 },
     ];
     Setting::awkward(0, TIGHT).with_graveyard_of_seed().holds(ops);
+}
+
+/// A file allocated part of a block grows: zeroing what the block held past the file's end read the
+/// block from its extent, which an allocation that wrote nothing left off the device, and failed
+/// (EIO, "no extent"). Found by the model's allocations (TASK-149.36), at once with a power cut,
+/// which a truncate after shows too.
+#[test]
+fn a_file_allocated_part_of_a_block_grows() {
+    let ops = vec![
+        Op::Create(0),
+        Op::Allocate { file: 0, at: 0, len: 1 },
+        Op::Truncate { file: 0, size: 4096 },
+        Op::Allocate { file: 0, at: 8192, len: 4097 },
+        Op::Write { file: 0, at: 16384, len: 1, byte: 1 },
+        Op::Remount,
+        Op::Truncate { file: 0, size: 3 * 4096 + 7 },
+        Op::Truncate { file: 0, size: 4 * 4096 },
+    ];
+    Setting::calm(0, ROOMY).cutting_one_in(u32::MAX).holds(ops);
+    let ops = vec![Op::Create(0), Op::Allocate { file: 0, at: 0, len: 1 }];
+    Setting::awkward(54400744546958328, ROOMY).with_graveyard_of_seed().holds(ops);
+}
+
+/// FIFOs, sockets and devices read back as made, by lookup and by readdir, linked, moved and cut.
+/// A readdir took a node's type from its entry, which says only that it is a file: a FIFO was
+/// listed as a regular file, which `find -type p` and `ls` take a listing's word for. Found by
+/// the model's special files (TASK-149.36).
+#[test]
+fn special_files_read_back_as_made() {
+    let make = |kind, rdev| Make { kind, permissions: 0o640 | 1 << 16, uid: 7, gid: 8, rdev };
+    let ops = vec![
+        Op::Mkdir(0),
+        Op::Make { name: 1, make: make(2, 0) },
+        Op::Make { name: 2, make: make(3, 0) },
+        Op::Make { name: 3, make: make(4, 0x1234_5678) },
+        Op::Make { name: NAMES + 1, make: make(5, u32::MAX) },
+        Op::Link(0, 4),
+        Op::ReadSome { dir: 0, count: 2 },
+        Op::Rename(1, NAMES + 2),
+        Op::ReadOn { cursor: 0, count: 8 },
+        Op::SetAttr { node: 2, change: Change { valid: SET_MODE | SET_GID, ..CHANGE } },
+        Op::Sync,
+        Op::Unlink(2),
+        Op::Remount,
+    ];
+    Setting::awkward(0, ROOMY).cutting_everywhere().holds(ops);
+}
+
+/// A change of mode, owner, group and times, as `Op::SetAttr` asks.
+const CHANGE: Change = Change {
+    valid: SET_ANY,
+    permissions: 0o4750,
+    uid: 1000,
+    gid: 100,
+    atime: 1,
+    mtime: 999_999_999,
+    ctime: 1 << 59,
+};
+
+/// The root's attributes, which Fxfs gives no record until they change, change, one at a time and
+/// all at once, and its times, and a directory's, move as its names do: TASK-222 found a change of
+/// one of the root's mode, owner and group alone zero the others (TASK-149.36).
+#[test]
+fn the_roots_attributes_change_as_any_nodes() {
+    let change = |valid| Op::SetAttr { node: 0, change: Change { valid, ..CHANGE } };
+    let ops = vec![
+        change(SET_UID),
+        change(SET_GID),
+        change(SET_MODE),
+        Op::Create(0),
+        change(SET_ATIME | SET_MTIME),
+        Op::Mkdir(1),
+        change(SET_CTIME),
+        Op::Rename(0, NAMES),
+        change(SET_ANY),
+        Op::NodeXattr { node: 0, name: 11, change: XattrChange::Set { len: 300, byte: 1 } },
+        Op::NodeXattr { node: 0, name: 11, change: XattrChange::Replace { len: 0, byte: 0 } },
+        Op::SetDirXattr { dir: 0, name: 3, len: MAX_XATTR_VALUE_SIZE, byte: 2 },
+        Op::SetDirXattr { dir: 0, name: 4, len: MAX_XATTR_VALUE_SIZE + 1, byte: 3 },
+        Op::NodeXattr { node: 0, name: 3, change: XattrChange::Create { len: 1, byte: 4 } },
+        Op::NodeXattr { node: 0, name: 5, change: XattrChange::Remove },
+        Op::Exchange(1, NAMES),
+    ];
+    Setting::awkward(0, ROOMY).cutting_everywhere().holds(ops);
+}
+
+/// Names of every spelling (`SPELLINGS`), as long as a name may be and of many bytes a character,
+/// in a directory that folds case, where names in another case are one, and readdirs going on
+/// while names come and go.
+#[test]
+fn names_of_every_spelling_fold_and_list() {
+    let in_a = |at: usize| (at / NAMES) * NAMES * DIRS + NAMES + at % NAMES;
+    let mut ops = vec![Op::Mkdir(0), Op::Casefold { dir: 1, folds: true }];
+    ops.extend((0..2 * NAMES).map(|at| Op::Create(in_a(at))));
+    ops.extend([
+        Op::ReadSome { dir: 1, count: 2 },
+        Op::Unlink(in_a(8)),
+        Op::Create(in_a(9)),
+        Op::Rename(in_a(10), in_a(1)),
+        Op::ReadOn { cursor: 0, count: 1 },
+        Op::Mkdir(in_a(2)),
+        Op::ReadOn { cursor: 0, count: 8 },
+        Op::BadName { dir: 1, name: 0 },
+        Op::BadName { dir: 0, name: 3 },
+        Op::Create(2 * NAMES * DIRS - 2),
+        Op::Rename(in_a(11), 2 * NAMES * DIRS - 1),
+        Op::Remount,
+    ]);
+    Setting::awkward(0, ROOMY).holds(ops);
 }

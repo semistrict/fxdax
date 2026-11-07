@@ -1,0 +1,12 @@
+diff --git a/crates/fxfs-posix/src/lib.rs b/crates/fxfs-posix/src/lib.rs
+--- a/crates/fxfs-posix/src/lib.rs
++++ b/crates/fxfs-posix/src/lib.rs
+@@ -1664,7 +1664,7 @@
+             // 0, for a node that has none, as a new volume's root directory hasn't, whose
+             // defaults `attr` gives: a chown of it alone left it mode 000 (TASK-222).
+             let posix = [attributes.mode, attributes.uid, attributes.gid];
+-            if posix.iter().any(Option::is_some) && posix.iter().any(Option::is_none) {
++            if posix.iter().any(Option::is_some) && posix.iter().any(Option::is_none) && false {
+                 let now = self.attr_after(&transaction, ino).await?;
+                 attributes.mode.get_or_insert(now.mode);
+                 attributes.uid.get_or_insert(now.uid);

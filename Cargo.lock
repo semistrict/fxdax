@@ -1491,6 +1491,7 @@ dependencies = [
  "fuchsia-async",
  "futures",
  "fxfs",
+ "fxfs-unicode",
  "log",
  "proptest",
  "rand 0.10.3",

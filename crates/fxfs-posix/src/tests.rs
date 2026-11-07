@@ -115,6 +115,28 @@ async fn mode_owner_and_group_change_one_at_a_time() {
     }
 }
 
+/// A readdir lists FIFOs, sockets and devices as what they are, as their attributes say: their
+/// entries say only that they are files, and a FIFO was listed as a regular file (TASK-149.36).
+#[fuchsia::test]
+async fn readdir_lists_special_files_as_what_they_are() {
+    let (fs, root) = volume().await;
+    let kinds = [S_IFREG, S_IFIFO, S_IFSOCK, S_IFCHR, S_IFBLK, S_IFDIR];
+    for (name, kind) in (b'a'..).zip(kinds) {
+        let attr = fs.create(root, &[name], kind | 0o600, 7, 0, 0, &[]).await.expect("creating");
+        assert_eq!(attr[0].mode & S_IFMT, kind);
+    }
+    let mut listed = Vec::new();
+    let read = fs.readdir(root, ReaddirStart::Index(0), |name, _, kind| {
+        listed.push((name.to_owned(), kind));
+        true
+    });
+    read.await.expect("readdir failed");
+    let expected: Vec<(String, u32)> =
+        (b'a'..).zip(kinds).map(|(name, kind)| (char::from(name).to_string(), kind)).collect();
+    assert_eq!(listed, expected);
+    fs.stop_delayed().await.unwrap();
+}
+
 /// An unlink no others join goes by itself: it holds its room, and its place in the journal, for
 /// no sync.
 #[fuchsia::test]
