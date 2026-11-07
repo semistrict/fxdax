@@ -922,13 +922,15 @@ fn closing_during_a_framing() {
     reopening.join().unwrap();
 }
 
-/// One run of the framing of the segment a commit closed, which stalls, failing, while those of
-/// the segments later commits closed wait behind it (TASK-79.99): the branch's closing waits for
-/// each, so that another store, opening the branch, frames their segments again from their raw
-/// files only once nothing else frames them. Framings are one queue (TASK-165.9): those after the
-/// failed one fail with it, framing nothing. A flush waits for no framing: the commits it made
-/// durable while the first stalled, their records in the logs of the segments they were made in,
-/// the opening recovers; the commit after, which no flush took before the store failed, not.
+/// One run of a flush failing, as the framing of the segment its first commit closed, which
+/// stalls, fails, while those of the segments its later commits closed, and a commit after it took
+/// them, go on (TASK-79.99): the flush waits for each it took before it says it failed, and the
+/// branch's closing for the rest, so that another store, opening the branch, frames their segments
+/// again from their raw files only once nothing else frames them. Since framings are one queue
+/// (TASK-165.9), those after the failed one fail with it, framing nothing: no schedule fails
+/// without `close_waits_for_framings` here, which [`closing_during_a_framing`] shows needed. A
+/// flush waits for the framings of the segments its commits closed, their data written since the
+/// commit before durable in their framed files alone (TASK-165.9).
 fn closing_after_a_failed_framing() {
     let (dir, store) = framing_stalls();
     // Each commit fills the open segment, and closes it: the first, whose framing stalls.
@@ -936,20 +938,22 @@ fn closing_after_a_failed_framing() {
     store.commit_ordered(None).unwrap();
     store.write(extent(3), 0, &pattern(3, 3 * BLOCK)).unwrap();
     store.commit_ordered(None).unwrap();
-    store.flush().unwrap();
+    let flushing = {
+        let store = store.clone();
+        thread::spawn(move || store.flush().expect_err("a flush whose framing failed"))
+    };
     store.write(extent(4), 0, &pattern(4, 3 * BLOCK)).unwrap();
     store.commit_ordered(None).unwrap();
     dir.wait_until_stalled();
     dir.let_go(Err(std::io::Error::other("the disk failed")));
-    // The framings end, failing, and the store with them.
-    let error = store.closed(usize::MAX).map(|_| ()).expect_err("a framing failed");
-    drop(error);
-    store.close().expect_err("a store whose framing failed closed with its commits durable");
-    let failure = "a framing raced the branch's closing after a failed framing";
+    drop(flushing.join().unwrap());
+    // Failing too, unless the flush took every commit, and nothing was left to flush.
+    drop(store.close());
+    let failure = "a framing raced the branch's closing after a failed flush";
     let reopened = Store::open(dir.clone(), OPTIONS);
     let reopened = reopened.unwrap_or_else(|error| panic!("{failure}: {error:#}"));
-    // What was durable: the commits the flush took, extents 1 to 3's.
-    assert_eq!(reopened.epoch().unwrap(), 3, "{failure}: other commits than durable recovered");
+    // What was durable: the first commit, extent 1's.
+    assert_eq!(reopened.epoch().unwrap(), 1, "{failure}: commits not durable recovered");
     check_framed(&reopened, failure);
     // Writing on, it closes segments of its own, numbered past those it found, framed where no
     // framing of the store before frames them still, making files of their numbers.
@@ -1114,8 +1118,8 @@ fn pending_during_a_flush() {
 
 /// One run of a flush, as a daemon's turn makes its guests' commits durable, while the framing of
 /// the segment a closing between commits, the uploader's, closed stalls, as on a slow disk: the
-/// flush waits for no framing, its commits' records going to the logs of the segments they were
-/// made in (TASK-165.9). Waiting for framings held the daemon's turns up past their 50 ms, and a
+/// flush waits for no framing of a segment closed with nothing written since the commit before,
+/// its commits' records going to the logs of the segments they were made in (TASK-165.9). Waiting for framings held the daemon's turns up past their 50 ms, and a
 /// daemon killed meanwhile lost commits its guest was told were durable (GCE r719's
 /// crash-dax-daemon-killed); Shuttle, whose waits that can't end are deadlocks it reports, finds a
 /// flush that waits. A crash then recovers both commits, closing both segments again from their

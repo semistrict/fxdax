@@ -32,7 +32,8 @@ enum Phase<F> {
     /// fxdax: closed by commit `last`, its data being framed off the commit, on a thread of its
     /// own, which ends the framing itself ([`Segments::framed`], TASK-153.8): read from its raw
     /// file, which stays open, until then; its commits' records still appended to its log by the
-    /// flushes that make them durable, which wait for no framing (TASK-165.9).
+    /// flushes that make them durable, which wait for its framing only if it closed with data
+    /// written since the commit before (TASK-165.9).
     Framing { raw: Arc<F>, log: Arc<F>, last: u64 },
     /// fxdax: its framing failed, which failed the store: read from its raw file, which stays.
     Failed { raw: Arc<F>, log: Arc<F>, error: String },
@@ -158,9 +159,10 @@ pub(crate) struct Segments<F> {
     files: Files<SegmentId, F>,
     /// Whether the open segment was written since the last commit, which syncs it.
     written: bool,
-    /// fxdax: the raw files of the segments closed since the last commit, written since the one
-    /// before, which the next commit's flush syncs (TASK-165.9).
-    closed_unsynced: Vec<Arc<F>>,
+    /// fxdax: the segments closed since the last commit, written since the one before, whose
+    /// framings the next commit's flush waits for, their framed files what makes that durable
+    /// (TASK-165.9).
+    closed_unsynced: Vec<SegmentId>,
     /// Whether a segment closed since the last commit, which syncs the directories of segments,
     /// the framed file's, and of open ones, the next's.
     closed_since: bool,
@@ -466,10 +468,12 @@ impl<F: File> Segments<F> {
         };
         segment.phase = Phase::Framing { raw: raw.clone(), log, last: epoch };
         let len = segment.len;
-        // What was written to it since the last commit, the next flush syncs, before it appends
-        // the records of the commits in it to its log (TASK-165.9).
+        // What was written to it since the last commit is durable once it is framed, which the
+        // next flush waits for, rather than write it back from its raw file too, as the framing
+        // writes it: both at once, each flush's syncs waited for as long, up to 0.8 s under pgbench
+        // (GCE r737, TASK-165.9).
         if std::mem::take(&mut self.written) {
-            self.closed_unsynced.push(raw.clone());
+            self.closed_unsynced.push(number);
         }
         self.tracked.insert(next, Segment::new(phase, 0));
         self.open = next;
@@ -610,8 +614,8 @@ impl<F: File> Segments<F> {
             };
             syncs.cached(raw.clone());
         }
-        for raw in self.closed_unsynced.drain(..) {
-            syncs.cached(raw);
+        for number in self.closed_unsynced.drain(..) {
+            syncs.framing(number);
         }
         if std::mem::take(&mut self.closed_since) {
             for kind in [SEGMENTS, OPEN_SEGMENTS, LOGS] {
@@ -1170,8 +1174,8 @@ mod tests {
 
     /// A commit syncs the open segment's file if it was written since the last commit, keeping
     /// its pages cached (TASK-92.23), and the directories of segments and of open ones if one
-    /// closed; fxdax: and the raw file of one closed, if written since, which its commits' records
-    /// name the data of (TASK-165.9).
+    /// closed; fxdax: and, of one closed, if written since, its framing, which makes that durable
+    /// (TASK-165.9).
     #[test]
     fn only_written_open_segments_are_synced() {
         let dir = MemDir::new();
@@ -1180,21 +1184,23 @@ mod tests {
             let mut syncs = Syncs::default();
             segments.take_syncs(&mut syncs);
             let (files, cached) = syncs.files();
-            ((files.len(), cached.len()), syncs.dirs().iter().cloned().collect::<Vec<_>>())
+            let dirs = syncs.dirs().iter().cloned().collect::<Vec<_>>();
+            ((files.len(), cached.len()), dirs, syncs.framings().to_vec())
         };
-        assert_eq!(syncs(&mut segments), ((0, 0), vec![]));
+        assert_eq!(syncs(&mut segments), ((0, 0), vec![], vec![]));
         write(&mut segments, 1);
-        assert_eq!(syncs(&mut segments), ((0, 1), vec![]));
-        assert_eq!(syncs(&mut segments), ((0, 0), vec![]));
+        assert_eq!(syncs(&mut segments), ((0, 1), vec![], vec![]));
+        assert_eq!(syncs(&mut segments), ((0, 0), vec![], vec![]));
         write(&mut segments, 2);
+        let closed = segments.open_segment();
         segments.close(&dir, 1, 0).unwrap();
         let dirs = vec![
             branch_dir(LOGS, BRANCH),
             branch_dir(OPEN_SEGMENTS, BRANCH),
             branch_dir(SEGMENTS, BRANCH),
         ];
-        assert_eq!(syncs(&mut segments), ((0, 1), dirs));
+        assert_eq!(syncs(&mut segments), ((0, 0), dirs, vec![closed]));
         segments.append(BLOCK);
-        assert_eq!(syncs(&mut segments), ((0, 1), vec![]));
+        assert_eq!(syncs(&mut segments), ((0, 1), vec![], vec![]));
     }
 }
