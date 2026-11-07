@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-04 07:34'
-updated_date: '2026-11-07 13:16'
+updated_date: '2026-11-07 19:15'
 labels: []
 dependencies:
   - TASK-164
@@ -85,4 +85,6 @@ By module, code at 9f81f6018 -> main (doc-14's estimate):
 - extent_remote: local.rs 0 -> 212 (file bucket), wal.rs 0 -> 147 (Wal::rebase), cache.rs 316 -> 905 (kept across restarts, adopt), recovery.rs 500 -> 670.
 
 TASK-165.1-165.9 commits (git log --grep 'TASK-165\.[1-9]' 9f81f6018..213504c4b, --numstat, code and tests): extent_store +6,466 -11,096 (src +5,181 -7,797; tests/ +1,285 -3,299); fxdax +3,803 -4,839 (remote.rs +953 -2,913, host_store.rs +690 -532, extents.rs +576 -598, storage/kept.rs +383 -36); extent_remote +4,073 -809 (cache.rs +1,589 -333, wal.rs +447, local.rs +259, recovery.rs +272 -107); extent_frame +152 -125. In all about 2.4k lines fewer, against the review's 7-8k: one recovery from the bucket and the WAL, crash-tested at each write, and the part cache's persistence are larger than doc-14 guessed, and kept frees stayed. The review's section 2 is marked done (docs/reviews/2026-11-04-first-principles.md); doc-14's What went has the table.
+
+2026-11-07: steps 1-6, 9 and 10 done (TASK-165.10 closed: doc-7, doc-14 and the measurements). Left before TASK-165 can close: TASK-165.11 (GCS durable commits and opens, open work); TASK-165.7 and TASK-165.8, whose code landed with 165.9 but which were never finalized: 165.7's AC #1 says a child shares its parent's state in memory where the decision was O(extents) (doc-14, Decisions), and its AC #4, a 10 GiB base's fork timed before and after, was never run; 165.8's ACs were never checked against evidence.
 <!-- SECTION:NOTES:END -->
