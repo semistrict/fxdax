@@ -46,6 +46,15 @@ pub trait File: Send + Sync + 'static {
         Ok(())
     }
 
+    /// fxdax: has the host begin writing the `len` bytes at `offset` back to its disk, written
+    /// through its page cache, waiting for none of it; durable only once synced. A file written
+    /// as a guest writes, as the open segment's raw file is, is written back so behind its writes,
+    /// that the disk writes as they come rather than all at once at the sync after (TASK-221). A
+    /// host that writes back as it pleases does nothing.
+    fn write_behind(&self, _offset: u64, _len: u64) -> io::Result<()> {
+        Ok(())
+    }
+
     /// The file's size.
     fn size(&self) -> io::Result<u64>;
 
@@ -436,6 +445,28 @@ impl File for HostFile {
             let done =
                 unsafe { libc::sync_file_range(self.written().as_raw_fd(), offset, len, flags) };
             if done != 0 {
+                return Err(io::Error::last_os_error());
+            }
+        }
+        #[cfg(not(target_os = "linux"))]
+        let _ = (offset, len);
+        Ok(())
+    }
+
+    fn write_behind(&self, offset: u64, len: u64) -> io::Result<()> {
+        #[cfg(target_os = "linux")]
+        {
+            let (offset, len) = (offset as libc::off64_t, len as libc::off64_t);
+            // SAFETY: Begins writing back a range of an open file descriptor's file.
+            let begun = unsafe {
+                libc::sync_file_range(
+                    self.written().as_raw_fd(),
+                    offset,
+                    len,
+                    libc::SYNC_FILE_RANGE_WRITE,
+                )
+            };
+            if begun != 0 {
                 return Err(io::Error::last_os_error());
             }
         }

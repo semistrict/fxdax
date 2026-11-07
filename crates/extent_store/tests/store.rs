@@ -1103,6 +1103,29 @@ fn framings_write_back_as_they_go() {
     assert_eq!(dir.io().most_unwritten, 1 << 20);
 }
 
+/// fxdax: what a guest writes to the open segment is written back as it writes it, a MiB at a
+/// time, before any commit, so that the sync of the flush after has little left for the host's
+/// disk to write at once: a guest's burst, up to 300 MB a second under pgbench, waited in the
+/// host's page cache for the flush of extentd's next turn, which synced 100 MB at once in 250-420
+/// ms, the disk idle until then, and the commits behind it waited for as long (GCE r954,
+/// TASK-221). Red with nothing written back until the flush.
+#[test]
+fn writes_are_written_back_as_they_go() {
+    let dir = MemDir::new();
+    let options = Options { segment_size: 16 << 20, ..OPTIONS };
+    let description = Description { block_size: BLOCK as u32, capacity: 64 << 20, branch: BRANCH };
+    let store = Store::create(dir.clone(), description, options).unwrap();
+    let len = 16 << 10;
+    for sequence in 1..=512 {
+        store.write(extent(sequence), 0, &noise(sequence, len)).unwrap();
+    }
+    assert_eq!(dir.io().most_unwritten, 1 << 20);
+    store.commit(None).unwrap();
+    for sequence in 1..=512 {
+        assert_eq!(read(&store, extent(sequence), 0, len), noise(sequence, len));
+    }
+}
+
 /// The files the process has open.
 fn open_fds() -> usize {
     std::fs::read_dir("/dev/fd").unwrap().count()

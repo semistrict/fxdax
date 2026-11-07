@@ -297,7 +297,13 @@ impl<D: Dir> Write<'_, D> {
     /// it.
     pub fn finish(mut self) {
         self.finished = true;
-        self.store.finish_write(&self);
+        // fxdax: what was written to the open segment, its writing back begun once a MiB or more
+        // waits (TASK-221): holding no lock.
+        if let Some((raw, offset, len)) = self.store.finish_write(&self)
+            && let Err(err) = raw.write_behind(offset, len)
+        {
+            log::warn!("extent store: writing back {len} bytes at {offset} of a segment: {err}");
+        }
     }
 }
 
@@ -1105,7 +1111,9 @@ impl<D: Dir> Store<D> {
         Ok(())
     }
 
-    fn finish_write(&self, write: &Write<'_, D>) {
+    /// Records `write`, done; returns what of the open segment's raw file to begin writing back,
+    /// if anything ([`Segments::write_behind`]).
+    fn finish_write(&self, write: &Write<'_, D>) -> Option<(Arc<D::File>, u64, u64)> {
         let mut state = self.lock();
         let state = &mut *state;
         // A write to an extent freed since it began is dropped, as though it finished before the
@@ -1115,7 +1123,8 @@ impl<D: Dir> Store<D> {
         if rules().drop_writes_to_freed_extents
             && !state.uncommitted.is_open_in(write.extent, write.opening)
         {
-            return self.drop_write(state, write);
+            self.drop_write(state, write);
+            return None;
         }
         state.space.unreserve(write.grows);
         let extent = write.extent;
@@ -1156,6 +1165,8 @@ impl<D: Dir> Store<D> {
         }
         state.next_sequence = state.next_sequence.max(extent.sequence + 1);
         self.written(state);
+        let number = write.segment?;
+        state.segments.write_behind(number, write.offset + write.len)
     }
 
     fn abandon_write(&self, write: &Write<'_, D>) {
