@@ -98,6 +98,7 @@ use futures::stream::FuturesUnordered;
 use std::fs::File;
 use std::io::{Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
+use std::ptr::NonNull;
 use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock, Weak};
 use std::task::{Context, Poll, Wake, Waker};
@@ -491,17 +492,93 @@ struct PageChanges {
 }
 
 /// A page the window maps here, read-only: its memory, whether it is installed in host memory or
-/// left out, and when it was installed or faulted on last.
+/// left out, and when it was installed or faulted on last. fxdax: `Option<Mapped>`'s `None` is
+/// zero bytes, `used`'s 0, which no tick of the clock is, so that a window's pages, zeroed memory
+/// to begin with ([`WindowPages`]), each map nothing; `installed` a byte rather than a bool, whose
+/// spare values would hold `None` instead (TASK-227).
 #[derive(Clone, Copy)]
 struct Mapped {
     phys: crate::pages::PhysLocation,
-    installed: bool,
-    used: u64,
+    /// 1 if installed in host memory, 0 if left out ([`Mapped::installed`]).
+    installed: u8,
+    used: std::num::NonZeroU64,
+}
+
+impl Mapped {
+    /// Whether it is installed in host memory, rather than left out.
+    fn installed(&self) -> bool {
+        self.installed != 0
+    }
+}
+
+/// fxdax: a window's pages' changes, one for each of its pages, in anonymous memory of their own,
+/// zeros until written, which is what a page that nothing changed nor maps is
+/// ([`PageChanges::default`], [`Mapped`]): the memory a window takes here is the pages the guest
+/// reached's, not the window's size's. As a `Vec` made with each page's default, a 64 GiB window's
+/// took 48 bytes a page, 768 MiB, as the VM process began (TASK-227).
+struct WindowPages {
+    pages: NonNull<PageChanges>,
+    len: usize,
+}
+
+// SAFETY: The memory is the value's alone, as a Vec's is.
+unsafe impl Send for WindowPages {}
+unsafe impl Sync for WindowPages {}
+
+impl WindowPages {
+    /// Changes for `len` pages, each its default, none of their memory touched.
+    fn new(len: usize) -> std::io::Result<Self> {
+        let bytes = Self::bytes(len)?;
+        if bytes == 0 {
+            return Ok(Self { pages: NonNull::dangling(), len });
+        }
+        let (prot, flags) =
+            (libc::PROT_READ | libc::PROT_WRITE, libc::MAP_PRIVATE | libc::MAP_ANONYMOUS);
+        // SAFETY: Anonymous memory of its own, zeros, which is each page's default.
+        let memory = unsafe { libc::mmap(std::ptr::null_mut(), bytes, prot, flags, -1, 0) };
+        if memory == libc::MAP_FAILED {
+            return Err(std::io::Error::last_os_error());
+        }
+        let pages = NonNull::new(memory.cast()).expect("mmap returns no null mapping");
+        Ok(Self { pages, len })
+    }
+
+    fn bytes(len: usize) -> std::io::Result<usize> {
+        len.checked_mul(size_of::<PageChanges>())
+            .ok_or_else(|| std::io::Error::from_raw_os_error(libc::ENOMEM))
+    }
+}
+
+impl std::ops::Deref for WindowPages {
+    type Target = [PageChanges];
+
+    fn deref(&self) -> &[PageChanges] {
+        // SAFETY: `len` pages' changes, zeros or written since, each valid as zeros are
+        // ([`PageChanges::default`]'s bytes).
+        unsafe { std::slice::from_raw_parts(self.pages.as_ptr(), self.len) }
+    }
+}
+
+impl std::ops::DerefMut for WindowPages {
+    fn deref_mut(&mut self) -> &mut [PageChanges] {
+        // SAFETY: As `deref`, the memory this value's alone.
+        unsafe { std::slice::from_raw_parts_mut(self.pages.as_ptr(), self.len) }
+    }
+}
+
+impl Drop for WindowPages {
+    fn drop(&mut self) {
+        let bytes = Self::bytes(self.len).unwrap_or(0);
+        if bytes > 0 {
+            // SAFETY: The memory `new` mapped, which nothing refers to once this goes.
+            unsafe { libc::munmap(self.pages.as_ptr().cast(), bytes) };
+        }
+    }
 }
 
 /// A second stage's pages, and the runs of them installed.
 struct Pages {
-    pages: Vec<PageChanges>,
+    pages: WindowPages,
     /// The runs of pages installed: consecutive pages of one arena's memory, each a mapping.
     runs: usize,
     /// Counts installations and faults, the ones longest ago left out first.
@@ -520,11 +597,11 @@ impl Pages {
     /// Whether page `at` starts a run installed: it is installed, and its memory doesn't follow
     /// on from its predecessor's, installed.
     fn starts_run(&self, at: usize) -> bool {
-        let Some(Mapped { phys, installed: true, .. }) = self.pages[at].mapped else {
+        let Some(Mapped { phys, installed: 1, .. }) = self.pages[at].mapped else {
             return false;
         };
         let follows = at > 0
-            && matches!(self.pages[at - 1].mapped, Some(Mapped { phys: before, installed: true, .. })
+            && matches!(self.pages[at - 1].mapped, Some(Mapped { phys: before, installed: 1, .. })
                 if before.arena == phys.arena && before.offset + page_size() == phys.offset);
         !follows
     }
@@ -542,15 +619,15 @@ impl Pages {
         self.runs = self.runs + self.runs_around(&range) - before;
     }
 
-    /// The next tick of the clock.
-    fn tick(&mut self) -> u64 {
+    /// The next tick of the clock, never 0.
+    fn tick(&mut self) -> std::num::NonZeroU64 {
         self.clock += 1;
-        self.clock
+        std::num::NonZeroU64::new(self.clock).expect("the clock ticks from 1")
     }
 
     /// fxdax: whether a page of `range` is installed, which a change taking it away flushes.
     fn any_installed(&self, range: std::ops::Range<usize>) -> bool {
-        self.pages[range].iter().any(|page| page.mapped.is_some_and(|mapped| mapped.installed))
+        self.pages[range].iter().any(|page| page.mapped.is_some_and(|mapped| mapped.installed()))
     }
 
     /// fxdax: the private pages of `range`, which a change of it ends, private no more: the runs
@@ -577,7 +654,7 @@ impl Pages {
             let offset = phys.offset + at as u64 * page_size();
             !page.restricted
                 && page.mapped.is_some_and(|mapped| {
-                    mapped.installed
+                    mapped.installed()
                         && mapped.phys == (crate::pages::PhysLocation { offset, ..phys })
                 })
         })
@@ -1023,7 +1100,7 @@ impl<H: HostMemory> UffdSecondStage<H> {
         if !base.is_multiple_of(page_size) || size == 0 || !size.is_multiple_of(page_size) {
             return Err(Error::msg("DAX window memory must be whole pages"));
         }
-        let pages = vec![PageChanges::default(); size / page_size];
+        let pages = WindowPages::new(size / page_size).map_err(Error::new)?;
         let for_workers = Vec::new();
         let pages = Mutex::new(Pages { pages, runs: 0, clock: 0, released: false, for_workers });
         let budget = budget.max(1);
@@ -1041,8 +1118,17 @@ impl<H: HostMemory> UffdSecondStage<H> {
             start: std::time::Instant::now(),
             busy: Busy::default(),
         });
-        stage.unmap(0, size as u64);
+        stage.leave_out_untouched();
         Ok(stage)
+    }
+
+    /// fxdax: leaves the whole window out, as a window that maps nothing yet and faults nothing
+    /// yet, made or about to copy on write, is: its pages' changes as they begin, each mapping
+    /// nothing, none written, where an unmap of the window counted a change of each page, which
+    /// took the whole window's changes' memory, 768 MiB of a 64 GiB window's (TASK-227).
+    fn leave_out_untouched(&self) {
+        debug_assert!(self.pages.lock().unwrap().runs == 0, "a window left out untouched maps runs");
+        self.leave_out(self.base, self.size);
     }
 
     /// fxdax: its window copies on write (backlog doc-13), from now on: told before the window is
@@ -1059,7 +1145,7 @@ impl<H: HostMemory> UffdSecondStage<H> {
             self.host.unreserve(private.view, self.size);
             return Err(Error::msg("the window copies on write already"));
         }
-        self.unmap(0, self.size as u64);
+        self.leave_out_untouched();
         Ok(())
     }
 
@@ -1148,12 +1234,24 @@ impl<H: HostMemory> UffdSecondStage<H> {
     pub fn release(&self) {
         let mut pages = self.pages.lock().unwrap();
         pages.released = true;
-        let all = 0..pages.pages.len();
-        pages.update(all, |pages| {
-            pages.iter_mut().for_each(|page| {
-                (page.mapped, page.restricted, page.private) = (None, false, false)
-            })
-        });
+        // fxdax: each page mapping nothing, as a window's pages begin: memory of zeros again,
+        // where writing each page's changes took the whole window's (TASK-227). Its changes
+        // counted from 0 again, a fault that saw others finds them changed.
+        let len = pages.pages.len();
+        match WindowPages::new(len) {
+            Ok(fresh) => {
+                (pages.pages, pages.runs) = (fresh, 0);
+                pages.for_workers.clear();
+            }
+            Err(err) => {
+                log::warn!("fxdax: a released DAX window's pages, anew: {err}: each changed");
+                pages.update(0..len, |pages| {
+                    pages.iter_mut().for_each(|page| {
+                        (page.mapped, page.restricted, page.private) = (None, false, false)
+                    })
+                });
+            }
+        }
         self.host.map(self.base, self.size, libc::PROT_NONE, Memory::Anonymous);
     }
 
@@ -1197,7 +1295,7 @@ impl<H: HostMemory> UffdSecondStage<H> {
         let page_size = page_size() as usize;
         let at = self.page_range(addr, 1).start;
         let mut pages = self.pages.lock().unwrap();
-        let installed = pages.pages[at].mapped.is_some_and(|mapped| mapped.installed);
+        let installed = pages.pages[at].mapped.is_some_and(|mapped| mapped.installed());
         if pages.released || !installed {
             return;
         }
@@ -1412,7 +1510,7 @@ impl<H: HostMemory> UffdSecondStage<H> {
             let installed = |at: u64| {
                 let page = &pages.pages[at as usize];
                 !page.withheld
-                    && (page.private || page.mapped.is_some_and(|mapped| mapped.installed))
+                    && (page.private || page.mapped.is_some_and(|mapped| mapped.installed()))
             };
             let mut runs: Vec<std::ops::Range<u64>> = Vec::new();
             for at in (first..last).filter(|&at| installed(at)) {
@@ -1454,7 +1552,7 @@ impl<H: HostMemory> SecondStage for UffdSecondStage<H> {
                     for (at, page) in pages.iter_mut().enumerate() {
                         let offset = phys.offset + at as u64 * page_size;
                         let phys = crate::pages::PhysLocation { arena: phys.arena, offset };
-                        page.mapped = Some(Mapped { phys, installed: true, used });
+                        page.mapped = Some(Mapped { phys, installed: 1, used });
                         page.restricted = false;
                     }
                 });
@@ -1518,7 +1616,7 @@ impl<H: HostMemory> SecondStage for UffdSecondStage<H> {
                 Self::took(&self.taken.overwritten, over);
             }
             let installed_before: Vec<bool> = (range.clone())
-                .map(|at| pages.pages[at].mapped.is_some_and(|mapped| mapped.installed))
+                .map(|at| pages.pages[at].mapped.is_some_and(|mapped| mapped.installed()))
                 .collect();
             // fxdax: the private pages there go, mapped over or left out (backlog doc-13).
             let private = pages.take_private(range.clone());
@@ -1533,7 +1631,7 @@ impl<H: HostMemory> SecondStage for UffdSecondStage<H> {
                     for (at, page) in pages.iter_mut().enumerate() {
                         let offset = phys.offset + at as u64 * page_size as u64;
                         let phys = crate::pages::PhysLocation { offset, ..phys };
-                        page.mapped = Some(Mapped { phys, installed: true, used });
+                        page.mapped = Some(Mapped { phys, installed: 1, used });
                     }
                 });
             }
@@ -1631,7 +1729,7 @@ impl<H: HostMemory> SecondStage for UffdSecondStage<H> {
             let in_place = changes.iter().all(|page| {
                 !page.withheld
                     && !page.restricted
-                    && !page.mapped.is_some_and(|mapped| mapped.installed)
+                    && !page.mapped.is_some_and(|mapped| mapped.installed())
             });
             pages.update(range.clone(), |pages| {
                 for page in pages {
@@ -1752,10 +1850,10 @@ impl<H: HostMemory> UffdSecondStage<H> {
             let start = at;
             let mut used = 0;
             loop {
-                used = used.max(pages.pages[at].mapped.map_or(0, |mapped| mapped.used));
+                used = used.max(pages.pages[at].mapped.map_or(0, |mapped| mapped.used.get()));
                 at += 1;
                 let installed = at < pages.pages.len()
-                    && pages.pages[at].mapped.is_some_and(|mapped| mapped.installed);
+                    && pages.pages[at].mapped.is_some_and(|mapped| mapped.installed());
                 if !installed || pages.starts_run(at) {
                     break;
                 }
@@ -1775,7 +1873,7 @@ impl<H: HostMemory> UffdSecondStage<H> {
                     page.made = page.made.wrapping_add(1);
                     page.changed = now;
                     if let Some(mapped) = &mut page.mapped {
-                        mapped.installed = false;
+                        mapped.installed = 0;
                         page.restricted = false;
                     }
                 }
@@ -1798,7 +1896,7 @@ impl<H: HostMemory> UffdSecondStage<H> {
         }
         let used = pages.tick();
         let Some(mapped) = &mut pages.pages[at].mapped else { return false };
-        if mapped.installed {
+        if mapped.installed() {
             mapped.used = used;
             return false;
         }
@@ -1806,7 +1904,7 @@ impl<H: HostMemory> UffdSecondStage<H> {
         // The pages around it left out with it, of memory following on, as far as a chunk's.
         let left_out_with = |page: &PageChanges, distance: i64| {
             page.mapped.is_some_and(|other| {
-                !other.installed
+                !other.installed()
                     && other.phys.arena == phys.arena
                     && other.phys.offset as i64 - phys.offset as i64 == distance * page_size as i64
             })
@@ -1836,7 +1934,7 @@ impl<H: HostMemory> UffdSecondStage<H> {
                 page.made = page.made.wrapping_add(1);
                 page.changed = now;
                 if let Some(mapped) = &mut page.mapped {
-                    mapped.installed = true;
+                    mapped.installed = 1;
                     mapped.used = used;
                 }
             }
@@ -1882,8 +1980,8 @@ impl<H: HostMemory> UffdSecondStage<H> {
             return said;
         };
         let count = |what: fn(&PageChanges) -> bool| pages.pages.iter().filter(|p| what(p)).count();
-        let installed = |page: &PageChanges| page.mapped.is_some_and(|mapped| mapped.installed);
-        let left_out = |page: &PageChanges| page.mapped.is_some_and(|mapped| !mapped.installed);
+        let installed = |page: &PageChanges| page.mapped.is_some_and(|mapped| mapped.installed());
+        let left_out = |page: &PageChanges| page.mapped.is_some_and(|mapped| !mapped.installed());
         said.push_str(&format!(
             "; {} runs installed of a budget of {}, {} pages installed, {} left out, {} private, \
              {} withheld, {} restricted ({} for workers' writes)",
@@ -1902,7 +2000,7 @@ impl<H: HostMemory> UffdSecondStage<H> {
                 _ if page.private => "private".to_owned(),
                 Some(mapped) => format!(
                     "{} of {:?} at {:#x}",
-                    if mapped.installed { "installed" } else { "left out" },
+                    if mapped.installed() { "installed" } else { "left out" },
                     mapped.phys.arena,
                     mapped.phys.offset
                 ),
@@ -2312,7 +2410,7 @@ mod tests {
             pages
                 .pages
                 .iter()
-                .filter(|page| page.mapped.is_some_and(|mapped| !mapped.installed))
+                .filter(|page| page.mapped.is_some_and(|mapped| !mapped.installed()))
                 .count()
         };
         let within = |when: &str| {
@@ -2593,7 +2691,7 @@ mod tests {
         // In memory as it is mapped, so installed here at once.
         let file = TestSource::filled(1, 9);
         dax.map(0, &file.source(), 0, ps as u64);
-        let installed = stage.pages.lock().unwrap().pages[0].mapped.map(|mapped| mapped.installed);
+        let installed = stage.pages.lock().unwrap().pages[0].mapped.map(|mapped| mapped.installed());
         assert_eq!(installed, Some(true));
         let mut pipe = [0; 2];
         // SAFETY: Creates a pipe, which the test closes.
@@ -2667,6 +2765,56 @@ mod tests {
         let memory = unsafe { libc::mmap(std::ptr::null_mut(), len, prot, flags, -1, 0) };
         assert_ne!(memory, libc::MAP_FAILED);
         memory as usize
+    }
+
+    /// fxdax TASK-227: a window as large as the data costs the VM process what the guest reaches
+    /// of it, not its size: a 64 GiB window's stage takes a few MiB of this process's memory as it
+    /// is made, and a page of it mapped takes a page more. Red with its pages' changes a Vec of
+    /// each one's default: 48 bytes a page, 768 MiB as it was made.
+    #[test]
+    fn a_large_windows_stage_takes_the_memory_it_reaches() {
+        const SIZE: usize = 64 << 30;
+        let rss = || -> usize {
+            let status = std::fs::read_to_string("/proc/self/status").unwrap();
+            let line = status.lines().find(|line| line.starts_with("VmRSS:")).unwrap();
+            line.split_whitespace().nth(1).unwrap().parse::<usize>().unwrap() << 10
+        };
+        let (prot, flags) = (
+            libc::PROT_READ | libc::PROT_WRITE,
+            libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_NORESERVE,
+        );
+        // SAFETY: Anonymous memory of the test's, reserved, which nothing accesses but the stage.
+        let memory = unsafe { libc::mmap(std::ptr::null_mut(), SIZE, prot, flags, -1, 0) };
+        assert_ne!(memory, libc::MAP_FAILED);
+        let before = rss();
+        // SAFETY: Only the test uses the memory, which outlives the window.
+        let stage = unsafe {
+            UffdSecondStage::with_budget(memory as usize, SIZE as u64, Memories::InProcess, None, 64)
+        }
+        .unwrap();
+        let made = rss().saturating_sub(before);
+        assert!(made < 16 << 20, "a 64 GiB window's stage took {made} bytes as it was made");
+        drop(stage);
+        // SAFETY: Unmaps the memory, which nothing uses any more.
+        assert_eq!(unsafe { libc::munmap(memory, SIZE) }, 0);
+    }
+
+    /// fxdax TASK-227: zero bytes are a page that nothing changed nor maps, which a window's pages
+    /// are as their memory is made ([`WindowPages`]): `Option<Mapped>`'s `None` is `used`'s 0,
+    /// `installed` a byte with no spare values for it.
+    #[test]
+    fn zero_bytes_are_a_page_nothing_changed() {
+        // SAFETY: Zero bytes, valid for each field: none is a reference, and `Option<Mapped>`'s
+        // only spare value is `used`'s 0, its `None`.
+        let zeros: PageChanges = unsafe { std::mem::zeroed() };
+        let nothing = PageChanges::default();
+        assert_eq!(
+            (zeros.made, zeros.withheld, zeros.restricted, zeros.for_worker, zeros.private),
+            (nothing.made, nothing.withheld, nothing.restricted, nothing.for_worker, nothing.private)
+        );
+        assert_eq!((zeros.changed, zeros.mapped.is_none()), (nothing.changed, true));
+        let pages = WindowPages::new(4).unwrap();
+        assert!(pages.iter().all(|page| page.mapped.is_none() && !page.private && page.made == 0));
     }
 
     /// fxdax TASK-164.1 (backlog doc-13): a window's private pages cost its VM process no mapping

@@ -820,7 +820,7 @@ fn worker_writes_copy_nothing(vcpu_stores: bool, not_here: NotHere) {
         load(&guest, 0);
         load(&guest, 2 * ps);
         let mapped = stage.pages.lock().unwrap().pages[0].mapped;
-        assert!(mapped.is_some_and(|mapped| !mapped.installed), "the first page wasn't left out");
+        assert!(mapped.is_some_and(|mapped| !mapped.installed()), "the first page wasn't left out");
     }
 
     // The worker's write, retried as get_user_pages retries it, until it fails or is made.
@@ -992,7 +992,7 @@ fn worker_writes_of_pages_here_copy_nothing(vcpu_stores: bool) {
     let sealed = TestSource::filled(1, SEALED);
     dax.map(0, &sealed.source(), 0, ps);
     let guest = HostGuest { memory, stage: stage.clone(), window: window.clone(), base };
-    assert!(stage.pages.lock().unwrap().pages[0].mapped.is_some_and(|mapped| mapped.installed));
+    assert!(stage.pages.lock().unwrap().pages[0].mapped.is_some_and(|mapped| mapped.installed()));
 
     // The worker's write, retried as get_user_pages retries it, until it fails or is made.
     worker_writes(&guest);
@@ -1239,7 +1239,7 @@ fn stores_to_pages_not_here_install_nothing_after_them() {
     let guest = HostGuest { memory, stage: stage.clone(), window: window.clone(), base };
     let installed = |page: usize| {
         let pages = stage.pages.lock().unwrap();
-        pages.pages[page].mapped.is_some_and(|mapped| mapped.installed)
+        pages.pages[page].mapped.is_some_and(|mapped| mapped.installed())
     };
     match guest.access(0, Access::Write, Some(STORED)) {
         Outcome::Faulted(fault) => future::block_on(fault).unwrap(),
