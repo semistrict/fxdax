@@ -60,6 +60,8 @@ pub mod errno {
     pub const EINVAL: i32 = 22;
     pub const ENOSPC: i32 = 28;
     pub const ENOMEM: i32 = 12;
+    pub const EFAULT: i32 = 14;
+    pub const EFBIG: i32 = 27;
 }
 
 /// fxdax: what an operation came to, or should: how many bytes it did (written, stored, read,
@@ -197,6 +199,61 @@ pub enum Op {
     /// mapped again: on a DAX mount, a file read in again once its writes are sealed is DAX, its
     /// stores copying on write, where one created and kept open stays in the page cache.
     Reopen { file: usize },
+    /// fxdax: a call with arguments no well-behaved caller passes (TASK-149.16), which the VFS
+    /// refuses as it is, whatever the filesystem's largest file: an offset and a length past i64's
+    /// end together, a negative offset, a length of nothing. `k` places it near the end.
+    Limit { file: usize, call: Limit, k: u64, len: u64 },
+    /// fxdax: a write, or a truncation, `k` bytes either side of `base`, far past what the model
+    /// holds, on a scratch file of the run's own (`Run`'s far file): the DAX window's ends, ext4's
+    /// largest file's, a DAX mount's, i64's. What it comes to is the filesystem's largest file's,
+    /// which a run measures.
+    Far { base: u64, k: i64, len: u64, data: u64, truncate: bool },
+    /// fxdax: mmap of `len` bytes of the file at `place`, a page's start if `aligned`: refused
+    /// (`EINVAL`) at no page's start, or of nothing; else read through, past the file's end too, to
+    /// its last page's.
+    MapOdd { file: usize, place: Place, len: u64, aligned: bool },
+    /// fxdax: a new shared mapping of the file's pages at `place`, MAP_FIXED over the same pages of
+    /// the kept mapping of `over`, which may be another file's, its stores through it within the
+    /// file; `over`'s pages then mapped back.
+    MapFixed { file: usize, over: usize, place: Place, len: u64, data: u64 },
+    /// fxdax: a new mapping of the file's pages at `place`, remapped (mremap) twice as large, moved
+    /// if it must, its stores through it within the file.
+    Mremap { file: usize, place: Place, len: u64, data: u64 },
+    /// fxdax: madvise of the kept mapping's pages at `place`: DONTNEED, which leaves the file, or
+    /// REMOVE, which punches them; at no page's start if `odd`, `EINVAL`.
+    Madvise { file: usize, place: Place, len: u64, remove: bool, odd: bool },
+    /// fxdax: a truncation down to `size` and back, while a thread stores through the kept mapping
+    /// below it.
+    TruncateRacing { file: usize, size: u64, place: Place, len: u64, data: u64 },
+    /// fxdax: a write(2) from a buffer whose bytes past its `good`th fault (TASK-149.16): it
+    /// stops there, or short of it, at an offset of the file no page's start, as the copy got.
+    FaultingWrite { file: usize, place: Place, len: u64, good: u64, data: u64 },
+    /// fxdax: a write(2) from the kept mapping of its own file, `by` bytes on from where it writes:
+    /// the same bytes, if 0, or overlapping.
+    WriteFromMapping { file: usize, place: Place, len: u64, by: u64 },
+}
+
+/// fxdax: the calls of [`Op::Limit`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Limit {
+    /// pwrite whose offset and length pass i64's end: `EINVAL` (rw_verify_area).
+    WritePastI64,
+    /// pwrite at a negative offset: `EINVAL`.
+    WriteNegative,
+    /// pread `k` bytes short of i64's end: `EINVAL` past it, nothing within it, past the largest
+    /// file.
+    ReadPastI64,
+    /// ftruncate to a negative size: `EINVAL`.
+    TruncateNegative,
+    /// fallocate of nothing (`EINVAL`), at a negative offset (`EINVAL`), or past i64's end
+    /// (`EFBIG`, vfs_fallocate).
+    AllocateNothing,
+    AllocateNegative,
+    AllocatePastI64,
+    /// copy_file_range from `k` bytes short of i64's end: nothing to copy.
+    CopyFromPastI64,
+    /// FICLONERANGE of a length negative as a loff_t: `EINVAL` (remap_verify_area).
+    CloneNegative,
 }
 
 /// What a script's operations are drawn from.
@@ -209,14 +266,20 @@ pub struct Mix {
     pub forks: bool,
     /// fxdax: whether the operations are drawn from the wide mix's, [`wide_op`]'s, too.
     pub wide: bool,
+    /// fxdax: whether hostile operations are drawn too, [`hostile_op`]'s (TASK-149.16).
+    pub hostile: bool,
 }
 
 /// `random_ops`'s.
-pub const ONE_FILE: Mix = Mix { ops: 3000, files: 1, clones: false, forks: false, wide: false };
+pub const ONE_FILE: Mix =
+    Mix { ops: 3000, files: 1, clones: false, forks: false, wide: false, hostile: false };
 /// `fxfs-guest-script`'s.
-pub const SEVERAL_FILES: Mix = Mix { ops: 3000, files: 3, clones: true, forks: true, wide: false };
+pub const SEVERAL_FILES: Mix =
+    Mix { ops: 3000, files: 3, clones: true, forks: true, wide: false, hostile: false };
 /// fxdax: `fxfs-guest-fsx`'s (TASK-44.15).
 pub const WIDE: Mix = Mix { wide: true, ..SEVERAL_FILES };
+/// fxdax: `fxfs-guest-fsx`'s since TASK-149.16: the wide mix, and hostile operations.
+pub const HOSTILE: Mix = Mix { hostile: true, ..WIDE };
 
 /// Where an operation goes: anywhere, or near a chunk's end, a page's, or the file's.
 fn place(rng: &mut Rng) -> Place {
@@ -255,6 +318,9 @@ pub fn generate(seed: u64, mix: Mix) -> Vec<Op> {
             let from = rng.next(mix.files as u64) as usize;
             let to = (from + 1 + rng.next(mix.files as u64 - 1) as usize) % mix.files;
             script.push(Op::Clone { from, to });
+        }
+        if mix.hostile && rng.next(HOSTILE_ONE_IN) == 0 {
+            script.push(hostile_op(&mut rng, mix));
         }
         if mix.forks && rng.next(FORK_ONE_IN) == 0 {
             let file = rng.next(mix.files as u64) as usize;
@@ -313,6 +379,91 @@ fn wide_op(
         29 => Op::Drop { file },
         30 => Op::Reopen { file },
         _ => Op::Truncate { file, size: rng.next(MAX) },
+    }
+}
+
+/// fxdax: of the operations, one in this many has a hostile one after it, in the hostile mix.
+const HOSTILE_ONE_IN: u64 = 4;
+
+/// fxdax: where [`Op::Far`]'s offsets are drawn around: the DAX window's ends (512 MiB, the
+/// guest's), past them, ext4's largest file (16 TiB less a block, 4 KiB blocks), a DAX mount's
+/// (i64's end less a chunk), i64's.
+const FAR: [u64; 6] = [
+    512 << 20,
+    1 << 30,
+    (1 << 32) * PAGE - PAGE,
+    (i64::MAX as u64) / CHUNK * CHUNK,
+    i64::MAX as u64,
+    1 << 50,
+];
+
+/// fxdax: a hostile operation (TASK-149.16), of [`Op`]'s last nine, its arguments drawn here, or a
+/// range of a file cloned or copied onto itself, overlapping.
+fn hostile_op(rng: &mut Rng, mix: Mix) -> Op {
+    let file = rng.next(mix.files as u64) as usize;
+    let place = place(rng);
+    let (len, data) = (1 + rng.next(LONGEST), rng.next(u64::MAX));
+    match rng.next(12) {
+        0 | 1 => {
+            const CALLS: [Limit; 9] = [
+                Limit::WritePastI64,
+                Limit::WriteNegative,
+                Limit::ReadPastI64,
+                Limit::TruncateNegative,
+                Limit::AllocateNothing,
+                Limit::AllocateNegative,
+                Limit::AllocatePastI64,
+                Limit::CopyFromPastI64,
+                Limit::CloneNegative,
+            ];
+            let call = CALLS[rng.next(CALLS.len() as u64) as usize];
+            Op::Limit { file, call, k: rng.next(2 * len), len }
+        }
+        2 => {
+            let base = FAR[rng.next(FAR.len() as u64) as usize];
+            let k = rng.next(4 * LONGEST) as i64 - 2 * LONGEST as i64;
+            Op::Far { base, k, len, data, truncate: rng.next(4) == 0 }
+        }
+        3 => {
+            let len = if rng.next(8) == 0 { 0 } else { len };
+            Op::MapOdd { file, place, len, aligned: rng.next(2) == 0 }
+        }
+        4 => Op::MapFixed { file, over: rng.next(mix.files as u64) as usize, place, len, data },
+        5 => Op::Mremap { file, place, len, data },
+        6 => Op::Madvise { file, place, len, remove: rng.next(2) == 0, odd: rng.next(8) == 0 },
+        7 => Op::TruncateRacing { file, size: rng.next(MAX), place, len, data },
+        // Appends as often as anything, a write past the end stopped short (TASK-133).
+        8 | 9 => {
+            let place = if rng.next(2) == 0 { Place::FromEnd(0) } else { place };
+            Op::FaultingWrite { file, place, len, good: rng.next(len + 1), data }
+        }
+        // The same bytes one in four, else overlapping or not, as it comes.
+        10 => {
+            let by = if rng.next(4) == 0 { 0 } else { rng.next(2 * len) };
+            Op::WriteFromMapping { file, place, len, by }
+        }
+        // A range cloned or copied onto itself, overlapping, or just not, unaligned as it comes.
+        _ => {
+            let shift = rng.next(2 * len + 1) as i64 - len as i64;
+            let to_place = match place {
+                Place::At(at) => Place::At(at.saturating_add_signed(shift)),
+                Place::FromEnd(by) => Place::FromEnd(by + shift),
+            };
+            match rng.next(2) {
+                0 => Op::Copy { from: file, from_place: place, to: file, to_place, len },
+                _ => {
+                    let aligned = rng.next(2) == 0;
+                    Op::CloneRange {
+                        from: file,
+                        from_place: place,
+                        to: file,
+                        to_place,
+                        len,
+                        aligned,
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -441,6 +592,65 @@ pub enum Step {
     Reopen {
         file: usize,
     },
+    /// fxdax: the hostile mix's (TASK-149.16). `at` as the call has it, negative too.
+    Limit {
+        file: usize,
+        call: Limit,
+        at: i64,
+        len: u64,
+    },
+    /// Of the run's far file, empty before it and after.
+    Far {
+        at: u64,
+        data: Vec<u8>,
+        truncate: bool,
+    },
+    MapOdd {
+        file: usize,
+        at: u64,
+        len: u64,
+    },
+    /// Through a mapping of `file`'s pages, MAP_FIXED over the same of `over`'s kept mapping.
+    MapFixed {
+        file: usize,
+        over: usize,
+        at: u64,
+        data: Vec<u8>,
+    },
+    Mremap {
+        file: usize,
+        at: u64,
+        data: Vec<u8>,
+    },
+    /// Of the kept mapping's pages from `at`'s, `at` a page's start, from a byte on if `odd`.
+    Madvise {
+        file: usize,
+        at: u64,
+        len: u64,
+        remove: bool,
+        odd: bool,
+    },
+    /// Down to `size` and back, while a child stores `data` at `at`, below both.
+    TruncateRacing {
+        file: usize,
+        size: u64,
+        at: u64,
+        data: Vec<u8>,
+    },
+    /// Of `data`, its first `good` bytes readable, the rest past a fault.
+    FaultingWrite {
+        file: usize,
+        at: u64,
+        data: Vec<u8>,
+        good: u64,
+    },
+    /// Of the kept mapping's `len` bytes at `src`, onto `dst`, at or before it, within the file.
+    WriteFromMapping {
+        file: usize,
+        src: u64,
+        dst: u64,
+        len: u64,
+    },
 }
 
 impl Step {
@@ -470,6 +680,27 @@ impl Step {
             Step::DirectRead { .. } => "direct read",
             Step::Drop { .. } => "drop the page cache",
             Step::Reopen { .. } => "reopen",
+            Step::Limit { call, .. } => match call {
+                Limit::WritePastI64 => "write past i64's end",
+                Limit::WriteNegative => "write at a negative offset",
+                Limit::ReadPastI64 => "read near i64's end",
+                Limit::TruncateNegative => "truncate to a negative size",
+                Limit::AllocateNothing => "allocate nothing",
+                Limit::AllocateNegative => "allocate at a negative offset",
+                Limit::AllocatePastI64 => "allocate past i64's end",
+                Limit::CopyFromPastI64 => "copy from near i64's end",
+                Limit::CloneNegative => "clone a negative length",
+            },
+            Step::Far { truncate: false, .. } => "write far",
+            Step::Far { truncate: true, .. } => "truncate far",
+            Step::MapOdd { .. } => "map oddly",
+            Step::MapFixed { .. } => "store through a fixed mapping",
+            Step::Mremap { .. } => "store through a remapped mapping",
+            Step::Madvise { remove: false, .. } => "madvise DONTNEED",
+            Step::Madvise { remove: true, .. } => "madvise REMOVE",
+            Step::TruncateRacing { .. } => "truncate racing a store",
+            Step::FaultingWrite { .. } => "write from a faulting buffer",
+            Step::WriteFromMapping { .. } => "write from its own mapping",
         }
     }
 
@@ -499,6 +730,14 @@ impl Step {
             | Step::DirectRead { file: its, .. }
             | Step::Drop { file: its }
             | Step::Reopen { file: its }
+            | Step::Limit { file: its, .. }
+            | Step::MapOdd { file: its, .. }
+            | Step::MapFixed { file: its, .. }
+            | Step::Mremap { file: its, .. }
+            | Step::Madvise { file: its, .. }
+            | Step::TruncateRacing { file: its, .. }
+            | Step::FaultingWrite { file: its, .. }
+            | Step::WriteFromMapping { file: its, .. }
                 if its == file =>
             {
                 Role::Its
@@ -518,7 +757,13 @@ impl Step {
             | Step::Zero { file, .. }
             | Step::Allocate { file, .. }
             | Step::MapStore { file, private: false, .. }
-            | Step::DirectWrite { file, .. } => Some(file),
+            | Step::DirectWrite { file, .. }
+            | Step::MapFixed { file, .. }
+            | Step::Mremap { file, .. }
+            | Step::Madvise { file, remove: true, .. }
+            | Step::TruncateRacing { file, .. }
+            | Step::FaultingWrite { file, .. }
+            | Step::WriteFromMapping { file, .. } => Some(file),
             Step::Clone { to, .. } | Step::CloneRange { to, .. } | Step::Copy { to, .. } => {
                 Some(to)
             }
@@ -534,7 +779,22 @@ impl Step {
             Step::Write { file, at, ref data }
             | Step::Store { file, at, ref data, .. }
             | Step::MapStore { file, at, ref data, private: false }
-            | Step::DirectWrite { file, at, ref data } => (file, at, at + data.len() as u64, None),
+            | Step::DirectWrite { file, at, ref data }
+            | Step::MapFixed { file, at, ref data, .. }
+            | Step::Mremap { file, at, ref data }
+            | Step::FaultingWrite { file, at, ref data, .. } => {
+                (file, at, at + data.len() as u64, None)
+            }
+            Step::TruncateRacing { file, size: to, at, ref data } => {
+                let end = to.max(size(file)).max(at + data.len() as u64);
+                (file, at.min(to), end, None)
+            }
+            Step::Madvise { file, at, len, remove: true, odd: false } => {
+                (file, at, at + len.next_multiple_of(PAGE), None)
+            }
+            Step::WriteFromMapping { file, src, dst, len } => {
+                (file, dst, dst + len, Some((file, src)))
+            }
             Step::Truncate { file, size: to } => {
                 (file, to.min(size(file)), to.max(size(file)), None)
             }
@@ -556,7 +816,20 @@ impl Step {
     /// whose times change at a write fault, which comes as the filesystem's cache has the page,
     /// written back or not, which filesystems differ in.
     pub fn says_its_times(&self) -> bool {
-        !matches!(self, Step::Store { .. } | Step::MapStore { private: false, .. })
+        !matches!(
+            self,
+            Step::Store { .. }
+                | Step::MapStore { private: false, .. }
+                | Step::MapFixed { .. }
+                | Step::Mremap { .. }
+                | Step::TruncateRacing { .. }
+        )
+    }
+
+    /// fxdax: whether its outcome is its filesystem's own, by its largest file ([`far`]), which
+    /// filesystems differ in, as the model says each's.
+    pub fn outcome_is_the_filesystems(&self) -> bool {
+        matches!(self, Step::Far { .. })
     }
 }
 
@@ -604,6 +877,42 @@ impl fmt::Display for Step {
             }
             Step::Drop { file } => write!(f, "drop file {file}'s page cache"),
             Step::Reopen { file } => write!(f, "reopen file {file}"),
+            Step::Limit { file, call, at, len } => {
+                write!(f, "{call:?}: {len:#x} at {at:#x} of file {file}")
+            }
+            Step::Far { at, data, truncate: false } => {
+                write!(f, "write {:#x} at {at:#x} of the far file", data.len())
+            }
+            Step::Far { at, truncate: true, .. } => write!(f, "truncate the far file to {at:#x}"),
+            Step::MapOdd { file, at, len } => write!(f, "map {len:#x} at {at:#x} of file {file}"),
+            Step::MapFixed { file, over, at, data } => write!(
+                f,
+                "store {:#x} at {at:#x} of file {file} through a mapping fixed over file {over}'s",
+                data.len()
+            ),
+            Step::Mremap { file, at, data } => write!(
+                f,
+                "store {:#x} at {at:#x} of file {file} through a mapping remapped larger",
+                data.len()
+            ),
+            Step::Madvise { file, at, len, remove, odd } => {
+                let advice = if *remove { "REMOVE" } else { "DONTNEED" };
+                let at = at + u64::from(*odd);
+                write!(f, "madvise {advice} {len:#x} at {at:#x} of file {file}")
+            }
+            Step::TruncateRacing { file, size, at, data } => write!(
+                f,
+                "truncate file {file} to {size:#x} and back, while a child stores {:#x} at {at:#x}",
+                data.len()
+            ),
+            Step::FaultingWrite { file, at, data, good } => write!(
+                f,
+                "write {:#x} at {at:#x} of file {file} from a buffer faulting after {good:#x}",
+                data.len()
+            ),
+            Step::WriteFromMapping { file, src, dst, len } => {
+                write!(f, "write {len:#x} at {dst:#x} of file {file} from its mapping at {src:#x}")
+            }
         }
     }
 }
@@ -667,9 +976,8 @@ impl Model {
                 Step::Write { file, at, data: bytes(data, len.min(MOST - at)) }
             }
             Op::Store { file, place, len, data, child } => {
-                let size = self.size(file);
-                let at = place.resolve(size).checked_rem(size).unwrap_or(0);
-                Step::Store { file, at, data: bytes(data, len.min(size - at)), child }
+                let (at, data) = self.within(file, place, len, data);
+                Step::Store { file, at, data, child }
             }
             Op::Read { file, place, len } => {
                 Step::Read { file, at: place.resolve(self.size(file)), len }
@@ -726,7 +1034,67 @@ impl Model {
             }
             Op::Drop { file } => Step::Drop { file },
             Op::Reopen { file } => Step::Reopen { file },
+            Op::Limit { file, call, k, len } => {
+                const END: i64 = i64::MAX;
+                let at = match call {
+                    // Past i64's end, by less than the length.
+                    Limit::WritePastI64 | Limit::AllocatePastI64 => END - (k % len) as i64,
+                    Limit::WriteNegative | Limit::TruncateNegative | Limit::AllocateNegative => {
+                        -1 - k as i64
+                    }
+                    Limit::ReadPastI64 | Limit::CopyFromPastI64 => END - k as i64,
+                    Limit::AllocateNothing | Limit::CloneNegative => k as i64,
+                };
+                let len = match call {
+                    Limit::AllocateNothing => 0,
+                    Limit::CloneNegative => len | 1 << 63,
+                    _ => len,
+                };
+                Step::Limit { file, call, at, len }
+            }
+            Op::Far { base, k, len, data, truncate } => {
+                Step::Far { at: base.saturating_add_signed(k), data: bytes(data, len), truncate }
+            }
+            Op::MapOdd { file, place, len, aligned } => {
+                let at = place.resolve(self.size(file));
+                Step::MapOdd { file, at: if aligned { at / PAGE * PAGE } else { at }, len }
+            }
+            Op::MapFixed { file, over, place, len, data } => {
+                let (at, data) = self.within(file, place, len, data);
+                Step::MapFixed { file, over, at, data }
+            }
+            Op::Mremap { file, place, len, data } => {
+                let (at, data) = self.within(file, place, len, data);
+                Step::Mremap { file, at, data }
+            }
+            Op::Madvise { file, place, len, remove, odd } => {
+                let at = place.resolve(self.size(file)) / PAGE * PAGE;
+                Step::Madvise { file, at, len, remove, odd }
+            }
+            Op::TruncateRacing { file, size, place, len, data } => {
+                let below = size.min(self.size(file));
+                let at = place.resolve(below).checked_rem(below).unwrap_or(0);
+                Step::TruncateRacing { file, size, at, data: bytes(data, len.min(below - at)) }
+            }
+            Op::FaultingWrite { file, place, len, good, data } => {
+                let at = place.resolve(self.size(file));
+                Step::FaultingWrite { file, at, data: bytes(data, len), good }
+            }
+            Op::WriteFromMapping { file, place, len, by } => {
+                let size = self.size(file);
+                let src = place.resolve(size).checked_rem(size).unwrap_or(0);
+                let dst = src - by.min(src);
+                Step::WriteFromMapping { file, src, dst, len: len.min(size - src) }
+            }
         }
+    }
+
+    /// Where, and what, a store of `len` bytes of `data`'s at `place` of `file` stores: within the
+    /// file, wrapping round to its start, as much as it holds.
+    fn within(&self, file: usize, place: Place, len: u64, data: u64) -> (u64, Vec<u8>) {
+        let size = self.size(file);
+        let at = place.resolve(size).checked_rem(size).unwrap_or(0);
+        (at, Rng::new(data).bytes(len.min(size - at) as usize))
     }
 
     /// fxdax: what `step` should come to, done whole: what it does, or the errno it fails with.
@@ -745,6 +1113,25 @@ impl Model {
                 self.clone_range(from, src, to, dst, len)
             }
             Step::Copy { from, src, to, dst, len } => self.copy_range(from, src, to, dst, len),
+            Step::Limit { call, at, len, .. } => match call {
+                Limit::ReadPastI64 if at.checked_add(len as i64).is_some() => Ok(0),
+                Limit::CopyFromPastI64 => Ok(0),
+                Limit::AllocatePastI64 => Err(errno::EFBIG),
+                _ => Err(errno::EINVAL),
+            },
+            Step::Far { .. } => {
+                unreachable!("a far step's outcome is its filesystem's: script::far")
+            }
+            Step::MapOdd { at, len, .. } if !at.is_multiple_of(PAGE) || len == 0 => {
+                Err(errno::EINVAL)
+            }
+            Step::MapFixed { ref data, .. }
+            | Step::Mremap { ref data, .. }
+            | Step::TruncateRacing { ref data, .. } => Ok(data.len() as u64),
+            Step::Madvise { odd: true, .. } => Err(errno::EINVAL),
+            Step::FaultingWrite { good: 0, .. } => Err(errno::EFAULT),
+            Step::FaultingWrite { good, .. } => Ok(good),
+            Step::WriteFromMapping { len, .. } => Ok(len),
             _ => Ok(0),
         }
     }
@@ -767,6 +1154,27 @@ impl Model {
                 self.grow(file, at + len, keep_size);
             }
             Step::Allocate { file, at, len, keep_size } => self.grow(file, at + len, keep_size),
+            Step::MapFixed { file, at, ref data, .. } | Step::Mremap { file, at, ref data } => {
+                self.write(file, at, data)
+            }
+            Step::Madvise { file, at, len, remove: true, odd: false } => {
+                self.punch(file, at, len.next_multiple_of(PAGE))
+            }
+            Step::TruncateRacing { file, size, at, ref data } => {
+                let was = self.size(file);
+                if size < was {
+                    self.truncate(file, size);
+                    self.truncate(file, was);
+                }
+                self.write(file, at, data);
+            }
+            Step::FaultingWrite { file, at, ref data, good } => {
+                self.write(file, at, &data[..good as usize])
+            }
+            Step::WriteFromMapping { file, src, dst, len } => {
+                let bytes = self.files[file][src as usize..(src + len) as usize].to_vec();
+                self.write(file, dst, &bytes);
+            }
             _ => {}
         }
     }
@@ -879,14 +1287,18 @@ impl Model {
         let before = &self.files[file];
         let reached = |what: String| format!("file {file} {what} after `{step}` stopped short");
         match *step {
-            Step::Write { .. } if got != &before[..] => {
+            Step::Write { .. } | Step::FaultingWrite { .. } | Step::WriteFromMapping { .. }
+                if got != &before[..] =>
+            {
                 let first = got.iter().zip(before).position(|(a, b)| a != b);
                 let first =
                     first.map_or("past the end of either".to_owned(), |at| format!("{at:#x}"));
                 let (got, was) = (got.len(), before.len());
                 Err(reached(format!("is {got:#x} bytes long, was {was:#x}, differing at {first}")))
             }
-            Step::Write { .. } => Ok(()),
+            Step::Write { .. } | Step::FaultingWrite { .. } | Step::WriteFromMapping { .. } => {
+                Ok(())
+            }
             Step::Clone { from, to } => {
                 assert_eq!(to, file, "a clone changes its destination alone");
                 self.clone_stopped_short(from, to, got)
@@ -939,6 +1351,34 @@ impl Model {
         self.files[to].resize(reached, 0);
         self.files[to][..end].copy_from_slice(&source[..end]);
         Ok(())
+    }
+}
+
+/// fxdax: the largest file a filesystem holds, its superblock's `s_maxbytes`: the VFS's own
+/// (MAX_LFS_FILESIZE), as XFS's and Fxfs's without a DAX window are; Fxfs's with one, a chunk short
+/// of the VFS's (fxfs_vfs_fill_super); and ext4's of blocks of `block` bytes, its extents' 32-bit
+/// block numbers' (ext4_max_size).
+pub const LARGEST: u64 = i64::MAX as u64;
+pub const LARGEST_DAX: u64 = LARGEST / CHUNK * CHUNK;
+pub const fn largest_ext4(block: u64) -> u64 {
+    ((1 << 32) - 1) * block
+}
+
+/// fxdax: what [`Step::Far`] comes to, a write of `len` bytes at `at` of an empty file, or a
+/// truncation to `at`, on a filesystem whose largest file is `largest`, as the VFS checks it
+/// (pwrite64, rw_verify_area, generic_write_check_limits; do_ftruncate, inode_newsize_ok): `EINVAL`
+/// at a negative offset, or past i64's end, `EFBIG` at the largest file's end or past it, and a
+/// write shortened to it.
+pub fn far(at: u64, len: u64, truncate: bool, largest: u64) -> Outcome {
+    let end = i64::MAX as u64;
+    if at > end || (!truncate && at + len > end) {
+        Err(errno::EINVAL)
+    } else if truncate {
+        if at > largest { Err(errno::EFBIG) } else { Ok(0) }
+    } else if at >= largest {
+        Err(errno::EFBIG)
+    } else {
+        Ok(len.min(largest - at))
     }
 }
 
@@ -1097,6 +1537,16 @@ mod tests {
                 Op::Direct { write: false, .. } => "direct read",
                 Op::Drop { .. } => "drop",
                 Op::Reopen { .. } => "reopen",
+                Op::Limit { .. } => "limit",
+                Op::Far { .. } => "far",
+                Op::MapOdd { .. } => "map oddly",
+                Op::MapFixed { .. } => "fixed map store",
+                Op::Mremap { .. } => "remapped store",
+                Op::Madvise { remove: false, .. } => "dontneed",
+                Op::Madvise { remove: true, .. } => "remove",
+                Op::TruncateRacing { .. } => "truncate racing",
+                Op::FaultingWrite { .. } => "faulting write",
+                Op::WriteFromMapping { .. } => "write from mapping",
             };
             *counts.entry(kind).or_insert(0) += 1;
         }
@@ -1209,7 +1659,7 @@ mod tests {
     /// store past a file's end.
     #[test]
     fn any_subset_of_a_script_resolves() {
-        for (mix, seed) in [(SEVERAL_FILES, 11), (WIDE, 11), (WIDE, 12)] {
+        for (mix, seed) in [(SEVERAL_FILES, 11), (WIDE, 11), (WIDE, 12), (HOSTILE, 11)] {
             let script = generate(seed, mix);
             for keep_one_in in [1, 2, 3, 7, 50] {
                 let mut rng = Rng::new(keep_one_in);
@@ -1217,9 +1667,19 @@ mod tests {
                 for op in script.iter().filter(|_| rng.next(keep_one_in) == 0) {
                     let step = model.resolve(op);
                     if let Step::Store { file, at, data, .. }
-                    | Step::MapStore { file, at, data, .. } = &step
+                    | Step::MapStore { file, at, data, .. }
+                    | Step::MapFixed { file, at, data, .. }
+                    | Step::Mremap { file, at, data }
+                    | Step::TruncateRacing { file, at, data, .. } = &step
                     {
                         assert!(*at as usize + data.len() <= model.files[*file].len(), "{step}");
+                    }
+                    if let Step::TruncateRacing { size, at, data, .. } = &step {
+                        assert!(at + data.len() as u64 <= *size, "{step}");
+                    }
+                    if let Step::WriteFromMapping { file, src, dst, len } = &step {
+                        assert!(src + len <= model.files[*file].len() as u64, "{step}");
+                        assert!(dst <= src, "{step}");
                     }
                     if let Step::DirectWrite { at, .. } | Step::DirectRead { at, .. } = &step {
                         assert_eq!(at % PAGE, 0, "{step}");
@@ -1489,6 +1949,158 @@ mod tests {
     fn the_wide_mix_leaves_the_others_scripts_as_they_were() {
         assert_eq!(generate(1, Mix { wide: false, ..WIDE }), generate(1, SEVERAL_FILES));
         assert_ne!(generate(1, WIDE), generate(1, SEVERAL_FILES));
+    }
+
+    /// The hostile mix: the wide one's, and after one operation in four, one of its own, a
+    /// range onto itself among them.
+    #[test]
+    fn the_hostile_mix_adds_to_the_wide_one() {
+        let script = generate(1, HOSTILE);
+        let expected = BTreeMap::from([
+            ("allocate", 105),
+            ("append", 80),
+            ("check", 11),
+            ("clone", 91),
+            ("clone range", 140),
+            ("clone range, unaligned", 59),
+            ("clone to the end", 45),
+            ("copy", 223),
+            ("direct read", 103),
+            ("direct write", 106),
+            ("dontneed", 37),
+            ("drop", 95),
+            ("far", 54),
+            ("faulting write", 129),
+            ("fdatasync", 78),
+            ("fixed map store", 55),
+            ("fork", 177),
+            ("fsync", 193),
+            ("limit", 123),
+            ("map oddly", 73),
+            ("map store", 95),
+            ("msync", 99),
+            ("private store", 108),
+            ("punch", 86),
+            ("read", 267),
+            ("remapped store", 66),
+            ("remove", 33),
+            ("reopen", 106),
+            ("store", 342),
+            ("truncate", 196),
+            ("truncate racing", 62),
+            ("write", 461),
+            ("write from mapping", 67),
+            ("zero", 96),
+        ]);
+        assert_eq!(tally(&script), expected);
+        assert_eq!(generate(1, Mix { hostile: false, ..HOSTILE }), generate(1, WIDE));
+    }
+
+    /// Arguments no well-behaved caller passes, refused by the VFS before any filesystem sees them
+    /// (rw_verify_area, ksys_pwrite64, do_ftruncate, vfs_fallocate, remap_verify_area), or
+    /// nothing done: a read near i64's end past the largest file, a copy from past the source's end.
+    #[test]
+    fn calls_past_i64_are_refused_as_the_vfs_refuses_them() {
+        let model = Model { files: vec![vec![1; 100]] };
+        let limit = |call, k, len| {
+            let step = model.resolve(&Op::Limit { file: 0, call, k, len });
+            let Step::Limit { at, len, .. } = step else { panic!("a limit") };
+            (at, len, model.outcome(&step))
+        };
+        let end = i64::MAX;
+        let (einval, efbig) = (Err(errno::EINVAL), Err(errno::EFBIG));
+        assert_eq!(limit(Limit::WritePastI64, 12, 10), (end - 2, 10, einval));
+        assert_eq!(limit(Limit::WriteNegative, 0, 10), (-1, 10, einval));
+        assert_eq!(limit(Limit::ReadPastI64, 10, 10), (end - 10, 10, Ok(0)));
+        assert_eq!(limit(Limit::ReadPastI64, 9, 10), (end - 9, 10, einval));
+        assert_eq!(limit(Limit::TruncateNegative, 4, 10), (-5, 10, einval));
+        assert_eq!(limit(Limit::AllocateNothing, 4, 10), (4, 0, einval));
+        assert_eq!(limit(Limit::AllocateNegative, 4, 10), (-5, 10, einval));
+        assert_eq!(limit(Limit::AllocatePastI64, 3, 10), (end - 3, 10, efbig));
+        assert_eq!(limit(Limit::CopyFromPastI64, 30, 10), (end - 30, 10, Ok(0)));
+        assert_eq!(limit(Limit::CloneNegative, 0, 10), (0, 10 | 1 << 63, einval));
+    }
+
+    /// Far writes and truncations come to what each filesystem's largest file lets them.
+    #[test]
+    fn far_steps_come_to_what_the_largest_file_lets_them() {
+        let ext4 = largest_ext4(PAGE);
+        assert_eq!(ext4, 0xfff_ffff_f000);
+        assert_eq!(LARGEST_DAX, 0x7fff_ffff_ffe0_0000);
+        assert_eq!(far(512 << 20, 100, false, ext4), Ok(100));
+        assert_eq!(far(ext4 - 10, 100, false, ext4), Ok(10));
+        assert_eq!(far(ext4, 100, false, ext4), Err(errno::EFBIG));
+        assert_eq!(far(ext4, 100, false, LARGEST_DAX), Ok(100));
+        assert_eq!(far(ext4, 0, true, ext4), Ok(0));
+        assert_eq!(far(ext4 + 1, 0, true, ext4), Err(errno::EFBIG));
+        assert_eq!(far(LARGEST_DAX - 1, 100, false, LARGEST_DAX), Ok(1));
+        assert_eq!(far(LARGEST - 100, 100, false, LARGEST), Ok(100));
+        assert_eq!(far(LARGEST - 99, 100, false, LARGEST), Err(errno::EINVAL));
+        assert_eq!(far(LARGEST, 0, true, LARGEST), Ok(0));
+        assert_eq!(far(LARGEST + 1, 0, true, LARGEST), Err(errno::EINVAL));
+        assert_eq!(far(LARGEST + 1, 100, false, LARGEST), Err(errno::EINVAL));
+        let step = Model::new(1).resolve(&Op::Far {
+            base: LARGEST,
+            k: -5,
+            len: 3,
+            data: 1,
+            truncate: false,
+        });
+        assert_eq!(
+            step,
+            Step::Far { at: LARGEST - 5, data: Rng::new(1).bytes(3), truncate: false }
+        );
+    }
+
+    /// Mappings at no page's start, or of nothing, are refused; madvise too, and REMOVE punches
+    /// the pages it advises of, whole.
+    #[test]
+    fn odd_mappings_and_advice_are_refused_and_removal_punches_pages() {
+        let mut model = Model { files: vec![vec![1; 3 * PAGE as usize]] };
+        let map = |at, len| model.outcome(&Step::MapOdd { file: 0, at, len });
+        assert_eq!(map(PAGE + 1, 10), Err(errno::EINVAL));
+        assert_eq!(map(PAGE, 0), Err(errno::EINVAL));
+        assert_eq!(map(PAGE, 10), Ok(0));
+        let madvise = |odd, remove| Step::Madvise { file: 0, at: PAGE, len: 10, remove, odd };
+        assert_eq!(model.outcome(&madvise(true, true)), Err(errno::EINVAL));
+        model.apply(&madvise(false, false));
+        assert_eq!(model.files[0], vec![1; 3 * PAGE as usize]);
+        model.apply(&madvise(false, true));
+        let punched = [vec![1; PAGE as usize], vec![0; PAGE as usize], vec![1; PAGE as usize]];
+        assert_eq!(model.files[0], punched.concat());
+    }
+
+    /// A write from a buffer that faults writes what lies before the fault, or fails, nothing
+    /// before it; a write from the file's own mapping moves bytes as memmove does.
+    #[test]
+    fn writes_from_faulting_buffers_and_their_files_mappings() {
+        let mut model = Model { files: vec![(0..100).collect()] };
+        let faulting = |good| Step::FaultingWrite { file: 0, at: 90, data: vec![7; 20], good };
+        assert_eq!(model.outcome(&faulting(0)), Err(errno::EFAULT));
+        assert_eq!(model.outcome(&faulting(5)), Ok(5));
+        model.apply(&faulting(5));
+        assert_eq!(model.files[0], [(0..90).collect(), vec![7; 5], (95..100).collect()].concat());
+        let op = Op::WriteFromMapping { file: 0, place: Place::At(30), len: 50, by: 10 };
+        let step = model.resolve(&op);
+        assert_eq!(step, Step::WriteFromMapping { file: 0, src: 30, dst: 20, len: 50 });
+        assert_eq!(model.outcome(&step), Ok(50));
+        let mut moved = model.files[0].clone();
+        moved.copy_within(30..80, 20);
+        model.apply(&step);
+        assert_eq!(model.files[0], moved);
+    }
+
+    /// A truncation racing a store leaves the store, below the size it went down to, and zeros
+    /// between that and the size it came back to.
+    #[test]
+    fn a_truncation_racing_a_store_leaves_the_store_and_zeros_past_its_size() {
+        let mut model = Model { files: vec![vec![1; 100]] };
+        let op = Op::TruncateRacing { file: 0, size: 50, place: Place::At(140), len: 30, data: 2 };
+        let step = model.resolve(&op);
+        let stored = Rng::new(2).bytes(10);
+        assert_eq!(step, Step::TruncateRacing { file: 0, size: 50, at: 40, data: stored.clone() });
+        model.apply(&step);
+        assert_eq!(model.files[0], [vec![1; 40], stored, vec![0; 50]].concat());
     }
 
     #[test]

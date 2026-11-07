@@ -6,7 +6,11 @@
 //! guest (TASK-44.15, TASK-149.12): scripts of the wide mix (`script::WIDE`: writes, stores through
 //! mappings kept, made and private, reads, truncations, punches, ranges zeroed, allocated, cloned
 //! and copied, fsyncs, fdatasyncs, msyncs, O_DIRECT, page caches dropped and files evicted and read
-//! in again, which on a DAX mount makes them DAX, copying on write), seed after seed for
+//! in again, which on a DAX mount makes them DAX, copying on write) and the hostile one's
+//! (`script::HOSTILE`, TASK-149.16: offsets and lengths at and past i64's end and the largest
+//! file's, ranges onto themselves, mappings at odd offsets, MAP_FIXED over those kept, moved by
+//! mremap, madvised away, truncations racing stores, writes from buffers that fault partway and
+//! from the file's own mapping), seed after seed for
 //! FXDAX_FSX_SECS (one script if 0), each on three files of Fxfs's and three of ext4's, a disk of
 //! the guest's own, step by step, both held to the model and to each other (`differential`).
 //!
@@ -43,6 +47,13 @@ const SECS: &str = "FXDAX_FSX_SECS";
 const SHRINK_SECS: &str = "FXDAX_FSX_SHRINK_SECS";
 /// In the guest's environment, the reference's disk.
 const REFERENCE: &str = "FXDAX_FSX_REFERENCE";
+/// The reference's mount options: no delayed allocation, whose blocks a write that stopped short
+/// left reserved past the end it reached, which an O_DIRECT read past it found delayed and failed,
+/// EIO (Linux 6.18's ext4 and iomap_dio_iter; GCE r860, TASK-149.16). Allocating as it writes,
+/// ext4 lets a write's blocks past what it wrote go as it ends (ext4_write_end,
+/// ext4_truncate_failed_write).
+#[cfg_attr(feature = "host", allow(dead_code))]
+const REFERENCE_OPTIONS: &str = "nodelalloc";
 const DEFAULT_SECS: u64 = 60;
 const DEFAULT_SHRINK_SECS: u64 = 300;
 /// What the guest says as each script starts, before its seed.
@@ -70,7 +81,7 @@ fn model(n: usize) -> String {
 mod host {
     use super::*;
     use crate::common::{fxdax_guest_should_run, guest_kernel_slowness, setup_rootfs};
-    use crate::script::{self, Failure, WIDE, kind};
+    use crate::script::{self, Failure, HOSTILE, kind};
     use crate::script_vm::{self, Replays};
     use crate::test_fxfs_guest_checks::host::seed;
     use crate::vm::Vm;
@@ -167,7 +178,7 @@ mod host {
                 runner: std::env::current_exe().unwrap(),
                 test_setup,
                 seed,
-                mix: WIDE,
+                mix: HOSTILE,
                 env: &[(SECS, "0"), (SHRINK_SECS, "0")],
                 timeout: self.replay_limit(),
                 verdict: &verdict,
@@ -192,7 +203,7 @@ mod host {
                 }
                 Err(err) => format!("which a replay from a boot couldn't run: {err:#}"),
             };
-            let len = script::generate(seed, WIDE).len();
+            let len = script::generate(seed, HOSTILE).len();
             format!(
                 "{failure}\nrun seed {run}: the guest shrank script seed {seed} to {} of {len} \
                  operations, {replayed}; FXDAX_SEED={seed} {}={drops} {SECS}=0 replays it:\n  {}",
@@ -285,7 +296,7 @@ mod host {
                     said.unallowed.join("\n")
                 ));
             }
-            let files: Vec<_> = (0..WIDE.files).map(|n| (file(n), model(n))).collect();
+            let files: Vec<_> = (0..HOSTILE.files).map(|n| (file(n), model(n))).collect();
             match script_vm::stored_as_modelled(&test_setup.tmp_dir.join("fxdax.img"), &files) {
                 Some(failure) => TestOutcome::Fail(format!("the last script's files: {failure}")),
                 None => TestOutcome::Pass,
@@ -337,7 +348,7 @@ mod guest {
     use crate::Test;
     use crate::differential::{Differences, Differential};
     use crate::guest_fxfs::evict;
-    use crate::script::{self, Failure, Model, WIDE, kind};
+    use crate::script::{self, Failure, HOSTILE, Model, kind};
     use crate::script_run::{self, Faults, Options, Run};
     use crate::test_fxfs_guest_checks::guest::{mount, path, seed};
     use nix::libc;
@@ -353,13 +364,15 @@ mod guest {
     /// How many of a shrunk script's operations the guest lists.
     const LISTED: usize = 64;
 
-    /// Mounts ext4 from the disk FXDAX_FSX_REFERENCE names.
+    /// Mounts ext4 from the disk FXDAX_FSX_REFERENCE names, with REFERENCE_OPTIONS.
     fn mount_reference() {
         fs::create_dir_all(MNT).unwrap();
         let device = CString::new(std::env::var(REFERENCE).unwrap()).unwrap();
         let (target, fstype) = (CString::new(MNT).unwrap(), c"ext4");
+        let options = CString::new(REFERENCE_OPTIONS).unwrap();
         let ret = unsafe {
-            libc::mount(device.as_ptr(), target.as_ptr(), fstype.as_ptr(), 0, std::ptr::null())
+            let options = options.as_ptr().cast();
+            libc::mount(device.as_ptr(), target.as_ptr(), fstype.as_ptr(), 0, options)
         };
         assert_eq!(ret, 0, "mount {MNT}: {}", std::io::Error::last_os_error());
     }
@@ -377,14 +390,15 @@ mod guest {
         /// A script's two runs, ext4's and Fxfs's, on files made anew.
         fn differential(&self, seed: u64, faults: Option<Faults>) -> Differential {
             let names = |dir: &dyn Fn(&str) -> String| -> Vec<String> {
-                (0..WIDE.files).map(|n| dir(&file(n))).collect()
+                (0..HOSTILE.files).map(|n| dir(&file(n))).collect()
             };
             let options = Options { seeks: true, ..Options::default() };
             let reference = Run::new(
                 &names(&|name| format!("{MNT}/{name}")),
-                Options { copies_clones: true, ..options },
+                Options { copies_clones: true, largest: script_run::ext4_largest(MNT), ..options },
             );
-            let mut subject = Run::new(&names(&|name| path(name)), options);
+            let largest = if self.dax { script::LARGEST_DAX } else { script::LARGEST };
+            let mut subject = Run::new(&names(&|name| path(name)), Options { largest, ..options });
             if let Some(faults) = faults {
                 subject.inject(faults.of(seed));
             }
@@ -413,7 +427,7 @@ mod guest {
                 if Instant::now() >= deadline {
                     return None;
                 }
-                let (script, len) = script_run::numbered(seed, WIDE, drops);
+                let (script, len) = script_run::numbered(seed, HOSTILE, drops);
                 self.differential(seed, faults).script(&script, len).err()
             });
             let Some(kept) = shrunk.kept else {
@@ -423,7 +437,7 @@ mod guest {
                 );
                 return;
             };
-            let ops = script::generate(seed, WIDE);
+            let ops = script::generate(seed, HOSTILE);
             println!("{SHRUNK_LINE}{}", script::drops(&kept, len));
             for &index in kept.iter().take(LISTED) {
                 println!("  {index}: {:?}", ops[index]);
@@ -462,13 +476,15 @@ mod guest {
             let secs = Duration::from_secs(super::secs(SECS, DEFAULT_SECS));
             let shrink = Duration::from_secs(super::secs(SHRINK_SECS, DEFAULT_SHRINK_SECS));
             let deadline = Instant::now() + secs;
-            let names: Vec<String> = (0..WIDE.files).map(|n| path(&file(n))).collect();
+            let names: Vec<String> = (0..HOSTILE.files).map(|n| path(&file(n))).collect();
             let mut totals = Totals::default();
             for seed in first.. {
                 println!("{SEED_LINE}{seed}");
-                let (script, len) = script_run::numbered(seed, WIDE, &drops);
+                let (script, len) = script_run::numbered(seed, HOSTILE, &drops);
                 let began = Instant::now();
                 let mut differential = self.differential(seed, faults);
+                // A replay of part of a script, as a shrink leaves it: few steps, each said.
+                differential.says_steps = !drops.is_empty();
                 if let Err(failure) = differential.script(&script, len) {
                     eprintln!("seed {seed}: {failure}; {}", differential.subject.history());
                     drop(differential);

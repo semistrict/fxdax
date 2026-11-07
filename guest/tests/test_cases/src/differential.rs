@@ -33,11 +33,15 @@ pub struct Differential {
     /// The seed of the script, which the differences say.
     seed: u64,
     pub differences: Differences,
+    /// Whether each step is said on standard error before the subject does it: a run that dies,
+    /// as a guest does whose VM went down, said which step it was at.
+    pub says_steps: bool,
 }
 
 impl Differential {
     pub fn new(seed: u64, reference: Run, subject: Run) -> Self {
-        Self { reference, subject, seed, differences: Differences::default() }
+        let differences = Differences::default();
+        Self { reference, subject, seed, differences, says_steps: false }
     }
 
     /// Runs `script`, what's left of a script of `len` operations, on both, and checks the files as
@@ -56,6 +60,9 @@ impl Differential {
             what: format!("{}: {}", failure.kind, failure.what),
             ..failure
         })?;
+        if self.says_steps {
+            eprintln!("operation {index}: {}", theirs.step);
+        }
         let ours = self.subject.step(index, op)?;
         let failure =
             |what: String| Failure { op: Some(index), kind: kind::DIFFERS.to_owned(), what };
@@ -70,7 +77,8 @@ impl Differential {
             }
             return Ok(());
         }
-        if theirs.outcome != ours.outcome {
+        // Each run held it to the model's outcome for its own filesystem.
+        if theirs.outcome != ours.outcome && !ours.step.outcome_is_the_filesystems() {
             let step = &ours.step;
             let (theirs, ours) = (theirs.outcome, ours.outcome);
             return Err(failure(format!("`{step}` came to {theirs:?} on the reference, {ours:?}")));
@@ -208,10 +216,10 @@ impl Differences {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::script::{Place, Step, WIDE};
+    use crate::script::{HOSTILE, Place, Step, WIDE};
     use crate::script_run::Changed;
     use crate::script_run::tests::Loop;
-    use crate::script_run::{Options, fill};
+    use crate::script_run::{Options, ext4_largest, fill};
     use std::fs;
     use std::os::unix::fs::FileExt;
     use tempdir::TempDir;
@@ -313,7 +321,8 @@ mod tests {
     }
 
     /// A differential run on two ext4 filesystems of the host's, reference and subject, each on a
-    /// loop device of its own, copying clones, which ext4 can't make: not the host's temporary
+    /// loop device of its own, mounted as fxfs-guest-fsx's reference is (`Loop::reference`),
+    /// copying clones, which ext4 can't make: not the host's temporary
     /// directory's, whose filesystem may not zero ranges (tmpfs: EOPNOTSUPP, GCE r693). Fields
     /// drop in order, the runs' files first, the directory last.
     struct Host {
@@ -328,10 +337,11 @@ mod tests {
         let ext4 = |name: &str| {
             let at = dir.path().join(name);
             fs::create_dir(&at).unwrap();
-            Loop::new(&at, 300 << 20, "mkfs.ext4", &["-q", "-F"])
+            Loop::reference(&at)
         };
         let (reference, subject) = (ext4("reference"), ext4("subject"));
-        let options = Options { copies_clones: true, seeks: true, ..Options::default() };
+        let largest = ext4_largest(reference.mountpoint.to_str().unwrap());
+        let options = Options { copies_clones: true, seeks: true, largest, ..Options::default() };
         let theirs = Run::new(&names(&reference.mountpoint), options);
         let ours = Run::new(&names(&subject.mountpoint), options);
         Host { differential: Differential::new(1, theirs, ours), reference, subject, _dir: dir }
@@ -346,6 +356,21 @@ mod tests {
         let host = on_the_host();
         let mut differential = host.differential;
         let (script, len) = crate::script_run::numbered(1, WIDE, "");
+        differential
+            .script(&script, len)
+            .unwrap_or_else(|failure| panic!("{failure}; {}", differential.subject.history()));
+        let (reference, subject, _) = differential.finish();
+        assert_eq!(reference.model, subject.model);
+        drop((host.reference, host.subject, host._dir));
+    }
+
+    /// fxdax: and the hostile mix's (TASK-149.16), its far steps each held to its own filesystem's
+    /// largest file.
+    #[test]
+    fn a_hostile_script_on_one_filesystem_twice_agrees() {
+        let host = on_the_host();
+        let mut differential = host.differential;
+        let (script, len) = crate::script_run::numbered(1, HOSTILE, "");
         differential
             .script(&script, len)
             .unwrap_or_else(|failure| panic!("{failure}; {}", differential.subject.history()));

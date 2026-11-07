@@ -17,7 +17,7 @@
 //! init: there every store is a child's. Under fault injection ([`Faults`]) the same holds of
 //! ENOMEM, the operations' own calls failing their allocations.
 
-use crate::script::{self, Failure, MOST, Mix, Model, Op, Outcome, PAGE, Reach, Step, kind};
+use crate::script::{self, Failure, Limit, MOST, Mix, Model, Op, Outcome, PAGE, Reach, Step, kind};
 use nix::libc;
 use std::cell::Cell;
 use std::ffi::CString;
@@ -58,12 +58,23 @@ pub fn numbered(seed: u64, mix: Mix, drops: &str) -> (Vec<(usize, Op)>, usize) {
     (kept.into_iter().map(|index| (index, ops[index])).collect(), ops.len())
 }
 
-/// What's free on the filesystem of `name`.
-pub fn free(name: &str) -> u64 {
+/// The filesystem of `name`, as statvfs has it.
+fn statvfs(name: &str) -> libc::statvfs {
     let name = CString::new(name).unwrap();
     let mut stat: libc::statvfs = unsafe { std::mem::zeroed() };
     assert_eq!(unsafe { libc::statvfs(name.as_ptr(), &mut stat) }, 0);
+    stat
+}
+
+/// What's free on the filesystem of `name`.
+pub fn free(name: &str) -> u64 {
+    let stat = statvfs(name);
     stat.f_bfree as u64 * stat.f_frsize as u64
+}
+
+/// fxdax: the largest file of the ext4 filesystem `name` is on, by its blocks' size.
+pub fn ext4_largest(name: &str) -> u64 {
+    script::largest_ext4(statvfs(name).f_bsize as u64)
 }
 
 /// Takes all the room but `left` on a filesystem, or as much as it gives, with the file `ballast`:
@@ -110,6 +121,54 @@ impl Mapping {
 
     fn slice(&self, at: u64, len: usize) -> &[u8] {
         unsafe { std::slice::from_raw_parts(self.bytes.add(at as usize), len) }
+    }
+
+    /// fxdax: the mapping remapped `len` bytes long (mremap), and moved, to where a reservation of
+    /// that many bytes was.
+    fn moved(self, len: usize) -> io::Result<Self> {
+        let to = Self::of(-1, 0, len, libc::MAP_PRIVATE)?;
+        let flags = libc::MREMAP_MAYMOVE | libc::MREMAP_FIXED;
+        let moved =
+            unsafe { libc::mremap(self.bytes.cast(), self.len, len, flags, to.bytes.cast::<u8>()) };
+        if moved == libc::MAP_FAILED {
+            return Err(io::Error::last_os_error());
+        }
+        assert_eq!(moved.cast(), to.bytes, "mremap's MREMAP_FIXED");
+        std::mem::forget((self, to));
+        Ok(Self { bytes: moved.cast(), len })
+    }
+}
+
+/// fxdax: maps `len` bytes of `fd` from `offset` at `place`, shared, MAP_FIXED over whatever was
+/// mapped there: part of a mapping kept, which unmaps it.
+fn map_fixed(place: *mut u8, fd: libc::c_int, offset: u64, len: usize) -> io::Result<()> {
+    let prot = libc::PROT_READ | libc::PROT_WRITE;
+    let flags = libc::MAP_SHARED | libc::MAP_FIXED;
+    let map = unsafe { libc::mmap(place.cast(), len, prot, flags, fd, offset as i64) };
+    if map == libc::MAP_FAILED {
+        return Err(io::Error::last_os_error());
+    }
+    assert_eq!(map.cast(), place, "mmap's MAP_FIXED");
+    Ok(())
+}
+
+/// fxdax: a buffer holding `bytes`, whose next byte faults: they end where a page that allows no
+/// access starts.
+struct Faulting {
+    _mapping: Mapping,
+    start: *const u8,
+}
+
+impl Faulting {
+    fn new(bytes: &[u8]) -> Self {
+        let pages = bytes.len().div_ceil(PAGE as usize) + 1;
+        let mapping = Mapping::of(-1, 0, pages * PAGE as usize, libc::MAP_PRIVATE).expect("mmap");
+        let fault = unsafe { mapping.bytes.add((pages - 1) * PAGE as usize) };
+        let protected = unsafe { libc::mprotect(fault.cast(), PAGE as usize, libc::PROT_NONE) };
+        assert_eq!(protected, 0, "mprotect: {}", io::Error::last_os_error());
+        let start = unsafe { fault.sub(bytes.len()) };
+        unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), start, bytes.len()) };
+        Self { _mapping: mapping, start }
     }
 }
 
@@ -177,7 +236,7 @@ pub struct Ran {
 }
 
 /// fxdax: what a run's filesystem is, and may do.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Options {
     /// Whether it may refuse operations for lack of room.
     pub full: bool,
@@ -187,6 +246,15 @@ pub struct Options {
     /// Whether whole-file checks walk the files' holes and data too (SEEK_HOLE, SEEK_DATA), each a
     /// file's writeback.
     pub seeks: bool,
+    /// Its largest file, which says what a far step comes to (`script::far`): the VFS's, but for
+    /// ext4 ([`ext4_largest`]) and Fxfs with a DAX window (`script::LARGEST_DAX`).
+    pub largest: u64,
+}
+
+impl Default for Options {
+    fn default() -> Self {
+        Self { full: false, copies_clones: false, seeks: false, largest: script::LARGEST }
+    }
 }
 
 /// fxdax: the kernel's fault injection (failslab and fail_page_alloc, a debug kernel's: TASK-44.10)
@@ -334,6 +402,8 @@ pub struct Run {
     touches: Vec<(usize, String, Reach)>,
     /// fxdax: the byte of which file a check found differing from the model, the first.
     differed: Cell<Option<(usize, u64)>>,
+    /// fxdax: the file far steps write, empty between them, once made (`Run::far_file`).
+    far: Option<fs::File>,
 }
 
 impl Run {
@@ -365,6 +435,7 @@ impl Run {
             dax,
             touches,
             differed,
+            far: None,
         }
     }
 
@@ -387,7 +458,12 @@ impl Run {
     pub fn step(&mut self, index: usize, op: &Op) -> Result<Effect, Failure> {
         let failure = |(kind, what): Failed| Failure { op: Some(index), kind, what };
         let step = self.model.resolve(op);
-        let expected = self.model.outcome(&step);
+        let expected = match step {
+            Step::Far { at, ref data, truncate } => {
+                script::far(at, data.len() as u64, truncate, self.options.largest)
+            }
+            ref step => self.model.outcome(step),
+        };
         self.calls.set((index, 0));
         let reach = step.reach(&self.model);
         self.done.push(step.to_string());
@@ -532,36 +608,11 @@ impl Run {
         let fd = |file: usize| self.files[file].as_raw_fd();
         match step {
             Step::Write { file, at, data } => {
-                let (file, fd) = (*file, fd(*file));
-                let call = || {
-                    counted(unsafe {
-                        libc::pwrite(fd, data.as_ptr().cast(), data.len(), *at as i64)
-                    })
-                };
-                let written = match self.call(call) {
-                    Ok(written) => written as usize,
-                    Err(err) => return self.failed(step, "pwrite", err),
-                };
-                let may_refuse = self.options.full || self.faults.is_some();
-                if written < data.len() && !may_refuse {
-                    let what = format!("{written:#x} bytes of {:#x} at {at:#x}", data.len());
-                    return Err((kind::SHORT_WRITE.to_owned(), what));
-                }
-                self.model.write(file, *at, &data[..written]);
-                if written < data.len() {
-                    self.refuse(&format!("{written:#x} bytes written"));
-                    self.check_read(file)?;
-                }
-                Ok(Ok(written as u64))
+                self.pwrite(step, *file, *at, data.as_ptr(), data, data.len())
             }
             Step::Store { file, at, data, child } => {
                 let mapped = unsafe { self.maps[*file].bytes.add(*at as usize) };
-                let stored = if *child || self.options.full {
-                    self.store_in_child(mapped, data)?
-                } else {
-                    store(mapped, data);
-                    data.len()
-                };
+                let stored = self.store_through(mapped, data, *child)?;
                 self.model.write(*file, *at, &data[..stored]);
                 Ok(Ok(stored as u64))
             }
@@ -676,6 +727,46 @@ impl Run {
                 }
             }
             Step::Reopen { file } => self.reopen(*file).map(|()| Ok(0)),
+            Step::Limit { file, call, at, len } => {
+                self.limit(step, *file, *call, *at, *len, expected)
+            }
+            Step::Far { at, data, truncate } => self.far(step, *at, data, *truncate, expected),
+            Step::MapOdd { file, at, len } => self.map_odd(step, *file, *at, *len),
+            Step::MapFixed { file, over, at, data } => self.map_fixed(*file, *over, *at, data),
+            Step::Mremap { file, at, data } => self.mremap(*file, *at, data),
+            Step::Madvise { file, at, len, remove, odd } => {
+                let start = unsafe { self.maps[*file].bytes.add((at + u64::from(*odd)) as usize) };
+                let advice = if *remove { libc::MADV_REMOVE } else { libc::MADV_DONTNEED };
+                match self
+                    .call(|| done(unsafe { libc::madvise(start.cast(), *len as usize, advice) }))
+                {
+                    Ok(_) => {
+                        self.model.apply(step);
+                        Ok(Ok(0))
+                    }
+                    Err(err) => self.failed(step, "madvise", err),
+                }
+            }
+            Step::TruncateRacing { file, size, at, data } => {
+                self.truncate_racing(*file, *size, *at, data)
+            }
+            // Checked at once, as a write that failed partway may leave a file's size or bytes
+            // as no write would (TASK-133).
+            Step::FaultingWrite { file, at, data, good } => {
+                let buffer = Faulting::new(&data[..*good as usize]);
+                let outcome = self.pwrite(step, *file, *at, buffer.start, data, *good as usize)?;
+                self.check_around(*file, *at, data.len() as u64).map_err(came_to(outcome))?;
+                Ok(outcome)
+            }
+            // The mapping's bytes are what the model has, before the write.
+            Step::WriteFromMapping { file, src, dst, len } => {
+                let from = unsafe { self.maps[*file].bytes.add(*src as usize) };
+                fault_in(from, *len as usize);
+                let bytes = self.model.files[*file][*src as usize..(*src + *len) as usize].to_vec();
+                let outcome = self.pwrite(step, *file, *dst, from, &bytes, *len as usize)?;
+                self.check_around(*file, *dst, *len).map_err(came_to(outcome))?;
+                Ok(outcome)
+            }
             Step::Check => {
                 for file in 0..self.files.len() {
                     self.check_whole(file)?;
@@ -683,6 +774,328 @@ impl Run {
                 Ok(Ok(0))
             }
         }
+    }
+
+    /// pwrite(2) of `bytes.len()` bytes from `from` at `at` of `file`, `step`'s call, the model
+    /// writing as many of `bytes` as it wrote: fewer than `whole`, which it had what it needed to
+    /// write, a refusal on a filesystem that may refuse, else a short write.
+    fn pwrite(
+        &mut self,
+        step: &Step,
+        file: usize,
+        at: u64,
+        from: *const u8,
+        bytes: &[u8],
+        whole: usize,
+    ) -> Result<Outcome, Failed> {
+        let fd = self.files[file].as_raw_fd();
+        let call = || counted(unsafe { libc::pwrite(fd, from.cast(), bytes.len(), at as i64) });
+        let written = match self.call(call) {
+            Ok(written) => written as usize,
+            Err(err) => return self.failed(step, "pwrite", err),
+        };
+        let may_refuse = self.options.full || self.faults.is_some();
+        if written < whole && !may_refuse {
+            let what = format!("{written:#x} bytes of {whole:#x} at {at:#x}");
+            return Err((kind::SHORT_WRITE.to_owned(), what));
+        }
+        self.model.write(file, at, &bytes[..written.min(bytes.len())]);
+        if written < whole {
+            self.refuse(&format!("{written:#x} bytes written"));
+            self.check_read(file)?;
+        }
+        Ok(Ok(written as u64))
+    }
+
+    /// Stores `data` at `mapped`, of a file's mapping: from a child, if `child`, or on a filesystem
+    /// that may have no room for them ([`Run::store_in_child`]). How many it stored.
+    fn store_through(
+        &mut self,
+        mapped: *mut u8,
+        data: &[u8],
+        child: bool,
+    ) -> Result<usize, Failed> {
+        if child || self.options.full {
+            return self.store_in_child(mapped, data, 1, None);
+        }
+        store(mapped, data);
+        Ok(data.len())
+    }
+
+    /// fxdax: a call with arguments no well-behaved caller passes, `call` of `len` bytes at `at` of
+    /// `file`, as the model has `step`: whose outcome, a clone's on a filesystem without reflinks, is
+    /// the model's, `expected`.
+    fn limit(
+        &mut self,
+        step: &Step,
+        file: usize,
+        call: Limit,
+        at: i64,
+        len: u64,
+        expected: &Outcome,
+    ) -> Result<Outcome, Failed> {
+        let fd = self.files[file].as_raw_fd();
+        // A buffer for a read's or a write's length: a clone's is negative.
+        let mut buffer = vec![0u8; if len >> 63 == 0 { len as usize } else { 0 }];
+        touch(buffer.as_mut_ptr(), buffer.len());
+        let pointer = buffer.as_mut_ptr();
+        let (what, made) = match call {
+            Limit::WritePastI64 | Limit::WriteNegative => (
+                "pwrite",
+                self.call(|| {
+                    counted(unsafe { libc::pwrite(fd, pointer.cast(), len as usize, at) })
+                }),
+            ),
+            Limit::ReadPastI64 => (
+                "pread",
+                self.call(|| counted(unsafe { libc::pread(fd, pointer.cast(), len as usize, at) })),
+            ),
+            Limit::TruncateNegative => {
+                ("ftruncate", self.call(|| done(unsafe { libc::ftruncate(fd, at) })))
+            }
+            Limit::AllocateNothing | Limit::AllocateNegative | Limit::AllocatePastI64 => {
+                ("fallocate", self.call(|| done(unsafe { libc::fallocate(fd, 0, at, len as i64) })))
+            }
+            Limit::CopyFromPastI64 => {
+                let (mut src, mut dst) = (at, 0i64);
+                let copy = || {
+                    counted(unsafe {
+                        let (src, dst): (*mut i64, *mut i64) = (&mut src, &mut dst);
+                        libc::syscall(libc::SYS_copy_file_range, fd, src, fd, dst, len, 0u32)
+                    } as isize)
+                };
+                ("copy_file_range", self.call(copy))
+            }
+            Limit::CloneNegative if self.options.copies_clones => return Ok(*expected),
+            Limit::CloneNegative => {
+                let range = CloneRange {
+                    src_fd: fd as i64,
+                    src_offset: at as u64,
+                    src_length: len,
+                    dest_offset: 0,
+                };
+                let clone = || done(unsafe { libc::ioctl(fd, FICLONERANGE as _, &range) });
+                ("FICLONERANGE", self.call(clone))
+            }
+        };
+        match made {
+            Ok(count) => Ok(Ok(count)),
+            Err(err) => self.failed(step, what, err),
+        }
+    }
+
+    /// fxdax: the run's far file, which far steps write, made empty at the first, evicted and read
+    /// in again, so that on a DAX mount it is DAX.
+    fn far_file(&mut self) -> io::Result<libc::c_int> {
+        if self.far.is_none() {
+            let name = format!("{}-far", self.names[0]);
+            let mut options = fs::OpenOptions::new();
+            options.create(true).truncate(true).read(true).write(true);
+            options.open(&name)?.sync_all()?;
+            fs::write("/proc/sys/vm/drop_caches", b"2")?;
+            self.far = Some(fs::OpenOptions::new().read(true).write(true).open(&name)?);
+        }
+        Ok(self.far.as_ref().expect("the far file").as_raw_fd())
+    }
+
+    /// fxdax: a far step, `step`: a write of `data` at `at` of the far file, or its truncation to
+    /// `at`, which comes to `expected` if it is the filesystem's to say. What it did is checked,
+    /// through read(2) and a mapping, and the far file made empty again.
+    fn far(
+        &mut self,
+        step: &Step,
+        at: u64,
+        data: &[u8],
+        truncate: bool,
+        expected: &Outcome,
+    ) -> Result<Outcome, Failed> {
+        let fd = match self.far_file() {
+            Ok(fd) => fd,
+            Err(err) => return self.failed(step, "making the far file", err),
+        };
+        let (what, made) = match truncate {
+            true => ("ftruncate", self.call(|| done(unsafe { libc::ftruncate(fd, at as i64) }))),
+            false => (
+                "pwrite",
+                self.call(|| {
+                    counted(unsafe {
+                        libc::pwrite(fd, data.as_ptr().cast(), data.len(), at as i64)
+                    })
+                }),
+            ),
+        };
+        let outcome = match made {
+            Ok(count) => Ok(count),
+            Err(err) => self.failed(step, what, err)?,
+        };
+        if outcome == *expected
+            && let Ok(count) = outcome
+        {
+            self.check_far(at, &data[..count as usize], truncate)?;
+        }
+        let far = self.far.as_ref().expect("the far file");
+        far.set_len(0).map_err(|err| errno("making the far file empty", &err))?;
+        Ok(outcome)
+    }
+
+    /// fxdax: checks the far file holds `data` at `at`, and nothing else, or, `truncate`, that it
+    /// is `at` bytes long.
+    fn check_far(&self, at: u64, data: &[u8], truncate: bool) -> Result<(), Failed> {
+        let far = self.far.as_ref().expect("the far file");
+        let size = far.metadata().map_err(|err| errno("fstat of the far file", &err))?.len();
+        let end = if truncate { at } else { at + data.len() as u64 };
+        if size != end {
+            return Err(differs(format!("the far file has size {size:#x}, not {end:#x}")));
+        }
+        if truncate || data.is_empty() {
+            return Ok(());
+        }
+        let mut got = vec![0u8; data.len()];
+        let read = far.read_at(&mut got, at).map_err(|err| errno("pread of the far file", &err))?;
+        if got[..read] != *data {
+            let first = got.iter().zip(data).position(|(a, b)| a != b).unwrap_or(read);
+            let what =
+                format!("the far file reads {read:#x} bytes at {at:#x}, differing at {first:#x}");
+            return Err(differs(what));
+        }
+        // Through a mapping, from the page it starts in, whose bytes before it are a hole's: none
+        // of pages past the VFS's largest file, which i64's last one is (file_mmap_ok).
+        let first = at / PAGE * PAGE;
+        let len = (at - first) as usize + data.len();
+        let mapped = Mapping::of(far.as_raw_fd(), first, len, libc::MAP_SHARED);
+        let past = first + (len as u64).next_multiple_of(PAGE) > script::LARGEST;
+        let mapping = match mapped {
+            Err(err) if past && err.raw_os_error() == Some(libc::EOVERFLOW) => return Ok(()),
+            Err(err) => return Err(errno(&format!("mmap of the far file at {first:#x}"), &err)),
+            Ok(_) if past => {
+                return Err(differs(format!("the far file mapped at {first:#x}, past the end")));
+            }
+            Ok(mapping) => mapping,
+        };
+        let want = [vec![0; (at - first) as usize], data.to_vec()].concat();
+        if let Some(off) = mapping.slice(0, len).iter().zip(&want).position(|(a, b)| a != b) {
+            let what = format!("the far file's mapping differs at {:#x}", first + off as u64);
+            return Err(differs(what));
+        }
+        Ok(())
+    }
+
+    /// fxdax: mmap of `len` bytes at `at` of `file`, as the model has `step`: its bytes within the
+    /// file's last page, the file's, then zeros, checked.
+    fn map_odd(&mut self, step: &Step, file: usize, at: u64, len: u64) -> Result<Outcome, Failed> {
+        let fd = self.files[file].as_raw_fd();
+        let mapping = match self.call(|| Mapping::of(fd, at, len as usize, libc::MAP_SHARED)) {
+            Ok(mapping) => mapping,
+            Err(err) => return self.failed(step, "mmap", err),
+        };
+        let model = &self.model.files[file];
+        let end = (model.len() as u64).next_multiple_of(PAGE).clamp(at, at + len);
+        let want: Vec<u8> =
+            (at..end).map(|i| model.get(i as usize).copied().unwrap_or(0)).collect();
+        if let Some(off) = mapping.slice(0, want.len()).iter().zip(&want).position(|(a, b)| a != b)
+        {
+            let at = at + off as u64;
+            self.differs_at(file, at);
+            return Err(differs(format!("file {file} mapped oddly differs at {at:#x}")));
+        }
+        Ok(Ok(0))
+    }
+
+    /// fxdax: stores `data` at `at` of `file` through a mapping of its pages MAP_FIXED over the same
+    /// pages of the mapping kept of `over`, whose own are then mapped back, if it's another's.
+    fn map_fixed(
+        &mut self,
+        file: usize,
+        over: usize,
+        at: u64,
+        data: &[u8],
+    ) -> Result<Outcome, Failed> {
+        if data.is_empty() {
+            return Ok(Ok(0));
+        }
+        let first = at / PAGE * PAGE;
+        let len = (at - first) as usize + data.len();
+        let place = unsafe { self.maps[over].bytes.add(first as usize) };
+        let fd = self.files[file].as_raw_fd();
+        map_fixed(place, fd, first, len).map_err(|err| errno("mmap with MAP_FIXED", &err))?;
+        let stored =
+            self.store_through(unsafe { place.add((at - first) as usize) }, data, false)?;
+        if over != file {
+            let fd = self.files[over].as_raw_fd();
+            map_fixed(place, fd, first, len).map_err(|err| errno("mmap back", &err))?;
+        }
+        self.model.write(file, at, &data[..stored]);
+        Ok(Ok(stored as u64))
+    }
+
+    /// fxdax: stores `data` at `at` of `file` through a mapping made for them, half of them before
+    /// it is remapped twice as large, and moved (mremap), half after; then reads them back through
+    /// it.
+    fn mremap(&mut self, file: usize, at: u64, data: &[u8]) -> Result<Outcome, Failed> {
+        if data.is_empty() {
+            return Ok(Ok(0));
+        }
+        let (page, first) = (PAGE as usize, at / PAGE * PAGE);
+        let off = (at - first) as usize;
+        let small = (off + data.len()).div_ceil(2).next_multiple_of(page).max(page);
+        let fd = self.files[file].as_raw_fd();
+        let mapping =
+            Mapping::of(fd, first, small, libc::MAP_SHARED).map_err(|err| errno("mmap", &err))?;
+        let before = (small - off).min(data.len());
+        let mut stored =
+            self.store_through(unsafe { mapping.bytes.add(off) }, &data[..before], false)?;
+        let mapping = mapping.moved(2 * small).map_err(|err| errno("mremap", &err))?;
+        if stored == before {
+            let after = unsafe { mapping.bytes.add(off + before) };
+            stored += self.store_through(after, &data[before..], false)?;
+        }
+        self.model.write(file, at, &data[..stored]);
+        if let Some(i) =
+            mapping.slice(off as u64, stored).iter().zip(data).position(|(a, b)| a != b)
+        {
+            let at = at + i as u64;
+            self.differs_at(file, at);
+            return Err(differs(format!("file {file}'s mapping moved differs at {at:#x}")));
+        }
+        Ok(Ok(stored as u64))
+    }
+
+    /// fxdax: truncates `file` down to `size` and back, again and again, while a child stores
+    /// `data` at `at`, below both, through the mapping kept, again and again; then checks the file
+    /// around the store and the size it went down to.
+    fn truncate_racing(
+        &mut self,
+        file: usize,
+        size: u64,
+        at: u64,
+        data: &[u8],
+    ) -> Result<Outcome, Failed> {
+        const PASSES: usize = 64;
+        let was = self.model.files[file].len() as u64;
+        let fd = self.files[file].as_raw_fd();
+        let failed: Cell<Option<io::Error>> = Cell::new(None);
+        let mut race = || {
+            for to in [size, was] {
+                if let Err(err) = done(unsafe { libc::ftruncate(fd, to as i64) }) {
+                    failed.set(Some(err));
+                }
+            }
+        };
+        let stored = if data.is_empty() {
+            race();
+            0
+        } else {
+            let mapped = unsafe { self.maps[file].bytes.add(at as usize) };
+            self.store_in_child(mapped, data, PASSES, Some(&mut race))?
+        };
+        if let Some(err) = failed.take() {
+            return Err(errno("ftruncate racing a store", &err));
+        }
+        let data = data[..stored].to_vec();
+        self.model.apply(&Step::TruncateRacing { file, size, at, data });
+        self.check_around(file, at, stored as u64)?;
+        self.check_around(file, size.min(was), 0)?;
+        Ok(Ok(stored as u64))
     }
 
     /// fxdax: fallocate of `mode` on `len` bytes at `at` of `file`, as the model has `step`.
@@ -706,7 +1119,15 @@ impl Run {
 
     /// Stores `data` at `mapped`, of a file's mapping, from a child, which inherits it: all of it,
     /// or on a filesystem with no room left, as much as the child got to store before it died.
-    fn store_in_child(&mut self, mapped: *mut u8, data: &[u8]) -> Result<usize, Failed> {
+    /// fxdax: the child stores it `passes` times over, while this process calls `race` until the
+    /// child is done, if it's given, and once at least.
+    fn store_in_child(
+        &mut self,
+        mapped: *mut u8,
+        data: &[u8],
+        passes: usize,
+        mut race: Option<&mut dyn FnMut()>,
+    ) -> Result<usize, Failed> {
         let stored = unsafe { AtomicUsize::from_ptr(self.stored.bytes.cast()) };
         stored.store(0, Ordering::Relaxed);
         let child = unsafe { libc::fork() };
@@ -714,14 +1135,30 @@ impl Run {
         if child == 0 {
             // No core of a death a full filesystem is allowed: a host counts one as a crash.
             unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0) };
-            for (i, &byte) in data.iter().enumerate() {
-                unsafe { mapped.add(i).write_volatile(byte) };
-                stored.store(i + 1, Ordering::Release);
+            for pass in 0..passes {
+                for (i, &byte) in data.iter().enumerate() {
+                    unsafe { mapped.add(i).write_volatile(byte) };
+                    if pass == 0 {
+                        stored.store(i + 1, Ordering::Release);
+                    }
+                }
             }
             unsafe { libc::_exit(0) };
         }
         let mut status = 0;
-        assert_eq!(unsafe { libc::waitpid(child, &mut status, 0) }, child);
+        let wait = if race.is_some() { libc::WNOHANG } else { 0 };
+        loop {
+            if let Some(race) = race.as_mut() {
+                race();
+            }
+            match unsafe { libc::waitpid(child, &mut status, wait) } {
+                0 => continue,
+                waited => {
+                    assert_eq!(waited, child, "waitpid: {}", io::Error::last_os_error());
+                    break;
+                }
+            }
+        }
         if libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0 {
             return Ok(data.len());
         }
@@ -868,7 +1305,7 @@ impl Run {
         let mapping = Mapping::of(fd, first, len, flags).map_err(|err| errno("mmap", &err))?;
         let mapped = unsafe { mapping.bytes.add((at - first) as usize) };
         let stored = if self.options.full && !private {
-            self.store_in_child(mapped, data)?
+            self.store_in_child(mapped, data, 1, None)?
         } else {
             store(mapped, data);
             data.len()
@@ -970,12 +1407,18 @@ impl Run {
         let first =
             (got.iter().zip(want).position(|(a, b)| a != b)).unwrap_or(got.len().min(want.len()));
         self.differs_at(file, at + first as u64);
+        // What each has from there: a few bytes, and how many differ in a row.
+        let (theirs, ours) = (&got[first..], &want[first.min(want.len())..]);
+        let differing = theirs.iter().zip(ours).take_while(|(a, b)| a != b).count();
+        let few = |bytes: &[u8]| format!("{:02x?}", &bytes[..bytes.len().min(8)]);
         Err(differs(format!(
             "{len:#x} bytes {how} at {at:#x} of file {file}: {} bytes, differing from the model at \
-             {:#x} ({} bytes there)",
+             {:#x} ({} bytes there), {differing:#x} bytes in a row: {} where the model has {}",
             got.len(),
             at as usize + first,
-            want.len()
+            want.len(),
+            few(theirs),
+            few(ours)
         )))
     }
 
@@ -997,6 +1440,17 @@ impl Run {
         let fd = self.files[file].as_raw_fd();
         assert_eq!(unsafe { libc::posix_fadvise(fd, 0, 0, libc::POSIX_FADV_DONTNEED) }, 0);
         self.check(file, 0, size + PAGE).map(drop)
+    }
+
+    /// fxdax: checks `file`'s size, and its bytes around `len` at `at`, a page either side, against
+    /// the model: at once after a step that may leave them as it shouldn't.
+    fn check_around(&self, file: usize, at: u64, len: u64) -> Result<(), Failed> {
+        let (size, want) = (self.length(file)?, self.model.files[file].len() as u64);
+        if size != want {
+            return Err(differs(format!("file {file} has size {size:#x}, the model's {want:#x}")));
+        }
+        let start = at.saturating_sub(PAGE) / PAGE * PAGE;
+        self.check(file, start, (at + len + PAGE).next_multiple_of(PAGE) - start).map(drop)
     }
 
     /// Checks all of `file`, its size, and through read(2) and its mapping, against the model; and
@@ -1055,6 +1509,11 @@ impl Run {
     }
 }
 
+/// fxdax: a failure, of a check after a step that came to `outcome`, saying so.
+fn came_to(outcome: Outcome) -> impl FnOnce(Failed) -> Failed {
+    move |(kind, what)| (kind, format!("{what}, after the step came to {outcome:?}"))
+}
+
 /// fxdax: what failing to come to `expected`, coming to `outcome`, says of `step`.
 fn unexpected(step: &Step, outcome: Outcome, expected: Outcome) -> Failed {
     match (outcome, expected) {
@@ -1084,9 +1543,22 @@ fn open(name: &str, empty: bool) -> fs::File {
 /// to a page of it not there faults it in, and a fault whose allocation fault injection failed is
 /// the call's EFAULT, which is no filesystem's (GCE r783).
 fn touch(bytes: *mut u8, len: usize) {
-    for at in (0..len).step_by(PAGE as usize) {
+    for at in pages(len) {
         unsafe { bytes.add(at).write_volatile(0) };
     }
+}
+
+/// fxdax: faults in the `len` bytes at `bytes`, a call's source, reading them.
+fn fault_in(bytes: *const u8, len: usize) {
+    for at in pages(len) {
+        unsafe { bytes.add(at).read_volatile() };
+    }
+}
+
+/// fxdax: of `len` bytes, one in each page they reach, wherever in a page they start: every
+/// page's worth, and the last.
+fn pages(len: usize) -> impl Iterator<Item = usize> {
+    (0..len).step_by(PAGE as usize).chain(len.checked_sub(1))
 }
 
 /// Stores `data` at `mapped`.
@@ -1121,7 +1593,7 @@ fn is_dax(file: &fs::File) -> bool {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::script::{ONE_FILE, Place, SEVERAL_FILES, TRIES, WIDE, shrink_failure};
+    use crate::script::{HOSTILE, ONE_FILE, Place, SEVERAL_FILES, TRIES, WIDE, shrink_failure};
     use std::process::Command;
     use tempdir::TempDir;
 
@@ -1209,6 +1681,191 @@ pub(crate) mod tests {
         let ran = run.finish();
         assert_eq!(ran.dax, 0);
         assert_hold(&names, &ran.model);
+    }
+
+    /// fxdax: the hostile mix's scripts (TASK-149.16), on XFS, with reflinks, and on ext4 as
+    /// fxfs-guest-fsx's reference has it, its clones copies: every errno the model says of them,
+    /// the kernel says. XFS's without writes from buffers that fault, which leave what a page held
+    /// in a hole (`a_write_stopped_short_in_a_hole_leaves_zeros`).
+    #[test]
+    fn hostile_scripts_pass_on_xfs_and_ext4() {
+        let dir = TempDir::new("script").unwrap();
+        let at = |name: &str| {
+            let at = dir.path().join(name);
+            fs::create_dir(&at).unwrap();
+            at
+        };
+        let xfs = Loop::reflinks(&at("xfs"));
+        let ext4 = Loop::reference(&at("ext4"));
+        let largest = ext4_largest(ext4.mountpoint.to_str().unwrap());
+        let ext4_options =
+            Options { copies_clones: true, seeks: true, largest, ..Options::default() };
+        let xfs_options = Options { seeks: true, ..Options::default() };
+        for (mountpoint, options, faulting) in
+            [(&xfs.mountpoint, xfs_options, false), (&ext4.mountpoint, ext4_options, true)]
+        {
+            let names = names(mountpoint, HOSTILE);
+            for seed in 1..=seeds() {
+                let (mut script, len) = numbered(HOSTILE, seed);
+                script.retain(|(_, op)| faulting || !matches!(op, Op::FaultingWrite { .. }));
+                let mut run = Run::new(&names, options);
+                run.script(&script, len).unwrap_or_else(|failure| run.fail(seed, &failure));
+                let ran = run.finish();
+                assert_eq!(ran.refused, 0);
+                assert_hold(&names, &ran.model);
+            }
+        }
+    }
+
+    /// fxdax: a write from a buffer that faults partway, into a hole, unaligned, which ends in a
+    /// page it writes part of: what it didn't write of that page stays a hole's, zeros. Not on XFS,
+    /// whose iomap marks the page up to date as it zeroes what lies outside the write, before the
+    /// copy, and keeps a short one, the rest of what the write was to cover holding what the page
+    /// held before (Linux 6.18 and 7.2's __iomap_write_begin and __iomap_write_end): a kernel's
+    /// memory, unless it zeroes pages as it allocates them (init_on_alloc).
+    #[test]
+    fn a_write_stopped_short_in_a_hole_leaves_zeros() {
+        let dir = TempDir::new("script").unwrap();
+        let ext4 = Loop::new(dir.path(), 300 << 20, "mkfs.ext4", &["-q", "-F"]);
+        let names = names(&ext4.mountpoint, HOSTILE);
+        let mut run = Run::new(&names, Options::default());
+        let ops = [
+            Op::Truncate { file: 1, size: 4 * PAGE },
+            Op::FaultingWrite {
+                file: 1,
+                place: Place::At(0x63a),
+                len: 0x18ea,
+                good: 0x140e,
+                data: 2,
+            },
+            Op::FaultingWrite {
+                file: 1,
+                place: Place::At(3 * PAGE + 5),
+                len: 99,
+                good: 0,
+                data: 3,
+            },
+        ];
+        let outcomes: Vec<Outcome> = (ops.iter().enumerate())
+            .map(|(index, op)| {
+                run.step(index, op).unwrap_or_else(|failure| run.fail(0, &failure)).outcome
+            })
+            .collect();
+        assert_eq!(outcomes, [Ok(0), Ok(0x140e), Err(script::errno::EFAULT)]);
+        assert_hold(&names, &run.model);
+    }
+
+    /// fxdax: an O_DIRECT read of the page an append from a buffer that faults stopped short in,
+    /// and past it, on ext4 as fxfs-guest-fsx's reference has it. With delayed allocation, Linux
+    /// 6.18's ext4 and 7.2's leave the blocks the write reserved past the end it reached, which
+    /// iomap's direct read finds delayed and fails, EIO ("Direct I/O collision with buffered
+    /// writes!", iomap_dio_iter; GCE r860, fxfs-guest-fsx, the reference refusing).
+    #[test]
+    fn a_direct_read_past_an_append_stopped_short_reads_the_file() {
+        let dir = TempDir::new("script").unwrap();
+        let ext4 = Loop::reference(dir.path());
+        let names = names(&ext4.mountpoint, HOSTILE);
+        let mut run = Run::new(&names, Options::default());
+        let ops = [
+            Op::Truncate { file: 0, size: 0xb054f },
+            Op::FaultingWrite {
+                file: 0,
+                place: Place::FromEnd(0),
+                len: 0x3a34,
+                good: 0x149c,
+                data: 2,
+            },
+            Op::Direct { file: 0, place: Place::FromEnd(-5260), pages: 4, data: 1, write: false },
+        ];
+        let outcomes: Vec<Outcome> = (ops.iter().enumerate())
+            .map(|(index, op)| {
+                run.step(index, op).unwrap_or_else(|failure| run.fail(0, &failure)).outcome
+            })
+            .collect();
+        assert_eq!(outcomes, [Ok(0), Ok(0x149c), Ok(0x19eb)]);
+        assert_hold(&names, &run.model);
+    }
+
+    /// fxdax: hostile steps, each, on ext4: what each comes to, and what the files hold after.
+    #[test]
+    fn hostile_steps_come_to_what_the_model_says() {
+        let dir = TempDir::new("script").unwrap();
+        let ext4 = Loop::new(dir.path(), 300 << 20, "mkfs.ext4", &["-q", "-F"]);
+        let names = names(&ext4.mountpoint, HOSTILE);
+        let largest = ext4_largest(ext4.mountpoint.to_str().unwrap());
+        let options = Options { copies_clones: true, largest, ..Options::default() };
+        let mut run = Run::new(&names, options);
+        let far = |base, k, truncate| Op::Far { base, k, len: 100, data: 3, truncate };
+        let ops = [
+            Op::Write { file: 0, place: Place::At(0), len: 5 * PAGE + 7, data: 1 },
+            Op::Write { file: 1, place: Place::At(0), len: 2 * PAGE, data: 2 },
+            Op::Limit { file: 0, call: Limit::WritePastI64, k: 5, len: 10 },
+            Op::Limit { file: 0, call: Limit::ReadPastI64, k: 50, len: 10 },
+            Op::Limit { file: 0, call: Limit::AllocatePastI64, k: 5, len: 10 },
+            Op::Limit { file: 0, call: Limit::CopyFromPastI64, k: 5, len: 10 },
+            far(largest, -10, false),
+            far(largest, 0, false),
+            far(largest, 0, true),
+            far(largest, 1, true),
+            far(1 << 30, 7, false),
+            far(script::LARGEST, 1, false),
+            Op::MapOdd { file: 0, place: Place::At(PAGE + 1), len: 10, aligned: false },
+            Op::MapOdd { file: 0, place: Place::At(5 * PAGE), len: 2 * PAGE, aligned: true },
+            Op::MapFixed { file: 1, over: 0, place: Place::At(PAGE - 3), len: 10, data: 4 },
+            Op::MapFixed { file: 0, over: 0, place: Place::At(3), len: 10, data: 5 },
+            Op::Mremap { file: 0, place: Place::At(PAGE - 5), len: 3 * PAGE, data: 6 },
+            Op::Madvise { file: 0, place: Place::At(PAGE + 9), len: 10, remove: true, odd: false },
+            Op::Madvise { file: 0, place: Place::At(PAGE), len: 10, remove: false, odd: true },
+            Op::TruncateRacing {
+                file: 0,
+                size: 2 * PAGE + 3,
+                place: Place::At(PAGE),
+                len: 99,
+                data: 7,
+            },
+            Op::FaultingWrite { file: 1, place: Place::FromEnd(0), len: 300, good: 0, data: 8 },
+            Op::FaultingWrite { file: 1, place: Place::FromEnd(-5), len: 300, good: 123, data: 9 },
+            Op::WriteFromMapping { file: 0, place: Place::At(100), len: 2 * PAGE, by: 0 },
+            Op::WriteFromMapping { file: 0, place: Place::At(PAGE), len: 2 * PAGE, by: 99 },
+            Op::Check,
+        ];
+        let outcomes: Vec<Outcome> = (ops.iter().enumerate())
+            .map(|(index, op)| {
+                run.step(index, op).unwrap_or_else(|failure| run.fail(0, &failure)).outcome
+            })
+            .collect();
+        use script::errno::{EFAULT, EFBIG, EINVAL};
+        assert_eq!(
+            outcomes,
+            [
+                Ok(5 * PAGE + 7),
+                Ok(2 * PAGE),
+                Err(EINVAL),
+                Ok(0),
+                Err(EFBIG),
+                Ok(0),
+                Ok(10),
+                Err(EFBIG),
+                Ok(0),
+                Err(EFBIG),
+                Ok(100),
+                Err(EINVAL),
+                Err(EINVAL),
+                Ok(0),
+                Ok(10),
+                Ok(10),
+                Ok(3 * PAGE),
+                Ok(0),
+                Err(EINVAL),
+                Ok(99),
+                Err(EFAULT),
+                Ok(123),
+                Ok(2 * PAGE),
+                Ok(2 * PAGE),
+                Ok(0),
+            ]
+        );
+        assert_hold(&names, &run.model);
     }
 
     /// fxdax: each operation's outcome, which a step's effect says, is the model's: a range clone
@@ -1400,12 +2057,29 @@ pub(crate) mod tests {
 
     impl Loop {
         pub(crate) fn new(dir: &std::path::Path, len: u64, mkfs: &str, args: &[&str]) -> Self {
+            Self::mounted(dir, len, mkfs, args, "loop")
+        }
+
+        /// fxdax: of the mount's `options`.
+        fn mounted(
+            dir: &std::path::Path,
+            len: u64,
+            mkfs: &str,
+            args: &[&str],
+            options: &str,
+        ) -> Self {
             let (image, mountpoint) = (dir.join("image"), dir.join("mounted"));
             fs::File::create(&image).unwrap().set_len(len).unwrap();
             fs::create_dir(&mountpoint).unwrap();
             run_ok(Command::new(mkfs).args(args).arg(&image));
-            run_ok(Command::new("mount").args(["-o", "loop"]).arg(&image).arg(&mountpoint));
+            run_ok(Command::new("mount").args(["-o", options]).arg(&image).arg(&mountpoint));
             Self { mountpoint }
+        }
+
+        /// fxdax: ext4 as fxfs-guest-fsx's reference has it: with no delayed allocation
+        /// (`test_fxfs_guest_fsx::REFERENCE_OPTIONS`).
+        pub(crate) fn reference(dir: &std::path::Path) -> Self {
+            Self::mounted(dir, 300 << 20, "mkfs.ext4", &["-q", "-F"], "loop,nodelalloc")
         }
 
         /// XFS with reflinks, which a host's temporary directory may not have: its ext4 says
@@ -1481,7 +2155,7 @@ pub(crate) mod tests {
         let mut run = Run::new(&names, Options::default());
         // A child's store past the mapping of an empty file dies of it.
         let mapped = run.maps[0].bytes;
-        let failed = run.store_in_child(mapped, &[1]).unwrap_err();
+        let failed = run.store_in_child(mapped, &[1], 1, None).unwrap_err();
         assert_eq!(failed.0, kind::STORE_KILLED);
         assert_eq!(failed.1, format!("0x0 bytes of 0x1 stored, the child {:#x}", libc::SIGBUS));
     }
@@ -1502,7 +2176,8 @@ pub(crate) mod tests {
         assert_eq!(
             failure.what,
             "0x144c bytes read at 0x0 of file 0: 1100 bytes, differing from the model at 0x96 \
-             (1100 bytes there)"
+             (1100 bytes there), 0x1 bytes in a row: [00, ed, e3, b4, 02, bc, f5, 69] where the \
+             model has [77, ed, e3, b4, 02, bc, f5, 69]"
         );
         assert_eq!(Failure::parse(&failure.to_string()), Some(failure));
     }

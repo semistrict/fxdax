@@ -1438,6 +1438,65 @@ static void cow_write_whole(u64 page, u64 round)
  * following on from nothing, makes none ahead. What the pages made private ahead held, they hold,
  * and the file is as written. Red with nothing made private ahead: 128 PRIVATEs.
  */
+/*
+ * That a write(2) from a file's own mapping, copying on write, its source a page on from its
+ * target, overlapping it, then stores through the mapping over both, leave the file as written
+ * and stored, each store to a page made private (TASK-149.16's hostile scripts' writes from a
+ * file's mapping, as same_page has them without copying on write).
+ */
+static void cow_write_from_its_own_mapping(void)
+{
+	static char bytes[13604];
+	const size_t src = 5674, len = 5136, at = 6684;
+	ssize_t done;
+
+	cow_mapped_file(8);
+	wait_for(sim_spawn("rebinder", cow_rebind_now, NULL));
+	done = sim_write_user(cow_target, 0, cow_addr + src, len);
+	check(done == len, "a write from its own mapping: %zd", done);
+	memmove(cow_expected, cow_expected + src, len);
+	fill(bytes, sizeof(bytes), 9);
+	check(!sim_user_store(cow_addr + at, bytes, sizeof(bytes)), "the stores after");
+	memcpy(cow_expected + at, bytes, sizeof(bytes));
+	cow_check_file("after the stores", 8 * PAGE_SIZE);
+}
+
+/*
+ * As cow_write_from_its_own_mapping, of a file of holes read in again, after a write from memory
+ * that stops short of its end, and with stores far on between (TASK-149.16, GCE r861's script but
+ * for its fork, which fxfs-guest-checks' cow_fork_after_a_split_pmd has).
+ */
+static void cow_write_from_its_own_mapping_of_holes(void)
+{
+	static char source[PAGE_SIZE], stores[13604], far[10236];
+	const size_t size = 256 * PAGE_SIZE - 37;
+	struct file *file = sim_file_new(mount);
+	char *expected = kzalloc(size, GFP_KERNEL);
+	ssize_t done;
+
+	check(!sim_truncate(file, size), "the truncate");
+	check(!sim_fsync(file), "the fsync");
+	sim_file_evict(file);
+	cow_target = sim_file_read_in(mount, file);
+	cow_addr = sim_mmap(cow_target, 0, size);
+	fill(source, sizeof(source), 3);
+	done = sim_write_user(cow_target, size - 7264, stops_after(source, 580), 2556);
+	check(done == 580, "a write from memory ending part way: %zd", done);
+	memcpy(expected + size - 7264, source + sizeof(source) - 580, 580);
+	done = sim_write_user(cow_target, 0, cow_addr + 5674, 5136);
+	check(done == 5136, "a write from its own mapping: %zd", done);
+	memmove(expected, expected + 5674, 5136);
+	fill(far, sizeof(far), 7);
+	check(!sim_user_store(cow_addr + 676639, far, sizeof(far)), "the stores far on");
+	memcpy(expected + 676639, far, sizeof(far));
+	check_file("after the stores far on", cow_target, expected, size);
+	fill(stores, sizeof(stores), 9);
+	check(!sim_user_store(cow_addr + 6684, stores, sizeof(stores)), "the stores over both");
+	memcpy(expected + 6684, stores, sizeof(stores));
+	check_file("after the stores over both", cow_target, expected, size);
+	kfree(expected);
+}
+
 static void cow_writes_ahead(void)
 {
 	u64 privates, ahead, page;
@@ -1581,6 +1640,8 @@ static const struct {
 	COW_SCENARIO(cow_store_to_pinned_slice),
 	COW_SCENARIO(cow_writeback_counts_again),
 	SCENARIO(cow_writes_ahead),
+	SCENARIO(cow_write_from_its_own_mapping),
+	SCENARIO(cow_write_from_its_own_mapping_of_holes),
 	SCENARIO(cow_writes_private_before_the_lock),
 	SCENARIO(cow_rebinds_map_ranges_at_once),
 };
