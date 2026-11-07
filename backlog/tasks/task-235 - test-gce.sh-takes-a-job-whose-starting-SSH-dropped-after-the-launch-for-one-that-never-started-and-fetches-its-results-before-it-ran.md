@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-07 18:37'
-updated_date: '2026-11-07 18:40'
+updated_date: '2026-11-07 20:24'
 labels: []
 dependencies: []
 references:
@@ -52,4 +52,6 @@ But the starting SSH can fail after the job launched: r942's connection timed ou
 
 <!-- SECTION:NOTES:BEGIN -->
 scripts/tests: test_gce.py 37 tests pass, every script test passes (191) (python3 -m unittest discover -s scripts/tests). Red without the fix: a_job_whose_starting_connection_dropped_is_waited_for returned 255 with nothing waited for. a_job_that_did_not_start_is_not_waited_for passes, its calls one SSH more (the look for the pid), still 255 and no wait. No GCE run needed (the user, 2026-11-07).
+
+Correction, before landing: r943 (fxdax-test-r942-b, this branch's first version) left no pid file. The start was `mkdir && rm -f status pid && setsid ... & echo $! > pid`, where `&` backgrounded the whole list, so the pid was written before its directory existed or removed by the rm after. The launch and its pid are now grouped alone in the background: `mkdir && rm && { setsid ... & echo $! > pid; }`. The fake-only tests couldn't see it, as the fake ran no command. fake_gcloud now runs an SSH's command in a local shell (ssh_run), and two tests run the start for real: a_job_keeps_its_pid_and_is_waited_for and a_job_whose_starting_connection_dropped_is_waited_for (red ungrouped: no pid, status 1, and 255). 37 test_gce tests and all 191 script tests pass.
 <!-- SECTION:NOTES:END -->
