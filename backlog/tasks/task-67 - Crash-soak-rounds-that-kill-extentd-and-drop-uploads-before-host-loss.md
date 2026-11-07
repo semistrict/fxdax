@@ -1,11 +1,11 @@
 ---
 id: TASK-67
 title: Crash soak rounds that kill extentd and drop uploads before host loss
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-10-21 19:54'
-updated_date: '2026-11-06 19:28'
+updated_date: '2026-11-07 15:55'
 labels:
   - sandbox
 dependencies: []
@@ -21,9 +21,9 @@ The 1,002-round soak kills only the VM. Add rounds that kill extentd, and that d
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -72,4 +72,12 @@ Runs after gcloud's sign-in (2026-11-06):
 - r759 (GCS): 37 rounds passed, 2.3 h of rounds (5 host losses, 3 cache losses more, 9 daemon kills, 4 failed uploads, VMs killed in 30 rounds, stores forked anew in 11); round 38, VM crashes alone: TASK-218 (slot 1's store, 37 rounds old, mounted with more metadata borrowed than it reserves, its first compaction closing the journal; state kept in soak67-evidence/r759-round38-state.tar.gz and soak67-gcs/run-20261106T162704Z-afc14ccc).
 Growth, r757 rounds 1-39 and r759 rounds 1-37: the bucket 0.4-2.3 GB, flat after round 4; the stores 0.4-9.5 MB; the loaded daemons' peak RSS 0.7-2.0 GB; the checking daemon's 0.6-2.9 GB, flat after round 5 once writers keep their runs; none past its bound. The cache about 1 GB a round, reset by each cache or host loss (r759: 1.1, 2.1, 0.6 lost, ... 7.4 GB at round 36), bounded only by CACHE_FLOOR.
 No single run has reached the 3 h asked: each stopped at a finding, r757 at 2.1 h and r759 at 2.3 h of rounds. Run numbers r750-r759 are spent; the hosts are deleted, and the results prefix with them.
+
+r832 (file bucket, jailed, production seccomp, main ab43bcd09 with TASK-231; FXDAX_SEED=6813877555725379215, GCE us-east1-c): 60/60 rounds passed, 3.15 h of rounds (11:57-15:52Z, 3.9 h on the host), the first single run past 3 h. Faults: daemon killed 23 rounds, host lost 14, cache lost 7, latency 25/250/1000 ms 31, failed uploads 5, VMs crashed mid-write in 51. Growth, round 1 / 10 / 20 / 30 / 40 / 50 / 60 (max): bucket 0.51 / 1.60 / 1.28 / 0.68 / 1.10 / 0.78 / 0.54 GB (1.60); stores 96 / 68 / 68 / 68 / 100 / 68 / 104 KiB (104 KiB); part cache 0.91 / 2.34 / 2.23 / 0.47 / 5.54 / 0.54 / 4.32 GB (5.98), back down at each cache or host loss; extentd peak 0.75 / 0.79 / 1.01 / 0.77 / 1.16 / 0.87 / 0.95 GB (1.62); the checking daemon's 0.77 / 2.25 / 1.99 / 1.26 / 1.72 / 1.39 / 1.10 GB (2.43); free disk 181-184 GB throughout. No trend in any: the bucket's collector keeps it under 1.6 GB, extentd's memory under 1.7 GB. Earlier: r830 (file) 26 rounds 1.39 h, failed round 27 (TASK-231); r831 (GCS) 28 rounds 1.99 h, failed round 29 (TASK-232); both fixed on main.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+fxfs-guest-soak: ≥4 VMs forked from a base, pgbench, fsx-style scripts and writers, with extentd killed and restarted, uploads failed, host loss (stores recovered from the bucket), cache loss, bucket latency and VMs crashed mid-write; each round checks acknowledged writes, forks reading their base, the collector deleting nothing live, and bounds on bucket, local disk and extentd memory; seeds replay rounds; outcome.json per round. Its findings fixed: TASK-67.1, 67.2, 208, 216, 217, 231, 232 (TASK-218 and 228 open). r832, on the file bucket, jailed with the production seccomp filter, passed 60/60 rounds over 3.15 h with no growth trend; r831 on GCS reached 1.99 h before TASK-232, since fixed.
+<!-- SECTION:FINAL_SUMMARY:END -->
