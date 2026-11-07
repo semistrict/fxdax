@@ -8,105 +8,150 @@
 //! `pwrite`. On Linux, the engine submits operations to an io_uring, whose completions a thread
 //! of its own collects. Elsewhere, a small pool of threads runs them.
 //!
-//! An operation's buffer is the caller's until the host is done with it, so a future dropped while
-//! its operation is in flight waits for the operation to complete before it returns.
+//! An operation owns what the host touches, its buffer and its file, until the host is done with
+//! them, and gives the buffer back as it completes. A future dropped, or leaked, while its
+//! operation is in flight leaves them to the operation, which frees them once it completes: the
+//! caller's memory is never the host's. It was, the future waiting for the operation as it was
+//! dropped, but a future leaked (`mem::forget`) waited for nothing, which safe code may do of a
+//! device's read, and the host went on writing memory its caller had back (TASK-24).
 
+use extent_store::Aligned;
 use futures::task::AtomicWaker;
 use std::future::Future;
 use std::io;
-use std::os::fd::RawFd;
+use std::os::fd::AsRawFd;
 use std::pin::Pin;
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 
-/// An operation on a file.
-#[derive(Clone, Copy, Debug)]
+/// An operation on a file: what it owns of what the host touches.
 pub(super) enum Op {
-    /// Reads `len` bytes at `offset` into memory at `addr`.
-    Read { addr: usize, len: usize, offset: u64 },
-    /// Writes `len` bytes at `offset` from memory at `addr`.
-    Write { addr: usize, len: usize, offset: u64 },
+    /// Reads `len` bytes at `offset`, into a buffer of its own.
+    Read { len: usize, offset: u64 },
+    /// Writes `data` at `offset`.
+    Write { data: Aligned, offset: u64 },
+}
+
+/// A file an operation runs on, which it keeps open until the host is done with it.
+pub(super) type IoFile = Arc<dyn AsRawFd + Send + Sync>;
+
+/// An operation as an engine runs it: on memory at `addr`, which the operation's completion owns.
+#[derive(Clone, Copy, Debug)]
+struct Raw {
+    write: bool,
+    addr: usize,
+    len: usize,
+    offset: u64,
+}
+
+/// What an operation did: the bytes it transferred, and its buffer, a read's bytes or a write's
+/// data.
+pub(super) struct Done {
+    pub result: io::Result<usize>,
+    pub buffer: Aligned,
 }
 
 /// The engine running operations on files.
 pub(super) struct Io {
-    engine: Engine,
+    engine: Arc<Engine>,
+    /// A test's hold of the next operation: submitted once the test lets it go.
+    #[cfg(test)]
+    hold: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
 }
 
 impl Io {
     pub fn new() -> io::Result<Self> {
-        Ok(Self { engine: Engine::new()? })
+        Ok(Self {
+            engine: Arc::new(Engine::new()?),
+            #[cfg(test)]
+            hold: Mutex::new(None),
+        })
     }
 
-    /// Runs `op` on `fd`, and returns its result: the bytes transferred.
-    ///
-    /// # Safety
-    ///
-    /// `fd` must stay open, and a read's or write's memory valid for its access, until the
-    /// returned future completes or is dropped. The future must not be leaked (`mem::forget`):
-    /// only completing or dropping it waits for the host to be done with the memory.
-    pub unsafe fn run(&self, fd: RawFd, op: Op) -> InFlight {
-        let completion = Arc::new(Completion::default());
-        self.engine.submit(fd, op, completion.clone());
-        InFlight { completion, done: false }
+    /// Runs `op` on `file`, and returns what it did.
+    pub fn run(&self, file: IoFile, op: Op) -> InFlight {
+        let (write, mut buffer, offset) = match op {
+            Op::Read { len, offset } => (false, Aligned::new(len), offset),
+            Op::Write { data, offset } => (true, data, offset),
+        };
+        let bytes = buffer.as_mut_slice();
+        // The buffer's bytes are on the heap, where moving it into the completion leaves them.
+        let raw = Raw { write, addr: bytes.as_mut_ptr() as usize, len: bytes.len(), offset };
+        let fd = file.as_raw_fd();
+        let completion = Arc::new(Completion {
+            state: Mutex::new(State::InFlight { buffer, _file: file }),
+            waker: AtomicWaker::new(),
+        });
+        #[cfg(test)]
+        if let Some(hold) = self.hold.lock().unwrap().take() {
+            let (engine, submitted) = (self.engine.clone(), completion.clone());
+            std::thread::spawn(move || {
+                let _ = hold.recv();
+                engine.submit(fd, raw, submitted);
+            });
+            return InFlight { completion };
+        }
+        self.engine.submit(fd, raw, completion.clone());
+        InFlight { completion }
     }
 }
 
-/// The result of an operation once it completes, and its waiters.
-#[derive(Default)]
+/// An operation's state: in flight, owning its buffer and its file, or done, with its result, a
+/// negated errno on failure, and its buffer, until the future takes them.
+enum State {
+    InFlight { buffer: Aligned, _file: IoFile },
+    Done { result: i64, buffer: Aligned },
+    Taken,
+}
+
+/// An operation's state, which the engine holds until it completes, and its future's waker.
 pub(super) struct Completion {
-    /// The operation's result, as a negated errno on failure.
-    result: Mutex<Option<i64>>,
-    /// Notified when the result arrives, for a dropped future waiting for it.
-    done: Condvar,
+    state: Mutex<State>,
     waker: AtomicWaker,
 }
 
 impl Completion {
+    /// The host is done with the operation's memory and file: the file is let go of, and the
+    /// buffer kept for the future, or freed with the completion if the future is gone.
     fn complete(&self, result: i64) {
-        *self.result.lock().unwrap() = Some(result);
-        self.done.notify_all();
+        let file = {
+            let mut state = self.state.lock().unwrap();
+            let State::InFlight { buffer, _file } = std::mem::replace(&mut *state, State::Taken)
+            else {
+                unreachable!("an operation completed twice");
+            };
+            *state = State::Done { result, buffer };
+            _file
+        };
+        drop(file);
         self.waker.wake();
-    }
-
-    fn result(&self) -> Option<i64> {
-        *self.result.lock().unwrap()
     }
 }
 
-/// An operation in flight, which completes with its result.
+/// An operation in flight, which completes with what it did. Dropped, or leaked, it leaves the
+/// operation what it owns, which goes with the operation's completion.
 pub(super) struct InFlight {
     completion: Arc<Completion>,
-    done: bool,
 }
 
 impl Future for InFlight {
-    type Output = io::Result<usize>;
+    type Output = Done;
 
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<usize>> {
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Done> {
         self.completion.waker.register(cx.waker());
-        let Some(result) = self.completion.result() else {
+        let mut state = self.completion.state.lock().unwrap();
+        if matches!(*state, State::InFlight { .. }) {
             return Poll::Pending;
+        }
+        let State::Done { result, buffer } = std::mem::replace(&mut *state, State::Taken) else {
+            panic!("an operation's future polled after it completed");
         };
-        self.done = true;
-        Poll::Ready(if result < 0 {
+        let result = if result < 0 {
             Err(io::Error::from_raw_os_error(-result as i32))
         } else {
             Ok(result as usize)
-        })
-    }
-}
-
-impl Drop for InFlight {
-    /// Waits for the operation, which may still be using its buffer, to complete.
-    fn drop(&mut self) {
-        if self.done {
-            return;
-        }
-        let mut result = self.completion.result.lock().unwrap();
-        while result.is_none() {
-            result = self.completion.done.wait(result).unwrap();
-        }
+        };
+        Poll::Ready(Done { result, buffer })
     }
 }
 
@@ -119,7 +164,7 @@ use pool::Engine;
 /// The io_uring engine.
 #[cfg(target_os = "linux")]
 mod uring {
-    use super::{Completion, Op};
+    use super::{Completion, Raw};
     use io_uring::{IoUring, opcode, squeue, types};
     use std::collections::HashMap;
     use std::io;
@@ -152,13 +197,12 @@ mod uring {
             Ok(Self { ring, submissions: Mutex::new(0), in_flight, thread: Some(thread) })
         }
 
-        pub fn submit(&self, fd: RawFd, op: Op, completion: Arc<Completion>) {
+        pub fn submit(&self, fd: RawFd, raw: Raw, completion: Arc<Completion>) {
             let fd = types::Fd(fd);
-            let entry = match op {
-                Op::Read { addr, len, offset } => {
-                    opcode::Read::new(fd, addr as *mut u8, len as u32).offset(offset).build()
-                }
-                Op::Write { addr, len, offset } => {
+            let Raw { write, addr, len, offset } = raw;
+            let entry = match write {
+                false => opcode::Read::new(fd, addr as *mut u8, len as u32).offset(offset).build(),
+                true => {
                     opcode::Write::new(fd, addr as *const u8, len as u32).offset(offset).build()
                 }
             };
@@ -191,7 +235,8 @@ mod uring {
     fn push(ring: &IoUring, entry: &squeue::Entry) -> io::Result<()> {
         loop {
             // SAFETY: Submissions are serialized, so this is the queue's only producer, and the
-            // entry's buffers are valid until it completes, as `Io::run`'s caller guarantees.
+            // entry's buffer and file are its completion's, which `in_flight` holds until the
+            // kernel completes it.
             let pushed = unsafe { ring.submission_shared().push(entry) };
             if pushed.is_ok() {
                 break;
@@ -252,7 +297,7 @@ mod uring {
 /// The thread pool engine.
 #[cfg(not(target_os = "linux"))]
 mod pool {
-    use super::{Completion, Op};
+    use super::{Completion, Raw};
     use std::io;
     use std::os::fd::RawFd;
     use std::sync::mpsc;
@@ -261,7 +306,7 @@ mod pool {
 
     const THREADS: usize = 4;
 
-    type Job = (RawFd, Op, Arc<Completion>);
+    type Job = (RawFd, Raw, Arc<Completion>);
 
     pub(in super::super) struct Engine {
         jobs: Option<mpsc::Sender<Job>>,
@@ -279,10 +324,10 @@ mod pool {
                         loop {
                             // The receiver is unlocked while the operation runs.
                             let job = receiver.lock().unwrap().recv();
-                            let Ok((fd, op, completion)) = job else {
+                            let Ok((fd, raw, completion)) = job else {
                                 break;
                             };
-                            completion.complete(run(fd, op));
+                            completion.complete(run(fd, raw));
                         }
                     })
                 })
@@ -290,8 +335,12 @@ mod pool {
             Ok(Self { jobs: Some(jobs), threads })
         }
 
-        pub fn submit(&self, fd: RawFd, op: Op, completion: Arc<Completion>) {
-            self.jobs.as_ref().unwrap().send((fd, op, completion)).expect("the io threads stopped");
+        pub fn submit(&self, fd: RawFd, raw: Raw, completion: Arc<Completion>) {
+            self.jobs
+                .as_ref()
+                .unwrap()
+                .send((fd, raw, completion))
+                .expect("the io threads stopped");
         }
     }
 
@@ -304,17 +353,15 @@ mod pool {
         }
     }
 
-    /// Runs `op` on `fd`, returning its result, or a negated errno.
-    fn run(fd: RawFd, op: Op) -> i64 {
-        // SAFETY: `Io::run`'s caller guarantees that `fd` is open and the buffers valid.
+    /// Runs `raw` on `fd`, returning its result, or a negated errno.
+    fn run(fd: RawFd, raw: Raw) -> i64 {
+        let Raw { write, addr, len, offset } = raw;
+        // SAFETY: `fd` is open and the buffer valid: both are the operation's completion's, which
+        // the job holds until this returns.
         let result = unsafe {
-            match op {
-                Op::Read { addr, len, offset } => {
-                    libc::pread(fd, addr as *mut _, len, offset as libc::off_t) as i64
-                }
-                Op::Write { addr, len, offset } => {
-                    libc::pwrite(fd, addr as *const _, len, offset as libc::off_t) as i64
-                }
+            match write {
+                false => libc::pread(fd, addr as *mut _, len, offset as libc::off_t) as i64,
+                true => libc::pwrite(fd, addr as *const _, len, offset as libc::off_t) as i64,
             }
         };
         if result < 0 {
@@ -322,5 +369,55 @@ mod pool {
         } else {
             result
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write as _;
+
+    /// A read whose future is leaked, safe code being free to, writes none of its caller's memory,
+    /// and frees its own once it completes: before TASK-24, the caller's buffer was the host's
+    /// until the future completed or was dropped, and a leaked one was neither, which the host
+    /// went on writing as its caller reused it.
+    #[test]
+    fn a_leaked_read_writes_only_what_it_owns() {
+        let mut file = tempfile::tempfile().unwrap();
+        file.write_all(&[7u8; 4096]).unwrap();
+        let file = Arc::new(file);
+        let io = Io::new().unwrap();
+        let (release, hold) = std::sync::mpsc::channel();
+        *io.hold.lock().unwrap() = Some(hold);
+        let in_flight = io.run(file.clone(), Op::Read { len: 4096, offset: 0 });
+        let completion = Arc::downgrade(&in_flight.completion);
+        std::mem::forget(in_flight);
+        assert_eq!(Arc::strong_count(&file), 2, "the operation keeps the file open");
+        release.send(()).unwrap();
+        // Waiting for it as the leaked future would have: it read into its own buffer, and,
+        // done, let the file go.
+        let completion = completion.upgrade().expect("held by the leaked future");
+        let Done { result, buffer } = futures::executor::block_on(InFlight { completion });
+        assert_eq!(result.unwrap(), 4096);
+        assert!(buffer.as_slice().iter().all(|&b| b == 7));
+        assert_eq!(Arc::strong_count(&file), 1, "the operation let the file go");
+    }
+
+    /// Reads and writes give their buffers back with what they did.
+    #[test]
+    fn operations_give_their_buffers_back() {
+        let file = Arc::new(tempfile::tempfile().unwrap());
+        let io = Io::new().unwrap();
+        let mut data = Aligned::new(4096);
+        data.as_mut_slice().fill(3);
+        let Done { result, buffer } =
+            futures::executor::block_on(io.run(file.clone(), Op::Write { data, offset: 4096 }));
+        assert_eq!(result.unwrap(), 4096);
+        assert!(buffer.as_slice().iter().all(|&b| b == 3));
+        let Done { result, buffer } =
+            futures::executor::block_on(io.run(file, Op::Read { len: 8192, offset: 0 }));
+        assert_eq!(result.unwrap(), 8192);
+        assert!(buffer.as_slice()[..4096].iter().all(|&b| b == 0));
+        assert!(buffer.as_slice()[4096..].iter().all(|&b| b == 3));
     }
 }
