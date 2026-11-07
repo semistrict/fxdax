@@ -7,7 +7,7 @@
 
 use super::*;
 pub(crate) use crate::guest_fxfs::evict;
-use crate::guest_fxfs::{cow_base_file, is_dax, read_in_sealed};
+use crate::guest_fxfs::{cow_base_file, drop_pages, is_dax, read_in_sealed};
 use crate::guest_init;
 use crate::posix_acl;
 use crate::script::{self, Rng};

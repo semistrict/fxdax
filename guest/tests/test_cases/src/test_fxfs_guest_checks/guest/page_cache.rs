@@ -2,9 +2,20 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-//! The checks of files in the page cache, without a DAX window: large folios and writeback.
+//! The checks of files in the page cache: large folios and writeback. They run in every suite:
+//! with a DAX window, copying on write, a file a check makes is the page cache's too, until its
+//! inode is read in again (doc-13, TASK-164.3). So each drops its file's pages, not its inode
+//! ([`drop_pages`]), checks the file is the page cache's ([`in_page_cache`]), and evicts it only to
+//! read what reached the device (TASK-149.20.3: they ran without a window alone, on the premise,
+//! false since copying on write, that files on DAX are in no page cache).
 
 use super::*;
+
+/// That the file at `path` is the page cache's, not mapped from a DAX window: what these checks
+/// check of it.
+fn in_page_cache(path: &str) {
+    assert!(!is_dax(path), "{path} is DAX: these checks are of files in the page cache");
+}
 
 /// TASK-26.19.11: a file in the page cache is cached in large folios: of a large file read
 /// through once, most of the pages its mapping maps are compound pages' tails
@@ -18,7 +29,8 @@ pub(super) fn test_large_folios() {
     const KPF_COMPOUND_TAIL: u64 = 1 << 16;
     let file = path("large-folios");
     fs::write(&file, vec![0x5a; SIZE]).unwrap();
-    evict(&file);
+    drop_pages(&file);
+    in_page_cache(&file);
     assert_eq!(fs::read(&file).unwrap(), vec![0x5a; SIZE]);
     let opened = fs::File::open(&file).unwrap();
     let map = unsafe {
@@ -64,7 +76,8 @@ pub(super) fn test_scattered_writeback() {
     const PAGE: usize = 4096;
     let name = path("scattered");
     fs::write(&name, vec![1; SIZE]).unwrap();
-    evict(&name);
+    drop_pages(&name);
+    in_page_cache(&name);
     let file = fs::OpenOptions::new().write(true).open(&name).unwrap();
     let mut expected = vec![1; SIZE];
     for page in (0..SIZE / PAGE).step_by(2) {
@@ -77,6 +90,7 @@ pub(super) fn test_scattered_writeback() {
     expected.resize(SIZE + PAGE, 0);
     expected.extend_from_slice(&tail);
     drop(file);
+    in_page_cache(&name);
     evict(&name);
     assert!(fs::read(&name).unwrap() == expected, "the file differs from what was written");
     fs::remove_file(&name).unwrap();
@@ -93,7 +107,8 @@ pub(super) fn test_partial_writeback() {
     const AT: [usize; 3] = [(1 << 20) + (64 << 10), (3 << 20) - (4 << 10), 6 << 20];
     let name = path("partial-writeback");
     fs::write(&name, vec![1; SIZE]).unwrap();
-    evict(&name);
+    drop_pages(&name);
+    in_page_cache(&name);
     assert!(fs::read(&name).unwrap() == vec![1; SIZE]);
     let file = fs::OpenOptions::new().read(true).write(true).open(&name).unwrap();
     let mut expected = vec![1; SIZE];
@@ -123,6 +138,7 @@ pub(super) fn test_partial_writeback() {
     assert_eq!(unsafe { libc::msync(map, SIZE, libc::MS_SYNC) }, 0);
     assert_eq!(unsafe { libc::munmap(map, SIZE) }, 0);
     drop(file);
+    in_page_cache(&name);
     evict(&name);
     assert!(fs::read(&name).unwrap() == expected, "the file differs from what was written");
     fs::remove_file(&name).unwrap();
@@ -154,6 +170,8 @@ pub(super) fn test_writeback_out_of_memory() {
         .truncate(true)
         .open(&name)
         .unwrap();
+    // Open throughout, its inode isn't evicted: the page cache's for every round.
+    in_page_cache(&name);
     let mut failed = 0;
     for nth in 1..=NTH {
         let data: Vec<u8> = (0..PAGES * 4096).map(|at| (at as u64 * 31 + nth) as u8).collect();
@@ -183,6 +201,7 @@ pub(super) fn test_writeback_out_of_memory() {
         evict(&name);
         file.read_exact_at(&mut got, 0).unwrap();
         assert!(got == data, "allocation {nth} failing: the file evicted, synced again, differs");
+        in_page_cache(&name);
     }
     eprintln!("writeback_out_of_memory: {failed} of {NTH} fsyncs had an allocation fail");
     assert!(failed > 0, "no allocation of an fsync's failed");

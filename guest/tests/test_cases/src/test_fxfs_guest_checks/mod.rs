@@ -92,8 +92,6 @@ pub(crate) enum Suites {
     Dax,
     /// Those with a DAX window of 512 MiB, which the checks' files don't fill.
     LargeDax,
-    /// Those without one, whose files are in the page cache.
-    PageCache,
     /// Those with a DAX window of 32 MiB, which they do.
     SmallDax,
     /// The overrun suite's alone: the checks made to fail, which no other runs
@@ -107,7 +105,6 @@ impl Suites {
             Suites::All => true,
             Suites::Dax => suite.dax,
             Suites::LargeDax => suite.dax && !suite.small_window,
-            Suites::PageCache => !suite.dax,
             Suites::SmallDax => suite.dax && suite.small_window,
             Suites::Failing => suite.overrun,
         }
@@ -223,11 +220,12 @@ macro_rules! checks {
             cow_fork_after_a_split_pmd: Dax, 3 => test_cow_fork_after_a_split_pmd;
             rebind_against_loads_and_stores: Dax, 3 => test_rebind_against_loads_and_stores;
             stores_under_rebinds: Dax, 5 => test_stores_under_rebinds;
-            // Files on DAX are in no page cache.
-            large_folios: PageCache, 3 => test_large_folios;
-            scattered_writeback: PageCache, 3 => test_scattered_writeback;
-            partial_writeback: PageCache, 3 => test_partial_writeback;
-            writeback_out_of_memory: PageCache, 20 => test_writeback_out_of_memory;
+            // Of files in the page cache, which a DAX mount's created files are too, copying on
+            // write (TASK-149.20.3).
+            large_folios: All, 3 => test_large_folios;
+            scattered_writeback: All, 3 => test_scattered_writeback;
+            partial_writeback: All, 3 => test_partial_writeback;
+            writeback_out_of_memory: All, 20 => test_writeback_out_of_memory;
             // Of a small window, which it fills.
             window_held_killed: SmallDax, 4 => test_window_held_killed;
             // Last: it fills the filesystem, then removes what it filled it with.
@@ -339,13 +337,26 @@ mod tests {
             ]
         );
         assert_eq!(
-            last(&DAX, 4),
-            ["stores_under_rebinds", "enospc", "write_times_add_up", "unbind_waits_for_unmount"]
-        );
-        assert_eq!(
-            last(&SMALL, 6),
+            last(&DAX, 8),
             [
                 "stores_under_rebinds",
+                "large_folios",
+                "scattered_writeback",
+                "partial_writeback",
+                "writeback_out_of_memory",
+                "enospc",
+                "write_times_add_up",
+                "unbind_waits_for_unmount",
+            ]
+        );
+        assert_eq!(
+            last(&SMALL, 10),
+            [
+                "stores_under_rebinds",
+                "large_folios",
+                "scattered_writeback",
+                "partial_writeback",
+                "writeback_out_of_memory",
                 "window_held_killed",
                 "enospc",
                 "write_times_add_up",
@@ -382,7 +393,7 @@ mod tests {
     /// FXDAX_CHECKS's checks run in the table's order, those of the suite alone.
     #[test]
     fn named_checks_run_alone() {
-        assert_eq!(names(&DAX, "enospc,sparse,large_folios"), ["sparse", "enospc"]);
+        assert_eq!(names(&DAX, "enospc,sparse,window_held_killed"), ["sparse", "enospc"]);
         let checks = DAX.checks("enospc").unwrap();
         assert_eq!(CHECKS[checks[0].0].name, "enospc");
     }

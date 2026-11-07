@@ -24,6 +24,18 @@ pub fn evict(path: &str) {
     fs::write("/proc/sys/vm/drop_caches", b"2").unwrap();
 }
 
+/// Drops `path`'s pages, written back first, keeping its inode: for a file to be read from the
+/// device again through the page cache. On a DAX mount, copying on write, a file created there is
+/// the page cache's until its inode is read in again (doc-13, TASK-164.3), which [`evict`] would
+/// have it be: so a file made by a check stays the page cache's, as one on a mount without a
+/// window does (TASK-149.20.3).
+pub fn drop_pages(path: &str) {
+    let file = fs::File::open(path).unwrap();
+    file.sync_all().unwrap();
+    let fd = file.as_raw_fd();
+    assert_eq!(unsafe { libc::posix_fadvise(fd, 0, 0, libc::POSIX_FADV_DONTNEED) }, 0);
+}
+
 /// Whether the kernel accesses `path` through the DAX window: STATX_ATTR_DAX.
 pub fn is_dax(path: &str) -> bool {
     const STATX_ATTR_DAX: u64 = 0x200000;
