@@ -239,7 +239,6 @@ impl<F: File> Syncs<F> {
     /// Syncs them, in `dir`: each file once, however many commits wrote it, then the directories.
     /// fxdax: [`AT_ONCE`] of the files at a time, then of the directories (TASK-92.42); one at a
     /// time, if the directory's I/O is its callers' alone ([`Dir::concurrent`], TASK-79.79).
-    #[cfg(test)]
     pub fn sync<D: Dir<File = F>>(&self, dir: &D) -> Result<(), Error> {
         self.sync_files(dir)?;
         self.sync_dirs(dir)

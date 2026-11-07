@@ -730,13 +730,16 @@ impl<F: File> Unframed<F> {
         // fxdax: timed, phase by phase (TASK-165.9).
         let mut phases = Phases::default();
         let started = Instant::now();
-        let mut own = self.footer.own().peekable();
-        if own.peek().is_some() {
-            for (extent, _) in own {
-                dir.open(&extent_path(extent), true)?.sync()?;
-            }
-            dir.sync_dir(&branch_dir(EXTENTS, self.number.branch))?;
+        // The extents stored on their own it names, durable before it is, as a flush syncs them,
+        // several at once: one at a time, each a journal commit of the host's file system's, they
+        // held up for as long the syncs of the flushes of extentd's turns, which wait on the same
+        // files, up to 0.9 s under pgbench (GCE r730, TASK-165.9).
+        let mut own = Syncs::default();
+        for (extent, _) in self.footer.own() {
+            own.file(Arc::new(dir.open(&extent_path(extent), true)?));
+            own.dir(branch_dir(EXTENTS, self.number.branch));
         }
+        own.sync(dir)?;
         let synced = phases.took(framing::OWN, started);
         let footer = self.footer.encode();
         let framed = frame_segment(dir, &segment_path(self.number), &self.raw, self.len, &footer)?;
