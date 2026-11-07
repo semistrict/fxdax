@@ -1,0 +1,11 @@
+--- a/crates/fxfs/src/filesystem.rs
++++ b/crates/fxfs/src/filesystem.rs
+@@ -796,7 +796,7 @@
+         // fxdax: what dropped allocations left in shared extents, before the barrier that seals it:
+         // boxed, as an allocation short of room syncs, and this commits a transaction; but not as
+         // the caller holds the commit lock, which that transaction would wait for (TASK-233).
+-        if !self.options.read_only && !options.holding_commits {
++        if !self.options.read_only {
+             Box::pin(self.allocator().record_reaches()).await?;
+         }
+         self.journal.sync(options).await?;

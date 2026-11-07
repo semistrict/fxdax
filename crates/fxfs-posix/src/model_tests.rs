@@ -135,6 +135,21 @@ const BATCHES_APART: Duration = Duration::from_secs(3600);
 /// waiting for the sequence to end: a graveyard walking every attribute ID was found only by the
 /// time a run took.
 const SEQUENCE_LIMIT: Duration = Duration::from_secs(120);
+/// How long a failing case shrinks, at most, in milliseconds, unless PROPTEST_MAX_SHRINK_TIME says:
+/// then it says what it has. Unbounded, a case each run of which stalled 60 s before it panicked
+/// (debug_assert_not_too_long), and so fed the watchdog, shrank past CI's 90 minutes, its report
+/// lost with the job (TASK-233).
+const SHRINK_FOR_AT_MOST: u32 = 600_000;
+
+/// The runner's configuration of `cases` cases, each failure shrinking for [`SHRINK_FOR_AT_MOST`].
+fn config(cases: u32) -> Config {
+    let default = Config::default();
+    let max_shrink_time = match default.max_shrink_time {
+        0 => SHRINK_FOR_AT_MOST,
+        set => set,
+    };
+    Config { cases, failure_persistence: None, max_shrink_time, ..default }
+}
 /// The operations a filesystem that survived a power cut goes on with.
 const GOES_ON_FOR: usize = 4;
 /// The most a barrier may lose, a free or an extent's writes each, for every subset of it to be
@@ -3038,7 +3053,7 @@ fn whatever_a_vfs_asks_reads_back_as_a_model_says() {
     let cases = std::env::var("FXDAX_MODEL_CASES").map_or(96, |cases| cases.parse().unwrap());
     let fsck_each = std::env::var_os("FXDAX_MODEL_FSCK").is_some();
     let workers = std::env::var_os("FXDAX_MODEL_WORKERS").is_some();
-    let config = Config { cases, failure_persistence: None, ..Config::default() };
+    let config = config(cases);
     let most: u32 = std::env::var("FXDAX_MODEL_OPS").map_or(48, |most| most.parse().unwrap());
     let room = prop_oneof![Just(ROOMY), Just(TIGHT)];
     let sequences = (any::<u64>(), room, proptest::collection::vec(op(), 1..most as usize));
@@ -3077,7 +3092,7 @@ static PANICS: Mutex<Vec<String>> = Mutex::new(Vec::new());
 #[test]
 fn a_device_that_fails_loses_nothing_durable() {
     let cases = std::env::var("FXDAX_MODEL_FAILURES").map_or(24, |cases| cases.parse().unwrap());
-    let config = Config { cases, failure_persistence: None, ..Config::default() };
+    let config = config(cases);
     let room = prop_oneof![Just(ROOMY), Just(TIGHT)];
     // Many syncs, for a flush to fail under.
     let op = || prop_oneof![4 => op(), 1 => Just(Op::Fsync), 1 => Just(Op::Sync)];
@@ -3155,7 +3170,7 @@ fn a_failed_fsync_is_reported_and_keeps_what_was_synced() {
 #[test]
 fn every_cut_of_a_short_sequence() {
     let cases = std::env::var("FXDAX_MODEL_EVERY_CUT").map_or(6, |cases| cases.parse().unwrap());
-    let config = Config { cases, failure_persistence: None, ..Config::default() };
+    let config = config(cases);
     let sequences = (any::<u64>(), proptest::collection::vec(short_op(), 1..=SHORT));
     let tally = Rc::new(Tally::default());
     let watched = watch_sequences(30 * SEQUENCE_LIMIT);
@@ -4144,4 +4159,45 @@ fn a_cut_during_a_replay_counts_blocks_once_trimmed() {
     ];
     let setting = Setting::awkward(1273004606570409581, ROOMY).with_graveyard_of_seed().failing();
     assert_eq!(setting.run(ops, Rc::default()), Ok(()), "{setting:?}");
+}
+
+/// TASK-233: a clone's commit, on a device whose room dead extents took, made room in the journal,
+/// whose allocation synced to free them, and the sync recorded what dropped allocations reached
+/// (TASK-213) in a transaction of its own: which waited for the commit lock the clone's commit held,
+/// for ever. Found by the model test, as CI's workspace job shrank it past its 90 minutes, each
+/// shrink 60 s waiting (filesystem.rs's debug_assert_not_too_long); then this, its 42 operations
+/// cut to 8. A sync as a commit makes room records nothing; the next records it.
+#[test]
+fn a_commit_making_room_in_the_journal_syncs_without_committing() {
+    let ops = vec![
+        Op::Make {
+            name: 14,
+            make: Make {
+                kind: 4,
+                permissions: 593185,
+                uid: 4294967294,
+                gid: 1187,
+                rdev: 3649396020,
+            },
+        },
+        Op::Create(1),
+        Op::FillWhileCompacting { file: 3, page: 34, pages: 22, byte: 44, flushing: false },
+        Op::Create(3),
+        Op::SetAttr {
+            node: 0,
+            change: Change {
+                valid: 6,
+                permissions: 461441,
+                uid: 65534,
+                gid: 1320,
+                atime: 0,
+                mtime: 0,
+                ctime: 0,
+            },
+        },
+        Op::Fill { file: 15, page: 55, pages: 3247, stride: 2, byte: 160 },
+        Op::FillWhileCompacting { file: 10, page: 5, pages: 18, byte: 168, flushing: true },
+        Op::CloneToEnd { from: 13, to: 5, page: 25, to_page: 274877906946 },
+    ];
+    Setting::awkward(8580878931066154398, TIGHT).with_graveyard_of_seed().holds(ops);
 }
