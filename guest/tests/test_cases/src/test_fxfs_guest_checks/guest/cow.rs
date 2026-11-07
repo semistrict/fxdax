@@ -95,6 +95,55 @@ pub(super) fn test_cow_store_persists() {
     fs::remove_file(&name).unwrap();
 }
 
+/// fxdax: copying on write (doc-13), a fork after a chunk mapped whole, read in 2 MiB at once, so
+/// that its window's pages are one large folio, the mapping split by a store to one of them, and
+/// the chunk read again, page by page: the child's store to a page it only read faults, which
+/// makes the page private, as the parent's would (TASK-149.16). Fork copies a large folio's PTEs
+/// as one, all writable if any is (6.18's copy_present_ptes, FPB_MERGE_WRITE), of a mapping it
+/// copies at all: a VM_MIXEDMAP one, as Fxfs's were. The child stored, unfaulted, to a page no
+/// PRIVATE had made the VM's, which the host refused, again and again, till the VM went down
+/// (GCE r861, fxfs-guest-fsx-faults-dax; r866).
+pub(super) fn test_cow_fork_after_a_split_pmd() {
+    const PAGE: usize = 4096;
+    const SIZE: usize = 4 << 20;
+    // A page the parent only reads, the second chunk's mapping whole too, as in r861's.
+    const CHILDS: usize = 435 * PAGE + 0x9bf;
+    let name = path("cow-fork-after-split");
+    let mut data: Vec<u8> = (0..SIZE).map(|i| (i % 251) as u8 + 1).collect();
+    fs::write(&name, &data).unwrap();
+    read_in_sealed(&name);
+    let file = fs::OpenOptions::new().read(true).write(true).open(&name).unwrap();
+    let map = CowMapping::new(&file, SIZE);
+    let huge = stats()["dax_huge_maps"];
+    assert!(map.bytes()[..] == data[..], "the file as mapped differs from what was written");
+    assert!(stats()["dax_huge_maps"] > huge, "no fault mapped a PMD's 2 MiB: {:?}", stats());
+    let private = || stats()["dax_private_pages"];
+    let before = private();
+    map.bytes()[PAGE + 100] = 0xee;
+    data[PAGE + 100] = 0xee;
+    assert_eq!(private(), before + 1, "private pages after a store to a PMD's page");
+    // Page by page now, the PMD split: each page's PTE read-only, but the one stored to.
+    assert!(map.bytes()[..] == data[..], "the file read again, page by page");
+    let child = unsafe { libc::fork() };
+    assert!(child >= 0, "fork: {}", std::io::Error::last_os_error());
+    if child == 0 {
+        unsafe {
+            (map.addr.cast::<u8>().add(CHILDS)).write_volatile(0xcd);
+            libc::_exit(0);
+        }
+    }
+    let status = wait_for_child(child, std::time::Duration::from_secs(10));
+    assert!(libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0, "the child: {status:#x}");
+    data[CHILDS] = 0xcd;
+    assert_eq!(private(), before + 2, "private pages after the child's store");
+    assert!(map.bytes()[..] == data[..], "the mapping after the child's store");
+    drop(map);
+    drop(file);
+    evict(&name);
+    assert!(fs::read(&name).unwrap() == data, "{name} evicted");
+    fs::remove_file(&name).unwrap();
+}
+
 /// fxdax: copying on write, per page (doc-13, the 400 GB case at small scale): of a large file
 /// read in from sealed extents, mapped shared, three pages stored to cost three private pages,
 /// and the rest stay mapped from the extents, shared, costing none, read as they were; written

@@ -220,6 +220,7 @@ macro_rules! checks {
             cow_dirty_truncate_punch_clone: Dax, 3 => test_cow_dirty_truncate_punch_clone;
             cow_commit_after_bytes: Dax, 3 => test_cow_commit_after_bytes;
             cow_created_in_page_cache: Dax, 3 => test_cow_created_in_page_cache;
+            cow_fork_after_a_split_pmd: Dax, 3 => test_cow_fork_after_a_split_pmd;
             rebind_against_loads_and_stores: Dax, 3 => test_rebind_against_loads_and_stores;
             stores_under_rebinds: Dax, 5 => test_stores_under_rebinds;
             // Files on DAX are in no page cache.

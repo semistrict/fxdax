@@ -3527,8 +3527,15 @@ static int fxfs_dax_mmap(struct file *file, struct vm_area_struct *vma)
 {
 	file_accessed(file);
 	vma->vm_ops = &fxfs_dax_vm_ops;
-	/* fxdax: read faults may map 2 MiB at once (fxfs_dax_huge_fault), as ext4's DAX does. */
-	vm_flags_set(vma, VM_MIXEDMAP | VM_HUGEPAGE);
+	/*
+	 * fxdax: read faults may map 2 MiB at once (fxfs_dax_huge_fault), as ext4's DAX does. And as
+	 * ext4's, not VM_MIXEDMAP, which the folios dax.c maps need not be: a fork copies the PTEs of
+	 * a mapping that is, a large folio's as one, all writable if any is (copy_present_ptes,
+	 * FPB_MERGE_WRITE), which made writable, unfaulted, pages no PRIVATE had made the VM's: those
+	 * of a chunk read in whole, a store having split its PMD. The child's store to one the host
+	 * refused, again and again (GCE r861, TASK-149.16). A child's PTEs are its own faults'.
+	 */
+	vm_flags_set(vma, VM_HUGEPAGE);
 	return 0;
 }
 

@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: GPL-2.0
+# Copyright 2026 The fxdax Authors.
+#
+# Kernel: release
+# Killer: fxfs-guest-checks-dax cow_fork_after_a_split_pmd
+#
+# TASK-149.16: Fxfs's DAX mappings VM_MIXEDMAP again, which a fork copies the PTEs of, a large
+# folio's as one, all writable if any is: a chunk read in whole, its PMD split by a store, then
+# read page by page, gave a child writable PTEs of pages no PRIVATE had made the VM's, and its
+# store to one the host refused till the VM went down (GCE r861, fxfs-guest-fsx-faults-dax).
+
+--- a/guest/linux/fs/fxfs/dax.c
++++ b/guest/linux/fs/fxfs/dax.c
+@@ -3529,7 +3529,7 @@
+ 	 * of a chunk read in whole, a store having split its PMD. The child's store to one the host
+ 	 * refused, again and again (GCE r861, TASK-149.16). A child's PTEs are its own faults'.
+ 	 */
+-	vm_flags_set(vma, VM_HUGEPAGE);
++	vm_flags_set(vma, VM_MIXEDMAP | VM_HUGEPAGE);
+ 	return 0;
+ }
+ 
