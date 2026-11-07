@@ -82,6 +82,7 @@ mod host {
 
     /// The host's memory, and the extent daemon's, of process `daemon`, which serves its metrics at
     /// `metrics`.
+    #[derive(Clone, Copy)]
     pub struct HostMemory {
         daemon: u32,
         metrics: SocketAddr,
@@ -198,13 +199,41 @@ mod host {
 
         /// The next request of the guest of `firecracker`'s VM: an error if the VM exits first.
         pub fn next(&self, firecracker: &mut Firecracker) -> anyhow::Result<Request> {
-            let stream = firecracker.accept(&self.listener)?;
-            let mut line = String::new();
-            BufReader::new(&stream).read_line(&mut line)?;
-            let asked = (line.trim_end().strip_prefix("measure "))
-                .with_context(|| format!("the guest asked {line:?}"))?;
-            let (phase, guest) = asked.split_once(' ').unwrap_or((asked, ""));
-            Ok(Request { phase: phase.to_owned(), guest: guest.to_owned(), stream })
+            Request::read(firecracker.accept(&self.listener)?)?
+                .context("the guest connected and asked nothing")
+        }
+
+        /// Answers every request of the guest of VM `vm`, whose process is `vmm`, on a thread of
+        /// its own, saying the host's memory at each through `host`, until [`Served::stop`]: for
+        /// a VM whose host side waits on other things as it runs, as one talking to the host on
+        /// another port does (TASK-136.1).
+        pub fn serve(self, host: HostMemory, vm: usize, vmm: u32) -> Served {
+            let path = self.path.clone();
+            let thread = std::thread::spawn(move || -> anyhow::Result<()> {
+                for stream in self.listener.incoming() {
+                    // A connection that asks nothing is [`Served::stop`]'s.
+                    let Some(request) = Request::read(stream?)? else { return Ok(()) };
+                    host.say(vm, &request.phase, Some(vmm), &request.guest)?;
+                    request.answer()?;
+                }
+                Ok(())
+            });
+            Served { path, thread }
+        }
+    }
+
+    /// The requests of a guest a thread answers ([`Requests::serve`]).
+    pub struct Served {
+        path: PathBuf,
+        thread: std::thread::JoinHandle<anyhow::Result<()>>,
+    }
+
+    impl Served {
+        /// Stops answering, once the requests made are answered, and says whether any failed.
+        pub fn stop(self) -> anyhow::Result<()> {
+            UnixStream::connect(&self.path)
+                .with_context(|| format!("connecting to {}", self.path.display()))?;
+            self.thread.join().map_err(|_| anyhow::anyhow!("the measuring thread panicked"))?
         }
     }
 
@@ -225,6 +254,19 @@ mod host {
     }
 
     impl Request {
+        /// The request the guest asks on `stream`: none if it asks nothing.
+        fn read(stream: UnixStream) -> anyhow::Result<Option<Self>> {
+            let mut line = String::new();
+            BufReader::new(&stream).read_line(&mut line)?;
+            if line.is_empty() {
+                return Ok(None);
+            }
+            let asked = (line.trim_end().strip_prefix("measure "))
+                .with_context(|| format!("the guest asked {line:?}"))?;
+            let (phase, guest) = asked.split_once(' ').unwrap_or((asked, ""));
+            Ok(Some(Request { phase: phase.to_owned(), guest: guest.to_owned(), stream }))
+        }
+
         /// Lets the guest go on.
         pub fn answer(self) -> anyhow::Result<()> {
             (&self.stream).write_all(b"ok\n").context("answering the guest")
