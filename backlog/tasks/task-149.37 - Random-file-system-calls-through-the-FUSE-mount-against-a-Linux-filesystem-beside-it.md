@@ -3,11 +3,11 @@ id: TASK-149.37
 title: >-
   Random file system calls through the FUSE mount, against a Linux filesystem
   beside it
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-07 05:20'
-updated_date: '2026-11-07 08:16'
+updated_date: '2026-11-07 11:17'
 labels:
   - testing
   - fuse
@@ -30,12 +30,12 @@ The host's Node layer (crates/fxdax/src/filesystem.rs), which imports and now FU
 - [x] #1 A seeded, shrinking differential test runs random sequences of file system calls on a FUSE mount of a new store and on a directory of the host's own filesystem, and compares every call's result and errno, and the trees, attributes and contents after
 - [x] #2 Differences Linux allows (inode numbers, st_blocks, times' granularity, d_type of special files) are listed in one place, each with why
 - [x] #3 Each difference it finds is fixed or listed as known with a task, and the test is shown to find a mutant of Node::setattr and of the FUSE server, red
-- [ ] #4 It runs in CI on Linux as the runner's user and on GCE as root
+- [x] #4 It runs in CI on Linux as the runner's user and on GCE as root
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
 - [x] #2 scripts/upstream-changes.py --check passes
 - [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
@@ -68,10 +68,12 @@ Blind spot (all): Node's VFS rules had example tests alone, each op's times and 
 Mutants (red): Node::setattr keeping only 0o777 of a chmod's perm (chmod . 0o2775: perm 509 for 1533, at 300 cases); the server's mkdir not giving setgid in a setgid directory (3 of 3 runs at 256 cases, after mkdir modes were biased to setgid: at 40 cases, the old default, it survived 300 cases and was found at 3000).
 
 Runs: Lima as user 3000 cases pass (340 s), as root 3000 pass (192 s).
+
+Landing: CI 42356882950's workspace part ran fuse_differential as the runner's user (fusermount3), green; GCE run-20261107T093421Z ran it as root (random_calls_on_a_mount_come_to_what_they_do_on_tmpfs, two_tmpfs_directories_agree), workspace 2312/2312; Lima 7/7 after a7676bc96 dropped an unused import that warned on Linux.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
 
 <!-- SECTION:FINAL_SUMMARY:BEGIN -->
-crates/fxdax/tests/fuse_differential.rs: random calls on a FUSE mount and on tmpfs, results, trees, times and the store compared, as the user and as root with identities switched; ALLOWED lists what may differ. It found six bugs, each fixed with its test (long symlinks sized 0, in the guest too; ctime left by xattr changes, fallocate and a setattr of nothing; any xattr namespace served; setgid kept over fallocate, by dropping KILLPRIV_V2); TASK-226 for the calls the mount refuses. Mutants of Node::setattr and the server red. Verified: Lima 3,000 cases as user and as root, macOS suite green. Left: AC 4's CI and GCE runs, which come with the push and the user's GCE run.
+crates/fxdax/tests/fuse_differential.rs: random calls on a FUSE mount and on tmpfs, results, trees, times and the store compared, as the user and as root with identities switched; ALLOWED lists what may differ. It found six bugs, each fixed with its test (long symlinks sized 0, in the guest too; ctime left by xattr changes, fallocate and a setattr of nothing; any xattr namespace served; setgid kept over fallocate, by dropping KILLPRIV_V2); TASK-226 for the calls the mount refuses. Mutants of Node::setattr and the server red. Verified: Lima 3,000 cases as user and as root, macOS suite, CI 42356882950 (as the runner's user) and GCE (as root).
 <!-- SECTION:FINAL_SUMMARY:END -->

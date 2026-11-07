@@ -3,11 +3,11 @@ id: TASK-149.36
 title: >-
   Metadata in the model test: mode, owner, group, times, special files,
   fallocate, names, readdir, xattr limits, statfs
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-07 05:20'
-updated_date: '2026-11-07 08:28'
+updated_date: '2026-11-07 11:17'
 labels:
   - testing
   - fxfs
@@ -37,7 +37,7 @@ TASK-222's FUSE mount found fxfs-posix's setattr zeroing a node's mode when one 
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
 - [x] #2 scripts/upstream-changes.py --check passes
 - [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
@@ -90,10 +90,12 @@ Merged with 4497a6bec (TASK-149.39: fallocate grows the file and sets nothing as
 Blind spot, why the model never hit MissingOverwriteExtents though it ran fsck: (1) fsck ran only at a sequence's end, after crashes and in cut checks, and the flag is wrong only while no overwrite extent is left: a write had to replace every block an allocation made, and nothing after (a truncate, which drops the flag with the extents, or another allocation) set it right again before the check. (2) The generator made that rare: allocations of 1 to 64 pages or thousands, at offsets drawn apart from the writes', which are 1 to 3 pages, so a write covering all of an allocation came seldom. (3) Most of all: the model's own oracle saw writes take blocks out of overwrite mode (the extents it compared), and I took that for Fxfs's design ("writes end allocated mode") and taught it to the model, without asking what else in Fxfs recorded overwrite mode and whether it stayed true: an oracle fitted to what it observed instead of holding an invariant of it. The model now checks the record's flag and the extents after every data operation, so a write that leaves either fails at once.
 
 Also found while merging: a cut during the replay of a cut left a truncate of a thousand extents to the graveyard's trim, which runs after the mount, the file counting its blocks until then, and the second replay was counted before syncing: it now syncs until nothing waits to be freed first (lets_go), as the first replay does; pinned a_cut_during_a_replay_counts_blocks_once_trimmed (the default run's seed). Held to the first replay's full orphan check, such replays hold extents Fxfs doesn't know: TASK-149.41, with the reproduction.
+
+Landing: merged with TASK-149.37-39 and main; GCE run-20261107T093421Z: workspace 2312/2312 and every Fxfs guest case pass (one failure, extent-guest's next_sequence 33 against 34, main's TASK-165.9 code, which this branch doesn't touch, handed to its owner); CI 42356882950 green; 945/945 on macOS after the last merge with main.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
 
 <!-- SECTION:FINAL_SUMMARY:BEGIN -->
-The fxfs-posix model test holds every node's attributes as Linux's VFS sees them (mode, owner, group, rdev, times, xattrs, st_blocks), from the root's defaults, across cuts, remounts, tiny and failing devices, with new operations for special files, setattr, fallocate, readdirs going on after a name, casefolding, bad names, xattr modes and limits, and statfs. It found three bugs, each fixed in a commit of its own with a test red before: readdir listed FIFOs, sockets and devices as regular files (now taken from each file's record, one node_type; host FUSE listing fixed too); fallocate of part of a block then any growth failed EIO (the tail zeroing now reads through the one read path); a DAX window would map blocks an allocation left unwritten (extents_in now leaves them out). 15 mutants, all red. Verified on macOS (fxfs-posix 80/80, fxfs 781/781, FUSE tests, hunts of 2,100 + 300 + 150 + 400 sequences); the GCE run is still to do.
+The fxfs-posix model test holds every node's attributes as Linux's VFS sees them (mode, owner, group, rdev, times, xattrs, st_blocks), from the root's defaults, across cuts, remounts, tiny and failing devices, with new operations for special files, setattr, fallocate (as TASK-149.39 made it: growing the file, nothing set aside), readdirs resumed after a name, casefolding, bad names, xattr modes and limits, and statfs. It found four Fxfs bugs, each fixed with a test red before: readdir listed FIFOs, sockets and devices as regular files; fallocate of part of a block then any growth failed EIO; a DAX window would map blocks an allocation left unwritten; a queued unlink in a casefolded or encrypted directory overwrote the directory's times. Mutants all red. Verified on macOS (suites, hunts), GCE (workspace 2312/2312, every Fxfs guest case) and CI 42356882950.
 <!-- SECTION:FINAL_SUMMARY:END -->

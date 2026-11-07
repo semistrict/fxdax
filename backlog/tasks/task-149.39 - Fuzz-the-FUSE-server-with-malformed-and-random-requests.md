@@ -1,11 +1,11 @@
 ---
 id: TASK-149.39
 title: Fuzz the FUSE server with malformed and random requests
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-07 05:20'
-updated_date: '2026-11-07 08:16'
+updated_date: '2026-11-07 11:17'
 labels:
   - testing
   - fuse
@@ -31,7 +31,7 @@ fxdax::fuse::Server (TASK-222) decodes requests from the kernel, which a FUSE se
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
 - [x] #2 scripts/upstream-changes.py --check passes
 - [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
@@ -52,10 +52,12 @@ Implemented: crates/fxdax/src/fuse/server/fuzz_tests.rs, a child of the server's
 Bug found (fixed, own commit): fallocate then a write across the allocation left fsck's MissingOverwriteExtents. Found: the fuzzer's third case (MKNOD, FALLOCATE 1 byte at 28672, WRITE at 28469). Cause: fxfs-posix's allocate used Fxfs's preallocation (DataObjectHandle::allocate), overwrite extents and the attribute's has_overwrite_extents flag; fxdax writes copy-on-write (write_many), replacing the overwrite extent, the flag left set. The guest's fallocate never preallocates (fxfs_data_fallocate: grows, checks room), so only the host made them. Blind spot: no test wrote over an allocation (tests/filesystem.rs allocate only checked blocks; fxfs-posix's model test has no fallocate, TASK-149.36 adds it). Test: filesystem writes_across_an_allocation_past_the_end, red before the fix (lengths from 204 on, the write reaching the allocated block). Fix: fxfs-posix allocate checks room (usage, not statfs, which drains unlinks against Allocate's row) and grows the file by setattr, as the guest; the allocate test now expects no blocks and ENOSPC past room. Looking around: DataObjectHandle::allocate has no other caller in fxdax (journal/superblocks use preallocate_range); its module doc now says so. Structure: one fallocate semantics for host and guest makes the class impossible from fxfs-posix; Fxfs's preallocation with fxdax's copy-on-write writes stays inconsistent (the flag has two writers and a write that replaces extents doesn't clear it), unreachable now: recorded in OPEN_QUESTIONS as what undoing would take.
 
 Mutants (red): decoding, handle()'s body taken whole when the header's length is past it (LongHeader MKNOD: a 128-byte payload where EINVAL); lookup counting, entry() setting lookups to 1 rather than adding (Mkdir then Lookup: server {3:1}, kernel {3:2}).
+
+Landing: fuse::server::fuzz_tests::random_requests_are_answered_as_the_protocol_says passed on GCE run-20261107T093421Z (workspace 2312/2312) and in CI 42356882950.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
 
 <!-- SECTION:FINAL_SUMMARY:BEGIN -->
-A proptest fuzzer of fxdax::fuse::Server (fuse/server/fuzz_tests.rs): valid and malformed request sequences, each reply checked for shape and errno, the lookup and directory tables held to a model of the kernel's, fsck at the end. It found fallocate's preallocated overwrite extents corrupting stores once written (fixed in fxfs-posix, 4497a6bec). Mutants of decoding and lookup counting red. Verified: 5,000 cases on macOS, 256 in Lima as the user; macOS suite green. Left: the GCE workspace run (DoD 1), which the user runs before landing.
+A proptest fuzzer of fxdax::fuse::Server (fuse/server/fuzz_tests.rs): valid and malformed request sequences, each reply checked for shape and errno, the lookup and directory tables held to a model of the kernel's, fsck at the end. It found fallocate's preallocated overwrite extents corrupting stores once written (fixed in fxfs-posix, 4497a6bec: fallocate grows the file, as the guest's). Mutants of decoding and lookup counting red. Verified: 5,000 cases on macOS, Lima, CI 42356882950 and GCE.
 <!-- SECTION:FINAL_SUMMARY:END -->
