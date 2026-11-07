@@ -101,9 +101,6 @@ impl TestFxfsGuest {
     }
 }
 
-/// The DAX window's size, when the device has one.
-#[cfg_attr(feature = "guest", allow(dead_code))]
-const WINDOW: u64 = 64 << 20;
 
 /// fxdax: the window of a test that strays out of what it was given, and how much of its start the
 /// test's writers reach: its first half is files' ranges, and regions fill the second from its
@@ -406,7 +403,7 @@ mod host {
             let window = match self.dax {
                 _ if self.stray => STRAY_WINDOW,
                 false => 0,
-                true => crate::common::dax_window(crate::common::Window::Small(WINDOW))?,
+                true => crate::common::dax_window(crate::common::Window::Large)?,
             };
             // fxdax: on a daemon of its own, which goes on running till its test's end otherwise.
             let daemon = if self.daemon_killed {

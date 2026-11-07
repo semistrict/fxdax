@@ -38,7 +38,7 @@ mod host {
     use std::path::Path;
 
     const CAPACITY: u64 = 256 << 20;
-    const WINDOW: crate::common::Window = crate::common::Window::Small(64 << 20);
+    const WINDOW: crate::common::Window = crate::common::Window::Large;
     const VOLUMES: [&str; 4] = ["default", "a", "b", "c"];
 
     /// Makes the store at `path`, with `VOLUMES`, empty.

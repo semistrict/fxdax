@@ -114,9 +114,9 @@ pub const DAEMON_MEMORY: u64 = 8 << 30;
 /// it keeps for a window grows with the pages it maps, which it bounds so (TASK-150.3).
 pub const MAX_DAX_WINDOW: u64 = 64 << 30;
 
-/// fxdax: a case's DAX window: as large as the data, the host's memory ([`Window::Large`]), or a
-/// size of the case's own, which a small window's cases have, to have it fill
-/// ([`Window::Small`]); `FXDAX_DAX_WINDOW_MIB`'s, if set, for every case (TASK-227).
+/// fxdax: a case's DAX window: as large as the data, the host's memory, or `FXDAX_DAX_WINDOW_MIB`'s
+/// if set ([`Window::Large`]); or a small window's, whose cases check it fills
+/// ([`Window::Small`]), as fxfs-guest-checks-dax-small's, which a large one fails (TASK-227).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Window {
     Large,
@@ -134,15 +134,15 @@ pub fn dax_window(window: Window) -> anyhow::Result<u64> {
 }
 
 /// fxdax: [`dax_window`]'s bytes, of `window`, `given` FXDAX_DAX_WINDOW_MIB's, and the host's
-/// /proc/meminfo, `meminfo`: its MemTotal, rounded down to a window's 2 MiB, at most
-/// [`MAX_DAX_WINDOW`].
+/// /proc/meminfo, `meminfo`: a large window's `given`'s, or the host's MemTotal, rounded down to a
+/// window's 2 MiB, at most [`MAX_DAX_WINDOW`].
 fn window_bytes(window: Window, given: Option<&str>, meminfo: &str) -> anyhow::Result<u64> {
     const ALIGNMENT: u64 = 2 << 20;
-    if let Some(mib) = given.filter(|mib| !mib.is_empty()) {
-        return Ok(mib.parse::<u64>().context("FXDAX_DAX_WINDOW_MIB")? << 20);
-    }
     match window {
         Window::Small(bytes) => Ok(bytes),
+        Window::Large if let Some(mib) = given.filter(|mib| !mib.is_empty()) => {
+            Ok(mib.parse::<u64>().context("FXDAX_DAX_WINDOW_MIB")? << 20)
+        }
         Window::Large => {
             let line = (meminfo.lines().find(|line| line.starts_with("MemTotal:")))
                 .context("/proc/meminfo has no MemTotal")?;
@@ -314,7 +314,8 @@ mod tests {
     }
 
     /// TASK-227: a case's DAX window is the host's memory, rounded down to 2 MiB, at most a
-    /// window's 64 GiB, unless it is a small window's case; FXDAX_DAX_WINDOW_MIB sets every case's.
+    /// window's 64 GiB, or FXDAX_DAX_WINDOW_MIB's, unless it is a small window's, which stays so:
+    /// fxfs-guest-checks-dax-small's window_filled failed in 64 GiB (GCE r886).
     #[test]
     fn windows_are_as_large_as_the_hosts_memory() {
         let host = |kib: u64| format!("MemTotal:       {kib} kB\nMemFree:  1 kB\n");
@@ -324,7 +325,7 @@ mod tests {
         assert_eq!(large(256 << 20), MAX_DAX_WINDOW);
         let small = Window::Small(64 * mib);
         assert_eq!(window_bytes(small, None, &host(1 << 25)).unwrap(), 64 * mib);
-        assert_eq!(window_bytes(small, Some("8192"), &host(1 << 25)).unwrap(), 8 * gib);
+        assert_eq!(window_bytes(small, Some("8192"), &host(1 << 25)).unwrap(), 64 * mib);
         assert_eq!(window_bytes(Window::Large, Some("1024"), &host(1 << 25)).unwrap(), gib);
         assert_eq!(window_bytes(Window::Large, Some(""), &host(4 << 20)).unwrap(), 4 * gib);
         assert!(window_bytes(Window::Large, None, "MemFree: 1 kB\n").is_err());

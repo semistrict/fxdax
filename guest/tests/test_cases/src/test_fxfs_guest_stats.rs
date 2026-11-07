@@ -23,9 +23,9 @@ const MIB: u64 = 1 << 20;
 /// The store's capacity.
 #[cfg_attr(feature = "guest", allow(dead_code))]
 const CAPACITY: u64 = 256 * MIB;
-/// The DAX window's size, a small window's ([`crate::common::dax_window`]).
+/// The DAX window, as large as the data ([`crate::common::dax_window`]).
 #[cfg(feature = "host")]
-const WINDOW: crate::common::Window = crate::common::Window::Small(64 * MIB);
+const WINDOW: crate::common::Window = crate::common::Window::Large;
 /// The vsock port the guest asks for each snapshot on: a line of `stats`, and the counters it read,
 /// `NAME=VALUE` each; the host answers with `ok` and what the snapshot says of them, or the
 /// failure.
