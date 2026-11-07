@@ -122,6 +122,9 @@ struct Inner {
     recorded: BTreeSet<u64>,
     /// The children of those forks whose IDs another branch has: their forks made no branch.
     refused: BTreeSet<u64>,
+    /// The child of a fork whose record a checkpoint read last, looking for those deleted, which
+    /// the next goes on after (TASK-92.4).
+    looked: u64,
     /// Why it stopped, if it did.
     stopped: Option<Error>,
 }
@@ -234,6 +237,7 @@ impl<B: Bucket> Writer<B> {
                 checkpoint: recovered.checkpoint,
                 recorded: BTreeSet::new(),
                 refused: BTreeSet::new(),
+                looked: 0,
                 stopped: None,
             }),
             mover: std::sync::OnceLock::new(),
@@ -503,8 +507,22 @@ impl<B: Bucket> Writer<B> {
         if rules().moves_taken_first {
             self.take_moves(&moved);
         }
-        // Forks whose children were deleted. Their records stay; their forks need not.
-        let children: Vec<u64> = state.forks.iter().map(|fork| fork.child).collect();
+        // Forks whose children were deleted. Their records stay; their forks need not. Of a few
+        // forks' children each checkpoint, in turn, after those the last looked at: every child's,
+        // each checkpoint, made a storm of forks, a checkpoint each, read their records N^2 / 2
+        // times (TASK-92.4). A child deleted has its fork go within as many checkpoints as there
+        // are forks to read RECORDS_AT_ONCE at a time.
+        let mut children: Vec<u64> = state.forks.iter().map(|fork| fork.child).collect();
+        children.sort_unstable();
+        children.dedup();
+        let after = children.partition_point(|&child| child <= self.inner().looked);
+        let children: Vec<u64> = children[after..]
+            .iter()
+            .chain(&children[..after])
+            .take(RECORDS_AT_ONCE)
+            .copied()
+            .collect();
+        let looked = children.last().copied();
         let gone: Vec<u64> = futures::stream::iter(children)
             .map(|child| async move {
                 let record = branch::record(&*self.bucket, child).await?;
@@ -525,6 +543,7 @@ impl<B: Bucket> Writer<B> {
         }
         let mut inner = self.inner();
         inner.state.forks.retain(|fork| !gone.contains(&fork.child));
+        inner.looked = looked.unwrap_or(inner.looked);
         inner.checkpoint = inner.checkpoint.max(Some(seq));
         Ok(inner.checkpoint)
     }
@@ -754,6 +773,47 @@ mod tests {
             writer.checkpoint().await.unwrap();
         }));
         assert_eq!(checkpointed, RECORDS_AT_ONCE, "the records read at once");
+    }
+
+    /// TASK-92.4: a storm of forks, each acknowledged and checkpointed as the uploader does, its
+    /// children's records made as each is: a checkpoint reads the records of a few of the forks'
+    /// children at most, looking for those deleted, taking them in turn, not every child's each
+    /// time, which made a storm of N forks read N^2/2 records; and the forks of a child deleted go
+    /// within as many checkpoints as there are forks to read a few at a time.
+    #[test]
+    fn checkpoints_read_a_few_forks_records_at_most() {
+        const FORKS: u64 = 4 * RECORDS_AT_ONCE as u64;
+        futures::executor::block_on(async {
+            let bucket = memory();
+            branch::create(&*bucket, 1, 0).await.unwrap();
+            let writer = Writer::open(bucket.clone(), 1, 10, 0).await.unwrap();
+            let mut most = 0;
+            let mut first = None;
+            for n in 0..FORKS {
+                let batch = Batch::from(Commit { tag: n + 1, ..Commit::default() });
+                let forked = batch.fork(child(2 + n), &mut writer.chain()).frame();
+                let seq = writer.add_segment(forked).unwrap();
+                first.get_or_insert(seq);
+                writer.upload(seq).await.unwrap();
+                writer.acknowledge().await.unwrap();
+                let before = bucket.stats().requests(Request::Get);
+                writer.checkpoint().await.unwrap();
+                most = most.max(bucket.stats().requests(Request::Get) - before);
+            }
+            assert_eq!(most, RECORDS_AT_ONCE as u64, "the most records a checkpoint read");
+            // The first child deleted: its fork goes within FORKS / RECORDS_AT_ONCE checkpoints.
+            let origin = Origin { parent: 1, at: first.unwrap() };
+            let forked = crate::record::Kind::Fork(origin);
+            branch::delete_fork(&*bucket, 2, forked, child(2).owner, 9, 0).await.unwrap();
+            let forks = |writer: &Writer<Store>| writer.inner().state.forks.len() as u64;
+            for n in 0..FORKS / RECORDS_AT_ONCE as u64 {
+                let seq = add(&writer, Commit { tag: FORKS + n + 1, ..Commit::default() }).unwrap();
+                writer.upload(seq).await.unwrap();
+                writer.acknowledge().await.unwrap();
+                writer.checkpoint().await.unwrap();
+            }
+            assert_eq!(forks(&writer), FORKS - 1);
+        });
     }
 
     /// TASK-79.19: a writer uploading within a budget reads each object only once the budget has
