@@ -471,19 +471,32 @@ class Jobs(unittest.TestCase):
             ),
             (0, "status 255\n", ""),
         )
-        self.assertEqual(project.calls(), ["compute ssh fxdax-test-x"])
-
-    def test_a_job_whose_waiter_was_stopped_is_waited_for_again(self):
-        # Every SSH prints what the job's status file and log hold: its status, 3.
-        project = Project({"instances": {"fxdax-test-x": host("earlier")}, "ssh_out": "3\n"})
-        self.assertEqual(
-            project.run(
-                "sleep() { :; }\n"
-                "status=0; gce_remote_wait job || status=$?; echo status $status"
-            ),
-            (0, "3\nstatus 3\n", ""),
-        )
+        # The start, and a fresh connection's look for its pid, which finds none.
         self.assertEqual(project.calls(), ["compute ssh fxdax-test-x"] * 2)
+
+    def started(self, state):
+        """Runs `gce_remote_detached job`, its job echoing and failing with 3, on a project whose
+        host runs what SSH asks (fake_gcloud.py's ssh_run), as `state` adds to it: its status,
+        output and errors, and whether the job's pid was kept on the host."""
+        project = Project(
+            {"instances": {"fxdax-test-x": host("earlier")}, "ssh_run": True, **state}
+        )
+        done = project.run(
+            "sleep() { :; }\n"
+            "status=0; gce_remote_detached job 'echo ran; (exit 3)' || status=$?; echo status $status"
+        )
+        return done, (project.directory / "host" / "job.job" / "pid").is_file()
+
+    def test_a_job_keeps_its_pid_and_is_waited_for(self):
+        # TASK-235: its pid kept as it is launched, which a dropped start looks for.
+        self.assertEqual(self.started({}), ((0, "ran\nstatus 3\n", ""), True))
+
+    def test_a_job_whose_starting_connection_dropped_is_waited_for(self):
+        # TASK-235: the start's SSH fails once the job runs, as r942's did: a fresh connection
+        # finds its pid, and it is waited for.
+        self.assertEqual(
+            self.started({"ssh_calls": [[255, ""]]}), ((0, "ran\nstatus 3\n", ""), True)
+        )
 
     def fetch(self, state):
         """Runs `gce_fetch run-x` on a project as `state` has it, with the host: its status, its

@@ -12,7 +12,10 @@ those with no room for a host ("exhausted"), and the regions out of quota ("quot
 once by another run, whose maker label is "winner", and which this create then finds there; or
 "ambiguous", made as asked though the create reports an error), which listings and copies fail
 ("failing": "instances", "disks", "zones", "scp"), the status SSH ends with ("ssh"), and what it
-prints ("ssh_out", nothing by default). A host is
+prints ("ssh_out", nothing by default), or, call by call, until they run out, each SSH's status and
+what it prints ("ssh_calls", pairs). With "ssh_run", each SSH runs its command too, in bash, its
+home $FAKE_GCLOUD/host, sudo and setsid running what they're given: its status and output are
+the command's, unless "ssh_calls" says otherwise, as a connection dropped once it ran. A host is
 found by its zone, as gcloud's describe and delete find one, and by its name alone in a listing;
 described as JSON, it is its name and zone. scp writes, where it copies to here, an archive of one
 file, fetched, which names what it copied; and keeps what it copies to a host in uploaded/, by its
@@ -28,6 +31,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import sys
 import tarfile
 from pathlib import Path
@@ -55,6 +59,23 @@ def bucket(path):
     return Path(path)
 
 
+def run_on_host(command):
+    """Runs `command` as the host's shell would: in bash, in its home, $FAKE_GCLOUD/host, sudo and
+    setsid running what they are given. Its status and output."""
+    home, tools = STATE / "host", STATE / "host-bin"
+    home.mkdir(exist_ok=True)
+    tools.mkdir(exist_ok=True)
+    for tool in ("sudo", "setsid"):
+        (tools / tool).write_text('#!/bin/sh\nexec "$@"\n')
+        (tools / tool).chmod(0o755)
+    environment = {"HOME": str(home), "PATH": f"{tools}:/usr/bin:/bin"}
+    done = subprocess.run(
+        ["/bin/bash", "-c", command], env=environment, capture_output=True, text=True,
+        stdin=subprocess.DEVNULL,
+    )
+    return done.returncode, done.stdout
+
+
 def main(argv):
     words = [arg for arg in argv if not arg.startswith("--")]
     flags = dict(arg[2:].partition("=")[::2] for arg in argv if arg.startswith("--"))
@@ -65,8 +86,14 @@ def main(argv):
     instances, disks = state.setdefault("instances", {}), state.setdefault("disks", [])
     command, args = tuple(words[:3]), words[3:]
     if words[:2] == ["compute", "ssh"]:
-        print(state.get("ssh_out", ""), end="")
-        sys.exit(state.get("ssh", 0))
+        status, out = state.get("ssh", 0), state.get("ssh_out", "")
+        if state.get("ssh_run"):
+            status, out = run_on_host(flags["command"])
+        if state.get("ssh_calls"):
+            status, out = state["ssh_calls"].pop(0)
+            (STATE / "state.json").write_text(json.dumps(state))
+        print(out, end="")
+        sys.exit(status)
     elif words[:2] == ["compute", "scp"]:
         if "scp" in state.get("failing", []):
             sys.exit("ERROR: (gcloud.compute.scp) copying failed")

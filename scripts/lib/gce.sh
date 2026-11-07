@@ -181,15 +181,23 @@ gce_remote() {
 # gce_remote_detached runs COMMAND on the host apart from the SSH session, as job NAME, so that a
 # dropped connection, or this machine sleeping, does not stop it, and waits for it, reconnecting:
 # its output, kept in the host's ~/NAME.job/log, is printed once it ends, and its exit status is
-# this function's.
+# this function's. A job whose starting SSH failed is waited for only if a fresh connection finds
+# it launched, its pid kept in ~/NAME.job/pid: that SSH may drop once the job runs, as r942's did,
+# whose results were fetched before it ran (TASK-235); one that didn't start returns that SSH's
+# status, not waited for until the host's end.
 #
 # Usage: gce_remote_detached NAME COMMAND...
 gce_remote_detached() {
-    local name=$1 job
+    local name=$1 job started=0
     shift
     job="\$HOME/$name.job"
-    gce_remote "mkdir -p $job && rm -f $job/status && setsid nohup bash -c \
-        $(printf %q "$*; echo \$? > $job/status") > $job/log 2>&1 < /dev/null &" || return
+    # The launch and its pid alone in the background's list: `A && B & C` puts A and B there too.
+    gce_remote "mkdir -p $job && rm -f $job/status $job/pid && { setsid nohup bash -c \
+        $(printf %q "$*; echo \$? > $job/status") > $job/log 2>&1 < /dev/null & \
+        echo \$! > $job/pid; }" || started=$?
+    if ((started)) && ! gce_remote "test -e $job/pid"; then
+        return "$started"
+    fi
     gce_remote_wait "$name"
 }
 
