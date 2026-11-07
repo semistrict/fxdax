@@ -55,18 +55,19 @@ pub(crate) struct ImageDevice {
 
 impl ImageDevice {
     /// Makes a new image at `dir`, which must not exist, holding at most `capacity` bytes, of
-    /// `branch`, whole if `whole` ([`Kept::create`]), and its device, whose writes, frees and
-    /// commits go through `writes`.
+    /// `branch`, whole if `whole`, its branch kept as `keeping` says ([`Kept::create`]), and its
+    /// device, whose writes, frees and commits go through `writes`.
     pub fn create(
         dir: &Path,
-        (capacity, branch, whole): (u64, u64, bool),
+        made: (u64, u64, bool),
+        keeping: extent_store::upload::Options,
         writes: Arc<WriteGate>,
     ) -> Result<Self, Error> {
-        Self::new(Kept::create(dir, capacity, branch, whole)?, writes)
+        Self::new(Kept::create(dir, made, keeping)?, writes)
     }
 
-    /// The device of the image at `dir`, or of the clone whose handle `dir` is, whose writes,
-    /// frees and commits go through `writes`.
+    /// The device of the image at `dir`, an image's or a clone's, whose writes, frees and commits
+    /// go through `writes`.
     pub fn open(dir: &Path, writes: Arc<WriteGate>) -> Result<Self, Error> {
         let image = Kept::open(dir).with_context(|| format!("opening {}", dir.display()))?;
         Self::new(image, writes)
@@ -331,7 +332,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let image = dir.path().join("image");
         let made = (capacity, BRANCH, true);
-        (ImageDevice::create(&image, made, Default::default()).unwrap(), image, dir)
+        let keeping = crate::host_store::keeping().unwrap();
+        (ImageDevice::create(&image, made, keeping, Default::default()).unwrap(), image, dir)
     }
 
     fn extent(sequence: u64) -> ExtentId {

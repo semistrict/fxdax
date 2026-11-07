@@ -86,14 +86,31 @@ impl Storage {
     /// clones share and which outlives it; or, on a host of fxdax's system, in the host's bucket
     /// (`FXDAX_EXTENTD_REMOTE`).
     pub fn create(path: impl AsRef<Path>, size: u64) -> Result<Self, Error> {
-        Self::make(path.as_ref(), size, true)
+        Self::make(path.as_ref(), size, true, Self::keeping()?)
     }
 
     /// fxdax: a new image at `path`, as [`Storage::create`] makes it, unmade until its maker says
     /// it is whole ([`Storage::made`]): what opens it before, or after its maker died part way,
     /// finds no store (TASK-196). As an import makes one, filling it first.
     pub fn create_unmade(path: impl AsRef<Path>, size: u64) -> Result<Self, Error> {
-        Self::make(path.as_ref(), size, false)
+        Self::make(path.as_ref(), size, false, Self::keeping()?)
+    }
+
+    /// fxdax: a new image at `path`, as [`Storage::create_unmade`] makes it, its branch kept as
+    /// `keeping` says: as the extent daemon's stores keep theirs, with the host's cache of the
+    /// bucket's objects, for an import the daemon makes (TASK-237).
+    pub(crate) fn create_unmade_keeping(
+        path: impl AsRef<Path>,
+        size: u64,
+        keeping: extent_store::upload::Options,
+    ) -> Result<Self, Error> {
+        Self::make(path.as_ref(), size, false, keeping)
+    }
+
+    /// How an image this process makes, where no host's daemon serves it, keeps its branch
+    /// ([`host_store::keeping`]): with no cache of the bucket's objects.
+    fn keeping() -> Result<extent_store::upload::Options, Error> {
+        host_store::keeping().map_err(Error::new)
     }
 
     /// fxdax: the image at `path`, made by [`Storage::create_unmade`] and closed since, is whole.
@@ -107,14 +124,21 @@ impl Storage {
         host_store::unmade(path.as_ref())
     }
 
-    /// A new image at `path`, as [`Storage::create`] makes it, whole if `whole`.
-    fn make(path: &Path, size: u64, whole: bool) -> Result<Self, Error> {
+    /// A new image at `path`, as [`Storage::create`] makes it, whole if `whole`, its branch kept
+    /// as `keeping` says.
+    fn make(
+        path: &Path,
+        size: u64,
+        whole: bool,
+        keeping: extent_store::upload::Options,
+    ) -> Result<Self, Error> {
         if size < Self::BLOCK_SIZE as u64 {
             return Err(Error::msg("the image is smaller than a block"));
         }
         let writes = Arc::new(WriteGate::default());
         let made = (size, host_store::new_branch(), whole);
-        let device = ImageDevice::create(path, made, writes.clone()).map_err(Error::new)?;
+        let device =
+            ImageDevice::create(path, made, keeping, writes.clone()).map_err(Error::new)?;
         Ok(Self::image(path.to_owned(), writes, device))
     }
 

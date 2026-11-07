@@ -15,8 +15,9 @@ use super::collect::{self, Collecting};
 use crate::error::{Error, anyhow_of};
 use crate::host_store::{self, Opened};
 use crate::remote;
+use extent_remote::cache::Cache;
 use extent_remote::layout::Child;
-use extent_store::upload::Remote;
+use extent_store::upload::{self, Remote};
 use extent_store::{HostDir, Store};
 use std::path::Path;
 use std::sync::Arc;
@@ -37,15 +38,22 @@ pub(crate) struct Kept {
 impl Kept {
     /// Makes a new image at `dir`, which must not exist, holding at most `capacity` bytes, of
     /// `branch` ([`host_store::create`]): whole if `whole`, or else unmade until its maker says it
-    /// is ([`host_store::create_unmade`], TASK-196), as an import's, once filled.
-    pub fn create(dir: &Path, capacity: u64, branch: u64, whole: bool) -> anyhow::Result<Self> {
-        let keeping = host_store::keeping().map_err(anyhow_of)?;
+    /// is ([`host_store::create_unmade`], TASK-196), as an import's, once filled. Its uploader
+    /// keeps its branch as `keeping` says: in a host's daemon, with the host's cache of the
+    /// bucket's objects, which what the bucket acknowledged goes into, and its extents are read
+    /// from (TASK-237); elsewhere, with none ([`host_store::keeping`]).
+    pub fn create(
+        dir: &Path,
+        (capacity, branch, whole): (u64, u64, bool),
+        keeping: upload::Options,
+    ) -> anyhow::Result<Self> {
+        let cache = keeping.cache.clone();
         let opened = host_store::create_unmade(dir, capacity, branch, None, keeping);
         let opened = opened.map_err(anyhow_of)?;
         if whole {
             opened.made()?;
         }
-        Self::opened(opened)
+        Self::opened(opened, cache)
     }
 
     /// The image at `dir`, or the clone at `dir`, a store of its own holding its branch alone
@@ -53,14 +61,14 @@ impl Kept {
     /// this process is no host's daemon ([`host_store::keeping`]).
     pub fn open(dir: &Path) -> anyhow::Result<Self> {
         let keeping = host_store::keeping().map_err(anyhow_of)?;
-        Self::opened(host_store::open(dir, keeping).map_err(anyhow_of)?)
+        Self::opened(host_store::open(dir, keeping).map_err(anyhow_of)?, None)
     }
 
-    /// `opened`, its branch taken in its bucket.
-    fn opened(opened: Opened) -> anyhow::Result<Self> {
+    /// `opened`, its branch taken in its bucket, its extents there read through `cache`, if given.
+    fn opened(opened: Opened, cache: Option<Arc<Cache>>) -> anyhow::Result<Self> {
         let Opened { store, bucket, remote } = opened;
         let url = store.bucket().unwrap_or_default().to_owned();
-        let fetcher = remote::Fetcher::new(bucket.clone(), None);
+        let fetcher = remote::Fetcher::new(bucket.clone(), cache);
         let own = host_store::keeps_own_bucket(&store);
         let collecting = own.then(|| collect::of(&url, &bucket));
         Ok(Self { store, remote, fetcher, collecting })
@@ -112,8 +120,8 @@ impl Kept {
     }
 }
 
-/// Deletes the image at `path`, or the clone whose handle `path` is, which nothing in this process
-/// has open ([`host_store::delete`]): its branch, in the bucket its description names, first, as
+/// Deletes the image at `path`, or the clone at `path`, which nothing in this process has open
+/// ([`host_store::delete`]): its branch, in the bucket its description names, first, as
 /// a copy never placed deletes it where this process is no host's daemon ([`host_store::token`]).
 pub(crate) fn delete(path: &Path) -> Result<(), Error> {
     let bucket = host_store::bucket_at(path).map_err(Error::new)?;
@@ -310,7 +318,7 @@ mod tests {
     fn the_collector_reclaims_what_images_freed() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("image");
-        let image = Kept::create(&path, SIZE, 7, true).unwrap();
+        let image = Kept::create(&path, (SIZE, 7, true), host_store::keeping().unwrap()).unwrap();
         let extent = |sequence| ExtentId::new(7, sequence);
         // Each stored on its own, in its bucket: 5 MiB, past the size for it.
         let data = crate::test_data::noise(1, 5 * MIB);

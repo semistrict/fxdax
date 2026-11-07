@@ -5823,5 +5823,42 @@ fn drains_give_up_past_their_bound() {
     );
     drop(connection);
 }
+/// TASK-237: an image imported through the daemon (`ImportImage`) keeps what the bucket
+/// acknowledged of it in the host's part cache, as the daemon's other stores do, and the import's
+/// check of the filesystem it made reads it there: no ranged GET of the bucket's but recovery's,
+/// of segments' footers, as the import's store is made and as the daemon opens it after. Its
+/// store was an image's, whose uploader and fetcher had no cache: its acknowledged segments were
+/// deleted, and the check read the image back from the bucket, 6,183 ranged GETs here (GCE r970:
+/// 6.8 GB downloaded for 11 GB uploaded).
+#[test]
+fn imports_read_what_they_made_from_the_hosts_cache() {
+    use crate::import::testing::{Entry, Kind, layer};
+    use extent_remote::store::Request;
+    host();
+    let dir = tempfile::tempdir().unwrap();
+    let cache = dir.path().join("cache");
+    std::fs::create_dir(&cache).unwrap();
+    // SAFETY: nextest runs each test in a process of its own, whose other threads don't read the
+    // environment yet.
+    unsafe { std::env::set_var("FXDAX_EXTENTD_CACHE", &cache) };
+    let bucket = super::stores::remote_bucket().unwrap();
+    // Files of a few parts each, so that what the check reads is in segments the bucket
+    // acknowledged before it, as the import's close waits for its uploads.
+    let contents: Vec<Vec<u8>> = (0..8u8).map(|file| pattern(file, 3 << 20)).collect();
+    let names: Vec<String> = (0..contents.len()).map(|file| format!("file-{file}")).collect();
+    let entries: Vec<Entry<'_>> = (names.iter().zip(&contents))
+        .map(|(name, contents)| Entry::new(name, Kind::File(contents)))
+        .collect();
+    let image = dir.path().join("image.tar");
+    std::fs::write(&image, layer(&entries).unwrap()).unwrap();
+    let ranged = || bucket.stats().requests(Request::GetRange);
+    let before = ranged();
+    let path = dir.path().join("store");
+    control(super::stores::import(path.clone(), 256 << 20, image, None)).unwrap();
+    // A footer as the store's writer takes its branch, made; two as the daemon opens it after, its
+    // recovery and its writer's.
+    assert_eq!(ranged() - before, 3, "ranged GETs of the bucket as the import ran");
+}
+
 /// TASK-149.17: a compromised VM process beside other tenants, checked against invariants.
 mod hostile;

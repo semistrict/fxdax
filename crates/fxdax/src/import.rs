@@ -66,7 +66,20 @@ pub async fn store(
     image: &Path,
     reference: Option<&str>,
 ) -> Result<(), Error> {
-    make_store(path.as_ref(), capacity, |storage| fill(storage, image, reference)).await
+    let keeping = crate::host_store::keeping().map_err(Error::new)?;
+    make_store(path.as_ref(), capacity, keeping, |storage| fill(storage, image, reference)).await
+}
+
+/// fxdax: makes a store at `path` as [`store`] does, its branch kept as `keeping` says: as the
+/// extent daemon's stores keep theirs, with the host's cache of the bucket's objects, which what
+/// the bucket acknowledged of the image goes into, and the import's check reads (TASK-237).
+pub(crate) async fn store_keeping(
+    path: impl AsRef<Path>,
+    capacity: u64,
+    (image, reference): (&Path, Option<&str>),
+    keeping: extent_store::upload::Options,
+) -> Result<(), Error> {
+    make_store(path.as_ref(), capacity, keeping, |storage| fill(storage, image, reference)).await
 }
 
 /// Makes a store at `path`, which must not exist, of `capacity` bytes, which `fill` fills. A store
@@ -75,13 +88,14 @@ pub async fn store(
 async fn make_store<F: Future<Output = anyhow::Result<()>>>(
     path: &Path,
     capacity: u64,
+    keeping: extent_store::upload::Options,
     fill: impl FnOnce(Storage) -> F,
 ) -> Result<(), Error> {
     // fxdax: what an import its process died in left, unmade, is no store: made anew (TASK-196).
     if Storage::is_unmade(path) {
         Storage::delete(path)?;
     }
-    let storage = Storage::create_unmade(path, capacity)?;
+    let storage = Storage::create_unmade_keeping(path, capacity, keeping)?;
     let unfinished = Unfinished(path);
     fill(storage).await.map_err(Error::new)?;
     // Whole once filled, and closed: until then, its making's dying leaves no store.
@@ -882,6 +896,11 @@ mod tests {
     use futures::future::{Either, select};
     use std::panic::{AssertUnwindSafe, catch_unwind};
 
+    /// How a store an import here makes keeps its branch: where no host's daemon serves it.
+    fn keeping() -> extent_store::upload::Options {
+        crate::host_store::keeping().unwrap()
+    }
+
     /// A store whose filling panics is deleted as the panic unwinds, as one whose filling fails
     /// is, once the filesystem filling it has dropped, closing it.
     #[test]
@@ -889,7 +908,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("store");
         let made = catch_unwind(AssertUnwindSafe(|| {
-            block_on(make_store(&path, 64 << 20, |storage| async {
+            block_on(make_store(&path, 64 << 20, keeping(), |storage| async {
                 let _fs = Filesystem::format(storage).await?;
                 panic!("filling the store panicked");
             }))
@@ -908,7 +927,7 @@ mod tests {
         let path = dir.path().join("store");
         block_on(async {
             let (formatted, filling) = oneshot::channel();
-            let made = Box::pin(make_store(&path, 64 << 20, |storage| async {
+            let made = Box::pin(make_store(&path, 64 << 20, keeping(), |storage| async {
                 let _fs = Filesystem::format(storage).await?;
                 formatted.send(()).unwrap();
                 std::future::pending().await
@@ -934,14 +953,15 @@ mod tests {
         use crate::import::testing::{Entry, Kind, layer};
         let Ok(path) = std::env::var(CHILD_STORE) else { return };
         let half = layer(&[Entry::new("half", Kind::File(b"half an image"))]).unwrap();
-        let made = block_on(make_store(Path::new(&path), 64 << 20, |storage| async move {
-            let fs = Filesystem::format(storage).await?;
-            let mut importer = Importer::new(&fs);
-            importer.apply(&half[..]).await?;
-            fs.root().fsync().await?;
-            println!("FILLED");
-            std::future::pending().await
-        }));
+        let made =
+            block_on(make_store(Path::new(&path), 64 << 20, keeping(), |storage| async move {
+                let fs = Filesystem::format(storage).await?;
+                let mut importer = Importer::new(&fs);
+                importer.apply(&half[..]).await?;
+                fs.root().fsync().await?;
+                println!("FILLED");
+                std::future::pending().await
+            }));
         panic!("the import ended: {made:?}");
     }
 

@@ -661,7 +661,10 @@ pub(super) async fn import(
         if path.exists() {
             return Err(Errno::EEXIST);
         }
-        let made = crate::import::store(&path, capacity, &image, reference.as_deref());
+        // As the daemon's stores keep their branches: with the host's cache, which what the bucket
+        // acknowledged of the image goes into and the import's check reads (TASK-237).
+        let imported = (image.as_path(), reference.as_deref());
+        let made = crate::import::store_keeping(&path, capacity, imported, keeping()?);
         futures::executor::block_on(made)
             .map_err(|err| errno_of(format_args!("importing {}", image.display()), err))?;
         Ok(open_here(&path)?.branch())
