@@ -15,7 +15,8 @@ use crate::layout::{
 };
 use crate::segments::{Reaped, Segments, Unframed, footer_last};
 use crate::state::{
-    Framing, Gate, Locked, OwnFiles, Placement, Reader, Space, State, Uncommitted, Unreferenced,
+    Framing, Gate, Life, Locked, OwnFiles, Placement, Reader, Space, State, Uncommitted,
+    Unreferenced,
 };
 use crate::sync::{Condvar, Mutex, MutexGuard, rules, spawn_or_return};
 use crate::timings::{self, Flush, flush};
@@ -999,19 +1000,17 @@ impl<D: Dir> Store<D> {
         }
     }
 
-    /// fxdax: fails unless `extent`, the branch's, may be opened, as a write opens it, by `state`:
-    /// unless it is open, or never sealed by the branch, held or freed ([`Spent`], TASK-79.6).
-    fn check_opens(state: &State<D::File>, extent: ExtentId) -> Result<(), Error> {
-        if state.uncommitted.is_open(extent) {
-            return Ok(());
+    /// fxdax: fails unless `extent`, the branch's, whose life in `state` is `life`, may be opened,
+    /// as a write opens it: unless it is open, or never sealed by the branch, held or freed
+    /// ([`Spent`], TASK-79.6). One kept, freed, is spent if it was the branch's own.
+    fn check_opens(state: &State<D::File>, life: &Life<'_>, extent: ExtentId) -> Result<(), Error> {
+        match life {
+            Life::Open(_) | Life::Unknown => Ok(()),
+            Life::Held(_) => bail!(SealedExtent(extent)),
+            Life::Spent => bail!(Spent(extent)),
+            Life::Kept(_) if state.spent.contains(extent.sequence) => bail!(Spent(extent)),
+            Life::Kept(_) => Ok(()),
         }
-        if state.extents.get(&extent).is_some() {
-            bail!(SealedExtent(extent));
-        }
-        if state.spent.contains(extent.sequence) {
-            bail!(Spent(extent));
-        }
-        Ok(())
     }
 
     /// Begins a write, as [`Store::begin_write`] says, with `state`, writable, held, and no commit
@@ -1024,18 +1023,22 @@ impl<D: Dir> Store<D> {
         len: u64,
     ) -> Result<Write<'_, D>, Error> {
         let end = offset + len;
-        let current = state.extents.get(&extent).map(|entry| entry.len);
-        Self::check_opens(&state, extent)?;
-        let grows = end.saturating_sub(current.unwrap_or(0));
-        let to_segment = match state.uncommitted.placement(extent) {
-            Some(placement) => matches!(placement, Placement::Segment),
-            None => end < self.options.large_extent,
-        };
-        // fxdax: what it writes over, in a segment, takes room too (TASK-79.2), as the writes
-        // that finished left the extent: not its holes (TASK-160.16).
-        let overwrites = match state.extents.get(&extent).map(|entry| &entry.data) {
-            Some(Data::Pieces(pieces)) if to_segment => covered(pieces, offset, end),
-            _ => 0,
+        let (grows, to_segment, overwrites) = {
+            let life = state.life(extent);
+            Self::check_opens(&state, &life, extent)?;
+            let current = life.held();
+            let grows = end.saturating_sub(current.map_or(0, |entry| entry.len));
+            let to_segment = match state.uncommitted.placement(extent) {
+                Some(placement) => matches!(placement, Placement::Segment),
+                None => end < self.options.large_extent,
+            };
+            // fxdax: what it writes over, in a segment, takes room too (TASK-79.2), as the writes
+            // that finished left the extent: not its holes (TASK-160.16).
+            let overwrites = match current.map(|entry| &entry.data) {
+                Some(Data::Pieces(pieces)) if to_segment => covered(pieces, offset, end),
+                _ => 0,
+            };
+            (grows, to_segment, overwrites)
         };
         state.check_room(grows, overwrites)?;
         if to_segment {
@@ -2230,8 +2233,9 @@ impl<D: Dir> Store<D> {
     /// holds it.
     pub fn extent(&self, extent: ExtentId) -> Result<Option<(u64, bool)>, Error> {
         let state = self.state()?;
-        let open = state.uncommitted.is_open(extent);
-        Ok(state.extents.get(&extent).map(|entry| (entry.len, open)))
+        let life = state.life(extent);
+        let open = matches!(life, Life::Open(_));
+        Ok(life.held().map(|entry| (entry.len, open)))
     }
 
     /// fxdax: whether an extent is open: written since the last commit, which seals it.

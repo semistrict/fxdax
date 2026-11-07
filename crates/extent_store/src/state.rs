@@ -137,6 +137,33 @@ pub(crate) enum Reader {
     View { epoch: u64, since: u64, pinned: bool },
 }
 
+/// fxdax: where an extent is in its life, as the store's state has it, found in one place
+/// ([`State::life`], TASK-160.18), which readers and writers decide by.
+pub(crate) enum Life<'a> {
+    /// Written since the last commit, which seals it: its entry, as the writes that finished left
+    /// it, if one did.
+    Open(Option<&'a Extent>),
+    /// Sealed, and held.
+    Held(&'a Extent),
+    /// Freed by a commit, and kept: for the bucket, views or pins ([`Kept`]).
+    Kept(&'a Kept),
+    /// Sealed once, and freed, and not kept: its number the branch writes no more (TASK-79.6).
+    Spent,
+    /// Neither opened nor sealed here.
+    Unknown,
+}
+
+impl Life<'_> {
+    /// Its entry, if the store holds it: open or sealed.
+    pub fn held(&self) -> Option<&Extent> {
+        match self {
+            Life::Open(entry) => *entry,
+            Life::Held(entry) => Some(entry),
+            Life::Kept(_) | Life::Spent | Life::Unknown => None,
+        }
+    }
+}
+
 impl<F: File> State<F> {
     /// Runs `change`, which changes the state ahead of the files it writes: failing part way, it
     /// leaves the state other than the files say, and fails the store, which does nothing more.
@@ -164,16 +191,32 @@ impl<F: File> State<F> {
         }
     }
 
+    /// fxdax: where `extent` is in its life ([`Life`], TASK-160.18).
+    pub fn life(&self, extent: ExtentId) -> Life<'_> {
+        let open = self.uncommitted.is_open(extent);
+        match self.extents.get(&extent) {
+            Some(entry) if open => Life::Open(Some(entry)),
+            Some(entry) => Life::Held(entry),
+            None if open => Life::Open(None),
+            None => match self.kept.get(&extent) {
+                Some(kept) => Life::Kept(kept),
+                None if self.spent.contains(extent.sequence) => Life::Spent,
+                None => Life::Unknown,
+            },
+        }
+    }
+
     /// `extent`'s entry, which `reader` may read: of what the store holds, or keeps, if not the
     /// store's own; a view's, of what its commits hold (not open, not sealed after its commit, not
     /// freed before the one it holds since), or it pins. Fails with `NoExtent` otherwise.
     pub fn entry_for(&self, extent: ExtentId, reader: Reader) -> Result<Extent, Error> {
+        let life = self.life(extent);
         if let Reader::View { epoch, .. } = reader
-            && (self.sealed.after(extent, epoch) || self.uncommitted.is_open(extent))
+            && (matches!(life, Life::Open(_)) || self.sealed.after(extent, epoch))
         {
             bail!(NoExtent(extent));
         }
-        let kept = |kept: &&Kept| match reader {
+        let readable = |kept: &Kept| match reader {
             Reader::Store => false,
             Reader::Kept => true,
             // Freed by a commit after the one the view holds since, which held it; or pinned.
@@ -181,14 +224,16 @@ impl<F: File> State<F> {
                 pinned || kept.freed > since || !rules().views_hold_their_commit
             }
         };
-        match (self.extents.get(&extent), self.kept.get(&extent)) {
-            (Some(entry), _) => Ok(entry.clone()),
-            (None, Some(held)) if kept(&held) => Ok(held.entry.clone()),
+        match life {
+            Life::Open(Some(entry)) | Life::Held(entry) => Ok(entry.clone()),
+            Life::Kept(kept) if readable(kept) => Ok(kept.entry.clone()),
             // Kept for another, freed before what the view holds: what it let go of.
-            (None, Some(_)) if matches!(reader, Reader::View { .. }) => {
+            Life::Kept(_) if matches!(reader, Reader::View { .. }) => {
                 Err(Error::new(NoExtent(extent)).context(NotHeld(extent)))
             }
-            _ => bail!(NoExtent(extent)),
+            Life::Open(None) | Life::Kept(_) | Life::Spent | Life::Unknown => {
+                bail!(NoExtent(extent))
+            }
         }
     }
 
