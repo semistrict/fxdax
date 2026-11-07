@@ -17,7 +17,7 @@ use crate::object_store::allocator::{AllocatorItem, Reservation};
 use crate::object_store::journal::{checksums_record_bytes, mutation_record_bytes};
 use crate::object_store::object_manager::{ObjectManager, reserved_space_from_journal_usage};
 use crate::object_store::object_record::{
-    BytesAndNodes, FxfsKey, FxfsKeyV49, ObjectItem, ObjectItemV60, ObjectKey, ObjectKeyData,
+    BytesAndNodes, FxfsKey, FxfsKeyV49, ObjectItem, ObjectItemV63, ObjectKey, ObjectKeyData,
     ObjectValue, ProjectProperty,
 };
 use crate::object_store::{AttributeId, AttributeKey, ProjectId};
@@ -89,14 +89,14 @@ pub struct TransactionLocks<'a>(pub WriteGuard<'a>);
 /// transaction, these are stored as a set which allows some mutations to be deduplicated and found
 /// (and we require custom comparison functions below).  For example, we need to be able to find
 /// object size changes.
-pub type Mutation = MutationV62;
+pub type Mutation = MutationV63;
 
 #[derive(
     Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize, TypeFingerprint, Versioned,
 )]
 #[cfg_attr(fuzz, derive(arbitrary::Arbitrary))]
-pub enum MutationV62 {
-    ObjectStore(ObjectStoreMutationV60),
+pub enum MutationV63 {
+    ObjectStore(ObjectStoreMutationV63),
     EncryptedObjectStore(#[serde(with = "crate::zerocopy_serialization")] Box<[u8]>),
     Allocator(AllocatorMutationV60),
     /// Indicates the beginning of a flush. This would typically involve sealing a tree.
@@ -153,12 +153,12 @@ impl Mutation {
 // We have custom comparison functions for mutations that just use the key, rather than the key and
 // value that would be used by default so that we can deduplicate and find mutations (see
 // get_object_mutation below).
-pub type ObjectStoreMutation = ObjectStoreMutationV60;
+pub type ObjectStoreMutation = ObjectStoreMutationV63;
 
 #[derive(Clone, Debug, Serialize, Deserialize, TypeFingerprint)]
 #[cfg_attr(fuzz, derive(arbitrary::Arbitrary))]
-pub struct ObjectStoreMutationV60 {
-    pub item: ObjectItemV60,
+pub struct ObjectStoreMutationV63 {
+    pub item: ObjectItemV63,
     pub op: Operation,
 }
 

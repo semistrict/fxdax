@@ -67,7 +67,7 @@ use crate::object_store::journal::writer::JournalWriter;
 use crate::object_store::object_manager::ObjectManager;
 use crate::object_store::object_record::{AttributeKey, ObjectKey, ObjectKeyData, ObjectValue};
 use crate::object_store::transaction::{
-    AllocatorMutation, LockKey, Mutation, MutationV62, ObjectMutationIterator, ObjectStoreMutation,
+    AllocatorMutation, LockKey, Mutation, MutationV63, ObjectMutationIterator, ObjectStoreMutation,
     Options, TRANSACTION_MAX_JOURNAL_USAGE, Transaction, lock_keys,
 };
 use crate::object_store::{
@@ -161,16 +161,16 @@ pub struct JournalCheckpointV32 {
     pub version: Version,
 }
 
-pub type JournalRecord = JournalRecordV62;
+pub type JournalRecord = JournalRecordV63;
 
 #[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug, Serialize, Deserialize, TypeFingerprint, Versioned)]
 #[cfg_attr(fuzz, derive(arbitrary::Arbitrary))]
-pub enum JournalRecordV62 {
+pub enum JournalRecordV63 {
     EndBlock,
     Mutation {
         object_id: u64,
-        mutation: MutationV62,
+        mutation: MutationV63,
     },
     /// Commits records in the transaction.
     Commit,

@@ -102,7 +102,7 @@ their leading comment:
   frozen, its extents never deallocated one by one while any store shares
   them, and freed once none does. Blocks written in place (preallocated
   files) are written to new blocks where a snapshot shares them. fsck checks
-  shared extents, and the on-disk format is version 62, the only one a mount
+  shared extents, and the on-disk format is version 63, the only one a mount
   reads: no format is migrated.
 
 ### `crates/physmem`: physical memory

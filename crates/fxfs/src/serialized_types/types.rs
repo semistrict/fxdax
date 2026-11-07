@@ -11,7 +11,10 @@
 // dying when the allocator's tree was compacted, which a mount frees again. Version 61 adds
 // StoreInfoV61: layers of a base, and the branches of its extents (backlog doc-10). Version 62's
 // MutationV62, and JournalRecordV62 that holds it, record what replay needs to find the metadata
-// space borrowed as the filesystem had it (`Mutation::UpdateBorrowed`, TASK-218).
+// space borrowed as the filesystem had it (`Mutation::UpdateBorrowed`, TASK-218). Version 63's
+// ObjectDescriptorV63 says which special file a file is, in the entries of its directories
+// (TASK-236): ObjectValueV63 holds it, and the item, mutation, journal, encrypted transaction and
+// super-block records that hold an ObjectValue are V63.
 
 use crate::blob_metadata::{BlobMetadata, BlobMetadataV53};
 use crate::lsm_tree::{
@@ -22,15 +25,15 @@ use crate::object_store::allocator::{
     AllocatorValueV32,
 };
 use crate::object_store::journal::super_block::{
-    SuperBlockHeader, SuperBlockHeaderV32, SuperBlockRecord, SuperBlockRecordV60,
+    SuperBlockHeader, SuperBlockHeaderV32, SuperBlockRecord, SuperBlockRecordV63,
 };
-use crate::object_store::journal::{JournalRecord, JournalRecordV62};
+use crate::object_store::journal::{JournalRecord, JournalRecordV63};
 use crate::object_store::object_record::{
-    FsverityMetadata, FsverityMetadataV50, ObjectKey, ObjectKeyV54, ObjectValue, ObjectValueV60,
+    FsverityMetadata, FsverityMetadataV50, ObjectKey, ObjectKeyV54, ObjectValue, ObjectValueV63,
 };
-use crate::object_store::transaction::{Mutation, MutationV62};
+use crate::object_store::transaction::{Mutation, MutationV63};
 use crate::object_store::{
-    EncryptedMutations, EncryptedMutationsV49, EncryptedTransaction, EncryptedTransactionV60,
+    EncryptedMutations, EncryptedMutationsV49, EncryptedTransaction, EncryptedTransactionV63,
     StoreInfo, StoreInfoV61,
 };
 use crate::serialized_types::{Version, Versioned, VersionedLatest, versioned_type};
@@ -45,7 +48,7 @@ use std::collections::BTreeMap;
 ///
 /// IMPORTANT: When changing this (major or minor), update the list of possible versions at
 /// https://cs.opensource.google/fuchsia/fuchsia/+/main:third_party/cobalt_config/fuchsia/local_storage/versions.txt.
-pub const LATEST_VERSION: Version = Version { major: 62, minor: 0 };
+pub const LATEST_VERSION: Version = Version { major: 63, minor: 0 };
 
 /// The last version of the filesystem where keys in layer files used the old serialization format
 /// (prior to SerializeKey and delta encoding).
@@ -136,22 +139,22 @@ versioned_types! {
         49.. => EncryptedMutationsV49,
     }
     EncryptedTransaction {
-        60.. => EncryptedTransactionV60,
+        63.. => EncryptedTransactionV63,
     }
     FsverityMetadata {
         50.. => FsverityMetadataV50,
     }
     JournalRecord {
-        62.. => JournalRecordV62,
+        63.. => JournalRecordV63,
     }
     Mutation {
-        62.. => MutationV62,
+        63.. => MutationV63,
     }
     ObjectKey {
         54.. => ObjectKeyV54,
     }
     ObjectValue {
-        60.. => ObjectValueV60,
+        63.. => ObjectValueV63,
     }
     PersistentLayerHeader {
         39.. => PersistentLayerHeaderV39,
@@ -166,7 +169,7 @@ versioned_types! {
         32.. => SuperBlockHeaderV32,
     }
     SuperBlockRecord {
-        60.. => SuperBlockRecordV60,
+        63.. => SuperBlockRecordV63,
     }
     BlobMetadata {
         53.. => BlobMetadataV53,

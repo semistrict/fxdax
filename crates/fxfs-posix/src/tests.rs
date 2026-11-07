@@ -10,7 +10,7 @@ use super::*;
 use fxfs::filesystem::FxFilesystemBuilder;
 use fxfs::lock_keys;
 use fxfs::object_store::volume::root_volume;
-use fxfs::object_store::{NewChildStoreOptions, StoreOptions};
+use fxfs::object_store::{NewChildStoreOptions, SpecialFile, StoreOptions};
 use storage_device::DeviceHolder;
 use storage_device::fake_device::FakeDevice;
 
@@ -115,26 +115,50 @@ async fn mode_owner_and_group_change_one_at_a_time() {
     }
 }
 
-/// A readdir lists FIFOs, sockets and devices as what they are, as their attributes say: their
-/// entries say only that they are files, and a FIFO was listed as a regular file (TASK-149.36).
+/// A readdir lists FIFOs, sockets and devices as what they are: a FIFO was listed as a regular
+/// file (TASK-149.36). Their entries say so, made, linked or moved, and readdir takes their word,
+/// looking up no record (TASK-236); fsck checks that their objects agree.
 #[fuchsia::test]
 async fn readdir_lists_special_files_as_what_they_are() {
     let (fs, root) = volume().await;
     let kinds = [S_IFREG, S_IFIFO, S_IFSOCK, S_IFCHR, S_IFBLK, S_IFDIR];
+    let mut inos = Vec::new();
     for (name, kind) in (b'a'..).zip(kinds) {
         let attr = fs.create(root, &[name], kind | 0o600, 7, 0, 0, &[]).await.expect("creating");
         assert_eq!(attr[0].mode & S_IFMT, kind);
+        inos.push(attr[0].ino);
     }
-    let mut listed = Vec::new();
-    let read = fs.readdir(root, ReaddirStart::Index(0), |name, _, kind| {
-        listed.push((name.to_owned(), kind));
-        true
-    });
-    read.await.expect("readdir failed");
-    let expected: Vec<(String, u32)> =
-        (b'a'..).zip(kinds).map(|(name, kind)| (char::from(name).to_string(), kind)).collect();
-    assert_eq!(listed, expected);
+    // A FIFO linked, and a socket moved, into another directory, whose entries say what they are.
+    let dir = fs.new_dir(root, b"z").await;
+    fs.link(inos[1], dir, b"fifo", false).await.expect("linking");
+    fs.rename(root, b"c", inos[2], dir, b"socket", None).await.expect("renaming");
+
+    let listing = async |dir| {
+        let mut listed = Vec::new();
+        let read = fs.readdir(dir, ReaddirStart::Index(0), |name, _, kind| {
+            listed.push((name.to_owned(), kind));
+            true
+        });
+        read.await.expect("readdir failed");
+        listed
+    };
+    let names = ["a", "b", "d", "e", "f", "z"].map(String::from);
+    let expected = names.into_iter().zip([S_IFREG, S_IFIFO, S_IFCHR, S_IFBLK, S_IFDIR, S_IFDIR]);
+    assert_eq!(listing(root).await, expected.collect::<Vec<_>>());
+    let expected = [("fifo".to_owned(), S_IFIFO), ("socket".to_owned(), S_IFSOCK)];
+    assert_eq!(listing(dir).await, expected);
+
+    let entry = async |dir, name| fs.directory(dir).await.unwrap().lookup(name).await.unwrap();
+    let special = |special| Some((inos[1], ObjectDescriptor::Special(special), false));
+    assert_eq!(entry(root, "b").await, special(SpecialFile::Fifo));
+    assert_eq!(entry(dir, "fifo").await, special(SpecialFile::Fifo));
+    let socket = Some((inos[2], ObjectDescriptor::Special(SpecialFile::Socket), false));
+    assert_eq!(entry(dir, "socket").await, socket);
+    assert_eq!(entry(root, "a").await, Some((inos[0], ObjectDescriptor::File, false)));
+
     fs.stop_delayed().await.unwrap();
+    let options = fxfs::fsck::FsckOptions { fail_on_warning: true, ..Default::default() };
+    fxfs::fsck::fsck_with_options(fs.filesystem().clone(), &options).await.expect("fsck");
 }
 
 /// An unlink no others join goes by itself: it holds its room, and its place in the journal, for

@@ -478,6 +478,7 @@ impl<S: HandleOwner> Directory<S> {
                 match src_dir.lookup_ext(src_name).await? {
                     Some(entry) => match entry.descriptor {
                         ObjectDescriptor::File
+                        | ObjectDescriptor::Special(_)
                         | ObjectDescriptor::Directory
                         | ObjectDescriptor::Symlink => {
                             if src_object_id != Some(entry.object_id) {
@@ -504,6 +505,7 @@ impl<S: HandleOwner> Directory<S> {
             let dst_id_and_descriptor = match dst_entry {
                 Some(entry) => match entry.descriptor {
                     ObjectDescriptor::File
+                    | ObjectDescriptor::Special(_)
                     | ObjectDescriptor::Directory
                     | ObjectDescriptor::Symlink => {
                         if child_object_id != entry.object_id {
@@ -760,18 +762,21 @@ impl<S: HandleOwner> Directory<S> {
         name: &str,
         handle: &DataObjectHandle<S>,
     ) -> Result<(), Error> {
-        self.add_child_file_and_time(transaction, name, handle, true).await
+        self.add_child_file_and_time(transaction, name, handle, ObjectDescriptor::File, true).await
     }
 
-    /// As `add_child_file`, setting the directory's times if `times` says.
+    /// As `add_child_file`, its entry saying `descriptor`, a file's (`ObjectDescriptor::is_file`),
+    /// setting the directory's times if `times` says.
     async fn add_child_file_and_time<'a>(
         &self,
         transaction: &mut Transaction<'a>,
         name: &str,
         handle: &DataObjectHandle<S>,
+        descriptor: ObjectDescriptor,
         times: bool,
     ) -> Result<(), Error> {
         ensure!(!self.is_deleted(), FxfsError::Deleted);
+        ensure!(descriptor.is_file(), FxfsError::InvalidArgs);
         if self.dir_type().is_encrypted() {
             let fscrypt_key =
                 self.get_fscrypt_key().await?.into_cipher().ok_or(FxfsError::NoKey)?;
@@ -786,7 +791,7 @@ impl<S: HandleOwner> Directory<S> {
                 self.store().store_object_id(),
                 Mutation::replace_or_insert_object(
                     ObjectKey::encrypted_child(self.object_id(), encrypted_name, hash_code),
-                    ObjectValue::child(handle.object_id(), ObjectDescriptor::File),
+                    ObjectValue::child(handle.object_id(), descriptor),
                 ),
             );
         } else {
@@ -794,7 +799,7 @@ impl<S: HandleOwner> Directory<S> {
                 self.store().store_object_id(),
                 Mutation::replace_or_insert_object(
                     ObjectKey::child(self.object_id(), &name, self.dir_type()),
-                    ObjectValue::child(handle.object_id(), ObjectDescriptor::File),
+                    ObjectValue::child(handle.object_id(), descriptor),
                 ),
             );
         }
@@ -880,12 +885,17 @@ impl<S: HandleOwner> Directory<S> {
         self.create_child_file_with_options(transaction, name, HandleOptions::default()).await
     }
 
-    /// fxdax: as `create_child_file`, but leaving the directory's times be, which the caller keeps
-    /// (the guest's kernel writes them back with the directory): one record fewer to change.
-    pub async fn create_child_file_untimed<'a>(
+    /// fxdax: as `create_child_file`, a file whose entry says `descriptor`: a regular file's
+    /// (`File`), or a special file's (`Special`), which the POSIX mode the caller gives it in
+    /// `transaction` must say too, as fsck checks. Unless `times`, the directory's times are left
+    /// be, which the caller keeps (the guest's kernel writes them back with the directory): one
+    /// record fewer to change.
+    pub async fn create_child_node<'a>(
         &self,
         transaction: &mut Transaction<'a>,
         name: &str,
+        descriptor: ObjectDescriptor,
+        times: bool,
     ) -> Result<DataObjectHandle<S>, Error> {
         ensure!(!self.is_deleted(), FxfsError::Deleted);
         let wrapping_key_id = self.wrapping_key_id();
@@ -896,7 +906,7 @@ impl<S: HandleOwner> Directory<S> {
             wrapping_key_id,
         )
         .await?;
-        self.add_child_file_and_time(transaction, name, &handle, false).await?;
+        self.add_child_file_and_time(transaction, name, &handle, descriptor, times).await?;
         let ObjectValue::Object { attributes: ObjectAttributes { project_id, .. }, .. } =
             self.store().txn_get_object_mutation(transaction, self.object_id()).await?.item.value
         else {
@@ -2011,7 +2021,10 @@ async fn replace_child_with_object_impl<'a, S: HandleOwner>(
     let store_id = dst.0.store().store_object_id();
 
     let result = match deleted_id_and_descriptor {
-        Some((old_id, ObjectDescriptor::File | ObjectDescriptor::Symlink)) => {
+        Some((
+            old_id,
+            ObjectDescriptor::File | ObjectDescriptor::Special(_) | ObjectDescriptor::Symlink,
+        )) => {
             let was_last_ref = dst.0.store().adjust_refs(transaction, old_id, -1).await?;
             if was_last_ref {
                 // fxdax: purged as every unlinked object tombstoned in a caller's transaction is,
@@ -2126,7 +2139,7 @@ mod tests {
     use crate::object_store::volume::root_volume;
     use crate::object_store::{
         AttributeId, HandleOptions, LockKey, NewChildStoreOptions, ObjectDescriptor, ObjectKind,
-        ObjectStore, SetExtendedAttributeMode, StoreObjectHandle, StoreOptions,
+        ObjectStore, SetExtendedAttributeMode, SpecialFile, StoreObjectHandle, StoreOptions,
     };
     use anyhow::Error;
     use assert_matches::assert_matches;
@@ -2787,7 +2800,7 @@ mod tests {
 
     /// fxdax: a file created untimed is named in its directory, which keeps its times.
     #[fuchsia::test]
-    async fn test_create_child_file_untimed() {
+    async fn test_create_child_node_untimed() {
         let device = DeviceHolder::new(FakeDevice::new(8192, TEST_DEVICE_BLOCK_SIZE));
         let fs = FxFilesystem::new_empty(device).await.expect("new_empty failed");
         let mut transaction = fs
@@ -2810,13 +2823,30 @@ mod tests {
             .await
             .expect("new_transaction failed");
         let child = dir
-            .create_child_file_untimed(&mut transaction, "foo")
+            .create_child_node(&mut transaction, "foo", ObjectDescriptor::File, false)
             .await
-            .expect("create_child_file_untimed failed");
+            .expect("create_child_node failed");
         transaction.commit().await.expect("commit failed");
 
         let found = dir.lookup("foo").await.expect("lookup failed").expect("foo not found");
         assert_eq!((found.0, found.1), (child.object_id(), ObjectDescriptor::File));
+        // A special file's entry says which it is.
+        let fifo = ObjectDescriptor::Special(SpecialFile::Fifo);
+        let mut transaction = fs
+            .root_store()
+            .new_transaction(
+                lock_keys![LockKey::object(fs.root_store().store_object_id(), dir.object_id())],
+                Options::default(),
+            )
+            .await
+            .expect("new_transaction failed");
+        let child = dir
+            .create_child_node(&mut transaction, "fifo", fifo, false)
+            .await
+            .expect("create_child_node failed");
+        transaction.commit().await.expect("commit failed");
+        let found = dir.lookup("fifo").await.expect("lookup failed").expect("fifo not found");
+        assert_eq!((found.0, found.1), (child.object_id(), fifo));
         let after = dir.get_properties().await.expect("get_properties failed");
         assert_eq!(
             (after.modification_time, after.change_time),

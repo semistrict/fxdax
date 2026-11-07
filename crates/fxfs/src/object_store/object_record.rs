@@ -3,8 +3,10 @@
 // found in the LICENSE file.
 
 // Fuchsia's `src/storage/fxfs/src/object_store/object_record.rs`. fxdax: an extent's value locates
-// its data in an extent of the extent store (backlog doc-4), so ObjectValueV60 holds ExtentValueV60,
-// which nothing older converts to.
+// its data in an extent of the extent store (backlog doc-4), so ObjectValue holds ExtentValueV60,
+// which nothing older converts to. ObjectDescriptorV63 says which special file a file is, so that
+// a directory's entries say what each node is (`ObjectDescriptor::Special`), and ChildValueV63,
+// ObjectValueV63 and ObjectItemV63 hold it.
 
 mod legacy;
 
@@ -33,11 +35,11 @@ use storage_device::ExtentId;
 use storage_units::BlockSize;
 
 /// ObjectDescriptor is the set of possible records in the object store.
-pub type ObjectDescriptor = ObjectDescriptorV32;
+pub type ObjectDescriptor = ObjectDescriptorV63;
 
 #[derive(Copy, Clone, Debug, Serialize, Deserialize, PartialEq, TypeFingerprint)]
 #[cfg_attr(fuzz, derive(arbitrary::Arbitrary))]
-pub enum ObjectDescriptorV32 {
+pub enum ObjectDescriptorV63 {
     /// A file (in the generic sense; i.e. an object with some attributes).
     File,
     /// A directory (in the generic sense; i.e. an object with children).
@@ -46,6 +48,69 @@ pub enum ObjectDescriptorV32 {
     Volume,
     /// A symbolic link.
     Symlink,
+    /// fxdax: a special file: a file object, whose POSIX mode says it is this one
+    /// (`SpecialFile::of_mode`), and fsck checks that it does. Its entries say so, that a listing
+    /// of a directory need not look up each file's record to say what it is (TASK-236).
+    Special(SpecialFileV63),
+}
+
+impl ObjectDescriptor {
+    /// fxdax: whether the entry is a file's, which is a file object: a regular file's, or a
+    /// special file's.
+    pub fn is_file(&self) -> bool {
+        matches!(self, ObjectDescriptor::File | ObjectDescriptor::Special(_))
+    }
+
+    /// fxdax: the descriptor of a file object whose POSIX mode is `mode`, if it has one: a special
+    /// file's, or a regular file's.
+    pub fn of_file(mode: Option<u32>) -> ObjectDescriptor {
+        match mode.and_then(SpecialFile::of_mode) {
+            Some(special) => ObjectDescriptor::Special(special),
+            None => ObjectDescriptor::File,
+        }
+    }
+}
+
+/// fxdax: the kinds of special file, as POSIX has them.
+pub type SpecialFile = SpecialFileV63;
+
+#[derive(Copy, Clone, Debug, Eq, Serialize, Deserialize, PartialEq, TypeFingerprint)]
+#[cfg_attr(fuzz, derive(arbitrary::Arbitrary))]
+pub enum SpecialFileV63 {
+    /// A FIFO (`S_IFIFO`).
+    Fifo,
+    /// A character device (`S_IFCHR`).
+    CharDevice,
+    /// A block device (`S_IFBLK`).
+    BlockDevice,
+    /// A socket (`S_IFSOCK`).
+    Socket,
+}
+
+impl SpecialFile {
+    /// The `S_IFMT` bits of a mode.
+    pub const MODE_TYPE: u32 = 0o170000;
+
+    /// The special file a POSIX mode's `S_IFMT` bits say, if they say one.
+    pub fn of_mode(mode: u32) -> Option<SpecialFile> {
+        match mode & Self::MODE_TYPE {
+            0o010000 => Some(SpecialFile::Fifo),
+            0o020000 => Some(SpecialFile::CharDevice),
+            0o060000 => Some(SpecialFile::BlockDevice),
+            0o140000 => Some(SpecialFile::Socket),
+            _ => None,
+        }
+    }
+
+    /// Its `S_IFMT` bits.
+    pub fn mode(self) -> u32 {
+        match self {
+            SpecialFile::Fifo => 0o010000,
+            SpecialFile::CharDevice => 0o020000,
+            SpecialFile::BlockDevice => 0o060000,
+            SpecialFile::Socket => 0o140000,
+        }
+    }
 }
 
 /// For specifying what property of the project is being addressed.
@@ -769,15 +834,15 @@ pub enum ExtendedAttributeValueV32 {
 }
 
 /// Id and descriptor for a child entry.
-pub type ChildValue = ChildValueV32;
+pub type ChildValue = ChildValueV63;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, TypeFingerprint, Versioned)]
 #[cfg_attr(fuzz, derive(arbitrary::Arbitrary))]
-pub struct ChildValueV32 {
+pub struct ChildValueV63 {
     /// The ID of the child object.
     pub object_id: u64,
     /// Describes the type of the child.
-    pub object_descriptor: ObjectDescriptorV32,
+    pub object_descriptor: ObjectDescriptorV63,
 }
 
 pub type RootDigest = RootDigestV33;
@@ -851,14 +916,14 @@ impl std::ops::Deref for EncryptionKeys {
 /// ObjectValue is the value of an item in the object store.
 /// Note that the tree stores deltas on objects, so these values describe deltas. Unless specified
 /// otherwise, a value indicates an insert/replace mutation.
-pub type ObjectValue = ObjectValueV60;
+pub type ObjectValue = ObjectValueV63;
 impl Value for ObjectValue {
     const DELETED_MARKER: Self = Self::None;
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, TypeFingerprint, Versioned)]
 #[cfg_attr(fuzz, derive(arbitrary::Arbitrary))]
-pub enum ObjectValueV60 {
+pub enum ObjectValueV63 {
     /// Some keys have no value (this often indicates a tombstone of some sort).  Records with this
     /// value are always filtered when a major compaction is performed, so the meaning must be the
     /// same as if the item was not present.
@@ -1052,9 +1117,9 @@ impl ObjectValue {
     }
 }
 
-pub type ObjectItem = ObjectItemV60;
+pub type ObjectItem = ObjectItemV63;
 
-pub type ObjectItemV60 = Item<ObjectKeyV54, ObjectValueV60>;
+pub type ObjectItemV63 = Item<ObjectKeyV54, ObjectValueV63>;
 
 impl ObjectItem {
     pub fn is_tombstone(&self) -> bool {

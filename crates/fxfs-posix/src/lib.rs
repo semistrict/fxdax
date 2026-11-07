@@ -787,10 +787,10 @@ impl<P: Platform> Fxfs<P> {
 
     /// Calls `emit` for the entries of the directory `dir` from `start` on, with each one's name,
     /// inode and type (as `S_IFMT` bits of a mode), until it returns false. fxdax: a follower's
-    /// under its fill barrier (`reading`), as of one state. A file's type is its record's, which
-    /// says whether it is a special file: its entry says only that it is a file, and a FIFO's was
-    /// listed as a regular file (`DT_REG`), which `find -type p` and `ls` take a listing's word
-    /// for. (TASK-149.36: entries that said a node's type would spare the lookup.)
+    /// under its fill barrier (`reading`), as of one state. Each type is its entry's, which says
+    /// which special file a file is (`ObjectDescriptor::Special`), so that no record is looked up:
+    /// a FIFO was listed as a regular file (`DT_REG`), which `find -type p` and `ls` take a
+    /// listing's word for (TASK-149.36), and then cost a lookup of each file's record (TASK-236).
     pub async fn readdir(
         &self,
         dir: u64,
@@ -813,11 +813,7 @@ impl<P: Platform> Fxfs<P> {
         let mut at = 0;
         while let Some((name, ino, descriptor)) = entries.get() {
             if at >= skip && Some(name) != after {
-                let kind = match descriptor {
-                    ObjectDescriptor::File => self.file_type(ino).await?,
-                    descriptor => file_type(descriptor),
-                };
-                if !emit(name, ino, kind) {
+                if !emit(name, ino, file_type(descriptor)) {
                     break;
                 }
             }
@@ -825,19 +821,6 @@ impl<P: Platform> Fxfs<P> {
             entries.advance().await?;
         }
         Ok(())
-    }
-
-    /// The type of the file `ino`, as `S_IFMT` bits: a regular file's, or a special file's. One
-    /// whose record went since its entry was read, as a batch of unlinks applied meanwhile may
-    /// have tombstoned it, is a regular file's, as its entry says.
-    async fn file_type(&self, ino: u64) -> Result<u32, Error> {
-        let object = self.volume.tree().find(&ObjectKey::object(ino)).await?;
-        Ok(match object.map(|item| item.value) {
-            Some(ObjectValue::Object { attributes, .. }) => {
-                node_type(S_IFREG, attributes.posix_attributes.as_ref())
-            }
-            _ => S_IFREG,
-        })
     }
 
     /// Reads up to `buf.len()` bytes of the file `ino` at `offset`, returning how many it read:
@@ -1002,12 +985,11 @@ impl<P: Platform> Fxfs<P> {
             child.handle().update_attributes(&mut transaction, Some(&attributes), None).await?;
             child.object_id()
         } else {
-            // fxdax: the directory's times are the kernel's, which writes them back with it.
-            let child = if P::KEEPS_DIRECTORY_TIMES {
-                dir.create_child_file_untimed(&mut transaction, name).await?
-            } else {
-                dir.create_child_file(&mut transaction, name).await?
-            };
+            // fxdax: its entry says which special file it is, if it is one, as its mode does; the
+            // directory's times are the kernel's, which writes them back with it.
+            let descriptor = ObjectDescriptor::of_file(Some(mode));
+            let times = !P::KEEPS_DIRECTORY_TIMES;
+            let child = dir.create_child_node(&mut transaction, name, descriptor, times).await?;
             child.update_attributes(&mut transaction, Some(&attributes), None).await?;
             child.object_id()
         };
@@ -1129,8 +1111,8 @@ impl<P: Platform> Fxfs<P> {
                 kind: ObjectKind::Symlink { .. } | ObjectKind::EncryptedSymlink { .. },
                 ..
             }) => ObjectDescriptor::Symlink,
-            Some(ObjectValue::Object { kind: ObjectKind::File { .. }, .. }) => {
-                ObjectDescriptor::File
+            Some(ObjectValue::Object { kind: ObjectKind::File { .. }, attributes }) => {
+                ObjectDescriptor::of_file(attributes.posix_attributes.map(|posix| posix.mode))
             }
             Some(ObjectValue::Object { kind: ObjectKind::Directory { .. }, .. }) => {
                 bail!(FxfsError::NotFile)
@@ -1902,22 +1884,22 @@ fn utf8_name(name: &[u8]) -> Result<&str, Error> {
         .map_err(|_| anyhow!(FxfsError::InvalidArgs).context("Fxfs's names are UTF-8"))
 }
 
-/// The `S_IFMT` bits of objects `descriptor` describes, as far as it says: a file may be a special
-/// file, which its record says (`node_type`).
+/// The `S_IFMT` bits of the objects `descriptor` describes, as their records say (`node_type`).
 fn file_type(descriptor: &ObjectDescriptor) -> u32 {
     match descriptor {
         ObjectDescriptor::Directory => S_IFDIR,
         ObjectDescriptor::Symlink => S_IFLNK,
-        _ => S_IFREG,
+        ObjectDescriptor::Special(special) => special.mode(),
+        ObjectDescriptor::File | ObjectDescriptor::Volume => S_IFREG,
     }
 }
 
 /// The `S_IFMT` bits of a node whose kind of object has `kind_bits` and whose POSIX attributes are
-/// `posix`, if it has any: the one place a node's type is decided. A file's mode may say it is a
-/// special file, a FIFO, a socket or a device, as Starnix and fxdax make them.
+/// `posix`, if it has any. A file's mode may say it is a special file, a FIFO, a socket or a
+/// device, as Starnix and fxdax make them: what its entries say it is (`ObjectDescriptor::of_file`).
 fn node_type(kind_bits: u32, posix: Option<&PosixAttributes>) -> u32 {
-    match posix {
-        Some(posix) if kind_bits == S_IFREG && posix.mode & S_IFMT != 0 => posix.mode & S_IFMT,
+    match kind_bits {
+        S_IFREG => file_type(&ObjectDescriptor::of_file(posix.map(|posix| posix.mode))),
         _ => kind_bits,
     }
 }

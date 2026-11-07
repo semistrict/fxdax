@@ -99,6 +99,8 @@ struct ScannedFile {
     // If fsverity-enabled, contains the hash size.
     verified: VerifiedType,
     wrapping_key_id: Option<WrappingKeyId>,
+    // fxdax: what its entries say it is, as its POSIX mode says: a regular file, or a special file.
+    descriptor: ObjectDescriptor,
 }
 
 #[derive(Debug)]
@@ -231,7 +233,8 @@ impl<'a> ScannedStore<'a> {
                     }
                     ObjectValue::Object {
                         kind: ObjectKind::File { refs },
-                        attributes: ObjectAttributes { project_id, allocated_size, .. },
+                        attributes:
+                            ObjectAttributes { project_id, allocated_size, posix_attributes, .. },
                     } => {
                         if let Some(project_id) = project_id {
                             self.used_project_ids.insert(*project_id, key.object_id);
@@ -266,6 +269,9 @@ impl<'a> ScannedStore<'a> {
                                 },
                                 verified: VerifiedType::None,
                                 wrapping_key_id: None,
+                                descriptor: ObjectDescriptor::of_file(
+                                    posix_attributes.as_ref().map(|posix| posix.mode),
+                                ),
                             }),
                         );
                     }
@@ -878,10 +884,9 @@ impl<'a> ScannedStore<'a> {
             };
         }
         match (self.objects.get_mut(&child_id), object_descriptor) {
-            (
-                Some(ScannedObject::File(ScannedFile { parents, .. })),
-                ObjectDescriptor::File | ObjectDescriptor::Volume,
-            ) => {
+            (Some(ScannedObject::File(ScannedFile { parents, descriptor, .. })), linked)
+                if linked == descriptor || linked == &ObjectDescriptor::Volume =>
+            {
                 parents.push(parent_id);
             }
             (
@@ -917,7 +922,8 @@ impl<'a> ScannedStore<'a> {
             (Some(s), _) => {
                 let expected = match s {
                     ScannedObject::Directory(_) => ObjectDescriptor::Directory,
-                    ScannedObject::File(_) | ScannedObject::Graveyard => ObjectDescriptor::File,
+                    ScannedObject::File(ScannedFile { descriptor, .. }) => *descriptor,
+                    ScannedObject::Graveyard => ObjectDescriptor::File,
                     ScannedObject::Symlink(ScannedSymlink { parents, .. }) => {
                         parents.push(parent_id);
                         ObjectDescriptor::Symlink

@@ -43,7 +43,9 @@ pub use data_object_handle::{
     FsverityStateInner, RangeType,
 };
 pub use directory::Directory;
-pub use object_record::{ChildValue, DirType, ObjectDescriptor, PosixAttributes, Timestamp};
+pub use object_record::{
+    ChildValue, DirType, ObjectDescriptor, PosixAttributes, SpecialFile, Timestamp,
+};
 pub use store_object_handle::{
     MAX_INLINE_XATTR_SIZE, MAX_XATTR_NAME_SIZE, MAX_XATTR_VALUE_SIZE, SetExtendedAttributeMode,
     StoreObjectHandle,
@@ -3458,7 +3460,7 @@ impl JournalingObject for ObjectStore {
 
 /// The plaintext serialization of the mutations for a transaction that are encrypted then wrapped
 /// in `Mutation::EncryptedObjectStore`.
-pub type EncryptedTransaction = EncryptedTransactionV60;
+pub type EncryptedTransaction = EncryptedTransactionV63;
 
 static_assertions::const_assert!(EncryptedTransaction::MAX_CHUNK_SIZE % 16 == 0);
 impl EncryptedTransaction {
@@ -3508,9 +3510,9 @@ impl EncryptedTransaction {
 // wrapped in Mutation and the version associated with it will come from some parent type above
 // Mutation.
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
-pub struct EncryptedTransactionV60(pub Vec<Mutation>);
+pub struct EncryptedTransactionV63(pub Vec<Mutation>);
 
-impl TypeFingerprint for EncryptedTransactionV60 {
+impl TypeFingerprint for EncryptedTransactionV63 {
     fn fingerprint() -> String {
         format!(
             "struct{{MAX_CHUNK_SIZE: {}, {}}}",
@@ -3521,7 +3523,7 @@ impl TypeFingerprint for EncryptedTransactionV60 {
     }
 }
 
-impl Versioned for EncryptedTransactionV60 {
+impl Versioned for EncryptedTransactionV63 {
     // This can serialize much larger sizes. They will be broken up before being wrapped in
     // EncryptedObjectStore.
     fn max_serialized_size() -> Option<u64> {

@@ -8,7 +8,7 @@ use storage_device::ExtentRange;
 
 use crate::errors::FxfsError;
 use crate::filesystem::{FxFilesystem, FxFilesystemBuilder, OpenFxFilesystem, SyncOptions};
-use crate::fsck::errors::{FsckError, FsckFatal, FsckIssue, FsckWarning};
+use crate::fsck::errors::{self, FsckError, FsckFatal, FsckIssue, FsckWarning};
 use crate::fsck::{FsckOptions, fsck_volume_with_options, fsck_with_options};
 use crate::lsm_tree::Query;
 use crate::lsm_tree::persistent_layer::PersistentLayerWriter;
@@ -26,7 +26,7 @@ use crate::object_store::{
     AttributeId, AttributeKey, BytesAndNodes, DataObjectHandle, ChildValue, DirType, EncryptionKeys, ExtentMode,
     ExtentValue, FsverityMetadata, HandleOptions, Mutation, NewChildStoreOptions, ObjectAttributes,
     ObjectDescriptor, ObjectKey, ObjectKeyData, ObjectKind, ObjectStore, ObjectValue, ProjectId,
-    RootDigest, StoreInfo, StoreOptions, Timestamp, VOLUME_DATA_KEY_ID,
+    RootDigest, SpecialFile, StoreInfo, StoreOptions, Timestamp, VOLUME_DATA_KEY_ID,
 };
 use crate::serialized_types::VersionedLatest;
 use crate::testing::writer::Writer;
@@ -1156,6 +1156,56 @@ async fn test_conflicting_link_types() {
         test.errors()[..],
         [FsckIssue::Error(FsckError::ConflictingTypeForLink(..)), ..]
     );
+}
+
+// fxdax: a file's entries say what its POSIX mode says it is, a regular file or a special file, as
+// readdir takes their word for it (TASK-236): an entry saying otherwise is reported, a FIFO's that
+// says it is a regular file, and a regular file's that says it is a FIFO.
+#[fuchsia::test]
+async fn test_conflicting_special_file_link_types() {
+    for (mode, descriptor) in [
+        (0o010644, ObjectDescriptor::File),
+        (0o100644, ObjectDescriptor::Special(SpecialFile::Fifo)),
+    ] {
+        let mut test = FsckTest::new().await;
+        {
+            let fs = test.filesystem();
+            let store = fs.root_store();
+            let root_directory = Directory::open(&store, store.root_directory_object_id())
+                .await
+                .expect("open failed");
+            let mut transaction = store
+                .new_transaction(
+                    lock_keys![LockKey::object(
+                        store.store_object_id(),
+                        root_directory.object_id()
+                    )],
+                    Options::default(),
+                )
+                .await
+                .expect("new_transaction failed");
+            let file = root_directory
+                .create_child_node(&mut transaction, "a", descriptor, true)
+                .await
+                .expect("create_child_node failed");
+            let posix = fio::MutableNodeAttributes { mode: Some(mode), ..Default::default() };
+            file.update_attributes(&mut transaction, Some(&posix), None)
+                .await
+                .expect("update_attributes failed");
+            transaction.commit().await.expect("commit transaction failed");
+        }
+
+        test.remount().await.expect("Remount failed");
+        test.run(TestOptions::default()).await.expect_err("Fsck should fail");
+        let (wanted, found): (errors::Value, errors::Value) =
+            (ObjectDescriptor::of_file(Some(mode)).into(), descriptor.into());
+        assert_matches!(
+            &test.errors()[..],
+            [FsckIssue::Error(FsckError::ConflictingTypeForLink(_, _, w, f)), ..]
+                if *w == wanted && *f == found,
+            "mode {mode:o}"
+        );
+    }
 }
 
 #[fuchsia::test]
