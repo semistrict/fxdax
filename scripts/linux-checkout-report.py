@@ -10,7 +10,8 @@ the guest's Fxfs, with and without DAX, and shared as a volume over a read-only 
     scripts/linux-checkout-report.py RESULTS
 
 RESULTS is scripts/test-e2e.sh's results directory (a GCE run's `e2e`), with a directory for each
-case run: `linux-checkout-ext4`, `linux-checkout-fxfs` and `linux-checkout-fxfs-dax`. Each case's
+case run: `linux-checkout-ext4`, `linux-checkout-ext4-pmem`, `linux-checkout-fxfs` and
+`linux-checkout-fxfs-dax`. Each case's
 guests say `measure ROLE NAME VALUE UNIT` on its standard output (stdout.txt) and the host
 `memory: vm=N phase=ROLE-STAGE NAME=VALUE...` on its log (log.txt), as crate::measure has it."""
 
@@ -19,7 +20,7 @@ import re
 import sys
 from pathlib import Path
 
-CASES = ["ext4", "fxfs", "fxfs-dax"]
+CASES = ["ext4", "ext4-pmem", "fxfs", "fxfs-dax"]
 MIB = 1 << 20
 MEASURE = re.compile(r"^measure (\S+) (\S+) (\S+) (\S+)$")
 
@@ -110,7 +111,7 @@ def timings(cases, roles):
 def sandboxes(cases):
     """The shared volume's timings, a column for each case over a base: the sandboxes' alone,
     their least and most; then with hundreds mounted, and those closed after a reboot."""
-    shared = [case for case in cases if case != "ext4"]
+    shared = [case for case in cases if not case.startswith("ext4")]
     rows = []
     for name in SANDBOX:
         row = []
@@ -146,17 +147,18 @@ def facts(cases):
 
 def memory(case, lines):
     """Each memory phase of `case`: the guest's memory in use (MemTotal less MemAvailable), the VM
-    process's anonymous memory (the guest's RAM it touched) and its shared memory (the daemon's
-    pages its window maps), the daemon's own share, and its arenas' bytes, in MiB."""
+    process's resident memory, of it its anonymous memory (the guest's RAM it touched) and its
+    shared memory (the daemon's pages its window maps), the rest its files' pages (a pmem device's
+    image's), the daemon's own share, and its arenas' bytes, in MiB."""
     rows = []
     for phase, fields in lines:
         if "vmm_anon" not in fields:
             continue
         guest = fields["guest_total"] - fields["guest_available"]
         rows.append([phase] + [f"{value / MIB:,.0f}" for value in (
-            guest, fields["vmm_anon"], fields["vmm_shmem"], fields["extentd_pss"],
+            guest, fields["vmm_rss"], fields["vmm_anon"], fields["vmm_shmem"], fields["extentd_pss"],
             fields.get("extentd_memory_bytes", 0))])
-    header = [f"{case}: phase", "guest used", "VM anon", "VM shmem", "extentd PSS",
+    header = [f"{case}: phase", "guest used", "VM RSS", "VM anon", "VM shmem", "extentd PSS",
               "extentd arenas"]
     return table(header, rows)
 
@@ -185,7 +187,7 @@ def report(cases):
     parts = ["## The checkout", facts(cases),
              "## Checking it out, and opening it in a fresh VM", timings(cases, ["checkout",
                                                                                 "reopened"])]
-    if any(case != "ext4" for case in cases):
+    if any(not case.startswith("ext4") for case in cases):
         parts += ["## Shared, a volume over the published base", sandboxes(cases)]
     parts.append("## Memory, MiB")
     parts += [memory(case, lines) for case, (_, lines) in cases.items()]

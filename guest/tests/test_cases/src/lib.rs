@@ -304,6 +304,11 @@ pub fn test_cases() -> Vec<TestCase> {
             Box::new(TestLinuxCheckout { on: Checkout::Ext4 }),
         ),
         TestCase::new(
+            "linux-checkout-ext4-pmem",
+            &[Tag::Manual],
+            Box::new(TestLinuxCheckout { on: Checkout::Ext4Pmem }),
+        ),
+        TestCase::new(
             "linux-checkout-fxfs",
             &[Tag::Manual],
             Box::new(TestLinuxCheckout { on: Checkout::Fxfs }),

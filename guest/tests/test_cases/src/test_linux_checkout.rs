@@ -3,8 +3,9 @@
 // found in the LICENSE file.
 
 //! What a checkout the size of Linux's costs (fxdax's TASK-136.1, backlog doc-10): on the guest's
-//! Fxfs, with a DAX window and without, against ext4 on a virtio-blk disk; and as a shared volume,
-//! a sandbox's volume over a read-only base.
+//! Fxfs, with a DAX window and without, against ext4 on a virtio-blk disk, and on virtio-pmem with
+//! DAX, which TASK-227 takes Fxfs's DAX to match; and as a shared volume, a sandbox's volume over a
+//! read-only base.
 //!
 //! A first VM checks Linux out: it clones it, without a checkout, from the bare repo the root
 //! filesystem holds, then checks it out, and syncs. Then, its caches dropped, it runs `git status`
@@ -31,7 +32,8 @@
 //! scripts/linux-checkout-report.py makes tables of what they said. FXDAX_LINUX_CHECKOUT_WINDOW
 //! sets the DAX window's bytes (1 GiB), and FXDAX_LINUX_CHECKOUT_EXTENTD_MEMORY the daemon's (its
 //! default, 1 GiB): each smaller than the tree, a read of it whole finds nothing of it still there
-//! the second time.
+//! the second time. ext4's disk, and its pmem device, is an 8 GiB image file, the host's page cache
+//! holding what it has of it: a virtio-pmem device maps the file into the guest whole.
 
 use macros::{guest, host};
 
@@ -40,10 +42,21 @@ use macros::{guest, host};
 pub enum Checkout {
     /// ext4 on a virtio-blk disk, on a raw image file the host's page cache caches.
     Ext4,
+    /// ext4 with DAX (`dax=always`) on writable virtio-pmem, on a raw image file the VM maps:
+    /// files read in place from the host's page cache, TASK-227's mark for Fxfs's DAX.
+    Ext4Pmem,
     /// The guest's Fxfs on an extent-store device, with files in the page cache.
     Fxfs,
     /// The guest's Fxfs on an extent-store device, mapping files from its DAX window.
     FxfsDax,
+}
+
+impl Checkout {
+    /// Whether it is ext4's, on an image file: one VM checks it out, another opens it, and no
+    /// volume is shared.
+    fn ext4(self) -> bool {
+        matches!(self, Checkout::Ext4 | Checkout::Ext4Pmem)
+    }
 }
 
 pub struct TestLinuxCheckout {
@@ -51,7 +64,7 @@ pub struct TestLinuxCheckout {
     pub on: Checkout,
 }
 
-/// The variable naming the ext4 disk's device in the guest.
+/// The variable naming the ext4 device in the guest.
 #[cfg_attr(feature = "host", allow(dead_code))]
 const DEVICE: &str = "FXDAX_LINUX_CHECKOUT_DEVICE";
 
@@ -155,23 +168,27 @@ RUN git clone --bare --depth 1 --branch v6.18 https://github.com/torvalds/linux 
             memory.say(0, "before", None, "")?;
             let window = match self.on {
                 Checkout::FxfsDax => bytes("FXDAX_LINUX_CHECKOUT_WINDOW")?.unwrap_or(WINDOW),
-                Checkout::Ext4 | Checkout::Fxfs => 0,
+                Checkout::Ext4 | Checkout::Ext4Pmem | Checkout::Fxfs => 0,
             };
             let mut vms = Vms::new(test_setup, root, extentd, CAPACITY, window);
             (vms.cpus, vms.memory_mib, vms.memory) = (CPUS, MEMORY_MIB, Some(memory));
             match self.on {
-                Checkout::Ext4 => ext4(&vms, dir),
+                Checkout::Ext4 | Checkout::Ext4Pmem => ext4(&vms, dir, self.on),
                 Checkout::Fxfs | Checkout::FxfsDax => fxfs(&vms, dir),
             }
         }
     }
 
-    /// The checkout on ext4, on a disk the two VMs boot with.
-    fn ext4(vms: &Vms, dir: &Path) -> anyhow::Result<()> {
+    /// The checkout on ext4, `on` a disk or a pmem device the two VMs boot with.
+    fn ext4(vms: &Vms, dir: &Path, on: Checkout) -> anyhow::Result<()> {
         let image = dir.join("ext4.img");
         std::fs::File::create(&image)?.set_len(CAPACITY)?;
         let disk = |vm: &mut Vm| -> anyhow::Result<()> {
-            let device = vm.disk("repo", &image)?;
+            let device = match on {
+                Checkout::Ext4 => vm.disk("repo", &image)?,
+                Checkout::Ext4Pmem => vm.pmem("repo", &image)?,
+                Checkout::Fxfs | Checkout::FxfsDax => anyhow::bail!("{on:?} is no ext4"),
+            };
             vm.env(&CString::new(format!("{DEVICE}={device}"))?);
             Ok(())
         };
@@ -233,14 +250,15 @@ RUN git clone --bare --depth 1 --branch v6.18 https://github.com/torvalds/linux 
         fn check(self: Box<Self>, stdout: Vec<u8>, _test_setup: TestSetup) -> TestOutcome {
             let output = without_kernel_lines(&String::from_utf8(stdout).unwrap());
             let said: Vec<_> = output.lines().filter(|line| line.starts_with("OK ")).collect();
-            let roles: Vec<String> = match self.on {
-                Checkout::Ext4 => vec!["checkout".into(), "reopened".into()],
-                Checkout::Fxfs | Checkout::FxfsDax => ["checkout", "reopened"]
+            let roles: Vec<String> = if self.on.ext4() {
+                vec!["checkout".into(), "reopened".into()]
+            } else {
+                ["checkout", "reopened"]
                     .into_iter()
                     .map(str::to_owned)
                     .chain((0..SANDBOXES).map(|sandbox| format!("sandbox-{sandbox}")))
                     .chain(["hundreds".to_owned(), "rebooted".to_owned()])
-                    .collect(),
+                    .collect()
             };
             let expected: Vec<_> = roles.iter().map(|role| format!("OK {role}")).collect();
             if said == expected {
@@ -411,7 +429,7 @@ mod guest {
 
     /// Checks Linux out at `REPO`, measures it, and publishes it if it is a volume.
     fn checkout(measure: &Measure, on: Checkout) {
-        if on != Checkout::Ext4 {
+        if !on.ext4() {
             mount_repo();
         }
         measure.pinned("booted");
@@ -434,7 +452,7 @@ mod guest {
         reads(measure, REPO);
         measure.memory("read");
         measure.pinned("read");
-        if on != Checkout::Ext4 {
+        if !on.ext4() {
             let mut host = connect();
             let manifest = measure.time("publish", || publish(&mut host));
             measure.say("manifest", manifest, "bytes");
@@ -445,7 +463,7 @@ mod guest {
     /// Opens the checkout at `REPO` in a VM that has seen nothing of it, and measures it.
     fn reopened(measure: &Measure, on: Checkout) {
         measure.pinned("booted");
-        if on != Checkout::Ext4 {
+        if !on.ext4() {
             // Given to the user as the first VM checked it out: nothing to write.
             measure.time("mount", || mount(Some("repo"), REPO));
         }
@@ -558,14 +576,22 @@ mod guest {
             let role = std::env::var("FXDAX_SHARED_VOLUMES").unwrap();
             let measure = Measure { role: role.clone() };
             fs::create_dir_all(MNT).unwrap();
-            if self.on == Checkout::Ext4 {
+            if self.on.ext4() {
                 let device = std::env::var(DEVICE).unwrap();
                 let fresh = role == "checkout";
                 if fresh {
                     measure.time("mkfs", || run("mkfs.ext4", &["-q", "-F", &device]));
                 }
                 fs::create_dir_all(REPO).unwrap();
-                measure.time("mount", || run("mount", &["-t", "ext4", &device, REPO]));
+                // On pmem, ext4 maps files from the device, or refuses to mount.
+                let options = if self.on == Checkout::Ext4Pmem { "dax=always" } else { "defaults" };
+                let mount = ["-t", "ext4", "-o", options, &device, REPO];
+                measure.time("mount", || run("mount", &mount));
+                if self.on == Checkout::Ext4Pmem {
+                    let mounts = fs::read_to_string("/proc/mounts").unwrap();
+                    let line = mounts.lines().find(|line| line.contains(REPO)).unwrap();
+                    assert!(line.contains("dax=always"), "ext4 mounted without DAX: {line}");
+                }
                 if fresh {
                     // Git clones into an empty directory alone.
                     fs::remove_dir(format!("{REPO}/lost+found")).unwrap();
@@ -578,12 +604,12 @@ mod guest {
             match (self.on, role.split('-').next().unwrap()) {
                 (on, "checkout") => checkout(&measure, on),
                 (on, "reopened") => reopened(&measure, on),
-                (Checkout::Fxfs | Checkout::FxfsDax, "sandbox") => sandbox(&measure),
-                (Checkout::Fxfs | Checkout::FxfsDax, "hundreds") => hundreds(&measure),
-                (Checkout::Fxfs | Checkout::FxfsDax, "rebooted") => rebooted(&measure),
+                (on, "sandbox") if !on.ext4() => sandbox(&measure),
+                (on, "hundreds") if !on.ext4() => hundreds(&measure),
+                (on, "rebooted") if !on.ext4() => rebooted(&measure),
                 (on, role) => panic!("no role {role} on {on:?}"),
             }
-            if self.on != Checkout::Ext4 {
+            if !self.on.ext4() {
                 unmount(MNT);
             }
             println!("OK {role}");

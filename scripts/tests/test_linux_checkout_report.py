@@ -29,6 +29,11 @@ measure reopened status-cold 684.9 ms
 OK reopened
 """
 
+PMEM_STDOUT = """\
+measure checkout clone 12000.0 ms
+measure reopened read-warm 300.0 ms
+"""
+
 FXFS_STDOUT = """\
 measure checkout clone 11790.0 ms
 measure checkout status-cold 696.3 ms
@@ -44,9 +49,10 @@ measure host sandbox-0-disk-log.txt 16384 bytes
 """
 
 
-def memory_line(phase, guest_used, anon, shmem=0):
+def memory_line(phase, guest_used, anon, shmem=0, files=0):
     total = 4096 * MIB
-    return (f"memory: vm=1 phase={phase} host_used=1 vmm_rss={anon} vmm_pss={anon} "
+    rss = anon + shmem + files
+    return (f"memory: vm=1 phase={phase} host_used=1 vmm_rss={rss} vmm_pss={rss} "
             f"vmm_anon={anon} vmm_shmem={shmem} extentd_pss={8 * MIB} "
             f"extentd_memory_bytes={MIB} guest_total={total} "
             f"guest_available={total - guest_used} guest_faults=3")
@@ -73,16 +79,20 @@ class Report(unittest.TestCase):
     def cases(self):
         log = memory_line("checkout-checked-out", 453 * MIB, 2915 * MIB)
         dax_log = memory_line("checkout-read", 434 * MIB, 2915 * MIB, 451 * MIB)
+        pmem_log = memory_line("checkout-read", 300 * MIB, 500 * MIB, files=1500 * MIB)
         return {"ext4": report.parse(EXT4_STDOUT, log),
+                "ext4-pmem": report.parse(PMEM_STDOUT, pmem_log),
                 "fxfs-dax": report.parse(FXFS_STDOUT, dax_log)}
 
     def test_timings_compare_the_filesystems(self):
         self.assertEqual(report.timings(self.cases(), ["checkout", "reopened"]), "\n".join([
-            "|  | ext4 checkout | fxfs-dax checkout | ext4 reopened | fxfs-dax reopened |",
-            "|---|---|---|---|---|",
-            "| mount | 58.1 ms |  |  |  |",
-            "| clone | 12.74 s | 11.79 s |  |  |",
-            "| status-cold | 364.5 ms | 696.3 ms | 684.9 ms |  |",
+            "|  | ext4 checkout | ext4-pmem checkout | fxfs-dax checkout | ext4 reopened | "
+            "ext4-pmem reopened | fxfs-dax reopened |",
+            "|---|---|---|---|---|---|---|",
+            "| mount | 58.1 ms |  |  |  |  |  |",
+            "| clone | 12.74 s | 12.00 s | 11.79 s |  |  |  |",
+            "| status-cold | 364.5 ms |  | 696.3 ms | 684.9 ms |  |  |",
+            "| read-warm |  |  |  |  | 300.0 ms |  |",
         ]))
 
     def test_sandboxes_spread_from_least_to_most(self):
@@ -96,9 +106,9 @@ class Report(unittest.TestCase):
     def test_memory_is_in_mib(self):
         _, lines = self.cases()["fxfs-dax"]
         self.assertEqual(report.memory("fxfs-dax", lines), "\n".join([
-            "| fxfs-dax: phase | guest used | VM anon | VM shmem | extentd PSS | extentd arenas |",
-            "|---|---|---|---|---|---|",
-            "| checkout-read | 434 | 2,915 | 451 | 8 | 1 |",
+            "| fxfs-dax: phase | guest used | VM RSS | VM anon | VM shmem | extentd PSS | extentd arenas |",
+            "|---|---|---|---|---|---|---|",
+            "| checkout-read | 434 | 3,366 | 2,915 | 451 | 8 | 1 |",
         ]))
 
     def test_disk_leaves_out_logs_and_the_root(self):
@@ -111,11 +121,11 @@ class Report(unittest.TestCase):
 
     def test_facts_name_the_volume(self):
         self.assertEqual(report.facts(self.cases()), "\n".join([
-            "|  | ext4 | fxfs-dax |",
-            "|---|---|---|",
-            "| tracked-files | 91,166 files |  |",
-            "| manifest |  | 600 bytes |",
-            "| volume-allocator-records |  | 1,557 records |",
+            "|  | ext4 | ext4-pmem | fxfs-dax |",
+            "|---|---|---|---|",
+            "| tracked-files | 91,166 files |  |  |",
+            "| manifest |  |  | 600 bytes |",
+            "| volume-allocator-records |  |  | 1,557 records |",
         ]))
 
 
@@ -129,7 +139,7 @@ class Main(unittest.TestCase):
             done = subprocess.run([sys.executable, str(script.SCRIPTS / "linux-checkout-report.py"),
                                    results], capture_output=True, text=True, check=True)
         self.assertTrue(done.stdout.startswith("## The checkout\n"))
-        self.assertIn("| checkout-read | 340 | 2,925 | 0 | 8 | 1 |", done.stdout)
+        self.assertIn("| checkout-read | 340 | 2,925 | 2,925 | 0 | 8 | 1 |", done.stdout)
         self.assertNotIn("## Shared", done.stdout)
 
     def test_says_when_there_is_nothing(self):
