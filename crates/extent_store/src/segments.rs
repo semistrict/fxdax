@@ -16,6 +16,7 @@ use crate::layout::{
     extent_path, held_frees, log_path, open_segment_path, segment_path,
 };
 use crate::store::{Options, Usage};
+use crate::timings::{self, Phases, framing};
 use anyhow::{Context as _, Error, anyhow, bail, ensure};
 use extent_frame::segment::{Chain, Child, Contents, Footer, epoch_of};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
@@ -726,6 +727,9 @@ impl<F: File> Unframed<F> {
     /// files of the extents stored on their own its footer names are durable first, so that a
     /// framed file a crash leaves whole names none torn (TASK-165.9).
     pub fn frame<D: Dir<File = F>>(self, dir: &D) -> Result<Arc<Framed<F>>, Error> {
+        // fxdax: timed, phase by phase (TASK-165.9).
+        let mut phases = Phases::default();
+        let started = Instant::now();
         let mut own = self.footer.own().peekable();
         if own.peek().is_some() {
             for (extent, _) in own {
@@ -733,13 +737,18 @@ impl<F: File> Unframed<F> {
             }
             dir.sync_dir(&branch_dir(EXTENTS, self.number.branch))?;
         }
+        let synced = phases.took(framing::OWN, started);
         let footer = self.footer.encode();
         let framed = frame_segment(dir, &segment_path(self.number), &self.raw, self.len, &footer)?;
+        let written = phases.took(framing::WRITE, synced);
         framed.file.sync()?;
+        let synced = phases.took(framing::SYNC, written);
         for kind in [SEGMENTS, OPEN_SEGMENTS] {
             dir.sync_dir(&branch_dir(kind, self.number.branch))?;
         }
         dir.barrier()?;
+        phases.took(framing::DIRS, synced);
+        timings::framed(phases);
         Ok(framed)
     }
 }

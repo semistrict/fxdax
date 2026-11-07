@@ -1257,19 +1257,13 @@ fn daemon_line() -> String {
         true => format!("durable_lag_gt_{}ms={count}", 1u64 << (bucket - 1)),
     };
     let buckets: Vec<String> = lags.buckets.iter().enumerate().map(bucket).collect();
-    // And where it went: how long its flushes took, the slowest's phases and each phase's
-    // longest, and its framings.
+    // And where it went: how long its flushes and framings took, phase by phase.
     let timings = extent_store::timings();
-    let mut timed = vec![
-        format!("flush_count={}", timings.flushes),
-        format!("flush_slow={}", timings.slow_flushes),
-    ];
-    for (kind, phases) in [("slowest", timings.slowest), ("max", timings.phase_max)] {
-        let named = phases.named().map(|(phase, us)| format!("flush_{kind}_{phase}_us={us}"));
-        timed.extend(named);
-    }
-    timed.push(format!("framing_count={}", timings.framings));
-    timed.push(format!("framing_max_us={}", timings.framing_max_us));
+    let timed = [
+        timed_fields("flush", &timings.flushes, &extent_store::FLUSH_PHASES),
+        timed_fields("framing", &timings.framings, &extent_store::FRAMING_PHASES),
+    ]
+    .concat();
     format!(
         "daemon: {} durable_lag_count={} durable_lag_max_us={} durable_lag_p50_ms={} \
          durable_lag_p99_ms={} {} {}",
@@ -1281,6 +1275,22 @@ fn daemon_line() -> String {
         buckets.join(" "),
         timed.join(" ")
     )
+}
+
+/// fxdax: `timed`, of `kind`, as `NAME=COUNT` fields: so many, so many slow, the slowest's
+/// phases, by `names`, and each phase's longest (TASK-165.9).
+fn timed_fields<const N: usize>(
+    kind: &str,
+    timed: &extent_store::Timed<N>,
+    names: &[&str; N],
+) -> Vec<String> {
+    let mut fields =
+        vec![format!("{kind}_count={}", timed.count), format!("{kind}_slow={}", timed.slow)];
+    for (which, phases) in [("slowest", &timed.slowest), ("max", &timed.max)] {
+        let named = names.iter().zip(phases.us);
+        fields.extend(named.map(|(phase, us)| format!("{kind}_{which}_{phase}_us={us}")));
+    }
+    fields
 }
 
 /// fxdax: replaces `file` with `lines`, whole: a reader finds the old lines or the new.

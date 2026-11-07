@@ -18,7 +18,7 @@ use crate::state::{
     Framing, Gate, Locked, OwnFiles, Placement, Reader, Space, State, Uncommitted, Unreferenced,
 };
 use crate::sync::{Condvar, Mutex, MutexGuard, rules, spawn_or_return};
-use crate::timings::{self, FlushPhases};
+use crate::timings::{self, Phases, flush};
 use crate::uploads::Closed;
 use crate::views::{Limits, Sealed, View, Views};
 use crate::wal::{BaseFile, Queue, Queued, Recovered, SegmentLog};
@@ -877,7 +877,7 @@ impl<D: Dir> Store<D> {
         let mut flushing = rules().close_waits_for_flushes.then(|| self.flushing.lock().unwrap());
         let flushed = match &mut flushing {
             Some(_) if !self.flush_pending() => Ok(()),
-            Some(flushing) => self.flush_locked(flushing, &mut FlushPhases::default()),
+            Some(flushing) => self.flush_locked(flushing, &mut Phases::default()),
             // With the rule off, as if the commits a flush in flight took were durable.
             None if !self.durability.lock().unwrap().queued() => Ok(()),
             None => self.flush(),
@@ -1721,9 +1721,7 @@ impl<D: Dir> Store<D> {
                     let whole = state.still_whole();
                     drop(state);
                     let number = unframed.number();
-                    let started = Instant::now();
                     let framed = whole.and_then(|()| unframed.frame(&*dir));
-                    timings::framed(started.elapsed());
                     state = Locked::new(shared.lock().unwrap());
                     framing_ended(&mut state, number, framed);
                     idle.notify_all();
@@ -1738,9 +1736,7 @@ impl<D: Dir> Store<D> {
         // its callers' alone, or the host refuses a thread: no framer runs meanwhile.
         while let Some(unframed) = state.framing.queue.pop_front() {
             let number = unframed.number();
-            let started = Instant::now();
             let framed = state.still_whole().and_then(|()| unframed.frame(&*self.dir));
-            timings::framed(started.elapsed());
             framing_ended(state, number, framed);
         }
         state.framing.running = false;
@@ -1911,8 +1907,8 @@ impl<D: Dir> Store<D> {
         // fxdax: timed, phase by phase (TASK-165.9).
         let asked = Instant::now();
         let mut logs = self.flushing.lock().unwrap();
-        let mut phases =
-            FlushPhases { wait_us: timings::us(asked.elapsed()), ..Default::default() };
+        let mut phases = Phases::default();
+        phases.took(flush::WAIT, asked);
         let flushed = self.flush_locked(&mut logs, &mut phases);
         timings::flushed(phases);
         flushed
@@ -1920,11 +1916,7 @@ impl<D: Dir> Store<D> {
 
     /// [`Store::flush`], holding `flushing`, and so `logs`, those of the open segment and of the
     /// segments closed since that the last flush left; timing its phases in `phases`.
-    fn flush_locked(
-        &self,
-        logs: &mut Logs<D::File>,
-        phases: &mut FlushPhases,
-    ) -> Result<(), Error> {
+    fn flush_locked(&self, logs: &mut Logs<D::File>, phases: &mut Phases<6>) -> Result<(), Error> {
         // A store that failed makes nothing more durable.
         drop(self.state()?);
         let batch = self.durability.lock().unwrap().take();
@@ -1946,7 +1938,7 @@ impl<D: Dir> Store<D> {
                     leaving.extend(pending.leaving);
                 }
                 leave(&*self.dir, self.cache.as_deref(), leaving);
-                phases.gone_us = timings::us(started.elapsed());
+                phases.took(flush::GONE, started);
                 last
             }
         };
@@ -1955,7 +1947,7 @@ impl<D: Dir> Store<D> {
         let started = Instant::now();
         let raw = self.state()?.segments.raw(durable);
         let removed = self.remove_raw(raw);
-        phases.raw_us = timings::us(started.elapsed());
+        phases.took(flush::RAW, started);
         removed
     }
 
@@ -1981,16 +1973,17 @@ impl<D: Dir> Store<D> {
         &self,
         logs: &mut Logs<D::File>,
         commits: &mut [Pending<D::File>],
-        phases: &mut FlushPhases,
+        phases: &mut Phases<6>,
     ) -> Result<(), Error> {
         let started = Instant::now();
         let mut syncs = Syncs::default();
         for pending in commits.iter_mut() {
             syncs.extend(std::mem::take(&mut pending.syncs));
         }
-        syncs.sync(&*self.dir)?;
-        let synced = Instant::now();
-        phases.sync_us = timings::us(synced - started);
+        syncs.sync_files(&*self.dir)?;
+        let synced = phases.took(flush::DATA, started);
+        syncs.sync_dirs(&*self.dir)?;
+        let synced = phases.took(flush::DIRS, synced);
         // Each segment's records, in the commits' order, appended and synced at once.
         let mut at = 0;
         while at < commits.len() {
@@ -2009,7 +2002,7 @@ impl<D: Dir> Store<D> {
             at += run;
         }
         self.dir.barrier()?;
-        phases.logs_us = timings::us(synced.elapsed());
+        phases.took(flush::LOGS, synced);
         // The logs of segments closed since go: no commit made in them is still to come.
         let open = self.lock().segments.open_segment();
         logs.retain(|segment, _| *segment == open);

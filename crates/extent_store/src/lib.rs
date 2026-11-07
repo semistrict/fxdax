@@ -138,7 +138,7 @@ mod state;
 mod store;
 mod sync;
 mod timings;
-pub use timings::{FlushPhases, Timings, timings};
+pub use timings::{FLUSH_PHASES, FRAMING_PHASES, Phases, Timed, Timings, timings};
 pub mod upload;
 mod uploads;
 mod views;

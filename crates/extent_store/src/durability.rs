@@ -239,8 +239,14 @@ impl<F: File> Syncs<F> {
     /// Syncs them, in `dir`: each file once, however many commits wrote it, then the directories.
     /// fxdax: [`AT_ONCE`] of the files at a time, then of the directories (TASK-92.42); one at a
     /// time, if the directory's I/O is its callers' alone ([`Dir::concurrent`], TASK-79.79).
+    #[cfg(test)]
     pub fn sync<D: Dir<File = F>>(&self, dir: &D) -> Result<(), Error> {
-        let most = if dir.concurrent() { AT_ONCE } else { 1 };
+        self.sync_files(dir)?;
+        self.sync_dirs(dir)
+    }
+
+    /// fxdax: syncs the files, as [`Syncs::sync`] does first.
+    pub fn sync_files<D: Dir<File = F>>(&self, dir: &D) -> Result<(), Error> {
         let sync: fn(&F) -> io::Result<()> = F::sync;
         let sync_cached: fn(&F) -> io::Result<()> = F::sync_cached;
         let mut seen = HashSet::new();
@@ -248,8 +254,14 @@ impl<F: File> Syncs<F> {
             .chain(self.cached.iter().map(|file| (file, sync_cached)))
             .filter(|(file, _)| seen.insert(Arc::as_ptr(file)))
             .collect();
-        at_once(&files, most, |(file, sync)| sync(file).context("syncing extents' data"))?;
+        let most = if dir.concurrent() { AT_ONCE } else { 1 };
+        at_once(&files, most, |(file, sync)| sync(file).context("syncing extents' data"))
+    }
+
+    /// fxdax: syncs the directories, as [`Syncs::sync`] does after the files.
+    pub fn sync_dirs<D: Dir<File = F>>(&self, dir: &D) -> Result<(), Error> {
         let dirs: Vec<&String> = self.dirs.iter().collect();
+        let most = if dir.concurrent() { AT_ONCE } else { 1 };
         at_once(&dirs, most, |path| dir.sync_dir(path).with_context(|| format!("syncing {path}")))
     }
 

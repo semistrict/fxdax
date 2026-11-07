@@ -315,14 +315,17 @@ fn keeps_object_storage_and_follower_stats() {
     expected.extend(lags.map(str::to_owned));
     expected.extend((0..15).map(|bucket| format!("durable_lag_le_{}ms", 1 << bucket)));
     expected.push("durable_lag_gt_16384ms".to_owned());
-    // And how long its flushes, phase by phase, and framings took.
-    expected.extend(["flush_count", "flush_slow"].map(str::to_owned));
-    for kind in ["slowest", "max"] {
-        for phase in ["wait", "sync", "logs", "gone", "raw"] {
-            expected.push(format!("flush_{kind}_{phase}_us"));
+    // And how long its flushes and framings took, phase by phase.
+    let phases: [(&str, &[&str]); 2] = [
+        ("flush", &["wait", "data", "dirs", "logs", "gone", "raw"]),
+        ("framing", &["own", "write", "sync", "dirs"]),
+    ];
+    for (kind, phases) in phases {
+        expected.extend(["count", "slow"].map(|field| format!("{kind}_{field}")));
+        for which in ["slowest", "max"] {
+            expected.extend(phases.iter().map(|phase| format!("{kind}_{which}_{phase}_us")));
         }
     }
-    expected.extend(["framing_count", "framing_max_us"].map(str::to_owned));
     assert_eq!(names, expected, "{kept}");
     assert_eq!(count(&daemon, "durable_lag_count"), Some(3), "{kept}");
     // The three commits, each a COMMIT request: a request's time holds its commit's, which

@@ -2,149 +2,145 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-//! fxdax: how long this process's stores' flushes took, phase by phase, and their framings: where
-//! the time commits wait to be made durable goes ([`crate::Lags`], TASK-165.9).
+//! fxdax: how long this process's stores' flushes and framings took, phase by phase: where the
+//! time commits wait to be made durable goes ([`crate::Lags`], TASK-165.9).
 
 use std::sync::Mutex;
-use std::time::Duration;
+use std::time::Instant;
 
-/// The phases of a flush ([`crate::Store::flush`]), in microseconds: waiting for the flush before
-/// it; syncing its commits' data and directories; appending their records to the segments' logs;
-/// removing the files they let go of; and removing the raw files and logs of the segments framed
-/// whose commits are durable.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct FlushPhases {
-    pub wait_us: u64,
-    pub sync_us: u64,
-    pub logs_us: u64,
-    pub gone_us: u64,
-    pub raw_us: u64,
+/// The phases of a flush ([`crate::Store::flush`]): waiting for the flush before it; syncing its
+/// commits' data files; syncing the directories whose entries they changed; appending their
+/// records to the segments' logs; removing the files they let go of; and removing the raw files
+/// and logs of the segments framed whose commits are durable.
+pub const FLUSH_PHASES: [&str; 6] = ["wait", "data", "dirs", "logs", "gone", "raw"];
+
+/// The phases of a framing ([`crate::Store::framing`]): syncing the extents stored on their own
+/// its footer names; reading its raw data and writing its framed file, written back as it goes;
+/// syncing the framed file; and syncing the directories of segments.
+pub const FRAMING_PHASES: [&str; 4] = ["own", "write", "sync", "dirs"];
+
+/// Something timed, phase by phase, in microseconds: [`FLUSH_PHASES`] or [`FRAMING_PHASES`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Phases<const N: usize> {
+    pub us: [u64; N],
 }
 
-impl FlushPhases {
-    /// The whole flush's.
+impl<const N: usize> Default for Phases<N> {
+    fn default() -> Self {
+        Self { us: [0; N] }
+    }
+}
+
+impl<const N: usize> Phases<N> {
+    /// The whole's.
     pub fn total_us(&self) -> u64 {
-        self.wait_us + self.sync_us + self.logs_us + self.gone_us + self.raw_us
+        self.us.iter().sum()
     }
 
-    /// Each phase, by its name.
-    pub fn named(&self) -> [(&'static str, u64); 5] {
-        [
-            ("wait", self.wait_us),
-            ("sync", self.sync_us),
-            ("logs", self.logs_us),
-            ("gone", self.gone_us),
-            ("raw", self.raw_us),
-        ]
+    /// Phase `phase` took from `since` till now; returns now, when the next began.
+    pub(crate) fn took(&mut self, phase: usize, since: Instant) -> Instant {
+        let now = Instant::now();
+        self.us[phase] += (now - since).as_micros() as u64;
+        now
     }
 
     /// The longer of each phase of `self`'s and `other`'s.
     fn max(self, other: Self) -> Self {
-        Self {
-            wait_us: self.wait_us.max(other.wait_us),
-            sync_us: self.sync_us.max(other.sync_us),
-            logs_us: self.logs_us.max(other.logs_us),
-            gone_us: self.gone_us.max(other.gone_us),
-            raw_us: self.raw_us.max(other.raw_us),
-        }
+        Self { us: std::array::from_fn(|phase| self.us[phase].max(other.us[phase])) }
     }
 }
 
-/// How long this process's stores' flushes and framings took: so many flushes, and so many past
-/// extentd's turn, 50 ms; the phases of the longest; the longest of each phase, of any flush; and
-/// so many framings, and the longest.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Timings {
-    pub flushes: u64,
-    pub slow_flushes: u64,
-    pub slowest: FlushPhases,
-    pub phase_max: FlushPhases,
-    pub framings: u64,
-    pub framing_max_us: u64,
+/// What took [`Phases`]: so many, and so many past extentd's turn, 50 ms; the phases of the
+/// longest; and the longest of each phase, of any.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Timed<const N: usize> {
+    pub count: u64,
+    pub slow: u64,
+    pub slowest: Phases<N>,
+    pub max: Phases<N>,
 }
 
-impl Timings {
-    /// A flush took `phases`.
-    fn flushed(&mut self, phases: FlushPhases) {
-        self.flushes += 1;
+impl<const N: usize> Default for Timed<N> {
+    fn default() -> Self {
+        Self::NONE
+    }
+}
+
+impl<const N: usize> Timed<N> {
+    const NONE: Self =
+        Self { count: 0, slow: 0, slowest: Phases { us: [0; N] }, max: Phases { us: [0; N] } };
+
+    /// One took `phases`.
+    fn record(&mut self, phases: Phases<N>) {
+        self.count += 1;
         if phases.total_us() > 50_000 {
-            self.slow_flushes += 1;
+            self.slow += 1;
         }
         if phases.total_us() > self.slowest.total_us() {
             self.slowest = phases;
         }
-        self.phase_max = self.phase_max.max(phases);
-    }
-
-    /// A framing took `took`.
-    fn framed(&mut self, took: Duration) {
-        self.framings += 1;
-        self.framing_max_us = self.framing_max_us.max(us(took));
+        self.max = self.max.max(phases);
     }
 }
 
-const NONE: FlushPhases = FlushPhases { wait_us: 0, sync_us: 0, logs_us: 0, gone_us: 0, raw_us: 0 };
+/// How long this process's stores' flushes and framings took.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Timings {
+    pub flushes: Timed<6>,
+    pub framings: Timed<4>,
+}
 
 /// [`Timings`] of this process's stores.
-static TIMINGS: Mutex<Timings> = Mutex::new(Timings {
-    flushes: 0,
-    slow_flushes: 0,
-    slowest: NONE,
-    phase_max: NONE,
-    framings: 0,
-    framing_max_us: 0,
-});
+static TIMINGS: Mutex<Timings> =
+    Mutex::new(Timings { flushes: Timed::NONE, framings: Timed::NONE });
 
 /// fxdax: how long this process's stores' flushes and framings took ([`Timings`]).
 pub fn timings() -> Timings {
     *TIMINGS.lock().unwrap()
 }
 
-/// `took`, in microseconds.
-pub(crate) fn us(took: Duration) -> u64 {
-    took.as_micros() as u64
-}
-
 /// A flush of a store of this process's took `phases`.
-pub(crate) fn flushed(phases: FlushPhases) {
-    TIMINGS.lock().unwrap().flushed(phases);
+pub(crate) fn flushed(phases: Phases<6>) {
+    TIMINGS.lock().unwrap().flushes.record(phases);
 }
 
-/// A framing of a store of this process's took `took`.
-pub(crate) fn framed(took: Duration) {
-    TIMINGS.lock().unwrap().framed(took);
+/// A framing of a store of this process's took `phases`.
+pub(crate) fn framed(phases: Phases<4>) {
+    TIMINGS.lock().unwrap().framings.record(phases);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// The slowest flush's phases are kept whole, beside each phase's longest of any flush; and
-    /// the longest framing.
+    /// The slowest's phases are kept whole, beside each phase's longest of any.
     #[test]
-    fn the_slowest_flush_keeps_its_phases() {
-        let mut timings = Timings::default();
-        let flushes = [
-            FlushPhases { wait_us: 40_000, sync_us: 1_000, ..NONE },
-            FlushPhases { sync_us: 30_000, logs_us: 30_000, ..NONE },
-            FlushPhases { raw_us: 2_000, ..NONE },
-        ];
-        for phases in flushes {
-            timings.flushed(phases);
+    fn the_slowest_keeps_its_phases() {
+        let mut timed = Timed::<3>::default();
+        let all = [[40_000, 1_000, 0], [0, 30_000, 30_000], [0, 0, 2_000]];
+        for us in all {
+            timed.record(Phases { us });
         }
-        assert_eq!((timings.flushes, timings.slow_flushes), (3, 1));
-        assert_eq!(timings.slowest, flushes[1]);
-        let longest = FlushPhases {
-            wait_us: 40_000,
-            sync_us: 30_000,
-            logs_us: 30_000,
-            gone_us: 0,
-            raw_us: 2_000,
-        };
-        assert_eq!(timings.phase_max, longest);
-        for ms in [3, 9, 4] {
-            timings.framed(Duration::from_millis(ms));
-        }
-        assert_eq!((timings.framings, timings.framing_max_us), (3, 9_000));
+        assert_eq!((timed.count, timed.slow), (3, 1));
+        assert_eq!(timed.slowest, Phases { us: all[1] });
+        assert_eq!(timed.max, Phases { us: [40_000, 30_000, 30_000] });
     }
+}
+
+/// The indices of [`FLUSH_PHASES`].
+pub(crate) mod flush {
+    pub const WAIT: usize = 0;
+    pub const DATA: usize = 1;
+    pub const DIRS: usize = 2;
+    pub const LOGS: usize = 3;
+    pub const GONE: usize = 4;
+    pub const RAW: usize = 5;
+}
+
+/// The indices of [`FRAMING_PHASES`].
+pub(crate) mod framing {
+    pub const OWN: usize = 0;
+    pub const WRITE: usize = 1;
+    pub const SYNC: usize = 2;
+    pub const DIRS: usize = 3;
 }
