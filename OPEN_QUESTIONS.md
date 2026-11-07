@@ -8,6 +8,15 @@
 
 # Decisions
 
+## A tenant's disk is its directory's; the part cache is no tenant's (TASK-94, 2026-11-07)
+
+TASK-94 left the counting rule for shared data to you. Decided, unconfirmed:
+- **A file is the tenant's whose directory holds it**, counted by walking the directory (`du -sx`: blocks, each inode once, one filesystem), as granted, every 10 s, soon after a refusal, and on `GetTenantDisk`; writes admitted between walks counted as they come (`extentd::disk`). Since TASK-165.7/165.8 a fork's directory holds only what it wrote, so forks of a shared base pay for their own writes; the base's data is in the bucket.
+- **The host's part cache is charged to no tenant.** You named "its share of the part cache": it is bounded by its own capacity and floor and evicts to stay within them, so no tenant's reads can fill the disk through it, and charging a share (first reader, or split by readers) would make one tenant's limit move with another's reads, and evictions refuse no one. *Instead:* charge each cached object to the tenant whose store fetched or adopted it, until evicted (needs tenant-aware `extent_remote::cache`).
+- **Past a limit: `ENOSPC` on WRITE, and on a VM process making a store** (`OPEN` creating, `FORK`, admitted as 64 KiB); commits go on, so data can upload and leave. No limits by default, as memory. The default tenant (daemon's own socket) has no directory and is not counted; the total limit counts granted tenants.
+- **Not directory quotas:** they refuse the store's own writes (framing a segment fails the store, a flush's log record), not the guest's next one, and are host setup the daemon can't make per grant.
+- *Undoing it:* `SetDiskLimit` with no bytes, or drop `Tenant::admit_to_disk`'s three calls.
+
 ## A tenant's connections share a room, 8 GiB a tenant by default (TASK-149.35, 2026-11-07)
 
 The protocol bounds what the daemon holds of a VM process's requests per connection (`server::Peer::room`, 272 MiB without a window), but a tenant has up to `MAX_CONNECTIONS` (1,024), so one tenant, within the protocol, could have the daemon hold ~272 GiB of its requests' data at once, every tenant's daemon with it. Decided:
