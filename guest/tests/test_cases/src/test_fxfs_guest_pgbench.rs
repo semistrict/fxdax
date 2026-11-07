@@ -29,7 +29,10 @@
 //! kept running once its runs are done, the host's memory measured as each is added
 //! (`crate::measure`): what a VM more costs the host (fxfs-guest-pgbench-density, -dax-density).
 //! FXDAX_PGBENCH_RUNS and FXDAX_PGBENCH_RUN_SECS set the runs, and
-//! FXDAX_PGBENCH_DENSITY_MEMORY_MIB the density cases' VMs' memory (1024).
+//! FXDAX_PGBENCH_DENSITY_MEMORY_MIB the density cases' VMs' memory (1024). With FXDAX_PGBENCH_COLD
+//! set, the forks' VMs are served by a daemon started once the base's has drained and stopped,
+//! with a part cache of its own, empty, and nothing in memory: a host forking another host's base,
+//! which holds none of its data (TASK-225).
 
 use macros::{guest, host};
 
@@ -179,6 +182,11 @@ mod host {
     /// came (TASK-102, TASK-103).
     fn vms() -> usize {
         setting("FXDAX_PGBENCH_VMS", 1).map_or(1, |vms| vms.max(1) as usize)
+    }
+
+    /// fxdax: whether the forks' VMs run on a cold host, FXDAX_PGBENCH_COLD set (TASK-225).
+    fn cold() -> bool {
+        std::env::var_os("FXDAX_PGBENCH_COLD").is_some_and(|cold| !cold.is_empty())
     }
 
     /// The environment's `name`, a count, or `default`.
@@ -526,8 +534,9 @@ RUN apk add --no-cache postgresql postgresql-contrib perf e2fsprogs
             // As much memory as the sandbox team's daemon has: with its default, 1 GiB, the guest's
             // working set, a 2 GiB window's, didn't fit, and faults paged in and unpacked again
             // what was evicted, slower as the database grew.
-            let memory = Some(8 << 30);
-            let daemon = crate::common::spawn_daemon(test_setup, &socket, "extentd", &env, memory)?;
+            let daemon_memory = Some(8 << 30);
+            let mut daemon =
+                crate::common::spawn_daemon(test_setup, &socket, "extentd", &env, daemon_memory)?;
             let base = dir.join("base");
             let forked = self.database != Database::Made;
             // fxdax: the base's VM, making the database, as much memory as a VM loading it needs.
@@ -538,6 +547,29 @@ RUN apk add --no-cache postgresql postgresql-contrib perf e2fsprogs
                 machine.env(c"FXDAX_PGBENCH_BASE_DATABASE=1");
             }
             wait(boot(test_setup, root, "base", machine)?)?;
+            if cold() {
+                // fxdax: a host that holds none of the base's data, as one forking another host's
+                // base: the base's daemon drains, its uploads done, and stops (SIGTERM, doc-11);
+                // another serves the forks, with a part cache of its own, empty, and nothing in
+                // memory. Its log and stats are the case's `extentd`'s, the base's daemon's log
+                // kept beside them.
+                // SAFETY: a signal to the daemon this case started, which it waits for.
+                unsafe { nix::libc::kill(daemon.id() as nix::libc::pid_t, nix::libc::SIGTERM) };
+                let status = daemon.wait()?;
+                anyhow::ensure!(status.success(), "the base's daemon drained: {status}");
+                std::fs::rename(dir.join("extentd.log"), dir.join("extentd-base.log"))?;
+                let cache = dir.join("extentd-cold-cache");
+                std::fs::create_dir_all(&cache)?;
+                let mut env = env.to_vec();
+                env.push(("FXDAX_EXTENTD_CACHE", cache.as_os_str()));
+                daemon = crate::common::spawn_daemon(
+                    test_setup,
+                    &socket,
+                    "extentd",
+                    &env,
+                    daemon_memory,
+                )?;
+            }
             let window = if self.storage == Storage::FxfsDax { window()? } else { 0 };
             let served = Served { test_setup, root, socket, stats, base, window };
             if self.database == Database::Density {
