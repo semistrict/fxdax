@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-07 13:25'
-updated_date: '2026-11-07 13:41'
+updated_date: '2026-11-07 14:39'
 labels:
   - bug
 dependencies: []
@@ -23,9 +23,9 @@ Found by fxfs-guest-soak (TASK-67) on GCS, GCE r831 round 29 (run FXDAX_SEED=130
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A store whose daemon goes during its opening fails with an error that says so, shown by a test that fails first
-- [ ] #2 Firecracker exits 158 when its daemon goes as it creates its extent device, as after (a VMM test, or a guest case killing the daemon as its VM boots)
-- [ ] #3 fxfs-guest-soak accepts no exit but 158 or a kill for a VM booted before the daemon died
+- [x] #1 A store whose daemon goes during its opening fails with an error that says so, shown by a test that fails first
+- [x] #2 Firecracker exits 158 when its daemon goes as it creates its extent device, as after (a VMM test, or a guest case killing the daemon as its VM boots)
+- [x] #3 fxfs-guest-soak accepts no exit but 158 or a kill for a VM booted before the daemon died
 <!-- AC:END -->
 
 ## Definition of Done
@@ -45,3 +45,9 @@ Found by fxfs-guest-soak (TASK-67) on GCS, GCE r831 round 29 (run FXDAX_SEED=130
 5. AC #3: fxfs-guest-soak's load_problems already accepts only 0/kill/158 (158 when lossy) for a VM: no change.
 6. Linux Docker + macOS fxdax tests, FC extent tests, upstream-changes.py --check; push land-k5 (fxdax and fork) and run CI.
 <!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+land-k5 ac2e7e1d7 (fork land-k5 7d0a0970e on 99c2b05c5): CI 42379721997 green, all 11 jobs. AC#1: extentd::tests::daemons_going_as_stores_open_are_told_of_first red before (['open failed'] against ['daemon lost', 'open failed']), green after; the open fails 'opening the extent store at store: the extent daemon went: EIO (errno 5)'. AC#2: fxfs-guest-daemon-lost's third VM (its daemon the test's own, taking the OPEN and closing), jailed, on GCE r833: red on the old VMM (fork 05dd8e3df: "opening's VM exited exit status: 1 (signal None), not 158", Firecracker 'Cannot create extent-store device ... exit_code=1'), green on land-k5 (OK 1/1; 'extent device extents: the extent daemon went; stopping the VM'). AC#3: fxfs-guest-soak's load_problems already accepts only 0, a kill, or 158 when lossy (r831 round 29 failed on the 1): unchanged. fxdax 315/315 on macOS before the rebase; Linux Docker extentd/uffd (163) and VMM extent tests (23) after it.
+<!-- SECTION:NOTES:END -->
