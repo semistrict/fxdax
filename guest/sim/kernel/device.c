@@ -556,7 +556,7 @@ u64 sim_device_kept(void)
 	return kept;
 }
 
-void sim_device_check_unmounted(void)
+void sim_device_check_unmapped(const char *when)
 {
 	u64 page, pages = device.window_len >> PAGE_SHIFT, private = 0;
 	static const char *const states[] = { "nothing", "zeros", "an extent", "a private page" };
@@ -566,12 +566,17 @@ void sim_device_check_unmounted(void)
 
 		private += at->state == WINDOW_PRIVATE;
 		if (at->state != WINDOW_NONE && !at->kept)
-			sim_panic("the end: window page %llx maps %s, unmounted, with no UNMAP that failed of it",
+			sim_panic("%s: window page %llx maps %s, with no UNMAP that failed of it", when,
 				  page, states[at->state]);
 	}
 	if (private != device.private_pages)
-		sim_panic("the end: the window has %llu private pages, and counts %llu", private,
+		sim_panic("%s: the window has %llu private pages, and counts %llu", when, private,
 			  device.private_pages);
+}
+
+void sim_device_check_unmounted(void)
+{
+	sim_device_check_unmapped("the end, unmounted");
 }
 
 int virtio_extent_call(struct virtio_extent *vext, struct vext_request *req)

@@ -100,9 +100,12 @@ u64 sim_device_private_freed(void);
 u64 sim_device_private_refused(void);
 u64 sim_device_open_maps_refused(void);
 /*
- * That the window maps nothing, and holds no page private, but what UNMAPs that failed kept: the
- * mount gone (sim_end).
+ * That the window maps nothing, and holds no page private, but what UNMAPs that failed kept, as of
+ * `when`: once nothing of the guest's holds window space, every MAP of it has been UNMAPped
+ * (TASK-149.20.4).
  */
+void sim_device_check_unmapped(const char *when);
+/* sim_device_check_unmapped, the mount gone (sim_end). */
 void sim_device_check_unmounted(void);
 /* How many of the window's pages UNMAPs that failed kept. */
 u64 sim_device_kept(void);

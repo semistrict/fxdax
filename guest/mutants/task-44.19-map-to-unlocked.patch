@@ -2,15 +2,20 @@
 # Copyright 2026 The fxdax Authors.
 #
 # Kernel: sim
-# Killer: none
+# Killer: scenarios region_maps_at_once
 #
 # TASK-44.19: a region's MAPs and its `mapped` without the region's lock. Two readers of slices of
-# one staging extent each MAP from what they found mapped, and the one that ends last says how far.
-# Killed by neither the simulator nor a real kernel: no guest suite found it (GCE, 2026-11-02, as
-# scripts/guest-mutants-gce.py's map_to_unlocked), nor 3,000 seeds here; reaches_at_once, which
-# wrote through slices, did, and went with writable DAX. Copying on write, only reads take slices,
-# and each range MAPs every page it uses: what is left is the region's put UNMAPping less than the
-# host maps, which no oracle here or in the guest's suites checks.
+# one extent each MAP from what they found mapped, and the one that ends last says how far.
+# Killed by neither the simulator nor a real kernel until TASK-149.20.4: no guest suite found it
+# (GCE, 2026-11-02, as scripts/guest-mutants-gce.py's map_to_unlocked), nor 3,000 seeds here;
+# reaches_at_once, which wrote through slices, did, and went with writable DAX. Copying on write,
+# only reads take slices, and each range MAPs every page it uses: what is left is the region's put
+# UNMAPping less than the host maps. region_maps_at_once plays it out: a file and a clone of its
+# first pages, slices of one region; the clone's reader's MAP of the whole region fails, its MAP of
+# its own pages is held, and the file's reader MAPs the whole region meanwhile, which the clone's
+# reader, ending last, says it didn't. With the files' ranges dropped, the host still maps pages of
+# the region the guest gave back (sim_device_check_unmapped). The check at the unmount alone missed
+# it: the end reads the files in again, whose region took the same space and UNMAPped it whole.
 
 --- a/guest/linux/fs/fxfs/dax.c
 +++ b/guest/linux/fs/fxfs/dax.c

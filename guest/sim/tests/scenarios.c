@@ -1599,6 +1599,75 @@ static void cow_rebinds_map_ranges_at_once(void)
 	cow_check_file("after the rebind", 64 * PAGE_SIZE);
 }
 
+/* Two files' chunks, slices of one extent's region: a file's first 4 pages, cloned, and the file. */
+static struct file *slices[2];
+static const size_t slice_pages[2] = { 4, 8 };
+static char slice_bytes[8 * PAGE_SIZE];
+
+/* Reads slice file `arg` whole, by read(2), and checks what it reads. */
+static void read_slice(void *arg)
+{
+	static char got[2][8 * PAGE_SIZE];
+	uintptr_t n = (uintptr_t)arg;
+	size_t len = slice_pages[n] * PAGE_SIZE;
+	ssize_t read = sim_read(slices[n], 0, got[n], len);
+
+	check(read == len, "the read of slice file %zu: %zd", (size_t)n, read);
+	check(!memcmp(got[n], slice_bytes, len), "slice file %zu reads otherwise", (size_t)n);
+}
+
+/*
+ * That a region's MAPs are one at a time, its `mapped` what the host maps (TASK-44.19, 149.20.4).
+ * A file of 8 pages written back and sealed, and a file cloned from its first 4: each file's chunk
+ * one piece of the one extent, their ranges dropped, each read maps its chunk as a slice of the
+ * extent's region. The clone's reader's MAP of the whole region fails, and its MAP of as far as it
+ * reads, 4 pages, is held on its way (sim_device_hold); the file's reader, reaching the region's
+ * end, waits for the region's lock. Without it, that reader MAPped the whole region and said so,
+ * and the clone's, ending last, said 4 pages: the region's put UNMAPped those alone, and the host
+ * mapped the rest once nothing of the guest's held the space (sim_device_check_unmapped), as a
+ * guest that leaks the host's mappings, its daemon's window state, would.
+ */
+static void region_maps_at_once(void)
+{
+	struct task_struct *first, *second;
+	const size_t len = slice_pages[1] * PAGE_SIZE;
+	size_t n;
+	int err;
+
+	fill(slice_bytes, len, 7);
+	slices[1] = new_file(slice_bytes, len);
+	check(!sim_fsync(slices[1]), "the file's fsync");
+	slices[0] = sim_file_new(mount);
+	err = sim_clone(slices[1], 0, slices[0], 0, slice_pages[0] * PAGE_SIZE);
+	check(!err, "the clone of the file's first pages: %d", err);
+	check(!sim_fsync(slices[0]), "the clone's fsync");
+	for (n = 0; n < ARRAY_SIZE(slices); n++)
+		drop_ranges(slices[n]);
+	check(sim_dax_stat(mount, "window_regions") == 0, "%llu regions before the reads",
+	      sim_dax_stat(mount, "window_regions"));
+	sim_device_fail(VIRTIO_EXTENT_T_MAP, 0, 1);
+	sim_device_hold(VIRTIO_EXTENT_T_MAP);
+	first = sim_spawn("clone's reader", read_slice, (void *)0UL);
+	sim_await(sim_device_held(), "no MAP held");
+	check(sim_device_held() == slice_pages[0],
+	      "the MAP held is of %llu pages, not the clone's %zu", sim_device_held(),
+	      slice_pages[0]);
+	second = sim_spawn("file's reader", read_slice, (void *)1UL);
+	msleep(50);
+	sim_device_release();
+	wait_for(first);
+	wait_for(second);
+	check(sim_dax_stat(mount, "window_regions") == 1,
+	      "%llu regions: the two files' chunks aren't slices of one extent's",
+	      sim_dax_stat(mount, "window_regions"));
+	for (n = 0; n < ARRAY_SIZE(slices); n++)
+		drop_ranges(slices[n]);
+	check(sim_dax_stat(mount, "window_regions") == 0, "%llu regions after the drops",
+	      sim_dax_stat(mount, "window_regions"));
+	/* Before the end reads the files again, whose region may take the same space. */
+	sim_device_check_unmapped("the files' ranges and region gone");
+}
+
 static const struct {
 	const char *name;
 	void (*run)(void);
@@ -1644,6 +1713,7 @@ static const struct {
 	SCENARIO(cow_write_from_its_own_mapping_of_holes),
 	SCENARIO(cow_writes_private_before_the_lock),
 	SCENARIO(cow_rebinds_map_ranges_at_once),
+	SCENARIO(region_maps_at_once),
 };
 
 static void scenario(void *arg)
