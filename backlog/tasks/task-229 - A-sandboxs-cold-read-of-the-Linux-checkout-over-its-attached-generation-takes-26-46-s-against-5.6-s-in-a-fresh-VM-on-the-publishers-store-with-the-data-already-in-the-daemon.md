@@ -8,7 +8,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-07 10:46'
-updated_date: '2026-11-07 18:16'
+updated_date: '2026-11-07 20:16'
 labels: []
 dependencies: []
 references:
@@ -38,9 +38,9 @@ Open: the time split per VM (MAPs, their latency, guest faults, the layered volu
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Where a sandbox's cold read spends its time is measured per VM and recorded (transport trace or guest profile), against the reopened VM's in the same run
-- [ ] #2 A sandbox's cold read of the Linux checkout, with its base already in the daemon's memory, takes no more than 1.5x a fresh VM's on the publisher's store in the same run, or the remaining gap is explained and recorded in OPEN_QUESTIONS
-- [ ] #3 docs/measurements/linux-checkout-2026-11-07.md's explanation of the sandboxes' cold read is corrected
+- [x] #1 Where a sandbox's cold read spends its time is measured per VM and recorded (transport trace or guest profile), against the reopened VM's in the same run
+- [x] #2 A sandbox's cold read of the Linux checkout, with its base already in the daemon's memory, takes no more than 1.5x a fresh VM's on the publisher's store in the same run, or the remaining gap is explained and recorded in OPEN_QUESTIONS
+- [x] #3 docs/measurements/linux-checkout-2026-11-07.md's explanation of the sandboxes' cold read is corrected
 <!-- AC:END -->
 
 ## Definition of Done
@@ -67,4 +67,22 @@ Root: fxfs-posix's DaxExtent::new takes extent_size from the filesystem's alloca
 Fix (dax.c, fxfs_dax_region_size): an extent of no size counted is a chunk's region (2 MiB, the most a slice's extent may be, a staging extent's); the device maps zeros past an extent's end (ExtentStore::mapped_of), so the region maps whole in one MAP; a piece past it is a range's (-EXDEV from fxfs_dax_region_map).
 Sim: base_extents_sliced (fxfs_sim_extent_sizes_unknown): eight one-page files of one sealed extent, read with no size counted: red 0 of 8 sliced; green 8 slices, 1 MAP request. zloop -s 300: every test and 300 seeds of interleave and failures pass; guest-mutants-gce.py --check 53, mutants.sh --check 42, none broken.
 r941 (the fix): fresh VM 4.88 s; sandbox-1 5.80 s (1.19x), sandbox-2 5.71 s (1.17x), each 1,006 MAP requests and 90,853 slices as the fresh VM; sandbox-0, first on the generation, 14.5 s, paging the generation in (2,089 page-ins, 1.8 GB): TASK-234. The window maps 515k pages against the fresh VM's 402k, the zeros past each extent's end within its 2 MiB region, the same 798 MB of the daemon's memory (vmm_shmem); host_used grew 152 MB over the read (r888 before the fix: 180 MB; fresh VM 53 MB).
+
+r942 (GCE fxdax-test-r942-b, task-229 0a80c997c): fxfs-guest-checks-dax, -checks-dax-small, -shared-volumes-dax, -snapshot-dax, -snapshot-volumes-dax, -follow-dax, -follow-torture-dax, fxfs-guest-dax, fxfs-guest-crash-dax and pjdfstest-fxfs-guest-dax passed. xfstests-fxfs-guest-dax failed only as main does: no test failed but its known ones, and four of KNOWN_FAILURES passed (generic/303, 525, 372, 401); r943 ran it on main f94a37dbe without this change and found the same four passing, the same 12 failing. The list is land-r2's (TASK-136.1's agent, the user 2026-11-07). r942's starting SSH dropped after its launch and its results were fetched early (TASK-235); its results were fetched again with test-gce.sh resume. The local copies of r940-r943 went with a reboot of this machine; their numbers are those recorded here.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+A sandbox's cold read of the Linux checkout over its attached generation took 26-46 s against a fresh VM's 5.6 s, the daemon holding every page. Each VM's Fxfs counters (r940) found it the guest's MAPs: 91,072 MAP requests, 19.6 s of 27 s, against a fresh VM's 1,005, no file a slice. Fxfs counts no size for a base's extents (the publisher's allocator does), and fxfs_dax_new_slice refused an extent of size 0, so each file was a range of its own.
+
+The fix (dax.c, fxfs_dax_region_size): such an extent's region spans a chunk, the most a slice's extent may be. The device maps zeros past an extent's end, so the region maps in one MAP and every file of it is a slice.
+
+Measured (r941): a sandbox's cold read takes 5.7-5.8 s against a fresh VM's 4.9 s (1.17-1.19x), with the same 1,006 MAP requests and no host memory more for the zeros.
+
+Verified:
+- the sim scenario base_extents_sliced (red: 0 of 8 sliced), zloop -s 300, every mutant still applying;
+- the DAX suites (r942), xfstests' known-failures list aside, which main's r943 shares.
+
+docs/measurements/linux-checkout-2026-11-07.md's attribution is corrected. The first sandbox on a generation still pages it in (1.8 GB, 14.5 s): TASK-234.
+<!-- SECTION:FINAL_SUMMARY:END -->
