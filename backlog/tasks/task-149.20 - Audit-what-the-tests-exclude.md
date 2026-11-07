@@ -1,11 +1,11 @@
 ---
 id: TASK-149.20
 title: Audit what the tests exclude
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-01 16:54'
-updated_date: '2026-11-07 13:55'
+updated_date: '2026-11-07 15:21'
 labels: []
 dependencies: []
 documentation:
@@ -25,13 +25,13 @@ test_short_copy already covered a data loss bug but was switched off on DAX. Nob
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
 - [x] #1 A list of every if !dax, skipped check, ignored test and xfstests known failure, each with why
-- [x] #2 What no longer has a reason runs again, its failures filed
+- [ ] #2 What no longer has a reason runs again, its failures filed
 - [x] #3 A new exclusion must say why, checked by scripts/check-guest.sh or the like
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
 - [x] #2 scripts/upstream-changes.py --check passes
 - [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
@@ -56,4 +56,12 @@ Fixed: every fxdax #[ignore] says why; patch-0012-invalidate-unmaps-after's head
 AC #3: scripts/check-exclusions.py (scripts part): a bare #[ignore] of fxdax's, a known-failure line naming no open task, an xfstests known failure under no comment, a Killer: none saying no why, each fails; 9 tests.
 Filed: TASK-149.20.1 xfstests in no suite; .2 no macOS CI; .3 the page-cache checks not on DAX mounts, whose new files are in the page cache (stale premise, GCE to run); .4 no oracle for a region's put unmapping less than the host maps (task-44.19's mutant); .5 the GCS test runs nowhere; .6 FXDAX_NO_UNSHARE on GCE.
 Runs: macOS workspace + shuttle all pass (2,105); Docker Linux workspace 2,326 of 2,330 (the container's 4: git, sudo), guest part 202 of 202, clippy; scripts 188 of 188 on macOS (in the container 8 fail for its lack of git, rsync and Coccinelle); RustFS and Azurite tests pass locally in containers; mutants --check all; upstream-changes.py --check passes. DoD #1 open: Lima not run (Docker instead).
+
+Landed: main dd5916063 (land-hk5, with land-k5), CI 42382617461 green; land-h5's own CI 42379218029 green, object-stores among it. AC #2 partly: the S3 and Azure tests run again (CI's object-stores job) and their failure, fxdaxctl take's lease token, is fixed; the page-cache checks whose premise went stale aren't run on DAX mounts yet, which needs GCE: TASK-149.20.3. DoD #1: macOS workspace and shuttle pass (2,105), Linux in Docker (the container's 4 aside) and CI, not Lima.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Audited every place the tests skip, ignore or filter (doc-15: each with its reason and verdict). Found and fixed a real bug: fxdaxctl take of a new copy at a later placement took the branch's lease with the host's token and was refused (ESTALE), hidden as its only test ran against S3 and nothing ran the S3 tests; the branch tests now run on a file bucket in every suite run, and CI's new object-stores job runs the S3 and Azure tests against RustFS and Azurite in containers (their scripts fixed). Every fxdax #[ignore] says why; xfstests' known-failure list fails the case when a listed test passes; patch-0012's header says why it has no killer. scripts/check-exclusions.py (scripts part, 9 tests) keeps new exclusions saying why and their tasks open. AC #2 partly: the stale page-cache-only checks need GCE to run on DAX mounts (TASK-149.20.3). Gaps filed: TASK-149.20.1-6. Verified: macOS workspace+shuttle, Docker Linux workspace and guest parts, RustFS/Azurite locally, CI green on land-h5 and on main (land-hk5).
+<!-- SECTION:FINAL_SUMMARY:END -->
