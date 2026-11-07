@@ -57,10 +57,9 @@ host_setup() {
     # scripts/test.sh checks clippy's rules first (TASK-44.20).
     rustup component add clippy
 
-    # The guest tests' runner isolates each test with `buildah unshare` where
-    # buildah is installed, as podman installs it, and buildah's re-execution fails
-    # on these hosts (memfd_create: invalid argument), so the tests run without it.
-    export FXDAX_NO_UNSHARE=1
+    # The guest tests' runner gives each case a network of its own (TASK-149.20.6):
+    # as root, as here, with `unshare --net`, not `buildah unshare`, which failed
+    # as root (memfd_create: invalid argument) and had the cases run unisolated.
 }
 
 # host_pin TOOL prints the version of TOOL the hosts run: Rust's, or that of a

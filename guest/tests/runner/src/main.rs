@@ -116,6 +116,78 @@ fn kill_cleanup_pids(test_dir: &Path) {
     }
 }
 
+/// fxdax: how the runner isolates a case: in a network namespace of its own, its loopback alone,
+/// so that cases on one host share no ports (TASK-149.20.6).
+#[derive(Debug, PartialEq, Eq)]
+enum Isolation {
+    /// `unshare --net`, as root: root maps its own IDs.
+    Net,
+    /// `buildah unshare`, mapping the user's subordinate IDs, then `unshare --net`: as any other user.
+    MappedNet,
+    /// None, and why.
+    None(&'static str),
+}
+
+/// fxdax: what [`isolation`] goes by.
+struct Host {
+    linux: bool,
+    root: bool,
+    /// FXDAX_NO_UNSHARE: set, the cases run as they are.
+    no_unshare: bool,
+    /// FXDAX_EXTENTD_REMOTE, the bucket cases' own extent daemons keep their stores in.
+    remote: Option<String>,
+    has: fn(&str) -> bool,
+}
+
+impl Host {
+    fn this() -> Self {
+        Self {
+            linux: cfg!(target_os = "linux"),
+            root: nix::unistd::geteuid().is_root(),
+            no_unshare: std::env::var_os("FXDAX_NO_UNSHARE").is_some(),
+            remote: std::env::var("FXDAX_EXTENTD_REMOTE").ok().filter(|url| !url.is_empty()),
+            has: on_path,
+        }
+    }
+}
+
+/// fxdax: whether `command` is an executable file in a directory of PATH. Not whether it runs with
+/// `--version`, which `ip` refuses: the hosts ran every case unisolated, `ip` taken for missing
+/// (GCE r961).
+fn on_path(command: &str) -> bool {
+    use std::os::unix::fs::PermissionsExt as _;
+    let Some(path) = std::env::var_os("PATH") else { return false };
+    std::env::split_paths(&path).any(|dir| {
+        let metadata = std::fs::metadata(dir.join(command));
+        metadata.is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
+    })
+}
+
+/// fxdax: how a case runs on `host`. Root, as on the GCE hosts, unshares its network itself:
+/// `buildah unshare` as root, with no subordinate IDs, entered user namespace after user namespace
+/// till its memfd's name, which grows with each, was past the kernel's 249 bytes (`memfd_create:
+/// invalid argument`), which once had the hosts run every case unisolated (FXDAX_NO_UNSHARE). A case
+/// whose own extent daemons keep their stores in a bucket over the network, as a GCS run's do,
+/// runs in the host's network.
+fn isolation(host: &Host) -> Isolation {
+    let networked = |url: &str| !url.starts_with("file://") && !url.starts_with("memory://");
+    if !host.linux {
+        Isolation::None("network namespaces are Linux's")
+    } else if host.no_unshare {
+        Isolation::None("FXDAX_NO_UNSHARE is set")
+    } else if host.remote.as_deref().is_some_and(networked) {
+        Isolation::None("FXDAX_EXTENTD_REMOTE names a bucket over the network")
+    } else if !(host.has)("unshare") || !(host.has)("ip") {
+        Isolation::None("unshare or ip is missing")
+    } else if host.root {
+        Isolation::Net
+    } else if (host.has)("buildah") {
+        Isolation::MappedNet
+    } else {
+        Isolation::None("buildah, which maps a user's IDs, is missing")
+    }
+}
+
 fn run_single_test(
     test_case: &TestCase,
     base_dir: &Path,
@@ -166,23 +238,7 @@ fn run_single_test(
     let stdout_path = test_dir.join("stdout.txt");
     let stdout_file = File::create(&stdout_path).context("Failed to create stdout file")?;
 
-    // Use `buildah unshare` for full subuid/subgid mapping + `unshare --net`
-    // for network namespace isolation.
-    // Fall back to running directly (with a warning) if buildah or unshare isn't available.
-    let has_cmd = |cmd: &str| {
-        Command::new(cmd)
-            .arg("--version")
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false)
-    };
-    let use_buildah_unshare = cfg!(target_os = "linux")
-        && std::env::var_os("FXDAX_NO_UNSHARE").is_none()
-        && has_cmd("buildah")
-        && has_cmd("unshare");
-
+    let isolation = isolation(&Host::this());
     // Enforce a per-test timeout. If the child doesn't exit within the
     // deadline, kill it so we don't hang the entire suite.
     let timeout = std::time::Duration::from_secs(test_case.timeout_secs());
@@ -192,39 +248,44 @@ fn run_single_test(
         .context("the clock is before the epoch")?
         .as_secs()
         .to_string();
-    let child = if use_buildah_unshare {
-        let exe = executable.display();
-        let name = test_case.name;
-        let dir = test_dir.display();
-        Command::new("buildah")
-            .args(["unshare", "--", "unshare", "--net", "--", "sh", "-c"])
-            .arg(format!(
-                "echo '=== namespace debug ===' >&2; id >&2; cat /proc/self/uid_map >&2; cat /proc/self/gid_map >&2; ip link >&2; ip addr add 127.0.0.1/8 dev lo && ip link set lo up; echo '=== lo setup exit: '$?' ===' >&2; ip addr >&2; echo '=== end debug ===' >&2; exec {exe} start-vm --test-case {name} --tmp-dir {dir}"
-            ))
-            .env(test_cases::TEST_DEADLINE, &killed_at)
-            .stdin(Stdio::piped())
-            .stdout(stdout_file)
-            .stderr(log_file)
-            .spawn()
-            .context("Failed to start subprocess for test")?
-    } else {
-        if cfg!(target_os = "linux") {
-            eprintln!("WARNING: buildah not available, running without namespace isolation.");
-            eprintln!("Tests may fail if the required network ports are already in use.");
-        }
-        Command::new(&executable)
-            .arg("start-vm")
-            .arg("--test-case")
-            .arg(test_case.name)
-            .arg("--tmp-dir")
-            .arg(&test_dir)
-            .env(test_cases::TEST_DEADLINE, &killed_at)
-            .stdin(Stdio::piped())
-            .stdout(stdout_file)
-            .stderr(log_file)
-            .spawn()
-            .context("Failed to start subprocess for test")?
+    // The case, in a network of its own, its loopback up, unless it runs as is: `unshare`'s
+    // arguments.
+    let net = |command: &mut Command| {
+        command.args(["--net", "--", "sh", "-c"]).arg(format!(
+            "ip addr add 127.0.0.1/8 dev lo && ip link set lo up || exit 1; exec {} start-vm \
+             --test-case {} --tmp-dir {}",
+            executable.display(),
+            test_case.name,
+            test_dir.display()
+        ));
     };
+    let mut command = match &isolation {
+        Isolation::Net => {
+            let mut command = Command::new("unshare");
+            net(&mut command);
+            command
+        }
+        Isolation::MappedNet => {
+            let mut command = Command::new("buildah");
+            command.args(["unshare", "--", "unshare"]);
+            net(&mut command);
+            command
+        }
+        Isolation::None(why) => {
+            eprintln!("WARNING: running {} without network isolation: {why}.", test_case.name);
+            let mut command = Command::new(&executable);
+            command.arg("start-vm").arg("--test-case").arg(test_case.name).arg("--tmp-dir");
+            command.arg(&test_dir);
+            command
+        }
+    };
+    let child = command
+        .env(test_cases::TEST_DEADLINE, &killed_at)
+        .stdin(Stdio::piped())
+        .stdout(stdout_file)
+        .stderr(log_file)
+        .spawn()
+        .context("Failed to start subprocess for test")?;
 
     let mut child = child;
     let began = std::time::Instant::now();
@@ -729,6 +790,52 @@ fn main() -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use super::{Host, Isolation, isolation, on_path};
+
+    /// A Linux host as root with every command, FXDAX_EXTENTD_REMOTE `remote`.
+    fn host(remote: Option<&str>) -> Host {
+        let remote = remote.map(str::to_owned);
+        Host { linux: true, root: true, no_unshare: false, remote, has: |_| true }
+    }
+
+    /// A command is found on PATH, executable, whatever it says to `--version`.
+    #[test]
+    fn commands_are_found_on_the_path() {
+        assert!(on_path("sh"));
+        assert!(!on_path("no-such-command-anywhere"));
+    }
+
+    /// TASK-149.20.6: root unshares its network itself, as `buildah unshare` failed as root on the
+    /// GCE hosts; another user maps its IDs with buildah first; a case whose daemons reach a bucket
+    /// over the network, or a host told not to, isolates nothing.
+    #[test]
+    fn cases_run_in_a_network_of_their_own_but_where_they_need_one() {
+        assert_eq!(isolation(&host(None)), Isolation::Net);
+        assert_eq!(isolation(&host(Some("file:///dev/shm/bucket/"))), Isolation::Net);
+        assert_eq!(isolation(&host(Some("memory:///vmm"))), Isolation::Net);
+        assert_eq!(
+            isolation(&host(Some("gs://bucket/run"))),
+            Isolation::None("FXDAX_EXTENTD_REMOTE names a bucket over the network")
+        );
+        assert_eq!(isolation(&Host { root: false, ..host(None) }), Isolation::MappedNet);
+        assert_eq!(
+            isolation(&Host { root: false, has: |command| command != "buildah", ..host(None) }),
+            Isolation::None("buildah, which maps a user's IDs, is missing")
+        );
+        assert_eq!(
+            isolation(&Host { has: |command| command != "ip", ..host(None) }),
+            Isolation::None("unshare or ip is missing")
+        );
+        assert_eq!(
+            isolation(&Host { no_unshare: true, ..host(None) }),
+            Isolation::None("FXDAX_NO_UNSHARE is set")
+        );
+        assert_eq!(
+            isolation(&Host { linux: false, ..host(None) }),
+            Isolation::None("network namespaces are Linux's")
+        );
+    }
+
     use super::*;
 
     /// fxdax: a checks suite's guest's failures as it says them, and nothing else on its lines.
