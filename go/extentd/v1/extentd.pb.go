@@ -2637,6 +2637,202 @@ func (x *ShrinkMemoryResponse) GetBytes() uint64 {
 	return 0
 }
 
+// Limits the disk of a tenant, or of every tenant.
+type SetDiskLimitRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The tenant whose disk to limit, alive now or granted later, until its limit is set again;
+	// empty for every tenant's together. A tenant revoked and granted again while its earlier VMs
+	// run has the limit for each of its directories.
+	Tenant string `protobuf:"bytes,1,opt,name=tenant,proto3" json:"tenant,omitempty"`
+	// The limit, in bytes; absent, none.
+	Bytes         *uint64 `protobuf:"varint,2,opt,name=bytes,proto3,oneof" json:"bytes,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SetDiskLimitRequest) Reset() {
+	*x = SetDiskLimitRequest{}
+	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[43]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SetDiskLimitRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SetDiskLimitRequest) ProtoMessage() {}
+
+func (x *SetDiskLimitRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[43]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SetDiskLimitRequest.ProtoReflect.Descriptor instead.
+func (*SetDiskLimitRequest) Descriptor() ([]byte, []int) {
+	return file_fxdax_extentd_v1_extentd_proto_rawDescGZIP(), []int{43}
+}
+
+func (x *SetDiskLimitRequest) GetTenant() string {
+	if x != nil {
+		return x.Tenant
+	}
+	return ""
+}
+
+func (x *SetDiskLimitRequest) GetBytes() uint64 {
+	if x != nil && x.Bytes != nil {
+		return *x.Bytes
+	}
+	return 0
+}
+
+// The limit is set.
+type SetDiskLimitResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SetDiskLimitResponse) Reset() {
+	*x = SetDiskLimitResponse{}
+	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[44]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SetDiskLimitResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SetDiskLimitResponse) ProtoMessage() {}
+
+func (x *SetDiskLimitResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[44]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SetDiskLimitResponse.ProtoReflect.Descriptor instead.
+func (*SetDiskLimitResponse) Descriptor() ([]byte, []int) {
+	return file_fxdax_extentd_v1_extentd_proto_rawDescGZIP(), []int{44}
+}
+
+// Asks what a tenant's disk takes.
+type GetTenantDiskRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The tenant, alive (NOT_FOUND otherwise); empty for every tenant together.
+	Tenant        string `protobuf:"bytes,1,opt,name=tenant,proto3" json:"tenant,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetTenantDiskRequest) Reset() {
+	*x = GetTenantDiskRequest{}
+	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[45]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetTenantDiskRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetTenantDiskRequest) ProtoMessage() {}
+
+func (x *GetTenantDiskRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[45]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetTenantDiskRequest.ProtoReflect.Descriptor instead.
+func (*GetTenantDiskRequest) Descriptor() ([]byte, []int) {
+	return file_fxdax_extentd_v1_extentd_proto_rawDescGZIP(), []int{45}
+}
+
+func (x *GetTenantDiskRequest) GetTenant() string {
+	if x != nil {
+		return x.Tenant
+	}
+	return ""
+}
+
+// What a tenant's disk takes.
+type GetTenantDiskResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The bytes of the filesystem's blocks its directories' files take, as `du -sx` counts them,
+	// with what writes admitted add as the count is made.
+	Bytes uint64 `protobuf:"varint,1,opt,name=bytes,proto3" json:"bytes,omitempty"`
+	// Its limit, if it has one.
+	LimitBytes    *uint64 `protobuf:"varint,2,opt,name=limit_bytes,json=limitBytes,proto3,oneof" json:"limit_bytes,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetTenantDiskResponse) Reset() {
+	*x = GetTenantDiskResponse{}
+	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[46]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetTenantDiskResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetTenantDiskResponse) ProtoMessage() {}
+
+func (x *GetTenantDiskResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_fxdax_extentd_v1_extentd_proto_msgTypes[46]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetTenantDiskResponse.ProtoReflect.Descriptor instead.
+func (*GetTenantDiskResponse) Descriptor() ([]byte, []int) {
+	return file_fxdax_extentd_v1_extentd_proto_rawDescGZIP(), []int{46}
+}
+
+func (x *GetTenantDiskResponse) GetBytes() uint64 {
+	if x != nil {
+		return x.Bytes
+	}
+	return 0
+}
+
+func (x *GetTenantDiskResponse) GetLimitBytes() uint64 {
+	if x != nil && x.LimitBytes != nil {
+		return *x.LimitBytes
+	}
+	return 0
+}
+
 var File_fxdax_extentd_v1_extentd_proto protoreflect.FileDescriptor
 
 const file_fxdax_extentd_v1_extentd_proto_rawDesc = "" +
@@ -2835,7 +3031,19 @@ const file_fxdax_extentd_v1_extentd_proto_rawDesc = "" +
 	"\x06tenant\x18\x01 \x01(\tR\x06tenant\x12!\n" +
 	"\ftarget_bytes\x18\x02 \x01(\x04R\vtargetBytes\",\n" +
 	"\x14ShrinkMemoryResponse\x12\x14\n" +
-	"\x05bytes\x18\x01 \x01(\x04R\x05bytes2\xa1\r\n" +
+	"\x05bytes\x18\x01 \x01(\x04R\x05bytes\"R\n" +
+	"\x13SetDiskLimitRequest\x12\x16\n" +
+	"\x06tenant\x18\x01 \x01(\tR\x06tenant\x12\x19\n" +
+	"\x05bytes\x18\x02 \x01(\x04H\x00R\x05bytes\x88\x01\x01B\b\n" +
+	"\x06_bytes\"\x16\n" +
+	"\x14SetDiskLimitResponse\".\n" +
+	"\x14GetTenantDiskRequest\x12\x16\n" +
+	"\x06tenant\x18\x01 \x01(\tR\x06tenant\"c\n" +
+	"\x15GetTenantDiskResponse\x12\x14\n" +
+	"\x05bytes\x18\x01 \x01(\x04R\x05bytes\x12$\n" +
+	"\vlimit_bytes\x18\x02 \x01(\x04H\x00R\n" +
+	"limitBytes\x88\x01\x01B\x0e\n" +
+	"\f_limit_bytes2\xe2\x0e\n" +
 	"\aExtentd\x12Z\n" +
 	"\vCreateStore\x12$.fxdax.extentd.v1.CreateStoreRequest\x1a%.fxdax.extentd.v1.CreateStoreResponse\x12Z\n" +
 	"\vImportImage\x12$.fxdax.extentd.v1.ImportImageRequest\x1a%.fxdax.extentd.v1.ImportImageResponse\x12T\n" +
@@ -2859,7 +3067,9 @@ const file_fxdax_extentd_v1_extentd_proto_rawDesc = "" +
 	"\x06Revoke\x12\x1f.fxdax.extentd.v1.RevokeRequest\x1a .fxdax.extentd.v1.RevokeResponse\x12c\n" +
 	"\x0eSetMemoryLimit\x12'.fxdax.extentd.v1.SetMemoryLimitRequest\x1a(.fxdax.extentd.v1.SetMemoryLimitResponse\x12`\n" +
 	"\rSetTenantRoom\x12&.fxdax.extentd.v1.SetTenantRoomRequest\x1a'.fxdax.extentd.v1.SetTenantRoomResponse\x12]\n" +
-	"\fShrinkMemory\x12%.fxdax.extentd.v1.ShrinkMemoryRequest\x1a&.fxdax.extentd.v1.ShrinkMemoryResponseB5Z3github.com/semistrict/fxdax/go/extentd/v1;extentdv1b\x06proto3"
+	"\fShrinkMemory\x12%.fxdax.extentd.v1.ShrinkMemoryRequest\x1a&.fxdax.extentd.v1.ShrinkMemoryResponse\x12]\n" +
+	"\fSetDiskLimit\x12%.fxdax.extentd.v1.SetDiskLimitRequest\x1a&.fxdax.extentd.v1.SetDiskLimitResponse\x12`\n" +
+	"\rGetTenantDisk\x12&.fxdax.extentd.v1.GetTenantDiskRequest\x1a'.fxdax.extentd.v1.GetTenantDiskResponseB5Z3github.com/semistrict/fxdax/go/extentd/v1;extentdv1b\x06proto3"
 
 var (
 	file_fxdax_extentd_v1_extentd_proto_rawDescOnce sync.Once
@@ -2873,7 +3083,7 @@ func file_fxdax_extentd_v1_extentd_proto_rawDescGZIP() []byte {
 	return file_fxdax_extentd_v1_extentd_proto_rawDescData
 }
 
-var file_fxdax_extentd_v1_extentd_proto_msgTypes = make([]protoimpl.MessageInfo, 52)
+var file_fxdax_extentd_v1_extentd_proto_msgTypes = make([]protoimpl.MessageInfo, 56)
 var file_fxdax_extentd_v1_extentd_proto_goTypes = []any{
 	(*CreateStoreRequest)(nil),     // 0: fxdax.extentd.v1.CreateStoreRequest
 	(*CreateStoreResponse)(nil),    // 1: fxdax.extentd.v1.CreateStoreResponse
@@ -2918,31 +3128,35 @@ var file_fxdax_extentd_v1_extentd_proto_goTypes = []any{
 	(*SetTenantRoomResponse)(nil),  // 40: fxdax.extentd.v1.SetTenantRoomResponse
 	(*ShrinkMemoryRequest)(nil),    // 41: fxdax.extentd.v1.ShrinkMemoryRequest
 	(*ShrinkMemoryResponse)(nil),   // 42: fxdax.extentd.v1.ShrinkMemoryResponse
-	nil,                            // 43: fxdax.extentd.v1.GetSnapshotResponse.CountersEntry
-	nil,                            // 44: fxdax.extentd.v1.GetSnapshotResponse.GaugesEntry
-	nil,                            // 45: fxdax.extentd.v1.VmSnapshot.CountersEntry
-	nil,                            // 46: fxdax.extentd.v1.VmSnapshot.GaugesEntry
-	nil,                            // 47: fxdax.extentd.v1.VmSnapshot.WindowEntry
-	nil,                            // 48: fxdax.extentd.v1.GuestSnapshot.CountersEntry
-	nil,                            // 49: fxdax.extentd.v1.GuestSnapshot.HistogramsEntry
-	nil,                            // 50: fxdax.extentd.v1.ObjectStorageStats.RequestsEntry
-	nil,                            // 51: fxdax.extentd.v1.ObjectStorageStats.UploadedBytesEntry
+	(*SetDiskLimitRequest)(nil),    // 43: fxdax.extentd.v1.SetDiskLimitRequest
+	(*SetDiskLimitResponse)(nil),   // 44: fxdax.extentd.v1.SetDiskLimitResponse
+	(*GetTenantDiskRequest)(nil),   // 45: fxdax.extentd.v1.GetTenantDiskRequest
+	(*GetTenantDiskResponse)(nil),  // 46: fxdax.extentd.v1.GetTenantDiskResponse
+	nil,                            // 47: fxdax.extentd.v1.GetSnapshotResponse.CountersEntry
+	nil,                            // 48: fxdax.extentd.v1.GetSnapshotResponse.GaugesEntry
+	nil,                            // 49: fxdax.extentd.v1.VmSnapshot.CountersEntry
+	nil,                            // 50: fxdax.extentd.v1.VmSnapshot.GaugesEntry
+	nil,                            // 51: fxdax.extentd.v1.VmSnapshot.WindowEntry
+	nil,                            // 52: fxdax.extentd.v1.GuestSnapshot.CountersEntry
+	nil,                            // 53: fxdax.extentd.v1.GuestSnapshot.HistogramsEntry
+	nil,                            // 54: fxdax.extentd.v1.ObjectStorageStats.RequestsEntry
+	nil,                            // 55: fxdax.extentd.v1.ObjectStorageStats.UploadedBytesEntry
 }
 var file_fxdax_extentd_v1_extentd_proto_depIdxs = []int32{
 	24, // 0: fxdax.extentd.v1.ListStoresResponse.stores:type_name -> fxdax.extentd.v1.ListedStore
 	21, // 1: fxdax.extentd.v1.ListedStore.stat:type_name -> fxdax.extentd.v1.StatStoreResponse
 	32, // 2: fxdax.extentd.v1.GetStatsResponse.object_storage:type_name -> fxdax.extentd.v1.ObjectStorageStats
-	43, // 3: fxdax.extentd.v1.GetSnapshotResponse.counters:type_name -> fxdax.extentd.v1.GetSnapshotResponse.CountersEntry
-	44, // 4: fxdax.extentd.v1.GetSnapshotResponse.gauges:type_name -> fxdax.extentd.v1.GetSnapshotResponse.GaugesEntry
+	47, // 3: fxdax.extentd.v1.GetSnapshotResponse.counters:type_name -> fxdax.extentd.v1.GetSnapshotResponse.CountersEntry
+	48, // 4: fxdax.extentd.v1.GetSnapshotResponse.gauges:type_name -> fxdax.extentd.v1.GetSnapshotResponse.GaugesEntry
 	29, // 5: fxdax.extentd.v1.GetSnapshotResponse.vms:type_name -> fxdax.extentd.v1.VmSnapshot
-	45, // 6: fxdax.extentd.v1.VmSnapshot.counters:type_name -> fxdax.extentd.v1.VmSnapshot.CountersEntry
-	46, // 7: fxdax.extentd.v1.VmSnapshot.gauges:type_name -> fxdax.extentd.v1.VmSnapshot.GaugesEntry
-	47, // 8: fxdax.extentd.v1.VmSnapshot.window:type_name -> fxdax.extentd.v1.VmSnapshot.WindowEntry
+	49, // 6: fxdax.extentd.v1.VmSnapshot.counters:type_name -> fxdax.extentd.v1.VmSnapshot.CountersEntry
+	50, // 7: fxdax.extentd.v1.VmSnapshot.gauges:type_name -> fxdax.extentd.v1.VmSnapshot.GaugesEntry
+	51, // 8: fxdax.extentd.v1.VmSnapshot.window:type_name -> fxdax.extentd.v1.VmSnapshot.WindowEntry
 	30, // 9: fxdax.extentd.v1.VmSnapshot.guest:type_name -> fxdax.extentd.v1.GuestSnapshot
-	48, // 10: fxdax.extentd.v1.GuestSnapshot.counters:type_name -> fxdax.extentd.v1.GuestSnapshot.CountersEntry
-	49, // 11: fxdax.extentd.v1.GuestSnapshot.histograms:type_name -> fxdax.extentd.v1.GuestSnapshot.HistogramsEntry
-	50, // 12: fxdax.extentd.v1.ObjectStorageStats.requests:type_name -> fxdax.extentd.v1.ObjectStorageStats.RequestsEntry
-	51, // 13: fxdax.extentd.v1.ObjectStorageStats.uploaded_bytes:type_name -> fxdax.extentd.v1.ObjectStorageStats.UploadedBytesEntry
+	52, // 10: fxdax.extentd.v1.GuestSnapshot.counters:type_name -> fxdax.extentd.v1.GuestSnapshot.CountersEntry
+	53, // 11: fxdax.extentd.v1.GuestSnapshot.histograms:type_name -> fxdax.extentd.v1.GuestSnapshot.HistogramsEntry
+	54, // 12: fxdax.extentd.v1.ObjectStorageStats.requests:type_name -> fxdax.extentd.v1.ObjectStorageStats.RequestsEntry
+	55, // 13: fxdax.extentd.v1.ObjectStorageStats.uploaded_bytes:type_name -> fxdax.extentd.v1.ObjectStorageStats.UploadedBytesEntry
 	31, // 14: fxdax.extentd.v1.GuestSnapshot.HistogramsEntry.value:type_name -> fxdax.extentd.v1.Histogram
 	0,  // 15: fxdax.extentd.v1.Extentd.CreateStore:input_type -> fxdax.extentd.v1.CreateStoreRequest
 	2,  // 16: fxdax.extentd.v1.Extentd.ImportImage:input_type -> fxdax.extentd.v1.ImportImageRequest
@@ -2963,27 +3177,31 @@ var file_fxdax_extentd_v1_extentd_proto_depIdxs = []int32{
 	37, // 31: fxdax.extentd.v1.Extentd.SetMemoryLimit:input_type -> fxdax.extentd.v1.SetMemoryLimitRequest
 	39, // 32: fxdax.extentd.v1.Extentd.SetTenantRoom:input_type -> fxdax.extentd.v1.SetTenantRoomRequest
 	41, // 33: fxdax.extentd.v1.Extentd.ShrinkMemory:input_type -> fxdax.extentd.v1.ShrinkMemoryRequest
-	1,  // 34: fxdax.extentd.v1.Extentd.CreateStore:output_type -> fxdax.extentd.v1.CreateStoreResponse
-	3,  // 35: fxdax.extentd.v1.Extentd.ImportImage:output_type -> fxdax.extentd.v1.ImportImageResponse
-	5,  // 36: fxdax.extentd.v1.Extentd.ForkStore:output_type -> fxdax.extentd.v1.ForkStoreResponse
-	7,  // 37: fxdax.extentd.v1.Extentd.DeleteStore:output_type -> fxdax.extentd.v1.DeleteStoreResponse
-	9,  // 38: fxdax.extentd.v1.Extentd.DropStore:output_type -> fxdax.extentd.v1.DropStoreResponse
-	11, // 39: fxdax.extentd.v1.Extentd.ResizeStore:output_type -> fxdax.extentd.v1.ResizeStoreResponse
-	13, // 40: fxdax.extentd.v1.Extentd.PlaceStore:output_type -> fxdax.extentd.v1.PlaceStoreResponse
-	15, // 41: fxdax.extentd.v1.Extentd.MakePublic:output_type -> fxdax.extentd.v1.MakePublicResponse
-	17, // 42: fxdax.extentd.v1.Extentd.AttachBase:output_type -> fxdax.extentd.v1.AttachBaseResponse
-	19, // 43: fxdax.extentd.v1.Extentd.SyncStore:output_type -> fxdax.extentd.v1.SyncStoreResponse
-	21, // 44: fxdax.extentd.v1.Extentd.StatStore:output_type -> fxdax.extentd.v1.StatStoreResponse
-	23, // 45: fxdax.extentd.v1.Extentd.ListStores:output_type -> fxdax.extentd.v1.ListStoresResponse
-	26, // 46: fxdax.extentd.v1.Extentd.GetStats:output_type -> fxdax.extentd.v1.GetStatsResponse
-	28, // 47: fxdax.extentd.v1.Extentd.GetSnapshot:output_type -> fxdax.extentd.v1.GetSnapshotResponse
-	34, // 48: fxdax.extentd.v1.Extentd.Grant:output_type -> fxdax.extentd.v1.GrantResponse
-	36, // 49: fxdax.extentd.v1.Extentd.Revoke:output_type -> fxdax.extentd.v1.RevokeResponse
-	38, // 50: fxdax.extentd.v1.Extentd.SetMemoryLimit:output_type -> fxdax.extentd.v1.SetMemoryLimitResponse
-	40, // 51: fxdax.extentd.v1.Extentd.SetTenantRoom:output_type -> fxdax.extentd.v1.SetTenantRoomResponse
-	42, // 52: fxdax.extentd.v1.Extentd.ShrinkMemory:output_type -> fxdax.extentd.v1.ShrinkMemoryResponse
-	34, // [34:53] is the sub-list for method output_type
-	15, // [15:34] is the sub-list for method input_type
+	43, // 34: fxdax.extentd.v1.Extentd.SetDiskLimit:input_type -> fxdax.extentd.v1.SetDiskLimitRequest
+	45, // 35: fxdax.extentd.v1.Extentd.GetTenantDisk:input_type -> fxdax.extentd.v1.GetTenantDiskRequest
+	1,  // 36: fxdax.extentd.v1.Extentd.CreateStore:output_type -> fxdax.extentd.v1.CreateStoreResponse
+	3,  // 37: fxdax.extentd.v1.Extentd.ImportImage:output_type -> fxdax.extentd.v1.ImportImageResponse
+	5,  // 38: fxdax.extentd.v1.Extentd.ForkStore:output_type -> fxdax.extentd.v1.ForkStoreResponse
+	7,  // 39: fxdax.extentd.v1.Extentd.DeleteStore:output_type -> fxdax.extentd.v1.DeleteStoreResponse
+	9,  // 40: fxdax.extentd.v1.Extentd.DropStore:output_type -> fxdax.extentd.v1.DropStoreResponse
+	11, // 41: fxdax.extentd.v1.Extentd.ResizeStore:output_type -> fxdax.extentd.v1.ResizeStoreResponse
+	13, // 42: fxdax.extentd.v1.Extentd.PlaceStore:output_type -> fxdax.extentd.v1.PlaceStoreResponse
+	15, // 43: fxdax.extentd.v1.Extentd.MakePublic:output_type -> fxdax.extentd.v1.MakePublicResponse
+	17, // 44: fxdax.extentd.v1.Extentd.AttachBase:output_type -> fxdax.extentd.v1.AttachBaseResponse
+	19, // 45: fxdax.extentd.v1.Extentd.SyncStore:output_type -> fxdax.extentd.v1.SyncStoreResponse
+	21, // 46: fxdax.extentd.v1.Extentd.StatStore:output_type -> fxdax.extentd.v1.StatStoreResponse
+	23, // 47: fxdax.extentd.v1.Extentd.ListStores:output_type -> fxdax.extentd.v1.ListStoresResponse
+	26, // 48: fxdax.extentd.v1.Extentd.GetStats:output_type -> fxdax.extentd.v1.GetStatsResponse
+	28, // 49: fxdax.extentd.v1.Extentd.GetSnapshot:output_type -> fxdax.extentd.v1.GetSnapshotResponse
+	34, // 50: fxdax.extentd.v1.Extentd.Grant:output_type -> fxdax.extentd.v1.GrantResponse
+	36, // 51: fxdax.extentd.v1.Extentd.Revoke:output_type -> fxdax.extentd.v1.RevokeResponse
+	38, // 52: fxdax.extentd.v1.Extentd.SetMemoryLimit:output_type -> fxdax.extentd.v1.SetMemoryLimitResponse
+	40, // 53: fxdax.extentd.v1.Extentd.SetTenantRoom:output_type -> fxdax.extentd.v1.SetTenantRoomResponse
+	42, // 54: fxdax.extentd.v1.Extentd.ShrinkMemory:output_type -> fxdax.extentd.v1.ShrinkMemoryResponse
+	44, // 55: fxdax.extentd.v1.Extentd.SetDiskLimit:output_type -> fxdax.extentd.v1.SetDiskLimitResponse
+	46, // 56: fxdax.extentd.v1.Extentd.GetTenantDisk:output_type -> fxdax.extentd.v1.GetTenantDiskResponse
+	36, // [36:57] is the sub-list for method output_type
+	15, // [15:36] is the sub-list for method input_type
 	15, // [15:15] is the sub-list for extension type_name
 	15, // [15:15] is the sub-list for extension extendee
 	0,  // [0:15] is the sub-list for field type_name
@@ -3000,13 +3218,15 @@ func file_fxdax_extentd_v1_extentd_proto_init() {
 	file_fxdax_extentd_v1_extentd_proto_msgTypes[33].OneofWrappers = []any{}
 	file_fxdax_extentd_v1_extentd_proto_msgTypes[37].OneofWrappers = []any{}
 	file_fxdax_extentd_v1_extentd_proto_msgTypes[39].OneofWrappers = []any{}
+	file_fxdax_extentd_v1_extentd_proto_msgTypes[43].OneofWrappers = []any{}
+	file_fxdax_extentd_v1_extentd_proto_msgTypes[46].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_fxdax_extentd_v1_extentd_proto_rawDesc), len(file_fxdax_extentd_v1_extentd_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   52,
+			NumMessages:   56,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
