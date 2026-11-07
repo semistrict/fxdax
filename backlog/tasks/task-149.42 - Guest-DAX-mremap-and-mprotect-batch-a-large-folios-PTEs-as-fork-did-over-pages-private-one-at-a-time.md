@@ -3,11 +3,11 @@ id: TASK-149.42
 title: >-
   Guest DAX: mremap and mprotect batch a large folio's PTEs, as fork did, over
   pages private one at a time
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-07 10:24'
-updated_date: '2026-11-07 20:17'
+updated_date: '2026-11-07 22:19'
 labels: []
 dependencies: []
 parent_task_id: TASK-149
@@ -23,15 +23,15 @@ TASK-149.16 found fork copying a large DAX folio's PTEs as one, all writable if 
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A guest check moves (mremap) and mprotects a mapping of a chunk read in whole, split by a store, then stores through the result to a page it only read: the store faults and makes the page private, or the check fails as r861 did
-- [ ] #2 Fxfs keeps a chunk's folio from mixing writable and read-only PTEs, or each path is shown not to merge write bits, with the kernel's code cited
+- [x] #1 A guest check moves (mremap) and mprotects a mapping of a chunk read in whole, split by a store, then stores through the result to a page it only read: the store faults and makes the page private, or the check fails as r861 did
+- [x] #2 Fxfs keeps a chunk's folio from mixing writable and read-only PTEs, or each path is shown not to merge write bits, with the kernel's code cited
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -51,4 +51,12 @@ GCE r932 (unfixed): cow_fork_after_a_split_pmd and cow_mremap_after_a_split_pmd 
 Fix (57bf1ea50): guest/linux/patches/0013, change_pte_range adds FPB_RESPECT_DIRTY to a shared mapping's batch made writable, each PTE decided by its own dirty bit as before 6.17's batching; documented in the patch's header. Mutant task-149.42-mprotect-batches-whatever-their-dirtiness leaves 0013 out of the series (killer: the suite, the VM going down). Host note: XFS on Linux 7.2.9 failed an O_DIRECT read near the end with EIO on hostile seed 3, with or without the new ops (the default seed passes).
 
 GCE r933 lost (its host's SSH timed out mid-build; mm/mprotect.o had compiled). r934: the mutant leaving 0013 out killed: fxfs-guest-checks-dax passed up to cow_mremap_after_a_split_pmd, then cow_mprotect_after_a_split_pmd took the VM down (AccessRefused). r935 (the fix in): fxfs-guest-checks-dax passes (77 s; cow_fork, cow_mremap, cow_mprotect_after_a_split_pmd each pass), fxfs-guest-fsx 316 s, -dax 311 s, -delay-dax 378 s pass, the hostile scripts' new ops among them.
+
+Validation after the rebase onto origin/main: GCE r936 (Linux, scripts/test.sh's parts, no guest tests): workspace 2334/2334 and every part passed, test_cases 110 and 107; macOS scripts/test.sh clippy, workspace 2106/2106, scripts 190; test_cases 110/107 in Docker; guest-mutants-gce.py --check 54; upstream-changes.py --check.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+6.18's mprotect carried a write bit across a large DAX folio's PTEs: change_pte_range batches PTEs alike in write and soft-dirty bits (soft-dirty unbuilt in the guest), not dirty; modify_prot_start_ptes merges their dirty bits into the first, and making a shared mapping writable again makes the whole batch writable if that one is dirty. A chunk mapped 2 MiB at once, split by a store and read page by page, then mprotected read-only and back, had every page writable for the one stored to, and a store to a page never made private took the VM down (GCE r932). Fixed narrowly: guest/linux/patches/0013, the batch made writable takes PTEs alike in dirtiness, each decided by its own dirty bit as before 6.17. mremap carries none (move_ptes batches with FPB_RESPECT_WRITE), fork none since TASK-149.16 (no VM_MIXEDMAP), and the other batching paths only clear or read PTEs (code cited in the notes). Checks cow_mremap_after_a_split_pmd and cow_mprotect_after_a_split_pmd (SplitChunk shared with the fork check); the hostile scripts read the kept mapping whole, mprotect or move it, and store through it; mutant task-149.42-mprotect-batches-whatever-their-dirtiness. Verified: r932 red, r934 the mutant killed, r935 green (checks-dax, fsx, -dax, -delay-dax), r936 Linux workspace, macOS workspace 2106/2106.
+<!-- SECTION:FINAL_SUMMARY:END -->
