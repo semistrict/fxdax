@@ -46,6 +46,9 @@
 //!   its Fxfs object ID.
 //! - Errors are [`Errno`]s, Linux's values on every host.
 //!
+//! On Linux, [`fuse`] mounts a filesystem with FUSE, for any process to use; `fxdax-mount` mounts
+//! a store so.
+//!
 //! # Async
 //!
 //! Every operation that can wait is an `async fn`, and none holds a thread while it waits. Their
@@ -119,6 +122,7 @@ mod extents;
 pub mod faults;
 mod fence;
 mod filesystem;
+pub mod fuse;
 mod host_store;
 mod image;
 pub mod import;

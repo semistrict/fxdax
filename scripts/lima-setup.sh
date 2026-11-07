@@ -10,7 +10,8 @@
 # again provisions what is missing, and changes nothing else.
 #
 # Inside it: the packages Firecracker, the guest kernel (cross-built for x86-64 too) and the
-# guests' root filesystems need; Rust and cargo-nextest (the guest's pinned nightly installs
+# guests' root filesystems need, and fuse3, whose fusermount3 mounts the FUSE tests' stores
+# (crates/fxdax/tests/fuse_mount.rs); Rust and cargo-nextest (the guest's pinned nightly installs
 # itself, from guest/rust/rust-toolchain.toml), with the musl targets the guest tests' agent is
 # built for; and libseccomp 2.6 in /usr/local, which Firecracker's seccompiler needs and Ubuntu
 # 24.04 lacks (it has 2.5.5).
@@ -33,7 +34,7 @@ export DEBIAN_FRONTEND=noninteractive
 packages=(build-essential clang libclang-dev llvm pkg-config musl-tools python3 curl
     ca-certificates e2fsprogs podman rsync git unzip xz-utils
     flex bison bc cpio libelf-dev libssl-dev gcc-x86-64-linux-gnu gperf libseccomp-dev elfutils
-    coccinelle sqlite3)
+    coccinelle sqlite3 fuse3)
 missing=()
 for package in "${packages[@]}"; do
     dpkg-query -W -f '${Status}' "$package" 2>/dev/null | grep -q 'install ok installed' ||

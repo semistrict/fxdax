@@ -111,6 +111,14 @@ pub(crate) struct HeldNode {
     children: u64,
 }
 
+impl HeldNode {
+    /// The directory a held directory is in, as it was found or moved there: none for the root,
+    /// nor for a node that is not a directory.
+    pub fn parent(&self) -> Option<u64> {
+        self.parent
+    }
+}
+
 /// A handle's hold on one of a volume's nodes, released as it is dropped. It keeps the volume
 /// no more than the node: once the volume's filesystem is gone, it holds nothing.
 pub(crate) struct Hold {

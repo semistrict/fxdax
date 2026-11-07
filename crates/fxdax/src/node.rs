@@ -175,7 +175,8 @@ pub struct SetAttr {
     /// A new modification time.
     pub mtime: Option<SetTime>,
     /// Clear setuid, and setgid if group-executable, as a write, truncation or chown by an
-    /// unprivileged process does. Applied before `perm`.
+    /// unprivileged process does. Applied before `perm`. A directory's are kept, as Linux keeps
+    /// them through a chown.
     pub kill_suid_sgid: bool,
 }
 

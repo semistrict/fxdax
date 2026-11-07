@@ -152,6 +152,12 @@ of these stands in with the items the code copied from Fuchsia uses:
   applies changesets (whiteouts, opaque directories), files keeping their
   owners, permissions, times and extended attributes. `fxdaxctl import` makes
   a base store of one, for VMs to boot forks of.
+- `fuse/` mounts a `Filesystem` on the host with FUSE (TASK-222): a server of
+  the protocol, a request's bytes in and its reply's out, on every host, and on
+  Linux a mount through `/dev/fuse`, by mount(2) as root or `fusermount3`
+  otherwise. `fxdax-mount STORE MOUNTPOINT` mounts a store nothing else has
+  open, read-write, until it is unmounted or sent SIGINT or SIGTERM. macOS has
+  no open-source FUSE, so no mounts there.
 - `memory.rs` holds `VolatileSlice` and `VolatileSliceMut`, memory fxdax only
   copies into and out of, as a guest may change it concurrently.
 - `error.rs` holds `Errno`, Linux's errno values on every host, mapped from

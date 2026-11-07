@@ -92,6 +92,13 @@ Decisions made without you, still yours to confirm or overturn. Each is a line o
 - **Truncate on a full disk: every growth takes one path that zeroes the tail.** TASK-150.19.
 - **A volume's read-only is derived from its filesystem's, at one place.** TASK-160.26, 2026-11-05.
 - **fxdax's additions to Fxfs's upstream files live in child modules,** tests beside them. TASK-160.24, 2026-11-05.
+- **A change of one of a node's mode, owner and group keeps the others,** filled from its attributes where it has no POSIX attributes (a new volume's root), in fxfs-posix's `setattr`, guest's too; and **a directory's setuid and setgid survive a chown,** as Linux's. TASK-222, 2026-11-07.
+
+## FUSE
+
+- **Host FUSE mounts are Linux's alone:** macFUSE and FUSE-T aren't open source; macOS would need an NFS loopback server or FSKit. TASK-222, 2026-11-07.
+- **fxdax serves FUSE itself** (`fxdax::fuse`, from TASK-17's server, a request's bytes in, its reply's out), mounting as libfuse does (mount(2), else `fusermount3`), rather than through the `fuser` crate (MIT): no new dependency, and its protocol tests run on macOS too. *Undoing it:* swap `mount.rs` and the server for `fuser`'s session and its `Filesystem` trait. TASK-222, 2026-11-07.
+- **Mounts are read-write, of stores nothing else has open,** the kernel caching all for a day (the mount is the only writer); no read-only mode: mounting replays the journal, which writes, so a VM's store is looked at through a fork. Grafting a VM's live store into a mount, followed read-only, is TASK-223. 2026-11-07.
 
 ## Tests and CI
 

@@ -50,13 +50,14 @@ jobs:
           submodules: true
       - name: Install the build's tools
         # elfutils' eu-stack and sqlite3, which tests run, as on the GCE hosts
-        # (scripts/lib/linux-host-setup.sh); libseccomp, which Firecracker's seccompiler links; and
-        # the part's own (matrix.packages). No protoc, which protox stands in for
+        # (scripts/lib/linux-host-setup.sh); fuse3's fusermount3, which mounts the FUSE tests'
+        # stores for the runner's user (crates/fxdax/tests/fuse_mount.rs); libseccomp, which
+        # Firecracker's seccompiler links; and the part's own (matrix.packages). No protoc, which protox stands in for
         # (crates/fxdax/build.rs), nor libclang, which no bindgen of fxdax's workspace or the guest
         # tests' needs: the VMM's alone, its part's own.
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang elfutils sqlite3 libseccomp-dev ${{ matrix.packages }}
+          sudo apt-get install -y clang elfutils sqlite3 fuse3 libseccomp-dev ${{ matrix.packages }}
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-unknown-linux-musl

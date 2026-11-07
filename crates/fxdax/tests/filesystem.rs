@@ -169,6 +169,11 @@ fn setattr_changes_owner_permissions_and_times() {
             file.setattr(&SetAttr { kill_suid_sgid: true, ..Default::default() }).await.unwrap();
         assert_eq!(attr.perm, 0o0755);
 
+        // A directory's are kept: its setgid gives its new nodes its group.
+        let (dir, _) = fs.root().mkdir(b"dir", 0o6775, OWNER).await.unwrap();
+        let chown = SetAttr { uid: Some(7), kill_suid_sgid: true, ..Default::default() };
+        assert_eq!(dir.setattr(&chown).await.unwrap().perm, 0o6775);
+
         let before = SystemTime::now();
         let attr = file.setattr(&SetAttr { mtime: Some(SetTime::Now), ..Default::default() }).await;
         assert!(attr.unwrap().mtime >= before);
@@ -389,6 +394,23 @@ fn renamed_directory_has_its_new_parent() {
         );
         assert_eq!(a.entries().await.unwrap(), []);
         assert_eq!(sub.entries().await.unwrap(), []);
+    })
+}
+
+/// A directory's parent, `..`, is the directory it was found in, and moves with a rename; the
+/// root's is itself, and a file has none.
+#[test]
+fn directories_know_their_parents() {
+    with_fs(async |fs| {
+        let root = fs.root();
+        assert_eq!(root.parent(), Ok(root.inode()));
+        let (a, _) = root.mkdir(b"a", 0o755, OWNER).await.unwrap();
+        let (b, _) = a.mkdir(b"b", 0o755, OWNER).await.unwrap();
+        assert_eq!((a.parent(), b.parent()), (Ok(root.inode()), Ok(a.inode())));
+        a.rename(b"b", root, b"b", RenameFlags::empty()).await.unwrap();
+        assert_eq!(b.parent(), Ok(root.inode()));
+        let (file, _) = a.create(b"file", 0o644, OWNER).await.unwrap();
+        assert_eq!(file.parent(), Err(Errno::ENOTDIR));
     })
 }
 

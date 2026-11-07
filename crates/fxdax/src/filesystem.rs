@@ -419,6 +419,15 @@ impl Node {
         }
     }
 
+    /// The inode of the directory this directory is in, as `..` names it: its own, for the root.
+    /// A directory removed keeps the one it was removed from. `ENOTDIR` if the node is not a
+    /// directory.
+    pub fn parent(&self) -> Result<Inode> {
+        let volume = self.directory()?;
+        let parent = volume.with_held(&self.0, |held| held.parent())?;
+        Ok(Inode(parent.unwrap_or(self.ino())))
+    }
+
     /// Looks up `name` in this directory, and returns a handle to the node it names and its
     /// attributes.
     pub async fn lookup(&self, name: &[u8]) -> Result<(Node, Attr)> {
@@ -490,6 +499,9 @@ impl Node {
         let (ino, block_size) = (self.ino(), volume.block_size());
         let attr = volume
             .run(move |fxfs| async move {
+                // As Linux's, a directory's setuid and setgid are never killed: its setgid says
+                // what its new nodes' group is.
+                let kill_suid_sgid = kill_suid_sgid && file_type != FileType::Directory;
                 if perm.is_some() || kill_suid_sgid {
                     let mode = match file_type {
                         // A symlink's permissions are always all of them.
