@@ -14,9 +14,8 @@
 //!   `open-segments/<branch>/<n>`: a record of each commit's contents, as its footer will fold
 //!   them (`extent_frame::segment::Contents`), each hashed, appended and synced by the flush that
 //!   makes the commit durable, after the data it names, whether the segment is open, or closed
-//!   since and being framed: a flush waits for its framing only if it closed with data written
-//!   since the commit before, which its framed file holds durably. Its raw data and log go once
-//!   it is framed and the commits it names are durable, its framed file their record then.
+//!   since and being framed: a flush waits for no framing. Its raw data and log go once it is
+//!   framed and the commits it names are durable, its framed file their record then.
 //! - **Its base**, `wal`: the branch's commit its first segment goes on from, which the store
 //!   writes, durably, before the segments it acknowledged leave it ([`BaseFile`]): a segment a
 //!   crash brings back, its removal not durable, whose last commit is the base's or before, is

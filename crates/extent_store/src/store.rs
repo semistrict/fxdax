@@ -1878,8 +1878,7 @@ impl<D: Dir> Store<D> {
     /// fxdax: makes the commits ordered so far durable, in order, as few syncs as they need
     /// together: their data, then their records in the logs of the segments they were made in,
     /// then the files they made unreferenced go; and the raw files and logs of the segments framed
-    /// whose commits are durable. It waits for no framing but those of the segments closed with
-    /// data written since the commit before, which their framed files hold durably (TASK-165.9).
+    /// whose commits are durable. It waits for no framing (TASK-165.9).
     pub fn flush(&self) -> Result<(), Error> {
         // fxdax: timed, phase by phase (TASK-165.9).
         let asked = Instant::now();
@@ -1946,8 +1945,6 @@ impl<D: Dir> Store<D> {
     /// unreferenced. fxdax: it waits for no framing, those of segments the uploader closes between
     /// commits among them, which held up the turns a daemon makes its guests' commits durable in
     /// (TASK-165.9): an opening closes a segment whose framed file isn't whole again from its log.
-    /// But for those of segments closed with data written since the commit before, which their
-    /// framings write durably: syncing their raw files too wrote it back twice at once.
     fn make_durable(
         &self,
         logs: &mut Logs<D::File>,
@@ -1960,9 +1957,6 @@ impl<D: Dir> Store<D> {
         for pending in commits.iter_mut() {
             syncs.extend(std::mem::take(&mut pending.syncs));
         }
-        // fxdax: the segments closed since the last commit before, written since, framed: their
-        // framed files hold that data durably (TASK-165.9).
-        self.wait_for_framings(syncs.framings().iter().copied())?;
         timed.synced = syncs.sync_files(&*self.dir)?;
         let synced = timed.phases.took(flush::DATA, started);
         syncs.sync_dirs(&*self.dir)?;

@@ -10,7 +10,6 @@
 //! durable commits, reads.
 
 use crate::dir::{Dir, File};
-use crate::layout::SegmentId;
 use crate::sync::{Mutex, thread};
 use anyhow::{Context as _, Error};
 use std::collections::{BTreeSet, HashSet, VecDeque};
@@ -216,9 +215,6 @@ pub struct FileSyncs {
 /// What a flush makes durable of the commits it takes: the files their data is in, and the
 /// directories whose entries they changed.
 pub(crate) struct Syncs<F> {
-    /// fxdax: the segments whose framings it waits for, their framed files what makes the data
-    /// written to them since the last commit before they closed durable (TASK-165.9).
-    framings: Vec<SegmentId>,
     files: Vec<Arc<F>>,
     /// fxdax: those of them written and synced again and again, as the open segment's raw file
     /// is, which keep their pages in the host's page cache ([`File::sync_cached`]).
@@ -228,7 +224,7 @@ pub(crate) struct Syncs<F> {
 
 impl<F> Default for Syncs<F> {
     fn default() -> Self {
-        Self { framings: Vec::new(), files: Vec::new(), cached: Vec::new(), dirs: BTreeSet::new() }
+        Self { files: Vec::new(), cached: Vec::new(), dirs: BTreeSet::new() }
     }
 }
 
@@ -249,19 +245,8 @@ impl<F: File> Syncs<F> {
         self.dirs.insert(path);
     }
 
-    /// fxdax: waits for segment `number`'s framing, done by then or not.
-    pub fn framing(&mut self, number: SegmentId) {
-        self.framings.push(number);
-    }
-
-    /// fxdax: the segments whose framings it waits for.
-    pub fn framings(&self) -> &[SegmentId] {
-        &self.framings
-    }
-
     /// Syncs what `other` does, too.
     pub fn extend(&mut self, other: Syncs<F>) {
-        self.framings.extend(other.framings);
         self.files.extend(other.files);
         self.cached.extend(other.cached);
         self.dirs.extend(other.dirs);
