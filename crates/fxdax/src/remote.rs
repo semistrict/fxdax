@@ -382,6 +382,77 @@ mod tests {
         compacted_twice(true);
     }
 
+    /// TASK-217: a store whose host died, its disk as the death left it and the host's cache lost
+    /// with it, opens and reads what it holds after the collector compacted its segment and took
+    /// it, the writer's checkpoint having followed the moves: opening names its extents as the
+    /// branch's newest checkpoint does, in the moves. Before (GCE r757, round 40, a soak's daemon
+    /// killed and its cache lost), the store opened from its own index, which named the extent in
+    /// the segment the collector had taken, and the checking VM's reads failed EIO (`lost: ... in
+    /// segments/<branch>/<seq>`); TASK-165.9 removed the index, and the opening recovers the branch.
+    #[test]
+    fn extents_compacted_read_once_their_host_died_and_its_cache_went() {
+        const EXTENT: usize = 64 * BLOCK;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("store");
+        let objects: Arc<dyn object_store::ObjectStore> = Arc::new(InMemory::new());
+        // The dying host's way to the objects, and what reaches them after it.
+        let gated = Arc::new(Gated::over(objects.clone()));
+        let reached = Arc::new(Bucket::new(gated.clone(), ""));
+        let bucket = Arc::new(Bucket::new(objects, ""));
+        let options = extent_remote::collector::Options { compact_below: 0.5, grace: 0 };
+        let collect = |holder| {
+            let pass = extent_remote::collector::collect(&*bucket, holder, &options);
+            futures::executor::block_on(pass).unwrap()
+        };
+        let cache = Some(Arc::new(Cache::open(&dir.path().join("cache"), 1 << 30, 0).unwrap()));
+        let keeping = extent_store::upload::Options { cache, ..idle() };
+        // One segment, of extents 1 to 16, which don't compress, freed but 1 to 3.
+        let store = kept_in(&path, (16 * EXTENT as u64, None), &reached, keeping).unwrap();
+        let branch = store.branch();
+        for sequence in 1..=16 {
+            write(&store, sequence, &noise(sequence, EXTENT));
+        }
+        store.commit(None).unwrap();
+        for sequence in 4..=16 {
+            store.free(ExtentId { branch, sequence }).unwrap();
+        }
+        let checkpointed = || {
+            for _ in 0..extent_store::upload::CHECKPOINT_EVERY {
+                store.commit(None).unwrap();
+            }
+        };
+        checkpointed();
+        // The segment compacted, 1 to 3 into its moves; the writer's checkpoint follows them; the
+        // segment goes.
+        assert_eq!(collect(1).compacted, 1);
+        checkpointed();
+        collect(2);
+        let keys: Vec<String> =
+            futures::executor::block_on(extent_remote::Bucket::list(&*bucket, ""))
+                .unwrap()
+                .into_iter()
+                .map(|meta| meta.key)
+                .collect();
+        let moves = format!("moves/segments/{branch:016x}/");
+        let first = format!("segments/{branch:016x}/{:016x}", 1);
+        assert!(keys.iter().any(|key| key.starts_with(&moves)), "{keys:?}");
+        assert!(!keys.contains(&first), "{keys:?}");
+        // The host dies: its disk copied as it is, its cache not, its store cut off.
+        let restarted = dir.path().join("restarted");
+        restart(&path, &restarted);
+        gated.sever();
+        naming(&restarted, &bucket);
+        let opened = reopened(&restarted, idle()).unwrap();
+        let mut data = vec![0; EXTENT];
+        let read = opened.read(
+            ExtentId { branch, sequence: 1 },
+            0,
+            &mut [crate::VolatileSliceMut::from(&mut data[..])],
+        );
+        assert_eq!(read.map(|()| data == noise(1, EXTENT)), Ok(true));
+        drop(store);
+    }
+
     /// TASK-195: so does a fork's store read what it inherited, its parent deleted: it names the
     /// extents where its own writer's checkpoints move them, from the parent's segment, compacted
     /// into moves, then into moves of moves, the segment and the first moves gone.
