@@ -122,30 +122,13 @@ fn main() -> anyhow::Result<()> {
 
 /// Drains the daemon on SIGTERM, as an orchestrator stops it, within `bound`, and exits
 /// (`fxdax::extentd::drain`, TASK-141.4): 0 once it drained, 1 past its bound. SIGTERM is blocked
-/// in every thread but one, made here first, which waits for it.
+/// in every thread but one, made here first, which waits for it (`fxdax::signals`).
 #[cfg(target_os = "linux")]
 fn drain_on_sigterm(bound: std::time::Duration) -> std::io::Result<()> {
-    // SAFETY: A signal set, filled by the calls below.
-    let mut set: libc::sigset_t = unsafe { std::mem::zeroed() };
-    // SAFETY: Plain calls on a signal set this function owns, and on the calling thread's mask,
-    // before any other thread is made, which inherit it.
-    unsafe {
-        libc::sigemptyset(&mut set);
-        libc::sigaddset(&mut set, libc::SIGTERM);
-        let status = libc::pthread_sigmask(libc::SIG_BLOCK, &set, std::ptr::null_mut());
-        if status != 0 {
-            return Err(std::io::Error::from_raw_os_error(status));
-        }
-    }
-    std::thread::Builder::new().name("extentd signals".into()).spawn(move || {
-        let mut signal = 0;
-        // SAFETY: Waits for a signal of the set, which every thread blocks.
-        let status = unsafe { libc::sigwait(&set, &mut signal) };
-        if status != 0 {
-            log::error!(
-                "extentd: waiting for SIGTERM: {}",
-                std::io::Error::from_raw_os_error(status)
-            );
+    let sigterm = fxdax::signals::Signals::block(&[libc::SIGTERM])?;
+    fxdax::signals::spawn_taking_no_signals("extentd signals", move || {
+        if let Err(error) = sigterm.wait() {
+            log::error!("extentd: waiting for SIGTERM: {error}");
             return;
         }
         log::info!("extentd: draining, on SIGTERM, within {}s", bound.as_secs());
@@ -160,8 +143,7 @@ fn drain_on_sigterm(bound: std::time::Duration) -> std::io::Result<()> {
                 std::process::exit(1);
             }
         }
-    })?;
-    Ok(())
+    })
 }
 
 #[cfg(not(target_os = "linux"))]

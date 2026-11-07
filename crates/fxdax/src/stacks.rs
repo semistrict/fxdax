@@ -12,65 +12,24 @@
 //! `--cfg tokio_unstable` and its `taskdump` feature, which this workspace doesn't set. A task
 //! that waits shows as its runtime's worker parked, or, blocked, as the thread it blocks.
 
+use crate::signals::{Signals, spawn_taking_no_signals};
 use std::io::Write;
 use std::process::{Command, Stdio};
 
 /// Blocks SIGQUIT in the calling thread, and those it starts from now on, and starts a thread that
 /// writes the process's stacks to standard error each time it is sent: before the process starts
-/// other threads, which would take the signal otherwise, and end it.
+/// other threads, which would take the signal otherwise, and end it (`crate::signals`).
 pub fn on_sigquit() -> std::io::Result<()> {
-    // SAFETY: A signal set, filled by the calls below.
-    let mut set: libc::sigset_t = unsafe { std::mem::zeroed() };
-    // SAFETY: Plain calls on a signal set this function owns, and on the calling thread's mask.
-    unsafe {
-        libc::sigemptyset(&mut set);
-        libc::sigaddset(&mut set, libc::SIGQUIT);
-        let status = libc::pthread_sigmask(libc::SIG_BLOCK, &set, std::ptr::null_mut());
-        if status != 0 {
-            return Err(std::io::Error::from_raw_os_error(status));
-        }
-    }
-    // Every other signal for the threads that wait for it, as SIGTERM's does in extentd.
+    let sigquit = Signals::block(&[libc::SIGQUIT])?;
     spawn_taking_no_signals("stacks on SIGQUIT", move || {
         loop {
-            let mut signal = 0;
-            // SAFETY: Waits for a signal of the set, which every thread blocks.
-            let status = unsafe { libc::sigwait(&set, &mut signal) };
-            if status != 0 {
-                log::error!("waiting for SIGQUIT: {}", std::io::Error::from_raw_os_error(status));
+            if let Err(error) = sigquit.wait() {
+                log::error!("waiting for SIGQUIT: {error}");
                 return;
             }
             log_stacks();
         }
     })
-}
-
-/// Starts a thread that takes no signal: blocked from before it starts, as a thread blocking them
-/// itself would take one until it first ran, however late that is, and a process that leaves the
-/// signal to another thread, as extentd does SIGTERM, would die of it.
-fn spawn_taking_no_signals(
-    name: &str,
-    work: impl FnOnce() + Send + 'static,
-) -> std::io::Result<()> {
-    // SAFETY: Signal sets, filled by the calls below.
-    let (mut all, mut mask): (libc::sigset_t, libc::sigset_t) =
-        unsafe { (std::mem::zeroed(), std::mem::zeroed()) };
-    // SAFETY: Plain calls on signal sets this function owns, and on the calling thread's mask,
-    // which it puts back below.
-    unsafe {
-        libc::sigfillset(&mut all);
-        let status = libc::pthread_sigmask(libc::SIG_SETMASK, &all, &mut mask);
-        if status != 0 {
-            return Err(std::io::Error::from_raw_os_error(status));
-        }
-    }
-    let spawned = std::thread::Builder::new().name(name.into()).spawn(work);
-    // SAFETY: As above.
-    let status = unsafe { libc::pthread_sigmask(libc::SIG_SETMASK, &mask, std::ptr::null_mut()) };
-    if status != 0 {
-        return Err(std::io::Error::from_raw_os_error(status));
-    }
-    spawned.map(drop)
 }
 
 /// Writes every thread's stack to standard error, through eu-stack, or why it couldn't.
@@ -106,29 +65,6 @@ fn stacks() -> std::io::Result<String> {
 
 #[cfg(test)]
 mod tests {
-    /// Whether the calling thread blocks SIGTERM.
-    fn blocks_sigterm() -> bool {
-        // SAFETY: A signal set, filled by the call below.
-        let mut mask: libc::sigset_t = unsafe { std::mem::zeroed() };
-        // SAFETY: Reads the calling thread's mask into a signal set of this function's.
-        assert_eq!(unsafe { libc::pthread_sigmask(0, std::ptr::null(), &mut mask) }, 0);
-        // SAFETY: A signal set the call above filled.
-        unsafe { libc::sigismember(&mask, libc::SIGTERM) == 1 }
-    }
-
-    /// The first thing such a thread does finds every signal blocked, so no signal can reach it
-    /// however late it first runs: `the_daemon_stops_on_sigterm` died of one under load, a thread
-    /// that blocked them itself not having run yet. Its caller's mask stays as it was.
-    #[test]
-    fn a_thread_taking_no_signals_takes_none_from_its_first_instruction() {
-        let before = blocks_sigterm();
-        let (sender, blocked) = std::sync::mpsc::channel();
-        super::spawn_taking_no_signals("test", move || sender.send(blocks_sigterm()).unwrap())
-            .unwrap();
-        assert!(blocked.recv().unwrap());
-        assert_eq!(blocks_sigterm(), before);
-    }
-
     /// A process's stacks name the functions its threads wait in: here, a thread parked in one of
     /// this test's.
     /// eu-stack is elfutils', which the hosts the tests run on have (scripts/lib/linux-host-setup.sh,
