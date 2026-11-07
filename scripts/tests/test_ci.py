@@ -90,3 +90,16 @@ class Ci(unittest.TestCase):
         self.assertIn("'vendor/firecracker/Cargo.lock'", job())
         e2e = (ROOT / "scripts" / "test-e2e.sh").read_text()
         self.assertIn('FXDAX_TEST_PARTS=firecracker "$root/scripts/test.sh"', e2e)
+
+    def test_macos_runs_what_compiles_for_macos(self):
+        """TASK-149.20.2: the macos job runs scripts/test.sh's workspace and Shuttle parts on a
+        macOS runner, a part a job, every failure: what fxdax compiles for macOS alone (physmem's
+        physical map, extent_store's syncs, extent_remote's cache, fxdax's storage I/O) ran on
+        laptops alone."""
+        text = CI.read_text()
+        macos = re.search(r"^  macos:\n(.*?)^  \S", text, re.MULTILINE | re.DOTALL).group(1)
+        self.assertIn("runs-on: macos-15", macos)
+        self.assertIn("parts: [workspace, shuttle]", macos)
+        self.assertIn("FXDAX_TEST_PARTS: ${{ matrix.parts }}", macos)
+        self.assertIn("run: scripts/test.sh --no-fail-fast", macos)
+        self.assertIn("submodules: true", macos)

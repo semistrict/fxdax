@@ -115,6 +115,42 @@ jobs:
   # POSIX's permissions, owners, times and errnos, which the guest's pjdfstest case checks only on
   # GCE (TASK-149.38). Failures but scripts/pjdfstest-fuse-known's fail it. A debug build, its
   # assertions and overflow checks on.
+  # The workspace's suite and the Shuttle suites on macOS, scripts/test.sh's parts as a Mac runs
+  # them: what fxdax compiles for macOS alone, and its tests, ran on laptops alone, so a regression
+  # there landed green (TASK-149.20.2): physmem's physical map, extent_store's syncs (F_FULLFSYNC),
+  # extent_remote's cache, fxdax's storage I/O. The guest's, the VMM's and the daemon's are Linux's.
+  macos:
+    name: macos (${{ matrix.parts }})
+    runs-on: macos-15
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        parts: [workspace, shuttle]
+    env:
+      FXDAX_TEST_PARTS: ${{ matrix.parts }}
+    steps:
+      # With vendor/firecracker, a path dependency of the workspace's, which Cargo reads.
+      - uses: actions/checkout@v7
+        with:
+          submodules: true
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+      - uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-${{ runner.os }}-${{ matrix.parts }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-${{ runner.os }}-${{ matrix.parts }}-
+      # Every failure, not the first alone. Within macOS's 256 open files a process, as the
+      # stores', the remotes' and physmem's tests were run within, all passing (TASK-149.20.2).
+      - name: scripts/test.sh
+        run: scripts/test.sh --no-fail-fast
+
   pjdfstest-fuse:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
