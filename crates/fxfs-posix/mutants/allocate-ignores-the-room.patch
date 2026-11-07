@@ -1,0 +1,12 @@
+diff --git a/crates/fxfs-posix/src/lib.rs b/crates/fxfs-posix/src/lib.rs
+--- a/crates/fxfs-posix/src/lib.rs
++++ b/crates/fxfs-posix/src/lib.rs
+@@ -651,7 +651,7 @@
+         // Not `statfs`, which comes after every queued unlink, as this doesn't (`Op::rules`).
+         let usage = self.usage();
+         let room = (usage.free_blocks * usage.block_size).saturating_add(attr.blocks * 512);
+-        ensure!(range.end - range.start <= room, FxfsError::NoSpace);
++        ensure!(range.end - range.start <= room || room > 0, FxfsError::NoSpace);
+         if range.end > attr.size {
+             let grow = SetAttr { valid: SET_SIZE, size: range.end, ..SetAttr::default() };
+             self.setattr(ino, &grow).await?;

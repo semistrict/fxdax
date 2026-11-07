@@ -1,0 +1,12 @@
+diff --git a/crates/fxfs-posix/src/lib.rs b/crates/fxfs-posix/src/lib.rs
+--- a/crates/fxfs-posix/src/lib.rs
++++ b/crates/fxfs-posix/src/lib.rs
+@@ -652,7 +652,7 @@
+         let usage = self.usage();
+         let room = (usage.free_blocks * usage.block_size).saturating_add(attr.blocks * 512);
+         ensure!(range.end - range.start <= room, FxfsError::NoSpace);
+-        if range.end > attr.size {
++        if range.end != attr.size {
+             let grow = SetAttr { valid: SET_SIZE, size: range.end, ..SetAttr::default() };
+             self.setattr(ino, &grow).await?;
+         }
