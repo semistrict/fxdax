@@ -77,6 +77,8 @@ fi
 # but for those of its model of Fxfs, which crates/fxfs-sim-diff runs).
 if part scripts; then
     python3 -m unittest discover -s "$root/scripts/tests"
+    # What the tests leave out says why, and a why naming a task names one open (TASK-149.20).
+    "$root/scripts/check-exclusions.py"
     "$root/crates/fxfs-posix/mutants.sh" --check
     "$root/crates/fxfs-sim-diff/mutants.sh" --check
     "$root/crates/fxdax/mutants.sh" --check
