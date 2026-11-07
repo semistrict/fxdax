@@ -8,9 +8,12 @@
 # (guest/tests), in its Firecracker, whose DAX window takes KVM's faults through
 # userfaultfd. `all`
 # always deletes its host; `create`, `run` and `delete` expose the same steps
-# for interrupted runs.
+# for interrupted runs, and `resume` waits for a run whose waiter here was
+# stopped, named as the host names it (RUN, of its ~/RUN.job), and fetches its
+# results as `run` would.
 #
 # Usage: test-gce.sh [all|create|run|delete] [instance] [results-directory]
+#        test-gce.sh resume instance results-directory run
 #
 # FXDAX_GCE_PROJECT is the project (default: gcloud's), FXDAX_GCE_ZONE the zone
 # to try first (default: us-east4-a), FXDAX_GCE_MACHINE the machine type
@@ -75,6 +78,26 @@ run() {
     gce_remote_detached "$run" "$(gce_host_command "$run" "FXDAX_EXTENTD_REMOTE=$remote" \
         "FXDAX_RESULTS_BUCKET=$kept" test-linux-host.sh ${FXDAX_E2E_TEST:-})" \
         > "$results/remote.log" 2>&1 || status=$?
+    finish "$run" "$kept" "$status"
+}
+
+# resume RUN: waits for the run RUN on the host, and fetches its results, as `run` does.
+resume() {
+    local run=$1 status=0 kept=
+    [[ "$run" =~ ^run-[0-9TZ]+-[0-9a-f]+$ ]] || { echo 'Name the run, run-...' >&2; exit 2; }
+    gce_check_owner
+    mkdir -p "$results"
+    results=$(cd "$results" && pwd)
+    echo "Results: $results" >&2
+    if [[ -n ${FXDAX_RESULTS_BUCKET:-} ]]; then kept=${FXDAX_RESULTS_BUCKET%/}/$run; fi
+    gce_remote_wait "$run" >> "$results/remote.log" 2>&1 || status=$?
+    finish "$run" "$kept" "$status"
+}
+
+# finish RUN KEPT STATUS: fetches the run RUN's results, those its bucket KEPT if the host's are
+# lost, and says how it went, returning STATUS unless the fetch failed.
+finish() {
+    local run=$1 kept=$2 status=$3
     gce_fetch "$run" || status=$?
     # The guest tests' results the host didn't give back, as a host lost mid-run doesn't: what
     # the bucket kept of them, each case as it ended.
@@ -93,7 +116,8 @@ run() {
 case "$action" in
     create) mkdir -p "$results"; gce_create ;;
     run) gce_locate; run ;;
+    resume) gce_locate; resume "${4:-}" ;;
     delete) gce_locate; gce_delete ;;
     all) mkdir -p "$results"; gce_all run ;;
-    *) echo "Usage: $0 [all|create|run|delete] [instance] [results-directory]" >&2; exit 2 ;;
+    *) echo "Usage: $0 [all|create|run|delete] [instance] [results-directory] | resume instance results run" >&2; exit 2 ;;
 esac
