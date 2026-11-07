@@ -114,3 +114,34 @@ No guest case or script runs `fxdax-gc` against the run's bucket (scripts/test-r
 against a local RustFS alone), so no collector ran beside the suites' stores. After r740,
 `fxdax-gc gs://.../run-20261106T064130Z-59e2abec --branches` listed 40 live branches, every one
 a store the cases left; no host held them any more. Each run's prefix was deleted afterwards.
+
+## The balance sum after the restart, again (TASK-165.12, 2026-11-07)
+
+fxfs-guest-pgbench-dax-forked alone, main b57d57e4a, n2-standard-4 in us-east4-b, jailed, release
+guest kernel. Since 800e9e140 (TASK-164.12) every test daemon keeps a part cache of its own, as
+production's does, which r740-r744's had not; r812 turns it off again (`FXDAX_EXTENTD_CACHE=`
+empty, its run started on the host by hand, as test-gce.sh passes no empty variable).
+
+| Run | Bucket | Part cache | Case | The sum after the restart | Ranged GETs | Downloaded | Page-ins read |
+|---|---|---|---|---|---|---|---|
+| r744 | GCS | none | 1,547.8 s of 1,800 | 926.6 s | 28,402 | 1.9 GB | |
+| r741 | memory + 25 ms | none | 1,276.9 s | 688.6 s | 35,971 | 2.3 GB | |
+| r812 | memory + 25 ms | none | 1,182.0 s | 705.7 s | 36,290 | 2.31 GB | 2.86 GB |
+| r810 | GCS | the daemon's | 432.3 s (24%) | 7.1 s | 18 | 1.2 MB | 4.60 GB |
+| r811 | memory + 25 ms | the daemon's | 467.1 s (26%) | 14.8 s | 6 | 0.1 MB | 4.47 GB |
+
+**What the sum waited on** (r812, the case daemon's samples over the sum's 660 s): 24,570
+page-ins, each a ranged GET of the bucket (24,614), one after another, 26.8 ms each: the 25 ms the
+case adds to its bucket's requests and the GET itself. A page-in of an extent the store keeps only
+in the bucket reads it through `remote.read` (crates/fxdax/src/cache.rs:418-424), with no part
+cache a GET each time (`extentd::stores::remote_cache`, crates/fxdax/src/extentd/stores.rs:1251),
+again after each eviction from the extent cache: 1.35 GB downloaded for the 743 MB the page-ins
+read. Faults 6.8 s of it, MAPs 5.1 s; the guest's vCPUs busy 8.7 s of their 1,320.
+
+With the part cache (r810, the same window): 10,082 page-ins reading 204 MB of the bucket's data,
+every one from the cache, no GET; uploaded segments join the cache as they are acknowledged
+(TASK-165.8), so a fork's base, made on the host, is local. The case's daemon downloaded 1.2 MB in
+all, against 4.6 GB its page-ins read.
+
+Not changed, and production's: a host whose cache holds none of a fork's data, as one forking
+another host's base, pages it in as r812 did, a ranged GET a page-in, one after another.
