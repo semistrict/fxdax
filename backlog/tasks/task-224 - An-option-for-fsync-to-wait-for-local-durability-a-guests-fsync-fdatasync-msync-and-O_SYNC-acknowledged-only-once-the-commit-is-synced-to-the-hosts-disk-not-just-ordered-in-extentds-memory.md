@@ -7,7 +7,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-11-07 04:40'
-updated_date: '2026-11-07 04:40'
+updated_date: '2026-11-07 04:42'
 labels: []
 dependencies:
   - TASK-165.9
@@ -38,6 +38,7 @@ After TASK-165.9, which rewrites Store::make_durable and the flush path.
 - [ ] #3 fsync latency and pgbench tps with the option on are measured on GCE against off and recorded
 - [ ] #4 doc-12's tables say what each setting survives
 - [ ] #5 After a crash (extentd killed, or the host rebooted with its disk kept), the store recovers every locally durable commit from the host's own store, its local WAL, before or without the bucket: a test cuts power or kills extentd and finds every acknowledged fsync after reopening on the same host
+- [ ] #6 Group commit, required (the user, 2026-11-06): concurrent fsyncs waiting for local durability share one disk sync. A test shows N concurrent fsyncs cost one sync, not N, and the GCE measurement reports syncs per fsync under pgbench
 <!-- AC:END -->
 
 ## Definition of Done
