@@ -180,6 +180,12 @@ pub(crate) trait Faults: Send + Sync {
     /// guest may map nothing at, which fails then as quietly as it may (`ENOENT`), as no access of
     /// the guest's was refused.
     fn probe(&self, offset: u64) -> BoxFuture<'_, Result<()>>;
+
+    /// fxdax: whether what resolves the faults went, as a VM process's daemon may: its faults fail
+    /// then, and the process is stopping, ExtentdLost, as its device tells it (TASK-231).
+    fn lost(&self) -> bool {
+        false
+    }
 }
 
 /// A test's window in this process's host memory resolves the faults on it itself.
