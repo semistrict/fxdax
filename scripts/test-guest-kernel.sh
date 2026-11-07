@@ -23,7 +23,6 @@ built=$("$root/scripts/build-guest-kernel.sh" | tail -1)
 cp "$built" "$results/"
 
 # The pjdfstest (BSD-2-Clause) commit pjdfstest-fxfs-guest builds.
-export PJDFSTEST_REPO=${PJDFSTEST_REPO:-https://github.com/pjd/pjdfstest}
-export PJDFSTEST_COMMIT=${PJDFSTEST_COMMIT:-85a8aea9e685999ef0540392fd80535f873d7ff7}
+source "$root/scripts/lib/pjdfstest.sh"
 FXDAX_GUEST_KERNEL="$results/$(basename "$built")" FXDAX_E2E_RESULTS="$results" \
     "$root/scripts/test-e2e.sh" --tag kernel

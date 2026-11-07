@@ -156,8 +156,9 @@ of these stands in with the items the code copied from Fuchsia uses:
   the protocol, a request's bytes in and its reply's out, on every host, and on
   Linux a mount through `/dev/fuse`, by mount(2) as root or `fusermount3`
   otherwise. `fxdax-mount STORE MOUNTPOINT` mounts a store nothing else has
-  open, read-write, until it is unmounted or sent SIGINT or SIGTERM. macOS has
-  no open-source FUSE, so no mounts there.
+  open, read-write, until it is unmounted or sent SIGINT or SIGTERM; with
+  `--new CAPACITY`, a new store it makes. macOS has no open-source FUSE, so no
+  mounts there.
 - `memory.rs` holds `VolatileSlice` and `VolatileSliceMut`, memory fxdax only
   copies into and out of, as a guest may change it concurrently.
 - `error.rs` holds `Errno`, Linux's errno values on every host, mapped from
@@ -472,6 +473,16 @@ scripts/test-e2e-linux.sh  # Linux, in a Lima VM
 Each case is in suites, which the scripts run it by: `scripts/test-e2e.sh --tag kernel`, or cases
 by name, `--tag e2e` if none (the runner's `list --help` names the suites). A run's outcomes are
 data, a round's in `CASE/round-K.json` and the run's in `summary.json` (`scripts/guest_results.py`).
+
+FUSE mounts (`crates/fxdax/src/fuse`) have their server fuzzed with random and
+malformed requests (`fuse/server/fuzz_tests.rs`), and on Linux random file
+system calls on a mount compared with the same on tmpfs, as the user and as
+root (`crates/fxdax/tests/fuse_differential.rs`, what may differ in its
+`ALLOWED`). CI also runs pjdfstest on mounts, as root:
+
+```sh
+sudo scripts/pjdfstest-fuse.py target/debug/fxdax-mount   # Linux
+```
 
 `scripts/test-guest-kernel.sh` builds the guest kernel with Fxfs in it and runs
 the guest tests on it, in Lima on macOS.

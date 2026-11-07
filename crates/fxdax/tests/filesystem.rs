@@ -489,6 +489,34 @@ fn writes_and_names_change_times() {
     })
 }
 
+/// What changes a node changes its status change time, as Linux's filesystems have it (TASK-149.37,
+/// each found staying by the FUSE differential): an extended attribute set or removed, a setattr
+/// of nothing (chown to the owner and group it has), an allocation, which changes its modification
+/// time too; and what fails, nothing.
+#[test]
+fn changes_of_status_change_the_ctime() {
+    with_fs(async |fs| {
+        let (file, _) = fs.root().create(b"file", 0o644, OWNER).await.unwrap();
+        let mut then = file.getattr().await.unwrap();
+        let mut changed = async |what: &str, mtime_too: bool| {
+            let now = file.getattr().await.unwrap();
+            assert!(now.ctime > then.ctime, "{what}: the ctime stayed");
+            assert_eq!(now.mtime > then.mtime, mtime_too, "{what}: the mtime");
+            then = now;
+        };
+        file.setxattr(b"user.a", b"1", XattrMode::Set).await.unwrap();
+        changed("a setxattr", false).await;
+        file.removexattr(b"user.a").await.unwrap();
+        changed("a removexattr", false).await;
+        file.setattr(&SetAttr::default()).await.unwrap();
+        changed("a setattr of nothing", false).await;
+        file.allocate(0, 4096).await.unwrap();
+        changed("an allocation", true).await;
+        assert_eq!(errno(file.removexattr(b"user.a").await), Errno::ENODATA);
+        assert_eq!(file.getattr().await.unwrap().ctime, then.ctime, "a removexattr that failed");
+    })
+}
+
 #[test]
 fn symlink_and_readlink() {
     with_fs(async |fs| {
@@ -501,6 +529,31 @@ fn symlink_and_readlink() {
         assert_eq!(root.lookup(b"link").await.unwrap().1.file_type, FileType::Symlink);
         assert_eq!(errno(root.readlink().await), Errno::EINVAL);
         assert_eq!(errno(root.symlink(b"link", b"other", OWNER).await), Errno::EEXIST);
+    })
+}
+
+/// A symlink's size is its target's length, however long: those past a record's 256 bytes, which
+/// Fxfs keeps in chunks of their own, too (TASK-149.37: such a symlink's size was 0), as made,
+/// looked up, and once the filesystem is mounted again.
+#[test]
+fn symlinks_are_as_large_as_their_targets() {
+    const LENGTHS: [usize; 6] = [1, 256, 257, 2048, 2049, 4095];
+    block_on(async {
+        let fs = format().await;
+        for len in LENGTHS {
+            let (target, name) = (vec![b't'; len], format!("link{len}"));
+            let (link, attr) = fs.root().symlink(name.as_bytes(), &target, OWNER).await.unwrap();
+            assert_eq!(attr.size, len as u64, "made");
+            assert_eq!(link.getattr().await.unwrap().size, len as u64, "its attributes");
+            assert_eq!(fs.root().lookup(name.as_bytes()).await.unwrap().1.size, len as u64);
+            assert_eq!(link.readlink().await.unwrap(), target);
+        }
+        let fs = Filesystem::mount(close_and_check(fs).await).await.unwrap();
+        for len in LENGTHS {
+            let (_, attr) = fs.root().lookup(format!("link{len}").as_bytes()).await.unwrap();
+            assert_eq!(attr.size, len as u64, "mounted again");
+        }
+        close_and_check(fs).await;
     })
 }
 
@@ -737,16 +790,41 @@ fn concurrent_listings_each_list_every_entry_once() {
     })
 }
 
+/// An allocation grows the file, setting no blocks aside, which an extent store can't, each write
+/// taking new ones: more than the filesystem has room for is refused.
 #[test]
 fn allocate() {
     with_fs(async |fs| {
         let (file, _) = fs.root().create(b"file", 0o644, OWNER).await.unwrap();
         file.allocate(0, 65536).await.expect("allocate failed");
         let attr = file.getattr().await.unwrap();
-        assert_eq!(attr.size, 65536);
-        assert_eq!(attr.blocks, 128);
+        assert_eq!((attr.size, attr.blocks), (65536, 0));
+        assert_eq!(read_all(&file).await, vec![0; 65536]);
+        // Within the file, it changes nothing.
+        file.allocate(4096, 4096).await.expect("allocate failed");
+        assert_eq!(file.getattr().await.unwrap().size, 65536);
+        assert_eq!(errno(file.allocate(0, 2 * STORAGE_SIZE).await), Errno::ENOSPC);
         assert_eq!(errno(fs.root().allocate(0, 4096).await), Errno::EISDIR);
     })
+}
+
+/// A file allocated past its end, then written across where the allocation begins, of every
+/// length, leaves the filesystem whole, holding what was written (TASK-149.39: the FUSE fuzzer's
+/// FALLOCATE of a byte at 28672 then a WRITE at 28469 left fsck's MissingOverwriteExtents).
+#[test]
+fn writes_across_an_allocation_past_the_end() {
+    for len in [1, 203, 204, 205, 300, 4096, 4300, 70000] {
+        with_fs(async |fs| {
+            let (file, _) = fs.root().create(b"file", 0o644, OWNER).await.unwrap();
+            file.allocate(28672, 1).await.expect("allocate failed");
+            let data = vec![7u8; len];
+            assert_eq!(file.write(28469, &data).await, Ok(len));
+            let end = (28469 + len).max(28673);
+            let mut expected = vec![0u8; end];
+            expected[28469..28469 + len].copy_from_slice(&data);
+            assert_eq!(read_all(&file).await, expected, "{len}");
+        })
+    }
 }
 
 #[test]

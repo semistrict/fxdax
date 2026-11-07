@@ -227,10 +227,11 @@ impl Drop for KillOnDrop {
     }
 }
 
-/// `fxdax-mount STORE MOUNTPOINT`, its output piped, once it has said it is mounted.
-fn fxdax_mount(store: &Path, mountpoint: &Path) -> KillOnDrop {
+/// `fxdax-mount [FLAGS] STORE MOUNTPOINT`, its output piped, once it has said it is mounted.
+fn fxdax_mount(flags: &[&str], store: &Path, mountpoint: &Path) -> KillOnDrop {
     let mut child = KillOnDrop(
         Command::new(env!("CARGO_BIN_EXE_fxdax-mount"))
+            .args(flags)
             .arg(store)
             .arg(mountpoint)
             .stdout(Stdio::piped())
@@ -256,16 +257,10 @@ fn fxdax_mount_serves_a_store_until_sigterm() {
     let dir = tempfile::tempdir().unwrap();
     let (store, m) = paths(dir.path());
     block_on(format(&store).close()).unwrap();
-    let mut child = fxdax_mount(&store, &m);
+    let child = fxdax_mount(&[], &store, &m);
     std::fs::create_dir(m.join("dir")).unwrap();
     std::fs::write(m.join("dir/file"), "through fxdax-mount").unwrap();
-    // SAFETY: Signals a process this test started.
-    assert_eq!(unsafe { libc::kill(child.0.id() as i32, libc::SIGTERM) }, 0);
-    let status = child.0.wait().unwrap();
-    let mut stderr = String::new();
-    child.0.stderr.take().unwrap().read_to_string(&mut stderr).unwrap();
-    assert!(status.success(), "{status}: {stderr}");
-    assert_eq!(names(&m), Vec::<String>::new(), "still mounted");
+    terminate(child, &m);
     block_on(async {
         let storage = Storage::open(&store).unwrap().check().await.unwrap();
         let fs = Filesystem::mount(storage).await.unwrap();
@@ -274,6 +269,52 @@ fn fxdax_mount_serves_a_store_until_sigterm() {
         drop(dir);
         fs.close().await.unwrap();
     });
+}
+
+/// Sends `fxdax-mount`'s `child` SIGTERM, and checks that it unmounted `mountpoint` and exited 0.
+fn terminate(mut child: KillOnDrop, mountpoint: &Path) {
+    // SAFETY: Signals a process this test started.
+    assert_eq!(unsafe { libc::kill(child.0.id() as i32, libc::SIGTERM) }, 0);
+    let status = child.0.wait().unwrap();
+    let mut stderr = String::new();
+    child.0.stderr.take().unwrap().read_to_string(&mut stderr).unwrap();
+    assert!(status.success(), "{status}: {stderr}");
+    assert_eq!(names(mountpoint), Vec::<String>::new(), "still mounted");
+}
+
+/// `fxdax-mount --new CAPACITY` makes a new store of CAPACITY bytes, its filesystem empty, its
+/// root a new volume's (0755, root's), and mounts it; a store already there it refuses, as it does
+/// a capacity that isn't a number.
+#[test]
+fn fxdax_mount_makes_a_new_store() {
+    let dir = tempfile::tempdir().unwrap();
+    let (store, m) = paths(dir.path());
+    let child = fxdax_mount(&["--new", "67108864"], &store, &m);
+    assert_eq!(names(&m), Vec::<String>::new());
+    let root = std::fs::metadata(&m).unwrap();
+    assert_eq!((root.mode() & 0o7777, root.uid(), root.gid()), (0o755, 0, 0));
+    terminate(child, &m);
+    block_on(async {
+        let storage = Storage::open(&store).unwrap().check().await.unwrap();
+        let fs = Filesystem::mount(storage).await.unwrap();
+        assert_eq!(fs.statfs().await.unwrap().blocks, 67108864 / 4096);
+        fs.close().await.unwrap();
+    });
+
+    for (args, said) in [
+        (vec!["--new", "67108864"], "making"),
+        (vec!["--new", "lots"], "--new CAPACITY, in bytes?"),
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_fxdax-mount"))
+            .args(args)
+            .arg(&store)
+            .arg(&m)
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(!output.status.success(), "mounted");
+        assert!(stderr.contains(said), "{stderr}");
+    }
 }
 
 /// A store mounted is its mount's alone: `fxdax-mount` fails to open it, once it has waited for it

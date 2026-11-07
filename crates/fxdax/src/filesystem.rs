@@ -50,7 +50,7 @@ const WRITE_CHUNK: usize = 1 << 20;
 
 /// `name`, a name of a directory's: valid, which `.`, `..`, and those holding `/` or NUL are not,
 /// and in UTF-8, as Fxfs keeps names.
-fn valid_name(name: &[u8]) -> Result<String> {
+pub(crate) fn valid_name(name: &[u8]) -> Result<String> {
     if name.len() > NAME_MAX {
         return Err(Errno::ENAMETOOLONG);
     }
@@ -101,6 +101,11 @@ fn changed_at(now: u64) -> fxfs_posix::SetAttr {
         ctime_ns: now,
         ..Default::default()
     }
+}
+
+/// The time of a change at `now` of a node's status alone: its status change time.
+fn status_changed_at(now: u64) -> fxfs_posix::SetAttr {
+    fxfs_posix::SetAttr { valid: fxfs_posix::SET_CTIME, ctime_ns: now, ..Default::default() }
 }
 
 /// Now, in nanoseconds since the Unix epoch.
@@ -463,11 +468,12 @@ impl Node {
         Ok(attr)
     }
 
-    /// Changes the node's attributes, and returns them.
+    /// Changes the node's attributes, and its status change time, whatever it changes, as Linux's
+    /// `notify_change` does: a chown to the owner and group it has too (TASK-149.37). Returns them.
     pub async fn setattr(&self, set: &SetAttr) -> Result<Attr> {
         let (file_type, volume) = self.file_type()?;
-        let mut change = fxfs_posix::SetAttr::default();
         let now = now()?;
+        let mut change = status_changed_at(now);
         if let Some(size) = set.size {
             match file_type {
                 FileType::Directory => return Err(Errno::EISDIR),
@@ -475,7 +481,8 @@ impl Node {
                 _ => {}
             }
             // A truncation changes the file's contents, as a write does.
-            change = changed_at(now);
+            change.valid |= changed_at(now).valid;
+            change.mtime_ns = now;
             change.valid |= fxfs_posix::SET_SIZE;
             change.size = size;
         }
@@ -520,9 +527,7 @@ impl Node {
                     change.valid |= fxfs_posix::SET_MODE;
                     change.mode = file_type.mode_bits() | mode;
                 }
-                if change.valid != 0 {
-                    fxfs.setattr(ino, &change).await.map_err(errno)?;
-                }
+                fxfs.setattr(ino, &change).await.map_err(errno)?;
                 attr(block_size, &fxfs.attr(ino).await.map_err(errno)?)
             })
             .await?;
@@ -846,13 +851,19 @@ impl Node {
             .await
     }
 
-    /// Allocates `len` bytes of this file at `offset`, extending it if they are past its end.
+    /// Allocates `len` bytes of this file at `offset`, extending it if they are past its end, as
+    /// an extent store can: the filesystem must have room for them, but none is set aside, as each
+    /// write takes new blocks (fxfs-posix's `allocate`). It changes the file's modification time,
+    /// as Linux's fallocate does (`file_modified`, the guest's too).
     pub async fn allocate(&self, offset: u64, len: u64) -> Result<()> {
         let volume = self.file()?;
         let end = offset.checked_add(len).filter(|_| len > 0).ok_or(Errno::EINVAL)?;
-        let ino = self.ino();
+        let (ino, now) = (self.ino(), now()?);
         volume
-            .run(move |fxfs| async move { fxfs.allocate(ino, offset..end).await.map_err(errno) })
+            .run(move |fxfs| async move {
+                fxfs.allocate(ino, offset..end).await.map_err(errno)?;
+                fxfs.setattr(ino, &changed_at(now)).await.map_err(errno)
+            })
             .await
     }
 
@@ -881,10 +892,11 @@ impl Node {
             .await
     }
 
-    /// Sets the node's extended attribute `name` to `value`, as `mode` says.
+    /// Sets the node's extended attribute `name` to `value`, as `mode` says, changing its status
+    /// change time, as Linux's filesystems do (the guest's `fxfs_vfs_xattr_set`).
     pub async fn setxattr(&self, name: &[u8], value: &[u8], mode: XattrMode) -> Result<()> {
         let volume = self.volume()?;
-        let (ino, name, value) = (self.ino(), name.to_vec(), value.to_vec());
+        let (ino, name, value, now) = (self.ino(), name.to_vec(), value.to_vec(), now()?);
         let mode = match mode {
             XattrMode::Set => SetExtendedAttributeMode::Set,
             XattrMode::Create => SetExtendedAttributeMode::Create,
@@ -892,7 +904,8 @@ impl Node {
         };
         volume
             .run(move |fxfs| async move {
-                fxfs.set_xattr(ino, &name, &value, mode).await.map_err(xattr_errno)
+                fxfs.set_xattr(ino, &name, &value, mode).await.map_err(xattr_errno)?;
+                fxfs.setattr(ino, &status_changed_at(now)).await.map_err(errno)
             })
             .await
     }
@@ -906,15 +919,16 @@ impl Node {
             .await
     }
 
-    /// Removes the node's extended attribute `name`. Fails with `ENODATA` if it has none of that
-    /// name.
+    /// Removes the node's extended attribute `name`, changing its status change time. Fails with
+    /// `ENODATA` if it has none of that name.
     pub async fn removexattr(&self, name: &[u8]) -> Result<()> {
         let volume = self.volume()?;
-        let (ino, name) = (self.ino(), name.to_vec());
+        let (ino, name, now) = (self.ino(), name.to_vec(), now()?);
         volume
-            .run(
-                move |fxfs| async move { fxfs.remove_xattr(ino, &name).await.map_err(xattr_errno) },
-            )
+            .run(move |fxfs| async move {
+                fxfs.remove_xattr(ino, &name).await.map_err(xattr_errno)?;
+                fxfs.setattr(ino, &status_changed_at(now)).await.map_err(errno)
+            })
             .await
     }
 }

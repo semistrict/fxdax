@@ -110,6 +110,44 @@ jobs:
             scripts/test.sh --no-fail-fast
           fi
 
+  # pjdfstest (BSD-2-Clause) on FUSE mounts of new stores, as root, in a directory of the mount
+  # and from its root: the host's Node layer, fxfs-posix under it and fxdax::fuse's server held to
+  # POSIX's permissions, owners, times and errnos, which the guest's pjdfstest case checks only on
+  # GCE (TASK-149.38). Failures but scripts/pjdfstest-fuse-known's fail it. A debug build, its
+  # assertions and overflow checks on.
+  pjdfstest-fuse:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      # With vendor/firecracker, a path dependency of the workspace's, which Cargo reads.
+      - uses: actions/checkout@v7
+        with:
+          submodules: true
+      # pjdfstest's build (autotools, a C compiler) and prove (perl's), fuse3 for /dev/fuse's
+      # helpers, clang as every part builds with.
+      - name: Install the build's tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang fuse3 autoconf automake gcc make perl
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-${{ runner.os }}-pjdfstest-fuse-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-${{ runner.os }}-pjdfstest-fuse-
+      - name: Build fxdax-mount
+        run: cargo build --locked -p fxdax --bin fxdax-mount
+      - name: pjdfstest on FUSE mounts of new stores, as root
+        run: sudo --preserve-env env "PATH=$PATH" scripts/pjdfstest-fuse.py target/debug/fxdax-mount
+      - uses: actions/upload-artifact@v7
+        if: failure()
+        with:
+          name: pjdfstest-fuse-logs
+          path: target/pjdfstest/*.log
+
   # vendor/firecracker only goes forward: b781ff302 took main's back to before F_SEAL, and nothing
   # here builds Firecracker to notice (TASK-166).
   firecracker-forward:

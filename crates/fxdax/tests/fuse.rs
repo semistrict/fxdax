@@ -383,12 +383,13 @@ fn init_negotiates() {
         assert_eq!((u32_at(&out, 0), u32_at(&out, 4)), (7, 36));
         assert_eq!(u32_at(&out, 8), 1 << 17, "max_readahead");
         // Of what was offered: async reads and direct I/O, big writes, readdirplus (auto),
-        // parallel directory operations, max pages, cached symlinks, KILLPRIV_V2 and the
-        // extension; not locks, ACLs or extended setxattr, which the server doesn't serve, atomic
-        // O_TRUNC (opens are refused), automatic invalidation of cached data (the mount is the
-        // only writer), the writeback cache (dead-ends/fuse-writeback-cache.md), or DAX.
+        // parallel directory operations, max pages, cached symlinks and the extension; not
+        // locks, ACLs or extended setxattr, which the server doesn't serve, atomic O_TRUNC (opens
+        // are refused), automatic invalidation of cached data (the mount is the only writer), the
+        // writeback cache (dead-ends/fuse-writeback-cache.md), KILLPRIV_V2 (the kernel kills
+        // setuid and setgid itself, knowing who may keep them), or DAX.
         let flags = u32_at(&out, 12) as u64 | (u32_at(&out, 52) as u64) << 32;
-        let expected: u64 = [0, 5, 13, 14, 15, 18, 22, 23, 28, 30].iter().map(|bit| 1 << bit).sum();
+        let expected: u64 = [0, 5, 13, 14, 15, 18, 22, 23, 30].iter().map(|bit| 1 << bit).sum();
         assert_eq!(flags, expected, "{flags:#x}");
         assert_eq!(u32_at(&out, 20), 1 << 20, "max_write");
         let max_pages = u16::from_le_bytes(out[28..30].try_into().unwrap());
@@ -483,6 +484,11 @@ fn file_io() {
     })
 }
 
+/// Opens are refused, so the kernel truncates an open with O_TRUNC itself: a SETATTR of the
+/// size. Setuid and setgid are the kernel's to kill (KILLPRIV_V2 is not offered), with a SETATTR
+/// of the mode it computes, alone or with what kills them: a truncation, a write, a chown keep
+/// them, even asked to kill them as KILLPRIV_V2's flags would, and a mode given with a chown is
+/// the file's; a directory's setgid survives a chown, as Linux's.
 #[test]
 fn truncating_and_killing_privileges() {
     block_on(async {
@@ -492,28 +498,21 @@ fn truncating_and_killing_privileges() {
         let setuid = SetattrFields { mode: 0o6755, ..Default::default() };
         assert_eq!(client.setattr(file, 1, setuid).await.mode, 0o106755);
 
-        // Opens are refused, so the kernel truncates an open with O_TRUNC itself: a SETATTR of the
-        // size, which clears setuid and setgid if asked to.
         let open = Body::default().u32(0o1000 | 2).u32(1);
         assert_eq!(client.call(OPEN, file, open).await.error, ENOSYS);
+        // FATTR_SIZE, with FATTR_KILL_SUIDGID.
         let attr = client.setattr(file, 8 | 2048, SetattrFields::default()).await;
-        assert_eq!((attr.size, attr.mode), (0, 0o100755));
-        // A truncation without it leaves them be.
-        client.setattr(file, 1, SetattrFields { mode: 0o4755, ..Default::default() }).await;
-        let attr = client.setattr(file, 8, SetattrFields::default()).await;
-        assert_eq!(attr.mode, 0o104755);
-        client.setattr(file, 1, SetattrFields { mode: 0o755, ..Default::default() }).await;
-
-        // A write clears them if asked to.
-        client.setattr(file, 1, SetattrFields { mode: 0o4755, ..Default::default() }).await;
+        assert_eq!((attr.size, attr.mode), (0, 0o106755));
+        // FUSE_WRITE_KILL_SUIDGID.
         client.write(file, 0, b"x", 1 << 2).await.ok();
-        assert_eq!(attr_out(&client.getattr(file).await.ok()).mode, 0o100755);
-        // As do chowns.
-        client.setattr(file, 1, SetattrFields { mode: 0o4755, ..Default::default() }).await;
+        assert_eq!(attr_out(&client.getattr(file).await.ok()).mode, 0o106755);
         let chown = SetattrFields { uid: 7, gid: 8, ..Default::default() };
         let attr = client.setattr(file, 2 | 4, chown).await;
-        assert_eq!((attr.uid, attr.gid, attr.mode), (7, 8, 0o100755));
-        // But a directory's, as Linux's chown.
+        assert_eq!((attr.uid, attr.gid, attr.mode), (7, 8, 0o106755));
+        // The kernel's chown of a setuid file: the owner and the mode it computed, in one.
+        let chown = SetattrFields { uid: 9, mode: 0o755, ..Default::default() };
+        let attr = client.setattr(file, 1 | 2, chown).await;
+        assert_eq!((attr.uid, attr.gid, attr.mode), (9, 8, 0o100755));
         let (dir, _) = client.mkdir(ROOT, b"dir", 0o2775).await;
         let attr = client.setattr(dir, 4, SetattrFields { gid: 8, ..Default::default() }).await;
         assert_eq!((attr.gid, attr.mode), (8, 0o042755));
@@ -752,6 +751,19 @@ fn extended_attributes() {
         // The value is all that follows the name, which its size must say.
         let short = Body::default().u32(10).u32(0).name(b"user.d").bytes(b"short");
         assert_eq!(client.call(SETXATTR, file, short).await.error, EINVAL);
+
+        // Names are of the namespaces Linux's filesystems serve, as its VFS resolves them: of none,
+        // EOPNOTSUPP; a namespace alone, EINVAL; of the others, as the user's.
+        let refused = [(&b"foo.bar"[..], ENOTSUP), (b"user.", EINVAL), (b"trusted.", EINVAL)];
+        for (name, error) in refused {
+            let set = client.call(SETXATTR, file, set(name, b"x", 0)).await;
+            assert_eq!(set.error, error, "{name:?}");
+            assert_eq!(client.call(GETXATTR, file, get(name, 64)).await.error, error, "{name:?}");
+            let remove = client.call(REMOVEXATTR, file, Body::default().name(name)).await;
+            assert_eq!(remove.error, error, "{name:?}");
+        }
+        assert_eq!(client.call(SETXATTR, file, set(b"security.s", b"x", 0)).await.ok(), b"");
+        assert_eq!(client.call(GETXATTR, file, get(b"security.s", 64)).await.ok(), b"x");
 
         assert_eq!(client.call(REMOVEXATTR, file, Body::default().name(b"user.a")).await.ok(), b"");
         assert_eq!(client.call(GETXATTR, file, get(b"user.a", 64)).await.error, ENODATA);

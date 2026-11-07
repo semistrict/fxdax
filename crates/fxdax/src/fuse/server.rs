@@ -232,7 +232,11 @@ impl Server {
         // AUTO_INVAL_DATA, which drops a file's cached pages when its modification time changes,
         // nor WRITEBACK_CACHE, which cost more than it saved (dead-ends/fuse-writeback-cache.md).
         // Opens are not sent (`OPEN` is refused), so not ATOMIC_O_TRUNC either: the kernel
-        // truncates with `SETATTR`.
+        // truncates with `SETATTR`. Nor HANDLE_KILLPRIV_V2: the kernel kills setuid and setgid
+        // itself, as for any filesystem, with a `SETATTR` of the mode, as it alone knows whether
+        // its caller may keep them (CAP_FSETID), and does so for every change that kills them,
+        // where with it a server is told of writes, truncations and chowns, not fallocate's
+        // (TASK-149.37), and must remove security.capability too.
         let supported = ASYNC_READ
             | PARALLEL_DIROPS
             | BIG_WRITES
@@ -241,7 +245,6 @@ impl Server {
             | READDIRPLUS_AUTO
             | MAX_PAGES
             | CACHE_SYMLINKS
-            | HANDLE_KILLPRIV_V2
             | INIT_EXT;
         let enabled = (((flags2 as u64) << 32) | init.flags as u64) & supported;
         let max_pages = (MAX_WRITE as u64).div_ceil(crate::pages::page_size());
@@ -297,10 +300,8 @@ impl Server {
             size: valid(FATTR_SIZE).then_some(set.size),
             atime: time(FATTR_ATIME, FATTR_ATIME_NOW, set.atime, set.atimensec)?,
             mtime: time(FATTR_MTIME, FATTR_MTIME_NOW, set.mtime, set.mtimensec)?,
-            // HANDLE_KILLPRIV_V2: truncations the kernel asks it of, and chowns.
-            kill_suid_sgid: (valid(FATTR_SIZE) && valid(FATTR_KILL_SUIDGID))
-                || valid(FATTR_UID)
-                || valid(FATTR_GID),
+            // The kernel's to kill, with the mode it sends.
+            kill_suid_sgid: false,
         };
         let attr = self.node(header.nodeid)?.setattr(&set).await?;
         Ok(attr_out(&attr).as_bytes().to_vec())
@@ -424,16 +425,13 @@ impl Server {
     }
 
     async fn write(&self, header: &InHeader, body: &mut Body<'_>) -> Result<Vec<u8>> {
-        let WriteIn { offset, size, write_flags, .. } = body.read()?;
+        let WriteIn { offset, size, .. } = body.read()?;
         if size > MAX_WRITE {
             return Err(Errno::EINVAL);
         }
         let data = body.take(size as usize)?;
         let file = self.node(header.nodeid)?;
         let written = file.write(offset, data).await?;
-        if write_flags & WRITE_KILL_SUIDGID != 0 {
-            file.setattr(&SetAttr { kill_suid_sgid: true, ..Default::default() }).await?;
-        }
         Ok(WriteOut { size: written as u32, padding: 0 }.as_bytes().to_vec())
     }
 
@@ -466,6 +464,7 @@ impl Server {
         if value.len() != size as usize {
             return Err(Errno::EINVAL);
         }
+        let name = xattr_name(name)?;
         self.node(header.nodeid)?.setxattr(name, value, mode).await?;
         Ok(Vec::new())
     }
@@ -473,7 +472,7 @@ impl Server {
     async fn getxattr(&self, header: &InHeader, body: &mut Body<'_>) -> Result<Vec<u8>> {
         let GetxattrIn { size, .. } = body.read()?;
         let [name] = strings(body.rest())?;
-        let value = self.node(header.nodeid)?.getxattr(name).await?;
+        let value = self.node(header.nodeid)?.getxattr(xattr_name(name)?).await?;
         sized(value, size)
     }
 
@@ -487,7 +486,7 @@ impl Server {
 
     async fn removexattr(&self, header: &InHeader, body: &mut Body<'_>) -> Result<Vec<u8>> {
         let [name] = strings(body.rest())?;
-        self.node(header.nodeid)?.removexattr(name).await?;
+        self.node(header.nodeid)?.removexattr(xattr_name(name)?).await?;
         Ok(Vec::new())
     }
 
@@ -631,6 +630,21 @@ fn strings<const N: usize>(body: &[u8]) -> Result<[&[u8]; N]> {
         .ok_or(Errno::EINVAL)
 }
 
+/// The namespaces of extended attributes served: those the guest's Fxfs has handlers of. POSIX
+/// ACLs' (`system.posix_acl_*`) the kernel refuses itself, as INIT doesn't offer `POSIX_ACL`.
+const XATTR_NAMESPACES: [&[u8]; 3] = [b"user.", b"trusted.", b"security."];
+
+/// `name`, an extended attribute's, of a namespace served, as Linux's VFS resolves a name to its
+/// filesystem's handler (`xattr_resolve_name`), which FUSE leaves to its servers: `EOPNOTSUPP` of
+/// another namespace, `EINVAL` for a namespace's prefix alone.
+fn xattr_name(name: &[u8]) -> Result<&[u8]> {
+    match XATTR_NAMESPACES.iter().find(|prefix| name.starts_with(prefix)) {
+        Some(prefix) if name.len() == prefix.len() => Err(Errno::EINVAL),
+        Some(_) => Ok(name),
+        None => Err(Errno::ENOTSUP),
+    }
+}
+
 /// `value` for a request that asked for at most `size` bytes of it, or, asking for 0, its size:
 /// `ERANGE` if it is longer, as getxattr(2) and listxattr(2) have it.
 fn sized(value: Vec<u8>, size: u32) -> Result<Vec<u8>> {
@@ -727,6 +741,9 @@ fn push_dirent(reply: &mut Vec<u8>, entry: &DirEntry, next_offset: u64, dirent_l
     reply.extend_from_slice(&entry.name);
     reply.resize(start + dirent_len, 0);
 }
+
+#[cfg(test)]
+mod fuzz_tests;
 
 #[cfg(test)]
 mod tests {
