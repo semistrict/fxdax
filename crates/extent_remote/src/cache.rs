@@ -314,6 +314,16 @@ impl Cache {
         }
     }
 
+    /// Whether part `part` of the object at `key` is kept, stored as `stored` says, as the cache's
+    /// index has it: reading nothing of its file, nor counting it read, as [`Cache::part`] does.
+    pub fn holds(&self, key: &str, part: u64, stored: &Stored) -> bool {
+        let kept = self.kept.lock().unwrap();
+        kept.objects.get(key).is_some_and(|object| {
+            object.kept.contains_key(&part)
+                && object.parts.stored.get(part as usize) == Some(stored)
+        })
+    }
+
     /// The stored bytes of part `part` of the object at `key`, if it is kept, stored as `stored`
     /// says (as the reader's tail does), and they pass its CRC: one that fails is dropped.
     pub fn part(&self, key: &str, part: u64, stored: &Stored) -> io::Result<Option<Vec<u8>>> {
@@ -1188,10 +1198,16 @@ mod tests {
         let other = Object::noise(KEY, 2 * PART, 2);
         other.keep_part(&cache, 1);
         assert_eq!((other.read(&cache, 1), object.read(&cache, 1)), (None, None));
+        assert!(!cache.holds(KEY, 0, &object.stored(0)));
         object.keep_part(&cache, 0);
         assert_eq!(cache.part(KEY, 0, &object.stored(1)).unwrap(), None);
         assert_eq!(object.read(&cache, 0).as_deref(), Some(object.part(0)));
         assert_eq!(cache.bytes(), PART + object.tail_len());
+        // What it holds, as stored so: not part 1, nor part 0 as another object stores it.
+        assert!(cache.holds(KEY, 0, &object.stored(0)));
+        assert!(!cache.holds(KEY, 0, &object.stored(1)));
+        assert!(!cache.holds(KEY, 1, &object.stored(1)));
+        assert!(!cache.holds("segments/0000000000000002/0000000000000000", 0, &object.stored(0)));
         cache.check();
     }
 

@@ -657,6 +657,7 @@ impl<B: Bucket> Fetcher<B> {
     /// Reads ahead of a read of parts `first..=last` of the object at `key`: the part after them,
     /// and twice as many as the time before, up to [`AHEAD`], while reads go on where the last
     /// stopped, so that a sequential reader finds its parts kept, and a random one their neighbours.
+    /// Parts the cache holds are not read again, from the bucket or the cache (TASK-225).
     fn read_ahead(&self, key: &str, first: u64, last: u64) {
         let Some(spawn) = self.spawn.as_ref().filter(|_| self.shared.cache.is_some()) else {
             return;
@@ -691,6 +692,11 @@ impl<B: Bucket> Fetcher<B> {
             // None past the object's end.
             let Ok(Some(tail)) = this.shared.tail(&key).await else { return };
             let parts = parts.start..parts.end.min(tail.parts.frame.parts());
+            let held = |part: &u64| match (&this.shared.cache, tail.stored(&key, *part)) {
+                (Some(cache), Ok((stored, _))) => cache.holds(&key, *part, &stored),
+                _ => false,
+            };
+            let parts = parts.filter(|part| !held(part));
             let reads = parts.map(|part| this.part(&key, part, &tail, Priority::Ahead));
             for read in futures::future::join_all(reads).await {
                 if let Err(err) = read {
@@ -1390,6 +1396,36 @@ mod tests {
         assert_eq!(read_part(3), [get(10), get(11), get(7), get(8), get(9)]);
         assert_eq!(read_part(7), Vec::<String>::new());
         assert_eq!(cache.bytes(), 12 * PART + tail_len(&data));
+    }
+
+    /// TASK-225: another fetcher of the host's, following reads afresh, reads ahead none of the
+    /// parts the cache holds: neither from the bucket nor from the cache. Here the cache's copies
+    /// of the parts are spoilt, so that a read of one there fails its CRC and is fetched again:
+    /// only the part the read wants is, not the one after it, read ahead.
+    #[test]
+    fn read_ahead_reads_nothing_the_cache_holds() {
+        let data = noise(4 * PART);
+        let bucket = bucket(&data);
+        let dir = tempfile::tempdir().unwrap();
+        let cache = Arc::new(Cache::open(dir.path(), 64 * PART, 0).unwrap());
+        let location = location(4 * PART);
+        let mut reads = Reads::new();
+        let first = Fetcher::new(bucket.clone(), limits(8), Memory::new(), Some(cache.clone()));
+        let first = Rc::new(first.reading_ahead(reads.spawn()));
+        for part in 0..2 {
+            reads.read(&first, location.clone(), part * PART, 10, Priority::Demand);
+        }
+        // Parts 0 and 1, read, and 2 and 3, read ahead; and the tail.
+        assert_eq!(complete_all(&bucket, &mut reads).len(), 5);
+        let file = std::fs::OpenOptions::new().write(true).open(cache.path(KEY)).unwrap();
+        std::os::unix::fs::FileExt::write_all_at(&file, &vec![0; 4 * PART as usize], 0).unwrap();
+        let other = Fetcher::new(bucket.clone(), limits(8), Memory::new(), Some(cache.clone()));
+        let other = Rc::new(other.reading_ahead(reads.spawn()));
+        let read = reads.read(&other, location, 2 * PART, 10, Priority::Demand);
+        let part = format!("get {KEY} {}..{}", 2 * PART, 3 * PART);
+        assert_eq!(complete_all(&bucket, &mut reads), [part]);
+        let at = 2 * PART as usize;
+        assert_eq!(reads.result(read), Some(Ok(data[at..at + 10].to_vec())));
     }
 
     /// A part stored compressed is fetched with one ranged GET of its stored bytes, checked and
