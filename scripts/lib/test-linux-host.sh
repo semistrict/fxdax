@@ -108,7 +108,10 @@ fi
 tracer=
 if [[ -n ${FXDAX_HOST_TRACE:-} ]]; then
     host_need bpftrace
-    bpftrace -q -o "$results/host-trace.txt" "$repo/$FXDAX_HOST_TRACE" 2> "$results/host-trace.log" &
+    # What it says, its first MiB, the rest read and dropped, which a closed pipe would kill it
+    # for: extent-transport.bt had it say 700 MB over a 30-minute case (GCE r810, r811).
+    bpftrace -q -o "$results/host-trace.txt" "$repo/$FXDAX_HOST_TRACE" \
+        2> >({ head -c 1048576; cat > /dev/null; } > "$results/host-trace.log") &
     tracer=$!
 fi
 e2e_status=0
