@@ -70,7 +70,8 @@ mod host {
         vm.guest_kernel()?;
         // Both run at once: each boots from an image of its own.
         vm.root_image(&format!("{role}.rootfs.ext4"));
-        let window = if test.dax { 1 << 28 } else { 0 };
+        let window =
+            if test.dax { crate::common::dax_window(crate::common::Window::Large)? } else { 0 };
         if read_only {
             vm.extent_store_following("extents", store, window)?;
         } else {

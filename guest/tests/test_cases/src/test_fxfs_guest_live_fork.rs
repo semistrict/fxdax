@@ -46,7 +46,12 @@ mod host {
     ) -> anyhow::Result<Firecracker> {
         let mut vm = Vm::new(2, 512)?;
         vm.guest_kernel()?;
-        vm.extent_store("extents", store, CAPACITY, 1 << 28)?;
+        vm.extent_store(
+            "extents",
+            store,
+            CAPACITY,
+            crate::common::dax_window(crate::common::Window::Large)?,
+        )?;
         vm.env(&CString::new(format!("FXDAX_LIVE_FORK={role}"))?);
         if let Some(uds) = uds {
             vm.vsock(uds);

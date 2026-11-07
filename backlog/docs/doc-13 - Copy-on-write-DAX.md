@@ -3,7 +3,7 @@ id: doc-13
 title: Copy-on-write DAX
 type: specification
 created_date: '2026-11-04 07:55'
-updated_date: '2026-11-07 03:00'
+updated_date: '2026-11-07 09:46'
 ---
 # Copy-on-write DAX: the window maps sealed extents only; a store gets a private copy
 
@@ -125,6 +125,9 @@ memory without asking other VMs anything.
 - **`private_max`** (configuration, with `DAX`): the most private pages the device holds at
   once. A store past it is refused, and the VM stops (159). The host sets it as it opens the device,
   and counts it against the tenant's memory then, not as pages come: a store never waits for memory.
+  *TASK-227:* 1 GiB unless configured (`dax_private_max`), or the window's pages if fewer, whatever
+  the window's size: the window is address space, as large as the data, its private pages memory
+  (half a window's, TASK-164.11's default, would have reserved 32 GiB of a 64 GiB window's).
 - **`MAP_ZEROS`** (a `MAP` flag): maps zeros, `id` ignored: holes and past-the-end pages of a range,
   so that a store to one is a private page of zeros (no copy).
 - **`PRIVATE`** (request): makes `len` bytes at `window_offset` private now, as stores would, and

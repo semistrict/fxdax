@@ -132,7 +132,8 @@ mod host {
             let mut vm = Vm::new(2, 768)?;
             vm.guest_kernel()?;
             vm.root_image(&format!("{role}.rootfs.ext4"));
-            let window = if self.dax { 1 << 28 } else { 0 };
+            let window =
+                if self.dax { crate::common::dax_window(crate::common::Window::Large)? } else { 0 };
             if role == "writer" {
                 vm.extent_store("extents", store, CAPACITY, window)?;
             } else {

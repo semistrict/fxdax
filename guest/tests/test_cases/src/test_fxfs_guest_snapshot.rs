@@ -324,7 +324,11 @@ mod host {
                 }
                 let mut vm = Vm::new(2, 512)?;
                 vm.guest_kernel()?;
-                let window = if self.dax { 1 << 28 } else { 0 };
+                let window = if self.dax {
+                    crate::common::dax_window(crate::common::Window::Large)?
+                } else {
+                    0
+                };
                 vm.extent_store_served(
                     "extents",
                     &store(dir, "source"),

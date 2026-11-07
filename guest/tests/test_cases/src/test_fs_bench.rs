@@ -553,9 +553,18 @@ RUN wget -q -O /opt/lua-5.4.7.tar.gz https://www.lua.org/ftp/lua-5.4.7.tar.gz \\
             vm.cpus(cpus);
             vm.root_image(&format!("{role}.rootfs.ext4"));
             if writer {
-                vm.extent_store("bench", store, IMAGE_SIZE, 1 << 31)?;
+                vm.extent_store(
+                    "bench",
+                    store,
+                    IMAGE_SIZE,
+                    crate::common::dax_window(crate::common::Window::Large)?,
+                )?;
             } else {
-                vm.extent_store_following("bench", store, 1 << 31)?;
+                vm.extent_store_following(
+                    "bench",
+                    store,
+                    crate::common::dax_window(crate::common::Window::Large)?,
+                )?;
             }
             if let Some(uds) = uds {
                 vm.vsock(uds);
@@ -730,7 +739,11 @@ RUN wget -q -O /opt/lua-5.4.7.tar.gz https://www.lua.org/ftp/lua-5.4.7.tar.gz \\
                 Backend::FxfsGuest | Backend::FxfsGuestDax => {
                     // A new store, which the guest's Fxfs formats as it mounts it.
                     let store = test_setup.tmp_dir.join("extents");
-                    let window = if self.backend == Backend::FxfsGuestDax { 1 << 31 } else { 0 };
+                    let window = if self.backend == Backend::FxfsGuestDax {
+                        crate::common::dax_window(crate::common::Window::Large)?
+                    } else {
+                        0
+                    };
                     vm.extent_store("bench", &store, IMAGE_SIZE, window)?;
                     None
                 }
@@ -740,8 +753,11 @@ RUN wget -q -O /opt/lua-5.4.7.tar.gz https://www.lua.org/ftp/lua-5.4.7.tar.gz \\
                 | Backend::FxfsGuestDaxForkProfiled
                 | Backend::FxfsGuestForkWarm => {
                     let store = std::env::var_os(STORE).context("no store for a fork case")?;
-                    let window =
-                        if self.backend == Backend::FxfsGuestForkWarm { 0 } else { 1 << 31 };
+                    let window = if self.backend == Backend::FxfsGuestForkWarm {
+                        0
+                    } else {
+                        crate::common::dax_window(crate::common::Window::Large)?
+                    };
                     vm.extent_store("bench", std::path::Path::new(&store), IMAGE_SIZE, window)?;
                     vm.env(&CString::new(format!("{ROLE}={}", std::env::var(ROLE)?))?);
                     None

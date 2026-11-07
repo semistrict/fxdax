@@ -55,7 +55,13 @@ mod host {
         // Both run at once: each boots from an image of its own, which making it remakes.
         vm.root_image(&format!("{name}.rootfs.ext4"));
         let store = test_setup.tmp_dir.join(format!("store-{name}"));
-        vm.extent_store_served("extents", &store, CAPACITY, 1 << 28, extentd);
+        vm.extent_store_served(
+            "extents",
+            &store,
+            CAPACITY,
+            crate::common::dax_window(crate::common::Window::Large)?,
+            extentd,
+        );
         vm.vsock(uds);
         vm.spawn_api(root, &test_setup.test_case, name, &Vm::api_socket(name))
     }
