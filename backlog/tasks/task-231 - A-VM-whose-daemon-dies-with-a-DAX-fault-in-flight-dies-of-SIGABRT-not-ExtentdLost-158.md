@@ -3,11 +3,11 @@ id: TASK-231
 title: >-
   A VM whose daemon dies with a DAX fault in flight dies of SIGABRT, not
   ExtentdLost (158)
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-07 11:54'
-updated_date: '2026-11-07 11:54'
+updated_date: '2026-11-07 13:25'
 labels:
   - bug
 dependencies: []
@@ -23,16 +23,16 @@ Found by fxfs-guest-soak (TASK-67), GCE r830 round 27, file bucket, jailed (run 
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A fault failed as its daemon goes waits for the VM process to stop rather than abort it, shown by a test that fails first
-- [ ] #2 What a request its daemon's going failed does finds the daemon lost, shown by a test that fails first
-- [ ] #3 fxfs-guest-soak runs daemon kills with VMs faulting without a VM dying of a signal
+- [x] #1 A fault failed as its daemon goes waits for the VM process to stop rather than abort it, shown by a test that fails first
+- [x] #2 What a request its daemon's going failed does finds the daemon lost, shown by a test that fails first
+- [x] #3 fxfs-guest-soak runs daemon kills with VMs faulting without a VM dying of a signal
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -51,4 +51,12 @@ Fixed on land-k4. client.rs: the connection's end marks the daemon lost before t
 Tests: dax::uffd::tests::faults_failed_as_their_daemon_goes_wait, SIGABRT before, green after; extentd::tests::requests_failed_by_the_daemons_going_find_it_gone, red before with the failpoint sleeping 200 ms (300 of 300 passed without it: the race needs the reader to lag), green after; Linux Docker (privileged, for userfaultfd): those and every dax::uffd and daemon test, 27 of 27; fxdax's handover tests (a real daemon killed) 3 of 3; fxdax 311 of 311 on macOS.
 
 Blind spot: the daemon-lost tests kill the daemon with the store idle (handover.rs's stores_are_told_when_their_daemon_goes, fxfs-guest-daemon-lost, crash-dax-daemon-killed, whose VMs' faults happened not to be in flight); none had a fault in flight as the connection ended, nor asked what a failure saw of the loss. Looking around: the window's other request paths fail their callers with EIO and leave it to them (the device's requests, reads, writes, commits), and the VMM's device exits 158 on the loss; only the fault thread turned EIO into the process's end. Structure: the loss was said after its effects; one flag set first, which every failure can consult, makes the order impossible to get wrong again.
+
+Verified (2026-11-07): on main via land-hk (ab43bcd09, CI 42373350940); land-k4's CI 42370190654 green. AC #3: GCE r832 (file bucket, main's code with this fix) ran 13 rounds so far, three killing the daemon under VMs running pgbench, fsx and writers through DAX (rounds 5, 9 and 12, the last with 1000 ms added), no VM dying of a signal. macOS workspace on main 2103/2103; upstream-changes --check passes.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+A VM whose daemon dies with a DAX fault in flight stops ExtentdLost (158), not SIGABRT: the client marks the daemon lost before failing what waits, and a fault failed while its window is lost waits for the VM process's exit. Verified by two tests red before (SIGABRT; a failpoint holding the connection's end), CI on land-k4 and main, and GCE r832's daemon-kill rounds.
+<!-- SECTION:FINAL_SUMMARY:END -->

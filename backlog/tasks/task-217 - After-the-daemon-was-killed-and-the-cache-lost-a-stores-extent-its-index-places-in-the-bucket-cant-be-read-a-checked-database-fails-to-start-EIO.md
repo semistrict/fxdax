@@ -3,11 +3,11 @@ id: TASK-217
 title: >-
   After the daemon was killed and the cache lost, a store's extent its index
   places in the bucket can't be read: a checked database fails to start (EIO)
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-06 16:32'
-updated_date: '2026-11-07 08:45'
+updated_date: '2026-11-07 13:25'
 labels:
   - bug
 dependencies: []
@@ -23,16 +23,16 @@ Found by fxfs-guest-soak (TASK-67), GCE r757 round 40 of 55, file bucket, jailed
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The extent is located in the kept state, and why its read fails is known: a missing object, a stale place, or another cause, with file:line
-- [ ] #2 A test of the class that fails first: a store reading what it acknowledged after its daemon is killed, its cache lost and the collector compacted, every acknowledged extent readable
+- [x] #1 The extent is located in the kept state, and why its read fails is known: a missing object, a stale place, or another cause, with file:line
+- [x] #2 A test of the class that fails first: a store reading what it acknowledged after its daemon is killed, its cache lost and the collector compacted, every acknowledged extent readable
 - [ ] #3 fxfs-guest-soak replays round 40 green (FXDAX_SEED=15816163861251038920, 40 rounds)
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -51,4 +51,12 @@ Root cause, from the kept state (gs://echophase-fxdax-bench/soak67-evidence/r757
 On main (TASK-165.9, c9207e5d4): no index; opening recovers the branch from the bucket, naming extents as its newest checkpoint does; and an open store follows its writer's moves (TASK-195, Writer::following, Store::moved). Test: remote.rs extents_compacted_read_once_their_host_died_and_its_cache_went (one segment compacted, the writer checkpointing the move, the segment taken by the collector; the host's disk copied as the death left it, its cache not, its bucket cut off; the store opened from the copy reads the extent): green on main, macOS fxdax and extent_store 466/466. It can't be run red on main, whose design has no index to go stale; red is the old design's, shown above from the soak's own state.
 
 Blind spot: no test opened a store after the collector moved what it held; TASK-195's tests the store open all along. This one covers opening after a crash with the cache lost. Structure: the class is gone with the index: one place names where an extent is, the branch's state as the bucket and its writer have it.
+
+Verified (2026-11-07): AC #1 from the kept state (above). AC #2: extents_compacted_read_once_their_host_died_and_its_cache_went, on main via land-xk (CI 42363963416); it is green on main and can't be red there, the index it would catch stale gone; its red is the old design's, shown by the kept state's probe. AC #3 left unchecked, not run: a replay of FXDAX_SEED=15816163861251038920 for 40 rounds on main replays the plans, not the old design's state, so it would show the class gone no more than r831's and r832's rounds do (r831: 5 host and 5 cache losses with the collector compacting, 28 rounds; r832, main: 13 rounds so far), none failing so. Closed as the user asked; the replay would be a GCE run of its own. Linux workspace CI 42363963416 and 42373350940; macOS workspace on main 2103/2103; upstream-changes --check passes.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Root cause (old design): the store's local index named an extent in a segment the collector compacted and took after the lease holder's checkpoint followed the moves; opened from its index after the daemon's kill, with its cache lost, the store read a deleted object (EIO). TASK-165.9 removed the index (opening recovers the branch from the bucket) and TASK-195 has an open store follow its writer's moves. Verified: the kept state probed at ce8ab6a71, and a test on main of the sequence (crash, cache lost, compacted, reopened) green.
+<!-- SECTION:FINAL_SUMMARY:END -->

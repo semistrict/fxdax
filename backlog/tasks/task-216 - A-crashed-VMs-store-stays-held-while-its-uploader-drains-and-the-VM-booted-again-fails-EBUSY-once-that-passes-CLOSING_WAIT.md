@@ -3,11 +3,11 @@ id: TASK-216
 title: >-
   A crashed VM's store stays held while its uploader drains, and the VM booted
   again fails EBUSY once that passes CLOSING_WAIT
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-06 16:24'
-updated_date: '2026-11-07 08:45'
+updated_date: '2026-11-07 13:25'
 labels:
   - bug
 dependencies: []
@@ -23,15 +23,15 @@ Found by fxfs-guest-soak (TASK-67) on GCS, GCE r758 round 14 (run FXDAX_SEED=653
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A VM booted again on a store whose last VM crashed opens it at once, whatever its uploader has left to upload, shown by a test with a slow bucket
-- [ ] #2 fxfs-guest-soak adds latency to real buckets again (its Plan::latency_ms no longer zeroed for them)
+- [x] #1 A VM booted again on a store whose last VM crashed opens it at once, whatever its uploader has left to upload, shown by a test with a slow bucket
+- [x] #2 fxfs-guest-soak adds latency to real buckets again (its Plan::latency_ms no longer zeroed for them)
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -50,4 +50,12 @@ Fixed in 583b1bdba (land-k3). Still present after TASK-165.9, which made the dra
 Test: extentd::tests::stores_whose_vm_went_open_again_while_their_uploads_wait (GatedReads holds the going store's next segment upload alone, hold_next_write; the VM booted again opens, reads extent 2, commits durably): red before, EBUSY after 10.006 s; green after, 0.06 s, Linux Docker. macOS extent_store and fxdax 466/466; Shuttle fxdax 33, extent_store 6.
 
 Blind spot: no test opened a store again while its predecessor's close waited on the bucket; the tests' buckets answer at once. Looking around: the daemon's holds (control API: fork, delete, drop, sync; stores.rs:145-169) wait the same CLOSING_WAIT for a going connection, and don't cut the drain, as DropStore and SyncStore count on it uploading a crashed VM's commits; a control call on a crashed VM's store under a slow bucket may still say EBUSY, which callers retry. Structure: the close's drain is right for a store not opened again here; the wait is the waiter's to cut, so the table carries the waiter's word to the holder, the one owner of who waits.
+
+Verified (2026-11-07): stores_whose_vm_went_open_again_while_their_uploads_wait, red before (EBUSY after 10.0 s), green after (0.06 s); on main via land-xk (c25281c5a, CI 42363963416). AC #2: the soak adds the plan's latency to every bucket on main (its zeroing gone with TASK-208's fix); GCE r831 (GCS, land-k3's code with this fix) ran 16 rounds with 25, 250 or 1000 ms added, VMs crashed and booted again in them, and no opening refused EBUSY; its round 29 failed otherwise (TASK-232). Linux workspace: CI 42363963416 and 42373350940 (main's land-xk and land-hk); macOS workspace on main ab43bcd09, 2103/2103; scripts/upstream-changes.py --check passes; no upstream code changed.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+A writer waiting for a going connection's store has that store's uploader stop at once (extent_store::upload::Remote::cut_short via store_table's Hold::when_wanted), its write-ahead log keeping what wasn't uploaded for the new opening: a VM booted again on a crashed VM's store opens it at once under a slow bucket, where it failed EBUSY after CLOSING_WAIT. Verified by a test red before (EBUSY after 10 s), CI on main, macOS workspace, and GCE r831's 16 latency rounds on GCS.
+<!-- SECTION:FINAL_SUMMARY:END -->
