@@ -4,9 +4,11 @@ title: >-
   A sandbox's cold read of the Linux checkout over its attached generation takes
   26-46 s, against 5.6 s in a fresh VM on the publisher's store, with the data
   already in the daemon
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-11-07 10:46'
+updated_date: '2026-11-07 18:16'
 labels: []
 dependencies: []
 references:
@@ -47,3 +49,22 @@ Open: the time split per VM (MAPs, their latency, guest faults, the layered volu
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Measure a sandbox's cold read per VM against a fresh VM's: each VM's Fxfs counters (/proc/fs/fxfs) around the read, and a guest profile (t229-measure).
+2. Fix the root in the guest's DAX, with a sim scenario that fails first.
+3. Measure again on GCE (linux-checkout-fxfs-dax); run the DAX suites.
+4. Correct the checkout doc's attribution.
+<!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+GCE r940 (linux-checkout-fxfs-dax, 8 GiB daemon, the window the host's memory, each VM's /proc/fs/fxfs counters around its cold read; the cold read under guest perf): fresh VM on the publisher's store 5.7 s, 90,853 slices of 786 regions, 1,005 MAP requests (0.87 s); sandbox-1, the daemon holding every page, 27.0 s, 0 slices, 91,072 MAP requests, 114,025 MAPs, 19.6 s in them, 2.17 GB mapped in ranges (each a power of two of pages: the 529k window pages against 402k).
+Root: fxfs-posix's DaxExtent::new takes extent_size from the filesystem's allocator (Allocator::extent_size), which counts its own extents alone, none of a base's (another branch, the publisher's); dax.c's fxfs_dax_new_slice refused an extent of size 0, so each file of the attached generation was a range of its own, a MAP each.
+Fix (dax.c, fxfs_dax_region_size): an extent of no size counted is a chunk's region (2 MiB, the most a slice's extent may be, a staging extent's); the device maps zeros past an extent's end (ExtentStore::mapped_of), so the region maps whole in one MAP; a piece past it is a range's (-EXDEV from fxfs_dax_region_map).
+Sim: base_extents_sliced (fxfs_sim_extent_sizes_unknown): eight one-page files of one sealed extent, read with no size counted: red 0 of 8 sliced; green 8 slices, 1 MAP request. zloop -s 300: every test and 300 seeds of interleave and failures pass; guest-mutants-gce.py --check 53, mutants.sh --check 42, none broken.
+r941 (the fix): fresh VM 4.88 s; sandbox-1 5.80 s (1.19x), sandbox-2 5.71 s (1.17x), each 1,006 MAP requests and 90,853 slices as the fresh VM; sandbox-0, first on the generation, 14.5 s, paging the generation in (2,089 page-ins, 1.8 GB): TASK-234. The window maps 515k pages against the fresh VM's 402k, the zeros past each extent's end within its 2 MiB region, the same 798 MB of the daemon's memory (vmm_shmem); host_used grew 152 MB over the read (r888 before the fix: 180 MB; fresh VM 53 MB).
+<!-- SECTION:NOTES:END -->
