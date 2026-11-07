@@ -489,6 +489,34 @@ fn writes_and_names_change_times() {
     })
 }
 
+/// What changes a node changes its status change time, as Linux's filesystems have it (TASK-149.37,
+/// each found staying by the FUSE differential): an extended attribute set or removed, a setattr
+/// of nothing (chown to the owner and group it has), an allocation, which changes its modification
+/// time too; and what fails, nothing.
+#[test]
+fn changes_of_status_change_the_ctime() {
+    with_fs(async |fs| {
+        let (file, _) = fs.root().create(b"file", 0o644, OWNER).await.unwrap();
+        let mut then = file.getattr().await.unwrap();
+        let mut changed = async |what: &str, mtime_too: bool| {
+            let now = file.getattr().await.unwrap();
+            assert!(now.ctime > then.ctime, "{what}: the ctime stayed");
+            assert_eq!(now.mtime > then.mtime, mtime_too, "{what}: the mtime");
+            then = now;
+        };
+        file.setxattr(b"user.a", b"1", XattrMode::Set).await.unwrap();
+        changed("a setxattr", false).await;
+        file.removexattr(b"user.a").await.unwrap();
+        changed("a removexattr", false).await;
+        file.setattr(&SetAttr::default()).await.unwrap();
+        changed("a setattr of nothing", false).await;
+        file.allocate(0, 4096).await.unwrap();
+        changed("an allocation", true).await;
+        assert_eq!(errno(file.removexattr(b"user.a").await), Errno::ENODATA);
+        assert_eq!(file.getattr().await.unwrap().ctime, then.ctime, "a removexattr that failed");
+    })
+}
+
 #[test]
 fn symlink_and_readlink() {
     with_fs(async |fs| {
