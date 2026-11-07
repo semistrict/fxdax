@@ -136,9 +136,8 @@ impl Recorder {
             Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {}
             created => created?,
         }
-        // Whole, or not at all.
-        let new = self.path.with_extension("new");
-        std::fs::write(&new, text)?;
-        std::fs::rename(&new, &self.path)
+        // Whole or not at all, and durably, as every record beside a store (TASK-160.13).
+        let name = self.path.file_name().and_then(|name| name.to_str());
+        crate::store_dir::write(dir, name.expect("a profile is named by its branch"), &text)
     }
 }

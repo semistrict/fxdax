@@ -141,6 +141,7 @@ pub mod signals;
 #[cfg(target_os = "linux")]
 pub mod stacks;
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+mod store_dir;
 mod store_requests;
 // The extent daemon's (Linux), and its tests' everywhere.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
