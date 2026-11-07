@@ -2103,3 +2103,110 @@ fn page_ins_in_flight_are_bounded() {
         "MiB of the tenant's memory and of the heap held, past {paged} and {room}: {held:?}"
     );
 }
+
+/// TASK-149.35: what the daemon holds of one tenant's VM processes' requests is bounded by the room
+/// its connections share, not by how many connections it has: each connection has a room of its
+/// own (272 MiB without a window), and a tenant as many as 1,024, so one tenant, within the
+/// protocol, held some 272 GiB, every tenant's daemon with it. Here many of mallory's connections,
+/// of one tenant, each flood the daemon with reads whose replies they leave unread, filling the
+/// connection's queue, which the tenant's room bounds across them; alice, another tenant, flooding
+/// as hard, is unaffected, her room her own.
+#[test]
+fn a_tenants_in_flight_data_is_bounded() {
+    const CONNECTIONS: usize = 8;
+    const MIB: u64 = 1 << 20;
+    // A room a payload's size at least; small, so the green run holds little.
+    const ROOM: u64 = MAX_PAYLOAD;
+    host();
+    let dir = tempfile::tempdir().unwrap();
+    // Two tenants, each flooding: mallory's many connections, alice's one, their rooms their own.
+    let tenant = |name: &str| {
+        let stores = dir.path().join(name);
+        std::fs::create_dir(&stores).unwrap();
+        let tenant = Tenant::new(name, &stores).unwrap();
+        let socket = dir.path().join(format!("{name}.sock"));
+        let listener = UnixListener::bind(&socket).unwrap();
+        let served = tenant.clone();
+        std::thread::spawn(move || serve_tenant(listener, served));
+        (stores, socket, tenant)
+    };
+    let (mstores, msocket, mallory) = tenant("mallory");
+    let (astores, asocket, alice) = tenant("alice");
+    super::super::memory::set_room(Some("mallory"), Some(ROOM)).unwrap();
+    super::super::memory::set_room(Some("alice"), Some(ROOM)).unwrap();
+
+    // A connection flooding reads of an extent of its own, their replies unread, on a thread of
+    // its own: the daemon stops reading it once the tenant's room is full, which blocks its
+    // synchronous sends, as a real VM process's socket fills. It holds its sockets open, and never
+    // returns: the test's process ends with it (nextest runs each in its own).
+    fn flood(socket: PathBuf, path: PathBuf) {
+        std::thread::spawn(move || {
+            let (sender, mut receiver, _stream, branch) = super::raw_connection(&socket, &path, 1 << 30);
+            let written = Header::new(WRITE, 2).with_args(&[branch, 1]);
+            sender.send(written, &super::pattern(1, MIB as usize), &[]).unwrap();
+            assert_eq!(receiver.receive(|| 0).unwrap().unwrap().header.status, 0);
+            // Reads past any room, none of whose replies it reads: what the daemon admits of them
+            // it queues, held in the tenant's room; the rest block here, as a full socket does.
+            for id in 0..300u64 {
+                let read = Header::new(READ, 100 + id).with_args(&[branch, 1, 0, MIB]);
+                if sender.send(read, &[], &[]).is_err() {
+                    break;
+                }
+            }
+            std::thread::park();
+            drop((sender, receiver));
+        });
+    }
+
+    let held = HELD.load(Ordering::Relaxed);
+    // Mallory's connections flood at once; their queues fill as far as the tenant's room lets them.
+    for n in 0..CONNECTIONS {
+        flood(msocket.clone(), mstores.join(format!("store-{n}")));
+    }
+    let deadline = std::time::Instant::now() + WAIT;
+    let (mut queued, mut stable) = (0, 0);
+    while std::time::Instant::now() < deadline {
+        std::thread::park_timeout(Duration::from_millis(100));
+        let now = mallory.in_flight().held();
+        stable = if now == queued && now > 0 { stable + 1 } else { 0 };
+        queued = now;
+        if stable >= 5 {
+            break;
+        }
+    }
+    let heap = (HELD.load(Ordering::Relaxed).saturating_sub(held)) >> 20;
+    let (mallory_held, mallory_peak) =
+        (mallory.in_flight().held() >> 20, mallory.in_flight().peak() >> 20);
+
+    // Alice, flooding as hard on her own room, is served: her write commits and her read answers.
+    let (asender, mut areceiver, _astream, abranch) =
+        super::raw_connection(&asocket, &astores.join("store"), 1 << 24);
+    let awritten = Header::new(WRITE, 2).with_args(&[abranch, 1]);
+    let alice_write =
+        super::call(&asender, &mut areceiver, awritten, &super::pattern(2, MIB as usize)).header.status;
+    let alice_commit = super::call(&asender, &mut areceiver, Header::new(COMMIT, 3), &[]).header.status;
+    let alice_read = super::call(
+        &asender,
+        &mut areceiver,
+        Header::new(READ, 4).with_args(&[abranch, 1, 0, MIB]),
+        &[],
+    );
+    let alice_room = alice.in_flight().room();
+
+    println!(
+        "mallory's {CONNECTIONS} connections held {mallory_held} MiB (peak {mallory_peak}), {heap}          MiB of the heap, of a {} MiB room; alice's room {} MiB, her write {alice_write}, commit {alice_commit}, her read          {} bytes",
+        ROOM >> 20,
+        alice_room >> 20,
+        alice_read.payload.len(),
+    );
+    // Mallory's tenant holds no more than its room, a connection's own slack over it at most (one
+    // request admitted as the room emptied): far less than its connections' rooms together.
+    assert!(
+        mallory.in_flight().peak() <= ROOM + MAX_PAYLOAD,
+        "mallory's tenant held {mallory_peak} MiB, past its {} MiB room",
+        ROOM >> 20,
+    );
+    // Alice, another tenant, flooding too, is unaffected: served throughout.
+    assert_eq!((alice_write, alice_commit, alice_read.header.status), (0, 0, 0), "alice was held up");
+    assert_eq!(alice_read.payload, super::pattern(2, MIB as usize), "alice read other data");
+}

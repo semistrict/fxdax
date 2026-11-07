@@ -4,7 +4,7 @@
 # Killer: extentd::tests::hostile::a_compromised_vm_process_harms_no_tenant_beside_it
 --- a/crates/fxdax/src/extentd/server.rs
 +++ b/crates/fxdax/src/extentd/server.rs
-@@ -1403,7 +1403,7 @@
+@@ -1415,7 +1415,7 @@
      async fn open(&self, path: &Path, mut how: codec::Opening) -> Result<u64, Errno> {
          // fxdax: the branch it names, if its tenant's word for one counts (TASK-150.4).
          if let codec::Opening::ForkFrom { branch, .. } = &mut how

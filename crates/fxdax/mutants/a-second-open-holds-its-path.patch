@@ -5,7 +5,7 @@
 # Killer: extentd::tests::hostile::a_compromised_vm_process_harms_no_tenant_beside_it
 --- a/crates/fxdax/src/extentd/server.rs
 +++ b/crates/fxdax/src/extentd/server.rs
-@@ -912,10 +912,16 @@
+@@ -926,10 +926,16 @@
      /// [`Phase::Following`]. Checked without the phase's lock, which a panic would poison.
      fn opened(self, path: &Path, store: Arc<ExtentStore>, opened: Phase) {
          let follower = matches!(opened, Phase::Following);
@@ -25,7 +25,7 @@
      }
  }
  
-@@ -1369,11 +1375,11 @@
+@@ -1381,11 +1387,11 @@
      fn opening(&self) -> Result<Opening<'_>, Errno> {
          let mut phase = self.phase.lock().unwrap();
          match *phase {

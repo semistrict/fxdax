@@ -4,7 +4,7 @@
 # Killer: extentd::tests::hostile::page_ins_in_flight_are_bounded
 --- a/crates/fxdax/src/extentd/server.rs
 +++ b/crates/fxdax/src/extentd/server.rs
-@@ -422,7 +422,7 @@
+@@ -434,7 +434,7 @@
          requests: Mutex::new(Requests::default()),
          drained: Arc::new(event_listener::Event::new()),
          report: snapshot::Report::new(&peer.sender),
