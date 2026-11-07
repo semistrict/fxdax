@@ -42,7 +42,7 @@ use std::ffi::CString;
 use std::fmt;
 use std::os::fd::{AsRawFd as _, FromRawFd as _, OwnedFd};
 use std::os::unix::ffi::OsStrExt as _;
-use std::os::unix::fs::{FileTypeExt as _, MetadataExt as _, PermissionsExt as _};
+use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 use std::path::{Path, PathBuf};
 
 /// What the mount and Linux's tmpfs may differ in, each with why. The comparison leaves out what
