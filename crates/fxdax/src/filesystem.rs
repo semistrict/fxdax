@@ -18,7 +18,7 @@
 
 use crate::error::{Errno, Error, Result};
 use crate::executor::assert_not_on_executor;
-use crate::image::{Compactions, Image, ImageShared};
+use crate::image::{Compactions, Image, ImageShared, VolumeMetadata};
 use crate::memory::{VolatileSlice, VolatileSliceMut};
 use crate::node::*;
 use crate::storage::Storage;
@@ -314,6 +314,11 @@ impl Filesystem {
         // As every operation does, it fails once the filesystem is unmounted.
         self.mounted()?;
         self.volume.image.compactions()
+    }
+
+    /// What the filesystem's volume takes of its image's metadata.
+    pub async fn metadata(&self) -> Result<VolumeMetadata> {
+        self.volume.run(|fxfs| async move { VolumeMetadata::of(&fxfs).await.map_err(errno) }).await
     }
 }
 

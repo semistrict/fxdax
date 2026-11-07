@@ -165,7 +165,7 @@ pub use extents::{
     StoreBytes, StoreRole, WindowMapping, WriteBarriers,
 };
 pub use filesystem::{Filesystem, Node, Options};
-pub use image::{Compactions, Image, TreeCompactions};
+pub use image::{Compactions, Image, TreeCompactions, VolumeMetadata};
 pub use memory::{VolatileSlice, VolatileSliceMut};
 pub use node::{
     Attr, DirEntry, FileType, Inode, Owner, RenameFlags, SetAttr, SetTime, StatFs, XattrMode,
