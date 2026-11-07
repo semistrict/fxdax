@@ -7,7 +7,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-11-07 08:14'
-updated_date: '2026-11-07 08:16'
+updated_date: '2026-11-07 09:41'
 labels: []
 dependencies: []
 priority: high
@@ -44,3 +44,9 @@ TASK-136.1 (r870) shows the cost of a small window: a 1.54 GB tree reread throug
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+2026-11-07, TASK-136.1's r872, the AC #5 baseline: one n2-standard-8, VMs of 4 vCPUs and 4 GiB, an 8 GiB window and 6 GiB of daemon memory. Warm full-tree reread of the Linux checkout (1.54 GB, 91k files), checkout VM / fresh VM: ext4 on virtio-pmem with dax=always (linux-checkout-ext4-pmem) 729 / 712 ms; Fxfs DAX 801 / 751 ms (1.10 / 1.05 of pmem); Fxfs DAX sandboxes over a shared base 759-781 ms. Without DAX: ext4 on virtio-blk 763 / 766 ms, Fxfs 858 / 791 ms. The gap to pmem is the size of Fxfs's gap to ext4 without DAX, likely per-file open and lookup cost (not profiled). Cold read in a fresh VM: Fxfs DAX 5.6 s, pmem 8.8 s. Raw output in docs/measurements/linux-checkout-2026-11-07/r872, tables in docs/measurements/linux-checkout-2026-11-07.md. To rerun: FXDAX_LINUX_CHECKOUT_WINDOW=8589934592 FXDAX_LINUX_CHECKOUT_EXTENTD_MEMORY=6442450944 FXDAX_E2E_TEST='linux-checkout-ext4-pmem linux-checkout-fxfs-dax' scripts/test-gce.sh.
+<!-- SECTION:NOTES:END -->
