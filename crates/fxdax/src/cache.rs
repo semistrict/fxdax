@@ -381,7 +381,6 @@ impl StoredExtent {
         let phase = offset % extent_frame::PART / page_size() * page_size();
         Self { holders, extent, phase, recorder }
     }
-
 }
 
 impl Contents for StoredExtent {
@@ -658,9 +657,9 @@ impl CachedExtent {
         let len = count * ps as usize;
         // What of it the extent holds; past it, zeros.
         let read = self.len.saturating_sub(offset).min(len as u64) as usize;
-        let consecutive = frames.windows(2).all(|pair| {
-            pair[1].as_ptr() as usize == pair[0].as_ptr() as usize + ps as usize
-        });
+        let consecutive = frames
+            .windows(2)
+            .all(|pair| pair[1].as_ptr() as usize == pair[0].as_ptr() as usize + ps as usize);
         let result = if consecutive {
             // SAFETY: The pages are consecutive in this process's memory, and allocated, and only
             // this read's until it puts them in the table.
@@ -673,7 +672,9 @@ impl CachedExtent {
             let result = self.contents.read(offset, &mut data[..read]).await;
             for (frame, bytes) in frames.iter().zip(data.chunks(ps as usize)) {
                 // SAFETY: As above, a page at a time.
-                unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), frame.as_ptr(), bytes.len()) };
+                unsafe {
+                    std::ptr::copy_nonoverlapping(bytes.as_ptr(), frame.as_ptr(), bytes.len())
+                };
             }
             result
         };

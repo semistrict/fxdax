@@ -955,7 +955,11 @@ fn stores_to_pages_here_copy_them() {
     }
     let arena = crate::pages::arena_memory(shared.arena).unwrap();
     use std::os::fd::AsRawFd as _;
-    assert_eq!(byte(arena.as_raw_fd(), shared.offset, None), SEALED, "the store reached the extent");
+    assert_eq!(
+        byte(arena.as_raw_fd(), shared.offset, None),
+        SEALED,
+        "the store reached the extent"
+    );
 }
 
 #[test]

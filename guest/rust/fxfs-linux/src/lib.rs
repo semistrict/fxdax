@@ -43,7 +43,8 @@ fn xattr_errno(error: &Error) -> c_int {
 /// fxdax: ESTALE for a follower that follows no more, or was cut off, until it remounts: doc-4,
 /// doc-8.
 fn stale(error: &Error) -> Option<Errno> {
-    let stale = error.chain().any(|cause| cause.is::<follower::Failed>() || device::is_stale(cause));
+    let stale =
+        error.chain().any(|cause| cause.is::<follower::Failed>() || device::is_stale(cause));
     stale.then_some(Errno::ESTALE)
 }
 
@@ -593,9 +594,8 @@ pub unsafe extern "C" fn fxfs_import(
     size: usize,
 ) -> c_int {
     // SAFETY: As the caller promises.
-    let (filesystem, name, manifest) = unsafe {
-        (&*filesystem, bytes(name, len), core::slice::from_raw_parts(manifest, size))
-    };
+    let (filesystem, name, manifest) =
+        unsafe { (&*filesystem, bytes(name, len), core::slice::from_raw_parts(manifest, size)) };
     let imported = block_on(async {
         let name = str::from_utf8(name).map_err(|_| FxfsError::InvalidArgs)?;
         filesystem.import(name, manifest).await

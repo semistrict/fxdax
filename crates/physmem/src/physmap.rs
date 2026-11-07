@@ -205,7 +205,12 @@ fn resize(fd: &OwnedFd, slots: u64) {
     loop {
         // SAFETY: A stat buffer the call fills, of an object of the caller's.
         let mut stat: libc::stat = unsafe { std::mem::zeroed() };
-        assert_eq!(unsafe { libc::fstat(fd.as_raw_fd(), &mut stat) }, 0, "fstat an arena: {}", errno());
+        assert_eq!(
+            unsafe { libc::fstat(fd.as_raw_fd(), &mut stat) },
+            0,
+            "fstat an arena: {}",
+            errno()
+        );
         if stat.st_size >= size {
             return;
         }

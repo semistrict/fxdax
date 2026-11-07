@@ -36,7 +36,10 @@ fn configure_once() {
 #[test]
 fn memory_of_part_of_a_chunk_fails() {
     let error = pages::configure(pages::Config::with_memory(3 * MIB)).expect_err("configured");
-    assert_eq!(error.to_string(), "invalid physical memory size: 3145728 bytes, not whole chunks of 2097152");
+    assert_eq!(
+        error.to_string(),
+        "invalid physical memory size: 3145728 bytes, not whole chunks of 2097152"
+    );
     assert_eq!(error.errno(), Some(Errno::EINVAL));
 }
 
@@ -48,8 +51,7 @@ fn more_memory_than_the_host_maps_fails() {
     let max_map_count = std::fs::read_to_string("/proc/sys/vm/max_map_count").unwrap();
     let chunks = max_map_count.trim().parse::<u64>().unwrap() - 4096;
     let (memory, max) = ((chunks + 1) * 2 * MIB, chunks * 2 * MIB);
-    let error =
-        pages::configure(pages::Config::with_memory(memory)).expect_err("configured");
+    let error = pages::configure(pages::Config::with_memory(memory)).expect_err("configured");
     assert_eq!(
         error.to_string(),
         format!(

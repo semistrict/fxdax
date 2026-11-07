@@ -752,7 +752,11 @@ impl Client {
 
     /// fxdax: sets the room the connections of the tenant `tenant`, or of every tenant without one,
     /// share to `bytes`, or to the default without them (`SetTenantRoom`, TASK-149.35).
-    pub fn set_tenant_room(&self, tenant: Option<&str>, bytes: Option<u64>) -> Result<(), crate::Error> {
+    pub fn set_tenant_room(
+        &self,
+        tenant: Option<&str>,
+        bytes: Option<u64>,
+    ) -> Result<(), crate::Error> {
         let request = SetTenantRoomRequest { tenant: tenant.unwrap_or_default().to_owned(), bytes };
         let what = format!("setting the room of {}", tenant.unwrap_or("every tenant"));
         self.call(what, |mut c| async move { c.set_tenant_room(request).await }).map(drop)

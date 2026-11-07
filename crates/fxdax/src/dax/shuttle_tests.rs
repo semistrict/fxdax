@@ -347,8 +347,7 @@ fn page_bytes(phys: PhysLocation) -> Vec<u8> {
     let len = page_size() as usize;
     let (prot, flags, fd) = (libc::PROT_READ, libc::MAP_SHARED, arena.as_raw_fd());
     // SAFETY: A new mapping of a page of the memory, which outlives it.
-    let page =
-        unsafe { libc::mmap(std::ptr::null_mut(), len, prot, flags, fd, phys.offset as _) };
+    let page = unsafe { libc::mmap(std::ptr::null_mut(), len, prot, flags, fd, phys.offset as _) };
     assert_ne!(page, libc::MAP_FAILED, "{}", std::io::Error::last_os_error());
     // SAFETY: `page` is the mapping, `len` bytes.
     let bytes = unsafe { std::slice::from_raw_parts(page.cast::<u8>(), len) }.to_vec();
@@ -541,7 +540,10 @@ fn copies_race_their_bound() {
         .collect();
     let made: Vec<bool> = vcpus.into_iter().map(|vcpu| vcpu.join().unwrap()).collect();
     let (private, writable) = (window.private_pages(), guest.writable().len());
-    assert!(private <= 1 && writable <= 1, "past the window's private pages: {private}, {writable}");
+    assert!(
+        private <= 1 && writable <= 1,
+        "past the window's private pages: {private}, {writable}"
+    );
     assert_eq!(made.iter().filter(|made| **made).count(), 1, "stores made: {made:?}");
     drop(dax);
 }

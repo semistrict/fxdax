@@ -270,9 +270,7 @@ fn main() {
         Some("burst") => burst(n(256)),
         Some("durable") => durable(n(2)),
         _ => {
-            eprintln!(
-                "usage: store-bench lagging-view|segments|close-now|burst|durable [N]"
-            );
+            eprintln!("usage: store-bench lagging-view|segments|close-now|burst|durable [N]");
             std::process::exit(2);
         }
     }

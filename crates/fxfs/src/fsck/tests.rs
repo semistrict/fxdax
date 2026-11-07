@@ -23,10 +23,11 @@ use crate::object_store::extent::MIN_BLOCK_SIZE;
 use crate::object_store::transaction::{self, LockKey, ObjectStoreMutation, Options, lock_keys};
 use crate::object_store::volume::root_volume;
 use crate::object_store::{
-    AttributeId, AttributeKey, BytesAndNodes, DataObjectHandle, ChildValue, DirType, EncryptionKeys, ExtentMode,
-    ExtentValue, FsverityMetadata, HandleOptions, Mutation, NewChildStoreOptions, ObjectAttributes,
-    ObjectDescriptor, ObjectKey, ObjectKeyData, ObjectKind, ObjectStore, ObjectValue, ProjectId,
-    RootDigest, SpecialFile, StoreInfo, StoreOptions, Timestamp, VOLUME_DATA_KEY_ID,
+    AttributeId, AttributeKey, BytesAndNodes, ChildValue, DataObjectHandle, DirType,
+    EncryptionKeys, ExtentMode, ExtentValue, FsverityMetadata, HandleOptions, Mutation,
+    NewChildStoreOptions, ObjectAttributes, ObjectDescriptor, ObjectKey, ObjectKeyData, ObjectKind,
+    ObjectStore, ObjectValue, ProjectId, RootDigest, SpecialFile, StoreInfo, StoreOptions,
+    Timestamp, VOLUME_DATA_KEY_ID,
 };
 use crate::serialized_types::VersionedLatest;
 use crate::testing::writer::Writer;
@@ -4094,7 +4095,8 @@ async fn test_filled_and_emptied_without_warnings() {
         "directories",
     );
     // As the guest's setattr shrinks a file: borrowing metadata space, as an unlink does.
-    let borrowing = Options { borrow_metadata_space: true, ..extents.default_transaction_options() };
+    let borrowing =
+        Options { borrow_metadata_space: true, ..extents.default_transaction_options() };
     extents.truncate_with_options(borrowing, 0).await.expect("truncate failed");
     settle().await;
 

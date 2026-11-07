@@ -1249,9 +1249,7 @@ impl Connection {
             Request::Commit { commit: Commit::Durable, root } => store.commit(*root),
             Request::Commit { commit: Commit::Ordered, root } => store.commit_ordered(*root),
             Request::Root => store.root().map(|root| *payload = root),
-            Request::Advance => {
-                store.advance().map(|epoch| reply.args = Advanced { epoch }.args())
-            }
+            Request::Advance => store.advance().map(|epoch| reply.args = Advanced { epoch }.args()),
             Request::LetGo { epoch } => store.let_go(*epoch),
             Request::Pin(extent) => store.pin(*extent),
             Request::Unpin(extent) => store.unpin(*extent),

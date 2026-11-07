@@ -649,7 +649,11 @@ impl Pages {
     /// fxdax: whether the pages of `range` are each installed, in one run of memory from `phys`
     /// on, none restricted by a fault: what a map of the very same pages there leaves in place
     /// (TASK-91.16).
-    fn installed_at(&self, range: std::ops::Range<usize>, phys: crate::pages::PhysLocation) -> bool {
+    fn installed_at(
+        &self,
+        range: std::ops::Range<usize>,
+        phys: crate::pages::PhysLocation,
+    ) -> bool {
         self.pages[range].iter().enumerate().all(|(at, page)| {
             let offset = phys.offset + at as u64 * page_size();
             !page.restricted
@@ -952,12 +956,11 @@ impl UffdSecondStage {
         budget: usize,
     ) -> Result<Arc<Self>, Error> {
         let uffd = open_userfaultfd()?;
-        let mut api =
-            UffdioApi {
-                api: UFFD_API,
-                features: UFFD_FEATURE_WP_HUGETLBFS_SHMEM | UFFD_FEATURE_THREAD_ID,
-                ioctls: 0,
-            };
+        let mut api = UffdioApi {
+            api: UFFD_API,
+            features: UFFD_FEATURE_WP_HUGETLBFS_SHMEM | UFFD_FEATURE_THREAD_ID,
+            ioctls: 0,
+        };
         ioctl(&uffd, UFFDIO_API, &mut api)
             .map_err(|err| Error::new(anyhow::Error::new(err).context("UFFDIO_API")))?;
         // SAFETY: As the caller promises.
@@ -1127,7 +1130,10 @@ impl<H: HostMemory> UffdSecondStage<H> {
     /// nothing, none written, where an unmap of the window counted a change of each page, which
     /// took the whole window's changes' memory, 768 MiB of a 64 GiB window's (TASK-227).
     fn leave_out_untouched(&self) {
-        debug_assert!(self.pages.lock().unwrap().runs == 0, "a window left out untouched maps runs");
+        debug_assert!(
+            self.pages.lock().unwrap().runs == 0,
+            "a window left out untouched maps runs"
+        );
         self.leave_out(self.base, self.size);
     }
 
@@ -2457,8 +2463,7 @@ mod tests {
         let base = memory as usize;
         let file = TestSource::filled(2, 1).source();
         // SAFETY: Only the test uses the memory, which outlives the window.
-        let stage =
-            unsafe { UffdSecondStage::in_process(base, (2 * ps) as u64, None) }.unwrap();
+        let stage = unsafe { UffdSecondStage::in_process(base, (2 * ps) as u64, None) }.unwrap();
         let (dax, _window) = Dax::in_host_memory(stage.clone()).unwrap();
         dax.window.map(0, &file, 0, (2 * ps) as u64);
         assert_eq!(stage.taken(), [0, 0], "mapped where nothing was");
@@ -2609,8 +2614,7 @@ mod tests {
         // SAFETY: Only the test uses the memory, which outlives the window.
         let stage = unsafe { UffdSecondStage::in_process(base, ps as u64, None) }.unwrap();
         let copying = crate::dax::CopyOnWrite::reserve(crate::pages::ArenaId::DEFAULT, 1).unwrap();
-        let (mut dax, window) =
-            Dax::in_host_memory_copying(stage.clone(), Some(copying)).unwrap();
+        let (mut dax, window) = Dax::in_host_memory_copying(stage.clone(), Some(copying)).unwrap();
         // Not in memory as it is mapped, and zeros as it is brought in: not here until a fault.
         let file = TestSource::anonymous(1);
         dax.map(0, &file.source(), 0, ps as u64);
@@ -2686,12 +2690,12 @@ mod tests {
         // SAFETY: Only the test uses the memory, which outlives the window.
         let stage = unsafe { UffdSecondStage::in_process(base, ps as u64, None) }.unwrap();
         let copying = crate::dax::CopyOnWrite::reserve(crate::pages::ArenaId::DEFAULT, 1).unwrap();
-        let (mut dax, window) =
-            Dax::in_host_memory_copying(stage.clone(), Some(copying)).unwrap();
+        let (mut dax, window) = Dax::in_host_memory_copying(stage.clone(), Some(copying)).unwrap();
         // In memory as it is mapped, so installed here at once.
         let file = TestSource::filled(1, 9);
         dax.map(0, &file.source(), 0, ps as u64);
-        let installed = stage.pages.lock().unwrap().pages[0].mapped.map(|mapped| mapped.installed());
+        let installed =
+            stage.pages.lock().unwrap().pages[0].mapped.map(|mapped| mapped.installed());
         assert_eq!(installed, Some(true));
         let mut pipe = [0; 2];
         // SAFETY: Creates a pipe, which the test closes.
@@ -2789,7 +2793,13 @@ mod tests {
         let before = rss();
         // SAFETY: Only the test uses the memory, which outlives the window.
         let stage = unsafe {
-            UffdSecondStage::with_budget(memory as usize, SIZE as u64, Memories::InProcess, None, 64)
+            UffdSecondStage::with_budget(
+                memory as usize,
+                SIZE as u64,
+                Memories::InProcess,
+                None,
+                64,
+            )
         }
         .unwrap();
         let made = rss().saturating_sub(before);
@@ -2810,7 +2820,13 @@ mod tests {
         let nothing = PageChanges::default();
         assert_eq!(
             (zeros.made, zeros.withheld, zeros.restricted, zeros.for_worker, zeros.private),
-            (nothing.made, nothing.withheld, nothing.restricted, nothing.for_worker, nothing.private)
+            (
+                nothing.made,
+                nothing.withheld,
+                nothing.restricted,
+                nothing.for_worker,
+                nothing.private
+            )
         );
         assert_eq!((zeros.changed, zeros.mapped.is_none()), (nothing.changed, true));
         let pages = WindowPages::new(4).unwrap();
@@ -2834,8 +2850,7 @@ mod tests {
         let stage = unsafe { UffdSecondStage::in_process(base, size, None) }.unwrap();
         let arena = crate::pages::ArenaId::DEFAULT;
         let copying = crate::dax::CopyOnWrite::reserve(arena, PAGES as u64).unwrap();
-        let (mut dax, window) =
-            Dax::in_host_memory_copying(stage.clone(), Some(copying)).unwrap();
+        let (mut dax, window) = Dax::in_host_memory_copying(stage.clone(), Some(copying)).unwrap();
         let tag = |page: usize| (page % 251) as u8 + 1;
         let file = TestSource::scattered(PAGES as u64, |page| tag(page as usize)).source();
         dax.map(0, &file, 0, size);
@@ -2875,14 +2890,12 @@ mod tests {
         let base = window_memory(PAGES);
         let size = (PAGES * ps) as u64;
         // SAFETY: Only the test uses the memory, which outlives the window.
-        let stage = unsafe {
-            UffdSecondStage::with_budget(base, size, Memories::InProcess, None, BUDGET)
-        }
-        .unwrap();
+        let stage =
+            unsafe { UffdSecondStage::with_budget(base, size, Memories::InProcess, None, BUDGET) }
+                .unwrap();
         let arena = crate::pages::ArenaId::DEFAULT;
         let copying = crate::dax::CopyOnWrite::reserve(arena, PAGES as u64).unwrap();
-        let (mut dax, window) =
-            Dax::in_host_memory_copying(stage.clone(), Some(copying)).unwrap();
+        let (mut dax, window) = Dax::in_host_memory_copying(stage.clone(), Some(copying)).unwrap();
         let tag = |page: usize| (page % 251) as u8 + 1;
         let file = TestSource::scattered(PAGES as u64, |page| tag(page as usize)).source();
         dax.map(0, &file, 0, size);
@@ -2941,8 +2954,7 @@ mod tests {
         let stage = unsafe { UffdSecondStage::in_process(base, (2 * ps) as u64, None) }.unwrap();
         let arena = crate::pages::ArenaId::DEFAULT;
         let copying = crate::dax::CopyOnWrite::reserve(arena, 2).unwrap();
-        let (mut dax, window) =
-            Dax::in_host_memory_copying(stage.clone(), Some(copying)).unwrap();
+        let (mut dax, window) = Dax::in_host_memory_copying(stage.clone(), Some(copying)).unwrap();
         let file = TestSource::filled(2, 7).source();
         dax.map(0, &file, 0, (2 * ps) as u64);
         futures::executor::block_on(window.make_private(0, ps as u64)).unwrap();

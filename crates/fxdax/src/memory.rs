@@ -187,7 +187,8 @@ mod tests {
         assert_eq!(gather(&buffers, 8, &mut out), 0);
 
         let (mut first, mut second) = ([0u8; 3], [0u8; 5]);
-        let mut buffers = [VolatileSliceMut::from(&mut first[..]), VolatileSliceMut::from(&mut second[..])];
+        let mut buffers =
+            [VolatileSliceMut::from(&mut first[..]), VolatileSliceMut::from(&mut second[..])];
         assert_eq!(scatter(&mut buffers, 1, b"wxyz"), 4);
         assert_eq!(scatter(&mut buffers, 6, b"0123"), 2);
         assert_eq!(scatter(&mut buffers, 8, b"!"), 0);

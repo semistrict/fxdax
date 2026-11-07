@@ -341,9 +341,7 @@ impl<'a> Request<'a> {
                 Encoded { fd: Some(area.0), ..message(0, [*len, 0, 0, 0, 0]) }
             }
             Request::Build(commit) => message(0, [0; 5]).carrying(commit.as_bytes()),
-            Request::Private { window_offset, len } => {
-                message(0, [*window_offset, *len, 0, 0, 0])
-            }
+            Request::Private { window_offset, len } => message(0, [*window_offset, *len, 0, 0, 0]),
             Request::Stats { ask, guest } => {
                 let args = [*ask, 0, 0, 0, 0];
                 message(flag(guest.is_some(), STATS_GUEST), args)
@@ -421,8 +419,11 @@ impl<'a> Request<'a> {
                 if (!has(WRITE_ROOT) && !root.is_empty()) || root.len() > MAX_ROOT {
                     return Err(Errno::EINVAL);
                 }
-                let after = has(WRITE_COMMIT)
-                    .then_some(if has(WRITE_DURABLE) { Commit::Durable } else { Commit::Ordered });
+                let after = has(WRITE_COMMIT).then_some(if has(WRITE_DURABLE) {
+                    Commit::Durable
+                } else {
+                    Commit::Ordered
+                });
                 let root = has(WRITE_ROOT).then_some(root);
                 let barriers = WriteBarriers { before: has(WRITE_BARRIER), after, root };
                 Request::Write { extent, offset: args[2], data, barriers }
@@ -1566,7 +1567,10 @@ mod tests {
             data: (0..64).collect(),
             root: b"root".to_vec(),
             paths: [PathBuf::from("store"), PathBuf::from("from")],
-            extents: vec![ExtentId { branch: 7, sequence: 9 }, ExtentId { branch: 7, sequence: 11 }],
+            extents: vec![
+                ExtentId { branch: 7, sequence: 9 },
+                ExtentId { branch: 7, sequence: 11 },
+            ],
             build: "build".into(),
             stats: "stats".into(),
             commit: Commit::Durable,
@@ -1616,8 +1620,11 @@ mod tests {
             sequence_floor: 1 << 40,
         };
         let replies = [opened.args(), Info(info).args(), Advanced { epoch: 12 }.args()];
-        hashed(&replies.as_flattened().iter().flat_map(|word| word.to_le_bytes()).collect::<Vec<_>>());
-        let extent = MappingContents::Extent { extent: ExtentId { branch: 3, sequence: 4 }, offset: 8192 };
+        hashed(
+            &replies.as_flattened().iter().flat_map(|word| word.to_le_bytes()).collect::<Vec<_>>(),
+        );
+        let extent =
+            MappingContents::Extent { extent: ExtentId { branch: 3, sequence: 4 }, offset: 8192 };
         hashed(&mappings_payload(&[
             WindowMapping { window_offset: 0, len: 4096, contents: extent },
             WindowMapping { window_offset: 4096, len: 8192, contents: MappingContents::Zeros },
@@ -1644,10 +1651,8 @@ mod tests {
     /// holds part of an ID is refused (TASK-92.13).
     #[test]
     fn free_many_payloads_name_their_extents() {
-        let extents = [
-            ExtentId { branch: 1, sequence: 2 },
-            ExtentId { branch: u64::MAX, sequence: 1 << 40 },
-        ];
+        let extents =
+            [ExtentId { branch: 1, sequence: 2 }, ExtentId { branch: u64::MAX, sequence: 1 << 40 }];
         let payload = extent_ids_payload(&extents);
         assert_eq!(payload.len(), 2 * EXTENT_ID_BYTES);
         assert_eq!(extent_ids(&payload).unwrap().collect::<Vec<_>>(), extents);

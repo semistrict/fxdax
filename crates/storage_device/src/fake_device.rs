@@ -1564,10 +1564,7 @@ mod tests {
             root: Some(b"root"),
             ..Default::default()
         };
-        device
-            .write_with_opts(extent, 0, buffer.as_ref(), options)
-            .await
-            .expect("write failed");
+        device.write_with_opts(extent, 0, buffer.as_ref(), options).await.expect("write failed");
         let snapshot = device.snapshot().expect("snapshot failed");
         snapshot.discard_random_since_last_flush().expect("discard failed");
         assert_eq!(snapshot.root().await.expect("root failed"), b"root");

@@ -336,21 +336,51 @@ struct Hostile {
 #[derive(Clone, Copy, Debug)]
 enum AliceOp {
     /// Writes a new extent of so many blocks.
-    Write { blocks: u8 },
-    Commit { durable: bool, root: bool },
+    Write {
+        blocks: u8,
+    },
+    Commit {
+        durable: bool,
+        root: bool,
+    },
     /// Reads an extent she wrote, freed or not.
-    Read { pick: usize, block: u8, blocks: u8 },
+    Read {
+        pick: usize,
+        block: u8,
+        blocks: u8,
+    },
     /// Frees an extent sealed.
-    Free { pick: usize },
+    Free {
+        pick: usize,
+    },
     /// Maps pages of an extent not freed, sealed or not, into her window.
-    Map { pick: usize, page: u8, pages: u8, at: u8 },
-    Zeros { at: u8, pages: u8 },
-    Unmap { at: u8, pages: u8 },
+    Map {
+        pick: usize,
+        page: u8,
+        pages: u8,
+        at: u8,
+    },
+    Zeros {
+        at: u8,
+        pages: u8,
+    },
+    Unmap {
+        at: u8,
+        pages: u8,
+    },
     /// A page of her window mapped, as her guest reads it.
-    Load { at: u8 },
+    Load {
+        at: u8,
+    },
     /// A byte, as her guest stores it, to a page mapped, within her private pages.
-    Store { at: u8, byte: u8 },
-    Private { at: u8, pages: u8 },
+    Store {
+        at: u8,
+        byte: u8,
+    },
+    Private {
+        at: u8,
+        pages: u8,
+    },
     Root,
 }
 
@@ -434,19 +464,54 @@ fn message() -> BoxedStrategy<Said> {
     use Word::*;
     let ps = page_size();
     const KINDS: [u32; 32] = [
-        OPEN, READ, WRITE, FREE, MAP, UNMAP, COMMIT, ROOT, INFO, WINDOW, FAULT, ACK, FORK, RESIZED,
-        MAPPINGS, ADVANCE, LET_GO, PIN, UNPIN, TRANSFER, FREE_MANY, STAGE_COUNTS, BUILD, PRIVATE,
-        REPLY, STAGE_MAP, STAGE_UNMAP, STAGE_PRIVATE, CAPACITY, COMMITTED, 29, 0xffff_ffff,
+        OPEN,
+        READ,
+        WRITE,
+        FREE,
+        MAP,
+        UNMAP,
+        COMMIT,
+        ROOT,
+        INFO,
+        WINDOW,
+        FAULT,
+        ACK,
+        FORK,
+        RESIZED,
+        MAPPINGS,
+        ADVANCE,
+        LET_GO,
+        PIN,
+        UNPIN,
+        TRANSFER,
+        FREE_MANY,
+        STAGE_COUNTS,
+        BUILD,
+        PRIVATE,
+        REPLY,
+        STAGE_MAP,
+        STAGE_UNMAP,
+        STAGE_PRIVATE,
+        CAPACITY,
+        COMMITTED,
+        29,
+        0xffff_ffff,
     ];
     let page = move || (0u64..WINDOW_BYTES / ps).prop_map(move |page| Is(page * ps));
     let pages = move || (1u64..16).prop_map(move |pages| Is(pages * ps));
     let sequence = || (1u64..16).prop_map(Is);
     let theirs = || prop_oneof![Just(Alice), Just(Bob)];
-    let transferred = || prop_oneof![Just(Is(0)), Just(Is(ps)), Just(Is(1 << 20)), Just(Is(MAX_TRANSFER_AREA))];
+    let transferred =
+        || prop_oneof![Just(Is(0)), Just(Is(ps)), Just(Is(1 << 20)), Just(Is(MAX_TRANSFER_AREA))];
     // Requests of its own store and window, as far as their extents and pages go.
     let plausible = prop_oneof![
         (sequence(), page(), 1usize..8).prop_map(move |(extent, at, count)| {
-            said(WRITE, 0, [Own, extent, at, Is(0), Is(0)], Payload::Filled(0x5a, count * ps as usize))
+            said(
+                WRITE,
+                0,
+                [Own, extent, at, Is(0), Is(0)],
+                Payload::Filled(0x5a, count * ps as usize),
+            )
         }),
         (sequence(), page(), pages()).prop_map(|(extent, at, len)| {
             said(READ, 0, [Own, extent, at, len, Is(0)], Payload::Bytes(Vec::new()))
@@ -460,12 +525,33 @@ fn message() -> BoxedStrategy<Said> {
         (sequence(), page(), pages(), page(), 0u32..4).prop_map(|(extent, at, len, to, flags)| {
             said(MAP, flags, [Own, extent, at, len, to], Payload::Bytes(Vec::new()))
         }),
-        (page(), pages()).prop_map(|(at, len)| said(UNMAP, 0, [at, len, Is(0), Is(0), Is(0)], Payload::Bytes(Vec::new()))),
-        (page(), 0u32..8).prop_map(|(at, flags)| said(FAULT, flags, [at, Is(0), Is(0), Is(0), Is(0)], Payload::Bytes(Vec::new()))),
-        (page(), pages()).prop_map(|(at, len)| said(PRIVATE, 0, [at, len, Is(0), Is(0), Is(0)], Payload::Bytes(Vec::new()))),
-        sequence().prop_map(|extent| said(FREE, 0, [Own, extent, Is(0), Is(0), Is(0)], Payload::Bytes(Vec::new()))),
+        (page(), pages()).prop_map(|(at, len)| said(
+            UNMAP,
+            0,
+            [at, len, Is(0), Is(0), Is(0)],
+            Payload::Bytes(Vec::new())
+        )),
+        (page(), 0u32..8).prop_map(|(at, flags)| said(
+            FAULT,
+            flags,
+            [at, Is(0), Is(0), Is(0), Is(0)],
+            Payload::Bytes(Vec::new())
+        )),
+        (page(), pages()).prop_map(|(at, len)| said(
+            PRIVATE,
+            0,
+            [at, len, Is(0), Is(0), Is(0)],
+            Payload::Bytes(Vec::new())
+        )),
+        sequence().prop_map(|extent| said(
+            FREE,
+            0,
+            [Own, extent, Is(0), Is(0), Is(0)],
+            Payload::Bytes(Vec::new())
+        )),
         (0u32..4, any::<bool>()).prop_map(|(flags, root)| {
-            let payload = if root && flags & COMMIT_ROOT != 0 { b"mallory".to_vec() } else { Vec::new() };
+            let payload =
+                if root && flags & COMMIT_ROOT != 0 { b"mallory".to_vec() } else { Vec::new() };
             said(COMMIT, flags, [Is(0); 5], Payload::Bytes(payload))
         }),
         Just(said(MAPPINGS, 0, [Is(0); 5], Payload::Bytes(Vec::new()))),
@@ -473,18 +559,40 @@ fn message() -> BoxedStrategy<Said> {
     ];
     // Storms of the window's own requests, and of transfers as large as its area takes.
     let storms = prop_oneof![
-        (prop_oneof![Just(PRIVATE), Just(UNMAP), Just(FAULT)], page(), pages(), 16u16..128).prop_map(
-            |(kind, at, len, repeat)| {
+        (prop_oneof![Just(PRIVATE), Just(UNMAP), Just(FAULT)], page(), pages(), 16u16..128)
+            .prop_map(|(kind, at, len, repeat)| {
                 let flags = if kind == FAULT { FAULT_WRITE } else { 0 };
-                Said { repeat, ..said(kind, flags, [at, len, Is(0), Is(0), Is(0)], Payload::Bytes(Vec::new())) }
+                Said {
+                    repeat,
+                    ..said(kind, flags, [at, len, Is(0), Is(0), Is(0)], Payload::Bytes(Vec::new()))
+                }
+            }),
+        (sequence(), transferred(), transferred(), 2u16..24).prop_map(
+            |(extent, at, len, repeat)| {
+                Said {
+                    repeat,
+                    ..said(
+                        READ,
+                        READ_TRANSFER,
+                        [Own, extent, Is(0), len, at],
+                        Payload::Bytes(Vec::new()),
+                    )
+                }
             }
         ),
-        (sequence(), transferred(), transferred(), 2u16..24).prop_map(|(extent, at, len, repeat)| {
-            Said { repeat, ..said(READ, READ_TRANSFER, [Own, extent, Is(0), len, at], Payload::Bytes(Vec::new())) }
-        }),
-        (sequence(), transferred(), transferred(), 2u16..24).prop_map(|(extent, at, len, repeat)| {
-            Said { repeat, ..said(WRITE, WRITE_TRANSFER, [Own, extent, Is(0), at, len], Payload::Bytes(Vec::new())) }
-        }),
+        (sequence(), transferred(), transferred(), 2u16..24).prop_map(
+            |(extent, at, len, repeat)| {
+                Said {
+                    repeat,
+                    ..said(
+                        WRITE,
+                        WRITE_TRANSFER,
+                        [Own, extent, Is(0), at, len],
+                        Payload::Bytes(Vec::new()),
+                    )
+                }
+            }
+        ),
     ];
     // What names another tenant's: their extents, branches and stores.
     let reaching = prop_oneof![
@@ -524,14 +632,38 @@ fn message() -> BoxedStrategy<Said> {
     // The protocol's own: acknowledgements forged, what its stage operations cost, its build, a
     // second window and transfer area, answers to asks never made.
     let abusing = prop_oneof![
-        (prop_oneof![Just(0u64), Just(u64::MAX), 1u64..1024, any::<u64>()], [word(), word(), word(), word(), word()])
-            .prop_map(|(id, args)| Said { id: Some(id), ..said(ACK, 0, args, Payload::Bytes(Vec::new())) }),
-        [word(), word(), word(), word(), word()].prop_map(|args| said(STAGE_COUNTS, 0, args, Payload::Bytes(Vec::new()))),
+        (
+            prop_oneof![Just(0u64), Just(u64::MAX), 1u64..1024, any::<u64>()],
+            [word(), word(), word(), word(), word()]
+        )
+            .prop_map(|(id, args)| Said {
+                id: Some(id),
+                ..said(ACK, 0, args, Payload::Bytes(Vec::new()))
+            }),
+        [word(), word(), word(), word(), word()].prop_map(|args| said(
+            STAGE_COUNTS,
+            0,
+            args,
+            Payload::Bytes(Vec::new())
+        )),
         prop_oneof![Just(b"0123abcd".to_vec()), proptest::collection::vec(any::<u8>(), 0..80)]
             .prop_map(|commit| said(BUILD, 0, [Is(0); 5], Payload::Bytes(commit))),
-        (area(), word()).prop_map(|(area, len)| Said { area: Some(area), ..said(TRANSFER, 0, [len, Is(0), Is(0), Is(0), Is(0)], Payload::Bytes(Vec::new())) }),
-        (word(), word()).prop_map(|(size, private)| said(WINDOW, 0, [size, private, Is(0), Is(0), Is(0)], Payload::Bytes(Vec::new()))),
-        (word(), 0u64..3).prop_map(|(capacity, took)| said(RESIZED, 0, [capacity, Is(took), Is(0), Is(0), Is(0)], Payload::Bytes(Vec::new()))),
+        (area(), word()).prop_map(|(area, len)| Said {
+            area: Some(area),
+            ..said(TRANSFER, 0, [len, Is(0), Is(0), Is(0), Is(0)], Payload::Bytes(Vec::new()))
+        }),
+        (word(), word()).prop_map(|(size, private)| said(
+            WINDOW,
+            0,
+            [size, private, Is(0), Is(0), Is(0)],
+            Payload::Bytes(Vec::new())
+        )),
+        (word(), 0u64..3).prop_map(|(capacity, took)| said(
+            RESIZED,
+            0,
+            [capacity, Is(took), Is(0), Is(0), Is(0)],
+            Payload::Bytes(Vec::new())
+        )),
     ];
     let anything = (
         proptest::sample::select(&KINDS[..]),
@@ -543,7 +675,10 @@ fn message() -> BoxedStrategy<Said> {
         ],
         proptest::option::weighted(0.05, area()),
     )
-        .prop_map(|(kind, flags, args, payload, area)| Said { area, ..said(kind, flags, args, payload) });
+        .prop_map(|(kind, flags, args, payload, area)| Said {
+            area,
+            ..said(kind, flags, args, payload)
+        });
     prop_oneof![10 => plausible, 2 => storms, 4 => reaching, 2 => abusing, 3 => anything].boxed()
 }
 
@@ -551,7 +686,8 @@ fn message() -> BoxedStrategy<Said> {
 fn act() -> impl Strategy<Value = Act> {
     let ps = page_size();
     let which = || 0u8..2;
-    let at = move || prop_oneof![Just(0u64), (0u64..1024).prop_map(move |page| page * ps), any::<u64>()];
+    let at =
+        move || prop_oneof![Just(0u64), (0u64..1024).prop_map(move |page| page * ps), any::<u64>()];
     let abuse = prop_oneof![
         (which(), prop_oneof![Just(0u64), Just(ps), Just(physmem::CHUNK_SIZE as u64)])
             .prop_map(|(which, to)| Abuse::Shrink { which, to }),
@@ -692,7 +828,10 @@ struct Kept {
 enum Page {
     Unmapped,
     /// Page `page` of extent `sequence`, zeros past its end.
-    Extent { sequence: u64, page: u64 },
+    Extent {
+        sequence: u64,
+        page: u64,
+    },
     Zeros,
     Private(Vec<u8>),
 }
@@ -754,7 +893,16 @@ impl Alice {
         store.commit(Some(&root)).unwrap();
         let branch = store.branch();
         let pages = vec![Page::Unmapped; ALICE_PAGES];
-        Self { store, window, branch, next: 1, extents: BTreeMap::new(), freed: BTreeSet::new(), pages, root }
+        Self {
+            store,
+            window,
+            branch,
+            next: 1,
+            extents: BTreeMap::new(),
+            freed: BTreeSet::new(),
+            pages,
+            root,
+        }
     }
 
     fn id(&self, sequence: u64) -> ExtentId {
@@ -831,7 +979,9 @@ impl Alice {
                         let expected = Ok(kept.bytes[at..at + len].to_vec());
                         if got != expected {
                             let (got, expected) = (summary(&got), summary(&expected));
-                            return Err(format!("alice's {op:?} of {sequence}: got {got}, her model {expected}"));
+                            return Err(format!(
+                                "alice's {op:?} of {sequence}: got {got}, her model {expected}"
+                            ));
                         }
                     }
                     None => {
@@ -859,7 +1009,8 @@ impl Alice {
                 let page = page as u64 % (kept.bytes.len().div_ceil(ps) as u64 + 1);
                 let range = Self::range(at, pages);
                 let (offset, len) = (page * ps as u64, (range.len() * ps) as u64);
-                let mapped = self.store.map(self.id(sequence), offset, len, (range.start * ps) as u64);
+                let mapped =
+                    self.store.map(self.id(sequence), offset, len, (range.start * ps) as u64);
                 if !kept.sealed {
                     return expect((op, sequence), mapped, Err(Errno::EPERM));
                 }
@@ -893,7 +1044,9 @@ impl Alice {
                 let expected = self.page_bytes(&self.pages[at]).ok_or(libc::EFAULT);
                 if got != expected {
                     let (got, expected) = (summary(&got), summary(&expected));
-                    return Err(format!("alice's {op:?} of page {at}: got {got}, her model {expected}"));
+                    return Err(format!(
+                        "alice's {op:?} of page {at}: got {got}, her model {expected}"
+                    ));
                 }
             }
             AliceOp::Store { at, byte } => {
@@ -999,7 +1152,9 @@ impl Alice {
                 let got = load(self.page_addr(at), ps);
                 if got != Ok(expected.clone()) {
                     let (got, expected) = (summary(&got), summary(&Ok::<_, ()>(expected)));
-                    return Err(format!("alice's window's page {at}: got {got}, her model {expected}"));
+                    return Err(format!(
+                        "alice's window's page {at}: got {got}, her model {expected}"
+                    ));
                 }
             }
         }
@@ -1215,7 +1370,9 @@ impl Answers {
         let statuses = self.statuses.lock().unwrap();
         let (statuses, _) = self
             .answered
-            .wait_timeout_while(statuses, WAIT, |(statuses, ended)| !statuses.contains_key(&id) && !*ended)
+            .wait_timeout_while(statuses, WAIT, |(statuses, ended)| {
+                !statuses.contains_key(&id) && !*ended
+            })
             .unwrap();
         statuses.0.get(&id).copied()
     }
@@ -1291,7 +1448,13 @@ fn receive(
         let theirs_named = |word: &u64| theirs.branches.contains(word);
         let mut said = header.args.iter().any(theirs_named);
         // A window's mappings name their extents' branches.
-        said |= message.payload.as_chunks::<8>().0.iter().map(|word| u64::from_le_bytes(*word)).any(|word| theirs_named(&word));
+        said |= message
+            .payload
+            .as_chunks::<8>()
+            .0
+            .iter()
+            .map(|word| u64::from_le_bytes(*word))
+            .any(|word| theirs_named(&word));
         if said {
             seen.stolen.push(format!("their branch named: {header:?}"));
         }
@@ -1336,9 +1499,10 @@ fn receive(
                             let before = shared.granted.fetch_max(size, Ordering::Relaxed);
                             let more = (room(size.max(before)) - room(before)) as usize;
                             // Unless the case is over, and checks nothing.
-                            let _ = LIMIT.try_update(Ordering::Relaxed, Ordering::Relaxed, |limit| {
-                                (limit != 0).then_some(limit + more)
-                            });
+                            let _ =
+                                LIMIT.try_update(Ordering::Relaxed, Ordering::Relaxed, |limit| {
+                                    (limit != 0).then_some(limit + more)
+                                });
                         }
                     }
                     _ => {}
@@ -1350,7 +1514,8 @@ fn receive(
                 }
             }
             if let Some(request) = request.filter(|request| request.kind == OPEN) {
-                let path = shared.paths.lock().unwrap().get(&header.id).cloned().unwrap_or_default();
+                let path =
+                    shared.paths.lock().unwrap().get(&header.id).cloned().unwrap_or_default();
                 seen.opens.push((path, request.flags, header.status));
             }
             if header.status == 0 && shared.flooding.lock().unwrap().contains(&header.id) {
@@ -1401,24 +1566,27 @@ fn run_hostile(
     let shared = Arc::new(Shared::default());
     let receiving = {
         let (sender, shared) = (sender.clone(), shared.clone());
-        std::thread::spawn(move || receive(receiver, sender, shared, hostile.acking, hostile.flood, theirs))
+        std::thread::spawn(move || {
+            receive(receiver, sender, shared, hostile.acking, hostile.flood, theirs)
+        })
     };
     let mut next = 0;
     // Each request by its ID, which mallory gives each of its own: what an acknowledgement says
     // is the stage operation's.
-    let send = |header: Header, payload: &[u8], fd: Option<OwnedFd>| -> Result<u64, std::io::Error> {
-        if ![ACK, STAGE_COUNTS].contains(&header.kind) {
-            shared.sent.lock().unwrap().insert(header.id, header);
-        }
-        // What an `OPEN` names, before a restore's NUL.
-        if header.kind == OPEN {
-            let named = payload.split(|byte| *byte == 0).next().unwrap_or_default();
-            let named = PathBuf::from(std::ffi::OsStr::from_bytes(named));
-            shared.paths.lock().unwrap().insert(header.id, named);
-        }
-        let fds: Vec<BorrowedFd<'_>> = fd.iter().map(|fd| fd.as_fd()).collect();
-        sender.send(header, payload, &fds).map(|()| header.id)
-    };
+    let send =
+        |header: Header, payload: &[u8], fd: Option<OwnedFd>| -> Result<u64, std::io::Error> {
+            if ![ACK, STAGE_COUNTS].contains(&header.kind) {
+                shared.sent.lock().unwrap().insert(header.id, header);
+            }
+            // What an `OPEN` names, before a restore's NUL.
+            if header.kind == OPEN {
+                let named = payload.split(|byte| *byte == 0).next().unwrap_or_default();
+                let named = PathBuf::from(std::ffi::OsStr::from_bytes(named));
+                shared.paths.lock().unwrap().insert(header.id, named);
+            }
+            let fds: Vec<BorrowedFd<'_>> = fd.iter().map(|fd| fd.as_fd()).collect();
+            sender.send(header, payload, &fds).map(|()| header.id)
+        };
     let mut id = || {
         next += 1;
         next
@@ -1431,7 +1599,9 @@ fn run_hostile(
         Opens::Restores | Opens::Twice => None,
     };
     if let Some(path) = opened {
-        let open = Header::new(OPEN, id()).with_args(&[STORE_BYTES, 0, 0, 0, VERSION]).with_flags(OPEN_CREATE);
+        let open = Header::new(OPEN, id())
+            .with_args(&[STORE_BYTES, 0, 0, 0, VERSION])
+            .with_flags(OPEN_CREATE);
         if let Ok(id) = send(open, path.as_os_str().as_bytes(), None) {
             shared.answers.wait(id);
         }
@@ -1450,7 +1620,8 @@ fn run_hostile(
         }
     }
     if hostile.opens == Opens::Restores {
-        let (to, point) = (names.vms.join(format!("{}-r{index}", names.case)), names.place(Place::Point));
+        let (to, point) =
+            (names.vms.join(format!("{}-r{index}", names.case)), names.place(Place::Point));
         let named = [to.as_os_str().as_bytes(), &[0], point.as_os_str().as_bytes()];
         let restore = Header::new(OPEN, id())
             .with_args(&[STORE_BYTES, names.given, 0, 0, VERSION])
@@ -1526,7 +1697,8 @@ fn run_hostile(
             let header = Header::new(said.kind, id).with_args(&args).with_flags(said.flags);
             let payload = names.payload(&said.payload, own);
             // The daemon may have let it go by now.
-            let sent = send(header, &payload, said.area.and_then(|area| area_fd(area, &shared.memories)));
+            let sent =
+                send(header, &payload, said.area.and_then(|area| area_fd(area, &shared.memories)));
             // What comes after a restore is said of the store it opened, as the daemon may take
             // longer over it than over all that comes after.
             if let Ok(id) = sent
@@ -1651,7 +1823,8 @@ fn a_compromised_vm_process_harms_no_tenant_beside_it() {
     bob.commit(None).unwrap();
     // A snapshot in the bucket, of a branch mallory's VM manager makes a point of in its directory.
     // Its extents a MiB each, which mallory's floods of page-ins page in (TASK-149.34).
-    let given = RemoteExtentStore::connect(&bob_socket, dir.path().join("given"), STORE_BYTES).unwrap();
+    let given =
+        RemoteExtentStore::connect(&bob_socket, dir.path().join("given"), STORE_BYTES).unwrap();
     let given_branch = given.branch();
     for sequence in 1..=GIVEN_EXTENTS {
         let extent = ExtentId { branch: given_branch, sequence };
@@ -1697,7 +1870,8 @@ fn a_compromised_vm_process_harms_no_tenant_beside_it() {
     });
     assert_eq!(settled, Ok(()));
 
-    let cases: u32 = std::env::var("FXDAX_HOSTILE_CASES").map_or(48, |cases| cases.parse().unwrap());
+    let cases: u32 =
+        std::env::var("FXDAX_HOSTILE_CASES").map_or(48, |cases| cases.parse().unwrap());
     // A failing case shrinks for two minutes at most.
     let config =
         Config { cases, failure_persistence: None, max_shrink_time: 120_000, ..Config::default() };
@@ -1706,10 +1880,8 @@ fn a_compromised_vm_process_harms_no_tenant_beside_it() {
     let commits = AtomicU64::new(0);
     let flooded = AtomicU64::new(0);
     let (fills_written, fills_refused) = (AtomicU64::new(0), AtomicU64::new(0));
-    let strategy = (
-        proptest::collection::vec(hostile(), 1..=3),
-        proptest::collection::vec(alice_op(), 0..32),
-    );
+    let strategy =
+        (proptest::collection::vec(hostile(), 1..=3), proptest::collection::vec(alice_op(), 0..32));
     TestRunner::new(config)
         .run(&strategy, |(hostiles, ops)| {
             let case = numbered.fetch_add(1, Ordering::Relaxed);
@@ -1726,9 +1898,8 @@ fn a_compromised_vm_process_harms_no_tenant_beside_it() {
             *CASE.lock().unwrap() = format!("case {case}: {hostiles:#?}");
             // As much as the heap may hold, the rooms of mallory's connections raised as their
             // windows are granted.
-            let limit = HELD.load(Ordering::Relaxed) as u64
-                + SLACK
-                + hostiles.len() as u64 * room(0);
+            let limit =
+                HELD.load(Ordering::Relaxed) as u64 + SLACK + hostiles.len() as u64 * room(0);
             LIMIT.store(limit as usize, Ordering::Relaxed);
             // Its disk limited a few MiB past what it takes, which its fills reach (TASK-94); but
             // as a connection of its floods, whose write, which its reads read, is to be admitted.
@@ -1745,7 +1916,8 @@ fn a_compromised_vm_process_harms_no_tenant_beside_it() {
                         (names.clone(), mallory_socket.clone(), theirs.clone(), start.clone());
                     let (done, finished) = std::sync::mpsc::channel();
                     std::thread::spawn(move || {
-                        let _ = done.send(run_hostile(hostile, index, names, socket, theirs, start));
+                        let _ =
+                            done.send(run_hostile(hostile, index, names, socket, theirs, start));
                     });
                     finished
                 })
@@ -1768,7 +1940,12 @@ fn a_compromised_vm_process_harms_no_tenant_beside_it() {
                 prop_assert!(opened <= 1, "a connection opened {opened} stores: {:?}", seen.opens);
                 // Its store, if it writes one, commits.
                 if let Some(status) = seen.committed {
-                    prop_assert_eq!(status, Some(0), "mallory's store didn't commit: {:?}", seen.opens);
+                    prop_assert_eq!(
+                        status,
+                        Some(0),
+                        "mallory's store didn't commit: {:?}",
+                        seen.opens
+                    );
                     commits.fetch_add(1, Ordering::Relaxed);
                 }
                 // A flood past its room is let go.
@@ -1832,7 +2009,8 @@ fn a_compromised_vm_process_harms_no_tenant_beside_it() {
             prop_assert!(!nothing.exists(), "a point of a branch named was taken");
             // Every store it opened to write opens again, and commits, whatever it said to it,
             // as far as it was served.
-            let wrote: BTreeSet<&PathBuf> = seen.iter().filter_map(|seen| seen.wrote.as_ref()).collect();
+            let wrote: BTreeSet<&PathBuf> =
+                seen.iter().filter_map(|seen| seen.wrote.as_ref()).collect();
             for path in wrote {
                 let reopened = RemoteExtentStore::connect(&mallory_socket, path, STORE_BYTES)
                     .map_err(|error| error.to_string())
@@ -1976,7 +2154,10 @@ fn what_requests_hold_is_within_the_room() {
     assert_eq!((transferred.id, transferred.status), (1, 0));
     let extent = |sequence| [branch, sequence];
     let written = Header::new(WRITE, 2).with_args(&extent(1));
-    assert_eq!(super::call(&sender, &mut receiver, written, &vec![7; len as usize]).header.status, 0);
+    assert_eq!(
+        super::call(&sender, &mut receiver, written, &vec![7; len as usize]).header.status,
+        0
+    );
     let committed = Header::new(COMMIT, 3);
     assert_eq!(super::call(&sender, &mut receiver, committed, &[]).header.status, 0);
     // In the extent cache, so that what bringing it in holds isn't counted here.
@@ -2014,10 +2195,13 @@ fn what_requests_hold_is_within_the_room() {
     let stream = (MAX_STREAM_BYTES / len) as usize;
     let many = 16;
     let reads = (0..many).map(|id| Header::new(READ, 10 + id).with_args(&[branch, 1, 0, len]));
-    let into_area = (0..many)
-        .map(|id| Header::new(READ, 100 + id).with_args(&[branch, 1, 0, len, 0]).with_flags(READ_TRANSFER));
+    let into_area = (0..many).map(|id| {
+        Header::new(READ, 100 + id).with_args(&[branch, 1, 0, len, 0]).with_flags(READ_TRANSFER)
+    });
     let from_area = (0..many).map(|id| {
-        Header::new(WRITE, 200 + id).with_args(&[branch, 2 + id, 0, 0, len]).with_flags(WRITE_TRANSFER)
+        Header::new(WRITE, 200 + id)
+            .with_args(&[branch, 2 + id, 0, 0, len])
+            .with_flags(WRITE_TRANSFER)
     });
     let writes = (0..many).map(|id| Header::new(WRITE, 300 + id).with_args(&[branch, 20 + id, 0]));
     let roots = (0..many).map(|id| Header::new(ROOT, 400 + id));
@@ -2031,7 +2215,13 @@ fn what_requests_hold_is_within_the_room() {
     let within: Vec<_> = held.iter().map(|(kind, within, _)| (kind.as_str(), *within)).collect();
     assert_eq!(
         within,
-        [("roots", true), ("reads", true), ("reads into the area", true), ("writes from the area", true), ("writes", true)],
+        [
+            ("roots", true),
+            ("reads", true),
+            ("reads into the area", true),
+            ("writes from the area", true),
+            ("writes", true)
+        ],
         "MiB held past the room's {} MiB and a reply's: {held:?}",
         room(0) >> 20,
     );
@@ -2062,7 +2252,9 @@ fn page_ins_in_flight_are_bounded() {
         let branch = store.branch();
         for sequence in 1..=EXTENTS {
             let data = super::pattern(sequence as u8, MIB as usize);
-            store.write(ExtentId { branch, sequence }, 0, &[VolatileSlice::from(&data[..])]).unwrap();
+            store
+                .write(ExtentId { branch, sequence }, 0, &[VolatileSlice::from(&data[..])])
+                .unwrap();
         }
         store.commit(None).unwrap();
         branch
@@ -2111,8 +2303,13 @@ fn page_ins_in_flight_are_bounded() {
     sender.send(Header::new(WINDOW, 2).with_args(&[EXTENTS * MIB, 1]), &[], &[]).unwrap();
     assert_eq!(answer(2), 0);
     for sequence in 1..=EXTENTS {
-        let mapped = Header::new(MAP, 2 + sequence)
-            .with_args(&[branch, sequence, 0, MIB, (sequence - 1) * MIB]);
+        let mapped = Header::new(MAP, 2 + sequence).with_args(&[
+            branch,
+            sequence,
+            0,
+            MIB,
+            (sequence - 1) * MIB,
+        ]);
         sender.send(mapped, &[], &[]).unwrap();
         assert_eq!(answer(2 + sequence), 0, "MAP {sequence}");
     }
@@ -2157,12 +2354,16 @@ fn page_ins_in_flight_are_bounded() {
     let held = [burst("faults", faults.collect()), burst("reads", reads.collect())];
     // A connection's page-ins, each a part and those it reads ahead, as many at once as it
     // resolves; and the heap within its room.
-    let paged = (super::super::server::PAGE_INS as u64 * (1 + super::super::super::cache::PARTS_AHEAD)
-        * extent_frame::PART) >> 20;
+    let paged = (super::super::server::PAGE_INS as u64
+        * (1 + super::super::super::cache::PARTS_AHEAD)
+        * extent_frame::PART)
+        >> 20;
     let room = room(EXTENTS * MIB) >> 20;
     println!("MiB of the tenant's memory and of the heap held: {held:?}");
-    let within: Vec<_> =
-        held.iter().map(|(what, paging, heap)| (what.as_str(), *paging <= paged, *heap <= room)).collect();
+    let within: Vec<_> = held
+        .iter()
+        .map(|(what, paging, heap)| (what.as_str(), *paging <= paged, *heap <= room))
+        .collect();
     assert_eq!(
         within,
         [("faults", true, true), ("reads", true, true)],
@@ -2207,7 +2408,8 @@ fn a_tenants_in_flight_data_is_bounded() {
     // returns: the test's process ends with it (nextest runs each in its own).
     fn flood(socket: PathBuf, path: PathBuf) {
         std::thread::spawn(move || {
-            let (sender, mut receiver, _stream, branch) = super::raw_connection(&socket, &path, 1 << 30);
+            let (sender, mut receiver, _stream, branch) =
+                super::raw_connection(&socket, &path, 1 << 30);
             let written = Header::new(WRITE, 2).with_args(&[branch, 1]);
             sender.send(written, &super::pattern(1, MIB as usize), &[]).unwrap();
             assert_eq!(receiver.receive(|| 0).unwrap().unwrap().header.status, 0);
@@ -2249,8 +2451,11 @@ fn a_tenants_in_flight_data_is_bounded() {
         super::raw_connection(&asocket, &astores.join("store"), 1 << 24);
     let awritten = Header::new(WRITE, 2).with_args(&[abranch, 1]);
     let alice_write =
-        super::call(&asender, &mut areceiver, awritten, &super::pattern(2, MIB as usize)).header.status;
-    let alice_commit = super::call(&asender, &mut areceiver, Header::new(COMMIT, 3), &[]).header.status;
+        super::call(&asender, &mut areceiver, awritten, &super::pattern(2, MIB as usize))
+            .header
+            .status;
+    let alice_commit =
+        super::call(&asender, &mut areceiver, Header::new(COMMIT, 3), &[]).header.status;
     let alice_read = super::call(
         &asender,
         &mut areceiver,
@@ -2273,7 +2478,11 @@ fn a_tenants_in_flight_data_is_bounded() {
         ROOM >> 20,
     );
     // Alice, another tenant, flooding too, is unaffected: served throughout.
-    assert_eq!((alice_write, alice_commit, alice_read.header.status), (0, 0, 0), "alice was held up");
+    assert_eq!(
+        (alice_write, alice_commit, alice_read.header.status),
+        (0, 0, 0),
+        "alice was held up"
+    );
     assert_eq!(alice_read.payload, super::pattern(2, MIB as usize), "alice read other data");
 }
 
@@ -2327,7 +2536,8 @@ fn a_tenant_filling_its_disk_leaves_others_committing() {
     let start = Arc::new(std::sync::Barrier::new(CONNECTIONS as usize + 1));
     let fills: Vec<_> = (0..CONNECTIONS)
         .map(|n| {
-            let (socket, path, start) = (msocket.clone(), mstores.join(format!("store-{n}")), start.clone());
+            let (socket, path, start) =
+                (msocket.clone(), mstores.join(format!("store-{n}")), start.clone());
             std::thread::spawn(move || {
                 // Its capacity bounds what it writes without a limit, 512 MiB in all.
                 let store = RemoteExtentStore::connect(&socket, &path, 64 * MIB);

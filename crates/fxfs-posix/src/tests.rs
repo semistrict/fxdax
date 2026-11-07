@@ -422,11 +422,10 @@ async fn a_writeback_paid_with_dirty_room_has_room_for_the_tail_its_growth_zeroe
     fs.write_dirty(ino, &mut [(8192, &[b'w'; 4096][..])], 4096).await.unwrap();
     let mut read = vec![0xff; 12288];
     assert_eq!(fs.read(ino, 0, &mut read).await.unwrap(), 12288);
-    assert_eq!((&read[..1000], &read[1000..8192], &read[8192..]), (
-        &[b'c'; 1000][..],
-        &[0; 7192][..],
-        &[b'w'; 4096][..]
-    ));
+    assert_eq!(
+        (&read[..1000], &read[1000..8192], &read[8192..]),
+        (&[b'c'; 1000][..], &[0; 7192][..], &[b'w'; 4096][..])
+    );
     fs.stop_delayed().await.unwrap();
 }
 

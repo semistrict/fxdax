@@ -3523,7 +3523,8 @@ fn raw_connection(
     let stream = UnixStream::connect(socket).unwrap();
     let (sender, mut receiver) =
         (Sender::new(stream.try_clone().unwrap()), Receiver::new(stream.try_clone().unwrap()));
-    let open = Header::new(OPEN, 1).with_args(&[capacity, 0, 0, 0, VERSION]).with_flags(OPEN_CREATE);
+    let open =
+        Header::new(OPEN, 1).with_args(&[capacity, 0, 0, 0, VERSION]).with_flags(OPEN_CREATE);
     sender.send(open, std::os::unix::ffi::OsStrExt::as_bytes(path.as_os_str()), &[]).unwrap();
     let opened = receiver.receive(|| 0).unwrap().unwrap();
     assert_eq!(opened.header.status, 0);
@@ -3714,7 +3715,8 @@ fn connections_open_one_store_at_a_time() {
     let stream = UnixStream::connect(&socket).unwrap();
     let sender = Sender::new(stream.try_clone().unwrap());
     let mut receiver = Receiver::new(stream.try_clone().unwrap());
-    let open = |id| Header::new(OPEN, id).with_args(&[1 << 24, 0, 0, 0, VERSION]).with_flags(OPEN_CREATE);
+    let open =
+        |id| Header::new(OPEN, id).with_args(&[1 << 24, 0, 0, 0, VERSION]).with_flags(OPEN_CREATE);
     sender.send(open(1), first.as_os_str().as_bytes(), &[]).unwrap();
     while !table().is_waited_for(&key) {
         std::thread::yield_now();
@@ -3847,9 +3849,8 @@ fn restores_open_stores_still_at_their_point() {
     store.fork_quiescent(&point, store.branch() + 1).unwrap();
     drop(store);
     let restore = |into: &Path| RemoteExtentStore::connect_forked(&socket, into, &point, 0, 0);
-    let at_point = |store: &RemoteExtentStore| {
-        (store.root().ok(), read(store, extent, 0, BLOCK).ok())
-    };
+    let at_point =
+        |store: &RemoteExtentStore| (store.root().ok(), read(store, extent, 0, BLOCK).ok());
     let state = (Some(b"root".to_vec()), Some(pattern(8, BLOCK)));
 
     // The snapshotted VM's own store, written nothing since its point.
@@ -4161,7 +4162,8 @@ fn vm_processes_of_other_wire_versions_are_refused() {
     for (id, other) in [(1, 0), (2, VERSION + 1), (3, u64::MAX)] {
         // Flags this version doesn't know, as another's OPEN may have.
         for flags in [OPEN_CREATE, u32::MAX] {
-            let open = Header::new(OPEN, id).with_args(&[1 << 24, 0, 0, 0, other]).with_flags(flags);
+            let open =
+                Header::new(OPEN, id).with_args(&[1 << 24, 0, 0, 0, other]).with_flags(flags);
             sender.send(open, named, &[]).unwrap();
             let reply = receiver.receive(|| 0).unwrap().unwrap();
             let said = (reply.header.id, reply.header.status, super::codec::version(&reply.header));

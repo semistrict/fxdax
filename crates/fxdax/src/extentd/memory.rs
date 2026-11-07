@@ -13,10 +13,10 @@
 
 use super::server::{Parking, Tenant};
 use crate::Errno;
+use physmem::CHUNK_SIZE;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Weak};
-use physmem::CHUNK_SIZE;
 
 /// The tenants alive, and their limits, under one lock, so that a tenant made as its limit is set
 /// is limited as it was set.
