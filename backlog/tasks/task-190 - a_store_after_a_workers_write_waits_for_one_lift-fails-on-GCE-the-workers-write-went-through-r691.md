@@ -3,11 +3,11 @@ id: TASK-190
 title: >-
   a_store_after_a_workers_write_waits_for_one_lift fails on GCE: the worker's
   write went through (r691)
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-06 01:32'
-updated_date: '2026-11-06 01:59'
+updated_date: '2026-11-07 23:54'
 labels:
   - bug
   - dax
@@ -35,7 +35,7 @@ GCE r691 (n2-standard-4, Linux 7.0 x86_64) ran the Linux workspace on main dde8d
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
 - [x] #2 scripts/upstream-changes.py --check passes
 - [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
@@ -57,6 +57,8 @@ Red/green: with the old zeros mapping put back, the new guard goes red at both b
 Stress (Docker on OrbStack, arm64, Linux 7.2, stress --cpu 16 --io 2 --vm 2, 6 runs at once): 500 of 500 at vm.max_map_count 1048576 (640 s), 500 of 500 at 262144 (723 s). Failed retries per run 1,000 to 1,082 (bound 2,000). cargo nextest run -p fxdax: 477 of 484; the 7 failures are the container's (eu-stack missing: stacks_name_where_threads_wait and two fxdaxctl sigquit tests; no git: builds_are_stamped_with_their_commit; the grants helper binary: 3 grants tests), the same set TASK-187 recorded. Clippy: nothing in the changed code. scripts/upstream-changes.py --check passes. The changed modules are Linux-only, so macOS compiles none of it.
 Looked around: the other tests whose windows exceed a host's budget pin it (uffd with_budget tests; windows_budget_by_the_mappings_the_daemon_says_the_host_allows uses MAX_MAP_COUNT_GIVEN). The rest use windows of at most 64 pages. No other test depends on vm.max_map_count.
 Structure: the store rule (a write to a page here is a store) is right for KVM and documented; now a test pins it. One unproven edge: if a page here ever needed KVM's async pf (memory read in, e.g. a swapped memfd page), the worker's write would be taken as a store and copy the page for a load. Not filed: nothing shows it happens.
+
+Finalized in the backlog sweep: its commits are on origin/main. DoD #1 by Main CI 42423368353 at 878aa8848 (which holds this work) green, macos (workspace) and test (workspace) among it; scripts/upstream-changes.py --check passes on main (2026-11-08 sweep).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

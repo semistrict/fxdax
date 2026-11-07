@@ -3,11 +3,11 @@ id: TASK-67.2
 title: >-
   A daemon's stores opened at once, its first, may each open the cache, and all
   but one fail EIO
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-06 12:53'
-updated_date: '2026-11-06 12:53'
+updated_date: '2026-11-07 23:54'
 labels: []
 dependencies: []
 parent_task_id: TASK-67
@@ -23,14 +23,14 @@ Found by fxfs-guest-soak (TASK-67), GCE r755 round 9 (run FXDAX_SEED=14204650337
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Stores opened at once share one cache, shown by a test red before
+- [x] #1 Stores opened at once share one cache, shown by a test red before
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -51,4 +51,12 @@ Blind spot: every test opens its daemon's first store from one thread, or sets t
 Looking around: remote_bucket (stores.rs:1053) has the same check, open, get_or_init shape; opening the bucket twice is harmless (the loser is dropped, no lock), so left. Other OnceLocks in crates/fxdax are get_or_init closures already.
 
 Structure: the class is a resource held exclusively, made lazily by check-then-init; the mutex makes the check and the making one step. Nothing above it needed changing.
+
+Finalized in the backlog sweep: its commits are on origin/main. DoD #1 by Main CI 42423368353 at 878aa8848 (which holds this work) green, macos (workspace) and test (workspace) among it; scripts/upstream-changes.py --check passes on main (2026-11-08 sweep).
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Fixed on main (0de2dbff2): remote_cache opens the cache once, under one mutex, those opening meanwhile waiting for it (crates/fxdax/src/extentd/stores.rs:1319-1336), where stores opened at once each opened it and all but one failed its directory's flock with EIO. stores_opened_at_once_share_the_cache (stores.rs:1347) red before in Linux Docker, green after. Main's CI green.
+<!-- SECTION:FINAL_SUMMARY:END -->

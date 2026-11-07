@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-10-31 20:30'
-updated_date: '2026-11-06 04:47'
+updated_date: '2026-11-07 23:54'
 labels: []
 dependencies: []
 parent_task_id: TASK-141
@@ -58,4 +58,6 @@ Rewritten 2026-11-05: its runbook's rollback and the N-1/N rehearsal went with A
 - AC #2 (migrate-gce.sh off and back nightly) not done: needs the nightly's GCP credentials and a bucket (OPEN_QUESTIONS).
 
 Verified: sigterm_closes_every_store_durable_and_uploaded passes on Linux Docker and GCE r692 (x86); drain unit tests pass both. Left In Progress for AC #2 alone.
+
+Backlog sweep (2026-11-08): its SIGTERM drain and runbook are on main (f9fa1c94a, 51b144262), inside green main CI 42423368353; AC #2 (scripts/migrate-gce.sh off and back nightly) still not done, waiting for the nightly's GCP credentials and bucket (OPEN_QUESTIONS.md). Left In Progress.
 <!-- SECTION:NOTES:END -->

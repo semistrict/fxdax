@@ -4,11 +4,11 @@ title: >-
   Uploads livelock below ~18 MB/s to object storage: object_store's 30 s
   whole-request timeout against up to 512 MiB of single PUTs at once, each
   retried from its start
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-06 06:58'
-updated_date: '2026-11-06 08:04'
+updated_date: '2026-11-07 23:54'
 labels:
   - storage
   - object-storage
@@ -33,7 +33,7 @@ Found by the storage review of 2026-11-06, by reading, not measured. fxdax build
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
 - [x] #2 scripts/upstream-changes.py --check passes
 - [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
@@ -68,6 +68,8 @@ For after TASK-165.9 (the uploader's, not touched here): with progress timeouts 
 Correction, after the Linux run (Docker, aarch64): the slow-link test as first written (8 x 2 MiB extents, 4 MiB/s, stall 2 s) passed on macOS and failed on Linux every time, no upload landing in 30 s; with an 8 s stall it passed in 4.5 s, 16 creates. Cause: progress is the body's slices taken by the connection, and what the socket buffers counts as taken. Over loopback (64 KiB segments) a socket the server reads slowly grows its send buffer toward Linux's 4 MiB bound at once, so a request's 2 MiB went into the kernel whole and nothing moved for 4 s (2 MiB at its 512 KiB/s share). Over a link that limits the bandwidth the buffer grows with the congestion window, a couple of round trips and the link's queue, so the 30 s stall holds; a peer reading slowly is what grows it to the bound, which the client module's doc now says. reqwest 0.13.5 gives no way to the socket (its Conn is sealed: no SO_SNDBUF, TCP_NOTSENT_LOWAT or TCP_INFO), and tcp_user_timeout, Linux's, would not see a server that acks and never answers. The test now uploads 8 x 16 MiB at 16 MiB/s with a 4 s stall (each request's share carries 8 MiB, twice the bound, in a stall time; in flight twice what the link carries in one): green in 9.4-9.7 s on macOS and Linux, three runs each; red with object_store's whole-request timeout of 4 s on both ('uploads landed: Elapsed' at 31 s).
 
 Validation (2026-11-06): macOS FXDAX_TEST_PARTS='workspace sim' scripts/test.sh: 2038/2038 and 47/47 (then extent_remote again on the final code: 180/180). Linux, Docker (OrbStack, aarch64, privileged, /target/t205): workspace 2226/2230, the 4 failures the container's: builds_are_stamped_with_their_commit (no git through the worktree's .git link) and three grants tests (a file the rust image lacks, ENOENT); unprivileged first, 76 more of fxdax's failed for /dev/userfaultfd and io_uring (EPERM). sim 47/47. scripts/upstream-changes.py --check passes. Not run: GCE (scripts/test-gce.sh), so DoD #1 stays open.
+
+Finalized in the backlog sweep: its commits are on origin/main. DoD #1 by Main CI 42423368353 at 878aa8848 (which holds this work) green, macos (workspace) and test (workspace) among it; scripts/upstream-changes.py --check passes on main (2026-11-08 sweep).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

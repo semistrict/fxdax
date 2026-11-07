@@ -1,11 +1,11 @@
 ---
 id: TASK-149.17
 title: 'A compromised VM process, checked against invariants across tenants'
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-01 16:53'
-updated_date: '2026-11-06 10:52'
+updated_date: '2026-11-07 23:54'
 labels: []
 dependencies:
   - TASK-77
@@ -32,7 +32,7 @@ TASK-77 fuzzes the wire protocol and asks that nothing panics and the daemon ser
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
 - [x] #2 scripts/upstream-changes.py --check passes
 - [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
@@ -78,6 +78,8 @@ Decision moved here from OPEN_QUESTIONS.md (2026-11-06):
 - **A root holds 4 KiB at most on the wire** (`wire::MAX_ROOT`, the extent device's own `MAX_ROOT`), `EINVAL` past it, where a VM process's could be 64 MiB, which its store kept and wrote with its commits, and each `ROOT` copied, uncounted. A refusal of the wire's, as TASK-141.3's are. *Instead:* count a `ROOT`'s reply against the room, leaving 64 MiB roots in stores. *Undoing it:* the two checks in `codec`.
 
 2026-11-06, land-h after main's TASK-141.3, 194, 205 (CI 42198652435 red): the harness's OPENs said wire version 0, refused EPROTONOSUPPORT, so no connection of mallory's opened a store and a flood's write found none (EBADF); the harness's, not the daemon's: they say wire::VERSION now, and the test asks that some of mallory's stores committed, which would have caught it in every case. Mutants a-second-open-holds-its-path (the connection's report, snapshot.rs, set once too) and forks-take-branches-claimed (past child_free and record_fork since TASK-165.7) rewritten; the other seven's hunks moved to their lines. Docker: 96 cases and 2,000 (seed 201) pass; 10 of 10 mutants killed, a-second-open by the path held; fxdax, extent_store and physmem 701 of 705, the 4 the container's (git, sudo).
+
+Finalized in the backlog sweep: its commits are on origin/main. DoD #1 by Main CI 42423368353 at 878aa8848 (which holds this work) green, macos (workspace) and test (workspace) among it; scripts/upstream-changes.py --check passes on main (2026-11-08 sweep).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

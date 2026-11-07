@@ -3,11 +3,11 @@ id: TASK-149.35
 title: >-
   A tenant's in-flight data is bounded per connection, not per tenant: 1,024
   connections hold 272 GiB
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-06 03:59'
-updated_date: '2026-11-07 03:55'
+updated_date: '2026-11-07 23:54'
 labels:
   - bug
   - extentd
@@ -32,9 +32,9 @@ Found by TASK-149.17. The protocol bounds what the daemon holds of a VM process'
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -51,6 +51,8 @@ Found by TASK-149.17. The protocol bounds what the daemon holds of a VM process'
 
 <!-- SECTION:NOTES:BEGIN -->
 2026-11-07: Measured (page_ins/room pinned test): 8 flooding connections of one tenant held 2,132 MiB without a bound (each up to its own 272 MiB room), the protocol's 1,024 connections x 272 MiB ~272 GiB a tenant. Bound: memory::InFlight, a room shared by a tenant's connections (DEFAULT_TENANT_ROOM 8 GiB), counting each request's stream data and the replies the daemon queues for a VM process; Connection::within_bounds takes from it before reading a request's payload, waiting (holding no thread) until what the tenant holds leaves room, or going on if it holds nothing (so a request as large as the room is served). AsyncSender::counting counts its queued bytes in the tenant's room, released as the socket takes them or the sender drops. Not let-go or EAGAIN: the stream carries a guest's I/O, which must be served; a healthy tenant moves data through transfer areas (256 KiB x 8 a connection), uncounted. Default 8 GiB: a host's density case held 16 MiB of a tenant's stream data; 8 GiB is ~30 VMs each with a full connection room, reached only writing 64 MiB extents through the stream back to back. Configurable: control SetTenantRoom, memory::set_room, per tenant (alive now or granted later) or daemon-wide, floor MAX_PAYLOAD. Pinned test: 8 connections held 64 MiB of a 64 MiB room (2,132 without the gate); a second tenant flooding was served throughout. Blind spot: the hostile harness opened few connections a tenant; still 1-3. Class: a_tenants_in_flight_data_is_bounded opens 8, each flooding. Mutant a-tenant-shares-no-room (the gate replaced by an unconditional add), killed by it. Docker: pinned test red (2,132>128) and green (64); hostile 500 cases pass; 12 of 12 mutants killed; fxdax, extent_store, physmem 707 of 711, the 4 the container's (git, sudo). Decision in OPEN_QUESTIONS.md.
+
+Finalized in the backlog sweep: its commits are on origin/main. DoD #1 by Main CI 42423368353 at 878aa8848 (which holds this work) green, macos (workspace) and test (workspace) among it; scripts/upstream-changes.py --check passes on main (2026-11-08 sweep).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

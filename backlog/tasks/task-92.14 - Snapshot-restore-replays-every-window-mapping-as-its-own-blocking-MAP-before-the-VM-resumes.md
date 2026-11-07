@@ -3,11 +3,11 @@ id: TASK-92.14
 title: >-
   Snapshot restore replays every window mapping as its own blocking MAP before
   the VM resumes
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-10-22 21:06'
-updated_date: '2026-11-06 06:58'
+updated_date: '2026-11-07 23:54'
 labels:
   - review-2026-10-21
 dependencies:
@@ -33,12 +33,12 @@ Found by the 2026-10-21 review of main at 6a0a3f8 (severity medium): docs/review
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
 - [x] #1 A measurement or a test shows the cost before the change (requests, copies, lock hold or time on the workload named)
-- [ ] #2 The change removes or bounds it, shown by the same measurement, and the macOS and Linux (GCE) suites pass
+- [x] #2 The change removes or bounds it, shown by the same measurement, and the macOS and Linux (GCE) suites pass
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
 - [x] #2 scripts/upstream-changes.py --check passes
 - [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
@@ -78,4 +78,12 @@ Correction: r687's mapping count wasn't recorded (a passing round keeps no VM lo
 
 Decision moved here from OPEN_QUESTIONS.md (2026-11-06):
 The VMM mapped a snapshot's window mappings again one `MAP` at a time before the VM resumed, a round trip and a change of the window each. Decided: **a daemon request of its own, `MAP_MANY` (32)**, whose payload is the mappings as `MAPPINGS`' reply has them; the daemon maps them all in one change of the window (one lock, the ranges anew told the VM process in runs, the pages in memory installed in runs across mappings). The VMM sends the whole map at once, in payload-bounded chunks (1.4 million mappings each). **Eager, not lazy on fault:** of a 1,280-mapping restore's 14-23 ms, the installs a lazy restore would skip are 3.6-5.5 ms, and each would come back as a fault after resume (dead-ends/lazy-restore-of-window-mappings.md). *Instead:* a flag on `MAP` (a daemon older than it would map the first and ignore the rest, as `FREE_MANY`'s reasoning says); pipelining `MAP`s without waiting (round trips overlap, but a change and a decode per mapping stay). *Undoing it:* `Request::MapMany` and the VMM's `map_again` back to a loop of `MAP`s.
+
+Finalized in the backlog sweep: its commits are on origin/main. DoD #1 by Main CI 42423368353 at 878aa8848 (which holds this work) green, macos (workspace) and test (workspace) among it; scripts/upstream-changes.py --check passes on main (2026-11-08 sweep).
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+A restore maps its snapshot's window again in one daemon request, MAP_MANY (32), mapped in one change of the window, not a blocking MAP each: 1,280 mappings from 1,280 MAPs in 60-68 ms to one MAP_MANY in 14-15 ms (snapshots_map_their_windows_again_in_one_request). AC #2's GCE suites: the DAX snapshot suites failed on main by TASK-191, which is fixed; with MAP_MANY on main they pass (TASK-191's verification, fxfs-guest-snapshot-dax, -suspend-dax, -migrate-dax and -migrate-tenant-dax 20 of 20 each, GCE r651). Landed on main (a3467f915); main's CI green.
+<!-- SECTION:FINAL_SUMMARY:END -->
