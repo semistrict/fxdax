@@ -1,0 +1,28 @@
+# SPDX-License-Identifier: GPL-2.0
+# Copyright 2026 The fxdax Authors.
+#
+# Kernel: release
+# Killer: fxfs-guest-checks listings_follow_changes
+#
+# TASK-230: an exchange keeps its directories' listings (fxfs_vfs_dir_listing): fxfs_vfs_rename
+# drops them for a rename alone, so a read after RENAME_EXCHANGE finds each name linking the inode
+# it linked before. listings_follow_changes reads "listed-too", exchanges listed/e with
+# listed-too/c, and reads it again: c's own inode, not e's. super.c, which guest/sim doesn't build.
+# Put in by hand, not a past bug: one of the four kinds of change whose drop is a code path of its
+# own (create, unlink, rename, exchange).
+
+--- a/guest/linux/fs/fxfs/super.c
++++ b/guest/linux/fs/fxfs/super.c
+@@ -840,8 +840,10 @@ static int fxfs_vfs_rename(struct mnt_idmap *idmap, struct inode *old_dir,
+ 	struct fxfs *fs = fxfs_vfs_fs(old_dir->i_sb);
+ 	int replaced, err;
+ 
+-	fxfs_vfs_dir_changes(old_dir);
+-	fxfs_vfs_dir_changes(new_dir);
++	if (!(flags & RENAME_EXCHANGE)) {
++		fxfs_vfs_dir_changes(old_dir);
++		fxfs_vfs_dir_changes(new_dir);
++	}
+ 	if (flags & RENAME_EXCHANGE) {
+ 		err = fxfs_nofs(fxfs_exchange(fs, old_dir->i_ino, old_dentry->d_name.name,
+ 					      old_dentry->d_name.len, new_dir->i_ino,

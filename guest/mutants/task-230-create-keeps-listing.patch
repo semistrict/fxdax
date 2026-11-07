@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: GPL-2.0
+# Copyright 2026 The fxdax Authors.
+#
+# Kernel: release
+# Killer: fxfs-guest-checks listings_follow_changes
+#
+# TASK-230: a creation keeps its directory's listing (fxfs_vfs_dir_listing): fxfs_vfs_mknod, which
+# create, mkdir and mknod go through, drops none, so a read after it finds the names before it.
+# listings_follow_changes reads "listed" empty, creates a and b, and reads it again: still empty.
+# super.c, which guest/sim doesn't build. Put in by hand, not a past bug: one of the four kinds of
+# change whose drop is a code path of its own (create, unlink, rename, exchange).
+
+--- a/guest/linux/fs/fxfs/super.c
++++ b/guest/linux/fs/fxfs/super.c
+@@ -642,7 +642,6 @@
+ 	u32 gid;
+ 	int err;
+ 
+-	fxfs_vfs_dir_changes(dir);
+ 	err = fxfs_vfs_new_acls(dir, &mode, &default_acl, &acl);
+ 	if (err)
+ 		return err;
