@@ -8,7 +8,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-07 08:14'
-updated_date: '2026-11-07 10:33'
+updated_date: '2026-11-07 11:29'
 labels: []
 dependencies: []
 priority: high
@@ -36,7 +36,7 @@ TASK-136.1 (r870) shows the cost of a small window: a 1.54 GB tree reread throug
 - [ ] #2 Windows default to large (e.g. the host's memory or a configured maximum), in the VMM and the tests, and a 64 GiB or larger window boots and runs the DAX suites
 - [ ] #3 Measured on GCE: guest struct-page memory, VM-process mappings and boot time against window size (1, 8, 64 GiB and more), and the Linux checkout's warm reread with a window larger than the tree
 - [ ] #4 README, doc-13 and the perf gate updated
-- [ ] #5 Target (the user, 2026-11-07): the Linux checkout's warm full-tree reread on Fxfs DAX is as fast as ext4 on Firecracker's virtio-pmem (mounted -o dax) or faster, same host, same VM size; both measured in the same run (linux-checkout cases, TASK-136.1)
+- [x] #5 Target (the user, 2026-11-07, relaxed the same day from 'as fast as or faster'): the Linux checkout's warm full-tree reread on Fxfs DAX within 1.5x of ext4 on Firecracker's virtio-pmem (mounted -o dax), same host, same VM size, both measured in the same run (linux-checkout cases, TASK-136.1)
 <!-- AC:END -->
 
 ## Definition of Done
@@ -68,4 +68,9 @@ TASK-136.1 (r870) shows the cost of a small window: a 1.54 GB tree reread throug
 - 64 GiB window: fxfs-guest-dax, -crash-dax, -crash-dax-killed (r885), -checks-dax (r886) passed. Host-memory default (31.3 GiB): stats, import-dax, volumes-dax, fxfs-guest-dax, checks-dax-small at its own 32 MiB passed (r887).
 - Forked pgbench at the new defaults, 15.6 GiB window and 1 GiB private_max (r884): forked-dax 0.967, PRIVATEs 108,983 (r807: 108,688).
 - Fork: semistrict/firecracker land-w1 (4079fbc85 private_max, 99c2b05c5 Cargo.lock). fxdax: land-w1, CI 42364466938.
+
+AC #5, the user's relaxed target (within 1.5x of pmem, 2026-11-07), met in the same runs, the fresh VM's warm reread after a timed warm one (read-warm-again), 8 GiB window, 8 GiB daemon:
+- r901 (land-w1's guest kernel): ext4 on pmem 537 ms, Fxfs DAX 568 ms (1.06x); first warm reread 548 / 578 ms (1.05x); sandboxes 565-578 ms.
+- r902 (with a read's iomap reading no clock, TASK-230's): pmem 536 ms, Fxfs DAX 564 ms (1.05x).
+The checkout VM's first warm reread is slow once (r901: 1.00 s, the next 594 ms). Where the rest goes (r901's reader-only profile, 10 kHz): the copy costs the same (pmem's copy_mc 2,285 samples, Fxfs's rep_movs 2,339); Fxfs's extra 641 samples (7.6%) are its directory reads' LSM seeks and decoding (~520-610), down_read (~190-210) and clock reads (~160), not per-page costs.
 <!-- SECTION:NOTES:END -->
