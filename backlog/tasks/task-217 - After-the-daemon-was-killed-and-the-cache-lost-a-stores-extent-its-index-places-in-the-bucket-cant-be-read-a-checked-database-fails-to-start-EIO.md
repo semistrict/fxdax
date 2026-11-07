@@ -3,9 +3,11 @@ id: TASK-217
 title: >-
   After the daemon was killed and the cache lost, a store's extent its index
   places in the bucket can't be read: a checked database fails to start (EIO)
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-11-06 16:32'
+updated_date: '2026-11-07 08:45'
 labels:
   - bug
 dependencies: []
@@ -32,3 +34,21 @@ Found by fxfs-guest-soak (TASK-67), GCE r757 round 40 of 55, file bucket, jailed
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Re-check against TASK-165.9: probe the kept state with the last tree that reads it (ce8ab6a71, local format 7, with the read-failure logging) for why the read fails and where the bucket has the extent.
+2. A test of the sequence on main: segment compacted, writer checkpointing the move, segment deleted, host dead with its cache, store opened from its disk.
+3. Close with the evidence if the new design passes it.
+<!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Root cause, from the kept state (gs://echophase-fxdax-bench/soak67-evidence/r757-round40-state.tar.gz, probed at ce8ab6a71 in a scratch worktree, not committed): the store's local index placed extent 0x4b00000006c1 of branch ec1f64fbe70bbd21 in segments/ec1f64fbe70bbd21/0000000000002181 at 30867456 (24576 bytes); the fetch said lost (the logging of ce8ab6a71 named it). That segment was in the branch (0x2186's footer follows 0x2185, epoch 75) and is gone from the bucket; the branch recovered from the bucket (newest checkpoint 0x223f, the checkpointer's epoch 78) has the extent live at moves/moves/segments/ec1f64fbe70bbd21/0000000000002181. So the collector compacted the segment, the lease holder's checkpoint named the moves, and the collector took the segment; the store, killed and opened again by the checking daemon, opened from its index, which never followed moves (TASK-195's class), and read a deleted object.
+
+On main (TASK-165.9, c9207e5d4): no index; opening recovers the branch from the bucket, naming extents as its newest checkpoint does; and an open store follows its writer's moves (TASK-195, Writer::following, Store::moved). Test: remote.rs extents_compacted_read_once_their_host_died_and_its_cache_went (one segment compacted, the writer checkpointing the move, the segment taken by the collector; the host's disk copied as the death left it, its cache not, its bucket cut off; the store opened from the copy reads the extent): green on main, macOS fxdax and extent_store 466/466. It can't be run red on main, whose design has no index to go stale; red is the old design's, shown above from the soak's own state.
+
+Blind spot: no test opened a store after the collector moved what it held; TASK-195's tests the store open all along. This one covers opening after a crash with the cache lost. Structure: the class is gone with the index: one place names where an extent is, the branch's state as the bucket and its writer have it.
+<!-- SECTION:NOTES:END -->
