@@ -504,6 +504,31 @@ fn symlink_and_readlink() {
     })
 }
 
+/// A symlink's size is its target's length, however long: those past a record's 256 bytes, which
+/// Fxfs keeps in chunks of their own, too (TASK-149.37: such a symlink's size was 0), as made,
+/// looked up, and once the filesystem is mounted again.
+#[test]
+fn symlinks_are_as_large_as_their_targets() {
+    const LENGTHS: [usize; 6] = [1, 256, 257, 2048, 2049, 4095];
+    block_on(async {
+        let fs = format().await;
+        for len in LENGTHS {
+            let (target, name) = (vec![b't'; len], format!("link{len}"));
+            let (link, attr) = fs.root().symlink(name.as_bytes(), &target, OWNER).await.unwrap();
+            assert_eq!(attr.size, len as u64, "made");
+            assert_eq!(link.getattr().await.unwrap().size, len as u64, "its attributes");
+            assert_eq!(fs.root().lookup(name.as_bytes()).await.unwrap().1.size, len as u64);
+            assert_eq!(link.readlink().await.unwrap(), target);
+        }
+        let fs = Filesystem::mount(close_and_check(fs).await).await.unwrap();
+        for len in LENGTHS {
+            let (_, attr) = fs.root().lookup(format!("link{len}").as_bytes()).await.unwrap();
+            assert_eq!(attr.size, len as u64, "mounted again");
+        }
+        close_and_check(fs).await;
+    })
+}
+
 #[test]
 fn symlinks_have_owners_and_times() {
     block_on(async {

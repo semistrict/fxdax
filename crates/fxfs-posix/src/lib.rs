@@ -676,6 +676,16 @@ impl<P: Platform> Fxfs<P> {
     /// `ino`'s attributes as `transaction` leaves them: those it changes, which needn't be read,
     /// and the rest as they are.
     async fn attr_after(&self, transaction: &Transaction<'_>, ino: u64) -> Result<Attr, Error> {
+        self.attr_after_sized(transaction, ino, None).await
+    }
+
+    /// `attr_after`, of an object whose size is `size`, if known.
+    async fn attr_after_sized(
+        &self,
+        transaction: &Transaction<'_>,
+        ino: u64,
+        size: Option<u64>,
+    ) -> Result<Attr, Error> {
         let store = self.volume.store_object_id();
         let changed = |key| {
             transaction.get_object_mutation(store, key).map(|mutation| mutation.item.value.clone())
@@ -684,12 +694,12 @@ impl<P: Platform> Fxfs<P> {
             Some(object) => Some(object),
             None => self.volume.tree().find(&ObjectKey::object(ino)).await?.map(|item| item.value),
         };
-        let size = changed(data_key(ino)).map(|data| data_size(Some(data)));
+        let size = size.or_else(|| changed(data_key(ino)).map(|data| data_size(Some(data))));
         self.attr_of(ino, object, size).await
     }
 
-    /// The attributes of `ino`, which `object` describes, and whose data's size is `size`, if
-    /// known.
+    /// The attributes of `ino`, which `object` describes, and whose size is `size`, if known: a
+    /// file's data's, or a symlink's target's.
     async fn attr_of(
         &self,
         ino: u64,
@@ -710,7 +720,16 @@ impl<P: Platform> Fxfs<P> {
                 (S_IFREG, refs, size)
             }
             ObjectKind::Symlink { refs, link } | ObjectKind::EncryptedSymlink { refs, link } => {
-                (S_IFLNK, refs, link.len() as u64)
+                // fxdax: a long target is in chunks of its own, its record's link empty
+                // (`directory::LONG_SYMLINK_XATTR`): its length theirs, as `size` says or reading
+                // them does. A size of 0 said so: lstat's st_size, which readlink(1) and realpath
+                // size their buffers by (TASK-149.37).
+                let len = match (link.is_empty(), size) {
+                    (false, _) => link.len() as u64,
+                    (true, Some(size)) => size,
+                    (true, None) => self.volume.read_symlink(ino).await?.len() as u64,
+                };
+                (S_IFLNK, refs, len)
             }
             ObjectKind::Graveyard => bail!(FxfsError::NotFound),
         };
@@ -1017,7 +1036,14 @@ impl<P: Platform> Fxfs<P> {
             ..Default::default()
         };
         self.handle(ino).update_attributes(&mut transaction, Some(&owner), Some(now)).await?;
-        self.commit_new(transaction, ino, dir.object_id()).await
+        // fxdax: its size its target's length, which a long target's chunks, not yet in the tree,
+        // can't say (`attr_of`).
+        let attrs = [
+            self.attr_after_sized(&transaction, ino, Some(target.len() as u64)).await?,
+            self.attr_after(&transaction, dir.object_id()).await?,
+        ];
+        transaction.commit().await?;
+        Ok(attrs)
     }
 
     /// Commits `transaction`, which made `ino` in directory `dir`: their attributes.
