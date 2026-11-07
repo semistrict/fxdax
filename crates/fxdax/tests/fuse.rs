@@ -753,6 +753,19 @@ fn extended_attributes() {
         let short = Body::default().u32(10).u32(0).name(b"user.d").bytes(b"short");
         assert_eq!(client.call(SETXATTR, file, short).await.error, EINVAL);
 
+        // Names are of the namespaces Linux's filesystems serve, as its VFS resolves them: of none,
+        // EOPNOTSUPP; a namespace alone, EINVAL; of the others, as the user's.
+        let refused = [(&b"foo.bar"[..], ENOTSUP), (b"user.", EINVAL), (b"trusted.", EINVAL)];
+        for (name, error) in refused {
+            let set = client.call(SETXATTR, file, set(name, b"x", 0)).await;
+            assert_eq!(set.error, error, "{name:?}");
+            assert_eq!(client.call(GETXATTR, file, get(name, 64)).await.error, error, "{name:?}");
+            let remove = client.call(REMOVEXATTR, file, Body::default().name(name)).await;
+            assert_eq!(remove.error, error, "{name:?}");
+        }
+        assert_eq!(client.call(SETXATTR, file, set(b"security.s", b"x", 0)).await.ok(), b"");
+        assert_eq!(client.call(GETXATTR, file, get(b"security.s", 64)).await.ok(), b"x");
+
         assert_eq!(client.call(REMOVEXATTR, file, Body::default().name(b"user.a")).await.ok(), b"");
         assert_eq!(client.call(GETXATTR, file, get(b"user.a", 64)).await.error, ENODATA);
         let remove_again = client.call(REMOVEXATTR, file, Body::default().name(b"user.a")).await;

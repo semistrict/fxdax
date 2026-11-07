@@ -466,6 +466,7 @@ impl Server {
         if value.len() != size as usize {
             return Err(Errno::EINVAL);
         }
+        let name = xattr_name(name)?;
         self.node(header.nodeid)?.setxattr(name, value, mode).await?;
         Ok(Vec::new())
     }
@@ -473,7 +474,7 @@ impl Server {
     async fn getxattr(&self, header: &InHeader, body: &mut Body<'_>) -> Result<Vec<u8>> {
         let GetxattrIn { size, .. } = body.read()?;
         let [name] = strings(body.rest())?;
-        let value = self.node(header.nodeid)?.getxattr(name).await?;
+        let value = self.node(header.nodeid)?.getxattr(xattr_name(name)?).await?;
         sized(value, size)
     }
 
@@ -487,7 +488,7 @@ impl Server {
 
     async fn removexattr(&self, header: &InHeader, body: &mut Body<'_>) -> Result<Vec<u8>> {
         let [name] = strings(body.rest())?;
-        self.node(header.nodeid)?.removexattr(name).await?;
+        self.node(header.nodeid)?.removexattr(xattr_name(name)?).await?;
         Ok(Vec::new())
     }
 
@@ -629,6 +630,21 @@ fn strings<const N: usize>(body: &[u8]) -> Result<[&[u8]; N]> {
     (found.iter().all(|string| string.last() == Some(&0)) && strings.next().is_none())
         .then(|| found.map(|string| &string[..string.len() - 1]))
         .ok_or(Errno::EINVAL)
+}
+
+/// The namespaces of extended attributes served: those the guest's Fxfs has handlers of. POSIX
+/// ACLs' (`system.posix_acl_*`) the kernel refuses itself, as INIT doesn't offer `POSIX_ACL`.
+const XATTR_NAMESPACES: [&[u8]; 3] = [b"user.", b"trusted.", b"security."];
+
+/// `name`, an extended attribute's, of a namespace served, as Linux's VFS resolves a name to its
+/// filesystem's handler (`xattr_resolve_name`), which FUSE leaves to its servers: `EOPNOTSUPP` of
+/// another namespace, `EINVAL` for a namespace's prefix alone.
+fn xattr_name(name: &[u8]) -> Result<&[u8]> {
+    match XATTR_NAMESPACES.iter().find(|prefix| name.starts_with(prefix)) {
+        Some(prefix) if name.len() == prefix.len() => Err(Errno::EINVAL),
+        Some(_) => Ok(name),
+        None => Err(Errno::ENOTSUP),
+    }
 }
 
 /// `value` for a request that asked for at most `size` bytes of it, or, asking for 0, its size:
