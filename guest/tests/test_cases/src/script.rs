@@ -229,7 +229,9 @@ pub enum Op {
     /// stops there, or short of it, at an offset of the file no page's start, as the copy got.
     FaultingWrite { file: usize, place: Place, len: u64, good: u64, data: u64 },
     /// fxdax: a write(2) from the kept mapping of its own file, `by` bytes on from where it writes:
-    /// the same bytes, if 0, or overlapping.
+    /// the same bytes, if 0, or bytes apart, in pages they may share. Not overlapping bytes, which
+    /// a write copies as memcpy does, its result undefined: the guest's x86 copy wrote bytes of a
+    /// line before it read them, which the source at 17 bytes on from them held (GCE r868).
     WriteFromMapping { file: usize, place: Place, len: u64, by: u64 },
 }
 
@@ -437,7 +439,7 @@ fn hostile_op(rng: &mut Rng, mix: Mix) -> Op {
             let place = if rng.next(2) == 0 { Place::FromEnd(0) } else { place };
             Op::FaultingWrite { file, place, len, good: rng.next(len + 1), data }
         }
-        // The same bytes one in four, else overlapping or not, as it comes.
+        // The same bytes one in four, else bytes apart, in a page they share or not, as it comes.
         10 => {
             let by = if rng.next(4) == 0 { 0 } else { rng.next(2 * len) };
             Op::WriteFromMapping { file, place, len, by }
@@ -644,7 +646,8 @@ pub enum Step {
         data: Vec<u8>,
         good: u64,
     },
-    /// Of the kept mapping's `len` bytes at `src`, onto `dst`, at or before it, within the file.
+    /// Of the kept mapping's `len` bytes at `src`, onto `dst`, at it or before it, within the file
+    /// and apart from it: no byte both read and written but at the same offset.
     WriteFromMapping {
         file: usize,
         src: u64,
@@ -1084,7 +1087,9 @@ impl Model {
                 let size = self.size(file);
                 let src = place.resolve(size).checked_rem(size).unwrap_or(0);
                 let dst = src - by.min(src);
-                Step::WriteFromMapping { file, src, dst, len: len.min(size - src) }
+                // As far as the source, if it's elsewhere, that no byte is both.
+                let apart = if dst == src { u64::MAX } else { src - dst };
+                Step::WriteFromMapping { file, src, dst, len: len.min(size - src).min(apart) }
             }
         }
     }
@@ -1679,7 +1684,7 @@ mod tests {
                     }
                     if let Step::WriteFromMapping { file, src, dst, len } = &step {
                         assert!(src + len <= model.files[*file].len() as u64, "{step}");
-                        assert!(dst <= src, "{step}");
+                        assert!(dst == src || dst + len <= *src, "{step}");
                     }
                     if let Step::DirectWrite { at, .. } | Step::DirectRead { at, .. } = &step {
                         assert_eq!(at % PAGE, 0, "{step}");
@@ -2071,7 +2076,8 @@ mod tests {
     }
 
     /// A write from a buffer that faults writes what lies before the fault, or fails, nothing
-    /// before it; a write from the file's own mapping moves bytes as memmove does.
+    /// before it; a write from the file's own mapping moves bytes apart from where it writes them,
+    /// or writes them where they are.
     #[test]
     fn writes_from_faulting_buffers_and_their_files_mappings() {
         let mut model = Model { files: vec![(0..100).collect()] };
@@ -2080,14 +2086,25 @@ mod tests {
         assert_eq!(model.outcome(&faulting(5)), Ok(5));
         model.apply(&faulting(5));
         assert_eq!(model.files[0], [(0..90).collect(), vec![7; 5], (95..100).collect()].concat());
-        let op = Op::WriteFromMapping { file: 0, place: Place::At(30), len: 50, by: 10 };
-        let step = model.resolve(&op);
-        assert_eq!(step, Step::WriteFromMapping { file: 0, src: 30, dst: 20, len: 50 });
-        assert_eq!(model.outcome(&step), Ok(50));
+        let from = |by| Op::WriteFromMapping { file: 0, place: Place::At(30), len: 50, by };
+        // Overlapping, it writes as far as its source.
+        let step = model.resolve(&from(10));
+        assert_eq!(step, Step::WriteFromMapping { file: 0, src: 30, dst: 20, len: 10 });
+        assert_eq!(model.outcome(&step), Ok(10));
         let mut moved = model.files[0].clone();
-        moved.copy_within(30..80, 20);
+        moved.copy_within(30..40, 20);
         model.apply(&step);
         assert_eq!(model.files[0], moved);
+        // The same bytes, all, or bytes apart, all.
+        assert_eq!(
+            model.resolve(&from(0)),
+            Step::WriteFromMapping { file: 0, src: 30, dst: 30, len: 50 }
+        );
+        let apart = Op::WriteFromMapping { file: 0, place: Place::At(60), len: 20, by: 40 };
+        assert_eq!(
+            model.resolve(&apart),
+            Step::WriteFromMapping { file: 0, src: 60, dst: 20, len: 20 }
+        );
     }
 
     /// A truncation racing a store leaves the store, below the size it went down to, and zeros

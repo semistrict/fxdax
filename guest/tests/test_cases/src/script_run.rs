@@ -1861,7 +1861,7 @@ pub(crate) mod tests {
                 Err(EFAULT),
                 Ok(123),
                 Ok(2 * PAGE),
-                Ok(2 * PAGE),
+                Ok(99),
                 Ok(0),
             ]
         );

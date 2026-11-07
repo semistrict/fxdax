@@ -1440,9 +1440,9 @@ static void cow_write_whole(u64 page, u64 round)
  */
 /*
  * That a write(2) from a file's own mapping, copying on write, its source a page on from its
- * target, overlapping it, then stores through the mapping over both, leave the file as written
- * and stored, each store to a page made private (TASK-149.16's hostile scripts' writes from a
- * file's mapping, as same_page has them without copying on write).
+ * target, apart from it in a page they share, then stores through the mapping over both, leave
+ * the file as written and stored, each store to a page made private (TASK-149.16's hostile
+ * scripts' writes from a file's mapping, as same_page has them without copying on write).
  */
 static void cow_write_from_its_own_mapping(void)
 {
