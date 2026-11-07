@@ -1270,12 +1270,13 @@ fn daemon_line() -> String {
     .concat();
     format!(
         "daemon: {} durable_lag_count={} durable_lag_max_us={} durable_lag_p50_ms={} \
-         durable_lag_p99_ms={} {} {}",
+         durable_lag_p99_ms={} durable_lag_within_50ms={} {} {}",
         named.join(" "),
         lags.count,
         lags.max_us,
         quantile(0.5),
         quantile(0.99),
+        lags.within_turn,
         buckets.join(" "),
         timed.join(" ")
     )

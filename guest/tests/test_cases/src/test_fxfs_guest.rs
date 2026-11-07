@@ -253,11 +253,11 @@ mod host {
     /// The store's capacity: room for the crash test's unnamed file too.
     const CAPACITY: u64 = 128 << 20;
 
-    /// fxdax: how long before the kill a file's fsync may have returned for it to be found short
-    /// or empty, as one its daemon killed lost, its creation durable, its data not: two of
-    /// extentd's turns, in which it makes the commits it ordered, and answered, durable (doc-12;
-    /// main's lag up to some 60 ms, GCE r733).
-    const LOST_WITHIN_MS: u128 = 100;
+    /// fxdax: doc-12's crash bound: what a daemon crash may lose, the commits ordered, and
+    /// answered, within it before. A file whose fsync returned that soon before the kill may be
+    /// found short or empty, as one the daemon lost, its creation durable, its data not (TASK-221:
+    /// set from the case's longest lags, main's 60-81 ms, TASK-165.9's up to 288 ms).
+    const CRASH_LOSS_BOUND_MS: u128 = 500;
 
     /// The files whose fsync the guest says returned, its writer and index, as `output` says.
     fn synced_files(output: &str) -> Vec<(u8, usize)> {
@@ -282,14 +282,15 @@ mod host {
             })
     }
 
-    /// fxdax: the files whose fsync returned within [`LOST_WITHIN_MS`] before the guest asked to be
-    /// killed, as `output` says: those a daemon killed may lose, short or empty.
+    /// fxdax: the files whose fsync returned within [`CRASH_LOSS_BOUND_MS`] before the guest asked
+    /// to be killed, as `output` says: those a daemon killed may lose, short or empty.
     fn synced_at_the_kill(output: &str) -> std::collections::BTreeSet<(u8, usize)> {
-        let killing = output.lines().find_map(|line| line.strip_prefix(KILLING)?.strip_suffix("ms"));
+        let killing = output.lines().find_map(|line| line.strip_prefix(KILLING));
+        let killing = killing.and_then(|at| at.strip_suffix("ms"));
         let Some(killing) = killing.and_then(|at| at.parse::<u128>().ok()) else {
             return std::collections::BTreeSet::new();
         };
-        let recent = |at: u128| at + LOST_WITHIN_MS >= killing;
+        let recent = |at: u128| at + CRASH_LOSS_BOUND_MS >= killing;
         synced(output).filter(|(_, at)| at.is_some_and(recent)).map(|(file, _)| file).collect()
     }
 
@@ -306,8 +307,10 @@ mod host {
         let stayed = |writer, index| kept(fs, writer, index, recent.contains(&(writer, index)));
         let mut lost = 0;
         for &(writer, index) in synced {
-            let earlier_lost = (synced.iter())
-                .any(|&(other, before)| other == writer && before < index && !stayed(other, before));
+            let lost_before = |&(other, before): &(u8, usize)| {
+                other == writer && before < index && !stayed(other, before)
+            };
+            let earlier_lost = synced.iter().any(lost_before);
             if stayed(writer, index) {
                 assert!(!earlier_lost, "writer {writer}'s file {index} stayed, an earlier one lost");
             } else {
@@ -343,12 +346,12 @@ mod host {
         assert_eq!(synced_files(output), vec![(1, 2), (4, 5)]);
     }
 
-    /// fxdax: the files whose fsync returned within [`LOST_WITHIN_MS`] before the guest asked to be
-    /// killed, as it says, are those a daemon killed may leave short; none if it says not when, or
-    /// a line cut short says not when (TASK-165.9).
+    /// fxdax: the files whose fsync returned within [`CRASH_LOSS_BOUND_MS`] before the guest asked
+    /// to be killed, as it says, are those a daemon killed may leave short; none if it says not
+    /// when, or a line cut short says not when (TASK-165.9).
     #[test]
     fn files_synced_just_before_the_kill_are_recent() {
-        let output = "synced 1 7 at 1000ms\nsynced 2 3 at 1150ms\nsynced 1 8 at 1201ms\n\
+        let output = "synced 1 7 at 500ms\nsynced 2 3 at 750ms\nsynced 1 8 at 801ms\n\
                       synced 2 4 at 125\nkilling at 1300ms\nkill me";
         assert_eq!(synced_files(output), vec![(1, 7), (2, 3), (1, 8), (2, 4)]);
         assert_eq!(synced_at_the_kill(output), [(1, 8)].into());

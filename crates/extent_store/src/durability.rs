@@ -39,6 +39,9 @@ pub(crate) struct Durability<T> {
 pub struct Lags {
     pub count: u64,
     pub max_us: u64,
+    /// fxdax: those within extentd's turn, 50 ms: doc-12's median holds while they are half of
+    /// them at least (TASK-221).
+    pub within_turn: u64,
     /// Bucket `i`: within 2^i ms (`i` 0: within 1 ms), the last all beyond.
     pub buckets: [u64; LAG_BUCKETS],
 }
@@ -67,6 +70,7 @@ impl Lags {
         let ms = us.div_ceil(1000).max(1);
         let bucket = (u64::BITS - (ms - 1).leading_zeros()) as usize;
         self.buckets[bucket.min(LAG_BUCKETS - 1)] += 1;
+        self.within_turn += u64::from(us <= 50_000);
         if us > self.max_us {
             self.max_us = us;
             // The longest yet, past extentd's turn: said as it happens, which a daemon killed
@@ -80,7 +84,7 @@ impl Lags {
 
 /// [`Lags`] of this process's stores.
 static LAGS: std::sync::Mutex<Lags> =
-    std::sync::Mutex::new(Lags { count: 0, max_us: 0, buckets: [0; LAG_BUCKETS] });
+    std::sync::Mutex::new(Lags { count: 0, max_us: 0, within_turn: 0, buckets: [0; LAG_BUCKETS] });
 
 /// fxdax: how long this process's stores' commits waited to be made durable ([`Lags`]).
 pub fn durability_lags() -> Lags {
@@ -396,16 +400,17 @@ mod tests {
     }
 
     /// Lags count each commit within the least power of two of milliseconds holding it, the
-    /// longest exactly; their quantiles are those buckets' bounds.
+    /// longest exactly; their quantiles are those buckets' bounds; and those within extentd's
+    /// turn, 50 ms, exactly.
     #[test]
     fn lags_are_counted_in_powers_of_two_of_milliseconds() {
         let mut lags = Lags::default();
-        for ms in [0, 1, 2, 3, 40, 70] {
+        for ms in [0, 1, 2, 3, 40, 50, 51, 70] {
             lags.record(std::time::Duration::from_millis(ms));
         }
-        assert_eq!((lags.count, lags.max_us), (6, 70_000));
-        assert_eq!(lags.buckets[..8], [2, 1, 1, 0, 0, 0, 1, 1]);
-        assert_eq!((lags.quantile_ms(0.5), lags.quantile_ms(0.99)), (Some(2), Some(128)));
+        assert_eq!((lags.count, lags.max_us, lags.within_turn), (8, 70_000, 6));
+        assert_eq!(lags.buckets[..8], [2, 1, 1, 0, 0, 0, 3, 1]);
+        assert_eq!((lags.quantile_ms(0.5), lags.quantile_ms(0.99)), (Some(4), Some(128)));
         assert_eq!(Lags::default().quantile_ms(0.99), None);
     }
 

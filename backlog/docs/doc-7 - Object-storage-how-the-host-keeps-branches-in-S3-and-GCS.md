@@ -3,7 +3,7 @@ id: doc-7
 title: 'Object storage: how the host keeps branches in S3 and GCS'
 type: specification
 created_date: '2026-10-17 01:31'
-updated_date: '2026-11-06 12:31'
+updated_date: '2026-11-07 02:53'
 ---
 # Object storage: how the host keeps branches in S3 and GCS
 
@@ -296,7 +296,7 @@ The lease says who should write a branch; the dense, create-only segments and th
 Each branch's commits go through:
 
 1. **Ordered:** `COMMIT` completes (doc-4).
-2. **Durable locally:** within 50 ms, as now.
+2. **Durable locally:** within 50 ms at the median, and doc-12's crash bound at most (TASK-221).
 3. **Closed:** the segment is full or old enough (the lag's time bound).
 4. **Uploaded:** segments and extents of their own upload in parallel (single PUTs up to 64 MiB,
    multipart for larger extents), extents before the segments that name them.

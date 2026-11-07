@@ -83,6 +83,26 @@ pub fn say_daemon_stats(test_setup: &TestSetup, name: &str) {
     }
 }
 
+/// fxdax: fails unless the daemon named `name` the test spawned made half its stores' commits
+/// durable within extentd's turn, 50 ms, at least, as its stats file says: doc-12's median
+/// (`durable_lag_within_50ms`, TASK-221).
+pub fn check_durable_median(test_setup: &TestSetup, name: &str) -> anyhow::Result<()> {
+    let path = test_setup.tmp_dir.join(format!("{name}-stats.txt"));
+    let kept = fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
+    let daemon = kept.lines().find_map(|line| line.strip_prefix("daemon: "));
+    let daemon = daemon.context("no daemon line")?;
+    let field = |name: &str| -> anyhow::Result<u64> {
+        let value = daemon.split(' ').find_map(|field| field.strip_prefix(name)?.strip_prefix('='));
+        Ok(value.with_context(|| format!("no {name}"))?.parse()?)
+    };
+    let (count, within) = (field("durable_lag_count")?, field("durable_lag_within_50ms")?);
+    anyhow::ensure!(
+        2 * within >= count,
+        "{within} of {count} commits durable within 50 ms: doc-12's median is 50 ms"
+    );
+    Ok(())
+}
+
 /// An extent daemon of the test's own, FXDAX_EXTENTD_BIN, serving at `socket`, and its control API
 /// beside it ([`control`]), once this returns, with `env` in its environment, and `memory` bytes of
 /// memory if given (its default, 1 GiB, otherwise), logging to `<name>.log` in the test's directory.

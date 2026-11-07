@@ -310,8 +310,13 @@ fn keeps_object_storage_and_follower_stats() {
     // Its counters, then how long its stores' commits waited to be made durable (TASK-165.9).
     let mut expected: Vec<String> =
         crate::stats::stats().named().map(|(name, _)| name.to_owned()).into();
-    let lags =
-        ["durable_lag_count", "durable_lag_max_us", "durable_lag_p50_ms", "durable_lag_p99_ms"];
+    let lags = [
+        "durable_lag_count",
+        "durable_lag_max_us",
+        "durable_lag_p50_ms",
+        "durable_lag_p99_ms",
+        "durable_lag_within_50ms",
+    ];
     expected.extend(lags.map(str::to_owned));
     expected.extend((0..15).map(|bucket| format!("durable_lag_le_{}ms", 1 << bucket)));
     expected.push("durable_lag_gt_16384ms".to_owned());
