@@ -51,7 +51,7 @@ mod host {
     use std::path::Path;
 
     const CAPACITY: u64 = 256 << 20;
-    const WINDOW: crate::common::Window = crate::common::Window::Small(64 << 20);
+    const WINDOW: crate::common::Window = crate::common::Window::Large;
 
     /// The image's layers, bottom first: the lower gzipped, as images' usually are.
     fn layers() -> anyhow::Result<Vec<Vec<u8>>> {
