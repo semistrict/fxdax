@@ -558,6 +558,16 @@ RUN apk add --no-cache postgresql postgresql-contrib perf e2fsprogs
                 let status = daemon.wait()?;
                 anyhow::ensure!(status.success(), "the base's daemon drained: {status}");
                 std::fs::rename(dir.join("extentd.log"), dir.join("extentd-base.log"))?;
+                // Its sockets stay where it served, which another daemon listens at only once
+                // they're gone.
+                for gone in [socket.clone(), socket.with_extension("control")] {
+                    match std::fs::remove_file(&gone) {
+                        Err(err) if err.kind() != std::io::ErrorKind::NotFound => {
+                            Err(err).with_context(|| format!("removing {}", gone.display()))?
+                        }
+                        _ => {}
+                    }
+                }
                 let cache = dir.join("extentd-cold-cache");
                 std::fs::create_dir_all(&cache)?;
                 let mut env = env.to_vec();
