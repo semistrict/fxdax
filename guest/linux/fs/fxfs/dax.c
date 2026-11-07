@@ -1431,6 +1431,21 @@ static struct fxfs_dax_range *fxfs_dax_alloc_range(struct fxfs_dax *dax, unsigne
 }
 
 /*
+ * The bytes the region of extent `e` spans: the extent's, or a chunk's if Fxfs doesn't count it, as
+ * a volume over a base counts none of the base's, whose filesystem's allocator does: as far as a
+ * slice's extent may reach, a small file's staging extent's (fxfs_dax_new_slice). The device maps
+ * zeros past an extent's end, so that the region maps whole in one MAP all the same, which each of
+ * the files of the extent then slices: refused, each was a range of its own, a MAP each, and a
+ * sandbox's cold read of the Linux tree over an attached generation took 27 s, 19.6 of them in
+ * 91,072 MAPs, against a fresh VM's 5.7 s on the publisher's store, its 1,005 (GCE r940,
+ * TASK-229). A piece past it is a range's of its own, as fxfs_dax_region_map refuses it (-EXDEV).
+ */
+static u64 fxfs_dax_region_size(const struct fxfs_dax_extent *e)
+{
+	return e->extent_size ?: FXFS_DAX_SIZE;
+}
+
+/*
  * The region mapping extent `e`'s, made, unmapped, if there is none: with a reference more, the
  * caller's. -EAGAIN if the window has no room for it now, reclaiming ranges for it if regions
  * share the ranges' space: the caller holds a file's DAX semaphore, and can't wait for room.
@@ -1440,7 +1455,7 @@ static struct fxfs_dax_range *fxfs_dax_alloc_range(struct fxfs_dax *dax, unsigne
 static struct fxfs_dax_region *fxfs_dax_get_region(struct fxfs_dax *dax,
 						   const struct fxfs_dax_extent *e)
 {
-	unsigned long pages = DIV_ROUND_UP(e->extent_size, PAGE_SIZE);
+	unsigned long pages = DIV_ROUND_UP(fxfs_dax_region_size(e), PAGE_SIZE);
 	struct fxfs_dax_region *region, *new;
 	long window_offset;
 
@@ -1570,8 +1585,8 @@ static struct fxfs_dax_range *fxfs_dax_new_slice(struct fxfs_dax *dax, struct in
 	if (count < 0)
 		return ERR_PTR(count);
 	/* Nothing maps an open extent: a range of its own maps the chunk, sealing it first. */
-	if (e.offset != start || e.len != end - start || !e.extent_size ||
-	    e.extent_size > FXFS_DAX_SIZE || !PAGE_ALIGNED(e.extent_offset) ||
+	if (e.offset != start || e.len != end - start || fxfs_dax_region_size(&e) > FXFS_DAX_SIZE ||
+	    !PAGE_ALIGNED(e.extent_offset) ||
 	    e.access != FXFS_DAX_SEALED)
 		return NULL;
 	region = fxfs_dax_get_region(dax, &e);

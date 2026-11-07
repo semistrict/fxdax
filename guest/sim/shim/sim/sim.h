@@ -222,6 +222,11 @@ u64 fxfs_sim_reserved(struct fxfs *fs, u64 ino);
 u64 fxfs_sim_seals(struct fxfs *fs);
 /* Whether a seal has begun and not ended. */
 bool fxfs_sim_sealing(struct fxfs *fs);
+/*
+ * Has Fxfs count no extent's size while `unknown` (fxfs_dax_extents' extent_size 0), as a volume
+ * over a base counts none of the base's, whose filesystem's allocator counts them (TASK-229).
+ */
+void fxfs_sim_extent_sizes_unknown(bool unknown);
 /* Logs what happens to the block of `page` of file `ino`. */
 void fxfs_sim_watch(u64 ino, u64 page);
 

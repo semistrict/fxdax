@@ -309,8 +309,21 @@ static u64 take_staged(struct fxfs *fs, u64 pages, struct stub_extent **extent)
 }
 
 /* How far `extent` reaches, as allocated, or for the staging extent, while it is open, may yet. */
+/*
+ * Whether Fxfs counts no extent's size (fxfs_sim_extent_sizes_unknown), as it counts none of a
+ * base's, another filesystem's allocator's (TASK-229).
+ */
+static bool sizes_unknown;
+
+void fxfs_sim_extent_sizes_unknown(bool unknown)
+{
+	sizes_unknown = unknown;
+}
+
 static u64 extent_bytes(const struct fxfs *fs, const struct stub_extent *extent)
 {
+	if (sizes_unknown)
+		return 0;
 	return (extent == fs->staging && extent->open ? extent->pages : extent->used) << PAGE_SHIFT;
 }
 
