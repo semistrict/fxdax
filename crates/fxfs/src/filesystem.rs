@@ -262,6 +262,12 @@ pub struct SyncOptions<'a> {
     /// flush lets die, round trips to the device that the next flush waits for (as an fsync
     /// needs only what it wrote to be on the device).
     pub background_frees: bool,
+
+    /// fxdax: the caller holds the commit lock: an allocation for the journal's own transaction
+    /// (`Transaction::holding_commits`), short of room, as a commit makes room in the journal. The
+    /// sync records no reaches, whose transaction would wait for that lock, its own task's, for
+    /// ever (TASK-233); the next sync records them.
+    pub holding_commits: bool,
 }
 
 pub struct OpenFxFilesystem(Arc<FxFilesystem>);
@@ -788,8 +794,9 @@ impl FxFilesystem {
     pub async fn sync(&self, options: SyncOptions<'_>) -> Result<(), Error> {
         let wait_for_frees = options.flush_device && !options.background_frees;
         // fxdax: what dropped allocations left in shared extents, before the barrier that seals it:
-        // boxed, as an allocation short of room syncs, and this commits a transaction.
-        if !self.options.read_only {
+        // boxed, as an allocation short of room syncs, and this commits a transaction; but not as
+        // the caller holds the commit lock, which that transaction would wait for (TASK-233).
+        if !self.options.read_only && !options.holding_commits {
             Box::pin(self.allocator().record_reaches()).await?;
         }
         self.journal.sync(options).await?;

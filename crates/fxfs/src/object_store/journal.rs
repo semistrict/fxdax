@@ -1760,6 +1760,9 @@ impl Journal {
         } else {
             handle.new_transaction_with_options(borrowing).await?
         };
+        // fxdax: made as the commit it makes room for holds the commit lock: an allocation short of
+        // room syncs, which commits nothing then (TASK-233).
+        transaction.holding_commits = true;
         if let Some(extension) = &extension {
             handle
                 .preallocate_range_in_extents_of(

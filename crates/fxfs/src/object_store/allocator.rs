@@ -1460,6 +1460,8 @@ impl Allocator {
                 .sync(SyncOptions {
                     flush_device: true,
                     precondition: Some(Box::new(|| self.needs_sync(len))),
+                    // fxdax: the journal's own transaction's, as a commit makes room (TASK-233).
+                    holding_commits: transaction.holding_commits,
                     ..Default::default()
                 })
                 .await?;

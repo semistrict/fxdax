@@ -661,6 +661,11 @@ pub struct Transaction<'a> {
 
     /// fxdax: what the records of `checksums` take of the journal.
     checksum_bytes: u64,
+
+    /// fxdax: whether it is made as a commit holds the commit lock: the journal's own
+    /// (`Journal::make_room`). What an allocation for it short of room syncs commits nothing,
+    /// which would wait for that lock, its own task's (TASK-233).
+    pub holding_commits: bool,
 }
 
 impl<'a> Transaction<'a> {
@@ -694,6 +699,7 @@ impl<'a> Transaction<'a> {
             includes_write: false,
             mutation_bytes: 0,
             checksum_bytes: 0,
+            holding_commits: false,
         };
 
         ScopeGuard::into_inner(guard);

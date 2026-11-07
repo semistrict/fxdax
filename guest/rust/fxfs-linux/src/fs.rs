@@ -295,9 +295,12 @@ impl Filesystem {
             let commits = hold_commits(&self.filesystem).await;
             {
                 let _durable = self.durability.begin();
+                // As `commits` holds the commit lock: a sync recording reaches would wait for it
+                // for ever (TASK-233).
                 let options = SyncOptions {
                     flush_device: true,
                     background_frees: true,
+                    holding_commits: true,
                     ..Default::default()
                 };
                 self.filesystem.sync(options).await?;

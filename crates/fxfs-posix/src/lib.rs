@@ -1772,6 +1772,7 @@ impl<P: Platform> Fxfs<P> {
                 flush_device: true,
                 background_frees: true,
                 precondition: Some(Box::new(precondition)),
+                ..Default::default()
             })
             .await?;
         if covered.load(Ordering::Relaxed) {
