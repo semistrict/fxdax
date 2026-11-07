@@ -92,6 +92,20 @@ measurement).
 
 ## Runs
 
+### r908, 2026-11-07: the full gate again, on main after the FUSE session's changes; every gate passes
+
+A check of main once the FUSE session's changes landed (fxfs and fxfs-posix: a DAX window maps none
+of what an allocation left unwritten, a file's last block past its end, queued unlinks' times), with
+land-w1 (TASK-227) on it, on `fxdax-test-r884-c` as r903: the single phase on 4b01ccf40, the density
+and gate phases on dcb379d75, the same with land-hk (TASK-94, TASK-231) under it. No gate regressed
+against r903.
+
+Single: no-dax 1248, 1277, 1306, 1298, 1337; dax 1309, 1293, 1364, 1350, 1376; ext4-dax-pmem median
+1208; no-dax-forked 1110, 1278, 1388, 1400, 1335; dax-forked 1133, 1279, 1250, 1310, 1247. Gates:
+`dax` 1.040, `forked-dax` 0.936 (r903: 0.949), `static-dax` 1.12, `decay` 0.99-1.20, `density` 1.01
+and 0.98, `density-memory` 0.761 (no DAX 2,517.3 MiB a VM added, DAX 1,915.3), `density-memory-mib`
+1,915.3, `bigmap-read` 4.86, `bigmap-guest-cache` 0.0, `bigmap-written-memory` 1.12.
+
 ### r903, 2026-11-07: the full gate with windows as large as the data (TASK-227); every gate passes
 
 The pgbench cases' windows the host's memory, 15.6 GiB (16,760,438,784 bytes), where they were 2
