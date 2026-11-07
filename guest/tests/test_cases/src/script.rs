@@ -204,9 +204,9 @@ pub enum Op {
     /// end together, a negative offset, a length of nothing. `k` places it near the end.
     Limit { file: usize, call: Limit, k: u64, len: u64 },
     /// fxdax: a write, or a truncation, `k` bytes either side of `base`, far past what the model
-    /// holds, on a scratch file of the run's own (`Run`'s far file): the DAX window's ends, ext4's
-    /// largest file's, a DAX mount's, i64's. What it comes to is the filesystem's largest file's,
-    /// which a run measures.
+    /// holds, on a scratch file of the run's own (`Run`'s far file): past a small DAX window's end,
+    /// at ext4's largest file's end, a DAX mount's, i64's. What it comes to is the filesystem's
+    /// largest file's, which a run is told ([`far`], `Options::largest`).
     Far { base: u64, k: i64, len: u64, data: u64, truncate: bool },
     /// fxdax: mmap of `len` bytes of the file at `place`, a page's start if `aligned`: refused
     /// (`EINVAL`) at no page's start, or of nothing; else read through, past the file's end too, to
@@ -387,9 +387,10 @@ fn wide_op(
 /// fxdax: of the operations, one in this many has a hostile one after it, in the hostile mix.
 const HOSTILE_ONE_IN: u64 = 4;
 
-/// fxdax: where [`Op::Far`]'s offsets are drawn around: the DAX window's ends (512 MiB, the
-/// guest's), past them, ext4's largest file (16 TiB less a block, 4 KiB blocks), a DAX mount's
-/// (i64's end less a chunk), i64's.
+/// fxdax: where [`Op::Far`]'s offsets are drawn around: a file's offsets past a small DAX window's
+/// end (512 MiB, 1 GiB, as a file larger than its window maps them in turn), ext4's largest file
+/// (16 TiB less a block, 4 KiB blocks), a DAX mount's (i64's end less a chunk), i64's, and between
+/// those (1 PiB).
 const FAR: [u64; 6] = [
     512 << 20,
     1 << 30,
