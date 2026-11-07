@@ -1,11 +1,11 @@
 ---
 id: TASK-222
 title: 'Host FUSE mounts of a store''s filesystem: fxdax-mount'
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-07 03:43'
-updated_date: '2026-11-07 04:11'
+updated_date: '2026-11-07 06:42'
 labels:
   - fuse
   - host
@@ -23,31 +23,31 @@ A store's Fxfs (an image, an imported base, a stopped VM's store) can only be re
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A FUSE server, independent of its transport, serves a mounted Filesystem: entries, attributes, file I/O, directories, symlinks, hard links, special files, renames, extended attributes, statfs, fsync, fallocate; malformed requests answered EINVAL, unsupported ones ENOSYS
-- [ ] #2 Protocol tests drive the server with requests encoded by an independent client, on every host
-- [ ] #3 On Linux, a mount through /dev/fuse: mount(2) as root, fusermount3 otherwise; served until unmounted, after which the filesystem is closed and its store whole (fsck)
-- [ ] #4 fxdax-mount STORE MOUNTPOINT mounts a store; SIGINT or SIGTERM unmounts it and it exits 0
-- [ ] #5 A Linux test mounts a store through the kernel, works on it with ordinary file system calls, unmounts, and finds what it wrote in the store, checked
+- [x] #1 A FUSE server, independent of its transport, serves a mounted Filesystem: entries, attributes, file I/O, directories, symlinks, hard links, special files, renames, extended attributes, statfs, fsync, fallocate; malformed requests answered EINVAL, unsupported ones ENOSYS
+- [x] #2 Protocol tests drive the server with requests encoded by an independent client, on every host
+- [x] #3 On Linux, a mount through /dev/fuse: mount(2) as root, fusermount3 otherwise; served until unmounted, after which the filesystem is closed and its store whole (fsck)
+- [x] #4 fxdax-mount STORE MOUNTPOINT mounts a store; SIGINT or SIGTERM unmounts it and it exits 0
+- [x] #5 A Linux test mounts a store through the kernel, works on it with ordinary file system calls, unmounts, and finds what it wrote in the store, checked
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Plan
 
 <!-- SECTION:PLAN:BEGIN -->
 1. Node: ..'s inode (the held parent); setattr's kill_suid_sgid never touches a directory, as Linux's chown.
-2. fxdax::thread (Linux): one helper that blocks signals in every thread and waits for them on its own; extentd's SIGTERM drain uses it.
+2. fxdax::signals (Linux): signals blocked in every thread and waited for on a thread of its own (Signals::block, wait, spawn_taking_no_signals), which stacks' SIGQUIT and extentd's SIGTERM now use.
 3. fxdax::fuse::abi: the messages and flags used, from Linux's include/uapi/linux/fuse.h (7.36), fxdax's own, as TASK-17's were.
-4. fxdax::fuse::Server: handle(request bytes) -> reply bytes or none. A table of the kernel's lookups (nodeid -> Node, count; FUSE_ROOT_ID and the root's object ID swapped), directory handles holding a snapshot of entries, xattrs, setgid directories' group inherited (the kernel's inode_init_owner, which FUSE leaves to the server). OPEN/FLUSH refused (ENOSYS: no open or flush sent again), caches long: the mount is the store's only writer.
-5. fxdax::fuse::Mount (Linux): /dev/fuse; mount(2) with default_permissions, falling back to fusermount3 (_FUSE_COMMFD, SCM_RIGHTS) on EPERM; worker threads read, handle and reply until ENODEV; unmount (umount2 or fusermount3 -u, lazily on request); join closes the filesystem and gives the storage back.
-6. bin/fxdax-mount STORE MOUNTPOINT [--allow-other]: SIGINT/SIGTERM unmount lazily; exits 0 once the filesystem closed.
-7. Tests: tests/fuse.rs, the protocol through an independent client (every host); tests/fuse_mount.rs (Linux): through the kernel, in process and through the binary, then the store checked (fsck) and read back.
-8. CI and GCE hosts install fuse3 (fusermount3); README and crate docs.
+4. fxdax::fuse::Server: handle(request bytes) -> reply bytes or none. A table of the kernel's lookups (nodeid -> Node, count; FUSE_ROOT_ID and the root's object ID swapped), directory handles holding a snapshot of entries, xattrs, setgid directories' group inherited. OPEN/FLUSH refused (ENOSYS), caches long: the mount is the store's only writer.
+5. fxdax::fuse::Mount (Linux): /dev/fuse; mount(2) with default_permissions, falling back to fusermount3 (_FUSE_COMMFD, SCM_RIGHTS) on EPERM; worker threads until ENODEV; Unmounter; join closes the filesystem and gives the storage back.
+6. bin/fxdax-mount STORE MOUNTPOINT [--allow-other]: SIGINT/SIGTERM unmount lazily; exits 0 once closed.
+7. Tests: tests/fuse.rs (protocol, independent client, every host); tests/fuse_mount.rs (Linux, through the kernel, in process and through the binary, the store checked and read back).
+8. fuse3 on CI, GCE and Lima hosts; README and crate docs.
 <!-- SECTION:PLAN:END -->
 
 ## Implementation Notes
@@ -60,4 +60,12 @@ Bug 1, fxfs-posix setattr: a chown alone of a node without POSIX attributes (a n
 Bug 2, Node::setattr: kill_suid_sgid cleared a directory's setgid (and setuid), which Linux never does (chown_common sets ATTR_KILL_SUID only for non-directories): a chown through the FUSE server (HANDLE_KILLPRIV_V2 sends every chown as kill) would have cleared a shared directory's setgid. Found reading the old server for this port. Blind spot: the kill tests ran on files alone. Tests: filesystem setattr_changes_owner_permissions_and_times and fuse truncating_and_killing_privileges chown a setgid directory; both red with the bug back. Looking around: the guest's kill path is the kernel's own (setattr_should_drop_suidgid), not this one. Structure fine: the rule lives in Node::setattr, the one place.
 
 Validation so far: macOS fuse, filesystem, signals tests 64/64; fxfs-posix 75/75; Lima (aarch64 Ubuntu 24.04) fuse_mount 4/4 as a user (fusermount3) and 4/4 as root (mount(2)), fuse protocol 17/17, signal/stack/sigterm tests pass.
+
+Validation: macOS suite 2072/2072 (workspace and scripts parts); GCE r-20261107T041148Z: workspace 2285/2285 (fuse_mount 4/4 as root, mount(2)) and the 16 guest cases, all pass (the run's exit 127 was test.sh's go part on a host without Go, TASK-219's, fixed in c603e3f3f); Lima fuse_mount 4/4 as a user (fusermount3) and as root; GitHub CI run 42345256468 on land-fuse: every job green, the workspace part running fuse_mount through fusermount3 as the runner's user. Merged with main again before landing (TASK-24's image I/O), CI rerun on the merge.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Host FUSE mounts of a store's filesystem: fxdax::fuse (a transport-independent Server descended from TASK-17's, and on Linux a Mount over /dev/fuse by mount(2) or fusermount3) and fxdax-mount STORE MOUNTPOINT, read-write, served until unmounted or SIGINT/SIGTERM, then closed. Found and fixed on the way: fxfs-posix's setattr zeroed a node's mode on a chown of a node without POSIX attributes (a new volume's root), and Node::setattr cleared a directory's setgid on chown; each with a test red with the bug back. Signal threads refactored into fxdax::signals. Verified by protocol tests on macOS and Linux, kernel mount tests in Lima (user and root), GCE (root) and GitHub CI (user), the macOS suite, GCE's workspace and guest cases, and CI.
+<!-- SECTION:FINAL_SUMMARY:END -->
