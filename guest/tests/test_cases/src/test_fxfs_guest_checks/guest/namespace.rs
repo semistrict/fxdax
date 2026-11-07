@@ -6,6 +6,7 @@
 //! file handles.
 
 use super::*;
+use std::os::unix::fs::DirEntryExt;
 
 pub(super) fn test_namespace() {
     fs::create_dir(path("dir")).unwrap();
@@ -28,6 +29,122 @@ pub(super) fn test_namespace() {
 
     fs::File::open(path("dir/renamed")).unwrap().sync_all().unwrap();
     fsync_dir(&path("dir"));
+}
+
+/// The names in the directory `dir` and the inodes they link, in order of name.
+fn listing(dir: &str) -> Vec<(String, u64)> {
+    let mut names: Vec<_> = fs::read_dir(path(dir))
+        .unwrap()
+        .map(|entry| {
+            let entry = entry.unwrap();
+            (entry.file_name().into_string().unwrap(), entry.ino())
+        })
+        .collect();
+    names.sort();
+    names
+}
+
+/// The inode `name` links.
+fn ino(name: &str) -> u64 {
+    fs::symlink_metadata(path(name)).unwrap().ino()
+}
+
+/// fxdax: a directory read whole is kept with its inode (super.c's fxfs_vfs_dir_listing): each
+/// change of its names shows in the next read, every kind of change, a directory read from an open
+/// handle again from its start too, and a directory too large to be kept (TASK-227).
+pub(super) fn test_listings_follow_changes() {
+    fs::create_dir(path("listed")).unwrap();
+    fs::create_dir(path("listed-too")).unwrap();
+    let names =
+        |dir: &str| -> Vec<String> { listing(dir).into_iter().map(|(name, _)| name).collect() };
+    assert_eq!(names("listed"), [] as [&str; 0]);
+    fs::write(path("listed/a"), b"a").unwrap();
+    fs::write(path("listed/b"), b"b").unwrap();
+    assert_eq!(names("listed"), ["a", "b"]);
+    // Read twice: the second from what the first kept.
+    assert_eq!(names("listed"), ["a", "b"]);
+    fs::write(path("listed/c"), b"c").unwrap();
+    assert_eq!(names("listed"), ["a", "b", "c"]);
+    fs::remove_file(path("listed/a")).unwrap();
+    assert_eq!(names("listed"), ["b", "c"]);
+    fs::create_dir(path("listed/d")).unwrap();
+    assert_eq!(names("listed"), ["b", "c", "d"]);
+    fs::remove_dir(path("listed/d")).unwrap();
+    assert_eq!(names("listed"), ["b", "c"]);
+    fs::rename(path("listed/b"), path("listed/b2")).unwrap();
+    assert_eq!(names("listed"), ["b2", "c"]);
+    assert_eq!(names("listed-too"), [] as [&str; 0]);
+    fs::rename(path("listed/c"), path("listed-too/c")).unwrap();
+    assert_eq!(names("listed"), ["b2"]);
+    assert_eq!(names("listed-too"), ["c"]);
+    fs::hard_link(path("listed/b2"), path("listed/e")).unwrap();
+    std::os::unix::fs::symlink("b2", path("listed/f")).unwrap();
+    assert_eq!(names("listed"), ["b2", "e", "f"]);
+    let mknod = CString::new(path("listed/g")).unwrap();
+    assert_eq!(unsafe { libc::mknod(mknod.as_ptr(), libc::S_IFIFO | 0o600, 0) }, 0);
+    assert_eq!(names("listed"), ["b2", "e", "f", "g"]);
+
+    // Exchanged: the same names, each linking the other's inode.
+    let (e, c) = (ino("listed/e"), ino("listed-too/c"));
+    assert_eq!(listing("listed-too"), [("c".to_owned(), c)]);
+    let (from, to) =
+        (CString::new(path("listed/e")).unwrap(), CString::new(path("listed-too/c")).unwrap());
+    let exchanged = unsafe {
+        libc::syscall(
+            libc::SYS_renameat2,
+            libc::AT_FDCWD,
+            from.as_ptr(),
+            libc::AT_FDCWD,
+            to.as_ptr(),
+            libc::RENAME_EXCHANGE,
+        )
+    };
+    assert_eq!(exchanged, 0, "RENAME_EXCHANGE: {}", std::io::Error::last_os_error());
+    assert_eq!(listing("listed-too"), [("c".to_owned(), e)]);
+    assert!(listing("listed").contains(&("e".to_owned(), c)), "{:?}", listing("listed"));
+
+    // An open handle's read from its start again, once a name was added.
+    let dir = CString::new(path("listed")).unwrap();
+    let handle = unsafe { libc::opendir(dir.as_ptr()) };
+    assert!(!handle.is_null(), "opendir: {}", std::io::Error::last_os_error());
+    let read_all = || {
+        let mut names = Vec::new();
+        loop {
+            let entry = unsafe { libc::readdir(handle) };
+            if entry.is_null() {
+                break;
+            }
+            let name = unsafe { CStr::from_ptr((*entry).d_name.as_ptr()) };
+            let name = name.to_str().unwrap().to_owned();
+            if name != "." && name != ".." {
+                names.push(name);
+            }
+        }
+        names.sort();
+        names
+    };
+    assert_eq!(read_all(), ["b2", "e", "f", "g"]);
+    fs::write(path("listed/h"), b"h").unwrap();
+    unsafe { libc::rewinddir(handle) };
+    assert_eq!(read_all(), ["b2", "e", "f", "g", "h"]);
+    assert_eq!(unsafe { libc::closedir(handle) }, 0);
+
+    // More names than a read takes at once (32 KiB): read in parts, none of it kept.
+    fs::create_dir(path("listed-large")).unwrap();
+    let large: Vec<String> = (0..1000).map(|n| format!("{n:04}-{}", "x".repeat(60))).collect();
+    for name in &large {
+        fs::write(path(&format!("listed-large/{name}")), b"").unwrap();
+    }
+    assert_eq!(names("listed-large"), large);
+    fs::remove_file(path(&format!("listed-large/{}", large[500]))).unwrap();
+    let mut left = large.clone();
+    left.remove(500);
+    assert_eq!(names("listed-large"), left);
+
+    // Its inode and the listing with it dropped with the dentries, if nothing holds them: read
+    // from Fxfs again.
+    fs::write("/proc/sys/vm/drop_caches", b"2").unwrap();
+    assert_eq!(names("listed"), ["b2", "e", "f", "g", "h"]);
 }
 
 /// O_TMPFILE: an unnamed file, which a link names, or which goes as it is closed.

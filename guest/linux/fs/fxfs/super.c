@@ -583,6 +583,53 @@ static int fxfs_vfs_acl_xattr(struct posix_acl *acl, int type, umode_t mode,
 	return 0;
 }
 
+/*
+ * fxdax: a directory's entries, all of them, packed as a cursor's buffer packs them, kept with its
+ * inode while the kernel caches it, as ext4's directory blocks are kept in the page cache: a read
+ * from the start takes them rather than seeking each of Fxfs's layers and decoding its records,
+ * and allocating a cursor's buffer: a 91k-file tree's 6,059 directories, warm, took 108 ms to walk
+ * that way against ext4 on virtio-pmem's 83 ms, and 62 ms kept (GCE r904, r905, TASK-230). The
+ * kernel holds the directory's lock exclusively as its entries change, and shared as they are
+ * read: they are kept as a read under the shared lock found them, and dropped as a change begins
+ * (fxfs_vfs_dir_changes). A follower's entries change under it: it keeps none.
+ */
+struct fxfs_vfs_dir_listing {
+	refcount_t refs;
+	size_t len;
+	char entries[];
+};
+
+static void fxfs_vfs_dir_put_listing(struct fxfs_vfs_dir_listing *listing)
+{
+	if (listing && refcount_dec_and_test(&listing->refs))
+		kvfree(listing);
+}
+
+/* The directory's listing, if it has one, for the caller to put. */
+static struct fxfs_vfs_dir_listing *fxfs_vfs_dir_get_listing(struct inode *inode)
+{
+	struct fxfs_vfs_dir_listing *listing;
+
+	spin_lock(&inode->i_lock);
+	listing = fxfs_vfs_inode(inode)->listing;
+	if (listing)
+		refcount_inc(&listing->refs);
+	spin_unlock(&inode->i_lock);
+	return listing;
+}
+
+/* Drops the directory's listing, as its entries change or it is evicted. */
+static void fxfs_vfs_dir_changes(struct inode *inode)
+{
+	struct fxfs_vfs_dir_listing *listing;
+
+	spin_lock(&inode->i_lock);
+	listing = fxfs_vfs_inode(inode)->listing;
+	fxfs_vfs_inode(inode)->listing = NULL;
+	spin_unlock(&inode->i_lock);
+	fxfs_vfs_dir_put_listing(listing);
+}
+
 /* Creates `dentry` in `dir` as `mode` says, owned by the caller. */
 static int fxfs_vfs_mknod(struct mnt_idmap *idmap, struct inode *dir, struct dentry *dentry,
 			  umode_t mode, dev_t rdev)
@@ -595,6 +642,7 @@ static int fxfs_vfs_mknod(struct mnt_idmap *idmap, struct inode *dir, struct den
 	u32 gid;
 	int err;
 
+	fxfs_vfs_dir_changes(dir);
 	err = fxfs_vfs_new_acls(dir, &mode, &default_acl, &acl);
 	if (err)
 		return err;
@@ -694,6 +742,7 @@ static int fxfs_vfs_symlink(struct mnt_idmap *idmap, struct inode *dir, struct d
 
 	if (strlen(target) > FXFS_SYMLINK_MAX)
 		return -ENAMETOOLONG;
+	fxfs_vfs_dir_changes(dir);
 	err = fxfs_nofs(fxfs_symlink(fxfs_vfs_fs(dir->i_sb), dir->i_ino, dentry->d_name.name,
 					 dentry->d_name.len, target, strlen(target),
 					 fxfs_vfs_new_uid(idmap, dir), gid, &attr,
@@ -710,10 +759,11 @@ static int fxfs_vfs_link(struct dentry *old_dentry, struct inode *dir, struct de
 	struct fxfs_attr attr, dir_attr;
 	/* An O_TMPFILE file, linked for the first time, leaves the graveyard. */
 	bool unnamed = inode->i_nlink == 0;
-	int err = fxfs_nofs(fxfs_link(fxfs_vfs_fs(dir->i_sb), inode->i_ino, dir->i_ino,
-				      dentry->d_name.name, dentry->d_name.len, unnamed, &attr,
-				      &dir_attr));
+	int err;
 
+	fxfs_vfs_dir_changes(dir);
+	err = fxfs_nofs(fxfs_link(fxfs_vfs_fs(dir->i_sb), inode->i_ino, dir->i_ino,
+				  dentry->d_name.name, dentry->d_name.len, unnamed, &attr, &dir_attr));
 	if (err)
 		return err;
 	fxfs_vfs_update_attr(inode, &attr);
@@ -755,6 +805,7 @@ static int fxfs_vfs_unlink(struct inode *dir, struct dentry *dentry)
 	struct fxfs_attr dir_attr;
 	int replaced;
 
+	fxfs_vfs_dir_changes(dir);
 	if (!S_ISDIR(inode->i_mode)) {
 		int err = fxfs_nofs(fxfs_unlink_later(fs, dir->i_ino, dentry->d_name.name,
 						      dentry->d_name.len, inode->i_ino));
@@ -789,6 +840,8 @@ static int fxfs_vfs_rename(struct mnt_idmap *idmap, struct inode *old_dir,
 	struct fxfs *fs = fxfs_vfs_fs(old_dir->i_sb);
 	int replaced, err;
 
+	fxfs_vfs_dir_changes(old_dir);
+	fxfs_vfs_dir_changes(new_dir);
 	if (flags & RENAME_EXCHANGE) {
 		err = fxfs_nofs(fxfs_exchange(fs, old_dir->i_ino, old_dentry->d_name.name,
 					      old_dentry->d_name.len, new_dir->i_ino,
@@ -1162,14 +1215,17 @@ struct fxfs_vfs_dir_entry {
 /*
  * Where reading an open directory got to: the position after the last entry it read, and that
  * entry's name, which the next read continues after, whatever was removed meanwhile. And the
- * entries read from Fxfs ahead of it, from `buffered_pos` on: each of the directory's reads, from
- * Fxfs, seeks its trees' layers for where it left off.
+ * entries read ahead of it, from `buffered_pos` on: read from Fxfs into its buffer, each of the
+ * directory's reads seeking its trees' layers for where it left off, or the directory's listing.
  */
 struct fxfs_vfs_dir_cursor {
 	loff_t pos;
 	size_t len;
 	char name[NAME_MAX + 1];
+	/* Its own, for what it reads from Fxfs; and the entries it has, in it or `listing`'s. */
 	char *buffer;
+	const char *entries;
+	struct fxfs_vfs_dir_listing *listing;
 	size_t buffered, at;
 	loff_t buffered_pos;
 	/* Whether the buffer holds the directory's last entries. */
@@ -1199,17 +1255,61 @@ static bool fxfs_vfs_buffer_entry(void *arg, const char *name, size_t len, u64 i
 }
 
 /*
+ * Keeps the entries in the cursor's buffer as the directory's listing: all of them, read from the
+ * start, under the directory's lock shared, which no change of them holds meanwhile. Not a
+ * follower's, whose entries change under it. Kept if it can be: a read without is only slower.
+ */
+static void fxfs_vfs_dir_keep(struct inode *inode, struct fxfs_vfs_dir_cursor *cursor)
+{
+	struct fxfs_vfs_dir_listing *listing;
+
+	if (fxfs_vfs_follows(inode->i_sb))
+		return;
+	listing = kvmalloc(struct_size(listing, entries, cursor->buffered), GFP_KERNEL);
+	if (!listing)
+		return;
+	refcount_set(&listing->refs, 1);
+	listing->len = cursor->buffered;
+	memcpy(listing->entries, cursor->buffer, cursor->buffered);
+	spin_lock(&inode->i_lock);
+	/* Another read's from the start may have kept the same entries first. */
+	if (!fxfs_vfs_inode(inode)->listing)
+		swap(fxfs_vfs_inode(inode)->listing, listing);
+	spin_unlock(&inode->i_lock);
+	fxfs_vfs_dir_put_listing(listing);
+}
+
+/*
  * Reads the directory's entries from position `pos` on into the cursor's buffer, as many as fit:
- * after the cursor's name if it is the entry before `pos`, as a read continuing does.
+ * after the cursor's name if it is the entry before `pos`, as a read continuing does. From the
+ * start, the directory's listing if it has one, or what it reads kept as one if that's all of them.
  */
 static int fxfs_vfs_dir_fill(struct inode *inode, struct fxfs_vfs_dir_cursor *cursor, loff_t pos)
 {
 	bool resume = cursor->len && cursor->pos == pos;
 	int err;
 
+	fxfs_vfs_dir_put_listing(cursor->listing);
+	cursor->listing = NULL;
 	cursor->buffered = 0;
 	cursor->at = 0;
 	cursor->buffered_pos = pos;
+	cursor->last = false;
+	if (pos == 2 && !resume) {
+		cursor->listing = fxfs_vfs_dir_get_listing(inode);
+		if (cursor->listing) {
+			cursor->entries = cursor->listing->entries;
+			cursor->buffered = cursor->listing->len;
+			cursor->last = true;
+			return 0;
+		}
+	}
+	if (!cursor->buffer) {
+		cursor->buffer = kvmalloc(FXFS_DIR_BUFFER, GFP_KERNEL);
+		if (!cursor->buffer)
+			return -ENOMEM;
+	}
+	cursor->entries = cursor->buffer;
 	/*
 	 * fxdax: a follower's entries as of one state, under its fill barrier; dir_emit copies them
 	 * out once it is let go of, as a copy may fault.
@@ -1224,6 +1324,8 @@ static int fxfs_vfs_dir_fill(struct inode *inode, struct fxfs_vfs_dir_cursor *cu
 			       FXFS_DIR_BUFFER;
 	if (err)
 		cursor->buffered = 0;
+	else if (pos == 2 && !resume && cursor->last)
+		fxfs_vfs_dir_keep(inode, cursor);
 	return err;
 }
 
@@ -1237,6 +1339,7 @@ static int fxfs_vfs_dir_release(struct inode *inode, struct file *file)
 {
 	struct fxfs_vfs_dir_cursor *cursor = file->private_data;
 
+	fxfs_vfs_dir_put_listing(cursor->listing);
 	kvfree(cursor->buffer);
 	kfree(cursor);
 	return 0;
@@ -1252,16 +1355,11 @@ static int fxfs_vfs_iterate(struct file *file, struct dir_context *ctx)
 {
 	struct inode *inode = file_inode(file);
 	struct fxfs_vfs_dir_cursor *cursor = file->private_data;
-	struct fxfs_vfs_dir_entry *entry;
+	const struct fxfs_vfs_dir_entry *entry;
 	int err;
 
 	if (!dir_emit_dots(file, ctx))
 		return 0;
-	if (!cursor->buffer) {
-		cursor->buffer = kvmalloc(FXFS_DIR_BUFFER, GFP_KERNEL);
-		if (!cursor->buffer)
-			return -ENOMEM;
-	}
 	for (;;) {
 		if (cursor->buffered_pos != ctx->pos || cursor->at == cursor->buffered) {
 			/* At the end of the buffer, which held the last entries. */
@@ -1273,7 +1371,7 @@ static int fxfs_vfs_iterate(struct file *file, struct dir_context *ctx)
 			if (!cursor->buffered)
 				return 0;
 		}
-		entry = (struct fxfs_vfs_dir_entry *)(cursor->buffer + cursor->at);
+		entry = (const struct fxfs_vfs_dir_entry *)(cursor->entries + cursor->at);
 		if (!dir_emit(ctx, entry->name, entry->len, entry->ino,
 			      fs_umode_to_dtype(entry->mode)))
 			return 0;
@@ -2429,6 +2527,7 @@ static void fxfs_vfs_evict_inode(struct inode *inode)
 	dax_break_layout_final(inode);
 	truncate_inode_pages_final(&inode->i_data);
 	fxfs_dax_evict(inode);
+	fxfs_vfs_dir_changes(inode);
 	clear_inode(inode);
 	nofs = memalloc_nofs_save();
 	fxfs_evict(fxfs_vfs_fs(inode->i_sb), inode->i_ino, !inode->i_nlink);
@@ -2734,6 +2833,7 @@ static struct inode *fxfs_vfs_alloc_inode(struct super_block *sb)
 	fi->data = &fxfs_vfs_cache_data;
 	fxfs_dax_inode_init(&fi->dax);
 	atomic64_set(&fi->gen, 0);
+	fi->listing = NULL;
 	fi->fsflags = 0;
 	fi->blocks_as_of = 0;
 	return &fi->vfs;

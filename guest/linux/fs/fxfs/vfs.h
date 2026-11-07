@@ -317,6 +317,7 @@ loff_t fxfs_data_remap_file_range(struct file *file_in, loff_t pos_in, struct fi
 				  loff_t pos_out, loff_t len, unsigned int remap_flags);
 
 struct fxfs_dax_file;
+struct fxfs_vfs_dir_listing;
 
 /* A regular file's DAX state (dax.c). */
 struct fxfs_dax_inode {
@@ -333,6 +334,8 @@ struct fxfs_vfs_inode {
 	 * its dentries were looked up at (d_time) and revalidate against.
 	 */
 	atomic64_t gen;
+	/* fxdax: a directory's entries, kept while it is cached, under i_lock (super.c). */
+	struct fxfs_vfs_dir_listing *listing;
 	/* Its attribute flags (FS_*_FL), which Fxfs keeps in its mode (FXFS_MODE_*). */
 	u32 fsflags;
 	/* fxdax: how far the journal was written as i_blocks was read (fxfs_vfs_getattr). */

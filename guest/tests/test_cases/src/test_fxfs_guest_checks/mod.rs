@@ -146,6 +146,7 @@ macro_rules! checks {
             mmap_write: All, 3 => test_mmap_write(dax), verify_mmap_write;
             regular_write: All, 3 => test_regular_write, verify_regular_write;
             namespace: All, 3 => test_namespace, verify_namespace;
+            listings_follow_changes: All, 3 => test_listings_follow_changes;
             truncate_mapped: All, 3 => test_truncate_mapped, verify_truncate_mapped;
             eviction_writes_back: All, 3 => test_eviction_writes_back, verify_eviction_writes_back;
             tmpfile: All, 3 => test_tmpfile, verify_tmpfile;
