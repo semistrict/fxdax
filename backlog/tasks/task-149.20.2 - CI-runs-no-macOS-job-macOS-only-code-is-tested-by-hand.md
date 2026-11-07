@@ -1,11 +1,11 @@
 ---
 id: TASK-149.20.2
 title: 'CI runs no macOS job: macOS-only code is tested by hand'
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-07 13:36'
-updated_date: '2026-11-07 14:51'
+updated_date: '2026-11-07 16:49'
 labels:
   - testing
 dependencies: []
@@ -23,15 +23,15 @@ Found by TASK-149.20. CI (.github/workflows/ci.yml) runs on ubuntu alone; the Do
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A CI job runs the workspace's tests on macOS (GitHub's macos runners), or the user decides against it, recorded in OPEN_QUESTIONS.md
-- [ ] #2 It passes on main, or what fails is filed
+- [x] #1 A CI job runs the workspace's tests on macOS (GitHub's macos runners), or the user decides against it, recorded in OPEN_QUESTIONS.md
+- [x] #2 It passes on main, or what fails is filed
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
 - [ ] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -42,3 +42,15 @@ Found by TASK-149.20. CI (.github/workflows/ci.yml) runs on ubuntu alone; the Do
 3. test_ci.py checks the job runs those parts on macOS.
 4. Push land-h6, CI's macos job the proof; what fails there and not on a laptop is fixed or filed.
 <!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Landed: main b39151af7 (land-h6), CI 42391103133 green: macos (workspace) 11 min, macos (shuttle) 6 min, on macos-15. Locally on macOS, workspace 2,105 and shuttle pass; extent_store, extent_remote, fxdax and physmem's 768 tests pass within macOS's default 256 open files, so the job raises nothing. The first CI run (42383533320) was cancelled at its 90 minutes by Linux's test (workspace), not the macOS jobs: fxfs-posix's model test shrinking a real failure, a commit_mutex stall (filed apart). DoD #1 left: Linux on GCE not run (no GCE); CI's Linux jobs instead.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+CI's new macos job runs scripts/test.sh's workspace and Shuttle parts on GitHub's macos-15 runners, so the code fxdax compiles for macOS alone (physmem's physical map, extent_store's F_FULLFSYNC syncs, extent_remote's cache, fxdax's storage I/O) is tested on every push, not only on laptops. test_ci.py checks the job. Verified: CI 42391103133 green with both macOS jobs; local macOS workspace and shuttle pass.
+<!-- SECTION:FINAL_SUMMARY:END -->
