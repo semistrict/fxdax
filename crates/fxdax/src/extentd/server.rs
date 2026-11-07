@@ -235,6 +235,9 @@ struct Memory {
     public: std::os::fd::OwnedFd,
     /// fxdax: how many connections the tenant's VM processes have ([`MAX_CONNECTIONS`]).
     connections: Arc<std::sync::atomic::AtomicUsize>,
+    /// fxdax: what its connections have the daemon hold of its VM processes' requests together,
+    /// within the room they share (TASK-149.35).
+    in_flight: Arc<super::memory::InFlight>,
 }
 
 impl Memory {
@@ -243,7 +246,8 @@ impl Memory {
         let public = reopen_read_only(crate::pages::physical_memory())?;
         let arena = crate::pages::Arena::new();
         let memory = crate::pages::arena_memory(arena.id()).expect("a new arena");
-        Ok(Self { arena, memory, public, connections: Default::default() })
+        let (connections, in_flight) = Default::default();
+        Ok(Self { arena, memory, public, connections, in_flight })
     }
 }
 
@@ -321,6 +325,12 @@ impl Tenant {
         self.memory.arena.id()
     }
 
+    /// fxdax: what its connections have the daemon hold of its VM processes' requests, within the
+    /// room they share (TASK-149.35).
+    pub(super) fn in_flight(&self) -> &Arc<super::memory::InFlight> {
+        &self.memory.in_flight
+    }
+
     /// Whether its VM processes may name the store at `path`, whichever way `path` names it:
     /// `EACCES` unless it is where they name stores ([`Stores`]).
     fn holds(&self, path: &Path) -> Result<(), Errno> {
@@ -392,7 +402,8 @@ pub(super) fn connections() -> usize {
 async fn run_connection(stream: UnixStream, tenant: Arc<Tenant>) {
     let sender = match stream.try_clone().and_then(|clone| {
         clone.set_nonblocking(true)?;
-        AsyncSender::new(clone)
+        // fxdax: what it queues held in its tenant's room too (TASK-149.35).
+        AsyncSender::counting(clone, tenant.in_flight().clone())
     }) {
         Ok(sender) => Arc::new(sender),
         Err(err) => {
@@ -521,7 +532,7 @@ fn receive(
     Box::pin(async move {
         let mut ended = Ended::Closed;
         loop {
-            match receiver.receive(|header| connection.within_bounds(header)).await {
+            match receiver.receive(|header| connection.clone().within_bounds(*header)).await {
                 // fxdax: what the stage operations cost, counted before what waits for them goes
                 // on (TASK-91.16). What says so malformed, nothing replies to: it is dropped, as
                 // what isn't said (TASK-160.9).
@@ -754,6 +765,8 @@ impl Answer {
         let bytes = stream_bytes(&header);
         if bytes > 0 {
             self.connection.requests.lock().unwrap().stream_bytes -= bytes;
+            // fxdax: and its tenant's, which its reply's bytes are counted in as they're queued.
+            self.connection.tenant.in_flight().sub(bytes);
         }
         if let Err(err) = self.connection.peer.sender.send(reply, payload, &fds) {
             log::warn!("extentd: replying to a VM process: {err}");
@@ -1012,21 +1025,29 @@ impl Connection {
     /// ([`MAX_REQUESTS`]), and their stream data ([`MAX_STREAM_BYTES`]), with what the connection
     /// has queued for the VM process, in its room ([`Peer::room`]). Counted in, a request's, until
     /// its reply is queued ([`Answer`]). Past them, `QuotaExceeded`: the VM process broke the
-    /// protocol, and is let go, rather than held without end in the daemon's memory.
-    fn within_bounds(&self, header: &Header) -> std::io::Result<()> {
+    /// protocol, and is let go, rather than held without end in the daemon's memory. fxdax: and its
+    /// stream data in the room its tenant's connections share, waiting, before its payload is read,
+    /// until what they hold leaves room for it (TASK-149.35, [`super::memory::InFlight`]).
+    async fn within_bounds(self: Arc<Self>, header: Header) -> std::io::Result<()> {
         // fxdax: nor what its stage operations cost, which it says unasked (TASK-91.16).
-        if header.kind == ACK || header.kind == STAGE_COUNTS {
+        if [ACK, STAGE_COUNTS, STAGE_PRIVATE_COUNTS].contains(&header.kind) {
             return Ok(());
         }
-        let bytes = stream_bytes(header);
-        let mut requests = self.requests.lock().unwrap();
-        let in_flight = requests.in_flight();
-        let held = requests.stream_bytes + bytes + self.peer.sender.queued();
-        if in_flight >= MAX_REQUESTS || held > self.peer.room() {
-            let what = format!("{} requests, and {held} bytes, in flight", in_flight + 1);
-            return Err(std::io::Error::new(std::io::ErrorKind::QuotaExceeded, what));
+        let bytes = stream_bytes(&header);
+        {
+            let requests = self.requests.lock().unwrap();
+            let in_flight = requests.in_flight();
+            let held = requests.stream_bytes + bytes + self.peer.sender.queued();
+            if in_flight >= MAX_REQUESTS || held > self.peer.room() {
+                let what = format!("{} requests, and {held} bytes, in flight", in_flight + 1);
+                return Err(std::io::Error::new(std::io::ErrorKind::QuotaExceeded, what));
+            }
         }
-        requests.stream_bytes += bytes;
+        // Admitted one at a time, as its messages are received, so nothing came in meanwhile.
+        if bytes > 0 {
+            self.tenant.in_flight().take(bytes).await;
+        }
+        self.requests.lock().unwrap().stream_bytes += bytes;
         Ok(())
     }
 

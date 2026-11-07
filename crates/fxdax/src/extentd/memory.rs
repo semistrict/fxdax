@@ -14,12 +14,14 @@
 use super::server::{Parking, Tenant};
 use crate::Errno;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use physmem::CHUNK_SIZE;
 
 /// The tenants alive, and their limits, under one lock, so that a tenant made as its limit is set
 /// is limited as it was set.
-static REGISTRY: Mutex<Registry> = Mutex::new(Registry { tenants: Vec::new(), limits: None });
+static REGISTRY: Mutex<Registry> =
+    Mutex::new(Registry { tenants: Vec::new(), limits: None, rooms: None });
 
 struct Registry {
     /// The tenants alive, which may outlive their grants, while their VM processes do: a tenant
@@ -29,6 +31,8 @@ struct Registry {
     /// The tenants' limits, in bytes, by name: those granted later, or again, are limited as they
     /// are made.
     limits: Option<HashMap<String, u64>>,
+    /// fxdax: the tenants' rooms ([`InFlight`]), in bytes, by name, as their limits are.
+    rooms: Option<HashMap<String, u64>>,
 }
 
 impl Registry {
@@ -63,6 +67,8 @@ pub(super) fn register(tenant: &Arc<Tenant>) {
     if let Some(bytes) = registry.limit(tenant.name()) {
         physmem::set_arena_cap(tenant.arena(), Some(bytes));
     }
+    let room = registry.rooms.as_ref().and_then(|rooms| rooms.get(tenant.name()).copied());
+    tenant.in_flight().set_room(room);
     registry.tenants.retain(|alive| alive.strong_count() > 0);
     registry.tenants.push(Arc::downgrade(tenant));
 }
@@ -156,4 +162,140 @@ pub fn tenants() -> Vec<TenantMemory> {
     let mut memory: Vec<_> = memory.into_values().collect();
     memory.sort_by(|a, b| a.label.cmp(&b.label));
     memory
+}
+
+/// fxdax: the room a tenant's connections share, unless one is set for it ([`set_room`]):
+/// what of its VM processes' requests the daemon holds at once, their stream data and what it has
+/// queued for them, together (TASK-149.35). Each connection has a room of its own too
+/// (`server::Peer::room`, 272 MiB without a window), and a tenant as many as 1,024 connections:
+/// some 272 GiB of one tenant's, held within the protocol, every tenant's daemon with it. A VM
+/// process moves the data of its requests through its transfer area, up to 256 KiB each, 8 at once,
+/// which no room counts; past that, through the stream. 8 GiB is 30 VM processes at once keeping
+/// their rooms full, which none does but writing 64 MiB extents back to back, where a host's
+/// density case, 300 forks reading their base, held 16 MiB of the tenant's at most.
+pub const DEFAULT_TENANT_ROOM: u64 = 8 << 30;
+
+/// fxdax: the room of every tenant whose own isn't set ([`set_room`]).
+static TENANT_ROOM: AtomicU64 = AtomicU64::new(DEFAULT_TENANT_ROOM);
+
+/// fxdax: sets the room the connections of the tenant `tenant` share to `bytes`, or, without
+/// `bytes`, to every tenant's; or, without `tenant`, every tenant's whose own isn't set, the
+/// default's without `bytes` (TASK-149.35). A tenant's holds for it alive now, and granted later,
+/// until it is set again. `EINVAL` for a room under a payload's most, which a request of it
+/// couldn't be held in.
+pub fn set_room(tenant: Option<&str>, bytes: Option<u64>) -> Result<(), Errno> {
+    if bytes.is_some_and(|bytes| bytes < super::wire::MAX_PAYLOAD) {
+        return Err(Errno::EINVAL);
+    }
+    let Some(name) = tenant else {
+        TENANT_ROOM.store(bytes.unwrap_or(DEFAULT_TENANT_ROOM), Ordering::Relaxed);
+        // Larger, it lets those waiting go on.
+        let registry = REGISTRY.lock().unwrap();
+        registry.alive().for_each(|tenant| tenant.in_flight().changed());
+        if let Ok(tenant) = super::server::default_tenant() {
+            tenant.in_flight().changed();
+        }
+        return Ok(());
+    };
+    super::grants::check_name(name)?;
+    let mut registry = REGISTRY.lock().unwrap();
+    let rooms = registry.rooms.get_or_insert_with(HashMap::new);
+    match bytes {
+        Some(bytes) => rooms.insert(name.to_owned(), bytes),
+        None => rooms.remove(name),
+    };
+    for tenant in registry.alive().filter(|tenant| tenant.name() == name) {
+        tenant.in_flight().set_room(bytes);
+    }
+    Ok(())
+}
+
+/// fxdax: what a tenant's connections have the daemon hold of its VM processes' requests together
+/// (TASK-149.35): what each counts against its own room, its requests' stream data and what it
+/// queued for its VM process, within the room they share, the tenant's own or every tenant's
+/// ([`DEFAULT_TENANT_ROOM`]). A request past it waits, before its payload is read, until what is
+/// held leaves it room; or, with nothing held, goes on, so that one as large as the room is
+/// served. Not let go, as a connection past its own room is: it keeps within its own, and the
+/// tenant's other VM processes, a healthy tenant's busy ones, take theirs.
+#[derive(Default)]
+pub struct InFlight {
+    held: AtomicU64,
+    /// Its room, or 0, every tenant's ([`TENANT_ROOM`]).
+    room: AtomicU64,
+    /// The most it held, which the tests measure.
+    peak: AtomicU64,
+    /// What says it held less, or its room grew.
+    less: event_listener::Event,
+}
+
+impl InFlight {
+    /// What it holds.
+    pub fn held(&self) -> u64 {
+        self.held.load(Ordering::Relaxed)
+    }
+
+    /// The most it held.
+    pub fn peak(&self) -> u64 {
+        self.peak.load(Ordering::Relaxed)
+    }
+
+    /// Its room: its own, or every tenant's.
+    pub fn room(&self) -> u64 {
+        match self.room.load(Ordering::Relaxed) {
+            0 => TENANT_ROOM.load(Ordering::Relaxed),
+            room => room,
+        }
+    }
+
+    fn set_room(&self, bytes: Option<u64>) {
+        self.room.store(bytes.unwrap_or(0), Ordering::Relaxed);
+        self.changed();
+    }
+
+    /// Tells those waiting for room that there may be some.
+    fn changed(&self) {
+        self.less.notify(usize::MAX);
+    }
+
+    /// Holds `bytes` more, room or not: what the daemon queued for a VM process, which it holds
+    /// whatever.
+    pub fn add(&self, bytes: u64) {
+        let held = self.held.fetch_add(bytes, Ordering::Relaxed) + bytes;
+        self.peak.fetch_max(held, Ordering::Relaxed);
+    }
+
+    /// Holds `bytes` fewer.
+    pub fn sub(&self, bytes: u64) {
+        if bytes > 0 {
+            self.held.fetch_sub(bytes, Ordering::Relaxed);
+            self.changed();
+        }
+    }
+
+    /// Holds `bytes` more, if they are within its room, or it holds nothing.
+    fn try_take(&self, bytes: u64) -> bool {
+        let room = self.room();
+        let taken = self.held.try_update(Ordering::Relaxed, Ordering::Relaxed, |held| {
+            (held == 0 || held + bytes <= room).then_some(held + bytes)
+        });
+        if let Ok(held) = taken {
+            self.peak.fetch_max(held + bytes, Ordering::Relaxed);
+        }
+        taken.is_ok()
+    }
+
+    /// Holds `bytes` more, once they are within its room, or it holds nothing: waiting, holding no
+    /// thread, until then.
+    pub async fn take(&self, bytes: u64) {
+        loop {
+            if self.try_take(bytes) {
+                return;
+            }
+            let less = self.less.listen();
+            if self.try_take(bytes) {
+                return;
+            }
+            less.await;
+        }
+    }
 }
