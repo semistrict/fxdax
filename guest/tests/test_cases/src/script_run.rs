@@ -78,15 +78,34 @@ pub fn ext4_largest(name: &str) -> u64 {
 }
 
 /// Takes all the room but `left` on a filesystem, or as much as it gives, with the file `ballast`:
-/// after making what needs room to be made.
+/// after making what needs room to be made. fxdax: the room left as the ballast is closed, which
+/// is when XFS gives back the blocks it took ahead of the file's end (speculative preallocation,
+/// xfs_release): a MiB or two, which a script's files then fit in, when filled with the ballast
+/// open (`a_filesystem_filled_has_the_room_asked_once_the_ballast_closes`; CI run 42420025615).
+/// So it fills again while the room the closed ballast leaves is more than `left`.
 pub fn fill(ballast: &str, left: u64) {
-    let mut file = fs::File::create(ballast).unwrap();
     let block = vec![0x5a; 1 << 20];
-    while free(ballast) > left {
-        match file.write_all(&block).and_then(|()| file.sync_all()) {
-            Ok(()) => {}
-            Err(err) if err.raw_os_error() == Some(libc::ENOSPC) => break,
-            Err(err) => panic!("filling the filesystem: {err}"),
+    let mut options = fs::OpenOptions::new();
+    options.create(true).append(true);
+    let dir = std::path::Path::new(ballast).parent().expect("the ballast's directory");
+    let room = || free(dir.to_str().expect("a directory's name"));
+    while room() > left {
+        let mut file = options.open(ballast).unwrap();
+        let mut filled = false;
+        while room() > left {
+            match file.write_all(&block).and_then(|()| file.sync_all()) {
+                Ok(()) => {}
+                Err(err) if err.raw_os_error() == Some(libc::ENOSPC) => {
+                    filled = true;
+                    break;
+                }
+                Err(err) => panic!("filling the filesystem: {err}"),
+            }
+        }
+        drop(file);
+        // No room for more, whatever closing it gave back: as much as it gives.
+        if filled {
+            break;
         }
     }
 }
@@ -2215,6 +2234,21 @@ pub(crate) mod tests {
         let dir = TempDir::new("script").unwrap();
         let xfs = Loop::reflinks(dir.path());
         refuses_on(&xfs.mountpoint, SEVERAL_FILES);
+    }
+
+    /// fxdax: a filesystem filled leaves no more room than asked once the ballast is closed: XFS
+    /// takes blocks ahead of a growing file's end (speculative preallocation), a MiB or two, which
+    /// it gives back as the file closes (xfs_release). Measured with the ballast open, a fill left
+    /// 2.2 MiB once it closed, a run in three on OrbStack's kernel, in which a script's files, full
+    /// of holes, nearly fit: 26 refusals where 1,697 is the rule, and none on CI's (run
+    /// 42420025615).
+    #[test]
+    fn a_filesystem_filled_has_the_room_asked_once_the_ballast_closes() {
+        let dir = TempDir::new("script").unwrap();
+        let xfs = Loop::reflinks(dir.path());
+        fill(xfs.mountpoint.join("ballast").to_str().unwrap(), LEFT);
+        let left = free(xfs.mountpoint.to_str().unwrap());
+        assert!(left <= LEFT, "{left} bytes left, of {LEFT} asked");
     }
 
     /// On a filesystem that has room, no store dies and is taken for a refusal.
