@@ -4406,6 +4406,20 @@ fn snapshots_hold_what_the_volume_did_as_it_goes_on() {
     Setting::awkward(0, ROOMY).cutting_everywhere().holds(ops);
 }
 
+/// A snapshot, an unlink queued and a write, every cut of them: land-all11's macOS run of
+/// every_cut_of_a_short_sequence hung on it, a commit waiting for its lock and another for room in
+/// the journal, before the fixes of TASK-241 and TASK-245.
+#[test]
+fn every_cut_of_a_snapshot_an_unlink_queued_and_a_write() {
+    let ops = vec![
+        Op::Snapshot,
+        Op::UnlinkLater(5),
+        Op::Write { file: 13, at: 36085, len: 2686, byte: 15 },
+    ];
+    let setting = Setting::awkward(17604531016692502004, ROOMY).with_graveyard_of_seed();
+    setting.cutting_everywhere().holds(ops);
+}
+
 /// A change of mode, owner, group and times, as `Op::SetAttr` asks.
 const CHANGE: Change = Change {
     valid: SET_ANY,
