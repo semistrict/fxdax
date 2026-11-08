@@ -1,11 +1,11 @@
 ---
 id: TASK-149.33
 title: A DAX window whose aligned room failed UNMAPs took maps no chunk's whole range
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-06 03:35'
-updated_date: '2026-11-08 04:33'
+updated_date: '2026-11-08 06:25'
 labels: []
 dependencies: []
 parent_task_id: TASK-149
@@ -21,15 +21,15 @@ Found by guest/sim's sweep (TASK-149.15): a chunk's whole range takes a 2 MiB-al
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A chunk's range is had while the window has room for it, aligned or not, or a failed UNMAP's room comes back once an UNMAP of it succeeds
-- [ ] #2 unmaps_failed_take_the_window, or a scenario beside it, shows the write succeeding with room left unaligned
+- [x] #1 A chunk's range is had while the window has room for it, aligned or not, or a failed UNMAP's room comes back once an UNMAP of it succeeds
+- [x] #2 unmaps_failed_take_the_window, or a scenario beside it, shows the write succeeding with room left unaligned
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -44,4 +44,12 @@ Found by guest/sim's sweep (TASK-149.15): a chunk's whole range takes a 2 MiB-al
 
 <!-- SECTION:NOTES:BEGIN -->
 2026-11-07: land-h11 0fb3a96be, CI 42446163807. unmaps_failed_leave_room_unaligned red on main (-28), green with the fix; mutant task-149.33-chunks-only-aligned killed by it, task-149.15-round-releases still killed; check.sh 0 failed of 46 runs and 200 seeds; sweep.sh of both window scenarios 1,830 calls, 0 failed; mutants.sh --check 43/43; check-exclusions 0. The fallback comes only after reclaim found nothing, so a window with reclaimable ranges still gets aligned room (PMDs) as before.
+
+2026-11-08: on main as b4341361d (land-all4, 722ce0723), CI 42449438764 (land-all4, on main as 722ce0723) green: test (workspace) on Linux, macos (workspace), guest-sim, guest-sim-sweep, scripts. DoD 1 by CI's Linux and macOS workspace jobs rather than GCE; DoD 3: dax.c's change is fxdax's own code.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+With nothing left to reclaim, a whole chunk's range takes unaligned room in the DAX window (PTEs; fs/dax.c falls back from PMDs on a misaligned page), counted in window_unaligned; dax_huge_maps counts aligned iomaps only. Scenario unmaps_failed_leave_room_unaligned red on main (ENOSPC), green after; mutant task-149.33-chunks-only-aligned killed. Verified: guest/sim check.sh, sweep of both window scenarios, mutants --check, CI 42449438764.
+<!-- SECTION:FINAL_SUMMARY:END -->

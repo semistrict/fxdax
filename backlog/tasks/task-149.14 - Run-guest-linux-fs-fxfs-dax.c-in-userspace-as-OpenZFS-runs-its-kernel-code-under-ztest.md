@@ -3,11 +3,11 @@ id: TASK-149.14
 title: >-
   Run guest/linux/fs/fxfs/dax.c in userspace, as OpenZFS runs its kernel code
   under ztest
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-01 06:38'
-updated_date: '2026-11-08 04:00'
+updated_date: '2026-11-08 06:25'
 labels: []
 dependencies: []
 parent_task_id: TASK-149
@@ -37,9 +37,9 @@ At dde8d58d3 (writable DAX deleted, 37c331a6c; resize, punch and clone driven fr
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
 - [x] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Notes
@@ -80,4 +80,12 @@ Handed back 2026-11-02 (triage): AC6 met: ci.yml's guest-sim job runs zloop.sh -
 2026-11-08, AC #7 and #8 (branch task-149-14). kernel/mm.c: each mapping's pages held as a fault maps them (vm_area_struct.held, a page or a PMD's row); a load (or a pin) that faults on a page its mapping holds, the page unmapped still under the mm lock, fails the run: 'a load faults again ... and nothing but a fault unmapped it'. What lets go of them: every unmap_mapping_pages but a read fault's of its own page, the one patch 0010 stops (dax_insert_entry replacing an entry naming the page), so a rebind's MAP, an UNMAP (fxfs_dax_drop_pinned, a store fault's fxfs_dax_fault_drop_slice among them), an eviction for room (fxfs_dax_release from fxfs_dax_alloc_window), a truncate or punch; and a shared PMD's split by a write fault (wp_huge_pmd's, by design). The rule took three rounds, each a false alarm traced to dax.c's call: (1) 'any unmap inside a fault' flagged a store fault evicting another range for window room (dax.c:1288 via fs/dax.c:788; 69 of 600 runs); (2) 'a fault's unmap of its own page' flagged a store fault dropping the slice it can't store to (dax.c:3485 -> 1781 -> 1288; seed 834 and the sweep's cow_store_to_pinned_slice at calls 34-37); (3) a load found the page unmapped, then another task's fault mapped and held it while it waited for the mm lock (seed 23): the check now asks under the lock. With patch 0010 in, no violation on main.
 AC #8: interleave mapped each file once in one mm, so no page ever had two mappings of its file; each worker now maps the shared files itself (slots.addrs[WORKERS]), as processes sharing a binary do, and loads and stores through its own. Mutant guest/mutants/patch-0010-reads-replace-their-entries (patch 0010 reversed, Kernel: sim, Killer: interleave): killed at seed 610 (seed 197 under an earlier rule), with no scenario written for it.
 Runs (Docker, guest/sim/linux.sh): zloop.sh -s 3000: 0 of 6,000 runs failed, every test of one run passes; sweep.sh: passes; mutants.sh: every sim mutant killed but the six none; mutants.sh --check 43/0, scripts/guest-mutants-gce.py --check 55/0, fxfs-sim-diff mutants --check. Rust workspace not run: no Rust changed.
+
+2026-11-08: land-h10 on main as afee06cd5 (land-all4, 722ce0723), CI 42449438764 (land-all4, on main as 722ce0723) green: test (workspace) on Linux, macos (workspace), guest-sim, guest-sim-sweep, scripts. DoD 3: guest/sim is fxdax's own, no upstream to deviate from.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+guest/sim runs dax.c unmodified over a kernel shim with a seeded scheduler, generation-stamped stores, mutants and CI (AC 1-6, earlier). AC 7-8 (afee06cd5): kernel/mm.c holds each mapping's pages as a fault maps them and fails a load faulting on a page held that only a fault unmapped; interleave's workers map the shared files themselves; with patch 0010 out (mutant patch-0010-reads-replace-their-entries) interleave fails at seed 610. Verified: zloop 3,000 seeds, sweep, every sim mutant killed, CI 42449438764.
+<!-- SECTION:FINAL_SUMMARY:END -->
