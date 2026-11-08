@@ -1,0 +1,23 @@
+[    0.102393] PCI: Fatal: No config space access function found
+[    0.129603] PCI: System does not support PCI
+[    0.242599] check access for rdinit=/init failed: -2, ignoring
+iteration 1/3
+OBSERVED mtime-ahead-of-guest-ms -3.383
+RESULT pgbench-init s lower 2.498
+FXFS pgbench-tps: device_commits 32669, device_commits_ns 5446677793, device_read_bytes 6606848, device_reads 488, device_reads_ns 3257894838, device_write_bytes 502857728, device_writes 69689, device_writes_ns 11945357936, fsyncs 32612, journal_compaction_ns 3585914600, journal_compactions 32, seal_waits 32669, seal_waits_ns 200409606, seals 32669, seals_ns 5576025722, writes_held_by_seals 1681, writes_held_by_seals_ns 339937197
+REQUESTS pgbench-tps: read 0.02 (6609 µs each), write 2.18 (132 µs each), free 0.91 (123 µs each), commit 0.00 (134 µs each) per operation
+RESULT pgbench-tps tps higher 2134.689
+iteration 2/3
+OBSERVED mtime-ahead-of-guest-ms -5.839
+RESULT pgbench-init s lower 1.696
+FXFS pgbench-tps: device_commits 32989, device_commits_ns 5551635091, device_read_bytes 6877184, device_reads 489, device_reads_ns 2018308854, device_write_bytes 510480384, device_writes 70439, device_writes_ns 12021859959, fsyncs 32927, journal_compaction_ns 2315595474, journal_compactions 32, seal_waits 32989, seal_waits_ns 216760719, seals 32989, seals_ns 5676952511, writes_held_by_seals 1737, writes_held_by_seals_ns 362025142
+REQUESTS pgbench-tps: read 0.02 (4074 µs each), write 2.20 (134 µs each), free 0.92 (124 µs each), commit 0.00 (133 µs each) per operation
+RESULT pgbench-tps tps higher 2174.352
+iteration 3/3
+OBSERVED mtime-ahead-of-guest-ms -6.266
+RESULT pgbench-init s lower 1.624
+FXFS pgbench-tps: device_commits 32937, device_commits_ns 5539528344, device_read_bytes 6893568, device_reads 493, device_reads_ns 3120688807, device_write_bytes 508555264, device_writes 70360, device_writes_ns 12023930327, fsyncs 32878, journal_compaction_ns 3422981932, journal_compactions 32, seal_waits 32937, seal_waits_ns 217272600, seals 32937, seals_ns 5669222664, writes_held_by_seals 1761, writes_held_by_seals_ns 372101525
+REQUESTS pgbench-tps: read 0.02 (6260 µs each), write 2.20 (134 µs each), free 0.92 (124 µs each), commit 0.00 (141 µs each) per operation
+RESULT pgbench-tps tps higher 2178.790
+DONE
+[   75.117332] reboot: Restarting system

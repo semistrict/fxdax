@@ -1,0 +1,45 @@
+{
+ "commit": "2161e4da25ac6edeac797d5e92cc7bdad671dcf9",
+ "rounds": 1,
+ "status": 0,
+ "failed": [],
+ "cases": [
+  {
+   "case": "bench-fs-ext4-dax-pmem",
+   "outcome": "report",
+   "round": 1,
+   "rounds_passed": 1,
+   "failed_checks": [],
+   "reason": null,
+   "replay": "FXDAX_WORKSPACE_TESTS=0 FXDAX_E2E_TEST=bench-fs-ext4-dax-pmem FXDAX_BENCH_CASES='bench-fs-ext4-dax-pmem bench-fs-fxfs-guest-dax' FXDAX_BENCH_GROUPS=pgbench FXDAX_BENCH_ITERATIONS=3 FXDAX_BENCH_NOTE='TASK-41: pgbench on Fxfs (guest kernel, DAX) with the store in GCS against ext4 on DAX pmem, at main 1a3391d7c plus task-perf-small (2161e4da2), as gce-fs-bench-pgbench-gcs-618' FXDAX_EXTENTD_MEMORY=8589934592 FXDAX_EXTENTD_REMOTE=gs://echophase-fxdax-bench/task-41-2026-11-08 FXDAX_GCE_STORAGE=1 FXDAX_GCE_ZONE=us-east1-b FXDAX_GUEST_KERNEL_BUILD=release scripts/test-gce.sh all",
+   "daemons": []
+  },
+  {
+   "case": "bench-fs-fxfs-guest-dax",
+   "outcome": "report",
+   "round": 1,
+   "rounds_passed": 1,
+   "failed_checks": [],
+   "reason": null,
+   "replay": "FXDAX_WORKSPACE_TESTS=0 FXDAX_E2E_TEST=bench-fs-fxfs-guest-dax FXDAX_BENCH_CASES='bench-fs-ext4-dax-pmem bench-fs-fxfs-guest-dax' FXDAX_BENCH_GROUPS=pgbench FXDAX_BENCH_ITERATIONS=3 FXDAX_BENCH_NOTE='TASK-41: pgbench on Fxfs (guest kernel, DAX) with the store in GCS against ext4 on DAX pmem, at main 1a3391d7c plus task-perf-small (2161e4da2), as gce-fs-bench-pgbench-gcs-618' FXDAX_EXTENTD_MEMORY=8589934592 FXDAX_EXTENTD_REMOTE=gs://echophase-fxdax-bench/task-41-2026-11-08 FXDAX_GCE_STORAGE=1 FXDAX_GCE_ZONE=us-east1-b FXDAX_GUEST_KERNEL_BUILD=release scripts/test-gce.sh all",
+   "daemons": []
+  }
+ ],
+ "daemon": {
+  "daemon": "extentd",
+  "downloaded": 13822577,
+  "bucket_read": 1273856,
+  "store_read": 31379456
+ },
+ "knobs": {
+  "FXDAX_BENCH_CASES": "bench-fs-ext4-dax-pmem bench-fs-fxfs-guest-dax",
+  "FXDAX_BENCH_GROUPS": "pgbench",
+  "FXDAX_BENCH_ITERATIONS": "3",
+  "FXDAX_BENCH_NOTE": "TASK-41: pgbench on Fxfs (guest kernel, DAX) with the store in GCS against ext4 on DAX pmem, at main 1a3391d7c plus task-perf-small (2161e4da2), as gce-fs-bench-pgbench-gcs-618",
+  "FXDAX_EXTENTD_MEMORY": "8589934592",
+  "FXDAX_EXTENTD_REMOTE": "gs://echophase-fxdax-bench/task-41-2026-11-08",
+  "FXDAX_GCE_STORAGE": "1",
+  "FXDAX_GCE_ZONE": "us-east1-b",
+  "FXDAX_GUEST_KERNEL_BUILD": "release"
+ }
+}
