@@ -3,10 +3,11 @@ id: TASK-165.11
 title: >-
   On GCS a durable commit waits ~130 ms for its upload, an open ~0.9 s: four
   guest checks fail their budgets on a real bucket, pass at 4x (GCE r740, r742)
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-11-06 09:22'
-updated_date: '2026-11-06 09:22'
+updated_date: '2026-11-08 00:22'
 labels:
   - real-bucket
   - perf
@@ -72,3 +73,22 @@ This is what TASK-165.9's recovery and uploader and TASK-165.10's measurements n
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Count and time each bucket round trip on the commit, open and fork paths (Stats::request_ns; a test pinning a durable commit's requests; bucket_round_trips_by_phase, a measurement against a real bucket).
+2. Cut the round trips the protocol doesn't need in series: the writer's reads once it holds the lease (record, recovery, segments listing) at once; the lease read alongside the record before recovery, the taking conditional on it; a checkpoint's moves listing alongside its children's record reads.
+3. Measure on GCE against gs://echophase-fxdax-bench (one host in us-east4, the bucket's region): the phases before and after the cuts; fxfs-guest-checks, -checks-dax and -docker-dax on GCS at 4x budgets, each check's time.
+4. Set the checks' remote scale in host.rs and docker's limit from that measurement; verify on GCS; record in docs/measurements.
+<!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Round trips, as the code has them (main 4fe1dd081):
+- A durable commit (ExtentStore::commit_and_wait, crates/fxdax/src/extents.rs:1316, make_durable :1238 -> extent_store::upload::Remote::wait_uploaded): the uploader's gather closes and frames the open segment (upload.rs:940), its own extents' PUTs a few at once then the segment's create (extent_remote writer.rs:344, upload), then a read of the lease, which acknowledges it (writer.rs:406, acknowledge, branch::holds_lease). Two round trips in series, three with extents of their own: what doc-7's Uploads and Fencing need (acknowledge only after a read of the lease after the creates). Pinned by durable_commits_cost_their_segments_create_and_a_lease_read (fxdax remote.rs): one create, one get. Nothing to cut without changing the protocol; r740-r742's hosts were in us-east1-c, the bucket in us-east4.
+- An open (extent_store upload.rs start, :789; extent_remote writer.rs take, :170): the record; a recovery before the lease (checkpoints listed, the checkpoint, footers' tails, the checkpoints listed again, doc-7's newest-checkpoint rule); the lease read and updated; the record again; the recovery on from there; the segments listed; the fence's create; the lease read again. Some 13 round trips in series. Cut: the record, the recovery on and the segments listing at once once the lease is taken (two fewer), and the lease read alongside the first record read, the taking conditional on it (one fewer).
+- A fork (fxdax host_store::fork): the child's record read (child_free), the commit's segment created and acknowledged (create, lease read), the child's record created, then the checkpoint that makes the fork: the moves listed, the children's records read, the checkpoint created. Cut: the moves listing alongside the records' reads (one fewer, every checkpoint).
+Locally (file bucket, each request 20 ms late, bucket_round_trips_by_phase): durable commit 61 ms (54 ms of bucket, 2 requests), open 364 -> 302 ms, a fork's first open 396 -> 336 ms. The newest_checkpoint rule's seed search found nothing in 0..20,000 after the cut (the interleavings moved); 33,630 finds it (an acknowledged commit lost, rule off), and holds with every rule on: the search widened to 40,000. SIM_SOAK=5 sim part 48/48; macOS workspace 2110/2110, Shuttle.
+<!-- SECTION:NOTES:END -->
