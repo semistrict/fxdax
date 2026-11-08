@@ -1,0 +1,10 @@
+--- a/crates/fxfs/src/object_store/allocator.rs
++++ b/crates/fxfs/src/object_store/allocator.rs
+@@ -1701,7 +1701,6 @@
+     /// a base's (backlog doc-10).
+     fn is_held_beyond_the_store(&self, range: &ExtentRange) -> bool {
+         self.inner.lock().base_branches.contains(&range.extent.branch)
+-            || self.frozen_owner(range).is_some()
+     }
+ 
+     /// fxdax: notes that a store opened has a base whose extents are in `branches`.

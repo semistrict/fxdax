@@ -1,0 +1,11 @@
+--- a/crates/fxfs-posix/src/lib.rs
++++ b/crates/fxfs-posix/src/lib.rs
+@@ -926,7 +926,7 @@
+         writes.sort_unstable_by_key(|(offset, _)| *offset);
+         let written = async {
+             self.begin(Op::WriteDirty, None).await?;
+-            self.file(ino).await?.write_many_reserved(writes, &taken.reservation).await
++            self.file(ino).await?.write_many(writes).await
+         };
+         let written = written.await;
+         self.dirty.written(taken);

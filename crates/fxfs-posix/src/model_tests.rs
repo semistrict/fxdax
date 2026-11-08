@@ -48,10 +48,18 @@
 //! sets reads back, and what Fxfs takes from the clock is no earlier than the operation that took
 //! it began; what the VFS keeps, a file's data's times, moves no earlier (`Time`). Names are as
 //! long as a name may be, of many bytes a character, in directories that fold case; a readdir
-//! goes on after the name it left off at while names come and go. Files grow by fallocate as well as by
-//! writes, which sets nothing aside on an extent store, and nodes are FIFOs, sockets and devices
-//! too. `statfs` counts at least what the model
-//! must take.
+//! goes on after the name it left off at while names come and go. Symlinks say targets of every
+//! length a VFS asks for, up to `MAX_LONG_SYMLINK`, which Fxfs keeps outside their records when
+//! long, in extended attributes listing leaves out. Files grow by fallocate as well as by writes,
+//! which sets nothing aside on an extent store, and by the page cache's writeback, paid for by the
+//! room reserved as its pages were dirtied, which a full filesystem refuses instead (`write_dirty`);
+//! nodes are FIFOs, sockets and devices too. `statfs` counts at least what the model must take.
+//!
+//! A quarter of the sequences run on the guest's platform, whose VFS keeps directories' times, a
+//! create of a file leaving them to it (`Seeded`). The volume is snapshotted too, each snapshot a
+//! volume of its own that holds what the volume did then, whatever it does after, across remounts
+//! and cuts: what the graveyard has queued tombstoned first, as TASK-241 has a snapshot of a volume
+//! being written lose what it shares.
 
 use super::*;
 use fxfs::filesystem::{FlushReason, ForceMajor, FxFilesystemBuilder};
@@ -59,6 +67,7 @@ use fxfs::fsck::{FsckOptions, fsck_with_options};
 use fxfs::hooks::Hooks;
 use fxfs::lsm_tree::Query;
 use fxfs::lsm_tree::types::{ItemRef, LayerIterator};
+use fxfs::object_store::directory::{MAX_INLINE_SYMLINK, MAX_LONG_SYMLINK};
 use fxfs::object_store::graveyard::Graveyard;
 use fxfs::object_store::journal::JournalOptions;
 use fxfs::object_store::object_record::ObjectKeyData;
@@ -122,8 +131,10 @@ const TIGHT: u64 = 2048;
 const BLOCKS_A_FILL_MAY_LEAVE: u64 = 1024;
 /// How much of a file is read whole, holes and all: a file may be as large as a file may be.
 const WHOLLY_READ: u64 = 64 << 20;
-/// What every symlink says.
-const SYMLINK_TARGET: &[u8] = b"target";
+/// The volume the sequences' files are in.
+const VOLUME: &str = "test";
+/// The snapshots a sequence takes of it, at most.
+const SNAPSHOTS: usize = 2;
 /// A power cut is recorded at one barrier in this many.
 const CUTS_ONE_IN: u32 = 3;
 /// A power cut of a replay is recorded at one barrier in this many.
@@ -211,6 +222,8 @@ struct Node {
     /// Of those, the ones Fxfs keeps outside its record, in an attribute of their own: once one is,
     /// it stays there, however short (`set_extended_attribute_impl`).
     outside: BTreeSet<u8>,
+    /// A symlink's target; nothing, any other node's.
+    target: Vec<u8>,
 }
 
 impl Node {
@@ -218,8 +231,13 @@ impl Node {
     fn new(mode: u32, uid: u32, gid: u32, rdev: u64, made: u64) -> Self {
         let made = Time::Since(made);
         let (atime, mtime, ctime) = (made, made, made);
-        let (xattrs, outside) = (BTreeMap::new(), BTreeSet::new());
-        Self { mode, uid, gid, rdev, atime, mtime, ctime, xattrs, outside }
+        let (xattrs, outside, target) = (BTreeMap::new(), BTreeSet::new(), Vec::new());
+        Self { mode, uid, gid, rdev, atime, mtime, ctime, xattrs, outside, target }
+    }
+
+    /// A symlink to `target`, made no earlier than `made`.
+    fn symlink(target: &Target, made: u64) -> Self {
+        Self { target: target.bytes(), ..Self::new(SYMLINK, 0, 0, 0, made) }
     }
 
     /// Its extended attribute `name` set to `value`, or removed, if there's none: its status
@@ -441,7 +459,8 @@ impl Plan {
 #[derive(Clone, Debug)]
 enum Op {
     Create(usize),
-    Symlink(usize),
+    /// A symlink of the name, to the target.
+    Symlink(usize, Target),
     Mkdir(usize),
     /// A file's or symlink's new name, or a tmpfile's first, as `linkat` makes.
     Link(usize, usize),
@@ -483,6 +502,17 @@ enum Op {
         pages: u64,
         byte: u8,
         flushing: bool,
+    },
+    /// Whole pages the page cache dirties, reserving their room first (`reserve_dirty`), which a
+    /// full filesystem refuses, as write(2) then fails; written back by `write_dirty`, which their
+    /// room pays for, so that a filesystem filled since doesn't refuse it; or, if `dropped`, let
+    /// go of unwritten, as a truncate drops them, their room released.
+    WriteDirty {
+        file: usize,
+        page: u64,
+        pages: u64,
+        byte: u8,
+        dropped: bool,
     },
     Read {
         file: usize,
@@ -577,6 +607,8 @@ enum Op {
     },
     /// statfs, which counts at least what the model takes.
     Statfs,
+    /// A snapshot of the volume, a volume of its own, unless the sequence has taken `SNAPSHOTS`.
+    Snapshot,
     Sync,
     Fsync,
     Compact,
@@ -650,6 +682,28 @@ impl Make {
     }
 }
 
+/// What `Op::Symlink` says: `len` bytes, as `byte` begins them, or the short target the pinned
+/// sequences' symlinks say. A VFS asks for none longer than `MAX_LONG_SYMLINK`, PATH_MAX's less
+/// one: Fxfs keeps one longer than `MAX_INLINE_SYMLINK` outside its record.
+#[derive(Clone, Copy, Debug)]
+struct Target {
+    len: usize,
+    byte: u8,
+}
+
+impl Target {
+    /// What the pinned sequences' symlinks say: `target`.
+    const SHORT: Target = Target { len: 0, byte: 0 };
+
+    fn bytes(&self) -> Vec<u8> {
+        if self.len == 0 {
+            return b"target".to_vec();
+        }
+        let letter = |at: usize| b'a' + ((self.byte as usize + at) % 26) as u8;
+        (0..self.len).map(|at| if at % 64 == 63 { b'/' } else { letter(at) }).collect()
+    }
+}
+
 /// What `Op::SetAttr` changes, of what `valid` says (`SET_*`): `permissions` with the node's type.
 #[derive(Clone, Copy, Debug)]
 struct Change {
@@ -693,7 +747,8 @@ impl Op {
                     pages.map(|page| Run { pages: page..page + 1, bytes: bytes() }).collect();
                 Some(Plan { ino: model.file(file)?, runs, size: None })
             }
-            Op::FillWhileCompacting { file, page, pages, byte, .. } => {
+            Op::FillWhileCompacting { file, page, pages, byte, .. }
+            | Op::WriteDirty { file, page, pages, byte, dropped: false } => {
                 Op::Fill { file, page, pages, stride: 1, byte }.plan(model)
             }
             Op::Punch { file, page, pages } => {
@@ -831,6 +886,17 @@ fn xattr_len() -> impl Strategy<Value = usize> {
     ]
 }
 
+/// A symlink's target: short, about as long as its record holds, kilobytes, or the most a VFS asks.
+fn target() -> impl Strategy<Value = Target> {
+    let len = prop_oneof![
+        3 => 1usize..64,
+        1 => MAX_INLINE_SYMLINK - 2..=MAX_INLINE_SYMLINK + 2,
+        2 => 1024usize..MAX_LONG_SYMLINK,
+        1 => MAX_LONG_SYMLINK - 2..=MAX_LONG_SYMLINK,
+    ];
+    (len, any::<u8>()).prop_map(|(len, byte)| Target { len, byte })
+}
+
 fn xattr_change() -> impl Strategy<Value = XattrChange> {
     prop_oneof![
         (xattr_len(), any::<u8>()).prop_map(|(len, byte)| XattrChange::Set { len, byte }),
@@ -865,6 +931,9 @@ fn short_op() -> impl Strategy<Value = Op> {
                 Op::FillWhileCompacting { file, page, pages, byte, flushing }
             }
         ),
+        2 => (file(), 0u64..16, 1u64..8, any::<u8>(), prop::bool::weighted(0.25)).prop_map(
+            |(file, page, pages, byte, dropped)| Op::WriteDirty { file, page, pages, byte, dropped }
+        ),
         1 => (file(), file(), 0u64..8, 1u64..8, 0u64..16).prop_map(
             |(from, to, page, pages, to_page)| Op::Clone { from, to, page, pages, to_page }
         ),
@@ -886,6 +955,7 @@ fn short_op() -> impl Strategy<Value = Op> {
         2 => Just(Op::Fsync),
         3 => Just(Op::Compact),
         2 => Just(Op::Remount),
+        1 => Just(Op::Snapshot),
     ]
 }
 
@@ -894,7 +964,7 @@ fn op() -> impl Strategy<Value = Op> {
     let length = || prop_oneof![1usize..64, Just(PAGE as usize), 1usize..(3 * PAGE as usize)];
     prop_oneof![
         3 => name().prop_map(Op::Create),
-        1 => name().prop_map(Op::Symlink),
+        1 => (name(), target()).prop_map(|(name, target)| Op::Symlink(name, target)),
         2 => name().prop_map(Op::Mkdir),
         1 => (file(), name()).prop_map(|(file, name)| Op::Link(file, name)),
         1 => name().prop_map(Op::Unlink),
@@ -913,6 +983,9 @@ fn op() -> impl Strategy<Value = Op> {
             |(file, page, pages, byte, flushing)| {
                 Op::FillWhileCompacting { file, page, pages, byte, flushing }
             }
+        ),
+        2 => (file(), 0u64..64, fill(), any::<u8>(), prop::bool::weighted(0.25)).prop_map(
+            |(file, page, pages, byte, dropped)| Op::WriteDirty { file, page, pages, byte, dropped }
         ),
         2 => (file(), offset(), length()).prop_map(|(file, at, len)| Op::Read { file, at, len }),
         3 => (file(), offset()).prop_map(|(file, size)| Op::Truncate { file, size }),
@@ -941,6 +1014,7 @@ fn op() -> impl Strategy<Value = Op> {
         1 => (0usize..DIRS, any::<bool>()).prop_map(|(dir, folds)| Op::Casefold { dir, folds }),
         1 => (0usize..DIRS, 0..BAD_NAMES.len()).prop_map(|(dir, name)| Op::BadName { dir, name }),
         1 => Just(Op::Statfs),
+        1 => Just(Op::Snapshot),
         1 => Just(Op::Sync),
         1 => Just(Op::Fsync),
         1 => Just(Op::Compact),
@@ -977,6 +1051,17 @@ struct Model {
     queued: Vec<Queued>,
     /// The files those leave nothing of, as a cut before them would find them.
     gone: BTreeMap<u64, Data>,
+    /// The snapshots of the volume, in the order they were taken.
+    snapshots: Vec<Arc<Snapshot>>,
+}
+
+/// A snapshot of the volume (`Op::Snapshot`), a volume of its own: what it holds is what the
+/// volume did as it was taken, as a volume opened anew has it, with any of the unlinks queued
+/// then done or not, and what was open with no name gone (`Model::cuts`).
+#[derive(Debug)]
+struct Snapshot {
+    name: String,
+    held: Vec<Model>,
 }
 
 impl Model {
@@ -993,7 +1078,14 @@ impl Model {
             linkable: BTreeSet::new(),
             queued: Vec::new(),
             gone: BTreeMap::new(),
+            snapshots: Vec::new(),
         }
+    }
+
+    /// What a snapshot taken now, named `name`, holds.
+    fn snapshot(&self, name: String) -> Snapshot {
+        let model = Self { snapshots: Vec::new(), ..self.clone() };
+        Snapshot { name, held: model.cuts() }
     }
 
     /// The ino of the `index`th file there is, if there is any: one open may have no names.
@@ -1165,7 +1257,7 @@ impl Model {
     /// The size of `ino`, a symlink or a special file: what a symlink says.
     fn size_of(&self, ino: u64) -> u64 {
         match self.kind(ino) {
-            S_IFLNK => SYMLINK_TARGET.len() as u64,
+            S_IFLNK => self.nodes[&ino].target.len() as u64,
             _ => 0,
         }
     }
@@ -1314,12 +1406,18 @@ struct Setting {
     /// Whether the graveyard tombstones in batches, as a guest's does, until what waits for it
     /// says, rather than each as it comes.
     batched_graveyard: bool,
+    /// Whether the platform is the guest's, whose VFS keeps directories' times (`Seeded`).
+    keeps_directory_times: bool,
+    /// Whether snapshots are taken with the graveyard's tombstones queued, not settled first,
+    /// which TASK-241 has a snapshot of a volume being written lose.
+    snapshots_unsettled: bool,
 }
 
 impl Setting {
     fn calm(seed: u64, blocks: u64) -> Self {
         let (awkward, fsck_each, every_cut, failing) = (false, false, false, false);
         let (cuts_one_in, workers, batched_graveyard) = (CUTS_ONE_IN, false, false);
+        let (keeps_directory_times, snapshots_unsettled) = (false, false);
         Self {
             seed,
             blocks,
@@ -1330,6 +1428,8 @@ impl Setting {
             failing,
             workers,
             batched_graveyard,
+            keeps_directory_times,
+            snapshots_unsettled,
         }
     }
 
@@ -1360,6 +1460,22 @@ impl Setting {
     /// A graveyard as a guest's, for half of a run's sequences, as its seed says.
     fn with_graveyard_of_seed(self) -> Self {
         Self { batched_graveyard: self.seed.is_multiple_of(2), ..self }
+    }
+
+    /// Snapshots taken with the graveyard's tombstones queued (TASK-241).
+    fn with_snapshots_unsettled(self) -> Self {
+        Self { snapshots_unsettled: true, ..self }
+    }
+
+    /// The guest's platform, whose VFS keeps directories' times.
+    fn on_the_guests_platform(self) -> Self {
+        Self { keeps_directory_times: true, ..self }
+    }
+
+    /// The guest's platform for a quarter of a run's sequences, as its seed says, apart from
+    /// which graveyard they have.
+    fn with_platform_of_seed(self) -> Self {
+        Self { keeps_directory_times: self.seed / 2 % 4 == 0, ..self }
     }
 
     /// How often this sequence's device's requests fail, if they do.
@@ -1431,8 +1547,11 @@ impl Setting {
 
     /// What `ops` come to here.
     fn run(self, ops: Vec<Op>, tally: Rc<Tally>) -> Result<(), String> {
-        let done = run(self, ops, tally);
-        fasync::LocalExecutorBuilder::new().build().run_singlethreaded(done)
+        let mut executor = fasync::LocalExecutorBuilder::new().build();
+        match self.keeps_directory_times {
+            true => executor.run_singlethreaded(run::<true>(self, ops, tally)),
+            false => executor.run_singlethreaded(run::<false>(self, ops, tally)),
+        }
     }
 
     /// Checks that `ops` hold here.
@@ -1448,12 +1567,13 @@ impl Setting {
 
 /// As the host does, but for the tasks that apply queued unlinks: a clock wakes them, and a seed
 /// wouldn't say what a sequence does. What waits for what's queued applies it, unless `workers`.
-struct Seeded {
+/// The guest's, if `KEEPS`: its VFS keeps directories' times, which a create then leaves be.
+struct Seeded<const KEEPS: bool> {
     workers: bool,
 }
 
-impl Platform for Seeded {
-    const KEEPS_DIRECTORY_TIMES: bool = false;
+impl<const KEEPS: bool> Platform for Seeded<KEEPS> {
+    const KEEPS_DIRECTORY_TIMES: bool = KEEPS;
 
     type Durable = ();
 
@@ -1466,14 +1586,197 @@ impl Platform for Seeded {
     }
 }
 
+/// What a volume's Fxfs holds, checked against a model: the volume's, or a snapshot's.
+struct View<'a, P: Platform>(&'a Fxfs<P>);
+
+impl<P: Platform> View<'_, P> {
+    /// Checks the names there are and each file against `model`.
+    async fn holds(&self, model: &Model) -> Result<(), String> {
+        for dir in &model.dirs {
+            self.holds_names(model, *dir).await?;
+        }
+        for ino in model.files.keys() {
+            self.check(model, *ino).await?;
+        }
+        Ok(())
+    }
+
+    /// Checks what the directory `dir` holds against `model`, and what its names link: their
+    /// types, each by lookup too, as any spelling of it, and every other spelling found not to be
+    /// there, its links, attributes, extended attributes, and what a symlink says.
+    async fn holds_names(&self, model: &Model, dir: u64) -> Result<(), String> {
+        let folds = Directory::open(&self.0.volume, dir).await;
+        let folds = folds.map_err(|e| format!("opening {dir}: {e:#}"))?.dir_type().is_casefold();
+        if folds != model.casefold.contains(&dir) {
+            return Err(format!("{dir} folds case: {folds}"));
+        }
+        // A lookup finds no name queued to go, though its record is there until the readdir below
+        // applies what is queued in the directory: a lookup applies only what its name's inode
+        // waits for (TASK-92.26).
+        for at in 0..SPELLINGS.len() {
+            let expected = model.names.get(&(dir, model.spelled(dir, at))).map(|entry| entry.ino());
+            let found = match self.0.lookup(dir, &name_of(at)).await {
+                Ok(attr) => Some(attr.ino),
+                Err(error) if errno(&error) == Errno::ENOENT => None,
+                Err(error) => return Err(format!("lookup of {at} in {dir}: {error:#}")),
+            };
+            if found != expected {
+                return Err(format!("{at} in {dir} is {found:?}, not {expected:?}"));
+            }
+        }
+        let mut found = Vec::new();
+        let listed = self.0.readdir(dir, ReaddirStart::Index(0), |name, ino, kind| {
+            found.push((name.as_bytes().to_vec(), ino, kind));
+            true
+        });
+        listed.await.map_err(|e| format!("readdir of {dir}: {e:#}"))?;
+        found.sort();
+        let mut names: Vec<(Vec<u8>, u64, u32)> = model
+            .names_in(dir)
+            .map(|(name, entry)| (name_of(name), entry.ino(), model.kind(entry.ino())))
+            .collect();
+        names.sort();
+        if found != names {
+            return Err(format!("{dir} holds {found:?}, not {names:?}"));
+        }
+        self.holds_xattrs(model, dir).await?;
+        let mut sub_dirs = 0;
+        for (name, entry) in model.names_in(dir) {
+            let attr = self.0.lookup(dir, &name_of(name)).await;
+            let attr = attr.map_err(|e| format!("lookup of {name} in {dir}: {e:#}"))?;
+            if attr.ino != entry.ino() {
+                return Err(format!("{name} in {dir} is {}, not {entry:?}", attr.ino));
+            }
+            self.holds_node(model, &attr)?;
+            match entry {
+                Entry::File(_) => {}
+                Entry::Symlink(ino) => {
+                    let target = self.0.readlink(ino).await;
+                    let target = target.map_err(|e| format!("readlink of {ino}: {e:#}"))?;
+                    let said = &model.nodes[&ino].target;
+                    if target != *said {
+                        let (got, len) = (String::from_utf8_lossy(&target), said.len());
+                        return Err(format!(
+                            "{ino} says {got:?}, not the {len} bytes it was made to"
+                        ));
+                    }
+                }
+                Entry::Dir(_) => sub_dirs += 1,
+                Entry::Special(_) => {}
+            }
+            if let Entry::Symlink(ino) | Entry::Special(ino) = entry {
+                if attr.nlink != model.links(ino) {
+                    let links = model.links(ino);
+                    return Err(format!("{ino} has {} links, not {links}", attr.nlink));
+                }
+                if attr.size != model.size_of(ino) {
+                    return Err(format!("{ino} has {} bytes", attr.size));
+                }
+                self.holds_xattrs(model, ino).await?;
+            }
+        }
+        let attr = self.0.attr(dir).await.map_err(|e| format!("attr of {dir}: {e:#}"))?;
+        if attr.nlink != 2 + sub_dirs {
+            return Err(format!("{dir} has {} links with {sub_dirs} subdirectories", attr.nlink));
+        }
+        self.holds_node(model, &attr)
+    }
+
+    /// Checks `attr`, the attributes Fxfs has of a node, against `model`'s, and the blocks it says
+    /// the node takes.
+    fn holds_node(&self, model: &Model, attr: &Attr) -> Result<(), String> {
+        let node = model.nodes.get(&attr.ino).ok_or(format!("{} has no model", attr.ino))?;
+        node.holds(attr, clock())?;
+        let blocks = model.blocks_of(attr.ino) * (PAGE / 512);
+        if attr.blocks != blocks {
+            return Err(format!(
+                "{} takes {} blocks of 512 bytes, not {blocks}",
+                attr.ino, attr.blocks
+            ));
+        }
+        Ok(())
+    }
+
+    /// Checks the extended attributes of the node `ino` against `model`'s: their names, and what
+    /// each holds.
+    async fn holds_xattrs(&self, model: &Model, ino: u64) -> Result<(), String> {
+        let xattrs = &model.nodes.get(&ino).ok_or(format!("{ino} has no model"))?.xattrs;
+        let mut names = self.0.list_xattrs(ino).await.map_err(|e| format!("xattrs: {e:#}"))?;
+        names.sort();
+        let mut expected: Vec<Vec<u8>> = xattrs.keys().map(|name| xattr_of(*name)).collect();
+        expected.sort();
+        if names != expected {
+            return Err(format!("{ino} has the xattrs {names:?}, not {expected:?}"));
+        }
+        for (name, value) in xattrs {
+            let got = self.0.get_xattr(ino, &xattr_of(*name)).await;
+            let got = got.map_err(|e| format!("xattr {name} of {ino}: {e:#}"))?;
+            if got != *value {
+                return Err(format!("xattr {name} of {ino} is {} bytes, not those set", got.len()));
+            }
+        }
+        Ok(())
+    }
+
+    /// Checks file `ino` against `model`: its size, its links, its extended attributes, and what
+    /// it reads back: all of it, as far as WHOLLY_READ, then around its pages and at its end.
+    async fn check(&self, model: &Model, ino: u64) -> Result<(), String> {
+        let data = &model.files[&ino];
+        // As a lookup does, for the links the kernel takes from it.
+        self.0.drain(&[ino]).await.map_err(|e| format!("draining: {e:#}"))?;
+        let attr = self.0.attr(ino).await.map_err(|e| format!("attr of {ino}: {e:#}"))?;
+        if attr.size != data.size {
+            return Err(format!("{ino} is {} bytes, not {}", attr.size, data.size));
+        }
+        // In the graveyard, its record counts one, which the kernel doesn't.
+        let links = model.links(ino).max(1);
+        if attr.nlink != links {
+            return Err(format!("{ino} has {} links, not {links}", attr.nlink));
+        }
+        self.holds_node(model, &attr)?;
+        self.holds_xattrs(model, ino).await?;
+        let mut places: Vec<u64> = data.pages.keys().map(|page| page * PAGE).collect();
+        places.push(data.size.saturating_sub(2 * PAGE));
+        places.sort_unstable();
+        // Holes too: a file's start, whole, for what should be a hole may hold what it did.
+        let mut runs = vec![0..data.size.min(WHOLLY_READ)];
+        for at in places {
+            let end = at + 3 * PAGE;
+            match runs.last_mut() {
+                Some(run) if at <= run.end => run.end = run.end.max(end),
+                _ => runs.push(at..end),
+            }
+        }
+        for run in runs {
+            self.compare(data, ino, run.start, (run.end - run.start) as usize).await?;
+        }
+        Ok(())
+    }
+
+    async fn compare(&self, data: &Data, ino: u64, at: u64, len: usize) -> Result<(), String> {
+        let expected = data.read(at, len);
+        let mut read = vec![0xa5; len];
+        let got = self.0.read(ino, at, &mut read).await;
+        let got = got.map_err(|e| format!("read of {len} at {at} of {ino}: {e:#}"))?;
+        if read[..got] != expected[..] {
+            let first = (0..got.min(expected.len())).find(|i| read[*i] != expected[*i]);
+            return Err(format!(
+                "read of {len} at {at} of {ino}: {got} bytes, expected {}, differing at {first:?}",
+                expected.len()
+            ));
+        }
+        Ok(())
+    }
+}
+
 /// A filesystem and its model.
-struct World {
+struct World<const KEEPS: bool> {
     setting: Setting,
     filesystem: fxfs::filesystem::OpenFxFilesystem,
     /// What checks its transactions (`Setting::builder`).
     _hooks: Hooks<'static>,
     // Boxed: the tasks applying queued unlinks refer to it as a world moves.
-    fs: Box<Fxfs<Seeded>>,
+    fs: Box<Fxfs<Seeded<KEEPS>>>,
     root: u64,
     model: Model,
     tally: Rc<Tally>,
@@ -1554,7 +1857,59 @@ fn xattr_of(name: u8) -> Vec<u8> {
     }
 }
 
-impl World {
+impl<const KEEPS: bool> World<KEEPS> {
+    /// What its volume holds, to check.
+    fn view(&self) -> View<'_, Seeded<KEEPS>> {
+        View(&self.fs)
+    }
+
+    /// Checks that its volume, and each of its snapshots, hold what `model` says.
+    async fn holds(&self, model: &Model) -> Result<(), String> {
+        self.view().holds(model).await?;
+        self.holds_snapshots(model).await
+    }
+
+    /// Checks that the filesystem's volumes are its volume and `model`'s snapshots, each of
+    /// which, opened as a volume, holds what it did as it was taken.
+    async fn holds_snapshots(&self, model: &Model) -> Result<(), String> {
+        let volumes = root_volume((*self.filesystem).clone()).await;
+        let volumes = volumes.map_err(|e| format!("the root volume: {e:#}"))?;
+        let mut found = Vec::new();
+        let layer_set = volumes.volume_directory().store().tree().layer_set();
+        let mut merger = layer_set.merger();
+        let listed = volumes.volume_directory().iter(&mut merger).await;
+        let mut listed = listed.map_err(|e| format!("listing volumes: {e:#}"))?;
+        while let Some((name, _, _)) = listed.get() {
+            found.push(name.to_string());
+            listed.advance().await.map_err(|e| format!("listing volumes: {e:#}"))?;
+        }
+        found.sort();
+        let mut expected: Vec<String> =
+            model.snapshots.iter().map(|snapshot| snapshot.name.clone()).collect();
+        expected.push(VOLUME.to_string());
+        expected.sort();
+        if found != expected {
+            return Err(format!("the volumes are {found:?}, not {expected:?}"));
+        }
+        for snapshot in &model.snapshots {
+            let volume = volumes.volume(&snapshot.name, StoreOptions::default()).await;
+            let volume = volume.map_err(|e| format!("{}: {e:#}", snapshot.name))?;
+            let platform = Seeded::<KEEPS> { workers: false };
+            let fs = Fxfs::new((*self.filesystem).clone(), volume, true, platform);
+            let mut differs = Vec::new();
+            for held in &snapshot.held {
+                match View(&fs).holds(held).await {
+                    Ok(()) => break,
+                    Err(error) => differs.push(error),
+                }
+            }
+            if differs.len() == snapshot.held.len() {
+                return Err(format!("{} holds none of what it did: {differs:?}", snapshot.name));
+            }
+        }
+        Ok(())
+    }
+
     async fn new(
         setting: Setting,
         crashes: &Arc<Crashes>,
@@ -1567,7 +1922,7 @@ impl World {
         let made = clock();
         let volumes = root_volume((*filesystem).clone()).await.expect("the root volume");
         let volume =
-            volumes.new_volume("test", NewChildStoreOptions::default()).await.expect("the volume");
+            volumes.new_volume(VOLUME, NewChildStoreOptions::default()).await.expect("the volume");
         let root = volume.root_directory_object_id();
         let platform = Seeded { workers: setting.workers };
         let fs = Box::new(Fxfs::new((*filesystem).clone(), volume, false, platform));
@@ -1588,7 +1943,7 @@ impl World {
         let filesystem = builder.open(device).await;
         let filesystem = filesystem.map_err(|e| format!("opening: {e:#}"))?;
         let volumes = root_volume((*filesystem).clone()).await.map_err(|e| format!("{e:#}"))?;
-        let volume = volumes.volume("test", StoreOptions::default()).await;
+        let volume = volumes.volume(VOLUME, StoreOptions::default()).await;
         let volume = volume.map_err(|e| format!("the volume: {e:#}"))?;
         drop(volumes);
         let platform = Seeded { workers: setting.workers };
@@ -1673,56 +2028,6 @@ impl World {
         }
     }
 
-    /// Checks file `ino` against `model`: its size, its links, its extended attributes, and what
-    /// it reads back: all of it, as far as WHOLLY_READ, then around its pages and at its end.
-    async fn check(&self, model: &Model, ino: u64) -> Result<(), String> {
-        let data = &model.files[&ino];
-        // As a lookup does, for the links the kernel takes from it.
-        self.fs.drain(&[ino]).await.map_err(|e| format!("draining: {e:#}"))?;
-        let attr = self.fs.attr(ino).await.map_err(|e| format!("attr of {ino}: {e:#}"))?;
-        if attr.size != data.size {
-            return Err(format!("{ino} is {} bytes, not {}", attr.size, data.size));
-        }
-        // In the graveyard, its record counts one, which the kernel doesn't.
-        let links = model.links(ino).max(1);
-        if attr.nlink != links {
-            return Err(format!("{ino} has {} links, not {links}", attr.nlink));
-        }
-        self.holds_node(model, &attr)?;
-        self.holds_xattrs(model, ino).await?;
-        let mut places: Vec<u64> = data.pages.keys().map(|page| page * PAGE).collect();
-        places.push(data.size.saturating_sub(2 * PAGE));
-        places.sort_unstable();
-        // Holes too: a file's start, whole, for what should be a hole may hold what it did.
-        let mut runs = vec![0..data.size.min(WHOLLY_READ)];
-        for at in places {
-            let end = at + 3 * PAGE;
-            match runs.last_mut() {
-                Some(run) if at <= run.end => run.end = run.end.max(end),
-                _ => runs.push(at..end),
-            }
-        }
-        for run in runs {
-            self.compare(data, ino, run.start, (run.end - run.start) as usize).await?;
-        }
-        Ok(())
-    }
-
-    async fn compare(&self, data: &Data, ino: u64, at: u64, len: usize) -> Result<(), String> {
-        let expected = data.read(at, len);
-        let mut read = vec![0xa5; len];
-        let got = self.fs.read(ino, at, &mut read).await;
-        let got = got.map_err(|e| format!("read of {len} at {at} of {ino}: {e:#}"))?;
-        if read[..got] != expected[..] {
-            let first = (0..got.min(expected.len())).find(|i| read[*i] != expected[*i]);
-            return Err(format!(
-                "read of {len} at {at} of {ino}: {got} bytes, expected {}, differing at {first:?}",
-                expected.len()
-            ));
-        }
-        Ok(())
-    }
-
     /// `data`, with what `plan` got done before it stopped short.
     async fn stopped_short(&self, mut data: Data, plan: &Plan) -> Result<Data, String> {
         let ino = plan.ino;
@@ -1759,119 +2064,6 @@ impl World {
             }
         }
         Ok(data)
-    }
-
-    /// Checks what the directory `dir` holds against `model`, and what its names link: their
-    /// types, each by lookup too, as any spelling of it, and every other spelling found not to be
-    /// there, its links, attributes, extended attributes, and what a symlink says.
-    async fn holds_names(&self, model: &Model, dir: u64) -> Result<(), String> {
-        let folds = Directory::open(&self.fs.volume, dir).await;
-        let folds = folds.map_err(|e| format!("opening {dir}: {e:#}"))?.dir_type().is_casefold();
-        if folds != model.casefold.contains(&dir) {
-            return Err(format!("{dir} folds case: {folds}"));
-        }
-        // A lookup finds no name queued to go, though its record is there until the readdir below
-        // applies what is queued in the directory: a lookup applies only what its name's inode
-        // waits for (TASK-92.26).
-        for at in 0..SPELLINGS.len() {
-            let expected = model.names.get(&(dir, model.spelled(dir, at))).map(|entry| entry.ino());
-            let found = match self.fs.lookup(dir, &name_of(at)).await {
-                Ok(attr) => Some(attr.ino),
-                Err(error) if errno(&error) == Errno::ENOENT => None,
-                Err(error) => return Err(format!("lookup of {at} in {dir}: {error:#}")),
-            };
-            if found != expected {
-                return Err(format!("{at} in {dir} is {found:?}, not {expected:?}"));
-            }
-        }
-        let mut found = Vec::new();
-        let listed = self.fs.readdir(dir, ReaddirStart::Index(0), |name, ino, kind| {
-            found.push((name.as_bytes().to_vec(), ino, kind));
-            true
-        });
-        listed.await.map_err(|e| format!("readdir of {dir}: {e:#}"))?;
-        found.sort();
-        let mut names: Vec<(Vec<u8>, u64, u32)> = model
-            .names_in(dir)
-            .map(|(name, entry)| (name_of(name), entry.ino(), model.kind(entry.ino())))
-            .collect();
-        names.sort();
-        if found != names {
-            return Err(format!("{dir} holds {found:?}, not {names:?}"));
-        }
-        self.holds_xattrs(model, dir).await?;
-        let mut sub_dirs = 0;
-        for (name, entry) in model.names_in(dir) {
-            let attr = self.fs.lookup(dir, &name_of(name)).await;
-            let attr = attr.map_err(|e| format!("lookup of {name} in {dir}: {e:#}"))?;
-            if attr.ino != entry.ino() {
-                return Err(format!("{name} in {dir} is {}, not {entry:?}", attr.ino));
-            }
-            self.holds_node(model, &attr)?;
-            match entry {
-                Entry::File(_) => {}
-                Entry::Symlink(ino) => {
-                    let target = self.fs.readlink(ino).await;
-                    let target = target.map_err(|e| format!("readlink of {ino}: {e:#}"))?;
-                    if target != SYMLINK_TARGET {
-                        return Err(format!("{ino} says {target:?}"));
-                    }
-                }
-                Entry::Dir(_) => sub_dirs += 1,
-                Entry::Special(_) => {}
-            }
-            if let Entry::Symlink(ino) | Entry::Special(ino) = entry {
-                if attr.nlink != model.links(ino) {
-                    let links = model.links(ino);
-                    return Err(format!("{ino} has {} links, not {links}", attr.nlink));
-                }
-                if attr.size != model.size_of(ino) {
-                    return Err(format!("{ino} has {} bytes", attr.size));
-                }
-                self.holds_xattrs(model, ino).await?;
-            }
-        }
-        let attr = self.fs.attr(dir).await.map_err(|e| format!("attr of {dir}: {e:#}"))?;
-        if attr.nlink != 2 + sub_dirs {
-            return Err(format!("{dir} has {} links with {sub_dirs} subdirectories", attr.nlink));
-        }
-        self.holds_node(model, &attr)
-    }
-
-    /// Checks `attr`, the attributes Fxfs has of a node, against `model`'s, and the blocks it says
-    /// the node takes.
-    fn holds_node(&self, model: &Model, attr: &Attr) -> Result<(), String> {
-        let node = model.nodes.get(&attr.ino).ok_or(format!("{} has no model", attr.ino))?;
-        node.holds(attr, clock())?;
-        let blocks = model.blocks_of(attr.ino) * (PAGE / 512);
-        if attr.blocks != blocks {
-            return Err(format!(
-                "{} takes {} blocks of 512 bytes, not {blocks}",
-                attr.ino, attr.blocks
-            ));
-        }
-        Ok(())
-    }
-
-    /// Checks the extended attributes of the node `ino` against `model`'s: their names, and what
-    /// each holds.
-    async fn holds_xattrs(&self, model: &Model, ino: u64) -> Result<(), String> {
-        let xattrs = &model.nodes.get(&ino).ok_or(format!("{ino} has no model"))?.xattrs;
-        let mut names = self.fs.list_xattrs(ino).await.map_err(|e| format!("xattrs: {e:#}"))?;
-        names.sort();
-        let mut expected: Vec<Vec<u8>> = xattrs.keys().map(|name| xattr_of(*name)).collect();
-        expected.sort();
-        if names != expected {
-            return Err(format!("{ino} has the xattrs {names:?}, not {expected:?}"));
-        }
-        for (name, value) in xattrs {
-            let got = self.fs.get_xattr(ino, &xattr_of(*name)).await;
-            let got = got.map_err(|e| format!("xattr {name} of {ino}: {e:#}"))?;
-            if got != *value {
-                return Err(format!("xattr {name} of {ino} is {} bytes, not those set", got.len()));
-            }
-        }
-        Ok(())
     }
 
     /// Checks that statfs counts what `model` takes at least, unless a cut left the device holding
@@ -2013,21 +2205,10 @@ impl World {
         Ok(!more)
     }
 
-    /// Checks the names there are and each file against `model`.
-    async fn holds(&self, model: &Model) -> Result<(), String> {
-        for dir in &model.dirs {
-            self.holds_names(model, *dir).await?;
-        }
-        for ino in model.files.keys() {
-            self.check(model, *ino).await?;
-        }
-        Ok(())
-    }
-
     /// Checks each file.
     async fn check_files(&self) -> Result<(), String> {
         for ino in self.model.files.keys() {
-            self.check(&self.model, *ino).await?;
+            self.view().check(&self.model, *ino).await?;
         }
         Ok(())
     }
@@ -2111,7 +2292,7 @@ impl World {
                 self.model.files.get_mut(&ino).expect("a file").truncate(size);
             }
             self.model.nodes.get_mut(&ino).expect("a node").written();
-            self.check(&self.model, ino).await?;
+            self.view().check(&self.model, ino).await?;
         }
         Ok(())
     }
@@ -2277,7 +2458,7 @@ impl World {
         let moved = matches!(op, Op::Rename(..) | Op::Exchange(..)) && *names != self.model.names;
         if moved || dirs != self.model.dirs.len() {
             for dir in &self.model.dirs {
-                self.holds_names(&self.model, *dir).await?;
+                self.view().holds_names(&self.model, *dir).await?;
             }
         }
         Ok(())
@@ -2336,17 +2517,17 @@ impl World {
             Op::Create(name) if self.model.entry(name).is_none() => {
                 self.make(name, &Make::FILE, now).await?;
             }
-            Op::Symlink(name) if self.model.entry(name).is_none() => {
+            Op::Symlink(name, target) if self.model.entry(name).is_none() => {
                 let (dir, at) = self.model.place(name);
-                let made = self.fs.symlink(dir, &name_of(at), SYMLINK_TARGET, 0, 0).await;
+                let made = self.fs.symlink(dir, &name_of(at), &target.bytes(), 0, 0).await;
                 let Some([attr, _]) = self.unless_full(made, "symlink")? else { return Ok(()) };
                 if attr.ctime_ns < attr.mtime_ns {
                     return Err(format!("a new symlink's ctime is before its mtime: {attr:?}"));
                 }
                 self.model.names.insert((dir, at), Entry::Symlink(attr.ino));
-                self.model.nodes.insert(attr.ino, Node::new(SYMLINK, 0, 0, 0, now));
+                self.model.nodes.insert(attr.ino, Node::symlink(&target, now));
                 self.renamed(dir, &[], now);
-                self.holds_node(&self.model, &attr)?;
+                self.view().holds_node(&self.model, &attr)?;
             }
             Op::Mkdir(name) if self.model.entry(name).is_none() => {
                 self.make(name, &Make::DIR, now).await?;
@@ -2371,7 +2552,7 @@ impl World {
                     let links = self.model.links(ino);
                     return Err(format!("{ino} has {} links, not {links}", attr.nlink));
                 }
-                self.holds_node(&self.model, &attr)?;
+                self.view().holds_node(&self.model, &attr)?;
             }
             Op::Unlink(name) if self.model.entry(name).is_some() => self.unlink(name).await?,
             Op::UnlinkLater(name) if self.model.entry(name).is_some() => {
@@ -2434,7 +2615,7 @@ impl World {
                 self.model.nodes.insert(attr.ino, Node::new(FILE, 0, 0, 0, now));
                 self.model.open.insert(attr.ino);
                 self.model.linkable.insert(attr.ino);
-                self.holds_node(&self.model, &attr)?;
+                self.view().holds_node(&self.model, &attr)?;
             }
             Op::Open(index) => {
                 let subdirs = self.model.dirs[1..].iter();
@@ -2458,7 +2639,7 @@ impl World {
                     self.model.files.get_mut(&ino).expect("a file").write(at, &bytes);
                 }
                 self.model.nodes.get_mut(&ino).expect("a node").written();
-                self.check(&self.model, ino).await?;
+                self.view().check(&self.model, ino).await?;
                 self.holds_extents(ino).await?;
             }
             Op::Fill { .. } | Op::Clone { .. } | Op::CloneToEnd { .. } => {
@@ -2505,9 +2686,35 @@ impl World {
                 compacted.map_err(|e| format!("compacting: {e:#}"))?;
                 self.planned(&plan, done).await?;
             }
+            Op::WriteDirty { file, pages, dropped, .. } => {
+                let Some(ino) = self.model.file(file) else { return Ok(()) };
+                let dirty = pages * PAGE;
+                let reserved = self.fs.reserve_dirty(ino, dirty);
+                if self.unless_full(reserved, "reserve_dirty")?.is_none() {
+                    return Ok(());
+                }
+                if dropped {
+                    self.fs.release_dirty(ino, dirty);
+                } else {
+                    let plan = op.plan(&self.model).expect("a file's pages");
+                    let mut writes: Vec<(u64, &[u8])> = (plan.runs.iter())
+                        .map(|run| (run.pages.start * PAGE, written(run)))
+                        .collect();
+                    let done = self.fs.write_dirty(ino, &mut writes, dirty).await;
+                    // Paid for with the room it reserved: a full filesystem doesn't refuse it.
+                    if let Err(error) = &done {
+                        return Err(format!("write_dirty of {dirty} bytes reserved: {error:#}"));
+                    }
+                    self.planned(&plan, done).await?;
+                }
+                let kept = self.fs.dirty.dirty_bytes(ino);
+                if kept != 0 {
+                    return Err(format!("{ino} keeps {kept} bytes of dirty room, none dirty"));
+                }
+            }
             Op::Read { file, at, len } => {
                 let Some(ino) = self.model.file(file) else { return Ok(()) };
-                self.compare(&self.model.files[&ino], ino, at, len).await?;
+                self.view().compare(&self.model.files[&ino], ino, at, len).await?;
             }
             Op::Truncate { file, size } => {
                 let Some(ino) = self.model.file(file) else { return Ok(()) };
@@ -2523,7 +2730,7 @@ impl World {
                     self.model.files.get_mut(&ino).expect("a file").truncate(size);
                 }
                 self.model.nodes.get_mut(&ino).expect("a node").written();
-                self.check(&self.model, ino).await?;
+                self.view().check(&self.model, ino).await?;
                 self.holds_extents(ino).await?;
             }
             Op::Punch { .. } => {
@@ -2549,7 +2756,7 @@ impl World {
                     self.model.files.get_mut(&ino).expect("a file").allocate(range);
                 }
                 self.model.nodes.get_mut(&ino).expect("a node").written();
-                self.check(&self.model, ino).await?;
+                self.view().check(&self.model, ino).await?;
                 self.holds_extents(ino).await?;
             }
             // Each set made at once, or refused if the filesystem has no room for it, as the
@@ -2577,7 +2784,7 @@ impl World {
                 self.fs.setattr(ino, &set).await.map_err(|e| format!("setattr: {e:#}"))?;
                 self.model.nodes.get_mut(&ino).expect("a node").set(&set, now);
                 let attr = self.fs.attr(ino).await.map_err(|e| format!("attr of {ino}: {e:#}"))?;
-                self.holds_node(&self.model, &attr)?;
+                self.view().holds_node(&self.model, &attr)?;
             }
             Op::ReadSome { dir, count } => {
                 let dir = self.model.dirs[dir % self.model.dirs.len()];
@@ -2613,11 +2820,29 @@ impl World {
                         false => drop(self.model.casefold.remove(&dir)),
                     }
                 }
-                self.holds_names(&self.model, dir).await?;
+                self.view().holds_names(&self.model, dir).await?;
             }
             Op::BadName { dir, name } => {
                 let dir = self.model.dirs[dir % self.model.dirs.len()];
                 self.refuses_bad_name(dir, BAD_NAMES[name % BAD_NAMES.len()]).await?;
+            }
+            Op::Snapshot if self.model.snapshots.len() < SNAPSHOTS => {
+                let name = format!("snapshot-{}", self.model.snapshots.len());
+                let volumes = root_volume((*self.filesystem).clone()).await;
+                let volumes = volumes.map_err(|e| format!("the root volume: {e:#}"))?;
+                // What the graveyard has queued, tombstoned first: a transaction of the volume's
+                // between the snapshot's flush and its commit frees what the snapshot shares, as
+                // the graveyard's did (TASK-241).
+                if !self.setting.snapshots_unsettled {
+                    self.filesystem.graveyard().flush().await;
+                }
+                let made = volumes.snapshot_volume(VOLUME, &name).await.map(drop);
+                if self.unless_full(made, "snapshot")?.is_none() {
+                    return Ok(());
+                }
+                let snapshot = self.model.snapshot(name);
+                self.model.snapshots.push(Arc::new(snapshot));
+                self.holds_snapshots(&self.model).await?;
             }
             Op::Statfs => self.holds_statfs(&self.model).await?,
             Op::Sync => self.fs.sync().await.map_err(|e| format!("sync: {e:#}"))?,
@@ -2656,8 +2881,13 @@ impl World {
             }
             Entry::Symlink(_) | Entry::Special(_) => {}
         }
-        self.renamed(dir, &[], now);
-        self.holds_node(&self.model, &attr)
+        // A directory's times are its VFS's on the guest's platform, which a create of a node but
+        // a directory leaves to it (`create_child_node`'s `times`): Fxfs times only those of the
+        // directories it makes in it.
+        if !KEEPS || matches!(entry, Entry::Dir(_)) {
+            self.renamed(dir, &[], now);
+        }
+        self.view().holds_node(&self.model, &attr)
     }
 
     /// Sets or removes the extended attribute `name` of `ino` as `change` says, and checks what it
@@ -2706,7 +2936,7 @@ impl World {
         if done.is_some() {
             self.model.nodes.get_mut(&ino).expect("a node").set_xattr(name, value);
         }
-        self.holds_xattrs(&self.model, ino).await
+        self.view().holds_xattrs(&self.model, ino).await
     }
 
     /// Checks that `name`, which Fxfs's names can't be, is no name in `dir`, and can't be made
@@ -2722,7 +2952,10 @@ impl World {
         }
         invalid("create", self.fs.create(dir, name, FILE, 0, 0, 0, &[]).await.map(drop))?;
         invalid("mkdir", self.fs.create(dir, name, DIR, 0, 0, 0, &[]).await.map(drop))?;
-        invalid("symlink", self.fs.symlink(dir, name, SYMLINK_TARGET, 0, 0).await.map(drop))?;
+        invalid(
+            "symlink",
+            self.fs.symlink(dir, name, &Target::SHORT.bytes(), 0, 0).await.map(drop),
+        )?;
         if let Some((at, entry)) = self.model.names_in(dir).next() {
             if !matches!(entry, Entry::Dir(_)) {
                 let linked = self.fs.link(entry.ino(), dir, name, false).await;
@@ -2732,7 +2965,7 @@ impl World {
             let renamed = self.fs.rename(dir, &name_of(at), ino, dir, name, None).await;
             invalid("rename", renamed.map(drop))?;
         }
-        self.holds_names(&self.model, dir).await
+        self.view().holds_names(&self.model, dir).await
     }
 
     /// `model`, had `op`, which failed, worked: this filesystem says what a name it made links.
@@ -2746,7 +2979,7 @@ impl World {
             return Some(model);
         }
         match *op {
-            Op::Create(name) | Op::Symlink(name) | Op::Mkdir(name) | Op::Make { name, .. } => {
+            Op::Create(name) | Op::Symlink(name, _) | Op::Mkdir(name) | Op::Make { name, .. } => {
                 let (dir, at) = model.place(name);
                 let ino = self.fs.lookup(dir, &name_of(at)).await.ok()?.ino;
                 let make = match *op {
@@ -2754,12 +2987,15 @@ impl World {
                     Op::Mkdir(_) => Make::DIR,
                     _ => Make::FILE,
                 };
-                let (entry, mode) = match op {
-                    Op::Symlink(_) => (Entry::Symlink(ino), SYMLINK),
-                    _ => (make.entry(ino), make.mode()),
+                let (entry, node) = match op {
+                    Op::Symlink(_, target) => (Entry::Symlink(ino), Node::symlink(target, 0)),
+                    _ => (
+                        make.entry(ino),
+                        Node::new(make.mode(), make.uid, make.gid, make.rdev(), 0),
+                    ),
                 };
                 model.names.insert((dir, at), entry);
-                model.nodes.insert(ino, Node::new(mode, make.uid, make.gid, make.rdev(), 0));
+                model.nodes.insert(ino, node);
                 touch(&mut model, dir);
                 match entry {
                     Entry::File(_) => drop(model.files.insert(ino, Data::default())),
@@ -2880,7 +3116,7 @@ impl World {
             data = self.stopped_short(data, plan).await?;
         }
         self.model.files.insert(plan.ino, data);
-        self.check(&self.model, plan.ino).await?;
+        self.view().check(&self.model, plan.ino).await?;
         self.holds_extents(plan.ino).await
     }
 }
@@ -2899,7 +3135,12 @@ struct Past {
 
 impl Past {
     /// The model had the operation that led to `state` stopped short, by what `world` holds of it.
-    async fn stopped_short(&self, world: &World, state: usize, ops: &[Op]) -> Option<Model> {
+    async fn stopped_short<const KEEPS: bool>(
+        &self,
+        world: &World<KEEPS>,
+        state: usize,
+        ops: &[Op],
+    ) -> Option<Model> {
         let mut before = self.states[state.checked_sub(1)?].clone();
         let plan = ops.get(state - 1)?.plan(&before)?;
         let data = before.files.remove(&plan.ino)?;
@@ -2912,7 +3153,7 @@ impl Past {
     /// Checks what power cut `cut` of a sequence, during operation `op` of `ops`, leaves on
     /// `device`: it replays, passes fsck, is the model after one of the operations since the last
     /// that was durable, and goes on with what the sequence did next.
-    async fn check_cut(
+    async fn check_cut<const KEEPS: bool>(
         &self,
         (cut, op): (usize, usize),
         ops: &[Op],
@@ -2927,7 +3168,8 @@ impl Past {
         let device = DeviceHolder::new(device.record_crashes(second_cuts.clone()));
         let setting = self.setting;
         let mut world =
-            World::mount(setting, device, root, Model::new(root, 0), tally.clone()).await?;
+            World::<KEEPS>::mount(setting, device, root, Model::new(root, 0), tally.clone())
+                .await?;
         world.cut = true;
         second_cuts.stop();
         checked(&world.filesystem).await?;
@@ -2964,7 +3206,8 @@ impl Past {
         for (_, device) in second_cuts.take() {
             tally.second_cuts.set(tally.second_cuts.get() + 1);
             let device = DeviceHolder::new(device);
-            let again = World::mount(setting, device, root, held.clone(), tally.clone()).await;
+            let again = World::<KEEPS>::mount(setting, device, root, held.clone(), tally.clone());
+            let again = again.await;
             let mut again = again.map_err(|e| format!("cut during its replay: {e}"))?;
             again.cut = true;
             // As the replay it cut was: what a truncate cut short left to trim, the graveyard
@@ -2986,10 +3229,14 @@ impl Past {
     }
 }
 
-async fn run(setting: Setting, ops: Vec<Op>, tally: Rc<Tally>) -> Result<(), String> {
+async fn run<const KEEPS: bool>(
+    setting: Setting,
+    ops: Vec<Op>,
+    tally: Rc<Tally>,
+) -> Result<(), String> {
     let crashes = setting.crashes();
     let faults = Faults::new(setting.seed);
-    let world = World::new(setting, &crashes, &faults, tally.clone()).await;
+    let world = World::<KEEPS>::new(setting, &crashes, &faults, tally.clone()).await;
     let (root, device) = (world.root, world.filesystem.device());
     let states = vec![world.model.clone()];
     let mut past = Past { setting, states, durable: vec![0], failed: None };
@@ -3045,14 +3292,16 @@ async fn run(setting: Setting, ops: Vec<Op>, tally: Rc<Tally>) -> Result<(), Str
     tally.barriers.set(tally.barriers.get() + counts.barriers);
     tally.beyond_the_bound.set(tally.beyond_the_bound.get() + counts.beyond_the_bound);
     for (cut, (mark, device)) in crashes.take().enumerate() {
-        let checked = past.check_cut((cut, mark as usize), &ops, device, root, tally.clone()).await;
+        let checked =
+            past.check_cut::<KEEPS>((cut, mark as usize), &ops, device, root, tally.clone());
+        let checked = checked.await;
         checked.map_err(|e| format!("cut {cut}, during op {mark}: {e}"))?;
     }
     Ok(())
 }
 
 /// Checks what a sequence left, across a remount, and unmounts it.
-async fn finish(world: World) -> Result<(), String> {
+async fn finish<const KEEPS: bool>(world: World<KEEPS>) -> Result<(), String> {
     world.check_all().await.map_err(|e| format!("at the end: {e}"))?;
     let world = world.remount().await.map_err(|e| format!("at the end: {e}"))?;
     world.check_all().await.map_err(|e| format!("remounted at the end: {e}"))?;
@@ -3095,6 +3344,7 @@ fn whatever_a_vfs_asks_reads_back_as_a_model_says() {
         .run(&sequences, |(seed, blocks, ops)| {
             watched.send(format!("{seed}, {blocks}, {ops:?}")).expect("the watchdog stopped");
             let setting = Setting::awkward(seed, blocks).with_graveyard_of_seed();
+            let setting = setting.with_platform_of_seed();
             let setting = setting.with_fsck_each(fsck_each).with_workers(workers);
             prop_assert_eq!(setting.run(ops, tally.clone()), Ok(()));
             Ok(())
@@ -3164,7 +3414,7 @@ fn a_failed_fsync_is_reported_and_keeps_what_was_synced() {
         let setting = Setting::awkward(0, ROOMY);
         let crashes = Crashes::new(0, u32::MAX);
         let faults = Faults::of_every_kind(0);
-        let mut world = World::new(setting, &crashes, &faults, Rc::default()).await;
+        let mut world = World::<false>::new(setting, &crashes, &faults, Rc::default()).await;
         let device = world.filesystem.device();
         let write = |byte| Op::Write { file: 0, at: 0, len: 1, byte };
         world.act(&Op::Create(0)).await.unwrap();
@@ -3185,7 +3435,8 @@ fn a_failed_fsync_is_reported_and_keeps_what_was_synced() {
         for (_, device) in crashes.take() {
             let tally = Rc::default();
             let device = DeviceHolder::new(device);
-            let world = World::mount(setting, device, root, synced.clone(), tally).await.unwrap();
+            let world = World::<false>::mount(setting, device, root, synced.clone(), tally);
+            let world = world.await.unwrap();
             let ino = *synced.files.keys().next().expect("a file");
             let mut read = [0];
             world.fs.read(ino, 0, &mut read).await.expect("read failed");
@@ -3291,7 +3542,7 @@ fn names_and_directories_move_as_one() {
         Op::SetDirXattr { dir: 1, name: 0, len: 4096, byte: 1 },
         Op::Compact,
         Op::Rename(1, 4),
-        Op::Symlink(5),
+        Op::Symlink(5, Target::SHORT),
         Op::Link(1, in_a(5)),
         Op::Unlink(5),
     ];
@@ -3377,7 +3628,7 @@ fn a_truncate_on_a_full_filesystem_leaves_nothing_past_the_end() {
         Op::Fill { file: 11, page: 2, pages: 2695, stride: 2, byte: 1 },
         Op::Create(1),
         Op::CloneToEnd { from: 6, to: 13, page: 0, to_page: 0 },
-        Op::Symlink(3),
+        Op::Symlink(3, Target::SHORT),
         Op::Fill { file: 1, page: 0, pages: 512, stride: 1, byte: 0 },
         Op::Unlink(0),
         Op::Rename(5, 1),
@@ -3829,7 +4080,7 @@ fn a_mount_compacts_nothing_before_its_initial_reap() {
 fn a_mount_frees_what_replay_found_dead_once_its_discard_is_recorded() {
     let ops = vec![
         Op::Remount,
-        Op::Symlink(0),
+        Op::Symlink(0, Target::SHORT),
         Op::Create(1),
         Op::Read { file: 0, at: 0, len: 1 },
         Op::Compact,
@@ -3837,7 +4088,7 @@ fn a_mount_frees_what_replay_found_dead_once_its_discard_is_recorded() {
         Op::Write { file: 0, at: 2093056, len: 4096, byte: 0 },
         Op::Read { file: 0, at: 0, len: 1 },
         Op::RemoveXattr { file: 0, name: 0 },
-        Op::Symlink(0),
+        Op::Symlink(0, Target::SHORT),
         Op::Write { file: 0, at: 16384, len: 1, byte: 0 },
         Op::Write { file: 0, at: 2093057, len: 28, byte: 156 },
         Op::Create(4),
@@ -3898,14 +4149,14 @@ fn a_cut_with_fsck_after_every_transaction_replays_as_far_as_its_barrier() {
         Op::Create(1),
         Op::Tmpfile(0),
         Op::Tmpfile(0),
-        Op::Symlink(0),
+        Op::Symlink(0, Target::SHORT),
         Op::Write { file: 10, at: 8192, len: 1, byte: 0 },
         Op::Sync,
         Op::Write { file: 4, at: 40960, len: 4096, byte: 0 },
         Op::Sync,
         Op::Fill { file: 3, page: 0, pages: 3945, stride: 1, byte: 0 },
         Op::UnlinkLater(1),
-        Op::Symlink(2),
+        Op::Symlink(2, Target::SHORT),
         Op::RemoveXattr { file: 0, name: 0 },
         Op::Truncate { file: 1, size: 4096 },
         Op::Fill { file: 14, page: 3, pages: 3377, stride: 1, byte: 0 },
@@ -3915,7 +4166,7 @@ fn a_cut_with_fsck_after_every_transaction_replays_as_far_as_its_barrier() {
         Op::Crash,
         Op::Truncate { file: 8, size: 4294963200 },
         Op::Close(5),
-        Op::Symlink(1),
+        Op::Symlink(1, Target::SHORT),
         Op::Fill { file: 0, page: 0, pages: 2997, stride: 2, byte: 0 },
     ];
     let setting = Setting::awkward(12436301060589371142, ROOMY).with_graveyard_of_seed();
@@ -3927,7 +4178,7 @@ fn a_cut_with_fsck_after_every_transaction_replays_as_far_as_its_barrier() {
 #[test]
 fn a_cut_during_a_replay_leaves_a_journal_that_replays() {
     let ops = vec![
-        Op::Symlink(0),
+        Op::Symlink(0, Target::SHORT),
         Op::Unlink(0),
         Op::Open(0),
         Op::Compact,
@@ -3944,7 +4195,7 @@ fn a_cut_during_a_replay_leaves_a_journal_that_replays() {
         Op::Write { file: 13, at: 2096015, len: 4096, byte: 23 },
         Op::Create(0),
         Op::Create(16),
-        Op::Symlink(4),
+        Op::Symlink(4, Target::SHORT),
         Op::Read { file: 0, at: 9223372036854775522, len: 4096 },
         Op::SetXattr { file: 5, name: 0, len: 37, byte: 105 },
         Op::FillWhileCompacting { file: 5, page: 42, pages: 10, byte: 189, flushing: true },
@@ -4051,6 +4302,112 @@ fn special_files_read_back_as_made() {
     Setting::awkward(0, ROOMY).cutting_everywhere().holds(ops);
 }
 
+/// Symlinks' targets of every length read back, those longer than a record holds kept in
+/// extended attributes of their own, which listing a symlink's leaves out: beside those set, which
+/// alone it lists, moved, unlinked and cut (TASK-149.40).
+#[test]
+fn long_symlinks_read_back_and_list_only_what_was_set() {
+    let target = |len| Target { len, byte: len as u8 };
+    let set = XattrChange::Set { len: 100, byte: 9 };
+    let ops = vec![
+        Op::Symlink(0, target(MAX_INLINE_SYMLINK + 1)),
+        Op::Symlink(1, target(MAX_LONG_SYMLINK)),
+        Op::Symlink(2, target(MAX_INLINE_SYMLINK)),
+        Op::NodeXattr { node: 1, name: 3, change: set },
+        Op::NodeXattr { node: 2, name: 4, change: set },
+        Op::NodeXattr { node: 2, name: 4, change: XattrChange::Remove },
+        Op::Sync,
+        Op::Rename(1, NAMES + 1),
+        Op::Unlink(2),
+        Op::Remount,
+    ];
+    Setting::awkward(0, ROOMY).cutting_everywhere().holds(ops);
+}
+
+/// On the guest's platform, whose VFS keeps directories' times, a create of a file or a special
+/// file leaves its directory's times as they were, set here, as the VFS writes them back; a mkdir,
+/// Fxfs's own, times it (TASK-149.40).
+#[test]
+fn creates_on_the_guests_platform_leave_their_directorys_times() {
+    let times = Change { valid: SET_MTIME | SET_CTIME, ..CHANGE };
+    let ops = vec![
+        Op::SetAttr { node: 0, change: times },
+        Op::Create(1),
+        Op::Make { name: 2, make: Make { kind: 2, ..Make::FILE } },
+        Op::Sync,
+        Op::Remount,
+        Op::SetAttr { node: 0, change: times },
+        Op::Mkdir(3),
+        Op::Remount,
+    ];
+    Setting::awkward(0, ROOMY).on_the_guests_platform().cutting_everywhere().holds(ops);
+}
+
+/// The page cache's writeback on a full filesystem: the room its pages reserved as they were
+/// dirtied pays for their writes, which nothing else has room for then. Of dirtyings halving in
+/// size, the first the filesystem has room to reserve for has no room for its writes beside: but
+/// for that room, its writeback would be refused. What the page cache drops unwritten gives its
+/// room back, and a reservation the filesystem hasn't room for is refused, before any write
+/// (TASK-149.40).
+#[test]
+fn writeback_on_a_full_filesystem_is_paid_for_by_the_room_it_reserved() {
+    let dirty = |page, pages, dropped| Op::WriteDirty { file: 0, page, pages, byte: 7, dropped };
+    let mut ops = vec![
+        Op::Create(0),
+        Op::Create(1),
+        dirty(0, 256, true),
+        dirty(0, 256, false),
+        Op::Fill { file: 1, page: 0, pages: TIGHT, stride: 1, byte: 1 },
+        Op::Truncate { file: 1, size: 3 * TIGHT / 4 * PAGE },
+        Op::Sync,
+    ];
+    ops.extend((0..11).map(|half| dirty(1024 + 2048 * half, 1024 >> half, false)));
+    ops.push(Op::Remount);
+    Setting::awkward(0, TIGHT).holds(ops);
+}
+
+/// A snapshot of a volume whose graveyard holds a file closed, not yet tombstoned, as a guest's
+/// batches its tombstones: remounted, the volume still syncs, and its snapshot holds nothing of
+/// the file. The graveyard tombstoned it during the snapshot's flush, freeing its extent, which the
+/// snapshot shared; remounted, the snapshot's graveyard freed it again, an inconsistency the
+/// journal failed with (TASK-149.40's snapshots found it, TASK-241). Op::Snapshot lets the
+/// graveyard settle first until that is fixed, which this doesn't.
+#[test]
+#[ignore = "TASK-241: a transaction of the volume during a snapshot frees what it shares"]
+fn a_snapshot_of_a_file_closed_but_not_yet_tombstoned() {
+    let ops = vec![
+        Op::Tmpfile(0),
+        Op::Write { file: 0, at: 0, len: 1, byte: 0 },
+        Op::Close(0),
+        Op::Snapshot,
+    ];
+    Setting::awkward(0, ROOMY).with_graveyard_of_seed().with_snapshots_unsettled().holds(ops);
+}
+
+/// Snapshots hold what the volume did as they were taken, as the volume goes on: its files
+/// written over, truncated, unlinked and renamed, a directory made, across cuts and remounts. A
+/// snapshot shares the volume's extents, which neither frees while both do (TASK-149.40).
+#[test]
+fn snapshots_hold_what_the_volume_did_as_it_goes_on() {
+    let write = |file, byte| Op::Fill { file, page: 0, pages: 4, stride: 1, byte };
+    let ops = vec![
+        Op::Create(0),
+        Op::Create(1),
+        write(0, 1),
+        write(1, 2),
+        Op::Snapshot,
+        write(0, 3),
+        Op::Truncate { file: 1, size: PAGE / 2 },
+        Op::Sync,
+        Op::Snapshot,
+        Op::Unlink(0),
+        Op::Rename(1, 2),
+        Op::Mkdir(3),
+        Op::Remount,
+    ];
+    Setting::awkward(0, ROOMY).cutting_everywhere().holds(ops);
+}
+
 /// A change of mode, owner, group and times, as `Op::SetAttr` asks.
 const CHANGE: Change = Change {
     valid: SET_ANY,
@@ -4120,7 +4477,7 @@ fn names_of_every_spelling_fold_and_list() {
 #[test]
 fn an_allocation_over_written_pages_changes_nothing() {
     let ops = vec![
-        Op::Symlink(1),
+        Op::Symlink(1, Target::SHORT),
         Op::Create(0),
         Op::FillWhileCompacting { file: 0, page: 0, pages: 13, byte: 1, flushing: false },
         Op::Allocate { file: 0, at: 0, len: 49153 },
@@ -4154,7 +4511,7 @@ fn allocations_on_a_full_filesystem_take_only_the_room() {
     let ops = vec![
         Op::Create(0),
         Op::Fill { file: 0, page: 4, pages: 39, stride: 1, byte: 0 },
-        Op::Symlink(0),
+        Op::Symlink(0, Target::SHORT),
         Op::Tmpfile(0),
         Op::SetXattr { file: 0, name: 0, len: 63984, byte: 0 },
         Op::Fill { file: 0, page: 43, pages: 2175, stride: 2, byte: 0 },
@@ -4182,7 +4539,7 @@ fn a_cut_during_a_replay_counts_blocks_once_trimmed() {
         Op::Fill { file: 2, page: 14, pages: 2084, stride: 2, byte: 130 },
         Op::Write { file: 9, at: 9223372036854760149, len: 4096, byte: 109 },
         Op::Sync,
-        Op::Symlink(4),
+        Op::Symlink(4, Target::SHORT),
         Op::Sync,
         Op::Clone { from: 5, to: 7, page: 513, pages: 1, to_page: 274877906946 },
         Op::Sync,
@@ -4409,7 +4766,7 @@ fn orphans_named_by_a_discard_between_two_ranges_stay_unsought() {
         Op::Compact,
         Op::Remount,
         Op::Create(2),
-        Op::Symlink(0),
+        Op::Symlink(0, Target::SHORT),
         Op::Read { file: 0, at: 4294963445, len: 11338 },
         Op::Open(13),
         Op::Write { file: 6, at: 24576, len: 55, byte: 9 },

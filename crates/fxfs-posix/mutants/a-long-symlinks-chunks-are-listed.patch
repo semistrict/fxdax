@@ -1,0 +1,11 @@
+--- a/crates/fxfs/src/object_store/store_object_handle.rs
++++ b/crates/fxfs/src/object_store/store_object_handle.rs
+@@ -1923,7 +1923,7 @@
+                         if *object_id == self.object_id() =>
+                     {
+                         // fxdax: a long symlink target's chunks are no attributes of the user's.
+-                        if !name.starts_with(super::directory::LONG_SYMLINK_XATTR) {
++                        if !name.starts_with(b"\0") {
+                             out.push(name.clone());
+                         }
+                     }
