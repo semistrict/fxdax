@@ -3,9 +3,11 @@ id: TASK-149.40
 title: >-
   The model test's remaining gaps: snapshots, write_dirty, the guest's platform,
   long symlinks
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-11-07 06:02'
+updated_date: '2026-11-08 05:13'
 labels:
   - testing
   - fxfs
@@ -36,3 +38,13 @@ TASK-149.36 surveyed the fxfs-posix model test (`crates/fxfs-posix/src/model_tes
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Symlinks: Op::Symlink with a target of any length up to MAX_LONG_SYMLINK, the model's per node; readlink across cuts; xattrs of symlinks listed as set (the fxdax.symlink. xattrs hidden). Mutant.
+2. Platform: World generic over Seeded<KEEPS>, some sequences on the guest's platform, creates leaving their directories' times. Mutant.
+3. write_dirty: Op::WriteDirty reserving dirty room (refused when full), written back by write_dirty, which a device filled since doesn't refuse; release_dirty for what's dropped. Mutant.
+4. Snapshots: Op::Snapshot of the volume, kept with the model as of it; each checked, opened as a volume, at the end, across remounts and cuts (a cut keeps those durable). Mutant.
+5. mutants.sh shows each red.
+<!-- SECTION:PLAN:END -->

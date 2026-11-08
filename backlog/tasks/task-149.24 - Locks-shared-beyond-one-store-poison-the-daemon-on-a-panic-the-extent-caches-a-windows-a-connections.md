@@ -3,10 +3,11 @@ id: TASK-149.24
 title: >-
   Locks shared beyond one store poison the daemon on a panic: the extent
   cache's, a window's, a connection's
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-11-03 07:40'
-updated_date: '2026-11-06 00:45'
+updated_date: '2026-11-08 05:13'
 labels: []
 dependencies: []
 parent_task_id: TASK-149
@@ -39,8 +40,18 @@ Found by TASK-153.16's look-around. Store locks (ExtentStore's) now fence their 
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. extent_store::shared: SharedLock (locked only through with), Shared guard tracking the thread's held locks, abort_on_panics hook aborting on a panic of a thread holding one; testing::panic_holding.
+2. Every lock the task lists, and the connection's and the store's others, a SharedLock; fxdax-extentd installs the hook.
+3. A child-process test per lock: SIGABRT naming it; red without the hook; a mutant.
+<!-- SECTION:PLAN:END -->
+
 ## Implementation Notes
 
 <!-- SECTION:NOTES:BEGIN -->
 2026-11-05 triage: citations brought to dde8d58d3; item (3) restated for 92ff6fc16, which moved a window's held-back change into its RemoteStage.
+
+2026-11-08: the user's decision (b0d7d00d2): abort rather than poison. land-h14 61a8dda62, CI 42449893885. Twelve locks covered, each by a child daemon in a_panic_holding_a_shared_lock_stops_the_daemon: extent cache, cached extent holders, cached extent pages, window, stage change, connection phase/window/requests, store state/commit/durability/flush; also shared but untested alone: extent cache arenas, promoted extent, connection behind, store opening and log base. Red without the hook: the extent cache's panic fenced one store, the fault after died EIO. The hook aborts at the panic, before unwinding, so no drop runs under a poisoned lock; end_change no longer panics in a drop during a panic. Outside the daemon (tests, other processes) nothing changes. Docker (Linux): fxdax + extent_store 707/711 (4 need git or sudo, absent in the container), shuttle parts as CI runs them green, clippy's disallowed_methods clean; macOS 483/483; fxdax mutants: the new one and four rebased onto server.rs killed; --check 16/16.
 <!-- SECTION:NOTES:END -->
