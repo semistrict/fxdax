@@ -3,9 +3,11 @@ id: TASK-241
 title: >-
   A snapshot taken while its volume is written shares extents the volume then
   frees
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-11-08 05:38'
+updated_date: '2026-11-08 06:05'
 labels:
   - bug
 dependencies: []
@@ -32,3 +34,13 @@ Found by TASK-149.40, the model test snapshotting its volume: `RootVolume::snaps
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+Design: a snapshot is atomic with its source's commits.
+1. A commit gate per store: `FxFilesystem::commit_transaction` takes a read lock on a new `LockKey::Commits { store_object_id }` for each store whose mutations the transaction holds (not BeginFlush/EndFlush, which a flush adds), after its write locks and before the journal commit, held until it commits. `snapshot_volume` takes it for writing before the flush lock, and holds it until its transaction commits: no commit of the source lands between the flush, whose layers the snapshot takes, and the snapshot's commit, which freezes the source's data owner. Taken first, it waits only for commits in flight, which may compact the journal and flush the source, the flush lock not yet held: no deadlock; the flush's own commits touch the source only by BeginFlush/EndFlush.
+2. Frozen at apply: a transaction built before the freeze and committed after it (waiting at the gate) may hold a Deallocate, or a Reference, of an extent now frozen, which `deallocate` would have left out had it been built after. The allocator's apply leaves those of frozen owners' extents out too, live and in replay alike (the Snapshot mutation precedes them in the journal).
+3. Not fixed: an allocation built before the freeze and committed after it is recorded under the frozen owner, which the source alone references: never freed one by one, a leak until the owner goes (the snapshot isn't harmed).
+Tests first: model_tests::a_snapshot_of_a_file_closed_but_not_yet_tombstoned un-ignored (red); a crates/fxfs test churning writes and frees of the source concurrently with snapshot_volume, fsck and reading both back (red if it reaches the window); then Op::Snapshot without the graveyard settling, the model test's hunts.
+<!-- SECTION:PLAN:END -->
