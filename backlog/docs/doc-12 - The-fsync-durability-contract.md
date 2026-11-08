@@ -3,7 +3,7 @@ id: doc-12
 title: The fsync durability contract
 type: other
 created_date: '2026-10-31 22:17'
-updated_date: '2026-11-07 02:53'
+updated_date: '2026-11-08 14:04'
 ---
 # What an acknowledged fsync survives (TASK-66)
 
@@ -49,7 +49,7 @@ it stays within the bound.
 |---|---|---|---|
 | Guest crash or panic, VM reset | kept | kept | fxfs-guest-crash, -crash-dax; guest/sim's `cow_crash_between_bytes_and_commit` (a commit held after its bytes) |
 | VMM killed (SIGKILL) | kept | kept | fxfs-guest-crash-dax-killed |
-| extentd killed | what was ordered within the crash bound (500 ms) may go, its records unwritten; a prefix stays, a file whose fsync returned in that time found short or empty at worst. The VM exits 158 | kept | fxfs-guest-crash-dax-daemon-killed (1 of 296 files told of went, GCE r342), fxfs-guest-daemon-lost |
+| extentd killed | what was ordered within the crash bound (1 s) may go, its records unwritten; a prefix stays, a file whose fsync returned in that time found short or empty at worst. The VM exits 158 | kept | fxfs-guest-crash-dax-daemon-killed (1 of 296 files told of went, GCE r342), fxfs-guest-daemon-lost |
 | Host reboot or kernel crash, disk kept | what was ordered within the crash bound may go; a prefix stays | kept | **nothing: no test loses a host's page cache (TASK-67)** |
 | Host lost, disk with it, with a remote | the unuploaded lag goes; a prefix stays | kept | the simulation (doc-7, `crashes_anywhere`); **no guest test (TASK-67)** |
 | Host lost, without a remote | everything goes | everything goes | not a recovery case: a store with no remote, or whose bucket is a file bucket beside it (an image's, `<image>.bucket`), lives on one disk; extentd refuses to start without a remote (`FXDAX_EXTENTD_REMOTE`, TASK-45) |
@@ -77,7 +77,7 @@ to. The README lists the rest ("How a VM process exits").
 
 ## Not promised
 
-- That an fsync survives extentd or the host going within the crash bound (500 ms) of returning. An application that
+- That an fsync survives extentd or the host going within the crash bound (1 s) of returning. An application that
   needs that must `syncfs`, which costs a round trip to the disk, and to object storage with a
   remote.
 - Anything of what the lag holds, across the loss of a host.
