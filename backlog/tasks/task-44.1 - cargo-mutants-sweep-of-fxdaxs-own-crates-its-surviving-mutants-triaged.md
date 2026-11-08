@@ -1,11 +1,12 @@
 ---
 id: TASK-44.1
 title: 'cargo-mutants sweep of fxdax''s own crates, its surviving mutants triaged'
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-10-18 04:06'
-updated_date: '2026-11-06 06:51'
-labels: []
+updated_date: '2026-11-08 04:46'
+labels:
+  - wontfix
 dependencies: []
 parent_task_id: TASK-44
 priority: low
@@ -61,4 +62,12 @@ extent_store (2026-10-19, pushed b42422d): the GCE sweep (docs/measurements/gce-
 TASK-44.19 does the same by hand for the guest's C (dax.c, device.c), which cargo-mutants can't.
 
 2026-11-06 tidy: priority to low: whole mutation sweeps were stopped by the user on 2026-10-19 (dead-ends/full-cargo-mutants-sweep.md); TASK-92.40 is what would make resuming TASK-44.1 cheaper.
+
+2026-11-08: closed as won't fix, the user's decision (OPEN_QUESTIONS.md, b0d7d00d2), whole mutation sweeps having been stopped by the user on 2026-10-19 (dead-ends/full-cargo-mutants-sweep.md). What was done stays: extent_frame's, extent_store's and extent_remote's sweeps triaged (docs/measurements/gce-mutants-*-2026-10-19), fxdax's shards 0-1, scripts/mutants.sh and mutants-gce.sh; hand mutants per crate (crates/*/mutants) carry on.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Won't fix, the user's decision of 2026-11-08 (OPEN_QUESTIONS.md, b0d7d00d2), after whole sweeps were stopped on 2026-10-19: extent_frame, extent_store and extent_remote swept and triaged, fxdax partly (shards 0-1); the scripts stay; hand mutants replace sweeps.
+<!-- SECTION:FINAL_SUMMARY:END -->

@@ -3,11 +3,12 @@ id: TASK-149.22
 title: >-
   guest/sim: MAPs that take seeded time, so that seeds reach two MAPs of one
   region at once
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-11-03 07:05'
-updated_date: '2026-11-06 00:46'
-labels: []
+updated_date: '2026-11-08 04:46'
+labels:
+  - wontfix
 dependencies: []
 parent_task_id: TASK-149
 priority: medium
@@ -40,4 +41,12 @@ What motivated it changed with writable DAX's deletion (37c331a6c). 3,000 seeds 
 
 <!-- SECTION:NOTES:BEGIN -->
 2026-11-05 triage: citations brought to dde8d58d3; the mutants moved from guest/sim/mutants to guest/mutants (b7653f781).
+
+2026-11-08: closed as won't fix, the user's decision (OPEN_QUESTIONS.md, b0d7d00d2): what motivated it, races of two MAPs of one region under writable DAX, went with its deletion (37c331a6c); what is left, a region's put UNMAPping less than the host maps, isn't worth a seeded-time device.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Won't fix, the user's decision of 2026-11-08 (OPEN_QUESTIONS.md, b0d7d00d2): its motivating race went with writable DAX (37c331a6c); nothing built.
+<!-- SECTION:FINAL_SUMMARY:END -->
