@@ -12,12 +12,23 @@
   header says which, in Fuchsia's words.
 - guest/linux, built into the guest's Linux kernel, is GPL-2.0 OR BSD-3-Clause, and its patches to
   the kernel GPL-2.0, as the kernel is: an SPDX line, then fxdax's copyright. So is guest/sim, which
-  links with the kernel's sources to run guest/linux's.
+  links with the kernel's sources to run guest/linux's, and crates/fxfs-sim-diff's shim of
+  guest/sim's kernel, which builds guest/sim's model of Fxfs.
 - The parts of Rust's std imported into the guest's std (scripts/import-guest-std.py) keep Rust's
   copyright and its MIT OR Apache-2.0 license.
 - libkrun's test framework, which the guest tests' harness (guest/tests) came from, keeps
   libkrun's copyright and its Apache-2.0 license (guest/tests/LICENSE.libkrun), with fxdax's
   copyright for its changes; the test cases fxdax wrote there are fxdax's own.
+
+Not checked: hand mutants' patches (`*/mutants/*.patch`), whose leading comment is the mutant's
+fields, which its runner reads (`# Killer:`, `# Kind:`): a mutant is a change to a file whose own
+header covers it, not a source of its own.
+
+Without the Fuchsia checkout at the revision the root Cargo.toml records, as in CI, a file citing
+Fuchsia is checked for The Fuchsia Authors' copyright and one license notice; the year, which
+license, and the other copyrights of what it cites are checked where the checkout is.
+
+scripts/test.sh's scripts part runs this, as CI does.
 
 Usage: scripts/license-headers.py [--fix]
 
@@ -53,6 +64,11 @@ YEAR = re.compile(r"Copyright (\d{4}) The Fuchsia Authors")
 # The files with headers: code, and the guest kernel's build files.
 SUFFIXES = (".rs", ".go", ".c", ".h", ".sh", ".py", ".patch")
 BUILD_FILES = ("Makefile", "Kconfig")
+# Hand mutants' patches: changes to files whose headers cover them, their leading comments their
+# fields (the module's docs).
+MUTANT = re.compile(r"(^|/)mutants/[^/]+\.patch$")
+# Under the kernel's license as well as fxdax's: guest/linux's, and what runs it outside the kernel.
+DUAL = ("guest/linux/", "guest/sim/", "crates/fxfs-sim-diff/shim/")
 
 
 def git(*args, cwd=ROOT):
@@ -64,8 +80,25 @@ def git(*args, cwd=ROOT):
 def files():
     for path in git("ls-files").splitlines():
         name = path.rsplit("/", 1)[-1]
+        if MUTANT.search(path):
+            continue
         if (path.endswith(SUFFIXES) or name in BUILD_FILES) and (ROOT / path).is_file():
             yield path
+
+
+_checkout = None
+
+
+def checkout():
+    """Whether the Fuchsia checkout has the revision the root Cargo.toml records."""
+    global _checkout
+    if _checkout is None:
+        _checkout = subprocess.run(
+            ["git", "-C", str(upstream.FUCHSIA), "cat-file", "-e",
+             f"{upstream.recorded_commit()}^{{commit}}"],
+            capture_output=True,
+        ).returncode == 0
+    return _checkout
 
 
 def marker(path):
@@ -99,7 +132,7 @@ def style(path):
 
 def needs(path, text):
     """What `path`'s header needs, as (kind, details)."""
-    if path.startswith(("guest/linux/", "guest/sim/")):
+    if path.startswith(DUAL):
         return ("spdx", "GPL-2.0" if path.endswith(".patch") else "GPL-2.0 OR BSD-3-Clause")
     head = leading(path, text)
     if RUST.search(head) or "Rust's `library/" in head:
@@ -109,6 +142,9 @@ def needs(path, text):
     cited = path.startswith("crates/") and upstream.CITATION.findall(head)
     if not cited:
         return ("fuchsia" if FUCHSIA.search(head) else "fxdax", style(path))
+    if not checkout():
+        # Which license, unknown without what it cites.
+        return ("fuchsia", None)
     # The license of what it ports, if its sources agree on one: Zircon's kernel is MIT, the rest
     # of Fuchsia BSD.
     styles = upstream_copyrights(cited)[2]
@@ -141,6 +177,11 @@ def problems(path, text):
     if kind == "fuchsia":
         if not FUCHSIA.search(head):
             found.append("cites Fuchsia, without The Fuchsia Authors' copyright")
+        if detail is None:
+            notices = [style for style, notice in STYLE.items() if notice.search(head)]
+            if len(notices) != 1:
+                found.append(f"not one license notice, but {len(notices)}")
+            return found
         cited = upstream.CITATION.findall(head)
         for other in upstream_copyrights(cited)[1] if cited else []:
             if other not in head:
@@ -250,6 +291,8 @@ def missing(path, text):
         return lines + ([] if FXDAX.search(head) else [wrap(copyright)]), []
     if kind in ("rust", "libkrun"):
         return [], []
+    if detail is None:
+        sys.exit(f"{path}: fixing a file citing Fuchsia needs its checkout ({upstream.FUCHSIA})")
     reserved = "" if detail == "MIT" else " All rights reserved."
     lines = []
     if kind == "fuchsia":
@@ -285,7 +328,7 @@ def fix(path, text):
         or SPDX.search(lines[at])
     ):
         at += 1
-    blank = "" if path.startswith(("guest/linux/", "guest/sim/")) else "\n"
+    blank = "" if path.startswith(DUAL) else "\n"
     return "".join(lines[:at]) + added + blank + "".join(lines[at:])
 
 

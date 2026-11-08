@@ -79,6 +79,8 @@ if part scripts; then
     python3 -m unittest discover -s "$root/scripts/tests"
     # What the tests leave out says why, and a why naming a task names one open (TASK-149.20).
     "$root/scripts/check-exclusions.py"
+    # Each source file carries the license header its origin needs.
+    "$root/scripts/license-headers.py"
     "$root/crates/fxfs-posix/mutants.sh" --check
     "$root/crates/fxfs-sim-diff/mutants.sh" --check
     "$root/crates/fxdax/mutants.sh" --check
