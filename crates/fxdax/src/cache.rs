@@ -958,11 +958,16 @@ impl Source for CachedExtent {
                         Some(Slot::Failed(errno)) if waited => return Err(*errno),
                         Some(Slot::Filling | Slot::Evicting(_)) => {}
                         Some(Slot::Absent | Slot::Failed(_)) => {
+                            // fxdax: for the guest request that wants it first, if any, which
+                            // its reads of object storage log (TASK-260).
                             for part in self.parts_to_read(&mut table, page) {
                                 // fxdax: a child of what faulted, or read, on the page.
                                 let span = self.page_in_span(&part);
                                 let reading = span.instrument(self.clone().read_part(part));
-                                extent_cache().pager.spawn(reading);
+                                let request = crate::request::current();
+                                extent_cache()
+                                    .pager
+                                    .spawn(crate::request::within(request, reading));
                             }
                         }
                     }

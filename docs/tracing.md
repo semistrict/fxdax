@@ -77,9 +77,12 @@ that upload.
 
 ### Request IDs
 
-`fxdax.request_id` is set from `otel::request_id`, the one function that gives a request's ID.
-It returns none until request IDs exist on the wire and in the log; the request-ID work fills it
-in.
+`fxdax.request_id` is set from `otel::request_id`, the one function that gives a request's ID:
+the guest's number of the request the call is for (its virtio extent device's `unique`), which
+the VMM's call says (wire `REQUEST`) and the daemon's log records name too (`request_id`, with
+the connection's `store`; TASK-260). A call for no guest request, as one the VMM makes of its
+own, has none. Work done for the request on other threads, as object storage's reads and the
+pager's, reads it from `fxdax::request::current()`.
 
 ## Cost while off
 

@@ -118,9 +118,13 @@ fn default_sampler() -> Result<Option<Sampler>, String> {
 }
 
 /// The span of the request `header` heads, a trace's root, served by a connection to the store
-/// of `branch`, if it has one open: `extentd.KIND` (`metrics::span_name`); nothing while spans are
-/// off, at the cost of a load.
-pub(super) fn request_span(header: &Header, branch: Option<u64>) -> extent_remote::trace::Span {
+/// of `branch`, if it has one open, a call for the guest request `guest`, if any: `extentd.KIND`
+/// (`metrics::span_name`); nothing while spans are off, at the cost of a load.
+pub(super) fn request_span(
+    header: &Header,
+    branch: Option<u64>,
+    guest: Option<&crate::request::RequestId>,
+) -> extent_remote::trace::Span {
     use extent_remote::trace::{self, Span};
     if !trace::enabled() {
         return Span::none();
@@ -131,7 +135,7 @@ pub(super) fn request_span(header: &Header, branch: Option<u64>) -> extent_remot
         // One metrics keep none of, as BUILD: its number.
         None => span.set_with(REQUEST_KIND, || header.kind.to_string()),
     }
-    if let Some(id) = request_id(header) {
+    if let Some(id) = request_id(guest) {
         span.set_with(REQUEST_ID, || id.to_string());
     }
     if let Some(branch) = branch {
@@ -140,11 +144,12 @@ pub(super) fn request_span(header: &Header, branch: Option<u64>) -> extent_remot
     span
 }
 
-/// The ID of the request `header` heads, which its span carries as [`REQUEST_ID`]: none yet. The
-/// hook the request-ID work fills in, which gives each request an ID its log lines and its VM
-/// process say too: this, and nothing else, then returns it (TASK-258).
-pub(super) fn request_id(_header: &Header) -> Option<u64> {
-    None
+/// The ID of the guest request `guest` a request is a call for, if any, which its span carries as
+/// [`REQUEST_ID`]: the guest's number of it, as the daemon's log records name it (`request_id`,
+/// TASK-260), the one function that gives a request's ID. What a request's serving does on other
+/// threads, as object storage's reads and the pager's, reads it from `crate::request::current`.
+pub(super) fn request_id(guest: Option<&crate::request::RequestId>) -> Option<u64> {
+    guest.map(|guest| guest.guest.get())
 }
 
 #[cfg(test)]

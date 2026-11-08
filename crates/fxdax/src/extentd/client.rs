@@ -870,6 +870,18 @@ impl Client {
         fds: &[std::os::fd::BorrowedFd<'_>],
     ) -> BoxFuture<'static, Reply> {
         header.id = self.next.fetch_add(1, Ordering::Relaxed);
+        // fxdax: a call for the guest request current says it, first in its payload, which the
+        // daemon serves the call with (`super::codec::guest_request`, TASK-260).
+        let guest = crate::request::current_guest().map(super::codec::request_bytes);
+        let with_guest: Vec<&[u8]>;
+        let payload = match &guest {
+            Some(guest) => {
+                header.flags |= REQUEST;
+                with_guest = std::iter::once(&guest[..]).chain(payload.iter().copied()).collect();
+                &with_guest[..]
+            }
+            None => payload,
+        };
         header.len = payload.iter().map(|part| part.len() as u64).sum();
         let bytes = stream_bytes(&header);
         let (reply, replied) = oneshot::channel();

@@ -148,7 +148,10 @@ impl Fetcher {
     pub(crate) fn new(bucket: Arc<Bucket>, cache: Option<Arc<Cache>>) -> Arc<Self> {
         let runtime = RUNTIME.handle().clone();
         let runs = runtime.clone();
-        let spawn: fetch::Spawn = Arc::new(move |future| drop(runs.spawn(future)));
+        // A read ahead is for the guest request whose read started it, if any (TASK-260).
+        let spawn: fetch::Spawn = Arc::new(move |future| {
+            drop(runs.spawn(crate::request::within(crate::request::current(), future)))
+        });
         let parts = fetch::Fetcher::new(bucket, BUDGET.clone(), MEMORY.clone(), cache);
         Arc::new(Self { runtime, parts: Arc::new(parts.reading_ahead(spawn)) })
     }
@@ -163,9 +166,12 @@ impl Fetcher {
         len: u64,
     ) -> impl std::future::Future<Output = Result<Vec<u8>, Failure>> + Send + use<> {
         let parts = self.parts.clone();
-        let read = self.runtime.spawn(async move {
-            Ok(parts.read(extent, &location, offset, len, Priority::Demand).await?)
-        });
+        // fxdax: for the guest request current, if any, there too: what the object store's
+        // requests for it log (TASK-260).
+        let read =
+            self.runtime.spawn(crate::request::within(crate::request::current(), async move {
+                Ok(parts.read(extent, &location, offset, len, Priority::Demand).await?)
+            }));
         async move { read.await.map_err(|err| Failure::local(err, "fetching"))? }
     }
 }
@@ -1815,6 +1821,48 @@ mod tests {
             [1, 2, sequence]
         );
         assert_eq!(root, Some(b"root".to_vec()));
+    }
+
+    /// TASK-260: a read for a guest request of what only object storage holds logs the requests
+    /// it makes of the bucket, on the remotes' runtime, with the guest request.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn reads_of_object_storage_are_logged_with_their_guest_request() {
+        use crate::request::{RequestId, within_now};
+        let lines = crate::extentd::logging::capture();
+        let dir = tempfile::tempdir().unwrap();
+        let bucket = Arc::new(Bucket::new(Arc::new(InMemory::new()), ""));
+        let first =
+            kept_in(dir.path().join("first"), (1 << 30, None), &bucket.clone(), idle()).unwrap();
+        let branch = first.branch();
+        write(&first, 1, &pattern(1, BLOCK));
+        first.commit(None).unwrap();
+        drop(first);
+        let second =
+            kept_in(dir.path().join("second"), (1 << 30, Some(branch)), &bucket.clone(), idle())
+                .unwrap();
+        lines.lock().unwrap().clear();
+        let request = RequestId {
+            guest: std::num::NonZeroU64::new(42).unwrap(),
+            store: Some("/stores/vm1".into()),
+        };
+        let mut data = vec![0; BLOCK];
+        let extent = ExtentId { branch, sequence: 1 };
+        within_now(Some(request), || {
+            second.read(extent, 0, &mut [crate::VolatileSliceMut::from(&mut data[..])]).unwrap()
+        });
+        assert_eq!(data, pattern(1, BLOCK));
+        // Each request of the bucket the read made: its kind, and the request it names.
+        let mut made: Vec<(String, String)> = (lines.lock().unwrap().iter())
+            .filter_map(|line| line.strip_prefix("DEBUG extent_remote::store: object storage: "))
+            .map(|line| {
+                let kind = line.split(' ').next().unwrap().to_owned();
+                (kind, line.split_once(" request_id=").map_or("none", |(_, id)| id).to_owned())
+            })
+            .collect();
+        made.dedup();
+        assert_eq!(made, [("get-range".to_owned(), "42 store=/stores/vm1".to_owned())]);
+        drop(second);
     }
 
     /// Opens the store at `path`, whose bucket's objects `gated` reaches, the write of its branch's

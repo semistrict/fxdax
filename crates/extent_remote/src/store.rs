@@ -195,7 +195,10 @@ impl Counts {
         if let Some(path) = path {
             span.set_with(crate::trace::OBJECT_KEY, || path.to_string());
         }
-        Timed { counts: self, request, started: std::time::Instant::now(), span }
+        // fxdax: what its log record names, if the log takes it (TASK-260).
+        let logged = log::log_enabled!(log::Level::Debug)
+            .then(|| path.map_or_else(String::new, |path| path.to_string()));
+        Timed { counts: self, request, started: std::time::Instant::now(), span, logged }
     }
 }
 
@@ -206,19 +209,40 @@ struct Timed<'a> {
     request: Request,
     started: std::time::Instant,
     span: crate::trace::Span,
+    /// fxdax: its object, as [`Timed::answered`] logs it, if the log takes it.
+    logged: Option<String>,
 }
 
 impl Timed<'_> {
     /// `answered`, the request's answer, said on its span: its bytes, as `bytes` counts those of
-    /// what it answered, or its error.
+    /// what it answered, or its error. fxdax: and logged, at debug, with its kind, object, time,
+    /// and bytes or error (TASK-260): in the extent daemon, its log gives the record the guest
+    /// request the work is for, if any (`fxdax::request`).
     fn answered<T>(
         &self,
         answered: Result<T, Error>,
         bytes: impl Fn(&T) -> usize,
     ) -> Result<T, Error> {
+        let kind = self.request.name();
+        let ms = || self.started.elapsed().as_secs_f64() * 1e3;
         match &answered {
-            Ok(answer) => self.span.set_count(crate::trace::BYTES, bytes(answer) as u64),
-            Err(error) => self.span.fail(error),
+            Ok(answer) => {
+                let bytes = bytes(answer) as u64;
+                self.span.set_count(crate::trace::BYTES, bytes);
+                if let Some(object) = &self.logged {
+                    let ms = ms();
+                    log::debug!(kind, object:%, ms, bytes; "object storage: {kind} {object}");
+                }
+            }
+            Err(error) => {
+                self.span.fail(error);
+                if let Some(object) = &self.logged {
+                    let ms = ms();
+                    log::debug!(
+                        kind, object:%, ms, error:%; "object storage: {kind} {object}: {error}"
+                    );
+                }
+            }
         }
         answered
     }

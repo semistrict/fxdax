@@ -131,6 +131,8 @@ mod node;
 pub mod pages;
 mod profile;
 pub mod remote;
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub mod request;
 #[cfg(all(test, feature = "shuttle"))]
 mod shuttle_testing;
 pub mod stats;

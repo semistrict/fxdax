@@ -72,7 +72,16 @@ impl Header {
 /// another, naming both. Where it is said, `args[4]` of an `OPEN` and of its reply, with the
 /// [`Header`]'s layout, [`OPEN`]'s and [`REPLY`]'s kinds and a reply's status, is what no version
 /// moves. `the_wire_is_its_version` (codec.rs) fails on a change to the wire without a new one.
-pub(crate) const VERSION: u64 = 3;
+/// Version 4: a request may say the guest request it is a call for ([`REQUEST`], TASK-260).
+pub(crate) const VERSION: u64 = 4;
+
+/// fxdax: a flag of any request, which says the guest request it is a call for, the guest's
+/// number of it (`crate::request`, TASK-260): little-endian, not 0, in the first
+/// [`REQUEST_BYTES`] of its payload, before what its kind has there. The daemon serves the request
+/// with it current, which its log records name.
+pub(crate) const REQUEST: u32 = 1 << 31;
+/// fxdax: the bytes of a [`REQUEST`]'s guest request.
+pub(crate) const REQUEST_BYTES: usize = 8;
 
 // Requests, from a VM process. A reply ([`REPLY`]) answers each, but for [`ACK`].
 

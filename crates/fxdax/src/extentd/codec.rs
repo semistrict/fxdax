@@ -24,6 +24,7 @@ use crate::pages::{ArenaId, PhysLocation};
 use crate::{Access, Commit, Errno, ExtentId, ExtentInfo, MappingContents};
 use crate::{WindowMapping, WriteBarriers};
 use std::borrow::Cow;
+use std::num::NonZeroU64;
 use std::os::fd::{AsFd, BorrowedFd};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
@@ -354,14 +355,17 @@ impl<'a> Request<'a> {
     /// `EPROTONOSUPPORT` for an [`OPEN`] of another wire version, whatever else it holds
     /// (TASK-141.3).
     pub fn decode(message: &'a Message) -> Result<Self, Errno> {
-        let Message { header, payload, fds } = message;
+        let Message { header, fds, .. } = message;
         let Header { kind, flags, args, status, .. } = *header;
         if kind == OPEN && version(header) != VERSION {
             return Err(Errno::EPROTONOSUPPORT);
         }
-        if status != 0 || flags & !known_flags(kind)? != 0 {
+        if status != 0 || flags & !(known_flags(kind)? | REQUEST) != 0 {
             return Err(Errno::EINVAL);
         }
+        // fxdax: what its kind has, after the guest request it says, if any (TASK-260).
+        let (_, payload) = guest_request(message)?;
+        let flags = flags & !REQUEST;
         // A request's descriptors: a TRANSFER's one, and none of any other.
         let fd = match (kind, &fds[..]) {
             (TRANSFER, [fd]) => Some(fd.as_fd()),
@@ -552,6 +556,24 @@ pub(crate) fn stream_bytes(header: &Header) -> u64 {
         READ if header.flags & READ_TRANSFER == 0 => header.len + header.args[3].min(MAX_PAYLOAD),
         _ => header.len,
     }
+}
+
+/// fxdax: the guest request the request `message` is a call for, if it says one ([`REQUEST`]),
+/// and the rest of its payload, its kind's: `EINVAL` if it says one it doesn't hold, or 0
+/// (TASK-260).
+pub(crate) fn guest_request(message: &Message) -> Result<(Option<NonZeroU64>, &[u8]), Errno> {
+    if message.header.flags & REQUEST == 0 {
+        return Ok((None, &message.payload));
+    }
+    let (guest, rest) =
+        message.payload.split_first_chunk::<REQUEST_BYTES>().ok_or(Errno::EINVAL)?;
+    let guest = NonZeroU64::new(u64::from_le_bytes(*guest)).ok_or(Errno::EINVAL)?;
+    Ok((Some(guest), rest))
+}
+
+/// fxdax: the bytes a [`REQUEST`] says the guest request `guest` in (TASK-260).
+pub(crate) fn request_bytes(guest: NonZeroU64) -> [u8; REQUEST_BYTES] {
+    guest.get().to_le_bytes()
 }
 
 /// The path `bytes` hold: `EINVAL` if empty, or holding a NUL, which no path does.
@@ -1052,6 +1074,44 @@ mod tests {
         Message { header, payload, fds }
     }
 
+    /// fxdax TASK-260: every request decodes as it is whether or not it says its guest request,
+    /// which [`guest_request`] reads; one that says it and doesn't hold it, or says 0, is refused.
+    #[test]
+    fn requests_say_their_guest_request() {
+        let fields = Fields {
+            words: [3, 5, 4096, 8192, 1 << 20],
+            flags: [true, false, false],
+            data: (0..64).collect(),
+            root: b"root".to_vec(),
+            paths: [PathBuf::from("store"), PathBuf::from("from")],
+            extents: vec![ExtentId { branch: 7, sequence: 9 }],
+            build: "build".into(),
+            stats: "stats".into(),
+            commit: Commit::Ordered,
+            access: Access::Read,
+        };
+        let area = area();
+        let guest = NonZeroU64::new(0x1234_5678_9abc).unwrap();
+        for request in requests(&fields, area.as_fd()) {
+            let plain = sent(&request, 1);
+            assert_eq!(guest_request(&plain).map(|(guest, _)| guest), Ok(None));
+            let mut saying = sent(&request, 1);
+            saying.header.flags |= REQUEST;
+            saying.payload.splice(0..0, request_bytes(guest));
+            saying.header.len += REQUEST_BYTES as u64;
+            assert_eq!(guest_request(&saying).map(|(guest, _)| guest), Ok(Some(guest)));
+            assert_eq!(Request::decode(&saying).as_ref(), Ok(&request), "{request:?}");
+            let mut zero = sent(&request, 1);
+            zero.header.flags |= REQUEST;
+            zero.payload.splice(0..0, [0; REQUEST_BYTES]);
+            assert_eq!(Request::decode(&zero).err(), Some(Errno::EINVAL), "{request:?}");
+        }
+        let mut short = sent(&Request::Info, 1);
+        short.header.flags |= REQUEST;
+        short.payload = vec![1; REQUEST_BYTES - 1];
+        assert_eq!(Request::decode(&short).err(), Some(Errno::EINVAL));
+    }
+
     /// A transfer area's descriptor, for requests to carry.
     fn area() -> OwnedFd {
         tempfile::tempfile().unwrap().into()
@@ -1119,7 +1179,9 @@ mod tests {
             let request = requests.iter().find(|request| request.kind() == kind).unwrap();
             let mut message = sent(request, 1);
             assert!(Request::decode(&message).is_ok(), "{request:?}");
-            for bit in (0..32).map(|bit| 1u32 << bit).filter(|bit| known(kind) & *bit == 0) {
+            // fxdax: REQUEST, which any request may have, aside (TASK-260).
+            let unknown = |bit: &u32| (known(kind) | REQUEST) & *bit == 0;
+            for bit in (0..32).map(|bit| 1u32 << bit).filter(unknown) {
                 message.header.flags = bit;
                 let decoded = Request::decode(&message);
                 assert_eq!(decoded.err(), Some(Errno::EINVAL), "kind {kind}, flag {bit:#x}");
@@ -1535,7 +1597,7 @@ mod tests {
     fn the_wire_is_its_version() {
         /// The version, and the fingerprint of the wire it is. A change to the wire is a new
         /// version, both changed together, never the fingerprint alone.
-        const WIRE: (u64, u64) = (3, 0x6f74_a856_6d64_2904);
+        const WIRE: (u64, u64) = (4, 0x2461_c9e8_dfa2_d6a6);
         let fingerprint = fingerprint();
         assert_eq!(
             (VERSION, fingerprint),
@@ -1585,6 +1647,9 @@ mod tests {
         for kind in 0..256 {
             hashed(&known_flags(kind).map_or(u64::MAX, u64::from).to_le_bytes());
         }
+        // fxdax: what any request says of its guest request (TASK-260).
+        hashed(&REQUEST.to_le_bytes());
+        hashed(&request_bytes(NonZeroU64::new(5).unwrap()));
         let phys = PhysLocation { arena: ArenaId(6), offset: 1 << 21 };
         let told = [
             StageOp::Map { offset: 4096, phys, len: 8192 },

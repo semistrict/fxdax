@@ -622,7 +622,8 @@ fn requests_with_flags_the_daemon_doesnt_know_are_refused() {
     let (store, served) = connect(&dir.path().join("store"), 1 << 24);
     let extent = ExtentId { branch: store.branch(), sequence: 1 };
     let args = [extent.branch, extent.sequence, 0, 0, BLOCK as u64];
-    for bit in 5..32 {
+    // Bit 31 is any request's: REQUEST (TASK-260).
+    for bit in 5..31 {
         let unknown = Header::new(WRITE, 0).with_args(&args).with_flags(1 << bit);
         let written = store.call(unknown, &pattern(1, BLOCK), &[]).map(drop);
         assert_eq!(written, Err(Errno::EINVAL), "flag {bit}");
@@ -6017,3 +6018,66 @@ mod hostile;
 
 /// TASK-258: the daemon's spans, exported.
 mod otel;
+
+/// TASK-260: the daemon's log records about a VM process's call for a guest request name the
+/// request, by the guest's number of it, and the store the call is of: refused at once, as a
+/// `WRITE` of a flag no write knows, or deferred, as a `PRIVATE` the window refuses; and a call for
+/// none names none.
+#[test]
+fn calls_for_guest_requests_are_logged_with_them() {
+    use super::wire::{Header, WRITE};
+    use crate::request::{RequestId, within_now};
+    use std::num::NonZeroU64;
+    let lines = super::logging::capture();
+    host();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("store");
+    let (store, served) = connect(&path, 1 << 24);
+    let named = std::fs::canonicalize(&path).unwrap();
+    let named = named.to_str().unwrap();
+    let extent = ExtentId { branch: store.branch(), sequence: 1 };
+    let args = [extent.branch, extent.sequence, 0, 0, BLOCK as u64];
+    let unknown = Header::new(WRITE, 0).with_args(&args).with_flags(1 << 20);
+    let guest = |guest| Some(RequestId { guest: NonZeroU64::new(guest).unwrap(), store: None });
+    let refused = || {
+        let logged = std::mem::take(&mut *lines.lock().unwrap());
+        logged.into_iter().filter(|line| line.contains("refused with EINVAL")).collect::<Vec<_>>()
+    };
+    // Its flags as the wire has them, REQUEST among them if it says its guest request.
+    let write_refused = |flags: u32| {
+        format!(
+            "WARN fxdax::extentd::server: extentd: request 3 refused with EINVAL: flags {flags:#x}, \
+             args [\n    {:#x},\n    0x1,\n    0x0,\n    0x0,\n    0x1000,\n]",
+            extent.branch
+        )
+    };
+    refused();
+    let written = within_now(guest(42), || store.call(unknown, &pattern(1, BLOCK), &[]).map(drop));
+    assert_eq!(written, Err(Errno::EINVAL));
+    let saying = write_refused(1 << 31 | 1 << 20);
+    assert_eq!(refused(), [format!("{saying} request_id=42 store={named}")]);
+    // Deferred: served as a future, polled with its request current; refused where the window
+    // maps nothing. Asked as the VMM does, a future polled with the guest's number current.
+    let ps = page_size() as u64;
+    let memory = memory(4);
+    // SAFETY: The memory is the test's, and outlives the store.
+    unsafe { store.create_dax_window_in_host_memory(memory, 4 * ps, None, 2) }.unwrap();
+    refused();
+    let private = crate::request::guest_request(43, store.make_private_async(0, ps));
+    assert_eq!(futures::executor::block_on(private), Err(Errno::EINVAL));
+    assert_eq!(
+        refused(),
+        [format!(
+            "WARN fxdax::extentd::server: extentd: request 30 refused with EINVAL: flags 0x80000000, \
+             args [\n    0x0,\n    {ps:#x},\n    0x0,\n    0x0,\n    0x0,\n] request_id=43 \
+             store={named}"
+        )]
+    );
+    // A call for no guest request: none.
+    assert_eq!(store.call(unknown, &pattern(1, BLOCK), &[]).map(drop), Err(Errno::EINVAL));
+    assert_eq!(refused(), [write_refused(1 << 20)]);
+    drop(store);
+    served.join().unwrap();
+    // SAFETY: Unmaps the memory, which nothing uses any more.
+    assert_eq!(unsafe { libc::munmap(memory.as_ptr().cast(), 4 * ps as usize) }, 0);
+}

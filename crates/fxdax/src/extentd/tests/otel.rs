@@ -27,7 +27,10 @@ fn write_read_commit() -> u64 {
     let (store, served) = connect(&dir.path().join("store"), 1 << 20);
     let branch = store.branch();
     let extent = ExtentId { branch, sequence: 1 };
-    write(&store, extent, 0, &pattern(1, 2 * BLOCK)).unwrap();
+    // TASK-260: the write for the guest's request 42.
+    let guest =
+        std::num::NonZeroU64::new(42).map(|guest| crate::request::RequestId { guest, store: None });
+    crate::request::within_now(guest, || write(&store, extent, 0, &pattern(1, 2 * BLOCK))).unwrap();
     assert_eq!(read(&store, extent, 0, 2 * BLOCK), Ok(pattern(1, 2 * BLOCK)));
     store.commit(Some(b"root")).unwrap();
     drop(store);
@@ -88,8 +91,10 @@ fn spans_trace_requests_commits_and_uploads() {
     assert_eq!(attribute(written, "fxdax.branch"), Some(hex.clone()));
     assert_eq!(attribute(written, "fxdax.bytes"), Some(Value::I64(2 * BLOCK as i64)));
     assert_eq!(written.status, opentelemetry::trace::Status::Unset);
+    assert_eq!(attribute(written, "fxdax.request_id"), Some(Value::from("42")));
     let read = the(&spans, "extentd.read");
     assert_eq!(attribute(read, "fxdax.bytes"), Some(Value::I64(2 * BLOCK as i64)));
+    assert_eq!(attribute(read, "fxdax.request_id"), None, "a call for no guest request");
 
     let committed = the(&spans, "extentd.commit");
     assert_eq!(attribute(committed, "fxdax.durable"), Some(Value::Bool(true)));

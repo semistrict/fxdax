@@ -455,6 +455,7 @@ async fn run_connection(stream: UnixStream, tenant: Arc<Tenant>) {
         drained: Arc::new(event_listener::Event::new()),
         report: snapshot::Report::new(&peer.sender),
         page_ins: tokio::sync::Semaphore::new(PAGE_INS),
+        named: OnceLock::new(),
         _alive: alive,
     });
     match AsyncReceiver::new(stream) {
@@ -721,11 +722,16 @@ struct Answer {
 }
 
 impl Answer {
-    /// The answer owed to `request`, which `connection` received.
-    fn new(connection: &Arc<Connection>, request: Header) -> Self {
+    /// The answer owed to `request`, which `connection` received, a call for the guest request
+    /// `guest`, if any.
+    fn new(
+        connection: &Arc<Connection>,
+        request: Header,
+        guest: Option<&crate::request::RequestId>,
+    ) -> Self {
         let started = std::time::Instant::now();
         let branch = connection.store().map(|store| store.branch());
-        let span = super::otel::request_span(&request, branch);
+        let span = super::otel::request_span(&request, branch, guest);
         Self { connection: connection.clone(), request, started, sent: false, span }
     }
 
@@ -963,6 +969,9 @@ pub(super) struct Connection {
     report: Arc<snapshot::Report>,
     /// fxdax: its faults and `PRIVATE`s resolving, [`PAGE_INS`] at most (TASK-149.34).
     page_ins: tokio::sync::Semaphore,
+    /// fxdax: its store's path, once open, which names the guest requests it serves calls for
+    /// (`crate::request::RequestId::store`, TASK-260).
+    named: OnceLock<Arc<str>>,
     /// What says, as it drops, that the connection has: its last field, dropped after its store,
     /// window and open extents, and its hold of its store's path (TASK-79.34).
     _alive: tokio::sync::oneshot::Sender<std::convert::Infallible>,
@@ -995,7 +1004,9 @@ impl Opening<'_> {
     /// [`Phase::Following`]. Checked without the phase's lock, which a panic would poison.
     fn opened(self, path: &Path, store: Arc<ExtentStore>, opened: Phase) {
         let follower = matches!(opened, Phase::Following);
-        self.0.report.opened(store_key(path), store.branch(), follower);
+        let key = store_key(path);
+        drop(self.0.named.set(key.to_string_lossy().into()));
+        self.0.report.opened(key, store.branch(), follower);
         assert!(self.0.store.set(store).is_ok(), "a connection opened a second store");
         let was = std::mem::replace(&mut *self.0.phase.with(Mutex::lock), opened);
         assert!(matches!(was, Phase::Opening), "a connection opened a store not opening one");
@@ -1141,7 +1152,18 @@ impl Connection {
     /// its tenant's VM processes don't ([`Connection::authorize`]), is refused, whatever it is, in
     /// one place (TASK-160.9).
     fn serve_in_turn(self: Arc<Self>, message: Message) {
-        let (turn, answer) = (Turn::new(self.clone()), Answer::new(&self, message.header));
+        // fxdax: served with the guest request it is a call for current, if any, as its futures
+        // are polled too, wherever: what its log records and its span name (`crate::request`,
+        // TASK-260).
+        let guest = match codec::guest_request(&message) {
+            Ok((Some(guest), _)) => {
+                Some(crate::request::RequestId { guest, store: self.named.get().cloned() })
+            }
+            // Refused as it is decoded, if it says one it doesn't hold.
+            Ok((None, _)) | Err(_) => None,
+        };
+        let answer = Answer::new(&self, message.header, guest.as_ref());
+        let turn = Turn::new(self.clone());
         let refuse = |answer: Answer, errno| {
             let reply = answer.reply_header();
             answer.send(Err(errno), reply, Vec::new(), Vec::new())
@@ -1160,21 +1182,32 @@ impl Connection {
         }
         // fxdax: the request's span the parent of what serving it does (TASK-258).
         let parent = answer.span.parent();
-        match request {
+        crate::request::within_now(guest.clone(), || match request {
             Err(Errno::EPROTONOSUPPORT) => refuse_version(&message.header, answer),
             Err(errno) => refuse(answer, errno),
-            Ok(Request::Fault(fault)) => {
-                serve_future(turn, parent.around(self.fault(fault, answer)))
-            }
+            Ok(Request::Fault(fault)) => serve_future(
+                turn,
+                crate::request::within(guest.clone(), parent.around(self.fault(fault, answer))),
+            ),
             // fxdax: as a fault, which waits for its pages to be brought in (backlog doc-13).
-            Ok(Request::Private { window_offset, len }) => {
-                serve_future(turn, parent.around(self.make_private(window_offset, len, answer)))
-            }
+            Ok(Request::Private { window_offset, len }) => serve_future(
+                turn,
+                crate::request::within(
+                    guest.clone(),
+                    parent.around(self.make_private(window_offset, len, answer)),
+                ),
+            ),
             Ok(Request::Open { path, opening }) if opening != codec::Opening::ReadOnly => {
-                serve_future(turn, parent.around(self.serve_open(path, opening, answer)))
+                serve_future(
+                    turn,
+                    crate::request::within(
+                        guest.clone(),
+                        parent.around(self.serve_open(path, opening, answer)),
+                    ),
+                )
             }
             Ok(request) => self.serve(&request, answer),
-        }
+        })
     }
 
     /// Serves the next request waiting, if any, on the [`Pool`], the last having been served; or,

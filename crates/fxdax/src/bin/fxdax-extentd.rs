@@ -65,6 +65,13 @@
 //! With `FXDAX_EXTENTD_TRACES` set to `otlp`, the daemon exports spans of what it does, over OTLP,
 //! to the collector `OTEL_EXPORTER_OTLP_ENDPOINT` names, OpenTelemetry's variables configuring
 //! them (`fxdax::extentd::otel`, TASK-258; `docs/tracing.md`): off otherwise.
+//!
+//! It logs to standard error, a line a record (`fxdax::extentd::logging`): text by default, or,
+//! with `FXDAX_LOG_FORMAT=json`, a JSON object a line, of the record's `timestamp`, `level`,
+//! `target`, `message` and key-values (TASK-259). `FXDAX_LOG_LEVEL` says how much, `info` by
+//! default, by target too: `info,extent_remote::store=debug` logs each request of object storage.
+//! A record about a VM's request names it, `request_id`, the guest's number of it, with its
+//! `store` (TASK-260).
 
 #[cfg(target_os = "linux")]
 fn main() -> anyhow::Result<()> {

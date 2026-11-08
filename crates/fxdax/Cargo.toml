@@ -35,6 +35,7 @@ libc.workspace = true
 log.workspace = true
 rand.workspace = true
 physmem.workspace = true
+pin-project-lite.workspace = true
 storage_device.workspace = true
 zerocopy.workspace = true
 async-trait.workspace = true
@@ -54,6 +55,7 @@ fail = "0.5.1"
 opentelemetry = { version = "0.33.1", default-features = false, features = ["trace"] }
 opentelemetry_sdk = { version = "0.33.1", default-features = false, features = ["trace"] }
 opentelemetry-otlp = { version = "0.33.1", default-features = false, features = ["http-proto", "reqwest-blocking-client", "trace"] }
+humantime = "2.4.0"
 
 [dev-dependencies]
 async-trait.workspace = true
