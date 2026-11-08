@@ -6,7 +6,9 @@
 //! kernel's own filesystem suite, its `generic/quick` group unless FXDAX_XFSTESTS names others.
 //! Fxfs has no block device for it: its devices are extent stores, named by tags, as virtiofs's
 //! are, which xfstests knows, so its image takes fxfs for virtiofs, and a test's scratch filesystem
-//! is emptied rather than made anew.
+//! is emptied rather than made anew. fxdax: but one of a size (`_scratch_mkfs_sized`, the enospc
+//! group's), which is a device of its own, its store as large ([`SIZED`]), empty till its first
+//! mount formats it, as the image's common/rc has it (TASK-149.25).
 //!
 //! Some tests run and fail for what Fxfs here doesn't do ([`KNOWN_FAILURES`]), each said why; one
 //! of them that runs and passes fails the case, so that the list keeps no test it no longer needs
@@ -45,6 +47,38 @@ mod host {
         "RUN make -j8 && useradd -m fsgqa && useradd -m 123456-fsgqa && useradd -m fsgqa2\n",
     );
 
+    /// fxdax: what the image's common/rc adds for Fxfs (TASK-149.25), after xfstests' own, which
+    /// it overrides: a scratch filesystem of a size (`_try_scratch_mkfs_sized`) is the device of
+    /// that size ([`SIZED`]), the test's from then on (SCRATCH_DEV), emptied as virtiofs's is; one
+    /// of no device's size isn't run. Its first mount formats it. A scratch filesystem is
+    /// unmounted by its mount point, as check unmounts whichever device a test left mounted.
+    pub(super) const COMMON_RC: &str = r#"
+# fxdax: Fxfs: a scratch filesystem of a size, a device as large (TASK-149.25).
+eval "_upstream$(declare -f _try_scratch_mkfs_sized)"
+eval "_upstream$(declare -f _scratch_unmount)"
+_try_scratch_mkfs_sized()
+{
+	[ "$FSTYP" = fxfs ] || { _upstream_try_scratch_mkfs_sized "$@"; return; }
+	_scratch_unmount 2>/dev/null
+	export SCRATCH_DEV=scratch-$1
+	_try_scratch_mount || _notrun "no Fxfs scratch device of $1 bytes"
+	_scratch_unmount
+	_scratch_cleanup_files
+}
+_scratch_unmount()
+{
+	[ "$FSTYP" = fxfs ] || { _upstream_scratch_unmount "$@"; return; }
+	_unmount $SCRATCH_MNT
+}
+"#;
+
+    /// The image: [`CONTAINERFILE`], and [`COMMON_RC`] added to common/rc as it is, each byte
+    /// printf's octal escape.
+    static IMAGE: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+        let escaped: String = COMMON_RC.bytes().map(|byte| format!("\\{byte:03o}")).collect();
+        format!("{CONTAINERFILE}RUN printf '{escaped}' >> common/rc\n")
+    });
+
     /// Tests that fail for what Fxfs here doesn't do, which any other failure isn't.
     /// fxdax: no longer generic/225 (DAX appends' reserved blocks, in FIEMAP), 564 (past a DAX
     /// mount's s_maxbytes) and 798 (cachestat, DAX's no page cache), which passed with DAX and
@@ -82,6 +116,12 @@ mod host {
 
     /// The bytes of each filesystem, and of its DAX window if it has one.
     const SIZE: u64 = 4 << 30;
+
+    /// fxdax: the sizes of scratch filesystem the tests ask `_scratch_mkfs_sized` for, a device of
+    /// each, tagged `scratch-<bytes>`, its DAX window as large: generic/416's, 619's, 015's (and
+    /// 027, 077, 083, 226, 449), 371's, 269's (and 546), 558's, 274's (and 275) and 312's.
+    pub(super) const SIZED: [u64; 8] =
+        [128 << 20, 240 << 20, 256 << 20, 330 << 20, 512 << 20, 1 << 30, 2 << 30, 5 << 30];
     const WINDOW: crate::common::Window = crate::common::Window::Large;
 
     impl Test for TestXfstests {
@@ -90,7 +130,7 @@ mod host {
         }
 
         fn rootfs_image(&self) -> Option<&'static str> {
-            Some(CONTAINERFILE)
+            Some(IMAGE.as_str())
         }
 
         fn timeout_secs(&self) -> u64 {
@@ -103,6 +143,12 @@ mod host {
             let window = if self.dax { crate::common::dax_window(WINDOW)? } else { 0 };
             vm.extent_store("extents", &test_setup.tmp_dir.join("extents"), SIZE, window)?;
             vm.extent_store("scratch", &test_setup.tmp_dir.join("scratch"), SIZE, window)?;
+            for size in SIZED {
+                let window = if self.dax { size } else { 0 };
+                let (tag, path) =
+                    (format!("scratch-{size}"), test_setup.tmp_dir.join(format!("scratch-{size}")));
+                vm.extent_store(&tag, &path, size, window)?;
+            }
             // Check's arguments, separated by commas: a kernel's command line carries them.
             let tests = std::env::var("FXDAX_XFSTESTS").unwrap_or("-g,generic/quick".to_owned());
             vm.env(&CString::new(format!("XFSTESTS={tests}"))?);
@@ -153,7 +199,64 @@ mod host {
 
     #[cfg(test)]
     mod tests {
-        use super::verdict;
+        use super::{COMMON_RC, IMAGE, SIZED, verdict};
+        use std::process::Command;
+
+        /// What `script` prints, run by bash after xfstests' functions as stubs that say what's
+        /// called, and the image's common/rc.
+        fn bash(script: &str) -> String {
+            let stubs = r#"
+_try_scratch_mkfs_sized() { echo "upstream mkfs $*"; }
+_scratch_unmount() { echo "upstream unmount $SCRATCH_DEV"; }
+_try_scratch_mount() { echo "mount $SCRATCH_DEV on $SCRATCH_MNT"; [ "$SCRATCH_DEV" != scratch-1 ]; }
+_scratch_cleanup_files() { echo "emptied $SCRATCH_DEV"; }
+_unmount() { echo "unmount $*"; }
+_notrun() { echo "notrun: $*"; exit 0; }
+SCRATCH_DEV=scratch SCRATCH_MNT=/mnt/scratch
+"#;
+            let output = Command::new("bash")
+                .args(["-c", &format!("{stubs}{COMMON_RC}{script}")])
+                .output()
+                .expect("run bash");
+            assert!(output.status.success(), "{output:?}");
+            String::from_utf8(output.stdout).unwrap()
+        }
+
+        /// The image's common/rc is [`COMMON_RC`], byte for byte, as printf writes it.
+        #[test]
+        fn the_image_adds_common_rc_as_it_is() {
+            let line = IMAGE.lines().last().unwrap();
+            let escaped = line.strip_prefix("RUN printf '").unwrap();
+            let escaped = escaped.strip_suffix("' >> common/rc").unwrap();
+            let printed = Command::new("sh").args(["-c", "printf \"$1\"", "sh", escaped]).output();
+            assert_eq!(String::from_utf8(printed.unwrap().stdout).unwrap(), COMMON_RC);
+        }
+
+        /// Of Fxfs, a scratch filesystem of a size is the device of that size, emptied, the test's
+        /// from then on, and one of no device's size isn't run; any other filesystem's is
+        /// xfstests' own.
+        #[test]
+        fn a_scratch_filesystem_of_a_size_is_its_device() {
+            let size = SIZED[2];
+            assert_eq!(
+                bash(&format!(
+                    "FSTYP=fxfs\n_try_scratch_mkfs_sized {size}\n_scratch_unmount\necho $SCRATCH_DEV"
+                )),
+                format!(
+                    "unmount /mnt/scratch\nmount scratch-{size} on /mnt/scratch\nunmount \
+                     /mnt/scratch\nemptied scratch-{size}\nunmount /mnt/scratch\nscratch-{size}\n"
+                )
+            );
+            assert_eq!(
+                bash("FSTYP=fxfs\n_try_scratch_mkfs_sized 1\necho ran on"),
+                "unmount /mnt/scratch\nmount scratch-1 on /mnt/scratch\nnotrun: no Fxfs scratch \
+                 device of 1 bytes\n"
+            );
+            assert_eq!(
+                bash("FSTYP=xfs\n_try_scratch_mkfs_sized 4096\n_scratch_unmount"),
+                "upstream mkfs 4096\nupstream unmount scratch\n"
+            );
+        }
 
         const KNOWN: [&str; 3] = ["generic/009", "generic/301", "generic/401"];
         const SOMETIMES: [&str; 1] = ["generic/301"];
