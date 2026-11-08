@@ -4,7 +4,7 @@ title: 'Move a repo to a newer generation on git fetch, through Git alternates'
 status: In Progress
 assignee: []
 created_date: '2026-10-31 04:49'
-updated_date: '2026-11-08 05:38'
+updated_date: '2026-11-08 06:34'
 labels: []
 dependencies:
   - TASK-136.2
@@ -57,4 +57,6 @@ Git has no pre-fetch hook (from memory, unchecked), so a remote helper installed
 
 <!-- SECTION:NOTES:BEGIN -->
 2026-11-08: implemented on land-m2 with TASK-136.6 (584baf4b9: upcall newest URL, git-remote-fxfs; eed826db1: fxfs-guest-git-fetch, Vms::restore and Running::snapshot for AC #5), CI 42451532378. Unit tests: alternates moving, transports, connect's protocol (nothing read past the connect line), a repo moved by a fake manager. Not yet run: fxfs-guest-git-fetch, waiting for a stopped kept GCE host as TASK-136.6's cases do. AC #6 (writable layers' growth across repeated pulls on a Linux-sized checkout) not started: a manual GCE measurement after the above lands.
+
+2026-11-08 GCE (same host): fxfs-guest-git-fetch failed twice on its own status check, fixed in the test: it counted the directories status opens to list untracked files, then the staged file Git rereads as racily clean when staged in the second its index was written (the consumer now waits that second out, as the publisher's settle_index does). Third run OK (22 s, at e8122ffa9): alternates moved to generation 1, the fetch received exactly rev-list B..C's objects and none of generation 1's, the pull wrote only the 8 changed files, status read none but those and the unstaged one, the local commit, staged and unstaged changes and untracked file kept, generation 0's objects read, a refused URL cloned ordinarily with no alternates, and through a snapshot's restore and a reboot the checkout's fsck passed through its alternates, which automounted again; the host's count of asks exact. land-m2 at a38426778, CI 42455316995. AC #6 (Linux-sized growth across pulls) still to measure.
 <!-- SECTION:NOTES:END -->

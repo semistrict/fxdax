@@ -4,7 +4,7 @@ title: 'Attach a repo on path lookup, through the sandbox manager'
 status: In Progress
 assignee: []
 created_date: '2026-10-30 09:08'
-updated_date: '2026-11-08 05:38'
+updated_date: '2026-11-08 06:34'
 labels: []
 dependencies:
   - TASK-136.2
@@ -52,4 +52,6 @@ A path lookup attaching a repo combines with gyit's path-is-the-URL idea. Since 
 
 <!-- SECTION:NOTES:BEGIN -->
 2026-11-08: implemented on land-m2 (068c68459 close_volume, 33b4a3be2 fxfs-linux unmount closes, 584baf4b9 fxfs-automount, eed826db1 guest cases, 02284af7f doc-10 and OPEN_QUESTIONS), CI 42451532378. Verified so far: fxfs volume::lazy 8/8 (close_volume's three tests new, red before as the function didn't exist; found and fixed on the way: a graveyard flush on a read-only filesystem waited for ever, and replay reopens a closed volume while the journal names it, now what the test and doc say); fxfs + fxfs-posix + fxfs-automount 885/885 on macOS; fxfs-automount 13/13 (daemon decisions over fakes, upcall protocol); Linux (musl) check and clippy clean; guest test crates check for host and guest (aarch64 musl); guest Rust (fxfs-linux) builds for aarch64-unknown-none-softfloat. Not yet run: the guest cases fxfs-guest-automount(-dax), fxfs-guest-shared-volumes(-dax) and fxfs-guest-volumes(-dax) (regressions of unmount closing), which need a GCE host: the one kept host (fxdax-keep-n2-standard-4-us-west1-b-1) is running, and the rule is to reuse a stopped kept host, never a fresh one. Not landable until they pass.
+
+2026-11-08 GCE (fxdax-test-r1021-a, us-east4-a, n2-standard-4, nested, release guest kernel, at 02284af7f; host stopped after): fxfs-guest-automount OK (7 s) and -dax OK (8 s): a lookup mounts, 8 concurrent lookups of one name attach once, a refusal fails ENOENT leaving no mount nor volume, idle mounts expire and close their volumes (volumes_open back to before), the next lookup and a reboot remount with no ask (the host's count of asks exact). Regressions of every unmount closing its volume: fxfs-guest-shared-volumes OK and -dax OK, fxfs-guest-volumes OK and -dax OK. land-m2 rebased onto main as a38426778, CI 42455316995.
 <!-- SECTION:NOTES:END -->
