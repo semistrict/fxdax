@@ -3,11 +3,11 @@ id: TASK-245
 title: >-
   snapshot_volume may deadlock: it waits for journal space holding its source's
   flush lock
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-08 06:26'
-updated_date: '2026-11-08 06:51'
+updated_date: '2026-11-08 11:22'
 labels:
   - bug
 dependencies: []
@@ -24,14 +24,14 @@ Noted with TASK-241's fix. `RootVolume::snapshot_volume` (crates/fxfs/src/object
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
 - [x] #1 A test shows whether snapshot_volume can hang waiting for journal space while it holds the flush lock (a seeded interleaving or Shuttle), before and after TASK-241's gate
-- [ ] #2 If it can, it no longer does: the test passes, and a snapshot of a busy volume with a small journal completes
+- [x] #2 If it can, it no longer does: the test passes, and a snapshot of a busy volume with a small journal completes
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -46,4 +46,12 @@ Wait for journal room before taking any lock; the snapshot's transaction with sk
 2026-11-08: real. test_snapshot_volume_waits_for_the_journal_holding_nothing hangs on main and on land-h17 (TASK-241's gate): the snapshot waited for room holding the source's flush lock (the journal's waiting hook saw snapshot_volume on its stack), the compaction, let go of the other volume's lock, waited for the source's flush lock; both hung (the test's 10 s). Fixed on land-h18 a0e9e2c26 (stacked on land-h17), CI 42456071252: the test passes; fxfs, fxfs-posix, follower, follower_sim and fxdax's image tests 922/922 on macOS. Seeded hammering alone (64 rounds of writes racing snapshots on a 16 KiB journal) never reached it: compaction kept up.
 
 2026-11-08: the model test reached it: land-all11's macOS every_cut_of_a_short_sequence hung on seed 17604531016692502004 (Snapshot, UnlinkLater(5), Write), its journal 16 KiB. Pinned as every_cut_of_a_snapshot_an_unlink_queued_and_a_write on land-h19 (stacked on land-h18): hangs 60 s on land-h15 and land-h17, passes on land-h18.
+
+Verified 2026-11-08: on main, GitHub CI 42469441083 green at 08d444ef7 (macOS and Linux workspace, shuttle, sim, guest-sim, firecracker), scripts/upstream-changes.py --check passes.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+snapshot_volume no longer deadlocks waiting for journal space while holding its source's flush lock (land-h18, in land-all14); pinned by every_cut_of_a_snapshot_an_unlink_queued_and_a_write, which hung 60 s before the fix and passes after.
+<!-- SECTION:FINAL_SUMMARY:END -->

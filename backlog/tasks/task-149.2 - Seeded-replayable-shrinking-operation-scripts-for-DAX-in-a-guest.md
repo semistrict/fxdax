@@ -1,11 +1,11 @@
 ---
 id: TASK-149.2
 title: 'Seeded, replayable, shrinking operation scripts for DAX in a guest'
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-01 06:13'
-updated_date: '2026-11-08 06:26'
+updated_date: '2026-11-08 11:22'
 labels: []
 dependencies: []
 parent_task_id: TASK-149
@@ -32,9 +32,9 @@ At 9f81f6018 (writable DAX deleted, 37c331a6c): the past bugs AC5 named went wit
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -78,4 +78,12 @@ GCE, one host, fxdax-test-r1001-t1492, us-east1-b, release guest kernel; stopped
 
 2026-11-08, AC3 done on a follow-up branch, the kill on the nearly full volume too. Rather than branching the model into sets of states (later operations resolve their places against a size the host wouldn't know), the guest says what each refused operation left of the file it changes: script::Partial, a new length and the byte ranges that read as the operation done whole has them, as before elsewhere. That's what a cut-short write or child's store, a stopped clone and a part-way truncate or punch leave (Model::stopped_short checks it). An fsync refused is 'unsynced', and resets no window. Run::step derives it from the model before and after when Options::partials and full. The host replays by those lines (script::survivals). New cases fxfs-guest-script-killed-full and -killed-full-dax.
 Tests: partials_are_said_and_replayed. GCE r1001g: killed-full and killed-full-dax pass, 3 rounds each, 79 to 1,117 operations refused before the kill; killed and script-full pass too. r1001h, planted fsync doing nothing: killed-full fails 'killed differs: script-0: 3163035 bytes, where it was {3403873, 4010308}', shrunk in 31 tries to 2 of 3,299 operations (a truncate and an fsync of file 2). killed-full-dax passed both planted rounds; the same plant failed killed-dax (r1001e), so the check works with DAX, and on the full volume the data reached the store some other way (presumably the worker's writeback under its pressure; not confirmed). Host stopped after, not deleted.
+
+Verified 2026-11-08: on main, GitHub CI 42469441083 green at 08d444ef7 (macOS and Linux workspace, shuttle, sim, guest-sim, firecracker), scripts/upstream-changes.py --check passes.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Seeded, replayable, shrinking operation scripts for DAX in a guest: generated from a seed, shrunk in a VM, combining mappings, forks, a nearly full disk and a kill, checked against a model, and shown to catch a reintroduced copy-on-write bug (on main via land-r4/r5 in land-all14; GCE r1001g/h).
+<!-- SECTION:FINAL_SUMMARY:END -->

@@ -3,11 +3,11 @@ id: TASK-243
 title: >-
   fxfs-posix model test: a_device_that_fails_loses_nothing_durable fails its
   vacuity check by chance
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-08 06:02'
-updated_date: '2026-11-08 06:02'
+updated_date: '2026-11-08 11:22'
 labels:
   - bug
   - flake
@@ -24,15 +24,15 @@ CI 42446163807 (land-h11, guest/sim only) failed it on macOS: "1 requests failed
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The test runs the same sequences every run unless a hunt asks for others, its vacuity check kept
-- [ ] #2 The old test is shown failing the check for a recorded seed
+- [x] #1 The test runs the same sequences every run unless a hunt asks for others, its vacuity check kept
+- [x] #2 The old test is shown failing the check for a recorded seed
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -45,4 +45,12 @@ Fixed proptest seed by default (FAILING_SEQUENCES), random when hunting; vacuity
 
 <!-- SECTION:NOTES:BEGIN -->
 2026-11-08: land-h16 029471ace, CI 42453087403. Fixed seed 2 gives 16 requests, 6 flushes, 12 operations failed, 6 syncs on macOS (three runs) and Linux (Docker) alike. Old test: PROPTEST_RNG_SEED=7 FXDAX_MODEL_FAILURES=4 fails the check (0 requests failed); a search for a seed failing it at the default 24 cases is running.
+
+Verified 2026-11-08: on main, GitHub CI 42469441083 green at 08d444ef7 (macOS and Linux workspace, shuttle, sim, guest-sim, firecracker), scripts/upstream-changes.py --check passes.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+The model test's vacuity check is deterministic: fixed seeds run the same sequences unless a hunt asks for others (land-h16, in land-all14). The old test is shown failing the check at PROPTEST_RNG_SEED=7 FXDAX_MODEL_FAILURES=4.
+<!-- SECTION:FINAL_SUMMARY:END -->

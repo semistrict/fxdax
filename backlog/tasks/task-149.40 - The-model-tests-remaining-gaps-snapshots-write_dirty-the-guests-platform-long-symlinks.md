@@ -3,11 +3,11 @@ id: TASK-149.40
 title: >-
   The model test's remaining gaps: snapshots, write_dirty, the guest's platform,
   long symlinks
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-07 06:02'
-updated_date: '2026-11-08 05:52'
+updated_date: '2026-11-08 11:22'
 labels:
   - testing
   - fxfs
@@ -25,18 +25,18 @@ TASK-149.36 surveyed the fxfs-posix model test (`crates/fxfs-posix/src/model_tes
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Random sequences snapshot the volume and check each snapshot against the model as of its operation, across cuts and remounts
-- [ ] #2 Random sequences write back with write_dirty, reserving and releasing dirty room as the guest does, on full devices too
-- [ ] #3 Some sequences run on a platform keeping directory times, the model holding directories' times as the guest's VFS would leave them to it
-- [ ] #4 Symlinks have targets of every length up to the most Fxfs takes, read back across cuts, and their xattrs list only what was set
-- [ ] #5 Each new kind of operation is shown to find a bug: a mutant, red
+- [x] #1 Random sequences snapshot the volume and check each snapshot against the model as of its operation, across cuts and remounts
+- [x] #2 Random sequences write back with write_dirty, reserving and releasing dirty room as the guest does, on full devices too
+- [x] #3 Some sequences run on a platform keeping directory times, the model holding directories' times as the guest's VFS would leave them to it
+- [x] #4 Symlinks have targets of every length up to the most Fxfs takes, read back across cuts, and their xattrs list only what was set
+- [x] #5 Each new kind of operation is shown to find a bug: a mutant, red
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -55,4 +55,12 @@ TASK-149.36 surveyed the fxfs-posix model test (`crates/fxfs-posix/src/model_tes
 2026-11-08: land-h15 85cf1f982 (CI to follow). AC1-4 built, each kind in the random sequences (op(), short_op()) and pinned: snapshots (Op::Snapshot, View checks each snapshot volume against the model as of it, across cuts and remounts), write_dirty (Op::WriteDirty, reserve then write_dirty or release, no dirty room kept; on a full device of dirtyings halving in size), the guest's platform (World<KEEPS>, a quarter of the sequences, creates leave directories' times), long symlinks (to MAX_LONG_SYMLINK, xattrs listing only what was set). AC5: mutants a-long-symlinks-chunks-are-listed (found by a_device_that_fails_loses_nothing_durable), a-create-times-its-directory-on-the-guest, writeback-pays-for-nothing-with-its-room, a-volume-frees-what-its-snapshot-shares, each killed by mutants.sh. Found: TASK-241 (High), a transaction of the volume between a snapshot's flush and commit frees what the snapshot shares (the batched graveyard's tombstone; remounted, the journal failed with an inconsistency): Op::Snapshot settles the graveyard first meanwhile; a_snapshot_of_a_file_closed_but_not_yet_tombstoned reproduces it, ignored naming TASK-241. Not built: the description's DAX window bytes check, no AC asks it. fxfs-posix 93/93 (1 ignored) on macOS; clippy's disallowed_methods clean.
 
 2026-11-08: land-h15 rebased onto TASK-241's commit: 740a2e71e, CI 42452421895. Hunt: FXDAX_MODEL_CASES=1500 whatever_a_vfs_asks passes (4,038 power cuts, 5,031 of replays, 414 refused), with a_device_that_fails_loses_nothing_durable and every_cut_of_a_short_sequence.
+
+Verified 2026-11-08: on main, GitHub CI 42469441083 green at 08d444ef7 (macOS and Linux workspace, shuttle, sim, guest-sim, firecracker), scripts/upstream-changes.py --check passes.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+The model test covers snapshots, write_dirty, the guest's platform keeping directory times and long symlinks, each kind in the random sequences and pinned, each shown to find a bug by a mutant (land-h15, in land-all14). A 1,500-case hunt passes (4,038 power cuts).
+<!-- SECTION:FINAL_SUMMARY:END -->

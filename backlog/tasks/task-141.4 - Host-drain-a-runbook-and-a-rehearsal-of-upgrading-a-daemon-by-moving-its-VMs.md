@@ -3,11 +3,11 @@ id: TASK-141.4
 title: >-
   Host drain: a runbook, and SIGTERM closing every store durably before the
   daemon exits
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-10-31 20:30'
-updated_date: '2026-11-08 10:17'
+updated_date: '2026-11-08 11:22'
 labels: []
 dependencies: []
 parent_task_id: TASK-141
@@ -61,4 +61,12 @@ Verified: sigterm_closes_every_store_durable_and_uploaded passes on Linux Docker
 Backlog sweep (2026-11-08): its SIGTERM drain and runbook are on main (f9fa1c94a, 51b144262), inside green main CI 42423368353; AC #2 (scripts/migrate-gce.sh off and back nightly) still not done, waiting for the nightly's GCP credentials and bucket (OPEN_QUESTIONS.md). Left In Progress.
 
 2026-11-08: the user dropped AC #2 (the nightly migrate check).
+
+Verified 2026-11-08: on main, GitHub CI 42469441083 green at 08d444ef7 (macOS and Linux workspace, shuttle, sim, guest-sim, firecracker), scripts/upstream-changes.py --check passes.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+The host drain runbook (drain, upgrade, check, what a format change refuses) and SIGTERM closing every store durably before the daemon exits, by test, are on main (f9fa1c94a, 51b144262). The nightly migrate check (AC #2) was dropped by the user (2026-11-08).
+<!-- SECTION:FINAL_SUMMARY:END -->

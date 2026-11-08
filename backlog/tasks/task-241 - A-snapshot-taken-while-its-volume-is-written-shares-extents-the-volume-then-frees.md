@@ -3,11 +3,11 @@ id: TASK-241
 title: >-
   A snapshot taken while its volume is written shares extents the volume then
   frees
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-08 05:38'
-updated_date: '2026-11-08 06:24'
+updated_date: '2026-11-08 11:22'
 labels:
   - bug
 dependencies: []
@@ -23,16 +23,16 @@ Found by TASK-149.40, the model test snapshotting its volume: `RootVolume::snaps
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A transaction of the source committing at any point while a snapshot is taken is in the snapshot whole or not at all, and nothing the snapshot references is freed by it
-- [ ] #2 model_tests::a_snapshot_of_a_file_closed_but_not_yet_tombstoned passes, no longer ignored, and the model test snapshots without letting the graveyard settle first
-- [ ] #3 A test of crates/fxfs commits writes and frees of the source concurrently with snapshot_volume and checks the snapshot with fsck and by reading it back
+- [x] #1 A transaction of the source committing at any point while a snapshot is taken is in the snapshot whole or not at all, and nothing the snapshot references is freed by it
+- [x] #2 model_tests::a_snapshot_of_a_file_closed_but_not_yet_tombstoned passes, no longer ignored, and the model test snapshots without letting the graveyard settle first
+- [x] #3 A test of crates/fxfs commits writes and frees of the source concurrently with snapshot_volume and checks the snapshot with fsck and by reading it back
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -49,4 +49,12 @@ Tests first: model_tests::a_snapshot_of_a_file_closed_but_not_yet_tombstoned un-
 
 <!-- SECTION:NOTES:BEGIN -->
 2026-11-08: land-h17 6a2bccd70 (stacked on land-h15 740a2e71e, in land-all10), CI 42454633606. fxfs 2be26dfb5: LockKey::Commits gate in commit_transaction and snapshot_volume; the allocator leaves frozen extents out applying Deallocate and Reference. test_snapshot_volume_racing_writes red before (fsck MissingAllocation of the snapshot's extents), red with either half removed, green with both. Model: a_snapshot_of_a_file_closed_but_not_yet_tombstoned un-ignored, green; Op::Snapshot no longer settles the graveyard; mutants a-snapshot-holds-no-commits-back and a-held-back-free-frees-what-is-frozen killed by it; FXDAX_MODEL_CASES=1500 passes (4,020 cuts). fxfs, follower, follower_sim and fxdax's image tests 827/827, fxfs-posix 94/94 on macOS; upstream-changes --check, check-exclusions, clippy's disallowed_methods clean. Left, as designed: an allocation built before a freeze and committed after it is recorded under the frozen owner, a leak until it goes.
+
+Verified 2026-11-08: on main, GitHub CI 42469441083 green at 08d444ef7 (macOS and Linux workspace, shuttle, sim, guest-sim, firecracker), scripts/upstream-changes.py --check passes.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+A snapshot taken while its volume is written is consistent: commit_transaction and snapshot_volume share the LockKey::Commits gate, and the allocator leaves frozen extents out applying Deallocate and Reference (land-h17, in land-all14 98d8a9cd6). test_snapshot_volume_racing_writes is red with either half removed and green with both; the model test's a_snapshot_of_a_file_closed_but_not_yet_tombstoned is un-ignored and passes.
+<!-- SECTION:FINAL_SUMMARY:END -->
