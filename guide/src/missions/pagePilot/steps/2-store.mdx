@@ -1,0 +1,47 @@
+import { After, Inv, Predict, Ref, Scenes } from "../../../ui/mdx.tsx";
+import { sharedScene, storeScenes } from "../scene.ts";
+
+Fork A's process stores one byte to page 0. The page is mapped read-only, so the store faults
+into Fxfs's DAX code in A's kernel.
+
+<Scenes scenes={[sharedScene]} />
+
+<Predict id="forkB" />
+
+<After id="forkB">
+
+<Predict id="address" />
+
+</After>
+
+<After id="address">
+
+<Predict id="copier" />
+
+</After>
+
+<After id="copier">
+
+Step through it. The order is the point: private first, dirty second, store last.
+
+<Scenes scenes={storeScenes} />
+
+<Inv id="dirty-implies-private" />
+<Inv id="three-kinds" />
+<Inv id="private-max" />
+
+The guest side: `fxfs_dax_dirty` asks for `PRIVATE` before anything is dirty, holding the file's
+semaphore shared until the store or copy is done.
+
+<Ref id="guest_dirty" />
+<Ref id="guest_device_private" />
+
+The host side: extentd serves `PRIVATE` by copying each page into the VM process's own memory,
+laid out as the window is, so a private page costs it no mapping of its own.
+
+<Ref id="server_make_private" />
+<Ref id="window_make_private" />
+<Ref id="uffd_copy_on_write" />
+<Ref id="vmm_private_max" />
+
+</After>

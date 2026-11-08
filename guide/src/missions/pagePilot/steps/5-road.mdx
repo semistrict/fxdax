@@ -1,0 +1,21 @@
+import { After, DeadEndRef, Predict } from "../../../ui/mdx.tsx";
+
+Copy-on-write DAX landed on November 4. Before it, a window page *was* the open extent's block:
+a store through the mapping, or a `write(2)`'s copy, was the write itself. No copy, no request.
+
+<Predict id="oldStore" />
+
+<After id="oldStore">
+
+From October 14 to November 4 that design took 169 commits to dax.c alone. doc-13 counted the rest
+when it was replaced: about 25k lines, 7 kernel patches, 3 of 4 TLA+ specs, about 47% of tasks
+titled as bugs, 37–39 of 65 dead ends, and DAX at 0.51–0.61× no-DAX under pgbench.
+
+Copy-on-write gave up the zero-copy write to make the window immutable. Writes go through the same
+writeback path as without DAX; reads stay zero-copy, which is where DAX's value was. The perf gate's
+latest recorded full run, r908, has DAX at 1.04× no-DAX, and a forked VM at 0.94×
+(`docs/measurements/dax-cow-gate.md`).
+
+<DeadEndRef file="writable-dax.md" />
+
+</After>

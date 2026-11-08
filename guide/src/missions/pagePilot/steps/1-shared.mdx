@@ -1,0 +1,28 @@
+import { After, Inv, Predict, Ref, Scenes } from "../../../ui/mdx.tsx";
+import { sharedScene } from "../scene.ts";
+
+Two VMs boot as forks of one base store. In each, a process maps a large data file `MAP_SHARED`
+and reads its first page: doc-13's own requirement case, a 400 GB file mapped read-write, about 5%
+of it written in this fork.
+
+Fxfs in each guest finds page 0's block in a sealed extent of the base, `base·7`, and sends `MAP`:
+map that extent's page into the window, at the file's offset there. The process's load faults; the
+VM process's userfaultfd hands the fault to extentd, which maps the page.
+
+<Scenes scenes={[sharedScene]} />
+
+<Predict id="copies" />
+
+<After id="copies">
+
+The cache keys each sealed extent by its ID and keeps its pages once per host. Every store and
+window maps them read-only: an extent never changes once sealed.
+
+<Inv id="one-copy" />
+
+<Ref id="es_map" />
+<Ref id="cache_cached" />
+<Ref id="extent_cache" />
+<Ref id="server_fault" />
+
+</After>

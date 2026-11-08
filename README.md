@@ -13,6 +13,9 @@ in physical memory of its own, and maps them into the VMs' DAX windows. Its
 cache is shared by the host's VMs: two VMs mapping one extent, such as two
 forks of one image, map the same pages.
 
+New to the code? `guide/` is an interactive guide to it, built from the code, the design docs,
+the TLA+ specs and the past bugs: `cd guide && pnpm install && pnpm dev` (guide/README.md).
+
 ## How it fits together
 
 ```

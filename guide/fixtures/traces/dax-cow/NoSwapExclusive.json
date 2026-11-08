@@ -1,0 +1,1588 @@
+{
+ "spec": "dax-cow",
+ "mutation": "NoSwapExclusive",
+ "violated": "FsyncKeepsStores",
+ "tlc": "1.8.0",
+ "commit": "d55e9dee4",
+ "vars": [
+  "win",
+  "refused",
+  "file",
+  "durable",
+  "latest",
+  "next",
+  "errors",
+  "pte",
+  "dirty",
+  "wb",
+  "sealing",
+  "counted",
+  "semX",
+  "semR",
+  "spc",
+  "sPage",
+  "sWay",
+  "stores",
+  "wpc",
+  "wOp",
+  "wPage",
+  "floor",
+  "buf",
+  "punches"
+ ],
+ "states": [
+  {
+   "action": "Init",
+   "values": {
+    "sPage": 0,
+    "durable": [
+     0,
+     0
+    ],
+    "sealing": [],
+    "floor": [
+     0,
+     0
+    ],
+    "dirty": [],
+    "wPage": 0,
+    "wOp": "none",
+    "counted": [],
+    "punches": 0,
+    "file": [
+     {
+      "data": 0,
+      "state": "hole"
+     },
+     {
+      "data": 0,
+      "state": "hole"
+     }
+    ],
+    "win": [
+     {
+      "kind": "zeros",
+      "data": 0
+     },
+     {
+      "kind": "zeros",
+      "data": 0
+     }
+    ],
+    "latest": [
+     0,
+     0
+    ],
+    "errors": [],
+    "stores": 0,
+    "semR": [],
+    "sWay": "none",
+    "semX": "none",
+    "next": 1,
+    "buf": [
+     0,
+     0
+    ],
+    "pte": [
+     "none",
+     "none"
+    ],
+    "spc": "idle",
+    "wb": [],
+    "wpc": "idle",
+    "refused": false
+   }
+  },
+  {
+   "action": "SStart",
+   "values": {
+    "sPage": 1,
+    "durable": [
+     0,
+     0
+    ],
+    "sealing": [],
+    "floor": [
+     0,
+     0
+    ],
+    "dirty": [],
+    "wPage": 0,
+    "wOp": "none",
+    "counted": [],
+    "punches": 0,
+    "file": [
+     {
+      "data": 0,
+      "state": "hole"
+     },
+     {
+      "data": 0,
+      "state": "hole"
+     }
+    ],
+    "win": [
+     {
+      "kind": "zeros",
+      "data": 0
+     },
+     {
+      "kind": "zeros",
+      "data": 0
+     }
+    ],
+    "latest": [
+     0,
+     0
+    ],
+    "errors": [],
+    "stores": 0,
+    "semR": [],
+    "sWay": "write",
+    "semX": "none",
+    "next": 1,
+    "buf": [
+     0,
+     0
+    ],
+    "pte": [
+     "none",
+     "none"
+    ],
+    "spc": "throttle",
+    "wb": [],
+    "wpc": "idle",
+    "refused": false
+   }
+  },
+  {
+   "action": "SThrottle",
+   "values": {
+    "sPage": 1,
+    "durable": [
+     0,
+     0
+    ],
+    "sealing": [],
+    "floor": [
+     0,
+     0
+    ],
+    "dirty": [],
+    "wPage": 0,
+    "wOp": "none",
+    "counted": [],
+    "punches": 0,
+    "file": [
+     {
+      "data": 0,
+      "state": "hole"
+     },
+     {
+      "data": 0,
+      "state": "hole"
+     }
+    ],
+    "win": [
+     {
+      "kind": "zeros",
+      "data": 0
+     },
+     {
+      "kind": "zeros",
+      "data": 0
+     }
+    ],
+    "latest": [
+     0,
+     0
+    ],
+    "errors": [],
+    "stores": 0,
+    "semR": [],
+    "sWay": "write",
+    "semX": "none",
+    "next": 1,
+    "buf": [
+     0,
+     0
+    ],
+    "pte": [
+     "none",
+     "none"
+    ],
+    "spc": "lock",
+    "wb": [],
+    "wpc": "idle",
+    "refused": false
+   }
+  },
+  {
+   "action": "SLock",
+   "values": {
+    "sPage": 1,
+    "durable": [
+     0,
+     0
+    ],
+    "sealing": [],
+    "floor": [
+     0,
+     0
+    ],
+    "dirty": [],
+    "wPage": 0,
+    "wOp": "none",
+    "counted": [],
+    "punches": 0,
+    "file": [
+     {
+      "data": 0,
+      "state": "hole"
+     },
+     {
+      "data": 0,
+      "state": "hole"
+     }
+    ],
+    "win": [
+     {
+      "kind": "zeros",
+      "data": 0
+     },
+     {
+      "kind": "zeros",
+      "data": 0
+     }
+    ],
+    "latest": [
+     0,
+     0
+    ],
+    "errors": [],
+    "stores": 0,
+    "semR": [
+     "S"
+    ],
+    "sWay": "write",
+    "semX": "none",
+    "next": 1,
+    "buf": [
+     0,
+     0
+    ],
+    "pte": [
+     "none",
+     "none"
+    ],
+    "spc": "begin",
+    "wb": [],
+    "wpc": "idle",
+    "refused": false
+   }
+  },
+  {
+   "action": "SBegin",
+   "values": {
+    "sPage": 1,
+    "durable": [
+     0,
+     0
+    ],
+    "sealing": [],
+    "floor": [
+     0,
+     0
+    ],
+    "dirty": [
+     1
+    ],
+    "wPage": 0,
+    "wOp": "none",
+    "counted": [
+     1
+    ],
+    "punches": 0,
+    "file": [
+     {
+      "data": 0,
+      "state": "hole"
+     },
+     {
+      "data": 0,
+      "state": "hole"
+     }
+    ],
+    "win": [
+     {
+      "kind": "private",
+      "data": 0
+     },
+     {
+      "kind": "zeros",
+      "data": 0
+     }
+    ],
+    "latest": [
+     0,
+     0
+    ],
+    "errors": [],
+    "stores": 0,
+    "semR": [
+     "S"
+    ],
+    "sWay": "write",
+    "semX": "none",
+    "next": 1,
+    "buf": [
+     0,
+     0
+    ],
+    "pte": [
+     "none",
+     "none"
+    ],
+    "spc": "copy",
+    "wb": [],
+    "wpc": "idle",
+    "refused": false
+   }
+  },
+  {
+   "action": "WStart",
+   "values": {
+    "sPage": 1,
+    "durable": [
+     0,
+     0
+    ],
+    "sealing": [],
+    "floor": [
+     0,
+     0
+    ],
+    "dirty": [
+     1
+    ],
+    "wPage": 0,
+    "wOp": "writeback",
+    "counted": [
+     1
+    ],
+    "punches": 0,
+    "file": [
+     {
+      "data": 0,
+      "state": "hole"
+     },
+     {
+      "data": 0,
+      "state": "hole"
+     }
+    ],
+    "win": [
+     {
+      "kind": "private",
+      "data": 0
+     },
+     {
+      "kind": "zeros",
+      "data": 0
+     }
+    ],
+    "latest": [
+     0,
+     0
+    ],
+    "errors": [],
+    "stores": 0,
+    "semR": [
+     "S"
+    ],
+    "sWay": "write",
+    "semX": "none",
+    "next": 1,
+    "buf": [
+     0,
+     0
+    ],
+    "pte": [
+     "none",
+     "none"
+    ],
+    "spc": "copy",
+    "wb": [],
+    "wpc": "swapLock",
+    "refused": false
+   }
+  },
+  {
+   "action": "WSwapLock",
+   "values": {
+    "sPage": 1,
+    "durable": [
+     0,
+     0
+    ],
+    "sealing": [],
+    "floor": [
+     0,
+     0
+    ],
+    "dirty": [
+     1
+    ],
+    "wPage": 0,
+    "wOp": "writeback",
+    "counted": [
+     1
+    ],
+    "punches": 0,
+    "file": [
+     {
+      "data": 0,
+      "state": "hole"
+     },
+     {
+      "data": 0,
+      "state": "hole"
+     }
+    ],
+    "win": [
+     {
+      "kind": "private",
+      "data": 0
+     },
+     {
+      "kind": "zeros",
+      "data": 0
+     }
+    ],
+    "latest": [
+     0,
+     0
+    ],
+    "errors": [],
+    "stores": 0,
+    "semR": [
+     "S",
+     "W"
+    ],
+    "sWay": "write",
+    "semX": "none",
+    "next": 1,
+    "buf": [
+     0,
+     0
+    ],
+    "pte": [
+     "none",
+     "none"
+    ],
+    "spc": "copy",
+    "wb": [],
+    "wpc": "swap",
+    "refused": false
+   }
+  },
+  {
+   "action": "WSwap",
+   "values": {
+    "sPage": 1,
+    "durable": [
+     0,
+     0
+    ],
+    "sealing": [],
+    "floor": [
+     0,
+     0
+    ],
+    "dirty": [],
+    "wPage": 0,
+    "wOp": "writeback",
+    "counted": [
+     1
+    ],
+    "punches": 0,
+    "file": [
+     {
+      "data": 0,
+      "state": "hole"
+     },
+     {
+      "data": 0,
+      "state": "hole"
+     }
+    ],
+    "win": [
+     {
+      "kind": "private",
+      "data": 0
+     },
+     {
+      "kind": "zeros",
+      "data": 0
+     }
+    ],
+    "latest": [
+     0,
+     0
+    ],
+    "errors": [],
+    "stores": 0,
+    "semR": [
+     "S",
+     "W"
+    ],
+    "sWay": "write",
+    "semX": "none",
+    "next": 1,
+    "buf": [
+     0,
+     0
+    ],
+    "pte": [
+     "none",
+     "none"
+    ],
+    "spc": "copy",
+    "wb": [
+     1
+    ],
+    "wpc": "wp",
+    "refused": false
+   }
+  },
+  {
+   "action": "WWp",
+   "values": {
+    "sPage": 1,
+    "durable": [
+     0,
+     0
+    ],
+    "sealing": [],
+    "floor": [
+     0,
+     0
+    ],
+    "dirty": [],
+    "wPage": 0,
+    "wOp": "writeback",
+    "counted": [
+     1
+    ],
+    "punches": 0,
+    "file": [
+     {
+      "data": 0,
+      "state": "hole"
+     },
+     {
+      "data": 0,
+      "state": "hole"
+     }
+    ],
+    "win": [
+     {
+      "kind": "private",
+      "data": 0
+     },
+     {
+      "kind": "zeros",
+      "data": 0
+     }
+    ],
+    "latest": [
+     0,
+     0
+    ],
+    "errors": [],
+    "stores": 0,
+    "semR": [
+     "S",
+     "W"
+    ],
+    "sWay": "write",
+    "semX": "none",
+    "next": 1,
+    "buf": [
+     0,
+     0
+    ],
+    "pte": [
+     "none",
+     "none"
+    ],
+    "spc": "copy",
+    "wb": [
+     1
+    ],
+    "wpc": "copy",
+    "refused": false
+   }
+  },
+  {
+   "action": "WCopy",
+   "values": {
+    "sPage": 1,
+    "durable": [
+     0,
+     0
+    ],
+    "sealing": [],
+    "floor": [
+     0,
+     0
+    ],
+    "dirty": [],
+    "wPage": 0,
+    "wOp": "writeback",
+    "counted": [
+     1
+    ],
+    "punches": 0,
+    "file": [
+     {
+      "data": 0,
+      "state": "hole"
+     },
+     {
+      "data": 0,
+      "state": "hole"
+     }
+    ],
+    "win": [
+     {
+      "kind": "private",
+      "data": 0
+     },
+     {
+      "kind": "zeros",
+      "data": 0
+     }
+    ],
+    "latest": [
+     0,
+     0
+    ],
+    "errors": [],
+    "stores": 0,
+    "semR": [
+     "S",
+     "W"
+    ],
+    "sWay": "write",
+    "semX": "none",
+    "next": 1,
+    "buf": [
+     0,
+     0
+    ],
+    "pte": [
+     "none",
+     "none"
+    ],
+    "spc": "copy",
+    "wb": [
+     1
+    ],
+    "wpc": "write",
+    "refused": false
+   }
+  },
+  {
+   "action": "SCopy",
+   "values": {
+    "sPage": 1,
+    "durable": [
+     0,
+     0
+    ],
+    "sealing": [],
+    "floor": [
+     0,
+     0
+    ],
+    "dirty": [],
+    "wPage": 0,
+    "wOp": "writeback",
+    "counted": [
+     1
+    ],
+    "punches": 0,
+    "file": [
+     {
+      "data": 0,
+      "state": "hole"
+     },
+     {
+      "data": 0,
+      "state": "hole"
+     }
+    ],
+    "win": [
+     {
+      "kind": "private",
+      "data": 1
+     },
+     {
+      "kind": "zeros",
+      "data": 0
+     }
+    ],
+    "latest": [
+     1,
+     0
+    ],
+    "errors": [],
+    "stores": 1,
+    "semR": [
+     "S",
+     "W"
+    ],
+    "sWay": "write",
+    "semX": "none",
+    "next": 2,
+    "buf": [
+     0,
+     0
+    ],
+    "pte": [
+     "none",
+     "none"
+    ],
+    "spc": "unlock",
+    "wb": [
+     1
+    ],
+    "wpc": "write",
+    "refused": false
+   }
+  },
+  {
+   "action": "WWrite",
+   "values": {
+    "sPage": 1,
+    "durable": [
+     0,
+     0
+    ],
+    "sealing": [],
+    "floor": [
+     0,
+     0
+    ],
+    "dirty": [],
+    "wPage": 0,
+    "wOp": "writeback",
+    "counted": [
+     1
+    ],
+    "punches": 0,
+    "file": [
+     {
+      "data": 0,
+      "state": "hole"
+     },
+     {
+      "data": 0,
+      "state": "hole"
+     }
+    ],
+    "win": [
+     {
+      "kind": "private",
+      "data": 1
+     },
+     {
+      "kind": "zeros",
+      "data": 0
+     }
+    ],
+    "latest": [
+     1,
+     0
+    ],
+    "errors": [],
+    "stores": 1,
+    "semR": [
+     "S",
+     "W"
+    ],
+    "sWay": "write",
+    "semX": "none",
+    "next": 2,
+    "buf": [
+     0,
+     0
+    ],
+    "pte": [
+     "none",
+     "none"
+    ],
+    "spc": "unlock",
+    "wb": [
+     1
+    ],
+    "wpc": "commit",
+    "refused": false
+   }
+  },
+  {
+   "action": "WCommit",
+   "values": {
+    "sPage": 1,
+    "durable": [
+     0,
+     0
+    ],
+    "sealing": [
+     1
+    ],
+    "floor": [
+     0,
+     0
+    ],
+    "dirty": [],
+    "wPage": 0,
+    "wOp": "writeback",
+    "counted": [
+     1
+    ],
+    "punches": 0,
+    "file": [
+     {
+      "data": 0,
+      "state": "open"
+     },
+     {
+      "data": 0,
+      "state": "hole"
+     }
+    ],
+    "win": [
+     {
+      "kind": "private",
+      "data": 1
+     },
+     {
+      "kind": "zeros",
+      "data": 0
+     }
+    ],
+    "latest": [
+     1,
+     0
+    ],
+    "errors": [],
+    "stores": 1,
+    "semR": [
+     "S",
+     "W"
+    ],
+    "sWay": "write",
+    "semX": "none",
+    "next": 2,
+    "buf": [
+     0,
+     0
+    ],
+    "pte": [
+     "none",
+     "none"
+    ],
+    "spc": "unlock",
+    "wb": [],
+    "wpc": "unlock",
+    "refused": false
+   }
+  },
+  {
+   "action": "WUnlock",
+   "values": {
+    "sPage": 1,
+    "durable": [
+     0,
+     0
+    ],
+    "sealing": [
+     1
+    ],
+    "floor": [
+     0,
+     0
+    ],
+    "dirty": [],
+    "wPage": 0,
+    "wOp": "writeback",
+    "counted": [
+     1
+    ],
+    "punches": 0,
+    "file": [
+     {
+      "data": 0,
+      "state": "open"
+     },
+     {
+      "data": 0,
+      "state": "hole"
+     }
+    ],
+    "win": [
+     {
+      "kind": "private",
+      "data": 1
+     },
+     {
+      "kind": "zeros",
+      "data": 0
+     }
+    ],
+    "latest": [
+     1,
+     0
+    ],
+    "errors": [],
+    "stores": 1,
+    "semR": [
+     "S"
+    ],
+    "sWay": "write",
+    "semX": "none",
+    "next": 2,
+    "buf": [
+     0,
+     0
+    ],
+    "pte": [
+     "none",
+     "none"
+    ],
+    "spc": "unlock",
+    "wb": [],
+    "wpc": "idle",
+    "refused": false
+   }
+  },
+  {
+   "action": "WStart",
+   "values": {
+    "sPage": 1,
+    "durable": [
+     0,
+     0
+    ],
+    "sealing": [
+     1
+    ],
+    "floor": [
+     1,
+     0
+    ],
+    "dirty": [],
+    "wPage": 0,
+    "wOp": "fsync",
+    "counted": [
+     1
+    ],
+    "punches": 0,
+    "file": [
+     {
+      "data": 0,
+      "state": "open"
+     },
+     {
+      "data": 0,
+      "state": "hole"
+     }
+    ],
+    "win": [
+     {
+      "kind": "private",
+      "data": 1
+     },
+     {
+      "kind": "zeros",
+      "data": 0
+     }
+    ],
+    "latest": [
+     1,
+     0
+    ],
+    "errors": [],
+    "stores": 1,
+    "semR": [
+     "S"
+    ],
+    "sWay": "write",
+    "semX": "none",
+    "next": 2,
+    "buf": [
+     0,
+     0
+    ],
+    "pte": [
+     "none",
+     "none"
+    ],
+    "spc": "unlock",
+    "wb": [],
+    "wpc": "swapLock",
+    "refused": false
+   }
+  },
+  {
+   "action": "WSwapLock",
+   "values": {
+    "sPage": 1,
+    "durable": [
+     0,
+     0
+    ],
+    "sealing": [
+     1
+    ],
+    "floor": [
+     1,
+     0
+    ],
+    "dirty": [],
+    "wPage": 0,
+    "wOp": "fsync",
+    "counted": [
+     1
+    ],
+    "punches": 0,
+    "file": [
+     {
+      "data": 0,
+      "state": "open"
+     },
+     {
+      "data": 0,
+      "state": "hole"
+     }
+    ],
+    "win": [
+     {
+      "kind": "private",
+      "data": 1
+     },
+     {
+      "kind": "zeros",
+      "data": 0
+     }
+    ],
+    "latest": [
+     1,
+     0
+    ],
+    "errors": [],
+    "stores": 1,
+    "semR": [
+     "S",
+     "W"
+    ],
+    "sWay": "write",
+    "semX": "none",
+    "next": 2,
+    "buf": [
+     0,
+     0
+    ],
+    "pte": [
+     "none",
+     "none"
+    ],
+    "spc": "unlock",
+    "wb": [],
+    "wpc": "swap",
+    "refused": false
+   }
+  },
+  {
+   "action": "WSwap",
+   "values": {
+    "sPage": 1,
+    "durable": [
+     0,
+     0
+    ],
+    "sealing": [
+     1
+    ],
+    "floor": [
+     1,
+     0
+    ],
+    "dirty": [],
+    "wPage": 0,
+    "wOp": "fsync",
+    "counted": [
+     1
+    ],
+    "punches": 0,
+    "file": [
+     {
+      "data": 0,
+      "state": "open"
+     },
+     {
+      "data": 0,
+      "state": "hole"
+     }
+    ],
+    "win": [
+     {
+      "kind": "private",
+      "data": 1
+     },
+     {
+      "kind": "zeros",
+      "data": 0
+     }
+    ],
+    "latest": [
+     1,
+     0
+    ],
+    "errors": [],
+    "stores": 1,
+    "semR": [
+     "S",
+     "W"
+    ],
+    "sWay": "write",
+    "semX": "none",
+    "next": 2,
+    "buf": [
+     0,
+     0
+    ],
+    "pte": [
+     "none",
+     "none"
+    ],
+    "spc": "unlock",
+    "wb": [],
+    "wpc": "wp",
+    "refused": false
+   }
+  },
+  {
+   "action": "WWp",
+   "values": {
+    "sPage": 1,
+    "durable": [
+     0,
+     0
+    ],
+    "sealing": [
+     1
+    ],
+    "floor": [
+     1,
+     0
+    ],
+    "dirty": [],
+    "wPage": 0,
+    "wOp": "fsync",
+    "counted": [
+     1
+    ],
+    "punches": 0,
+    "file": [
+     {
+      "data": 0,
+      "state": "open"
+     },
+     {
+      "data": 0,
+      "state": "hole"
+     }
+    ],
+    "win": [
+     {
+      "kind": "private",
+      "data": 1
+     },
+     {
+      "kind": "zeros",
+      "data": 0
+     }
+    ],
+    "latest": [
+     1,
+     0
+    ],
+    "errors": [],
+    "stores": 1,
+    "semR": [
+     "S",
+     "W"
+    ],
+    "sWay": "write",
+    "semX": "none",
+    "next": 2,
+    "buf": [
+     0,
+     0
+    ],
+    "pte": [
+     "none",
+     "none"
+    ],
+    "spc": "unlock",
+    "wb": [],
+    "wpc": "copy",
+    "refused": false
+   }
+  },
+  {
+   "action": "WCopy",
+   "values": {
+    "sPage": 1,
+    "durable": [
+     0,
+     0
+    ],
+    "sealing": [
+     1
+    ],
+    "floor": [
+     1,
+     0
+    ],
+    "dirty": [],
+    "wPage": 0,
+    "wOp": "fsync",
+    "counted": [
+     1
+    ],
+    "punches": 0,
+    "file": [
+     {
+      "data": 0,
+      "state": "open"
+     },
+     {
+      "data": 0,
+      "state": "hole"
+     }
+    ],
+    "win": [
+     {
+      "kind": "private",
+      "data": 1
+     },
+     {
+      "kind": "zeros",
+      "data": 0
+     }
+    ],
+    "latest": [
+     1,
+     0
+    ],
+    "errors": [],
+    "stores": 1,
+    "semR": [
+     "S",
+     "W"
+    ],
+    "sWay": "write",
+    "semX": "none",
+    "next": 2,
+    "buf": [
+     0,
+     0
+    ],
+    "pte": [
+     "none",
+     "none"
+    ],
+    "spc": "unlock",
+    "wb": [],
+    "wpc": "write",
+    "refused": false
+   }
+  },
+  {
+   "action": "WWrite",
+   "values": {
+    "sPage": 1,
+    "durable": [
+     0,
+     0
+    ],
+    "sealing": [
+     1
+    ],
+    "floor": [
+     1,
+     0
+    ],
+    "dirty": [],
+    "wPage": 0,
+    "wOp": "fsync",
+    "counted": [
+     1
+    ],
+    "punches": 0,
+    "file": [
+     {
+      "data": 0,
+      "state": "open"
+     },
+     {
+      "data": 0,
+      "state": "hole"
+     }
+    ],
+    "win": [
+     {
+      "kind": "private",
+      "data": 1
+     },
+     {
+      "kind": "zeros",
+      "data": 0
+     }
+    ],
+    "latest": [
+     1,
+     0
+    ],
+    "errors": [],
+    "stores": 1,
+    "semR": [
+     "S",
+     "W"
+    ],
+    "sWay": "write",
+    "semX": "none",
+    "next": 2,
+    "buf": [
+     0,
+     0
+    ],
+    "pte": [
+     "none",
+     "none"
+    ],
+    "spc": "unlock",
+    "wb": [],
+    "wpc": "commit",
+    "refused": false
+   }
+  },
+  {
+   "action": "WCommit",
+   "values": {
+    "sPage": 1,
+    "durable": [
+     0,
+     0
+    ],
+    "sealing": [
+     1
+    ],
+    "floor": [
+     1,
+     0
+    ],
+    "dirty": [],
+    "wPage": 0,
+    "wOp": "fsync",
+    "counted": [
+     1
+    ],
+    "punches": 0,
+    "file": [
+     {
+      "data": 0,
+      "state": "open"
+     },
+     {
+      "data": 0,
+      "state": "hole"
+     }
+    ],
+    "win": [
+     {
+      "kind": "private",
+      "data": 1
+     },
+     {
+      "kind": "zeros",
+      "data": 0
+     }
+    ],
+    "latest": [
+     1,
+     0
+    ],
+    "errors": [],
+    "stores": 1,
+    "semR": [
+     "S",
+     "W"
+    ],
+    "sWay": "write",
+    "semX": "none",
+    "next": 2,
+    "buf": [
+     0,
+     0
+    ],
+    "pte": [
+     "none",
+     "none"
+    ],
+    "spc": "unlock",
+    "wb": [],
+    "wpc": "unlock",
+    "refused": false
+   }
+  },
+  {
+   "action": "WUnlock",
+   "values": {
+    "sPage": 1,
+    "durable": [
+     0,
+     0
+    ],
+    "sealing": [
+     1
+    ],
+    "floor": [
+     1,
+     0
+    ],
+    "dirty": [],
+    "wPage": 0,
+    "wOp": "fsync",
+    "counted": [
+     1
+    ],
+    "punches": 0,
+    "file": [
+     {
+      "data": 0,
+      "state": "open"
+     },
+     {
+      "data": 0,
+      "state": "hole"
+     }
+    ],
+    "win": [
+     {
+      "kind": "private",
+      "data": 1
+     },
+     {
+      "kind": "zeros",
+      "data": 0
+     }
+    ],
+    "latest": [
+     1,
+     0
+    ],
+    "errors": [],
+    "stores": 1,
+    "semR": [
+     "S"
+    ],
+    "sWay": "write",
+    "semX": "none",
+    "next": 2,
+    "buf": [
+     0,
+     0
+    ],
+    "pte": [
+     "none",
+     "none"
+    ],
+    "spc": "unlock",
+    "wb": [],
+    "wpc": "fsSeal",
+    "refused": false
+   }
+  },
+  {
+   "action": "WFsSeal",
+   "values": {
+    "sPage": 1,
+    "durable": [
+     0,
+     0
+    ],
+    "sealing": [],
+    "floor": [
+     1,
+     0
+    ],
+    "dirty": [],
+    "wPage": 0,
+    "wOp": "fsync",
+    "counted": [
+     1
+    ],
+    "punches": 0,
+    "file": [
+     {
+      "data": 0,
+      "state": "sealed"
+     },
+     {
+      "data": 0,
+      "state": "hole"
+     }
+    ],
+    "win": [
+     {
+      "kind": "private",
+      "data": 1
+     },
+     {
+      "kind": "zeros",
+      "data": 0
+     }
+    ],
+    "latest": [
+     1,
+     0
+    ],
+    "errors": [],
+    "stores": 1,
+    "semR": [
+     "S"
+    ],
+    "sWay": "write",
+    "semX": "none",
+    "next": 2,
+    "buf": [
+     0,
+     0
+    ],
+    "pte": [
+     "none",
+     "none"
+    ],
+    "spc": "unlock",
+    "wb": [],
+    "wpc": "fsDone",
+    "refused": false
+   }
+  }
+ ]
+}

@@ -1,0 +1,55 @@
+{
+  "name": "fxdax-guide",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "license": "BSD-3-Clause",
+  "dependencies": {
+    "@fontsource-variable/archivo": "^5.3.0",
+    "@fontsource-variable/jetbrains-mono": "^5.3.0",
+    "@fontsource-variable/literata": "^5.3.0",
+    "highlight.js": "^11.12.0",
+    "marked": "^18.1.3",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
+  },
+  "devDependencies": {
+    "@mdx-js/rollup": "^3.1.1",
+    "@types/mdx": "^2.0.14",
+    "@types/node": "^26.6.6",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.2.1",
+    "tree-sitter-c": "^0.24.1",
+    "tree-sitter-rust": "^0.24.0",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.6",
+    "vite-plugin-singlefile": "^2.3.4",
+    "vitest": "^5.1.0",
+    "web-tree-sitter": "^0.27.2"
+  },
+  "description": "fxdax Flight School: an interactive guide to the fxdax codebase, built from its own code, docs, specs and tests",
+  "scripts": {
+    "index": "node tools/index.ts",
+    "evidence": "node tools/evidence.ts",
+    "traces": "node tools/traces.ts",
+    "check": "node tools/check.ts && tsc --noEmit -p .",
+    "generate": "node tools/index.ts && node tools/evidence.ts && node tools/sources.ts",
+    "sources": "node tools/sources.ts",
+    "dev": "pnpm generate && vite",
+    "build": "pnpm generate && node tools/check.ts && tsc --noEmit -p . && vite build",
+    "build:single": "pnpm generate && node tools/check.ts && tsc --noEmit -p . && vite build --mode single",
+    "preview": "vite preview",
+    "test": "vitest run"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "pnpm": {
+    "ignoredBuiltDependencies": [
+      "tree-sitter-c",
+      "tree-sitter-rust"
+    ]
+  },
+  "packageManager": "pnpm@10.34.0"
+}

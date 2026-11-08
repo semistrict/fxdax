@@ -235,6 +235,31 @@ jobs:
       - name: The Azure tests, against Azurite
         run: scripts/test-azurite.sh --no-fail-fast
 
+  # guide/: the codebase guide, which cites code by exact snippets. Its build fails when a snippet
+  # no longer occurs exactly once in its file, or evidence it cites is gone, so code changes that
+  # leave it pointing at nothing fail here, not in a reader's hands.
+  guide:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: guide
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: true
+      - uses: pnpm/action-setup@v6
+        with:
+          package_json_file: guide/package.json
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 26
+          cache: pnpm
+          cache-dependency-path: guide/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - run: pnpm test
+
   firecracker-forward:
     runs-on: ubuntu-24.04
     timeout-minutes: 5

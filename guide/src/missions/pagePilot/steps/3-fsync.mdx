@@ -1,0 +1,45 @@
+import { After, Design, Inv, Predict, Ref, Scenes } from "../../../ui/mdx.tsx";
+import { fsyncScenes } from "../scene.ts";
+
+A process in fork A calls `fsync`. Page 0 is private, dirty, and holds A's new byte. No extent
+names it.
+
+<Design id="fsync">
+
+Design it before you look. What has to happen, in what order, so that A's byte survives a crash,
+and page 0 ends up shared again instead of private forever? Who holds what lock?
+
+</Design>
+
+<After id="fsync">
+
+Here is what dax.c does. Writeback is the write path, with DAX as without it: dirty pages go to new
+extents by `WRITE`, then a commit. Compare it with yours.
+
+<Scenes scenes={fsyncScenes.slice(0, 4)} />
+
+<Predict id="sealChanges" />
+
+</After>
+
+<After id="sealChanges">
+
+<Scenes scenes={fsyncScenes.slice(4)} />
+
+The page stays private until a rebind maps it back. The rebind runs later, separately, under the
+semaphore held exclusively, and only for a page in neither set whose extent is sealed.
+
+<Inv id="sealed-only" />
+<Inv id="exclusive-swap-rebind" />
+<Inv id="bytes-first" />
+<Inv id="fsync-ordered" />
+
+<Ref id="guest_write_back_keeping" />
+<Ref id="guest_swap" />
+<Ref id="pages_swap" />
+<Ref id="es_write" />
+<Ref id="es_commit_ordered" />
+<Ref id="flush_behind" />
+<Ref id="guest_rebind_range" />
+
+</After>

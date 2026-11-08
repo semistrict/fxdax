@@ -1,0 +1,11 @@
+import { CatchLab } from "../../../ui/mdx.tsx";
+
+Every rule in that sequence is there because something breaks without it. `specs/dax-cow` models
+the protocol in TLA+, with a page or two, one storing task, one writeback task and the host. Each
+model in `specs/dax-cow/mutations` removes one rule, and TLC must find the violation that rule
+prevents, or `scripts/check-tla.sh` fails.
+
+Pick a rule to remove. Say what you think breaks, then watch the counterexample TLC found. It is a
+recorded TLC run, not an animation.
+
+<CatchLab spec="dax-cow" />
