@@ -149,7 +149,7 @@ impl<B: Bucket> Writer<B> {
     /// recovered once it holds the lease.
     pub async fn open(bucket: Arc<B>, branch: u64, holder: u64, token: u64) -> Result<Self, Error> {
         let record = branch::record(&*bucket, branch).await?.ok_or(Error::NoBranch)?;
-        Self::take(bucket, branch, record, None, holder, token).await
+        Self::take(bucket, branch, record, (None, None), holder, token).await
     }
 
     /// Takes over the branch `before` recovered, whose record is `record`, as [`Writer::open`]
@@ -163,30 +163,64 @@ impl<B: Bucket> Writer<B> {
         token: u64,
     ) -> Result<Self, Error> {
         let branch = before.state.branch;
-        Self::take(bucket, branch, record, Some(before), holder, token).await
+        Self::take(bucket, branch, record, (Some(before), None), holder, token).await
+    }
+
+    /// Takes over the branch `before` recovered as [`Writer::open_recovered`] does, its lease taken
+    /// from `lease`, what a read of it found as its record was read ([`branch::take_lease_from`]):
+    /// a round trip less on a real bucket (TASK-165.11).
+    pub async fn open_recovered_from(
+        bucket: Arc<B>,
+        record: Record,
+        (before, lease): (Recovered, branch::LeaseRead),
+        holder: u64,
+        token: u64,
+    ) -> Result<Self, Error> {
+        let branch = before.state.branch;
+        Self::take(bucket, branch, record, (Some(before), Some(lease)), holder, token).await
     }
 
     /// Takes `branch`, whose record is `record`, over, as [`Writer::open`] says: its state
-    /// recovered once it holds the lease, anew, or on from `before`, a recovery of it made before.
+    /// recovered once it holds the lease, anew, or on from `before`, a recovery of it made before;
+    /// the lease taken from `lease`, a read of it before, if given.
     async fn take(
         bucket: Arc<B>,
         branch: u64,
         record: Record,
-        before: Option<Recovered>,
+        (before, lease): (Option<Recovered>, Option<branch::LeaseRead>),
         holder: u64,
         token: u64,
     ) -> Result<Self, Error> {
         // Before the lease: a point has none, and nothing writes it, whoever asks.
         record.writable()?;
-        let epoch = branch::take_lease(&*bucket, &layout::lease(branch), holder, token).await?;
-        // Deleted meanwhile, and its lease removed: the collector removes the lease taken here.
-        if branch::record(&*bucket, branch).await?.is_none_or(|record| record.deleted) {
+        let key = layout::lease(branch);
+        let epoch = match lease {
+            Some(read) => branch::take_lease_from(&*bucket, &key, read, holder, token).await?,
+            None => branch::take_lease(&*bucket, &key, holder, token).await?,
+        };
+        // Once the lease is taken, three reads, none of which waits for another, at once: each a
+        // round trip or more on a real bucket, which every opening of a store pays (TASK-165.11).
+        // The record: deleted meanwhile, its lease removed, as the collector removes the lease
+        // taken here, the branch is gone, whatever its recovery found. The branch, recovered. And
+        // the segments there are, past its end too (below): read alongside the recovery, not
+        // after it, they miss no more than a listing after it does, as a segment may land at any
+        // time after either, which the fence and the links between segments answer for.
+        let recovering = async {
+            match before {
+                None => recovery::recover(&*bucket, branch, record.origin()).await,
+                Some(before) => recovery::recover_on(&*bucket, record.origin(), before).await,
+            }
+        };
+        let segments = layout::segments(branch);
+        let (found, recovered, listed) = futures::join!(
+            branch::record(&*bucket, branch),
+            recovering,
+            bucket::list(&*bucket, &segments),
+        );
+        if found?.is_none_or(|record| record.deleted) {
             return Err(Error::Deleted);
         }
-        let recovered = match before {
-            None => recovery::recover(&*bucket, branch, record.origin()).await?,
-            Some(before) => recovery::recover_on(&*bucket, record.origin(), before).await?,
-        };
+        let recovered = recovered?;
         let mut state = recovered.state;
         let recovered_commit = state.last_commit;
         let mut seq = recovered.end;
@@ -195,8 +229,7 @@ impl<B: Bucket> Writer<B> {
         // the branch's, and the fence goes after it. Segments past the end, earlier writers' landed
         // past a gap, are void, and empty segments fill the gaps between them, so that this
         // writer's follow without one.
-        let last = bucket::list(&*bucket, &layout::segments(branch))
-            .await
+        let last = listed
             .iter()
             .filter_map(|meta| match layout::kind(&meta.key) {
                 layout::Kind::Segment { seq, .. } => Some(seq),
@@ -491,22 +524,6 @@ impl<B: Bucket> Writer<B> {
             inner.state.clone()
         };
         let seq = state.through.unwrap();
-        let mut maps = MovesMaps::default();
-        maps.read(&*self.bucket, state.extents.values().map(|location| location.key.clone()))
-            .await?;
-        let mut moved = Vec::new();
-        for (extent, old) in &state.extents {
-            let location = maps.follow(&*self.bucket, *extent, old).await?;
-            if location != *old {
-                moved.push((*extent, old.clone(), location));
-            }
-        }
-        for (extent, _, location) in &moved {
-            state.extents.insert(*extent, location.clone());
-        }
-        if rules().moves_taken_first {
-            self.take_moves(&moved);
-        }
         // Forks whose children were deleted. Their records stay; their forks need not. Of a few
         // forks' children each checkpoint, in turn, after those the last looked at: every child's,
         // each checkpoint, made a storm of forks, a checkpoint each, read their records N^2 / 2
@@ -523,15 +540,38 @@ impl<B: Bucket> Writer<B> {
             .copied()
             .collect();
         let looked = children.last().copied();
-        let gone: Vec<u64> = futures::stream::iter(children)
+        let looking = futures::stream::iter(children)
             .map(|child| async move {
                 let record = branch::record(&*self.bucket, child).await?;
                 Ok::<_, Error>(record.is_some_and(|record| record.deleted).then_some(child))
             })
             .buffer_unordered(RECORDS_AT_ONCE)
             .try_filter_map(|gone| async move { Ok(gone) })
-            .try_collect()
-            .await?;
+            .try_collect::<Vec<u64>>();
+        // The moves of the objects its extents are in, followed, alongside those records' reads:
+        // neither waits for the other, a round trip less for each checkpoint, and so each fork,
+        // on a real bucket (TASK-165.11).
+        let following = async {
+            let mut maps = MovesMaps::default();
+            let keys = state.extents.values().map(|location| location.key.clone());
+            maps.read(&*self.bucket, keys).await?;
+            let mut moved = Vec::new();
+            for (extent, old) in &state.extents {
+                let location = maps.follow(&*self.bucket, *extent, old).await?;
+                if location != *old {
+                    moved.push((*extent, old.clone(), location));
+                }
+            }
+            Ok::<_, Error>(moved)
+        };
+        let (moved, gone) = futures::join!(following, looking);
+        let (moved, gone) = (moved?, gone?);
+        for (extent, _, location) in &moved {
+            state.extents.insert(*extent, location.clone());
+        }
+        if rules().moves_taken_first {
+            self.take_moves(&moved);
+        }
         state.forks.retain(|fork| !gone.contains(&fork.child));
         failpoint!("writer::checkpoint");
         let key = layout::checkpoint(self.branch, seq);
@@ -884,7 +924,9 @@ mod tests {
 
     /// TASK-92.6: a writer taking over a branch recovered before it took the lease recovers it on
     /// from there: it reads the lease, takes it, reads the record, then only the segments that came
-    /// in between, as its state has them, and fences the branch after them.
+    /// in between, as its state has them, and fences the branch after them. TASK-165.11: once the
+    /// lease is taken, the record, the recovery and the listing of the segments go at once, each
+    /// round a round trip on a real bucket.
     #[test]
     fn writers_open_on_what_was_recovered_before_their_lease() {
         use crate::sim::bucket::SimBucket;
@@ -912,22 +954,60 @@ mod tests {
         assert_eq!(second.last_commit(), Some(2));
         let tail = |seq| format!("get {} last {}", layout::segment(1, seq), crate::object::TAIL);
         let lease = layout::lease(1);
+        let record_key = layout::record(1);
         assert_eq!(
             rounds,
             [
                 vec![format!("get {lease}")],
                 vec![format!("put {lease}")],
-                vec![format!("get {}", layout::record(1))],
-                vec![tail(2)],
+                vec![format!("get {record_key}"), tail(2), format!("list {}", layout::segments(1))],
                 vec![tail(3), tail(4)],
                 vec![format!("list {}", layout::checkpoints(1))],
-                vec![format!("list {}", layout::segments(1))],
                 vec![format!("put {}", layout::segment(1, 3))],
                 vec![format!("get {lease}")],
             ]
         );
         let anew = bucket.served(recovery::recover(&*bucket, 1, None)).0.unwrap();
         assert_eq!(second.state(), anew.state);
+    }
+
+    /// TASK-165.11: a writer taking over a branch from a read of its lease made before, as its
+    /// record was read, takes the lease from that read: its first round the lease's update, a round
+    /// trip less; and from a read gone stale, another writer having taken the lease since, by
+    /// reading it again once its update finds it changed, at the epoch after that writer's.
+    #[test]
+    fn writers_open_on_a_read_of_their_lease_made_before() {
+        use crate::sim::bucket::SimBucket;
+        let bucket = SimBucket::new();
+        let (first, _) = bucket.served(async {
+            branch::create(&*bucket, 1, 0).await.unwrap();
+            Writer::open(bucket.clone(), 1, 10, 0).await.unwrap()
+        });
+        assert_eq!(first.epoch(), 1);
+        let lease = layout::lease(1);
+        let found = || {
+            let record = bucket.served(branch::record(&*bucket, 1)).0.unwrap().unwrap();
+            let before = bucket.served(recovery::recover(&*bucket, 1, None)).0.unwrap();
+            let read = bucket.served(branch::read_lease(&*bucket, &lease)).0;
+            (record, before, read)
+        };
+        let (record, before, read) = found();
+        let opening = Writer::open_recovered_from(bucket.clone(), record, (before, read), 11, 0);
+        let (second, rounds) = bucket.served_in_rounds(opening);
+        let second = second.unwrap();
+        assert_eq!(second.epoch(), 2);
+        assert_eq!(rounds[0], [format!("put {lease}")]);
+        // A read of the lease, then another writer's taking of it, then the opening.
+        let (record, before, read) = found();
+        let (third, _) = bucket.served(Writer::open(bucket.clone(), 1, 12, 0));
+        assert_eq!(third.unwrap().epoch(), 3);
+        let opening = Writer::open_recovered_from(bucket.clone(), record, (before, read), 13, 0);
+        let (fourth, rounds) = bucket.served_in_rounds(opening);
+        assert_eq!(fourth.unwrap().epoch(), 4);
+        // Its update refused, its answer read back, as an update whose answer was lost is told
+        // apart (`bucket::update`); then the lease, read anew, taken.
+        let (put, get) = (vec![format!("put {lease}")], vec![format!("get {lease}")]);
+        assert_eq!(rounds[..4], [put.clone(), get.clone(), get, put]);
     }
 
     /// A checkpoint as of the last one is not written again.

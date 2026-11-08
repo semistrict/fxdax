@@ -800,7 +800,12 @@ impl<D: Dir> Shared<D> {
         bucket.probed(holder).await.map_err(Failure::msg)?;
         let branch = recovering.branch();
         let cache = self.options.cache.clone();
-        let found = match record(bucket, branch).await? {
+        // The record, and the lease the writer takes after recovering the branch, at once: the
+        // taking goes on from this read of it, a round trip less (TASK-165.11).
+        let lease = extent_remote::layout::lease(branch);
+        let leased = branch::read_lease(&**bucket, &lease);
+        let (found, lease) = futures::join!(record(bucket, branch), leased);
+        let found = match found? {
             // A branch the bucket acknowledged commits of, which it no longer has: deleted, or
             // another bucket. Making it anew would lose them.
             None if recovering.base().is_some() => {
@@ -838,7 +843,8 @@ impl<D: Dir> Shared<D> {
         let writer = match found {
             None => Writer::open(bucket.clone(), branch, holder, token).await?,
             Some((record, recovered)) => {
-                Writer::open_recovered(bucket.clone(), record, recovered, holder, token).await?
+                let found = (recovered, lease);
+                Writer::open_recovered_from(bucket.clone(), record, found, holder, token).await?
             }
         };
         let writer = Arc::new(writer.uploading_within(self.uploads.clone()));

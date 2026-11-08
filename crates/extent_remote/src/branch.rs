@@ -11,7 +11,7 @@
 //! fxdax: every change of a record or a lease is a [`transition`], one compare-and-swap loop, of
 //! what it found to what it writes (TASK-160.14).
 
-use crate::bucket::{self, Bucket, Created, Updated};
+use crate::bucket::{self, Bucket, Created, Object, Updated};
 use crate::layout::{self, Child, Kind as Key, Lease, Origin};
 use crate::record::{Kind, Record};
 use crate::recovery::{self, Recovered, State, recover};
@@ -33,6 +33,9 @@ enum Start {
     Read,
     /// Nothing, as a create expects: one that finds something there reads it from its answer.
     Create,
+    /// What a read before found: a write after it finds the object changed, if another's write
+    /// came between, and reads it again, as it does after its own read.
+    Found(Option<Object>),
 }
 
 /// Changes the object at `key`, which `decode` reads, as `step` says of what is there, if anything,
@@ -52,6 +55,7 @@ async fn transition<T: Serialize, R>(
     let mut found = match start {
         Start::Read => bucket::get(bucket, key).await,
         Start::Create => None,
+        Start::Found(found) => found,
     };
     loop {
         let current = found.as_ref().map(|object| decode(&object.bytes)).transpose()?;
@@ -276,7 +280,42 @@ pub async fn take_lease(
     holder: u64,
     token: u64,
 ) -> Result<u64, Error> {
-    transition(bucket, key, Start::Read, Lease::decode, |found| {
+    taking(bucket, key, Start::Read, holder, token).await
+}
+
+/// The lease at `key` as a read finds it, for a taking of it after ([`take_lease_from`]).
+pub struct LeaseRead(Option<Object>);
+
+/// Reads the lease at `key` for a taking of it after ([`take_lease_from`]), as with other reads a
+/// taking needs, at once (TASK-165.11).
+pub async fn read_lease(bucket: &impl Bucket, key: &str) -> LeaseRead {
+    LeaseRead(bucket::get(bucket, key).await)
+}
+
+/// Takes the lease at `key` as [`take_lease`] does, starting from `read`, what a read of it before
+/// found ([`read_lease`]), rather than reading it again: its write is conditional on what `read`
+/// found, so that another's taking since, which changed it, is read and gone on from, as after a
+/// read of its own. A round trip less, on a real bucket, for every opening of a store
+/// (TASK-165.11).
+pub async fn take_lease_from(
+    bucket: &impl Bucket,
+    key: &str,
+    read: LeaseRead,
+    holder: u64,
+    token: u64,
+) -> Result<u64, Error> {
+    taking(bucket, key, Start::Found(read.0), holder, token).await
+}
+
+/// Takes the lease at `key` as [`take_lease`] says, starting from `start`.
+async fn taking(
+    bucket: &impl Bucket,
+    key: &str,
+    start: Start,
+    holder: u64,
+    token: u64,
+) -> Result<u64, Error> {
+    transition(bucket, key, start, Lease::decode, |found| {
         let epoch = match found {
             None => 1,
             Some(lease) if lease.epoch == Lease::FINAL => return Err(Error::Deleted),

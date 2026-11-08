@@ -66,9 +66,12 @@ macro_rules! test_holds {
 /// violation.
 macro_rules! test_needs {
     ($name:ident, $rule:ident, $profile:expr) => {
+        test_needs!($name, $rule, $profile, 0..20_000);
+    };
+    ($name:ident, $rule:ident, $profile:expr, $seeds:expr) => {
         #[test]
         fn $name() {
-            needed(Rules { $rule: false, ..Rules::ALL }, $profile, 0..20_000);
+            needed(Rules { $rule: false, ..Rules::ALL }, $profile, $seeds);
         }
     };
 }
@@ -539,7 +542,9 @@ fn recovering() -> Profile {
 
 test_holds!(recoveries_racing_collection, recovering());
 
-test_needs!(recoveries_need_newest_checkpoints, newest_checkpoint, takeovers());
+// Of 40,000 seeds: since a writer reads its branch's record, recovers it and lists its segments
+// at once once it holds the lease (TASK-165.11), the first that finds the case is 33,630.
+test_needs!(recoveries_need_newest_checkpoints, newest_checkpoint, takeovers(), 0..40_000);
 
 /// A create that lands and then fails, retried, finds its own object and succeeds; one that finds
 /// another's does not.
