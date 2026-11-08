@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-08 05:38'
-updated_date: '2026-11-08 06:05'
+updated_date: '2026-11-08 06:24'
 labels:
   - bug
 dependencies: []
@@ -44,3 +44,9 @@ Design: a snapshot is atomic with its source's commits.
 3. Not fixed: an allocation built before the freeze and committed after it is recorded under the frozen owner, which the source alone references: never freed one by one, a leak until the owner goes (the snapshot isn't harmed).
 Tests first: model_tests::a_snapshot_of_a_file_closed_but_not_yet_tombstoned un-ignored (red); a crates/fxfs test churning writes and frees of the source concurrently with snapshot_volume, fsck and reading both back (red if it reaches the window); then Op::Snapshot without the graveyard settling, the model test's hunts.
 <!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+2026-11-08: land-h17 6a2bccd70 (stacked on land-h15 740a2e71e, in land-all10), CI 42454633606. fxfs 2be26dfb5: LockKey::Commits gate in commit_transaction and snapshot_volume; the allocator leaves frozen extents out applying Deallocate and Reference. test_snapshot_volume_racing_writes red before (fsck MissingAllocation of the snapshot's extents), red with either half removed, green with both. Model: a_snapshot_of_a_file_closed_but_not_yet_tombstoned un-ignored, green; Op::Snapshot no longer settles the graveyard; mutants a-snapshot-holds-no-commits-back and a-held-back-free-frees-what-is-frozen killed by it; FXDAX_MODEL_CASES=1500 passes (4,020 cuts). fxfs, follower, follower_sim and fxdax's image tests 827/827, fxfs-posix 94/94 on macOS; upstream-changes --check, check-exclusions, clippy's disallowed_methods clean. Left, as designed: an allocation built before a freeze and committed after it is recorded under the frozen owner, a leak until it goes.
+<!-- SECTION:NOTES:END -->
