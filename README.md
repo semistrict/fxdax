@@ -534,9 +534,10 @@ labelled n2 host with nested KVM, which deletes itself after 8 hours, and
 The protocols whose bugs are rare interleavings have TLA+ specs, which TLC
 model-checks exhaustively over small bounds (`specs/`): live read-only
 followers (`specs/follower`, backlog doc-8), the guest Fxfs's copy-on-write
-DAX (`specs/dax-cow`, backlog doc-13, `guest/linux/fs/fxfs/dax.c`), and
+DAX (`specs/dax-cow`, backlog doc-13, `guest/linux/fs/fxfs/dax.c`),
 branches in the bucket with the host's write-ahead log (`specs/bucket`,
-backlog doc-7 and doc-14). Each rule
+backlog doc-7 and doc-14), and Fxfs's super-block claiming only what its
+journal flushed (`specs/journal`). Each rule
 of a protocol has a mutation, the spec with that rule removed, which TLC must
 find the violation of: `specs/dax-cow`'s include a writeback leaving a fault's
 PTE writable, which guest/sim found (`guest/sim`).

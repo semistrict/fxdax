@@ -14,6 +14,9 @@
 # - specs/bucket: branches in object storage with the host's WAL (doc-7, doc-14, TASK-165.2): its
 #   mutations, one per rule of extent_remote's Rules (two of newest_checkpoint), of branch::delete
 #   and of the WAL;
+# - specs/journal: Fxfs's journal, objects' flushes, device flushes and the super-block
+#   (crates/fxfs's write_super_block, TASK-149.11): a super-block claims only what its journal
+#   flushed, which the objects' offsets read after the device's flush broke (TASK-149.5);
 #
 #   check-tla.sh [MODEL...]
 #

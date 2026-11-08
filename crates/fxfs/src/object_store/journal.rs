@@ -1876,7 +1876,8 @@ impl Journal {
                 // fxdax: as of `checkpoint`, which is flushed below. Read after that flush, they
                 // said objects were flushed to where the journal wasn't yet, as commits go on
                 // while it runs: a crash then lost what they had given up replaying, a replay
-                // finding nothing where they said, and allocations the journal alone held.
+                // finding nothing where they said, and allocations the journal alone held
+                // (specs/journal, whose NoOffsetsAtPad finds it).
                 (journal_file_offsets, min_checkpoint) = self.objects.journal_file_offsets();
             }
             self.flush_device(checkpoint.file_offset, false)
