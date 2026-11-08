@@ -18,6 +18,9 @@ iterations=${3:-3}
 source "$(dirname "${BASH_SOURCE[0]}")/linux-host-setup.sh"
 host_setup
 host_tree bench-tree
+# scripts/bench.sh runs its cases through scripts/test-e2e.sh, which runs the VMM's tests under
+# nextest first (TASK-220): without it, every run failed there, "no such command: nextest" (GCE r1022).
+host_need cargo-nextest
 # Build the guest kernel from this source when asked, as test-linux-host.sh does.
 case ${FXDAX_GUEST_KERNEL_BUILD:-} in
     '') ;;

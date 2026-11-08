@@ -223,6 +223,21 @@ class Apt(unittest.TestCase):
         ]
         self.assertEqual(calls, [])
 
+    def test_the_hosts_that_run_the_guest_tests_install_nextest(self):
+        # scripts/test-e2e.sh, which bench.sh runs its cases through, runs scripts/test.sh's
+        # firecracker part, under nextest (TASK-220): every host script reaching it needs it, or the
+        # run fails there (GCE r1022, the bench host's).
+        reaching = ("scripts/test-e2e.sh", "scripts/bench.sh")
+        missing = [
+            path.name
+            for path in sorted((SCRIPTS / "lib").glob("*-linux-host.sh"))
+            for text in [path.read_text()]
+            if any(script in text for script in reaching)
+            and "host_need cargo-nextest" not in text
+        ]
+        self.assertEqual(missing, [])
+
+
 class Network(unittest.TestCase):
     """host_network: a fetch that stalls fails, rather than hang the run: GCE r940 waited 2 h
     40 min at cargo's "Updating crates.io index", its connection dropped."""
