@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-06 09:22'
-updated_date: '2026-11-08 00:22'
+updated_date: '2026-11-08 01:08'
 labels:
   - real-bucket
   - perf
@@ -64,7 +64,7 @@ This is what TASK-165.9's recovery and uploader and TASK-165.10's measurements n
 - [ ] #1 A durable commit, an open and a fork on a GCS bucket are measured by phase (segment close, PUT, lease read, acknowledgement, checkpoint) and recorded in docs/measurements
 - [ ] #2 fxfs-guest-checks and fxfs-guest-checks-dax pass on a GCS bucket within their budgets, the remote scale in host.rs set from that measurement rather than r353's 2.0
 - [ ] #3 fxfs-guest-docker-dax passes on a GCS bucket with its limit at least 1.5x what it takes
-- [ ] #4 A guest fsync on GCS costs no more round trips to the bucket than doc-7 says a durable commit needs, checked by a test that counts them
+- [x] #4 A guest fsync on GCS costs no more round trips to the bucket than doc-7 says a durable commit needs, checked by a test that counts them
 <!-- AC:END -->
 
 ## Definition of Done
@@ -91,4 +91,6 @@ Round trips, as the code has them (main 4fe1dd081):
 - An open (extent_store upload.rs start, :789; extent_remote writer.rs take, :170): the record; a recovery before the lease (checkpoints listed, the checkpoint, footers' tails, the checkpoints listed again, doc-7's newest-checkpoint rule); the lease read and updated; the record again; the recovery on from there; the segments listed; the fence's create; the lease read again. Some 13 round trips in series. Cut: the record, the recovery on and the segments listing at once once the lease is taken (two fewer), and the lease read alongside the first record read, the taking conditional on it (one fewer).
 - A fork (fxdax host_store::fork): the child's record read (child_free), the commit's segment created and acknowledged (create, lease read), the child's record created, then the checkpoint that makes the fork: the moves listed, the children's records read, the checkpoint created. Cut: the moves listing alongside the records' reads (one fewer, every checkpoint).
 Locally (file bucket, each request 20 ms late, bucket_round_trips_by_phase): durable commit 61 ms (54 ms of bucket, 2 requests), open 364 -> 302 ms, a fork's first open 396 -> 336 ms. The newest_checkpoint rule's seed search found nothing in 0..20,000 after the cut (the interleavings moved); 33,630 finds it (an acknowledged commit lost, rule off), and holds with every rule on: the search widened to 40,000. SIM_SOAK=5 sim part 48/48; macOS workspace 2110/2110, Shuttle.
+
+Landed in land-c5 (24639d64c, CI 42429850075 green): Stats::request_ns (41e0fc207); durable_commits_cost_their_segments_create_and_a_lease_read and bucket_round_trips_by_phase (31e0cca1d); an open three round trips fewer, a fork's checkpoint one (595324fe5); the spec's header (d8c855311). AC #4 checked: a durable commit, which a guest's fsync's COMMIT_DURABLE makes (ExtentStore::commit_and_wait), costs the bucket one create and one get, as doc-7 says it needs, pinned by that test; r980's phase measurement on GCS will give each one's time. Left, on GCE r980 (blocked: gcloud's credentials need an interactive login): AC #1, the phases on GCS before and after the cuts; AC #2 and #3, fxfs-guest-checks, -checks-dax and -docker-dax on GCS at 4x budgets, then the remote scale in host.rs and docker's limit set from them and verified.
 <!-- SECTION:NOTES:END -->
