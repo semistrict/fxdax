@@ -576,6 +576,18 @@ impl<F: File> Segments<F> {
     }
 
     /// fxdax: whether segment `number` is being framed.
+    /// fxdax: where segment `number` is in its life, for why a commit's sealing copies the extents
+    /// in it ([`crate::seals`], TASK-92.41).
+    pub fn stage(&self, number: SegmentId) -> crate::seals::Stage {
+        use crate::seals::Stage;
+        match self.tracked.get(&number).map(|segment| &segment.phase) {
+            _ if number == self.open => Stage::Open,
+            Some(Phase::Retired(_)) => Stage::Retired,
+            Some(Phase::Framing { .. } | Phase::Failed { .. }) => Stage::Framing,
+            Some(Phase::Open { .. }) | Some(Phase::Closed) | None => Stage::Closed,
+        }
+    }
+
     pub fn is_framing(&self, number: SegmentId) -> bool {
         matches!(self.tracked.get(&number), Some(Segment { phase: Phase::Framing { .. }, .. }))
     }

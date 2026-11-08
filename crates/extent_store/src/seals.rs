@@ -11,6 +11,19 @@
 
 use crate::layout::{Piece, SegmentId};
 
+/// Where a segment is in its life, as a commit seals the extents in it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Stage {
+    /// The open segment.
+    Open,
+    /// Set aside, full, since the last commit, holding no commit's data (TASK-79.2).
+    Retired,
+    /// Closed since the last commit, being framed: for want of room, or by the uploader.
+    Framing,
+    /// Closed and framed, as of earlier commits.
+    Closed,
+}
+
 /// Why a sealed extent was copied, or not.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Why {
@@ -20,9 +33,14 @@ pub(crate) enum Why {
     Own,
     /// In pieces, `large_extent` or more: copied into a file of its own.
     Large,
-    /// Some of its data in segments closed before, as of earlier commits: written over, or grown,
-    /// since it was last sealed. `new` of its bytes are in the open segment.
+    /// Some of its data in segments closed and framed, as of earlier commits: written over, or
+    /// grown, since it was last sealed. `new` of its bytes are in the open segment.
     Committed { new: u64 },
+    /// Some of its data in segments set aside, full, since the last commit: written since, more
+    /// than a segment holding no commit's data took.
+    Retired,
+    /// Some of its data in segments closed since the last commit, being framed.
+    Framing,
     /// All in the open segment, but not all of it: written with holes, or not from its start.
     Holes,
     /// All in the open segment, in order, but other writes between its pieces: interleaved with
@@ -36,8 +54,18 @@ pub(crate) enum Why {
 }
 
 impl Why {
-    const NAMES: [&str; 8] =
-        ["one_run", "own", "large", "committed", "holes", "interleaved", "rewritten", "adjacent"];
+    const NAMES: [&str; 10] = [
+        "one_run",
+        "own",
+        "large",
+        "committed",
+        "holes",
+        "interleaved",
+        "rewritten",
+        "adjacent",
+        "retired",
+        "framing",
+    ];
 
     fn index(self) -> usize {
         match self {
@@ -49,18 +77,34 @@ impl Why {
             Why::Interleaved => 5,
             Why::Rewritten => 6,
             Why::Adjacent => 7,
+            Why::Retired => 8,
+            Why::Framing => 9,
         }
     }
 
     /// Why an extent of `len` bytes, whose data is in `pieces`, is copied as it is sealed, or
-    /// not, the open segment `open`; `large` if `large_extent` or more.
-    pub fn of_pieces(pieces: &[Piece], len: u64, open: SegmentId, large: bool) -> Self {
+    /// not, each segment where `stage` says; `large` if `large_extent` or more.
+    pub fn of_pieces(
+        pieces: &[Piece],
+        len: u64,
+        stage: impl Fn(SegmentId) -> Stage,
+        large: bool,
+    ) -> Self {
         if large {
             return Why::Large;
         }
-        if pieces.iter().any(|piece| piece.segment != open) {
-            let new = pieces.iter().filter(|piece| piece.segment == open).map(|piece| piece.len);
+        let stages: Vec<Stage> = pieces.iter().map(|piece| stage(piece.segment)).collect();
+        if stages.contains(&Stage::Closed) {
+            let new = (pieces.iter().zip(&stages))
+                .filter(|(_, stage)| **stage == Stage::Open)
+                .map(|(piece, _)| piece.len);
             return Why::Committed { new: new.sum() };
+        }
+        if stages.contains(&Stage::Retired) {
+            return Why::Retired;
+        }
+        if stages.contains(&Stage::Framing) {
+            return Why::Framing;
         }
         let mut by_offset: Vec<&Piece> = pieces.iter().collect();
         by_offset.sort_by_key(|piece| piece.extent_offset);
@@ -100,8 +144,8 @@ pub(crate) fn enabled() -> bool {
 /// them new for [`Why::Committed`], and the most pieces of one copied.
 #[derive(Default)]
 pub(crate) struct Sealing {
-    count: [u64; 8],
-    bytes: [u64; 8],
+    count: [u64; 10],
+    bytes: [u64; 10],
     committed_new: u64,
     most_pieces: usize,
 }
@@ -152,9 +196,18 @@ mod tests {
     }
 
     /// Each why, from the pieces that make it.
+    fn stage(segment: SegmentId) -> Stage {
+        match segment.number {
+            5 => Stage::Open,
+            3 => Stage::Retired,
+            2 => Stage::Framing,
+            _ => Stage::Closed,
+        }
+    }
+
     #[test]
     fn pieces_say_why() {
-        let why = |pieces: &[Piece], len| Why::of_pieces(pieces, len, OPEN, false);
+        let why = |pieces: &[Piece], len| Why::of_pieces(pieces, len, stage, false);
         assert_eq!(why(&[piece(OPEN, 0, 0, 8)], 8), Why::OneRun);
         assert_eq!(
             why(&[piece(OLD, 0, 0, 4), piece(OPEN, 0, 4, 4)], 8),
@@ -164,6 +217,10 @@ mod tests {
         assert_eq!(why(&[piece(OPEN, 0, 0, 4), piece(OPEN, 9, 4, 4)], 8), Why::Interleaved);
         assert_eq!(why(&[piece(OPEN, 9, 0, 4), piece(OPEN, 0, 4, 4)], 8), Why::Rewritten);
         assert_eq!(why(&[piece(OPEN, 0, 0, 4), piece(OPEN, 4, 4, 4)], 8), Why::Adjacent);
-        assert_eq!(Why::of_pieces(&[piece(OPEN, 0, 0, 8)], 8, OPEN, true), Why::Large);
+        assert_eq!(Why::of_pieces(&[piece(OPEN, 0, 0, 8)], 8, stage, true), Why::Large);
+        let retired = SegmentId { branch: 1, number: 3 };
+        let framing = SegmentId { branch: 1, number: 2 };
+        assert_eq!(why(&[piece(retired, 0, 0, 4), piece(OPEN, 0, 4, 4)], 8), Why::Retired);
+        assert_eq!(why(&[piece(framing, 0, 0, 8)], 8), Why::Framing);
     }
 }

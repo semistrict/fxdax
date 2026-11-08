@@ -1506,9 +1506,9 @@ impl<D: Dir> Store<D> {
         match (&entry.data, state.uncommitted.placement(extent)) {
             (Data::Own, Some(Placement::Own(_))) => Some((seals::Why::Own, entry.len, 1)),
             (Data::Pieces(pieces), _) => {
-                let (open, large) =
-                    (state.segments.open_segment(), entry.len >= self.options.large_extent);
-                let why = seals::Why::of_pieces(pieces, entry.len, open, large);
+                let large = entry.len >= self.options.large_extent;
+                let stage = |segment| state.segments.stage(segment);
+                let why = seals::Why::of_pieces(pieces, entry.len, stage, large);
                 Some((why, entry.len, pieces.len()))
             }
             _ => None,
