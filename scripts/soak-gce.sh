@@ -3,7 +3,7 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-# Production-shaped soaks of the guest Fxfs on a disposable GCE host (TASK-44.18): DAX pgbench
+# Production-shaped soaks of the guest Fxfs on a kept GCE host (TASK-44.18): DAX pgbench
 # (fxfs-guest-pgbench-dax) over a matrix of guest memory, vCPUs and DAX window sizes, its bucket
 # FXDAX_REMOTE_LATENCY_MS away (25 by default), FXDAX_SOAK_ROUNDS rounds a cell (3), as the
 # sandbox team's small VMs meet what the suites' 4 GiB, 2-vCPU, 2 GiB-window guest doesn't
@@ -14,7 +14,7 @@
 #   scripts/soak-gce.sh RESULTS [MEMORY_MIB:VCPUS:WINDOW_MIB...]
 #
 # The default matrix: 1024:2:2048 1024:4:2048 2048:4:512 2048:4:8192 4096:2:2048. The host is
-# made, and deleted at the end, as scripts/test-gce.sh's (FXDAX_GCE_ZONE, FXDAX_GUEST_KERNEL or
+# held, and stopped at the end, by scripts/test-gce.sh's create and stop (FXDAX_GCE_ZONE, FXDAX_GUEST_KERNEL or
 # FXDAX_GUEST_KERNEL_BUILD as it takes them, and every other FXDAX_* reaching the host).
 set -euo pipefail
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
@@ -29,10 +29,9 @@ for cell in "${cells[@]}"; do
 done
 mkdir -p "$results"
 results=$(cd "$results" && pwd)
-host="fxdax-test-soak-$(date -u +%Y%m%d-%H%M%S)"
-"$repo/scripts/test-gce.sh" create "$host" "$results/host" > "$results/create.log" 2>&1 ||
-    { echo "creating $host failed: see $results/create.log" >&2; exit 1; }
-trap '"$repo/scripts/test-gce.sh" delete "$host" "$results/host" > /dev/null 2>&1' EXIT
+host=$("$repo/scripts/test-gce.sh" create "$results/host" 2> "$results/create.log") ||
+    { echo "holding a host failed: see $results/create.log" >&2; exit 1; }
+trap '"$repo/scripts/test-gce.sh" stop "$host" "$results/host" > /dev/null 2>&1' EXIT
 zone=$(gcloud compute instances list --filter="name=$host" --format='value(zone.basename())')
 export FXDAX_GCE_ZONE=$zone FXDAX_WORKSPACE_TESTS=0 FXDAX_E2E_TEST=fxfs-guest-pgbench-dax
 export FXDAX_E2E_ROUNDS=${FXDAX_SOAK_ROUNDS:-3} FXDAX_REMOTE_LATENCY_MS=${FXDAX_REMOTE_LATENCY_MS:-25}

@@ -218,6 +218,9 @@ class Project:
             f'#!/bin/sh\nexec {shlex.quote(sys.executable)} {shlex.quote(str(FAKE_GCLOUD))} "$@"\n'
         )
         gcloud.chmod(0o755)
+        # A driver waits for its job in steps of 30 s: here none.
+        (self.directory / "bin" / "sleep").write_text("#!/bin/sh\n")
+        (self.directory / "bin" / "sleep").chmod(0o755)
         self.environment = {
             "PATH": f"{self.directory / 'bin'}:/usr/bin:/bin",
             "HOME": str(self.directory),
@@ -231,12 +234,32 @@ class Project:
         """The calls of gcloud, each its words."""
         return (self.directory / "calls").read_text().splitlines()
 
-    def run(self, script):
-        """Runs `script` in macOS's bash, after sourcing gce.sh as a driver of the host
-        fxdax-test-x does: its status, output and errors."""
-        driver = """set -euo pipefail
-project=p zone=us-east4-a instance=fxdax-test-x machine=n2-standard-8 purpose=fxdax-test
-lifetime=8h limit=6h repo=/laptop/fxdax results=$HOME/results create_flags=()
+    def changes(self):
+        """The calls of gcloud that change a host: none of SSH's, nor the listings."""
+        return [
+            call for call in self.calls()
+            if not call.startswith(("compute ssh", "compute instances list", "compute zones list",
+                                    "compute instances describe"))
+        ]
+
+    def home(self, name):
+        """The home of the host `name` (fake_gcloud.py's run_on_host)."""
+        home = self.directory / "hosts" / name / "home"
+        home.mkdir(parents=True, exist_ok=True)
+        return home
+
+    def holder(self, name):
+        """Who holds the host `name`'s claim (gce_claim), or None."""
+        claim = self.directory / "hosts" / name / "run" / "fxdax-host" / "claim"
+        return os.readlink(claim) if claim.is_symlink() else None
+
+    def run(self, script, preamble=""):
+        """Runs `script` in macOS's bash, after sourcing gce.sh as a driver of n2-standard-8 hosts,
+        its host fxdax-test-x, does, `preamble` before it: its status, output and errors."""
+        driver = f"""set -euo pipefail
+project=p zone=us-east4-a instance=fxdax-test-x machine=n2-standard-8 limit=6h
+repo=/laptop/fxdax results=$HOME/results create_flags=()
+{preamble}
 mkdir -p "$results"
 source "$0"
 """
@@ -249,16 +272,33 @@ source "$0"
         return done.returncode, done.stdout, done.stderr
 
 
-def host(maker, purpose="fxdax-test"):
-    """A host made by the run whose mark is `maker`, for `purpose`."""
+def host(kind="other", status="RUNNING", zone="us-east4-a"):
+    """A kept host of `kind`, in `zone`, as `status` has it."""
     return {
-        "zone": "us-east4-a",
-        "labels": {"purpose": purpose, "lifecycle": "temporary", "maker": maker},
+        "zone": zone,
+        "labels": {"purpose": "fxdax", "lifecycle": "kept", "kind": kind},
+        "status": status,
     }
 
 
+def kind(preamble=""):
+    """The kind of host (gce_kind) a driver of n2-standard-8 hosts needs, as `preamble` sets it."""
+    status, out, errors = Project({}).run("gce_kind", preamble)
+    assert (status, errors) == (0, ""), errors
+    return out.strip()
+
+
+KIND = kind()
+# The host a run of KIND first makes in us-east4-a, and the next.
+FIRST = "fxdax-keep-n2-standard-8-us-east4-a-1"
+SECOND = "fxdax-keep-n2-standard-8-us-east4-a-2"
+# A run's command, which says where it ran.
+RAN = "gce_all eval 'echo \"ran on $instance in $zone\"'"
+
+
 class RunNames(unittest.TestCase):
-    """Each run's name, its directory on the host and its prefix of a bucket (gce_run_name)."""
+    """Each run's name, its directory on the host, its prefix of a bucket and the holder of the host
+    it claims (gce_run_name)."""
 
     def test_two_drivers_started_at_once_name_their_runs_apart(self):
         # Two drivers, in the same second: each sources gce.sh, with a mark of its own.
@@ -274,87 +314,246 @@ class RunNames(unittest.TestCase):
         # Apart whatever second each started in: by their marks.
         self.assertNotEqual(first.rsplit("-", 1)[1], second.rsplit("-", 1)[1])
 
+    def test_a_run_is_named_for_its_number_and_once(self):
+        project = Project({})
+        project.environment["FXDAX_GCE_RUN"] = "r1040"
+        status, output, errors = project.run("gce_run_name; gce_run_name")
+        self.assertEqual((status, errors), (0, ""))
+        first, second = output.splitlines()
+        self.assertRegex(first, r"^run-r1040-\d{8}T\d{6}Z-[0-9a-f]{8}$")
+        self.assertEqual(first, second)
+
 
 class Hosts(unittest.TestCase):
-    """A host's life: gce_all makes one and deletes it whatever happens, and gce_delete deletes one
-    by hand (a driver's `delete`)."""
+    """A host's life: a run reuses a kept host of its kind, or makes one if none fits, claims it,
+    and stops it whatever happens (gce_all); a driver's delete deletes one by hand."""
 
-    def test_a_run_deletes_its_host_when_done(self):
-        project = Project({})
+    def test_a_run_starts_a_stopped_host_and_stops_it_when_done(self):
+        project = Project({"instances": {FIRST: host(KIND, "TERMINATED")}, "disks": [FIRST],
+                           "ssh_run": True})
         self.assertEqual(
-            project.run("gce_all echo ran"),
+            project.run(RAN),
             (
                 0,
-                "ran\n",
-                "Created fxdax-test-x in us-east4-a.\n"
-                "Verified deletion of fxdax-test-x and its boot disk.\n",
+                f"ran on {FIRST} in us-east4-a\n",
+                f"Started {FIRST} in us-east4-a.\n"
+                f"Reusing {FIRST} in us-east4-a.\n"
+                f"Stopped {FIRST} in us-east4-a.\n",
             ),
         )
-        self.assertEqual(project.state()["instances"], {})
-
-    def test_a_run_deletes_the_host_its_failed_create_made(self):
-        project = Project({"create": "ambiguous"})
+        # Started with the startup script as it is now, not made: and stopped, not deleted.
         self.assertEqual(
-            project.run("gce_all echo ran"),
+            project.changes(),
+            [
+                f"compute instances add-metadata {FIRST}",
+                f"compute instances start {FIRST}",
+                f"compute instances stop {FIRST}",
+            ],
+        )
+        self.assertEqual(project.state()["instances"], {FIRST: host(KIND, "TERMINATED")})
+        self.assertEqual(project.state()["disks"], [FIRST])
+
+    def test_a_run_stops_its_host_when_it_fails(self):
+        project = Project({"instances": {FIRST: host(KIND, "TERMINATED")}, "disks": [FIRST],
+                           "ssh_run": True})
+        self.assertEqual(
+            project.run("gce_all false"),
             (
                 1,
                 "",
-                "ERROR: (gcloud.compute.instances.create) the request timed out\n"
-                "Verified deletion of fxdax-test-x and its boot disk.\n",
+                f"Started {FIRST} in us-east4-a.\n"
+                f"Reusing {FIRST} in us-east4-a.\n"
+                f"Stopped {FIRST} in us-east4-a.\n",
             ),
         )
-        self.assertEqual(project.state()["instances"], {})
+        self.assertEqual(project.state()["instances"], {FIRST: host(KIND, "TERMINATED")})
+        self.assertNotIn(f"compute instances delete {FIRST}", project.calls())
 
-    def test_a_run_makes_its_host_in_the_next_zone_with_room(self):
-        project = Project({"zones": ["us-east4-a", "us-east4-b"], "exhausted": ["us-east4-a"]})
+    def test_a_run_prefers_a_stopped_host_in_its_zone(self):
+        hosts = {
+            "fxdax-keep-n2-standard-8-us-west1-b-1": host(KIND, "TERMINATED", "us-west1-b"),
+            "fxdax-keep-n2-standard-8-us-east4-b-1": host(KIND, "TERMINATED", "us-east4-b"),
+            FIRST: host(KIND, "TERMINATED"),
+        }
+        project = Project({"instances": hosts, "ssh_run": True})
+        self.assertEqual(project.run(RAN)[1], f"ran on {FIRST} in us-east4-a\n")
+        project = Project({"instances": {k: v for k, v in hosts.items() if k != FIRST},
+                           "ssh_run": True})
+        # Else one in its region.
         self.assertEqual(
-            project.run("gce_all eval 'echo \"ran in $zone\"'"),
+            project.run(RAN)[1], "ran on fxdax-keep-n2-standard-8-us-east4-b-1 in us-east4-b\n"
+        )
+
+    def test_a_run_makes_a_host_only_when_none_fits(self):
+        # A host of another kind (another machine's, or one with a service account), of the same
+        # name but for its number: it fits no run of KIND.
+        other = host("0123456789ab", "TERMINATED")
+        project = Project({"instances": {FIRST: other}, "disks": [FIRST], "ssh_run": True})
+        self.assertEqual(
+            project.run(RAN),
             (
                 0,
-                "ran in us-east4-b\n",
-                "us-east4-a has no room for this machine; trying the next zone.\n"
-                "Created fxdax-test-x in us-east4-b.\n"
-                "Verified deletion of fxdax-test-x and its boot disk.\n",
+                f"ran on {SECOND} in us-east4-a\n",
+                f"Created {SECOND} in us-east4-a.\nStopped {SECOND} in us-east4-a.\n",
             ),
         )
-        self.assertEqual(project.state()["instances"], {})
+        self.assertEqual(
+            project.changes(),
+            [
+                f"compute instances create {SECOND} --labels=purpose=fxdax,lifecycle=kept,kind={KIND}",
+                f"compute instances stop {SECOND}",
+            ],
+        )
+        self.assertEqual(
+            project.state()["instances"], {FIRST: other, SECOND: host(KIND, "TERMINATED")}
+        )
+
+    def test_a_host_another_run_holds_is_not_shared(self):
+        # One run holds the host it made; a second, at once, makes another rather than share it.
+        project = Project({"ssh_run": True})
+        self.assertEqual(
+            project.run('gce_acquire held-first; echo "$instance"'),
+            (0, f"{FIRST}\n", f"Created {FIRST} in us-east4-a.\n"),
+        )
+        self.assertEqual(
+            project.run(RAN),
+            (
+                0,
+                f"ran on {SECOND} in us-east4-a\n",
+                f"{FIRST} is another run's; trying the next host.\n"
+                f"Created {SECOND} in us-east4-a.\n"
+                f"Stopped {SECOND} in us-east4-a.\n",
+            ),
+        )
+        # The first's host runs on, its claim the first's.
+        self.assertEqual(project.state()["instances"][FIRST]["status"], "RUNNING")
+        self.assertEqual(project.holder(FIRST), "held-first")
+        self.assertNotIn(f"compute instances stop {FIRST}", project.calls())
+        # Its stop releases it: the next run reuses it.
+        self.assertEqual(project.run(f"instance={FIRST}; gce_stop")[0], 0)
+        self.assertEqual(project.run(RAN)[1], f"ran on {FIRST} in us-east4-a\n")
+
+    def test_a_run_claims_no_host_it_already_holds(self):
+        # migrate-gce.sh's two hosts, claimed for one run: not one host twice.
+        project = Project({"instances": {FIRST: host(KIND, "TERMINATED")}, "ssh_run": True})
+        self.assertEqual(
+            project.run('gce_acquire "$gce_run"; gce_acquire "$gce_run"; echo "$instance"')[:2],
+            (0, f"{SECOND}\n"),
+        )
+
+    def test_an_idle_running_host_is_reused(self):
+        # Running, as one whose driver was killed is, and no one's.
+        project = Project({"instances": {FIRST: host(KIND)}, "ssh_run": True})
+        self.assertEqual(
+            project.run(RAN),
+            (
+                0,
+                f"ran on {FIRST} in us-east4-a\n",
+                f"Reusing {FIRST} in us-east4-a.\nStopped {FIRST} in us-east4-a.\n",
+            ),
+        )
+
+    def test_a_stopped_host_that_cannot_start_is_passed_over(self):
+        # Its zone has no room for it now: the run makes a host in the next zone.
+        project = Project(
+            {
+                "instances": {FIRST: host(KIND, "TERMINATED")},
+                "zones": ["us-east4-a", "us-east4-b"],
+                "exhausted": ["us-east4-a"],
+                "ssh_run": True,
+            }
+        )
+        status, out, errors = project.run(RAN)
+        self.assertEqual(
+            (status, out),
+            (0, "ran on fxdax-keep-n2-standard-8-us-east4-b-1 in us-east4-b\n"),
+        )
+        self.assertEqual(
+            errors,
+            "ERROR: (gcloud.compute.instances.start) The zone 'us-east4-a' does not have enough "
+            "resources available to fulfill the request.\n"
+            f"{FIRST} did not start; trying the next host.\n"
+            "us-east4-a has no room for this machine; trying the next zone.\n"
+            "Created fxdax-keep-n2-standard-8-us-east4-b-1 in us-east4-b.\n"
+            "Stopped fxdax-keep-n2-standard-8-us-east4-b-1 in us-east4-b.\n",
+        )
+
+    def test_a_run_makes_its_host_in_its_own_zone_first(self):
+        # Its zone is us-east4-b; the host it passed over, which would not start, us-east4-a's.
+        project = Project(
+            {
+                "instances": {FIRST: host(KIND, "TERMINATED")},
+                "zones": ["us-east4-a", "us-east4-b"],
+                "exhausted": ["us-east4-a"],
+                "ssh_run": True,
+            }
+        )
+        status, out, errors = project.run(RAN, preamble="zone=us-east4-b")
+        self.assertEqual(
+            (status, out), (0, "ran on fxdax-keep-n2-standard-8-us-east4-b-1 in us-east4-b\n")
+        )
+        self.assertNotIn("us-east4-a has no room", errors)
+
+    def test_a_run_takes_the_host_its_failed_create_made(self):
+        project = Project({"create": "ambiguous", "ssh_run": True})
+        self.assertEqual(
+            project.run(RAN),
+            (
+                0,
+                f"ran on {FIRST} in us-east4-a\n",
+                "ERROR: (gcloud.compute.instances.create) the request timed out\n"
+                f"Stopped {FIRST} in us-east4-a.\n",
+            ),
+        )
+        self.assertEqual(project.state()["instances"], {FIRST: host(KIND, "TERMINATED")})
+
+    def test_two_runs_making_a_host_at_once_name_theirs_apart(self):
+        # Both found no host, and the other's create of the first name came first.
+        project = Project({"create": ["taken", "made"], "ssh_run": True})
+        self.assertEqual(
+            project.run(RAN),
+            (
+                0,
+                f"ran on {SECOND} in us-east4-a\n",
+                f"Another run made {FIRST} as this one did; trying the next name.\n"
+                f"Created {SECOND} in us-east4-a.\n"
+                f"Stopped {SECOND} in us-east4-a.\n",
+            ),
+        )
+        self.assertEqual(project.state()["instances"][FIRST]["labels"]["maker"], "winner")
+        self.assertNotIn(f"compute instances stop {FIRST}", project.calls())
+
+    def test_a_run_makes_its_host_in_the_next_zone_with_room(self):
+        project = Project(
+            {"zones": ["us-east4-a", "us-east4-b"], "exhausted": ["us-east4-a"], "ssh_run": True}
+        )
+        self.assertEqual(
+            project.run(RAN),
+            (
+                0,
+                "ran on fxdax-keep-n2-standard-8-us-east4-b-1 in us-east4-b\n",
+                "us-east4-a has no room for this machine; trying the next zone.\n"
+                "Created fxdax-keep-n2-standard-8-us-east4-b-1 in us-east4-b.\n"
+                "Stopped fxdax-keep-n2-standard-8-us-east4-b-1 in us-east4-b.\n",
+            ),
+        )
 
     def test_a_run_makes_its_host_in_the_next_region_out_of_quota(self):
         # TASK-97: us-east4 has its zones, and no quota; us-east1 has room.
         project = Project(
-            {"zones": ["us-east4-a", "us-east4-b", "us-east1-b"], "quota": ["us-east4"]}
+            {"zones": ["us-east4-a", "us-east4-b", "us-east1-b"], "quota": ["us-east4"],
+             "ssh_run": True}
         )
         self.assertEqual(
-            project.run("gce_all eval 'echo \"ran in $zone\"'"),
+            project.run(RAN),
             (
                 0,
-                "ran in us-east1-b\n",
+                "ran on fxdax-keep-n2-standard-8-us-east1-b-1 in us-east1-b\n",
                 "us-east4 is out of quota for this machine; trying the next region.\n"
-                "Created fxdax-test-x in us-east1-b.\n"
-                "Verified deletion of fxdax-test-x and its boot disk.\n",
+                "Created fxdax-keep-n2-standard-8-us-east1-b-1 in us-east1-b.\n"
+                "Stopped fxdax-keep-n2-standard-8-us-east1-b-1 in us-east1-b.\n",
             ),
         )
-        self.assertEqual(project.state()["instances"], {})
-
-    def test_a_run_deletes_the_host_its_failed_create_made_in_the_next_zone(self):
-        project = Project(
-            {
-                "zones": ["us-east4-a", "us-east4-b"],
-                "exhausted": ["us-east4-a"],
-                "create": "ambiguous",
-            }
-        )
-        self.assertEqual(
-            project.run("gce_all echo ran"),
-            (
-                1,
-                "",
-                "us-east4-a has no room for this machine; trying the next zone.\n"
-                "ERROR: (gcloud.compute.instances.create) the request timed out\n"
-                "Verified deletion of fxdax-test-x and its boot disk.\n",
-            ),
-        )
-        self.assertEqual(project.state()["instances"], {})
 
     def test_a_failed_listing_of_zones_makes_no_host(self):
         project = Project({"failing": ["zones"]})
@@ -364,9 +563,9 @@ class Hosts(unittest.TestCase):
         )
         self.assertEqual(project.calls(), ["compute zones list"])
 
-    def test_a_run_whose_create_failed_runs_nothing(self):
+    def test_a_run_that_has_no_host_runs_nothing(self):
         # Under `||`, where errexit stops nothing.
-        project = Project({"exhausted": ["us-east4-a"]})
+        project = Project({"exhausted": ["us-east4-a"], "ssh_run": True})
         self.assertEqual(
             project.run("(gce_all echo ran) || echo status $?"),
             (
@@ -374,63 +573,89 @@ class Hosts(unittest.TestCase):
                 "status 1\n",
                 "us-east4-a has no room for this machine; trying the next zone.\n"
                 "ERROR: (gcloud.compute.instances.create) The zone 'us-east4-a' does not have "
-                "enough resources available to fulfill the request.\n"
-                "Verified deletion of fxdax-test-x and its boot disk.\n",
+                "enough resources available to fulfill the request.\n",
             ),
         )
+        self.assertEqual(project.state().get("instances", {}), {})
 
-    def test_a_run_deletes_no_host_another_run_made_at_once(self):
-        # Two runs of one name, at once: both found no host, and the other's create came first.
-        project = Project({"create": "taken"})
+    def test_a_failed_listing_of_hosts_runs_nothing(self):
+        project = Project({"failing": ["instances"], "ssh_run": True})
         self.assertEqual(
-            project.run("gce_all echo ran"),
+            project.run("(gce_all echo ran) || echo status $?"),
+            (
+                0,
+                "status 1\n",
+                "ERROR: (gcloud.compute.instances.list) listing the instances failed\n",
+            ),
+        )
+        self.assertEqual(project.changes(), [])
+
+    def test_a_host_a_create_holds_is_run_on_until_its_stop(self):
+        project = Project({"ssh_run": True})
+        driver = 'run() { echo "ran on $instance"; }\n'
+        self.assertEqual(
+            project.run(driver + "gce_main create"),
+            (
+                0,
+                f"{FIRST}\n",
+                f"Created {FIRST} in us-east4-a.\n"
+                f"Holding {FIRST} in us-east4-a: run on it with `run {FIRST}`, stop it with "
+                f"`stop {FIRST}`.\n",
+            ),
+        )
+        for _ in range(2):
+            self.assertEqual(project.run(driver + f"gce_main run {FIRST}"), (0, f"ran on {FIRST}\n", ""))
+        self.assertEqual(project.state()["instances"][FIRST]["status"], "RUNNING")
+        self.assertEqual(
+            project.run(driver + f"gce_main stop {FIRST}"), (0, "", f"Stopped {FIRST} in us-east4-a.\n")
+        )
+        self.assertEqual(project.state()["instances"], {FIRST: host(KIND, "TERMINATED")})
+
+    def test_a_run_named_runs_on_no_host_but_a_held_one(self):
+        # Another run's, which gce_all claimed: and a stopped one, which no one holds.
+        project = Project({"instances": {FIRST: host(KIND, "TERMINATED")}, "ssh_run": True})
+        driver = 'run() { echo "ran on $instance"; }\n'
+        self.assertEqual(project.run(f'gce_acquire "$gce_run"')[0], 0)
+        status, out, errors = project.run(driver + f"gce_main run {FIRST}")
+        self.assertEqual((status, out), (1, ""))
+        self.assertRegex(
+            errors,
+            rf"^{FIRST} is not held for runs \(run-\d{{8}}T\d{{6}}Z-[0-9a-f]{{8}}\): hold a host "
+            r"with create\.\n$",
+        )
+        self.assertEqual(project.run(f"instance={FIRST}; gce_stop")[0], 0)
+        self.assertEqual(
+            project.run(driver + f"gce_main run {FIRST}"),
             (
                 1,
                 "",
-                "ERROR: (gcloud.compute.instances.create) fxdax-test-x already exists\n"
-                "Refusing to delete fxdax-test-x, which another run made.\n",
+                f"{FIRST} is not held for runs (not running, or unclaimed): hold a host with create.\n",
             ),
         )
-        self.assertEqual(project.state()["instances"], {"fxdax-test-x": host("winner")})
-        self.assertNotIn("compute instances delete fxdax-test-x", project.calls())
 
-    def test_deleting_by_hand_deletes_a_host_another_run_made(self):
-        project = Project({"instances": {"fxdax-test-x": host("earlier")}, "disks": ["fxdax-test-x"]})
+    def test_deleting_by_hand_deletes_a_kept_host(self):
+        project = Project({"instances": {FIRST: host(KIND, "TERMINATED")}, "disks": [FIRST]})
         self.assertEqual(
-            project.run("gce_locate; gce_delete"),
-            (0, "", "Verified deletion of fxdax-test-x and its boot disk.\n"),
+            project.run(f"gce_main delete {FIRST}"),
+            (0, "", f"Verified deletion of {FIRST} and its boot disk.\n"),
         )
         self.assertEqual(project.state(), {"instances": {}, "disks": []})
 
-    def test_a_host_made_before_hosts_had_a_maker_is_deleted_by_hand_alone(self):
-        # gcloud prints a label a host lacks as empty: "fxdax-test<TAB>temporary<TAB>".
-        made = {"zone": "us-east4-a", "labels": {"purpose": "fxdax-test", "lifecycle": "temporary"}}
-        project = Project({"instances": {"fxdax-test-x": made}, "disks": ["fxdax-test-x"]})
-        self.assertEqual(
-            project.run("status=0; gce_delete mine || status=$?; echo status $status"),
-            (0, "status 1\n", "Refusing to delete fxdax-test-x, which another run made.\n"),
-        )
-        self.assertEqual(
-            project.run("gce_delete"),
-            (0, "", "Verified deletion of fxdax-test-x and its boot disk.\n"),
-        )
-        self.assertEqual(project.state()["instances"], {})
-
-    def test_a_host_of_another_purpose_is_not_deleted(self):
-        other = host("earlier", purpose="someone-else")
+    def test_a_host_that_is_not_kept_is_not_deleted(self):
+        other = {"zone": "us-east4-a", "labels": {"purpose": "someone-else", "lifecycle": "kept"}}
         project = Project({"instances": {"fxdax-test-x": other}, "disks": ["fxdax-test-x"]})
         self.assertEqual(
             project.run("status=0; gce_delete || status=$?; echo status $status"),
             (
                 0,
                 "status 1\n",
-                "Refusing to operate on fxdax-test-x, which lacks the fxdax-test labels.\n",
+                "Refusing to operate on fxdax-test-x, which lacks the labels of a kept host.\n",
             ),
         )
         self.assertEqual(project.state()["instances"], {"fxdax-test-x": other})
 
     def test_failed_listings_verify_no_deletion(self):
-        made = host("earlier")
+        made = host(KIND)
         project = Project(
             {
                 "instances": {"fxdax-test-x": made},
@@ -447,7 +672,7 @@ class Hosts(unittest.TestCase):
     def test_a_failed_listing_of_disks_verifies_no_deletion(self):
         project = Project(
             {
-                "instances": {"fxdax-test-x": host("earlier")},
+                "instances": {"fxdax-test-x": host(KIND)},
                 "disks": ["fxdax-test-x"],
                 "failing": ["disks"],
             }
@@ -458,11 +683,99 @@ class Hosts(unittest.TestCase):
         )
 
 
+class Resume(unittest.TestCase):
+    """test-gce.sh's resume, which waits for a run whose waiter was stopped, on its kept host, and
+    fetches its results."""
+
+    RUN = "run-r1040-20261108T120000Z-0123abcd"
+
+    def resume(self, state, job, holder=None):
+        """Runs `test-gce.sh resume FIRST RESULTS RUN` on a project as `state` has it, the host's
+        home holding RUN's job as `job` has it (its files' contents), and RUN's results, and its
+        claim `holder`'s, if given: its status, its errors and the project."""
+        project = Project({"ssh_run": True, **state})
+        home = project.home(FIRST)
+        if holder:
+            claim = project.directory / "hosts" / FIRST / "run" / "fxdax-host"
+            claim.mkdir(parents=True)
+            (claim / "ready").touch()
+            os.symlink(holder, claim / "claim")
+        (home / f"{self.RUN}.job").mkdir()
+        for name, text in job.items():
+            (home / f"{self.RUN}.job" / name).write_text(text)
+        (home / self.RUN / "results").mkdir(parents=True)
+        (home / self.RUN / "results" / "host.txt").write_text("a host\n")
+        done = subprocess.run(
+            ["/bin/bash", SCRIPTS / "test-gce.sh", "resume", FIRST, project.directory / "results",
+             self.RUN],
+            env={**project.environment, "FXDAX_GCE_PROJECT": "p"},
+            capture_output=True,
+            text=True,
+        )
+        return done.returncode, done.stderr, project
+
+    def test_a_run_on_a_stopped_host_is_resumed_and_the_host_stopped(self):
+        # The run's job ended, its waiter gone, and the host powered off, idle.
+        status, errors, project = self.resume(
+            {"instances": {FIRST: host(KIND, "TERMINATED")}}, {"status": "0\n", "log": "ran\n"}
+        )
+        results = project.directory / "results"
+        self.assertEqual(
+            (status, errors),
+            (
+                0,
+                f"Results: {results}\nStarted {FIRST} in us-east4-a.\nran\n"
+                f"Results: {results}\nStopped {FIRST} in us-east4-a.\n",
+            ),
+        )
+        self.assertEqual(
+            project.changes(),
+            [
+                f"compute instances add-metadata {FIRST}",
+                f"compute instances start {FIRST}",
+                f"compute scp {FIRST}:{self.RUN}/results.tar.gz {results}/results.tar.gz",
+                f"compute instances stop {FIRST}",
+            ],
+        )
+        self.assertEqual(project.state()["instances"][FIRST]["status"], "TERMINATED")
+
+    def test_a_run_on_a_host_another_run_holds_is_not_resumed(self):
+        other = "run-20261108T130000Z-ffffffff"
+        status, errors, project = self.resume(
+            {"instances": {FIRST: host(KIND)}}, {"status": "0\n", "log": "ran\n"}, holder=other
+        )
+        self.assertEqual(
+            (status, errors.splitlines()[-1]),
+            (1, f"{FIRST} is another run's ({other}), not {self.RUN}'s."),
+        )
+        # Not this run's to stop.
+        self.assertEqual(project.state()["instances"][FIRST]["status"], "RUNNING")
+
+    def test_a_run_on_a_host_a_create_holds_is_resumed_and_the_host_kept(self):
+        status, errors, project = self.resume(
+            {"instances": {FIRST: host(KIND)}}, {"status": "0\n", "log": "ran\n"},
+            holder="held-0123abcd",
+        )
+        self.assertEqual((status, errors.splitlines()[-1]), (0, f"Results: {project.directory / 'results'}"))
+        self.assertEqual(project.state()["instances"][FIRST]["status"], "RUNNING")
+
+    def test_a_job_its_hosts_stop_ended_is_lost(self):
+        # A pid no process has: the job's process went with the host's power, writing no status.
+        status, errors, project = self.resume(
+            {"instances": {FIRST: host(KIND, "TERMINATED")}}, {"pid": "4194303\n", "log": "half\n"}
+        )
+        self.assertEqual(status, 1)
+        self.assertIn(
+            f"{self.RUN} on {FIRST} is lost: its process ended without its status.\nhalf\n", errors
+        )
+        self.assertEqual(project.state()["instances"][FIRST]["status"], "TERMINATED")
+
+
 class Jobs(unittest.TestCase):
     """What runs on a host, under a driver's `|| status=$?`."""
 
     def test_a_job_that_did_not_start_is_not_waited_for(self):
-        project = Project({"instances": {"fxdax-test-x": host("earlier")}, "ssh": 255})
+        project = Project({"instances": {"fxdax-test-x": host(KIND)}, "ssh": 255})
         self.assertEqual(
             project.run(
                 # Waiting would take until the host's end, 8 hours on.
@@ -479,13 +792,13 @@ class Jobs(unittest.TestCase):
         host runs what SSH asks (fake_gcloud.py's ssh_run), as `state` adds to it: its status,
         output and errors, and whether the job's pid was kept on the host."""
         project = Project(
-            {"instances": {"fxdax-test-x": host("earlier")}, "ssh_run": True, **state}
+            {"instances": {"fxdax-test-x": host(KIND)}, "ssh_run": True, **state}
         )
         done = project.run(
             "sleep() { :; }\n"
             "status=0; gce_remote_detached job 'echo ran; (exit 3)' || status=$?; echo status $status"
         )
-        return done, (project.directory / "host" / "job.job" / "pid").is_file()
+        return done, (project.home("fxdax-test-x") / "job.job" / "pid").is_file()
 
     def test_a_job_keeps_its_pid_and_is_waited_for(self):
         # TASK-235: its pid kept as it is launched, which a dropped start looks for.
@@ -501,7 +814,7 @@ class Jobs(unittest.TestCase):
     def fetch(self, state):
         """Runs `gce_fetch run-x` on a project as `state` has it, with the host: its status, its
         errors, the files then in the results, and the calls of gcloud."""
-        project = Project({"instances": {"fxdax-test-x": host("earlier")}, **state})
+        project = Project({"instances": {"fxdax-test-x": host(KIND)}, **state})
         self.results = project.directory / "results"
         returncode, out, err = project.run(
             "status=0; gce_fetch run-x || status=$?; echo status $status"
@@ -576,7 +889,7 @@ class Source(unittest.TestCase):
         """Runs `gce_push_source run-x` on a project as `state` has it, with the host: its
         status and errors, the calls of gcloud, its copy's staging directory as STAGING, and the
         project."""
-        project = Project({"instances": {"fxdax-test-x": host("earlier")}, **state})
+        project = Project({"instances": {"fxdax-test-x": host(KIND)}, **state})
         returncode, out, err = project.run(
             f"repo={shlex.quote(str(self.repo))}\n"
             "status=0; gce_push_source run-x || status=$?; echo status $status"
@@ -665,27 +978,27 @@ class Source(unittest.TestCase):
 
 
 class Names(unittest.TestCase):
-    """The drivers' default names, of their hosts and their results, which runs at once share none
-    of: each ends in its run's mark, which its host carries as its maker."""
+    """The drivers' hosts and results: two runs at once hold two hosts, and keep their results
+    apart, each's directory ending in its run's mark."""
 
-    # Each driver's default host name and results directory, before the time, and its own
-    # settings.
+    # Each driver's results directory, before the time, its machine, and its own settings.
     DRIVERS = {
-        "bench-gce.sh": ("fxdax-bench", "gce-fs-bench", {}),
-        "example-gce.sh": ("fxdax-bench-example", "gce-mapbench", {"FXDAX_EXAMPLE": "mapbench"}),
-        "gets-gce.sh": ("fxdax-bench-gets", "gce-gets", {"FXDAX_GETS_BUCKET": "gs://bucket/b"}),
-        "mutants-gce.sh": ("fxdax-test-mutants", "gce-mutants", {}),
+        "bench-gce.sh": ("gce-fs-bench", "c3-standard-8", {}),
+        "example-gce.sh": ("gce-mapbench", "n2-standard-8", {"FXDAX_EXAMPLE": "mapbench"}),
+        "gets-gce.sh": ("gce-gets", "c3-standard-8", {"FXDAX_GETS_BUCKET": "gs://bucket/b"}),
+        "mutants-gce.sh": ("gce-mutants", "n2-standard-4", {}),
     }
 
-    def test_runs_at_once_have_names_of_their_own(self):
-        for driver, (host_name, results, environment) in self.DRIVERS.items():
+    def test_runs_at_once_have_hosts_and_names_of_their_own(self):
+        for driver, (results, machine, environment) in self.DRIVERS.items():
             with self.subTest(driver):
-                project = Project({})
+                project = Project({"ssh_run": True})
                 # The driver in a tree of its own, whose results it names.
                 tree = project.directory / "tree"
                 (tree / "scripts" / "lib").mkdir(parents=True)
                 (tree / "scripts" / driver).symlink_to(SCRIPTS / driver)
                 (tree / "scripts" / "lib" / "gce.sh").symlink_to(GCE)
+                held = []
                 for _ in range(2):
                     done = subprocess.run(
                         ["/bin/bash", tree / "scripts" / driver, "create"],
@@ -693,32 +1006,24 @@ class Names(unittest.TestCase):
                         capture_output=True,
                         text=True,
                     )
-                    self.assertEqual((done.returncode, done.stdout), (0, ""), done.stderr)
-                makers = sorted(
-                    made["labels"]["maker"] for made in project.state()["instances"].values()
-                )
-                self.assertEqual(len(set(makers)), 2, makers)
+                    self.assertEqual(done.returncode, 0, done.stderr)
+                    held.append(done.stdout)
                 self.assertEqual(
-                    sorted(
-                        re.fullmatch(rf"{host_name}-\d{{8}}-\d{{6}}-([0-9a-f]{{8}})", name).group(1)
-                        for name in project.state()["instances"]
-                    ),
-                    makers,
+                    held,
+                    [f"fxdax-keep-{machine}-us-east4-a-1\n", f"fxdax-keep-{machine}-us-east4-a-2\n"],
                 )
                 kept = sorted((tree / "docs" / "measurements").iterdir())
-                self.assertEqual(
-                    sorted(
-                        re.fullmatch(
-                            rf"{results}-\d{{4}}-\d{{2}}-\d{{2}}T\d{{4}}Z-([0-9a-f]{{8}})", path.name
-                        ).group(1)
-                        for path in kept
-                    ),
-                    makers,
-                )
+                marks = {
+                    re.fullmatch(rf"{results}-\d{{4}}-\d{{2}}-\d{{2}}T\d{{4}}Z-([0-9a-f]{{8}})", path.name)
+                    .group(1)
+                    for path in kept
+                }
+                self.assertEqual(len(marks), 2, kept)
 
 
 class Migrate(unittest.TestCase):
-    """scripts/migrate-gce.sh's hosts and its prefix of the bucket, which it deletes as it ends."""
+    """scripts/migrate-gce.sh's two hosts and its prefix of the bucket, which it stops and deletes
+    as it ends."""
 
     def migrate(self, project):
         done = subprocess.run(
@@ -734,37 +1039,37 @@ class Migrate(unittest.TestCase):
         )
         return done.returncode, done.stderr
 
-    def test_a_migration_deletes_only_what_it_made(self):
-        # Another migration's first host, made at once, whose name this one's would have shared.
-        project = Project({"create": "taken"})
-        returncode, stderr = self.migrate(project)
-        created = [call for call in project.calls() if call.startswith("compute instances create")]
-        self.assertEqual(len(created), 1, created)
-        made = (
-            r"compute instances create fxdax-test-migrate-a-(\d{8}-\d{6}-([0-9a-f]{8})) "
-            r"--labels=purpose=fxdax-test,lifecycle=temporary,maker=\2"
+    def test_a_migration_holds_two_hosts_and_stops_what_it_held(self):
+        # One kept host of its kind, which its first side takes: its second takes not that one
+        # again, and finds no quota for another.
+        first = "fxdax-keep-c3-standard-8-us-east4-a-1"
+        fits = kind("machine=c3-standard-8 FXDAX_GCE_STORAGE=1")
+        project = Project(
+            {"instances": {first: host(fits, "TERMINATED")}, "quota": ["us-east4"], "ssh_run": True}
         )
-        # The run's names are its own: they end in its mark, which its hosts carry.
-        self.assertRegex(created[0], f"^{made}$")
-        stamp = re.fullmatch(made, created[0]).group(1)
-        name = f"fxdax-test-migrate-a-{stamp}"
-        self.assertEqual(project.state()["instances"], {name: host("winner")})
+        project.environment["FXDAX_GCE_REGIONS"] = "us-east4"
+        returncode, stderr = self.migrate(project)
+        self.assertEqual(returncode, 1, stderr)
+        self.assertIn(f"{first} is another run's; trying the next host.\n", stderr)
+        self.assertEqual(project.state()["instances"], {first: host(fits, "TERMINATED")})
+        changes = project.changes()
         self.assertEqual(
-            [call for call in project.calls() if not call.startswith("compute instances list")][-3:],
+            [re.sub(r"run-\d{8}T\d{6}Z-[0-9a-f]{8}$", "RUN", change) for change in changes],
             [
-                f"compute instances describe {name}",
-                "compute disks list",
-                f"storage rm gs://bucket/prefix/run-{stamp}",
+                f"compute instances add-metadata {first}",
+                f"compute instances start {first}",
+                "compute instances create fxdax-keep-c3-standard-8-us-east4-a-2 "
+                f"--labels=purpose=fxdax,lifecycle=kept,kind={fits}",
+                f"compute instances stop {first}",
+                "storage rm gs://bucket/prefix/RUN",
             ],
         )
-        self.assertEqual(returncode, 1)
-        self.assertIn(f"Refusing to delete {name}, which another run made.\n", stderr)
 
     def test_a_migration_cleans_up_whatever_fails(self):
         project = Project({"failing": ["instances"]})
         returncode, stderr = self.migrate(project)
         self.assertEqual(returncode, 1)
-        self.assertRegex(project.calls()[-1], r"^storage rm gs://bucket/prefix/run-\d{8}-\d{6}-[0-9a-f]{8}$")
+        self.assertRegex(project.calls()[-1], r"^storage rm gs://bucket/prefix/run-\d{8}T\d{6}Z-[0-9a-f]{8}$")
         self.assertEqual(stderr.splitlines()[-1], f"Results: {project.directory / 'results'}")
 
 

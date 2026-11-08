@@ -26,6 +26,16 @@ of a batch.
 - Measure a change on its own only when isolating it is the point of the measurement (an A/B on
   one host).
 
+### GCE hosts are kept
+
+The user's rule (2026-11-08): reuse a kept GCE host, stop it when done, never delete one per run.
+The drivers do this (`scripts/lib/gce.sh`): `all` takes a stopped or idle host of the run's kind
+(`fxdax-keep-<machine>-<zone>-<n>`), claims it so no other run shares it, and stops it at the
+end, pass or fail. A kept host keeps its `target/`, guest kernel builds and toolchain, so a run
+builds only what changed, and none of a fresh host's setup (r940, r980, r990) can fail it; a
+stopped one holds no vCPU quota. Pass the run number as `FXDAX_GCE_RUN` (e.g. `r1040`), not in a
+host name. `delete` only a host broken beyond repair.
+
 ## Commit in batches, only what compiled and passed its tests
 
 Commit a batch once it has compiled and its unit tests have run and passed (the workspace's

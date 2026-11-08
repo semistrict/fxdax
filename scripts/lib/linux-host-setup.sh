@@ -3,7 +3,7 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-# What the scripts that run fxdax on a disposable x86-64 Linux KVM host, as
+# What the scripts that run fxdax on an x86-64 Linux KVM host, as
 # root (scripts/lib/*-linux-host.sh), share, sourced by them: provisioning the
 # host (host_setup), the tree each builds in (host_tree), the tools it needs,
 # at the versions pinned here (host_need), and the record of the host it ran on

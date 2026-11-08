@@ -6,18 +6,25 @@
 project's hosts and their boot disks, kept in $FAKE_GCLOUD/state.json, and each call's words, with
 the labels a create gave, appended to $FAKE_GCLOUD/calls.
 
-state.json holds the hosts ("instances": each name's zone and labels), their boot disks ("disks"),
+state.json holds the hosts ("instances": each name's zone, labels and status, RUNNING unless it
+says TERMINATED, as a stopped host is), their boot disks ("disks"),
 the zones ("zones", default us-east4-a alone, which a listing filtered by region gives those of),
 those with no room for a host ("exhausted"), and the regions out of quota ("quota"), how the next create goes ("create": "made", the host made as asked; "taken", made at
 once by another run, whose maker label is "winner", and which this create then finds there; or
-"ambiguous", made as asked though the create reports an error), which listings and copies fail
+"ambiguous", made as asked though the create reports an error; or a list of these, one a create,
+the last for every create after), which listings and copies fail
 ("failing": "instances", "disks", "zones", "scp"), the status SSH ends with ("ssh"), and what it
 prints ("ssh_out", nothing by default), or, call by call, until they run out, each SSH's status and
-what it prints ("ssh_calls", pairs). With "ssh_run", each SSH runs its command too, in bash, its
-home $FAKE_GCLOUD/host, sudo and setsid running what they're given: its status and output are
-the command's, unless "ssh_calls" says otherwise, as a connection dropped once it ran. A host is
-found by its zone, as gcloud's describe and delete find one, and by its name alone in a listing;
-described as JSON, it is its name and zone. scp writes, where it copies to here, an archive of one
+what it prints ("ssh_calls", pairs). With "ssh_run", each SSH runs its command too, in bash, on
+the host it names, whose home is $FAKE_GCLOUD/hosts/NAME/home and whose /run, the tmpfs a stop
+empties, is $FAKE_GCLOUD/hosts/NAME/run, sudo and setsid running what they're given: its status
+and output are the command's, unless "ssh_calls" says otherwise, as a connection dropped once it
+ran; an SSH to a host not running fails, as a refused connection. A host's startup script has run
+(/run/fxdax-host/ready) once it is made or started, or when it is first reached, if the state made
+it. A host is found by its zone, as gcloud's describe, start, stop and delete find one, and by its
+name alone in a listing, filtered by its name (name=NAME) or by its labels (labels.KEY=VALUE, AND
+between them); described as JSON, it is its name and zone. A host is started only if its zone has
+room ("exhausted"). scp writes, where it copies to here, an archive of one
 file, fetched, which names what it copied; and keeps what it copies to a host in uploaded/, by its
 path there, its slashes underscores. Cloud Storage's copies (`storage cp`, of a file, or with
 --recursive, of a directory into one) go to and from its buckets, kept in $FAKE_GCLOUD/gs, and fail
@@ -59,21 +66,56 @@ def bucket(path):
     return Path(path)
 
 
-def run_on_host(command):
-    """Runs `command` as the host's shell would: in bash, in its home, $FAKE_GCLOUD/host, sudo and
-    setsid running what they are given. Its status and output."""
-    home, tools = STATE / "host", STATE / "host-bin"
+def host_directory(name):
+    """Where the host `name` keeps its files: home, its home, and run, its /run."""
+    return STATE / "hosts" / name
+
+
+def booted(name):
+    """The host `name`'s startup script ran: its /run says it is ready."""
+    (host_directory(name) / "run" / "fxdax-host").mkdir(parents=True, exist_ok=True)
+    (host_directory(name) / "run" / "fxdax-host" / "ready").touch()
+
+
+def run_on_host(name, command):
+    """Runs `command` as the host `name`'s shell would: in bash, in its home, where it starts, its
+    /run its own,
+    sudo and setsid running what they are given. Its status and output."""
+    if not host_directory(name).exists():
+        booted(name)
+    home, tools = host_directory(name) / "home", STATE / "host-bin"
     home.mkdir(exist_ok=True)
     tools.mkdir(exist_ok=True)
+    # /run, not a path within another, as $HOME/run-x is.
+    command = re.sub(r"(?<![\w./$}-])/run/", f"{host_directory(name)}/run/", command)
     for tool in ("sudo", "setsid"):
         (tools / tool).write_text('#!/bin/sh\nexec "$@"\n')
         (tools / tool).chmod(0o755)
     environment = {"HOME": str(home), "PATH": f"{tools}:/usr/bin:/bin"}
     done = subprocess.run(
         ["/bin/bash", "-c", command], env=environment, capture_output=True, text=True,
-        stdin=subprocess.DEVNULL,
+        stdin=subprocess.DEVNULL, cwd=home,
     )
     return done.returncode, done.stdout
+
+
+def listed(instance, name, filter_):
+    """Whether the host `name`, as `instance` has it, passes the listing's filter."""
+    for term in filter_.split(" AND "):
+        key, _, value = term.partition("=")
+        if key == "name" and name != value:
+            return False
+        if key.startswith("labels.") and instance["labels"].get(key[len("labels."):]) != value:
+            return False
+    return True
+
+
+def next_create(state):
+    """How the next create goes (state.json's "create")."""
+    how = state.get("create", "made")
+    if isinstance(how, list):
+        how = how.pop(0) if len(how) > 1 else how[0]
+    return how
 
 
 def main(argv):
@@ -88,7 +130,10 @@ def main(argv):
     if words[:2] == ["compute", "ssh"]:
         status, out = state.get("ssh", 0), state.get("ssh_out", "")
         if state.get("ssh_run"):
-            status, out = run_on_host(flags["command"])
+            if instances.get(words[2], {}).get("status", "RUNNING") != "RUNNING":
+                print(f"ssh: connect to host {words[2]} port 22: Connection refused", file=sys.stderr)
+                sys.exit(255)
+            status, out = run_on_host(words[2], flags["command"])
         if state.get("ssh_calls"):
             status, out = state["ssh_calls"].pop(0)
             (STATE / "state.json").write_text(json.dumps(state))
@@ -124,12 +169,19 @@ def main(argv):
         region = flags.get("filter", "").removeprefix("region:")
         zones = state.get("zones", ["us-east4-a"])
         print("\n".join(zone for zone in zones if zone.rsplit("-", 1)[0] == region))
-    elif command in [("compute", "instances", "list"), ("compute", "disks", "list")]:
-        kind = command[1]
+    elif command == ("compute", "disks", "list"):
         name = flags["filter"].removeprefix("name=")
-        if name in (instances if kind == "instances" else disks):
-            values = {"name": name, "zone.basename()": instances.get(name, {}).get("zone")}
-            print("\t".join(values[field] for field in fields(flags["format"])))
+        if name in disks:
+            print(name)
+    elif command == ("compute", "instances", "list"):
+        for name, instance in instances.items():
+            if listed(instance, name, flags["filter"]):
+                values = {
+                    "name": name,
+                    "zone.basename()": instance["zone"],
+                    "status": instance.get("status", "RUNNING"),
+                }
+                print("\t".join(values[field] for field in fields(flags["format"])))
     elif command == ("compute", "instances", "describe"):
         found = find(instances, "describe", args[0], flags["zone"])
         if flags["format"].startswith("json("):
@@ -154,16 +206,38 @@ def main(argv):
                 "have enough resources available to fulfill the request."
             )
         labels = dict(label.split("=") for label in flags["labels"].split(","))
-        how = state.get("create", "made")
+        how = next_create(state)
         if how == "taken":
             labels["maker"] = "winner"
-        instances[name] = {"zone": flags["zone"], "labels": labels}
+        instances[name] = {"zone": flags["zone"], "labels": labels, "status": "RUNNING"}
         disks.append(name)
         (STATE / "state.json").write_text(json.dumps(state))
+        booted(name)
         if how == "taken":
             sys.exit(f"ERROR: (gcloud.compute.instances.create) {name} already exists")
         if how == "ambiguous":
             sys.exit("ERROR: (gcloud.compute.instances.create) the request timed out")
+    elif command == ("compute", "instances", "start"):
+        name = args[0]
+        found = find(instances, "start", name, flags["zone"])
+        if flags["zone"] in state.get("exhausted", []):
+            sys.exit(
+                f"ERROR: (gcloud.compute.instances.start) The zone '{flags['zone']}' does not "
+                "have enough resources available to fulfill the request."
+            )
+        if found.get("status", "RUNNING") != "RUNNING":
+            found["status"] = "RUNNING"
+            (STATE / "state.json").write_text(json.dumps(state))
+            booted(name)
+    elif command == ("compute", "instances", "stop"):
+        name = args[0]
+        find(instances, "stop", name, flags["zone"])["status"] = "TERMINATED"
+        (STATE / "state.json").write_text(json.dumps(state))
+        # Its /run is a tmpfs, gone with the host's power.
+        if (host_directory(name) / "run").exists():
+            shutil.rmtree(host_directory(name) / "run")
+    elif command == ("compute", "instances", "add-metadata"):
+        find(instances, "add-metadata", args[0], flags["zone"])
     elif command == ("compute", "instances", "delete"):
         name = args[0]
         find(instances, "delete", name, flags["zone"])

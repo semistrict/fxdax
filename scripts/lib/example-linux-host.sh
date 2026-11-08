@@ -3,7 +3,7 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-# Runs one of the workspace's examples, an optimized build, on a disposable x86-64
+# Runs one of the workspace's examples, an optimized build, on an x86-64
 # Linux host, as root, into RESULTS/output.txt (scripts/example-gce.sh). With
 # FXDAX_PERF=record, perf samples it, and RESULTS/perf.txt says where its
 # threads' time went.

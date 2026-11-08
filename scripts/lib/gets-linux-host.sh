@@ -3,7 +3,7 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-# Measure ranged GETs from object storage (fxdax-gets) on a disposable x86-64
+# Measure ranged GETs from object storage (fxdax-gets) on an x86-64
 # Linux host, as root, into RESULTS/gets.md (scripts/gets-gce.sh).
 #
 # Usage: gets-linux-host.sh SOURCE RESULTS URL OBJECT_MIB SECS

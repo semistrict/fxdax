@@ -3,21 +3,26 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-# Qualify fxdax on a disposable x86-64 GCE host with nested KVM
-# (scripts/lib/gce.sh). It runs the workspace's tests and fxdax's guest tests
-# (guest/tests), in its Firecracker, whose DAX window takes KVM's faults through
-# userfaultfd. `all`
-# always deletes its host; `create`, `run` and `delete` expose the same steps
-# for interrupted runs, and `resume` waits for a run whose waiter here was
-# stopped, named as the host names it (RUN, of its ~/RUN.job), and fetches its
-# results as `run` would.
+# Qualify fxdax on a kept x86-64 GCE host with nested KVM (scripts/lib/gce.sh),
+# reused from run to run, so that each builds only what changed. It runs the
+# workspace's tests and fxdax's guest tests (guest/tests), in its Firecracker,
+# whose DAX window takes KVM's faults through userfaultfd. `all` acquires a host,
+# stopped or idle, and stops it as it ends, whatever happens; `create` holds one
+# for a session of `run`s, until its `stop`; `delete` deletes one broken beyond
+# repair (gce_main). `resume` waits for a run whose waiter here was stopped,
+# named as the host names it (RUN, of its ~/RUN.job, and run.txt's in its
+# results), and fetches its results as `run` would: on the host, started again if
+# it was stopped, which it claims for RUN (an `all` run's, which it then stops) or
+# finds held by a `create`.
 #
-# Usage: test-gce.sh [all|create|run|delete] [instance] [results-directory]
+# Usage: test-gce.sh [all|create] [results-directory]
+#        test-gce.sh run|stop|delete instance [results-directory]
 #        test-gce.sh resume instance results-directory run
 #
 # FXDAX_GCE_PROJECT is the project (default: gcloud's), FXDAX_GCE_ZONE the zone
 # to try first (default: us-east4-a), FXDAX_GCE_MACHINE the machine type
-# (default: n2-standard-4), and FXDAX_E2E_TEST the guest tests' cases to
+# (default: n2-standard-4), FXDAX_GCE_RUN the run's number, as its caller counts
+# runs (such as r1040), which its name carries (gce_run_name), and FXDAX_E2E_TEST the guest tests' cases to
 # run, separated by spaces, by name or `--tag SUITE`, as scripts/test-e2e.sh's arguments,
 # instead of its default suite, each FXDAX_E2E_ROUNDS times, under Firecracker's seccomp filter with
 # FXDAX_FIRECRACKER_SECCOMP, in its jailer's jail with FXDAX_FIRECRACKER_JAIL
@@ -34,8 +39,8 @@
 # workspace's alone, and FXDAX_TEST_ARGS are cargo
 # nextest's arguments for the workspace's, such as a filter. FXDAX_EXTENTD_REMOTE,
 # if set, names a bucket (gs://bucket/prefix) the guest tests' extent daemons
-# keep their stores' branches in, under a prefix of the run's own: the host, made
-# with FXDAX_GCE_STORAGE set, reaches it (scripts/lib/gce.sh). FXDAX_RESULTS_BUCKET, if set,
+# keep their stores' branches in, under a prefix of the run's own: the host, of
+# the kind made with FXDAX_GCE_STORAGE set, reaches it (scripts/lib/gce.sh). FXDAX_RESULTS_BUCKET, if set,
 # names one (gs://bucket/prefix) the guest tests' results go to as each case ends, under the run's
 # prefix (scripts/guest_results.py), from which they are fetched if the host's are lost: a host
 # killed mid-run keeps its finished cases. Every other
@@ -47,16 +52,10 @@ repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 project=${FXDAX_GCE_PROJECT:-$(gcloud config get-value project 2>/dev/null)}
 source "$repo/scripts/lib/gce.sh"
 zone=${FXDAX_GCE_ZONE:-us-east4-a}
-action=${1:-all}
-instance=${2:-fxdax-test-$(date -u +%Y%m%d-%H%M%S)-$gce_maker}
-results=${3:-$(mktemp -d "${TMPDIR:-/tmp}/fxdax-gce.XXXXXX")}
+results=$(mktemp -d "${TMPDIR:-/tmp}/fxdax-gce.XXXXXX")
 [[ -n "$project" && "$project" != '(unset)' ]] || { echo 'Set FXDAX_GCE_PROJECT.' >&2; exit 2; }
-[[ "$instance" =~ ^fxdax-test-[a-z0-9-]+$ ]] || { echo 'Use an fxdax-test- instance name.' >&2; exit 2; }
 machine=${FXDAX_GCE_MACHINE:-n2-standard-4}
-purpose=fxdax-test
-# The host deletes itself after this long; the run's own limit leaves time to
-# copy the results back.
-lifetime=8h limit=${FXDAX_GCE_LIMIT:-6h}
+limit=${FXDAX_GCE_LIMIT:-6h}
 create_flags=(--min-cpu-platform='Intel Cascade Lake')
 
 run() {
@@ -81,14 +80,26 @@ run() {
     finish "$run" "$kept" "$status"
 }
 
-# resume RUN: waits for the run RUN on the host, and fetches its results, as `run` does.
+# resume RUN: waits for the run RUN on the host, and fetches its results, as `run` does: the host
+# started if it is stopped, and claimed for RUN, unless a `create` holds it; and stopped as it ends
+# if RUN holds it, as it does an `all` run's.
 resume() {
-    local run=$1 status=0 kept=
-    [[ "$run" =~ ^run-[0-9TZ]+-[0-9a-f]+$ ]] || { echo 'Name the run, run-...' >&2; exit 2; }
+    local run=$1 status=0 kept='' holder
+    [[ "$run" =~ $gce_run_pattern ]] || { echo 'Name the run, run-...' >&2; exit 2; }
     gce_check_owner
     mkdir -p "$results"
     results=$(cd "$results" && pwd)
     echo "Results: $results" >&2
+    if [[ $(gce_status) == TERMINATED ]]; then
+        gce_start
+    fi
+    gce_wait_ready
+    holder=$(gce_holder 2> /dev/null) || holder=
+    if [[ $holder != held-* ]]; then
+        trap 'status=$?; trap - EXIT; if ! gce_release; then exit 1; fi; exit "$status"' EXIT
+        gce_claim "$run" again ||
+            { echo "$instance is another run's (${holder:-unknown}), not $run's." >&2; exit 1; }
+    fi
     if [[ -n ${FXDAX_RESULTS_BUCKET:-} ]]; then kept=${FXDAX_RESULTS_BUCKET%/}/$run; fi
     gce_remote_wait "$run" >> "$results/remote.log" 2>&1 || status=$?
     finish "$run" "$kept" "$status"
@@ -113,11 +124,12 @@ finish() {
     return "$status"
 }
 
-case "$action" in
-    create) mkdir -p "$results"; gce_create ;;
-    run) gce_locate; run ;;
-    resume) gce_locate; resume "${4:-}" ;;
-    delete) gce_locate; gce_delete ;;
-    all) mkdir -p "$results"; gce_all run ;;
-    *) echo "Usage: $0 [all|create|run|delete] [instance] [results-directory] | resume instance results run" >&2; exit 2 ;;
-esac
+if [[ ${1:-} == resume ]]; then
+    (( $# == 4 )) || { echo "Usage: $0 resume instance results-directory run" >&2; exit 2; }
+    [[ $2 =~ ^fxdax-keep-[a-z0-9-]+$ ]] || { echo 'Name a kept host, fxdax-keep-...' >&2; exit 2; }
+    instance=$2 results=$3
+    gce_locate
+    resume "$4"
+else
+    gce_main "$@"
+fi

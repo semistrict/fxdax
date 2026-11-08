@@ -3,7 +3,7 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-# Move a VM between two disposable GCE hosts through GCS (TASK-28.11). On the
+# Move a VM between two kept GCE hosts through GCS (TASK-28.11). On the
 # first, the guest test fxfs-guest-migrate-dax runs a VM whose store's branch
 # its extent daemon keeps in the bucket, snapshots it, and the snapshot, its
 # memory and the VM's root filesystem go to the bucket too; on the second,
@@ -12,8 +12,10 @@
 # bucket, and the guest checks what it wrote before, and writes and reads more
 # (test_fxfs_guest_snapshot.rs). Both hosts are of one machine type with one CPU
 # model, as a snapshot restores on, and run the source from the same paths, as
-# the restored VM goes on reading its root filesystem where it was. Both hosts,
-# and what the run put in the bucket, are deleted whatever happens.
+# the restored VM goes on reading its root filesystem where it was. Both hosts
+# are acquired for the run (scripts/lib/gce.sh) and stopped, and what the run put
+# in the bucket deleted, whatever happens. The hosts' results go to
+# RESULTS/a and RESULTS/b.
 #
 #   scripts/migrate-gce.sh [results-directory]
 #
@@ -36,37 +38,33 @@ mkdir -p "$top"
 top=$(cd "$top" && pwd)
 # One CPU model (Sapphire Rapids), which a snapshot restores on, with nested KVM.
 machine=c3-standard-8
-purpose=fxdax-test
-lifetime=8h limit=2h
+limit=2h
 create_flags=()
 # The hosts read and write the bucket with the project's default service account.
 FXDAX_GCE_STORAGE=1
 results=$top
 source "$repo/scripts/lib/gce.sh"
 default_zone=$zone
-# The run's own names, and prefix of the bucket, which it deletes as it ends: its
-# mark tells them from another's made in the same second.
-stamp=$(date -u +%Y%m%d-%H%M%S)-$gce_maker
-hosts=("fxdax-test-migrate-a-$stamp" "fxdax-test-migrate-b-$stamp")
-# The same on both hosts: the test's paths, the root filesystem's among them, are too.
-run="run-$stamp"
+# The run's own name, the same on both hosts, as the test's paths, the root filesystem's among
+# them, are too; and its prefix of the bucket, which it deletes as it ends.
+run=$(gce_run_name)
 remote="$bucket/$run"
+# The hosts the run holds, a's and b's, and their zones.
+hosts=() zones=()
 
-# on HOST points gce.sh's functions at HOST, and at its directory of results.
+# on SIDE points gce.sh's functions at the host of SIDE (0 for a, 1 for b), and at its directory of
+# results.
 on() {
-    instance=$1
-    results="$top/$1"
-    mkdir -p "$results"
-    zone=$default_zone
-    gce_locate
+    instance=${hosts[$1]} zone=${zones[$1]}
+    results="$top/$(tr 01 ab <<< "$1")"
 }
 
 cleanup() {
-    local status=$? host
+    local status=$? side
     trap - EXIT
     # Each host, though another fails.
-    for host in "${hosts[@]}"; do
-        { on "$host" && gce_delete mine; } || status=1
+    for side in "${!hosts[@]}"; do
+        { on "$side" && gce_stop; } || status=1
     done
     gcloud storage rm --recursive --quiet "$remote" > /dev/null 2>&1 || true
     echo "Results: $top" >&2
@@ -74,14 +72,16 @@ cleanup() {
 }
 trap cleanup EXIT
 
-for host in "${hosts[@]}"; do
-    on "$host"
-    gce_create
+# Two hosts, each claimed for the run, and so not one host twice.
+for side in a b; do
+    results="$top/$side" zone=$default_zone
+    mkdir -p "$results"
+    gce_acquire "$run"
+    hosts+=("$instance") zones+=("$zone")
 done
-for host in "${hosts[@]}"; do
-    on "$host"
+for side in 0 1; do
+    on "$side"
     gce_check_owner
-    gce_wait_ready
     gce_push_source "$run"
 done
 
@@ -102,11 +102,11 @@ migrate() {
     return "$status"
 }
 
-on "${hosts[0]}"
+on 0
 migrate source 1
 gce_remote "$gcloud_ready; sudo gcloud storage cp --recursive \$HOME/$run/bundle $remote/" \
     >> "$results/remote.log" 2>&1
-on "${hosts[1]}"
+on 1
 gce_remote "$gcloud_ready; sudo gcloud storage cp --recursive $remote/bundle \$HOME/$run/" \
     > "$results/bundle.log" 2>&1
 # A later placement than the first host's.

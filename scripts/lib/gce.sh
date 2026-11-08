@@ -3,29 +3,40 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-# Disposable GCE hosts for the scripts that run fxdax on them, sourced by them:
+# Kept GCE hosts for the scripts that run fxdax on them, sourced by them:
 # scripts/test-gce.sh, bench-gce.sh, gets-gce.sh, example-gce.sh,
-# mutants-gce.sh and migrate-gce.sh. A host carries the labels
-# purpose=$purpose,lifecycle=temporary, and nothing here operates on one
-# without them, and maker, the mark of the run that made it: a run deletes, as
-# it ends, only a host it made (gce_all), as another run at once may have made
-# one of the same name. A host deletes itself $lifetime after it was created,
-# whatever becomes of the shell that made it, and powers off after a day
-# without a command from here (scripts/lib/gce-host-startup.sh). What a script
-# runs there, one of the host scripts (scripts/lib/*-linux-host.sh), runs in
-# this machine's environment, but for what sets up this machine's own builds
-# and daemons (gce_host_command).
+# mutants-gce.sh, fork-time-gce.sh and migrate-gce.sh. A host is kept, not made
+# for a run: a run reuses one that fits it, stopped or idle, and stops it as it
+# ends, whatever happens, so that its builds (its target directories, its guest
+# kernels', its toolchain and packages) carry over to the next run, which builds
+# only what changed, and nothing of a fresh host's setup can fail the run. A
+# stopped host holds no vCPU quota, only its disk. A host is deleted only by
+# hand (a driver's `delete`), when it is broken beyond repair.
+#
+# A host is named for what it is, fxdax-keep-MACHINE-ZONE-N, and carries the
+# labels purpose=fxdax,lifecycle=kept, and nothing here operates on one without
+# them, and kind, a digest of what it was made with (gce_shape): its machine
+# type, CPU platform, image, disk and service account. A run fits a host of its
+# own kind alone. A host is a run's once the run claims it: a symbolic link in
+# the host's /run, made atomically, which names its holder, and which the host's
+# stop, emptying its /run, a tmpfs, releases (gce_claim). No two runs hold one
+# host at once. A host left running, as by a driver killed, powers off, which
+# stops it, after two hours without a command from here and without a job
+# running (scripts/lib/gce-host-startup.sh). What a script runs there, one of
+# the host scripts (scripts/lib/*-linux-host.sh), runs in this machine's
+# environment, but for what sets up this machine's own builds and daemons
+# (gce_host_command).
 #
 # The drivers run these functions under `||` and `if !`, where errexit stops
 # nothing, so each checks the status of its every step itself.
 #
 # The sourcing script sets project, and FXDAX_GCE_STORAGE if it is to be set,
-# before it sources this, which draws the run's mark (gce_maker) that the
-# script's own names end in: two runs at once share no host, results or prefix
-# of a bucket. Then it sets zone (the zone to try first), instance, machine,
-# purpose, lifetime, limit (the longest a run may take on the host, timeout's
+# before it sources this, which draws the run's mark (gce_maker) that its name
+# (gce_run_name) and the script's own names end in: two runs at once share no
+# host, results or prefix of a bucket. Then it sets repo, zone (the zone to try
+# first), machine, limit (the longest a run may take on the host, timeout's
 # DURATION) and results, and passes any of its own creation flags in
-# create_flags.
+# create_flags. A driver's actions are gce_main's.
 #
 # A host has no service account, unless FXDAX_GCE_STORAGE or FXDAX_RESULTS_BUCKET
 # is set: then it has the project's default one, with read and write access to
@@ -33,27 +44,184 @@
 # (doc-7), or the guest tests keeping their results in one (test-gce.sh).
 
 cloud=(gcloud --quiet --project="$project")
-# This run's mark, which the hosts it makes carry as their maker label.
+# This run's mark, which its name and the names of its results end in.
 gce_maker=$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')
-
-# The name of a run on a host, its directory there and its prefix of a bucket: when it started, to
-# the second, and this driver's mark, so that two drivers started in the same second keep apart
-# (TASK-79.86).
+[[ ${FXDAX_GCE_RUN:-} =~ ^[a-z0-9]*$ ]] ||
+    { echo "FXDAX_GCE_RUN names a run in lower-case letters and digits, such as r1040" >&2; exit 2; }
+# The run's name, its directory and job on a host, its prefix of a bucket and the holder of the host
+# it claims: FXDAX_GCE_RUN, the run's number as its caller counts runs (such as r1040), if set; when
+# it started, to the second; and this driver's mark, so that two drivers started in the same second
+# keep apart (TASK-79.86). A run's job files on a host, which keeps them, collide with no other's.
+gce_run="run-${FXDAX_GCE_RUN:+$FXDAX_GCE_RUN-}$(date -u +%Y%m%dT%H%M%SZ)-$gce_maker"
 gce_run_name() {
-    echo "run-$(date -u +%Y%m%dT%H%M%SZ)-$gce_maker"
+    echo "$gce_run"
 }
+# What a run's name looks like, for those given one (test-gce.sh's resume).
+# shellcheck disable=SC2034 # The drivers read it.
+gce_run_pattern='^run-([a-z0-9]+-)?[0-9]{8}T[0-9]{6}Z-[0-9a-f]{8}$'
 if [[ -n ${FXDAX_GCE_STORAGE:-}${FXDAX_RESULTS_BUCKET:-} ]]; then
     account_flags=(--scopes=storage-rw)
 else
     account_flags=(--no-service-account --no-scopes)
 fi
+# The host this run holds, once it claims one, and its zone, which gce_release stops.
+gce_held='' gce_held_zone=''
 
-# gce_create makes the host in $zone, or where that zone has no room for its
-# machine, in the next zone of the same region that does; and where the region
-# is out of quota (its SSD or CPUs), or out of room, in the next region of
-# FXDAX_GCE_REGIONS's (TASK-97). The project's own quota, of every region, it
-# stops at. zone names each zone as its create is tried: a create that fails may
-# have made the host there all the same, which gce_all's trap then finds there.
+# gce_shape prints, a line each, the flags a host is made with that a run needs
+# of the host it runs on: what its kind is a digest of (gce_kind).
+gce_shape() {
+    printf '%s\n' --machine-type="$machine" --enable-nested-virtualization \
+        ${create_flags[@]+"${create_flags[@]}"} \
+        --image=ubuntu-2604-resolute-amd64-v20260918 --image-project=ubuntu-os-cloud \
+        --boot-disk-size=200GB --boot-disk-type=pd-balanced --boot-disk-auto-delete \
+        "${account_flags[@]}"
+}
+
+# gce_kind prints this run's kind of host, which the hosts it fits carry as their
+# kind label.
+gce_kind() {
+    local digest
+    digest=$(gce_shape | shasum -a 256) || return
+    echo "${digest:0:12}"
+}
+
+# gce_kept prints the kept hosts of this run's kind, NAME ZONE STATUS a line, in
+# the order a run tries them: stopped ones first, as a running one is likely
+# another run's; and of each, those in $zone first, then those in its region.
+gce_kept() {
+    local kind hosts
+    kind=$(gce_kind) || return
+    hosts=$("${cloud[@]}" compute instances list \
+        --filter="labels.lifecycle=kept AND labels.kind=$kind" \
+        --format='value(name,zone.basename(),status)') || return
+    awk -v zone="$zone" '
+        $3 == "TERMINATED" || $3 == "RUNNING" {
+            region = zone; sub(/-[^-]*$/, "", region)
+            print ($3 == "TERMINATED" ? 0 : 1) ($2 == zone ? 0 : index($2, region "-") == 1 ? 1 : 2), $0
+        }' <<< "$hosts" | sort | cut -d' ' -f2-
+}
+
+# gce_acquire HOLDER points instance and zone at a host of this run's kind that
+# HOLDER claims: a kept one, started if it is stopped, that no other run holds;
+# or, if none fits or every one that fits is another run's, a new one
+# (gce_create). A host it started that does not come up, it stops.
+gce_acquire() {
+    local holder=$1 wanted=$zone hosts name found status
+    hosts=$(gce_kept) || return
+    while read -r -u 3 name found status; do
+        [[ -n $name ]] || continue
+        instance=$name zone=$found
+        if [[ $status == TERMINATED ]]; then
+            if ! gce_start; then
+                echo "$instance did not start; trying the next host." >&2
+                continue
+            fi
+            if ! gce_wait_ready; then
+                gce_stop
+                continue
+            fi
+        fi
+        if gce_claim "$holder"; then
+            echo "Reusing $instance in $zone." >&2
+            return 0
+        fi
+        echo "$instance is another run's; trying the next host." >&2
+    done 3<<< "$hosts"
+    zone=$wanted
+    # A create that failed may have made the host all the same.
+    if ! gce_create && [[ -z $(gce_status) ]]; then
+        return 1
+    fi
+    if ! gce_wait_ready; then
+        gce_stop
+        return 1
+    fi
+    if ! gce_claim "$holder"; then
+        echo "$instance, made for this run, is another run's." >&2
+        return 1
+    fi
+}
+
+# gce_claim HOLDER [again] claims the host for HOLDER: it fails if another holds
+# it, and with `again`, succeeds if HOLDER does. The claim is a symbolic link to
+# HOLDER's name, made atomically, in the host's /run, a tmpfs, which the host's
+# stop empties: so a stop releases it, and a stopped host is no one's. A new
+# claim deletes the runs on the host untouched for three days, whose results a
+# resume has had time to fetch.
+gce_claim() {
+    local claim=/run/fxdax-host/claim mine=false
+    if [[ ${2:-} == again ]]; then mine="test \"\$(readlink $claim)\" = $1"; fi
+    gce_remote "sudo mkdir -p /run/fxdax-host &&
+        if sudo ln -s $1 $claim 2> /dev/null; then
+            find \"\$HOME\" -maxdepth 1 -name 'run-*' -mtime +3 -exec sudo rm -r -- {} + ||
+                echo 'Deleting the runs of three days ago failed.' >&2
+        else
+            $mine
+        fi" || return
+    gce_held=$instance gce_held_zone=$zone
+}
+
+# gce_release stops the host this run holds, if it holds one.
+gce_release() {
+    if [[ -z $gce_held ]]; then return 0; fi
+    instance=$gce_held zone=$gce_held_zone
+    gce_stop
+}
+
+# gce_holder prints who holds the host's claim (gce_claim), if it is running and claimed.
+gce_holder() {
+    gce_remote 'readlink /run/fxdax-host/claim'
+}
+
+# gce_check_held succeeds if the host is held for a session of runs, by a
+# driver's `create` (gce_main): a run named runs on no host but one so held,
+# and so on none another's run holds.
+gce_check_held() {
+    local holder
+    holder=$(gce_holder 2> /dev/null) || holder=
+    if [[ $holder != held-* ]]; then
+        echo "$instance is not held for runs (${holder:-not running, or unclaimed}): hold a host with create." >&2
+        return 1
+    fi
+}
+
+# gce_start starts the stopped host, with the startup script as it is now: a
+# kept host runs what this tree's says, as a new host would.
+gce_start() {
+    "${cloud[@]}" compute instances add-metadata "$instance" --zone="$zone" \
+        --metadata-from-file="startup-script=$repo/scripts/lib/gce-host-startup.sh" || return
+    "${cloud[@]}" compute instances start "$instance" --zone="$zone" || return
+    echo "Started $instance in $zone." >&2
+}
+
+# gce_stop stops the host, which releases its claim, and succeeds once its
+# listing says it is stopped.
+gce_stop() {
+    local status
+    "${cloud[@]}" compute instances stop "$instance" --zone="$zone" || return
+    status=$(gce_status) || return
+    if [[ $status != TERMINATED ]]; then
+        echo "$instance is not stopped: ${status:-gone}" >&2
+        return 1
+    fi
+    if [[ $gce_held == "$instance" ]]; then gce_held='' gce_held_zone=''; fi
+    echo "Stopped $instance in $zone." >&2
+}
+
+# gce_status prints the host's status (RUNNING, TERMINATED for a stopped one,
+# ...), or nothing if there is no host of its name. It fails if the listing
+# does.
+gce_status() {
+    "${cloud[@]}" compute instances list --filter="name=$instance" --format='value(status)'
+}
+
+# gce_create makes a host of this run's kind in $zone, or where that zone has no
+# room for its machine, in the next zone of the same region that does; and where
+# the region is out of quota (its SSD or CPUs), or out of room, in the next region
+# of FXDAX_GCE_REGIONS's (TASK-97). The project's own quota, of every region, it
+# stops at. zone and instance name each host as its create is tried: a create
+# that fails may have made the host there all the same, which gce_acquire then
+# takes.
 gce_create() {
     local first=$zone region regions zones candidates candidate log
     regions=("${first%-*}")
@@ -74,7 +242,8 @@ gce_create() {
         done < <(sort <<< "$zones")
         for candidate in ${candidates[@]+"${candidates[@]}"}; do
             zone=$candidate
-            if gce_create_in "$zone" 2> "$log"; then
+            if gce_create_in 2> "$log"; then
+                cat "$log" >&2
                 echo "Created $instance in $zone." >&2
                 rm -f -- "$log"
                 return 0
@@ -96,21 +265,42 @@ gce_create() {
     return 1
 }
 
+# gce_create_in makes a host in $zone, named fxdax-keep-MACHINE-ZONE-N, N the
+# least that no host has: or the next, if another run made a host of that name
+# as this one tried. The name holds the zone, so that names are the project's
+# own, as GCE keeps them a zone's alone.
 gce_create_in() {
-    "${cloud[@]}" compute instances create "$instance" --zone="$1" \
-        --machine-type="$machine" --enable-nested-virtualization ${create_flags[@]+"${create_flags[@]}"} \
-        --image=ubuntu-2604-resolute-amd64-v20260918 --image-project=ubuntu-os-cloud \
-        --boot-disk-size=200GB --boot-disk-type=pd-balanced --boot-disk-auto-delete \
-        "${account_flags[@]}" \
-        --metadata=block-project-ssh-keys=TRUE \
-        --metadata-from-file="startup-script=$repo/scripts/lib/gce-host-startup.sh" \
-        --labels="purpose=$purpose,lifecycle=temporary,maker=$gce_maker" \
-        --maintenance-policy=TERMINATE --no-restart-on-failure \
-        --max-run-duration="$lifetime" --instance-termination-action=DELETE
+    local taken kind n=1 shape=() flag errors made
+    taken=$("${cloud[@]}" compute instances list --filter=labels.lifecycle=kept \
+        --format='value(name)') || return
+    kind=$(gce_kind) || return
+    while read -r flag; do
+        shape+=("$flag")
+    done < <(gce_shape)
+    errors=$(mktemp) || return
+    while true; do
+        instance=fxdax-keep-$machine-$zone-$n
+        n=$((n + 1))
+        if [[ $'\n'$taken$'\n' == *$'\n'$instance$'\n'* ]]; then continue; fi
+        made=0
+        # What it made, to the errors: a driver's output is its own.
+        "${cloud[@]}" compute instances create "$instance" --zone="$zone" "${shape[@]}" \
+            --metadata=block-project-ssh-keys=TRUE \
+            --metadata-from-file="startup-script=$repo/scripts/lib/gce-host-startup.sh" \
+            --labels="purpose=fxdax,lifecycle=kept,kind=$kind" \
+            --maintenance-policy=TERMINATE --no-restart-on-failure >&2 2> "$errors" ||
+            made=$?
+        if (( made == 0 )) || ! [[ $(< "$errors") =~ $instance\ already\ exists ]]; then
+            cat "$errors" >&2
+            rm -f -- "$errors"
+            return "$made"
+        fi
+        echo "Another run made $instance as this one did; trying the next name." >&2
+    done
 }
 
-# gce_locate points zone at the zone the host is in, which gce_create may have
-# chosen: every other action finds the host by its name.
+# gce_locate points zone at the zone the host is in: every other action finds
+# the host by its name.
 gce_locate() {
     local found
     found=$("${cloud[@]}" compute instances list --filter="name=$instance" \
@@ -125,35 +315,26 @@ gce_listed() {
     "${cloud[@]}" compute "$1" list --filter="name=$instance" --format='value(name)'
 }
 
-# gce_check_owner [mine] succeeds if the host carries this script's labels;
-# with `mine`, only if this run made it too, which no host without a maker
-# label, as those made before hosts had one, was. gcloud prints a label the
-# host lacks as empty, after its tab.
+# gce_check_owner succeeds if the host carries the labels of a kept host. gcloud
+# prints a label the host lacks as empty, after its tab.
 gce_check_owner() {
     local labels
     labels=$("${cloud[@]}" compute instances describe "$instance" --zone="$zone" \
-        --format='value(labels.purpose,labels.lifecycle,labels.maker)') || return
-    case $labels in
-        "$purpose"$'\t'temporary$'\t'*) ;;
-        *)
-            echo "Refusing to operate on $instance, which lacks the $purpose labels." >&2
-            return 1
-            ;;
-    esac
-    if [[ ${1:-} == mine && $labels != "$purpose"$'\t'temporary$'\t'"$gce_maker" ]]; then
-        echo "Refusing to delete $instance, which another run made." >&2
+        --format='value(labels.purpose,labels.lifecycle)') || return
+    if [[ $labels != fxdax$'\t'kept ]]; then
+        echo "Refusing to operate on $instance, which lacks the labels of a kept host." >&2
         return 1
     fi
 }
 
-# gce_delete [mine] deletes the host and its boot disk, if it is there and
-# carries this script's labels (gce_check_owner; with `mine`, if this run made
-# it), and succeeds once the listings say both are gone.
+# gce_delete deletes the host and its boot disk, if it is there and carries the
+# labels of a kept host, and succeeds once the listings say both are gone: by
+# hand alone (a driver's `delete`), for a host broken beyond repair.
 gce_delete() {
     local listed
     listed=$(gce_listed instances) || return
     if [[ -n $listed ]]; then
-        gce_check_owner "$@" || return
+        gce_check_owner || return
         "${cloud[@]}" compute instances delete "$instance" --zone="$zone" --delete-disks=all || return
     fi
     listed=$(gce_listed instances) || return
@@ -202,18 +383,27 @@ gce_remote_detached() {
 }
 
 # gce_remote_wait waits for the job NAME gce_remote_detached started, as it does: for one whose
-# waiter was stopped, too.
+# waiter was stopped, too. A job whose process is gone without its status, as one is when its host
+# was stopped under it and started again, is lost, and so is one whose host is stopped or gone.
 #
 # Usage: gce_remote_wait NAME
 gce_remote_wait() {
-    local name=$1 job status= listed
+    local name=$1 job status='' state look
     job="\$HOME/$name.job"
+    # Its status, if it has one: its process may write it and end as this looks.
+    look="cat $job/status 2>/dev/null || kill -0 \"\$(cat $job/pid 2>/dev/null)\" 2>/dev/null ||
+        cat $job/status 2>/dev/null || echo lost"
     while [[ -z $status ]]; do
         sleep 30
-        status=$(gce_remote "cat $job/status 2>/dev/null" 2> /dev/null) || status=
-        # Gone only if the listing says so: a listing that fails says nothing.
-        if [[ -z $status ]] && listed=$(gce_listed instances) && [[ -z $listed ]]; then
-            echo "$instance is gone: $name did not finish." >&2
+        status=$(gce_remote "$look" 2> /dev/null) || status=
+        if [[ $status == lost ]]; then
+            echo "$name on $instance is lost: its process ended without its status." >&2
+            gce_remote "cat $job/log"
+            return 1
+        fi
+        # Not running only if the listing says so: a listing that fails says nothing.
+        if [[ -z $status ]] && state=$(gce_status) && [[ $state != RUNNING ]]; then
+            echo "$instance is ${state:-gone}: $name did not finish." >&2
             return 1
         fi
     done
@@ -221,10 +411,11 @@ gce_remote_wait() {
     return "$status"
 }
 
-# gce_wait_ready waits until the host accepts SSH and its startup script ran.
+# gce_wait_ready waits until the host accepts SSH and its startup script ran since it last started:
+# its mark of that is in /run, which a stop empties.
 gce_wait_ready() {
     for _ in {1..60}; do
-        if gce_remote 'test -e /var/lib/fxdax-host/ready' >> "$results/startup.log" 2>&1; then
+        if gce_remote 'test -e /run/fxdax-host/ready' >> "$results/startup.log" 2>&1; then
             return 0
         fi
         sleep 10
@@ -236,7 +427,8 @@ gce_wait_ready() {
 
 # gce_push_source copies the working tree's versioned and non-ignored source,
 # Firecracker's included, without Git internals or build caches, to RUN/source on
-# the host, and records what it copied and the host it copied it to. With
+# the host, and records what it copied, the host it copied it to, and the run's
+# name and host (run.txt), which test-gce.sh's resume takes. With
 # FXDAX_GUEST_KERNEL naming fxdax's guest kernel here, it copies that to
 # RUN/guest-kernel too (gce_host_command). The archive keeps the checkout's
 # file times, which the trees the host builds in do not go by (host_tree,
@@ -247,6 +439,7 @@ gce_push_source() {
     gce_stage_source "$staging" || staged=$?
     rm -r -- "$staging"
     (( staged == 0 )) || return "$staged"
+    printf 'run %s\nhost %s\nzone %s\n' "$run" "$instance" "$zone" > "$results/run.txt" || return
     gce_remote "set -eu; mkdir -p $run/source $run/results; tar -xzf source.tar.gz -C $run/source" ||
         return
     if [[ -n ${FXDAX_GUEST_KERNEL:-} ]]; then
@@ -400,7 +593,7 @@ gce_env_local() {
 # and tar's status says whether it did. A tar that fails may still have written
 # the archive of every other file (1: a file changed as it read it, as the logs
 # of a daemon a killed host script left running do; 2: it could not read one),
-# and gce_all deletes the host next: so the archive is copied and unpacked
+# and gce_all stops the host next: so the archive is copied and unpacked
 # however tar ended, and the first failure is this function's.
 gce_fetch() {
     local run=$1 archived=0 fetched=0
@@ -413,17 +606,59 @@ gce_fetch() {
     return $(( archived ? archived : fetched ))
 }
 
-# gce_all runs the given command on a new host and deletes the host whatever
-# happens, if this run made it. The trap is set before creation, to cover
-# ambiguous responses: a host made though its create failed is this run's too.
+# gce_all runs the given command on a host it acquires for this run
+# (gce_acquire), and stops the host whatever happens. The trap is set before the
+# host is acquired, and stops the host once this run claims it.
 gce_all() {
-    local listed
-    listed=$(gce_listed instances) || exit
-    if [[ -n $listed ]]; then
-        echo "Instance already exists: $instance" >&2
-        exit 1
-    fi
-    trap 'status=$?; trap - EXIT; if ! gce_delete mine; then exit 1; fi; exit "$status"' EXIT
-    gce_create || exit
+    trap 'status=$?; trap - EXIT; if ! gce_release; then exit 1; fi; exit "$status"' EXIT
+    gce_acquire "$gce_run" || exit
     "$@"
+}
+
+# gce_main [ACTION [ARG...]] does a driver's ACTION, all by default, its run
+# that of the driver's function run, which the driver defines:
+#
+#   all [RESULTS]           acquire a host (gce_acquire), run on it, and stop it
+#   create [RESULTS]        acquire a host and hold it for a session of runs,
+#                           printing its name, until its stop
+#   run INSTANCE [RESULTS]  run on a host a create holds
+#   stop INSTANCE           stop a host, which ends its holding
+#   delete INSTANCE         delete a host and its disk, broken beyond repair
+#
+# RESULTS takes the place of the results the driver set.
+gce_main() {
+    local action=${1:-all}
+    if (( $# > 0 )); then shift; fi
+    case $action in
+        all | create)
+            results=${1:-$results}
+            mkdir -p "$results"
+            if [[ $action == all ]]; then
+                gce_all run
+            else
+                gce_acquire "held-$gce_maker" || return
+                echo "Holding $instance in $zone: run on it with \`run $instance\`, stop it with \`stop $instance\`." >&2
+                echo "$instance"
+            fi
+            ;;
+        run | stop | delete)
+            instance=${1:-}
+            if ! [[ $instance =~ ^fxdax-keep-[a-z0-9-]+$ ]]; then
+                echo "Name a kept host, fxdax-keep-..." >&2
+                return 2
+            fi
+            results=${2:-$results}
+            mkdir -p "$results"
+            gce_locate || return
+            case $action in
+                run) gce_check_held && run ;;
+                stop) gce_check_owner && gce_stop ;;
+                delete) gce_delete ;;
+            esac
+            ;;
+        *)
+            echo "Usage: $0 [all|create] [results-directory] | run|stop|delete instance [results-directory]" >&2
+            return 2
+            ;;
+    esac
 }

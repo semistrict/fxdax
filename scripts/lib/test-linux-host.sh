@@ -3,7 +3,7 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-# Qualify fxdax on a disposable x86-64 Linux KVM host, as root. It runs the
+# Qualify fxdax on an x86-64 Linux KVM host, as root. It runs the
 # workspace's tests (unless FXDAX_WORKSPACE_TESTS=0; FXDAX_TEST_ARGS, split at
 # spaces, are cargo nextest's arguments, such as a filter), then fxdax's guest
 # tests (unless FXDAX_GUEST_TESTS=0; scripts/test-e2e.sh; TESTs name them),

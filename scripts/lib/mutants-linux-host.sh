@@ -3,7 +3,7 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-# Mutation testing (scripts/mutants.sh) on a disposable x86-64 Linux host, as
+# Mutation testing (scripts/mutants.sh) on an x86-64 Linux host, as
 # root, into RESULTS/mutants (scripts/mutants-gce.sh). FXDAX_MUTANTS_SHARD and
 # FXDAX_MUTANTS_JOBS are scripts/mutants.sh's, as is FXDAX_MUTANTS_LIST, a path in SOURCE; the latter's default here is a
 # third of the host's CPUs.

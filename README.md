@@ -490,7 +490,7 @@ The backlog (`backlog/`, managed with Backlog.md) tracks what remains.
 ```sh
 scripts/test.sh          # macOS or Linux
 scripts/test-linux.sh    # Linux, in a Lima VM
-scripts/test-gce.sh      # x86-64 Linux with KVM, on a disposable GCE host
+scripts/test-gce.sh      # x86-64 Linux with KVM, on a kept GCE host, reused
 ```
 
 `scripts/lima-setup.sh` creates the Lima VM the Linux scripts use on macOS, and
@@ -560,7 +560,7 @@ spreads and ratios to ext4. The guests' root filesystem is an Alpine image
 built with podman.
 
 ```sh
-scripts/bench-gce.sh       # x86-64 Linux with KVM, on a disposable GCE host
+scripts/bench-gce.sh       # x86-64 Linux with KVM, on a kept GCE host, reused
 scripts/bench.sh           # this host, Linux
 scripts/bench-linux.sh     # Linux, in a Lima VM
 ```

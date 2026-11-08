@@ -3,19 +3,21 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-# Benchmark fxdax against ext4 on virtio-blk (scripts/bench.sh) on a disposable
+# Benchmark fxdax against ext4 on virtio-blk (scripts/bench.sh) on a kept
 # x86-64 GCE host with nested KVM (scripts/lib/gce.sh), and keep the results in
 # the repo: the measurements, the host, the source measured, the comparison of
 # the filesystems (comparison.md) and what the run was for (note.md), and
 # brings docs/measurements/fs-bench-history.md up to date
 # (scripts/bench-history.py).
 #
-#   create   the host
-#   run      the benchmark on it, copying the results back
-#   delete   the host, verified
-#   all      create, run, and delete whatever happens
+#   all      acquire a kept host, run, and stop it whatever happens
+#   create   acquire a kept host and hold it for runs, until its stop
+#   run      the benchmark on a held host, copying the results back
+#   stop     the host, which ends its holding
+#   delete   the host, verified: one broken beyond repair (gce_main)
 #
-#   scripts/bench-gce.sh [all|create|run|delete] [instance] [results-directory]
+#   scripts/bench-gce.sh [all|create] [results-directory]
+#   scripts/bench-gce.sh run|stop|delete instance [results-directory]
 #
 # FXDAX_GCE_PROJECT is the project (default: gcloud's), FXDAX_GCE_ZONE the zone
 # to try first (default: us-east4-a), FXDAX_BENCH_MACHINE the machine type
@@ -51,17 +53,11 @@ source "$repo/scripts/lib/gce.sh"
 zone=${FXDAX_GCE_ZONE:-us-east4-a}
 machine=${FXDAX_BENCH_MACHINE:-c3-standard-8}
 iterations=${FXDAX_BENCH_ITERATIONS:-3}
-action=${1:-all}
-instance=${2:-fxdax-bench-$(date -u +%Y%m%d-%H%M%S)-$gce_maker}
-results=${3:-$repo/docs/measurements/gce-fs-bench-$(date -u +%Y-%m-%dT%H%MZ)-$gce_maker}
+results=$repo/docs/measurements/gce-fs-bench-$(date -u +%Y-%m-%dT%H%MZ)-$gce_maker
 [[ -n "$project" && "$project" != '(unset)' ]] || { echo 'Set FXDAX_GCE_PROJECT.' >&2; exit 2; }
-[[ "$instance" =~ ^fxdax-bench-[a-z0-9-]+$ ]] || { echo 'Use an fxdax-bench- instance name.' >&2; exit 2; }
 [[ "$machine" =~ ^[a-z0-9]+-[a-z]+-[0-9]+$ ]] || { echo 'FXDAX_BENCH_MACHINE is a machine type' >&2; exit 2; }
 [[ "$iterations" =~ ^[1-9][0-9]*$ ]] || { echo 'FXDAX_BENCH_ITERATIONS is a count' >&2; exit 2; }
-purpose=fxdax-bench
-# The host deletes itself after this long; the run's own limit leaves time to
-# copy the results back.
-lifetime=8h limit=${FXDAX_GCE_LIMIT:-6h}
+limit=${FXDAX_GCE_LIMIT:-6h}
 create_flags=()
 
 run() {
@@ -91,10 +87,4 @@ run() {
     return "$status"
 }
 
-case "$action" in
-    create) mkdir -p "$results"; gce_create ;;
-    run) gce_locate; run ;;
-    delete) gce_locate; gce_delete ;;
-    all) mkdir -p "$results"; gce_all run ;;
-    *) echo "Usage: $0 [all|create|run|delete] [instance] [results-directory]" >&2; exit 2 ;;
-esac
+gce_main "$@"

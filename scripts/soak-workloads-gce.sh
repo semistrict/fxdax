@@ -3,7 +3,7 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-# Soaks the guest suites on disposable GCE hosts, a host for each group of workloads at once, each
+# Soaks the guest suites on kept GCE hosts, a host for each group of workloads at once, each
 # case many rounds, stopping at its first failing round, whose logs its results keep
 # (scripts/test-e2e.sh); a group's cases are those of its suite, `runner list --tag soak-GROUP`:
 #
@@ -50,8 +50,7 @@ soak() {
     env ${own[@]+"${own[@]}"} FXDAX_WORKSPACE_TESTS=0 FXDAX_E2E_TEST="--tag soak-$group" \
         FXDAX_E2E_ROUNDS=$((rounds * factor)) FXDAX_GUEST_KERNEL_BUILD=$kernel \
         FXDAX_FOLLOW_SECONDS=$seconds \
-        "$repo/scripts/test-gce.sh" all "fxdax-test-soak-$group-$(date -u +%m%d%H%M%S)" \
-        "$results/$group" > "$results/$group.log" 2>&1
+        "$repo/scripts/test-gce.sh" all "$results/$group" > "$results/$group.log" 2>&1
 }
 
 mkdir -p "$results"

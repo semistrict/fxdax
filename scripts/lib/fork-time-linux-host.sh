@@ -3,7 +3,7 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-# How long a fork of a large base takes, on trees of fxdax's (TASK-165.7): on a disposable x86-64
+# How long a fork of a large base takes, on trees of fxdax's (TASK-165.7): on an x86-64
 # Linux host, as root, for each LABEL=TREE, builds TREE's extent daemon and fxdaxctl, starts the
 # daemon on a file bucket and a part cache of its own, imports a base of FXDAX_FORK_TIME_FILES
 # files (2,560) of FXDAX_FORK_TIME_FILE_MIB MiB (4) of random bytes, 10 GiB, which compress no
