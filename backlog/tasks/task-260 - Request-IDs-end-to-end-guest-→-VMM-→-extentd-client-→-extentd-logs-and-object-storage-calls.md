@@ -3,11 +3,11 @@ id: TASK-260
 title: >-
   Request IDs end to end: guest → VMM → extentd client → extentd logs and
   object-storage calls
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-08 14:04'
-updated_date: '2026-11-08 14:51'
+updated_date: '2026-11-08 16:23'
 labels:
   - logging
   - extentd
@@ -25,18 +25,18 @@ A slow or failed guest I/O cannot be followed across layers today: the guest, th
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Every daemon log record emitted while serving a VM process's call for a guest request carries that request's ID (request_id), including requests deferred across threads (faults, PRIVATE, opens) and object-storage work done on the remotes' runtime for it
-- [ ] #2 extent_remote logs each object-storage request (kind, key, time, outcome) and those made for a guest request carry its ID
-- [ ] #3 An old VMM (ids without the guest request) and an old daemon both keep working with the new side; records of calls without an ID say none
-- [ ] #4 One well-named function exposes the current request for an OpenTelemetry agent, documented in the task notes, with which ID is used and why
-- [ ] #5 Tests: the wire id round trip, propagation across polls and threads, and a daemon log record carrying the guest request of a VMM call
+- [x] #1 Every daemon log record emitted while serving a VM process's call for a guest request carries that request's ID (request_id), including requests deferred across threads (faults, PRIVATE, opens) and object-storage work done on the remotes' runtime for it
+- [x] #2 extent_remote logs each object-storage request (kind, key, time, outcome) and those made for a guest request carry its ID
+- [x] #3 One well-named function exposes the current request for an OpenTelemetry agent, documented in the task notes, with which ID is used and why
+- [x] #4 Tests: the wire id round trip, propagation across polls and threads, and a daemon log record carrying the guest request of a VMM call
+- [x] #5 VM processes of another wire version are refused (version 4, the user decision 2026-11-08: no deployments, AGENTS.md); calls for no guest request log none
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -55,4 +55,12 @@ Wire (user decision 2026-11-08: no deployments, follow AGENTS.md): daemon wire V
 For OpenTelemetry: fxdax::request::current() -> Option<RequestId { guest: NonZeroU64, store: Option<Arc<str>> }>, the request the work on this thread is for: in the VMM as it serves the request, in the daemon as it serves a call, and as object storage and the pager work for it (carried by request::within to the remotes runtime, read-ahead and the pager). The header alone does not hold the number (it is in the payload), so a hook of a Header can only say whether one is there; current() holds it wherever the work runs.
 
 Paths: crates/fxdax/src/request.rs; extentd/wire.rs, codec.rs, client.rs, server.rs; remote.rs; cache.rs; crates/extent_remote/src/store.rs (made(): each object-storage request logged at debug with kind, object, ms, error); vendor/firecracker extent/worker.rs (guest_request(unique, ...)), fork branch land-reqid 81f82bb27.
+
+Validation: main CI 42497804619 green at 76bbd8de8 (all 14 jobs; 87690e2cc failed only test (clippy scripts) on two mutant patches the change drifted, made again in 76bbd8de8, both killed by their killers in Linux Docker). Linux Docker: fxdax and extent_remote 801/805, the 4 others the container own (git unreachable, the grants tests tools), CI green on them; VMM extent tests 23/23; macOS 561/561 and extent_remote 189/189. Tests: codec requests_say_their_guest_request (every request kind with and without REQUEST, 0 and short refused), request:: propagation across polls and threads, extentd calls_for_guest_requests_are_logged_with_them (immediate WRITE, deferred PRIVATE via guest_request as the VMM does, a call for none), remote reads_of_object_storage_are_logged_with_their_guest_request (red with Fetcher::read hand-off carrying none: mutant killed), tests/otel spans_trace_requests_commits_and_uploads (fxdax.request_id 42 on the write span, none on the read). OTel: the TASK-258 hook otel::request_id now takes the guest RequestId, set from the REQUEST payload as the call is decoded. DoD 1 by CI linux and macos jobs rather than GCE; upstream-changes.py --check passes.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Each guest request's ID (the virtio header unique) goes end to end: the VMM serves the request with it current, the daemon client says it in its calls (wire version 4, REQUEST flag, 8 payload bytes), the daemon serves each call with it current with the store, carried to the remotes runtime, read-ahead and the pager; log records name it (request_id, store), extent_remote logs each object-storage request at debug, and the OTel span carries it (otel::request_id). fxdax::request::current() exposes it for any thread. Verified by codec, propagation, daemon log, object-storage log and OTel span tests, a killed mutant, Linux Docker and macOS suites, and main CI 42497804619 green at 76bbd8de8.
+<!-- SECTION:FINAL_SUMMARY:END -->
