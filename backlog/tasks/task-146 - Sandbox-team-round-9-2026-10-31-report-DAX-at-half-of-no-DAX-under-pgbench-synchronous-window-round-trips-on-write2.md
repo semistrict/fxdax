@@ -3,10 +3,10 @@ id: TASK-146
 title: >-
   Sandbox team, round 9 (2026-10-31 report): DAX at half of no DAX under
   pgbench; synchronous window round trips on write(2)
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-10-31 22:15'
-updated_date: '2026-11-06 06:51'
+updated_date: '2026-11-08 04:19'
 labels:
   - sandbox
   - performance
@@ -33,3 +33,13 @@ Measured at 5151882, which has none of the work since cc4f61cf0. Overlay/no DAX/
 <!-- SECTION:NOTES:BEGIN -->
 2026-11-06 tidy: priority high to low: TASK-146.1 was parked by the user on 2026-11-03 (the sandbox team happy with performance and integrating), and with writable DAX deleted (37c331a6c) a write(2) makes no window MAP; what a first store's PRIVATE round trip costs write(2) is TASK-92.24's.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Round 9's report, DAX at half of no DAX under pgbench with synchronous window round trips on write(2), is answered:
+- write(2) on DAX without a window round trip in the common case (TASK-146.2);
+- the pgbench gate's map, write_iter and evacuation latencies (TASK-146.3);
+- the round-trip timeline, superseded (TASK-146.1).
+The full gate on main has DAX pgbench at 0.977 of no DAX and forked-dax 0.949 (r903, docs/measurements/dax-cow-gate.md).
+<!-- SECTION:FINAL_SUMMARY:END -->

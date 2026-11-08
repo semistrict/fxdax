@@ -3,11 +3,12 @@ id: TASK-146.1
 title: >-
   A timeline of one device round trip: where 300+ us goes between the guest's
   kick and its wakeup, and whether polling saves it
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-10-31 22:15'
-updated_date: '2026-11-06 06:51'
-labels: []
+updated_date: '2026-11-08 04:19'
+labels:
+  - superseded
 dependencies: []
 parent_task_id: TASK-146
 priority: low
@@ -38,3 +39,9 @@ ordinal: 497000
 
 2026-11-06 tidy: priority high to low: TASK-146.1 was parked by the user on 2026-11-03 (the sandbox team happy with performance and integrating), and with writable DAX deleted (37c331a6c) a write(2) makes no window MAP; what a first store's PRIVATE round trip costs write(2) is TASK-92.24's.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Superseded by later measurement: TASK-146's premise, DAX at half of no DAX under pgbench, no longer holds. The full gate on main has DAX at 0.977 of no DAX and forked-dax 0.949 (r903, docs/measurements/dax-cow-gate.md). One device round trip was timed hop by hop for a PRIVATE (r800-r802 there): guest 527 us; VM process waiting 282 us; daemon's own work 66 us; stage run 116 us; messages about 100 us; each MMIO exit 8-32 us of host time. Neither halt polling (r801: 0.826) nor spin_ns=600 us (r803: 0.843) moved forked-dax, and spin_ns at 100 and 1,000 us wasn't run: the gap is now closed by other means (TASK-164.11).
+<!-- SECTION:FINAL_SUMMARY:END -->

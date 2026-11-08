@@ -4,10 +4,10 @@ title: >-
   Sandbox team, round 8 (2026-10-29 requests): DAX regression at b5d3246, fsync
   without seals, cheaper first reads of a shared base, refusals' cost, a CI
   performance gate, observability
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-10-29 21:13'
-updated_date: '2026-11-06 06:51'
+updated_date: '2026-11-08 04:19'
 labels:
   - sandbox
   - performance
@@ -34,3 +34,17 @@ Their report: DAX sharing works for them (each added VM ~285 MB of host memory a
 <!-- SECTION:NOTES:BEGIN -->
 2026-11-06 tidy: priority high to medium: the sandbox team is happy with performance and integrating (the user, 2026-11-03, TASK-146.1); base first reads against today's DAX are TASK-164.6's gate meanwhile.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Round 8's asks are answered, each subtask Done:
+- DAX regression at b5d3246: profiled and bisected (TASK-131.1);
+- fsync without a seal (TASK-131.2);
+- first reads of a shared base, superseded: about 270 MB/s now, not ~130, with whole-extent maps (TASK-131.3, r941);
+- refused writes' cost (TASK-131.4);
+- the CI performance gate (TASK-131.5): scripts/perf-gate-gce.sh, docs/measurements/dax-cow-gate.md, r903 passing every gate;
+- observability (TASK-131.6);
+- crash-dax-killed's lost rewrite (TASK-131.7).
+Its other asks went to TASK-111 and TASK-112, which hold them.
+<!-- SECTION:FINAL_SUMMARY:END -->

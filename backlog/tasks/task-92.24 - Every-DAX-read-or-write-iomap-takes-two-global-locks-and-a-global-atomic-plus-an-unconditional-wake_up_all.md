@@ -3,12 +3,13 @@ id: TASK-92.24
 title: >-
   A DAX write iomap takes its file's semaphore twice, the window's lock and
   global atomics
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-10-22 21:06'
-updated_date: '2026-11-06 00:45'
+updated_date: '2026-11-08 04:19'
 labels:
   - review-2026-10-21
+  - superseded
 dependencies: []
 references:
   - docs/reviews/2026-10-21-main.md
@@ -50,3 +51,9 @@ Found by the 2026-10-21 review of main at 6a0a3f8 (severity medium): docs/review
 <!-- SECTION:NOTES:BEGIN -->
 2026-11-05 triage: citations brought to dde8d58d3 (dax.c moved by f22c9459e, bda2e53a0 and 311f7b08b).
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Superseded by later measurement: what this guards against, a DAX write(2) slowed by its iomap's semaphore, the window's lock, global atomics and its PRIVATE round trip, no longer holds DAX back. TASK-164.11 moved a write's PRIVATE before the inode's lock (r807: lock waits 37.5 s to 7.4 s, forked-dax 0.912). The full perf gate on main (r903, docs/measurements/dax-cow-gate.md) has DAX pgbench at 0.977 of no DAX and forked-dax 0.949, every gate passing, so the double semaphore and the atomics cost nothing the gate can see. Closed under TASK-92's AC (a measurement showing it costs nothing worth fixing); the review's cache-line bouncing with writers on many vCPUs stays unmeasured.
+<!-- SECTION:FINAL_SUMMARY:END -->

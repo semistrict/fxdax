@@ -4,12 +4,13 @@ title: >-
   First reads of a shared base at ~130 MB/s with every base page in host memory:
   map once at boot, whole extents or 2 MiB per fault, base mappings kept ahead
   in reclaim, huge pages
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-10-29 21:13'
-updated_date: '2026-11-06 06:51'
+updated_date: '2026-11-08 04:19'
 labels:
   - performance
+  - superseded
 dependencies: []
 parent_task_id: TASK-131
 priority: medium
@@ -47,3 +48,9 @@ The deferred pre-fault is not pushed: with it fxfs-guest-checks-dax read zeros t
 
 2026-11-06 tidy: priority high to medium: the sandbox team is happy with performance and integrating (the user, 2026-11-03, TASK-146.1); base first reads against today's DAX are TASK-164.6's gate meanwhile.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Superseded by later measurement: first reads of a shared base whose pages the daemon holds now go at about 270 MB/s, not ~130. A sandbox's cold read of the 1.54 GB Linux tree takes 5.7-5.8 s against a fresh VM's 4.9 s, and ext4 on virtio-pmem's 8.7 s (GCE r941, docs/measurements/linux-checkout-2026-11-07.md, corrected by TASK-229). Each base extent is now mapped whole, one MAP per extent's region (TASK-229), which is this task's whole-extents option, landed. The first sandbox on a generation reads as fast once TASK-234 (land-w8) lands (r992: 6.25 s). The other options aren't measured: map once at boot, huge pages (TASK-131.3's own 2 MiB idea, left in TASK-227's OPEN_QUESTIONS), and reclaim order, moot since writable DAX went. Bare metal isn't measured either; the runs are nested GCE.
+<!-- SECTION:FINAL_SUMMARY:END -->
