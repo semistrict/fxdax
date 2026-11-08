@@ -1,0 +1,86 @@
+   Compiling fxdax v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fxdax)
+    Finished `release` profile [optimized] target(s) in 1m 05s
+    Finished `release` profile [optimized] target(s) in 0.14s
+   Compiling fxdax v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fxdax)
+   Compiling vmm v0.1.0 (/var/lib/fxdax-test/bench-tree/vendor/firecracker/src/vmm)
+   Compiling firecracker v1.16.1 (/var/lib/fxdax-test/bench-tree/vendor/firecracker/src/firecracker)
+    Finished `release` profile [optimized] target(s) in 1m 50s
+    Finished `release` profile [optimized] target(s) in 0.10s
+warning: method `unallowed` is never used
+   --> test_cases/src/differential.rs:194:12
+    |
+156 | impl Differences {
+    | ---------------- method in this implementation
+...
+194 |     pub fn unallowed(&self) -> impl Iterator<Item = (&Difference, &Seen)> {
+    |            ^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+
+running 111 tests
+....................................................................................... 87/111
+........................
+test result: ok. 111 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 58.83s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Compiling fxdax v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fxdax)
+   Compiling vmm v0.1.0 (/var/lib/fxdax-test/bench-tree/vendor/firecracker/src/vmm)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 27.71s
+────────────
+ Nextest run ID eb0c1c53-f916-4a1e-bbe9-5e91b31c155e with nextest profile: default
+    Starting 23 tests across 1 binary (722 tests skipped)
+        PASS [   0.007s] ( 1/23) vmm devices::virtio::extent::device::tests::branches_are_not_the_clocks
+        PASS [   0.007s] ( 2/23) vmm devices::virtio::extent::device::tests::unxorshift_undoes_the_clocks_xorshift
+        PASS [   0.007s] ( 3/23) vmm devices::virtio::extent::device::tests::the_configuration_says_its_version_first
+        PASS [   0.007s] ( 4/23) vmm devices::virtio::extent::device::tests::workers_start_all_or_none
+        PASS [   0.007s] ( 5/23) vmm devices::virtio::extent::tests::answers_to_shrinks_no_longer_asked_change_nothing
+        PASS [   0.008s] ( 6/23) vmm devices::virtio::extent::persist::tests::snapshots_of_other_protocols_are_refused
+        PASS [   0.008s] ( 7/23) vmm devices::virtio::extent::device::tests::drivers_take_every_feature_offered
+        PASS [   0.008s] ( 8/23) vmm devices::virtio::extent::device::tests::a_windows_private_pages_are_not_its_size
+        PASS [   0.009s] ( 9/23) vmm devices::virtio::extent::worker::tests::chains_writing_past_u32_are_refused
+        PASS [   0.012s] (10/23) vmm devices::virtio::extent::tests::stats_are_asked_of_guests_that_take_asks
+        PASS [   0.027s] (11/23) vmm devices::virtio::extent::worker::tests::stats_go_to_the_daemon
+        PASS [   0.027s] (12/23) vmm devices::virtio::extent::worker::tests::test_refuses_bad_requests
+        PASS [   0.032s] (13/23) vmm devices::virtio::extent::worker::tests::test_follows_a_writer
+        PASS [   0.008s] (14/23) vmm vmm_config::extent::tests::test_insert
+        PASS [   0.012s] (15/23) vmm vmm_config::extent::tests::test_deserialize
+        PASS [   0.007s] (16/23) vmm vmm_config::extent::tests::test_insert_invalid
+        PASS [   0.006s] (17/23) vmm vstate::vcpu::tests::efaults_given_up_on_tell_where
+        PASS [   0.036s] (18/23) vmm devices::virtio::extent::worker::tests::test_roots_and_info
+        PASS [   0.035s] (19/23) vmm devices::virtio::extent::worker::tests::test_writes_and_reads
+        PASS [   0.009s] (20/23) vmm vstate::vcpu::tests::test_exit_code_sent_before_the_exit_event
+        PASS [   0.073s] (21/23) vmm devices::virtio::extent::worker::tests::test_frees_many_in_one_request
+        PASS [   0.074s] (22/23) vmm devices::virtio::extent::worker::tests::test_refuses_many_past_their_most
+        PASS [   6.741s] (23/23) vmm devices::virtio::extent::worker::tests::test_answers_whatever_a_driver_asks
+────────────
+     Summary [   6.749s] 23 tests run: 23 passed, 722 skipped
+warning: method `unallowed` is never used
+   --> test_cases/src/differential.rs:194:12
+    |
+156 | impl Differences {
+    | ---------------- method in this implementation
+...
+194 |     pub fn unallowed(&self) -> impl Iterator<Item = (&Difference, &Seen)> {
+    |            ^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+[bench-fs-fxfs-guest-dax] ... WARNING: running bench-fs-fxfs-guest-dax without network isolation: FXDAX_EXTENTD_REMOTE names a bucket over the network.
+REPORT (31 s of 1800 s)
+  fxfs-guest-dax (1 iterations)
+
+  workload                     median          min          max  unit
+  pgbench-init                    2.5          2.5          2.5  s
+  pgbench-tps                  2041.9       2041.9       2041.9  tps
+  mtime-ahead-of-guest-ms: [-1.637]
+
+(See test artifacts at: /home/ramon/run-20261108T055327Z-fa99c302/results/logs/bench-fs-fxfs-guest-dax)
+
+OK - 0/0 passed (1 reports)
+Logs: /home/ramon/run-20261108T055327Z-fa99c302/results/logs
+Results: /home/ramon/run-20261108T055327Z-fa99c302/results

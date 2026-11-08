@@ -1,0 +1,46 @@
+Host: linux. VMM: firecracker. Iterations: fxfs-guest 1.
+
+| Workload | Unit | fxfs-guest |
+|---|---|---|
+| pgbench-init | s | 2.51 (2.51–2.51) |
+| pgbench-tps | tps | 2,154 (2,154–2,154) |
+
+- fxfs-guest: mtime-ahead-of-guest-ms -4.66 median (-4.66–-4.66)
+
+Object storage: the extent daemon's requests to its bucket, for the cases that kept their
+stores there, at GCS Standard single-region prices (class A $0.005 per 1,000, class B
+$0.0004 per 1,000, deletes free).
+
+| Request | Count | Class | Cost |
+|---|---|---|---|
+| get | 35 | B | $0.000014 |
+| get-range | 73 | B | $0.000029 |
+| head | 0 | B | $0.000000 |
+| list | 4 | A | $0.000020 |
+| create | 41 | A | $0.000205 |
+| update | 2 | A | $0.000010 |
+| overwrite | 0 | A | $0.000000 |
+| delete | 1 | free | $0.000000 |
+| all | 156 | | $0.000278 |
+
+Uploaded 46.5 MiB (segments 46.5 MiB, extents 0 B, checkpoints 0 B, moves 0 B, other 54 B); downloaded 3.4 MiB.
+
+Extent daemon: the VM processes' requests, as it served them, from their dispatch to their
+reply.
+
+| Request | Count | Each |
+|---|---|---|
+| open | 1 | 1,218,611.7 µs |
+| read | 508 | 4,283.1 µs |
+| write | 75,918 | 25.4 µs |
+| free | 28,873 | 3.8 µs |
+| commit | 73 | 7,255.1 µs |
+| root | 1 | 1.1 µs |
+| info | 4 | 1.6 µs |
+| transfer | 1 | 8.4 µs |
+| free_many | 340 | 121.2 µs |
+
+Commits: 33,260, 40.8 µs each: committing the store 9.3 µs, waiting for object storage 31.3 µs.
+
+Segments closed and framed: 36, 23.5 ms each.
+

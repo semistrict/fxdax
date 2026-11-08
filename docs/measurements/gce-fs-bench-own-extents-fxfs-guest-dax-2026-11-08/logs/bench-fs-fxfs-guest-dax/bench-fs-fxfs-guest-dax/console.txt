@@ -1,0 +1,11 @@
+[    0.107272] PCI: Fatal: No config space access function found
+[    0.131739] PCI: System does not support PCI
+[    0.240464] check access for rdinit=/init failed: -2, ignoring
+iteration 1/1
+OBSERVED mtime-ahead-of-guest-ms -1.637
+RESULT pgbench-init s lower 2.525
+FXFS pgbench-tps: dax_unsealed_inodes 1, device_commits 31327, device_commits_ns 5608856166, device_read_bytes 6451200, device_reads 472, device_reads_ns 3013845689, device_write_bytes 483721216, device_writes 66844, device_writes_ns 12096144099, fsyncs 31269, journal_compaction_ns 3330554857, journal_compactions 31, seal_waits 31327, seal_waits_ns 210149594, seals 31327, seals_ns 5731324534, writes_held_by_seals 1619, writes_held_by_seals_ns 346668488
+REQUESTS pgbench-tps: read 0.01 (6326 µs each), write 2.09 (143 µs each), free 0.87 (134 µs each), commit 0.00 (135 µs each) per operation
+RESULT pgbench-tps tps higher 2041.928
+DONE
+[   26.401400] reboot: Restarting system

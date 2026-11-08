@@ -1,0 +1,24 @@
+{
+  "case": "bench-fs-fxfs-guest-dax",
+  "commit": "0d6fde6a9e560c76e5f1c66ab1ad14cb6c68e24a-dirty",
+  "failed_checks": [],
+  "knobs": {
+    "FXDAX_BENCH_CASES": "bench-fs-fxfs-guest-dax",
+    "FXDAX_BENCH_GROUPS": "pgbench",
+    "FXDAX_BENCH_ITERATIONS": "1",
+    "FXDAX_BENCH_NOTE": "TASK-142: what a pgbench run stores in objects of their own, by the extents' reach (Options::large_extent 4 MiB), fxfs-guest-dax jailed with its store in GCS, as r353's",
+    "FXDAX_EXTENTD_MEMORY": "8589934592",
+    "FXDAX_EXTENTD_REMOTE": "gs://echophase-fxdax-bench/task-142-fxfs-guest-dax-2026-11-08",
+    "FXDAX_FIRECRACKER_JAIL": "1",
+    "FXDAX_GCE_STORAGE": "1",
+    "FXDAX_GCE_ZONE": "us-east1-b",
+    "FXDAX_GUEST_KERNEL_BUILD": "release"
+  },
+  "limit_secs": 1800,
+  "outcome": "report",
+  "reason": null,
+  "replay": "FXDAX_WORKSPACE_TESTS=0 FXDAX_E2E_TEST=bench-fs-fxfs-guest-dax FXDAX_BENCH_CASES=bench-fs-fxfs-guest-dax FXDAX_BENCH_GROUPS=pgbench FXDAX_BENCH_ITERATIONS=1 FXDAX_BENCH_NOTE='TASK-142: what a pgbench run stores in objects of their own, by the extents'\\'' reach (Options::large_extent 4 MiB), fxfs-guest-dax jailed with its store in GCS, as r353'\\''s' FXDAX_EXTENTD_MEMORY=8589934592 FXDAX_EXTENTD_REMOTE=gs://echophase-fxdax-bench/task-142-fxfs-guest-dax-2026-11-08 FXDAX_FIRECRACKER_JAIL=1 FXDAX_GCE_STORAGE=1 FXDAX_GCE_ZONE=us-east1-b FXDAX_GUEST_KERNEL_BUILD=release scripts/test-gce.sh all",
+  "round": 1,
+  "rounds": 1,
+  "took_secs": 31.232232035
+}
