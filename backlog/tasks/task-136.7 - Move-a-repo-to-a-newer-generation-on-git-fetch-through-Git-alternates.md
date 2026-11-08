@@ -1,10 +1,10 @@
 ---
 id: TASK-136.7
 title: 'Move a repo to a newer generation on git fetch, through Git alternates'
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-10-31 04:49'
-updated_date: '2026-10-31 16:04'
+updated_date: '2026-11-08 05:35'
 labels: []
 dependencies:
   - TASK-136.2
@@ -42,3 +42,13 @@ Git has no pre-fetch hook (from memory, unchecked), so a remote helper installed
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Upcall: newest URL -> named NAME | refused WHY (crates/fxfs-automount/src/upcall.rs, a Manager trait answering both asks).
+2. git-remote-fxfs (crates/fxfs-automount/src/git.rs): asks newest(URL), looks up ROOT/NAME/.git/objects (the automounter attaches and mounts it), replaces any earlier generation's line in alternates with it, then hands the URL to Git: exec git remote-<scheme> for http(s)/ftp(s); for local paths, the connect capability to git upload-pack/receive-pack. Refusal or failure: ordinary fetch. Unit tests: alternates moving, transports, connect's protocol, a repo moved by a fake manager.
+3. Guest test fxfs-guest-git-fetch: publisher publishes repo at A (g0) and B (g1), then upstream at C as a volume; consumer's checkout is g0 (automounted) with a local commit, staged and unstaged changes and an untracked file; fetch through the helper points alternates at g1 and receives exactly rev-list B..C's objects (loose, fetch.unpackLimit), none of g1's; pull --ff-only writes only the changed files (strace), status reads only those and the unstaged one; changes kept, g0's objects read; a URL the manager refuses clones ordinarily, no alternates; snapshot (volumes frozen) and restore, then reboot: the checkout reads through alternates, which automount again. Host checks the asks.
+4. AC #6 (writable layers' growth across repeated pulls on a Linux-sized checkout, doc-10): a manual case on GCE after the above lands.
+5. doc-10's Moving section; OPEN_QUESTIONS decision (helper's transports).
+<!-- SECTION:PLAN:END -->
