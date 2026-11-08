@@ -3,7 +3,7 @@
 // found in the LICENSE file.
 
 use crate::errors::FxfsError;
-use crate::filesystem::{ApplyContext, ApplyMode, FlushReason, JournalingObject};
+use crate::filesystem::{ApplyContext, ApplyMode, FlushReason, ForceMajor, JournalingObject};
 use crate::log::*;
 use crate::metrics;
 use crate::object_handle::INVALID_OBJECT_ID;
@@ -12,10 +12,10 @@ use crate::object_store::directory::Directory;
 use crate::object_store::journal::{self, JournalCheckpoint};
 use crate::object_store::transaction::{
     AssocObj, AssociatedObject, MetadataReservation, Mutation, ObjectMutationIterator, Transaction,
-    TxnMutation,
+    TxnMutation, lock_keys,
 };
 use crate::object_store::volume::{VOLUMES_DIRECTORY, list_volumes};
-use crate::object_store::{ObjectDescriptor, ObjectStore};
+use crate::object_store::{LockKey, ObjectDescriptor, ObjectStore};
 use crate::round::round_div;
 use crate::serialized_types::{LATEST_VERSION, Version};
 use anyhow::{Context, Error, anyhow, bail, ensure};
@@ -468,6 +468,52 @@ impl ObjectManager {
             filesystem.graveyard().initial_reap(&store).await?;
         }
         Ok(())
+    }
+
+    /// fxdax: closes the volume `object_id` again (`Options::lazy_volumes`), once nothing has it
+    /// open: what it holds in memory goes, its layers stay, and `open_volume` opens it again
+    /// (backlog doc-10, an idle repo's mount expiring, TASK-136.6). What the journal holds of it
+    /// is flushed into its layers first, which then hold all it has; on a read-only filesystem,
+    /// which can't flush, it stays open, as its layers lack what replay applied. A replay opens it
+    /// again while the journal still names it, as it opens any volume written to lately.
+    /// `Unavailable` if it is in use: anything else holds its store, or it was written to as it
+    /// closed.
+    pub async fn close_volume(&self, object_id: u64) -> Result<(), Error> {
+        let root_store = self.root_store();
+        let filesystem = root_store.filesystem();
+        ensure!(filesystem.options().lazy_volumes, FxfsError::InvalidArgs);
+        ensure!(!self.is_system_store(object_id), FxfsError::InvalidArgs);
+        if self.store(object_id).is_none() {
+            return Ok(());
+        }
+        // What it queued to reap, done: nothing reaps in a volume closed under it. A read-only
+        // filesystem's graveyard reaps nothing.
+        let read_only = filesystem.options().read_only;
+        if !read_only {
+            filesystem.graveyard().flush().await;
+        }
+        let keys = lock_keys![LockKey::flush(object_id)];
+        let _flushing = filesystem.lock_manager().write_lock(keys).await;
+        if self.needs_flush(object_id) {
+            ensure!(!read_only, FxfsError::ReadOnlyFilesystem);
+            let store = self.store(object_id).ok_or(FxfsError::NotFound)?;
+            store.flush_guarded_with_reason(FlushReason::Journal(ForceMajor::False)).await?;
+        }
+        let _commits = filesystem.lock_commits().await;
+        ensure!(!self.needs_flush(object_id), FxfsError::Unavailable);
+        let mut inner = self.inner.write();
+        let Some(store) = inner.stores.get(&object_id) else { return Ok(()) };
+        ensure!(Arc::strong_count(store) == 1, FxfsError::Unavailable);
+        inner.stores.remove(&object_id);
+        inner.reservations.remove(&object_id);
+        Ok(())
+    }
+
+    /// fxdax: how many volumes are open: not the root store's (`close_volume`).
+    pub fn open_volumes(&self) -> usize {
+        let inner = self.inner.read();
+        let system = [inner.root_store_object_id, inner.root_parent_store_object_id];
+        inner.stores.keys().filter(|id| !system.contains(id)).count()
     }
 
     /// Opens the specified store if it isn't already.  This is *not* thread-safe.
