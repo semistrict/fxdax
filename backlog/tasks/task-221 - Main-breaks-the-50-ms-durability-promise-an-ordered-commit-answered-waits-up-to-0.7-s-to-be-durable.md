@@ -3,11 +3,11 @@ id: TASK-221
 title: >-
   Main breaks the 50 ms durability promise: an ordered commit, answered, waits
   up to 0.7 s to be durable
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-07 02:30'
-updated_date: '2026-11-08 10:17'
+updated_date: '2026-11-08 13:19'
 labels: []
 dependencies: []
 documentation:
@@ -36,17 +36,17 @@ The daemon-killed test's check (TASK-165.9, 211d65896) now lets a file be found 
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The user's decision on the durability window (keep 50 ms, or restate it) is in OPEN_QUESTIONS.md's Decisions, and doc-12 and doc-2 say the same
-- [ ] #2 LOST_WITHIN_MS in guest/tests/test_cases/src/test_fxfs_guest.rs is the decided window, cited from doc-12, not a measured lag
-- [ ] #3 Under fxfs-guest-pgbench and fxfs-guest-pgbench-dax on GCE (3+ jailed rounds), extentd's durable_lag stats meet the decided window
-- [ ] #4 fxfs-guest-crash-dax-daemon-killed passes 8+ jailed rounds on GCE with the decided window
+- [x] #1 The user's decision on the durability window (keep 50 ms, or restate it) is in OPEN_QUESTIONS.md's Decisions, and doc-12 and doc-2 say the same
+- [x] #2 LOST_WITHIN_MS in guest/tests/test_cases/src/test_fxfs_guest.rs is the decided window, cited from doc-12, not a measured lag
+- [x] #3 Under fxfs-guest-pgbench and fxfs-guest-pgbench-dax on GCE (3+ jailed rounds), extentd's durable_lag stats meet the decided window
+- [x] #4 fxfs-guest-crash-dax-daemon-killed passes 8+ jailed rounds on GCE with the decided window
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Notes
@@ -73,4 +73,12 @@ land-k6, so far: (1) write-behind: the open segment's raw file is written back a
 What remains (r957-r958): single raw-file syncs writing 81-100 MB at once, 380-430 ms: a commit's sealing copies extents in pieces (not one run in the open segment) whole into the open segment, at commit, which its flush syncs. r958 (1 round each, a warning per commit copying past 8 MiB): pgbench, 24 such commits, 26 MB on average (111 extents sealed, 36 copied), the largest 105 MiB (654 sealed, 363 copied); pgbench-dax, 21 commits, 21 MB on average, the largest 111 MiB (329 sealed, 112 copied); the largest extent copied 1024 KiB in every one: under large_extent (4 MiB), so into the open segment. In the log, a commit copying 97 MiB is followed by a flush of 1 commit taking 380 ms (data 330 ms) and 'a commit durable 396 ms after it was ordered'; r958's max: pgbench 747 ms, dax 512 ms. Why each wasn't one run, r958 doesn't say: its warning counts sizes only (pieces in older segments, i.e. overwrites of committed extents, against pieces interleaved in the open segment, is the next measurement). That burst is TASK-92.41's (commits spanning segments). Write-behind already reaches those copies: they are appended to the open segment, so the next guest write begins their writing back and waits for them past 8 MiB; a separate hook at commit would begin it at most one write sooner, so land-k6 adds none.
 
 2026-11-08: land-k6 (write-behind, with its CI fixes) is on main (6e5d8b0db..43b1a281c). x86 confirmation: GCE r964 on fxdax-test-r956-k6 (CI's shuttle part, then the crash tests 25 times) exited 0. The user's decision (OPEN_QUESTIONS.md): the crash window is what main achieves; doc-12, doc-2 and LOST_WITHIN_MS are to state the window measured on main, not 50 ms.
+
+2026-11-08: the user's decision (OPEN_QUESTIONS.md): the window is what main achieves. Measured on main 08d444ef7 (GCE n2-standard-16, jailed, 3 rounds each of fxfs-guest-pgbench and -pgbench-dax, ~365,000 commits a round): durable lag median <=32 ms, p99 <=64 ms, 85% within 50 ms, longest <1,024 ms. doc-12 and doc-2 state it (median within 50 ms; crash bound 1 s), CRASH_LOSS_BOUND_MS 1000 cited from doc-12 (cd7088c90; its unit test fixed in 34e8dd705). fxfs-guest-crash-dax-daemon-killed: 8 of 8 jailed rounds passed at cd7088c90 (fxdax-test-r1001-t1492). CI 42482864645 green at 34e8dd705; upstream-changes --check passes.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Write-behind (land-k6) cut the ordered-commit tail from 0.4-0.7 s (TASK-165.9 longer) and, per the user's decision, the contract now states what main achieves: durable within 50 ms at the median (32 ms measured), and a crash loses at most the last 1 s of ordered commits (longest lag measured under 1,024 ms; p99 64 ms). doc-12, doc-2 and CRASH_LOSS_BOUND_MS say so. Verified: pgbench and pgbench-dax 3 jailed rounds each meet it, the daemon-killed crash test 8 of 8 jailed rounds, CI green.
+<!-- SECTION:FINAL_SUMMARY:END -->
