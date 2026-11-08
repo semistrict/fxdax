@@ -119,15 +119,18 @@ impl Upload {
 #[derive(Default)]
 struct Counts {
     requests: [AtomicU64; Request::ALL.len()],
+    /// The nanoseconds the requests of each kind took, each from its start to its answer.
+    request_ns: [AtomicU64; Request::ALL.len()],
     uploaded: [AtomicU64; Upload::ALL.len()],
     downloaded: AtomicU64,
 }
 
-/// What a store did so far: its requests by kind, the bytes it uploaded by kind of object, and the
-/// bytes it downloaded.
+/// What a store did so far: its requests by kind and how long they took, the bytes it uploaded by
+/// kind of object, and the bytes it downloaded.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Stats {
     pub requests: [u64; Request::ALL.len()],
+    pub request_ns: [u64; Request::ALL.len()],
     pub uploaded: [u64; Upload::ALL.len()],
     pub downloaded: u64,
 }
@@ -137,13 +140,19 @@ impl Stats {
         self.requests[request as usize]
     }
 
+    /// The nanoseconds the requests of kind `request` took in all, each from its start to its
+    /// answer (TASK-165.11): what waiting for the bucket costs, by kind.
+    pub fn request_ns(&self, request: Request) -> u64 {
+        self.request_ns[request as usize]
+    }
+
     pub fn uploaded(&self, upload: Upload) -> u64 {
         self.uploaded[upload as usize]
     }
 
     /// The stats as one line, which `scripts/bench-report.py` reads from the extent daemon's log:
     /// `object-store:`, then `NAME=COUNT` for each kind of request, `up-NAME=BYTES` for each kind
-    /// of object, and `down=BYTES`.
+    /// of object, `down=BYTES`, and `NAME-ns=NANOSECONDS` for each kind of request.
     pub fn line(&self) -> String {
         let mut line = "object-store:".to_owned();
         for request in Request::ALL {
@@ -152,13 +161,34 @@ impl Stats {
         for upload in Upload::ALL {
             line += &format!(" up-{}={}", upload.name(), self.uploaded(upload));
         }
-        line + &format!(" down={}", self.downloaded)
+        line += &format!(" down={}", self.downloaded);
+        for request in Request::ALL {
+            line += &format!(" {}-ns={}", request.name(), self.request_ns(request));
+        }
+        line
     }
 }
 
 impl Counts {
-    fn request(&self, request: Request) {
+    /// Counts a request of kind `request`, made now, and, once what it returns is dropped, as the
+    /// request is answered, how long it took.
+    fn request(&self, request: Request) -> Timed<'_> {
         self.requests[request as usize].fetch_add(1, Ordering::Relaxed);
+        Timed { counts: self, request, started: std::time::Instant::now() }
+    }
+}
+
+/// A request counted ([`Counts::request`]), whose time is counted as this drops.
+struct Timed<'a> {
+    counts: &'a Counts,
+    request: Request,
+    started: std::time::Instant,
+}
+
+impl Drop for Timed<'_> {
+    fn drop(&mut self) {
+        let ns = u64::try_from(self.started.elapsed().as_nanos()).unwrap_or(u64::MAX);
+        self.counts.request_ns[self.request as usize].fetch_add(ns, Ordering::Relaxed);
     }
 }
 
@@ -185,6 +215,7 @@ impl Store {
         let load = |count: &AtomicU64| count.load(Ordering::Relaxed);
         Stats {
             requests: self.counts.requests.each_ref().map(load),
+            request_ns: self.counts.request_ns.each_ref().map(load),
             uploaded: self.counts.uploaded.each_ref().map(load),
             downloaded: load(&self.counts.downloaded),
         }
@@ -330,7 +361,7 @@ impl Bucket for Store {
     fn get(&self, key: &str) -> impl Future<Output = Result<Object, Error>> + Send {
         let (store, path) = (self.store.clone(), self.path(key));
         async move {
-            self.counts.request(Request::Get);
+            let _timed = self.counts.request(Request::Get);
             let result = store.get_opts(&path, GetOptions::default()).await.map_err(error)?;
             let meta = self.meta(result.meta.clone());
             let bytes = result.bytes().await.map_err(error)?;
@@ -350,7 +381,7 @@ impl Bucket for Store {
             ByteRange::Suffix(n) => GetRange::Suffix(n),
         };
         async move {
-            self.counts.request(Request::GetRange);
+            let _timed = self.counts.request(Request::GetRange);
             let options = GetOptions { range: Some(range.clone()), ..GetOptions::default() };
             let result = match store.get_opts(&path, options).await {
                 // A store that reads no suffix of an object (Azure Blob Storage, TASK-46), which it
@@ -359,7 +390,7 @@ impl Bucket for Store {
                     if matches!(range, GetRange::Suffix(_)) =>
                 {
                     let GetRange::Suffix(len) = range else { unreachable!() };
-                    self.counts.request(Request::Head);
+                    let _head = self.counts.request(Request::Head);
                     let head = GetOptions { head: true, ..GetOptions::default() };
                     let size = store.get_opts(&path, head).await.map_err(error)?.meta.size;
                     let range = GetRange::Bounded(size.saturating_sub(len)..size);
@@ -377,7 +408,7 @@ impl Bucket for Store {
     fn head(&self, key: &str) -> impl Future<Output = Result<Meta, Error>> + Send {
         let (store, path) = (self.store.clone(), self.path(key));
         async move {
-            self.counts.request(Request::Head);
+            let _timed = self.counts.request(Request::Head);
             let options = GetOptions { head: true, ..GetOptions::default() };
             let result = store.get_opts(&path, options).await.map_err(error)?;
             Ok(self.meta(result.meta))
@@ -395,7 +426,7 @@ impl Bucket for Store {
         async move {
             // A listing of many objects takes a request for each page of them (1,000 on S3 and
             // GCS), which `object_store` does not say: counted as one.
-            self.counts.request(Request::List);
+            let _timed = self.counts.request(Request::List);
             let listed: Vec<ObjectMeta> =
                 store.list(path.as_ref()).try_collect().await.map_err(error)?;
             let mut metas: Vec<Meta> = listed.into_iter().map(|meta| self.meta(meta)).collect();
@@ -420,7 +451,7 @@ impl Bucket for Store {
         };
         let upload = Upload::of(key);
         async move {
-            self.counts.request(request);
+            let _timed = self.counts.request(request);
             let len = bytes.len() as u64;
             let options = PutOptions { mode, ..PutOptions::default() };
             let result =
@@ -433,7 +464,7 @@ impl Bucket for Store {
     fn delete(&self, key: &str) -> impl Future<Output = Result<(), Error>> + Send {
         let (store, path) = (self.store.clone(), self.path(key));
         async move {
-            self.counts.request(Request::Delete);
+            let _timed = self.counts.request(Request::Delete);
             let mut deleted = store.delete_stream(stream::once(async move { Ok(path) }).boxed());
             match deleted.next().await {
                 Some(Err(object_store::Error::NotFound { .. })) | Some(Ok(_)) | None => Ok(()),
@@ -509,7 +540,8 @@ pub(crate) mod tests {
     }
 
     /// FXDAX_REMOTE_LATENCY_MS adds its milliseconds to each request, as a farther object store's
-    /// would (TASK-62): a put and a get, two of them.
+    /// would (TASK-62): a put and a get, two of them; and each request's time is counted, by its
+    /// kind (TASK-165.11).
     #[test]
     fn requests_wait_the_latency_set() {
         // SAFETY: nextest runs each test in a process of its own, whose other threads don't read
@@ -524,6 +556,12 @@ pub(crate) mod tests {
         });
         let took = start.elapsed();
         assert!(took >= std::time::Duration::from_millis(100), "two requests took {took:?}");
+        let stats = store.stats();
+        let timed = |request| std::time::Duration::from_nanos(stats.request_ns(request));
+        for request in [Request::Create, Request::Get] {
+            assert!(timed(request) >= std::time::Duration::from_millis(50), "{request:?}");
+        }
+        assert_eq!(timed(Request::List), std::time::Duration::ZERO);
     }
 
     /// TASK-208: so does a file bucket's, its reads whole and ranged as well as its writes:
@@ -590,10 +628,15 @@ pub(crate) mod tests {
         );
         assert_eq!(stats.uploaded, [150, 11, 30, 13, 9]);
         assert_eq!(stats.downloaded, 70);
+        // Its line, each kind of request's time after the rest: as of times set here, as each
+        // request's time is its own.
+        let stats = Stats { request_ns: [10, 20, 30, 40, 50, 60, 70, 80], ..stats };
         assert_eq!(
             stats.line(),
             "object-store: get=2 get-range=1 head=1 list=1 create=5 update=1 overwrite=1 delete=1 \
-             up-segments=150 up-extents=11 up-checkpoints=30 up-moves=13 up-other=9 down=70"
+             up-segments=150 up-extents=11 up-checkpoints=30 up-moves=13 up-other=9 down=70 \
+             get-ns=10 get-range-ns=20 head-ns=30 list-ns=40 create-ns=50 update-ns=60 \
+             overwrite-ns=70 delete-ns=80"
         );
     }
 
