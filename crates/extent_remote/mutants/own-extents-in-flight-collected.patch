@@ -1,0 +1,15 @@
+# The collector deletes an extent stored on its own that no state names yet, though the segment
+# naming it may still land: an acknowledged commit's extent gone (TASK-79.3, TASK-150.1's class),
+# which the check after each step finds, the branch's object missing.
+# Killer: sim::forks_racing_collection
+--- a/crates/extent_remote/src/collector.rs
++++ b/crates/extent_remote/src/collector.rs
+@@ -626,7 +626,7 @@
+                         && (!named || moved_long_ago(key))
+                 }
+                 // Once no segment will name it.
+-                Kind::Extent { .. } => !named && !self.may_land(bucket, kind).await?,
++                Kind::Extent { .. } => !named,
+                 // Moves go once no state's way goes through them, and they are compacted in turn,
+                 // or what they are of is gone and they hold no extent a state names.
+                 Kind::Moves { from } => {

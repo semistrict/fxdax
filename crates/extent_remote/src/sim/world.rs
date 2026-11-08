@@ -10,6 +10,7 @@
 use super::bucket::{Direct, Fault, SimBucket};
 use crate::batch::{Batch, Commit, Data, Unframed};
 use crate::collector::{self, Options};
+use crate::fetch::{Budget, Limits};
 use crate::layout::{self, Child, Footer, Location, Origin};
 use crate::record::Kind;
 use crate::wal::Wal;
@@ -178,13 +179,26 @@ struct Truth {
     capacity: Option<u64>,
 }
 
-#[derive(Default)]
 struct Host {
     /// Each branch's write-ahead log, on the host's disk (doc-14): the segments of its commits
     /// made here, closed, not yet acknowledged, each with its data. Every branch a writer took
     /// here has one, empty once all is acknowledged.
     wals: HashMap<u64, Wal<Data>>,
     sessions: BTreeMap<u64, Session>,
+    /// The PUTs its writers upload objects with, as a host's share one budget
+    /// (`extent_store::upload`): a few at once, so that uploads wait for each other's to be done,
+    /// and are woken as they are (TASK-149.32).
+    uploads: Arc<Budget>,
+}
+
+/// How many PUTs a host's writers have in flight at once ([`Host::uploads`]).
+const UPLOADS_AT_ONCE: usize = 2;
+
+impl Default for Host {
+    fn default() -> Self {
+        let limits = Limits { requests: UPLOADS_AT_ONCE, bytes: u64::MAX };
+        Self { wals: HashMap::new(), sessions: BTreeMap::new(), uploads: Budget::new(limits) }
+    }
 }
 
 /// A branch's writer on a host, and its guest.
@@ -354,7 +368,24 @@ pub struct World {
     faults: bool,
     /// Whether everything is finishing: then every live branch must open.
     quiescing: bool,
+    /// The tasks spawned and not done, aborted or dropped, by number, each with where it was
+    /// spawned: one still here once every request is done waits for a wake nothing will give
+    /// (TASK-149.32).
+    tasks: Rc<RefCell<BTreeMap<u64, &'static std::panic::Location<'static>>>>,
+    next_task: u64,
     pub violations: Vec<String>,
+}
+
+/// A task's place in [`World::tasks`], which it gives up as it is dropped: done, or aborted.
+struct Running {
+    tasks: Rc<RefCell<BTreeMap<u64, &'static std::panic::Location<'static>>>>,
+    number: u64,
+}
+
+impl Drop for Running {
+    fn drop(&mut self) {
+        self.tasks.borrow_mut().remove(&self.number);
+    }
 }
 
 impl World {
@@ -380,6 +411,8 @@ impl World {
             next_id: 1,
             faults: true,
             quiescing: false,
+            tasks: Rc::default(),
+            next_task: 0,
             violations: Vec::new(),
         };
         let (root, owner) = (world.id(), world.id());
@@ -507,16 +540,25 @@ impl World {
 
     // Tasks.
 
+    /// Spawns `task`, counted among the [`World::tasks`] until it is done or aborted, by where
+    /// it was spawned.
+    #[track_caller]
     fn spawn(&mut self, task: impl Future<Output = ()> + 'static) -> AbortHandle {
         let (task, handle) = abortable(task);
+        self.next_task += 1;
+        let number = self.next_task;
+        self.tasks.borrow_mut().insert(number, std::panic::Location::caller());
+        let running = Running { tasks: self.tasks.clone(), number };
         self.spawner
             .spawn_local(async move {
+                let _running = running;
                 let _ = task.await;
             })
             .unwrap();
         handle
     }
 
+    #[track_caller]
     fn spawn_session(
         &mut self,
         host: usize,
@@ -1165,8 +1207,10 @@ impl World {
         };
         self.hosts[host].sessions.insert(branch, started);
         let (bucket, events) = (self.bucket.clone(), self.events.clone());
+        let uploads = self.hosts[host].uploads.clone();
         self.spawn_session(host, branch, async move {
-            let result = Writer::open(bucket, branch, holder, token).await.map(Arc::new);
+            let opened = Writer::open(bucket, branch, holder, token).await;
+            let result = opened.map(|writer| Arc::new(writer.uploading_within(uploads)));
             events.borrow_mut().push(Event::Opened { host, branch, session, token, result });
         });
     }
@@ -1669,6 +1713,9 @@ impl World {
                     continue;
                 }
                 for (extent, location) in &writer.state().extents {
+                    // Not one its guest freed: the writer's state lags what landed, unacknowledged
+                    // yet, whose free a collector may already have reclaimed (seed 4116 of
+                    // `everything` at 25x, TASK-149.32).
                     let Some(bytes) = session.guest.held.get(extent) else { continue };
                     match block_on(crate::read(&direct, *extent, location)) {
                         Ok(read) if read == *bytes => {}
@@ -1816,9 +1863,24 @@ impl World {
             self.settle();
             self.check_report(&before, reported.take());
         }
+        self.check_woken();
         self.check();
         self.check_garbage();
         self.check_compacted();
+    }
+
+    /// Checks that every task is done once everything settled, every request done and nothing
+    /// failing (TASK-149.32): an upload, an acknowledgement, a checkpoint, a fork, a deletion or a
+    /// collection still waiting then waits for a wake nothing will give. Its run would only end,
+    /// its check reading nothing of what it waited to do.
+    fn check_woken(&mut self) {
+        self.settle();
+        let waiting: Vec<String> = (self.tasks.borrow().values())
+            .map(|spawned| format!("{}:{}", spawned.file(), spawned.line()))
+            .collect();
+        if !waiting.is_empty() {
+            self.violation(format!("tasks still wait, everything settled: spawned at {waiting:?}"));
+        }
     }
 
     /// Checks that a pass of the collector that ran alone, the bucket holding `before` as it

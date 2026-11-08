@@ -1,0 +1,14 @@
+# An upload's place in its host's budget, given up as its PUT is done, lets no waiting upload go:
+# those behind it wait for ever, their segments never landing, and the run's end finds them still
+# waiting (TASK-149.32).
+# Killer: sim::everything
+--- a/crates/extent_remote/src/fetch.rs
++++ b/crates/extent_remote/src/fetch.rs
+@@ -111,7 +111,6 @@
+             let mut queues = budget.queues.lock().unwrap();
+             queues.requests -= 1;
+             queues.bytes -= self.bytes;
+-            budget.admit(&mut queues);
+         }
+     }
+ }

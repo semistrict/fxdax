@@ -82,6 +82,7 @@ if part scripts; then
     "$root/crates/fxfs-posix/mutants.sh" --check
     "$root/crates/fxfs-sim-diff/mutants.sh" --check
     "$root/crates/fxdax/mutants.sh" --check
+    "$root/crates/extent_remote/mutants.sh" --check
     "$root/scripts/guest-mutants-gce.py" --check
 fi
 # The Go client of the daemon's control API (TASK-219): its generated code as the .proto generates

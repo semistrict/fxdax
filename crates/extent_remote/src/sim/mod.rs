@@ -5,7 +5,12 @@
 //! A deterministic simulation of branches in object storage (TASK-28.1): doc-7's protocol run by
 //! writers, forks, takeovers, deletions and collectors over a bucket that delays, reorders and
 //! fails requests, checked after every step against what each branch's guests did and were told,
-//! and, once everything stops, for garbage left behind.
+//! every object a branch's acknowledged segments name there, and what its live writer names of its
+//! guest's read back (TASK-149.32);
+//! and, once everything stops, for garbage left behind, and for tasks still waiting: an upload, an
+//! acknowledgement or anything else nothing will wake. A host's writers upload within one budget,
+//! a few PUTs at once, so that uploads wait for each other. `crates/extent_remote/mutants.sh` puts
+//! back a bug of each kind, and sees a test fail.
 //!
 //! Each case doc-7 lists is a profile that makes it likely, run over many seeds; each rule of the
 //! protocol has a test that turns it off and expects some seed to find the violation it prevents.
