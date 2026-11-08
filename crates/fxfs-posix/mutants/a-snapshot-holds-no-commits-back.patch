@@ -1,7 +1,7 @@
 --- a/crates/fxfs/src/object_store/volume/snapshot.rs
 +++ b/crates/fxfs/src/object_store/volume/snapshot.rs
-@@ -49,10 +49,6 @@
- 
+@@ -56,10 +56,6 @@ impl RootVolume {
+         filesystem.journal().check_journal_space().await?;
          // fxdax: the source's commits held back until the snapshot commits, taken before the flush
          // lock: a commit in flight may compact the journal, which flushes the source (TASK-241).
 -        let _commits = filesystem
