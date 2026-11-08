@@ -12,3 +12,10 @@ fix "failed without the fix" only by this, and passed with the bug back once the
 **Why it's dead:** `Fxfs::sync` starts frees rather than finishing them, and a device that yields
 lets the test see that. The check loops over a sync and `Allocator::freed` until nothing is dead.
 **Reopen if:** The check still reports extents with nothing dead: those are real orphans.
+
+**Reopened 2026-11-07 (TASK-149.41):** with nothing dead, a replay of a cut made during a replay held
+2 extents Fxfs didn't know: real orphans, of another kind. The replay that was cut had found them, of
+the range before its floor, and minted its own past the floor before a frees' flush; the next mount
+sought orphans in the 2^16 sequence numbers below the device's next alone, all past the floor. Fixed
+by seeking past what the tree holds too (`allocator::orphan_windows`). The theory here stays dead for
+the extents it was about: dead and waiting for a flush.

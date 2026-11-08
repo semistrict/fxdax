@@ -397,8 +397,22 @@ impl SortByU64 for AllocatorKey {
     }
 }
 
-/// fxdax: the most sequence numbers a mount looks for orphans among, up to the device's next.
+/// fxdax: the most sequence numbers a mount looks for orphans among in each of its windows
+/// ([`orphan_windows`]).
 const MAX_ORPHANS_SOUGHT: u64 = 1 << 16;
+
+/// fxdax: the sequence numbers a mount looks for orphans among, those from `start`, past the
+/// allocations the tree holds, to the device's `next`: the first [`MAX_ORPHANS_SOUGHT`] of them,
+/// where a crash's orphans follow what it allocated; and the last as many, where a mount that
+/// crashed minted its own, past its floor, another writer's range, far past the last. One window,
+/// if the two meet. Orphans what replay discarded names wait for the journal to record the discard,
+/// past the mount's floor: a mount cut short after recording it left them, of the range before,
+/// which a search below the device's next alone never found again (TASK-149.41).
+fn orphan_windows(start: u64, next: u64) -> Vec<std::ops::Range<u64>> {
+    let first = start..start.saturating_add(MAX_ORPHANS_SOUGHT).min(next);
+    let last = next.saturating_sub(MAX_ORPHANS_SOUGHT).max(start)..next;
+    if last.start <= first.end { vec![start..next] } else { vec![first, last] }
+}
 
 const EXTENT_HASH_BUCKET_SIZE: BlockSize = BlockSize::SIZE_1MIB;
 
@@ -751,6 +765,8 @@ struct Inner {
     info: AllocatorInfo,
     /// fxdax: `info`'s next sequence number before replay, where orphans may start.
     next_sequence_opened: u64,
+    /// fxdax: the sequence numbers the mount sought orphans among ([`orphan_windows`]).
+    orphans_sought: Vec<std::ops::Range<u64>>,
 
     /// The allocator can only be opened if there have been no allocations and it has not already
     /// been opened or initialized.
@@ -942,6 +958,7 @@ impl Allocator {
             inner: Mutex::new(Inner {
                 info: AllocatorInfo::default(),
                 next_sequence_opened: 0,
+                orphans_sought: Vec::new(),
                 opened: false,
                 owner_bytes: BTreeMap::new(),
                 unattributed_reserved_bytes: 0,
@@ -1093,15 +1110,16 @@ impl Allocator {
     ) -> Result<(), Error> {
         let filesystem = self.filesystem.upgrade().unwrap();
         // Minting resumes past every extent of the branch the device holds, including those a
-        // crash left, whose transactions were lost: orphans, which die. They are freed with the
-        // flush the mount makes (`Journal::flush_for_frees`), once the journal records what replay
-        // discarded, and the flush (see `Journal::flush_device`): replay verifies the checksums of
-        // writes to them otherwise.
+        // crash left, whose transactions were lost: orphans, which die. Those what replay discarded
+        // names are freed with the flush the mount makes (`Journal::flush_for_frees`), once the
+        // journal records the discard, and the flush (see `Journal::flush_device`): replay
+        // verifies the checksums of writes to them otherwise. The rest are freed now, and their
+        // frees sealed, before the mount writes past its floor (below).
         // fxdax: and past the device's floor, another writer's range's start, which no extent the
         // device holds need reach: orphans are looked for below what it holds only.
         let device_next_sequence = filesystem.device().next_sequence().await?;
         let floor = filesystem.device().sequence_floor().await?;
-        {
+        let orphans = {
             let mut inner = self.inner.lock();
             // Check allocated_bytes fits within the device. fxdax: as replay leaves them, which a
             // shrink holds to (`set_device_size`), and not as the last compaction recorded them.
@@ -1122,18 +1140,19 @@ impl Allocator {
             // last compaction, or since the oldest extent alive if it is older, as a filesystem's
             // first extent may be millions past nothing, and of few of those at most.
             let lowest = inner.extents.lowest_sequence(self.branch()).unwrap_or(next_sequence);
-            let start = inner
-                .next_sequence_opened
-                .max(lowest)
-                .min(next_sequence)
-                .max(device_next_sequence.saturating_sub(MAX_ORPHANS_SOUGHT));
+            let start = inner.next_sequence_opened.max(lowest).min(next_sequence);
             inner.extents.settle_replay(discarded);
-            let orphans = inner.extents.kill_orphans(self.branch(), start..device_next_sequence);
+            let mut orphans = 0;
+            inner.orphans_sought = orphan_windows(start, device_next_sequence);
+            for sought in inner.orphans_sought.clone() {
+                orphans += inner.extents.kill_orphans(self.branch(), sought, discarded);
+            }
             if orphans > 0 {
                 info!(count = orphans; "Extents a crash left will be freed");
             }
             assert_eq!(std::mem::replace(&mut inner.opened, true), false);
-        }
+            orphans
+        };
         // What the mount found dead is freed now, unless what replay discarded names it, however it
         // died, when it waits for the journal to record the discard, and the mount's flush frees it
         // (`Journal::flush_for_frees`): the rest at once, as a full device's mount needs its room
@@ -1142,6 +1161,17 @@ impl Allocator {
             self.free_dead(&*filesystem.device(), 0, false)
                 .await
                 .context("Failed to free dead extents")?;
+            // fxdax: the orphans' frees sealed before the mount writes anything, which it does past
+            // its floor, another writer's range, as a lease may move at any mount: orphans are
+            // sought below the device's next alone, so that a mount cut short after writing there
+            // left those it had found, of the range before, unfreed and never sought again, in room
+            // no one counts (TASK-149.41). Sealed, a compaction doesn't record them dying either
+            // (TASK-149.3).
+            if orphans > 0 {
+                self.will_flush_device();
+                filesystem.device().flush().await.context("sealing the orphans' frees")?;
+                self.sealed();
+            }
         }
         Ok(())
     }
@@ -1790,6 +1820,12 @@ impl Allocator {
     /// fxdax: the current data owners of the stores snapshots gave new ones, by store object id.
     pub fn data_owners(&self) -> BTreeMap<u64, u64> {
         self.inner.lock().info.data_owners.clone()
+    }
+
+    /// fxdax: the sequence numbers of this allocator's branch the mount sought orphans among, for
+    /// tests that look for extents no one knows (TASK-149.41).
+    pub fn orphans_sought(&self) -> Vec<std::ops::Range<u64>> {
+        self.inner.lock().orphans_sought.clone()
     }
 
     /// fxdax: the extents alive, with their owners and the bytes of them allocated, for fsck.
@@ -2859,6 +2895,97 @@ mod tests {
 
     fn extent(sequence: u64) -> ExtentId {
         ExtentId::new(DEFAULT_BRANCH, sequence)
+    }
+
+    /// fxdax: orphans are sought past what the tree holds, and below the device's next, and in one
+    /// window if those meet.
+    #[test]
+    fn test_orphan_windows() {
+        let most = super::MAX_ORPHANS_SOUGHT;
+        assert_eq!(super::orphan_windows(10, 20), vec![10..20]);
+        assert_eq!(super::orphan_windows(10, 10), vec![10..10]);
+        assert_eq!(super::orphan_windows(0, 2 * most), vec![0..2 * most]);
+        assert_eq!(
+            super::orphan_windows(5, (1 << 40) + 7),
+            vec![5..5 + most, (1 << 40) + 7 - most..(1 << 40) + 7]
+        );
+    }
+
+    /// fxdax: a mount frees the orphans it found, and seals their frees with a flush, before it
+    /// writes anything, which it does past its floor once a lease has moved, or in what the
+    /// journal holds (TASK-149.41). A mount
+    /// cut short after writing there left the orphans of the range before unfreed, and the next
+    /// sought orphans below the device's next alone, past the floor: they stayed on the device,
+    /// in room no one counts, as fxfs-posix's model test found of power cuts during replays.
+    #[fuchsia::test]
+    async fn test_orphans_are_freed_and_sealed_before_a_mount_writes() {
+        use std::sync::Mutex;
+        use std::sync::atomic::AtomicBool;
+        use storage_device::fake_device::Op;
+
+        #[derive(Clone, Copy, Debug, PartialEq)]
+        enum Event {
+            Free,
+            Flush,
+            Write(ExtentId),
+        }
+        let (log, recording) = (Arc::new(Mutex::new(Vec::new())), Arc::new(AtomicBool::new(false)));
+        let floor = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let mut device = FakeDevice::new(4096, 4096).calm().with_sequence_floor(floor.clone());
+        let (ops, on) = (log.clone(), recording.clone());
+        device.set_op_callback(move |op| {
+            let event = match op {
+                Op::Free => Some(Event::Free),
+                Op::Flush => Some(Event::Flush),
+                _ => None,
+            };
+            if let Some(event) = event.filter(|_| on.load(Ordering::Relaxed)) {
+                ops.lock().unwrap().push(event);
+            }
+            Ok(())
+        });
+        let (writes, on) = (log.clone(), recording.clone());
+        device.set_write_hook(move |extent| {
+            if on.load(Ordering::Relaxed) {
+                writes.lock().unwrap().push(Event::Write(extent));
+            }
+            Box::pin(async {})
+        });
+        let fs =
+            FxFilesystem::new_empty(DeviceHolder::new(device)).await.expect("new_empty failed");
+        fs.close().await.expect("close failed");
+        let device = fs.take_device().await;
+        device.reopen(false);
+        let held = device.next_sequence().await.expect("next_sequence failed");
+        let orphans = [extent(held), extent(held + 1)];
+        let buffer = device.allocate_buffer(device.block_size() as usize).await;
+        for orphan in orphans {
+            device.write(orphan, 0, buffer.as_ref()).await.expect("write failed");
+        }
+        drop(buffer);
+        floor.store(1 << 40, Ordering::Relaxed);
+
+        recording.store(true, Ordering::Relaxed);
+        let fs = FxFilesystemBuilder::new().open(device).await.expect("open failed");
+        commit_allocation(&fs).await;
+        fs.sync(SyncOptions { flush_device: true, ..Default::default() })
+            .await
+            .expect("sync failed");
+        recording.store(false, Ordering::Relaxed);
+        let log = log.lock().unwrap().clone();
+        let first_write = log.iter().position(|event| matches!(event, Event::Write(_)));
+        let first_write = first_write.expect("the mount wrote nothing");
+        let before = &log[..first_write];
+        let freed = before.iter().position(|event| *event == Event::Free);
+        let freed = freed.unwrap_or_else(|| panic!("no free before the first write: {log:?}"));
+        assert!(
+            before[freed..].contains(&Event::Flush),
+            "the orphans' frees weren't sealed before the first write: {log:?}"
+        );
+        for orphan in orphans {
+            assert!(!device_holds(&fs.device(), orphan).await, "{orphan:?} isn't freed");
+        }
+        fs.close().await.expect("close failed");
     }
 
     /// fxdax: a filesystem reopened on a device whose floor is far past what it holds, as when

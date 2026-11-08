@@ -1210,6 +1210,8 @@ struct Tally {
     second_cuts: Cell<u64>,
     /// The cuts that left a file or a directory open that no name linked.
     cuts_of_the_unlinked: Cell<u64>,
+    /// Extents replays of cuts during replays held that no mount sought (TASK-149.41.1).
+    unsought_orphans: Cell<u64>,
     refused: Cell<u64>,
     /// The barriers with anything to lose, of sequences cut at every one.
     barriers: Cell<u64>,
@@ -1434,8 +1436,13 @@ impl Setting {
     }
 
     /// Checks that `ops` hold here.
+    /// That `ops` hold, and that no replay left an extent no mount sought (TASK-149.41.1), which
+    /// the random runs count rather than fail for: a pinned sequence leaves none, but the one that
+    /// shows that task.
     fn holds(self, ops: Vec<Op>) {
-        assert_eq!(self.run(ops, Rc::default()), Ok(()), "{self:?}");
+        let tally = Rc::new(Tally::default());
+        assert_eq!(self.run(ops, tally.clone()), Ok(()), "{self:?}");
+        assert_eq!(tally.unsought_orphans.get(), 0, "extents no mount sought: {self:?}");
     }
 }
 
@@ -2142,6 +2149,26 @@ impl World {
                 allocator.get_disk_bytes(),
                 allocator.get_allocated_bytes(),
             )),
+        }
+    }
+
+    /// `holds_no_orphans`, but for extents outside every window of sequence numbers the mount sought
+    /// orphans among, whose number it returns: those that transactions a replay discarded name, of a
+    /// writer's range between two others, that a cut past the replay's recorded tail left before
+    /// their frees (TASK-149.41.1). One in a window, which the mount sought, fails.
+    async fn holds_no_orphans_but_unsought(&self) -> Result<u64, String> {
+        let Err(error) = self.holds_no_orphans().await else { return Ok(0) };
+        let device = self.filesystem.device();
+        let known = self.filesystem.allocator().extents();
+        let sought = self.filesystem.allocator().orphans_sought();
+        let (branch, held) = (device.branch(), device.extents());
+        let orphans: Vec<_> =
+            held.iter().filter(|e| e.branch == branch && !known.contains_key(e)).collect();
+        let in_sought =
+            |e: &&storage_device::ExtentId| sought.iter().any(|w| w.contains(&e.sequence));
+        match orphans.iter().any(in_sought) {
+            true => Err(format!("{error}, sought {sought:?}")),
+            false => Ok(orphans.len() as u64),
         }
     }
 
@@ -2941,8 +2968,12 @@ impl Past {
             let mut again = again.map_err(|e| format!("cut during its replay: {e}"))?;
             again.cut = true;
             // As the replay it cut was: what a truncate cut short left to trim, the graveyard
-            // trims after the mount, the file counting its blocks until then.
-            again.lets_go().await.map_err(|e| format!("cut during its replay: {e}"))?;
+            // trims after the mount, the file counting its blocks until then; and it holds no
+            // extent Fxfs doesn't know, the orphans the replay it cut found among them, which it
+            // had minted past (TASK-149.41), but those of TASK-149.41.1.
+            let unsought = again.holds_no_orphans_but_unsought().await;
+            let unsought = unsought.map_err(|e| format!("cut during its replay: {e}"))?;
+            tally.unsought_orphans.set(tally.unsought_orphans.get() + unsought);
             again.check_all().await.map_err(|e| format!("cut during its replay: {e}"))?;
             again.unmount().await?;
         }
@@ -3073,8 +3104,9 @@ fn whatever_a_vfs_asks_reads_back_as_a_model_says() {
     let unlinked = tally.cuts_of_the_unlinked.get();
     println!(
         "{cuts} power cuts, {second_cuts} of replays, {unlinked} of files open with no name, {} \
-         refused",
-        tally.refused.get()
+         refused, {} extents left unsought (TASK-149.41.1)",
+        tally.refused.get(),
+        tally.unsought_orphans.get()
     );
     assert!(cuts > 0, "no power cut");
     assert!(second_cuts > 0, "no power cut of a replay");
@@ -4200,4 +4232,201 @@ fn a_commit_making_room_in_the_journal_syncs_without_committing() {
         Op::CloneToEnd { from: 13, to: 5, page: 25, to_page: 274877906946 },
     ];
     Setting::awkward(8580878931066154398, TIGHT).with_graveyard_of_seed().holds(ops);
+}
+
+/// A replay of a power cut made during the replay of a power cut holds no extent Fxfs doesn't know,
+/// across three writers' ranges: a mount found orphans of the second, minted past its floor in the
+/// third, and was cut before their frees; the next sought orphans below the device's next alone, in
+/// the third. Found by a hunt once the replays of cuts during replays were held to
+/// `holds_no_orphans` (TASK-149.41), its seed kept.
+#[test]
+fn orphans_a_cut_replay_found_are_freed_across_writers_ranges() {
+    let ops = vec![
+        Op::Mkdir(0),
+        Op::SetAttr {
+            node: 0,
+            change: Change {
+                valid: 22,
+                permissions: 592740,
+                uid: 0,
+                gid: 4294967294,
+                atime: 605274433419370234,
+                mtime: 2525524574,
+                ctime: 0,
+            },
+        },
+        Op::Remount,
+        Op::Fsync,
+        Op::Unlink(2),
+        Op::Punch { file: 8, page: 19, pages: 3 },
+        Op::CloneToEnd { from: 12, to: 5, page: 2251799813685246, to_page: 2251799813685241 },
+        Op::Rename(5, 19),
+        Op::Sync,
+        Op::Write { file: 0, at: 4294966230, len: 6018, byte: 31 },
+        Op::Open(8),
+        Op::Make {
+            name: 21,
+            make: Make {
+                kind: 0,
+                permissions: 591027,
+                uid: 4294967294,
+                gid: 65534,
+                rdev: 1683133175,
+            },
+        },
+        Op::Statfs,
+        Op::Crash,
+        Op::Close(13),
+        Op::Make {
+            name: 5,
+            make: Make { kind: 1, permissions: 2813, uid: 65534, gid: 0, rdev: 2362451879 },
+        },
+        Op::Truncate { file: 8, size: 9223372036854774438 },
+        Op::Write { file: 2, at: 9223372036854765833, len: 4096, byte: 200 },
+        Op::Create(0),
+        Op::Close(8),
+        Op::Mkdir(3),
+        Op::SetXattr { file: 8, name: 8, len: 257, byte: 204 },
+        Op::Remount,
+        Op::BadName { dir: 1, name: 0 },
+        Op::CloneToEnd { from: 1, to: 2, page: 20, to_page: 3 },
+        Op::Write { file: 12, at: 2100257, len: 57, byte: 244 },
+        Op::Exchange(4, 18),
+        Op::Write { file: 15, at: 39939, len: 4096, byte: 210 },
+        Op::Fill { file: 4, page: 35, pages: 12, stride: 1, byte: 71 },
+        Op::UnlinkLater(3),
+        Op::CloneToEnd { from: 4, to: 9, page: 16, to_page: 21 },
+        Op::Make {
+            name: 0,
+            make: Make { kind: 2, permissions: 132088, uid: 0, gid: 1899, rdev: 1988163531 },
+        },
+        Op::NodeXattr { node: 19, name: 4, change: XattrChange::Remove },
+        Op::Casefold { dir: 0, folds: true },
+        Op::SetXattr { file: 11, name: 11, len: 3242, byte: 84 },
+    ];
+    Setting::awkward(15527335009487930946, 32768).with_graveyard_of_seed().holds(ops);
+}
+
+/// A replay holds no extent Fxfs doesn't know after a cut that came once the replay before had
+/// recorded its journal's tail, before it freed the orphans what it discarded names, which wait
+/// for that record: the next sought below the device's next alone, past the floor. Found by a hunt
+/// once the replays of cuts during replays were held to `holds_no_orphans` (TASK-149.41), its seed
+/// kept.
+#[test]
+fn orphans_a_discard_names_are_freed_after_a_cut_past_the_super_block() {
+    let ops = vec![
+        Op::Open(0),
+        Op::Create(44),
+        Op::RemoveXattr { file: 0, name: 0 },
+        Op::Fill { file: 0, page: 9, pages: 45, stride: 2, byte: 1 },
+        Op::Remount,
+        Op::Truncate { file: 0, size: 36865 },
+        Op::Write { file: 0, at: 2093057, len: 4096, byte: 0 },
+        Op::Create(0),
+        Op::FillWhileCompacting { file: 0, page: 0, pages: 14, byte: 0, flushing: false },
+    ];
+    Setting::awkward(16256079810524344455, 32768).with_graveyard_of_seed().holds(ops);
+}
+
+/// As `orphans_a_discard_names_are_freed_after_a_cut_past_the_super_block`, on a device whose
+/// requests fail. Found by the same hunt (TASK-149.41), its seed kept.
+#[test]
+fn orphans_a_cut_replay_found_are_freed_on_a_device_that_fails() {
+    let ops = vec![
+        Op::Create(4),
+        Op::Truncate { file: 3, size: 8029 },
+        Op::Crash,
+        Op::Punch { file: 0, page: 26, pages: 6 },
+        Op::Rename(0, 25),
+        Op::Fsync,
+        Op::Tmpfile(25),
+        Op::Write { file: 9, at: 45923, len: 4607, byte: 122 },
+        Op::Mkdir(41),
+        Op::Unlink(3),
+        Op::FillWhileCompacting { file: 9, page: 52, pages: 8, byte: 196, flushing: false },
+        Op::Fsync,
+        Op::Fsync,
+        Op::Rename(2, 3),
+        Op::Compact,
+        Op::Fill { file: 4, page: 10, pages: 3108, stride: 1, byte: 222 },
+        Op::Exchange(2, 1),
+        Op::Clone { from: 4, to: 1, page: 8, pages: 2, to_page: 9 },
+        Op::Fill { file: 0, page: 53, pages: 23, stride: 1, byte: 159 },
+        Op::Clone { from: 0, to: 5, page: 274877906946, pages: 7, to_page: 20 },
+        Op::Fsync,
+        Op::Sync,
+        Op::Make {
+            name: 1,
+            make: Make {
+                kind: 1,
+                permissions: 393787,
+                uid: 481,
+                gid: 4294967294,
+                rdev: 3514334670,
+            },
+        },
+        Op::Sync,
+        Op::ReadOn { cursor: 0, count: 4 },
+        Op::Fsync,
+        Op::Truncate { file: 12, size: 9223372036854775337 },
+        Op::Fsync,
+        Op::Make {
+            name: 1,
+            make: Make {
+                kind: 1,
+                permissions: 658827,
+                uid: 4294967294,
+                gid: 65534,
+                rdev: 665549476,
+            },
+        },
+        Op::FillWhileCompacting { file: 1, page: 28, pages: 4, byte: 241, flushing: false },
+        Op::Fsync,
+        Op::FillWhileCompacting { file: 3, page: 51, pages: 21, byte: 11, flushing: false },
+        Op::Punch { file: 12, page: 29, pages: 4 },
+        Op::Statfs,
+        Op::Exchange(3, 1),
+        Op::RemoveXattr { file: 0, name: 7 },
+        Op::NodeXattr { node: 9, name: 10, change: XattrChange::Set { len: 5652, byte: 95 } },
+        Op::Sync,
+        Op::ReadOn { cursor: 0, count: 3 },
+        Op::Fsync,
+        Op::Sync,
+    ];
+    Setting::awkward(11133504338176470938, 2048).with_graveyard_of_seed().failing().holds(ops);
+}
+
+/// Orphans that transactions a replay discarded name, of a writer's range between two others, stay
+/// unsought after a cut once that replay had recorded its journal's tail, before their frees: the
+/// next mount seeks past what the tree holds and below the device's next. Counted apart, as
+/// TASK-149.41.1 has them, until it's fixed; found by a hunt (TASK-149.41), its seed kept.
+#[test]
+fn orphans_named_by_a_discard_between_two_ranges_stay_unsought() {
+    let ops = vec![
+        Op::Tmpfile(0),
+        Op::Crash,
+        Op::Write { file: 0, at: 0, len: 1, byte: 0 },
+        Op::Compact,
+        Op::Remount,
+        Op::Create(2),
+        Op::Symlink(0),
+        Op::Read { file: 0, at: 4294963445, len: 11338 },
+        Op::Open(13),
+        Op::Write { file: 6, at: 24576, len: 55, byte: 9 },
+        Op::Mkdir(0),
+        Op::Create(5),
+        Op::Clone { from: 11, to: 12, page: 21, pages: 3, to_page: 27 },
+        Op::Link(14, 0),
+        Op::Fill { file: 4, page: 54, pages: 47, stride: 1, byte: 12 },
+        Op::ReadOn { cursor: 2, count: 0 },
+        Op::Casefold { dir: 1, folds: false },
+        Op::Rename(17, 9),
+        Op::Write { file: 13, at: 2096241, len: 6564, byte: 235 },
+        Op::FillWhileCompacting { file: 2, page: 6, pages: 29, byte: 161, flushing: true },
+    ];
+    let setting = Setting::awkward(15596825076520818603, 32768).with_graveyard_of_seed();
+    let tally = Rc::new(Tally::default());
+    assert_eq!(setting.run(ops, tally.clone()), Ok(()));
+    // The same 8, left by each of two replays cut during the replay.
+    assert_eq!(tally.unsought_orphans.get(), 16, "TASK-149.41.1's orphans");
 }

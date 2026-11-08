@@ -718,18 +718,35 @@ impl ExtentTable {
         records
     }
 
-    /// Kills the extents of `branch` with `sequences` that aren't alive: those a crash left, whose
-    /// transactions were lost, which are freed with the next flush of the device with a record of
-    /// it. Returns how many.
-    pub(super) fn kill_orphans(&mut self, branch: u64, sequences: Range<u64>) -> usize {
+    /// Kills the extents of `branch` with `sequences`, and those `discarded` names, of what replay
+    /// read and discarded, wherever they are, that aren't alive: those a crash left, whose
+    /// transactions were lost. Those `discarded` names, which a replay after may read again and
+    /// verify, are freed with the next flush of the device with a record of it; the rest at once,
+    /// as nothing a replay reads names them: the mount frees them and seals their frees before it
+    /// writes past its floor (`Allocator::on_replay_complete`). Of another writer's range than
+    /// `sequences`, those `discarded` names were found by no window (TASK-149.41). Returns how
+    /// many.
+    pub(super) fn kill_orphans(
+        &mut self,
+        branch: u64,
+        sequences: Range<u64>,
+        discarded: &HashSet<ExtentId>,
+    ) -> usize {
         let dying: HashSet<_> = self.dying().into_iter().collect();
-        let orphans: Vec<_> = sequences
+        let named = (discarded.iter().copied())
+            .filter(|extent| extent.branch == branch && !sequences.contains(&extent.sequence));
+        let orphans: Vec<_> = (sequences.clone())
             .map(|sequence| ExtentId::new(branch, sequence))
+            .chain(named)
             .filter(|extent| !self.is_alive(*extent) && !dying.contains(extent))
             .collect();
         for &extent in &orphans {
+            let free_after = match discarded.contains(&extent) {
+                true => FreeAfter::RecordedFlush(0),
+                false => FreeAfter::Now,
+            };
             self.queue_dead(DeadExtent {
-                free_after: FreeAfter::RecordedFlush(0),
+                free_after,
                 extent,
                 size: 0,
                 owner_object_id: INVALID_OBJECT_ID,
@@ -1449,11 +1466,40 @@ mod tests {
         table.check();
 
         let orphan = ExtentId::new(DEFAULT_BRANCH, 0);
-        assert_eq!(table.kill_orphans(DEFAULT_BRANCH, 0..2), 1);
-        let orphaned = (orphan, FreeAfter::RecordedFlush(0), 0, INVALID_OBJECT_ID);
+        assert_eq!(table.kill_orphans(DEFAULT_BRANCH, 0..2, &HashSet::new()), 1);
+        let orphaned = (orphan, FreeAfter::Now, 0, INVALID_OBJECT_ID);
         assert_eq!(table.dead_extents().last(), Some(&orphaned));
         table.mint_from(5);
         assert_eq!(table.mint(DEFAULT_BRANCH, &device), ExtentId::new(DEFAULT_BRANCH, 5));
+        table.check();
+    }
+
+    /// Orphans die where they are sought, and wherever what replay discarded names them, outside
+    /// that too, as another writer's range's are (TASK-149.41): those it names after a recorded
+    /// flush, the rest at once. Nothing alive, nor anything dying already, dies again.
+    #[fuchsia::test]
+    fn orphans_die_where_sought_and_where_what_replay_discarded_names_them() {
+        let device = FakeDevice::new(64, BS as u32);
+        let mut table = ExtentTable::default();
+        let alive = table.mint(DEFAULT_BRANCH, &device);
+        commit(&mut table, &ExtentRange::new(alive, 0..BS), Applied::Live(0));
+        let [sought, far, other_branch] = [
+            ExtentId::new(DEFAULT_BRANCH, 20),
+            ExtentId::new(DEFAULT_BRANCH, 1 << 40),
+            ExtentId::new(DEFAULT_BRANCH + 1, 1 << 40),
+        ];
+        let discarded = HashSet::from([alive, far, other_branch]);
+        assert_eq!(table.kill_orphans(DEFAULT_BRANCH, 20..21, &discarded), 2);
+        let mut dead = table.dead_extents();
+        dead.sort_by_key(|(extent, ..)| *extent);
+        assert_eq!(
+            dead,
+            [
+                (sought, FreeAfter::Now, 0, INVALID_OBJECT_ID),
+                (far, FreeAfter::RecordedFlush(0), 0, INVALID_OBJECT_ID),
+            ]
+        );
+        assert_eq!(table.kill_orphans(DEFAULT_BRANCH, 20..21, &discarded), 0, "killed twice");
         table.check();
     }
 
@@ -1484,8 +1530,9 @@ mod tests {
     /// journal's record of the discard comes before, if what replay discarded names it: an
     /// allocation discarded may be in it, which the next replay, after a crash before that record,
     /// reads and verifies (CI runs 41876989384 and 42196106048, TASK-210). Otherwise as it died,
-    /// what replay killed at once, as a replay after reads what it says of it as this one did.
-    /// Orphans, and the extents of owners deleted, wait for a recorded flush either way.
+    /// what replay killed at once, as a replay after reads what it says of it as this one did; and
+    /// so orphans, found after replay as what it discarded settled (TASK-149.41). The extents of
+    /// owners deleted wait for a recorded flush either way.
     #[fuchsia::test]
     fn a_mount_settles_what_it_found_dead_by_what_replay_discarded() {
         let device = FakeDevice::new(64, BS as u32);
@@ -1503,10 +1550,11 @@ mod tests {
             let range = ExtentRange::new(replayed, 0..BS);
             commit(&mut table, &range, Applied::Replayed);
             let _ = table.recount(&range, -1, Applied::Replayed).expect("recount failed");
-            assert_eq!(table.kill_orphans(DEFAULT_BRANCH, orphan.sequence..orphan.sequence + 1), 1);
             let all = [minted, empty, deleted, replayed, orphan];
             let discarded = if named { HashSet::from(all) } else { HashSet::new() };
             table.settle_replay(&discarded);
+            let sought = orphan.sequence..orphan.sequence + 1;
+            assert_eq!(table.kill_orphans(DEFAULT_BRANCH, sought, &discarded), 1);
 
             let recorded = FreeAfter::RecordedFlush(0);
             let mount = if named { recorded } else { FreeAfter::Now };
@@ -1519,12 +1567,13 @@ mod tests {
                     (empty, mount, BS, OWNER),
                     (deleted, recorded, BS, OTHER_OWNER),
                     (replayed, mount, BS, OWNER),
-                    (orphan, recorded, 0, INVALID_OBJECT_ID),
+                    (orphan, mount, 0, INVALID_OBJECT_ID),
                 ]
             );
             let mut now = table.start_freeing(u64::MAX, false);
             now.sort();
-            let expected: &[ExtentId] = if named { &[] } else { &[minted, empty, replayed] };
+            let expected: &[ExtentId] =
+                if named { &[] } else { &[minted, empty, replayed, orphan] };
             assert_eq!(now, expected);
             table.check();
         }
