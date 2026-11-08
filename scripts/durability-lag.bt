@@ -1,0 +1,127 @@
+#!/usr/bin/env bpftrace
+// Copyright 2026 The fxdax Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+//
+// What the extent daemon's slow flushes wait on, on its host (TASK-221): each fdatasync and fsync
+// past 50 ms, by thread, as it ends, with when it began and how many bytes it wrote; what the
+// daemon's threads write each second; ext4's journal commits, each past 50 ms
+// with how long each of its phases took (jbd2_run_stats: waiting to start, running, locked,
+// flushing the ordered data, logging); the discards ext4 issues, which a mount with `discard`
+// makes as a commit's blocks are freed; and the block layer's requests (below). Run
+// alongside guest tests with FXDAX_HOST_TRACE=scripts/durability-lag.bt
+// (scripts/lib/test-linux-host.sh), which keeps what it prints in RESULTS/host-trace.txt.
+
+config = {
+	max_map_keys = 65536
+}
+
+BEGIN
+{
+	@start = nsecs;
+}
+
+tracepoint:syscalls:sys_enter_fdatasync,
+tracepoint:syscalls:sys_enter_fsync
+{
+	@sync_began[tid] = nsecs;
+}
+
+tracepoint:syscalls:sys_exit_fdatasync,
+tracepoint:syscalls:sys_exit_fsync
+/@sync_began[tid]/
+{
+	$us = (nsecs - @sync_began[tid]) / 1000;
+	@sync_us[comm] = hist($us);
+	@sync_bytes_hist[comm] = hist(@sync_bytes[tid]);
+	if ($us > 50000) {
+		printf("sync %s tid %d began %d ms, took %d ms, writing %d bytes\n", comm, tid,
+		       (@sync_began[tid] - @start) / 1000000, $us / 1000, @sync_bytes[tid]);
+	}
+	delete(@sync_began[tid]);
+	delete(@sync_bytes[tid]);
+}
+
+// What a sync writes: the bios it submits, as it does, in its own thread.
+tracepoint:block:block_bio_queue
+/@sync_began[tid]/
+{
+	@sync_bytes[tid] = @sync_bytes[tid] + args.nr_sector * 512;
+}
+
+// What the daemon's and the VM processes' threads write to their files, by thread, each second:
+// the guests' writes (extentd io), the framings', and the rest.
+tracepoint:syscalls:sys_exit_pwrite64,
+tracepoint:syscalls:sys_exit_pwritev,
+tracepoint:syscalls:sys_exit_write
+/args.ret > 0 && (strncmp(comm, "extentd", 7) == 0 || strncmp(comm, "fxdax", 5) == 0)/
+{
+	@written_by_second[(nsecs - @start) / 1000000000, comm] = sum(args.ret);
+}
+
+// Times in jiffies (CONFIG_HZ 1000 on Ubuntu's kernels: ms).
+tracepoint:jbd2:jbd2_run_stats
+{
+	$all = args.running + args.locked + args.flushing + args.logging;
+	@commit_ms = hist($all);
+	@flushing_ms = hist(args.flushing);
+	@logging_ms = hist(args.logging);
+	if ($all > 50 || args.wait > 50) {
+		printf("commit %d at %d ms: wait %d, request_delay %d, running %d, locked %d, flushing %d, logging %d; handles %d, blocks %d\n",
+		       args.tid, (nsecs - @start) / 1000000, args.wait, args.request_delay,
+		       args.running, args.locked, args.flushing, args.logging,
+		       args.handle_count, args.blocks);
+	}
+}
+
+tracepoint:ext4:ext4_discard_blocks
+{
+	@discards = count();
+	@discarded_blocks = sum(args.count);
+	@discards_by_second[(nsecs - @start) / 1000000000] = sum(args.count);
+}
+
+// The block layer's requests: who issued how many bytes each second (the writing thread, or the
+// kernel's flusher, kworker, for background writeback), how long each took to complete by kind,
+// how many bytes were in flight as each was issued, and each past 100 ms as it completes.
+tracepoint:block:block_rq_issue
+{
+	@issued[args.dev, args.sector] = nsecs;
+	@issued_bytes[args.dev, args.sector] = args.bytes;
+	@in_flight = @in_flight + args.bytes;
+	$in_flight = @in_flight;
+	@in_flight_at_issue[args.dev, args.sector] = $in_flight;
+	@bytes_by_second[(nsecs - @start) / 1000000000, comm] = sum(args.bytes);
+	$second = (nsecs - @start) / 1000000000;
+	if ($in_flight > @peak_in_flight[$second]) {
+		@peak_in_flight[$second] = $in_flight;
+	}
+}
+
+tracepoint:block:block_rq_complete
+/@issued[args.dev, args.sector]/
+{
+	$us = (nsecs - @issued[args.dev, args.sector]) / 1000;
+	@rq_us[args.rwbs] = hist($us);
+	@in_flight = @in_flight - @issued_bytes[args.dev, args.sector];
+	if ($us > 100000) {
+		printf("request %s %d bytes at %d ms took %d ms, %d bytes in flight as it was issued\n",
+		       args.rwbs, @issued_bytes[args.dev, args.sector],
+		       (@issued[args.dev, args.sector] - @start) / 1000000, $us / 1000,
+		       @in_flight_at_issue[args.dev, args.sector]);
+	}
+	delete(@issued[args.dev, args.sector]);
+	delete(@issued_bytes[args.dev, args.sector]);
+	delete(@in_flight_at_issue[args.dev, args.sector]);
+}
+
+END
+{
+	clear(@sync_began);
+	clear(@sync_bytes);
+	clear(@issued);
+	clear(@issued_bytes);
+	clear(@in_flight_at_issue);
+	clear(@in_flight);
+	clear(@start);
+}

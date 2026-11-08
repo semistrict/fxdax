@@ -1455,8 +1455,24 @@ impl<D: Dir> Store<D> {
     /// (doc-7, Segments), and returns them.
     fn seal_open(&self, state: &mut State<D::File>) -> Result<Vec<ExtentId>, Error> {
         let sealing = state.uncommitted.open_extents();
+        // fxdax: what sealing copied, which the commit's flush syncs: said once past 8 MiB, which
+        // the flush of extentd's turn writes at once (TASK-221).
+        let (mut copies, mut copied, mut largest) = (0, 0, 0);
         for &extent in &sealing {
-            self.seal(state, extent)?;
+            let bytes = self.seal(state, extent)?;
+            copies += u64::from(bytes > 0);
+            copied += bytes;
+            largest = largest.max(bytes);
+        }
+        if copied > 8 << 20 {
+            log::warn!(
+                "extent store: branch {:#x}'s commit sealed {} extents, copying {copies} of them, \
+                 {} KiB, the largest {} KiB",
+                self.branch,
+                sealing.len(),
+                copied >> 10,
+                largest >> 10
+            );
         }
         Ok(sealing)
     }
@@ -1503,8 +1519,8 @@ impl<D: Dir> Store<D> {
     /// Seals `extent`, which a commit seals, in one run in the open segment, or in a file of its
     /// own, framed, if it is large, copying its data there unless it is. fxdax: or if the open
     /// segment has no room for it, as when the extents written since the last commit filled
-    /// others (TASK-79.2).
-    fn seal(&self, state: &mut State<D::File>, extent: ExtentId) -> Result<(), Error> {
+    /// others (TASK-79.2). Returns the bytes it copied, if it copied them.
+    fn seal(&self, state: &mut State<D::File>, extent: ExtentId) -> Result<u64, Error> {
         let Some(entry) = state.extents.get(&extent).cloned() else {
             // fxdax: opened by a write abandoned, none since: its raw file, if it has one, holds
             // nothing, and goes now, as the commit waited for the writes in progress; not with the
@@ -1516,18 +1532,18 @@ impl<D: Dir> Store<D> {
                     log::warn!("extent store: failed to remove {path}: {err}");
                 }
             }
-            return Ok(());
+            return Ok(0);
         };
         let large = entry.len >= self.options.large_extent;
         let open = state.segments.open_segment();
         match (&entry.data, state.uncommitted.placement(extent)) {
-            (Data::Remote(_), _) => return Ok(()),
+            (Data::Remote(_), _) => return Ok(0),
             // Written to a raw file of its own, which it is framed from.
             (Data::Own, Some(Placement::Own(raw))) => {
                 let raw = raw.clone();
                 self.write_own(state, extent, entry.len, |at, buf| raw.read_cached(buf, at))?;
                 state.unreferenced.doomed.push(open_extent_path(extent));
-                return Ok(());
+                return Ok(entry.len);
             }
             (Data::Pieces(pieces), _) if !large => {
                 let one_run = matches!(pieces[..], [piece] if piece.segment == open
@@ -1535,7 +1551,7 @@ impl<D: Dir> Store<D> {
                     && piece.len == entry.len);
                 if one_run {
                     state.segments.place(extent, &entry.data);
-                    return Ok(());
+                    return Ok(0);
                 }
             }
             _ => {}
@@ -1568,7 +1584,7 @@ impl<D: Dir> Store<D> {
         };
         state.segments.place(extent, &data_now);
         state.extents.get_mut(&extent).unwrap().data = data_now;
-        Ok(())
+        Ok(entry.len)
     }
 
     /// Writes `extent`'s own file, framed, of its `len` bytes, which `read` reads, by ranges, into
