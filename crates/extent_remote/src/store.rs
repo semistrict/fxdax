@@ -32,6 +32,8 @@ pub struct Store {
     counts: Counts,
     /// Whether [`Store::probed`] found it honours conditional writes: what it found holds.
     honoured: std::sync::atomic::AtomicBool,
+    /// fxdax: the checkpoints' states its recoveries decoded ([`Bucket::decoded`]).
+    decoded: crate::recovery::Decoded,
 }
 
 /// The kinds of request a store makes.
@@ -196,7 +198,8 @@ impl Store {
     /// The objects of `store` under `prefix`, a path of segments separated by `/`, or empty.
     pub fn new(store: Arc<dyn ObjectStore>, prefix: &str) -> Self {
         let prefix = prefix.trim_matches('/').to_owned();
-        Self { store, prefix, counts: Counts::default(), honoured: Default::default() }
+        let (counts, honoured, decoded) = Default::default();
+        Self { store, prefix, counts, honoured, decoded }
     }
 
     /// Checks that it honours the conditional writes branches rely on ([`probe`]), with an object
@@ -358,6 +361,10 @@ fn error(error: object_store::Error) -> Error {
 }
 
 impl Bucket for Store {
+    fn decoded(&self) -> Option<&crate::recovery::Decoded> {
+        Some(&self.decoded)
+    }
+
     fn get(&self, key: &str) -> impl Future<Output = Result<Object, Error>> + Send {
         let (store, path) = (self.store.clone(), self.path(key));
         async move {
@@ -738,6 +745,43 @@ pub(crate) mod tests {
             store.delete("leases/01").await.unwrap();
             store.delete("leases/01").await.unwrap();
             assert_eq!(store.head("leases/01").await.map(|_| ()), Err(Error::NotFound));
+        });
+    }
+
+    /// TASK-92.55: recoveries through a host's bucket decode a checkpoint once: the forks of a
+    /// base opened one after another start from its newest checkpoint, the second reading it not
+    /// again, and the same state; one written at the key again is read anew.
+    #[test]
+    fn recoveries_share_the_checkpoints_they_decode() {
+        let bucket = memory();
+        futures::executor::block_on(async {
+            branch::create(&*bucket, 1, 0).await.unwrap();
+            let writer = Writer::open(bucket.clone(), 1, 10, 1).await.unwrap();
+            let extent = ExtentId::new(1, writer.chain().next_sequence());
+            let commit = Commit { tag: 1, extents: vec![(extent, vec![1])], ..Commit::default() };
+            let seq = add(&writer, commit);
+            writer.upload(seq).await.unwrap();
+            writer.acknowledge().await.unwrap();
+            assert_eq!(writer.checkpoint().await, Ok(Some(seq)));
+            let gets = || bucket.stats().requests(Request::Get);
+            let mut read = Vec::new();
+            let mut states = Vec::new();
+            for _ in 0..2 {
+                let before = gets();
+                states.push(recovery::recover(&*bucket, 1, None).await.unwrap().state);
+                read.push(gets() - before);
+            }
+            assert_eq!(read, [1, 0], "the checkpoint's GETs, by recovery");
+            assert_eq!(states[0], states[1]);
+            assert_eq!(states[0].extents.keys().copied().collect::<Vec<_>>(), [extent]);
+            // Written again, it is another object.
+            let key = crate::layout::checkpoint(1, seq);
+            let bytes = bucket.get(&key).await.unwrap().bytes;
+            bucket.delete(&key).await.unwrap();
+            bucket.put(&key, bytes, PutMode::Create).await.unwrap();
+            let before = gets();
+            recovery::recover(&*bucket, 1, None).await.unwrap();
+            assert_eq!(gets() - before, 1, "a checkpoint written again is read");
         });
     }
 

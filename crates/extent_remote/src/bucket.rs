@@ -13,7 +13,7 @@ use std::future::Future;
 
 /// An object's version, which a conditional update names: S3 names it by its ETag, GCS by its
 /// generation.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub struct Version {
     pub e_tag: Option<String>,
     pub version: Option<String>,
@@ -111,6 +111,13 @@ pub trait Bucket: Send + Sync + 'static {
     fn pause(&self, failures: u32) -> impl Future<Output = ()> + Send {
         let _ = failures;
         std::future::ready(())
+    }
+
+    /// fxdax: the checkpoints' states the recoveries reading through it decoded, which they share,
+    /// if it keeps them: a host's bucket does, so that the forks of a base it opens decode the
+    /// checkpoint they start from once (TASK-92.55).
+    fn decoded(&self) -> Option<&crate::recovery::Decoded> {
+        None
     }
 }
 

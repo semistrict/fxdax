@@ -1071,7 +1071,7 @@ mod tests {
             collect(&*passing, 1, &KEEP).now_or_never().unwrap().unwrap();
         }));
         let recovered = recovery::recover(&*bucket, 2, Some(Origin { parent: 1, at })).await?;
-        Ok(recovered.state.extents.into_keys().collect())
+        Ok(recovered.state.extents.keys().copied().collect())
     }
 
     /// TASK-178: a deletion that finds a branch live, as a placement cut off does once the latest

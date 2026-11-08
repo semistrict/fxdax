@@ -18,14 +18,14 @@
 //! them. A reader that finds a segment missing checks that no checkpoint newer than the one it
 //! started from has come: if one has, the segment may be one it covers, gone, and it starts again.
 
-use crate::bucket::{self, Bucket, Created};
+use crate::bucket::{self, Bucket, Created, Meta, Version};
 use crate::layout::{self, Chain, Contents, Footer, Fork, Location, Origin, Segment};
 use crate::record::Record;
 use crate::{Error, object, rules};
 use extent_frame::spent::Spent;
 use futures::future::{BoxFuture, FutureExt as _, Shared};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
+use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 use storage_device::ExtentId;
 
@@ -58,7 +58,7 @@ pub struct State<P = Extents> {
 }
 
 /// Where a branch's extents are in the bucket.
-pub type Extents = BTreeMap<ExtentId, Location>;
+pub type Extents = imbl::OrdMap<ExtentId, Location>;
 
 /// Where a branch's extents are, as a replay of its segments places them ([`State::apply`]).
 pub trait Places {
@@ -267,16 +267,17 @@ impl Layered {
         }
     }
 
-    /// Where its extents are, in one: what it inherited and holds still, and its own.
+    /// Where its extents are, in one: what it inherited and holds still, and its own. What it
+    /// inherited is shared, not copied: the map is persistent, so this costs what its own layer
+    /// holds, not what it inherited (TASK-92.55).
     fn flatten(self) -> Extents {
-        let Self { inherited, mut own, shadowed } = self;
+        let Self { inherited, own, shadowed } = self;
         let Some(inherited) = inherited else { return own };
-        let mut extents = Arc::unwrap_or_clone(inherited).extents;
+        let mut extents = inherited.extents.clone();
         for extent in &shadowed {
             extents.remove(extent);
         }
-        extents.append(&mut own);
-        extents
+        own.union(extents)
     }
 }
 
@@ -365,20 +366,31 @@ impl<'a, B: Bucket> Checkpoints<'a, B> {
         Self { bucket, keep, read: Mutex::default() }
     }
 
-    /// The state checkpoint `key` of `branch` holds, if it is there: read now, or by the read of
-    /// it in flight or kept. One gone, or that failed, is read anew the next time.
-    async fn read(&self, key: &str, branch: u64) -> Result<Option<Arc<State>>, Error> {
+    /// The state the checkpoint `listed` of `branch` holds, if it is there: read now, or by the
+    /// read of it in flight or kept, or as the bucket decoded it before ([`Bucket::decoded`]). One
+    /// gone, or that failed, is read anew the next time.
+    async fn read(&self, listed: &Meta, branch: u64) -> Result<Option<Arc<State>>, Error> {
+        let key = &listed.key;
         let flight = {
             let mut read = self.read.lock().unwrap();
             match read.flights.get(key) {
                 Some(flight) => flight.clone(),
                 None => {
-                    let (bucket, read_key) = (self.bucket, key.to_owned());
+                    let bucket = self.bucket;
+                    let listed = listed.clone();
                     let flight = async move {
-                        let Some(object) = bucket::get(bucket, &read_key).await else {
+                        let decoded = bucket.decoded();
+                        if let Some(state) = decoded.and_then(|decoded| decoded.get(&listed)) {
+                            return Ok(Some(state));
+                        }
+                        let Some(object) = bucket::get(bucket, &listed.key).await else {
                             return Ok(None);
                         };
-                        Ok(Some(Arc::new(checkpoint(&read_key, &object.bytes, branch)?)))
+                        let state = Arc::new(checkpoint(&listed.key, &object.bytes, branch)?);
+                        if let Some(decoded) = decoded {
+                            decoded.keep(&object.meta, &state);
+                        }
+                        Ok(Some(state))
                     };
                     let flight = flight.boxed().shared();
                     if self.keep > 0 {
@@ -400,6 +412,51 @@ impl<'a, B: Bucket> Checkpoints<'a, B> {
             read.order.retain(|kept| kept != key);
         }
         state
+    }
+}
+
+/// fxdax: the states checkpoints hold, decoded, which the recoveries reading through a bucket
+/// share ([`Bucket::decoded`]), by the objects they were decoded from: a checkpoint's key with its
+/// version, so that an object written at the key again is not taken for the one before, and none
+/// of an object the bucket names no version of. A state's extents are a persistent map, which a
+/// recovery starting from it takes for nothing; the last [`Decoded::KEEP`] decoded are kept: those
+/// the forks being opened start from (TASK-92.55).
+#[derive(Default)]
+pub struct Decoded {
+    kept: Mutex<Kept>,
+}
+
+/// The states [`Decoded`] keeps, by their objects, and those, oldest first.
+#[derive(Default)]
+struct Kept {
+    states: HashMap<(String, Version), Arc<State>>,
+    order: VecDeque<(String, Version)>,
+}
+
+impl Decoded {
+    /// How many states it keeps: a host's forks open from a few bases' newest checkpoints at once.
+    const KEEP: usize = 16;
+
+    /// The state the object `meta` names holds, if it kept it.
+    fn get(&self, meta: &Meta) -> Option<Arc<State>> {
+        let kept = self.kept.lock().unwrap();
+        kept.states.get(&(meta.key.clone(), meta.version.clone())).cloned()
+    }
+
+    /// Keeps `state`, which the object `meta` names holds, if the bucket names its version.
+    fn keep(&self, meta: &Meta, state: &Arc<State>) {
+        if meta.version == Version::default() {
+            return;
+        }
+        let object = (meta.key.clone(), meta.version.clone());
+        let mut kept = self.kept.lock().unwrap();
+        if kept.states.insert(object.clone(), state.clone()).is_none() {
+            kept.order.push_back(object);
+        }
+        while kept.order.len() > Self::KEEP {
+            let oldest = kept.order.pop_front().unwrap();
+            kept.states.remove(&oldest);
+        }
     }
 }
 
@@ -432,7 +489,7 @@ async fn attempt<B: Bucket>(
     let listed = bucket::list(bucket, &layout::checkpoints(branch)).await;
     let (state, checkpoint, checkpointer) = match listed.last() {
         Some(newest) => {
-            let Some(state) = checkpoints.read(&newest.key, branch).await? else {
+            let Some(state) = checkpoints.read(newest, branch).await? else {
                 return Err(Attempt::Restart);
             };
             touched.insert(newest.key.clone());
@@ -589,7 +646,7 @@ fn state_at<'a, B: Bucket>(
         });
         let mut state = match newest {
             Some(meta) => {
-                let Some(state) = checkpoints.read(&meta.key, branch).await? else {
+                let Some(state) = checkpoints.read(meta, branch).await? else {
                     return Err(Attempt::Restart);
                 };
                 touched.insert(meta.key.clone());

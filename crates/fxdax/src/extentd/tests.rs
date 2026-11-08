@@ -2934,6 +2934,60 @@ fn serves_hundreds_of_forks_of_a_base() {
     drop(stores);
 }
 
+/// TASK-92.55: opening a fork through the daemon unpacks and reads nothing more of a larger base:
+/// forks of a base of 32,768 extents unpack and read as much as forks of one of 1,024. 100 forks of
+/// the larger had taken about 0.5 s each on a GCE host (debug), in zstd on the remote thread. Their
+/// times are said, not bounded: what still grows with the base, the parent's checkpoint at each
+/// fork and the child's decoding it, is ~0.3 us an extent in a release build (~11 ms a fork of the
+/// larger against ~3.5 ms, Linux in Docker), under a round trip to a real bucket, and 42 ms against
+/// 5 ms in debug (124.5 ms against 6.0 ms on GCE r1021 before the extents' map was persistent).
+#[test]
+fn forks_opening_reads_nothing_more_of_a_larger_base() {
+    const FORKS: u64 = 20;
+    host();
+    super::raise_open_files_limit().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("extentd.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    std::thread::spawn(move || serve(listener));
+    // Forks of a base of `extents` extents, opened: how long their opening took, and what it
+    // unpacked and read from the stores.
+    let opened = |extents: u64| {
+        let base =
+            ExtentStore::create(dir.path().join(format!("base-{extents}")), 1 << 30).unwrap();
+        let branch = base.branch();
+        for sequence in 1..=extents {
+            let data = pattern(sequence as u8, BLOCK);
+            base.write(ExtentId { branch, sequence }, 0, &[VolatileSlice::from(&data[..])])
+                .unwrap();
+            if sequence % 1024 == 0 {
+                base.commit(None).unwrap();
+            }
+        }
+        let forks: Vec<_> = (1..=FORKS)
+            .map(|n| {
+                let fork = dir.path().join(format!("fork-{extents}-{n}"));
+                base.fork(&fork, branch + n).unwrap();
+                fork
+            })
+            .collect();
+        drop(base);
+        let before = crate::stats::stats();
+        let start = std::time::Instant::now();
+        let stores: Vec<_> = (forks.iter())
+            .map(|fork| RemoteExtentStore::connect(&socket, fork, 1 << 30).unwrap())
+            .collect();
+        let took = start.elapsed() / FORKS as u32;
+        let after = crate::stats::stats();
+        drop(stores);
+        (took, after.unpacks - before.unpacks, after.read_stored_bytes - before.read_stored_bytes)
+    };
+    let small = opened(1024);
+    let large = opened(32768);
+    println!("a fork's opening, of a base of 1,024 extents and of 32,768: {small:?} and {large:?}");
+    assert_eq!((large.1, large.2), (small.1, small.2), "(unpacked, read) by opening forks");
+}
+
 /// TASK-92.17: what the daemon says of followers, which its stats poll looks at every 200 ms and
 /// each scrape of its metrics counts, costs nothing of what a fork's base holds: here, of 100
 /// forks open of a base of 32768 extents, none followed, the followers' views are counted within
