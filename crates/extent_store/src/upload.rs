@@ -320,6 +320,20 @@ struct Point {
     origin: Origin,
 }
 
+/// fxdax: what a commit stalled behind object storage waits for, said as it stalls: the bytes not
+/// uploaded, and of them those past the lag bound, which a stall over the bound waits on alone,
+/// the commits not uploaded and the oldest's age, which a slow upload shows (TASK-92.52).
+fn stalled(pending: u64, max: u64, commits: u64, oldest: Option<Duration>) -> String {
+    let oldest = oldest.map_or("none seen yet".to_owned(), |age| {
+        format!("the oldest seen {} ms ago", age.as_millis())
+    });
+    format!(
+        "fxdax: commits wait for object storage: {pending} bytes not uploaded, {} past the lag \
+         bound of {max}; {commits} commits not uploaded, {oldest}",
+        pending.saturating_sub(max)
+    )
+}
+
 #[derive(Default)]
 struct Progress {
     /// The last epoch uploaded.
@@ -624,10 +638,11 @@ impl<D: Dir> Shared<D> {
         progress.wanted = true;
         if stall {
             progress.stalls += 1;
-            log::warn!(
-                "fxdax: commits wait for object storage: {} not uploaded",
-                epoch.saturating_sub(progress.uploaded)
-            );
+            let pending = self.store().wal_bytes()?;
+            let commits = epoch.saturating_sub(progress.uploaded);
+            let oldest = progress.seen.front().and_then(|(_, seen)| seen.elapsed().ok());
+            let max = self.options.max_lag_bytes;
+            log::warn!("{}", stalled(pending, max, commits, oldest));
         }
         drop(progress);
         self.wake.notify_one();
@@ -1124,6 +1139,24 @@ mod tests {
     use storage_device::ExtentId;
 
     const BRANCH: u64 = 7;
+
+    /// TASK-92.52: a stall says what it waits for: the bytes past the lag bound, which a stall over
+    /// it waits on, and the commits not uploaded and the oldest's age, which a slow upload shows.
+    #[test]
+    fn a_stall_says_what_it_waits_for() {
+        let over = stalled(5 << 20, 4 << 20, 3, Some(Duration::from_millis(250)));
+        assert_eq!(
+            over,
+            "fxdax: commits wait for object storage: 5242880 bytes not uploaded, 1048576 past the \
+             lag bound of 4194304; 3 commits not uploaded, the oldest seen 250 ms ago"
+        );
+        let slow = stalled(1 << 20, 4 << 20, 1, None);
+        assert_eq!(
+            slow,
+            "fxdax: commits wait for object storage: 1048576 bytes not uploaded, 0 past the lag \
+             bound of 4194304; 1 commits not uploaded, none seen yet"
+        );
+    }
 
     /// TASK-79.19: a gather takes no more of the segments the store closed than may upload at once,
     /// with those uploading; the rest it leaves in the store, until those it took are uploaded.
