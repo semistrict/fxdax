@@ -22,16 +22,18 @@ recovery.
 | Stage | What it means | When |
 |---|---|---|
 | Ordered | `COMMIT` returned: extentd has it, in order: its data in the store's files, its commit record in extentd's memory (`Pending`, `Store::commit_locked`) | as `fsync` returns |
-| Durable locally | the data synced, then the record written and synced (`Store::make_durable`) | within 50 ms at the median; the crash bound at most (below) |
+| Durable locally | the data synced, then the record written and synced (`Store::make_durable`) | within 50 ms at the median (32 ms on main); the crash bound, 1 s, at most (below) |
 | Uploaded | in object storage, a contiguous prefix, the lease still the writer's | the lag (below) |
 
-*Revised 2026-11-06 (TASK-221):* "within 50 ms" is the **median**: extentd makes the commits
-ordered durable every 50 ms, a flush behind the host's disk at worst, which under pgbench takes up to
-0.4-0.7 s on main, longer with TASK-165.9 (extentd's `durable_lag_*` stats). That tail is
-performance work, not a broken promise. What a daemon crash may lose is bounded apart: **the crash
-bound, 500 ms**, set from the daemon-killed case's longest lags (main 60-81 ms, TASK-165.9 up to
-288 ms, GCE r722-r735), and tightened as the tail is. The daemon-killed test holds extentd to it
-(`CRASH_LOSS_BOUND_MS`), and the pgbench cases to the median (`durable_lag_within_50ms`).
+*Revised 2026-11-08 (TASK-221, the user's decision: the window is what main achieves):* "within
+50 ms" is the **median**: extentd makes the commits ordered durable every 50 ms, a flush behind the
+host's disk at worst. Measured on main (08d444ef7, GCE n2-standard-16, jailed, 3 rounds each of
+fxfs-guest-pgbench and -pgbench-dax, ~365,000 commits a round, extentd's `durable_lag_*` stats): the
+median 32 ms or less, p99 64 ms or less, 85% within 50 ms, and the longest under 1,024 ms (about
+0.7% of commits over 64 ms). What a daemon or host crash may lose is bounded by that longest lag:
+**the crash bound, 1 s**. The daemon-killed test holds extentd to it (`CRASH_LOSS_BOUND_MS`), and the
+pgbench cases to the median (`durable_lag_within_50ms`). Shortening the tail is performance work
+(TASK-221's notes: commits whose sealing copies whole extents into the open segment).
 
 A guest's **fsync, fdatasync, msync and O_SYNC** wait for *ordered*. **sync, syncfs, unmount and
 freeze** ask for `COMMIT_DURABLE`, and wait for *durable locally*, and with a remote, for *uploaded*.

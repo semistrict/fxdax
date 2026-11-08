@@ -253,8 +253,9 @@ mod host {
     /// fxdax: doc-12's crash bound: what a daemon crash may lose, the commits ordered, and
     /// answered, within it before. A file whose fsync returned that soon before the kill may be
     /// found short or empty, as one the daemon lost, its creation durable, its data not (TASK-221:
-    /// set from the case's longest lags, main's 60-81 ms, TASK-165.9's up to 288 ms).
-    const CRASH_LOSS_BOUND_MS: u128 = 500;
+    /// the longest lag main has under pgbench, under 1,024 ms on GCE, 2026-11-08, the window the
+    /// user decided doc-12 states).
+    const CRASH_LOSS_BOUND_MS: u128 = 1000;
 
     /// The files whose fsync the guest says returned, its writer and index, as `output` says.
     fn synced_files(output: &str) -> Vec<(u8, usize)> {

@@ -60,7 +60,8 @@ Settled in a design review on 2026-10-13.
    filesystem always recovers to a prefix of it. fsync keeps its ordering guarantees, but need not wait
    for the change to be durable.
    *Revised 2026-11-06 (TASK-221):* how recent: durable locally within 50 ms at the median, and a
-   daemon or host crash loses at most what was ordered within doc-12's crash bound (500 ms).
+   daemon or host crash loses at most what was ordered within doc-12's crash bound (1 s, measured on main,
+   2026-11-08).
 3. **Size is unbounded.** Metadata is cached in guest memory and can be evicted and read back. It is not
    held resident whole.
 4. **The filesystem runs in the guest kernel,** for ext4-speed metadata and so that file pages can be
