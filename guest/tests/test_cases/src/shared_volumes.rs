@@ -25,17 +25,25 @@ pub mod host {
     use futures::executor::block_on;
     use fxdax::extentd::control::Client;
     use fxdax::{Image, Storage};
+    use fxfs_automount::upcall::{Answer, Newest};
     use std::cell::Cell;
+    use std::collections::BTreeMap;
     use std::ffi::CString;
     use std::io::{BufRead, BufReader, Read, Write};
     use std::os::unix::net::{UnixListener, UnixStream};
     use std::path::{Path, PathBuf};
+    use std::sync::{Arc, Mutex};
 
     /// Makes the publisher's store at `path`: its default volume, and the volume it publishes.
     pub fn format(path: &Path, capacity: u64) -> anyhow::Result<()> {
+        format_with(path, capacity, &[VOLUME])
+    }
+
+    /// Makes the publisher's store at `path`: its default volume, and `volumes`.
+    pub fn format_with(path: &Path, capacity: u64, volumes: &[&str]) -> anyhow::Result<()> {
         block_on(async {
             let image = Image::format(Storage::create(path, capacity)?).await?;
-            for volume in ["default", VOLUME] {
+            for volume in ["default"].iter().chain(volumes) {
                 image.create_volume(volume).await?.unmount().await?;
             }
             image.close().await?;
@@ -59,6 +67,7 @@ pub mod host {
     }
 
     /// A published generation: a fork of the publisher's store, and the manifest of its volume.
+    #[derive(Clone)]
     pub struct Generation {
         path: PathBuf,
         manifest: Vec<u8>,
@@ -94,6 +103,97 @@ pub mod host {
             send(&mut answers, &generation.manifest)?;
         }
         Ok(())
+    }
+
+    /// The sandbox manager, as the tests stand in for it, for VMs' automounters and
+    /// `git-remote-fxfs` (TASK-136.6, 136.7): it answers their asks ([`fxfs_automount::upcall`]),
+    /// attaching to their store the generation each name has, and naming the newest generation of
+    /// each repo URL it has, refusing the rest, counting what each name and URL was asked.
+    pub struct Manager {
+        /// The daemon's control socket's, as [`crate::common::control`] finds it.
+        extentd: PathBuf,
+        names: BTreeMap<String, Generation>,
+        newest: BTreeMap<String, String>,
+        asked: Arc<Mutex<BTreeMap<String, usize>>>,
+    }
+
+    /// A [`Manager`]'s answers, for one VM's store, through the daemon's control API.
+    struct Answering {
+        control: Client,
+        store: PathBuf,
+        names: BTreeMap<String, Generation>,
+        newest: BTreeMap<String, String>,
+        asked: Arc<Mutex<BTreeMap<String, usize>>>,
+    }
+
+    impl Answering {
+        fn count(&self, what: String) {
+            *self.asked.lock().unwrap().entry(what).or_default() += 1;
+        }
+    }
+
+    impl fxfs_automount::upcall::Manager for Answering {
+        fn attach(&mut self, name: &str) -> Answer {
+            self.count(name.to_owned());
+            let Some(generation) = self.names.get(name) else {
+                return Answer::Refused(format!("no {name} for this sandbox"));
+            };
+            self.control.attach_base(&self.store, &generation.path).expect("attaching");
+            Answer::Manifest(generation.manifest.clone())
+        }
+
+        fn newest(&mut self, url: &str) -> Newest {
+            self.count(format!("newest {url}"));
+            match self.newest.get(url) {
+                Some(name) => Newest::Named(name.clone()),
+                None => Newest::Refused(format!("no generation of {url}")),
+            }
+        }
+    }
+
+    impl Manager {
+        /// A manager attaching, by name, the generations `names` has, and naming the newest of
+        /// each URL `newest` has, through the daemon at `extentd`.
+        pub fn new(
+            extentd: PathBuf,
+            names: BTreeMap<String, Generation>,
+            newest: BTreeMap<String, String>,
+        ) -> Self {
+            Self { extentd, names, newest, asked: Default::default() }
+        }
+
+        /// Answers, on a thread of its own, the asks of the VM of `role`, on the store at `store`,
+        /// at the vsock port they ask at: listening before it boots.
+        pub fn serve(&self, role: &str, store: &Path) -> anyhow::Result<()> {
+            let path = Vms::vsock_port(role, fxfs_automount::PORT);
+            self.serve_at(UnixListener::bind(path)?, store)
+        }
+
+        /// Answers, as [`Manager::serve`], the asks that come to `listener`.
+        pub fn serve_at(&self, listener: UnixListener, store: &Path) -> anyhow::Result<()> {
+            let mut answering = Answering {
+                control: crate::common::control(&self.extentd)?,
+                store: store.to_owned(),
+                names: self.names.clone(),
+                newest: self.newest.clone(),
+                asked: self.asked.clone(),
+            };
+            std::thread::spawn(move || {
+                for stream in listener.incoming() {
+                    let stream = stream.expect("a guest's connection");
+                    if let Err(error) = fxfs_automount::upcall::answer(stream, &mut answering) {
+                        eprintln!("a guest's asks: {error}");
+                    }
+                }
+            });
+            Ok(())
+        }
+
+        /// How many times each name, and each URL (`newest URL`), was asked for, by every VM
+        /// served.
+        pub fn asked(&self) -> BTreeMap<String, usize> {
+            self.asked.lock().unwrap().clone()
+        }
     }
 
     /// A test's VMs, which run one after the other, with `cpus` and `memory_mib` each.
@@ -163,7 +263,7 @@ pub mod host {
             vm.env(&CString::new(format!("FXDAX_SHARED_VOLUMES={role}"))?);
             // One vsock, its Unix socket's path short, as they must be, and one for each VM's
             // Firecracker: for measuring on its port, and talking on `PORT`.
-            let requests = Requests::new(&format!("shared-{role}"))?;
+            let requests = Requests::new(&Self::vsock_name(role))?;
             vm.vsock(requests.uds());
             let listener = (talks)
                 .then(|| UnixListener::bind(format!("{}_{PORT}", requests.uds().display())))
@@ -182,6 +282,17 @@ pub mod host {
             Ok((Running { firecracker, served }, stream))
         }
 
+        /// The name of the vsock of the VM of `role` ([`Requests::uds_of`]).
+        fn vsock_name(role: &str) -> String {
+            format!("shared-{role}")
+        }
+
+        /// The path of the Unix socket the guest of the VM of `role` reaches the host's `port`
+        /// through, as Firecracker's vsock has it: to listen on before it boots.
+        pub fn vsock_port(role: &str, port: u32) -> PathBuf {
+            PathBuf::from(format!("{}_{port}", Requests::uds_of(&Self::vsock_name(role)).display()))
+        }
+
         /// A VM of `role` on the store at `store`, run to its end: a consumer of `generations`.
         pub fn run_consumer(
             &self,
@@ -197,7 +308,52 @@ pub mod host {
         }
     }
 
+    impl<'a> Vms<'a> {
+        /// The snapshot at `snapshot` and `memory`, restored as the VM of `role`, its store where
+        /// it was, resumed, and the host's end of the connection its guest makes on `PORT`.
+        pub fn restore(
+            &self,
+            role: &str,
+            snapshot: &Path,
+            memory: &Path,
+        ) -> anyhow::Result<(Running, UnixStream)> {
+            let requests = Requests::new(&Self::vsock_name(role))?;
+            let listener = UnixListener::bind(format!("{}_{PORT}", requests.uds().display()))?;
+            let dir = self.root.parent().context("the root has no parent")?;
+            let mut firecracker = Firecracker::spawn(dir, role, &Vm::api_socket(role), None, &[])?;
+            let load = serde_json::json!({
+                "snapshot_path": snapshot,
+                "mem_backend": { "backend_type": "File", "backend_path": memory },
+                "resume_vm": true,
+                "vsock_override": { "uds_path": requests.uds() },
+                "extent_overrides": [],
+            });
+            firecracker.request("PUT", "/snapshot/load", &load)?;
+            let stream = firecracker.accept(&listener)?;
+            Ok((Running { firecracker, served: Err(requests) }, stream))
+        }
+    }
+
     impl Running {
+        /// Pauses its VM, snapshots it into `snapshot` and `memory`, and ends it, passing on what
+        /// its guest said until then.
+        pub fn snapshot(self, snapshot: &Path, memory: &Path) -> anyhow::Result<()> {
+            let paused = serde_json::json!({ "state": "Paused" });
+            self.firecracker.request("PATCH", "/vm", &paused)?;
+            let create = serde_json::json!({
+                "snapshot_type": "Full",
+                "snapshot_path": snapshot,
+                "mem_file_path": memory,
+            });
+            self.firecracker.request("PUT", "/snapshot/create", &create)?;
+            let console = self.firecracker.kill()?;
+            crate::vm::split_console(std::fs::File::open(&console)?)?;
+            if let Ok(served) = self.served {
+                served.stop()?;
+            }
+            Ok(())
+        }
+
         /// Waits for its VM to end, and passes on what its guest said.
         pub fn wait(self) -> anyhow::Result<()> {
             let (status, console) = self.firecracker.wait()?;
@@ -260,7 +416,7 @@ pub mod guest {
     nix::ioctl_readwrite!(manifest_ioctl, b'x', 0x46, Manifest);
     nix::ioctl_write_ptr!(import_ioctl, b'x', 0x47, Import);
 
-    fn try_mount(volume: Option<&str>, target: &str) -> std::io::Result<()> {
+    pub fn try_mount(volume: Option<&str>, target: &str) -> std::io::Result<()> {
         let source = CString::new("extents").unwrap();
         let (target, fstype) = (CString::new(target).unwrap(), CString::new("fxfs").unwrap());
         let options = volume.map(|volume| CString::new(format!("volume={volume}")).unwrap());
@@ -325,12 +481,17 @@ pub mod guest {
     }
 
     fn command(program: &str, args: &[&str], dir: &str) -> String {
+        command_with(program, args, dir, "/usr/bin:/bin")
+    }
+
+    /// Runs `program args` as [`git`] runs Git, with `path` its `PATH`.
+    pub fn command_with(program: &str, args: &[&str], dir: &str, path: &str) -> String {
         let output = Command::new(program)
             .args(args)
             .current_dir(dir)
             .uid(USER)
             .gid(USER)
-            .env("PATH", "/usr/bin:/bin")
+            .env("PATH", path)
             .env("HOME", HOME)
             .env("GIT_CONFIG_NOSYSTEM", "1")
             // A status leaves the index as it is: what one finds, the next finds too.
@@ -352,12 +513,16 @@ pub mod guest {
 
     /// A connection to the host on `PORT`.
     pub fn connect() -> File {
+        try_connect().expect("connecting to the host")
+    }
+
+    /// A connection to the host on `PORT`, if it listens.
+    pub fn try_connect() -> nix::Result<File> {
         use nix::sys::socket::{AddressFamily, SockFlag, SockType, VsockAddr, connect, socket};
-        let fd = socket(AddressFamily::Vsock, SockType::Stream, SockFlag::empty(), None)
-            .expect("a vsock socket");
-        connect(fd.as_raw_fd(), &VsockAddr::new(2, PORT)).expect("connecting to the host");
+        let fd = socket(AddressFamily::Vsock, SockType::Stream, SockFlag::empty(), None)?;
+        connect(fd.as_raw_fd(), &VsockAddr::new(2, PORT))?;
         // SAFETY: The socket's descriptor, which the file owns from here on.
-        unsafe { File::from_raw_fd(fd.into_raw_fd()) }
+        Ok(unsafe { File::from_raw_fd(fd.into_raw_fd()) })
     }
 
     /// Has `dir`, and what is made in it, belong to `USER`.
@@ -390,18 +555,24 @@ pub mod guest {
     /// Publishes the volume at `REPO` to the host, which forks the store, and tells this it did.
     /// Returns the size of its manifest.
     pub fn publish(host: &mut File) -> usize {
+        publish_volume(host, REPO, &[MNT])
+    }
+
+    /// Publishes the volume at `volume` to the host, as [`publish`] does, the filesystem frozen
+    /// with `others`, every other volume mounted.
+    pub fn publish_volume(host: &mut File, volume: &str, others: &[&str]) -> usize {
         sync();
-        ioctl(REPO, FIFREEZE);
-        try_flush(REPO).expect("flushing");
-        ioctl(MNT, FIFREEZE);
-        let manifest = try_manifest(REPO).expect("the manifest");
+        ioctl(volume, FIFREEZE);
+        try_flush(volume).expect("flushing");
+        others.iter().for_each(|other| ioctl(other, FIFREEZE));
+        let manifest = try_manifest(volume).expect("the manifest");
         host.write_all(&(manifest.len() as u64).to_le_bytes()).unwrap();
         host.write_all(&manifest).unwrap();
         let mut said = [0; 7];
         host.read_exact(&mut said).unwrap();
         assert_eq!(&said, b"forked\n");
-        ioctl(MNT, FITHAW);
-        ioctl(REPO, FITHAW);
+        others.iter().rev().for_each(|other| ioctl(other, FITHAW));
+        ioctl(volume, FITHAW);
         manifest.len()
     }
 

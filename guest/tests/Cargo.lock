@@ -1118,6 +1118,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "fxfs-automount"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "libc",
+]
+
+[[package]]
 name = "fxfs-crypto"
 version = "0.1.0"
 dependencies = [
@@ -1246,6 +1254,7 @@ name = "guest-agent"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "fxfs-automount",
  "test_cases",
 ]
 
@@ -3054,6 +3063,7 @@ dependencies = [
  "follower_history",
  "futures",
  "fxdax",
+ "fxfs-automount",
  "macros",
  "nix 0.29.0",
  "serde",

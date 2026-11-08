@@ -50,7 +50,11 @@ mod test_fxfs_guest_follow_torture;
 use test_fxfs_guest_follow_torture::{Mutant, TestFxfsGuestFollowTorture};
 mod test_fxfs_guest_import;
 use test_fxfs_guest_import::TestFxfsGuestImport;
+mod test_fxfs_guest_automount;
+mod test_fxfs_guest_git_fetch;
 mod test_fxfs_guest_shared_volumes;
+use test_fxfs_guest_automount::TestFxfsGuestAutomount;
+use test_fxfs_guest_git_fetch::TestFxfsGuestGitFetch;
 use test_fxfs_guest_shared_volumes::TestFxfsGuestSharedVolumes;
 // fxdax: what a checkout the size of Linux's costs, shared and not (TASK-136.1).
 mod test_linux_checkout;
@@ -303,6 +307,21 @@ pub fn test_cases() -> Vec<TestCase> {
             "fxfs-guest-shared-volumes-dax",
             &[Tag::Kernel, Tag::Nightly],
             Box::new(TestFxfsGuestSharedVolumes { dax: true }),
+        ),
+        TestCase::new(
+            "fxfs-guest-automount",
+            &[Tag::Kernel, Tag::Nightly],
+            Box::new(TestFxfsGuestAutomount { dax: false }),
+        ),
+        TestCase::new(
+            "fxfs-guest-automount-dax",
+            &[Tag::Kernel, Tag::Nightly],
+            Box::new(TestFxfsGuestAutomount { dax: true }),
+        ),
+        TestCase::new(
+            "fxfs-guest-git-fetch",
+            &[Tag::Kernel, Tag::Nightly],
+            Box::new(TestFxfsGuestGitFetch),
         ),
         TestCase::new(
             "linux-checkout-ext4",

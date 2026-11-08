@@ -195,12 +195,17 @@ mod host {
         /// The vsock of the VM `name` of this process's: in the temporary directory, as a socket's
         /// path is short.
         pub fn new(name: &str) -> anyhow::Result<Self> {
-            let uds =
-                std::env::temp_dir().join(format!("fxdax-{}-{name}.vsock", std::process::id()));
+            let uds = Self::uds_of(name);
             let path = PathBuf::from(format!("{}_{PORT}", uds.display()));
             let listener = UnixListener::bind(&path)
                 .with_context(|| format!("listening at {}", path.display()))?;
             Ok(Self { uds, path, listener })
+        }
+
+        /// The path of the vsock's Unix socket of the VM `name`, as [`Requests::new`] makes it:
+        /// that of its port P is this with `_P` after it.
+        pub fn uds_of(name: &str) -> PathBuf {
+            std::env::temp_dir().join(format!("fxdax-{}-{name}.vsock", std::process::id()))
         }
 
         /// The path of the vsock's Unix socket, Firecracker's `uds_path`.

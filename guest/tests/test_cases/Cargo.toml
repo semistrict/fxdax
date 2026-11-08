@@ -25,6 +25,9 @@ anyhow = "1.0.95"
 serde = { version = "1", features = ["derive"], optional = true }
 serde_json = { version = "1", optional = true }
 tempdir = "0.3.7"
+# fxdax's automounter of shared volumes, which the guest runs and whose asks the host answers
+# (TASK-136.6).
+fxfs-automount = { path = "../../../crates/fxfs-automount" }
 # The fxdax repository whose guest tests these are.
 fxdax = { path = "../../../crates/fxdax", optional = true, features = ["testing"] }
 futures = { version = "0.3.34", optional = true }
