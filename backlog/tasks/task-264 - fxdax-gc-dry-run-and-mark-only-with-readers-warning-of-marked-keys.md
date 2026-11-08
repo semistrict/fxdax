@@ -1,11 +1,11 @@
 ---
 id: TASK-264
 title: 'fxdax-gc: --dry-run and --mark-only, with readers warning of marked keys'
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-08 19:49'
-updated_date: '2026-11-08 20:14'
+updated_date: '2026-11-08 20:31'
 labels:
   - gc
   - extent_remote
@@ -22,21 +22,21 @@ Before trusting the collector to delete in a bucket that matters, an operator ne
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 `fxdax-gc URL --dry-run` writes nothing to the bucket (gc/lease included), compacts nothing, and prints each doomed key with its kind and size, and totals, saying it undercounts what a real pass deletes
-- [ ] #2 Its doomed list equals what a real pass with --compact-below 0 deletes on the same bucket (test)
-- [ ] #3 `fxdax-gc URL --mark-only` compacts as a real pass does, deletes nothing, and writes gc/marks/<epoch> holding exactly the doomed keys with size, version/etag and modified time (test)
-- [ ] #4 The lease decision for mark-only is reasoned from doc-7 fencing (step 1, TASK-180) and recorded in the code and here
-- [ ] #5 Every reader of a bucket (extentd, host stores, writers recovering, fxdaxctl, the collector) warns when it GETs or HEADs a key the newest marks object names, with the key, its kind, the operation, request ID and span; one set lookup per read, nothing when no marks exist, refreshed on an interval, never a round trip per read (test)
-- [ ] #6 A mark-only pass warns of each key the previous marks named that is needed again, listed at the same version (test: a rule mutation dooms a live extent)
-- [ ] #7 Marks objects are never collected nor taken for branches objects (test)
-- [ ] #8 Usage text, module docs, parse tests and doc-7 Garbage collection describe both flags and say mark-only grows storage
+- [x] #1 `fxdax-gc URL --dry-run` writes nothing to the bucket (gc/lease included), compacts nothing, and prints each doomed key with its kind and size, and totals, saying it undercounts what a real pass deletes
+- [x] #2 Its doomed list equals what a real pass with --compact-below 0 deletes on the same bucket (test)
+- [x] #3 `fxdax-gc URL --mark-only` compacts as a real pass does, deletes nothing, and writes gc/marks/<epoch> holding exactly the doomed keys with size, version/etag and modified time (test)
+- [x] #4 The lease decision for mark-only is reasoned from doc-7 fencing (step 1, TASK-180) and recorded in the code and here
+- [x] #5 Every reader of a bucket (extentd, host stores, writers recovering, fxdaxctl, the collector) warns when it GETs or HEADs a key the newest marks object names, with the key, its kind, the operation, request ID and span; one set lookup per read, nothing when no marks exist, refreshed on an interval, never a round trip per read (test)
+- [x] #6 A mark-only pass warns of each key the previous marks named that is needed again, listed at the same version (test: a rule mutation dooms a live extent)
+- [x] #7 Marks objects are never collected nor taken for branches objects (test)
+- [x] #8 Usage text, module docs, parse tests and doc-7 Garbage collection describe both flags and say mark-only grows storage
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -62,4 +62,12 @@ Resurrection: a mark-only pass compares with the newest marks before its epoch; 
 --dry-run accepts --compact-below and lists what a pass would compact (by listed size) apart from what it would delete. fxdax-gc gets a warn-level stderr logger; fxdaxctl installs fxdax::extentd::logging at warn on Linux.
 
 Validation: cargo nextest run -p extent_remote -p fxdax 573/573 (macOS); scripts/test.sh clippy part clean; Linux cargo check -p fxdax -p extent_remote --tests --bins clean in rust:1 Docker.
+
+DoD: workspace suites green on Linux and macOS in main CI 42519109512 (test (workspace), macos (workspace)), not on GCE; scripts/upstream-changes.py --check passes; no upstream code changed (extent_remote and fxdax are fxdax-own).
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+fxdax-gc --dry-run (writes nothing, gc/lease included; lists delete/compact candidates with totals, says it undercounts) and --mark-only (takes the lease, compacts, writes gc/marks/<epoch>, warns RESURRECTED of objects the previous marks named that are kept at the same version). store::Store warns on GET/ranged GET/HEAD of marked keys (refresh every 60 s, uncounted, one load or one set lookup per read). Verified: collector tests (dry run leaves every object byte for byte and equals a compact_below 0 pass; mark-only marks exactly what a pass deletes, deletes nothing; a wrong pass via extent_keys_name_segments=false makes a fresh reader warn on both reads of the extent and the next mark-only pass warn RESURRECTED; marks survive a deleting pass), a store test, fxdax-gc parse and CLI tests; macOS extent_remote+fxdax 573/573; main CI 42519109512 green at 056e36f8a.
+<!-- SECTION:FINAL_SUMMARY:END -->
