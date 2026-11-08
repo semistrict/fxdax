@@ -556,10 +556,10 @@ pub(super) async fn attach(
 /// keeping its branch in the bucket its description names: the daemon's, for the stores it made,
 /// or another's, as an image's file bucket, for one it serves (TASK-165.6). Its opening takes the
 /// branch's lease (TASK-165.9).
-fn attached(
+fn attached<T>(
     path: &Path,
-    open: impl FnOnce(extent_store::upload::Options) -> Result<ExtentStore, crate::Error>,
-) -> Result<ExtentStore, Errno> {
+    open: impl FnOnce(extent_store::upload::Options) -> Result<T, crate::Error>,
+) -> Result<T, Errno> {
     // The daemon's own first, which the stores naming it share (`host_store::bucket`).
     remote_bucket()?;
     let keeping = keeping()?;
@@ -611,8 +611,11 @@ pub(super) fn errno_of(what: std::fmt::Arguments<'_>, err: crate::Error) -> Errn
 
 /// Makes an empty store at `path`, which must not exist (`EEXIST`), of `capacity` bytes, and
 /// returns its branch: a new one, or `branch`, if given, whose store kept in the daemon's bucket
-/// the daemon takes once it opens it (`fxdaxctl take`); placed at `token` if given
-/// ([`place`]).
+/// the daemon takes once it opens it (`fxdaxctl take`); placed at `token` if given ([`place`]).
+/// fxdax: made as [`ExtentStore::create_placed`] makes it, its lease taken with `token`, not the
+/// daemon's, so that a copy placed later than the one on another host that took the branch last
+/// takes it over (TASK-266: `ESTALE`, its lease taken with the daemon's token before it was
+/// placed).
 pub(super) async fn create(
     path: PathBuf,
     capacity: u64,
@@ -630,15 +633,9 @@ pub(super) async fn create(
         }
         let branch =
             branch.filter(|branch| *branch != 0).unwrap_or_else(crate::host_store::new_branch);
-        let created = attached(&path, |keeping| {
-            let opening = Opening { arena: None, profiled: false, keeping };
-            ExtentStore::create_with(&path, capacity, branch, opening)
-        });
-        drop(created?);
-        if let Some(token) = token {
-            ExtentStore::place(&path, token)
-                .map_err(|err| errno_of(format_args!("placing {}", path.display()), err))?;
-        }
+        attached(&path, |keeping| {
+            ExtentStore::create_placed(&path, (capacity, branch, token), keeping)
+        })?;
         Ok(branch)
     })
     .await

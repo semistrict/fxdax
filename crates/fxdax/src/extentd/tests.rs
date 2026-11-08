@@ -2461,6 +2461,42 @@ fn earlier_placements_open_no_stores() {
     assert_eq!(later.root().unwrap(), b"placed at 5");
 }
 
+/// TASK-266: a store the control API makes of a branch, at a placement (`CreateStore`, as
+/// `fxdaxctl take` through the daemon's), takes the branch's lease with that placement's token as
+/// it is made, not the daemon's: a copy placed later than the one that took the branch last, on
+/// another host, takes it over, in a file bucket as in any.
+#[test]
+fn control_takes_branches_at_the_placements_given() {
+    host();
+    let dir = tempfile::tempdir().unwrap();
+    let url = format!("file://{}/", dir.path().canonicalize().unwrap().join("bucket").display());
+    // SAFETY: as in host.
+    unsafe { std::env::set_var("FXDAX_EXTENTD_REMOTE", &url) };
+    let socket = dir.path().join("extentd.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    std::thread::spawn(move || serve(listener));
+    let path = |name: &str| dir.path().join(name);
+    let branch = crate::host_store::new_branch();
+    let extent = ExtentId { branch, sequence: 1 };
+
+    // Host 1's copy, placed at 5, its commit synced.
+    let made = super::stores::create(path("first"), 1 << 24, Some(branch), Some(5));
+    assert_eq!(control(made), Ok(branch));
+    let first = RemoteExtentStore::connect(&socket, path("first"), 1 << 24).unwrap();
+    write(&first, extent, 0, &pattern(7, BLOCK)).unwrap();
+    first.commit(Some(b"placed at 5")).unwrap();
+    drop(first);
+    assert_eq!(control(super::stores::sync(path("first"))), Ok(()));
+    // A copy beside the daemon, as fxdaxctl's without it, placed at 6.
+    ExtentStore::take(path("second"), 1 << 24, branch, Some(6)).unwrap();
+    // One through the daemon, placed at 7.
+    let taken = super::stores::create(path("third"), 1 << 24, Some(branch), Some(7));
+    assert_eq!(control(taken), Ok(branch));
+    let third = RemoteExtentStore::connect(&socket, path("third"), 1 << 24).unwrap();
+    assert_eq!(third.root().unwrap(), b"placed at 5");
+    assert_eq!(read(&third, extent, 0, BLOCK), Ok(pattern(7, BLOCK)));
+}
+
 /// TASK-39.7: the daemon returns once a store's commits so far are in its bucket: a store a VM
 /// process has open, and one none has.
 #[test]

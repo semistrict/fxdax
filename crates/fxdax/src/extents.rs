@@ -520,14 +520,25 @@ impl ExtentStore {
         opening: Opening,
     ) -> Result<Self, Error> {
         let path = path.as_ref();
-        let span = trace::Span::start("store.create");
-        span.set_with(trace::STORE, || path.display().to_string());
-        span.set_branch(branch);
-        span.run(|| {
+        Self::creating(path, branch, || {
             let keeping = opening.keeping.clone();
             let opened = host_store::create(path, capacity, branch, keeping)?;
             Self::new(path, opened, opening)
         })
+    }
+
+    /// fxdax: `make`'s making of a new store of `branch` at `path`, in a span of its own,
+    /// `store.create` (`extent_remote::trace`, TASK-258): a store made, opened, or made closed
+    /// ([`ExtentStore::create_placed`]).
+    fn creating<T>(
+        path: &Path,
+        branch: u64,
+        make: impl FnOnce() -> Result<T, Error>,
+    ) -> Result<T, Error> {
+        let span = trace::Span::start("store.create");
+        span.set_with(trace::STORE, || path.display().to_string());
+        span.set_branch(branch);
+        span.run(make)
     }
 
     /// fxdax: a new store at `path`, as [`ExtentStore::create_with`] makes, of `branch`, kept in
@@ -976,21 +987,38 @@ impl ExtentStore {
     ) -> Result<Self, Error> {
         let path = path.as_ref();
         if !path.exists() {
-            // fxdax: its lease taken as it is made with the token of the placement it is given,
-            // not this host's: a new copy placed later took no branch from an earlier placement
-            // (`ESTALE`), the lease taken before the placement was recorded (TASK-149.20).
-            let token = token.unwrap_or(opening.keeping.token);
-            let keeping = extent_store::upload::Options { token, ..opening.keeping.clone() };
-            drop(host_store::create(path, capacity, branch, keeping)?);
+            Self::create_placed(path, (capacity, branch, token), opening.keeping.clone())?;
         } else if extent_store::host_branch(path).map_err(Error::new)? != branch {
             let refused = format!("{} holds another branch than {branch:x}", path.display());
             return Err(Error::new(anyhow::Error::new(Errno::EEXIST).context(refused)));
-        }
-        if let Some(token) = token {
+        } else if let Some(token) = token {
             Self::place(path, token)?;
         }
         let opened = host_store::take(path, opening.keeping.clone())?;
         Self::new(path, opened, opening)
+    }
+
+    /// fxdax: makes a new store at `path`, which must not exist, of `capacity` bytes and
+    /// `branch`, its uploader as `keeping` says, placed at `token`'s placement if given, and
+    /// closes it: what [`ExtentStore::take_with`] takes a branch into, and the daemon's
+    /// `CreateStore` makes. Its lease is taken as it is made with the token of the placement it
+    /// is given, not `keeping`'s, this host's: a new copy placed later took no branch from an
+    /// earlier placement (`ESTALE`), the lease taken before the placement was recorded
+    /// (TASK-149.20, TASK-266).
+    pub fn create_placed(
+        path: impl AsRef<Path>,
+        (capacity, branch, token): (u64, u64, Option<u64>),
+        keeping: extent_store::upload::Options,
+    ) -> Result<(), Error> {
+        let path = path.as_ref();
+        let keeping =
+            extent_store::upload::Options { token: token.unwrap_or(keeping.token), ..keeping };
+        let made = || Ok(host_store::create(path, capacity, branch, keeping)?);
+        drop(Self::creating(path, branch, made)?);
+        match token {
+            Some(token) => Self::place(path, token),
+            None => Ok(()),
+        }
     }
 
     /// fxdax: places the store at `path` at the placement

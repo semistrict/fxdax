@@ -3,9 +3,11 @@ id: TASK-266
 title: >-
   extentd CreateStore with a token takes the lease at the daemon's token, then
   places: ESTALE for a branch placed later elsewhere
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-11-08 22:11'
+updated_date: '2026-11-08 22:30'
 labels: []
 dependencies: []
 priority: high
@@ -30,3 +32,12 @@ crates/fxdax/src/extentd/stores.rs create() makes the store through attached()'s
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Test first: extentd::tests::control_takes_branches_at_the_placements_given, on a file bucket: CreateStore at 5 + sync (host 1), ExtentStore::take at 6 beside the daemon, CreateStore at 7 must succeed (red: ESTALE).
+2. stores::create takes the store through ExtentStore::take_with (lease at the given token as it is made, placed, opened), not create_with then place.
+3. Factor create_with's store.create span into ExtentStore::creating, used by take_with's new copy too, so CreateStore stays traced.
+4. Check other daemon paths: import and fork's take_store carry no token; only CreateStore does.
+<!-- SECTION:PLAN:END -->
