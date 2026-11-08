@@ -87,9 +87,13 @@ _scratch_unmount()
     /// s_maxbytes, EFBIG), 372 (one of FIEMAP's shared extents, TASK-143) and 401 (readdir's
     /// d_type of a device, fifo or socket, TASK-144), which passed with DAX and without on main
     /// d7a36088b, the first run of the nightly's (GCE r960, TASK-149.20.1).
-    const KNOWN_FAILURES: [&str; 14] = [
+    const KNOWN_FAILURES: [&str; 16] = [
+        // Free space after a fill is removed is short by what the metadata reservation grew, four
+        // times the journal since the trees were flushed, more than 1% of 256 MiB (GCE r945, r947;
+        // TASK-247).
+        "generic/015",
         // An extent store reserves nothing, so fallocate leaves no unwritten extents, which they
-        // look for with FIEMAP (`fxfs_vfs_fallocate`).
+        // look for with FIEMAP (`fxfs_data_fallocate`).
         "generic/009",
         "generic/092",
         "generic/094",
@@ -97,6 +101,9 @@ _scratch_unmount()
         "generic/568",
         "generic/796",
         "generic/797",
+        // Nor room: a write to what fallocate covered finds none on a full filesystem, as 274's
+        // does (`fxfs_data_fallocate`; GCE r945, TASK-149.25).
+        "generic/274",
         // A heuristic of how few extents a reflinked file's data takes, which the allocator
         // makes it pass or not (r348, r352); its data is right either way.
         "generic/301",

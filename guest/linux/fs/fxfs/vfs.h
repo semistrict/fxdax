@@ -54,6 +54,14 @@ struct fxfs_vfs_filesystem {
 	/* fxdax: takes the size the host resizes the store to (fxfs_resize), off the interrupt. */
 	struct work_struct resize;
 	/*
+	 * fxdax: the writes that found the filesystem full and asked for room (fxfs_vfs_make_room),
+	 * and the syncs that made it, begun and done, which `room_lock` serializes (TASK-149.25).
+	 */
+	atomic64_t room_asked;
+	struct mutex room_lock;
+	u64 room_syncs_begun;
+	u64 room_syncs_done;
+	/*
 	 * Its superblocks, and how many of those are frozen (`struct fxfs_vfs_info`'s `frozen`),
 	 * read-only ones too (fxfs_vfs_settle_frozen).
 	 */

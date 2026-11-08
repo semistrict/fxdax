@@ -459,6 +459,11 @@ impl Filesystem {
         for (name, count) in counts {
             let _ = writeln!(out, "{name} {}", count.load(Relaxed));
         }
+        // What the filesystem holds back from its free space to write the journal's changes to
+        // its trees (`ObjectManager::required_reservation`): it grows with the journal and shrinks
+        // as the trees are flushed (TASK-149.25).
+        let reserved = self.filesystem.object_manager().metadata_reservation().amount();
+        let _ = writeln!(out, "metadata_reserved_bytes {reserved}");
         out
     }
 }

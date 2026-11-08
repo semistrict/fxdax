@@ -350,7 +350,7 @@ pub(super) fn test_enospc() {
     }
     drop(read);
     // Full, a directory doesn't fit either. (Nor is fallocate checked: it reserves no space,
-    // which an extent store can't, fxfs_vfs_fallocate.)
+    // which an extent store can't, fxfs_data_fallocate.)
     enospc(fill(IMAGE_MIB * 1024, &mut |n| fs::create_dir(format!("{dir}/d{n}"))), "directories");
     file.set_len(0).unwrap();
     drop(file);

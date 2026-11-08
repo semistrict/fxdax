@@ -1631,12 +1631,29 @@ static void fxfs_vfs_unreserve_clean(struct folio *folio, size_t offset, size_t 
  * dirty data, which frees what was reserved for it beyond what its writeback took, and the
  * removed files it holds still, as ext4's delayed allocation does (ext4_nonda_switch). Not while
  * it is frozen, or unmounted.
+ *
+ * Writes that find it full share syncs (TASK-149.25): one begun after this write found no room
+ * makes what room this write's own would, so when one has finished by the time this write may
+ * begin its own, it doesn't, and the caller tries again. One at a time, a sync each, 128 writers
+ * at ENOSPC (xfstests' generic/269) each waited behind the others' syncs, for hours.
  */
 void fxfs_vfs_make_room(struct super_block *sb)
 {
+	struct fxfs_vfs_filesystem *filesystem = fxfs_vfs_info(sb)->filesystem;
+	/* The syncs begun before this write found no room, or as it did. */
+	u64 begun = READ_ONCE(filesystem->room_syncs_begun);
+
+	atomic64_inc(&filesystem->room_asked);
 	if (!down_read_trylock(&sb->s_umount))
 		return;
-	sync_filesystem(sb);
+	mutex_lock(&filesystem->room_lock);
+	/* They finish in the order they begin: the next one done began after. */
+	if (filesystem->room_syncs_done <= begun) {
+		WRITE_ONCE(filesystem->room_syncs_begun, filesystem->room_syncs_begun + 1);
+		sync_filesystem(sb);
+		WRITE_ONCE(filesystem->room_syncs_done, filesystem->room_syncs_done + 1);
+	}
+	mutex_unlock(&filesystem->room_lock);
 	up_read(&sb->s_umount);
 }
 
@@ -3359,6 +3376,8 @@ static int fxfs_vfs_stats_show(struct seq_file *m, void *v)
 	seq_write(m, buf, min_t(size_t, len, PAGE_SIZE));
 	kfree(buf);
 	fxfs_device_show_stats(fxfs_dax_device(filesystem->filesystem), m);
+	seq_printf(m, "vfs_room_asked %lld\nvfs_room_syncs %llu\n",
+		   atomic64_read(&filesystem->room_asked), READ_ONCE(filesystem->room_syncs_done));
 	if (filesystem->dax)
 		fxfs_dax_show_stats(filesystem->dax, m);
 	return 0;
@@ -3403,6 +3422,7 @@ static struct fxfs_vfs_filesystem *fxfs_vfs_filesystem_of(struct virtio_extent *
 	if (filesystem) {
 		filesystem->vext = vext;
 		mutex_init(&filesystem->lock);
+		mutex_init(&filesystem->room_lock);
 		INIT_WORK(&filesystem->resize, fxfs_vfs_resize_work);
 		list_add(&filesystem->list, &fxfs_vfs_filesystems);
 	}

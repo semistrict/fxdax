@@ -126,6 +126,84 @@ pub(super) fn test_inherited_acls_on_full_filesystem() {
 
 /// A file or directory, removed as this goes, and synced, its room free again: if a check that
 /// filled the filesystem failed, for the checks after it.
+/// fxdax: writes that find the filesystem full share the syncs that make room (TASK-149.25): many
+/// writers, each with its file, write together on a full filesystem, round after round, each
+/// write making room before it fails (fxfs_vfs_make_room), and syncs made for them are far fewer
+/// than the writes that asked: one begun after a write found no room is room enough. A sync each, 128 writers at ENOSPC,
+/// xfstests' generic/269's fsstress, waited behind each other's syncs for two hours (GCE r941,
+/// r942: fxfs_vfs_write_begin, sync_filesystem, fxfs_sync).
+pub(super) fn test_writers_on_a_full_filesystem_share_syncs() {
+    const WRITERS: usize = 32;
+    const WRITES: usize = 2;
+    let names: Vec<Removed> = (0..WRITERS).map(|n| Removed(path(&format!("room-{n}")))).collect();
+    for name in &names {
+        fs::write(&name.0, b"").unwrap();
+    }
+    let filler = Removed(path("room-filler"));
+    fill_until_enospc(&filler.0);
+    let count = |stats: &std::collections::BTreeMap<String, u64>| {
+        (stats["vfs_room_asked"], stats["vfs_room_syncs"])
+    };
+    let (asked, synced) = count(&stats());
+    let together = std::sync::Barrier::new(WRITERS);
+    std::thread::scope(|scope| {
+        for name in &names {
+            let together = &together;
+            scope.spawn(move || {
+                let mut file = fs::OpenOptions::new().append(true).open(&name.0).unwrap();
+                for _ in 0..WRITES {
+                    together.wait();
+                    match file.write_all(&[0x5a; 64 << 10]) {
+                        Ok(()) => {}
+                        Err(error) if error.raw_os_error() == Some(libc::ENOSPC) => {}
+                        Err(error) => panic!("writing {}: {error}", name.0),
+                    }
+                }
+            });
+        }
+    });
+    let (now_asked, now_synced) = count(&stats());
+    let (asked, synced) = (now_asked - asked, now_synced - synced);
+    eprintln!("writers_on_a_full_filesystem_share_syncs: {synced} syncs for {asked} asked");
+    assert!(asked >= WRITERS as u64, "{asked} writes asked for room, of {WRITERS} writers");
+    assert!(synced * 4 <= asked, "{synced} syncs made room for {asked} writes that found none");
+    drop(filler);
+    drop(names);
+}
+
+/// fxdax: a file that filled the filesystem, removed, gives back all it took but what the
+/// metadata reservation grew by (`metadata_reserved_bytes`, TASK-149.25): Fxfs holds back four
+/// times what the journal took since its trees were last flushed, which a sync doesn't do, to write
+/// them (`ObjectManager::required_reservation`), and counts it as used. Its free space after a fill
+/// and a removal is short by that (xfstests' generic/015, on 256 MiB, by 4 MiB of its 1%).
+pub(super) fn test_a_removed_fill_gives_back_all_but_the_reservation() {
+    let free = || {
+        let mnt = CString::new(MNT).unwrap();
+        let mut stat: libc::statvfs = unsafe { std::mem::zeroed() };
+        assert_eq!(unsafe { libc::statvfs(mnt.as_ptr(), &mut stat) }, 0);
+        (stat.f_bfree * stat.f_frsize, stat.f_blocks * stat.f_frsize)
+    };
+    let reserved = || stats()["metadata_reserved_bytes"];
+    unsafe { libc::sync() };
+    let ((before, size), reserved_before) = (free(), reserved());
+    drop({
+        let filler = Removed(path("gives-back-filler"));
+        fill_until_enospc(&filler.0);
+        filler
+    });
+    let ((after, _), reserved_after) = (free(), reserved());
+    let (short, grew) =
+        (before as i64 - after as i64, reserved_after as i64 - reserved_before as i64);
+    eprintln!(
+        "a_removed_fill_gives_back_all_but_the_reservation: {size} bytes, {before} free before, \
+         {after} after, {short} short; reserved {reserved_before}, then {reserved_after}"
+    );
+    assert!(
+        (short - grew).unsigned_abs() <= size / 100,
+        "{short} short, the reservation grew {grew}"
+    );
+}
+
 struct Removed(String);
 
 impl Drop for Removed {
