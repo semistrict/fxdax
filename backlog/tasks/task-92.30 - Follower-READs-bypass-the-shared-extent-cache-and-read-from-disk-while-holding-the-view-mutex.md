@@ -3,12 +3,13 @@ id: TASK-92.30
 title: >-
   Follower READs bypass the shared extent cache and read from disk while holding
   the view mutex
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-10-22 21:06'
-updated_date: '2026-11-06 00:48'
+updated_date: '2026-11-08 04:51'
 labels:
   - review-2026-10-21
+  - wontfix
 dependencies: []
 references:
   - docs/reviews/2026-10-21-main.md
@@ -47,4 +48,12 @@ Found by the 2026-10-21 review of main at 6a0a3f8 (severity medium): docs/review
 Frozen 2026-11-04 by the user: followers and the standalone store layer have no customer now; resumed after read-only DAX (TASK-164) and the storage collapse (TASK-165) land (docs/reviews/2026-11-04-first-principles.md, section 6).
 
 2026-11-05 triage: citations brought to dde8d58d3; still frozen.
+
+2026-11-08 sweep: tried making a follower's READ use the extent cache through view_extent (as its MAP does); followers_are_cut_off_once_the_collector_reclaims_what_they_read then returned data where ESTALE was due: a cached copy outlives the collector's reclaim that TASK-165.8's cut-off answers ESTALE for, so the change is a policy call under doc-8 decision 7, not a fix. Reverted.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Closed as won't fix, the user's decision of 2026-11-08 (OPEN_QUESTIONS.md, b0d7d00d2: 'Judgement calls, as recommended: close TASK-149.22, 44.1, 92.30 and 92.31 as won't fix'). A follower's READ reads through its view, not the extent cache, so that TASK-165.8's cut-off holds: serving it from the cache returned reclaimed data where the test followers_are_cut_off_once_the_collector_reclaims_what_they_read wants ESTALE (tried in the 2026-11-08 sweep, reverted). No code change.
+<!-- SECTION:FINAL_SUMMARY:END -->

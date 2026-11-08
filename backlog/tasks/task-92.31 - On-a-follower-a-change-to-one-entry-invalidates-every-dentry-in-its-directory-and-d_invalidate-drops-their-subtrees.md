@@ -3,12 +3,13 @@ id: TASK-92.31
 title: >-
   On a follower, a change to one entry invalidates every dentry in its
   directory, and d_invalidate drops their subtrees
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-10-22 21:06'
-updated_date: '2026-11-06 00:48'
+updated_date: '2026-11-08 04:51'
 labels:
   - review-2026-10-21
+  - wontfix
 dependencies: []
 references:
   - docs/reviews/2026-10-21-main.md
@@ -48,3 +49,9 @@ Frozen 2026-11-04 by the user: followers and the standalone store layer have no 
 
 2026-11-05 triage: citations brought to dde8d58d3; still frozen.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Closed as won't fix, the user's decision of 2026-11-08 (OPEN_QUESTIONS.md, b0d7d00d2: 'Judgement calls, as recommended: close TASK-149.22, 44.1, 92.30 and 92.31 as won't fix'). A follower's dentries stay invalidated per directory generation (guest/linux/fs/fxfs/super.c:357-366, the design TASK-42.6 AC#2 specifies); per-entry invalidation would need Changes::add to record children's names through follower.rs, follow.rs and the guest's drop path, 1-2 days, for follower stat loops the user judged not worth it now. No code change.
+<!-- SECTION:FINAL_SUMMARY:END -->
