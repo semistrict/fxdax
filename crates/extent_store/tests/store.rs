@@ -1401,6 +1401,11 @@ fn cached_pages(path: &std::path::Path) -> usize {
 
 /// fxdax: on Linux, durable commits leave the pages of the open segment's raw file, written through
 /// the host's page cache, in it; its framed file, once synced, lets them go (TASK-92.23).
+///
+/// Synced, the raw file's pages are clean, which the kernel's reclaim may take under memory
+/// pressure whenever it likes: a loaded host's took one of 8 in 2,000 runs (TASK-228). What this
+/// guards against, a sync letting the file go (`POSIX_FADV_DONTNEED`, dir.rs), takes all of them,
+/// so most staying cached is what tells the two apart.
 #[cfg(target_os = "linux")]
 #[test]
 fn durable_commits_keep_the_open_segments_pages_cached_on_the_host() {
@@ -1412,7 +1417,8 @@ fn durable_commits_keep_the_open_segments_pages_cached_on_the_host() {
         store.commit(None).unwrap();
     }
     let path = |kind| temp.path().join(of(kind, BRANCH)).join(format!("{:016x}", 0));
-    assert_eq!(cached_pages(&path("open-segments")), (8 * BLOCK).div_ceil(page_size()));
+    let (written, cached) = ((8 * BLOCK).div_ceil(page_size()), cached_pages(&path("open-segments")));
+    assert!(cached > written / 2, "{cached} of the open segment's {written} pages cached");
     store.close_segment().unwrap();
     store.commit(None).unwrap();
     // Framed, on a thread of its own, which no commit waits for, nothing written since the commit
