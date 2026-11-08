@@ -104,7 +104,9 @@ gce_kept() {
 # gce_acquire HOLDER points instance and zone at a host of this run's kind that
 # HOLDER claims: a kept one, started if it is stopped, that no other run holds;
 # or, if none fits or every one that fits is another run's, a new one
-# (gce_create). A host it started that does not come up, it stops.
+# (gce_create). A host it started that does not come up, it stops. Each runs the
+# startup script as this tree has it: one started or made boots with it
+# (gce_start), and one found running runs it again (gce_refresh).
 gce_acquire() {
     local holder=$1 wanted=$zone hosts name found status
     hosts=$(gce_kept) || return
@@ -123,6 +125,7 @@ gce_acquire() {
         fi
         if gce_claim "$holder"; then
             echo "Reusing $instance in $zone." >&2
+            if [[ $status == RUNNING ]]; then gce_refresh || return; fi
             return 0
         fi
         echo "$instance is another run's; trying the next host." >&2
@@ -181,6 +184,19 @@ gce_check_held() {
     holder=$(gce_holder 2> /dev/null) || holder=
     if [[ $holder != held-* ]]; then
         echo "$instance is not held for runs (${holder:-not running, or unclaimed}): hold a host with create." >&2
+        return 1
+    fi
+}
+
+# gce_refresh gives the running host the startup script as this tree has it, and
+# runs it, as the host's guest agent runs it at boot: a kept host keeps the
+# script it last booted with, and r941's, without main's needrestart settings,
+# lost two runs. The script is idempotent.
+gce_refresh() {
+    "${cloud[@]}" compute instances add-metadata "$instance" --zone="$zone" \
+        --metadata-from-file="startup-script=$repo/scripts/lib/gce-host-startup.sh" || return
+    if ! gce_remote 'sudo google_metadata_script_runner startup' >> "$results/startup.log" 2>&1; then
+        echo "$instance did not run its startup script again: see $results/startup.log" >&2
         return 1
     fi
 }

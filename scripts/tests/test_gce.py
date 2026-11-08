@@ -452,6 +452,27 @@ class Hosts(unittest.TestCase):
                 f"Reusing {FIRST} in us-east4-a.\nStopped {FIRST} in us-east4-a.\n",
             ),
         )
+        # With the startup script as the tree has it, run again (r941's lacked main's).
+        self.assertEqual(
+            project.changes(),
+            [f"compute instances add-metadata {FIRST}", f"compute instances stop {FIRST}"],
+        )
+        self.assertEqual((project.home(FIRST) / "metadata-scripts-ran").read_text(), "startup\n")
+
+    def test_a_running_host_whose_startup_script_fails_is_not_run_on(self):
+        project = Project({"instances": {FIRST: host(KIND)}, "ssh_run": True,
+                           "metadata_scripts": 1})
+        self.assertEqual(
+            project.run(RAN),
+            (
+                1,
+                "",
+                f"Reusing {FIRST} in us-east4-a.\n"
+                f"{FIRST} did not run its startup script again: see "
+                f"{project.directory}/results/startup.log\n"
+                f"Stopped {FIRST} in us-east4-a.\n",
+            ),
+        )
 
     def test_a_stopped_host_that_cannot_start_is_passed_over(self):
         # Its zone has no room for it now: the run makes a host in the next zone.

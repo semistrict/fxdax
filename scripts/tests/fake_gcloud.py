@@ -19,7 +19,9 @@ the last for every create after), which listings and copies fail
 prints ("ssh_out", nothing by default), or, call by call, until they run out, each SSH's status and
 what it prints ("ssh_calls", pairs). With "ssh_run", each SSH runs its command too, in bash, on
 the host it names, whose home is $FAKE_GCLOUD/hosts/NAME/home and whose /run, the tmpfs a stop
-empties, is $FAKE_GCLOUD/hosts/NAME/run, sudo and setsid running what they're given: its status
+empties, is $FAKE_GCLOUD/hosts/NAME/run, sudo and setsid running what they're given, and the guest agent's
+google_metadata_script_runner noting each script it runs in metadata-scripts-ran, and ending
+with "metadata_scripts", 0 by default: its status
 and output are the command's, unless "ssh_calls" says otherwise, as a connection dropped once it
 ran; an SSH to a host not running fails, as a refused connection. A host's startup script has run
 (/run/fxdax-host/ready) once it is made or started, or when it is first reached, if the state made
@@ -79,7 +81,7 @@ def booted(name):
     (host_directory(name) / "run" / "fxdax-host" / "ready").touch()
 
 
-def run_on_host(name, command):
+def run_on_host(name, command, agent=0):
     """Runs `command` as the host `name`'s shell would: in bash, in its home, where it starts, its
     /run its own,
     sudo and setsid running what they are given. Its status and output."""
@@ -93,6 +95,10 @@ def run_on_host(name, command):
     for tool in ("sudo", "setsid"):
         (tools / tool).write_text('#!/bin/sh\nexec "$@"\n')
         (tools / tool).chmod(0o755)
+    # The guest agent's runner of the metadata's scripts: it says, in the host's home, it ran.
+    runner = tools / "google_metadata_script_runner"
+    runner.write_text(f'#!/bin/sh\necho "$@" >> "$HOME/metadata-scripts-ran"\nexit {agent}\n')
+    runner.chmod(0o755)
     environment = {"HOME": str(home), "PATH": f"{tools}:/usr/bin:/bin"}
     done = subprocess.run(
         ["/bin/bash", "-c", command], env=environment, capture_output=True, text=True,
@@ -135,7 +141,7 @@ def main(argv):
             if instances.get(words[2], {}).get("status", "RUNNING") != "RUNNING":
                 print(f"ssh: connect to host {words[2]} port 22: Connection refused", file=sys.stderr)
                 sys.exit(255)
-            status, out = run_on_host(words[2], flags["command"])
+            status, out = run_on_host(words[2], flags["command"], state.get("metadata_scripts", 0))
         if state.get("ssh_calls"):
             status, out = state["ssh_calls"].pop(0)
             (STATE / "state.json").write_text(json.dumps(state))
