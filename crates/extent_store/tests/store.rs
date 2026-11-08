@@ -1410,6 +1410,8 @@ fn raw_files_are_read_through_the_page_cache() {
     store.write(extent(3), 0, &pattern(3, 0, large)).unwrap();
     store.close_segment().unwrap();
     store.commit(None).unwrap();
+    // Framed, on a thread of its own, which no commit waits for (TASK-221).
+    settled(&store);
     assert_eq!(of_raw_files(dir.direct()), BTreeMap::new());
     // The copies of the two extents, 4 blocks, and the segment framed, 8; the large extent framed.
     let cached = |segments: usize| {

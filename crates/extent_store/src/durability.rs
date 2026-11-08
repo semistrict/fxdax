@@ -178,8 +178,27 @@ const AT_ONCE: usize = 16;
 /// many syncs.
 const HELPERS: usize = AT_ONCE - 1;
 
-/// fxdax: how many of [`HELPERS`] sync now.
-static HELPING: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+/// fxdax: how many of [`HELPERS`] sync now: the process's; with the `shuttle` feature, each Shuttle
+/// execution's own, so that how many helpers an execution's flushes get is of its own flushes
+/// alone, as the scheduler sees them, not another execution's run beside it in the process: a
+/// test's two runs of a round at once got helpers by each other's flushes, outside the scheduler,
+/// and diverged (crash::crashes_recover_prefixes_of_their_commits_concurrently, round 228, CI
+/// 42463756531, TASK-221).
+fn helping() -> &'static std::sync::atomic::AtomicUsize {
+    #[cfg(not(feature = "shuttle"))]
+    {
+        static HELPING: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        &HELPING
+    }
+    #[cfg(feature = "shuttle")]
+    {
+        shuttle::lazy_static! {
+            static ref HELPING: std::sync::atomic::AtomicUsize =
+                std::sync::atomic::AtomicUsize::new(0);
+        }
+        &HELPING
+    }
+}
 
 /// fxdax: some of [`HELPERS`], taken for a flush's syncs until dropped.
 struct Helpers(usize);
@@ -188,7 +207,7 @@ impl Helpers {
     /// As many of them as are free, `wanted` at most.
     fn take(wanted: usize) -> Self {
         use std::sync::atomic::Ordering;
-        let helping = HELPING.update(Ordering::AcqRel, Ordering::Acquire, |helping| {
+        let helping = helping().update(Ordering::AcqRel, Ordering::Acquire, |helping| {
             helping + wanted.min(HELPERS - helping)
         });
         Self(wanted.min(HELPERS - helping))
@@ -197,7 +216,7 @@ impl Helpers {
 
 impl Drop for Helpers {
     fn drop(&mut self) {
-        HELPING.fetch_sub(self.0, std::sync::atomic::Ordering::AcqRel);
+        helping().fetch_sub(self.0, std::sync::atomic::Ordering::AcqRel);
     }
 }
 
@@ -452,6 +471,36 @@ mod tests {
         use shuttle::{Config, Runner};
         use std::collections::BTreeMap;
         use std::io;
+
+        /// fxdax: each Shuttle execution has helpers of its own: one, holding every helper, leaves
+        /// another, run beside it in the process, as many as it asks for. Shared, an execution's
+        /// helpers depended on another's flushes, outside the scheduler, and a test's two runs of a
+        /// round at once diverged (crash::crashes_recover_prefixes_of_their_commits_concurrently,
+        /// round 228, CI 42463756531, TASK-221). Red with one count for the process.
+        #[test]
+        fn executions_have_helpers_of_their_own() {
+            use std::sync::mpsc::channel;
+            let (held, holding) = channel::<()>();
+            let (done, finished) = channel::<()>();
+            let (held, finished) = (std::sync::Mutex::new(held), std::sync::Mutex::new(finished));
+            std::thread::scope(|scope| {
+                scope.spawn(|| {
+                    Runner::new(RandomScheduler::new(1), Config::new()).run(move || {
+                        let _all = Helpers::take(HELPERS);
+                        held.lock().unwrap().send(()).unwrap();
+                        finished.lock().unwrap().recv().unwrap();
+                    })
+                });
+                holding.recv().unwrap();
+                let taken = std::sync::Arc::new(std::sync::Mutex::new(None));
+                let theirs = taken.clone();
+                Runner::new(RandomScheduler::new(1), Config::new()).run(move || {
+                    *theirs.lock().unwrap() = Some(Helpers::take(HELPERS).0);
+                });
+                done.send(()).unwrap();
+                assert_eq!(*taken.lock().unwrap(), Some(HELPERS));
+            });
+        }
 
         /// The files a test's flush syncs, more than twice as many as it syncs at once, and the
         /// directories.
