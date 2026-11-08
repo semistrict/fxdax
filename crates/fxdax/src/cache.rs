@@ -14,10 +14,15 @@
 //! changes once sealed, its ID its branch's to write once, which the store keeps to (TASK-79.6).
 //! A page evicted is unmapped from each window that maps it first; freed, it waits in quarantine
 //! for the VM processes that may reach it still (`physmem::quarantine_with`, TASK-79.9).
+//!
+//! An extent the default arena holds is that one copy for a tenant's store too, as every VM
+//! process may read the default arena; and one a tenant's arena holds that a store reads into the
+//! default arena, as a public base's extent its publisher's store had read, moves there: its pages
+//! copied in memory, rather than paged in again, and evicted from the tenant's (TASK-234).
 
 use crate::dax::{Origin, Source, Window};
 use crate::error::{Errno, Result};
-use crate::extents::ExtentId;
+use crate::extents::{ExtentId, PublicReach};
 use crate::pages::{ArenaId, page_size};
 use crate::profile::Recorder;
 use crate::stats::{self, Counter};
@@ -36,6 +41,9 @@ struct ExtentCache {
     pager: tokio::runtime::Runtime,
     /// By the arena their pages are of (TASK-43), and their IDs.
     extents: Mutex<HashMap<(ArenaId, ExtentId), Cached>>,
+    /// The arenas but the default that extents were cached of, to look for an extent's copy in,
+    /// taken after `extents` (TASK-234).
+    arenas: Mutex<HashSet<ArenaId>>,
 }
 
 /// A sealed extent cached.
@@ -72,6 +80,13 @@ impl Holders {
         if !holders.iter().any(|holder| std::ptr::eq(holder.store.as_ptr(), Arc::as_ptr(store))) {
             let (store, remote) = (Arc::downgrade(store), remote.map(Arc::downgrade));
             holders.push(Holder { store, remote });
+        }
+    }
+
+    /// Adds those of `other` open still, as [`Holders::add`] does.
+    fn adopt(&self, other: &Holders) {
+        for (store, remote) in other.open() {
+            self.add(&store, remote.as_ref());
         }
     }
 
@@ -133,7 +148,7 @@ fn extent_cache() -> &'static ExtentCache {
             .thread_name("fxdax pager")
             .build()
             .expect("the extent cache's pager");
-        ExtentCache { pager, extents: Mutex::new(HashMap::new()) }
+        ExtentCache { pager, extents: Mutex::default(), arenas: Mutex::default() }
     })
 }
 
@@ -190,17 +205,39 @@ pub(crate) fn evict_arena(arena: ArenaId) {
     let Some(cache) = EXTENT_CACHE.get() else { return };
     let evicted: Vec<Cached> = {
         let mut extents = cache.extents.lock().unwrap();
+        cache.arenas.lock().unwrap().remove(&arena);
         extents.extract_if(|(of, _), _| *of == arena).map(|(_, cached)| cached).collect()
     };
     drop(evicted);
 }
 
-/// The sealed `extent`, of `len` bytes, in the cache, of `arena`, cached from `store` if it isn't:
+/// Which arena an extent's pages are of, and whether a tenant's copy of it may move to the default
+/// arena: only an extent reachable from a published generation may (TASK-234), as every VM process
+/// maps the default arena, and a tenant's pages there would be every tenant's to read.
+pub(crate) enum Placement {
+    /// Of `arena`: a tenant's, or the default for a store of none, which takes no other arena's
+    /// copy.
+    Arena(ArenaId),
+    /// Of the default arena, reachable from a published generation, as its store found: a
+    /// tenant's copy of it moves there.
+    Public(PublicReach),
+}
+
+impl Placement {
+    fn arena(&self) -> ArenaId {
+        match self {
+            Placement::Arena(arena) => *arena,
+            Placement::Public(_) => ArenaId::DEFAULT,
+        }
+    }
+}
+
+/// The sealed `extent`, of `len` bytes, in the cache, of `placement`'s arena, cached from `store` if it isn't:
 /// read from it, or from `remote`, with its page-ins recorded by `recorder`, if any; and from any
 /// other store that asked for it, which `store` is one of from now on (TASK-79.7).
 pub(crate) fn cached(
     store: &Arc<Store<HostDir>>,
-    arena: ArenaId,
+    placement: Placement,
     remote: Option<Arc<crate::remote::Fetcher>>,
     recorder: Option<Arc<Recorder>>,
     extent: ExtentId,
@@ -208,15 +245,30 @@ pub(crate) fn cached(
 ) -> Result<Arc<CachedExtent>> {
     let cache = extent_cache();
     let mut extents = cache.extents.lock().unwrap();
-    let key = (arena, extent);
-    let cached = extents.entry(key).or_insert_with(|| {
+    let key = held_key(&extents, placement.arena(), extent);
+    let mut moved = None;
+    if !extents.contains_key(&key) {
         let holders = Arc::new(Holders::default());
         let stored = StoredExtent::new(holders.clone(), store, extent, recorder);
-        Cached {
-            extent: Arc::new(CachedExtent::new(arena, extent, Box::new(stored), len)),
-            holders,
+        let mut contents: Box<dyn Contents> = Box::new(stored);
+        if let Placement::Public(reach) = &placement {
+            // A tenant's copy, which moves here (TASK-234): of this extent alone.
+            assert_eq!(reach.extent(), extent, "a tenant's copy moved for another extent");
+            let arenas = cache.arenas.lock().unwrap();
+            let other = arenas.iter().find_map(|of| extents.remove(&(*of, extent)));
+            if let Some(other) = other {
+                holders.adopt(&other.holders);
+                moved = Some(other.extent.clone());
+                let from = Mutex::new(Some(other.extent));
+                contents = Box::new(Promoted { from, stored: contents });
+            }
+        } else if key.0 != ArenaId::DEFAULT {
+            cache.arenas.lock().unwrap().insert(key.0);
         }
-    });
+        let new = Arc::new(CachedExtent::new(key.0, extent, contents, len));
+        extents.insert(key, Cached { extent: new, holders });
+    }
+    let cached = extents.get_mut(&key).expect("cached");
     cached.extent.used();
     cached.holders.add(store, remote.as_ref());
     let found = cached.extent.clone();
@@ -231,7 +283,41 @@ pub(crate) fn cached(
     drop(extents);
     // Freed past the cache's lock.
     drop(gone);
+    if let Some(from) = moved {
+        // The tenant's windows map it from here from now on, and nothing of the copy: a fault on
+        // it would read it in again. Past the cache's lock, which no window's is taken under.
+        let (from_source, to_source): (Arc<dyn Source>, Arc<dyn Source>) =
+            (from.clone(), found.clone());
+        for window in from.windows() {
+            window.rebind(&from_source, to_source.clone());
+        }
+        // What of it the tenant's arena holds, moved at once, rather than as it is asked for:
+        // nothing else would evict it.
+        let to = found.clone();
+        cache.pager.spawn(async move {
+            for page in from.present_parts() {
+                if let Err(errno) = to.clone().bring_in(page).await {
+                    log::warn!("fxdax: moving {:?}'s page {page}: {errno:?}", to.extent);
+                }
+            }
+        });
+    }
     Ok(found)
+}
+
+/// The key `extent` of `arena` is cached by: the default arena's, if it holds it, as every VM
+/// process may read it, a tenant's too: one copy (TASK-234).
+fn held_key(
+    extents: &HashMap<(ArenaId, ExtentId), Cached>,
+    arena: ArenaId,
+    extent: ExtentId,
+) -> (ArenaId, ExtentId) {
+    let public = (ArenaId::DEFAULT, extent);
+    if arena != ArenaId::DEFAULT && extents.contains_key(&public) {
+        public
+    } else {
+        (arena, extent)
+    }
 }
 
 /// The cached `extent` of `arena`, if it is cached.
@@ -252,10 +338,12 @@ pub(crate) fn freed(
     extent: ExtentId,
 ) -> Option<Arc<CachedExtent>> {
     let cache = EXTENT_CACHE.get()?;
-    let key = (arena, extent);
-    let (cached, holders) = {
+    let (key, cached, holders) = {
         let extents = cache.extents.lock().unwrap();
-        extents.get(&key).map(|cached| (cached.extent.clone(), cached.holders.clone()))?
+        let key = held_key(&extents, arena, extent);
+        let (cached, holders) =
+            extents.get(&key).map(|cached| (cached.extent.clone(), cached.holders.clone()))?;
+        (key, cached, holders)
     };
     if !holders.another_holds(store, extent.into()) {
         let mut extents = cache.extents.lock().unwrap();
@@ -436,6 +524,43 @@ impl Contents for StoredExtent {
     }
 }
 
+/// An extent's contents read into the default arena from a tenant's copy of it (TASK-234): its
+/// pages in memory copied, and the rest read from the stores; either way, the copy's pages go, and
+/// the copy once none is left.
+struct Promoted {
+    from: Mutex<Option<Arc<CachedExtent>>>,
+    stored: Box<dyn Contents>,
+}
+
+impl Contents for Promoted {
+    fn read<'a>(
+        &'a self,
+        offset: u64,
+        buf: &'a mut [u8],
+    ) -> BoxFuture<'a, std::result::Result<(), anyhow::Error>> {
+        let ps = page_size();
+        let pages = offset / ps..(offset + buf.len() as u64).div_ceil(ps);
+        let from = self.from.lock().unwrap().clone();
+        Box::pin(async move {
+            let copied = from.as_ref().is_some_and(|from| from.copy_present(offset, buf));
+            if !copied {
+                self.stored.read(offset, buf).await?;
+            }
+            if let Some(from) = from {
+                from.evict_pages(pages);
+                if from.present.load(Ordering::Relaxed) == 0 {
+                    self.from.lock().unwrap().take();
+                }
+            }
+            Ok(())
+        })
+    }
+
+    fn phase(&self) -> u64 {
+        self.stored.phase()
+    }
+}
+
 /// A page of a cached extent.
 enum Slot {
     /// Not in memory.
@@ -560,14 +685,65 @@ impl CachedExtent {
         Ok(())
     }
 
+    /// Copies its bytes at `offset` into `data`, if its pages they are of are all in memory:
+    /// whether they were (TASK-234).
+    fn copy_present(&self, offset: u64, data: &mut [u8]) -> bool {
+        let ps = page_size();
+        let pages = self.pages.lock().unwrap();
+        let first = offset / ps;
+        let count = (data.len() as u64).div_ceil(ps);
+        let frames: Option<Vec<_>> = (first..first + count)
+            .map(|page| match pages.slots.get(page as usize) {
+                Some(Slot::Present(frame)) => Some(frame.as_ptr()),
+                _ => None,
+            })
+            .collect();
+        let Some(frames) = frames else { return false };
+        for (frame, bytes) in frames.into_iter().zip(data.chunks_mut(ps as usize)) {
+            // SAFETY: The page is the extent's, in memory while its lock is held, and sealed: only
+            // read.
+            unsafe { std::ptr::copy_nonoverlapping(frame, bytes.as_mut_ptr(), bytes.len()) };
+        }
+        true
+    }
+
+    /// The windows that map it.
+    fn windows(&self) -> Vec<Arc<Window>> {
+        let pages = self.pages.lock().unwrap();
+        pages.windows.iter().filter_map(Weak::upgrade).collect()
+    }
+
+    /// The first pages of its parts of which a page is in memory (TASK-234).
+    fn present_parts(&self) -> Vec<u64> {
+        let pages = self.pages.lock().unwrap();
+        let count = pages.slots.len() as u64;
+        let mut parts = Vec::new();
+        let mut page = 0;
+        while page < count {
+            let part = self.part_of(page, count);
+            if part.clone().any(|page| matches!(pages.slots[page as usize], Slot::Present(_))) {
+                parts.push(part.start);
+            }
+            page = part.end;
+        }
+        parts
+    }
+
     /// Evicts its pages in memory: unmaps them from the windows that map them, then lets go of
     /// them, those a window's second stage mapped into quarantine (`physmem::quarantine_with`).
     /// Returns the bytes it evicted.
     pub(crate) fn evict(&self) -> u64 {
+        self.evict_pages(0..u64::MAX)
+    }
+
+    /// Evicts its pages in memory of `range`, as [`CachedExtent::evict`] evicts them all.
+    fn evict_pages(&self, range: Range<u64>) -> u64 {
         let (frames, windows) = {
             let mut pages = self.pages.lock().unwrap();
             let mut frames = HashSet::new();
-            for slot in &mut pages.slots {
+            let end = range.end.min(pages.slots.len() as u64) as usize;
+            let start = (range.start as usize).min(end);
+            for slot in &mut pages.slots[start..end] {
                 *slot = match std::mem::replace(slot, Slot::Absent) {
                     Slot::Present(frame) => {
                         frames.insert(frame.frame());

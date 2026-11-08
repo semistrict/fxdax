@@ -1134,6 +1134,33 @@ impl Window {
         }
     }
 
+    /// Maps from `to` what it maps from `from`, the same pages of the same extent: `from`'s
+    /// pages it has mapped unmapped, `to`'s mapped as they are faulted on, its private pages
+    /// staying. fxdax: a tenant's copy of an extent moved to the default arena, which every VM
+    /// process may read, so that the window faults on nothing of the copy, which goes (TASK-234).
+    pub(crate) fn rebind(self: &Arc<Self>, from: &Arc<dyn Source>, to: Arc<dyn Source>) {
+        let mut state = self.state.lock().unwrap();
+        let Some(starts) = state.by_source.remove(&source_identity(from)) else { return };
+        let mut gone = Vec::new();
+        for start in &starts {
+            let end = state.mappings[start].end;
+            gone.extend(
+                (state.ptes.range(*start..end))
+                    .filter(|(_, pte)| matches!(pte, Pte::Source { .. }))
+                    .map(|(offset, _)| *offset),
+            );
+            state.mappings.get_mut(start).expect("a mapping's start").source = to.clone();
+        }
+        for offset in &gone {
+            state.remove_pte(*offset);
+        }
+        self.unmap_runs(&gone);
+        state.by_source.entry(source_identity(&to)).or_default().extend(starts);
+        drop(state);
+        from.unmapped(self);
+        to.mapped(self);
+    }
+
     /// Unmaps the pages the window has mapped of `source`, by its identity, that `evicted` says
     /// are of the frames it evicts: before it lets go of them. fxdax: a private page within its
     /// mappings is none of its pages, and stays (backlog doc-13).
@@ -1959,6 +1986,34 @@ pub(crate) mod tests {
         dax.window.unmap_pages_of(source_identity(&source), &|frame| frames.contains(&frame));
         let pages: Vec<u64> = stage.pages().into_iter().map(|(page, _)| page).collect();
         assert_eq!(pages, [0, 3, 4, 5]);
+    }
+
+    /// TASK-234: a window rebound from one source to another, the same pages of the same extent
+    /// moved, maps nothing of the first, the second's pages as they are faulted on, and its
+    /// mappings are the second's: pages loaded before it read the first's bytes, after it the
+    /// second's, never a page of the first left mapped.
+    #[test]
+    fn a_rebound_window_maps_nothing_of_its_old_source() {
+        let ps = page_size();
+        let (old, new) = (TestSource::numbered(4, 1), TestSource::numbered(4, 11));
+        let (mut dax, window) = Dax::new(4 * ps, None).unwrap();
+        dax.map(0, &old.source(), 0, 4 * ps);
+        let loaded: Vec<u8> = (0..4).map(|page| load(&window, page)).collect();
+        assert_eq!(loaded, [1, 2, 3, 4]);
+
+        dax.window.rebind(&old.source(), new.source());
+        let loaded: Vec<u8> = (0..4).map(|page| load(&window, page)).collect();
+        assert_eq!(loaded, [11, 12, 13, 14]);
+        assert_eq!(dax.mappings(), [new.mapping_at(0, 0, 4 * ps)]);
+
+        let stage = Arc::new(Recorded::default());
+        let (mut dax, window) = Dax::new(4 * ps, Some(stage.clone())).unwrap();
+        dax.map(0, &old.source(), 0, 4 * ps);
+        for page in 0..4 {
+            futures::executor::block_on(window.fault(page * ps, Access::Read)).unwrap();
+        }
+        dax.window.rebind(&old.source(), new.source());
+        assert_eq!(stage.pages(), []);
     }
 
     /// The ranges a freed extent mapped map zeros, read-only; the others keep what they map.

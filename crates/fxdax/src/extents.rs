@@ -25,7 +25,7 @@
 //! write: a store to a page gives the window a private copy of it (`crate::dax`), which no extent
 //! names, so that no commit changes anything in a window.
 
-use crate::cache::{self, CachedExtent};
+use crate::cache::{self, CachedExtent, Placement};
 use crate::dax::{Dax, DaxMapping, DaxWindow, SecondStage, Source};
 use crate::error::{Errno, Error, Result};
 use crate::faults::failpoint;
@@ -1724,7 +1724,21 @@ impl ExtentStore {
     fn cached(&self, extent: ExtentId, len: u64) -> Result<Arc<CachedExtent>> {
         let remote = Some(self.fetcher());
         let recorder = self.profiling.as_ref().map(|(recorder, _)| recorder.clone());
-        cache::cached(&self.store, self.arenas.of(extent), remote, recorder, extent, len)
+        let placement = match self.public_reach(extent) {
+            Some(reach) => Placement::Public(reach),
+            None => Placement::Arena(self.arenas.of(extent)),
+        };
+        cache::cached(&self.store, placement, remote, recorder, extent, len)
+    }
+
+    /// fxdax: that `extent` is reachable from a published generation, if it is: the store is
+    /// public, a generation or a base its directory marks so, and holds it sealed (TASK-234).
+    fn public_reach(&self, extent: ExtentId) -> Option<PublicReach> {
+        if !self.is_public() {
+            return None;
+        }
+        let held = self.store.extent(extent.into());
+        matches!(held, Ok(Some((_, false)))).then_some(PublicReach(extent))
     }
 
     /// fxdax: makes the store's branch public, and those it inherited from (TASK-43): a base,
@@ -1810,6 +1824,20 @@ impl ExtentStore {
     /// ([`ExtentStore::open_in`]): its tenant's, or the default.
     pub fn arena(&self) -> ArenaId {
         self.arenas.own()
+    }
+}
+
+/// fxdax: that an extent is reachable from a published generation (TASK-234): a public store, a
+/// generation or a base, holds it, so that every tenant attaching or forking it may read it. Only
+/// a store makes one, having found so ([`ExtentStore::public_reach`]): its field is this module's.
+/// The extent cache moves a tenant's copy of an extent to the default arena, which every VM
+/// process maps, only with one naming that extent (`cache::Placement::Public`).
+pub(crate) struct PublicReach(ExtentId);
+
+impl PublicReach {
+    /// The extent reachable.
+    pub(crate) fn extent(&self) -> ExtentId {
+        self.0
     }
 }
 
@@ -1949,7 +1977,8 @@ fn replay(
                 let Ok(Some((len, false))) = store.extent(id) else { continue };
                 let arena = arenas.of(unit.extent);
                 let fetcher = Some(fetcher.clone());
-                let extent = cache::cached(&store, arena, fetcher, None, unit.extent, len);
+                let placement = Placement::Arena(arena);
+                let extent = cache::cached(&store, placement, fetcher, None, unit.extent, len);
                 let Ok(extent) = extent else { continue };
                 match extent.read(unit.offset, &mut [0; 1]) {
                     Ok(()) => stats::add(Counter::Prefetches, 1),
@@ -3394,7 +3423,8 @@ mod tests {
         store.map(id(&store, 1), 0, ps, 0).unwrap();
         for sequence in 2..=20 {
             let extent = id(&store, sequence);
-            drop(cache::cached(&store.store, ArenaId::DEFAULT, None, None, extent, ps).unwrap());
+            let placement = Placement::Arena(ArenaId::DEFAULT);
+            drop(cache::cached(&store.store, placement, None, None, extent, ps).unwrap());
         }
         let mut kept: Vec<u64> = cache::keys().iter().map(|(_, extent)| extent.sequence).collect();
         kept.sort_unstable();
@@ -3423,7 +3453,8 @@ mod tests {
         let before = stats::stats();
         for sequence in mapped + 1..=mapped + looked_up {
             let extent = id(&store, sequence);
-            drop(cache::cached(&store.store, ArenaId::DEFAULT, None, None, extent, ps).unwrap());
+            let placement = Placement::Arena(ArenaId::DEFAULT);
+            drop(cache::cached(&store.store, placement, None, None, extent, ps).unwrap());
         }
         let trims = stats::stats().since(&before).cache_trims;
         assert!(trims <= looked_up / (MOST as u64 / 8) + 1, "{trims} trims of the cache");
@@ -3674,6 +3705,102 @@ mod tests {
         let mut held = vec![0; ps as usize];
         extent_cached.read(0, &mut held).unwrap();
         assert!(held == pattern(4, ps as usize), "the cache holds other data");
+    }
+
+    /// TASK-234: an extent of a base its publisher's store, open in its tenant's arena, has cached
+    /// is read into the default arena, which a base's pages are of, from those pages, not paged in
+    /// again, and they go: one copy, the default arena's, which the publisher's store reads from
+    /// then on. The first sandbox on a generation of the Linux tree paged 1.8 GB in, 14.5 s, the
+    /// daemon holding it as the publisher's store's (GCE r941).
+    #[test]
+    fn a_bases_extent_its_publisher_has_cached_moves_to_the_default_arena() {
+        let dir = tempfile::tempdir().unwrap();
+        let ps = page_size();
+        let len = 4 * extent_frame::PART as usize;
+        let data = pattern(7, len);
+        let (publisher_path, base) = (dir.path().join("publisher"), dir.path().join("base"));
+        let publisher = made(&publisher_path, 1 << 24);
+        let extent = id(&publisher, 1);
+        write(&publisher, extent, 0, &data).unwrap();
+        publisher.commit(None).unwrap();
+        publisher.fork(&base, publisher.branch() + 1).unwrap();
+        drop(publisher);
+        ExtentStore::open(&base).unwrap().make_generation_public().unwrap();
+        let tenant = Arena::new();
+        let publisher = ExtentStore::open_in(&publisher_path, Some(tenant.clone())).unwrap();
+        // The publisher's VM maps its first page, from the tenant's copy.
+        let window = publisher.create_dax_window(len as u64, None).unwrap();
+        publisher.map(extent, 0, len as u64, 0).unwrap();
+        block_on(window.fault(0, Access::Read)).unwrap();
+        assert_eq!(read(&publisher, extent, 0, len), Ok(data.clone()));
+        let pages = len as u64 / ps;
+        let held = |arena| cache::find(arena, extent).map(|cached| cached.held());
+        assert_eq!(held(tenant.id()), Some(pages));
+
+        let ancestry = ExtentStore::open(&base).unwrap().ancestry();
+        let sandbox = made(&dir.path().join("sandbox"), 1 << 20);
+        sandbox.open_bases(one_instance_each()).unwrap();
+        sandbox.attach_base(&base, &ancestry).unwrap();
+        let page_ins = stats::stats().page_ins;
+        assert_eq!(read(&sandbox, extent, 0, len), Ok(data.clone()));
+        assert_eq!(stats::stats().page_ins - page_ins, 0, "paged in again");
+        assert_eq!((held(ArenaId::DEFAULT), held(tenant.id())), (Some(pages), None));
+
+        assert_eq!(read(&publisher, extent, 0, len), Ok(data.clone()));
+        // Its window, the tenant's page evicted from it, faults onto the default arena's.
+        block_on(window.fault(0, Access::Read)).unwrap();
+        // SAFETY: The test faulted the page in, and nothing writes it.
+        let mapped = unsafe { std::slice::from_raw_parts(window.host_base(), ps as usize) };
+        assert!(mapped == &data[..ps as usize], "the publisher's window maps other data");
+        assert_eq!(stats::stats().page_ins - page_ins, 0, "the publisher paged in again");
+        let copies = cache::keys().into_iter().filter(|(_, cached)| *cached == extent).count();
+        assert_eq!(copies, 1);
+    }
+
+    /// TASK-234: a tenant's copy of an extent moves to the default arena only for a read through a
+    /// published generation: one not published, read without an arena as a base is, takes nothing
+    /// of the tenant's, which keeps its copy, and pages in its own, as every VM process maps the
+    /// default arena.
+    #[test]
+    fn an_extent_of_no_published_generation_stays_its_tenants() {
+        let dir = tempfile::tempdir().unwrap();
+        let ps = page_size();
+        let len = 4 * extent_frame::PART as usize;
+        let data = pattern(8, len);
+        let (publisher_path, base) = (dir.path().join("publisher"), dir.path().join("base"));
+        let publisher = made(&publisher_path, 1 << 24);
+        let extent = id(&publisher, 1);
+        write(&publisher, extent, 0, &data).unwrap();
+        publisher.commit(None).unwrap();
+        publisher.fork(&base, publisher.branch() + 1).unwrap();
+        drop(publisher);
+        let tenant = Arena::new();
+        let publisher = ExtentStore::open_in(&publisher_path, Some(tenant.clone())).unwrap();
+        assert_eq!(read(&publisher, extent, 0, len), Ok(data.clone()));
+        let pages = len as u64 / ps;
+        let held = |arena| cache::find(arena, extent).map(|cached| cached.held());
+
+        let ancestry = ExtentStore::open(&base).unwrap().ancestry();
+        let sandbox = made(&dir.path().join("sandbox"), 1 << 20);
+        sandbox.open_bases(one_instance_each()).unwrap();
+        sandbox.attach_base(&base, &ancestry).unwrap();
+        let page_ins = stats::stats().page_ins;
+        assert_eq!(read(&sandbox, extent, 0, len), Ok(data));
+        assert_eq!(stats::stats().page_ins - page_ins, 4, "one page-in a part");
+        assert_eq!((held(tenant.id()), held(ArenaId::DEFAULT)), (Some(pages), Some(pages)));
+    }
+
+    /// TASK-234: what says an extent is reachable from a published generation says it of that
+    /// extent alone: the cache moves no other's pages with it.
+    #[test]
+    #[should_panic(expected = "a tenant's copy moved for another extent")]
+    fn a_public_reach_moves_its_own_extent_alone() {
+        let (store, _dir) = store(1 << 20);
+        let (reached, other) = (id(&store, 1), id(&store, 2));
+        write(&store, other, 0, &[1; BLOCK]).unwrap();
+        store.commit(None).unwrap();
+        let placement = Placement::Public(PublicReach(reached));
+        drop(cache::cached(&store.store, placement, None, None, other, BLOCK as u64));
     }
 
     /// doc-10: what a generation pins stays, whatever its store does next.
