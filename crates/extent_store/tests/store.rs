@@ -1126,6 +1126,86 @@ fn writes_are_written_back_as_they_go() {
     }
 }
 
+/// fxdax: the framing of segment 0, which the commit after `store`'s first closes, held where its
+/// framed file is created, not yet written, until the returned sender says go or drops: its
+/// framing begun once this returns.
+fn framing_held(
+    store: &Store<MemDir>,
+) -> (std::sync::mpsc::Sender<()>, fail::FailGuard) {
+    use std::sync::Mutex;
+    use std::sync::mpsc::channel;
+    store.write(extent(1), 0, &pattern(1, 0, BLOCK)).unwrap();
+    store.commit(None).unwrap();
+    store.flush().unwrap();
+    let (waiting, waits) = channel();
+    let (go, gone) = channel::<()>();
+    let gone = Mutex::new(gone);
+    let guard = fail::FailGuard::with_callback("segments::framing", move || {
+        let _ = waiting.send(());
+        let _ = gone.lock().unwrap().recv();
+    })
+    .unwrap();
+    store.write(extent(2), 0, &pattern(2, 0, BLOCK)).unwrap();
+    store.close_segment().unwrap();
+    store.commit(None).unwrap();
+    waits.recv().unwrap();
+    (go, guard)
+}
+
+/// fxdax: a commit made in a segment as it closes, its framing not yet written, is durable once a
+/// flush has synced the segment's raw file and appended the commit's record to the segment's log,
+/// which it syncs: no flush waits for a framing (TASK-221), and an opening after a crash closes the
+/// segment again from its raw file and log (TASK-165.9).
+#[test]
+fn commits_in_segments_being_framed_are_durable_in_their_raw_files_and_logs() {
+    let dir = MemDir::new();
+    let store = create(dir.clone(), 64 << 20);
+    let (go, guard) = framing_held(&store);
+    store.flush().unwrap();
+    for seed in 0..16 {
+        let reopened = Store::open(dir.crash(seed), OPTIONS).unwrap();
+        assert_eq!(reopened.epoch().unwrap(), 2, "seed {seed}");
+        for sequence in 1..=2 {
+            assert_eq!(
+                read(&reopened, extent(sequence), 0, BLOCK),
+                pattern(sequence as u8, 0, BLOCK),
+                "seed {seed}, extent {sequence}"
+            );
+        }
+    }
+    go.send(()).unwrap();
+    drop(guard);
+}
+
+/// fxdax: a segment's raw file and log stay until its framed file is synced, its commits durable:
+/// an opening after a crash closes a segment whose framed file isn't whole again from them
+/// (TASK-165.9); what goes once it is, the framed file holds, a crash after finding it whole.
+#[test]
+fn raw_files_and_logs_stay_until_their_framed_files_are_synced() {
+    let dir = MemDir::new();
+    let store = create(dir.clone(), 64 << 20);
+    let (go, guard) = framing_held(&store);
+    store.flush().unwrap();
+    let name = format!("{:016x}", 0);
+    let held = |kind: &str| dir.list(&of(kind, BRANCH)).unwrap().contains(&name);
+    assert!(held("open-segments") && held("logs"), "segment 0's raw file or log went, unframed");
+    go.send(()).unwrap();
+    drop(guard);
+    settled(&store);
+    assert!(!held("open-segments") && !held("logs"), "segment 0's raw file or log stayed, framed");
+    for seed in 0..16 {
+        let reopened = Store::open(dir.crash(seed), OPTIONS).unwrap();
+        assert_eq!(reopened.epoch().unwrap(), 2, "seed {seed}");
+        for sequence in 1..=2 {
+            assert_eq!(
+                read(&reopened, extent(sequence), 0, BLOCK),
+                pattern(sequence as u8, 0, BLOCK),
+                "seed {seed}, extent {sequence}"
+            );
+        }
+    }
+}
+
 /// The files the process has open.
 fn open_fds() -> usize {
     std::fs::read_dir("/dev/fd").unwrap().count()
