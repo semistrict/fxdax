@@ -3,9 +3,11 @@ id: TASK-91.8
 title: >-
   fs-bench: the sandbox team's baselines, ext4 on virtio-blk with cache_type
   Unsafe and Writeback, and pgbench runs at 25 ms
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-10-22 18:22'
+updated_date: '2026-11-08 06:02'
 labels: []
 dependencies: []
 parent_task_id: TASK-91
