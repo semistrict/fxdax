@@ -13,6 +13,7 @@ use crate::layout::{
     Piece, Place, SEGMENTS, SegmentId, StoreFile, add_piece, branch_dir, create_branch_dirs,
     encode, extent_path, files_of, list_numbers, open_extent_path, segment_path,
 };
+use crate::seals;
 use crate::segments::{Behind, Reaped, Segments, Unframed, footer_last};
 use crate::shared::{Shared, SharedLock};
 use crate::state::{
@@ -1465,7 +1466,14 @@ impl<D: Dir> Store<D> {
         // fxdax: what sealing copied, which the commit's flush syncs: said once past 8 MiB, which
         // the flush of extentd's turn writes at once (TASK-221).
         let (mut copies, mut copied, mut largest) = (0, 0, 0);
+        // fxdax: why it copies what it copies, with FXDAX_SEAL_STATS set (TASK-92.41).
+        let mut why = seals::enabled().then(seals::Sealing::default);
         for &extent in &sealing {
+            if let Some(why) = &mut why
+                && let Some((sealed, len, pieces)) = self.why_sealed(state, extent)
+            {
+                why.sealed(sealed, len, pieces);
+            }
             let bytes = self.seal(state, extent)?;
             copies += u64::from(bytes > 0);
             copied += bytes;
@@ -1481,7 +1489,30 @@ impl<D: Dir> Store<D> {
                 largest >> 10
             );
         }
+        if let Some(why) = why {
+            why.log(self.branch, state.epoch);
+        }
         Ok(sealing)
+    }
+
+    /// fxdax: why sealing `extent` copies it, or not, its length and how many pieces it is in;
+    /// none if sealing does nothing with it (TASK-92.41).
+    fn why_sealed(
+        &self,
+        state: &State<D::File>,
+        extent: ExtentId,
+    ) -> Option<(seals::Why, u64, usize)> {
+        let entry = state.extents.get(&extent)?;
+        match (&entry.data, state.uncommitted.placement(extent)) {
+            (Data::Own, Some(Placement::Own(_))) => Some((seals::Why::Own, entry.len, 1)),
+            (Data::Pieces(pieces), _) => {
+                let (open, large) =
+                    (state.segments.open_segment(), entry.len >= self.options.large_extent);
+                let why = seals::Why::of_pieces(pieces, entry.len, open, large);
+                Some((why, entry.len, pieces.len()))
+            }
+            _ => None,
+        }
     }
 
     /// Publishes commit `epoch`, which sets `root`, if any, and seals `sealing`, to views, which

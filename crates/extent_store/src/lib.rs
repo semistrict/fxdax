@@ -133,6 +133,7 @@ mod host;
 mod kept;
 mod layout;
 mod mem;
+mod seals;
 mod segments;
 pub mod shared;
 mod state;
