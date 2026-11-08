@@ -6,7 +6,8 @@
 # Run clippy's rules (clippy.toml), the test suite, extent_remote's simulation, the concurrency
 # tests under Shuttle, the scripts' tests (scripts/tests) and the mutant runners' checks, the Go
 # client's (go/), and on Linux the guest tests' own tests (guest/tests, both halves) and the VMM's
-# own that fxdax adds to (vendor/firecracker): what CI runs, a part a job.
+# own that fxdax adds to (vendor/firecracker, built as fxdax builds it: scripts/firecracker-cargo.sh):
+# what CI runs, a part a job.
 # Arguments are passed to the suite's and the simulation's `cargo nextest run`. FXDAX_TEST_PARTS
 # names the parts to run, separated by spaces (default: all of clippy, workspace, sim, shuttle,
 # scripts, go, and guest and firecracker on Linux).
@@ -113,14 +114,16 @@ if part guest; then
 fi
 # The VMM's own tests that fxdax adds to, which no other suite reaches: its extent device's
 # (TASK-79.102) and its vCPUs' exits' (TASK-187), on Linux alone, which the VMM builds for, with no
-# KVM. From its directory, whose .cargo/config.toml sets its target directory and build
-# environment. Each extent test serves its store from a daemon in its process, a host's: its
-# stores' branches in a bucket in memory, as of placement 1, which without FXDAX_EXTENTD_REMOTE and
-# FXDAX_EXTENTD_TOKEN fails EIO opening it (TASK-220). userfaultfd-sys's bindgen needs libclang to
-# build it.
+# KVM. With its fxdax feature, as fxdax builds it (scripts/firecracker-cargo.sh), and those its
+# feature gates: the extent device's, its vCPUs' exits', its MMIO transport's shared memory
+# regions', its features pages' and its signal handlers'. Each extent test serves its store from a
+# daemon in its process, a host's: its stores' branches in a bucket in memory, as of placement 1,
+# which without FXDAX_EXTENTD_REMOTE and FXDAX_EXTENTD_TOKEN fails EIO opening it (TASK-220).
+# userfaultfd-sys's bindgen needs libclang to build it.
 if part firecracker; then
-    (cd "$root/vendor/firecracker" &&
-        FXDAX_EXTENTD_REMOTE=memory:///vmm FXDAX_EXTENTD_TOKEN=1 cargo nextest run -p vmm --lib \
-            --features fxdax \
-            -E 'test(/extent::/) | test(/vcpu::tests::(efaults_|test_exit_code_)/)')
+    tests='test(/extent::/) | test(/vcpu::tests::(efaults_|test_exit_code_)/)'
+    tests+=' | test(/mmio::tests::test_shm_regions/) | test(/device::tests::test_features_/)'
+    tests+=' | test(/signal_handler::/)'
+    FXDAX_EXTENTD_REMOTE=memory:///vmm FXDAX_EXTENTD_TOKEN=1 \
+        "$root/scripts/firecracker-cargo.sh" nextest run -p vmm --lib --features fxdax -E "$tests"
 fi

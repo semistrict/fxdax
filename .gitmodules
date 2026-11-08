@@ -1,4 +1,4 @@
 [submodule "vendor/firecracker"]
 	path = vendor/firecracker
 	url = https://github.com/semistrict/firecracker.git
-	branch = fxdax-v1.16.1
+	branch = fxdax-v1.16.1-optin

@@ -1,0 +1,5 @@
+# vendor/firecracker commits that replace a series rather than go on from it, which
+# scripts/firecracker-forward.sh lets main move to: `OLD REWRITTEN`, the old series' tip and its
+# rewrite's.
+# TASK-269: the opt-in series, fxdax-v1.16.1-r1, replacing fxdax-v1.16.1 at land-reqid's tip.
+06c161526ef7b4df9e9cf698fed6ecc2e0f3cf33 8e14cd916c07e26cc00439557f6168262cf5fe59

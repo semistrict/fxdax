@@ -68,7 +68,7 @@ class Ci(unittest.TestCase):
         self.assertIn("protox::compile", (ROOT / "crates/fxdax/build.rs").read_text())
         for lock in [ROOT / "Cargo.lock", ROOT / "guest/tests/Cargo.lock"]:
             self.assertNotIn('name = "bindgen"', lock.read_text(), lock)
-        self.assertIn('name = "bindgen"', (ROOT / "vendor/firecracker/Cargo.lock").read_text())
+        self.assertIn('name = "bindgen"', (ROOT / "vendor/firecracker.lock").read_text())
 
     def test_each_part_is_one_test_sh_runs(self):
         """Each part of the matrix is one scripts/test.sh runs (`part NAME`): a part it hasn't runs
@@ -80,20 +80,20 @@ class Ci(unittest.TestCase):
 
     def test_the_vmms_own_tests_run_with_a_bucket(self):
         """TASK-220: the firecracker part runs the VMM's extent device's tests and its vCPUs'
-        exits', from vendor/firecracker, each extent test's daemon a host's, its stores' branches in
-        a bucket in memory: with none named, every store's opening fails EIO, which 8 of its 21
-        did, run by nothing but scripts/test-e2e.sh on GCE. And the cache keeps its builds."""
+        exits', from vendor/firecracker as fxdax builds it (scripts/firecracker-cargo.sh, TASK-269),
+        each extent test's daemon a host's, its stores' branches in a bucket in memory: with none
+        named, every store's opening fails EIO, which 8 of its 21 did, run by nothing but
+        scripts/test-e2e.sh on GCE. And the cache keeps its builds, in target/firecracker."""
         script = TEST_SH.read_text()
         body = re.search(r"^if part firecracker; then\n(.*?)^fi$", script,
                          re.MULTILINE | re.DOTALL).group(1)
-        self.assertIn('cd "$root/vendor/firecracker"', body)
+        self.assertIn('"$root/scripts/firecracker-cargo.sh" nextest run -p vmm --lib', body)
         self.assertIn("FXDAX_EXTENTD_REMOTE=memory:///", body)
         self.assertIn("FXDAX_EXTENTD_TOKEN=1", body)
-        self.assertIn("cargo nextest run -p vmm --lib", body)
         self.assertIn("--features fxdax", body)
         self.assertIn("test(/extent::/)", body)
-        self.assertIn("vendor/firecracker/build/cargo_target", job())
-        self.assertIn("'vendor/firecracker/Cargo.lock'", job())
+        self.assertIn("            target\n", job())
+        self.assertIn("'vendor/firecracker.lock'", job())
         e2e = (ROOT / "scripts" / "test-e2e.sh").read_text()
         self.assertIn('FXDAX_TEST_PARTS=firecracker "$root/scripts/test.sh"', e2e)
 

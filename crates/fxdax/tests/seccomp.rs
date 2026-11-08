@@ -3,7 +3,8 @@
 // found in the LICENSE file.
 
 //! TASK-149.28: the VM process's side of a copy-on-write DAX window under the seccomp filters it
-//! runs under in production, Firecracker's (vendor/firecracker/resources/seccomp): its VMM
+//! runs under in production, Firecracker's built with its fxdax feature (vendor/firecracker's
+//! resources/seccomp, with resources/fxdax/seccomp's rules before each thread's own): its VMM
 //! thread's, `vmm`, which the threads fxdax starts in its process run under (`fxdax::thread`,
 //! Firecracker's `confine_extent_threads`), and its vCPUs', `vcpu`. Four system calls copy-on-write
 //! DAX makes were missing from `vmm`, `memfd_create`, `fallocate`, `UFFDIO_COPY`'s `ioctl` and
@@ -34,11 +35,26 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
-/// Firecracker's seccomp filters' JSON, for this architecture and musl, as its build compiles them.
-fn filters_json() -> std::path::PathBuf {
-    let arch = std::env::consts::ARCH;
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join(format!("../../vendor/firecracker/resources/seccomp/{arch}-unknown-linux-musl.json"))
+/// Firecracker's seccomp filters, for this architecture and musl, as its build compiles them with
+/// its fxdax feature: upstream's, with fxdax's rules before each thread's own, as its build.rs
+/// puts them (its resources/fxdax/README.md).
+fn filters_json() -> serde_json::Value {
+    let resources =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../vendor/firecracker/resources");
+    let file = format!("{}-unknown-linux-musl.json", std::env::consts::ARCH);
+    let read = |path: std::path::PathBuf| -> serde_json::Value {
+        let json = std::fs::read_to_string(&path)
+            .unwrap_or_else(|err| panic!("{}: {err}", path.display()));
+        serde_json::from_str(&json).unwrap_or_else(|err| panic!("{}: {err}", path.display()))
+    };
+    let mut filters = read(resources.join("seccomp").join(&file));
+    let fxdax = read(resources.join("fxdax/seccomp").join(&file));
+    for (thread, rules) in fxdax.as_object().expect("fxdax's rules, by thread") {
+        let filter = filters[thread.as_str()]["filter"].as_array_mut().expect("a filter's rules");
+        let rules = rules["filter"].as_array().expect("fxdax's rules of a thread");
+        filter.splice(0..0, rules.iter().cloned());
+    }
+    filters
 }
 
 /// A BPF program's return of a constant (`BPF_RET | BPF_K`).
@@ -47,8 +63,9 @@ const BPF_RET_K: u16 = 0x06;
 /// Firecracker's filter of the threads `kind` names ("vmm", "vcpu"), compiled as its build compiles
 /// it, but notifying a supervisor of what it refuses, where Firecracker's traps.
 fn filter(kind: &str) -> Arc<[libc::sock_filter]> {
-    let json = filters_json();
     let dir = tempfile::tempdir().unwrap();
+    let json = dir.path().join("filters.json");
+    std::fs::write(&json, filters_json().to_string()).unwrap();
     // Each kind's program, raw, beside the path given (`split_output`).
     let out = dir.path().join("filters");
     let arch = std::env::consts::ARCH;
@@ -260,8 +277,7 @@ fn syscall_name(nr: i32) -> String {
 
 /// Whether the filter of `kind` in Firecracker's JSON allows `syscall` with any arguments.
 fn allows_any(kind: &str, syscall: &str) -> bool {
-    let json: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(filters_json()).unwrap()).unwrap();
+    let json = filters_json();
     let rules = json[kind]["filter"].as_array().expect("a filter's rules");
     (rules.iter()).any(|rule| rule["syscall"] == syscall && rule.get("args").is_none())
 }
@@ -407,8 +423,8 @@ fn copy_on_write_windows_run_under_firecrackers_seccomp_filters() {
     assert_eq!(
         refusals(),
         Vec::<String>::new(),
-        "Firecracker's seccomp filters ({}) refuse what fxdax calls",
-        filters_json().display()
+        "Firecracker's seccomp filters (vendor/firecracker's resources/seccomp and \
+         resources/fxdax/seccomp) refuse what fxdax calls"
     );
     // SAFETY: Unmaps the memory, which nothing uses any more.
     assert_eq!(unsafe { libc::munmap(memory.as_ptr().cast(), 4 * ps) }, 0);

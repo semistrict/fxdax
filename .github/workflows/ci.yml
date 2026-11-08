@@ -94,8 +94,7 @@ jobs:
             ~/.cargo/git
             target
             guest/tests/target
-            vendor/firecracker/build/cargo_target
-          key: cargo-${{ runner.os }}-${{ matrix.parts }}-${{ hashFiles('Cargo.lock', 'guest/tests/Cargo.lock', 'vendor/firecracker/Cargo.lock') }}
+          key: cargo-${{ runner.os }}-${{ matrix.parts }}-${{ hashFiles('Cargo.lock', 'guest/tests/Cargo.lock', 'vendor/firecracker.lock') }}
           restore-keys: cargo-${{ runner.os }}-${{ matrix.parts }}-
       # The guest's half for its own target too, as the guest agent is built (scripts/test-e2e.sh):
       # its tests run on the host's in scripts/test.sh.
@@ -276,6 +275,47 @@ jobs:
             BASE=$(git merge-base origin/main HEAD)
           fi
           scripts/firecracker-forward.sh "$BASE" HEAD
+
+  # Every commit of the Firecracker series builds both ways, as it promises those who take it onto
+  # forks of their own (TASK-269): without its fxdax feature outside this checkout, with it as fxdax
+  # builds it (scripts/firecracker-series-check.sh), from its upstream release up; when
+  # vendor/firecracker moved, a build of each commit.
+  firecracker-series:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          submodules: true
+      - name: Whether vendor/firecracker moved
+        id: moved
+        env:
+          BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          if [[ -z $BASE || $BASE == 0000000000000000000000000000000000000000 ]]; then
+            BASE=$(git merge-base origin/main HEAD)
+          fi
+          if [[ $(git rev-parse "$BASE:vendor/firecracker") == $(git rev-parse HEAD:vendor/firecracker) ]]; then
+            echo moved=false >> "$GITHUB_OUTPUT"
+          else
+            echo moved=true >> "$GITHUB_OUTPUT"
+          fi
+      - name: Install the build's tools
+        if: steps.moved.outputs.moved == 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang libclang-dev libseccomp-dev
+      # The series' history and its upstream release's tag, and its toolchain with clippy.
+      - name: Fetch the series
+        if: steps.moved.outputs.moved == 'true'
+        run: |
+          git -C vendor/firecracker fetch --tags --unshallow origin || git -C vendor/firecracker fetch --tags origin
+          rustup toolchain install "$(sed -n 's/^channel = "\(.*\)"$/\1/p' vendor/firecracker/rust-toolchain.toml)" \
+            --profile minimal -c clippy
+      - name: scripts/firecracker-series-check.sh
+        if: steps.moved.outputs.moved == 'true'
+        run: scripts/firecracker-series-check.sh
 
   # guest/sim: dax.c in a process, over a fake kernel, as zloop.sh runs ztest (TASK-149.14). Its
   # 3,000 seeds when what it tests changed since the base (scripts/guest-sim-scope.py), else 200: the

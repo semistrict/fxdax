@@ -373,20 +373,32 @@ branches on the same terms, and makes new stores (`take`, `import`) anywhere.
 
 ### `vendor/firecracker`: the VMM
 
-The VMM is a submodule: branch `fxdax-v1.16.1` of
-[semistrict/firecracker](https://github.com/semistrict/firecracker), which is
-Firecracker's v1.16.1 release, the sandboxes' pin, plus fxdax's changes, a
-commit each, built with its `fxdax` feature (TASK-39.6). Branch `fxdax`, on
-Firecracker's main branch, where they began, is superseded by it: it stops at
-TASK-37's change, and takes no more. fxdax ran on
-libkrun before; it left it for Firecracker, which the sandboxes it serves run
-(TASK-40).
+The VMM is a submodule: branch `fxdax-v1.16.1-optin` of
+[semistrict/firecracker](https://github.com/semistrict/firecracker), Firecracker's
+v1.16.1 release, the sandboxes' pin, plus fxdax's changes as one linear series,
+each release of it tagged `fxdax-v1.16.1-rN` (TASK-269). Its first commits are
+general fixes, each standing alone; everything else is behind its `fxdax`
+feature, so that a build without it is upstream's. Every commit builds both
+ways (`scripts/firecracker-series-check.sh`, CI's firecracker-series job). The
+series names no fxdax dependency and holds none of fxdax's in its Cargo.lock,
+so that it builds outside this checkout, as those who take it onto forks of
+their own build it: fxdax's build supplies them, in a copy of the tree,
+`target/firecracker` (`scripts/firecracker-cargo.sh`, which every script that
+builds Firecracker goes through): the vmm crate's dependency on
+`crates/fxdax`, fxdax's lock (`vendor/firecracker.lock`, which
+`scripts/firecracker-cargo.sh --lock` updates), and frame pointers, from this
+repo's `.cargo/config.toml`. The series' own `resources/fxdax/README.md` says
+the same for its users. Branch `fxdax-v1.16.1`, the series before, a commit a
+change, and `fxdax`, on Firecracker's main branch, where they began, are
+superseded by it (`vendor/firecracker.rewrites`). fxdax ran on libkrun before;
+it left it for Firecracker, which the sandboxes it serves run (TASK-40).
 
 The workspace builds with it checked out (`git submodule update --init`): on
-Linux, fxdax's tests compile its production seccomp filters
-(`resources/seccomp`) with its seccompiler, which links libseccomp, and run the
-VM process's side of a DAX window under them, so that a system call fxdax
-makes and the filters refuse fails CI rather than a jailed VM
+Linux, fxdax's tests compile its production seccomp filters, upstream's
+(`resources/seccomp`) with the rules the `fxdax` feature adds before each
+thread's own (`resources/fxdax/seccomp`), with its seccompiler, which links
+libseccomp, and run the VM process's side of a DAX window under them, so that a
+system call fxdax makes and the filters refuse fails CI rather than a jailed VM
 (`crates/fxdax/tests/seccomp.rs`, TASK-149.28).
 
 | Change | Why |

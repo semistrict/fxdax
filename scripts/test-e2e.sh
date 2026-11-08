@@ -77,18 +77,20 @@ export FXDAX_GC_BIN="$root/target/release/fxdax-gc"
 # The run's directory, by which a case that goes on from round to round keys what it keeps
 # (fxfs-guest-soak).
 export FXDAX_E2E_RUN="$results"
-# From its directory, whose .cargo/config.toml sets its target directory and build environment.
-# FXDAX_FIRECRACKER_SECCOMP builds Firecracker as production does, for musl, which compiles in its
+# As fxdax builds it, with its fxdax feature (scripts/firecracker-cargo.sh), in the copy of
+# vendor/firecracker that builds in, whose .cargo/config.toml sets its target directory and build
+# environment. FXDAX_FIRECRACKER_SECCOMP builds Firecracker as production does, for musl, which compiles in its
 # filter (TASK-50.1): `real`, the default, runs under that; `log` under a copy of it that allows
 # what it would refuse, logging it, which $results/seccomp-log.txt lists afterwards, by thread and
 # system call; `none` for the host's target, with no filter of its own, allowing every system
 # call. Real by default: copy-on-write DAX's private memory needed three system calls the filter
 # lacked, and only jailed runs, which ask for it, would have shown it (TASK-164).
-firecracker_dir="$root/vendor/firecracker"
+firecracker_cargo="$root/scripts/firecracker-cargo.sh"
+firecracker_dir=$("$firecracker_cargo" --tree)
 seccomp=${FXDAX_FIRECRACKER_SECCOMP:-real}
 case "$seccomp" in
     none)
-        (cd "$firecracker_dir" && cargo build --release -p firecracker --features fxdax)
+        "$firecracker_cargo" build --release -p firecracker --features fxdax
         export FXDAX_FIRECRACKER="$firecracker_dir/build/cargo_target/release/firecracker"
         ;;
     real | log)
@@ -96,20 +98,25 @@ case "$seccomp" in
         # musl-gcc's headers lack the kernel's, which userfaultfd-sys includes: the host's, after
         # musl's own (Firecracker's container has them in musl's tree).
         musl_cflags="CFLAGS_${musl//-/_}=-idirafter /usr/include -idirafter /usr/include/$(uname -m)-linux-gnu"
-        (cd "$firecracker_dir" &&
-            env "$musl_cflags" cargo build --release -p firecracker --features fxdax --target "$musl")
+        env "$musl_cflags" "$firecracker_cargo" build --release -p firecracker --features fxdax \
+            --target "$musl"
         export FXDAX_FIRECRACKER="$firecracker_dir/build/cargo_target/$musl/release/firecracker"
         if [[ $seccomp == log ]]; then
-            python3 - "$firecracker_dir/resources/seccomp/$musl.json" "$results/seccomp-log.json" <<'PY'
+            # The filter the build compiled in: upstream's, with fxdax's rules before each thread's
+            # own, as its build.rs puts them (resources/fxdax/README.md).
+            python3 - "$firecracker_dir/resources/seccomp/$musl.json" \
+                "$firecracker_dir/resources/fxdax/seccomp/$musl.json" "$results/seccomp-log.json" <<'PY'
 import json, sys
 filters = json.load(open(sys.argv[1]))
+for thread, rules in json.load(open(sys.argv[2])).items():
+    filters[thread]["filter"][:0] = rules["filter"]
 for thread in filters.values():
     thread["default_action"] = "log"
-json.dump(filters, open(sys.argv[2], "w"), indent=1)
+json.dump(filters, open(sys.argv[3], "w"), indent=1)
 PY
-            (cd "$firecracker_dir" && cargo run --release -q -p seccompiler --bin seccompiler-bin -- \
+            "$firecracker_cargo" run --release -q -p seccompiler --bin seccompiler-bin -- \
                 --target-arch "$(uname -m)" --input-file "$results/seccomp-log.json" \
-                --output-file "$results/seccomp-log.bpf")
+                --output-file "$results/seccomp-log.bpf"
             export FXDAX_FIRECRACKER_SECCOMP_FILTER="$results/seccomp-log.bpf"
             # Every refusal it logs, not the first few of each burst.
             sysctl -q kernel.printk_ratelimit=0
@@ -123,7 +130,7 @@ esac
 # the jail and vm.unprivileged_userfaultfd off; under a seccomp filter, for musl.
 if [[ -n ${FXDAX_FIRECRACKER_JAIL:-} ]]; then
     [[ $seccomp != none ]] || { echo "FXDAX_FIRECRACKER_JAIL needs a seccomp filter" >&2; exit 2; }
-    (cd "$firecracker_dir" && env "$musl_cflags" cargo build --release -p jailer --target "$musl")
+    env "$musl_cflags" "$firecracker_cargo" build --release -p jailer --target "$musl"
     export FXDAX_FIRECRACKER_JAILER="$firecracker_dir/build/cargo_target/$musl/release/jailer"
     export FXDAX_JAIL_UID=64000 FXDAX_JAIL_GID=64000
     sysctl -q vm.unprivileged_userfaultfd=0
