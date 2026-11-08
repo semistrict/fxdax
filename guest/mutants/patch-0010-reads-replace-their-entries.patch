@@ -1,0 +1,51 @@
+# SPDX-License-Identifier: GPL-2.0
+# Copyright 2026 The fxdax Authors.
+#
+# Kernel: sim
+# Killer: interleave
+#
+# Patch 0010, TASK-152, taken out: a read fault of a page another mapping holds, its blocks shared,
+# replaces the entry naming that page, unmapping it from every mapping, so that two processes
+# reading one page undo each other's mappings, a fault each load: the livelock of a build's
+# processes reading a binary out of shared blocks, which no wrong byte, WARN or fault going round
+# shows, each fault succeeding. Killed by kernel/mm.c's check that a load faults again on a page
+# its mapping held only after something other than a fault unmapped it (TASK-149.14), with no
+# scenario written for it.
+
+--- a/fs/dax.c
++++ b/fs/dax.c
+@@ -1054,18 +1054,6 @@
+ }
+ 
+ /*
+- * Whether real entry @entry names @pfn as the page of @index already, a PMD
+- * entry the page of its row.
+- */
+-static bool dax_entry_names(void *entry, unsigned long index, unsigned long pfn)
+-{
+-	if (dax_is_zero_entry(entry) || dax_is_empty_entry(entry))
+-		return false;
+-	index = dax_is_pmd_entry(entry) ? index & PG_PMD_COLOUR : 0;
+-	return dax_to_pfn(entry) + index == pfn;
+-}
+-
+-/*
+  * By this point grab_mapping_entry() has ensured that we have a locked entry
+  * of the appropriate size so we don't have to worry about downgrading PMDs to
+  * PTEs.  If we happen to be trying to insert a PTE and there is a PMD
+@@ -1080,14 +1068,7 @@
+ 	void *new_entry = dax_make_entry(pfn, flags);
+ 	bool write = iter->flags & IOMAP_WRITE;
+ 	bool dirty = write && !dax_fault_is_synchronous(iter, vmf->vma);
+-	/*
+-	 * A read of a shared page its entry names replaces nothing. Replacing it
+-	 * anyway unmaps the page from everything else mapping it, which faults
+-	 * again and unmaps it from this mapping in turn: tasks reading one page
+-	 * take a fault for each load, queued on its entry.
+-	 */
+-	bool shared = (iter->iomap.flags & IOMAP_F_SHARED) &&
+-		      (write || !dax_entry_names(entry, xas->xa_index, pfn));
++	bool shared = iter->iomap.flags & IOMAP_F_SHARED;
+ 
+ 	if (dirty)
+ 		__mark_inode_dirty(mapping->host, I_DIRTY_PAGES);

@@ -86,8 +86,12 @@ host); a sleep in an atomic section; every `WARN` and lockdep assertion in the r
 wrong through read(2), a mapping, or Fxfs's extents once written back, at every fsync as well as at
 the end; a store a rebind or a writeback lost, an fsync missing a store that ended before it
 began, a punch or truncate a writeback undoes, a crash's file other than old or new, and room for
-dirty pages given back twice or kept. A MAP of an open extent fails EPERM, as the host's does, and
-is counted: the `cow_` scenarios, whose Fxfs says open of every extent until its seal, expect none.
+dirty pages given back twice or kept; a load faulting again on a page its mapping held, which nothing
+but a fault unmapped (`kernel/mm.c`, each mapping's pages held as a fault maps them and let go as a
+rebind's MAP, an UNMAP, an eviction, a truncate or a punch unmaps them, a fault's unmapping of its
+own page from the others holding them still: read faults undoing each other's mappings, a fault
+each, as TASK-152's livelock, which succeed, and nothing else checks; TASK-149.14). A MAP of an open
+extent fails EPERM, as the host's does, and is counted: the `cow_` scenarios, whose Fxfs says open of every extent until its seal, expect none.
 
 Every store carries a stamp, as ztest's blocks carry their tags: file, place, worker, generation, and
 the seal it was made in. A task reads its own slots exactly, and any other's within bounds: no older
@@ -258,6 +262,7 @@ every run copying on write, 2,000 seeds):
 | TASK-147, a write's own source shrinks its range | seed 32; copying on write, seed 10 | short write |
 | TASK-153.1, a fault with no limit on its range's drops | with TASK-140's bug, gone with writable DAX, a livelock; copying on write, no | equivalent: nothing else drops a fault's slice for ever |
 | TASK-44.19, `fxfs_dax_region_map` without the region's lock | `reaches_at_once`, which wrote through slices, gone; no, in 3,000; copying on write, no | bytes wrong then: two slices reach at once, and the region says it maps less than it does. Copying on write, only reads take slices, and each range MAPs every page it uses: what is left is the region's put UNMAPping less than the host maps, which no oracle here checks |
+| patch 0010, a read fault of a page others map, its blocks shared, replaces its entry (TASK-152) | `interleave` seed 197, each worker mapping the shared files itself | a load faults again, its mapping holding the page, a fault having unmapped it (`patch-0010-reads-replace-their-entries`) |
 | patch 0012, an invalidation puts a folio mapped still | `pmd_entry_invalidated_mapped`, gone; copying on write, no | `fs/dax.c:416`'s WARN. Equivalent copying on write: no write says its pages are new, which invalidates, and a range's release unmaps (`dax_layout_busy_page_range`) under the invalidate lock before it invalidates |
 | TASK-79.28, a range remapped too small | no | equivalent since TASK-147: a fault sizing a range from the old end holds the invalidate lock `fxfs_dax_fit` waits for, and one after sees `growing`. `task-79.28-before-147`, with that gone too, showed at seed 31 |
 

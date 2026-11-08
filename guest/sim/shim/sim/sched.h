@@ -40,6 +40,10 @@ struct task_struct {
 	bool killed;
 	/* How often the fault it is in had the kernel drop entries: -1 out of faults. */
 	int fault_drops;
+	/* The page the fault it is in maps, its file's and its index there, and if a store's. */
+	struct address_space *fault_mapping;
+	pgoff_t fault_pgoff;
+	bool fault_write;
 	/* Kernel copies don't fault (fxfs_dax_write_iter's, and read's). */
 	int pagefault_disabled;
 	/* Spinlocks held, and RCU readers entered: a sleep under either fails the run. */

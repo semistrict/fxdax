@@ -74,7 +74,12 @@ struct slot {
 
 struct slots {
 	struct file *file;
-	unsigned long addr, pages;
+	unsigned long pages;
+	/*
+	 * By worker, its mapping of the file, as each process sharing a file maps it: a page's read
+	 * faults in one mapping must leave the others' alone (TASK-149.14, patch 0010).
+	 */
+	unsigned long addrs[WORKERS];
 	/* By worker, then page. */
 	struct slot *slots[WORKERS];
 };
@@ -326,7 +331,7 @@ static void slot_store(struct worker *worker, struct slots *file, unsigned long 
 
 	stamp_make(&stamp, file_inode(file->file)->i_ino, at, worker->id, ++slot->begun);
 	slot->flying = true;
-	done = mapped ? sim_user_store(file->addr + at, &stamp, SLOT) ?: SLOT :
+	done = mapped ? sim_user_store(file->addrs[worker->id] + at, &stamp, SLOT) ?: SLOT :
 	       sim_write(file->file, at, &stamp, SLOT);
 	check(done == SLOT || failed_as_asked(done), "a store at page %lu of worker %d: %zd", page,
 	      worker->id, done);
@@ -349,7 +354,7 @@ static void slot_read(struct worker *reader, struct slots *file, unsigned long p
 	struct stamp got;
 	ssize_t done;
 
-	done = mapped ? user_load(file->addr + at, &got, SLOT) ?: SLOT :
+	done = mapped ? user_load(file->addrs[reader->id] + at, &got, SLOT) ?: SLOT :
 	       read_file(file->file, at, &got, SLOT);
 	check(done == SLOT, "%s of page %lu of worker %d: %zd", what, page, owner, done);
 	overlapped = flying || slot->flying || slot->begun != begun;
@@ -357,7 +362,7 @@ static void slot_read(struct worker *reader, struct slots *file, unsigned long p
 			    overlapped ? slot->begun : slot->done.generation, overlapped);
 	if (wrong) {
 		if (mapped)
-			sim_mm_describe(file->addr + at);
+			sim_mm_describe(file->addrs[reader->id] + at);
 		wrong_read(what, wrong, file->file, &got, overlapped ? NULL : &slot->done, at);
 	}
 	slot->seen = max(slot->seen, got.generation);
@@ -952,13 +957,17 @@ static void setup(void)
 	mount = sim_mount_new();
 	slots_new(&shared, SHARED_PAGES);
 	slots_new(&big, BIG_PAGES);
-	for (i = 0; i < SMALL_FILES; i++) {
+	for (i = 0; i < SMALL_FILES; i++)
 		slots_new(&small[i], SMALL_PAGES);
-		small[i].addr = sim_mmap(small[i].file, 0, SMALL_PAGES << PAGE_SHIFT);
-	}
 	check(!sim_fsync(shared.file), "the first seal");
-	shared.addr = sim_mmap(shared.file, 0, SHARED_PAGES << PAGE_SHIFT);
-	big.addr = sim_mmap(big.file, 0, BIG_PAGES << PAGE_SHIFT);
+	for (i = 0; i < WORKERS; i++) {
+		int f;
+
+		for (f = 0; f < SMALL_FILES; f++)
+			small[f].addrs[i] = sim_mmap(small[f].file, 0, SMALL_PAGES << PAGE_SHIFT);
+		shared.addrs[i] = sim_mmap(shared.file, 0, SHARED_PAGES << PAGE_SHIFT);
+		big.addrs[i] = sim_mmap(big.file, 0, BIG_PAGES << PAGE_SHIFT);
+	}
 	for (i = 0; i < WORKERS; i++) {
 		workers[i].id = i;
 		workers[i].file = sim_file_new(mount);

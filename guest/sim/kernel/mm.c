@@ -248,10 +248,62 @@ static void zap_pmd(pmd_t *pmd)
 	}
 }
 
-/* How file THP splits: the PMD goes, and faults map the PTEs again. */
+/* The index in `vma`'s range of its page at `addr`. */
+static pgoff_t page_in(struct vm_area_struct *vma, unsigned long addr)
+{
+	return (addr - vma->vm_start) >> PAGE_SHIFT;
+}
+
+/*
+ * The pages of `vma` from `from` to `to`, held or not: as a fault maps them, or as something other
+ * than a fault unmaps them. Faults again on a page held, a load's, are a fault's unmapping of it:
+ * read faults undoing each other's mappings, a fault each, which nothing else checks, as each
+ * succeeds (TASK-152, the livelock patch 0010 ends).
+ */
+static void set_held(struct vm_area_struct *vma, unsigned long from, unsigned long to, bool held)
+{
+	from = max(from, vma->vm_start);
+	to = min(to, vma->vm_end);
+	for (; from < to; from += PAGE_SIZE)
+		vma->held[page_in(vma, from)] = held;
+}
+
+/* What `vma` maps at `addr`, held: its page, or its PMD's row. */
+static void hold(struct vm_area_struct *vma, unsigned long addr)
+{
+	if (pmd_trans_huge(*pmd_of(vma, addr)))
+		set_held(vma, addr & PMD_MASK, (addr & PMD_MASK) + PMD_SIZE, true);
+	else
+		set_held(vma, addr & PAGE_MASK, (addr & PAGE_MASK) + PAGE_SIZE, true);
+}
+
+/*
+ * Whether the current task is in a read fault whose page is among `nr` of `mapping` at `start`: its
+ * own page unmapped, from every mapping, as a read fault replaces its entry (dax_insert_entry,
+ * which patch 0010 stops for a page the entry names), which holds what it unmaps still. A fault's
+ * other unmappings are as anything else's: of other ranges, as one evicts a range to make room in
+ * the window (fxfs_dax_release), and a store's of its own, as it drops the slice it can't store to
+ * (fxfs_dax_fault_drop_slice), an UNMAP of the range.
+ */
+static bool faults_on(struct address_space *mapping, pgoff_t start, pgoff_t nr)
+{
+	pgoff_t last = start + nr - 1;
+
+	if (last < start)
+		last = ULONG_MAX;
+	return current->fault_drops >= 0 && !current->fault_write &&
+	       current->fault_mapping == mapping && current->fault_pgoff >= start &&
+	       current->fault_pgoff <= last;
+}
+
+/*
+ * How file THP splits: the PMD goes, and faults map the PTEs again: what a shared PMD's write
+ * fault does by design (wp_huge_pmd), the row's pages let go of, as they fault again once.
+ */
 void split_huge_pmd(struct vm_area_struct *vma, pmd_t *pmd, unsigned long address)
 {
 	zap_pmd(pmd);
+	set_held(vma, address & PMD_MASK, (address & PMD_MASK) + PMD_SIZE, false);
 }
 
 /* Each VMA of `mapping` overlapping `nr` pages at `start`, as addresses `from` to `to`. */
@@ -284,6 +336,9 @@ void unmap_mapping_pages(struct address_space *mapping, pgoff_t start, pgoff_t n
 
 	i_mmap_lock_read(mapping);
 	for_each_mapped(vma, mapping, start, nr, from, to) {
+		/* Not a fault's own page: a rebind's MAP, an UNMAP, a truncate, a punch, an eviction. */
+		if (!faults_on(mapping, start, nr))
+			set_held(vma, from, to, false);
 		for (addr = from; addr < to; addr += PAGE_SIZE) {
 			pte_t *pte = pte_of(vma, addr), value = *pte;
 
@@ -415,6 +470,9 @@ static vm_fault_t handle_fault(struct vm_area_struct *vma, unsigned long addr, b
 	pte_t *pte = pte_of(vma, addr);
 	vm_fault_t ret;
 
+	current->fault_mapping = vma->vm_file->f_mapping;
+	current->fault_pgoff = vmf.pgoff;
+	current->fault_write = write;
 	if (pmd_none(*vmf.pmd) && (vma->vm_flags & VM_HUGEPAGE)) {
 		ret = vma->vm_ops->huge_fault(&vmf, PMD_ORDER);
 		if (!(ret & VM_FAULT_FALLBACK))
@@ -490,10 +548,17 @@ size_t sim_copy_user(unsigned long addr, void *buf, size_t len, bool write)
 			/* The kernel's mmap_lock: a fault keeps its VMA, as a task unmaps it. */
 			down_read(&mm->lock);
 			vma = find_vma(mm, addr);
+			/* Unmapped still, under the lock: another task's fault may have mapped it. */
+			if (vma && !write && vma->held[page_in(vma, addr)] && !translate(vma, addr, false))
+				sim_panic("a load faults again: page %lu of a mapping at %lx, which held it, "
+					  "and nothing but a fault unmapped it", page_in(vma, addr),
+					  vma->vm_start);
 			current->fault_drops = 0;
 			if (vma)
 				ret = handle_fault(vma, addr, write, true);
 			current->fault_drops = -1;
+			if (vma && translate_page(vma, addr, false))
+				hold(vma, addr);
 			up_read(&mm->lock);
 			if (!vma || (ret & VM_FAULT_ERROR))
 				break;
@@ -552,9 +617,15 @@ struct page *sim_pin_user_page(unsigned long addr)
 			break;
 		}
 		sim_mm_faults++;
+		/* Unmapped, under the lock, as translate_page above found it. */
+		if (vma->held[page_in(vma, addr)])
+			sim_panic("a pin faults again: page %lu of a mapping at %lx, which held it, and "
+				  "nothing but a fault unmapped it", page_in(vma, addr), vma->vm_start);
 		current->fault_drops = 0;
 		ret = handle_fault(vma, addr, false, false);
 		current->fault_drops = -1;
+		if (translate_page(vma, addr, false))
+			hold(vma, addr);
 	}
 	up_read(&mm->lock);
 	return page;
@@ -650,6 +721,7 @@ unsigned long sim_mm_map(struct mm_struct *mm, struct file *file, pgoff_t pgoff,
 	vma->vm_file = file;
 	vma->vm_mm = mm;
 	vma->ptes = kcalloc(PAGE_ALIGN(len) >> PAGE_SHIFT, sizeof(*vma->ptes), GFP_KERNEL);
+	vma->held = kcalloc(PAGE_ALIGN(len) >> PAGE_SHIFT, sizeof(*vma->held), GFP_KERNEL);
 	pmds = (vma->vm_end >> PMD_SHIFT) - (vma->vm_start >> PMD_SHIFT) + 1;
 	vma->pmds = kcalloc(pmds, sizeof(*vma->pmds), GFP_KERNEL);
 	err = file->f_inode->i_fop->mmap(file, vma);
@@ -681,6 +753,7 @@ void sim_munmap(unsigned long addr)
 	list_del(&vma->mm_list);
 	up_write(&mm->lock);
 	kfree(vma->ptes);
+	kfree(vma->held);
 	kfree(vma->pmds);
 	kfree(vma);
 }

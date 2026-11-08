@@ -3,10 +3,11 @@ id: TASK-149.14
 title: >-
   Run guest/linux/fs/fxfs/dax.c in userspace, as OpenZFS runs its kernel code
   under ztest
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-11-01 06:38'
-updated_date: '2026-11-06 00:45'
+updated_date: '2026-11-08 04:00'
 labels: []
 dependencies: []
 parent_task_id: TASK-149
@@ -30,8 +31,8 @@ At dde8d58d3 (writable DAX deleted, 37c331a6c; resize, punch and clone driven fr
 - [x] #4 Stores carry a generation, so a stale or zero read is caught, as ztest's txg stamps catch temporal incursions
 - [x] #5 Reintroducing a past DAX bug (a moved-unmapped mutant) fails
 - [x] #6 It runs in CI on every push, as zloop does
-- [ ] #7 Every scenario and seed checks that a load faults again on a page its mapping already held only after something other than a fault unmapped it (a rebind's MAP over it, an UNMAP, a truncate or punch), counted per mapping and page in guest/sim/kernel/mm.c
-- [ ] #8 With patch 0010 taken out, interleave fails the fault check above, with no scenario written for it
+- [x] #7 Every scenario and seed checks that a load faults again on a page its mapping already held only after something other than a fault unmapped it (a rebind's MAP over it, an UNMAP, a truncate or punch), counted per mapping and page in guest/sim/kernel/mm.c
+- [x] #8 With patch 0010 taken out, interleave fails the fault check above, with no scenario written for it
 <!-- AC:END -->
 
 ## Definition of Done
@@ -75,4 +76,8 @@ Fault budget, from TASK-152. The read-fault livelock was invisible here: each fa
 Handed back 2026-11-02 (triage): AC6 met: ci.yml's guest-sim job runs zloop.sh -s 3000 on every push to main, passing (runs 41513855862, 41562059405). Left: AC7, count faults per mapping and page in guest/sim/kernel/mm.c (one global sim_mm_faults now), reset by a move or a non-fault unmap, failing past one; AC8, red with patch 0010 out; DoD3.
 
 2026-11-05 triage: AC #6 checked: .github/workflows/ci.yml's guest-sim job (ci.yml:116-140), run on every push to main, runs guest/sim/mutants.sh --check and guest/sim/zloop.sh -s 3000; it passed in CI run 42135112053 on c82e2be51. Description's citations brought to dde8d58d3 (dax.c moved by f22c9459e and bda2e53a0).
+
+2026-11-08, AC #7 and #8 (branch task-149-14). kernel/mm.c: each mapping's pages held as a fault maps them (vm_area_struct.held, a page or a PMD's row); a load (or a pin) that faults on a page its mapping holds, the page unmapped still under the mm lock, fails the run: 'a load faults again ... and nothing but a fault unmapped it'. What lets go of them: every unmap_mapping_pages but a read fault's of its own page, the one patch 0010 stops (dax_insert_entry replacing an entry naming the page), so a rebind's MAP, an UNMAP (fxfs_dax_drop_pinned, a store fault's fxfs_dax_fault_drop_slice among them), an eviction for room (fxfs_dax_release from fxfs_dax_alloc_window), a truncate or punch; and a shared PMD's split by a write fault (wp_huge_pmd's, by design). The rule took three rounds, each a false alarm traced to dax.c's call: (1) 'any unmap inside a fault' flagged a store fault evicting another range for window room (dax.c:1288 via fs/dax.c:788; 69 of 600 runs); (2) 'a fault's unmap of its own page' flagged a store fault dropping the slice it can't store to (dax.c:3485 -> 1781 -> 1288; seed 834 and the sweep's cow_store_to_pinned_slice at calls 34-37); (3) a load found the page unmapped, then another task's fault mapped and held it while it waited for the mm lock (seed 23): the check now asks under the lock. With patch 0010 in, no violation on main.
+AC #8: interleave mapped each file once in one mm, so no page ever had two mappings of its file; each worker now maps the shared files itself (slots.addrs[WORKERS]), as processes sharing a binary do, and loads and stores through its own. Mutant guest/mutants/patch-0010-reads-replace-their-entries (patch 0010 reversed, Kernel: sim, Killer: interleave): killed at seed 610 (seed 197 under an earlier rule), with no scenario written for it.
+Runs (Docker, guest/sim/linux.sh): zloop.sh -s 3000: 0 of 6,000 runs failed, every test of one run passes; sweep.sh: passes; mutants.sh: every sim mutant killed but the six none; mutants.sh --check 43/0, scripts/guest-mutants-gce.py --check 55/0, fxfs-sim-diff mutants --check. Rust workspace not run: no Rust changed.
 <!-- SECTION:NOTES:END -->

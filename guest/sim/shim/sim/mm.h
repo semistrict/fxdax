@@ -183,6 +183,12 @@ struct vm_area_struct {
 	/* Its page tables, by page and by PMD of its range. */
 	pte_t *ptes;
 	pmd_t *pmds;
+	/*
+	 * By page of its range, whether a fault mapped it since something other than a fault
+	 * last unmapped it: a load faulting on one held faults again only as a fault unmapped it
+	 * (TASK-149.14, kernel/mm.c).
+	 */
+	bool *held;
 	/* On its mm's, and on its file's mapping's (`i_mmap`). */
 	struct list_head mm_list, mapping_list;
 };
