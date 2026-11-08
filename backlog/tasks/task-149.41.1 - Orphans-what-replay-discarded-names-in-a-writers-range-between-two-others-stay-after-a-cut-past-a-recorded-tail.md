@@ -3,12 +3,14 @@ id: TASK-149.41.1
 title: >-
   Orphans what replay discarded names, in a writer's range between two others,
   stay after a cut past a recorded tail
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-11-08 01:24'
+updated_date: '2026-11-08 03:29'
 labels:
   - testing
   - fxfs
+  - wontfix
 dependencies: []
 parent_task_id: TASK-149.41
 priority: medium
@@ -32,3 +34,15 @@ Found by TASK-149.41's hunts (seed 4 of 1,200 cases; its case pinned as orphans_
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+2026-11-07: the user decided not to fix this: it leaks room only, rarely (0-13 extents per about 4,100 replays of cuts during replays in TASK-149.41's hunts), and loses no data. fxfs-posix's model test keeps counting these extents apart (holds_no_orphans_but_unsought; orphans_named_by_a_discard_between_two_ranges_stay_unsought pins 16), and fails on any orphan in a window a mount sought.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Won't fix, the user's decision (2026-11-07): a space leak only, rare, with no data loss. The orphans that replay's discarded transactions name, of a writer's range between two others, after a cut past the recorded journal tail, stay until something frees their room. fxfs-posix's model test keeps counting them apart and fails on any orphan inside a window a mount sought.
+<!-- SECTION:FINAL_SUMMARY:END -->

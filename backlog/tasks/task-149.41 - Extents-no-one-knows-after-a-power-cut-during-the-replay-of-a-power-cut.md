@@ -1,11 +1,11 @@
 ---
 id: TASK-149.41
 title: Extents no one knows after a power cut during the replay of a power cut
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-07 08:28'
-updated_date: '2026-11-08 02:04'
+updated_date: '2026-11-08 03:29'
 labels:
   - testing
   - fxfs
@@ -29,7 +29,7 @@ The fxfs-posix model test checks that a filesystem replayed after a power cut ho
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
 - [x] #2 scripts/upstream-changes.py --check passes
 - [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
@@ -58,4 +58,12 @@ Hunts (model and corrupt tests, FXDAX_MODEL_CASES=1200, FXDAX_CORRUPT_CASES=1500
 Blind spot: the second replays were checked with check_all, which counts nothing the device holds. The allocator's floor test covered only orphans below the device's next.
 Look around: no other caller of kill_orphans or MAX_ORPHANS_SOUGHT. dead-ends/theory-orphans-after-cuts-on-an-awkward-device.md had a 'Reopen if' that came about; updated.
 Structure: orphans are found by searching ranges of numbers, a heuristic over sequence numbers whose writer ranges jump. A device listing of the extents it holds in a range would make the search exact; that, or recording orphans durably, is what TASK-149.41.1 weighs.
+
+Landed in main 8799cb6c4 as land-c8, stacked on land-w7 with land-h9's code (b54c9f125, the fix). CI 42440067129 on 76f18456d green: macOS and Linux workspace among its jobs. land-r3's CI 42437043328 had passed before. The user decided TASK-149.41.1 won't be fixed; the model test's count-apart stays.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+A mount frees the orphans it found, and seals their frees, before it writes anything. Before, they waited for the recorded flush, after the mount had written past its floor (another writer's range), and a cut there left them where no later mount looks. Orphans that replay's discarded transactions name die wherever they are, and a second window past what the tree holds finds them after the recorded tail. Replays of cuts during replays are held to holds_no_orphans. Verified by allocator, extent-table and model tests red without the fix (four of them hunt seeds), hunts at 1,200 cases (seeds 1-3, 5-8 pass), macOS 2115/2115 and CI 42440067129. The residual, discarded-named orphans of a range between two others, is TASK-149.41.1, closed won't fix by the user; the model test counts it apart.
+<!-- SECTION:FINAL_SUMMARY:END -->
