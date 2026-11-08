@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-07 06:02'
-updated_date: '2026-11-08 05:13'
+updated_date: '2026-11-08 05:46'
 labels:
   - testing
   - fxfs
@@ -48,3 +48,9 @@ TASK-149.36 surveyed the fxfs-posix model test (`crates/fxfs-posix/src/model_tes
 4. Snapshots: Op::Snapshot of the volume, kept with the model as of it; each checked, opened as a volume, at the end, across remounts and cuts (a cut keeps those durable). Mutant.
 5. mutants.sh shows each red.
 <!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+2026-11-08: land-h15 85cf1f982 (CI to follow). AC1-4 built, each kind in the random sequences (op(), short_op()) and pinned: snapshots (Op::Snapshot, View checks each snapshot volume against the model as of it, across cuts and remounts), write_dirty (Op::WriteDirty, reserve then write_dirty or release, no dirty room kept; on a full device of dirtyings halving in size), the guest's platform (World<KEEPS>, a quarter of the sequences, creates leave directories' times), long symlinks (to MAX_LONG_SYMLINK, xattrs listing only what was set). AC5: mutants a-long-symlinks-chunks-are-listed (found by a_device_that_fails_loses_nothing_durable), a-create-times-its-directory-on-the-guest, writeback-pays-for-nothing-with-its-room, a-volume-frees-what-its-snapshot-shares, each killed by mutants.sh. Found: TASK-241 (High), a transaction of the volume between a snapshot's flush and commit frees what the snapshot shares (the batched graveyard's tombstone; remounted, the journal failed with an inconsistency): Op::Snapshot settles the graveyard first meanwhile; a_snapshot_of_a_file_closed_but_not_yet_tombstoned reproduces it, ignored naming TASK-241. Not built: the description's DAX window bytes check, no AC asks it. fxfs-posix 93/93 (1 ignored) on macOS; clippy's disallowed_methods clean.
+<!-- SECTION:NOTES:END -->
