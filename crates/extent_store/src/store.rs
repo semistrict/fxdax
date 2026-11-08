@@ -29,6 +29,7 @@ use anyhow::{Context as _, Error, anyhow, bail, ensure};
 use extent_frame::segment::{Chain, Child, Contents, Footer, Location, epoch_of};
 use extent_remote::cache::Cache;
 use extent_remote::recovery::{Places, Seal};
+use extent_remote::trace;
 use extent_remote::wal::{Fenced, Wal};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io;
@@ -1400,10 +1401,28 @@ impl<D: Dir> Store<D> {
 
     /// The steps of the next commit, which sets `root`, if any, in their order: each takes what
     /// those before it leave.
+    /// fxdax: its seal, and what it writes of it, each in a span of its own, `commit.seal` and
+    /// `commit.write` (`extent_remote::trace`, TASK-258).
     fn commit_in(&self, state: &mut State<D::File>, root: Option<&[u8]>) -> Result<(), Error> {
         let epoch = state.epoch + 1;
-        let sealing = self.seal_open(state)?;
-        self.publish(state, epoch, root, &sealing);
+        let seal = trace::Span::start("commit.seal");
+        let sealing = seal.run(|| self.seal_open(state, &seal))?;
+        drop(seal);
+        let write = trace::Span::start("commit.write");
+        write.set_count(trace::EPOCH, epoch);
+        write.run(|| self.write_commit(state, epoch, root, &sealing))
+    }
+
+    /// Writes commit `epoch`, which sets `root`, if any, and seals `sealing`, sealed: publishes it
+    /// to views, records it in the open segment, and queues its flush.
+    fn write_commit(
+        &self,
+        state: &mut State<D::File>,
+        epoch: u64,
+        root: Option<&[u8]>,
+        sealing: &[ExtentId],
+    ) -> Result<(), Error> {
+        self.publish(state, epoch, root, sealing);
         let (changes, capacity) = (state.uncommitted.take(), state.uncommitted.take_capacity());
         // The open segment's footer records them, before the segment closes; fxdax: and its log,
         // unless it closes with them (TASK-165.9).
@@ -1460,8 +1479,13 @@ impl<D: Dir> Store<D> {
     }
 
     /// Seals the extents open, as a commit does, each in one run, or a file of its own if large
-    /// (doc-7, Segments), and returns them.
-    fn seal_open(&self, state: &mut State<D::File>) -> Result<Vec<ExtentId>, Error> {
+    /// (doc-7, Segments), and returns them; fxdax: saying on `span` how many, and the bytes it
+    /// copied.
+    fn seal_open(
+        &self,
+        state: &mut State<D::File>,
+        span: &trace::Span,
+    ) -> Result<Vec<ExtentId>, Error> {
         let sealing = state.uncommitted.open_extents();
         // fxdax: what sealing copied, which the commit's flush syncs: said once past 8 MiB, which
         // the flush of extentd's turn writes at once (TASK-221).
@@ -1492,6 +1516,8 @@ impl<D: Dir> Store<D> {
         if let Some(why) = why {
             why.log(self.branch, state.epoch);
         }
+        span.set_count(trace::EXTENTS, sealing.len() as u64);
+        span.set_count(trace::BYTES, copied);
         Ok(sealing)
     }
 
@@ -1940,15 +1966,23 @@ impl<D: Dir> Store<D> {
     /// together: their data, then their records in the logs of the segments they were made in,
     /// then the files they made unreferenced go; and the raw files and logs of the segments framed
     /// whose commits are durable. It waits for no framing (TASK-165.9).
+    ///
+    /// fxdax: in a span of its own, `store.flush` (`extent_remote::trace`, TASK-258): a durable
+    /// commit's, or of the commits ordered before, which a daemon's turn makes durable.
     pub fn flush(&self) -> Result<(), Error> {
-        // fxdax: timed, phase by phase (TASK-165.9).
-        let asked = Instant::now();
-        let mut logs = self.flushing.with(Mutex::lock);
-        let mut timed = Flush::default();
-        timed.phases.took(flush::WAIT, asked);
-        let flushed = self.flush_locked(&mut logs, &mut timed);
-        timings::flushed(self.branch, &timed);
-        flushed
+        let span = trace::Span::start("store.flush");
+        span.set_branch(self.branch);
+        span.run(|| {
+            // fxdax: timed, phase by phase (TASK-165.9).
+            let asked = Instant::now();
+            let mut logs = self.flushing.with(Mutex::lock);
+            let mut timed = Flush::default();
+            timed.phases.took(flush::WAIT, asked);
+            let flushed = self.flush_locked(&mut logs, &mut timed);
+            timings::flushed(self.branch, &timed);
+            span.set_count(trace::COMMITS, timed.commits as u64);
+            flushed
+        })
     }
 
     /// [`Store::flush`], holding `flushing`, and so `logs`, those of the open segment and of the

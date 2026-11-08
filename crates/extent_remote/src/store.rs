@@ -64,6 +64,20 @@ impl Request {
         Self::Delete,
     ];
 
+    /// fxdax: the name of its span ([`crate::trace`], TASK-258).
+    pub fn span_name(self) -> &'static str {
+        match self {
+            Self::Get => "bucket.get",
+            Self::GetRange => "bucket.get_range",
+            Self::Head => "bucket.head",
+            Self::List => "bucket.list",
+            Self::Create => "bucket.create",
+            Self::Update => "bucket.update",
+            Self::Overwrite => "bucket.overwrite",
+            Self::Delete => "bucket.delete",
+        }
+    }
+
     /// Its name in [`Stats::line`].
     pub fn name(self) -> &'static str {
         match self {
@@ -172,19 +186,42 @@ impl Stats {
 }
 
 impl Counts {
-    /// Counts a request of kind `request`, made now, and, once what it returns is dropped, as the
-    /// request is answered, how long it took.
-    fn request(&self, request: Request) -> Timed<'_> {
+    /// Counts a request of kind `request`, made now, for the object at `path` (or the objects
+    /// under it), and, once what it returns is dropped, as the request is answered, how long it
+    /// took. fxdax: its span starts, a child of what made the request (TASK-258).
+    fn request(&self, request: Request, path: Option<&Path>) -> Timed<'_> {
         self.requests[request as usize].fetch_add(1, Ordering::Relaxed);
-        Timed { counts: self, request, started: std::time::Instant::now() }
+        let span = crate::trace::Span::start(request.span_name());
+        if let Some(path) = path {
+            span.set_with(crate::trace::OBJECT_KEY, || path.to_string());
+        }
+        Timed { counts: self, request, started: std::time::Instant::now(), span }
     }
 }
 
-/// A request counted ([`Counts::request`]), whose time is counted as this drops.
+/// A request counted ([`Counts::request`]), whose time is counted as this drops; fxdax: and its
+/// span ended, which [`Timed::answered`] tells how it went (TASK-258).
 struct Timed<'a> {
     counts: &'a Counts,
     request: Request,
     started: std::time::Instant,
+    span: crate::trace::Span,
+}
+
+impl Timed<'_> {
+    /// `answered`, the request's answer, said on its span: its bytes, as `bytes` counts those of
+    /// what it answered, or its error.
+    fn answered<T>(
+        &self,
+        answered: Result<T, Error>,
+        bytes: impl Fn(&T) -> usize,
+    ) -> Result<T, Error> {
+        match &answered {
+            Ok(answer) => self.span.set_count(crate::trace::BYTES, bytes(answer) as u64),
+            Err(error) => self.span.fail(error),
+        }
+        answered
+    }
 }
 
 impl Drop for Timed<'_> {
@@ -193,7 +230,6 @@ impl Drop for Timed<'_> {
         self.counts.request_ns[self.request as usize].fetch_add(ns, Ordering::Relaxed);
     }
 }
-
 impl Store {
     /// The objects of `store` under `prefix`, a path of segments separated by `/`, or empty.
     pub fn new(store: Arc<dyn ObjectStore>, prefix: &str) -> Self {
@@ -368,12 +404,15 @@ impl Bucket for Store {
     fn get(&self, key: &str) -> impl Future<Output = Result<Object, Error>> + Send {
         let (store, path) = (self.store.clone(), self.path(key));
         async move {
-            let _timed = self.counts.request(Request::Get);
-            let result = store.get_opts(&path, GetOptions::default()).await.map_err(error)?;
-            let meta = self.meta(result.meta.clone());
-            let bytes = result.bytes().await.map_err(error)?;
-            self.counts.downloaded.fetch_add(bytes.len() as u64, Ordering::Relaxed);
-            Ok(Object { bytes: bytes.to_vec(), meta })
+            let timed = self.counts.request(Request::Get, Some(&path));
+            let got = async {
+                let result = store.get_opts(&path, GetOptions::default()).await.map_err(error)?;
+                let meta = self.meta(result.meta.clone());
+                let bytes = result.bytes().await.map_err(error)?;
+                self.counts.downloaded.fetch_add(bytes.len() as u64, Ordering::Relaxed);
+                Ok(Object { bytes: bytes.to_vec(), meta })
+            };
+            timed.answered(got.await, |object| object.bytes.len())
         }
     }
 
@@ -388,37 +427,41 @@ impl Bucket for Store {
             ByteRange::Suffix(n) => GetRange::Suffix(n),
         };
         async move {
-            let _timed = self.counts.request(Request::GetRange);
-            let options = GetOptions { range: Some(range.clone()), ..GetOptions::default() };
-            let result = match store.get_opts(&path, options).await {
-                // A store that reads no suffix of an object (Azure Blob Storage, TASK-46), which it
-                // says before any request: the object's size first, then the range it ends with.
-                Err(object_store::Error::NotSupported { .. })
-                    if matches!(range, GetRange::Suffix(_)) =>
-                {
-                    let GetRange::Suffix(len) = range else { unreachable!() };
-                    let _head = self.counts.request(Request::Head);
-                    let head = GetOptions { head: true, ..GetOptions::default() };
-                    let size = store.get_opts(&path, head).await.map_err(error)?.meta.size;
-                    let range = GetRange::Bounded(size.saturating_sub(len)..size);
-                    let options = GetOptions { range: Some(range), ..GetOptions::default() };
-                    store.get_opts(&path, options).await.map_err(error)?
-                }
-                result => result.map_err(error)?,
+            let timed = self.counts.request(Request::GetRange, Some(&path));
+            let got = async {
+                let options = GetOptions { range: Some(range.clone()), ..GetOptions::default() };
+                let result = match store.get_opts(&path, options).await {
+                    // A store that reads no suffix of an object (Azure Blob Storage, TASK-46),
+                    // which it says before any request: the object's size first, then the range
+                    // it ends with.
+                    Err(object_store::Error::NotSupported { .. })
+                        if matches!(range, GetRange::Suffix(_)) =>
+                    {
+                        let GetRange::Suffix(len) = range else { unreachable!() };
+                        let _head = self.counts.request(Request::Head, Some(&path));
+                        let head = GetOptions { head: true, ..GetOptions::default() };
+                        let size = store.get_opts(&path, head).await.map_err(error)?.meta.size;
+                        let range = GetRange::Bounded(size.saturating_sub(len)..size);
+                        let options = GetOptions { range: Some(range), ..GetOptions::default() };
+                        store.get_opts(&path, options).await.map_err(error)?
+                    }
+                    result => result.map_err(error)?,
+                };
+                let bytes = result.bytes().await.map_err(error)?;
+                self.counts.downloaded.fetch_add(bytes.len() as u64, Ordering::Relaxed);
+                Ok(bytes.to_vec())
             };
-            let bytes = result.bytes().await.map_err(error)?;
-            self.counts.downloaded.fetch_add(bytes.len() as u64, Ordering::Relaxed);
-            Ok(bytes.to_vec())
+            timed.answered(got.await, Vec::len)
         }
     }
 
     fn head(&self, key: &str) -> impl Future<Output = Result<Meta, Error>> + Send {
         let (store, path) = (self.store.clone(), self.path(key));
         async move {
-            let _timed = self.counts.request(Request::Head);
+            let timed = self.counts.request(Request::Head, Some(&path));
             let options = GetOptions { head: true, ..GetOptions::default() };
-            let result = store.get_opts(&path, options).await.map_err(error)?;
-            Ok(self.meta(result.meta))
+            let result = store.get_opts(&path, options).await.map_err(error);
+            timed.answered(result.map(|result| self.meta(result.meta)), |_| 0)
         }
     }
 
@@ -433,9 +476,10 @@ impl Bucket for Store {
         async move {
             // A listing of many objects takes a request for each page of them (1,000 on S3 and
             // GCS), which `object_store` does not say: counted as one.
-            let _timed = self.counts.request(Request::List);
-            let listed: Vec<ObjectMeta> =
-                store.list(path.as_ref()).try_collect().await.map_err(error)?;
+            let timed = self.counts.request(Request::List, path.as_ref());
+            let listed = store.list(path.as_ref()).try_collect::<Vec<ObjectMeta>>().await;
+            let listed = timed.answered(listed.map_err(error), |_| 0)?;
+            timed.span.set_count(crate::trace::OBJECTS, listed.len() as u64);
             let mut metas: Vec<Meta> = listed.into_iter().map(|meta| self.meta(meta)).collect();
             metas.sort_by(|a, b| a.key.cmp(&b.key));
             Ok(metas)
@@ -458,11 +502,12 @@ impl Bucket for Store {
         };
         let upload = Upload::of(key);
         async move {
-            let _timed = self.counts.request(request);
+            let timed = self.counts.request(request, Some(&path));
             let len = bytes.len() as u64;
             let options = PutOptions { mode, ..PutOptions::default() };
             let result =
-                store.put_opts(&path, PutPayload::from(bytes), options).await.map_err(error)?;
+                store.put_opts(&path, PutPayload::from(bytes), options).await.map_err(error);
+            let result = timed.answered(result, |_| len as usize)?;
             self.counts.uploaded[upload as usize].fetch_add(len, Ordering::Relaxed);
             Ok(Version { e_tag: result.e_tag, version: result.version })
         }
@@ -471,12 +516,13 @@ impl Bucket for Store {
     fn delete(&self, key: &str) -> impl Future<Output = Result<(), Error>> + Send {
         let (store, path) = (self.store.clone(), self.path(key));
         async move {
-            let _timed = self.counts.request(Request::Delete);
+            let timed = self.counts.request(Request::Delete, Some(&path));
             let mut deleted = store.delete_stream(stream::once(async move { Ok(path) }).boxed());
-            match deleted.next().await {
+            let deleted = match deleted.next().await {
                 Some(Err(object_store::Error::NotFound { .. })) | Some(Ok(_)) | None => Ok(()),
                 Some(Err(other)) => Err(error(other)),
-            }
+            };
+            timed.answered(deleted, |_| 0)
         }
     }
 

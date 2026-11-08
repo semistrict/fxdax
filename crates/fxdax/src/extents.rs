@@ -36,6 +36,7 @@ use crate::pages::{Arena, ArenaId, page_size};
 use crate::profile::{self, Recorder};
 use crate::stats::{self, Counter};
 use crate::store_dir;
+use extent_remote::trace;
 use extent_store::{HostDir, NoSpace, NotHeld, Spent, Store, TooLong, TooSmall, Unaligned};
 use std::collections::HashMap;
 use std::path::Path;
@@ -420,6 +421,14 @@ fn remote_errno(failure: extent_store::upload::Failure) -> Errno {
     })
 }
 
+/// fxdax: the span of a commit's wait for object storage to hold the commits up to `epoch`, or
+/// as many of them as its lag allows (`extent_remote::trace`, TASK-258).
+fn upload_wait(epoch: u64) -> trace::Span {
+    let span = trace::Span::start("commit.upload_wait");
+    span.set_count(trace::EPOCH, epoch);
+    span
+}
+
 /// The errno of the store's error, as doc-4 has them: each of the store's errors its own, and any
 /// other the store failing to read or write, `EIO`, logged. The one list of them, which a
 /// writer's requests and a follower's share.
@@ -502,7 +511,8 @@ impl ExtentStore {
     }
 
     /// fxdax: a new store at `path`, as [`ExtentStore::create_for_branch`] makes, opened as
-    /// `opening` says ([`ExtentStore::open_with`]).
+    /// `opening` says ([`ExtentStore::open_with`]). fxdax: in a span of its own, `store.create`
+    /// (`extent_remote::trace`, TASK-258).
     pub fn create_with(
         path: impl AsRef<Path>,
         capacity: u64,
@@ -510,9 +520,14 @@ impl ExtentStore {
         opening: Opening,
     ) -> Result<Self, Error> {
         let path = path.as_ref();
-        let keeping = opening.keeping.clone();
-        let opened = host_store::create(path, capacity, branch, keeping)?;
-        Self::new(path, opened, opening)
+        let span = trace::Span::start("store.create");
+        span.set_with(trace::STORE, || path.display().to_string());
+        span.set_branch(branch);
+        span.run(|| {
+            let keeping = opening.keeping.clone();
+            let opened = host_store::create(path, capacity, branch, keeping)?;
+            Self::new(path, opened, opening)
+        })
     }
 
     /// fxdax: a new store at `path`, as [`ExtentStore::create_with`] makes, of `branch`, kept in
@@ -562,10 +577,18 @@ impl ExtentStore {
     /// and what reads into the extent cache for it, until they are gone (TASK-79.36); or of the
     /// default arena, without one. Those of public branches' extents, which every tenant's forks of
     /// them share, are of the default arena.
+    ///
+    /// fxdax: in a span of its own, `store.open` (`extent_remote::trace`, TASK-258).
     pub fn open_with(path: impl AsRef<Path>, opening: Opening) -> Result<Self, Error> {
         let path = path.as_ref();
-        let opened = host_store::open(path, opening.keeping.clone())?;
-        Self::new(path, opened, opening)
+        let span = trace::Span::start("store.open");
+        span.set_with(trace::STORE, || path.display().to_string());
+        span.run(|| {
+            let opened = host_store::open(path, opening.keeping.clone())?;
+            let store = Self::new(path, opened, opening)?;
+            span.set_branch(store.branch());
+            Ok(store)
+        })
     }
 
     /// fxdax: the store at `path`, as [`ExtentStore::open`] has it, a tenant's (TASK-43), its own
@@ -882,13 +905,26 @@ impl ExtentStore {
     ///
     /// A fork of a point commits nothing in object storage: its child's record is the fork, which
     /// fails with `ENOENT` once the point is deleted (`Remote::forked`).
+    ///
+    /// fxdax: in a span of its own, `store.fork` (`extent_remote::trace`, TASK-258).
     pub fn fork(&self, path: impl AsRef<Path>, branch: u64) -> Result<(), Error> {
-        self.access().may_manage()?;
-        self.make_durable()?;
-        failpoint!("fork::durable");
-        // None comes between the look and the fork's commit.
-        let opening = self.opening.write(&self.fence)?;
-        self.fork_durable(path.as_ref(), branch, false, Some(opening))
+        self.fork_span(branch, false).run(|| {
+            self.access().may_manage()?;
+            self.make_durable()?;
+            failpoint!("fork::durable");
+            // None comes between the look and the fork's commit.
+            let opening = self.opening.write(&self.fence)?;
+            self.fork_durable(path.as_ref(), branch, false, Some(opening))
+        })
+    }
+
+    /// fxdax: the span of a fork of it to `branch`, a point if `point`.
+    fn fork_span(&self, branch: u64, point: bool) -> trace::Span {
+        let span = trace::Span::start("store.fork");
+        span.set_branch(self.branch());
+        span.set_with(trace::CHILD, || format!("{branch:x}"));
+        span.set(trace::POINT, point);
+        span
     }
 
     /// fxdax: forks the store, as [`ExtentStore::fork`] says, its commits made durable: `opening`,
@@ -1238,7 +1274,9 @@ impl ExtentStore {
     fn make_durable(&self) -> Result<()> {
         let epoch = self.durable_epoch()?;
         match self.remote.as_ref() {
-            Some(remote) => remote.wait_uploaded(epoch).map_err(remote_errno),
+            Some(remote) => {
+                upload_wait(epoch).run(|| remote.wait_uploaded(epoch).map_err(remote_errno))
+            }
             None => Ok(()),
         }
     }
@@ -1302,13 +1340,21 @@ impl ExtentStore {
         self.flush_turns.load(std::sync::atomic::Ordering::Acquire)
     }
 
+    /// fxdax: in a span of its own, `store.commit` (`extent_remote::trace`, TASK-258), whose
+    /// children are its phases: `commit.seal` and `commit.write`, the store's; then, durable,
+    /// `store.flush`, and `commit.upload_wait` as it waits for object storage.
     fn commit_with(&self, root: Option<&[u8]>, durable: bool) -> Result<()> {
-        // fxdax: nothing a panic went through is committed (`crate::fence`).
-        self.fence.check()?;
-        let started = std::time::Instant::now();
-        let committed = self.commit_and_wait(root, durable);
-        stats::count_since(Counter::Commits, Counter::CommitNs, started);
-        committed
+        let span = trace::Span::start("store.commit");
+        span.set_branch(self.branch());
+        span.set(trace::DURABLE, durable);
+        span.run(|| {
+            // fxdax: nothing a panic went through is committed (`crate::fence`).
+            self.fence.check()?;
+            let started = std::time::Instant::now();
+            let committed = self.commit_and_wait(root, durable);
+            stats::count_since(Counter::Commits, Counter::CommitNs, started);
+            committed
+        })
     }
 
     /// Commits, and waits for object storage as `durable` says: the commit's phases, each counted
@@ -1326,7 +1372,7 @@ impl ExtentStore {
                 // Within the lag the remote allows.
                 Some(remote) => {
                     let epoch = self.store.epoch().map_err(errno)?;
-                    remote.wait_lag(epoch).map_err(remote_errno)
+                    upload_wait(epoch).run(|| remote.wait_lag(epoch).map_err(remote_errno))
                 }
                 None => Ok(()),
             }
@@ -1665,6 +1711,11 @@ impl ExtentStore {
     /// or a rebind refused, it says it left. Checked before the fork's lock, which no write of the
     /// window's private pages takes: with its VM paused, as a snapshot has it, none comes after.
     fn fork_at_rest(&self, path: &Path, branch: u64, point: bool) -> Result<(), Error> {
+        self.fork_span(branch, point).run(|| self.fork_at_rest_now(path, branch, point))
+    }
+
+    /// fxdax: forks the store, as [`ExtentStore::fork_at_rest`] says, in its span.
+    fn fork_at_rest_now(&self, path: &Path, branch: u64, point: bool) -> Result<(), Error> {
         let private = self.private_pages()?;
         if private > 0 {
             let refused = format!(

@@ -6014,3 +6014,6 @@ fn imports_read_what_they_made_from_the_hosts_cache() {
 
 /// TASK-149.17: a compromised VM process beside other tenants, checked against invariants.
 mod hostile;
+
+/// TASK-258: the daemon's spans, exported.
+mod otel;

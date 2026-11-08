@@ -51,6 +51,9 @@ serde.workspace = true
 serde_json = "1.0.154"
 shuttle = { workspace = true, optional = true }
 fail = "0.5.1"
+opentelemetry = { version = "0.33.1", default-features = false, features = ["trace"] }
+opentelemetry_sdk = { version = "0.33.1", default-features = false, features = ["trace"] }
+opentelemetry-otlp = { version = "0.33.1", default-features = false, features = ["http-proto", "reqwest-blocking-client", "trace"] }
 
 [dev-dependencies]
 async-trait.workspace = true
@@ -64,6 +67,7 @@ memchr.workspace = true
 object_store.workspace = true
 proptest.workspace = true
 tempfile.workspace = true
+opentelemetry_sdk = { version = "0.33.1", default-features = false, features = ["trace", "testing"] }
 
 [lints]
 workspace = true

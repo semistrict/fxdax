@@ -26,6 +26,7 @@ use crate::extents::{ExtentId, PublicReach};
 use crate::pages::{ArenaId, page_size};
 use crate::profile::Recorder;
 use crate::stats::{self, Counter};
+use extent_remote::trace;
 use extent_store::shared::SharedLock;
 use extent_store::{HostDir, Store};
 use futures::future::BoxFuture;
@@ -168,8 +169,22 @@ fn extent_cache() -> &'static ExtentCache {
 /// the bytes evicted so far, that they are, or none is left to evict: memory an arena past its cap,
 /// or the arenas past the total's, give back (TASK-50.3). Returns the bytes it evicted. Evicted
 /// pages are read in again as they are touched.
-pub(crate) fn evict_least_used(arena: Option<ArenaId>, mut enough: impl FnMut(u64) -> bool) -> u64 {
-    let Some(cache) = EXTENT_CACHE.get() else { return 0 };
+///
+/// fxdax: in a span of its own, `cache.relief` (`extent_remote::trace`, TASK-258).
+pub(crate) fn evict_least_used(arena: Option<ArenaId>, enough: impl FnMut(u64) -> bool) -> u64 {
+    let span = trace::Span::start("cache.relief");
+    if let Some(arena) = arena {
+        span.set_count(trace::ARENA, u64::from(arena.0));
+    }
+    let (evicted, extents) = evict_in_order(arena, enough);
+    span.set_count(trace::BYTES, evicted);
+    span.set_count(trace::EXTENTS, extents);
+    evicted
+}
+
+/// Evicts as [`evict_least_used`] says: returns the bytes it evicted, and of how many extents.
+fn evict_in_order(arena: Option<ArenaId>, mut enough: impl FnMut(u64) -> bool) -> (u64, u64) {
+    let Some(cache) = EXTENT_CACHE.get() else { return (0, 0) };
     let candidates: Vec<Arc<CachedExtent>> = {
         let extents = cache.extents.with(Mutex::lock);
         (extents.iter())
@@ -183,14 +198,16 @@ pub(crate) fn evict_least_used(arena: Option<ArenaId>, mut enough: impl FnMut(u6
         .filter_map(|extent| Some((extent.eviction_order()?, extent)))
         .collect();
     candidates.sort_unstable_by_key(|(order, _)| *order);
-    let mut evicted = 0;
+    let (mut evicted, mut extents) = (0, 0);
     for (_, extent) in candidates {
         if enough(evicted) {
             break;
         }
-        evicted += extent.evict();
+        let bytes = extent.evict();
+        evicted += bytes;
+        extents += u64::from(bytes > 0);
     }
-    evicted
+    (evicted, extents)
 }
 
 /// Gives, once, the relief of arenas under pressure (TASK-50.3) its evictor, which frees pages of
@@ -794,6 +811,17 @@ impl CachedExtent {
         bytes
     }
 
+    /// fxdax: the span of a page-in of its part `pages`, `cache.page_in` (`extent_remote::trace`,
+    /// TASK-258): its reads, from the store or the bucket, its children.
+    fn page_in_span(&self, pages: &Range<u64>) -> trace::Span {
+        let span = trace::Span::start("cache.page_in");
+        span.set_branch(self.extent.branch);
+        span.set_count(trace::EXTENT, self.extent.sequence);
+        span.set_count(trace::ARENA, u64::from(self.arena.0));
+        span.set_count(trace::BYTES, (pages.end - pages.start) * page_size());
+        span
+    }
+
     /// Reads in the part `pages` of the extent, which a page-in marked filling, into pages of its
     /// arena, and puts those still filling then in its table.
     async fn read_part(self: Arc<Self>, pages: Range<u64>) {
@@ -931,7 +959,10 @@ impl Source for CachedExtent {
                         Some(Slot::Filling | Slot::Evicting(_)) => {}
                         Some(Slot::Absent | Slot::Failed(_)) => {
                             for part in self.parts_to_read(&mut table, page) {
-                                extent_cache().pager.spawn(self.clone().read_part(part));
+                                // fxdax: a child of what faulted, or read, on the page.
+                                let span = self.page_in_span(&part);
+                                let reading = span.instrument(self.clone().read_part(part));
+                                extent_cache().pager.spawn(reading);
                             }
                         }
                     }

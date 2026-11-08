@@ -99,6 +99,7 @@ mod grants;
 pub mod logging;
 pub mod memory;
 pub mod metrics;
+pub mod otel;
 mod pool;
 pub(crate) mod server;
 mod snapshot;

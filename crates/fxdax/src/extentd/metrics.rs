@@ -112,6 +112,22 @@ struct Requests {
 /// Each kind's requests, in [`KINDS`]' order.
 static REQUESTS: LazyLock<[Requests; KINDS.len()]> = LazyLock::new(Default::default);
 
+/// The name of the kind of request `kind` ([`KINDS`]), if it is one.
+pub(super) fn kind_name(kind: u32) -> Option<&'static str> {
+    KINDS.iter().find(|(known, _)| *known == kind).map(|(_, name)| *name)
+}
+
+/// fxdax: the name of the span of a request of `kind`, `extentd.NAME` ([`kind_name`]), or
+/// `extentd.request` of a kind it isn't (`super::otel`, TASK-258).
+pub(super) fn span_name(kind: u32) -> &'static str {
+    static NAMES: LazyLock<[String; KINDS.len()]> =
+        LazyLock::new(|| KINDS.map(|(_, name)| format!("extentd.{name}")));
+    match KINDS.iter().position(|(known, _)| *known == kind) {
+        Some(at) => &NAMES[at],
+        None => "extentd.request",
+    }
+}
+
 /// Counts a request of `kind` served, which took `took`, and whether it `failed`.
 pub(super) fn served(kind: u32, took: Duration, failed: bool) {
     let Some(at) = KINDS.iter().position(|(known, _)| *known == kind) else { return };

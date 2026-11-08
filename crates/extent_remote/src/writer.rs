@@ -31,7 +31,7 @@ use crate::moves::MovesMaps;
 use crate::record::Record;
 use crate::recovery::{self, Recovered, State};
 use crate::wal::Fenced;
-use crate::{EPOCH_SHIFT, Error, branch, rules};
+use crate::{EPOCH_SHIFT, Error, branch, rules, trace};
 use futures::{StreamExt as _, TryStreamExt as _};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -373,14 +373,28 @@ impl<B: Bucket> Writer<B> {
     /// Uploads segment `seq`: its extents stored on their own, a few at once, then it, its bytes
     /// ending with the footer it was taken with. Another writer's segment found in its place stops
     /// the writer for good: a later writer's, which fenced it ([`Error::Fenced`]), or an earlier
-    /// one's, landed late past its fence ([`Error::Displaced`]).
+    /// one's, landed late past its fence ([`Error::Displaced`]). fxdax: in a span of its own,
+    /// `upload.segment`, its bucket's requests children of it (`crate::trace`, TASK-258).
     pub async fn upload(&self, seq: u64) -> Result<(), Error> {
+        let span = trace::Span::start("upload.segment");
+        span.set_branch(self.branch);
+        span.set_count(trace::SEGMENT, seq);
+        let uploaded = span.around(self.upload_segment(seq, &span)).await;
+        span.result(&uploaded);
+        uploaded
+    }
+
+    /// Uploads segment `seq`, as [`Writer::upload`] says, saying its extents and bytes on `span`.
+    async fn upload_segment(&self, seq: u64, span: &trace::Span) -> Result<(), Error> {
         let Some((footer, segment, own)) = self.inner().pending.get(&seq).and_then(|pending| {
             let (segment, own) = pending.objects.clone()?;
             Some((pending.footer.clone(), segment, own))
         }) else {
             return Ok(());
         };
+        span.set_count(trace::EXTENTS, own.len() as u64);
+        let bytes = segment.len + own.iter().map(|(_, body)| body.len).sum::<u64>();
+        span.set_count(trace::BYTES, bytes);
         // Its extents of their own, a few at once, then it.
         let creates = futures::stream::iter(own).map(|(key, body)| async move {
             // One uploaded before, by this writer, whose key names its epoch, is created: its bytes.
@@ -515,7 +529,18 @@ impl<B: Bucket> Writer<B> {
     /// moved where they went: where the writer names them from then on, before the checkpoint
     /// lands, so that it never names one before where a checkpoint of its own does, which the
     /// collector, seeing the writer hold the lease, keeps the moves from, not from before (TASK-175).
+    /// fxdax: in a span of its own, `upload.checkpoint`, its bucket's requests children of it
+    /// (`crate::trace`, TASK-258).
     pub async fn checkpoint(&self) -> Result<Option<u64>, Error> {
+        let span = trace::Span::start("upload.checkpoint");
+        span.set_branch(self.branch);
+        let checkpointed = span.around(self.write_checkpoint(&span)).await;
+        span.result(&checkpointed);
+        checkpointed
+    }
+
+    /// Writes a checkpoint, as [`Writer::checkpoint`] says, saying what it is of on `span`.
+    async fn write_checkpoint(&self, span: &trace::Span) -> Result<Option<u64>, Error> {
         let mut state = {
             let inner = self.inner();
             if inner.state.through.is_none() || inner.state.through <= inner.checkpoint {
@@ -524,6 +549,8 @@ impl<B: Bucket> Writer<B> {
             inner.state.clone()
         };
         let seq = state.through.unwrap();
+        span.set_count(trace::SEGMENT, seq);
+        span.set_count(trace::EXTENTS, state.extents.len() as u64);
         // Forks whose children were deleted. Their records stay; their forks need not. Of a few
         // forks' children each checkpoint, in turn, after those the last looked at: every child's,
         // each checkpoint, made a storm of forks, a checkpoint each, read their records N^2 / 2

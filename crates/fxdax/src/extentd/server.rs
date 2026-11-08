@@ -17,6 +17,7 @@ use crate::store_requests::{self, Guest, Resizes, Shrinking};
 use crate::store_table::Writer;
 use crate::{Commit, MappingContents, VolatileSlice, VolatileSliceMut, WindowMapping};
 use crate::{DaxWindow, Errno, ExtentStore, SecondStage};
+use extent_remote::trace;
 use extent_store::shared::SharedLock;
 use std::os::fd::AsFd;
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -710,18 +711,22 @@ impl Drop for Turn {
 /// its serving panicking, it answers `EIO` as it is dropped, rather than leave its VM process
 /// waiting for good, those bytes counted for good; and fences its store, which the panic went
 /// through: past the store's locks, which fence it themselves (`crate::fence`, TASK-153.16).
+/// fxdax: and the request's span, which ends as it is answered (`super::otel`, TASK-258).
 struct Answer {
     connection: Arc<Connection>,
     request: Header,
     started: std::time::Instant,
     sent: bool,
+    span: trace::Span,
 }
 
 impl Answer {
     /// The answer owed to `request`, which `connection` received.
     fn new(connection: &Arc<Connection>, request: Header) -> Self {
         let started = std::time::Instant::now();
-        Self { connection: connection.clone(), request, started, sent: false }
+        let branch = connection.store().map(|store| store.branch());
+        let span = super::otel::request_span(&request, branch);
+        Self { connection: connection.clone(), request, started, sent: false, span }
     }
 
     /// The header of its reply, before what the reply says.
@@ -781,6 +786,8 @@ impl Answer {
             reply.status = -errno.raw();
             payload.clear();
             fds.clear();
+            self.span.set(super::otel::ERRNO, errno.raw() as i64);
+            self.span.fail(errno);
         }
         // Counted before its reply, which its VM process may then count on.
         super::metrics::served(header.kind, self.started.elapsed(), reply.status != 0);
@@ -808,6 +815,41 @@ impl Drop for Answer {
             let reply = self.reply_header();
             self.reply(Err(Errno::EIO), reply, Vec::new(), Vec::new());
         }
+    }
+}
+
+/// fxdax: says what `request` asks for on `span`, its span: the bytes it reads, writes or maps, and
+/// the extents it frees or maps (TASK-258).
+fn traced(span: &trace::Span, request: &Request<'_>) {
+    if !span.is_on() {
+        return;
+    }
+    let (bytes, extents) = match request {
+        Request::Read { len, .. } => (Some(*len), None),
+        Request::Write { data: Data::Inline(data), .. } => (Some(data.len() as u64), None),
+        Request::Write { data: Data::Transfer { len, .. }, .. } => (Some(*len), None),
+        Request::Map(mapping) => (Some(mapping.len), Some(1)),
+        Request::MapMany(mappings) => {
+            (Some(mappings.iter().map(|mapping| mapping.len).sum()), Some(mappings.len() as u64))
+        }
+        Request::Unmap { len, .. } | Request::Private { len, .. } => (Some(*len), None),
+        Request::Free(_) => (None, Some(1)),
+        Request::FreeMany { rest, .. } => (None, Some(1 + rest.len() as u64)),
+        Request::Commit { commit, .. } => {
+            span.set(trace::DURABLE, *commit == Commit::Durable);
+            (None, None)
+        }
+        Request::Open { path, .. } | Request::Fork { path, .. } => {
+            span.set_with(trace::STORE, || path.display().to_string());
+            (None, None)
+        }
+        _ => (None, None),
+    };
+    if let Some(bytes) = bytes {
+        span.set_count(trace::BYTES, bytes);
+    }
+    if let Some(extents) = extents {
+        span.set_count(trace::EXTENTS, extents);
     }
 }
 
@@ -1113,16 +1155,23 @@ impl Connection {
             request.paths().try_for_each(|path| self.authorize(path))?;
             Ok(request)
         });
+        if let Ok(request) = &request {
+            traced(&answer.span, request);
+        }
+        // fxdax: the request's span the parent of what serving it does (TASK-258).
+        let parent = answer.span.parent();
         match request {
             Err(Errno::EPROTONOSUPPORT) => refuse_version(&message.header, answer),
             Err(errno) => refuse(answer, errno),
-            Ok(Request::Fault(fault)) => serve_future(turn, self.fault(fault, answer)),
+            Ok(Request::Fault(fault)) => {
+                serve_future(turn, parent.around(self.fault(fault, answer)))
+            }
             // fxdax: as a fault, which waits for its pages to be brought in (backlog doc-13).
             Ok(Request::Private { window_offset, len }) => {
-                serve_future(turn, self.make_private(window_offset, len, answer))
+                serve_future(turn, parent.around(self.make_private(window_offset, len, answer)))
             }
             Ok(Request::Open { path, opening }) if opening != codec::Opening::ReadOnly => {
-                serve_future(turn, self.serve_open(path, opening, answer))
+                serve_future(turn, parent.around(self.serve_open(path, opening, answer)))
             }
             Ok(request) => self.serve(&request, answer),
         }
@@ -1176,7 +1225,10 @@ impl Connection {
         let mut reply = answer.reply_header();
         let mut payload = Vec::new();
         let mut fds = Vec::new();
-        let result = self.handle(request, &mut reply, &mut payload, &mut fds);
+        let result = {
+            let _entered = answer.span.enter();
+            self.handle(request, &mut reply, &mut payload, &mut fds)
+        };
         answer.send(result, reply, payload, fds);
     }
 

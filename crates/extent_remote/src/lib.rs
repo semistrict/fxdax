@@ -43,6 +43,7 @@ pub mod recovery;
 #[cfg(test)]
 mod s3_server;
 pub mod store;
+pub mod trace;
 pub mod wal;
 pub mod writer;
 

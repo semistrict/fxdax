@@ -61,6 +61,10 @@
 //! bucket, its requests by kind and its bytes up and down (`extent_remote::store::Stats::line`),
 //! what the stores' followers are, what serving the stores cost it (`fxdax::stats::Stats`), and
 //! the VM processes' requests it served, by kind, rewritten as they change.
+//!
+//! With `FXDAX_EXTENTD_TRACES` set to `otlp`, the daemon exports spans of what it does, over OTLP,
+//! to the collector `OTEL_EXPORTER_OTLP_ENDPOINT` names, OpenTelemetry's variables configuring
+//! them (`fxdax::extentd::otel`, TASK-258; `docs/tracing.md`): off otherwise.
 
 #[cfg(target_os = "linux")]
 fn main() -> anyhow::Result<()> {
@@ -76,6 +80,11 @@ fn main() -> anyhow::Result<()> {
     fxdax::stacks::on_sigquit().context("handling SIGQUIT")?;
     let drain = fxdax::extentd::drain::bound().map_err(anyhow::Error::msg)?;
     drain_on_sigterm(drain).context("handling SIGTERM")?;
+    // fxdax: its spans, over OTLP, if FXDAX_EXTENTD_TRACES says so (TASK-258): its exporter's
+    // threads made after SIGTERM is blocked, as every thread but the drain's.
+    if fxdax::extentd::otel::from_env().map_err(anyhow::Error::msg)? {
+        log::info!("extentd: exporting spans over OTLP");
+    }
     fxdax::extentd::raise_open_files_limit().context("raising the limit of open files")?;
     // A host of the multi-node system: the bucket and this host's placement token named.
     fxdax::remote::Host::from_env().map_err(anyhow::Error::msg)?;
@@ -138,7 +147,9 @@ fn drain_on_sigterm(bound: std::time::Duration) -> std::io::Result<()> {
         }
         log::info!("extentd: draining, on SIGTERM, within {}s", bound.as_secs());
         let began = std::time::Instant::now();
-        match fxdax::extentd::drain::drain(bound) {
+        let drained = fxdax::extentd::drain::drain(bound);
+        fxdax::extentd::otel::shutdown();
+        match drained {
             Ok(()) => {
                 log::info!("extentd: drained in {:.1?}: every store closed", began.elapsed());
                 std::process::exit(0);
