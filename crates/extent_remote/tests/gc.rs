@@ -84,12 +84,122 @@ fn collects_a_file_bucket() {
     assert_eq!(String::from_utf8_lossy(&out.stdout), "1\n");
 }
 
+/// TASK-264: a dry run over a bucket on the host's filesystem lists what a pass would delete,
+/// writing nothing, the collector's lease neither, nor the probe of its conditional writes; a
+/// mark-only pass marks it, deleting nothing; a pass after deletes it, leaving the marks.
+#[test]
+fn dry_runs_and_mark_only_passes_delete_nothing() {
+    use extent_remote::batch::{Batch, Commit};
+    use extent_remote::store::Store;
+    use extent_remote::{Writer, branch};
+    use std::sync::Arc;
+    use storage_device::ExtentId;
+
+    let dir = tempfile::tempdir().unwrap();
+    let url = url::Url::from_directory_path(dir.path()).unwrap().to_string();
+    futures::executor::block_on(async {
+        let bucket = Arc::new(Store::from_url(&url).unwrap());
+        branch::create(&*bucket, 1, 0).await.unwrap();
+        let writer = Writer::open(bucket, 1, 10, 1).await.unwrap();
+        let extent = ExtentId::new(1, writer.chain().next_sequence());
+        let written =
+            Commit { tag: 1, extents: vec![(extent, vec![7; 4096])], ..Commit::default() };
+        let freed = Commit { tag: 2, frees: vec![extent], ..Commit::default() };
+        for commit in [written, freed] {
+            let segment = Batch::from(commit).close(&mut writer.chain()).frame();
+            let seq = writer.add_segment(segment).unwrap();
+            writer.upload(seq).await.unwrap();
+            writer.acknowledge().await.unwrap();
+        }
+        writer.checkpoint().await.unwrap();
+    });
+    let files = || -> Vec<(String, Vec<u8>)> {
+        let mut files: Vec<_> = walk(dir.path())
+            .into_iter()
+            .map(|path| {
+                let name = path.strip_prefix(dir.path()).unwrap().display().to_string();
+                (name, std::fs::read(&path).unwrap())
+            })
+            .collect();
+        files.sort();
+        files
+    };
+    let before = files();
+    let out = gc(&[&url, "--dry-run", "--grace", "0"]);
+    let branch = "0000000000000001";
+    let segment = |seq: u64| format!("segments/{branch}/{seq:016x}");
+    let (fence, holding, freeing) = (segment(0), segment(1), segment(2));
+    let listed = String::from_utf8_lossy(&out.stdout).into_owned();
+    let sizes: Vec<&str> = listed.lines().map(|line| line.split(' ').nth(2).unwrap()).collect();
+    let expected: String = [&fence, &holding, &freeing]
+        .iter()
+        .zip(&sizes)
+        .map(|(key, size)| format!("{key} segment {size} delete\n"))
+        .collect();
+    assert_eq!(listed, expected);
+    let bytes: u64 = sizes.iter().map(|size| size.parse::<u64>().unwrap()).sum();
+    assert_eq!(
+        String::from_utf8_lossy(&out.stderr),
+        format!(
+            "fxdax-gc: dry run: a pass would delete 3 objects ({bytes} bytes), and more: it would \
+             compact 0 (0 bytes), and delete what it compacts a grace period after, which a dry \
+             run, compacting nothing, doesn't count\n"
+        )
+    );
+    assert!(out.status.success());
+    assert_eq!(files(), before);
+
+    let out = gc(&[&url, "--mark-only", "--grace", "0"]);
+    assert_eq!(
+        String::from_utf8_lossy(&out.stderr),
+        format!(
+            "fxdax-gc: marked 3 ({bytes} bytes) in gc/marks/0000000000000001, deleted 0, \
+             compacted 0, resurrected 0\n"
+        )
+    );
+    let names: Vec<String> = files().into_iter().map(|(name, _)| name).collect();
+    for key in [&fence, &holding, &freeing] {
+        assert!(names.contains(key), "{key} marked, deleted");
+    }
+    assert!(names.contains(&"gc/marks/0000000000000001".to_owned()), "{names:?}");
+
+    let out = gc(&[&url, "--grace", "0"]);
+    assert_eq!(String::from_utf8_lossy(&out.stderr), "fxdax-gc: deleted 3, compacted 0\n");
+    let names: Vec<String> = files().into_iter().map(|(name, _)| name).collect();
+    // The bucket's lock, no object, then the objects.
+    let kept = [
+        extent_remote::local::LOCK.to_owned(),
+        format!("branches/{branch}"),
+        format!("checkpoints/{branch}/0000000000000002"),
+        "gc/lease".to_owned(),
+        "gc/marks/0000000000000001".to_owned(),
+        format!("leases/{branch}"),
+    ];
+    assert_eq!(names, kept);
+}
+
+/// The files under `dir`, at every depth.
+fn walk(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut files = Vec::new();
+    for entry in std::fs::read_dir(dir).unwrap() {
+        let path = entry.unwrap().path();
+        match path.is_dir() {
+            true => files.extend(walk(&path)),
+            false => files.push(path),
+        }
+    }
+    files
+}
+
 #[test]
 fn without_a_bucket_prints_its_usage() {
     let out = gc(&[]);
-    let usage = "usage: fxdax-gc URL [--every SECONDS] [--grace SECONDS] \
+    let usage = "usage: fxdax-gc URL [--mark-only] [--every SECONDS] [--grace SECONDS] \
+                 [--compact-below FRACTION] | fxdax-gc URL --dry-run [--grace SECONDS] \
                  [--compact-below FRACTION] | fxdax-gc URL --branches [--held FILE] | \
-                 fxdax-gc URL --delete-branch ID";
+                 fxdax-gc URL --delete-branch ID (--mark-only deletes nothing, writing \
+                 gc/marks/EPOCH: the bucket grows; --dry-run writes nothing, and finds less than \
+                 a pass deletes)";
     assert_eq!(String::from_utf8_lossy(&out.stderr), format!("Error: {usage:?}\n"));
     assert_eq!(out.status.code(), Some(1));
 }

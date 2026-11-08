@@ -3,7 +3,7 @@ id: doc-7
 title: 'Object storage: how the host keeps branches in S3 and GCS'
 type: specification
 created_date: '2026-10-17 01:31'
-updated_date: '2026-11-07 17:47'
+updated_date: '2026-11-08 19:59'
 ---
 # Object storage: how the host keeps branches in S3 and GCS
 
@@ -146,6 +146,7 @@ Per bucket prefix, for every branch of every lineage:
 | `branches/<branch>` | the format of the branch's objects, first; its owner; where it was forked from, whether it is a fork's, whether deleted, whether a point, whether its fork of a point is being made, whether a failed fork's claim | create; updated with a condition |
 | `leases/<branch>` | the writer's epoch, who took it, and its placement's fencing token | created, then updated with a condition |
 | `gc/lease` | the collector's epoch | likewise |
+| `gc/marks/<epoch>` | what the mark-only pass of that epoch would have deleted, each object's key, size, version and time as listed (Garbage collection) | create-only, by the collector; removed by an operator |
 | `moves/<key>` | the live extents of the object at `key`, compacted, and where in it each is | create-only, by the collector |
 
 doc-2's separate `index/` deltas and `frees/` objects are gone: a segment's footer is its delta,
@@ -543,6 +544,46 @@ one for the next pass to reclaim. A pass:
 
 **Time** (the grace period, by the store's clock) only spares readers that just looked an extent up
 a round trip; correctness does not depend on it.
+
+**Watching before deleting** *(added 2026-11-08, TASK-264).* Two passes delete nothing, for an
+operator to see what the collector would do before trusting it with a bucket:
+
+- `fxdax-gc URL --dry-run [--grace S] [--compact-below F]` writes nothing at all. It does not take
+  `gc/lease`, which would bump the epoch and fence a pass running meanwhile out of its deletes; it
+  reads the lease's epoch as it starts instead, and says it was fenced if a pass took the lease
+  before it ended, what it read being possibly older than that pass's deletes. Nor does it write
+  what giving up on forks writes (a fork of a deleted point being made, a failed fork's claim): it
+  takes them as given up on. It compacts nothing, and prints each object a pass would delete, then
+  each it would compact by its listed size, `KEY KIND SIZE delete|compact`, and their counts and
+  bytes. It **undercounts**: what a pass compacts it deletes a grace period after, which a dry run
+  never finds doomed. With `--compact-below 0`, a pass deletes exactly what it lists.
+- `fxdax-gc URL --mark-only [--every S] [--grace S] [--compact-below F]` is a pass in every respect
+  but deleting: it compacts as one does (the compacted originals are the keys most worth watching,
+  TASK-175), and instead of deleting writes `gc/marks/<epoch>`, the doomed objects as listed.
+  *Decided:* it **takes `gc/lease`** (step 1). Its marks are ordered by the epoch, each pass's its
+  own and later than every pass's before, so readers and the next mark-only pass find the newest by
+  key; a pass that deletes, fenced by it, is late, never wrong; and where it finds lost what a live
+  branch needs, it can tell a pass that deleted since (it was fenced, and stops, TASK-180) from a
+  bug, which a pass not holding the lease could not. Fenced, it writes no marks, as a fenced pass
+  deletes nothing. Nothing marked goes, so **storage grows**: originals and their moves both, and
+  every marks object, until an operator collects for real or removes them. The collector never
+  takes `gc/marks/` for a candidate, nor for a branch's.
+  - **Readers warn.** Every reader of a bucket reads it through `store::Store` (extentd's remote
+    stores, writers recovering, fxdaxctl, the collector), which holds the newest marks' keys,
+    read again every 60 s by a listing of `gc/marks/` (and a read once it changed) alongside one of
+    its reads, uncounted in its stats, never a round trip a read. A GET, ranged GET or HEAD of a
+    marked key logs a `warn` with the key, its kind (naming its branch), the request, the marks'
+    epoch and the current span's trace and span IDs; in extentd the log names the guest request too
+    (`request_id`). A read costs one load with no marks, one set lookup with some. Listings are
+    logged at `debug` only: they name what callers pass over (older checkpoints, segments a
+    checkpoint covers) as well as what they go by, which they read, and which is warned of. A
+    warning is a bug in the collector, unless the reader is one the protocol lets find the object
+    gone and start again (a recovery a newer checkpoint restarts, a reader within the grace period).
+  - **Resurrection.** Each mark-only pass compares what it finds doomed with the newest marks
+    before its own: an object marked then, listed now at the same version, size and key, and not
+    doomed, is warned of loudly, as no correct fork or recovery reaches what no live branch
+    reached. Marks of a shorter grace period than the pass's are not compared: a compacted object
+    takes longer to be doomed under a longer one.
 
 **Not yet:** merging small objects. Compaction writes each object's live extents to its own moves;
 merging several into one needs the moves of each to name it, and a moves object can be deleted only

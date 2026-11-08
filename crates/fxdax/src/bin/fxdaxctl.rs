@@ -70,6 +70,10 @@
 //! whether it is public, and, through the daemon, open. `--version` prints the commit it was built
 //! of (`fxdax::BUILD_COMMIT`, TASK-111.7).
 //!
+//! fxdax: on Linux, it logs on standard error what is as grave as a warning: as a read of an object
+//! the collector's newest mark-only pass marked, a bug in the collector (`extent_remote::marks`,
+//! TASK-264).
+//!
 //! `stats`, through the daemon alone, prints what the daemon, its VM processes and their guests
 //! counted, as of one moment, each with the commit it was built of (the control API's
 //! `GetSnapshot`, TASK-111.4): with `--json`, as one JSON object, of `taken_unix_ns`, `extentd`
@@ -466,6 +470,13 @@ fn main() -> anyhow::Result<()> {
     // fxdax: its threads' stacks on SIGQUIT, as an import that hung needed (TASK-98, TASK-44.13).
     #[cfg(target_os = "linux")]
     fxdax::stacks::on_sigquit()?;
+    // fxdax: warnings, as of reading what the collector marked (TASK-264).
+    #[cfg(target_os = "linux")]
+    {
+        use fxdax::extentd::logging;
+        let warnings = logging::Settings { level: log::LevelFilter::Warn, ..Default::default() };
+        logging::install(warnings)?;
+    }
     let args: Vec<String> = std::env::args().skip(1).collect();
     // fxdax: the commit it was built of (TASK-111.7).
     if args == ["--version"] {

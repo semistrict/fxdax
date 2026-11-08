@@ -76,6 +76,19 @@ pub fn enabled() -> bool {
     ENABLED.load(Ordering::Relaxed)
 }
 
+/// The IDs of the span current on this thread, if spans are on and one is: its trace's and its
+/// own, in hexadecimal, as exporters name them, which a log record says to be found in its trace.
+/// Asked off the hot path: it reads the context current.
+pub fn current_ids() -> Option<(String, String)> {
+    if !enabled() {
+        return None;
+    }
+    let context = Context::current();
+    let span = context.span();
+    let ids = span.span_context();
+    ids.is_valid().then(|| (ids.trace_id().to_string(), ids.span_id().to_string()))
+}
+
 /// A span of an operation, ended as it drops; nothing while spans are off ([`enabled`]).
 #[must_use = "a span ends as it drops"]
 pub struct Span(Option<Context>);

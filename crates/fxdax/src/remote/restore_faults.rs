@@ -395,7 +395,7 @@ impl Hosts {
                 Kind::Record { branch } => !block_on(branch::record(&*self.bucket, branch))
                     .unwrap()
                     .is_some_and(|record| record.deleted),
-                Kind::GcLease => false,
+                Kind::GcLease | Kind::Marks { .. } => false,
                 _ => true,
             })
             .collect();

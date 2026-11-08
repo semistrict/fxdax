@@ -11,6 +11,10 @@
 //!
 //! A store counts the requests it makes, by kind, those that fail too, which object storage bills,
 //! and the bytes it uploads, by kind of object, and downloads ([`Store::stats`]).
+//!
+//! fxdax: every reader of a bucket reads it through a store, which warns of reading what the
+//! collector's newest mark-only pass marked ([`crate::marks`], TASK-264): on wherever a marks object
+//! is, as a store reads the newest every [`crate::marks::REFRESH`] alongside a read of its own.
 
 use crate::bucket::{Bucket, ByteRange, Error, Meta, Object, PutMode, Version};
 use crate::client::Client;
@@ -34,6 +38,9 @@ pub struct Store {
     honoured: std::sync::atomic::AtomicBool,
     /// fxdax: the checkpoints' states its recoveries decoded ([`Bucket::decoded`]).
     decoded: crate::recovery::Decoded,
+    /// fxdax: what the collector's newest mark-only pass marked, which its reads warn of reaching
+    /// (TASK-264).
+    marks: crate::marks::Watch,
 }
 
 /// The kinds of request a store makes.
@@ -259,7 +266,7 @@ impl Store {
     pub fn new(store: Arc<dyn ObjectStore>, prefix: &str) -> Self {
         let prefix = prefix.trim_matches('/').to_owned();
         let (counts, honoured, decoded) = Default::default();
-        Self { store, prefix, counts, honoured, decoded }
+        Self { store, prefix, counts, honoured, decoded, marks: crate::marks::Watch::new() }
     }
 
     /// Checks that it honours the conditional writes branches rely on ([`probe`]), with an object
@@ -282,6 +289,45 @@ impl Store {
             uploaded: self.counts.uploaded.each_ref().map(load),
             downloaded: load(&self.counts.downloaded),
         }
+    }
+
+    /// fxdax: reads the newest marks object of the collector's mark-only passes, if it is another
+    /// than the one it holds (TASK-264): a listing of `gc/marks/`, then a read of the newest. A
+    /// store does every [`crate::marks::REFRESH`] alongside a read; its requests go uncounted
+    /// ([`Store::stats`]), being no reader's. A request failed, it keeps what it held, until the
+    /// next; marks it can't decode, it warns of, holding none.
+    pub async fn refresh_marks(&self) {
+        let prefix = self.path(layout::GC_MARKS.trim_end_matches('/'));
+        let listed = match self.store.list(Some(&prefix)).try_collect::<Vec<_>>().await {
+            Ok(listed) => listed,
+            Err(error) => {
+                log::debug!(error:%; "object storage: listing the collector's marks: {error}");
+                return;
+            }
+        };
+        let newest = (listed.into_iter().map(|meta| self.meta(meta)))
+            .filter(|meta| matches!(layout::kind(&meta.key), Kind::Marks { .. }))
+            .max_by(|a, b| a.key.cmp(&b.key));
+        let Some(newest) = newest else { return self.marks.hold(None) };
+        if self.marks.holds(&newest) {
+            return;
+        }
+        let path = self.path(&newest.key);
+        let read = async { self.store.get_opts(&path, GetOptions::default()).await?.bytes().await };
+        match read.await.map(|bytes| layout::decode::<layout::Marks>(&bytes)) {
+            Ok(Ok(marks)) => self.marks.hold(Some((&newest, marks))),
+            Ok(Err(error)) => {
+                log::warn!(key = newest.key, error:%; "extent_remote: the collector's marks: {error}");
+                self.marks.hold(None);
+            }
+            Err(error) => log::debug!(error:%; "object storage: reading {path}: {error}"),
+        }
+    }
+
+    /// The reading of the marks again ([`Store::refresh_marks`]), if it is due, which a read goes
+    /// alongside: nothing, if not.
+    fn marks_due(&self) -> futures::future::OptionFuture<impl Future<Output = ()> + Send + '_> {
+        self.marks.take_refresh().then(|| self.refresh_marks()).into()
     }
 
     /// The bucket at `url`: `s3://bucket/prefix`, `gs://bucket/prefix`, `az://container/prefix`
@@ -426,8 +472,10 @@ impl Bucket for Store {
     }
 
     fn get(&self, key: &str) -> impl Future<Output = Result<Object, Error>> + Send {
+        self.marks.reached(Request::Get, key);
+        let refresh = self.marks_due();
         let (store, path) = (self.store.clone(), self.path(key));
-        async move {
+        let get = async move {
             let timed = self.counts.request(Request::Get, Some(&path));
             let got = async {
                 let result = store.get_opts(&path, GetOptions::default()).await.map_err(error)?;
@@ -437,7 +485,8 @@ impl Bucket for Store {
                 Ok(Object { bytes: bytes.to_vec(), meta })
             };
             timed.answered(got.await, |object| object.bytes.len())
-        }
+        };
+        async move { futures::join!(get, refresh).0 }
     }
 
     fn get_range(
@@ -445,12 +494,14 @@ impl Bucket for Store {
         key: &str,
         range: ByteRange,
     ) -> impl Future<Output = Result<Vec<u8>, Error>> + Send {
+        self.marks.reached(Request::GetRange, key);
+        let refresh = self.marks_due();
         let (store, path) = (self.store.clone(), self.path(key));
         let range = match range {
             ByteRange::Bounded(range) => GetRange::Bounded(range),
             ByteRange::Suffix(n) => GetRange::Suffix(n),
         };
-        async move {
+        let get = async move {
             let timed = self.counts.request(Request::GetRange, Some(&path));
             let got = async {
                 let options = GetOptions { range: Some(range.clone()), ..GetOptions::default() };
@@ -476,17 +527,21 @@ impl Bucket for Store {
                 Ok(bytes.to_vec())
             };
             timed.answered(got.await, Vec::len)
-        }
+        };
+        async move { futures::join!(get, refresh).0 }
     }
 
     fn head(&self, key: &str) -> impl Future<Output = Result<Meta, Error>> + Send {
+        self.marks.reached(Request::Head, key);
+        let refresh = self.marks_due();
         let (store, path) = (self.store.clone(), self.path(key));
-        async move {
+        let head = async move {
             let timed = self.counts.request(Request::Head, Some(&path));
             let options = GetOptions { head: true, ..GetOptions::default() };
             let result = store.get_opts(&path, options).await.map_err(error);
             timed.answered(result.map(|result| self.meta(result.meta)), |_| 0)
-        }
+        };
+        async move { futures::join!(head, refresh).0 }
     }
 
     fn list(&self, prefix: &str) -> impl Future<Output = Result<Vec<Meta>, Error>> + Send {
@@ -497,7 +552,9 @@ impl Bucket for Store {
             (true, "") => None,
             (_, prefix) => Some(self.path(prefix)),
         };
-        async move {
+        let refresh = self.marks_due();
+        let prefix = prefix.to_owned();
+        let list = async move {
             // A listing of many objects takes a request for each page of them (1,000 on S3 and
             // GCS), which `object_store` does not say: counted as one.
             let timed = self.counts.request(Request::List, path.as_ref());
@@ -507,6 +564,13 @@ impl Bucket for Store {
             let mut metas: Vec<Meta> = listed.into_iter().map(|meta| self.meta(meta)).collect();
             metas.sort_by(|a, b| a.key.cmp(&b.key));
             Ok(metas)
+        };
+        async move {
+            let listed = futures::join!(list, refresh).0;
+            if let Ok(metas) = &listed {
+                self.marks.listed(&prefix, metas);
+            }
+            listed
         }
     }
 
@@ -662,6 +726,63 @@ pub(crate) mod tests {
         });
         let took = start.elapsed();
         assert!(took >= std::time::Duration::from_millis(150), "three requests took {took:?}");
+    }
+
+    /// TASK-264: a store reads the collector's newest marks with requests it doesn't count, at its
+    /// first read, alongside it, and warns as it gets or heads a key they name, of no other key; nor
+    /// of one listed, which a caller may pass over. With no marks, it warns of nothing.
+    #[test]
+    fn stores_warn_of_reading_what_the_newest_marks_name() {
+        use crate::layout::{Marked, Marks};
+        let log = crate::marks::captured();
+        let objects: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
+        let (old, marked) = (layout::checkpoint(1, 3), layout::checkpoint(1, 4));
+        let warned = || -> Vec<String> { log.lock().unwrap().clone() };
+        futures::executor::block_on(async {
+            let writer = Store::new(objects.clone(), "p");
+            for key in [&old, &marked, &layout::checkpoint(1, 5)] {
+                writer.put(key, vec![1, 2], PutMode::Create).await.unwrap();
+            }
+            let unmarked = Store::new(objects.clone(), "p");
+            unmarked.get(&marked).await.unwrap();
+            unmarked.get(&marked).await.unwrap();
+            assert_eq!(warned(), Vec::<String>::new());
+
+            let at = |key: &String| Marked {
+                key: key.clone(),
+                size: 2,
+                e_tag: None,
+                version: None,
+                modified: 0,
+            };
+            let (older, newest) = (Marks { epoch: 6, grace: 0, marked: vec![at(&old)] }, 7);
+            let marks = Marks { epoch: newest, grace: 0, marked: vec![at(&marked)] };
+            let put = |marks: &Marks| layout::encode(marks);
+            writer.put(&layout::marks(6), put(&older), PutMode::Create).await.unwrap();
+            writer.put(&layout::marks(newest), put(&marks), PutMode::Create).await.unwrap();
+
+            let reader = Store::new(objects.clone(), "p");
+            // Its first read reads the marks, alongside: what it reads after, it warns of.
+            reader.head(&layout::checkpoint(1, 5)).await.unwrap();
+            assert_eq!(reader.stats().requests(Request::List), 0);
+            assert_eq!(reader.stats().requests(Request::Head), 1);
+            reader.get(&old).await.unwrap();
+            reader.list("checkpoints/").await.unwrap();
+            assert_eq!(warned(), Vec::<String>::new());
+            reader.head(&marked).await.unwrap();
+            let range = ByteRange::Bounded(0..1);
+            reader.get_range(&marked, range).await.unwrap();
+            reader.get(&marked).await.unwrap();
+        });
+        let saying = "a reader reached what the collector's newest mark-only pass found no live \
+                      branch needs, and would have deleted";
+        let reached = |request: &str| {
+            format!(
+                "WARN extent_remote: {request} {marked}: {saying} (gc/marks/0000000000000007) \
+                 key={marked} kind=Checkpoint {{ branch: 1, seq: 4 }} request={request} marks=7"
+            )
+        };
+        assert_eq!(warned(), [reached("head"), reached("get-range"), reached("get")]);
     }
 
     /// A store counts its requests by kind, failed ones too, and the bytes it uploads, by kind of

@@ -46,9 +46,19 @@
 //! A pass reads records, recovers branches and deletes objects many at once; what forks inherited
 //! together, their parent's state where they were forked, it reads once and takes once for them
 //! all; and a collector reads a record again only once it changed ([`Collector`], TASK-92.7).
+//!
+//! fxdax: two passes delete nothing (TASK-264). A mark-only pass ([`Collector::mark`]) is a pass in
+//! every respect but that: it takes the lease and compacts, and writes what it would delete to a
+//! marks object (`gc/marks/<epoch>`, [`layout::Marks`]), which every reader of the bucket warns of
+//! reaching ([`crate::marks`]), and which the next such pass compares what it finds doomed with: an
+//! object doomed before and kept now, the same object still, is a bug, as no correct fork or
+//! recovery reaches what no live branch reached. Nothing marked goes, so the bucket grows by what
+//! it would have reclaimed, the compacted objects and their moves both. A dry run
+//! ([`Collector::dry_run`]) writes nothing at all, the lease neither: it says what a pass would
+//! delete, less what a pass would delete only for compacting it, a grace period after.
 
 use crate::bucket::{self, Bucket, Meta};
-use crate::layout::{self, Kind, Location, Moves, Origin};
+use crate::layout::{self, Kind, Location, Marked, Marks, Moves, Origin};
 use crate::moves::{Moved, MovesMaps};
 use crate::record::Record;
 use crate::recovery::{self, Checkpoints, Layered, Layers, Recovered, State};
@@ -87,6 +97,33 @@ pub struct Report {
     pub compacted: usize,
 }
 
+/// fxdax: what a mark-only pass did ([`Collector::mark`]).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Marking {
+    /// What it compacted; it deleted nothing.
+    pub report: Report,
+    /// The marks it wrote, at [`layout::marks`] of their epoch: none if a later pass took the lease
+    /// from it, which stopped it as it stops a pass before deleting.
+    pub marks: Option<Marks>,
+    /// The objects the newest marks before named that it found kept, the same objects still: a
+    /// bug, each warned of.
+    pub resurrected: Vec<String>,
+}
+
+/// fxdax: what a dry run found ([`Collector::dry_run`]).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DryRun {
+    /// What a pass would delete, as listed, in the order of their keys; less what it would compact
+    /// and so delete a grace period after.
+    pub doomed: Vec<Meta>,
+    /// What a pass would compact, by their listed sizes, which count their footers, as listed:
+    /// what it deletes too, a grace period after, once no state's way to an extent goes through it.
+    pub compactable: Vec<Meta>,
+    /// Whether a pass took the collector's lease while it ran: what it read may be older than what
+    /// that pass, deleting since, read, and what it found is no more than a guess.
+    pub fenced: bool,
+}
+
 /// One pass of the collector, as `holder`, which must differ from every other pass's: of a
 /// collector of its own, which remembers nothing of it ([`Collector`]).
 pub async fn collect(
@@ -114,22 +151,98 @@ impl Collector {
     /// One pass, as `holder`, which must differ from every other pass's.
     pub async fn collect(&mut self, bucket: &impl Bucket, holder: u64) -> Result<Report, Error> {
         let epoch = branch::take_lease(bucket, layout::GC_LEASE, holder, 0).await?;
+        let Some(pass) = self.survey(bucket, epoch, Writes::Some).await? else {
+            return Ok(Report::default());
+        };
+        let mut report = Report::default();
+        pass.compact(bucket, &self.options, &mut report).await?;
+        let doomed = pass.doomed(bucket, &self.options).await?;
+        // A pass a later one took the lease from stops.
+        if fenced(bucket, epoch).await? {
+            return Ok(report);
+        }
+        // Many at once, in any order: none of it is what a live branch needs, whatever else goes.
+        let deletes = futures::stream::iter(&doomed).map(|meta| bucket::delete(bucket, &meta.key));
+        report.deleted += deletes.buffer_unordered(DELETES_AT_ONCE).count().await;
+        Ok(report)
+    }
+
+    /// fxdax: one mark-only pass, as `holder`, which must differ from every other pass's: a pass
+    /// but for deleting, which writes what it would delete to its marks instead (TASK-264).
+    ///
+    /// It takes the collector's lease, as a pass that deletes does (doc-7, Garbage collection, step
+    /// 1). Its marks are ordered by it, each pass's epoch its own and later than every pass's
+    /// before, so that readers, and the next mark-only pass, find the newest by their keys, and no
+    /// two passes' marks share a key. A pass that deletes, which it then fences, deletes nothing,
+    /// and the next deletes what it would have: a pass fenced is late, never wrong. And it stops, as
+    /// a pass that deletes does (TASK-180), where it finds lost what a live branch needs once a pass
+    /// that deletes took the lease from it, deleting since what it read live; a pass not holding the
+    /// lease could not tell that from a bug. Fenced, it writes no marks, as a pass fenced deletes
+    /// nothing: what it read may be older than what a later pass did. Compacting, which writes only
+    /// create-only moves that other passes' stand beside, needs the lease no more than before.
+    pub async fn mark(&mut self, bucket: &impl Bucket, holder: u64) -> Result<Marking, Error> {
+        let epoch = branch::take_lease(bucket, layout::GC_LEASE, holder, 0).await?;
+        let Some(pass) = self.survey(bucket, epoch, Writes::Some).await? else {
+            return Ok(Marking::default());
+        };
+        let mut report = Report::default();
+        pass.compact(bucket, &self.options, &mut report).await?;
+        let doomed = pass.doomed(bucket, &self.options).await?;
+        if fenced(bucket, epoch).await? {
+            return Ok(Marking { report, ..Marking::default() });
+        }
+        let resurrected = resurrected(bucket, epoch, &self.options, &pass.objects, &doomed).await;
+        let marked = doomed.into_iter().map(Marked::of).collect();
+        let marks = Marks { epoch, grace: self.options.grace, marked };
+        // The epoch is this pass's taking of the lease alone: nothing else is at its key.
+        bucket::create(bucket, &layout::marks(epoch), layout::encode(&marks)).await;
+        Ok(Marking { report, marks: Some(marks), resurrected })
+    }
+
+    /// fxdax: what a pass would delete, writing nothing (TASK-264): not taking the collector's
+    /// lease, which would fence a pass that deletes, running meanwhile, out of its deletes. It
+    /// compacts nothing, and so finds doomed none of what a pass would delete only once it
+    /// compacted it, a grace period after: no more than a pass would delete, and less. What a pass
+    /// would compact, it says apart ([`DryRun::compactable`]). It goes by
+    /// the lease's epoch as it starts, as a pass by the epoch it takes, to tell whether a pass that
+    /// deletes ran meanwhile ([`DryRun::fenced`]). Where a pass would give up on a fork of a point
+    /// deleted, writing its record, it takes the fork as given up on, as a pass mostly finds it.
+    pub async fn dry_run(&mut self, bucket: &impl Bucket) -> Result<DryRun, Error> {
+        let epoch = branch::lease_epoch(bucket, layout::GC_LEASE).await?;
+        let Some(pass) = self.survey(bucket, epoch, Writes::None).await? else {
+            return Ok(DryRun { fenced: true, ..DryRun::default() });
+        };
+        let doomed = pass.doomed(bucket, &self.options).await?.into_iter().cloned().collect();
+        let compactable = pass.compactable(bucket, &self.options).await?;
+        let compactable = compactable.into_iter().map(|(meta, _)| meta.clone()).collect();
+        Ok(DryRun { doomed, compactable, fenced: fenced(bucket, epoch).await? })
+    }
+
+    /// What a pass of the collector's lease's `epoch` finds: every object listed, and what the live
+    /// branches need of them; none if a later pass took the lease from it as it found what a live
+    /// branch needs lost (TASK-180). It writes what giving up on forks needs, if `writes` says so.
+    async fn survey(
+        &mut self,
+        bucket: &impl Bucket,
+        epoch: u64,
+        writes: Writes,
+    ) -> Result<Option<Pass>, Error> {
         let early = rules().candidates_first;
         let mut objects = if early { listing(bucket).await } else { BTreeMap::new() };
         let mut records = self.records(bucket).await?;
         let mut live = Live::default();
         loop {
             if rules().collector_abandons {
-                abandon(bucket, &mut records).await?;
+                abandon(bucket, &mut records, writes).await?;
             }
-            let checkpointed = match recover_live(bucket, &records, &mut live).await {
+            let checkpointed = match recover_live(bucket, &records, &mut live, writes).await {
                 // Fenced, it read what the pass that fenced it, deleting since, may have found no
                 // live branch needs: a point deleted, read live before, and its fork being made,
                 // read after (TASK-180). It stops, as it would before deleting.
                 Err(Error::Lost(_))
                     if rules().passes_fenced_stop && fenced(bucket, epoch).await? =>
                 {
-                    return Ok(Report::default());
+                    return Ok(None);
                 }
                 recovered => recovered?,
             };
@@ -146,18 +259,7 @@ impl Collector {
         if !early {
             objects = listing(bucket).await;
         }
-        let pass = Pass::new(bucket, objects, records, live).await?;
-        let mut report = Report::default();
-        pass.compact(bucket, &self.options, &mut report).await?;
-        let doomed = pass.doomed(bucket, &self.options).await?;
-        // A pass a later one took the lease from stops.
-        if fenced(bucket, epoch).await? {
-            return Ok(report);
-        }
-        // Many at once, in any order: none of it is what a live branch needs, whatever else goes.
-        let deletes = futures::stream::iter(&doomed).map(|key| bucket::delete(bucket, key));
-        report.deleted += deletes.buffer_unordered(DELETES_AT_ONCE).count().await;
-        Ok(report)
+        Ok(Some(Pass::new(bucket, objects, records, live).await?))
     }
 
     /// The branches' records, read many at once, but those read before at the versions listed. A
@@ -205,21 +307,91 @@ impl Collector {
     }
 }
 
+/// fxdax: whether a pass writes to the bucket what giving up on forks needs: a dry run writes
+/// nothing (TASK-264).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Writes {
+    Some,
+    None,
+}
+
+/// fxdax: the objects the newest marks before those of `epoch` named, that `objects`, listed by the
+/// mark-only pass of `epoch`, holds still, the same objects, and that `doomed`, what it found no live
+/// branch needs, does not: each warned of, loudly. No correct fork or recovery reaches what no live
+/// branch reached, so each is a bug in the collector, which a pass deleting would have lost. Marks
+/// of a shorter grace period than `options`' are compared with none: what a compacted object needs
+/// to go, its moves aged, takes longer by a longer one. Marks it can't read, it warns of.
+async fn resurrected(
+    bucket: &impl Bucket,
+    epoch: u64,
+    options: &Options,
+    objects: &BTreeMap<String, Meta>,
+    doomed: &[&Meta],
+) -> Vec<String> {
+    let listed = bucket::list(bucket, layout::GC_MARKS).await;
+    let before = listed.iter().rev().find(
+        |meta| matches!(layout::kind(&meta.key), Kind::Marks { epoch: marked } if marked < epoch),
+    );
+    let Some(object) = (match before {
+        Some(before) => bucket::get(bucket, &before.key).await,
+        None => None,
+    }) else {
+        return Vec::new();
+    };
+    let marks: Marks = match layout::decode(&object.bytes) {
+        Ok(marks) => marks,
+        Err(error) => {
+            let key = &object.meta.key;
+            log::warn!(key, error:%; "fxdax-gc: {key}, the marks before, unread: {error}");
+            return Vec::new();
+        }
+    };
+    if marks.grace < options.grace {
+        return Vec::new();
+    }
+    let doomed: BTreeSet<&str> = doomed.iter().map(|meta| meta.key.as_str()).collect();
+    let mut resurrected = Vec::new();
+    for marked in &marks.marked {
+        let key = marked.key.as_str();
+        if doomed.contains(key) || !objects.get(key).is_some_and(|meta| marked.is(meta)) {
+            continue;
+        }
+        let (kind, before) = (layout::kind(key), marks.epoch);
+        log::warn!(
+            key, kind:?, marks = before, epoch;
+            "fxdax-gc: RESURRECTED {key}: the mark-only pass {before:x} found no live branch needs \
+             it, and the pass {epoch:x} finds one does: a bug in the collector, which deleting \
+             would have lost it to"
+        );
+        resurrected.push(marked.key.clone());
+    }
+    resurrected
+}
+
 /// Whether a later pass took the collector's lease from the pass that took it at `epoch`.
 async fn fenced(bucket: &impl Bucket, epoch: u64) -> Result<bool, Error> {
     Ok(branch::lease_epoch(bucket, layout::GC_LEASE).await? != epoch)
 }
 
 /// Gives up on the forks being made of points that were deleted, as `records` say, which it says
-/// are deleted then, or made, if that came first ([`branch::abandon`]).
-async fn abandon(bucket: &impl Bucket, records: &mut BTreeMap<u64, Record>) -> Result<(), Error> {
+/// are deleted then, or made, if that came first ([`branch::abandon`]); without `writes`, takes them
+/// as deleted, writing nothing.
+async fn abandon(
+    bucket: &impl Bucket,
+    records: &mut BTreeMap<u64, Record>,
+    writes: Writes,
+) -> Result<(), Error> {
     let gone = |point: u64| records.get(&point).is_none_or(|record| record.deleted);
     let abandoned: Vec<u64> = (records.iter())
         .filter(|(_, record)| !record.deleted && record.forking().is_some_and(gone))
         .map(|(&child, _)| child)
         .collect();
     for child in abandoned {
-        records.insert(child, branch::abandon(bucket, child).await?);
+        let record = match writes {
+            Writes::Some => branch::abandon(bucket, child).await?,
+            Writes::None => Record { deleted: true, ..records[&child] },
+        };
+        records.insert(child, record);
     }
     Ok(())
 }
@@ -260,10 +432,14 @@ async fn listing(bucket: &impl Bucket) -> BTreeMap<String, Meta> {
 /// fork refused, has its record from another branch whose fork to its ID came first, a restore's,
 /// which listing the records again may find only after the child was recovered by the state; what
 /// the record's origin needs is what the child does (TASK-173).
+///
+/// A failed fork's claim no writer has, whose recovery finds what it names lost, it gives up,
+/// writing its record so if `writes` says so.
 async fn recover_live(
     bucket: &impl Bucket,
     records: &BTreeMap<u64, Record>,
     live: &mut Live,
+    writes: Writes,
 ) -> Result<bool, Error> {
     let checkpoints = Checkpoints::new(bucket, CHECKPOINTS_KEPT);
     let mut checkpointed = false;
@@ -302,7 +478,9 @@ async fn recover_live(
                 Err(Error::Lost(lost)) => match branch::record(bucket, branch).await? {
                     Some(record) if record.deleted => continue,
                     Some(record) if branch::lost_is_ok(bucket, branch, &record).await? => {
-                        branch::abandon_claim(bucket, branch).await?;
+                        if writes == Writes::Some {
+                            branch::abandon_claim(bucket, branch).await?;
+                        }
                         continue;
                     }
                     Some(_) => return Err(Error::Lost(lost)),
@@ -473,6 +651,12 @@ impl Live {
     }
 }
 
+/// Whether `extents`, live in an object of `size` bytes, take less than `options`' fraction of it.
+fn below(extents: &BTreeMap<ExtentId, Location>, options: &Options, size: usize) -> bool {
+    let used: u64 = extents.values().map(|location| location.len).sum();
+    (used as f64) < options.compact_below * size as f64
+}
+
 /// What a pass found: every object listed, and what the live branches need of them.
 struct Pass {
     objects: BTreeMap<String, Meta>,
@@ -557,6 +741,34 @@ impl Pass {
         Ok(false)
     }
 
+    /// The objects mostly freed, as their listed sizes say, which counts their footers: those
+    /// [`Pass::compact`] reads, to compact those whose data says so too. With the live extents of
+    /// each, which take less than `options`' fraction of it.
+    async fn compactable(
+        &self,
+        bucket: &impl Bucket,
+        options: &Options,
+    ) -> Result<Vec<(&Meta, &BTreeMap<ExtentId, Location>)>, Error> {
+        let mut compactable = Vec::new();
+        for (key, extents) in &self.named {
+            let ours = match layout::kind(key) {
+                kind @ Kind::Segment { .. } => {
+                    !self.touched.contains(key) && !self.may_land(bucket, kind).await?
+                }
+                Kind::Moves { .. } => true,
+                _ => false,
+            };
+            let meta = &self.objects[key];
+            if ours
+                && !self.objects.contains_key(&layout::moves(key))
+                && below(extents, options, meta.size as usize)
+            {
+                compactable.push((meta, extents));
+            }
+        }
+        Ok(compactable)
+    }
+
     /// Compacts the objects mostly freed: copies the live extents of each to its moves.
     async fn compact(
         &self,
@@ -564,24 +776,9 @@ impl Pass {
         options: &Options,
         report: &mut Report,
     ) -> Result<(), Error> {
-        for (key, extents) in &self.named {
-            let compactable = match layout::kind(key) {
-                kind @ Kind::Segment { .. } => {
-                    !self.touched.contains(key) && !self.may_land(bucket, kind).await?
-                }
-                Kind::Moves { .. } => true,
-                _ => false,
-            };
-            let moves = layout::moves(key);
-            let used: u64 = extents.values().map(|location| location.len).sum();
-            let below = |size: usize| (used as f64) < options.compact_below * size as f64;
-            // Its size, which counts its footer, first, then its data's.
-            if !compactable
-                || self.objects.contains_key(&moves)
-                || !below(self.objects[key].size as usize)
-            {
-                continue;
-            }
+        for (meta, extents) in self.compactable(bucket, options).await? {
+            let (key, moves) = (&meta.key, layout::moves(&meta.key));
+            let below = |size| below(extents, options, size);
             let Some(object) = bucket::get(bucket, key).await else { continue };
             // Its data, checked: compacting copies none that is corrupt under new CRCs.
             let object_data = layout::data(&object.bytes)?;
@@ -608,8 +805,8 @@ impl Pass {
         Ok(())
     }
 
-    /// What goes: everything listed that the live branches do not need.
-    async fn doomed(&self, bucket: &impl Bucket, options: &Options) -> Result<Vec<String>, Error> {
+    /// What goes: everything listed that the live branches do not need, in the order of its keys.
+    async fn doomed(&self, bucket: &impl Bucket, options: &Options) -> Result<Vec<&Meta>, Error> {
         let now = bucket.now();
         let aged = |meta: &Meta| meta.modified.saturating_add(options.grace) <= now;
         let moved_long_ago = |key: &str| self.objects.get(&layout::moves(key)).is_some_and(aged);
@@ -646,10 +843,12 @@ impl Pass {
                 Kind::Lease { branch } => {
                     !self.records.get(&branch).is_some_and(|record| !record.deleted)
                 }
-                Kind::GcLease | Kind::Unknown => false,
+                // The collector's own: its lease, and its marks, which a mark-only pass never
+                // deletes, and an operator removes (TASK-264).
+                Kind::GcLease | Kind::Marks { .. } | Kind::Unknown => false,
             };
             if goes {
-                doomed.push(key.clone());
+                doomed.push(meta);
             }
         }
         Ok(doomed)
@@ -2120,5 +2319,235 @@ mod tests {
         let report = block_on(collect(&deleting, 2, &KEEP)).unwrap();
         assert_eq!(report, Report { deleted: 1, compacted: 0 });
         assert!(!block_on(keys(&deleting)).contains(&stray));
+    }
+
+    /// TASK-264: what the bucket holds, every object, the collector's lease included: its key, its
+    /// version, size and time, and its bytes.
+    async fn held(bucket: &impl Bucket) -> Vec<(Meta, Vec<u8>)> {
+        let mut held = Vec::new();
+        for meta in listing(bucket).await.into_values() {
+            let bytes = bucket::get(bucket, &meta.key).await.unwrap().bytes;
+            held.push((meta, bytes));
+        }
+        held
+    }
+
+    /// TASK-264: branch 1, of a pass already, so that the collector's lease is there, then of
+    /// garbage: its fence, a segment of a small extent and a large, a segment freeing the large,
+    /// all covered by a checkpoint, and an extent stored on its own, freed. The segment of the
+    /// small extent is mostly freed: a pass compacting below half compacts it.
+    async fn garbage(bucket: &Arc<Store>) {
+        branch::create(&**bucket, 1, 0).await.unwrap();
+        let writer = Writer::open(bucket.clone(), 1, 10, 0).await.unwrap();
+        collect(&**bucket, 1, &KEEP).await.unwrap();
+        let first = writer.chain().next_sequence();
+        let (small, large, own) =
+            (ExtentId::new(1, first), ExtentId::new(1, first + 1), ExtentId::new(1, first + 2));
+        let large_bytes: Vec<u8> = (0..20_000u32).map(|i| (i * 7 % 251) as u8).collect();
+        let extents = vec![(small, b"small".to_vec()), (large, large_bytes)];
+        let owned = vec![(own.sequence, b"own".to_vec())];
+        commit(&writer, Commit { tag: 1, extents, own: owned, ..Commit::default() }).await;
+        let frees = vec![large, own];
+        commit(&writer, Commit { tag: 2, frees, ..Commit::default() }).await;
+        writer.checkpoint().await.unwrap();
+    }
+
+    /// The keys `garbage` makes that a pass deletes: the fence, the segment freeing, and the extent
+    /// stored on its own; not the segment of the small extent, which is live.
+    fn garbage_doomed() -> Vec<String> {
+        let own = layout::extent(1, 1, ExtentId::new(1, (1 << crate::EPOCH_SHIFT) + 2));
+        vec![own, layout::segment(1, 0), layout::segment(1, 2)]
+    }
+
+    /// TASK-264: a dry run writes nothing, not even the collector's lease, and compacts nothing; it
+    /// finds doomed what a pass compacting nothing deletes, and the object such a pass compacting
+    /// below half compacts.
+    #[test]
+    fn dry_runs_write_nothing_and_find_what_passes_delete() {
+        block_on(async {
+            let bucket = store();
+            garbage(&bucket).await;
+            let before = held(&*bucket).await;
+            let options = Options { compact_below: 0.5, grace: 0 };
+            let dry = Collector::new(options).dry_run(&*bucket).await.unwrap();
+            assert_eq!(held(&*bucket).await, before);
+            let doomed: Vec<String> = dry.doomed.iter().map(|meta| meta.key.clone()).collect();
+            assert_eq!(doomed, garbage_doomed());
+            let compactable: Vec<String> =
+                dry.compactable.into_iter().map(|meta| meta.key).collect();
+            assert_eq!(compactable, [layout::segment(1, 1)]);
+            assert!(!dry.fenced);
+
+            let keys_before = keys(&*bucket).await;
+            let now = Options { compact_below: 0.0, grace: 0 };
+            let report = collect(&*bucket, 2, &now).await.unwrap();
+            assert_eq!(report, Report { deleted: 3, compacted: 0 });
+            let after = keys(&*bucket).await;
+            let deleted: Vec<String> =
+                keys_before.into_iter().filter(|key| !after.contains(key)).collect();
+            assert_eq!(deleted, doomed);
+        });
+    }
+
+    /// TASK-264: a dry run a pass ran during, which took the collector's lease and deleted, says it
+    /// was fenced.
+    #[test]
+    fn dry_runs_a_pass_ran_during_say_so() {
+        block_on(async {
+            let direct = Arc::new(Direct(SimBucket::new()));
+            branch::create(&*direct, 1, 0).await.unwrap();
+            // As the dry run reads the lease again, at its end.
+            let during = Hooked::new(direct.clone(), Hook::Getting(layout::GC_LEASE.into(), 2));
+            let passing = direct.clone();
+            *during.then.lock().unwrap() = Some(Box::new(move || {
+                let pass = collect(&*passing, 9, &KEEP).now_or_never();
+                assert_eq!(pass, Some(Ok(Report::default())));
+            }));
+            let dry = Collector::new(KEEP).dry_run(&during).await.unwrap();
+            assert_eq!(dry, DryRun { fenced: true, ..DryRun::default() });
+        });
+    }
+
+    /// TASK-264: a mark-only pass compacts as a pass does, deletes nothing, and marks exactly what
+    /// a pass deletes; the next marks the object compacted too, its moves aged, and nothing found
+    /// kept that was marked. Marks are never collected, nor marked: a pass deleting leaves them.
+    #[test]
+    fn mark_only_passes_compact_and_mark_what_passes_delete() {
+        let compacting = Options { compact_below: 0.5, grace: 0 };
+        let deleted = block_on(async {
+            let bucket = store();
+            garbage(&bucket).await;
+            let before = keys(&*bucket).await;
+            let report = collect(&*bucket, 2, &compacting).await.unwrap();
+            assert_eq!(report, Report { deleted: 3, compacted: 1 });
+            let after = keys(&*bucket).await;
+            before.into_iter().filter(|key| !after.contains(key)).collect::<Vec<_>>()
+        });
+        assert_eq!(deleted, garbage_doomed());
+        block_on(async {
+            let bucket = store();
+            garbage(&bucket).await;
+            let before = held(&*bucket).await;
+            let mut collector = Collector::new(compacting);
+            let marking = collector.mark(&*bucket, 2).await.unwrap();
+            assert_eq!(marking.report, Report { deleted: 0, compacted: 1 });
+            assert_eq!(marking.resurrected, Vec::<String>::new());
+            let marks = marking.marks.unwrap();
+            let listed: BTreeMap<String, Meta> =
+                before.iter().map(|(meta, _)| (meta.key.clone(), meta.clone())).collect();
+            let expected: Vec<Marked> =
+                deleted.iter().map(|key| Marked::of(&listed[key])).collect();
+            assert_eq!(marks, Marks { epoch: 2, grace: 0, marked: expected });
+            let stored = bucket::get(&*bucket, &layout::marks(2)).await.unwrap().bytes;
+            assert_eq!(layout::decode::<Marks>(&stored), Ok(marks));
+            // Nothing deleted: what was there is, but the collector's lease, taken again.
+            let after = held(&*bucket).await;
+            let kept = |held: &[(Meta, Vec<u8>)]| -> Vec<(Meta, Vec<u8>)> {
+                held.iter().filter(|(meta, _)| meta.key != layout::GC_LEASE).cloned().collect()
+            };
+            let mut more: Vec<String> = after.iter().map(|(meta, _)| meta.key.clone()).collect();
+            more.retain(|key| !listed.contains_key(key));
+            let moved = layout::moves(&layout::segment(1, 1));
+            assert_eq!(more, [layout::marks(2), moved]);
+            let left: Vec<_> = kept(&after)
+                .into_iter()
+                .filter(|(meta, _)| listed.contains_key(&meta.key))
+                .collect();
+            assert_eq!(left, kept(&before));
+
+            let next = collector.mark(&*bucket, 3).await.unwrap();
+            assert_eq!(next.report, Report { deleted: 0, compacted: 0 });
+            assert_eq!(next.resurrected, Vec::<String>::new());
+            let marked: Vec<String> =
+                next.marks.unwrap().marked.into_iter().map(|marked| marked.key).collect();
+            let mut expected = garbage_doomed();
+            expected.push(layout::segment(1, 1));
+            expected.sort();
+            assert_eq!(marked, expected);
+
+            let report = collect(&*bucket, 4, &compacting).await.unwrap();
+            assert_eq!(report, Report { deleted: 4, compacted: 0 });
+            let marks: Vec<String> = (keys(&*bucket).await.into_iter())
+                .filter(|key| matches!(layout::kind(key), Kind::Marks { .. }))
+                .collect();
+            assert_eq!(marks, [layout::marks(2), layout::marks(3)]);
+        });
+    }
+
+    /// TASK-264: a pass wrong as the collector was before TASK-79.3, going by the branch's next
+    /// sequence number, marks an extent uploaded ahead of the segment that names it. The segment
+    /// landing, a reader starting after the pass, which reads the marks first, warns as it reads
+    /// the extent, each read of it; and the next mark-only pass, right, warns that it finds needed
+    /// what was marked, the same object still.
+    #[test]
+    fn readers_and_mark_only_passes_warn_of_what_a_wrong_pass_marked() {
+        let log = crate::marks::captured();
+        let memory: Arc<dyn object_store::ObjectStore> = Arc::new(InMemory::new());
+        let bucket = Arc::new(Store::new(memory.clone(), ""));
+        let (late, key) = block_on(async {
+            branch::create(&*bucket, 1, 0).await.unwrap();
+            let writer = Writer::open(bucket.clone(), 1, 10, 0).await.unwrap();
+            let first = writer.chain().next_sequence();
+            let (late, early) = (ExtentId::new(1, first), ExtentId::new(1, first + 1));
+            let extents = vec![(early, b"early".to_vec())];
+            commit(&writer, Commit { tag: 1, extents, ..Commit::default() }).await;
+            // The writer's next segment, which names `late`, its object uploaded first.
+            let own = vec![(late.sequence, b"late".to_vec())];
+            let objects = Batch::from(Commit { tag: 2, own, ..Commit::default() })
+                .close(&mut writer.chain())
+                .frame();
+            let [(key, bytes)] = &objects.own[..] else { panic!("{}", objects.own.len()) };
+            let created = bucket::create(&*bucket, key, bytes.read().unwrap()).await;
+            assert!(matches!(created, Created::Created));
+
+            crate::set_rules(crate::Rules {
+                extent_keys_name_segments: false,
+                ..crate::Rules::ALL
+            });
+            let marking = Collector::new(KEEP).mark(&*bucket, 1).await;
+            crate::set_rules(crate::Rules::ALL);
+            let marked: Vec<String> =
+                marking.unwrap().marks.unwrap().marked.into_iter().map(|m| m.key).collect();
+            assert_eq!(marked, [key.as_str()]);
+            let segment = layout::segment(1, writer.chain().next_seq());
+            let created = bucket::create(&*bucket, &segment, objects.segment.read().unwrap()).await;
+            assert!(matches!(created, Created::Created));
+            (late, key.clone())
+        });
+        let warnings = || -> Vec<String> {
+            let lines = log.lock().unwrap();
+            lines.iter().filter(|line| line.starts_with("WARN")).cloned().collect()
+        };
+        assert_eq!(warnings(), Vec::<String>::new());
+
+        let reader = Arc::new(Store::new(memory.clone(), ""));
+        let read = block_on(async {
+            let recovered = recovery::recover(&*reader, 1, None).await.unwrap();
+            crate::read(&reader, late, &recovered.state.extents[&late]).await
+        });
+        assert_eq!(read, Ok(b"late".to_vec()));
+        let kind = layout::kind(&key);
+        let saying = "a reader reached what the collector's newest mark-only pass found no live \
+                      branch needs, and would have deleted";
+        let reached = |request: &str| {
+            format!(
+                "WARN extent_remote: {request} {key}: {saying} (gc/marks/0000000000000001) \
+                 key={key} kind={kind:?} request={request} marks=1"
+            )
+        };
+        // Its tail, then its data.
+        let read_twice = [reached("get-range"), reached("get-range")];
+        assert_eq!(warnings(), read_twice);
+
+        let next = block_on(Collector::new(KEEP).mark(&*bucket, 2)).unwrap();
+        assert_eq!(next.resurrected, [key.as_str()]);
+        assert_eq!(next.marks.unwrap().marked, Vec::<Marked>::new());
+        let resurrected = format!(
+            "WARN fxdax-gc: RESURRECTED {key}: the mark-only pass 1 found no live branch needs it, \
+             and the pass 2 finds one does: a bug in the collector, which deleting would have lost \
+             it to key={key} kind={kind:?} marks=1 epoch=2"
+        );
+        let [tail, data] = read_twice;
+        assert_eq!(warnings(), [tail, data, resurrected]);
     }
 }

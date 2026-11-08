@@ -31,7 +31,7 @@ pub enum PutMode {
 }
 
 /// What a store says of an object.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Meta {
     pub key: String,
     pub version: Version,

@@ -436,7 +436,7 @@ impl World {
                             .record(branch)
                             .is_some_and(|record| record.deleted && !record.may_drop())
                 }
-                Kind::GcLease => false,
+                Kind::GcLease | Kind::Marks { .. } => false,
                 Kind::Moves { .. } | Kind::Unknown => true,
             })
             .collect();

@@ -24,6 +24,8 @@ pub const FORMAT: u32 = 2;
 
 pub const BRANCHES: &str = "branches/";
 pub const GC_LEASE: &str = "gc/lease";
+/// fxdax: where the collector's mark-only passes write what they would delete ([`marks`]).
+pub const GC_MARKS: &str = "gc/marks/";
 const MOVES: &str = "moves/";
 
 pub fn segments(branch: u64) -> String {
@@ -68,6 +70,13 @@ pub fn moves(key: &str) -> String {
     format!("{MOVES}{key}")
 }
 
+/// fxdax: what the mark-only pass of the collector that took its lease at `epoch` found no live
+/// branch needs, and would have deleted ([`Marks`]; doc-7, Garbage collection; TASK-264): keyed by
+/// the epoch, so that the newest lists last.
+pub fn marks(epoch: u64) -> String {
+    format!("{GC_MARKS}{epoch:016x}")
+}
+
 /// Whether the object at `later` is further along the way of an extent from the object at `key`:
 /// the moves of it, or of moves of it.
 pub fn further(key: &str, later: &str) -> bool {
@@ -86,14 +95,52 @@ pub fn further(key: &str, later: &str) -> bool {
 /// named by, as its writer declares it (TASK-79.3, TASK-153.7).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind<'a> {
-    Segment { branch: u64, seq: u64 },
-    Extent { branch: u64, epoch: u64, seq: u64, sequence: u64 },
-    Checkpoint { branch: u64, seq: u64 },
-    Record { branch: u64 },
-    Lease { branch: u64 },
+    Segment {
+        branch: u64,
+        seq: u64,
+    },
+    Extent {
+        branch: u64,
+        epoch: u64,
+        seq: u64,
+        sequence: u64,
+    },
+    Checkpoint {
+        branch: u64,
+        seq: u64,
+    },
+    Record {
+        branch: u64,
+    },
+    Lease {
+        branch: u64,
+    },
     GcLease,
-    Moves { from: &'a str },
+    /// fxdax: a mark-only pass's marks ([`marks`]): the collector's own, never a candidate.
+    Marks {
+        epoch: u64,
+    },
+    Moves {
+        from: &'a str,
+    },
     Unknown,
+}
+
+impl Kind<'_> {
+    /// fxdax: its name, as an operator reads it (`fxdax-gc --dry-run`).
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::Segment { .. } => "segment",
+            Self::Extent { .. } => "extent",
+            Self::Checkpoint { .. } => "checkpoint",
+            Self::Record { .. } => "record",
+            Self::Lease { .. } => "lease",
+            Self::GcLease => "gc-lease",
+            Self::Marks { .. } => "marks",
+            Self::Moves { .. } => "moves",
+            Self::Unknown => "unknown",
+        }
+    }
 }
 
 fn hex(text: &str) -> Option<u64> {
@@ -109,6 +156,9 @@ pub fn kind(key: &str) -> Kind<'_> {
     let parsed = || -> Option<Kind<'_>> {
         if key == GC_LEASE {
             return Some(Kind::GcLease);
+        }
+        if let Some(rest) = key.strip_prefix(GC_MARKS) {
+            return Some(Kind::Marks { epoch: hex(rest)? });
         }
         if let Some(from) = key.strip_prefix(MOVES) {
             return Some(Kind::Moves { from });
@@ -203,6 +253,53 @@ impl Lease {
     }
 }
 
+/// fxdax: a mark-only pass's marks object ([`marks`]): what it would have deleted, each object as
+/// its listing found it, which readers warn of reaching, and the next such pass compares what it
+/// finds doomed with (TASK-264).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Marks {
+    /// The epoch of the collector's lease the pass took.
+    pub epoch: u64,
+    /// Its grace period, in milliseconds by the store's clock ([`crate::collector::Options`]):
+    /// what it found doomed, a pass of no shorter one finds doomed too.
+    pub grace: u64,
+    /// The objects marked, in the order of their keys.
+    pub marked: Vec<Marked>,
+}
+
+/// An object a mark-only pass found doomed, as the listing it went by found it: an object at its
+/// key of another version is another object.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Marked {
+    pub key: String,
+    pub size: u64,
+    pub e_tag: Option<String>,
+    pub version: Option<String>,
+    /// When it was written, by the store's clock.
+    pub modified: u64,
+}
+
+impl Marked {
+    /// The object `meta` lists.
+    pub fn of(meta: &crate::bucket::Meta) -> Self {
+        Self {
+            key: meta.key.clone(),
+            size: meta.size,
+            e_tag: meta.version.e_tag.clone(),
+            version: meta.version.version.clone(),
+            modified: meta.modified,
+        }
+    }
+
+    /// Whether `meta` lists it: the object at its key, of its version.
+    pub fn is(&self, meta: &crate::bucket::Meta) -> bool {
+        self.key == meta.key
+            && self.e_tag == meta.version.e_tag
+            && self.version == meta.version.version
+            && self.size == meta.size
+    }
+}
+
 /// The footer of a compacted object's moves: where in the moves each extent the object held, live,
 /// now is.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -275,6 +372,9 @@ mod tests {
         assert_eq!(kind(&record(3)), Kind::Record { branch: 3 });
         assert_eq!(kind(&lease(3)), Kind::Lease { branch: 3 });
         assert_eq!(kind(GC_LEASE), Kind::GcLease);
+        assert_eq!(kind(&marks(0x2a)), Kind::Marks { epoch: 0x2a });
+        assert_eq!(marks(0x2a), "gc/marks/000000000000002a");
+        assert_eq!(kind("gc/marks/2a"), Kind::Unknown);
         let from = segment(3, 7);
         assert_eq!(kind(&moves(&from)), Kind::Moves { from: &from });
         assert_eq!(kind("segments/3/7"), Kind::Unknown);
