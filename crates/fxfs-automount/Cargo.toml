@@ -1,0 +1,16 @@
+# fxdax's own: a guest's automounter of shared volumes (backlog doc-10, TASK-136.6).
+[package]
+name = "fxfs-automount"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+libc.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true
