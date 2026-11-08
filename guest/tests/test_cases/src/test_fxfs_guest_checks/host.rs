@@ -67,6 +67,11 @@ pub(crate) fn seed() -> u64 {
 /// syncing as the guest ends.
 const SETUP: Duration = Duration::from_secs(30);
 
+/// fxdax: what the checks' budgets are scaled by where the daemon keeps their stores in a real
+/// bucket (`FXDAX_EXTENTD_REMOTE`): the most a check took of its budget on GCS, 3.3 times (GCE
+/// r980), and half that again (TASK-165.11).
+const REMOTE_SCALE: f64 = 5.0;
+
 impl TestFxfsGuestChecks {
     /// fxdax: the checks a run is of, FXDAX_CHECKS's, as [`TestFxfsGuestChecks::checks`] has
     /// them.
@@ -75,13 +80,16 @@ impl TestFxfsGuestChecks {
     }
 
     /// fxdax: the run's checks, and what their budgets are scaled by: the guest kernel's
-    /// slowness, its storage's, object storage's taking twice the daemon's memory's (270 s
-    /// where 135 s, GCE r353), and FXDAX_CHECKS_SCALE's, for a slower host (TASK-168).
+    /// slowness, its storage's, and FXDAX_CHECKS_SCALE's, for a slower host (TASK-168). A real
+    /// bucket's, [`REMOTE_SCALE`], is measured: on GCS a check took at most 3.3 times its budget
+    /// on a file bucket (GCE r980, TASK-165.11: append_writeback's 64 fdatasyncs, each a durable
+    /// commit's create and lease read, 10.0 s of 3.0 s; torture 79 s of 38 s), against r353's
+    /// twice, which four of them overran on GCS (r740).
     fn run(&self) -> anyhow::Result<(Vec<(usize, &'static Check)>, f64)> {
         let checks = self.checks(&self.only()).map_err(anyhow::Error::msg)?;
         anyhow::ensure!(!checks.is_empty(), "FXDAX_CHECKS names none of this suite's checks");
         let remote = std::env::var_os("FXDAX_EXTENTD_REMOTE").is_some_and(|r| !r.is_empty());
-        let storage = if remote { 2.0 } else { 1.0 };
+        let storage = if remote { REMOTE_SCALE } else { 1.0 };
         let given = match std::env::var(SCALE) {
             Ok(given) => given.parse().with_context(|| format!("{SCALE} is {given:?}"))?,
             Err(_) => 1.0,
