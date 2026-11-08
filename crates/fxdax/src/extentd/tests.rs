@@ -3531,6 +3531,44 @@ fn raw_connection(
     (sender, receiver, stream, opened.header.args[0])
 }
 
+/// Sends `requests`, of no payload, until the daemon lets the VM process go, as it may before the
+/// last is sent: what it leaves unread passes what a connection may hold while the test still
+/// sends (TASK-240). A send failing so ends them; whether the daemon let it go is the test's to
+/// check, with [`assert_let_go`].
+fn send_until_let_go(
+    sender: &super::wire::Sender,
+    requests: impl IntoIterator<Item = super::wire::Header>,
+) {
+    for request in requests {
+        match sender.send(request, &[], &[]) {
+            Ok(()) => {}
+            Err(error) if shut(&error) => return,
+            Err(error) => panic!("sending request {}: {error}", request.id),
+        }
+    }
+}
+
+/// Whether `error`, a send's, says the daemon shut the connection.
+fn shut(error: &std::io::Error) -> bool {
+    use std::io::ErrorKind::{BrokenPipe, ConnectionReset};
+    matches!(error.kind(), BrokenPipe | ConnectionReset)
+}
+
+/// Asserts the daemon let go of the VM process whose connection `sender` sends on and `stream` is,
+/// within 10 s: it hangs up, and shuts the connection, so that what the VM process sends then
+/// fails, as a send of [`send_until_let_go`]'s may (TASK-240).
+fn assert_let_go(sender: &super::wire::Sender, stream: &UnixStream) {
+    use super::wire::{Header, INFO};
+    use std::os::fd::AsRawFd;
+    let mut hung_up = libc::pollfd { fd: stream.as_raw_fd(), events: libc::POLLRDHUP, revents: 0 };
+    // SAFETY: Polls the stream, which the caller keeps open, for 10 s at most.
+    let ready = unsafe { libc::poll(&mut hung_up, 1, 10_000) };
+    assert_eq!(ready, 1, "the daemon holds what the VM process leaves unread");
+    assert_ne!(hung_up.revents & libc::POLLRDHUP, 0, "{:#x}", hung_up.revents);
+    let sent = sender.send(Header::new(INFO, u64::MAX), &[], &[]);
+    assert!(sent.as_ref().is_err_and(shut), "sent once let go: {sent:?}");
+}
+
 /// How many bytes `stream` has received that are not read yet.
 fn unread(stream: &UnixStream) -> usize {
     use std::os::fd::AsRawFd;
@@ -3597,16 +3635,9 @@ fn vm_processes_that_leave_replies_unread_are_let_go() {
     let written = Header::new(WRITE, 2).with_args(&[branch, 1, 0]);
     sender.send(written, &pattern(1, len), &[]).unwrap();
     assert_eq!(receiver.receive(|| 0).unwrap().unwrap().header.status, 0);
-    for id in 3..67 {
-        let read = Header::new(READ, id).with_args(&[branch, 1, 0, len as u64]);
-        sender.send(read, &[], &[]).unwrap();
-    }
-    use std::os::fd::AsRawFd;
-    let mut hung_up = libc::pollfd { fd: stream.as_raw_fd(), events: libc::POLLRDHUP, revents: 0 };
-    // SAFETY: Polls the stream, which the test keeps open, for 10 s at most.
-    let ready = unsafe { libc::poll(&mut hung_up, 1, 10_000) };
-    assert_eq!(ready, 1, "the daemon holds what the VM process leaves unread");
-    assert_ne!(hung_up.revents & libc::POLLRDHUP, 0, "{:#x}", hung_up.revents);
+    let reads = (3..67).map(|id| Header::new(READ, id).with_args(&[branch, 1, 0, len as u64]));
+    send_until_let_go(&sender, reads);
+    assert_let_go(&sender, &stream);
     drop((sender, receiver, stream));
 }
 
@@ -3628,15 +3659,9 @@ fn vm_processes_naming_vast_windows_are_let_go_all_the_same() {
     let len = 8 << 20;
     let written = Header::new(WRITE, 3).with_args(&[branch, 1, 0]);
     assert_eq!(call(&sender, &mut receiver, written, &pattern(1, len)).header.status, 0);
-    for id in 4..68 {
-        let read = Header::new(READ, id).with_args(&[branch, 1, 0, len as u64]);
-        sender.send(read, &[], &[]).unwrap();
-    }
-    use std::os::fd::AsRawFd;
-    let mut hung_up = libc::pollfd { fd: stream.as_raw_fd(), events: libc::POLLRDHUP, revents: 0 };
-    // SAFETY: Polls the stream, which the test keeps open, for 10 s at most.
-    let ready = unsafe { libc::poll(&mut hung_up, 1, 10_000) };
-    assert_eq!(ready, 1, "the daemon holds what the VM process leaves unread");
+    let reads = (4..68).map(|id| Header::new(READ, id).with_args(&[branch, 1, 0, len as u64]));
+    send_until_let_go(&sender, reads);
+    assert_let_go(&sender, &stream);
     assert_eq!(answered, -Errno::EINVAL.raw());
     drop((sender, receiver, stream));
 }
