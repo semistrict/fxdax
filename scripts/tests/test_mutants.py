@@ -92,6 +92,18 @@ class Mutants(unittest.TestCase):
             ],
         )
 
+    def test_extent_remotes_mutants_build_with_the_profile_sim(self):
+        # Its simulation, optimized, as scripts/test.sh runs it (TASK-92.40); others as their
+        # tests build.
+        self.mutants({"sweep": SWEEP}, "extent_remote", "extent_frame")
+        self.assertEqual(
+            [call[:4] for call in self.calls()],
+            [
+                ["-p", "extent_remote", "--profile", "sim"],
+                ["-p", "extent_frame", "--test-tool", "nextest"],
+            ],
+        )
+
     def test_a_rerun_keeps_each_passes_report_before_it(self):
         self.mutants({"sweep": SWEEP, "shuttle": SHUTTLE}, "extent_store")
         again = {"caught": ["c1", "c2", "c3", "m1"], "missed": ["m2"], "status": 2}
