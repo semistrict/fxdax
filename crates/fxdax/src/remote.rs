@@ -1567,6 +1567,116 @@ mod tests {
     /// checkpoint many, recovers the branch once, its lease taken between the start and the rest:
     /// by the tails of its segments, which hold their footers, a window of them at once, not by
     /// the segments whole. The bucket, which the lost host's store probed, it probes not again.
+    /// TASK-165.11: what a durable commit, an open, a fork and a fork's first open cost on a real
+    /// bucket, FXDAX_PHASES_BUCKET's (`gs://bucket/prefix`, under a prefix of the run's own), by
+    /// phase: each one's time, and the bucket's requests it made, by kind, their count and time
+    /// (`Stats::request_ns`), the rest local (closing and framing the segment, flushing). A
+    /// measurement, not a check: ignored, run on a host that reaches the bucket, as
+    /// scripts/test-gce.sh runs it with FXDAX_GCE_STORAGE set, `FXDAX_TEST_PARTS=workspace` and
+    /// `FXDAX_TEST_ARGS='--run-ignored only --no-capture bucket_round_trips_by_phase'`. Each
+    /// operation is a line, `PHASE ...`.
+    #[test]
+    #[ignore = "a measurement against FXDAX_PHASES_BUCKET's bucket"]
+    fn bucket_round_trips_by_phase() {
+        use extent_remote::store::Request;
+        let url = std::env::var("FXDAX_PHASES_BUCKET").expect("FXDAX_PHASES_BUCKET names a bucket");
+        let url = format!("{}/phases-{:016x}/", url.trim_end_matches('/'), rand::random::<u64>());
+        let bucket = crate::host_store::bucket(&url).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let mut phases: std::collections::BTreeMap<&str, Vec<f64>> = Default::default();
+        // Runs `operation`, a `phase`, and says what it took and asked of the bucket.
+        let mut measure = |phase: &'static str, operation: &mut dyn FnMut()| {
+            let (before, started) = (bucket.stats(), std::time::Instant::now());
+            operation();
+            let took = started.elapsed().as_secs_f64() * 1000.0;
+            let after = bucket.stats();
+            let mut line = format!("PHASE {phase} ms={took:.1}");
+            let mut waited = 0.0;
+            for request in Request::ALL {
+                let count = after.requests(request) - before.requests(request);
+                let ns = after.request_ns(request) - before.request_ns(request);
+                if count > 0 {
+                    line += &format!(" {}={count}/{:.1}ms", request.name(), ns as f64 / 1e6);
+                    waited += ns as f64 / 1e6;
+                }
+            }
+            println!("{line} bucket-ms={waited:.1}");
+            phases.entry(phase).or_default().push(took);
+        };
+        let base = dir.path().join("base");
+        let branch = crate::host_store::new_branch();
+        let mut store = None;
+        measure("create", &mut || {
+            let made = ExtentStore::create_kept_with(&base, 1 << 30, branch, &url, idle());
+            store = Some(made.unwrap());
+        });
+        let store = store.unwrap();
+        for sequence in 1..=20 {
+            write(&store, sequence, &pattern(sequence as u8, BLOCK));
+            measure("durable-commit", &mut || store.commit(None).unwrap());
+        }
+        drop(store);
+        for _ in 0..10 {
+            measure("open", &mut || drop(reopened(&base, idle()).unwrap()));
+        }
+        let store = reopened(&base, idle()).unwrap();
+        let forks: Vec<_> = (0..10).map(|fork| dir.path().join(format!("fork-{fork}"))).collect();
+        for fork in &forks {
+            let child = crate::host_store::new_branch();
+            measure("fork", &mut || store.fork(fork, child).unwrap());
+        }
+        drop(store);
+        for fork in &forks {
+            measure("fork-open", &mut || drop(reopened(fork, idle()).unwrap()));
+        }
+        for (phase, mut took) in phases {
+            took.sort_by(f64::total_cmp);
+            println!(
+                "PHASES {phase} n={} median-ms={:.1} min-ms={:.1} max-ms={:.1}",
+                took.len(),
+                took[took.len() / 2],
+                took[0],
+                took[took.len() - 1]
+            );
+        }
+    }
+
+    /// TASK-165.11: a durable commit, as a guest's fsync makes one, costs the bucket what doc-7's
+    /// Uploads and Fencing say it needs, one after the other: the create of the segment its commit
+    /// closes, and a read of the lease after it, which acknowledges it; nothing else, as no
+    /// checkpoint is due and no fork made. On GCS each is a round trip (GCE r740: a guest's
+    /// fdatasync about 130 ms).
+    #[test]
+    fn durable_commits_cost_their_segments_create_and_a_lease_read() {
+        use extent_remote::store::Request;
+        let dir = tempfile::tempdir().unwrap();
+        let bucket = Arc::new(Bucket::new(Arc::new(InMemory::new()), ""));
+        let store =
+            kept_in(dir.path().join("store"), (1 << 30, None), &bucket.clone(), idle()).unwrap();
+        write(&store, 1, &pattern(1, BLOCK));
+        store.commit(None).unwrap();
+        let before = bucket.stats();
+        write(&store, 2, &pattern(2, BLOCK));
+        store.commit(None).unwrap();
+        let after = bucket.stats();
+        let asked: Vec<_> = (Request::ALL.iter())
+            .map(|&request| (request.name(), after.requests(request) - before.requests(request)))
+            .collect();
+        assert_eq!(
+            asked,
+            [
+                ("get", 1),
+                ("get-range", 0),
+                ("head", 0),
+                ("list", 0),
+                ("create", 1),
+                ("update", 0),
+                ("overwrite", 0),
+                ("delete", 0),
+            ]
+        );
+    }
+
     #[test]
     fn takes_recover_their_branches_once_by_their_segments_tails() {
         use extent_remote::layout;
