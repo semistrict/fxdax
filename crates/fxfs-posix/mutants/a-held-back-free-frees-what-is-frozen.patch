@@ -1,0 +1,12 @@
+--- a/crates/fxfs/src/object_store/allocator.rs
++++ b/crates/fxfs/src/object_store/allocator.rs
+@@ -2222,9 +2222,6 @@
+                 // flush: left out here, the extent shared with the snapshot (TASK-241). The parts
+                 // referenced more than once lose a reference; the rest are deallocated (see
+                 // "References").
+-                if inner.is_frozen(&device_range) {
+-                    return Ok(());
+-                }
+                 let records = inner.recount(&device_range, -1, context)?;
+                 self.record(records);
+             }

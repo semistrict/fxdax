@@ -58,8 +58,7 @@
 //! A quarter of the sequences run on the guest's platform, whose VFS keeps directories' times, a
 //! create of a file leaving them to it (`Seeded`). The volume is snapshotted too, each snapshot a
 //! volume of its own that holds what the volume did then, whatever it does after, across remounts
-//! and cuts: what the graveyard has queued tombstoned first, as TASK-241 has a snapshot of a volume
-//! being written lose what it shares.
+//! and cuts, the graveyard tombstoning what it has queued meanwhile (TASK-241).
 
 use super::*;
 use fxfs::filesystem::{FlushReason, ForceMajor, FxFilesystemBuilder};
@@ -1408,16 +1407,13 @@ struct Setting {
     batched_graveyard: bool,
     /// Whether the platform is the guest's, whose VFS keeps directories' times (`Seeded`).
     keeps_directory_times: bool,
-    /// Whether snapshots are taken with the graveyard's tombstones queued, not settled first,
-    /// which TASK-241 has a snapshot of a volume being written lose.
-    snapshots_unsettled: bool,
 }
 
 impl Setting {
     fn calm(seed: u64, blocks: u64) -> Self {
         let (awkward, fsck_each, every_cut, failing) = (false, false, false, false);
         let (cuts_one_in, workers, batched_graveyard) = (CUTS_ONE_IN, false, false);
-        let (keeps_directory_times, snapshots_unsettled) = (false, false);
+        let keeps_directory_times = false;
         Self {
             seed,
             blocks,
@@ -1429,7 +1425,6 @@ impl Setting {
             workers,
             batched_graveyard,
             keeps_directory_times,
-            snapshots_unsettled,
         }
     }
 
@@ -1460,11 +1455,6 @@ impl Setting {
     /// A graveyard as a guest's, for half of a run's sequences, as its seed says.
     fn with_graveyard_of_seed(self) -> Self {
         Self { batched_graveyard: self.seed.is_multiple_of(2), ..self }
-    }
-
-    /// Snapshots taken with the graveyard's tombstones queued (TASK-241).
-    fn with_snapshots_unsettled(self) -> Self {
-        Self { snapshots_unsettled: true, ..self }
     }
 
     /// The guest's platform, whose VFS keeps directories' times.
@@ -2830,12 +2820,6 @@ impl<const KEEPS: bool> World<KEEPS> {
                 let name = format!("snapshot-{}", self.model.snapshots.len());
                 let volumes = root_volume((*self.filesystem).clone()).await;
                 let volumes = volumes.map_err(|e| format!("the root volume: {e:#}"))?;
-                // What the graveyard has queued, tombstoned first: a transaction of the volume's
-                // between the snapshot's flush and its commit frees what the snapshot shares, as
-                // the graveyard's did (TASK-241).
-                if !self.setting.snapshots_unsettled {
-                    self.filesystem.graveyard().flush().await;
-                }
                 let made = volumes.snapshot_volume(VOLUME, &name).await.map(drop);
                 if self.unless_full(made, "snapshot")?.is_none() {
                     return Ok(());
@@ -4386,10 +4370,8 @@ fn writeback_on_a_full_filesystem_is_paid_for_by_the_room_it_reserved() {
 /// batches its tombstones: remounted, the volume still syncs, and its snapshot holds nothing of
 /// the file. The graveyard tombstoned it during the snapshot's flush, freeing its extent, which the
 /// snapshot shared; remounted, the snapshot's graveyard freed it again, an inconsistency the
-/// journal failed with (TASK-149.40's snapshots found it, TASK-241). Op::Snapshot lets the
-/// graveyard settle first until that is fixed, which this doesn't.
+/// journal failed with (TASK-149.40's snapshots found it, TASK-241).
 #[test]
-#[ignore = "TASK-241: a transaction of the volume during a snapshot frees what it shares"]
 fn a_snapshot_of_a_file_closed_but_not_yet_tombstoned() {
     let ops = vec![
         Op::Tmpfile(0),
@@ -4397,7 +4379,7 @@ fn a_snapshot_of_a_file_closed_but_not_yet_tombstoned() {
         Op::Close(0),
         Op::Snapshot,
     ];
-    Setting::awkward(0, ROOMY).with_graveyard_of_seed().with_snapshots_unsettled().holds(ops);
+    Setting::awkward(0, ROOMY).with_graveyard_of_seed().holds(ops);
 }
 
 /// Snapshots hold what the volume did as they were taken, as the volume goes on: its files
