@@ -12,6 +12,14 @@
 //! fxfs-guest-script-full and -full-dax: on a small volume, filled to `LEFT` before the script
 //! starts, where anything may be refused for lack of room (`script_run`), and a run that's never
 //! refused anything fails, having looked at nothing.
+//!
+//! fxfs-guest-script-killed and -killed-dax: the VM killed at an operation the seed picks
+//! (`script::kill_index`): the guest does those before it, says [`KILL_ME`] and waits, and the host
+//! kills its VM process, writeback, rebinds and the journal still going in the guest's kernel; then
+//! the host's Fxfs replays the store, which fsck checks, and each file must hold what it may after a
+//! kill (`script::Survivals`): a size it had since its last fsync, and each page as one of its states
+//! since then had it. Not on the small volume: what a refused clone or punch leaves, the guest reads
+//! back, which the host can't once it's killed it.
 
 use macros::{guest, host};
 
@@ -21,7 +29,15 @@ pub struct TestFxfsGuestScript {
     pub dax: bool,
     /// Whether the volume is small, and nearly full.
     pub full: bool,
+    /// fxdax: whether the VM is killed part way, and the files checked against what a kill may
+    /// leave.
+    pub killed: bool,
 }
+
+/// fxdax: what a killed run's guest says once it has done the operations before the kill, at which
+/// the host kills its VM process.
+#[cfg_attr(feature = "host", allow(dead_code))]
+const KILL_ME: &str = "kill me";
 
 /// `file`'s name, and its model's.
 fn file(n: usize) -> String {
@@ -37,7 +53,7 @@ mod host {
     use super::*;
 
     use crate::common::{fxdax_guest_should_run, setup_rootfs};
-    use crate::script::{Failure, SEVERAL_FILES, kind};
+    use crate::script::{DROP_VAR, Failure, SEVERAL_FILES, kind};
     use crate::script_vm::{self, Replays};
     use crate::test_fxfs_guest_checks::host::seed;
     use crate::vm::Vm;
@@ -57,6 +73,61 @@ mod host {
             let fs = Filesystem::format(Storage::create(path, size)?).await?;
             fs.close().await?;
             Ok(())
+        })
+    }
+
+    /// fxdax: how the killed run in `dir`, which said `stdout`, failed, if it did: as a run does, if
+    /// it said so before the kill; or a file the store holds isn't what it may be after a kill
+    /// before the script's operation the seed picks, of what the run's drops kept (TASK-149.2).
+    fn killed_verdict(dir: &Path, stdout: &[u8]) -> Option<Failure> {
+        let output = String::from_utf8_lossy(stdout);
+        if let Some(failure) = Failure::parse(&output) {
+            return Some(failure);
+        }
+        if !output.lines().any(|line| line == KILL_ME) {
+            let what = format!("it said {output:?}");
+            return Some(Failure { op: None, kind: kind::DIED.to_owned(), what });
+        }
+        let seed: u64 = std::fs::read_to_string(dir.join("seed")).ok()?.parse().ok()?;
+        let drops = std::fs::read_to_string(dir.join("drops")).unwrap_or_default();
+        let ops = crate::script::generate(seed, SEVERAL_FILES);
+        let kept = crate::script::kept(&drops, ops.len()).expect(DROP_VAR);
+        let script: Vec<_> = kept.into_iter().map(|index| (index, ops[index])).collect();
+        let kill = crate::script::kill_index(seed, ops.len());
+        let survivals = crate::script::survivals(&script, kill, SEVERAL_FILES.files);
+        let failed = |kind: &str, what: String| {
+            Some(Failure { op: Some(kill), kind: kind.to_owned(), what })
+        };
+        let fs =
+            Storage::open(dir.join("fxdax.img")).map_err(anyhow::Error::from).and_then(|storage| {
+                block_on(async { Ok(Filesystem::mount(storage.check().await?).await?) })
+            });
+        let fs = match fs {
+            Ok(fs) => fs,
+            Err(err) => return failed(kind::FSCK, format!("{err:#}")),
+        };
+        for (n, survivals) in survivals.iter().enumerate() {
+            let got = block_on(async {
+                let Ok((handle, attr)) = fs.root().lookup(file(n).as_bytes()).await else {
+                    return Ok(None);
+                };
+                let mut buf = vec![0; attr.size as usize];
+                let count = handle.read(0, &mut buf).await?;
+                buf.truncate(count);
+                anyhow::Ok(Some(buf))
+            });
+            let got = match got {
+                Ok(got) => got,
+                Err(err) => return failed(kind::KILLED_DIFFERS, format!("{}: {err:#}", file(n))),
+            };
+            if let Err(what) = survivals.hold(got.as_deref()) {
+                return failed(kind::KILLED_DIFFERS, format!("{}: {what}", file(n)));
+            }
+        }
+        crate::vm::complaints(&dir.join("console.txt")).err().map(|err| Failure {
+            op: None,
+            kind: kind::COMPLAINT.to_owned(),
+            what: format!("{err:#}"),
         })
     }
 
@@ -80,6 +151,53 @@ mod host {
         })
     }
 
+    /// fxdax: a killed run's files checked as the host's Fxfs reads them from the store (TASK-149.2):
+    /// what the operations before the kill left passes; a page no state of the file held fails,
+    /// and so does a run that never said it was to be killed.
+    #[test]
+    fn a_killed_runs_files_are_checked_as_the_store_holds_them() {
+        use fxdax::Owner;
+        let killed = |files: &[Vec<u8>], seed: u64, output: &[u8]| {
+            let dir = tempdir::TempDir::new("killed").unwrap();
+            std::fs::write(dir.path().join("seed"), seed.to_string()).unwrap();
+            std::fs::write(dir.path().join("console.txt"), b"").unwrap();
+            let image = dir.path().join("fxdax.img");
+            block_on(async {
+                let fs = Filesystem::format(Storage::create(&image, IMAGE_SIZE)?).await?;
+                let owner = Owner { uid: 0, gid: 0 };
+                for (n, data) in files.iter().enumerate() {
+                    let (handle, _) = fs.root().create(file(n).as_bytes(), 0o644, owner).await?;
+                    handle.write(0, data).await?;
+                }
+                fs.close().await?;
+                anyhow::Ok(())
+            })
+            .unwrap();
+            killed_verdict(dir.path(), output)
+        };
+        // A seed whose first file is more than a page long at its kill.
+        let (seed, model) = (0..)
+            .map(|seed| {
+                let ops = crate::script::generate(seed, SEVERAL_FILES);
+                let kill = crate::script::kill_index(seed, ops.len());
+                let mut model = crate::script::Model::new(SEVERAL_FILES.files);
+                for op in &ops[..kill] {
+                    model.apply(&model.resolve(op));
+                }
+                (seed, model)
+            })
+            .find(|(_, model)| model.files[0].len() > 2 * crate::script::PAGE as usize)
+            .unwrap();
+        let said = format!("{KILL_ME}\n");
+        assert_eq!(killed(&model.files, seed, said.as_bytes()), None);
+        let mut garbled = model.files.clone();
+        garbled[0][crate::script::PAGE as usize + 3] ^= 0xa5;
+        let failure = killed(&garbled, seed, said.as_bytes()).expect("a garbled page passed");
+        assert_eq!(failure.kind, kind::KILLED_DIFFERS, "{failure}");
+        let failure = killed(&model.files, seed, b"").expect("a run never killed passed");
+        assert_eq!(failure.kind, kind::DIED, "{failure}");
+    }
+
     impl TestFxfsGuestScript {
         fn report(&self, test_setup: &TestSetup, failure: &Failure) -> String {
             let seed = std::fs::read_to_string(test_setup.tmp_dir.join("seed")).unwrap();
@@ -90,7 +208,7 @@ mod host {
                 mix: SEVERAL_FILES,
                 env: &[],
                 timeout: Duration::from_secs(self.timeout_secs()),
-                verdict: &verdict,
+                verdict: if self.killed { &killed_verdict } else { &verdict },
             };
             replays.report(failure)
         }
@@ -120,11 +238,18 @@ mod host {
             let seed = seed();
             eprintln!("{}: seed {seed} (FXDAX_SEED={seed} replays it)", test_setup.test_case);
             std::fs::write(test_setup.tmp_dir.join("seed"), seed.to_string())?;
+            // fxdax: what a replay drops, for the verdict of a killed run, which replays the model.
+            let drops = std::env::var(DROP_VAR).unwrap_or_default();
+            std::fs::write(test_setup.tmp_dir.join("drops"), drops)?;
+            if self.killed {
+                vm.kill_on(KILL_ME);
+            }
             script_vm::pass_script(&mut vm, seed)?;
             vm.enter(&setup_rootfs(&test_setup)?, &test_setup.test_case)
         }
 
         fn check(self: Box<Self>, stdout: Vec<u8>, test_setup: TestSetup) -> TestOutcome {
+            let verdict = if self.killed { killed_verdict } else { verdict };
             match verdict(&test_setup.tmp_dir, &stdout) {
                 Some(failure) => TestOutcome::Fail(self.report(&test_setup, &failure)),
                 None => TestOutcome::Pass,
@@ -162,8 +287,40 @@ mod guest {
             let (script, len) = script_run::from_env(seed, SEVERAL_FILES);
             let names: Vec<String> = (0..SEVERAL_FILES.files).map(|n| path(&file(n))).collect();
             let mut run = Run::new(&names, Options { full: self.full, ..Options::default() });
+            // fxdax: on a DAX mount, the files read in again first, as a file the mount makes is
+            // the page cache's until then, copying on write (doc-13): the DAX cases looked at the
+            // page cache alone, their files made here and never evicted (TASK-149.2).
+            if self.dax {
+                for file in 0..names.len() {
+                    if let Err(failure) = run.step(0, &crate::script::Op::Reopen { file }) {
+                        run.fail(seed, &failure);
+                    }
+                }
+                if run.dax != names.len() {
+                    let what =
+                        format!("{} of {} files read in again are DAX", run.dax, names.len());
+                    let failure = Failure { op: Some(0), kind: kind::NEVER_DAX.to_owned(), what };
+                    println!("{failure}");
+                    return;
+                }
+            }
             if self.full {
                 script_run::fill(&path(BALLAST), LEFT);
+            }
+            if self.killed {
+                // fxdax: the operations before the kill, then the host's kill, waited for.
+                let kill = crate::script::kill_index(seed, len);
+                for (index, op) in script.iter().take_while(|(index, _)| *index < kill) {
+                    if let Err(failure) = run.step(*index, op) {
+                        crate::kernel_log::print();
+                        run.fail(seed, &failure);
+                    }
+                }
+                eprintln!("killed before operation {kill} of {len}");
+                println!("{KILL_ME}");
+                loop {
+                    unsafe { libc::pause() };
+                }
             }
             if let Err(failure) = run.script(&script, len) {
                 crate::kernel_log::print();

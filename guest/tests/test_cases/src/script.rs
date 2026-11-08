@@ -98,6 +98,9 @@ pub mod kind {
     pub const NEVER_DAX: &str = "never DAX";
     /// fxdax: no time compared changed on either filesystem: the comparison looked at nothing.
     pub const NO_TIMES: &str = "no times changed";
+    /// fxdax: after the VM was killed, a file holds what none of its states since its last fsync
+    /// held ([`Survivals`], TASK-149.2).
+    pub const KILLED_DIFFERS: &str = "killed differs";
 }
 
 /// fxdax: what a line of a guest's saying how the filesystems' times differed starts with
@@ -1440,6 +1443,118 @@ pub fn far(at: u64, len: u64, truncate: bool, largest: u64) -> Outcome {
     }
 }
 
+/// fxdax: the index in the whole of `seed`'s script of `len` operations before which a killed run
+/// stops (TASK-149.2): it does those before it of what's kept, says so, and waits to be killed.
+/// Never 0, so that something is done, nor past the end.
+pub fn kill_index(seed: u64, len: usize) -> usize {
+    1 + Rng::new(seed ^ 0x6b69_6c6c_6564).next(len.max(2) as u64 - 1) as usize
+}
+
+/// fxdax: what a file may hold after its VM is killed, as of the operations done (TASK-149.2): the
+/// sizes it had since its last fsync, and of each of its pages, the contents it had since then,
+/// past its end reading zeros. Writeback writes pages as they are when it takes them, and a kill
+/// keeps what it wrote, so that each page, and the size, may be of a state of its own. Kept page
+/// by page, not state by state: a file that isn't synced for thousands of operations had thousands
+/// of states of megabytes.
+#[derive(Clone, Debug, Default)]
+pub struct Survivals {
+    sizes: std::collections::BTreeSet<u64>,
+    pages: Vec<std::collections::HashSet<Vec<u8>>>,
+}
+
+/// fxdax: `data`'s page `index`, past its end reading zeros.
+fn page_of(data: &[u8], index: usize) -> Vec<u8> {
+    let mut page = vec![0; PAGE as usize];
+    let start = (index * PAGE as usize).min(data.len());
+    let end = ((index + 1) * PAGE as usize).min(data.len());
+    page[..end - start].copy_from_slice(&data[start..end]);
+    page
+}
+
+impl Survivals {
+    /// What a file synced as `synced` may hold.
+    pub fn synced(synced: &[u8]) -> Self {
+        let mut survivals = Self::default();
+        survivals.sizes.insert(synced.len() as u64);
+        for index in 0..synced.len().div_ceil(PAGE as usize) {
+            survivals.page(index).insert(page_of(synced, index));
+        }
+        survivals
+    }
+
+    fn page(&mut self, index: usize) -> &mut std::collections::HashSet<Vec<u8>> {
+        if self.pages.len() <= index {
+            // A page past every state's end read zeros in each of them.
+            self.pages.resize_with(index + 1, || [vec![0; PAGE as usize]].into());
+        }
+        &mut self.pages[index]
+    }
+
+    /// The file went from `was` to `now`: its new size, and the pages that changed, may be kept.
+    pub fn changed(&mut self, was: &[u8], now: &[u8]) {
+        self.sizes.insert(now.len() as u64);
+        for index in 0..was.len().max(now.len()).div_ceil(PAGE as usize) {
+            let page = page_of(now, index);
+            if page != page_of(was, index) {
+                self.page(index).insert(page);
+            }
+        }
+    }
+
+    /// Whether `got`, what the file holds after the kill, or nothing if it isn't there, is what it
+    /// may hold: a size it had, and each page as one of its states had it, as far as it reaches.
+    /// A file not there is one whose creation the kill lost, as empty.
+    pub fn hold(&self, got: Option<&[u8]>) -> Result<(), String> {
+        let got = got.unwrap_or_default();
+        if !self.sizes.contains(&(got.len() as u64)) {
+            return Err(format!("{} bytes, where it was {:?}", got.len(), self.sizes));
+        }
+        for index in 0..got.len().div_ceil(PAGE as usize) {
+            let end = ((index + 1) * PAGE as usize).min(got.len());
+            let held = &got[index * PAGE as usize..end];
+            let zero = [vec![0; PAGE as usize]].into();
+            let pages = self.pages.get(index).unwrap_or(&zero);
+            if !pages.iter().any(|page| page[..held.len()] == *held) {
+                return Err(format!("page {index:#x} holds what none of its states held"));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// fxdax: what each of `files` may hold after a kill before the script's operation `kill`, of
+/// `script` done in order, its outcomes the model's, as on a volume with room: each file's
+/// [`Survivals`] since its last fsync.
+pub fn survivals(script: &[(usize, Op)], kill: usize, files: usize) -> Vec<Survivals> {
+    let mut model = Model::new(files);
+    let mut survivals = vec![Survivals::synced(&[]); files];
+    for (_, op) in script.iter().take_while(|(index, _)| *index < kill) {
+        let step = model.resolve(op);
+        // Of the files the operation may change, what they were: copies of megabytes otherwise.
+        let changes = match *op {
+            Op::Read { .. } | Op::Check | Op::Fsync { .. } => Vec::new(),
+            Op::Write { file, .. }
+            | Op::Append { file, .. }
+            | Op::Store { file, .. }
+            | Op::Truncate { file, .. }
+            | Op::Punch { file, .. } => vec![file],
+            Op::Clone { to, .. } => vec![to],
+            _ => (0..files).collect(),
+        };
+        let was: Vec<_> = changes.iter().map(|&file| model.files[file].clone()).collect();
+        model.apply(&step);
+        for (&file, was) in changes.iter().zip(&was) {
+            if *was != model.files[file] {
+                survivals[file].changed(was, &model.files[file]);
+            }
+        }
+        if let Op::Fsync { file } = *op {
+            survivals[file] = Survivals::synced(&model.files[file]);
+        }
+    }
+    survivals
+}
+
 /// A script's failure, as its run saw it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Failure {
@@ -1564,6 +1679,72 @@ pub fn shrink_failure(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// fxdax: after a kill, a file holds a size it had since its last fsync, and each page as one of
+    /// its states since then had it, which may be of different states; not what it held before
+    /// that fsync, nor bytes no state held, nor a size none had. A file the kill lost the creation
+    /// of is empty (TASK-149.2).
+    #[test]
+    fn a_killed_file_holds_pages_of_its_states_since_its_last_fsync() {
+        let page = PAGE as usize;
+        let place = Place::At(0);
+        let script: Vec<(usize, Op)> = [
+            Op::Write { file: 0, place, len: 2 * PAGE, data: 1 },
+            Op::Fsync { file: 0 },
+            Op::Write { file: 0, place: Place::At(PAGE), len: PAGE, data: 2 },
+            Op::Write { file: 0, place, len: PAGE, data: 3 },
+            Op::Write { file: 1, place, len: 10, data: 4 },
+            Op::Truncate { file: 0, size: 3 * PAGE + 5 },
+        ]
+        .into_iter()
+        .enumerate()
+        .collect();
+        let mut model = Model::new(2);
+        let mut states = vec![model.clone()];
+        for (_, op) in &script {
+            model.apply(&model.resolve(op));
+            states.push(model.clone());
+        }
+        let survivals = survivals(&script, script.len(), 2);
+        let state = |n: usize| states[n].files[0].clone();
+        assert_eq!(survivals[0].hold(Some(&state(2))), Ok(()), "as synced");
+        assert_eq!(survivals[0].hold(Some(&state(6))), Ok(()), "as last done");
+        // The first page as the second write left it, the second as the third did.
+        let mut mixed = state(4);
+        mixed[..page].copy_from_slice(&state(3)[..page]);
+        assert_eq!(survivals[0].hold(Some(&mixed)), Ok(()));
+        assert!(survivals[0].hold(Some(&state(1))).is_ok(), "the synced state, by its pages");
+        let mut garbage = state(6);
+        garbage[page + 7] ^= 0xff;
+        assert_eq!(
+            survivals[0].hold(Some(&garbage)),
+            Err("page 0x1 holds what none of its states held".to_owned())
+        );
+        assert_eq!(
+            survivals[0].hold(None),
+            Err(format!(
+                "0 bytes, where it was {:?}",
+                std::collections::BTreeSet::from([2 * PAGE, 3 * PAGE + 5])
+            ))
+        );
+        // Of file 1, never synced: empty, or written.
+        assert_eq!(survivals[1].hold(None), Ok(()));
+        assert_eq!(survivals[1].hold(Some(&states[5].files[1])), Ok(()));
+        // Before the kill, as the guest stops before the operation it names.
+        let before = super::survivals(&script, 2, 2);
+        assert_eq!(before[0].hold(Some(&state(2))), Ok(()));
+        assert!(before[0].hold(Some(&state(3))).is_err(), "a write after the kill kept");
+    }
+
+    /// fxdax: a killed run stops at an operation of the script, never before its first.
+    #[test]
+    fn kill_indices_fall_within_the_script() {
+        for seed in 0..1000 {
+            assert!((1..3000).contains(&kill_index(seed, 3000)), "seed {seed}");
+        }
+        assert_eq!(kill_index(7, 1), 1);
+        assert_ne!(kill_index(1, 3000), kill_index(2, 3000));
+    }
     use std::collections::BTreeMap;
 
     /// Each kind of operation, and how many of it, of `script`.

@@ -609,25 +609,39 @@ pub fn test_cases() -> Vec<TestCase> {
         TestCase::new(
             "fxfs-guest-script",
             &[Tag::Nightly],
-            Box::new(TestFxfsGuestScript { dax: false, full: false }),
+            Box::new(TestFxfsGuestScript { dax: false, full: false, killed: false }),
         ),
         #[cfg(any(feature = "host", target_os = "linux"))]
         TestCase::new(
             "fxfs-guest-script-dax",
             &[Tag::Nightly],
-            Box::new(TestFxfsGuestScript { dax: true, full: false }),
+            Box::new(TestFxfsGuestScript { dax: true, full: false, killed: false }),
         ),
         #[cfg(any(feature = "host", target_os = "linux"))]
         TestCase::new(
             "fxfs-guest-script-full",
             &[Tag::Nightly],
-            Box::new(TestFxfsGuestScript { dax: false, full: true }),
+            Box::new(TestFxfsGuestScript { dax: false, full: true, killed: false }),
         ),
         #[cfg(any(feature = "host", target_os = "linux"))]
         TestCase::new(
             "fxfs-guest-script-full-dax",
             &[Tag::Nightly],
-            Box::new(TestFxfsGuestScript { dax: true, full: true }),
+            Box::new(TestFxfsGuestScript { dax: true, full: true, killed: false }),
+        ),
+        // fxdax: the script's VM killed part way, its files checked against what a kill may leave
+        // (TASK-149.2).
+        #[cfg(any(feature = "host", target_os = "linux"))]
+        TestCase::new(
+            "fxfs-guest-script-killed",
+            &[Tag::Nightly],
+            Box::new(TestFxfsGuestScript { dax: false, full: false, killed: true }),
+        ),
+        #[cfg(any(feature = "host", target_os = "linux"))]
+        TestCase::new(
+            "fxfs-guest-script-killed-dax",
+            &[Tag::Nightly],
+            Box::new(TestFxfsGuestScript { dax: true, full: false, killed: true }),
         ),
         // fxdax: fsx-style scripts on Fxfs and ext4 in one guest (TASK-44.15).
         #[cfg(any(feature = "host", target_os = "linux"))]

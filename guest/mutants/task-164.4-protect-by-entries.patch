@@ -10,6 +10,9 @@
 # the rebind's read-only MAP under it, refused; interleave's seed 22, 15 of CI's 3,000. Since
 # TASK-164.9 writeback reads nothing of the entries: this puts their cleaning (as writepages and
 # fxfs_dax_release clean them, for the kernel's sake) in place of the page tables' write-protect.
+# In a release guest kernel, fxfs-guest-fsx-dax, -fsx-delay-dax and -checks-dax pass with it (GCE
+# r1000, TASK-149.2), and -script-dax, its files then the page cache's: no VM's stores met a
+# writeback's locked entry as the simulator's scenario has them.
 
 --- a/guest/linux/fs/fxfs/dax.c
 +++ b/guest/linux/fs/fxfs/dax.c
