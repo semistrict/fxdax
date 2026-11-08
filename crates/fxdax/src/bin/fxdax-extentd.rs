@@ -66,6 +66,9 @@
 fn main() -> anyhow::Result<()> {
     use anyhow::Context;
     fxdax::extentd::logging::to_stderr()?;
+    // fxdax: a panic holding a lock shared beyond one store, which no fence contains, stops the
+    // daemon, rather than poison the lock for every user after (TASK-149.24).
+    extent_store::shared::abort_on_panics();
     // fxdax: the failpoints FAILPOINTS sets, in a daemon built with them (TASK-44.10).
     let _failpoints = fail::FailScenario::setup();
     fxdax::faults::from_seed().map_err(anyhow::Error::msg)?;

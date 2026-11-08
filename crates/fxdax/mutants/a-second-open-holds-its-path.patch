@@ -5,7 +5,7 @@
 # Killer: extentd::tests::hostile::a_compromised_vm_process_harms_no_tenant_beside_it
 --- a/crates/fxdax/src/extentd/server.rs
 +++ b/crates/fxdax/src/extentd/server.rs
-@@ -926,10 +926,16 @@
+@@ -953,10 +953,16 @@
      /// [`Phase::Following`]. Checked without the phase's lock, which a panic would poison.
      fn opened(self, path: &Path, store: Arc<ExtentStore>, opened: Phase) {
          let follower = matches!(opened, Phase::Following);
@@ -19,15 +19,15 @@
 +            return;
 +        }
 +        self.0.report.opened(store_key(path), branch, follower);
-         let was = std::mem::replace(&mut *self.0.phase.lock().unwrap(), opened);
+         let was = std::mem::replace(&mut *self.0.phase.with(Mutex::lock), opened);
 -        assert!(matches!(was, Phase::Opening), "a connection opened a store not opening one");
 +        let _ = was;
      }
  }
  
-@@ -1381,11 +1387,11 @@
+@@ -1414,11 +1420,11 @@
      fn opening(&self) -> Result<Opening<'_>, Errno> {
-         let mut phase = self.phase.lock().unwrap();
+         let mut phase = self.phase.with(Mutex::lock);
          match *phase {
 -            Phase::Unopened => {
 +            Phase::Unopened | Phase::Opening => {

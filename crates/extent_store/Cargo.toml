@@ -45,3 +45,6 @@ shuttle = ["dep:shuttle", "audit"]
 # through all the branch holds each time. Its own tests, the Shuttle and crash tests among them,
 # turn it on.
 audit = []
+# fxdax: tests' panics holding a lock shared beyond one store (shared::testing, TASK-149.24): fxdax's
+# tests have it.
+testing = []

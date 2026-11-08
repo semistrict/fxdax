@@ -57,6 +57,8 @@ async-trait.workspace = true
 # fxfs-metabench's attributes, as Fxfs's API takes them.
 fidl-fuchsia-io.workspace = true
 fxdax = { path = ".", features = ["failpoints", "testing"] }
+# Panics holding a lock shared beyond one store, in tests that ask (TASK-149.24).
+extent_store = { workspace = true, features = ["testing"] }
 # What the hostile VM process test looks for in the memory it is given (TASK-149.17).
 memchr.workspace = true
 object_store.workspace = true

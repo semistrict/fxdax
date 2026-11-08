@@ -5756,6 +5756,77 @@ fn a_panic_holding_a_stores_lock_fences_it_alone() {
     }
 }
 
+/// The locks shared beyond one store a VM process's requests take ([`child_panics_holding`]): the
+/// extent cache's and its extents', a window's and its change's, its connection's, and those of
+/// `extent_store`'s store, which its followers share with its writer (TASK-149.24).
+const SHARED_LOCKS: &[&str] = &[
+    "extent cache",
+    "cached extent holders",
+    "cached extent pages",
+    "window",
+    "stage change",
+    "connection phase",
+    "connection window",
+    "connection requests",
+    "store state",
+    "store commit",
+    "store durability",
+    "store flush",
+];
+
+/// What [`child_panics_holding`] panics holding, as its parent says.
+const PANIC_HOLDING: &str = "FXDAX_EXTENTD_TEST_PANIC_HOLDING";
+
+/// Run by [`a_panic_holding_a_shared_lock_stops_the_daemon`], in a process of its own: a daemon,
+/// aborting on panics as `fxdax-extentd` does, serves a VM process's window and store, which
+/// write, commit, map and fault a page in, and close, a panic holding the lock [`PANIC_HOLDING`]
+/// names as it is next taken. It says if it got to the end.
+#[test]
+#[ignore = "run by a_panic_holding_a_shared_lock_stops_the_daemon, in a process of its own"]
+fn child_panics_holding() {
+    let Ok(lock) = std::env::var(PANIC_HOLDING) else { return };
+    extent_store::shared::abort_on_panics();
+    host();
+    let ps = page_size() as usize;
+    let dir = tempfile::tempdir().unwrap();
+    let (store, served) = connect(&dir.path().join("store"), 1 << 24);
+    let memory = memory(1);
+    // SAFETY: The memory is the test's, and outlives the store.
+    unsafe { store.create_dax_window_in_host_memory(memory, ps as u64, None, 1) }.unwrap();
+    let extent = ExtentId { branch: store.branch(), sequence: 1 };
+    extent_store::shared::testing::panic_holding(lock.leak());
+    let written = write(&store, extent, 0, &pattern(3, ps));
+    let committed = store.commit(None);
+    let mapped = store.map(extent, 0, ps as u64, 0);
+    // SAFETY: The window's memory, whose faults the store serves.
+    let loaded = unsafe { memory.as_ptr().read_volatile() };
+    drop(store);
+    let closed = served.join();
+    println!("THE END: {written:?} {committed:?} {mapped:?} {loaded} {closed:?}");
+}
+
+/// TASK-149.24: a panic holding a lock shared beyond one store stops the daemon at once, saying
+/// which: an abort, from its panic hook, before anything unwinds; not a fence, which contains only
+/// its store, while the lock's poison, or what it guards half changed, reaches every user after,
+/// nor an abort from a drop panicking as it unwinds.
+#[test]
+fn a_panic_holding_a_shared_lock_stops_the_daemon() {
+    use std::os::unix::process::ExitStatusExt;
+    for lock in SHARED_LOCKS {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "extentd::tests::child_panics_holding", "--ignored", "--nocapture"])
+            .env(PANIC_HOLDING, lock)
+            .output()
+            .unwrap();
+        let said =
+            String::from_utf8_lossy(&output.stdout) + String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.signal(), Some(libc::SIGABRT), "{lock}: {said}");
+        assert!(extent_store::shared::aborted_holding(&said, lock), "{lock}: {said}");
+        assert!(!said.contains("THE END"), "{lock}: {said}");
+        assert!(!said.contains("panic in a destructor"), "{lock}: {said}");
+    }
+}
+
 /// TASK-153.16: a panic serving a VM process's request past the store's locks, which poisons
 /// none of them, as one in `extent_store` beneath them may (TASK-79.1, TASK-79.80), fences the
 /// store as well: a read after it, which would find nothing amiss, fails with `EIO`. Its VM

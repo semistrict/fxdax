@@ -14,6 +14,10 @@
 //! of a store's is held across a panic without fencing it, and none is locked poisoned. What
 //! panics beneath a store, past its locks, the extent daemon fences it for, as it answers the
 //! request that panicked.
+//!
+//! A lock shared beyond one store, which no fence contains, as the process's cache of extents, a
+//! window's, a connection's, or `extent_store`'s store's, which its followers share with its writer,
+//! is an `extent_store::shared::SharedLock`: a panic holding one stops the daemon (TASK-149.24).
 
 use crate::error::{Errno, Result};
 use std::ops::{Deref, DerefMut};

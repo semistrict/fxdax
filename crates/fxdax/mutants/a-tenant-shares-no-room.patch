@@ -5,12 +5,12 @@
 # Killer: extentd::tests::hostile::a_tenants_in_flight_data_is_bounded
 --- a/crates/fxdax/src/extentd/server.rs
 +++ b/crates/fxdax/src/extentd/server.rs
-@@ -1045,7 +1045,7 @@
+@@ -1072,7 +1072,7 @@
          }
          // Admitted one at a time, as its messages are received, so nothing came in meanwhile.
          if bytes > 0 {
 -            self.tenant.in_flight().take(bytes).await;
 +            self.tenant.in_flight().add(bytes);
          }
-         self.requests.lock().unwrap().stream_bytes += bytes;
+         self.requests.with(Mutex::lock).stream_bytes += bytes;
          Ok(())

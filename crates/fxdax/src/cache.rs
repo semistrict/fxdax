@@ -26,6 +26,7 @@ use crate::extents::{ExtentId, PublicReach};
 use crate::pages::{ArenaId, page_size};
 use crate::profile::Recorder;
 use crate::stats::{self, Counter};
+use extent_store::shared::SharedLock;
 use extent_store::{HostDir, Store};
 use futures::future::BoxFuture;
 use std::collections::{HashMap, HashSet};
@@ -39,11 +40,12 @@ use storage_device::NoExtent;
 struct ExtentCache {
     /// The threads the pager reads extents' parts on.
     pager: tokio::runtime::Runtime,
-    /// By the arena their pages are of (TASK-43), and their IDs.
-    extents: Mutex<HashMap<(ArenaId, ExtentId), Cached>>,
+    /// By the arena their pages are of (TASK-43), and their IDs. Every tenant's, which a panic
+    /// holding aborts the daemon (`extent_store::shared`, TASK-149.24); as do the others here.
+    extents: SharedLock<Mutex<HashMap<(ArenaId, ExtentId), Cached>>>,
     /// The arenas but the default that extents were cached of, to look for an extent's copy in,
     /// taken after `extents` (TASK-234).
-    arenas: Mutex<HashSet<ArenaId>>,
+    arenas: SharedLock<Mutex<HashSet<ArenaId>>>,
 }
 
 /// A sealed extent cached.
@@ -59,8 +61,13 @@ pub(crate) struct Cached {
 /// keeps it for a follower's view: a store that frees an extent its siblings map, or closes,
 /// leaves them reading it through theirs. Each holds the same data by its ID, which its branch
 /// writes once (TASK-79.6).
-#[derive(Default)]
-struct Holders(Mutex<Vec<Holder>>);
+struct Holders(SharedLock<Mutex<Vec<Holder>>>);
+
+impl Default for Holders {
+    fn default() -> Self {
+        Self(SharedLock::new("cached extent holders", Mutex::default()))
+    }
+}
 
 /// A store a cached extent's pages are read from, and its object storage, which holds them if the
 /// store holds them without their data.
@@ -75,7 +82,7 @@ type OpenHolder = (Arc<Store<HostDir>>, Option<Arc<crate::remote::Fetcher>>);
 impl Holders {
     /// Adds `store`, reading through `remote`, unless it is there, letting go of those closed.
     fn add(&self, store: &Arc<Store<HostDir>>, remote: Option<&Arc<crate::remote::Fetcher>>) {
-        let mut holders = self.0.lock().unwrap();
+        let mut holders = self.0.with(Mutex::lock);
         holders.retain(|holder| holder.store.strong_count() > 0);
         if !holders.iter().any(|holder| std::ptr::eq(holder.store.as_ptr(), Arc::as_ptr(store))) {
             let (store, remote) = (Arc::downgrade(store), remote.map(Arc::downgrade));
@@ -92,7 +99,7 @@ impl Holders {
 
     /// Those open still, in the order they asked, with their object storage.
     fn open(&self) -> Vec<OpenHolder> {
-        let holders = self.0.lock().unwrap();
+        let holders = self.0.with(Mutex::lock);
         (holders.iter())
             .filter_map(|holder| {
                 Some((holder.store.upgrade()?, holder.remote.as_ref().and_then(Weak::upgrade)))
@@ -102,7 +109,7 @@ impl Holders {
 
     /// Whether one is open still.
     fn any_open(&self) -> bool {
-        self.0.lock().unwrap().iter().any(|holder| holder.store.strong_count() > 0)
+        self.0.with(Mutex::lock).iter().any(|holder| holder.store.strong_count() > 0)
     }
 
     /// Whether one open still, but `store`, holds `extent`.
@@ -148,7 +155,11 @@ fn extent_cache() -> &'static ExtentCache {
             .thread_name("fxdax pager")
             .build()
             .expect("the extent cache's pager");
-        ExtentCache { pager, extents: Mutex::default(), arenas: Mutex::default() }
+        ExtentCache {
+            pager,
+            extents: SharedLock::new("extent cache", Mutex::default()),
+            arenas: SharedLock::new("extent cache arenas", Mutex::default()),
+        }
     })
 }
 
@@ -160,7 +171,7 @@ fn extent_cache() -> &'static ExtentCache {
 pub(crate) fn evict_least_used(arena: Option<ArenaId>, mut enough: impl FnMut(u64) -> bool) -> u64 {
     let Some(cache) = EXTENT_CACHE.get() else { return 0 };
     let candidates: Vec<Arc<CachedExtent>> = {
-        let extents = cache.extents.lock().unwrap();
+        let extents = cache.extents.with(Mutex::lock);
         (extents.iter())
             .filter(|((of, _), _)| arena.is_none_or(|arena| *of == arena))
             .map(|(_, cached)| cached.extent.clone())
@@ -204,8 +215,8 @@ pub(crate) fn relieve_pressure() {
 pub(crate) fn evict_arena(arena: ArenaId) {
     let Some(cache) = EXTENT_CACHE.get() else { return };
     let evicted: Vec<Cached> = {
-        let mut extents = cache.extents.lock().unwrap();
-        cache.arenas.lock().unwrap().remove(&arena);
+        let mut extents = cache.extents.with(Mutex::lock);
+        cache.arenas.with(Mutex::lock).remove(&arena);
         extents.extract_if(|(of, _), _| *of == arena).map(|(_, cached)| cached).collect()
     };
     drop(evicted);
@@ -244,7 +255,7 @@ pub(crate) fn cached(
     len: u64,
 ) -> Result<Arc<CachedExtent>> {
     let cache = extent_cache();
-    let mut extents = cache.extents.lock().unwrap();
+    let mut extents = cache.extents.with(Mutex::lock);
     let key = held_key(&extents, placement.arena(), extent);
     let mut moved = None;
     if !extents.contains_key(&key) {
@@ -254,16 +265,16 @@ pub(crate) fn cached(
         if let Placement::Public(reach) = &placement {
             // A tenant's copy, which moves here (TASK-234): of this extent alone.
             assert_eq!(reach.extent(), extent, "a tenant's copy moved for another extent");
-            let arenas = cache.arenas.lock().unwrap();
+            let arenas = cache.arenas.with(Mutex::lock);
             let other = arenas.iter().find_map(|of| extents.remove(&(*of, extent)));
             if let Some(other) = other {
                 holders.adopt(&other.holders);
                 moved = Some(other.extent.clone());
-                let from = Mutex::new(Some(other.extent));
+                let from = SharedLock::new("promoted extent", Mutex::new(Some(other.extent)));
                 contents = Box::new(Promoted { from, stored: contents });
             }
         } else if key.0 != ArenaId::DEFAULT {
-            cache.arenas.lock().unwrap().insert(key.0);
+            cache.arenas.with(Mutex::lock).insert(key.0);
         }
         let new = Arc::new(CachedExtent::new(key.0, extent, contents, len));
         extents.insert(key, Cached { extent: new, holders });
@@ -323,7 +334,7 @@ fn held_key(
 #[cfg(test)]
 pub(crate) fn find(arena: ArenaId, extent: ExtentId) -> Option<Arc<CachedExtent>> {
     let cache = EXTENT_CACHE.get()?;
-    let extents = cache.extents.lock().unwrap();
+    let extents = cache.extents.with(Mutex::lock);
     extents.get(&(arena, extent)).map(|cached| cached.extent.clone())
 }
 
@@ -338,14 +349,14 @@ pub(crate) fn freed(
 ) -> Option<Arc<CachedExtent>> {
     let cache = EXTENT_CACHE.get()?;
     let (key, cached, holders) = {
-        let extents = cache.extents.lock().unwrap();
+        let extents = cache.extents.with(Mutex::lock);
         let key = held_key(&extents, arena, extent);
         let (cached, holders) =
             extents.get(&key).map(|cached| (cached.extent.clone(), cached.holders.clone()))?;
         (key, cached, holders)
     };
     if !holders.another_holds(store, extent.into()) {
-        let mut extents = cache.extents.lock().unwrap();
+        let mut extents = cache.extents.with(Mutex::lock);
         let same = extents.get(&key).is_some_and(|now| Arc::ptr_eq(&now.extent, &cached));
         let removed = same.then(|| extents.remove(&key));
         drop(extents);
@@ -369,7 +380,7 @@ pub(crate) struct Entries {
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub(crate) fn entries() -> Entries {
     let Some(cache) = EXTENT_CACHE.get() else { return Entries::default() };
-    let extents = cache.extents.lock().unwrap();
+    let extents = cache.extents.with(Mutex::lock);
     let idle = extents.values().filter(|cached| Arc::strong_count(&cached.extent) == 1).count();
     Entries { pinned: (extents.len() - idle) as u64, idle: idle as u64 }
 }
@@ -378,7 +389,7 @@ pub(crate) fn entries() -> Entries {
 #[cfg(test)]
 pub(crate) fn keys() -> Vec<(ArenaId, ExtentId)> {
     let Some(cache) = EXTENT_CACHE.get() else { return Vec::new() };
-    cache.extents.lock().unwrap().keys().copied().collect()
+    cache.extents.with(Mutex::lock).keys().copied().collect()
 }
 
 /// Takes out of the cache `extents` those asked for longest ago that nothing else holds, down to
@@ -527,7 +538,7 @@ impl Contents for StoredExtent {
 /// pages in memory copied, and the rest read from the stores; either way, the copy's pages go, and
 /// the copy once none is left.
 struct Promoted {
-    from: Mutex<Option<Arc<CachedExtent>>>,
+    from: SharedLock<Mutex<Option<Arc<CachedExtent>>>>,
     stored: Box<dyn Contents>,
 }
 
@@ -539,7 +550,7 @@ impl Contents for Promoted {
     ) -> BoxFuture<'a, std::result::Result<(), anyhow::Error>> {
         let ps = page_size();
         let pages = offset / ps..(offset + buf.len() as u64).div_ceil(ps);
-        let from = self.from.lock().unwrap().clone();
+        let from = self.from.with(Mutex::lock).clone();
         Box::pin(async move {
             let copied = from.as_ref().is_some_and(|from| from.copy_present(offset, buf));
             if !copied {
@@ -548,7 +559,7 @@ impl Contents for Promoted {
             if let Some(from) = from {
                 from.evict_pages(pages);
                 if from.present.load(Ordering::Relaxed) == 0 {
-                    self.from.lock().unwrap().take();
+                    self.from.with(Mutex::lock).take();
                 }
             }
             Ok(())
@@ -589,7 +600,7 @@ pub(crate) struct CachedExtent {
     extent: ExtentId,
     contents: Box<dyn Contents>,
     len: u64,
-    pages: Mutex<Pages>,
+    pages: SharedLock<Mutex<Pages>>,
     /// How many of its pages are in memory, which relief asks of every extent cached (TASK-92.33).
     present: AtomicUsize,
     /// When it was last asked for or faulted on, by [`CACHE_CLOCK`]: those longest ago are evicted
@@ -610,7 +621,10 @@ impl CachedExtent {
         let count = len.div_ceil(page_size()) as usize;
         let slots = std::iter::repeat_with(|| Slot::Absent).take(count).collect();
         // A reader from its start reads on.
-        let pages = Mutex::new(Pages { slots, windows: Vec::new(), next: 0 });
+        let pages = SharedLock::new(
+            "cached extent pages",
+            Mutex::new(Pages { slots, windows: Vec::new(), next: 0 }),
+        );
         Self {
             arena,
             extent,
@@ -636,7 +650,7 @@ impl CachedExtent {
         if self.present.load(Ordering::Relaxed) == 0 {
             return None;
         }
-        let pages = self.pages.lock().unwrap();
+        let pages = self.pages.with(Mutex::lock);
         let mapped = pages.windows.iter().any(|window| window.strong_count() > 0);
         Some((mapped, self.used.load(Ordering::Relaxed)))
     }
@@ -654,7 +668,7 @@ impl CachedExtent {
     /// How many of its pages are in memory.
     #[cfg(test)]
     pub(crate) fn held(&self) -> u64 {
-        let pages = self.pages.lock().unwrap();
+        let pages = self.pages.with(Mutex::lock);
         pages.slots.iter().filter(|slot| matches!(slot, Slot::Present(_))).count() as u64
     }
 
@@ -672,7 +686,7 @@ impl CachedExtent {
             let (page, within) = (at / ps, (at % ps) as usize);
             let len = (ps as usize - within).min(bytes.len() - done);
             futures::executor::block_on(self.clone().bring_in(page))?;
-            let pages = self.pages.lock().unwrap();
+            let pages = self.pages.with(Mutex::lock);
             // Evicted meanwhile: read in again.
             let Some(Slot::Present(frame)) = pages.slots.get(page as usize) else { continue };
             // SAFETY: The page is the extent's, in memory while its lock is held, and sealed: only
@@ -688,7 +702,7 @@ impl CachedExtent {
     /// whether they were (TASK-234).
     fn copy_present(&self, offset: u64, data: &mut [u8]) -> bool {
         let ps = page_size();
-        let pages = self.pages.lock().unwrap();
+        let pages = self.pages.with(Mutex::lock);
         let first = offset / ps;
         let count = (data.len() as u64).div_ceil(ps);
         let frames: Option<Vec<_>> = (first..first + count)
@@ -708,13 +722,13 @@ impl CachedExtent {
 
     /// The windows that map it.
     fn windows(&self) -> Vec<Arc<Window>> {
-        let pages = self.pages.lock().unwrap();
+        let pages = self.pages.with(Mutex::lock);
         pages.windows.iter().filter_map(Weak::upgrade).collect()
     }
 
     /// The first pages of its parts of which a page is in memory (TASK-234).
     fn present_parts(&self) -> Vec<u64> {
-        let pages = self.pages.lock().unwrap();
+        let pages = self.pages.with(Mutex::lock);
         let count = pages.slots.len() as u64;
         let mut parts = Vec::new();
         let mut page = 0;
@@ -738,7 +752,7 @@ impl CachedExtent {
     /// Evicts its pages in memory of `range`, as [`CachedExtent::evict`] evicts them all.
     fn evict_pages(&self, range: Range<u64>) -> u64 {
         let (frames, windows) = {
-            let mut pages = self.pages.lock().unwrap();
+            let mut pages = self.pages.with(Mutex::lock);
             let mut frames = HashSet::new();
             let end = range.end.min(pages.slots.len() as u64) as usize;
             let start = (range.start as usize).min(end);
@@ -763,7 +777,7 @@ impl CachedExtent {
             window.unmap_pages_of(identity, &|frame| frames.contains(&frame));
         }
         let evicted: Vec<physmem::Page> = {
-            let mut pages = self.pages.lock().unwrap();
+            let mut pages = self.pages.with(Mutex::lock);
             (pages.slots.iter_mut())
                 .filter_map(|slot| match std::mem::replace(slot, Slot::Absent) {
                     Slot::Evicting(frame) => Some(frame),
@@ -785,7 +799,7 @@ impl CachedExtent {
     async fn read_part(self: Arc<Self>, pages: Range<u64>) {
         let ps = page_size();
         let read = self.read_pages(pages.clone()).await;
-        let mut table = self.pages.lock().unwrap();
+        let mut table = self.pages.with(Mutex::lock);
         match read {
             Ok(frames) => {
                 for (page, frame) in pages.zip(frames) {
@@ -895,7 +909,7 @@ impl CachedExtent {
 
 impl Source for CachedExtent {
     fn each_present(&self, pages: Range<u64>, found: &mut dyn FnMut(u64, &physmem::Page)) {
-        let table = self.pages.lock().unwrap();
+        let table = self.pages.with(Mutex::lock);
         for page in pages {
             if let Some(Slot::Present(frame)) = table.slots.get(page as usize) {
                 found(page, frame);
@@ -909,7 +923,7 @@ impl Source for CachedExtent {
             let mut waited = false;
             loop {
                 let listener = {
-                    let mut table = self.pages.lock().unwrap();
+                    let mut table = self.pages.with(Mutex::lock);
                     match table.slots.get(page as usize) {
                         None => return Err(Errno::ENOENT),
                         Some(Slot::Present(_)) => return Ok(waited),
@@ -932,16 +946,16 @@ impl Source for CachedExtent {
 
     /// The rest of its part, which a page-in reads whole.
     fn brought_in_with(&self, page: u64) -> u64 {
-        let count = self.pages.lock().unwrap().slots.len() as u64;
+        let count = self.pages.with(Mutex::lock).slots.len() as u64;
         self.part_of(page, count).end.saturating_sub(page).max(1)
     }
 
     fn mapped(&self, window: &Arc<Window>) {
-        self.pages.lock().unwrap().windows.push(Arc::downgrade(window));
+        self.pages.with(Mutex::lock).windows.push(Arc::downgrade(window));
     }
 
     fn unmapped(&self, window: &Window) {
-        let mut table = self.pages.lock().unwrap();
+        let mut table = self.pages.with(Mutex::lock);
         table.windows.retain(|mapped| !std::ptr::eq(mapped.as_ptr(), window));
     }
 

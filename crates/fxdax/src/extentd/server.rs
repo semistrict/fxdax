@@ -17,6 +17,7 @@ use crate::store_requests::{self, Guest, Resizes, Shrinking};
 use crate::store_table::Writer;
 use crate::{Commit, MappingContents, VolatileSlice, VolatileSliceMut, WindowMapping};
 use crate::{DaxWindow, Errno, ExtentStore, SecondStage};
+use extent_store::shared::SharedLock;
 use std::os::fd::AsFd;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
@@ -443,13 +444,13 @@ async fn run_connection(stream: UnixStream, tenant: Arc<Tenant>) {
         tenant,
         peer: peer.clone(),
         store: OnceLock::new(),
-        phase: Mutex::new(Phase::Unopened),
-        window: Mutex::new(None),
-        behind: Mutex::new(None),
+        phase: SharedLock::new("connection phase", Mutex::new(Phase::Unopened)),
+        window: SharedLock::new("connection window", Mutex::new(None)),
+        behind: SharedLock::new("connection behind", Mutex::new(None)),
         shrinking: Shrinking::new(),
         transfer: OnceLock::new(),
         closing: AtomicBool::new(false),
-        requests: Mutex::new(Requests::default()),
+        requests: SharedLock::new("connection requests", Mutex::new(Requests::default())),
         drained: Arc::new(event_listener::Event::new()),
         report: snapshot::Report::new(&peer.sender),
         page_ins: tokio::sync::Semaphore::new(PAGE_INS),
@@ -497,13 +498,13 @@ async fn run_connection(stream: UnixStream, tenant: Arc<Tenant>) {
     // Its requests received are served still, as they were before it went.
     loop {
         let drained = connection.drained.listen();
-        if connection.requests.lock().unwrap().is_done() {
+        if connection.requests.with(Mutex::lock).is_done() {
             break;
         }
         drained.await;
     }
     // What it committed is durable before another connection may open its store.
-    let behind = connection.behind.lock().unwrap().take();
+    let behind = connection.behind.with(Mutex::lock).take();
     if let Some((stop, behind)) = behind {
         drop(stop);
         let _ = behind.await;
@@ -619,7 +620,7 @@ impl Connection {
         if self.store().is_some_and(|store| store.is_fenced()) {
             return true;
         }
-        let window = self.window.lock().unwrap();
+        let window = self.window.with(Mutex::lock);
         self.peer.acks.unacknowledged() || window.as_ref().is_some_and(DaxWindow::maps_pages)
     }
 }
@@ -686,7 +687,7 @@ impl Turn {
     /// flight until the turn ends.
     fn defer(&mut self) {
         let connection = self.connection().clone();
-        connection.requests.lock().unwrap().deferred += 1;
+        connection.requests.with(Mutex::lock).deferred += 1;
         connection.next_turn();
         self.deferred = true;
     }
@@ -785,7 +786,7 @@ impl Answer {
         super::metrics::served(header.kind, self.started.elapsed(), reply.status != 0);
         let bytes = stream_bytes(&header);
         if bytes > 0 {
-            self.connection.requests.lock().unwrap().stream_bytes -= bytes;
+            self.connection.requests.with(Mutex::lock).stream_bytes -= bytes;
             // fxdax: and its tenant's, which its reply's bytes are counted in as they're queued.
             self.connection.tenant.in_flight().sub(bytes);
         }
@@ -884,6 +885,9 @@ pub(super) fn in_dir(path: &Path, dir: &Path) -> bool {
 /// How long a shrink waits for the guest's answer.
 const SHRINK_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
 
+/// What works behind a connection's store, a task, and what stops it, dropped.
+type Behind = (tokio::sync::oneshot::Sender<()>, tokio::task::JoinHandle<()>);
+
 /// A connection's store and window.
 pub(super) struct Connection {
     this: Weak<Connection>,
@@ -895,12 +899,14 @@ pub(super) struct Connection {
     /// read by its every request, without a lock. fxdax: a follower's, if read-only (backlog
     /// doc-8).
     store: OnceLock<Arc<ExtentStore>>,
-    /// Where it is in its life: whether it has its store, and how (TASK-160.8).
-    phase: Mutex<Phase>,
-    window: Mutex<Option<DaxWindow>>,
+    /// Where it is in its life: whether it has its store, and how (TASK-160.8). Its locks are
+    /// its requests', its teardown's and its window's, beyond what fences its store: a panic
+    /// holding one aborts the daemon (`extent_store::shared`, TASK-149.24).
+    phase: SharedLock<Mutex<Phase>>,
+    window: SharedLock<Mutex<Option<DaxWindow>>>,
     /// What works behind the store, a task, and what stops it, dropped: making a writer's commits
     /// durable behind them; fxdax: telling a follower's VM process of its writer's commits.
-    behind: Mutex<Option<(tokio::sync::oneshot::Sender<()>, tokio::task::JoinHandle<()>)>>,
+    behind: SharedLock<Mutex<Option<Behind>>>,
     /// The shrink the guest was asked to take, and where its answer goes ([`RESIZED`]).
     shrinking: Shrinking,
     /// Its transfer area, once its VM process gives it one ([`TRANSFER`]).
@@ -908,7 +914,7 @@ pub(super) struct Connection {
     /// Whether its VM process is gone, and its store goes once durable.
     closing: AtomicBool,
     /// Its requests received and not done (TASK-34), and what says when none is left.
-    requests: Mutex<Requests>,
+    requests: SharedLock<Mutex<Requests>>,
     drained: Arc<event_listener::Event>,
     /// fxdax: what the daemon reports of its VM process (TASK-111.4): its store, its build, what
     /// it says of its window's second stage, and its answers to asks for its stats.
@@ -949,14 +955,14 @@ impl Opening<'_> {
         let follower = matches!(opened, Phase::Following);
         self.0.report.opened(store_key(path), store.branch(), follower);
         assert!(self.0.store.set(store).is_ok(), "a connection opened a second store");
-        let was = std::mem::replace(&mut *self.0.phase.lock().unwrap(), opened);
+        let was = std::mem::replace(&mut *self.0.phase.with(Mutex::lock), opened);
         assert!(matches!(was, Phase::Opening), "a connection opened a store not opening one");
     }
 }
 
 impl Drop for Opening<'_> {
     fn drop(&mut self) {
-        let mut phase = self.0.phase.lock().unwrap();
+        let mut phase = self.0.phase.with(Mutex::lock);
         if matches!(*phase, Phase::Opening) {
             *phase = Phase::Unopened;
         }
@@ -972,8 +978,8 @@ impl Drop for Connection {
     /// once, and what it holds must go, in this order, whatever panicked.
     fn drop(&mut self) {
         drop(self.store.take());
-        drop(self.window.get_mut().unwrap_or_else(PoisonError::into_inner).take());
-        let phase = self.phase.get_mut().unwrap_or_else(PoisonError::into_inner);
+        drop(self.window.get_mut().get_mut().unwrap_or_else(PoisonError::into_inner).take());
+        let phase = self.phase.get_mut().get_mut().unwrap_or_else(PoisonError::into_inner);
         drop(std::mem::replace(phase, Phase::Unopened));
     }
 }
@@ -1014,7 +1020,7 @@ impl Connection {
 
     /// Its hold of its store, if it writes it.
     fn hold(&self) -> Option<Arc<stores::Hold>> {
-        match &*self.phase.lock().unwrap() {
+        match &*self.phase.with(Mutex::lock) {
             Phase::Writing(hold) => Some(hold.clone()),
             Phase::Unopened | Phase::Opening | Phase::Following => None,
         }
@@ -1038,7 +1044,7 @@ impl Connection {
     ) {
         let (stop, stopped) = tokio::sync::oneshot::channel();
         let task = IO.spawn(work(stopped));
-        *self.behind.lock().unwrap() = Some((stop, task));
+        *self.behind.with(Mutex::lock) = Some((stop, task));
     }
 
     /// fxdax: admits a message of `header`, before its payload is read, as the protocol's bounds
@@ -1056,7 +1062,7 @@ impl Connection {
         }
         let bytes = stream_bytes(&header);
         {
-            let requests = self.requests.lock().unwrap();
+            let requests = self.requests.with(Mutex::lock);
             let in_flight = requests.in_flight();
             let held = requests.stream_bytes + bytes + self.peer.sender.queued();
             if in_flight >= MAX_REQUESTS || held > self.peer.room() {
@@ -1068,14 +1074,14 @@ impl Connection {
         if bytes > 0 {
             self.tenant.in_flight().take(bytes).await;
         }
-        self.requests.lock().unwrap().stream_bytes += bytes;
+        self.requests.with(Mutex::lock).stream_bytes += bytes;
         Ok(())
     }
 
     /// `message`, a request, to serve now, unless [`WORKERS`] of the connection's run, when it
     /// waits for one of them to be done, which serves it then ([`Connection::serve_in_turn`]).
     fn admit(&self, message: Message) -> Option<Message> {
-        let mut requests = self.requests.lock().unwrap();
+        let mut requests = self.requests.with(Mutex::lock);
         if requests.running == WORKERS {
             requests.waiting.push_back(message);
             return None;
@@ -1125,7 +1131,7 @@ impl Connection {
     /// Serves the next request waiting, if any, on the [`Pool`], the last having been served; or,
     /// with none, counts one fewer running.
     fn next_turn(self: Arc<Self>) {
-        let mut requests = self.requests.lock().unwrap();
+        let mut requests = self.requests.with(Mutex::lock);
         match requests.waiting.pop_front() {
             Some(next) => {
                 drop(requests);
@@ -1148,7 +1154,7 @@ impl Connection {
 
     /// fxdax: counts a request deferred ([`Turn::defer`]) answered.
     fn answered_deferred(self: Arc<Self>) {
-        let mut requests = self.requests.lock().unwrap();
+        let mut requests = self.requests.with(Mutex::lock);
         requests.deferred -= 1;
         let drained = requests.is_done().then(|| self.drained.clone());
         drop(requests);
@@ -1278,7 +1284,11 @@ impl Connection {
             // No larger than the daemon makes room for, the codec has it (TASK-150.3).
             Request::Window { size, private_max, budget } => {
                 let (sender, acks) = (self.peer.sender.clone(), self.peer.acks.clone());
-                let stage = Arc::new(RemoteStage { sender, acks, change: Mutex::default() });
+                let stage = Arc::new(RemoteStage {
+                    sender,
+                    acks,
+                    change: SharedLock::new("stage change", Mutex::default()),
+                });
                 // fxdax: a writer's copies on write, and only a writer's (backlog doc-13).
                 let writer = self.hold().is_some();
                 let window = match private_max {
@@ -1302,7 +1312,7 @@ impl Connection {
                 self.peer.set_window(window.size());
                 // fxdax: its gauges, and its runs' budget, as its VM process says (TASK-111.5).
                 self.report.windowed(window.gauges(), *budget);
-                *self.window.lock().unwrap() = Some(window);
+                *self.window.with(Mutex::lock) = Some(window);
                 Ok(())
             }
             Request::Resized { capacity, took } => {
@@ -1323,7 +1333,7 @@ impl Connection {
     async fn fault(self: Arc<Self>, fault: Fault, answer: Answer) {
         let Fault { offset, access, page, .. } = fault;
         let faulted = async {
-            let window = self.window.lock().unwrap().clone().ok_or(Errno::EBADF)?;
+            let window = self.window.with(Mutex::lock).clone().ok_or(Errno::EBADF)?;
             // fxdax: in its turn, as what it pages in holds memory (TASK-149.34).
             let _turn = self.page_ins.acquire().await.map_err(|_| Errno::EIO)?;
             window.fault(offset, access).await
@@ -1362,7 +1372,7 @@ impl Connection {
     /// pages it copies to be brought in.
     async fn make_private(self: Arc<Self>, window_offset: u64, len: u64, answer: Answer) {
         let made = async {
-            let window = self.window.lock().unwrap().clone().ok_or(Errno::EBADF)?;
+            let window = self.window.with(Mutex::lock).clone().ok_or(Errno::EBADF)?;
             // fxdax: in its turn, as a fault's, as it pages in what it copies (TASK-149.34).
             let _turn = self.page_ins.acquire().await.map_err(|_| Errno::EIO)?;
             window.make_private(window_offset, len).await
@@ -1402,7 +1412,7 @@ impl Connection {
     /// requests are served side by side, or it has its store (TASK-150.5). What an `OPEN` holds
     /// meanwhile, its store's path among it, its [`Opening`] gives the connection, or it lets go of.
     fn opening(&self) -> Result<Opening<'_>, Errno> {
-        let mut phase = self.phase.lock().unwrap();
+        let mut phase = self.phase.with(Mutex::lock);
         match *phase {
             Phase::Unopened => {
                 *phase = Phase::Opening;
@@ -1522,7 +1532,7 @@ impl Connection {
     /// How many of its requests it received and has not answered.
     #[cfg(test)]
     pub(super) fn unanswered(&self) -> usize {
-        self.requests.lock().unwrap().in_flight()
+        self.requests.with(Mutex::lock).in_flight()
     }
 
     /// How many bytes it has queued for its VM process, which its socket has not taken.
@@ -2261,13 +2271,13 @@ struct RemoteStage {
     /// its lock (`SecondStage::begin_change`): nothing else of the window's comes between, nor
     /// does any wait, so that the guest's access to a page waits for no operation held back
     /// (TASK-160.11).
-    change: Mutex<Option<Vec<StageOp>>>,
+    change: SharedLock<Mutex<Option<Vec<StageOp>>>>,
 }
 
 impl RemoteStage {
     /// Sends the stage operation `op`, or holds it back with the change being made.
     fn send(&self, op: StageOp) {
-        let mut change = self.change.lock().unwrap();
+        let mut change = self.change.with(Mutex::lock);
         match change.as_mut() {
             Some(ops) => ops.push(op),
             None => self.send_now(&[op]),
@@ -2292,13 +2302,18 @@ impl SecondStage for RemoteStage {
     }
 
     fn begin_change(&self) {
-        let before = self.change.lock().unwrap().replace(Vec::new());
+        let before = self.change.with(Mutex::lock).replace(Vec::new());
         assert!(before.is_none(), "a window's change begun in another");
     }
 
+    /// fxdax: as a change's drop ends it: during a panic, which a window's lock held has aborted
+    /// the daemon for, unless a test's window, panicking no more (TASK-149.24).
     fn end_change(&self) {
-        let mut change = self.change.lock().unwrap();
-        let ops = change.take().expect("a window's change ended, not begun");
+        let mut change = self.change.with(Mutex::lock);
+        let Some(ops) = change.take() else {
+            assert!(std::thread::panicking(), "a window's change ended, not begun");
+            return;
+        };
         if !ops.is_empty() {
             self.send_now(&ops);
         }

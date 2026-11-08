@@ -40,6 +40,7 @@ pub(crate) mod uffd;
 use crate::error::{Errno, Result};
 use crate::extents::{ExtentId, MappingContents, WindowMapping};
 use crate::pages::{PhysLocation, page_size};
+use extent_store::shared::SharedLock;
 use futures::future::BoxFuture;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::ops::Range;
@@ -313,7 +314,7 @@ impl DaxWindow {
 
     /// Whether it has pages mapped in its second stage, or in host memory, which reach them.
     pub fn maps_pages(&self) -> bool {
-        !self.0.state.lock().unwrap().ptes.is_empty()
+        !self.0.state.with(Mutex::lock).ptes.is_empty()
     }
 
     /// fxdax: makes the `len` bytes at `offset` private now, as stores to each page would, and
@@ -332,7 +333,7 @@ impl DaxWindow {
     /// goes: one window's of what [`live`] counts of them all (TASK-111.5).
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     pub(crate) fn gauges(&self) -> Arc<Gauges> {
-        self.0.state.lock().unwrap().gauges.clone()
+        self.0.state.with(Mutex::lock).gauges.clone()
     }
 }
 
@@ -620,7 +621,9 @@ impl WindowState {
 pub(crate) struct Window {
     size: u64,
     translation: Translation,
-    state: Mutex<WindowState>,
+    /// fxdax: shared with its connection's [`DaxWindow`] and the guest's faults, beyond what fences
+    /// its store: a panic holding it aborts the daemon (`extent_store::shared`, TASK-149.24).
+    state: SharedLock<Mutex<WindowState>>,
     /// fxdax: how it copies on write, if it does (backlog doc-13): a store to a window that
     /// doesn't, a follower's, is refused.
     copy_on_write: Option<CopyOnWrite>,
@@ -647,7 +650,7 @@ impl Window {
             Some(stage) => Translation::Stage(stage),
             None => Translation::Host { base: reserve(None, len).map_err(|_| Errno::ENOMEM)? },
         };
-        let state = Mutex::new(WindowState::new());
+        let state = SharedLock::new("window", Mutex::new(WindowState::new()));
         Ok(Self { size, translation, state, copy_on_write })
     }
 
@@ -677,7 +680,7 @@ impl Window {
     }
 
     fn is_mapped(&self, offset: u64) -> bool {
-        self.state.lock().unwrap().mapping_at(offset).is_some()
+        self.state.with(Mutex::lock).mapping_at(offset).is_some()
     }
 
     /// Resolves the guest's fault at `offset` for `access`: a load's maps the page
@@ -712,7 +715,7 @@ impl Window {
         let mut waited = false;
         loop {
             let (source, page, mapped) = {
-                let state = self.state.lock().unwrap();
+                let state = self.state.with(Mutex::lock);
                 let (start, mapping) = state.mapping_at(offset).ok_or(Errno::ENOENT)?;
                 if state.ptes.contains_key(&offset) {
                     return Ok(waited);
@@ -722,7 +725,7 @@ impl Window {
                 (mapping.source.clone(), page, left.min(mapping.source.brought_in_with(page)))
             };
             waited |= source.clone().bring_in(page).await?;
-            let mut state = self.state.lock().unwrap();
+            let mut state = self.state.with(Mutex::lock);
             let same = state.mapping_at(offset).is_some_and(|(start, mapping)| {
                 source_identity(&mapping.source) == source_identity(&source)
                     && mapping.page + (offset - start) / ps == page
@@ -750,7 +753,7 @@ impl Window {
         let mut waited = false;
         loop {
             let (source, page) = {
-                let state = self.state.lock().unwrap();
+                let state = self.state.with(Mutex::lock);
                 let (start, mapping) = state.mapping_at(offset).ok_or(Errno::ENOENT)?;
                 if state.private.contains(&offset) {
                     return Ok(waited);
@@ -764,7 +767,7 @@ impl Window {
             if !zeros {
                 waited |= source.clone().bring_in(page).await?;
             }
-            let mut state = self.state.lock().unwrap();
+            let mut state = self.state.with(Mutex::lock);
             let _change = self.change();
             // Mapped anew meanwhile, by the guest's MAP or a free's zeros, the store is to what is
             // mapped now.
@@ -881,7 +884,7 @@ impl Window {
         let ps = page_size();
         let pages = (offset..offset + len).step_by(ps as usize);
         {
-            let state = self.state.lock().unwrap();
+            let state = self.state.with(Mutex::lock);
             let mut more = 0;
             for at in pages.clone() {
                 state.mapping_at(at).ok_or(Errno::EINVAL)?;
@@ -894,7 +897,7 @@ impl Window {
         loop {
             // The sources' pages of those not private yet, as mapped now.
             let wanted: Vec<(Arc<dyn Source>, u64)> = {
-                let state = self.state.lock().unwrap();
+                let state = self.state.with(Mutex::lock);
                 (pages.clone())
                     .filter(|at| !state.private.contains(at))
                     .filter_map(|at| {
@@ -907,7 +910,7 @@ impl Window {
             for (source, page) in wanted {
                 source.bring_in(page).await?;
             }
-            let mut state = self.state.lock().unwrap();
+            let mut state = self.state.with(Mutex::lock);
             let _change = self.change();
             // The runs made private, each mapped as one, whatever comes of the rest.
             let mut runs: Vec<(u64, Vec<Option<Held>>)> = Vec::new();
@@ -963,7 +966,7 @@ impl Window {
 
     /// fxdax: the private pages it holds (backlog doc-13): none unless it copies on write.
     pub(crate) fn private_pages(&self) -> u64 {
-        self.state.lock().unwrap().private.len() as u64
+        self.state.with(Mutex::lock).private.len() as u64
     }
 
     /// Maps as [`Window::map_as`] does, as the guest's `MAP`, which ends the private pages there.
@@ -985,7 +988,7 @@ impl Window {
         len: u64,
         private: Private,
     ) {
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.with(Mutex::lock);
         let _change = self.change();
         self.map_locked(&mut state, offset, source, source_offset / page_size(), len, private);
     }
@@ -1018,7 +1021,7 @@ impl Window {
     /// each made a change of its own, of a run at least (TASK-92.14). What a snapshot's window
     /// held is mapped again so, as its VM is restored.
     fn map_many(self: &Arc<Self>, pieces: &[Piece<'_>]) {
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.with(Mutex::lock);
         let _change = self.change();
         let mut anew: Vec<Range<u64>> = Vec::new();
         for &Piece { offset, source, page, len } in pieces {
@@ -1073,7 +1076,7 @@ impl Window {
     /// nothing to map. fxdax: the private pages there stay, the guest's, which only its own `MAP`
     /// or `UNMAP` ends (backlog doc-13).
     fn map_zeros_over(self: &Arc<Self>, source: usize, zeros: &Arc<dyn Source>) -> Vec<Range<u64>> {
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.with(Mutex::lock);
         let _change = self.change();
         let Some(starts) = state.by_source.get(&source) else { return Vec::new() };
         let ranges: Vec<Range<u64>> =
@@ -1092,7 +1095,7 @@ impl Window {
     /// The window's mappings, in order, as a snapshot of its VM records them, to map them again
     /// where it is restored ([`crate::ExtentStore::window_mappings`]).
     fn mappings(&self) -> Vec<WindowMapping> {
-        let state = self.state.lock().unwrap();
+        let state = self.state.with(Mutex::lock);
         (state.mappings.iter())
             .map(|(start, mapping)| WindowMapping {
                 window_offset: *start,
@@ -1110,7 +1113,7 @@ impl Window {
     /// Unmaps `len` bytes of the window at `offset`: fxdax: the guest's `UNMAP`, which ends the
     /// private pages there.
     fn unmap(&self, offset: u64, len: u64) {
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.with(Mutex::lock);
         self.unmap_locked(&mut state, offset, len, Private::Free);
     }
 
@@ -1139,7 +1142,7 @@ impl Window {
     /// staying. fxdax: a tenant's copy of an extent moved to the default arena, which every VM
     /// process may read, so that the window faults on nothing of the copy, which goes (TASK-234).
     pub(crate) fn rebind(self: &Arc<Self>, from: &Arc<dyn Source>, to: Arc<dyn Source>) {
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.with(Mutex::lock);
         let Some(starts) = state.by_source.remove(&source_identity(from)) else { return };
         let mut gone = Vec::new();
         for start in &starts {
@@ -1165,7 +1168,7 @@ impl Window {
     /// are of the frames it evicts: before it lets go of them. fxdax: a private page within its
     /// mappings is none of its pages, and stays (backlog doc-13).
     pub(crate) fn unmap_pages_of(&self, source: usize, evicted: &dyn Fn(u32) -> bool) {
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.with(Mutex::lock);
         let Some(starts) = state.by_source.get(&source) else { return };
         let ranges: Vec<(u64, u64)> =
             starts.iter().map(|start| (*start, state.mappings[start].end)).collect();

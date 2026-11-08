@@ -14,6 +14,7 @@ use crate::layout::{
     encode, extent_path, files_of, list_numbers, open_extent_path, segment_path,
 };
 use crate::segments::{Behind, Reaped, Segments, Unframed, footer_last};
+use crate::shared::{Shared, SharedLock};
 use crate::state::{
     Framing, Gate, Life, Locked, OwnFiles, Placement, Readable, Reader, Space, Standing, State,
     Uncommitted, Unreferenced, Writable,
@@ -180,6 +181,9 @@ pub struct Usage {
     pub kept_for_views: u64,
 }
 
+/// fxdax: a store's directory, taken and claimed for its opening, until it closes.
+type Opened<D> = Option<(Claim<D>, Arc<Taken<D>>)>;
+
 /// An extent store, open. See the crate's docs.
 pub struct Store<D: Dir> {
     /// Its directory, which its framings share.
@@ -191,24 +195,24 @@ pub struct Store<D: Dir> {
     /// Its directory, taken for this process ([`Dir::take`]), and claimed for its opening
     /// ([`Dir::claim`]): closing it lets go of both, but of the taking what holds it still
     /// ([`Store::hold_dir`]).
-    opened: Mutex<Option<(Claim<D>, Arc<Taken<D>>)>>,
+    opened: SharedLock<Mutex<Opened<D>>>,
     /// The parts of its files read lately, unpacked.
     unpacked: Unpacked,
     options: Options,
     /// fxdax: shared with the framings of its segments, each of which ends itself in it, on a
     /// thread of its own (TASK-153.8).
-    state: Arc<Mutex<State<D::File>>>,
+    state: Arc<SharedLock<Mutex<State<D::File>>>>,
     /// Held by a commit.
-    committing: Mutex<()>,
+    committing: SharedLock<Mutex<()>>,
     /// When its commits are durable: those ordered that no flush has taken yet, oldest first, for
     /// [`Store::flush`] to make durable, and the last that is.
-    durability: Mutex<Durability<Pending<D::File>>>,
+    durability: SharedLock<Mutex<Durability<Pending<D::File>>>>,
     /// Held by a flush: commits become durable in order. fxdax: and the logs flushes append
     /// records to, of the open segment, and of those closed since whose commits wait (TASK-165.9).
-    flushing: Mutex<Logs<D::File>>,
+    flushing: SharedLock<Mutex<Logs<D::File>>>,
     /// fxdax: the base of its write-ahead log, written as segments are acknowledged, before their
     /// files leave (TASK-165.9).
-    base: Mutex<BaseFile>,
+    base: SharedLock<Mutex<BaseFile>>,
     /// fxdax: the host's cache of the bucket's objects, if it has one: what the bucket acknowledged
     /// of the store's goes into it (TASK-165.8).
     cache: Option<Arc<Cache>>,
@@ -602,35 +606,38 @@ impl<D: Dir> Recovering<D> {
             block_size,
             branch,
             bucket,
-            opened: Mutex::new(Some((claim, taken))),
+            opened: SharedLock::new("store opening", Mutex::new(Some((claim, taken)))),
             unpacked: Unpacked::default(),
             options,
-            state: Arc::new(Mutex::new(State {
-                extents,
-                space: Space::new(capacity, stored, own_stored),
-                epoch,
-                root,
-                next_sequence,
-                spent,
-                uncommitted,
-                gate: Gate::default(),
-                segments,
-                own_files: OwnFiles::new(branch, own_sizes, options.open_files),
-                unreferenced: Unreferenced::default(),
-                wal: Queue::new(wal.base(), queued),
-                point: fenced.is_none(),
-                kept: KeptExtents::default(),
-                sealed: Sealed::default(),
-                standing: Standing::Open,
-                deferred: Vec::new(),
-                framing: Framing::default(),
-                #[cfg(any(test, feature = "audit"))]
-                replay,
-            })),
-            committing: Mutex::new(()),
-            durability: Mutex::new(Durability::new(epoch)),
-            flushing: Mutex::new(log),
-            base: Mutex::new(base_file),
+            state: Arc::new(SharedLock::new(
+                "store state",
+                Mutex::new(State {
+                    extents,
+                    space: Space::new(capacity, stored, own_stored),
+                    epoch,
+                    root,
+                    next_sequence,
+                    spent,
+                    uncommitted,
+                    gate: Gate::default(),
+                    segments,
+                    own_files: OwnFiles::new(branch, own_sizes, options.open_files),
+                    unreferenced: Unreferenced::default(),
+                    wal: Queue::new(wal.base(), queued),
+                    point: fenced.is_none(),
+                    kept: KeptExtents::default(),
+                    sealed: Sealed::default(),
+                    standing: Standing::Open,
+                    deferred: Vec::new(),
+                    framing: Framing::default(),
+                    #[cfg(any(test, feature = "audit"))]
+                    replay,
+                }),
+            )),
+            committing: SharedLock::new("store commit", Mutex::new(())),
+            durability: SharedLock::new("store durability", Mutex::new(Durability::new(epoch))),
+            flushing: SharedLock::new("store flush", Mutex::new(log)),
+            base: SharedLock::new("store log base", Mutex::new(base_file)),
             cache,
             idle: Arc::new(Condvar::new()),
             views,
@@ -816,7 +823,7 @@ impl<D: Dir> Store<D> {
     /// as the store open does: for what outlives the store's closing and still writes in the
     /// directory, as its uploader does as it stops (TASK-129). Fails once it is closed.
     pub fn hold_dir(&self) -> Result<DirHold<D>, Error> {
-        let opened = self.opened.lock().unwrap();
+        let opened = self.opened.with(Mutex::lock);
         let (_, taken) =
             opened.as_ref().ok_or_else(|| anyhow!("branch {:#x} is closed", self.branch))?;
         Ok(DirHold { _taken: taken.clone() })
@@ -828,7 +835,7 @@ impl<D: Dir> Store<D> {
     /// the commit. Returns the commit's epoch. One that fails once its commit was made fails with
     /// [`ForkCommitted`]: the segment names the fork, as a host crashing then would leave it.
     pub fn commit_fork(&self, child: Child) -> Result<u64, Error> {
-        let committing = self.committing.lock().unwrap();
+        let committing = self.committing.with(Mutex::lock);
         self.writable()?.segments.close_for_fork(child);
         self.commit_locked(&committing, None)?;
         let epoch = self.lock().epoch;
@@ -858,7 +865,7 @@ impl<D: Dir> Store<D> {
     /// The state, locked, failed or not: audited as it is let go, in the builds of the tests
     /// ([`Locked`], TASK-160.16).
     fn lock(&self) -> Locked<'_, D::File> {
-        Locked::new(self.state.lock().unwrap())
+        Locked::new(self.state.with(Mutex::lock))
     }
 
     /// The state, to read: unless the store failed ([`Readable`], TASK-160.19).
@@ -878,12 +885,12 @@ impl<D: Dir> Store<D> {
     pub fn close(&self) -> Result<(), Error> {
         // After a flush in flight: its commits are durable, and the files they made unreferenced
         // gone, before another store may open the branch.
-        let mut flushing = rules().close_waits_for_flushes.then(|| self.flushing.lock().unwrap());
+        let mut flushing = rules().close_waits_for_flushes.then(|| self.flushing.with(Mutex::lock));
         let flushed = match &mut flushing {
             Some(_) if !self.flush_pending() => Ok(()),
             Some(flushing) => self.flush_locked(flushing, &mut Flush::default()),
             // With the rule off, as if the commits a flush in flight took were durable.
-            None if !self.durability.lock().unwrap().queued() => Ok(()),
+            None if !self.durability.with(Mutex::lock).queued() => Ok(()),
             None => self.flush(),
         };
         drop(flushing);
@@ -900,12 +907,12 @@ impl<D: Dir> Store<D> {
             state.standing.close();
             // Their raw files, of commits durable, go as a flush's would.
             let raw = match state.standing.failed() {
-                false => state.segments.raw(self.durability.lock().unwrap().durable()),
+                false => state.segments.raw(self.durability.with(Mutex::lock).durable()),
                 true => Vec::new(),
             };
             drop(state);
             self.remove_raw(raw)?;
-            drop(self.opened.lock().unwrap().take());
+            drop(self.opened.with(Mutex::lock).take());
         }
         flushed
     }
@@ -1368,14 +1375,14 @@ impl<D: Dir> Store<D> {
     /// before it. A crash keeps a prefix of the commits, which [`Store::flush`] makes durable in
     /// order: doc-4's `COMMIT` without `COMMIT_DURABLE`.
     pub fn commit_ordered(&self, root: Option<&[u8]>) -> Result<(), Error> {
-        let committing = self.committing.lock().unwrap();
+        let committing = self.committing.with(Mutex::lock);
         self.commit_locked(&committing, root)
     }
 
     /// Commits, as [`Store::commit_ordered`] does, holding `_committing`.
     fn commit_locked(
         &self,
-        _committing: &MutexGuard<'_, ()>,
+        _committing: &Shared<MutexGuard<'_, ()>>,
         root: Option<&[u8]>,
     ) -> Result<(), Error> {
         let mut state = self.writable()?;
@@ -1447,7 +1454,7 @@ impl<D: Dir> Store<D> {
         let record = (segment, encode(contents));
         // Queued while the state is locked, so that commits queue in their order.
         let pending = Pending { syncs, record, doomed, leaving };
-        self.durability.lock().unwrap().push(epoch, pending);
+        self.durability.with(Mutex::lock).push(epoch, pending);
         Ok(())
     }
 
@@ -1667,7 +1674,7 @@ impl<D: Dir> Store<D> {
     /// behind, and returns it: none if no commit came since it opened, nor fork, or the branch is
     /// closed.
     fn close_between_commits(&self) -> Result<Option<SegmentId>, Error> {
-        let _committing = self.committing.lock().unwrap();
+        let _committing = self.committing.with(Mutex::lock);
         let state = self.state()?;
         // Closed, it changes nothing: its last segment closes when it is next opened.
         if state.standing.is_closed() || !state.segments.has_commits(state.epoch) {
@@ -1713,7 +1720,7 @@ impl<D: Dir> Store<D> {
         if self.dir.concurrent() {
             let (dir, shared, idle) = (self.dir.clone(), self.state.clone(), self.idle.clone());
             let framer = move |()| {
-                let mut state = Locked::new(shared.lock().unwrap());
+                let mut state = Locked::new(shared.with(Mutex::lock));
                 while let Some(unframed) = state.framing.queue.pop_front() {
                     // fxdax: none once the store failed, a segment before it among what failed,
                     // saying so (TASK-165.9).
@@ -1721,7 +1728,7 @@ impl<D: Dir> Store<D> {
                     drop(state);
                     let number = unframed.number();
                     let framed = whole.and_then(|()| unframed.frame(&*dir));
-                    state = Locked::new(shared.lock().unwrap());
+                    state = Locked::new(shared.with(Mutex::lock));
                     framing_ended(&mut state, number, framed);
                     idle.notify_all();
                 }
@@ -1771,7 +1778,7 @@ impl<D: Dir> Store<D> {
     /// commits its own (TASK-165.9). The uploader flushes before it takes them, but for commits
     /// made between.
     fn uploadable(&self) -> u64 {
-        self.durability.lock().unwrap().durable()
+        self.durability.with(Mutex::lock).durable()
     }
 
     /// fxdax: `state`, once no segment is being framed ([`Store::frame_behind`]), which it let go
@@ -1852,7 +1859,7 @@ impl<D: Dir> Store<D> {
     /// log's base, its last commit from now on, is durable first, so that the store opened again
     /// puts what is left of the log after the branch (TASK-165.9).
     pub fn acknowledged(&self, number: u64) -> Result<(), Error> {
-        let mut base = self.base.lock().unwrap();
+        let mut base = self.base.with(Mutex::lock);
         let after = {
             let state = self.state()?;
             match state.wal.first() {
@@ -1890,7 +1897,7 @@ impl<D: Dir> Store<D> {
             }
             // fxdax: and the raw files and logs of the segments framed whose commits are durable,
             // as those acknowledged are, which no flush may come to remove (TASK-165.9).
-            let raw = state.segments.raw(self.durability.lock().unwrap().durable());
+            let raw = state.segments.raw(self.durability.with(Mutex::lock).durable());
             (leaving, raw)
         };
         self.remove_raw(raw)?;
@@ -1905,7 +1912,7 @@ impl<D: Dir> Store<D> {
     pub fn flush(&self) -> Result<(), Error> {
         // fxdax: timed, phase by phase (TASK-165.9).
         let asked = Instant::now();
-        let mut logs = self.flushing.lock().unwrap();
+        let mut logs = self.flushing.with(Mutex::lock);
         let mut timed = Flush::default();
         timed.phases.took(flush::WAIT, asked);
         let flushed = self.flush_locked(&mut logs, &mut timed);
@@ -1918,16 +1925,16 @@ impl<D: Dir> Store<D> {
     fn flush_locked(&self, logs: &mut Logs<D::File>, timed: &mut Flush) -> Result<(), Error> {
         // A store that failed makes nothing more durable.
         drop(self.state()?);
-        let batch = self.durability.lock().unwrap().take();
+        let batch = self.durability.with(Mutex::lock).take();
         let durable = match batch {
-            None => self.durability.lock().unwrap().durable(),
+            None => self.durability.with(Mutex::lock).durable(),
             Some(Batch { last, mut commits }) => {
                 if let Err(error) = self.make_durable(logs, &mut commits, timed) {
                     let error = error.context("committing the extent store");
                     self.lock().fail(&error);
                     return Err(error);
                 }
-                self.durability.lock().unwrap().finish(last);
+                self.durability.with(Mutex::lock).finish(last);
                 // The files the commits let go of go, once they are durable; fxdax: those of the
                 // bucket's, into the host's cache (TASK-165.8).
                 let started = Instant::now();
@@ -2031,7 +2038,7 @@ impl<D: Dir> Store<D> {
     /// taken counted not, a daemon's turn finding none took commits for durable that weren't,
     /// a flush of the uploader's in flight (TASK-165.9).
     pub fn flush_pending(&self) -> bool {
-        self.durability.lock().unwrap().pending()
+        self.durability.with(Mutex::lock).pending()
     }
 
     /// Reads `buf.len()` bytes at `offset` in `extent`, as `locate` finds them.
@@ -2092,7 +2099,7 @@ impl<D: Dir> Store<D> {
     /// segment's footer says (TASK-165.3). It may grow it, or shrink it no lower than what the
     /// extents hold, with what writes in progress may add ([`TooSmall`]).
     pub fn set_capacity(&self, capacity: u64) -> Result<(), Error> {
-        let committing = self.committing.lock().unwrap();
+        let committing = self.committing.with(Mutex::lock);
         {
             let mut state = self.writable()?;
             let block_size = self.block_size as u64;
@@ -2364,8 +2371,8 @@ mod tests {
                 let description = Description { block_size: 4096, capacity: 1 << 20, branch: 1 };
                 let store =
                     Store::create(crate::MemDir::new(), description, Options::default()).unwrap();
-                let _committing = store.committing.lock().unwrap();
-                let _state = store.state.lock().unwrap();
+                let _committing = store.committing.with(Mutex::lock);
+                let _state = store.state.with(Mutex::lock);
                 let mut view = store.view();
                 view.advance().unwrap();
                 view.pin(ExtentId::new(1, 1)).unwrap();
@@ -2422,7 +2429,7 @@ mod tests {
         let store = Store::create(crate::MemDir::new(), description, Options::default()).unwrap();
         // Whether extent `sequence` is recorded as sealed after commit `epoch`.
         let sealed_after = |sequence, epoch| {
-            store.state.lock().unwrap().sealed.after(ExtentId::new(1, sequence), epoch)
+            store.state.with(Mutex::lock).sealed.after(ExtentId::new(1, sequence), epoch)
         };
         let commit = |sequence| {
             store.write(ExtentId::new(1, sequence), 0, &[1; 4096]).unwrap();
@@ -2448,7 +2455,7 @@ mod tests {
         let description = Description { block_size: 4096, capacity: 1 << 20, branch: 1 };
         let store = Store::create(crate::MemDir::new(), description, Options::default()).unwrap();
         store.write(ExtentId::new(1, 1), 0, &[1; 4096]).unwrap();
-        store.state.lock().unwrap().space.added(4096, true);
+        store.state.with(Mutex::lock).space.added(4096, true);
         store.epoch().unwrap();
     }
 

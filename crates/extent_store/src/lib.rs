@@ -134,6 +134,7 @@ mod kept;
 mod layout;
 mod mem;
 mod segments;
+pub mod shared;
 mod state;
 mod store;
 mod sync;

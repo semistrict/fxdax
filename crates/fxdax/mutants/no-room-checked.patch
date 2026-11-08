@@ -4,8 +4,8 @@
 # Killer: extentd::tests::hostile::a_compromised_vm_process_harms_no_tenant_beside_it
 --- a/crates/fxdax/src/extentd/server.rs
 +++ b/crates/fxdax/src/extentd/server.rs
-@@ -1038,7 +1038,7 @@
-             let requests = self.requests.lock().unwrap();
+@@ -1065,7 +1065,7 @@
+             let requests = self.requests.with(Mutex::lock);
              let in_flight = requests.in_flight();
              let held = requests.stream_bytes + bytes + self.peer.sender.queued();
 -            if in_flight >= MAX_REQUESTS || held > self.peer.room() {

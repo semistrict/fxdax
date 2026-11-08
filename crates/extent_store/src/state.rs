@@ -22,6 +22,7 @@ use crate::layout::{
 #[cfg(any(test, feature = "audit"))]
 use crate::segments::Recount;
 use crate::segments::{Segments, Unframed};
+use crate::shared::Shared;
 #[cfg(any(test, feature = "audit"))]
 use crate::store::covered;
 use crate::store::{Info, NoSpace, TooSmall};
@@ -521,18 +522,22 @@ impl<F: File, H> DerefMut for Guarded<'_, F, H> {
 /// state other than its files say; or the thread is panicking, which another panic would abort.
 pub(crate) struct Locked<'a, F: File> {
     /// None only as it waits ([`Locked::wait`]).
-    guard: Option<MutexGuard<'a, State<F>>>,
+    guard: Option<StateGuard<'a, F>>,
 }
 
+/// fxdax: the state's lock held, shared beyond one store, as its followers share it with its
+/// writer, which a panic holding aborts the extent daemon (`crate::shared`, TASK-149.24).
+pub(crate) type StateGuard<'a, F> = Shared<MutexGuard<'a, State<F>>>;
+
 impl<'a, F: File> Locked<'a, F> {
-    pub fn new(guard: MutexGuard<'a, State<F>>) -> Self {
+    pub fn new(guard: StateGuard<'a, F>) -> Self {
         Self { guard: Some(guard) }
     }
 
     /// Waits for `condvar`, letting the state go meanwhile, and returns it, locked again.
     pub fn wait(mut self, condvar: &Condvar) -> Self {
         let guard = audited(self.guard.take().expect("the state is locked"));
-        Self::new(condvar.wait(guard).unwrap())
+        Self::new(guard.unlocked(|guard| condvar.wait(guard).unwrap()))
     }
 }
 
@@ -570,7 +575,7 @@ const AUDITED_EXTENTS: usize = 4096;
 /// unpoisoned, saying what it found after [`AUDIT_FAILED`]: the store's drop, closing its branch,
 /// locks it again, which a lock poisoned would panic in, aborting as the audit's panic unwinds.
 #[cfg(any(test, feature = "audit"))]
-fn audited<F: File>(guard: MutexGuard<'_, State<F>>) -> MutexGuard<'_, State<F>> {
+fn audited<F: File>(guard: StateGuard<'_, F>) -> StateGuard<'_, F> {
     if guard.standing.failed() || std::thread::panicking() || guard.extents.len() > AUDITED_EXTENTS
     {
         return guard;
@@ -594,7 +599,7 @@ pub const AUDIT_FAILED: &str = "the extent store's audit found its counts drifte
 
 /// fxdax: `guard`, audited not, in the other builds.
 #[cfg(not(any(test, feature = "audit")))]
-fn audited<F: File>(guard: MutexGuard<'_, State<F>>) -> MutexGuard<'_, State<F>> {
+fn audited<F: File>(guard: StateGuard<'_, F>) -> StateGuard<'_, F> {
     guard
 }
 
