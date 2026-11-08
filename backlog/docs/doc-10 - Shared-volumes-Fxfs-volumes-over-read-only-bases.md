@@ -3,16 +3,17 @@ id: doc-10
 title: 'Shared volumes: Fxfs volumes over read-only bases'
 type: specification
 created_date: '2026-10-30 09:08'
-updated_date: '2026-11-07 09:36'
+updated_date: '2026-11-08 05:34'
 ---
 # Shared volumes: Fxfs volumes over read-only bases
 
-Status, 2026-11-07. Built: the guest's mounts of volumes (TASK-136.2), volumes over base layers in
+Status, 2026-11-08. Built: the guest's mounts of volumes (TASK-136.2), volumes over base layers in
 Fxfs (TASK-136.3), attaching a base to a store (TASK-136.5), and publishing from a sandbox and
-importing in another (TASK-136.4), which the test `fxfs-guest-shared-volumes` runs with Git.
-Measured on a Linux-sized checkout, against ext4 (TASK-136.1): see Proof below. Not
-built: the sandbox manager's part, lookups that attach (TASK-136.6), and moving to a newer generation
-(TASK-136.7). Work: TASK-136.
+importing in another (TASK-136.4), which the test `fxfs-guest-shared-volumes` runs with Git; lookups
+that attach, and idle mounts that expire (TASK-136.6, `fxfs-guest-automount`); and `git fetch`
+moving onto a newer generation (TASK-136.7, `fxfs-guest-git-fetch`). Measured on a Linux-sized
+checkout, against ext4 (TASK-136.1): see Proof below. Not built: the sandbox manager's part, which
+the tests stand in for, answering the guest's asks (Automount, below). Work: TASK-136.
 It sits on top of the filesystem and is separate from TASK-96, the abstract extent store split. Idea
 note: `~/docs/ideas/fxfs-native-overlay-for-shared-repos.md`.
 
@@ -223,34 +224,73 @@ Limits:
 
 ### Automount (TASK-136.6)
 
-`d_automount` on a path lookup, combining with gyit's path-is-the-URL idea (`~/docs/projects/gat.md`).
-As only the sandbox manager attaches, the lookup waits on an upcall through a guest agent.
+Built: `fxfs-automount ROOT FILESYSTEM` (`crates/fxfs-automount`), a guest's daemon. A lookup of a
+name under ROOT, `/repos/linux`, mounts the volume of that name there and returns once it is
+mounted. The volume, if the filesystem has none of that name, is imported first, through the
+volume mounted at FILESYSTEM, from the manifest the sandbox manager answers with once it attached
+the base. A name it refuses fails the lookup with `ENOENT`, leaving nothing mounted nor made. A
+volume imported already, by an earlier lookup or before a reboot, mounts with no ask, as its base
+stays attached (TASK-136.5's record).
+
+- **The kernel's side is Linux's autofs**, protocol 5, an indirect map on ROOT, not a
+  `d_automount` of fs/fxfs's own: autofs is `d_automount`'s client already. It holds every lookup
+  of a name on one wait while the daemon mounts it, so that concurrent lookups of a repo attach it
+  once; it lets the daemon's process group alone through the directory unmounted (the daemon makes
+  a group of its own); and it finds the mounts idle for the timeout, which the daemon unmounts as
+  it asks (`AUTOFS_IOC_EXPIRE_MULTI`). No kernel code of fxdax's is involved. Firecracker's CI
+  configuration of its guests builds autofs in.
+- **The upcall:** the daemon asks the sandbox manager over vsock (the host's port 5054), a
+  connection for each ask, so that a VM restored from a snapshot, whose connections are gone, asks
+  as before. The protocol is lines (`crates/fxfs-automount/src/upcall.rs`): `attach NAME`,
+  answered `manifest SIZE` and the manifest, or `refused WHY`; and `newest URL`, for moving to a
+  newer generation (below), answered `named NAME` or `refused WHY`. The guest agent is whatever
+  runs the daemon: it needs nothing else of the guest's.
+- **A name is a volume's:** 1 to 64 of ASCII letters, digits, `-`, `_` and `.`, not first, and
+  not `default`. One level, not gyit's path-is-the-URL (`~/docs/projects/gat.md`): a URL is the
+  sandbox manager's to name, as `newest` does.
+- **Expiring closes the volume** (`ObjectManager::close_volume`, the inverse of `open_volume`):
+  every unmount of a volume of a guest's Fxfs closes it once nothing holds its store. What the
+  journal holds of it is flushed into its layers first, which then hold all it has. A volume in use
+  stays open, as does one a read-only filesystem can't flush. A replay opens it again while the
+  journal still names it, as it opens any volume written to lately. The guest's
+  `/proc/fs/fxfs/TAG` says `volumes_open`.
 
 ### Hundreds mounted at once
 
 A sandbox with hundreds of repos must not pay for those it isn't using:
 
 - A cold mount opens only the volumes it mounts (built, TASK-136.2).
-- An idle automount expires, as NFS referrals' do (from memory): its store closes and its writable
-  layers stay, and its next lookup mounts it again (TASK-136.6).
+- An idle automount expires (autofs's timeout, the daemon's `--timeout`, 600 s by default): its
+  volume closes, what it held in memory going and its writable layers staying, and its next lookup
+  mounts it again (built, TASK-136.6).
 - All volumes share one tree-cache budget (built, TASK-136.2), and the device's fall-through
   doesn't grow with attachments (TASK-136.5).
 
 ### Moving to a newer generation (TASK-136.7)
 
 A mounted worktree's base doesn't change. `git fetch` moves a repo's objects to a newer generation
-at the Git level, where objects are content-addressed and nothing can conflict:
+at the Git level, where objects are content-addressed and nothing can conflict. Built
+(`git-remote-fxfs`, `crates/fxfs-automount/src/git.rs`):
 
-1. A remote helper installed through `url.insteadOf` runs first, as Git has no pre-fetch hook (from
-   memory). It asks the guest agent, which asks the sandbox manager to attach the newest generation.
-2. The generation mounts read-only at a path of its own, which can automount, so that the path
-   resolves after a restore.
-3. `.git/objects/info/alternates` points at its objects. The fetch then transfers only what is newer
-   than the generation.
-4. `git pull` writes only what changed into the writable layers.
+1. Git's remote helper `git-remote-fxfs`, installed through `url.<base>.insteadOf`
+   (`url.fxfs::https://github.com/.insteadOf https://github.com/`), runs first on every fetch of
+   those URLs, as Git has no pre-fetch hook. It asks the sandbox manager for the newest generation
+   of the repo at the URL (`newest URL`), which names a base.
+2. It looks the name up under the automounter's root (`FXFS_AUTOMOUNT_ROOT`, `/repos`), which
+   attaches and mounts the generation there, at a path that automounts again after a restore or a
+   reboot.
+3. `.git/objects/info/alternates` points at its objects, in place of an earlier generation's: Git
+   sends what its alternates' refs hold as haves, so the fetch transfers only what is newer than
+   the generation. Each generation holds every object of the earlier ones, so none is lost.
+4. It hands the URL to Git's own transport: `git remote-https` and the like for a URL of theirs,
+   and, for a local path, Git's `connect` to `git upload-pack`. ssh's, which Git serves itself
+   rather than through a helper, isn't taken.
+5. `git pull` writes only what changed into the writable layers.
 
-A refused attach leaves an ordinary fetch. Pulled changes stay in the writable layers, which grow
-with them, and the first generation stays pinned.
+A refusal, or anything failing, leaves the repo as it is and the fetch ordinary. Pulled changes
+stay in the writable layers, which grow with them, and the first generation stays pinned.
+`fxfs-guest-git-fetch` shows each step, with a commit, staged and unstaged changes and an
+untracked file kept, and through a snapshot's restore and a reboot.
 
 An in-place swap would replace a volume's base layers under the live mount on a fast-forward, so
 that those layers stop growing and old generations unpin. Part of it exists: `set_layers` already
