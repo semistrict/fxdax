@@ -24,6 +24,7 @@ host_setup() {
     test "$(uname -m)" = x86_64
     test -c /dev/kvm
 
+    host_network
     export DEBIAN_FRONTEND=noninteractive
     # clang's libraries build Firecracker's bindings, libseccomp its seccompiler,
     # podman the root filesystems of guests that need one, and busybox-static the
@@ -49,7 +50,8 @@ host_setup() {
     export CARGO_HOME="$work/tools/cargo" RUSTUP_HOME="$work/tools/rustup" RUSTUP_TOOLCHAIN
     export PATH="$CARGO_HOME/bin:$PATH"
     if [[ ! -x "$CARGO_HOME/bin/cargo" ]]; then
-        curl -fsSL https://sh.rustup.rs -o "$work/tools/rustup-init.sh"
+        curl -fsSL --retry 5 --connect-timeout 60 --speed-limit 1024 --speed-time 60 \
+            https://sh.rustup.rs -o "$work/tools/rustup-init.sh"
         sh "$work/tools/rustup-init.sh" -y --profile minimal --default-toolchain "$RUSTUP_TOOLCHAIN" \
             --no-modify-path
     fi
@@ -81,6 +83,20 @@ host_version() {
         cargo-*) cargo "${1#cargo-}" --version | sed -n 1p ;;
         *) echo "host_version: $1 is no tool host_need installs" >&2; return 1 ;;
     esac
+}
+
+# host_network bounds what cargo fetches for a run: a fetch receiving less
+# than a KiB a second for a minute fails, tried again a few times, and then
+# fails the run, whose job says so in its status, rather than hang it without
+# end; HTTP/2 multiplexing off, so that each fetch is a connection of its own.
+# GCE r940 waited 2 h 40 min at "Updating crates.io index", its load 0, its
+# connection dropped as the host's services restarted, as r990's did (2026-11-08).
+# What the caller set stays.
+host_network() {
+    export CARGO_HTTP_TIMEOUT=${CARGO_HTTP_TIMEOUT:-60}
+    export CARGO_HTTP_LOW_SPEED_LIMIT=${CARGO_HTTP_LOW_SPEED_LIMIT:-1024}
+    export CARGO_NET_RETRY=${CARGO_NET_RETRY:-5}
+    export CARGO_HTTP_MULTIPLEXING=${CARGO_HTTP_MULTIPLEXING:-false}
 }
 
 # host_apt ARG... runs apt-get with ARGs, waiting for its lock, restarting no

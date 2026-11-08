@@ -8,8 +8,10 @@ run in, which scripts/lib/lima.sh syncs with it, here with a temporary directory
 where a limactl in its place runs the VM's shell."""
 
 import os
+import socket
 import subprocess
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -220,6 +222,76 @@ class Apt(unittest.TestCase):
             and "DPkg::Lock::Timeout=600 \"$@\"" not in line
         ]
         self.assertEqual(calls, [])
+
+class Network(unittest.TestCase):
+    """host_network: a fetch that stalls fails, rather than hang the run: GCE r940 waited 2 h
+    40 min at cargo's "Updating crates.io index", its connection dropped."""
+
+    def test_a_stalled_fetch_fails(self):
+        # A registry that takes each connection and says nothing on it, holding it.
+        listener = socket.socket()
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(16)
+        held = []
+        accepting = threading.Thread(
+            target=lambda: [held.append(listener.accept()) for _ in range(16)], daemon=True
+        )
+        accepting.start()
+        port = listener.getsockname()[1]
+        with tempfile.TemporaryDirectory() as directory:
+            project = Path(directory)
+            (project / "src").mkdir()
+            (project / "src" / "lib.rs").write_text("")
+            (project / "Cargo.toml").write_text(
+                '[package]\nname = "stalled"\nversion = "0.1.0"\nedition = "2021"\n'
+                '[dependencies]\nnone-such = "1"\n'
+            )
+            (project / ".cargo").mkdir()
+            (project / ".cargo" / "config.toml").write_text(
+                '[source.crates-io]\nreplace-with = "silent"\n'
+                f'[source.silent]\nregistry = "sparse+http://127.0.0.1:{port}/"\n'
+            )
+            environment = {
+                "PATH": os.environ["PATH"],
+                "HOME": os.environ["HOME"],
+                "CARGO_HOME": str(project / "cargo-home"),
+                # Its bounds scaled down: a minute, five tries, as seconds, one.
+                "CARGO_HTTP_TIMEOUT": "2",
+                "CARGO_NET_RETRY": "1",
+            }
+            started = time.monotonic()
+            done = subprocess.run(
+                ["/bin/bash", "-c", 'source "$0"; host_network; cargo generate-lockfile', LIBRARY],
+                cwd=project,
+                env=environment,
+                capture_output=True,
+                text=True,
+                # A hang, the bug, ends here.
+                timeout=120,
+            )
+            took = time.monotonic() - started
+        listener.close()
+        self.assertEqual(done.returncode, 101, done.stderr)
+        # Its low-speed limit host_network's, a KiB a second.
+        stalled = "transfer too slow: failed to transfer more than 1024 bytes in 2s"
+        self.assertIn(f"{stalled} (transferred 0 bytes)", done.stderr)
+        self.assertLess(took, 60)
+
+    def test_fetches_are_bounded_as_the_caller_leaves_them(self):
+        script = 'source "$0"; host_network; env | grep ^CARGO_ | sort'
+        done = subprocess.run(
+            ["/bin/bash", "-c", script, LIBRARY],
+            env={"PATH": "/usr/bin:/bin", "CARGO_NET_RETRY": "2"},
+            capture_output=True,
+            text=True,
+        )
+        said = [
+            "CARGO_HTTP_LOW_SPEED_LIMIT=1024",
+            "CARGO_HTTP_MULTIPLEXING=false",
+            "CARGO_HTTP_TIMEOUT=60",
+            "CARGO_NET_RETRY=2",
+        ]
+        self.assertEqual((done.returncode, done.stdout.splitlines(), done.stderr), (0, said, ""))
 
 if __name__ == "__main__":
     unittest.main()
