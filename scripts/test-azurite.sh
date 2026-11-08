@@ -27,7 +27,11 @@ debug=()
 if [[ -n ${FXDAX_AZURITE_DEBUG:-} ]]; then
     debug=(-v "$FXDAX_AZURITE_DEBUG:/debug")
 fi
-server="$("$engine" run -d --rm -p "127.0.0.1:$port:10000" ${debug[@]+"${debug[@]}"} "$image" \
+# Ready once it listens, inside the container, which it does once it has started, as its log says
+# (TASK-239: a probe from here, which the engine's port forwarding answers before Azurite does,
+# retried all errors into /dev/null, and curl's truncation of it failed, exiting 23).
+server="$(healthy_container "$engine" 'nc -z 127.0.0.1 10000' \
+    -p "127.0.0.1:$port:10000" ${debug[@]+"${debug[@]}"} "$image" \
     azurite-blob --blobHost 0.0.0.0 --blobPort 10000 --loose \
     ${FXDAX_AZURITE_DEBUG:+--debug /debug/azurite.log})"
 trap '"$engine" stop "$server" >/dev/null' EXIT
@@ -39,9 +43,6 @@ endpoint="http://127.0.0.1:$port/$account"
 export AZURE_STORAGE_USE_EMULATOR=true AZURE_STORAGE_ACCOUNT_NAME="$account"
 export AZURE_STORAGE_ACCOUNT_KEY="$key"
 
-# Up once it answers anything.
-curl -s --retry 60 --retry-all-errors --retry-delay 1 -o /dev/null "$endpoint?comp=list"
-
 # The container, made with a request signed as Shared Key authorization signs it.
 container=fxdax
 date="$(LC_ALL=C date -u '+%a, %d %b %Y %H:%M:%S GMT')"
@@ -49,7 +50,7 @@ version=2021-08-06
 string="PUT\n\n\n\n\n\n\n\n\n\n\n\nx-ms-date:$date\nx-ms-version:$version\n/$account/$account/$container\nrestype:container"
 hex_key="$(printf '%s' "$key" | base64 -d | od -An -vtx1 | tr -d ' \n')"
 signature="$(printf '%b' "$string" | openssl dgst -sha256 -mac HMAC -macopt "hexkey:$hex_key" -binary | base64)"
-curl -sf -X PUT -H "x-ms-date: $date" -H "x-ms-version: $version" -H 'Content-Length: 0' \
+curl -fsS -X PUT -H "x-ms-date: $date" -H "x-ms-version: $version" -H 'Content-Length: 0' \
     -H "Authorization: SharedKey $account:$signature" "$endpoint/$container?restype=container"
 
 FXDAX_AZURE_URL="az://$container/test" cargo nextest run --manifest-path "$root/Cargo.toml" \

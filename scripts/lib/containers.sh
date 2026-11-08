@@ -23,3 +23,54 @@ container_engine() {
     echo "neither docker nor podman runs here: start one, or set FXDAX_CONTAINER_ENGINE" >&2
     return 1
 }
+
+# HEALTH_EVERY is how often a container's health check runs, as healthy_container starts it: what
+# its readiness is known within, the engine running the check inside the container.
+HEALTH_EVERY=1s
+
+# healthy_container ENGINE HEALTH RUN_ARG... starts a container detached, as `ENGINE run -d --rm
+# RUN_ARG...` does, with HEALTH, a shell command run inside it, as its health check: the server's
+# own word that it is ready, asked in its own network. It prints the container's ID once the engine
+# says it is healthy, waiting for that event, at most HEALTHY_WITHIN seconds (120): not probing the
+# server from here, through the engine's port forwarding, which takes connections before the
+# server does and cuts them short, nor retrying what failed (TASK-239: curl retrying a transfer it
+# had written part of into /dev/null, whose truncation fails on Linux, exited 23). A container
+# that doesn't get healthy in time is stopped, its log said, and it fails.
+healthy_container() {
+    local engine=$1 health=$2 since id status=""
+    shift 2
+    since=$(date +%s)
+    id=$("$engine" run -d --rm --health-cmd "$health" --health-interval "$HEALTH_EVERY" \
+        --health-retries 120 "$@") || return
+    if [[ $(basename "$engine") == podman ]]; then
+        timeout "${HEALTHY_WITHIN:-120}" "$engine" wait --condition=healthy "$id" > /dev/null &&
+            status=healthy
+    else
+        # The container's health events since before it started, as they come, none missed,
+        # through a FIFO: no coproc in macOS's bash 3.2.
+        local events fifo action
+        fifo=$(mktemp -u)
+        mkfifo "$fifo"
+        "$engine" events --since "$since" --filter "container=$id" \
+            --filter event=health_status --format '{{.Action}}' > "$fifo" &
+        events=$!
+        exec 3< "$fifo"
+        rm "$fifo"
+        while read -r -t "${HEALTHY_WITHIN:-120}" action <&3; do
+            if [[ $action == "health_status: healthy" ]]; then
+                status=healthy
+                break
+            fi
+        done
+        exec 3<&-
+        kill "$events" 2> /dev/null
+        wait "$events" 2> /dev/null
+    fi
+    if [[ $status != healthy ]]; then
+        echo "container $id didn't say it was healthy within ${HEALTHY_WITHIN:-120} s:" >&2
+        "$engine" logs "$id" >&2
+        "$engine" stop "$id" > /dev/null
+        return 1
+    fi
+    echo "$id"
+}
