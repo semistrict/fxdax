@@ -291,16 +291,15 @@ pub(crate) fn cached(
         for window in from.windows() {
             window.rebind(&from_source, to_source.clone());
         }
-        // What of it the tenant's arena holds, moved at once, rather than as it is asked for:
-        // nothing else would evict it.
-        let to = found.clone();
-        cache.pager.spawn(async move {
-            for page in from.present_parts() {
-                if let Err(errno) = to.clone().bring_in(page).await {
-                    log::warn!("fxdax: moving {:?}'s page {page}: {errno:?}", to.extent);
-                }
+        // What of it the tenant's arena holds, moved before the caller maps it, so that its MAP
+        // maps those pages: moved as asked for, each was a fault of the guest's, and the first
+        // sandbox's cold read of the Linux tree took 13.7 s, paging nothing in, 4,422 faults,
+        // against the next sandbox's 5.7 s and none (GCE r991).
+        for page in from.present_parts() {
+            if let Err(errno) = futures::executor::block_on(found.clone().bring_in(page)) {
+                log::warn!("fxdax: moving {:?}'s page {page}: {errno:?}", found.extent);
             }
-        });
+        }
     }
     Ok(found)
 }

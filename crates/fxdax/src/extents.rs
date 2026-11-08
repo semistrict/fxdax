@@ -3741,10 +3741,15 @@ mod tests {
         let sandbox = made(&dir.path().join("sandbox"), 1 << 20);
         sandbox.open_bases(one_instance_each()).unwrap();
         sandbox.attach_base(&base, &ancestry).unwrap();
+        let sandbox_window = sandbox.create_dax_window(len as u64, None).unwrap();
         let page_ins = stats::stats().page_ins;
+        // Moved as the sandbox maps it, so that its MAP maps every page, none faulted on: moved
+        // as asked for, the first sandbox on the Linux tree took 4,422 faults (GCE r991).
+        sandbox.map(extent, 0, len as u64, 0).unwrap();
+        assert_eq!((held(ArenaId::DEFAULT), held(tenant.id())), (Some(pages), None));
         assert_eq!(read(&sandbox, extent, 0, len), Ok(data.clone()));
         assert_eq!(stats::stats().page_ins - page_ins, 0, "paged in again");
-        assert_eq!((held(ArenaId::DEFAULT), held(tenant.id())), (Some(pages), None));
+        drop(sandbox_window);
 
         assert_eq!(read(&publisher, extent, 0, len), Ok(data.clone()));
         // Its window, the tenant's page evicted from it, faults onto the default arena's.
