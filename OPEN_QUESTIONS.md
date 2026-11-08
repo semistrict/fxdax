@@ -8,6 +8,10 @@
 
 # Decisions
 
+## guest/sim's CI jobs: a smoke run in CI, the full runs nightly (the user, 2026-11-08)
+
+guest-sim (3,000 zloop seeds, ~30 min) and guest-sim-sweep (~31 min) set CI's wall time (~35 min against ~16 without them). Since 10-31, over 430 CI runs, guest-sim failed 8 times, each time beside workspace or shuttle failures during the 11-02/11-04 rewrite; the sweep never failed. The user decided: CI runs about 200 seeds and a slice of the sweep. The full runs happen when guest/linux/fs/fxfs, the guest kernel's patches, guest/sim or the kernel build script change, and nightly.
+
 ## The backlog's open tasks, sorted (the user, 2026-11-08)
 
 Asked to drive the backlog to closed, the sweeps left tasks that are real work or a judgement call. The user decided:
