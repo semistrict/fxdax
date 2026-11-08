@@ -397,9 +397,10 @@ struct fxfs_dax {
 	bool read_only;
 	/*
 	 * fxdax: how often the window had no room for a range, or for a region in their own space,
-	 * how many ranges were reclaimed for room, and how many regions there are (TASK-91.7).
+	 * how many ranges were reclaimed for room, and how many regions there are (TASK-91.7);
+	 * how many chunks' ranges took room off a chunk's alignment, which no PMD maps (TASK-149.33).
 	 */
-	atomic_long_t window_full, regions_full, reclaims, region_count;
+	atomic_long_t window_full, regions_full, reclaims, region_count, unaligned;
 	/* fxdax: the window's MAPs, and the bytes they mapped, by why (`enum fxfs_dax_why`). */
 	atomic64_t maps[FXFS_DAX_WHYS], map_bytes[FXFS_DAX_WHYS];
 	/* fxdax: the window's bytes kept from use as their UNMAP failed (TASK-44.22). */
@@ -1398,6 +1399,20 @@ static long fxfs_dax_alloc_window(struct fxfs_dax *dax, unsigned long pages, boo
 			return window_offset;
 		if (fxfs_dax_reclaim(dax))
 			continue;
+		/*
+		 * fxdax: nothing to reclaim, a chunk's range takes the room the window has off a
+		 * chunk's alignment, mapped a page at a time (fs/dax.c falls back from a PMD where
+		 * the window's page isn't 2 MiB-aligned): UNMAPs that failed keep a piece of an
+		 * aligned slot from use for good, and every chunk's write failed ENOSPC once each
+		 * slot had one, most of the window free (TASK-149.33).
+		 */
+		if (aligned && pages == FXFS_DAX_PAGES) {
+			window_offset = fxfs_dax_take_window(dax, pages, false);
+			if (window_offset >= 0) {
+				atomic_long_inc(&dax->unaligned);
+				return window_offset;
+			}
+		}
 		/* fxdax: ranges holding dirty pages aren't reclaimed: written back, they are. */
 		fxfs_dax_kick(dax, true);
 		if (nowait)
@@ -1993,7 +2008,7 @@ static int fxfs_dax_iomap_read(struct inode *inode, loff_t pos, loff_t length, u
 	if (fault) {
 		fxfs_dax_trace(FXFS_DAX_TRACE_READ, inode->i_ino, (start >> PAGE_SHIFT) + page, at, 0,
 			       length >> PAGE_SHIFT, 0);
-		if (length >= PMD_SIZE)
+		if (length >= PMD_SIZE && IS_ALIGNED(at, PMD_SIZE))
 			atomic64_inc(&dax->huge_maps);
 		/*
 		 * fxdax: a slice's page may be in other files' DAX entries too, or this one's at
@@ -3678,6 +3693,7 @@ void fxfs_dax_show_stats(struct fxfs_dax *dax, struct seq_file *m)
 		   atomic_long_read(&dax->window_full), atomic_long_read(&dax->regions_full),
 		   atomic_long_read(&dax->reclaims));
 	seq_printf(m, "window_regions %ld\n", atomic_long_read(&dax->region_count));
+	seq_printf(m, "window_unaligned %ld\n", atomic_long_read(&dax->unaligned));
 	fxfs_dax_show_regions(dax, m);
 	seq_printf(m, "window_lost_bytes %lld\n", atomic64_read(&dax->lost_bytes));
 	seq_printf(m, "dax_huge_maps %lld\n", atomic64_read(&dax->huge_maps));

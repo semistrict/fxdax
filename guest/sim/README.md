@@ -168,6 +168,11 @@ In dax.c, found by the sweep and the file model, each fixed:
    toward giving up (`FXFS_DAX_NO_ROOM_WAITS`). read_pressure's window, its aligned room taken by a
    failed UNMAP: livelock. The worker's writeback lets go of its ranges as it ends, which says so.
    `unmaps_failed_take_the_window`, `task-149.15-round-releases`.
+4. **A chunk's range had no room once failed UNMAPs took a piece of every aligned slot** (TASK-149.33),
+   most of the window free: read_pressure's 8 MiB window, after one failed UNMAP, failed every chunk's
+   write ENOSPC. With nothing to reclaim, a chunk's range takes room off a chunk's alignment, mapped a
+   page at a time (`window_unaligned` counts them). `unmaps_failed_leave_room_unaligned`,
+   `task-149.33-chunks-only-aligned`.
 
 And this simulator's own: a failed mount (the device, the DAX, the volume) went on with what it hadn't;
 a test's struct files and the model's extents' counts leaked; ended tasks' stacks were kept until a
@@ -178,6 +183,7 @@ run ended, gigabytes of a work's queued again and again; a sync's recorded error
 | `task-149.15-writeback-batch-short` | `cow_writeback_counts_again`: the second chunk's write not in Fxfs after the fsync |
 | `task-149.15-sync-without-memory` | `sweep scenarios short_copy`: the end's sync, its allocation failed, writes nothing back |
 | `task-149.15-round-releases` | `unmaps_failed_take_the_window`: livelock, the write never failing ENOSPC |
+| `task-149.33-chunks-only-aligned` | `unmaps_failed_leave_room_unaligned`: the write fails ENOSPC, the window's room unaligned |
 | `task-149.18-round-unwoken`, the worker's round waking no one it throttled | `interleave` seed 5: a lost wake, the throttled write's |
 | `task-149.18-release-unwoken`, a range let go of waking no one waiting for room | `read_pressure`: a lost wake, the writer's |
 

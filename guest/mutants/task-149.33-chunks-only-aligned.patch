@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: GPL-2.0
+# Copyright 2026 The fxdax Authors.
+#
+# Kernel: sim
+# Killer: scenarios unmaps_failed_leave_room_unaligned
+#
+# TASK-149.33: a chunk's range takes room at a chunk's alignment alone: UNMAPs that failed, each
+# keeping a piece of an aligned slot from use for good, leave a window with room for the chunk but
+# no slot for it, and every write or read of a large file's chunk fails ENOSPC from then on, most
+# of the window free. unmaps_failed_leave_room_unaligned: its write fails ENOSPC.
+
+--- a/guest/linux/fs/fxfs/dax.c
++++ b/guest/linux/fs/fxfs/dax.c
+@@ -1406,7 +1406,7 @@
+ 		 * aligned slot from use for good, and every chunk's write failed ENOSPC once each
+ 		 * slot had one, most of the window free (TASK-149.33).
+ 		 */
+-		if (aligned && pages == FXFS_DAX_PAGES) {
++		if (false && aligned && pages == FXFS_DAX_PAGES) {
+ 			window_offset = fxfs_dax_take_window(dax, pages, false);
+ 			if (window_offset >= 0) {
+ 				atomic_long_inc(&dax->unaligned);

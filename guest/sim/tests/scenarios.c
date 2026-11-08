@@ -404,6 +404,50 @@ static void unmaps_failed_take_the_window(void)
 	check(done == -ENOSPC, "a write with no room in the window for its chunk: %zd", done);
 }
 
+/*
+ * That a chunk's range has room the window still has, though UNMAPs that failed left none at a
+ * chunk's alignment (TASK-149.33): the ranges' half of the window filled with ranges of a MiB, the
+ * first and last of every 4 MiB kept from use as their UNMAPs fail, the others freed. Each aligned
+ * slot holds a MiB kept, and 2 MiB are free between them, which the write's chunk takes, unaligned,
+ * where the write failed ENOSPC, waiting for aligned room no one would give back (read_pressure in
+ * guest/sim's sweep, an 8 MiB window).
+ */
+static void unmaps_failed_leave_room_unaligned(void)
+{
+	static char chunk[CHUNK_LEN];
+	const int pieces = WINDOW_LEN / 2 / (CHUNK_LEN / 2);
+	struct file *files[WINDOW_LEN / 2 / (CHUNK_LEN / 2)], *file;
+	int i, kept = 0;
+	ssize_t done;
+
+	memset(chunk, 'u', sizeof(chunk));
+	/* Their ranges in a row, as the window's first fit gives them. */
+	for (i = 0; i < pieces; i++) {
+		files[i] = new_file(chunk, CHUNK_LEN / 2);
+		check(!sim_fsync(files[i]), "file %d's fsync", i);
+	}
+	cow_rebind_now(NULL);
+	for (i = 0; i < pieces; i++) {
+		bool keep = i % 4 == 0 || i % 4 == 3;
+
+		if (keep)
+			sim_device_fail(VIRTIO_EXTENT_T_UNMAP, 0, 1);
+		check(!sim_truncate(files[i], 0), "truncating file %d", i);
+		kept += keep;
+		check(sim_device_failed() == kept, "file %d's UNMAP: %llu failed, not %d", i,
+		      sim_device_failed(), kept);
+	}
+	check(sim_dax_stat(mount, "window_lost_bytes") == WINDOW_LEN / 4, "%llu bytes lost",
+	      sim_dax_stat(mount, "window_lost_bytes"));
+	file = sim_file_new(mount);
+	done = sim_write(file, 0, chunk, sizeof(chunk));
+	check(done == sizeof(chunk), "a write with room in the window for its chunk, unaligned: %zd",
+	      done);
+	check(sim_dax_stat(mount, "window_unaligned") == 1, "%llu chunks' ranges unaligned",
+	      sim_dax_stat(mount, "window_unaligned"));
+	check_file("the chunk unaligned", file, chunk, sizeof(chunk));
+}
+
 static char sweep_bytes[PAGE_SIZE * 64];
 
 /* Goes round allocating with the `skip`th allocation failing, for each until none is left. */
@@ -1686,6 +1730,7 @@ static const struct {
 	SCENARIO(write_killed),
 	SCENARIO(unmap_failed),
 	SCENARIO(unmaps_failed_take_the_window),
+	SCENARIO(unmaps_failed_leave_room_unaligned),
 	SCENARIO(allocations_failed),
 	COW_SCENARIO(cow_rebind_against_stores),
 	COW_SCENARIO(cow_writeback_against_stores),
