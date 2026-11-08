@@ -19,6 +19,8 @@
 //! fxdaxctl public DIR
 //! fxdaxctl stat DIR
 //! fxdaxctl stats [--json]
+//! fxdaxctl grant TENANT DIR [UID [GID]]
+//! fxdaxctl revoke TENANT
 //! fxdaxctl --version
 //! ```
 //!
@@ -76,6 +78,14 @@
 //! `guest` (`build`, `counters`, `histograms`), null where it has none; otherwise as lines of a
 //! path through that object and a value, `vms.0.guest.counters.seals 12`. Counters only grow: a
 //! measurement is the difference of two.
+//!
+//! `grant` and `revoke`, through the daemon alone, are the control API's `Grant` and `Revoke`
+//! (TASK-43.4), for tests and operators (TASK-71): `grant` gives the tenant TENANT, whose stores
+//! are in the directory DIR, a VM socket of its own, its VM processes naming stores in DIR alone,
+//! the socket given to the user UID and the group GID if named, the daemon's own otherwise, and
+//! prints its path; granting a tenant again, of the same directory, prints it again. `revoke`
+//! takes the tenant's socket away: its VM processes connected keep their stores, and no more
+//! connect.
 
 use anyhow::{Context as _, bail};
 use fxdax::ExtentStore;
@@ -88,7 +98,8 @@ fn usage() -> anyhow::Error {
          fxdaxctl point SRC DST | fxdaxctl delete DIR | fxdaxctl drop DIR | \
          fxdaxctl resize DIR CAPACITY | fxdaxctl public DIR | \
          fxdaxctl public-generation DIR | fxdaxctl attach DIR BASE | fxdaxctl stat DIR | \
-         fxdaxctl stats [--json] | fxdaxctl --version"
+         fxdaxctl stats [--json] | fxdaxctl grant TENANT DIR [UID [GID]] | \
+         fxdaxctl revoke TENANT | fxdaxctl --version"
     )
 }
 
@@ -148,12 +159,27 @@ enum Command {
         #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
         json: bool,
     },
+    /// fxdax: a tenant granted a VM socket of its own, for its stores in `dir`, given to `uid` and
+    /// `gid` if named (TASK-71). Read by `through`, which is Linux's alone.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    Grant {
+        tenant: String,
+        dir: PathBuf,
+        uid: Option<u32>,
+        gid: Option<u32>,
+    },
+    /// fxdax: a tenant's grant revoked (TASK-71).
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    Revoke {
+        tenant: String,
+    },
 }
 
 impl Command {
     fn parse(args: &[String]) -> anyhow::Result<Self> {
         let capacity = |capacity: &str| capacity.parse().context("CAPACITY must be a number");
         let token = |token: &str| token.parse().context("TOKEN must be a number");
+        let id = |id: &str, what| id.parse().with_context(|| format!("{what} must be a number"));
         Ok(match args.iter().map(String::as_str).collect::<Vec<_>>()[..] {
             ["take", dir, size, branch, ref rest @ ..] if rest.len() <= 1 => Self::Take {
                 dir: dir.into(),
@@ -180,6 +206,13 @@ impl Command {
             ["stat", dir] => Self::Stat { dir: dir.into() },
             ["stats"] => Self::Stats { json: false },
             ["stats", "--json"] => Self::Stats { json: true },
+            ["grant", tenant, dir, ref ids @ ..] if ids.len() <= 2 => Self::Grant {
+                tenant: tenant.to_owned(),
+                dir: dir.into(),
+                uid: ids.first().map(|uid| id(uid, "UID")).transpose()?,
+                gid: ids.get(1).map(|gid| id(gid, "GID")).transpose()?,
+            },
+            ["revoke", tenant] => Self::Revoke { tenant: tenant.to_owned() },
             _ => bail!(usage()),
         })
     }
@@ -230,6 +263,10 @@ impl Command {
                     false => print!("{}", flattened(&snapshot)),
                 }
             }
+            Self::Grant { tenant, dir, uid, gid } => {
+                println!("{}", daemon.grant(&tenant, &dir, uid, gid)?.display());
+            }
+            Self::Revoke { tenant } => daemon.revoke(&tenant)?,
         }
         Ok(())
     }
@@ -242,8 +279,13 @@ impl Command {
     /// Does it here, on stores nothing has open: new ones anywhere; existing ones with the bucket
     /// and a placement token.
     fn locally(self) -> anyhow::Result<()> {
-        if let Self::Stats { .. } = self {
-            bail!("stats are the extent daemon's: name its control socket (FXDAX_EXTENTD_GRPC)");
+        let daemons = match self {
+            Self::Stats { .. } => Some("stats are"),
+            Self::Grant { .. } | Self::Revoke { .. } => Some("tenants' grants are"),
+            _ => None,
+        };
+        if let Some(what) = daemons {
+            bail!("{what} the extent daemon's: name its control socket (FXDAX_EXTENTD_GRPC)");
         }
         // What stat reads needs no branch changed, nor does a copy dropped, its branch left be.
         let existing = !matches!(
@@ -303,7 +345,9 @@ impl Command {
                 let ancestry = ExtentStore::open(&base)?.ancestry();
                 ExtentStore::open(&dir)?.attach_base(&base.canonicalize()?, &ancestry)?;
             }
-            Self::Stats { .. } => unreachable!("refused above"),
+            Self::Stats { .. } | Self::Grant { .. } | Self::Revoke { .. } => {
+                unreachable!("refused above")
+            }
             Self::Stat { dir } => {
                 let store = ExtentStore::open(&dir)?;
                 let (info, bytes) = (store.info()?, store.bytes()?);

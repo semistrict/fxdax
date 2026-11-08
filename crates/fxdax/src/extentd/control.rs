@@ -737,6 +737,14 @@ impl Client {
         Ok(response.socket.into())
     }
 
+    /// Revokes the tenant `tenant`'s grant: its VM socket goes, its VM processes connected keep
+    /// their stores (`Revoke`).
+    pub fn revoke(&self, tenant: &str) -> Result<(), crate::Error> {
+        let request = RevokeRequest { tenant: tenant.to_owned() };
+        let what = format!("revoking {tenant}");
+        self.call(what, |mut c| async move { c.revoke(request).await }).map(drop)
+    }
+
     /// Limits the memory of the tenant `tenant`, or of every tenant without one, to `bytes`, or
     /// lifts the limit without them (`SetMemoryLimit`).
     pub fn set_memory_limit(

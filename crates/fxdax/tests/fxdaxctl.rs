@@ -436,6 +436,54 @@ fn fxdaxctl_writes_its_stacks_on_sigquit() {
     assert_eq!(child.0.try_wait().unwrap(), None, "SIGQUIT stopped fxdaxctl:\n{stacks}");
 }
 
+/// TASK-71: `fxdaxctl grant` gives a tenant a VM socket of its own, given to the user and group
+/// named, and prints its path: its VM processes open stores in its directory through it, and no
+/// other's. Granted again, it prints it again. `revoke` takes it away: its VM process connected
+/// keeps its store, and no other connects; revoked again, there is no grant to revoke.
+#[cfg(target_os = "linux")]
+#[test]
+fn tenants_are_granted_and_revoked() {
+    use fxdax::{Errno, RemoteExtentStore};
+    let dir = tempfile::tempdir().unwrap();
+    let fxdaxctl = Fxdaxctl::through_daemon(dir.path(), &[]);
+    let (acme, other) = (dir.path().join("acme"), dir.path().join("other"));
+    std::fs::create_dir(&acme).unwrap();
+    // SAFETY: Reads the process's own ids.
+    let (uid, gid) = unsafe { (libc::getuid(), libc::getgid()) };
+    let (uid, gid) = (uid.to_string(), gid.to_string());
+    let grant = [Path::new("grant"), Path::new("acme"), &acme, Path::new(&uid), Path::new(&gid)];
+    let socket = dir.path().join("tenants/acme.sock");
+    assert_eq!(fxdaxctl.run(&grant).unwrap(), format!("{}\n", socket.display()));
+    assert_eq!(fxdaxctl.run(&grant[..3]).unwrap(), format!("{}\n", socket.display()));
+    let vm = RemoteExtentStore::connect(&socket, acme.join("vm"), 1 << 24).unwrap();
+    let refused = RemoteExtentStore::connect(&socket, other.join("vm"), 1 << 24);
+    assert_eq!(refused.err().and_then(|err| err.errno()), Some(Errno::EACCES));
+
+    let revoke = [Path::new("revoke"), Path::new("acme")];
+    assert_eq!(fxdaxctl.run(&revoke).unwrap(), "");
+    assert!(!socket.exists(), "the revoked tenant's socket stayed");
+    assert!(RemoteExtentStore::connect(&socket, acme.join("new"), 1 << 24).is_err());
+    assert_eq!(vm.info().unwrap().capacity, 1 << 24);
+    drop(vm);
+    let error = fxdaxctl.run(&revoke).expect_err("revoked a tenant not granted");
+    assert!(error.contains("revoking acme"), "{error}");
+}
+
+/// TASK-71: tenants' grants are the daemon's: without one, `grant` and `revoke` are refused,
+/// saying so.
+#[test]
+fn grants_need_the_daemon() {
+    let dir = tempfile::tempdir().unwrap();
+    let fxdaxctl = Fxdaxctl::local();
+    for args in [
+        [Path::new("grant"), Path::new("acme"), dir.path()].as_slice(),
+        &[Path::new("revoke"), Path::new("acme")],
+    ] {
+        let error = fxdaxctl.run(args).expect_err("granted without a daemon");
+        assert!(error.contains("tenants' grants are the extent daemon's"), "{error}");
+    }
+}
+
 /// TASK-48: SIGTERM stops the daemon: it exits, successfully.
 #[cfg(target_os = "linux")]
 #[test]
