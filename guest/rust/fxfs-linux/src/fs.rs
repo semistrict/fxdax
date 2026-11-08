@@ -444,6 +444,8 @@ impl Filesystem {
             let _ = writeln!(out, "{name}_hist {}", timed.hist());
         }
         let _ = writeln!(out, "fsyncs {fsyncs}");
+        // fxdax: the volumes open, mounted or not yet closed (TASK-136.6).
+        let _ = writeln!(out, "volumes_open {}", self.filesystem.object_manager().open_volumes());
         let _ = writeln!(out, "fsyncs_coalesced {coalesced}");
         let counts = [
             ("device_read_bytes", &device.read_bytes),
@@ -463,7 +465,9 @@ impl Filesystem {
 
 /// What a mounted volume does that Fxfs's POSIX layer doesn't.
 pub(crate) trait GuestFxfs: Sized {
-    /// Unmounts the volume, applying what it queued. Its filesystem stays open.
+    /// Unmounts the volume, applying what it queued, and closes it, so that what it holds in
+    /// memory goes (backlog doc-10, an idle repo's mount expiring, TASK-136.6). Its filesystem
+    /// stays open.
     async fn unmount(self);
 
     /// fxdax: a follower's batch.
@@ -492,7 +496,15 @@ pub(crate) trait GuestFxfs: Sized {
 
 impl GuestFxfs for Fxfs {
     async fn unmount(self) {
+        let (filesystem, volume) = (self.filesystem().clone(), self.volume_id());
         self.close().await;
+        // A follower's volumes, opened all at once, stay so. One in use, or that a read-only
+        // filesystem can't flush, stays open: it holds memory, and nothing else.
+        if filesystem.options().lazy_volumes
+            && let Err(error) = filesystem.object_manager().close_volume(volume).await
+        {
+            log::info!("volume {volume} stays open as it unmounts: {error:#}");
+        }
     }
 
     async fn flush_volume(&self) -> Result<(), Error> {
