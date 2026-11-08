@@ -8,6 +8,14 @@
 
 # Decisions
 
+## The backlog's open tasks, sorted (the user, 2026-11-08)
+
+Asked to drive the backlog to closed, the sweeps left tasks that are real work or a judgement call. The user decided:
+- **Low-priority features stay open, Low:** TASK-72, 73, 75, 76, 143, 145, 223, 226, 33 (lowered from Medium), 96 (frozen), 78 (needs Azure credentials).
+- **Testing techniques: the best value first.** Start TASK-149.40 (the model test's last operation kinds), 149.13 (recovery-path coverage), 149.19 (suites under CPU starvation). Keep 149.4, 149.10, 44.5, 44.7 and 44.16 open.
+- **Performance and refactors: do the top ones.** Do TASK-92.55 (fork open flat in the base's size), 92.41 (commits spanning segments) and 136.6/136.7 (attaching a repo on lookup, following git fetch). Keep 88, 90, 164.11.1, 164.11.2, 26.9, 26.18.7, 91.5, 91.8 and 91.15 open.
+- **Judgement calls, as recommended:** close TASK-149.22, 44.1, 92.30 and 92.31 as won't fix. Do 149.24 (extentd aborts on a panic under a shared lock), 142's measurement, and 193 and 238 on a kept GCE host.
+
 ## A tenant's disk is its directory's; the part cache is no tenant's (TASK-94, 2026-11-07)
 
 TASK-94 left the counting rule for shared data to you. Decided, unconfirmed:

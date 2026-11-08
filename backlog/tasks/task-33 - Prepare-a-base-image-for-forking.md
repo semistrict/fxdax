@@ -4,12 +4,12 @@ title: Prepare a base image for forking
 status: To Do
 assignee: []
 created_date: '2026-10-17 15:26'
-updated_date: '2026-11-06 00:48'
+updated_date: '2026-11-08 04:46'
 labels:
   - performance
   - forks
 dependencies: []
-priority: medium
+priority: low
 ordinal: 102000
 ---
 
