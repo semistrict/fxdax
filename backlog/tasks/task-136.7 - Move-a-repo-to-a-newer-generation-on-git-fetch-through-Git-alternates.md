@@ -4,7 +4,7 @@ title: 'Move a repo to a newer generation on git fetch, through Git alternates'
 status: In Progress
 assignee: []
 created_date: '2026-10-31 04:49'
-updated_date: '2026-11-08 05:35'
+updated_date: '2026-11-08 05:38'
 labels: []
 dependencies:
   - TASK-136.2
@@ -52,3 +52,9 @@ Git has no pre-fetch hook (from memory, unchecked), so a remote helper installed
 4. AC #6 (writable layers' growth across repeated pulls on a Linux-sized checkout, doc-10): a manual case on GCE after the above lands.
 5. doc-10's Moving section; OPEN_QUESTIONS decision (helper's transports).
 <!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+2026-11-08: implemented on land-m2 with TASK-136.6 (584baf4b9: upcall newest URL, git-remote-fxfs; eed826db1: fxfs-guest-git-fetch, Vms::restore and Running::snapshot for AC #5), CI 42451532378. Unit tests: alternates moving, transports, connect's protocol (nothing read past the connect line), a repo moved by a fake manager. Not yet run: fxfs-guest-git-fetch, waiting for a stopped kept GCE host as TASK-136.6's cases do. AC #6 (writable layers' growth across repeated pulls on a Linux-sized checkout) not started: a manual GCE measurement after the above lands.
+<!-- SECTION:NOTES:END -->

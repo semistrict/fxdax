@@ -4,7 +4,7 @@ title: 'Attach a repo on path lookup, through the sandbox manager'
 status: In Progress
 assignee: []
 created_date: '2026-10-30 09:08'
-updated_date: '2026-11-08 05:35'
+updated_date: '2026-11-08 05:38'
 labels: []
 dependencies:
   - TASK-136.2
@@ -47,3 +47,9 @@ A path lookup attaching a repo combines with gyit's path-is-the-URL idea. Since 
 3. Guest test fxfs-guest-automount(-dax): publisher publishes a volume; consumer runs the automounter on /repos with a host stand-in for the sandbox manager (shared_volumes::host::Manager): lookup mounts, 8 concurrent lookups attach once, refusal leaves nothing, expiry closes volumes (volumes_open) and the next lookup remounts unasked; reboot remounts unasked. Host checks the asks.
 4. doc-10's Automount section; OPEN_QUESTIONS decisions (autofs over a d_automount of our own; every unmount closes its volume).
 <!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+2026-11-08: implemented on land-m2 (068c68459 close_volume, 33b4a3be2 fxfs-linux unmount closes, 584baf4b9 fxfs-automount, eed826db1 guest cases, 02284af7f doc-10 and OPEN_QUESTIONS), CI 42451532378. Verified so far: fxfs volume::lazy 8/8 (close_volume's three tests new, red before as the function didn't exist; found and fixed on the way: a graveyard flush on a read-only filesystem waited for ever, and replay reopens a closed volume while the journal names it, now what the test and doc say); fxfs + fxfs-posix + fxfs-automount 885/885 on macOS; fxfs-automount 13/13 (daemon decisions over fakes, upcall protocol); Linux (musl) check and clippy clean; guest test crates check for host and guest (aarch64 musl); guest Rust (fxfs-linux) builds for aarch64-unknown-none-softfloat. Not yet run: the guest cases fxfs-guest-automount(-dax), fxfs-guest-shared-volumes(-dax) and fxfs-guest-volumes(-dax) (regressions of unmount closing), which need a GCE host: the one kept host (fxdax-keep-n2-standard-4-us-west1-b-1) is running, and the rule is to reuse a stopped kept host, never a fresh one. Not landable until they pass.
+<!-- SECTION:NOTES:END -->
