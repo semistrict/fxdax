@@ -49,19 +49,37 @@ host_setup() {
     RUSTUP_TOOLCHAIN=$(host_pin rust)
     export CARGO_HOME="$work/tools/cargo" RUSTUP_HOME="$work/tools/rustup" RUSTUP_TOOLCHAIN
     export PATH="$CARGO_HOME/bin:$PATH"
+    host_rust
+
+    # The guest tests' runner gives each case a network of its own (TASK-149.20.6):
+    # as root, as here, with `unshare --net`, not `buildah unshare`, which failed
+    # as root (memfd_create: invalid argument) and had the cases run unisolated.
+}
+
+# host_rust installs rustup, in CARGO_HOME and RUSTUP_HOME, and the toolchain the
+# hosts build with, RUSTUP_TOOLCHAIN, with its musl target and clippy, unless they
+# are there and work. A toolchain whose install was cut off, the job killed with
+# its SSH session, has no manifest, and every rustup and cargo after fails
+# ("missing manifest in toolchain", GCE r980): one whose rustc doesn't run is
+# removed, with the update hash naming it, and installed anew.
+host_rust() {
     if [[ ! -x "$CARGO_HOME/bin/cargo" ]]; then
         curl -fsSL --retry 5 --connect-timeout 60 --speed-limit 1024 --speed-time 60 \
             https://sh.rustup.rs -o "$work/tools/rustup-init.sh"
         sh "$work/tools/rustup-init.sh" -y --profile minimal --default-toolchain "$RUSTUP_TOOLCHAIN" \
             --no-modify-path
     fi
+    if ! rustc --version > /dev/null 2>&1; then
+        local part
+        for part in "$RUSTUP_HOME/toolchains/$RUSTUP_TOOLCHAIN"-* \
+            "$RUSTUP_HOME/update-hashes/$RUSTUP_TOOLCHAIN"-*; do
+            if [[ -e $part ]]; then rm -r -- "$part"; fi
+        done
+        rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
+    fi
     rustup target add x86_64-unknown-linux-musl
     # scripts/test.sh checks clippy's rules first (TASK-44.20).
     rustup component add clippy
-
-    # The guest tests' runner gives each case a network of its own (TASK-149.20.6):
-    # as root, as here, with `unshare --net`, not `buildah unshare`, which failed
-    # as root (memfd_create: invalid argument) and had the cases run unisolated.
 }
 
 # host_pin TOOL prints the version of TOOL the hosts run: Rust's, or that of a

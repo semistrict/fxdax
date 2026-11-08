@@ -293,5 +293,97 @@ class Network(unittest.TestCase):
         ]
         self.assertEqual((done.returncode, done.stdout.splitlines(), done.stderr), (0, said, ""))
 
+class Rust(unittest.TestCase):
+    """host_rust: the toolchain the hosts build with, installed unless there and working. A job
+    killed as rustup installed it, with its SSH session, left a toolchain with no manifest, and
+    every run on the host after failed at its first rustup or cargo, "missing manifest in toolchain"
+    (GCE r980). Here rustup and rustc are fakes that keep the toolchain as rustup's directories do:
+    rustc runs only if the toolchain's manifest is there, and rustup's install puts it there."""
+
+    TOOLCHAIN = "1.97.1"
+    FULL = "1.97.1-x86_64-unknown-linux-gnu"
+    MANIFEST = "lib/rustlib/multirust-channel-manifest.toml"
+    # Each records its call; rustc, and rustup's other commands, fail without the manifest.
+    RUSTC = """#!/bin/bash
+toolchain="$RUSTUP_HOME/toolchains/$RUSTUP_TOOLCHAIN-x86_64-unknown-linux-gnu"
+[[ -f $toolchain/lib/rustlib/multirust-channel-manifest.toml ]] ||
+    { echo "error: missing manifest in toolchain '$RUSTUP_TOOLCHAIN'" >&2; exit 1; }
+echo "rustc $RUSTUP_TOOLCHAIN"
+"""
+    RUSTUP = """#!/bin/bash
+echo "rustup $*" >> "$CALLS"
+toolchain="$RUSTUP_HOME/toolchains/$RUSTUP_TOOLCHAIN-x86_64-unknown-linux-gnu"
+if [[ $1 == toolchain && $2 == install ]]; then
+    mkdir -p "$toolchain/lib/rustlib" "$RUSTUP_HOME/update-hashes"
+    touch "$toolchain/lib/rustlib/multirust-channel-manifest.toml"
+    echo hash > "$RUSTUP_HOME/update-hashes/$RUSTUP_TOOLCHAIN-x86_64-unknown-linux-gnu"
+    exit 0
+fi
+[[ -f $toolchain/lib/rustlib/multirust-channel-manifest.toml ]] ||
+    { echo "error: missing manifest in toolchain '$RUSTUP_TOOLCHAIN'" >&2; exit 1; }
+"""
+
+    def host_rust(self, home, toolchain_files):
+        """host_rust's status and errors, and the rustup calls it made, on a host whose rustup is
+        installed, in `home`, and whose toolchain holds `toolchain_files`, the update hash naming
+        it."""
+        cargo, rustup = home / "cargo", home / "rustup"
+        tools = cargo / "bin"
+        tools.mkdir(parents=True)
+        for name, text in (("rustc", self.RUSTC), ("rustup", self.RUSTUP), ("cargo", "")):
+            (tools / name).write_text(text)
+            (tools / name).chmod(0o755)
+        for name in toolchain_files:
+            path = rustup / "toolchains" / self.FULL / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("")
+        (rustup / "update-hashes").mkdir(parents=True)
+        (rustup / "update-hashes" / self.FULL).write_text("hash\n")
+        calls = home / "calls"
+        calls.write_text("")
+        done = subprocess.run(
+            ["/bin/bash", "-c", 'source "$0"; host_rust', LIBRARY],
+            env={
+                "PATH": f"{tools}:/usr/bin:/bin",
+                "CARGO_HOME": str(cargo),
+                "RUSTUP_HOME": str(rustup),
+                "RUSTUP_TOOLCHAIN": self.TOOLCHAIN,
+                "CALLS": str(calls),
+            },
+            capture_output=True,
+            text=True,
+        )
+        return done.returncode, done.stderr, calls.read_text().splitlines()
+
+    def test_a_toolchain_installed_part_way_is_installed_again(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            # Its binaries, some; no manifest, which rustup writes last.
+            done = self.host_rust(home, ["bin/rustc", "lib/librustc_driver.so"])
+            toolchain = home / "rustup" / "toolchains" / self.FULL
+            left = sorted(str(path.relative_to(toolchain)) for path in toolchain.rglob("*"))
+        self.assertEqual(
+            done,
+            (
+                0,
+                "",
+                [
+                    f"rustup toolchain install {self.TOOLCHAIN} --profile minimal",
+                    "rustup target add x86_64-unknown-linux-musl",
+                    "rustup component add clippy",
+                ],
+            ),
+        )
+        # What the install left part way gone, the toolchain installed anew.
+        self.assertEqual(left, ["lib", "lib/rustlib", self.MANIFEST])
+
+    def test_a_working_toolchain_is_kept(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            done = self.host_rust(home, ["bin/rustc", self.MANIFEST])
+        calls = ["rustup target add x86_64-unknown-linux-musl", "rustup component add clippy"]
+        self.assertEqual(done, (0, "", calls))
+
+
 if __name__ == "__main__":
     unittest.main()
