@@ -13,6 +13,10 @@ GCOV_PROFILE_super.o := y
 
 # fxdax: the commit the build is of, which /proc/fs/fxfs/build shows: scripts/build-guest-kernel.sh
 # gives it, as scripts/build-commit.sh says (TASK-111.7).
+# fxdax: the tracepoints device.c defines, whose header define_trace.h reads again from here
+# (fxfs_trace.h, TASK-44.16).
+CFLAGS_device.o += -I$(src)
+
 FXFS_BUILD_COMMIT ?= unknown
 CFLAGS_super.o += -DFXFS_BUILD_COMMIT='"$(FXFS_BUILD_COMMIT)"'
 

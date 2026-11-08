@@ -1,0 +1,69 @@
+#!/usr/bin/env bpftrace
+// Copyright 2026 The fxdax Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+//
+// In a guest: how long the guest Fxfs's seals and DAX window MAPs take, in microseconds, the MAPs
+// by why the window maps (fs/fxfs/fxfs_trace.h's events, docs/guest-tracepoints.md), and the bytes
+// the seals sealed. Printed as it ends, at Ctrl-C.
+
+BEGIN
+{
+	printf("Tracing fxfs seals and window MAPs; Ctrl-C to end.\n");
+}
+
+// A seal's begin and end: its count, odd as it begins, one more as it ends.
+tracepoint:fxfs:fxfs_seal_begin
+{
+	@seal_began[args.seals] = nsecs;
+}
+
+tracepoint:fxfs:fxfs_seal_end
+/@seal_began[args.seals - 1]/
+{
+	@seal_us = hist((nsecs - @seal_began[args.seals - 1]) / 1000);
+	@sealed_bytes = sum(args.bytes);
+	delete(@seal_began[args.seals - 1]);
+}
+
+// Why the window maps, on the task that then MAPs: reach, range, rebind or zeros.
+tracepoint:fxfs:fxfs_dax_map
+{
+	@why[tid] = args.why;
+}
+
+tracepoint:fxfs:fxfs_window_map_start
+{
+	@map_began[args.id] = nsecs;
+	@map_why[args.id] = @why[tid];
+	@map_bytes = hist(args.len);
+}
+
+tracepoint:fxfs:fxfs_window_map_end
+/@map_began[args.id]/
+{
+	$why = @map_why[args.id];
+	$us = (nsecs - @map_began[args.id]) / 1000;
+	if ($why == 0) {
+		@map_us["reach"] = hist($us);
+	} else if ($why == 1) {
+		@map_us["range"] = hist($us);
+	} else if ($why == 2) {
+		@map_us["rebind"] = hist($us);
+	} else {
+		@map_us["zeros"] = hist($us);
+	}
+	if (args.err != 0) {
+		@map_errors[args.err] = count();
+	}
+	delete(@map_began[args.id]);
+	delete(@map_why[args.id]);
+}
+
+END
+{
+	clear(@seal_began);
+	clear(@map_began);
+	clear(@map_why);
+	clear(@why);
+}

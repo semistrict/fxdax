@@ -26,6 +26,13 @@ static inline value name##_sub_return(value i, atomic *v) { return v->counter -=
 static inline value name##_inc_return(atomic *v) { return ++v->counter; }		\
 static inline value name##_dec_return(atomic *v) { return --v->counter; }		\
 static inline bool name##_dec_and_test(atomic *v) { return !--v->counter; }		\
+static inline value name##_xchg(atomic *v, value new)					\
+{											\
+	value old = v->counter;								\
+											\
+	v->counter = new;								\
+	return old;									\
+}											\
 static inline value name##_fetch_add(value i, atomic *v)				\
 {											\
 	value old = v->counter;								\

@@ -10,16 +10,16 @@
 
 --- a/guest/linux/fs/fxfs/dax.c
 +++ b/guest/linux/fs/fxfs/dax.c
-@@ -2164,7 +2164,7 @@
+@@ -2321,7 +2321,7 @@
  	unsigned long kept = 0;
  	struct fxfs_dax_range *range;
  	unsigned long chunk;
 -	size_t nr = 0, most, now, i;
 +	size_t nr = 0, most, now;
- 	long pages = 0;
+ 	long pages = 0, written = 0;
+ 	bool traced = false;
  	int err = 0;
- 
-@@ -2218,8 +2218,6 @@
+@@ -2378,8 +2378,6 @@
  		if (!fxfs_dax_range_dirty(range))
  			continue;
  		batch[nr].range = range;
@@ -28,12 +28,12 @@
  		pages += fxfs_dax_pages_swap(range->state, batch[nr].pages);
  		bitmap_zero(batch[nr].kept, FXFS_DAX_PAGES);
  		nr++;
-@@ -2236,8 +2234,6 @@
+@@ -2396,8 +2394,6 @@
  	} else if (kept) {
  		kept = fxfs_dax_keep(inode, batch, nr);
  	}
 -	for (i = 0; i < nr; i++)
 -		fxfs_dax_put_range(dax, batch[i].range);
  	atomic64_inc(&dax->writebacks);
- 	atomic64_add(pages - kept, &dax->written);
- 	/*
+ 	written = pages - kept;
+ 	atomic64_add(written, &dax->written);

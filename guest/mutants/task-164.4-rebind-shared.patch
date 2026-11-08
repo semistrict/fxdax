@@ -11,8 +11,8 @@
 
 --- a/guest/linux/fs/fxfs/dax.c
 +++ b/guest/linux/fs/fxfs/dax.c
-@@ -2249,7 +2249,7 @@
- 
+@@ -2449,7 +2449,7 @@
+ 	trace_fxfs_dax_rebind_start(file->ino);
  	while (atomic_long_read(&file->private_pages) && atomic_long_read(&dax->private) > target) {
  		mutex_lock(&file->wb_lock);
 -		down_write(&file->sem);
@@ -20,7 +20,7 @@
  		/* A volume going (fxfs_dax_remove_volume) stops the worker first. */
  		volume = READ_ONCE(file->volume);
  		range = volume ? xa_find(&file->ranges, &chunk, ULONG_MAX, XA_PRESENT) : NULL;
-@@ -2261,7 +2261,7 @@
+@@ -2461,7 +2461,7 @@
  			else
  				rebound += done;
  		}

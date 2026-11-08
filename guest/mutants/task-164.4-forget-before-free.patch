@@ -10,7 +10,7 @@
 
 --- a/guest/linux/fs/fxfs/dax.c
 +++ b/guest/linux/fs/fxfs/dax.c
-@@ -1093,11 +1093,10 @@
+@@ -1227,11 +1227,10 @@
  	     range->file->ino, range->chunk, range->window_offset, atomic_read(&range->users));
  
  	xa_erase(&range->file->ranges, range->chunk);
@@ -23,10 +23,10 @@
  	fxfs_dax_free_range(dax, range, err);
  }
  
-@@ -3895,14 +3894,13 @@
- 		 * released; unmapped if it fails, as a write maps them again.
- 		 */
- 		if (!range->region) {
+@@ -4445,14 +4444,13 @@
+ 			trace_fxfs_dax_map(FXFS_TRACE_MAP_ZEROS, inode->i_ino,
+ 					   fxfs_dax_page_offset(range, page),
+ 					   (u64)(range->pages - page) << PAGE_SHIFT, 1);
 +			fxfs_dax_dropped(dax, range,
 +					 fxfs_dax_pages_cut(range->state, page, range->pages - page),
 +					 true);

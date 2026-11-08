@@ -73,6 +73,7 @@
 #include <linux/writeback.h>
 
 #include "device.h"
+#include "fxfs_trace.h"
 #include "hist.h"
 #include "pages.h"
 #include "vfs.h"
@@ -777,6 +778,14 @@ static long fxfs_dax_map_all(struct fxfs_dax *dax, struct fxfs_dax_range *range,
 		range->unsure = true;
 		return rebound < 0 ? rebound : -EIO;
 	}
+	if (trace_fxfs_dax_map_enabled()) {
+		u64 len = 0;
+
+		for (i = 0; i < count; i++)
+			len += maps[i].len;
+		trace_fxfs_dax_map(rebind ? FXFS_TRACE_MAP_REBIND : FXFS_TRACE_MAP_RANGE,
+				   range->file->ino, maps[0].window_offset, len, count);
+	}
 	err = fxfs_dax_device_map_many(dax, maps, count);
 	atomic64_add(count, &dax->maps[FXFS_DAX_RANGE]);
 	for (i = 0; i < count; i++) {
@@ -1376,6 +1385,7 @@ static bool fxfs_dax_reclaim(struct fxfs_dax *dax)
 	if (!file)
 		return false;
 	reclaimed = fxfs_dax_reclaim_range(dax, file, chunk);
+	trace_fxfs_dax_reclaim(file->ino, chunk, reclaimed);
 	fxfs_dax_put_file(dax, file);
 	if (reclaimed)
 		atomic_long_inc(&dax->reclaims);
@@ -1538,6 +1548,9 @@ static int fxfs_dax_region_map(struct fxfs_dax *dax, struct fxfs_dax_region *reg
 	}
 	to = region->pages;
 	for (;;) {
+		trace_fxfs_dax_map(FXFS_TRACE_MAP_REACH, 0,
+				   region->window_offset + ((u64)from << PAGE_SHIFT),
+				   (u64)(to - from) << PAGE_SHIFT, 1);
 		err = fxfs_device_map(dax->dev, region->branch, region->sequence,
 				      (u64)from << PAGE_SHIFT, (u64)(to - from) << PAGE_SHIFT,
 				      region->window_offset + ((u64)from << PAGE_SHIFT), true);
@@ -2309,7 +2322,8 @@ static int fxfs_dax_write_back_keeping(struct inode *inode, bool keep)
 	struct fxfs_dax_range *range;
 	unsigned long chunk;
 	size_t nr = 0, most, now, i;
-	long pages = 0;
+	long pages = 0, written = 0;
+	bool traced = false;
 	int err = 0;
 
 	if (!IS_DAX(inode) || !file)
@@ -2323,6 +2337,8 @@ static int fxfs_dax_write_back_keeping(struct inode *inode, bool keep)
 	mutex_lock(&file->wb_lock);
 	if (!atomic_long_read(&file->dirty_pages))
 		goto out;
+	traced = true;
+	trace_fxfs_dax_writeback_start(file->ino);
 	parts = kmalloc_array(FXFS_DAX_WRITEBACK_RUN, sizeof(*parts), GFP_NOFS);
 	run_parts = kmalloc_array(FXFS_DAX_WRITEBACK_RUN, sizeof(*run_parts), GFP_NOFS);
 	if (!parts || !run_parts) {
@@ -2383,7 +2399,8 @@ static int fxfs_dax_write_back_keeping(struct inode *inode, bool keep)
 	for (i = 0; i < nr; i++)
 		fxfs_dax_put_range(dax, batch[i].range);
 	atomic64_inc(&dax->writebacks);
-	atomic64_add(pages - kept, &dax->written);
+	written = pages - kept;
+	atomic64_add(written, &dax->written);
 	/*
 	 * As the page cache's writeback: what an I/O error stopped is clean, the error the file's
 	 * (fsync's, syncfs's). What Fxfs had no memory for is dirty still (TASK-207), and this
@@ -2394,6 +2411,8 @@ static int fxfs_dax_write_back_keeping(struct inode *inode, bool keep)
 	if (kept)
 		err = err ?: -ENOMEM;
 out:
+	if (traced)
+		trace_fxfs_dax_writeback_end(file->ino, err ?: written);
 	mutex_unlock(&file->wb_lock);
 	kfree(run_parts);
 	kfree(parts);
@@ -2427,6 +2446,7 @@ static long fxfs_dax_rebind(struct fxfs_dax *dax, struct fxfs_dax_file *file, lo
 	unsigned long chunk = 0;
 	long rebound = 0, done;
 
+	trace_fxfs_dax_rebind_start(file->ino);
 	while (atomic_long_read(&file->private_pages) && atomic_long_read(&dax->private) > target) {
 		mutex_lock(&file->wb_lock);
 		down_write(&file->sem);
@@ -2449,6 +2469,7 @@ static long fxfs_dax_rebind(struct fxfs_dax *dax, struct fxfs_dax_file *file, lo
 		cond_resched();
 	}
 	atomic64_add(rebound, &dax->rebound);
+	trace_fxfs_dax_rebind_end(file->ino, rebound);
 	return rebound;
 }
 
@@ -3440,6 +3461,7 @@ static vm_fault_t fxfs_dax_do_fault(struct vm_fault *vmf, unsigned int order, bo
 	unsigned long pfn;
 	int error;
 
+	trace_fxfs_dax_fault_start(inode->i_ino, vmf->pgoff, order, write);
 	if (write) {
 		sb_start_pagefault(sb);
 		file_update_time(vmf->vma->vm_file);
@@ -3517,6 +3539,7 @@ static vm_fault_t fxfs_dax_do_fault(struct vm_fault *vmf, unsigned int order, bo
 	if (write)
 		sb_end_pagefault(sb);
 	fxfs_hist_add(&dax->fault_hist, ktime_get_ns() - began);
+	trace_fxfs_dax_fault_end(inode->i_ino, vmf->pgoff, ret);
 	return ret;
 }
 
@@ -4419,6 +4442,9 @@ static void fxfs_dax_resize_end(struct inode *inode, loff_t size)
 		 * released; unmapped if it fails, as a write maps them again.
 		 */
 		if (!range->region) {
+			trace_fxfs_dax_map(FXFS_TRACE_MAP_ZEROS, inode->i_ino,
+					   fxfs_dax_page_offset(range, page),
+					   (u64)(range->pages - page) << PAGE_SHIFT, 1);
 			err = fxfs_device_map_zeros(dax->dev, fxfs_dax_page_offset(range, page),
 						    (u64)(range->pages - page) << PAGE_SHIFT);
 			if (!err) {

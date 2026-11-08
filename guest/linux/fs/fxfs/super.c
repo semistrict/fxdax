@@ -44,6 +44,7 @@
 
 #include "device.h"
 #include "fxfs.h"
+#include "fxfs_trace.h"
 #include "rt.h"
 #include "vfs.h"
 
@@ -2129,7 +2130,10 @@ static const struct address_space_operations fxfs_vfs_aops = {
 int fxfs_vfs_fsync(struct file *file, loff_t start, loff_t end, int datasync)
 {
 	struct inode *inode = file_inode(file);
-	int err = file_write_and_wait_range(file, start, end);
+	int err;
+
+	trace_fxfs_fsync_start(inode->i_ino);
+	err = file_write_and_wait_range(file, start, end);
 
 	/*
 	 * fxdax: a DAX file's dirty pages, which a write(2)'s leave the mapping untagged for, so that
@@ -2147,6 +2151,7 @@ int fxfs_vfs_fsync(struct file *file, loff_t start, loff_t end, int datasync)
 	}
 	if (!err)
 		err = fxfs_nofs(fxfs_fsync(fxfs_vfs_fs(inode->i_sb)));
+	trace_fxfs_fsync_end(inode->i_ino, err);
 	return err;
 }
 

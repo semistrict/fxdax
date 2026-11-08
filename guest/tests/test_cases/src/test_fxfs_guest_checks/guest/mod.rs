@@ -34,6 +34,7 @@ mod page_cache;
 mod random;
 mod run;
 mod seals;
+mod tracepoints;
 mod window;
 
 use appends::*;
@@ -48,6 +49,7 @@ use page_cache::*;
 pub(crate) use random::seed;
 use random::*;
 use seals::*;
+use tracepoints::*;
 use window::*;
 
 const MNT: &str = "/mnt/fxdax";

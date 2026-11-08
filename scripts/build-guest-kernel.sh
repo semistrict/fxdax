@@ -171,6 +171,9 @@ grep -q '^CONFIG_FXFS_FS=y' "$src/.config"
 grep -q '^CONFIG_VIRTIO_EXTENT=y' "$src/.config"
 grep -q '^CONFIG_VIRTIO_PMEM=y' "$src/.config"
 grep -q '^CONFIG_SERIAL_8250_CONSOLE=y' "$src/.config"
+# fxdax: fs/fxfs's tracepoints, in tracefs and for BPF (fxdax.config, TASK-44.16).
+grep -q '^CONFIG_FTRACE=y' "$src/.config"
+grep -q '^CONFIG_BPF_EVENTS=y' "$src/.config"
 
 # The filesystem's Rust, against a sysroot whose std is the kernel's (guest/rust/std). With
 # FXDAX_GUEST_KERNEL_RUST_CHECKS=1, optimized, but with its debug assertions, and arithmetic that

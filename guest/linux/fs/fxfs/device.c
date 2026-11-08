@@ -18,6 +18,9 @@
 #include "device.h"
 #include "hist.h"
 
+#define CREATE_TRACE_POINTS
+#include "fxfs_trace.h"
+
 struct fxfs_device {
 	struct virtio_extent *vext;
 	/* Guards the seals. */
@@ -41,13 +44,28 @@ struct fxfs_device {
 	/* fxdax: what they took, and each (TASK-164.10). */
 	atomic64_t private_ns;
 	struct fxfs_hist private_hist;
+	/* fxdax: the bytes written since a seal last ended, which the next seals (fxfs_seal_end). */
+	atomic64_t unsealed_bytes;
 };
 
 struct fxfs_device_request {
 	struct vext_request req;
 	fxfs_device_done_t done;
 	void *arg;
+	/* fxdax: the id its events share (fxfs_device_submit, fxfs_device_done). */
+	u64 trace_id;
 };
+
+/*
+ * fxdax: the id of a request's events (fxfs_trace.h), if its first event, `on`, is: the guest's
+ * own count, as the device's requests carry no id. 0 if it is off.
+ */
+static atomic64_t fxfs_device_trace_ids = ATOMIC64_INIT(0);
+
+static u64 fxfs_device_trace_id(bool on)
+{
+	return on ? atomic64_inc_return(&fxfs_device_trace_ids) : 0;
+}
 
 struct fxfs_device *fxfs_device_find(const char *tag, size_t len, struct fxfs_device_info *info)
 {
@@ -99,6 +117,7 @@ static void fxfs_device_done(struct vext_request *req)
 {
 	struct fxfs_device_request *r = container_of(req, struct fxfs_device_request, req);
 
+	trace_fxfs_device_done(r->trace_id, req->type, req->status);
 	r->done(r->arg, req->status);
 	kfree(r);
 }
@@ -122,9 +141,16 @@ int fxfs_device_submit(struct fxfs_device *dev, const struct fxfs_device_op *op,
 	r->req.done = fxfs_device_done;
 	r->done = done;
 	r->arg = arg;
+	r->trace_id = fxfs_device_trace_id(trace_fxfs_device_submit_enabled());
+	if (op->type == VIRTIO_EXTENT_T_WRITE)
+		atomic64_add(op->len, &dev->unsealed_bytes);
+	trace_fxfs_device_submit(r->trace_id, op->type, op->flags, op->branch, op->sequence,
+				 op->offset, op->len);
 	err = virtio_extent_submit(dev->vext, &r->req);
-	if (err)
+	if (err) {
+		trace_fxfs_device_done(r->trace_id, op->type, err);
 		kfree(r);
+	}
 	return err;
 }
 
@@ -168,6 +194,8 @@ u64 fxfs_device_seals(struct fxfs_device *dev)
 
 void fxfs_device_seal_begin(struct fxfs_device *dev)
 {
+	u64 seals;
+
 	spin_lock(&dev->lock);
 	while (dev->sealing) {
 		spin_unlock(&dev->lock);
@@ -175,21 +203,25 @@ void fxfs_device_seal_begin(struct fxfs_device *dev)
 		spin_lock(&dev->lock);
 	}
 	dev->sealing = true;
-	dev->seals++;
+	seals = ++dev->seals;
 	spin_unlock(&dev->lock);
+	trace_fxfs_seal_begin(seals);
 }
 
 void fxfs_device_seal_end(struct fxfs_device *dev)
 {
 	fxfs_device_sealed_t sealed;
 	void *arg;
+	u64 seals;
 
 	spin_lock(&dev->lock);
 	dev->sealing = false;
-	dev->seals++;
+	seals = ++dev->seals;
 	sealed = dev->sealed;
 	arg = dev->sealed_arg;
 	spin_unlock(&dev->lock);
+	/* fxdax: writes are kept out through a seal (fxfs-linux's Seal): its request's are its. */
+	trace_fxfs_seal_end(seals, atomic64_xchg(&dev->unsealed_bytes, 0));
 	wake_up_all(&dev->wait);
 	if (sealed)
 		sealed(arg);
@@ -228,7 +260,7 @@ static u32 fxfs_device_map_flags(struct fxfs_device *dev, const struct fxfs_devi
 static int fxfs_device_map_one(struct fxfs_device *dev, const struct fxfs_device_map *map)
 {
 	struct vext_request *req = kzalloc(sizeof(*req), GFP_NOFS);
-	u64 began;
+	u64 began, id;
 	int err;
 
 	if (!req)
@@ -241,8 +273,12 @@ static int fxfs_device_map_one(struct fxfs_device *dev, const struct fxfs_device
 	req->offset = map->zeros ? 0 : map->offset;
 	req->len = map->len;
 	req->window_offset = map->window_offset;
+	id = fxfs_device_trace_id(trace_fxfs_window_map_start_enabled());
+	trace_fxfs_window_map_start(id, req->id.branch, req->id.sequence, req->offset, req->len,
+				    req->window_offset, 1, map->zeros);
 	began = ktime_get_ns();
 	err = virtio_extent_call(dev->vext, req);
+	trace_fxfs_window_map_end(id, err);
 	atomic64_inc(&dev->maps);
 	atomic64_inc(&dev->map_requests);
 	atomic64_add(ktime_get_ns() - began, &dev->map_ns);
@@ -274,7 +310,7 @@ int fxfs_device_map_zeros(struct fxfs_device *dev, u64 window_offset, u64 len)
 int fxfs_device_private(struct fxfs_device *dev, u64 window_offset, u64 len)
 {
 	struct vext_request *req = kzalloc(sizeof(*req), GFP_NOFS);
-	u64 began, took;
+	u64 began, took, id;
 	int err;
 
 	if (!req)
@@ -282,9 +318,12 @@ int fxfs_device_private(struct fxfs_device *dev, u64 window_offset, u64 len)
 	req->type = VIRTIO_EXTENT_T_PRIVATE;
 	req->len = len;
 	req->window_offset = window_offset;
+	id = fxfs_device_trace_id(trace_fxfs_window_private_start_enabled());
+	trace_fxfs_window_private_start(id, window_offset, len);
 	began = ktime_get_ns();
 	err = virtio_extent_call(dev->vext, req);
 	took = ktime_get_ns() - began;
+	trace_fxfs_window_private_end(id, err);
 	atomic64_inc(&dev->privates);
 	atomic64_add(took, &dev->private_ns);
 	fxfs_hist_add(&dev->private_hist, took);
@@ -322,7 +361,7 @@ static int fxfs_device_map_one_request(struct fxfs_device *dev, const struct fxf
 				       size_t count, struct virtio_extent_map_entry *entries)
 {
 	struct vext_request *req = kzalloc(sizeof(*req), GFP_NOFS);
-	u64 began;
+	u64 began, id, len;
 	size_t i;
 	int err;
 
@@ -351,8 +390,16 @@ static int fxfs_device_map_one_request(struct fxfs_device *dev, const struct fxf
 	req->window_offset = maps[0].window_offset;
 	req->data = entries;
 	req->data_len = (count - 1) * sizeof(*entries);
+	id = fxfs_device_trace_id(trace_fxfs_window_map_start_enabled());
+	if (id) {
+		for (i = 0, len = 0; i < count; i++)
+			len += maps[i].len;
+		trace_fxfs_window_map_start(id, req->id.branch, req->id.sequence, req->offset, len,
+					    req->window_offset, count, maps[0].zeros);
+	}
 	began = ktime_get_ns();
 	err = virtio_extent_call(dev->vext, req);
+	trace_fxfs_window_map_end(id, err);
 	atomic64_add(count, &dev->maps);
 	atomic64_inc(&dev->map_requests);
 	atomic64_add(ktime_get_ns() - began, &dev->map_ns);
@@ -393,14 +440,17 @@ int fxfs_device_map_many(struct fxfs_device *dev, const struct fxfs_device_map *
 int fxfs_device_unmap(struct fxfs_device *dev, u64 window_offset, u64 len)
 {
 	struct vext_request *req = kzalloc(sizeof(*req), GFP_NOFS | __GFP_NOFAIL);
-	u64 began;
+	u64 began, id;
 	int err;
 
 	req->type = VIRTIO_EXTENT_T_UNMAP;
 	req->len = len;
 	req->window_offset = window_offset;
+	id = fxfs_device_trace_id(trace_fxfs_window_unmap_start_enabled());
+	trace_fxfs_window_unmap_start(id, window_offset, len);
 	began = ktime_get_ns();
 	err = virtio_extent_call(dev->vext, req);
+	trace_fxfs_window_unmap_end(id, err);
 	atomic64_inc(&dev->unmaps);
 	atomic64_add(ktime_get_ns() - began, &dev->unmap_ns);
 	fxfs_hist_add(&dev->unmap_hist, ktime_get_ns() - began);

@@ -11,8 +11,8 @@
 
 --- a/guest/linux/fs/fxfs/dax.c
 +++ b/guest/linux/fs/fxfs/dax.c
-@@ -2168,17 +2168,9 @@
- 	long pages = 0;
+@@ -2326,17 +2326,9 @@
+ 	bool traced = false;
  	int err = 0;
  
 -	if (!IS_DAX(inode) || !file)
@@ -27,6 +27,6 @@
  	mutex_lock(&file->wb_lock);
 -	if (!atomic_long_read(&file->dirty_pages))
 -		goto out;
+ 	traced = true;
+ 	trace_fxfs_dax_writeback_start(file->ino);
  	parts = kmalloc_array(FXFS_DAX_WRITEBACK_RUN, sizeof(*parts), GFP_NOFS);
- 	run_parts = kmalloc_array(FXFS_DAX_WRITEBACK_RUN, sizeof(*run_parts), GFP_NOFS);
- 	if (!parts || !run_parts) {

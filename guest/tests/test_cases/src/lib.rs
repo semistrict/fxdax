@@ -51,6 +51,9 @@ use test_fxfs_guest_follow_torture::{Mutant, TestFxfsGuestFollowTorture};
 mod test_fxfs_guest_import;
 use test_fxfs_guest_import::TestFxfsGuestImport;
 mod test_fxfs_guest_automount;
+// fxdax: the guest Fxfs's tracepoints under bpftrace (TASK-44.16).
+mod test_fxfs_guest_bpftrace;
+use test_fxfs_guest_bpftrace::TestFxfsGuestBpftrace;
 mod test_fxfs_guest_git_fetch;
 mod test_fxfs_guest_shared_volumes;
 use test_fxfs_guest_automount::TestFxfsGuestAutomount;
@@ -317,6 +320,11 @@ pub fn test_cases() -> Vec<TestCase> {
             "fxfs-guest-automount-dax",
             &[Tag::Kernel, Tag::Nightly],
             Box::new(TestFxfsGuestAutomount { dax: true }),
+        ),
+        TestCase::new(
+            "fxfs-guest-bpftrace-dax",
+            &[Tag::Kernel, Tag::Nightly],
+            Box::new(TestFxfsGuestBpftrace),
         ),
         TestCase::new(
             "fxfs-guest-git-fetch",
