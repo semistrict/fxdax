@@ -24,6 +24,11 @@ impl RootVolume {
     /// which the allocator freezes (see `Allocator::snapshot`), so it takes time and space
     /// independent of the source's size. Writes to the source that are not flushed when this
     /// flushes it, such as a file's dirty pages, are not in the snapshot.
+    ///
+    /// It is atomic with the source's commits (TASK-241): it holds them back from before its flush
+    /// until it commits (`LockKey::Commits`), so that none comes between the layers it shares and
+    /// the freezing of the source's data owner. One built before the freeze and committed after
+    /// it frees nothing frozen: the allocator leaves frozen extents out as it applies it.
     pub async fn snapshot_volume(
         &self,
         source_name: &str,
@@ -42,6 +47,12 @@ impl RootVolume {
             .ok_or(FxfsError::NotFound)
             .context("Missing volume store")?;
 
+        // fxdax: the source's commits held back until the snapshot commits, taken before the flush
+        // lock: a commit in flight may compact the journal, which flushes the source (TASK-241).
+        let _commits = filesystem
+            .lock_manager()
+            .write_lock(lock_keys![LockKey::commits(source_object_id)])
+            .await;
         // Flush the source, and keep its layers as they are until the snapshot shares them.
         let _flush_guard = filesystem
             .lock_manager()
@@ -253,6 +264,61 @@ mod tests {
             write_file(&filesystem, &source, "after", &[0xdd; 4096]).await;
         }
         do_fsck(&filesystem, Some("source"), None).await;
+        filesystem.close().await.expect("Close failed");
+    }
+
+    /// fxdax: a snapshot is atomic with its source's commits (TASK-241): writes of the source
+    /// racing it, each overwriting a file whole, which frees the extents it overwrote, are in it
+    /// or not, each file whole, and free nothing it shares; the snapshot reads back, passes fsck,
+    /// and so after a remount. A commit between the snapshot's flush and its own freed extents
+    /// the snapshot shared.
+    #[fuchsia::test]
+    async fn test_snapshot_volume_racing_writes() {
+        const FILES: u8 = 8;
+        const LEN: usize = 8192;
+        let device = DeviceHolder::new(FakeDevice::new(16384, 512));
+        let filesystem = FxFilesystem::new_empty(device).await.expect("new_empty failed");
+        let name = |file: u8| format!("file-{file}");
+        {
+            let root = root_volume(filesystem.clone()).await.expect("root_volume failed");
+            let source = root
+                .new_volume("source", NewChildStoreOptions::default())
+                .await
+                .expect("new_volume failed");
+            for file in 0..FILES {
+                write_file(&filesystem, &source, &name(file), &[0; LEN]).await;
+            }
+            let writes = async {
+                for round in 1..=4u8 {
+                    for file in 0..FILES {
+                        write_file(&filesystem, &source, &name(file), &[round; LEN]).await;
+                    }
+                }
+            };
+            let (snapshot, ()) = futures::join!(root.snapshot_volume("source", "snapshot"), writes);
+            let snapshot = snapshot.expect("snapshot failed");
+            for file in 0..FILES {
+                let held = read_file(&snapshot, &name(file)).await;
+                assert!(held.len() == LEN && held.iter().all(|byte| *byte == held[0]), "torn");
+                assert_eq!(read_file(&source, &name(file)).await, vec![4; LEN]);
+            }
+            filesystem.sync(SyncOptions::default()).await.expect("sync failed");
+        }
+        do_fsck(&filesystem, Some("source"), None).await;
+        do_fsck(&filesystem, Some("snapshot"), None).await;
+        filesystem.close().await.expect("Close failed");
+        let device = filesystem.take_device().await;
+        device.reopen(false);
+        let filesystem = FxFilesystem::open(device).await.expect("open failed");
+        do_fsck(&filesystem, Some("snapshot"), None).await;
+        {
+            let root = root_volume(filesystem.clone()).await.expect("root_volume failed");
+            let snapshot =
+                root.volume("snapshot", StoreOptions::default()).await.expect("volume failed");
+            for file in 0..FILES {
+                assert_eq!(read_file(&snapshot, &name(file)).await.len(), LEN);
+            }
+        }
         filesystem.close().await.expect("Close failed");
     }
 

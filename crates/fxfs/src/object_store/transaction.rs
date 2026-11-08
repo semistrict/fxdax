@@ -4,7 +4,8 @@
 
 // Fuchsia's `src/storage/fxfs/src/object_store/transaction.rs`. fxdax snapshots (volume snapshots
 // that share their source's layers and extents) deviate from upstream here: AllocatorMutation gains
-// a Snapshot variant, last, so that the others serialize as they did. A transaction counts what its
+// a Snapshot variant, last, so that the others serialize as they did, and LockKey a Commits variant,
+// a store's commits, which a snapshot of it holds back (TASK-241). A transaction counts what its
 // records take of the journal, and says how much room it has left (`Transaction::room`), which
 // upstream's loops guess at, each with a constant of its own.
 
@@ -351,6 +352,14 @@ pub enum LockKey {
     PreCacheKeys {
         store_object_id: u64,
     },
+
+    /// fxdax: a store's commits: each takes it to read, in `FxFilesystem::commit_transaction`,
+    /// after its keys are promoted to write locks, for each store it changes; a snapshot of the
+    /// store takes it to write, before its flush, and holds it until it commits, so that no commit
+    /// of the store comes between the two (TASK-241).
+    Commits {
+        store_object_id: u64,
+    },
 }
 
 impl LockKey {
@@ -376,6 +385,10 @@ impl LockKey {
 
     pub const fn pre_cache_keys(store_object_id: u64) -> Self {
         LockKey::PreCacheKeys { store_object_id }
+    }
+
+    pub const fn commits(store_object_id: u64) -> Self {
+        LockKey::Commits { store_object_id }
     }
 }
 

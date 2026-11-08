@@ -5,7 +5,8 @@
 // Fuchsia's `src/storage/fxfs/src/filesystem.rs`, without trimming (the trim task, its options and
 // the power manager it waited for a charger with): the device is an extent store (backlog doc-4),
 // whose extents Fxfs frees whole once nothing refers to them. A read-only mount can follow its
-// writer (crate::follower, backlog doc-8), whose state it holds.
+// writer (crate::follower, backlog doc-8), whose state it holds. fxdax: a commit holds back a
+// snapshot of a store it changes, and waits for one (`LockKey::Commits`, TASK-241).
 
 use crate::errors::FxfsError;
 use crate::fsck::{FsckOptions, fsck_volume_with_options, fsck_with_options};
@@ -887,6 +888,7 @@ impl FxFilesystem {
         // Since transaction.mutations() is sorted by object_id, we can deduplicate
         // on-the-fly.
         let mut guards = Vec::new();
+        let mut commits = Vec::new();
         let mut last_object_id = 0;
         for mutation in transaction.mutations() {
             let object_id = mutation.object_id;
@@ -901,6 +903,14 @@ impl FxFilesystem {
             }
             assert!(object_id > last_object_id);
             last_object_id = object_id;
+
+            // fxdax: a store's commits, which a snapshot of it holds back from its flush until it
+            // commits (TASK-241): a flush's BeginFlush and EndFlush, above, take nothing, as the
+            // snapshot's flush makes them.
+            if self.object_manager().store(object_id).is_some() {
+                let commits_of = lock_keys![LockKey::commits(object_id)];
+                commits.push(self.lock_manager.read_lock(commits_of).await);
+            }
 
             if let Some(obj) = self.object_manager().journaling_object(object_id) {
                 if let Some(guard) = obj.prepare_commit(self, transaction).await? {
@@ -934,6 +944,7 @@ impl FxFilesystem {
         };
 
         std::mem::drop(guards);
+        std::mem::drop(commits);
         self.completed_transactions.add(1);
 
         // For now, call the callback whilst holding the lock.  Technically, we don't need to do

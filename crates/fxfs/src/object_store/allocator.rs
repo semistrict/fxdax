@@ -829,6 +829,13 @@ impl Inner {
         (Saturating(limit) - used).0
     }
 
+    /// fxdax: whether `range`'s extent is a frozen owner's, shared with stores a snapshot made.
+    fn is_frozen(&self, range: &ExtentRange) -> bool {
+        self.extents
+            .owner(range.extent)
+            .is_some_and(|owner| self.info.frozen_owners.contains_key(&owner))
+    }
+
     /// fxdax: the owner that allocations for `owner_object_id`, a store or another owner, are
     /// recorded and counted under: a store's current data owner, which a snapshot changes, and
     /// otherwise the owner itself.
@@ -2194,6 +2201,12 @@ impl JournalingObject for Allocator {
             }
             Mutation::Allocator(AllocatorMutation::Reference { device_range, delta, .. }) => {
                 let mut inner = self.inner.lock();
+                // fxdax: of a transaction built before a snapshot froze the extent's owner and
+                // committed after it, which `reference` and `deallocate` would have left out: a
+                // frozen owner's extents are shared whole (TASK-241).
+                if inner.is_frozen(&device_range) {
+                    return Ok(());
+                }
                 let records = inner.recount(&device_range, delta, context)?;
                 self.record(records);
             }
@@ -2204,8 +2217,14 @@ impl JournalingObject for Allocator {
             Mutation::Allocator(AllocatorMutation::Deallocate { device_range, .. }) => {
                 let mut inner = self.inner.lock();
                 // `deallocate` leaves out the extents frozen owners hold, so the extent is the
-                // store's current data owner's. fxdax: the parts referenced more than once lose a
-                // reference; the rest are deallocated (see "References").
+                // store's current data owner's. fxdax: but for a transaction built before a
+                // snapshot froze its owner and committed after it, held back from the snapshot's
+                // flush: left out here, the extent shared with the snapshot (TASK-241). The parts
+                // referenced more than once lose a reference; the rest are deallocated (see
+                // "References").
+                if inner.is_frozen(&device_range) {
+                    return Ok(());
+                }
                 let records = inner.recount(&device_range, -1, context)?;
                 self.record(records);
             }
