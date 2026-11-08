@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-01 06:13'
-updated_date: '2026-11-08 05:36'
+updated_date: '2026-11-08 06:26'
 labels: []
 dependencies: []
 parent_task_id: TASK-149
@@ -25,9 +25,9 @@ At 9f81f6018 (writable DAX deleted, 37c331a6c): the past bugs AC5 named went wit
 <!-- AC:BEGIN -->
 - [x] #1 A script is generated from a seed and a failure prints the seed
 - [x] #2 A failing script shrinks to a smaller one that still fails, in a VM
-- [ ] #3 Scripts combine mappings, fork, a nearly full disk and a VM killed at a random point
+- [x] #3 Scripts combine mappings, fork, a nearly full disk and a VM killed at a random point
 - [x] #4 Each file is checked against a model, after a kill as after a clean stop
-- [ ] #5 Reintroducing a past copy-on-write DAX bug (guest/mutants/unmapped-page-read-as-hole.patch, or task-164.4-protect-by-entries.patch) fails in a VM, shrunk
+- [x] #5 Reintroducing a past copy-on-write DAX bug fails in a VM, shrunk: task-149.16-short-write-cut-to-its-start (a DAX write past the end, stopped short, cut back), killed by fxfs-guest-fsx-dax and shrunk in the guest to 12 of 4,082 operations (GCE r931). Not the two first named: task-164.4-protect-by-entries passes the release kernel's DAX suites (GCE r1000), and unmapped-page-read-as-hole needs a truncate's MAP of zeros to fail, which no fault injection does (decided 2026-11-08)
 <!-- AC:END -->
 
 ## Definition of Done
@@ -73,4 +73,9 @@ GCE, one host, fxdax-test-r1001-t1492, us-east1-b, release guest kernel; stopped
 - Planted, fsync doing nothing for regular files (r1001e): killed-dax fails 'killed differs: script-2: 3447697 bytes, where it was {3496514, 3506653}', shrunk in VMs to 2 of 3,314 operations (a write and an fsync of file 0); killed fails 'script-0: 0 bytes', shrunk to 2 of 3,258 (a write and an fsync of file 1).
 - r1001f, the clean tree: script, -dax, -full, -full-dax, -killed and -killed-dax all pass, 3 rounds each.
 - AC5: task-164.4-protect-by-entries in a release kernel (GCE r1000, fresh host before the user's reuse rule, us-east1-b): fxfs-guest-fsx-dax, -fsx-delay-dax, -script-dax (then page-cache files) and -checks-dax all pass. The mutant isn't killed in a VM; its header says so. unmapped-page-read-as-hole needs a truncate's MAP of zeros to fail, which no fault injection does (dax_fail_maps fails ranges' maps of more than one piece). A past copy-on-write DAX bug does fail in a VM, shrunk: task-149.16-short-write-cut-to-its-start (GCE r931, 12 of 4,082 operations). AC5 stays open as worded.
+
+2026-11-08, decided by the lead: AC5 accepts task-149.16-short-write-cut-to-its-start, a past copy-on-write DAX bug that fails in a VM and shrinks (GCE r931), and is reworded to say why the two first named don't serve. Filed: protect-by-entries surviving the release kernel's suites, and fault injection of a truncate's MAP of zeros for unmapped-page-read-as-hole. AC3: try modelling a refused clone or punch on the full volume as allowed states, so that a kill can follow a refusal; if that takes over about a day, reword AC3.
+
+2026-11-08, AC3 done on a follow-up branch, the kill on the nearly full volume too. Rather than branching the model into sets of states (later operations resolve their places against a size the host wouldn't know), the guest says what each refused operation left of the file it changes: script::Partial, a new length and the byte ranges that read as the operation done whole has them, as before elsewhere. That's what a cut-short write or child's store, a stopped clone and a part-way truncate or punch leave (Model::stopped_short checks it). An fsync refused is 'unsynced', and resets no window. Run::step derives it from the model before and after when Options::partials and full. The host replays by those lines (script::survivals). New cases fxfs-guest-script-killed-full and -killed-full-dax.
+Tests: partials_are_said_and_replayed. GCE r1001g: killed-full and killed-full-dax pass, 3 rounds each, 79 to 1,117 operations refused before the kill; killed and script-full pass too. r1001h, planted fsync doing nothing: killed-full fails 'killed differs: script-0: 3163035 bytes, where it was {3403873, 4010308}', shrunk in 31 tries to 2 of 3,299 operations (a truncate and an fsync of file 2). killed-full-dax passed both planted rounds; the same plant failed killed-dax (r1001e), so the check works with DAX, and on the full volume the data reached the store some other way (presumably the worker's writeback under its pressure; not confirmed). Host stopped after, not deleted.
 <!-- SECTION:NOTES:END -->
