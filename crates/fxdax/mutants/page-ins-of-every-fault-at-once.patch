@@ -4,12 +4,12 @@
 # Killer: extentd::tests::hostile::page_ins_in_flight_are_bounded
 --- a/crates/fxdax/src/extentd/server.rs
 +++ b/crates/fxdax/src/extentd/server.rs
-@@ -453,7 +453,7 @@
+@@ -454,7 +454,7 @@
          requests: SharedLock::new("connection requests", Mutex::new(Requests::default())),
          drained: Arc::new(event_listener::Event::new()),
          report: snapshot::Report::new(&peer.sender),
 -        page_ins: tokio::sync::Semaphore::new(PAGE_INS),
 +        page_ins: tokio::sync::Semaphore::new(tokio::sync::Semaphore::MAX_PERMITS),
+         named: OnceLock::new(),
          _alive: alive,
      });
-     match AsyncReceiver::new(stream) {
