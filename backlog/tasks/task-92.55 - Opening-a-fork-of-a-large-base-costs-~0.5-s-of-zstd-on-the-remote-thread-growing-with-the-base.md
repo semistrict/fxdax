@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-10-24 03:39'
-updated_date: '2026-11-08 04:51'
+updated_date: '2026-11-08 05:19'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -35,6 +35,17 @@ Found in round 2b (TASK-92.17's test counting_followers_walks_no_extents). 100 f
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+Target (the user, 2026-11-08): a fork's opening at a base of 32,768 extents within 2x of one at 1,024 (debug, the test forks_open_in_a_time_flat_in_their_base: 100 forks, each at a fork point of its own, as r1021). Slices, each measured; stop once there.
+1. A branch's extents in a persistent map (imbl::OrdMap, B-tree, std-like API; rpds's red-black tree iterates slower): a State copies for free between recovery, the writer, its checkpoints and the store's opening. Measured (Linux in Docker, debug, 2 runs each): 32,768 extents 44-49 ms a fork against main's 53-55; 1,024: 5-7 ms on both. ~15%.
+2. Checkpoints decoded once a host: a host-wide cache of the states checkpoints hold, by key (create-only objects), each an Arc<State> on the persistent map, bounded by count; recoveries of forks starting from one share it (Checkpoints, today per recovery with keep 0).
+3. No checkpoint for each fork (no format change; replaces the delta checkpoints proposed): the writer acknowledging a segment with forks makes them without a checkpoint at it: the child's record is made on its acknowledgement (as now), and the child's recovery starts from the parent's newest checkpoint up to the fork point, shared (2), with the parent's footers after it applied (at most CHECKPOINT_EVERY = 64), copying nothing of the base (1). The collector already keeps what recoveries read: checkpoints, the segments they replay (doc-7, Garbage collection 4), and the moves from where a replay from an older checkpoint names extents (TASK-175). What the per-fork checkpoint also did, moves followed and forks of deleted children dropped, the next periodic checkpoint does. doc-7 Checkpoints and Forks updated. Slice 1's profile at 32,768: the parent's checkpoint at each fork 49% of the open (following moves 16%, encoding 17%), the child decoding it 26%, the child's store open 11.5%.
+4. The child's store opens in its own extents' time: what it inherited held as the bucket's, layered, not rebuilt into the store's map (extent_store Recovering::open walks every extent, summing sizes).
+Tests: forks_open_in_a_time_flat_in_their_base (the measurement: unpacks, reads equal; 32,768 within 2x of 1,024); extent_remote sim (every rule test) and its mutants (crates/extent_remote/mutants.sh) for 3; GCE r1021 (kept) for the final numbers.
+<!-- SECTION:PLAN:END -->
 
 ## Implementation Notes
 
