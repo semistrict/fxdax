@@ -3,11 +3,11 @@ id: TASK-149.32
 title: >-
   extent_remote's simulation: every acknowledged object exists, every upload,
   sync and durable commit woken
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-06 03:35'
-updated_date: '2026-11-08 01:37'
+updated_date: '2026-11-08 02:37'
 labels: []
 dependencies: []
 parent_task_id: TASK-149
@@ -31,9 +31,9 @@ Split from TASK-149.18, which the user took to guest/sim (2026-11-05): its invar
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -51,4 +51,12 @@ Split from TASK-149.18, which the user took to guest/sim (2026-11-05): its invar
 <!-- SECTION:NOTES:BEGIN -->
 2026-11-08. check_woken at quiescence and per-host upload budgets added; the sim's after-step object check kept as AC #1 (recovered branches' touched objects and each extent's object or moves; live writers' guest-held extents read back). A stricter check I tried, every extent a live writer's acknowledged state names exists, failed at 25x (seed 4116 of everything): not a loss, the writer's state lags the bucket, a landed segment's free (commit 24, segment 5) unacknowledged yet, its old segment rightly reclaimed by the collector; dropped, a comment says why. AC #2 reread for doc-14 (no inherited uploads exist any more; children's own extents beside the collector are generated, and the collector mutant is killed on a child, branch 0x14 reading its parent 0x20's own extent, among others). The extent_store side of AC #3 (syncs, durable commits) is extent_store's Shuttle tests' (uploading_during_flushes, flushes_in_flight_keep_their_commits_pending and others), whose deadlock detection finds a waiter left blocked; no extent_store change, as asked.
 Runs (macOS, profile sim): sim part 48 of 48; holds profiles at SIM_SOAK 5 (1,000 seeds each), 25 (5,000) and 100 (20,000 each, 400,000 runs): no violation after the writer-state check went; mutants.sh: uploads-wake-no-waiter killed by sim::everything (seed 0, uploads still waiting at world.rs:577), own-extents-in-flight-collected killed by sim::forks_racing_collection (seed 4, an acknowledged extent's object gone), and also by collectors_stopping_and_racing, everything and forks_and_frees; extent_remote's other tests 187 of 187; scripts' tests 194 of 194; clippy's disallowed methods; upstream-changes.py --check passes.
+
+Landed: main e2e0759cd (land-h9), CI 42435074739 green (sim, workspace, macos (workspace), clippy scripts with extent_remote's mutants --check). DoD #1 by CI's Linux and macOS workspace jobs, not GCE; #2 upstream-changes.py --check passes; #3 nothing of upstream's changed.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+extent_remote's simulation now fails a run that ends with a task still waiting, everything settled (World::check_woken: every spawned task counted by its spawn site), and a host's writers upload within one budget of two PUTs, so that uploads wait on each other at all. Its after-step check already asserts every object a recovered branch's acknowledged segments name exists (or its moves), and a live writer's guest-held extents read back; a stricter writer-state check was wrong (the writer lags what landed, seed 4116) and went. Inherited uploads no longer exist since TASK-165.7/165.9; children's own extents beside the collector are generated. crates/extent_remote/mutants.sh: a budget grant waking no waiter, and the collector deleting an own extent's object that may still land (TASK-79.3/150.1's class), each killed. Soaked at 5x, 25x, 100x: no violation. CI green on land-h9.
+<!-- SECTION:FINAL_SUMMARY:END -->
