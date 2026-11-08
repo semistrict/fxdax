@@ -40,8 +40,8 @@ host_setup() {
         git flex bison bc cpio libelf-dev libssl-dev sqlite3 elfutils coccinelle fuse3)
     packages_ready="$work/tools/packages-$(printf '%s\n' "${packages[@]}" | sha256sum | cut -c1-16)"
     if [[ ! -f "$packages_ready" ]]; then
-        apt-get -o DPkg::Lock::Timeout=600 update -qq
-        apt-get -o DPkg::Lock::Timeout=600 install -y -qq "${packages[@]}"
+        host_apt update -qq
+        host_apt install -y -qq "${packages[@]}"
         touch "$packages_ready"
     fi
 
@@ -83,6 +83,15 @@ host_version() {
     esac
 }
 
+# host_apt ARG... runs apt-get with ARGs, waiting for its lock, restarting no
+# service: needrestart, which a host installs, restarted sshd and re-executed
+# systemd after a run's packages went in, and the run's job, which they ran
+# under, died with no status 11 s later (GCE r990, 2026-11-08).
+host_apt() {
+    NEEDRESTART_SUSPEND=1 DEBIAN_FRONTEND=noninteractive \
+        apt-get -o DPkg::Lock::Timeout=600 "$@"
+}
+
 # host_need TOOL... installs each TOOL, unless it is there: perf, which follows
 # the running kernel and so has no pin, or a cargo subcommand, at its pinned
 # version (host_pin). host_record records them.
@@ -92,13 +101,13 @@ host_need() {
         case $tool in
             perf)
                 if ! command -v perf > /dev/null; then
-                    apt-get -o DPkg::Lock::Timeout=600 install -y -qq linux-tools-common \
-                        "linux-tools-$(uname -r)" > /dev/null
+                    host_apt install -y -qq linux-tools-common "linux-tools-$(uname -r)" \
+                        > /dev/null
                 fi
                 ;;
             bpftrace)
                 command -v bpftrace > /dev/null ||
-                    apt-get -o DPkg::Lock::Timeout=600 install -y -qq bpftrace > /dev/null
+                    host_apt install -y -qq bpftrace > /dev/null
                 ;;
             *)
                 pin=$(host_pin "$tool")

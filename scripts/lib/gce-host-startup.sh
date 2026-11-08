@@ -42,4 +42,12 @@ WantedBy=timers.target
 UNIT
 systemctl daemon-reload
 systemctl enable --now fxdax-host-expire.timer
+# Nothing restarts the host's services under a run: needrestart only lists what
+# would need it, and no daily upgrade runs on a host that lives a few hours.
+# needrestart restarted sshd and re-executed systemd after a run's packages went
+# in, and the run's job died with no status 11 s later (GCE r990, 2026-11-08).
+install -d -m 0755 /etc/needrestart/conf.d
+echo "\$nrconf{restart} = 'l';" > /etc/needrestart/conf.d/fxdax.conf
+systemctl disable --now apt-daily.timer apt-daily-upgrade.timer unattended-upgrades.service \
+    2> /dev/null || true
 touch /var/lib/fxdax-host/ready

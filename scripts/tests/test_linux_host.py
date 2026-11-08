@@ -184,5 +184,42 @@ class Lima(Synced, unittest.TestCase):
         self.assertSynced(self.vm / "fxdax-test", self.start)
 
 
+class Apt(unittest.TestCase):
+    """host_apt, what installs a host's packages, restarting no service under the run's job:
+    needrestart restarted sshd and re-executed systemd after a run's packages went in, and the
+    job died with no status 11 s later (GCE r990)."""
+
+    def test_apt_get_runs_restarting_no_service(self):
+        with tempfile.TemporaryDirectory() as directory:
+            tools = Path(directory)
+            apt = tools / "apt-get"
+            apt.write_text(
+                "#!/bin/bash\n"
+                'echo "NEEDRESTART_SUSPEND=${NEEDRESTART_SUSPEND:-}'
+                ' DEBIAN_FRONTEND=${DEBIAN_FRONTEND:-} $*"\n'
+            )
+            apt.chmod(0o755)
+            done = subprocess.run(
+                ["/bin/bash", "-c", 'source "$0"; host_apt install -y -qq podman', LIBRARY],
+                env={"PATH": f"{tools}:/usr/bin:/bin"},
+                capture_output=True,
+                text=True,
+            )
+        said = "NEEDRESTART_SUSPEND=1 DEBIAN_FRONTEND=noninteractive"
+        said += " -o DPkg::Lock::Timeout=600 install -y -qq podman\n"
+        self.assertEqual((done.returncode, done.stdout, done.stderr), (0, said, ""))
+
+    def test_the_hosts_scripts_install_through_host_apt(self):
+        # Every apt-get a run's host script calls, but host_apt's own.
+        calls = [
+            f"{path.name}:{number}"
+            for path in sorted((SCRIPTS / "lib").glob("*.sh"))
+            for number, line in enumerate(path.read_text().splitlines(), 1)
+            if "apt-get" in line
+            and not line.lstrip().startswith("#")
+            and "DPkg::Lock::Timeout=600 \"$@\"" not in line
+        ]
+        self.assertEqual(calls, [])
+
 if __name__ == "__main__":
     unittest.main()
