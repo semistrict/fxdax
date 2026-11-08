@@ -13,7 +13,7 @@ use crate::layout::{
     Piece, Place, SEGMENTS, SegmentId, StoreFile, add_piece, branch_dir, create_branch_dirs,
     encode, extent_path, files_of, list_numbers, open_extent_path, segment_path,
 };
-use crate::segments::{Reaped, Segments, Unframed, footer_last};
+use crate::segments::{Behind, Reaped, Segments, Unframed, footer_last};
 use crate::state::{
     Framing, Gate, Life, Locked, OwnFiles, Placement, Readable, Reader, Space, Standing, State,
     Uncommitted, Unreferenced, Writable,
@@ -298,11 +298,18 @@ impl<D: Dir> Write<'_, D> {
     pub fn finish(mut self) {
         self.finished = true;
         // fxdax: what was written to the open segment, its writing back begun once a MiB or more
-        // waits (TASK-221): holding no lock.
-        if let Some((raw, offset, len)) = self.store.finish_write(&self)
-            && let Err(err) = raw.write_behind(offset, len)
-        {
+        // waits, and waited for once more than WRITTEN_BEHIND_MOST is begun: holding no lock
+        // (TASK-221). Failing, it is the flush's sync that fails.
+        let Some(Behind { raw, begin: (offset, len), wait }) = self.store.finish_write(&self) else {
+            return;
+        };
+        if let Err(err) = raw.write_behind(offset, len) {
             log::warn!("extent store: writing back {len} bytes at {offset} of a segment: {err}");
+        }
+        if let Some((offset, len)) = wait
+            && let Err(err) = raw.write_back(offset, len)
+        {
+            log::warn!("extent store: waiting for {len} bytes at {offset} of a segment: {err}");
         }
     }
 }
@@ -1111,9 +1118,9 @@ impl<D: Dir> Store<D> {
         Ok(())
     }
 
-    /// Records `write`, done; returns what of the open segment's raw file to begin writing back,
-    /// if anything ([`Segments::write_behind`]).
-    fn finish_write(&self, write: &Write<'_, D>) -> Option<(Arc<D::File>, u64, u64)> {
+    /// Records `write`, done; returns what of the open segment's raw file to write back, if
+    /// anything ([`Segments::write_behind`]).
+    fn finish_write(&self, write: &Write<'_, D>) -> Option<Behind<D::File>> {
         let mut state = self.lock();
         let state = &mut *state;
         // A write to an extent freed since it began is dropped, as though it finished before the

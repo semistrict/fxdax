@@ -362,11 +362,6 @@ impl File for MemFile {
         Ok(())
     }
 
-    /// As [`MemFile::write_back`]: what it began to write back, it counts written back.
-    fn write_behind(&self, offset: u64, len: u64) -> io::Result<()> {
-        self.write_back(offset, len)
-    }
-
     fn size(&self) -> io::Result<u64> {
         Ok(self.fs.lock().unwrap().inodes[&self.inode].data.len() as u64)
     }

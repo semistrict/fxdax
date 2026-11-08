@@ -62,8 +62,10 @@ struct Segment<F> {
     /// (TASK-165.8).
     sealed: HashSet<ExtentId>,
     /// fxdax: the bytes of its raw file, from its start, whose writing back has begun, as the
-    /// writes to it while open end ([`Segments::write_behind`], TASK-221).
+    /// writes to it while open end, and of those, the bytes waited for ([`Segments::write_behind`],
+    /// TASK-221).
     written_behind: u64,
+    written_back: u64,
     /// fxdax: its key in the bucket, once its uploader's writer acknowledged it there: it leaves
     /// the store for the host's cache of objects once no extent's data is in it here (TASK-165.8),
     /// if the object there is its framed file, not stamped anew after a takeover (TASK-165.9).
@@ -82,6 +84,7 @@ impl<F> Segment<F> {
             pending,
             sealed: HashSet::new(),
             written_behind: 0,
+            written_back: 0,
             acknowledged: None,
         }
     }
@@ -315,11 +318,12 @@ impl<F: File> Segments<F> {
         })
     }
 
-    /// fxdax: what of segment `number`'s raw file to begin writing back, a write to which, while it
-    /// is open, ended at `end` in it: what was written since the writing back last began, if
-    /// [`WRITE_BEHIND`] bytes or more, as its raw file and their range (TASK-221). Writes end out of
-    /// order: what one of those before it hasn't written yet, the sync of the flush after writes.
-    pub fn write_behind(&mut self, number: SegmentId, end: u64) -> Option<(Arc<F>, u64, u64)> {
+    /// fxdax: what of segment `number`'s raw file to write back, a write to which, while it is open,
+    /// ended at `end` in it (TASK-221): what was written since the writing back last began, to
+    /// begin writing back, if [`WRITE_BEHIND`] bytes or more; and what was begun more than
+    /// [`WRITTEN_BEHIND_MOST`] bytes before `end`, to wait for. Writes end out of order: what one of
+    /// those before it hasn't written yet, the sync of the flush after writes.
+    pub fn write_behind(&mut self, number: SegmentId, end: u64) -> Option<Behind<F>> {
         let segment = self.tracked.get_mut(&number)?;
         let Phase::Open { raw, .. } = &segment.phase else { return None };
         let from = segment.written_behind;
@@ -327,7 +331,12 @@ impl<F: File> Segments<F> {
             return None;
         }
         segment.written_behind = end;
-        Some((raw.clone(), from, end - from))
+        let back = segment.written_back;
+        let wait = end.checked_sub(WRITTEN_BEHIND_MOST).filter(|&to| to > back).map(|to| {
+            segment.written_back = to;
+            (back, to - back)
+        });
+        Some(Behind { raw: raw.clone(), begin: (from, end - from), wait })
     }
 
     /// fxdax: segment `number`, closed, is acknowledged in the bucket, its object there at `key`
@@ -779,9 +788,25 @@ impl<F: File> Unframed<F> {
 }
 
 /// fxdax: the bytes of the open segment's raw file whose writing back begins at once, written
-/// ([`Segments::write_behind`]): what the sync of a daemon's turn writes of what its guest wrote
-/// before, at most, but for the writes in progress then (TASK-221).
+/// ([`Segments::write_behind`], TASK-221).
 pub(crate) const WRITE_BEHIND: u64 = 1 << 20;
+
+/// fxdax: the most bytes of the open segment's raw file whose writing back began that its writes
+/// go on past, not waiting for it ([`Segments::write_behind`]): what the sync of a daemon's turn
+/// writes of what its guest wrote, at most, but for the writes in progress then. A guest's burst
+/// outran the host's disk, up to 300 MB a second under pgbench against some 200, and its writing
+/// back, begun but not waited for, filled the disk's queue as waiting in the host's page cache did:
+/// the syncs of the turns after waited behind it, up to 0.6 s (GCE r956, TASK-221). Waiting, its
+/// writes go on as fast as the disk takes them.
+pub(crate) const WRITTEN_BEHIND_MOST: u64 = 8 << 20;
+
+/// fxdax: what of the open segment's raw file to write back, a write to it done
+/// ([`Segments::write_behind`]): a range to begin writing back, and one to wait for, if any.
+pub(crate) struct Behind<F> {
+    pub raw: Arc<F>,
+    pub begin: (u64, u64),
+    pub wait: Option<(u64, u64)>,
+}
 
 /// fxdax: the bytes of a framed file a framing writes back at a time ([`File::write_back`]): what
 /// a sync behind it, a daemon's turn's, waits for at most, as the host's disk writes them.
