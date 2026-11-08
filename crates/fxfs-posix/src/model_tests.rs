@@ -75,7 +75,7 @@ use fxfs::object_store::transaction::TRANSACTION_MAX_JOURNAL_USAGE;
 use fxfs::object_store::volume::root_volume;
 use fxfs::object_store::{Extent, ExtentMode, ExtentValue, NewChildStoreOptions, StoreOptions};
 use proptest::prelude::*;
-use proptest::test_runner::{Config, TestRunner};
+use proptest::test_runner::{Config, RngSeed, TestRunner};
 use rand::rngs::StdRng;
 use rand::{RngExt as _, SeedableRng as _};
 use std::cell::Cell;
@@ -3364,17 +3364,33 @@ fn whatever_a_vfs_asks_reads_back_as_a_model_says() {
     assert!(tally.refused.get() > 0, "no device filled");
 }
 
+/// The proptest seed of the sequences `a_device_that_fails_loses_nothing_durable` runs unless a
+/// hunt asks for others: of its 24, 12 fail an operation, 6 of them syncs.
+const FAILING_SEQUENCES: u64 = 2;
+
 /// A panic of any task since the last call, which a sequence can't see of one it doesn't wait for.
 static PANICS: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
 /// Sequences whose device's requests fail, each ended by the first its operation doesn't survive:
 /// a filesystem that hit an error remounts, passes fsck, and holds what was durable, or what the
 /// operation that failed got as far as: nothing panics, and no sync that said it was done isn't.
-/// FXDAX_MODEL_FAILURES asks for more.
+///
+/// The same sequences every run, of `FAILING_SEQUENCES`, unless a hunt asks for others
+/// (FXDAX_MODEL_FAILURES, for more, and PROPTEST_RNG_SEED): a sequence fails as its seed says,
+/// requests of one kind, one in 4, 32 or 256, and about two in three fail no operation, most
+/// because no request did. 24 sequences drawn afresh each run all did so once in about 10,000
+/// runs, and the check that something failed failed with them (CI 42446163807: one request failed,
+/// a flush, no operation).
 #[test]
 fn a_device_that_fails_loses_nothing_durable() {
-    let cases = std::env::var("FXDAX_MODEL_FAILURES").map_or(24, |cases| cases.parse().unwrap());
-    let config = config(cases);
+    let hunt = std::env::var("FXDAX_MODEL_FAILURES").ok();
+    let cases = hunt.as_ref().map_or(24, |cases| cases.parse().unwrap());
+    let config = match (config(cases), hunt) {
+        (config, None) if config.rng_seed == RngSeed::Random => {
+            Config { rng_seed: RngSeed::Fixed(FAILING_SEQUENCES), ..config }
+        }
+        (config, _) => config,
+    };
     let room = prop_oneof![Just(ROOMY), Just(TIGHT)];
     // Many syncs, for a flush to fail under.
     let op = || prop_oneof![4 => op(), 1 => Just(Op::Fsync), 1 => Just(Op::Sync)];
