@@ -9,8 +9,17 @@ name: CI
 on:
   push:
     branches: [main]
+    # fxdax: a push of backlog notes alone tests nothing new: what reaches main has passed its
+    # land-X branch's run first. Their runs queued ahead of land-X branches' for half an hour.
+    paths-ignore: ['backlog/**', 'OPEN_QUESTIONS.md']
   pull_request:
   workflow_dispatch:
+
+# fxdax: a newer run of a ref replaces an older one still going: a push to main, or a land-X branch
+# pushed again, makes the older run's result moot.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   test:
