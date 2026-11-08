@@ -26,6 +26,12 @@ def job():
     return re.search(r"^  test:\n(.*?)^  \S", text, re.MULTILINE | re.DOTALL).group(1)
 
 
+def workflow_job(text, name):
+    """The text of the job `name` of a workflow's `text`."""
+    match = re.search(rf"^  {re.escape(name)}:\n(.*?)(?=^  \S|\Z)", text, re.MULTILINE | re.DOTALL)
+    return match.group(1)
+
+
 def parts():
     """The parts the job's matrix runs."""
     listed = re.search(r"^        parts: \[(.*)\]$", job(), re.MULTILINE).group(1)
@@ -90,6 +96,34 @@ class Ci(unittest.TestCase):
         self.assertIn("'vendor/firecracker/Cargo.lock'", job())
         e2e = (ROOT / "scripts" / "test-e2e.sh").read_text()
         self.assertIn('FXDAX_TEST_PARTS=firecracker "$root/scripts/test.sh"', e2e)
+
+    def test_guest_sim_runs_whole_when_what_it_tests_changed_and_nightly(self):
+        """The user's decision (2026-11-08): guest/sim's jobs, keeping their names, run whole in CI
+        only when what they test changed since the base, which scripts/guest-sim-scope.py says
+        from the base firecracker-forward compares with: else 200 seeds, and a twelfth of the
+        sweep's calls, rotating with the run's number; the mutants checked either way. The nightly
+        workflow runs both whole."""
+        text = CI.read_text()
+        base = re.search(r"^          BASE: (.*)$", workflow_job(text, "firecracker-forward"),
+                         re.MULTILINE).group(1)
+        for name in ["guest-sim", "guest-sim-sweep"]:
+            body = workflow_job(text, name)
+            self.assertIn("fetch-depth: 0", body, name)
+            self.assertIn(f"          BASE: {base}\n", body, name)
+            self.assertIn("FXDAX_GUEST_SIM: ${{ inputs.guest-sim }}", body, name)
+            self.assertIn('run: echo "scope=$(scripts/guest-sim-scope.py "$BASE")"', body, name)
+        seeds = workflow_job(text, "guest-sim")
+        self.assertIn("guest/sim/mutants.sh --check", seeds)
+        self.assertIn("SEEDS: ${{ steps.scope.outputs.scope == 'full' && 3000 || 200 }}", seeds)
+        self.assertIn('guest/sim/zloop.sh -s "$SEEDS"', seeds)
+        sweep = workflow_job(text, "guest-sim-sweep")
+        self.assertIn('guest/sim/sweep.sh -s "$GITHUB_RUN_NUMBER/12"', sweep)
+        self.assertIn('guest/sim/sweep.sh -d "$BUILD/sweep"', sweep)
+        nightly = (ROOT / ".github" / "workflows" / "nightly.yml").read_text()
+        self.assertIn('guest/sim/zloop.sh -s 3000 -d "$BUILD/logs"',
+                      workflow_job(nightly, "guest-sim"))
+        self.assertIn('guest/sim/sweep.sh -d "$BUILD/sweep"',
+                      workflow_job(nightly, "guest-sim-sweep"))
 
     def test_macos_runs_what_compiles_for_macos(self):
         """TASK-149.20.2: the macos job runs scripts/test.sh's workspace and Shuttle parts on a

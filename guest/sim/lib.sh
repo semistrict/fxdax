@@ -156,7 +156,9 @@ sim_sweep() { # dir, logs, jobs, run...
     shift 3
     mkdir -p "$logs"
     calls=$(sim_sweep_calls "$dir" "$@") || { echo "$calls"; return 1; }
-    failed=$(seq 1 "$calls" | xargs -P "$jobs" -I{} bash -c 'sim_sweep_one "$@"' _ "$dir" "$logs" {} "$@")
+    # Every call, or every sweep_every-th from sweep_from, as sweep.sh's -s asks.
+    failed=$(seq "${sweep_from:-1}" "${sweep_every:-1}" "$calls" |
+        xargs -P "$jobs" -I{} bash -c 'sim_sweep_one "$@"' _ "$dir" "$logs" {} "$@")
     [[ -z $failed ]] && return 0
     sort -t' ' -k1,1 -V <<< "$failed"
     return 1

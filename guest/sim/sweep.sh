@@ -9,10 +9,12 @@
 # the end of the run's (sim_end), the mount synced, its files read as Fxfs holds them, what they were
 # told durable, unmounted. A run fails if it exits other than 0.
 #
-#   sweep.sh [-j JOBS] [-d LOGS] [-p PATCH]... [RUN...]
+#   sweep.sh [-j JOBS] [-d LOGS] [-p PATCH]... [-s K/N] [RUN...]
 #
 # RUNs as sim_one_runs lists them (`scenarios cow_commit_failed`), every one by default, with
-# read_pressure's of fewer readers (sim_sweep_runs). Runs dax.c with fixes/*.patch in, as zloop.sh,
+# read_pressure's of fewer readers (sim_sweep_runs). -s K/N sweeps a slice of each run's calls:
+# every Nth, from the (K mod N)+1th, a sweep's Nth part in cost, every run in it, as CI's smoke run
+# does, K its run's number, so that N runs of it go through every call (scripts/guest-sim-scope.py). Runs dax.c with fixes/*.patch in, as zloop.sh,
 # and the -p patches, such as a mutant. Takes KERNEL and BUILD as the Makefile does. LOGS/failures
 # lists what failed, a line each, and each run's log is kept; `SIM_SWEEP=N $BUILD/mutants/sweep/RUN`
 # runs one again.
@@ -20,12 +22,13 @@
 set -u -o pipefail
 cd "$(dirname "$0")"
 
-jobs=$(nproc) logs="" patches=()
-while getopts j:d:p: opt; do
+jobs=$(nproc) logs="" patches=() slice=""
+while getopts j:d:p:s: opt; do
     case $opt in
         j) jobs=$OPTARG ;;
         d) logs=$OPTARG ;;
         p) patches+=("$OPTARG") ;;
+        s) slice=$OPTARG ;;
         *) exit 2 ;;
     esac
 done
@@ -47,12 +50,18 @@ if (($#)); then
 else
     mapfile -t runs < <(sim_sweep_runs "$bin")
 fi
+if [[ -n $slice ]]; then
+    [[ $slice =~ ^([0-9]+)/([1-9][0-9]*)$ ]] || { echo "sweep: -s K/N, not $slice" >&2; exit 2; }
+    # Read by sim_sweep: the calls it fails, every sweep_every-th from sweep_from.
+    sweep_every=${BASH_REMATCH[2]} sweep_from=$((BASH_REMATCH[1] % BASH_REMATCH[2] + 1))
+    echo "sweep: every ${sweep_every}th call of each run, from call $sweep_from"
+fi
 
 began=$SECONDS total=0
 for one in "${runs[@]}"; do
     # shellcheck disable=SC2086
     calls=$(sim_sweep_calls "$bin" $one) || { echo "$calls" | tee -a "$logs/failures"; continue; }
-    total=$((total + calls))
+    total=$((total + (calls - ${sweep_from:-1} + ${sweep_every:-1}) / ${sweep_every:-1}))
     # shellcheck disable=SC2086
     sim_sweep "$bin" "$logs" "$jobs" $one | tee -a "$logs/failures"
     echo "sweep: $one: $calls calls"

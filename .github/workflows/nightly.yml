@@ -8,7 +8,9 @@
 # and the guest kernel's, which it lacked (followers, snapshots, volumes, pjdfstest), the
 # others cheap on a release kernel (TASK-160.29), and xfstests' generic/quick with DAX and without,
 # its known failures checked (TASK-149.20.1). Needs the repository's GCP_WORKLOAD_IDENTITY_PROVIDER and GCP_SERVICE_ACCOUNT
-# secrets, and its FXDAX_GCE_PROJECT and FXDAX_NIGHTLY_BUCKET (gs://bucket/prefix) variables.
+# secrets, and its FXDAX_GCE_PROJECT and FXDAX_NIGHTLY_BUCKET (gs://bucket/prefix) variables. And
+# guest/sim whole, which CI runs whole only when what it tests changed (scripts/guest-sim-scope.py):
+# 3,000 seeds of each of its seeded tests, and its sweep, every call of every run of one failing.
 name: Nightly
 
 on:
@@ -49,3 +51,55 @@ jobs:
         with:
           name: results
           path: results
+
+  # guest/sim's 3,000 seeds, as CI runs them when what they test changed (TASK-149.14).
+  guest-sim:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      KERNEL: ${{ github.workspace }}/target/sim-kernel
+      BUILD: ${{ github.workspace }}/target/sim
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install the build's tools
+        run: sudo apt-get update && sudo apt-get install -y clang lld llvm
+      - uses: actions/cache@v6
+        with:
+          path: target/sim-kernel
+          key: sim-kernel-${{ hashFiles('scripts/build-guest-kernel.sh', 'guest/sim/kernel-tree.sh', 'guest/linux/patches/*') }}
+      - name: Fetch the kernel's sources
+        run: guest/sim/kernel-tree.sh "$KERNEL"
+      - name: The mutants apply
+        run: guest/sim/mutants.sh --check
+      - name: Run 3,000 seeds of each
+        run: guest/sim/zloop.sh -s 3000 -d "$BUILD/logs"
+      - uses: actions/upload-artifact@v7
+        if: failure()
+        with:
+          name: guest-sim-logs
+          path: target/sim/logs
+
+  # guest/sim's whole sweep, as CI runs it when what it tests changed (TASK-149.15).
+  guest-sim-sweep:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      KERNEL: ${{ github.workspace }}/target/sim-kernel
+      BUILD: ${{ github.workspace }}/target/sim
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install the build's tools
+        run: sudo apt-get update && sudo apt-get install -y clang lld llvm
+      - uses: actions/cache@v6
+        with:
+          path: target/sim-kernel
+          key: sim-kernel-${{ hashFiles('scripts/build-guest-kernel.sh', 'guest/sim/kernel-tree.sh', 'guest/linux/patches/*') }}
+      - name: Fetch the kernel's sources
+        run: guest/sim/kernel-tree.sh "$KERNEL"
+      - name: Fail each call of every run of one in turn
+        run: guest/sim/sweep.sh -d "$BUILD/sweep"
+      - uses: actions/upload-artifact@v7
+        if: failure()
+        with:
+          name: guest-sim-sweep-logs
+          path: target/sim/sweep

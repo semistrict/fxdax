@@ -14,6 +14,12 @@ on:
     paths-ignore: ['backlog/**', 'OPEN_QUESTIONS.md']
   pull_request:
   workflow_dispatch:
+    inputs:
+      guest-sim:
+        description: guest/sim's jobs whole, a smoke run, or as what they test changed
+        type: choice
+        options: [auto, full, smoke]
+        default: auto
 
 # fxdax: a newer run of a ref replaces an older one still going: a push to main, or a land-X branch
 # pushed again, makes the older run's result moot.
@@ -246,7 +252,9 @@ jobs:
           fi
           scripts/firecracker-forward.sh "$BASE" HEAD
 
-  # guest/sim: dax.c in a process, over a fake kernel, as zloop.sh runs ztest (TASK-149.14).
+  # guest/sim: dax.c in a process, over a fake kernel, as zloop.sh runs ztest (TASK-149.14). Its
+  # 3,000 seeds when what it tests changed since the base (scripts/guest-sim-scope.py), else 200: the
+  # whole took half an hour, CI's wall time, and the nightly workflow runs it whole every day.
   guest-sim:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
@@ -255,6 +263,14 @@ jobs:
       BUILD: ${{ github.workspace }}/target/sim
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Whole, or a smoke run
+        id: scope
+        env:
+          BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          FXDAX_GUEST_SIM: ${{ inputs.guest-sim }}
+        run: echo "scope=$(scripts/guest-sim-scope.py "$BASE")" | tee -a "$GITHUB_OUTPUT"
       - name: Install the build's tools
         run: sudo apt-get update && sudo apt-get install -y clang lld llvm
       - uses: actions/cache@v6
@@ -266,8 +282,10 @@ jobs:
       # First, as it takes seconds: a past bug whose patch no longer applies would test nothing.
       - name: The mutants apply
         run: guest/sim/mutants.sh --check
-      - name: Run 3,000 seeds of each
-        run: guest/sim/zloop.sh -s 3000 -d "$BUILD/logs"
+      - name: Run the seeds of each, 3,000 or 200
+        env:
+          SEEDS: ${{ steps.scope.outputs.scope == 'full' && 3000 || 200 }}
+        run: guest/sim/zloop.sh -s "$SEEDS" -d "$BUILD/logs"
       - uses: actions/upload-artifact@v7
         if: failure()
         with:
@@ -275,7 +293,9 @@ jobs:
           path: target/sim/logs
 
   # guest/sim's sweep (TASK-149.15): each run of one, each of its calls that may fail failing in
-  # turn, 14,000 runs, a job of its own beside guest-sim's seeds, which take most of theirs.
+  # turn, 17,000 runs, a job of its own beside guest-sim's seeds: all of them when what it tests
+  # changed since the base, else a twelfth, every 12th call of each run from one the run's number
+  # says, so that twelve runs of CI go through them all; the nightly workflow sweeps them all daily.
   guest-sim-sweep:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
@@ -284,6 +304,14 @@ jobs:
       BUILD: ${{ github.workspace }}/target/sim
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Whole, or a smoke run
+        id: scope
+        env:
+          BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          FXDAX_GUEST_SIM: ${{ inputs.guest-sim }}
+        run: echo "scope=$(scripts/guest-sim-scope.py "$BASE")" | tee -a "$GITHUB_OUTPUT"
       - name: Install the build's tools
         run: sudo apt-get update && sudo apt-get install -y clang lld llvm
       - uses: actions/cache@v6
@@ -292,8 +320,15 @@ jobs:
           key: sim-kernel-${{ hashFiles('scripts/build-guest-kernel.sh', 'guest/sim/kernel-tree.sh', 'guest/linux/patches/*') }}
       - name: Fetch the kernel's sources
         run: guest/sim/kernel-tree.sh "$KERNEL"
-      - name: Fail each call of every run of one in turn
-        run: guest/sim/sweep.sh -d "$BUILD/sweep"
+      - name: Fail each call of every run of one in turn, or a twelfth of them
+        env:
+          SCOPE: ${{ steps.scope.outputs.scope }}
+        run: |
+          if [[ $SCOPE == full ]]; then
+            guest/sim/sweep.sh -d "$BUILD/sweep"
+          else
+            guest/sim/sweep.sh -s "$GITHUB_RUN_NUMBER/12" -d "$BUILD/sweep"
+          fi
       - uses: actions/upload-artifact@v7
         if: failure()
         with:

@@ -35,7 +35,9 @@ runs as it is added.
 `zloop.sh` runs dax.c with the candidate fixes in, as bugs known aren't news. As dax.c takes a fix its
 patch stops applying, which fails `zloop.sh` until the patch is removed. An open bug's failure,
 as `known-failures` matches it, is counted apart and doesn't fail it, so that one bug doesn't fail
-every run: its line goes with its fix. CI's `guest-sim` job runs seeds 1 to 3,000; the nightly hunt
+every run: its line goes with its fix. CI's `guest-sim` job runs seeds 1 to 3,000 when what it tests
+changed since its base (dax.c and the kernel's fxfs, the kernel's patches and build, this directory:
+`scripts/guest-sim-scope.py`), else 1 to 200; the nightly workflow runs 3,000 every day; the nightly hunt
 (`.github/workflows/hunt.yml`) 20,000 more each night, from a first seed that moves, and keeps what
 failed, with `replay`, how to run each again.
 
@@ -127,7 +129,9 @@ fs/dax.c and the XArrays and pool they use; the device's MAPs, UNMAPs and PRIVAT
 Fxfs's room for dirty pages, growths, writeback's commits, clones (part way, as Fxfs's transactions
 of one), seals and lookups. `SIM_SWEEP=N` fails the Nth, once; up to it the run is the run without
 it. `sweep.sh` runs each run of one (every test of one run, every scenario; read_pressure with two
-readers of two rounds) as it is, to count its calls, then once for each N. Once the call has failed,
+readers of two rounds) as it is, to count its calls, then once for each N; `-s K/N` every Nth of each
+run's calls alone, from the (K mod N)+1th, as CI's `guest-sim-sweep` does with K its run's number
+when what it tests is unchanged, the nightly workflow sweeping them all. Once the call has failed,
 what the test expects is void (`sim_expect`, `sim_unexpected`: logged, and the run goes on); what holds
 whatever fails isn't: ASan, UBSan, LeakSanitizer (every run, at exit), the WARNs of dax.c and
 fs/dax.c, this kernel's checks, and the end of the run. A run still going 300 s of virtual time after
