@@ -1,10 +1,10 @@
 ---
 id: TASK-160
 title: 'Structure review of 2026-11-03: what each area''s shape lets bugs through'
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-11-03 13:07'
-updated_date: '2026-11-06 02:22'
+updated_date: '2026-11-08 04:28'
 labels:
   - structure
 dependencies: []
@@ -21,18 +21,26 @@ Five read-only reviews (guest DAX and VFS; host daemon and VMM; extent store and
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Each subtask done, or closed saying why not
+- [x] #1 Each subtask done, or closed saying why not
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Notes
 
 <!-- SECTION:NOTES:BEGIN -->
 2026-11-05: TASK-160.11, 160.23, 160.24, 160.25, 160.26, 160.29, 160.30, 160.31 and 160.32 done on main (GCE r691 and r690, CI 42137709782, macOS workspace 2118 of 2118 at 752515020). AC #1 open: TASK-160.7, 160.13, 160.17, 160.18 and 160.19 are To Do.
+
+2026-11-08 closure sweep: every subtask is Done (TASK-160.1 to 160.32; 160.7, 160.13, 160.17, 160.18 and 160.19, open at the last note, closed since). DoD #1 rests on green main CI 42442410406 at 7de89a88d (macos (workspace), test (workspace), guest-sim, shuttle, sim all success), which contains every subtask's commits.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Closed: the structure review's 32 findings are each done or closed saying why (backlog: TASK-160.1 to TASK-160.32 all Done). Verified by the subtasks' own evidence and green main CI 42442410406 (7de89a88d), whose macOS and Linux workspace jobs contain all of their commits.
+<!-- SECTION:FINAL_SUMMARY:END -->

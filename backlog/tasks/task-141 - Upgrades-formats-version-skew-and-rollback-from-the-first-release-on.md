@@ -6,7 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-10-31 20:30'
-updated_date: '2026-11-06 06:56'
+updated_date: '2026-11-08 04:29'
 labels: []
 dependencies: []
 priority: high
@@ -28,7 +28,7 @@ Where it stands, at main dde8d58d3:
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Every persistent and wire format refuses any version but its own, naming it, each by a test
+- [x] #1 Every persistent and wire format refuses any version but its own, naming it, each by a test
 - [ ] #2 TASK-141.1, 141.3 and 141.4 done
 <!-- AC:END -->
 
@@ -49,4 +49,6 @@ Decision moved here from OPEN_QUESTIONS.md on 2026-11-06, as written there; the 
 **TASK-141's upgrade plan rewritten to the no-migrations rule, its tasks kept as refusals (TASK-141, doc-11, 2026-11-05)**
 
 - **TASK-141.1 and 141.3 are rewritten to their inverses rather than closed**: 141.1, which asked that a release read and migrate the one before's formats, now asks that Fxfs refuse version 60, which it still reads (`EARLIEST_SUPPORTED_VERSION` 60, `LATEST_VERSION` 61 since 321fb94f2, though `allocator.rs` says they are equal); 141.3, which asked that daemon N serve VMM N-1, now asks that a VM process, daemon or guest of another wire format be refused, where today `BUILD`'s `EINVAL` is let be. 141.4 keeps the drain and SIGTERM's durable close, without N-1/N moves or rollback. doc-11's rules say the same. *Instead:* close all three as against the rule and file the refusals new. *Undoing it:* close 141.1 and 141.3 and drop their ACs.
+
+2026-11-08 closure sweep: AC #1 holds, each format refusing any version but its own by name, each by a test: store files (extent_store FORMAT; host_store.rs older_stores_are_refused_by_their_format), branches in a bucket (extent_remote layout::FORMAT; record.rs records_of_other_formats_are_refused, branches_of_newer_formats_are_refused; TASK-141.2), Fxfs (EARLIEST_SUPPORTED_VERSION = LATEST_VERSION, 63 now, types.rs:67; FxfsError::InvalidVersion; TASK-141.1), the VM process/daemon wire (wire::VERSION in OPEN, fingerprint test) and the device (VIRTIO_EXTENT_VERSION; TASK-141.3). TASK-141.1, 141.2, 141.3 Done; AC #2 waits on TASK-141.4's AC #2 alone (migrate-gce.sh nightly, needs the nightly's GCP credentials, OPEN_QUESTIONS.md). Left open.
 <!-- SECTION:NOTES:END -->

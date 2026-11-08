@@ -4,9 +4,10 @@ title: >-
   extentd's vm_processes_that_leave_replies_unread_are_let_go fails with a
   broken pipe under load: the daemon lets the VM process go while the test still
   sends its reads
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-11-08 03:21'
+updated_date: '2026-11-08 04:35'
 labels:
   - testing
 dependencies: []
@@ -41,3 +42,15 @@ Likely the same in vm_processes_naming_vast_windows_are_let_go_all_the_same, who
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. A helper sending the reads that ends at a send failing EPIPE or ECONNRESET (send_until_let_go), used by both tests. 2. A helper asserting the let-go: POLLRDHUP within 10 s, and a send after it failing EPIPE/ECONNRESET (assert_let_go). 3. Stress both under load in Linux Docker, before and after.
+<!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+2026-11-08 (closure sweep): implemented in 728aac974 on land-m1 (CI run 42447440838), not yet on main. Reproducing the race before the fix: not done: in Linux Docker (aarch64, 15 CPUs), 300 runs of both tests beside 14 CPU-bound loops and 8 x 100 runs side by side, all 1,100 passed with the old sends. The mechanism is shown deterministically instead: assert_let_go sends once the daemon hung up, and that send fails EPIPE, which is what the old unwrap at tests.rs:3602 met when a send came after the let-go. vm_processes_naming_vast_windows_are_let_go_all_the_same's loop raced the same way (AC #2) and takes both helpers. After: both pass, 8 concurrent stress runs of 100 each, 800 of 800, Linux Docker. Left for the landing: AC/DoD after land-m1's CI, then Done.
+<!-- SECTION:NOTES:END -->

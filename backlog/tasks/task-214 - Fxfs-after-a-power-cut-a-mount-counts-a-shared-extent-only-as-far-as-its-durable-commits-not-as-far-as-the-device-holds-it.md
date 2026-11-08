@@ -3,13 +3,14 @@ id: TASK-214
 title: >-
   Fxfs: after a power cut, a mount counts a shared extent only as far as its
   durable commits, not as far as the device holds it
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-11-06 14:01'
-updated_date: '2026-11-07 03:00'
+updated_date: '2026-11-08 04:28'
 labels:
   - bug
   - fxfs
+  - wontfix
 dependencies: []
 priority: low
 type: bug
@@ -39,4 +40,12 @@ Found by TASK-213's check (2026-11-06). The model's new oracle, that Fxfs counts
 
 <!-- SECTION:NOTES:BEGIN -->
 The user's decision, 2026-11-06: leave it. After a power cut, up to 2 MiB a volume's staging extent stays uncounted, freed when the extent dies; not worth a device protocol change now. Recorded in OPEN_QUESTIONS.md under Fxfs.
+
+2026-11-08 closure sweep: closed as won't fix on the user's decision of 2026-11-06 (above, and OPEN_QUESTIONS.md under Fxfs). The oracle counts_what_its_device_holds still runs only on filesystems no cut touched (World::cut in crates/fxfs-posix model_tests.rs).
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Won't fix, the user's decision (2026-11-06): after a power cut, up to 2 MiB a volume of a staging extent may stay uncounted until the extent dies; closing it needs a device request for extents' lengths (doc-4, driver, Firecracker, extentd), not worth a protocol change now. No code changed; the model's oracle keeps running on uncut filesystems only.
+<!-- SECTION:FINAL_SUMMARY:END -->
