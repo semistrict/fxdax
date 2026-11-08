@@ -143,6 +143,7 @@ pub(super) fn test_append_writeback() {
         })
     };
     let mut expected = Vec::new();
+    let (mut syncing, mut longest) = (Duration::ZERO, Duration::ZERO);
     for round in 0..64 {
         file.set_len(0).unwrap();
         expected = vec![round as u8; 100];
@@ -153,11 +154,16 @@ pub(super) fn test_append_writeback() {
         }
         file.set_len(120).unwrap();
         expected.truncate(120);
+        let began = Instant::now();
         file.sync_data().unwrap();
+        let took = began.elapsed();
+        (syncing, longest) = (syncing + took, longest.max(took));
         assert_eq!(fs::read(&name).unwrap(), expected);
     }
     stop.store(true, Ordering::Relaxed);
     syncer.join().unwrap();
+    // fxdax: where its time goes, against its budget (TASK-168).
+    eprintln!("append_writeback: 64 fdatasyncs in {syncing:.2?}, the longest {longest:.2?}");
     drop(file);
     evict(&name);
     assert_eq!(fs::read(&name).unwrap(), expected, "after eviction");

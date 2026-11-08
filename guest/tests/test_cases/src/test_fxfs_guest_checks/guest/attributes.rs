@@ -206,15 +206,31 @@ pub(super) fn test_a_removed_fill_gives_back_all_but_the_reservation() {
 
 struct Removed(String);
 
-impl Drop for Removed {
-    fn drop(&mut self) {
+impl Removed {
+    /// Removes it, then syncs, now rather than as it drops: how long each took.
+    fn remove(self) -> (Duration, Duration) {
+        let timed = Self::remove_path(&self.0);
+        std::mem::forget(self);
+        timed
+    }
+
+    fn remove_path(name: &str) -> (Duration, Duration) {
+        let began = Instant::now();
         // Not a panic, which in a panic's unwinding would abort before the first said why.
-        let path = std::path::Path::new(&self.0);
+        let path = std::path::Path::new(name);
         let removed = if path.is_dir() { fs::remove_dir_all(path) } else { fs::remove_file(path) };
         if let Err(error) = removed {
-            eprintln!("removing {}: {error}", self.0);
+            eprintln!("removing {name}: {error}");
         }
+        let removed = began.elapsed();
         unsafe { libc::sync() };
+        (removed, began.elapsed() - removed)
+    }
+}
+
+impl Drop for Removed {
+    fn drop(&mut self) {
+        Self::remove_path(&self.0);
     }
 }
 
@@ -256,6 +272,7 @@ pub(super) fn test_xattrs_bounded() {
     fs::create_dir(&dir.0).unwrap();
     let value = vec![0xa5; 64000];
     let (mut set, mut refused) = (0u64, false);
+    let began = Instant::now();
     let enospc = |error: &std::io::Error| error.raw_os_error() == Some(libc::ENOSPC);
     // Fewer than the 448 an object holds too large to keep inline.
     'files: for n in 0.. {
@@ -282,10 +299,21 @@ pub(super) fn test_xattrs_bounded() {
             }
         }
     }
+    let filled = began.elapsed();
     assert_eq!(vmstat("oom_kill"), killed, "OOM kills, after {set} bytes of extended attributes");
     assert!(
         refused,
         "{set} bytes of extended attributes set, of {memory} bytes' memory, none refused"
+    );
+    // fxdax: where its time goes, against its budget (TASK-168): what was set made durable, then
+    // the files removed, and their room freed.
+    let began = Instant::now();
+    unsafe { libc::sync() };
+    let durable = began.elapsed();
+    let (removed, freed) = dir.remove();
+    eprintln!(
+        "xattrs_bounded: {set} bytes set in {filled:.2?}, synced in {durable:.2?}; removed in \
+         {removed:.2?}, synced in {freed:.2?}"
     );
 }
 
