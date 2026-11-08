@@ -1,0 +1,21 @@
+large file                    948 MiB/s  1055.34 µs/MiB    0.270 s
+small files                  8271 entry/s   120.90 µs/entry   12.846 s
+replacing them               5229 entry/s   191.22 µs/entry   20.318 s
+whiting them out            14532 entry/s    68.81 µs/entry    6.881 s
+finishing                   34508 dir/s    28.98 µs/dir    0.181 s
+allocator                     572 compactions       11.2 MB    0.155 s
+object stores                1144 compactions      290.8 MB    3.565 s
+large file                    942 MiB/s  1061.38 µs/MiB    0.272 s
+small files                  8172 entry/s   122.36 µs/entry   13.001 s
+replacing them               5185 entry/s   192.87 µs/entry   20.493 s
+whiting them out            14837 entry/s    67.40 µs/entry    6.740 s
+finishing                   37896 dir/s    26.39 µs/dir    0.165 s
+allocator                     572 compactions       11.2 MB    0.154 s
+object stores                1144 compactions      290.2 MB    3.547 s
+large file                    933 MiB/s  1071.96 µs/MiB    0.274 s
+small files                  7756 entry/s   128.93 µs/entry   13.699 s
+replacing them               4908 entry/s   203.75 µs/entry   21.649 s
+whiting them out            14784 entry/s    67.64 µs/entry    6.764 s
+finishing                   41617 dir/s    24.03 µs/dir    0.150 s
+allocator                     572 compactions       11.2 MB    0.154 s
+object stores                1144 compactions      289.7 MB    3.538 s

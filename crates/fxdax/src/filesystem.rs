@@ -135,6 +135,9 @@ impl Options {
     /// They are separate from the tasks and threads calling the filesystem. The default is 1:
     /// operations mostly wait for one another and the device, and on one thread they wake one
     /// another without waking other threads, which costs a request most of its time otherwise.
+    /// An image's import goes no faster on two (TASK-92.47: on an n2-standard-8, 7,700 small
+    /// files a second against 8,100 on one, the large file 940 MiB/s on either;
+    /// docs/measurements/gce-import-bench-threads-{1,2}-2026-11-08).
     pub fn executor_threads(&mut self, threads: NonZeroU8) -> &mut Self {
         self.executor_threads = threads;
         self
