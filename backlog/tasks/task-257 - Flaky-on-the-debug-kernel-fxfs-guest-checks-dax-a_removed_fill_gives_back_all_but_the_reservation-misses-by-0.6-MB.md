@@ -6,6 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-11-08 10:38'
+updated_date: '2026-11-08 14:53'
 labels:
   - bug
   - flaky
@@ -32,3 +33,9 @@ GCE validation run B (2026-11-08, main 08d444ef7, debug kernel: KCSAN, lockdep; 
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+2026-11-08: failed on the release kernel too (GCE fxdax-test-r1001-t1492, n2-standard-16, fxfs-guest-checks-dax seed 1794222176066265452, at the tracepoints commit ad266aff6's parent tree plus it): 268435456 bytes, 240873472 free before, 253026304 after, -12152832 short; reserved 14139932, then 5202908 (the reservation grew -8937024). It passed in the same commit's first release run and its debug run.
+<!-- SECTION:NOTES:END -->
