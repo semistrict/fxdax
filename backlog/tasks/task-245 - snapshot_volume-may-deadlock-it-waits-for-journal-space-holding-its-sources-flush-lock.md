@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-08 06:26'
-updated_date: '2026-11-08 06:46'
+updated_date: '2026-11-08 06:51'
 labels:
   - bug
 dependencies: []
@@ -44,4 +44,6 @@ Wait for journal room before taking any lock; the snapshot's transaction with sk
 
 <!-- SECTION:NOTES:BEGIN -->
 2026-11-08: real. test_snapshot_volume_waits_for_the_journal_holding_nothing hangs on main and on land-h17 (TASK-241's gate): the snapshot waited for room holding the source's flush lock (the journal's waiting hook saw snapshot_volume on its stack), the compaction, let go of the other volume's lock, waited for the source's flush lock; both hung (the test's 10 s). Fixed on land-h18 a0e9e2c26 (stacked on land-h17), CI 42456071252: the test passes; fxfs, fxfs-posix, follower, follower_sim and fxdax's image tests 922/922 on macOS. Seeded hammering alone (64 rounds of writes racing snapshots on a 16 KiB journal) never reached it: compaction kept up.
+
+2026-11-08: the model test reached it: land-all11's macOS every_cut_of_a_short_sequence hung on seed 17604531016692502004 (Snapshot, UnlinkLater(5), Write), its journal 16 KiB. Pinned as every_cut_of_a_snapshot_an_unlink_queued_and_a_write on land-h19 (stacked on land-h18): hangs 60 s on land-h15 and land-h17, passes on land-h18.
 <!-- SECTION:NOTES:END -->
