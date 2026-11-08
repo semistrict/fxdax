@@ -9,14 +9,14 @@
 # whose DAX window takes KVM's faults through userfaultfd. `all` acquires a host,
 # stopped or idle, and stops it as it ends, whatever happens; `create` holds one
 # for a session of `run`s, until its `stop`; `delete` deletes one broken beyond
-# repair (gce_main). `resume` waits for a run whose waiter here was stopped,
+# repair; `adopt` makes a stopped host the old scripts made a kept one (gce_main). `resume` waits for a run whose waiter here was stopped,
 # named as the host names it (RUN, of its ~/RUN.job, and run.txt's in its
 # results), and fetches its results as `run` would: on the host, started again if
 # it was stopped, which it claims for RUN (an `all` run's, which it then stops) or
 # finds held by a `create`.
 #
 # Usage: test-gce.sh [all|create] [results-directory]
-#        test-gce.sh run|stop|delete instance [results-directory]
+#        test-gce.sh run|stop|delete|adopt instance [results-directory]
 #        test-gce.sh resume instance results-directory run
 #
 # FXDAX_GCE_PROJECT is the project (default: gcloud's), FXDAX_GCE_ZONE the zone
@@ -126,7 +126,7 @@ finish() {
 
 if [[ ${1:-} == resume ]]; then
     (( $# == 4 )) || { echo "Usage: $0 resume instance results-directory run" >&2; exit 2; }
-    [[ $2 =~ ^fxdax-keep-[a-z0-9-]+$ ]] || { echo 'Name a kept host, fxdax-keep-...' >&2; exit 2; }
+    [[ $2 =~ ^fxdax-[a-z0-9-]+$ ]] || { echo 'Name a host, fxdax-...' >&2; exit 2; }
     instance=$2 results=$3
     gce_locate
     resume "$4"

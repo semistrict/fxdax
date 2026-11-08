@@ -299,6 +299,41 @@ gce_create_in() {
     done
 }
 
+# gce_adopt makes the host, stopped, one made before hosts were kept (as the old
+# scripts' fxdax-test-...), a kept host of this run's kind, keeping its name, if
+# it fits the run: its machine type, CPU platform and service account, as this
+# run's hosts are made with (gce_shape); its image and disk are those every
+# driver made hosts with. Its schedule's own end, which deleted it, is cleared,
+# as it can't be while it runs: a kept host's end is its stop.
+gce_adopt() {
+    local shape status type cpu account wanted_cpu='' wanted_account flag kind
+    for flag in ${create_flags[@]+"${create_flags[@]}"}; do
+        if [[ $flag == --min-cpu-platform=* ]]; then wanted_cpu=${flag#*=}; fi
+    done
+    kind=$(gce_kind) || return
+    shape=$("${cloud[@]}" compute instances describe "$instance" --zone="$zone" \
+        --format='csv[no-heading](status,machineType.basename(),minCpuPlatform,serviceAccounts[0].email)') ||
+        return
+    IFS=, read -r status type cpu account <<< "$shape"
+    if [[ $status != TERMINATED ]]; then
+        echo "Refusing to adopt $instance, which is $status: stop it first." >&2
+        return 1
+    fi
+    # A service account if, and only if, the run's hosts have one (account_flags).
+    wanted_account=${FXDAX_GCE_STORAGE:-}${FXDAX_RESULTS_BUCKET:-}
+    if [[ $type != "$machine" || ${cpu/#Automatic/} != "$wanted_cpu" ||
+        ${account:+1} != "${wanted_account:+1}" ]]; then
+        echo "Refusing to adopt $instance, which fits no run of this kind: $type, CPU" \
+            "${cpu:-any}, ${account:-no service account}." >&2
+        return 1
+    fi
+    "${cloud[@]}" compute instances set-scheduling "$instance" --zone="$zone" \
+        --clear-max-run-duration --clear-instance-termination-action || return
+    "${cloud[@]}" compute instances add-labels "$instance" --zone="$zone" \
+        --labels="purpose=fxdax,lifecycle=kept,kind=$kind" || return
+    echo "Adopted $instance in $zone, a kept host of kind $kind." >&2
+}
+
 # gce_locate points zone at the zone the host is in: every other action finds
 # the host by its name.
 gce_locate() {
@@ -624,6 +659,8 @@ gce_all() {
 #   run INSTANCE [RESULTS]  run on a host a create holds
 #   stop INSTANCE           stop a host, which ends its holding
 #   delete INSTANCE         delete a host and its disk, broken beyond repair
+#   adopt INSTANCE          make a stopped host the old scripts made a kept one
+#                           (gce_adopt)
 #
 # RESULTS takes the place of the results the driver set.
 gce_main() {
@@ -641,10 +678,11 @@ gce_main() {
                 echo "$instance"
             fi
             ;;
-        run | stop | delete)
+        run | stop | delete | adopt)
+            # A host the old scripts made keeps its name, fxdax-test-... (gce_adopt).
             instance=${1:-}
-            if ! [[ $instance =~ ^fxdax-keep-[a-z0-9-]+$ ]]; then
-                echo "Name a kept host, fxdax-keep-..." >&2
+            if ! [[ $instance =~ ^fxdax-[a-z0-9-]+$ ]]; then
+                echo "Name a host, fxdax-..." >&2
                 return 2
             fi
             results=${2:-$results}
@@ -654,10 +692,11 @@ gce_main() {
                 run) gce_check_held && run ;;
                 stop) gce_check_owner && gce_stop ;;
                 delete) gce_delete ;;
+                adopt) gce_adopt ;;
             esac
             ;;
         *)
-            echo "Usage: $0 [all|create] [results-directory] | run|stop|delete instance [results-directory]" >&2
+            echo "Usage: $0 [all|create] [results-directory] | run|stop|delete|adopt instance [results-directory]" >&2
             return 2
             ;;
     esac

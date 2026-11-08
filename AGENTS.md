@@ -34,7 +34,10 @@ The drivers do this (`scripts/lib/gce.sh`): `all` takes a stopped or idle host o
 end, pass or fail. A kept host keeps its `target/`, guest kernel builds and toolchain, so a run
 builds only what changed, and none of a fresh host's setup (r940, r980, r990) can fail it; a
 stopped one holds no vCPU quota. Pass the run number as `FXDAX_GCE_RUN` (e.g. `r1040`), not in a
-host name. `delete` only a host broken beyond repair.
+host name. A host the old scripts made (`fxdax-test-...`) joins the pool, keeping its name, by
+`scripts/test-gce.sh adopt NAME` once stopped: it checks the host fits, clears its
+`--max-run-duration` deletion (only possible while stopped) and labels it. `delete` only a host
+broken beyond repair.
 
 ## Commit in batches, only what compiled and passed its tests
 

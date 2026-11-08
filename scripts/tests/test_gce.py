@@ -633,6 +633,53 @@ class Hosts(unittest.TestCase):
             ),
         )
 
+    def old(self, **given):
+        """A host the old scripts made, as `given` changes it: stopped, its schedule's end set."""
+        return {
+            "zone": "us-east4-a",
+            "labels": {"purpose": "fxdax-test", "lifecycle": "temporary", "maker": "31658e3a"},
+            "status": "TERMINATED", "machine": "n2-standard-8", "end": "8h", **given,
+        }
+
+    def test_a_host_the_old_scripts_made_is_adopted_and_reused(self):
+        name = "fxdax-test-r941-t14925"
+        project = Project({"instances": {name: self.old()}, "ssh_run": True})
+        self.assertEqual(
+            project.run(f"gce_main adopt {name}"),
+            (0, "", f"Adopted {name} in us-east4-a, a kept host of kind {KIND}.\n"),
+        )
+        adopted = project.state()["instances"][name]
+        self.assertEqual(
+            adopted["labels"],
+            {"purpose": "fxdax", "lifecycle": "kept", "kind": KIND, "maker": "31658e3a"},
+        )
+        self.assertNotIn("end", adopted)
+        self.assertEqual(project.run(RAN)[:2], (0, f"ran on {name} in us-east4-a\n"))
+        self.assertEqual(project.state()["instances"][name]["status"], "TERMINATED")
+
+    def test_a_host_that_fits_no_run_of_the_kind_is_not_adopted(self):
+        for given, shape in [
+            ({"machine": "c3-standard-8"}, "c3-standard-8, CPU any, no service account"),
+            ({"account": "1-compute@developer"}, "n2-standard-8, CPU any, 1-compute@developer"),
+            ({"cpu": "Intel Cascade Lake"}, "n2-standard-8, CPU Intel Cascade Lake, no service account"),
+        ]:
+            with self.subTest(shape):
+                name = "fxdax-test-r1"
+                project = Project({"instances": {name: self.old(**given)}})
+                self.assertEqual(
+                    project.run(f"gce_main adopt {name}"),
+                    (1, "", f"Refusing to adopt {name}, which fits no run of this kind: {shape}.\n"),
+                )
+                self.assertEqual(project.state()["instances"][name], self.old(**given))
+
+    def test_a_running_host_is_not_adopted(self):
+        name = "fxdax-test-r1"
+        project = Project({"instances": {name: self.old(status="RUNNING")}})
+        self.assertEqual(
+            project.run(f"gce_main adopt {name}"),
+            (1, "", f"Refusing to adopt {name}, which is RUNNING: stop it first.\n"),
+        )
+
     def test_deleting_by_hand_deletes_a_kept_host(self):
         project = Project({"instances": {FIRST: host(KIND, "TERMINATED")}, "disks": [FIRST]})
         self.assertEqual(

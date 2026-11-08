@@ -7,7 +7,9 @@ project's hosts and their boot disks, kept in $FAKE_GCLOUD/state.json, and each 
 the labels a create gave, appended to $FAKE_GCLOUD/calls.
 
 state.json holds the hosts ("instances": each name's zone, labels and status, RUNNING unless it
-says TERMINATED, as a stopped host is), their boot disks ("disks"),
+says TERMINATED, as a stopped host is; its machine type, CPU platform and service account, if
+given, "machine", "cpu" and "account"; and its schedule's end, "end", which set-scheduling clears,
+and only on a stopped host), their boot disks ("disks"),
 the zones ("zones", default us-east4-a alone, which a listing filtered by region gives those of),
 those with no room for a host ("exhausted"), and the regions out of quota ("quota"), how the next create goes ("create": "made", the host made as asked; "taken", made at
 once by another run, whose maker label is "winner", and which this create then finds there; or
@@ -186,6 +188,9 @@ def main(argv):
         found = find(instances, "describe", args[0], flags["zone"])
         if flags["format"].startswith("json("):
             print(json.dumps({"name": args[0], "zone": found["zone"]}))
+        elif flags["format"].startswith("csv[no-heading]("):
+            print(",".join([found.get("status", "RUNNING"), found.get("machine", ""),
+                            found.get("cpu", ""), found.get("account", "")]))
         else:
             print("\t".join(found["labels"].get(field.removeprefix("labels."), "")
                             for field in fields(flags["format"])))
@@ -236,6 +241,18 @@ def main(argv):
         # Its /run is a tmpfs, gone with the host's power.
         if (host_directory(name) / "run").exists():
             shutil.rmtree(host_directory(name) / "run")
+    elif command == ("compute", "instances", "set-scheduling"):
+        found = find(instances, "set-scheduling", args[0], flags["zone"])
+        if found.get("status", "RUNNING") != "TERMINATED":
+            sys.exit("ERROR: (gcloud.compute.instances.set-scheduling) Termination time cannot be "
+                     "changed while the instance is running")
+        if "clear-max-run-duration" in flags and "clear-instance-termination-action" in flags:
+            found.pop("end", None)
+        (STATE / "state.json").write_text(json.dumps(state))
+    elif command == ("compute", "instances", "add-labels"):
+        found = find(instances, "add-labels", args[0], flags["zone"])
+        found["labels"].update(label.split("=") for label in flags["labels"].split(","))
+        (STATE / "state.json").write_text(json.dumps(state))
     elif command == ("compute", "instances", "add-metadata"):
         find(instances, "add-metadata", args[0], flags["zone"])
     elif command == ("compute", "instances", "delete"):
