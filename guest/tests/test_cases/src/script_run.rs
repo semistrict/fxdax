@@ -268,11 +268,16 @@ pub struct Options {
     /// Its largest file, which says what a far step comes to (`script::far`): the VFS's, but for
     /// ext4 ([`ext4_largest`]) and Fxfs with a DAX window (`script::LARGEST_DAX`).
     pub largest: u64,
+    /// fxdax: whether the run says, on its standard output, what each operation it refused came
+    /// to (`script::Partial`), for a host to replay the model by once it has killed the VM
+    /// (TASK-149.2).
+    pub partials: bool,
 }
 
 impl Default for Options {
     fn default() -> Self {
-        Self { full: false, copies_clones: false, seeks: false, largest: script::LARGEST }
+        let largest = script::LARGEST;
+        Self { full: false, copies_clones: false, seeks: false, largest, partials: false }
     }
 }
 
@@ -458,6 +463,35 @@ impl Run {
         }
     }
 
+    /// fxdax: says what `step`, the script's `index`th, which the filesystem refused, came to, of
+    /// the file it changes as the model had it before, `before`, if it changes one
+    /// (`script::Partial`); an fsync refused made nothing durable.
+    fn say_partial(
+        &self,
+        index: usize,
+        step: &Step,
+        before: Option<&(usize, Vec<u8>)>,
+    ) -> Result<(), Failed> {
+        let partial = match before {
+            Some((file, was)) => {
+                let mut whole = self.model.clone();
+                whole.files[*file] = was.clone();
+                whole.apply(step);
+                let now = &self.model.files[*file];
+                script::Partial::of(was, now, &whole.files[*file])
+                    .map_err(|what| (kind::DIFFERS.to_owned(), format!("file {file}: {what}")))?
+            }
+            _ if matches!(step, Step::Fsync { .. } | Step::Fdatasync { .. }) => {
+                Some(script::Partial::Unsynced)
+            }
+            _ => None,
+        };
+        if let Some(partial) = partial {
+            println!("{}", partial.line(index));
+        }
+        Ok(())
+    }
+
     /// fxdax: has the run's calls on its files fail their allocations as `faults` says, ENOMEM
     /// then a refusal.
     pub fn inject(&mut self, faults: Faults) {
@@ -487,8 +521,15 @@ impl Run {
         let reach = step.reach(&self.model);
         self.done.push(step.to_string());
         let refused = self.refused;
+        // fxdax: what the file it changes held, to say what a refusal left of it.
+        let said = self.options.partials && self.options.full;
+        let before =
+            step.changes().filter(|_| said).map(|file| (file, self.model.files[file].clone()));
         let outcome = self.act(&step, &expected).map_err(failure)?;
         let refused = self.refused > refused;
+        if said && refused {
+            self.say_partial(index, &step, before.as_ref()).map_err(failure)?;
+        }
         if let Some(reach) = reach {
             self.touches.push((index, self.done.last().cloned().unwrap_or_default(), reach));
         }

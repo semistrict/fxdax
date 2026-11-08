@@ -1522,13 +1522,106 @@ impl Survivals {
     }
 }
 
+/// fxdax: what an operation a full volume refused came to, where it isn't what the model says of
+/// it done whole, which a killed run's guest says for the host to replay (TASK-149.2): the file it
+/// changes, as long as `len`, reading as the operation done whole has it over `ranges`, and as it
+/// was elsewhere, as a write or a child's store cut short, a clone that stopped, and a truncate or
+/// punch that got part way leave it ([`Model::stopped_short`]); or, of an fsync refused, nothing
+/// made durable.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Partial {
+    Reached { len: u64, ranges: Vec<(u64, u64)> },
+    Unsynced,
+}
+
+/// fxdax: what a line of a guest's saying an operation's [`Partial`] starts with: `partial INDEX
+/// unsynced`, or `partial INDEX LEN START-END,...`.
+pub const PARTIAL: &str = "partial ";
+
+impl Partial {
+    /// What `step`, as `before` had its file, left of it as `after`, where `whole` is what it would
+    /// have done whole: none if that's what it did. An error if `after` isn't, byte by byte,
+    /// `before` or `whole`, which no operation that stops short leaves.
+    pub fn of(before: &[u8], after: &[u8], whole: &[u8]) -> Result<Option<Self>, String> {
+        if after == whole {
+            return Ok(None);
+        }
+        let byte = |bytes: &[u8], at: usize| bytes.get(at).copied().unwrap_or(0);
+        let mut ranges: Vec<(u64, u64)> = Vec::new();
+        for at in 0..after.len() {
+            if after[at] == byte(before, at) {
+                continue;
+            }
+            if after[at] != byte(whole, at) {
+                return Err(format!("byte {at:#x} is neither as it was nor as it would be"));
+            }
+            match ranges.last_mut() {
+                Some((_, end)) if *end == at as u64 => *end += 1,
+                _ => ranges.push((at as u64, at as u64 + 1)),
+            }
+        }
+        Ok(Some(Partial::Reached { len: after.len() as u64, ranges }))
+    }
+
+    /// The file as it left it, of `before` and `whole` ([`Partial::of`]).
+    pub fn leave(&self, before: &[u8], whole: &[u8]) -> Vec<u8> {
+        let Partial::Reached { len, ranges } = self else { return before.to_vec() };
+        let byte = |bytes: &[u8], at: usize| bytes.get(at).copied().unwrap_or(0);
+        let mut left: Vec<u8> = (0..*len as usize).map(|at| byte(before, at)).collect();
+        for &(start, end) in ranges {
+            for at in start as usize..end as usize {
+                left[at] = byte(whole, at);
+            }
+        }
+        left
+    }
+
+    /// The line a guest says of the script's operation `index`.
+    pub fn line(&self, index: usize) -> String {
+        match self {
+            Partial::Unsynced => format!("{PARTIAL}{index} unsynced"),
+            Partial::Reached { len, ranges } => {
+                let ranges: Vec<_> = ranges.iter().map(|(s, e)| format!("{s}-{e}")).collect();
+                format!("{PARTIAL}{index} {len} {}", ranges.join(","))
+            }
+        }
+    }
+
+    /// The operations' partials a guest said on `output`, by their index.
+    pub fn said(output: &str) -> std::collections::BTreeMap<usize, Self> {
+        let parse = |line: &str| -> Option<(usize, Self)> {
+            let mut words = line.strip_prefix(PARTIAL)?.split(' ');
+            let index = words.next()?.parse().ok()?;
+            let what = words.next()?;
+            if what == "unsynced" {
+                return Some((index, Partial::Unsynced));
+            }
+            let len = what.parse().ok()?;
+            let ranges = (words.next().unwrap_or_default().split(','))
+                .filter(|range| !range.is_empty())
+                .map(|range| {
+                    let (start, end) = range.split_once('-')?;
+                    Some((start.parse().ok()?, end.parse().ok()?))
+                })
+                .collect::<Option<_>>()?;
+            Some((index, Partial::Reached { len, ranges }))
+        };
+        output.lines().filter_map(parse).collect()
+    }
+}
+
 /// fxdax: what each of `files` may hold after a kill before the script's operation `kill`, of
-/// `script` done in order, its outcomes the model's, as on a volume with room: each file's
-/// [`Survivals`] since its last fsync.
-pub fn survivals(script: &[(usize, Op)], kill: usize, files: usize) -> Vec<Survivals> {
+/// `script` done in order, its outcomes the model's, but for those a full volume refused, as
+/// `partials` says them: each file's [`Survivals`] since its last fsync, which a refused one isn't.
+pub fn survivals(
+    script: &[(usize, Op)],
+    kill: usize,
+    files: usize,
+    partials: &std::collections::BTreeMap<usize, Partial>,
+) -> Vec<Survivals> {
     let mut model = Model::new(files);
     let mut survivals = vec![Survivals::synced(&[]); files];
-    for (_, op) in script.iter().take_while(|(index, _)| *index < kill) {
+    for (index, op) in script.iter().take_while(|(index, _)| *index < kill) {
         let step = model.resolve(op);
         // Of the files the operation may change, what they were: copies of megabytes otherwise.
         let changes = match *op {
@@ -1543,13 +1636,22 @@ pub fn survivals(script: &[(usize, Op)], kill: usize, files: usize) -> Vec<Survi
         };
         let was: Vec<_> = changes.iter().map(|&file| model.files[file].clone()).collect();
         model.apply(&step);
+        match (partials.get(index), step.changes()) {
+            (Some(partial @ Partial::Reached { .. }), Some(file)) => {
+                let before = &was[changes.iter().position(|&f| f == file).expect("a change")];
+                model.files[file] = partial.leave(before, &model.files[file]);
+            }
+            (Some(Partial::Unsynced), _) => {}
+            _ => {
+                if let Op::Fsync { file } = *op {
+                    survivals[file] = Survivals::synced(&model.files[file]);
+                }
+            }
+        }
         for (&file, was) in changes.iter().zip(&was) {
             if *was != model.files[file] {
                 survivals[file].changed(was, &model.files[file]);
             }
-        }
-        if let Op::Fsync { file } = *op {
-            survivals[file] = Survivals::synced(&model.files[file]);
         }
     }
     survivals
@@ -1705,7 +1807,8 @@ mod tests {
             model.apply(&model.resolve(op));
             states.push(model.clone());
         }
-        let survivals = survivals(&script, script.len(), 2);
+        let none = std::collections::BTreeMap::new();
+        let survivals = survivals(&script, script.len(), 2, &none);
         let state = |n: usize| states[n].files[0].clone();
         assert_eq!(survivals[0].hold(Some(&state(2))), Ok(()), "as synced");
         assert_eq!(survivals[0].hold(Some(&state(6))), Ok(()), "as last done");
@@ -1731,9 +1834,47 @@ mod tests {
         assert_eq!(survivals[1].hold(None), Ok(()));
         assert_eq!(survivals[1].hold(Some(&states[5].files[1])), Ok(()));
         // Before the kill, as the guest stops before the operation it names.
-        let before = super::survivals(&script, 2, 2);
+        let before = super::survivals(&script, 2, 2, &none);
         assert_eq!(before[0].hold(Some(&state(2))), Ok(()));
         assert!(before[0].hold(Some(&state(3))).is_err(), "a write after the kill kept");
+    }
+
+    /// fxdax: what a refused operation left is said, read back, and replayed: a write cut short,
+    /// and a refused fsync, which makes nothing durable; a byte neither as it was nor as it would
+    /// be can't be said (TASK-149.2).
+    #[test]
+    fn partials_are_said_and_replayed() {
+        let (before, whole) = (vec![1u8; 10], vec![1, 1, 7, 7, 7, 7, 1, 1, 1, 1, 9, 9]);
+        let after = vec![1, 1, 7, 7, 1, 1, 1, 1, 1, 1];
+        let partial = Partial::of(&before, &after, &whole).unwrap().unwrap();
+        assert_eq!(partial, Partial::Reached { len: 10, ranges: vec![(2, 4)] });
+        assert_eq!(partial.leave(&before, &whole), after);
+        assert_eq!(Partial::of(&before, &whole, &whole), Ok(None));
+        assert!(Partial::of(&before, &[5; 10], &whole).is_err());
+        let said = format!("{}\nother\n{}\n", partial.line(3), Partial::Unsynced.line(8));
+        assert_eq!(said, "partial 3 10 2-4\nother\npartial 8 unsynced\n");
+        let parsed = Partial::said(&said);
+        assert_eq!(parsed, [(3, partial), (8, Partial::Unsynced)].into());
+        let empty = Partial::Reached { len: 0, ranges: vec![] };
+        assert_eq!(Partial::said(&empty.line(1)), [(1, empty)].into());
+
+        // A write cut to its first 3 bytes, then an fsync refused: the window isn't reset.
+        let script: Vec<(usize, Op)> = [
+            Op::Write { file: 0, place: Place::At(0), len: 8, data: 5 },
+            Op::Fsync { file: 0 },
+            Op::Write { file: 0, place: Place::At(0), len: 8, data: 6 },
+            Op::Fsync { file: 0 },
+        ]
+        .into_iter()
+        .enumerate()
+        .collect();
+        let first = Model::new(1).resolve(&script[0].1);
+        let Step::Write { ref data, .. } = first else { panic!("{first:?}") };
+        let cut = Partial::Reached { len: 3, ranges: vec![(0, 3)] };
+        let partials = [(0, cut), (3, Partial::Unsynced)].into();
+        let survivals = survivals(&script, 4, 1, &partials);
+        assert_eq!(survivals[0].hold(Some(&data[..3])), Ok(()), "as synced after the cut write");
+        assert!(survivals[0].hold(Some(&data[..])).is_err(), "the write whole, which was cut");
     }
 
     /// fxdax: a killed run stops at an operation of the script, never before its first.

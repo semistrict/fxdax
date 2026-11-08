@@ -18,8 +18,9 @@
 //! kills its VM process, writeback, rebinds and the journal still going in the guest's kernel; then
 //! the host's Fxfs replays the store, which fsck checks, and each file must hold what it may after a
 //! kill (`script::Survivals`): a size it had since its last fsync, and each page as one of its states
-//! since then had it. Not on the small volume: what a refused clone or punch leaves, the guest reads
-//! back, which the host can't once it's killed it.
+//! since then had it. fxfs-guest-script-killed-full and -killed-full-dax: on the small volume, nearly
+//! full, where what an operation refused left of a file the guest reads back: it says each such as
+//! it goes (`script::Partial`), and the host replays the model by them.
 
 use macros::{guest, host};
 
@@ -94,7 +95,8 @@ mod host {
         let kept = crate::script::kept(&drops, ops.len()).expect(DROP_VAR);
         let script: Vec<_> = kept.into_iter().map(|index| (index, ops[index])).collect();
         let kill = crate::script::kill_index(seed, ops.len());
-        let survivals = crate::script::survivals(&script, kill, SEVERAL_FILES.files);
+        let partials = crate::script::Partial::said(&output);
+        let survivals = crate::script::survivals(&script, kill, SEVERAL_FILES.files, &partials);
         let failed = |kind: &str, what: String| {
             Some(Failure { op: Some(kill), kind: kind.to_owned(), what })
         };
@@ -286,7 +288,8 @@ mod guest {
             let seed = seed();
             let (script, len) = script_run::from_env(seed, SEVERAL_FILES);
             let names: Vec<String> = (0..SEVERAL_FILES.files).map(|n| path(&file(n))).collect();
-            let mut run = Run::new(&names, Options { full: self.full, ..Options::default() });
+            let options = Options { full: self.full, partials: self.killed, ..Options::default() };
+            let mut run = Run::new(&names, options);
             // fxdax: on a DAX mount, the files read in again first, as a file the mount makes is
             // the page cache's until then, copying on write (doc-13): the DAX cases looked at the
             // page cache alone, their files made here and never evicted (TASK-149.2).
@@ -316,7 +319,7 @@ mod guest {
                         run.fail(seed, &failure);
                     }
                 }
-                eprintln!("killed before operation {kill} of {len}");
+                eprintln!("killed before operation {kill} of {len}, {} refused", run.refused);
                 println!("{KILL_ME}");
                 loop {
                     unsafe { libc::pause() };

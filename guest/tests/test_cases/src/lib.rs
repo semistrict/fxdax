@@ -643,6 +643,18 @@ pub fn test_cases() -> Vec<TestCase> {
             &[Tag::Nightly],
             Box::new(TestFxfsGuestScript { dax: true, full: false, killed: true }),
         ),
+        #[cfg(any(feature = "host", target_os = "linux"))]
+        TestCase::new(
+            "fxfs-guest-script-killed-full",
+            &[Tag::Nightly],
+            Box::new(TestFxfsGuestScript { dax: false, full: true, killed: true }),
+        ),
+        #[cfg(any(feature = "host", target_os = "linux"))]
+        TestCase::new(
+            "fxfs-guest-script-killed-full-dax",
+            &[Tag::Nightly],
+            Box::new(TestFxfsGuestScript { dax: true, full: true, killed: true }),
+        ),
         // fxdax: fsx-style scripts on Fxfs and ext4 in one guest (TASK-44.15).
         #[cfg(any(feature = "host", target_os = "linux"))]
         TestCase::new(
