@@ -1,0 +1,85 @@
+{
+ "commit": "36d43351478d3c2f652f271ed12b1f29a439a0ad-dirty",
+ "rounds": 1,
+ "status": 0,
+ "failed": [],
+ "cases": [
+  {
+   "case": "fxfs-guest-pgbench",
+   "outcome": "pass",
+   "round": 1,
+   "rounds_passed": 1,
+   "failed_checks": [],
+   "reason": null,
+   "replay": "FXDAX_WORKSPACE_TESTS=0 FXDAX_E2E_TEST=fxfs-guest-pgbench FXDAX_BENCH_CASES='pgbench-ext4-blk-unsafe pgbench-ext4-blk-writeback pgbench-ext4-dax-pmem fxfs-guest-pgbench fxfs-guest-pgbench-dax' FXDAX_BENCH_ITERATIONS=1 FXDAX_BENCH_NOTE='TASK-91.8: the sandbox team'\\''s baselines, ext4 on virtio-blk with cache_type Unsafe and Writeback, beside ext4-dax-pmem and the guest'\\''s Fxfs without DAX and with it; pgbench at scale 50, two 60 s runs a VM, its bucket 25 ms away, jailed' FXDAX_EXTENTD_MEMORY=8589934592 FXDAX_FIRECRACKER_JAIL=1 FXDAX_GCE_STORAGE=1 FXDAX_GCE_ZONE=us-east1-b FXDAX_GUEST_KERNEL_BUILD=release FXDAX_PGBENCH_RUNS=2 FXDAX_PGBENCH_RUN_SECS=60 scripts/test-gce.sh all",
+   "daemons": [
+    {
+     "daemon": "extentd",
+     "downloaded": 493193,
+     "bucket_read": 22646784,
+     "store_read": 127553536
+    }
+   ]
+  },
+  {
+   "case": "fxfs-guest-pgbench-dax",
+   "outcome": "pass",
+   "round": 1,
+   "rounds_passed": 1,
+   "failed_checks": [],
+   "reason": null,
+   "replay": "FXDAX_WORKSPACE_TESTS=0 FXDAX_E2E_TEST=fxfs-guest-pgbench-dax FXDAX_BENCH_CASES='pgbench-ext4-blk-unsafe pgbench-ext4-blk-writeback pgbench-ext4-dax-pmem fxfs-guest-pgbench fxfs-guest-pgbench-dax' FXDAX_BENCH_ITERATIONS=1 FXDAX_BENCH_NOTE='TASK-91.8: the sandbox team'\\''s baselines, ext4 on virtio-blk with cache_type Unsafe and Writeback, beside ext4-dax-pmem and the guest'\\''s Fxfs without DAX and with it; pgbench at scale 50, two 60 s runs a VM, its bucket 25 ms away, jailed' FXDAX_EXTENTD_MEMORY=8589934592 FXDAX_FIRECRACKER_JAIL=1 FXDAX_GCE_STORAGE=1 FXDAX_GCE_ZONE=us-east1-b FXDAX_GUEST_KERNEL_BUILD=release FXDAX_PGBENCH_RUNS=2 FXDAX_PGBENCH_RUN_SECS=60 scripts/test-gce.sh all",
+   "daemons": [
+    {
+     "daemon": "extentd",
+     "downloaded": 300334,
+     "bucket_read": 16637952,
+     "store_read": 123359232
+    }
+   ]
+  },
+  {
+   "case": "pgbench-ext4-dax-pmem",
+   "outcome": "pass",
+   "round": 1,
+   "rounds_passed": 1,
+   "failed_checks": [],
+   "reason": null,
+   "replay": "FXDAX_WORKSPACE_TESTS=0 FXDAX_E2E_TEST=pgbench-ext4-dax-pmem FXDAX_BENCH_CASES='pgbench-ext4-blk-unsafe pgbench-ext4-blk-writeback pgbench-ext4-dax-pmem fxfs-guest-pgbench fxfs-guest-pgbench-dax' FXDAX_BENCH_ITERATIONS=1 FXDAX_BENCH_NOTE='TASK-91.8: the sandbox team'\\''s baselines, ext4 on virtio-blk with cache_type Unsafe and Writeback, beside ext4-dax-pmem and the guest'\\''s Fxfs without DAX and with it; pgbench at scale 50, two 60 s runs a VM, its bucket 25 ms away, jailed' FXDAX_EXTENTD_MEMORY=8589934592 FXDAX_FIRECRACKER_JAIL=1 FXDAX_GCE_STORAGE=1 FXDAX_GCE_ZONE=us-east1-b FXDAX_GUEST_KERNEL_BUILD=release FXDAX_PGBENCH_RUNS=2 FXDAX_PGBENCH_RUN_SECS=60 scripts/test-gce.sh all",
+   "daemons": []
+  },
+  {
+   "case": "pgbench-ext4-blk-unsafe",
+   "outcome": "pass",
+   "round": 1,
+   "rounds_passed": 1,
+   "failed_checks": [],
+   "reason": null,
+   "replay": "FXDAX_WORKSPACE_TESTS=0 FXDAX_E2E_TEST=pgbench-ext4-blk-unsafe FXDAX_BENCH_CASES='pgbench-ext4-blk-unsafe pgbench-ext4-blk-writeback pgbench-ext4-dax-pmem fxfs-guest-pgbench fxfs-guest-pgbench-dax' FXDAX_BENCH_ITERATIONS=1 FXDAX_BENCH_NOTE='TASK-91.8: the sandbox team'\\''s baselines, ext4 on virtio-blk with cache_type Unsafe and Writeback, beside ext4-dax-pmem and the guest'\\''s Fxfs without DAX and with it; pgbench at scale 50, two 60 s runs a VM, its bucket 25 ms away, jailed' FXDAX_EXTENTD_MEMORY=8589934592 FXDAX_FIRECRACKER_JAIL=1 FXDAX_GCE_STORAGE=1 FXDAX_GCE_ZONE=us-east1-b FXDAX_GUEST_KERNEL_BUILD=release FXDAX_PGBENCH_RUNS=2 FXDAX_PGBENCH_RUN_SECS=60 scripts/test-gce.sh all",
+   "daemons": []
+  },
+  {
+   "case": "pgbench-ext4-blk-writeback",
+   "outcome": "pass",
+   "round": 1,
+   "rounds_passed": 1,
+   "failed_checks": [],
+   "reason": null,
+   "replay": "FXDAX_WORKSPACE_TESTS=0 FXDAX_E2E_TEST=pgbench-ext4-blk-writeback FXDAX_BENCH_CASES='pgbench-ext4-blk-unsafe pgbench-ext4-blk-writeback pgbench-ext4-dax-pmem fxfs-guest-pgbench fxfs-guest-pgbench-dax' FXDAX_BENCH_ITERATIONS=1 FXDAX_BENCH_NOTE='TASK-91.8: the sandbox team'\\''s baselines, ext4 on virtio-blk with cache_type Unsafe and Writeback, beside ext4-dax-pmem and the guest'\\''s Fxfs without DAX and with it; pgbench at scale 50, two 60 s runs a VM, its bucket 25 ms away, jailed' FXDAX_EXTENTD_MEMORY=8589934592 FXDAX_FIRECRACKER_JAIL=1 FXDAX_GCE_STORAGE=1 FXDAX_GCE_ZONE=us-east1-b FXDAX_GUEST_KERNEL_BUILD=release FXDAX_PGBENCH_RUNS=2 FXDAX_PGBENCH_RUN_SECS=60 scripts/test-gce.sh all",
+   "daemons": []
+  }
+ ],
+ "daemon": null,
+ "knobs": {
+  "FXDAX_BENCH_CASES": "pgbench-ext4-blk-unsafe pgbench-ext4-blk-writeback pgbench-ext4-dax-pmem fxfs-guest-pgbench fxfs-guest-pgbench-dax",
+  "FXDAX_BENCH_ITERATIONS": "1",
+  "FXDAX_BENCH_NOTE": "TASK-91.8: the sandbox team's baselines, ext4 on virtio-blk with cache_type Unsafe and Writeback, beside ext4-dax-pmem and the guest's Fxfs without DAX and with it; pgbench at scale 50, two 60 s runs a VM, its bucket 25 ms away, jailed",
+  "FXDAX_EXTENTD_MEMORY": "8589934592",
+  "FXDAX_FIRECRACKER_JAIL": "1",
+  "FXDAX_GCE_STORAGE": "1",
+  "FXDAX_GCE_ZONE": "us-east1-b",
+  "FXDAX_GUEST_KERNEL_BUILD": "release",
+  "FXDAX_PGBENCH_RUNS": "2",
+  "FXDAX_PGBENCH_RUN_SECS": "60"
+ }
+}

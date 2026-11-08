@@ -8,14 +8,17 @@
 # of a VM, on the guest's Fxfs without a DAX window, and with one, whose stores
 # copy on write, each VM making its database; the same two on a database a
 # base holds, which the VM forks; on ext4 with DAX on virtio-pmem, a static DAX
-# device; and bigmap, a file four times the guest's memory, in a base, mapped
-# shared, read all over and 5% of it written, the same two ways. Then the
+# device; on ext4 on virtio-blk, its flushes dropped, the sandbox team's runtime,
+# and each a host fsync (TASK-91.8); and bigmap, a file four times the guest's
+# memory, in a base, mapped shared, read all over and 5% of it written, the same
+# two ways. Then the
 # density run (RESULTS/density): FXDAX_PERF_GATE_VMS VMs (default 3) on forks
 # of a base holding the database, without DAX and with it, all served by one
 # daemon, each making FXDAX_PERF_GATE_DENSITY_RUNS runs (default 2) and kept
 # running until the last's are done, the host's memory measured as each is
 # added. Then scripts/pgbench-gate.py over both, which writes
-# RESULTS/gate.json. It fails if a run or a gate does.
+# RESULTS/gate.json, and scripts/pgbench-steps.py, each case's runs step by
+# step in RESULTS/steps.md (and steps.json). It fails if a run or a gate does.
 # docs/measurements/dax-cow-gate.md says what each case measures.
 #
 # Usage: perf-gate-gce.sh [--bare-metal] INSTANCE RESULTS [PHASE...]
@@ -71,6 +74,9 @@ for phase in "${phases[@]}"; do
         gate)
             "$repo/scripts/pgbench-gate.py" --host "$host" --json "$results/gate.json" \
                 "$results/single" "$results/density" || status=$?
+            # Each case's runs step by step, as the sandbox team's harness reports them (TASK-91.8).
+            "$repo/scripts/pgbench-steps.py" --json "$results/steps.json" "$results/single" \
+                "$results/density" > "$results/steps.md" || status=$?
             ;;
     esac
 done

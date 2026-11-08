@@ -34,8 +34,8 @@ JAIL=${FXDAX_FIRECRACKER_JAIL:-}" >> "$CALLS"
 mib=1048576
 case $FXDAX_E2E_TEST in
     "--tag perf-single") cases="fxfs-guest-pgbench fxfs-guest-pgbench-dax pgbench-ext4-dax-pmem
-        fxfs-guest-pgbench-forked fxfs-guest-pgbench-dax-forked fxfs-guest-bigmap
-        fxfs-guest-bigmap-dax" ;;
+        pgbench-ext4-blk-unsafe pgbench-ext4-blk-writeback fxfs-guest-pgbench-forked
+        fxfs-guest-pgbench-dax-forked fxfs-guest-bigmap fxfs-guest-bigmap-dax" ;;
     "--tag perf-density") cases="fxfs-guest-pgbench-density fxfs-guest-pgbench-dax-density" ;;
     *) echo "no such suite: $FXDAX_E2E_TEST" >&2; exit 2 ;;
 esac
@@ -69,6 +69,8 @@ for case in $cases; do
     echo 'OK base' > "$place/stdout.txt"
     for ((vm = 0; vm < ${FXDAX_PGBENCH_VMS:-1}; vm++)); do
         tps=$((vm == 0 ? 100 : 80))
+        echo "pgbench: at 16.00 s: pgbench -h /run/postgresql -c 4 -j 2 -T 60 bench" >> "$log"
+        echo "pgbench: 60.1s, exit status: 0" >> "$log"
         echo "tps = $tps (without initial connection time)" >> "$log"
         if [[ $case == *density* ]]; then
             echo "memory: vm=$((vm + 1)) phase=ran host_used=$(((1000 + (vm + 1) * per) * mib))" \
@@ -90,7 +92,7 @@ class PerfGateGce(unittest.TestCase):
         self.root = Path(tempfile.mkdtemp())
         scripts = self.root / "scripts"
         scripts.mkdir()
-        for name in ["perf-gate-gce.sh", "pgbench-gate.py"]:
+        for name in ["perf-gate-gce.sh", "pgbench-gate.py", "pgbench-steps.py"]:
             shutil.copy2(script.SCRIPTS / name, scripts / name)
         fake = scripts / "test-gce.sh"
         fake.write_text(FAKE_TEST_GCE)
@@ -122,6 +124,13 @@ class PerfGateGce(unittest.TestCase):
         self.assertEqual(report["tps"]["dax"], [[[100.0]]])
         self.assertEqual(report["tps"]["dax-density"], [[[100.0], [80.0], [80.0]]])
         self.assertEqual(report["tps"]["ext4-dax-pmem"], [[[100.0]]])
+        self.assertEqual(report["tps"]["ext4-blk-unsafe"], [[[100.0]]])
+        # Each case's runs step by step (TASK-91.8).
+        steps = (self.results / "steps.md").read_text().splitlines()
+        self.assertEqual(steps[:2], ["| Case | Load | Run 1 tps | Run 2 tps | Run 3 tps |",
+                                     "|---|---|---|---|---|"])
+        self.assertIn("| pgbench-ext4-blk-writeback | – | 100 | – | – |", steps)
+        self.assertIn("| fxfs-guest-pgbench-dax-density | – | 100 | 80 | 80 |", steps)
         self.assertEqual(report["memory"]["no-dax-density"]["per_added_vm_mib"], 1000.0)
         self.assertEqual(report["memory"]["dax-density"]["per_added_vm_mib"], 300.0)
         self.assertEqual(report["bigmap"]["bigmap-no-dax"]["guest_cache_share"], 0.25)
@@ -139,6 +148,8 @@ class PerfGateGce(unittest.TestCase):
             ("dax", "dax", True),
             ("forked-dax", "dax-forked", True),
             ("static-dax", "dax", True),
+            ("unsafe-dax", "dax", True),
+            ("writeback-dax", "dax", True),
             ("density-memory", "dax-density", True),
             ("density-memory-mib", "dax-density", True),
             ("bigmap-read", "bigmap-dax", True),

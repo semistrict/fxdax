@@ -17,7 +17,8 @@ import script
 
 gate = script.load("pgbench-gate")
 
-THRESHOLDS = {"decay": 0.9, "dax": 0.95, "forked-dax": 0.8, "static-dax": 0.0, "density": 0.9,
+THRESHOLDS = {"decay": 0.9, "dax": 0.95, "forked-dax": 0.8, "static-dax": 0.0, "unsafe-dax": 0.0,
+              "writeback-dax": 0.0, "density": 0.9,
               "density-memory": 0.9, "density-memory-mib": 2560.0, "bigmap-read": 4.0,
               "bigmap-guest-cache": 0.05, "bigmap-written-memory": 1.5}
 MIB = 1 << 20
@@ -173,6 +174,19 @@ class PgbenchGate(unittest.TestCase):
         ])
         gated = gate.gates(measured, {**THRESHOLDS, "static-dax": 0.6})
         self.assertEqual(gated[1]["passed"], False)
+
+    def test_dax_is_reported_against_ext4_on_virtio_blk_ungated(self):
+        # The sandbox team's baselines (TASK-91.8): flushes dropped, and each a host fsync.
+        measured = gate.measure(self.results({
+            "fxfs-guest-pgbench-dax": log([900, 900]),
+            "pgbench-ext4-blk-unsafe": log([1800, 2000]),
+            "pgbench-ext4-blk-writeback": log([600, 600]),
+        }))
+        self.assertEqual(gate.gates(measured, THRESHOLDS), [
+            least("decay", "dax", 1.0, 0.9, True),
+            least("unsafe-dax", "dax", 0.4737, 0.0, True),
+            least("writeback-dax", "dax", 1.5, 0.0, True),
+        ])
 
     def test_density_is_of_the_first_round_of_many_vms_in_any_results(self):
         single = self.results({

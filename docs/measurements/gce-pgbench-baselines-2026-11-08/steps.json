@@ -1,0 +1,306 @@
+{
+  "fxfs-guest-pgbench": {
+    "load": {
+      "seconds": 13.46,
+      "phases": {
+        "drop tables": 0.01,
+        "create tables": 0.01,
+        "client-side generate": 9.44,
+        "vacuum": 0.25,
+        "primary keys": 3.76
+      }
+    },
+    "runs": [
+      {
+        "started": 16.46,
+        "seconds": 60.1,
+        "cpu": {
+          "user": 0.396,
+          "system": 0.414,
+          "idle": 0.189,
+          "steal": 0.001
+        },
+        "latency_ms": 1.989,
+        "tps": 2010.799931,
+        "daemon": {
+          "seconds": 62,
+          "requests": {
+            "read": {
+              "per_s": 24.1,
+              "mean_us": 235.5
+            },
+            "write": {
+              "per_s": 3339.5,
+              "mean_us": 34.3
+            },
+            "free": {
+              "per_s": 455.1,
+              "mean_us": 4.0
+            },
+            "commit": {
+              "per_s": 2.7,
+              "mean_us": 24.6
+            },
+            "free_many": {
+              "per_s": 20.2,
+              "mean_us": 83.8
+            }
+          },
+          "commits_per_s": 1369.9,
+          "commit_wait_us": 5.0
+        }
+      },
+      {
+        "started": 82.59,
+        "seconds": 60.1,
+        "cpu": {
+          "user": 0.402,
+          "system": 0.419,
+          "idle": 0.178,
+          "steal": 0.001
+        },
+        "latency_ms": 1.964,
+        "tps": 2036.999969,
+        "daemon": {
+          "seconds": 62,
+          "requests": {
+            "read": {
+              "per_s": 25.4,
+              "mean_us": 173.3
+            },
+            "write": {
+              "per_s": 3366.0,
+              "mean_us": 30.7
+            },
+            "free": {
+              "per_s": 478.5,
+              "mean_us": 4.5
+            },
+            "commit": {
+              "per_s": 2.7,
+              "mean_us": 49.7
+            },
+            "free_many": {
+              "per_s": 295.3,
+              "mean_us": 13.8
+            }
+          },
+          "commits_per_s": 1363.5,
+          "commit_wait_us": 5.5
+        }
+      }
+    ]
+  },
+  "fxfs-guest-pgbench-dax": {
+    "load": {
+      "seconds": 13.45,
+      "phases": {
+        "drop tables": 0.0,
+        "create tables": 0.0,
+        "client-side generate": 9.44,
+        "vacuum": 0.43,
+        "primary keys": 3.59
+      }
+    },
+    "runs": [
+      {
+        "started": 16.48,
+        "seconds": 60.1,
+        "cpu": {
+          "user": 0.403,
+          "system": 0.413,
+          "idle": 0.184,
+          "steal": 0.001
+        },
+        "latency_ms": 1.996,
+        "tps": 2003.610884,
+        "daemon": {
+          "seconds": 62,
+          "requests": {
+            "read": {
+              "per_s": 24.1,
+              "mean_us": 190.4
+            },
+            "write": {
+              "per_s": 3334.1,
+              "mean_us": 32.6
+            },
+            "free": {
+              "per_s": 457.8,
+              "mean_us": 3.8
+            },
+            "commit": {
+              "per_s": 2.7,
+              "mean_us": 19.9
+            },
+            "free_many": {
+              "per_s": 20.0,
+              "mean_us": 82.4
+            }
+          },
+          "commits_per_s": 1369.9,
+          "commit_wait_us": 4.7
+        }
+      },
+      {
+        "started": 81.96,
+        "seconds": 60.1,
+        "cpu": {
+          "user": 0.405,
+          "system": 0.423,
+          "idle": 0.172,
+          "steal": 0.001
+        },
+        "latency_ms": 1.954,
+        "tps": 2047.12025,
+        "daemon": {
+          "seconds": 64,
+          "requests": {
+            "read": {
+              "per_s": 25.0,
+              "mean_us": 181.8
+            },
+            "write": {
+              "per_s": 3311.7,
+              "mean_us": 37.6
+            },
+            "free": {
+              "per_s": 474.8,
+              "mean_us": 4.3
+            },
+            "commit": {
+              "per_s": 2.7,
+              "mean_us": 127.5
+            },
+            "free_many": {
+              "per_s": 280.6,
+              "mean_us": 14.7
+            }
+          },
+          "commits_per_s": 1332.0,
+          "commit_wait_us": 20.5
+        }
+      }
+    ]
+  },
+  "pgbench-ext4-blk-unsafe": {
+    "load": {
+      "seconds": 10.87,
+      "phases": {
+        "drop tables": 0.0,
+        "create tables": 0.01,
+        "client-side generate": 7.57,
+        "vacuum": 0.24,
+        "primary keys": 3.05
+      }
+    },
+    "runs": [
+      {
+        "started": 13.48,
+        "seconds": 60.0,
+        "cpu": {
+          "user": 0.473,
+          "system": 0.435,
+          "idle": 0.091,
+          "steal": 0.0
+        },
+        "latency_ms": 1.108,
+        "tps": 3609.352345,
+        "daemon": null
+      },
+      {
+        "started": 77.27,
+        "seconds": 60.0,
+        "cpu": {
+          "user": 0.486,
+          "system": 0.428,
+          "idle": 0.086,
+          "steal": 0.0
+        },
+        "latency_ms": 1.047,
+        "tps": 3820.490544,
+        "daemon": null
+      }
+    ]
+  },
+  "pgbench-ext4-blk-writeback": {
+    "load": {
+      "seconds": 15.16,
+      "phases": {
+        "drop tables": 0.0,
+        "create tables": 0.01,
+        "client-side generate": 9.82,
+        "vacuum": 0.23,
+        "primary keys": 5.09
+      }
+    },
+    "runs": [
+      {
+        "started": 17.81,
+        "seconds": 60.0,
+        "cpu": {
+          "user": 0.245,
+          "system": 0.21,
+          "idle": 0.545,
+          "steal": 0.0
+        },
+        "latency_ms": 2.604,
+        "tps": 1536.257999,
+        "daemon": null
+      },
+      {
+        "started": 82.77,
+        "seconds": 60.7,
+        "cpu": {
+          "user": 0.239,
+          "system": 0.195,
+          "idle": 0.566,
+          "steal": 0.0
+        },
+        "latency_ms": 2.607,
+        "tps": 1534.476735,
+        "daemon": null
+      }
+    ]
+  },
+  "pgbench-ext4-dax-pmem": {
+    "load": {
+      "seconds": 17.48,
+      "phases": {
+        "drop tables": 0.0,
+        "create tables": 0.01,
+        "client-side generate": 11.54,
+        "vacuum": 0.97,
+        "primary keys": 4.97
+      }
+    },
+    "runs": [
+      {
+        "started": 20.82,
+        "seconds": 60.0,
+        "cpu": {
+          "user": 0.231,
+          "system": 0.194,
+          "idle": 0.575,
+          "steal": 0.0
+        },
+        "latency_ms": 3.167,
+        "tps": 1262.918033,
+        "daemon": null
+      },
+      {
+        "started": 95.94,
+        "seconds": 60.3,
+        "cpu": {
+          "user": 0.221,
+          "system": 0.183,
+          "idle": 0.596,
+          "steal": 0.0
+        },
+        "latency_ms": 3.441,
+        "tps": 1162.53286,
+        "daemon": null
+      }
+    ]
+  }
+}

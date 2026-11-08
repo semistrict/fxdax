@@ -17,7 +17,9 @@ round-K/CASE/log.txt), each directory's rounds after the last's:
   no-dax-forked, dax-forked), its files read in, which DAX maps; so, each VM kept running until the
   last's runs are done, the host's memory measured as each is added (fxfs-guest-pgbench-density,
   -dax-density: no-dax-density, dax-density); and on ext4 with DAX on virtio-pmem, a static DAX
-  device (pgbench-ext4-dax-pmem: ext4-dax-pmem).
+  device (pgbench-ext4-dax-pmem: ext4-dax-pmem); and the sandbox team's baselines, ext4 on virtio-blk
+  whose flushes the host drops, their runtime (pgbench-ext4-blk-unsafe: ext4-blk-unsafe), or makes
+  each a host fsync (pgbench-ext4-blk-writeback: ext4-blk-writeback) (TASK-91.8).
 - bigmap's (test_fxfs_guest_bigmap.rs): a file four times the guest's memory, in a base, mapped
   shared by a VM on a fork of it, read all over, 5% of it written, and synced: its results
   (`bigmap: NAME VALUE` on the console), without a DAX window (fxfs-guest-bigmap: bigmap-no-dax),
@@ -43,6 +45,9 @@ acceptable, with room for noise.
   accepted, TASK-164.10), at least FORKED_DAX;
 - static-dax: DAX against ext4 with DAX on pmem, as `dax`: the gap to a static DAX device, at least
   STATIC_DAX, by default 0, reported and not gated;
+- unsafe-dax, writeback-dax: DAX against ext4 on virtio-blk, its flushes dropped (the sandbox
+  team's runtime) or each a host fsync, as `dax`: at least UNSAFE_DAX and WRITEBACK_DAX, by default
+  0, reported and not gated (TASK-91.8);
 - density: of one daemon serving many VMs, the first round that had more than one, its last VM's
   median run against its first's, at least DENSITY;
 - density-memory: each DAX density case's host memory per added VM against no DAX's,
@@ -87,18 +92,22 @@ CASES = {
     "fxfs-guest-pgbench": "no-dax",
     "fxfs-guest-pgbench-dax": "dax",
     "pgbench-ext4-dax-pmem": "ext4-dax-pmem",
+    "pgbench-ext4-blk-unsafe": "ext4-blk-unsafe",
+    "pgbench-ext4-blk-writeback": "ext4-blk-writeback",
     "fxfs-guest-pgbench-forked": "no-dax-forked",
     "fxfs-guest-pgbench-dax-forked": "dax-forked",
     "fxfs-guest-pgbench-density": "no-dax-density",
     "fxfs-guest-pgbench-dax-density": "dax-density",
 }
 # Those of the guest's Fxfs, which its gates of decay and density hold to.
-FXFS = tuple(name for name in CASES.values() if name != "ext4-dax-pmem")
+FXFS = tuple(name for name in CASES.values() if not name.startswith("ext4-"))
 # The gates of a case against another's median run of its first VM: the case and the other.
 AGAINST = {
     "dax": ("dax", "no-dax"),
     "forked-dax": ("dax-forked", "no-dax-forked"),
     "static-dax": ("dax", "ext4-dax-pmem"),
+    "unsafe-dax": ("dax", "ext4-blk-unsafe"),
+    "writeback-dax": ("dax", "ext4-blk-writeback"),
 }
 # The DAX density cases, gated on their memory against no DAX's.
 DENSITY_DAX = ("dax-density",)
@@ -129,6 +138,8 @@ DEFAULTS = {
     # The user's decision (2026-11-06): 0.836 and 0.854 measured (r650), with room for noise.
     "forked-dax": 0.8,
     "static-dax": 0.0,
+    "unsafe-dax": 0.0,
+    "writeback-dax": 0.0,
     "density": 0.9,
     # Set from r632 (0.86, 2,361 MiB, 5.76, 0.0, 1.29), with room for a nested host's noise.
     "density-memory": 0.9,

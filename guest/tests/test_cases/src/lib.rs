@@ -360,6 +360,16 @@ pub fn test_cases() -> Vec<TestCase> {
             Box::new(TestFxfsGuestPgbench::on(PgbenchStorage::Ext4DaxPmem)),
         ),
         TestCase::new(
+            "pgbench-ext4-blk-unsafe",
+            &[Tag::PerfSingle],
+            Box::new(TestFxfsGuestPgbench::on(PgbenchStorage::Ext4BlkUnsafe)),
+        ),
+        TestCase::new(
+            "pgbench-ext4-blk-writeback",
+            &[Tag::PerfSingle],
+            Box::new(TestFxfsGuestPgbench::on(PgbenchStorage::Ext4BlkWriteback)),
+        ),
+        TestCase::new(
             "fxfs-guest-pgbench-forked",
             &[Tag::PerfSingle],
             Box::new(

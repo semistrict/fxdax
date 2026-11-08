@@ -23,6 +23,26 @@ pub fn has_vmm() -> bool {
     std::env::var_os("FXDAX_FIRECRACKER").is_some()
 }
 
+/// fxdax: what a virtio-blk disk does with the guest's flushes, Firecracker's `cache_type`
+/// (TASK-91.8).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DiskCache {
+    /// Each flush a host fsync of the image: durable.
+    Writeback,
+    /// Flushes dropped: the sandbox team's runtime, which a host crash loses writes of.
+    Unsafe,
+}
+
+impl DiskCache {
+    /// Its name in Firecracker's configuration.
+    fn name(self) -> &'static str {
+        match self {
+            DiskCache::Writeback => "Writeback",
+            DiskCache::Unsafe => "Unsafe",
+        }
+    }
+}
+
 /// A VM, as it is configured, until it boots: Firecracker's configuration.
 pub struct Vm {
     config: serde_json::Value,
@@ -189,6 +209,16 @@ impl Vm {
     /// Adds a writable virtio-blk disk on the raw `image`, which the host's page cache caches and
     /// whose flushes reach the host's disk, and returns its device in the guest.
     pub fn disk(&mut self, id: &str, image: &Path) -> anyhow::Result<String> {
+        self.disk_cached(id, image, DiskCache::Writeback)
+    }
+
+    /// fxdax: as [`Vm::disk`], its flushes as `cache` has them (TASK-91.8).
+    pub fn disk_cached(
+        &mut self,
+        id: &str,
+        image: &Path,
+        cache: DiskCache,
+    ) -> anyhow::Result<String> {
         // The root's disk is the first.
         let device = format!("/dev/vd{}", disk_letter(self.disks + 1));
         self.disks += 1;
@@ -199,7 +229,7 @@ impl Vm {
                 "path_on_host": image,
                 "is_root_device": false,
                 "is_read_only": false,
-                "cache_type": "Writeback",
+                "cache_type": cache.name(),
             }),
         );
         Ok(device)

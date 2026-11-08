@@ -1,0 +1,8 @@
+[    0.055065] PCI: Fatal: No config space access function found
+[    0.079559] PCI: System does not support PCI
+[    0.190876] check access for rdinit=/init failed: -2, ignoring
+[    0.290532] fxfs: Formatting
+[    0.476808] fxfs: Filesystem closed (checkpoint=16384, metadata_reservation=ReservationInner { amount: 542240, reserved: 0 }, reservation_required=1101028, borrowed=558788)
+OK base
+[    0.543429] reboot: Restarting system
+[    0.544196] reboot: machine restart

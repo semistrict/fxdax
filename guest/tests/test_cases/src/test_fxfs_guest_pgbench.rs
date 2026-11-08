@@ -80,6 +80,12 @@ pub enum Storage {
     FxfsDax,
     /// fxdax: ext4 with DAX on writable virtio-pmem, on a copy of a base image (TASK-131.5).
     Ext4DaxPmem,
+    /// fxdax: ext4 on a virtio-blk disk whose flushes the host drops (Firecracker's cache_type
+    /// Unsafe), on a copy of a base image: the sandbox team's runtime (TASK-91.8).
+    Ext4BlkUnsafe,
+    /// fxdax: as `Ext4BlkUnsafe`, each flush a host fsync (cache_type Writeback): its durable
+    /// counterpart (TASK-91.8).
+    Ext4BlkWriteback,
 }
 
 /// What a run of pgbench's first is probed for (TASK-91.14).
@@ -133,7 +139,7 @@ fn count(name: &str, default: u64) -> u64 {
 mod host {
     use super::*;
     use crate::common::{fxdax_guest_should_run, setup_rootfs};
-    use crate::vm::{Firecracker, Vm};
+    use crate::vm::{DiskCache, Firecracker, Vm};
     use crate::{ShouldRun, Test, TestOutcome, TestSetup};
     use anyhow::Context;
     use std::ffi::{CString, OsStr};
@@ -209,6 +215,28 @@ RUN apk add --no-cache postgresql postgresql-contrib perf e2fsprogs
         Store { store: &'a Path, extentd: &'a Path, window: u64 },
         /// The image at `image`, on writable virtio-pmem, which the guest mounts ext4 on, with DAX.
         Pmem(&'a Path),
+        /// fxdax: the image at `image`, on a writable virtio-blk disk whose flushes go as `cache`
+        /// has them, which the guest mounts ext4 on (TASK-91.8).
+        Blk(&'a Path, DiskCache),
+    }
+
+    /// fxdax: the device a case's ext4 images are on (TASK-91.8).
+    #[derive(Clone, Copy)]
+    enum Image {
+        /// Writable virtio-pmem, with DAX.
+        Pmem,
+        /// A writable virtio-blk disk, its flushes as the cache has them.
+        Blk(DiskCache),
+    }
+
+    impl Image {
+        /// The device of `image`.
+        fn device(self, image: &Path) -> Device<'_> {
+            match self {
+                Image::Pmem => Device::Pmem(image),
+                Image::Blk(cache) => Device::Blk(image, cache),
+            }
+        }
     }
 
     /// A VM of `memory` MiB on `device`, its guest in role `role`: `base`, which makes the base's
@@ -224,6 +252,10 @@ RUN apk add --no-cache postgresql postgresql-contrib perf e2fsprogs
             Device::Pmem(image) => {
                 let device = vm.pmem("pgbench", image)?;
                 vm.env(&CString::new(format!("FXDAX_PGBENCH_PMEM={device}"))?);
+            }
+            Device::Blk(image, cache) => {
+                let device = vm.disk_cached("pgbench", image, cache)?;
+                vm.env(&CString::new(format!("FXDAX_PGBENCH_BLK={device}"))?);
             }
         }
         vm.env(&CString::new(format!("FXDAX_PGBENCH_ROLE={role}"))?);
@@ -483,25 +515,32 @@ RUN apk add --no-cache postgresql postgresql-contrib perf e2fsprogs
             let root = setup_rootfs(test_setup)?;
             match self.storage {
                 Storage::Fxfs | Storage::FxfsDax => self.run_stores(test_setup, &root),
-                Storage::Ext4DaxPmem => Self::run_images(test_setup, &root),
+                Storage::Ext4DaxPmem => Self::run_images(test_setup, &root, Image::Pmem),
+                Storage::Ext4BlkUnsafe => {
+                    Self::run_images(test_setup, &root, Image::Blk(DiskCache::Unsafe))
+                }
+                Storage::Ext4BlkWriteback => {
+                    Self::run_images(test_setup, &root, Image::Blk(DiskCache::Writeback))
+                }
             }
         }
 
         /// The base's VM makes ext4 on an image of its own, then each VM loads and runs pgbench on
-        /// a copy of it, made as it boots, as bench-fork-ext4-dax-pmem's forks are.
-        fn run_images(test_setup: &TestSetup, root: &Path) -> anyhow::Result<()> {
+        /// a copy of it, made as it boots, as bench-fork-ext4-dax-pmem's forks are: each image on
+        /// the device `on` makes of it.
+        fn run_images(test_setup: &TestSetup, root: &Path, on: Image) -> anyhow::Result<()> {
             // Under `extents`, which what keeps a run's results leaves out (test-linux-host.sh).
             let images = test_setup.tmp_dir.join("extents");
             std::fs::create_dir_all(&images)?;
             let base = images.join("base.img");
             std::fs::File::create(&base)?.set_len(PMEM_SIZE)?;
-            wait(boot(test_setup, root, "base", machine("base", Device::Pmem(&base), 512)?)?)?;
+            wait(boot(test_setup, root, "base", machine("base", on.device(&base), 512)?)?)?;
             for vm in 0..vms() {
                 let image = images.join(format!("{}.img", nth("load", vm)));
                 let status =
                     Command::new("cp").arg("--sparse=always").arg(&base).arg(&image).status()?;
                 anyhow::ensure!(status.success(), "copying the base's image: {status}");
-                let machine = machine("load", Device::Pmem(&image), load_memory()?)?;
+                let machine = machine("load", on.device(&image), load_memory()?)?;
                 let loaded = wait(boot(test_setup, root, &nth("load", vm), machine)?);
                 std::fs::remove_file(&image)?;
                 loaded.with_context(|| format!("VM {} of {}", vm + 1, vms()))?;
@@ -758,19 +797,23 @@ mod guest {
 
     /// Mounts the database's filesystem at MNT: the guest's Fxfs on the store tagged `extents`,
     /// made as it mounts; or, on the virtio-pmem device FXDAX_PGBENCH_PMEM names, ext4 with DAX,
-    /// which the base (`role`) makes, and which must map its files' data in place (TASK-131.5).
+    /// which must map its files' data in place (TASK-131.5); or on the virtio-blk disk
+    /// FXDAX_PGBENCH_BLK names, ext4 (TASK-91.8). The base (`role`) makes the ext4.
     fn mount(role: &str) {
         fs::create_dir_all(MNT).unwrap();
-        let (source, fstype, data) = match std::env::var("FXDAX_PGBENCH_PMEM") {
-            Ok(device) => {
-                if role == "base" {
-                    let status = Command::new("mkfs.ext4").args(["-q", "-F", &device]).status();
-                    assert!(status.expect("mkfs.ext4").success(), "mkfs.ext4 {device}");
-                }
-                (device, "ext4", "dax=always")
+        let ext4 = |device: String, data| {
+            if role == "base" {
+                let status = Command::new("mkfs.ext4").args(["-q", "-F", &device]).status();
+                assert!(status.expect("mkfs.ext4").success(), "mkfs.ext4 {device}");
             }
-            Err(_) => ("extents".to_owned(), "fxfs", ""),
+            (device, "ext4", data)
         };
+        let (source, fstype, data) =
+            match (std::env::var("FXDAX_PGBENCH_PMEM"), std::env::var("FXDAX_PGBENCH_BLK")) {
+                (Ok(device), _) => ext4(device, "dax=always"),
+                (_, Ok(device)) => ext4(device, ""),
+                _ => ("extents".to_owned(), "fxfs", ""),
+            };
         let (source, target, fstype, options) = (
             CString::new(source).unwrap(),
             CString::new(MNT).unwrap(),

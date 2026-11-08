@@ -1,0 +1,184 @@
+[    0.049912] PCI: Fatal: No config space access function found
+[    0.077365] PCI: System does not support PCI
+[    0.169096] check access for rdinit=/init failed: -2, ignoring
+[    0.631120] EXT4-fs (vdb): mounted filesystem e5fbf099-a9c2-4ec9-a623-ff0547f31223 r/w with ordered data mode. Quota mode: none.
+[    0.636287] EXT4-fs (vdb): unmounting filesystem e5fbf099-a9c2-4ec9-a623-ff0547f31223.
+[    0.644712] reboot: Restarting system
+[    0.645481] reboot: machine restart
+[    0.431437] PCI: Fatal: No config space access function found
+[    0.455891] PCI: System does not support PCI
+[    0.581004] check access for rdinit=/init failed: -2, ignoring
+[    0.656539] EXT4-fs (vdb): mounted filesystem e5fbf099-a9c2-4ec9-a623-ff0547f31223 r/w with ordered data mode. Quota mode: none.
+pgbench: at 0.66 s: initdb -D /mnt/fxfs/pgdata -A trust --data-checksums
+pgbench: 1.2s, exit status: 0
+fxfs stats: 
+device completions: 
+guest cpu: cpu  40 0 91 127 18 0 7 0 0 0
+pgbench: at 1.82 s: pg_ctl -D /mnt/fxfs/pgdata -l /mnt/fxfs/pgdata/server.log -o "-c shared_buffers=256MB -k /run/postgresql -c listen_addresses=''" -w -t 900 start
+pgbench: 107.2ms, exit status: 0
+fxfs stats: 
+device completions: 
+guest cpu: cpu  41 0 98 138 20 0 7 0 0 0
+pgbench: at 1.93 s: createdb -h /run/postgresql bench
+pgbench: 107.8ms, exit status: 0
+fxfs stats: 
+device completions: 
+guest cpu: cpu  42 0 106 149 21 0 7 0 0 0
+pgbench: at 2.04 s: pgbench -h /run/postgresql -i -q -s 50 bench
+dropping old tables...
+NOTICE:  table "pgbench_accounts" does not exist, skipping
+NOTICE:  table "pgbench_branches" does not exist, skipping
+NOTICE:  table "pgbench_history" does not exist, skipping
+NOTICE:  table "pgbench_tellers" does not exist, skipping
+creating tables...
+generating data (client-side)...
+500 of 500 tuples (100%) of pgbench_tellers done (elapsed 0.00 s, remaining 0.00 s)
+2920100 of 5000000 tuples (58%) of pgbench_accounts done (elapsed 5.18 s, remaining 3.69 s)
+5000000 of 5000000 tuples (100%) of pgbench_accounts done (elapsed 9.80 s, remaining 0.00 s)
+vacuuming...
+creating primary keys...
+done in 15.16 s (drop tables 0.00 s, create tables 0.01 s, client-side generate 9.82 s, vacuum 0.23 s, primary keys 5.09 s).
+pgbench: 15.2s, exit status: 0
+fxfs stats: 
+device completions: 
+guest cpu: cpu  816 0 686 1250 585 0 14 0 0 0
+pgbench: at 17.21 s: psql -h /run/postgresql -At -c 'select count(*), count(distinct aid) from pgbench_accounts' bench
+pgbench: 598.9ms, exit status: 0
+fxfs stats: 
+device completions: 
+guest cpu: cpu  860 0 703 1309 585 0 14 0 0 0
+pgbench: at 17.81 s: pgbench -h /run/postgresql -c 4 -j 2 -T 60 bench
+starting vacuum...end.
+pgbench: 60.0s, exit status: 0
+fxfs stats: 
+device completions: 
+guest cpu: cpu  3795 0 2646 4334 4098 0 590 2 0 0
+pgbench (17.11)
+transaction type: <builtin: TPC-B (sort of)>
+scaling factor: 50
+query mode: simple
+number of clients: 4
+number of threads: 2
+maximum number of tries: 1
+duration: 60 s
+number of transactions actually processed: 92169
+number of failed transactions: 0 (0.000%)
+latency average = 2.604 ms
+initial connection time = 8.873 ms
+tps = 1536.257999 (without initial connection time)
+pgbench: at 77.83 s: psql -h /run/postgresql -At -c 'select (select wal_bytes from pg_stat_wal), (select sum(writes * op_bytes) from pg_stat_io)' bench
+pgbench: 21.5ms, exit status: 0
+fxfs stats: 
+device completions: 
+guest cpu: cpu  3795 0 2648 4334 4098 0 590 2 0 0
+postgres wal|pages written: 1238311607|1205157888
+pgbench: at 77.85 s: psql -h /run/postgresql -v ON_ERROR_STOP=1 -At -c "select (select coalesce(sum(abalance), 0) from pgbench_accounts), (select coalesce(sum(tbalance), 0) from pgbench_tellers), (select coalesce(sum(bbalance), 0) from pgbench_branches), (select coalesce(sum(delta), 0) from pgbench_history)" bench
+pgbench: 2.4s, exit status: 0
+fxfs stats: 
+device completions: 
+guest cpu: cpu  3869 0 2683 4475 4319 0 593 2 0 0
+pgbench: at 80.30 s: psql -h /run/postgresql -v ON_ERROR_STOP=1 -At -c "create extension if not exists amcheck" bench
+pgbench: 23.6ms, exit status: 0
+fxfs stats: 
+device completions: 
+guest cpu: cpu  3869 0 2684 4477 4321 0 594 2 0 0
+pgbench: at 80.33 s: psql -h /run/postgresql -v ON_ERROR_STOP=1 -At -c "select count(*) from unnest(array['pgbench_accounts', 'pgbench_branches', 'pgbench_tellers', 'pgbench_history']::regclass[]) as t(rel), verify_heapam(rel)" bench
+pgbench: 346.3ms, exit status: 0
+fxfs stats: 
+device completions: 
+guest cpu: cpu  3894 0 2694 4483 4347 0 596 2 0 0
+pgbench: at 80.68 s: psql -h /run/postgresql -v ON_ERROR_STOP=1 -At -c "select count(*) from (select bt_index_check(indexrelid, true) from pg_index where indrelid = any(array['pgbench_accounts', 'pgbench_branches', 'pgbench_tellers', 'pgbench_history']::regclass[])) as checked" bench
+pgbench: 2.1s, exit status: 0
+fxfs stats: 
+device completions: 
+guest cpu: cpu  4034 0 2767 4483 4550 0 597 2 0 0
+pgbench: at 82.77 s: pgbench -h /run/postgresql -c 4 -j 2 -T 60 bench
+starting vacuum...end.
+pgbench: 60.7s, exit status: 0
+fxfs stats: 
+device completions: 
+guest cpu: cpu  6919 0 4563 7487 8395 0 1159 3 0 0
+pgbench (17.11)
+transaction type: <builtin: TPC-B (sort of)>
+scaling factor: 50
+query mode: simple
+number of clients: 4
+number of threads: 2
+maximum number of tries: 1
+duration: 60 s
+number of transactions actually processed: 92069
+number of failed transactions: 0 (0.000%)
+latency average = 2.607 ms
+initial connection time = 7.467 ms
+tps = 1534.476735 (without initial connection time)
+pgbench: at 143.45 s: psql -h /run/postgresql -At -c 'select (select wal_bytes from pg_stat_wal), (select sum(writes * op_bytes) from pg_stat_io)' bench
+pgbench: 19.8ms, exit status: 0
+fxfs stats: 
+device completions: 
+guest cpu: cpu  6920 0 4564 7488 8395 0 1159 3 0 0
+postgres wal|pages written: 2404282146|2318655488
+pgbench: at 143.48 s: psql -h /run/postgresql -v ON_ERROR_STOP=1 -At -c "select (select coalesce(sum(abalance), 0) from pgbench_accounts), (select coalesce(sum(tbalance), 0) from pgbench_tellers), (select coalesce(sum(bbalance), 0) from pgbench_branches), (select coalesce(sum(delta), 0) from pgbench_history)" bench
+pgbench: 512.6ms, exit status: 0
+fxfs stats: 
+device completions: 
+guest cpu: cpu  6988 0 4591 7493 8398 0 1159 4 0 0
+pgbench: at 143.99 s: psql -h /run/postgresql -v ON_ERROR_STOP=1 -At -c "create extension if not exists amcheck" bench
+NOTICE:  extension "amcheck" already exists, skipping
+pgbench: 13.9ms, exit status: 0
+fxfs stats: 
+device completions: 
+guest cpu: cpu  6988 0 4592 7493 8398 0 1159 4 0 0
+pgbench: at 144.00 s: psql -h /run/postgresql -v ON_ERROR_STOP=1 -At -c "select count(*) from unnest(array['pgbench_accounts', 'pgbench_branches', 'pgbench_tellers', 'pgbench_history']::regclass[]) as t(rel), verify_heapam(rel)" bench
+pgbench: 331.0ms, exit status: 0
+fxfs stats: 
+device completions: 
+guest cpu: cpu  7013 0 4602 7514 8407 0 1161 4 0 0
+pgbench: at 144.34 s: psql -h /run/postgresql -v ON_ERROR_STOP=1 -At -c "select count(*) from (select bt_index_check(indexrelid, true) from pg_index where indrelid = any(array['pgbench_accounts', 'pgbench_branches', 'pgbench_tellers', 'pgbench_history']::regclass[])) as checked" bench
+pgbench: 2.1s, exit status: 0
+fxfs stats: 
+device completions: 
+guest cpu: cpu  7166 0 4661 7722 8407 0 1161 4 0 0
+pgbench: at 146.44 s: pg_ctl -D /mnt/fxfs/pgdata -w -m immediate stop
+pgbench: 401.8ms, exit status: 0
+fxfs stats: 
+device completions: 
+guest cpu: cpu  7166 0 4664 7763 8443 0 1161 4 0 0
+pgbench: at 146.84 s: pg_ctl -D /mnt/fxfs/pgdata -l /mnt/fxfs/pgdata/server.log -o "-c shared_buffers=256MB -k /run/postgresql -c listen_addresses=''" -w -t 900 start
+pgbench: 12.2s, exit status: 0
+fxfs stats: 
+device completions: 
+guest cpu: cpu  7271 0 4733 8944 9510 0 1183 4 0 0
+pgbench: at 159.07 s: psql -h /run/postgresql -v ON_ERROR_STOP=1 -At -c "select (select coalesce(sum(abalance), 0) from pgbench_accounts), (select coalesce(sum(tbalance), 0) from pgbench_tellers), (select coalesce(sum(bbalance), 0) from pgbench_branches), (select coalesce(sum(delta), 0) from pgbench_history)" bench
+pgbench: 2.2s, exit status: 0
+fxfs stats: 
+device completions: 
+guest cpu: cpu  7334 0 4764 9126 9653 0 1183 4 0 0
+pgbench: at 161.23 s: psql -h /run/postgresql -v ON_ERROR_STOP=1 -At -c "create extension if not exists amcheck" bench
+NOTICE:  extension "amcheck" already exists, skipping
+pgbench: 13.4ms, exit status: 0
+fxfs stats: 
+device completions: 
+guest cpu: cpu  7335 0 4766 9126 9653 0 1183 4 0 0
+pgbench: at 161.24 s: psql -h /run/postgresql -v ON_ERROR_STOP=1 -At -c "select count(*) from unnest(array['pgbench_accounts', 'pgbench_branches', 'pgbench_tellers', 'pgbench_history']::regclass[]) as t(rel), verify_heapam(rel)" bench
+pgbench: 327.2ms, exit status: 0
+fxfs stats: 
+device completions: 
+guest cpu: cpu  7358 0 4776 9157 9654 0 1183 4 0 0
+pgbench: at 161.57 s: psql -h /run/postgresql -v ON_ERROR_STOP=1 -At -c "select count(*) from (select bt_index_check(indexrelid, true) from pg_index where indrelid = any(array['pgbench_accounts', 'pgbench_branches', 'pgbench_tellers', 'pgbench_history']::regclass[])) as checked" bench
+pgbench: 2.1s, exit status: 0
+fxfs stats: 
+device completions: 
+guest cpu: cpu  7510 0 4837 9365 9654 0 1183 4 0 0
+pgbench: at 163.67 s: pg_ctl -D /mnt/fxfs/pgdata -w -m fast stop
+pgbench: 2.9s, exit status: 0
+fxfs stats: 
+device completions: 
+guest cpu: cpu  7516 0 4853 9579 9991 0 1189 4 0 0
+pgbench: at 166.58 s: pg_checksums --check -D /mnt/fxfs/pgdata
+pgbench: 211.0ms, exit status: 0
+fxfs stats: 
+device completions: 
+guest cpu: cpu  7525 0 4864 9600 9992 0 1189 4 0 0
+[  166.891234] EXT4-fs (vdb): unmounting filesystem e5fbf099-a9c2-4ec9-a623-ff0547f31223.
+[  166.907108] reboot: Restarting system
+[  166.907879] reboot: machine restart
