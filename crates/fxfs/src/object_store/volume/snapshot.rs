@@ -25,7 +25,8 @@ impl RootVolume {
     /// independent of the source's size. Writes to the source that are not flushed when this
     /// flushes it, such as a file's dirty pages, are not in the snapshot.
     ///
-    /// It is atomic with the source's commits (TASK-241): it holds them back from before its flush
+    /// It waits for room in the journal holding no lock, and its transaction takes its room past it,
+    /// as a store's flush does its own (TASK-245). It is atomic with the source's commits (TASK-241): it holds them back from before its flush
     /// until it commits (`LockKey::Commits`), so that none comes between the layers it shares and
     /// the freezing of the source's data owner. One built before the freeze and committed after
     /// it frees nothing frozen: the allocator leaves frozen extents out as it applies it.
@@ -47,6 +48,12 @@ impl RootVolume {
             .ok_or(FxfsError::NotFound)
             .context("Missing volume store")?;
 
+        // fxdax: room in the journal waited for first, holding nothing: what makes it is a
+        // compaction, which flushes the source if it has mutations journaled, and so waits for the
+        // flush lock taken below, which the snapshot's transaction, waiting for room with it held,
+        // never let go of (TASK-245). That transaction then takes what it needs past the room, as a
+        // store's flush does its own.
+        filesystem.journal().check_journal_space().await?;
         // fxdax: the source's commits held back until the snapshot commits, taken before the flush
         // lock: a commit in flight may compact the journal, which flushes the source (TASK-241).
         let _commits = filesystem
@@ -67,8 +74,8 @@ impl RootVolume {
         keys.extend(info.layers.iter().map(|layer| LockKey::object(root_store_object_id, *layer)));
         // Declared first, as the transaction writes it.
         let handle;
-        let mut transaction =
-            root_store.new_transaction(LockKeys::Vec(keys), Options::default()).await?;
+        let options = Options { skip_journal_checks: true, ..Default::default() };
+        let mut transaction = root_store.new_transaction(LockKeys::Vec(keys), options).await?;
         ensure!(
             matches!(self.volume_directory().lookup(snapshot_name).await?, None),
             FxfsError::AlreadyExists
@@ -119,14 +126,18 @@ impl RootVolume {
 
 #[cfg(test)]
 mod tests {
-    use crate::filesystem::{FxFilesystem, SyncOptions};
+    use crate::filesystem::{FxFilesystem, FxFilesystemBuilder, SyncOptions};
     use crate::object_handle::{ObjectHandle, WriteObjectHandle};
     use crate::object_store::directory::Directory;
+    use crate::object_store::journal::JournalOptions;
+    use crate::object_store::transaction::{LockKey, lock_keys};
     use crate::object_store::volume::root_volume;
     use crate::object_store::volume::testing::{delete_volume, open_file, read_file, write_file};
     use crate::object_store::volume::tests::do_fsck;
     use crate::object_store::{HandleOptions, NewChildStoreOptions, ObjectStore, StoreOptions};
+    use fuchsia_async as fasync;
     use std::sync::Arc;
+    use std::sync::atomic::Ordering;
     use storage_device::DeviceHolder;
     use storage_device::fake_device::FakeDevice;
     use test_case::test_case;
@@ -320,6 +331,98 @@ mod tests {
             }
         }
         filesystem.close().await.expect("Close failed");
+    }
+
+    /// fxdax: a snapshot waits for room in the journal holding nothing a compaction needs
+    /// (TASK-245). A compaction flushes each store with mutations journaled as it began, the source
+    /// among them; one held up on another store, here by its flush lock, has the journal fill, so
+    /// that the snapshot's transaction waits for room. Holding the source's flush lock as it
+    /// waited, the compaction, let go, then waited for that lock: neither went on.
+    #[fuchsia::test]
+    async fn test_snapshot_volume_waits_for_the_journal_holding_nothing() {
+        let device = DeviceHolder::new(FakeDevice::new(32768, 512));
+        let options =
+            JournalOptions { reclaim_size: 128 << 10, chunk_size: 16 << 10, ..Default::default() };
+        // Each wait for room in the journal, as it begins; and whether a snapshot's has.
+        let (mut hooks, handle) = crate::hooks::Hooks::new();
+        let waiting = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let snapshot_waits = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        hooks.set_waiting_for_journal_space({
+            let (waiting, snapshot_waits) = (waiting.clone(), snapshot_waits.clone());
+            move || {
+                waiting.fetch_add(1, Ordering::Relaxed);
+                let stack = std::backtrace::Backtrace::force_capture().to_string();
+                if stack.contains("snapshot_volume") {
+                    snapshot_waits.store(true, Ordering::Relaxed);
+                }
+            }
+        });
+        let filesystem = FxFilesystemBuilder::new()
+            .journal_options(options)
+            .hooks(handle)
+            .format(true)
+            .open(device)
+            .await
+            .expect("open failed");
+        let root = Arc::new(root_volume(filesystem.clone()).await.expect("root_volume failed"));
+        let source =
+            root.new_volume("source", NewChildStoreOptions::default()).await.expect("new_volume");
+        let other =
+            root.new_volume("other", NewChildStoreOptions::default()).await.expect("new_volume");
+        write_file(&filesystem, &source, "file", &[1; 4096]).await;
+        write_file(&filesystem, &other, "file", &[1; 4096]).await;
+        // Nothing journaled, nor a compaction under way.
+        filesystem.journal().force_compact().await.expect("compaction failed");
+
+        // The compaction held up on the other volume, which it flushes first, by its flush lock:
+        // writes to it fill the journal, until they wait for room.
+        let waits = || waiting.load(Ordering::Relaxed);
+        let held = filesystem
+            .lock_manager()
+            .write_lock(lock_keys![LockKey::flush(other.store_object_id())])
+            .await
+            .into_owned(filesystem.clone());
+        // The source with a mutation journaled, which the next compaction flushes, after the
+        // other volume, its object ID greater.
+        write_file(&filesystem, &source, "file", &[2; 4096]).await;
+        assert!(other.store_object_id() > source.store_object_id());
+        let writer = fasync::Task::spawn({
+            let (filesystem, other) = (filesystem.clone(), other.clone());
+            async move {
+                for write in 0..4096u32 {
+                    write_file(&filesystem, &other, "file", &write.to_le_bytes().repeat(1024))
+                        .await;
+                }
+            }
+        });
+        let until = async |what: &str, done: &dyn Fn() -> bool| {
+            for _ in 0..5000 {
+                if done() {
+                    return;
+                }
+                fasync::Timer::new(std::time::Duration::from_millis(1)).await;
+            }
+            panic!("{what}: not within 5 s, {} waits for the journal", waits());
+        };
+        until("the journal filling", &|| waits() > 0).await;
+        // The snapshot, as the journal is full, then the compaction let go.
+        let snapshot = fasync::Task::spawn({
+            let root = root.clone();
+            async move { root.snapshot_volume("source", "snapshot").await.map(drop) }
+        });
+        until("the snapshot waiting for the journal", &|| snapshot_waits.load(Ordering::Relaxed))
+            .await;
+        drop(held);
+        let hung = fasync::Timer::new(std::time::Duration::from_secs(10));
+        futures::pin_mut!(hung);
+        match futures::future::select(snapshot, hung).await {
+            futures::future::Either::Left((done, _)) => done.expect("snapshot failed"),
+            futures::future::Either::Right(_) => panic!("the snapshot and the compaction hung"),
+        }
+        writer.await;
+        do_fsck(&filesystem, Some("snapshot"), None).await;
+        filesystem.close().await.expect("Close failed");
+        drop(hooks);
     }
 
     /// fxdax: what a snapshot shares is freed once neither it nor its source references it, in
