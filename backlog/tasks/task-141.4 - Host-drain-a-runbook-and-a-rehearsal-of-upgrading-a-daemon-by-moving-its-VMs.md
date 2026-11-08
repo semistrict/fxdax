@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-10-31 20:30'
-updated_date: '2026-11-07 23:54'
+updated_date: '2026-11-08 10:17'
 labels: []
 dependencies: []
 parent_task_id: TASK-141
@@ -27,8 +27,7 @@ Rewritten 2026-11-05: its runbook's rollback and the N-1/N rehearsal went with A
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
 - [x] #1 A runbook covers drain, upgrade and check, and says what a format change refuses
-- [ ] #2 scripts/migrate-gce.sh moves a VM off a host and back, both hosts of one build, nightly
-- [x] #3 SIGTERM's stores are durable and closed before the daemon exits, by test
+- [x] #2 SIGTERM's stores are durable and closed before the daemon exits, by test
 <!-- AC:END -->
 
 ## Definition of Done
@@ -60,4 +59,6 @@ Rewritten 2026-11-05: its runbook's rollback and the N-1/N rehearsal went with A
 Verified: sigterm_closes_every_store_durable_and_uploaded passes on Linux Docker and GCE r692 (x86); drain unit tests pass both. Left In Progress for AC #2 alone.
 
 Backlog sweep (2026-11-08): its SIGTERM drain and runbook are on main (f9fa1c94a, 51b144262), inside green main CI 42423368353; AC #2 (scripts/migrate-gce.sh off and back nightly) still not done, waiting for the nightly's GCP credentials and bucket (OPEN_QUESTIONS.md). Left In Progress.
+
+2026-11-08: the user dropped AC #2 (the nightly migrate check).
 <!-- SECTION:NOTES:END -->

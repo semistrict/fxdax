@@ -6,6 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-11-07 22:20'
+updated_date: '2026-11-08 10:17'
 labels: []
 dependencies: []
 priority: medium
@@ -31,3 +32,9 @@ Found by the TASK-149.42 agent (2026-11-07, GCE r935/r936 hosts): the hostile gu
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+2026-11-08, soak agent (thread bc4ae656, never recorded before it died; copied here from its report): reproduced on OrbStack's kernel 7.2.12 and traced to an XFS/iomap kernel bug, not extentd. Seed 3 shrinks to 6 operations on one file; the last is a direct read of 0x4000 at 0x2fe000 crossing EOF (0x2fed08). At the read the block past EOF (0x2ff000-0x300000) is still a delayed allocation (FIEMAP flags 0x7) while the EOF block is allocated: a reflink clone left a shared extent beside it. The read's flush covers only pages within EOF, so that block is never written back, and iomap's direct read fails the whole read with EIO ('Direct I/O collision with buffered writes!') instead of returning the 0xd08 bytes up to EOF. Plain xfs_io without the clone layout doesn't reproduce it. Still to do: whether the GCE kernel (7.0) has it, the exact kernel source line, a standalone reproducer, and how CI covers it.
+<!-- SECTION:NOTES:END -->

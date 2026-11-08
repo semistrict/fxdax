@@ -7,7 +7,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-11-07 04:40'
-updated_date: '2026-11-07 04:42'
+updated_date: '2026-11-08 10:17'
 labels: []
 dependencies:
   - TASK-165.9
@@ -52,4 +52,6 @@ After TASK-165.9, which rewrites Store::make_durable and the flush path.
 
 <!-- SECTION:NOTES:BEGIN -->
 2026-11-06, the user: in a crash the store must recover from the local store, so a locally durable fsync is worth something without object storage. This may be a large tax (a disk sync per fsync, or per group commit), so it's filed rather than scheduled; start it only when asked.
+
+2026-11-08: the user's decision: stays To Do, unscheduled.
 <!-- SECTION:NOTES:END -->

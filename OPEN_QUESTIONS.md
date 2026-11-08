@@ -8,6 +8,18 @@
 
 # Decisions
 
+## The crash window of an ordered commit is what main achieves (the user, 2026-11-08)
+TASK-221: after a host crash, guest writes answered but not fsync'd may be lost for as long as main's write-behind leaves them; doc-12 and doc-2 promise the window measured on main (GCE, pgbench and pgbench-dax jailed), not 50 ms, and LOST_WITHIN_MS cites it.
+
+## fsync waiting for local durability stays unscheduled (the user, 2026-11-08)
+TASK-224 stays To Do, not scheduled.
+
+## The nightly's migrate check is dropped (the user, 2026-11-08)
+TASK-141.4's AC #2 (scripts/migrate-gce.sh off and back nightly) is dropped; the task closes on its other criteria. The nightly's GCP credentials (above) are still open.
+
+## Experiment branches deleted (the user, 2026-11-08)
+Branches and worktrees never meant for main (TASK-133's late pre-fault, t227-prof/t229-measure, exp/79.8-repro, night/evacuate, wip/task-112-5-on-119, zircon-removal-*, r3/*, r7/dax, perf-*, decay, lockup) are deleted outright; SHAs the backlog and dead-ends cite from them no longer resolve.
+
 ## guest/sim's CI jobs: a smoke run in CI, the full runs nightly (the user, 2026-11-08)
 
 guest-sim (3,000 zloop seeds, ~30 min) and guest-sim-sweep (~31 min) set CI's wall time (~35 min against ~16 without them). Since 10-31, over 430 CI runs, guest-sim failed 8 times, each time beside workspace or shuttle failures during the 11-02/11-04 rewrite; the sweep never failed. The user decided: CI runs about 200 seeds and a slice of the sweep. The full runs happen when guest/linux/fs/fxfs, the guest kernel's patches, guest/sim or the kernel build script change, and nightly.
