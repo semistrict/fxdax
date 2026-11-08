@@ -5,7 +5,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-03 08:09'
-updated_date: '2026-11-08 08:23'
+updated_date: '2026-11-08 15:38'
 labels:
   - testing
 dependencies: []
@@ -46,4 +46,6 @@ xfstests' enospc group runs 2 of its 22 tests on the guest's Fxfs (generic/103, 
 
 <!-- SECTION:NOTES:BEGIN -->
 generic/269 crawls: GCE r941 (enospc group, xfstests-fxfs-guest) hit its 150m limit in generic/269; r942 (269 alone, loglevel=7) shows dd and fsstress blocked >10s in fxfs_vfs_write_begin -> sync_filesystem -> fxfs_vfs_sync_fs -> fxfs_sync -> fxfs_rt_park. Cause: every write that finds the filesystem full syncs it (fxfs_vfs_make_room, guest/linux/fs/fxfs/super.c:1635; callers super.c write_begin and page_mkwrite, dax.c's write and fault paths), so 128 writers at ENOSPC each wait behind the others' syncs. Fix: writes share syncs, one begun after a write found no room serving it (room_syncs_begun/done under room_lock), counted in /proc/fs/fxfs/<tag> as vfs_room_asked and vfs_room_syncs. Guest check writers_on_a_full_filesystem_share_syncs (32 writers, 2 writes each, on a full filesystem): red on GCE r943 (a sync each, unserialized-by-count build: 33 writers queued on room_lock, killed past its 10s budget) and r944 (64 syncs for 64 asked, attributes.rs assert).
+
+GCE r941 runs 20261108T082313Z and 20261108T085230Z (tree 005e4e047-dirty, the sized scratch devices and the shared room syncs; collected 2026-11-08 after their waiter was lost, host stopped): xfstests-fxfs-guest and -dax each failed only on tests not in KNOWN_FAILURES, the same on both mounts: generic/015 and generic/274 in the first, generic/211 and generic/679 in the second (17 of 664 failed in all, the rest known). Not yet root-caused (step 3). Checks in the same runs: writers_on_a_full_filesystem_share_syncs failed once (082313), xattrs_bounded twice (085230, TASK-263's slow host durability).
 <!-- SECTION:NOTES:END -->
