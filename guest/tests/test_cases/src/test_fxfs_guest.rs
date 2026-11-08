@@ -349,10 +349,16 @@ mod host {
     /// when, or a line cut short says not when (TASK-165.9).
     #[test]
     fn files_synced_just_before_the_kill_are_recent() {
-        let output = "synced 1 7 at 500ms\nsynced 2 3 at 750ms\nsynced 1 8 at 801ms\n\
-                      synced 2 4 at 125\nkilling at 1300ms\nkill me";
-        assert_eq!(synced_files(output), vec![(1, 7), (2, 3), (1, 8), (2, 4)]);
-        assert_eq!(synced_at_the_kill(output), [(1, 8)].into());
+        // Two files synced before the bound began, one just within it, one whose line was cut short.
+        let kill = 2 * CRASH_LOSS_BOUND_MS + 300;
+        let bound = kill - CRASH_LOSS_BOUND_MS;
+        let (old, older, recent) = (bound - 50, bound - 300, bound + 1);
+        let output = format!(
+            "synced 1 7 at {older}ms\nsynced 2 3 at {old}ms\nsynced 1 8 at {recent}ms\n\
+             synced 2 4 at 125\nkilling at {kill}ms\nkill me"
+        );
+        assert_eq!(synced_files(&output), vec![(1, 7), (2, 3), (1, 8), (2, 4)]);
+        assert_eq!(synced_at_the_kill(&output), [(1, 8)].into());
         assert_eq!(synced_at_the_kill("synced 1 7 at 1000ms\nkill me"), [].into());
     }
 
