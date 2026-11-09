@@ -13,16 +13,26 @@
 # those build as fxdax builds them, with its crate and lock, but no feature to ask for.
 #
 # Usage: firecracker-series-check.sh [BASE [TIP]]
-# BASE defaults to the upstream release the series is on (vendor/firecracker's latest vX.Y.Z tag),
-# TIP to vendor/firecracker's HEAD. FXDAX_FIRECRACKER_SERIES_WORK is where the checkout outside
+# BASE defaults to the upstream release the series is on, which its latest release's tag names
+# (fxdax-vX.Y.Z-rN: vX.Y.Z), TIP to vendor/firecracker's HEAD. FXDAX_FIRECRACKER_SERIES_WORK is where the checkout outside
 # this repo and the builds go (default $TMPDIR/fxdax-firecracker-series), kept from run to run.
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
 fc=$root/vendor/firecracker
 work=${FXDAX_FIRECRACKER_SERIES_WORK:-${TMPDIR:-/tmp}/fxdax-firecracker-series}
-base=${1:-$(git -C "$fc" describe --tags --abbrev=0 --match 'v[0-9]*.[0-9]*.[0-9]*' --exclude '*-*' HEAD)}
 tip=$(git -C "$fc" rev-parse "${2:-HEAD}")
+if [[ -n ${1:-} ]]; then
+    base=$1
+else
+    release=$(git -C "$fc" describe --tags --abbrev=0 --match 'fxdax-v*-r*' "$tip") ||
+        { echo "no fxdax-vX.Y.Z-rN tag below ${tip:0:12}: name the base" >&2; exit 2; }
+    base=${release#fxdax-}
+    base=${base%-r*}
+fi
+git -C "$fc" merge-base --is-ancestor "$base" "$tip" ||
+    { echo "$base is not below ${tip:0:12}: not the series' base" >&2; exit 2; }
+echo "The series: $base..${tip:0:12}"
 case "$work/" in
     "$root"/*) echo "FXDAX_FIRECRACKER_SERIES_WORK $work is in $root: the default build must be outside it" >&2; exit 2 ;;
 esac

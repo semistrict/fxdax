@@ -7,7 +7,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-11-09 00:50'
-updated_date: '2026-11-09 00:53'
+updated_date: '2026-11-09 01:41'
 labels:
   - fxfs
 dependencies: []
@@ -39,4 +39,6 @@ GCE debug round for TASK-269 (run-20261108T233114Z-d2a31963, host workspace suit
 
 <!-- SECTION:NOTES:BEGIN -->
 Reproduced on the release round too (run-20261108T233107Z-6613ee40): failed after 390 s, same test.
+
+Also red in main CI 42542801715 (test (workspace), 620 s, at 1c60cffb2), green in 42533641317 at bbed9afd0: intermittent, proptest seeds random per run.
 <!-- SECTION:NOTES:END -->
