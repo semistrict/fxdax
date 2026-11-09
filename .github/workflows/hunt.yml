@@ -103,7 +103,11 @@ jobs:
       FXDAX_MODEL_CASES: 1200
       FXDAX_CORRUPT_CASES: 1500
     steps:
+      # With vendor/firecracker: cargo resolves the whole workspace, and fxdax depends on its
+      # seccompiler by path, so without it no package builds (TASK-282).
       - uses: actions/checkout@v7
+        with:
+          submodules: true
       - uses: dtolnay/rust-toolchain@stable
       - uses: taiki-e/install-action@v2
         with:
