@@ -6,7 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-11-08 10:38'
-updated_date: '2026-11-09 01:35'
+updated_date: '2026-11-09 04:28'
 labels:
   - bug
   - flaky
@@ -42,4 +42,6 @@ GCE validation run B (2026-11-08, main 08d444ef7, debug kernel: KCSAN, lockdep; 
 2026-11-08, TASK-269 GCE debug round (run-20261108T233114Z-d2a31963, vendor/firecracker fxdax-v1.16.1-r1): failed again in fxfs-guest-checks (seed 1793593445840806806) and fxfs-guest-checks-dax-small (seed 1793647760234740270), same check; fxfs-guest-checks-dax and -dax-delay passed.
 
 2026-11-09: seen on the release kernel too, over virtio-PCI (TASK-267 GCE pcirel5, seed 1794651830648838433): 268435456 bytes, 242372608 free before, 254468096 after, -12095488 short; reserved 13202664, then 4308976 (the reservation grew -8893688). Passed in pcidbg4 and every other PCI round.
+
+2026-11-09, again on the debug kernel: GCE t273dbg (TASK-273, main 0f011561a's code, fxdax-keep-n2-standard-4-us-east4-a-1), fxfs-guest-checks-dax-delay seed 1794564303531441755: 268435456 bytes, 242634752 free before, 254599168 after, -11964416 short; reserved 12993740, then 4171088; the reservation grew -8822652: short - grew = -3.1 MB against the 2.68 MB tolerance, the same as before. Every device on virtio-PCI there; the release round's 16 cases passed.
 <!-- SECTION:NOTES:END -->
