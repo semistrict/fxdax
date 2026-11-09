@@ -3,11 +3,11 @@ id: TASK-281
 title: >-
   fxfs-guest-automount: a volume still open right after its mount expired
   (volumes_open 2, 1 expected)
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-09 07:16'
-updated_date: '2026-11-09 09:01'
+updated_date: '2026-11-09 09:18'
 labels:
   - bug
   - guest-tests
@@ -24,15 +24,15 @@ GCE run t277d (TASK-277; n2-standard-4 us-west1-b, fxdax 2adb9ccd6, Firecracker 
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Root cause found and fixed
-- [ ] #2 fxfs-guest-automount passes 10 rounds on GCE
+- [x] #1 Root cause found and fixed
+- [x] #2 fxfs-guest-automount passes 10 rounds on GCE
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -45,4 +45,12 @@ GCE run t277d (TASK-277; n2-standard-4 us-west1-b, fxdax 2adb9ccd6, Firecracker 
 
 <!-- SECTION:NOTES:BEGIN -->
 Root cause: the test. umount2's umount_tree takes the mount out of the namespace (mountinfo) at once; the mount's last mntput queues cleanup_mnt as task work on the caller (the automounter), which runs deactivate_super -> fxfs_vfs_kill_sb -> fxfs_unmount (block_on, close_volume) before umount2 returns to it. So the test, polling mountinfo, could count volumes while the second expiry's kill_sb was still closing its volume (2, 1 expected). The code keeps the crate's promise: expire answers READY only after umount2 returned, the volume closed, and after removing the mount's directory. Fix (472daf73d): the test waits for /repos to list no entries (the autofs root's readdir is dcache_readdir: no lookup, no automount), the automounter's rmdir being after the close, then asserts both unmounted and volumes_open == before. Verified on GCE n2-standard-4 us-west1-b: release guest kernel 10/10; debug kernel 1/1. Same debug run: Rust workspace 2420/2420; scripts/tests' 3 host-environment failures filed as TASK-294.
+
+Validation: GCE n2-standard-4 us-west1-b (fxdax-keep-n2-standard-4-us-west1-b-1, stopped after): release guest kernel 10/10, debug 1/1; debug run's Rust workspace 2420/2420; upstream-changes.py --check ok; main CI 42590395981 at 9a523ff6b (contains the fix) green, every job, macOS and Linux workspace included. No upstream code changed (guest test only).
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+The test counted open volumes as soon as the expired mounts left mountinfo, which umount2 does before the mount's last-reference cleanup (task work on the automounter's return) runs kill_sb and closes the volume. The automounter keeps its doc's promise: it removes the directory and answers the expiry only after umount2 returned. Fix 472daf73d: the test waits for /repos to list no entries (readdir there looks nothing up) and then asserts unmounted and volumes_open == before. GCE release 10/10, debug 1/1; main CI green.
+<!-- SECTION:FINAL_SUMMARY:END -->

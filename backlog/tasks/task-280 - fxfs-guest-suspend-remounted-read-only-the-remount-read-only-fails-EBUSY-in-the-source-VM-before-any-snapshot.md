@@ -3,11 +3,11 @@ id: TASK-280
 title: >-
   fxfs-guest-suspend-remounted-read-only: the remount read-only fails EBUSY in
   the source VM, before any snapshot
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-09 07:16'
-updated_date: '2026-11-09 09:01'
+updated_date: '2026-11-09 09:18'
 labels:
   - bug
   - guest-tests
@@ -24,15 +24,15 @@ GCE run t277d (TASK-277; n2-standard-4 us-west1-b, fxdax 2adb9ccd6, Firecracker 
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Root cause of the EBUSY found and fixed
-- [ ] #2 fxfs-guest-suspend-remounted-read-only passes 10 rounds on GCE
+- [x] #1 Root cause of the EBUSY found and fixed
+- [x] #2 fxfs-guest-suspend-remounted-read-only passes 10 rounds on GCE
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -45,4 +45,12 @@ GCE run t277d (TASK-277; n2-standard-4 us-west1-b, fxdax 2adb9ccd6, Firecracker 
 
 <!-- SECTION:NOTES:BEGIN -->
 Root cause: the test. map_pieces opens the pieces file O_RDWR and keeps it mapped MAP_SHARED|PROT_WRITE; the vma holds the file, which do_dentry_open marked FMODE_WRITER (file_get_write_access -> mnt_get_write_access), so reconfigure_super's sb_prepare_remount_readonly -> mnt_hold_writers returns EBUSY. Generic VFS, before fxfs_vfs_reconfigure runs: ext4 refuses the same remount the same way, so guest Fxfs is right. History: the case passed when it landed (6e93f8a47, GCE r762); 6e3b379a6 (TASK-92.14/TASK-191's test, rebased onto main after it) made the pieces mapping writable and ran only -snapshot-dax/-suspend-dax/-migrate, so the variant has failed every run since. Fix (086fd0e7e): ReadOnly::Remounted unmaps the writable mapping and maps the file again read-only (map takes a length) before the remount, reading it all, as an integrator would. Verified on GCE n2-standard-4 us-west1-b: release guest kernel 10/10; debug kernel 1/1.
+
+Validation: GCE n2-standard-4 us-west1-b (fxdax-keep-n2-standard-4-us-west1-b-1, stopped after): release guest kernel 10/10, debug 1/1; debug run's Rust workspace 2420/2420; upstream-changes.py --check ok; main CI 42590395981 at 9a523ff6b (contains the fix) green, every job, macOS and Linux workspace included. No upstream code changed (guest test only).
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+The read-only remount's EBUSY was the test's: the pieces file stayed mapped shared and writable, holding it open for writing, which the VFS's sb_prepare_remount_readonly refuses on any filesystem (ext4 too). Broken since 6e3b379a6 landed after the case (which passed at 6e93f8a47, r762). Fix 086fd0e7e: the remounted variant unmaps the writable mapping and maps the file again read-only before remounting. GCE release 10/10, debug 1/1; main CI green.
+<!-- SECTION:FINAL_SUMMARY:END -->
