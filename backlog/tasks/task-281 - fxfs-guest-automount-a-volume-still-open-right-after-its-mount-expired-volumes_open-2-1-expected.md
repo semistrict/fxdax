@@ -3,9 +3,11 @@ id: TASK-281
 title: >-
   fxfs-guest-automount: a volume still open right after its mount expired
   (volumes_open 2, 1 expected)
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-11-09 07:16'
+updated_date: '2026-11-09 08:08'
 labels:
   - bug
   - guest-tests

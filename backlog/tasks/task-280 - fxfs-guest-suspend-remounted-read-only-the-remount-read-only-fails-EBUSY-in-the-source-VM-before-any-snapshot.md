@@ -3,9 +3,11 @@ id: TASK-280
 title: >-
   fxfs-guest-suspend-remounted-read-only: the remount read-only fails EBUSY in
   the source VM, before any snapshot
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-11-09 07:16'
+updated_date: '2026-11-09 08:08'
 labels:
   - bug
   - guest-tests
