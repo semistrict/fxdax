@@ -8,7 +8,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-09 08:41'
-updated_date: '2026-11-09 09:13'
+updated_date: '2026-11-09 11:05'
 labels:
   - bug
   - fxfs
@@ -36,3 +36,9 @@ GCE t257dbg2 (debug kernel, main 142195ae2 + TASK-257, fxdax-keep-n2-standard-4-
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Fix c42c8e2a6-line (pushed with TASK-257): Shards counts its items in an AtomicUsize updated under the shard's lock (added/removed, enforce), len() reads it lock-free, shrink() try_locks and passes over a held shard. Host test test_counted_and_shrunk_under_a_shards_lock hangs on the old len (verified: SLOW >60 s, killed) and passes on the fix. GCE debug fxfs-guest-checks-dax-delay with the fix: t257dbg3 2 rounds (round 2 lost to TASK-299), t257ws4 8 rounds (round 8 lost to TASK-299): 10 rounds, no hang; AC #3 (20 rounds) open, TASK-299 stopping runs.
+<!-- SECTION:NOTES:END -->

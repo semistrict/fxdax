@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-08 10:38'
-updated_date: '2026-11-09 09:13'
+updated_date: '2026-11-09 11:05'
 labels:
   - bug
   - flaky
@@ -66,4 +66,6 @@ Root cause (measured, AC #1): the check's model, not Fxfs. Free space = device -
 Fix: Allocator::usage() (fxdax, one lock) divides used bytes; fxfs-linux stats add used_bytes, metadata_held_bytes (root parent + root store owners), data_held_bytes (other owners + pending), reserved_bytes, uncommitted_bytes. The guest check, renamed a_removed_fill_gives_back_all_its_data, asserts data held grew by no more than STAGING_SIZE (tighter than the old 2.68 MB), and short == data + metadata held + reservation deltas within the old size/100. Measured identity in the guest within a few KB.
 
 GCE (fxdax-keep-n2-standard-4-us-west1-a-1): debug t257dbg1+t257dbg2: the check passed 34/34 runs across fxfs-guest-checks, -dax, -dax-small, -dax-delay, 8 with the flush (the old failure's shape). Rounds lost to other bugs: dax-small KCSAN (TASK-286), dax-delay reclaim deadlock (TASK-292). Release t257rel1: 20/20 rounds of the four variants passed (min short -12656640, max 4202496). macOS scripts/test.sh passed (2170 tests).
+
+Final verification: GCE t257dbg3 (debug, all five variants incl. -overrun, 5 rounds, with TASK-292): the check passed 23/23; rounds lost only to TASK-299 (tracepoints). Totals with the new model: debug 57/57, release 20/20. Linux workspace (GCE t257ws4): every cargo suite passed (2422 tests); scripts/tests' three failures are TASK-294's. macOS scripts/test.sh passed; fxfs + fxfs-posix 888/888 after rebase; upstream-changes.py --check passes.
 <!-- SECTION:NOTES:END -->
