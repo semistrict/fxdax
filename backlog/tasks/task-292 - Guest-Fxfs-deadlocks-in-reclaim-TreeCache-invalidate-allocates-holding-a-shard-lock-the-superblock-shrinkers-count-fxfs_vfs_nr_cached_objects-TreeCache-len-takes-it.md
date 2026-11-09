@@ -8,7 +8,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-09 08:41'
-updated_date: '2026-11-09 11:05'
+updated_date: '2026-11-09 13:07'
 labels:
   - bug
   - fxfs
@@ -41,4 +41,6 @@ GCE t257dbg2 (debug kernel, main 142195ae2 + TASK-257, fxdax-keep-n2-standard-4-
 
 <!-- SECTION:NOTES:BEGIN -->
 Fix c42c8e2a6-line (pushed with TASK-257): Shards counts its items in an AtomicUsize updated under the shard's lock (added/removed, enforce), len() reads it lock-free, shrink() try_locks and passes over a held shard. Host test test_counted_and_shrunk_under_a_shards_lock hangs on the old len (verified: SLOW >60 s, killed) and passes on the fix. GCE debug fxfs-guest-checks-dax-delay with the fix: t257dbg3 2 rounds (round 2 lost to TASK-299), t257ws4 8 rounds (round 8 lost to TASK-299): 10 rounds, no hang; AC #3 (20 rounds) open, TASK-299 stopping runs.
+
+2026-11-09, ubu1 (non-root): debug kernel built (FXDAX_GUEST_KERNEL_DEBUG=1), fxfs-guest-checks-dax-delay alone with FXDAX_E2E_ROUNDS=20 (prebuilt, as test-e2e.sh's own pre-tests need root, TASK-307): round 1 failed in 1 s, the extent device's userfaultfd refused (/dev/userfaultfd root 0600, Firecracker's fallback syscall killed by seccomp, TASK-308). Blocked on ubu1's setup: /dev/userfaultfd must be readable and writable by ramon (udev rule for the kvm group). Worktree ~/src/fxdax-t292 and kernel ~/fxdax-guest-kernel-debug kept on ubu1 for the re-run.
 <!-- SECTION:NOTES:END -->
