@@ -20,13 +20,22 @@
 # default; log, or none), and FXDAX_FIRECRACKER_JAIL=1 in its jailer's jail, as an unprivileged
 # user (see below).
 #
+# fxdax: FXDAX_E2E_BUILD_ONLY=DIR builds what the cases run, and copies it into DIR, as its
+# artifacts: the runner, the guest agent, the extent daemon, fxdaxctl, fxdax-gc and Firecracker;
+# it runs no test. FXDAX_E2E_PREBUILT=DIR runs the cases with DIR's artifacts, building nothing,
+# nor running the VMM's tests first: so that an A/B of two trees (scripts/bench-ab-gce.sh)
+# alternates between their builds, each made once, its rounds the cases' time alone (TASK-276).
+# Neither takes FXDAX_FIRECRACKER_SECCOMP=log or FXDAX_FIRECRACKER_JAIL, which build per run.
+# FXDAX_E2E_ROOT names the tree whose code it builds and boots, and whose helpers it runs (default:
+# this script's), so that this script's modes serve a tree of before them, an A/B's base.
+#
 # The guests' extent stores are served by fxdax's extent daemon, which this
 # starts, as FXDAX_EXTENTD tells the tests; its control API is beside it, at
 # extentd.control. FXDAX_EXTENTD_MEMORY caps its memory, in bytes. LIBCLANG_PATH names libclang's
 # directory where llvm-config cannot, and DAX needs access to /dev/userfaultfd
 # (see the README).
 set -euo pipefail
-root=$(cd "$(dirname "$0")/.." && pwd)
+root=$(cd "${FXDAX_E2E_ROOT:-$(dirname "$0")/..}" && pwd)
 harness="$root/guest/tests"
 selectors=("$@")
 if (( ${#selectors[@]} == 0 )); then
@@ -35,6 +44,19 @@ fi
 results=${FXDAX_E2E_RESULTS:-$(mktemp -d "${TMPDIR:-/tmp}/fxdax-e2e.XXXXXX")}
 mkdir -p "$results"
 results=$(cd "$results" && pwd)
+build_only=${FXDAX_E2E_BUILD_ONLY:-} prebuilt=${FXDAX_E2E_PREBUILT:-}
+if [[ -n $build_only && -n $prebuilt ]]; then
+    echo "FXDAX_E2E_BUILD_ONLY and FXDAX_E2E_PREBUILT: one or the other" >&2
+    exit 2
+fi
+if [[ -n $build_only$prebuilt && ( ${FXDAX_FIRECRACKER_SECCOMP:-} == log || -n ${FXDAX_FIRECRACKER_JAIL:-} ) ]]; then
+    echo "prebuilt artifacts take no FXDAX_FIRECRACKER_SECCOMP=log nor FXDAX_FIRECRACKER_JAIL" >&2
+    exit 2
+fi
+if [[ -n $prebuilt && ! -f $prebuilt/artifacts.txt ]]; then
+    echo "$prebuilt holds no artifacts (FXDAX_E2E_BUILD_ONLY makes them)" >&2
+    exit 2
+fi
 
 if [[ $(uname -s) != Linux ]]; then
     echo "fxdax's guests run on Linux only: use scripts/test-e2e-linux.sh" >&2
@@ -47,14 +69,21 @@ if [[ -n ${LIBCLANG_PATH:-} ]]; then export LIBCLANG_PATH; fi
 
 # The harness's runner, which boots a VM for each test, and says which cases the arguments select,
 # a selection naming no case failing before anything else is built (TASK-160.29).
-(cd "$harness" && cargo build -q -p runner)
-runner="$harness/target/debug/runner"
-listed=$("$runner" list "${selectors[@]}")
-mapfile -t tests <<< "$listed"
-rounds=${FXDAX_E2E_ROUNDS:-1}
-[[ $rounds =~ ^[1-9][0-9]*$ ]] || { echo "FXDAX_E2E_ROUNDS is a count" >&2; exit 2; }
-# The run as data, its knobs as it was given them, before this sets any (TASK-160.31).
-"$root/scripts/guest_results.py" start "$results" "$rounds" "${tests[@]}"
+if [[ -n $prebuilt ]]; then
+    runner="$prebuilt/runner"
+else
+    (cd "$harness" && cargo build -q -p runner)
+    runner="$harness/target/debug/runner"
+fi
+tests=()
+if [[ -z $build_only ]]; then
+    listed=$("$runner" list "${selectors[@]}")
+    mapfile -t tests <<< "$listed"
+    rounds=${FXDAX_E2E_ROUNDS:-1}
+    [[ $rounds =~ ^[1-9][0-9]*$ ]] || { echo "FXDAX_E2E_ROUNDS is a count" >&2; exit 2; }
+    # The run as data, its knobs as it was given them, before this sets any (TASK-160.31).
+    "$root/scripts/guest_results.py" start "$results" "$rounds" "${tests[@]}"
+fi
 
 # With frame pointers, as every build here has them (.cargo/config.toml), which the bench's perf
 # call graphs walk (FXDAX_BENCH_PERF). With FXDAX_FAILPOINTS, a daemon whose failpoints it sets (FAILPOINTS, the fail crate's): requests
@@ -62,9 +91,20 @@ rounds=${FXDAX_E2E_ROUNDS:-1}
 # fork's steps its seed says (fxdax::faults); with FXDAX_EXTENTD_FAILPOINTS=1, one built with them,
 # none set, for cases that set their own daemons' (fxfs-guest-soak, TASK-67).
 extentd_features=()
-if [[ -n ${FXDAX_FAILPOINTS:-}${FXDAX_FAULT_SEED:-}${FXDAX_EXTENTD_FAILPOINTS:-} ]]; then
+seccomp=${FXDAX_FIRECRACKER_SECCOMP:-real}
+if [[ -n $prebuilt ]]; then
+    extentd_bin="$prebuilt/fxdax-extentd"
+    export FXDAXCTL_BIN="$prebuilt/fxdaxctl" FXDAX_GC_BIN="$prebuilt/fxdax-gc"
+    export FXDAX_FIRECRACKER="$prebuilt/firecracker"
+    export FXDAX_GUEST_AGENT="$prebuilt/guest-agent"
+fi
+if [[ -z $prebuilt && -n ${FXDAX_FAILPOINTS:-}${FXDAX_FAULT_SEED:-}${FXDAX_EXTENTD_FAILPOINTS:-} ]]; then
     extentd_features=(--features failpoints)
 fi
+# The run's directory, by which a case that goes on from round to round keys what it keeps
+# (fxfs-guest-soak).
+export FXDAX_E2E_RUN="$results"
+if [[ -z $prebuilt ]]; then
 cargo build --release --manifest-path "$root/Cargo.toml" -p fxdax --bin fxdax-extentd \
     --bin fxdaxctl ${extentd_features[@]+"${extentd_features[@]}"}
 extentd_bin="$root/target/release/fxdax-extentd"
@@ -74,9 +114,6 @@ extentd_bin="$root/target/release/fxdax-extentd"
 export FXDAXCTL_BIN="$root/target/release/fxdaxctl"
 cargo build --release --manifest-path "$root/Cargo.toml" -p extent_remote --bin fxdax-gc
 export FXDAX_GC_BIN="$root/target/release/fxdax-gc"
-# The run's directory, by which a case that goes on from round to round keys what it keeps
-# (fxfs-guest-soak).
-export FXDAX_E2E_RUN="$results"
 # As fxdax builds it, with its fxdax feature (scripts/firecracker-cargo.sh), in the copy of
 # vendor/firecracker that builds in, whose .cargo/config.toml sets its target directory and build
 # environment. FXDAX_FIRECRACKER_SECCOMP builds Firecracker as production does, for musl, which compiles in its
@@ -87,7 +124,6 @@ export FXDAX_E2E_RUN="$results"
 # lacked, and only jailed runs, which ask for it, would have shown it (TASK-164).
 firecracker_cargo="$root/scripts/firecracker-cargo.sh"
 firecracker_dir=$("$firecracker_cargo" --tree)
-seccomp=${FXDAX_FIRECRACKER_SECCOMP:-real}
 case "$seccomp" in
     none)
         "$firecracker_cargo" build --release -p firecracker --features fxdax
@@ -125,6 +161,7 @@ PY
         ;;
     *) echo "FXDAX_FIRECRACKER_SECCOMP is real, log or none" >&2; exit 2 ;;
 esac
+fi
 # FXDAX_FIRECRACKER_JAIL=1 runs each Firecracker as production does (TASK-50.1, TASK-50.4): in
 # the jail Firecracker's jailer makes, as an unprivileged user (64000), with /dev/userfaultfd in
 # the jail and vm.unprivileged_userfaultfd off; under a seccomp filter, for musl.
@@ -176,12 +213,30 @@ fi
 # The harness's guest agent, a static binary each guest runs as its init. pjdfstest's cases take
 # its repository and commit as they build.
 guest_target="$(uname -m)-unknown-linux-musl"
-(cd "$harness" && cargo test -q -p test_cases --features guest)
-# The VMM's extent device's tests, and its vCPUs' exits', fxdax's, which no other suite reaches
-# (TASK-79.102, TASK-187): scripts/test.sh's firecracker part, which CI runs too (TASK-220).
-FXDAX_TEST_PARTS=firecracker "$root/scripts/test.sh"
-(cd "$harness" && cargo build -q --target "$guest_target" -p guest-agent)
-export FXDAX_GUEST_AGENT="$harness/target/$guest_target/debug/guest-agent"
+if [[ -z $build_only$prebuilt ]]; then
+    (cd "$harness" && cargo test -q -p test_cases --features guest)
+    # The VMM's extent device's tests, and its vCPUs' exits', fxdax's, which no other suite reaches
+    # (TASK-79.102, TASK-187): scripts/test.sh's firecracker part, which CI runs too (TASK-220).
+    FXDAX_TEST_PARTS=firecracker "$root/scripts/test.sh"
+fi
+if [[ -z $prebuilt ]]; then
+    (cd "$harness" && cargo build -q --target "$guest_target" -p guest-agent)
+    export FXDAX_GUEST_AGENT="$harness/target/$guest_target/debug/guest-agent"
+fi
+# fxdax: the artifacts, copied for runs to take as they are (FXDAX_E2E_PREBUILT), and what they
+# were built from and as; and nothing run.
+if [[ -n $build_only ]]; then
+    mkdir -p "$build_only"
+    cp "$runner" "$FXDAX_GUEST_AGENT" "$extentd_bin" "$FXDAXCTL_BIN" "$FXDAX_GC_BIN" \
+        "$FXDAX_FIRECRACKER" "$build_only/"
+    {
+        echo "source $(cat "$root/source-revision.txt" 2> /dev/null || echo unknown)"
+        echo "seccomp $seccomp"
+        (cd "$build_only" && sha256sum runner guest-agent fxdax-extentd fxdaxctl fxdax-gc firecracker)
+    } > "$build_only/artifacts.txt"
+    echo "Artifacts: $build_only" >&2
+    exit 0
+fi
 socket="$results/extentd.sock"
 control="$results/extentd.control"
 if [[ -e $socket || -e $control ]]; then

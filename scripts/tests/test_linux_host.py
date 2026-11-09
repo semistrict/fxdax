@@ -226,7 +226,9 @@ class Apt(unittest.TestCase):
     def test_the_hosts_that_run_the_guest_tests_install_nextest(self):
         # scripts/test-e2e.sh, which bench.sh runs its cases through, runs scripts/test.sh's
         # firecracker part, under nextest (TASK-220): every host script reaching it needs it, or the
-        # run fails there (GCE r1022, the bench host's).
+        # run fails there (GCE r1022, the bench host's). But for one whose runs build and run
+        # artifacts built once (FXDAX_E2E_BUILD_ONLY, FXDAX_E2E_PREBUILT), which run no tests of
+        # the VMM's (bench-ab-linux-host.sh, TASK-276).
         reaching = ("scripts/test-e2e.sh", "scripts/bench.sh")
         missing = [
             path.name
@@ -234,6 +236,7 @@ class Apt(unittest.TestCase):
             for text in [path.read_text()]
             if any(script in text for script in reaching)
             and "host_need cargo-nextest" not in text
+            and "FXDAX_E2E_PREBUILT" not in text
         ]
         self.assertEqual(missing, [])
 

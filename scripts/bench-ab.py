@@ -9,10 +9,18 @@ pooled across a side's directories and cases, their medians and ranges, how many
 is than A (above 1, B is slower), and whether the two ranges overlap, which a difference within
 noise does. It prints a Markdown table.
 
-Usage: scripts/bench-ab.py A_NAME A_DIR... -- B_NAME B_DIR...
+With --control CASE, each case's workloads are compared apart, and against the control: CASE, a
+case whose code is the same on both sides (ext4 on virtio-blk, as `ext4-guest-kernel`), whose own
+B-vs-A ratio for the same workload is the drift between the sides' runs. A difference is called
+real only where the two sides' ranges don't overlap and it is larger than the control's drift for
+that workload (TASK-276): the rounds interleave the sides on one host, and what still moves the
+control moves the others as much.
+
+Usage: scripts/bench-ab.py [--control CASE] A_NAME A_DIR... -- B_NAME B_DIR...
 """
 
 import json
+import math
 import statistics
 import sys
 from pathlib import Path
@@ -27,6 +35,65 @@ def pooled(directories):
                 values.setdefault(result["workload"], []).extend(result["values"])
                 kinds[result["workload"]] = (result["unit"], result["higher_is_better"])
     return values, kinds
+
+
+def by_case(directories):
+    """Each case's workloads' values across `directories`' results, by (case, workload), the case
+    its backend, and each workload's unit and direction."""
+    values, kinds = {}, {}
+    for directory in directories:
+        for path in sorted(Path(directory).glob("bench-*.json")):
+            report = json.loads(path.read_text())
+            case = report.get("backend", path.stem)
+            for result in report["results"]:
+                values.setdefault((case, result["workload"]), []).extend(result["values"])
+                kinds[result["workload"]] = (result["unit"], result["higher_is_better"])
+    return values, kinds
+
+
+def slower(a, b, higher_is_better):
+    """How many times slower B's values are than A's, by their medians: above 1, B is slower."""
+    a_median, b_median = statistics.median(a), statistics.median(b)
+    return a_median / b_median if higher_is_better else b_median / a_median
+
+
+def overlap(a, b):
+    return max(min(a), min(b)) <= min(max(a), max(b))
+
+
+def verdict(ratio, overlaps, control):
+    """Whether a difference of `ratio` is real: the ranges apart, and further from 1 than the
+    control's own ratio, `control` (None if the control has no such workload)."""
+    if control is None:
+        return "no control"
+    if overlaps or abs(math.log(ratio)) <= abs(math.log(control)):
+        return "within drift"
+    return "real"
+
+
+def control_table(a_name, a_dirs, b_name, b_dirs, control):
+    (a, kinds), (b, _) = by_case(a_dirs), by_case(b_dirs)
+    lines = [
+        f"| Case | Workload | Unit | {a_name} | {b_name} | {b_name} vs {a_name} | "
+        f"{control} {b_name} vs {a_name} | Verdict |",
+        "|---|---|---|---|---|---|---|---|",
+    ]
+    for (case, workload), a_values in sorted(a.items()):
+        b_values = b.get((case, workload))
+        if not b_values or case == control:
+            continue
+        unit, higher_is_better = kinds[workload]
+        ratio = slower(a_values, b_values, higher_is_better)
+        a_control, b_control = a.get((control, workload)), b.get((control, workload))
+        drift = None
+        if a_control and b_control:
+            drift = slower(a_control, b_control, higher_is_better)
+        lines.append(
+            f"| {case} | {workload} | {unit} | {described(a_values)} | {described(b_values)} | "
+            f"{ratio:.2f}× | {'-' if drift is None else f'{drift:.2f}×'} | "
+            f"{verdict(ratio, overlap(a_values, b_values), drift)} |"
+        )
+    return "\n".join(lines)
 
 
 def described(values):
@@ -54,10 +121,17 @@ def table(a_name, a_dirs, b_name, b_dirs):
 
 def main():
     args = sys.argv[1:]
+    control = None
+    if args[:1] == ["--control"] and len(args) > 1:
+        control, args = args[1], args[2:]
     if "--" not in args or args.index("--") < 2 or len(args) - args.index("--") < 3:
         sys.exit(__doc__.strip().splitlines()[-1])
     cut = args.index("--")
-    print(table(args[0], args[1:cut], args[cut + 1], args[cut + 2 :]))
+    a_name, a_dirs, b_name, b_dirs = args[0], args[1:cut], args[cut + 1], args[cut + 2 :]
+    if control:
+        print(control_table(a_name, a_dirs, b_name, b_dirs, control))
+    else:
+        print(table(a_name, a_dirs, b_name, b_dirs))
 
 
 if __name__ == "__main__":
