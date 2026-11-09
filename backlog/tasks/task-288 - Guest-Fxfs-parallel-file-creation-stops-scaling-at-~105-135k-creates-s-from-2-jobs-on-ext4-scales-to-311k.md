@@ -6,6 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-11-09 08:05'
+updated_date: '2026-11-09 08:30'
 labels:
   - perf
   - fxfs
@@ -47,3 +48,12 @@ Fxfs gains from a second thread, then holds or falls, at every vCPU count, while
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Guest kernel profile (2026-11-09, FXDAX_BENCH_GUEST_PERF=1, fxfs-guest, 4 vCPUs, TASK-276's build, GCE c3-standard-8, perf over each workload; results in the session's create-prof, logs/bench-fs-fxfs-guest/*/log.txt PROFILE/INCLUSIVE/CALLERS scale-create-j1 and -j8):
+- j1: 75% of samples idle (pv_native_safe_halt): one thread creating, a CPU of four.
+- j8 (8 threads, 4 vCPUs): 21% fxfs_rt_park called straight from fxfs_create (the guest's Rust runtime parking the thread while create's future waits: on a lock or the journal), 13% idle with 8 threads runnable, so they wait rather than run. Inclusive under fxfs_create (61%): Transaction::commit 27%, of it Journal::commit 17% and Journal::write_and_apply_mutations 16.6%; ObjectManager::apply_transaction 13%, apply_mutation 12.8%, ObjectStore::apply_mutation 11.4%; LSM skip-list layer insert and TreeCache 2.5% and 2.5%. Points at the commit path, every create's transaction applied through the journal one at a time, with the parks waiting their turn: a filesystem-wide serialization, as each thread has its own directory.
+- Which lock or wait the parks are on is inlined into fxfs_create here: next, a kernel built with FXDAX_GUEST_KERNEL_PROFILE=1 (frames through Rust), or Fxfs's lock statistics, at j1 vs j8.
+<!-- SECTION:NOTES:END -->
