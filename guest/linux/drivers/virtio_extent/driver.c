@@ -59,6 +59,12 @@ struct vext_queue {
 	 * each interrupt costs exits to read and acknowledge it (TASK-91.15).
 	 */
 	atomic64_t interrupts, polled;
+	/*
+	 * fxdax: the requests completed on a CPU other than the one they were queued on: each wakes
+	 * its caller with an interrupt between CPUs, and finds its request in another's cache
+	 * (TASK-276).
+	 */
+	atomic64_t cross;
 } ____cacheline_aligned_in_smp;
 
 /*
@@ -476,6 +482,7 @@ int virtio_extent_submit(struct virtio_extent *vext, struct vext_request *req)
 	queue = &vext->queues[raw_smp_processor_id() % vext->nr_queues];
 	for (;;) {
 		req->queued_ns = ktime_get_ns();
+		req->cpu = raw_smp_processor_id();
 		spin_lock_irqsave(&queue->lock, flags);
 		/*
 		 * fxdax: closed, as the device resets or is closed, it has no queues, or will not
@@ -529,6 +536,8 @@ static unsigned int vext_reap(struct virtio_extent *vext, struct vext_queue *que
 		recent = &vext->recent_ns[req->type];
 		WRITE_ONCE(*recent, READ_ONCE(*recent) - (READ_ONCE(*recent) >> 3) + (took >> 3));
 		req->status = -(int)le32_to_cpu(req->resp.status);
+		if (req->cpu != raw_smp_processor_id())
+			atomic64_inc(&queue->cross);
 		sg_free_table(&req->data_sgt);
 		req->done(req);
 		reaped++;
@@ -758,19 +767,22 @@ static DEVICE_ATTR_RO(queues);
 
 /*
  * fxdax: the `completions` attribute: the queues' interrupts, and the requests their callers
- * completed polling them, without one (vext_wait), all told.
+ * completed polling them, without one (vext_wait), all told; and the requests completed on a CPU
+ * other than their own (TASK-276).
  */
 static ssize_t completions_show(struct device *dev, struct device_attribute *attr, char *buf)
 {
 	struct virtio_extent *vext = dev_to_virtio(dev)->priv;
-	s64 interrupts = 0, polled = 0;
+	s64 interrupts = 0, polled = 0, cross = 0;
 	unsigned int i;
 
 	for (i = 0; i < vext->nr_queues; i++) {
 		interrupts += atomic64_read(&vext->queues[i].interrupts);
 		polled += atomic64_read(&vext->queues[i].polled);
+		cross += atomic64_read(&vext->queues[i].cross);
 	}
-	return sysfs_emit(buf, "interrupts %lld\npolled %lld\n", interrupts, polled);
+	return sysfs_emit(buf, "interrupts %lld\npolled %lld\ncross %lld\n", interrupts, polled,
+			  cross);
 }
 static DEVICE_ATTR_RO(completions);
 

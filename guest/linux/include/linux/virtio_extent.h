@@ -326,6 +326,8 @@ struct vext_request {
 	u64 queued_ns;
 	/* fxdax: the queue it went to, which its caller may poll for it (virtio_extent_call). */
 	struct vext_queue *queue;
+	/* fxdax: the CPU it was queued on, which its completion's is compared with (TASK-276). */
+	int cpu;
 	union {
 		struct virtio_extent_io io;
 		struct virtio_extent_id id;

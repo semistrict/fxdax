@@ -20,6 +20,10 @@
 // files, fsync, tree, large-dir and concurrent; pgbench, PostgreSQL's benchmark, runs only when it
 // names it. The sqlite group adds rollback-journal and WAL commits, batches, checkpoints,
 // process recovery and reader isolation; it also runs the mmap scan independently of io.
+// The scaling group, which also runs only when named, runs random reads cold and warm, random
+// writes, fsynced appends and metadata operations at each of FXDAX_BENCH_JOBS's jobs at once (1, 2,
+// 4 and 8), with their latencies' percentiles and how the device's queues took their requests;
+// FXDAX_BENCH_VCPUS sets the VMs' vCPUs (2), to measure how the filesystems scale (TASK-276).
 // FXDAX_BENCH_SQLITE_TXNS sizes each transaction workload (200 commits). The sqlite-transactions
 // group skips scans; FXDAX_BENCH_SQLITE_WORKLOAD selects one transaction workload by its result
 // name (such as sqlite-wal-normal-batch100), keeping the recovery and snapshot checks.
@@ -455,6 +459,14 @@ RUN wget -q -O /opt/lua-5.4.7.tar.gz https://www.lua.org/ftp/lua-5.4.7.tar.gz \\
         }
     }
 
+    /// fxdax: the vCPUs of a case's VM: FXDAX_BENCH_VCPUS, or 2 (TASK-276).
+    fn vcpus() -> anyhow::Result<u8> {
+        match std::env::var("FXDAX_BENCH_VCPUS") {
+            Ok(vcpus) => vcpus.parse().context("FXDAX_BENCH_VCPUS is a count of vCPUs"),
+            Err(_) => Ok(2),
+        }
+    }
+
     /// Sets what the guest's workloads take from the host's environment in `vm`'s: the iterations,
     /// the groups, the workloads' sizes, and the paths the guest's programs need.
     fn workloads_env(vm: &mut Vm) -> anyhow::Result<()> {
@@ -469,6 +481,7 @@ RUN wget -q -O /opt/lua-5.4.7.tar.gz https://www.lua.org/ftp/lua-5.4.7.tar.gz \\
             "FXDAX_BENCH_PGBENCH_SECS",
             "FXDAX_BENCH_PGBENCH_SCALE",
             "FXDAX_BENCH_WATCHDOG_SECS",
+            "FXDAX_BENCH_JOBS",
         ] {
             if let Ok(value) = std::env::var(var) {
                 vm.env(&CString::new(format!("{var}={value}"))?);
@@ -732,7 +745,7 @@ RUN wget -q -O /opt/lua-5.4.7.tar.gz https://www.lua.org/ftp/lua-5.4.7.tar.gz \\
             }
             let root_dir = setup_rootfs(&test_setup)?;
 
-            let mut vm = Vm::new(2, 2048)?;
+            let mut vm = Vm::new(vcpus()?, 2048)?;
             vm.guest_kernel()?;
             // The filesystem's device in the guest, for those on one.
             let device = match self.backend {
@@ -1480,9 +1493,15 @@ mod guest {
     /// Runs `f(thread)` on `THREADS` threads at once, and times them all as `workload`, of `count`
     /// operations in all.
     fn parallel(workload: &str, count: usize, f: impl Fn(usize) + Sync) {
+        parallel_on(THREADS, workload, count, f)
+    }
+
+    /// Runs `f(thread)` on `threads` threads at once, and times them all as `workload`, of `count`
+    /// operations in all.
+    fn parallel_on(threads: usize, workload: &str, count: usize, f: impl Fn(usize) + Sync) {
         timed(workload, count, || {
             std::thread::scope(|scope| {
-                for thread in 0..THREADS {
+                for thread in 0..threads {
                     let f = &f;
                     scope.spawn(move || f(thread));
                 }
@@ -1697,6 +1716,262 @@ mod guest {
             }
         });
         fs::remove_dir(&shared).unwrap();
+    }
+
+    /// fxdax: where the scaling workloads' files are, a file of [`SCALE_FILE_SIZE`] bytes per job,
+    /// fio's `scale.<job>.0` (TASK-276).
+    const SCALE_DIR: &str = "/mnt/bench/scale";
+    const SCALE_FILE_SIZE: u64 = 64 << 20;
+
+    /// fxdax: the jobs the scaling workloads run at, each in turn: FXDAX_BENCH_JOBS, separated by
+    /// commas, or 1, 2, 4 and 8.
+    fn scale_jobs() -> Vec<usize> {
+        let jobs = std::env::var("FXDAX_BENCH_JOBS").unwrap_or_default();
+        if jobs.is_empty() {
+            return vec![1, 2, 4, 8];
+        }
+        jobs.split(',').map(|n| n.parse().expect("FXDAX_BENCH_JOBS is counts")).collect()
+    }
+
+    /// fxdax: runs fio's `jobs` jobs named `name` at once, each on a file of its own of `size`
+    /// bytes in [`SCALE_DIR`], and returns what it measured of them together (`group_reporting`).
+    fn fio_jobs(name: &str, jobs: usize, size: u64, args: &[&str]) -> serde_json::Value {
+        let output = "/tmp/fio.json";
+        let (name, jobs, size) =
+            (format!("--name={name}"), format!("--numjobs={jobs}"), format!("--size={size}"));
+        let mut all = vec![
+            &name[..],
+            "--directory",
+            SCALE_DIR,
+            &jobs,
+            &size,
+            "--group_reporting",
+            // fio would drop the files' cached pages before each job: drop_caches makes the cold
+            // jobs cold.
+            "--invalidate=0",
+            "--output-format=json",
+            "--output",
+            output,
+        ];
+        all.extend_from_slice(args);
+        run("fio", &all);
+        let json: serde_json::Value =
+            serde_json::from_slice(&fs::read(output).unwrap()).expect("fio's JSON");
+        json["jobs"][0].clone()
+    }
+
+    /// fxdax: reports what fio measured of `workload`'s `direction` (`read`, `write`), `job`: its
+    /// operations a second, and the 50th and 99th percentiles of their completion latency; and of
+    /// its fsyncs, if it made any.
+    fn fio_result(workload: &str, job: &serde_json::Value, direction: &str) {
+        let rates = Rates::of(&job[direction]);
+        result(workload, "IOPS", true, rates.iops);
+        let percentiles = |what: &serde_json::Value, of: &str| {
+            for (name, key) in [("p50", "50.000000"), ("p99", "99.000000")] {
+                if let Some(ns) = what["percentile"][key].as_f64() {
+                    result(&format!("{workload}-{of}{name}"), "us", false, ns / 1000.0);
+                }
+            }
+        };
+        percentiles(&job[direction]["clat_ns"], "");
+        if job["sync"]["total_ios"].as_u64().is_some_and(|ios| ios > 0) {
+            percentiles(&job["sync"]["lat_ns"], "fsync-");
+        }
+    }
+
+    /// fxdax: the request queues' interrupts by CPU, from /proc/interrupts: each queue's line, by
+    /// its name, of the extent device's queues (`virtioN-requests`) and virtio-blk's
+    /// (`virtioN-req.Q`).
+    fn queue_interrupts() -> Vec<(String, Vec<u64>)> {
+        let text = fs::read_to_string("/proc/interrupts").unwrap();
+        let mut lines = text.lines();
+        let cpus = lines.next().map_or(0, |header| header.split_whitespace().count());
+        lines
+            .filter_map(|line| {
+                let name = line.split_whitespace().last()?;
+                let queue = name.starts_with("virtio")
+                    && (name.ends_with("-requests") || name.contains("-req."));
+                if !queue {
+                    return None;
+                }
+                let counts = line.split_whitespace().skip(1).take(cpus);
+                Some((name.to_owned(), counts.map(|n| n.parse().unwrap_or(0)).collect()))
+            })
+            .collect()
+    }
+
+    /// fxdax: the extent device's attribute `name`'s lines, if the guest's filesystem is on one.
+    fn device_attribute(name: &str) -> Option<String> {
+        let device =
+            fs::read_dir("/sys/bus/virtio/drivers/virtio_extent").ok()?.find_map(|entry| {
+                let path = entry.ok()?.path().join(name);
+                path.exists().then_some(path)
+            })?;
+        fs::read_to_string(device).ok()
+    }
+
+    /// fxdax: runs `f`, `workload`, as [`observed`] does, and says how its requests spread over the
+    /// device's queues and where they completed (TASK-276): the requests each queue took, and the
+    /// queues' interrupts by CPU, to the log; how many queues took requests, and the share of the
+    /// requests completed on a CPU other than the one that queued them, as observations.
+    fn scaled<T>(workload: &str, f: impl FnOnce() -> T) -> T {
+        let counts = |text: Option<String>| -> Vec<u64> {
+            let text = text.unwrap_or_default();
+            text.lines().filter_map(|line| line.rsplit(' ').next()?.parse().ok()).collect()
+        };
+        let completions = || -> Option<std::collections::BTreeMap<String, u64>> {
+            let text = device_attribute("completions")?;
+            Some(
+                (text.lines())
+                    .filter_map(|line| {
+                        let (name, n) = line.split_once(' ')?;
+                        Some((name.to_owned(), n.parse().ok()?))
+                    })
+                    .collect(),
+            )
+        };
+        let (queues, done, interrupts) =
+            (counts(device_attribute("queues")), completions(), queue_interrupts());
+        let value = observed(workload, 1, f);
+        let taken: Vec<u64> = counts(device_attribute("queues"))
+            .iter()
+            .zip(queues.iter().chain(std::iter::repeat(&0)))
+            .map(|(after, before)| after.saturating_sub(*before))
+            .collect();
+        if !taken.is_empty() {
+            eprintln!("QUEUES {workload}: {taken:?}");
+            println!("OBSERVED {workload}-queues-used {}", taken.iter().filter(|n| **n > 0).count());
+        }
+        if let (Some(before), Some(after)) = (done, completions()) {
+            let delta = |name: &str| {
+                after.get(name).unwrap_or(&0).saturating_sub(*before.get(name).unwrap_or(&0))
+            };
+            let requests: u64 = taken.iter().sum();
+            if requests > 0 {
+                let cross = delta("cross") as f64 * 100.0 / requests as f64;
+                println!("OBSERVED {workload}-cross-cpu-pct {cross:.1}");
+                println!(
+                    "OBSERVED {workload}-interrupts-per-request {:.3}",
+                    delta("interrupts") as f64 / requests as f64
+                );
+            }
+        }
+        // By position: a device's queues share a name, its lines in the queues' order.
+        for (queue, (name, after)) in queue_interrupts().into_iter().enumerate() {
+            let before = interrupts.get(queue).filter(|(n, _)| *n == name).map(|(_, c)| &c[..]);
+            let by_cpu: Vec<u64> = after
+                .iter()
+                .zip(before.unwrap_or_default().iter().chain(std::iter::repeat(&0)))
+                .map(|(after, before)| after.saturating_sub(*before))
+                .collect();
+            if by_cpu.iter().any(|n| *n > 0) {
+                eprintln!("IRQS {workload}: {name} (line {queue}) by CPU {by_cpu:?}");
+            }
+        }
+        value
+    }
+
+    /// fxdax: how the filesystem's throughput and latency scale with the jobs doing I/O at once,
+    /// and with the guest's vCPUs, which the host sets (TASK-276): random reads cold and warm,
+    /// random writes, fsynced appends and metadata operations, each at each of [`scale_jobs`]'s
+    /// jobs, the reads first, on files of their own, which the writes then change. With them, how
+    /// the device's queues took the requests and where they completed ([`scaled`]).
+    fn scaling_workloads() {
+        let all = scale_jobs();
+        let most = *all.iter().max().expect("FXDAX_BENCH_JOBS names jobs");
+        fs::create_dir_all(SCALE_DIR).unwrap();
+        // Every job's file laid out once, untimed, as fio would as each job starts.
+        fio_jobs("scale", most, SCALE_FILE_SIZE, &["--rw=write", "--bs=1M", "--end_fsync=1"]);
+        for &jobs in &all {
+            let name = |workload: &str| format!("scale-{workload}-j{jobs}");
+            drop_caches();
+            let workload = name("rand-read-cold");
+            let job = scaled(&workload, || {
+                fio_jobs("scale", jobs, SCALE_FILE_SIZE, &["--rw=randread", "--bs=4k", "--io_size=8M"])
+            });
+            fio_result(&workload, &job, "read");
+            // Each file read whole first: the random reads then find it cached.
+            fio_jobs("scale", jobs, SCALE_FILE_SIZE, &["--rw=read", "--bs=1M"]);
+            let workload = name("rand-read-warm");
+            let job = scaled(&workload, || {
+                fio_jobs(
+                    "scale",
+                    jobs,
+                    SCALE_FILE_SIZE,
+                    &["--rw=randread", "--bs=4k", "--time_based", RUNTIME],
+                )
+            });
+            fio_result(&workload, &job, "read");
+        }
+        // One job keeping 16 reads in flight, through io_uring, which the kernel's workers serve.
+        drop_caches();
+        let workload = "scale-rand-read-cold-qd16";
+        let job = scaled(workload, || {
+            fio_jobs(
+                "scale",
+                1,
+                SCALE_FILE_SIZE,
+                &["--rw=randread", "--bs=4k", "--io_size=8M", "--ioengine=io_uring", "--iodepth=16"],
+            )
+        });
+        fio_result(workload, &job, "read");
+        for &jobs in &all {
+            let name = |workload: &str| format!("scale-{workload}-j{jobs}");
+            let workload = name("rand-write");
+            let job = scaled(&workload, || {
+                fio_jobs(
+                    "scale",
+                    jobs,
+                    SCALE_FILE_SIZE,
+                    &["--rw=randwrite", "--bs=4k", "--io_size=4M", "--end_fsync=1"],
+                )
+            });
+            fio_result(&workload, &job, "write");
+            // Each job appending to a log of its own, each 4 KiB fsynced.
+            let workload = name("fsync-append");
+            let job = scaled(&workload, || {
+                fio_jobs("fsync", jobs, 2 << 20, &["--rw=write", "--bs=4k", "--fsync=1"])
+            });
+            fio_result(&workload, &job, "write");
+            for job in 0..jobs {
+                fs::remove_file(format!("{SCALE_DIR}/fsync.{job}.0")).unwrap();
+            }
+            // Each thread creating, statting and removing files in a directory of its own.
+            let files = files();
+            let own = |thread: usize| format!("{SCALE_DIR}/thread-{thread}");
+            for thread in 0..jobs {
+                fs::create_dir(own(thread)).unwrap();
+            }
+            let workload = name("create");
+            scaled(&workload, || {
+                parallel_on(jobs, &workload, jobs * files, |thread| {
+                    for i in 0..files {
+                        fs::File::create(format!("{}/f{i}", own(thread))).unwrap();
+                    }
+                })
+            });
+            drop_caches();
+            let workload = name("stat-cold");
+            scaled(&workload, || {
+                parallel_on(jobs, &workload, jobs * files, |thread| {
+                    for i in 0..files {
+                        fs::metadata(format!("{}/f{i}", own(thread))).unwrap();
+                    }
+                })
+            });
+            let workload = name("unlink");
+            scaled(&workload, || {
+                parallel_on(jobs, &workload, jobs * files, |thread| {
+                    for i in 0..files {
+                        fs::remove_file(format!("{}/f{i}", own(thread))).unwrap();
+                    }
+                })
+            });
+            for thread in 0..jobs {
+                fs::remove_dir(own(thread)).unwrap();
+            }
+        }
+        run("rm", &["-rf", SCALE_DIR]);
     }
 
     /// The metadata workloads, those of the parts of them that `runs` says run, or all.
@@ -2015,6 +2290,10 @@ mod guest {
                 if runs("build") && std::panic::catch_unwind(build_workload).is_err() {
                     println!("FAILED build");
                     run("rm", &["-rf", &format!("{MNT}/build")]);
+                }
+                // fxdax: the scaling workloads run only when named, as pgbench does (TASK-276).
+                if groups.split(',').any(|g| g == "scaling") {
+                    scaling_workloads();
                 }
                 // pgbench runs only when named, which keeps a run of every other group short.
                 if groups.split(',').any(|g| g == "pgbench")

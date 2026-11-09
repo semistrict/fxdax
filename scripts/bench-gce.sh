@@ -21,7 +21,9 @@
 #
 # FXDAX_GCE_PROJECT is the project (default: gcloud's), FXDAX_GCE_ZONE the zone
 # to try first (default: us-east4-a), FXDAX_BENCH_MACHINE the machine type
-# (default: c3-standard-8), and FXDAX_BENCH_ITERATIONS how many times each
+# (default: c3-standard-8), FXDAX_BENCH_CPU_PLATFORM its least CPU platform, if
+# any (such as 'Intel Cascade Lake': test-gce.sh's hosts are so made, and a bench
+# run may take a stopped one of them), and FXDAX_BENCH_ITERATIONS how many times each
 # workload runs (default: 3). FXDAX_BENCH_CASES and FXDAX_BENCH_GROUPS choose
 # what runs (scripts/bench.sh). FXDAX_BENCH_PERF=record profiles each case's
 # VMM with perf, into perf-CASE.txt, record:EVENTS records the events there
@@ -29,7 +31,8 @@
 # (test_fs_bench.rs). FXDAX_BENCH_GUEST_PERF, if set, profiles the guest's
 # kernel through each workload, into the cases' logs. FXDAX_BENCH_FILES and
 # FXDAX_BENCH_PGBENCH_SECS and FXDAX_BENCH_PGBENCH_SCALE size the metadata workloads and
-# pgbench (test_fs_bench.rs).
+# pgbench, and FXDAX_BENCH_VCPUS and FXDAX_BENCH_JOBS the VMs' vCPUs and the scaling group's
+# jobs (test_fs_bench.rs).
 # FXDAX_EXTENTD_REMOTE, if set, names the bucket the extent daemon keeps the
 # stores' branches in (gs://bucket/prefix: a host made with FXDAX_GCE_STORAGE
 # set can reach it, scripts/lib/gce.sh), and FXDAX_EXTENTD_CACHE the directory
@@ -59,6 +62,9 @@ results=$repo/docs/measurements/gce-fs-bench-$(date -u +%Y-%m-%dT%H%MZ)-$gce_mak
 [[ "$iterations" =~ ^[1-9][0-9]*$ ]] || { echo 'FXDAX_BENCH_ITERATIONS is a count' >&2; exit 2; }
 limit=${FXDAX_GCE_LIMIT:-6h}
 create_flags=()
+if [[ -n ${FXDAX_BENCH_CPU_PLATFORM:-} ]]; then
+    create_flags=(--min-cpu-platform="$FXDAX_BENCH_CPU_PLATFORM")
+fi
 
 run() {
     gce_check_owner
