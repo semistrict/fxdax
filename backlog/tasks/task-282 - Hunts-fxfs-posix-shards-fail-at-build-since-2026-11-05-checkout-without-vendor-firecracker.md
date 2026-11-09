@@ -3,9 +3,10 @@ id: TASK-282
 title: >-
   Hunt's fxfs-posix shards fail at build since 2026-11-05: checkout without
   vendor/firecracker
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-11-09 07:26'
+updated_date: '2026-11-09 08:21'
 labels:
   - ci
   - bug
@@ -22,7 +23,7 @@ Every scheduled Hunt since 2026-11-05 (runs at b57d57e4a, d4d473576, b6ba50fb3..
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Hunt's fxfs-posix shards build and run their cases (a dispatched Hunt run shows them green or failing on a test, not at build)
+- [x] #1 Hunt's fxfs-posix shards build and run their cases (a dispatched Hunt run shows them green or failing on a test, not at build)
 <!-- AC:END -->
 
 ## Definition of Done
@@ -31,3 +32,9 @@ Every scheduled Hunt since 2026-11-05 (runs at b57d57e4a, d4d473576, b6ba50fb3..
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+hunt.yml's fxfs-posix job now checks out vendor/firecracker (f824ffd50). Dispatched Hunt run 42579403046 on main: all four fxfs-posix shards built and passed their cases; before, every scheduled Hunt since 2026-11-05 failed them at cargo's workspace resolution.
+<!-- SECTION:FINAL_SUMMARY:END -->
