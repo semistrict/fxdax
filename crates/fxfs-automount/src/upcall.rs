@@ -96,7 +96,10 @@ fn exchange<'a, S: Read + Write>(
     stream.write_all(format!("{ask}\n").as_bytes())?;
     stream.flush()?;
     let mut reader = BufReader::new(stream);
-    let line = read_line(&mut reader)?.ok_or_else(|| invalid("the host hung up".into()))?;
+    // Hung up before it answered: as a restore's reset of the connection ends it (TASK-277).
+    let line = read_line(&mut reader)?.ok_or_else(|| {
+        io::Error::new(io::ErrorKind::UnexpectedEof, "the host hung up before it answered")
+    })?;
     Ok((line, reader))
 }
 
@@ -142,9 +145,14 @@ fn read_line(reader: &mut impl BufRead) -> io::Result<Option<String>> {
     if line.is_empty() {
         return Ok(None);
     }
-    if line.pop() != Some(b'\n') {
-        return Err(invalid("a line too long, or cut short".into()));
+    if line.last() != Some(&b'\n') {
+        if line.len() == 4096 {
+            return Err(invalid("a line too long".into()));
+        }
+        // Cut short: the stream ended in it, as a restore's reset of the connection ends it.
+        return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "a line cut short"));
     }
+    line.pop();
     String::from_utf8(line).map(Some).map_err(|_| invalid("a line not UTF-8".into()))
 }
 
@@ -227,15 +235,19 @@ mod tests {
         );
     }
 
-    /// A host's answer out of the protocol is an error, not a manifest: one too large, one cut
-    /// short, one that isn't an answer, and none; and a generation that names no volume.
+    /// A host's answer out of the protocol is an error, not a manifest: one too large, a line too
+    /// long, one that isn't an answer; and a generation that names no volume. One cut short, its
+    /// manifest or its line, or none, ends as a restore's reset of the connection does
+    /// (`UnexpectedEof`, which `crate::reconnect` asks again on, TASK-277).
     #[test]
     fn answers_out_of_the_protocol() {
         for (said, expected) in [
             (format!("manifest {}\n", MAX_MANIFEST + 1), io::ErrorKind::InvalidData),
-            ("manifest 10\nshort".to_owned(), io::ErrorKind::UnexpectedEof),
+            ("x".repeat(4096), io::ErrorKind::InvalidData),
             ("yes\n".to_owned(), io::ErrorKind::InvalidData),
-            (String::new(), io::ErrorKind::InvalidData),
+            ("manifest 10\nshort".to_owned(), io::ErrorKind::UnexpectedEof),
+            ("manif".to_owned(), io::ErrorKind::UnexpectedEof),
+            (String::new(), io::ErrorKind::UnexpectedEof),
         ] {
             let (mut guest, mut host) = UnixStream::pair().unwrap();
             host.write_all(said.as_bytes()).unwrap();

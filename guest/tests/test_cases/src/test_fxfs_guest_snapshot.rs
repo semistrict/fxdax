@@ -681,29 +681,18 @@ mod guest {
 
     /// The name the host gives this restored VM, on a new connection. The restore resets the
     /// guest's vsock connections, which its kernel learns of from an event it may take only after
-    /// the old connection has ended, and a new one is made: a new connection reset so is made
-    /// again (TASK-50.1.2). One made as the snapshot was taken, its RST behind its response in
-    /// the RX queue, connects and then ends, nothing read (TASK-277): made again too.
+    /// the old connection has ended, and a new one is made (TASK-50.1.2): one made as the snapshot
+    /// was taken connects, as its response was in the RX queue, and then ends, its RST behind it,
+    /// nothing read (TASK-277). Each so reset is made again ([`fxfs_automount::reconnect`]).
     fn name_from_host() -> String {
-        for _ in 0..100 {
+        let name = fxfs_automount::reconnect::exchange(try_connect, |host| {
             let mut name = String::new();
-            let read = try_connect().and_then(|host| BufReader::new(host).read_line(&mut name));
-            match read {
-                Ok(0) => {}
-                Ok(_) => return name.trim_end().to_owned(),
-                Err(err)
-                    if matches!(
-                        err.kind(),
-                        std::io::ErrorKind::NotConnected | std::io::ErrorKind::ConnectionReset
-                    ) =>
-                {
-                    // The reset is the kernel's to take: a moment for it.
-                    std::thread::sleep(std::time::Duration::from_millis(10));
-                }
-                Err(err) => panic!("reading the name from the host: {err}"),
+            match BufReader::new(host).read_line(&mut name)? {
+                0 => Err(std::io::ErrorKind::UnexpectedEof.into()),
+                _ => Ok(name),
             }
-        }
-        panic!("every connection to the host was reset");
+        });
+        name.expect("reading the name from the host").trim_end().to_owned()
     }
 
     /// Writes the file of `PIECES` pages at `path`, each page an extent of its own: written alone,

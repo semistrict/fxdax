@@ -124,6 +124,32 @@ DeleteStore(point)
 their data. New restores fail with `ENOENT`, on every host. A restore racing the deletion either
 fails or succeeds whole: one that succeeded keeps everything it inherited.
 
+### Guests' vsock connections across a restore
+
+A restored VM has none of the snapshotted VM's vsock connections: Firecracker resets them all, and
+the guest's kernel takes the resets once the restored VM runs. That includes a connection the guest
+was making while the snapshot was taken. Its `connect` may then succeed, and the connection is reset
+right after (TASK-277). So in every agent of yours that connects from the guest to the host:
+
+- **Make a new connection for each exchange.** Never keep one open across a point where the VM may
+  be snapshotted, and expect it gone after a restore.
+- **Treat a reset as "connect again", not as an answer.** Any of these ends the exchange: a
+  `connect` that fails with `ECONNRESET`; a write that fails with `EPIPE`, `ENOTCONN`,
+  `ECONNRESET` or `ECONNABORTED`; or a read that ends (EOF, 0 bytes) or fails with `ECONNRESET`
+  before the whole answer is in. Make the exchange again on a new connection, a few milliseconds
+  later, up to about a second's worth of tries.
+- **Only resend what the host can safely see twice.** The host may have read the ask before the
+  reset. Make the host's side idempotent, or give each ask an ID the host deduplicates on.
+
+`crates/fxfs-automount/src/reconnect.rs` does this for fxdax's own guest agent (`fxfs-automount`,
+`git-remote-fxfs`), whose asks to the sandbox manager are idempotent: `AttachBase` of a base that is
+already attached does nothing. Copy its rules, or call it from Rust.
+
+This needs fxdax's Firecracker series `fxdax-v1.16.1-r3` or later. When it takes a snapshot, it
+queues an RST behind any response still in the guest's receive queue. On older series, the guest
+can take such a response after the reset: its connection then connects to nothing, and its reads
+hang forever.
+
 ## Forking a base on any number of hosts at once
 
 A fork of a store that isn't a point, such as a base from `ImportImage`, is a commit on that

@@ -18,11 +18,13 @@
 //! code of fxdax's is involved.
 //!
 //! The sandbox manager is asked through [`upcall`]'s protocol, over any stream: the binary,
-//! `fxfs-automount`, connects to the host over vsock for each ask, as the guest agent does. The
-//! crate's other binary, `git-remote-fxfs` ([`git`]), moves a repo's fetches to the newest
-//! generation of it (TASK-136.7).
+//! `fxfs-automount`, connects to the host over vsock for each ask, as the guest agent does, and
+//! asks again on a new connection while a restore from a snapshot resets it ([`reconnect`],
+//! TASK-277). The crate's other binary, `git-remote-fxfs` ([`git`]), moves a repo's fetches to the
+//! newest generation of it (TASK-136.7).
 
 pub mod git;
+pub mod reconnect;
 pub mod upcall;
 
 #[cfg(target_os = "linux")]

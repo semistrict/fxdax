@@ -135,7 +135,9 @@ impl Volumes for Fxfs {
 }
 
 /// The sandbox manager, asked over vsock, at `port` of `cid`: a connection for each ask, so
-/// that a VM restored from a snapshot, whose connections are gone, asks as before.
+/// that a VM restored from a snapshot, whose connections are gone, asks as before; an ask a
+/// restore's reset ends is asked again on a new one, as the sandbox manager answers each the
+/// same however often it is asked ([`crate::reconnect`], TASK-277).
 pub struct Vsock {
     pub cid: u32,
     pub port: u32,
@@ -167,13 +169,13 @@ impl Vsock {
 
 impl Attach for Vsock {
     fn attach(&mut self, name: &str) -> io::Result<Answer> {
-        upcall::ask(&mut self.connect()?, name)
+        crate::reconnect::exchange(|| self.connect(), |host| upcall::ask(host, name))
     }
 }
 
 impl crate::git::Ask for Vsock {
     fn newest(&mut self, url: &str) -> io::Result<upcall::Newest> {
-        upcall::ask_newest(&mut self.connect()?, url)
+        crate::reconnect::exchange(|| self.connect(), |host| upcall::ask_newest(host, url))
     }
 }
 

@@ -393,7 +393,10 @@ mod guest {
     const FROZEN: [&str; 4] = [CHECKOUT, "/repos/repo-g1", REMOTE, MNT];
 
     /// Freezes the filesystem, tells the host, which snapshots the VM, and once restored, as the
-    /// host says on a connection made anew, thaws it.
+    /// host says on a connection made anew, thaws it. The host closes its end as soon as it has
+    /// read that the guest is frozen, so that the guest may connect again as the snapshot is
+    /// taken: restored, that connection is reset, and made again, as any a restore resets
+    /// ([`fxfs_automount::reconnect`], TASK-277).
     fn snapshotted() {
         FROZEN.iter().for_each(|volume| ioctl(volume, FIFREEZE));
         let mut host = connect();
@@ -401,17 +404,19 @@ mod guest {
         // The snapshot is taken as this waits; restored, the connection is gone.
         let mut nothing = Vec::new();
         let _ = host.read_to_end(&mut nothing);
-        let mut said = String::new();
-        let deadline = Instant::now() + Duration::from_secs(60);
-        loop {
-            if let Ok(host) = try_connect() {
-                BufReader::new(host).read_line(&mut said).unwrap();
-                break;
-            }
-            assert!(Instant::now() < deadline, "the host never answered after the restore");
-            std::thread::sleep(Duration::from_millis(100));
-        }
-        assert_eq!(said, "restored\n");
+        // The host listens before it restores the VM (`Vms::restore`): a connection refused is
+        // one a reset ended.
+        let restored = fxfs_automount::reconnect::exchange(
+            || try_connect().map_err(std::io::Error::from),
+            |host| {
+                let mut said = String::new();
+                match BufReader::new(host).read_line(&mut said)? {
+                    0 => Err(std::io::ErrorKind::UnexpectedEof.into()),
+                    _ => Ok(said),
+                }
+            },
+        );
+        assert_eq!(restored.expect("the host's word that the VM is restored"), "restored\n");
         FROZEN.iter().rev().for_each(|volume| ioctl(volume, FITHAW));
     }
 
