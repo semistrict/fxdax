@@ -46,6 +46,9 @@ fn metric(series: &str) -> u64 {
 }
 
 /// What the files under `dir` take of the disk, as `du -sx` says.
+/// The bytes of a segment's log's header, a block (`extent_store::wal::LOG_RECORDS`).
+const LOG_HEADER: u64 = 4096;
+
 fn du(dir: &Path) -> u64 {
     let output = std::process::Command::new("du").args(["-sxB1"]).arg(dir).output().unwrap();
     assert!(output.status.success(), "du: {}", String::from_utf8_lossy(&output.stderr));
@@ -116,11 +119,12 @@ fn tenants_past_their_disk_limits_are_refused_while_others_write() {
     };
     assert_eq!((refused, written), (Errno::ENOSPC, 16));
     // What it takes, counted again, is what it wrote, and the base of each fork's write-ahead
-    // log, which its store makes as it opens to write (backlog doc-14, `wal`): its metrics name it
-    // by a hash, with its limit.
+    // log, which its store makes as it opens to write (backlog doc-14, `wal`), and the header of
+    // its open segment's log (TASK-301): its metrics name it by a hash, with its limit.
     let (full, _) = daemon.tenant_disk(Some("acme")).unwrap();
     let wals: u64 = forks.iter().map(|fork| du(&fork.join("wal"))).sum();
-    assert_eq!((full, du(&acme)), (taken + 16 * EXTENT + wals, taken + 16 * EXTENT + wals));
+    let opened = wals + forks.len() as u64 * LOG_HEADER;
+    assert_eq!((full, du(&acme)), (taken + 16 * EXTENT + opened, taken + 16 * EXTENT + opened));
     let tenant = format!("{{tenant=\"{}\"}}", label("acme"));
     assert!(!render().contains("acme"), "the metrics name the tenant");
     assert_eq!(metric(&format!("fxdax_extentd_tenant_disk_limit_bytes{tenant}")), limit);

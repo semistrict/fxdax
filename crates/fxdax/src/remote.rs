@@ -1508,10 +1508,11 @@ mod tests {
             std::thread::yield_now();
         }
         // The host is lost: its store and uploader, forgotten, never reach object storage again,
-        // and its disk is gone.
+        // and its disk is gone: renamed away at once, as its threads, forgotten, may still make
+        // files in it, which a removal racing them finds (TASK-301: a log becoming a spare).
         std::mem::forget(lost);
         drop(waiting);
-        std::fs::remove_dir_all(dir.path().join("lost")).unwrap();
+        std::fs::rename(dir.path().join("lost"), dir.path().join("gone")).unwrap();
 
         let bucket = Arc::new(Bucket::new(store, prefix));
         let taken =

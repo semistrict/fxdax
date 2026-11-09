@@ -201,16 +201,23 @@ fn helping() -> &'static std::sync::atomic::AtomicUsize {
 }
 
 /// fxdax: some of [`HELPERS`], taken for a flush's syncs until dropped.
-struct Helpers(usize);
+pub(crate) struct Helpers(usize);
 
 impl Helpers {
     /// As many of them as are free, `wanted` at most.
-    fn take(wanted: usize) -> Self {
+    pub(crate) fn take(wanted: usize) -> Self {
         use std::sync::atomic::Ordering;
         let helping = helping().update(Ordering::AcqRel, Ordering::Acquire, |helping| {
             helping + wanted.min(HELPERS - helping)
         });
         Self(wanted.min(HELPERS - helping))
+    }
+}
+
+impl Helpers {
+    /// How many it took.
+    pub(crate) fn count(&self) -> usize {
+        self.0
     }
 }
 

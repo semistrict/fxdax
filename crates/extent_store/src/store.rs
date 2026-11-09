@@ -2154,16 +2154,18 @@ impl<D: Dir> Store<D> {
         Ok(())
     }
 
-    /// fxdax: runs `first`, and `then`, at once, `then` on a thread of its own; or in turn, on this
-    /// thread, if the directory does one thing at a time, or the host refuses the thread. Not at
-    /// once under Shuttle, which fails an execution that ends with a scoped thread not run, as a
-    /// flush on a thread a test leaves behind would.
+    /// fxdax: runs `first`, and `then`, at once, `then` on a thread of its own, one of the helpers
+    /// every flush of the process shares (`durability::HELPERS`); or in turn, on this thread, if
+    /// none is free, the directory does one thing at a time, or the host refuses the thread. Not
+    /// at once under Shuttle, which fails an execution that ends with a scoped thread not run, as
+    /// a flush on a thread a test leaves behind would.
     fn at_once<T: Send>(
         &self,
         first: impl FnOnce() -> Result<(), Error>,
         then: impl FnOnce() -> Result<T, Error> + Send + Copy,
     ) -> Result<T, Error> {
-        if !self.dir.concurrent() || cfg!(feature = "shuttle") {
+        let helper = crate::durability::Helpers::take(1);
+        if !self.dir.concurrent() || cfg!(feature = "shuttle") || helper.count() == 0 {
             first()?;
             return then();
         }

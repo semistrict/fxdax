@@ -631,7 +631,8 @@ fn requests_with_flags_the_daemon_doesnt_know_are_refused() {
     assert_eq!(read(&store, extent, 0, BLOCK), Err(Errno::ENOENT));
     assert_eq!(write(&store, extent, 0, &pattern(2, BLOCK)), Ok(()));
     assert_eq!(store.commit(Some(b"before")), Ok(()));
-    let unknown = Header::new(COMMIT, 0).with_flags(COMMIT_ROOT | 1 << 2);
+    // Bit 2 is COMMIT_LOCAL (TASK-301).
+    let unknown = Header::new(COMMIT, 0).with_flags(COMMIT_ROOT | 1 << 3);
     assert_eq!(store.call(unknown, b"after", &[]).map(drop), Err(Errno::EINVAL));
     assert_eq!(store.root(), Ok(b"before".to_vec()));
     assert_eq!(read(&store, extent, 0, BLOCK), Ok(pattern(2, BLOCK)));
