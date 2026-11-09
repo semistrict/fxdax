@@ -150,6 +150,15 @@ mod guest {
         })
     }
 
+    /// The names with a directory under `ROOT`, as its listing has them, which looks none up. The
+    /// automounter removes an expired mount's once its unmount has returned, which is after its
+    /// volume closed (the unmount's last reference to the mount, the automounter's, closes it
+    /// on its way back from the call); the mount leaves `mounted` before (TASK-281).
+    fn listed() -> Vec<String> {
+        let entries = fs::read_dir(ROOT).unwrap().map(|entry| entry.unwrap().file_name());
+        entries.map(|name| name.into_string().unwrap()).collect()
+    }
+
     /// The volumes the filesystem has open, as it says (TASK-136.6).
     fn volumes_open() -> usize {
         let stats = fs::read_to_string("/proc/fs/fxfs/extents").unwrap();
@@ -212,7 +221,8 @@ mod guest {
         assert_eq!(error.raw_os_error(), Some(nix::libc::ENOENT), "{error}");
 
         // Idle, they expire, their volumes closed; repo mounts again, unasked.
-        wait_for("the mounts to expire", || mounted(&repo).is_none() && mounted(&other).is_none());
+        wait_for("the mounts to expire", || listed().is_empty());
+        assert_eq!((mounted(&repo), mounted(&other)), (None, None));
         assert_eq!(volumes_open(), before);
         assert_eq!(fs::read(format!("{repo}/written")).unwrap(), b"the consumer's\n");
         check_published(&repo);
