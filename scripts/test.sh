@@ -3,7 +3,7 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-# Run clippy's rules (clippy.toml), the test suite, extent_remote's simulation, the concurrency
+# Run clippy's rules (clippy.toml), the test suite, the simulation of the bucket's protocol, the concurrency
 # tests under Shuttle, the scripts' tests (scripts/tests) and the mutant runners' checks, the Go
 # client's (go/), and on Linux the guest tests' own tests (guest/tests, both halves) and the VMM's
 # own that fxdax adds to (vendor/firecracker, built as fxdax builds it: scripts/firecracker-cargo.sh):
@@ -44,17 +44,18 @@ if part clippy; then
     UCD_ZIP="$zip" cargo clippy --manifest-path "$root/Cargo.toml" --workspace --tests -- \
         -A clippy::all -D clippy::disallowed_methods
 fi
-# extent_remote's simulation: its profiles' soaks, and its rules' seed searches, each until a seed
-# with the rule off finds what the rule prevents, up to 20,000. Its own part, built with the
-# profile sim, optimized with a debug build's checks: unoptimized, in the suite's build, four
-# searches took 20 to 27 minutes each, which ran CI's workspace job out of time (TASK-188).
-sim='package(extent_remote) & test(/^sim::/)'
+# The simulation of extent_remote's protocol over extent_store's stores (TASK-88): its profiles'
+# soaks, and its rules' seed searches, each until a seed with the rule off finds what the rule
+# prevents, up to 20,000. Its own part, built with the profile sim, optimized with a debug build's
+# checks: unoptimized, in the suite's build, four searches took 20 to 27 minutes each, which ran
+# CI's workspace job out of time (TASK-188).
+sim='package(extent_store) & test(/^sim::/)'
 if part workspace; then
     UCD_ZIP="$zip" cargo nextest run --manifest-path "$root/Cargo.toml" --workspace \
         -E "not ($sim)" "$@"
 fi
 if part sim; then
-    cargo nextest run --manifest-path "$root/Cargo.toml" --cargo-profile sim -p extent_remote \
+    cargo nextest run --manifest-path "$root/Cargo.toml" --cargo-profile sim -p extent_store \
         -E "$sim" "$@"
 fi
 # The concurrency tests under Shuttle, built with each crate's `shuttle` feature, which only they

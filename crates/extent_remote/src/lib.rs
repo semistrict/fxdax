@@ -48,8 +48,8 @@ pub mod trace;
 pub mod wal;
 pub mod writer;
 
-#[cfg(test)]
-mod sim;
+#[cfg(any(test, feature = "testing"))]
+pub mod testing;
 
 pub use batch::{Batch, Commit};
 pub use bucket::Bucket;
@@ -124,7 +124,7 @@ impl From<extent_frame::Corrupt> for Error {
 /// The rules doc-7's protocol relies on, each of which the simulation shows to be needed by
 /// turning it off, and specs/bucket's TLA+ by its mutation removing it (doc-7, Testing).
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct Rules {
+pub struct Rules {
     /// A writer acknowledges a segment only once a read of its lease that follows the segment's
     /// creation shows the lease still its.
     /// TLA+: `specs/bucket/mutations/NoAcksAfterLease.cfg`.
@@ -300,22 +300,26 @@ impl Rules {
     };
 }
 
-#[cfg(not(test))]
+#[cfg(not(any(test, feature = "testing")))]
 pub(crate) fn rules() -> Rules {
     Rules::ALL
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "testing"))]
 thread_local! {
     static RULES: std::cell::Cell<Rules> = const { std::cell::Cell::new(Rules::ALL) };
 }
 
-#[cfg(test)]
-pub(crate) fn rules() -> Rules {
+/// The rules this thread's protocol keeps: all of them, but in tests that turn some off
+/// ([`set_rules`]).
+#[cfg(any(test, feature = "testing"))]
+pub fn rules() -> Rules {
     RULES.with(|rules| rules.get())
 }
 
-#[cfg(test)]
-pub(crate) fn set_rules(rules: Rules) {
+/// Has this thread's protocol keep `rules` alone, as tests that see a rule needed do: extent_remote's
+/// own, and extent_store's simulation of the protocol (the `testing` feature).
+#[cfg(any(test, feature = "testing"))]
+pub fn set_rules(rules: Rules) {
     RULES.with(|cell| cell.set(rules));
 }

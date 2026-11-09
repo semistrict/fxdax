@@ -3,7 +3,7 @@ id: doc-8
 title: Live read-only followers of a mounted Fxfs
 type: specification
 created_date: '2026-10-17 22:17'
-updated_date: '2026-11-06 06:41'
+updated_date: '2026-11-09 09:10'
 ---
 # Live read-only followers of a mounted Fxfs
 
@@ -387,7 +387,7 @@ turn each of the follower's rules off (`fxfs::follower::Rules`), and simulate it
 past its view, skipping changes, splitting commits), each caught.
 
 The real Fxfs, writer and follower, on one store, with many reader tasks, in one process, under
-Shuttle's scheduler, as FoundationDB and TigerBeetle test, and as crates/extent_remote/src/sim
+Shuttle's scheduler, as FoundationDB and TigerBeetle test, and as crates/extent_store/src/sim
 does for doc-7. Shuttle is the deterministic executor: our fuchsia-async (tasks, timers) and
 fuchsia-sync (locks, condition variables) get a `shuttle` feature backed by Shuttle's futures and
 primitives, so Fxfs's code runs unchanged under it.

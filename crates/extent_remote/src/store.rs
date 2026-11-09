@@ -839,7 +839,7 @@ pub(crate) mod tests {
     }
 
     /// A bucket that writes whatever it is asked to, conditions or not.
-    struct Careless(crate::sim::bucket::Direct);
+    struct Careless(crate::testing::Direct);
 
     impl Bucket for Careless {
         fn get(&self, key: &str) -> impl Future<Output = Result<Object, Error>> + Send {
@@ -883,7 +883,7 @@ pub(crate) mod tests {
     /// The probe passes a bucket that honours conditional writes, and fails one that does not.
     #[test]
     fn probes_find_buckets_without_conditional_writes() {
-        use crate::sim::bucket::{Direct, SimBucket};
+        use crate::testing::{Direct, SimBucket};
         let sim = SimBucket::new();
         futures::executor::block_on(async {
             assert_eq!(probe(&Direct(sim.clone()), 1).await, Ok(()));
@@ -1086,7 +1086,7 @@ pub(crate) mod tests {
 
     #[test]
     fn simulated_buckets_conform() {
-        let bucket = crate::sim::bucket::Direct(crate::sim::bucket::SimBucket::new());
+        let bucket = crate::testing::Direct(crate::testing::SimBucket::new());
         futures::executor::block_on(crate::bucket::conformance(&bucket, "conformance"));
     }
 

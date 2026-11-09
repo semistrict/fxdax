@@ -82,7 +82,7 @@ impl Table {
 mod tests {
     use super::*;
     use crate::bucket::{Bucket, ByteRange, Meta, Object, PutMode, Version};
-    use crate::sim::bucket::{Direct, SimBucket};
+    use crate::testing::{Direct, SimBucket};
     use std::future::Future;
     use std::sync::atomic::{AtomicU64, Ordering};
 

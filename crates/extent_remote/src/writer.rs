@@ -777,7 +777,7 @@ mod tests {
     /// while it goes, rather than all at once: the next goes as one is done.
     #[test]
     fn extents_of_their_own_upload_a_few_at_once() {
-        use crate::sim::bucket::{Fault, SimBucket};
+        use crate::testing::{Fault, SimBucket};
         use std::task::{Context, Poll};
         let bucket = SimBucket::new();
         let (writer, _) = bucket.served(async {
@@ -805,7 +805,7 @@ mod tests {
     #[test]
     fn forks_records_are_made_and_read_a_few_at_once() {
         use crate::layout::Segment;
-        use crate::sim::bucket::{Fault, SimBucket};
+        use crate::testing::{Fault, SimBucket};
         use std::task::{Context, Poll};
         let bucket = SimBucket::new();
         let (writer, _) = bucket.served(async {
@@ -888,7 +888,7 @@ mod tests {
     /// is read only as the one before is done.
     #[test]
     fn uploads_read_their_objects_within_their_budget() {
-        use crate::sim::bucket::{Fault, SimBucket};
+        use crate::testing::{Fault, SimBucket};
         use std::task::{Context, Poll};
         let bucket = SimBucket::new();
         let (writer, _) = bucket.served(async {
@@ -956,7 +956,7 @@ mod tests {
     /// round a round trip on a real bucket.
     #[test]
     fn writers_open_on_what_was_recovered_before_their_lease() {
-        use crate::sim::bucket::SimBucket;
+        use crate::testing::SimBucket;
         let bucket = SimBucket::new();
         let (first, _) = bucket.served(async {
             branch::create(&*bucket, 1, 0).await.unwrap();
@@ -1004,7 +1004,7 @@ mod tests {
     /// reading it again once its update finds it changed, at the epoch after that writer's.
     #[test]
     fn writers_open_on_a_read_of_their_lease_made_before() {
-        use crate::sim::bucket::SimBucket;
+        use crate::testing::SimBucket;
         let bucket = SimBucket::new();
         let (first, _) = bucket.served(async {
             branch::create(&*bucket, 1, 0).await.unwrap();

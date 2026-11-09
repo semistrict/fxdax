@@ -92,7 +92,7 @@ pub async fn footer<T: DeserializeOwned>(
 mod tests {
     use super::*;
     use crate::bucket::PutMode;
-    use crate::sim::bucket::{Direct, SimBucket};
+    use crate::testing::{Direct, SimBucket};
     use futures::executor::block_on;
     use std::sync::Arc;
 

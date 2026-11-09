@@ -2,12 +2,16 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-//! A bucket whose requests take effect when the simulation says: in any order, failing before or
-//! after taking effect, or after whoever made them has gone; a writer's creates of segments, if it
-//! says, only once an object at their keys was deleted.
+//! fxdax: what tests of the protocol need (the `testing` feature, TASK-88): a bucket whose requests
+//! take effect when the test says ([`SimBucket`]): in any order, failing before or after taking
+//! effect, or after whoever made them has gone; a writer's creates of segments, if it says, only
+//! once an object at their keys was deleted; and the collector's moves, which a test follows as a
+//! reader does ([`MovesMaps`]). extent_store's simulation of doc-7's protocol runs on it, as this
+//! crate's own tests do.
 
 use crate::bucket::{Bucket, ByteRange, Error, Meta, Object, PutMode, Version};
 use crate::layout::{self, Kind};
+pub use crate::moves::{Moved, MovesMaps};
 use futures::channel::oneshot;
 use std::collections::BTreeMap;
 use std::future::Future;
@@ -432,6 +436,43 @@ mod tests {
         bucket.complete(0, Fault::None);
         let version = Version { e_tag: Some("2".to_owned()), version: None };
         assert_eq!(block_on(created), Ok(version));
+    }
+
+    /// A create that lands and then fails, retried, finds its own object and succeeds; one that finds
+    /// another's does not.
+    #[test]
+    fn ambiguous_creates_are_resolved_by_reading_back() {
+        use crate::bucket::{Created, create};
+        use futures::executor::LocalPool;
+        use futures::task::LocalSpawnExt as _;
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        let sim = SimBucket::new();
+        let mut pool = LocalPool::new();
+        let results = Rc::new(RefCell::new(Vec::new()));
+        for (key, bytes) in [("ours", b"ours"), ("theirs", b"ours")] {
+            let (sim, results) = (sim.clone(), results.clone());
+            pool.spawner()
+                .spawn_local(async move {
+                    let created = create(&*sim, key, bytes.to_vec()).await;
+                    results.borrow_mut().push((key, matches!(created, Created::Created)));
+                })
+                .unwrap();
+        }
+        pool.run_until_stalled();
+        // "theirs" holds another's object before its create lands.
+        block_on(Direct(sim.clone()).put("theirs", b"theirs".to_vec(), PutMode::Create)).unwrap();
+        // The first create of each lands and fails; what follows succeeds.
+        let mut first = true;
+        while sim.waiting() > 0 {
+            sim.complete(0, if first { Fault::After } else { Fault::None });
+            first = false;
+            pool.run_until_stalled();
+        }
+        let mut results = results.borrow().clone();
+        results.sort();
+        assert_eq!(results, [("ours", true), ("theirs", false)]);
     }
 
     /// A bucket the test above reads ranges of, at once.

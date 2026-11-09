@@ -38,3 +38,10 @@ tokio = { workspace = true, features = ["test-util"] }
 
 [lints]
 workspace = true
+
+[features]
+# fxdax: what tests of the protocol outside this crate need, as its own have it: a bucket whose
+# requests take effect when the test says (`testing::SimBucket`), the collector's moves
+# (`testing::MovesMaps`), and the protocol's rules, which they may turn off (`set_rules`), as
+# extent_store's simulation does (TASK-88).
+testing = []

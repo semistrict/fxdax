@@ -3,7 +3,7 @@ id: doc-7
 title: 'Object storage: how the host keeps branches in S3 and GCS'
 type: specification
 created_date: '2026-10-17 01:31'
-updated_date: '2026-11-08 19:59'
+updated_date: '2026-11-09 09:10'
 ---
 # Object storage: how the host keeps branches in S3 and GCS
 
@@ -592,7 +592,9 @@ while none of them could still be written.
 ## Testing
 
 The protocol was settled by a simulation before the code it checks (doc-2's risk: "the reclamation
-rules need a model and tests before code"): `crates/extent_remote`, its `sim` module (TASK-28.1).
+rules need a model and tests before code"): `crates/extent_remote`, its `sim` module (TASK-28.1),
+since TASK-88 extent_store's (`crates/extent_store/src/sim`), whose hosts' stores are
+extent_store's and their uploaders `extent_store::upload`'s, on its own clock.
 
 - **The simulation** runs writers on hosts for their guests, forks, takeovers (a second writer taking
   a branch from one still running), crashes that may lose a host's disk, branch deletions, and

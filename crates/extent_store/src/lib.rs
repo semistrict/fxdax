@@ -136,6 +136,8 @@ mod mem;
 mod seals;
 mod segments;
 pub mod shared;
+#[cfg(test)]
+mod sim;
 mod state;
 mod store;
 mod sync;

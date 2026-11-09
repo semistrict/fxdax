@@ -85,22 +85,31 @@ class Mutants(unittest.TestCase):
         self.assertEqual(
             self.calls()[1],
             [
-                "-p", "extent_store", "--test-tool", "nextest", "--jobs", "3",
+                "-p", "extent_store", "--profile", "sim", "--test-tool", "nextest", "--jobs", "3",
                 "--output", str(self.out / "extent_store" / "shuttle"),
                 "--features", "shuttle", "-F", "^m1$|^m2$",
                 "--", "-E", "test(/shuttle/) | binary(shuttle)",
             ],
         )
 
-    def test_extent_remotes_mutants_build_with_the_profile_sim(self):
-        # Its simulation, optimized, as scripts/test.sh runs it (TASK-92.40); others as their
-        # tests build.
-        self.mutants({"sweep": SWEEP}, "extent_remote", "extent_frame")
+    def test_the_simulations_crates_mutants_build_with_the_profile_sim(self):
+        # The simulation, optimized, as scripts/test.sh runs it (TASK-92.40), extent_store's,
+        # which extent_remote's mutants run too (TASK-88); others as their tests build.
+        self.mutants({"sweep": SWEEP}, "extent_remote", "extent_store", "extent_frame")
         self.assertEqual(
-            [call[:4] for call in self.calls()],
+            [call[:8] for call in self.calls()],
             [
-                ["-p", "extent_remote", "--profile", "sim"],
-                ["-p", "extent_frame", "--test-tool", "nextest"],
+                [
+                    "-p", "extent_remote", "--profile", "sim",
+                    "--test-package", "extent_remote", "--test-package", "extent_store",
+                ],
+                ["-p", "extent_store", "--profile", "sim", "--test-tool", "nextest", "--jobs", "3"],
+                # Its missed, under Shuttle.
+                ["-p", "extent_store", "--profile", "sim", "--test-tool", "nextest", "--jobs", "3"],
+                [
+                    "-p", "extent_frame", "--test-tool", "nextest", "--jobs", "3",
+                    "--output", str(self.out / "extent_frame"),
+                ],
             ],
         )
 

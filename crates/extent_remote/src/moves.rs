@@ -17,7 +17,7 @@ use storage_device::ExtentId;
 pub(crate) const MOVES: usize = 64;
 
 /// Whether the collector moved an extent when it compacted the object holding it.
-pub(crate) enum Moved {
+pub enum Moved {
     /// It did not compact the object.
     No,
     To(Location),
@@ -27,7 +27,7 @@ pub(crate) enum Moved {
 
 /// The maps of compacted objects' moves, each read once.
 #[derive(Default)]
-pub(crate) struct MovesMaps {
+pub struct MovesMaps {
     maps: HashMap<String, Option<BTreeMap<ExtentId, Location>>>,
 }
 

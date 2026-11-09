@@ -3,24 +3,24 @@
 // found in the LICENSE file.
 
 //! A deterministic simulation of branches in object storage (TASK-28.1): doc-7's protocol run by
-//! writers, forks, takeovers, deletions and collectors over a bucket that delays, reorders and
-//! fails requests, checked after every step against what each branch's guests did and were told,
-//! every object a branch's acknowledged segments name there, and what its live writer names of its
-//! guest's read back (TASK-149.32);
-//! and, once everything stops, for garbage left behind, and for tasks still waiting: an upload, an
-//! acknowledgement or anything else nothing will wake. A host's writers upload within one budget,
-//! a few PUTs at once, so that uploads wait for each other. `crates/extent_remote/mutants.sh` puts
+//! hosts' stores, this crate's, and their uploaders (`upload`), writing, committing, forking,
+//! taken over and crashing, and by deletions and collectors, over a bucket that delays, reorders
+//! and fails requests (TASK-88: extent_remote's until then, whose writers made their segments
+//! with `Batch`, so that the store's choice of what a segment seals, frees and forks never met a
+//! takeover or a collector), checked after every step against what each branch's guests did and
+//! were told, every object a branch's acknowledged segments name there, and what its live writer
+//! and its store name of its guest's read back (TASK-149.32, TASK-195); and, once everything
+//! stops, for garbage left behind, for tasks still waiting, a checkpoint, a deletion or anything
+//! else nothing will wake, and for uploaders that upload no more what they are asked to. A host's
+//! writers upload within one budget, a few PUTs at once, so that uploads wait for each other. `crates/extent_remote/mutants.sh` puts
 //! back a bug of each kind, and sees a test fail.
 //!
 //! Each case doc-7 lists is a profile that makes it likely, run over many seeds; each rule of the
 //! protocol has a test that turns it off and expects some seed to find the violation it prevents.
 
-pub(crate) mod bucket;
 mod world;
 
-use bucket::Direct;
-
-use crate::{Rules, set_rules};
+use extent_remote::{Rules, set_rules};
 use std::ops::Range;
 use world::{Profile, Weights, World};
 
@@ -154,6 +154,7 @@ fn one() {
         "deleted_forking" => deleted_forking(),
         "wals" => wals(),
         "forked_wals" => forked_wals(),
+        "late_checkpoints" => late_checkpoints(),
         other => panic!("no profile {other}"),
     };
     let count = std::env::var("SIM_SEEDS").map_or(1, |count| count.parse().unwrap());
@@ -313,9 +314,34 @@ test_holds!(stale_creates_landing_past_deletions, recreated());
 
 test_needs!(stale_creates_need_reads_by_footers, footers, recreated());
 
+/// Writers checkpointing often, taken over with their checkpoints in flight, which land late, past
+/// where the next writer recovered from, while collectors compact what the checkpoints name and
+/// delete what they cover (TASK-175).
+fn late_checkpoints() -> Profile {
+    let mut profile = weights(|weights| {
+        weights.complete = 80;
+        weights.write = 2;
+        weights.commit = 6;
+        weights.close = 6;
+        weights.checkpoint = 12;
+        weights.takeover = 12;
+        weights.open = 2;
+        weights.crash = 0;
+        weights.delete = 0;
+        weights.fork = 0;
+        weights.collect = 12;
+        weights.tick = 8;
+    });
+    profile.options.compact_below = 0.9;
+    profile.options.grace = 1;
+    profile
+}
+
+test_holds!(late_checkpoints_landing_past_takeovers, late_checkpoints());
+
 // A writer taken over checkpointing late, past where the next one recovered from, the collector
 // having moved what that names (TASK-175).
-test_needs!(late_checkpoints_need_ways_from_seals, ways_from_seals, recreated());
+test_needs!(late_checkpoints_need_ways_from_seals, ways_from_seals, late_checkpoints());
 
 /// Takeovers while collectors run: an extent of the writer taken over, uploaded, its segment not
 /// yet.
@@ -337,6 +363,15 @@ test_needs!(takeovers_need_orphans_after_successors, orphans_after_successor, ta
 
 // Case 10: extents minted after a takeover.
 test_needs!(takeovers_need_epoch_sequences, epoch_sequences, takeovers());
+
+// An extent stored on its own, uploaded before the segment naming it, which the store's footer
+// closed between commits covers by its next sequence number: the collector deleting it by that
+// loses it once the segment lands (TASK-79.3), which only the stores' own footers reach (TASK-88).
+test_needs!(
+    collection_needs_extent_keys_naming_segments,
+    extent_keys_name_segments,
+    Profile::default()
+);
 
 /// Case 5: crashes between a segment's upload and the next, and between a fork and its child's
 /// record. Case 6: frees in commits never made durable.
@@ -547,50 +582,7 @@ fn recovering() -> Profile {
 
 test_holds!(recoveries_racing_collection, recovering());
 
-// Of 40,000 seeds: since a writer reads its branch's record, recovers it and lists its segments
-// at once once it holds the lease (TASK-165.11), the first that finds the case is 33,630.
-test_needs!(recoveries_need_newest_checkpoints, newest_checkpoint, takeovers(), 0..40_000);
-
-/// A create that lands and then fails, retried, finds its own object and succeeds; one that finds
-/// another's does not.
-#[test]
-fn ambiguous_creates_are_resolved_by_reading_back() {
-    use crate::bucket::{Created, create};
-    use bucket::{Fault, SimBucket};
-    use futures::executor::LocalPool;
-    use futures::task::LocalSpawnExt as _;
-    use std::cell::RefCell;
-    use std::rc::Rc;
-
-    let sim = SimBucket::new();
-    let mut pool = LocalPool::new();
-    let results = Rc::new(RefCell::new(Vec::new()));
-    for (key, bytes) in [("ours", b"ours"), ("theirs", b"ours")] {
-        let (sim, results) = (sim.clone(), results.clone());
-        pool.spawner()
-            .spawn_local(async move {
-                let created = create(&*sim, key, bytes.to_vec()).await;
-                results.borrow_mut().push((key, matches!(created, Created::Created)));
-            })
-            .unwrap();
-    }
-    pool.run_until_stalled();
-    // "theirs" holds another's object before its create lands.
-    futures::executor::block_on(crate::bucket::Bucket::put(
-        &Direct(sim.clone()),
-        "theirs",
-        b"theirs".to_vec(),
-        crate::bucket::PutMode::Create,
-    ))
-    .unwrap();
-    // The first create of each lands and fails; what follows succeeds.
-    let mut first = true;
-    while sim.waiting() > 0 {
-        sim.complete(0, if first { Fault::After } else { Fault::None });
-        first = false;
-        pool.run_until_stalled();
-    }
-    let mut results = results.borrow().clone();
-    results.sort();
-    assert_eq!(results, [("ours", true), ("theirs", false)]);
-}
+// Writers recovering as checkpoints land and collectors delete what they cover: with the stores'
+// own segments (TASK-88), no seed of 40,000 of `takeovers` finds the case, nor of 4,000 of
+// `recovering` or `everything`, which seed 1,389 of `recreated` does, a writer's extent lost.
+test_needs!(recoveries_need_newest_checkpoints, newest_checkpoint, recreated());

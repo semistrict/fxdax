@@ -121,8 +121,8 @@ pub trait Bucket: Send + Sync + 'static {
     }
 }
 
-/// The object at `key`, if any.
-pub(crate) async fn get(bucket: &impl Bucket, key: &str) -> Option<Object> {
+/// The object at `key`, if any, its reads retried while they fail.
+pub async fn get(bucket: &impl Bucket, key: &str) -> Option<Object> {
     let mut failures = 0;
     loop {
         match bucket.get(key).await {

@@ -35,7 +35,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # The workspace's suite, a quarter of an hour of tests; extent_remote's simulation, whose
+        # The workspace's suite, a quarter of an hour of tests; the simulation of the bucket's
+        # protocol, extent_store's (TASK-88), whose
         # seed searches took most of an hour in the suite's unoptimized build, an optimized build of
         # its own (TASK-188); the Shuttle suites, each built with its crate's feature, a build of
         # their own; the guest tests' own, a workspace of their own; the Go client, its generated

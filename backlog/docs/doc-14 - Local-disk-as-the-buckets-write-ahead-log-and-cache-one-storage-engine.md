@@ -3,7 +3,7 @@ id: doc-14
 title: 'Local disk as the bucket''s write-ahead log and cache: one storage engine'
 type: specification
 created_date: '2026-11-05 03:13'
-updated_date: '2026-11-07 17:47'
+updated_date: '2026-11-09 09:10'
 ---
 # Local disk as the bucket's write-ahead log and cache: one storage engine
 
@@ -344,7 +344,9 @@ No migration: nothing uses fxdax yet (AGENTS.md).
 runs against `memory:///`, `file:///`, the simulation's `Direct`, and, ignored without their
 servers, RustFS and Azurite.
 
-**The simulation** (`extent_remote/src/sim`) is where the protocol's interleavings are searched.
+**The simulation** (`extent_remote/src/sim`, since TASK-88 `extent_store/src/sim`, its hosts'
+stores extent_store's over directories in memory and their uploaders the store's own, run on the
+simulation's clock) is where the protocol's interleavings are searched.
 Its hosts' disks become WALs of stamped segments, and every open on a host with one runs the
 production `wal::rebase`, not the simulation's own re-batching (`World::opened`): the host's side
 of the seam is then in the simulation. Two rules join `Rules`, each shown needed by a seed:

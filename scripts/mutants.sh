@@ -27,11 +27,12 @@
 # missed.
 # FXDAX_MUTANTS_LIST names a file of mutants, one a line as `cargo mutants --list`
 # names them, to run alone: a sweep's survivors, again, once tests for them came.
-# extent_remote's mutants build with the profile sim (Cargo.toml: release with debug
-# assertions), as scripts/test.sh builds its simulation: its baseline took 155 s against
-# 854 s unoptimized, its timeout 595 s against 4,170 s, and 16 mutants 639 s against
-# 1,211 s; a mutant its tests catch at once takes 20 s against 7, building optimized
-# (TASK-92.40). The other crates' build as their tests do.
+# extent_remote's and extent_store's mutants build with the profile sim (Cargo.toml: release
+# with debug assertions), as scripts/test.sh builds the simulation, extent_store's: its baseline
+# took 155 s against 854 s unoptimized, its timeout 595 s against 4,170 s, and 16 mutants 639 s
+# against 1,211 s; a mutant its tests catch at once takes 20 s against 7, building optimized
+# (TASK-92.40). extent_remote's run extent_store's tests too, the simulation of its protocol
+# among them (TASK-88). The other crates' build as their tests do.
 set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 crates=("$@")
@@ -78,11 +79,17 @@ print("|".join("^" + re.escape(line.strip()) + "$" for line in open(sys.argv[1])
 # one that failed may have left no report, as cargo-mutants moves an earlier run's aside only once
 # it has found the mutants, or one of some of them. It succeeds if the pass finished.
 pass() {
-    local line=$1 output=$2 ended=0 profile=()
+    local line=$1 output=$2 ended=0 profile=() tests=()
     shift 2
-    if [[ $crate == extent_remote ]]; then profile=(--profile sim); fi
-    cargo mutants -p "$crate" ${profile[@]+"${profile[@]}"} --test-tool nextest --jobs "$jobs" \
-        --output "$output" "$@" || ended=$?
+    case $crate in
+        extent_remote)
+            profile=(--profile sim)
+            tests=(--test-package extent_remote --test-package extent_store)
+            ;;
+        extent_store) profile=(--profile sim) ;;
+    esac
+    cargo mutants -p "$crate" ${profile[@]+"${profile[@]}"} ${tests[@]+"${tests[@]}"} \
+        --test-tool nextest --jobs "$jobs" --output "$output" "$@" || ended=$?
     if ! finished "$ended"; then
         echo "$line: failed with status $ended"
         return 1

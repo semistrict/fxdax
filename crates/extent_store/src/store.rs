@@ -306,7 +306,8 @@ impl<D: Dir> Write<'_, D> {
         // fxdax: what was written to the open segment, its writing back begun once a MiB or more
         // waits, and waited for once more than WRITTEN_BEHIND_MOST is begun: holding no lock
         // (TASK-221). Failing, it is the flush's sync that fails.
-        let Some(Behind { raw, begin: (offset, len), wait }) = self.store.finish_write(&self) else {
+        let Some(Behind { raw, begin: (offset, len), wait }) = self.store.finish_write(&self)
+        else {
             return;
         };
         if let Err(err) = raw.write_behind(offset, len) {
@@ -451,13 +452,20 @@ impl<D: Dir> Recovering<D> {
 
     /// Drops its write-ahead log, the commits it holds never acknowledged lost: what `fxdaxctl
     /// take` does of a store whose log diverged (doc-14, Opening a store). Its base goes with it:
-    /// an empty log follows any branch.
+    /// an empty log follows any branch. Durably, before the store opens past it: a crash after
+    /// brings none of it back, whose commits the branch moved on from, to upload after the store's
+    /// own since (TASK-295).
     pub fn drop_wal(&mut self) -> Result<(), Error> {
         let dir = &*self.dir;
+        let branch = self.file.branch;
         for (footer, number) in std::mem::take(&mut self.wal.segments) {
-            let segment = SegmentId { branch: self.file.branch, number };
+            let segment = SegmentId { branch, number };
             self.remove_files([segment_path(segment)], &footer);
         }
+        for kind in [SEGMENTS, EXTENTS] {
+            dir.sync_dir(&branch_dir(kind, branch))?;
+        }
+        self.wal.base_file.write(dir, None)?;
         dir.barrier()?;
         self.wal.base = None;
         Ok(())

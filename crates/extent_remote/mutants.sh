@@ -3,10 +3,10 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 #
-# Puts each of mutants/*.patch into the tree, a bug of a kind extent_remote's simulation exists to
-# find (TASK-149.32: an object an acknowledged segment names gone, an upload never woken), runs the
-# simulation's test its header names (`# Killer: TEST`, built with the profile sim, as scripts/test.sh's
-# sim part builds it) against it, and takes it out: killed if the test fails, MISSED if it passes,
+# Puts each of mutants/*.patch into the tree, a bug of a kind the simulation of extent_remote's
+# protocol exists to find (TASK-149.32: an object an acknowledged segment names gone, an upload never
+# woken), runs the simulation's test its header names (`# Killer: TEST`, extent_store's, TASK-88,
+# built with the profile sim, as scripts/test.sh's sim part builds it) against it, and takes it out: killed if the test fails, MISSED if it passes,
 # BROKEN if the patch doesn't apply or the tree doesn't build. This fails unless each is killed.
 #
 #   mutants.sh [--check] [NAME...]
@@ -83,7 +83,7 @@ for name in "${names[@]}"; do
     patch -s -F0 -p1 < "$patch"
     log=$logs/$name.log
     began=$SECONDS
-    cargo nextest run --cargo-profile sim -p extent_remote --no-fail-fast -E "test(=$killer)" \
+    cargo nextest run --cargo-profile sim -p extent_store --no-fail-fast -E "test(=$killer)" \
         > "$log" 2>&1
     status=$?
     patch -s -F0 -R -p1 < "$patch" || { echo "$name: its patch doesn't reverse: the tree has it" >&2; exit 1; }

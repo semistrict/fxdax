@@ -861,8 +861,8 @@ mod tests {
     use crate::batch::{Batch, Commit};
     use crate::bucket::{ByteRange, Created, Error as BucketError, Object, PutMode, Version};
     use crate::layout::{Child, child};
-    use crate::sim::bucket::{Direct, SimBucket};
     use crate::store::Store;
+    use crate::testing::{Direct, SimBucket};
     use crate::writer::Writer;
     use futures::FutureExt as _;
     use futures::executor::block_on;

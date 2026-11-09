@@ -545,7 +545,7 @@ pub async fn delete_fork(
 mod tests {
     use super::*;
     use crate::layout::child;
-    use crate::sim::bucket::{Direct, SimBucket};
+    use crate::testing::{Direct, SimBucket};
     use futures::executor::block_on;
 
     /// TASK-79.82: a fork's child is deleted only if its branch is the fork's: one with no record,

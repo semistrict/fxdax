@@ -1130,9 +1130,7 @@ fn writes_are_written_back_as_they_go() {
 /// fxdax: the framing of segment 0, which the commit after `store`'s first closes, held where its
 /// framed file is created, not yet written, until the returned sender says go or drops: its
 /// framing begun once this returns.
-fn framing_held(
-    store: &Store<MemDir>,
-) -> (std::sync::mpsc::Sender<()>, fail::FailGuard) {
+fn framing_held(store: &Store<MemDir>) -> (std::sync::mpsc::Sender<()>, fail::FailGuard) {
     use std::sync::Mutex;
     use std::sync::mpsc::channel;
     store.write(extent(1), 0, &pattern(1, 0, BLOCK)).unwrap();
@@ -1523,7 +1521,8 @@ fn durable_commits_keep_the_open_segments_pages_cached_on_the_host() {
         store.commit(None).unwrap();
     }
     let path = |kind| temp.path().join(of(kind, BRANCH)).join(format!("{:016x}", 0));
-    let (written, cached) = ((8 * BLOCK).div_ceil(page_size()), cached_pages(&path("open-segments")));
+    let (written, cached) =
+        ((8 * BLOCK).div_ceil(page_size()), cached_pages(&path("open-segments")));
     assert!(cached > written / 2, "{cached} of the open segment's {written} pages cached");
     store.close_segment().unwrap();
     store.commit(None).unwrap();
@@ -2735,4 +2734,32 @@ fn stores_tell_their_own_bytes_from_those_inherited() {
     assert_eq!(bytes(&store), (block, 3 * block));
     drop(store);
     assert_eq!(bytes(&opened_on(dir, state, WRITER)), (block, 3 * block));
+}
+
+/// TASK-295: a write-ahead log dropped, as `fxdaxctl take` drops one another writer's commits
+/// moved the branch on from, stays dropped whatever a crash after it keeps: the store's branch is
+/// what it committed since, and none of the log's.
+#[test]
+fn a_dropped_log_stays_dropped_through_a_crash() {
+    for seed in 0..64 {
+        let dir = MemDir::new();
+        let store = create(dir.clone(), 64 << 20);
+        for sequence in 1..=2 {
+            store.write(extent(sequence), 0, &pattern(sequence as u8, 0, BLOCK)).unwrap();
+            store.close_segment().unwrap();
+            store.commit(None).unwrap();
+        }
+        drop(store);
+        let mut recovering = Store::recover(dir.clone()).unwrap();
+        recovering.drop_wal().unwrap();
+        // Its commit in its open segment: no segment framed since, whose directory's sync would
+        // make the drop's removals durable too.
+        let store = recovering.open(OPTIONS, Opening::new(BRANCH)).unwrap();
+        store.write(extent(3), 0, &pattern(3, 0, BLOCK)).unwrap();
+        store.commit(None).unwrap();
+        let crashed = dir.crash(seed);
+        drop(store);
+        let reopened = Store::open(crashed, OPTIONS).unwrap();
+        assert_eq!(reopened.extents().unwrap(), [(extent(3), BLOCK as u64)], "seed {seed}");
+    }
 }

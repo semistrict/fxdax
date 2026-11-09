@@ -3,7 +3,7 @@ id: doc-15
 title: 'What the tests exclude, and why'
 type: specification
 created_date: '2026-11-07 13:38'
-updated_date: '2026-11-07 20:19'
+updated_date: '2026-11-09 09:10'
 ---
 # What the tests exclude, and why (TASK-149.20, 2026-11-07)
 
@@ -16,7 +16,7 @@ Verdicts: **kept** (still justified, reason named), **fixed** (stale: runs again
 | Test | Why | Verdict |
 |---|---|---|
 | extent_remote `bench_passes_over_many_forks`, `bench_reads_while_parts_are_kept`, `bench_sequential_reads`, `bench_reads_of_the_cache_on_a_runtime`, `bench_reads_of_parts_in_memory_by_a_hosts_fetchers`, `client_throughput`; fxdax `bench_sustained_uploads`; extent_frame `bench_checking_parts`; extent_store `hot_paths`; fxfs `layer_read_cost` | Benchmarks: run alone, some in release, with `--run-ignored only` | kept; each now `#[ignore = "a benchmark (TASK-…)…"]` |
-| extent_remote `sim::one` | Debugs one seed (`SIM_SEED`); the sim part runs the soaks and searches | kept, reason added |
+| extent_store `sim::one` (extent_remote's until TASK-88) | Debugs one seed (`SIM_SEED`); the sim part runs the soaks and searches | kept, reason added |
 | extent_remote `store::tests::rustfs`, fxdax `rustfs_branches_survive_their_hosts_loss`, `rustfs_forks_and_takes_branches`, `rustfs_places_and_syncs_stores` | Need an S3 server | kept, reason added; **fixed**: nothing ran them. `rustfs_places_and_syncs_stores` failed: a real bug, `fxdaxctl take DIR CAP BRANCH TOKEN` of a new copy took the branch's lease with the host's token before the placement's, so a later placement couldn't take a branch over (`ESTALE`); fixed in `ExtentStore::take_with`. The two branch tests now also run in every suite run on a file bucket; CI's new object-stores job runs the S3 ones against RustFS 1.0.4 in a container (scripts/test-rustfs.sh, which ran `scripts/test.sh` with `--run-ignored only`, every part, and needed a RustFS built from source) |
 | extent_remote `store::tests::azurite` | Needs Azurite | kept, reason added; **fixed**: CI's object-stores job runs it (scripts/test-azurite.sh, which took a podman installed but not running, and whose readiness probe gave up on an empty reply) |
 | extent_remote `store::tests::gcs` | Needs a GCS bucket and credentials | kept, reason added; **filed** TASK-149.20.5 (runs nowhere) |
@@ -27,7 +27,7 @@ Verdicts: **kept** (still justified, reason named), **fixed** (stale: runs again
 
 | What | Why | Verdict |
 |---|---|---|
-| scripts/test.sh workspace part `-E "not (package(extent_remote) & test(/^sim::/))"` | The simulation is a part of its own, optimized (TASK-188) | kept |
+| scripts/test.sh workspace part `-E "not (package(extent_store) & test(/^sim::/))"` | The simulation is a part of its own, optimized (TASK-188) | kept |
 | firecracker part `-E 'test(/extent::/) \| test(/vcpu::tests::(efaults_\|test_exit_code_)/)'` | The VMM's tests fxdax adds to; the rest are upstream's, some need KVM | kept |
 | shuttle part: extent_store, physmem, fxdax, follower, follower_sim | Every crate whose Shuttle tests exist; fuchsia-async, fuchsia-sync and fxfs have the feature as plumbing alone | kept |
 | hunt.yml's `-E` filters | Hunting jobs aim at the model and corrupt tests, and one test's seeds | kept |

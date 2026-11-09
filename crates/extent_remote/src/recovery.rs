@@ -731,8 +731,8 @@ mod tests {
     use crate::batch::{Batch, Commit};
     use crate::branch;
     use crate::layout::{Child, child};
-    use crate::sim::bucket::SimBucket;
     use crate::store::Store;
+    use crate::testing::SimBucket;
     use crate::writer::Writer;
     use object_store::memory::InMemory;
     use std::sync::Arc;

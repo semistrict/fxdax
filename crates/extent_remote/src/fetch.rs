@@ -936,7 +936,7 @@ mod tests {
     use crate::bucket::PutMode;
     use crate::layout::{self, Frame, Moves};
     use crate::object::TAIL;
-    use crate::sim::bucket::{Direct, Fault, SimBucket};
+    use crate::testing::{Direct, Fault, SimBucket};
     use futures::executor::{LocalPool, block_on};
     use futures::task::LocalSpawnExt as _;
     use std::cell::RefCell;
