@@ -1,0 +1,384 @@
+# By thread
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 170K of event 'cpu-clock:ppp'
+# Event count (approx.): 170845845675
+#
+# Overhead  Command        
+# ........  ...............
+#
+    78.73%  swapper        
+     3.24%  extentd io     
+     2.36%  fxdax remote   
+     0.83%  extentd client 
+     0.63%  mkfs.ext4      
+     0.55%  fc_vcpu 1      
+     0.52%  fc_vcpu 2      
+     0.51%  fc_vcpu 0      
+     0.50%  fc_vcpu 3      
+     0.19%  physmap populat
+     0.12%  fc_extent_q2   
+     0.11%  fc_extent_q3   
+     0.11%  fc_extent_q1   
+     0.10%  fc_extent_q0   
+     0.09%  dax faults     
+     0.07%  fxdax pager    
+
+
+#
+# (Cannot load tips.txt file, please install perf!)
+#
+# By thread and symbol
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 170K of event 'cpu-clock:ppp'
+# Event count (approx.): 170845845675
+#
+# Overhead  Command          Shared Object             Symbol                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            
+# ........  ...............  ........................  ..................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................
+#
+    78.21%  swapper          [kernel.kallsyms]         [k] pv_native_safe_halt
+     1.04%  extentd io       fxdax-extentd             [.] ZSTD_compressBlock_fast
+     0.32%  extentd client   [kernel.kallsyms]         [k] smp_call_function_many_cond
+     0.30%  swapper          [kernel.kallsyms]         [k] finish_task_switch.isra.0
+     0.27%  fxdax remote     libc.so.6                 [.] 0x00000000001bc512
+     0.25%  extentd io       fxdax-extentd             [.] HUF_compress1X_usingCTable_internal_bmi2
+     0.23%  extentd io       fxdax-extentd             [.] HIST_count_parallel_wksp
+     0.20%  fxdax remote     [kernel.kallsyms]         [k] _raw_spin_unlock_irqrestore
+
+
+#
+# (Cannot load tips.txt file, please install perf!)
+#
+# Call graphs of the symbols over 1%, callers first
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 170K of event 'cpu-clock:ppp'
+# Event count (approx.): 170845845675
+#
+# Children      Self  Symbol                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            
+# ........  ........  ..................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................
+#
+    78.73%     0.00%  [.] common_startup_64
+    78.72%     0.00%  [.] cpu_startup_entry
+            |          
+            |--68.29%--start_secondary
+            |          common_startup_64
+            |          
+             --10.44%--rest_init
+                       start_kernel
+                       x86_64_start_reservations
+                       x86_64_start_kernel
+                       common_startup_64
+
+    78.72%     0.01%  [.] do_idle
+            |          
+             --78.72%--cpu_startup_entry
+                       |          
+                       |--68.28%--start_secondary
+                       |          common_startup_64
+                       |          
+                        --10.44%--rest_init
+                                  start_kernel
+                                  x86_64_start_reservations
+                                  x86_64_start_kernel
+                                  common_startup_64
+
+    78.37%     0.01%  [.] cpuidle_idle_call
+            |
+            ---do_idle
+               cpu_startup_entry
+               |          
+               |--67.98%--start_secondary
+               |          common_startup_64
+               |          
+                --10.39%--rest_init
+                          start_kernel
+                          x86_64_start_reservations
+                          x86_64_start_kernel
+                          common_startup_64
+
+    78.36%     0.01%  [.] default_idle_call
+            |
+            ---cpuidle_idle_call
+               do_idle
+               cpu_startup_entry
+               |          
+               |--67.97%--start_secondary
+               |          common_startup_64
+               |          
+                --10.39%--rest_init
+                          start_kernel
+                          x86_64_start_reservations
+                          x86_64_start_kernel
+                          common_startup_64
+
+    78.35%     0.00%  [.] arch_cpu_idle
+            |
+            ---default_idle_call
+               cpuidle_idle_call
+               do_idle
+               cpu_startup_entry
+               |          
+               |--67.96%--start_secondary
+               |          common_startup_64
+               |          
+                --10.39%--rest_init
+                          start_kernel
+                          x86_64_start_reservations
+                          x86_64_start_kernel
+                          common_startup_64
+
+    78.35%    78.21%  [k] pv_native_safe_halt
+            |
+            ---arch_cpu_idle
+               default_idle_call
+               cpuidle_idle_call
+               do_idle
+               cpu_startup_entry
+               |          
+               |--67.96%--start_secondary
+               |          common_startup_64
+               |          
+                --10.39%--rest_init
+                          start_kernel
+                          x86_64_start_reservations
+                          x86_64_start_kernel
+                          common_startup_64
+
+    68.29%     0.00%  [.] start_secondary
+            |
+            ---common_startup_64
+
+    10.44%     0.00%  [.] x86_64_start_kernel
+            |
+            ---common_startup_64
+
+    10.44%     0.00%  [.] x86_64_start_reservations
+            |
+            ---x86_64_start_kernel
+               common_startup_64
+
+    10.44%     0.00%  [.] start_kernel
+            |
+            ---x86_64_start_reservations
+               x86_64_start_kernel
+               common_startup_64
+
+    10.44%     0.00%  [.] rest_init
+            |
+            ---start_kernel
+               x86_64_start_reservations
+               x86_64_start_kernel
+               common_startup_64
+
+     5.44%     0.00%  [.] entry_SYSCALL_64_after_hwframe
+            |          
+            |--2.19%--ioctl
+            |          |          
+            |           --2.07%--<vmm::vstate::vcpu::Vcpu>::running
+            |                     std::sys::backtrace::__rust_begin_short_backtrace::<<vmm::vstate::vcpu::Vcpu>::start_threaded::{closure#0}, ()>
+            |                     <std::thread::lifecycle::spawn_unchecked<<vmm::vstate::vcpu::Vcpu>::start_threaded::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+            |                     <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+            |                     <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+            |                     <std::sys::thread::unix::Thread>::new::thread_start
+            |                     start
+            |          
+             --1.24%--0x771a36ab4792
+
+     5.44%     0.05%  [.] do_syscall_64
+            |
+            ---entry_SYSCALL_64_after_hwframe
+               |          
+               |--2.19%--ioctl
+               |          |          
+               |           --2.07%--<vmm::vstate::vcpu::Vcpu>::running
+               |                     std::sys::backtrace::__rust_begin_short_backtrace::<<vmm::vstate::vcpu::Vcpu>::start_threaded::{closure#0}, ()>
+               |                     <std::thread::lifecycle::spawn_unchecked<<vmm::vstate::vcpu::Vcpu>::start_threaded::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               |                     <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+               |                     <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+               |                     <std::sys::thread::unix::Thread>::new::thread_start
+               |                     start
+               |          
+                --1.24%--0x771a36ab4792
+
+     5.35%     0.01%  [.] x64_sys_call
+            |          
+             --5.35%--do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       |          
+                       |--2.18%--ioctl
+                       |          |          
+                       |           --2.06%--<vmm::vstate::vcpu::Vcpu>::running
+                       |                     std::sys::backtrace::__rust_begin_short_backtrace::<<vmm::vstate::vcpu::Vcpu>::start_threaded::{closure#0}, ()>
+                       |                     <std::thread::lifecycle::spawn_unchecked<<vmm::vstate::vcpu::Vcpu>::start_threaded::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                       |                     <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+                       |                     <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+                       |                     <std::sys::thread::unix::Thread>::new::thread_start
+                       |                     start
+                       |          
+                        --1.23%--0x771a36ab4792
+
+     3.21%     0.00%  [.] start
+     3.21%     0.00%  [.] <std::sys::thread::unix::Thread>::new::thread_start
+            |
+            ---start
+
+     3.21%     0.00%  [.] <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+            |
+            ---<std::sys::thread::unix::Thread>::new::thread_start
+               start
+
+     3.21%     0.00%  [.] <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+            |
+            ---<alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+               <std::sys::thread::unix::Thread>::new::thread_start
+               start
+
+     2.21%     0.02%  [.] ioctl
+            |          
+             --2.08%--<vmm::vstate::vcpu::Vcpu>::running
+                       std::sys::backtrace::__rust_begin_short_backtrace::<<vmm::vstate::vcpu::Vcpu>::start_threaded::{closure#0}, ()>
+                       <std::thread::lifecycle::spawn_unchecked<<vmm::vstate::vcpu::Vcpu>::start_threaded::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                       <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+                       <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+                       <std::sys::thread::unix::Thread>::new::thread_start
+                       start
+
+     2.18%     0.00%  [.] __x64_sys_ioctl
+            |
+            ---x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               ioctl
+               |          
+                --2.06%--<vmm::vstate::vcpu::Vcpu>::running
+                          std::sys::backtrace::__rust_begin_short_backtrace::<<vmm::vstate::vcpu::Vcpu>::start_threaded::{closure#0}, ()>
+                          <std::thread::lifecycle::spawn_unchecked<<vmm::vstate::vcpu::Vcpu>::start_threaded::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                          <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+                          <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+                          <std::sys::thread::unix::Thread>::new::thread_start
+                          start
+
+     2.13%     0.00%  [.] kvm_vcpu_ioctl
+            |          
+             --2.13%--__x64_sys_ioctl
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       ioctl
+                       |          
+                        --2.06%--<vmm::vstate::vcpu::Vcpu>::running
+                                  std::sys::backtrace::__rust_begin_short_backtrace::<<vmm::vstate::vcpu::Vcpu>::start_threaded::{closure#0}, ()>
+                                  <std::thread::lifecycle::spawn_unchecked<<vmm::vstate::vcpu::Vcpu>::start_threaded::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                                  <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+                                  <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+                                  <std::sys::thread::unix::Thread>::new::thread_start
+                                  start
+
+     2.09%     0.00%  [.] <std::thread::lifecycle::spawn_unchecked<<vmm::vstate::vcpu::Vcpu>::start_threaded::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+            |
+            ---<alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+               <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+               <std::sys::thread::unix::Thread>::new::thread_start
+               start
+
+     2.09%     0.00%  [.] std::sys::backtrace::__rust_begin_short_backtrace::<<vmm::vstate::vcpu::Vcpu>::start_threaded::{closure#0}, ()>
+            |
+            ---<std::thread::lifecycle::spawn_unchecked<<vmm::vstate::vcpu::Vcpu>::start_threaded::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+               <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+               <std::sys::thread::unix::Thread>::new::thread_start
+               start
+
+     2.09%     0.00%  [.] <vmm::vstate::vcpu::Vcpu>::running
+            |
+            ---std::sys::backtrace::__rust_begin_short_backtrace::<<vmm::vstate::vcpu::Vcpu>::start_threaded::{closure#0}, ()>
+               <std::thread::lifecycle::spawn_unchecked<<vmm::vstate::vcpu::Vcpu>::start_threaded::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+               <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+               <std::sys::thread::unix::Thread>::new::thread_start
+               start
+
+     2.06%     0.00%  [.] kvm_arch_vcpu_ioctl_run
+            |
+            ---kvm_vcpu_ioctl
+               __x64_sys_ioctl
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               ioctl
+               <vmm::vstate::vcpu::Vcpu>::running
+               std::sys::backtrace::__rust_begin_short_backtrace::<<vmm::vstate::vcpu::Vcpu>::start_threaded::{closure#0}, ()>
+               <std::thread::lifecycle::spawn_unchecked<<vmm::vstate::vcpu::Vcpu>::start_threaded::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+               <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+               <std::sys::thread::unix::Thread>::new::thread_start
+               start
+
+     2.06%     0.01%  [.] vcpu_run
+            |
+            ---kvm_arch_vcpu_ioctl_run
+               kvm_vcpu_ioctl
+               __x64_sys_ioctl
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               ioctl
+               <vmm::vstate::vcpu::Vcpu>::running
+               std::sys::backtrace::__rust_begin_short_backtrace::<<vmm::vstate::vcpu::Vcpu>::start_threaded::{closure#0}, ()>
+               <std::thread::lifecycle::spawn_unchecked<<vmm::vstate::vcpu::Vcpu>::start_threaded::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+               <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+               <std::sys::thread::unix::Thread>::new::thread_start
+               start
+
+     1.26%     0.00%  [.] 0x0000771a36ab4792
+     1.21%     0.16%  [.] kvm_vcpu_halt
+            |
+            ---vcpu_run
+               kvm_arch_vcpu_ioctl_run
+               kvm_vcpu_ioctl
+               __x64_sys_ioctl
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               ioctl
+               <vmm::vstate::vcpu::Vcpu>::running
+               std::sys::backtrace::__rust_begin_short_backtrace::<<vmm::vstate::vcpu::Vcpu>::start_threaded::{closure#0}, ()>
+               <std::thread::lifecycle::spawn_unchecked<<vmm::vstate::vcpu::Vcpu>::start_threaded::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+               <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+               <std::sys::thread::unix::Thread>::new::thread_start
+               start
+
+     1.13%     0.00%  [.] <std::thread::lifecycle::spawn_unchecked<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+            |
+            ---<alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+               <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+               <std::sys::thread::unix::Thread>::new::thread_start
+               start
+
+     1.13%     0.00%  [.] std::sys::backtrace::__rust_begin_short_backtrace::<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>
+            |
+            ---<std::thread::lifecycle::spawn_unchecked<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+               <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+               <std::sys::thread::unix::Thread>::new::thread_start
+               start
+
+     1.07%     1.07%  [.] ZSTD_compressBlock_fast
+
+
+#
+# (Cannot load tips.txt file, please install perf!)
+#

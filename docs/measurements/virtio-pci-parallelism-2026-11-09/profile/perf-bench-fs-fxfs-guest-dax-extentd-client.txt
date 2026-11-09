@@ -1,0 +1,1694 @@
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 1K of event 'cpu-clock:ppp'
+# Event count (approx.): 1411411410
+#
+# Children      Self  Symbol                                                                                                                                                                                                                                                                                           
+# ........  ........  .................................................................................................................................................................................................................................................................................................
+#
+    90.85%     0.00%  [.] start
+    90.85%     0.00%  [.] <std::sys::thread::unix::Thread>::new::thread_start
+            |
+            ---start
+
+    90.85%     0.00%  [.] <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+            |
+            ---<std::sys::thread::unix::Thread>::new::thread_start
+               start
+
+    90.85%     0.00%  [.] <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+            |
+            ---<alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+               <std::sys::thread::unix::Thread>::new::thread_start
+               start
+
+    90.85%     0.00%  [.] <std::thread::lifecycle::spawn_unchecked<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+            |
+            ---<alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+               <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+               <std::sys::thread::unix::Thread>::new::thread_start
+               start
+
+    90.85%     0.00%  [.] <fxdax::thread::spawn<(), &str, <fxdax::extentd::client::Client>::start::{closure#0}>::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+            |
+            ---std::sys::backtrace::__rust_begin_short_backtrace::<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>
+               <std::thread::lifecycle::spawn_unchecked<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+               <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+               <std::sys::thread::unix::Thread>::new::thread_start
+               start
+
+    90.78%     0.00%  [.] std::sys::backtrace::__rust_begin_short_backtrace::<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>
+            |
+            ---<std::thread::lifecycle::spawn_unchecked<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+               <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+               <std::sys::thread::unix::Thread>::new::thread_start
+               start
+
+    89.93%     0.00%  [.] entry_SYSCALL_64_after_hwframe
+            |          
+            |--0.39%--__syscall6 (inlined)
+            |          |          
+            |           --0.39%--__mmap
+            |                     <fxdax::extentd::client::Client>::receive
+            |                     <fxdax::thread::spawn<(), &str, <fxdax::extentd::client::Client>::start::{closure#0}>::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+            |                     std::sys::backtrace::__rust_begin_short_backtrace::<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>
+            |                     <std::thread::lifecycle::spawn_unchecked<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+            |                     <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+            |                     <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+            |                     <std::sys::thread::unix::Thread>::new::thread_start
+            |                     start
+            |          
+            |--0.11%--ioctl
+            |          |          
+            |          |--0.06%--<fxdax::dax::uffd::UffdSecondStage as fxdax::dax::SecondStage>::make_private
+            |          |          <fxdax::extentd::client::Client>::receive
+            |          |          <fxdax::thread::spawn<(), &str, <fxdax::extentd::client::Client>::start::{closure#0}>::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+            |          |          std::sys::backtrace::__rust_begin_short_backtrace::<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>
+            |          |          <std::thread::lifecycle::spawn_unchecked<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+            |          |          <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+            |          |          <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+            |          |          <std::sys::thread::unix::Thread>::new::thread_start
+            |          |          start
+            |          |          
+            |           --0.05%--<fxdax::extentd::client::Client>::receive
+            |                     <fxdax::thread::spawn<(), &str, <fxdax::extentd::client::Client>::start::{closure#0}>::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+            |                     std::sys::backtrace::__rust_begin_short_backtrace::<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>
+            |                     <std::thread::lifecycle::spawn_unchecked<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+            |                     <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+            |                     <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+            |                     <std::sys::thread::unix::Thread>::new::thread_start
+            |                     start
+            |          
+            |--0.10%--__syscall4 (inlined)
+            |          fallocate
+            |          <fxdax::extentd::client::Client>::receive
+            |          <fxdax::thread::spawn<(), &str, <fxdax::extentd::client::Client>::start::{closure#0}>::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+            |          std::sys::backtrace::__rust_begin_short_backtrace::<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>
+            |          <std::thread::lifecycle::spawn_unchecked<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+            |          <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+            |          <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+            |          <std::sys::thread::unix::Thread>::new::thread_start
+            |          start
+            |          
+            |--0.09%--sccp
+            |          |          
+            |           --0.06%--<fxdax::extentd::client::Client>::receive
+            |                     <fxdax::thread::spawn<(), &str, <fxdax::extentd::client::Client>::start::{closure#0}>::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+            |                     std::sys::backtrace::__rust_begin_short_backtrace::<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>
+            |                     <std::thread::lifecycle::spawn_unchecked<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+            |                     <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+            |                     <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+            |                     <std::sys::thread::unix::Thread>::new::thread_start
+            |                     start
+            |          
+             --0.03%--__syscall2 (inlined)
+                       __munmap
+
+    89.86%     1.06%  [.] do_syscall_64
+            |
+            ---entry_SYSCALL_64_after_hwframe
+               |          
+               |--0.39%--__syscall6 (inlined)
+               |          |          
+               |           --0.39%--__mmap
+               |                     <fxdax::extentd::client::Client>::receive
+               |                     <fxdax::thread::spawn<(), &str, <fxdax::extentd::client::Client>::start::{closure#0}>::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               |                     std::sys::backtrace::__rust_begin_short_backtrace::<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>
+               |                     <std::thread::lifecycle::spawn_unchecked<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               |                     <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+               |                     <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+               |                     <std::sys::thread::unix::Thread>::new::thread_start
+               |                     start
+               |          
+               |--0.11%--ioctl
+               |          |          
+               |          |--0.06%--<fxdax::dax::uffd::UffdSecondStage as fxdax::dax::SecondStage>::make_private
+               |          |          <fxdax::extentd::client::Client>::receive
+               |          |          <fxdax::thread::spawn<(), &str, <fxdax::extentd::client::Client>::start::{closure#0}>::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               |          |          std::sys::backtrace::__rust_begin_short_backtrace::<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>
+               |          |          <std::thread::lifecycle::spawn_unchecked<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               |          |          <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+               |          |          <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+               |          |          <std::sys::thread::unix::Thread>::new::thread_start
+               |          |          start
+               |          |          
+               |           --0.05%--<fxdax::extentd::client::Client>::receive
+               |                     <fxdax::thread::spawn<(), &str, <fxdax::extentd::client::Client>::start::{closure#0}>::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               |                     std::sys::backtrace::__rust_begin_short_backtrace::<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>
+               |                     <std::thread::lifecycle::spawn_unchecked<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               |                     <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+               |                     <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+               |                     <std::sys::thread::unix::Thread>::new::thread_start
+               |                     start
+               |          
+               |--0.10%--__syscall4 (inlined)
+               |          fallocate
+               |          <fxdax::extentd::client::Client>::receive
+               |          <fxdax::thread::spawn<(), &str, <fxdax::extentd::client::Client>::start::{closure#0}>::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               |          std::sys::backtrace::__rust_begin_short_backtrace::<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>
+               |          <std::thread::lifecycle::spawn_unchecked<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               |          <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+               |          <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+               |          <std::sys::thread::unix::Thread>::new::thread_start
+               |          start
+               |          
+               |--0.09%--sccp
+               |          |          
+               |           --0.06%--<fxdax::extentd::client::Client>::receive
+               |                     <fxdax::thread::spawn<(), &str, <fxdax::extentd::client::Client>::start::{closure#0}>::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               |                     std::sys::backtrace::__rust_begin_short_backtrace::<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>
+               |                     <std::thread::lifecycle::spawn_unchecked<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               |                     <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+               |                     <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+               |                     <std::sys::thread::unix::Thread>::new::thread_start
+               |                     start
+               |          
+                --0.03%--__syscall2 (inlined)
+                          __munmap
+
+    89.72%     0.99%  [.] <fxdax::extentd::client::Client>::receive
+            |
+            ---<fxdax::thread::spawn<(), &str, <fxdax::extentd::client::Client>::start::{closure#0}>::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               std::sys::backtrace::__rust_begin_short_backtrace::<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>
+               <std::thread::lifecycle::spawn_unchecked<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+               <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+               <std::sys::thread::unix::Thread>::new::thread_start
+               start
+
+    87.38%     0.35%  [.] x64_sys_call
+            |          
+             --0.72%--do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       |          
+                       |--0.39%--__syscall6 (inlined)
+                       |          |          
+                       |           --0.39%--__mmap
+                       |                     <fxdax::extentd::client::Client>::receive
+                       |                     <fxdax::thread::spawn<(), &str, <fxdax::extentd::client::Client>::start::{closure#0}>::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                       |                     std::sys::backtrace::__rust_begin_short_backtrace::<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>
+                       |                     <std::thread::lifecycle::spawn_unchecked<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                       |                     <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+                       |                     <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+                       |                     <std::sys::thread::unix::Thread>::new::thread_start
+                       |                     start
+                       |          
+                       |--0.11%--ioctl
+                       |          |          
+                       |          |--0.06%--<fxdax::dax::uffd::UffdSecondStage as fxdax::dax::SecondStage>::make_private
+                       |          |          <fxdax::extentd::client::Client>::receive
+                       |          |          <fxdax::thread::spawn<(), &str, <fxdax::extentd::client::Client>::start::{closure#0}>::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                       |          |          std::sys::backtrace::__rust_begin_short_backtrace::<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>
+                       |          |          <std::thread::lifecycle::spawn_unchecked<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                       |          |          <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+                       |          |          <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+                       |          |          <std::sys::thread::unix::Thread>::new::thread_start
+                       |          |          start
+                       |          |          
+                       |           --0.04%--<fxdax::extentd::client::Client>::receive
+                       |                     <fxdax::thread::spawn<(), &str, <fxdax::extentd::client::Client>::start::{closure#0}>::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                       |                     std::sys::backtrace::__rust_begin_short_backtrace::<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>
+                       |                     <std::thread::lifecycle::spawn_unchecked<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                       |                     <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+                       |                     <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+                       |                     <std::sys::thread::unix::Thread>::new::thread_start
+                       |                     start
+                       |          
+                       |--0.10%--__syscall4 (inlined)
+                       |          fallocate
+                       |          <fxdax::extentd::client::Client>::receive
+                       |          <fxdax::thread::spawn<(), &str, <fxdax::extentd::client::Client>::start::{closure#0}>::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                       |          std::sys::backtrace::__rust_begin_short_backtrace::<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>
+                       |          <std::thread::lifecycle::spawn_unchecked<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                       |          <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+                       |          <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+                       |          <std::sys::thread::unix::Thread>::new::thread_start
+                       |          start
+                       |          
+                       |--0.08%--sccp
+                       |          |          
+                       |           --0.06%--<fxdax::extentd::client::Client>::receive
+                       |                     <fxdax::thread::spawn<(), &str, <fxdax::extentd::client::Client>::start::{closure#0}>::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                       |                     std::sys::backtrace::__rust_begin_short_backtrace::<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>
+                       |                     <std::thread::lifecycle::spawn_unchecked<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                       |                     <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+                       |                     <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+                       |                     <std::sys::thread::unix::Thread>::new::thread_start
+                       |                     start
+                       |          
+                        --0.03%--__syscall2 (inlined)
+                                  __munmap
+
+    47.23%     0.28%  [.] __mmap
+            |          
+             --0.39%--__mmap
+                       |          
+                        --0.39%--<fxdax::extentd::client::Client>::receive
+                                  <fxdax::thread::spawn<(), &str, <fxdax::extentd::client::Client>::start::{closure#0}>::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                                  std::sys::backtrace::__rust_begin_short_backtrace::<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>
+                                  <std::thread::lifecycle::spawn_unchecked<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                                  <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+                                  <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+                                  <std::sys::thread::unix::Thread>::new::thread_start
+                                  start
+
+    47.02%     0.00%  [.] __syscall6 (inlined)
+            |
+            ---__mmap
+               <fxdax::extentd::client::Client>::receive
+               <fxdax::thread::spawn<(), &str, <fxdax::extentd::client::Client>::start::{closure#0}>::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               std::sys::backtrace::__rust_begin_short_backtrace::<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>
+               <std::thread::lifecycle::spawn_unchecked<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+               <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+               <std::sys::thread::unix::Thread>::new::thread_start
+               start
+
+    46.60%     0.00%  [.] __x64_sys_mmap
+            |
+            ---x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               __syscall6 (inlined)
+               __mmap
+               <fxdax::extentd::client::Client>::receive
+               <fxdax::thread::spawn<(), &str, <fxdax::extentd::client::Client>::start::{closure#0}>::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               std::sys::backtrace::__rust_begin_short_backtrace::<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>
+               <std::thread::lifecycle::spawn_unchecked<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+               <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+               <std::sys::thread::unix::Thread>::new::thread_start
+               start
+
+    46.60%     0.00%  [.] ksys_mmap_pgoff
+            |
+            ---__x64_sys_mmap
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               __syscall6 (inlined)
+               __mmap
+               <fxdax::extentd::client::Client>::receive
+               <fxdax::thread::spawn<(), &str, <fxdax::extentd::client::Client>::start::{closure#0}>::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               std::sys::backtrace::__rust_begin_short_backtrace::<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>
+               <std::thread::lifecycle::spawn_unchecked<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+               <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+               <std::sys::thread::unix::Thread>::new::thread_start
+               start
+
+    46.52%     0.00%  [.] vm_mmap_pgoff
+            |
+            ---ksys_mmap_pgoff
+               __x64_sys_mmap
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               __syscall6 (inlined)
+               __mmap
+               <fxdax::extentd::client::Client>::receive
+               <fxdax::thread::spawn<(), &str, <fxdax::extentd::client::Client>::start::{closure#0}>::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               std::sys::backtrace::__rust_begin_short_backtrace::<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>
+               <std::thread::lifecycle::spawn_unchecked<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+               <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+               <std::sys::thread::unix::Thread>::new::thread_start
+               start
+
+    46.24%     0.07%  [.] do_mmap
+            |
+            ---vm_mmap_pgoff
+               ksys_mmap_pgoff
+               __x64_sys_mmap
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               __syscall6 (inlined)
+               __mmap
+               <fxdax::extentd::client::Client>::receive
+               <fxdax::thread::spawn<(), &str, <fxdax::extentd::client::Client>::start::{closure#0}>::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               std::sys::backtrace::__rust_begin_short_backtrace::<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>
+               <std::thread::lifecycle::spawn_unchecked<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+               <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+               <std::sys::thread::unix::Thread>::new::thread_start
+               start
+
+    46.03%     0.00%  [.] mmap_region
+            |
+            ---do_mmap
+               vm_mmap_pgoff
+               ksys_mmap_pgoff
+               __x64_sys_mmap
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               __syscall6 (inlined)
+               __mmap
+               <fxdax::extentd::client::Client>::receive
+               <fxdax::thread::spawn<(), &str, <fxdax::extentd::client::Client>::start::{closure#0}>::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               std::sys::backtrace::__rust_begin_short_backtrace::<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>
+               <std::thread::lifecycle::spawn_unchecked<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+               <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+               <std::sys::thread::unix::Thread>::new::thread_start
+               start
+
+    45.96%     0.14%  [.] __mmap_region
+            |
+            ---mmap_region
+               do_mmap
+               vm_mmap_pgoff
+               ksys_mmap_pgoff
+               __x64_sys_mmap
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               __syscall6 (inlined)
+               __mmap
+               <fxdax::extentd::client::Client>::receive
+               <fxdax::thread::spawn<(), &str, <fxdax::extentd::client::Client>::start::{closure#0}>::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               std::sys::backtrace::__rust_begin_short_backtrace::<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>
+               <std::thread::lifecycle::spawn_unchecked<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+               <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+               <std::sys::thread::unix::Thread>::new::thread_start
+               start
+
+    42.48%     0.00%  [.] unmap_region
+            |          
+            |--0.32%--__mmap_region
+            |          mmap_region
+            |          do_mmap
+            |          vm_mmap_pgoff
+            |          ksys_mmap_pgoff
+            |          __x64_sys_mmap
+            |          x64_sys_call
+            |          do_syscall_64
+            |          entry_SYSCALL_64_after_hwframe
+            |          __syscall6 (inlined)
+            |          __mmap
+            |          <fxdax::extentd::client::Client>::receive
+            |          <fxdax::thread::spawn<(), &str, <fxdax::extentd::client::Client>::start::{closure#0}>::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+            |          std::sys::backtrace::__rust_begin_short_backtrace::<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>
+            |          <std::thread::lifecycle::spawn_unchecked<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+            |          <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+            |          <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+            |          <std::sys::thread::unix::Thread>::new::thread_start
+            |          start
+            |          
+             --0.03%--vms_complete_munmap_vmas
+                       do_vmi_align_munmap
+                       do_vmi_munmap
+                       __vm_munmap
+                       __x64_sys_munmap
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       __syscall2 (inlined)
+                       __munmap
+
+    41.13%    39.22%  [k] smp_call_function_many_cond
+            |          
+            |--0.23%--on_each_cpu_cond_mask
+            |          native_flush_tlb_multi
+            |          flush_tlb_mm_range
+            |          |          
+            |          |--0.17%--tlb_flush_mmu_tlbonly
+            |          |          tlb_finish_mmu
+            |          |          |          
+            |          |           --0.16%--unmap_region
+            |          |                     |          
+            |          |                      --0.15%--__mmap_region
+            |          |                                mmap_region
+            |          |                                do_mmap
+            |          |                                vm_mmap_pgoff
+            |          |                                ksys_mmap_pgoff
+            |          |                                __x64_sys_mmap
+            |          |                                x64_sys_call
+            |          |                                do_syscall_64
+            |          |                                entry_SYSCALL_64_after_hwframe
+            |          |                                __syscall6 (inlined)
+            |          |                                __mmap
+            |          |                                <fxdax::extentd::client::Client>::receive
+            |          |                                <fxdax::thread::spawn<(), &str, <fxdax::extentd::client::Client>::start::{closure#0}>::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+            |          |                                std::sys::backtrace::__rust_begin_short_backtrace::<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>
+            |          |                                <std::thread::lifecycle::spawn_unchecked<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+            |          |                                <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+            |          |                                <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+            |          |                                <std::sys::thread::unix::Thread>::new::thread_start
+            |          |                                start
+            |          |          
+            |           --0.06%--tlb_flush_mmu_tlbonly
+            |                     zap_pte_range
+            |                     zap_pmd_range.isra.0
+            |                     unmap_page_range
+            |                     unmap_single_vma
+            |                     zap_page_range_single_batched
+            |                     zap_page_range_single
+            |                     unmap_mapping_range
+            |                     shmem_fallocate
+            |                     vfs_fallocate
+            |                     __x64_sys_fallocate
+            |                     x64_sys_call
+            |                     do_syscall_64
+            |                     entry_SYSCALL_64_after_hwframe
+            |                     __syscall4 (inlined)
+            |                     fallocate
+            |                     <fxdax::extentd::client::Client>::receive
+            |                     <fxdax::thread::spawn<(), &str, <fxdax::extentd::client::Client>::start::{closure#0}>::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+            |                     std::sys::backtrace::__rust_begin_short_backtrace::<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>
+            |                     <std::thread::lifecycle::spawn_unchecked<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+            |                     <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+            |                     <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+            |                     <std::sys::thread::unix::Thread>::new::thread_start
+            |                     start
+            |          
+             --0.11%--smp_call_function_many
+                       kvm_make_all_cpus_request
+                       kvm_flush_remote_tlbs
+                       kvm_mmu_notifier_invalidate_range_start
+                       __mmu_notifier_invalidate_range_start
+                       |          
+                        --0.10%--unmap_vmas
+                                  unmap_region
+                                  __mmap_region
+                                  mmap_region
+                                  do_mmap
+                                  vm_mmap_pgoff
+                                  ksys_mmap_pgoff
+                                  __x64_sys_mmap
+                                  x64_sys_call
+                                  do_syscall_64
+                                  entry_SYSCALL_64_after_hwframe
+                                  __syscall6 (inlined)
+                                  __mmap
+                                  <fxdax::extentd::client::Client>::receive
+                                  <fxdax::thread::spawn<(), &str, <fxdax::extentd::client::Client>::start::{closure#0}>::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                                  std::sys::backtrace::__rust_begin_short_backtrace::<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>
+                                  <std::thread::lifecycle::spawn_unchecked<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                                  <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+                                  <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+                                  <std::sys::thread::unix::Thread>::new::thread_start
+                                  start
+
+    28.44%     0.00%  [.] flush_tlb_mm_range
+            |          
+            |--0.17%--tlb_flush_mmu_tlbonly
+            |          tlb_finish_mmu
+            |          |          
+            |           --0.16%--unmap_region
+            |                     |          
+            |                      --0.15%--__mmap_region
+            |                                mmap_region
+            |                                do_mmap
+            |                                vm_mmap_pgoff
+            |                                ksys_mmap_pgoff
+            |                                __x64_sys_mmap
+            |                                x64_sys_call
+            |                                do_syscall_64
+            |                                entry_SYSCALL_64_after_hwframe
+            |                                __syscall6 (inlined)
+            |                                __mmap
+            |                                <fxdax::extentd::client::Client>::receive
+            |                                <fxdax::thread::spawn<(), &str, <fxdax::extentd::client::Client>::start::{closure#0}>::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+            |                                std::sys::backtrace::__rust_begin_short_backtrace::<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>
+            |                                <std::thread::lifecycle::spawn_unchecked<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+            |                                <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+            |                                <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+            |                                <std::sys::thread::unix::Thread>::new::thread_start
+            |                                start
+            |          
+             --0.06%--tlb_flush_mmu_tlbonly
+                       zap_pte_range
+                       zap_pmd_range.isra.0
+                       unmap_page_range
+                       unmap_single_vma
+                       zap_page_range_single_batched
+                       zap_page_range_single
+                       unmap_mapping_range
+                       shmem_fallocate
+                       vfs_fallocate
+                       __x64_sys_fallocate
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       __syscall4 (inlined)
+                       fallocate
+                       <fxdax::extentd::client::Client>::receive
+                       <fxdax::thread::spawn<(), &str, <fxdax::extentd::client::Client>::start::{closure#0}>::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                       std::sys::backtrace::__rust_begin_short_backtrace::<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>
+                       <std::thread::lifecycle::spawn_unchecked<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                       <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+                       <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+                       <std::sys::thread::unix::Thread>::new::thread_start
+                       start
+
+    28.16%     0.00%  [.] native_flush_tlb_multi
+            |
+            ---flush_tlb_mm_range
+               |          
+               |--0.17%--tlb_flush_mmu_tlbonly
+               |          tlb_finish_mmu
+               |          |          
+               |           --0.16%--unmap_region
+               |                     |          
+               |                      --0.15%--__mmap_region
+               |                                mmap_region
+               |                                do_mmap
+               |                                vm_mmap_pgoff
+               |                                ksys_mmap_pgoff
+               |                                __x64_sys_mmap
+               |                                x64_sys_call
+               |                                do_syscall_64
+               |                                entry_SYSCALL_64_after_hwframe
+               |                                __syscall6 (inlined)
+               |                                __mmap
+               |                                <fxdax::extentd::client::Client>::receive
+               |                                <fxdax::thread::spawn<(), &str, <fxdax::extentd::client::Client>::start::{closure#0}>::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               |                                std::sys::backtrace::__rust_begin_short_backtrace::<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>
+               |                                <std::thread::lifecycle::spawn_unchecked<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               |                                <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+               |                                <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+               |                                <std::sys::thread::unix::Thread>::new::thread_start
+               |                                start
+               |          
+                --0.06%--tlb_flush_mmu_tlbonly
+                          zap_pte_range
+                          zap_pmd_range.isra.0
+                          unmap_page_range
+                          unmap_single_vma
+                          zap_page_range_single_batched
+                          zap_page_range_single
+                          unmap_mapping_range
+                          shmem_fallocate
+                          vfs_fallocate
+                          __x64_sys_fallocate
+                          x64_sys_call
+                          do_syscall_64
+                          entry_SYSCALL_64_after_hwframe
+                          __syscall4 (inlined)
+                          fallocate
+                          <fxdax::extentd::client::Client>::receive
+                          <fxdax::thread::spawn<(), &str, <fxdax::extentd::client::Client>::start::{closure#0}>::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                          std::sys::backtrace::__rust_begin_short_backtrace::<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>
+                          <std::thread::lifecycle::spawn_unchecked<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                          <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+                          <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+                          <std::sys::thread::unix::Thread>::new::thread_start
+                          start
+
+    28.16%     0.00%  [.] on_each_cpu_cond_mask
+            |
+            ---native_flush_tlb_multi
+               flush_tlb_mm_range
+               |          
+               |--0.17%--tlb_flush_mmu_tlbonly
+               |          tlb_finish_mmu
+               |          |          
+               |           --0.16%--unmap_region
+               |                     |          
+               |                      --0.15%--__mmap_region
+               |                                mmap_region
+               |                                do_mmap
+               |                                vm_mmap_pgoff
+               |                                ksys_mmap_pgoff
+               |                                __x64_sys_mmap
+               |                                x64_sys_call
+               |                                do_syscall_64
+               |                                entry_SYSCALL_64_after_hwframe
+               |                                __syscall6 (inlined)
+               |                                __mmap
+               |                                <fxdax::extentd::client::Client>::receive
+               |                                <fxdax::thread::spawn<(), &str, <fxdax::extentd::client::Client>::start::{closure#0}>::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               |                                std::sys::backtrace::__rust_begin_short_backtrace::<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>
+               |                                <std::thread::lifecycle::spawn_unchecked<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               |                                <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+               |                                <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+               |                                <std::sys::thread::unix::Thread>::new::thread_start
+               |                                start
+               |          
+                --0.06%--tlb_flush_mmu_tlbonly
+                          zap_pte_range
+                          zap_pmd_range.isra.0
+                          unmap_page_range
+                          unmap_single_vma
+                          zap_page_range_single_batched
+                          zap_page_range_single
+                          unmap_mapping_range
+                          shmem_fallocate
+                          vfs_fallocate
+                          __x64_sys_fallocate
+                          x64_sys_call
+                          do_syscall_64
+                          entry_SYSCALL_64_after_hwframe
+                          __syscall4 (inlined)
+                          fallocate
+                          <fxdax::extentd::client::Client>::receive
+                          <fxdax::thread::spawn<(), &str, <fxdax::extentd::client::Client>::start::{closure#0}>::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                          std::sys::backtrace::__rust_begin_short_backtrace::<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>
+                          <std::thread::lifecycle::spawn_unchecked<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                          <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+                          <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+                          <std::sys::thread::unix::Thread>::new::thread_start
+                          start
+
+    22.48%     0.14%  [.] __mmu_notifier_invalidate_range_start
+            |          
+             --0.16%--unmap_vmas
+                       unmap_region
+                       __mmap_region
+                       mmap_region
+                       do_mmap
+                       vm_mmap_pgoff
+                       ksys_mmap_pgoff
+                       __x64_sys_mmap
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       __syscall6 (inlined)
+                       __mmap
+                       <fxdax::extentd::client::Client>::receive
+                       <fxdax::thread::spawn<(), &str, <fxdax::extentd::client::Client>::start::{closure#0}>::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                       std::sys::backtrace::__rust_begin_short_backtrace::<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>
+                       <std::thread::lifecycle::spawn_unchecked<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                       <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+                       <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+                       <std::sys::thread::unix::Thread>::new::thread_start
+                       start
+
+    21.99%     0.07%  [.] kvm_mmu_notifier_invalidate_range_start
+            |
+            ---__mmu_notifier_invalidate_range_start
+               |          
+                --0.16%--unmap_vmas
+                          unmap_region
+                          __mmap_region
+                          mmap_region
+                          do_mmap
+                          vm_mmap_pgoff
+                          ksys_mmap_pgoff
+                          __x64_sys_mmap
+                          x64_sys_call
+                          do_syscall_64
+                          entry_SYSCALL_64_after_hwframe
+                          __syscall6 (inlined)
+                          __mmap
+                          <fxdax::extentd::client::Client>::receive
+                          <fxdax::thread::spawn<(), &str, <fxdax::extentd::client::Client>::start::{closure#0}>::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                          std::sys::backtrace::__rust_begin_short_backtrace::<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>
+                          <std::thread::lifecycle::spawn_unchecked<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                          <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+                          <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+                          <std::sys::thread::unix::Thread>::new::thread_start
+                          start
+
+    21.84%     0.00%  [.] tlb_finish_mmu
+            |          
+             --0.17%--unmap_region
+                       |          
+                        --0.15%--__mmap_region
+                                  mmap_region
+                                  do_mmap
+                                  vm_mmap_pgoff
+                                  ksys_mmap_pgoff
+                                  __x64_sys_mmap
+                                  x64_sys_call
+                                  do_syscall_64
+                                  entry_SYSCALL_64_after_hwframe
+                                  __syscall6 (inlined)
+                                  __mmap
+                                  <fxdax::extentd::client::Client>::receive
+                                  <fxdax::thread::spawn<(), &str, <fxdax::extentd::client::Client>::start::{closure#0}>::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                                  std::sys::backtrace::__rust_begin_short_backtrace::<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>
+                                  <std::thread::lifecycle::spawn_unchecked<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                                  <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+                                  <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+                                  <std::sys::thread::unix::Thread>::new::thread_start
+                                  start
+
+    21.42%     0.00%  [.] unmap_vmas
+            |
+            ---unmap_region
+               |          
+                --0.17%--__mmap_region
+                          mmap_region
+                          do_mmap
+                          vm_mmap_pgoff
+                          ksys_mmap_pgoff
+                          __x64_sys_mmap
+                          x64_sys_call
+                          do_syscall_64
+                          entry_SYSCALL_64_after_hwframe
+                          __syscall6 (inlined)
+                          __mmap
+                          <fxdax::extentd::client::Client>::receive
+                          <fxdax::thread::spawn<(), &str, <fxdax::extentd::client::Client>::start::{closure#0}>::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                          std::sys::backtrace::__rust_begin_short_backtrace::<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>
+                          <std::thread::lifecycle::spawn_unchecked<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                          <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+                          <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+                          <std::sys::thread::unix::Thread>::new::thread_start
+                          start
+
+    20.85%     0.00%  [.] tlb_flush_mmu_tlbonly
+            |
+            ---tlb_finish_mmu
+               |          
+                --0.16%--unmap_region
+                          |          
+                           --0.15%--__mmap_region
+                                     mmap_region
+                                     do_mmap
+                                     vm_mmap_pgoff
+                                     ksys_mmap_pgoff
+                                     __x64_sys_mmap
+                                     x64_sys_call
+                                     do_syscall_64
+                                     entry_SYSCALL_64_after_hwframe
+                                     __syscall6 (inlined)
+                                     __mmap
+                                     <fxdax::extentd::client::Client>::receive
+                                     <fxdax::thread::spawn<(), &str, <fxdax::extentd::client::Client>::start::{closure#0}>::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                                     std::sys::backtrace::__rust_begin_short_backtrace::<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>
+                                     <std::thread::lifecycle::spawn_unchecked<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                                     <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+                                     <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+                                     <std::sys::thread::unix::Thread>::new::thread_start
+                                     start
+
+    13.69%     0.00%  [.] kvm_flush_remote_tlbs
+            |
+            ---kvm_mmu_notifier_invalidate_range_start
+               __mmu_notifier_invalidate_range_start
+               |          
+                --0.10%--unmap_vmas
+                          unmap_region
+                          __mmap_region
+                          mmap_region
+                          do_mmap
+                          vm_mmap_pgoff
+                          ksys_mmap_pgoff
+                          __x64_sys_mmap
+                          x64_sys_call
+                          do_syscall_64
+                          entry_SYSCALL_64_after_hwframe
+                          __syscall6 (inlined)
+                          __mmap
+                          <fxdax::extentd::client::Client>::receive
+                          <fxdax::thread::spawn<(), &str, <fxdax::extentd::client::Client>::start::{closure#0}>::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                          std::sys::backtrace::__rust_begin_short_backtrace::<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>
+                          <std::thread::lifecycle::spawn_unchecked<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                          <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+                          <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+                          <std::sys::thread::unix::Thread>::new::thread_start
+                          start
+
+    13.62%     0.00%  [.] kvm_make_all_cpus_request
+            |
+            ---kvm_flush_remote_tlbs
+               kvm_mmu_notifier_invalidate_range_start
+               __mmu_notifier_invalidate_range_start
+               |          
+                --0.10%--unmap_vmas
+                          unmap_region
+                          __mmap_region
+                          mmap_region
+                          do_mmap
+                          vm_mmap_pgoff
+                          ksys_mmap_pgoff
+                          __x64_sys_mmap
+                          x64_sys_call
+                          do_syscall_64
+                          entry_SYSCALL_64_after_hwframe
+                          __syscall6 (inlined)
+                          __mmap
+                          <fxdax::extentd::client::Client>::receive
+                          <fxdax::thread::spawn<(), &str, <fxdax::extentd::client::Client>::start::{closure#0}>::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                          std::sys::backtrace::__rust_begin_short_backtrace::<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>
+                          <std::thread::lifecycle::spawn_unchecked<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                          <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+                          <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+                          <std::sys::thread::unix::Thread>::new::thread_start
+                          start
+
+    13.55%     0.14%  [.] ioctl
+            |          
+            |--0.07%--<fxdax::dax::uffd::UffdSecondStage as fxdax::dax::SecondStage>::make_private
+            |          <fxdax::extentd::client::Client>::receive
+            |          <fxdax::thread::spawn<(), &str, <fxdax::extentd::client::Client>::start::{closure#0}>::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+            |          std::sys::backtrace::__rust_begin_short_backtrace::<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>
+            |          <std::thread::lifecycle::spawn_unchecked<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+            |          <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+            |          <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+            |          <std::sys::thread::unix::Thread>::new::thread_start
+            |          start
+            |          
+             --0.05%--<fxdax::extentd::client::Client>::receive
+                       <fxdax::thread::spawn<(), &str, <fxdax::extentd::client::Client>::start::{closure#0}>::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                       std::sys::backtrace::__rust_begin_short_backtrace::<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>
+                       <std::thread::lifecycle::spawn_unchecked<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                       <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+                       <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+                       <std::sys::thread::unix::Thread>::new::thread_start
+                       start
+
+    13.05%     0.00%  [.] smp_call_function_many
+            |
+            ---kvm_make_all_cpus_request
+               kvm_flush_remote_tlbs
+               kvm_mmu_notifier_invalidate_range_start
+               __mmu_notifier_invalidate_range_start
+               |          
+                --0.10%--unmap_vmas
+                          unmap_region
+                          __mmap_region
+                          mmap_region
+                          do_mmap
+                          vm_mmap_pgoff
+                          ksys_mmap_pgoff
+                          __x64_sys_mmap
+                          x64_sys_call
+                          do_syscall_64
+                          entry_SYSCALL_64_after_hwframe
+                          __syscall6 (inlined)
+                          __mmap
+                          <fxdax::extentd::client::Client>::receive
+                          <fxdax::thread::spawn<(), &str, <fxdax::extentd::client::Client>::start::{closure#0}>::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                          std::sys::backtrace::__rust_begin_short_backtrace::<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>
+                          <std::thread::lifecycle::spawn_unchecked<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                          <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+                          <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+                          <std::sys::thread::unix::Thread>::new::thread_start
+                          start
+
+    12.84%     0.07%  [.] __x64_sys_ioctl
+            |
+            ---x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               ioctl
+               |          
+               |--0.06%--<fxdax::dax::uffd::UffdSecondStage as fxdax::dax::SecondStage>::make_private
+               |          <fxdax::extentd::client::Client>::receive
+               |          <fxdax::thread::spawn<(), &str, <fxdax::extentd::client::Client>::start::{closure#0}>::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               |          std::sys::backtrace::__rust_begin_short_backtrace::<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>
+               |          <std::thread::lifecycle::spawn_unchecked<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               |          <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+               |          <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+               |          <std::sys::thread::unix::Thread>::new::thread_start
+               |          start
+               |          
+                --0.04%--<fxdax::extentd::client::Client>::receive
+                          <fxdax::thread::spawn<(), &str, <fxdax::extentd::client::Client>::start::{closure#0}>::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                          std::sys::backtrace::__rust_begin_short_backtrace::<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>
+                          <std::thread::lifecycle::spawn_unchecked<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                          <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+                          <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+                          <std::sys::thread::unix::Thread>::new::thread_start
+                          start
+
+    12.77%     0.14%  [.] fallocate
+            |          
+             --0.10%--fallocate
+                       <fxdax::extentd::client::Client>::receive
+                       <fxdax::thread::spawn<(), &str, <fxdax::extentd::client::Client>::start::{closure#0}>::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                       std::sys::backtrace::__rust_begin_short_backtrace::<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>
+                       <std::thread::lifecycle::spawn_unchecked<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                       <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+                       <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+                       <std::sys::thread::unix::Thread>::new::thread_start
+                       start
+
+    12.77%     0.00%  [.] __syscall4 (inlined)
+            |
+            ---fallocate
+               <fxdax::extentd::client::Client>::receive
+               <fxdax::thread::spawn<(), &str, <fxdax::extentd::client::Client>::start::{closure#0}>::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               std::sys::backtrace::__rust_begin_short_backtrace::<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>
+               <std::thread::lifecycle::spawn_unchecked<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+               <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+               <std::sys::thread::unix::Thread>::new::thread_start
+               start
+
+    12.41%     0.00%  [.] __x64_sys_fallocate
+            |
+            ---x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               __syscall4 (inlined)
+               fallocate
+               <fxdax::extentd::client::Client>::receive
+               <fxdax::thread::spawn<(), &str, <fxdax::extentd::client::Client>::start::{closure#0}>::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               std::sys::backtrace::__rust_begin_short_backtrace::<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>
+               <std::thread::lifecycle::spawn_unchecked<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+               <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+               <std::sys::thread::unix::Thread>::new::thread_start
+               start
+
+    12.34%     0.00%  [.] vfs_fallocate
+            |
+            ---__x64_sys_fallocate
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               __syscall4 (inlined)
+               fallocate
+               <fxdax::extentd::client::Client>::receive
+               <fxdax::thread::spawn<(), &str, <fxdax::extentd::client::Client>::start::{closure#0}>::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               std::sys::backtrace::__rust_begin_short_backtrace::<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>
+               <std::thread::lifecycle::spawn_unchecked<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+               <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+               <std::sys::thread::unix::Thread>::new::thread_start
+               start
+
+    12.34%     0.00%  [.] shmem_fallocate
+            |
+            ---vfs_fallocate
+               __x64_sys_fallocate
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               __syscall4 (inlined)
+               fallocate
+               <fxdax::extentd::client::Client>::receive
+               <fxdax::thread::spawn<(), &str, <fxdax::extentd::client::Client>::start::{closure#0}>::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               std::sys::backtrace::__rust_begin_short_backtrace::<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>
+               <std::thread::lifecycle::spawn_unchecked<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+               <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+               <std::sys::thread::unix::Thread>::new::thread_start
+               start
+
+    11.70%     0.92%  [.] sccp
+            |          
+             --0.07%--<fxdax::extentd::client::Client>::receive
+                       <fxdax::thread::spawn<(), &str, <fxdax::extentd::client::Client>::start::{closure#0}>::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                       std::sys::backtrace::__rust_begin_short_backtrace::<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>
+                       <std::thread::lifecycle::spawn_unchecked<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                       <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+                       <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+                       <std::sys::thread::unix::Thread>::new::thread_start
+                       start
+
+    11.63%     0.00%  [.] unmap_mapping_range
+            |
+            ---shmem_fallocate
+               vfs_fallocate
+               __x64_sys_fallocate
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               __syscall4 (inlined)
+               fallocate
+               <fxdax::extentd::client::Client>::receive
+               <fxdax::thread::spawn<(), &str, <fxdax::extentd::client::Client>::start::{closure#0}>::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               std::sys::backtrace::__rust_begin_short_backtrace::<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>
+               <std::thread::lifecycle::spawn_unchecked<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+               <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+               <std::sys::thread::unix::Thread>::new::thread_start
+               start
+
+    11.28%     0.00%  [.] zap_page_range_single
+            |
+            ---unmap_mapping_range
+               shmem_fallocate
+               vfs_fallocate
+               __x64_sys_fallocate
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               __syscall4 (inlined)
+               fallocate
+               <fxdax::extentd::client::Client>::receive
+               <fxdax::thread::spawn<(), &str, <fxdax::extentd::client::Client>::start::{closure#0}>::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               std::sys::backtrace::__rust_begin_short_backtrace::<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>
+               <std::thread::lifecycle::spawn_unchecked<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+               <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+               <std::sys::thread::unix::Thread>::new::thread_start
+               start
+
+    10.14%     0.00%  [.] zap_page_range_single_batched
+            |
+            ---zap_page_range_single
+               unmap_mapping_range
+               shmem_fallocate
+               vfs_fallocate
+               __x64_sys_fallocate
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               __syscall4 (inlined)
+               fallocate
+               <fxdax::extentd::client::Client>::receive
+               <fxdax::thread::spawn<(), &str, <fxdax::extentd::client::Client>::start::{closure#0}>::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               std::sys::backtrace::__rust_begin_short_backtrace::<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>
+               <std::thread::lifecycle::spawn_unchecked<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+               <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+               <std::sys::thread::unix::Thread>::new::thread_start
+               start
+
+     9.57%     0.00%  [.] unmap_single_vma
+            |          
+             --0.06%--zap_page_range_single_batched
+                       zap_page_range_single
+                       unmap_mapping_range
+                       shmem_fallocate
+                       vfs_fallocate
+                       __x64_sys_fallocate
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       __syscall4 (inlined)
+                       fallocate
+                       <fxdax::extentd::client::Client>::receive
+                       <fxdax::thread::spawn<(), &str, <fxdax::extentd::client::Client>::start::{closure#0}>::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                       std::sys::backtrace::__rust_begin_short_backtrace::<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>
+                       <std::thread::lifecycle::spawn_unchecked<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                       <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+                       <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+                       <std::sys::thread::unix::Thread>::new::thread_start
+                       start
+
+     9.57%     0.00%  [.] unmap_page_range
+            |
+            ---unmap_single_vma
+               |          
+                --0.06%--zap_page_range_single_batched
+                          zap_page_range_single
+                          unmap_mapping_range
+                          shmem_fallocate
+                          vfs_fallocate
+                          __x64_sys_fallocate
+                          x64_sys_call
+                          do_syscall_64
+                          entry_SYSCALL_64_after_hwframe
+                          __syscall4 (inlined)
+                          fallocate
+                          <fxdax::extentd::client::Client>::receive
+                          <fxdax::thread::spawn<(), &str, <fxdax::extentd::client::Client>::start::{closure#0}>::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                          std::sys::backtrace::__rust_begin_short_backtrace::<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>
+                          <std::thread::lifecycle::spawn_unchecked<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                          <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+                          <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+                          <std::sys::thread::unix::Thread>::new::thread_start
+                          start
+
+     9.57%     0.07%  [.] zap_pmd_range.isra.0
+            |
+            ---unmap_page_range
+               unmap_single_vma
+               |          
+                --0.06%--zap_page_range_single_batched
+                          zap_page_range_single
+                          unmap_mapping_range
+                          shmem_fallocate
+                          vfs_fallocate
+                          __x64_sys_fallocate
+                          x64_sys_call
+                          do_syscall_64
+                          entry_SYSCALL_64_after_hwframe
+                          __syscall4 (inlined)
+                          fallocate
+                          <fxdax::extentd::client::Client>::receive
+                          <fxdax::thread::spawn<(), &str, <fxdax::extentd::client::Client>::start::{closure#0}>::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                          std::sys::backtrace::__rust_begin_short_backtrace::<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>
+                          <std::thread::lifecycle::spawn_unchecked<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                          <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+                          <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+                          <std::sys::thread::unix::Thread>::new::thread_start
+                          start
+
+     9.43%     0.28%  [k] zap_pte_range
+            |
+            ---zap_pmd_range.isra.0
+               unmap_page_range
+               unmap_single_vma
+               |          
+                --0.06%--zap_page_range_single_batched
+                          zap_page_range_single
+                          unmap_mapping_range
+                          shmem_fallocate
+                          vfs_fallocate
+                          __x64_sys_fallocate
+                          x64_sys_call
+                          do_syscall_64
+                          entry_SYSCALL_64_after_hwframe
+                          __syscall4 (inlined)
+                          fallocate
+                          <fxdax::extentd::client::Client>::receive
+                          <fxdax::thread::spawn<(), &str, <fxdax::extentd::client::Client>::start::{closure#0}>::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                          std::sys::backtrace::__rust_begin_short_backtrace::<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>
+                          <std::thread::lifecycle::spawn_unchecked<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                          <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+                          <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+                          <std::sys::thread::unix::Thread>::new::thread_start
+                          start
+
+     8.44%     0.43%  [.] <fxdax::dax::uffd::UffdSecondStage as fxdax::dax::SecondStage>::make_private
+            |
+            ---<fxdax::extentd::client::Client>::receive
+               <fxdax::thread::spawn<(), &str, <fxdax::extentd::client::Client>::start::{closure#0}>::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               std::sys::backtrace::__rust_begin_short_backtrace::<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>
+               <std::thread::lifecycle::spawn_unchecked<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+               <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+               <std::sys::thread::unix::Thread>::new::thread_start
+               start
+
+     7.73%     0.07%  [.] kvm_vcpu_ioctl
+            |
+            ---__x64_sys_ioctl
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               ioctl
+               <fxdax::dax::uffd::UffdSecondStage as fxdax::dax::SecondStage>::make_private
+               <fxdax::extentd::client::Client>::receive
+               <fxdax::thread::spawn<(), &str, <fxdax::extentd::client::Client>::start::{closure#0}>::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               std::sys::backtrace::__rust_begin_short_backtrace::<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>
+               <std::thread::lifecycle::spawn_unchecked<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+               <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+               <std::sys::thread::unix::Thread>::new::thread_start
+               start
+
+     7.59%     0.00%  [.] kvm_vcpu_pre_fault_memory
+            |
+            ---kvm_vcpu_ioctl
+               __x64_sys_ioctl
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               ioctl
+               <fxdax::dax::uffd::UffdSecondStage as fxdax::dax::SecondStage>::make_private
+               <fxdax::extentd::client::Client>::receive
+               <fxdax::thread::spawn<(), &str, <fxdax::extentd::client::Client>::start::{closure#0}>::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               std::sys::backtrace::__rust_begin_short_backtrace::<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>
+               <std::thread::lifecycle::spawn_unchecked<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+               <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+               <std::sys::thread::unix::Thread>::new::thread_start
+               start
+
+     7.59%     0.00%  [.] tlb_flush_mmu_tlbonly
+            |
+            ---zap_pte_range
+               zap_pmd_range.isra.0
+               unmap_page_range
+               unmap_single_vma
+               zap_page_range_single_batched
+               zap_page_range_single
+               unmap_mapping_range
+               shmem_fallocate
+               vfs_fallocate
+               __x64_sys_fallocate
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               __syscall4 (inlined)
+               fallocate
+               <fxdax::extentd::client::Client>::receive
+               <fxdax::thread::spawn<(), &str, <fxdax::extentd::client::Client>::start::{closure#0}>::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               std::sys::backtrace::__rust_begin_short_backtrace::<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>
+               <std::thread::lifecycle::spawn_unchecked<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+               <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+               <std::sys::thread::unix::Thread>::new::thread_start
+               start
+
+     7.52%     0.00%  [.] kvm_arch_vcpu_pre_fault_memory
+            |
+            ---kvm_vcpu_pre_fault_memory
+               kvm_vcpu_ioctl
+               __x64_sys_ioctl
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               ioctl
+               <fxdax::dax::uffd::UffdSecondStage as fxdax::dax::SecondStage>::make_private
+               <fxdax::extentd::client::Client>::receive
+               <fxdax::thread::spawn<(), &str, <fxdax::extentd::client::Client>::start::{closure#0}>::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               std::sys::backtrace::__rust_begin_short_backtrace::<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>
+               <std::thread::lifecycle::spawn_unchecked<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+               <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+               <std::sys::thread::unix::Thread>::new::thread_start
+               start
+
+     7.45%     0.00%  [.] kvm_tdp_page_prefault.constprop.0
+            |
+            ---kvm_arch_vcpu_pre_fault_memory
+               kvm_vcpu_pre_fault_memory
+               kvm_vcpu_ioctl
+               __x64_sys_ioctl
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               ioctl
+               <fxdax::dax::uffd::UffdSecondStage as fxdax::dax::SecondStage>::make_private
+               <fxdax::extentd::client::Client>::receive
+               <fxdax::thread::spawn<(), &str, <fxdax::extentd::client::Client>::start::{closure#0}>::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               std::sys::backtrace::__rust_begin_short_backtrace::<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>
+               <std::thread::lifecycle::spawn_unchecked<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+               <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+               <std::sys::thread::unix::Thread>::new::thread_start
+               start
+
+     7.45%     0.00%  [.] kvm_mmu_do_page_fault
+            |
+            ---kvm_tdp_page_prefault.constprop.0
+               kvm_arch_vcpu_pre_fault_memory
+               kvm_vcpu_pre_fault_memory
+               kvm_vcpu_ioctl
+               __x64_sys_ioctl
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               ioctl
+               <fxdax::dax::uffd::UffdSecondStage as fxdax::dax::SecondStage>::make_private
+               <fxdax::extentd::client::Client>::receive
+               <fxdax::thread::spawn<(), &str, <fxdax::extentd::client::Client>::start::{closure#0}>::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               std::sys::backtrace::__rust_begin_short_backtrace::<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>
+               <std::thread::lifecycle::spawn_unchecked<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+               <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+               <std::sys::thread::unix::Thread>::new::thread_start
+               start
+
+     7.45%     0.00%  [.] kvm_tdp_page_fault
+            |
+            ---kvm_mmu_do_page_fault
+               kvm_tdp_page_prefault.constprop.0
+               kvm_arch_vcpu_pre_fault_memory
+               kvm_vcpu_pre_fault_memory
+               kvm_vcpu_ioctl
+               __x64_sys_ioctl
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               ioctl
+               <fxdax::dax::uffd::UffdSecondStage as fxdax::dax::SecondStage>::make_private
+               <fxdax::extentd::client::Client>::receive
+               <fxdax::thread::spawn<(), &str, <fxdax::extentd::client::Client>::start::{closure#0}>::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               std::sys::backtrace::__rust_begin_short_backtrace::<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>
+               <std::thread::lifecycle::spawn_unchecked<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+               <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+               <std::sys::thread::unix::Thread>::new::thread_start
+               start
+
+     7.45%     0.00%  [.] kvm_unmap_gfn_range
+            |
+            ---kvm_mmu_notifier_invalidate_range_start
+               __mmu_notifier_invalidate_range_start
+               |          
+                --0.05%--unmap_vmas
+                          unmap_region
+                          __mmap_region
+                          mmap_region
+                          do_mmap
+                          vm_mmap_pgoff
+                          ksys_mmap_pgoff
+                          __x64_sys_mmap
+                          x64_sys_call
+                          do_syscall_64
+                          entry_SYSCALL_64_after_hwframe
+                          __syscall6 (inlined)
+                          __mmap
+                          <fxdax::extentd::client::Client>::receive
+                          <fxdax::thread::spawn<(), &str, <fxdax::extentd::client::Client>::start::{closure#0}>::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                          std::sys::backtrace::__rust_begin_short_backtrace::<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>
+                          <std::thread::lifecycle::spawn_unchecked<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                          <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+                          <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+                          <std::sys::thread::unix::Thread>::new::thread_start
+                          start
+
+     7.45%     6.67%  [k] tdp_mmu_zap_leafs
+            |          
+             --0.06%--kvm_tdp_mmu_unmap_gfn_range
+                       kvm_unmap_gfn_range
+                       kvm_mmu_notifier_invalidate_range_start
+                       __mmu_notifier_invalidate_range_start
+                       |          
+                        --0.05%--unmap_vmas
+                                  unmap_region
+                                  __mmap_region
+                                  mmap_region
+                                  do_mmap
+                                  vm_mmap_pgoff
+                                  ksys_mmap_pgoff
+                                  __x64_sys_mmap
+                                  x64_sys_call
+                                  do_syscall_64
+                                  entry_SYSCALL_64_after_hwframe
+                                  __syscall6 (inlined)
+                                  __mmap
+                                  <fxdax::extentd::client::Client>::receive
+                                  <fxdax::thread::spawn<(), &str, <fxdax::extentd::client::Client>::start::{closure#0}>::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                                  std::sys::backtrace::__rust_begin_short_backtrace::<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>
+                                  <std::thread::lifecycle::spawn_unchecked<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                                  <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+                                  <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+                                  <std::sys::thread::unix::Thread>::new::thread_start
+                                  start
+
+     7.38%     0.00%  [.] kvm_tdp_mmu_unmap_gfn_range
+            |
+            ---kvm_unmap_gfn_range
+               kvm_mmu_notifier_invalidate_range_start
+               __mmu_notifier_invalidate_range_start
+               |          
+                --0.05%--unmap_vmas
+                          unmap_region
+                          __mmap_region
+                          mmap_region
+                          do_mmap
+                          vm_mmap_pgoff
+                          ksys_mmap_pgoff
+                          __x64_sys_mmap
+                          x64_sys_call
+                          do_syscall_64
+                          entry_SYSCALL_64_after_hwframe
+                          __syscall6 (inlined)
+                          __mmap
+                          <fxdax::extentd::client::Client>::receive
+                          <fxdax::thread::spawn<(), &str, <fxdax::extentd::client::Client>::start::{closure#0}>::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                          std::sys::backtrace::__rust_begin_short_backtrace::<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>
+                          <std::thread::lifecycle::spawn_unchecked<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                          <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+                          <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+                          <std::sys::thread::unix::Thread>::new::thread_start
+                          start
+
+     7.09%     0.00%  [.] kvm_tdp_mmu_map
+            |
+            ---kvm_tdp_page_fault
+               kvm_mmu_do_page_fault
+               kvm_tdp_page_prefault.constprop.0
+               kvm_arch_vcpu_pre_fault_memory
+               kvm_vcpu_pre_fault_memory
+               kvm_vcpu_ioctl
+               __x64_sys_ioctl
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               ioctl
+               <fxdax::dax::uffd::UffdSecondStage as fxdax::dax::SecondStage>::make_private
+               <fxdax::extentd::client::Client>::receive
+               <fxdax::thread::spawn<(), &str, <fxdax::extentd::client::Client>::start::{closure#0}>::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               std::sys::backtrace::__rust_begin_short_backtrace::<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>
+               <std::thread::lifecycle::spawn_unchecked<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+               <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+               <std::sys::thread::unix::Thread>::new::thread_start
+               start
+
+     6.81%     0.00%  [.] __x64_sys_recvmsg
+            |
+            ---x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               sccp
+               <fxdax::extentd::client::Client>::receive
+               <fxdax::thread::spawn<(), &str, <fxdax::extentd::client::Client>::start::{closure#0}>::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               std::sys::backtrace::__rust_begin_short_backtrace::<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>
+               <std::thread::lifecycle::spawn_unchecked<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+               <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+               <std::sys::thread::unix::Thread>::new::thread_start
+               start
+
+     6.81%     0.00%  [.] tdp_mmu_map_handle_target_level
+            |
+            ---kvm_tdp_mmu_map
+               kvm_tdp_page_fault
+               kvm_mmu_do_page_fault
+               kvm_tdp_page_prefault.constprop.0
+               kvm_arch_vcpu_pre_fault_memory
+               kvm_vcpu_pre_fault_memory
+               kvm_vcpu_ioctl
+               __x64_sys_ioctl
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               ioctl
+               <fxdax::dax::uffd::UffdSecondStage as fxdax::dax::SecondStage>::make_private
+               <fxdax::extentd::client::Client>::receive
+               <fxdax::thread::spawn<(), &str, <fxdax::extentd::client::Client>::start::{closure#0}>::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               std::sys::backtrace::__rust_begin_short_backtrace::<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>
+               <std::thread::lifecycle::spawn_unchecked<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+               <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+               <std::sys::thread::unix::Thread>::new::thread_start
+               start
+
+     6.81%     6.74%  [k] tdp_mmu_set_spte_atomic
+            |
+            ---tdp_mmu_map_handle_target_level
+               kvm_tdp_mmu_map
+               kvm_tdp_page_fault
+               kvm_mmu_do_page_fault
+               kvm_tdp_page_prefault.constprop.0
+               kvm_arch_vcpu_pre_fault_memory
+               kvm_vcpu_pre_fault_memory
+               kvm_vcpu_ioctl
+               __x64_sys_ioctl
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               ioctl
+               <fxdax::dax::uffd::UffdSecondStage as fxdax::dax::SecondStage>::make_private
+               <fxdax::extentd::client::Client>::receive
+               <fxdax::thread::spawn<(), &str, <fxdax::extentd::client::Client>::start::{closure#0}>::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               std::sys::backtrace::__rust_begin_short_backtrace::<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>
+               <std::thread::lifecycle::spawn_unchecked<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+               <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+               <std::sys::thread::unix::Thread>::new::thread_start
+               start
+
+     6.74%     0.00%  [.] __sys_recvmsg
+            |
+            ---__x64_sys_recvmsg
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               sccp
+               <fxdax::extentd::client::Client>::receive
+               <fxdax::thread::spawn<(), &str, <fxdax::extentd::client::Client>::start::{closure#0}>::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               std::sys::backtrace::__rust_begin_short_backtrace::<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>
+               <std::thread::lifecycle::spawn_unchecked<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+               <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+               <std::sys::thread::unix::Thread>::new::thread_start
+               start
+
+     6.52%     0.14%  [.] ___sys_recvmsg
+            |
+            ---__sys_recvmsg
+               __x64_sys_recvmsg
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               sccp
+               <fxdax::extentd::client::Client>::receive
+               <fxdax::thread::spawn<(), &str, <fxdax::extentd::client::Client>::start::{closure#0}>::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               std::sys::backtrace::__rust_begin_short_backtrace::<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>
+               <std::thread::lifecycle::spawn_unchecked<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+               <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+               <std::sys::thread::unix::Thread>::new::thread_start
+               start
+
+     5.89%     0.07%  [.] ____sys_recvmsg
+            |
+            ---___sys_recvmsg
+               __sys_recvmsg
+               __x64_sys_recvmsg
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               sccp
+               <fxdax::extentd::client::Client>::receive
+               <fxdax::thread::spawn<(), &str, <fxdax::extentd::client::Client>::start::{closure#0}>::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               std::sys::backtrace::__rust_begin_short_backtrace::<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>
+               <std::thread::lifecycle::spawn_unchecked<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+               <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+               <std::sys::thread::unix::Thread>::new::thread_start
+               start
+
+     5.74%     0.00%  [.] sock_recvmsg
+            |
+            ---____sys_recvmsg
+               ___sys_recvmsg
+               __sys_recvmsg
+               __x64_sys_recvmsg
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               sccp
+               <fxdax::extentd::client::Client>::receive
+               <fxdax::thread::spawn<(), &str, <fxdax::extentd::client::Client>::start::{closure#0}>::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               std::sys::backtrace::__rust_begin_short_backtrace::<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>
+               <std::thread::lifecycle::spawn_unchecked<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+               <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+               <std::sys::thread::unix::Thread>::new::thread_start
+               start
+
+     5.74%     0.07%  [.] unix_stream_recvmsg
+            |          
+             --0.05%--sock_recvmsg
+                       ____sys_recvmsg
+                       ___sys_recvmsg
+                       __sys_recvmsg
+                       __x64_sys_recvmsg
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       sccp
+                       <fxdax::extentd::client::Client>::receive
+                       <fxdax::thread::spawn<(), &str, <fxdax::extentd::client::Client>::start::{closure#0}>::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                       std::sys::backtrace::__rust_begin_short_backtrace::<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>
+                       <std::thread::lifecycle::spawn_unchecked<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                       <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+                       <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+                       <std::sys::thread::unix::Thread>::new::thread_start
+                       start
+
+     5.60%     0.35%  [.] unix_stream_read_generic
+            |
+            ---unix_stream_recvmsg
+               sock_recvmsg
+               ____sys_recvmsg
+               ___sys_recvmsg
+               __sys_recvmsg
+               __x64_sys_recvmsg
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               sccp
+               <fxdax::extentd::client::Client>::receive
+               <fxdax::thread::spawn<(), &str, <fxdax::extentd::client::Client>::start::{closure#0}>::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               std::sys::backtrace::__rust_begin_short_backtrace::<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>
+               <std::thread::lifecycle::spawn_unchecked<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+               <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+               <std::sys::thread::unix::Thread>::new::thread_start
+               start
+
+     4.96%     0.07%  [.] userfaultfd_ioctl
+            |
+            ---__x64_sys_ioctl
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               ioctl
+               <fxdax::extentd::client::Client>::receive
+               <fxdax::thread::spawn<(), &str, <fxdax::extentd::client::Client>::start::{closure#0}>::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               std::sys::backtrace::__rust_begin_short_backtrace::<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>
+               <std::thread::lifecycle::spawn_unchecked<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+               <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+               <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+               <std::sys::thread::unix::Thread>::new::thread_start
+               start
+
+     3.97%     0.00%  [.] __munmap
+     3.97%     0.00%  [.] __syscall2 (inlined)
+            |
+            ---__munmap
+
+     3.90%     0.00%  [.] __x64_sys_munmap
+            |
+            ---x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               __syscall2 (inlined)
+               __munmap
+
+     3.90%     0.00%  [.] __vm_munmap
+            |
+            ---__x64_sys_munmap
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               __syscall2 (inlined)
+               __munmap
+
+     3.90%     0.14%  [.] do_vmi_munmap
+            |
+            ---__vm_munmap
+               __x64_sys_munmap
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               __syscall2 (inlined)
+               __munmap
+
+     3.90%     0.00%  [.] vms_complete_munmap_vmas
+            |          
+             --0.03%--do_vmi_align_munmap
+                       do_vmi_munmap
+                       __vm_munmap
+                       __x64_sys_munmap
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       __syscall2 (inlined)
+                       __munmap
+
+     3.83%     0.21%  [.] vms_gather_munmap_vmas
+            |          
+             --0.03%--__mmap_region
+                       mmap_region
+                       do_mmap
+                       vm_mmap_pgoff
+                       ksys_mmap_pgoff
+                       __x64_sys_mmap
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       __syscall6 (inlined)
+                       __mmap
+                       <fxdax::extentd::client::Client>::receive
+                       <fxdax::thread::spawn<(), &str, <fxdax::extentd::client::Client>::start::{closure#0}>::{closure#0} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                       std::sys::backtrace::__rust_begin_short_backtrace::<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>
+                       <std::thread::lifecycle::spawn_unchecked<vmm::builder::confine_extent_threads::{closure#1}::{closure#0}::{closure#0}, ()>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+                       <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+                       <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+                       <std::sys::thread::unix::Thread>::new::thread_start
+                       start
+
+     3.76%     0.00%  [.] do_vmi_align_munmap
+            |
+            ---do_vmi_munmap
+               __vm_munmap
+               __x64_sys_munmap
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               __syscall2 (inlined)
+               __munmap
+
+     3.12%     0.14%  [.] __split_vma
+     3.12%     3.12%  [k] _raw_spin_unlock_irqrestore
+
+
+#
+# (Cannot load tips.txt file, please install perf!)
+#

@@ -1,0 +1,727 @@
+{
+  "case": "bench-fs-ext4-guest-kernel",
+  "backend": "ext4-guest-kernel",
+  "host_os": "linux",
+  "vmm": "firecracker",
+  "iterations": 3,
+  "results": [
+    {
+      "workload": "scale-rand-read-cold-j1",
+      "unit": "IOPS",
+      "higher_is_better": true,
+      "values": [
+        24975.61,
+        30117.647,
+        26256.41
+      ]
+    },
+    {
+      "workload": "scale-rand-read-cold-j1-p50",
+      "unit": "us",
+      "higher_is_better": false,
+      "values": [
+        41.216,
+        31.36,
+        36.096
+      ]
+    },
+    {
+      "workload": "scale-rand-read-cold-j1-p99",
+      "unit": "us",
+      "higher_is_better": false,
+      "values": [
+        88.576,
+        50.944,
+        59.648
+      ]
+    },
+    {
+      "workload": "scale-rand-read-warm-j1",
+      "unit": "IOPS",
+      "higher_is_better": true,
+      "values": [
+        988141.929,
+        972698.151,
+        966843.078
+      ]
+    },
+    {
+      "workload": "scale-rand-read-warm-j1-p50",
+      "unit": "us",
+      "higher_is_better": false,
+      "values": [
+        0.716,
+        0.732,
+        0.74
+      ]
+    },
+    {
+      "workload": "scale-rand-read-warm-j1-p99",
+      "unit": "us",
+      "higher_is_better": false,
+      "values": [
+        0.98,
+        1.004,
+        1.012
+      ]
+    },
+    {
+      "workload": "scale-rand-read-cold-j2",
+      "unit": "IOPS",
+      "higher_is_better": true,
+      "values": [
+        52512.821,
+        55351.351,
+        53894.737
+      ]
+    },
+    {
+      "workload": "scale-rand-read-cold-j2-p50",
+      "unit": "us",
+      "higher_is_better": false,
+      "values": [
+        34.56,
+        33.536,
+        34.56
+      ]
+    },
+    {
+      "workload": "scale-rand-read-cold-j2-p99",
+      "unit": "us",
+      "higher_is_better": false,
+      "values": [
+        66.048,
+        58.624,
+        59.648
+      ]
+    },
+    {
+      "workload": "scale-rand-read-warm-j2",
+      "unit": "IOPS",
+      "higher_is_better": true,
+      "values": [
+        1860078.961,
+        1844742.629,
+        1845314.186
+      ]
+    },
+    {
+      "workload": "scale-rand-read-warm-j2-p50",
+      "unit": "us",
+      "higher_is_better": false,
+      "values": [
+        0.772,
+        0.78,
+        0.772
+      ]
+    },
+    {
+      "workload": "scale-rand-read-warm-j2-p99",
+      "unit": "us",
+      "higher_is_better": false,
+      "values": [
+        1.08,
+        1.064,
+        1.08
+      ]
+    },
+    {
+      "workload": "scale-rand-read-cold-j4",
+      "unit": "IOPS",
+      "higher_is_better": true,
+      "values": [
+        38824.645,
+        57690.141,
+        38280.374
+      ]
+    },
+    {
+      "workload": "scale-rand-read-cold-j4-p50",
+      "unit": "us",
+      "higher_is_better": false,
+      "values": [
+        114.176,
+        64.768,
+        118.272
+      ]
+    },
+    {
+      "workload": "scale-rand-read-cold-j4-p99",
+      "unit": "us",
+      "higher_is_better": false,
+      "values": [
+        158.72,
+        129.536,
+        160.768
+      ]
+    },
+    {
+      "workload": "scale-rand-read-warm-j4",
+      "unit": "IOPS",
+      "higher_is_better": true,
+      "values": [
+        3650056.972,
+        3625857.071,
+        3650408.591
+      ]
+    },
+    {
+      "workload": "scale-rand-read-warm-j4-p50",
+      "unit": "us",
+      "higher_is_better": false,
+      "values": [
+        0.788,
+        0.796,
+        0.788
+      ]
+    },
+    {
+      "workload": "scale-rand-read-warm-j4-p99",
+      "unit": "us",
+      "higher_is_better": false,
+      "values": [
+        1.144,
+        1.128,
+        1.144
+      ]
+    },
+    {
+      "workload": "scale-rand-read-cold-j8",
+      "unit": "IOPS",
+      "higher_is_better": true,
+      "values": [
+        46545.455,
+        49498.489,
+        47766.764
+      ]
+    },
+    {
+      "workload": "scale-rand-read-cold-j8-p50",
+      "unit": "us",
+      "higher_is_better": false,
+      "values": [
+        164.864,
+        156.672,
+        162.816
+      ]
+    },
+    {
+      "workload": "scale-rand-read-cold-j8-p99",
+      "unit": "us",
+      "higher_is_better": false,
+      "values": [
+        261.12,
+        234.496,
+        242.688
+      ]
+    },
+    {
+      "workload": "scale-rand-read-warm-j8",
+      "unit": "IOPS",
+      "higher_is_better": true,
+      "values": [
+        4569835.664,
+        4530337.494,
+        4561215.892
+      ]
+    },
+    {
+      "workload": "scale-rand-read-warm-j8-p50",
+      "unit": "us",
+      "higher_is_better": false,
+      "values": [
+        1.144,
+        1.16,
+        1.144
+      ]
+    },
+    {
+      "workload": "scale-rand-read-warm-j8-p99",
+      "unit": "us",
+      "higher_is_better": false,
+      "values": [
+        1.64,
+        1.656,
+        1.64
+      ]
+    },
+    {
+      "workload": "scale-rand-read-cold-qd16",
+      "unit": "IOPS",
+      "higher_is_better": true,
+      "values": [
+        58514.286,
+        64000.0,
+        56888.889
+      ]
+    },
+    {
+      "workload": "scale-rand-read-cold-qd16-p50",
+      "unit": "us",
+      "higher_is_better": false,
+      "values": [
+        222.208,
+        222.208,
+        276.48
+      ]
+    },
+    {
+      "workload": "scale-rand-read-cold-qd16-p99",
+      "unit": "us",
+      "higher_is_better": false,
+      "values": [
+        552.96,
+        284.672,
+        333.824
+      ]
+    },
+    {
+      "workload": "scale-rand-write-j1",
+      "unit": "IOPS",
+      "higher_is_better": true,
+      "values": [
+        21333.333,
+        22260.87,
+        22260.87
+      ]
+    },
+    {
+      "workload": "scale-rand-write-j1-p50",
+      "unit": "us",
+      "higher_is_better": false,
+      "values": [
+        1.352,
+        1.336,
+        1.4
+      ]
+    },
+    {
+      "workload": "scale-rand-write-j1-p99",
+      "unit": "us",
+      "higher_is_better": false,
+      "values": [
+        16.32,
+        4.128,
+        4.32
+      ]
+    },
+    {
+      "workload": "scale-fsync-append-j1",
+      "unit": "IOPS",
+      "higher_is_better": true,
+      "values": [
+        429.17,
+        440.999,
+        444.444
+      ]
+    },
+    {
+      "workload": "scale-fsync-append-j1-p50",
+      "unit": "us",
+      "higher_is_better": false,
+      "values": [
+        6.752,
+        7.52,
+        5.6
+      ]
+    },
+    {
+      "workload": "scale-fsync-append-j1-p99",
+      "unit": "us",
+      "higher_is_better": false,
+      "values": [
+        43.776,
+        17.024,
+        16.064
+      ]
+    },
+    {
+      "workload": "scale-fsync-append-j1-fsync-p50",
+      "unit": "us",
+      "higher_is_better": false,
+      "values": [
+        2310.144,
+        2244.608,
+        2244.608
+      ]
+    },
+    {
+      "workload": "scale-fsync-append-j1-fsync-p99",
+      "unit": "us",
+      "higher_is_better": false,
+      "values": [
+        2801.664,
+        2703.36,
+        2670.592
+      ]
+    },
+    {
+      "workload": "scale-create-j1",
+      "unit": "ops/s",
+      "higher_is_better": true,
+      "values": [
+        96812.347,
+        106198.639,
+        107034.666
+      ]
+    },
+    {
+      "workload": "scale-stat-cold-j1",
+      "unit": "ops/s",
+      "higher_is_better": true,
+      "values": [
+        201229.006,
+        253621.332,
+        248754.641
+      ]
+    },
+    {
+      "workload": "scale-unlink-j1",
+      "unit": "ops/s",
+      "higher_is_better": true,
+      "values": [
+        212516.454,
+        215282.403,
+        168570.786
+      ]
+    },
+    {
+      "workload": "scale-rand-write-j2",
+      "unit": "IOPS",
+      "higher_is_better": true,
+      "values": [
+        44521.739,
+        44521.739,
+        45511.111
+      ]
+    },
+    {
+      "workload": "scale-rand-write-j2-p50",
+      "unit": "us",
+      "higher_is_better": false,
+      "values": [
+        1.704,
+        1.528,
+        2.096
+      ]
+    },
+    {
+      "workload": "scale-rand-write-j2-p99",
+      "unit": "us",
+      "higher_is_better": false,
+      "values": [
+        29.312,
+        6.112,
+        8.768
+      ]
+    },
+    {
+      "workload": "scale-fsync-append-j2",
+      "unit": "IOPS",
+      "higher_is_better": true,
+      "values": [
+        466.09,
+        616.867,
+        909.414
+      ]
+    },
+    {
+      "workload": "scale-fsync-append-j2-p50",
+      "unit": "us",
+      "higher_is_better": false,
+      "values": [
+        47.872,
+        10.816,
+        5.664
+      ]
+    },
+    {
+      "workload": "scale-fsync-append-j2-p99",
+      "unit": "us",
+      "higher_is_better": false,
+      "values": [
+        97.792,
+        85.504,
+        14.912
+      ]
+    },
+    {
+      "workload": "scale-fsync-append-j2-fsync-p50",
+      "unit": "us",
+      "higher_is_better": false,
+      "values": [
+        4227.072,
+        2539.52,
+        2179.072
+      ]
+    },
+    {
+      "workload": "scale-fsync-append-j2-fsync-p99",
+      "unit": "us",
+      "higher_is_better": false,
+      "values": [
+        5865.472,
+        4947.968,
+        2736.128
+      ]
+    },
+    {
+      "workload": "scale-create-j2",
+      "unit": "ops/s",
+      "higher_is_better": true,
+      "values": [
+        144550.814,
+        162936.474,
+        172903.191
+      ]
+    },
+    {
+      "workload": "scale-stat-cold-j2",
+      "unit": "ops/s",
+      "higher_is_better": true,
+      "values": [
+        303198.716,
+        324165.002,
+        368187.631
+      ]
+    },
+    {
+      "workload": "scale-unlink-j2",
+      "unit": "ops/s",
+      "higher_is_better": true,
+      "values": [
+        258190.38,
+        301041.445,
+        315945.659
+      ]
+    },
+    {
+      "workload": "scale-rand-write-j4",
+      "unit": "IOPS",
+      "higher_is_better": true,
+      "values": [
+        42666.667,
+        48188.235,
+        44043.011
+      ]
+    },
+    {
+      "workload": "scale-rand-write-j4-p50",
+      "unit": "us",
+      "higher_is_better": false,
+      "values": [
+        2.192,
+        1.544,
+        1.912
+      ]
+    },
+    {
+      "workload": "scale-rand-write-j4-p99",
+      "unit": "us",
+      "higher_is_better": false,
+      "values": [
+        26.752,
+        6.624,
+        7.456
+      ]
+    },
+    {
+      "workload": "scale-fsync-append-j4",
+      "unit": "IOPS",
+      "higher_is_better": true,
+      "values": [
+        938.588,
+        908.204,
+        930.909
+      ]
+    },
+    {
+      "workload": "scale-fsync-append-j4-p50",
+      "unit": "us",
+      "higher_is_better": false,
+      "values": [
+        60.16,
+        61.696,
+        59.136
+      ]
+    },
+    {
+      "workload": "scale-fsync-append-j4-p99",
+      "unit": "us",
+      "higher_is_better": false,
+      "values": [
+        127.488,
+        142.336,
+        118.272
+      ]
+    },
+    {
+      "workload": "scale-fsync-append-j4-fsync-p50",
+      "unit": "us",
+      "higher_is_better": false,
+      "values": [
+        4227.072,
+        4292.608,
+        4227.072
+      ]
+    },
+    {
+      "workload": "scale-fsync-append-j4-fsync-p99",
+      "unit": "us",
+      "higher_is_better": false,
+      "values": [
+        5079.04,
+        6062.08,
+        6062.08
+      ]
+    },
+    {
+      "workload": "scale-create-j4",
+      "unit": "ops/s",
+      "higher_is_better": true,
+      "values": [
+        177492.945,
+        208761.822,
+        239337.908
+      ]
+    },
+    {
+      "workload": "scale-stat-cold-j4",
+      "unit": "ops/s",
+      "higher_is_better": true,
+      "values": [
+        375335.45,
+        420208.013,
+        385791.567
+      ]
+    },
+    {
+      "workload": "scale-unlink-j4",
+      "unit": "ops/s",
+      "higher_is_better": true,
+      "values": [
+        435123.4,
+        430889.638,
+        393643.756
+      ]
+    },
+    {
+      "workload": "scale-rand-write-j8",
+      "unit": "IOPS",
+      "higher_is_better": true,
+      "values": [
+        24023.46,
+        32507.937,
+        32899.598
+      ]
+    },
+    {
+      "workload": "scale-rand-write-j8-p50",
+      "unit": "us",
+      "higher_is_better": false,
+      "values": [
+        2.16,
+        2.16,
+        2.16
+      ]
+    },
+    {
+      "workload": "scale-rand-write-j8-p99",
+      "unit": "us",
+      "higher_is_better": false,
+      "values": [
+        21.632,
+        9.408,
+        10.048
+      ]
+    },
+    {
+      "workload": "scale-fsync-append-j8",
+      "unit": "IOPS",
+      "higher_is_better": true,
+      "values": [
+        1601.877,
+        1611.33,
+        1635.783
+      ]
+    },
+    {
+      "workload": "scale-fsync-append-j8-p50",
+      "unit": "us",
+      "higher_is_better": false,
+      "values": [
+        74.24,
+        74.24,
+        70.144
+      ]
+    },
+    {
+      "workload": "scale-fsync-append-j8-p99",
+      "unit": "us",
+      "higher_is_better": false,
+      "values": [
+        164.864,
+        154.624,
+        193.536
+      ]
+    },
+    {
+      "workload": "scale-fsync-append-j8-fsync-p50",
+      "unit": "us",
+      "higher_is_better": false,
+      "values": [
+        4882.432,
+        4816.896,
+        4751.36
+      ]
+    },
+    {
+      "workload": "scale-fsync-append-j8-fsync-p99",
+      "unit": "us",
+      "higher_is_better": false,
+      "values": [
+        5668.864,
+        6717.44,
+        6127.616
+      ]
+    },
+    {
+      "workload": "scale-create-j8",
+      "unit": "ops/s",
+      "higher_is_better": true,
+      "values": [
+        227399.36,
+        318990.236,
+        311040.503
+      ]
+    },
+    {
+      "workload": "scale-stat-cold-j8",
+      "unit": "ops/s",
+      "higher_is_better": true,
+      "values": [
+        405671.357,
+        405131.169,
+        411679.004
+      ]
+    },
+    {
+      "workload": "scale-unlink-j8",
+      "unit": "ops/s",
+      "higher_is_better": true,
+      "values": [
+        391784.427,
+        412398.099,
+        436667.136
+      ]
+    }
+  ],
+  "failures": {},
+  "observations": {
+    "mtime-ahead-of-guest-ms": [
+      -5.065,
+      -3.782,
+      -6.268
+    ]
+  }
+}

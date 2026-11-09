@@ -1,0 +1,8 @@
+Linux fxdax-keep-c3-standard-8-us-east5-b-1 7.0.0-1011-gcp #11-Ubuntu SMP PREEMPT Tue Aug 11 17:32:26 UTC 2026 x86_64 GNU/Linux
+model name	: Intel(R) Xeon(R) Platinum 8481C CPU @ 2.70GHz
+cpus 8
+MemTotal:       32856440 kB
+rustc 1.97.1 (8bab26f4f 2026-07-14)
+A unaffine: run-20261109T064056Z-d257eba5/a/source FXDAX_GUEST_CMDLINE=virtio_extent.affine=0
+B affine: same 
+Took 1580s.

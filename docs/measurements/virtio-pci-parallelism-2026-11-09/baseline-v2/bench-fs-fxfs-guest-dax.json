@@ -1,0 +1,1012 @@
+{
+  "case": "bench-fs-fxfs-guest-dax",
+  "backend": "fxfs-guest-dax",
+  "host_os": "linux",
+  "vmm": "firecracker",
+  "iterations": 3,
+  "results": [
+    {
+      "workload": "scale-rand-read-cold-j1",
+      "unit": "IOPS",
+      "higher_is_better": true,
+      "values": [
+        5580.381,
+        6243.902,
+        5535.135
+      ]
+    },
+    {
+      "workload": "scale-rand-read-cold-j1-p50",
+      "unit": "us",
+      "higher_is_better": false,
+      "values": [
+        13.504,
+        15.424,
+        13.76
+      ]
+    },
+    {
+      "workload": "scale-rand-read-cold-j1-p99",
+      "unit": "us",
+      "higher_is_better": false,
+      "values": [
+        4554.752,
+        4358.144,
+        4685.824
+      ]
+    },
+    {
+      "workload": "scale-rand-read-warm-j1",
+      "unit": "IOPS",
+      "higher_is_better": true,
+      "values": [
+        909821.089,
+        910570.715,
+        895427.286
+      ]
+    },
+    {
+      "workload": "scale-rand-read-warm-j1-p50",
+      "unit": "us",
+      "higher_is_better": false,
+      "values": [
+        0.796,
+        0.796,
+        0.82
+      ]
+    },
+    {
+      "workload": "scale-rand-read-warm-j1-p99",
+      "unit": "us",
+      "higher_is_better": false,
+      "values": [
+        1.032,
+        1.032,
+        1.048
+      ]
+    },
+    {
+      "workload": "scale-rand-read-cold-j2",
+      "unit": "IOPS",
+      "higher_is_better": true,
+      "values": [
+        9869.88,
+        9775.656,
+        10529.563
+      ]
+    },
+    {
+      "workload": "scale-rand-read-cold-j2-p50",
+      "unit": "us",
+      "higher_is_better": false,
+      "values": [
+        12.224,
+        12.48,
+        12.608
+      ]
+    },
+    {
+      "workload": "scale-rand-read-cold-j2-p99",
+      "unit": "us",
+      "higher_is_better": false,
+      "values": [
+        4882.432,
+        5341.184,
+        4685.824
+      ]
+    },
+    {
+      "workload": "scale-rand-read-warm-j2",
+      "unit": "IOPS",
+      "higher_is_better": true,
+      "values": [
+        1492949.525,
+        1478483.258,
+        1472718.141
+      ]
+    },
+    {
+      "workload": "scale-rand-read-warm-j2-p50",
+      "unit": "us",
+      "higher_is_better": false,
+      "values": [
+        1.004,
+        1.012,
+        1.02
+      ]
+    },
+    {
+      "workload": "scale-rand-read-warm-j2-p99",
+      "unit": "us",
+      "higher_is_better": false,
+      "values": [
+        1.432,
+        1.432,
+        1.464
+      ]
+    },
+    {
+      "workload": "scale-rand-read-cold-j4",
+      "unit": "IOPS",
+      "higher_is_better": true,
+      "values": [
+        23339.031,
+        22505.495,
+        22818.942
+      ]
+    },
+    {
+      "workload": "scale-rand-read-cold-j4-p50",
+      "unit": "us",
+      "higher_is_better": false,
+      "values": [
+        12.48,
+        12.48,
+        12.736
+      ]
+    },
+    {
+      "workload": "scale-rand-read-cold-j4-p99",
+      "unit": "us",
+      "higher_is_better": false,
+      "values": [
+        3915.776,
+        4554.752,
+        4358.144
+      ]
+    },
+    {
+      "workload": "scale-rand-read-warm-j4",
+      "unit": "IOPS",
+      "higher_is_better": true,
+      "values": [
+        1476180.91,
+        1476802.599,
+        1469731.134
+      ]
+    },
+    {
+      "workload": "scale-rand-read-warm-j4-p50",
+      "unit": "us",
+      "higher_is_better": false,
+      "values": [
+        1.032,
+        1.02,
+        1.032
+      ]
+    },
+    {
+      "workload": "scale-rand-read-warm-j4-p99",
+      "unit": "us",
+      "higher_is_better": false,
+      "values": [
+        1.448,
+        1.448,
+        1.448
+      ]
+    },
+    {
+      "workload": "scale-rand-read-cold-j8",
+      "unit": "IOPS",
+      "higher_is_better": true,
+      "values": [
+        25440.994,
+        25720.565,
+        24165.192
+      ]
+    },
+    {
+      "workload": "scale-rand-read-cold-j8-p50",
+      "unit": "us",
+      "higher_is_better": false,
+      "values": [
+        12.608,
+        12.864,
+        12.736
+      ]
+    },
+    {
+      "workload": "scale-rand-read-cold-j8-p99",
+      "unit": "us",
+      "higher_is_better": false,
+      "values": [
+        5668.864,
+        6127.616,
+        6717.44
+      ]
+    },
+    {
+      "workload": "scale-rand-read-warm-j8",
+      "unit": "IOPS",
+      "higher_is_better": true,
+      "values": [
+        1472495.02,
+        1462026.919,
+        1468879.741
+      ]
+    },
+    {
+      "workload": "scale-rand-read-warm-j8-p50",
+      "unit": "us",
+      "higher_is_better": false,
+      "values": [
+        1.032,
+        1.032,
+        1.032
+      ]
+    },
+    {
+      "workload": "scale-rand-read-warm-j8-p99",
+      "unit": "us",
+      "higher_is_better": false,
+      "values": [
+        1.48,
+        1.464,
+        1.48
+      ]
+    },
+    {
+      "workload": "scale-rand-read-cold-qd16",
+      "unit": "IOPS",
+      "higher_is_better": true,
+      "values": [
+        682666.667,
+        682666.667,
+        682666.667
+      ]
+    },
+    {
+      "workload": "scale-rand-read-cold-qd16-p50",
+      "unit": "us",
+      "higher_is_better": false,
+      "values": [
+        15.552,
+        16.192,
+        15.424
+      ]
+    },
+    {
+      "workload": "scale-rand-read-cold-qd16-p99",
+      "unit": "us",
+      "higher_is_better": false,
+      "values": [
+        73.216,
+        59.648,
+        64.256
+      ]
+    },
+    {
+      "workload": "scale-rand-write-j1",
+      "unit": "IOPS",
+      "higher_is_better": true,
+      "values": [
+        6282.209,
+        6320.988,
+        6131.737
+      ]
+    },
+    {
+      "workload": "scale-rand-write-j1-p50",
+      "unit": "us",
+      "higher_is_better": false,
+      "values": [
+        140.288,
+        140.288,
+        144.384
+      ]
+    },
+    {
+      "workload": "scale-rand-write-j1-p99",
+      "unit": "us",
+      "higher_is_better": false,
+      "values": [
+        205.824,
+        197.632,
+        205.824
+      ]
+    },
+    {
+      "workload": "scale-fsync-append-j1",
+      "unit": "IOPS",
+      "higher_is_better": true,
+      "values": [
+        3346.405,
+        3240.506,
+        3180.124
+      ]
+    },
+    {
+      "workload": "scale-fsync-append-j1-p50",
+      "unit": "us",
+      "higher_is_better": false,
+      "values": [
+        3.216,
+        3.024,
+        2.992
+      ]
+    },
+    {
+      "workload": "scale-fsync-append-j1-p99",
+      "unit": "us",
+      "higher_is_better": false,
+      "values": [
+        11.968,
+        10.176,
+        14.528
+      ]
+    },
+    {
+      "workload": "scale-fsync-append-j1-fsync-p50",
+      "unit": "us",
+      "higher_is_better": false,
+      "values": [
+        261.12,
+        248.832,
+        257.024
+      ]
+    },
+    {
+      "workload": "scale-fsync-append-j1-fsync-p99",
+      "unit": "us",
+      "higher_is_better": false,
+      "values": [
+        765.952,
+        1499.136,
+        1466.368
+      ]
+    },
+    {
+      "workload": "scale-create-j1",
+      "unit": "ops/s",
+      "higher_is_better": true,
+      "values": [
+        84472.305,
+        86468.411,
+        86517.165
+      ]
+    },
+    {
+      "workload": "scale-stat-cold-j1",
+      "unit": "ops/s",
+      "higher_is_better": true,
+      "values": [
+        172446.736,
+        158008.237,
+        159354.309
+      ]
+    },
+    {
+      "workload": "scale-unlink-j1",
+      "unit": "ops/s",
+      "higher_is_better": true,
+      "values": [
+        194366.236,
+        165417.092,
+        138440.591
+      ]
+    },
+    {
+      "workload": "scale-rand-write-j2",
+      "unit": "IOPS",
+      "higher_is_better": true,
+      "values": [
+        11976.608,
+        12263.473,
+        11570.621
+      ]
+    },
+    {
+      "workload": "scale-rand-write-j2-p50",
+      "unit": "us",
+      "higher_is_better": false,
+      "values": [
+        37.632,
+        86.528,
+        132.096
+      ]
+    },
+    {
+      "workload": "scale-rand-write-j2-p99",
+      "unit": "us",
+      "higher_is_better": false,
+      "values": [
+        240.64,
+        234.496,
+        236.544
+      ]
+    },
+    {
+      "workload": "scale-fsync-append-j2",
+      "unit": "IOPS",
+      "higher_is_better": true,
+      "values": [
+        4179.592,
+        3893.536,
+        3835.206
+      ]
+    },
+    {
+      "workload": "scale-fsync-append-j2-p50",
+      "unit": "us",
+      "higher_is_better": false,
+      "values": [
+        3.888,
+        3.984,
+        4.048
+      ]
+    },
+    {
+      "workload": "scale-fsync-append-j2-p99",
+      "unit": "us",
+      "higher_is_better": false,
+      "values": [
+        27.264,
+        29.568,
+        30.848
+      ]
+    },
+    {
+      "workload": "scale-fsync-append-j2-fsync-p50",
+      "unit": "us",
+      "higher_is_better": false,
+      "values": [
+        444.416,
+        436.224,
+        444.416
+      ]
+    },
+    {
+      "workload": "scale-fsync-append-j2-fsync-p99",
+      "unit": "us",
+      "higher_is_better": false,
+      "values": [
+        2072.576,
+        2408.448,
+        2146.304
+      ]
+    },
+    {
+      "workload": "scale-create-j2",
+      "unit": "ops/s",
+      "higher_is_better": true,
+      "values": [
+        117542.954,
+        127742.63,
+        133065.504
+      ]
+    },
+    {
+      "workload": "scale-stat-cold-j2",
+      "unit": "ops/s",
+      "higher_is_better": true,
+      "values": [
+        230015.955,
+        233311.736,
+        224773.577
+      ]
+    },
+    {
+      "workload": "scale-unlink-j2",
+      "unit": "ops/s",
+      "higher_is_better": true,
+      "values": [
+        191102.068,
+        202110.192,
+        176035.875
+      ]
+    },
+    {
+      "workload": "scale-rand-write-j4",
+      "unit": "IOPS",
+      "higher_is_better": true,
+      "values": [
+        12263.473,
+        12300.3,
+        12226.866
+      ]
+    },
+    {
+      "workload": "scale-rand-write-j4-p50",
+      "unit": "us",
+      "higher_is_better": false,
+      "values": [
+        276.48,
+        280.576,
+        284.672
+      ]
+    },
+    {
+      "workload": "scale-rand-write-j4-p99",
+      "unit": "us",
+      "higher_is_better": false,
+      "values": [
+        505.856,
+        505.856,
+        493.568
+      ]
+    },
+    {
+      "workload": "scale-fsync-append-j4",
+      "unit": "IOPS",
+      "higher_is_better": true,
+      "values": [
+        4612.613,
+        4686.499,
+        4612.613
+      ]
+    },
+    {
+      "workload": "scale-fsync-append-j4-p50",
+      "unit": "us",
+      "higher_is_better": false,
+      "values": [
+        3.728,
+        3.888,
+        3.792
+      ]
+    },
+    {
+      "workload": "scale-fsync-append-j4-p99",
+      "unit": "us",
+      "higher_is_better": false,
+      "values": [
+        44.8,
+        58.112,
+        56.576
+      ]
+    },
+    {
+      "workload": "scale-fsync-append-j4-fsync-p50",
+      "unit": "us",
+      "higher_is_better": false,
+      "values": [
+        485.376,
+        501.76,
+        493.568
+      ]
+    },
+    {
+      "workload": "scale-fsync-append-j4-fsync-p99",
+      "unit": "us",
+      "higher_is_better": false,
+      "values": [
+        5799.936,
+        4947.968,
+        5799.936
+      ]
+    },
+    {
+      "workload": "scale-create-j4",
+      "unit": "ops/s",
+      "higher_is_better": true,
+      "values": [
+        101690.381,
+        115967.073,
+        99734.467
+      ]
+    },
+    {
+      "workload": "scale-stat-cold-j4",
+      "unit": "ops/s",
+      "higher_is_better": true,
+      "values": [
+        202551.767,
+        198556.775,
+        198339.625
+      ]
+    },
+    {
+      "workload": "scale-unlink-j4",
+      "unit": "ops/s",
+      "higher_is_better": true,
+      "values": [
+        190890.792,
+        184253.197,
+        187013.467
+      ]
+    },
+    {
+      "workload": "scale-rand-write-j8",
+      "unit": "IOPS",
+      "higher_is_better": true,
+      "values": [
+        11299.31,
+        11346.26,
+        11070.27
+      ]
+    },
+    {
+      "workload": "scale-rand-write-j8-p50",
+      "unit": "us",
+      "higher_is_better": false,
+      "values": [
+        626.688,
+        618.496,
+        643.072
+      ]
+    },
+    {
+      "workload": "scale-rand-write-j8-p99",
+      "unit": "us",
+      "higher_is_better": false,
+      "values": [
+        1400.832,
+        1318.912,
+        1302.528
+      ]
+    },
+    {
+      "workload": "scale-fsync-append-j8",
+      "unit": "IOPS",
+      "higher_is_better": true,
+      "values": [
+        4654.545,
+        4535.991,
+        4581.655
+      ]
+    },
+    {
+      "workload": "scale-fsync-append-j8-p50",
+      "unit": "us",
+      "higher_is_better": false,
+      "values": [
+        3.728,
+        3.856,
+        3.856
+      ]
+    },
+    {
+      "workload": "scale-fsync-append-j8-p99",
+      "unit": "us",
+      "higher_is_better": false,
+      "values": [
+        58.624,
+        58.624,
+        51.968
+      ]
+    },
+    {
+      "workload": "scale-fsync-append-j8-fsync-p50",
+      "unit": "us",
+      "higher_is_better": false,
+      "values": [
+        544.768,
+        544.768,
+        569.344
+      ]
+    },
+    {
+      "workload": "scale-fsync-append-j8-fsync-p99",
+      "unit": "us",
+      "higher_is_better": false,
+      "values": [
+        17170.432,
+        18743.296,
+        16908.288
+      ]
+    },
+    {
+      "workload": "scale-create-j8",
+      "unit": "ops/s",
+      "higher_is_better": true,
+      "values": [
+        120613.036,
+        116154.973,
+        117135.567
+      ]
+    },
+    {
+      "workload": "scale-stat-cold-j8",
+      "unit": "ops/s",
+      "higher_is_better": true,
+      "values": [
+        214963.1,
+        202463.764,
+        213999.66
+      ]
+    },
+    {
+      "workload": "scale-unlink-j8",
+      "unit": "ops/s",
+      "higher_is_better": true,
+      "values": [
+        180882.99,
+        180743.563,
+        180795.767
+      ]
+    }
+  ],
+  "failures": {},
+  "observations": {
+    "mtime-ahead-of-guest-ms": [
+      -4.55,
+      -6.403,
+      -3.739
+    ],
+    "scale-create-j1-queues-used": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "scale-create-j2-queues-used": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "scale-create-j4-cross-cpu-pct": [
+      100.0,
+      100.0,
+      100.0
+    ],
+    "scale-create-j4-interrupts-per-request": [
+      0.437,
+      1.0,
+      0.36
+    ],
+    "scale-create-j4-queues-used": [
+      2.0,
+      2.0,
+      2.0
+    ],
+    "scale-create-j8-cross-cpu-pct": [
+      100.0,
+      100.0,
+      100.0
+    ],
+    "scale-create-j8-interrupts-per-request": [
+      0.292,
+      0.25,
+      0.303
+    ],
+    "scale-create-j8-queues-used": [
+      1.0,
+      1.0,
+      1.0
+    ],
+    "scale-fsync-append-j1-cross-cpu-pct": [
+      100.0,
+      100.0,
+      100.0
+    ],
+    "scale-fsync-append-j1-interrupts-per-request": [
+      0.995,
+      0.994,
+      0.996
+    ],
+    "scale-fsync-append-j1-queues-used": [
+      2.0,
+      2.0,
+      2.0
+    ],
+    "scale-fsync-append-j2-cross-cpu-pct": [
+      100.0,
+      100.0,
+      100.0
+    ],
+    "scale-fsync-append-j2-interrupts-per-request": [
+      0.996,
+      0.992,
+      0.995
+    ],
+    "scale-fsync-append-j2-queues-used": [
+      2.0,
+      2.0,
+      2.0
+    ],
+    "scale-fsync-append-j4-cross-cpu-pct": [
+      100.0,
+      100.0,
+      100.0
+    ],
+    "scale-fsync-append-j4-interrupts-per-request": [
+      0.991,
+      0.99,
+      0.991
+    ],
+    "scale-fsync-append-j4-queues-used": [
+      2.0,
+      2.0,
+      2.0
+    ],
+    "scale-fsync-append-j8-cross-cpu-pct": [
+      100.0,
+      100.0,
+      100.0
+    ],
+    "scale-fsync-append-j8-interrupts-per-request": [
+      0.985,
+      0.988,
+      0.987
+    ],
+    "scale-fsync-append-j8-queues-used": [
+      2.0,
+      2.0,
+      2.0
+    ],
+    "scale-rand-read-cold-j1-cross-cpu-pct": [
+      87.5,
+      100.0,
+      100.0
+    ],
+    "scale-rand-read-cold-j1-interrupts-per-request": [
+      0.875,
+      1.0,
+      1.0
+    ],
+    "scale-rand-read-cold-j1-queues-used": [
+      1.0,
+      1.0,
+      1.0
+    ],
+    "scale-rand-read-cold-j2-cross-cpu-pct": [
+      100.0,
+      100.0,
+      100.0
+    ],
+    "scale-rand-read-cold-j2-interrupts-per-request": [
+      1.0,
+      1.0,
+      1.0
+    ],
+    "scale-rand-read-cold-j2-queues-used": [
+      1.0,
+      1.0,
+      1.0
+    ],
+    "scale-rand-read-cold-j4-cross-cpu-pct": [
+      100.0,
+      100.0,
+      100.0
+    ],
+    "scale-rand-read-cold-j4-interrupts-per-request": [
+      0.984,
+      0.984,
+      0.984
+    ],
+    "scale-rand-read-cold-j4-queues-used": [
+      2.0,
+      2.0,
+      2.0
+    ],
+    "scale-rand-read-cold-j8-cross-cpu-pct": [
+      100.0,
+      100.0,
+      100.0
+    ],
+    "scale-rand-read-cold-j8-interrupts-per-request": [
+      0.797,
+      0.812,
+      0.773
+    ],
+    "scale-rand-read-cold-j8-queues-used": [
+      2.0,
+      2.0,
+      2.0
+    ],
+    "scale-rand-read-cold-qd16-queues-used": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "scale-rand-read-warm-j1-queues-used": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "scale-rand-read-warm-j2-queues-used": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "scale-rand-read-warm-j4-queues-used": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "scale-rand-read-warm-j8-queues-used": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "scale-rand-write-j1-cross-cpu-pct": [
+      100.0,
+      100.0,
+      100.0
+    ],
+    "scale-rand-write-j1-interrupts-per-request": [
+      0.984,
+      0.985,
+      0.982
+    ],
+    "scale-rand-write-j1-queues-used": [
+      2.0,
+      2.0,
+      2.0
+    ],
+    "scale-rand-write-j2-cross-cpu-pct": [
+      100.0,
+      100.0,
+      100.0
+    ],
+    "scale-rand-write-j2-interrupts-per-request": [
+      0.965,
+      0.955,
+      0.965
+    ],
+    "scale-rand-write-j2-queues-used": [
+      2.0,
+      2.0,
+      2.0
+    ],
+    "scale-rand-write-j4-cross-cpu-pct": [
+      100.0,
+      100.0,
+      100.0
+    ],
+    "scale-rand-write-j4-interrupts-per-request": [
+      0.784,
+      0.786,
+      0.791
+    ],
+    "scale-rand-write-j4-queues-used": [
+      2.0,
+      2.0,
+      2.0
+    ],
+    "scale-rand-write-j8-cross-cpu-pct": [
+      100.0,
+      100.0,
+      100.0
+    ],
+    "scale-rand-write-j8-interrupts-per-request": [
+      0.843,
+      0.846,
+      0.854
+    ],
+    "scale-rand-write-j8-queues-used": [
+      2.0,
+      2.0,
+      2.0
+    ],
+    "scale-stat-cold-j1-queues-used": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "scale-stat-cold-j2-queues-used": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "scale-stat-cold-j4-queues-used": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "scale-stat-cold-j8-queues-used": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "scale-unlink-j1-queues-used": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "scale-unlink-j2-queues-used": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "scale-unlink-j4-queues-used": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "scale-unlink-j8-queues-used": [
+      0.0,
+      0.0,
+      0.0
+    ]
+  }
+}

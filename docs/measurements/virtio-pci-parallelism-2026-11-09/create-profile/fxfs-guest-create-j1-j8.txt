@@ -1,0 +1,794 @@
+PROFILE scale-create-j1
+    75.14%  [k] pv_native_safe_halt
+     2.54%  [k] __pi_memcpy
+     1.27%  [k] _RNvMsg_NtNtCs2KEid22FHEA_4fxfs8lsm_tree15skip_list_layerINtB5_20SkipListLayerIterMutNtNtNtB9_12object_store13object_record12ObjectKeyV54NtB1m_14ObjectValueV63E3newB9_
+     1.09%  [k] inode_init_once
+
+
+
+INCLUSIVE scale-create-j1
+    75.32%    75.14%  swapper      [k] pv_native_safe_halt
+    75.32%     0.00%  swapper      [k] arch_cpu_idle
+    75.32%     0.00%  swapper      [k] common_startup_64
+    75.32%     0.00%  swapper      [k] cpu_startup_entry
+    75.32%     0.00%  swapper      [k] default_idle_call
+    75.32%     0.00%  swapper      [k] do_idle
+    74.59%     0.00%  swapper      [k] start_secondary
+    23.59%     0.00%  guest-agent  [.] _RNvNvMs0_NtNtNtCs268jdzri8zx_3std3sys6thread4unixNtB7_6Thread3new12thread_start
+    23.59%     0.00%  guest-agent  [.] __rust_try
+    23.59%     0.00%  guest-agent  [.] start
+    23.41%     0.00%  guest-agent  [.] _RINvNtNtCs268jdzri8zx_3std3sys9backtrace28___rust_begin_short_backtraceNCNCNCINvNtNtCs1IvpAZRFdS9_10test_cases13test_fs_bench5guest11parallel_onNCNCNvB1g_17scaling_workloadss6_00E000uEB1k_
+    23.41%     0.00%  guest-agent  [.] _RINvNvNtCs268jdzri8zx_3std9panicking12catch_unwind7do_callINtNtNtCs7x1JxYRm7tp_4core5panic11unwind_safe16AssertUnwindSafeNCNCINvNtNtB6_6thread9lifecycle15spawn_uncheckedNCNCNCINvNtNtCs1IvpAZRFdS9_10test_cases13test_fs_bench5guest11parallel_onNCNCNvB2Q_17scaling_workloadss6_00E000uEs_00EuEB2U_
+    23.41%     0.00%  guest-agent  [.] _RNCINvNtNtCs268jdzri8zx_3std6thread9lifecycle15spawn_uncheckedNCNCNCINvNtNtCs1IvpAZRFdS9_10test_cases13test_fs_bench5guest11parallel_onNCNCNvB17_17scaling_workloadss6_00E000uEs_0B1b_
+    23.41%     0.00%  guest-agent  [.] _RNCNCINvNtNtCs268jdzri8zx_3std6thread9lifecycle15spawn_uncheckedNCNCNCINvNtNtCs1IvpAZRFdS9_10test_cases13test_fs_bench5guest11parallel_onNCNCNvB19_17scaling_workloadss6_00E000uEs_00B1d_
+    23.41%     0.00%  guest-agent  [.] _RNCNCNCINvNtNtCs1IvpAZRFdS9_10test_cases13test_fs_bench5guest11parallel_onNCNCNvB8_17scaling_workloadss6_00E000Bc_
+    23.41%     0.00%  guest-agent  [.] _RNCNCNvNtNtCs1IvpAZRFdS9_10test_cases13test_fs_bench5guest17scaling_workloadss6_00B9_
+    23.41%     0.00%  guest-agent  [.] _RNSNvYNCINvNtNtCs268jdzri8zx_3std6thread9lifecycle15spawn_uncheckedNCNCNCINvNtNtCs1IvpAZRFdS9_10test_cases13test_fs_bench5guest11parallel_onNCNCNvB1c_17scaling_workloadss6_00E000uEs_0INtNtNtCs7x1JxYRm7tp_4core3ops8function6FnOnceuE9call_once6vtableB1g_
+    23.41%     0.00%  guest-agent  [.] _RNvXsl_NtNtCs7x1JxYRm7tp_4core5panic11unwind_safeINtB5_16AssertUnwindSafeNCNCINvNtNtCs268jdzri8zx_3std6thread9lifecycle15spawn_uncheckedNCNCNCINvNtNtCs1IvpAZRFdS9_10test_cases13test_fs_bench5guest11parallel_onNCNCNvB2j_17scaling_workloadss6_00E000uEs_00EINtNtNtB9_3ops8function6FnOnceuE9call_onceB2n_
+    22.32%     0.00%  guest-agent  [k] entry_SYSCALL_64_after_hwframe
+    22.14%     0.54%  guest-agent  [k] do_syscall_64
+    21.96%     0.18%  guest-agent  [.] _RINvMs2_NtCs268jdzri8zx_3std2fsNtB6_4File6createNtNtCskPe9mFtgPYj_5alloc6string6StringECs1IvpAZRFdS9_10test_cases
+    21.78%     0.18%  guest-agent  [k] x64_sys_call
+    21.60%     0.36%  guest-agent  [.] _RINvMsj_NtCs268jdzri8zx_3std2fsNtB6_11OpenOptions4openRNtNtB8_4path4PathECs3LuMwi9DwoQ_4rand
+    21.42%     0.18%  guest-agent  [.] _RNvMsj_NtCs268jdzri8zx_3std2fsNtB5_11OpenOptions5__open
+    21.42%     0.00%  guest-agent  [.] sccp
+    20.51%     0.18%  guest-agent  [k] __x64_sys_open
+    20.33%     0.00%  guest-agent  [k] do_filp_open
+    20.33%     0.00%  guest-agent  [k] do_sys_openat2
+    20.33%     0.00%  guest-agent  [k] path_openat
+    19.06%     0.00%  guest-agent  [k] open_last_lookups
+    18.87%     0.00%  guest-agent  [k] lookup_open.isra.0
+    17.06%     0.00%  guest-agent  [k] fxfs_vfs_create
+    16.88%     0.00%  guest-agent  [k] fxfs_vfs_mknod
+    14.16%     0.36%  guest-agent  [k] fxfs_create
+     8.89%     0.18%  guest-agent  [k] _RNCNvMso_NtNtCs2KEid22FHEA_4fxfs12object_store11transactionNtB7_11Transaction6commit0Cs8offoKLMPQ3_10fxfs_linux
+     7.80%     0.36%  guest-agent  [k] _RNvMso_NtNtCs2KEid22FHEA_4fxfs12object_store7journalNtB5_7Journal25write_and_apply_mutations
+     7.80%     0.00%  guest-agent  [k] _RNCNvMso_NtNtCs2KEid22FHEA_4fxfs12object_store7journalNtB7_7Journal6commit0Cs8offoKLMPQ3_10fxfs_linux
+     6.53%     0.00%  guest-agent  [k] _RNvMs0_NtNtCs2KEid22FHEA_4fxfs12object_store14object_managerNtB5_13ObjectManager17apply_transaction
+     6.17%     0.36%  guest-agent  [k] _RNvMs0_NtNtCs2KEid22FHEA_4fxfs12object_store14object_managerNtB5_13ObjectManager14apply_mutation
+     5.44%     0.91%  guest-agent  [k] _RNvXsA_NtCs2KEid22FHEA_4fxfs12object_storeNtB5_11ObjectStoreNtNtB7_10filesystem16JournalingObject14apply_mutation
+     2.54%     2.54%  guest-agent  [k] __pi_memcpy
+     2.18%     0.00%  guest-agent  [k] fxfs_vfs_instantiate
+     2.00%     0.91%  guest-agent  [k] _RNvXs4_NtNtCs2KEid22FHEA_4fxfs12object_store10tree_cacheNtB5_9TreeCacheINtNtNtB9_8lsm_tree5cache11ObjectCacheNtNtB7_13object_record12ObjectKeyV54NtB1L_14ObjectValueV63E10invalidate
+     1.81%     0.00%  guest-agent  [k] fxfs_vfs_iget_as
+     1.63%     0.54%  guest-agent  [k] ___slab_alloc
+     1.63%     0.00%  guest-agent  [k] __slab_alloc.isra.0
+     1.63%     0.00%  guest-agent  [k] iget_locked
+     1.45%     1.27%  guest-agent  [k] _RNvMsg_NtNtCs2KEid22FHEA_4fxfs8lsm_tree15skip_list_layerINtB5_20SkipListLayerIterMutNtNtNtB9_12object_store13object_record12ObjectKeyV54NtB1m_14ObjectValueV63E3newB9_
+     1.45%     0.00%  guest-agent  [k] _RNCNvMs2_NtNtCs2KEid22FHEA_4fxfs12object_store18data_object_handleINtB7_16DataObjectHandleNtB9_11ObjectStoreE17update_attributes0Cs8offoKLMPQ3_10fxfs_linux
+     1.45%     0.00%  guest-agent  [k] _RNCNvMs2_NtNtCs2KEid22FHEA_4fxfs12object_store19store_object_handleINtB7_17StoreObjectHandleNtB9_11ObjectStoreE17update_attributes0Cs8offoKLMPQ3_10fxfs_linux
+     1.45%     0.00%  guest-agent  [k] _RNCNvMs9_NtCs2KEid22FHEA_4fxfs12object_storeNtB7_11ObjectStore17update_attributes0Cs8offoKLMPQ3_10fxfs_linux
+     1.45%     0.00%  guest-agent  [k] fxfs_lookup
+     1.45%     0.00%  guest-agent  [k] fxfs_vfs_lookup
+     1.27%     0.54%  guest-agent  [k] _RNCNvMs9_NtCs2KEid22FHEA_4fxfs12object_storeNtB7_11ObjectStore15new_transaction0Cs8offoKLMPQ3_10fxfs_linux
+     1.27%     0.18%  guest-agent  [k] alloc_inode
+     1.27%     0.00%  guest-agent  [k] _RNCNvMs4_CsjFhVZ1tr6fu_10fxfs_posixINtB7_5BegunNtNtCs8offoKLMPQ3_10fxfs_linux2fs5GuestE11transaction0BN_
+     1.27%     0.00%  guest-agent  [k] _RNCNvMs4_CsjFhVZ1tr6fu_10fxfs_posixINtB7_5BegunNtNtCs8offoKLMPQ3_10fxfs_linux2fs5GuestE19transaction_locking0BN_
+     1.27%     0.00%  guest-agent  [k] _RNvMs8_NtNtCs2KEid22FHEA_4fxfs8lsm_tree15skip_list_layerINtB5_13SkipListLayerNtNtNtB9_12object_store13object_record12ObjectKeyV54NtB1f_14ObjectValueV63E6insertB9_
+     1.09%     1.09%  guest-agent  [k] inode_init_once
+     1.09%     0.54%  guest-agent  [k] _RNCNvMs9_NtCs2KEid22FHEA_4fxfs12object_storeNtB7_11ObjectStore23txn_get_object_mutation0Cs8offoKLMPQ3_10fxfs_linux
+     1.09%     0.54%  guest-agent  [k] __kvmalloc_node_noprof
+     1.09%     0.36%  guest-agent  [k] _RNCNvMs3_NtNtCs2KEid22FHEA_4fxfs12object_store9directoryINtB7_9DirectoryNtB9_11ObjectStoreE10lookup_ext0Cs8offoKLMPQ3_10fxfs_linux
+     1.09%     0.00%  guest-agent  [k] _RNCNvMs3_NtNtCs2KEid22FHEA_4fxfs12object_store9directoryINtB7_9DirectoryNtB9_11ObjectStoreE6lookup0Cs8offoKLMPQ3_10fxfs_linux
+     1.09%     0.00%  guest-agent  [k] allocate_slab
+     1.09%     0.00%  guest-agent  [k] fxfs_rt_alloc
+     1.09%     0.00%  guest-agent  [k] fxfs_vfs_alloc_inode
+     1.09%     0.00%  guest-agent  [k] fxfs_vfs_inode_init_once
+     1.09%     0.00%  guest-agent  [k] kmem_cache_alloc_lru_noprof
+     1.09%     0.00%  guest-agent  [k] setup_object
+     1.09%     0.00%  guest-agent  [k] shuffle_freelist
+     0.91%     0.00%  guest-agent  [k] link_path_walk
+     0.73%     0.18%  guest-agent  [k] _RNCINvMs9_NtCs2KEid22FHEA_4fxfs12object_storeNtB8_11ObjectStore13create_objectBH_E0Cs8offoKLMPQ3_10fxfs_linux
+     0.73%     0.18%  guest-agent  [k] _RNvMs6_CsdOFdY6mdYW1_15linked_hash_mapINtB5_13LinkedHashMapNtNtNtCs2KEid22FHEA_4fxfs12object_store13object_record12ObjectKeyV54NtNtBZ_10tree_cache10CacheValueINtNtCs2RzmApnEpjJ_4core4hash18BuildHasherDefaultNtCs5t8wfrOWwBm_10rustc_hash8FxHasherEE6insertB11_
+     0.73%     0.00%  guest-agent  [.] _RINvNtCs7x1JxYRm7tp_4core3ptr9drop_glueNtNtCs268jdzri8zx_3std2fs4FileECs3LuMwi9DwoQ_4rand
+     0.73%     0.00%  guest-agent  [.] _RINvNtCs7x1JxYRm7tp_4core3ptr9drop_glueNtNtNtNtCs268jdzri8zx_3std2os2fd5owned7OwnedFdECs3LuMwi9DwoQ_4rand
+     0.73%     0.00%  guest-agent  [.] _RINvNtCs7x1JxYRm7tp_4core3ptr9drop_glueNtNtNtNtCs268jdzri8zx_3std3sys2fd4unix8FileDescECs3LuMwi9DwoQ_4rand
+     0.73%     0.00%  guest-agent  [.] _RINvNtCs7x1JxYRm7tp_4core3ptr9drop_glueNtNtNtNtCs268jdzri8zx_3std3sys2fs4unix4FileECs3LuMwi9DwoQ_4rand
+     0.73%     0.00%  guest-agent  [k] _RNvMso_NtNtCs2KEid22FHEA_4fxfs12object_store11transactionNtB5_11Transaction24add_with_object_internal
+     0.73%     0.00%  swapper      [k] kernel_init
+     0.73%     0.00%  swapper      [k] start_kernel
+     0.73%     0.00%  swapper      [k] x86_64_start_kernel
+     0.73%     0.00%  swapper      [k] x86_64_start_reservations
+     0.54%     0.54%  guest-agent  [k] _RINvXNvNtNtCs2KEid22FHEA_4fxfs12object_store11transaction1__NtB5_11MutationV63NtNtCslaoSmfS0x5U_10serde_core3ser9Serialize9serializeQINtNtCsjr86reHQuqA_7bincode3ser11SizeCheckerINtNtB2c_6config17WithOtherTrailingNtB2S_14DefaultOptionsNtNtB2S_8trailing13AllowTrailingEEEB9_
+     0.54%     0.54%  guest-agent  [k] __d_lookup_rcu
+     0.54%     0.54%  guest-agent  [k] __raw_callee_save___pv_queued_spin_unlock
+     0.54%     0.54%  guest-agent  [k] _raw_spin_lock
+     0.54%     0.54%  guest-agent  [.] memcpy
+     0.54%     0.36%  guest-agent  [k] _RNvXs4_NtNtCs2KEid22FHEA_4fxfs12object_store10tree_cacheNtB5_9TreeCacheINtNtNtB9_8lsm_tree5cache11ObjectCacheNtNtB7_13object_record12ObjectKeyV54NtB1L_14ObjectValueV63E17lookup_or_reserve
+     0.54%     0.18%  guest-agent  [k] _RINvNtCs2RzmApnEpjJ_4core3ptr9drop_glueNtNtNtCs2KEid22FHEA_4fxfs12object_store11transaction11TransactionECs8offoKLMPQ3_10fxfs_linux
+     0.54%     0.00%  guest-agent  [.] _RINvMNtCs7x1JxYRm7tp_4core6optionINtB3_6OptionReE11map_or_elseNtNtCskPe9mFtgPYj_5alloc6string6StringNCNvNtB12_3fmt6format0NvYeNtNtB12_6borrow7ToOwned8to_ownedECs7mxwlHZonca_10serde_json
+     0.54%     0.00%  guest-agent  [k] _RINvMNtNtCsjr86reHQuqA_7bincode6config3intNtB3_14VarintEncoding16serialize_varintQINtNtCs1R8tEabxR5k_5alloc3vec3VechEINtB5_14WithOtherLimitINtB5_17WithOtherTrailingNtB5_14DefaultOptionsNtNtB5_8trailing13AllowTrailingENtNtB5_5limit7BoundedEECs2KEid22FHEA_4fxfs
+     0.54%     0.00%  guest-agent  [k] _RINvMs9_NtCs2KEid22FHEA_4fxfs12object_storeNtB6_11ObjectStore21create_object_with_idBF_ECs8offoKLMPQ3_10fxfs_linux
+     0.54%     0.00%  guest-agent  [.] _RINvNtCs268jdzri8zx_3std2rt10lang_startINtNtCs7x1JxYRm7tp_4core6result6ResultuNtCscikDJ3LbBdg_6anyhow5ErrorEECseq0key2jNMT_11guest_agent
+     0.54%     0.00%  guest-agent  [.] _RINvNtCs268jdzri8zx_3std5panic12catch_unwindNCNvCseq0key2jNMT_11guest_agent4main0INtNtCs7x1JxYRm7tp_4core6result6ResultuNtCscikDJ3LbBdg_6anyhow5ErrorEEBK_
+     0.54%     0.00%  guest-agent  [.] _RINvNtNtCs1IvpAZRFdS9_10test_cases13test_fs_bench5guest11parallel_onNCNCNvB2_17scaling_workloadss6_00EB6_
+     0.54%     0.00%  guest-agent  [.] _RINvNtNtCs1IvpAZRFdS9_10test_cases13test_fs_bench5guest5timeduNCINvB2_11parallel_onNCNCNvB2_17scaling_workloadss6_00E0EB6_
+     0.54%     0.00%  guest-agent  [.] _RINvNtNtCs1IvpAZRFdS9_10test_cases13test_fs_bench5guest6scaleduNCNvB2_17scaling_workloadss6_0EB6_
+     0.54%     0.00%  guest-agent  [.] _RINvNtNtCs1IvpAZRFdS9_10test_cases13test_fs_bench5guest8observeduNCINvB2_5timeduNCINvB2_11parallel_onNCNCNvB2_17scaling_workloadss6_00E0E0EB6_
+     0.54%     0.00%  guest-agent  [.] _RINvNtNtCs1IvpAZRFdS9_10test_cases13test_fs_bench5guest8observeduNCNvB2_17scaling_workloadss6_0EB6_
+     0.54%     0.00%  guest-agent  [.] _RINvNtNtCs268jdzri8zx_3std3sys9backtrace28___rust_begin_short_backtraceFEINtNtCs7x1JxYRm7tp_4core6result6ResultuNtCscikDJ3LbBdg_6anyhow5ErrorEB19_ECseq0key2jNMT_11guest_agent
+     0.54%     0.00%  guest-agent  [.] _RINvNvNtCs268jdzri8zx_3std9panicking12catch_unwind7do_callNCNvCseq0key2jNMT_11guest_agent4main0INtNtCs7x1JxYRm7tp_4core6result6ResultuNtCscikDJ3LbBdg_6anyhow5ErrorEEBY_
+     0.54%     0.00%  guest-agent  [k] _RINvXNvNtNtCs2KEid22FHEA_4fxfs12object_store11transaction1__NtB5_11MutationV63NtNtCslaoSmfS0x5U_10serde_core3ser9Serialize9serializeQINtNtCsjr86reHQuqA_7bincode3ser10SerializerQINtNtCs1R8tEabxR5k_5alloc3vec3VechEINtNtB2c_6config14WithOtherLimitINtB3r_17WithOtherTrailingNtB3r_14DefaultOptionsNtNtB3r_8trailing13AllowTrailingENtNtB3r_5limit7BoundedEEEB9_
+     0.54%     0.00%  guest-agent  [.] _RNCINvNtCs268jdzri8zx_3std2rt10lang_startINtNtCs7x1JxYRm7tp_4core6result6ResultuNtCscikDJ3LbBdg_6anyhow5ErrorEE0Cseq0key2jNMT_11guest_agent
+     0.54%     0.00%  guest-agent  [.] _RNCINvNtNtCs1IvpAZRFdS9_10test_cases13test_fs_bench5guest11parallel_onNCNCNvB4_17scaling_workloadss6_00E0B8_
+     0.54%     0.00%  guest-agent  [.] _RNCINvNtNtCs1IvpAZRFdS9_10test_cases13test_fs_bench5guest5timeduNCINvB4_11parallel_onNCNCNvB4_17scaling_workloadss6_00E0E0B8_
+     0.54%     0.00%  guest-agent  [.] _RNCNvCseq0key2jNMT_11guest_agent4main0B3_
+     0.54%     0.00%  guest-agent  [.] _RNCNvNtCskPe9mFtgPYj_5alloc3fmt6format0Cs7mxwlHZonca_10serde_json
+     0.54%     0.00%  guest-agent  [.] _RNCNvNtNtCs1IvpAZRFdS9_10test_cases13test_fs_bench5guest17scaling_workloadss6_0B7_
+     0.54%     0.00%  guest-agent  [.] _RNvCseq0key2jNMT_11guest_agent15run_guest_agent
+     0.54%     0.00%  guest-agent  [.] _RNvCseq0key2jNMT_11guest_agent4main
+     0.54%     0.00%  guest-agent  [.] _RNvNtCs268jdzri8zx_3std2rt19lang_start_internal
+     0.54%     0.00%  guest-agent  [.] _RNvNtCskPe9mFtgPYj_5alloc3fmt6formatCs1IvpAZRFdS9_10test_cases
+     0.54%     0.00%  guest-agent  [.] _RNvNtNtCs1IvpAZRFdS9_10test_cases13test_fs_bench5guest17scaling_workloads
+     0.54%     0.00%  guest-agent  [.] _RNvNvNtCskPe9mFtgPYj_5alloc3fmt6format12format_inner
+     0.54%     0.00%  guest-agent  [.] _RNvXs1_NtNtCs1IvpAZRFdS9_10test_cases13test_fs_bench5guestNtB7_11TestFsBenchNtB9_4Test8in_guest
+     0.54%     0.00%  guest-agent  [.] _RNvYFEINtNtCs7x1JxYRm7tp_4core6result6ResultuNtCscikDJ3LbBdg_6anyhow5ErrorEINtNtNtB9_3ops8function6FnOnceuE9call_onceCseq0key2jNMT_11guest_agent
+     0.54%     0.00%  guest-agent  [k] __fput
+     0.54%     0.00%  guest-agent  [.] __rust_try
+     0.54%     0.00%  guest-agent  [k] __x64_sys_close
+     0.54%     0.00%  guest-agent  [k] _raw_spin_unlock
+     0.54%     0.00%  guest-agent  [k] fput_close_sync
+     0.54%     0.00%  guest-agent  [.] libc_start_main_stage2
+     0.54%     0.00%  guest-agent  [k] lookup_fast
+     0.54%     0.00%  guest-agent  [.] main
+     0.54%     0.00%  guest-agent  [.] open
+     0.54%     0.00%  guest-agent  [k] walk_component
+
+
+
+CALLERS scale-create-j1
+    75.14%  [k] pv_native_safe_halt
+            |
+            ---arch_cpu_idle
+               default_idle_call
+               do_idle
+               cpu_startup_entry
+               |          
+                --74.41%--start_secondary
+                          common_startup_64
+
+
+
+
+FXFS scale-create-j1: metadata_reserved_bytes 556168
+REQUESTS scale-create-j1:  per operation
+PROFILE scale-create-j1
+    75.14%  [k] pv_native_safe_halt
+     2.54%  [k] __pi_memcpy
+     1.27%  [k] _RNvMsg_NtNtCs2KEid22FHEA_4fxfs8lsm_tree15skip_list_layerINtB5_20SkipListLayerIterMutNtNtNtB9_12object_store13object_record12ObjectKeyV54NtB1m_14ObjectValueV63E3newB9_
+     1.09%  [k] inode_init_once
+
+
+
+INCLUSIVE scale-create-j1
+    75.32%    75.14%  swapper      [k] pv_native_safe_halt
+    75.32%     0.00%  swapper      [k] arch_cpu_idle
+    75.32%     0.00%  swapper      [k] common_startup_64
+    75.32%     0.00%  swapper      [k] cpu_startup_entry
+    75.32%     0.00%  swapper      [k] default_idle_call
+    75.32%     0.00%  swapper      [k] do_idle
+    74.59%     0.00%  swapper      [k] start_secondary
+    23.59%     0.00%  guest-agent  [.] _RNvNvMs0_NtNtNtCs268jdzri8zx_3std3sys6thread4unixNtB7_6Thread3new12thread_start
+    23.59%     0.00%  guest-agent  [.] __rust_try
+    23.59%     0.00%  guest-agent  [.] start
+    23.41%     0.00%  guest-agent  [.] _RINvNtNtCs268jdzri8zx_3std3sys9backtrace28___rust_begin_short_backtraceNCNCNCINvNtNtCs1IvpAZRFdS9_10test_cases13test_fs_bench5guest11parallel_onNCNCNvB1g_17scaling_workloadss6_00E000uEB1k_
+    23.41%     0.00%  guest-agent  [.] _RINvNvNtCs268jdzri8zx_3std9panicking12catch_unwind7do_callINtNtNtCs7x1JxYRm7tp_4core5panic11unwind_safe16AssertUnwindSafeNCNCINvNtNtB6_6thread9lifecycle15spawn_uncheckedNCNCNCINvNtNtCs1IvpAZRFdS9_10test_cases13test_fs_bench5guest11parallel_onNCNCNvB2Q_17scaling_workloadss6_00E000uEs_00EuEB2U_
+    23.41%     0.00%  guest-agent  [.] _RNCINvNtNtCs268jdzri8zx_3std6thread9lifecycle15spawn_uncheckedNCNCNCINvNtNtCs1IvpAZRFdS9_10test_cases13test_fs_bench5guest11parallel_onNCNCNvB17_17scaling_workloadss6_00E000uEs_0B1b_
+    23.41%     0.00%  guest-agent  [.] _RNCNCINvNtNtCs268jdzri8zx_3std6thread9lifecycle15spawn_uncheckedNCNCNCINvNtNtCs1IvpAZRFdS9_10test_cases13test_fs_bench5guest11parallel_onNCNCNvB19_17scaling_workloadss6_00E000uEs_00B1d_
+    23.41%     0.00%  guest-agent  [.] _RNCNCNCINvNtNtCs1IvpAZRFdS9_10test_cases13test_fs_bench5guest11parallel_onNCNCNvB8_17scaling_workloadss6_00E000Bc_
+    23.41%     0.00%  guest-agent  [.] _RNCNCNvNtNtCs1IvpAZRFdS9_10test_cases13test_fs_bench5guest17scaling_workloadss6_00B9_
+    23.41%     0.00%  guest-agent  [.] _RNSNvYNCINvNtNtCs268jdzri8zx_3std6thread9lifecycle15spawn_uncheckedNCNCNCINvNtNtCs1IvpAZRFdS9_10test_cases13test_fs_bench5guest11parallel_onNCNCNvB1c_17scaling_workloadss6_00E000uEs_0INtNtNtCs7x1JxYRm7tp_4core3ops8function6FnOnceuE9call_once6vtableB1g_
+    23.41%     0.00%  guest-agent  [.] _RNvXsl_NtNtCs7x1JxYRm7tp_4core5panic11unwind_safeINtB5_16AssertUnwindSafeNCNCINvNtNtCs268jdzri8zx_3std6thread9lifecycle15spawn_uncheckedNCNCNCINvNtNtCs1IvpAZRFdS9_10test_cases13test_fs_bench5guest11parallel_onNCNCNvB2j_17scaling_workloadss6_00E000uEs_00EINtNtNtB9_3ops8function6FnOnceuE9call_onceB2n_
+    22.32%     0.00%  guest-agent  [k] entry_SYSCALL_64_after_hwframe
+    22.14%     0.54%  guest-agent  [k] do_syscall_64
+    21.96%     0.18%  guest-agent  [.] _RINvMs2_NtCs268jdzri8zx_3std2fsNtB6_4File6createNtNtCskPe9mFtgPYj_5alloc6string6StringECs1IvpAZRFdS9_10test_cases
+    21.78%     0.18%  guest-agent  [k] x64_sys_call
+    21.60%     0.36%  guest-agent  [.] _RINvMsj_NtCs268jdzri8zx_3std2fsNtB6_11OpenOptions4openRNtNtB8_4path4PathECs3LuMwi9DwoQ_4rand
+    21.42%     0.18%  guest-agent  [.] _RNvMsj_NtCs268jdzri8zx_3std2fsNtB5_11OpenOptions5__open
+    21.42%     0.00%  guest-agent  [.] sccp
+    20.51%     0.18%  guest-agent  [k] __x64_sys_open
+    20.33%     0.00%  guest-agent  [k] do_filp_open
+    20.33%     0.00%  guest-agent  [k] do_sys_openat2
+    20.33%     0.00%  guest-agent  [k] path_openat
+    19.06%     0.00%  guest-agent  [k] open_last_lookups
+    18.87%     0.00%  guest-agent  [k] lookup_open.isra.0
+    17.06%     0.00%  guest-agent  [k] fxfs_vfs_create
+    16.88%     0.00%  guest-agent  [k] fxfs_vfs_mknod
+    14.16%     0.36%  guest-agent  [k] fxfs_create
+     8.89%     0.18%  guest-agent  [k] _RNCNvMso_NtNtCs2KEid22FHEA_4fxfs12object_store11transactionNtB7_11Transaction6commit0Cs8offoKLMPQ3_10fxfs_linux
+     7.80%     0.36%  guest-agent  [k] _RNvMso_NtNtCs2KEid22FHEA_4fxfs12object_store7journalNtB5_7Journal25write_and_apply_mutations
+     7.80%     0.00%  guest-agent  [k] _RNCNvMso_NtNtCs2KEid22FHEA_4fxfs12object_store7journalNtB7_7Journal6commit0Cs8offoKLMPQ3_10fxfs_linux
+     6.53%     0.00%  guest-agent  [k] _RNvMs0_NtNtCs2KEid22FHEA_4fxfs12object_store14object_managerNtB5_13ObjectManager17apply_transaction
+     6.17%     0.36%  guest-agent  [k] _RNvMs0_NtNtCs2KEid22FHEA_4fxfs12object_store14object_managerNtB5_13ObjectManager14apply_mutation
+     5.44%     0.91%  guest-agent  [k] _RNvXsA_NtCs2KEid22FHEA_4fxfs12object_storeNtB5_11ObjectStoreNtNtB7_10filesystem16JournalingObject14apply_mutation
+     2.54%     2.54%  guest-agent  [k] __pi_memcpy
+     2.18%     0.00%  guest-agent  [k] fxfs_vfs_instantiate
+     2.00%     0.91%  guest-agent  [k] _RNvXs4_NtNtCs2KEid22FHEA_4fxfs12object_store10tree_cacheNtB5_9TreeCacheINtNtNtB9_8lsm_tree5cache11ObjectCacheNtNtB7_13object_record12ObjectKeyV54NtB1L_14ObjectValueV63E10invalidate
+     1.81%     0.00%  guest-agent  [k] fxfs_vfs_iget_as
+     1.63%     0.54%  guest-agent  [k] ___slab_alloc
+     1.63%     0.00%  guest-agent  [k] __slab_alloc.isra.0
+     1.63%     0.00%  guest-agent  [k] iget_locked
+     1.45%     1.27%  guest-agent  [k] _RNvMsg_NtNtCs2KEid22FHEA_4fxfs8lsm_tree15skip_list_layerINtB5_20SkipListLayerIterMutNtNtNtB9_12object_store13object_record12ObjectKeyV54NtB1m_14ObjectValueV63E3newB9_
+     1.45%     0.00%  guest-agent  [k] _RNCNvMs2_NtNtCs2KEid22FHEA_4fxfs12object_store18data_object_handleINtB7_16DataObjectHandleNtB9_11ObjectStoreE17update_attributes0Cs8offoKLMPQ3_10fxfs_linux
+     1.45%     0.00%  guest-agent  [k] _RNCNvMs2_NtNtCs2KEid22FHEA_4fxfs12object_store19store_object_handleINtB7_17StoreObjectHandleNtB9_11ObjectStoreE17update_attributes0Cs8offoKLMPQ3_10fxfs_linux
+     1.45%     0.00%  guest-agent  [k] _RNCNvMs9_NtCs2KEid22FHEA_4fxfs12object_storeNtB7_11ObjectStore17update_attributes0Cs8offoKLMPQ3_10fxfs_linux
+     1.45%     0.00%  guest-agent  [k] fxfs_lookup
+     1.45%     0.00%  guest-agent  [k] fxfs_vfs_lookup
+     1.27%     0.54%  guest-agent  [k] _RNCNvMs9_NtCs2KEid22FHEA_4fxfs12object_storeNtB7_11ObjectStore15new_transaction0Cs8offoKLMPQ3_10fxfs_linux
+     1.27%     0.18%  guest-agent  [k] alloc_inode
+     1.27%     0.00%  guest-agent  [k] _RNCNvMs4_CsjFhVZ1tr6fu_10fxfs_posixINtB7_5BegunNtNtCs8offoKLMPQ3_10fxfs_linux2fs5GuestE11transaction0BN_
+     1.27%     0.00%  guest-agent  [k] _RNCNvMs4_CsjFhVZ1tr6fu_10fxfs_posixINtB7_5BegunNtNtCs8offoKLMPQ3_10fxfs_linux2fs5GuestE19transaction_locking0BN_
+     1.27%     0.00%  guest-agent  [k] _RNvMs8_NtNtCs2KEid22FHEA_4fxfs8lsm_tree15skip_list_layerINtB5_13SkipListLayerNtNtNtB9_12object_store13object_record12ObjectKeyV54NtB1f_14ObjectValueV63E6insertB9_
+     1.09%     1.09%  guest-agent  [k] inode_init_once
+     1.09%     0.54%  guest-agent  [k] _RNCNvMs9_NtCs2KEid22FHEA_4fxfs12object_storeNtB7_11ObjectStore23txn_get_object_mutation0Cs8offoKLMPQ3_10fxfs_linux
+     1.09%     0.54%  guest-agent  [k] __kvmalloc_node_noprof
+     1.09%     0.36%  guest-agent  [k] _RNCNvMs3_NtNtCs2KEid22FHEA_4fxfs12object_store9directoryINtB7_9DirectoryNtB9_11ObjectStoreE10lookup_ext0Cs8offoKLMPQ3_10fxfs_linux
+     1.09%     0.00%  guest-agent  [k] _RNCNvMs3_NtNtCs2KEid22FHEA_4fxfs12object_store9directoryINtB7_9DirectoryNtB9_11ObjectStoreE6lookup0Cs8offoKLMPQ3_10fxfs_linux
+     1.09%     0.00%  guest-agent  [k] allocate_slab
+     1.09%     0.00%  guest-agent  [k] fxfs_rt_alloc
+     1.09%     0.00%  guest-agent  [k] fxfs_vfs_alloc_inode
+     1.09%     0.00%  guest-agent  [k] fxfs_vfs_inode_init_once
+     1.09%     0.00%  guest-agent  [k] kmem_cache_alloc_lru_noprof
+     1.09%     0.00%  guest-agent  [k] setup_object
+     1.09%     0.00%  guest-agent  [k] shuffle_freelist
+     0.91%     0.00%  guest-agent  [k] link_path_walk
+     0.73%     0.18%  guest-agent  [k] _RNCINvMs9_NtCs2KEid22FHEA_4fxfs12object_storeNtB8_11ObjectStore13create_objectBH_E0Cs8offoKLMPQ3_10fxfs_linux
+     0.73%     0.18%  guest-agent  [k] _RNvMs6_CsdOFdY6mdYW1_15linked_hash_mapINtB5_13LinkedHashMapNtNtNtCs2KEid22FHEA_4fxfs12object_store13object_record12ObjectKeyV54NtNtBZ_10tree_cache10CacheValueINtNtCs2RzmApnEpjJ_4core4hash18BuildHasherDefaultNtCs5t8wfrOWwBm_10rustc_hash8FxHasherEE6insertB11_
+     0.73%     0.00%  guest-agent  [.] _RINvNtCs7x1JxYRm7tp_4core3ptr9drop_glueNtNtCs268jdzri8zx_3std2fs4FileECs3LuMwi9DwoQ_4rand
+     0.73%     0.00%  guest-agent  [.] _RINvNtCs7x1JxYRm7tp_4core3ptr9drop_glueNtNtNtNtCs268jdzri8zx_3std2os2fd5owned7OwnedFdECs3LuMwi9DwoQ_4rand
+     0.73%     0.00%  guest-agent  [.] _RINvNtCs7x1JxYRm7tp_4core3ptr9drop_glueNtNtNtNtCs268jdzri8zx_3std3sys2fd4unix8FileDescECs3LuMwi9DwoQ_4rand
+     0.73%     0.00%  guest-agent  [.] _RINvNtCs7x1JxYRm7tp_4core3ptr9drop_glueNtNtNtNtCs268jdzri8zx_3std3sys2fs4unix4FileECs3LuMwi9DwoQ_4rand
+     0.73%     0.00%  guest-agent  [k] _RNvMso_NtNtCs2KEid22FHEA_4fxfs12object_store11transactionNtB5_11Transaction24add_with_object_internal
+     0.73%     0.00%  swapper      [k] kernel_init
+     0.73%     0.00%  swapper      [k] start_kernel
+     0.73%     0.00%  swapper      [k] x86_64_start_kernel
+     0.73%     0.00%  swapper      [k] x86_64_start_reservations
+     0.54%     0.54%  guest-agent  [k] _RINvXNvNtNtCs2KEid22FHEA_4fxfs12object_store11transaction1__NtB5_11MutationV63NtNtCslaoSmfS0x5U_10serde_core3ser9Serialize9serializeQINtNtCsjr86reHQuqA_7bincode3ser11SizeCheckerINtNtB2c_6config17WithOtherTrailingNtB2S_14DefaultOptionsNtNtB2S_8trailing13AllowTrailingEEEB9_
+     0.54%     0.54%  guest-agent  [k] __d_lookup_rcu
+     0.54%     0.54%  guest-agent  [k] __raw_callee_save___pv_queued_spin_unlock
+     0.54%     0.54%  guest-agent  [k] _raw_spin_lock
+     0.54%     0.54%  guest-agent  [.] memcpy
+     0.54%     0.36%  guest-agent  [k] _RNvXs4_NtNtCs2KEid22FHEA_4fxfs12object_store10tree_cacheNtB5_9TreeCacheINtNtNtB9_8lsm_tree5cache11ObjectCacheNtNtB7_13object_record12ObjectKeyV54NtB1L_14ObjectValueV63E17lookup_or_reserve
+     0.54%     0.18%  guest-agent  [k] _RINvNtCs2RzmApnEpjJ_4core3ptr9drop_glueNtNtNtCs2KEid22FHEA_4fxfs12object_store11transaction11TransactionECs8offoKLMPQ3_10fxfs_linux
+     0.54%     0.00%  guest-agent  [.] _RINvMNtCs7x1JxYRm7tp_4core6optionINtB3_6OptionReE11map_or_elseNtNtCskPe9mFtgPYj_5alloc6string6StringNCNvNtB12_3fmt6format0NvYeNtNtB12_6borrow7ToOwned8to_ownedECs7mxwlHZonca_10serde_json
+     0.54%     0.00%  guest-agent  [k] _RINvMNtNtCsjr86reHQuqA_7bincode6config3intNtB3_14VarintEncoding16serialize_varintQINtNtCs1R8tEabxR5k_5alloc3vec3VechEINtB5_14WithOtherLimitINtB5_17WithOtherTrailingNtB5_14DefaultOptionsNtNtB5_8trailing13AllowTrailingENtNtB5_5limit7BoundedEECs2KEid22FHEA_4fxfs
+     0.54%     0.00%  guest-agent  [k] _RINvMs9_NtCs2KEid22FHEA_4fxfs12object_storeNtB6_11ObjectStore21create_object_with_idBF_ECs8offoKLMPQ3_10fxfs_linux
+     0.54%     0.00%  guest-agent  [.] _RINvNtCs268jdzri8zx_3std2rt10lang_startINtNtCs7x1JxYRm7tp_4core6result6ResultuNtCscikDJ3LbBdg_6anyhow5ErrorEECseq0key2jNMT_11guest_agent
+     0.54%     0.00%  guest-agent  [.] _RINvNtCs268jdzri8zx_3std5panic12catch_unwindNCNvCseq0key2jNMT_11guest_agent4main0INtNtCs7x1JxYRm7tp_4core6result6ResultuNtCscikDJ3LbBdg_6anyhow5ErrorEEBK_
+     0.54%     0.00%  guest-agent  [.] _RINvNtNtCs1IvpAZRFdS9_10test_cases13test_fs_bench5guest11parallel_onNCNCNvB2_17scaling_workloadss6_00EB6_
+     0.54%     0.00%  guest-agent  [.] _RINvNtNtCs1IvpAZRFdS9_10test_cases13test_fs_bench5guest5timeduNCINvB2_11parallel_onNCNCNvB2_17scaling_workloadss6_00E0EB6_
+     0.54%     0.00%  guest-agent  [.] _RINvNtNtCs1IvpAZRFdS9_10test_cases13test_fs_bench5guest6scaleduNCNvB2_17scaling_workloadss6_0EB6_
+     0.54%     0.00%  guest-agent  [.] _RINvNtNtCs1IvpAZRFdS9_10test_cases13test_fs_bench5guest8observeduNCINvB2_5timeduNCINvB2_11parallel_onNCNCNvB2_17scaling_workloadss6_00E0E0EB6_
+     0.54%     0.00%  guest-agent  [.] _RINvNtNtCs1IvpAZRFdS9_10test_cases13test_fs_bench5guest8observeduNCNvB2_17scaling_workloadss6_0EB6_
+     0.54%     0.00%  guest-agent  [.] _RINvNtNtCs268jdzri8zx_3std3sys9backtrace28___rust_begin_short_backtraceFEINtNtCs7x1JxYRm7tp_4core6result6ResultuNtCscikDJ3LbBdg_6anyhow5ErrorEB19_ECseq0key2jNMT_11guest_agent
+     0.54%     0.00%  guest-agent  [.] _RINvNvNtCs268jdzri8zx_3std9panicking12catch_unwind7do_callNCNvCseq0key2jNMT_11guest_agent4main0INtNtCs7x1JxYRm7tp_4core6result6ResultuNtCscikDJ3LbBdg_6anyhow5ErrorEEBY_
+     0.54%     0.00%  guest-agent  [k] _RINvXNvNtNtCs2KEid22FHEA_4fxfs12object_store11transaction1__NtB5_11MutationV63NtNtCslaoSmfS0x5U_10serde_core3ser9Serialize9serializeQINtNtCsjr86reHQuqA_7bincode3ser10SerializerQINtNtCs1R8tEabxR5k_5alloc3vec3VechEINtNtB2c_6config14WithOtherLimitINtB3r_17WithOtherTrailingNtB3r_14DefaultOptionsNtNtB3r_8trailing13AllowTrailingENtNtB3r_5limit7BoundedEEEB9_
+     0.54%     0.00%  guest-agent  [.] _RNCINvNtCs268jdzri8zx_3std2rt10lang_startINtNtCs7x1JxYRm7tp_4core6result6ResultuNtCscikDJ3LbBdg_6anyhow5ErrorEE0Cseq0key2jNMT_11guest_agent
+     0.54%     0.00%  guest-agent  [.] _RNCINvNtNtCs1IvpAZRFdS9_10test_cases13test_fs_bench5guest11parallel_onNCNCNvB4_17scaling_workloadss6_00E0B8_
+     0.54%     0.00%  guest-agent  [.] _RNCINvNtNtCs1IvpAZRFdS9_10test_cases13test_fs_bench5guest5timeduNCINvB4_11parallel_onNCNCNvB4_17scaling_workloadss6_00E0E0B8_
+     0.54%     0.00%  guest-agent  [.] _RNCNvCseq0key2jNMT_11guest_agent4main0B3_
+     0.54%     0.00%  guest-agent  [.] _RNCNvNtCskPe9mFtgPYj_5alloc3fmt6format0Cs7mxwlHZonca_10serde_json
+     0.54%     0.00%  guest-agent  [.] _RNCNvNtNtCs1IvpAZRFdS9_10test_cases13test_fs_bench5guest17scaling_workloadss6_0B7_
+     0.54%     0.00%  guest-agent  [.] _RNvCseq0key2jNMT_11guest_agent15run_guest_agent
+     0.54%     0.00%  guest-agent  [.] _RNvCseq0key2jNMT_11guest_agent4main
+     0.54%     0.00%  guest-agent  [.] _RNvNtCs268jdzri8zx_3std2rt19lang_start_internal
+     0.54%     0.00%  guest-agent  [.] _RNvNtCskPe9mFtgPYj_5alloc3fmt6formatCs1IvpAZRFdS9_10test_cases
+     0.54%     0.00%  guest-agent  [.] _RNvNtNtCs1IvpAZRFdS9_10test_cases13test_fs_bench5guest17scaling_workloads
+     0.54%     0.00%  guest-agent  [.] _RNvNvNtCskPe9mFtgPYj_5alloc3fmt6format12format_inner
+     0.54%     0.00%  guest-agent  [.] _RNvXs1_NtNtCs1IvpAZRFdS9_10test_cases13test_fs_bench5guestNtB7_11TestFsBenchNtB9_4Test8in_guest
+     0.54%     0.00%  guest-agent  [.] _RNvYFEINtNtCs7x1JxYRm7tp_4core6result6ResultuNtCscikDJ3LbBdg_6anyhow5ErrorEINtNtNtB9_3ops8function6FnOnceuE9call_onceCseq0key2jNMT_11guest_agent
+     0.54%     0.00%  guest-agent  [k] __fput
+     0.54%     0.00%  guest-agent  [.] __rust_try
+     0.54%     0.00%  guest-agent  [k] __x64_sys_close
+     0.54%     0.00%  guest-agent  [k] _raw_spin_unlock
+     0.54%     0.00%  guest-agent  [k] fput_close_sync
+     0.54%     0.00%  guest-agent  [.] libc_start_main_stage2
+     0.54%     0.00%  guest-agent  [k] lookup_fast
+     0.54%     0.00%  guest-agent  [.] main
+     0.54%     0.00%  guest-agent  [.] open
+     0.54%     0.00%  guest-agent  [k] walk_component
+
+
+
+CALLERS scale-create-j1
+    75.14%  [k] pv_native_safe_halt
+            |
+            ---arch_cpu_idle
+               default_idle_call
+               do_idle
+               cpu_startup_entry
+               |          
+                --74.41%--start_secondary
+                          common_startup_64
+
+
+
+
+FXFS scale-create-j1: metadata_reserved_bytes 556168
+REQUESTS scale-create-j1:  per operation
+QUEUES scale-create-j1: [0, 0, 0, 0]
+IRQS scale-create-j1: virtio0-req.0 (line 4) by CPU [0, 0, 0, 4]
+PROFILE scale-create-j8
+    20.98%  [k] fxfs_rt_park
+    13.09%  [k] pv_native_safe_halt
+     4.21%  [k] _raw_spin_unlock_irqrestore
+     3.67%  [k] __pi_memcpy
+     2.56%  [k] finish_task_switch.isra.0
+     2.48%  [k] _RNvMsg_NtNtCs2KEid22FHEA_4fxfs8lsm_tree15skip_list_layerINtB5_20SkipListLayerIterMutNtNtNtB9_12object_store13object_record12ObjectKeyV54NtB1m_14ObjectValueV63E3newB9_
+     1.45%  [k] _RNvXsA_NtCs2KEid22FHEA_4fxfs12object_storeNtB5_11ObjectStoreNtNtB7_10filesystem16JournalingObject14apply_mutation
+     1.34%  [k] _RNvXs4_NtNtCs2KEid22FHEA_4fxfs12object_store10tree_cacheNtB5_9TreeCacheINtNtNtB9_8lsm_tree5cache11ObjectCacheNtNtB7_13object_record12ObjectKeyV54NtB1L_14ObjectValueV63E10invalidate
+     1.14%  [k] _RNvXs4_NtNtCs2KEid22FHEA_4fxfs12object_store10tree_cacheNtB5_9TreeCacheINtNtNtB9_8lsm_tree5cache11ObjectCacheNtNtB7_13object_record12ObjectKeyV54NtB1L_14ObjectValueV63E17lookup_or_reserve
+     1.14%  [k] ___slab_alloc
+     1.14%  [k] __kvmalloc_node_noprof
+     1.11%  [k] _raw_spin_lock
+     1.05%  [k] _RNCNvMs9_NtCs2KEid22FHEA_4fxfs12object_storeNtB7_11ObjectStore15new_transaction0Cs8offoKLMPQ3_10fxfs_linux
+     1.02%  [.] __libc_malloc_impl
+     1.02%  [k] shuffle_freelist
+
+
+
+INCLUSIVE scale-create-j8
+    79.85%     0.00%  guest-agent      [.] _RNvNvMs0_NtNtNtCs268jdzri8zx_3std3sys6thread4unixNtB7_6Thread3new12thread_start
+    79.85%     0.00%  guest-agent      [.] start
+    79.82%     0.00%  guest-agent      [.] __rust_try
+    79.76%     0.00%  guest-agent      [.] _RINvNtNtCs268jdzri8zx_3std3sys9backtrace28___rust_begin_short_backtraceNCNCNCINvNtNtCs1IvpAZRFdS9_10test_cases13test_fs_bench5guest11parallel_onNCNCNvB1g_17scaling_workloadss6_00E000uEB1k_
+    79.76%     0.00%  guest-agent      [.] _RINvNvNtCs268jdzri8zx_3std9panicking12catch_unwind7do_callINtNtNtCs7x1JxYRm7tp_4core5panic11unwind_safe16AssertUnwindSafeNCNCINvNtNtB6_6thread9lifecycle15spawn_uncheckedNCNCNCINvNtNtCs1IvpAZRFdS9_10test_cases13test_fs_bench5guest11parallel_onNCNCNvB2Q_17scaling_workloadss6_00E000uEs_00EuEB2U_
+    79.76%     0.00%  guest-agent      [.] _RNCINvNtNtCs268jdzri8zx_3std6thread9lifecycle15spawn_uncheckedNCNCNCINvNtNtCs1IvpAZRFdS9_10test_cases13test_fs_bench5guest11parallel_onNCNCNvB17_17scaling_workloadss6_00E000uEs_0B1b_
+    79.76%     0.00%  guest-agent      [.] _RNCNCINvNtNtCs268jdzri8zx_3std6thread9lifecycle15spawn_uncheckedNCNCNCINvNtNtCs1IvpAZRFdS9_10test_cases13test_fs_bench5guest11parallel_onNCNCNvB19_17scaling_workloadss6_00E000uEs_00B1d_
+    79.76%     0.00%  guest-agent      [.] _RNCNCNCINvNtNtCs1IvpAZRFdS9_10test_cases13test_fs_bench5guest11parallel_onNCNCNvB8_17scaling_workloadss6_00E000Bc_
+    79.76%     0.00%  guest-agent      [.] _RNSNvYNCINvNtNtCs268jdzri8zx_3std6thread9lifecycle15spawn_uncheckedNCNCNCINvNtNtCs1IvpAZRFdS9_10test_cases13test_fs_bench5guest11parallel_onNCNCNvB1c_17scaling_workloadss6_00E000uEs_0INtNtNtCs7x1JxYRm7tp_4core3ops8function6FnOnceuE9call_once6vtableB1g_
+    79.76%     0.00%  guest-agent      [.] _RNvXsl_NtNtCs7x1JxYRm7tp_4core5panic11unwind_safeINtB5_16AssertUnwindSafeNCNCINvNtNtCs268jdzri8zx_3std6thread9lifecycle15spawn_uncheckedNCNCNCINvNtNtCs1IvpAZRFdS9_10test_cases13test_fs_bench5guest11parallel_onNCNCNvB2j_17scaling_workloadss6_00E000uEs_00EINtNtNtB9_3ops8function6FnOnceuE9call_onceB2n_
+    79.62%     0.11%  guest-agent      [.] _RNCNCNvNtNtCs1IvpAZRFdS9_10test_cases13test_fs_bench5guest17scaling_workloadss6_00B9_
+    76.40%     0.00%  guest-agent      [k] entry_SYSCALL_64_after_hwframe
+    76.37%     0.43%  guest-agent      [k] do_syscall_64
+    76.06%     0.09%  guest-agent      [.] _RINvMs2_NtCs268jdzri8zx_3std2fsNtB6_4File6createNtNtCskPe9mFtgPYj_5alloc6string6StringECs1IvpAZRFdS9_10test_cases
+    75.97%     0.03%  guest-agent      [k] x64_sys_call
+    75.60%     0.11%  guest-agent      [.] _RINvMsj_NtCs268jdzri8zx_3std2fsNtB6_11OpenOptions4openRNtNtB8_4path4PathECs3LuMwi9DwoQ_4rand
+    75.52%     0.23%  guest-agent      [.] sccp
+    75.38%     0.09%  guest-agent      [.] _RNvMsj_NtCs268jdzri8zx_3std2fsNtB5_11OpenOptions5__open
+    73.95%     0.03%  guest-agent      [k] __x64_sys_open
+    73.87%     0.03%  guest-agent      [k] do_sys_openat2
+    73.56%     0.06%  guest-agent      [k] do_filp_open
+    73.50%     0.00%  guest-agent      [k] path_openat
+    71.45%     0.17%  guest-agent      [k] open_last_lookups
+    70.79%     0.00%  guest-agent      [k] lookup_open.isra.0
+    63.42%     0.03%  guest-agent      [k] fxfs_vfs_create
+    63.39%     0.03%  guest-agent      [k] fxfs_vfs_mknod
+    60.69%     0.65%  guest-agent      [k] fxfs_create
+    26.70%     0.65%  guest-agent      [k] _RNCNvMso_NtNtCs2KEid22FHEA_4fxfs12object_store11transactionNtB7_11Transaction6commit0Cs8offoKLMPQ3_10fxfs_linux
+    23.74%    20.98%  guest-agent      [k] fxfs_rt_park
+    16.99%     0.20%  guest-agent      [k] _RNCNvMso_NtNtCs2KEid22FHEA_4fxfs12object_store7journalNtB7_7Journal6commit0Cs8offoKLMPQ3_10fxfs_linux
+    16.57%     0.54%  guest-agent      [k] _RNvMso_NtNtCs2KEid22FHEA_4fxfs12object_store7journalNtB5_7Journal25write_and_apply_mutations
+    13.52%     0.00%  swapper          [k] common_startup_64
+    13.52%     0.00%  swapper          [k] cpu_startup_entry
+    13.46%     0.06%  swapper          [k] do_idle
+    13.29%     0.43%  guest-agent      [k] _RNvMs0_NtNtCs2KEid22FHEA_4fxfs12object_store14object_managerNtB5_13ObjectManager17apply_transaction
+    13.21%     0.06%  swapper          [k] default_idle_call
+    13.15%    13.09%  swapper          [k] pv_native_safe_halt
+    13.15%     0.00%  swapper          [k] arch_cpu_idle
+    12.78%     0.43%  guest-agent      [k] _RNvMs0_NtNtCs2KEid22FHEA_4fxfs12object_store14object_managerNtB5_13ObjectManager14apply_mutation
+    11.41%     1.45%  guest-agent      [k] _RNvXsA_NtCs2KEid22FHEA_4fxfs12object_storeNtB5_11ObjectStoreNtNtB7_10filesystem16JournalingObject14apply_mutation
+     9.79%     0.00%  swapper          [k] start_secondary
+     5.55%     0.00%  guest-agent      [k] fxfs_vfs_lookup
+     5.32%     0.03%  guest-agent      [k] fxfs_lookup
+     4.53%     0.03%  guest-agent      [k] _RNCNvMs4_CsjFhVZ1tr6fu_10fxfs_posixINtB7_5BegunNtNtCs8offoKLMPQ3_10fxfs_linux2fs5GuestE11transaction0BN_
+     4.50%     0.06%  guest-agent      [k] _RNCNvMs4_CsjFhVZ1tr6fu_10fxfs_posixINtB7_5BegunNtNtCs8offoKLMPQ3_10fxfs_linux2fs5GuestE19transaction_locking0BN_
+     4.47%     1.05%  guest-agent      [k] _RNCNvMs9_NtCs2KEid22FHEA_4fxfs12object_storeNtB7_11ObjectStore15new_transaction0Cs8offoKLMPQ3_10fxfs_linux
+     4.16%     0.48%  guest-agent      [k] _RNvXsp_NtNtCs2KEid22FHEA_4fxfs12object_store11transactionNtB5_11TransactionNtNtNtCs2RzmApnEpjJ_4core3ops4drop4Drop4drop
+     4.16%     0.00%  guest-agent      [k] _RINvNtCs2RzmApnEpjJ_4core3ptr9drop_glueNtNtNtCs2KEid22FHEA_4fxfs12object_store11transaction11TransactionECs8offoKLMPQ3_10fxfs_linux
+     4.16%     0.00%  guest-agent      [k] _RNCNvMs3_NtNtCs2KEid22FHEA_4fxfs12object_store9directoryINtB7_9DirectoryNtB9_11ObjectStoreE6lookup0Cs8offoKLMPQ3_10fxfs_linux
+     4.07%     4.07%  guest-agent      [k] _raw_spin_unlock_irqrestore
+     4.04%     1.34%  guest-agent      [k] _RNvXs4_NtNtCs2KEid22FHEA_4fxfs12object_store10tree_cacheNtB5_9TreeCacheINtNtNtB9_8lsm_tree5cache11ObjectCacheNtNtB7_13object_record12ObjectKeyV54NtB1L_14ObjectValueV63E10invalidate
+     4.01%     0.03%  guest-agent      [k] _RNvMs8_NtNtCs2KEid22FHEA_4fxfs8lsm_tree15skip_list_layerINtB5_13SkipListLayerNtNtNtB9_12object_store13object_record12ObjectKeyV54NtB1f_14ObjectValueV63E6insertB9_
+     3.93%     0.37%  guest-agent      [k] _RNCNvMs3_NtNtCs2KEid22FHEA_4fxfs12object_store9directoryINtB7_9DirectoryNtB9_11ObjectStoreE10lookup_ext0Cs8offoKLMPQ3_10fxfs_linux
+     3.73%     0.00%  swapper          [k] kernel_init
+     3.73%     0.00%  swapper          [k] start_kernel
+     3.73%     0.00%  swapper          [k] x86_64_start_kernel
+     3.73%     0.00%  swapper          [k] x86_64_start_reservations
+     3.16%     0.09%  guest-agent      [k] _RNvMsm_NtCs2KEid22FHEA_4fxfs10filesystemNtB5_12FxFilesystem15sub_transaction
+     3.07%     0.00%  guest-agent      [k] __slab_alloc.isra.0
+     3.05%     1.11%  guest-agent      [k] ___slab_alloc
+     3.02%     0.00%  kworker/u16:49-  [k] kthread
+     3.02%     0.00%  kworker/u16:49-  [k] ret_from_fork
+     3.02%     0.00%  kworker/u16:49-  [k] ret_from_fork_asm
+     3.02%     0.00%  kworker/u16:49-  [k] worker_thread
+     2.96%     2.96%  guest-agent      [k] __pi_memcpy
+     2.90%     0.00%  kworker/u16:49-  [k] _RNvMs1_NtCs8WWmacacxHO_10async_task3rawINtB5_7RawTaskINtNtCsa4Wcd7wDxpd_12futures_util9abortable9AbortableNCNvMso_NtNtCs2KEid22FHEA_4fxfs12object_store7journalNtB1O_7Journal10flush_task0EINtNtCs2RzmApnEpjJ_4core6result6ResultuNtBS_7AbortedENvNtCshRwtkNAyQY8_8linux_rt8executor8scheduleNtB3S_4WorkE3runB1S_
+     2.90%     0.00%  kworker/u16:49-  [k] fxfs_rt_work_run
+     2.90%     0.00%  kworker/u16:49-  [k] process_one_work
+     2.88%     2.48%  guest-agent      [k] _RNvMsg_NtNtCs2KEid22FHEA_4fxfs8lsm_tree15skip_list_layerINtB5_20SkipListLayerIterMutNtNtNtB9_12object_store13object_record12ObjectKeyV54NtB1m_14ObjectValueV63E3newB9_
+     2.88%     0.00%  kworker/u16:49-  [k] _RNCNvMs_NtNtCs2KEid22FHEA_4fxfs12object_store5flushNtB8_11ObjectStore14flush_unlocked0Ba_
+     2.88%     0.00%  kworker/u16:49-  [k] _RNCNvXsA_NtCs2KEid22FHEA_4fxfs12object_storeNtB7_11ObjectStoreNtNtB9_10filesystem16JournalingObject5flush0B9_
+     2.82%     0.37%  guest-agent      [k] fxfs_rt_unpark
+     2.70%     0.23%  guest-agent      [k] _RINvNvNtCs1R8tEabxR5k_5alloc4task9raw_waker4wakeNtNtCshRwtkNAyQY8_8linux_rt8executor6ParkerECs8offoKLMPQ3_10fxfs_linux
+     2.45%     0.00%  guest-agent      [k] complete
+     2.42%     0.17%  guest-agent      [k] _RINvMs_NtCsxwJpPu2g00_14event_listener3sysINtB7_5InneruE10with_innerjNCINvB2_6notifyNtNtB7_6notify6NotifyE0ECs2KEid22FHEA_4fxfs
+     2.39%     0.09%  guest-agent      [k] fxfs_rt_alloc
+     2.36%     0.74%  guest-agent      [k] _RNvMs6_CsdOFdY6mdYW1_15linked_hash_mapINtB5_13LinkedHashMapNtNtNtCs2KEid22FHEA_4fxfs12object_store13object_record12ObjectKeyV54NtNtBZ_10tree_cache10CacheValueINtNtCs2RzmApnEpjJ_4core4hash18BuildHasherDefaultNtCs5t8wfrOWwBm_10rustc_hash8FxHasherEE6insertB11_
+     2.33%     0.03%  guest-agent      [k] fxfs_vfs_instantiate
+     2.33%     0.03%  guest-agent      [k] schedule
+     2.31%     2.31%  guest-agent      [k] finish_task_switch.isra.0
+     2.31%     1.14%  guest-agent      [k] __kvmalloc_node_noprof
+     2.31%     0.00%  guest-agent      [k] __schedule
+     1.96%     0.06%  guest-agent      [k] _RINvMs0_NtCsxwJpPu2g00_14event_listener3sysINtB6_5InneruE6notifyNtNtB8_6notify6NotifyECs2KEid22FHEA_4fxfs
+     1.82%     0.03%  guest-agent      [k] kmem_cache_alloc_lru_noprof
+     1.82%     0.03%  guest-agent      [k] wait_for_completion
+     1.76%     0.03%  guest-agent      [k] fxfs_vfs_iget_as
+     1.74%     0.11%  kworker/u16:49-  [k] _RNCNvXsi_NtNtCs2KEid22FHEA_4fxfs8lsm_tree16persistent_layerINtB7_21PersistentLayerWriterINtB7_10KeptWriterINtNtNtBb_12object_store18data_object_handle12DirectWriterNtB1L_11ObjectStoreEENtNtB1L_13object_record12ObjectKeyV54NtB2Z_14ObjectValueV63EINtNtB9_5types11LayerWriterB2X_B3y_E5write0Bb_
+     1.74%     0.00%  guest-agent      [k] _RINvXNvNtNtCs2KEid22FHEA_4fxfs12object_store11transaction1__NtB5_11MutationV63NtNtCslaoSmfS0x5U_10serde_core3ser9Serialize9serializeQINtNtCsjr86reHQuqA_7bincode3ser10SerializerQINtNtCs1R8tEabxR5k_5alloc3vec3VechEINtNtB2c_6config14WithOtherLimitINtB3r_17WithOtherTrailingNtB3r_14DefaultOptionsNtNtB3r_8trailing13AllowTrailingENtNtB3r_5limit7BoundedEEEB9_
+     1.71%     0.80%  guest-agent      [k] _RNvMsh_CsxwJpPu2g00_14event_listenerINtB5_13InnerListeneruINtNtNtCs1R8tEabxR5k_5alloc3rcs3arc3ArcINtB5_5InneruEEE13poll_internalCs2KEid22FHEA_4fxfs
+     1.71%     0.00%  guest-agent      [k] allocate_slab
+     1.68%     0.80%  guest-agent      [k] _RNvMNtNtNtCshuP6zn3CkNr_3std3sys4sync5mutexNtB2_5Mutex14lock_contended
+     1.68%     0.03%  guest-agent      [.] _RINvNtCs7x1JxYRm7tp_4core3ptr9drop_glueNtNtCs268jdzri8zx_3std2fs4FileECs3LuMwi9DwoQ_4rand
+     1.65%     0.00%  guest-agent      [.] _RINvNtCs7x1JxYRm7tp_4core3ptr9drop_glueNtNtNtNtCs268jdzri8zx_3std3sys2fd4unix8FileDescECs3LuMwi9DwoQ_4rand
+     1.65%     0.00%  guest-agent      [.] _RINvNtCs7x1JxYRm7tp_4core3ptr9drop_glueNtNtNtNtCs268jdzri8zx_3std3sys2fs4unix4FileECs3LuMwi9DwoQ_4rand
+     1.62%     0.00%  guest-agent      [.] _RINvNtCs7x1JxYRm7tp_4core3ptr9drop_glueNtNtNtNtCs268jdzri8zx_3std2os2fd5owned7OwnedFdECs3LuMwi9DwoQ_4rand
+     1.62%     0.00%  guest-agent      [k] schedule_timeout
+     1.59%     1.02%  guest-agent      [k] shuffle_freelist
+     1.48%     0.03%  guest-agent      [k] iget_locked
+     1.45%     0.48%  guest-agent      [k] _RNvXsi_NtNtCs2KEid22FHEA_4fxfs8lsm_tree15skip_list_layerINtB5_20SkipListLayerIterMutNtNtNtB9_12object_store13object_record12ObjectKeyV54NtB1m_14ObjectValueV63EINtNtB7_5types16LayerIteratorMutB1k_B2a_E6insertB9_
+     1.37%     0.11%  guest-agent      [k] d_alloc_parallel
+     1.37%     0.03%  kworker/u16:49-  [k] _RNvMsh_NtNtCs2KEid22FHEA_4fxfs8lsm_tree16persistent_layerINtB5_21PersistentLayerWriterINtB5_10KeptWriterINtNtNtB9_12object_store18data_object_handle12DirectWriterNtB1J_11ObjectStoreEENtNtB1J_13object_record12ObjectKeyV54NtB2X_14ObjectValueV63E14serialize_itemB9_
+     1.34%     0.03%  guest-agent      [.] _RNvNtCskPe9mFtgPYj_5alloc3fmt6formatCs1IvpAZRFdS9_10test_cases
+     1.34%     0.03%  guest-agent      [k] fxfs_rt_futex_wake
+     1.31%     0.03%  guest-agent      [k] wake_up_var
+     1.28%     0.11%  guest-agent      [.] _RINvMNtCs7x1JxYRm7tp_4core6optionINtB3_6OptionReE11map_or_elseNtNtCskPe9mFtgPYj_5alloc6string6StringNCNvNtB12_3fmt6format0NvYeNtNtB12_6borrow7ToOwned8to_ownedECs7mxwlHZonca_10serde_json
+     1.20%     1.14%  guest-agent      [k] _RNvXs4_NtNtCs2KEid22FHEA_4fxfs12object_store10tree_cacheNtB5_9TreeCacheINtNtNtB9_8lsm_tree5cache11ObjectCacheNtNtB7_13object_record12ObjectKeyV54NtB1L_14ObjectValueV63E17lookup_or_reserve
+     1.20%     0.06%  guest-agent      [.] _RNCNvNtCskPe9mFtgPYj_5alloc3fmt6format0Cs7mxwlHZonca_10serde_json
+     1.20%     0.00%  guest-agent      [k] __d_alloc
+     1.17%     1.11%  guest-agent      [k] _raw_spin_lock
+     1.17%     0.26%  guest-agent      [k] _RNCNvMs9_NtCs2KEid22FHEA_4fxfs12object_storeNtB7_11ObjectStore23txn_get_object_mutation0Cs8offoKLMPQ3_10fxfs_linux
+     1.17%     0.17%  guest-agent      [.] _RNvNvNtCskPe9mFtgPYj_5alloc3fmt6format12format_inner
+     1.14%     0.00%  guest-agent      [k] _RNCINvMs9_NtCs2KEid22FHEA_4fxfs12object_storeNtB8_11ObjectStore13create_objectBH_E0Cs8offoKLMPQ3_10fxfs_linux
+     1.05%     1.02%  guest-agent      [.] __libc_malloc_impl
+     1.05%     0.03%  guest-agent      [k] _RINvMNtNtCsjr86reHQuqA_7bincode6config3intNtB3_14VarintEncoding16serialize_varintQINtNtCs1R8tEabxR5k_5alloc3vec3VechEINtB5_14WithOtherLimitINtB5_17WithOtherTrailingNtB5_14DefaultOptionsNtNtB5_8trailing13AllowTrailingENtNtB5_5limit7BoundedEECs2KEid22FHEA_4fxfs
+     1.02%     0.26%  guest-agent      [k] _RNCNvMs6_CsjFhVZ1tr6fu_10fxfs_posixINtB7_4FxfsNtNtCs8offoKLMPQ3_10fxfs_linux2fs5GuestE16attr_after_sized0BM_
+     1.02%     0.00%  guest-agent      [k] fxfs_rt_free
+     1.00%     0.60%  guest-agent      [k] _RNCNvXsj_NtNtCs2KEid22FHEA_4fxfs8lsm_tree15skip_list_layerINtB7_13SkipListLayerNtNtNtBb_12object_store13object_record12ObjectKeyV54NtB1h_14ObjectValueV63EINtNtB9_5types5LayerB1f_B25_E4seek0Cs8offoKLMPQ3_10fxfs_linux
+     1.00%     0.00%  guest-agent      [k] __x64_sys_close
+     1.00%     0.00%  guest-agent      [k] alloc_inode
+     0.97%     0.63%  guest-agent      [k] _RNvMsb_NtCs2KEid22FHEA_4fxfs8lsm_treeINtB5_7LSMTreeNtNtNtB7_12object_store13object_record12ObjectKeyV54NtBP_14ObjectValueV63E9layer_setCs8offoKLMPQ3_10fxfs_linux
+     0.97%     0.34%  guest-agent      [k] _RNvYQINtNtCs1R8tEabxR5k_5alloc3vec3VechENtNtCshuP6zn3CkNr_3std2io5Write9write_allCs2KEid22FHEA_4fxfs
+     0.94%     0.80%  guest-agent      [k] _RNvXse_NtNtCsa4Wcd7wDxpd_12futures_util4lock5mutexINtB5_15MutexLockFutureINtNtCs2RzmApnEpjJ_4core6option6OptionINtNtNtNtCshY9N03A7Id3_13fuchsia_async7runtime5guest4task4TaskINtNtB1e_6result6ResultuNtCs1ldHOCgi55O_6anyhow5ErrorEEEENtNtNtB1e_6future6future6Future4pollCs2KEid22FHEA_4fxfs
+     0.91%     0.20%  guest-agent      [k] _RNCINvMsb_NtCs2KEid22FHEA_4fxfs8lsm_treeINtB8_7LSMTreeNtNtNtBa_12object_store13object_record12ObjectKeyV54NtBS_14ObjectValueV63E8find_mapINtNtB8_5types4ItemBQ_B1G_ENCNvB4_4find0E0Cs8offoKLMPQ3_10fxfs_linux
+     0.88%     0.77%  guest-agent      [k] kfree
+     0.88%     0.09%  guest-agent      [.] _RNvNtCs7x1JxYRm7tp_4core3fmt5write
+     0.88%     0.06%  guest-agent      [k] local_clock_noinstr
+     0.88%     0.00%  guest-agent      [k] fxfs_rt_futex_wait
+     0.85%     0.85%  guest-agent      [k] _RINvXs1B_NtNtCs2KEid22FHEA_4fxfs12object_store13object_recordNtB7_12ObjectKeyV54NtNtCs2RzmApnEpjJ_4core4hash4Hash4hashNtCs5t8wfrOWwBm_10rustc_hash8FxHasherEBb_
+     0.85%     0.03%  guest-agent      [k] fput_close_sync
+     0.85%     0.00%  guest-agent      [k] local_clock
+     0.83%     0.26%  guest-agent      [k] _RINvMs9_NtCs2KEid22FHEA_4fxfs12object_storeNtB6_11ObjectStore21create_object_with_idBF_ECs8offoKLMPQ3_10fxfs_linux
+     0.83%     0.06%  guest-agent      [k] __fput
+     0.83%     0.00%  guest-agent      [.] _RNCNvNtNtCs1IvpAZRFdS9_10test_cases13test_fs_bench5guest17scaling_workloadss5_0B7_
+     0.80%     0.80%  guest-agent      [k] pvclock_clocksource_read_nowd
+     0.80%     0.17%  guest-agent      [.] open
+     0.80%     0.09%  guest-agent      [k] kvfree
+     0.80%     0.00%  guest-agent      [k] sched_clock_noinstr
+     0.77%     0.06%  guest-agent      [k] lookup_fast
+     0.77%     0.00%  kworker/u16:49-  [k] _RNvMsn_NtNtCs1R8tEabxR5k_5alloc3rcs3arcINtB5_3ArcDG0_INtNtNtCs2RzmApnEpjJ_4core3ops8function2FnTRL1_INtNtNtCs2KEid22FHEA_4fxfs12object_store11transaction11TransactionL0_EEEp6OutputINtNtBW_6result6ResultuNtCs1ldHOCgi55O_6anyhow5ErrorENtNtBW_6marker4SendNtB3L_4SyncEL_E9drop_slowB1H_
+     0.74%     0.74%  guest-agent      [.] __libc_free
+     0.74%     0.23%  kworker/u16:49-  [k] _RINvNtCs2RzmApnEpjJ_4core3ptr9drop_glueINtNtNtCs2KEid22FHEA_4fxfs8lsm_tree15skip_list_layer13SkipListLayerNtNtNtBI_12object_store13object_record12ObjectKeyV54NtB1I_14ObjectValueV63EEBI_
+     0.74%     0.00%  guest-agent      [k] link_path_walk
+     0.71%     0.71%  guest-agent      [k] __d_lookup_rcu
+     0.71%     0.68%  kworker/u16:49-  [k] __pi_memcpy
+     0.71%     0.65%  guest-agent      [k] _RNCNvMsA_NtNtCs2KEid22FHEA_4fxfs12object_store11transactionNtB7_11LockManager4lock0Cs8offoKLMPQ3_10fxfs_linux
+     0.71%     0.03%  guest-agent      [k] dput
+     0.71%     0.00%  kworker/u16:22-  [k] fxfs_rt_work_run
+     0.71%     0.00%  kworker/u16:22-  [k] kthread
+     0.71%     0.00%  kworker/u16:22-  [k] process_one_work
+     0.71%     0.00%  kworker/u16:22-  [k] ret_from_fork
+     0.71%     0.00%  kworker/u16:22-  [k] ret_from_fork_asm
+     0.71%     0.00%  kworker/u16:22-  [k] worker_thread
+     0.68%     0.34%  guest-agent      [k] _RNvXsD_NtNtCs2KEid22FHEA_4fxfs12object_store11transactionNtB5_9ReadGuardNtNtNtCs2RzmApnEpjJ_4core3ops4drop4Drop4drop
+     0.68%     0.09%  guest-agent      [k] _RINvNvMs5_NtCs1R8tEabxR5k_5alloc7raw_vecINtB8_11RawVecInnerpE7reserve21do_reserve_and_handleNtNtBa_5alloc6GlobalECshuP6zn3CkNr_3std
+     0.68%     0.00%  guest-agent      [k] _RNCNvMs2_NtNtCs2KEid22FHEA_4fxfs12object_store18data_object_handleINtB7_16DataObjectHandleNtB9_11ObjectStoreE17update_attributes0Cs8offoKLMPQ3_10fxfs_linux
+     0.68%     0.00%  guest-agent      [k] _RNCNvMs2_NtNtCs2KEid22FHEA_4fxfs12object_store19store_object_handleINtB7_17StoreObjectHandleNtB9_11ObjectStoreE17update_attributes0Cs8offoKLMPQ3_10fxfs_linux
+     0.68%     0.00%  guest-agent      [k] d_lru_add
+     0.68%     0.00%  guest-agent      [k] do_open
+     0.68%     0.00%  guest-agent      [k] list_lru_add_obj
+     0.68%     0.00%  kworker/u16:22-  [k] _RNvMs1_NtCs8WWmacacxHO_10async_task3rawINtB5_7RawTaskINtNtCsa4Wcd7wDxpd_12futures_util9abortable9AbortableNCNvMso_NtNtCs2KEid22FHEA_4fxfs12object_store7journalNtB1O_7Journal10flush_task0EINtNtCs2RzmApnEpjJ_4core6result6ResultuNtBS_7AbortedENvNtCshRwtkNAyQY8_8linux_rt8executor8scheduleNtB3S_4WorkE3runB1S_
+     0.65%     0.65%  guest-agent      [k] _RNvMs_NtNtCs2KEid22FHEA_4fxfs12object_store14object_managerNtB4_5Inner17journaling_object
+     0.65%     0.51%  kworker/u16:49-  [k] _RINvYNtNtNtCs2KEid22FHEA_4fxfs12object_store13object_record12ObjectKeyV54NtNtNtB9_16serialized_types14serialized_key12SerializeKey28serialize_key_with_base_intoINtNtCs1R8tEabxR5k_5alloc3vec3VechEEB9_
+     0.65%     0.09%  guest-agent      [k] _RNCNvMs9_NtCs2KEid22FHEA_4fxfs12object_storeNtB7_11ObjectStore17update_attributes0Cs8offoKLMPQ3_10fxfs_linux
+     0.65%     0.03%  kworker/u16:22-  [k] _RNCNvMs2_NtNtCs2KEid22FHEA_4fxfs12object_store18data_object_handleINtB7_16DataObjectHandleNtB9_11ObjectStoreE9overwrite0Bb_
+     0.63%     0.00%  guest-agent      [k] __x64_sys_fcntl
+     0.63%     0.00%  guest-agent      [k] fxfs_vfs_alloc_inode
+     0.60%     0.09%  guest-agent      [k] setup_object
+     0.57%     0.57%  guest-agent      [k] memcmp
+     0.57%     0.06%  guest-agent      [k] inode_permission
+     0.57%     0.03%  guest-agent      [k] _RINvXNvNtNtCs2KEid22FHEA_4fxfs12object_store13object_recordsc_1__NtB5_12ObjectKeyV54NtNtCslaoSmfS0x5U_10serde_core3ser9Serialize9serializeQINtNtCsjr86reHQuqA_7bincode3ser10SerializerQINtNtCs1R8tEabxR5k_5alloc3vec3VechEINtNtB2i_6config14WithOtherLimitINtB3x_17WithOtherTrailingNtB3x_14DefaultOptionsNtNtB3x_8trailing13AllowTrailingENtNtB3x_5limit7BoundedEEEB9_
+     0.54%     0.00%  kworker/u16:22-  [k] _RNCNvMs2_NtNtCs2KEid22FHEA_4fxfs12object_store18data_object_handleINtB7_16DataObjectHandleNtB9_11ObjectStoreE8write_at0Bb_
+     0.54%     0.00%  kworker/u16:22-  [k] _RNCNvMs2_NtNtCs2KEid22FHEA_4fxfs12object_store19store_object_handleINtB7_17StoreObjectHandleNtB9_11ObjectStoreE13write_aligned0Bb_
+     0.51%     0.00%  guest-agent      [k] fxfs_vfs_inode_init_once
+
+
+
+CALLERS scale-create-j8
+    20.98%  [k] fxfs_rt_park
+            |
+            ---fxfs_create
+               fxfs_vfs_mknod
+               fxfs_vfs_create
+               lookup_open.isra.0
+               open_last_lookups
+               path_openat
+               do_filp_open
+               do_sys_openat2
+               __x64_sys_open
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               sccp
+               _RNvMsj_NtCs268jdzri8zx_3std2fsNtB5_11OpenOptions5__open
+               _RINvMsj_NtCs268jdzri8zx_3std2fsNtB6_11OpenOptions4openRNtNtB8_4path4PathECs3LuMwi9DwoQ_4rand
+               _RINvMs2_NtCs268jdzri8zx_3std2fsNtB6_4File6createNtNtCskPe9mFtgPYj_5alloc6string6StringECs1IvpAZRFdS9_10test_cases
+               _RNCNCNvNtNtCs1IvpAZRFdS9_10test_cases13test_fs_bench5guest17scaling_workloadss6_00B9_
+               _RNCNCNCINvNtNtCs1IvpAZRFdS9_10test_cases13test_fs_bench5guest11parallel_onNCNCNvB8_17scaling_workloadss6_00E000Bc_
+               _RINvNtNtCs268jdzri8zx_3std3sys9backtrace28___rust_begin_short_backtraceNCNCNCINvNtNtCs1IvpAZRFdS9_10test_cases13test_fs_bench5guest11parallel_onNCNCNvB1g_17scaling_workloadss6_00E000uEB1k_
+               _RNCNCINvNtNtCs268jdzri8zx_3std6thread9lifecycle15spawn_uncheckedNCNCNCINvNtNtCs1IvpAZRFdS9_10test_cases13test_fs_bench5guest11parallel_onNCNCNvB19_17scaling_workloadss6_00E000uEs_00B1d_
+               _RNvXsl_NtNtCs7x1JxYRm7tp_4core5panic11unwind_safeINtB5_16AssertUnwindSafeNCNCINvNtNtCs268jdzri8zx_3std6thread9lifecycle15spawn_uncheckedNCNCNCINvNtNtCs1IvpAZRFdS9_10test_cases13test_fs_bench5guest11parallel_onNCNCNvB2j_17scaling_workloadss6_00E000uEs_00EINtNtNtB9_3ops8function6FnOnceuE9call_onceB2n_
+               _RINvNvNtCs268jdzri8zx_3std9panicking12catch_unwind7do_callINtNtNtCs7x1JxYRm7tp_4core5panic11unwind_safe16AssertUnwindSafeNCNCINvNtNtB6_6thread9lifecycle15spawn_uncheckedNCNCNCINvNtNtCs1IvpAZRFdS9_10test_cases13test_fs_bench5guest11parallel_onNCNCNvB2Q_17scaling_workloadss6_00E000uEs_00EuEB2U_
+               __rust_try
+
+    13.09%  [k] pv_native_safe_halt
+            |
+            ---arch_cpu_idle
+               default_idle_call
+               do_idle
+               cpu_startup_entry
+               |          
+                --9.51%--start_secondary
+                          common_startup_64
+
+     4.21%  [k] _raw_spin_unlock_irqrestore
+
+
+
+FXFS scale-create-j8: device_commits 2, device_commits_ns 1029776, device_read_bytes 634880, device_reads 16, device_reads_ns 7597512, device_write_bytes 3350528, device_writes 392, device_writes_ns 1022185013, journal_compaction_ns 52377462, journal_compactions 1, seal_waits 2, seal_waits_ns 1127, seals 2, seals_ns 1045973
+REQUESTS scale-create-j8: read 0.00 (438 µs each), write 0.02 (422 µs each), free 0.00 (529 µs each), commit 0.00 (492 µs each) per operation
+PROFILE scale-create-j8
+    20.98%  [k] fxfs_rt_park
+    13.09%  [k] pv_native_safe_halt
+     4.21%  [k] _raw_spin_unlock_irqrestore
+     3.67%  [k] __pi_memcpy
+     2.56%  [k] finish_task_switch.isra.0
+     2.48%  [k] _RNvMsg_NtNtCs2KEid22FHEA_4fxfs8lsm_tree15skip_list_layerINtB5_20SkipListLayerIterMutNtNtNtB9_12object_store13object_record12ObjectKeyV54NtB1m_14ObjectValueV63E3newB9_
+     1.45%  [k] _RNvXsA_NtCs2KEid22FHEA_4fxfs12object_storeNtB5_11ObjectStoreNtNtB7_10filesystem16JournalingObject14apply_mutation
+     1.34%  [k] _RNvXs4_NtNtCs2KEid22FHEA_4fxfs12object_store10tree_cacheNtB5_9TreeCacheINtNtNtB9_8lsm_tree5cache11ObjectCacheNtNtB7_13object_record12ObjectKeyV54NtB1L_14ObjectValueV63E10invalidate
+     1.14%  [k] _RNvXs4_NtNtCs2KEid22FHEA_4fxfs12object_store10tree_cacheNtB5_9TreeCacheINtNtNtB9_8lsm_tree5cache11ObjectCacheNtNtB7_13object_record12ObjectKeyV54NtB1L_14ObjectValueV63E17lookup_or_reserve
+     1.14%  [k] ___slab_alloc
+     1.14%  [k] __kvmalloc_node_noprof
+     1.11%  [k] _raw_spin_lock
+     1.05%  [k] _RNCNvMs9_NtCs2KEid22FHEA_4fxfs12object_storeNtB7_11ObjectStore15new_transaction0Cs8offoKLMPQ3_10fxfs_linux
+     1.02%  [.] __libc_malloc_impl
+     1.02%  [k] shuffle_freelist
+
+
+
+INCLUSIVE scale-create-j8
+    79.85%     0.00%  guest-agent      [.] _RNvNvMs0_NtNtNtCs268jdzri8zx_3std3sys6thread4unixNtB7_6Thread3new12thread_start
+    79.85%     0.00%  guest-agent      [.] start
+    79.82%     0.00%  guest-agent      [.] __rust_try
+    79.76%     0.00%  guest-agent      [.] _RINvNtNtCs268jdzri8zx_3std3sys9backtrace28___rust_begin_short_backtraceNCNCNCINvNtNtCs1IvpAZRFdS9_10test_cases13test_fs_bench5guest11parallel_onNCNCNvB1g_17scaling_workloadss6_00E000uEB1k_
+    79.76%     0.00%  guest-agent      [.] _RINvNvNtCs268jdzri8zx_3std9panicking12catch_unwind7do_callINtNtNtCs7x1JxYRm7tp_4core5panic11unwind_safe16AssertUnwindSafeNCNCINvNtNtB6_6thread9lifecycle15spawn_uncheckedNCNCNCINvNtNtCs1IvpAZRFdS9_10test_cases13test_fs_bench5guest11parallel_onNCNCNvB2Q_17scaling_workloadss6_00E000uEs_00EuEB2U_
+    79.76%     0.00%  guest-agent      [.] _RNCINvNtNtCs268jdzri8zx_3std6thread9lifecycle15spawn_uncheckedNCNCNCINvNtNtCs1IvpAZRFdS9_10test_cases13test_fs_bench5guest11parallel_onNCNCNvB17_17scaling_workloadss6_00E000uEs_0B1b_
+    79.76%     0.00%  guest-agent      [.] _RNCNCINvNtNtCs268jdzri8zx_3std6thread9lifecycle15spawn_uncheckedNCNCNCINvNtNtCs1IvpAZRFdS9_10test_cases13test_fs_bench5guest11parallel_onNCNCNvB19_17scaling_workloadss6_00E000uEs_00B1d_
+    79.76%     0.00%  guest-agent      [.] _RNCNCNCINvNtNtCs1IvpAZRFdS9_10test_cases13test_fs_bench5guest11parallel_onNCNCNvB8_17scaling_workloadss6_00E000Bc_
+    79.76%     0.00%  guest-agent      [.] _RNSNvYNCINvNtNtCs268jdzri8zx_3std6thread9lifecycle15spawn_uncheckedNCNCNCINvNtNtCs1IvpAZRFdS9_10test_cases13test_fs_bench5guest11parallel_onNCNCNvB1c_17scaling_workloadss6_00E000uEs_0INtNtNtCs7x1JxYRm7tp_4core3ops8function6FnOnceuE9call_once6vtableB1g_
+    79.76%     0.00%  guest-agent      [.] _RNvXsl_NtNtCs7x1JxYRm7tp_4core5panic11unwind_safeINtB5_16AssertUnwindSafeNCNCINvNtNtCs268jdzri8zx_3std6thread9lifecycle15spawn_uncheckedNCNCNCINvNtNtCs1IvpAZRFdS9_10test_cases13test_fs_bench5guest11parallel_onNCNCNvB2j_17scaling_workloadss6_00E000uEs_00EINtNtNtB9_3ops8function6FnOnceuE9call_onceB2n_
+    79.62%     0.11%  guest-agent      [.] _RNCNCNvNtNtCs1IvpAZRFdS9_10test_cases13test_fs_bench5guest17scaling_workloadss6_00B9_
+    76.40%     0.00%  guest-agent      [k] entry_SYSCALL_64_after_hwframe
+    76.37%     0.43%  guest-agent      [k] do_syscall_64
+    76.06%     0.09%  guest-agent      [.] _RINvMs2_NtCs268jdzri8zx_3std2fsNtB6_4File6createNtNtCskPe9mFtgPYj_5alloc6string6StringECs1IvpAZRFdS9_10test_cases
+    75.97%     0.03%  guest-agent      [k] x64_sys_call
+    75.60%     0.11%  guest-agent      [.] _RINvMsj_NtCs268jdzri8zx_3std2fsNtB6_11OpenOptions4openRNtNtB8_4path4PathECs3LuMwi9DwoQ_4rand
+    75.52%     0.23%  guest-agent      [.] sccp
+    75.38%     0.09%  guest-agent      [.] _RNvMsj_NtCs268jdzri8zx_3std2fsNtB5_11OpenOptions5__open
+    73.95%     0.03%  guest-agent      [k] __x64_sys_open
+    73.87%     0.03%  guest-agent      [k] do_sys_openat2
+    73.56%     0.06%  guest-agent      [k] do_filp_open
+    73.50%     0.00%  guest-agent      [k] path_openat
+    71.45%     0.17%  guest-agent      [k] open_last_lookups
+    70.79%     0.00%  guest-agent      [k] lookup_open.isra.0
+    63.42%     0.03%  guest-agent      [k] fxfs_vfs_create
+    63.39%     0.03%  guest-agent      [k] fxfs_vfs_mknod
+    60.69%     0.65%  guest-agent      [k] fxfs_create
+    26.70%     0.65%  guest-agent      [k] _RNCNvMso_NtNtCs2KEid22FHEA_4fxfs12object_store11transactionNtB7_11Transaction6commit0Cs8offoKLMPQ3_10fxfs_linux
+    23.74%    20.98%  guest-agent      [k] fxfs_rt_park
+    16.99%     0.20%  guest-agent      [k] _RNCNvMso_NtNtCs2KEid22FHEA_4fxfs12object_store7journalNtB7_7Journal6commit0Cs8offoKLMPQ3_10fxfs_linux
+    16.57%     0.54%  guest-agent      [k] _RNvMso_NtNtCs2KEid22FHEA_4fxfs12object_store7journalNtB5_7Journal25write_and_apply_mutations
+    13.52%     0.00%  swapper          [k] common_startup_64
+    13.52%     0.00%  swapper          [k] cpu_startup_entry
+    13.46%     0.06%  swapper          [k] do_idle
+    13.29%     0.43%  guest-agent      [k] _RNvMs0_NtNtCs2KEid22FHEA_4fxfs12object_store14object_managerNtB5_13ObjectManager17apply_transaction
+    13.21%     0.06%  swapper          [k] default_idle_call
+    13.15%    13.09%  swapper          [k] pv_native_safe_halt
+    13.15%     0.00%  swapper          [k] arch_cpu_idle
+    12.78%     0.43%  guest-agent      [k] _RNvMs0_NtNtCs2KEid22FHEA_4fxfs12object_store14object_managerNtB5_13ObjectManager14apply_mutation
+    11.41%     1.45%  guest-agent      [k] _RNvXsA_NtCs2KEid22FHEA_4fxfs12object_storeNtB5_11ObjectStoreNtNtB7_10filesystem16JournalingObject14apply_mutation
+     9.79%     0.00%  swapper          [k] start_secondary
+     5.55%     0.00%  guest-agent      [k] fxfs_vfs_lookup
+     5.32%     0.03%  guest-agent      [k] fxfs_lookup
+     4.53%     0.03%  guest-agent      [k] _RNCNvMs4_CsjFhVZ1tr6fu_10fxfs_posixINtB7_5BegunNtNtCs8offoKLMPQ3_10fxfs_linux2fs5GuestE11transaction0BN_
+     4.50%     0.06%  guest-agent      [k] _RNCNvMs4_CsjFhVZ1tr6fu_10fxfs_posixINtB7_5BegunNtNtCs8offoKLMPQ3_10fxfs_linux2fs5GuestE19transaction_locking0BN_
+     4.47%     1.05%  guest-agent      [k] _RNCNvMs9_NtCs2KEid22FHEA_4fxfs12object_storeNtB7_11ObjectStore15new_transaction0Cs8offoKLMPQ3_10fxfs_linux
+     4.16%     0.48%  guest-agent      [k] _RNvXsp_NtNtCs2KEid22FHEA_4fxfs12object_store11transactionNtB5_11TransactionNtNtNtCs2RzmApnEpjJ_4core3ops4drop4Drop4drop
+     4.16%     0.00%  guest-agent      [k] _RINvNtCs2RzmApnEpjJ_4core3ptr9drop_glueNtNtNtCs2KEid22FHEA_4fxfs12object_store11transaction11TransactionECs8offoKLMPQ3_10fxfs_linux
+     4.16%     0.00%  guest-agent      [k] _RNCNvMs3_NtNtCs2KEid22FHEA_4fxfs12object_store9directoryINtB7_9DirectoryNtB9_11ObjectStoreE6lookup0Cs8offoKLMPQ3_10fxfs_linux
+     4.07%     4.07%  guest-agent      [k] _raw_spin_unlock_irqrestore
+     4.04%     1.34%  guest-agent      [k] _RNvXs4_NtNtCs2KEid22FHEA_4fxfs12object_store10tree_cacheNtB5_9TreeCacheINtNtNtB9_8lsm_tree5cache11ObjectCacheNtNtB7_13object_record12ObjectKeyV54NtB1L_14ObjectValueV63E10invalidate
+     4.01%     0.03%  guest-agent      [k] _RNvMs8_NtNtCs2KEid22FHEA_4fxfs8lsm_tree15skip_list_layerINtB5_13SkipListLayerNtNtNtB9_12object_store13object_record12ObjectKeyV54NtB1f_14ObjectValueV63E6insertB9_
+     3.93%     0.37%  guest-agent      [k] _RNCNvMs3_NtNtCs2KEid22FHEA_4fxfs12object_store9directoryINtB7_9DirectoryNtB9_11ObjectStoreE10lookup_ext0Cs8offoKLMPQ3_10fxfs_linux
+     3.73%     0.00%  swapper          [k] kernel_init
+     3.73%     0.00%  swapper          [k] start_kernel
+     3.73%     0.00%  swapper          [k] x86_64_start_kernel
+     3.73%     0.00%  swapper          [k] x86_64_start_reservations
+     3.16%     0.09%  guest-agent      [k] _RNvMsm_NtCs2KEid22FHEA_4fxfs10filesystemNtB5_12FxFilesystem15sub_transaction
+     3.07%     0.00%  guest-agent      [k] __slab_alloc.isra.0
+     3.05%     1.11%  guest-agent      [k] ___slab_alloc
+     3.02%     0.00%  kworker/u16:49-  [k] kthread
+     3.02%     0.00%  kworker/u16:49-  [k] ret_from_fork
+     3.02%     0.00%  kworker/u16:49-  [k] ret_from_fork_asm
+     3.02%     0.00%  kworker/u16:49-  [k] worker_thread
+     2.96%     2.96%  guest-agent      [k] __pi_memcpy
+     2.90%     0.00%  kworker/u16:49-  [k] _RNvMs1_NtCs8WWmacacxHO_10async_task3rawINtB5_7RawTaskINtNtCsa4Wcd7wDxpd_12futures_util9abortable9AbortableNCNvMso_NtNtCs2KEid22FHEA_4fxfs12object_store7journalNtB1O_7Journal10flush_task0EINtNtCs2RzmApnEpjJ_4core6result6ResultuNtBS_7AbortedENvNtCshRwtkNAyQY8_8linux_rt8executor8scheduleNtB3S_4WorkE3runB1S_
+     2.90%     0.00%  kworker/u16:49-  [k] fxfs_rt_work_run
+     2.90%     0.00%  kworker/u16:49-  [k] process_one_work
+     2.88%     2.48%  guest-agent      [k] _RNvMsg_NtNtCs2KEid22FHEA_4fxfs8lsm_tree15skip_list_layerINtB5_20SkipListLayerIterMutNtNtNtB9_12object_store13object_record12ObjectKeyV54NtB1m_14ObjectValueV63E3newB9_
+     2.88%     0.00%  kworker/u16:49-  [k] _RNCNvMs_NtNtCs2KEid22FHEA_4fxfs12object_store5flushNtB8_11ObjectStore14flush_unlocked0Ba_
+     2.88%     0.00%  kworker/u16:49-  [k] _RNCNvXsA_NtCs2KEid22FHEA_4fxfs12object_storeNtB7_11ObjectStoreNtNtB9_10filesystem16JournalingObject5flush0B9_
+     2.82%     0.37%  guest-agent      [k] fxfs_rt_unpark
+     2.70%     0.23%  guest-agent      [k] _RINvNvNtCs1R8tEabxR5k_5alloc4task9raw_waker4wakeNtNtCshRwtkNAyQY8_8linux_rt8executor6ParkerECs8offoKLMPQ3_10fxfs_linux
+     2.45%     0.00%  guest-agent      [k] complete
+     2.42%     0.17%  guest-agent      [k] _RINvMs_NtCsxwJpPu2g00_14event_listener3sysINtB7_5InneruE10with_innerjNCINvB2_6notifyNtNtB7_6notify6NotifyE0ECs2KEid22FHEA_4fxfs
+     2.39%     0.09%  guest-agent      [k] fxfs_rt_alloc
+     2.36%     0.74%  guest-agent      [k] _RNvMs6_CsdOFdY6mdYW1_15linked_hash_mapINtB5_13LinkedHashMapNtNtNtCs2KEid22FHEA_4fxfs12object_store13object_record12ObjectKeyV54NtNtBZ_10tree_cache10CacheValueINtNtCs2RzmApnEpjJ_4core4hash18BuildHasherDefaultNtCs5t8wfrOWwBm_10rustc_hash8FxHasherEE6insertB11_
+     2.33%     0.03%  guest-agent      [k] fxfs_vfs_instantiate
+     2.33%     0.03%  guest-agent      [k] schedule
+     2.31%     2.31%  guest-agent      [k] finish_task_switch.isra.0
+     2.31%     1.14%  guest-agent      [k] __kvmalloc_node_noprof
+     2.31%     0.00%  guest-agent      [k] __schedule
+     1.96%     0.06%  guest-agent      [k] _RINvMs0_NtCsxwJpPu2g00_14event_listener3sysINtB6_5InneruE6notifyNtNtB8_6notify6NotifyECs2KEid22FHEA_4fxfs
+     1.82%     0.03%  guest-agent      [k] kmem_cache_alloc_lru_noprof
+     1.82%     0.03%  guest-agent      [k] wait_for_completion
+     1.76%     0.03%  guest-agent      [k] fxfs_vfs_iget_as
+     1.74%     0.11%  kworker/u16:49-  [k] _RNCNvXsi_NtNtCs2KEid22FHEA_4fxfs8lsm_tree16persistent_layerINtB7_21PersistentLayerWriterINtB7_10KeptWriterINtNtNtBb_12object_store18data_object_handle12DirectWriterNtB1L_11ObjectStoreEENtNtB1L_13object_record12ObjectKeyV54NtB2Z_14ObjectValueV63EINtNtB9_5types11LayerWriterB2X_B3y_E5write0Bb_
+     1.74%     0.00%  guest-agent      [k] _RINvXNvNtNtCs2KEid22FHEA_4fxfs12object_store11transaction1__NtB5_11MutationV63NtNtCslaoSmfS0x5U_10serde_core3ser9Serialize9serializeQINtNtCsjr86reHQuqA_7bincode3ser10SerializerQINtNtCs1R8tEabxR5k_5alloc3vec3VechEINtNtB2c_6config14WithOtherLimitINtB3r_17WithOtherTrailingNtB3r_14DefaultOptionsNtNtB3r_8trailing13AllowTrailingENtNtB3r_5limit7BoundedEEEB9_
+     1.71%     0.80%  guest-agent      [k] _RNvMsh_CsxwJpPu2g00_14event_listenerINtB5_13InnerListeneruINtNtNtCs1R8tEabxR5k_5alloc3rcs3arc3ArcINtB5_5InneruEEE13poll_internalCs2KEid22FHEA_4fxfs
+     1.71%     0.00%  guest-agent      [k] allocate_slab
+     1.68%     0.80%  guest-agent      [k] _RNvMNtNtNtCshuP6zn3CkNr_3std3sys4sync5mutexNtB2_5Mutex14lock_contended
+     1.68%     0.03%  guest-agent      [.] _RINvNtCs7x1JxYRm7tp_4core3ptr9drop_glueNtNtCs268jdzri8zx_3std2fs4FileECs3LuMwi9DwoQ_4rand
+     1.65%     0.00%  guest-agent      [.] _RINvNtCs7x1JxYRm7tp_4core3ptr9drop_glueNtNtNtNtCs268jdzri8zx_3std3sys2fd4unix8FileDescECs3LuMwi9DwoQ_4rand
+     1.65%     0.00%  guest-agent      [.] _RINvNtCs7x1JxYRm7tp_4core3ptr9drop_glueNtNtNtNtCs268jdzri8zx_3std3sys2fs4unix4FileECs3LuMwi9DwoQ_4rand
+     1.62%     0.00%  guest-agent      [.] _RINvNtCs7x1JxYRm7tp_4core3ptr9drop_glueNtNtNtNtCs268jdzri8zx_3std2os2fd5owned7OwnedFdECs3LuMwi9DwoQ_4rand
+     1.62%     0.00%  guest-agent      [k] schedule_timeout
+     1.59%     1.02%  guest-agent      [k] shuffle_freelist
+     1.48%     0.03%  guest-agent      [k] iget_locked
+     1.45%     0.48%  guest-agent      [k] _RNvXsi_NtNtCs2KEid22FHEA_4fxfs8lsm_tree15skip_list_layerINtB5_20SkipListLayerIterMutNtNtNtB9_12object_store13object_record12ObjectKeyV54NtB1m_14ObjectValueV63EINtNtB7_5types16LayerIteratorMutB1k_B2a_E6insertB9_
+     1.37%     0.11%  guest-agent      [k] d_alloc_parallel
+     1.37%     0.03%  kworker/u16:49-  [k] _RNvMsh_NtNtCs2KEid22FHEA_4fxfs8lsm_tree16persistent_layerINtB5_21PersistentLayerWriterINtB5_10KeptWriterINtNtNtB9_12object_store18data_object_handle12DirectWriterNtB1J_11ObjectStoreEENtNtB1J_13object_record12ObjectKeyV54NtB2X_14ObjectValueV63E14serialize_itemB9_
+     1.34%     0.03%  guest-agent      [.] _RNvNtCskPe9mFtgPYj_5alloc3fmt6formatCs1IvpAZRFdS9_10test_cases
+     1.34%     0.03%  guest-agent      [k] fxfs_rt_futex_wake
+     1.31%     0.03%  guest-agent      [k] wake_up_var
+     1.28%     0.11%  guest-agent      [.] _RINvMNtCs7x1JxYRm7tp_4core6optionINtB3_6OptionReE11map_or_elseNtNtCskPe9mFtgPYj_5alloc6string6StringNCNvNtB12_3fmt6format0NvYeNtNtB12_6borrow7ToOwned8to_ownedECs7mxwlHZonca_10serde_json
+     1.20%     1.14%  guest-agent      [k] _RNvXs4_NtNtCs2KEid22FHEA_4fxfs12object_store10tree_cacheNtB5_9TreeCacheINtNtNtB9_8lsm_tree5cache11ObjectCacheNtNtB7_13object_record12ObjectKeyV54NtB1L_14ObjectValueV63E17lookup_or_reserve
+     1.20%     0.06%  guest-agent      [.] _RNCNvNtCskPe9mFtgPYj_5alloc3fmt6format0Cs7mxwlHZonca_10serde_json
+     1.20%     0.00%  guest-agent      [k] __d_alloc
+     1.17%     1.11%  guest-agent      [k] _raw_spin_lock
+     1.17%     0.26%  guest-agent      [k] _RNCNvMs9_NtCs2KEid22FHEA_4fxfs12object_storeNtB7_11ObjectStore23txn_get_object_mutation0Cs8offoKLMPQ3_10fxfs_linux
+     1.17%     0.17%  guest-agent      [.] _RNvNvNtCskPe9mFtgPYj_5alloc3fmt6format12format_inner
+     1.14%     0.00%  guest-agent      [k] _RNCINvMs9_NtCs2KEid22FHEA_4fxfs12object_storeNtB8_11ObjectStore13create_objectBH_E0Cs8offoKLMPQ3_10fxfs_linux
+     1.05%     1.02%  guest-agent      [.] __libc_malloc_impl
+     1.05%     0.03%  guest-agent      [k] _RINvMNtNtCsjr86reHQuqA_7bincode6config3intNtB3_14VarintEncoding16serialize_varintQINtNtCs1R8tEabxR5k_5alloc3vec3VechEINtB5_14WithOtherLimitINtB5_17WithOtherTrailingNtB5_14DefaultOptionsNtNtB5_8trailing13AllowTrailingENtNtB5_5limit7BoundedEECs2KEid22FHEA_4fxfs
+     1.02%     0.26%  guest-agent      [k] _RNCNvMs6_CsjFhVZ1tr6fu_10fxfs_posixINtB7_4FxfsNtNtCs8offoKLMPQ3_10fxfs_linux2fs5GuestE16attr_after_sized0BM_
+     1.02%     0.00%  guest-agent      [k] fxfs_rt_free
+     1.00%     0.60%  guest-agent      [k] _RNCNvXsj_NtNtCs2KEid22FHEA_4fxfs8lsm_tree15skip_list_layerINtB7_13SkipListLayerNtNtNtBb_12object_store13object_record12ObjectKeyV54NtB1h_14ObjectValueV63EINtNtB9_5types5LayerB1f_B25_E4seek0Cs8offoKLMPQ3_10fxfs_linux
+     1.00%     0.00%  guest-agent      [k] __x64_sys_close
+     1.00%     0.00%  guest-agent      [k] alloc_inode
+     0.97%     0.63%  guest-agent      [k] _RNvMsb_NtCs2KEid22FHEA_4fxfs8lsm_treeINtB5_7LSMTreeNtNtNtB7_12object_store13object_record12ObjectKeyV54NtBP_14ObjectValueV63E9layer_setCs8offoKLMPQ3_10fxfs_linux
+     0.97%     0.34%  guest-agent      [k] _RNvYQINtNtCs1R8tEabxR5k_5alloc3vec3VechENtNtCshuP6zn3CkNr_3std2io5Write9write_allCs2KEid22FHEA_4fxfs
+     0.94%     0.80%  guest-agent      [k] _RNvXse_NtNtCsa4Wcd7wDxpd_12futures_util4lock5mutexINtB5_15MutexLockFutureINtNtCs2RzmApnEpjJ_4core6option6OptionINtNtNtNtCshY9N03A7Id3_13fuchsia_async7runtime5guest4task4TaskINtNtB1e_6result6ResultuNtCs1ldHOCgi55O_6anyhow5ErrorEEEENtNtNtB1e_6future6future6Future4pollCs2KEid22FHEA_4fxfs
+     0.91%     0.20%  guest-agent      [k] _RNCINvMsb_NtCs2KEid22FHEA_4fxfs8lsm_treeINtB8_7LSMTreeNtNtNtBa_12object_store13object_record12ObjectKeyV54NtBS_14ObjectValueV63E8find_mapINtNtB8_5types4ItemBQ_B1G_ENCNvB4_4find0E0Cs8offoKLMPQ3_10fxfs_linux
+     0.88%     0.77%  guest-agent      [k] kfree
+     0.88%     0.09%  guest-agent      [.] _RNvNtCs7x1JxYRm7tp_4core3fmt5write
+     0.88%     0.06%  guest-agent      [k] local_clock_noinstr
+     0.88%     0.00%  guest-agent      [k] fxfs_rt_futex_wait
+     0.85%     0.85%  guest-agent      [k] _RINvXs1B_NtNtCs2KEid22FHEA_4fxfs12object_store13object_recordNtB7_12ObjectKeyV54NtNtCs2RzmApnEpjJ_4core4hash4Hash4hashNtCs5t8wfrOWwBm_10rustc_hash8FxHasherEBb_
+     0.85%     0.03%  guest-agent      [k] fput_close_sync
+     0.85%     0.00%  guest-agent      [k] local_clock
+     0.83%     0.26%  guest-agent      [k] _RINvMs9_NtCs2KEid22FHEA_4fxfs12object_storeNtB6_11ObjectStore21create_object_with_idBF_ECs8offoKLMPQ3_10fxfs_linux
+     0.83%     0.06%  guest-agent      [k] __fput
+     0.83%     0.00%  guest-agent      [.] _RNCNvNtNtCs1IvpAZRFdS9_10test_cases13test_fs_bench5guest17scaling_workloadss5_0B7_
+     0.80%     0.80%  guest-agent      [k] pvclock_clocksource_read_nowd
+     0.80%     0.17%  guest-agent      [.] open
+     0.80%     0.09%  guest-agent      [k] kvfree
+     0.80%     0.00%  guest-agent      [k] sched_clock_noinstr
+     0.77%     0.06%  guest-agent      [k] lookup_fast
+     0.77%     0.00%  kworker/u16:49-  [k] _RNvMsn_NtNtCs1R8tEabxR5k_5alloc3rcs3arcINtB5_3ArcDG0_INtNtNtCs2RzmApnEpjJ_4core3ops8function2FnTRL1_INtNtNtCs2KEid22FHEA_4fxfs12object_store11transaction11TransactionL0_EEEp6OutputINtNtBW_6result6ResultuNtCs1ldHOCgi55O_6anyhow5ErrorENtNtBW_6marker4SendNtB3L_4SyncEL_E9drop_slowB1H_
+     0.74%     0.74%  guest-agent      [.] __libc_free
+     0.74%     0.23%  kworker/u16:49-  [k] _RINvNtCs2RzmApnEpjJ_4core3ptr9drop_glueINtNtNtCs2KEid22FHEA_4fxfs8lsm_tree15skip_list_layer13SkipListLayerNtNtNtBI_12object_store13object_record12ObjectKeyV54NtB1I_14ObjectValueV63EEBI_
+     0.74%     0.00%  guest-agent      [k] link_path_walk
+     0.71%     0.71%  guest-agent      [k] __d_lookup_rcu
+     0.71%     0.68%  kworker/u16:49-  [k] __pi_memcpy
+     0.71%     0.65%  guest-agent      [k] _RNCNvMsA_NtNtCs2KEid22FHEA_4fxfs12object_store11transactionNtB7_11LockManager4lock0Cs8offoKLMPQ3_10fxfs_linux
+     0.71%     0.03%  guest-agent      [k] dput
+     0.71%     0.00%  kworker/u16:22-  [k] fxfs_rt_work_run
+     0.71%     0.00%  kworker/u16:22-  [k] kthread
+     0.71%     0.00%  kworker/u16:22-  [k] process_one_work
+     0.71%     0.00%  kworker/u16:22-  [k] ret_from_fork
+     0.71%     0.00%  kworker/u16:22-  [k] ret_from_fork_asm
+     0.71%     0.00%  kworker/u16:22-  [k] worker_thread
+     0.68%     0.34%  guest-agent      [k] _RNvXsD_NtNtCs2KEid22FHEA_4fxfs12object_store11transactionNtB5_9ReadGuardNtNtNtCs2RzmApnEpjJ_4core3ops4drop4Drop4drop
+     0.68%     0.09%  guest-agent      [k] _RINvNvMs5_NtCs1R8tEabxR5k_5alloc7raw_vecINtB8_11RawVecInnerpE7reserve21do_reserve_and_handleNtNtBa_5alloc6GlobalECshuP6zn3CkNr_3std
+     0.68%     0.00%  guest-agent      [k] _RNCNvMs2_NtNtCs2KEid22FHEA_4fxfs12object_store18data_object_handleINtB7_16DataObjectHandleNtB9_11ObjectStoreE17update_attributes0Cs8offoKLMPQ3_10fxfs_linux
+     0.68%     0.00%  guest-agent      [k] _RNCNvMs2_NtNtCs2KEid22FHEA_4fxfs12object_store19store_object_handleINtB7_17StoreObjectHandleNtB9_11ObjectStoreE17update_attributes0Cs8offoKLMPQ3_10fxfs_linux
+     0.68%     0.00%  guest-agent      [k] d_lru_add
+     0.68%     0.00%  guest-agent      [k] do_open
+     0.68%     0.00%  guest-agent      [k] list_lru_add_obj
+     0.68%     0.00%  kworker/u16:22-  [k] _RNvMs1_NtCs8WWmacacxHO_10async_task3rawINtB5_7RawTaskINtNtCsa4Wcd7wDxpd_12futures_util9abortable9AbortableNCNvMso_NtNtCs2KEid22FHEA_4fxfs12object_store7journalNtB1O_7Journal10flush_task0EINtNtCs2RzmApnEpjJ_4core6result6ResultuNtBS_7AbortedENvNtCshRwtkNAyQY8_8linux_rt8executor8scheduleNtB3S_4WorkE3runB1S_
+     0.65%     0.65%  guest-agent      [k] _RNvMs_NtNtCs2KEid22FHEA_4fxfs12object_store14object_managerNtB4_5Inner17journaling_object
+     0.65%     0.51%  kworker/u16:49-  [k] _RINvYNtNtNtCs2KEid22FHEA_4fxfs12object_store13object_record12ObjectKeyV54NtNtNtB9_16serialized_types14serialized_key12SerializeKey28serialize_key_with_base_intoINtNtCs1R8tEabxR5k_5alloc3vec3VechEEB9_
+     0.65%     0.09%  guest-agent      [k] _RNCNvMs9_NtCs2KEid22FHEA_4fxfs12object_storeNtB7_11ObjectStore17update_attributes0Cs8offoKLMPQ3_10fxfs_linux
+     0.65%     0.03%  kworker/u16:22-  [k] _RNCNvMs2_NtNtCs2KEid22FHEA_4fxfs12object_store18data_object_handleINtB7_16DataObjectHandleNtB9_11ObjectStoreE9overwrite0Bb_
+     0.63%     0.00%  guest-agent      [k] __x64_sys_fcntl
+     0.63%     0.00%  guest-agent      [k] fxfs_vfs_alloc_inode
+     0.60%     0.09%  guest-agent      [k] setup_object
+     0.57%     0.57%  guest-agent      [k] memcmp
+     0.57%     0.06%  guest-agent      [k] inode_permission
+     0.57%     0.03%  guest-agent      [k] _RINvXNvNtNtCs2KEid22FHEA_4fxfs12object_store13object_recordsc_1__NtB5_12ObjectKeyV54NtNtCslaoSmfS0x5U_10serde_core3ser9Serialize9serializeQINtNtCsjr86reHQuqA_7bincode3ser10SerializerQINtNtCs1R8tEabxR5k_5alloc3vec3VechEINtNtB2i_6config14WithOtherLimitINtB3x_17WithOtherTrailingNtB3x_14DefaultOptionsNtNtB3x_8trailing13AllowTrailingENtNtB3x_5limit7BoundedEEEB9_
+     0.54%     0.00%  kworker/u16:22-  [k] _RNCNvMs2_NtNtCs2KEid22FHEA_4fxfs12object_store18data_object_handleINtB7_16DataObjectHandleNtB9_11ObjectStoreE8write_at0Bb_
+     0.54%     0.00%  kworker/u16:22-  [k] _RNCNvMs2_NtNtCs2KEid22FHEA_4fxfs12object_store19store_object_handleINtB7_17StoreObjectHandleNtB9_11ObjectStoreE13write_aligned0Bb_
+     0.51%     0.00%  guest-agent      [k] fxfs_vfs_inode_init_once
+
+
+
+CALLERS scale-create-j8
+    20.98%  [k] fxfs_rt_park
+            |
+            ---fxfs_create
+               fxfs_vfs_mknod
+               fxfs_vfs_create
+               lookup_open.isra.0
+               open_last_lookups
+               path_openat
+               do_filp_open
+               do_sys_openat2
+               __x64_sys_open
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               sccp
+               _RNvMsj_NtCs268jdzri8zx_3std2fsNtB5_11OpenOptions5__open
+               _RINvMsj_NtCs268jdzri8zx_3std2fsNtB6_11OpenOptions4openRNtNtB8_4path4PathECs3LuMwi9DwoQ_4rand
+               _RINvMs2_NtCs268jdzri8zx_3std2fsNtB6_4File6createNtNtCskPe9mFtgPYj_5alloc6string6StringECs1IvpAZRFdS9_10test_cases
+               _RNCNCNvNtNtCs1IvpAZRFdS9_10test_cases13test_fs_bench5guest17scaling_workloadss6_00B9_
+               _RNCNCNCINvNtNtCs1IvpAZRFdS9_10test_cases13test_fs_bench5guest11parallel_onNCNCNvB8_17scaling_workloadss6_00E000Bc_
+               _RINvNtNtCs268jdzri8zx_3std3sys9backtrace28___rust_begin_short_backtraceNCNCNCINvNtNtCs1IvpAZRFdS9_10test_cases13test_fs_bench5guest11parallel_onNCNCNvB1g_17scaling_workloadss6_00E000uEB1k_
+               _RNCNCINvNtNtCs268jdzri8zx_3std6thread9lifecycle15spawn_uncheckedNCNCNCINvNtNtCs1IvpAZRFdS9_10test_cases13test_fs_bench5guest11parallel_onNCNCNvB19_17scaling_workloadss6_00E000uEs_00B1d_
+               _RNvXsl_NtNtCs7x1JxYRm7tp_4core5panic11unwind_safeINtB5_16AssertUnwindSafeNCNCINvNtNtCs268jdzri8zx_3std6thread9lifecycle15spawn_uncheckedNCNCNCINvNtNtCs1IvpAZRFdS9_10test_cases13test_fs_bench5guest11parallel_onNCNCNvB2j_17scaling_workloadss6_00E000uEs_00EINtNtNtB9_3ops8function6FnOnceuE9call_onceB2n_
+               _RINvNvNtCs268jdzri8zx_3std9panicking12catch_unwind7do_callINtNtNtCs7x1JxYRm7tp_4core5panic11unwind_safe16AssertUnwindSafeNCNCINvNtNtB6_6thread9lifecycle15spawn_uncheckedNCNCNCINvNtNtCs1IvpAZRFdS9_10test_cases13test_fs_bench5guest11parallel_onNCNCNvB2Q_17scaling_workloadss6_00E000uEs_00EuEB2U_
+               __rust_try
+
+    13.09%  [k] pv_native_safe_halt
+            |
+            ---arch_cpu_idle
+               default_idle_call
+               do_idle
+               cpu_startup_entry
+               |          
+                --9.51%--start_secondary
+                          common_startup_64
+
+     4.21%  [k] _raw_spin_unlock_irqrestore
+
+
+
+FXFS scale-create-j8: device_commits 2, device_commits_ns 1029776, device_read_bytes 634880, device_reads 16, device_reads_ns 7597512, device_write_bytes 3350528, device_writes 392, device_writes_ns 1022185013, journal_compaction_ns 52377462, journal_compactions 1, seal_waits 2, seal_waits_ns 1127, seals 2, seals_ns 1045973
+REQUESTS scale-create-j8: read 16.00 (438 µs each), write 393.00 (422 µs each), free 11.00 (529 µs each), commit 2.00 (492 µs each) per operation
+QUEUES scale-create-j8: [6, 145, 11, 260]
+IRQS scale-create-j8: virtio1-requests (line 0) by CPU [6, 0, 0, 0]
+IRQS scale-create-j8: virtio1-requests (line 1) by CPU [0, 84, 0, 0]
+IRQS scale-create-j8: virtio1-requests (line 2) by CPU [0, 0, 11, 0]
+IRQS scale-create-j8: virtio1-requests (line 3) by CPU [0, 0, 0, 63]
+IRQS scale-create-j8: virtio0-req.0 (line 4) by CPU [0, 0, 0, 2]
