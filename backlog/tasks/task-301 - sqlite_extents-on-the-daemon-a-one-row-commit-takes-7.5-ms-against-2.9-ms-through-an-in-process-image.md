@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-09 10:48'
-updated_date: '2026-11-09 11:38'
+updated_date: '2026-11-09 14:38'
 labels: []
 dependencies: []
 priority: high
@@ -39,4 +39,6 @@ GCE run docs/measurements/gce-sqlite-bench-2026-11-09T1038Z-6ba6c6a9 (TASK-300):
 <!-- SECTION:NOTES:BEGIN -->
 Profile on GCE (docs/measurements/gce-sqlite-commit-profile-2026-11-09T1114Z-2b9c1415): a one-row commit on the daemon is 7.7 ms, its commit_root 6.9 ms: COMMIT_DURABLE waits for the upload to the bucket (ExtentStore::make_durable, remote.wait_uploaded), ~4 store flushes a commit. Write 79 us, free 87 us, window map 114 us. Through the in-process image, the local flush is data sync 0.74 ms then log sync 1.03 ms; a bare fdatasync is 0.94 ms, WAL FULL's commit 0.91 ms.
 Decision (user, 2026-11-09): a SQLite commit on the daemon waits for the host's local disk, as WAL FULL does, not the bucket: a local-durable COMMIT level, an exception to TASK-96's 'no local only level'.
+
+Branch task-301 (f308caa59). On ubu1 (ZFS), five sqlite-bench runs, through the daemon against WAL FULL: one-row commits 90% (mmap 86%), one-row updates 77% (75%), 500-update transactions 57%, reads 111% (189%), scans 101% (295%) (docs/measurements/ubu1-sqlite-2026-11-09). What got there: COMMIT_LOCAL (wire v5); flushes holding small commits' runs in their log records, one sync; checksummed records synced beside the data otherwise; raw files left unsynced carried to the next data flush; recycled logs with a per-log salt in a synced header; the root on the last write; frees and window remaps batched; a commit's chunks read from memory until remapped; dying lists past a root's room in an extent of their own. Bugs the simulation (crates/extent_store/src/sim) found on the way and fixed: a flush overwrote a segment's records after the uploader closed it between commits (logs now kept per segment until they go); salts by segment number repeated as numbers restart; a commit sealing nothing took a raw file's sync a later flush needed. Tests: macOS store 166, sqlite 20, Shuttle 36 green; ubu1 test.sh all parts green but four that fail on unchanged code there (grants x3: other users and jails; the page-cache test on ZFS, TASK-309). Mutants caught: held runs not restored, checksums not checked, one salt for every log. Guest e2e on ubu1 blocked: test-e2e.sh's harness tests mount loop devices, which need root there. CI on the branch: run 42636643883.
 <!-- SECTION:NOTES:END -->
