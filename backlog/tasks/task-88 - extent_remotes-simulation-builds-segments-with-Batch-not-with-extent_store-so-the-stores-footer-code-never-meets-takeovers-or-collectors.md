@@ -3,11 +3,11 @@ id: TASK-88
 title: >-
   extent_remote's simulation builds segments with Batch, not with extent_store,
   so the store's footer contents never meet takeovers or collectors
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-10-22 13:26'
-updated_date: '2026-11-09 10:21'
+updated_date: '2026-11-09 10:42'
 labels:
   - review-2026-10-21
 dependencies:
@@ -34,7 +34,7 @@ Each session would need an extent_store Store of its own, attached as fxdax's re
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
 - [x] #2 scripts/upstream-changes.py --check passes
 - [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
@@ -59,6 +59,8 @@ Verify: cargo nextest of extent_store sim tests (profile sim), mutants.sh, scrip
 2026-11-06 tidy: depends on TASK-165.9, which moves the uploader into extent_store and deletes the attach's diff: where its description says to do this.
 
 Branch task-88 at 12733b212 (worktree ~/.t3/worktrees/fxdax/task-88). The sim runs real Stores (MemDir::serial) and the real uploader loop (upload::Shared, generic over the bucket, its interval on a Clock). AC1 done. AC2: sim::collection_needs_extent_keys_naming_segments (rule extent_keys_name_segments off = TASK-79.3 pre-fix) finds the case at seed 115 of everything; the old sim none in 4,000/4,000/20,000 seeds of everything/collected/takeovers. AC3: sim part 46/47 pass in 70 s (macOS, profile sim); everything 4.6 s vs 2.7 s before. Open: late_checkpoints_need_ways_from_seals finds no seed in 40,000 of recreated or late_checkpoints (TASK-175 case: a fenced writer that never wrote checkpointing late). Found and filed: TASK-295 (fixed on the branch), TASK-293 (open; check_compacted mirrors the prefilter meanwhile).
+
+CI 42600287867 green at df22d4e59 (Linux workspace, sim, shuttle; macOS workspace and shuttle).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

@@ -3,11 +3,11 @@ id: TASK-295
 title: >-
   A write-ahead log dropped by `fxdaxctl take` (Recovering::drop_wal) comes back
   after a crash, and its stale commits upload into the branch
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-09 09:07'
-updated_date: '2026-11-09 10:21'
+updated_date: '2026-11-09 10:42'
 labels:
   - bug
 dependencies: []
@@ -30,7 +30,7 @@ Found by TASK-88's simulation (seed 193 of sim::stale_creates_landing_past_delet
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
 - [x] #2 scripts/upstream-changes.py --check passes
 - [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
@@ -39,6 +39,8 @@ Found by TASK-88's simulation (seed 193 of sim::stale_creates_landing_past_delet
 
 <!-- SECTION:NOTES:BEGIN -->
 Fixed on branch task-88 (12733b212): drop_wal syncs segments/ and extents/ of its branch and writes the empty base before its barrier. tests/store.rs a_dropped_log_stays_dropped_through_a_crash failed at seed 2 before, passes after; sim::stale_creates_landing_past_deletions holds.
+
+CI 42600287867 green at df22d4e59.
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
