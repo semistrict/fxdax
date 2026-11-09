@@ -1,0 +1,20 @@
+revision 20cea87ccf7da72a08e0b264e363a9e00da4e9c9
+firecracker 7d0a0970e891368b3d6c543db698fce4bc77dcbe
+changed  M Cargo.lock
+changed  M "backlog/tasks/task-300 - sqlite_extents-a-page-read-below-SQLites-cache-costs-~1-ms-on-an-image-no-cache-of-the-immutable-blocks.md"
+changed  M crates/fxdax/src/extentd/mod.rs
+changed  M crates/fxdax/src/lib.rs
+changed  M crates/sqlite_extents/Cargo.toml
+changed  M crates/sqlite_extents/examples/sqlite-bench.rs
+changed  M crates/sqlite_extents/src/lib.rs
+changed  M crates/sqlite_extents/src/pages.rs
+changed  M crates/sqlite_extents/src/vfs.rs
+changed  M crates/sqlite_extents/src/volume.rs
+changed  M crates/sqlite_extents/tests/sqlite.rs
+changed  M guest/tests/Cargo.lock
+changed ?? crates/fxdax/src/extentd/device.rs
+changed ?? crates/sqlite_extents/src/daemon.rs
+changed ?? crates/sqlite_extents/src/window.rs
+changed ?? crates/sqlite_extents/tests/daemon.rs
+changed ?? docs/measurements/gce-sqlite-bench-2026-11-09T1038Z-6ba6c6a9/
+366852e11985e8f5ca01f51cbbd151be20eb5d57ed5101b5391e8a4bd8b19d81  source.tar.gz

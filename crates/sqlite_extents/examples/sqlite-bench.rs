@@ -14,7 +14,9 @@
 //! - `scan`: a sum over every row.
 //!
 //! Configurations: `extents`, this crate's VFS on an image (`fxdax::Storage`), every commit
-//! durable, the image's I/O bypassing the page cache; and SQLite's own unix VFS on a file:
+//! durable, the image's I/O bypassing the page cache; on Linux, `daemon`, the VFS on a store an
+//! extent daemon on a thread of this process serves, its reads copied from the daemon's window
+//! (TASK-300), and `daemon-mmap`, SQLite's memory-mapped reads reading pages there in place; and SQLite's own unix VFS on a file:
 //! `delete-full` (rollback journal, `synchronous=FULL`: every commit durable), `wal-full` (WAL,
 //! every commit durable) and `wal-normal` (WAL, durable at checkpoints only: no commit is).
 //!
@@ -171,12 +173,50 @@ fn disk_bytes(path: &Path) -> u64 {
     std::fs::read_dir(path).unwrap().map(|entry| disk_bytes(&entry.unwrap().path())).sum()
 }
 
+/// Runs every workload on a database on `volume`, with `pragmas`.
+fn on_volume(config: &str, volume: std::sync::Arc<Volume>, pragmas: &str, scale: usize) {
+    let registration = register(config, volume.clone()).unwrap();
+    let connection =
+        Connection::open_with_flags_and_vfs("bench.db", OpenFlags::default(), config).unwrap();
+    connection.execute_batch(pragmas).unwrap();
+    workloads(config, &connection, scale);
+    drop(connection);
+    drop(registration);
+    volume.close().unwrap();
+}
+
+/// An extent daemon serving stores under `root` on a thread of this process, as a host's would
+/// from its own, keeping their branches in a file bucket there: its socket.
+#[cfg(target_os = "linux")]
+fn daemon(root: &Path) -> PathBuf {
+    let socket = root.join("extentd.sock");
+    let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+    std::thread::spawn(move || fxdax::extentd::serve(listener));
+    socket
+}
+
+/// The bytes the bucket under `root` the stores keep their branches in takes, if it is there yet.
+fn bucket_bytes(root: &Path) -> u64 {
+    let bucket = root.join("daemon.bucket");
+    if bucket.exists() { disk_bytes(&bucket) } else { 0 }
+}
+
 fn main() {
     let scale: usize = std::env::args().nth(1).map_or(1, |scale| scale.parse().expect("a scale"));
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/sqlite-bench");
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&root).unwrap();
     let root = root.canonicalize().unwrap();
+    // A host of the multi-node system, as the daemon's is, and the image's then: their branches
+    // kept in a file bucket here, placement 1.
+    // SAFETY: before this process starts any other thread.
+    unsafe {
+        std::env::set_var(
+            "FXDAX_EXTENTD_REMOTE",
+            format!("file://{}/", root.join("daemon.bucket").display()),
+        );
+        std::env::set_var("FXDAX_EXTENTD_TOKEN", "1");
+    }
     println!("Databases under {}, scale {scale}.", root.display());
     println!();
     println!("| config | workload | ops | seconds | ops/s | p50 µs | p99 µs |");
@@ -185,22 +225,30 @@ fn main() {
     let mut sizes = Vec::new();
     {
         let image = root.join("extents");
-        let volume = Volume::open(
-            Storage::create(&image, 64 << 30).unwrap().into_device(),
-            Options::default(),
-        )
-        .unwrap();
-        let registration = register("sqlite-bench", volume.clone()).unwrap();
-        let connection =
-            Connection::open_with_flags_and_vfs("bench.db", OpenFlags::default(), "sqlite-bench")
-                .unwrap();
-        workloads("extents", &connection, scale);
-        drop(connection);
-        drop(registration);
-        volume.close().unwrap();
-        // The image, and the bucket beside it that keeps its branch (`Storage::create`).
-        let bucket = root.join("extents.bucket");
-        sizes.push(("extents", disk_bytes(&image) + disk_bytes(&bucket)));
+        let device = Storage::create(&image, 64 << 30).unwrap().into_device();
+        let volume = Volume::open(device, Options::default()).unwrap();
+        on_volume("extents", volume, "", scale);
+        // The image, and what the bucket its branch is kept in holds (FXDAX_EXTENTD_REMOTE).
+        sizes.push(("extents", disk_bytes(&image) + bucket_bytes(&root)));
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let socket = daemon(&root);
+        for (config, pragmas) in [("daemon", ""), ("daemon-mmap", "PRAGMA mmap_size = 1073741824")]
+        {
+            let (store, before) = (root.join(config), bucket_bytes(&root));
+            let volume = sqlite_extents::daemon::open(
+                &socket,
+                &store,
+                64 << 30,
+                1 << 30,
+                Options::default(),
+            )
+            .unwrap();
+            on_volume(config, volume.clone(), pragmas, scale);
+            println!("| {config} | pages read in place | {} | | | | |", volume.fetched());
+            sizes.push((config, disk_bytes(&store) + bucket_bytes(&root) - before));
+        }
     }
     for (config, pragmas) in [
         ("delete-full", "PRAGMA journal_mode = DELETE; PRAGMA synchronous = FULL"),

@@ -5,6 +5,10 @@
 //! A volume as a SQLite VFS ([`register`]): its databases' files are the volume's, by the names
 //! SQLite opens them by, and their journals and temporary files are memory (see `volume`).
 //!
+//! With `PRAGMA mmap_size`, SQLite reads pages in place, in the volume's window, if it has one,
+//! with nothing copied (`xFetch`); otherwise, or for pages changed since the last commit, it reads
+//! them as it would without.
+//!
 //! A transaction is committed as SQLite syncs the database's file at its end, or, if told not to
 //! sync (`synchronous=OFF`), as it unlocks it. WAL mode is refused: its log would be memory, which
 //! a crash loses, and SQLite then keeps to the rollback journal; nor does the VFS give SQLite the
@@ -111,7 +115,8 @@ struct Handle {
 }
 
 static METHODS: ffi::sqlite3_io_methods = ffi::sqlite3_io_methods {
-    iVersion: 1,
+    // 3, for memory-mapped reads (`xFetch`); without shared memory, which WAL mode would need.
+    iVersion: 3,
     xClose: Some(x_close),
     xRead: Some(x_read),
     xWrite: Some(x_write),
@@ -128,8 +133,8 @@ static METHODS: ffi::sqlite3_io_methods = ffi::sqlite3_io_methods {
     xShmLock: None,
     xShmBarrier: None,
     xShmUnmap: None,
-    xFetch: None,
-    xUnfetch: None,
+    xFetch: Some(x_fetch),
+    xUnfetch: Some(x_unfetch),
 };
 
 /// The VFS's app.
@@ -484,4 +489,42 @@ unsafe extern "C" fn x_device_characteristics(_file: *mut ffi::sqlite3_file) -> 
     ffi::SQLITE_IOCAP_POWERSAFE_OVERWRITE
         | ffi::SQLITE_IOCAP_SAFE_APPEND
         | ffi::SQLITE_IOCAP_SEQUENTIAL
+}
+
+unsafe extern "C" fn x_fetch(
+    file: *mut ffi::sqlite3_file,
+    offset: ffi::sqlite3_int64,
+    len: c_int,
+    out: *mut *mut c_void,
+) -> c_int {
+    // SAFETY: as SQLite calls it.
+    let fetched = match unsafe { open(file) } {
+        Open::Database { volume, name, .. } => volume.fetch(name, offset as u64, len as u64),
+        Open::Memory(_) => Ok(None),
+    };
+    match fetched {
+        Ok(fetched) => {
+            // Read-only, as SQLite reads what it fetches, and copies what it changes.
+            let at = fetched.map_or(std::ptr::null_mut(), |at| at as *mut c_void);
+            unsafe { *out = at };
+            ffi::SQLITE_OK
+        }
+        Err(error) => {
+            unsafe { *out = std::ptr::null_mut() };
+            code_of(Err(error), ffi::SQLITE_IOERR_MMAP)
+        }
+    }
+}
+
+unsafe extern "C" fn x_unfetch(
+    file: *mut ffi::sqlite3_file,
+    _offset: ffi::sqlite3_int64,
+    page: *mut c_void,
+) -> c_int {
+    // SAFETY: as SQLite calls it. A page of none is SQLite asking for its mapping to go, which the
+    // window keeps in step with the file whatever it holds.
+    if let (Open::Database { volume, name, .. }, false) = (unsafe { open(file) }, page.is_null()) {
+        volume.unfetch(name);
+    }
+    ffi::SQLITE_OK
 }

@@ -11,12 +11,21 @@
 //! (`volume`). So a crash leaves each database as of one of its transactions, with no journal to
 //! roll back, and what the device keeps of its commits, forks and views of them, it keeps of the
 //! databases too.
+//!
+//! A volume may map its files into a window of memory ([`Volume::open_mapped`], `window`): reads
+//! copy from it, and SQLite's memory-mapped I/O reads pages there in place. On Linux, `daemon`
+//! opens a volume on a store the host's extent daemon serves, whose window holds the daemon's
+//! cache's pages themselves, one copy for every store and VM on the host (TASK-300).
 
+#[cfg(target_os = "linux")]
+pub mod daemon;
 mod format;
 mod locks;
 mod pages;
 mod vfs;
 mod volume;
+mod window;
 
 pub use vfs::{Registration, register};
 pub use volume::{Failed, NotFound, Options, Volume};
+pub use window::{Contents, Run, Window};

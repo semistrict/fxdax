@@ -19,7 +19,10 @@ thiserror.workspace = true
 workspace = true
 
 [dev-dependencies]
-anyhow.workspace = true
 rand.workspace = true
 fxdax = { path = "../fxdax" }
 tempfile.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+fxdax = { path = "../fxdax" }
+libc.workspace = true

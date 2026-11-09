@@ -16,6 +16,14 @@
 //! root also says where minting goes on: the extents past it a crash left, written for a commit
 //! whose root it lost, are freed by the next opening, as Fxfs's allocator frees its orphans.
 //!
+//! **The window.** A volume opened with a window ([`Volume::open_mapped`]) maps each file it
+//! opens into a region of it, as the file's last commit has it (`window`), and maps again what
+//! each commit changed, before anything reads the file as of it. Reads of what the last commit
+//! left copy from the window, and SQLite's memory-mapped reads ([`Volume::fetch`]) read it in
+//! place. While SQLite holds pages it fetched, a commit maps nothing again, as SQLite's own unix
+//! VFS remaps nothing while pages are out: the file is read from the device meanwhile, and mapped
+//! again as the last page goes back ([`Volume::unfetch`]).
+//!
 //! **Memory files.** Journals and temporary files live in memory: a database's file changes only
 //! at its commits, whole, so that no crash needs a journal to roll it back.
 //!
@@ -25,9 +33,12 @@
 use crate::format::{self, Root};
 use crate::locks::{Level, Locks};
 use crate::pages::Pages;
+use crate::window::{Run, Window};
 use anyhow::{Context as _, Error, bail};
 use futures::executor::block_on;
 use std::collections::{BTreeMap, HashMap};
+use std::ops::Range;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use storage_device::{Device, DeviceHolder, ExtentId};
 
@@ -54,11 +65,14 @@ pub struct Failed(pub String);
 pub struct Options {
     /// The most blocks an extent holds: a commit writing more writes several.
     pub max_extent_blocks: u32,
+    /// How many regions a window is cut into, a file mapped in each: files opened past them, and
+    /// the parts of files past their region's end, are read from the device.
+    pub window_regions: u32,
 }
 
 impl Default for Options {
     fn default() -> Self {
-        Self { max_extent_blocks: 1024 }
+        Self { max_extent_blocks: 1024, window_regions: 4 }
     }
 }
 
@@ -70,6 +84,19 @@ struct File {
     opens: usize,
     /// Whether a commit made it: one not committed yet goes with its last opening's close.
     committed: bool,
+    /// Where its region of the window is, if it has one.
+    region: Option<u64>,
+    /// How many pages of its region SQLite holds ([`Volume::fetch`]).
+    fetches: u32,
+    /// The chunks commits changed while SQLite held pages, which its region is to map again.
+    stale: Vec<Range<u64>>,
+}
+
+impl File {
+    fn new(pages: Pages, committed: bool) -> Self {
+        let (locks, region, stale) = (Locks::default(), None, Vec::new());
+        Self { pages, locks, opens: 0, committed, region, fetches: 0, stale }
+    }
 }
 
 /// A file in memory, a journal or a temporary file.
@@ -85,6 +112,8 @@ struct Inner {
     /// Extents left unreferenced whose frees failed, or have not been made yet.
     dying: Vec<ExtentId>,
     failed: Option<String>,
+    /// The window's regions no file holds.
+    regions: Vec<u64>,
 }
 
 /// A volume on a device. See the module docs.
@@ -92,6 +121,10 @@ pub struct Volume {
     device: DeviceHolder,
     options: Options,
     inner: Mutex<Inner>,
+    /// The window, if any, and the bytes of each of its regions.
+    window: Option<(Box<dyn Window>, u64)>,
+    /// How many times SQLite fetched pages to read in place.
+    fetched: AtomicU64,
 }
 
 /// Frees `extents` on `device`, a request at most per [`FREES_AT_ONCE`]: those it failed to free.
@@ -122,7 +155,28 @@ impl Volume {
     pub fn open(device: DeviceHolder, options: Options) -> Result<Arc<Self>, Error> {
         assert!(options.max_extent_blocks > 0, "extents of no blocks");
         let inner = block_on(Self::recover(&**device))?;
-        Ok(Arc::new(Self { device, options, inner: Mutex::new(inner) }))
+        let fetched = AtomicU64::new(0);
+        Ok(Arc::new(Self { device, options, inner: Mutex::new(inner), window: None, fetched }))
+    }
+
+    /// The volume on `device`, as [`Volume::open`] opens it, its files mapped into `window`, a
+    /// region each, as many regions as `options` says.
+    pub fn open_mapped(
+        device: DeviceHolder,
+        window: Box<dyn Window>,
+        options: Options,
+    ) -> Result<Arc<Self>, Error> {
+        assert!(options.max_extent_blocks > 0 && options.window_regions > 0);
+        let block_size = device.block_size() as u64;
+        let (base, size) = window.memory();
+        let region = size / options.window_regions as u64 / block_size * block_size;
+        if !(base.as_ptr() as u64).is_multiple_of(block_size) || region == 0 {
+            bail!("a window of {size} bytes at {base:?} holds no region of blocks");
+        }
+        let mut inner = block_on(Self::recover(&**device))?;
+        inner.regions = (0..options.window_regions as u64).rev().map(|n| n * region).collect();
+        let (window, fetched) = (Some((window, region)), AtomicU64::new(0));
+        Ok(Arc::new(Self { device, options, inner: Mutex::new(inner), window, fetched }))
     }
 
     /// What `device` holds, its root's dying extents and what a crash left freed, and the root
@@ -138,6 +192,7 @@ impl Volume {
             mint: next.max(floor),
             dying: Vec::new(),
             failed: None,
+            regions: Vec::new(),
         };
         let Some(root) = root else {
             let made = Root { minted: inner.mint, ..Root::default() };
@@ -148,10 +203,7 @@ impl Volume {
         for (name, file) in &root.files {
             let pages =
                 Pages::open(device, file).await.with_context(|| format!("opening {name}"))?;
-            inner.files.insert(
-                name.clone(),
-                File { pages, locks: Locks::default(), opens: 0, committed: true },
-            );
+            inner.files.insert(name.clone(), File::new(pages, true));
         }
         let branch = device.branch();
         let orphans = orphans(root.minted, next);
@@ -212,18 +264,114 @@ impl Volume {
     pub fn open_file(&self, name: &str, create: bool) -> Result<(), Error> {
         let mut inner = self.lock()?;
         let block_size = self.device.block_size() as usize;
+        let inner = &mut *inner;
         let file = match inner.files.get_mut(name) {
             Some(file) => file,
-            None if create => inner.files.entry(name.to_owned()).or_insert(File {
-                pages: Pages::new(block_size),
-                locks: Locks::default(),
-                opens: 0,
-                committed: false,
-            }),
+            None if create => (inner.files.entry(name.to_owned()))
+                .or_insert(File::new(Pages::new(block_size), false)),
             None => bail!(NotFound(name.to_owned())),
         };
         file.opens += 1;
+        // Mapped as it is first opened, if a region is free.
+        if self.window.is_some()
+            && file.region.is_none()
+            && let Some(region) = inner.regions.pop()
+        {
+            file.region = Some(region);
+            let chunks = file.pages.root().size.div_ceil(block_size as u64);
+            self.remap(name, file, &mut inner.regions, std::iter::once(0..chunks));
+        }
         Ok(())
+    }
+
+    /// Maps `changed`, ranges of file `name`'s chunks, into its region of the window as its last
+    /// commit has them; or, while SQLite holds pages of it, keeps them to map once it holds none,
+    /// the file read from the device meanwhile. A failure is logged, and the file reads from the
+    /// device from then on, its region given back.
+    fn remap(
+        &self,
+        name: &str,
+        file: &mut File,
+        regions: &mut Vec<u64>,
+        changed: impl IntoIterator<Item = Range<u64>>,
+    ) {
+        let (Some((window, region_bytes)), Some(region)) = (&self.window, file.region) else {
+            return;
+        };
+        if file.fetches > 0 {
+            file.stale.extend(changed);
+            file.pages.set_mapped(None);
+            return;
+        }
+        let block_size = self.device.block_size() as u64;
+        let mapped = region_bytes / block_size;
+        let (mut runs, mut unmapped) = (Vec::new(), Vec::new());
+        for range in changed.into_iter().chain(std::mem::take(&mut file.stale)) {
+            let range = range.start.min(mapped)..range.end.min(mapped);
+            for (chunks, contents) in file.pages.runs(range) {
+                let (at, len) =
+                    (region + chunks.start * block_size, (chunks.end - chunks.start) * block_size);
+                match contents {
+                    Some(contents) => runs.push(Run { at, len, contents }),
+                    None => unmapped.push((at, len)),
+                }
+            }
+        }
+        let made = window
+            .map(&**self.device, &runs)
+            .and_then(|()| unmapped.iter().try_for_each(|(at, len)| window.unmap(*at, *len)));
+        match made {
+            Ok(()) => {
+                let (base, _) = window.memory();
+                // SAFETY: within the window, whose memory the region is.
+                let at = unsafe { base.add(region as usize) };
+                file.pages.set_mapped(Some((at, *region_bytes)));
+            }
+            Err(error) => {
+                log::error!(
+                    "sqlite_extents: mapping {name}, read from the device from now on: {error:#}"
+                );
+                file.pages.set_mapped(None);
+                file.region = None;
+                match window.unmap(region, *region_bytes) {
+                    Ok(()) => regions.push(region),
+                    Err(error) => {
+                        log::error!("sqlite_extents: unmapping {name}'s region: {error:#}")
+                    }
+                }
+            }
+        }
+    }
+
+    /// Where the `len` bytes of file `name` at `offset` are in the window, if it maps them as
+    /// they read: for SQLite to read in place until it gives them back ([`Volume::unfetch`]).
+    pub fn fetch(&self, name: &str, offset: u64, len: u64) -> Result<Option<*const u8>, Error> {
+        let mut inner = self.lock()?;
+        let file = Self::file(&mut inner, name);
+        if file.region.is_none() || !file.stale.is_empty() {
+            return Ok(None);
+        }
+        let fetched = file.pages.fetch(offset, len);
+        file.fetches += fetched.is_some() as u32;
+        self.fetched.fetch_add(fetched.is_some() as u64, Ordering::Relaxed);
+        Ok(fetched)
+    }
+
+    /// How many times SQLite fetched pages to read in place ([`Volume::fetch`]).
+    pub fn fetched(&self) -> u64 {
+        self.fetched.load(Ordering::Relaxed)
+    }
+
+    /// Gives back a page of file `name` fetched ([`Volume::fetch`]): once SQLite holds none, what
+    /// commits changed meanwhile is mapped.
+    pub fn unfetch(&self, name: &str) {
+        let mut inner = self.inner.lock().unwrap();
+        let inner = &mut *inner;
+        let file = inner.files.get_mut(name).expect("a file open");
+        file.fetches = file.fetches.checked_sub(1).expect("a page fetched");
+        if file.fetches == 0 && !file.stale.is_empty() && inner.failed.is_none() {
+            self.remap(name, file, &mut inner.regions, []);
+        }
     }
 
     /// Closes file `name`, opened once more than closed.
@@ -315,6 +463,12 @@ impl Volume {
             bail!("deleting {name}, open");
         }
         let file = inner.files.remove(name).unwrap();
+        if let (Some((window, region_bytes)), Some(region)) = (&self.window, file.region) {
+            match window.unmap(region, *region_bytes) {
+                Ok(()) => inner.regions.push(region),
+                Err(error) => log::error!("sqlite_extents: unmapping {name}'s region: {error:#}"),
+            }
+        }
         if file.committed {
             let dead: Vec<_> = file.pages.extents().collect();
             self.commit_root(&mut inner, None, dead)?;
@@ -355,9 +509,11 @@ impl Volume {
             return Err(error.context(format!("committing {name}")));
         }
         self.commit_root(inner, Some((name, plan.root.clone())), plan.dead.clone())?;
-        let file = Self::file(inner, name);
-        file.pages.apply(plan);
+        let inner = &mut *inner;
+        let file = inner.files.get_mut(name).expect("a file open");
+        let changed = file.pages.apply(plan);
         file.committed = true;
+        self.remap(name, file, &mut inner.regions, changed);
         Ok(())
     }
 

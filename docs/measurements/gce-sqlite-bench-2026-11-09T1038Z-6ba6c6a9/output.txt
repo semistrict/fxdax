@@ -1,0 +1,102 @@
+Databases under /var/lib/fxdax-test/example-tree/target/sqlite-bench, scale 1.
+
+| config | workload | ops | seconds | ops/s | p50 µs | p99 µs |
+|---|---|---|---|---|---|---|
+| extents | commit | 2000 | 5.838 | 343 | 2875 | 4522 |
+| extents | bulk | 100000 | 0.091 | 1101955 |  |  |
+| extents | update | 2000 | 10.296 | 194 | 3591 | 19555 |
+| extents | batch | 100 | 33.576 | 3 | 342565 | 473558 |
+| extents | read | 50000 | 53.397 | 936 |  |  |
+| extents | scan (rows) | 300000 | 4.675 | 64169 |  |  |
+| daemon | commit | 2000 | 15.392 | 130 | 7623 | 9452 |
+| daemon | bulk | 100000 | 0.090 | 1108816 |  |  |
+| daemon | update | 2000 | 16.562 | 121 | 8040 | 11013 |
+| daemon | batch | 100 | 6.291 | 16 | 62886 | 89693 |
+| daemon | read | 50000 | 0.188 | 265945 |  |  |
+| daemon | scan (rows) | 300000 | 0.015 | 20003131 |  |  |
+| daemon | pages read in place | 0 | | | | |
+| daemon-mmap | commit | 2000 | 15.240 | 131 | 7543 | 9338 |
+| daemon-mmap | bulk | 100000 | 0.085 | 1180477 |  |  |
+| daemon-mmap | update | 2000 | 16.580 | 121 | 8060 | 11314 |
+| daemon-mmap | batch | 100 | 6.264 | 16 | 63346 | 85536 |
+| daemon-mmap | read | 50000 | 0.186 | 268439 |  |  |
+| daemon-mmap | scan (rows) | 300000 | 0.012 | 25260616 |  |  |
+| daemon-mmap | pages read in place | 158133 | | | | |
+| delete-full | commit | 2000 | 6.120 | 327 | 3065 | 3930 |
+| delete-full | bulk | 100000 | 0.066 | 1511622 |  |  |
+| delete-full | update | 2000 | 6.120 | 327 | 3086 | 3926 |
+| delete-full | batch | 100 | 7.789 | 13 | 95222 | 103067 |
+| delete-full | read | 50000 | 0.210 | 237725 |  |  |
+| delete-full | scan (rows) | 300000 | 0.017 | 17477058 |  |  |
+| wal-full | commit | 2000 | 1.951 | 1025 | 992 | 1398 |
+| wal-full | bulk | 100000 | 0.068 | 1469577 |  |  |
+| wal-full | update | 2000 | 1.715 | 1166 | 910 | 1447 |
+| wal-full | batch | 100 | 4.408 | 23 | 6607 | 161679 |
+| wal-full | read | 50000 | 0.109 | 460692 |  |  |
+| wal-full | scan (rows) | 300000 | 0.017 | 17160493 |  |  |
+| wal-normal | commit | 2000 | 0.025 | 80075 | 6 | 14 |
+| wal-normal | bulk | 100000 | 0.072 | 1397881 |  |  |
+| wal-normal | update | 2000 | 0.091 | 21994 | 7 | 12 |
+| wal-normal | batch | 100 | 5.503 | 18 | 3380 | 167948 |
+| wal-normal | read | 50000 | 0.107 | 466938 |  |  |
+| wal-normal | scan (rows) | 300000 | 0.018 | 17096511 |  |  |
+
+| config | bytes on disk |
+|---|---|
+| extents | 17129472 |
+| daemon | 33964032 |
+| daemon-mmap | 33964032 |
+| delete-full | 11341824 |
+| wal-full | 11337728 |
+| wal-normal | 11337728 |
+Databases under /var/lib/fxdax-test/example-tree/target/sqlite-bench, scale 1.
+
+| config | workload | ops | seconds | ops/s | p50 µs | p99 µs |
+|---|---|---|---|---|---|---|
+| extents | commit | 2000 | 5.947 | 336 | 2936 | 4170 |
+| extents | bulk | 100000 | 0.091 | 1094791 |  |  |
+| extents | update | 2000 | 9.325 | 214 | 3587 | 13552 |
+| extents | batch | 100 | 33.063 | 3 | 333141 | 449206 |
+| extents | read | 50000 | 53.179 | 940 |  |  |
+| extents | scan (rows) | 300000 | 4.643 | 64608 |  |  |
+| daemon | commit | 2000 | 15.187 | 132 | 7510 | 9235 |
+| daemon | bulk | 100000 | 0.087 | 1143111 |  |  |
+| daemon | update | 2000 | 16.535 | 121 | 8051 | 11090 |
+| daemon | batch | 100 | 6.214 | 16 | 62331 | 87271 |
+| daemon | read | 50000 | 0.196 | 254639 |  |  |
+| daemon | scan (rows) | 300000 | 0.015 | 19783988 |  |  |
+| daemon | pages read in place | 0 | | | | |
+| daemon-mmap | commit | 2000 | 14.902 | 134 | 7398 | 9229 |
+| daemon-mmap | bulk | 100000 | 0.084 | 1186483 |  |  |
+| daemon-mmap | update | 2000 | 16.037 | 125 | 7826 | 10734 |
+| daemon-mmap | batch | 100 | 6.181 | 16 | 61904 | 87562 |
+| daemon-mmap | read | 50000 | 0.181 | 276671 |  |  |
+| daemon-mmap | scan (rows) | 300000 | 0.012 | 25056228 |  |  |
+| daemon-mmap | pages read in place | 158133 | | | | |
+| delete-full | commit | 2000 | 5.072 | 394 | 2574 | 3546 |
+| delete-full | bulk | 100000 | 0.053 | 1875642 |  |  |
+| delete-full | update | 2000 | 5.384 | 371 | 2813 | 3361 |
+| delete-full | batch | 100 | 7.759 | 13 | 95001 | 99435 |
+| delete-full | read | 50000 | 0.212 | 235380 |  |  |
+| delete-full | scan (rows) | 300000 | 0.017 | 17684955 |  |  |
+| wal-full | commit | 2000 | 1.905 | 1050 | 979 | 1266 |
+| wal-full | bulk | 100000 | 0.068 | 1468694 |  |  |
+| wal-full | update | 2000 | 1.757 | 1138 | 927 | 1330 |
+| wal-full | batch | 100 | 4.453 | 22 | 6428 | 163671 |
+| wal-full | read | 50000 | 0.109 | 457355 |  |  |
+| wal-full | scan (rows) | 300000 | 0.018 | 16981014 |  |  |
+| wal-normal | commit | 2000 | 0.024 | 83878 | 6 | 13 |
+| wal-normal | bulk | 100000 | 0.070 | 1432010 |  |  |
+| wal-normal | update | 2000 | 0.092 | 21647 | 7 | 12 |
+| wal-normal | batch | 100 | 5.472 | 18 | 3273 | 165508 |
+| wal-normal | read | 50000 | 0.108 | 462519 |  |  |
+| wal-normal | scan (rows) | 300000 | 0.018 | 16984619 |  |  |
+
+| config | bytes on disk |
+|---|---|
+| extents | 17149952 |
+| daemon | 33964032 |
+| daemon-mmap | 33964032 |
+| delete-full | 11341824 |
+| wal-full | 11337728 |
+| wal-normal | 11337728 |

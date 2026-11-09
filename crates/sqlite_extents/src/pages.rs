@@ -25,6 +25,7 @@
 //! its own changes, so that it dies.
 
 use crate::format::{self, FileRoot, Ref};
+use crate::window::Contents;
 use anyhow::{Context as _, Error, ensure};
 use futures::StreamExt as _;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -134,6 +135,9 @@ pub(crate) struct Pages {
     cut: u64,
     /// The chunks written since, whole.
     dirty: BTreeMap<u64, Box<[u8]>>,
+    /// The window's region that maps the file as of the last commit, if one does (`window`): its
+    /// first byte's address, and its length.
+    mapped: Option<(usize, u64)>,
 }
 
 impl Pages {
@@ -150,6 +154,7 @@ impl Pages {
             size: 0,
             cut: 0,
             dirty: BTreeMap::new(),
+            mapped: None,
         }
     }
 
@@ -273,7 +278,8 @@ impl Pages {
         }
     }
 
-    /// Reads chunk `index` as of the last commit, as the file reads now, into `out`.
+    /// Reads chunk `index` as of the last commit, as the file reads now, into `out`: from the
+    /// window's memory if it maps it.
     async fn read_committed(
         &self,
         device: &dyn Device,
@@ -282,9 +288,82 @@ impl Pages {
     ) -> Result<(), Error> {
         match self.committed(index) {
             HOLE => out.fill(0),
-            loc => read_block(device, self.slot(loc).extent, loc.block, out).await?,
+            loc => match self.mapped(index * self.block_size as u64, out.len() as u64) {
+                // SAFETY: the window maps the chunk, read-only, until the file's next commit.
+                Some(at) => {
+                    out.copy_from_slice(unsafe { std::slice::from_raw_parts(at, out.len()) })
+                }
+                None => read_block(device, self.slot(loc).extent, loc.block, out).await?,
+            },
         }
         Ok(())
+    }
+
+    /// Makes `mapped`, the memory of a window's region, if given, what reads read the file as of
+    /// its last commit from: which the region maps, kept so by its caller.
+    pub fn set_mapped(&mut self, mapped: Option<(std::ptr::NonNull<u8>, u64)>) {
+        self.mapped = mapped.map(|(base, len)| (base.as_ptr() as usize, len));
+    }
+
+    /// Where the `len` bytes at `offset` are in the window's memory, if it maps them.
+    fn mapped(&self, offset: u64, len: u64) -> Option<*const u8> {
+        let (base, mapped) = self.mapped?;
+        (offset + len <= mapped).then(|| (base + offset as usize) as *const u8)
+    }
+
+    /// Where the `len` bytes at `offset` are in the window's memory, if it maps them and they
+    /// read as the last commit left them: unchanged since, and no hole.
+    pub fn fetch(&self, offset: u64, len: u64) -> Option<*const u8> {
+        let block_size = self.block_size as u64;
+        if len == 0 || offset + len > self.committed_size.min(self.size) {
+            return None;
+        }
+        let chunks = offset / block_size..(offset + len).div_ceil(block_size);
+        let clean = |index: u64| !self.dirty.contains_key(&index) && self.committed(index) != HOLE;
+        if !chunks.into_iter().all(clean) {
+            return None;
+        }
+        self.mapped(offset, len)
+    }
+
+    /// What the window is to map of `chunks` as of the last commit, in runs of chunks alike: a run
+    /// of blocks of one extent, holes (zeros), or nothing, past the file's end.
+    pub fn runs(
+        &self,
+        chunks: std::ops::Range<u64>,
+    ) -> Vec<(std::ops::Range<u64>, Option<Contents>)> {
+        let block_size = self.block_size as u64;
+        let contents = |index: u64| match self.levels[0].get(index as usize) {
+            None => None,
+            Some(&HOLE) => Some(Contents::Zeros),
+            Some(loc) => {
+                let offset = loc.block as u64 * block_size;
+                Some(Contents::Extent { extent: self.slot(*loc).extent, offset })
+            }
+        };
+        let mut runs: Vec<(std::ops::Range<u64>, Option<Contents>)> = Vec::new();
+        for index in chunks {
+            let next = contents(index);
+            if let Some((run, last)) = runs.last_mut() {
+                let follows = match (last, next) {
+                    (None, None) | (Some(Contents::Zeros), Some(Contents::Zeros)) => true,
+                    (
+                        Some(Contents::Extent { extent, offset }),
+                        Some(Contents::Extent { extent: next_extent, offset: next_offset }),
+                    ) => {
+                        *extent == next_extent
+                            && *offset + (run.end - run.start) * block_size == next_offset
+                    }
+                    _ => false,
+                };
+                if follows {
+                    run.end = index + 1;
+                    continue;
+                }
+            }
+            runs.push((index..index + 1, next));
+        }
+        runs
     }
 
     /// Reads into `buf` from `offset`, as far as the file goes: how many bytes it read.
@@ -538,9 +617,22 @@ impl Pages {
         })
     }
 
-    /// Makes `plan`, written and committed, the file's last commit.
-    pub fn apply(&mut self, plan: Plan) {
+    /// Makes `plan`, written and committed, the file's last commit: the ranges of chunks it
+    /// changed, which a window mapping the file is to map again.
+    pub fn apply(&mut self, plan: Plan) -> Vec<std::ops::Range<u64>> {
         let Plan { extents, max_blocks, placed, released, counts, root, dead, .. } = plan;
+        let mut changed: Vec<std::ops::Range<u64>> = Vec::new();
+        for index in placed.keys().filter(|(level, _)| *level == 0).map(|(_, index)| *index) {
+            match changed.last_mut() {
+                Some(range) if range.end == index => range.end += 1,
+                _ => changed.push(index..index + 1),
+            }
+        }
+        // Cut, or past the end.
+        let old_n = self.levels[0].len() as u64;
+        if self.cut < old_n {
+            changed.push(self.cut..old_n);
+        }
         let mut died = Vec::new();
         for loc in released {
             let slot = self.slots[loc.slot as usize].as_mut().unwrap();
@@ -590,6 +682,7 @@ impl Pages {
         (self.committed_size, self.cut) = (root.size, n);
         self.dirty.clear();
         debug_assert_eq!(self.root(), root);
+        changed
     }
 }
 
