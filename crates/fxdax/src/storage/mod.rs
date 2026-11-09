@@ -230,6 +230,13 @@ impl Storage {
         Ok(Self::closed(device.await.map_err(Error::new)?, kind))
     }
 
+    /// fxdax: the storage's device, for what keeps itself on a device in place of Fxfs, as a
+    /// SQLite volume does (crates/sqlite_extents, TASK-296). Its user closes it: an image's
+    /// close waits for its commits to be uploaded.
+    pub fn into_device(self) -> DeviceHolder {
+        self.device
+    }
+
     pub(crate) fn into_parts(self) -> (DeviceHolder, Kind) {
         (self.device, self.kind)
     }

@@ -1,0 +1,25 @@
+# fxdax's own: SQLite databases kept straight on an extent device, as pages in write-once
+# extents, each transaction one commit of the device (TASK-296).
+[package]
+name = "sqlite_extents"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+anyhow.workspace = true
+futures.workspace = true
+log.workspace = true
+rusqlite = { version = "0.41.1", features = ["bundled"] }
+storage_device.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+anyhow.workspace = true
+rand.workspace = true
+fxdax = { path = "../fxdax" }
+tempfile.workspace = true
