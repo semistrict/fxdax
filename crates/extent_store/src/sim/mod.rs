@@ -330,6 +330,7 @@ fn late_checkpoints() -> Profile {
         weights.delete = 0;
         weights.fork = 0;
         weights.collect = 12;
+        weights.stale_checkpoint = 6;
         weights.tick = 8;
     });
     profile.options.compact_below = 0.9;
@@ -339,9 +340,12 @@ fn late_checkpoints() -> Profile {
 
 test_holds!(late_checkpoints_landing_past_takeovers, late_checkpoints());
 
-// A writer taken over checkpointing late, past where the next one recovered from, the collector
-// having moved what that names (TASK-175).
-test_needs!(late_checkpoints_need_ways_from_seals, ways_from_seals, late_checkpoints());
+// The rule `ways_from_seals` (TASK-175), a writer taken over checkpointing late past where the
+// next recovered from, has no search here: extent_remote's simulation reached its case at one seed
+// of 20,000 of `recreated` (677, where it was found), and this one, its writers the stores', at
+// none of 40,000 of `recreated` or of `late_checkpoints` (TASK-88). The collector's
+// `writers_reading_past_checkpoints_landing_after_they_took_over_need_ways_from_seals` shows it
+// needed, and specs/bucket's mutation NoWaysFromSeals.
 
 /// Takeovers while collectors run: an extent of the writer taken over, uploaded, its segment not
 /// yet.

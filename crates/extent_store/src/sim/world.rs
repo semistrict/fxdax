@@ -81,6 +81,9 @@ pub struct Weights {
     /// A root takes the ID of a fork's child whose segment is not yet acknowledged, as a guest may
     /// name any, and is deleted (TASK-174).
     pub usurp: u32,
+    /// A writer whose session stopped, a later one taking its branch or its host cut off, which
+    /// runs on unaware, checkpoints: late, past where the next writer recovered from (TASK-175).
+    pub stale_checkpoint: u32,
     /// The store's clock advances.
     pub tick: u32,
 }
@@ -135,6 +138,7 @@ impl Default for Profile {
                 restore: 0,
                 write_point: 0,
                 usurp: 0,
+                stale_checkpoint: 0,
                 tick: 3,
             },
             options: Options { compact_below: 0.5, grace: 4 },
@@ -175,6 +179,9 @@ macro_rules! trace {
         }
     };
 }
+
+/// How many of the writers of the sessions stopped the world keeps ([`World::stale`]).
+const STALE_WRITERS: usize = 4;
 
 /// How many PUTs a host's writers have in flight at once ([`Host::uploads`]).
 const UPLOADS_AT_ONCE: usize = 2;
@@ -413,6 +420,9 @@ pub struct World {
     /// origin is where the uploader that took its segment put it, again after a takeover.
     forking: BTreeMap<u64, (u64, Child)>,
     collectors: BTreeMap<u64, AbortHandle>,
+    /// The writers of the sessions stopped, the latest few, which may run on unaware
+    /// ([`World::stale_checkpoint`]).
+    stale: Vec<Arc<Writer<SimBucket>>>,
     unforks: BTreeMap<u64, Unfork>,
     restores: BTreeMap<u64, Restore>,
     /// The forks whose children's IDs a root is taking ([`World::usurp`]), until it is done: the
@@ -467,6 +477,7 @@ impl World {
             stamps: HashMap::new(),
             forking: BTreeMap::new(),
             collectors: BTreeMap::new(),
+            stale: Vec::new(),
             unforks: BTreeMap::new(),
             restores: BTreeMap::new(),
             usurped: BTreeMap::new(),
@@ -522,6 +533,7 @@ impl World {
             w.write_point,
             w.usurp,
             w.write,
+            w.stale_checkpoint,
             w.tick,
         ];
         let mut roll = self.rng.random_range(0..choices.iter().sum::<u32>());
@@ -553,6 +565,7 @@ impl World {
             19 => self.write_point(),
             20 => self.usurp(),
             21 => self.write(),
+            22 => self.stale_checkpoint(),
             _ => {
                 let ticks = self.rng.random_range(1..=self.profile.options.grace);
                 self.bucket.advance(ticks);
@@ -981,6 +994,12 @@ impl World {
         trace!("host {host}: session {} of {branch:x} stops", session.id);
         session.running.abort();
         self.forks_taken(branch, &session.uploader);
+        if let Some(writer) = session.uploader.writer() {
+            self.stale.push(writer);
+            if self.stale.len() > STALE_WRITERS {
+                self.stale.remove(0);
+            }
+        }
         let Session { uploader, store, .. } = session;
         let closing = store.as_ref().map(Arc::downgrade);
         let going = Arc::downgrade(&uploader);
@@ -1204,6 +1223,18 @@ impl World {
         if let Err(failure) = asked {
             self.store_failed(host, branch, anyhow::Error::new(failure));
         }
+    }
+
+    /// A writer whose session stopped checkpoints, as one running on unaware of it would: a later
+    /// writer's, or none, holding its branch's lease.
+    fn stale_checkpoint(&mut self) {
+        if self.stale.is_empty() {
+            return;
+        }
+        let writer = self.stale[self.rng.random_range(0..self.stale.len())].clone();
+        self.spawn(async move {
+            let _ = writer.checkpoint().await;
+        });
     }
 
     fn checkpoint(&mut self) {
