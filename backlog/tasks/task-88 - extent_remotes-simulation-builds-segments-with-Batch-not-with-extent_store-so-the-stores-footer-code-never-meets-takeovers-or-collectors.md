@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-10-22 13:26'
-updated_date: '2026-11-09 08:41'
+updated_date: '2026-11-09 10:21'
 labels:
   - review-2026-10-21
 dependencies:
@@ -27,16 +27,16 @@ Each session would need an extent_store Store of its own, attached as fxdax's re
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The simulation's writers commit through extent_store's Store, and their segments' footers come from it
-- [ ] #2 The simulation reaches TASK-79.3's case: a test seeds it and fails before TASK-79.3's fix
-- [ ] #3 The extent_remote simulation tests pass, in a time comparable to now
+- [x] #1 The simulation's writers commit through extent_store's Store, and their segments' footers come from it
+- [x] #2 The simulation reaches TASK-79.3's case: a test seeds it and fails before TASK-79.3's fix
+- [x] #3 The extent_remote simulation tests pass, in a time comparable to now
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
 - [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -57,4 +57,12 @@ Verify: cargo nextest of extent_store sim tests (profile sim), mutants.sh, scrip
 2026-11-05 triage: description brought to dde8d58d3: TASK-165.3 made one footer shape and one replay, leaving two producers of Contents; extent_store now depends on extent_remote, so the simulation can't build a Store from extent_remote.
 
 2026-11-06 tidy: depends on TASK-165.9, which moves the uploader into extent_store and deletes the attach's diff: where its description says to do this.
+
+Branch task-88 at 12733b212 (worktree ~/.t3/worktrees/fxdax/task-88). The sim runs real Stores (MemDir::serial) and the real uploader loop (upload::Shared, generic over the bucket, its interval on a Clock). AC1 done. AC2: sim::collection_needs_extent_keys_naming_segments (rule extent_keys_name_segments off = TASK-79.3 pre-fix) finds the case at seed 115 of everything; the old sim none in 4,000/4,000/20,000 seeds of everything/collected/takeovers. AC3: sim part 46/47 pass in 70 s (macOS, profile sim); everything 4.6 s vs 2.7 s before. Open: late_checkpoints_need_ways_from_seals finds no seed in 40,000 of recreated or late_checkpoints (TASK-175 case: a fenced writer that never wrote checkpointing late). Found and filed: TASK-295 (fixed on the branch), TASK-293 (open; check_compacted mirrors the prefilter meanwhile).
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+The simulation of doc-7's protocol now runs on extent_store's real stores (MemDir::serial, deterministic I/O) and the real uploader loop (upload::Shared, made generic over the bucket and run on a Clock the simulation alone runs out), so the store's seals, frees, forks, footers, WAL and rebasing meet takeovers, crashes and collectors. It moved from extent_remote to extent_store, extent_remote exposing its SimBucket, moves and rule switches behind a `testing` feature. Verified: sim part 46/46 in 38 s (profile sim, macOS, on origin/main fcf318cfe), extent_store+extent_remote suites 370/370, both hand mutants killed, scripts tests 257 OK, Linux compile in a rust:1 container. AC2: with TASK-79.3's pre-fix rule (extent_keys_name_segments off) the new sim loses an own extent at seed 115 of everything; the old sim found none in 28,000 seeds. Found and filed: TASK-295 (dropped WAL resurrected by a crash; fixed with a store test), TASK-293 (collector never compacts compressed mostly-dead segments; open). Per the user, the ways_from_seals sim search was removed (reached at no seed of 40,000; the old sim only at seed 677), its rule shown by the collector unit test and TLA+.
+<!-- SECTION:FINAL_SUMMARY:END -->
