@@ -3,10 +3,11 @@ id: TASK-88
 title: >-
   extent_remote's simulation builds segments with Batch, not with extent_store,
   so the store's footer contents never meet takeovers or collectors
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-10-22 13:26'
-updated_date: '2026-11-06 06:51'
+updated_date: '2026-11-09 08:41'
 labels:
   - review-2026-10-21
 dependencies:
@@ -37,6 +38,18 @@ Each session would need an extent_store Store of its own, attached as fxdax's re
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. extent_remote: a `testing` feature (on in its own tests) that makes the protocol rules switchable (Rules, set_rules; cfg(any(test, feature))) and exposes what the sim needs that is private now: SimBucket/Direct/Fault (sim/bucket.rs moves to extent_remote::testing), moves::{MovesMaps, Moved}.
+2. extent_store upload.rs: the uploader generic over the bucket (Shared<D, B: Bucket>, Writer<B>), its steps (start, gather, acknowledged, after/retake) callable without its tokio loop: probe moved to open(); blocking() runs inline outside a multi-thread runtime. Production keeps Remote<D> over extent_remote::store::Store (default type parameter).
+3. The simulation moves to extent_store/src/sim (cfg(test)), extent_store dev-depending on extent_remote/testing. A session is a Store over its host disk (MemDir::serial, deterministic I/O) and an uploader Shared over SimBucket whose steps the world schedules as tasks/events, as now. Guest actions: write extents (open, uncommitted), commit (seals, frees, root, capacity), close (gather with close: close_now between commits), fork (commit_fork). Batch and Wal<Data> leave the sim. Host crash: MemDir::crash(seed); disk lost: dropped. Commit identity: the sim maps (branch, footer tag) to its own commit tags, registering each store epoch as committed and each tag as gathered.
+4. Checks as now, plus: the store names what it reads where the store itself says (its places), replacing the names mock (TASK-195).
+5. scripts/test.sh sim part, mutants.sh (extent_remote mutants killed by extent_store sim tests), doc-7/doc-14/doc-15 references updated.
+6. AC #2: a mutant putting back TASK-79.3 (collector deletes an own extent object by next_sequence) killed by a seed with writes between commits and close_now. AC #3: time the sim part before/after.
+Verify: cargo nextest of extent_store sim tests (profile sim), mutants.sh, scripts/test.sh parts touched.
+<!-- SECTION:PLAN:END -->
 
 ## Implementation Notes
 
