@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-09 07:16'
-updated_date: '2026-11-09 08:08'
+updated_date: '2026-11-09 09:01'
 labels:
   - bug
   - guest-tests
@@ -34,3 +34,15 @@ GCE run t277d (TASK-277; n2-standard-4 us-west1-b, fxdax 2adb9ccd6, Firecracker 
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Confirm EBUSY's source in the VFS. 2. Compare with ext4. 3. Find when the case broke. 4. Fix the test. 5. GCE: 10 release rounds, 1 debug.
+<!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Root cause: the test. map_pieces opens the pieces file O_RDWR and keeps it mapped MAP_SHARED|PROT_WRITE; the vma holds the file, which do_dentry_open marked FMODE_WRITER (file_get_write_access -> mnt_get_write_access), so reconfigure_super's sb_prepare_remount_readonly -> mnt_hold_writers returns EBUSY. Generic VFS, before fxfs_vfs_reconfigure runs: ext4 refuses the same remount the same way, so guest Fxfs is right. History: the case passed when it landed (6e93f8a47, GCE r762); 6e3b379a6 (TASK-92.14/TASK-191's test, rebased onto main after it) made the pieces mapping writable and ran only -snapshot-dax/-suspend-dax/-migrate, so the variant has failed every run since. Fix (086fd0e7e): ReadOnly::Remounted unmaps the writable mapping and maps the file again read-only (map takes a length) before the remount, reading it all, as an integrator would. Verified on GCE n2-standard-4 us-west1-b: release guest kernel 10/10; debug kernel 1/1.
+<!-- SECTION:NOTES:END -->
