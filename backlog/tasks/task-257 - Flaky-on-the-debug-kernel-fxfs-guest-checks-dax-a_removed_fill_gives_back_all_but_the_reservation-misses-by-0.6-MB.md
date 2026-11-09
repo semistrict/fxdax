@@ -3,11 +3,11 @@ id: TASK-257
 title: >-
   Flaky: fxfs-guest-checks a_removed_fill_gives_back_all_but_the_reservation
   ignores the layer files and journal a flush during the fill changes
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-08 10:38'
-updated_date: '2026-11-09 11:05'
+updated_date: '2026-11-09 12:55'
 labels:
   - bug
   - flaky
@@ -24,15 +24,15 @@ GCE validation run B (2026-11-08, main 08d444ef7, debug kernel: KCSAN, lockdep; 
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The cause found: what besides the metadata reservation changes free space across the fill and removal
-- [ ] #2 The check holds on the debug kernel for 20 rounds, measuring what it means to, its tolerance not loosened to hide a cause
+- [x] #1 The cause found: what besides the metadata reservation changes free space across the fill and removal
+- [x] #2 The check holds on the debug kernel for 20 rounds, measuring what it means to, its tolerance not loosened to hide a cause
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -68,4 +68,12 @@ Fix: Allocator::usage() (fxdax, one lock) divides used bytes; fxfs-linux stats a
 GCE (fxdax-keep-n2-standard-4-us-west1-a-1): debug t257dbg1+t257dbg2: the check passed 34/34 runs across fxfs-guest-checks, -dax, -dax-small, -dax-delay, 8 with the flush (the old failure's shape). Rounds lost to other bugs: dax-small KCSAN (TASK-286), dax-delay reclaim deadlock (TASK-292). Release t257rel1: 20/20 rounds of the four variants passed (min short -12656640, max 4202496). macOS scripts/test.sh passed (2170 tests).
 
 Final verification: GCE t257dbg3 (debug, all five variants incl. -overrun, 5 rounds, with TASK-292): the check passed 23/23; rounds lost only to TASK-299 (tracepoints). Totals with the new model: debug 57/57, release 20/20. Linux workspace (GCE t257ws4): every cargo suite passed (2422 tests); scripts/tests' three failures are TASK-294's. macOS scripts/test.sh passed; fxfs + fxfs-posix 888/888 after rebase; upstream-changes.py --check passes.
+
+Main CI 42606149376 green at ef0f4f1d9 (its workspace job, cancelled once by concurrency, re-run and passed).
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Cause: the check's model, not Fxfs. Besides the metadata reservation, a fill and its removal change free space by the trees' layer files (a flush during the fill, the journal near its reclaim size, shrinks the reservation and writes or compacts layers: in the guest, metadata held -3.2 MB with the reservation -9 MB, free space back 12.2 MB more than before), the journal's growth (~1 MB), and the open staging extent's reach (<= STAGING_SIZE). The fill's data all comes back. Fix: Allocator::usage() divides used bytes; fxfs-linux stats report metadata held, data held, reservations, uncommitted; the check (now a_removed_fill_gives_back_all_its_data) asserts data held grows by no more than a staging extent and free space changes by data + metadata held + reservation within its 1%. Host regression test in fxfs-posix. Verified: GCE debug 57/57 check runs (five variants), release 20/20 rounds; Linux and macOS workspace suites; upstream-changes --check; main CI 42606149376 green (83e6dd6d0, ef0f4f1d9).
+<!-- SECTION:FINAL_SUMMARY:END -->
