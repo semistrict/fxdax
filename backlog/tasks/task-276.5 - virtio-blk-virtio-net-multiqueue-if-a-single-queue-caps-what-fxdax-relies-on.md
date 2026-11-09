@@ -6,6 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-11-09 03:54'
+updated_date: '2026-11-09 05:12'
 labels:
   - firecracker
   - perf
@@ -32,3 +33,9 @@ Upstream Firecracker virtio-blk and virtio-net are single-queue. Only worth a ge
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Skipped (phase 1, GCE c3-standard-8): ext4 on single-queue virtio-blk scales cold 4K random reads 27-30k (1 job) -> 48-89k IOPS (8 jobs) and stays above fxfs at every point (fxfs-guest 13-20k); random writes 22-44k. No single-queue ceiling that limits fxdax: fxdax's guests store through the extent device, not virtio-blk, and the control is not what caps them. Upstream Firecracker stays as it is.
+<!-- SECTION:NOTES:END -->
