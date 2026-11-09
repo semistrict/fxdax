@@ -174,7 +174,12 @@ of these stands in with the items the code copied from Fuchsia uses:
   Linux a mount through `/dev/fuse`, by mount(2) as root or `fusermount3`
   otherwise. `fxdax-mount STORE MOUNTPOINT` mounts a store nothing else has
   open, read-write, until it is unmounted or sent SIGINT or SIGTERM; with
-  `--new CAPACITY`, a new store it makes. macOS has no open-source FUSE, so no
+  `--new CAPACITY`, a new store it makes. `fxdax-mount --control SOCKET --stores
+  DIR MOUNTPOINT` is one mount for any number of stores (TASK-302): its control
+  API (`proto/fxdax/mount/v1/mount.proto`; `fxdax-mount attach`, `detach`,
+  `list`) takes a branch of the bucket, its lease with it, into `DIR/NAME` and
+  shows it at `MOUNTPOINT/NAME`, and detaches it once the kernel lets go of it,
+  written back and its lease let go. macOS has no open-source FUSE, so no
   mounts there.
 - `memory.rs` holds `VolatileSlice` and `VolatileSliceMut`, memory fxdax only
   copies into and out of, as a guest may change it concurrently.

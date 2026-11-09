@@ -211,6 +211,12 @@ pub fn errno(status: &Status) -> Option<Errno> {
 
 /// The status of a call that failed with `errno`.
 fn status(errno: Errno) -> Status {
+    saying(errno, format!("{errno:?}"))
+}
+
+/// The status of a call that failed with `errno`, saying `message`: as this API's errors are, and
+/// those of the API of FUSE mounts of many stores (`crate::fuse::control`).
+pub(crate) fn saying(errno: Errno, message: String) -> Status {
     let code = match errno {
         Errno::ENOENT => Code::NotFound,
         Errno::EEXIST => Code::AlreadyExists,
@@ -221,7 +227,7 @@ fn status(errno: Errno) -> Status {
         Errno::EBUSY | Errno::ESTALE | Errno::ENOTSUP | Errno::EROFS => Code::FailedPrecondition,
         _ => Code::Internal,
     };
-    let mut status = Status::new(code, format!("{errno:?}"));
+    let mut status = Status::new(code, message);
     status.metadata_mut().insert(ERRNO, errno.raw().into());
     status
 }

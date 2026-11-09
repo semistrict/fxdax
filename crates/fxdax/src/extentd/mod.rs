@@ -93,8 +93,8 @@
 pub(crate) mod client;
 mod codec;
 pub mod control;
-pub mod disk;
 mod device;
+pub mod disk;
 pub mod drain;
 mod grants;
 pub mod logging;
@@ -111,8 +111,8 @@ use std::os::unix::net::UnixListener;
 use std::path::Path;
 
 pub use client::{DaemonConnection, RemoteExtentStore, spawn_on_replies};
-pub use device::RemoteDevice;
 pub use control::serve_control;
+pub use device::RemoteDevice;
 pub use metrics::serve_metrics;
 pub use server::{Tenant, serve, serve_tenant};
 

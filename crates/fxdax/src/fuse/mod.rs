@@ -9,6 +9,9 @@
 //!   them, on every host, as its tests drive it.
 //! - [`MountOptions::mount`] mounts a filesystem on Linux, through `/dev/fuse`, and serves the
 //!   kernel's requests until it is unmounted. macOS has no FUSE of its own, nor an open-source one.
+//! - [`MountOptions::mount_stores`] mounts a directory of stores instead (TASK-302): one mount,
+//!   into which stores are attached by name, and detached, by [`Server::attach`] and
+//!   [`Server::detach`], or through [`control`], a gRPC API, as `fxdax-mount --control` serves it.
 //!
 //! The mount is its store's only writer, as a store's directory is its process's alone, so the
 //! kernel may cache all it reads: names, their absence, attributes, pages, directories' entries,
@@ -33,9 +36,11 @@
 
 mod abi;
 #[cfg(target_os = "linux")]
+pub mod control;
+#[cfg(target_os = "linux")]
 mod mount;
 mod server;
 
 #[cfg(target_os = "linux")]
-pub use mount::{Mount, MountOptions, Unmounter};
-pub use server::Server;
+pub use mount::{Mount, MountOptions, StoresMount, Unmounter};
+pub use server::{Attached, Notifier, Server};

@@ -2,7 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-//! Generates the extent daemon's gRPC API (`proto/fxdax/extentd/v1/extentd.proto`), with protox,
+//! Generates the extent daemon's gRPC API (`proto/fxdax/extentd/v1/extentd.proto`), and that of
+//! FUSE mounts of many stores (`proto/fxdax/mount/v1/mount.proto`), with protox,
 //! which compiles protobuf in Rust: no protoc needed. fxdax: and stamps the build with the commit it
 //! is of (`FXDAX_BUILD_COMMIT`, [`crate::BUILD_COMMIT`]), as scripts/build-commit.sh says, which
 //! every build of the tree reports (TASK-111.7).
@@ -11,9 +12,11 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let proto = "proto/fxdax/extentd/v1/extentd.proto";
-    println!("cargo:rerun-if-changed={proto}");
-    let descriptors = protox::compile([proto], ["proto"])?;
+    let protos = ["proto/fxdax/extentd/v1/extentd.proto", "proto/fxdax/mount/v1/mount.proto"];
+    for proto in protos {
+        println!("cargo:rerun-if-changed={proto}");
+    }
+    let descriptors = protox::compile(protos, ["proto"])?;
     tonic_prost_build::configure().compile_fds(descriptors)?;
     stamp_commit()
 }

@@ -17,6 +17,7 @@
 use super::server::{MAX_WRITE, Server};
 use crate::error::Error;
 use crate::filesystem::Filesystem;
+use crate::node::Owner;
 use crate::storage::Storage;
 use anyhow::{Context as _, bail};
 use std::ffi::CString;
@@ -73,28 +74,60 @@ impl MountOptions {
     /// The filesystem is its store's only writer, as the store's directory is its process's
     /// alone, which the kernel's caches count on: they are kept as long as it likes.
     pub fn mount(&self, fs: Filesystem, mountpoint: impl AsRef<Path>) -> Result<Mount, Error> {
-        let mountpoint = mountpoint.as_ref().to_owned();
+        let served = self.serve(mountpoint.as_ref(), |_| Server::new(fs))?;
+        Ok(Mount { served })
+    }
+
+    /// Mounts a directory of stores at `mountpoint`, none attached yet (TASK-302): stores are
+    /// attached in it and detached by [`StoresMount::server`]'s [`Server::attach`] and
+    /// [`Server::detach`], one mount however many. It is the mounting user's, as its stores' roots
+    /// say who else may use them. Served until it is unmounted, as [`MountOptions::mount`]'s.
+    pub fn mount_stores(&self, mountpoint: impl AsRef<Path>) -> Result<StoresMount, Error> {
+        // SAFETY: Plain calls returning the process's IDs.
+        let owner = unsafe { Owner { uid: libc::getuid(), gid: libc::getgid() } };
+        let served = self.serve(mountpoint.as_ref(), |device| {
+            // Notifications are written whole, as replies are, by whatever thread sends them.
+            let notify = move |message: &[u8]| match (&*device).write(message)? {
+                written if written == message.len() => Ok(()),
+                written => Err(io::Error::other(format!(
+                    "{written} bytes of a {}-byte notification",
+                    message.len()
+                ))),
+            };
+            Server::stores(owner, Box::new(notify))
+        })?;
+        Ok(StoresMount { served })
+    }
+
+    /// Mounts a FUSE filesystem at `mountpoint`, and serves it with the server `server` makes,
+    /// given the device it is served through, with threads of the mount's own.
+    fn serve(
+        &self,
+        mountpoint: &Path,
+        server: impl FnOnce(Arc<File>) -> Server,
+    ) -> Result<Served, Error> {
+        let mountpoint = mountpoint.to_owned();
         let (device, how) = mount(&mountpoint, self.allow_other).map_err(Error::new)?;
         let unmounter = Unmounter { mountpoint, how };
-        let (device, server) = (Arc::new(device), Arc::new(Server::new(fs)));
-        let mut workers = Vec::new();
+        let device = Arc::new(device);
+        let server = Arc::new(server(device.clone()));
+        let mut served = Served { unmounter, server: Some(server.clone()), workers: Vec::new() };
         for index in 0..self.threads.get() {
-            let (theirs, served) = (device.clone(), server.clone());
+            let (theirs, server) = (device.clone(), server.clone());
             let spawned =
                 std::thread::Builder::new().name(format!("fuse {index}")).spawn(move || {
-                    serve(&theirs, &served);
+                    serve(&theirs, &server);
                 });
             match spawned {
-                Ok(worker) => workers.push(worker),
+                Ok(worker) => served.workers.push(worker),
                 Err(error) => {
                     // The workers started end once it is unmounted.
-                    let mount = Mount { unmounter, server: Some(server), workers };
-                    drop(mount);
+                    drop(served);
                     return Err(Error::new(anyhow::Error::new(error).context("starting a thread")));
                 }
             }
         }
-        Ok(Mount { unmounter, server: Some(server), workers })
+        Ok(served)
     }
 }
 
@@ -109,36 +142,96 @@ impl Default for MountOptions {
 ///
 /// Dropped before it is joined, it unmounts it lazily, waits until the kernel is done with it,
 /// and closes it.
+#[derive(Debug)]
 pub struct Mount {
-    unmounter: Unmounter,
-    /// The server, which the workers share until they end: taken by `join`.
-    server: Option<Arc<Server>>,
-    workers: Vec<JoinHandle<()>>,
+    served: Served,
 }
 
 impl Mount {
     /// Where the filesystem is mounted.
     pub fn mountpoint(&self) -> &Path {
-        &self.unmounter.mountpoint
+        &self.served.unmounter.mountpoint
     }
 
     /// What unmounts the filesystem, from another thread, such as a signal's.
     pub fn unmounter(&self) -> Unmounter {
-        self.unmounter.clone()
+        self.served.unmounter.clone()
     }
 
     /// Unmounts the filesystem (see [`Unmounter::unmount`]).
     pub fn unmount(&self, lazily: bool) -> Result<(), Error> {
-        self.unmounter.unmount(lazily)
+        self.served.unmounter.unmount(lazily)
     }
 
     /// Waits until the filesystem is unmounted and the kernel is done with it, then closes it,
     /// writing back what is dirty, and gives its storage back, as [`Filesystem::close`] does.
-    pub fn join(mut self) -> Result<Storage, Error> {
-        self.join_workers();
-        let server = self.server.take().expect("joined once");
-        let server = Arc::into_inner(server).expect("the workers shared the server alone");
+    pub fn join(self) -> Result<Storage, Error> {
+        let server = self.served.join();
         futures::executor::block_on(server.into_filesystem().close())
+    }
+}
+
+/// A directory of stores mounted with FUSE ([`MountOptions::mount_stores`]), served until it is
+/// unmounted, as a [`Mount`] is; [`join`](Self::join) then unmounts the stores attached.
+///
+/// Dropped before it is joined, it unmounts it lazily, waits until the kernel is done with it, and
+/// unmounts the stores.
+#[derive(Debug)]
+pub struct StoresMount {
+    served: Served,
+}
+
+impl StoresMount {
+    /// Where it is mounted.
+    pub fn mountpoint(&self) -> &Path {
+        &self.served.unmounter.mountpoint
+    }
+
+    /// The server, which attaches stores, detaches them and lists them.
+    pub fn server(&self) -> &Arc<Server> {
+        self.served.server.as_ref().expect("served until joined")
+    }
+
+    /// What unmounts it, from another thread, such as a signal's.
+    pub fn unmounter(&self) -> Unmounter {
+        self.served.unmounter.clone()
+    }
+
+    /// Unmounts it (see [`Unmounter::unmount`]).
+    pub fn unmount(&self, lazily: bool) -> Result<(), Error> {
+        self.served.unmounter.unmount(lazily)
+    }
+
+    /// Waits until it is unmounted and the kernel is done with it, then unmounts the stores still
+    /// attached, writing back what is dirty, and closes their stores: once those sharing the
+    /// server, which attach no more, have let it go. Fails with the first unmount's error.
+    pub fn join(self) -> Result<(), Error> {
+        let server = self.served.join_shared();
+        futures::executor::block_on(server.unmount())
+    }
+}
+
+/// A FUSE filesystem served by threads of its own until it is unmounted.
+#[derive(Debug)]
+struct Served {
+    unmounter: Unmounter,
+    /// The server, which the workers share until they end: taken by a join.
+    server: Option<Arc<Server>>,
+    workers: Vec<JoinHandle<()>>,
+}
+
+impl Served {
+    /// Waits until the filesystem is unmounted and the kernel is done with it, and returns the
+    /// server, which the workers shared alone.
+    fn join(self) -> Server {
+        Arc::into_inner(self.join_shared()).expect("the workers shared the server alone")
+    }
+
+    /// Waits until the filesystem is unmounted and the kernel is done with it, and returns the
+    /// server, which others may share.
+    fn join_shared(mut self) -> Arc<Server> {
+        self.join_workers();
+        self.server.take().expect("joined once")
     }
 
     /// Waits for the workers, which end once the filesystem is unmounted.
@@ -151,22 +244,17 @@ impl Mount {
     }
 }
 
-impl Drop for Mount {
+impl Drop for Served {
     fn drop(&mut self) {
-        if self.workers.is_empty() {
-            return;
-        }
+        let Some(server) = self.server.take() else { return };
         if let Err(error) = self.unmounter.unmount(true) {
             log::error!("fuse: unmounting {}: {error:#}", self.unmounter.mountpoint.display());
         }
         self.join_workers();
-        // The filesystem closes as the server goes.
-    }
-}
-
-impl std::fmt::Debug for Mount {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Mount").field("mountpoint", &self.unmounter.mountpoint).finish()
+        // The kernel's DESTROY unmounted what was served, unless it never came.
+        if let Err(error) = futures::executor::block_on(server.unmount()) {
+            log::error!("fuse: closing {}: {error:#}", self.unmounter.mountpoint.display());
+        }
     }
 }
 

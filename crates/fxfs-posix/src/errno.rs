@@ -85,6 +85,9 @@ errnos! {
     EPROTO = 71,
     /// Not a data message: data whose checksum doesn't match, as ext4's and XFS's `EFSBADCRC`.
     EBADMSG = 74,
+    /// Value too large for defined data type: an object ID too large for the inode numbers of a
+    /// host FUSE mount of many stores, which keep its high bits for the store's.
+    EOVERFLOW = 75,
     /// Protocol not supported.
     EPROTONOSUPPORT = 93,
     /// Operation not supported.

@@ -89,6 +89,53 @@ impl Storage {
         Self::make(path.as_ref(), size, true, Self::keeping()?)
     }
 
+    /// fxdax: the image at `path` of `branch`, kept in the bucket at `bucket` (TASK-302), its
+    /// branch, and whether that is new, holding nothing. If no image is at `path`, or what an image's making left unmade, a new one of
+    /// `capacity` bytes holding what the branch holds in the bucket, its lease taken, as
+    /// `fxdaxctl take` takes a branch: with `token`'s placement, which it is placed at, if given,
+    /// as `Storage::open` takes leases otherwise. `branch` 0 is a new branch, which holds nothing:
+    /// a filesystem must be formatted on it. If an image is at `path`, it is opened as
+    /// [`Storage::open`] opens it, and must be of `branch`, unless that is 0: `EEXIST` otherwise.
+    pub fn take(
+        path: impl AsRef<Path>,
+        (branch, capacity): (u64, u64),
+        bucket: &str,
+        token: Option<u64>,
+    ) -> Result<(Self, u64, bool), Error> {
+        let path = path.as_ref();
+        // What a making that died part way left is no store: its directory goes, not the branch,
+        // which may be another's, as the extent daemon's `CreateStore` has it (TASK-196).
+        if host_store::unmade(path) {
+            std::fs::remove_dir_all(path)
+                .with_context(|| format!("removing {}, a store unmade", path.display()))
+                .map_err(Error::new)?;
+        }
+        let new = branch == 0 && !path.exists();
+        if !path.exists() {
+            let branch = match branch {
+                0 => host_store::new_branch(),
+                branch => branch,
+            };
+            let keeping = Self::keeping()?;
+            let keeping =
+                extent_store::upload::Options { token: token.unwrap_or(keeping.token), ..keeping };
+            let opened = host_store::create_unmade(path, capacity, branch, Some(bucket), keeping)?;
+            opened.made().map_err(Error::new)?;
+            // Closed before it is placed, as `CreateStore` places a store, and opened again.
+            drop(opened);
+            if let Some(token) = token {
+                extent_store::place_host(path, token).map_err(Error::new)?;
+            }
+        }
+        let found = extent_store::host_branch(path).map_err(Error::new)?;
+        if branch != 0 && found != branch {
+            let error =
+                anyhow::anyhow!("{} holds branch {found:x}, not {branch:x}", path.display());
+            return Err(Error::new(error.context(crate::Errno::EEXIST)));
+        }
+        Ok((Self::open(path)?, found, new))
+    }
+
     /// fxdax: a new image at `path`, as [`Storage::create`] makes it, unmade until its maker says
     /// it is whole ([`Storage::made`]): what opens it before, or after its maker died part way,
     /// finds no store (TASK-196). As an import makes one, filling it first.

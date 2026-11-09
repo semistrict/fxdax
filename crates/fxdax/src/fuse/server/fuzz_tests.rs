@@ -882,7 +882,8 @@ fn check_dirents(
 /// The server's tables are the model's: the nodes the kernel holds, with their lookups, each the
 /// node its ID names; and the directories open.
 fn check_tables(server: &Server, model: &Model) -> Result<(), String> {
-    let nodes = server.nodes.lock().unwrap();
+    let held = server.nodes.lock().unwrap();
+    let nodes = &held.looked;
     let lookups: BTreeMap<u64, u64> =
         nodes.iter().map(|(&id, looked)| (id, looked.lookups)).collect();
     if lookups != model.lookups {
@@ -896,7 +897,7 @@ fn check_tables(server: &Server, model: &Model) -> Result<(), String> {
     {
         return Err(format!("node {id} holds object {}", looked.node.inode().0));
     }
-    drop(nodes);
+    drop(held);
     let open: BTreeSet<u64> = server.dirs.lock().unwrap().open.keys().copied().collect();
     if open != model.open {
         return Err(format!("the server has directories {open:?} open, where {:?}", model.open));
@@ -910,7 +911,7 @@ fn fuzz(sent: &[Sent]) -> Result<(), String> {
     block_on(async {
         let fs = Filesystem::format(crate::Storage::memory(STORAGE_SIZE)).await.unwrap();
         let server = Server::new(fs);
-        let mut model = Model { root: server.root, ..Model::default() };
+        let mut model = Model { root: server.root(), ..Model::default() };
         let mut history = Vec::new();
         for (index, sent) in sent.iter().enumerate() {
             model.unique += 1;

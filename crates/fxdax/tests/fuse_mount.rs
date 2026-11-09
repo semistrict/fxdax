@@ -337,3 +337,114 @@ fn a_store_mounted_is_not_mounted_again() {
     mount.unmount(false).unwrap();
     block_on(mount.join().unwrap().check()).unwrap();
 }
+
+/// `fxdax-mount --control SOCKET --stores DIR --bucket URL MOUNTPOINT`, all in `dir`, once it has
+/// said it is mounted (TASK-302): its child, its control socket and its mount point.
+fn fxdax_mount_stores(dir: &Path) -> (KillOnDrop, PathBuf, PathBuf) {
+    let (socket, stores, bucket) = (dir.join("control"), dir.join("stores"), dir.join("bucket"));
+    std::fs::create_dir(&stores).unwrap();
+    std::fs::create_dir(&bucket).unwrap();
+    let bucket = url::Url::from_directory_path(&bucket).unwrap().to_string();
+    let mountpoint = dir.join("mnt");
+    std::fs::create_dir(&mountpoint).unwrap();
+    let flags = ["--control", socket.to_str().unwrap(), "--stores", stores.to_str().unwrap()];
+    let mut child = KillOnDrop(
+        Command::new(env!("CARGO_BIN_EXE_fxdax-mount"))
+            .args(flags)
+            .args(["--bucket", &bucket])
+            .arg(&mountpoint)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
+    let mut said = String::new();
+    std::io::BufReader::new(child.0.stdout.take().unwrap()).read_line(&mut said).unwrap();
+    if said.is_empty() {
+        let mut stderr = String::new();
+        child.0.stderr.take().unwrap().read_to_string(&mut stderr).unwrap();
+        panic!("fxdax-mount ended unmounted, {}: {stderr}", child.0.wait().unwrap());
+    }
+    assert_eq!(said.trim_end(), mountpoint.to_str().unwrap());
+    (child, socket, mountpoint)
+}
+
+/// `fxdax-mount COMMAND ARGS`: what it prints, once it succeeds.
+fn fxdax_mount_command(args: &[&str]) -> String {
+    let output = Command::new(env!("CARGO_BIN_EXE_fxdax-mount")).args(args).output().unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "fxdax-mount {args:?}: {}: {stderr}", output.status);
+    String::from_utf8(output.stdout).unwrap()
+}
+
+/// One mount of many stores (TASK-302): branches attached through its control socket are
+/// directories of its root, each a filesystem of its own (nothing renamed between them, nothing
+/// made in the root); a store detached goes, written back and its lease let go, so that it
+/// attaches again from its store, or as its branch taken from the bucket into another; a store
+/// with a file open is detached once the file is closed.
+#[test]
+fn one_mount_attaches_and_detaches_many_stores() {
+    let dir = tempfile::tempdir().unwrap();
+    let (child, socket, m) = fxdax_mount_stores(dir.path());
+    let socket = socket.to_str().unwrap();
+    assert_eq!(names(&m), Vec::<String>::new());
+    let capacity = STORE_SIZE.to_string();
+    let attach = |name: &str, branch: &str| {
+        fxdax_mount_command(&["attach", socket, name, branch, &capacity]).trim().to_owned()
+    };
+    let a = attach("a", "0");
+    let b = attach("b", "0");
+    assert_ne!(a, b);
+    assert_eq!(names(&m), ["a", "b"]);
+    std::fs::write(m.join("a/file"), "in a").unwrap();
+    std::fs::write(m.join("b/file"), "in b").unwrap();
+    assert_eq!(std::fs::read_to_string(m.join("a/file")).unwrap(), "in a");
+    assert_eq!(std::fs::read_to_string(m.join("b/file")).unwrap(), "in b");
+    let renamed = std::fs::rename(m.join("a/file"), m.join("b/moved")).unwrap_err();
+    assert_eq!(renamed.raw_os_error(), Some(libc::EXDEV));
+    let made = std::fs::create_dir(m.join("c")).unwrap_err();
+    assert_eq!(made.raw_os_error(), Some(libc::EPERM));
+    assert_ne!(
+        std::fs::metadata(m.join("a/file")).unwrap().ino(),
+        std::fs::metadata(m.join("b/file")).unwrap().ino()
+    );
+    assert_eq!(fxdax_mount_command(&["list", socket]), format!("a {a}\nb {b}\n"));
+
+    // Detached, and attached again from its store; then from the bucket, into another.
+    fxdax_mount_command(&["detach", socket, "a"]);
+    assert_eq!(names(&m), ["b"]);
+    assert_eq!(attach("a", &a), a);
+    assert_eq!(std::fs::read_to_string(m.join("a/file")).unwrap(), "in a");
+    fxdax_mount_command(&["detach", socket, "a"]);
+    assert_eq!(attach("again", &a), a);
+    assert_eq!(names(&m), ["again", "b"]);
+    assert_eq!(std::fs::read_to_string(m.join("again/file")).unwrap(), "in a");
+
+    // A file open holds the store until it is closed.
+    let open = std::fs::File::open(m.join("b/file")).unwrap();
+    let mut detach = KillOnDrop(
+        Command::new(env!("CARGO_BIN_EXE_fxdax-mount"))
+            .args(["detach", socket, "b"])
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
+    while fxdax_mount_command(&["list", socket]) != format!("again {a}\nb {b} detaching\n") {}
+    assert_eq!(names(&m), ["again"]);
+    assert!(detach.0.try_wait().unwrap().is_none(), "detached with a file open");
+    drop(open);
+    assert!(detach.0.wait().unwrap().success());
+    assert_eq!(fxdax_mount_command(&["list", socket]), format!("again {a}\n"));
+
+    terminate(child, &m);
+    // Each store is whole, and holds what was written.
+    block_on(async {
+        for (name, file) in [("again", "in a"), ("b", "in b")] {
+            let store = dir.path().join("stores").join(name);
+            let storage = Storage::open(&store).unwrap().check().await.unwrap();
+            let fs = Filesystem::mount(storage).await.unwrap();
+            assert_eq!(contents(fs.root(), b"file").await, file.as_bytes());
+            fs.close().await.unwrap();
+        }
+    });
+}

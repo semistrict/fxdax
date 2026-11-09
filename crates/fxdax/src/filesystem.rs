@@ -42,7 +42,7 @@ fn xattr_errno(error: anyhow::Error) -> Errno {
 }
 
 /// The longest name a directory holds, as Linux's `NAME_MAX`.
-const NAME_MAX: usize = 255;
+pub(crate) const NAME_MAX: usize = 255;
 
 /// How much of a write Fxfs writes in a transaction at most: a write longer is written a piece at
 /// a time.

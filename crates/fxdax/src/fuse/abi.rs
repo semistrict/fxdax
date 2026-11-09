@@ -92,6 +92,14 @@ pub mod opcode {
     pub const RENAME2: u32 = 45;
 }
 
+/// The notifications the server sends the kernel unasked: an [`OutHeader`] whose `unique` is 0 and
+/// whose `error` is the notification's code.
+pub mod notify {
+    /// Drop a directory's entry of a name, and the dentries under it the kernel holds unused,
+    /// which it then forgets: [`super::NotifyInvalEntryOut`], then the name and a NUL.
+    pub const INVAL_ENTRY: i32 = 3;
+}
+
 macro_rules! messages {
     ($($(#[$doc:meta])* pub struct $name:ident { $(pub $field:ident: $ty:ty,)* })*) => {
         $(
@@ -344,5 +352,13 @@ messages! {
         pub off: u64,
         pub namelen: u32,
         pub type_: u32,
+    }
+
+    /// The body of a [`notify::INVAL_ENTRY`]: the directory, and the length of the name that
+    /// follows, without its NUL.
+    pub struct NotifyInvalEntryOut {
+        pub parent: u64,
+        pub namelen: u32,
+        pub flags: u32,
     }
 }

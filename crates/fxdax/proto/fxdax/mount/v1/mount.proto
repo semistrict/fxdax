@@ -1,0 +1,102 @@
+// Copyright 2026 The fxdax Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+// The control API of a host FUSE mount of many stores (TASK-302): `fxdax-mount --control SOCKET
+// --stores DIR MOUNTPOINT` serves one FUSE mount, whose root directory holds the stores attached
+// to it, each at its name, however many: one OS mount, not one per store. Attach takes a branch
+// of the mount's bucket, its lease with it, into a store at DIR/NAME, and shows its filesystem at
+// MOUNTPOINT/NAME; Detach writes it back and lets its lease go, so that a VM, or another mount,
+// may take the branch.
+//
+// It is served over a Unix socket, the mounting user's alone, mode 0600 whatever its umask, as
+// every caller may do everything.
+//
+// Errors are gRPC statuses whose code follows the errno the mount failed with, which the
+// `fxdax-errno` metadata entry carries, as a decimal number (Linux's), as the extent daemon's
+// control API has them (fxdax/extentd/v1/extentd.proto): ENOENT is NOT_FOUND, EEXIST
+// ALREADY_EXISTS, EACCES and EPERM PERMISSION_DENIED, EINVAL INVALID_ARGUMENT, ENOSPC
+// RESOURCE_EXHAUSTED, ETIMEDOUT DEADLINE_EXCEEDED, EBUSY, ESTALE, ENOTSUP and EROFS
+// FAILED_PRECONDITION, EIO and others INTERNAL.
+//
+// Calls block for as long as their work takes: an attach while its store recovers, a detach until
+// the kernel lets the store go. A caller bounds them with deadlines; one that gives up does not
+// stop the work, which completes, or fails, on its own.
+//
+// Compatibility: v1 only grows, as the extent daemon's does.
+
+syntax = "proto3";
+
+package fxdax.mount.v1;
+
+// Its Go package, go/mount/v1, generated from this file (go/generate.sh).
+option go_package = "github.com/semistrict/fxdax/go/mount/v1;mountv1";
+
+// The control API of a FUSE mount of many stores.
+service Mount {
+  // Attaches a branch of the mount's bucket at a name in the mount's root directory: takes it
+  // into a store at DIR/NAME, its lease with it, and shows its filesystem at MOUNTPOINT/NAME. A
+  // store at DIR/NAME already, as one detached left, is opened again: it must be of the branch
+  // (ALREADY_EXISTS otherwise). ALREADY_EXISTS if a store is attached at the name; EBUSY if one is
+  // being attached or detached there; ESTALE if a later placement holds the branch.
+  rpc Attach(AttachRequest) returns (AttachResponse);
+  // Detaches the store attached at a name: the name goes from the mount's root at once; the store
+  // is unmounted, what is dirty written back, and its lease let go, once the kernel has let go of
+  // every file and directory of it, as once whatever has one open, or as its current directory,
+  // lets it go: the call returns then. NOT_FOUND if none is attached there; EBUSY if one is being
+  // attached or detached there. DIR/NAME stays, to attach again.
+  rpc Detach(DetachRequest) returns (DetachResponse);
+  // The stores attached, and those being detached.
+  rpc List(ListRequest) returns (ListResponse);
+}
+
+// What to attach, and where.
+message AttachRequest {
+  // The name in the mount's root, and of the store's directory in DIR: a file name, UTF-8, not
+  // "." or "..", with no "/" (INVALID_ARGUMENT otherwise).
+  string name = 1;
+  // The branch to take, or 0 for a new branch, whose filesystem is made empty, its root
+  // directory the mounting user's.
+  uint64 branch = 2;
+  // The most bytes the store holds, if it is made: as its branch's VMs' disks hold.
+  uint64 capacity = 3;
+  // The fencing token of the placement to take the branch's lease at, if any: as CreateStore's.
+  optional uint64 token = 4;
+}
+
+// What was attached.
+message AttachResponse {
+  // The branch attached: the one asked for, or the new one made.
+  uint64 branch = 1;
+}
+
+// What to detach.
+message DetachRequest {
+  // The name it is attached at.
+  string name = 1;
+  // Unmount the store at once, without waiting for the kernel to let go of it: files and
+  // directories of it still open fail with ENOTCONN from then on.
+  bool force = 2;
+}
+
+// A store detached.
+message DetachResponse {}
+
+// No more than the call.
+message ListRequest {}
+
+// The stores attached.
+message ListResponse {
+  // By name.
+  repeated Attached stores = 1;
+}
+
+// A store attached.
+message Attached {
+  // The name it is attached at.
+  string name = 1;
+  // The branch its store holds.
+  uint64 branch = 2;
+  // Whether it is being detached.
+  bool detaching = 3;
+}
