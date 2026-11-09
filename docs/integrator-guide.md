@@ -27,6 +27,9 @@ follows from that.
    socket into a jail: it can take any branch by its ID.
 4. Run jails with Firecracker's jailer, as a uid other than the daemon's. The default VM socket is
    mode `0600`, owned by the daemon, so that a mistake in step 3 still can't connect.
+5. Start Firecracker with `--enable-pci`, on x86-64 and aarch64 alike: the extent device attaches
+   over virtio-PCI alone, its DAX window a BAR of its own, and a VM with it on MMIO does not start
+   (TASK-273).
 
 Grants don't survive a restart of the daemon. After one, call `Grant` again, and bind-mount the new
 socket.

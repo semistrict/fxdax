@@ -3,3 +3,6 @@
 # rewrite's.
 # TASK-269: the opt-in series, fxdax-v1.16.1-r1, replacing fxdax-v1.16.1 at land-reqid's tip.
 06c161526ef7b4df9e9cf698fed6ecc2e0f3cf33 8e14cd916c07e26cc00439557f6168262cf5fe59
+# TASK-273: the series' second release, fxdax-v1.16.1-r2 (branch fxdax-v1.16.1-pci), the extent
+# device over virtio-PCI alone and no MMIO shared memory registers, replacing fxdax-pci-r1's stack.
+517d438c5d02b097725a46bbde9e9cae4fe5a0c2 68d5971759373a2b2edb9e698bed44a56cda1a54

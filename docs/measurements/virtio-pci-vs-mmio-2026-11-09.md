@@ -115,3 +115,7 @@ default on x86-64 now. fxdax's own MMIO code can go, but not yet:
   as it is.
 
 So: remove fxdax's MMIO paths once TASK-268 has aarch64 on PCI and no MMIO snapshot is kept.
+
+TASK-273 (2026-11-09) removed them without waiting on TASK-268: with no deployments, no MMIO
+snapshot is kept, and aarch64 went to PCI untested on KVM (TASK-268 runs it once an arm64 KVM host
+exists).

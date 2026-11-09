@@ -116,14 +116,13 @@ fi
 # (TASK-79.102), its vCPUs' exits' (TASK-187) and the PCI transport's shared memory BAR's and device
 # IDs' (TASK-267), on Linux alone, which the VMM builds for, with no KVM. With its fxdax feature, as
 # fxdax builds it (scripts/firecracker-cargo.sh), and those its feature gates: the extent
-# device's, its vCPUs' exits', its MMIO transport's shared memory regions', its features pages' and
-# its signal handlers'. Each extent test serves its store from a daemon in its process, a host's:
+# device's, its vCPUs' exits', its features pages' and its signal handlers'. Each extent test serves its store from a daemon in its process, a host's:
 # its stores' branches in a bucket in memory, as of placement 1, which without
 # FXDAX_EXTENTD_REMOTE and FXDAX_EXTENTD_TOKEN fails EIO opening it (TASK-220). userfaultfd-sys's
 # bindgen needs libclang to build it.
 if part firecracker; then
     tests='test(/extent::/) | test(/vcpu::tests::(efaults_|test_exit_code_)/)'
-    tests+=' | test(/mmio::tests::test_shm_regions/) | test(/device::tests::test_features_/)'
+    tests+=' | test(/device::tests::test_features_/)'
     tests+=' | test(/signal_handler::/)'
     tests+=' | test(/transport::pci::device::tests::test_(shm_bar|pci_device_ids)$/)'
     FXDAX_EXTENTD_REMOTE=memory:///vmm FXDAX_EXTENTD_TOKEN=1 \

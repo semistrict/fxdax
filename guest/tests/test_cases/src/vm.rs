@@ -625,35 +625,6 @@ fn kill_on_line(
     }
 }
 
-/// fxdax: the virtio transport of Firecracker's devices, as FXDAX_VIRTIO_TRANSPORT says, `pci` or
-/// `mmio` (TASK-267). PCI by default on x86-64: its MSI-X interrupts cost the guest no exits to
-/// read and acknowledge an interrupt's status, which MMIO's do (TASK-91.15). MMIO by default
-/// elsewhere: fxdax has run no aarch64 guest over PCI, which needs its GICv3's ITS for MSI-X.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Transport {
-    Mmio,
-    Pci,
-}
-
-impl Transport {
-    /// The transport FXDAX_VIRTIO_TRANSPORT names, or this architecture's default if it is unset
-    /// or empty.
-    pub fn from_env() -> anyhow::Result<Self> {
-        Self::named(std::env::var("FXDAX_VIRTIO_TRANSPORT").ok().as_deref())
-    }
-
-    /// The transport `given` names, as FXDAX_VIRTIO_TRANSPORT would.
-    fn named(given: Option<&str>) -> anyhow::Result<Self> {
-        match given.filter(|t| !t.is_empty()) {
-            None if cfg!(target_arch = "x86_64") => Ok(Self::Pci),
-            None => Ok(Self::Mmio),
-            Some("pci") => Ok(Self::Pci),
-            Some("mmio") => Ok(Self::Mmio),
-            Some(other) => anyhow::bail!("FXDAX_VIRTIO_TRANSPORT is pci or mmio, not {other:?}"),
-        }
-    }
-}
-
 fn spawn(
     args: &[std::ffi::OsString],
     console: &Path,
@@ -671,9 +642,10 @@ fn spawn(
     if let Some(filter) = std::env::var_os("FXDAX_FIRECRACKER_SECCOMP_FILTER") {
         command.arg("--seccomp-filter").arg(filter);
     }
-    if Transport::from_env()? == Transport::Pci {
-        command.arg("--enable-pci");
-    }
+    // Every device on virtio-PCI, on every architecture: the extent device attaches over PCI
+    // alone, its DAX window a BAR of its own, and MSI-X costs the guest no exits to read and
+    // acknowledge an interrupt's status, which MMIO's do (TASK-91.15, TASK-267, TASK-273).
+    command.arg("--enable-pci");
     command
         .args(args)
         .stdin(std::process::Stdio::null())
@@ -978,21 +950,6 @@ fn tree_size(dir: &Path) -> anyhow::Result<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// fxdax TASK-267: FXDAX_VIRTIO_TRANSPORT names the transport; unset or empty, x86-64's is
-    /// PCI and the others' MMIO.
-    #[test]
-    fn the_transport_is_named_or_the_architectures() {
-        assert_eq!(Transport::named(Some("pci")).unwrap(), Transport::Pci);
-        assert_eq!(Transport::named(Some("mmio")).unwrap(), Transport::Mmio);
-        let default = if cfg!(target_arch = "x86_64") { Transport::Pci } else { Transport::Mmio };
-        assert_eq!(Transport::named(None).unwrap(), default);
-        assert_eq!(Transport::named(Some("")).unwrap(), default);
-        assert_eq!(
-            Transport::named(Some("PCI")).unwrap_err().to_string(),
-            "FXDAX_VIRTIO_TRANSPORT is pci or mmio, not \"PCI\""
-        );
-    }
 
     /// A guest dumps its stacks the margin before the runner's deadline, if it has time to.
     #[test]

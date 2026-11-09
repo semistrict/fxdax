@@ -96,8 +96,8 @@ pub fn set_up() -> Init {
 
 /// fxdax: says on the console, beside the kernel's messages, how long the guest took to boot:
 /// its kernel from its start to running init, as the kernel's log has it, and the guest to here,
-/// the agent set up, by CLOCK_BOOTTIME, as `fxdax: boot kernel_ns=K agent_ns=A`; what virtio-PCI's
-/// enumeration costs against MMIO's (TASK-267).
+/// the agent set up, by CLOCK_BOOTTIME, as `fxdax: boot kernel_ns=K agent_ns=A` (TASK-267 compared
+/// virtio-PCI's boot with MMIO's by it).
 fn say_boot(mut console: &File) {
     let mut now = libc::timespec { tv_sec: 0, tv_nsec: 0 };
     // SAFETY: A plain system call, which fills `now`.

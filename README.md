@@ -373,12 +373,17 @@ branches on the same terms, and makes new stores (`take`, `import`) anywhere.
 
 ### `vendor/firecracker`: the VMM
 
-The VMM is a submodule: branch `fxdax-v1.16.1-optin` of
+The VMM is a submodule: branch `fxdax-v1.16.1-pci` of
 [semistrict/firecracker](https://github.com/semistrict/firecracker), Firecracker's
 v1.16.1 release, the sandboxes' pin, plus fxdax's changes as one linear series,
-each release of it tagged `fxdax-v1.16.1-rN` (TASK-269). Its first commits are
-general fixes, each standing alone; everything else is behind its `fxdax`
-feature, so that a build without it is upstream's. Every commit builds both
+each release of it tagged `fxdax-v1.16.1-rN` (TASK-269; r2, TASK-273, the one
+with the extent device over virtio-PCI alone). Its first commits are general
+fixes, each standing alone, among them the PCI transport's shared memory
+regions; everything else is behind its `fxdax` feature, so that a build without
+it is upstream's. Every fxdax VM, on x86-64 and aarch64 alike, runs its devices
+on virtio-PCI (`--enable-pci`): the extent device's DAX window is a BAR of its
+own, which upstream's MMIO transport has no way to describe, so a VM with the
+device on MMIO does not start (TASK-267, TASK-273). Every commit builds both
 ways (`scripts/firecracker-series-check.sh`, CI's firecracker-series job). The
 series names no fxdax dependency and holds none of fxdax's in its Cargo.lock,
 so that it builds outside this checkout, as those who take it onto forks of
@@ -389,8 +394,9 @@ builds Firecracker goes through): the vmm crate's dependency on
 `scripts/firecracker-cargo.sh --lock` updates), and frame pointers, from this
 repo's `.cargo/config.toml`. The series' own `resources/fxdax/README.md` says
 the same for its users. Branch `fxdax-v1.16.1`, the series before, a commit a
-change, and `fxdax`, on Firecracker's main branch, where they began, are
-superseded by it (`vendor/firecracker.rewrites`). fxdax ran on libkrun before;
+change, `fxdax`, on Firecracker's main branch, where they began, r1's
+`fxdax-v1.16.1-optin` and its PCI stack, `fxdax-pci-r1`, are superseded by it
+(`vendor/firecracker.rewrites`). fxdax ran on libkrun before;
 it left it for Firecracker, which the sandboxes it serves run (TASK-40).
 
 The workspace builds with it checked out (`git submodule update --init`): on
@@ -403,8 +409,8 @@ system call fxdax makes and the filters refuse fails CI rather than a jailed VM
 
 | Change | Why |
 |---|---|
-| The extent-store device (`devices/virtio/extent`), behind the `fxdax` feature: `PUT /extent/{id}` before boot, or the configuration file's `extent` list, names its tag, store, capacity, DAX window and the extent daemon's socket (`extentd_socket`). Its store is served by the daemon (`fxdax::RemoteExtentStore`). | The guest's own Fxfs keeps its filesystem in it (backlog doc-4). No fxdax code serves a store in the VM process: the daemon owns the stores and their cache, which the host's VMs share. |
-| Virtio shared memory regions on the MMIO transport, and `KvmMemSlot`, a KVM memory slot any device may map host memory with. | The device's DAX window is a shared memory region, the daemon's memory mapped in; KVM follows it. |
+| The extent-store device (`devices/virtio/extent`), behind the `fxdax` feature: `PUT /extent/{id}` before boot, or the configuration file's `extent` list, names its tag, store, capacity, DAX window and the extent daemon's socket (`extentd_socket`). Its store is served by the daemon (`fxdax::RemoteExtentStore`). It attaches over virtio-PCI alone (`--enable-pci`), its DAX window a BAR of its own. | The guest's own Fxfs keeps its filesystem in it (backlog doc-4). No fxdax code serves a store in the VM process: the daemon owns the stores and their cache, which the host's VMs share. |
+| Virtio shared memory regions on the PCI transport, a BAR with `VIRTIO_PCI_CAP_SHARED_MEMORY_CFG` capabilities (a general fix), and `KvmMemSlot`, a KVM memory slot any device may map host memory with. | The device's DAX window is a shared memory region, the daemon's memory mapped in; KVM follows it. |
 | The window maps the pages the daemon maps for the guest ahead of its accesses (`KVM_PRE_FAULT_MEMORY`). | Each of KVM's own faults on a page costs an exit, slow under nested virtualization (TASK-25.3). |
 | A vCPU retries a `KVM_RUN` failing with `EFAULT` while a window is remapped. | The daemon's changes to a window's host memory make the guest's access fail meanwhile; see DAX on Linux above (TASK-25.4). |
 | `WRITE_COMMIT`, INFO's `sequence_floor`, and the store's capacity in the device's configuration, changed while the guest runs. | doc-4's requests (TASK-36, TASK-37). |
