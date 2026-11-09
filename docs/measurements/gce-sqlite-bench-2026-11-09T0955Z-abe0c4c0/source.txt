@@ -1,0 +1,10 @@
+revision ca4e477f1dbf73046504df1da20c7def3912b579
+firecracker 7d0a0970e891368b3d6c543db698fce4bc77dcbe
+changed  M "backlog/tasks/task-88 - extent_remotes-simulation-builds-segments-with-Batch-not-with-extent_store-so-the-stores-footer-code-never-meets-takeovers-or-collectors.md"
+changed  M guest/tests/Cargo.lock
+changed ?? "backlog/tasks/task-293 - The-collector-never-compacts-a-compressed-segment-its-live-extents-leave-mostly-dead-its-prefilter-compares-their-logical-bytes-with-the-stored-size.md"
+changed ?? "backlog/tasks/task-295 - A-write-ahead-log-dropped-by-`fxdaxctl-take`-Recovering-drop_wal-comes-back-after-a-crash-and-its-stale-commits-upload-into-the-branch.md"
+changed ?? "backlog/tasks/task-298 - Benchmark-SQLite-on-sqlite_extents-against-SQLite-on-ext4-on-GCE.md"
+changed ?? crates/sqlite_extents/examples/
+changed ?? docs/measurements/gce-sqlite-bench-2026-11-09T0955Z-abe0c4c0/
+2e2adafe4c232d097bbee7b2604a53eddca23370d033451bcafad2114de7d05e  source.tar.gz

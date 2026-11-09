@@ -1,0 +1,70 @@
+Databases under /var/lib/fxdax-test/example-tree/target/sqlite-bench, scale 1.
+
+| config | workload | ops | seconds | ops/s | p50 µs | p99 µs |
+|---|---|---|---|---|---|---|
+| extents | commit | 2000 | 5.937 | 337 | 2933 | 4651 |
+| extents | bulk | 100000 | 0.091 | 1100398 |  |  |
+| extents | update | 2000 | 9.496 | 211 | 3638 | 13373 |
+| extents | batch | 100 | 33.806 | 3 | 344206 | 539660 |
+| extents | read | 50000 | 50.651 | 987 |  |  |
+| extents | scan (rows) | 300000 | 4.406 | 68088 |  |  |
+| delete-full | commit | 2000 | 5.485 | 365 | 2834 | 3478 |
+| delete-full | bulk | 100000 | 0.054 | 1844177 |  |  |
+| delete-full | update | 2000 | 5.512 | 363 | 2847 | 3486 |
+| delete-full | batch | 100 | 7.772 | 13 | 94828 | 100525 |
+| delete-full | read | 50000 | 0.212 | 235625 |  |  |
+| delete-full | scan (rows) | 300000 | 0.017 | 17442834 |  |  |
+| wal-full | commit | 2000 | 1.848 | 1082 | 956 | 1238 |
+| wal-full | bulk | 100000 | 0.072 | 1390610 |  |  |
+| wal-full | update | 2000 | 1.887 | 1060 | 961 | 1591 |
+| wal-full | batch | 100 | 4.415 | 23 | 6953 | 162095 |
+| wal-full | read | 50000 | 0.107 | 465661 |  |  |
+| wal-full | scan (rows) | 300000 | 0.018 | 17092042 |  |  |
+| wal-normal | commit | 2000 | 0.025 | 81308 | 6 | 14 |
+| wal-normal | bulk | 100000 | 0.070 | 1420127 |  |  |
+| wal-normal | update | 2000 | 0.090 | 22155 | 6 | 11 |
+| wal-normal | batch | 100 | 5.464 | 18 | 3434 | 164709 |
+| wal-normal | read | 50000 | 0.107 | 466386 |  |  |
+| wal-normal | scan (rows) | 300000 | 0.018 | 17101067 |  |  |
+
+| config | bytes on disk |
+|---|---|
+| extents | 17186816 |
+| delete-full | 11341824 |
+| wal-full | 11337728 |
+| wal-normal | 11337728 |
+Databases under /var/lib/fxdax-test/example-tree/target/sqlite-bench, scale 1.
+
+| config | workload | ops | seconds | ops/s | p50 µs | p99 µs |
+|---|---|---|---|---|---|---|
+| extents | commit | 2000 | 5.959 | 336 | 2954 | 4006 |
+| extents | bulk | 100000 | 0.089 | 1120170 |  |  |
+| extents | update | 2000 | 9.444 | 212 | 3637 | 13097 |
+| extents | batch | 100 | 33.569 | 3 | 342038 | 484665 |
+| extents | read | 50000 | 50.220 | 996 |  |  |
+| extents | scan (rows) | 300000 | 4.564 | 65734 |  |  |
+| delete-full | commit | 2000 | 5.752 | 348 | 2858 | 4477 |
+| delete-full | bulk | 100000 | 0.055 | 1829389 |  |  |
+| delete-full | update | 2000 | 5.534 | 361 | 2747 | 3906 |
+| delete-full | batch | 100 | 7.740 | 13 | 94823 | 99525 |
+| delete-full | read | 50000 | 0.209 | 239386 |  |  |
+| delete-full | scan (rows) | 300000 | 0.018 | 16739934 |  |  |
+| wal-full | commit | 2000 | 1.805 | 1108 | 937 | 1268 |
+| wal-full | bulk | 100000 | 0.068 | 1468778 |  |  |
+| wal-full | update | 2000 | 1.777 | 1126 | 930 | 1409 |
+| wal-full | batch | 100 | 4.484 | 22 | 6788 | 161161 |
+| wal-full | read | 50000 | 0.108 | 462213 |  |  |
+| wal-full | scan (rows) | 300000 | 0.018 | 16407171 |  |  |
+| wal-normal | commit | 2000 | 0.025 | 81492 | 6 | 13 |
+| wal-normal | bulk | 100000 | 0.065 | 1537737 |  |  |
+| wal-normal | update | 2000 | 0.096 | 20768 | 7 | 13 |
+| wal-normal | batch | 100 | 5.465 | 18 | 3403 | 165164 |
+| wal-normal | read | 50000 | 0.109 | 459502 |  |  |
+| wal-normal | scan (rows) | 300000 | 0.018 | 16318415 |  |  |
+
+| config | bytes on disk |
+|---|---|
+| extents | 17158144 |
+| delete-full | 11341824 |
+| wal-full | 11337728 |
+| wal-normal | 11337728 |
