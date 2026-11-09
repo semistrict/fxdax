@@ -86,7 +86,7 @@ use crate::object_store::allocator::{
 };
 use crate::range::RangeExt;
 use anyhow::{Error, anyhow, bail, ensure};
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::num::NonZero;
 use std::ops::Range;
 use storage_device::{Device, ExtentId, ExtentRange};
@@ -858,6 +858,19 @@ impl ExtentTable {
         })
     }
 
+    /// The bytes the extents alive take, whole, by owner, and those the extents pending take,
+    /// which have none yet: `alive_bytes`, divided (TASK-257).
+    pub(super) fn held(&self) -> (BTreeMap<u64, u64>, u64) {
+        let (mut owners, mut pending) = (BTreeMap::new(), 0);
+        for state in self.extents.values() {
+            match state.owner() {
+                Some(owner) => *owners.entry(owner).or_default() += state.size(),
+                None => pending += state.size(),
+            }
+        }
+        (owners, pending)
+    }
+
     /// The extents that died and are not yet freed, nor being freed, in the order they died.
     pub(super) fn dead(&self) -> impl ExactSizeIterator<Item = ExtentId> + '_ {
         self.dead.iter().map(|dead| dead.extent)
@@ -1020,6 +1033,8 @@ mod tests {
         fn check(&self) {
             let alive_bytes: u64 = self.extents.values().map(ExtentState::size).sum();
             assert_eq!(self.alive_bytes, alive_bytes, "the bytes alive");
+            let (owners, pending) = self.held();
+            assert_eq!(owners.values().sum::<u64>() + pending, alive_bytes, "the bytes held");
             let dead_bytes: u64 = self.dead.iter().chain(&self.freeing).map(|dead| dead.size).sum();
             assert_eq!(self.dead_bytes, dead_bytes, "the bytes dead");
             for (extent, state) in &self.extents {

@@ -836,3 +836,80 @@ async fn syncs_make_what_fsyncs_ordered_durable() {
         );
     }
 }
+
+/// fxdax: a file that filled the filesystem, removed, gives back all the data it took, but for the
+/// staging extent's reach; and statfs's free space changes by nothing else but Fxfs's metadata,
+/// held and reserved: with the journal near its reclaim size, as the guest's checks before
+/// leave it, a flush during the fill writes the volume's layer file as the metadata reservation
+/// shrinks, and the journal grows, which a model of the reservation alone missed by 5 MB on 256
+/// MiB; in the guest, whose flush compacted layers, freeing old ones, by 3 MB (TASK-257).
+#[fuchsia::test]
+async fn a_removed_fill_gives_back_all_its_data() {
+    use fxfs::object_store::allocator::STAGING_SIZE;
+    use fxfs::object_store::journal::{JournalOptions, LazyFlush};
+    // As the guest has it on 256 MiB (fxfs-linux's fs.rs, JOURNAL_SHARE and LAZY_FLUSH).
+    let journal = JournalOptions {
+        reclaim_size: 8 << 20,
+        lazy_flush: Some(LazyFlush { bytes: 1 << 20, delay: Duration::from_secs(5) }),
+        ..Default::default()
+    };
+    let filesystem = FxFilesystemBuilder::new()
+        .format(true)
+        .journal_options(journal)
+        .open(DeviceHolder::new(FakeDevice::new(65536, 4096)))
+        .await
+        .expect("formatting");
+    let volumes = root_volume((*filesystem).clone()).await.expect("the root volume");
+    let volume = volumes.new_volume("test", NewChildStoreOptions::default()).await.unwrap();
+    let root = volume.root_directory_object_id();
+    let fs = Fxfs::new((*filesystem).clone(), volume, false, Tested);
+    let objects = filesystem.object_manager();
+    // Data held, metadata held, and the metadata reservation.
+    let usage = || {
+        let usage = filesystem.allocator().usage();
+        let metadata = [objects.root_parent_store_object_id(), objects.root_store_object_id()];
+        let (metadata, data): (Vec<_>, Vec<_>) =
+            usage.held.iter().partition(|(owner, _)| metadata.contains(owner));
+        let held = |owners: Vec<(&u64, &u64)>| owners.into_iter().map(|(_, b)| *b as i64).sum();
+        let reserved = objects.metadata_reservation().amount() as i64;
+        [held(data) + usage.pending as i64, held(metadata), reserved]
+    };
+    // Metadata, until the reservation for the journal is 12 MiB: 3 MiB of the journal's 8.
+    let mut n = 0;
+    while objects.metadata_reservation().amount() < 12 << 20 {
+        let ino = fs.new_file(root, format!("before-{n}").as_bytes()).await;
+        fs.set_xattr(ino, b"user.x", &[1; 200], SetExtendedAttributeMode::Set).await.unwrap();
+        n += 1;
+    }
+    fs.sync().await.unwrap();
+    let free = || (fs.usage().free_blocks * 4096) as i64;
+    let (before, usage_before) = (free(), usage());
+    let filler = fs.new_file(root, b"filler").await;
+    let mut at = 0;
+    for len in [1 << 20, 4096] {
+        loop {
+            match fs.write(filler, at, &vec![0x5a; len]).await {
+                Ok(()) => at += len as u64,
+                Err(error) if FxfsError::NoSpace.matches(&error) => break,
+                Err(error) => panic!("filling: {error:#}"),
+            }
+        }
+    }
+    fs.fsync().await.unwrap();
+    fs.unlink(root, b"filler", filler).await.unwrap();
+    fs.evict(filler, true);
+    fs.sync().await.unwrap();
+    let (after, usage_after) = (free(), usage());
+    let short = before - after;
+    let [data, metadata, reserved] = [0, 1, 2].map(|i| usage_after[i] - usage_before[i]);
+    let said = format!(
+        "{at} filled, {before} free before, {after} after, {short} short; data, metadata held and \
+         reserved {usage_before:?}, then {usage_after:?}"
+    );
+    assert!(reserved < 0 && metadata > -reserved, "no flush during the fill: {said}");
+    assert!(short - reserved > 1 << 20, "the reservation alone accounts for it: {said}");
+    assert!(data <= STAGING_SIZE as i64, "{said}");
+    // To the block statfs rounds the used bytes up to.
+    assert!((short - data - metadata - reserved).abs() < 4096, "{said}");
+    fs.stop_delayed().await.unwrap();
+}

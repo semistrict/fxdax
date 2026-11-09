@@ -171,36 +171,49 @@ pub(super) fn test_writers_on_a_full_filesystem_share_syncs() {
     drop(names);
 }
 
-/// fxdax: a file that filled the filesystem, removed, gives back all it took but what the
-/// metadata reservation grew by (`metadata_reserved_bytes`, TASK-149.25): Fxfs holds back four
-/// times what the journal took since its trees were last flushed, which a sync doesn't do, to write
-/// them (`ObjectManager::required_reservation`), and counts it as used. Its free space after a fill
-/// and a removal is short by that (xfstests' generic/015, on 256 MiB, by 4 MiB of its 1%).
-pub(super) fn test_a_removed_fill_gives_back_all_but_the_reservation() {
+/// fxdax: a file that filled the filesystem, removed, gives back all the data it took, but for
+/// the staging extent's reach (fxfs's `STAGING_SIZE`); and the free space changes by nothing else
+/// but Fxfs's metadata, held and reserved. Fxfs holds back four times what the journal took since
+/// its trees were last flushed, which a sync doesn't do, to write them
+/// (`ObjectManager::required_reservation`), and counts it as used: its free space after a fill and
+/// a removal is short by that (xfstests' generic/015, on 256 MiB, by 4 MiB of its 1%,
+/// TASK-149.25). And a flush of the trees during the fill, the journal near its reclaim size,
+/// shrinks the reservation and changes the layer files: compacting them, it freed old ones,
+/// 3.2 MB more than it wrote, and free space came back 12.2 MB more than before with the
+/// reservation 9 MB smaller, which a check of the reservation alone failed (TASK-257).
+pub(super) fn test_a_removed_fill_gives_back_all_its_data() {
+    /// The most a staging extent takes (fxfs's `STAGING_SIZE`).
+    const STAGING_SIZE: i64 = 2 << 20;
     let free = || {
         let mnt = CString::new(MNT).unwrap();
         let mut stat: libc::statvfs = unsafe { std::mem::zeroed() };
         assert_eq!(unsafe { libc::statvfs(mnt.as_ptr(), &mut stat) }, 0);
         (stat.f_bfree * stat.f_frsize, stat.f_blocks * stat.f_frsize)
     };
-    let reserved = || stats()["metadata_reserved_bytes"];
+    let usage = || {
+        let stats = stats();
+        let held = ["data_held_bytes", "metadata_held_bytes", "metadata_reserved_bytes"];
+        held.map(|name| stats[name] as i64)
+    };
     unsafe { libc::sync() };
-    let ((before, size), reserved_before) = (free(), reserved());
+    let ((before, size), usage_before) = (free(), usage());
     drop({
         let filler = Removed(path("gives-back-filler"));
         fill_until_enospc(&filler.0);
         filler
     });
-    let ((after, _), reserved_after) = (free(), reserved());
-    let (short, grew) =
-        (before as i64 - after as i64, reserved_after as i64 - reserved_before as i64);
+    let ((after, _), usage_after) = (free(), usage());
+    let short = before as i64 - after as i64;
+    let [data, metadata, reserved] = [0, 1, 2].map(|i| usage_after[i] - usage_before[i]);
     eprintln!(
-        "a_removed_fill_gives_back_all_but_the_reservation: {size} bytes, {before} free before, \
-         {after} after, {short} short; reserved {reserved_before}, then {reserved_after}"
+        "a_removed_fill_gives_back_all_its_data: {size} bytes, {before} free before, {after} \
+         after, {short} short; data, metadata held and reserved {usage_before:?}, then \
+         {usage_after:?}"
     );
+    assert!(data <= STAGING_SIZE, "{data} bytes of data more held, of {short} short");
     assert!(
-        (short - grew).unsigned_abs() <= size / 100,
-        "{short} short, the reservation grew {grew}"
+        (short - data - metadata - reserved).unsigned_abs() <= size / 100,
+        "{short} short; data held grew {data}, metadata {metadata}, its reservation {reserved}"
     );
 }
 

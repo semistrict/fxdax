@@ -670,6 +670,29 @@ pub struct Allocator {
     freeing: futures::lock::Mutex<Option<fasync::Task<Result<(), Error>>>>,
 }
 
+/// fxdax: the allocator's used bytes, divided (`Allocator::usage`): they are the sum of these.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Usage {
+    /// The bytes each owner's extents alive take, whole: a store's for the objects in it (the
+    /// root parent store's are the journal's and the root store's layers; the root store's, the
+    /// other stores' and the allocator's layers), a volume's data owner's for its files' data,
+    /// as far as the staging extent it has reached.
+    pub held: BTreeMap<u64, u64>,
+    /// The bytes the extents pending take, which no committed allocation owns yet.
+    pub pending: u64,
+    /// The bytes allocated for transactions not yet committed.
+    pub uncommitted: u64,
+    /// The bytes reserved, the object manager's metadata reservation among them.
+    pub reserved: u64,
+}
+
+impl Usage {
+    /// The used bytes.
+    pub fn used(&self) -> u64 {
+        self.held.values().sum::<u64>() + self.pending + self.uncommitted + self.reserved
+    }
+}
+
 /// Tracks the different stages of byte allocations for an individual owner.
 #[derive(Debug, Default, PartialEq)]
 struct ByteTracking {
@@ -2064,6 +2087,19 @@ impl Allocator {
     /// allocated but not yet committed.
     pub fn get_used_bytes(&self) -> Saturating<u64> {
         Saturating(self.inner.lock().used_bytes())
+    }
+
+    /// fxdax: what the used bytes (`get_used_bytes`) are made of, at one moment: what the free
+    /// space a statfs reports changes by, divided, as a check of it needs (TASK-257).
+    pub fn usage(&self) -> Usage {
+        let inner = self.inner.lock();
+        let (held, pending) = inner.extents.held();
+        Usage {
+            held,
+            pending,
+            uncommitted: inner.uncommitted_allocated_bytes(),
+            reserved: inner.reserved_bytes(),
+        }
     }
 
     pub async fn flush(&self) -> Result<Version, Error> {

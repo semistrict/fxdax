@@ -163,7 +163,7 @@ macro_rules! checks {
             xattrs_bounded: All, 8 => test_xattrs_bounded;
             inherited_acls_on_full_filesystem: All, 5 => test_inherited_acls_on_full_filesystem;
             writers_on_a_full_filesystem_share_syncs: All, 30 => test_writers_on_a_full_filesystem_share_syncs;
-            a_removed_fill_gives_back_all_but_the_reservation: All, 10 => test_a_removed_fill_gives_back_all_but_the_reservation;
+            a_removed_fill_gives_back_all_its_data: All, 10 => test_a_removed_fill_gives_back_all_its_data;
             freeze: All, 3 => test_freeze;
             failed_thaw_thaws_on_retry: All, 3 => test_failed_thaw_thaws_on_retry;
             read_only_freezes: All, 3 => test_read_only_freezes;

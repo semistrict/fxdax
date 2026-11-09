@@ -462,8 +462,28 @@ impl Filesystem {
         // What the filesystem holds back from its free space to write the journal's changes to
         // its trees (`ObjectManager::required_reservation`): it grows with the journal and shrinks
         // as the trees are flushed (TASK-149.25).
-        let reserved = self.filesystem.object_manager().metadata_reservation().amount();
+        let objects = self.filesystem.object_manager();
+        let reserved = objects.metadata_reservation().amount();
         let _ = writeln!(out, "metadata_reserved_bytes {reserved}");
+        // And what else the free space a statfs reports changes by, all of it: Fxfs's own
+        // metadata, held (the journal, and the trees' layer files, which a flush writes as the
+        // reservation shrinks), and the volumes' data, the staging extent among it as far as it
+        // has reached; reservations, and allocations not yet committed (TASK-257).
+        let usage = self.filesystem.allocator().usage();
+        let metadata = [objects.root_parent_store_object_id(), objects.root_store_object_id()];
+        let (metadata, data): (Vec<_>, Vec<_>) =
+            usage.held.iter().partition(|(owner, _)| metadata.contains(owner));
+        let held = |owners: Vec<(&u64, &u64)>| owners.into_iter().map(|(_, bytes)| bytes).sum();
+        let lines = [
+            ("used_bytes", usage.used()),
+            ("metadata_held_bytes", held(metadata)),
+            ("data_held_bytes", held(data) + usage.pending),
+            ("reserved_bytes", usage.reserved),
+            ("uncommitted_bytes", usage.uncommitted),
+        ];
+        for (name, bytes) in lines {
+            let _ = writeln!(out, "{name} {bytes}");
+        }
         out
     }
 }
