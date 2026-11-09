@@ -6,6 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-11-09 03:54'
+updated_date: '2026-11-09 08:25'
 labels:
   - perf
 dependencies: []
@@ -32,3 +33,9 @@ All queue workers of an extent device share one DaemonConnection: one client rec
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Profile (phase 1): the connection doesn't serialize: the client keeps up to 4096 requests in flight, extentd serves 8 a connection at once, neither saturates. The one serial step is the VM process's receiving thread applying stage operations in order, saturated by DAX writes' PRIVATEs (mmap 47%, fallocate 13%, mostly TLB-shootdown IPIs, under mmap_lock for write: more threads would not overlap them; TASK-276.6). Tried: KVM's prefault of private runs (7.6% of the thread) moved to a thread of its own (5ab0927d6). Interleaved A/B (fxfs-guest-dax + ext4 control, 4 vCPUs, 3 rounds x 2 iterations): no IOPS change beyond drift, inline 1.08x ahead at 1-2 jobs (within drift), and rand-write j8 p99 1,073 -> 1,155 us (real): the guest's store now reaches the page before the prefault and pays the nested fault itself. Dropped, not landed. No daemon-path change lands from this task; the ceiling is TASK-276.6's.
+<!-- SECTION:NOTES:END -->
