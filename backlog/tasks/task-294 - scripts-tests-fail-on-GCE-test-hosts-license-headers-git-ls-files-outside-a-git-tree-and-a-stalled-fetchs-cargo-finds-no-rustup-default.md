@@ -6,6 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-11-09 09:00'
+updated_date: '2026-11-09 09:03'
 labels:
   - bug
   - scripts
@@ -31,3 +32,9 @@ GCE run on fxdax-keep-n2-standard-4-us-west1-b-1 (TASK-280/281's debug run, fxda
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Same failures as TASK-279 (TASK-276's release round, GCE mqrel, 2026-11-09): one fix closes both.
+<!-- SECTION:NOTES:END -->

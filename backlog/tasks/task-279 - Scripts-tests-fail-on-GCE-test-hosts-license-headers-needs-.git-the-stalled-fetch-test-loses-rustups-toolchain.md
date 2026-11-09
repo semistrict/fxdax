@@ -6,6 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-11-09 06:48'
+updated_date: '2026-11-09 09:03'
 labels:
   - flaky
 dependencies: []
@@ -31,3 +32,9 @@ A full release round (scripts/test-gce.sh, FXDAX_TEST_PARTS default, TASK-276, G
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Same failures as TASK-294 (filed independently from TASK-280/281's run): one fix closes both.
+<!-- SECTION:NOTES:END -->
