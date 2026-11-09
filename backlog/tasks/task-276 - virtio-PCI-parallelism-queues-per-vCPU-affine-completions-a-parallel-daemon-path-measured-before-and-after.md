@@ -3,11 +3,11 @@ id: TASK-276
 title: >-
   virtio-PCI parallelism: queues per vCPU, affine completions, a parallel daemon
   path, measured before and after
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-09 03:53'
-updated_date: '2026-11-09 09:18'
+updated_date: '2026-11-09 10:13'
 labels:
   - firecracker
   - perf
@@ -27,7 +27,7 @@ Every fxdax VM runs on virtio-PCI since TASK-273, whose MSI-X gives each queue i
 <!-- AC:BEGIN -->
 - [x] #1 Baseline scaling of current main measured on one GCE host and its ceilings identified (throughput, p50/p99, host-side profile, per-queue counts, cross-CPU completions)
 - [x] #2 Each optimization subtask done or skipped with the measured reason
-- [ ] #3 Same host, same matrix, after: docs/measurements/virtio-pci-parallelism-<date>.md has baseline, per-optimization deltas, final scaling and regressions
+- [x] #3 Same host, same matrix, after: docs/measurements/virtio-pci-parallelism-<date>.md has baseline, per-optimization deltas, final scaling and regressions
 - [x] #4 Firecracker changes on a new branch and series tag on semistrict/firecracker; series check passes both ways; test_config_space_as_upstream passes
 - [x] #5 Release and debug guest rounds pass on GCE; main CI green
 <!-- AC:END -->
@@ -54,4 +54,12 @@ Phase 1 (baseline, main 0f011561a + bench 3be9d1bf8, GCE fxdax-keep-c3-standard-
 Coordination (2026-11-09): TASK-277's agent tags fxdax-v1.16.1-r3 (branch fxdax-v1.16.1-pci-vsock-reset, vsock reset before snapshot). Don't use r3. On landing: rebase this task's Firecracker commit (bb2d858a1 on fxdax-v1.16.1-pci-mq, queue per vCPU) onto whatever main's vendor/firecracker points at then, series check both ways, tag fxdax-v1.16.1-r4. The A/B results stand: the vsock change doesn't touch the extent device's I/O path.
 
 Landed at main 9a523ff6b (CI 42590395981 green, every job incl. firecracker-series and macOS). docs/measurements/virtio-pci-parallelism-2026-11-09.md: baseline at 2/4/8 vCPUs, ceilings and profiles, each change alone (interleaved A/Bs), the landed tree against main at 4 vCPUs (17 real differences, all improvements). AC #3 open: the after side is the landed tree at 4 vCPUs and the pre-rebase A/Bs at 4 and 8; no after-matrix at 2 vCPUs, nor at 8 on the landed tree.
+
+AC #3 closed: interleaved A/Bs of main before TASK-276 (+ bench, fc8026b14) against the landed tree (b199aea26, Firecracker a075570c8) at 2 and 8 vCPUs (GCE c3-standard-8-us-east5-b-1, 3 rounds x 2 iterations, ext4 control), beside 4: final scaling table in the write-up. 2 vCPUs 15 real (14 improvements; fxfs-guest buffered rand-write p50 j4 +4%), 8 vCPUs 29 real (28 improvements; fxfs-guest-dax fsync p99 j8 +20%, TASK-276.9).
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+fxdax on virtio-PCI now gives each vCPU its own extent-device request queue and MSI-X vector (Firecracker fxdax-v1.16.1-r4) and completes each request on its submitter's CPU (guest driver affinity; cross-CPU completions 100% -> 0%). Measured with interleaved A/Bs against ext4 as control (scripts/bench-ab-gce.sh), landed tree against main: 15 / 17 / 29 real differences at 2 / 4 / 8 vCPUs, all but two improvements: DAX random writes +6 to +21%, fsync-append up to +20%, cold-read and fsync p50 down 7-25%; regressions TASK-276.8 (qd16 read p99, affinity A/B) and TASK-276.9 (8-vCPU fsync p99). The prefault move was tried and dropped; virtio-blk multiqueue skipped. Ceilings left: TASK-276.6 (DAX writes, TLB shootdowns on the receiving thread), TASK-276.7, TASK-288 (Fxfs creates). Landed at main 9a523ff6b, CI 42590395981 green; docs/measurements/virtio-pci-parallelism-2026-11-09.md.
+<!-- SECTION:FINAL_SUMMARY:END -->

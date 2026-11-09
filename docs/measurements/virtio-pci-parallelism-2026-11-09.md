@@ -147,6 +147,49 @@ is the receiving thread's TLB shootdowns (TASK-276.6), which neither queues nor 
 Reads' and fsyncs' latency fell by a tenth to a seventh, completions now waking their submitter on
 its own CPU.
 
+## Final scaling
+
+The same A/B, the landed tree against main before it with the bench added, at each vCPU count
+(`ab-landed-v2`, `ab-landed-v4`, `ab-landed-v8`, each three interleaved rounds of two iterations,
+ext4 the control). Medians of six, thousands of IOPS (creates: ops/s), main → landed, at 1 job and
+at 8:
+
+| Workload | Case | 2 vCPUs: j1 / j8 | 4 vCPUs: j1 / j8 | 8 vCPUs: j1 / j8 |
+|---|---|---|---|---|
+| rand-read-cold | fxfs | 3.9 → 4.0 / 21.0 → 21.2 | 3.7 → 3.9 / 18.8 → 19.7 | 3.7 → 4.0 / 12.8 → 13.2 |
+| rand-read-cold | fxfs-dax | 5.7 → 5.7 / 25.9 → 25.0 | 5.5 → 5.5 / 36.3 → 36.5 | 5.8 → 5.9 / 35.2 → 35.8 |
+| rand-read-cold | ext4/blk | 29.7 → 29.3 / 88.9 → 86.7 | 28.9 → 26.8 / 66.3 → 66.1 | 28.1 → 28.6 / 50.7 → 50.6 |
+| rand-write | fxfs | 66.1 → 68.3 / 116.2 → 111.6 | 60.2 → 64.0 / 159.1 → 104.3 | 64.0 → 68.3 / 132.2 → 134.4 |
+| rand-write | fxfs-dax | 6.2 → 7.5 / 11.4 → 12.1 | 6.2 → 7.1 / 10.5 → 10.9 | 6.3 → 7.3 / 10.5 → 11.1 |
+| rand-write | ext4/blk | 19.0 → 19.1 / 42.0 → 43.9 | 25.0 → 24.4 / 45.1 → 46.7 | 20.1 → 19.5 / 31.4 → 32.6 |
+| fsync-append | fxfs | 3.5 → 4.0 / 4.6 → 5.1 | 3.1 → 3.6 / 5.5 → 5.9 | 3.0 → 3.2 / 4.0 → 4.2 |
+| fsync-append | fxfs-dax | 3.4 → 3.8 / 4.6 → 4.9 | 3.1 → 3.1 / 5.3 → 5.4 | 2.6 → 3.0 / 3.7 → 4.1 |
+| fsync-append | ext4/blk | 0.3 → 0.3 / 1.3 → 1.4 | 0.5 → 0.5 / 1.8 → 1.9 | 0.3 → 0.3 / 1.3 → 1.3 |
+| create | fxfs | 85.9 → 84.8 / 115.4 → 109.8 | 72.2 → 74.5 / 129.9 → 130.3 | 70.0 → 80.9 / 106.6 → 107.9 |
+| create | fxfs-dax | 83.7 → 78.0 / 118.2 → 112.0 | 70.5 → 75.3 / 129.3 → 133.6 | 58.4 → 77.8 / 105.9 → 104.9 |
+| create | ext4/blk | 98.8 → 88.3 / 163.7 → 166.7 | 99.4 → 95.5 / 233.6 → 233.5 | 92.5 → 75.0 / 271.0 → 245.3 |
+
+Which of these, and of the latencies, are real by the A/B's rule (each A/B's `ab.md` has all of
+them, with ranges and the control's ratio):
+
+- **2 vCPUs**: 15 real, 14 improvements: DAX random writes j1 6.2k → 7.5k (+21%), j8 11.4k → 12.1k
+  (+6%), their p50 and p99 at j1 −15 to −19%; fsync-append j4 and j8 +6 to +12% (fxfs), +6%
+  (fxfs-dax j8); cold-read p50 j1 and j2 −13%. One regression: fxfs-guest's buffered random writes'
+  p50 at 4 jobs 1.74 → 1.81 µs (+4%), a page-cache copy, no device request in it.
+- **4 vCPUs**: 17 real, all improvements (above).
+- **8 vCPUs**: 29 real, 28 improvements: DAX random writes +6 to +19% at every job count (j2 11.8k →
+  13.9k), their p99 at j8 −17%; fsync-append +7 to +20% (fxfs-dax j2 3.2k → 3.8k), fsync p50 −7 to
+  −25%; cold-read p50 −6 to −17% and IOPS at j1 +7%; cold stats at j8 +15%. One regression: fsync
+  p99 at 8 jobs on fxfs-guest-dax, 13.2 → 15.9 ms (+20%; fxfs-guest's +28% within drift), the tail
+  on the oversubscribed host, while the same workload's p50 fell 25% and its IOPS rose 9%
+  (TASK-276.9).
+
+Throughput past drift moved only where the device's requests are the work (DAX writes, fsyncs);
+reads' IOPS stay within drift, their latency down; creates, stats and unlinks, which send the
+device almost nothing, within drift but for the 8-vCPU stats. The ceilings stand: DAX writes at
+10.9-12.1k at 8 jobs (TASK-276.6), Fxfs creates at 105-135k (TASK-288), fsync-append at 4-6k
+(Fxfs's commits).
+
 ## Tests
 
 On the landed tree (fxdax b199aea26, the code as it landed, Firecracker fxdax-v1.16.1-r4): the vmm crate's suite with
