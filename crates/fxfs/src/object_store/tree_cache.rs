@@ -40,7 +40,23 @@ const SHARDS: usize = 16;
 const SHARD_ABOVE: usize = 16 * ITEM_LIMIT;
 
 type Shard = LinkedHashMap<ObjectKey, CacheValue, BuildHasherDefault<rustc_hash::FxHasher>>;
-type Shards = Box<[Mutex<Shard>]>;
+
+/// fxdax: a cache's shards, and how many items they hold, all told, counted as they change, so
+/// that the count takes no lock: the kernel's superblock shrinker counts the cache under memory
+/// pressure (`TreeCache::len`), from an allocation that may be made under one of these locks,
+/// as `invalidate`'s insert is (TASK-292).
+struct Shards {
+    shards: Box<[Mutex<Shard>]>,
+    len: AtomicUsize,
+}
+
+impl std::ops::Deref for Shards {
+    type Target = [Mutex<Shard>];
+
+    fn deref(&self) -> &Self::Target {
+        &self.shards
+    }
+}
 
 /// fxdax: what the caches of a filesystem's stores share: they hold at most `limit` items, all
 /// told, whatever their number. Over it, a cache adding an item takes one from each of them in
@@ -75,11 +91,17 @@ impl TreeCacheBudget {
             let found = (0..shards).any(|turn| {
                 let mut at = first.wrapping_add(turn) % shards;
                 let shard = caches.iter().find_map(|cache| {
-                    let shard = cache.get(at);
+                    let shard = cache.get(at).map(|shard| (cache, shard));
                     at -= cache.len().min(at);
                     shard
                 });
-                shard.unwrap().lock().pop_front().is_some()
+                let (cache, shard) = shard.unwrap();
+                let mut shard = shard.lock();
+                let found = shard.pop_front().is_some();
+                if found {
+                    cache.len.fetch_sub(1, Ordering::Relaxed);
+                }
+                found
             });
             if !found {
                 return;
@@ -169,8 +191,10 @@ impl TreeCache {
     /// fxdax: a cache sharing `budget` with the others on it, which grows as it fills.
     pub fn sharing(budget: &Arc<TreeCacheBudget>) -> Self {
         let shards = if budget.limit > SHARD_ABOVE { SHARDS } else { 1 };
-        let shards: Arc<Shards> =
-            Arc::new((0..shards).map(|_| Mutex::new(LinkedHashMap::default())).collect());
+        let shards = Arc::new(Shards {
+            shards: (0..shards).map(|_| Mutex::new(LinkedHashMap::default())).collect(),
+            len: AtomicUsize::new(0),
+        });
         budget.caches.write().push(shards.clone());
         Self { shards, placeholder_counter: AtomicU64::new(0), budget: budget.clone() }
     }
@@ -181,15 +205,18 @@ impl TreeCache {
         &self.shards[hash as usize % self.shards.len()]
     }
 
-    /// Counts an item added to a shard, or `replaced` one of its, or that it held none.
+    /// Counts an item added to a shard, or `replaced` one of its, or that it held none. Under the
+    /// shard's lock, as `removed`, so that no count of its removal comes first (TASK-292).
     fn added(&self, replaced: bool) {
         if !replaced {
+            self.shards.len.fetch_add(1, Ordering::Relaxed);
             self.budget.used.fetch_add(1, Ordering::Relaxed);
         }
     }
 
     /// Counts `count` items removed from its shards.
     fn removed(&self, count: usize) {
+        self.shards.len.fetch_sub(count, Ordering::Relaxed);
         self.budget.used.fetch_sub(count, Ordering::Relaxed);
     }
 }
@@ -220,8 +247,8 @@ impl ObjectCache<ObjectKey, ObjectValue> for TreeCache {
             Err((mut inner, true)) => {
                 let placeholder_id = self.placeholder_counter.fetch_add(1, Ordering::Relaxed);
                 let replaced = inner.insert(key.clone(), CacheValue::Placeholder(placeholder_id));
-                drop(inner);
                 self.added(replaced.is_some());
+                drop(inner);
                 self.budget.enforce();
                 ObjectCacheResult::Placeholder(Box::new(Placeholder {
                     cache: self,
@@ -247,7 +274,8 @@ impl ObjectCache<ObjectKey, ObjectValue> for TreeCache {
         {
             let data =
                 ObjectKey::attribute(key.object_id, AttributeId::DATA, AttributeKey::Attribute);
-            if self.shard(&data).lock().remove(&data).is_some() {
+            let mut shard = self.shard(&data).lock();
+            if shard.remove(&data).is_some() {
                 self.removed(1);
             }
         }
@@ -259,8 +287,8 @@ impl ObjectCache<ObjectKey, ObjectValue> for TreeCache {
                 // fxdax: a record written is cached too, as the kernel's caches keep what it
                 // creates: the object a file just created is, say, which its unlink finds.
                 inner.insert(key.clone(), CacheValue::Value(replacement));
-                drop(inner);
                 self.added(false);
+                drop(inner);
                 self.budget.enforce();
             }
         } else if inner.remove(key).is_some() {
@@ -276,12 +304,15 @@ impl ObjectCache<ObjectKey, ObjectValue> for TreeCache {
         }
     }
 
+    /// fxdax: counted, taking no shard's lock (`Shards`, TASK-292).
     fn len(&self) -> usize {
-        self.shards.iter().map(|shard| shard.lock().len()).sum()
+        self.shards.len.load(Ordering::Relaxed)
     }
 
     /// fxdax: a shard at a time, round about, each's least recently used first, so that each
     /// shrinks alike. A placeholder removed is completed to nothing (`Placeholder::replace_entry`).
+    /// A shard whose lock is held is passed over: the kernel's shrinker asks this of an
+    /// allocation that may be made under it, which would wait for itself (TASK-292).
     fn shrink(&self, count: usize) -> usize {
         let mut removed = 0;
         while removed < count {
@@ -290,7 +321,8 @@ impl ObjectCache<ObjectKey, ObjectValue> for TreeCache {
                 if removed == count {
                     break;
                 }
-                if shard.lock().pop_front().is_some() {
+                let Some(mut shard) = shard.try_lock() else { continue };
+                if shard.pop_front().is_some() {
                     self.removed(1);
                     removed += 1;
                 }
@@ -366,6 +398,37 @@ mod tests {
         assert_eq!(cache.len(), limit);
         let last = ObjectKey::object(2 * limit as u64 - 1);
         assert_matches!(cache.lookup_or_reserve(&last), ObjectCacheResult::Value(_));
+    }
+
+    /// fxdax: the cache is counted, and shrunk, with a shard's lock held, as the kernel's shrinker
+    /// does both under memory pressure from an allocation made under it (`invalidate`'s insert):
+    /// a count that took the lock waited for itself, and the guest hung (TASK-292). The count is
+    /// the shards' items, all told, through what changes them.
+    #[fuchsia::test]
+    async fn test_counted_and_shrunk_under_a_shards_lock() {
+        let now = Timestamp::now();
+        let value = ObjectValue::file(1, 0, now, now, now, now, None, None);
+        let cache = TreeCache::with_limit(2 * super::SHARD_ABOVE);
+        let held = |cache: &TreeCache| cache.shards.iter().map(|s| s.lock().len()).sum::<usize>();
+        for i in 0..1000 {
+            cache.invalidate(&ObjectKey::object(i), Some(value.clone()));
+        }
+        for i in 0..100 {
+            cache.invalidate(&ObjectKey::object(i), None);
+        }
+        let placeholder = cache.lookup_or_reserve(&ObjectKey::object(5000));
+        assert_matches!(placeholder, ObjectCacheResult::Placeholder(_));
+        assert_eq!((cache.len(), held(&cache)), (901, 901));
+        drop(placeholder);
+        assert_eq!((cache.len(), held(&cache)), (900, 900));
+        let shard = cache.shards[0].lock();
+        let in_shard = shard.len();
+        assert!(in_shard > 0);
+        assert_eq!(cache.len(), 900);
+        assert_eq!(cache.shrink(1000), 900 - in_shard);
+        assert_eq!(cache.len(), in_shard);
+        drop(shard);
+        assert_eq!((cache.len(), held(&cache)), (in_shard, in_shard));
     }
 
     /// fxdax: shrinking removes what was used least recently, and stops when the cache is empty;
