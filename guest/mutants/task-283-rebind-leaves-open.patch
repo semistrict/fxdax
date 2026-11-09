@@ -1,0 +1,40 @@
+# SPDX-License-Identifier: GPL-2.0
+# Copyright 2026 The fxdax Authors.
+#
+# Kernel: sim
+# Killer: scenarios cow_rebind_seals_open_extents
+#
+# TASK-283: the budget's worker seals only what it wrote back itself. Pages another writeback wrote
+# (a growth's or a truncate's, a write's that stopped short, the flusher's), nothing sealing after,
+# stay private, their extent open, and with nothing dirty no round rebinds one: interleave seed
+# 215500, Fxfs failing, a 4 MiB write stopped short at ENOSPC, all 256 of private_max private, and
+# a punch's partial page, waiting for room, failed ENOMEM. cow_rebind_seals_open_extents: the
+# worker's rebind, asked for, leaves the truncate's 7 pages private.
+
+--- a/guest/linux/fs/fxfs/dax.c
++++ b/guest/linux/fs/fxfs/dax.c
+@@ -2486,24 +2486,11 @@
+  */
+ static long fxfs_dax_rebind(struct fxfs_dax *dax, struct fxfs_dax_file *file, long target)
+ {
+-	struct fxfs_dax_volume *volume;
+ 	unsigned long open = 0;
+ 	long rebound;
+-	int err;
+ 
+ 	trace_fxfs_dax_rebind_start(file->ino);
+ 	rebound = fxfs_dax_rebind_ranges(dax, file, target, &open);
+-	/* A volume going (fxfs_dax_remove_volume) stops the worker first. */
+-	volume = READ_ONCE(file->volume);
+-	if (open && volume && atomic_long_read(&dax->private) > target) {
+-		atomic64_inc(&dax->seals_made);
+-		err = fxfs_nofs(fxfs_fsync(volume->fs));
+-		if (err)
+-			pr_warn_ratelimited("fxfs: sealing ino %llu's private pages: %d\n", file->ino,
+-					    err);
+-		else
+-			rebound += fxfs_dax_rebind_ranges(dax, file, target, &open);
+-	}
+ 	atomic64_add(rebound, &dax->rebound);
+ 	trace_fxfs_dax_rebind_end(file->ino, rebound);
+ 	return rebound;

@@ -980,14 +980,14 @@ out:
  * each run was a look and a MAP of its own. A forked pgbench's writes scattered over its tables
  * left runs of a page or two: 30,085 MAPs a minute, 294 us each, nested, the file's semaphore held
  * for writing through all of a file's (TASK-164.10, GCE r649). A page whose extent is open yet
- * stays private (fxfs_dax_map_all). How many it rebound, or a -errno. With the file's semaphore
- * held for writing, and its writeback lock.
+ * stays private (fxfs_dax_map_all), counted in `*open`. How many it rebound, or a -errno. With the
+ * file's semaphore held for writing, and its writeback lock.
  */
 static long fxfs_dax_rebind_range(struct fxfs_dax *dax, struct fxfs *fs,
-				  struct fxfs_dax_range *range)
+				  struct fxfs_dax_range *range, unsigned long *open)
 {
 	loff_t start = fxfs_dax_chunk_start(range);
-	unsigned long first, last = 0, page, end;
+	unsigned long first, last = 0, page, end, rebindable = 0;
 	struct fxfs_dax_extent *found;
 	struct fxfs_device_map *maps;
 	size_t capacity, runs = 0, n = 0;
@@ -999,6 +999,7 @@ static long fxfs_dax_rebind_range(struct fxfs_dax *dax, struct fxfs *fs,
 	for (page = first; page < range->pages;
 	     page = fxfs_dax_pages_next_rebindable(range->state, end, &end)) {
 		last = end;
+		rebindable += end - page;
 		runs++;
 	}
 	if (!runs)
@@ -1029,6 +1030,9 @@ static long fxfs_dax_rebind_range(struct fxfs_dax *dax, struct fxfs *fs,
 		n += fxfs_dax_maps_of(dax, range, found + i, count - i, page, end, false, maps + n);
 	}
 	ret = fxfs_dax_map_all(dax, range, maps, n, true);
+	/* Every page clean and private under the semaphore is rebound, but those of open extents. */
+	if (ret >= 0)
+		*open += rebindable - ret;
 out:
 	kfree(maps);
 	kvfree(found);
@@ -2437,16 +2441,16 @@ int fxfs_dax_write_back(struct inode *inode)
  * its writeback's barrier not come, stays private. Range by range, until no more than `target`
  * pages are private: the writeback lock and the semaphore taken for each range, which held through
  * a file's every range kept its readers, writers and fsyncs waiting through every MAP of them
- * (TASK-164.10). How many it rebound.
+ * (TASK-164.10). How many it rebound, and in `*open` how many it left private, their extents open.
  */
-static long fxfs_dax_rebind(struct fxfs_dax *dax, struct fxfs_dax_file *file, long target)
+static long fxfs_dax_rebind_ranges(struct fxfs_dax *dax, struct fxfs_dax_file *file, long target,
+				   unsigned long *open)
 {
 	struct fxfs_dax_volume *volume;
 	struct fxfs_dax_range *range;
 	unsigned long chunk = 0;
 	long rebound = 0, done;
 
-	trace_fxfs_dax_rebind_start(file->ino);
 	while (atomic_long_read(&file->private_pages) && atomic_long_read(&dax->private) > target) {
 		mutex_lock(&file->wb_lock);
 		down_write(&file->sem);
@@ -2454,7 +2458,7 @@ static long fxfs_dax_rebind(struct fxfs_dax *dax, struct fxfs_dax_file *file, lo
 		volume = READ_ONCE(file->volume);
 		range = volume ? xa_find(&file->ranges, &chunk, ULONG_MAX, XA_PRESENT) : NULL;
 		if (range) {
-			done = fxfs_dax_rebind_range(dax, volume->fs, range);
+			done = fxfs_dax_rebind_range(dax, volume->fs, range, open);
 			if (done < 0)
 				pr_warn_ratelimited("fxfs: rebinding ino %llu chunk %lu: %ld\n",
 						    file->ino, chunk, done);
@@ -2467,6 +2471,38 @@ static long fxfs_dax_rebind(struct fxfs_dax *dax, struct fxfs_dax_file *file, lo
 			break;
 		chunk++;
 		cond_resched();
+	}
+	return rebound;
+}
+
+/*
+ * fxdax: rebinds `file`'s clean private pages (fxfs_dax_rebind_ranges) until no more than `target`
+ * are private; and, if it left some private, their extents open, with more private than that still,
+ * seals, and rebinds again. Writeback outside the budget's (a growth's or a truncate's, a write's
+ * that stopped short, a drop's, the flusher's) seals nothing after it: what it wrote stays open
+ * until the next fsync or sync seals it, and the worker sealed only what it wrote back itself. With
+ * nothing dirty, as after interleave seed 215500's write stopped short, every round rebound none,
+ * and a write's or a punch's wait for room failed ENOMEM (TASK-283). How many it rebound.
+ */
+static long fxfs_dax_rebind(struct fxfs_dax *dax, struct fxfs_dax_file *file, long target)
+{
+	struct fxfs_dax_volume *volume;
+	unsigned long open = 0;
+	long rebound;
+	int err;
+
+	trace_fxfs_dax_rebind_start(file->ino);
+	rebound = fxfs_dax_rebind_ranges(dax, file, target, &open);
+	/* A volume going (fxfs_dax_remove_volume) stops the worker first. */
+	volume = READ_ONCE(file->volume);
+	if (open && volume && atomic_long_read(&dax->private) > target) {
+		atomic64_inc(&dax->seals_made);
+		err = fxfs_nofs(fxfs_fsync(volume->fs));
+		if (err)
+			pr_warn_ratelimited("fxfs: sealing ino %llu's private pages: %d\n", file->ino,
+					    err);
+		else
+			rebound += fxfs_dax_rebind_ranges(dax, file, target, &open);
 	}
 	atomic64_add(rebound, &dax->rebound);
 	trace_fxfs_dax_rebind_end(file->ino, rebound);

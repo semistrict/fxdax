@@ -1234,6 +1234,32 @@ static void cow_map_during_seal(void)
 	}
 }
 
+/*
+ * That the budget's worker rebinds clean private pages whose extent a writeback outside it left
+ * open, with nothing dirty for it to write back: a truncate's writes them back first
+ * (fxfs_dax_resize_begin), as a write that stopped short's, the flusher's or a drop's would, and
+ * nothing seals after. The worker sealed only what it wrote back itself, and left them private for
+ * good: interleave seed 215500, a 4 MiB write stopped short at ENOSPC, its growth's writeback
+ * leaving 256 pages private of private_max's 256, no round of the worker rebinding any, and a
+ * punch's partial page, waiting for room, failed ENOMEM (TASK-283).
+ */
+static void cow_rebind_seals_open_extents(void)
+{
+	u64 page;
+
+	cow_mapped_file(8);
+	cow_put_pages(0, 7, 1);
+	check(!sim_truncate(cow_target, 7 * PAGE_SIZE), "the truncate");
+	check(sim_device_private() == 7, "%llu pages private after the truncate's writeback, not 7",
+	      sim_device_private());
+	wait_for(sim_spawn("rebinder", cow_rebind_now, NULL));
+	check(!sim_device_private(), "the worker left %llu clean pages private, their extent open",
+	      sim_device_private());
+	for (page = 0; page < 7; page++)
+		cow_check(page, page % 2, "after a rebind of pages a truncate wrote back");
+	cow_check_file("after a rebind of pages a truncate wrote back", 7 * PAGE_SIZE);
+}
+
 static void cow_truncate_to_a_page(void *arg)
 {
 	check(!sim_truncate(arg, PAGE_SIZE), "the truncate to a page");
@@ -1750,6 +1776,7 @@ static const struct {
 	COW_SCENARIO(cow_reclaim_after_writeback_met_a_fault),
 	COW_SCENARIO(cow_writeback_before_store),
 	COW_SCENARIO(cow_map_during_seal),
+	COW_SCENARIO(cow_rebind_seals_open_extents),
 	COW_SCENARIO(cow_private_failed),
 	COW_SCENARIO(cow_store_to_pinned_slice),
 	COW_SCENARIO(cow_writeback_counts_again),

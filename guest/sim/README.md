@@ -312,6 +312,7 @@ a quarter of the window, the other tests' a quarter; and these scenarios, at 64 
 | `cow_map_during_seal` | an fsync's seal held after it began (`fxfs_sim_hold_seals`), Fxfs taking its writeback's extent for sealed already, the device not: a read's slice, a write's range, a load's fault and a store's, of the chunk, wait for the seal to map it, the faults holding their DAX entries, and ask no MAP the host refuses |
 | `cow_reclaim_after_writeback_met_a_fault` | an fsync writes back a page whose DAX entry a load's fault, paused, holds, which stays tagged dirty: once other files' chunks fill the window, reclaim has taken the range all the same |
 | `cow_private_failed` | the device failing the `PRIVATE` of a write(2)'s iomap, and of a store's fault's: the write fails EIO, the store SIGBUS, nothing dirty nor reserved; again, both succeed |
+| `cow_rebind_seals_open_extents` | a truncate's writeback, which seals nothing after it, leaves clean pages private in an open extent, nothing dirty: a rebind (`dax_rebind_now`) seals, and rebinds every one (TASK-283) |
 | `cow_store_to_pinned_slice` | a pin of a slice's page, as vmsplice's (`sim_pin_user_page`): a store to it, which can't use the slice, waits for the pin to go, its fault from user mode holding none, then lands (TASK-79.49; the guest check `slice_held`'s steps, gone with writable DAX) |
 
 Each ends with read(2) and Fxfs holding every page's last store, no room for dirty pages left
@@ -337,6 +338,7 @@ reserved, and no MAP of an open extent asked. The rules' mutants:
 | `task-164.4-truncate-unwritten` | expected equivalent: a grow drops the chunk at the old end, which writes it back |
 | `task-164.9-private-failure-ignored` | `cow_private_failed`: the write whose `PRIVATE` failed stores to a page no `PRIVATE` made the VM's |
 | `task-164.2-writeback-holds-no-range` | `cow_reclaim_during_writeback`: the writeback hands Fxfs the zeros of the chunk reclaim gave its range's space to, reads the window where nothing is mapped, or the range reclaim freed (ASan) |
+| `task-283-rebind-leaves-open` | `cow_rebind_seals_open_extents`: the worker leaves the 7 pages private |
 | `task-79.49-store-fails-on-pins` | `cow_store_to_pinned_slice`: the store fails (SIGBUS), its fault's drop of the slice refusing to wait for the pin (TASK-149.31) |
 | `unmapped-page-read-as-hole` | `hole_mapped_then_written`: a load of page 2, which a truncate's failed MAP of zeros left with no window page, reads the kernel's zero page where read(2) reads a write's bytes |
 
@@ -400,6 +402,16 @@ for the last reference, and `igrab` fails meanwhile.
 After the fixes: `zloop.sh -s 3000` passed (every test and scenario, 3,000 seeds of `interleave`
 and `failures`); and copying on write, seeds 2 to 43,000 of `interleave` that copied (10,750) at
 200 operations, the 4,000 of them to 16,000 at 1,000, and 2,000 others forced to, all passed.
+
+Found since, by the nightly hunt: **the budget's worker sealed only what it wrote back itself**
+(TASK-283). Writeback elsewhere (a growth's or a truncate's, a write's that stopped short, a
+drop's, the flusher's) seals nothing after it, and its pages stay private, their extent open, until
+an fsync or a sync seals it. With nothing dirty, the worker wrote nothing, sealed nothing, and
+rebound none: `interleave` seed 215500, Fxfs failing, a 4 MiB write stopped short at ENOSPC, its
+growth's writeback leaving all 256 of `private_max` private, every one of 3,000 rounds rebound none,
+and a punch's partial page, waiting for room, failed ENOMEM. The worker's rebind seals now when it
+leaves pages private for open extents and needs the room (`fxfs_dax_rebind`).
+`cow_rebind_seals_open_extents`, `task-283-rebind-leaves-open`.
 
 ### One owner of a page's state (TASK-164.9)
 
