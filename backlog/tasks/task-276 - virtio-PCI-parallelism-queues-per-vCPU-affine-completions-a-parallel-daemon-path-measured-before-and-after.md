@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-09 03:53'
-updated_date: '2026-11-09 05:52'
+updated_date: '2026-11-09 09:18'
 labels:
   - firecracker
   - perf
@@ -25,18 +25,18 @@ Every fxdax VM runs on virtio-PCI since TASK-273, whose MSI-X gives each queue i
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Baseline scaling of current main measured on one GCE host and its ceilings identified (throughput, p50/p99, host-side profile, per-queue counts, cross-CPU completions)
-- [ ] #2 Each optimization subtask done or skipped with the measured reason
+- [x] #1 Baseline scaling of current main measured on one GCE host and its ceilings identified (throughput, p50/p99, host-side profile, per-queue counts, cross-CPU completions)
+- [x] #2 Each optimization subtask done or skipped with the measured reason
 - [ ] #3 Same host, same matrix, after: docs/measurements/virtio-pci-parallelism-<date>.md has baseline, per-optimization deltas, final scaling and regressions
-- [ ] #4 Firecracker changes on a new branch and series tag on semistrict/firecracker; series check passes both ways; test_config_space_as_upstream passes
-- [ ] #5 Release and debug guest rounds pass on GCE; main CI green
+- [x] #4 Firecracker changes on a new branch and series tag on semistrict/firecracker; series check passes both ways; test_config_space_as_upstream passes
+- [x] #5 Release and debug guest rounds pass on GCE; main CI green
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Notes
@@ -52,4 +52,6 @@ Phase 1 (baseline, main 0f011561a + bench 3be9d1bf8, GCE fxdax-keep-c3-standard-
 - 8 vCPUs on an 8-vCPU host: everything drops (host oversubscribed).
 
 Coordination (2026-11-09): TASK-277's agent tags fxdax-v1.16.1-r3 (branch fxdax-v1.16.1-pci-vsock-reset, vsock reset before snapshot). Don't use r3. On landing: rebase this task's Firecracker commit (bb2d858a1 on fxdax-v1.16.1-pci-mq, queue per vCPU) onto whatever main's vendor/firecracker points at then, series check both ways, tag fxdax-v1.16.1-r4. The A/B results stand: the vsock change doesn't touch the extent device's I/O path.
+
+Landed at main 9a523ff6b (CI 42590395981 green, every job incl. firecracker-series and macOS). docs/measurements/virtio-pci-parallelism-2026-11-09.md: baseline at 2/4/8 vCPUs, ceilings and profiles, each change alone (interleaved A/Bs), the landed tree against main at 4 vCPUs (17 real differences, all improvements). AC #3 open: the after side is the landed tree at 4 vCPUs and the pre-rebase A/Bs at 4 and 8; no after-matrix at 2 vCPUs, nor at 8 on the landed tree.
 <!-- SECTION:NOTES:END -->
