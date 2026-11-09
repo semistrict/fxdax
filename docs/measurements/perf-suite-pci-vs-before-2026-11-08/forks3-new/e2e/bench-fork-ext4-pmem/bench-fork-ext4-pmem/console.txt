@@ -1,0 +1,11 @@
+[    0.326930] nd_pmem namespace0.0: unable to guarantee persistence of writes
+[    0.444543] check access for rdinit=/init failed: -2, ignoring
+fxdax: boot kernel_ns=1061065000 agent_ns=1109367900
+RESULT fork-mount s lower 3.774
+RESULT fork-read-usr s lower 4.171
+FXFS fork-read-usr: 
+RESULT fork-reread-usr s lower 0.031
+FXFS fork-reread-usr: 
+RESULT fork-pg-start s lower 0.268
+RESULT fork-pgbench-select tps higher 23030.337
+[   19.693349] reboot: Restarting system

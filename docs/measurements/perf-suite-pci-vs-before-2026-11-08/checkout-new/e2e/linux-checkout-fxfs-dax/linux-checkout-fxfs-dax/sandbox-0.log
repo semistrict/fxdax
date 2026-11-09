@@ -1,0 +1,17 @@
+2026-11-09T06:19:22.054949997 [anonymous-instance:fc_vcpu 0] Received a VcpuEvent::Resume message with immediate_exit enabled. immediate_exit was disabled before proceeding
+2026-11-09T06:19:22.054993128 [anonymous-instance:fc_vcpu 1] Received a VcpuEvent::Resume message with immediate_exit enabled. immediate_exit was disabled before proceeding
+2026-11-09T06:19:22.055020732 [anonymous-instance:fc_vcpu 2] Received a VcpuEvent::Resume message with immediate_exit enabled. immediate_exit was disabled before proceeding
+2026-11-09T06:19:22.055043834 [anonymous-instance:fc_vcpu 3] Received a VcpuEvent::Resume message with immediate_exit enabled. immediate_exit was disabled before proceeding
+2026-11-09T06:19:22.572218889 [anonymous-instance:fc_vcpu 0] vcpu: IO write @ 0x70:0x1 failed: bus_error: MissingAddressRange
+2026-11-09T06:19:22.572284457 [anonymous-instance:fc_vcpu 0] vcpu: IO write @ 0x71:0x1 failed: bus_error: MissingAddressRange
+2026-11-09T06:19:22.578727539 [anonymous-instance:fc_vcpu 0] vcpu: IO write @ 0x70:0x1 failed: bus_error: MissingAddressRange
+2026-11-09T06:19:22.578764782 [anonymous-instance:fc_vcpu 0] vcpu: IO write @ 0x71:0x1 failed: bus_error: MissingAddressRange
+2026-11-09T06:19:22.672651731 [anonymous-instance:fc_vcpu 2] vcpu: IO read @ 0x87:0x1 failed: bus_error: MissingAddressRange
+2026-11-09T06:19:22.698052940 [anonymous-instance:fc_vcpu 1] Cannot acknowledge unknown features page: 2
+2026-11-09T06:19:22.698112591 [anonymous-instance:fc_vcpu 1] Cannot acknowledge unknown features page: 3
+2026-11-09T06:19:22.709365474 [anonymous-instance:fc_vcpu 2] Cannot acknowledge unknown features page: 2
+2026-11-09T06:19:22.709416134 [anonymous-instance:fc_vcpu 2] Cannot acknowledge unknown features page: 3
+2026-11-09T06:19:22.719776441 [anonymous-instance:fc_vcpu 1] Cannot acknowledge unknown features page: 2
+2026-11-09T06:19:22.719832764 [anonymous-instance:fc_vcpu 1] Cannot acknowledge unknown features page: 3
+2026-11-09T06:19:37.021934913 [anonymous-instance:fc_vcpu 0] Attempt to reset device when not implemented in underlying device
+2026-11-09T06:19:37.022626091 [anonymous-instance:fc_vcpu 0] Attempt to reset device when not implemented in underlying device

@@ -1,0 +1,20 @@
+{
+ "commit": "0f011561a52f9d13506e67b7a4c3dff92fa6c530",
+ "knobs": {
+  "FXDAX_BENCH_CASES": "bench-fs-ext4-guest-kernel bench-fs-ext4-dax-pmem bench-fs-ext4-pmem bench-fs-fxfs-guest bench-fs-fxfs-guest-dax bench-fs-fxfs-guest-dax-followed bench-fs-fxfs-guest-dax-followed-idle",
+  "FXDAX_BENCH_ITERATIONS": "3",
+  "FXDAX_BENCH_NOTE": "TASK-275: the perf suite, virtio-PCI main against main before it; new side (new = 0f011561a), round 1, on fxdax-keep-c3-standard-8-us-east4-a-1",
+  "FXDAX_EXTENTD_MEMORY": "8589934592",
+  "FXDAX_GUEST_KERNEL_BUILD": "release"
+ },
+ "rounds": 1,
+ "cases": [
+  "bench-fs-ext4-guest-kernel",
+  "bench-fs-ext4-dax-pmem",
+  "bench-fs-ext4-pmem",
+  "bench-fs-fxfs-guest",
+  "bench-fs-fxfs-guest-dax",
+  "bench-fs-fxfs-guest-dax-followed",
+  "bench-fs-fxfs-guest-dax-followed-idle"
+ ]
+}

@@ -1,0 +1,452 @@
+{
+  "case": "bench-fs-ext4-guest-kernel",
+  "backend": "ext4-guest-kernel",
+  "host_os": "linux",
+  "vmm": "firecracker",
+  "iterations": 3,
+  "results": [
+    {
+      "workload": "seq-write",
+      "unit": "MiB/s",
+      "higher_is_better": true,
+      "values": [
+        122.664,
+        189.069,
+        189.069
+      ]
+    },
+    {
+      "workload": "rand-read-cold",
+      "unit": "IOPS",
+      "higher_is_better": true,
+      "values": [
+        13149.278,
+        14813.743,
+        15906.796
+      ]
+    },
+    {
+      "workload": "seq-read-cold",
+      "unit": "MiB/s",
+      "higher_is_better": true,
+      "values": [
+        927.536,
+        3878.788,
+        3938.462
+      ]
+    },
+    {
+      "workload": "seq-read-warm",
+      "unit": "MiB/s",
+      "higher_is_better": true,
+      "values": [
+        8112.444,
+        8331.834,
+        8267.366
+      ]
+    },
+    {
+      "workload": "rand-read-warm",
+      "unit": "IOPS",
+      "higher_is_better": true,
+      "values": [
+        910181.409,
+        934756.622,
+        922694.653
+      ]
+    },
+    {
+      "workload": "mmap-seq-read",
+      "unit": "MiB/s",
+      "higher_is_better": true,
+      "values": [
+        9481.481,
+        9846.154,
+        9846.154
+      ]
+    },
+    {
+      "workload": "rand-write",
+      "unit": "IOPS",
+      "higher_is_better": true,
+      "values": [
+        10119.827,
+        14537.711,
+        14422.535
+      ]
+    },
+    {
+      "workload": "mmap-rand-read",
+      "unit": "IOPS",
+      "higher_is_better": true,
+      "values": [
+        1273559.22,
+        1276219.39,
+        1271240.88
+      ]
+    },
+    {
+      "workload": "mmap-rand-write",
+      "unit": "IOPS",
+      "higher_is_better": true,
+      "values": [
+        7937.984,
+        12374.622,
+        12254.301
+      ]
+    },
+    {
+      "workload": "fsync-append",
+      "unit": "IOPS",
+      "higher_is_better": true,
+      "values": [
+        386.78,
+        387.659,
+        392.412
+      ]
+    },
+    {
+      "workload": "sqlite-pread-scan",
+      "unit": "MiB/s",
+      "higher_is_better": true,
+      "values": [
+        650.329,
+        1045.524,
+        2732.022
+      ]
+    },
+    {
+      "workload": "sqlite-pread-scan-warm",
+      "unit": "MiB/s",
+      "higher_is_better": true,
+      "values": [
+        3011.027,
+        2967.29,
+        3022.627
+      ]
+    },
+    {
+      "workload": "sqlite-mmap-scan",
+      "unit": "MiB/s",
+      "higher_is_better": true,
+      "values": [
+        2392.402,
+        2651.892,
+        2729.714
+      ]
+    },
+    {
+      "workload": "sqlite-mmap-scan-warm",
+      "unit": "MiB/s",
+      "higher_is_better": true,
+      "values": [
+        2988.737,
+        2903.767,
+        2986.215
+      ]
+    },
+    {
+      "workload": "create",
+      "unit": "ops/s",
+      "higher_is_better": true,
+      "values": [
+        92821.096,
+        90442.339,
+        97819.132
+      ]
+    },
+    {
+      "workload": "stat-cold",
+      "unit": "ops/s",
+      "higher_is_better": true,
+      "values": [
+        333322.834,
+        341600.23,
+        340372.115
+      ]
+    },
+    {
+      "workload": "stat-warm",
+      "unit": "ops/s",
+      "higher_is_better": true,
+      "values": [
+        1191683.479,
+        1393459.242,
+        1283928.616
+      ]
+    },
+    {
+      "workload": "lookup-missing",
+      "unit": "ops/s",
+      "higher_is_better": true,
+      "values": [
+        457224.165,
+        458015.442,
+        454722.383
+      ]
+    },
+    {
+      "workload": "readdir",
+      "unit": "ops/s",
+      "higher_is_better": true,
+      "values": [
+        2719253.402,
+        3024181.354,
+        2986148.749
+      ]
+    },
+    {
+      "workload": "read-small-cold",
+      "unit": "ops/s",
+      "higher_is_better": true,
+      "values": [
+        15552.57,
+        15260.971,
+        15661.901
+      ]
+    },
+    {
+      "workload": "chmod",
+      "unit": "ops/s",
+      "higher_is_better": true,
+      "values": [
+        679051.433,
+        494245.622,
+        462715.11
+      ]
+    },
+    {
+      "workload": "setxattr",
+      "unit": "ops/s",
+      "higher_is_better": true,
+      "values": [
+        547224.967,
+        512185.141,
+        559215.465
+      ]
+    },
+    {
+      "workload": "link",
+      "unit": "ops/s",
+      "higher_is_better": true,
+      "values": [
+        153042.832,
+        150228.118,
+        153806.838
+      ]
+    },
+    {
+      "workload": "rename",
+      "unit": "ops/s",
+      "higher_is_better": true,
+      "values": [
+        118969.22,
+        119988.385,
+        118965.08
+      ]
+    },
+    {
+      "workload": "rename-across",
+      "unit": "ops/s",
+      "higher_is_better": true,
+      "values": [
+        99996.595,
+        94777.468,
+        99787.428
+      ]
+    },
+    {
+      "workload": "unlink",
+      "unit": "ops/s",
+      "higher_is_better": true,
+      "values": [
+        381004.633,
+        393343.139,
+        385747.33
+      ]
+    },
+    {
+      "workload": "create-fsync",
+      "unit": "ops/s",
+      "higher_is_better": true,
+      "values": [
+        384.457,
+        363.219,
+        379.875
+      ]
+    },
+    {
+      "workload": "mkdir-tree",
+      "unit": "ops/s",
+      "higher_is_better": true,
+      "values": [
+        100666.041,
+        128725.294,
+        129757.323
+      ]
+    },
+    {
+      "workload": "find-cold",
+      "unit": "ops/s",
+      "higher_is_better": true,
+      "values": [
+        321494.898,
+        321063.94,
+        309623.101
+      ]
+    },
+    {
+      "workload": "rm-tree",
+      "unit": "ops/s",
+      "higher_is_better": true,
+      "values": [
+        109765.752,
+        109911.379,
+        103552.45
+      ]
+    },
+    {
+      "workload": "large-dir-create",
+      "unit": "ops/s",
+      "higher_is_better": true,
+      "values": [
+        102294.623,
+        111731.782,
+        111609.518
+      ]
+    },
+    {
+      "workload": "large-dir-stat-cold",
+      "unit": "ops/s",
+      "higher_is_better": true,
+      "values": [
+        263096.746,
+        269682.414,
+        260101.723
+      ]
+    },
+    {
+      "workload": "large-dir-unlink",
+      "unit": "ops/s",
+      "higher_is_better": true,
+      "values": [
+        208774.315,
+        209428.038,
+        203792.528
+      ]
+    },
+    {
+      "workload": "create-parallel",
+      "unit": "ops/s",
+      "higher_is_better": true,
+      "values": [
+        180864.696,
+        174417.714,
+        184002.953
+      ]
+    },
+    {
+      "workload": "stat-parallel",
+      "unit": "ops/s",
+      "higher_is_better": true,
+      "values": [
+        520318.333,
+        531665.817,
+        489158.625
+      ]
+    },
+    {
+      "workload": "unlink-parallel",
+      "unit": "ops/s",
+      "higher_is_better": true,
+      "values": [
+        282639.631,
+        309656.566,
+        302910.745
+      ]
+    },
+    {
+      "workload": "create-shared-dir",
+      "unit": "ops/s",
+      "higher_is_better": true,
+      "values": [
+        110146.735,
+        113092.746,
+        112269.117
+      ]
+    },
+    {
+      "workload": "unlink-shared-dir",
+      "unit": "ops/s",
+      "higher_is_better": true,
+      "values": [
+        272628.349,
+        284405.28,
+        275842.912
+      ]
+    },
+    {
+      "workload": "untar",
+      "unit": "s",
+      "higher_is_better": false,
+      "values": [
+        0.015,
+        0.015,
+        0.016
+      ]
+    },
+    {
+      "workload": "make",
+      "unit": "s",
+      "higher_is_better": false,
+      "values": [
+        4.608,
+        4.545,
+        4.606
+      ]
+    },
+    {
+      "workload": "build-total",
+      "unit": "s",
+      "higher_is_better": false,
+      "values": [
+        4.624,
+        4.56,
+        4.622
+      ]
+    }
+  ],
+  "failures": {},
+  "observations": {
+    "mmap-seq-read-faults-per-mib": [
+      6.6,
+      6.6,
+      6.6
+    ],
+    "mtime-ahead-of-guest-ms": [
+      -3.474,
+      -2.903,
+      -3.536
+    ],
+    "sqlite-mmap-scan-faults-per-mib": [
+      2.1,
+      2.1,
+      2.1
+    ],
+    "sqlite-mmap-scan-warm-faults-per-mib": [
+      2.1,
+      2.1,
+      2.1
+    ],
+    "sqlite-pread-scan-faults-per-mib": [
+      2.7,
+      2.6,
+      2.6
+    ],
+    "sqlite-pread-scan-warm-faults-per-mib": [
+      2.6,
+      2.6,
+      2.6
+    ]
+  }
+}

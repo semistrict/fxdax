@@ -1,0 +1,520 @@
+   Compiling fxfs v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fxfs)
+   Compiling fxdax v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fxdax)
+   Compiling fxfs-posix v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fxfs-posix)
+    Finished `release` profile [optimized] target(s) in 1m 27s
+    Finished `release` profile [optimized] target(s) in 0.18s
+   Compiling fxfs v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fxfs)
+   Compiling fxdax v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fxdax)
+   Compiling fxfs-posix v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fxfs-posix)
+   Compiling vmm v0.1.0 (/var/lib/fxdax-test/bench-tree/target/firecracker/src/vmm)
+   Compiling firecracker v1.16.1 (/var/lib/fxdax-test/bench-tree/target/firecracker/src/firecracker)
+    Finished `release` profile [optimized] target(s) in 2m 11s
+warning: method `unallowed` is never used
+   --> test_cases/src/differential.rs:194:12
+    |
+156 | impl Differences {
+    | ---------------- method in this implementation
+...
+194 |     pub fn unallowed(&self) -> impl Iterator<Item = (&Difference, &Seen)> {
+    |            ^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+
+running 114 tests
+....................................................................................... 87/114
+..........................test differential::tests::refusals_are_adopted_by_the_reference has been running for over 60 seconds
+.
+test result: ok. 114 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 61.24s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Compiling fxfs v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fxfs)
+   Compiling fxdax v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fxdax)
+   Compiling fxfs-posix v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fxfs-posix)
+   Compiling vmm v0.1.0 (/var/lib/fxdax-test/bench-tree/target/firecracker/src/vmm)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 03s
+────────────
+ Nextest run ID 7d1f944c-b491-4656-af1b-487e36d11f9a with nextest profile: default
+    Starting 29 tests across 1 binary (722 tests skipped)
+        PASS [   0.007s] ( 1/29) vmm devices::virtio::extent::device::tests::unxorshift_undoes_the_clocks_xorshift
+        PASS [   0.007s] ( 2/29) vmm devices::virtio::extent::device::tests::a_windows_private_pages_are_not_its_size
+        PASS [   0.008s] ( 3/29) vmm devices::virtio::device::tests::test_features_written_again
+        PASS [   0.008s] ( 4/29) vmm devices::virtio::extent::device::tests::branches_are_not_the_clocks
+        PASS [   0.008s] ( 5/29) vmm devices::virtio::extent::device::tests::workers_start_all_or_none
+        PASS [   0.008s] ( 6/29) vmm devices::virtio::extent::device::tests::the_configuration_says_its_version_first
+        PASS [   0.008s] ( 7/29) vmm devices::virtio::extent::persist::tests::snapshots_of_other_protocols_are_refused
+        PASS [   0.008s] ( 8/29) vmm devices::virtio::extent::device::tests::drivers_take_every_feature_offered
+        PASS [   0.007s] ( 9/29) vmm devices::virtio::extent::tests::stats_are_asked_of_guests_that_take_asks
+        PASS [   0.007s] (10/29) vmm devices::virtio::extent::worker::tests::chains_writing_past_u32_are_refused
+        PASS [   0.008s] (11/29) vmm devices::virtio::extent::window::tests::windows_are_bars_in_the_mmio64_gap
+        PASS [   0.009s] (12/29) vmm devices::virtio::extent::tests::answers_to_shrinks_no_longer_asked_change_nothing
+        PASS [   0.032s] (13/29) vmm devices::virtio::extent::worker::tests::stats_go_to_the_daemon
+        PASS [   0.029s] (14/29) vmm devices::virtio::extent::worker::tests::test_refuses_bad_requests
+        PASS [   0.008s] (15/29) vmm devices::virtio::transport::pci::device::tests::test_pci_device_ids
+        PASS [   0.040s] (16/29) vmm devices::virtio::extent::worker::tests::test_follows_a_writer
+        PASS [   0.008s] (17/29) vmm devices::virtio::transport::pci::device::tests::test_shm_bar
+        PASS [   0.039s] (18/29) vmm devices::virtio::extent::worker::tests::test_roots_and_info
+        PASS [   0.008s] (19/29) vmm vmm_config::extent::tests::test_deserialize
+        PASS [   0.044s] (20/29) vmm devices::virtio::extent::worker::tests::test_writes_and_reads
+        PASS [   0.006s] (21/29) vmm vmm_config::extent::tests::test_insert
+        PASS [   0.013s] (22/29) vmm signal_handler::tests::test_fault_logs_its_address
+        PASS [   0.012s] (23/29) vmm signal_handler::tests::test_stack_overflow_runs_the_handler
+        PASS [   0.047s] (24/29) vmm devices::virtio::extent::worker::tests::test_refuses_many_past_their_most
+        PASS [   0.007s] (25/29) vmm vmm_config::extent::tests::test_insert_invalid
+        PASS [   0.006s] (26/29) vmm vstate::vcpu::tests::test_exit_code_sent_before_the_exit_event
+        PASS [   0.006s] (27/29) vmm vstate::vcpu::tests::efaults_given_up_on_tell_where
+        PASS [   0.077s] (28/29) vmm devices::virtio::extent::worker::tests::test_frees_many_in_one_request
+        PASS [   9.837s] (29/29) vmm devices::virtio::extent::worker::tests::test_answers_whatever_a_driver_asks
+────────────
+     Summary [   9.845s] 29 tests run: 29 passed, 722 skipped
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.23s
+────────────
+ Nextest run ID b4cd8a85-5b29-4033-a2f2-ff80fbcd94a8 with nextest profile: default
+    Starting 31 tests across 1 binary (720 tests skipped)
+        PASS [   0.076s] ( 1/31) vmm device_manager::pci_mngr::tests::test_device_manager_persistence
+        PASS [   0.067s] ( 2/31) vmm device_manager::persist::tests::test_device_manager_persistence
+        PASS [   0.006s] ( 3/31) vmm devices::virtio::transport::pci::common_config::tests::test_bad_width_reads
+        PASS [   0.005s] ( 4/31) vmm devices::virtio::transport::pci::common_config::tests::test_config_msix_vector
+        PASS [   0.005s] ( 5/31) vmm devices::virtio::transport::pci::common_config::tests::test_device_activated_blocks_transitions
+        PASS [   0.005s] ( 6/31) vmm devices::virtio::transport::pci::common_config::tests::test_device_feature
+        PASS [   0.005s] ( 7/31) vmm devices::virtio::transport::pci::common_config::tests::test_device_status
+        PASS [   0.005s] ( 8/31) vmm devices::virtio::transport::pci::common_config::tests::test_device_status_invalid_transitions
+        PASS [   0.005s] ( 9/31) vmm devices::virtio::transport::pci::common_config::tests::test_driver_feature
+        PASS [   0.005s] (10/31) vmm devices::virtio::transport::pci::common_config::tests::test_num_queues
+        PASS [   0.005s] (11/31) vmm devices::virtio::transport::pci::common_config::tests::test_queue_addresses
+        PASS [   0.005s] (12/31) vmm devices::virtio::transport::pci::common_config::tests::test_queue_enable
+        PASS [   0.005s] (13/31) vmm devices::virtio::transport::pci::common_config::tests::test_queue_msix_vector
+        PASS [   0.005s] (14/31) vmm devices::virtio::transport::pci::common_config::tests::test_queue_notify_off
+        PASS [   0.006s] (15/31) vmm devices::virtio::transport::pci::common_config::tests::test_queue_size
+        PASS [   0.005s] (16/31) vmm devices::virtio::transport::pci::common_config::tests::write_base_regs
+        PASS [   0.027s] (17/31) vmm devices::virtio::transport::pci::device::tests::test_activate_failure_sets_needs_reset
+        PASS [   0.026s] (18/31) vmm devices::virtio::transport::pci::device::tests::test_capabilities
+        PASS [   0.022s] (19/31) vmm devices::virtio::transport::pci::device::tests::test_config_space_as_upstream
+        PASS [   0.023s] (20/31) vmm devices::virtio::transport::pci::device::tests::test_device_initialization
+        PASS [   0.025s] (21/31) vmm devices::virtio::transport::pci::device::tests::test_failed_reset_blocks_reinitialization
+        PASS [   0.025s] (22/31) vmm devices::virtio::transport::pci::device::tests::test_isr_capability
+        PASS [   0.027s] (23/31) vmm devices::virtio::transport::pci::device::tests::test_no_shared_memory_capabilities
+        PASS [   0.025s] (24/31) vmm devices::virtio::transport::pci::device::tests::test_notification_capability
+        PASS [   0.026s] (25/31) vmm devices::virtio::transport::pci::device::tests::test_pci_configuration_cap
+        PASS [   0.023s] (26/31) vmm devices::virtio::transport::pci::device::tests::test_pci_device_config
+        PASS [   0.006s] (27/31) vmm devices::virtio::transport::pci::device::tests::test_pci_device_ids
+        PASS [   0.028s] (28/31) vmm devices::virtio::transport::pci::device::tests::test_reading_bars
+        PASS [   0.021s] (29/31) vmm devices::virtio::transport::pci::device::tests::test_reset_then_reinitialization
+        PASS [   0.023s] (30/31) vmm devices::virtio::transport::pci::device::tests::test_shared_memory_capabilities
+        PASS [   0.006s] (31/31) vmm devices::virtio::transport::pci::device::tests::test_shm_bar
+────────────
+     Summary [   0.553s] 31 tests run: 31 passed, 720 skipped
+warning: method `unallowed` is never used
+   --> test_cases/src/differential.rs:194:12
+    |
+156 | impl Differences {
+    | ---------------- method in this implementation
+...
+194 |     pub fn unallowed(&self) -> impl Iterator<Item = (&Difference, &Seen)> {
+    |            ^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+[bench-fs-ext4-guest-kernel] ... REPORT (90 s of 5400 s)
+  ext4-guest-kernel (3 iterations)
+
+  workload                     median          min          max  unit
+  seq-write                     157.8        120.1        189.8  MiB/s
+  rand-read-cold              29574.0      28593.4      31447.2  IOPS
+  seq-read-cold                3657.1       1075.6       3820.9  MiB/s
+  seq-read-warm                8141.9       8060.5       8183.4  MiB/s
+  rand-read-warm             922427.8     918550.7     927179.9  IOPS
+  mmap-seq-read                9846.2       9481.5       9846.2  MiB/s
+  rand-write                  15226.8      14800.4      15283.6  IOPS
+  mmap-rand-read            1264993.5    1264748.1    1282159.9  IOPS
+  mmap-rand-write              8346.4       8159.4      10757.7  IOPS
+  fsync-append                  436.3        435.1        442.4  IOPS
+  sqlite-pread-scan            2742.9       1449.7       2773.0  MiB/s
+  sqlite-pread-scan-warm       3023.7       3022.5       3044.9  MiB/s
+  sqlite-mmap-scan             2612.5       1294.0       2683.3  MiB/s
+  sqlite-mmap-scan-warm        2893.2       2889.7       2994.6  MiB/s
+  create                      98930.5      94779.6      99026.0  ops/s
+  stat-cold                  331118.9     191983.6     334575.7  ops/s
+  stat-warm                  839858.7     730959.2    1248391.9  ops/s
+  lookup-missing             435646.2     381146.5     438465.8  ops/s
+  readdir                   3077027.2    2925666.1    3080577.1  ops/s
+  read-small-cold             25971.5      25944.3      26326.4  ops/s
+  chmod                      681235.1     680562.2     681262.0  ops/s
+  setxattr                   549310.2     541463.8     559706.9  ops/s
+  link                       151878.5     140444.1     154990.1  ops/s
+  rename                     119062.0     118297.9     119867.0  ops/s
+  rename-across              100935.3     100233.9     101156.1  ops/s
+  unlink                     393736.7     380461.1     394618.0  ops/s
+  create-fsync                  438.5        420.3        444.7  ops/s
+  mkdir-tree                 128339.0     110324.1     128469.8  ops/s
+  find-cold                  317616.2     315481.3     318991.0  ops/s
+  rm-tree                    107091.2     105652.6     115185.3  ops/s
+  large-dir-create           111639.5     111526.4     111702.1  ops/s
+  large-dir-stat-cold        265906.5     240273.4     267011.0  ops/s
+  large-dir-unlink           210081.7     208851.5     210537.8  ops/s
+  create-parallel            175892.2     171979.2     184607.9  ops/s
+  stat-parallel              616689.4     540970.2     642078.2  ops/s
+  unlink-parallel            305191.8     302652.3     311610.6  ops/s
+  create-shared-dir          112713.9     110078.1     113891.9  ops/s
+  unlink-shared-dir          272191.0     261084.1     287282.3  ops/s
+  untar                           0.0          0.0          0.0  s
+  make                            4.6          4.6          4.6  s
+  build-total                     4.6          4.6          4.6  s
+  mmap-seq-read-faults-per-mib: [6.6, 6.6, 6.6]
+  mtime-ahead-of-guest-ms: [-3.91, -3.083, -4.205]
+  sqlite-mmap-scan-faults-per-mib: [2.1, 2.1, 2.1]
+  sqlite-mmap-scan-warm-faults-per-mib: [2.1, 2.1, 2.1]
+  sqlite-pread-scan-faults-per-mib: [2.7, 2.7, 2.6]
+  sqlite-pread-scan-warm-faults-per-mib: [2.6, 2.6, 2.6]
+
+(See test artifacts at: /home/ramon/run-20261109T052200Z-7266fa29/results/logs/bench-fs-ext4-guest-kernel)
+
+OK - 0/0 passed (1 reports)
+[bench-fs-ext4-dax-pmem] ... REPORT (95 s of 5400 s)
+  ext4-dax-pmem (3 iterations)
+
+  workload                     median          min          max  unit
+  seq-write                     124.5        124.3        127.2  MiB/s
+  rand-read-cold              73801.8      73470.9      75502.3  IOPS
+  seq-read-cold                 446.8        442.9        462.1  MiB/s
+  seq-read-warm               11014.0      10827.6      11059.5  MiB/s
+  rand-read-warm             866230.4     802059.5     868158.4  IOPS
+  mmap-seq-read                9846.2       9142.9      10240.0  MiB/s
+  rand-write                  11040.4      10033.1      11145.6  IOPS
+  mmap-rand-read             780820.6     767891.1     782580.2  IOPS
+  mmap-rand-write             10966.5      10076.3      11047.9  IOPS
+  fsync-append                  533.8        529.7        534.9  IOPS
+  sqlite-pread-scan             292.7        285.3        293.1  MiB/s
+  sqlite-pread-scan-warm       2807.3       2807.0       2822.1  MiB/s
+  sqlite-mmap-scan             2879.1       1914.8       2882.7  MiB/s
+  sqlite-mmap-scan-warm        2994.9       2023.8       2998.9  MiB/s
+  create                      38075.9      33821.2      38702.2  ops/s
+  stat-cold                  323571.2     148103.6     329032.4  ops/s
+  stat-warm                 1163024.0    1106801.4    1192159.4  ops/s
+  lookup-missing             429839.5     301798.7     433017.0  ops/s
+  readdir                   2867334.2    2743969.8    2998001.8  ops/s
+  read-small-cold             53186.6      47603.3      53886.2  ops/s
+  chmod                      708433.0     686171.3     728624.0  ops/s
+  setxattr                   561295.7     549350.0     590413.6  ops/s
+  link                       150634.1     149788.1     155459.5  ops/s
+  rename                     116135.1     114209.0     116463.7  ops/s
+  rename-across               98997.0      98236.8     100025.2  ops/s
+  unlink                     379766.0     338205.4     401081.2  ops/s
+  create-fsync                  544.6        516.7        572.9  ops/s
+  mkdir-tree                  42419.2      36298.1      43449.7  ops/s
+  find-cold                  309671.1     138586.4     312643.6  ops/s
+  rm-tree                    109343.8     106260.0     113424.4  ops/s
+  large-dir-create           103612.7      82862.3     110065.5  ops/s
+  large-dir-stat-cold        252528.2     210508.7     267817.1  ops/s
+  large-dir-unlink           201995.5     200853.1     203052.4  ops/s
+  create-parallel            175002.4     174750.8     175182.5  ops/s
+  stat-parallel              591722.9     517616.1     597379.7  ops/s
+  unlink-parallel            291426.8     278235.3     295642.6  ops/s
+  create-shared-dir          108224.4     107524.5     109053.6  ops/s
+  unlink-shared-dir          269540.4     268036.8     287587.5  ops/s
+  untar                           0.0          0.0          0.0  s
+  make                            4.7          4.6          4.7  s
+  build-total                     4.7          4.7          4.7  s
+  mmap-seq-read-faults-per-mib: [5.6, 5.6, 5.6]
+  mtime-ahead-of-guest-ms: [-4.306, -0.757, -1.864]
+  sqlite-mmap-scan-faults-per-mib: [3.7, 3.7, 129.1]
+  sqlite-mmap-scan-warm-faults-per-mib: [3.6, 3.6, 129.1]
+  sqlite-pread-scan-faults-per-mib: [2.7, 2.6, 2.6]
+  sqlite-pread-scan-warm-faults-per-mib: [2.6, 2.6, 2.6]
+
+(See test artifacts at: /home/ramon/run-20261109T052200Z-7266fa29/results/logs/bench-fs-ext4-dax-pmem)
+
+OK - 0/0 passed (1 reports)
+[bench-fs-ext4-pmem] ... REPORT (95 s of 5400 s)
+  ext4-pmem (3 iterations)
+
+  workload                     median          min          max  unit
+  seq-write                     123.9         98.3        145.1  MiB/s
+  rand-read-cold              65274.9      61134.3      67702.5  IOPS
+  seq-read-cold                 421.7        319.6        422.4  MiB/s
+  seq-read-warm                8254.9       8243.4       8310.8  MiB/s
+  rand-read-warm             922414.8     844361.8     930997.0  IOPS
+  mmap-seq-read                9846.2       9481.5       9846.2  MiB/s
+  rand-write                  11521.8      10220.8      12082.6  IOPS
+  mmap-rand-read            1239709.1    1230012.5    1243268.4  IOPS
+  mmap-rand-write              7903.5       7427.0       7922.6  IOPS
+  fsync-append                  533.6        529.6        534.9  IOPS
+  sqlite-pread-scan             313.3        262.3        315.0  MiB/s
+  sqlite-pread-scan-warm       2915.8       2853.3       2951.7  MiB/s
+  sqlite-mmap-scan             2619.5       2433.3       2642.0  MiB/s
+  sqlite-mmap-scan-warm        2733.8       2728.2       2738.9  MiB/s
+  create                      98559.2      96146.7      98802.7  ops/s
+  stat-cold                  330969.7     325248.3     336468.0  ops/s
+  stat-warm                  740544.6     728819.9    1359113.0  ops/s
+  lookup-missing             439385.7     439115.5     439684.9  ops/s
+  readdir                   2828610.3     961078.7    2932018.2  ops/s
+  read-small-cold             50158.0      49672.0      51853.9  ops/s
+  chmod                      717678.8     693483.0     834614.8  ops/s
+  setxattr                   571170.9     569254.2     614052.6  ops/s
+  link                       157291.5     156692.0     158656.7  ops/s
+  rename                     116528.4     110151.5     117726.4  ops/s
+  rename-across              100417.2      97091.4     102119.6  ops/s
+  unlink                     406740.8     397431.1     423583.7  ops/s
+  create-fsync                  552.0        514.8        583.7  ops/s
+  mkdir-tree                 129717.9     129213.4     130149.3  ops/s
+  find-cold                  317715.7     315405.0     321708.0  ops/s
+  rm-tree                    107402.5     103002.7     111286.3  ops/s
+  large-dir-create           110618.8     108744.2     111302.9  ops/s
+  large-dir-stat-cold        260444.2     257204.4     279421.0  ops/s
+  large-dir-unlink           207517.3     207431.5     208171.9  ops/s
+  create-parallel            179842.0     178186.8     182141.7  ops/s
+  stat-parallel              609516.1     555294.8     625736.1  ops/s
+  unlink-parallel            310572.2     310568.6     318234.2  ops/s
+  create-shared-dir          108233.2     106549.4     115336.6  ops/s
+  unlink-shared-dir          273705.1     271776.3     280981.9  ops/s
+  untar                           0.0          0.0          0.0  s
+  make                            4.6          4.6          4.6  s
+  build-total                     4.6          4.6          4.7  s
+  mmap-seq-read-faults-per-mib: [6.3, 6.3, 6.3]
+  mtime-ahead-of-guest-ms: [-6.804, -4.006, -6.405]
+  sqlite-mmap-scan-faults-per-mib: [13.3, 13.3, 13.3]
+  sqlite-mmap-scan-warm-faults-per-mib: [11.9, 11.9, 11.9]
+  sqlite-pread-scan-faults-per-mib: [2.7, 2.7, 2.6]
+  sqlite-pread-scan-warm-faults-per-mib: [2.7, 2.6, 2.6]
+
+(See test artifacts at: /home/ramon/run-20261109T052200Z-7266fa29/results/logs/bench-fs-ext4-pmem)
+
+OK - 0/0 passed (1 reports)
+[bench-fs-fxfs-guest] ... REPORT (108 s of 5400 s)
+  fxfs-guest (3 iterations)
+
+  workload                     median          min          max  unit
+  seq-write                     140.7        105.8        141.1  MiB/s
+  rand-read-cold               6019.1       5647.7       6088.4  IOPS
+  seq-read-cold                 958.8        739.9        969.7  MiB/s
+  seq-read-warm                8262.9       8231.9       8382.8  MiB/s
+  rand-read-warm             930501.2     921786.1     934082.0  IOPS
+  mmap-seq-read                8827.6       8533.3       8827.6  MiB/s
+  rand-write                  76560.7      65015.9      80313.7  IOPS
+  mmap-rand-read            1223991.0    1222724.6    1229110.9  IOPS
+  mmap-rand-write              8131.0       7663.2       8245.6  IOPS
+  fsync-append                 2064.5       1744.5       2585.9  IOPS
+  sqlite-pread-scan             337.9        302.9        413.9  MiB/s
+  sqlite-pread-scan-warm       3041.7       3015.4       3079.5  MiB/s
+  sqlite-mmap-scan              874.0        872.6        883.7  MiB/s
+  sqlite-mmap-scan-warm        2884.4       2790.3       2916.0  MiB/s
+  create                      79140.6      78916.8      79489.3  ops/s
+  stat-cold                  182527.1     173613.6     196635.1  ops/s
+  stat-warm                 1128544.0     849200.6    1159897.0  ops/s
+  lookup-missing             437501.8     392621.0     447934.4  ops/s
+  readdir                   3004035.9    2790423.8    3148396.5  ops/s
+  read-small-cold              8268.1       8211.5       8617.9  ops/s
+  chmod                      330078.2     321722.1     393980.4  ops/s
+  setxattr                   172665.5     161899.1     182280.5  ops/s
+  link                        92667.2      85873.1      94117.9  ops/s
+  rename                      69435.4      61273.7      75305.6  ops/s
+  rename-across               63357.5      57683.0      66946.5  ops/s
+  unlink                     232093.8     205765.5     250060.9  ops/s
+  create-fsync                 2738.9       2499.7       3097.0  ops/s
+  mkdir-tree                  76432.1      75156.4      77139.3  ops/s
+  find-cold                  162116.0     114844.6     165163.9  ops/s
+  rm-tree                     70303.3      68189.5      70653.3  ops/s
+  large-dir-create            88679.0      87531.7      88757.5  ops/s
+  large-dir-stat-cold        166597.3     119850.6     175040.6  ops/s
+  large-dir-unlink           181498.3     142604.3     184140.6  ops/s
+  create-parallel            116980.7     114846.1     120551.1  ops/s
+  stat-parallel              412856.3     321231.2     445528.6  ops/s
+  unlink-parallel            163791.9     155031.4     165780.7  ops/s
+  create-shared-dir           86181.5      76703.9      88978.2  ops/s
+  unlink-shared-dir          169914.0     150921.5     174613.2  ops/s
+  untar                           0.0          0.0          0.0  s
+  make                            4.6          4.6          4.6  s
+  build-total                     4.6          4.6          4.6  s
+  mmap-seq-read-faults-per-mib: [13.8, 13.7, 13.7]
+  mtime-ahead-of-guest-ms: [-6.102, -5.844, -5.179]
+  sqlite-mmap-scan-faults-per-mib: [9.6, 9.6, 9.6]
+  sqlite-mmap-scan-warm-faults-per-mib: [9.3, 9.3, 9.3]
+  sqlite-pread-scan-faults-per-mib: [2.7, 2.6, 2.6]
+  sqlite-pread-scan-warm-faults-per-mib: [2.6, 2.6, 2.6]
+
+(See test artifacts at: /home/ramon/run-20261109T052200Z-7266fa29/results/logs/bench-fs-fxfs-guest)
+
+OK - 0/0 passed (1 reports)
+[bench-fs-fxfs-guest-dax] ... REPORT (108 s of 5400 s)
+  fxfs-guest-dax (3 iterations)
+
+  workload                     median          min          max  unit
+  seq-write                     127.1        106.0        141.1  MiB/s
+  rand-read-cold              12136.3      11433.4      12145.3  IOPS
+  seq-read-cold                 398.1        391.4        399.4  MiB/s
+  seq-read-warm               10688.2      10666.2      10861.1  MiB/s
+  rand-read-warm             838474.3     832540.7     844911.5  IOPS
+  mmap-seq-read                9846.2       9846.2       9846.2  MiB/s
+  rand-write                   5983.9       5853.5       6122.6  IOPS
+  mmap-rand-read            1281399.3    1274522.2    1295099.9  IOPS
+  mmap-rand-write             61594.0      46811.4      64503.9  IOPS
+  fsync-append                 3402.0       3025.1       3612.0  IOPS
+  sqlite-pread-scan             159.9        159.0        177.7  MiB/s
+  sqlite-pread-scan-warm       2777.6       2753.2       2787.3  MiB/s
+  sqlite-mmap-scan             2875.1       2829.1       2876.0  MiB/s
+  sqlite-mmap-scan-warm        2922.8       2855.2       2980.4  MiB/s
+  create                      78167.8      74598.3      78188.3  ops/s
+  stat-cold                  177937.8     168954.8     181808.0  ops/s
+  stat-warm                  844563.6     840794.3    1258569.3  ops/s
+  lookup-missing             501009.4     458020.7     502761.0  ops/s
+  readdir                   2836984.1    2775206.9    3091548.5  ops/s
+  read-small-cold             36414.9      34122.7      36659.0  ops/s
+  chmod                      369354.4     346418.5     415644.5  ops/s
+  setxattr                   184829.5     165427.1     194056.6  ops/s
+  link                        96243.8      88809.0      97118.3  ops/s
+  rename                      77334.4      72651.9      77352.2  ops/s
+  rename-across               63839.7      56464.8      65055.9  ops/s
+  unlink                     251464.5     200851.3     252803.8  ops/s
+  create-fsync                 2920.8       2899.6       3032.0  ops/s
+  mkdir-tree                  77465.6      77354.5      79638.3  ops/s
+  find-cold                  150022.9     143907.0     150070.6  ops/s
+  rm-tree                     66905.3      64599.0      67923.2  ops/s
+  large-dir-create            89536.5      88818.3      89676.4  ops/s
+  large-dir-stat-cold        160354.6     158805.6     168700.6  ops/s
+  large-dir-unlink           137506.7     128407.8     188103.0  ops/s
+  create-parallel            124826.3     124094.3     125205.9  ops/s
+  stat-parallel              476069.0     427880.5     484046.0  ops/s
+  unlink-parallel            168581.5     166073.0     176318.2  ops/s
+  create-shared-dir           83603.6      81446.5      87128.0  ops/s
+  unlink-shared-dir          154313.4     123008.2     160790.5  ops/s
+  untar                           0.0          0.0          0.0  s
+  make                            4.6          4.6          4.6  s
+  build-total                     4.6          4.6          4.7  s
+  mmap-seq-read-faults-per-mib: [5.5, 5.5, 5.5]
+  mtime-ahead-of-guest-ms: [-3.655, -5.672, -3.534]
+  sqlite-mmap-scan-faults-per-mib: [1.7, 1.7, 1.7]
+  sqlite-mmap-scan-warm-faults-per-mib: [1.7, 1.7, 1.7]
+  sqlite-pread-scan-faults-per-mib: [2.7, 2.7, 2.7]
+  sqlite-pread-scan-warm-faults-per-mib: [2.7, 2.6, 2.6]
+
+(See test artifacts at: /home/ramon/run-20261109T052200Z-7266fa29/results/logs/bench-fs-fxfs-guest-dax)
+
+OK - 0/0 passed (1 reports)
+[bench-fs-fxfs-guest-dax-followed] ... REPORT (114 s of 5400 s)
+  fxfs-guest-dax-followed (3 iterations)
+
+  workload                     median          min          max  unit
+  seq-write                     126.2        108.1        140.2  MiB/s
+  rand-read-cold              80709.4      11644.6      93090.9  IOPS
+  seq-read-cold                1446.3        398.8       1479.8  MiB/s
+  seq-read-warm               10927.5      10799.6      10999.5  MiB/s
+  rand-read-warm             844648.2     839746.6     846631.7  IOPS
+  mmap-seq-read               10240.0       9846.2      10240.0  MiB/s
+  rand-write                   6422.6       5305.7       7083.4  IOPS
+  mmap-rand-read             920708.6     776692.7    1288196.4  IOPS
+  mmap-rand-write             63503.9      45385.0      64000.0  IOPS
+  fsync-append                 1980.7       1673.2       2311.5  IOPS
+  sqlite-pread-scan             171.3        156.5        606.2  MiB/s
+  sqlite-pread-scan-warm       2810.2       2750.3       2831.2  MiB/s
+  sqlite-mmap-scan             2873.7       2815.8       2964.2  MiB/s
+  sqlite-mmap-scan-warm        2949.8       2946.7       2976.0  MiB/s
+  create                      77999.1      69237.7      78238.1  ops/s
+  stat-cold                  176261.9     170591.5     183493.2  ops/s
+  stat-warm                 1124892.3     984759.9    1180062.8  ops/s
+  lookup-missing             483590.2     408690.3     492895.3  ops/s
+  readdir                   3026877.2    2708643.4    3172865.7  ops/s
+  read-small-cold             34380.9      23260.7      35297.4  ops/s
+  chmod                      362177.8     353547.8     392625.9  ops/s
+  setxattr                   168147.1     166247.4     169151.3  ops/s
+  link                        93609.2      74543.4      93715.8  ops/s
+  rename                      73664.0      57001.2      76186.7  ops/s
+  rename-across               51263.5      48235.9      61640.4  ops/s
+  unlink                     201743.8     153459.6     283813.2  ops/s
+  create-fsync                 2005.1       1931.1       2062.0  ops/s
+  mkdir-tree                  75556.5      68862.8      76948.0  ops/s
+  find-cold                  151893.0     117446.8     154760.7  ops/s
+  rm-tree                     66376.9      53424.8      69550.4  ops/s
+  large-dir-create            87661.9      69232.2      88616.9  ops/s
+  large-dir-stat-cold        156708.1     136897.9     168806.6  ops/s
+  large-dir-unlink           174203.6     134584.9     187514.8  ops/s
+  create-parallel            124183.8     121938.0     124308.9  ops/s
+  stat-parallel              377164.7     357610.9     415920.6  ops/s
+  unlink-parallel            162314.9     155325.4     168471.0  ops/s
+  create-shared-dir           84295.5      78905.0      88862.5  ops/s
+  unlink-shared-dir          162017.7     128149.4     165521.8  ops/s
+  untar                           0.0          0.0          0.0  s
+  make                            4.6          4.6          4.6  s
+  build-total                     4.6          4.6          4.6  s
+  follower1-failed-reads: [0.0]
+  follower1-raced-reads: [11964620.0]
+  follower1-reads: [755186.0]
+  follower2-failed-reads: [0.0]
+  follower2-raced-reads: [11855820.0]
+  follower2-reads: [752696.0]
+  mmap-seq-read-faults-per-mib: [5.5, 5.5, 5.5]
+  mtime-ahead-of-guest-ms: [-1.29, -5.065, -5.917]
+  sqlite-mmap-scan-faults-per-mib: [1.7, 1.7, 1.7]
+  sqlite-mmap-scan-warm-faults-per-mib: [1.7, 1.7, 1.7]
+  sqlite-pread-scan-faults-per-mib: [2.7, 2.7, 2.7]
+  sqlite-pread-scan-warm-faults-per-mib: [2.6, 2.6, 2.6]
+
+(See test artifacts at: /home/ramon/run-20261109T052200Z-7266fa29/results/logs/bench-fs-fxfs-guest-dax-followed)
+
+OK - 0/0 passed (1 reports)
+[bench-fs-fxfs-guest-dax-followed-idle] ... REPORT (115 s of 5400 s)
+  fxfs-guest-dax-followed-idle (3 iterations)
+
+  workload                     median          min          max  unit
+  seq-write                     132.4        105.7        141.0  MiB/s
+  rand-read-cold              12055.9      11872.5      12281.9  IOPS
+  seq-read-cold                 394.5        393.2        397.5  MiB/s
+  seq-read-warm               11029.0      10860.1      11172.4  MiB/s
+  rand-read-warm             851288.4     833101.9     852069.0  IOPS
+  mmap-seq-read                9846.2       9846.2      10240.0  MiB/s
+  rand-write                   6001.5       5990.5       6437.7  IOPS
+  mmap-rand-read            1288952.0    1285162.9    1295865.6  IOPS
+  mmap-rand-write             64000.0      55165.0      64251.0  IOPS
+  fsync-append                 2652.8       2646.0       2998.5  IOPS
+  sqlite-pread-scan             159.3        156.9        162.9  MiB/s
+  sqlite-pread-scan-warm       2753.0       2748.6       2754.3  MiB/s
+  sqlite-mmap-scan             2857.9       2855.0       2906.5  MiB/s
+  sqlite-mmap-scan-warm        2991.8       2959.6       2996.7  MiB/s
+  create                      79047.6      76471.1      80808.6  ops/s
+  stat-cold                  169497.2     167429.8     187590.7  ops/s
+  stat-warm                  832953.3     702609.4    1009573.3  ops/s
+  lookup-missing             469771.1     408611.6     486947.0  ops/s
+  readdir                   2822295.6    2605554.3    3030895.4  ops/s
+  read-small-cold             35403.6      35022.2      35873.4  ops/s
+  chmod                      353900.9     346460.1     387108.1  ops/s
+  setxattr                   166694.9     165842.4     174149.5  ops/s
+  link                        91023.3      87635.0      94117.9  ops/s
+  rename                      72621.4      59880.9      75369.4  ops/s
+  rename-across               62286.9      60576.6      65902.1  ops/s
+  unlink                     257238.7     196532.8     259038.7  ops/s
+  create-fsync                 2371.6       2102.2       2443.7  ops/s
+  mkdir-tree                  77987.8      71045.8      78290.3  ops/s
+  find-cold                  148473.5     123517.8     154967.0  ops/s
+  rm-tree                     67217.8      65456.8      69086.5  ops/s
+  large-dir-create            86629.3      86583.5      89313.1  ops/s
+  large-dir-stat-cold        163828.1     120755.0     164234.1  ops/s
+  large-dir-unlink           176316.8     137417.1     189185.9  ops/s
+  create-parallel            113835.5     112407.8     121531.6  ops/s
+  stat-parallel              425312.0     338917.9     433943.9  ops/s
+  unlink-parallel            173754.7     162423.1     181120.8  ops/s
+  create-shared-dir           89022.1      84491.7      90567.6  ops/s
+  unlink-shared-dir          156964.5     153583.5     175897.6  ops/s
+  untar                           0.0          0.0          0.0  s
+  make                            4.6          4.6          4.6  s
+  build-total                     4.6          4.6          4.6  s
+  follower1-failed-reads: [0.0]
+  follower1-raced-reads: [0.0]
+  follower1-reads: [0.0]
+  follower2-failed-reads: [0.0]
+  follower2-raced-reads: [0.0]
+  follower2-reads: [0.0]
+  mmap-seq-read-faults-per-mib: [5.5, 5.5, 5.5]
+  mtime-ahead-of-guest-ms: [-6.421, -6.57, -5.491]
+  sqlite-mmap-scan-faults-per-mib: [1.7, 1.7, 1.7]
+  sqlite-mmap-scan-warm-faults-per-mib: [1.7, 1.7, 1.7]
+  sqlite-pread-scan-faults-per-mib: [2.7, 2.7, 2.7]
+  sqlite-pread-scan-warm-faults-per-mib: [2.7, 2.6, 2.6]
+
+(See test artifacts at: /home/ramon/run-20261109T052200Z-7266fa29/results/logs/bench-fs-fxfs-guest-dax-followed-idle)
+
+OK - 0/0 passed (1 reports)
+Logs: /home/ramon/run-20261109T052200Z-7266fa29/results/logs
+Results: /home/ramon/run-20261109T052200Z-7266fa29/results

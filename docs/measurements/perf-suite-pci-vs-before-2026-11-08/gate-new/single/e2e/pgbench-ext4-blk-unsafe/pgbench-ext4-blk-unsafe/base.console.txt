@@ -1,0 +1,7 @@
+[    0.330407] check access for rdinit=/init failed: -2, ignoring
+fxdax: boot kernel_ns=357069000 agent_ns=381186236
+[    0.568742] EXT4-fs (vdb): mounted filesystem 98f51369-dcc1-4e61-972f-da0ae0d8c154 r/w with ordered data mode. Quota mode: none.
+[    0.573549] EXT4-fs (vdb): unmounting filesystem 98f51369-dcc1-4e61-972f-da0ae0d8c154.
+OK base
+[    0.579359] reboot: Restarting system
+[    0.580557] reboot: machine restart

@@ -1,0 +1,33 @@
+info: component rust-std for target x86_64-unknown-linux-musl is up to date
+info: component clippy is up to date
+== the image: 2560 files of 4 MiB
+== old: building /home/ramon/run-20261109T035142Z-eaf5c011-old/source
+== old: timing
+import	0	203.722
+sync	0	0.037
+stat	0	0.035
+fork	1	0.057
+stat	1	0.039
+fork	2	0.037
+stat	2	0.040
+fork	3	0.039
+stat	3	0.039
+fork	4	0.039
+stat	4	0.039
+fork	5	0.038
+stat	5	0.042
+== new: building /home/ramon/run-20261109T035142Z-eaf5c011-new/source
+== new: timing
+import	0	202.663
+sync	0	0.036
+stat	0	0.034
+fork	1	0.057
+stat	1	0.037
+fork	2	0.039
+stat	2	0.037
+fork	3	0.039
+stat	3	0.036
+fork	4	0.036
+stat	4	0.037
+fork	5	0.036
+stat	5	0.036

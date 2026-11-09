@@ -1,0 +1,29 @@
+{
+  "boot-source": {
+    "boot_args": "console=ttyS0 loglevel=5 reboot=k panic=-1 8250.nr_uarts=1 i8042.noaux i8042.nomux i8042.dumbkbd sysctl.kernel.hung_task_timeout_secs=10 softlockup_panic=1 panic_print=0x1 sysctl.kernel.softlockup_all_cpu_backtrace=1 init=/guest-agent FXDAX_PGBENCH_ROLE=base FXDAX_GUEST_WATCHDOG_SECS=1182 -- fxfs-guest-pgbench-dax",
+    "kernel_image_path": "/var/lib/fxdax-test/guest-kernel-release/out/x86_64/vmlinux"
+  },
+  "drives": [
+    {
+      "drive_id": "rootfs",
+      "is_read_only": false,
+      "is_root_device": true,
+      "path_on_host": "/home/ramon/run-20261109T052049Z-c2267f0b/results/e2e/fxfs-guest-pgbench-dax/fxfs-guest-pgbench-dax/base.rootfs.ext4"
+    }
+  ],
+  "extent": [
+    {
+      "capacity": 17179869184,
+      "extentd_socket": "/tmp/fxdax-pgbench.0oM3fbJYpiLG/extentd.sock",
+      "id": "extents",
+      "path_on_host": "/home/ramon/run-20261109T052049Z-c2267f0b/results/e2e/fxfs-guest-pgbench-dax/fxfs-guest-pgbench-dax/base",
+      "tag": "extents"
+    }
+  ],
+  "machine-config": {
+    "huge_pages": "None",
+    "mem_size_mib": 512,
+    "vcpu_count": 2
+  },
+  "pmem": []
+}

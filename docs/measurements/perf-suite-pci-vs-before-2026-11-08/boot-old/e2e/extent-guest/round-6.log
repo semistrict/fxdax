@@ -1,0 +1,5 @@
+[    0.064277] PCI: Fatal: No config space access function found
+[    0.096226] PCI: System does not support PCI
+[    0.249668] check access for rdinit=/init failed: -2, ignoring
+fxdax: boot kernel_ns=275100000 agent_ns=300834703
+[    0.337204] reboot: Restarting system

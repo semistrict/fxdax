@@ -1,0 +1,481 @@
+   Compiling fxfs v0.1.0 (/var/lib/fxdax-test/test-tree/crates/fxfs)
+   Compiling fxdax v0.1.0 (/var/lib/fxdax-test/test-tree/crates/fxdax)
+   Compiling fxfs-posix v0.1.0 (/var/lib/fxdax-test/test-tree/crates/fxfs-posix)
+    Finished `release` profile [optimized] target(s) in 2m 17s
+    Finished `release` profile [optimized] target(s) in 0.19s
+   Compiling fxfs v0.1.0 (/var/lib/fxdax-test/test-tree/crates/fxfs)
+   Compiling fxdax v0.1.0 (/var/lib/fxdax-test/test-tree/crates/fxdax)
+   Compiling fxfs-posix v0.1.0 (/var/lib/fxdax-test/test-tree/crates/fxfs-posix)
+   Compiling vmm v0.1.0 (/var/lib/fxdax-test/test-tree/target/firecracker/src/vmm)
+   Compiling firecracker v1.16.1 (/var/lib/fxdax-test/test-tree/target/firecracker/src/firecracker)
+    Finished `release` profile [optimized] target(s) in 2m 15s
+    Finished `release` profile [optimized] target(s) in 0.12s
+warning: method `unallowed` is never used
+   --> test_cases/src/differential.rs:194:12
+    |
+156 | impl Differences {
+    | ---------------- method in this implementation
+...
+194 |     pub fn unallowed(&self) -> impl Iterator<Item = (&Difference, &Seen)> {
+    |            ^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+
+running 114 tests
+..................................................................................test differential::tests::refusals_are_adopted_by_the_reference has been running for over 60 seconds
+..... 87/114
+...........................
+test result: ok. 114 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 98.77s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Compiling fxfs v0.1.0 (/var/lib/fxdax-test/test-tree/crates/fxfs)
+   Compiling fxdax v0.1.0 (/var/lib/fxdax-test/test-tree/crates/fxdax)
+   Compiling fxfs-posix v0.1.0 (/var/lib/fxdax-test/test-tree/crates/fxfs-posix)
+   Compiling vmm v0.1.0 (/var/lib/fxdax-test/test-tree/target/firecracker/src/vmm)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 00s
+────────────
+ Nextest run ID ee6f7681-8ee2-4bda-95b9-d900197a8638 with nextest profile: default
+    Starting 29 tests across 1 binary (722 tests skipped)
+        PASS [   0.008s] ( 1/29) vmm devices::virtio::extent::device::tests::drivers_take_every_feature_offered
+        PASS [   0.008s] ( 2/29) vmm devices::virtio::extent::device::tests::branches_are_not_the_clocks
+        PASS [   0.008s] ( 3/29) vmm devices::virtio::device::tests::test_features_written_again
+        PASS [   0.008s] ( 4/29) vmm devices::virtio::extent::device::tests::a_windows_private_pages_are_not_its_size
+        PASS [   0.007s] ( 5/29) vmm devices::virtio::extent::device::tests::the_configuration_says_its_version_first
+        PASS [   0.007s] ( 6/29) vmm devices::virtio::extent::device::tests::workers_start_all_or_none
+        PASS [   0.008s] ( 7/29) vmm devices::virtio::extent::persist::tests::snapshots_of_other_protocols_are_refused
+        PASS [   0.008s] ( 8/29) vmm devices::virtio::extent::device::tests::unxorshift_undoes_the_clocks_xorshift
+        PASS [   0.007s] ( 9/29) vmm devices::virtio::extent::tests::answers_to_shrinks_no_longer_asked_change_nothing
+        PASS [   0.007s] (10/29) vmm devices::virtio::extent::tests::stats_are_asked_of_guests_that_take_asks
+        PASS [   0.007s] (11/29) vmm devices::virtio::extent::window::tests::windows_are_bars_in_the_mmio64_gap
+        PASS [   0.008s] (12/29) vmm devices::virtio::extent::worker::tests::chains_writing_past_u32_are_refused
+        PASS [   0.039s] (13/29) vmm devices::virtio::extent::worker::tests::stats_go_to_the_daemon
+        PASS [   0.041s] (14/29) vmm devices::virtio::extent::worker::tests::test_follows_a_writer
+        PASS [   0.039s] (15/29) vmm devices::virtio::extent::worker::tests::test_refuses_bad_requests
+        PASS [   0.058s] (16/29) vmm devices::virtio::extent::worker::tests::test_refuses_many_past_their_most
+        PASS [   0.097s] (17/29) vmm devices::virtio::extent::worker::tests::test_frees_many_in_one_request
+        PASS [   0.010s] (18/29) vmm devices::virtio::transport::pci::device::tests::test_pci_device_ids
+        PASS [   0.041s] (19/29) vmm devices::virtio::extent::worker::tests::test_roots_and_info
+        PASS [   0.010s] (20/29) vmm devices::virtio::transport::pci::device::tests::test_shm_bar
+        PASS [   0.011s] (21/29) vmm signal_handler::tests::test_fault_logs_its_address
+        PASS [   0.013s] (22/29) vmm signal_handler::tests::test_stack_overflow_runs_the_handler
+        PASS [   0.008s] (23/29) vmm vmm_config::extent::tests::test_deserialize
+        PASS [   0.007s] (24/29) vmm vmm_config::extent::tests::test_insert
+        PASS [   0.046s] (25/29) vmm devices::virtio::extent::worker::tests::test_writes_and_reads
+        PASS [   0.008s] (26/29) vmm vmm_config::extent::tests::test_insert_invalid
+        PASS [   0.008s] (27/29) vmm vstate::vcpu::tests::efaults_given_up_on_tell_where
+        PASS [   0.007s] (28/29) vmm vstate::vcpu::tests::test_exit_code_sent_before_the_exit_event
+        PASS [  10.036s] (29/29) vmm devices::virtio::extent::worker::tests::test_answers_whatever_a_driver_asks
+────────────
+     Summary [  10.060s] 29 tests run: 29 passed, 722 skipped
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.23s
+────────────
+ Nextest run ID 32335758-86b2-4996-bd73-b5733841203b with nextest profile: default
+    Starting 31 tests across 1 binary (720 tests skipped)
+        PASS [   0.051s] ( 1/31) vmm device_manager::pci_mngr::tests::test_device_manager_persistence
+        PASS [   0.056s] ( 2/31) vmm device_manager::persist::tests::test_device_manager_persistence
+        PASS [   0.006s] ( 3/31) vmm devices::virtio::transport::pci::common_config::tests::test_bad_width_reads
+        PASS [   0.005s] ( 4/31) vmm devices::virtio::transport::pci::common_config::tests::test_config_msix_vector
+        PASS [   0.006s] ( 5/31) vmm devices::virtio::transport::pci::common_config::tests::test_device_activated_blocks_transitions
+        PASS [   0.005s] ( 6/31) vmm devices::virtio::transport::pci::common_config::tests::test_device_feature
+        PASS [   0.006s] ( 7/31) vmm devices::virtio::transport::pci::common_config::tests::test_device_status
+        PASS [   0.005s] ( 8/31) vmm devices::virtio::transport::pci::common_config::tests::test_device_status_invalid_transitions
+        PASS [   0.005s] ( 9/31) vmm devices::virtio::transport::pci::common_config::tests::test_driver_feature
+        PASS [   0.005s] (10/31) vmm devices::virtio::transport::pci::common_config::tests::test_num_queues
+        PASS [   0.005s] (11/31) vmm devices::virtio::transport::pci::common_config::tests::test_queue_addresses
+        PASS [   0.005s] (12/31) vmm devices::virtio::transport::pci::common_config::tests::test_queue_enable
+        PASS [   0.005s] (13/31) vmm devices::virtio::transport::pci::common_config::tests::test_queue_msix_vector
+        PASS [   0.005s] (14/31) vmm devices::virtio::transport::pci::common_config::tests::test_queue_notify_off
+        PASS [   0.005s] (15/31) vmm devices::virtio::transport::pci::common_config::tests::test_queue_size
+        PASS [   0.005s] (16/31) vmm devices::virtio::transport::pci::common_config::tests::write_base_regs
+        PASS [   0.026s] (17/31) vmm devices::virtio::transport::pci::device::tests::test_activate_failure_sets_needs_reset
+        PASS [   0.021s] (18/31) vmm devices::virtio::transport::pci::device::tests::test_capabilities
+        PASS [   0.025s] (19/31) vmm devices::virtio::transport::pci::device::tests::test_config_space_as_upstream
+        PASS [   0.024s] (20/31) vmm devices::virtio::transport::pci::device::tests::test_device_initialization
+        PASS [   0.022s] (21/31) vmm devices::virtio::transport::pci::device::tests::test_failed_reset_blocks_reinitialization
+        PASS [   0.026s] (22/31) vmm devices::virtio::transport::pci::device::tests::test_isr_capability
+        PASS [   0.022s] (23/31) vmm devices::virtio::transport::pci::device::tests::test_no_shared_memory_capabilities
+        PASS [   0.022s] (24/31) vmm devices::virtio::transport::pci::device::tests::test_notification_capability
+        PASS [   0.021s] (25/31) vmm devices::virtio::transport::pci::device::tests::test_pci_configuration_cap
+        PASS [   0.022s] (26/31) vmm devices::virtio::transport::pci::device::tests::test_pci_device_config
+        PASS [   0.006s] (27/31) vmm devices::virtio::transport::pci::device::tests::test_pci_device_ids
+        PASS [   0.022s] (28/31) vmm devices::virtio::transport::pci::device::tests::test_reading_bars
+        PASS [   0.025s] (29/31) vmm devices::virtio::transport::pci::device::tests::test_reset_then_reinitialization
+        PASS [   0.022s] (30/31) vmm devices::virtio::transport::pci::device::tests::test_shared_memory_capabilities
+        PASS [   0.006s] (31/31) vmm devices::virtio::transport::pci::device::tests::test_shm_bar
+────────────
+     Summary [   0.495s] 31 tests run: 31 passed, 720 skipped
+warning: method `unallowed` is never used
+   --> test_cases/src/differential.rs:194:12
+    |
+156 | impl Differences {
+    | ---------------- method in this implementation
+...
+194 |     pub fn unallowed(&self) -> impl Iterator<Item = (&Difference, &Seen)> {
+    |            ^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+[bench-fork-fxfs-guest-dax-warm] ... REPORT (68 s of 5400 s)
+  fxfs-guest-dax-fork-warm (3 iterations)
+
+  workload                     median          min          max  unit
+  base-copy-usr                   5.0          5.0          5.0  s
+  base-pgbench-init               7.2          7.2          7.2  s
+  fork-mount                      0.2          0.2          0.3  s
+  fork-read-usr                   0.8          0.8          3.8  s
+  fork-reread-usr                 0.1          0.1          0.1  s
+  fork-pg-start                   0.3          0.3          0.3  s
+  fork-pgbench-select         26644.1      24138.4      26709.6  tps
+  extentd-cache-trim-ns: [0.0, 0.0, 0.0]
+  extentd-cache-trims: [0.0, 0.0, 0.0]
+  extentd-commit-ns: [22267316.0, 26980790.0, 24127029.0]
+  extentd-commit-store-ns: [873377.0, 1117871.0, 997813.0]
+  extentd-commit-wait-ns: [21379858.0, 25853128.0, 23119023.0]
+  extentd-commits: [33.0, 33.0, 33.0]
+  extentd-fault-ns: [1400490210.0, 0.0, 0.0]
+  extentd-fault-refusals: [0.0, 0.0, 0.0]
+  extentd-fault-stores: [0.0, 0.0, 0.0]
+  extentd-fault-waits: [0.0, 0.0, 0.0]
+  extentd-faults: [4568.0, 0.0, 0.0]
+  extentd-fetched-bytes: [632532992.0, 49152.0, 49152.0]
+  extentd-map-ns: [17140820.0, 60074902.0, 60630469.0]
+  extentd-maps: [712.0, 712.0, 712.0]
+  extentd-page-in-bytes: [20480.0, 20480.0, 20480.0]
+  extentd-page-ins: [1788.0, 12.0, 12.0]
+  extentd-prefetches: [0.0, 1782.0, 1782.0]
+  extentd-read-bytes: [8413184.0, 8413184.0, 8413184.0]
+  extentd-read-stored-bytes: [45056.0, 45056.0, 45056.0]
+  extentd-reads: [1287.0, 1287.0, 1287.0]
+  extentd-segment-close-ns: [6276530.0, 6542378.0, 6287473.0]
+  extentd-segment-closes: [6.0, 6.0, 6.0]
+  extentd-stage-leave-outs: [0.0, 0.0, 0.0]
+  extentd-stage-map-bytes: [0.0, 0.0, 0.0]
+  extentd-stage-maps: [0.0, 0.0, 0.0]
+  extentd-stage-ns: [0.0, 0.0, 0.0]
+  extentd-stage-ops: [0.0, 0.0, 0.0]
+  extentd-stage-overwrites: [0.0, 0.0, 0.0]
+  extentd-stage-private-ns: [0.0, 0.0, 0.0]
+  extentd-stage-private-pages: [0.0, 0.0, 0.0]
+  extentd-stage-private-runs: [0.0, 0.0, 0.0]
+  extentd-stage-segments: [0.0, 0.0, 0.0]
+  extentd-unpacks: [0.0, 0.0, 0.0]
+  extentd-vm-private-request-ns: [0.0, 0.0, 0.0]
+  extentd-vm-private-requests: [0.0, 0.0, 0.0]
+  guest-advance-ms: [0.0, 0.0, 0.0]
+  guest-advance-requests: [0.0, 0.0, 0.0]
+  guest-commit-ms: [0.866, 0.935, 0.898]
+  guest-commit-requests: [5.0, 5.0, 5.0]
+  guest-free-ms: [4.763, 4.503, 5.007]
+  guest-free-requests: [19.0, 19.0, 19.0]
+  guest-freeze-ms: [0.0, 0.0, 0.0]
+  guest-freeze-requests: [0.0, 0.0, 0.0]
+  guest-info-ms: [1.264, 1.245, 0.562]
+  guest-info-requests: [3.0, 3.0, 3.0]
+  guest-let_go-ms: [0.0, 0.0, 0.0]
+  guest-let_go-requests: [0.0, 0.0, 0.0]
+  guest-map-ms: [122.128, 301.616, 300.344]
+  guest-map-requests: [363.0, 363.0, 363.0]
+  guest-pin-ms: [0.0, 0.0, 0.0]
+  guest-pin-requests: [0.0, 0.0, 0.0]
+  guest-private-ms: [8.7, 7.284, 6.954]
+  guest-private-requests: [16.0, 16.0, 16.0]
+  guest-read-ms: [2859.497, 578.971, 544.308]
+  guest-read-requests: [1286.0, 1286.0, 1286.0]
+  guest-resized-ms: [0.0, 0.0, 0.0]
+  guest-resized-requests: [0.0, 0.0, 0.0]
+  guest-root-ms: [0.67, 0.761, 1.347]
+  guest-root-requests: [4.0, 4.0, 4.0]
+  guest-stats-ms: [0.0, 0.0, 0.0]
+  guest-stats-requests: [0.0, 0.0, 0.0]
+  guest-unmap-ms: [1.201, 0.951, 0.899]
+  guest-unmap-requests: [4.0, 4.0, 4.0]
+  guest-unpin-ms: [0.0, 0.0, 0.0]
+  guest-unpin-requests: [0.0, 0.0, 0.0]
+  guest-write-ms: [10.206, 14.629, 14.454]
+  guest-write-requests: [59.0, 59.0, 59.0]
+
+(See test artifacts at: /home/ramon/run-20261109T091534Z-6f638452/results/e2e/bench-fork-fxfs-guest-dax-warm)
+
+OK - 0/0 passed (1 reports)
+[bench-fork-fxfs-guest-dax-cold] ... REPORT (77 s of 5400 s)
+  fxfs-guest-dax-fork-cold (3 iterations)
+
+  workload                     median          min          max  unit
+  base-copy-usr                   5.2          5.2          5.2  s
+  base-pgbench-init               7.7          7.7          7.7  s
+  fork-mount                      0.3          0.3          0.3  s
+  fork-read-usr                   4.1          4.1          4.1  s
+  fork-reread-usr                 0.1          0.1          0.1  s
+  fork-pg-start                   0.3          0.3          0.3  s
+  fork-pgbench-select         18971.7      17983.4      23396.5  tps
+  extentd-cache-trim-ns: [0.0, 0.0, 0.0]
+  extentd-cache-trims: [0.0, 0.0, 0.0]
+  extentd-commit-ns: [23084718.0, 475051535.0, 48213581.0]
+  extentd-commit-store-ns: [929251.0, 931703.0, 1210518.0]
+  extentd-commit-wait-ns: [22145084.0, 474109321.0, 46993720.0]
+  extentd-commits: [33.0, 33.0, 33.0]
+  extentd-fault-ns: [1815961689.0, 1779754939.0, 1746170826.0]
+  extentd-fault-refusals: [0.0, 0.0, 0.0]
+  extentd-fault-stores: [0.0, 0.0, 0.0]
+  extentd-fault-waits: [0.0, 0.0, 0.0]
+  extentd-faults: [4438.0, 4444.0, 4368.0]
+  extentd-fetched-bytes: [630177792.0, 630177792.0, 630177792.0]
+  extentd-map-ns: [18311693.0, 22060146.0, 17280024.0]
+  extentd-maps: [703.0, 703.0, 703.0]
+  extentd-page-in-bytes: [20480.0, 20480.0, 20480.0]
+  extentd-page-ins: [1746.0, 1746.0, 1746.0]
+  extentd-prefetches: [0.0, 0.0, 0.0]
+  extentd-read-bytes: [8491008.0, 8491008.0, 8491008.0]
+  extentd-read-stored-bytes: [61440.0, 61440.0, 61440.0]
+  extentd-reads: [1285.0, 1285.0, 1285.0]
+  extentd-segment-close-ns: [5962924.0, 82098243.0, 5768677.0]
+  extentd-segment-closes: [5.0, 5.0, 5.0]
+  extentd-stage-leave-outs: [0.0, 0.0, 0.0]
+  extentd-stage-map-bytes: [0.0, 0.0, 0.0]
+  extentd-stage-maps: [0.0, 0.0, 0.0]
+  extentd-stage-ns: [0.0, 0.0, 0.0]
+  extentd-stage-ops: [0.0, 0.0, 0.0]
+  extentd-stage-overwrites: [0.0, 0.0, 0.0]
+  extentd-stage-private-ns: [0.0, 0.0, 0.0]
+  extentd-stage-private-pages: [0.0, 0.0, 0.0]
+  extentd-stage-private-runs: [0.0, 0.0, 0.0]
+  extentd-stage-segments: [0.0, 0.0, 0.0]
+  extentd-unpacks: [0.0, 0.0, 0.0]
+  extentd-vm-private-request-ns: [0.0, 0.0, 0.0]
+  extentd-vm-private-requests: [0.0, 0.0, 0.0]
+  guest-advance-ms: [0.0, 0.0, 0.0]
+  guest-advance-requests: [0.0, 0.0, 0.0]
+  guest-commit-ms: [1.385, 0.874, 0.921]
+  guest-commit-requests: [5.0, 5.0, 5.0]
+  guest-free-ms: [4.713, 4.251, 4.485]
+  guest-free-requests: [19.0, 19.0, 19.0]
+  guest-freeze-ms: [0.0, 0.0, 0.0]
+  guest-freeze-requests: [0.0, 0.0, 0.0]
+  guest-info-ms: [0.636, 0.5, 0.468]
+  guest-info-requests: [3.0, 3.0, 3.0]
+  guest-let_go-ms: [0.0, 0.0, 0.0]
+  guest-let_go-requests: [0.0, 0.0, 0.0]
+  guest-map-ms: [129.347, 133.723, 125.838]
+  guest-map-requests: [362.0, 362.0, 362.0]
+  guest-pin-ms: [0.0, 0.0, 0.0]
+  guest-pin-requests: [0.0, 0.0, 0.0]
+  guest-private-ms: [8.887, 7.969, 7.881]
+  guest-private-requests: [16.0, 16.0, 16.0]
+  guest-read-ms: [2452.757, 2465.403, 2503.384]
+  guest-read-requests: [1284.0, 1284.0, 1284.0]
+  guest-resized-ms: [0.0, 0.0, 0.0]
+  guest-resized-requests: [0.0, 0.0, 0.0]
+  guest-root-ms: [0.564, 1.359, 1.01]
+  guest-root-requests: [4.0, 4.0, 4.0]
+  guest-stats-ms: [0.0, 0.0, 0.0]
+  guest-stats-requests: [0.0, 0.0, 0.0]
+  guest-unmap-ms: [1.188, 1.108, 1.174]
+  guest-unmap-requests: [4.0, 4.0, 4.0]
+  guest-unpin-ms: [0.0, 0.0, 0.0]
+  guest-unpin-requests: [0.0, 0.0, 0.0]
+  guest-write-ms: [11.131, 11.262, 13.935]
+  guest-write-requests: [59.0, 59.0, 59.0]
+
+(See test artifacts at: /home/ramon/run-20261109T091534Z-6f638452/results/e2e/bench-fork-fxfs-guest-dax-cold)
+
+OK - 0/0 passed (1 reports)
+[bench-fork-fxfs-guest-warm] ... REPORT (71 s of 5400 s)
+  fxfs-guest-fork-warm (3 iterations)
+
+  workload                     median          min          max  unit
+  base-copy-usr                   5.1          5.1          5.1  s
+  base-pgbench-init               7.0          7.0          7.0  s
+  fork-mount                      0.2          0.2          0.3  s
+  fork-read-usr                   2.7          2.7          3.8  s
+  fork-reread-usr                 0.0          0.0          0.0  s
+  fork-pg-start                   0.3          0.3          0.3  s
+  fork-pgbench-select         21638.1      21398.7      21653.3  tps
+  extentd-cache-trim-ns: [0.0, 0.0, 0.0]
+  extentd-cache-trims: [0.0, 0.0, 0.0]
+  extentd-commit-ns: [23436592.0, 39307527.0, 22499082.0]
+  extentd-commit-store-ns: [914682.0, 1041089.0, 995718.0]
+  extentd-commit-wait-ns: [22511766.0, 38256259.0, 21494116.0]
+  extentd-commits: [33.0, 33.0, 33.0]
+  extentd-fault-ns: [0.0, 0.0, 0.0]
+  extentd-fault-refusals: [0.0, 0.0, 0.0]
+  extentd-fault-stores: [0.0, 0.0, 0.0]
+  extentd-fault-waits: [0.0, 0.0, 0.0]
+  extentd-faults: [0.0, 0.0, 0.0]
+  extentd-fetched-bytes: [625647616.0, 49152.0, 49152.0]
+  extentd-map-ns: [0.0, 0.0, 0.0]
+  extentd-maps: [0.0, 0.0, 0.0]
+  extentd-page-in-bytes: [20480.0, 20480.0, 20480.0]
+  extentd-page-ins: [1765.0, 12.0, 12.0]
+  extentd-prefetches: [0.0, 1758.0, 1758.0]
+  extentd-read-bytes: [621260800.0, 621260800.0, 621260800.0]
+  extentd-read-stored-bytes: [61440.0, 61440.0, 61440.0]
+  extentd-reads: [21215.0, 21223.0, 21199.0]
+  extentd-segment-close-ns: [6709136.0, 6036457.0, 6656727.0]
+  extentd-segment-closes: [6.0, 6.0, 6.0]
+  extentd-stage-leave-outs: [0.0, 0.0, 0.0]
+  extentd-stage-map-bytes: [0.0, 0.0, 0.0]
+  extentd-stage-maps: [0.0, 0.0, 0.0]
+  extentd-stage-ns: [0.0, 0.0, 0.0]
+  extentd-stage-ops: [0.0, 0.0, 0.0]
+  extentd-stage-overwrites: [0.0, 0.0, 0.0]
+  extentd-stage-private-ns: [0.0, 0.0, 0.0]
+  extentd-stage-private-pages: [0.0, 0.0, 0.0]
+  extentd-stage-private-runs: [0.0, 0.0, 0.0]
+  extentd-stage-segments: [0.0, 0.0, 0.0]
+  extentd-unpacks: [0.0, 0.0, 0.0]
+  extentd-vm-private-request-ns: [0.0, 0.0, 0.0]
+  extentd-vm-private-requests: [0.0, 0.0, 0.0]
+  guest-advance-ms: [0.0, 0.0, 0.0]
+  guest-advance-requests: [0.0, 0.0, 0.0]
+  guest-commit-ms: [0.832, 0.862, 0.922]
+  guest-commit-requests: [5.0, 5.0, 5.0]
+  guest-free-ms: [4.738, 5.235, 4.925]
+  guest-free-requests: [19.0, 19.0, 19.0]
+  guest-freeze-ms: [0.0, 0.0, 0.0]
+  guest-freeze-requests: [0.0, 0.0, 0.0]
+  guest-info-ms: [0.596, 0.584, 1.074]
+  guest-info-requests: [3.0, 3.0, 3.0]
+  guest-let_go-ms: [0.0, 0.0, 0.0]
+  guest-let_go-requests: [0.0, 0.0, 0.0]
+  guest-map-ms: [0.0, 0.0, 0.0]
+  guest-map-requests: [0.0, 0.0, 0.0]
+  guest-pin-ms: [0.0, 0.0, 0.0]
+  guest-pin-requests: [0.0, 0.0, 0.0]
+  guest-private-ms: [0.0, 0.0, 0.0]
+  guest-private-requests: [0.0, 0.0, 0.0]
+  guest-read-ms: [7749.737, 4116.465, 4002.004]
+  guest-read-requests: [21214.0, 21222.0, 21198.0]
+  guest-resized-ms: [0.0, 0.0, 0.0]
+  guest-resized-requests: [0.0, 0.0, 0.0]
+  guest-root-ms: [0.565, 1.485, 0.795]
+  guest-root-requests: [4.0, 4.0, 4.0]
+  guest-stats-ms: [0.0, 0.0, 0.0]
+  guest-stats-requests: [0.0, 0.0, 0.0]
+  guest-unmap-ms: [0.0, 0.0, 0.0]
+  guest-unmap-requests: [0.0, 0.0, 0.0]
+  guest-unpin-ms: [0.0, 0.0, 0.0]
+  guest-unpin-requests: [0.0, 0.0, 0.0]
+  guest-write-ms: [11.138, 11.487, 12.334]
+  guest-write-requests: [59.0, 59.0, 59.0]
+
+(See test artifacts at: /home/ramon/run-20261109T091534Z-6f638452/results/e2e/bench-fork-fxfs-guest-warm)
+
+OK - 0/0 passed (1 reports)
+[bench-fork-ext4-dax-pmem] ... REPORT (86 s of 5400 s)
+  ext4-dax-pmem-fork (3 iterations)
+
+  workload                     median          min          max  unit
+  base-copy-usr                   6.5          6.5          6.5  s
+  base-pgbench-init               7.0          7.0          7.0  s
+  fork-mount                      3.8          3.8          3.8  s
+  fork-read-usr                   2.1          2.1          2.1  s
+  fork-reread-usr                 0.1          0.1          0.1  s
+  fork-pg-start                   0.3          0.3          0.3  s
+  fork-pgbench-select         23184.0      19182.7      25194.0  tps
+
+(See test artifacts at: /home/ramon/run-20261109T091534Z-6f638452/results/e2e/bench-fork-ext4-dax-pmem)
+
+OK - 0/0 passed (1 reports)
+[bench-fork-ext4-pmem] ... REPORT (96 s of 5400 s)
+  ext4-pmem-fork (3 iterations)
+
+  workload                     median          min          max  unit
+  base-copy-usr                   4.8          4.8          4.8  s
+  base-pgbench-init               8.6          8.6          8.6  s
+  fork-mount                      3.8          3.8          3.8  s
+  fork-read-usr                   4.2          4.2          4.2  s
+  fork-reread-usr                 0.0          0.0          0.0  s
+  fork-pg-start                   0.3          0.3          0.3  s
+  fork-pgbench-select         20816.0      18665.6      23030.3  tps
+
+(See test artifacts at: /home/ramon/run-20261109T091534Z-6f638452/results/e2e/bench-fork-ext4-pmem)
+
+OK - 0/0 passed (1 reports)
+[bench-fork-fxfs-guest-dax-profiled] ... REPORT (88 s of 5400 s)
+  fxfs-guest-dax-fork-profiled (3 iterations)
+
+  workload                     median          min          max  unit
+  base-copy-usr                   5.0          5.0          5.0  s
+  base-pgbench-init               7.3          7.3          7.3  s
+  fork-mount                      0.4          0.4          0.5  s
+  fork-read-usr                   0.9          0.8          0.9  s
+  fork-reread-usr                 0.1          0.1          0.1  s
+  fork-pg-start                   0.3          0.3          0.3  s
+  fork-pgbench-select         25707.2      20505.8      26942.4  tps
+  extentd-cache-trim-ns: [0.0, 0.0, 0.0]
+  extentd-cache-trims: [0.0, 0.0, 0.0]
+  extentd-commit-ns: [25217056.0, 22484676.0, 25616732.0]
+  extentd-commit-store-ns: [935027.0, 976821.0, 950719.0]
+  extentd-commit-wait-ns: [24272608.0, 21498986.0, 24656461.0]
+  extentd-commits: [33.0, 33.0, 33.0]
+  extentd-fault-ns: [0.0, 0.0, 0.0]
+  extentd-fault-refusals: [0.0, 0.0, 0.0]
+  extentd-fault-stores: [0.0, 0.0, 0.0]
+  extentd-fault-waits: [0.0, 0.0, 0.0]
+  extentd-faults: [0.0, 0.0, 0.0]
+  extentd-fetched-bytes: [634466304.0, 634466304.0, 634466304.0]
+  extentd-map-ns: [58291534.0, 58702156.0, 58631317.0]
+  extentd-maps: [706.0, 706.0, 706.0]
+  extentd-page-in-bytes: [20480.0, 20480.0, 20480.0]
+  extentd-page-ins: [1775.0, 1775.0, 1775.0]
+  extentd-prefetches: [1769.0, 1769.0, 1769.0]
+  extentd-read-bytes: [8515584.0, 8515584.0, 8515584.0]
+  extentd-read-stored-bytes: [86016.0, 86016.0, 86016.0]
+  extentd-reads: [1299.0, 1299.0, 1299.0]
+  extentd-segment-close-ns: [5930035.0, 6816640.0, 5917132.0]
+  extentd-segment-closes: [5.0, 6.0, 5.0]
+  extentd-stage-leave-outs: [0.0, 0.0, 0.0]
+  extentd-stage-map-bytes: [0.0, 0.0, 0.0]
+  extentd-stage-maps: [0.0, 0.0, 0.0]
+  extentd-stage-ns: [0.0, 0.0, 0.0]
+  extentd-stage-ops: [0.0, 0.0, 0.0]
+  extentd-stage-overwrites: [0.0, 0.0, 0.0]
+  extentd-stage-private-ns: [0.0, 0.0, 0.0]
+  extentd-stage-private-pages: [0.0, 0.0, 0.0]
+  extentd-stage-private-runs: [0.0, 0.0, 0.0]
+  extentd-stage-segments: [0.0, 0.0, 0.0]
+  extentd-unpacks: [0.0, 0.0, 0.0]
+  extentd-vm-private-request-ns: [0.0, 0.0, 0.0]
+  extentd-vm-private-requests: [0.0, 0.0, 0.0]
+  guest-advance-ms: [0.0, 0.0, 0.0]
+  guest-advance-requests: [0.0, 0.0, 0.0]
+  guest-commit-ms: [2.502, 1.746, 1.332]
+  guest-commit-requests: [5.0, 5.0, 5.0]
+  guest-free-ms: [5.732, 5.344, 4.93]
+  guest-free-requests: [20.0, 20.0, 20.0]
+  guest-freeze-ms: [0.0, 0.0, 0.0]
+  guest-freeze-requests: [0.0, 0.0, 0.0]
+  guest-info-ms: [1.927, 0.588, 0.872]
+  guest-info-requests: [3.0, 3.0, 3.0]
+  guest-let_go-ms: [0.0, 0.0, 0.0]
+  guest-let_go-requests: [0.0, 0.0, 0.0]
+  guest-map-ms: [339.21, 315.007, 321.496]
+  guest-map-requests: [366.0, 366.0, 366.0]
+  guest-pin-ms: [0.0, 0.0, 0.0]
+  guest-pin-requests: [0.0, 0.0, 0.0]
+  guest-private-ms: [6.348, 5.977, 7.153]
+  guest-private-requests: [16.0, 16.0, 16.0]
+  guest-read-ms: [1481.585, 1340.608, 1465.548]
+  guest-read-requests: [1298.0, 1298.0, 1298.0]
+  guest-resized-ms: [0.0, 0.0, 0.0]
+  guest-resized-requests: [0.0, 0.0, 0.0]
+  guest-root-ms: [2.053, 1.807, 3.677]
+  guest-root-requests: [4.0, 4.0, 4.0]
+  guest-stats-ms: [0.0, 0.0, 0.0]
+  guest-stats-requests: [0.0, 0.0, 0.0]
+  guest-unmap-ms: [0.818, 1.071, 1.069]
+  guest-unmap-requests: [4.0, 4.0, 4.0]
+  guest-unpin-ms: [0.0, 0.0, 0.0]
+  guest-unpin-requests: [0.0, 0.0, 0.0]
+  guest-write-ms: [18.056, 20.288, 14.415]
+  guest-write-requests: [59.0, 59.0, 59.0]
+
+(See test artifacts at: /home/ramon/run-20261109T091534Z-6f638452/results/e2e/bench-fork-fxfs-guest-dax-profiled)
+
+OK - 0/0 passed (1 reports)
+Logs: /home/ramon/run-20261109T091534Z-6f638452/results/e2e

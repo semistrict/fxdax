@@ -1,0 +1,151 @@
+{
+ "commit": "0f011561a52f9d13506e67b7a4c3dff92fa6c530-dirty",
+ "rounds": 1,
+ "status": 0,
+ "failed": [],
+ "cases": [
+  {
+   "case": "fxfs-guest-pgbench",
+   "outcome": "pass",
+   "round": 1,
+   "rounds_passed": 1,
+   "failed_checks": [],
+   "reason": null,
+   "replay": "FXDAX_WORKSPACE_TESTS=0 FXDAX_E2E_TEST=fxfs-guest-pgbench FXDAX_E2E_ROUNDS=1 FXDAX_FIRECRACKER_JAIL=1 FXDAX_GUEST_KERNEL_BUILD=release FXDAX_TEST_PARTS='clippy workspace sim shuttle scripts guest firecracker' PJDFSTEST_COMMIT=85a8aea9e685999ef0540392fd80535f873d7ff7 PJDFSTEST_REPO=https://github.com/pjd/pjdfstest scripts/test-gce.sh all",
+   "daemons": [
+    {
+     "daemon": "extentd",
+     "downloaded": 735878,
+     "bucket_read": 45006848,
+     "store_read": 264650752
+    }
+   ]
+  },
+  {
+   "case": "fxfs-guest-pgbench-dax",
+   "outcome": "pass",
+   "round": 1,
+   "rounds_passed": 1,
+   "failed_checks": [],
+   "reason": null,
+   "replay": "FXDAX_WORKSPACE_TESTS=0 FXDAX_E2E_TEST=fxfs-guest-pgbench-dax FXDAX_E2E_ROUNDS=1 FXDAX_FIRECRACKER_JAIL=1 FXDAX_GUEST_KERNEL_BUILD=release FXDAX_TEST_PARTS='clippy workspace sim shuttle scripts guest firecracker' PJDFSTEST_COMMIT=85a8aea9e685999ef0540392fd80535f873d7ff7 PJDFSTEST_REPO=https://github.com/pjd/pjdfstest scripts/test-gce.sh all",
+   "daemons": [
+    {
+     "daemon": "extentd",
+     "downloaded": 1087834,
+     "bucket_read": 37613568,
+     "store_read": 274104320
+    }
+   ]
+  },
+  {
+   "case": "pgbench-ext4-dax-pmem",
+   "outcome": "pass",
+   "round": 1,
+   "rounds_passed": 1,
+   "failed_checks": [],
+   "reason": null,
+   "replay": "FXDAX_WORKSPACE_TESTS=0 FXDAX_E2E_TEST=pgbench-ext4-dax-pmem FXDAX_E2E_ROUNDS=1 FXDAX_FIRECRACKER_JAIL=1 FXDAX_GUEST_KERNEL_BUILD=release FXDAX_TEST_PARTS='clippy workspace sim shuttle scripts guest firecracker' PJDFSTEST_COMMIT=85a8aea9e685999ef0540392fd80535f873d7ff7 PJDFSTEST_REPO=https://github.com/pjd/pjdfstest scripts/test-gce.sh all",
+   "daemons": []
+  },
+  {
+   "case": "pgbench-ext4-blk-unsafe",
+   "outcome": "pass",
+   "round": 1,
+   "rounds_passed": 1,
+   "failed_checks": [],
+   "reason": null,
+   "replay": "FXDAX_WORKSPACE_TESTS=0 FXDAX_E2E_TEST=pgbench-ext4-blk-unsafe FXDAX_E2E_ROUNDS=1 FXDAX_FIRECRACKER_JAIL=1 FXDAX_GUEST_KERNEL_BUILD=release FXDAX_TEST_PARTS='clippy workspace sim shuttle scripts guest firecracker' PJDFSTEST_COMMIT=85a8aea9e685999ef0540392fd80535f873d7ff7 PJDFSTEST_REPO=https://github.com/pjd/pjdfstest scripts/test-gce.sh all",
+   "daemons": []
+  },
+  {
+   "case": "pgbench-ext4-blk-writeback",
+   "outcome": "pass",
+   "round": 1,
+   "rounds_passed": 1,
+   "failed_checks": [],
+   "reason": null,
+   "replay": "FXDAX_WORKSPACE_TESTS=0 FXDAX_E2E_TEST=pgbench-ext4-blk-writeback FXDAX_E2E_ROUNDS=1 FXDAX_FIRECRACKER_JAIL=1 FXDAX_GUEST_KERNEL_BUILD=release FXDAX_TEST_PARTS='clippy workspace sim shuttle scripts guest firecracker' PJDFSTEST_COMMIT=85a8aea9e685999ef0540392fd80535f873d7ff7 PJDFSTEST_REPO=https://github.com/pjd/pjdfstest scripts/test-gce.sh all",
+   "daemons": []
+  },
+  {
+   "case": "fxfs-guest-pgbench-forked",
+   "outcome": "pass",
+   "round": 1,
+   "rounds_passed": 1,
+   "failed_checks": [],
+   "reason": null,
+   "replay": "FXDAX_WORKSPACE_TESTS=0 FXDAX_E2E_TEST=fxfs-guest-pgbench-forked FXDAX_E2E_ROUNDS=1 FXDAX_FIRECRACKER_JAIL=1 FXDAX_GUEST_KERNEL_BUILD=release FXDAX_TEST_PARTS='clippy workspace sim shuttle scripts guest firecracker' PJDFSTEST_COMMIT=85a8aea9e685999ef0540392fd80535f873d7ff7 PJDFSTEST_REPO=https://github.com/pjd/pjdfstest scripts/test-gce.sh all",
+   "daemons": [
+    {
+     "daemon": "extentd",
+     "downloaded": 865544,
+     "bucket_read": 908288000,
+     "store_read": 258076672
+    }
+   ]
+  },
+  {
+   "case": "fxfs-guest-pgbench-dax-forked",
+   "outcome": "pass",
+   "round": 1,
+   "rounds_passed": 1,
+   "failed_checks": [],
+   "reason": null,
+   "replay": "FXDAX_WORKSPACE_TESTS=0 FXDAX_E2E_TEST=fxfs-guest-pgbench-dax-forked FXDAX_E2E_ROUNDS=1 FXDAX_FIRECRACKER_JAIL=1 FXDAX_GUEST_KERNEL_BUILD=release FXDAX_TEST_PARTS='clippy workspace sim shuttle scripts guest firecracker' PJDFSTEST_COMMIT=85a8aea9e685999ef0540392fd80535f873d7ff7 PJDFSTEST_REPO=https://github.com/pjd/pjdfstest scripts/test-gce.sh all",
+   "daemons": [
+    {
+     "daemon": "extentd",
+     "downloaded": 748355,
+     "bucket_read": 4858970112,
+     "store_read": 235630592
+    }
+   ]
+  },
+  {
+   "case": "fxfs-guest-bigmap",
+   "outcome": "pass",
+   "round": 1,
+   "rounds_passed": 1,
+   "failed_checks": [],
+   "reason": null,
+   "replay": "FXDAX_WORKSPACE_TESTS=0 FXDAX_E2E_TEST=fxfs-guest-bigmap FXDAX_E2E_ROUNDS=1 FXDAX_FIRECRACKER_JAIL=1 FXDAX_GUEST_KERNEL_BUILD=release FXDAX_TEST_PARTS='clippy workspace sim shuttle scripts guest firecracker' PJDFSTEST_COMMIT=85a8aea9e685999ef0540392fd80535f873d7ff7 PJDFSTEST_REPO=https://github.com/pjd/pjdfstest scripts/test-gce.sh all",
+   "daemons": [
+    {
+     "daemon": "extentd",
+     "downloaded": 741280,
+     "bucket_read": 4527849472,
+     "store_read": 749568
+    }
+   ]
+  },
+  {
+   "case": "fxfs-guest-bigmap-dax",
+   "outcome": "pass",
+   "round": 1,
+   "rounds_passed": 1,
+   "failed_checks": [],
+   "reason": null,
+   "replay": "FXDAX_WORKSPACE_TESTS=0 FXDAX_E2E_TEST=fxfs-guest-bigmap-dax FXDAX_E2E_ROUNDS=1 FXDAX_FIRECRACKER_JAIL=1 FXDAX_GUEST_KERNEL_BUILD=release FXDAX_TEST_PARTS='clippy workspace sim shuttle scripts guest firecracker' PJDFSTEST_COMMIT=85a8aea9e685999ef0540392fd80535f873d7ff7 PJDFSTEST_REPO=https://github.com/pjd/pjdfstest scripts/test-gce.sh all",
+   "daemons": [
+    {
+     "daemon": "extentd",
+     "downloaded": 740868,
+     "bucket_read": 4313853952,
+     "store_read": 0
+    }
+   ]
+  }
+ ],
+ "daemon": null,
+ "knobs": {
+  "FXDAX_E2E_ROUNDS": "1",
+  "FXDAX_E2E_TEST": "--tag perf-single",
+  "FXDAX_FIRECRACKER_JAIL": "1",
+  "FXDAX_GUEST_KERNEL_BUILD": "release",
+  "FXDAX_TEST_PARTS": "clippy workspace sim shuttle scripts guest firecracker",
+  "FXDAX_WORKSPACE_TESTS": "0",
+  "PJDFSTEST_COMMIT": "85a8aea9e685999ef0540392fd80535f873d7ff7",
+  "PJDFSTEST_REPO": "https://github.com/pjd/pjdfstest"
+ }
+}

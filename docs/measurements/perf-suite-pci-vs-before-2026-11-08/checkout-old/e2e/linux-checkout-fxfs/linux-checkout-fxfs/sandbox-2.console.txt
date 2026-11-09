@@ -1,0 +1,20 @@
+[    0.447115] PCI: Fatal: No config space access function found
+[    0.479459] PCI: System does not support PCI
+[    0.612118] check access for rdinit=/init failed: -2, ignoring
+fxdax: boot kernel_ns=663152000 agent_ns=688980676
+measure sandbox-2 default-mount 54.413085 ms
+measure sandbox-2 attach 18.120939 ms
+measure sandbox-2 import 19.63709 ms
+measure sandbox-2 mount 0.538774 ms
+measure sandbox-2 status-cold 676.592058 ms
+measure sandbox-2 status-warm 158.83075499999998 ms
+measure sandbox-2 status-synced 190.325099 ms
+measure sandbox-2 status-warm-again 103.533547 ms
+measure sandbox-2 read-cold 23553.357497 ms
+measure sandbox-2 read-bytes 1535304277 bytes
+measure sandbox-2 read-warm 546.83925 ms
+measure sandbox-2 first-overwrite 1.205697 ms
+measure sandbox-2 first-create 1.322178 ms
+measure sandbox-2 status-after-writes 485.085032 ms
+OK sandbox-2
+[   32.141937] reboot: Restarting system

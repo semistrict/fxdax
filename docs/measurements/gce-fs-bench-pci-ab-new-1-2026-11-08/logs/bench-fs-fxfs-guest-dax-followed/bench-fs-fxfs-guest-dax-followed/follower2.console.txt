@@ -1,0 +1,197 @@
+[    0.683337] check access for rdinit=/init failed: -2, ignoring
+fxdax: boot kernel_ns=708415000 agent_ns=725215961
+FOLLOWED 0 0 0
+FOLLOWED 1 0 0
+FOLLOWED 29 0 0
+FOLLOWED 57 0 0
+FOLLOWED 85 0 0
+FOLLOWED 113 0 0
+FOLLOWED 142 0 0
+FOLLOWED 171 0 0
+FOLLOWED 200 0 0
+FOLLOWED 228 0 0
+FOLLOWED 256 0 0
+FOLLOWED 271 0 0
+FOLLOWED 292 0 0
+[   19.558496] fxfs: following the writer: -116
+FOLLOWED 296 1 0
+FOLLOWED 296 241479 0
+[   20.648769] fxfs: following the writer: -116
+[   20.651742] fxfs: following the writer: -116
+FOLLOWED 296 482846 0
+[   22.090772] fxfs: following the writer: -116
+[   22.092419] fxfs: following the writer: -116
+FOLLOWED 296 723621 0
+FOLLOWED 296 964928 0
+FOLLOWED 296 1206405 0
+FOLLOWED 296 1447841 0
+[   26.264783] fxfs: following the writer: -116
+[   26.272430] fxfs: following the writer: -116
+FOLLOWED 296 1688437 0
+FOLLOWED 296 1929900 0
+[   28.134782] fxfs: following the writer: -116
+[   28.143758] fxfs: following the writer: -116
+[   28.149748] fxfs: following the writer: -116
+FOLLOWED 296 2169743 0
+[   28.644443] fxfs: following the writer: -116
+[   28.701772] fxfs: following the writer: -116
+[   28.709760] fxfs: following the writer: -116
+[   28.752367] fxfs: following the writer: -116
+[   28.756417] fxfs: following the writer: -116
+FOLLOWED 296 2401752 0
+FOLLOWED 296 2642710 0
+FOLLOWED 296 2884004 0
+FOLLOWED 296 3125065 0
+FOLLOWED 296 3366092 0
+FOLLOWED 296 3607109 0
+[   34.961782] fxfs_vfs_follow_work: 141 callbacks suppressed
+[   34.961830] fxfs: following the writer: -116
+[   34.989777] fxfs: following the writer: -116
+[   34.996411] fxfs: following the writer: -116
+FOLLOWED 296 3846792 0
+FOLLOWED 296 4087602 0
+[   37.220438] fxfs: following the writer: -116
+[   37.406794] fxfs: following the writer: -116
+FOLLOWED 296 4327920 0
+FOLLOWED 296 4569525 0
+FOLLOWED 296 4811201 0
+[   39.867803] fxfs: following the writer: -116
+FOLLOWED 296 5051765 0
+FOLLOWED 296 5270094 0
+[   41.775830] fxfs: following the writer: -116
+[   41.783777] fxfs: following the writer: -116
+[   41.790460] fxfs: following the writer: -116
+FOLLOWED 296 5509024 0
+FOLLOWED 296 5750210 0
+FOLLOWED 296 5990648 0
+FOLLOWED 296 6231350 0
+FOLLOWED 296 6472180 0
+FOLLOWED 296 6713029 0
+FOLLOWED 296 6947951 0
+FOLLOWED 296 7166911 0
+FOLLOWED 296 7386135 0
+[   51.365805] fxfs: following the writer: -116
+FOLLOWED 296 7614404 0
+FOLLOWED 296 7855419 0
+FOLLOWED 296 8096494 0
+[   54.363806] fxfs: following the writer: -116
+[   54.368562] fxfs: following the writer: -116
+[   54.481795] fxfs: following the writer: -116
+FOLLOWED 296 8335117 0
+[   54.926486] fxfs: following the writer: -116
+[   54.927994] fxfs: following the writer: -116
+[   54.966481] fxfs: following the writer: -116
+[   54.967991] fxfs: following the writer: -116
+[   54.972600] fxfs: following the writer: -116
+[   54.974000] fxfs: following the writer: -116
+FOLLOWED 296 8524781 0
+FOLLOWED 296 8753975 0
+[   57.024806] fxfs_vfs_follow_work: 1146 callbacks suppressed
+[   57.024813] fxfs: following the writer: -116
+[   57.027851] fxfs: following the writer: -116
+FOLLOWED 296 8993863 0
+[   58.058496] fxfs: following the writer: -116
+[   58.060422] fxfs: following the writer: -116
+FOLLOWED 296 9233992 0
+FOLLOWED 296 9474949 0
+FOLLOWED 296 9715880 0
+FOLLOWED 296 9956910 0
+[   61.799815] fxfs: following the writer: -116
+[   61.806473] fxfs: following the writer: -116
+FOLLOWED 296 10197461 0
+[   63.547816] fxfs: following the writer: -116
+[   63.556420] fxfs: following the writer: -116
+[   63.562459] fxfs: following the writer: -116
+FOLLOWED 296 10436912 0
+[   64.063819] fxfs: following the writer: -116
+[   64.117807] fxfs: following the writer: -116
+[   64.128365] fxfs: following the writer: -116
+[   64.168809] fxfs: following the writer: -116
+[   64.177797] fxfs: following the writer: -116
+[   64.183796] fxfs: following the writer: -116
+[   64.381813] fxfs: following the writer: -116
+FOLLOWED 296 10667674 0
+FOLLOWED 296 10908369 0
+FOLLOWED 296 11149462 0
+FOLLOWED 296 11390617 0
+FOLLOWED 296 11631714 0
+FOLLOWED 296 11872851 0
+[   70.546504] fxfs_vfs_follow_work: 133 callbacks suppressed
+[   70.546509] fxfs: following the writer: -116
+[   70.582482] fxfs: following the writer: -116
+[   70.590468] fxfs: following the writer: -116
+FOLLOWED 296 12112209 0
+FOLLOWED 296 12352905 0
+FOLLOWED 296 12593486 0
+[   72.670498] fxfs: following the writer: -116
+[   72.747830] fxfs: following the writer: -116
+FOLLOWED 296 12833352 0
+FOLLOWED 296 13074285 0
+[   75.302830] fxfs: following the writer: -116
+FOLLOWED 296 13314449 0
+FOLLOWED 296 13554869 0
+[   77.064438] fxfs: following the writer: -116
+[   77.076366] fxfs: following the writer: -116
+[   77.078452] fxfs: following the writer: -116
+FOLLOWED 296 13793824 0
+FOLLOWED 296 14034493 0
+FOLLOWED 296 14275789 0
+FOLLOWED 296 14516967 0
+FOLLOWED 296 14758069 0
+FOLLOWED 296 14999244 0
+FOLLOWED 296 15239841 0
+FOLLOWED 296 15458143 0
+FOLLOWED 296 15676482 0
+[   86.471842] fxfs: following the writer: -116
+[   86.476560] fxfs: following the writer: -116
+FOLLOWED 296 15901194 0
+[   86.659829] fxfs: following the writer: -116
+FOLLOWED 296 16141893 0
+FOLLOWED 296 16383212 0
+FOLLOWED 296 16624145 0
+[   89.689844] fxfs: following the writer: -116
+[   90.227843] fxfs: following the writer: -116
+[   90.232570] fxfs: following the writer: -116
+[   90.270479] fxfs: following the writer: -116
+[   90.272006] fxfs: following the writer: -116
+[   90.276614] fxfs: following the writer: -116
+[   90.278006] fxfs: following the writer: -116
+FOLLOWED 296 16835134 0
+FOLLOWED 296 17040511 0
+[   92.414499] fxfs_vfs_follow_work: 1159 callbacks suppressed
+[   92.414506] fxfs: following the writer: -116
+[   92.420564] fxfs: following the writer: -116
+FOLLOWED 296 17301368 0
+[   93.438505] fxfs: following the writer: -116
+[   93.442463] fxfs: following the writer: -116
+FOLLOWED 296 17541950 0
+[   94.245850] fxfs: following the writer: -116
+[   94.247320] fxfs: following the writer: -116
+FOLLOWED 296 17778588 0
+FOLLOWED 296 18019513 0
+FOLLOWED 296 18260624 0
+FOLLOWED 296 18501780 0
+[   97.983852] fxfs: following the writer: -116
+[   97.991838] fxfs: following the writer: -116
+FOLLOWED 296 18742293 0
+[   99.620861] fxfs: following the writer: -116
+[   99.629840] fxfs: following the writer: -116
+[   99.636416] fxfs: following the writer: -116
+FOLLOWED 296 18981894 0
+[  100.132442] fxfs: following the writer: -116
+[  100.191850] fxfs: following the writer: -116
+[  100.199838] fxfs: following the writer: -116
+[  100.241856] fxfs: following the writer: -116
+[  100.249838] fxfs: following the writer: -116
+FOLLOWED 296 19212925 0
+FOLLOWED 296 19454180 0
+FOLLOWED 296 19695974 0
+FOLLOWED 296 19937913 0
+FOLLOWED 296 20179919 0
+FOLLOWED 296 20421907 0
+[  106.503865] fxfs_vfs_follow_work: 145 callbacks suppressed
+[  106.503872] fxfs: following the writer: -116
+[  106.533857] fxfs: following the writer: -116
+[  106.540840] fxfs: following the writer: -116
+[  106.550463] fxfs: following the writer: -116
+[  106.556580] fxfs: following the writer: -116

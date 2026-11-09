@@ -1,0 +1,24 @@
+[    0.408036] check access for rdinit=/init failed: -2, ignoring
+fxdax: boot kernel_ns=457071000 agent_ns=473104680
+[   13.273128] reboot: Restarting system
+[    0.406615] check access for rdinit=/init failed: -2, ignoring
+fxdax: boot kernel_ns=433006000 agent_ns=457166653
+FXFS fork-read-usr: device_read_bytes 455520256, device_reads 4068, device_reads_ns 2957890192
+REQUESTS fork-read-usr: read 4355.00 (634 µs each) per operation
+FXFS fork-reread-usr: 
+REQUESTS fork-reread-usr:  per operation
+[   15.142682] reboot: Restarting system
+[    0.390170] check access for rdinit=/init failed: -2, ignoring
+fxdax: boot kernel_ns=425130000 agent_ns=445163418
+FXFS fork-read-usr: device_read_bytes 455520256, device_reads 4068, device_reads_ns 1339761895
+REQUESTS fork-read-usr: read 4355.00 (275 µs each) per operation
+FXFS fork-reread-usr: 
+REQUESTS fork-reread-usr:  per operation
+[   13.994462] reboot: Restarting system
+[    0.399881] check access for rdinit=/init failed: -2, ignoring
+fxdax: boot kernel_ns=433156000 agent_ns=449145671
+FXFS fork-read-usr: device_read_bytes 455520256, device_reads 4068, device_reads_ns 1317560075
+REQUESTS fork-read-usr: read 4355.00 (270 µs each) per operation
+FXFS fork-reread-usr: 
+REQUESTS fork-reread-usr:  per operation
+[   13.968441] reboot: Restarting system

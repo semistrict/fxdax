@@ -1,0 +1,9 @@
+[    0.096007] PCI: Fatal: No config space access function found
+[    0.127796] PCI: System does not support PCI
+[    0.292495] check access for rdinit=/init failed: -2, ignoring
+fxdax: boot kernel_ns=341133000 agent_ns=357025678
+[    0.585384] EXT4-fs (vdb): mounted filesystem e66969c9-14fb-4868-bdd7-0518a56c562e r/w with ordered data mode. Quota mode: none.
+[    0.590059] EXT4-fs (vdb): unmounting filesystem e66969c9-14fb-4868-bdd7-0518a56c562e.
+OK base
+[    0.595711] reboot: Restarting system
+[    0.596759] reboot: machine restart

@@ -1,0 +1,54 @@
+[    0.735720] PCI: Fatal: No config space access function found
+[    0.767019] PCI: System does not support PCI
+[    0.935181] check access for rdinit=/init failed: -2, ignoring
+fxdax: boot kernel_ns=993139000 agent_ns=1009266235
+[    1.097618] fxfs: Formatting
+pgbench: at 1.10 s: initdb -D /mnt/fxfs/pgdata -A trust --data-checksums
+pgbench: 1.7s, exit status: 0
+fxfs stats: device_reads 0 device_reads_ns 0 device_reads_hist 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0 device_writes 1302 device_writes_ns 686951548 device_writes_hist 0,0,0,0,0,0,0,0,979,185,10,23,97,6,1,1,0,0,0,0,0,0,0,0 device_commits 387 device_commits_ns 131594643 device_commits_hist 0,0,0,0,0,0,0,0,314,64,4,2,1,0,1,1,0,0,0,0,0,0,0,0 seal_waits 387 seal_waits_ns 161454 seal_waits_hist 386,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0 seals 387 seals_ns 131793702 seals_hist 0,0,0,0,0,0,0,0,314,64,4,2,1,0,1,1,0,0,0,0,0,0,0,0 writes_held_by_seals 0 writes_held_by_seals_ns 0 writes_held_by_seals_hist 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0 fsyncs 996 volumes_open 1 fsyncs_coalesced 0 device_read_bytes 0 device_write_bytes 41857024 device_durable_commits 0 journal_space_waits 0 journal_space_wait_ns 0 journal_compactions 0 journal_compaction_ns 0 metadata_reserved_bytes 6092696 window_maps 0 window_maps_ns 0 window_map_requests 0 window_map_requests_hist 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0 window_unmaps 0 window_unmaps_ns 0 window_unmaps_hist 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0 window_privates 0 window_private_bytes 0 window_privates_ns 0 window_privates_hist 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0 vfs_room_asked 0 vfs_room_syncs 0
+device completions: interrupts 1243 polled 0
+guest cpu: cpu  53 0 148 204 6 0 2 2 0 0
+pgbench: at 2.89 s: pg_ctl -D /mnt/fxfs/pgdata -l /mnt/fxfs/pgdata/server.log -o "-c shared_buffers=256MB -k /run/postgresql -c listen_addresses=''" -w -t 900 start
+pgbench: 214.6ms, exit status: 0
+fxfs stats: device_reads 5 device_reads_ns 4232822 device_reads_hist 0,0,0,0,0,0,0,0,0,2,1,2,0,0,0,0,0,0,0,0,0,0,0,0 device_writes 1316 device_writes_ns 691205970 device_writes_hist 0,0,0,0,0,0,0,0,983,195,10,23,97,6,1,1,0,0,0,0,0,0,0,0 device_commits 394 device_commits_ns 133663369 device_commits_hist 0,0,0,0,0,0,0,0,317,68,4,2,1,0,1,1,0,0,0,0,0,0,0,0 seal_waits 394 seal_waits_ns 166430 seal_waits_hist 392,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0 seals 394 seals_ns 133868976 seals_hist 0,0,0,0,0,0,0,0,317,68,4,2,1,0,1,1,0,0,0,0,0,0,0,0 writes_held_by_seals 0 writes_held_by_seals_ns 0 writes_held_by_seals_hist 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0 fsyncs 1003 volumes_open 1 fsyncs_coalesced 0 device_read_bytes 20480 device_write_bytes 41918464 device_durable_commits 0 journal_space_waits 0 journal_space_wait_ns 0 journal_compactions 0 journal_compaction_ns 0 metadata_reserved_bytes 6207928 window_maps 0 window_maps_ns 0 window_map_requests 0 window_map_requests_hist 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0 window_unmaps 0 window_unmaps_ns 0 window_unmaps_hist 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0 window_privates 0 window_private_bytes 0 window_privates_ns 0 window_privates_hist 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0 vfs_room_asked 0 vfs_room_syncs 0
+device completions: interrupts 1266 polled 0
+guest cpu: cpu  55 0 165 231 7 0 2 2 0 0
+pgbench: at 3.14 s: createdb -h /run/postgresql bench
+pgbench: 164.6ms, exit status: 0
+fxfs stats: device_reads 5 device_reads_ns 4232822 device_reads_hist 0,0,0,0,0,0,0,0,0,2,1,2,0,0,0,0,0,0,0,0,0,0,0,0 device_writes 1340 device_writes_ns 707945565 device_writes_hist 0,0,0,0,0,0,0,1,989,208,10,23,101,6,1,1,0,0,0,0,0,0,0,0 device_commits 400 device_commits_ns 135649605 device_commits_hist 0,0,0,0,0,0,0,0,317,74,4,2,1,0,1,1,0,0,0,0,0,0,0,0 seal_waits 400 seal_waits_ns 170181 seal_waits_hist 397,3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0 seals 400 seals_ns 135859984 seals_hist 0,0,0,0,0,0,0,0,317,74,4,2,1,0,1,1,0,0,0,0,0,0,0,0 writes_held_by_seals 0 writes_held_by_seals_ns 0 writes_held_by_seals_hist 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0 fsyncs 1011 volumes_open 1 fsyncs_coalesced 0 device_read_bytes 20480 device_write_bytes 46268416 device_durable_commits 0 journal_space_waits 0 journal_space_wait_ns 0 journal_compactions 0 journal_compaction_ns 0 metadata_reserved_bytes 6477840 window_maps 0 window_maps_ns 0 window_map_requests 0 window_map_requests_hist 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0 window_unmaps 0 window_unmaps_ns 0 window_unmaps_hist 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0 window_privates 0 window_private_bytes 0 window_privates_ns 0 window_privates_hist 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0 vfs_room_asked 0 vfs_room_syncs 0
+device completions: interrupts 1287 polled 0
+guest cpu: cpu  59 0 182 247 7 0 2 2 0 0
+pgbench: at 3.31 s: pgbench -h /run/postgresql -i -q -s 50 bench
+dropping old tables...
+NOTICE:  table "pgbench_accounts" does not exist, skipping
+NOTICE:  table "pgbench_branches" does not exist, skipping
+NOTICE:  table "pgbench_history" does not exist, skipping
+NOTICE:  table "pgbench_tellers" does not exist, skipping
+creating tables...
+generating data (client-side)...
+500 of 500 tuples (100%) of pgbench_tellers done (elapsed 0.00 s, remaining 0.00 s)
+2042200 of 5000000 tuples (40%) of pgbench_accounts done (elapsed 5.01 s, remaining 7.25 s)
+3813900 of 5000000 tuples (76%) of pgbench_accounts done (elapsed 10.09 s, remaining 3.14 s)
+5000000 of 5000000 tuples (100%) of pgbench_accounts done (elapsed 13.69 s, remaining 0.00 s)
+vacuuming...
+creating primary keys...
+done in 19.61 s (drop tables 0.01 s, create tables 0.01 s, client-side generate 13.86 s, vacuum 0.47 s, primary keys 5.27 s).
+pgbench: 19.7s, exit status: 0
+fxfs stats: device_reads 34 device_reads_ns 54572265 device_reads_hist 0,0,0,0,0,0,0,0,4,10,7,5,6,1,1,0,0,0,0,0,0,0,0,0 device_writes 5608 device_writes_ns 10897572461 device_writes_hist 0,0,0,0,0,0,0,10,1420,1234,669,1302,731,89,89,28,18,9,9,0,0,0,0,0 device_commits 602 device_commits_ns 629315354 device_commits_hist 0,0,0,0,0,0,0,0,345,196,20,10,5,6,11,7,2,0,0,0,0,0,0,0 seal_waits 602 seal_waits_ns 97775362 seal_waits_hist 555,12,0,0,0,1,2,3,0,1,3,15,5,3,1,1,0,0,0,0,0,0,0,0 seals 602 seals_ns 630233501 seals_hist 0,0,0,0,0,0,0,0,344,197,20,10,5,6,11,7,2,0,0,0,0,0,0,0 writes_held_by_seals 34 writes_held_by_seals_ns 359708750 writes_held_by_seals_hist 0,0,0,0,0,0,0,2,2,2,7,1,1,4,10,3,2,0,0,0,0,0,0,0 fsyncs 1280 volumes_open 1 fsyncs_coalesced 0 device_read_bytes 196608 device_write_bytes 1892216832 device_durable_commits 0 journal_space_waits 0 journal_space_wait_ns 0 journal_compactions 2 journal_compaction_ns 318767568 metadata_reserved_bytes 12456892 window_maps 0 window_maps_ns 0 window_map_requests 0 window_map_requests_hist 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0 window_unmaps 0 window_unmaps_ns 0 window_unmaps_hist 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0 window_privates 0 window_private_bytes 0 window_privates_ns 0 window_privates_hist 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0 vfs_room_asked 0 vfs_room_syncs 0
+device completions: interrupts 5805 polled 0
+guest cpu: cpu  904 0 1204 2268 12 0 21 22 0 0
+pgbench: at 22.99 s: psql -h /run/postgresql -At -c 'select count(*), count(distinct aid) from pgbench_accounts' bench
+pgbench: 700.6ms, exit status: 0
+fxfs stats: device_reads 34 device_reads_ns 54572265 device_reads_hist 0,0,0,0,0,0,0,0,4,10,7,5,6,1,1,0,0,0,0,0,0,0,0,0 device_writes 5610 device_writes_ns 10898386979 device_writes_hist 0,0,0,0,0,0,0,10,1421,1234,670,1302,731,89,89,28,18,9,9,0,0,0,0,0 device_commits 602 device_commits_ns 629315354 device_commits_hist 0,0,0,0,0,0,0,0,345,196,20,10,5,6,11,7,2,0,0,0,0,0,0,0 seal_waits 602 seal_waits_ns 97775362 seal_waits_hist 555,12,0,0,0,1,2,3,0,1,3,15,5,3,1,1,0,0,0,0,0,0,0,0 seals 602 seals_ns 630233501 seals_hist 0,0,0,0,0,0,0,0,344,197,20,10,5,6,11,7,2,0,0,0,0,0,0,0 writes_held_by_seals 34 writes_held_by_seals_ns 359708750 writes_held_by_seals_hist 0,0,0,0,0,0,0,2,2,2,7,1,1,4,10,3,2,0,0,0,0,0,0,0 fsyncs 1280 volumes_open 1 fsyncs_coalesced 0 device_read_bytes 196608 device_write_bytes 1892478976 device_durable_commits 0 journal_space_waits 0 journal_space_wait_ns 0 journal_compactions 2 journal_compaction_ns 318767568 metadata_reserved_bytes 12477256 window_maps 0 window_maps_ns 0 window_map_requests 0 window_map_requests_hist 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0 window_unmaps 0 window_unmaps_ns 0 window_unmaps_hist 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0 window_privates 0 window_private_bytes 0 window_privates_ns 0 window_privates_hist 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0 vfs_room_asked 0 vfs_room_syncs 0
+device completions: interrupts 5807 polled 0
+guest cpu: cpu  949 0 1225 2333 16 0 21 22 0 0
+pgbench: at 23.69 s: pg_ctl -D /mnt/fxfs/pgdata -w -m fast stop
+OK load 5000000
+pgbench: 3.1s, exit status: 0
+fxfs stats: device_reads 51 device_reads_ns 114728055 device_reads_hist 0,0,0,0,0,0,0,0,6,15,9,10,8,1,1,0,1,0,0,0,0,0,0,0 device_writes 6866 device_writes_ns 16412251128 device_writes_hist 0,0,0,0,0,0,0,16,1810,1355,726,1444,977,296,103,87,26,14,12,0,0,0,0,0 device_commits 913 device_commits_ns 1139339665 device_commits_hist 0,0,0,0,0,0,0,0,588,248,26,13,7,6,12,8,2,2,1,0,0,0,0,0 seal_waits 913 seal_waits_ns 103472637 seal_waits_hist 856,13,0,1,0,1,2,4,0,3,7,16,5,3,1,1,0,0,0,0,0,0,0,0 seals 913 seals_ns 1140447734 seals_hist 0,0,0,0,0,0,0,0,585,251,26,13,7,6,12,8,2,2,1,0,0,0,0,0 writes_held_by_seals 38 writes_held_by_seals_ns 580934360 writes_held_by_seals_hist 0,0,0,0,0,0,0,3,3,3,7,1,1,4,10,3,2,0,1,0,0,0,0,0 fsyncs 1735 volumes_open 1 fsyncs_coalesced 0 device_read_bytes 372736 device_write_bytes 2259845120 device_durable_commits 0 journal_space_waits 0 journal_space_wait_ns 0 journal_compactions 3 journal_compaction_ns 671426198 metadata_reserved_bytes 11746224 window_maps 0 window_maps_ns 0 window_map_requests 0 window_map_requests_hist 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0 window_unmaps 0 window_unmaps_ns 0 window_unmaps_hist 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0 window_privates 0 window_private_bytes 0 window_privates_ns 0 window_privates_hist 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0 vfs_room_asked 0 vfs_room_syncs 0
+device completions: interrupts 7076 polled 0
+guest cpu: cpu  951 0 1278 2874 16 0 23 31 0 0
+[   27.330068] fxfs: Filesystem closed (checkpoint=13353720, metadata_reservation=ReservationInner { amount: 11679376, reserved: 0 }, reservation_required=3705820, borrowed=363852)
+OK base
+[   27.401509] reboot: Restarting system
+[   27.402605] reboot: machine restart

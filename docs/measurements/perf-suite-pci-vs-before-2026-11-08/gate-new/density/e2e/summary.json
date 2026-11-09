@@ -1,0 +1,55 @@
+{
+ "commit": "0f011561a52f9d13506e67b7a4c3dff92fa6c530-dirty",
+ "rounds": 1,
+ "status": 0,
+ "failed": [],
+ "cases": [
+  {
+   "case": "fxfs-guest-pgbench-density",
+   "outcome": "pass",
+   "round": 1,
+   "rounds_passed": 1,
+   "failed_checks": [],
+   "reason": null,
+   "replay": "FXDAX_WORKSPACE_TESTS=0 FXDAX_E2E_TEST=fxfs-guest-pgbench-density FXDAX_E2E_ROUNDS=1 FXDAX_FIRECRACKER_JAIL=1 FXDAX_GUEST_KERNEL_BUILD=release FXDAX_PGBENCH_RUNS=2 FXDAX_PGBENCH_VMS=3 FXDAX_TEST_PARTS='clippy workspace sim shuttle scripts guest firecracker' PJDFSTEST_COMMIT=85a8aea9e685999ef0540392fd80535f873d7ff7 PJDFSTEST_REPO=https://github.com/pjd/pjdfstest scripts/test-gce.sh all",
+   "daemons": [
+    {
+     "daemon": "extentd",
+     "downloaded": 16286717,
+     "bucket_read": 11400318976,
+     "store_read": 1007292416
+    }
+   ]
+  },
+  {
+   "case": "fxfs-guest-pgbench-dax-density",
+   "outcome": "pass",
+   "round": 1,
+   "rounds_passed": 1,
+   "failed_checks": [],
+   "reason": null,
+   "replay": "FXDAX_WORKSPACE_TESTS=0 FXDAX_E2E_TEST=fxfs-guest-pgbench-dax-density FXDAX_E2E_ROUNDS=1 FXDAX_FIRECRACKER_JAIL=1 FXDAX_GUEST_KERNEL_BUILD=release FXDAX_PGBENCH_RUNS=2 FXDAX_PGBENCH_VMS=3 FXDAX_TEST_PARTS='clippy workspace sim shuttle scripts guest firecracker' PJDFSTEST_COMMIT=85a8aea9e685999ef0540392fd80535f873d7ff7 PJDFSTEST_REPO=https://github.com/pjd/pjdfstest scripts/test-gce.sh all",
+   "daemons": [
+    {
+     "daemon": "extentd",
+     "downloaded": 1996805,
+     "bucket_read": 6833291264,
+     "store_read": 242728960
+    }
+   ]
+  }
+ ],
+ "daemon": null,
+ "knobs": {
+  "FXDAX_E2E_ROUNDS": "1",
+  "FXDAX_E2E_TEST": "--tag perf-density",
+  "FXDAX_FIRECRACKER_JAIL": "1",
+  "FXDAX_GUEST_KERNEL_BUILD": "release",
+  "FXDAX_PGBENCH_RUNS": "2",
+  "FXDAX_PGBENCH_VMS": "3",
+  "FXDAX_TEST_PARTS": "clippy workspace sim shuttle scripts guest firecracker",
+  "FXDAX_WORKSPACE_TESTS": "0",
+  "PJDFSTEST_COMMIT": "85a8aea9e685999ef0540392fd80535f873d7ff7",
+  "PJDFSTEST_REPO": "https://github.com/pjd/pjdfstest"
+ }
+}

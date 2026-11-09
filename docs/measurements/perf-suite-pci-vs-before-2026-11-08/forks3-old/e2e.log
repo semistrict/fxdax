@@ -1,0 +1,222 @@
+   Compiling fxfs v0.1.0 (/var/lib/fxdax-test/test-tree/crates/fxfs)
+   Compiling fxdax v0.1.0 (/var/lib/fxdax-test/test-tree/crates/fxdax)
+   Compiling fxfs-posix v0.1.0 (/var/lib/fxdax-test/test-tree/crates/fxfs-posix)
+    Finished `release` profile [optimized] target(s) in 2m 19s
+    Finished `release` profile [optimized] target(s) in 0.17s
+   Compiling fxfs v0.1.0 (/var/lib/fxdax-test/test-tree/crates/fxfs)
+   Compiling fxdax v0.1.0 (/var/lib/fxdax-test/test-tree/crates/fxdax)
+   Compiling fxfs-posix v0.1.0 (/var/lib/fxdax-test/test-tree/crates/fxfs-posix)
+   Compiling vmm v0.1.0 (/var/lib/fxdax-test/test-tree/target/firecracker/src/vmm)
+   Compiling firecracker v1.16.1 (/var/lib/fxdax-test/test-tree/target/firecracker/src/firecracker)
+    Finished `release` profile [optimized] target(s) in 2m 16s
+    Finished `release` profile [optimized] target(s) in 0.10s
+warning: method `unallowed` is never used
+   --> test_cases/src/differential.rs:194:12
+    |
+156 | impl Differences {
+    | ---------------- method in this implementation
+...
+194 |     pub fn unallowed(&self) -> impl Iterator<Item = (&Difference, &Seen)> {
+    |            ^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+
+running 114 tests
+..............................................................................test differential::tests::refusals_are_adopted_by_the_reference has been running for over 60 seconds
+......... 87/114
+...........................
+test result: ok. 114 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 101.89s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Compiling fxfs v0.1.0 (/var/lib/fxdax-test/test-tree/crates/fxfs)
+   Compiling fxdax v0.1.0 (/var/lib/fxdax-test/test-tree/crates/fxdax)
+   Compiling fxfs-posix v0.1.0 (/var/lib/fxdax-test/test-tree/crates/fxfs-posix)
+   Compiling vmm v0.1.0 (/var/lib/fxdax-test/test-tree/target/firecracker/src/vmm)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 03s
+────────────
+ Nextest run ID 77cb47f0-7431-47f0-ad85-2c58cbdec8fb with nextest profile: default
+    Starting 27 tests across 1 binary (718 tests skipped)
+        PASS [   0.009s] ( 1/27) vmm devices::virtio::device::tests::test_features_written_again
+        PASS [   0.009s] ( 2/27) vmm devices::virtio::extent::device::tests::a_windows_private_pages_are_not_its_size
+        PASS [   0.009s] ( 3/27) vmm devices::virtio::extent::device::tests::branches_are_not_the_clocks
+        PASS [   0.010s] ( 4/27) vmm devices::virtio::extent::device::tests::drivers_take_every_feature_offered
+        PASS [   0.009s] ( 5/27) vmm devices::virtio::extent::device::tests::unxorshift_undoes_the_clocks_xorshift
+        PASS [   0.008s] ( 6/27) vmm devices::virtio::extent::persist::tests::snapshots_of_other_protocols_are_refused
+        PASS [   0.009s] ( 7/27) vmm devices::virtio::extent::device::tests::the_configuration_says_its_version_first
+        PASS [   0.009s] ( 8/27) vmm devices::virtio::extent::device::tests::workers_start_all_or_none
+        PASS [   0.008s] ( 9/27) vmm devices::virtio::extent::worker::tests::chains_writing_past_u32_are_refused
+        PASS [   0.009s] (10/27) vmm devices::virtio::extent::tests::answers_to_shrinks_no_longer_asked_change_nothing
+        PASS [   0.009s] (11/27) vmm devices::virtio::extent::tests::stats_are_asked_of_guests_that_take_asks
+        PASS [   0.036s] (12/27) vmm devices::virtio::extent::worker::tests::stats_go_to_the_daemon
+        PASS [   0.045s] (13/27) vmm devices::virtio::extent::worker::tests::test_follows_a_writer
+        PASS [   0.041s] (14/27) vmm devices::virtio::extent::worker::tests::test_refuses_bad_requests
+        PASS [   0.101s] (15/27) vmm devices::virtio::extent::worker::tests::test_frees_many_in_one_request
+        PASS [   0.038s] (16/27) vmm devices::virtio::extent::worker::tests::test_roots_and_info
+        PASS [   0.013s] (17/27) vmm devices::virtio::transport::mmio::tests::test_shm_regions
+        PASS [   0.081s] (18/27) vmm devices::virtio::extent::worker::tests::test_refuses_many_past_their_most
+        PASS [   0.018s] (19/27) vmm signal_handler::tests::test_fault_logs_its_address
+        PASS [   0.013s] (20/27) vmm signal_handler::tests::test_stack_overflow_runs_the_handler
+        PASS [   0.007s] (21/27) vmm vmm_config::extent::tests::test_deserialize
+        PASS [   0.010s] (22/27) vmm vmm_config::extent::tests::test_insert
+        PASS [   0.049s] (23/27) vmm devices::virtio::extent::worker::tests::test_writes_and_reads
+        PASS [   0.007s] (24/27) vmm vmm_config::extent::tests::test_insert_invalid
+        PASS [   0.006s] (25/27) vmm vstate::vcpu::tests::efaults_given_up_on_tell_where
+        PASS [   0.007s] (26/27) vmm vstate::vcpu::tests::test_exit_code_sent_before_the_exit_event
+        PASS [  10.135s] (27/27) vmm devices::virtio::extent::worker::tests::test_answers_whatever_a_driver_asks
+────────────
+     Summary [  10.163s] 27 tests run: 27 passed, 718 skipped
+warning: method `unallowed` is never used
+   --> test_cases/src/differential.rs:194:12
+    |
+156 | impl Differences {
+    | ---------------- method in this implementation
+...
+194 |     pub fn unallowed(&self) -> impl Iterator<Item = (&Difference, &Seen)> {
+    |            ^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+[bench-fork-fxfs-guest-dax-warm] ... SKIP (podman build failed: *
+* If you need ICU with non-English locales and legacy charset support, install
+* package icu-data-full.
+*
+*
+* If you want to use JIT in PostgreSQL, install postgresql17-jit or
+* postgresql-jit (if you didn't install specific major version of postgresql).
+*
+* Setting postgresql17 as the default version
+WARNING: opening from cache https://dl-cdn.alpinelinux.org/alpine/v3.22/main: No such file or directory
+WARNING: opening from cache https://dl-cdn.alpinelinux.org/alpine/v3.22/community: No such file or directory
+wget: can't connect to remote host (46.175.8.47): Operation timed out
+Error: building at STEP "RUN wget -q -O /opt/lua-5.4.7.tar.gz https://www.lua.org/ftp/lua-5.4.7.tar.gz     && echo '9fbf5e28ef86c69858f6d3d34eccc32e911c1a28b4120ff3e84aaa70cfbf1e30  /opt/lua-5.4.7.tar.gz'     | sha256sum -c": while running runtime: exit status 1
+)
+(See test artifacts at: /home/ramon/run-20261109T082543Z-87a3196b/results/e2e/bench-fork-fxfs-guest-dax-warm)
+
+FAIL - 0/0 passed (1 skipped)
+bench-fork-fxfs-guest-dax-warm was asked for, and skipped
+Error: 
+bench-fork-fxfs-guest-dax-warm: failed in round 1 of 1: see /home/ramon/run-20261109T082543Z-87a3196b/results/e2e/bench-fork-fxfs-guest-dax-warm
+[bench-fork-fxfs-guest-dax-cold] ... SKIP (podman build failed: wget: download timed out
+Error: building at STEP "RUN wget -q -O /opt/lua-5.4.7.tar.gz https://www.lua.org/ftp/lua-5.4.7.tar.gz     && echo '9fbf5e28ef86c69858f6d3d34eccc32e911c1a28b4120ff3e84aaa70cfbf1e30  /opt/lua-5.4.7.tar.gz'     | sha256sum -c": while running runtime: exit status 1
+)
+(See test artifacts at: /home/ramon/run-20261109T082543Z-87a3196b/results/e2e/bench-fork-fxfs-guest-dax-cold)
+
+FAIL - 0/0 passed (1 skipped)
+bench-fork-fxfs-guest-dax-cold was asked for, and skipped
+Error: 
+bench-fork-fxfs-guest-dax-cold: failed in round 1 of 1: see /home/ramon/run-20261109T082543Z-87a3196b/results/e2e/bench-fork-fxfs-guest-dax-cold
+[bench-fork-fxfs-guest-warm] ... SKIP (podman build failed: wget: download timed out
+Error: building at STEP "RUN wget -q -O /opt/lua-5.4.7.tar.gz https://www.lua.org/ftp/lua-5.4.7.tar.gz     && echo '9fbf5e28ef86c69858f6d3d34eccc32e911c1a28b4120ff3e84aaa70cfbf1e30  /opt/lua-5.4.7.tar.gz'     | sha256sum -c": while running runtime: exit status 1
+)
+(See test artifacts at: /home/ramon/run-20261109T082543Z-87a3196b/results/e2e/bench-fork-fxfs-guest-warm)
+
+FAIL - 0/0 passed (1 skipped)
+bench-fork-fxfs-guest-warm was asked for, and skipped
+Error: 
+bench-fork-fxfs-guest-warm: failed in round 1 of 1: see /home/ramon/run-20261109T082543Z-87a3196b/results/e2e/bench-fork-fxfs-guest-warm
+[bench-fork-ext4-dax-pmem] ... SKIP (podman build failed: wget: can't connect to remote host (46.175.8.47): Operation timed out
+Error: building at STEP "RUN wget -q -O /opt/lua-5.4.7.tar.gz https://www.lua.org/ftp/lua-5.4.7.tar.gz     && echo '9fbf5e28ef86c69858f6d3d34eccc32e911c1a28b4120ff3e84aaa70cfbf1e30  /opt/lua-5.4.7.tar.gz'     | sha256sum -c": while running runtime: exit status 1
+)
+(See test artifacts at: /home/ramon/run-20261109T082543Z-87a3196b/results/e2e/bench-fork-ext4-dax-pmem)
+
+FAIL - 0/0 passed (1 skipped)
+bench-fork-ext4-dax-pmem was asked for, and skipped
+Error: 
+bench-fork-ext4-dax-pmem: failed in round 1 of 1: see /home/ramon/run-20261109T082543Z-87a3196b/results/e2e/bench-fork-ext4-dax-pmem
+[bench-fork-ext4-pmem] ... SKIP (podman build failed: wget: can't connect to remote host (46.175.8.47): Operation timed out
+Error: building at STEP "RUN wget -q -O /opt/lua-5.4.7.tar.gz https://www.lua.org/ftp/lua-5.4.7.tar.gz     && echo '9fbf5e28ef86c69858f6d3d34eccc32e911c1a28b4120ff3e84aaa70cfbf1e30  /opt/lua-5.4.7.tar.gz'     | sha256sum -c": while running runtime: exit status 1
+)
+(See test artifacts at: /home/ramon/run-20261109T082543Z-87a3196b/results/e2e/bench-fork-ext4-pmem)
+
+FAIL - 0/0 passed (1 skipped)
+bench-fork-ext4-pmem was asked for, and skipped
+Error: 
+bench-fork-ext4-pmem: failed in round 1 of 1: see /home/ramon/run-20261109T082543Z-87a3196b/results/e2e/bench-fork-ext4-pmem
+[bench-fork-fxfs-guest-dax-profiled] ... REPORT (88 s of 5400 s)
+  fxfs-guest-dax-fork-profiled (3 iterations)
+
+  workload                     median          min          max  unit
+  base-copy-usr                   5.5          5.5          5.5  s
+  base-pgbench-init               7.1          7.1          7.1  s
+  fork-mount                      0.5          0.4          0.5  s
+  fork-read-usr                   0.8          0.8          0.8  s
+  fork-reread-usr                 0.1          0.1          0.1  s
+  fork-pg-start                   0.3          0.3          0.3  s
+  fork-pgbench-select         26718.8      26241.7      26947.2  tps
+  extentd-cache-trim-ns: [0.0, 0.0, 0.0]
+  extentd-cache-trims: [0.0, 0.0, 0.0]
+  extentd-commit-ns: [20805782.0, 23527746.0, 24730241.0]
+  extentd-commit-store-ns: [1082522.0, 947076.0, 952526.0]
+  extentd-commit-wait-ns: [19714986.0, 22572203.0, 23769155.0]
+  extentd-commits: [33.0, 33.0, 33.0]
+  extentd-fault-ns: [0.0, 0.0, 0.0]
+  extentd-fault-refusals: [0.0, 0.0, 0.0]
+  extentd-fault-stores: [0.0, 0.0, 0.0]
+  extentd-fault-waits: [0.0, 0.0, 0.0]
+  extentd-faults: [0.0, 0.0, 0.0]
+  extentd-fetched-bytes: [629919744.0, 629919744.0, 629919744.0]
+  extentd-map-ns: [61432622.0, 56918886.0, 55632649.0]
+  extentd-maps: [706.0, 706.0, 706.0]
+  extentd-page-in-bytes: [20480.0, 20480.0, 20480.0]
+  extentd-page-ins: [1730.0, 1730.0, 1730.0]
+  extentd-prefetches: [1724.0, 1724.0, 1724.0]
+  extentd-read-bytes: [8413184.0, 8413184.0, 8413184.0]
+  extentd-read-stored-bytes: [61440.0, 61440.0, 61440.0]
+  extentd-reads: [1243.0, 1243.0, 1243.0]
+  extentd-segment-close-ns: [5356735.0, 6962270.0, 6575533.0]
+  extentd-segment-closes: [5.0, 6.0, 6.0]
+  extentd-stage-leave-outs: [0.0, 0.0, 0.0]
+  extentd-stage-map-bytes: [0.0, 0.0, 0.0]
+  extentd-stage-maps: [0.0, 0.0, 0.0]
+  extentd-stage-ns: [0.0, 0.0, 0.0]
+  extentd-stage-ops: [0.0, 0.0, 0.0]
+  extentd-stage-overwrites: [0.0, 0.0, 0.0]
+  extentd-stage-private-ns: [0.0, 0.0, 0.0]
+  extentd-stage-private-pages: [0.0, 0.0, 0.0]
+  extentd-stage-private-runs: [0.0, 0.0, 0.0]
+  extentd-stage-segments: [0.0, 0.0, 0.0]
+  extentd-unpacks: [0.0, 0.0, 0.0]
+  extentd-vm-private-request-ns: [0.0, 0.0, 0.0]
+  extentd-vm-private-requests: [0.0, 0.0, 0.0]
+  guest-advance-ms: [0.0, 0.0, 0.0]
+  guest-advance-requests: [0.0, 0.0, 0.0]
+  guest-commit-ms: [1.615, 4.366, 2.162]
+  guest-commit-requests: [5.0, 5.0, 5.0]
+  guest-free-ms: [7.037, 5.527, 5.568]
+  guest-free-requests: [19.0, 19.0, 19.0]
+  guest-freeze-ms: [0.0, 0.0, 0.0]
+  guest-freeze-requests: [0.0, 0.0, 0.0]
+  guest-info-ms: [1.307, 1.645, 1.155]
+  guest-info-requests: [3.0, 3.0, 3.0]
+  guest-let_go-ms: [0.0, 0.0, 0.0]
+  guest-let_go-requests: [0.0, 0.0, 0.0]
+  guest-map-ms: [313.359, 312.42, 314.809]
+  guest-map-requests: [360.0, 360.0, 360.0]
+  guest-pin-ms: [0.0, 0.0, 0.0]
+  guest-pin-requests: [0.0, 0.0, 0.0]
+  guest-private-ms: [7.059, 6.87, 7.655]
+  guest-private-requests: [16.0, 16.0, 16.0]
+  guest-read-ms: [1253.114, 1785.682, 1384.135]
+  guest-read-requests: [1242.0, 1242.0, 1242.0]
+  guest-resized-ms: [0.0, 0.0, 0.0]
+  guest-resized-requests: [0.0, 0.0, 0.0]
+  guest-root-ms: [1.154, 0.79, 3.307]
+  guest-root-requests: [4.0, 4.0, 4.0]
+  guest-stats-ms: [0.0, 0.0, 0.0]
+  guest-stats-requests: [0.0, 0.0, 0.0]
+  guest-unmap-ms: [1.327, 1.101, 1.144]
+  guest-unmap-requests: [4.0, 4.0, 4.0]
+  guest-unpin-ms: [0.0, 0.0, 0.0]
+  guest-unpin-requests: [0.0, 0.0, 0.0]
+  guest-write-ms: [18.037, 14.113, 15.08]
+  guest-write-requests: [59.0, 59.0, 59.0]
+
+(See test artifacts at: /home/ramon/run-20261109T082543Z-87a3196b/results/e2e/bench-fork-fxfs-guest-dax-profiled)
+
+OK - 0/0 passed (1 reports)
+Logs: /home/ramon/run-20261109T082543Z-87a3196b/results/e2e

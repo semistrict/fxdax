@@ -1,0 +1,53 @@
+branch 864c8f62b12de445
+capacity 17179869184
+used 10780323840
+available 6399545344
+own 10780323840
+inherited 0
+public false
+open false
+b9aa3a1fc5c40459
+branch b9aa3a1fc5c40459
+capacity 17179869184
+used 10780323840
+available 6399545344
+own 0
+inherited 10780323840
+public false
+open false
+62d297a25de92b43
+branch 62d297a25de92b43
+capacity 17179869184
+used 10780323840
+available 6399545344
+own 0
+inherited 10780323840
+public false
+open false
+f5f6e025eaa693fb
+branch f5f6e025eaa693fb
+capacity 17179869184
+used 10780323840
+available 6399545344
+own 0
+inherited 10780323840
+public false
+open false
+45c9022daa12cc6a
+branch 45c9022daa12cc6a
+capacity 17179869184
+used 10780323840
+available 6399545344
+own 0
+inherited 10780323840
+public false
+open false
+ea8a841500c5d267
+branch ea8a841500c5d267
+capacity 17179869184
+used 10780323840
+available 6399545344
+own 0
+inherited 10780323840
+public false
+open false

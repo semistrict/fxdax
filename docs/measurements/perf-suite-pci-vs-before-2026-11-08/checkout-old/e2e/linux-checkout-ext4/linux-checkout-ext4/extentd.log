@@ -1,0 +1,2 @@
+INFO fxdax_extentd: extentd: draining, on SIGTERM, within 60s
+INFO fxdax_extentd: extentd: drained in 195.3µs: every store closed

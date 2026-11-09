@@ -1,0 +1,23 @@
+[    0.625722] check access for rdinit=/init failed: -2, ignoring
+fxdax: boot kernel_ns=667148000 agent_ns=688856902
+measure checkout mkfs 365.64272 ms
+measure checkout mount 27.864805 ms
+measure checkout clone 10566.711332 ms
+measure checkout checkout 15424.359533 ms
+measure checkout sync 1875.318096 ms
+measure checkout tracked-files 91166 files
+measure checkout volume-files 91192 files
+measure checkout volume-directories 6059 directories
+measure checkout volume-bytes 1831129545 bytes
+measure checkout git-files 26 files
+measure checkout git-directories 9 directories
+measure checkout git-bytes 295822513 bytes
+measure checkout status-cold 295.992621 ms
+measure checkout status-warm 139.020856 ms
+measure checkout status-synced 134.73965099999998 ms
+measure checkout status-warm-again 138.89185 ms
+measure checkout read-cold 4088.5502960000003 ms
+measure checkout read-bytes 1535304277 bytes
+measure checkout read-warm 592.451135 ms
+OK checkout
+[   37.140694] reboot: Restarting system

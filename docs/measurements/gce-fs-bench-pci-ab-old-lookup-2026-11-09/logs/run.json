@@ -1,0 +1,15 @@
+{
+ "commit": "557b49a700efff4f705d493d010102d112bc929b-dirty",
+ "knobs": {
+  "FXDAX_BENCH_CASES": "bench-fs-ext4-guest-kernel",
+  "FXDAX_BENCH_GROUPS": "metadata",
+  "FXDAX_BENCH_ITERATIONS": "5",
+  "FXDAX_BENCH_NOTE": "TASK-275: rerun of ext4-guest-kernel's metadata group (lookup-missing 4% lower on PCI in rounds 1-2), old side, on fxdax-keep-c3-standard-8-us-east4-a-1",
+  "FXDAX_EXTENTD_MEMORY": "8589934592",
+  "FXDAX_GUEST_KERNEL_BUILD": "release"
+ },
+ "rounds": 1,
+ "cases": [
+  "bench-fs-ext4-guest-kernel"
+ ]
+}

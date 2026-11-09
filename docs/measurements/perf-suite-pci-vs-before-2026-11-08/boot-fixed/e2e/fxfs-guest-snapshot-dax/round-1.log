@@ -1,0 +1,14 @@
+a: restored in 25.186939ms
+b: restored in 25.323421ms
+restored
+fxfs-automount: the host's connection was reset (Socket not connected (os error 107)): again
+a: thawing
+a: thawed
+a: wrote
+[    1.927213] reboot: Restarting system
+restored
+fxfs-automount: the host's connection was reset (Socket not connected (os error 107)): again
+b: thawing
+b: thawed
+b: wrote
+[    1.927575] reboot: Restarting system

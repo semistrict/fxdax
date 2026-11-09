@@ -1,0 +1,26 @@
+[    0.442229] PCI: Fatal: No config space access function found
+[    0.473321] PCI: System does not support PCI
+[    0.597336] check access for rdinit=/init failed: -2, ignoring
+fxdax: boot kernel_ns=635135000 agent_ns=664914161
+measure checkout default-mount 58.839003 ms
+measure checkout clone 10049.889625 ms
+measure checkout checkout 36905.978345 ms
+measure checkout sync 445.179867 ms
+measure checkout tracked-files 91166 files
+measure checkout volume-files 91192 files
+measure checkout volume-directories 6059 directories
+measure checkout volume-bytes 1831129545 bytes
+measure checkout git-files 26 files
+measure checkout git-directories 9 directories
+measure checkout git-bytes 295822513 bytes
+measure checkout status-cold 813.312516 ms
+measure checkout status-warm 113.411511 ms
+measure checkout status-synced 133.452396 ms
+measure checkout status-warm-again 103.557964 ms
+measure checkout read-cold 10631.7235 ms
+measure checkout read-bytes 1535304277 bytes
+measure checkout read-warm 525.80696 ms
+measure checkout publish 1254.706763 ms
+measure checkout manifest 600 bytes
+OK checkout
+[   65.528240] reboot: Restarting system

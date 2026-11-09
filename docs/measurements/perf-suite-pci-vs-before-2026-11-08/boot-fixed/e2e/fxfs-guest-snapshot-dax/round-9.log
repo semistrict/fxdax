@@ -1,0 +1,14 @@
+a: restored in 26.433527ms
+b: restored in 26.415362ms
+restored
+fxfs-automount: the host's connection was reset (unexpected end of file): again
+a: thawing
+a: thawed
+a: wrote
+[    1.969532] reboot: Restarting system
+restored
+fxfs-automount: the host's connection was reset (Connection reset by peer (os error 104)): again
+b: thawing
+b: thawed
+b: wrote
+[    1.965166] reboot: Restarting system

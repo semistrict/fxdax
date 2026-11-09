@@ -1,0 +1,15 @@
+[    0.621595] check access for rdinit=/init failed: -2, ignoring
+fxdax: boot kernel_ns=647079000 agent_ns=672855410
+measure rebooted default-mount 84.788319 ms
+measure rebooted mount 6.903420000000001 ms
+measure rebooted status-cold 665.8244800000001 ms
+measure rebooted status-warm 116.77816200000001 ms
+measure rebooted status-synced 177.494466 ms
+measure rebooted status-warm-again 134.350501 ms
+measure rebooted mount-others-first 0.176457 ms
+measure rebooted mount-others-median 5.95214 ms
+measure rebooted mount-others-max 9.962957 ms
+measure rebooted mount-others-total 1437.544572 ms
+measure rebooted unmount-all 5194.289501 ms
+OK rebooted
+[    8.951999] reboot: Restarting system

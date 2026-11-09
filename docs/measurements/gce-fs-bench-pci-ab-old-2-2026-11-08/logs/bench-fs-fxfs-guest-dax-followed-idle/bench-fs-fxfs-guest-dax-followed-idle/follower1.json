@@ -1,0 +1,31 @@
+{
+  "boot-source": {
+    "boot_args": "console=ttyS0 loglevel=5 reboot=k panic=-1 8250.nr_uarts=1 i8042.noaux i8042.nomux i8042.dumbkbd sysctl.kernel.hung_task_timeout_secs=10 softlockup_panic=1 panic_print=0x1 sysctl.kernel.softlockup_all_cpu_backtrace=1 init=/guest-agent FXDAX_FORK_BENCH_ROLE=follower1 FXDAX_BENCH_ITERATIONS=3 FXDAX_BENCH_GROUPS= FXDAX_BENCH_GUEST_PERF= PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin HOME=/root FXDAX_GUEST_WATCHDOG_SECS=5377 -- bench-fs-fxfs-guest-dax-followed-idle",
+    "kernel_image_path": "/var/lib/fxdax-test/guest-kernel-release/out/x86_64/vmlinux"
+  },
+  "drives": [
+    {
+      "drive_id": "rootfs",
+      "is_read_only": false,
+      "is_root_device": true,
+      "path_on_host": "/home/ramon/run-20261109T050007Z-cebf9111/results/logs/bench-fs-fxfs-guest-dax-followed-idle/bench-fs-fxfs-guest-dax-followed-idle/follower1.rootfs.ext4"
+    }
+  ],
+  "extent": [
+    {
+      "capacity": 0,
+      "dax_window_size": 33644609536,
+      "extentd_socket": "/home/ramon/run-20261109T050007Z-cebf9111/results/logs/extentd.sock",
+      "id": "bench",
+      "path_on_host": "/home/ramon/run-20261109T050007Z-cebf9111/results/logs/bench-fs-fxfs-guest-dax-followed-idle/bench-fs-fxfs-guest-dax-followed-idle/extents",
+      "read_only": true,
+      "tag": "bench"
+    }
+  ],
+  "machine-config": {
+    "huge_pages": "None",
+    "mem_size_mib": 1024,
+    "vcpu_count": 1
+  },
+  "pmem": []
+}

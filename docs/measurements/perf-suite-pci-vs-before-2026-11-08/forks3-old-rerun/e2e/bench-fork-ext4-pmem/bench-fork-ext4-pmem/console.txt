@@ -1,0 +1,13 @@
+[    0.184418] PCI: Fatal: No config space access function found
+[    0.219204] PCI: System does not support PCI
+[    0.307346] nd_pmem namespace0.0: unable to guarantee persistence of writes
+[    0.441691] check access for rdinit=/init failed: -2, ignoring
+fxdax: boot kernel_ns=993196000 agent_ns=1009182098
+RESULT fork-mount s lower 3.762
+RESULT fork-read-usr s lower 4.155
+FXFS fork-read-usr: 
+RESULT fork-reread-usr s lower 0.030
+FXFS fork-reread-usr: 
+RESULT fork-pg-start s lower 0.270
+RESULT fork-pgbench-select tps higher 17764.935
+[   19.560437] reboot: Restarting system

@@ -1,0 +1,10 @@
+info: component rust-std for target x86_64-unknown-linux-musl is up to date
+info: component clippy is up to date
+     Ignored package `cargo-nextest v0.9.143` is already installed, use --force to override
+== guest kernel (release)
+info: syncing channel updates for nightly-2026-10-12-x86_64-unknown-linux-gnu
+info: latest update on 2026-10-12 for version 1.101.0-nightly (080cc2714 2026-10-11)
+info: component rust-src is up to date
+info: checking for self-update (current version: 1.29.3)
+== guest tests
+guest tests: exit 0

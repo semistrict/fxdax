@@ -1,0 +1,28 @@
+{
+  "boot-source": {
+    "boot_args": "console=ttyS0 loglevel=5 reboot=k panic=-1 8250.nr_uarts=1 i8042.noaux i8042.nomux i8042.dumbkbd sysctl.kernel.hung_task_timeout_secs=10 softlockup_panic=1 panic_print=0x1 sysctl.kernel.softlockup_all_cpu_backtrace=1 init=/guest-agent FXDAX_PGBENCH_BLK=/dev/vdb FXDAX_PGBENCH_ROLE=load FXDAX_GUEST_WATCHDOG_SECS=1178 -- pgbench-ext4-blk-writeback",
+    "kernel_image_path": "/var/lib/fxdax-test/guest-kernel-release/out/x86_64/vmlinux"
+  },
+  "drives": [
+    {
+      "drive_id": "rootfs",
+      "is_read_only": false,
+      "is_root_device": true,
+      "path_on_host": "/home/ramon/run-20261109T035205Z-577a46b6/results/e2e/pgbench-ext4-blk-writeback/pgbench-ext4-blk-writeback/load.rootfs.ext4"
+    },
+    {
+      "cache_type": "Writeback",
+      "drive_id": "pgbench",
+      "is_read_only": false,
+      "is_root_device": false,
+      "path_on_host": "/home/ramon/run-20261109T035205Z-577a46b6/results/e2e/pgbench-ext4-blk-writeback/pgbench-ext4-blk-writeback/extents/load.img"
+    }
+  ],
+  "extent": [],
+  "machine-config": {
+    "huge_pages": "None",
+    "mem_size_mib": 4096,
+    "vcpu_count": 2
+  },
+  "pmem": []
+}

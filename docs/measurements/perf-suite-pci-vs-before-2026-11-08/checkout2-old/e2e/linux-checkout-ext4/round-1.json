@@ -1,0 +1,21 @@
+{
+  "case": "linux-checkout-ext4",
+  "commit": "557b49a700efff4f705d493d010102d112bc929b-dirty",
+  "failed_checks": [],
+  "knobs": {
+    "FXDAX_E2E_ROUNDS": "1",
+    "FXDAX_E2E_TEST": "linux-checkout-ext4 linux-checkout-fxfs",
+    "FXDAX_GUEST_KERNEL_BUILD": "release",
+    "FXDAX_TEST_PARTS": "clippy workspace sim shuttle scripts guest firecracker",
+    "FXDAX_WORKSPACE_TESTS": "0",
+    "PJDFSTEST_COMMIT": "85a8aea9e685999ef0540392fd80535f873d7ff7",
+    "PJDFSTEST_REPO": "https://github.com/pjd/pjdfstest"
+  },
+  "limit_secs": 7200,
+  "outcome": "pass",
+  "reason": null,
+  "replay": "FXDAX_WORKSPACE_TESTS=0 FXDAX_E2E_TEST=linux-checkout-ext4 FXDAX_E2E_ROUNDS=1 FXDAX_GUEST_KERNEL_BUILD=release FXDAX_TEST_PARTS='clippy workspace sim shuttle scripts guest firecracker' PJDFSTEST_COMMIT=85a8aea9e685999ef0540392fd80535f873d7ff7 PJDFSTEST_REPO=https://github.com/pjd/pjdfstest scripts/test-gce.sh all",
+  "round": 1,
+  "rounds": 1,
+  "took_secs": 66.863082875
+}

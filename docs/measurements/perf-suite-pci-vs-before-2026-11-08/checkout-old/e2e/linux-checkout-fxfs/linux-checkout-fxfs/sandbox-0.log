@@ -1,0 +1,11 @@
+2026-11-09T05:56:17.283049220 [anonymous-instance:fc_vcpu 0] Received a VcpuEvent::Resume message with immediate_exit enabled. immediate_exit was disabled before proceeding
+2026-11-09T05:56:17.283100105 [anonymous-instance:fc_vcpu 1] Received a VcpuEvent::Resume message with immediate_exit enabled. immediate_exit was disabled before proceeding
+2026-11-09T05:56:17.283125918 [anonymous-instance:fc_vcpu 2] Received a VcpuEvent::Resume message with immediate_exit enabled. immediate_exit was disabled before proceeding
+2026-11-09T05:56:17.283148598 [anonymous-instance:fc_vcpu 3] Received a VcpuEvent::Resume message with immediate_exit enabled. immediate_exit was disabled before proceeding
+2026-11-09T05:56:17.318186426 [anonymous-instance:fc_vcpu 0] vcpu: IO write @ 0xcf8:0x4 failed: bus_error: MissingAddressRange
+2026-11-09T05:56:17.318267035 [anonymous-instance:fc_vcpu 0] vcpu: IO read @ 0xcfc:0x2 failed: bus_error: MissingAddressRange
+2026-11-09T05:56:17.790991454 [anonymous-instance:fc_vcpu 0] vcpu: IO write @ 0x70:0x1 failed: bus_error: MissingAddressRange
+2026-11-09T05:56:17.791060638 [anonymous-instance:fc_vcpu 0] vcpu: IO write @ 0x71:0x1 failed: bus_error: MissingAddressRange
+2026-11-09T05:56:17.798133637 [anonymous-instance:fc_vcpu 0] vcpu: IO write @ 0x70:0x1 failed: bus_error: MissingAddressRange
+2026-11-09T05:56:17.798172448 [anonymous-instance:fc_vcpu 0] vcpu: IO write @ 0x71:0x1 failed: bus_error: MissingAddressRange
+2026-11-09T05:56:17.881210274 [anonymous-instance:fc_vcpu 0] vcpu: IO read @ 0x87:0x1 failed: bus_error: MissingAddressRange

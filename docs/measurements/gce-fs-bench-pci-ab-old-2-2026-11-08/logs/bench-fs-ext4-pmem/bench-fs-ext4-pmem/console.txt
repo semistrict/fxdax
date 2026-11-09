@@ -1,0 +1,241 @@
+[    0.117145] PCI: Fatal: No config space access function found
+[    0.148712] PCI: System does not support PCI
+[    0.211659] nd_pmem namespace0.0: unable to guarantee persistence of writes
+[    0.353965] check access for rdinit=/init failed: -2, ignoring
+fxdax: boot kernel_ns=699022000 agent_ns=720870971
+iteration 1/3
+OBSERVED mtime-ahead-of-guest-ms -0.185
+FXFS seq-write: 
+RESULT seq-write MiB/s higher 98.880
+FXFS rand-read-cold: 
+RESULT rand-read-cold IOPS higher 63750.973
+RESULT seq-read-cold MiB/s higher 308.063
+RESULT seq-read-warm MiB/s higher 8288.356
+RESULT rand-read-warm IOPS higher 930306.347
+RESULT mmap-seq-read MiB/s higher 9481.481
+OBSERVED mmap-seq-read-faults-per-mib 6.3
+FXFS rand-write: 
+RESULT rand-write IOPS higher 10988.598
+RESULT mmap-rand-read IOPS higher 1235700.650
+FXFS mmap-rand-write: 
+RESULT mmap-rand-write IOPS higher 7865.578
+FXFS fsync-append: 
+RESULT fsync-append IOPS higher 536.266
+RESULT sqlite-pread-scan MiB/s higher 310.270
+OBSERVED sqlite-pread-scan-faults-per-mib 2.7
+RESULT sqlite-pread-scan-warm MiB/s higher 2981.462
+OBSERVED sqlite-pread-scan-warm-faults-per-mib 2.6
+RESULT sqlite-mmap-scan MiB/s higher 2572.009
+OBSERVED sqlite-mmap-scan-faults-per-mib 13.3
+RESULT sqlite-mmap-scan-warm MiB/s higher 2760.258
+OBSERVED sqlite-mmap-scan-warm-faults-per-mib 11.9
+RESULT create ops/s higher 93709.967
+FXFS create: 
+RESULT stat-cold ops/s higher 318058.469
+FXFS stat-cold: 
+RESULT stat-warm ops/s higher 1237608.445
+FXFS stat-warm: 
+RESULT lookup-missing ops/s higher 429383.208
+FXFS lookup-missing: 
+RESULT readdir ops/s higher 2859144.258
+FXFS readdir: 
+RESULT read-small-cold ops/s higher 50426.385
+FXFS read-small-cold: 
+RESULT chmod ops/s higher 722791.420
+FXFS chmod: 
+RESULT setxattr ops/s higher 558589.940
+FXFS setxattr: 
+RESULT link ops/s higher 154302.974
+FXFS link: 
+RESULT rename ops/s higher 115945.410
+FXFS rename: 
+RESULT rename-across ops/s higher 102650.576
+FXFS rename-across: 
+RESULT unlink ops/s higher 393970.052
+FXFS unlink: 
+RESULT create-fsync ops/s higher 522.050
+FXFS create-fsync: 
+RESULT mkdir-tree ops/s higher 130480.956
+FXFS mkdir-tree: 
+RESULT find-cold ops/s higher 318043.853
+FXFS find-cold: 
+RESULT rm-tree ops/s higher 104578.439
+FXFS rm-tree: 
+RESULT large-dir-create ops/s higher 105962.125
+FXFS large-dir-create: 
+RESULT large-dir-stat-cold ops/s higher 272170.428
+FXFS large-dir-stat-cold: 
+RESULT large-dir-unlink ops/s higher 209028.637
+FXFS large-dir-unlink: 
+RESULT create-parallel ops/s higher 175642.989
+FXFS create-parallel: 
+RESULT stat-parallel ops/s higher 606700.813
+FXFS stat-parallel: 
+RESULT unlink-parallel ops/s higher 312517.823
+FXFS unlink-parallel: 
+RESULT create-shared-dir ops/s higher 112553.267
+FXFS create-shared-dir: 
+RESULT unlink-shared-dir ops/s higher 279893.618
+FXFS unlink-shared-dir: 
+RESULT untar s lower 0.015
+ar: `u' modifier ignored since `D' is the default (see `U')
+RESULT make s lower 4.635
+RESULT build-total s lower 4.650
+iteration 2/3
+OBSERVED mtime-ahead-of-guest-ms -2.357
+FXFS seq-write: 
+RESULT seq-write MiB/s higher 123.195
+FXFS rand-read-cold: 
+RESULT rand-read-cold IOPS higher 65799.197
+RESULT seq-read-cold MiB/s higher 412.238
+RESULT seq-read-warm MiB/s higher 8238.381
+RESULT rand-read-warm IOPS higher 924366.817
+RESULT mmap-seq-read MiB/s higher 9846.154
+OBSERVED mmap-seq-read-faults-per-mib 6.3
+FXFS rand-write: 
+RESULT rand-write IOPS higher 11787.050
+RESULT mmap-rand-read IOPS higher 1223649.175
+FXFS mmap-rand-write: 
+RESULT mmap-rand-write IOPS higher 6203.711
+FXFS fsync-append: 
+RESULT fsync-append IOPS higher 535.285
+RESULT sqlite-pread-scan MiB/s higher 301.666
+OBSERVED sqlite-pread-scan-faults-per-mib 2.7
+RESULT sqlite-pread-scan-warm MiB/s higher 2912.001
+OBSERVED sqlite-pread-scan-warm-faults-per-mib 2.6
+RESULT sqlite-mmap-scan MiB/s higher 2647.372
+OBSERVED sqlite-mmap-scan-faults-per-mib 13.3
+RESULT sqlite-mmap-scan-warm MiB/s higher 2754.134
+OBSERVED sqlite-mmap-scan-warm-faults-per-mib 11.9
+RESULT create ops/s higher 98914.341
+FXFS create: 
+RESULT stat-cold ops/s higher 333678.635
+FXFS stat-cold: 
+RESULT stat-warm ops/s higher 739166.043
+FXFS stat-warm: 
+RESULT lookup-missing ops/s higher 387916.103
+FXFS lookup-missing: 
+RESULT readdir ops/s higher 3118242.185
+FXFS readdir: 
+RESULT read-small-cold ops/s higher 51006.361
+FXFS read-small-cold: 
+RESULT chmod ops/s higher 783352.813
+FXFS chmod: 
+RESULT setxattr ops/s higher 594993.546
+FXFS setxattr: 
+RESULT link ops/s higher 154439.212
+FXFS link: 
+RESULT rename ops/s higher 117089.746
+FXFS rename: 
+RESULT rename-across ops/s higher 99797.312
+FXFS rename-across: 
+RESULT unlink ops/s higher 353609.165
+FXFS unlink: 
+RESULT create-fsync ops/s higher 529.375
+FXFS create-fsync: 
+RESULT mkdir-tree ops/s higher 128567.360
+FXFS mkdir-tree: 
+RESULT find-cold ops/s higher 314906.249
+FXFS find-cold: 
+RESULT rm-tree ops/s higher 102318.221
+FXFS rm-tree: 
+RESULT large-dir-create ops/s higher 110739.814
+FXFS large-dir-create: 
+RESULT large-dir-stat-cold ops/s higher 278355.164
+FXFS large-dir-stat-cold: 
+RESULT large-dir-unlink ops/s higher 207620.641
+FXFS large-dir-unlink: 
+RESULT create-parallel ops/s higher 177615.954
+FXFS create-parallel: 
+RESULT stat-parallel ops/s higher 532219.398
+FXFS stat-parallel: 
+RESULT unlink-parallel ops/s higher 322373.001
+FXFS unlink-parallel: 
+RESULT create-shared-dir ops/s higher 113605.569
+FXFS create-shared-dir: 
+RESULT unlink-shared-dir ops/s higher 270728.542
+FXFS unlink-shared-dir: 
+RESULT untar s lower 0.015
+ar: `u' modifier ignored since `D' is the default (see `U')
+RESULT make s lower 4.620
+RESULT build-total s lower 4.635
+iteration 3/3
+OBSERVED mtime-ahead-of-guest-ms -3.516
+FXFS seq-write: 
+RESULT seq-write MiB/s higher 149.010
+FXFS rand-read-cold: 
+RESULT rand-read-cold IOPS higher 65015.873
+RESULT seq-read-cold MiB/s higher 420.361
+RESULT seq-read-warm MiB/s higher 8276.862
+RESULT rand-read-warm IOPS higher 926347.826
+RESULT mmap-seq-read MiB/s higher 9846.154
+OBSERVED mmap-seq-read-faults-per-mib 6.3
+FXFS rand-write: 
+RESULT rand-write IOPS higher 11619.858
+RESULT mmap-rand-read IOPS higher 1226590.205
+FXFS mmap-rand-write: 
+RESULT mmap-rand-write IOPS higher 7288.256
+FXFS fsync-append: 
+RESULT fsync-append IOPS higher 529.884
+RESULT sqlite-pread-scan MiB/s higher 293.181
+OBSERVED sqlite-pread-scan-faults-per-mib 2.6
+RESULT sqlite-pread-scan-warm MiB/s higher 2943.953
+OBSERVED sqlite-pread-scan-warm-faults-per-mib 2.6
+RESULT sqlite-mmap-scan MiB/s higher 2606.232
+OBSERVED sqlite-mmap-scan-faults-per-mib 13.3
+RESULT sqlite-mmap-scan-warm MiB/s higher 2647.375
+OBSERVED sqlite-mmap-scan-warm-faults-per-mib 11.9
+RESULT create ops/s higher 97621.306
+FXFS create: 
+RESULT stat-cold ops/s higher 328490.507
+FXFS stat-cold: 
+RESULT stat-warm ops/s higher 1112177.566
+FXFS stat-warm: 
+RESULT lookup-missing ops/s higher 427128.740
+FXFS lookup-missing: 
+FXFS readdir: 
+RESULT readdir ops/s higher 934534.896
+RESULT read-small-cold ops/s higher 48691.356
+FXFS read-small-cold: 
+RESULT chmod ops/s higher 705513.411
+FXFS chmod: 
+RESULT setxattr ops/s higher 542452.760
+FXFS setxattr: 
+RESULT link ops/s higher 148506.235
+FXFS link: 
+RESULT rename ops/s higher 112963.308
+FXFS rename: 
+RESULT rename-across ops/s higher 95601.422
+FXFS rename-across: 
+RESULT unlink ops/s higher 368490.251
+FXFS unlink: 
+RESULT create-fsync ops/s higher 503.620
+FXFS create-fsync: 
+RESULT mkdir-tree ops/s higher 129439.572
+FXFS mkdir-tree: 
+RESULT find-cold ops/s higher 314805.954
+FXFS find-cold: 
+RESULT rm-tree ops/s higher 103310.523
+FXFS rm-tree: 
+RESULT large-dir-create ops/s higher 110158.691
+FXFS large-dir-create: 
+RESULT large-dir-stat-cold ops/s higher 260969.313
+FXFS large-dir-stat-cold: 
+RESULT large-dir-unlink ops/s higher 207567.377
+FXFS large-dir-unlink: 
+RESULT create-parallel ops/s higher 174269.519
+FXFS create-parallel: 
+RESULT stat-parallel ops/s higher 544214.614
+FXFS stat-parallel: 
+RESULT unlink-parallel ops/s higher 296990.120
+FXFS unlink-parallel: 
+RESULT create-shared-dir ops/s higher 110482.383
+FXFS create-shared-dir: 
+RESULT unlink-shared-dir ops/s higher 281750.181
+FXFS unlink-shared-dir: 
+RESULT untar s lower 0.016
+ar: `u' modifier ignored since `D' is the default (see `U')
+RESULT make s lower 4.627
+RESULT build-total s lower 4.643
+DONE
+[   92.436305] reboot: Restarting system

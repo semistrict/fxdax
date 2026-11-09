@@ -1,0 +1,9 @@
+2026-11-09T09:51:25.892763552 [303170-0:fc_vcpu 1] Received a VcpuEvent::Resume message with immediate_exit enabled. immediate_exit was disabled before proceeding
+2026-11-09T09:51:25.892863534 [303170-0:fc_vcpu 0] Received a VcpuEvent::Resume message with immediate_exit enabled. immediate_exit was disabled before proceeding
+2026-11-09T09:51:25.945226080 [303170-0:fc_vcpu 0] vcpu: IO write @ 0xcf8:0x4 failed: bus_error: MissingAddressRange
+2026-11-09T09:51:25.945310718 [303170-0:fc_vcpu 0] vcpu: IO read @ 0xcfc:0x2 failed: bus_error: MissingAddressRange
+2026-11-09T09:51:26.119969893 [303170-0:fc_vcpu 0] vcpu: IO write @ 0x70:0x1 failed: bus_error: MissingAddressRange
+2026-11-09T09:51:26.120025865 [303170-0:fc_vcpu 0] vcpu: IO write @ 0x71:0x1 failed: bus_error: MissingAddressRange
+2026-11-09T09:51:26.121652607 [303170-0:fc_vcpu 0] vcpu: IO write @ 0x70:0x1 failed: bus_error: MissingAddressRange
+2026-11-09T09:51:26.121700230 [303170-0:fc_vcpu 0] vcpu: IO write @ 0x71:0x1 failed: bus_error: MissingAddressRange
+2026-11-09T09:51:26.267660768 [303170-0:fc_vcpu 1] vcpu: IO read @ 0x87:0x1 failed: bus_error: MissingAddressRange

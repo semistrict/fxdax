@@ -1,0 +1,1475 @@
+{
+  "fxfs-guest-pgbench": {
+    "load": {
+      "seconds": 19.64,
+      "phases": {
+        "drop tables": 0.01,
+        "create tables": 0.01,
+        "client-side generate": 13.89,
+        "vacuum": 0.43,
+        "primary keys": 5.31
+      }
+    },
+    "runs": [
+      {
+        "started": 23.74,
+        "seconds": 60.1,
+        "cpu": {
+          "user": 0.36,
+          "system": 0.393,
+          "idle": 0.241,
+          "steal": 0.006
+        },
+        "latency_ms": 2.848,
+        "tps": 1404.719102,
+        "daemon": {
+          "seconds": 62,
+          "requests": {
+            "read": {
+              "per_s": 16.1,
+              "mean_us": 253.7
+            },
+            "write": {
+              "per_s": 2231.7,
+              "mean_us": 60.3
+            },
+            "free": {
+              "per_s": 284.3,
+              "mean_us": 7.2
+            },
+            "commit": {
+              "per_s": 1.8,
+              "mean_us": 50.7
+            },
+            "free_many": {
+              "per_s": 12.5,
+              "mean_us": 110.8
+            }
+          },
+          "commits_per_s": 915.5,
+          "commit_wait_us": 8.9
+        }
+      },
+      {
+        "started": 92.12,
+        "seconds": 60.1,
+        "cpu": {
+          "user": 0.362,
+          "system": 0.408,
+          "idle": 0.223,
+          "steal": 0.007
+        },
+        "latency_ms": 2.894,
+        "tps": 1382.229173,
+        "daemon": {
+          "seconds": 62,
+          "requests": {
+            "read": {
+              "per_s": 16.8,
+              "mean_us": 294.3
+            },
+            "write": {
+              "per_s": 2352.1,
+              "mean_us": 56.7
+            },
+            "free": {
+              "per_s": 324.7,
+              "mean_us": 8.0
+            },
+            "commit": {
+              "per_s": 1.8,
+              "mean_us": 36.8
+            },
+            "free_many": {
+              "per_s": 206.2,
+              "mean_us": 21.0
+            }
+          },
+          "commits_per_s": 889.5,
+          "commit_wait_us": 11.5
+        }
+      },
+      {
+        "started": 158.11,
+        "seconds": 60.1,
+        "cpu": {
+          "user": 0.385,
+          "system": 0.401,
+          "idle": 0.209,
+          "steal": 0.005
+        },
+        "latency_ms": 2.706,
+        "tps": 1478.03088,
+        "daemon": {
+          "seconds": 62,
+          "requests": {
+            "read": {
+              "per_s": 17.3,
+              "mean_us": 246.5
+            },
+            "write": {
+              "per_s": 2433.7,
+              "mean_us": 46.2
+            },
+            "free": {
+              "per_s": 334.7,
+              "mean_us": 7.8
+            },
+            "commit": {
+              "per_s": 1.9,
+              "mean_us": 36.0
+            },
+            "free_many": {
+              "per_s": 65.4,
+              "mean_us": 38.7
+            }
+          },
+          "commits_per_s": 958.3,
+          "commit_wait_us": 12.4
+        }
+      },
+      {
+        "started": 223.55,
+        "seconds": 60.1,
+        "cpu": {
+          "user": 0.381,
+          "system": 0.405,
+          "idle": 0.21,
+          "steal": 0.005
+        },
+        "latency_ms": 2.759,
+        "tps": 1449.56668,
+        "daemon": {
+          "seconds": 62,
+          "requests": {
+            "read": {
+              "per_s": 17.6,
+              "mean_us": 289.3
+            },
+            "write": {
+              "per_s": 2359.7,
+              "mean_us": 48.1
+            },
+            "free": {
+              "per_s": 350.1,
+              "mean_us": 8.0
+            },
+            "commit": {
+              "per_s": 1.8,
+              "mean_us": 39.9
+            },
+            "free_many": {
+              "per_s": 209.9,
+              "mean_us": 20.6
+            }
+          },
+          "commits_per_s": 930.5,
+          "commit_wait_us": 12.6
+        }
+      },
+      {
+        "started": 288.62,
+        "seconds": 60.0,
+        "cpu": {
+          "user": 0.37,
+          "system": 0.409,
+          "idle": 0.216,
+          "steal": 0.006
+        },
+        "latency_ms": 2.785,
+        "tps": 1436.24028,
+        "daemon": {
+          "seconds": 62,
+          "requests": {
+            "read": {
+              "per_s": 17.5,
+              "mean_us": 279.8
+            },
+            "write": {
+              "per_s": 2361.1,
+              "mean_us": 56.0
+            },
+            "free": {
+              "per_s": 354.8,
+              "mean_us": 7.8
+            },
+            "commit": {
+              "per_s": 1.9,
+              "mean_us": 51.5
+            },
+            "free_many": {
+              "per_s": 224.6,
+              "mean_us": 22.3
+            }
+          },
+          "commits_per_s": 921.4,
+          "commit_wait_us": 12.6
+        }
+      }
+    ]
+  },
+  "fxfs-guest-pgbench-dax": {
+    "load": {
+      "seconds": 19.82,
+      "phases": {
+        "drop tables": 0.01,
+        "create tables": 0.01,
+        "client-side generate": 14.55,
+        "vacuum": 0.35,
+        "primary keys": 4.91
+      }
+    },
+    "runs": [
+      {
+        "started": 23.96,
+        "seconds": 60.1,
+        "cpu": {
+          "user": 0.365,
+          "system": 0.394,
+          "idle": 0.236,
+          "steal": 0.006
+        },
+        "latency_ms": 2.869,
+        "tps": 1394.179379,
+        "daemon": {
+          "seconds": 64,
+          "requests": {
+            "read": {
+              "per_s": 15.6,
+              "mean_us": 276.6
+            },
+            "write": {
+              "per_s": 2183.3,
+              "mean_us": 65.6
+            },
+            "free": {
+              "per_s": 277.2,
+              "mean_us": 7.5
+            },
+            "commit": {
+              "per_s": 1.7,
+              "mean_us": 33.5
+            },
+            "free_many": {
+              "per_s": 12.4,
+              "mean_us": 105.8
+            }
+          },
+          "commits_per_s": 885.3,
+          "commit_wait_us": 8.9
+        }
+      },
+      {
+        "started": 93.05,
+        "seconds": 60.0,
+        "cpu": {
+          "user": 0.371,
+          "system": 0.407,
+          "idle": 0.215,
+          "steal": 0.006
+        },
+        "latency_ms": 2.933,
+        "tps": 1363.692911,
+        "daemon": {
+          "seconds": 62,
+          "requests": {
+            "read": {
+              "per_s": 16.5,
+              "mean_us": 308.1
+            },
+            "write": {
+              "per_s": 2313.0,
+              "mean_us": 54.7
+            },
+            "free": {
+              "per_s": 330.6,
+              "mean_us": 8.0
+            },
+            "commit": {
+              "per_s": 1.7,
+              "mean_us": 49.6
+            },
+            "free_many": {
+              "per_s": 198.2,
+              "mean_us": 21.7
+            }
+          },
+          "commits_per_s": 884.0,
+          "commit_wait_us": 11.5
+        }
+      },
+      {
+        "started": 160.21,
+        "seconds": 60.1,
+        "cpu": {
+          "user": 0.384,
+          "system": 0.402,
+          "idle": 0.209,
+          "steal": 0.005
+        },
+        "latency_ms": 2.759,
+        "tps": 1449.758258,
+        "daemon": {
+          "seconds": 62,
+          "requests": {
+            "read": {
+              "per_s": 17.2,
+              "mean_us": 325.9
+            },
+            "write": {
+              "per_s": 2393.6,
+              "mean_us": 47.2
+            },
+            "free": {
+              "per_s": 314.6,
+              "mean_us": 7.8
+            },
+            "commit": {
+              "per_s": 1.8,
+              "mean_us": 39.2
+            },
+            "free_many": {
+              "per_s": 70.9,
+              "mean_us": 36.3
+            }
+          },
+          "commits_per_s": 937.3,
+          "commit_wait_us": 12.9
+        }
+      },
+      {
+        "started": 225.84,
+        "seconds": 60.1,
+        "cpu": {
+          "user": 0.385,
+          "system": 0.407,
+          "idle": 0.203,
+          "steal": 0.005
+        },
+        "latency_ms": 2.802,
+        "tps": 1427.743575,
+        "daemon": {
+          "seconds": 62,
+          "requests": {
+            "read": {
+              "per_s": 16.8,
+              "mean_us": 388.7
+            },
+            "write": {
+              "per_s": 2341.4,
+              "mean_us": 46.2
+            },
+            "free": {
+              "per_s": 354.6,
+              "mean_us": 8.2
+            },
+            "commit": {
+              "per_s": 1.8,
+              "mean_us": 34.6
+            },
+            "free_many": {
+              "per_s": 198.3,
+              "mean_us": 20.3
+            }
+          },
+          "commits_per_s": 925.8,
+          "commit_wait_us": 13.1
+        }
+      },
+      {
+        "started": 290.47,
+        "seconds": 60.0,
+        "cpu": {
+          "user": 0.374,
+          "system": 0.402,
+          "idle": 0.219,
+          "steal": 0.006
+        },
+        "latency_ms": 2.843,
+        "tps": 1406.856771,
+        "daemon": {
+          "seconds": 62,
+          "requests": {
+            "read": {
+              "per_s": 18.0,
+              "mean_us": 299.9
+            },
+            "write": {
+              "per_s": 2313.5,
+              "mean_us": 58.2
+            },
+            "free": {
+              "per_s": 343.8,
+              "mean_us": 8.0
+            },
+            "commit": {
+              "per_s": 1.8,
+              "mean_us": 76.9
+            },
+            "free_many": {
+              "per_s": 231.3,
+              "mean_us": 22.3
+            }
+          },
+          "commits_per_s": 906.5,
+          "commit_wait_us": 13.2
+        }
+      }
+    ]
+  },
+  "fxfs-guest-pgbench-dax-forked": {
+    "load": {
+      "seconds": 19.61,
+      "phases": {
+        "drop tables": 0.01,
+        "create tables": 0.01,
+        "client-side generate": 13.86,
+        "vacuum": 0.47,
+        "primary keys": 5.27
+      }
+    },
+    "runs": [
+      {
+        "started": 1.6,
+        "seconds": 60.1,
+        "cpu": {
+          "user": 0.339,
+          "system": 0.429,
+          "idle": 0.224,
+          "steal": 0.007
+        },
+        "latency_ms": 3.403,
+        "tps": 1175.32371,
+        "daemon": null
+      },
+      {
+        "started": 72.45,
+        "seconds": 60.0,
+        "cpu": {
+          "user": 0.347,
+          "system": 0.369,
+          "idle": 0.277,
+          "steal": 0.008
+        },
+        "latency_ms": 3.119,
+        "tps": 1282.49834,
+        "daemon": {
+          "seconds": 62,
+          "requests": {
+            "read": {
+              "per_s": 15.6,
+              "mean_us": 262.3
+            },
+            "write": {
+              "per_s": 1768.3,
+              "mean_us": 66.3
+            },
+            "free": {
+              "per_s": 288.5,
+              "mean_us": 9.4
+            },
+            "map": {
+              "per_s": 293.1,
+              "mean_us": 89.5
+            },
+            "unmap": {
+              "per_s": 0.3,
+              "mean_us": 44.3
+            },
+            "commit": {
+              "per_s": 1.7,
+              "mean_us": 851.5
+            },
+            "fault": {
+              "per_s": 0.2,
+              "mean_us": 361.8
+            },
+            "free_many": {
+              "per_s": 10.8,
+              "mean_us": 165.1
+            },
+            "private": {
+              "per_s": 364.4,
+              "mean_us": 51.0
+            }
+          },
+          "commits_per_s": 837.6,
+          "commit_wait_us": 8.8
+        }
+      },
+      {
+        "started": 139.08,
+        "seconds": 60.0,
+        "cpu": {
+          "user": 0.327,
+          "system": 0.344,
+          "idle": 0.32,
+          "steal": 0.009
+        },
+        "latency_ms": 3.241,
+        "tps": 1234.22267,
+        "daemon": {
+          "seconds": 62,
+          "requests": {
+            "read": {
+              "per_s": 15.9,
+              "mean_us": 302.5
+            },
+            "write": {
+              "per_s": 1630.1,
+              "mean_us": 77.6
+            },
+            "free": {
+              "per_s": 281.2,
+              "mean_us": 24.4
+            },
+            "map": {
+              "per_s": 582.9,
+              "mean_us": 91.9
+            },
+            "unmap": {
+              "per_s": 0.1,
+              "mean_us": 42.5
+            },
+            "commit": {
+              "per_s": 1.6,
+              "mean_us": 47.2
+            },
+            "fault": {
+              "per_s": 40.7,
+              "mean_us": 79.2
+            },
+            "free_many": {
+              "per_s": 190.6,
+              "mean_us": 61.6
+            },
+            "private": {
+              "per_s": 153.7,
+              "mean_us": 435.8
+            }
+          },
+          "commits_per_s": 777.2,
+          "commit_wait_us": 11.1
+        }
+      },
+      {
+        "started": 206.4,
+        "seconds": 60.0,
+        "cpu": {
+          "user": 0.366,
+          "system": 0.363,
+          "idle": 0.265,
+          "steal": 0.006
+        },
+        "latency_ms": 2.816,
+        "tps": 1420.405019,
+        "daemon": {
+          "seconds": 62,
+          "requests": {
+            "read": {
+              "per_s": 16.8,
+              "mean_us": 278.8
+            },
+            "write": {
+              "per_s": 1871.9,
+              "mean_us": 68.6
+            },
+            "free": {
+              "per_s": 340.6,
+              "mean_us": 13.1
+            },
+            "map": {
+              "per_s": 140.1,
+              "mean_us": 90.8
+            },
+            "unmap": {
+              "per_s": 0.0,
+              "mean_us": 110.5
+            },
+            "commit": {
+              "per_s": 1.8,
+              "mean_us": 52.5
+            },
+            "fault": {
+              "per_s": 4.5,
+              "mean_us": 25.7
+            },
+            "free_many": {
+              "per_s": 219.3,
+              "mean_us": 33.3
+            },
+            "private": {
+              "per_s": 83.1,
+              "mean_us": 313.6
+            }
+          },
+          "commits_per_s": 906.4,
+          "commit_wait_us": 12.2
+        }
+      },
+      {
+        "started": 271.53,
+        "seconds": 60.0,
+        "cpu": {
+          "user": 0.334,
+          "system": 0.329,
+          "idle": 0.328,
+          "steal": 0.009
+        },
+        "latency_ms": 3.158,
+        "tps": 1266.618704,
+        "daemon": {
+          "seconds": 62,
+          "requests": {
+            "read": {
+              "per_s": 15.1,
+              "mean_us": 314.1
+            },
+            "write": {
+              "per_s": 1662.6,
+              "mean_us": 92.2
+            },
+            "free": {
+              "per_s": 305.0,
+              "mean_us": 22.9
+            },
+            "map": {
+              "per_s": 471.7,
+              "mean_us": 97.9
+            },
+            "unmap": {
+              "per_s": 0.0,
+              "mean_us": 24.0
+            },
+            "commit": {
+              "per_s": 1.6,
+              "mean_us": 68.0
+            },
+            "fault": {
+              "per_s": 10.7,
+              "mean_us": 103.9
+            },
+            "free_many": {
+              "per_s": 192.9,
+              "mean_us": 63.8
+            },
+            "private": {
+              "per_s": 46.9,
+              "mean_us": 1340.1
+            }
+          },
+          "commits_per_s": 793.3,
+          "commit_wait_us": 12.1
+        }
+      }
+    ]
+  },
+  "fxfs-guest-pgbench-forked": {
+    "load": {
+      "seconds": 19.19,
+      "phases": {
+        "drop tables": 0.01,
+        "create tables": 0.01,
+        "client-side generate": 13.88,
+        "vacuum": 0.57,
+        "primary keys": 4.72
+      }
+    },
+    "runs": [
+      {
+        "started": 1.44,
+        "seconds": 60.2,
+        "cpu": {
+          "user": 0.322,
+          "system": 0.49,
+          "idle": 0.182,
+          "steal": 0.006
+        },
+        "latency_ms": 3.363,
+        "tps": 1189.466718,
+        "daemon": null
+      },
+      {
+        "started": 69.38,
+        "seconds": 60.1,
+        "cpu": {
+          "user": 0.351,
+          "system": 0.397,
+          "idle": 0.245,
+          "steal": 0.007
+        },
+        "latency_ms": 3.008,
+        "tps": 1329.788453,
+        "daemon": {
+          "seconds": 62,
+          "requests": {
+            "read": {
+              "per_s": 17.8,
+              "mean_us": 272.1
+            },
+            "write": {
+              "per_s": 2257.8,
+              "mean_us": 52.2
+            },
+            "free": {
+              "per_s": 276.3,
+              "mean_us": 7.6
+            },
+            "commit": {
+              "per_s": 1.7,
+              "mean_us": 38.6
+            },
+            "free_many": {
+              "per_s": 23.8,
+              "mean_us": 74.9
+            }
+          },
+          "commits_per_s": 851.7,
+          "commit_wait_us": 10.3
+        }
+      },
+      {
+        "started": 134.24,
+        "seconds": 60.1,
+        "cpu": {
+          "user": 0.381,
+          "system": 0.41,
+          "idle": 0.203,
+          "steal": 0.005
+        },
+        "latency_ms": 2.793,
+        "tps": 1432.279523,
+        "daemon": {
+          "seconds": 62,
+          "requests": {
+            "read": {
+              "per_s": 17.0,
+              "mean_us": 263.1
+            },
+            "write": {
+              "per_s": 2348.5,
+              "mean_us": 46.4
+            },
+            "free": {
+              "per_s": 333.4,
+              "mean_us": 7.7
+            },
+            "commit": {
+              "per_s": 1.8,
+              "mean_us": 57.8
+            },
+            "free_many": {
+              "per_s": 245.8,
+              "mean_us": 18.8
+            }
+          },
+          "commits_per_s": 923.6,
+          "commit_wait_us": 12.6
+        }
+      },
+      {
+        "started": 199.81,
+        "seconds": 60.1,
+        "cpu": {
+          "user": 0.376,
+          "system": 0.409,
+          "idle": 0.21,
+          "steal": 0.005
+        },
+        "latency_ms": 2.806,
+        "tps": 1425.496924,
+        "daemon": {
+          "seconds": 62,
+          "requests": {
+            "read": {
+              "per_s": 17.2,
+              "mean_us": 303.6
+            },
+            "write": {
+              "per_s": 2338.6,
+              "mean_us": 47.6
+            },
+            "free": {
+              "per_s": 342.0,
+              "mean_us": 8.0
+            },
+            "commit": {
+              "per_s": 1.8,
+              "mean_us": 45.4
+            },
+            "free_many": {
+              "per_s": 218.2,
+              "mean_us": 20.1
+            }
+          },
+          "commits_per_s": 913.6,
+          "commit_wait_us": 13.6
+        }
+      },
+      {
+        "started": 264.87,
+        "seconds": 60.0,
+        "cpu": {
+          "user": 0.376,
+          "system": 0.407,
+          "idle": 0.211,
+          "steal": 0.006
+        },
+        "latency_ms": 2.822,
+        "tps": 1417.45698,
+        "daemon": {
+          "seconds": 62,
+          "requests": {
+            "read": {
+              "per_s": 17.1,
+              "mean_us": 295.8
+            },
+            "write": {
+              "per_s": 2335.0,
+              "mean_us": 55.2
+            },
+            "free": {
+              "per_s": 344.3,
+              "mean_us": 8.0
+            },
+            "commit": {
+              "per_s": 1.8,
+              "mean_us": 53.5
+            },
+            "free_many": {
+              "per_s": 221.8,
+              "mean_us": 22.5
+            }
+          },
+          "commits_per_s": 909.5,
+          "commit_wait_us": 13.7
+        }
+      }
+    ]
+  },
+  "pgbench-ext4-blk-unsafe": {
+    "load": {
+      "seconds": 14.25,
+      "phases": {
+        "drop tables": 0.01,
+        "create tables": 0.01,
+        "client-side generate": 10.15,
+        "vacuum": 0.35,
+        "primary keys": 3.74
+      }
+    },
+    "runs": [
+      {
+        "started": 17.76,
+        "seconds": 60.0,
+        "cpu": {
+          "user": 0.463,
+          "system": 0.443,
+          "idle": 0.094,
+          "steal": 0.0
+        },
+        "latency_ms": 1.544,
+        "tps": 2591.374038,
+        "daemon": null
+      },
+      {
+        "started": 82.51,
+        "seconds": 60.0,
+        "cpu": {
+          "user": 0.473,
+          "system": 0.447,
+          "idle": 0.08,
+          "steal": 0.0
+        },
+        "latency_ms": 1.468,
+        "tps": 2724.733019,
+        "daemon": null
+      },
+      {
+        "started": 147.76,
+        "seconds": 60.0,
+        "cpu": {
+          "user": 0.474,
+          "system": 0.436,
+          "idle": 0.09,
+          "steal": 0.0
+        },
+        "latency_ms": 1.438,
+        "tps": 2781.889836,
+        "daemon": null
+      },
+      {
+        "started": 212.54,
+        "seconds": 60.0,
+        "cpu": {
+          "user": 0.498,
+          "system": 0.43,
+          "idle": 0.072,
+          "steal": 0.0
+        },
+        "latency_ms": 1.438,
+        "tps": 2782.457316,
+        "daemon": null
+      },
+      {
+        "started": 277.83,
+        "seconds": 60.0,
+        "cpu": {
+          "user": 0.479,
+          "system": 0.451,
+          "idle": 0.07,
+          "steal": 0.0
+        },
+        "latency_ms": 1.468,
+        "tps": 2724.64514,
+        "daemon": null
+      }
+    ]
+  },
+  "pgbench-ext4-blk-writeback": {
+    "load": {
+      "seconds": 19.31,
+      "phases": {
+        "drop tables": 0.01,
+        "create tables": 0.01,
+        "client-side generate": 13.87,
+        "vacuum": 0.36,
+        "primary keys": 5.06
+      }
+    },
+    "runs": [
+      {
+        "started": 23.07,
+        "seconds": 60.0,
+        "cpu": {
+          "user": 0.236,
+          "system": 0.223,
+          "idle": 0.541,
+          "steal": 0.001
+        },
+        "latency_ms": 3.629,
+        "tps": 1102.112221,
+        "daemon": null
+      },
+      {
+        "started": 87.37,
+        "seconds": 63.1,
+        "cpu": {
+          "user": 0.235,
+          "system": 0.205,
+          "idle": 0.56,
+          "steal": 0.0
+        },
+        "latency_ms": 3.431,
+        "tps": 1165.994582,
+        "daemon": null
+      },
+      {
+        "started": 154.65,
+        "seconds": 60.0,
+        "cpu": {
+          "user": 0.234,
+          "system": 0.207,
+          "idle": 0.558,
+          "steal": 0.001
+        },
+        "latency_ms": 3.564,
+        "tps": 1122.326114,
+        "daemon": null
+      },
+      {
+        "started": 218.79,
+        "seconds": 60.1,
+        "cpu": {
+          "user": 0.227,
+          "system": 0.21,
+          "idle": 0.563,
+          "steal": 0.001
+        },
+        "latency_ms": 3.596,
+        "tps": 1112.333057,
+        "daemon": null
+      },
+      {
+        "started": 283.12,
+        "seconds": 60.0,
+        "cpu": {
+          "user": 0.239,
+          "system": 0.21,
+          "idle": 0.551,
+          "steal": 0.0
+        },
+        "latency_ms": 3.52,
+        "tps": 1136.232402,
+        "daemon": null
+      }
+    ]
+  },
+  "pgbench-ext4-dax-pmem": {
+    "load": {
+      "seconds": 23.57,
+      "phases": {
+        "drop tables": 0.01,
+        "create tables": 0.01,
+        "client-side generate": 15.55,
+        "vacuum": 1.46,
+        "primary keys": 6.53
+      }
+    },
+    "runs": [
+      {
+        "started": 28.27,
+        "seconds": 60.0,
+        "cpu": {
+          "user": 0.298,
+          "system": 0.261,
+          "idle": 0.44,
+          "steal": 0.0
+        },
+        "latency_ms": 3.404,
+        "tps": 1174.95637,
+        "daemon": null
+      },
+      {
+        "started": 105.05,
+        "seconds": 60.1,
+        "cpu": {
+          "user": 0.295,
+          "system": 0.266,
+          "idle": 0.439,
+          "steal": 0.0
+        },
+        "latency_ms": 3.465,
+        "tps": 1154.451862,
+        "daemon": null
+      },
+      {
+        "started": 181.23,
+        "seconds": 60.5,
+        "cpu": {
+          "user": 0.296,
+          "system": 0.268,
+          "idle": 0.436,
+          "steal": 0.0
+        },
+        "latency_ms": 3.345,
+        "tps": 1195.661053,
+        "daemon": null
+      },
+      {
+        "started": 260.07,
+        "seconds": 60.4,
+        "cpu": {
+          "user": 0.294,
+          "system": 0.272,
+          "idle": 0.433,
+          "steal": 0.0
+        },
+        "latency_ms": 3.328,
+        "tps": 1202.030316,
+        "daemon": null
+      },
+      {
+        "started": 339.86,
+        "seconds": 60.1,
+        "cpu": {
+          "user": 0.302,
+          "system": 0.272,
+          "idle": 0.426,
+          "steal": 0.0
+        },
+        "latency_ms": 3.303,
+        "tps": 1211.050958,
+        "daemon": null
+      }
+    ]
+  },
+  "fxfs-guest-pgbench-dax-density": {
+    "load": {
+      "seconds": 20.55,
+      "phases": {
+        "drop tables": 0.0,
+        "create tables": 0.01,
+        "client-side generate": 14.37,
+        "vacuum": 0.35,
+        "primary keys": 5.83
+      }
+    },
+    "runs": [
+      {
+        "started": 0.97,
+        "seconds": 60.1,
+        "cpu": {
+          "user": 0.339,
+          "system": 0.428,
+          "idle": 0.227,
+          "steal": 0.007
+        },
+        "latency_ms": 3.336,
+        "tps": 1198.996512,
+        "daemon": null
+      },
+      {
+        "started": 71.59,
+        "seconds": 60.1,
+        "cpu": {
+          "user": 0.341,
+          "system": 0.372,
+          "idle": 0.279,
+          "steal": 0.008
+        },
+        "latency_ms": 3.072,
+        "tps": 1302.182824,
+        "daemon": {
+          "seconds": 62,
+          "requests": {
+            "read": {
+              "per_s": 15.9,
+              "mean_us": 253.3
+            },
+            "write": {
+              "per_s": 1807.4,
+              "mean_us": 71.6
+            },
+            "free": {
+              "per_s": 296.0,
+              "mean_us": 8.6
+            },
+            "map": {
+              "per_s": 295.9,
+              "mean_us": 82.6
+            },
+            "unmap": {
+              "per_s": 0.3,
+              "mean_us": 57.5
+            },
+            "commit": {
+              "per_s": 1.8,
+              "mean_us": 99.9
+            },
+            "fault": {
+              "per_s": 0.2,
+              "mean_us": 220.3
+            },
+            "free_many": {
+              "per_s": 11.8,
+              "mean_us": 146.7
+            },
+            "private": {
+              "per_s": 334.9,
+              "mean_us": 48.1
+            }
+          },
+          "commits_per_s": 855.5,
+          "commit_wait_us": 8.8
+        }
+      },
+      {
+        "started": 0.98,
+        "seconds": 60.1,
+        "cpu": {
+          "user": 0.353,
+          "system": 0.386,
+          "idle": 0.254,
+          "steal": 0.007
+        },
+        "latency_ms": 3.341,
+        "tps": 1197.163833,
+        "daemon": null
+      },
+      {
+        "started": 70.42,
+        "seconds": 60.1,
+        "cpu": {
+          "user": 0.343,
+          "system": 0.362,
+          "idle": 0.287,
+          "steal": 0.009
+        },
+        "latency_ms": 3.279,
+        "tps": 1220.016652,
+        "daemon": {
+          "seconds": 62,
+          "requests": {
+            "read": {
+              "per_s": 15.9,
+              "mean_us": 253.3
+            },
+            "write": {
+              "per_s": 1807.4,
+              "mean_us": 71.6
+            },
+            "free": {
+              "per_s": 296.0,
+              "mean_us": 8.6
+            },
+            "map": {
+              "per_s": 295.9,
+              "mean_us": 82.6
+            },
+            "unmap": {
+              "per_s": 0.3,
+              "mean_us": 57.5
+            },
+            "commit": {
+              "per_s": 1.8,
+              "mean_us": 99.9
+            },
+            "fault": {
+              "per_s": 0.2,
+              "mean_us": 220.3
+            },
+            "free_many": {
+              "per_s": 11.8,
+              "mean_us": 146.7
+            },
+            "private": {
+              "per_s": 334.9,
+              "mean_us": 48.1
+            }
+          },
+          "commits_per_s": 855.5,
+          "commit_wait_us": 8.8
+        }
+      },
+      {
+        "started": 0.97,
+        "seconds": 60.1,
+        "cpu": {
+          "user": 0.358,
+          "system": 0.4,
+          "idle": 0.236,
+          "steal": 0.006
+        },
+        "latency_ms": 3.157,
+        "tps": 1267.195812,
+        "daemon": null
+      },
+      {
+        "started": 69.83,
+        "seconds": 60.1,
+        "cpu": {
+          "user": 0.333,
+          "system": 0.362,
+          "idle": 0.295,
+          "steal": 0.01
+        },
+        "latency_ms": 3.208,
+        "tps": 1246.845178,
+        "daemon": {
+          "seconds": 62,
+          "requests": {
+            "read": {
+              "per_s": 15.3,
+              "mean_us": 251.0
+            },
+            "write": {
+              "per_s": 1745.0,
+              "mean_us": 71.3
+            },
+            "free": {
+              "per_s": 282.9,
+              "mean_us": 8.6
+            },
+            "map": {
+              "per_s": 296.1,
+              "mean_us": 82.6
+            },
+            "unmap": {
+              "per_s": 0.3,
+              "mean_us": 56.6
+            },
+            "commit": {
+              "per_s": 1.7,
+              "mean_us": 102.2
+            },
+            "fault": {
+              "per_s": 0.6,
+              "mean_us": 72.0
+            },
+            "free_many": {
+              "per_s": 11.2,
+              "mean_us": 143.9
+            },
+            "private": {
+              "per_s": 338.3,
+              "mean_us": 46.9
+            }
+          },
+          "commits_per_s": 827.4,
+          "commit_wait_us": 8.9
+        }
+      }
+    ]
+  },
+  "fxfs-guest-pgbench-density": {
+    "load": {
+      "seconds": 19.41,
+      "phases": {
+        "drop tables": 0.0,
+        "create tables": 0.01,
+        "client-side generate": 13.82,
+        "vacuum": 0.49,
+        "primary keys": 5.09
+      }
+    },
+    "runs": [
+      {
+        "started": 0.84,
+        "seconds": 60.2,
+        "cpu": {
+          "user": 0.333,
+          "system": 0.46,
+          "idle": 0.199,
+          "steal": 0.008
+        },
+        "latency_ms": 3.413,
+        "tps": 1171.87194,
+        "daemon": null
+      },
+      {
+        "started": 76.61,
+        "seconds": 60.1,
+        "cpu": {
+          "user": 0.334,
+          "system": 0.425,
+          "idle": 0.231,
+          "steal": 0.011
+        },
+        "latency_ms": 3.424,
+        "tps": 1168.192425,
+        "daemon": {
+          "seconds": 62,
+          "requests": {
+            "read": {
+              "per_s": 1274.9,
+              "mean_us": 127.5
+            },
+            "write": {
+              "per_s": 2110.5,
+              "mean_us": 48.5
+            },
+            "free": {
+              "per_s": 257.5,
+              "mean_us": 8.4
+            },
+            "commit": {
+              "per_s": 1.6,
+              "mean_us": 167.5
+            },
+            "free_many": {
+              "per_s": 18.7,
+              "mean_us": 100.1
+            }
+          },
+          "commits_per_s": 799.4,
+          "commit_wait_us": 9.9
+        }
+      },
+      {
+        "started": 0.88,
+        "seconds": 60.2,
+        "cpu": {
+          "user": 0.325,
+          "system": 0.469,
+          "idle": 0.2,
+          "steal": 0.007
+        },
+        "latency_ms": 3.506,
+        "tps": 1140.855364,
+        "daemon": null
+      },
+      {
+        "started": 75.79,
+        "seconds": 60.1,
+        "cpu": {
+          "user": 0.336,
+          "system": 0.422,
+          "idle": 0.233,
+          "steal": 0.01
+        },
+        "latency_ms": 3.359,
+        "tps": 1190.656751,
+        "daemon": {
+          "seconds": 62,
+          "requests": {
+            "read": {
+              "per_s": 1258.9,
+              "mean_us": 100.3
+            },
+            "write": {
+              "per_s": 2081.8,
+              "mean_us": 48.3
+            },
+            "free": {
+              "per_s": 252.7,
+              "mean_us": 8.4
+            },
+            "commit": {
+              "per_s": 1.5,
+              "mean_us": 170.5
+            },
+            "free_many": {
+              "per_s": 18.4,
+              "mean_us": 99.5
+            }
+          },
+          "commits_per_s": 787.6,
+          "commit_wait_us": 9.9
+        }
+      },
+      {
+        "started": 0.82,
+        "seconds": 60.1,
+        "cpu": {
+          "user": 0.333,
+          "system": 0.461,
+          "idle": 0.199,
+          "steal": 0.007
+        },
+        "latency_ms": 3.399,
+        "tps": 1176.744222,
+        "daemon": null
+      },
+      {
+        "started": 77.01,
+        "seconds": 60.1,
+        "cpu": {
+          "user": 0.328,
+          "system": 0.422,
+          "idle": 0.239,
+          "steal": 0.011
+        },
+        "latency_ms": 3.5,
+        "tps": 1142.858876,
+        "daemon": {
+          "seconds": 62,
+          "requests": {
+            "read": {
+              "per_s": 1274.9,
+              "mean_us": 127.5
+            },
+            "write": {
+              "per_s": 2110.5,
+              "mean_us": 48.5
+            },
+            "free": {
+              "per_s": 257.5,
+              "mean_us": 8.4
+            },
+            "commit": {
+              "per_s": 1.6,
+              "mean_us": 167.5
+            },
+            "free_many": {
+              "per_s": 18.7,
+              "mean_us": 100.1
+            }
+          },
+          "commits_per_s": 799.4,
+          "commit_wait_us": 9.9
+        }
+      }
+    ]
+  }
+}

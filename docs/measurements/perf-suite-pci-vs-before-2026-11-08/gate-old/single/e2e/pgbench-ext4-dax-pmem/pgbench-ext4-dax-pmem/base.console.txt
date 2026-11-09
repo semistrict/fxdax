@@ -1,0 +1,10 @@
+[    0.096020] PCI: Fatal: No config space access function found
+[    0.124681] PCI: System does not support PCI
+[    0.202608] nd_pmem namespace0.0: unable to guarantee persistence of writes
+[    0.401642] check access for rdinit=/init failed: -2, ignoring
+fxdax: boot kernel_ns=889060000 agent_ns=905141117
+[    1.540862] EXT4-fs (pmem0): mounted filesystem 336b9e6a-ddbc-4e6c-9271-879aa132157b r/w with ordered data mode. Quota mode: none.
+[    1.547888] EXT4-fs (pmem0): unmounting filesystem 336b9e6a-ddbc-4e6c-9271-879aa132157b.
+OK base
+[    1.559060] reboot: Restarting system
+[    1.560232] reboot: machine restart

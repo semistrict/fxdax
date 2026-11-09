@@ -1,0 +1,14 @@
+a: restored in 28.777486ms
+b: restored in 28.831009ms
+restored
+fxfs-automount: the host's connection was reset (unexpected end of file): again
+a: thawing
+a: thawed
+a: wrote
+[    1.962701] reboot: Restarting system
+restored
+fxfs-automount: the host's connection was reset (unexpected end of file): again
+b: thawing
+b: thawed
+b: wrote
+[    1.974632] reboot: Restarting system

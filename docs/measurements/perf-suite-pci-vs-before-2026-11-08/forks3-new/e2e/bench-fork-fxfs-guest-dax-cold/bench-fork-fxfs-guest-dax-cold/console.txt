@@ -1,0 +1,44 @@
+[    0.430404] check access for rdinit=/init failed: -2, ignoring
+fxdax: boot kernel_ns=461047000 agent_ns=485237058
+RESULT fork-mount s lower 0.324
+RESULT fork-read-usr s lower 4.057
+FXFS fork-read-usr: dax_extent_alloc_bytes 5304320, device_read_bytes 1966080, device_reads 15, device_reads_ns 4706352, window_map_bytes_range 387973120, window_map_bytes_reach 82968576, window_map_requests 254, window_maps 463, window_maps_ns 98954493, window_maps_range 394, window_maps_reach 69, window_regions 69, window_regions_bytes 82968576, window_regions_refs 3440, window_slices 3440
+REQUESTS fork-read-usr: read 15.00 (270 µs each), map 254.00 (332 µs each) per operation
+RESULT fork-reread-usr s lower 0.096
+FXFS fork-reread-usr: 
+REQUESTS fork-reread-usr:  per operation
+RESULT fork-pg-start s lower 0.270
+RESULT fork-pgbench-select tps higher 18971.669
+OBSERVED guest-read-requests 1284
+OBSERVED guest-read-ms 2503.384
+OBSERVED guest-write-requests 59
+OBSERVED guest-write-ms 13.935
+OBSERVED guest-free-requests 19
+OBSERVED guest-free-ms 4.485
+OBSERVED guest-map-requests 362
+OBSERVED guest-map-ms 125.838
+OBSERVED guest-unmap-requests 4
+OBSERVED guest-unmap-ms 1.174
+OBSERVED guest-commit-requests 5
+OBSERVED guest-commit-ms 0.921
+OBSERVED guest-root-requests 4
+OBSERVED guest-root-ms 1.010
+OBSERVED guest-info-requests 3
+OBSERVED guest-info-ms 0.468
+OBSERVED guest-resized-requests 0
+OBSERVED guest-resized-ms 0.000
+OBSERVED guest-freeze-requests 0
+OBSERVED guest-freeze-ms 0.000
+OBSERVED guest-advance-requests 0
+OBSERVED guest-advance-ms 0.000
+OBSERVED guest-let_go-requests 0
+OBSERVED guest-let_go-ms 0.000
+OBSERVED guest-pin-requests 0
+OBSERVED guest-pin-ms 0.000
+OBSERVED guest-unpin-requests 0
+OBSERVED guest-unpin-ms 0.000
+OBSERVED guest-private-requests 16
+OBSERVED guest-private-ms 7.881
+OBSERVED guest-stats-requests 0
+OBSERVED guest-stats-ms 0.000
+[   15.594926] reboot: Restarting system

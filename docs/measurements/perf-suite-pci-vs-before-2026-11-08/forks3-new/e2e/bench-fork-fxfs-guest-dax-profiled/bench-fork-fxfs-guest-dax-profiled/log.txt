@@ -1,0 +1,31 @@
+[    0.439297] check access for rdinit=/init failed: -2, ignoring
+fxdax: boot kernel_ns=485188000 agent_ns=505302967
+[   13.583183] reboot: Restarting system
+[    0.424026] check access for rdinit=/init failed: -2, ignoring
+fxdax: boot kernel_ns=453351000 agent_ns=473153249
+FXFS fork-read-usr: dax_extent_alloc_bytes 5304320, device_read_bytes 1966080, device_reads 15, device_reads_ns 4729471, window_map_bytes_range 387973120, window_map_bytes_reach 87474176, window_map_requests 258, window_maps 467, window_maps_ns 106836265, window_maps_range 394, window_maps_reach 73, window_regions 73, window_regions_bytes 87474176, window_regions_refs 3440, window_slices 3440
+REQUESTS fork-read-usr: read 15.00 (269 µs each), map 258.00 (353 µs each) per operation
+FXFS fork-reread-usr: 
+REQUESTS fork-reread-usr:  per operation
+[   15.677823] reboot: Restarting system
+[    0.679228] check access for rdinit=/init failed: -2, ignoring
+fxdax: boot kernel_ns=721198000 agent_ns=757459441
+FXFS fork-read-usr: dax_extent_alloc_bytes 5304320, device_read_bytes 1966080, device_reads 15, device_reads_ns 7302424, window_map_bytes_range 387973120, window_map_bytes_reach 87474176, window_map_requests 258, window_maps 467, window_maps_ns 255739056, window_maps_range 394, window_maps_reach 73, window_regions 73, window_regions_bytes 87474176, window_regions_refs 3440, window_slices 3440
+REQUESTS fork-read-usr: read 15.00 (329 µs each), map 258.00 (921 µs each) per operation
+FXFS fork-reread-usr: 
+REQUESTS fork-reread-usr:  per operation
+[   12.716590] reboot: Restarting system
+[    0.562521] check access for rdinit=/init failed: -2, ignoring
+fxdax: boot kernel_ns=602528000 agent_ns=633485629
+FXFS fork-read-usr: dax_extent_alloc_bytes 5304320, device_read_bytes 1966080, device_reads 15, device_reads_ns 10330467, window_map_bytes_range 387973120, window_map_bytes_reach 87474176, window_map_requests 258, window_maps 467, window_maps_ns 239919118, window_maps_range 394, window_maps_reach 73, window_regions 73, window_regions_bytes 87474176, window_regions_refs 3440, window_slices 3440
+REQUESTS fork-read-usr: read 15.00 (522 µs each), map 258.00 (876 µs each) per operation
+FXFS fork-reread-usr: 
+REQUESTS fork-reread-usr:  per operation
+[   12.620655] reboot: Restarting system
+[    0.656620] check access for rdinit=/init failed: -2, ignoring
+fxdax: boot kernel_ns=714272000 agent_ns=754962610
+FXFS fork-read-usr: dax_extent_alloc_bytes 5304320, device_read_bytes 1966080, device_reads 15, device_reads_ns 4984963, window_map_bytes_range 387973120, window_map_bytes_reach 87474176, window_map_requests 258, window_maps 467, window_maps_ns 227938556, window_maps_range 394, window_maps_reach 73, window_regions 73, window_regions_bytes 87474176, window_regions_refs 3440, window_slices 3440
+REQUESTS fork-read-usr: read 15.00 (280 µs each), map 258.00 (831 µs each) per operation
+FXFS fork-reread-usr: 
+REQUESTS fork-reread-usr:  per operation
+[   12.720313] reboot: Restarting system

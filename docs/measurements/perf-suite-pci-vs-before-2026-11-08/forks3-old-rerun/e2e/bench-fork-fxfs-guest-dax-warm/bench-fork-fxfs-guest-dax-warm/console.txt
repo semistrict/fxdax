@@ -1,0 +1,46 @@
+[    0.175999] PCI: Fatal: No config space access function found
+[    0.207659] PCI: System does not support PCI
+[    0.388653] check access for rdinit=/init failed: -2, ignoring
+fxdax: boot kernel_ns=421291000 agent_ns=437133036
+RESULT fork-mount s lower 0.209
+RESULT fork-read-usr s lower 0.808
+FXFS fork-read-usr: dax_extent_alloc_bytes 5304320, device_read_bytes 1966080, device_reads 15, device_reads_ns 4906799, window_map_bytes_range 387973120, window_map_bytes_reach 87351296, window_map_requests 256, window_maps 465, window_maps_ns 229480436, window_maps_range 394, window_maps_reach 71, window_regions 71, window_regions_bytes 87351296, window_regions_refs 3440, window_slices 3440
+REQUESTS fork-read-usr: read 15.00 (313 µs each), map 256.00 (886 µs each) per operation
+RESULT fork-reread-usr s lower 0.088
+FXFS fork-reread-usr: 
+REQUESTS fork-reread-usr:  per operation
+RESULT fork-pg-start s lower 0.264
+RESULT fork-pgbench-select tps higher 26538.454
+OBSERVED guest-read-requests 1288
+OBSERVED guest-read-ms 546.375
+OBSERVED guest-write-requests 59
+OBSERVED guest-write-ms 16.695
+OBSERVED guest-free-requests 19
+OBSERVED guest-free-ms 6.954
+OBSERVED guest-map-requests 364
+OBSERVED guest-map-ms 323.010
+OBSERVED guest-unmap-requests 4
+OBSERVED guest-unmap-ms 1.248
+OBSERVED guest-commit-requests 5
+OBSERVED guest-commit-ms 0.939
+OBSERVED guest-root-requests 4
+OBSERVED guest-root-ms 0.871
+OBSERVED guest-info-requests 3
+OBSERVED guest-info-ms 0.702
+OBSERVED guest-resized-requests 0
+OBSERVED guest-resized-ms 0.000
+OBSERVED guest-freeze-requests 0
+OBSERVED guest-freeze-ms 0.000
+OBSERVED guest-advance-requests 0
+OBSERVED guest-advance-ms 0.000
+OBSERVED guest-let_go-requests 0
+OBSERVED guest-let_go-ms 0.000
+OBSERVED guest-pin-requests 0
+OBSERVED guest-pin-ms 0.000
+OBSERVED guest-unpin-requests 0
+OBSERVED guest-unpin-ms 0.000
+OBSERVED guest-private-requests 16
+OBSERVED guest-private-ms 8.005
+OBSERVED guest-stats-requests 0
+OBSERVED guest-stats-ms 0.000
+[   12.117281] reboot: Restarting system

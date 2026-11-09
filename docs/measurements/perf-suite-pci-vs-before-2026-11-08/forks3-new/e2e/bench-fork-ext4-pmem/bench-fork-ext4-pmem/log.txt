@@ -1,0 +1,22 @@
+[    0.332448] nd_pmem namespace0.0: unable to guarantee persistence of writes
+[    0.490265] check access for rdinit=/init failed: -2, ignoring
+fxdax: boot kernel_ns=1021075000 agent_ns=1045262873
+[   15.667743] reboot: Restarting system
+[    0.328247] nd_pmem namespace0.0: unable to guarantee persistence of writes
+[    0.492135] check access for rdinit=/init failed: -2, ignoring
+fxdax: boot kernel_ns=1025081000 agent_ns=1077130989
+FXFS fork-read-usr: 
+FXFS fork-reread-usr: 
+[   19.682767] reboot: Restarting system
+[    0.337551] nd_pmem namespace0.0: unable to guarantee persistence of writes
+[    0.480541] check access for rdinit=/init failed: -2, ignoring
+fxdax: boot kernel_ns=1057061000 agent_ns=1101094190
+FXFS fork-read-usr: 
+FXFS fork-reread-usr: 
+[   19.723519] reboot: Restarting system
+[    0.326930] nd_pmem namespace0.0: unable to guarantee persistence of writes
+[    0.444543] check access for rdinit=/init failed: -2, ignoring
+fxdax: boot kernel_ns=1061065000 agent_ns=1109367900
+FXFS fork-read-usr: 
+FXFS fork-reread-usr: 
+[   19.693349] reboot: Restarting system

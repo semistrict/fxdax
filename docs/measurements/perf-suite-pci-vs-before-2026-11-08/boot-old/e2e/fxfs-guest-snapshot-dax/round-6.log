@@ -1,0 +1,12 @@
+b: restored in 26.514918ms
+a: restored in 29.285247ms
+restored
+a: thawing
+a: thawed
+a: wrote
+[    2.058672] reboot: Restarting system
+restored
+b: thawing
+b: thawed
+b: wrote
+[    2.060517] reboot: Restarting system

@@ -1,0 +1,142 @@
+OBSERVED mtime-ahead-of-guest-ms -3.169
+RESULT seq-write MiB/s higher 120.357
+RESULT rand-read-cold IOPS higher 29520.721
+RESULT seq-read-cold MiB/s higher 1312.821
+RESULT seq-read-warm MiB/s higher 8126.437
+RESULT rand-read-warm IOPS higher 924419.290
+RESULT mmap-seq-read MiB/s higher 9481.481
+OBSERVED mmap-seq-read-faults-per-mib 6.6
+RESULT rand-write IOPS higher 11018.157
+RESULT mmap-rand-read IOPS higher 1250934.533
+RESULT mmap-rand-write IOPS higher 9022.026
+RESULT fsync-append IOPS higher 415.500
+RESULT sqlite-pread-scan MiB/s higher 2709.246
+OBSERVED sqlite-pread-scan-faults-per-mib 2.7
+RESULT sqlite-pread-scan-warm MiB/s higher 3010.195
+OBSERVED sqlite-pread-scan-warm-faults-per-mib 2.6
+RESULT sqlite-mmap-scan MiB/s higher 1031.444
+OBSERVED sqlite-mmap-scan-faults-per-mib 2.1
+RESULT sqlite-mmap-scan-warm MiB/s higher 2948.654
+OBSERVED sqlite-mmap-scan-warm-faults-per-mib 2.1
+RESULT create ops/s higher 96192.207
+RESULT stat-cold ops/s higher 279371.866
+RESULT stat-warm ops/s higher 1205127.819
+RESULT lookup-missing ops/s higher 381288.423
+RESULT readdir ops/s higher 2907145.764
+RESULT read-small-cold ops/s higher 26122.887
+RESULT chmod ops/s higher 680558.684
+RESULT setxattr ops/s higher 558760.981
+RESULT link ops/s higher 152264.431
+RESULT rename ops/s higher 120083.698
+RESULT rename-across ops/s higher 101518.766
+RESULT unlink ops/s higher 381783.287
+RESULT create-fsync ops/s higher 404.192
+RESULT mkdir-tree ops/s higher 126016.887
+RESULT find-cold ops/s higher 311095.706
+RESULT rm-tree ops/s higher 101419.121
+RESULT large-dir-create ops/s higher 101564.291
+RESULT large-dir-stat-cold ops/s higher 251168.947
+RESULT large-dir-unlink ops/s higher 207483.066
+RESULT create-parallel ops/s higher 169327.565
+RESULT stat-parallel ops/s higher 607048.071
+RESULT unlink-parallel ops/s higher 294383.826
+RESULT create-shared-dir ops/s higher 109153.547
+RESULT unlink-shared-dir ops/s higher 279785.511
+RESULT untar s lower 0.014
+RESULT make s lower 4.609
+RESULT build-total s lower 4.623
+OBSERVED mtime-ahead-of-guest-ms -2.514
+RESULT seq-write MiB/s higher 153.846
+RESULT rand-read-cold IOPS higher 30453.532
+RESULT seq-read-cold MiB/s higher 3047.619
+RESULT seq-read-warm MiB/s higher 8055.472
+RESULT rand-read-warm IOPS higher 915694.153
+RESULT mmap-seq-read MiB/s higher 9846.154
+OBSERVED mmap-seq-read-faults-per-mib 6.6
+RESULT rand-write IOPS higher 15086.556
+RESULT mmap-rand-read IOPS higher 1260424.788
+RESULT mmap-rand-write IOPS higher 10708.497
+RESULT fsync-append IOPS higher 424.280
+RESULT sqlite-pread-scan MiB/s higher 2733.201
+OBSERVED sqlite-pread-scan-faults-per-mib 2.6
+RESULT sqlite-pread-scan-warm MiB/s higher 3032.538
+OBSERVED sqlite-pread-scan-warm-faults-per-mib 2.6
+RESULT sqlite-mmap-scan MiB/s higher 2680.357
+OBSERVED sqlite-mmap-scan-faults-per-mib 2.1
+RESULT sqlite-mmap-scan-warm MiB/s higher 2931.130
+OBSERVED sqlite-mmap-scan-warm-faults-per-mib 2.1
+RESULT create ops/s higher 97052.218
+RESULT stat-cold ops/s higher 324175.431
+RESULT stat-warm ops/s higher 677667.239
+RESULT lookup-missing ops/s higher 447612.346
+RESULT readdir ops/s higher 1427861.577
+RESULT read-small-cold ops/s higher 23499.224
+RESULT chmod ops/s higher 670204.228
+RESULT setxattr ops/s higher 521526.529
+RESULT link ops/s higher 137078.623
+RESULT rename ops/s higher 116417.010
+RESULT rename-across ops/s higher 98662.248
+RESULT unlink ops/s higher 359055.146
+RESULT create-fsync ops/s higher 372.865
+RESULT mkdir-tree ops/s higher 126078.866
+RESULT find-cold ops/s higher 314994.604
+RESULT rm-tree ops/s higher 103855.670
+RESULT large-dir-create ops/s higher 110812.131
+RESULT large-dir-stat-cold ops/s higher 261047.140
+RESULT large-dir-unlink ops/s higher 207445.835
+RESULT create-parallel ops/s higher 180176.118
+RESULT stat-parallel ops/s higher 534290.211
+RESULT unlink-parallel ops/s higher 317501.567
+RESULT create-shared-dir ops/s higher 105224.503
+RESULT unlink-shared-dir ops/s higher 276415.453
+RESULT untar s lower 0.014
+RESULT make s lower 4.620
+RESULT build-total s lower 4.634
+OBSERVED mtime-ahead-of-guest-ms -2.843
+RESULT seq-write MiB/s higher 188.791
+RESULT rand-read-cold IOPS higher 26298.555
+RESULT seq-read-cold MiB/s higher 3240.506
+RESULT seq-read-warm MiB/s higher 8113.443
+RESULT rand-read-warm IOPS higher 909210.895
+RESULT mmap-seq-read MiB/s higher 9481.481
+OBSERVED mmap-seq-read-faults-per-mib 6.6
+RESULT rand-write IOPS higher 14894.545
+RESULT mmap-rand-read IOPS higher 1276519.240
+RESULT mmap-rand-write IOPS higher 9598.125
+RESULT fsync-append IOPS higher 435.467
+RESULT sqlite-pread-scan MiB/s higher 2717.521
+OBSERVED sqlite-pread-scan-faults-per-mib 2.7
+RESULT sqlite-pread-scan-warm MiB/s higher 3042.410
+OBSERVED sqlite-pread-scan-warm-faults-per-mib 2.6
+RESULT sqlite-mmap-scan MiB/s higher 2133.647
+OBSERVED sqlite-mmap-scan-faults-per-mib 2.1
+RESULT sqlite-mmap-scan-warm MiB/s higher 2934.476
+OBSERVED sqlite-mmap-scan-warm-faults-per-mib 2.1
+RESULT create ops/s higher 97615.064
+RESULT stat-cold ops/s higher 336984.050
+RESULT stat-warm ops/s higher 1216992.871
+RESULT lookup-missing ops/s higher 447460.327
+RESULT readdir ops/s higher 3030904.619
+RESULT read-small-cold ops/s higher 23371.534
+RESULT chmod ops/s higher 451031.000
+RESULT setxattr ops/s higher 552640.225
+RESULT link ops/s higher 137095.677
+RESULT rename ops/s higher 117556.927
+RESULT rename-across ops/s higher 100346.033
+RESULT unlink ops/s higher 366991.938
+RESULT create-fsync ops/s higher 431.706
+RESULT mkdir-tree ops/s higher 125978.136
+RESULT find-cold ops/s higher 309892.088
+RESULT rm-tree ops/s higher 107694.363
+RESULT large-dir-create ops/s higher 111544.614
+RESULT large-dir-stat-cold ops/s higher 260045.191
+RESULT large-dir-unlink ops/s higher 203480.143
+RESULT create-parallel ops/s higher 171593.679
+RESULT stat-parallel ops/s higher 648176.566
+RESULT unlink-parallel ops/s higher 305579.507
+RESULT create-shared-dir ops/s higher 113241.936
+RESULT unlink-shared-dir ops/s higher 284009.367
+RESULT untar s lower 0.014
+RESULT make s lower 4.615
+RESULT build-total s lower 4.630
+DONE

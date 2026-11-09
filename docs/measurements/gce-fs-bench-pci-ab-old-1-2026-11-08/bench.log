@@ -1,0 +1,1285 @@
+   Compiling fxdax v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fxdax)
+    Finished `release` profile [optimized] target(s) in 1m 10s
+    Finished `release` profile [optimized] target(s) in 0.19s
+ Downloading crates ...
+  Downloaded android_system_properties v0.1.6
+  Downloaded bumpalo v3.20.2
+  Downloaded anstyle-wincon v3.0.11
+  Downloaded clap-num v1.2.0
+  Downloaded combine v4.6.9
+  Downloaded core-foundation v0.10.1
+  Downloaded crunchy v0.2.4
+  Downloaded core-foundation-sys v0.8.7
+  Downloaded iana-time-zone-haiku v0.1.2
+  Downloaded id-arena v2.3.0
+  Downloaded jiff-static v0.2.24
+  Downloaded jni v0.22.4
+  Downloaded jni-sys-macros v0.4.1
+  Downloaded jni-macros v0.22.4
+  Downloaded once_cell_polyfill v1.70.2
+  Downloaded leb128fmt v0.1.0
+  Downloaded jni-sys v0.4.1
+  Downloaded portable-atomic-util v0.2.7
+  Downloaded js-sys v0.3.98
+  Downloaded r-efi v5.3.0
+  Downloaded rustls-platform-verifier-android v0.2.0
+  Downloaded redox_syscall v0.5.18
+  Downloaded security-framework-sys v2.17.0
+  Downloaded schannel v0.1.30
+  Downloaded security-framework v3.7.0
+  Downloaded simdutf8 v0.1.5
+  Downloaded simd_cesu8 v1.2.0
+  Downloaded wasi v0.11.1+wasi-snapshot-preview1
+  Downloaded vm-fdt v0.3.0
+  Downloaded wasm-bindgen-macro-support v0.2.121
+  Downloaded wasm-bindgen v0.2.121
+  Downloaded wasm-metadata v0.244.0
+  Downloaded web-sys v0.3.98
+  Downloaded winapi v0.3.9
+  Downloaded winapi-x86_64-pc-windows-gnu v0.4.0
+  Downloaded windows-interface v0.59.3
+  Downloaded windows-targets v0.52.6
+  Downloaded windows-strings v0.5.1
+  Downloaded windows_i686_gnu v0.52.6
+  Downloaded windows_x86_64_gnu v0.52.6
+  Downloaded wit-bindgen v0.51.0
+  Downloaded wit-parser v0.244.0
+  Downloaded wit-bindgen-rust v0.51.0
+  Downloaded wasm-bindgen-futures v0.4.71
+  Downloaded wasm-encoder v0.244.0
+  Downloaded web-time v1.1.0
+  Downloaded winapi-util v0.1.11
+  Downloaded windows-link v0.2.1
+  Downloaded windows_i686_gnullvm v0.52.6
+  Downloaded windows-sys v0.61.2
+  Downloaded windows_x86_64_msvc v0.52.6
+  Downloaded wit-bindgen-rust-macro v0.51.0
+  Downloaded wasip3 v0.4.0+wasi-0.3.0-rc-2026-01-06
+  Downloaded wasm-streams v0.5.0
+  Downloaded windows-result v0.4.1
+  Downloaded winapi-i686-pc-windows-gnu v0.4.0
+  Downloaded wit-bindgen v0.57.1
+  Downloaded wasip2 v1.0.3+wasi-0.2.9
+  Downloaded windows_aarch64_msvc v0.52.6
+  Downloaded wasmparser v0.244.0
+  Downloaded windows-implement v0.60.2
+  Downloaded wit-component v0.244.0
+  Downloaded windows_i686_msvc v0.52.6
+  Downloaded webpki-root-certs v1.0.9
+  Downloaded windows_aarch64_gnullvm v0.52.6
+  Downloaded wasm-bindgen-macro v0.2.121
+  Downloaded wasm-bindgen-shared v0.2.121
+  Downloaded windows-sys v0.52.0
+  Downloaded windows-core v0.62.2
+  Downloaded wit-bindgen-core v0.51.0
+  Downloaded windows_x86_64_gnullvm v0.52.6
+   Compiling proc-macro2 v1.0.107
+   Compiling quote v1.0.47
+   Compiling unicode-ident v1.0.24
+   Compiling libc v0.2.191
+   Compiling serde_core v1.0.229
+   Compiling cfg-if v1.0.4
+   Compiling pin-project-lite v0.2.17
+   Compiling zerocopy v0.8.48
+   Compiling futures-core v0.3.34
+   Compiling memchr v2.8.3
+   Compiling futures-sink v0.3.34
+   Compiling bytes v1.12.1
+   Compiling slab v0.4.12
+   Compiling thiserror v2.0.21
+   Compiling serde v1.0.229
+   Compiling smallvec v1.16.3
+   Compiling futures-channel v0.3.34
+   Compiling futures-io v0.3.34
+   Compiling syn v2.0.119
+   Compiling syn v3.0.9
+   Compiling shlex v1.3.0
+   Compiling anyhow v1.0.104
+   Compiling find-msvc-tools v0.1.9
+   Compiling futures-task v0.3.34
+   Compiling typenum v1.20.1
+   Compiling jobserver v0.1.34
+   Compiling once_cell v1.21.4
+   Compiling cc v1.2.62
+   Compiling itoa v1.0.18
+   Compiling either v1.19.0
+   Compiling socket2 v0.6.5
+   Compiling mio v1.2.4
+   Compiling cpufeatures v0.3.0
+   Compiling stable_deref_trait v1.2.1
+   Compiling http v1.5.0
+   Compiling hybrid-array v0.4.15
+   Compiling percent-encoding v2.3.2
+   Compiling equivalent v1.0.2
+   Compiling bitflags v2.13.2
+   Compiling tracing-core v0.1.36
+   Compiling hashbrown v0.17.0
+   Compiling crypto-common v0.2.2
+   Compiling cmake v0.1.58
+   Compiling http-body v1.1.0
+   Compiling aho-corasick v1.1.4
+   Compiling autocfg v1.5.0
+   Compiling cmov v0.5.4
+   Compiling indexmap v2.14.0
+   Compiling regex-syntax v0.8.10
+   Compiling dunce v1.0.5
+   Compiling fs_extra v1.3.0
+   Compiling num-traits v0.2.19
+   Compiling ctutils v0.4.3
+   Compiling aws-lc-sys v0.41.0
+   Compiling block-buffer v0.12.1
+   Compiling const-oid v0.10.2
+   Compiling tower-service v0.3.3
+   Compiling digest v0.11.3
+   Compiling itertools v0.14.0
+   Compiling parking_lot_core v0.9.12
+   Compiling httparse v1.10.1
+   Compiling getrandom v0.2.17
+   Compiling synstructure v0.14.0
+   Compiling fnv v1.0.7
+   Compiling scopeguard v1.2.0
+   Compiling try-lock v0.2.5
+   Compiling atomic-waker v1.1.2
+   Compiling zeroize v1.8.2
+   Compiling static_assertions v1.1.0
+   Compiling regex-automata v0.4.14
+   Compiling litemap v0.8.3
+   Compiling aws-lc-rs v1.17.0
+   Compiling writeable v0.6.4
+   Compiling want v0.3.2
+   Compiling lock_api v0.4.14
+   Compiling rand_core v0.6.4
+   Compiling log v0.4.34
+   Compiling zerocopy-derive v0.8.48
+   Compiling displaydoc v0.2.5
+   Compiling tracing-attributes v0.1.31
+   Compiling prost-derive v0.14.4
+   Compiling sync_wrapper v1.0.2
+   Compiling tower-layer v0.3.3
+   Compiling serde_derive v1.0.229
+   Compiling futures-macro v0.3.34
+   Compiling thiserror-impl v2.0.21
+   Compiling tokio-macros v2.7.2
+   Compiling futures-util v0.3.34
+   Compiling zerofrom-derive v0.1.8
+   Compiling tokio v1.53.1
+   Compiling yoke-derive v0.8.4
+   Compiling zerovec-derive v0.11.6
+   Compiling zerofrom v0.1.8
+   Compiling yoke v0.8.3
+   Compiling tracing v0.1.44
+   Compiling zerotrie v0.2.5
+   Compiling zerovec v0.11.8
+   Compiling async-trait v0.1.92
+   Compiling icu_properties_data v2.3.0
+   Compiling utf8_iter v1.0.4
+   Compiling icu_normalizer_data v2.3.0
+   Compiling httpdate v1.0.3
+   Compiling futures-executor v0.3.34
+   Compiling tinystr v0.8.4
+   Compiling potential_utf v0.1.6
+   Compiling parking_lot v0.12.5
+   Compiling icu_collections v2.3.0
+   Compiling icu_locale_core v2.3.0
+   Compiling futures v0.3.34
+   Compiling rustls-pki-types v1.15.1
+   Compiling ipnet v2.12.2
+   Compiling untrusted v0.7.1
+   Compiling rand_core v0.10.0
+   Compiling getrandom v0.3.4
+   Compiling base64 v0.23.1
+   Compiling getrandom v0.4.1
+   Compiling zmij v1.0.21
+   Compiling bit-vec v0.10.1
+   Compiling fprint-macros v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fprint-macros)
+   Compiling zx-types v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/zx-types)
+   Compiling ppv-lite86 v0.2.21
+   Compiling icu_provider v2.3.1
+   Compiling storage_ptr_slice v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/storage_ptr_slice)
+   Compiling http-body-util v0.1.5
+   Compiling bstr v1.13.1
+   Compiling rand_chacha v0.3.1
+   Compiling untrusted v0.9.0
+   Compiling rustls v0.23.43
+   Compiling rand v0.8.8
+   Compiling icu_normalizer v2.3.0
+   Compiling icu_properties v2.3.0
+   Compiling fprint v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fprint)
+   Compiling tokio-util v0.7.20
+   Compiling chacha20 v0.10.0
+   Compiling shuttle-parking_lot v0.12.5
+   Compiling num-integer v0.1.47
+   Compiling rustix v1.1.4
+   Compiling version_check v0.9.5
+   Compiling subtle v2.6.1
+   Compiling h2 v0.4.20
+   Compiling tower v0.5.3
+   Compiling serde_json v1.0.154
+   Compiling generic-array v0.14.7
+   Compiling rand v0.10.3
+   Compiling rand_core v0.9.5
+   Compiling idna_adapter v1.2.2
+   Compiling regex v1.12.3
+   Compiling sha2 v0.11.1
+   Compiling form_urlencoded v1.2.2
+   Compiling zx-status v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/zx-status)
+   Compiling zx-sys v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/zx-sys)
+   Compiling pkg-config v0.3.34
+   Compiling zx-status-ext v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/zx-status-ext)
+   Compiling heck v0.5.0
+   Compiling zx v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/zx)
+   Compiling parking v2.2.1
+   Compiling idna v1.1.0
+   Compiling zstd-sys v2.1.2+zstd.1.5.7
+   Compiling num-bigint v0.4.8
+   Compiling prost v0.14.4
+   Compiling fuchsia-sync v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fuchsia-sync)
+   Compiling hex v0.4.3
+   Compiling block-padding v0.4.2
+   Compiling glob v0.3.3
+   Compiling openssl-probe v0.2.1
+   Compiling rustls-native-certs v0.8.5
+   Compiling clang-sys v1.8.1
+   Compiling logos-codegen v0.16.1
+   Compiling inout v0.2.4
+   Compiling prost-types v0.14.4
+   Compiling hyper v1.12.0
+   Compiling num-rational v0.4.2
+   Compiling url v2.5.8
+   Compiling num-iter v0.1.46
+   Compiling num-complex v0.4.6
+   Compiling pulldown-cmark v0.13.4
+   Compiling base64 v0.22.1
+   Compiling prettyplease v0.2.37
+   Compiling num v0.4.3
+   Compiling hyper-util v0.1.21
+   Compiling tower-http v0.6.11
+   Compiling logos-derive v0.16.1
+   Compiling crypto-common v0.1.7
+   Compiling cipher v0.5.2
+   Compiling event-listener v5.4.2
+   Compiling block_protocol v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/block_protocol)
+   Compiling opentelemetry v0.33.1
+   Compiling derive_arbitrary v1.5.0
+   Compiling miette-derive v7.6.0
+   Compiling pin-project-internal v1.1.13
+   Compiling unicase v2.10.0
+   Compiling bytemuck v1.25.0
+   Compiling foldhash v0.1.5
+   Compiling zstd-safe v8.2.0
+   Compiling fxfs-unicode-types v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fxfs-unicode-types)
+   Compiling cfg_aliases v0.2.2
+   Compiling linux-raw-sys v0.12.1
+   Compiling minimal-lexical v0.2.1
+   Compiling unicode-width v0.1.14
+   Compiling nom v7.1.3
+   Compiling pin-project v1.1.13
+   Compiling miette v7.6.0
+   Compiling nix v0.31.3
+   Compiling fxfs-unicode-gen v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fxfs-unicode-gen)
+   Compiling hashbrown v0.15.5
+   Compiling arbitrary v1.5.0
+   Compiling storage_device v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/storage_device)
+   Compiling digest v0.10.7
+   Compiling logos v0.16.1
+   Compiling bincode v1.3.3
+   Compiling libloading v0.8.9
+   Compiling utf8parse v0.2.2
+   Compiling bindgen v0.69.5
+   Compiling mime v0.3.17
+   Compiling spin v0.10.1
+   Compiling fixedbitset v0.5.7
+   Compiling fastrand v2.5.0
+   Compiling bitflags v1.3.2
+   Compiling vmm-sys-util v0.15.0
+   Compiling petgraph v0.8.3
+   Compiling crc-fast v1.10.0
+   Compiling axum-core v0.5.6
+   Compiling tempfile v3.27.0
+   Compiling anstyle-parse v1.0.0
+   Compiling pulldown-cmark-to-cmark v22.0.3
+   Compiling fxfs-unicode v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fxfs-unicode)
+   Compiling cexpr v0.6.0
+   Compiling safe_arch v0.7.4
+   Compiling fidl v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fidl)
+   Compiling fuchsia-hash v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fuchsia-hash)
+   Compiling bssl-crypto v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/bssl-crypto)
+   Compiling rand_chacha v0.9.0
+   Compiling fxfs_trace_macros v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fxfs_trace_macros)
+   Compiling bitcode_derive v0.6.9
+   Compiling hmac v0.13.0
+   Compiling itertools v0.12.1
+   Compiling lazy_static v1.5.0
+   Compiling cpubits v0.1.1
+   Compiling iana-time-zone v0.1.65
+   Compiling multimap v0.10.1
+   Compiling same-file v1.0.6
+   Compiling rustc-hash v1.1.0
+   Compiling anstyle v1.0.14
+   Compiling ryu v1.0.23
+   Compiling colorchoice v1.0.5
+   Compiling is_terminal_polyfill v1.70.2
+   Compiling storage_trace v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/storage_trace)
+   Compiling lazycell v1.3.0
+   Compiling anstyle-query v1.1.5
+   Compiling siphasher v1.0.4
+   Compiling matchit v0.8.4
+   Compiling fscrypt v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fscrypt)
+   Compiling anstream v1.0.0
+   Compiling futures-lite v2.6.1
+   Compiling axum v0.8.9
+   Compiling serde_urlencoded v0.7.1
+   Compiling fxfs_trace v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fxfs_trace)
+   Compiling prost-build v0.14.4
+   Compiling walkdir v2.5.0
+   Compiling chrono v0.4.45
+   Compiling aes v0.9.3
+   Compiling rand v0.9.4
+   Compiling fuchsia_merkle v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fuchsia_merkle)
+   Compiling wide v0.7.33
+   Compiling fidl-fuchsia-io v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fidl-fuchsia-io)
+   Compiling tonic-build v0.14.6
+   Compiling prost-reflect v0.16.5
+   Compiling protox-parse v0.10.0
+   Compiling itertools v0.15.0
+   Compiling hyper-timeout v0.5.2
+   Compiling storage_xts v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/storage_xts)
+   Compiling cbc v0.2.1
+   Compiling fuchsia-emulated-handle v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fuchsia-emulated-handle)
+   Compiling mundane v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/mundane)
+   Compiling uuid v1.28.0
+   Compiling rand_xoshiro v0.7.0
+   Compiling tokio-stream v0.1.19
+   Compiling quick-xml v0.41.0
+   Compiling fuchsia-async-macro v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fuchsia-async-macro)
+   Compiling md-5 v0.11.0
+   Compiling clap_lex v1.1.0
+   Compiling humantime v2.4.0
+   Compiling rapidhash v1.4.0
+   Compiling imbl-sized-chunks v0.2.0
+   Compiling crc32fast v1.5.2
+   Compiling byteorder v1.5.0
+   Compiling strsim v0.11.1
+   Compiling archery v1.2.3
+   Compiling fidl-fuchsia-fxfs v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fidl-fuchsia-fxfs)
+   Compiling fxfs-crypto v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fxfs-crypto)
+   Compiling imbl v7.0.2
+   Compiling clap_builder v4.6.0
+   Compiling protox v0.10.0
+   Compiling fuchsia-async v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fuchsia-async)
+   Compiling tonic v0.14.6
+   Compiling userfaultfd-sys v0.6.0
+   Compiling fsverity_merkle v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fsverity_merkle)
+   Compiling tonic-prost-build v0.14.6
+   Compiling blob_metadata v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/blob_metadata)
+   Compiling opentelemetry_sdk v0.33.1
+   Compiling storage_units v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/storage_units)
+   Compiling clap_derive v4.6.1
+   Compiling fail v0.5.1
+   Compiling fuchsia-inspect v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fuchsia-inspect)
+   Compiling vm-memory v0.17.1
+   Compiling fxfs_macros v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fxfs_macros)
+   Compiling thiserror v1.0.69
+   Compiling simd-adler32 v0.3.10
+   Compiling radium v0.7.0
+   Compiling io-uring v0.7.15
+   Compiling unicode-segmentation v1.13.2
+   Compiling linked-hash-map v0.5.6
+   Compiling adler2 v2.0.1
+   Compiling assert_matches v1.5.0
+   Compiling seccompiler v1.16.1 (/var/lib/fxdax-test/bench-tree/target/firecracker/src/seccompiler)
+   Compiling rustc-hash v2.1.3
+   Compiling convert_case v0.10.0
+   Compiling fxfs v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fxfs)
+   Compiling bitcode v0.6.9
+   Compiling clap v4.6.1
+   Compiling miniz_oxide v0.9.1
+   Compiling tonic-prost v0.14.6
+   Compiling opentelemetry-proto v0.33.1
+   Compiling fxdax v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fxdax)
+   Compiling thiserror-impl v1.0.69
+   Compiling filetime v0.2.29
+   Compiling kvm-ioctls v0.24.0
+   Compiling tap v1.0.1
+   Compiling micro_http v0.1.0 (https://github.com/firecracker-microvm/micro-http#876f3fec)
+   Compiling unicode-xid v0.2.6
+   Compiling derive_more-impl v2.1.1
+   Compiling wyz v0.5.1
+   Compiling tar v0.4.46
+   Compiling flate2 v1.1.10
+   Compiling tonic-health v0.14.6
+   Compiling kvm-bindings v0.14.0
+   Compiling physmem v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/physmem)
+   Compiling nix v0.27.1
+   Compiling async-task v4.7.1
+   Compiling funty v2.0.0
+   Compiling userfaultfd v0.9.0
+   Compiling firecracker v1.16.1 (/var/lib/fxdax-test/bench-tree/target/firecracker/src/firecracker)
+   Compiling bitvec v1.0.1
+   Compiling memfd v0.6.5
+   Compiling derive_more v2.1.1
+   Compiling vhost v0.15.0
+   Compiling linux-loader v0.13.2
+   Compiling acpi_tables v0.1.0 (/var/lib/fxdax-test/bench-tree/target/firecracker/src/acpi-tables)
+   Compiling event-manager v0.4.2
+   Compiling vm-allocator v0.1.3
+   Compiling utils v0.1.0 (/var/lib/fxdax-test/bench-tree/target/firecracker/src/utils)
+   Compiling semver v1.0.28
+   Compiling crc64 v2.0.0
+   Compiling vm-superio v0.8.1
+   Compiling fxfs-posix v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fxfs-posix)
+   Compiling zstd v0.14.3
+   Compiling extent_frame v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/extent_frame)
+   Compiling rustls-webpki v0.103.13
+   Compiling tokio-rustls v0.26.6
+   Compiling rustls-platform-verifier v0.7.1
+   Compiling hyper-rustls v0.27.10
+   Compiling reqwest v0.13.5
+   Compiling object_store v0.14.2
+   Compiling opentelemetry-http v0.33.1
+   Compiling opentelemetry-otlp v0.33.1
+   Compiling extent_remote v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/extent_remote)
+   Compiling extent_store v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/extent_store)
+   Compiling vmm v0.1.0 (/var/lib/fxdax-test/bench-tree/target/firecracker/src/vmm)
+    Finished `release` profile [optimized] target(s) in 3m 14s
+warning: method `unallowed` is never used
+   --> test_cases/src/differential.rs:194:12
+    |
+156 | impl Differences {
+    | ---------------- method in this implementation
+...
+194 |     pub fn unallowed(&self) -> impl Iterator<Item = (&Difference, &Seen)> {
+    |            ^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+
+running 114 tests
+....................................................................................... 87/114
+..........................test differential::tests::refusals_are_adopted_by_the_reference has been running for over 60 seconds
+.
+test result: ok. 114 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 61.75s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Compiling proc-macro2 v1.0.107
+   Compiling unicode-ident v1.0.24
+   Compiling quote v1.0.47
+   Compiling libc v0.2.191
+   Compiling cfg-if v1.0.4
+   Compiling serde_core v1.0.229
+   Compiling memchr v2.8.3
+   Compiling zerocopy v0.8.48
+   Compiling pin-project-lite v0.2.17
+   Compiling bytes v1.12.1
+   Compiling futures-core v0.3.34
+   Compiling futures-sink v0.3.34
+   Compiling shlex v1.3.0
+   Compiling serde v1.0.229
+   Compiling find-msvc-tools v0.1.9
+   Compiling smallvec v1.16.3
+   Compiling slab v0.4.12
+   Compiling futures-channel v0.3.34
+   Compiling futures-io v0.3.34
+   Compiling typenum v1.20.1
+   Compiling syn v2.0.119
+   Compiling syn v3.0.9
+   Compiling futures-task v0.3.34
+   Compiling anyhow v1.0.104
+   Compiling thiserror v2.0.21
+   Compiling equivalent v1.0.2
+   Compiling jobserver v0.1.34
+   Compiling itoa v1.0.18
+   Compiling hashbrown v0.17.0
+   Compiling cc v1.2.62
+   Compiling hybrid-array v0.4.15
+   Compiling once_cell v1.21.4
+   Compiling fnv v1.0.7
+   Compiling mio v1.2.4
+   Compiling socket2 v0.6.5
+   Compiling either v1.19.0
+   Compiling regex-syntax v0.8.10
+   Compiling bitflags v2.13.2
+   Compiling crypto-common v0.2.2
+   Compiling cpufeatures v0.3.0
+   Compiling stable_deref_trait v1.2.1
+   Compiling http v1.5.0
+   Compiling percent-encoding v2.3.2
+   Compiling autocfg v1.5.0
+   Compiling tracing-core v0.1.36
+   Compiling num-traits v0.2.19
+   Compiling cmake v0.1.58
+   Compiling indexmap v2.14.0
+   Compiling http-body v1.1.0
+   Compiling aho-corasick v1.1.4
+   Compiling cmov v0.5.4
+   Compiling dunce v1.0.5
+   Compiling fs_extra v1.3.0
+   Compiling ctutils v0.4.3
+   Compiling block-buffer v0.12.1
+   Compiling aws-lc-sys v0.41.0
+   Compiling tower-service v0.3.3
+   Compiling const-oid v0.10.2
+   Compiling parking_lot_core v0.9.12
+   Compiling digest v0.11.3
+   Compiling httparse v1.10.1
+   Compiling itertools v0.14.0
+   Compiling getrandom v0.2.17
+   Compiling regex-automata v0.4.14
+   Compiling writeable v0.6.4
+   Compiling synstructure v0.14.0
+   Compiling scopeguard v1.2.0
+   Compiling getrandom v0.3.4
+   Compiling litemap v0.8.3
+   Compiling static_assertions v1.1.0
+   Compiling aws-lc-rs v1.17.0
+   Compiling try-lock v0.2.5
+   Compiling zeroize v1.8.2
+   Compiling atomic-waker v1.1.2
+   Compiling want v0.3.2
+   Compiling lock_api v0.4.14
+   Compiling rand_core v0.6.4
+   Compiling log v0.4.34
+   Compiling sync_wrapper v1.0.2
+   Compiling httpdate v1.0.3
+   Compiling zerocopy-derive v0.8.48
+   Compiling displaydoc v0.2.5
+   Compiling tracing-attributes v0.1.31
+   Compiling prost-derive v0.14.4
+   Compiling serde_derive v1.0.229
+   Compiling futures-macro v0.3.34
+   Compiling tokio-macros v2.7.2
+   Compiling tokio v1.53.1
+   Compiling futures-util v0.3.34
+   Compiling thiserror-impl v2.0.21
+   Compiling zerofrom-derive v0.1.8
+   Compiling yoke-derive v0.8.4
+   Compiling zerofrom v0.1.8
+   Compiling zerovec-derive v0.11.6
+   Compiling tracing v0.1.44
+   Compiling async-trait v0.1.92
+   Compiling yoke v0.8.3
+   Compiling zerotrie v0.2.5
+   Compiling zerovec v0.11.8
+   Compiling utf8_iter v1.0.4
+   Compiling icu_properties_data v2.3.0
+   Compiling tower-layer v0.3.3
+   Compiling icu_normalizer_data v2.3.0
+   Compiling prost v0.14.4
+   Compiling parking_lot v0.12.5
+   Compiling futures-executor v0.3.34
+   Compiling tinystr v0.8.4
+   Compiling potential_utf v0.1.6
+   Compiling icu_collections v2.3.0
+   Compiling futures v0.3.34
+   Compiling rustls-pki-types v1.15.1
+   Compiling getrandom v0.4.1
+   Compiling icu_locale_core v2.3.0
+   Compiling ipnet v2.12.2
+   Compiling base64 v0.23.1
+   Compiling rand_core v0.10.0
+   Compiling untrusted v0.7.1
+   Compiling rand_core v0.9.5
+   Compiling bit-vec v0.10.1
+   Compiling fprint-macros v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fprint-macros)
+   Compiling http-body-util v0.1.5
+   Compiling bstr v1.13.1
+   Compiling zx-types v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/zx-types)
+   Compiling ppv-lite86 v0.2.21
+   Compiling icu_provider v2.3.1
+   Compiling storage_ptr_slice v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/storage_ptr_slice)
+   Compiling tokio-util v0.7.20
+   Compiling rand_chacha v0.3.1
+   Compiling untrusted v0.9.0
+   Compiling rustls v0.23.43
+   Compiling icu_normalizer v2.3.0
+   Compiling icu_properties v2.3.0
+   Compiling fprint v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fprint)
+   Compiling rand v0.8.8
+   Compiling h2 v0.4.20
+   Compiling tower v0.5.3
+   Compiling chacha20 v0.10.0
+   Compiling shuttle-parking_lot v0.12.5
+   Compiling num-integer v0.1.47
+   Compiling version_check v0.9.5
+   Compiling subtle v2.6.1
+   Compiling generic-array v0.14.7
+   Compiling idna_adapter v1.2.2
+   Compiling rand v0.10.3
+   Compiling regex v1.12.3
+   Compiling sha2 v0.11.1
+   Compiling form_urlencoded v1.2.2
+   Compiling parking v2.2.1
+   Compiling rustix v1.1.4
+   Compiling pkg-config v0.3.34
+   Compiling idna v1.1.0
+   Compiling num-bigint v0.4.8
+   Compiling fuchsia-sync v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fuchsia-sync)
+   Compiling zstd-sys v2.1.2+zstd.1.5.7
+   Compiling hex v0.4.3
+   Compiling block-padding v0.4.2
+   Compiling linux-raw-sys v0.12.1
+   Compiling openssl-probe v0.2.1
+   Compiling glob v0.3.3
+   Compiling zmij v1.0.21
+   Compiling rustls-native-certs v0.8.5
+   Compiling inout v0.2.4
+   Compiling zx-status v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/zx-status)
+   Compiling zx-sys v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/zx-sys)
+   Compiling clang-sys v1.8.1
+   Compiling zx-status-ext v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/zx-status-ext)
+   Compiling url v2.5.8
+   Compiling zx v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/zx)
+   Compiling hyper v1.12.0
+   Compiling num-rational v0.4.2
+   Compiling num-iter v0.1.46
+   Compiling num-complex v0.4.6
+   Compiling prost-types v0.14.4
+   Compiling logos-codegen v0.16.1
+   Compiling pulldown-cmark v0.13.4
+   Compiling hyper-util v0.1.21
+   Compiling serde_json v1.0.154
+   Compiling prettyplease v0.2.37
+   Compiling base64 v0.22.1
+   Compiling num v0.4.3
+   Compiling crypto-common v0.1.7
+   Compiling tower-http v0.6.11
+   Compiling cipher v0.5.2
+   Compiling event-listener v5.4.2
+   Compiling block_protocol v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/block_protocol)
+   Compiling opentelemetry v0.33.1
+   Compiling derive_arbitrary v1.5.0
+   Compiling logos-derive v0.16.1
+   Compiling pin-project-internal v1.1.13
+   Compiling miette-derive v7.6.0
+   Compiling cfg_aliases v0.2.2
+   Compiling zstd-safe v8.2.0
+   Compiling unicase v2.10.0
+   Compiling fxfs-unicode-types v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fxfs-unicode-types)
+   Compiling foldhash v0.1.5
+   Compiling unicode-width v0.1.14
+   Compiling bytemuck v1.25.0
+   Compiling minimal-lexical v0.2.1
+   Compiling hashbrown v0.15.5
+   Compiling nom v7.1.3
+   Compiling miette v7.6.0
+   Compiling pin-project v1.1.13
+   Compiling fxfs-unicode-gen v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fxfs-unicode-gen)
+   Compiling nix v0.31.3
+   Compiling arbitrary v1.5.0
+   Compiling logos v0.16.1
+   Compiling digest v0.10.7
+   Compiling storage_device v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/storage_device)
+   Compiling rand_chacha v0.9.0
+   Compiling bincode v1.3.3
+   Compiling libloading v0.8.9
+   Compiling same-file v1.0.6
+   Compiling fixedbitset v0.5.7
+   Compiling bindgen v0.69.5
+   Compiling spin v0.10.1
+   Compiling bitflags v1.3.2
+   Compiling mime v0.3.17
+   Compiling fastrand v2.5.0
+   Compiling crc-fast v1.10.0
+   Compiling axum-core v0.5.6
+   Compiling vmm-sys-util v0.15.0
+   Compiling petgraph v0.8.3
+   Compiling tempfile v3.27.0
+   Compiling walkdir v2.5.0
+   Compiling rand v0.9.4
+   Compiling cexpr v0.6.0
+   Compiling fxfs-unicode v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fxfs-unicode)
+   Compiling pulldown-cmark-to-cmark v22.0.3
+   Compiling fidl v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fidl)
+   Compiling safe_arch v0.7.4
+   Compiling fuchsia-hash v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fuchsia-hash)
+   Compiling bssl-crypto v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/bssl-crypto)
+   Compiling fxfs_trace_macros v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fxfs_trace_macros)
+   Compiling hmac v0.13.0
+   Compiling itertools v0.12.1
+   Compiling ryu v1.0.23
+   Compiling rustc-hash v1.1.0
+   Compiling iana-time-zone v0.1.65
+   Compiling siphasher v1.0.4
+   Compiling cpubits v0.1.1
+   Compiling multimap v0.10.1
+   Compiling heck v0.5.0
+   Compiling lazy_static v1.5.0
+   Compiling storage_trace v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/storage_trace)
+   Compiling matchit v0.8.4
+   Compiling lazycell v1.3.0
+   Compiling futures-lite v2.6.1
+   Compiling fxfs_trace v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fxfs_trace)
+   Compiling prost-build v0.14.4
+   Compiling fscrypt v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fscrypt)
+   Compiling axum v0.8.9
+   Compiling chrono v0.4.45
+   Compiling aes v0.9.3
+   Compiling serde_urlencoded v0.7.1
+   Compiling wide v0.7.33
+   Compiling fuchsia_merkle v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fuchsia_merkle)
+   Compiling fidl-fuchsia-io v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fidl-fuchsia-io)
+   Compiling tonic-build v0.14.6
+   Compiling protox-parse v0.10.0
+   Compiling prost-reflect v0.16.5
+   Compiling hyper-timeout v0.5.2
+   Compiling storage_xts v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/storage_xts)
+   Compiling cbc v0.2.1
+   Compiling fuchsia-emulated-handle v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fuchsia-emulated-handle)
+   Compiling mundane v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/mundane)
+   Compiling uuid v1.28.0
+   Compiling itertools v0.15.0
+   Compiling tokio-stream v0.1.19
+   Compiling rand_xoshiro v0.7.0
+   Compiling quick-xml v0.41.0
+   Compiling fuchsia-async-macro v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fuchsia-async-macro)
+   Compiling md-5 v0.11.0
+   Compiling humantime v2.4.0
+   Compiling imbl-sized-chunks v0.2.0
+   Compiling archery v1.2.3
+   Compiling rapidhash v1.4.0
+   Compiling byteorder v1.5.0
+   Compiling fidl-fuchsia-fxfs v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fidl-fuchsia-fxfs)
+   Compiling crc32fast v1.5.2
+   Compiling imbl v7.0.2
+   Compiling fxfs-crypto v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fxfs-crypto)
+   Compiling protox v0.10.0
+   Compiling fuchsia-async v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fuchsia-async)
+   Compiling tonic v0.14.6
+   Compiling userfaultfd-sys v0.6.0
+   Compiling fsverity_merkle v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fsverity_merkle)
+   Compiling tonic-prost-build v0.14.6
+   Compiling blob_metadata v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/blob_metadata)
+   Compiling opentelemetry_sdk v0.33.1
+   Compiling storage_units v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/storage_units)
+   Compiling fail v0.5.1
+   Compiling half v2.7.1
+   Compiling fuchsia-inspect v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fuchsia-inspect)
+   Compiling vm-memory v0.17.1
+   Compiling fxfs_macros v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fxfs_macros)
+   Compiling alloca v0.4.0
+   Compiling simd-adler32 v0.3.10
+   Compiling io-uring v0.7.15
+   Compiling radium v0.7.0
+   Compiling adler2 v2.0.1
+   Compiling unicode-segmentation v1.13.2
+   Compiling anstyle v1.0.14
+   Compiling clap_lex v1.1.0
+   Compiling thiserror v1.0.69
+   Compiling assert_matches v1.5.0
+   Compiling ciborium-io v0.2.2
+   Compiling linked-hash-map v0.5.6
+   Compiling rustc-hash v2.1.3
+   Compiling ciborium-ll v0.2.2
+   Compiling convert_case v0.10.0
+   Compiling tonic-prost v0.14.6
+   Compiling fxfs v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fxfs)
+   Compiling opentelemetry-proto v0.33.1
+   Compiling clap_builder v4.6.0
+   Compiling miniz_oxide v0.9.1
+   Compiling fxdax v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fxdax)
+   Compiling itertools v0.13.0
+   Compiling thiserror-impl v1.0.69
+   Compiling filetime v0.2.29
+   Compiling kvm-ioctls v0.24.0
+   Compiling tap v1.0.1
+   Compiling micro_http v0.1.0 (https://github.com/firecracker-microvm/micro-http#876f3fec)
+   Compiling cast v0.3.0
+   Compiling unicode-xid v0.2.6
+   Compiling criterion-plot v0.8.2
+   Compiling derive_more-impl v2.1.1
+   Compiling wyz v0.5.1
+   Compiling tar v0.4.46
+   Compiling clap v4.6.1
+   Compiling flate2 v1.1.10
+   Compiling ciborium v0.2.2
+   Compiling tonic-health v0.14.6
+   Compiling kvm-bindings v0.14.0
+   Compiling tinytemplate v1.2.1
+   Compiling physmem v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/physmem)
+   Compiling rand_xorshift v0.4.0
+   Compiling bitcode_derive v0.6.9
+   Compiling nix v0.27.1
+   Compiling zstd v0.14.3
+   Compiling page_size v0.6.0
+   Compiling unarray v0.1.4
+   Compiling extent_frame v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/extent_frame)
+   Compiling funty v2.0.0
+   Compiling oorandom v11.1.5
+   Compiling anes v0.1.6
+   Compiling async-task v4.7.1
+   Compiling memfd v0.6.5
+   Compiling criterion v0.8.2
+   Compiling bitcode v0.6.9
+   Compiling bitvec v1.0.1
+   Compiling proptest v1.11.0
+   Compiling userfaultfd v0.9.0
+   Compiling derive_more v2.1.1
+   Compiling acpi_tables v0.1.0 (/var/lib/fxdax-test/bench-tree/target/firecracker/src/acpi-tables)
+   Compiling linux-loader v0.13.2
+   Compiling vhost v0.15.0
+   Compiling event-manager v0.4.2
+   Compiling vm-allocator v0.1.3
+   Compiling utils v0.1.0 (/var/lib/fxdax-test/bench-tree/target/firecracker/src/utils)
+   Compiling semver v1.0.28
+   Compiling vm-superio v0.8.1
+   Compiling device_tree v1.1.0
+   Compiling crc64 v2.0.0
+   Compiling rustls-webpki v0.103.13
+   Compiling fxfs-posix v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fxfs-posix)
+   Compiling tokio-rustls v0.26.6
+   Compiling rustls-platform-verifier v0.7.1
+   Compiling hyper-rustls v0.27.10
+   Compiling reqwest v0.13.5
+   Compiling object_store v0.14.2
+   Compiling opentelemetry-http v0.33.1
+   Compiling opentelemetry-otlp v0.33.1
+   Compiling extent_remote v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/extent_remote)
+   Compiling extent_store v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/extent_store)
+   Compiling vmm v0.1.0 (/var/lib/fxdax-test/bench-tree/target/firecracker/src/vmm)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 59s
+────────────
+ Nextest run ID c1f469c8-62e5-4404-a1d3-f0ec94d70c8c with nextest profile: default
+    Starting 27 tests across 1 binary (718 tests skipped)
+        PASS [   0.008s] ( 1/27) vmm devices::virtio::extent::persist::tests::snapshots_of_other_protocols_are_refused
+        PASS [   0.008s] ( 2/27) vmm devices::virtio::extent::device::tests::unxorshift_undoes_the_clocks_xorshift
+        PASS [   0.008s] ( 3/27) vmm devices::virtio::device::tests::test_features_written_again
+        PASS [   0.009s] ( 4/27) vmm devices::virtio::extent::device::tests::branches_are_not_the_clocks
+        PASS [   0.010s] ( 5/27) vmm devices::virtio::extent::device::tests::drivers_take_every_feature_offered
+        PASS [   0.009s] ( 6/27) vmm devices::virtio::extent::device::tests::the_configuration_says_its_version_first
+        PASS [   0.010s] ( 7/27) vmm devices::virtio::extent::device::tests::a_windows_private_pages_are_not_its_size
+        PASS [   0.010s] ( 8/27) vmm devices::virtio::extent::device::tests::workers_start_all_or_none
+        PASS [   0.007s] ( 9/27) vmm devices::virtio::extent::tests::answers_to_shrinks_no_longer_asked_change_nothing
+        PASS [   0.008s] (10/27) vmm devices::virtio::extent::worker::tests::chains_writing_past_u32_are_refused
+        PASS [   0.012s] (11/27) vmm devices::virtio::extent::tests::stats_are_asked_of_guests_that_take_asks
+        PASS [   0.034s] (12/27) vmm devices::virtio::extent::worker::tests::stats_go_to_the_daemon
+        PASS [   0.035s] (13/27) vmm devices::virtio::extent::worker::tests::test_refuses_bad_requests
+        PASS [   0.031s] (14/27) vmm devices::virtio::extent::worker::tests::test_roots_and_info
+        PASS [   0.012s] (15/27) vmm devices::virtio::transport::mmio::tests::test_shm_regions
+        PASS [   0.011s] (16/27) vmm signal_handler::tests::test_fault_logs_its_address
+        PASS [   0.013s] (17/27) vmm signal_handler::tests::test_stack_overflow_runs_the_handler
+        PASS [   0.051s] (18/27) vmm devices::virtio::extent::worker::tests::test_follows_a_writer
+        PASS [   0.007s] (19/27) vmm vmm_config::extent::tests::test_deserialize
+        PASS [   0.044s] (20/27) vmm devices::virtio::extent::worker::tests::test_writes_and_reads
+        PASS [   0.009s] (21/27) vmm vmm_config::extent::tests::test_insert
+        PASS [   0.009s] (22/27) vmm vstate::vcpu::tests::efaults_given_up_on_tell_where
+        PASS [   0.006s] (23/27) vmm vstate::vcpu::tests::test_exit_code_sent_before_the_exit_event
+        PASS [   0.010s] (24/27) vmm vmm_config::extent::tests::test_insert_invalid
+        PASS [   0.092s] (25/27) vmm devices::virtio::extent::worker::tests::test_frees_many_in_one_request
+        PASS [   0.089s] (26/27) vmm devices::virtio::extent::worker::tests::test_refuses_many_past_their_most
+        PASS [  10.057s] (27/27) vmm devices::virtio::extent::worker::tests::test_answers_whatever_a_driver_asks
+────────────
+     Summary [  10.068s] 27 tests run: 27 passed, 718 skipped
+warning: method `unallowed` is never used
+   --> test_cases/src/differential.rs:194:12
+    |
+156 | impl Differences {
+    | ---------------- method in this implementation
+...
+194 |     pub fn unallowed(&self) -> impl Iterator<Item = (&Difference, &Seen)> {
+    |            ^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+[bench-fs-ext4-guest-kernel] ... REPORT (93 s of 5400 s)
+  ext4-guest-kernel (3 iterations)
+
+  workload                     median          min          max  unit
+  seq-write                     189.1        122.7        189.1  MiB/s
+  rand-read-cold              14813.7      13149.3      15906.8  IOPS
+  seq-read-cold                3878.8        927.5       3938.5  MiB/s
+  seq-read-warm                8267.4       8112.4       8331.8  MiB/s
+  rand-read-warm             922694.7     910181.4     934756.6  IOPS
+  mmap-seq-read                9846.2       9481.5       9846.2  MiB/s
+  rand-write                  14422.5      10119.8      14537.7  IOPS
+  mmap-rand-read            1273559.2    1271240.9    1276219.4  IOPS
+  mmap-rand-write             12254.3       7938.0      12374.6  IOPS
+  fsync-append                  387.7        386.8        392.4  IOPS
+  sqlite-pread-scan            1045.5        650.3       2732.0  MiB/s
+  sqlite-pread-scan-warm       3011.0       2967.3       3022.6  MiB/s
+  sqlite-mmap-scan             2651.9       2392.4       2729.7  MiB/s
+  sqlite-mmap-scan-warm        2986.2       2903.8       2988.7  MiB/s
+  create                      92821.1      90442.3      97819.1  ops/s
+  stat-cold                  340372.1     333322.8     341600.2  ops/s
+  stat-warm                 1283928.6    1191683.5    1393459.2  ops/s
+  lookup-missing             457224.2     454722.4     458015.4  ops/s
+  readdir                   2986148.7    2719253.4    3024181.4  ops/s
+  read-small-cold             15552.6      15261.0      15661.9  ops/s
+  chmod                      494245.6     462715.1     679051.4  ops/s
+  setxattr                   547225.0     512185.1     559215.5  ops/s
+  link                       153042.8     150228.1     153806.8  ops/s
+  rename                     118969.2     118965.1     119988.4  ops/s
+  rename-across               99787.4      94777.5      99996.6  ops/s
+  unlink                     385747.3     381004.6     393343.1  ops/s
+  create-fsync                  379.9        363.2        384.5  ops/s
+  mkdir-tree                 128725.3     100666.0     129757.3  ops/s
+  find-cold                  321063.9     309623.1     321494.9  ops/s
+  rm-tree                    109765.8     103552.4     109911.4  ops/s
+  large-dir-create           111609.5     102294.6     111731.8  ops/s
+  large-dir-stat-cold        263096.7     260101.7     269682.4  ops/s
+  large-dir-unlink           208774.3     203792.5     209428.0  ops/s
+  create-parallel            180864.7     174417.7     184003.0  ops/s
+  stat-parallel              520318.3     489158.6     531665.8  ops/s
+  unlink-parallel            302910.7     282639.6     309656.6  ops/s
+  create-shared-dir          112269.1     110146.7     113092.7  ops/s
+  unlink-shared-dir          275842.9     272628.3     284405.3  ops/s
+  untar                           0.0          0.0          0.0  s
+  make                            4.6          4.5          4.6  s
+  build-total                     4.6          4.6          4.6  s
+  mmap-seq-read-faults-per-mib: [6.6, 6.6, 6.6]
+  mtime-ahead-of-guest-ms: [-3.474, -2.903, -3.536]
+  sqlite-mmap-scan-faults-per-mib: [2.1, 2.1, 2.1]
+  sqlite-mmap-scan-warm-faults-per-mib: [2.1, 2.1, 2.1]
+  sqlite-pread-scan-faults-per-mib: [2.7, 2.6, 2.6]
+  sqlite-pread-scan-warm-faults-per-mib: [2.6, 2.6, 2.6]
+
+(See test artifacts at: /home/ramon/run-20261109T035205Z-325c3708/results/logs/bench-fs-ext4-guest-kernel)
+
+OK - 0/0 passed (1 reports)
+[bench-fs-ext4-dax-pmem] ... REPORT (95 s of 5400 s)
+  ext4-dax-pmem (3 iterations)
+
+  workload                     median          min          max  unit
+  seq-write                     125.8        124.4        127.9  MiB/s
+  rand-read-cold              75851.9      72176.2      76560.7  IOPS
+  seq-read-cold                 442.1        439.1        458.0  MiB/s
+  seq-read-warm               10836.6      10737.6      11432.8  MiB/s
+  rand-read-warm             873645.7     783630.2     877715.1  IOPS
+  mmap-seq-read               10240.0       9846.2      10666.7  MiB/s
+  rand-write                  11070.3       9990.2      11221.9  IOPS
+  mmap-rand-read             786593.7     779596.2     798690.7  IOPS
+  mmap-rand-write             10959.2      10922.7      11100.3  IOPS
+  fsync-append                  533.3        529.6        533.5  IOPS
+  sqlite-pread-scan             291.2        289.7        294.0  MiB/s
+  sqlite-pread-scan-warm       2815.6       2784.7       2822.5  MiB/s
+  sqlite-mmap-scan             2868.8       1893.7       2882.8  MiB/s
+  sqlite-mmap-scan-warm        3023.8       2039.7       3028.6  MiB/s
+  create                      38569.6      33722.7      38761.7  ops/s
+  stat-cold                  324579.1     147399.1     327992.1  ops/s
+  stat-warm                 1193253.3     717077.2    1296693.9  ops/s
+  lookup-missing             436771.8     432290.5     437812.8  ops/s
+  readdir                   2877089.3     963021.0    3044001.0  ops/s
+  read-small-cold             54371.4      53628.7      54630.0  ops/s
+  chmod                      480371.9     458926.0     724361.1  ops/s
+  setxattr                   582990.4     506011.2     585800.9  ops/s
+  link                       148639.6     143145.2     155350.7  ops/s
+  rename                     110494.3     109558.5     113570.4  ops/s
+  rename-across              100462.0      96258.7     104663.6  ops/s
+  unlink                     398056.7     360018.6     404876.5  ops/s
+  create-fsync                  539.1        534.8        558.2  ops/s
+  mkdir-tree                  42971.7      42221.2      43130.6  ops/s
+  find-cold                  305347.0     278089.8     309540.5  ops/s
+  rm-tree                    101723.6      98882.2     106397.2  ops/s
+  large-dir-create           109101.6      77124.4     110278.1  ops/s
+  large-dir-stat-cold        239271.7     142293.9     266987.6  ops/s
+  large-dir-unlink           200232.8     198954.1     201805.9  ops/s
+  create-parallel            175342.2     143569.6     176343.7  ops/s
+  stat-parallel              573466.5     501180.7     574850.8  ops/s
+  unlink-parallel            286364.5     281478.6     298991.5  ops/s
+  create-shared-dir          111148.4     110418.9     111527.9  ops/s
+  unlink-shared-dir          258771.0     255719.3     276740.2  ops/s
+  untar                           0.0          0.0          0.0  s
+  make                            4.6          4.6          4.8  s
+  build-total                     4.7          4.7          4.8  s
+  mmap-seq-read-faults-per-mib: [5.6, 5.5, 5.6]
+  mtime-ahead-of-guest-ms: [-7.767, -5.277, -6.011]
+  sqlite-mmap-scan-faults-per-mib: [3.7, 3.7, 129.1]
+  sqlite-mmap-scan-warm-faults-per-mib: [3.6, 3.6, 129.1]
+  sqlite-pread-scan-faults-per-mib: [2.7, 2.7, 2.6]
+  sqlite-pread-scan-warm-faults-per-mib: [2.6, 2.6, 2.6]
+
+(See test artifacts at: /home/ramon/run-20261109T035205Z-325c3708/results/logs/bench-fs-ext4-dax-pmem)
+
+OK - 0/0 passed (1 reports)
+[bench-fs-ext4-pmem] ... REPORT (96 s of 5400 s)
+  ext4-pmem (3 iterations)
+
+  workload                     median          min          max  unit
+  seq-write                     116.3         98.4        128.4  MiB/s
+  rand-read-cold              65015.9      62773.9      66332.0  IOPS
+  seq-read-cold                 413.6        338.6        419.7  MiB/s
+  seq-read-warm                8372.3       8245.4       8450.8  MiB/s
+  rand-read-warm             927415.3     875038.0     929432.8  IOPS
+  mmap-seq-read                9481.5       9481.5       9846.2  MiB/s
+  rand-write                  11229.6      10259.2      11497.5  IOPS
+  mmap-rand-read            1226569.7    1226431.3    1233730.6  IOPS
+  mmap-rand-write              7839.2       7151.5       7941.8  IOPS
+  fsync-append                  529.2        520.6        533.5  IOPS
+  sqlite-pread-scan             300.2        269.5        307.4  MiB/s
+  sqlite-pread-scan-warm       2980.1       2951.9       2980.7  MiB/s
+  sqlite-mmap-scan             2600.4       2581.1       2637.0  MiB/s
+  sqlite-mmap-scan-warm        2813.3       2700.7       2823.3  MiB/s
+  create                      96556.8      73712.7      98242.1  ops/s
+  stat-cold                  328675.7     184158.6     342092.3  ops/s
+  stat-warm                  710028.8     662033.5    1137223.7  ops/s
+  lookup-missing             449630.2     448816.4     450353.5  ops/s
+  readdir                   2758285.9     728608.1    2972682.5  ops/s
+  read-small-cold             49600.9      48890.2      49775.9  ops/s
+  chmod                      677221.8     461548.7     691518.5  ops/s
+  setxattr                   558591.7     543718.7     582013.2  ops/s
+  link                       155901.7     139055.2     156510.7  ops/s
+  rename                     118114.8     110025.8     121151.6  ops/s
+  rename-across               99881.1      98799.1     105813.4  ops/s
+  unlink                     384186.1     376103.2     425221.5  ops/s
+  create-fsync                  533.9        488.6        544.4  ops/s
+  mkdir-tree                 128996.7     128067.4     129951.3  ops/s
+  find-cold                  317440.7     313510.2     320960.7  ops/s
+  rm-tree                    107700.2     104193.2     110010.8  ops/s
+  large-dir-create           112210.0     111854.8     112220.7  ops/s
+  large-dir-stat-cold        258796.0     254183.3     264203.5  ops/s
+  large-dir-unlink           208729.8     206568.9     210819.4  ops/s
+  create-parallel            175974.1     169694.6     178655.3  ops/s
+  stat-parallel              565301.8     552390.9     572600.8  ops/s
+  unlink-parallel            304837.2     291446.0     308864.2  ops/s
+  create-shared-dir          110293.9     107425.0     115387.2  ops/s
+  unlink-shared-dir          271431.3     265726.3     274975.7  ops/s
+  untar                           0.0          0.0          0.0  s
+  make                            4.7          4.6          4.7  s
+  build-total                     4.7          4.6          4.7  s
+  mmap-seq-read-faults-per-mib: [6.3, 6.3, 6.3]
+  mtime-ahead-of-guest-ms: [-6.37, -4.348, -3.732]
+  sqlite-mmap-scan-faults-per-mib: [13.3, 13.3, 13.3]
+  sqlite-mmap-scan-warm-faults-per-mib: [11.9, 11.9, 11.9]
+  sqlite-pread-scan-faults-per-mib: [2.6, 2.6, 2.6]
+  sqlite-pread-scan-warm-faults-per-mib: [2.6, 2.6, 2.6]
+
+(See test artifacts at: /home/ramon/run-20261109T035205Z-325c3708/results/logs/bench-fs-ext4-pmem)
+
+OK - 0/0 passed (1 reports)
+[bench-fs-fxfs-guest] ... REPORT (111 s of 5400 s)
+  fxfs-guest (3 iterations)
+
+  workload                     median          min          max  unit
+  seq-write                     140.1        106.4        140.3  MiB/s
+  rand-read-cold               4975.4       4735.3       5091.4  IOPS
+  seq-read-cold                 882.8        695.7        907.8  MiB/s
+  seq-read-warm                8123.9       8113.9       8210.9  MiB/s
+  rand-read-warm             921608.2     915001.0     923720.6  IOPS
+  mmap-seq-read                8827.6       8827.6       8827.6  MiB/s
+  rand-write                  78019.0      70926.4      79534.0  IOPS
+  mmap-rand-read            1218191.9    1202508.2    1227759.6  IOPS
+  mmap-rand-write              7761.3       6243.9       8321.0  IOPS
+  fsync-append                 2149.0       1486.2       2283.2  IOPS
+  sqlite-pread-scan             297.6        296.1        349.3  MiB/s
+  sqlite-pread-scan-warm       2994.0       2990.9       3056.2  MiB/s
+  sqlite-mmap-scan              811.1        791.4        829.7  MiB/s
+  sqlite-mmap-scan-warm        2795.4       2734.5       2832.6  MiB/s
+  create                      79993.3      67834.3      80019.1  ops/s
+  stat-cold                  173993.1     170318.4     187375.7  ops/s
+  stat-warm                 1046486.5    1046052.5    1097318.4  ops/s
+  lookup-missing             452348.5     412748.7     469213.4  ops/s
+  readdir                   2954912.5    2702450.7    3019255.3  ops/s
+  read-small-cold              6396.2       6208.6       6676.4  ops/s
+  chmod                      358722.8     348352.9     403163.6  ops/s
+  setxattr                   164896.9     163209.5     165457.9  ops/s
+  link                        89808.6      88534.8      95128.9  ops/s
+  rename                      71638.6      57083.3      75784.8  ops/s
+  rename-across               63219.5      59200.2      65888.7  ops/s
+  unlink                     286317.8     190876.6     331057.3  ops/s
+  create-fsync                 2382.6       1996.0       2405.8  ops/s
+  mkdir-tree                  77297.1      76422.7      77461.2  ops/s
+  find-cold                  158283.5     119351.4     165436.4  ops/s
+  rm-tree                     65285.1      56728.9      69613.4  ops/s
+  large-dir-create            87118.8      84512.1      89287.7  ops/s
+  large-dir-stat-cold        168525.9     122588.5     173562.3  ops/s
+  large-dir-unlink           158778.2     156998.5     168237.4  ops/s
+  create-parallel            119762.5     113698.2     120290.7  ops/s
+  stat-parallel              382864.0     278296.2     401786.6  ops/s
+  unlink-parallel            174847.9     157931.4     175789.0  ops/s
+  create-shared-dir           83117.9      78579.2      89307.2  ops/s
+  unlink-shared-dir          160939.7     154590.2     177577.7  ops/s
+  untar                           0.0          0.0          0.0  s
+  make                            4.7          4.7          4.7  s
+  build-total                     4.7          4.7          4.7  s
+  mmap-seq-read-faults-per-mib: [13.7, 13.7, 13.7]
+  mtime-ahead-of-guest-ms: [-4.567, -5.449, -5.403]
+  sqlite-mmap-scan-faults-per-mib: [9.6, 9.6, 9.6]
+  sqlite-mmap-scan-warm-faults-per-mib: [9.3, 9.3, 9.1]
+  sqlite-pread-scan-faults-per-mib: [2.7, 2.6, 2.6]
+  sqlite-pread-scan-warm-faults-per-mib: [2.6, 2.6, 2.6]
+
+(See test artifacts at: /home/ramon/run-20261109T035205Z-325c3708/results/logs/bench-fs-fxfs-guest)
+
+OK - 0/0 passed (1 reports)
+[bench-fs-fxfs-guest-dax] ... REPORT (111 s of 5400 s)
+  fxfs-guest-dax (3 iterations)
+
+  workload                     median          min          max  unit
+  seq-write                     130.5        107.2        141.1  MiB/s
+  rand-read-cold              11967.9      11644.6      12365.3  IOPS
+  seq-read-cold                 395.1        392.0        398.1  MiB/s
+  seq-read-warm               10657.2      10645.7      11143.4  MiB/s
+  rand-read-warm             839663.2     829659.2     840523.7  IOPS
+  mmap-seq-read                9846.2       9846.2      10240.0  MiB/s
+  rand-write                   4930.5       4896.6       5176.6  IOPS
+  mmap-rand-read            1271752.1    1266174.4    1294567.2  IOPS
+  mmap-rand-write             63751.0      60457.6      64251.0  IOPS
+  fsync-append                 2727.0       2409.4       2767.6  IOPS
+  sqlite-pread-scan             159.1        157.2        177.0  MiB/s
+  sqlite-pread-scan-warm       2725.8       2707.2       2805.0  MiB/s
+  sqlite-mmap-scan             2843.2       2733.5       2863.8  MiB/s
+  sqlite-mmap-scan-warm        2977.1       2820.4       2980.9  MiB/s
+  create                      79669.4      70571.3      80208.2  ops/s
+  stat-cold                  167478.7     145317.6     173316.1  ops/s
+  stat-warm                 1075144.5     835513.7    1173364.6  ops/s
+  lookup-missing             423901.0     420056.0     457155.3  ops/s
+  readdir                   2908739.7    2800645.8    2951929.3  ops/s
+  read-small-cold             35301.4      34505.9      36281.3  ops/s
+  chmod                      301561.9     182215.8     349293.5  ops/s
+  setxattr                   162027.2     156670.2     169178.2  ops/s
+  link                        90017.1      89822.4      95507.2  ops/s
+  rename                      71697.8      70923.8      73601.6  ops/s
+  rename-across               61358.3      58197.1      61832.4  ops/s
+  unlink                     194350.2     141597.4     268250.0  ops/s
+  create-fsync                 2390.3       2270.1       2444.4  ops/s
+  mkdir-tree                  76510.9      75224.8      77092.2  ops/s
+  find-cold                  146439.8     131930.7     154995.2  ops/s
+  rm-tree                     64829.2      56881.6      67039.5  ops/s
+  large-dir-create            85251.6      84045.0      87172.4  ops/s
+  large-dir-stat-cold        164534.1     156479.3     168505.9  ops/s
+  large-dir-unlink           142128.9     135005.6     171851.7  ops/s
+  create-parallel            119180.5     118411.9     122001.0  ops/s
+  stat-parallel              405686.8     402472.8     464021.7  ops/s
+  unlink-parallel            173067.4     161903.2     178650.1  ops/s
+  create-shared-dir           84447.2      79114.4      89333.9  ops/s
+  unlink-shared-dir          148942.9     134781.5     165030.4  ops/s
+  untar                           0.0          0.0          0.0  s
+  make                            4.6          4.6          4.6  s
+  build-total                     4.7          4.6          4.7  s
+  mmap-seq-read-faults-per-mib: [5.5, 5.5, 5.5]
+  mtime-ahead-of-guest-ms: [-3.561, -4.042, -2.183]
+  sqlite-mmap-scan-faults-per-mib: [1.7, 1.7, 1.7]
+  sqlite-mmap-scan-warm-faults-per-mib: [1.7, 1.7, 1.7]
+  sqlite-pread-scan-faults-per-mib: [2.7, 2.7, 2.7]
+  sqlite-pread-scan-warm-faults-per-mib: [2.6, 2.6, 2.6]
+
+(See test artifacts at: /home/ramon/run-20261109T035205Z-325c3708/results/logs/bench-fs-fxfs-guest-dax)
+
+OK - 0/0 passed (1 reports)
+[bench-fs-fxfs-guest-dax-followed] ... REPORT (118 s of 5400 s)
+  fxfs-guest-dax-followed (3 iterations)
+
+  workload                     median          min          max  unit
+  seq-write                     128.5        106.2        139.2  MiB/s
+  rand-read-cold              79534.0      11611.6      93090.9  IOPS
+  seq-read-cold                1532.9        397.5       1551.5  MiB/s
+  seq-read-warm               10811.6      10804.6      10843.6  MiB/s
+  rand-read-warm             836978.5     829151.9     839206.4  IOPS
+  mmap-seq-read                9846.2       9846.2       9846.2  MiB/s
+  rand-write                   5165.2       4169.0       5597.5  IOPS
+  mmap-rand-read             797403.8     775106.4    1281323.3  IOPS
+  mmap-rand-write             59362.3      48473.4      60681.5  IOPS
+  fsync-append                 1474.4       1393.2       1725.4  IOPS
+  sqlite-pread-scan             156.4        152.9        595.5  MiB/s
+  sqlite-pread-scan-warm       2767.6       2660.6       2790.9  MiB/s
+  sqlite-mmap-scan             2775.2       2693.5       2795.0  MiB/s
+  sqlite-mmap-scan-warm        2924.0       2885.6       2957.4  MiB/s
+  create                      80332.7      66659.0      80835.1  ops/s
+  stat-cold                  176508.4     115434.3     184288.2  ops/s
+  stat-warm                 1111915.4     896968.0    1335238.3  ops/s
+  lookup-missing             500156.0     424039.6     511763.4  ops/s
+  readdir                   3212650.1    2391843.8    3266436.7  ops/s
+  read-small-cold             35315.6      23745.9      35966.3  ops/s
+  chmod                      382105.9     298936.0     385727.9  ops/s
+  setxattr                   173408.1     161262.9     192953.3  ops/s
+  link                        90284.9      84575.7      95362.0  ops/s
+  rename                      63405.9      63359.1      75516.4  ops/s
+  rename-across               61124.3      54672.7      68751.2  ops/s
+  unlink                     241244.9     206530.0     297793.1  ops/s
+  create-fsync                 1674.6       1259.6       1689.1  ops/s
+  mkdir-tree                  75174.3      69739.1      76869.1  ops/s
+  find-cold                  127192.8     125825.0     156565.5  ops/s
+  rm-tree                     55322.9      54818.3      67417.7  ops/s
+  large-dir-create            83833.3      77147.2      87282.7  ops/s
+  large-dir-stat-cold        150778.5     119424.2     165990.9  ops/s
+  large-dir-unlink           178269.9     165280.2     184228.4  ops/s
+  create-parallel            112337.2     106397.0     121825.9  ops/s
+  stat-parallel              404942.1     321627.5     431713.2  ops/s
+  unlink-parallel            169380.5     169044.8     169919.6  ops/s
+  create-shared-dir           77025.9      76055.0      87177.8  ops/s
+  unlink-shared-dir          159425.4     134805.4     188480.1  ops/s
+  untar                           0.0          0.0          0.0  s
+  make                            4.6          4.6          4.7  s
+  build-total                     4.6          4.6          4.8  s
+  follower1-failed-reads: [0.0]
+  follower1-raced-reads: [12344506.0]
+  follower1-reads: [700972.0]
+  follower2-failed-reads: [0.0]
+  follower2-raced-reads: [12356692.0]
+  follower2-reads: [547750.0]
+  mmap-seq-read-faults-per-mib: [5.5, 5.5, 5.5]
+  mtime-ahead-of-guest-ms: [-4.462, -5.737, -6.189]
+  sqlite-mmap-scan-faults-per-mib: [1.7, 1.7, 1.7]
+  sqlite-mmap-scan-warm-faults-per-mib: [1.7, 1.7, 1.7]
+  sqlite-pread-scan-faults-per-mib: [2.7, 2.7, 2.6]
+  sqlite-pread-scan-warm-faults-per-mib: [2.6, 2.6, 2.6]
+
+(See test artifacts at: /home/ramon/run-20261109T035205Z-325c3708/results/logs/bench-fs-fxfs-guest-dax-followed)
+
+OK - 0/0 passed (1 reports)
+[bench-fs-fxfs-guest-dax-followed-idle] ... REPORT (120 s of 5400 s)
+  fxfs-guest-dax-followed-idle (3 iterations)
+
+  workload                     median          min          max  unit
+  seq-write                     135.8        106.7        140.6  MiB/s
+  rand-read-cold              11889.7      11787.0      11967.9  IOPS
+  seq-read-cold                 396.3        393.2        398.8  MiB/s
+  seq-read-warm               11075.0      10702.1      11121.9  MiB/s
+  rand-read-warm             835521.7     830276.9     848299.3  IOPS
+  mmap-seq-read                9846.2       9846.2       9846.2  MiB/s
+  rand-write                   5004.3       4436.5       5259.7  IOPS
+  mmap-rand-read            1282823.1    1279133.4    1285688.7  IOPS
+  mmap-rand-write             59362.3      44765.0      62060.6  IOPS
+  fsync-append                 2064.5       1961.7       2197.4  IOPS
+  sqlite-pread-scan             160.1        155.8        172.9  MiB/s
+  sqlite-pread-scan-warm       2758.5       2758.0       2822.6  MiB/s
+  sqlite-mmap-scan             2874.4       2842.8       2931.8  MiB/s
+  sqlite-mmap-scan-warm        3048.1       2951.9       3090.3  MiB/s
+  create                      80074.0      77684.0      80536.4  ops/s
+  stat-cold                  176107.1     169963.7     187455.0  ops/s
+  stat-warm                 1117884.2     825989.9    1158098.4  ops/s
+  lookup-missing             491170.7     452326.9     493123.2  ops/s
+  readdir                   2844282.6    2772402.4    2875281.8  ops/s
+  read-small-cold             35906.0      35185.7      36670.2  ops/s
+  chmod                      367180.8     343438.7     387819.2  ops/s
+  setxattr                   186802.0     181715.6     189838.9  ops/s
+  link                        94824.1      92608.7      97687.2  ops/s
+  rename                      74671.6      73716.2      76384.1  ops/s
+  rename-across               59390.4      59052.6      64352.0  ops/s
+  unlink                     264577.0     176280.7     289611.5  ops/s
+  create-fsync                 1868.6       1839.5       1904.0  ops/s
+  mkdir-tree                  75970.0      73257.4      78891.6  ops/s
+  find-cold                  150579.5     136811.1     157121.0  ops/s
+  rm-tree                     63806.0      53223.8      67909.2  ops/s
+  large-dir-create            88615.8      85885.1      89490.3  ops/s
+  large-dir-stat-cold        166616.1     153672.2     170083.8  ops/s
+  large-dir-unlink           139363.9     125628.3     148489.9  ops/s
+  create-parallel            117132.8     113338.3     118805.0  ops/s
+  stat-parallel              444320.3     428081.0     474290.2  ops/s
+  unlink-parallel            166691.6     159115.7     172574.0  ops/s
+  create-shared-dir           82047.8      79531.4      83858.4  ops/s
+  unlink-shared-dir          152581.5     110726.5     163227.8  ops/s
+  untar                           0.0          0.0          0.0  s
+  make                            4.7          4.6          4.7  s
+  build-total                     4.7          4.6          4.7  s
+  follower1-failed-reads: [0.0]
+  follower1-raced-reads: [0.0]
+  follower1-reads: [0.0]
+  follower2-failed-reads: [0.0]
+  follower2-raced-reads: [0.0]
+  follower2-reads: [0.0]
+  mmap-seq-read-faults-per-mib: [5.5, 5.5, 5.5]
+  mtime-ahead-of-guest-ms: [-3.003, -3.088, -5.183]
+  sqlite-mmap-scan-faults-per-mib: [1.7, 1.7, 1.7]
+  sqlite-mmap-scan-warm-faults-per-mib: [1.7, 1.6, 1.6]
+  sqlite-pread-scan-faults-per-mib: [2.7, 2.7, 2.6]
+  sqlite-pread-scan-warm-faults-per-mib: [2.7, 2.6, 2.6]
+
+(See test artifacts at: /home/ramon/run-20261109T035205Z-325c3708/results/logs/bench-fs-fxfs-guest-dax-followed-idle)
+
+OK - 0/0 passed (1 reports)
+Logs: /home/ramon/run-20261109T035205Z-325c3708/results/logs
+Results: /home/ramon/run-20261109T035205Z-325c3708/results

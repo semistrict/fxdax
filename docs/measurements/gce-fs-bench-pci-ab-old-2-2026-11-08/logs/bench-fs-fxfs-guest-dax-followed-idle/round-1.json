@@ -1,0 +1,19 @@
+{
+  "case": "bench-fs-fxfs-guest-dax-followed-idle",
+  "commit": "557b49a700efff4f705d493d010102d112bc929b-dirty",
+  "failed_checks": [],
+  "knobs": {
+    "FXDAX_BENCH_CASES": "bench-fs-ext4-guest-kernel bench-fs-ext4-dax-pmem bench-fs-ext4-pmem bench-fs-fxfs-guest bench-fs-fxfs-guest-dax bench-fs-fxfs-guest-dax-followed bench-fs-fxfs-guest-dax-followed-idle",
+    "FXDAX_BENCH_ITERATIONS": "3",
+    "FXDAX_BENCH_NOTE": "TASK-275: the perf suite, virtio-PCI main against main before it; old side (old = 557b49a70), round 2, on fxdax-keep-c3-standard-8-us-east4-a-1",
+    "FXDAX_EXTENTD_MEMORY": "8589934592",
+    "FXDAX_GUEST_KERNEL_BUILD": "release"
+  },
+  "limit_secs": 5400,
+  "outcome": "report",
+  "reason": null,
+  "replay": "FXDAX_WORKSPACE_TESTS=0 FXDAX_E2E_TEST=bench-fs-fxfs-guest-dax-followed-idle FXDAX_BENCH_CASES='bench-fs-ext4-guest-kernel bench-fs-ext4-dax-pmem bench-fs-ext4-pmem bench-fs-fxfs-guest bench-fs-fxfs-guest-dax bench-fs-fxfs-guest-dax-followed bench-fs-fxfs-guest-dax-followed-idle' FXDAX_BENCH_ITERATIONS=3 FXDAX_BENCH_NOTE='TASK-275: the perf suite, virtio-PCI main against main before it; old side (old = 557b49a70), round 2, on fxdax-keep-c3-standard-8-us-east4-a-1' FXDAX_EXTENTD_MEMORY=8589934592 FXDAX_GUEST_KERNEL_BUILD=release scripts/test-gce.sh all",
+  "round": 1,
+  "rounds": 1,
+  "took_secs": 120.109770417
+}

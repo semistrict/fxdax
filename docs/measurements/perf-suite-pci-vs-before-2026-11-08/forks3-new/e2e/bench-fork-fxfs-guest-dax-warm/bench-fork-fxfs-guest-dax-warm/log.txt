@@ -1,0 +1,24 @@
+[    0.399111] check access for rdinit=/init failed: -2, ignoring
+fxdax: boot kernel_ns=429030000 agent_ns=453090547
+[   13.429727] reboot: Restarting system
+[    0.401392] check access for rdinit=/init failed: -2, ignoring
+fxdax: boot kernel_ns=429365000 agent_ns=449158076
+FXFS fork-read-usr: dax_extent_alloc_bytes 5304320, device_read_bytes 1966080, device_reads 15, device_reads_ns 4229193, window_map_bytes_range 387973120, window_map_bytes_reach 87810048, window_map_requests 256, window_maps 465, window_maps_ns 99440124, window_maps_range 394, window_maps_reach 71, window_regions 71, window_regions_bytes 87810048, window_regions_refs 3440, window_slices 3440
+REQUESTS fork-read-usr: read 15.00 (245 µs each), map 256.00 (331 µs each) per operation
+FXFS fork-reread-usr: 
+REQUESTS fork-reread-usr:  per operation
+[   15.224810] reboot: Restarting system
+[    0.422810] check access for rdinit=/init failed: -2, ignoring
+fxdax: boot kernel_ns=449198000 agent_ns=469108378
+FXFS fork-read-usr: dax_extent_alloc_bytes 5304320, device_read_bytes 1966080, device_reads 15, device_reads_ns 4540396, window_map_bytes_range 387973120, window_map_bytes_reach 87810048, window_map_requests 256, window_maps 465, window_maps_ns 227130005, window_maps_range 394, window_maps_reach 71, window_regions 71, window_regions_bytes 87810048, window_regions_refs 3440, window_slices 3440
+REQUESTS fork-read-usr: read 15.00 (257 µs each), map 256.00 (838 µs each) per operation
+FXFS fork-reread-usr: 
+REQUESTS fork-reread-usr:  per operation
+[   12.133039] reboot: Restarting system
+[    0.405181] check access for rdinit=/init failed: -2, ignoring
+fxdax: boot kernel_ns=437048000 agent_ns=457091962
+FXFS fork-read-usr: dax_extent_alloc_bytes 5304320, device_read_bytes 1966080, device_reads 15, device_reads_ns 4065608, window_map_bytes_range 387973120, window_map_bytes_reach 87810048, window_map_requests 256, window_maps 465, window_maps_ns 225628197, window_maps_range 394, window_maps_reach 71, window_regions 71, window_regions_bytes 87810048, window_regions_refs 3440, window_slices 3440
+REQUESTS fork-read-usr: read 15.00 (231 µs each), map 256.00 (831 µs each) per operation
+FXFS fork-reread-usr: 
+REQUESTS fork-reread-usr:  per operation
+[   12.118591] reboot: Restarting system

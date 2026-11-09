@@ -1,0 +1,33 @@
+{
+  "boot-source": {
+    "boot_args": "console=ttyS0 loglevel=5 reboot=k panic=-1 8250.nr_uarts=1 i8042.noaux i8042.nomux i8042.dumbkbd sysctl.kernel.hung_task_timeout_secs=10 softlockup_panic=1 panic_print=0x1 sysctl.kernel.softlockup_all_cpu_backtrace=1 init=/guest-agent FXDAX_PGBENCH_ROLE=run FXDAX_PGBENCH_RUNS=2 FXDAX_PGBENCH_MEASURE=1 FXDAX_GUEST_WATCHDOG_SECS=3294 -- fxfs-guest-pgbench-density",
+    "kernel_image_path": "/var/lib/fxdax-test/guest-kernel-release/out/x86_64/vmlinux"
+  },
+  "drives": [
+    {
+      "drive_id": "rootfs",
+      "is_read_only": false,
+      "is_root_device": true,
+      "path_on_host": "/home/ramon/run-20261109T063307Z-ad4de508/results/e2e/fxfs-guest-pgbench-density/fxfs-guest-pgbench-density/run-2.rootfs.ext4"
+    }
+  ],
+  "extent": [
+    {
+      "capacity": 17179869184,
+      "extentd_socket": "/tmp/fxdax-pgbench.44ni2OKhdHqL/extentd.sock",
+      "id": "extents",
+      "path_on_host": "/home/ramon/run-20261109T063307Z-ad4de508/results/e2e/fxfs-guest-pgbench-density/fxfs-guest-pgbench-density/fork-2",
+      "tag": "extents"
+    }
+  ],
+  "machine-config": {
+    "huge_pages": "None",
+    "mem_size_mib": 1024,
+    "vcpu_count": 2
+  },
+  "pmem": [],
+  "vsock": {
+    "guest_cid": 3,
+    "uds_path": "/tmp/fxdax-142841-run-2.vsock"
+  }
+}

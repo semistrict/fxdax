@@ -1,0 +1,3 @@
+[    0.259503] check access for rdinit=/init failed: -2, ignoring
+fxdax: boot kernel_ns=291107000 agent_ns=308932076
+[    0.351975] reboot: Restarting system

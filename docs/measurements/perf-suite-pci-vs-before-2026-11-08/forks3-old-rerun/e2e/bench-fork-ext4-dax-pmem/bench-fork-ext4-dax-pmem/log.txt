@@ -1,0 +1,30 @@
+[    0.177321] PCI: Fatal: No config space access function found
+[    0.214063] PCI: System does not support PCI
+[    0.297240] nd_pmem namespace0.0: unable to guarantee persistence of writes
+[    0.481688] check access for rdinit=/init failed: -2, ignoring
+fxdax: boot kernel_ns=1009156000 agent_ns=1029152666
+[   15.311670] reboot: Restarting system
+[    0.178873] PCI: Fatal: No config space access function found
+[    0.212574] PCI: System does not support PCI
+[    0.294469] nd_pmem namespace0.0: unable to guarantee persistence of writes
+[    0.464664] check access for rdinit=/init failed: -2, ignoring
+fxdax: boot kernel_ns=997188000 agent_ns=1017202028
+FXFS fork-read-usr: 
+FXFS fork-reread-usr: 
+[   15.969405] reboot: Restarting system
+[    0.186262] PCI: Fatal: No config space access function found
+[    0.218789] PCI: System does not support PCI
+[    0.291817] nd_pmem namespace0.0: unable to guarantee persistence of writes
+[    0.432805] check access for rdinit=/init failed: -2, ignoring
+fxdax: boot kernel_ns=997412000 agent_ns=1021118202
+FXFS fork-read-usr: 
+FXFS fork-reread-usr: 
+[   17.224523] reboot: Restarting system
+[    0.177072] PCI: Fatal: No config space access function found
+[    0.209830] PCI: System does not support PCI
+[    0.304567] nd_pmem namespace0.0: unable to guarantee persistence of writes
+[    0.438244] check access for rdinit=/init failed: -2, ignoring
+fxdax: boot kernel_ns=997111000 agent_ns=1017149139
+FXFS fork-read-usr: 
+FXFS fork-reread-usr: 
+[   17.512043] reboot: Restarting system

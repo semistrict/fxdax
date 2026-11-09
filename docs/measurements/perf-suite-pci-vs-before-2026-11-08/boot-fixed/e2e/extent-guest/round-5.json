@@ -1,0 +1,21 @@
+{
+  "case": "extent-guest",
+  "commit": "56cdb1ecddca068c45e0fe450f41f20b98052ac4",
+  "failed_checks": [],
+  "knobs": {
+    "FXDAX_E2E_ROUNDS": "10",
+    "FXDAX_E2E_TEST": "extent-guest fxfs-guest-snapshot-dax",
+    "FXDAX_GUEST_KERNEL_BUILD": "release",
+    "FXDAX_TEST_PARTS": "clippy workspace sim shuttle scripts guest firecracker",
+    "FXDAX_WORKSPACE_TESTS": "0",
+    "PJDFSTEST_COMMIT": "85a8aea9e685999ef0540392fd80535f873d7ff7",
+    "PJDFSTEST_REPO": "https://github.com/pjd/pjdfstest"
+  },
+  "limit_secs": 15,
+  "outcome": "pass",
+  "reason": null,
+  "replay": "FXDAX_WORKSPACE_TESTS=0 FXDAX_E2E_TEST=extent-guest FXDAX_E2E_ROUNDS=10 FXDAX_GUEST_KERNEL_BUILD=release FXDAX_TEST_PARTS='clippy workspace sim shuttle scripts guest firecracker' PJDFSTEST_COMMIT=85a8aea9e685999ef0540392fd80535f873d7ff7 PJDFSTEST_REPO=https://github.com/pjd/pjdfstest scripts/test-gce.sh all",
+  "round": 5,
+  "rounds": 10,
+  "took_secs": 0.700714912
+}

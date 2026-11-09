@@ -1,0 +1,17 @@
+[    0.371531] check access for rdinit=/init failed: -2, ignoring
+fxdax: boot kernel_ns=420963000 agent_ns=437184228
+bigmap: file_bytes 4294967296.000
+bigmap: read_cold_mib_s 21.987
+bigmap: read_cold_faults_per_page 1.000
+bigmap: read_cold_major_faults_per_page 1.000
+bigmap: read_warm_mib_s 30.082
+bigmap: write_pages 52428.000
+bigmap: write_pages_s 6951.926
+bigmap: write_faults_per_page 1.009
+bigmap: write_major_faults_per_page 0.820
+bigmap: store_p50_us 151.988
+bigmap: store_p99_us 454.879
+bigmap: store_max_us 72802.420
+bigmap: msync_s 0.505
+OK checked
+[  381.605054] reboot: Restarting system

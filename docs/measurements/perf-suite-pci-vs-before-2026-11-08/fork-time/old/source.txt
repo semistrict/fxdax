@@ -1,0 +1,6 @@
+revision 557b49a700efff4f705d493d010102d112bc929b
+firecracker 8e14cd916c07e26cc00439557f6168262cf5fe59
+changed  M guest/tests/test_cases/src/guest_init.rs
+changed  M guest/tests/test_cases/src/kernel_log.rs
+changed  M guest/tests/test_cases/src/measure.rs
+ab97f2a56022184c41792977b7129041c1f1374c3f8026a962ca34b4550065e9  source.tar.gz

@@ -1,0 +1,8 @@
+[    0.242233] nd_pmem namespace0.0: unable to guarantee persistence of writes
+[    0.381051] check access for rdinit=/init failed: -2, ignoring
+fxdax: boot kernel_ns=953083000 agent_ns=969128106
+[    1.609455] EXT4-fs (pmem0): mounted filesystem 8234fbd7-43c7-4b6e-b1f7-93580cff3516 r/w with ordered data mode. Quota mode: none.
+[    1.616021] EXT4-fs (pmem0): unmounting filesystem 8234fbd7-43c7-4b6e-b1f7-93580cff3516.
+OK base
+[    1.626016] reboot: Restarting system
+[    1.627185] reboot: machine restart

@@ -1,0 +1,316 @@
+INFO fxfs::object_store::journal: Formatting device_size=17179869184
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 0 } took 894.4 ms (own 0.0, write 889.0, sync 3.9, dirs 1.5 ms)
+WARN extent_store::store: extent store: branch 0x864c8f62b12de445's commit sealed 124 extents, copying 42 of them, 20568 KiB, the largest 1024 KiB
+WARN extent_store::durability: extent store: a commit durable 64.959366ms after it was ordered
+WARN extent_store::timings: extent store: branch 0x864c8f62b12de445's flush of 1 commits took 73.1 ms (wait 0.0, data 46.5, dirs 3.8, logs 14.6, gone 0.0, raw 8.1 ms); synced 0 own extents' files, the longest 0.0 ms, and 2 raw files, the longest 46.2 ms
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 1 } took 872.7 ms (own 0.0, write 866.7, sync 4.6, dirs 1.3 ms)
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 2 } took 252.7 ms (own 0.0, write 247.0, sync 3.0, dirs 2.7 ms)
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 3 } took 635.5 ms (own 0.0, write 629.7, sync 3.3, dirs 2.5 ms)
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 4 } took 981.2 ms (own 0.0, write 976.2, sync 3.9, dirs 1.1 ms)
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 5 } took 909.2 ms (own 0.0, write 904.0, sync 3.8, dirs 1.4 ms)
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 6 } took 961.4 ms (own 0.0, write 953.7, sync 5.9, dirs 1.8 ms)
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 7 } took 599.7 ms (own 0.0, write 596.3, sync 2.0, dirs 1.4 ms)
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 8 } took 826.1 ms (own 0.0, write 821.6, sync 3.3, dirs 1.2 ms)
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 9 } took 997.0 ms (own 0.0, write 990.0, sync 4.0, dirs 3.0 ms)
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 10 } took 814.5 ms (own 0.0, write 809.6, sync 3.5, dirs 1.5 ms)
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 11 } took 773.6 ms (own 0.0, write 768.7, sync 3.6, dirs 1.2 ms)
+WARN extent_store::upload: fxdax: commits wait for object storage: 1083482112 bytes not uploaded, 9740288 past the lag bound of 1073741824; 0 commits not uploaded, the oldest seen 10856 ms ago
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 12 } took 871.0 ms (own 0.0, write 864.4, sync 3.9, dirs 2.7 ms)
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 13 } took 520.2 ms (own 0.0, write 516.6, sync 3.6, dirs 0.0 ms)
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 14 } took 506.9 ms (own 0.0, write 503.0, sync 3.8, dirs 0.0 ms)
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 15 } took 427.7 ms (own 0.0, write 424.5, sync 3.2, dirs 0.0 ms)
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 16 } took 479.6 ms (own 0.0, write 475.9, sync 3.7, dirs 0.0 ms)
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 17 } took 562.3 ms (own 0.0, write 558.2, sync 4.1, dirs 0.0 ms)
+WARN extent_store::timings: extent store: branch 0x864c8f62b12de445's flush of 1 commits took 58.3 ms (wait 0.0, data 1.6, dirs 0.0, logs 56.7, gone 0.0, raw 0.0 ms); synced 0 own extents' files, the longest 0.0 ms, and 1 raw files, the longest 1.6 ms
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 18 } took 810.1 ms (own 0.0, write 802.2, sync 3.0, dirs 4.8 ms)
+WARN extent_store::store: extent store: branch 0x864c8f62b12de445's commit sealed 126 extents, copying 86 of them, 42164 KiB, the largest 1024 KiB
+WARN extent_store::durability: extent store: a commit durable 147.311701ms after it was ordered
+WARN extent_store::timings: extent store: branch 0x864c8f62b12de445's flush of 1 commits took 147.3 ms (wait 0.0, data 126.5, dirs 6.2, logs 14.6, gone 0.0, raw 0.0 ms); synced 0 own extents' files, the longest 0.0 ms, and 2 raw files, the longest 126.1 ms
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 19 } took 887.2 ms (own 0.0, write 876.7, sync 6.5, dirs 3.9 ms)
+WARN extent_store::upload: fxdax: commits wait for object storage: 1099403264 bytes not uploaded, 25661440 past the lag bound of 1073741824; 0 commits not uploaded, the oldest seen 15633 ms ago
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 20 } took 544.4 ms (own 0.0, write 540.8, sync 3.6, dirs 0.0 ms)
+WARN extent_store::upload: fxdax: commits wait for object storage: 1085407232 bytes not uploaded, 11665408 past the lag bound of 1073741824; 0 commits not uploaded, the oldest seen 15616 ms ago
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 21 } took 472.5 ms (own 0.0, write 469.4, sync 3.0, dirs 0.0 ms)
+WARN extent_store::upload: fxdax: commits wait for object storage: 1104875520 bytes not uploaded, 31133696 past the lag bound of 1073741824; 0 commits not uploaded, the oldest seen 16081 ms ago
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 22 } took 631.4 ms (own 0.0, write 616.9, sync 5.4, dirs 9.1 ms)
+WARN extent_store::upload: fxdax: commits wait for object storage: 1095208960 bytes not uploaded, 21467136 past the lag bound of 1073741824; 0 commits not uploaded, the oldest seen 15409 ms ago
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 23 } took 892.9 ms (own 0.0, write 888.8, sync 4.1, dirs 0.0 ms)
+WARN extent_store::upload: fxdax: commits wait for object storage: 1087148032 bytes not uploaded, 13406208 past the lag bound of 1073741824; 0 commits not uploaded, the oldest seen 16334 ms ago
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 24 } took 1331.8 ms (own 0.0, write 1328.5, sync 3.2, dirs 0.0 ms)
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 25 } took 563.9 ms (own 0.0, write 553.5, sync 3.4, dirs 7.0 ms)
+WARN extent_store::upload: fxdax: commits wait for object storage: 1103806464 bytes not uploaded, 30064640 past the lag bound of 1073741824; 0 commits not uploaded, the oldest seen 16936 ms ago
+WARN extent_store::upload: fxdax: commits wait for object storage: 1077985280 bytes not uploaded, 4243456 past the lag bound of 1073741824; 0 commits not uploaded, the oldest seen 17638 ms ago
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 26 } took 2151.8 ms (own 0.0, write 2147.9, sync 3.8, dirs 0.0 ms)
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 27 } took 850.7 ms (own 0.0, write 837.0, sync 5.3, dirs 8.4 ms)
+WARN extent_store::upload: fxdax: commits wait for object storage: 1113350144 bytes not uploaded, 39608320 past the lag bound of 1073741824; 0 commits not uploaded, the oldest seen 18763 ms ago
+WARN extent_store::upload: fxdax: commits wait for object storage: 1117720576 bytes not uploaded, 43978752 past the lag bound of 1073741824; 0 commits not uploaded, the oldest seen 18984 ms ago
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 28 } took 1206.1 ms (own 0.0, write 1201.9, sync 4.2, dirs 0.0 ms)
+WARN extent_store::upload: fxdax: commits wait for object storage: 1082413056 bytes not uploaded, 8671232 past the lag bound of 1073741824; 0 commits not uploaded, the oldest seen 18769 ms ago
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 29 } took 485.7 ms (own 0.0, write 482.6, sync 3.1, dirs 0.0 ms)
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 30 } took 406.3 ms (own 0.0, write 399.1, sync 2.3, dirs 4.9 ms)
+WARN extent_store::durability: extent store: a commit durable 227.548503ms after it was ordered
+WARN extent_store::timings: extent store: branch 0x864c8f62b12de445's flush of 1 commits took 227.5 ms (wait 0.0, data 56.5, dirs 15.0, logs 156.0, gone 0.0, raw 0.0 ms); synced 0 own extents' files, the longest 0.0 ms, and 1 raw files, the longest 56.5 ms
+WARN extent_store::durability: extent store: a commit durable 332.85794ms after it was ordered
+WARN extent_store::timings: extent store: branch 0x864c8f62b12de445's flush of 1 commits took 332.9 ms (wait 0.0, data 137.8, dirs 0.0, logs 195.1, gone 0.0, raw 0.0 ms); synced 0 own extents' files, the longest 0.0 ms, and 1 raw files, the longest 137.7 ms
+WARN extent_store::timings: extent store: branch 0x864c8f62b12de445's flush of 1 commits took 88.2 ms (wait 0.0, data 15.6, dirs 27.9, logs 44.7, gone 0.0, raw 0.0 ms); synced 0 own extents' files, the longest 0.0 ms, and 1 raw files, the longest 15.6 ms
+WARN extent_store::timings: extent store: branch 0x864c8f62b12de445's flush of 1 commits took 60.3 ms (wait 0.0, data 36.9, dirs 0.0, logs 23.4, gone 0.0, raw 0.0 ms); synced 0 own extents' files, the longest 0.0 ms, and 1 raw files, the longest 36.8 ms
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 31 } took 5374.2 ms (own 0.0, write 5362.8, sync 7.6, dirs 3.9 ms)
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 32 } took 1105.4 ms (own 0.0, write 1096.9, sync 5.3, dirs 3.2 ms)
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 33 } took 722.4 ms (own 0.0, write 712.7, sync 5.1, dirs 4.5 ms)
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 34 } took 832.6 ms (own 0.0, write 823.6, sync 5.0, dirs 4.0 ms)
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 35 } took 584.0 ms (own 0.0, write 573.0, sync 3.5, dirs 7.5 ms)
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 36 } took 799.8 ms (own 0.0, write 791.6, sync 3.5, dirs 4.7 ms)
+WARN extent_store::store: extent store: branch 0x864c8f62b12de445's commit sealed 103 extents, copying 25 of them, 12340 KiB, the largest 1024 KiB
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 37 } took 806.8 ms (own 0.0, write 797.8, sync 4.0, dirs 4.9 ms)
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 38 } took 722.3 ms (own 0.0, write 711.9, sync 5.7, dirs 4.6 ms)
+WARN extent_store::upload: fxdax: commits wait for object storage: 1082806272 bytes not uploaded, 9064448 past the lag bound of 1073741824; 0 commits not uploaded, the oldest seen 11523 ms ago
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 39 } took 736.4 ms (own 0.0, write 732.7, sync 3.6, dirs 0.0 ms)
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 40 } took 533.6 ms (own 0.0, write 530.1, sync 3.4, dirs 0.0 ms)
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 41 } took 372.3 ms (own 0.0, write 369.3, sync 2.9, dirs 0.0 ms)
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 42 } took 511.6 ms (own 0.0, write 508.2, sync 3.4, dirs 0.0 ms)
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 43 } took 570.9 ms (own 0.0, write 567.1, sync 3.7, dirs 0.1 ms)
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 44 } took 122.4 ms (own 0.0, write 120.4, sync 1.9, dirs 0.0 ms)
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 45 } took 335.2 ms (own 0.0, write 331.7, sync 3.5, dirs 0.0 ms)
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 46 } took 481.9 ms (own 0.0, write 478.4, sync 3.4, dirs 0.1 ms)
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 47 } took 532.3 ms (own 0.0, write 528.5, sync 3.8, dirs 0.0 ms)
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 48 } took 469.5 ms (own 0.0, write 466.3, sync 3.2, dirs 0.0 ms)
+WARN extent_store::timings: extent store: branch 0x864c8f62b12de445's flush of 1 commits took 125.3 ms (wait 0.0, data 39.9, dirs 0.0, logs 85.4, gone 0.0, raw 0.0 ms); synced 0 own extents' files, the longest 0.0 ms, and 1 raw files, the longest 39.9 ms
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 49 } took 870.7 ms (own 0.0, write 859.3, sync 6.2, dirs 5.2 ms)
+WARN extent_store::store: extent store: branch 0x864c8f62b12de445's commit sealed 119 extents, copying 73 of them, 35992 KiB, the largest 1024 KiB
+WARN extent_store::timings: extent store: branch 0x864c8f62b12de445's flush of 1 commits took 137.2 ms (wait 0.0, data 112.0, dirs 9.8, logs 15.4, gone 0.0, raw 0.0 ms); synced 0 own extents' files, the longest 0.0 ms, and 2 raw files, the longest 111.4 ms
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 50 } took 815.8 ms (own 0.0, write 803.1, sync 4.4, dirs 8.3 ms)
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 51 } took 628.3 ms (own 0.0, write 621.6, sync 3.1, dirs 3.6 ms)
+WARN extent_store::upload: fxdax: commits wait for object storage: 1098379264 bytes not uploaded, 24637440 past the lag bound of 1073741824; 0 commits not uploaded, the oldest seen 15340 ms ago
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 52 } took 823.1 ms (own 0.0, write 819.5, sync 3.5, dirs 0.0 ms)
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 53 } took 507.4 ms (own 0.0, write 503.7, sync 3.7, dirs 0.0 ms)
+WARN extent_store::upload: fxdax: commits wait for object storage: 1080799232 bytes not uploaded, 7057408 past the lag bound of 1073741824; 0 commits not uploaded, the oldest seen 17173 ms ago
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 54 } took 1632.8 ms (own 0.0, write 1629.5, sync 3.2, dirs 0.0 ms)
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 55 } took 614.9 ms (own 0.0, write 606.9, sync 3.0, dirs 5.0 ms)
+WARN extent_store::upload: fxdax: commits wait for object storage: 1090174976 bytes not uploaded, 16433152 past the lag bound of 1073741824; 0 commits not uploaded, the oldest seen 17754 ms ago
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 56 } took 993.6 ms (own 0.0, write 989.6, sync 4.0, dirs 0.0 ms)
+WARN extent_store::timings: extent store: branch 0x864c8f62b12de445's flush of 1 commits took 84.1 ms (wait 0.0, data 10.4, dirs 7.1, logs 66.6, gone 0.0, raw 0.0 ms); synced 0 own extents' files, the longest 0.0 ms, and 1 raw files, the longest 10.4 ms
+WARN extent_store::upload: fxdax: commits wait for object storage: 1082990592 bytes not uploaded, 9248768 past the lag bound of 1073741824; 0 commits not uploaded, the oldest seen 18779 ms ago
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 57 } took 1397.1 ms (own 0.0, write 1394.5, sync 2.6, dirs 0.0 ms)
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 58 } took 962.1 ms (own 0.0, write 951.6, sync 6.1, dirs 4.3 ms)
+WARN extent_store::store: extent store: branch 0x864c8f62b12de445's commit sealed 210 extents, copying 158 of them, 76812 KiB, the largest 1024 KiB
+WARN extent_store::durability: extent store: a commit durable 405.863271ms after it was ordered
+WARN extent_store::timings: extent store: branch 0x864c8f62b12de445's flush of 1 commits took 405.8 ms (wait 0.0, data 389.7, dirs 5.7, logs 10.4, gone 0.0, raw 0.0 ms); synced 2 own extents' files, the longest 55.7 ms, and 2 raw files, the longest 389.2 ms
+WARN extent_store::upload: fxdax: commits wait for object storage: 1100464128 bytes not uploaded, 26722304 past the lag bound of 1073741824; 0 commits not uploaded, the oldest seen 20141 ms ago
+WARN extent_store::timings: extent store: branch 0x864c8f62b12de445's flush of 0 commits took 348.4 ms (wait 348.4, data 0.0, dirs 0.0, logs 0.0, gone 0.0, raw 0.0 ms); synced 0 own extents' files, the longest 0.0 ms, and 0 raw files, the longest 0.0 ms
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 59 } took 1713.4 ms (own 0.0, write 1709.2, sync 4.1, dirs 0.0 ms)
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 60 } took 563.0 ms (own 1.6, write 556.9, sync 4.5, dirs 0.0 ms)
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 62 } took 4361.7 ms (own 0.0, write 4350.4, sync 7.6, dirs 3.7 ms)
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 63 } took 558.0 ms (own 0.0, write 550.7, sync 3.0, dirs 4.2 ms)
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 64 } took 1034.4 ms (own 0.0, write 1024.9, sync 5.5, dirs 4.0 ms)
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 65 } took 667.7 ms (own 0.0, write 660.1, sync 3.2, dirs 4.4 ms)
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 66 } took 652.1 ms (own 0.0, write 647.9, sync 3.1, dirs 1.1 ms)
+WARN extent_store::store: extent store: branch 0x864c8f62b12de445's commit sealed 129 extents, copying 45 of them, 22620 KiB, the largest 1024 KiB
+WARN extent_store::timings: extent store: branch 0x864c8f62b12de445's flush of 1 commits took 82.0 ms (wait 0.0, data 60.3, dirs 5.8, logs 10.3, gone 0.0, raw 5.7 ms); synced 0 own extents' files, the longest 0.0 ms, and 2 raw files, the longest 60.0 ms
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 67 } took 960.3 ms (own 0.0, write 948.1, sync 3.9, dirs 8.4 ms)
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 68 } took 813.1 ms (own 0.0, write 809.5, sync 2.8, dirs 0.8 ms)
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 69 } took 812.2 ms (own 0.0, write 804.7, sync 3.7, dirs 3.8 ms)
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 70 } took 932.8 ms (own 0.0, write 928.1, sync 3.5, dirs 1.2 ms)
+WARN extent_store::upload: fxdax: commits wait for object storage: 1083777024 bytes not uploaded, 10035200 past the lag bound of 1073741824; 0 commits not uploaded, the oldest seen 12203 ms ago
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 71 } took 657.1 ms (own 0.0, write 652.4, sync 3.3, dirs 1.3 ms)
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 72 } took 250.1 ms (own 0.0, write 247.6, sync 2.5, dirs 0.0 ms)
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 73 } took 398.4 ms (own 0.0, write 394.3, sync 4.0, dirs 0.0 ms)
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 74 } took 566.7 ms (own 0.0, write 562.7, sync 4.0, dirs 0.0 ms)
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 75 } took 587.1 ms (own 0.0, write 583.2, sync 3.8, dirs 0.0 ms)
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 76 } took 336.4 ms (own 0.0, write 333.2, sync 3.1, dirs 0.0 ms)
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 77 } took 503.8 ms (own 0.0, write 500.0, sync 3.7, dirs 0.1 ms)
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 78 } took 540.0 ms (own 0.0, write 536.1, sync 3.9, dirs 0.0 ms)
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 79 } took 422.8 ms (own 0.0, write 419.4, sync 3.4, dirs 0.1 ms)
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 80 } took 953.3 ms (own 0.0, write 948.1, sync 2.9, dirs 2.4 ms)
+WARN extent_store::store: extent store: branch 0x864c8f62b12de445's commit sealed 110 extents, copying 76 of them, 37024 KiB, the largest 1024 KiB
+WARN extent_store::timings: extent store: branch 0x864c8f62b12de445's flush of 1 commits took 122.7 ms (wait 0.0, data 96.3, dirs 5.3, logs 21.0, gone 0.0, raw 0.0 ms); synced 0 own extents' files, the longest 0.0 ms, and 2 raw files, the longest 96.1 ms
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 81 } took 857.0 ms (own 0.0, write 851.1, sync 3.5, dirs 2.4 ms)
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 82 } took 559.0 ms (own 0.0, write 554.8, sync 3.0, dirs 1.2 ms)
+WARN extent_store::upload: fxdax: commits wait for object storage: 1113083904 bytes not uploaded, 39342080 past the lag bound of 1073741824; 0 commits not uploaded, the oldest seen 16097 ms ago
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 83 } took 833.6 ms (own 0.0, write 829.1, sync 3.2, dirs 1.2 ms)
+WARN extent_store::timings: extent store: branch 0x864c8f62b12de445's flush of 1 commits took 122.5 ms (wait 0.0, data 42.0, dirs 0.0, logs 80.5, gone 0.0, raw 0.0 ms); synced 0 own extents' files, the longest 0.0 ms, and 1 raw files, the longest 42.0 ms
+WARN extent_store::upload: fxdax: commits wait for object storage: 1117487104 bytes not uploaded, 43745280 past the lag bound of 1073741824; 0 commits not uploaded, the oldest seen 17284 ms ago
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 84 } took 1625.9 ms (own 0.0, write 1621.0, sync 3.7, dirs 1.2 ms)
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 85 } took 739.5 ms (own 0.0, write 735.2, sync 4.3, dirs 0.0 ms)
+WARN extent_store::upload: fxdax: commits wait for object storage: 1095995392 bytes not uploaded, 22253568 past the lag bound of 1073741824; 0 commits not uploaded, the oldest seen 17536 ms ago
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 86 } took 544.7 ms (own 0.0, write 540.6, sync 4.1, dirs 0.0 ms)
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 87 } took 491.6 ms (own 0.0, write 487.0, sync 3.3, dirs 1.3 ms)
+WARN extent_store::upload: fxdax: commits wait for object storage: 1107038208 bytes not uploaded, 33296384 past the lag bound of 1073741824; 0 commits not uploaded, the oldest seen 18430 ms ago
+WARN extent_store::upload: fxdax: commits wait for object storage: 1114447872 bytes not uploaded, 40706048 past the lag bound of 1073741824; 0 commits not uploaded, the oldest seen 19691 ms ago
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 88 } took 1933.2 ms (own 0.0, write 1927.9, sync 4.1, dirs 1.1 ms)
+WARN extent_store::timings: extent store: branch 0x864c8f62b12de445's flush of 1 commits took 112.7 ms (wait 0.0, data 1.8, dirs 0.0, logs 110.8, gone 0.0, raw 0.0 ms); synced 0 own extents' files, the longest 0.0 ms, and 1 raw files, the longest 1.8 ms
+WARN extent_store::upload: fxdax: commits wait for object storage: 1085579264 bytes not uploaded, 11837440 past the lag bound of 1073741824; 0 commits not uploaded, the oldest seen 19716 ms ago
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 89 } took 957.0 ms (own 0.0, write 952.6, sync 4.4, dirs 0.0 ms)
+WARN extent_store::upload: fxdax: commits wait for object storage: 1097723904 bytes not uploaded, 23982080 past the lag bound of 1073741824; 0 commits not uploaded, the oldest seen 19812 ms ago
+WARN extent_store::upload: fxdax: commits wait for object storage: 1102798848 bytes not uploaded, 29057024 past the lag bound of 1073741824; 0 commits not uploaded, the oldest seen 21093 ms ago
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 90 } took 1332.0 ms (own 0.0, write 1326.7, sync 4.0, dirs 1.3 ms)
+WARN extent_store::upload: fxdax: commits wait for object storage: 1088909312 bytes not uploaded, 15167488 past the lag bound of 1073741824; 0 commits not uploaded, the oldest seen 21470 ms ago
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 91 } took 1220.7 ms (own 0.0, write 1215.4, sync 3.9, dirs 1.3 ms)
+WARN extent_store::upload: fxdax: commits wait for object storage: 1075838976 bytes not uploaded, 2097152 past the lag bound of 1073741824; 0 commits not uploaded, the oldest seen 21409 ms ago
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 92 } took 735.2 ms (own 0.0, write 731.4, sync 3.7, dirs 0.0 ms)
+WARN extent_store::upload: fxdax: commits wait for object storage: 1085923328 bytes not uploaded, 12181504 past the lag bound of 1073741824; 0 commits not uploaded, the oldest seen 21786 ms ago
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 93 } took 625.0 ms (own 0.0, write 622.2, sync 2.8, dirs 0.1 ms)
+WARN extent_store::upload: fxdax: commits wait for object storage: 1099100160 bytes not uploaded, 25358336 past the lag bound of 1073741824; 0 commits not uploaded, the oldest seen 22416 ms ago
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 94 } took 1030.1 ms (own 0.0, write 1024.7, sync 4.1, dirs 1.3 ms)
+WARN extent_store::upload: fxdax: commits wait for object storage: 1084403712 bytes not uploaded, 10661888 past the lag bound of 1073741824; 0 commits not uploaded, the oldest seen 22812 ms ago
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 95 } took 1564.9 ms (own 0.0, write 1560.7, sync 4.1, dirs 0.0 ms)
+WARN extent_store::upload: fxdax: commits wait for object storage: 1083928576 bytes not uploaded, 10186752 past the lag bound of 1073741824; 0 commits not uploaded, the oldest seen 16915 ms ago
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 96 } took 738.3 ms (own 0.0, write 735.7, sync 2.6, dirs 0.0 ms)
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 97 } took 1218.0 ms (own 0.0, write 1211.4, sync 4.1, dirs 2.5 ms)
+WARN extent_store::upload: fxdax: commits wait for object storage: 1110560768 bytes not uploaded, 36818944 past the lag bound of 1073741824; 0 commits not uploaded, the oldest seen 17999 ms ago
+WARN extent_store::upload: fxdax: commits wait for object storage: 1109544960 bytes not uploaded, 35803136 past the lag bound of 1073741824; 0 commits not uploaded, the oldest seen 18251 ms ago
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 98 } took 1433.1 ms (own 0.0, write 1427.8, sync 4.1, dirs 1.2 ms)
+WARN extent_store::timings: extent store: branch 0x864c8f62b12de445's flush of 1 commits took 162.2 ms (wait 0.0, data 81.8, dirs 41.9, logs 38.4, gone 0.0, raw 0.0 ms); synced 0 own extents' files, the longest 0.0 ms, and 1 raw files, the longest 81.8 ms
+WARN extent_store::upload: fxdax: commits wait for object storage: 1107554304 bytes not uploaded, 33812480 past the lag bound of 1073741824; 0 commits not uploaded, the oldest seen 19459 ms ago
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 99 } took 1110.7 ms (own 0.0, write 1107.7, sync 3.0, dirs 0.0 ms)
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 100 } took 1064.1 ms (own 0.0, write 1060.1, sync 2.8, dirs 1.2 ms)
+WARN extent_store::store: extent store: branch 0x864c8f62b12de445's commit sealed 103 extents, copying 84 of them, 40352 KiB, the largest 1024 KiB
+WARN extent_store::timings: extent store: branch 0x864c8f62b12de445's flush of 1 commits took 209.5 ms (wait 0.0, data 184.1, dirs 5.4, logs 20.0, gone 0.0, raw 0.0 ms); synced 0 own extents' files, the longest 0.0 ms, and 2 raw files, the longest 183.9 ms
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 101 } took 1055.1 ms (own 0.0, write 1050.6, sync 3.3, dirs 1.2 ms)
+WARN extent_store::upload: fxdax: commits wait for object storage: 1083772928 bytes not uploaded, 10031104 past the lag bound of 1073741824; 0 commits not uploaded, the oldest seen 19432 ms ago
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 102 } took 491.5 ms (own 0.0, write 487.3, sync 3.2, dirs 1.1 ms)
+WARN extent_store::timings: extent store: branch 0x864c8f62b12de445's flush of 1 commits took 171.5 ms (wait 0.0, data 10.5, dirs 158.6, logs 2.4, gone 0.0, raw 0.0 ms); synced 0 own extents' files, the longest 0.0 ms, and 1 raw files, the longest 10.5 ms
+WARN extent_store::upload: fxdax: commits wait for object storage: 1077485568 bytes not uploaded, 3743744 past the lag bound of 1073741824; 0 commits not uploaded, the oldest seen 19078 ms ago
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 103 } took 1076.5 ms (own 0.0, write 1073.1, sync 3.3, dirs 0.0 ms)
+WARN extent_store::upload: fxdax: commits wait for object storage: 1092222976 bytes not uploaded, 18481152 past the lag bound of 1073741824; 0 commits not uploaded, the oldest seen 19015 ms ago
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 104 } took 405.6 ms (own 0.0, write 402.3, sync 3.3, dirs 0.0 ms)
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 105 } took 1131.8 ms (own 0.0, write 1126.1, sync 3.1, dirs 2.6 ms)
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 106 } took 1077.3 ms (own 0.0, write 1071.2, sync 3.7, dirs 2.4 ms)
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 107 } took 1595.5 ms (own 0.0, write 1590.4, sync 3.9, dirs 1.3 ms)
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 108 } took 1309.2 ms (own 0.0, write 1302.6, sync 3.9, dirs 2.7 ms)
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 109 } took 621.8 ms (own 0.0, write 615.8, sync 3.6, dirs 2.4 ms)
+WARN extent_store::upload: fxdax: commits wait for object storage: 1114308608 bytes not uploaded, 40566784 past the lag bound of 1073741824; 0 commits not uploaded, the oldest seen 19301 ms ago
+WARN extent_store::upload: fxdax: commits wait for object storage: 1103695872 bytes not uploaded, 29954048 past the lag bound of 1073741824; 0 commits not uploaded, the oldest seen 19374 ms ago
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 110 } took 1356.7 ms (own 0.0, write 1351.8, sync 3.5, dirs 1.4 ms)
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 111 } took 628.1 ms (own 0.0, write 624.2, sync 3.8, dirs 0.0 ms)
+WARN extent_store::upload: fxdax: commits wait for object storage: 1084039168 bytes not uploaded, 10297344 past the lag bound of 1073741824; 0 commits not uploaded, the oldest seen 19338 ms ago
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 112 } took 1332.2 ms (own 0.0, write 1326.2, sync 3.4, dirs 2.6 ms)
+WARN extent_store::upload: fxdax: commits wait for object storage: 1085095936 bytes not uploaded, 11354112 past the lag bound of 1073741824; 0 commits not uploaded, the oldest seen 19509 ms ago
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 113 } took 379.8 ms (own 0.0, write 376.7, sync 3.1, dirs 0.0 ms)
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 114 } took 676.9 ms (own 0.0, write 672.4, sync 3.2, dirs 1.3 ms)
+WARN extent_store::upload: fxdax: commits wait for object storage: 1099595776 bytes not uploaded, 25853952 past the lag bound of 1073741824; 0 commits not uploaded, the oldest seen 18848 ms ago
+WARN extent_store::upload: fxdax: commits wait for object storage: 1089290240 bytes not uploaded, 15548416 past the lag bound of 1073741824; 0 commits not uploaded, the oldest seen 19249 ms ago
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 115 } took 1857.2 ms (own 0.0, write 1851.1, sync 3.7, dirs 2.3 ms)
+WARN extent_store::upload: fxdax: commits wait for object storage: 1078018048 bytes not uploaded, 4276224 past the lag bound of 1073741824; 0 commits not uploaded, the oldest seen 17795 ms ago
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 116 } took 538.7 ms (own 0.0, write 535.0, sync 3.7, dirs 0.0 ms)
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 117 } took 842.1 ms (own 0.0, write 837.1, sync 2.7, dirs 2.4 ms)
+WARN extent_store::store: extent store: branch 0x864c8f62b12de445's commit sealed 128 extents, copying 107 of them, 52128 KiB, the largest 1024 KiB
+WARN extent_store::timings: extent store: branch 0x864c8f62b12de445's flush of 1 commits took 322.9 ms (wait 0.0, data 288.7, dirs 15.4, logs 18.8, gone 0.0, raw 0.0 ms); synced 0 own extents' files, the longest 0.0 ms, and 2 raw files, the longest 288.5 ms
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 118 } took 1199.1 ms (own 0.0, write 1191.3, sync 3.4, dirs 4.4 ms)
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 119 } took 636.4 ms (own 0.0, write 629.7, sync 4.4, dirs 2.3 ms)
+WARN extent_store::store: extent store: branch 0x864c8f62b12de445's commit sealed 211 extents, copying 188 of them, 91848 KiB, the largest 1024 KiB
+WARN extent_store::timings: extent store: branch 0x864c8f62b12de445's flush of 1 commits took 366.0 ms (wait 0.0, data 359.7, dirs 0.3, logs 2.0, gone 0.0, raw 3.9 ms); synced 6 own extents' files, the longest 180.3 ms, and 2 raw files, the longest 359.1 ms
+WARN extent_store::upload: fxdax: commits wait for object storage: 1250365440 bytes not uploaded, 176623616 past the lag bound of 1073741824; 0 commits not uploaded, the oldest seen 20164 ms ago
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 120 } took 1154.6 ms (own 0.0, write 1150.4, sync 4.2, dirs 0.0 ms)
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 121 } took 522.1 ms (own 1.7, write 515.8, sync 4.6, dirs 0.1 ms)
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 123 } took 2728.2 ms (own 0.0, write 2699.8, sync 10.2, dirs 18.1 ms)
+WARN extent_store::timings: extent store: branch 0x864c8f62b12de445's flush of 1 commits took 100.1 ms (wait 0.0, data 20.3, dirs 25.9, logs 48.8, gone 0.0, raw 5.2 ms); synced 0 own extents' files, the longest 0.0 ms, and 1 raw files, the longest 20.3 ms
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 124 } took 1178.6 ms (own 0.0, write 1171.8, sync 3.7, dirs 3.1 ms)
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 125 } took 842.6 ms (own 0.0, write 837.7, sync 3.6, dirs 1.3 ms)
+WARN extent_store::store: extent store: branch 0x864c8f62b12de445's commit sealed 128 extents, copying 62 of them, 30848 KiB, the largest 1024 KiB
+WARN extent_store::timings: extent store: branch 0x864c8f62b12de445's flush of 1 commits took 157.4 ms (wait 0.0, data 120.3, dirs 10.6, logs 15.4, gone 0.0, raw 11.1 ms); synced 0 own extents' files, the longest 0.0 ms, and 2 raw files, the longest 120.1 ms
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 126 } took 782.4 ms (own 0.0, write 776.1, sync 3.7, dirs 2.6 ms)
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 127 } took 317.8 ms (own 0.0, write 312.3, sync 3.0, dirs 2.4 ms)
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 128 } took 619.3 ms (own 0.0, write 612.3, sync 4.3, dirs 2.7 ms)
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 129 } took 747.0 ms (own 0.0, write 740.4, sync 4.7, dirs 1.8 ms)
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 130 } took 862.0 ms (own 0.0, write 855.2, sync 3.9, dirs 2.9 ms)
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 131 } took 977.2 ms (own 0.0, write 969.1, sync 5.5, dirs 2.7 ms)
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 132 } took 692.6 ms (own 0.0, write 685.8, sync 4.4, dirs 2.4 ms)
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 133 } took 888.7 ms (own 0.0, write 882.6, sync 3.6, dirs 2.4 ms)
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 134 } took 902.6 ms (own 0.0, write 897.3, sync 4.6, dirs 0.7 ms)
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 135 } took 999.5 ms (own 0.0, write 992.7, sync 3.8, dirs 3.0 ms)
+WARN extent_store::upload: fxdax: commits wait for object storage: 1091395584 bytes not uploaded, 17653760 past the lag bound of 1073741824; 0 commits not uploaded, the oldest seen 14187 ms ago
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 136 } took 609.1 ms (own 0.0, write 604.1, sync 3.7, dirs 1.3 ms)
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 137 } took 533.7 ms (own 0.0, write 529.8, sync 3.8, dirs 0.0 ms)
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 138 } took 540.6 ms (own 0.0, write 537.0, sync 3.6, dirs 0.0 ms)
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 139 } took 1823.8 ms (own 0.0, write 1783.6, sync 17.7, dirs 22.4 ms)
+WARN extent_store::upload: fxdax: commits wait for object storage: 1076563968 bytes not uploaded, 2822144 past the lag bound of 1073741824; 0 commits not uploaded, the oldest seen 17098 ms ago
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 140 } took 1617.7 ms (own 0.0, write 1614.2, sync 3.5, dirs 0.0 ms)
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 141 } took 747.8 ms (own 0.0, write 742.9, sync 3.6, dirs 1.3 ms)
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 142 } took 1166.3 ms (own 0.0, write 1159.3, sync 4.2, dirs 2.8 ms)
+WARN extent_store::upload: fxdax: commits wait for object storage: 1117716480 bytes not uploaded, 43974656 past the lag bound of 1073741824; 0 commits not uploaded, the oldest seen 14850 ms ago
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 143 } took 629.2 ms (own 0.0, write 626.8, sync 2.2, dirs 0.2 ms)
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 144 } took 713.7 ms (own 0.0, write 709.9, sync 3.8, dirs 0.0 ms)
+WARN extent_store::upload: fxdax: commits wait for object storage: 1100283904 bytes not uploaded, 26542080 past the lag bound of 1073741824; 0 commits not uploaded, the oldest seen 15543 ms ago
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 145 } took 503.7 ms (own 0.0, write 500.0, sync 3.7, dirs 0.0 ms)
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 146 } took 1340.2 ms (own 0.0, write 1334.7, sync 3.0, dirs 2.5 ms)
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 147 } took 1280.4 ms (own 0.0, write 1275.5, sync 2.5, dirs 2.3 ms)
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 148 } took 1348.7 ms (own 0.0, write 1343.7, sync 3.8, dirs 1.2 ms)
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 149 } took 1254.8 ms (own 0.0, write 1248.8, sync 3.5, dirs 2.5 ms)
+WARN extent_store::upload: fxdax: commits wait for object storage: 1113411584 bytes not uploaded, 39669760 past the lag bound of 1073741824; 0 commits not uploaded, the oldest seen 19379 ms ago
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 150 } took 494.1 ms (own 0.0, write 490.9, sync 3.2, dirs 0.0 ms)
+WARN extent_store::upload: fxdax: commits wait for object storage: 1096564736 bytes not uploaded, 22822912 past the lag bound of 1073741824; 0 commits not uploaded, the oldest seen 19207 ms ago
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 151 } took 523.6 ms (own 0.0, write 519.0, sync 4.5, dirs 0.1 ms)
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 152 } took 860.9 ms (own 0.0, write 855.5, sync 3.5, dirs 1.8 ms)
+WARN extent_store::store: extent store: branch 0x864c8f62b12de445's commit sealed 118 extents, copying 81 of them, 39084 KiB, the largest 1024 KiB
+WARN extent_store::timings: extent store: branch 0x864c8f62b12de445's flush of 1 commits took 171.9 ms (wait 0.0, data 156.1, dirs 4.8, logs 11.0, gone 0.0, raw 0.0 ms); synced 0 own extents' files, the longest 0.0 ms, and 2 raw files, the longest 155.9 ms
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 153 } took 982.6 ms (own 0.0, write 977.8, sync 3.4, dirs 1.4 ms)
+WARN extent_store::upload: fxdax: commits wait for object storage: 1083842560 bytes not uploaded, 10100736 past the lag bound of 1073741824; 0 commits not uploaded, the oldest seen 20232 ms ago
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 154 } took 554.5 ms (own 0.0, write 548.1, sync 3.5, dirs 2.9 ms)
+WARN extent_store::upload: fxdax: commits wait for object storage: 1078620160 bytes not uploaded, 4878336 past the lag bound of 1073741824; 0 commits not uploaded, the oldest seen 20511 ms ago
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 155 } took 1067.8 ms (own 0.0, write 1062.7, sync 3.6, dirs 1.4 ms)
+WARN extent_store::timings: extent store: branch 0x864c8f62b12de445's flush of 1 commits took 120.7 ms (wait 0.0, data 70.8, dirs 44.8, logs 5.0, gone 0.0, raw 0.0 ms); synced 0 own extents' files, the longest 0.0 ms, and 1 raw files, the longest 70.8 ms
+WARN extent_store::upload: fxdax: commits wait for object storage: 1078034432 bytes not uploaded, 4292608 past the lag bound of 1073741824; 0 commits not uploaded, the oldest seen 21517 ms ago
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 156 } took 1294.0 ms (own 0.0, write 1290.7, sync 3.3, dirs 0.0 ms)
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 157 } took 1647.4 ms (own 0.0, write 1642.7, sync 3.4, dirs 1.3 ms)
+WARN extent_store::store: extent store: branch 0x864c8f62b12de445's commit sealed 98 extents, copying 87 of them, 40560 KiB, the largest 1024 KiB
+WARN extent_store::timings: extent store: branch 0x864c8f62b12de445's flush of 1 commits took 337.8 ms (wait 0.0, data 303.4, dirs 23.7, logs 10.7, gone 0.0, raw 0.0 ms); synced 0 own extents' files, the longest 0.0 ms, and 2 raw files, the longest 303.2 ms
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 158 } took 1166.5 ms (own 0.0, write 1161.6, sync 3.7, dirs 1.2 ms)
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 159 } took 487.5 ms (own 0.0, write 481.5, sync 4.6, dirs 1.3 ms)
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 160 } took 801.3 ms (own 0.0, write 796.9, sync 4.2, dirs 0.2 ms)
+WARN extent_store::upload: fxdax: commits wait for object storage: 1139281920 bytes not uploaded, 65540096 past the lag bound of 1073741824; 0 commits not uploaded, the oldest seen 19668 ms ago
+WARN extent_store::upload: fxdax: commits wait for object storage: 1085804544 bytes not uploaded, 12062720 past the lag bound of 1073741824; 0 commits not uploaded, the oldest seen 19463 ms ago
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 161 } took 1148.5 ms (own 0.0, write 1145.1, sync 3.4, dirs 0.0 ms)
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 162 } took 592.8 ms (own 0.0, write 589.0, sync 3.8, dirs 0.0 ms)
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 163 } took 1049.7 ms (own 0.0, write 1043.1, sync 4.0, dirs 2.6 ms)
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 164 } took 1644.8 ms (own 0.0, write 1638.6, sync 4.0, dirs 2.3 ms)
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 165 } took 1285.5 ms (own 0.0, write 1278.4, sync 4.5, dirs 2.6 ms)
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 166 } took 948.6 ms (own 0.0, write 942.8, sync 3.5, dirs 2.3 ms)
+WARN extent_store::upload: fxdax: commits wait for object storage: 1131372544 bytes not uploaded, 57630720 past the lag bound of 1073741824; 0 commits not uploaded, the oldest seen 19545 ms ago
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 167 } took 907.7 ms (own 0.0, write 901.6, sync 4.6, dirs 1.5 ms)
+WARN extent_store::upload: fxdax: commits wait for object storage: 1106325504 bytes not uploaded, 32583680 past the lag bound of 1073741824; 0 commits not uploaded, the oldest seen 18783 ms ago
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 168 } took 838.1 ms (own 0.0, write 833.8, sync 4.2, dirs 0.0 ms)
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 169 } took 500.7 ms (own 0.0, write 496.3, sync 4.3, dirs 0.0 ms)
+WARN extent_store::upload: fxdax: commits wait for object storage: 1075621888 bytes not uploaded, 1880064 past the lag bound of 1073741824; 0 commits not uploaded, the oldest seen 18753 ms ago
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 170 } took 485.8 ms (own 0.0, write 480.9, sync 3.6, dirs 1.3 ms)
+WARN extent_store::upload: fxdax: commits wait for object storage: 1080950784 bytes not uploaded, 7208960 past the lag bound of 1073741824; 0 commits not uploaded, the oldest seen 18761 ms ago
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 171 } took 1352.5 ms (own 0.0, write 1345.9, sync 4.1, dirs 2.5 ms)
+WARN extent_store::upload: fxdax: commits wait for object storage: 1100312576 bytes not uploaded, 26570752 past the lag bound of 1073741824; 0 commits not uploaded, the oldest seen 19720 ms ago
+WARN extent_store::upload: fxdax: commits wait for object storage: 1088544768 bytes not uploaded, 14802944 past the lag bound of 1073741824; 0 commits not uploaded, the oldest seen 19190 ms ago
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 172 } took 1353.6 ms (own 0.0, write 1349.5, sync 4.1, dirs 0.0 ms)
+WARN extent_store::upload: fxdax: commits wait for object storage: 1088544768 bytes not uploaded, 14802944 past the lag bound of 1073741824; 0 commits not uploaded, the oldest seen 19859 ms ago
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 173 } took 762.1 ms (own 0.0, write 759.1, sync 2.9, dirs 0.0 ms)
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 174 } took 1605.0 ms (own 0.0, write 1600.1, sync 3.4, dirs 1.4 ms)
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 175 } took 983.0 ms (own 0.0, write 979.4, sync 2.1, dirs 1.4 ms)
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 176 } took 1043.7 ms (own 0.0, write 1037.2, sync 3.9, dirs 2.6 ms)
+WARN extent_store::upload: fxdax: commits wait for object storage: 1105100800 bytes not uploaded, 31358976 past the lag bound of 1073741824; 0 commits not uploaded, the oldest seen 19198 ms ago
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 177 } took 1181.8 ms (own 0.0, write 1165.7, sync 7.2, dirs 9.0 ms)
+WARN extent_store::upload: fxdax: commits wait for object storage: 1128972288 bytes not uploaded, 55230464 past the lag bound of 1073741824; 0 commits not uploaded, the oldest seen 19975 ms ago
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 178 } took 653.5 ms (own 0.0, write 649.8, sync 3.7, dirs 0.0 ms)
+WARN extent_store::upload: fxdax: commits wait for object storage: 1087275008 bytes not uploaded, 13533184 past the lag bound of 1073741824; 0 commits not uploaded, the oldest seen 19345 ms ago
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 179 } took 677.0 ms (own 0.0, write 672.8, sync 4.1, dirs 0.0 ms)
+WARN extent_store::timings: extent store: branch 0x864c8f62b12de445's flush of 1 commits took 52.7 ms (wait 0.0, data 25.5, dirs 10.5, logs 16.7, gone 0.0, raw 0.0 ms); synced 0 own extents' files, the longest 0.0 ms, and 2 raw files, the longest 25.5 ms
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 180 } took 516.6 ms (own 0.0, write 510.4, sync 5.0, dirs 1.3 ms)
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 181 } took 3614.6 ms (own 0.0, write 3607.8, sync 4.0, dirs 2.8 ms)
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 182 } took 950.0 ms (own 0.0, write 943.7, sync 3.8, dirs 2.5 ms)
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 183 } took 723.7 ms (own 0.0, write 717.2, sync 3.9, dirs 2.6 ms)
+WARN extent_store::store: extent store: branch 0x864c8f62b12de445's commit sealed 131 extents, copying 127 of them, 59752 KiB, the largest 1024 KiB
+WARN extent_store::timings: extent store: branch 0x864c8f62b12de445's flush of 1 commits took 256.5 ms (wait 0.0, data 224.4, dirs 10.4, logs 15.5, gone 0.0, raw 6.2 ms); synced 0 own extents' files, the longest 0.0 ms, and 2 raw files, the longest 224.2 ms
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 184 } took 1309.2 ms (own 0.0, write 1302.9, sync 3.8, dirs 2.5 ms)
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 185 } took 608.1 ms (own 0.0, write 602.8, sync 3.9, dirs 1.3 ms)
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 186 } took 626.0 ms (own 0.0, write 621.1, sync 3.6, dirs 1.3 ms)
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 187 } took 839.8 ms (own 0.0, write 833.7, sync 3.5, dirs 2.7 ms)
+INFO fxfs::filesystem: Filesystem closed (checkpoint=47575040, metadata_reservation=ReservationInner { amount: 64632436, reserved: 0 }, reservation_required=64638312, borrowed=5876)
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 188 } took 719.8 ms (own 0.0, write 715.9, sync 3.9, dirs 0.0 ms)
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 189 } took 503.6 ms (own 0.0, write 499.8, sync 3.7, dirs 0.0 ms)
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 190 } took 458.0 ms (own 0.0, write 454.2, sync 3.7, dirs 0.0 ms)
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 191 } took 492.9 ms (own 0.0, write 488.8, sync 4.1, dirs 0.0 ms)
+WARN extent_store::timings: extent store: framing SegmentId { branch: 9677267353354495045, number: 192 } took 201.1 ms (own 0.0, write 198.8, sync 2.2, dirs 0.0 ms)
+INFO fxfs::object_store::journal::super_block: loaded super-block super_block=SuperBlockHeaderV32 { guid: <redacted>, generation: 181, root_parent_store_object_id: 3, root_parent_graveyard_directory_object_id: 6, root_store_object_id: 4, allocator_object_id: 5, journal_object_id: 5, journal_checkpoint: JournalCheckpointV32 { file_offset: 47436048, checksum: 17301492493942728658, version: Version { major: 63, minor: 0 } }, super_block_journal_file_offset: 47475863, journal_file_offsets: {9: 47436048, 5: 47445184}, borrowed_metadata_space: 196, earliest_version: Version { major: 63, minor: 0 } } current_super_block=B
+INFO fxfs::object_store::journal: replay complete checkpoint=47575040 discarded_to=None
+INFO fxfs::fsck: Starting fsck
+INFO fxfs::fsck: No issues detected
+INFO fxfs::fsck: Starting volume fsck store_id=9
+INFO fxfs::fsck: No issues detected
+INFO fxfs::filesystem: Filesystem closed (checkpoint=47575040, metadata_reservation=ReservationInner { amount: 64632436, reserved: 0 }, reservation_required=64638312, borrowed=5876)
+INFO fxdax_extentd: extentd: draining, on SIGTERM, within 60s
+INFO fxdax_extentd: extentd: drained in 1.4ms: every store closed

@@ -1,0 +1,307 @@
+{
+  "case": "bench-fs-ext4-guest-kernel",
+  "backend": "ext4-guest-kernel",
+  "host_os": "linux",
+  "vmm": "firecracker",
+  "iterations": 5,
+  "results": [
+    {
+      "workload": "create",
+      "unit": "ops/s",
+      "higher_is_better": true,
+      "values": [
+        35038.46,
+        71388.487,
+        47528.825,
+        94890.115,
+        97135.602
+      ]
+    },
+    {
+      "workload": "stat-cold",
+      "unit": "ops/s",
+      "higher_is_better": true,
+      "values": [
+        172754.387,
+        335312.459,
+        334142.403,
+        332195.343,
+        336055.043
+      ]
+    },
+    {
+      "workload": "stat-warm",
+      "unit": "ops/s",
+      "higher_is_better": true,
+      "values": [
+        1327169.075,
+        760250.168,
+        776821.51,
+        1439186.457,
+        842791.562
+      ]
+    },
+    {
+      "workload": "lookup-missing",
+      "unit": "ops/s",
+      "higher_is_better": true,
+      "values": [
+        408174.844,
+        408218.916,
+        435985.835,
+        437680.53,
+        327198.846
+      ]
+    },
+    {
+      "workload": "readdir",
+      "unit": "ops/s",
+      "higher_is_better": true,
+      "values": [
+        2930188.265,
+        1856284.591,
+        986316.827,
+        2992529.151,
+        3043593.388
+      ]
+    },
+    {
+      "workload": "read-small-cold",
+      "unit": "ops/s",
+      "higher_is_better": true,
+      "values": [
+        26618.721,
+        26803.719,
+        22887.337,
+        22650.553,
+        23081.407
+      ]
+    },
+    {
+      "workload": "chmod",
+      "unit": "ops/s",
+      "higher_is_better": true,
+      "values": [
+        767995.478,
+        492083.726,
+        519015.562,
+        724729.585,
+        768423.924
+      ]
+    },
+    {
+      "workload": "setxattr",
+      "unit": "ops/s",
+      "higher_is_better": true,
+      "values": [
+        617402.095,
+        559371.244,
+        467555.942,
+        436854.438,
+        611675.416
+      ]
+    },
+    {
+      "workload": "link",
+      "unit": "ops/s",
+      "higher_is_better": true,
+      "values": [
+        156433.32,
+        154298.855,
+        144221.551,
+        155524.781,
+        144108.509
+      ]
+    },
+    {
+      "workload": "rename",
+      "unit": "ops/s",
+      "higher_is_better": true,
+      "values": [
+        112917.133,
+        117680.321,
+        119424.474,
+        119264.475,
+        120047.63
+      ]
+    },
+    {
+      "workload": "rename-across",
+      "unit": "ops/s",
+      "higher_is_better": true,
+      "values": [
+        103742.07,
+        101775.779,
+        104005.442,
+        102494.196,
+        104011.138
+      ]
+    },
+    {
+      "workload": "unlink",
+      "unit": "ops/s",
+      "higher_is_better": true,
+      "values": [
+        424888.706,
+        394206.349,
+        370217.553,
+        413713.956,
+        413201.029
+      ]
+    },
+    {
+      "workload": "create-fsync",
+      "unit": "ops/s",
+      "higher_is_better": true,
+      "values": [
+        396.25,
+        404.43,
+        359.917,
+        383.042,
+        422.419
+      ]
+    },
+    {
+      "workload": "mkdir-tree",
+      "unit": "ops/s",
+      "higher_is_better": true,
+      "values": [
+        116536.634,
+        130559.078,
+        110463.323,
+        116090.678,
+        131498.546
+      ]
+    },
+    {
+      "workload": "find-cold",
+      "unit": "ops/s",
+      "higher_is_better": true,
+      "values": [
+        223475.648,
+        327467.721,
+        322056.992,
+        320488.218,
+        321812.448
+      ]
+    },
+    {
+      "workload": "rm-tree",
+      "unit": "ops/s",
+      "higher_is_better": true,
+      "values": [
+        106731.409,
+        106883.768,
+        110729.691,
+        106358.715,
+        113173.282
+      ]
+    },
+    {
+      "workload": "large-dir-create",
+      "unit": "ops/s",
+      "higher_is_better": true,
+      "values": [
+        79217.04,
+        107566.576,
+        112234.298,
+        112503.943,
+        111182.517
+      ]
+    },
+    {
+      "workload": "large-dir-stat-cold",
+      "unit": "ops/s",
+      "higher_is_better": true,
+      "values": [
+        134260.952,
+        229310.571,
+        261245.867,
+        285662.165,
+        272117.922
+      ]
+    },
+    {
+      "workload": "large-dir-unlink",
+      "unit": "ops/s",
+      "higher_is_better": true,
+      "values": [
+        211138.254,
+        212584.724,
+        207260.142,
+        209775.668,
+        214165.502
+      ]
+    },
+    {
+      "workload": "create-parallel",
+      "unit": "ops/s",
+      "higher_is_better": true,
+      "values": [
+        172584.335,
+        168553.628,
+        170501.781,
+        177301.467,
+        178729.976
+      ]
+    },
+    {
+      "workload": "stat-parallel",
+      "unit": "ops/s",
+      "higher_is_better": true,
+      "values": [
+        624843.545,
+        592967.831,
+        601508.146,
+        548072.088,
+        593499.152
+      ]
+    },
+    {
+      "workload": "unlink-parallel",
+      "unit": "ops/s",
+      "higher_is_better": true,
+      "values": [
+        286534.08,
+        306881.692,
+        289809.679,
+        305383.503,
+        290814.137
+      ]
+    },
+    {
+      "workload": "create-shared-dir",
+      "unit": "ops/s",
+      "higher_is_better": true,
+      "values": [
+        112137.562,
+        112356.451,
+        108911.775,
+        108139.65,
+        110726.184
+      ]
+    },
+    {
+      "workload": "unlink-shared-dir",
+      "unit": "ops/s",
+      "higher_is_better": true,
+      "values": [
+        275620.597,
+        288426.4,
+        282611.544,
+        279375.993,
+        267238.37
+      ]
+    }
+  ],
+  "failures": {},
+  "observations": {
+    "mtime-ahead-of-guest-ms": [
+      -5.078,
+      -3.049,
+      -2.872,
+      -4.838,
+      -4.009
+    ]
+  }
+}

@@ -1,0 +1,32 @@
+[    0.177595] PCI: Fatal: No config space access function found
+[    0.205981] PCI: System does not support PCI
+[    0.372786] check access for rdinit=/init failed: -2, ignoring
+fxdax: boot kernel_ns=405097000 agent_ns=425218264
+[   14.047513] reboot: Restarting system
+[    0.187225] PCI: Fatal: No config space access function found
+[    0.222773] PCI: System does not support PCI
+[    0.392261] check access for rdinit=/init failed: -2, ignoring
+fxdax: boot kernel_ns=425215000 agent_ns=445114224
+FXFS fork-read-usr: device_read_bytes 455389184, device_reads 4067, device_reads_ns 3407026869
+REQUESTS fork-read-usr: read 4354.00 (750 µs each) per operation
+FXFS fork-reread-usr: 
+REQUESTS fork-reread-usr:  per operation
+[   15.637003] reboot: Restarting system
+[    0.178579] PCI: Fatal: No config space access function found
+[    0.214212] PCI: System does not support PCI
+[    0.400140] check access for rdinit=/init failed: -2, ignoring
+fxdax: boot kernel_ns=445105000 agent_ns=469379470
+FXFS fork-read-usr: device_read_bytes 455389184, device_reads 4067, device_reads_ns 1580890350
+REQUESTS fork-read-usr: read 4354.00 (339 µs each) per operation
+FXFS fork-reread-usr: 
+REQUESTS fork-reread-usr:  per operation
+[   14.293485] reboot: Restarting system
+[    0.181830] PCI: Fatal: No config space access function found
+[    0.210209] PCI: System does not support PCI
+[    0.377769] check access for rdinit=/init failed: -2, ignoring
+fxdax: boot kernel_ns=421186000 agent_ns=441184435
+FXFS fork-read-usr: device_read_bytes 455389184, device_reads 4067, device_reads_ns 1537655257
+REQUESTS fork-read-usr: read 4354.00 (328 µs each) per operation
+FXFS fork-reread-usr: 
+REQUESTS fork-reread-usr:  per operation
+[   14.185620] reboot: Restarting system

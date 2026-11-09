@@ -1,0 +1,7 @@
+[    0.316399] check access for rdinit=/init failed: -2, ignoring
+fxdax: boot kernel_ns=349114000 agent_ns=364716271
+[    0.450759] fxfs: Formatting
+[    0.645470] fxfs: Filesystem closed (checkpoint=16863, metadata_reservation=ReservationInner { amount: 543056, reserved: 0 }, reservation_required=1116028, borrowed=591404)
+OK base
+[    0.715942] reboot: Restarting system
+[    0.717215] reboot: machine restart

@@ -1,0 +1,35 @@
+{
+ "commit": "0f011561a52f9d13506e67b7a4c3dff92fa6c530-dirty",
+ "rounds": 20,
+ "status": 1,
+ "failed": [
+  "fxfs-guest-snapshot-dax"
+ ],
+ "cases": [
+  {
+   "case": "fxfs-guest-snapshot-dax",
+   "outcome": "timeout",
+   "round": 7,
+   "rounds_passed": 6,
+   "failed_checks": [],
+   "reason": null,
+   "replay": "FXDAX_WORKSPACE_TESTS=0 FXDAX_E2E_TEST=fxfs-guest-snapshot-dax FXDAX_E2E_ROUNDS=20 FXDAX_GUEST_KERNEL_BUILD=release FXDAX_TEST_PARTS='clippy workspace sim shuttle scripts guest firecracker' PJDFSTEST_COMMIT=85a8aea9e685999ef0540392fd80535f873d7ff7 PJDFSTEST_REPO=https://github.com/pjd/pjdfstest scripts/test-gce.sh all",
+   "daemons": []
+  }
+ ],
+ "daemon": {
+  "daemon": "extentd",
+  "downloaded": 2900390,
+  "bucket_read": 86056960,
+  "store_read": 1708032
+ },
+ "knobs": {
+  "FXDAX_E2E_ROUNDS": "20",
+  "FXDAX_E2E_TEST": "fxfs-guest-snapshot-dax",
+  "FXDAX_GUEST_KERNEL_BUILD": "release",
+  "FXDAX_TEST_PARTS": "clippy workspace sim shuttle scripts guest firecracker",
+  "FXDAX_WORKSPACE_TESTS": "0",
+  "PJDFSTEST_COMMIT": "85a8aea9e685999ef0540392fd80535f873d7ff7",
+  "PJDFSTEST_REPO": "https://github.com/pjd/pjdfstest"
+ }
+}

@@ -1,0 +1,134 @@
+   Compiling fxfs v0.1.0 (/var/lib/fxdax-test/test-tree/crates/fxfs)
+   Compiling fxdax v0.1.0 (/var/lib/fxdax-test/test-tree/crates/fxdax)
+   Compiling fxfs-posix v0.1.0 (/var/lib/fxdax-test/test-tree/crates/fxfs-posix)
+    Finished `release` profile [optimized] target(s) in 1m 25s
+    Finished `release` profile [optimized] target(s) in 0.14s
+   Compiling fxfs v0.1.0 (/var/lib/fxdax-test/test-tree/crates/fxfs)
+   Compiling fxdax v0.1.0 (/var/lib/fxdax-test/test-tree/crates/fxdax)
+   Compiling fxfs-posix v0.1.0 (/var/lib/fxdax-test/test-tree/crates/fxfs-posix)
+   Compiling vmm v0.1.0 (/var/lib/fxdax-test/test-tree/target/firecracker/src/vmm)
+   Compiling firecracker v1.16.1 (/var/lib/fxdax-test/test-tree/target/firecracker/src/firecracker)
+    Finished `release` profile [optimized] target(s) in 2m 08s
+warning: method `unallowed` is never used
+   --> test_cases/src/differential.rs:194:12
+    |
+156 | impl Differences {
+    | ---------------- method in this implementation
+...
+194 |     pub fn unallowed(&self) -> impl Iterator<Item = (&Difference, &Seen)> {
+    |            ^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+
+running 114 tests
+....................................................................................... 87/114
+..........................test differential::tests::refusals_are_adopted_by_the_reference has been running for over 60 seconds
+.
+test result: ok. 114 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 62.57s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Compiling fxfs v0.1.0 (/var/lib/fxdax-test/test-tree/crates/fxfs)
+   Compiling fxdax v0.1.0 (/var/lib/fxdax-test/test-tree/crates/fxdax)
+   Compiling fxfs-posix v0.1.0 (/var/lib/fxdax-test/test-tree/crates/fxfs-posix)
+   Compiling vmm v0.1.0 (/var/lib/fxdax-test/test-tree/target/firecracker/src/vmm)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 57.66s
+────────────
+ Nextest run ID 2cc30877-2621-4e71-8934-66d481bb29c2 with nextest profile: default
+    Starting 29 tests across 1 binary (722 tests skipped)
+        PASS [   0.008s] ( 1/29) vmm devices::virtio::extent::device::tests::drivers_take_every_feature_offered
+        PASS [   0.008s] ( 2/29) vmm devices::virtio::extent::device::tests::branches_are_not_the_clocks
+        PASS [   0.008s] ( 3/29) vmm devices::virtio::extent::persist::tests::snapshots_of_other_protocols_are_refused
+        PASS [   0.008s] ( 4/29) vmm devices::virtio::extent::device::tests::unxorshift_undoes_the_clocks_xorshift
+        PASS [   0.008s] ( 5/29) vmm devices::virtio::extent::device::tests::the_configuration_says_its_version_first
+        PASS [   0.008s] ( 6/29) vmm devices::virtio::extent::device::tests::workers_start_all_or_none
+        PASS [   0.008s] ( 7/29) vmm devices::virtio::device::tests::test_features_written_again
+        PASS [   0.008s] ( 8/29) vmm devices::virtio::extent::device::tests::a_windows_private_pages_are_not_its_size
+        PASS [   0.007s] ( 9/29) vmm devices::virtio::extent::tests::stats_are_asked_of_guests_that_take_asks
+        PASS [   0.007s] (10/29) vmm devices::virtio::extent::window::tests::windows_are_bars_in_the_mmio64_gap
+        PASS [   0.008s] (11/29) vmm devices::virtio::extent::worker::tests::chains_writing_past_u32_are_refused
+        PASS [   0.008s] (12/29) vmm devices::virtio::extent::tests::answers_to_shrinks_no_longer_asked_change_nothing
+        PASS [   0.031s] (13/29) vmm devices::virtio::extent::worker::tests::stats_go_to_the_daemon
+        PASS [   0.037s] (14/29) vmm devices::virtio::extent::worker::tests::test_follows_a_writer
+        PASS [   0.031s] (15/29) vmm devices::virtio::extent::worker::tests::test_refuses_bad_requests
+        PASS [   0.008s] (16/29) vmm devices::virtio::transport::pci::device::tests::test_pci_device_ids
+        PASS [   0.031s] (17/29) vmm devices::virtio::extent::worker::tests::test_roots_and_info
+        PASS [   0.008s] (18/29) vmm vmm_config::extent::tests::test_deserialize
+        PASS [   0.010s] (19/29) vmm devices::virtio::transport::pci::device::tests::test_shm_bar
+        PASS [   0.010s] (20/29) vmm signal_handler::tests::test_stack_overflow_runs_the_handler
+        PASS [   0.011s] (21/29) vmm signal_handler::tests::test_fault_logs_its_address
+        PASS [   0.044s] (22/29) vmm devices::virtio::extent::worker::tests::test_writes_and_reads
+        PASS [   0.007s] (23/29) vmm vmm_config::extent::tests::test_insert_invalid
+        PASS [   0.008s] (24/29) vmm vmm_config::extent::tests::test_insert
+        PASS [   0.007s] (25/29) vmm vstate::vcpu::tests::test_exit_code_sent_before_the_exit_event
+        PASS [   0.007s] (26/29) vmm vstate::vcpu::tests::efaults_given_up_on_tell_where
+        PASS [   0.080s] (27/29) vmm devices::virtio::extent::worker::tests::test_refuses_many_past_their_most
+        PASS [   0.090s] (28/29) vmm devices::virtio::extent::worker::tests::test_frees_many_in_one_request
+        PASS [   9.806s] (29/29) vmm devices::virtio::extent::worker::tests::test_answers_whatever_a_driver_asks
+────────────
+     Summary [   9.815s] 29 tests run: 29 passed, 722 skipped
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.22s
+────────────
+ Nextest run ID 203cd34f-3097-4db2-be29-d41d50090f42 with nextest profile: default
+    Starting 31 tests across 1 binary (720 tests skipped)
+        PASS [   0.062s] ( 1/31) vmm device_manager::pci_mngr::tests::test_device_manager_persistence
+        PASS [   0.067s] ( 2/31) vmm device_manager::persist::tests::test_device_manager_persistence
+        PASS [   0.006s] ( 3/31) vmm devices::virtio::transport::pci::common_config::tests::test_bad_width_reads
+        PASS [   0.005s] ( 4/31) vmm devices::virtio::transport::pci::common_config::tests::test_config_msix_vector
+        PASS [   0.005s] ( 5/31) vmm devices::virtio::transport::pci::common_config::tests::test_device_activated_blocks_transitions
+        PASS [   0.005s] ( 6/31) vmm devices::virtio::transport::pci::common_config::tests::test_device_feature
+        PASS [   0.005s] ( 7/31) vmm devices::virtio::transport::pci::common_config::tests::test_device_status
+        PASS [   0.005s] ( 8/31) vmm devices::virtio::transport::pci::common_config::tests::test_device_status_invalid_transitions
+        PASS [   0.005s] ( 9/31) vmm devices::virtio::transport::pci::common_config::tests::test_driver_feature
+        PASS [   0.005s] (10/31) vmm devices::virtio::transport::pci::common_config::tests::test_num_queues
+        PASS [   0.005s] (11/31) vmm devices::virtio::transport::pci::common_config::tests::test_queue_addresses
+        PASS [   0.005s] (12/31) vmm devices::virtio::transport::pci::common_config::tests::test_queue_enable
+        PASS [   0.005s] (13/31) vmm devices::virtio::transport::pci::common_config::tests::test_queue_msix_vector
+        PASS [   0.005s] (14/31) vmm devices::virtio::transport::pci::common_config::tests::test_queue_notify_off
+        PASS [   0.005s] (15/31) vmm devices::virtio::transport::pci::common_config::tests::test_queue_size
+        PASS [   0.005s] (16/31) vmm devices::virtio::transport::pci::common_config::tests::write_base_regs
+        PASS [   0.025s] (17/31) vmm devices::virtio::transport::pci::device::tests::test_activate_failure_sets_needs_reset
+        PASS [   0.028s] (18/31) vmm devices::virtio::transport::pci::device::tests::test_capabilities
+        PASS [   0.022s] (19/31) vmm devices::virtio::transport::pci::device::tests::test_config_space_as_upstream
+        PASS [   0.024s] (20/31) vmm devices::virtio::transport::pci::device::tests::test_device_initialization
+        PASS [   0.025s] (21/31) vmm devices::virtio::transport::pci::device::tests::test_failed_reset_blocks_reinitialization
+        PASS [   0.024s] (22/31) vmm devices::virtio::transport::pci::device::tests::test_isr_capability
+        PASS [   0.027s] (23/31) vmm devices::virtio::transport::pci::device::tests::test_no_shared_memory_capabilities
+        PASS [   0.024s] (24/31) vmm devices::virtio::transport::pci::device::tests::test_notification_capability
+        PASS [   0.027s] (25/31) vmm devices::virtio::transport::pci::device::tests::test_pci_configuration_cap
+        PASS [   0.027s] (26/31) vmm devices::virtio::transport::pci::device::tests::test_pci_device_config
+        PASS [   0.006s] (27/31) vmm devices::virtio::transport::pci::device::tests::test_pci_device_ids
+        PASS [   0.022s] (28/31) vmm devices::virtio::transport::pci::device::tests::test_reading_bars
+        PASS [   0.025s] (29/31) vmm devices::virtio::transport::pci::device::tests::test_reset_then_reinitialization
+        PASS [   0.021s] (30/31) vmm devices::virtio::transport::pci::device::tests::test_shared_memory_capabilities
+        PASS [   0.005s] (31/31) vmm devices::virtio::transport::pci::device::tests::test_shm_bar
+────────────
+     Summary [   0.534s] 31 tests run: 31 passed, 720 skipped
+warning: method `unallowed` is never used
+   --> test_cases/src/differential.rs:194:12
+    |
+156 | impl Differences {
+    | ---------------- method in this implementation
+...
+194 |     pub fn unallowed(&self) -> impl Iterator<Item = (&Difference, &Seen)> {
+    |            ^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+[linux-checkout-ext4] ... OK (59 s of 7200 s)
+(See test artifacts at: /home/ramon/run-20261109T060415Z-a35d2b55/results/e2e/linux-checkout-ext4)
+
+OK - 1/1 passed
+[linux-checkout-fxfs] ... OK (233 s of 7200 s)
+(See test artifacts at: /home/ramon/run-20261109T060415Z-a35d2b55/results/e2e/linux-checkout-fxfs)
+
+OK - 1/1 passed
+[linux-checkout-fxfs-dax] ... OK (166 s of 7200 s)
+(See test artifacts at: /home/ramon/run-20261109T060415Z-a35d2b55/results/e2e/linux-checkout-fxfs-dax)
+
+OK - 1/1 passed
+Logs: /home/ramon/run-20261109T060415Z-a35d2b55/results/e2e

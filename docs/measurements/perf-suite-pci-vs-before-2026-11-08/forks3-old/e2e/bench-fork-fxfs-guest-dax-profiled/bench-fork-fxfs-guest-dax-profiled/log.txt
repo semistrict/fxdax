@@ -1,0 +1,41 @@
+[    0.178188] PCI: Fatal: No config space access function found
+[    0.206402] PCI: System does not support PCI
+[    0.383096] check access for rdinit=/init failed: -2, ignoring
+fxdax: boot kernel_ns=417154000 agent_ns=436986895
+[   13.664982] reboot: Restarting system
+[    0.179497] PCI: Fatal: No config space access function found
+[    0.207388] PCI: System does not support PCI
+[    0.389647] check access for rdinit=/init failed: -2, ignoring
+fxdax: boot kernel_ns=425126000 agent_ns=449152070
+FXFS fork-read-usr: dax_extent_alloc_bytes 5304320, device_read_bytes 1966080, device_reads 15, device_reads_ns 5294403, window_map_bytes_range 387973120, window_map_bytes_reach 80916480, window_map_requests 252, window_maps 461, window_maps_ns 104662403, window_maps_range 394, window_maps_reach 67, window_regions 67, window_regions_bytes 80916480, window_regions_refs 3440, window_slices 3440
+REQUESTS fork-read-usr: read 15.00 (338 µs each), map 252.00 (393 µs each) per operation
+FXFS fork-reread-usr: 
+REQUESTS fork-reread-usr:  per operation
+[   15.493003] reboot: Restarting system
+[    0.233232] PCI: Fatal: No config space access function found
+[    0.275408] PCI: System does not support PCI
+[    0.580480] check access for rdinit=/init failed: -2, ignoring
+fxdax: boot kernel_ns=643125000 agent_ns=677772384
+FXFS fork-read-usr: dax_extent_alloc_bytes 5304320, device_read_bytes 1966080, device_reads 15, device_reads_ns 9348788, window_map_bytes_range 387973120, window_map_bytes_reach 80916480, window_map_requests 252, window_maps 461, window_maps_ns 232771390, window_maps_range 394, window_maps_reach 67, window_regions 67, window_regions_bytes 80916480, window_regions_refs 3440, window_slices 3440
+REQUESTS fork-read-usr: read 15.00 (591 µs each), map 252.00 (874 µs each) per operation
+FXFS fork-reread-usr: 
+REQUESTS fork-reread-usr:  per operation
+[   12.622107] reboot: Restarting system
+[    0.233608] PCI: Fatal: No config space access function found
+[    0.286453] PCI: System does not support PCI
+[    0.568726] check access for rdinit=/init failed: -2, ignoring
+fxdax: boot kernel_ns=608152000 agent_ns=637765695
+FXFS fork-read-usr: dax_extent_alloc_bytes 5304320, device_read_bytes 1966080, device_reads 15, device_reads_ns 11440722, window_map_bytes_range 387973120, window_map_bytes_reach 80916480, window_map_requests 252, window_maps 461, window_maps_ns 216833257, window_maps_range 394, window_maps_reach 67, window_regions 67, window_regions_bytes 80916480, window_regions_refs 3440, window_slices 3440
+REQUESTS fork-read-usr: read 15.00 (586 µs each), map 252.00 (850 µs each) per operation
+FXFS fork-reread-usr: 
+REQUESTS fork-reread-usr:  per operation
+[   12.625273] reboot: Restarting system
+[    0.235256] PCI: Fatal: No config space access function found
+[    0.276125] PCI: System does not support PCI
+[    0.554413] check access for rdinit=/init failed: -2, ignoring
+fxdax: boot kernel_ns=615225000 agent_ns=641422385
+FXFS fork-read-usr: dax_extent_alloc_bytes 5304320, device_read_bytes 1966080, device_reads 15, device_reads_ns 6186631, window_map_bytes_range 387973120, window_map_bytes_reach 80916480, window_map_requests 252, window_maps 461, window_maps_ns 222076538, window_maps_range 394, window_maps_reach 67, window_regions 67, window_regions_bytes 80916480, window_regions_refs 3440, window_slices 3440
+REQUESTS fork-read-usr: read 15.00 (397 µs each), map 252.00 (871 µs each) per operation
+FXFS fork-reread-usr: 
+REQUESTS fork-reread-usr:  per operation
+[   12.616108] reboot: Restarting system

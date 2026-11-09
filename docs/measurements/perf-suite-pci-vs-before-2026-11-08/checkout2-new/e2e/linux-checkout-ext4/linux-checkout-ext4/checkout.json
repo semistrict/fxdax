@@ -1,0 +1,32 @@
+{
+  "boot-source": {
+    "boot_args": "console=ttyS0 loglevel=5 reboot=k panic=-1 8250.nr_uarts=1 i8042.noaux i8042.nomux i8042.dumbkbd sysctl.kernel.hung_task_timeout_secs=10 softlockup_panic=1 panic_print=0x1 sysctl.kernel.softlockup_all_cpu_backtrace=1 init=/guest-agent FXDAX_LINUX_CHECKOUT_DEVICE=/dev/vdb FXDAX_SHARED_VOLUMES=checkout FXDAX_GUEST_WATCHDOG_SECS=7179 -- linux-checkout-ext4",
+    "kernel_image_path": "/var/lib/fxdax-test/guest-kernel-release/out/x86_64/vmlinux"
+  },
+  "drives": [
+    {
+      "drive_id": "rootfs",
+      "is_read_only": false,
+      "is_root_device": true,
+      "path_on_host": "/home/ramon/run-20261109T070447Z-b99c4214/results/e2e/linux-checkout-ext4/linux-checkout-ext4/rootfs.ext4"
+    },
+    {
+      "cache_type": "Writeback",
+      "drive_id": "repo",
+      "is_read_only": false,
+      "is_root_device": false,
+      "path_on_host": "/home/ramon/run-20261109T070447Z-b99c4214/results/e2e/linux-checkout-ext4/linux-checkout-ext4/ext4.img"
+    }
+  ],
+  "extent": [],
+  "machine-config": {
+    "huge_pages": "None",
+    "mem_size_mib": 4096,
+    "vcpu_count": 4
+  },
+  "pmem": [],
+  "vsock": {
+    "guest_cid": 3,
+    "uds_path": "/tmp/fxdax-288176-shared-checkout.vsock"
+  }
+}

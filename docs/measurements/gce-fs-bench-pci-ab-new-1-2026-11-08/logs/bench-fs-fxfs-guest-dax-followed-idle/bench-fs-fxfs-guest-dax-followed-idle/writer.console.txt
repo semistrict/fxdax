@@ -1,0 +1,325 @@
+[    0.314131] check access for rdinit=/init failed: -2, ignoring
+fxdax: boot kernel_ns=347066000 agent_ns=368787693
+iteration 1/3
+OBSERVED mtime-ahead-of-guest-ms -3.378
+FXFS seq-write: device_commits 1, device_commits_ns 604295014, device_write_bytes 269549568, device_writes 528, device_writes_ns 2117195665, fsyncs 1, metadata_reserved_bytes 3323468, seal_waits 1, seal_waits_ns 729, seals 1, seals_ns 604316917
+RESULT seq-write MiB/s higher 107.293
+REQUESTS seq-write: write 0.01 (2292 µs each) per operation
+FXFS rand-read-cold: dax_extent_alloc_bytes 3670016, window_map_bytes_range 268435456, window_map_requests 128, window_maps 256, window_maps_ns 25290353, window_maps_range 256
+RESULT rand-read-cold IOPS higher 11959.124
+REQUESTS rand-read-cold: map 0.01 (163 µs each) per operation
+RESULT seq-read-cold MiB/s higher 396.285
+RESULT seq-read-warm MiB/s higher 11026.987
+RESULT rand-read-warm IOPS higher 846448.776
+RESULT mmap-seq-read MiB/s higher 9846.154
+OBSERVED mmap-seq-read-faults-per-mib 5.5
+FXFS rand-write: dax_private_before_pages 16384, dax_private_pages 16384, dax_privates 16384, dax_write_begin_ns 8491090, dax_write_copy_ns 78219561, dax_write_end_ns 1095828, dax_write_fault_in_ns 2840425, dax_write_lock_ns 1040745, dax_write_other_ns 738543, dax_write_private_ns 2425578064, dax_write_setup_ns 2299291, dax_write_tail_ns 1326577, dax_writebacks 1, dax_writes 16384, dax_writes_ns 2521630124, dax_written_pages 16384, device_commits 1, device_commits_ns 5251054, device_write_bytes 68603904, device_writes 493, device_writes_ns 619580472, fsyncs 1, metadata_reserved_bytes 4312792, seal_waits 1, seal_waits_ns 901, seals 1, seals_ns 5252387, window_private_bytes 67108864, window_privates 16384, window_privates_ns 2414570441
+REQUESTS rand-write: write 0.03 (717 µs each), free 0.00 (192 µs each), private 1.00 (128 µs each) per operation
+RESULT rand-write IOPS higher 5934.082
+RESULT mmap-rand-read IOPS higher 1286127.936
+FXFS mmap-rand-write: dax_writebacks 1, dax_written_pages 16384, device_commits 1, device_commits_ns 5303230, device_write_bytes 68603904, device_writes 493, device_writes_ns 704847587, fsyncs 1, metadata_reserved_bytes 4425564, seal_waits 1, seal_waits_ns 827, seals 1, seals_ns 5304736
+REQUESTS mmap-rand-write: write 0.03 (858 µs each), free 0.00 (244 µs each) per operation
+RESULT mmap-rand-write IOPS higher 64000.000
+FXFS fsync-append: device_commits 2053, device_commits_ns 246511278, device_read_bytes 421888, device_reads 42, device_reads_ns 7949260, device_write_bytes 18309120, device_writes 4307, device_writes_ns 633830645, fsyncs 2047, journal_compaction_ns 35852671, journal_compactions 3, seal_waits 2053, seal_waits_ns 2285984, seals 2053, seals_ns 267596043, writes_held_by_seals 2, writes_held_by_seals_ns 405142
+REQUESTS fsync-append: read 0.02 (172 µs each), write 2.10 (112 µs each), free 0.01 (3200 µs each), commit 0.00 (201 µs each) per operation
+RESULT fsync-append IOPS higher 3038.576
+RESULT sqlite-pread-scan MiB/s higher 159.804
+OBSERVED sqlite-pread-scan-faults-per-mib 2.7
+RESULT sqlite-pread-scan-warm MiB/s higher 2799.092
+OBSERVED sqlite-pread-scan-warm-faults-per-mib 2.7
+RESULT sqlite-mmap-scan MiB/s higher 2876.337
+OBSERVED sqlite-mmap-scan-faults-per-mib 1.7
+RESULT sqlite-mmap-scan-warm MiB/s higher 2971.151
+OBSERVED sqlite-mmap-scan-warm-faults-per-mib 1.7
+RESULT create ops/s higher 81258.793
+FXFS create: metadata_reserved_bytes 457096
+REQUESTS create:  per operation
+RESULT stat-cold ops/s higher 165158.549
+FXFS stat-cold: 
+REQUESTS stat-cold:  per operation
+RESULT stat-warm ops/s higher 775596.628
+FXFS stat-warm: 
+REQUESTS stat-warm:  per operation
+RESULT lookup-missing ops/s higher 498333.573
+FXFS lookup-missing: 
+REQUESTS lookup-missing:  per operation
+RESULT readdir ops/s higher 2737873.275
+FXFS readdir: 
+REQUESTS readdir:  per operation
+RESULT read-small-cold ops/s higher 36778.035
+FXFS read-small-cold: window_map_bytes_reach 8192000, window_map_requests 4, window_maps 4, window_maps_ns 816554, window_maps_reach 4, window_regions 4, window_regions_bytes 8192000, window_regions_refs 2000, window_slices 2000
+REQUESTS read-small-cold: map 0.00 (165 µs each) per operation
+RESULT chmod ops/s higher 410771.159
+FXFS chmod: 
+REQUESTS chmod:  per operation
+RESULT setxattr ops/s higher 178502.131
+FXFS setxattr: metadata_reserved_bytes 238528
+REQUESTS setxattr:  per operation
+RESULT link ops/s higher 96736.521
+FXFS link: metadata_reserved_bytes 811720
+REQUESTS link:  per operation
+RESULT rename ops/s higher 74242.842
+FXFS rename: metadata_reserved_bytes 836496
+REQUESTS rename:  per operation
+RESULT rename-across ops/s higher 62113.684
+FXFS rename-across: device_write_bytes 1048576, device_writes 256, device_writes_ns 419369598, metadata_reserved_bytes 1285424
+REQUESTS rename-across: write 0.13 (709 µs each) per operation
+RESULT unlink ops/s higher 253486.388
+FXFS unlink: metadata_reserved_bytes 434668
+REQUESTS unlink:  per operation
+RESULT create-fsync ops/s higher 2648.256
+FXFS create-fsync: device_commits 200, device_commits_ns 21679737, device_write_bytes 1937408, device_writes 473, device_writes_ns 81001675, fsyncs 400, metadata_reserved_bytes 2326220, seal_waits 200, seal_waits_ns 46690, seals 200, seals_ns 23430683
+REQUESTS create-fsync: write 2.37 (153 µs each), free 0.01 (1532 µs each) per operation
+RESULT mkdir-tree ops/s higher 72512.599
+FXFS mkdir-tree: device_read_bytes 45056, device_reads 4, device_reads_ns 436290, device_write_bytes 180224, device_writes 1, device_writes_ns 541902, metadata_reserved_bytes 312644
+REQUESTS mkdir-tree: read 0.00 (420 µs each), write 0.00 (298 µs each) per operation
+RESULT find-cold ops/s higher 137378.130
+FXFS find-cold: 
+REQUESTS find-cold:  per operation
+RESULT rm-tree ops/s higher 67087.395
+FXFS rm-tree: metadata_reserved_bytes 387552
+REQUESTS rm-tree:  per operation
+RESULT large-dir-create ops/s higher 87949.153
+FXFS large-dir-create: device_write_bytes 1048576, device_writes 256, device_writes_ns 397314098, metadata_reserved_bytes 5335096
+REQUESTS large-dir-create: write 0.01 (679 µs each) per operation
+RESULT large-dir-stat-cold ops/s higher 166522.927
+FXFS large-dir-stat-cold: 
+REQUESTS large-dir-stat-cold:  per operation
+RESULT large-dir-unlink ops/s higher 184656.948
+FXFS large-dir-unlink: metadata_reserved_bytes 1531764
+REQUESTS large-dir-unlink:  per operation
+RESULT create-parallel ops/s higher 115225.015
+FXFS create-parallel: device_write_bytes 1048576, device_writes 256, device_writes_ns 493154193, metadata_reserved_bytes 2049472
+REQUESTS create-parallel: write 0.03 (769 µs each) per operation
+RESULT stat-parallel ops/s higher 460706.541
+FXFS stat-parallel: 
+REQUESTS stat-parallel:  per operation
+RESULT unlink-parallel ops/s higher 182914.865
+FXFS unlink-parallel: metadata_reserved_bytes 666016
+REQUESTS unlink-parallel:  per operation
+RESULT create-shared-dir ops/s higher 79096.045
+FXFS create-shared-dir: device_commits 2, device_commits_ns 843599, device_read_bytes 278528, device_reads 15, device_reads_ns 13889284, device_write_bytes 1720320, device_writes 276, device_writes_ns 609534508, journal_compaction_ns 52400518, journal_compactions 1, seal_waits 2, seal_waits_ns 1176, seals 2, seals_ns 846219
+REQUESTS create-shared-dir: read 0.00 (224 µs each), write 0.03 (502 µs each), free 0.00 (114 µs each), commit 0.00 (395 µs each) per operation
+RESULT unlink-shared-dir ops/s higher 126152.289
+FXFS unlink-shared-dir: metadata_reserved_bytes 629080
+REQUESTS unlink-shared-dir:  per operation
+RESULT untar s lower 0.016
+ar: `u' modifier ignored since `D' is the default (see `U')
+RESULT make s lower 4.606
+RESULT build-total s lower 4.622
+iteration 2/3
+OBSERVED mtime-ahead-of-guest-ms -7.309
+FXFS seq-write: device_commits 1, device_commits_ns 615129993, device_write_bytes 269553664, device_writes 529, device_writes_ns 2119223946, fsyncs 1, metadata_reserved_bytes 3196968, seal_waits 1, seal_waits_ns 713, seals 1, seals_ns 615159333
+RESULT seq-write MiB/s higher 129.358
+REQUESTS seq-write: write 0.01 (2322 µs each), free 0.00 (279 µs each) per operation
+FXFS rand-read-cold: dax_extent_alloc_bytes 3670016, window_map_bytes_range 268435456, window_map_requests 128, window_maps 256, window_maps_ns 23710265, window_maps_range 256
+RESULT rand-read-cold IOPS higher 12199.553
+REQUESTS rand-read-cold: map 0.01 (152 µs each) per operation
+RESULT seq-read-cold MiB/s higher 396.285
+RESULT seq-read-warm MiB/s higher 11102.949
+RESULT rand-read-warm IOPS higher 844884.558
+RESULT mmap-seq-read MiB/s higher 9846.154
+OBSERVED mmap-seq-read-faults-per-mib 5.5
+FXFS rand-write: dax_private_before_pages 16384, dax_private_pages 16384, dax_privates 16384, dax_write_begin_ns 7484235, dax_write_copy_ns 71404038, dax_write_end_ns 999751, dax_write_fault_in_ns 2622050, dax_write_lock_ns 1017888, dax_write_other_ns 717211, dax_write_private_ns 2428990979, dax_write_setup_ns 2158495, dax_write_tail_ns 904321, dax_writebacks 1, dax_writes 16384, dax_writes_ns 2516298968, dax_written_pages 16384, device_commits 1, device_commits_ns 5617576, device_write_bytes 68624384, device_writes 498, device_writes_ns 749481600, fsyncs 1, metadata_reserved_bytes 4531360, seal_waits 1, seal_waits_ns 613, seals 1, seals_ns 5619673, window_private_bytes 67108864, window_privates 16384, window_privates_ns 2419097616
+RESULT rand-write IOPS higher 5949.165
+REQUESTS rand-write: write 0.03 (868 µs each), free 0.00 (117 µs each), private 1.00 (129 µs each) per operation
+RESULT mmap-rand-read IOPS higher 1285103.448
+FXFS mmap-rand-write: dax_writebacks 1, dax_written_pages 16384, device_commits 3, device_commits_ns 7062098, device_read_bytes 315392, device_reads 15, device_reads_ns 7620859, device_write_bytes 70881280, device_writes 518, device_writes_ns 738365351, fsyncs 1, journal_compaction_ns 55173607, journal_compactions 1, seal_waits 3, seal_waits_ns 1655079, seals 3, seals_ns 7075159, writes_held_by_seals 1, writes_held_by_seals_ns 5316473
+REQUESTS mmap-rand-write: read 0.00 (334 µs each), write 0.03 (806 µs each), free 0.00 (503 µs each), commit 0.00 (2833 µs each) per operation
+RESULT mmap-rand-write IOPS higher 63503.876
+FXFS fsync-append: device_commits 2051, device_commits_ns 251355302, device_read_bytes 253952, device_reads 29, device_reads_ns 7615252, device_write_bytes 18161664, device_writes 4305, device_writes_ns 650900792, fsyncs 2047, journal_compaction_ns 25660867, journal_compactions 2, metadata_reserved_bytes 1926188, seal_waits 2051, seal_waits_ns 4593775, seals 2051, seals_ns 272104099, writes_held_by_seals 7, writes_held_by_seals_ns 687974
+RESULT fsync-append IOPS higher 2778.833
+REQUESTS fsync-append: read 0.01 (234 µs each), write 2.10 (112 µs each), free 0.01 (2415 µs each), commit 0.00 (119 µs each) per operation
+RESULT sqlite-pread-scan MiB/s higher 160.788
+OBSERVED sqlite-pread-scan-faults-per-mib 2.7
+RESULT sqlite-pread-scan-warm MiB/s higher 2762.501
+OBSERVED sqlite-pread-scan-warm-faults-per-mib 2.6
+RESULT sqlite-mmap-scan MiB/s higher 2936.385
+OBSERVED sqlite-mmap-scan-faults-per-mib 1.7
+RESULT sqlite-mmap-scan-warm MiB/s higher 3054.432
+OBSERVED sqlite-mmap-scan-warm-faults-per-mib 1.7
+RESULT create ops/s higher 79455.245
+FXFS create: metadata_reserved_bytes 609960
+REQUESTS create:  per operation
+RESULT stat-cold ops/s higher 170453.199
+FXFS stat-cold: 
+REQUESTS stat-cold:  per operation
+RESULT stat-warm ops/s higher 851957.842
+FXFS stat-warm: 
+REQUESTS stat-warm:  per operation
+RESULT lookup-missing ops/s higher 436296.272
+FXFS lookup-missing: 
+REQUESTS lookup-missing:  per operation
+RESULT readdir ops/s higher 2881541.279
+FXFS readdir: 
+REQUESTS readdir:  per operation
+RESULT read-small-cold ops/s higher 34858.518
+FXFS read-small-cold: window_map_bytes_reach 8192000, window_map_requests 4, window_maps 4, window_maps_ns 747117, window_maps_reach 4, window_regions 4, window_regions_bytes 8192000, window_regions_refs 2000, window_slices 2000
+REQUESTS read-small-cold: map 0.00 (152 µs each) per operation
+RESULT chmod ops/s higher 342869.212
+FXFS chmod: 
+REQUESTS chmod:  per operation
+RESULT setxattr ops/s higher 154314.153
+FXFS setxattr: metadata_reserved_bytes 109408
+REQUESTS setxattr:  per operation
+RESULT link ops/s higher 89511.599
+FXFS link: metadata_reserved_bytes 847624
+REQUESTS link:  per operation
+RESULT rename ops/s higher 71568.560
+FXFS rename: metadata_reserved_bytes 1019504
+REQUESTS rename:  per operation
+RESULT rename-across ops/s higher 48328.089
+FXFS rename-across: device_commits 1, device_commits_ns 467429, device_read_bytes 245760, device_reads 15, device_reads_ns 3597173, device_write_bytes 1830912, device_writes 277, device_writes_ns 428601157, seal_waits 1, seal_waits_ns 643, seals 1, seals_ns 468884
+REQUESTS rename-across: read 0.01 (217 µs each), write 0.14 (576 µs each), free 0.00 (131 µs each), commit 0.00 (293 µs each) per operation
+RESULT unlink ops/s higher 156943.346
+FXFS unlink: metadata_reserved_bytes 678624
+REQUESTS unlink:  per operation
+RESULT create-fsync ops/s higher 2459.286
+FXFS create-fsync: device_commits 200, device_commits_ns 24011094, device_write_bytes 1966080, device_writes 480, device_writes_ns 94059964, fsyncs 400, metadata_reserved_bytes 2319416, seal_waits 200, seal_waits_ns 73431, seals 200, seals_ns 25457146
+REQUESTS create-fsync: write 2.40 (162 µs each), free 0.03 (542 µs each) per operation
+RESULT mkdir-tree ops/s higher 75278.011
+FXFS mkdir-tree: metadata_reserved_bytes 623876
+REQUESTS mkdir-tree:  per operation
+RESULT find-cold ops/s higher 141847.132
+FXFS find-cold: 
+REQUESTS find-cold:  per operation
+RESULT rm-tree ops/s higher 64148.461
+FXFS rm-tree: metadata_reserved_bytes 386884
+REQUESTS rm-tree:  per operation
+RESULT large-dir-create ops/s higher 88726.502
+FXFS large-dir-create: device_write_bytes 1048576, device_writes 256, device_writes_ns 398403750, metadata_reserved_bytes 5335020
+REQUESTS large-dir-create: write 0.01 (685 µs each) per operation
+RESULT large-dir-stat-cold ops/s higher 161984.888
+FXFS large-dir-stat-cold: 
+REQUESTS large-dir-stat-cold:  per operation
+RESULT large-dir-unlink ops/s higher 129793.619
+FXFS large-dir-unlink: device_commits 2, device_commits_ns 449367, device_read_bytes 389120, device_reads 17, device_reads_ns 4997031, device_write_bytes 1802240, device_writes 106, device_writes_ns 80502965, journal_compaction_ns 42495447, journal_compactions 1, seal_waits 2, seal_waits_ns 1255, seals 2, seals_ns 451752
+REQUESTS large-dir-unlink: read 0.00 (272 µs each), write 0.01 (567 µs each), free 0.00 (110 µs each), commit 0.00 (210 µs each) per operation
+RESULT create-parallel ops/s higher 127317.985
+FXFS create-parallel: metadata_reserved_bytes 2220576
+REQUESTS create-parallel:  per operation
+RESULT stat-parallel ops/s higher 482504.216
+FXFS stat-parallel: 
+REQUESTS stat-parallel:  per operation
+RESULT unlink-parallel ops/s higher 165238.626
+FXFS unlink-parallel: device_write_bytes 1048576, device_writes 256, device_writes_ns 924883146, metadata_reserved_bytes 615412
+REQUESTS unlink-parallel: write 0.03 (457 µs each) per operation
+RESULT create-shared-dir ops/s higher 90695.544
+FXFS create-shared-dir: metadata_reserved_bytes 2402372
+REQUESTS create-shared-dir:  per operation
+RESULT unlink-shared-dir ops/s higher 164224.720
+FXFS unlink-shared-dir: device_write_bytes 1048576, device_writes 256, device_writes_ns 428011071, metadata_reserved_bytes 765296
+REQUESTS unlink-shared-dir: write 0.03 (501 µs each) per operation
+RESULT untar s lower 0.017
+ar: `u' modifier ignored since `D' is the default (see `U')
+RESULT make s lower 4.635
+RESULT build-total s lower 4.652
+iteration 3/3
+OBSERVED mtime-ahead-of-guest-ms -4.596
+FXFS seq-write: device_commits 1, device_commits_ns 613333334, device_write_bytes 269553664, device_writes 529, device_writes_ns 2442044932, fsyncs 1, metadata_reserved_bytes 3199872, seal_waits 1, seal_waits_ns 653, seals 1, seals_ns 613352400
+RESULT seq-write MiB/s higher 140.274
+REQUESTS seq-write: write 0.01 (2516 µs each), free 0.00 (403 µs each) per operation
+FXFS rand-read-cold: dax_extent_alloc_bytes 3670016, window_map_bytes_range 268435456, window_map_requests 128, window_maps 256, window_maps_ns 22772532, window_maps_range 256
+REQUESTS rand-read-cold: map 0.01 (146 µs each) per operation
+RESULT rand-read-cold IOPS higher 12235.997
+RESULT seq-read-cold MiB/s higher 398.134
+RESULT seq-read-warm MiB/s higher 10853.073
+RESULT rand-read-warm IOPS higher 844055.972
+RESULT mmap-seq-read MiB/s higher 9846.154
+OBSERVED mmap-seq-read-faults-per-mib 5.5
+FXFS rand-write: dax_private_before_pages 16384, dax_private_pages 16384, dax_privates 16384, dax_write_begin_ns 7105565, dax_write_copy_ns 70224961, dax_write_end_ns 1003276, dax_write_fault_in_ns 2750532, dax_write_lock_ns 974557, dax_write_other_ns 681858, dax_write_private_ns 2370988762, dax_write_setup_ns 2124171, dax_write_tail_ns 926407, dax_writebacks 1, dax_writes 16384, dax_writes_ns 2456780089, dax_written_pages 16384, device_commits 3, device_commits_ns 7191223, device_read_bytes 376832, device_reads 16, device_reads_ns 5215136, device_write_bytes 70770688, device_writes 523, device_writes_ns 1576822923, fsyncs 1, journal_compaction_ns 52461563, journal_compactions 1, seal_waits 3, seal_waits_ns 303747, seals 3, seals_ns 7213178, window_private_bytes 67108864, window_privates 16384, window_privates_ns 2361708585, writes_held_by_seals 1, writes_held_by_seals_ns 4752018
+REQUESTS rand-write: read 0.00 (306 µs each), write 0.03 (1063 µs each), free 0.00 (536 µs each), commit 0.00 (2495 µs each), private 1.00 (127 µs each) per operation
+RESULT rand-write IOPS higher 5880.833
+RESULT mmap-rand-read IOPS higher 1283077.961
+FXFS mmap-rand-write: dax_writebacks 1, dax_written_pages 16384, device_commits 1, device_commits_ns 6204737, device_write_bytes 68648960, device_writes 504, device_writes_ns 752454300, fsyncs 1, metadata_reserved_bytes 4481696, seal_waits 1, seal_waits_ns 620, seals 1, seals_ns 6206302
+REQUESTS mmap-rand-write: write 0.03 (861 µs each), free 0.00 (292 µs each) per operation
+RESULT mmap-rand-write IOPS higher 61826.415
+FXFS fsync-append: device_commits 2049, device_commits_ns 258707590, device_read_bytes 1404928, device_reads 36, device_reads_ns 13154391, device_write_bytes 18137088, device_writes 4301, device_writes_ns 672224649, fsyncs 2047, journal_compaction_ns 75572705, journal_compactions 2, seal_waits 2049, seal_waits_ns 2971691, seals 2049, seals_ns 279730618, writes_held_by_seals 7, writes_held_by_seals_ns 516654
+REQUESTS fsync-append: read 0.02 (340 µs each), write 2.10 (117 µs each), free 0.01 (1994 µs each), commit 0.00 (131 µs each) per operation
+RESULT fsync-append IOPS higher 2605.598
+RESULT sqlite-pread-scan MiB/s higher 173.361
+OBSERVED sqlite-pread-scan-faults-per-mib 2.6
+RESULT sqlite-pread-scan-warm MiB/s higher 2754.977
+OBSERVED sqlite-pread-scan-warm-faults-per-mib 2.6
+RESULT sqlite-mmap-scan MiB/s higher 2925.654
+OBSERVED sqlite-mmap-scan-faults-per-mib 1.7
+RESULT sqlite-mmap-scan-warm MiB/s higher 2973.747
+OBSERVED sqlite-mmap-scan-warm-faults-per-mib 1.6
+RESULT create ops/s higher 67818.197
+FXFS create: metadata_reserved_bytes 543048
+REQUESTS create:  per operation
+RESULT stat-cold ops/s higher 164595.696
+FXFS stat-cold: 
+REQUESTS stat-cold:  per operation
+RESULT stat-warm ops/s higher 1065123.232
+FXFS stat-warm: 
+REQUESTS stat-warm:  per operation
+RESULT lookup-missing ops/s higher 486619.899
+FXFS lookup-missing: 
+REQUESTS lookup-missing:  per operation
+RESULT readdir ops/s higher 2740980.120
+FXFS readdir: 
+REQUESTS readdir:  per operation
+RESULT read-small-cold ops/s higher 35614.528
+FXFS read-small-cold: window_map_bytes_reach 8192000, window_map_requests 4, window_maps 4, window_maps_ns 841934, window_maps_reach 4, window_regions 4, window_regions_bytes 8192000, window_regions_refs 2000, window_slices 2000
+REQUESTS read-small-cold: map 0.00 (177 µs each) per operation
+RESULT chmod ops/s higher 332664.511
+FXFS chmod: 
+REQUESTS chmod:  per operation
+RESULT setxattr ops/s higher 178055.877
+FXFS setxattr: metadata_reserved_bytes 125440
+REQUESTS setxattr:  per operation
+RESULT link ops/s higher 91136.385
+FXFS link: metadata_reserved_bytes 911720
+REQUESTS link:  per operation
+RESULT rename ops/s higher 72835.782
+FXFS rename: metadata_reserved_bytes 968624
+REQUESTS rename:  per operation
+RESULT rename-across ops/s higher 59034.162
+FXFS rename-across: device_write_bytes 1048576, device_writes 256, device_writes_ns 439054017, metadata_reserved_bytes 1449552
+REQUESTS rename-across: write 0.13 (732 µs each) per operation
+RESULT unlink ops/s higher 280115.615
+FXFS unlink: metadata_reserved_bytes 471680
+REQUESTS unlink:  per operation
+RESULT create-fsync ops/s higher 2452.571
+FXFS create-fsync: device_commits 200, device_commits_ns 23921815, device_write_bytes 2068480, device_writes 505, device_writes_ns 114949658, fsyncs 400, metadata_reserved_bytes 2172480, seal_waits 200, seal_waits_ns 69708, seals 200, seals_ns 25494757
+REQUESTS create-fsync: write 2.52 (182 µs each), free 0.01 (1467 µs each) per operation
+RESULT mkdir-tree ops/s higher 76030.406
+FXFS mkdir-tree: metadata_reserved_bytes 689652
+REQUESTS mkdir-tree:  per operation
+RESULT find-cold ops/s higher 146052.601
+FXFS find-cold: 
+REQUESTS find-cold:  per operation
+RESULT rm-tree ops/s higher 67930.436
+FXFS rm-tree: metadata_reserved_bytes 280096
+REQUESTS rm-tree:  per operation
+RESULT large-dir-create ops/s higher 86124.429
+FXFS large-dir-create: device_commits 2, device_commits_ns 531369, device_read_bytes 167936, device_reads 15, device_reads_ns 4154276, device_write_bytes 1961984, device_writes 379, device_writes_ns 521731722, journal_compaction_ns 17246259, journal_compactions 1, seal_waits 2, seal_waits_ns 1194, seals 2, seals_ns 533985
+REQUESTS large-dir-create: read 0.00 (250 µs each), write 0.02 (685 µs each), free 0.00 (115 µs each), commit 0.00 (240 µs each) per operation
+RESULT large-dir-stat-cold ops/s higher 153271.076
+FXFS large-dir-stat-cold: 
+REQUESTS large-dir-stat-cold:  per operation
+RESULT large-dir-unlink ops/s higher 179730.058
+FXFS large-dir-unlink: metadata_reserved_bytes 1725108
+REQUESTS large-dir-unlink:  per operation
+RESULT create-parallel ops/s higher 117046.392
+FXFS create-parallel: device_write_bytes 1048576, device_writes 256, device_writes_ns 1221474578, metadata_reserved_bytes 2305952
+REQUESTS create-parallel: write 0.03 (580 µs each) per operation
+RESULT stat-parallel ops/s higher 416173.653
+FXFS stat-parallel: 
+REQUESTS stat-parallel:  per operation
+RESULT unlink-parallel ops/s higher 169431.700
+FXFS unlink-parallel: metadata_reserved_bytes 818892
+REQUESTS unlink-parallel:  per operation
+RESULT create-shared-dir ops/s higher 83765.494
+FXFS create-shared-dir: device_write_bytes 1048576, device_writes 256, device_writes_ns 1055190972, metadata_reserved_bytes 2271272
+REQUESTS create-shared-dir: write 0.03 (476 µs each) per operation
+FXFS unlink-shared-dir: device_commits 2, device_commits_ns 1645831, device_read_bytes 253952, device_reads 14, device_reads_ns 5361486, device_write_bytes 1630208, device_writes 119, device_writes_ns 144796195, journal_compaction_ns 42821736, journal_compactions 1, seal_waits 2, seal_waits_ns 1063, seals 2, seals_ns 1648337
+REQUESTS unlink-shared-dir: read 0.00 (282 µs each), write 0.01 (525 µs each), free 0.00 (151 µs each), commit 0.00 (609 µs each) per operation
+RESULT unlink-shared-dir ops/s higher 115589.725
+RESULT untar s lower 0.018
+ar: `u' modifier ignored since `D' is the default (see `U')
+RESULT make s lower 4.646
+RESULT build-total s lower 4.663
+DONE
+[  111.857417] reboot: Restarting system

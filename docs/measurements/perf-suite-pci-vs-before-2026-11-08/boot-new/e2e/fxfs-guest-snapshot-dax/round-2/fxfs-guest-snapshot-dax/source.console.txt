@@ -1,0 +1,4 @@
+[    0.268648] check access for rdinit=/init failed: -2, ignoring
+fxdax: boot kernel_ns=295058000 agent_ns=316618949
+before the freeze: (private, dirty) pages (Some(128), Some(128))
+

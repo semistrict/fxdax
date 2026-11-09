@@ -1,0 +1,18 @@
+RESULT base-copy-usr s lower 6.509
+RESULT base-pgbench-init s lower 7.009
+RESULT fork-mount s lower 3.839
+RESULT fork-read-usr s lower 2.059
+RESULT fork-reread-usr s lower 0.083
+RESULT fork-pg-start s lower 0.267
+RESULT fork-pgbench-select tps higher 23183.975
+RESULT fork-mount s lower 3.788
+RESULT fork-read-usr s lower 2.072
+RESULT fork-reread-usr s lower 0.081
+RESULT fork-pg-start s lower 0.266
+RESULT fork-pgbench-select tps higher 19182.671
+RESULT fork-mount s lower 3.802
+RESULT fork-read-usr s lower 2.053
+RESULT fork-reread-usr s lower 0.081
+RESULT fork-pg-start s lower 0.266
+RESULT fork-pgbench-select tps higher 25193.971
+DONE

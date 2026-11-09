@@ -1,0 +1,7 @@
+revision 557b49a700efff4f705d493d010102d112bc929b
+firecracker 8e14cd916c07e26cc00439557f6168262cf5fe59
+changed  M docs/measurements/fs-bench-history.md
+changed  M guest/tests/test_cases/src/guest_init.rs
+changed  M guest/tests/test_cases/src/kernel_log.rs
+changed  M guest/tests/test_cases/src/measure.rs
+f6e4ea14def76849baefefac7d41709c3e0cc18d76f33deb8d175b011aa3da84  source.tar.gz

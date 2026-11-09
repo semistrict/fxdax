@@ -1,0 +1,171 @@
+info: component rust-std for target x86_64-unknown-linux-musl is up to date
+info: component clippy is up to date
+     Ignored package `cargo-nextest v0.9.143` is already installed, use --force to override
+info: syncing channel updates for nightly-2026-10-12-x86_64-unknown-linux-gnu
+info: latest update on 2026-10-12 for version 1.101.0-nightly (080cc2714 2026-10-11)
+info: component rust-src is up to date
+info: checking for self-update (current version: 1.29.3)
+Took 1282s.
+Host: linux. VMM: firecracker. Iterations: ext4-guest-kernel 3, ext4-pmem 3, ext4-dax-pmem 3, fxfs-guest 3, fxfs-guest-dax 3, fxfs-guest-dax-followed 3, fxfs-guest-dax-followed-idle 3.
+
+| Workload | Unit | ext4-guest-kernel | ext4-pmem | ext4-dax-pmem | fxfs-guest | fxfs-guest-dax | fxfs-guest-dax-followed | fxfs-guest-dax-followed-idle | ext4-pmem vs ext4-guest-kernel | ext4-dax-pmem vs ext4-pmem | fxfs-guest vs ext4-dax-pmem | fxfs-guest-dax vs ext4-dax-pmem | fxfs-guest-dax-followed vs fxfs-guest-dax | fxfs-guest-dax-followed-idle vs fxfs-guest-dax |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| seq-write | MiB/s | 154 (120–189) | 113 (93.7–127) | 124 (123–135) | 139 (106–140) | 129 (106–140) | 130 (106–140) | 129 (107–140) | 1.36× | 0.91× | 0.90× | 0.96× | 0.99× | 1.00× |
+| rand-read-cold | IOPS | 29,521 (26,299–30,454) | 65,016 (63,015–67,424) | 73,471 (73,143–74,473) | 5,934 (5,814–6,004) | 11,753 (11,481–12,163) | 11,457 (10,967–84,021) | 12,200 (11,959–12,236) | 0.45× | 0.88× | **12.38×** | **6.25×** | 1.03× | 0.96× |
+| seq-read-cold | MiB/s | 3,048 (1,313–3,241) | 413 (322–424) | 447 (441–449) | 945 (780–959) | 391 (391–395) | 391 (388–1,524) | 396 (396–398) | **7.38×** | 0.92× | 0.47× | 1.14× | 1.00× | 0.99× |
+| seq-read-warm | MiB/s | 8,113 (8,055–8,126) | 8,363 (8,346–8,483) | 11,004 (10,780–11,267) | 8,217 (8,176–8,311) | 10,824 (10,791–10,895) | 10,657 (10,585–10,731) | 11,027 (10,853–11,103) | 0.97× | 0.76× | 1.34× | 1.02× | 1.02× | 0.98× |
+| rand-read-warm | IOPS | 915,694 (909,211–924,419) | 925,097 (820,838–929,280) | 866,241 (863,826–874,547) | 926,335 (923,448–928,923) | 840,113 (839,345–844,356) | 831,540 (831,141–840,264) | 844,885 (844,056–846,449) | 0.99× | 1.07× | 0.94× | 1.03× | 1.01× | 0.99× |
+| mmap-seq-read | MiB/s | 9,481 (9,481–9,846) | 9,846 (9,846–9,846) | 10,240 (10,240–10,667) | 8,828 (8,828–9,143) | 10,240 (9,846–10,240) | 9,846 (9,481–10,240) | 9,846 (9,846–9,846) | 0.96× | 0.96× | 1.16× | 1.00× | 1.04× | 1.04× |
+| rand-write | IOPS | 14,895 (11,018–15,087) | 11,214 (10,298–11,409) | 11,078 (9,846–11,085) | 76,561 (71,235–78,392) | 6,008 (5,822–6,413) | 5,422 (5,407–7,208) | 5,934 (5,881–5,949) | 1.33× | 1.01× | 0.14× | 1.84× | 1.11× | 1.01× |
+| mmap-rand-read | IOPS | 1,260,425 (1,250,935–1,276,519) | 1,230,913 (1,226,646–1,232,043) | 790,476 (786,767–792,998) | 1,223,723 (1,215,842–1,224,893) | 1,278,624 (1,278,248–1,287,440) | 1,285,021 (762,618–1,293,346) | 1,285,103 (1,283,078–1,286,128) | 1.02× | 1.56× | 0.65× | 0.62× | 1.00× | 0.99× |
+| mmap-rand-write | IOPS | 9,598 (9,022–10,708) | 7,953 (7,873–7,953) | 10,952 (10,952–11,048) | 7,780 (7,596–7,877) | 60,907 (60,235–64,504) | 61,363 (45,638–64,251) | 63,504 (61,826–64,000) | 1.21× | 0.73× | 1.41× | 0.18× | 0.99× | 0.96× |
+| fsync-append | IOPS | 424 (416–435) | 533 (530–534) | 542 (533–543) | 1,898 (1,616–2,821) | 3,165 (2,981–3,556) | 2,263 (1,864–2,401) | 2,779 (2,606–3,039) | 0.80× | 0.98× | 0.29× | 0.17× | 1.40× | 1.14× |
+| sqlite-pread-scan | MiB/s | 2,718 (2,709–2,733) | 304 (304–311) | 285 (279–286) | 307 (302–320) | 160 (153–176) | 158 (147–170) | 161 (160–173) | **8.93×** | 1.07× | 0.93× | 1.78× | 1.01× | 1.00× |
+| sqlite-pread-scan-warm | MiB/s | 3,033 (3,010–3,042) | 2,971 (2,957–2,978) | 2,827 (2,800–2,829) | 2,999 (2,985–3,016) | 2,768 (2,735–2,770) | 2,752 (2,715–2,781) | 2,763 (2,755–2,799) | 1.02× | 1.05× | 0.94× | 1.02× | 1.01× | 1.00× |
+| sqlite-mmap-scan | MiB/s | 2,134 (1,031–2,680) | 2,652 (2,636–2,667) | 2,906 (1,923–2,926) | 866 (827–869) | 2,844 (2,811–2,850) | 2,847 (2,845–2,873) | 2,926 (2,876–2,936) | 0.80× | 0.91× | **3.35×** | 1.02× | 1.00× | 0.97× |
+| sqlite-mmap-scan-warm | MiB/s | 2,934 (2,931–2,949) | 2,772 (2,760–2,780) | 3,037 (2,006–3,075) | 2,826 (2,768–2,844) | 2,926 (2,908–2,927) | 2,939 (2,926–2,950) | 2,974 (2,971–3,054) | 1.06× | 0.91× | 1.07× | 1.04× | 1.00× | 0.98× |
+| create | ops/s | 97,052 (96,192–97,615) | 98,283 (82,617–98,458) | 38,432 (33,314–38,481) | 78,985 (78,085–81,103) | 78,947 (62,483–80,211) | 79,040 (77,773–79,596) | 79,455 (67,818–81,259) | 0.99× | **2.56×** | 0.49× | 0.49× | 1.00× | 0.99× |
+| stat-cold | ops/s | 324,175 (279,372–336,984) | 332,066 (201,712–338,843) | 328,176 (158,218–332,494) | 179,009 (170,960–179,379) | 161,224 (121,609–178,797) | 172,488 (170,605–196,586) | 165,159 (164,596–170,453) | 0.98× | 1.01× | 1.83× | **2.04×** | 0.93× | 0.98× |
+| stat-warm | ops/s | 1,205,128 (677,667–1,216,993) | 959,376 (727,524–1,086,272) | 798,949 (691,960–1,126,715) | 1,168,818 (1,085,126–1,179,346) | 1,075,061 (1,026,276–1,158,511) | 1,145,739 (1,118,404–1,197,901) | 851,958 (775,597–1,065,123) | 1.26× | 1.20× | 0.68× | 0.74× | 0.94× | 1.26× |
+| lookup-missing | ops/s | 447,460 (381,288–447,612) | 413,460 (388,090–449,084) | 438,590 (382,353–444,704) | 471,667 (452,444–478,910) | 485,838 (451,522–486,157) | 497,326 (465,017–504,900) | 486,620 (436,296–498,334) | 1.08× | 0.94× | 0.93× | 0.90× | 0.98× | 1.00× |
+| readdir | ops/s | 2,907,146 (1,427,862–3,030,905) | 3,002,363 (2,886,182–3,093,863) | 2,917,293 (2,105,210–2,941,272) | 3,155,903 (2,569,763–3,206,397) | 2,780,373 (2,744,772–2,921,235) | 2,862,123 (2,857,669–2,906,212) | 2,740,980 (2,737,873–2,881,541) | 0.97× | 1.03× | 0.92× | 1.05× | 0.97× | 1.01× |
+| read-small-cold | ops/s | 23,499 (23,372–26,123) | 49,093 (48,857–50,278) | 52,977 (52,593–53,005) | 8,219 (7,982–8,413) | 35,093 (33,301–35,754) | 35,389 (34,068–35,778) | 35,615 (34,859–36,778) | 0.48× | 0.93× | **6.45×** | 1.51× | 0.99× | 0.99× |
+| chmod | ops/s | 670,204 (451,031–680,559) | 643,149 (458,286–688,699) | 695,341 (672,791–727,955) | 349,781 (345,481–388,227) | 340,549 (277,533–368,756) | 354,354 (338,852–405,582) | 342,869 (332,665–410,771) | 1.04× | 0.92× | 1.99× | **2.04×** | 0.96× | 0.99× |
+| setxattr | ops/s | 552,640 (521,527–558,761) | 568,017 (528,579–590,726) | 525,812 (411,867–545,588) | 164,541 (162,397–178,752) | 182,176 (175,033–183,743) | 166,907 (163,436–177,824) | 178,056 (154,314–178,502) | 0.97× | 1.08× | **3.20×** | **2.89×** | 1.09× | 1.02× |
+| link | ops/s | 137,096 (137,079–152,264) | 150,993 (140,615–155,743) | 150,158 (150,127–154,394) | 91,931 (86,216–95,376) | 93,045 (90,677–94,752) | 91,447 (89,697–94,319) | 91,136 (89,512–96,737) | 0.91× | 1.01× | 1.63× | 1.61× | 1.02× | 1.02× |
+| rename | ops/s | 117,557 (116,417–120,084) | 118,673 (118,155–120,403) | 113,856 (110,565–113,942) | 73,631 (55,040–77,374) | 73,034 (71,961–74,343) | 72,888 (71,597–75,475) | 72,836 (71,569–74,243) | 0.99× | 1.04× | 1.55× | 1.56× | 1.00× | 1.00× |
+| rename-across | ops/s | 100,346 (98,662–101,519) | 99,534 (99,274–100,800) | 97,668 (97,250–99,786) | 63,946 (60,124–65,376) | 59,207 (53,427–62,866) | 59,317 (53,760–63,850) | 59,034 (48,328–62,114) | 1.01× | 1.02× | 1.53× | 1.65× | 1.00× | 1.00× |
+| unlink | ops/s | 366,992 (359,055–381,783) | 382,349 (379,142–400,837) | 378,806 (357,895–378,849) | 291,530 (160,351–309,649) | 237,691 (207,326–263,236) | 241,019 (214,019–276,036) | 253,486 (156,943–280,116) | 0.96× | 1.01× | 1.30× | 1.59× | 0.99× | 0.94× |
+| create-fsync | ops/s | 404 (373–432) | 562 (546–575) | 572 (547–586) | 2,908 (2,508–2,935) | 2,730 (2,708–2,742) | 2,096 (2,027–2,311) | 2,459 (2,453–2,648) | 0.72× | 0.98× | 0.20× | 0.21× | 1.30× | 1.11× |
+| mkdir-tree | ops/s | 126,017 (125,978–126,079) | 129,900 (129,189–129,911) | 42,461 (42,200–42,678) | 76,822 (74,341–78,439) | 76,652 (76,340–77,548) | 76,481 (72,632–77,321) | 75,278 (72,513–76,030) | 0.97× | **3.06×** | 0.55× | 0.55× | 1.00× | 1.02× |
+| find-cold | ops/s | 311,096 (309,892–314,995) | 313,470 (295,007–319,385) | 312,409 (144,719–313,044) | 152,638 (124,925–171,141) | 150,965 (137,499–152,905) | 149,906 (135,925–160,245) | 141,847 (137,378–146,053) | 0.99× | 1.00× | **2.05×** | **2.07×** | 1.01× | 1.06× |
+| rm-tree | ops/s | 103,856 (101,419–107,694) | 109,147 (107,003–110,294) | 108,312 (98,450–111,674) | 69,178 (64,946–69,420) | 67,753 (64,158–69,286) | 66,072 (52,480–68,382) | 67,087 (64,148–67,930) | 0.95× | 1.01× | 1.57× | 1.60× | 1.03× | 1.01× |
+| large-dir-create | ops/s | 110,812 (101,564–111,545) | 111,361 (106,368–111,671) | 110,047 (78,259–111,639) | 86,832 (85,520–88,306) | 88,335 (87,354–88,764) | 88,063 (87,404–88,238) | 87,949 (86,124–88,727) | 1.00× | 1.01× | 1.27× | 1.25× | 1.00× | 1.00× |
+| large-dir-stat-cold | ops/s | 260,045 (251,169–261,047) | 265,502 (259,102–275,072) | 224,276 (142,306–249,307) | 173,113 (125,285–176,544) | 161,852 (156,738–166,981) | 161,786 (157,929–166,588) | 161,985 (153,271–166,523) | 0.98× | 1.18× | 1.30× | 1.39× | 1.00× | 1.00× |
+| large-dir-unlink | ops/s | 207,446 (203,480–207,483) | 205,890 (181,151–209,978) | 205,686 (203,846–205,847) | 161,492 (145,670–164,935) | 162,194 (123,773–175,312) | 185,303 (128,810–186,448) | 179,730 (129,794–184,657) | 1.01× | 1.00× | 1.27× | 1.27× | 0.88× | 0.90× |
+| create-parallel | ops/s | 171,594 (169,328–180,176) | 180,395 (175,218–181,107) | 174,092 (170,173–181,358) | 119,231 (101,160–121,607) | 119,368 (119,297–125,663) | 121,753 (118,464–124,113) | 117,046 (115,225–127,318) | 0.95× | 1.04× | 1.46× | 1.46× | 0.98× | 1.02× |
+| stat-parallel | ops/s | 607,048 (534,290–648,177) | 643,646 (615,258–683,353) | 542,091 (538,564–619,944) | 366,850 (319,193–430,554) | 453,914 (419,399–462,543) | 429,238 (403,154–448,974) | 460,707 (416,174–482,504) | 0.94× | 1.19× | 1.48× | 1.19× | 1.06× | 0.99× |
+| unlink-parallel | ops/s | 305,580 (294,384–317,502) | 307,234 (307,125–315,737) | 283,061 (280,194–319,027) | 166,322 (164,303–168,937) | 168,797 (159,294–179,381) | 167,670 (160,609–179,103) | 169,432 (165,239–182,915) | 0.99× | 1.09× | 1.70× | 1.68× | 1.01× | 1.00× |
+| create-shared-dir | ops/s | 109,154 (105,225–113,242) | 109,353 (108,117–109,928) | 109,121 (107,063–110,807) | 84,881 (79,700–88,170) | 82,968 (79,967–83,834) | 81,501 (80,283–87,924) | 83,765 (79,096–90,696) | 1.00× | 1.00× | 1.29× | 1.32× | 1.02× | 0.99× |
+| unlink-shared-dir | ops/s | 279,786 (276,415–284,009) | 277,811 (268,910–282,997) | 273,871 (270,336–274,194) | 159,693 (154,299–184,808) | 154,361 (123,613–163,527) | 157,905 (128,810–164,308) | 126,152 (115,590–164,225) | 1.01× | 1.01× | 1.71× | 1.77× | 0.98× | 1.22× |
+| untar | s | 0.01 (0.01–0.01) | 0.01 (0.01–0.01) | 0.01 (0.01–0.01) | 0.01 (0.01–0.02) | 0.01 (0.01–0.01) | 0.02 (0.01–0.02) | 0.02 (0.02–0.02) | 1.07× | 1.00× | 1.00× | 1.00× | 1.07× | 1.13× |
+| make | s | 4.62 (4.61–4.62) | 4.60 (4.59–4.61) | 4.65 (4.65–4.79) | 4.67 (4.63–4.67) | 4.67 (4.64–4.68) | 4.62 (4.61–4.68) | 4.63 (4.61–4.65) | 1.00× | 1.01× | 1.00× | 1.00× | 0.99× | 0.99× |
+| build-total | s | 4.63 (4.62–4.63) | 4.61 (4.61–4.62) | 4.67 (4.66–4.80) | 4.69 (4.64–4.69) | 4.68 (4.66–4.70) | 4.64 (4.63–4.70) | 4.65 (4.62–4.66) | 1.00× | 1.01× | 1.00× | 1.00× | 0.99× | 0.99× |
+
+- ext4-guest-kernel: mmap-seq-read-faults-per-mib 6.60 median (6.60–6.60)
+- ext4-guest-kernel: mtime-ahead-of-guest-ms -2.84 median (-3.17–-2.51)
+- ext4-guest-kernel: sqlite-mmap-scan-faults-per-mib 2.10 median (2.10–2.10)
+- ext4-guest-kernel: sqlite-mmap-scan-warm-faults-per-mib 2.10 median (2.10–2.10)
+- ext4-guest-kernel: sqlite-pread-scan-faults-per-mib 2.70 median (2.60–2.70)
+- ext4-guest-kernel: sqlite-pread-scan-warm-faults-per-mib 2.60 median (2.60–2.60)
+- ext4-pmem: mmap-seq-read-faults-per-mib 6.30 median (6.30–6.30)
+- ext4-pmem: mtime-ahead-of-guest-ms -7.45 median (-7.64–-7.14)
+- ext4-pmem: sqlite-mmap-scan-faults-per-mib 13.3 median (13.3–13.3)
+- ext4-pmem: sqlite-mmap-scan-warm-faults-per-mib 11.9 median (11.9–11.9)
+- ext4-pmem: sqlite-pread-scan-faults-per-mib 2.60 median (2.60–2.70)
+- ext4-pmem: sqlite-pread-scan-warm-faults-per-mib 2.60 median (2.60–2.60)
+- ext4-dax-pmem: mmap-seq-read-faults-per-mib 5.60 median (5.60–5.60)
+- ext4-dax-pmem: mtime-ahead-of-guest-ms -5.16 median (-5.86–-2.72)
+- ext4-dax-pmem: sqlite-mmap-scan-faults-per-mib 3.70 median (3.70–129)
+- ext4-dax-pmem: sqlite-mmap-scan-warm-faults-per-mib 3.60 median (3.60–129)
+- ext4-dax-pmem: sqlite-pread-scan-faults-per-mib 2.70 median (2.70–2.70)
+- ext4-dax-pmem: sqlite-pread-scan-warm-faults-per-mib 2.60 median (2.60–2.60)
+- fxfs-guest: mmap-seq-read-faults-per-mib 13.7 median (13.7–13.7)
+- fxfs-guest: mtime-ahead-of-guest-ms -5.70 median (-6.19–-3.68)
+- fxfs-guest: sqlite-mmap-scan-faults-per-mib 9.60 median (9.60–9.60)
+- fxfs-guest: sqlite-mmap-scan-warm-faults-per-mib 9.30 median (9.20–9.30)
+- fxfs-guest: sqlite-pread-scan-faults-per-mib 2.60 median (2.60–2.70)
+- fxfs-guest: sqlite-pread-scan-warm-faults-per-mib 2.60 median (2.60–2.60)
+- fxfs-guest-dax: mmap-seq-read-faults-per-mib 5.50 median (5.50–5.50)
+- fxfs-guest-dax: mtime-ahead-of-guest-ms -4.97 median (-5.96–-3.98)
+- fxfs-guest-dax: sqlite-mmap-scan-faults-per-mib 1.70 median (1.70–1.70)
+- fxfs-guest-dax: sqlite-mmap-scan-warm-faults-per-mib 1.70 median (1.70–1.70)
+- fxfs-guest-dax: sqlite-pread-scan-faults-per-mib 2.70 median (2.70–2.70)
+- fxfs-guest-dax: sqlite-pread-scan-warm-faults-per-mib 2.60 median (2.60–2.60)
+- fxfs-guest-dax-followed: follower1-failed-reads 0.00 median (0.00–0.00)
+- fxfs-guest-dax-followed: follower1-raced-reads 20,479,112 median (20,479,112–20,479,112)
+- fxfs-guest-dax-followed: follower1-reads 299 median (299–299)
+- fxfs-guest-dax-followed: follower2-failed-reads 0.00 median (0.00–0.00)
+- fxfs-guest-dax-followed: follower2-raced-reads 20,421,907 median (20,421,907–20,421,907)
+- fxfs-guest-dax-followed: follower2-reads 296 median (296–296)
+- fxfs-guest-dax-followed: mmap-seq-read-faults-per-mib 5.50 median (5.50–5.50)
+- fxfs-guest-dax-followed: mtime-ahead-of-guest-ms -4.65 median (-5.91–-3.10)
+- fxfs-guest-dax-followed: sqlite-mmap-scan-faults-per-mib 1.70 median (1.70–1.70)
+- fxfs-guest-dax-followed: sqlite-mmap-scan-warm-faults-per-mib 1.70 median (1.70–1.70)
+- fxfs-guest-dax-followed: sqlite-pread-scan-faults-per-mib 2.70 median (2.70–2.70)
+- fxfs-guest-dax-followed: sqlite-pread-scan-warm-faults-per-mib 2.60 median (2.60–2.60)
+- fxfs-guest-dax-followed-idle: follower1-failed-reads 0.00 median (0.00–0.00)
+- fxfs-guest-dax-followed-idle: follower1-raced-reads 0.00 median (0.00–0.00)
+- fxfs-guest-dax-followed-idle: follower1-reads 0.00 median (0.00–0.00)
+- fxfs-guest-dax-followed-idle: follower2-failed-reads 0.00 median (0.00–0.00)
+- fxfs-guest-dax-followed-idle: follower2-raced-reads 0.00 median (0.00–0.00)
+- fxfs-guest-dax-followed-idle: follower2-reads 0.00 median (0.00–0.00)
+- fxfs-guest-dax-followed-idle: mmap-seq-read-faults-per-mib 5.50 median (5.50–5.50)
+- fxfs-guest-dax-followed-idle: mtime-ahead-of-guest-ms -4.60 median (-7.31–-3.38)
+- fxfs-guest-dax-followed-idle: sqlite-mmap-scan-faults-per-mib 1.70 median (1.70–1.70)
+- fxfs-guest-dax-followed-idle: sqlite-mmap-scan-warm-faults-per-mib 1.70 median (1.60–1.70)
+- fxfs-guest-dax-followed-idle: sqlite-pread-scan-faults-per-mib 2.70 median (2.60–2.70)
+- fxfs-guest-dax-followed-idle: sqlite-pread-scan-warm-faults-per-mib 2.60 median (2.60–2.70)
+
+Object storage: the extent daemon's requests to its bucket, for the cases that kept their
+stores there, at GCS Standard single-region prices (class A $0.005 per 1,000, class B
+$0.0004 per 1,000, deletes free).
+
+| Request | Count | Class | Cost |
+|---|---|---|---|
+| get | 430 | B | $0.000172 |
+| get-range | 9,583 | B | $0.003833 |
+| head | 0 | B | $0.000000 |
+| list | 20 | A | $0.000100 |
+| create | 4,297 | A | $0.021485 |
+| update | 2 | A | $0.000010 |
+| overwrite | 0 | A | $0.000000 |
+| delete | 1 | free | $0.000000 |
+| all | 14,333 | | $0.025600 |
+
+Uploaded 7.7 GiB (segments 4.7 GiB, extents 3.0 GiB, checkpoints 36.1 KiB, moves 0 B, other 180 B); downloaded 5.8 GiB.
+
+Followers: at most 2 at once, at most 4826 commits and 87,201 ms behind their writer, keeping at most 2.0 GiB of its frees.
+
+Extent daemon: the VM processes' requests, as it served them, from their dispatch to their
+reply.
+
+| Request | Count | Each |
+|---|---|---|
+| open | 8 | 3,942.1 µs |
+| read | 116,124 | 71.6 µs |
+| write | 160,475 | 550.4 µs |
+| free | 129 | 12.8 µs |
+| map | 63,467 | 59.2 µs |
+| unmap | 2,895 | 79.0 µs |
+| commit | 369 | 79,353.2 µs |
+| root | 16 | 1.2 µs |
+| info | 32 | 2.2 µs |
+| window | 7 | 24.3 µs |
+| fault | 65,226 | 264.8 µs |
+| advance | 2,777 | 3.1 µs |
+| let_go | 2,775 | 2.9 µs |
+| pin | 650 | 6.9 µs |
+| transfer | 8 | 11.9 µs |
+| free_many | 555 | 1,785.8 µs |
+| private | 147,456 | 8.2 µs |
+
+Commits: 27,576, 3,253.4 µs each: committing the store 438.4 µs, waiting for object storage 2,814.7 µs.
+
+Segments closed and framed: 445, 108.4 ms each.
+
+Over 2× slower than ext4:
+- rand-read-cold on fxfs-guest: 12.38× ext4-dax-pmem's
+- rand-read-cold on fxfs-guest-dax: 6.25× ext4-dax-pmem's
+- seq-read-cold on ext4-pmem: 7.38× ext4-guest-kernel's
+- sqlite-pread-scan on ext4-pmem: 8.93× ext4-guest-kernel's
+- sqlite-mmap-scan on fxfs-guest: 3.35× ext4-dax-pmem's
+- create on ext4-dax-pmem: 2.56× ext4-pmem's
+- stat-cold on fxfs-guest-dax: 2.04× ext4-dax-pmem's
+- read-small-cold on fxfs-guest: 6.45× ext4-dax-pmem's
+- chmod on fxfs-guest-dax: 2.04× ext4-dax-pmem's
+- setxattr on fxfs-guest: 3.20× ext4-dax-pmem's
+- setxattr on fxfs-guest-dax: 2.89× ext4-dax-pmem's
+- mkdir-tree on ext4-dax-pmem: 3.06× ext4-pmem's
+- find-cold on fxfs-guest: 2.05× ext4-dax-pmem's
+- find-cold on fxfs-guest-dax: 2.07× ext4-dax-pmem's

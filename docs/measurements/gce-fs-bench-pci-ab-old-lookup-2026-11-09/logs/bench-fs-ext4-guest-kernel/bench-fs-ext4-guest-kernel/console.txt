@@ -1,0 +1,256 @@
+[    0.111725] PCI: Fatal: No config space access function found
+[    0.139219] PCI: System does not support PCI
+[    0.299677] check access for rdinit=/init failed: -2, ignoring
+fxdax: boot kernel_ns=323106000 agent_ns=344857290
+iteration 1/5
+OBSERVED mtime-ahead-of-guest-ms -3.298
+RESULT create ops/s higher 35387.286
+FXFS create: 
+RESULT stat-cold ops/s higher 150164.344
+FXFS stat-cold: 
+RESULT stat-warm ops/s higher 1014230.156
+FXFS stat-warm: 
+RESULT lookup-missing ops/s higher 350650.378
+FXFS lookup-missing: 
+RESULT readdir ops/s higher 2931910.770
+FXFS readdir: 
+RESULT read-small-cold ops/s higher 14500.998
+FXFS read-small-cold: 
+RESULT chmod ops/s higher 685169.439
+FXFS chmod: 
+RESULT setxattr ops/s higher 545876.707
+FXFS setxattr: 
+RESULT link ops/s higher 153315.529
+FXFS link: 
+RESULT rename ops/s higher 113437.339
+FXFS rename: 
+RESULT rename-across ops/s higher 102456.292
+FXFS rename-across: 
+RESULT unlink ops/s higher 407935.404
+FXFS unlink: 
+RESULT create-fsync ops/s higher 368.459
+FXFS create-fsync: 
+RESULT mkdir-tree ops/s higher 106475.198
+FXFS mkdir-tree: 
+RESULT find-cold ops/s higher 320837.219
+FXFS find-cold: 
+RESULT rm-tree ops/s higher 109492.895
+FXFS rm-tree: 
+RESULT large-dir-create ops/s higher 71137.410
+FXFS large-dir-create: 
+RESULT large-dir-stat-cold ops/s higher 212240.175
+FXFS large-dir-stat-cold: 
+RESULT large-dir-unlink ops/s higher 210864.716
+FXFS large-dir-unlink: 
+RESULT create-parallel ops/s higher 169040.656
+FXFS create-parallel: 
+RESULT stat-parallel ops/s higher 627589.985
+FXFS stat-parallel: 
+RESULT unlink-parallel ops/s higher 311882.315
+FXFS unlink-parallel: 
+RESULT create-shared-dir ops/s higher 110667.990
+FXFS create-shared-dir: 
+RESULT unlink-shared-dir ops/s higher 285499.325
+FXFS unlink-shared-dir: 
+iteration 2/5
+OBSERVED mtime-ahead-of-guest-ms -3.861
+RESULT create ops/s higher 92616.368
+FXFS create: 
+RESULT stat-cold ops/s higher 339019.941
+FXFS stat-cold: 
+RESULT stat-warm ops/s higher 1301474.115
+FXFS stat-warm: 
+RESULT lookup-missing ops/s higher 419172.269
+FXFS RESULT readdir ops/s higher 3121590.638
+lookup-missing: 
+FXFS readdir: 
+RESULT read-small-cold ops/s higher 12878.860
+FXFS read-small-cold: 
+RESULT chmod ops/s higher 454382.187
+FXFS chmod: 
+RESULT setxattr ops/s higher 543973.750
+FXFS setxattr: 
+RESULT link ops/s higher 150284.989
+FXFS link: 
+RESULT rename ops/s higher 116741.590
+FXFS rename: 
+RESULT rename-across ops/s higher 98534.361
+FXFS rename-across: 
+RESULT unlink ops/s higher 362419.885
+FXFS unlink: 
+RESULT create-fsync ops/s higher 378.077
+FXFS create-fsync: 
+RESULT mkdir-tree ops/s higher 130120.206
+FXFS mkdir-tree: 
+RESULT find-cold ops/s higher 321546.687
+FXFS find-cold: 
+RESULT rm-tree ops/s higher 112128.122
+FXFS rm-tree: 
+RESULT large-dir-create ops/s higher 111185.288
+FXFS large-dir-create: 
+RESULT large-dir-stat-cold ops/s higher 258599.450
+FXFS large-dir-stat-cold: 
+RESULT large-dir-unlink ops/s higher 206407.346
+FXFS large-dir-unlink: 
+RESULT create-parallel ops/s higher 174497.066
+FXFS create-parallel: 
+RESULT stat-parallel ops/s higher 649994.629
+FXFS stat-parallel: 
+RESULT unlink-parallel ops/s higher 299274.879
+FXFS unlink-parallel: 
+RESULT create-shared-dir ops/s higher 108120.565
+FXFS create-shared-dir: 
+RESULT unlink-shared-dir ops/s higher 272678.510
+FXFS unlink-shared-dir: 
+iteration 3/5
+OBSERVED mtime-ahead-of-guest-ms -5.197
+RESULT create ops/s higher 46474.274
+FXFS create: 
+RESULT stat-cold ops/s higher 337301.517
+FXFS stat-cold: 
+RESULT stat-warm ops/s higher 1328086.506
+FXFS stat-warm: 
+RESULT lookup-missing ops/s higher 408560.737
+FXFS lookup-missing: 
+FXFS readdir: 
+RESULT readdir ops/s higher 3106139.907
+RESULT read-small-cold ops/s higher 13945.812
+FXFS read-small-cold: 
+RESULT chmod ops/s higher 587881.873
+FXFS RESULT setxattr ops/s higher 550247.047
+chmod: 
+FXFS setxattr: 
+RESULT link ops/s higher 139998.425
+FXFS link: 
+RESULT rename ops/s higher 118874.798
+FXFS rename: 
+RESULT rename-across ops/s higher 102115.470
+FXFS rename-across: 
+RESULT unlink ops/s higher 405852.474
+FXFS unlink: 
+RESULT create-fsync ops/s higher 375.733
+FXFS create-fsync: 
+RESULT mkdir-tree ops/s higher 119951.315
+FXFS mkdir-tree: 
+RESULT find-cold ops/s higher 316441.384
+FXFS find-cold: 
+RESULT rm-tree ops/s higher 107721.990
+FXFS rm-tree: 
+RESULT large-dir-create ops/s higher 102960.142
+FXFS large-dir-create: 
+RESULT large-dir-stat-cold ops/s higher 266433.818
+FXFS large-dir-stat-cold: 
+RESULT large-dir-unlink ops/s higher 211834.346
+FXFS large-dir-unlink: 
+RESULT create-parallel ops/s higher 165088.060
+FXFS create-parallel: 
+RESULT stat-parallel ops/s higher 597862.596
+FXFS stat-parallel: 
+RESULT unlink-parallel ops/s higher 287681.431
+FXFS unlink-parallel: 
+RESULT create-shared-dir ops/s higher 107162.130
+FXFS create-shared-dir: 
+RESULT unlink-shared-dir ops/s higher 287435.005
+FXFS unlink-shared-dir: 
+iteration 4/5
+OBSERVED mtime-ahead-of-guest-ms -4.549
+RESULT create ops/s higher 74493.780
+FXFS create: 
+RESULT stat-cold ops/s higher 337142.538
+FXFS stat-cold: 
+RESULT stat-warm ops/s higher 1489875.551
+FXFS stat-warm: 
+FXFS lookup-missing: 
+RESULT lookup-missing ops/s higher 451833.733
+FXFS readdir: 
+RESULT readdir ops/s higher 2941851.366
+RESULT read-small-cold ops/s higher 15134.776
+FXFS read-small-cold: 
+RESULT chmod ops/s higher 457769.819
+FXFS chmod: 
+RESULT setxattr ops/s higher 563695.157
+FXFS setxattr: 
+RESULT link ops/s higher 144987.916
+FXFS link: 
+RESULT rename ops/s higher 114538.583
+FXFS rename: 
+RESULT rename-across ops/s higher 102186.166
+FXFS rename-across: 
+RESULT unlink ops/s higher 400246.392
+FXFS unlink: 
+RESULT create-fsync ops/s higher 377.791
+FXFS create-fsync: 
+RESULT mkdir-tree ops/s higher 126691.658
+FXFS mkdir-tree: 
+RESULT find-cold ops/s higher 313529.102
+FXFS find-cold: 
+RESULT rm-tree ops/s higher 103443.472
+FXFS rm-tree: 
+RESULT large-dir-create ops/s higher 111447.739
+FXFS large-dir-create: 
+RESULT large-dir-stat-cold ops/s higher 265808.350
+FXFS large-dir-stat-cold: 
+RESULT large-dir-unlink ops/s higher 211517.100
+FXFS large-dir-unlink: 
+RESULT create-parallel ops/s higher 176195.678
+FXFS create-parallel: 
+RESULT stat-parallel ops/s higher 574662.897
+FXFS stat-parallel: 
+RESULT unlink-parallel ops/s higher 299357.101
+FXFS unlink-parallel: 
+RESULT create-shared-dir ops/s higher 109585.800
+FXFS create-shared-dir: 
+RESULT unlink-shared-dir ops/s higher 277644.075
+FXFS unlink-shared-dir: 
+iteration 5/5
+OBSERVED mtime-ahead-of-guest-ms -3.189
+RESULT create ops/s higher 100283.768
+FXFS create: 
+RESULT stat-cold ops/s higher 332092.966
+FXFS stat-cold: 
+RESULT stat-warm ops/s higher 1173118.918
+FXFS stat-warm: 
+RESULT lookup-missing ops/s higher 446892.921
+FXFS lookup-missing: 
+RESULT readdir ops/s higher 3066078.593
+FXFS readdir: 
+RESULT read-small-cold ops/s higher 16294.858
+FXFS read-small-cold: 
+RESULT chmod ops/s higher 537461.323
+FXFS chmod: 
+RESULT setxattr ops/s higher 608651.988
+FXFS setxattr: 
+RESULT link ops/s higher 157287.669
+FXFS link: 
+RESULT rename ops/s higher 122168.277
+FXFS rename: 
+RESULT rename-across ops/s higher 102436.005
+FXFS rename-across: 
+FXFS unlink: 
+RESULT unlink ops/s higher 406804.042
+RESULT create-fsync ops/s higher 359.420
+FXFS create-fsync: 
+RESULT mkdir-tree ops/s higher 119129.875
+FXFS mkdir-tree: 
+RESULT find-cold ops/s higher 294844.521
+FXFS find-cold: 
+RESULT rm-tree ops/s higher 107407.863
+FXFS rm-tree: 
+RESULT large-dir-create ops/s higher 109671.469
+FXFS large-dir-create: 
+RESULT large-dir-stat-cold ops/s higher 163849.159
+FXFS large-dir-stat-cold: 
+RESULT large-dir-unlink ops/s higher 208114.540
+FXFS large-dir-unlink: 
+RESULT create-parallel ops/s higher 176906.411
+FXFS create-parallel: 
+RESULT stat-parallel ops/s higher 628106.181
+FXFS stat-parallel: 
+RESULT unlink-parallel ops/s higher 297642.223
+FXFS unlink-parallel: 
+RESULT create-shared-dir ops/s higher 108520.359
+FXFS create-shared-dir: 
+RESULT unlink-shared-dir ops/s higher 280457.284
+FXFS unlink-shared-dir: 
+DONE
+[    8.819718] reboot: Restarting system

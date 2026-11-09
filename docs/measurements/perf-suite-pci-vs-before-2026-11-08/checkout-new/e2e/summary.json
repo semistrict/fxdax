@@ -1,0 +1,62 @@
+{
+ "commit": "0f011561a52f9d13506e67b7a4c3dff92fa6c530-dirty",
+ "rounds": 1,
+ "status": 0,
+ "failed": [],
+ "cases": [
+  {
+   "case": "linux-checkout-ext4",
+   "outcome": "pass",
+   "round": 1,
+   "rounds_passed": 1,
+   "failed_checks": [],
+   "reason": null,
+   "replay": "FXDAX_WORKSPACE_TESTS=0 FXDAX_E2E_TEST=linux-checkout-ext4 FXDAX_E2E_ROUNDS=1 FXDAX_GUEST_KERNEL_BUILD=release FXDAX_TEST_PARTS='clippy workspace sim shuttle scripts guest firecracker' PJDFSTEST_COMMIT=85a8aea9e685999ef0540392fd80535f873d7ff7 PJDFSTEST_REPO=https://github.com/pjd/pjdfstest scripts/test-gce.sh all",
+   "daemons": []
+  },
+  {
+   "case": "linux-checkout-fxfs",
+   "outcome": "pass",
+   "round": 1,
+   "rounds_passed": 1,
+   "failed_checks": [],
+   "reason": null,
+   "replay": "FXDAX_WORKSPACE_TESTS=0 FXDAX_E2E_TEST=linux-checkout-fxfs FXDAX_E2E_ROUNDS=1 FXDAX_GUEST_KERNEL_BUILD=release FXDAX_TEST_PARTS='clippy workspace sim shuttle scripts guest firecracker' PJDFSTEST_COMMIT=85a8aea9e685999ef0540392fd80535f873d7ff7 PJDFSTEST_REPO=https://github.com/pjd/pjdfstest scripts/test-gce.sh all",
+   "daemons": [
+    {
+     "daemon": "extentd",
+     "downloaded": 39898,
+     "bucket_read": 1789992960,
+     "store_read": 1073152
+    }
+   ]
+  },
+  {
+   "case": "linux-checkout-fxfs-dax",
+   "outcome": "pass",
+   "round": 1,
+   "rounds_passed": 1,
+   "failed_checks": [],
+   "reason": null,
+   "replay": "FXDAX_WORKSPACE_TESTS=0 FXDAX_E2E_TEST=linux-checkout-fxfs-dax FXDAX_E2E_ROUNDS=1 FXDAX_GUEST_KERNEL_BUILD=release FXDAX_TEST_PARTS='clippy workspace sim shuttle scripts guest firecracker' PJDFSTEST_COMMIT=85a8aea9e685999ef0540392fd80535f873d7ff7 PJDFSTEST_REPO=https://github.com/pjd/pjdfstest scripts/test-gce.sh all",
+   "daemons": [
+    {
+     "daemon": "extentd",
+     "downloaded": 40114,
+     "bucket_read": 1788850176,
+     "store_read": 1097728
+    }
+   ]
+  }
+ ],
+ "daemon": null,
+ "knobs": {
+  "FXDAX_E2E_ROUNDS": "1",
+  "FXDAX_E2E_TEST": "linux-checkout-ext4 linux-checkout-fxfs linux-checkout-fxfs-dax",
+  "FXDAX_GUEST_KERNEL_BUILD": "release",
+  "FXDAX_TEST_PARTS": "clippy workspace sim shuttle scripts guest firecracker",
+  "FXDAX_WORKSPACE_TESTS": "0",
+  "PJDFSTEST_COMMIT": "85a8aea9e685999ef0540392fd80535f873d7ff7",
+  "PJDFSTEST_REPO": "https://github.com/pjd/pjdfstest"
+ }
+}
