@@ -4,11 +4,11 @@ title: >-
   Guest Fxfs deadlocks in reclaim: TreeCache::invalidate allocates holding a
   shard lock, the superblock shrinker's count (fxfs_vfs_nr_cached_objects,
   TreeCache::len) takes it
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-09 08:41'
-updated_date: '2026-11-09 13:07'
+updated_date: '2026-11-09 14:12'
 labels:
   - bug
   - fxfs
@@ -25,16 +25,16 @@ GCE t257dbg2 (debug kernel, main 142195ae2 + TASK-257, fxdax-keep-n2-standard-4-
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 TreeCache::len takes no lock, and TreeCache::shrink no lock it would wait for
-- [ ] #2 A host test: an allocation under a shard's lock that calls the cache's len and shrink returns (no deadlock)
-- [ ] #3 fxfs-guest-checks-dax-delay passes 20 rounds on the debug kernel
+- [x] #1 TreeCache::len takes no lock, and TreeCache::shrink no lock it would wait for
+- [x] #2 A host test: an allocation under a shard's lock that calls the cache's len and shrink returns (no deadlock)
+- [x] #3 fxfs-guest-checks-dax-delay passes 20 rounds on the debug kernel
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Notes
@@ -43,4 +43,12 @@ GCE t257dbg2 (debug kernel, main 142195ae2 + TASK-257, fxdax-keep-n2-standard-4-
 Fix c42c8e2a6-line (pushed with TASK-257): Shards counts its items in an AtomicUsize updated under the shard's lock (added/removed, enforce), len() reads it lock-free, shrink() try_locks and passes over a held shard. Host test test_counted_and_shrunk_under_a_shards_lock hangs on the old len (verified: SLOW >60 s, killed) and passes on the fix. GCE debug fxfs-guest-checks-dax-delay with the fix: t257dbg3 2 rounds (round 2 lost to TASK-299), t257ws4 8 rounds (round 8 lost to TASK-299): 10 rounds, no hang; AC #3 (20 rounds) open, TASK-299 stopping runs.
 
 2026-11-09, ubu1 (non-root): debug kernel built (FXDAX_GUEST_KERNEL_DEBUG=1), fxfs-guest-checks-dax-delay alone with FXDAX_E2E_ROUNDS=20 (prebuilt, as test-e2e.sh's own pre-tests need root, TASK-307): round 1 failed in 1 s, the extent device's userfaultfd refused (/dev/userfaultfd root 0600, Firecracker's fallback syscall killed by seccomp, TASK-308). Blocked on ubu1's setup: /dev/userfaultfd must be readable and writable by ramon (udev rule for the kvm group). Worktree ~/src/fxdax-t292 and kernel ~/fxdax-guest-kernel-debug kept on ubu1 for the re-run.
+
+2026-11-09, ubu1 (/dev/userfaultfd root:kvm 0660 now): debug kernel, fxfs-guest-checks-dax-delay alone, FXDAX_E2E_ROUNDS=20, prebuilt (TASK-307): 20 rounds passed (e2e.log 'fxfs-guest-checks-dax-delay: 20 rounds passed', 20 'OK - 1/1 passed'), no hang. Workspace: GCE t257ws4 Linux suites passed with the fix; main CI 42606149376 green (macOS workspace included) at ef0f4f1d9.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+TreeCache::invalidate allocated under a shard's lock; direct reclaim's superblock shrinker counted the cache (fxfs_vfs_nr_cached_objects -> TreeCache::len) by taking every shard's lock, and the guest deadlocked. Shards now count their items in an atomic updated under the shard's lock, len() reads it lock-free, shrink() try_locks and passes over a held shard (c42c8e2a6). Verified: host test test_counted_and_shrunk_under_a_shards_lock (hangs on the old len, passes now), fxfs/fxfs-posix 888/888, main CI green, 20/20 debug-kernel rounds of fxfs-guest-checks-dax-delay on ubu1.
+<!-- SECTION:FINAL_SUMMARY:END -->
