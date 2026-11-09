@@ -51,7 +51,10 @@
 //!
 //! The VMs run in Firecracker driven through its API. Their root filesystem's disk is read-only,
 //! as the restored VMs share it. The guest tells the host it is frozen over vsock, and each
-//! restored guest, whose connection the restore resets, asks the host its name on a new one.
+//! restored guest, whose connection the restore resets, asks the host its name on a new one. The
+//! host closes its end as soon as it has read that the guest is frozen, so the guest may be
+//! connecting again as the snapshot is taken: a connection whose response is in the restored
+//! guest's RX queue, which Firecracker resets there too (TASK-277).
 
 use macros::{guest, host};
 
@@ -679,12 +682,14 @@ mod guest {
     /// The name the host gives this restored VM, on a new connection. The restore resets the
     /// guest's vsock connections, which its kernel learns of from an event it may take only after
     /// the old connection has ended, and a new one is made: a new connection reset so is made
-    /// again (TASK-50.1.2).
+    /// again (TASK-50.1.2). One made as the snapshot was taken, its RST behind its response in
+    /// the RX queue, connects and then ends, nothing read (TASK-277): made again too.
     fn name_from_host() -> String {
         for _ in 0..100 {
             let mut name = String::new();
             let read = try_connect().and_then(|host| BufReader::new(host).read_line(&mut name));
             match read {
+                Ok(0) => {}
                 Ok(_) => return name.trim_end().to_owned(),
                 Err(err)
                     if matches!(

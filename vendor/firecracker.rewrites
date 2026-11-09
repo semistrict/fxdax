@@ -6,3 +6,7 @@
 # TASK-273: the series' second release, fxdax-v1.16.1-r2 (branch fxdax-v1.16.1-pci), the extent
 # device over virtio-PCI alone and no MMIO shared memory registers, replacing fxdax-pci-r1's stack.
 517d438c5d02b097725a46bbde9e9cae4fe5a0c2 68d5971759373a2b2edb9e698bed44a56cda1a54
+# TASK-277: the series' third release, fxdax-v1.16.1-r3 (branch fxdax-v1.16.1-pci-vsock-reset), a
+# general vsock fix (a snapshot resets the connections in the RX queue, ahead of TRANSPORT_RESET)
+# among the fixes at the series' base, before the fxdax feature.
+68d5971759373a2b2edb9e698bed44a56cda1a54 14dc26674a5ae0f8626433c689b2517357da80e2
