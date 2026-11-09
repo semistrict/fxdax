@@ -3,7 +3,7 @@ id: doc-10
 title: 'Shared volumes: Fxfs volumes over read-only bases'
 type: specification
 created_date: '2026-10-30 09:08'
-updated_date: '2026-11-08 05:34'
+updated_date: '2026-11-09 05:56'
 ---
 # Shared volumes: Fxfs volumes over read-only bases
 
@@ -241,7 +241,9 @@ stays attached (TASK-136.5's record).
   configuration of its guests builds autofs in.
 - **The upcall:** the daemon asks the sandbox manager over vsock (the host's port 5054), a
   connection for each ask, so that a VM restored from a snapshot, whose connections are gone, asks
-  as before. The protocol is lines (`crates/fxfs-automount/src/upcall.rs`): `attach NAME`,
+  as before; an ask a restore's reset ends, as of a connection made while the snapshot was taken,
+  is asked again on a new one, as every ask is idempotent (`crates/fxfs-automount/src/reconnect.rs`,
+  TASK-277). The protocol is lines (`crates/fxfs-automount/src/upcall.rs`): `attach NAME`,
   answered `manifest SIZE` and the manifest, or `refused WHY`; and `newest URL`, for moving to a
   newer generation (below), answered `named NAME` or `refused WHY`. The guest agent is whatever
   runs the daemon: it needs nothing else of the guest's.

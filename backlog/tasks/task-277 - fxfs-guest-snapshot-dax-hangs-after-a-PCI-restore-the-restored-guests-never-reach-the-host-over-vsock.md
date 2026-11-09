@@ -3,9 +3,11 @@ id: TASK-277
 title: >-
   fxfs-guest-snapshot-dax hangs after a PCI restore: the restored guests never
   reach the host over vsock
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-11-09 05:02'
+updated_date: '2026-11-09 07:23'
 labels:
   - bug
   - pci
@@ -33,3 +35,17 @@ GCE TASK-275 boot-new run (fxdax-keep-c3-standard-8-us-east4-a-1, main 0f011561a
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Reproduce on a stopped n2 GCE host (40 rounds, Firecracker debug logs, guest prints of the frozen connection's end and each name connection). 2. Root cause from the hung guest's stacks and the guest kernel's vsock code. 3. Fix in Firecracker's vsock (general commit, new branch off fxdax-v1.16.1-pci, series re-cut as fxdax-v1.16.1-r3), unit tests. 4. Guest case: a name connection that ends unread is made again. 5. A/B: fixed build 40 rounds on a second n2 host. 6. Quick KVM tests + PCI guest cases, snapshot case >=30 rounds, release guest round; rebase, push, CI.
+<!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Reproduced on fxdax-keep-n2-standard-4-us-west1-a-1 (main + guest prints, Firecracker r2 68d597175, Debug log): round 2 of 40 hung (round 1 passed). Source VM's log, the last 0.3 ms before the pause: host shuts the frozen connection (op 4), guest closes (op 3) and sends a REQUEST on a new port (op 1), the muxer puts its RESPONSE (op 2, guest port 181040319) in the RX queue; then pause and snapshot. Both restored guests print 'connect: Ok(())' and block in read forever (vsock_connectible_recvmsg); the host's listeners never accept. Root cause: TRANSPORT_RESET resets only sockets in Linux's connected table; a connecting socket enters it on taking OP_RESPONSE (virtio_transport_common.c recv_connecting). Under MSI-X the guest takes the event queue and RX queue on separate vectors, in either order: taking the stale RESPONSE after the reset sweep connects the socket to a muxer that no longer exists. MMIO's single interrupt took RX first, which is why MMIO never hung. r2 vs 517d438c5: no vsock or restore-path change beyond the MMIO removal; the earlier 10/10 PCI pass was luck.
+
+Fix: Firecracker fxdax-v1.16.1-r3 (14dc26674; general commit bc3954c00 'vsock: a snapshot resets the connections in the RX queue, ahead of TRANSPORT_RESET', branch fxdax-v1.16.1-pci-vsock-reset): prepare_save kills the muxer's connections, each an RST in the RX queue behind any response, before TRANSPORT_RESET, bypassing the RX gate (every packet then is an RST); kick signals the RX queue too. Guest side: fxfs_automount::reconnect::exchange makes an exchange again on a new connection while a reset ends it (ECONNRESET, EPIPE, ENOTCONN, ECONNABORTED, EOF before the answer), used by fxfs-automount/git-remote-fxfs (idempotent asks) and the snapshot and git-fetch cases; docs/integrator-guide.md states the contract for integrators' agents. Verification: unfixed r2 hung in round 2 of 40 (and round 2 of 10 originally); r3 40/40 (t277b) and 30/30 (t277e, every round logged a reset made again: the race hit each round and was handled); restore cases 3 rounds each (t277d): all snapshot/suspend/migrate/git-fetch/shared-volumes pass, two unrelated failures filed (TASK-280 remount EBUSY before any snapshot, TASK-281 automount volume open after expiry); full run t277c: workspace + Firecracker KVM tests all pass, release guest suite 15/16 (TASK-257's flake). Series check: 15 commits, both ways (arm64 container). macOS workspace 2169/2169; scripts/upstream-changes.py --check passes.
+<!-- SECTION:NOTES:END -->
