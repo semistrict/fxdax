@@ -3,9 +3,10 @@
 /*
  * The virtio extent-store device's driver (fxdax's backlog doc-4; include/linux/virtio_extent.h).
  *
- * Requests go to the device's one request queue as descriptor chains: the header and arguments,
- * the data the device reads, the data it writes, and the response. Many may be in flight; the
- * queue's interrupt completes them, calling each one's `done`. A submitter waits for room when
+ * Requests go to the device's request queues as descriptor chains, each CPU's to its own: the
+ * header and arguments, the data the device reads, the data it writes, and the response. Many may
+ * be in flight; the queue's interrupt, on the CPUs whose queue it is, completes them, calling each
+ * one's `done`. A submitter waits for room when
  * the queue is full. The DAX window, if the device has one, is memremapped, so that the guest's
  * Fxfs reads extents mapped into it in place: as pages of a dax_device, with FS_DAX, as
  * virtio_fs_setup_dax makes its cache window, which files map (fs/fxfs/dax.c). fxdax: without
@@ -15,6 +16,7 @@
 #include <linux/completion.h>
 #include <linux/dax.h>
 #include <linux/device/driver.h>
+#include <linux/interrupt.h>
 #include <linux/io.h>
 #include <linux/memremap.h>
 #include <linux/list.h>
@@ -105,6 +107,11 @@ struct virtio_extent {
 	 */
 	struct vext_queue *queues;
 	unsigned int nr_queues;
+	/*
+	 * fxdax: the queue each CPU's requests go to, by CPU: the one whose interrupt the transport
+	 * made affine to it, so that they complete on it (vext_map_queues, TASK-276).
+	 */
+	unsigned int *cpu_queue;
 	struct vext_config config;
 	/* fxdax: its DAX window, if it has one (F_DAX, with FS_DAX). */
 	struct vext_window window;
@@ -478,8 +485,11 @@ int virtio_extent_submit(struct virtio_extent *vext, struct vext_request *req)
 		return -EINVAL;
 	}
 
-	/* The queue of the CPU it runs on: if it moves meanwhile, another's, which is as good. */
-	queue = &vext->queues[raw_smp_processor_id() % vext->nr_queues];
+	/*
+	 * The queue of the CPU it runs on, whose interrupt completes it there: if it moves meanwhile,
+	 * another's, which is as good.
+	 */
+	queue = &vext->queues[READ_ONCE(vext->cpu_queue[raw_smp_processor_id()])];
 	for (;;) {
 		req->queued_ns = ktime_get_ns();
 		req->cpu = raw_smp_processor_id();
@@ -666,12 +676,58 @@ static void vext_done(struct virtqueue *vq)
 }
 
 /*
+ * fxdax: whether the queues' interrupts are spread over the CPUs, each queue's affine to the CPUs
+ * whose requests go to it (vext_map_queues), and how many queues the driver uses at most, 0 for
+ * as many as the device has: what an A/B of the queues' parallelism turns off, interleaved in one
+ * build (TASK-276). Read as a device's queues are found.
+ */
+static bool vext_affine = true;
+module_param_named(affine, vext_affine, bool, 0444);
+MODULE_PARM_DESC(affine, "Whether each CPU's requests go to a queue whose interrupt is affine to it");
+static unsigned int vext_max_queues;
+module_param_named(max_queues, vext_max_queues, uint, 0444);
+MODULE_PARM_DESC(max_queues, "The most request queues the driver uses, 0 for the device's all");
+
+/*
+ * fxdax: maps each CPU to the queue whose interrupt the transport made affine to it, as
+ * blk_mq_virtio_map_queues does (TASK-276): a request then completes on the CPU that queued it,
+ * whose caller is woken there, rather than by an interrupt between CPUs, and finds its request in
+ * its cache. Where the transport says no affinity of some queue (vectors shared, or none), the CPUs
+ * go round the queues, as they did before.
+ */
+static void vext_map_queues(struct virtio_extent *vext)
+{
+	struct virtio_device *vdev = vext->vdev;
+	const struct cpumask *mask;
+	unsigned int i, cpu;
+
+	for (i = 0; vext_affine && vdev->config->get_vq_affinity && i < vext->nr_queues; i++) {
+		if (!vdev->config->get_vq_affinity(vdev, i))
+			break;
+	}
+	if (!vext_affine || !vdev->config->get_vq_affinity || i < vext->nr_queues) {
+		for_each_possible_cpu(cpu)
+			WRITE_ONCE(vext->cpu_queue[cpu], cpu % vext->nr_queues);
+		return;
+	}
+	for (i = 0; i < vext->nr_queues; i++) {
+		mask = vdev->config->get_vq_affinity(vdev, i);
+		for_each_cpu(cpu, mask)
+			WRITE_ONCE(vext->cpu_queue[cpu], i);
+	}
+}
+
+/*
  * Finds the device's request queues, one for each CPU, up to as many as it has: one, if it says
- * none (num_request_queues is 1 at least).
+ * none (num_request_queues is 1 at least). fxdax: their interrupts spread over the CPUs, each
+ * queue's affine to those its requests come from (vext_map_queues), the configuration's apart, as
+ * virtio_blk has its queues' (TASK-276).
  */
 static int vext_find_queues(struct virtio_extent *vext)
 {
 	struct virtio_device *vdev = vext->vdev;
+	/* The transport counts the configuration's vector among those before the queues'. */
+	struct irq_affinity affinity = { 0 };
 	struct virtqueue_info *infos;
 	struct virtqueue **vqs;
 	unsigned int i, offered;
@@ -684,6 +740,8 @@ static int vext_find_queues(struct virtio_extent *vext)
 	if (!vext->queues) {
 		virtio_cread_le(vdev, struct virtio_extent_config, num_request_queues, &offered);
 		vext->nr_queues = clamp(offered, 1U, nr_cpu_ids);
+		if (vext_max_queues)
+			vext->nr_queues = min(vext->nr_queues, vext_max_queues);
 		vext->queues = devm_kcalloc(&vdev->dev, vext->nr_queues, sizeof(*vext->queues),
 					    GFP_KERNEL);
 		if (!vext->queues)
@@ -692,6 +750,11 @@ static int vext_find_queues(struct virtio_extent *vext)
 			spin_lock_init(&vext->queues[i].lock);
 			init_waitqueue_head(&vext->queues[i].room);
 		}
+		/* Every CPU's, the first queue's until they are found: none is found unmapped. */
+		vext->cpu_queue = devm_kcalloc(&vdev->dev, nr_cpu_ids, sizeof(*vext->cpu_queue),
+					       GFP_KERNEL);
+		if (!vext->cpu_queue)
+			return -ENOMEM;
 	}
 	infos = kcalloc(vext->nr_queues, sizeof(*infos), GFP_KERNEL);
 	vqs = kcalloc(vext->nr_queues, sizeof(*vqs), GFP_KERNEL);
@@ -700,9 +763,10 @@ static int vext_find_queues(struct virtio_extent *vext)
 		goto out;
 	for (i = 0; i < vext->nr_queues; i++)
 		infos[i] = (struct virtqueue_info){ "requests", vext_done };
-	err = virtio_find_vqs(vdev, vext->nr_queues, vqs, infos, NULL);
+	err = virtio_find_vqs(vdev, vext->nr_queues, vqs, infos, vext_affine ? &affinity : NULL);
 	if (err)
 		goto out;
+	vext_map_queues(vext);
 	for (i = 0; i < vext->nr_queues; i++) {
 		struct vext_queue *queue = &vext->queues[i];
 
