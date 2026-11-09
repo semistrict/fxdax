@@ -76,7 +76,10 @@ pub enum ReadOnly {
     /// A volume of its own, `RO_VOLUME`, mounted read-only beside the default, on a store the host
     /// makes with it, which the guest writes to first, mounted writable.
     Volume,
-    /// The default volume, remounted read-only before it freezes, and writable once it thaws.
+    /// The default volume, remounted read-only before it freezes, and writable once it thaws. The
+    /// pieces' writable mapping goes first, mapped again read-only: the file it maps stays open
+    /// for writing while it does, which the VFS's read-only remount refuses (`EBUSY`), any
+    /// filesystem's, as an integrator's would be (TASK-280).
     Remounted,
 }
 
@@ -733,13 +736,13 @@ mod guest {
         mapped
     }
 
-    /// Maps the `MAPPED_LEN` bytes of `path`, shared and read-only, which stays mapped.
-    fn map(path: &str) -> &'static [u8] {
+    /// Maps the `len` bytes of `path`, shared and read-only, which stays mapped.
+    fn map(path: &str, len: usize) -> &'static [u8] {
         let file = fs::File::open(path).unwrap();
         let map = unsafe {
             libc::mmap(
                 std::ptr::null_mut(),
-                MAPPED_LEN,
+                len,
                 libc::PROT_READ,
                 libc::MAP_SHARED,
                 file.as_raw_fd(),
@@ -748,7 +751,7 @@ mod guest {
         };
         assert_ne!(map, libc::MAP_FAILED, "mmap: {}", std::io::Error::last_os_error());
         // SAFETY: the mapping, never unmapped.
-        unsafe { std::slice::from_raw_parts(map as *const u8, MAPPED_LEN) }
+        unsafe { std::slice::from_raw_parts(map as *const u8, len) }
     }
 
     impl Test for TestFxfsGuestSnapshot {
@@ -765,7 +768,7 @@ mod guest {
             write_pieces(&format!("{MNT}/pieces"));
             unmount();
             mount();
-            let mapped_pieces = map_pieces(&format!("{MNT}/pieces"));
+            let mut mapped_pieces = map_pieces(&format!("{MNT}/pieces"));
             for volume in 0..volumes {
                 fs::create_dir(at(volume)).unwrap();
             }
@@ -775,7 +778,7 @@ mod guest {
             }
             fs::write(format!("{MNT}/before"), BEFORE).unwrap();
             fs::write(format!("{MNT}/mapped"), mapped_pattern()).unwrap();
-            let mapped = map(&format!("{MNT}/mapped"));
+            let mapped = map(&format!("{MNT}/mapped"), MAPPED_LEN);
             // Read through the mapping, which with a DAX window maps the window's pages.
             assert!(mapped == &mapped_pattern()[..], "the mapping before the snapshot");
             match self.read_only {
@@ -790,6 +793,12 @@ mod guest {
                     freeze_at(&read_only_at(), FIFREEZE);
                 }
                 ReadOnly::Remounted => {
+                    let len = mapped_pieces.len();
+                    // SAFETY: the mapping `map_pieces` made, which nothing uses any more.
+                    assert_eq!(unsafe { libc::munmap(mapped_pieces.as_ptr() as *mut _, len) }, 0);
+                    mapped_pieces = map(&format!("{MNT}/pieces"), len);
+                    let written = pieces_stored();
+                    assert!(mapped_pieces == &written[..], "the pieces' mapping, read-only");
                     mount_volume(FXFS_DEFAULT, MNT, libc::MS_REMOUNT | libc::MS_RDONLY)
                 }
             }
@@ -847,7 +856,7 @@ mod guest {
             let written = pieces_stored();
             assert!(mapped_pieces == &written[..], "{name}: the pieces' mapping after the restore");
             assert!(fs::read(format!("{MNT}/pieces")).unwrap() == written, "{name}: pieces read");
-            // SAFETY: the mapping `map_pieces` made, which nothing uses any more.
+            // SAFETY: the pieces' mapping, which nothing uses any more.
             let len = mapped_pieces.len();
             assert_eq!(unsafe { libc::munmap(mapped_pieces.as_ptr() as *mut _, len) }, 0);
             fs::write(format!("{MNT}/who"), &name).unwrap();
