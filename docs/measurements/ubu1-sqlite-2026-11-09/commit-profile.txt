@@ -1,0 +1,37 @@
+16
+Under /home/ramon/src/fxdax-t301/target/sqlite-commit-profile.
+append and fdatasync 1 blocks: 1000 commits, 1543/s, p50 632 µs, p99 722 µs
+overwrite and fdatasync 1 blocks: 1000 commits, 1536/s, p50 635 µs, p99 745 µs
+append and fdatasync 5 blocks: 1000 commits, 1509/s, p50 647 µs, p99 757 µs
+overwrite and fdatasync 5 blocks: 1000 commits, 1518/s, p50 644 µs, p99 756 µs
+  store flushes 0.00 a commit; µs a commit: wait 0.0, data 0.0, dirs 0.0, logs 0.0, gone 0.0, raw 0.0
+wal-full: 1000 commits, 1437/s, p50 674 µs, p99 805 µs
+image:
+  read           3.77 a commit,     22.8 µs each,     86.1 µs a commit
+  write          1.00 a commit,    822.7 µs each,    825.1 µs a commit
+  free           0.01 a commit,    100.4 µs each,      1.4 µs a commit
+  store flushes 1.00 a commit; µs a commit: wait 0.0, data 13.2, dirs 0.0, logs 703.1, gone 0.0, raw 0.0
+image: 1000 commits, 1053/s, p50 904 µs, p99 1604 µs
+daemon:
+  write          1.00 a commit,    854.7 µs each,    857.3 µs a commit
+  free           0.01 a commit,     99.3 µs each,      1.4 µs a commit
+  store flushes 1.00 a commit; µs a commit: wait 3.0, data 8.7, dirs 0.0, logs 762.7, gone 0.1, raw 0.0
+daemon: 1000 commits, 1106/s, p50 827 µs, p99 2596 µs
+Under /home/ramon/src/fxdax-t301/target/sqlite-commit-profile.
+append and fdatasync 1 blocks: 1000 commits, 1352/s, p50 652 µs, p99 2569 µs
+overwrite and fdatasync 1 blocks: 1000 commits, 1175/s, p50 676 µs, p99 3913 µs
+append and fdatasync 5 blocks: 1000 commits, 1307/s, p50 663 µs, p99 2588 µs
+overwrite and fdatasync 5 blocks: 1000 commits, 1388/s, p50 651 µs, p99 3154 µs
+  store flushes 0.00 a commit; µs a commit: wait 0.0, data 0.0, dirs 0.0, logs 0.0, gone 0.0, raw 0.0
+wal-full: 1000 commits, 1265/s, p50 699 µs, p99 2416 µs
+image:
+  read           3.77 a commit,     38.2 µs each,    143.8 µs a commit
+  write          1.00 a commit,   1080.5 µs each,   1083.7 µs a commit
+  free           0.01 a commit,     96.2 µs each,      1.3 µs a commit
+  store flushes 1.00 a commit; µs a commit: wait 0.4, data 13.6, dirs 0.0, logs 941.9, gone 0.1, raw 0.2
+image: 1000 commits, 773/s, p50 1007 µs, p99 4322 µs
+daemon:
+  write          1.00 a commit,    911.1 µs each,    913.9 µs a commit
+  free           0.01 a commit,     85.3 µs each,      1.2 µs a commit
+  store flushes 1.00 a commit; µs a commit: wait 0.1, data 9.0, dirs 0.0, logs 808.4, gone 0.1, raw 0.1
+daemon: 1000 commits, 1033/s, p50 853 µs, p99 3084 µs

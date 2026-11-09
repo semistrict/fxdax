@@ -1,0 +1,5 @@
+Linux ubu1 7.0.0-43-generic #43-Ubuntu SMP PREEMPT_DYNAMIC Fri Oct 23 13:25:25 UTC 2026 x86_64 GNU/Linux
+Model name:                              AMD Ryzen 9 8945HS w/ Radeon 780M Graphics
+16
+MemTotal:       29056644 kB
+rpool/USERDATA/home_tk4nb1 zfs  1859744000 29442304 1830301696   2% /home
