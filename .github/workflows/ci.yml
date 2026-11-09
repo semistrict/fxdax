@@ -279,7 +279,7 @@ jobs:
   # Every commit of the Firecracker series builds both ways, as it promises those who take it onto
   # forks of their own (TASK-269): without its fxdax feature outside this checkout, with it as fxdax
   # builds it (scripts/firecracker-series-check.sh), from its upstream release up; when
-  # vendor/firecracker moved, a build of each commit.
+  # vendor/firecracker moved, or the run was asked for by hand, a build of each commit.
   firecracker-series:
     runs-on: ubuntu-24.04
     timeout-minutes: 90
@@ -296,7 +296,9 @@ jobs:
           if [[ -z $BASE || $BASE == 0000000000000000000000000000000000000000 ]]; then
             BASE=$(git merge-base origin/main HEAD)
           fi
-          if [[ $(git rev-parse "$BASE:vendor/firecracker") == $(git rev-parse HEAD:vendor/firecracker) ]]; then
+          # A run asked for by hand checks the series whatever moved.
+          if [[ $GITHUB_EVENT_NAME != workflow_dispatch &&
+                $(git rev-parse "$BASE:vendor/firecracker") == $(git rev-parse HEAD:vendor/firecracker) ]]; then
             echo moved=false >> "$GITHUB_OUTPUT"
           else
             echo moved=true >> "$GITHUB_OUTPUT"
