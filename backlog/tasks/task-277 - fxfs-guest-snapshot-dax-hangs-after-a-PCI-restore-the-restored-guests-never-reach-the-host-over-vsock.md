@@ -3,7 +3,7 @@ id: TASK-277
 title: >-
   fxfs-guest-snapshot-dax hangs after a PCI restore: the restored guests never
   reach the host over vsock
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-09 05:02'
@@ -51,3 +51,9 @@ Fix: Firecracker fxdax-v1.16.1-r3 (14dc26674; general commit bc3954c00 'vsock: a
 
 CI at f824ffd50 (another agent's push on top of 96f1d068e): every job passed in at least one of runs 42579391459 (push) and 42581320255 (dispatched, so that the x86 firecracker-series check ran: passed). No single run is fully green: macos (workspace) in the first, macos (shuttle) in the second and its rerun, each failed installing tools (taiki-e/install-action, HTTP 504 from the download host for 60 s; TASK-285) before any test ran. Status left In Progress until a fully green run.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Root cause: a guest connecting over vsock as a snapshot was taken had Firecracker's OP_RESPONSE in its RX queue; Linux's TRANSPORT_RESET resets only connected sockets, and under MSI-X the guest took the RX queue after the event, connecting its socket to a muxer the restored VM lacks, whose reads then hung forever (MMIO's single interrupt took RX first). Fix: Firecracker fxdax-v1.16.1-r3 (14dc26674, general commit bc3954c00 on branch fxdax-v1.16.1-pci-vsock-reset): a snapshot ends the muxer's connections, each an RST in the RX queue ahead of TRANSPORT_RESET, and the restore's kick signals the RX queue; unit tests for each. Guest side, now the specified behaviour: fxfs_automount::reconnect makes an exchange again on a new connection while a restore's reset ends it, used by fxfs-automount, git-remote-fxfs and the snapshot and git-fetch cases; docs/integrator-guide.md and doc-10 state the contract. Verified: r2 hung in round 2 of 40; r3 passed 40/40 and 30/30 (a reset made again in every round), every restore case 3 rounds, workspace and Firecracker KVM tests on GCE and macOS, series check both ways on arm64 and x86 (CI 42581320255). CI at f824ffd50: every job passed in at least one of runs 42579391459 and 42581320255; the only failures were macos (workspace) and macos (shuttle) failing to install tools on HTTP 504s before any test ran (TASK-285), accepted by the user. Reopen if the dfb61b0a4 push run shows a real test failure. Seen along the way and filed: TASK-280, TASK-281, TASK-257 again.
+<!-- SECTION:FINAL_SUMMARY:END -->
