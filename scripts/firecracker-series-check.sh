@@ -13,23 +13,21 @@
 # those build as fxdax builds them, with its crate and lock, but no feature to ask for.
 #
 # Usage: firecracker-series-check.sh [BASE [TIP]]
-# BASE defaults to the upstream release the series is on, which its latest release's tag names
-# (fxdax-vX.Y.Z-rN: vX.Y.Z), TIP to vendor/firecracker's HEAD. FXDAX_FIRECRACKER_SERIES_WORK is where the checkout outside
-# this repo and the builds go (default $TMPDIR/fxdax-firecracker-series), kept from run to run.
+# BASE defaults to the upstream release the series is on, by commit, as vendor/firecracker.base
+# records it: no tag, which a fresh checkout of the fork may lack (the fork had no v1.16.1 tag, and
+# git describe found an older one, CI runs 42542801715 and 42547087497). TIP defaults to
+# vendor/firecracker's HEAD. FXDAX_FIRECRACKER_SERIES_WORK is where the checkout outside this repo
+# and the builds go (default $TMPDIR/fxdax-firecracker-series), kept from run to run.
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
 fc=$root/vendor/firecracker
 work=${FXDAX_FIRECRACKER_SERIES_WORK:-${TMPDIR:-/tmp}/fxdax-firecracker-series}
 tip=$(git -C "$fc" rev-parse "${2:-HEAD}")
-if [[ -n ${1:-} ]]; then
-    base=$1
-else
-    release=$(git -C "$fc" describe --tags --abbrev=0 --match 'fxdax-v*-r*' "$tip") ||
-        { echo "no fxdax-vX.Y.Z-rN tag below ${tip:0:12}: name the base" >&2; exit 2; }
-    base=${release#fxdax-}
-    base=${base%-r*}
-fi
+base=${1:-$(sed -n 's/^\([0-9a-f]\{40\}\) .*/\1/p' "$root/vendor/firecracker.base")}
+[[ -n $base ]] || { echo "vendor/firecracker.base names no commit" >&2; exit 2; }
+git -C "$fc" cat-file -e "$base^{commit}" 2> /dev/null ||
+    { echo "$base: not in vendor/firecracker's history (git -C vendor/firecracker fetch --unshallow)" >&2; exit 2; }
 git -C "$fc" merge-base --is-ancestor "$base" "$tip" ||
     { echo "$base is not below ${tip:0:12}: not the series' base" >&2; exit 2; }
 echo "The series: $base..${tip:0:12}"

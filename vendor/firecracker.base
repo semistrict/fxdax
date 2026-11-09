@@ -1,0 +1,4 @@
+# The upstream release vendor/firecracker's series is on, by commit, which
+# scripts/firecracker-series-check.sh checks the series from: no tag is needed, which a checkout
+# may lack (TASK-269). Moved with the series, as it goes onto another release.
+2038188f145fb81b8d098147a10e9d9f392fd22f v1.16.1

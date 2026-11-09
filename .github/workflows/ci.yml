@@ -308,11 +308,12 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y clang libclang-dev libseccomp-dev
-      # The series' history and its upstream release's tag, and its toolchain with clippy.
+      # The series' history, down to the upstream release it is on (vendor/firecracker.base, by
+      # commit: the fork need have no tag of it), and its toolchain with clippy.
       - name: Fetch the series
         if: steps.moved.outputs.moved == 'true'
         run: |
-          git -C vendor/firecracker fetch --tags --unshallow origin || git -C vendor/firecracker fetch --tags origin
+          git -C vendor/firecracker fetch --unshallow origin || git -C vendor/firecracker fetch origin
           rustup toolchain install "$(sed -n 's/^channel = "\(.*\)"$/\1/p' vendor/firecracker/rust-toolchain.toml)" \
             --profile minimal -c clippy
       - name: scripts/firecracker-series-check.sh
