@@ -4,10 +4,11 @@ title: >-
   fxfs-posix every_cut_of_a_short_sequence: a cut waits for journal space too
   long (debug_assert_not_too_long, journal.rs) after Snapshot, Mkdir,
   SetDirXattr, Rename
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-11-09 00:50'
-updated_date: '2026-11-09 01:41'
+updated_date: '2026-11-09 01:50'
 labels:
   - fxfs
 dependencies: []
@@ -41,4 +42,6 @@ GCE debug round for TASK-269 (run-20261108T233114Z-d2a31963, host workspace suit
 Reproduced on the release round too (run-20261108T233107Z-6613ee40): failed after 390 s, same test.
 
 Also red in main CI 42542801715 (test (workspace), 620 s, at 1c60cffb2), green in 42533641317 at bbed9afd0: intermittent, proptest seeds random per run.
+
+2026-11-09: root cause: TASK-245's fix had snapshot_volume call Journal::check_journal_space directly, skipping the maybe_start_flush_task that reservation_for_transaction does first. A cut's remount that has committed nothing yet (super-block at checkpoint 0, 17036 bytes replayed, reclaim 16 KiB) has no flush task, so no compaction ran and the Snapshot waited forever. Fixed at 527e42a34: FxFilesystem::wait_for_journal_space starts the flush task, then waits; the snapshot and every checked transaction use it. Pinned by every_cut_of_a_snapshot_a_directory_its_xattr_and_a_rename: 60 s hang before, 0.19 s after. fxfs + fxfs-posix 886/886 on macOS, upstream-changes --check passes. TASK-245 itself stays fixed; this was a regression its fix introduced.
 <!-- SECTION:NOTES:END -->
