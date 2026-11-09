@@ -1,0 +1,1004 @@
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 3K of event 'task-clock:ppp'
+# Event count (approx.): 635327040
+#
+# Children      Self  Symbol                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         
+# ........  ........  ...........................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................
+#
+    29.22%     0.00%  [.] entry_SYSCALL_64_after_hwframe
+            |          
+            |--3.26%--0x71db734b4792
+            |          |          
+            |          |--1.61%--__libc_pread
+            |          |          <std::sys::fd::unix::FileDesc>::read_at (inlined)
+            |          |          <std::sys::fs::unix::File>::read_at (inlined)
+            |          |          <std::fs::File as std::os::unix::fs::FileExt>::read_at
+            |          |          read_fully (inlined)
+            |          |          <extent_store::dir::HostFile as extent_store::dir::File>::read_cached
+            |          |          0x894800086a1a15ff
+            |          |          
+            |           --0.80%--epoll_wait
+            |                     select (inlined)
+            |                     <mio::poll::Poll>::poll
+            |          
+             --1.80%--syscall
+                       |          
+                        --1.22%--atomic_load<u8> (inlined)
+                                  load (inlined)
+                                  get (inlined)
+                                  |          
+                                   --0.63%--wait_timeout<tokio::runtime::blocking::pool::Shared> (inlined)
+                                             <tokio::runtime::blocking::pool::Inner>::run
+
+    29.16%     0.47%  [.] do_syscall_64
+            |
+            ---entry_SYSCALL_64_after_hwframe
+               |          
+               |--3.25%--0x71db734b4792
+               |          |          
+               |          |--1.61%--__libc_pread
+               |          |          <std::sys::fd::unix::FileDesc>::read_at (inlined)
+               |          |          <std::sys::fs::unix::File>::read_at (inlined)
+               |          |          <std::fs::File as std::os::unix::fs::FileExt>::read_at
+               |          |          read_fully (inlined)
+               |          |          <extent_store::dir::HostFile as extent_store::dir::File>::read_cached
+               |          |          0x894800086a1a15ff
+               |          |          
+               |           --0.80%--epoll_wait
+               |                     select (inlined)
+               |                     <mio::poll::Poll>::poll
+               |          
+                --1.80%--syscall
+                          |          
+                           --1.21%--atomic_load<u8> (inlined)
+                                     load (inlined)
+                                     get (inlined)
+                                     |          
+                                      --0.63%--wait_timeout<tokio::runtime::blocking::pool::Shared> (inlined)
+                                                <tokio::runtime::blocking::pool::Inner>::run
+
+    28.72%     0.25%  [.] x64_sys_call
+            |          
+             --5.76%--do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       |          
+                       |--3.24%--0x71db734b4792
+                       |          |          
+                       |          |--1.61%--__libc_pread
+                       |          |          <std::sys::fd::unix::FileDesc>::read_at (inlined)
+                       |          |          <std::sys::fs::unix::File>::read_at (inlined)
+                       |          |          <std::fs::File as std::os::unix::fs::FileExt>::read_at
+                       |          |          read_fully (inlined)
+                       |          |          <extent_store::dir::HostFile as extent_store::dir::File>::read_cached
+                       |          |          0x894800086a1a15ff
+                       |          |          
+                       |           --0.79%--epoll_wait
+                       |                     select (inlined)
+                       |                     <mio::poll::Poll>::poll
+                       |          
+                        --1.72%--syscall
+                                  |          
+                                   --1.17%--atomic_load<u8> (inlined)
+                                             load (inlined)
+                                             get (inlined)
+                                             |          
+                                              --0.61%--wait_timeout<tokio::runtime::blocking::pool::Shared> (inlined)
+                                                        <tokio::runtime::blocking::pool::Inner>::run
+
+    23.55%     0.03%  [.] zstd::bulk::decompress_to_buffer
+    23.49%     0.00%  [.] decompress_to_buffer<[u8]> (inlined)
+            |
+            ---zstd::bulk::decompress_to_buffer
+
+    23.49%     0.00%  [.] decompress<[u8]> (inlined)
+            |
+            ---decompress_to_buffer<[u8]> (inlined)
+               zstd::bulk::decompress_to_buffer
+
+    23.49%     0.00%  [.] write_from<[u8], zstd_safe::{impl#8}::decompress::{closure_env#0}<[u8]>> (inlined)
+            |
+            ---decompress<[u8]> (inlined)
+               decompress_to_buffer<[u8]> (inlined)
+               zstd::bulk::decompress_to_buffer
+
+    23.49%     0.00%  [.] {closure#0}<[u8]> (inlined)
+            |
+            ---write_from<[u8], zstd_safe::{impl#8}::decompress::{closure_env#0}<[u8]>> (inlined)
+               decompress<[u8]> (inlined)
+               decompress_to_buffer<[u8]> (inlined)
+               zstd::bulk::decompress_to_buffer
+
+    23.43%     0.00%  [.] ZSTD_decompressFrame (inlined)
+            |
+            ---ZSTD_decompressMultiFrame
+               ZSTD_decompressDCtx
+               {closure#0}<[u8]> (inlined)
+               write_from<[u8], zstd_safe::{impl#8}::decompress::{closure_env#0}<[u8]>> (inlined)
+               decompress<[u8]> (inlined)
+               decompress_to_buffer<[u8]> (inlined)
+               zstd::bulk::decompress_to_buffer
+
+    22.23%     0.00%  [.] ZSTD_decompressDCtx
+            |
+            ---{closure#0}<[u8]> (inlined)
+               write_from<[u8], zstd_safe::{impl#8}::decompress::{closure_env#0}<[u8]>> (inlined)
+               decompress<[u8]> (inlined)
+               decompress_to_buffer<[u8]> (inlined)
+               zstd::bulk::decompress_to_buffer
+
+    22.20%     0.00%  [.] ZSTD_decompressMultiFrame
+            |
+            ---ZSTD_decompressDCtx
+               {closure#0}<[u8]> (inlined)
+               write_from<[u8], zstd_safe::{impl#8}::decompress::{closure_env#0}<[u8]>> (inlined)
+               decompress<[u8]> (inlined)
+               decompress_to_buffer<[u8]> (inlined)
+               zstd::bulk::decompress_to_buffer
+
+    16.69%     0.00%  [.] ZSTD_decompressSequences_body (inlined)
+            |
+            ---ZSTD_decompressSequences_bmi2.constprop.0
+               ZSTD_decompressFrame (inlined)
+               ZSTD_decompressMultiFrame
+               ZSTD_decompressDCtx
+               {closure#0}<[u8]> (inlined)
+               write_from<[u8], zstd_safe::{impl#8}::decompress::{closure_env#0}<[u8]>> (inlined)
+               decompress<[u8]> (inlined)
+               decompress_to_buffer<[u8]> (inlined)
+               zstd::bulk::decompress_to_buffer
+
+    16.37%     0.00%  [.] 0x000071db734b4792
+            |          
+            |--1.61%--__libc_pread
+            |          <std::sys::fd::unix::FileDesc>::read_at (inlined)
+            |          <std::sys::fs::unix::File>::read_at (inlined)
+            |          <std::fs::File as std::os::unix::fs::FileExt>::read_at
+            |          read_fully (inlined)
+            |          <extent_store::dir::HostFile as extent_store::dir::File>::read_cached
+            |          0x894800086a1a15ff
+            |          
+             --0.81%--epoll_wait
+                       select (inlined)
+                       <mio::poll::Poll>::poll
+
+    15.71%    15.52%  [.] ZSTD_decompressSequences_bmi2.constprop.0
+            |          
+            |--0.77%--ZSTD_decodeSequence (inlined)
+            |          ZSTD_decompressSequences_body (inlined)
+            |          ZSTD_decompressSequences_bmi2.constprop.0
+            |          ZSTD_decompressFrame (inlined)
+            |          ZSTD_decompressMultiFrame
+            |          ZSTD_decompressDCtx
+            |          {closure#0}<[u8]> (inlined)
+            |          write_from<[u8], zstd_safe::{impl#8}::decompress::{closure_env#0}<[u8]>> (inlined)
+            |          decompress<[u8]> (inlined)
+            |          decompress_to_buffer<[u8]> (inlined)
+            |          zstd::bulk::decompress_to_buffer
+            |          
+             --0.75%--ZSTD_wildcopy (inlined)
+                       ZSTD_execSequence (inlined)
+                       ZSTD_decompressSequences_body (inlined)
+                       ZSTD_decompressSequences_bmi2.constprop.0
+                       ZSTD_decompressFrame (inlined)
+                       ZSTD_decompressMultiFrame
+                       ZSTD_decompressDCtx
+                       {closure#0}<[u8]> (inlined)
+                       write_from<[u8], zstd_safe::{impl#8}::decompress::{closure_env#0}<[u8]>> (inlined)
+                       decompress<[u8]> (inlined)
+                       decompress_to_buffer<[u8]> (inlined)
+                       zstd::bulk::decompress_to_buffer
+
+     9.86%     0.00%  [.] compress_to_buffer<alloc::vec::Vec<u8, alloc::alloc::Global>> (inlined)
+            |
+            ---extent_frame::pack_part
+               |          
+                --0.88%--0x540ebf0e2a0f950f
+
+     9.86%     0.00%  [.] compress2<alloc::vec::Vec<u8, alloc::alloc::Global>> (inlined)
+            |
+            ---compress_to_buffer<alloc::vec::Vec<u8, alloc::alloc::Global>> (inlined)
+               extent_frame::pack_part
+               |          
+                --0.88%--0x540ebf0e2a0f950f
+
+     9.86%     0.00%  [.] write_from<alloc::vec::Vec<u8, alloc::alloc::Global>, zstd_safe::{impl#3}::compress2::{closure_env#0}<alloc::vec::Vec<u8, alloc::alloc::Global>>> (inlined)
+            |
+            ---compress2<alloc::vec::Vec<u8, alloc::alloc::Global>> (inlined)
+               compress_to_buffer<alloc::vec::Vec<u8, alloc::alloc::Global>> (inlined)
+               extent_frame::pack_part
+               |          
+                --0.88%--0x540ebf0e2a0f950f
+
+     9.86%     0.00%  [.] {closure#0}<alloc::vec::Vec<u8, alloc::alloc::Global>> (inlined)
+            |
+            ---write_from<alloc::vec::Vec<u8, alloc::alloc::Global>, zstd_safe::{impl#3}::compress2::{closure_env#0}<alloc::vec::Vec<u8, alloc::alloc::Global>>> (inlined)
+               compress2<alloc::vec::Vec<u8, alloc::alloc::Global>> (inlined)
+               compress_to_buffer<alloc::vec::Vec<u8, alloc::alloc::Global>> (inlined)
+               extent_frame::pack_part
+               |          
+                --0.88%--0x540ebf0e2a0f950f
+
+     9.86%     0.00%  [.] ZSTD_compress2
+            |
+            ---{closure#0}<alloc::vec::Vec<u8, alloc::alloc::Global>> (inlined)
+               write_from<alloc::vec::Vec<u8, alloc::alloc::Global>, zstd_safe::{impl#3}::compress2::{closure_env#0}<alloc::vec::Vec<u8, alloc::alloc::Global>>> (inlined)
+               compress2<alloc::vec::Vec<u8, alloc::alloc::Global>> (inlined)
+               compress_to_buffer<alloc::vec::Vec<u8, alloc::alloc::Global>> (inlined)
+               extent_frame::pack_part
+               |          
+                --0.88%--0x540ebf0e2a0f950f
+
+     9.86%     0.00%  [.] ZSTD_compressStream2_simpleArgs (inlined)
+            |
+            ---ZSTD_compress2
+               {closure#0}<alloc::vec::Vec<u8, alloc::alloc::Global>> (inlined)
+               write_from<alloc::vec::Vec<u8, alloc::alloc::Global>, zstd_safe::{impl#3}::compress2::{closure_env#0}<alloc::vec::Vec<u8, alloc::alloc::Global>>> (inlined)
+               compress2<alloc::vec::Vec<u8, alloc::alloc::Global>> (inlined)
+               compress_to_buffer<alloc::vec::Vec<u8, alloc::alloc::Global>> (inlined)
+               extent_frame::pack_part
+               |          
+                --0.88%--0x540ebf0e2a0f950f
+
+     9.86%     0.00%  [.] ZSTD_compressStream2 (inlined)
+            |
+            ---ZSTD_compressStream2_simpleArgs (inlined)
+               ZSTD_compress2
+               {closure#0}<alloc::vec::Vec<u8, alloc::alloc::Global>> (inlined)
+               write_from<alloc::vec::Vec<u8, alloc::alloc::Global>, zstd_safe::{impl#3}::compress2::{closure_env#0}<alloc::vec::Vec<u8, alloc::alloc::Global>>> (inlined)
+               compress2<alloc::vec::Vec<u8, alloc::alloc::Global>> (inlined)
+               compress_to_buffer<alloc::vec::Vec<u8, alloc::alloc::Global>> (inlined)
+               extent_frame::pack_part
+               |          
+                --0.88%--0x540ebf0e2a0f950f
+
+     9.86%     0.00%  [.] ZSTD_compressEnd_public
+            |
+            ---ZSTD_compressStream_generic
+               ZSTD_compressStream2 (inlined)
+               ZSTD_compressStream2_simpleArgs (inlined)
+               ZSTD_compress2
+               {closure#0}<alloc::vec::Vec<u8, alloc::alloc::Global>> (inlined)
+               write_from<alloc::vec::Vec<u8, alloc::alloc::Global>, zstd_safe::{impl#3}::compress2::{closure_env#0}<alloc::vec::Vec<u8, alloc::alloc::Global>>> (inlined)
+               compress2<alloc::vec::Vec<u8, alloc::alloc::Global>> (inlined)
+               compress_to_buffer<alloc::vec::Vec<u8, alloc::alloc::Global>> (inlined)
+               extent_frame::pack_part
+               |          
+                --0.88%--0x540ebf0e2a0f950f
+
+     9.86%     0.00%  [.] ZSTD_compressContinue_internal (inlined)
+            |
+            ---ZSTD_compressEnd_public
+               ZSTD_compressStream_generic
+               ZSTD_compressStream2 (inlined)
+               ZSTD_compressStream2_simpleArgs (inlined)
+               ZSTD_compress2
+               {closure#0}<alloc::vec::Vec<u8, alloc::alloc::Global>> (inlined)
+               write_from<alloc::vec::Vec<u8, alloc::alloc::Global>, zstd_safe::{impl#3}::compress2::{closure_env#0}<alloc::vec::Vec<u8, alloc::alloc::Global>>> (inlined)
+               compress2<alloc::vec::Vec<u8, alloc::alloc::Global>> (inlined)
+               compress_to_buffer<alloc::vec::Vec<u8, alloc::alloc::Global>> (inlined)
+               extent_frame::pack_part
+               |          
+                --0.88%--0x540ebf0e2a0f950f
+
+     9.60%     0.63%  [.] syscall
+            |          
+             --1.32%--atomic_load<u8> (inlined)
+                       load (inlined)
+                       get (inlined)
+                       |          
+                       |--0.67%--wait_timeout<tokio::runtime::blocking::pool::Shared> (inlined)
+                       |          <tokio::runtime::blocking::pool::Inner>::run
+                       |          
+                        --0.65%--wait<()> (inlined)
+                                  <tokio::runtime::scheduler::multi_thread::park::Inner>::park_condvar
+
+     9.16%     0.00%  [.] ZSTD_compressBlock_internal
+            |
+            ---ZSTD_compress_frameChunk
+               ZSTD_compressContinue_internal (inlined)
+               ZSTD_compressEnd_public
+               ZSTD_compressStream_generic
+               ZSTD_compressStream2 (inlined)
+               ZSTD_compressStream2_simpleArgs (inlined)
+               ZSTD_compress2
+               {closure#0}<alloc::vec::Vec<u8, alloc::alloc::Global>> (inlined)
+               write_from<alloc::vec::Vec<u8, alloc::alloc::Global>, zstd_safe::{impl#3}::compress2::{closure_env#0}<alloc::vec::Vec<u8, alloc::alloc::Global>>> (inlined)
+               compress2<alloc::vec::Vec<u8, alloc::alloc::Global>> (inlined)
+               compress_to_buffer<alloc::vec::Vec<u8, alloc::alloc::Global>> (inlined)
+               extent_frame::pack_part
+               |          
+                --0.81%--0x540ebf0e2a0f950f
+
+     9.13%     0.00%  [.] extent_frame::pack_part
+            |          
+             --0.85%--0x540ebf0e2a0f950f
+
+     9.10%     0.00%  [.] ZSTD_compressStream_generic
+            |
+            ---ZSTD_compressStream2 (inlined)
+               ZSTD_compressStream2_simpleArgs (inlined)
+               ZSTD_compress2
+               {closure#0}<alloc::vec::Vec<u8, alloc::alloc::Global>> (inlined)
+               write_from<alloc::vec::Vec<u8, alloc::alloc::Global>, zstd_safe::{impl#3}::compress2::{closure_env#0}<alloc::vec::Vec<u8, alloc::alloc::Global>>> (inlined)
+               compress2<alloc::vec::Vec<u8, alloc::alloc::Global>> (inlined)
+               compress_to_buffer<alloc::vec::Vec<u8, alloc::alloc::Global>> (inlined)
+               extent_frame::pack_part
+               |          
+                --0.85%--0x540ebf0e2a0f950f
+
+     9.10%     0.00%  [.] ZSTD_compress_frameChunk
+            |
+            ---ZSTD_compressContinue_internal (inlined)
+               ZSTD_compressEnd_public
+               ZSTD_compressStream_generic
+               ZSTD_compressStream2 (inlined)
+               ZSTD_compressStream2_simpleArgs (inlined)
+               ZSTD_compress2
+               {closure#0}<alloc::vec::Vec<u8, alloc::alloc::Global>> (inlined)
+               write_from<alloc::vec::Vec<u8, alloc::alloc::Global>, zstd_safe::{impl#3}::compress2::{closure_env#0}<alloc::vec::Vec<u8, alloc::alloc::Global>>> (inlined)
+               compress2<alloc::vec::Vec<u8, alloc::alloc::Global>> (inlined)
+               compress_to_buffer<alloc::vec::Vec<u8, alloc::alloc::Global>> (inlined)
+               extent_frame::pack_part
+               |          
+                --0.85%--0x540ebf0e2a0f950f
+
+     8.53%     0.00%  [.] 0x000071db735bc512
+     8.50%     0.09%  [.] __x64_sys_futex
+            |          
+             --1.70%--x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       syscall
+                       |          
+                        --1.15%--atomic_load<u8> (inlined)
+                                  load (inlined)
+                                  get (inlined)
+                                  |          
+                                   --0.61%--wait_timeout<tokio::runtime::blocking::pool::Shared> (inlined)
+                                             <tokio::runtime::blocking::pool::Inner>::run
+
+     8.44%     0.09%  [.] do_futex
+            |          
+             --1.68%--__x64_sys_futex
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       syscall
+                       |          
+                        --1.13%--atomic_load<u8> (inlined)
+                                  load (inlined)
+                                  get (inlined)
+
+     8.38%     0.00%  [.] vfs_read
+            |          
+             --1.61%--__x64_sys_pread64
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       0x71db734b4792
+                       __libc_pread
+                       <std::sys::fd::unix::FileDesc>::read_at (inlined)
+                       <std::sys::fs::unix::File>::read_at (inlined)
+                       <std::fs::File as std::os::unix::fs::FileExt>::read_at
+                       read_fully (inlined)
+                       <extent_store::dir::HostFile as extent_store::dir::File>::read_cached
+                       0x894800086a1a15ff
+
+     8.38%     0.00%  [.] ext4_file_read_iter
+            |
+            ---vfs_read
+               |          
+                --1.61%--__x64_sys_pread64
+                          x64_sys_call
+                          do_syscall_64
+                          entry_SYSCALL_64_after_hwframe
+                          0x71db734b4792
+                          __libc_pread
+                          <std::sys::fd::unix::FileDesc>::read_at (inlined)
+                          <std::sys::fs::unix::File>::read_at (inlined)
+                          <std::fs::File as std::os::unix::fs::FileExt>::read_at
+                          read_fully (inlined)
+                          <extent_store::dir::HostFile as extent_store::dir::File>::read_cached
+                          0x894800086a1a15ff
+
+     8.38%     0.00%  [.] generic_file_read_iter
+            |
+            ---ext4_file_read_iter
+               vfs_read
+               |          
+                --1.61%--__x64_sys_pread64
+                          x64_sys_call
+                          do_syscall_64
+                          entry_SYSCALL_64_after_hwframe
+                          0x71db734b4792
+                          __libc_pread
+                          <std::sys::fd::unix::FileDesc>::read_at (inlined)
+                          <std::sys::fs::unix::File>::read_at (inlined)
+                          <std::fs::File as std::os::unix::fs::FileExt>::read_at
+                          read_fully (inlined)
+                          <extent_store::dir::HostFile as extent_store::dir::File>::read_cached
+                          0x894800086a1a15ff
+
+     8.34%     0.00%  [.] ZSTD_decodeSequence (inlined)
+            |
+            ---ZSTD_decompressSequences_body (inlined)
+               ZSTD_decompressSequences_bmi2.constprop.0
+               ZSTD_decompressFrame (inlined)
+               ZSTD_decompressMultiFrame
+               ZSTD_decompressDCtx
+               {closure#0}<[u8]> (inlined)
+               write_from<[u8], zstd_safe::{impl#8}::decompress::{closure_env#0}<[u8]>> (inlined)
+               decompress<[u8]> (inlined)
+               decompress_to_buffer<[u8]> (inlined)
+               zstd::bulk::decompress_to_buffer
+
+     8.19%     0.22%  [.] filemap_read
+            |
+            ---generic_file_read_iter
+               ext4_file_read_iter
+               vfs_read
+               |          
+                --1.57%--__x64_sys_pread64
+                          x64_sys_call
+                          do_syscall_64
+                          entry_SYSCALL_64_after_hwframe
+                          0x71db734b4792
+                          __libc_pread
+                          <std::sys::fd::unix::FileDesc>::read_at (inlined)
+                          <std::sys::fs::unix::File>::read_at (inlined)
+                          <std::fs::File as std::os::unix::fs::FileExt>::read_at
+                          read_fully (inlined)
+                          <extent_store::dir::HostFile as extent_store::dir::File>::read_cached
+                          0x894800086a1a15ff
+
+     8.03%     0.00%  [.] 0x894800086a1a15ff
+     8.00%     8.00%  [.] 0x00000000001bc512
+     8.00%     0.00%  [.] read_fully (inlined)
+            |
+            ---<extent_store::dir::HostFile as extent_store::dir::File>::read_cached
+               0x894800086a1a15ff
+
+     8.00%     0.00%  [.] <std::fs::File as std::os::unix::fs::FileExt>::read_at
+            |
+            ---read_fully (inlined)
+               <extent_store::dir::HostFile as extent_store::dir::File>::read_cached
+               0x894800086a1a15ff
+
+     8.00%     0.00%  [.] <std::sys::fs::unix::File>::read_at (inlined)
+            |
+            ---<std::fs::File as std::os::unix::fs::FileExt>::read_at
+               read_fully (inlined)
+               <extent_store::dir::HostFile as extent_store::dir::File>::read_cached
+               0x894800086a1a15ff
+
+     8.00%     0.00%  [.] <std::sys::fd::unix::FileDesc>::read_at (inlined)
+            |
+            ---<std::sys::fs::unix::File>::read_at (inlined)
+               <std::fs::File as std::os::unix::fs::FileExt>::read_at
+               read_fully (inlined)
+               <extent_store::dir::HostFile as extent_store::dir::File>::read_cached
+               0x894800086a1a15ff
+
+     8.00%     0.00%  [.] __libc_pread
+            |
+            ---<std::sys::fd::unix::FileDesc>::read_at (inlined)
+               <std::sys::fs::unix::File>::read_at (inlined)
+               <std::fs::File as std::os::unix::fs::FileExt>::read_at
+               read_fully (inlined)
+               <extent_store::dir::HostFile as extent_store::dir::File>::read_cached
+               0x894800086a1a15ff
+
+     8.00%     0.00%  [.] __x64_sys_pread64
+            |
+            ---x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               0x71db734b4792
+               __libc_pread
+               <std::sys::fd::unix::FileDesc>::read_at (inlined)
+               <std::sys::fs::unix::File>::read_at (inlined)
+               <std::fs::File as std::os::unix::fs::FileExt>::read_at
+               read_fully (inlined)
+               <extent_store::dir::HostFile as extent_store::dir::File>::read_cached
+               0x894800086a1a15ff
+
+     7.93%     0.00%  [.] ZSTD_execSequence (inlined)
+            |
+            ---ZSTD_decompressSequences_body (inlined)
+               ZSTD_decompressSequences_bmi2.constprop.0
+               ZSTD_decompressFrame (inlined)
+               ZSTD_decompressMultiFrame
+               ZSTD_decompressDCtx
+               {closure#0}<[u8]> (inlined)
+               write_from<[u8], zstd_safe::{impl#8}::decompress::{closure_env#0}<[u8]>> (inlined)
+               decompress<[u8]> (inlined)
+               decompress_to_buffer<[u8]> (inlined)
+               zstd::bulk::decompress_to_buffer
+
+     7.40%     0.06%  [.] copy_page_to_iter
+            |
+            ---filemap_read
+               generic_file_read_iter
+               ext4_file_read_iter
+               vfs_read
+               |          
+                --1.45%--__x64_sys_pread64
+                          x64_sys_call
+                          do_syscall_64
+                          entry_SYSCALL_64_after_hwframe
+                          0x71db734b4792
+                          __libc_pread
+                          <std::sys::fd::unix::FileDesc>::read_at (inlined)
+                          <std::sys::fs::unix::File>::read_at (inlined)
+                          <std::fs::File as std::os::unix::fs::FileExt>::read_at
+                          read_fully (inlined)
+                          <extent_store::dir::HostFile as extent_store::dir::File>::read_cached
+                          0x894800086a1a15ff
+
+     7.34%     3.21%  [.] _copy_to_iter
+            |
+            ---copy_page_to_iter
+               filemap_read
+               generic_file_read_iter
+               ext4_file_read_iter
+               vfs_read
+               |          
+                --1.44%--__x64_sys_pread64
+                          x64_sys_call
+                          do_syscall_64
+                          entry_SYSCALL_64_after_hwframe
+                          0x71db734b4792
+                          __libc_pread
+                          <std::sys::fd::unix::FileDesc>::read_at (inlined)
+                          <std::sys::fs::unix::File>::read_at (inlined)
+                          <std::fs::File as std::os::unix::fs::FileExt>::read_at
+                          read_fully (inlined)
+                          <extent_store::dir::HostFile as extent_store::dir::File>::read_cached
+                          0x894800086a1a15ff
+
+     7.24%     0.09%  [.] schedule
+            |          
+             --0.90%--futex_do_wait
+                       __futex_wait
+                       futex_wait
+                       do_futex
+                       __x64_sys_futex
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       syscall
+                       |          
+                        --0.89%--atomic_load<u8> (inlined)
+                                  load (inlined)
+                                  get (inlined)
+
+     7.21%     0.00%  [.] <extent_store::dir::HostFile as extent_store::dir::File>::read_cached
+            |
+            ---0x894800086a1a15ff
+
+     7.18%     0.25%  [.] __schedule
+            |          
+             --1.44%--schedule
+                       |          
+                        --0.89%--futex_do_wait
+                                  __futex_wait
+                                  futex_wait
+                                  do_futex
+                                  __x64_sys_futex
+                                  x64_sys_call
+                                  do_syscall_64
+                                  entry_SYSCALL_64_after_hwframe
+                                  syscall
+                                  |          
+                                   --0.87%--atomic_load<u8> (inlined)
+                                             load (inlined)
+                                             get (inlined)
+
+     6.93%     6.93%  [k] finish_task_switch.isra.0
+            |
+            ---__schedule
+               schedule
+               |          
+                --0.86%--futex_do_wait
+                          __futex_wait
+                          futex_wait
+                          do_futex
+                          __x64_sys_futex
+                          x64_sys_call
+                          do_syscall_64
+                          entry_SYSCALL_64_after_hwframe
+                          syscall
+                          |          
+                           --0.85%--atomic_load<u8> (inlined)
+                                     load (inlined)
+                                     get (inlined)
+
+     6.74%     0.00%  [.] ZSTD_wildcopy (inlined)
+            |
+            ---ZSTD_execSequence (inlined)
+               ZSTD_decompressSequences_body (inlined)
+               ZSTD_decompressSequences_bmi2.constprop.0
+               ZSTD_decompressFrame (inlined)
+               ZSTD_decompressMultiFrame
+               ZSTD_decompressDCtx
+               {closure#0}<[u8]> (inlined)
+               write_from<[u8], zstd_safe::{impl#8}::decompress::{closure_env#0}<[u8]>> (inlined)
+               decompress<[u8]> (inlined)
+               decompress_to_buffer<[u8]> (inlined)
+               zstd::bulk::decompress_to_buffer
+
+     6.33%     0.00%  [.] ZSTD_decompressBlock_internal
+            |
+            ---ZSTD_decompressBlock_internal
+               ZSTD_decompressFrame (inlined)
+               ZSTD_decompressMultiFrame
+               ZSTD_decompressDCtx
+               {closure#0}<[u8]> (inlined)
+               write_from<[u8], zstd_safe::{impl#8}::decompress::{closure_env#0}<[u8]>> (inlined)
+               decompress<[u8]> (inlined)
+               decompress_to_buffer<[u8]> (inlined)
+               zstd::bulk::decompress_to_buffer
+
+     5.82%     0.00%  [.] 0x000071db735bcad8
+     5.70%     0.09%  [.] futex_wait
+            |
+            ---do_futex
+               __x64_sys_futex
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               syscall
+               |          
+                --1.13%--atomic_load<u8> (inlined)
+                          load (inlined)
+                          get (inlined)
+
+     5.57%     5.57%  [.] 0x00000000001bcad8
+     5.38%     0.03%  [.] __futex_wait
+            |
+            ---futex_wait
+               do_futex
+               __x64_sys_futex
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               syscall
+               |          
+                --1.06%--atomic_load<u8> (inlined)
+                          load (inlined)
+                          get (inlined)
+
+     5.29%     0.00%  [.] asm_exc_page_fault
+            |          
+             --0.83%--_copy_to_iter
+                       copy_page_to_iter
+                       filemap_read
+                       generic_file_read_iter
+                       ext4_file_read_iter
+                       vfs_read
+                       __x64_sys_pread64
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       0x71db734b4792
+                       __libc_pread
+                       <std::sys::fd::unix::FileDesc>::read_at (inlined)
+                       <std::sys::fs::unix::File>::read_at (inlined)
+                       <std::fs::File as std::os::unix::fs::FileExt>::read_at
+                       read_fully (inlined)
+                       <extent_store::dir::HostFile as extent_store::dir::File>::read_cached
+                       0x894800086a1a15ff
+
+     5.29%     0.00%  [.] exc_page_fault
+            |
+            ---asm_exc_page_fault
+               |          
+                --0.83%--_copy_to_iter
+                          copy_page_to_iter
+                          filemap_read
+                          generic_file_read_iter
+                          ext4_file_read_iter
+                          vfs_read
+                          __x64_sys_pread64
+                          x64_sys_call
+                          do_syscall_64
+                          entry_SYSCALL_64_after_hwframe
+                          0x71db734b4792
+                          __libc_pread
+                          <std::sys::fd::unix::FileDesc>::read_at (inlined)
+                          <std::sys::fs::unix::File>::read_at (inlined)
+                          <std::fs::File as std::os::unix::fs::FileExt>::read_at
+                          read_fully (inlined)
+                          <extent_store::dir::HostFile as extent_store::dir::File>::read_cached
+                          0x894800086a1a15ff
+
+     5.29%     1.79%  [.] do_user_addr_fault
+            |
+            ---exc_page_fault
+               asm_exc_page_fault
+               |          
+                --0.83%--_copy_to_iter
+                          copy_page_to_iter
+                          filemap_read
+                          generic_file_read_iter
+                          ext4_file_read_iter
+                          vfs_read
+                          __x64_sys_pread64
+                          x64_sys_call
+                          do_syscall_64
+                          entry_SYSCALL_64_after_hwframe
+                          0x71db734b4792
+                          __libc_pread
+                          <std::sys::fd::unix::FileDesc>::read_at (inlined)
+                          <std::sys::fs::unix::File>::read_at (inlined)
+                          <std::fs::File as std::os::unix::fs::FileExt>::read_at
+                          read_fully (inlined)
+                          <extent_store::dir::HostFile as extent_store::dir::File>::read_cached
+                          0x894800086a1a15ff
+
+     4.66%     4.63%  [.] ZSTD_compressBlock_fast
+     4.66%     0.09%  [.] futex_do_wait
+            |          
+             --0.92%--__futex_wait
+                       futex_wait
+                       do_futex
+                       __x64_sys_futex
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       syscall
+                       |          
+                        --0.91%--atomic_load<u8> (inlined)
+                                  load (inlined)
+                                  get (inlined)
+
+     4.66%     0.00%  [.] ZSTD_buildSeqStore
+            |
+            ---ZSTD_compressBlock_internal
+               ZSTD_compress_frameChunk
+               ZSTD_compressContinue_internal (inlined)
+               ZSTD_compressEnd_public
+               ZSTD_compressStream_generic
+               ZSTD_compressStream2 (inlined)
+               ZSTD_compressStream2_simpleArgs (inlined)
+               ZSTD_compress2
+               {closure#0}<alloc::vec::Vec<u8, alloc::alloc::Global>> (inlined)
+               write_from<alloc::vec::Vec<u8, alloc::alloc::Global>, zstd_safe::{impl#3}::compress2::{closure_env#0}<alloc::vec::Vec<u8, alloc::alloc::Global>>> (inlined)
+               compress2<alloc::vec::Vec<u8, alloc::alloc::Global>> (inlined)
+               compress_to_buffer<alloc::vec::Vec<u8, alloc::alloc::Global>> (inlined)
+               extent_frame::pack_part
+
+     4.66%     0.00%  [.] ZSTD_compressBlock_fast_noDict_7_0 (inlined)
+            |
+            ---ZSTD_compressBlock_fast
+               ZSTD_buildSeqStore
+               ZSTD_compressBlock_internal
+               ZSTD_compress_frameChunk
+               ZSTD_compressContinue_internal (inlined)
+               ZSTD_compressEnd_public
+               ZSTD_compressStream_generic
+               ZSTD_compressStream2 (inlined)
+               ZSTD_compressStream2_simpleArgs (inlined)
+               ZSTD_compress2
+               {closure#0}<alloc::vec::Vec<u8, alloc::alloc::Global>> (inlined)
+               write_from<alloc::vec::Vec<u8, alloc::alloc::Global>, zstd_safe::{impl#3}::compress2::{closure_env#0}<alloc::vec::Vec<u8, alloc::alloc::Global>>> (inlined)
+               compress2<alloc::vec::Vec<u8, alloc::alloc::Global>> (inlined)
+               compress_to_buffer<alloc::vec::Vec<u8, alloc::alloc::Global>> (inlined)
+               extent_frame::pack_part
+
+     4.66%     0.00%  [.] ZSTD_compressBlock_fast_noDict_generic (inlined)
+            |
+            ---ZSTD_compressBlock_fast_noDict_7_0 (inlined)
+               ZSTD_compressBlock_fast
+               ZSTD_buildSeqStore
+               ZSTD_compressBlock_internal
+               ZSTD_compress_frameChunk
+               ZSTD_compressContinue_internal (inlined)
+               ZSTD_compressEnd_public
+               ZSTD_compressStream_generic
+               ZSTD_compressStream2 (inlined)
+               ZSTD_compressStream2_simpleArgs (inlined)
+               ZSTD_compress2
+               {closure#0}<alloc::vec::Vec<u8, alloc::alloc::Global>> (inlined)
+               write_from<alloc::vec::Vec<u8, alloc::alloc::Global>, zstd_safe::{impl#3}::compress2::{closure_env#0}<alloc::vec::Vec<u8, alloc::alloc::Global>>> (inlined)
+               compress2<alloc::vec::Vec<u8, alloc::alloc::Global>> (inlined)
+               compress_to_buffer<alloc::vec::Vec<u8, alloc::alloc::Global>> (inlined)
+               extent_frame::pack_part
+
+     4.50%     0.00%  [.] ZSTD_entropyCompressSeqStore (inlined)
+            |
+            ---ZSTD_compressBlock_internal
+               ZSTD_compress_frameChunk
+               ZSTD_compressContinue_internal (inlined)
+               ZSTD_compressEnd_public
+               ZSTD_compressStream_generic
+               ZSTD_compressStream2 (inlined)
+               ZSTD_compressStream2_simpleArgs (inlined)
+               ZSTD_compress2
+               {closure#0}<alloc::vec::Vec<u8, alloc::alloc::Global>> (inlined)
+               write_from<alloc::vec::Vec<u8, alloc::alloc::Global>, zstd_safe::{impl#3}::compress2::{closure_env#0}<alloc::vec::Vec<u8, alloc::alloc::Global>>> (inlined)
+               compress2<alloc::vec::Vec<u8, alloc::alloc::Global>> (inlined)
+               compress_to_buffer<alloc::vec::Vec<u8, alloc::alloc::Global>> (inlined)
+               extent_frame::pack_part
+
+     4.50%     0.00%  [.] ZSTD_entropyCompressSeqStore_wExtLitBuffer (inlined)
+            |
+            ---ZSTD_entropyCompressSeqStore (inlined)
+               ZSTD_compressBlock_internal
+               ZSTD_compress_frameChunk
+               ZSTD_compressContinue_internal (inlined)
+               ZSTD_compressEnd_public
+               ZSTD_compressStream_generic
+               ZSTD_compressStream2 (inlined)
+               ZSTD_compressStream2_simpleArgs (inlined)
+               ZSTD_compress2
+               {closure#0}<alloc::vec::Vec<u8, alloc::alloc::Global>> (inlined)
+               write_from<alloc::vec::Vec<u8, alloc::alloc::Global>, zstd_safe::{impl#3}::compress2::{closure_env#0}<alloc::vec::Vec<u8, alloc::alloc::Global>>> (inlined)
+               compress2<alloc::vec::Vec<u8, alloc::alloc::Global>> (inlined)
+               compress_to_buffer<alloc::vec::Vec<u8, alloc::alloc::Global>> (inlined)
+               extent_frame::pack_part
+
+     4.50%     0.00%  [.] ZSTD_entropyCompressSeqStore_internal (inlined)
+            |
+            ---ZSTD_entropyCompressSeqStore_wExtLitBuffer (inlined)
+               ZSTD_entropyCompressSeqStore (inlined)
+               ZSTD_compressBlock_internal
+               ZSTD_compress_frameChunk
+               ZSTD_compressContinue_internal (inlined)
+               ZSTD_compressEnd_public
+               ZSTD_compressStream_generic
+               ZSTD_compressStream2 (inlined)
+               ZSTD_compressStream2_simpleArgs (inlined)
+               ZSTD_compress2
+               {closure#0}<alloc::vec::Vec<u8, alloc::alloc::Global>> (inlined)
+               write_from<alloc::vec::Vec<u8, alloc::alloc::Global>, zstd_safe::{impl#3}::compress2::{closure_env#0}<alloc::vec::Vec<u8, alloc::alloc::Global>>> (inlined)
+               compress2<alloc::vec::Vec<u8, alloc::alloc::Global>> (inlined)
+               compress_to_buffer<alloc::vec::Vec<u8, alloc::alloc::Global>> (inlined)
+               extent_frame::pack_part
+
+     4.41%     0.00%  [.] 0x540ebf0e2a0f950f
+     4.28%     0.44%  [.] <tokio::runtime::blocking::pool::Inner>::run
+            |          
+             --0.82%--<tokio::runtime::blocking::pool::Inner>::run
+
+     4.19%     0.09%  [.] <mio::poll::Poll>::poll
+            |          
+             --0.83%--<mio::poll::Poll>::poll
+
+     4.16%     0.00%  [.] select (inlined)
+            |
+            ---<mio::poll::Poll>::poll
+
+     4.16%     0.06%  [.] epoll_wait
+            |          
+             --0.82%--select (inlined)
+                       <mio::poll::Poll>::poll
+
+     3.90%     0.00%  [.] wait_timeout<tokio::runtime::blocking::pool::Shared> (inlined)
+            |
+            ---<tokio::runtime::blocking::pool::Inner>::run
+
+     3.87%     0.00%  [.] __x64_sys_epoll_wait
+            |
+            ---x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               0x71db734b4792
+               epoll_wait
+               select (inlined)
+               <mio::poll::Poll>::poll
+
+     3.84%     0.00%  [.] get (inlined)
+            |
+            ---wait_timeout<tokio::runtime::blocking::pool::Shared> (inlined)
+               <tokio::runtime::blocking::pool::Inner>::run
+
+     3.84%     0.00%  [.] load (inlined)
+            |
+            ---get (inlined)
+               wait_timeout<tokio::runtime::blocking::pool::Shared> (inlined)
+               <tokio::runtime::blocking::pool::Inner>::run
+
+     3.84%     0.00%  [.] atomic_load<u8> (inlined)
+            |
+            ---load (inlined)
+               get (inlined)
+               wait_timeout<tokio::runtime::blocking::pool::Shared> (inlined)
+               <tokio::runtime::blocking::pool::Inner>::run
+
+     3.81%     0.00%  [.] do_epoll_wait
+            |
+            ---__x64_sys_epoll_wait
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               0x71db734b4792
+               epoll_wait
+               select (inlined)
+               <mio::poll::Poll>::poll
+
+     3.68%     3.68%  [k] _raw_spin_unlock_irqrestore
+     3.65%     0.19%  [.] ep_poll
+            |
+            ---do_epoll_wait
+               __x64_sys_epoll_wait
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               0x71db734b4792
+               epoll_wait
+               select (inlined)
+               <mio::poll::Poll>::poll
+
+     3.43%     0.03%  [.] <tokio::runtime::scheduler::multi_thread::park::Inner>::park_condvar
+            |          
+             --0.68%--<tokio::runtime::scheduler::multi_thread::park::Inner>::park_condvar
+
+     3.40%     0.00%  [.] wait<()> (inlined)
+            |
+            ---<tokio::runtime::scheduler::multi_thread::park::Inner>::park_condvar
+
+     3.40%     0.00%  [.] get (inlined)
+            |
+            ---wait<()> (inlined)
+               <tokio::runtime::scheduler::multi_thread::park::Inner>::park_condvar
+
+     3.40%     0.00%  [.] load (inlined)
+            |
+            ---get (inlined)
+               wait<()> (inlined)
+               <tokio::runtime::scheduler::multi_thread::park::Inner>::park_condvar
+
+     3.40%     0.00%  [.] atomic_load<u8> (inlined)
+            |
+            ---load (inlined)
+               get (inlined)
+               wait<()> (inlined)
+               <tokio::runtime::scheduler::multi_thread::park::Inner>::park_condvar
+
+     3.37%     0.13%  [.] ZSTD_decodeLiteralsBlock
+            |          
+             --0.67%--ZSTD_decodeLiteralsBlock
+                       |          
+                        --0.66%--ZSTD_decompressBlock_internal
+                                  ZSTD_decompressBlock_internal
+                                  ZSTD_decompressFrame (inlined)
+                                  ZSTD_decompressMultiFrame
+                                  ZSTD_decompressDCtx
+                                  {closure#0}<[u8]> (inlined)
+                                  write_from<[u8], zstd_safe::{impl#8}::decompress::{closure_env#0}<[u8]>> (inlined)
+                                  decompress<[u8]> (inlined)
+                                  decompress_to_buffer<[u8]> (inlined)
+                                  zstd::bulk::decompress_to_buffer
+
+     3.21%     0.00%  [.] handle_mm_fault
+            |
+            ---do_user_addr_fault
+               exc_page_fault
+               asm_exc_page_fault
+
+     3.21%     0.06%  [.] __handle_mm_fault
+            |
+            ---handle_mm_fault
+               do_user_addr_fault
+               exc_page_fault
+               asm_exc_page_fault
+
+     3.15%     0.00%  [.] handle_pte_fault
+            |
+            ---__handle_mm_fault
+               handle_mm_fault
+               do_user_addr_fault
+               exc_page_fault
+               asm_exc_page_fault
+
+     3.02%     0.03%  [.] ZSTD_decodeSeqHeaders
+
+
+#
+# (Cannot load tips.txt file, please install perf!)
+#

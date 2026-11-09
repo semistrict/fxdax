@@ -1,0 +1,12 @@
+ssh: connect to host 35.245.199.119 port 22: Connection refused
+
+Recommendation: To check for possible causes of SSH connectivity issues and get
+recommendations, rerun the ssh command with the --troubleshoot option.
+
+gcloud compute ssh fxdax-keep-c3-standard-8-us-east4-a-1 --project=echophase-connectome-test --zone=us-east4-a --troubleshoot
+
+Or, to investigate an IAP tunneling issue:
+
+gcloud compute ssh fxdax-keep-c3-standard-8-us-east4-a-1 --project=echophase-connectome-test --zone=us-east4-a --troubleshoot --tunnel-through-iap
+
+ERROR: (gcloud.compute.ssh) [/usr/bin/ssh] exited with return code [255].

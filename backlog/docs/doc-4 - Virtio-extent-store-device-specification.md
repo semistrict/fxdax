@@ -3,7 +3,7 @@ id: doc-4
 title: Virtio extent-store device specification
 type: specification
 created_date: '2026-10-13 22:18'
-updated_date: '2026-11-07 03:00'
+updated_date: '2026-11-09 11:53'
 ---
 # The virtio extent-store device
 
@@ -352,6 +352,11 @@ in any window.
 - **With `COMMIT_DURABLE`** (bit 0), it completes once everything before it is durable: on local
   disk in milestone 1, uploaded once object storage arrives (milestone 3). Unmount and `sync` use
   it.
+- fxdax: the extent daemon's wire has a third level, which no guest's device asks for:
+  `COMMIT_LOCAL` (`WRITE_LOCAL` for a write's commit), which completes once everything before it is
+  durable on the host's disk, not waiting for object storage: what a database on the daemon
+  commits with, as SQLite's own on a local filesystem does (crates/sqlite_extents, the user's
+  decision of 2026-11-09, TASK-301).
 
 ### `ROOT`
 

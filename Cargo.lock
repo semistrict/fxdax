@@ -3654,6 +3654,8 @@ name = "sqlite_extents"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
+ "extent_store",
  "futures",
  "fxdax",
  "libc",

@@ -1,0 +1,30 @@
+Under /var/lib/fxdax-test/example-tree/target/sqlite-commit-profile.
+append and fdatasync a block: 1000 commits, 970/s, p50 1012 µs, p99 1518 µs
+  store flushes 0.00 a commit; µs a commit: wait 0.0, data 0.0, dirs 0.0, logs 0.0, gone 0.0, raw 0.0
+wal-full: 1000 commits, 1029/s, p50 982 µs, p99 1295 µs
+image:
+  read           3.77 a commit,    280.1 µs each,   1055.1 µs a commit
+  write          1.00 a commit,   2336.6 µs each,   2343.6 µs a commit
+  free           0.01 a commit,   1060.0 µs each,     14.8 µs a commit
+  store flushes 1.01 a commit; µs a commit: wait 5.6, data 354.9, dirs 0.0, logs 1296.3, gone 0.0, raw 15.7
+image: 1000 commits, 288/s, p50 3180 µs, p99 6636 µs
+daemon:
+  write          1.00 a commit,   1565.6 µs each,   1570.3 µs a commit
+  free           0.01 a commit,   2805.4 µs each,     39.3 µs a commit
+  store flushes 1.02 a commit; µs a commit: wait 14.1, data 49.6, dirs 0.0, logs 1235.0, gone 0.0, raw 21.1
+daemon: 1000 commits, 609/s, p50 1561 µs, p99 3760 µs
+Under /var/lib/fxdax-test/example-tree/target/sqlite-commit-profile.
+append and fdatasync a block: 1000 commits, 937/s, p50 1046 µs, p99 1625 µs
+  store flushes 0.00 a commit; µs a commit: wait 0.0, data 0.0, dirs 0.0, logs 0.0, gone 0.0, raw 0.0
+wal-full: 1000 commits, 877/s, p50 1113 µs, p99 1471 µs
+image:
+  read           3.77 a commit,    318.0 µs each,   1197.9 µs a commit
+  write          1.00 a commit,   2492.2 µs each,   2499.7 µs a commit
+  free           0.01 a commit,    964.8 µs each,     13.5 µs a commit
+  store flushes 1.01 a commit; µs a commit: wait 5.8, data 377.2, dirs 0.0, logs 1383.1, gone 0.0, raw 16.0
+image: 1000 commits, 265/s, p50 3455 µs, p99 6848 µs
+daemon:
+  write          1.00 a commit,   1650.0 µs each,   1655.0 µs a commit
+  free           0.01 a commit,   3223.4 µs each,     45.1 µs a commit
+  store flushes 1.02 a commit; µs a commit: wait 12.6, data 50.2, dirs 0.0, logs 1295.8, gone 0.0, raw 23.2
+daemon: 1000 commits, 572/s, p50 1656 µs, p99 3854 µs

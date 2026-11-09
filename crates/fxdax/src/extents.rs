@@ -408,7 +408,10 @@ pub struct WriteBarriers<'a> {
 pub enum Commit {
     /// Once ordered: the store makes it durable soon after.
     Ordered,
-    /// Once durable (`COMMIT_DURABLE`).
+    /// fxdax: once durable on the host's disk, not waiting for object storage (`COMMIT_LOCAL`):
+    /// what a database's commit waits for, as SQLite's own does on a local filesystem (TASK-301).
+    Local,
+    /// Once durable (`COMMIT_DURABLE`): uploaded, if the store has a remote.
     Durable,
 }
 
@@ -1232,8 +1235,10 @@ impl ExtentStore {
         self.write(extent, offset, buffers)?;
         match barriers.after {
             None => Ok(()),
-            Some(Commit::Ordered) => self.commit_ordered(barriers.root),
-            Some(Commit::Durable) => self.commit(barriers.root),
+            Some(commit) => {
+                self.access().may_write()?;
+                self.commit_with(barriers.root, commit)
+            }
         }
     }
 
@@ -1282,7 +1287,14 @@ impl ExtentStore {
     /// maps any of them, and nothing in a window changes.
     pub fn commit(&self, root: Option<&[u8]>) -> Result<()> {
         self.access().may_write()?;
-        self.commit_with(root, true)
+        self.commit_with(root, Commit::Durable)
+    }
+
+    /// fxdax: commits as [`ExtentStore::commit`] does, completing once durable on the host's disk,
+    /// not waiting for object storage (`COMMIT_LOCAL`, TASK-301).
+    pub fn commit_local(&self, root: Option<&[u8]>) -> Result<()> {
+        self.access().may_write()?;
+        self.commit_with(root, Commit::Local)
     }
 
     /// fxdax: commits as [`ExtentStore::commit`] does, but without waiting for durability: a
@@ -1290,7 +1302,7 @@ impl ExtentStore {
     /// `COMMIT_DURABLE`). [`ExtentStore::flush`] makes the commits ordered so far durable.
     pub fn commit_ordered(&self, root: Option<&[u8]>) -> Result<()> {
         self.access().may_write()?;
-        self.commit_with(root, false)
+        self.commit_with(root, Commit::Ordered)
     }
 
     /// Makes the commits ordered so far durable.
@@ -1371,39 +1383,39 @@ impl ExtentStore {
     /// fxdax: in a span of its own, `store.commit` (`extent_remote::trace`, TASK-258), whose
     /// children are its phases: `commit.seal` and `commit.write`, the store's; then, durable,
     /// `store.flush`, and `commit.upload_wait` as it waits for object storage.
-    fn commit_with(&self, root: Option<&[u8]>, durable: bool) -> Result<()> {
+    fn commit_with(&self, root: Option<&[u8]>, commit: Commit) -> Result<()> {
         let span = trace::Span::start("store.commit");
         span.set_branch(self.branch());
-        span.set(trace::DURABLE, durable);
+        span.set(trace::DURABLE, commit != Commit::Ordered);
         span.run(|| {
             // fxdax: nothing a panic went through is committed (`crate::fence`).
             self.fence.check()?;
             let started = std::time::Instant::now();
-            let committed = self.commit_and_wait(root, durable);
+            let committed = self.commit_and_wait(root, commit);
             stats::count_since(Counter::Commits, Counter::CommitNs, started);
             committed
         })
     }
 
-    /// Commits, and waits for object storage as `durable` says: the commit's phases, each counted
-    /// ([`stats::Stats::commits`]).
-    fn commit_and_wait(&self, root: Option<&[u8]>, durable: bool) -> Result<()> {
+    /// Commits, and waits as `commit` says: for the remote's lag, the host's disk, or object
+    /// storage; the commit's phases, each counted ([`stats::Stats::commits`]).
+    fn commit_and_wait(&self, root: Option<&[u8]>, commit: Commit) -> Result<()> {
         let committing = std::time::Instant::now();
         self.store.commit_ordered(root).map_err(errno)?;
         self.committed.notify(usize::MAX);
         stats::add_since(Counter::CommitStoreNs, committing);
         let waiting = std::time::Instant::now();
-        let waited = if durable {
-            self.make_durable()
-        } else {
-            match self.remote.as_ref() {
+        let waited = match commit {
+            Commit::Durable => self.make_durable(),
+            Commit::Local => self.flush(),
+            Commit::Ordered => match self.remote.as_ref() {
                 // Within the lag the remote allows.
                 Some(remote) => {
                     let epoch = self.store.epoch().map_err(errno)?;
                     upload_wait(epoch).run(|| remote.wait_lag(epoch).map_err(remote_errno))
                 }
                 None => Ok(()),
-            }
+            },
         };
         stats::add_since(Counter::CommitWaitNs, waiting);
         waited

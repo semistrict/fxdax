@@ -85,6 +85,14 @@ pub trait Dir: Send + Sync + 'static {
     /// Removes the file at `path`.
     fn remove(&self, path: &str) -> io::Result<()>;
 
+    /// fxdax: renames the file at `from` to `to`, in the same directory, which holds no `to`, at
+    /// once: a crash leaves it at one or the other, as `sync_dir` makes durable (TASK-301). By
+    /// default, unsupported.
+    fn rename(&self, from: &str, to: &str) -> io::Result<()> {
+        let _ = (from, to);
+        Err(io::Error::from(io::ErrorKind::Unsupported))
+    }
+
     /// Creates the directory at `path`.
     fn create_dir(&self, path: &str) -> io::Result<()>;
 
@@ -257,6 +265,11 @@ impl Dir for HostDir {
 
     fn remove(&self, path: &str) -> io::Result<()> {
         std::fs::remove_file(self.path.join(path))
+    }
+
+    fn rename(&self, from: &str, to: &str) -> io::Result<()> {
+        assert_eq!(from.rsplit_once('/').map(|(dir, _)| dir), to.rsplit_once('/').map(|(dir, _)| dir));
+        std::fs::rename(self.path.join(from), self.path.join(to))
     }
 
     fn create_dir(&self, path: &str) -> io::Result<()> {

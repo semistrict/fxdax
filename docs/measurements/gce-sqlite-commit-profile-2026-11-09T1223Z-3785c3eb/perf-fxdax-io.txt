@@ -1,0 +1,246 @@
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 225  of event 'task-clock:ppp'
+# Event count (approx.): 45009000
+#
+# Children      Self  Symbol                                                                                                                                                                                                                                                                                                                                                                
+# ........  ........  ......................................................................................................................................................................................................................................................................................................................................................................
+#
+    79.11%     6.67%  [.] syscall
+            |          
+             --0.27%--atomic_sub<usize, usize> (inlined)
+                       fetch_sub (inlined)
+                       drop<futures_executor::local_pool::ThreadNotify, alloc::alloc::Global> (inlined)
+                       drop_glue<alloc::sync::Arc<futures_executor::local_pool::ThreadNotify, alloc::alloc::Global>> (inlined)
+                       wake<futures_executor::local_pool::ThreadNotify> (inlined)
+                       futures_task::waker::wake_arc_raw::<futures_executor::local_pool::ThreadNotify>
+
+    72.44%     0.00%  [.] entry_SYSCALL_64_after_hwframe
+            |
+            ---syscall
+               |          
+                --0.23%--atomic_sub<usize, usize> (inlined)
+                          fetch_sub (inlined)
+                          drop<futures_executor::local_pool::ThreadNotify, alloc::alloc::Global> (inlined)
+                          drop_glue<alloc::sync::Arc<futures_executor::local_pool::ThreadNotify, alloc::alloc::Global>> (inlined)
+                          wake<futures_executor::local_pool::ThreadNotify> (inlined)
+                          futures_task::waker::wake_arc_raw::<futures_executor::local_pool::ThreadNotify>
+
+    72.44%     4.44%  [.] do_syscall_64
+            |
+            ---entry_SYSCALL_64_after_hwframe
+               syscall
+               |          
+                --0.23%--atomic_sub<usize, usize> (inlined)
+                          fetch_sub (inlined)
+                          drop<futures_executor::local_pool::ThreadNotify, alloc::alloc::Global> (inlined)
+                          drop_glue<alloc::sync::Arc<futures_executor::local_pool::ThreadNotify, alloc::alloc::Global>> (inlined)
+                          wake<futures_executor::local_pool::ThreadNotify> (inlined)
+                          futures_task::waker::wake_arc_raw::<futures_executor::local_pool::ThreadNotify>
+
+    67.56%     0.89%  [.] x64_sys_call
+            |
+            ---do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               syscall
+               |          
+                --0.22%--atomic_sub<usize, usize> (inlined)
+                          fetch_sub (inlined)
+                          drop<futures_executor::local_pool::ThreadNotify, alloc::alloc::Global> (inlined)
+                          drop_glue<alloc::sync::Arc<futures_executor::local_pool::ThreadNotify, alloc::alloc::Global>> (inlined)
+                          wake<futures_executor::local_pool::ThreadNotify> (inlined)
+                          futures_task::waker::wake_arc_raw::<futures_executor::local_pool::ThreadNotify>
+
+    52.44%     0.44%  [.] __x64_sys_io_uring_enter
+            |          
+             --0.74%--x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       syscall
+
+    51.11%     0.89%  [.] __do_sys_io_uring_enter
+            |
+            ---__x64_sys_io_uring_enter
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               syscall
+
+    48.44%     6.22%  [.] io_cqring_wait
+            |
+            ---__do_sys_io_uring_enter
+               __x64_sys_io_uring_enter
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               syscall
+
+    38.22%     0.44%  [.] schedule
+            |
+            ---io_cqring_wait
+               __do_sys_io_uring_enter
+               __x64_sys_io_uring_enter
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               syscall
+
+    37.78%     0.89%  [.] __schedule
+            |
+            ---schedule
+               io_cqring_wait
+               __do_sys_io_uring_enter
+               __x64_sys_io_uring_enter
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               syscall
+
+    36.89%    36.44%  [k] finish_task_switch.isra.0
+            |
+            ---__schedule
+               schedule
+               io_cqring_wait
+               __do_sys_io_uring_enter
+               __x64_sys_io_uring_enter
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               syscall
+
+    19.11%     0.00%  [.] futures_task::waker::wake_arc_raw::<futures_executor::local_pool::ThreadNotify>
+    19.11%     0.00%  [.] wake<futures_executor::local_pool::ThreadNotify> (inlined)
+            |
+            ---futures_task::waker::wake_arc_raw::<futures_executor::local_pool::ThreadNotify>
+
+    19.11%     0.00%  [.] drop_glue<alloc::sync::Arc<futures_executor::local_pool::ThreadNotify, alloc::alloc::Global>> (inlined)
+            |
+            ---wake<futures_executor::local_pool::ThreadNotify> (inlined)
+               futures_task::waker::wake_arc_raw::<futures_executor::local_pool::ThreadNotify>
+
+    19.11%     0.00%  [.] drop<futures_executor::local_pool::ThreadNotify, alloc::alloc::Global> (inlined)
+            |
+            ---drop_glue<alloc::sync::Arc<futures_executor::local_pool::ThreadNotify, alloc::alloc::Global>> (inlined)
+               wake<futures_executor::local_pool::ThreadNotify> (inlined)
+               futures_task::waker::wake_arc_raw::<futures_executor::local_pool::ThreadNotify>
+
+    19.11%     0.00%  [.] fetch_sub (inlined)
+            |
+            ---drop<futures_executor::local_pool::ThreadNotify, alloc::alloc::Global> (inlined)
+               drop_glue<alloc::sync::Arc<futures_executor::local_pool::ThreadNotify, alloc::alloc::Global>> (inlined)
+               wake<futures_executor::local_pool::ThreadNotify> (inlined)
+               futures_task::waker::wake_arc_raw::<futures_executor::local_pool::ThreadNotify>
+
+    19.11%     0.00%  [.] atomic_sub<usize, usize> (inlined)
+            |
+            ---fetch_sub (inlined)
+               drop<futures_executor::local_pool::ThreadNotify, alloc::alloc::Global> (inlined)
+               drop_glue<alloc::sync::Arc<futures_executor::local_pool::ThreadNotify, alloc::alloc::Global>> (inlined)
+               wake<futures_executor::local_pool::ThreadNotify> (inlined)
+               futures_task::waker::wake_arc_raw::<futures_executor::local_pool::ThreadNotify>
+
+    14.67%     0.44%  [.] __x64_sys_futex
+            |
+            ---x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               syscall
+               atomic_sub<usize, usize> (inlined)
+               fetch_sub (inlined)
+               drop<futures_executor::local_pool::ThreadNotify, alloc::alloc::Global> (inlined)
+               drop_glue<alloc::sync::Arc<futures_executor::local_pool::ThreadNotify, alloc::alloc::Global>> (inlined)
+               wake<futures_executor::local_pool::ThreadNotify> (inlined)
+               futures_task::waker::wake_arc_raw::<futures_executor::local_pool::ThreadNotify>
+
+    14.22%     0.00%  [.] do_futex
+            |
+            ---__x64_sys_futex
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               syscall
+               atomic_sub<usize, usize> (inlined)
+               fetch_sub (inlined)
+               drop<futures_executor::local_pool::ThreadNotify, alloc::alloc::Global> (inlined)
+               drop_glue<alloc::sync::Arc<futures_executor::local_pool::ThreadNotify, alloc::alloc::Global>> (inlined)
+               wake<futures_executor::local_pool::ThreadNotify> (inlined)
+               futures_task::waker::wake_arc_raw::<futures_executor::local_pool::ThreadNotify>
+
+    13.78%     0.44%  [.] futex_wake
+            |
+            ---do_futex
+               __x64_sys_futex
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               syscall
+               atomic_sub<usize, usize> (inlined)
+               fetch_sub (inlined)
+               drop<futures_executor::local_pool::ThreadNotify, alloc::alloc::Global> (inlined)
+               drop_glue<alloc::sync::Arc<futures_executor::local_pool::ThreadNotify, alloc::alloc::Global>> (inlined)
+               wake<futures_executor::local_pool::ThreadNotify> (inlined)
+               futures_task::waker::wake_arc_raw::<futures_executor::local_pool::ThreadNotify>
+
+    10.67%    10.67%  [k] _raw_spin_unlock_irqrestore
+            |          
+             --0.13%--try_to_wake_up
+                       wake_up_q
+                       futex_wake
+                       do_futex
+                       __x64_sys_futex
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       syscall
+                       atomic_sub<usize, usize> (inlined)
+                       fetch_sub (inlined)
+                       drop<futures_executor::local_pool::ThreadNotify, alloc::alloc::Global> (inlined)
+                       drop_glue<alloc::sync::Arc<futures_executor::local_pool::ThreadNotify, alloc::alloc::Global>> (inlined)
+                       wake<futures_executor::local_pool::ThreadNotify> (inlined)
+                       futures_task::waker::wake_arc_raw::<futures_executor::local_pool::ThreadNotify>
+
+     9.33%     0.00%  [.] wake_up_q
+            |
+            ---futex_wake
+               do_futex
+               __x64_sys_futex
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               syscall
+               atomic_sub<usize, usize> (inlined)
+               fetch_sub (inlined)
+               drop<futures_executor::local_pool::ThreadNotify, alloc::alloc::Global> (inlined)
+               drop_glue<alloc::sync::Arc<futures_executor::local_pool::ThreadNotify, alloc::alloc::Global>> (inlined)
+               wake<futures_executor::local_pool::ThreadNotify> (inlined)
+               futures_task::waker::wake_arc_raw::<futures_executor::local_pool::ThreadNotify>
+
+     9.33%     0.00%  [.] try_to_wake_up
+            |
+            ---wake_up_q
+               futex_wake
+               do_futex
+               __x64_sys_futex
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               syscall
+               atomic_sub<usize, usize> (inlined)
+               fetch_sub (inlined)
+               drop<futures_executor::local_pool::ThreadNotify, alloc::alloc::Global> (inlined)
+               drop_glue<alloc::sync::Arc<futures_executor::local_pool::ThreadNotify, alloc::alloc::Global>> (inlined)
+               wake<futures_executor::local_pool::ThreadNotify> (inlined)
+               futures_task::waker::wake_arc_raw::<futures_executor::local_pool::ThreadNotify>
+
+     5.33%     5.33%  [.] <hashbrown::raw::RawTable<(u64, alloc::sync::Arc<fxfs::object_store::data_object_handle::DataObjectHandle<fxfs::object_store::ObjectStore>>)>>::remove_entry::<hashbrown::map::equivalent_key<u64, u64, alloc::sync::Arc<fxfs::object_store::data_object_handle::DataObjectHandle<fxfs::object_store::ObjectStore>>>::{closure#0}>
+     4.44%     4.44%  [.] <futures_executor::local_pool::ThreadNotify as futures_task::arc_wake::ArcWake>::wake_by_ref
+     4.00%     4.00%  [.] <fxdax::storage::io::Completion>::complete
+     3.56%     3.56%  [.] fxdax::storage::io::uring::complete
+
+
+#
+# (Cannot load tips.txt file, please install perf!)
+#

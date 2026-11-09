@@ -1,0 +1,10 @@
+revision 8ffaaf175a88c4d54b803aba2a226635c20c8641
+firecracker 7d0a0970e891368b3d6c543db698fce4bc77dcbe
+changed  M Cargo.lock
+changed  M "backlog/tasks/task-301 - sqlite_extents-on-the-daemon-a-one-row-commit-takes-7.5-ms-against-2.9-ms-through-an-in-process-image.md"
+changed  M crates/extent_store/src/timings.rs
+changed  M crates/sqlite_extents/Cargo.toml
+changed  M guest/tests/Cargo.lock
+changed ?? crates/sqlite_extents/examples/sqlite-commit-profile.rs
+changed ?? docs/measurements/gce-sqlite-commit-profile-2026-11-09T1111Z-5602ef2e/
+4d8d2d8af0224c9a895e2df18a3f1c45bf1bb87d16cce96cd47d28b302fc60dc  source.tar.gz

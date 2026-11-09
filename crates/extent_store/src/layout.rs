@@ -161,10 +161,19 @@ pub(crate) fn parse_number(name: &str) -> Option<u64> {
     (name.len() == 16).then(|| u64::from_str_radix(name, 16).ok()).flatten()
 }
 
-/// The numbers of the files in `path`, in order.
+/// fxdax: the prefix of the names of spare logs, in a branch's directory of logs: logs of segments
+/// gone, kept to be the logs of segments to come (`segments::Segments::recycle`, TASK-301).
+pub(crate) const SPARE: &str = "spare-";
+
+/// fxdax: the path of the spare log that was the log of `segment`.
+pub(crate) fn spare_path(segment: SegmentId) -> String {
+    format!("{}/{SPARE}{:016x}", branch_dir(LOGS, segment.branch), segment.number)
+}
+
+/// The numbers of the files in `path`, in order; fxdax: but spare logs, which hold none.
 pub(crate) fn list_numbers<D: Dir>(dir: &D, path: &str) -> Result<Vec<u64>, Error> {
     let mut numbers = Vec::new();
-    for name in dir.list(path)? {
+    for name in dir.list(path)?.into_iter().filter(|name| !name.starts_with(SPARE)) {
         numbers.push(parse_number(&name).ok_or_else(|| anyhow!("{path}/{name} is no file"))?);
     }
     numbers.sort_unstable();
@@ -352,27 +361,43 @@ fn hash(payload: &[u8]) -> u64 {
 
 /// `record`, as a log holds it: its header, then its payload.
 pub(crate) fn encode<R: Serialize>(record: &R) -> Vec<u8> {
+    encode_salted(record, 0)
+}
+
+/// fxdax: `record`, encoded as [`encode`] does, its hash salted with `salt`: what reads it with
+/// another salt finds torn, as a log reused finds what it held before (TASK-301).
+pub(crate) fn encode_salted<R: Serialize>(record: &R, salt: u64) -> Vec<u8> {
     let payload = bincode::serialize(record).expect("records serialize");
     let len = u32::try_from(payload.len()).expect("a record is under 4 GiB");
     let mut bytes = Vec::with_capacity(HEADER + payload.len());
     bytes.extend_from_slice(&len.to_le_bytes());
-    bytes.extend_from_slice(&hash(&payload).to_le_bytes());
+    bytes.extend_from_slice(&(hash(&payload) ^ salt).to_le_bytes());
     bytes.extend_from_slice(&payload);
     bytes
 }
 
 /// The records at the start of `bytes` that are whole and intact, and how many bytes they take.
 pub(crate) fn decode<R: serde::de::DeserializeOwned>(bytes: &[u8]) -> (Vec<R>, usize) {
+    decode_with(bytes, 0, |payload| bincode::deserialize(payload).ok())
+}
+
+/// fxdax: the records at the start of `bytes` that are whole and intact, their hashes salted with
+/// `salt` ([`encode_salted`]), each payload's as `parse` reads it, and how many bytes they take.
+pub(crate) fn decode_with<R>(
+    bytes: &[u8],
+    salt: u64,
+    parse: impl Fn(&[u8]) -> Option<R>,
+) -> (Vec<R>, usize) {
     let mut records = Vec::new();
     let mut at = 0;
     while let Some(header) = bytes.get(at..at + HEADER) {
         let len = u32::from_le_bytes(header[..4].try_into().unwrap()) as usize;
         let expected = u64::from_le_bytes(header[4..].try_into().unwrap());
         let Some(payload) = bytes.get(at + HEADER..at + HEADER + len) else { break };
-        if len == 0 || hash(payload) != expected {
+        if len == 0 || hash(payload) ^ salt != expected {
             break;
         }
-        let Ok(record) = bincode::deserialize(payload) else { break };
+        let Some(record) = parse(payload) else { break };
         records.push(record);
         at += HEADER + len;
     }

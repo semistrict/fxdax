@@ -1,0 +1,42 @@
+revision 8ffaaf175a88c4d54b803aba2a226635c20c8641
+firecracker 7d0a0970e891368b3d6c543db698fce4bc77dcbe
+changed  M Cargo.lock
+changed  M "backlog/docs/doc-4 - Virtio-extent-store-device-specification.md"
+changed  M "backlog/tasks/task-301 - sqlite_extents-on-the-daemon-a-one-row-commit-takes-7.5-ms-against-2.9-ms-through-an-in-process-image.md"
+changed  M crates/extent_store/src/durability.rs
+changed  M crates/extent_store/src/layout.rs
+changed  M crates/extent_store/src/segments.rs
+changed  M crates/extent_store/src/store.rs
+changed  M crates/extent_store/src/timings.rs
+changed  M crates/extent_store/src/wal.rs
+changed  M crates/extent_store/tests/corrupt.rs
+changed  M crates/extent_store/tests/crash/rounds.rs
+changed  M crates/extent_store/tests/host.rs
+changed  M crates/extent_store/tests/shuttle/main.rs
+changed  M crates/extent_store/tests/store.rs
+changed  M crates/extent_store/tests/views.rs
+changed  M crates/fxdax/src/extentd/codec.rs
+changed  M crates/fxdax/src/extentd/device.rs
+changed  M crates/fxdax/src/extentd/server.rs
+changed  M crates/fxdax/src/extentd/wire.rs
+changed  M crates/fxdax/src/extents.rs
+changed  M crates/sqlite_extents/Cargo.toml
+changed  M crates/sqlite_extents/src/format.rs
+changed  M crates/sqlite_extents/src/pages.rs
+changed  M crates/sqlite_extents/src/volume.rs
+changed  M crates/sqlite_extents/tests/sqlite.rs
+changed  M guest/tests/Cargo.lock
+changed  M scripts/lib/example-linux-host.sh
+changed ?? "backlog/tasks/task-303 - example-gce.sh-measured-every-example-with-the-extent-stores-audit-compiled-in.md"
+changed ?? crates/sqlite_extents/examples/sqlite-commit-profile.rs
+changed ?? docs/measurements/gce-sqlite-commit-profile-2026-11-09T1111Z-5602ef2e/
+changed ?? docs/measurements/gce-sqlite-commit-profile-2026-11-09T1114Z-2b9c1415/
+changed ?? docs/measurements/gce-sqlite-commit-profile-2026-11-09T1156Z-6ccce2cb/
+changed ?? docs/measurements/gce-sqlite-commit-profile-2026-11-09T1208Z-b7e7d6ca/
+changed ?? docs/measurements/gce-sqlite-commit-profile-2026-11-09T1212Z-de06e598/
+changed ?? docs/measurements/gce-sqlite-commit-profile-2026-11-09T1217Z-0397c896/
+changed ?? docs/measurements/gce-sqlite-commit-profile-2026-11-09T1221Z-e205a5fc/
+changed ?? docs/measurements/gce-sqlite-commit-profile-2026-11-09T1223Z-3785c3eb/
+changed ?? docs/measurements/gce-sqlite-commit-profile-2026-11-09T1236Z-7bf6c9f6/
+changed ?? docs/measurements/gce-sqlite-commit-profile-2026-11-09T1241Z-fd94ec24/
+c018c474dee93bc4fb8097c7fa9537f194580b0962977cfb9c9d0691afdd4b3a  source.tar.gz

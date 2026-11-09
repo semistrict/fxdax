@@ -1,0 +1,65 @@
+info: component rust-std for target x86_64-unknown-linux-musl is up to date
+info: component clippy is up to date
+   Compiling tokio v1.53.1
+   Compiling crypto-common v0.2.2
+   Compiling displaydoc v0.2.7
+   Compiling bytemuck v1.25.2
+   Compiling rand_core v0.9.5
+   Compiling crc32fast v1.5.2
+   Compiling fail v0.5.1
+   Compiling fxdax v0.1.0 (/var/lib/fxdax-test/example-tree/crates/fxdax)
+   Compiling safe_arch v0.7.4
+   Compiling rand_xoshiro v0.7.0
+   Compiling digest v0.11.3
+   Compiling tinystr v0.8.4
+   Compiling zerotrie v0.2.5
+   Compiling icu_collections v2.3.0
+   Compiling sha2 v0.11.0
+   Compiling icu_locale_core v2.3.0
+   Compiling cipher v0.5.2
+   Compiling hmac v0.13.0
+   Compiling md-5 v0.11.0
+   Compiling wide v0.7.33
+   Compiling cbc v0.2.1
+   Compiling aes v0.9.3
+   Compiling storage_xts v0.1.0 (/var/lib/fxdax-test/example-tree/crates/storage_xts)
+   Compiling flate2 v1.1.10
+   Compiling bssl-crypto v0.1.0 (/var/lib/fxdax-test/example-tree/crates/bssl-crypto)
+   Compiling fuchsia_merkle v0.1.0 (/var/lib/fxdax-test/example-tree/crates/fuchsia_merkle)
+   Compiling fscrypt v0.1.0 (/var/lib/fxdax-test/example-tree/crates/fscrypt)
+   Compiling mundane v0.1.0 (/var/lib/fxdax-test/example-tree/crates/mundane)
+   Compiling icu_provider v2.3.1
+   Compiling fxfs-crypto v0.1.0 (/var/lib/fxdax-test/example-tree/crates/fxfs-crypto)
+   Compiling blob_metadata v0.1.0 (/var/lib/fxdax-test/example-tree/crates/blob_metadata)
+   Compiling icu_normalizer v2.3.0
+   Compiling icu_properties v2.3.0
+   Compiling imbl v7.0.2
+   Compiling idna_adapter v1.2.2
+   Compiling idna v1.1.0
+   Compiling url v2.5.8
+   Compiling tokio-util v0.7.20
+   Compiling tokio-rustls v0.26.6
+   Compiling fuchsia-emulated-handle v0.1.0 (/var/lib/fxdax-test/example-tree/crates/fuchsia-emulated-handle)
+   Compiling fidl-fuchsia-io v0.1.0 (/var/lib/fxdax-test/example-tree/crates/fidl-fuchsia-io)
+   Compiling h2 v0.4.20
+   Compiling tower v0.5.3
+   Compiling tokio-stream v0.1.19
+   Compiling fsverity_merkle v0.1.0 (/var/lib/fxdax-test/example-tree/crates/fsverity_merkle)
+   Compiling fuchsia-async v0.1.0 (/var/lib/fxdax-test/example-tree/crates/fuchsia-async)
+   Compiling fxfs v0.1.0 (/var/lib/fxdax-test/example-tree/crates/fxfs)
+   Compiling tower-http v0.6.11
+   Compiling axum v0.8.9
+   Compiling hyper v1.12.0
+   Compiling hyper-util v0.1.21
+   Compiling hyper-rustls v0.27.10
+   Compiling hyper-timeout v0.5.2
+   Compiling reqwest v0.13.5
+   Compiling tonic v0.14.6
+   Compiling object_store v0.14.2
+   Compiling tonic-prost v0.14.6
+   Compiling tonic-health v0.14.6
+   Compiling extent_remote v0.1.0 (/var/lib/fxdax-test/example-tree/crates/extent_remote)
+   Compiling extent_store v0.1.0 (/var/lib/fxdax-test/example-tree/crates/extent_store)
+   Compiling fxfs-posix v0.1.0 (/var/lib/fxdax-test/example-tree/crates/fxfs-posix)
+   Compiling sqlite_extents v0.1.0 (/var/lib/fxdax-test/example-tree/crates/sqlite_extents)
+    Finished `release` profile [optimized] target(s) in 1m 26s

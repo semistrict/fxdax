@@ -1,0 +1,520 @@
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 129  of event 'task-clock:ppp'
+# Event count (approx.): 25805160
+#
+# Children      Self  Symbol                                                                                                                                                               
+# ........  ........  .....................................................................................................................................................................
+#
+    78.29%     0.00%  [.] entry_SYSCALL_64_after_hwframe
+            |          
+            |--0.53%--0x71db734b4792
+            |          |          
+            |           --0.53%--recvmsg
+            |                     fxdax::extentd::wire::receive_with_fds
+            |          
+             --0.11%--syscall
+                       atomic_sub<usize, usize> (inlined)
+                       fetch_sub (inlined)
+                       drop<futures_executor::local_pool::ThreadNotify, alloc::alloc::Global> (inlined)
+                       drop_glue<alloc::sync::Arc<futures_executor::local_pool::ThreadNotify, alloc::alloc::Global>> (inlined)
+                       wake<futures_executor::local_pool::ThreadNotify> (inlined)
+                       futures_task::waker::wake_arc_raw::<futures_executor::local_pool::ThreadNotify>
+
+    78.29%     2.33%  [.] do_syscall_64
+            |
+            ---entry_SYSCALL_64_after_hwframe
+               |          
+               |--0.53%--0x71db734b4792
+               |          |          
+               |           --0.53%--recvmsg
+               |                     fxdax::extentd::wire::receive_with_fds
+               |          
+                --0.11%--syscall
+                          atomic_sub<usize, usize> (inlined)
+                          fetch_sub (inlined)
+                          drop<futures_executor::local_pool::ThreadNotify, alloc::alloc::Global> (inlined)
+                          drop_glue<alloc::sync::Arc<futures_executor::local_pool::ThreadNotify, alloc::alloc::Global>> (inlined)
+                          wake<futures_executor::local_pool::ThreadNotify> (inlined)
+                          futures_task::waker::wake_arc_raw::<futures_executor::local_pool::ThreadNotify>
+
+    75.19%     0.00%  [.] x64_sys_call
+            |
+            ---do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               |          
+               |--0.53%--0x71db734b4792
+               |          |          
+               |           --0.52%--recvmsg
+               |                     fxdax::extentd::wire::receive_with_fds
+               |          
+                --0.09%--syscall
+                          atomic_sub<usize, usize> (inlined)
+                          fetch_sub (inlined)
+                          drop<futures_executor::local_pool::ThreadNotify, alloc::alloc::Global> (inlined)
+                          drop_glue<alloc::sync::Arc<futures_executor::local_pool::ThreadNotify, alloc::alloc::Global>> (inlined)
+                          wake<futures_executor::local_pool::ThreadNotify> (inlined)
+                          futures_task::waker::wake_arc_raw::<futures_executor::local_pool::ThreadNotify>
+
+    68.22%     2.33%  [.] fxdax::extentd::wire::receive_with_fds
+    65.12%     0.00%  [.] recvmsg
+            |
+            ---fxdax::extentd::wire::receive_with_fds
+
+    65.12%     0.00%  [.] 0x000071db734b4792
+            |          
+             --0.53%--recvmsg
+                       fxdax::extentd::wire::receive_with_fds
+
+    63.57%     0.00%  [.] __x64_sys_recvmsg
+            |
+            ---x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               0x71db734b4792
+               recvmsg
+               fxdax::extentd::wire::receive_with_fds
+
+    63.57%     0.00%  [.] __sys_recvmsg
+            |
+            ---__x64_sys_recvmsg
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               0x71db734b4792
+               recvmsg
+               fxdax::extentd::wire::receive_with_fds
+
+    60.47%     0.00%  [.] ___sys_recvmsg
+            |
+            ---__sys_recvmsg
+               __x64_sys_recvmsg
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               0x71db734b4792
+               recvmsg
+               fxdax::extentd::wire::receive_with_fds
+
+    58.91%     3.10%  [.] ____sys_recvmsg
+            |          
+             --0.47%--___sys_recvmsg
+                       __sys_recvmsg
+                       __x64_sys_recvmsg
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       0x71db734b4792
+                       recvmsg
+                       fxdax::extentd::wire::receive_with_fds
+
+    55.04%     0.00%  [.] sock_recvmsg
+            |
+            ---____sys_recvmsg
+               ___sys_recvmsg
+               __sys_recvmsg
+               __x64_sys_recvmsg
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               0x71db734b4792
+               recvmsg
+               fxdax::extentd::wire::receive_with_fds
+
+    54.26%     2.33%  [.] unix_stream_read_generic
+            |          
+             --0.44%--unix_stream_recvmsg
+                       sock_recvmsg
+                       ____sys_recvmsg
+                       ___sys_recvmsg
+                       __sys_recvmsg
+                       __x64_sys_recvmsg
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       0x71db734b4792
+                       recvmsg
+                       fxdax::extentd::wire::receive_with_fds
+
+    53.49%     0.00%  [.] unix_stream_recvmsg
+            |
+            ---sock_recvmsg
+               ____sys_recvmsg
+               ___sys_recvmsg
+               __sys_recvmsg
+               __x64_sys_recvmsg
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               0x71db734b4792
+               recvmsg
+               fxdax::extentd::wire::receive_with_fds
+
+    33.33%     0.78%  [.] unix_stream_data_wait
+            |
+            ---unix_stream_read_generic
+               unix_stream_recvmsg
+               sock_recvmsg
+               ____sys_recvmsg
+               ___sys_recvmsg
+               __sys_recvmsg
+               __x64_sys_recvmsg
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               0x71db734b4792
+               recvmsg
+               fxdax::extentd::wire::receive_with_fds
+
+    31.01%     0.78%  [.] schedule_timeout
+            |          
+             --0.25%--unix_stream_data_wait
+                       unix_stream_read_generic
+                       unix_stream_recvmsg
+                       sock_recvmsg
+                       ____sys_recvmsg
+                       ___sys_recvmsg
+                       __sys_recvmsg
+                       __x64_sys_recvmsg
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       0x71db734b4792
+                       recvmsg
+                       fxdax::extentd::wire::receive_with_fds
+
+    30.23%     0.00%  [.] schedule
+            |
+            ---schedule_timeout
+               unix_stream_data_wait
+               unix_stream_read_generic
+               unix_stream_recvmsg
+               sock_recvmsg
+               ____sys_recvmsg
+               ___sys_recvmsg
+               __sys_recvmsg
+               __x64_sys_recvmsg
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               0x71db734b4792
+               recvmsg
+               fxdax::extentd::wire::receive_with_fds
+
+    30.23%     0.00%  [.] __schedule
+            |
+            ---schedule
+               schedule_timeout
+               unix_stream_data_wait
+               unix_stream_read_generic
+               unix_stream_recvmsg
+               sock_recvmsg
+               ____sys_recvmsg
+               ___sys_recvmsg
+               __sys_recvmsg
+               __x64_sys_recvmsg
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               0x71db734b4792
+               recvmsg
+               fxdax::extentd::wire::receive_with_fds
+
+    30.23%    30.23%  [k] finish_task_switch.isra.0
+            |
+            ---__schedule
+               schedule
+               schedule_timeout
+               unix_stream_data_wait
+               unix_stream_read_generic
+               unix_stream_recvmsg
+               sock_recvmsg
+               ____sys_recvmsg
+               ___sys_recvmsg
+               __sys_recvmsg
+               __x64_sys_recvmsg
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               0x71db734b4792
+               recvmsg
+               fxdax::extentd::wire::receive_with_fds
+
+    17.05%    17.05%  [k] _raw_spin_unlock_irqrestore
+            |          
+            |--0.08%--__wake_up_sync_key
+            |          unix_write_space
+            |          sock_wfree
+            |          unix_wfree
+            |          skb_release_head_state
+            |          consume_skb
+            |          unix_stream_read_generic
+            |          unix_stream_recvmsg
+            |          sock_recvmsg
+            |          ____sys_recvmsg
+            |          ___sys_recvmsg
+            |          __sys_recvmsg
+            |          __x64_sys_recvmsg
+            |          x64_sys_call
+            |          do_syscall_64
+            |          entry_SYSCALL_64_after_hwframe
+            |          0x71db734b4792
+            |          recvmsg
+            |          fxdax::extentd::wire::receive_with_fds
+            |          
+             --0.06%--try_to_wake_up
+                       wake_up_q
+                       futex_wake
+                       do_futex
+                       __x64_sys_futex
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       syscall
+                       atomic_sub<usize, usize> (inlined)
+                       fetch_sub (inlined)
+                       drop<futures_executor::local_pool::ThreadNotify, alloc::alloc::Global> (inlined)
+                       drop_glue<alloc::sync::Arc<futures_executor::local_pool::ThreadNotify, alloc::alloc::Global>> (inlined)
+                       wake<futures_executor::local_pool::ThreadNotify> (inlined)
+                       futures_task::waker::wake_arc_raw::<futures_executor::local_pool::ThreadNotify>
+
+    14.73%     0.00%  [.] futures_task::waker::wake_arc_raw::<futures_executor::local_pool::ThreadNotify>
+    14.73%     0.00%  [.] wake<futures_executor::local_pool::ThreadNotify> (inlined)
+            |
+            ---futures_task::waker::wake_arc_raw::<futures_executor::local_pool::ThreadNotify>
+
+    14.73%     0.00%  [.] drop_glue<alloc::sync::Arc<futures_executor::local_pool::ThreadNotify, alloc::alloc::Global>> (inlined)
+            |
+            ---wake<futures_executor::local_pool::ThreadNotify> (inlined)
+               futures_task::waker::wake_arc_raw::<futures_executor::local_pool::ThreadNotify>
+
+    14.73%     0.00%  [.] drop<futures_executor::local_pool::ThreadNotify, alloc::alloc::Global> (inlined)
+            |
+            ---drop_glue<alloc::sync::Arc<futures_executor::local_pool::ThreadNotify, alloc::alloc::Global>> (inlined)
+               wake<futures_executor::local_pool::ThreadNotify> (inlined)
+               futures_task::waker::wake_arc_raw::<futures_executor::local_pool::ThreadNotify>
+
+    14.73%     0.00%  [.] fetch_sub (inlined)
+            |
+            ---drop<futures_executor::local_pool::ThreadNotify, alloc::alloc::Global> (inlined)
+               drop_glue<alloc::sync::Arc<futures_executor::local_pool::ThreadNotify, alloc::alloc::Global>> (inlined)
+               wake<futures_executor::local_pool::ThreadNotify> (inlined)
+               futures_task::waker::wake_arc_raw::<futures_executor::local_pool::ThreadNotify>
+
+    14.73%     0.00%  [.] atomic_sub<usize, usize> (inlined)
+            |
+            ---fetch_sub (inlined)
+               drop<futures_executor::local_pool::ThreadNotify, alloc::alloc::Global> (inlined)
+               drop_glue<alloc::sync::Arc<futures_executor::local_pool::ThreadNotify, alloc::alloc::Global>> (inlined)
+               wake<futures_executor::local_pool::ThreadNotify> (inlined)
+               futures_task::waker::wake_arc_raw::<futures_executor::local_pool::ThreadNotify>
+
+    14.73%     0.78%  [.] consume_skb
+            |
+            ---unix_stream_read_generic
+               unix_stream_recvmsg
+               sock_recvmsg
+               ____sys_recvmsg
+               ___sys_recvmsg
+               __sys_recvmsg
+               __x64_sys_recvmsg
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               0x71db734b4792
+               recvmsg
+               fxdax::extentd::wire::receive_with_fds
+
+    13.95%     0.78%  [.] syscall
+            |
+            ---atomic_sub<usize, usize> (inlined)
+               fetch_sub (inlined)
+               drop<futures_executor::local_pool::ThreadNotify, alloc::alloc::Global> (inlined)
+               drop_glue<alloc::sync::Arc<futures_executor::local_pool::ThreadNotify, alloc::alloc::Global>> (inlined)
+               wake<futures_executor::local_pool::ThreadNotify> (inlined)
+               futures_task::waker::wake_arc_raw::<futures_executor::local_pool::ThreadNotify>
+
+    11.63%     0.78%  [.] __x64_sys_futex
+            |          
+             --0.09%--x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       syscall
+                       atomic_sub<usize, usize> (inlined)
+                       fetch_sub (inlined)
+                       drop<futures_executor::local_pool::ThreadNotify, alloc::alloc::Global> (inlined)
+                       drop_glue<alloc::sync::Arc<futures_executor::local_pool::ThreadNotify, alloc::alloc::Global>> (inlined)
+                       wake<futures_executor::local_pool::ThreadNotify> (inlined)
+                       futures_task::waker::wake_arc_raw::<futures_executor::local_pool::ThreadNotify>
+
+    10.85%     0.00%  [.] do_futex
+            |
+            ---__x64_sys_futex
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               syscall
+               atomic_sub<usize, usize> (inlined)
+               fetch_sub (inlined)
+               drop<futures_executor::local_pool::ThreadNotify, alloc::alloc::Global> (inlined)
+               drop_glue<alloc::sync::Arc<futures_executor::local_pool::ThreadNotify, alloc::alloc::Global>> (inlined)
+               wake<futures_executor::local_pool::ThreadNotify> (inlined)
+               futures_task::waker::wake_arc_raw::<futures_executor::local_pool::ThreadNotify>
+
+    10.85%     0.00%  [.] futex_wake
+            |
+            ---do_futex
+               __x64_sys_futex
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               syscall
+               atomic_sub<usize, usize> (inlined)
+               fetch_sub (inlined)
+               drop<futures_executor::local_pool::ThreadNotify, alloc::alloc::Global> (inlined)
+               drop_glue<alloc::sync::Arc<futures_executor::local_pool::ThreadNotify, alloc::alloc::Global>> (inlined)
+               wake<futures_executor::local_pool::ThreadNotify> (inlined)
+               futures_task::waker::wake_arc_raw::<futures_executor::local_pool::ThreadNotify>
+
+    10.85%     0.78%  [.] skb_release_head_state
+            |
+            ---consume_skb
+               unix_stream_read_generic
+               unix_stream_recvmsg
+               sock_recvmsg
+               ____sys_recvmsg
+               ___sys_recvmsg
+               __sys_recvmsg
+               __x64_sys_recvmsg
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               0x71db734b4792
+               recvmsg
+               fxdax::extentd::wire::receive_with_fds
+
+    10.85%     0.78%  [.] unix_wfree
+            |          
+             --0.08%--skb_release_head_state
+                       consume_skb
+                       unix_stream_read_generic
+                       unix_stream_recvmsg
+                       sock_recvmsg
+                       ____sys_recvmsg
+                       ___sys_recvmsg
+                       __sys_recvmsg
+                       __x64_sys_recvmsg
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       0x71db734b4792
+                       recvmsg
+                       fxdax::extentd::wire::receive_with_fds
+
+    10.08%     0.00%  [.] sock_wfree
+            |
+            ---unix_wfree
+               skb_release_head_state
+               consume_skb
+               unix_stream_read_generic
+               unix_stream_recvmsg
+               sock_recvmsg
+               ____sys_recvmsg
+               ___sys_recvmsg
+               __sys_recvmsg
+               __x64_sys_recvmsg
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               0x71db734b4792
+               recvmsg
+               fxdax::extentd::wire::receive_with_fds
+
+    10.08%     0.78%  [k] unix_write_space
+            |
+            ---sock_wfree
+               unix_wfree
+               skb_release_head_state
+               consume_skb
+               unix_stream_read_generic
+               unix_stream_recvmsg
+               sock_recvmsg
+               ____sys_recvmsg
+               ___sys_recvmsg
+               __sys_recvmsg
+               __x64_sys_recvmsg
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               0x71db734b4792
+               recvmsg
+               fxdax::extentd::wire::receive_with_fds
+
+     9.30%     0.00%  [.] __wake_up_sync_key
+            |
+            ---unix_write_space
+               sock_wfree
+               unix_wfree
+               skb_release_head_state
+               consume_skb
+               unix_stream_read_generic
+               unix_stream_recvmsg
+               sock_recvmsg
+               ____sys_recvmsg
+               ___sys_recvmsg
+               __sys_recvmsg
+               __x64_sys_recvmsg
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               0x71db734b4792
+               recvmsg
+               fxdax::extentd::wire::receive_with_fds
+
+     6.98%     0.00%  [.] wake_up_q
+            |
+            ---futex_wake
+               do_futex
+               __x64_sys_futex
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               syscall
+               atomic_sub<usize, usize> (inlined)
+               fetch_sub (inlined)
+               drop<futures_executor::local_pool::ThreadNotify, alloc::alloc::Global> (inlined)
+               drop_glue<alloc::sync::Arc<futures_executor::local_pool::ThreadNotify, alloc::alloc::Global>> (inlined)
+               wake<futures_executor::local_pool::ThreadNotify> (inlined)
+               futures_task::waker::wake_arc_raw::<futures_executor::local_pool::ThreadNotify>
+
+     6.98%     0.00%  [.] try_to_wake_up
+            |
+            ---wake_up_q
+               futex_wake
+               do_futex
+               __x64_sys_futex
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               syscall
+               atomic_sub<usize, usize> (inlined)
+               fetch_sub (inlined)
+               drop<futures_executor::local_pool::ThreadNotify, alloc::alloc::Global> (inlined)
+               drop_glue<alloc::sync::Arc<futures_executor::local_pool::ThreadNotify, alloc::alloc::Global>> (inlined)
+               wake<futures_executor::local_pool::ThreadNotify> (inlined)
+               futures_task::waker::wake_arc_raw::<futures_executor::local_pool::ThreadNotify>
+
+     6.20%     6.20%  [.] <futures_executor::local_pool::ThreadNotify as futures_task::arc_wake::ArcWake>::wake_by_ref
+            |          
+             --0.04%--<futures_executor::local_pool::ThreadNotify as futures_task::arc_wake::ArcWake>::wake_by_ref
+
+     3.10%     3.10%  [.] <fxdax::extentd::wire::Receiver>::receive::<<fxdax::extentd::client::Client>::receive::{closure#0}>
+     3.10%     3.10%  [.] <futures_channel::oneshot::Sender<core::result::Result<fxdax::extentd::wire::Message, fxfs_posix::errno::Errno>>>::send
+
+
+#
+# (Cannot load tips.txt file, please install perf!)
+#

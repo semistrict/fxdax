@@ -1,0 +1,18 @@
+Under /var/lib/fxdax-test/example-tree/target/sqlite-commit-profile.
+append and fdatasync 1 blocks: 1000 commits, 959/s, p50 1014 µs, p99 1283 µs
+overwrite and fdatasync 1 blocks: 1000 commits, 3003/s, p50 325 µs, p99 467 µs
+append and fdatasync 5 blocks: 1000 commits, 964/s, p50 1002 µs, p99 1486 µs
+overwrite and fdatasync 5 blocks: 1000 commits, 3087/s, p50 317 µs, p99 461 µs
+  store flushes 0.00 a commit; µs a commit: wait 0.0, data 0.0, dirs 0.0, logs 0.0, gone 0.0, raw 0.0
+wal-full: 1000 commits, 1074/s, p50 943 µs, p99 1185 µs
+image:
+  read           3.77 a commit,    271.0 µs each,   1020.9 µs a commit
+  write          1.00 a commit,   2114.4 µs each,   2120.8 µs a commit
+  free           0.01 a commit,     85.8 µs each,      1.2 µs a commit
+  store flushes 1.01 a commit; µs a commit: wait 9.7, data 329.7, dirs 0.0, logs 1248.0, gone 0.0, raw 5.1
+image: 1000 commits, 313/s, p50 2987 µs, p99 6126 µs
+daemon:
+  write          1.00 a commit,   1235.8 µs each,   1239.5 µs a commit
+  free           0.01 a commit,    108.2 µs each,      1.5 µs a commit
+  store flushes 1.01 a commit; µs a commit: wait 8.5, data 9.1, dirs 0.0, logs 1129.0, gone 0.0, raw 3.9
+daemon: 1000 commits, 784/s, p50 1250 µs, p99 1997 µs

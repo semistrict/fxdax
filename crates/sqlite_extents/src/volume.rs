@@ -11,18 +11,21 @@
 //! its root leaves the file as it was, the extents it wrote freed; one that fails committing the
 //! root fails the volume, which may or may not hold it, until it is opened again.
 //!
-//! **Freeing.** What a commit leaves unreferenced is freed once its root is durable, and named in
-//! that root as dying until then, so that the next opening frees it if a crash came between. The
-//! root also says where minting goes on: the extents past it a crash left, written for a commit
-//! whose root it lost, are freed by the next opening, as Fxfs's allocator frees its orphans.
+//! **Freeing.** What a commit leaves unreferenced is freed once a root naming it as dying is
+//! durable, so that the next opening frees it if a crash came between: [`FREE_BATCH`] of them at a
+//! time, a request for many rather than one a commit, the roots naming them meanwhile. A root holds
+//! few (the extent daemon's is 4 KiB at most): more, as a commit that compacts, truncates or
+//! deletes much leaves, are listed in an extent of their own, written with the commit, which the
+//! root names, and which is freed a commit later. The root also says where minting goes on: the
+//! extents past it a crash left, written for a commit whose root it lost, are freed by the next
+//! opening, as Fxfs's allocator frees its orphans.
 //!
 //! **The window.** A volume opened with a window ([`Volume::open_mapped`]) maps each file it
 //! opens into a region of it, as the file's last commit has it (`window`), and maps again what
-//! each commit changed, before anything reads the file as of it. Reads of what the last commit
-//! left copy from the window, and SQLite's memory-mapped reads ([`Volume::fetch`]) read it in
-//! place. While SQLite holds pages it fetched, a commit maps nothing again, as SQLite's own unix
-//! VFS remaps nothing while pages are out: the file is read from the device meanwhile, and mapped
-//! again as the last page goes back ([`Volume::unfetch`]).
+//! commits changed, a batch at a time ([`REMAP_BATCH`]), or as SQLite fetches pages: reads of
+//! what they changed go to the device meanwhile. Reads of the rest copy from the window, and
+//! SQLite's memory-mapped reads ([`Volume::fetch`]) read it in place. While SQLite holds pages it
+//! fetched, nothing is mapped again, as SQLite's own unix VFS remaps nothing while pages are out.
 //!
 //! **Memory files.** Journals and temporary files live in memory: a database's file changes only
 //! at its commits, whole, so that no crash needs a journal to roll it back.
@@ -32,7 +35,7 @@
 
 use crate::format::{self, Root};
 use crate::locks::{Level, Locks};
-use crate::pages::Pages;
+use crate::pages::{Failure, Pages, Plan};
 use crate::window::{Run, Window};
 use anyhow::{Context as _, Error, bail};
 use futures::executor::block_on;
@@ -48,6 +51,15 @@ const MAX_ORPHANS_SOUGHT: u64 = 1 << 16;
 
 /// The most extents freed in one request.
 const FREES_AT_ONCE: usize = 4096;
+
+/// How many chunks commits change before the window maps them again, one request for them all
+/// rather than one a commit, each chunk once however often changed: what they wrote is read from
+/// memory meanwhile, 4 MiB at most a file.
+const REMAP_BATCH: u64 = 1024;
+
+/// The most dying extents a root names itself, and how many wait to be freed at once: 16 bytes
+/// each.
+const FREE_BATCH: usize = 64;
 
 /// The error of opening a database file the volume doesn't hold.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
@@ -88,14 +100,12 @@ struct File {
     region: Option<u64>,
     /// How many pages of its region SQLite holds ([`Volume::fetch`]).
     fetches: u32,
-    /// The chunks commits changed while SQLite held pages, which its region is to map again.
-    stale: Vec<Range<u64>>,
 }
 
 impl File {
     fn new(pages: Pages, committed: bool) -> Self {
-        let (locks, region, stale) = (Locks::default(), None, Vec::new());
-        Self { pages, locks, opens: 0, committed, region, fetches: 0, stale }
+        let (locks, region) = (Locks::default(), None);
+        Self { pages, locks, opens: 0, committed, region, fetches: 0 }
     }
 }
 
@@ -182,7 +192,8 @@ impl Volume {
     /// What `device` holds, its root's dying extents and what a crash left freed, and the root
     /// made if it was empty.
     async fn recover(device: &dyn Device) -> Result<Inner, Error> {
-        format::check_block_size(device.block_size() as usize)?;
+        let block_size = device.block_size() as usize;
+        format::check_block_size(block_size)?;
         let root = Root::decode(&device.root().await.context("reading the root")?)?;
         let next = device.next_sequence().await?;
         let floor = device.sequence_floor().await?;
@@ -206,25 +217,34 @@ impl Volume {
             inner.files.insert(name.clone(), File::new(pages, true));
         }
         let branch = device.branch();
-        let orphans = orphans(root.minted, next);
-        let freeing: Vec<_> = root
-            .dying
-            .iter()
-            .copied()
-            .chain(orphans.map(|sequence| ExtentId::new(branch, sequence)))
-            .collect();
+        let orphans = orphans(root.minted, next).map(|sequence| ExtentId::new(branch, sequence));
+        let mut freeing: Vec<_> = root.dying.iter().copied().chain(orphans).collect();
+        if let Some((list, count)) = root.dying_list {
+            let mut buffer = device.allocate_buffer(format::list_len(count, block_size)).await;
+            device
+                .read(list, 0, buffer.as_mut())
+                .await
+                .context("reading the dying extents' list")?;
+            freeing.extend(format::decode_list(&buffer.as_ref().to_vec(), count)?);
+        }
         if !freeing.is_empty() {
             inner.dying = free(device, &freeing).await;
             // Sealed before anything is written past them.
             device.flush().await.context("sealing the frees of what a crash left")?;
         }
+        // The list goes once a root that names it not is durable, as its next commit's.
+        inner.dying.extend(root.dying_list.map(|(list, _)| list));
         Ok(inner)
     }
 
     /// Closes the device: every commit is durable already, and the device may keep them
     /// elsewhere too, as an image uploads them to its bucket, which closing it waits for.
     pub fn close(&self) -> Result<(), Error> {
-        let _inner = self.lock()?;
+        let mut inner = self.lock()?;
+        // What waits to be freed, which the last root names, so that a crash before the device's
+        // closing seals the frees frees them again.
+        let dying = std::mem::take(&mut inner.dying);
+        inner.dying = block_on(free(&**self.device, &dying));
         block_on(self.device.close()).context("closing the device")
     }
 
@@ -246,11 +266,12 @@ impl Volume {
         Ok(self.lock()?.files.keys().cloned().collect())
     }
 
-    /// The extents its files' last commits reference, in order.
+    /// The extents it holds, in order: those its files' last commits reference, and those it has
+    /// yet to free.
     pub fn extents(&self) -> Result<Vec<ExtentId>, Error> {
         let inner = self.lock()?;
-        let mut extents: Vec<_> =
-            inner.files.values().flat_map(|file| file.pages.extents()).collect();
+        let referenced = inner.files.values().flat_map(|file| file.pages.extents());
+        let mut extents: Vec<_> = referenced.chain(inner.dying.iter().copied()).collect();
         extents.sort();
         Ok(extents)
     }
@@ -285,9 +306,8 @@ impl Volume {
     }
 
     /// Maps `changed`, ranges of file `name`'s chunks, into its region of the window as its last
-    /// commit has them; or, while SQLite holds pages of it, keeps them to map once it holds none,
-    /// the file read from the device meanwhile. A failure is logged, and the file reads from the
-    /// device from then on, its region given back.
+    /// commit has them. A failure is logged, and the file reads from the device from then on, its
+    /// region given back.
     fn remap(
         &self,
         name: &str,
@@ -298,15 +318,10 @@ impl Volume {
         let (Some((window, region_bytes)), Some(region)) = (&self.window, file.region) else {
             return;
         };
-        if file.fetches > 0 {
-            file.stale.extend(changed);
-            file.pages.set_mapped(None);
-            return;
-        }
         let block_size = self.device.block_size() as u64;
         let mapped = region_bytes / block_size;
         let (mut runs, mut unmapped) = (Vec::new(), Vec::new());
-        for range in changed.into_iter().chain(std::mem::take(&mut file.stale)) {
+        for range in changed {
             let range = range.start.min(mapped)..range.end.min(mapped);
             for (chunks, contents) in file.pages.runs(range) {
                 let (at, len) =
@@ -343,14 +358,26 @@ impl Volume {
         }
     }
 
+    /// Maps file `name`'s chunks commits changed since its region was last mapped, as the last
+    /// has them: unless SQLite holds pages of it, which it reads as they were until it gives them
+    /// back, as SQLite's own unix VFS remaps nothing while pages are out.
+    fn refresh(&self, name: &str, file: &mut File, regions: &mut Vec<u64>) {
+        if file.region.is_some() && file.fetches == 0 && file.pages.stale_chunks() > 0 {
+            let stale = file.pages.take_stale();
+            self.remap(name, file, regions, stale);
+        }
+    }
+
     /// Where the `len` bytes of file `name` at `offset` are in the window, if it maps them as
     /// they read: for SQLite to read in place until it gives them back ([`Volume::unfetch`]).
     pub fn fetch(&self, name: &str, offset: u64, len: u64) -> Result<Option<*const u8>, Error> {
         let mut inner = self.lock()?;
-        let file = Self::file(&mut inner, name);
-        if file.region.is_none() || !file.stale.is_empty() {
+        let inner = &mut *inner;
+        let file = inner.files.get_mut(name).expect("a file open");
+        if file.region.is_none() {
             return Ok(None);
         }
+        self.refresh(name, file, &mut inner.regions);
         let fetched = file.pages.fetch(offset, len);
         file.fetches += fetched.is_some() as u32;
         self.fetched.fetch_add(fetched.is_some() as u64, Ordering::Relaxed);
@@ -362,16 +389,11 @@ impl Volume {
         self.fetched.load(Ordering::Relaxed)
     }
 
-    /// Gives back a page of file `name` fetched ([`Volume::fetch`]): once SQLite holds none, what
-    /// commits changed meanwhile is mapped.
+    /// Gives back a page of file `name` fetched ([`Volume::fetch`]).
     pub fn unfetch(&self, name: &str) {
         let mut inner = self.inner.lock().unwrap();
-        let inner = &mut *inner;
         let file = inner.files.get_mut(name).expect("a file open");
         file.fetches = file.fetches.checked_sub(1).expect("a page fetched");
-        if file.fetches == 0 && !file.stale.is_empty() && inner.failed.is_none() {
-            self.remap(name, file, &mut inner.regions, []);
-        }
     }
 
     /// Closes file `name`, opened once more than closed.
@@ -471,7 +493,7 @@ impl Volume {
         }
         if file.committed {
             let dead: Vec<_> = file.pages.extents().collect();
-            self.commit_root(&mut inner, None, dead)?;
+            self.commit_root(&mut inner, None, dead, None)?;
         }
         Ok(true)
     }
@@ -502,29 +524,31 @@ impl Volume {
         // What it minted is spent, whatever came of it.
         inner.mint = next;
         let plan = plan?;
-        if let Err(error) = block_on(plan.write(device)) {
-            let written: Vec<_> = plan.extents().collect();
-            let failed = block_on(free(device, &written));
-            inner.dying.extend(failed);
-            return Err(error.context(format!("committing {name}")));
-        }
-        self.commit_root(inner, Some((name, plan.root.clone())), plan.dead.clone())?;
+        let changed = Some((name, plan.root.clone()));
+        let committed = self.commit_root(inner, changed, plan.dead.clone(), Some(&plan));
+        committed.with_context(|| format!("committing {name}"))?;
         let inner = &mut *inner;
         let file = inner.files.get_mut(name).expect("a file open");
         let changed = file.pages.apply(plan);
         file.committed = true;
-        self.remap(name, file, &mut inner.regions, changed);
+        // Mapped again a batch at a time: read from the device meanwhile.
+        file.pages.mark_stale(changed);
+        if file.pages.stale_chunks() >= REMAP_BATCH {
+            self.refresh(name, file, &mut inner.regions);
+        }
         Ok(())
     }
 
-    /// Commits the root: each file committed as it is, but `changed`, if given, as it says, and
-    /// `dead` freed once it is durable, with what earlier frees didn't free. A failure fails the
-    /// volume.
+    /// Commits the root: each file committed as it is, but `changed`, if given, as it says, `plan`'s
+    /// extents written first, the last write carrying the root; and `dead` among the dying, freed
+    /// once a batch of them waits ([`FREE_BATCH`]), their root durable. A failure before the root
+    /// changes nothing, but that what it wrote is freed; one committing it fails the volume.
     fn commit_root(
         &self,
         inner: &mut Inner,
         changed: Option<(&str, format::FileRoot)>,
         dead: Vec<ExtentId>,
+        plan: Option<&Plan>,
     ) -> Result<(), Error> {
         let device = &**self.device;
         let mut files: BTreeMap<_, _> = (inner.files.iter())
@@ -534,15 +558,58 @@ impl Volume {
         if let Some((name, root)) = changed {
             files.insert(name.to_owned(), root);
         }
-        let mut dying = std::mem::take(&mut inner.dying);
-        dying.extend(dead);
-        let root = Root { minted: inner.mint, dying, files };
-        if let Err(error) = block_on(device.commit_root(&root.encode())) {
-            let error = error.context("committing the volume's root");
-            inner.failed = Some(format!("{error:#}"));
-            return Err(error);
+        let carried = std::mem::take(&mut inner.dying);
+        let dying: Vec<_> = carried.iter().copied().chain(dead).collect();
+        // Too many for the root: listed in an extent of their own.
+        let list = (dying.len() > FREE_BATCH).then(|| {
+            inner.mint += 1;
+            ExtentId::new(device.branch(), inner.mint - 1)
+        });
+        let root = match list {
+            Some(list) => Root {
+                minted: inner.mint,
+                dying: Vec::new(),
+                dying_list: Some((list, dying.len() as u64)),
+                files,
+            },
+            None => Root { minted: inner.mint, dying: dying.clone(), dying_list: None, files },
+        };
+        let encoded = root.encode();
+        let written = block_on(async {
+            if let Some(list) = list {
+                let bytes = format::encode_list(&dying, device.block_size() as usize);
+                let mut buffer = device.allocate_buffer(bytes.len()).await;
+                buffer.as_mut().copy_from_slice(&bytes);
+                let listed = device.write(list, 0, buffer.as_ref()).await;
+                listed.context("writing the dying extents' list").map_err(Failure::Writing)?;
+            }
+            match plan {
+                Some(plan) => plan.write(device, Some(&encoded)).await,
+                None => device.commit_root(&encoded).await.map_err(Failure::Committing),
+            }
+        });
+        match written {
+            Ok(()) => {}
+            Err(Failure::Writing(error)) => {
+                // Nothing names what it wrote: freed, or, failing that, dying.
+                let wrote: Vec<_> =
+                    list.into_iter().chain(plan.into_iter().flat_map(Plan::extents)).collect();
+                inner.dying = carried;
+                inner.dying.extend(block_on(free(device, &wrote)));
+                return Err(error);
+            }
+            Err(Failure::Committing(error)) => {
+                let error = error.context("committing the volume's root");
+                inner.failed = Some(format!("{error:#}"));
+                return Err(error);
+            }
         }
-        inner.dying = block_on(free(device, &root.dying));
+        inner.dying = match list.is_some() || dying.len() >= FREE_BATCH {
+            true => block_on(free(device, &dying)),
+            false => dying,
+        };
+        // A list goes once a root that names it not is durable.
+        inner.dying.extend(list);
         Ok(())
     }
 

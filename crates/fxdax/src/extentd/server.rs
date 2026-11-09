@@ -1338,6 +1338,7 @@ impl Connection {
             }
             Request::Unmap { window_offset, len } => store.unmap(*window_offset, *len),
             Request::Commit { commit: Commit::Durable, root } => store.commit(*root),
+            Request::Commit { commit: Commit::Local, root } => store.commit_local(*root),
             Request::Commit { commit: Commit::Ordered, root } => store.commit_ordered(*root),
             Request::Root => store.root().map(|root| *payload = root),
             Request::Advance => store.advance().map(|epoch| reply.args = Advanced { epoch }.args()),

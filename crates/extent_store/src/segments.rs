@@ -12,9 +12,11 @@ use crate::dir::{Dir, File};
 use crate::durability::Syncs;
 use crate::framed::{Aligned, Files, Framed, Source, read_parts};
 use crate::layout::{
-    Change, Data, EXTENTS, Extents, LOGS, OPEN_SEGMENTS, Piece, SEGMENTS, SegmentId, branch_dir,
-    extent_path, held_frees, log_path, open_segment_path, segment_path,
+    Change, Data, EXTENTS, Extents, LOGS, OPEN_SEGMENTS, Piece, SEGMENTS, SPARE, SegmentId,
+    branch_dir, extent_path, held_frees, log_path, open_segment_path, parse_number, segment_path,
+    spare_path,
 };
+use crate::wal::{log_header, log_salt, new_salt};
 use crate::store::{Options, Usage};
 use crate::timings::{self, Phases, framing};
 use anyhow::{Context as _, Error, anyhow, bail, ensure};
@@ -28,14 +30,14 @@ use storage_device::ExtentId;
 enum Phase<F> {
     /// Taking writes, in its raw file; fxdax: its commits recorded in its log, which the flushes
     /// append to (TASK-165.9).
-    Open { raw: Arc<F>, log: Arc<F> },
+    Open { raw: Arc<F>, log: Log<F> },
     /// fxdax: closed by commit `last`, its data being framed off the commit, on a thread of its
     /// own, which ends the framing itself ([`Segments::framed`], TASK-153.8): read from its raw
     /// file, which stays open, until then; its commits' records still appended to its log by the
     /// flushes that make them durable, which wait for no framing (TASK-165.9).
-    Framing { raw: Arc<F>, log: Arc<F>, last: u64 },
+    Framing { raw: Arc<F>, log: Log<F>, last: u64 },
     /// fxdax: its framing failed, which failed the store: read from its raw file, which stays.
-    Failed { raw: Arc<F>, log: Arc<F>, error: String },
+    Failed { raw: Arc<F>, log: Log<F>, error: String },
     /// Closed, a segment of the write-ahead log until acknowledged in the bucket. Its framed file,
     /// if open, is among those kept open (`Segments::files`).
     Closed,
@@ -43,6 +45,18 @@ enum Phase<F> {
     /// wrote to it is in its raw file, which no footer names, nor framing frames, and which goes
     /// once the next commit has copied the extents in it out (TASK-79.2).
     Retired(Arc<F>),
+}
+
+/// fxdax: a segment's log, and the salt of its records, its header's (`wal::log_header`).
+pub(crate) struct Log<F> {
+    pub file: Arc<F>,
+    pub salt: u64,
+}
+
+impl<F> Clone for Log<F> {
+    fn clone(&self) -> Self {
+        Self { file: self.file.clone(), salt: self.salt }
+    }
 }
 
 /// A segment the branch tracks.
@@ -177,7 +191,15 @@ pub(crate) struct Segments<F> {
     /// commit its footer names: they go once that commit is durable, so that an opening finding it
     /// not durable closes the segment again from them (`wal::recover`, TASK-92.16, TASK-165.9).
     raw: Vec<(u64, SegmentId)>,
+    /// fxdax: the spare logs, by the segments they were the logs of ([`spare_path`]), which the
+    /// next segments' logs are, rather than files made anew (TASK-301).
+    spares: Vec<SegmentId>,
+    /// fxdax: what the salts of the logs this opening of the branch makes are of ([`new_salt`]).
+    lifetime: u64,
 }
+
+/// fxdax: how many spare logs a branch keeps ([`Segments::spare`]).
+const SPARES: usize = 2;
 
 /// A segment the branch let go of, no extent being in it any more: set aside, its raw file going;
 /// or fxdax: acknowledged in the bucket, its key there if its file is the object there, which goes
@@ -215,7 +237,17 @@ impl<F: File> Segments<F> {
             segments.insert(id, segment);
         }
         let open = SegmentId { branch, number: next };
-        let phase = create_open(dir, open)?;
+        let logs = dir.list(&branch_dir(LOGS, branch))?;
+        let spared = logs.iter().filter_map(|name| name.strip_prefix(SPARE)).filter_map(parse_number);
+        let mut spares: Vec<_> = spared.map(|number| SegmentId { branch, number }).collect();
+        let lifetime = {
+            let mut bytes = [0; 24];
+            for (at, word) in [branch, epoch, next].into_iter().enumerate() {
+                bytes[at * 8..][..8].copy_from_slice(&word.to_le_bytes());
+            }
+            rapidhash::rapidhash(&bytes)
+        };
+        let phase = create_open(dir, open, &mut spares, new_salt(lifetime, open))?;
         for kind in [OPEN_SEGMENTS, LOGS] {
             dir.sync_dir(&branch_dir(kind, branch))?;
         }
@@ -235,6 +267,8 @@ impl<F: File> Segments<F> {
             closed_since: false,
             framing: BTreeSet::new(),
             raw: Vec::new(),
+            spares,
+            lifetime,
         })
     }
 
@@ -401,7 +435,7 @@ impl<F: File> Segments<F> {
     }
 
     /// fxdax: the log of the open segment's commits (TASK-165.9).
-    pub fn open_log(&self) -> Arc<F> {
+    pub fn open_log(&self) -> Log<F> {
         let Phase::Open { log, .. } = &self.tracked[&self.open].phase else {
             unreachable!("the open segment is open")
         };
@@ -418,12 +452,29 @@ impl<F: File> Segments<F> {
     /// fxdax: the log of segment `number`'s commits, open or closed since, which a flush appends
     /// their records to: there until its raw file goes, once it is framed and they are durable
     /// ([`Segments::raw`]).
-    pub fn log_file<D: Dir<File = F>>(&self, dir: &D, number: SegmentId) -> Result<Arc<F>, Error> {
+    pub fn log_file<D: Dir<File = F>>(&self, dir: &D, number: SegmentId) -> Result<Log<F>, Error> {
         match self.tracked.get(&number).map(|segment| &segment.phase) {
             Some(
                 Phase::Open { log, .. } | Phase::Framing { log, .. } | Phase::Failed { log, .. },
             ) => Ok(log.clone()),
-            _ => Ok(Arc::new(dir.open(&log_path(number), false)?)),
+            _ => {
+                let file = dir.open(&log_path(number), false)?;
+                let mut header = [0; 16];
+                file.read_cached(&mut header, 0)?;
+                let salt = log_salt(&header).ok_or_else(|| anyhow!("{number:?}'s log has no header"))?;
+                Ok(Log { file: Arc::new(file), salt })
+            }
+        }
+    }
+
+    /// fxdax: segment `number`'s raw file, whose data a commit's record checks (`wal::LogRecord`):
+    /// there until it goes, once the segment is framed and its commits durable.
+    pub fn raw_file<D: Dir<File = F>>(&self, dir: &D, number: SegmentId) -> Result<Arc<F>, Error> {
+        match self.tracked.get(&number).map(|segment| &segment.phase) {
+            Some(
+                Phase::Open { raw, .. } | Phase::Framing { raw, .. } | Phase::Failed { raw, .. },
+            ) => Ok(raw.clone()),
+            _ => Ok(Arc::new(dir.open(&open_segment_path(number), false)?)),
         }
     }
 
@@ -482,7 +533,7 @@ impl<F: File> Segments<F> {
     ) -> Result<Unframed<F>, Error> {
         let number = self.open;
         let next = SegmentId { number: number.number + 1, ..number };
-        let phase = create_open(dir, next)?;
+        let phase = create_open(dir, next, &mut self.spares, new_salt(self.lifetime, next))?;
         // Nothing fails from here on.
         let window =
             std::mem::replace(&mut self.window, Window::starting(number.branch, epoch + 1));
@@ -523,7 +574,7 @@ impl<F: File> Segments<F> {
             "{number:?}, set aside, holds a commit's data or a fork"
         );
         let next = SegmentId { number: number.number + 1, ..number };
-        let phase = create_open(dir, next)?;
+        let phase = create_open(dir, next, &mut self.spares, new_salt(self.lifetime, next))?;
         let segment = self.tracked.get_mut(&number).unwrap();
         let Phase::Open { raw, .. } = &segment.phase else {
             unreachable!("the open segment is open")
@@ -608,13 +659,30 @@ impl<F: File> Segments<F> {
     /// fxdax: the paths of the raw files, and logs, of the segments framed whose footers name no
     /// commit past `durable`, the last durable, which may go: an opening reads their framed files
     /// (TASK-153.8, TASK-165.9).
-    pub fn raw(&mut self, durable: u64) -> Vec<String> {
+    pub fn raw(&mut self, durable: u64) -> Vec<SegmentId> {
         let (going, staying) = std::mem::take(&mut self.raw)
             .into_iter()
             .partition::<Vec<_>, _>(|(last, _)| *last <= durable);
         self.raw = staying;
-        let paths = |(_, number)| [open_segment_path(number), log_path(number)];
-        going.into_iter().flat_map(paths).collect()
+        going.into_iter().map(|(_, number)| number).collect()
+    }
+
+    /// fxdax: whether `segment` has its log still: open, being framed, or framed and its raw file
+    /// and log not gone yet, as its commits aren't durable.
+    pub fn has_log(&self, segment: SegmentId) -> bool {
+        let framed = self.raw.iter().any(|(_, number)| *number == segment);
+        let phase = self.tracked.get(&segment).map(|segment| &segment.phase);
+        framed || matches!(phase, Some(Phase::Open { .. } | Phase::Framing { .. } | Phase::Failed { .. }))
+    }
+
+    /// fxdax: whether the branch keeps another spare log ([`SPARES`]).
+    pub fn wants_spare(&self) -> bool {
+        self.spares.len() < SPARES
+    }
+
+    /// fxdax: the log of `segment`, gone, is a spare now, at [`spare_path`].
+    pub fn spare(&mut self, segment: SegmentId) {
+        self.spares.push(segment);
     }
 
     /// The file of segment `number`, opened in `dir` if it isn't: the raw file
@@ -1003,10 +1071,29 @@ pub(crate) fn fold(branch: u64, commits: &[Contents]) -> Contents {
 }
 
 /// fxdax: the phase of a new open segment, `segment`, whose raw file and log it makes in `dir`.
-fn create_open<D: Dir>(dir: &D, segment: SegmentId) -> Result<Phase<D::File>, Error> {
+fn create_open<D: Dir>(
+    dir: &D,
+    segment: SegmentId,
+    spares: &mut Vec<SegmentId>,
+    salt: u64,
+) -> Result<Phase<D::File>, Error> {
     let raw = Arc::new(dir.create(&open_segment_path(segment), true)?);
-    let log = Arc::new(dir.create(&log_path(segment), false)?);
-    Ok(Phase::Open { raw, log })
+    // fxdax: its log a spare, if there is one, its header written over the one there (TASK-301).
+    let path = log_path(segment);
+    let reused = spares.pop().map(|spare| dir.rename(&spare_path(spare), &path));
+    let log = match reused {
+        Some(Ok(())) => dir.open(&path, false)?,
+        Some(Err(error)) => {
+            log::warn!("extent store: reusing a spare log for {segment:?}: {error}");
+            dir.create(&path, false)?
+        }
+        None => dir.create(&path, false)?,
+    };
+    // Durable before any record is appended: a crash losing it would leave a spare's header, and
+    // the records it salts, its last segment's.
+    log.write_at(&log_header(salt), 0)?;
+    log.sync_cached()?;
+    Ok(Phase::Open { raw, log: Log { file: Arc::new(log), salt } })
 }
 
 /// The store's epoch of the last commit of the segment whose footer is `footer`.

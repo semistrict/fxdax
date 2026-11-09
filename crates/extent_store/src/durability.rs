@@ -259,9 +259,36 @@ impl<F: File> Syncs<F> {
         self.cached.push(file);
     }
 
+    /// fxdax: whether it syncs extents stored on their own, whose data no commit's record checks.
+    pub fn holds_own(&self) -> bool {
+        !self.files.is_empty()
+    }
+
+    /// fxdax: whether it syncs any file, or any directory, beside a flush's records.
+    pub fn holds_any(&self, files: bool) -> bool {
+        (files && !(self.files.is_empty() && self.cached.is_empty())) || !self.dirs.is_empty()
+    }
+
     /// Syncs the directory at `path`.
     pub fn dir(&mut self, path: String) {
         self.dirs.insert(path);
+    }
+
+    /// fxdax: syncs `files`, as [`Syncs::cached`] does each, once each, those it syncs already
+    /// left; and no more those nothing else holds: a segment's raw file, which its segment lets go
+    /// of once framed, its framed file durable then, holding its data.
+    pub fn carry(&mut self, files: Vec<Arc<F>>) {
+        self.cached.retain(|carried| Arc::strong_count(carried) > 1);
+        for file in files {
+            if !self.cached.iter().any(|carried| Arc::ptr_eq(carried, &file)) {
+                self.cached.push(file);
+            }
+        }
+    }
+
+    /// fxdax: the files it syncs keeping their pages cached, which it syncs no more.
+    pub fn take_cached(&mut self) -> Vec<Arc<F>> {
+        std::mem::take(&mut self.cached)
     }
 
     /// Syncs what `other` does, too.
@@ -335,7 +362,7 @@ impl<F: File> Syncs<F> {
 /// sync then does no harm, as the flush fails. A thread the host refuses is one fewer: the
 /// caller's syncs whatever the others don't, so that a flush never fails for want of threads
 /// (TASK-92.42); as do those of [`HELPERS`] other flushes have (TASK-92.49).
-fn at_once<T: Sync>(
+pub(crate) fn at_once<T: Sync>(
     items: &[T],
     most: usize,
     sync: impl Fn(&T) -> Result<(), Error> + Sync,

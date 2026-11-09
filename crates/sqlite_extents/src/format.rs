@@ -12,8 +12,9 @@
 //! level and its index at that level, which its reader checks against where it looked for it.
 //!
 //! **The root.** [`ROOT_MAGIC`], a version, the sequence number minting goes on from, the extents
-//! to free once the root is durable, and each file: its name, size, its tree's height and the ref
-//! to its top node.
+//! to free once the root is durable, and the extent listing more of them, if any (a device's root
+//! is small: the extent daemon's holds 4 KiB), and each file: its name, size, its tree's height
+//! and the ref to its top node.
 
 use anyhow::{Error, ensure};
 use std::collections::BTreeMap;
@@ -32,7 +33,7 @@ const NODE_MAGIC: u32 = u32::from_le_bytes(*b"FXSN");
 const ROOT_MAGIC: &[u8; 8] = b"FXSQLVOL";
 
 /// The version of the root's format.
-const ROOT_VERSION: u32 = 1;
+const ROOT_VERSION: u32 = 2;
 
 /// A block of an extent: what a tree's refs name.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -130,7 +131,30 @@ pub(crate) struct Root {
     /// The extents to free once the root is durable: what its commit left unreferenced, and what
     /// earlier frees didn't free.
     pub dying: Vec<ExtentId>,
+    /// An extent listing more of them, and how many ([`encode_list`]).
+    pub dying_list: Option<(ExtentId, u64)>,
     pub files: BTreeMap<String, FileRoot>,
+}
+
+/// The bytes of an extent listing `count` extents, in blocks of `block_size`.
+pub(crate) fn list_len(count: u64, block_size: usize) -> usize {
+    (count as usize * 16).div_ceil(block_size).max(1) * block_size
+}
+
+/// The bytes of an extent listing `extents`, in blocks of `block_size`.
+pub(crate) fn encode_list(extents: &[ExtentId], block_size: usize) -> Vec<u8> {
+    let mut out: Vec<u8> = (extents.iter())
+        .flat_map(|extent| [extent.branch.to_le_bytes(), extent.sequence.to_le_bytes()])
+        .flatten()
+        .collect();
+    out.resize(list_len(extents.len() as u64, block_size), 0);
+    out
+}
+
+/// The `count` extents `bytes`, an extent listing them, lists.
+pub(crate) fn decode_list(bytes: &[u8], count: u64) -> Result<Vec<ExtentId>, Error> {
+    let mut reader = Reader(bytes);
+    (0..count).map(|_| Ok(ExtentId::new(reader.u64()?, reader.u64()?))).collect()
 }
 
 impl Root {
@@ -143,6 +167,10 @@ impl Root {
         for extent in &self.dying {
             out.extend_from_slice(&extent.branch.to_le_bytes());
             out.extend_from_slice(&extent.sequence.to_le_bytes());
+        }
+        let (list, count) = self.dying_list.unwrap_or((ExtentId::new(0, 0), 0));
+        for word in [list.branch, list.sequence, count] {
+            out.extend_from_slice(&word.to_le_bytes());
         }
         out.extend_from_slice(&(self.files.len() as u64).to_le_bytes());
         for (name, file) in &self.files {
@@ -170,6 +198,8 @@ impl Root {
         let dying = (0..reader.u64()?)
             .map(|_| Ok(ExtentId::new(reader.u64()?, reader.u64()?)))
             .collect::<Result<_, Error>>()?;
+        let (list, count) = (ExtentId::new(reader.u64()?, reader.u64()?), reader.u64()?);
+        let dying_list = (count > 0).then_some((list, count));
         let mut files = BTreeMap::new();
         for _ in 0..reader.u64()? {
             let len = reader.u64()? as usize;
@@ -180,7 +210,7 @@ impl Root {
             files.insert(name, FileRoot { size, height, top });
         }
         ensure!(reader.0.is_empty(), "{} bytes past the root", reader.0.len());
-        Ok(Some(Self { minted, dying, files }))
+        Ok(Some(Self { minted, dying, dying_list, files }))
     }
 }
 
@@ -237,6 +267,7 @@ mod tests {
         let root = Root {
             minted: 1 << 33,
             dying: vec![ExtentId::new(1, 2), ExtentId::new(4, 5)],
+            dying_list: Some((ExtentId::new(1, 9), 300)),
             files: BTreeMap::from([
                 ("a.db".into(), FileRoot { size: 8192, height: 1, top: Some(at(7, 2)) }),
                 ("b.db".into(), FileRoot { size: 0, height: 0, top: None }),
@@ -244,6 +275,10 @@ mod tests {
         };
         assert_eq!(Root::decode(&root.encode()).unwrap(), Some(root));
         assert_eq!(Root::decode(&[]).unwrap(), None);
+        let listed: Vec<_> = (0..300).map(|n| ExtentId::new(1, n)).collect();
+        let list = encode_list(&listed, 4096);
+        assert_eq!(list.len(), 8192);
+        assert_eq!(decode_list(&list, 300).unwrap(), listed);
         let error = Root::decode(b"something else").unwrap_err();
         assert_eq!(error.to_string(), "the device holds no volume");
     }

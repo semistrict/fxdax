@@ -52,13 +52,14 @@ impl<const N: usize> Phases<N> {
 }
 
 /// What took [`Phases`]: so many, and so many past extentd's turn, 50 ms; the phases of the
-/// longest; and the longest of each phase, of any.
+/// longest; the longest of each phase, of any; and each phase's time, summed over all.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Timed<const N: usize> {
     pub count: u64,
     pub slow: u64,
     pub slowest: Phases<N>,
     pub max: Phases<N>,
+    pub sum: Phases<N>,
 }
 
 impl<const N: usize> Default for Timed<N> {
@@ -68,8 +69,13 @@ impl<const N: usize> Default for Timed<N> {
 }
 
 impl<const N: usize> Timed<N> {
-    const NONE: Self =
-        Self { count: 0, slow: 0, slowest: Phases { us: [0; N] }, max: Phases { us: [0; N] } };
+    const NONE: Self = Self {
+        count: 0,
+        slow: 0,
+        slowest: Phases { us: [0; N] },
+        max: Phases { us: [0; N] },
+        sum: Phases { us: [0; N] },
+    };
 
     /// One took `phases`.
     fn record(&mut self, phases: Phases<N>) {
@@ -81,6 +87,8 @@ impl<const N: usize> Timed<N> {
             self.slowest = phases;
         }
         self.max = self.max.max(phases);
+        self.sum =
+            Phases { us: std::array::from_fn(|phase| self.sum.us[phase] + phases.us[phase]) };
     }
 }
 
@@ -173,6 +181,7 @@ mod tests {
         assert_eq!((timed.count, timed.slow), (3, 1));
         assert_eq!(timed.slowest, Phases { us: all[1] });
         assert_eq!(timed.max, Phases { us: [40_000, 30_000, 30_000] });
+        assert_eq!(timed.sum, Phases { us: [40_000, 31_000, 32_000] });
     }
 }
 

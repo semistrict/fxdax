@@ -91,6 +91,8 @@ struct Inode {
 enum DirChange {
     Add(String, u64),
     Remove(String),
+    /// fxdax: a file renamed, at once ([`Dir::rename`]).
+    Rename(String, String, u64),
 }
 
 fn not_found(path: &str) -> io::Error {
@@ -140,6 +142,13 @@ impl Fs {
             }
             DirChange::Remove(name) => {
                 entries.remove(name).ok_or_else(|| not_found(path))?;
+            }
+            DirChange::Rename(_, to, _) if entries.contains_key(to) => {
+                return Err(io::Error::new(io::ErrorKind::AlreadyExists, format!("{to} exists")));
+            }
+            DirChange::Rename(from, to, inode) => {
+                entries.remove(from).ok_or_else(|| not_found(path))?;
+                entries.insert(to.clone(), *inode);
             }
         }
         self.dir_changes.entry(dir.to_owned()).or_default().push(change);
@@ -212,6 +221,11 @@ impl MemDir {
                         DirChange::Remove(name) => {
                             entries.remove(name);
                         }
+                        DirChange::Rename(from, to, inode) => {
+                            if entries.remove(from).is_some() {
+                                entries.insert(to.clone(), *inode);
+                            }
+                        }
                     }
                 }
             }
@@ -281,6 +295,15 @@ impl Dir for MemDir {
         fs.spend()?;
         let (_, name) = split(path);
         fs.change_dir(path, DirChange::Remove(name.to_owned()))
+    }
+
+    fn rename(&self, from: &str, to: &str) -> io::Result<()> {
+        let ((dir, from_name), (to_dir, to_name)) = (split(from), split(to));
+        assert_eq!(dir, to_dir, "a rename within a directory");
+        let mut fs = self.fs.lock().unwrap();
+        fs.spend()?;
+        let inode = fs.lookup(from)?;
+        fs.change_dir(from, DirChange::Rename(from_name.to_owned(), to_name.to_owned(), inode))
     }
 
     fn create_dir(&self, path: &str) -> io::Result<()> {

@@ -191,9 +191,11 @@ fn known_flags(kind: u32) -> Result<u32, Errno> {
     Ok(match kind {
         OPEN => OPEN_CREATE | OPEN_FORK_FROM | OPEN_READ_ONLY,
         READ => READ_TRANSFER,
-        WRITE => WRITE_BARRIER | WRITE_COMMIT | WRITE_DURABLE | WRITE_TRANSFER | WRITE_ROOT,
+        WRITE => {
+            WRITE_BARRIER | WRITE_COMMIT | WRITE_DURABLE | WRITE_LOCAL | WRITE_TRANSFER | WRITE_ROOT
+        }
         MAP => MAP_ZEROS,
-        COMMIT => COMMIT_ROOT | COMMIT_DURABLE,
+        COMMIT => COMMIT_ROOT | COMMIT_DURABLE | COMMIT_LOCAL,
         FAULT => FAULT_WRITE | FAULT_PAGE | FAULT_PROBE,
         FORK => FORK_QUIESCENT,
         STATS => STATS_GUEST,
@@ -281,6 +283,7 @@ impl<'a> Request<'a> {
                 flags |= match barriers.after {
                     None => 0,
                     Some(Commit::Ordered) => WRITE_COMMIT,
+                    Some(Commit::Local) => WRITE_COMMIT | WRITE_LOCAL,
                     Some(Commit::Durable) => WRITE_COMMIT | WRITE_DURABLE,
                 };
                 // fxdax: the root the commit sets, after the data in the payload (TASK-153.13).
@@ -315,6 +318,7 @@ impl<'a> Request<'a> {
             Request::Unmap { window_offset, len } => message(0, [*window_offset, *len, 0, 0, 0]),
             Request::Commit { commit, root } => {
                 let flags = flag(root.is_some(), COMMIT_ROOT)
+                    | flag(*commit == Commit::Local, COMMIT_LOCAL)
                     | flag(*commit == Commit::Durable, COMMIT_DURABLE);
                 message(flags, [0; 5]).carrying(root.unwrap_or_default())
             }
@@ -407,7 +411,11 @@ impl<'a> Request<'a> {
             }
             WRITE => {
                 // A commit's flags, without a commit.
-                if !has(WRITE_COMMIT) && has(WRITE_DURABLE | WRITE_ROOT) {
+                if !has(WRITE_COMMIT) && has(WRITE_DURABLE | WRITE_LOCAL | WRITE_ROOT) {
+                    return Err(Errno::EINVAL);
+                }
+                // Durable two ways.
+                if has(WRITE_DURABLE) && has(WRITE_LOCAL) {
                     return Err(Errno::EINVAL);
                 }
                 // The data, and the root after it in the payload, if any.
@@ -423,10 +431,10 @@ impl<'a> Request<'a> {
                 if (!has(WRITE_ROOT) && !root.is_empty()) || root.len() > MAX_ROOT {
                     return Err(Errno::EINVAL);
                 }
-                let after = has(WRITE_COMMIT).then_some(if has(WRITE_DURABLE) {
-                    Commit::Durable
-                } else {
-                    Commit::Ordered
+                let after = has(WRITE_COMMIT).then_some(match (has(WRITE_DURABLE), has(WRITE_LOCAL)) {
+                    (true, _) => Commit::Durable,
+                    (false, true) => Commit::Local,
+                    (false, false) => Commit::Ordered,
                 });
                 let root = has(WRITE_ROOT).then_some(root);
                 let barriers = WriteBarriers { before: has(WRITE_BARRIER), after, root };
@@ -466,7 +474,12 @@ impl<'a> Request<'a> {
                 if root.is_some_and(|root| root.len() > MAX_ROOT) {
                     return Err(Errno::EINVAL);
                 }
-                let commit = if has(COMMIT_DURABLE) { Commit::Durable } else { Commit::Ordered };
+                let commit = match (has(COMMIT_DURABLE), has(COMMIT_LOCAL)) {
+                    (true, true) => return Err(Errno::EINVAL),
+                    (true, false) => Commit::Durable,
+                    (false, true) => Commit::Local,
+                    (false, false) => Commit::Ordered,
+                };
                 Request::Commit { commit, root }
             }
             ROOT | INFO | MAPPINGS | ADVANCE => {
@@ -973,7 +986,7 @@ mod tests {
             (any::<[u64; 5]>(), any::<[bool; 3]>(), bytes(), bytes()),
             ([path(), path()], proptest::collection::vec(extent, 0..8)),
             ("[a-zA-Z0-9._-]{1,64}", "(\\PC{0,16}\n){0,8}"),
-            prop_oneof![Just(Commit::Ordered), Just(Commit::Durable)],
+            prop_oneof![Just(Commit::Ordered), Just(Commit::Local), Just(Commit::Durable)],
             prop_oneof![Just(Access::Read), Just(Access::Write)],
         )
             .prop_map(
@@ -1150,10 +1163,12 @@ mod tests {
             match kind {
                 OPEN => 0b111,
                 READ => 0b1,
-                WRITE => 0b1_1111,
+                // fxdax: bit 5, WRITE_LOCAL (TASK-301).
+                WRITE => 0b11_1111,
                 // fxdax: zeros; bit 0, writably, writable DAX's, is gone (backlog doc-13).
                 MAP => 0b10,
-                COMMIT => 0b11,
+                // fxdax: bit 2, COMMIT_LOCAL (TASK-301).
+                COMMIT => 0b111,
                 FAULT => 0b11,
                 FORK => 0b1,
                 // fxdax: the guest's (TASK-111.4).
@@ -1197,7 +1212,11 @@ mod tests {
         refused(OPEN, OPEN_CREATE | OPEN_READ_ONLY, b"store");
         refused(OPEN, OPEN_FORK_FROM | OPEN_READ_ONLY, b"store\0from");
         refused(WRITE, WRITE_DURABLE, b"data");
+        refused(WRITE, WRITE_LOCAL, b"data");
         refused(WRITE, WRITE_ROOT, b"data");
+        // fxdax: durable two ways (TASK-301).
+        refused(WRITE, WRITE_COMMIT | WRITE_DURABLE | WRITE_LOCAL, b"data");
+        refused(COMMIT, COMMIT_DURABLE | COMMIT_LOCAL, b"");
         // fxdax: a probe is of a page alone, to read.
         refused(FAULT, FAULT_PROBE, b"");
         refused(FAULT, FAULT_PROBE | FAULT_PAGE | FAULT_WRITE, b"");
@@ -1597,7 +1616,7 @@ mod tests {
     fn the_wire_is_its_version() {
         /// The version, and the fingerprint of the wire it is. A change to the wire is a new
         /// version, both changed together, never the fingerprint alone.
-        const WIRE: (u64, u64) = (4, 0x2461_c9e8_dfa2_d6a6);
+        const WIRE: (u64, u64) = (5, 0x2461_c9e8_dfa2_d6a6);
         let fingerprint = fingerprint();
         assert_eq!(
             (VERSION, fingerprint),

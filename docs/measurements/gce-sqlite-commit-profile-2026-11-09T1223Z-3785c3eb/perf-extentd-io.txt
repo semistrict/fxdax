@@ -1,0 +1,714 @@
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 4K of event 'task-clock:ppp'
+# Event count (approx.): 907581480
+#
+# Children      Self  Symbol                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         
+# ........  ........  ........................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................
+#
+    22.53%     0.00%  [.] entry_SYSCALL_64_after_hwframe
+            |          
+             --5.93%--0x71db734b4792
+                       |          
+                       |--2.17%--fdatasync
+                       |          <i32 as std::sys::pal::unix::IsMinusOne>::is_minus_one (inlined)
+                       |          std::sys::pal::unix::cvt::<i32> (inlined)
+                       |          std::sys::pal::unix::cvt_r::<i32, <std::sys::fs::unix::File>::datasync::{closure#0}> (inlined)
+                       |          <std::sys::fs::unix::File>::datasync (inlined)
+                       |          <std::fs::File>::sync_data
+                       |          append<extent_store::dir::HostFile, core::iter::adapters::map::Map<core::slice::iter::Iter<(extent_store::layout::SegmentId, alloc::vec::Vec<u8, alloc::alloc::Global>)>, extent_store::store::{impl#9}::append_records::{closure_env#1}<extent_store::dir::HostDir>>> (inlined)
+                       |          <extent_store::store::Store<extent_store::dir::HostDir>>::append_records
+                       |          
+                        --2.15%--__libc_pwrite
+                                  <std::sys::fd::unix::FileDesc>::write_at (inlined)
+                                  <std::sys::fs::unix::File>::write_at (inlined)
+                                  <std::fs::File as std::os::unix::fs::FileExt>::write_at
+                                  write_all_at<std::fs::File> (inlined)
+                                  <extent_store::dir::HostFile as extent_store::dir::File>::write_at
+                                  0x8948000869ea15ff
+
+    22.46%     0.35%  [.] do_syscall_64
+            |
+            ---entry_SYSCALL_64_after_hwframe
+               |          
+                --5.91%--0x71db734b4792
+                          |          
+                          |--2.17%--fdatasync
+                          |          <i32 as std::sys::pal::unix::IsMinusOne>::is_minus_one (inlined)
+                          |          std::sys::pal::unix::cvt::<i32> (inlined)
+                          |          std::sys::pal::unix::cvt_r::<i32, <std::sys::fs::unix::File>::datasync::{closure#0}> (inlined)
+                          |          <std::sys::fs::unix::File>::datasync (inlined)
+                          |          <std::fs::File>::sync_data
+                          |          append<extent_store::dir::HostFile, core::iter::adapters::map::Map<core::slice::iter::Iter<(extent_store::layout::SegmentId, alloc::vec::Vec<u8, alloc::alloc::Global>)>, extent_store::store::{impl#9}::append_records::{closure_env#1}<extent_store::dir::HostDir>>> (inlined)
+                          |          <extent_store::store::Store<extent_store::dir::HostDir>>::append_records
+                          |          
+                           --2.15%--__libc_pwrite
+                                     <std::sys::fd::unix::FileDesc>::write_at (inlined)
+                                     <std::sys::fs::unix::File>::write_at (inlined)
+                                     <std::fs::File as std::os::unix::fs::FileExt>::write_at
+                                     write_all_at<std::fs::File> (inlined)
+                                     <extent_store::dir::HostFile as extent_store::dir::File>::write_at
+                                     0x8948000869ea15ff
+
+    22.09%     0.13%  [.] x64_sys_call
+            |          
+             --6.33%--do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       |          
+                        --5.79%--0x71db734b4792
+                                  |          
+                                  |--2.16%--fdatasync
+                                  |          <i32 as std::sys::pal::unix::IsMinusOne>::is_minus_one (inlined)
+                                  |          std::sys::pal::unix::cvt::<i32> (inlined)
+                                  |          std::sys::pal::unix::cvt_r::<i32, <std::sys::fs::unix::File>::datasync::{closure#0}> (inlined)
+                                  |          <std::sys::fs::unix::File>::datasync (inlined)
+                                  |          <std::fs::File>::sync_data
+                                  |          append<extent_store::dir::HostFile, core::iter::adapters::map::Map<core::slice::iter::Iter<(extent_store::layout::SegmentId, alloc::vec::Vec<u8, alloc::alloc::Global>)>, extent_store::store::{impl#9}::append_records::{closure_env#1}<extent_store::dir::HostDir>>> (inlined)
+                                  |          <extent_store::store::Store<extent_store::dir::HostDir>>::append_records
+                                  |          
+                                   --2.14%--__libc_pwrite
+                                             <std::sys::fd::unix::FileDesc>::write_at (inlined)
+                                             <std::sys::fs::unix::File>::write_at (inlined)
+                                             <std::fs::File as std::os::unix::fs::FileExt>::write_at
+                                             write_all_at<std::fs::File> (inlined)
+                                             <extent_store::dir::HostFile as extent_store::dir::File>::write_at
+                                             0x8948000869ea15ff
+
+    20.92%     0.00%  [.] 0x000071db734b4792
+            |          
+            |--2.19%--fdatasync
+            |          <i32 as std::sys::pal::unix::IsMinusOne>::is_minus_one (inlined)
+            |          std::sys::pal::unix::cvt::<i32> (inlined)
+            |          std::sys::pal::unix::cvt_r::<i32, <std::sys::fs::unix::File>::datasync::{closure#0}> (inlined)
+            |          <std::sys::fs::unix::File>::datasync (inlined)
+            |          <std::fs::File>::sync_data
+            |          append<extent_store::dir::HostFile, core::iter::adapters::map::Map<core::slice::iter::Iter<(extent_store::layout::SegmentId, alloc::vec::Vec<u8, alloc::alloc::Global>)>, extent_store::store::{impl#9}::append_records::{closure_env#1}<extent_store::dir::HostDir>>> (inlined)
+            |          <extent_store::store::Store<extent_store::dir::HostDir>>::append_records
+            |          
+             --2.16%--__libc_pwrite
+                       <std::sys::fd::unix::FileDesc>::write_at (inlined)
+                       <std::sys::fs::unix::File>::write_at (inlined)
+                       <std::fs::File as std::os::unix::fs::FileExt>::write_at
+                       write_all_at<std::fs::File> (inlined)
+                       <extent_store::dir::HostFile as extent_store::dir::File>::write_at
+                       0x8948000869ea15ff
+
+     7.78%     0.07%  [.] <extent_store::store::Store<extent_store::dir::HostDir>>::append_records
+            |          
+             --2.23%--<extent_store::store::Store<extent_store::dir::HostDir>>::append_records
+
+     7.74%     0.07%  [.] <std::fs::File>::sync_data
+            |          
+             --2.22%--append<extent_store::dir::HostFile, core::iter::adapters::map::Map<core::slice::iter::Iter<(extent_store::layout::SegmentId, alloc::vec::Vec<u8, alloc::alloc::Global>)>, extent_store::store::{impl#9}::append_records::{closure_env#1}<extent_store::dir::HostDir>>> (inlined)
+                       <extent_store::store::Store<extent_store::dir::HostDir>>::append_records
+
+     7.71%     0.00%  [.] append<extent_store::dir::HostFile, core::iter::adapters::map::Map<core::slice::iter::Iter<(extent_store::layout::SegmentId, alloc::vec::Vec<u8, alloc::alloc::Global>)>, extent_store::store::{impl#9}::append_records::{closure_env#1}<extent_store::dir::HostDir>>> (inlined)
+            |
+            ---<extent_store::store::Store<extent_store::dir::HostDir>>::append_records
+
+     7.67%     0.00%  [.] <std::sys::fs::unix::File>::datasync (inlined)
+            |
+            ---<std::fs::File>::sync_data
+               append<extent_store::dir::HostFile, core::iter::adapters::map::Map<core::slice::iter::Iter<(extent_store::layout::SegmentId, alloc::vec::Vec<u8, alloc::alloc::Global>)>, extent_store::store::{impl#9}::append_records::{closure_env#1}<extent_store::dir::HostDir>>> (inlined)
+               <extent_store::store::Store<extent_store::dir::HostDir>>::append_records
+
+     7.67%     0.00%  [.] std::sys::pal::unix::cvt_r::<i32, <std::sys::fs::unix::File>::datasync::{closure#0}> (inlined)
+            |
+            ---<std::sys::fs::unix::File>::datasync (inlined)
+               <std::fs::File>::sync_data
+               append<extent_store::dir::HostFile, core::iter::adapters::map::Map<core::slice::iter::Iter<(extent_store::layout::SegmentId, alloc::vec::Vec<u8, alloc::alloc::Global>)>, extent_store::store::{impl#9}::append_records::{closure_env#1}<extent_store::dir::HostDir>>> (inlined)
+               <extent_store::store::Store<extent_store::dir::HostDir>>::append_records
+
+     7.67%     0.00%  [.] std::sys::pal::unix::cvt::<i32> (inlined)
+            |
+            ---std::sys::pal::unix::cvt_r::<i32, <std::sys::fs::unix::File>::datasync::{closure#0}> (inlined)
+               <std::sys::fs::unix::File>::datasync (inlined)
+               <std::fs::File>::sync_data
+               append<extent_store::dir::HostFile, core::iter::adapters::map::Map<core::slice::iter::Iter<(extent_store::layout::SegmentId, alloc::vec::Vec<u8, alloc::alloc::Global>)>, extent_store::store::{impl#9}::append_records::{closure_env#1}<extent_store::dir::HostDir>>> (inlined)
+               <extent_store::store::Store<extent_store::dir::HostDir>>::append_records
+
+     7.67%     0.00%  [.] fdatasync
+            |
+            ---<i32 as std::sys::pal::unix::IsMinusOne>::is_minus_one (inlined)
+               std::sys::pal::unix::cvt::<i32> (inlined)
+               std::sys::pal::unix::cvt_r::<i32, <std::sys::fs::unix::File>::datasync::{closure#0}> (inlined)
+               <std::sys::fs::unix::File>::datasync (inlined)
+               <std::fs::File>::sync_data
+               append<extent_store::dir::HostFile, core::iter::adapters::map::Map<core::slice::iter::Iter<(extent_store::layout::SegmentId, alloc::vec::Vec<u8, alloc::alloc::Global>)>, extent_store::store::{impl#9}::append_records::{closure_env#1}<extent_store::dir::HostDir>>> (inlined)
+               <extent_store::store::Store<extent_store::dir::HostDir>>::append_records
+
+     7.54%     0.02%  [.] __x64_sys_fdatasync
+            |          
+             --2.16%--x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       0x71db734b4792
+                       fdatasync
+                       <i32 as std::sys::pal::unix::IsMinusOne>::is_minus_one (inlined)
+                       std::sys::pal::unix::cvt::<i32> (inlined)
+                       std::sys::pal::unix::cvt_r::<i32, <std::sys::fs::unix::File>::datasync::{closure#0}> (inlined)
+                       <std::sys::fs::unix::File>::datasync (inlined)
+                       <std::fs::File>::sync_data
+                       append<extent_store::dir::HostFile, core::iter::adapters::map::Map<core::slice::iter::Iter<(extent_store::layout::SegmentId, alloc::vec::Vec<u8, alloc::alloc::Global>)>, extent_store::store::{impl#9}::append_records::{closure_env#1}<extent_store::dir::HostDir>>> (inlined)
+                       <extent_store::store::Store<extent_store::dir::HostDir>>::append_records
+
+     7.54%     0.00%  [.] 0x8948000869ea15ff
+     7.54%     0.00%  [.] <extent_store::dir::HostFile as extent_store::dir::File>::write_at
+            |
+            ---0x8948000869ea15ff
+
+     7.54%     0.00%  [.] write_all_at<std::fs::File> (inlined)
+            |
+            ---<extent_store::dir::HostFile as extent_store::dir::File>::write_at
+               0x8948000869ea15ff
+
+     7.54%     0.00%  [.] <std::fs::File as std::os::unix::fs::FileExt>::write_at
+            |
+            ---write_all_at<std::fs::File> (inlined)
+               <extent_store::dir::HostFile as extent_store::dir::File>::write_at
+               0x8948000869ea15ff
+
+     7.54%     0.00%  [.] <std::sys::fs::unix::File>::write_at (inlined)
+            |
+            ---<std::fs::File as std::os::unix::fs::FileExt>::write_at
+               write_all_at<std::fs::File> (inlined)
+               <extent_store::dir::HostFile as extent_store::dir::File>::write_at
+               0x8948000869ea15ff
+
+     7.54%     0.00%  [.] <std::sys::fd::unix::FileDesc>::write_at (inlined)
+            |
+            ---<std::sys::fs::unix::File>::write_at (inlined)
+               <std::fs::File as std::os::unix::fs::FileExt>::write_at
+               write_all_at<std::fs::File> (inlined)
+               <extent_store::dir::HostFile as extent_store::dir::File>::write_at
+               0x8948000869ea15ff
+
+     7.54%     0.00%  [.] __libc_pwrite
+            |
+            ---<std::sys::fd::unix::FileDesc>::write_at (inlined)
+               <std::sys::fs::unix::File>::write_at (inlined)
+               <std::fs::File as std::os::unix::fs::FileExt>::write_at
+               write_all_at<std::fs::File> (inlined)
+               <extent_store::dir::HostFile as extent_store::dir::File>::write_at
+               0x8948000869ea15ff
+
+     7.52%     0.00%  [.] do_fsync
+            |
+            ---__x64_sys_fdatasync
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               0x71db734b4792
+               fdatasync
+               <i32 as std::sys::pal::unix::IsMinusOne>::is_minus_one (inlined)
+               std::sys::pal::unix::cvt::<i32> (inlined)
+               std::sys::pal::unix::cvt_r::<i32, <std::sys::fs::unix::File>::datasync::{closure#0}> (inlined)
+               <std::sys::fs::unix::File>::datasync (inlined)
+               <std::fs::File>::sync_data
+               append<extent_store::dir::HostFile, core::iter::adapters::map::Map<core::slice::iter::Iter<(extent_store::layout::SegmentId, alloc::vec::Vec<u8, alloc::alloc::Global>)>, extent_store::store::{impl#9}::append_records::{closure_env#1}<extent_store::dir::HostDir>>> (inlined)
+               <extent_store::store::Store<extent_store::dir::HostDir>>::append_records
+
+     7.49%     0.07%  [.] ext4_sync_file
+            |
+            ---do_fsync
+               __x64_sys_fdatasync
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               0x71db734b4792
+               fdatasync
+               <i32 as std::sys::pal::unix::IsMinusOne>::is_minus_one (inlined)
+               std::sys::pal::unix::cvt::<i32> (inlined)
+               std::sys::pal::unix::cvt_r::<i32, <std::sys::fs::unix::File>::datasync::{closure#0}> (inlined)
+               <std::sys::fs::unix::File>::datasync (inlined)
+               <std::fs::File>::sync_data
+               append<extent_store::dir::HostFile, core::iter::adapters::map::Map<core::slice::iter::Iter<(extent_store::layout::SegmentId, alloc::vec::Vec<u8, alloc::alloc::Global>)>, extent_store::store::{impl#9}::append_records::{closure_env#1}<extent_store::dir::HostDir>>> (inlined)
+               <extent_store::store::Store<extent_store::dir::HostDir>>::append_records
+
+     7.43%     0.00%  [.] __x64_sys_pwrite64
+            |
+            ---x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               0x71db734b4792
+               __libc_pwrite
+               <std::sys::fd::unix::FileDesc>::write_at (inlined)
+               <std::sys::fs::unix::File>::write_at (inlined)
+               <std::fs::File as std::os::unix::fs::FileExt>::write_at
+               write_all_at<std::fs::File> (inlined)
+               <extent_store::dir::HostFile as extent_store::dir::File>::write_at
+               0x8948000869ea15ff
+
+     7.38%     7.38%  [.] core::slice::sort::stable::quicksort::quicksort::<(u64, storage_device::extent::ExtentId), <(u64, storage_device::extent::ExtentId) as core::cmp::PartialOrd>::lt>
+     7.32%     0.04%  [.] vfs_write
+            |
+            ---__x64_sys_pwrite64
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               0x71db734b4792
+               __libc_pwrite
+               <std::sys::fd::unix::FileDesc>::write_at (inlined)
+               <std::sys::fs::unix::File>::write_at (inlined)
+               <std::fs::File as std::os::unix::fs::FileExt>::write_at
+               write_all_at<std::fs::File> (inlined)
+               <extent_store::dir::HostFile as extent_store::dir::File>::write_at
+               0x8948000869ea15ff
+
+     7.30%     7.30%  [.] core::slice::sort::shared::smallsort::small_sort_general_with_scratch::<(u64, storage_device::extent::ExtentId), <(u64, storage_device::extent::ExtentId) as core::cmp::PartialOrd>::lt>
+     7.19%     0.00%  [.] ext4_file_write_iter
+            |
+            ---vfs_write
+               __x64_sys_pwrite64
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               0x71db734b4792
+               __libc_pwrite
+               <std::sys::fd::unix::FileDesc>::write_at (inlined)
+               <std::sys::fs::unix::File>::write_at (inlined)
+               <std::fs::File as std::os::unix::fs::FileExt>::write_at
+               write_all_at<std::fs::File> (inlined)
+               <extent_store::dir::HostFile as extent_store::dir::File>::write_at
+               0x8948000869ea15ff
+
+     7.19%     0.02%  [.] ext4_buffered_write_iter
+            |          
+             --2.06%--ext4_file_write_iter
+                       vfs_write
+                       __x64_sys_pwrite64
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       0x71db734b4792
+                       __libc_pwrite
+                       <std::sys::fd::unix::FileDesc>::write_at (inlined)
+                       <std::sys::fs::unix::File>::write_at (inlined)
+                       <std::fs::File as std::os::unix::fs::FileExt>::write_at
+                       write_all_at<std::fs::File> (inlined)
+                       <extent_store::dir::HostFile as extent_store::dir::File>::write_at
+                       0x8948000869ea15ff
+
+     7.14%     0.00%  [.] stable_partition<(u64, storage_device::extent::ExtentId), fn(&(u64, storage_device::extent::ExtentId), &(u64, storage_device::extent::ExtentId)) -> bool> (inlined)
+            |
+            ---core::slice::sort::stable::quicksort::quicksort::<(u64, storage_device::extent::ExtentId), <(u64, storage_device::extent::ExtentId) as core::cmp::PartialOrd>::lt>
+               |          
+                --1.68%--0x4ed74c4672173277
+
+     6.83%     0.00%  [.] <i32 as std::sys::pal::unix::IsMinusOne>::is_minus_one (inlined)
+            |
+            ---std::sys::pal::unix::cvt::<i32> (inlined)
+               std::sys::pal::unix::cvt_r::<i32, <std::sys::fs::unix::File>::datasync::{closure#0}> (inlined)
+               <std::sys::fs::unix::File>::datasync (inlined)
+               <std::fs::File>::sync_data
+               append<extent_store::dir::HostFile, core::iter::adapters::map::Map<core::slice::iter::Iter<(extent_store::layout::SegmentId, alloc::vec::Vec<u8, alloc::alloc::Global>)>, extent_store::store::{impl#9}::append_records::{closure_env#1}<extent_store::dir::HostDir>>> (inlined)
+               <extent_store::store::Store<extent_store::dir::HostDir>>::append_records
+
+     6.46%     0.00%  [.] 0x4ed74c4672173277
+     6.37%     0.00%  [.] file_write_and_wait_range
+            |
+            ---ext4_sync_file
+               do_fsync
+               __x64_sys_fdatasync
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               0x71db734b4792
+               fdatasync
+               <i32 as std::sys::pal::unix::IsMinusOne>::is_minus_one (inlined)
+               std::sys::pal::unix::cvt::<i32> (inlined)
+               std::sys::pal::unix::cvt_r::<i32, <std::sys::fs::unix::File>::datasync::{closure#0}> (inlined)
+               <std::sys::fs::unix::File>::datasync (inlined)
+               <std::fs::File>::sync_data
+               append<extent_store::dir::HostFile, core::iter::adapters::map::Map<core::slice::iter::Iter<(extent_store::layout::SegmentId, alloc::vec::Vec<u8, alloc::alloc::Global>)>, extent_store::store::{impl#9}::append_records::{closure_env#1}<extent_store::dir::HostDir>>> (inlined)
+               <extent_store::store::Store<extent_store::dir::HostDir>>::append_records
+
+     6.08%     0.00%  [.] generic_perform_write
+            |
+            ---ext4_buffered_write_iter
+               ext4_file_write_iter
+               vfs_write
+               __x64_sys_pwrite64
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               0x71db734b4792
+               __libc_pwrite
+               <std::sys::fd::unix::FileDesc>::write_at (inlined)
+               <std::sys::fs::unix::File>::write_at (inlined)
+               <std::fs::File as std::os::unix::fs::FileExt>::write_at
+               write_all_at<std::fs::File> (inlined)
+               <extent_store::dir::HostFile as extent_store::dir::File>::write_at
+               0x8948000869ea15ff
+
+     5.95%     0.00%  [.] filemap_writeback
+            |          
+             --1.58%--file_write_and_wait_range
+                       ext4_sync_file
+                       do_fsync
+                       __x64_sys_fdatasync
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       0x71db734b4792
+                       fdatasync
+                       <i32 as std::sys::pal::unix::IsMinusOne>::is_minus_one (inlined)
+                       std::sys::pal::unix::cvt::<i32> (inlined)
+                       std::sys::pal::unix::cvt_r::<i32, <std::sys::fs::unix::File>::datasync::{closure#0}> (inlined)
+                       <std::sys::fs::unix::File>::datasync (inlined)
+                       <std::fs::File>::sync_data
+                       append<extent_store::dir::HostFile, core::iter::adapters::map::Map<core::slice::iter::Iter<(extent_store::layout::SegmentId, alloc::vec::Vec<u8, alloc::alloc::Global>)>, extent_store::store::{impl#9}::append_records::{closure_env#1}<extent_store::dir::HostDir>>> (inlined)
+                       <extent_store::store::Store<extent_store::dir::HostDir>>::append_records
+
+     5.93%     0.07%  [.] ext4_writepages
+            |          
+             --1.70%--do_writepages
+                       filemap_writeback
+                       |          
+                        --1.56%--file_write_and_wait_range
+                                  ext4_sync_file
+                                  do_fsync
+                                  __x64_sys_fdatasync
+                                  x64_sys_call
+                                  do_syscall_64
+                                  entry_SYSCALL_64_after_hwframe
+                                  0x71db734b4792
+                                  fdatasync
+                                  <i32 as std::sys::pal::unix::IsMinusOne>::is_minus_one (inlined)
+                                  std::sys::pal::unix::cvt::<i32> (inlined)
+                                  std::sys::pal::unix::cvt_r::<i32, <std::sys::fs::unix::File>::datasync::{closure#0}> (inlined)
+                                  <std::sys::fs::unix::File>::datasync (inlined)
+                                  <std::fs::File>::sync_data
+                                  append<extent_store::dir::HostFile, core::iter::adapters::map::Map<core::slice::iter::Iter<(extent_store::layout::SegmentId, alloc::vec::Vec<u8, alloc::alloc::Global>)>, extent_store::store::{impl#9}::append_records::{closure_env#1}<extent_store::dir::HostDir>>> (inlined)
+                                  <extent_store::store::Store<extent_store::dir::HostDir>>::append_records
+
+     5.91%     0.00%  [.] do_writepages
+            |
+            ---filemap_writeback
+               |          
+                --1.56%--file_write_and_wait_range
+                          ext4_sync_file
+                          do_fsync
+                          __x64_sys_fdatasync
+                          x64_sys_call
+                          do_syscall_64
+                          entry_SYSCALL_64_after_hwframe
+                          0x71db734b4792
+                          fdatasync
+                          <i32 as std::sys::pal::unix::IsMinusOne>::is_minus_one (inlined)
+                          std::sys::pal::unix::cvt::<i32> (inlined)
+                          std::sys::pal::unix::cvt_r::<i32, <std::sys::fs::unix::File>::datasync::{closure#0}> (inlined)
+                          <std::sys::fs::unix::File>::datasync (inlined)
+                          <std::fs::File>::sync_data
+                          append<extent_store::dir::HostFile, core::iter::adapters::map::Map<core::slice::iter::Iter<(extent_store::layout::SegmentId, alloc::vec::Vec<u8, alloc::alloc::Global>)>, extent_store::store::{impl#9}::append_records::{closure_env#1}<extent_store::dir::HostDir>>> (inlined)
+                          <extent_store::store::Store<extent_store::dir::HostDir>>::append_records
+
+     5.80%     0.07%  [.] ext4_do_writepages
+            |
+            ---ext4_writepages
+               do_writepages
+               filemap_writeback
+               |          
+                --1.53%--file_write_and_wait_range
+                          ext4_sync_file
+                          do_fsync
+                          __x64_sys_fdatasync
+                          x64_sys_call
+                          do_syscall_64
+                          entry_SYSCALL_64_after_hwframe
+                          0x71db734b4792
+                          fdatasync
+                          <i32 as std::sys::pal::unix::IsMinusOne>::is_minus_one (inlined)
+                          std::sys::pal::unix::cvt::<i32> (inlined)
+                          std::sys::pal::unix::cvt_r::<i32, <std::sys::fs::unix::File>::datasync::{closure#0}> (inlined)
+                          <std::sys::fs::unix::File>::datasync (inlined)
+                          <std::fs::File>::sync_data
+                          append<extent_store::dir::HostFile, core::iter::adapters::map::Map<core::slice::iter::Iter<(extent_store::layout::SegmentId, alloc::vec::Vec<u8, alloc::alloc::Global>)>, extent_store::store::{impl#9}::append_records::{closure_env#1}<extent_store::dir::HostDir>>> (inlined)
+                          <extent_store::store::Store<extent_store::dir::HostDir>>::append_records
+
+     5.75%     5.75%  [.] <extent_store::segments::Recount>::keeps
+            |          
+             --1.13%--<extent_store::segments::Recount>::keeps
+
+     5.71%     0.00%  [.] collect_seq<&mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>>, &alloc::vec::Vec<u8, alloc::alloc::Global>> (inlined)
+            |
+            ---serialize<u8, &mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>>> (inlined)
+               <&mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>> as serde_core::ser::Serializer>::serialize_newtype_variant::<alloc::vec::Vec<u8>>
+
+     5.71%     0.00%  [.] try_for_each<core::slice::iter::Iter<u8>, serde_core::ser::Serializer::collect_seq::{closure_env#0}<&mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>>, &alloc::vec::Vec<u8, alloc::alloc::Global>>, core::result::Result<(), alloc::boxed::Box<bincode::error::ErrorKind, alloc::alloc::Global>>> (inlined)
+            |
+            ---collect_seq<&mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>>, &alloc::vec::Vec<u8, alloc::alloc::Global>> (inlined)
+               serialize<u8, &mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>>> (inlined)
+               <&mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>> as serde_core::ser::Serializer>::serialize_newtype_variant::<alloc::vec::Vec<u8>>
+
+     5.71%     0.00%  [.] try_fold<core::slice::iter::Iter<u8>, (), core::iter::traits::iterator::Iterator::try_for_each::call::{closure_env#0}<&u8, core::result::Result<(), alloc::boxed::Box<bincode::error::ErrorKind, alloc::alloc::Global>>, serde_core::ser::Serializer::collect_seq::{closure_env#0}<&mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>>, &alloc::vec::Vec<u8, alloc::alloc::Global>>>, core::result::Result<(), alloc::boxed::Box<bincode::error::ErrorKind, alloc::alloc::Global>>> (inlined)
+            |
+            ---try_for_each<core::slice::iter::Iter<u8>, serde_core::ser::Serializer::collect_seq::{closure_env#0}<&mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>>, &alloc::vec::Vec<u8, alloc::alloc::Global>>, core::result::Result<(), alloc::boxed::Box<bincode::error::ErrorKind, alloc::alloc::Global>>> (inlined)
+               collect_seq<&mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>>, &alloc::vec::Vec<u8, alloc::alloc::Global>> (inlined)
+               serialize<u8, &mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>>> (inlined)
+               <&mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>> as serde_core::ser::Serializer>::serialize_newtype_variant::<alloc::vec::Vec<u8>>
+
+     5.71%     0.00%  [.] serialize<u8, &mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>>> (inlined)
+            |          
+             --1.63%--serialize_element<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>, &u8> (inlined)
+                       {closure#0}<&mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>>, &alloc::vec::Vec<u8, alloc::alloc::Global>> (inlined)
+                       {closure#0}<&u8, core::result::Result<(), alloc::boxed::Box<bincode::error::ErrorKind, alloc::alloc::Global>>, serde_core::ser::Serializer::collect_seq::{closure_env#0}<&mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>>, &alloc::vec::Vec<u8, alloc::alloc::Global>>> (inlined)
+                       try_fold<core::slice::iter::Iter<u8>, (), core::iter::traits::iterator::Iterator::try_for_each::call::{closure_env#0}<&u8, core::result::Result<(), alloc::boxed::Box<bincode::error::ErrorKind, alloc::alloc::Global>>, serde_core::ser::Serializer::collect_seq::{closure_env#0}<&mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>>, &alloc::vec::Vec<u8, alloc::alloc::Global>>>, core::result::Result<(), alloc::boxed::Box<bincode::error::ErrorKind, alloc::alloc::Global>>> (inlined)
+                       try_for_each<core::slice::iter::Iter<u8>, serde_core::ser::Serializer::collect_seq::{closure_env#0}<&mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>>, &alloc::vec::Vec<u8, alloc::alloc::Global>>, core::result::Result<(), alloc::boxed::Box<bincode::error::ErrorKind, alloc::alloc::Global>>> (inlined)
+                       collect_seq<&mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>>, &alloc::vec::Vec<u8, alloc::alloc::Global>> (inlined)
+                       serialize<u8, &mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>>> (inlined)
+                       <&mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>> as serde_core::ser::Serializer>::serialize_newtype_variant::<alloc::vec::Vec<u8>>
+
+     5.71%     5.71%  [.] <&mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>> as serde_core::ser::Serializer>::serialize_newtype_variant::<alloc::vec::Vec<u8>>
+            |          
+             --1.51%--append_elements<u8, alloc::alloc::Global> (inlined)
+                       spec_extend<u8, alloc::alloc::Global> (inlined)
+                       extend_from_slice<u8, alloc::alloc::Global> (inlined)
+                       write_all<alloc::alloc::Global> (inlined)
+                       write_all<alloc::vec::Vec<u8, alloc::alloc::Global>> (inlined)
+                       write_u8<&mut alloc::vec::Vec<u8, alloc::alloc::Global>> (inlined)
+                       serialize_byte<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>> (inlined)
+                       serialize_u8<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>> (inlined)
+                       serialize<&mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>>> (inlined)
+                       serialize<u8, &mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>>> (inlined)
+                       serialize_element<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>, &u8> (inlined)
+                       {closure#0}<&mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>>, &alloc::vec::Vec<u8, alloc::alloc::Global>> (inlined)
+                       {closure#0}<&u8, core::result::Result<(), alloc::boxed::Box<bincode::error::ErrorKind, alloc::alloc::Global>>, serde_core::ser::Serializer::collect_seq::{closure_env#0}<&mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>>, &alloc::vec::Vec<u8, alloc::alloc::Global>>> (inlined)
+                       try_fold<core::slice::iter::Iter<u8>, (), core::iter::traits::iterator::Iterator::try_for_each::call::{closure_env#0}<&u8, core::result::Result<(), alloc::boxed::Box<bincode::error::ErrorKind, alloc::alloc::Global>>, serde_core::ser::Serializer::collect_seq::{closure_env#0}<&mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>>, &alloc::vec::Vec<u8, alloc::alloc::Global>>>, core::result::Result<(), alloc::boxed::Box<bincode::error::ErrorKind, alloc::alloc::Global>>> (inlined)
+                       try_for_each<core::slice::iter::Iter<u8>, serde_core::ser::Serializer::collect_seq::{closure_env#0}<&mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>>, &alloc::vec::Vec<u8, alloc::alloc::Global>>, core::result::Result<(), alloc::boxed::Box<bincode::error::ErrorKind, alloc::alloc::Global>>> (inlined)
+                       collect_seq<&mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>>, &alloc::vec::Vec<u8, alloc::alloc::Global>> (inlined)
+                       serialize<u8, &mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>>> (inlined)
+                       <&mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>> as serde_core::ser::Serializer>::serialize_newtype_variant::<alloc::vec::Vec<u8>>
+
+     5.66%     0.00%  [.] {closure#0}<&u8, core::result::Result<(), alloc::boxed::Box<bincode::error::ErrorKind, alloc::alloc::Global>>, serde_core::ser::Serializer::collect_seq::{closure_env#0}<&mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>>, &alloc::vec::Vec<u8, alloc::alloc::Global>>> (inlined)
+            |
+            ---try_fold<core::slice::iter::Iter<u8>, (), core::iter::traits::iterator::Iterator::try_for_each::call::{closure_env#0}<&u8, core::result::Result<(), alloc::boxed::Box<bincode::error::ErrorKind, alloc::alloc::Global>>, serde_core::ser::Serializer::collect_seq::{closure_env#0}<&mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>>, &alloc::vec::Vec<u8, alloc::alloc::Global>>>, core::result::Result<(), alloc::boxed::Box<bincode::error::ErrorKind, alloc::alloc::Global>>> (inlined)
+               try_for_each<core::slice::iter::Iter<u8>, serde_core::ser::Serializer::collect_seq::{closure_env#0}<&mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>>, &alloc::vec::Vec<u8, alloc::alloc::Global>>, core::result::Result<(), alloc::boxed::Box<bincode::error::ErrorKind, alloc::alloc::Global>>> (inlined)
+               collect_seq<&mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>>, &alloc::vec::Vec<u8, alloc::alloc::Global>> (inlined)
+               serialize<u8, &mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>>> (inlined)
+               <&mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>> as serde_core::ser::Serializer>::serialize_newtype_variant::<alloc::vec::Vec<u8>>
+
+     5.66%     0.00%  [.] {closure#0}<&mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>>, &alloc::vec::Vec<u8, alloc::alloc::Global>> (inlined)
+            |
+            ---{closure#0}<&u8, core::result::Result<(), alloc::boxed::Box<bincode::error::ErrorKind, alloc::alloc::Global>>, serde_core::ser::Serializer::collect_seq::{closure_env#0}<&mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>>, &alloc::vec::Vec<u8, alloc::alloc::Global>>> (inlined)
+               try_fold<core::slice::iter::Iter<u8>, (), core::iter::traits::iterator::Iterator::try_for_each::call::{closure_env#0}<&u8, core::result::Result<(), alloc::boxed::Box<bincode::error::ErrorKind, alloc::alloc::Global>>, serde_core::ser::Serializer::collect_seq::{closure_env#0}<&mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>>, &alloc::vec::Vec<u8, alloc::alloc::Global>>>, core::result::Result<(), alloc::boxed::Box<bincode::error::ErrorKind, alloc::alloc::Global>>> (inlined)
+               try_for_each<core::slice::iter::Iter<u8>, serde_core::ser::Serializer::collect_seq::{closure_env#0}<&mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>>, &alloc::vec::Vec<u8, alloc::alloc::Global>>, core::result::Result<(), alloc::boxed::Box<bincode::error::ErrorKind, alloc::alloc::Global>>> (inlined)
+               collect_seq<&mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>>, &alloc::vec::Vec<u8, alloc::alloc::Global>> (inlined)
+               serialize<u8, &mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>>> (inlined)
+               <&mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>> as serde_core::ser::Serializer>::serialize_newtype_variant::<alloc::vec::Vec<u8>>
+
+     5.66%     0.00%  [.] serialize_element<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>, &u8> (inlined)
+            |
+            ---{closure#0}<&mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>>, &alloc::vec::Vec<u8, alloc::alloc::Global>> (inlined)
+               {closure#0}<&u8, core::result::Result<(), alloc::boxed::Box<bincode::error::ErrorKind, alloc::alloc::Global>>, serde_core::ser::Serializer::collect_seq::{closure_env#0}<&mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>>, &alloc::vec::Vec<u8, alloc::alloc::Global>>> (inlined)
+               try_fold<core::slice::iter::Iter<u8>, (), core::iter::traits::iterator::Iterator::try_for_each::call::{closure_env#0}<&u8, core::result::Result<(), alloc::boxed::Box<bincode::error::ErrorKind, alloc::alloc::Global>>, serde_core::ser::Serializer::collect_seq::{closure_env#0}<&mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>>, &alloc::vec::Vec<u8, alloc::alloc::Global>>>, core::result::Result<(), alloc::boxed::Box<bincode::error::ErrorKind, alloc::alloc::Global>>> (inlined)
+               try_for_each<core::slice::iter::Iter<u8>, serde_core::ser::Serializer::collect_seq::{closure_env#0}<&mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>>, &alloc::vec::Vec<u8, alloc::alloc::Global>>, core::result::Result<(), alloc::boxed::Box<bincode::error::ErrorKind, alloc::alloc::Global>>> (inlined)
+               collect_seq<&mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>>, &alloc::vec::Vec<u8, alloc::alloc::Global>> (inlined)
+               serialize<u8, &mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>>> (inlined)
+               <&mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>> as serde_core::ser::Serializer>::serialize_newtype_variant::<alloc::vec::Vec<u8>>
+
+     5.66%     0.00%  [.] serialize<&mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>>> (inlined)
+            |
+            ---serialize<u8, &mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>>> (inlined)
+               serialize_element<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>, &u8> (inlined)
+               {closure#0}<&mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>>, &alloc::vec::Vec<u8, alloc::alloc::Global>> (inlined)
+               {closure#0}<&u8, core::result::Result<(), alloc::boxed::Box<bincode::error::ErrorKind, alloc::alloc::Global>>, serde_core::ser::Serializer::collect_seq::{closure_env#0}<&mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>>, &alloc::vec::Vec<u8, alloc::alloc::Global>>> (inlined)
+               try_fold<core::slice::iter::Iter<u8>, (), core::iter::traits::iterator::Iterator::try_for_each::call::{closure_env#0}<&u8, core::result::Result<(), alloc::boxed::Box<bincode::error::ErrorKind, alloc::alloc::Global>>, serde_core::ser::Serializer::collect_seq::{closure_env#0}<&mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>>, &alloc::vec::Vec<u8, alloc::alloc::Global>>>, core::result::Result<(), alloc::boxed::Box<bincode::error::ErrorKind, alloc::alloc::Global>>> (inlined)
+               try_for_each<core::slice::iter::Iter<u8>, serde_core::ser::Serializer::collect_seq::{closure_env#0}<&mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>>, &alloc::vec::Vec<u8, alloc::alloc::Global>>, core::result::Result<(), alloc::boxed::Box<bincode::error::ErrorKind, alloc::alloc::Global>>> (inlined)
+               collect_seq<&mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>>, &alloc::vec::Vec<u8, alloc::alloc::Global>> (inlined)
+               serialize<u8, &mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>>> (inlined)
+               <&mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>> as serde_core::ser::Serializer>::serialize_newtype_variant::<alloc::vec::Vec<u8>>
+
+     5.66%     0.00%  [.] serialize_u8<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>> (inlined)
+            |
+            ---serialize<&mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>>> (inlined)
+               serialize<u8, &mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>>> (inlined)
+               serialize_element<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>, &u8> (inlined)
+               {closure#0}<&mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>>, &alloc::vec::Vec<u8, alloc::alloc::Global>> (inlined)
+               {closure#0}<&u8, core::result::Result<(), alloc::boxed::Box<bincode::error::ErrorKind, alloc::alloc::Global>>, serde_core::ser::Serializer::collect_seq::{closure_env#0}<&mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>>, &alloc::vec::Vec<u8, alloc::alloc::Global>>> (inlined)
+               try_fold<core::slice::iter::Iter<u8>, (), core::iter::traits::iterator::Iterator::try_for_each::call::{closure_env#0}<&u8, core::result::Result<(), alloc::boxed::Box<bincode::error::ErrorKind, alloc::alloc::Global>>, serde_core::ser::Serializer::collect_seq::{closure_env#0}<&mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>>, &alloc::vec::Vec<u8, alloc::alloc::Global>>>, core::result::Result<(), alloc::boxed::Box<bincode::error::ErrorKind, alloc::alloc::Global>>> (inlined)
+               try_for_each<core::slice::iter::Iter<u8>, serde_core::ser::Serializer::collect_seq::{closure_env#0}<&mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>>, &alloc::vec::Vec<u8, alloc::alloc::Global>>, core::result::Result<(), alloc::boxed::Box<bincode::error::ErrorKind, alloc::alloc::Global>>> (inlined)
+               collect_seq<&mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>>, &alloc::vec::Vec<u8, alloc::alloc::Global>> (inlined)
+               serialize<u8, &mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>>> (inlined)
+               <&mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>> as serde_core::ser::Serializer>::serialize_newtype_variant::<alloc::vec::Vec<u8>>
+
+     5.66%     0.00%  [.] serialize_byte<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>> (inlined)
+            |
+            ---serialize_u8<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>> (inlined)
+               serialize<&mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>>> (inlined)
+               serialize<u8, &mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>>> (inlined)
+               serialize_element<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>, &u8> (inlined)
+               {closure#0}<&mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>>, &alloc::vec::Vec<u8, alloc::alloc::Global>> (inlined)
+               {closure#0}<&u8, core::result::Result<(), alloc::boxed::Box<bincode::error::ErrorKind, alloc::alloc::Global>>, serde_core::ser::Serializer::collect_seq::{closure_env#0}<&mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>>, &alloc::vec::Vec<u8, alloc::alloc::Global>>> (inlined)
+               try_fold<core::slice::iter::Iter<u8>, (), core::iter::traits::iterator::Iterator::try_for_each::call::{closure_env#0}<&u8, core::result::Result<(), alloc::boxed::Box<bincode::error::ErrorKind, alloc::alloc::Global>>, serde_core::ser::Serializer::collect_seq::{closure_env#0}<&mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>>, &alloc::vec::Vec<u8, alloc::alloc::Global>>>, core::result::Result<(), alloc::boxed::Box<bincode::error::ErrorKind, alloc::alloc::Global>>> (inlined)
+               try_for_each<core::slice::iter::Iter<u8>, serde_core::ser::Serializer::collect_seq::{closure_env#0}<&mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>>, &alloc::vec::Vec<u8, alloc::alloc::Global>>, core::result::Result<(), alloc::boxed::Box<bincode::error::ErrorKind, alloc::alloc::Global>>> (inlined)
+               collect_seq<&mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>>, &alloc::vec::Vec<u8, alloc::alloc::Global>> (inlined)
+               serialize<u8, &mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>>> (inlined)
+               <&mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>> as serde_core::ser::Serializer>::serialize_newtype_variant::<alloc::vec::Vec<u8>>
+
+     5.66%     0.00%  [.] write_u8<&mut alloc::vec::Vec<u8, alloc::alloc::Global>> (inlined)
+            |
+            ---serialize_byte<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>> (inlined)
+               serialize_u8<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>> (inlined)
+               serialize<&mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>>> (inlined)
+               serialize<u8, &mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>>> (inlined)
+               serialize_element<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>, &u8> (inlined)
+               {closure#0}<&mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>>, &alloc::vec::Vec<u8, alloc::alloc::Global>> (inlined)
+               {closure#0}<&u8, core::result::Result<(), alloc::boxed::Box<bincode::error::ErrorKind, alloc::alloc::Global>>, serde_core::ser::Serializer::collect_seq::{closure_env#0}<&mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>>, &alloc::vec::Vec<u8, alloc::alloc::Global>>> (inlined)
+               try_fold<core::slice::iter::Iter<u8>, (), core::iter::traits::iterator::Iterator::try_for_each::call::{closure_env#0}<&u8, core::result::Result<(), alloc::boxed::Box<bincode::error::ErrorKind, alloc::alloc::Global>>, serde_core::ser::Serializer::collect_seq::{closure_env#0}<&mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>>, &alloc::vec::Vec<u8, alloc::alloc::Global>>>, core::result::Result<(), alloc::boxed::Box<bincode::error::ErrorKind, alloc::alloc::Global>>> (inlined)
+               try_for_each<core::slice::iter::Iter<u8>, serde_core::ser::Serializer::collect_seq::{closure_env#0}<&mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>>, &alloc::vec::Vec<u8, alloc::alloc::Global>>, core::result::Result<(), alloc::boxed::Box<bincode::error::ErrorKind, alloc::alloc::Global>>> (inlined)
+               collect_seq<&mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>>, &alloc::vec::Vec<u8, alloc::alloc::Global>> (inlined)
+               serialize<u8, &mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>>> (inlined)
+               <&mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>> as serde_core::ser::Serializer>::serialize_newtype_variant::<alloc::vec::Vec<u8>>
+
+     5.66%     0.00%  [.] write_all<alloc::vec::Vec<u8, alloc::alloc::Global>> (inlined)
+            |
+            ---write_u8<&mut alloc::vec::Vec<u8, alloc::alloc::Global>> (inlined)
+               serialize_byte<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>> (inlined)
+               serialize_u8<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>> (inlined)
+               serialize<&mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>>> (inlined)
+               serialize<u8, &mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>>> (inlined)
+               serialize_element<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>, &u8> (inlined)
+               {closure#0}<&mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>>, &alloc::vec::Vec<u8, alloc::alloc::Global>> (inlined)
+               {closure#0}<&u8, core::result::Result<(), alloc::boxed::Box<bincode::error::ErrorKind, alloc::alloc::Global>>, serde_core::ser::Serializer::collect_seq::{closure_env#0}<&mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>>, &alloc::vec::Vec<u8, alloc::alloc::Global>>> (inlined)
+               try_fold<core::slice::iter::Iter<u8>, (), core::iter::traits::iterator::Iterator::try_for_each::call::{closure_env#0}<&u8, core::result::Result<(), alloc::boxed::Box<bincode::error::ErrorKind, alloc::alloc::Global>>, serde_core::ser::Serializer::collect_seq::{closure_env#0}<&mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>>, &alloc::vec::Vec<u8, alloc::alloc::Global>>>, core::result::Result<(), alloc::boxed::Box<bincode::error::ErrorKind, alloc::alloc::Global>>> (inlined)
+               try_for_each<core::slice::iter::Iter<u8>, serde_core::ser::Serializer::collect_seq::{closure_env#0}<&mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>>, &alloc::vec::Vec<u8, alloc::alloc::Global>>, core::result::Result<(), alloc::boxed::Box<bincode::error::ErrorKind, alloc::alloc::Global>>> (inlined)
+               collect_seq<&mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>>, &alloc::vec::Vec<u8, alloc::alloc::Global>> (inlined)
+               serialize<u8, &mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>>> (inlined)
+               <&mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>> as serde_core::ser::Serializer>::serialize_newtype_variant::<alloc::vec::Vec<u8>>
+
+     5.66%     0.00%  [.] write_all<alloc::alloc::Global> (inlined)
+            |
+            ---write_all<alloc::vec::Vec<u8, alloc::alloc::Global>> (inlined)
+               write_u8<&mut alloc::vec::Vec<u8, alloc::alloc::Global>> (inlined)
+               serialize_byte<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>> (inlined)
+               serialize_u8<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>> (inlined)
+               serialize<&mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>>> (inlined)
+               serialize<u8, &mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>>> (inlined)
+               serialize_element<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>, &u8> (inlined)
+               {closure#0}<&mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>>, &alloc::vec::Vec<u8, alloc::alloc::Global>> (inlined)
+               {closure#0}<&u8, core::result::Result<(), alloc::boxed::Box<bincode::error::ErrorKind, alloc::alloc::Global>>, serde_core::ser::Serializer::collect_seq::{closure_env#0}<&mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>>, &alloc::vec::Vec<u8, alloc::alloc::Global>>> (inlined)
+               try_fold<core::slice::iter::Iter<u8>, (), core::iter::traits::iterator::Iterator::try_for_each::call::{closure_env#0}<&u8, core::result::Result<(), alloc::boxed::Box<bincode::error::ErrorKind, alloc::alloc::Global>>, serde_core::ser::Serializer::collect_seq::{closure_env#0}<&mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>>, &alloc::vec::Vec<u8, alloc::alloc::Global>>>, core::result::Result<(), alloc::boxed::Box<bincode::error::ErrorKind, alloc::alloc::Global>>> (inlined)
+               try_for_each<core::slice::iter::Iter<u8>, serde_core::ser::Serializer::collect_seq::{closure_env#0}<&mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>>, &alloc::vec::Vec<u8, alloc::alloc::Global>>, core::result::Result<(), alloc::boxed::Box<bincode::error::ErrorKind, alloc::alloc::Global>>> (inlined)
+               collect_seq<&mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>>, &alloc::vec::Vec<u8, alloc::alloc::Global>> (inlined)
+               serialize<u8, &mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>>> (inlined)
+               <&mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>> as serde_core::ser::Serializer>::serialize_newtype_variant::<alloc::vec::Vec<u8>>
+
+     5.66%     0.00%  [.] extend_from_slice<u8, alloc::alloc::Global> (inlined)
+            |
+            ---write_all<alloc::alloc::Global> (inlined)
+               write_all<alloc::vec::Vec<u8, alloc::alloc::Global>> (inlined)
+               write_u8<&mut alloc::vec::Vec<u8, alloc::alloc::Global>> (inlined)
+               serialize_byte<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>> (inlined)
+               serialize_u8<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>> (inlined)
+               serialize<&mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>>> (inlined)
+               serialize<u8, &mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>>> (inlined)
+               serialize_element<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>, &u8> (inlined)
+               {closure#0}<&mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>>, &alloc::vec::Vec<u8, alloc::alloc::Global>> (inlined)
+               {closure#0}<&u8, core::result::Result<(), alloc::boxed::Box<bincode::error::ErrorKind, alloc::alloc::Global>>, serde_core::ser::Serializer::collect_seq::{closure_env#0}<&mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>>, &alloc::vec::Vec<u8, alloc::alloc::Global>>> (inlined)
+               try_fold<core::slice::iter::Iter<u8>, (), core::iter::traits::iterator::Iterator::try_for_each::call::{closure_env#0}<&u8, core::result::Result<(), alloc::boxed::Box<bincode::error::ErrorKind, alloc::alloc::Global>>, serde_core::ser::Serializer::collect_seq::{closure_env#0}<&mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>>, &alloc::vec::Vec<u8, alloc::alloc::Global>>>, core::result::Result<(), alloc::boxed::Box<bincode::error::ErrorKind, alloc::alloc::Global>>> (inlined)
+               try_for_each<core::slice::iter::Iter<u8>, serde_core::ser::Serializer::collect_seq::{closure_env#0}<&mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>>, &alloc::vec::Vec<u8, alloc::alloc::Global>>, core::result::Result<(), alloc::boxed::Box<bincode::error::ErrorKind, alloc::alloc::Global>>> (inlined)
+               collect_seq<&mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>>, &alloc::vec::Vec<u8, alloc::alloc::Global>> (inlined)
+               serialize<u8, &mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>>> (inlined)
+               <&mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>> as serde_core::ser::Serializer>::serialize_newtype_variant::<alloc::vec::Vec<u8>>
+
+     5.66%     0.00%  [.] spec_extend<u8, alloc::alloc::Global> (inlined)
+            |
+            ---extend_from_slice<u8, alloc::alloc::Global> (inlined)
+               write_all<alloc::alloc::Global> (inlined)
+               write_all<alloc::vec::Vec<u8, alloc::alloc::Global>> (inlined)
+               write_u8<&mut alloc::vec::Vec<u8, alloc::alloc::Global>> (inlined)
+               serialize_byte<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>> (inlined)
+               serialize_u8<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>> (inlined)
+               serialize<&mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>>> (inlined)
+               serialize<u8, &mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>>> (inlined)
+               serialize_element<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>, &u8> (inlined)
+               {closure#0}<&mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>>, &alloc::vec::Vec<u8, alloc::alloc::Global>> (inlined)
+               {closure#0}<&u8, core::result::Result<(), alloc::boxed::Box<bincode::error::ErrorKind, alloc::alloc::Global>>, serde_core::ser::Serializer::collect_seq::{closure_env#0}<&mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>>, &alloc::vec::Vec<u8, alloc::alloc::Global>>> (inlined)
+               try_fold<core::slice::iter::Iter<u8>, (), core::iter::traits::iterator::Iterator::try_for_each::call::{closure_env#0}<&u8, core::result::Result<(), alloc::boxed::Box<bincode::error::ErrorKind, alloc::alloc::Global>>, serde_core::ser::Serializer::collect_seq::{closure_env#0}<&mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>>, &alloc::vec::Vec<u8, alloc::alloc::Global>>>, core::result::Result<(), alloc::boxed::Box<bincode::error::ErrorKind, alloc::alloc::Global>>> (inlined)
+               try_for_each<core::slice::iter::Iter<u8>, serde_core::ser::Serializer::collect_seq::{closure_env#0}<&mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>>, &alloc::vec::Vec<u8, alloc::alloc::Global>>, core::result::Result<(), alloc::boxed::Box<bincode::error::ErrorKind, alloc::alloc::Global>>> (inlined)
+               collect_seq<&mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>>, &alloc::vec::Vec<u8, alloc::alloc::Global>> (inlined)
+               serialize<u8, &mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>>> (inlined)
+               <&mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>> as serde_core::ser::Serializer>::serialize_newtype_variant::<alloc::vec::Vec<u8>>
+
+     5.66%     0.00%  [.] append_elements<u8, alloc::alloc::Global> (inlined)
+            |
+            ---spec_extend<u8, alloc::alloc::Global> (inlined)
+               extend_from_slice<u8, alloc::alloc::Global> (inlined)
+               write_all<alloc::alloc::Global> (inlined)
+               write_all<alloc::vec::Vec<u8, alloc::alloc::Global>> (inlined)
+               write_u8<&mut alloc::vec::Vec<u8, alloc::alloc::Global>> (inlined)
+               serialize_byte<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>> (inlined)
+               serialize_u8<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>> (inlined)
+               serialize<&mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>>> (inlined)
+               serialize<u8, &mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>>> (inlined)
+               serialize_element<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>, &u8> (inlined)
+               {closure#0}<&mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>>, &alloc::vec::Vec<u8, alloc::alloc::Global>> (inlined)
+               {closure#0}<&u8, core::result::Result<(), alloc::boxed::Box<bincode::error::ErrorKind, alloc::alloc::Global>>, serde_core::ser::Serializer::collect_seq::{closure_env#0}<&mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>>, &alloc::vec::Vec<u8, alloc::alloc::Global>>> (inlined)
+               try_fold<core::slice::iter::Iter<u8>, (), core::iter::traits::iterator::Iterator::try_for_each::call::{closure_env#0}<&u8, core::result::Result<(), alloc::boxed::Box<bincode::error::ErrorKind, alloc::alloc::Global>>, serde_core::ser::Serializer::collect_seq::{closure_env#0}<&mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>>, &alloc::vec::Vec<u8, alloc::alloc::Global>>>, core::result::Result<(), alloc::boxed::Box<bincode::error::ErrorKind, alloc::alloc::Global>>> (inlined)
+               try_for_each<core::slice::iter::Iter<u8>, serde_core::ser::Serializer::collect_seq::{closure_env#0}<&mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>>, &alloc::vec::Vec<u8, alloc::alloc::Global>>, core::result::Result<(), alloc::boxed::Box<bincode::error::ErrorKind, alloc::alloc::Global>>> (inlined)
+               collect_seq<&mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>>, &alloc::vec::Vec<u8, alloc::alloc::Global>> (inlined)
+               serialize<u8, &mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8, alloc::alloc::Global>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>>> (inlined)
+               <&mut bincode::ser::Serializer<&mut alloc::vec::Vec<u8>, bincode::config::WithOtherLimit<bincode::config::WithOtherTrailing<bincode::config::WithOtherIntEncoding<bincode::config::DefaultOptions, bincode::config::int::FixintEncoding>, bincode::config::trailing::AllowTrailing>, bincode::config::limit::Infinite>> as serde_core::ser::Serializer>::serialize_newtype_variant::<alloc::vec::Vec<u8>>
+
+     4.83%     0.04%  [.] ext4_da_write_begin
+            |
+            ---generic_perform_write
+               ext4_buffered_write_iter
+               ext4_file_write_iter
+               vfs_write
+               __x64_sys_pwrite64
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               0x71db734b4792
+               __libc_pwrite
+               <std::sys::fd::unix::FileDesc>::write_at (inlined)
+               <std::sys::fs::unix::File>::write_at (inlined)
+               <std::fs::File as std::os::unix::fs::FileExt>::write_at
+               write_all_at<std::fs::File> (inlined)
+               <extent_store::dir::HostFile as extent_store::dir::File>::write_at
+               0x8948000869ea15ff
+
+     3.75%     0.00%  [.] insert_tail<(u64, storage_device::extent::ExtentId), fn(&(u64, storage_device::extent::ExtentId), &(u64, storage_device::extent::ExtentId)) -> bool> (inlined)
+            |
+            ---core::slice::sort::shared::smallsort::small_sort_general_with_scratch::<(u64, storage_device::extent::ExtentId), <(u64, storage_device::extent::ExtentId) as core::cmp::PartialOrd>::lt>
+
+     3.68%     0.00%  [.] 0x0000000000000001
+     3.68%     0.00%  [.] partition_one<(u64, storage_device::extent::ExtentId)> (inlined)
+            |
+            ---stable_partition<(u64, storage_device::extent::ExtentId), fn(&(u64, storage_device::extent::ExtentId), &(u64, storage_device::extent::ExtentId)) -> bool> (inlined)
+               core::slice::sort::stable::quicksort::quicksort::<(u64, storage_device::extent::ExtentId), <(u64, storage_device::extent::ExtentId) as core::cmp::PartialOrd>::lt>
+
+     3.39%     2.16%  [.] <alloc::collections::btree::node::NodeRef<alloc::collections::btree::node::marker::Owned, (u64, storage_device::extent::ExtentId), alloc::collections::btree::set_val::SetValZST, alloc::collections::btree::node::marker::LeafOrInternal>>::bulk_push::<alloc::collections::btree::dedup_sorted_iter::DedupSortedIter<(u64, storage_device::extent::ExtentId), alloc::collections::btree::set_val::SetValZST, core::iter::adapters::map::Map<alloc::vec::into_iter::IntoIter<(u64, storage_device::extent::ExtentId)>, <alloc::collections::btree::set::BTreeSet<(u64, storage_device::extent::ExtentId)>>::from_sorted_iter<alloc::vec::into_iter::IntoIter<(u64, storage_device::extent::ExtentId)>>::{closure#0}>>, alloc::alloc::Global>
+     3.35%     3.35%  [.] <extent_store::kept::KeptExtents>::audit
+     3.28%     3.28%  [.] <alloc::collections::btree::map::BTreeMap<(u64, storage_device::extent::ExtentId), alloc::collections::btree::set_val::SetValZST> as core::cmp::PartialEq>::eq
+     3.24%     3.24%  [.] <extent_store::segments::Recount>::holds
+     3.02%     0.09%  [.] __filemap_get_folio_mpol
+            |
+            ---ext4_da_write_begin
+               generic_perform_write
+               ext4_buffered_write_iter
+               ext4_file_write_iter
+               vfs_write
+               __x64_sys_pwrite64
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               0x71db734b4792
+               __libc_pwrite
+               <std::sys::fd::unix::FileDesc>::write_at (inlined)
+               <std::sys::fs::unix::File>::write_at (inlined)
+               <std::fs::File as std::os::unix::fs::FileExt>::write_at
+               write_all_at<std::fs::File> (inlined)
+               <extent_store::dir::HostFile as extent_store::dir::File>::write_at
+               0x8948000869ea15ff
+
+
+
+#
+# (Cannot load tips.txt file, please install perf!)
+#

@@ -27,8 +27,21 @@ if [[ ${FXDAX_PERF:-} == record ]]; then
     export CARGO_PROFILE_RELEASE_DEBUG=line-tables-only
 fi
 host_record > "$results/host.txt"
+# The example's package alone: built across the workspace, its features would be unified with
+# every member's dev-dependencies', such as extent_store's own `audit`, which recounts the store's
+# state after each of its critical sections (TASK-301).
+package=$(cargo metadata --no-deps --format-version 1 --manifest-path "$repo/Cargo.toml" |
+    python3 -I -c '
+import json, sys
+example = sys.argv[1]
+packages = [package["name"] for package in json.load(sys.stdin)["packages"]
+            if any(target["name"] == example and "example" in target["kind"]
+                   for target in package["targets"])]
+assert len(packages) == 1, f"the packages with example {example}: {packages}"
+print(packages[0])
+' "$example")
 CARGO_TARGET_DIR="$target" \
-    cargo build --release --manifest-path "$repo/Cargo.toml" --example "$example"
+    cargo build --release --manifest-path "$repo/Cargo.toml" -p "$package" --example "$example"
 binary="$target/release/examples/$example"
 if [[ ${FXDAX_PERF:-} != record ]]; then
     # FXDAX_EXAMPLE_RUNS times, one after another, to see how much runs differ.

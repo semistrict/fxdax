@@ -3,9 +3,11 @@ id: TASK-301
 title: >-
   sqlite_extents on the daemon: a one-row commit takes 7.5 ms, against 2.9 ms
   through an in-process image
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-11-09 10:48'
+updated_date: '2026-11-09 11:38'
 labels: []
 dependencies: []
 priority: high
@@ -22,6 +24,7 @@ GCE run docs/measurements/gce-sqlite-bench-2026-11-09T1038Z-6ba6c6a9 (TASK-300):
 <!-- AC:BEGIN -->
 - [ ] #1 A perf profile on GCE says where a one-row commit's time goes on the daemon
 - [ ] #2 One-row commits on the daemon at least as fast as through the in-process image, shown by sqlite-bench on GCE
+- [ ] #3 One-row commits on the daemon at 75% of WAL FULL at least (the user, 2026-11-09), shown by sqlite-bench on GCE
 <!-- AC:END -->
 
 ## Definition of Done
@@ -30,3 +33,10 @@ GCE run docs/measurements/gce-sqlite-bench-2026-11-09T1038Z-6ba6c6a9 (TASK-300):
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Profile on GCE (docs/measurements/gce-sqlite-commit-profile-2026-11-09T1114Z-2b9c1415): a one-row commit on the daemon is 7.7 ms, its commit_root 6.9 ms: COMMIT_DURABLE waits for the upload to the bucket (ExtentStore::make_durable, remote.wait_uploaded), ~4 store flushes a commit. Write 79 us, free 87 us, window map 114 us. Through the in-process image, the local flush is data sync 0.74 ms then log sync 1.03 ms; a bare fdatasync is 0.94 ms, WAL FULL's commit 0.91 ms.
+Decision (user, 2026-11-09): a SQLite commit on the daemon waits for the host's local disk, as WAL FULL does, not the bucket: a local-durable COMMIT level, an exception to TASK-96's 'no local only level'.
+<!-- SECTION:NOTES:END -->

@@ -1,0 +1,4 @@
+info: component rust-std for target x86_64-unknown-linux-musl is up to date
+info: component clippy is up to date
+   Compiling sqlite_extents v0.1.0 (/var/lib/fxdax-test/example-tree/crates/sqlite_extents)
+    Finished `release` profile [optimized] target(s) in 4.36s

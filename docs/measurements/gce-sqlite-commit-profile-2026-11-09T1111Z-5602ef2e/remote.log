@@ -1,0 +1,46 @@
+info: component rust-std for target x86_64-unknown-linux-musl is up to date
+info: component clippy is up to date
+   Compiling extent_store v0.1.0 (/var/lib/fxdax-test/example-tree/crates/extent_store)
+   Compiling fxdax v0.1.0 (/var/lib/fxdax-test/example-tree/crates/fxdax)
+   Compiling sqlite_extents v0.1.0 (/var/lib/fxdax-test/example-tree/crates/sqlite_extents)
+    Finished `release` profile [optimized] target(s) in 54.62s
+
+thread 'main' (2360) panicked at /var/lib/fxdax-test/tools/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/futures-executor-0.3.34/src/local_pool.rs:80:26:
+cannot execute `LocalPool` executor from within another executor: EnterError
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread 'main' (2360) panicked at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/panicking.rs:225:5:
+panic in a function that cannot unwind
+stack backtrace:
+   0:     0x5c2bd8044988 - <<std[1e3c4ec04c5261a9]::sys::backtrace::BacktraceLock>::print::DisplayBacktrace as core[37f591cfbe66b0b1]::fmt::Display>::fmt
+   1:     0x5c2bd805ceba - core[37f591cfbe66b0b1]::fmt::write
+   2:     0x5c2bd804a752 - <std[1e3c4ec04c5261a9]::sys::stdio::unix::Stderr as std[1e3c4ec04c5261a9]::io::Write>::write_fmt
+   3:     0x5c2bd801ff16 - std[1e3c4ec04c5261a9]::panicking::default_hook::{closure#0}
+   4:     0x5c2bd803ac71 - std[1e3c4ec04c5261a9]::panicking::default_hook
+   5:     0x5c2bd803aeeb - std[1e3c4ec04c5261a9]::panicking::panic_with_hook
+   6:     0x5c2bd8020004 - std[1e3c4ec04c5261a9]::panicking::panic_handler::{closure#0}
+   7:     0x5c2bd80146e9 - std[1e3c4ec04c5261a9]::sys::backtrace::__rust_end_short_backtrace::<std[1e3c4ec04c5261a9]::panicking::panic_handler::{closure#0}, !>
+   8:     0x5c2bd80211bd - __rustc[6ef78fba13ac776c]::rust_begin_unwind
+   9:     0x5c2bd805d45d - core[37f591cfbe66b0b1]::panicking::panic_nounwind_fmt
+  10:     0x5c2bd805d3db - core[37f591cfbe66b0b1]::panicking::panic_nounwind
+  11:     0x5c2bd805d567 - core[37f591cfbe66b0b1]::panicking::panic_cannot_unwind
+  12:     0x5c2bd7424b60 - sqlite_extents[e9e086132da2d1b7]::vfs::x_sync
+  13:     0x5c2bd74ee18b - sqlite3PagerCommitPhaseOne.part.0
+  14:     0x5c2bd7500c69 - sqlite3BtreeCommitPhaseOne.part.0
+  15:     0x5c2bd750268d - sqlite3VdbeHalt
+  16:     0x5c2bd7562e33 - sqlite3VdbeExec
+  17:     0x5c2bd75640bf - sqlite3_step
+  18:     0x5c2bd742720e - <rusqlite[b8c31e5e3b095bf1]::Connection>::execute_batch
+  19:     0x5c2bd73e8274 - sqlite_commit_profile[716e9e2148092cdf]::commits
+  20:     0x5c2bd73e9ce7 - sqlite_commit_profile[716e9e2148092cdf]::on_volume
+  21:     0x5c2bd73e7795 - sqlite_commit_profile[716e9e2148092cdf]::main
+  22:     0x5c2bd73f2c23 - std[1e3c4ec04c5261a9]::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  23:     0x5c2bd73ef089 - std[1e3c4ec04c5261a9]::rt::lang_start::<()>::{closure#0}
+  24:     0x5c2bd8039847 - std[1e3c4ec04c5261a9]::rt::lang_start_internal
+  25:     0x5c2bd73eb3c5 - main
+  26:     0x784b2042a8c1 - <unknown>
+  27:     0x784b2042a9d8 - __libc_start_main
+  28:     0x5c2bd73e46a5 - _start
+  29:                0x0 - <unknown>
+thread caused non-unwinding panic. aborting.
+run-20261109T111111Z-5602ef2e/source/scripts/lib/example-linux-host.sh: line 35:  2360 Aborted                    (core dumped) "$binary" "$@"

@@ -22,6 +22,7 @@ const OPTIONS: Options = Options {
     open_files: 2,
     view_lag: None,
     view_kept_bytes: None,
+    held_most: 256 << 10,
 };
 
 fn create(path: &Path) -> extent_store::Store<HostDir> {

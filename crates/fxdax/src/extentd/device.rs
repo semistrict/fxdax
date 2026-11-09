@@ -6,7 +6,9 @@
 //! filesystem keeps itself on: for what keeps itself on the host's daemon from outside a VM, as a
 //! SQLite volume does (crates/sqlite_extents, TASK-300). Its reads of sealed extents are the
 //! daemon's, from its cache, which every store and VM it serves shares; its writes, frees and
-//! commits are requests of the daemon, as a VM's device's are.
+//! commits are requests of the daemon, as a VM's device's are. Its commits and flushes are
+//! durable on the host's disk (`COMMIT_LOCAL`), as a database's on a local filesystem are, not
+//! waiting for object storage (the user, 2026-11-09, TASK-301); closing it waits for that.
 
 use super::RemoteExtentStore;
 use crate::{Commit, VolatileSlice, VolatileSliceMut, WriteBarriers};
@@ -88,7 +90,7 @@ impl Device for RemoteDevice {
         );
         let barriers = WriteBarriers {
             before: flags.contains(WriteFlags::PRE_BARRIER),
-            after: flags.contains(WriteFlags::POST_BARRIER).then_some(Commit::Durable),
+            after: flags.contains(WriteFlags::POST_BARRIER).then_some(Commit::Local),
             root: write_opts.root,
         };
         let bytes = buffer.try_as_slice().expect("a buffer of the heap's");
@@ -128,16 +130,17 @@ impl Device for RemoteDevice {
     }
 
     async fn commit_root(&self, root: &[u8]) -> Result<(), Error> {
-        self.store.commit_async(Some(root), Commit::Durable).await.map_err(Error::new)
+        self.store.commit_async(Some(root), Commit::Local).await.map_err(Error::new)
     }
 
-    /// The daemon closes the store as the connection goes, uploading what it holds.
+    /// Waits for what it committed to be in object storage, as a closed image's branch is whole
+    /// in its bucket.
     async fn close(&self) -> Result<(), Error> {
-        self.flush().await
+        self.store.commit_async(None, Commit::Durable).await.map_err(Error::new)
     }
 
     async fn flush(&self) -> Result<(), Error> {
-        self.store.commit_async(None, Commit::Durable).await.map_err(Error::new)
+        self.store.commit_async(None, Commit::Local).await.map_err(Error::new)
     }
 
     fn is_read_only(&self) -> bool {

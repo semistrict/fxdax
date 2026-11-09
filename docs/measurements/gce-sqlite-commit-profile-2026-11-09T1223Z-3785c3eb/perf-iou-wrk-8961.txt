@@ -1,0 +1,864 @@
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 268  of event 'task-clock:ppp'
+# Event count (approx.): 53610720
+#
+# Children      Self  Symbol                                       
+# ........  ........  .............................................
+#
+   100.00%     0.00%  [.] ret_from_fork_asm
+   100.00%     0.00%  [.] ret_from_fork
+            |
+            ---ret_from_fork_asm
+
+   100.00%     0.75%  [.] io_wq_worker
+            |
+            ---ret_from_fork
+               ret_from_fork_asm
+
+    88.06%     0.75%  [.] io_worker_handle_work
+            |
+            ---io_wq_worker
+               ret_from_fork
+               ret_from_fork_asm
+
+    84.70%     0.00%  [.] io_wq_submit_work
+            |
+            ---io_worker_handle_work
+               io_wq_worker
+               ret_from_fork
+               ret_from_fork_asm
+
+    84.70%     0.00%  [.] io_issue_sqe
+            |
+            ---io_wq_submit_work
+               io_worker_handle_work
+               io_wq_worker
+               ret_from_fork
+               ret_from_fork_asm
+
+    82.09%     0.00%  [.] __io_issue_sqe
+            |
+            ---io_issue_sqe
+               io_wq_submit_work
+               io_worker_handle_work
+               io_wq_worker
+               ret_from_fork
+               ret_from_fork_asm
+
+    81.72%     0.37%  [.] io_write
+            |
+            ---__io_issue_sqe
+               io_issue_sqe
+               io_wq_submit_work
+               io_worker_handle_work
+               io_wq_worker
+               ret_from_fork
+               ret_from_fork_asm
+
+    78.73%     0.00%  [.] ext4_file_write_iter
+            |
+            ---io_write
+               __io_issue_sqe
+               io_issue_sqe
+               io_wq_submit_work
+               io_worker_handle_work
+               io_wq_worker
+               ret_from_fork
+               ret_from_fork_asm
+
+    78.73%     0.00%  [.] ext4_dio_write_iter
+            |
+            ---ext4_file_write_iter
+               io_write
+               __io_issue_sqe
+               io_issue_sqe
+               io_wq_submit_work
+               io_worker_handle_work
+               io_wq_worker
+               ret_from_fork
+               ret_from_fork_asm
+
+    63.43%     0.00%  [.] iomap_dio_rw
+            |
+            ---ext4_dio_write_iter
+               ext4_file_write_iter
+               io_write
+               __io_issue_sqe
+               io_issue_sqe
+               io_wq_submit_work
+               io_worker_handle_work
+               io_wq_worker
+               ret_from_fork
+               ret_from_fork_asm
+
+    60.45%     1.12%  [.] __iomap_dio_rw
+            |
+            ---iomap_dio_rw
+               ext4_dio_write_iter
+               ext4_file_write_iter
+               io_write
+               __io_issue_sqe
+               io_issue_sqe
+               io_wq_submit_work
+               io_worker_handle_work
+               io_wq_worker
+               ret_from_fork
+               ret_from_fork_asm
+
+    20.15%     0.75%  [.] iomap_iter
+            |
+            ---__iomap_dio_rw
+               iomap_dio_rw
+               ext4_dio_write_iter
+               ext4_file_write_iter
+               io_write
+               __io_issue_sqe
+               io_issue_sqe
+               io_wq_submit_work
+               io_worker_handle_work
+               io_wq_worker
+               ret_from_fork
+               ret_from_fork_asm
+
+    19.78%     0.00%  [.] blk_finish_plug
+            |
+            ---__iomap_dio_rw
+               iomap_dio_rw
+               ext4_dio_write_iter
+               ext4_file_write_iter
+               io_write
+               __io_issue_sqe
+               io_issue_sqe
+               io_wq_submit_work
+               io_worker_handle_work
+               io_wq_worker
+               ret_from_fork
+               ret_from_fork_asm
+
+    19.78%     0.00%  [.] __blk_flush_plug
+            |
+            ---blk_finish_plug
+               __iomap_dio_rw
+               iomap_dio_rw
+               ext4_dio_write_iter
+               ext4_file_write_iter
+               io_write
+               __io_issue_sqe
+               io_issue_sqe
+               io_wq_submit_work
+               io_worker_handle_work
+               io_wq_worker
+               ret_from_fork
+               ret_from_fork_asm
+
+    19.78%     0.00%  [.] blk_mq_flush_plug_list
+            |
+            ---__blk_flush_plug
+               blk_finish_plug
+               __iomap_dio_rw
+               iomap_dio_rw
+               ext4_dio_write_iter
+               ext4_file_write_iter
+               io_write
+               __io_issue_sqe
+               io_issue_sqe
+               io_wq_submit_work
+               io_worker_handle_work
+               io_wq_worker
+               ret_from_fork
+               ret_from_fork_asm
+
+    19.40%     0.75%  [.] blk_mq_dispatch_queue_requests
+            |
+            ---blk_mq_flush_plug_list
+               __blk_flush_plug
+               blk_finish_plug
+               __iomap_dio_rw
+               iomap_dio_rw
+               ext4_dio_write_iter
+               ext4_file_write_iter
+               io_write
+               __io_issue_sqe
+               io_issue_sqe
+               io_wq_submit_work
+               io_worker_handle_work
+               io_wq_worker
+               ret_from_fork
+               ret_from_fork_asm
+
+    19.03%     0.00%  [.] ext4_iomap_begin
+            |
+            ---iomap_iter
+               __iomap_dio_rw
+               iomap_dio_rw
+               ext4_dio_write_iter
+               ext4_file_write_iter
+               io_write
+               __io_issue_sqe
+               io_issue_sqe
+               io_wq_submit_work
+               io_worker_handle_work
+               io_wq_worker
+               ret_from_fork
+               ret_from_fork_asm
+
+    19.03%     0.00%  [.] ext4_iomap_alloc
+            |
+            ---ext4_iomap_begin
+               iomap_iter
+               __iomap_dio_rw
+               iomap_dio_rw
+               ext4_dio_write_iter
+               ext4_file_write_iter
+               io_write
+               __io_issue_sqe
+               io_issue_sqe
+               io_wq_submit_work
+               io_worker_handle_work
+               io_wq_worker
+               ret_from_fork
+               ret_from_fork_asm
+
+    19.03%     0.75%  [.] nvme_queue_rqs
+            |          
+             --0.32%--blk_mq_dispatch_queue_requests
+                       blk_mq_flush_plug_list
+                       __blk_flush_plug
+                       blk_finish_plug
+                       __iomap_dio_rw
+                       iomap_dio_rw
+                       ext4_dio_write_iter
+                       ext4_file_write_iter
+                       io_write
+                       __io_issue_sqe
+                       io_issue_sqe
+                       io_wq_submit_work
+                       io_worker_handle_work
+                       io_wq_worker
+                       ret_from_fork
+                       ret_from_fork_asm
+
+    17.54%     0.37%  [.] ext4_map_blocks
+            |
+            ---ext4_iomap_alloc
+               ext4_iomap_begin
+               iomap_iter
+               __iomap_dio_rw
+               iomap_dio_rw
+               ext4_dio_write_iter
+               ext4_file_write_iter
+               io_write
+               __io_issue_sqe
+               io_issue_sqe
+               io_wq_submit_work
+               io_worker_handle_work
+               io_wq_worker
+               ret_from_fork
+               ret_from_fork_asm
+
+    16.04%     0.00%  [.] ext4_map_create_blocks
+            |
+            ---ext4_map_blocks
+               ext4_iomap_alloc
+               ext4_iomap_begin
+               iomap_iter
+               __iomap_dio_rw
+               iomap_dio_rw
+               ext4_dio_write_iter
+               ext4_file_write_iter
+               io_write
+               __io_issue_sqe
+               io_issue_sqe
+               io_wq_submit_work
+               io_worker_handle_work
+               io_wq_worker
+               ret_from_fork
+               ret_from_fork_asm
+
+    15.67%     0.37%  [.] schedule_timeout
+            |          
+            |--0.17%--io_wq_worker
+            |          ret_from_fork
+            |          ret_from_fork_asm
+            |          
+             --0.09%--io_schedule_timeout
+                       blk_io_schedule
+                       __iomap_dio_rw
+                       iomap_dio_rw
+                       ext4_dio_write_iter
+                       ext4_file_write_iter
+                       io_write
+                       __io_issue_sqe
+                       io_issue_sqe
+                       io_wq_submit_work
+                       io_worker_handle_work
+                       io_wq_worker
+                       ret_from_fork
+                       ret_from_fork_asm
+
+    15.67%    15.67%  [k] nvme_submit_cmds.part.0
+            |
+            ---nvme_queue_rqs
+               blk_mq_dispatch_queue_requests
+               blk_mq_flush_plug_list
+               __blk_flush_plug
+               blk_finish_plug
+               __iomap_dio_rw
+               iomap_dio_rw
+               ext4_dio_write_iter
+               ext4_file_write_iter
+               io_write
+               __io_issue_sqe
+               io_issue_sqe
+               io_wq_submit_work
+               io_worker_handle_work
+               io_wq_worker
+               ret_from_fork
+               ret_from_fork_asm
+
+    14.93%     0.75%  [k] ext4_ext_map_blocks
+            |
+            ---ext4_map_create_blocks
+               ext4_map_blocks
+               ext4_iomap_alloc
+               ext4_iomap_begin
+               iomap_iter
+               __iomap_dio_rw
+               iomap_dio_rw
+               ext4_dio_write_iter
+               ext4_file_write_iter
+               io_write
+               __io_issue_sqe
+               io_issue_sqe
+               io_wq_submit_work
+               io_worker_handle_work
+               io_wq_worker
+               ret_from_fork
+               ret_from_fork_asm
+
+    14.55%     0.37%  [.] schedule
+            |
+            ---schedule_timeout
+               |          
+               |--0.17%--io_wq_worker
+               |          ret_from_fork
+               |          ret_from_fork_asm
+               |          
+                --0.08%--io_schedule_timeout
+                          blk_io_schedule
+                          __iomap_dio_rw
+                          iomap_dio_rw
+                          ext4_dio_write_iter
+                          ext4_file_write_iter
+                          io_write
+                          __io_issue_sqe
+                          io_issue_sqe
+                          io_wq_submit_work
+                          io_worker_handle_work
+                          io_wq_worker
+                          ret_from_fork
+                          ret_from_fork_asm
+
+    14.18%     1.12%  [.] __schedule
+            |          
+             --0.23%--schedule
+                       schedule_timeout
+                       |          
+                       |--0.16%--io_wq_worker
+                       |          ret_from_fork
+                       |          ret_from_fork_asm
+                       |          
+                        --0.08%--io_schedule_timeout
+                                  blk_io_schedule
+                                  __iomap_dio_rw
+                                  iomap_dio_rw
+                                  ext4_dio_write_iter
+                                  ext4_file_write_iter
+                                  io_write
+                                  __io_issue_sqe
+                                  io_issue_sqe
+                                  io_wq_submit_work
+                                  io_worker_handle_work
+                                  io_wq_worker
+                                  ret_from_fork
+                                  ret_from_fork_asm
+
+    13.06%    13.06%  [k] finish_task_switch.isra.0
+            |
+            ---__schedule
+               schedule
+               schedule_timeout
+               |          
+               |--0.15%--io_wq_worker
+               |          ret_from_fork
+               |          ret_from_fork_asm
+               |          
+                --0.08%--io_schedule_timeout
+                          blk_io_schedule
+                          __iomap_dio_rw
+                          iomap_dio_rw
+                          ext4_dio_write_iter
+                          ext4_file_write_iter
+                          io_write
+                          __io_issue_sqe
+                          io_issue_sqe
+                          io_wq_submit_work
+                          io_worker_handle_work
+                          io_wq_worker
+                          ret_from_fork
+                          ret_from_fork_asm
+
+    11.57%     0.37%  [.] iomap_dio_bio_iter
+            |          
+             --0.19%--__iomap_dio_rw
+                       iomap_dio_rw
+                       ext4_dio_write_iter
+                       ext4_file_write_iter
+                       io_write
+                       __io_issue_sqe
+                       io_issue_sqe
+                       io_wq_submit_work
+                       io_worker_handle_work
+                       io_wq_worker
+                       ret_from_fork
+                       ret_from_fork_asm
+
+    10.82%     0.00%  [.] iomap_dio_bio_iter_one
+            |
+            ---iomap_dio_bio_iter
+               __iomap_dio_rw
+               iomap_dio_rw
+               ext4_dio_write_iter
+               ext4_file_write_iter
+               io_write
+               __io_issue_sqe
+               io_issue_sqe
+               io_wq_submit_work
+               io_worker_handle_work
+               io_wq_worker
+               ret_from_fork
+               ret_from_fork_asm
+
+    10.82%     0.75%  [.] ext4_mb_new_blocks
+            |          
+             --0.18%--ext4_ext_map_blocks
+                       ext4_map_create_blocks
+                       ext4_map_blocks
+                       ext4_iomap_alloc
+                       ext4_iomap_begin
+                       iomap_iter
+                       __iomap_dio_rw
+                       iomap_dio_rw
+                       ext4_dio_write_iter
+                       ext4_file_write_iter
+                       io_write
+                       __io_issue_sqe
+                       io_issue_sqe
+                       io_wq_submit_work
+                       io_worker_handle_work
+                       io_wq_worker
+                       ret_from_fork
+                       ret_from_fork_asm
+
+     9.70%     0.00%  [.] __mark_inode_dirty
+            |          
+             --0.14%--file_update_time_flags
+                       file_modified
+                       ext4_dio_write_checks
+                       ext4_dio_write_iter
+                       ext4_file_write_iter
+                       io_write
+                       __io_issue_sqe
+                       io_issue_sqe
+                       io_wq_submit_work
+                       io_worker_handle_work
+                       io_wq_worker
+                       ret_from_fork
+                       ret_from_fork_asm
+
+     9.33%     0.00%  [.] ext4_dio_write_checks
+            |
+            ---ext4_dio_write_iter
+               ext4_file_write_iter
+               io_write
+               __io_issue_sqe
+               io_issue_sqe
+               io_wq_submit_work
+               io_worker_handle_work
+               io_wq_worker
+               ret_from_fork
+               ret_from_fork_asm
+
+     9.33%     0.37%  [.] file_update_time_flags
+            |          
+             --0.15%--file_modified
+                       ext4_dio_write_checks
+                       ext4_dio_write_iter
+                       ext4_file_write_iter
+                       io_write
+                       __io_issue_sqe
+                       io_issue_sqe
+                       io_wq_submit_work
+                       io_worker_handle_work
+                       io_wq_worker
+                       ret_from_fork
+                       ret_from_fork_asm
+
+     9.33%     0.00%  [.] ext4_dirty_inode
+            |
+            ---__mark_inode_dirty
+               |          
+                --0.14%--file_update_time_flags
+                          file_modified
+                          ext4_dio_write_checks
+                          ext4_dio_write_iter
+                          ext4_file_write_iter
+                          io_write
+                          __io_issue_sqe
+                          io_issue_sqe
+                          io_wq_submit_work
+                          io_worker_handle_work
+                          io_wq_worker
+                          ret_from_fork
+                          ret_from_fork_asm
+
+     8.96%     0.00%  [.] file_modified
+            |
+            ---ext4_dio_write_checks
+               ext4_dio_write_iter
+               ext4_file_write_iter
+               io_write
+               __io_issue_sqe
+               io_issue_sqe
+               io_wq_submit_work
+               io_worker_handle_work
+               io_wq_worker
+               ret_from_fork
+               ret_from_fork_asm
+
+     6.72%     0.00%  [.] ext4_mb_mark_diskspace_used
+            |
+            ---ext4_mb_new_blocks
+               |          
+                --0.11%--ext4_ext_map_blocks
+                          ext4_map_create_blocks
+                          ext4_map_blocks
+                          ext4_iomap_alloc
+                          ext4_iomap_begin
+                          iomap_iter
+                          __iomap_dio_rw
+                          iomap_dio_rw
+                          ext4_dio_write_iter
+                          ext4_file_write_iter
+                          io_write
+                          __io_issue_sqe
+                          io_issue_sqe
+                          io_wq_submit_work
+                          io_worker_handle_work
+                          io_wq_worker
+                          ret_from_fork
+                          ret_from_fork_asm
+
+     6.34%     0.37%  [.] submit_bio
+            |          
+             --0.10%--iomap_dio_submit_bio
+                       iomap_dio_bio_iter_one
+                       iomap_dio_bio_iter
+                       __iomap_dio_rw
+                       iomap_dio_rw
+                       ext4_dio_write_iter
+                       ext4_file_write_iter
+                       io_write
+                       __io_issue_sqe
+                       io_issue_sqe
+                       io_wq_submit_work
+                       io_worker_handle_work
+                       io_wq_worker
+                       ret_from_fork
+                       ret_from_fork_asm
+
+     5.97%     0.00%  [.] iomap_dio_submit_bio
+            |
+            ---iomap_dio_bio_iter_one
+               iomap_dio_bio_iter
+               __iomap_dio_rw
+               iomap_dio_rw
+               ext4_dio_write_iter
+               ext4_file_write_iter
+               io_write
+               __io_issue_sqe
+               io_issue_sqe
+               io_wq_submit_work
+               io_worker_handle_work
+               io_wq_worker
+               ret_from_fork
+               ret_from_fork_asm
+
+     5.97%     0.37%  [.] __ext4_mark_inode_dirty
+            |          
+             --0.08%--ext4_dirty_inode
+                       __mark_inode_dirty
+                       |          
+                        --0.06%--file_update_time_flags
+                                  file_modified
+                                  ext4_dio_write_checks
+                                  ext4_dio_write_iter
+                                  ext4_file_write_iter
+                                  io_write
+                                  __io_issue_sqe
+                                  io_issue_sqe
+                                  io_wq_submit_work
+                                  io_worker_handle_work
+                                  io_wq_worker
+                                  ret_from_fork
+                                  ret_from_fork_asm
+
+     5.97%     0.00%  [.] __ext4_journal_get_write_access
+     5.60%     0.00%  [.] blk_io_schedule
+            |
+            ---__iomap_dio_rw
+               iomap_dio_rw
+               ext4_dio_write_iter
+               ext4_file_write_iter
+               io_write
+               __io_issue_sqe
+               io_issue_sqe
+               io_wq_submit_work
+               io_worker_handle_work
+               io_wq_worker
+               ret_from_fork
+               ret_from_fork_asm
+
+     5.60%     0.75%  [k] submit_bio_noacct
+            |
+            ---submit_bio
+               |          
+                --0.09%--iomap_dio_submit_bio
+                          iomap_dio_bio_iter_one
+                          iomap_dio_bio_iter
+                          __iomap_dio_rw
+                          iomap_dio_rw
+                          ext4_dio_write_iter
+                          ext4_file_write_iter
+                          io_write
+                          __io_issue_sqe
+                          io_issue_sqe
+                          io_wq_submit_work
+                          io_worker_handle_work
+                          io_wq_worker
+                          ret_from_fork
+                          ret_from_fork_asm
+
+     5.22%     0.00%  [.] io_schedule_timeout
+            |
+            ---blk_io_schedule
+               __iomap_dio_rw
+               iomap_dio_rw
+               ext4_dio_write_iter
+               ext4_file_write_iter
+               io_write
+               __io_issue_sqe
+               io_issue_sqe
+               io_wq_submit_work
+               io_worker_handle_work
+               io_wq_worker
+               ret_from_fork
+               ret_from_fork_asm
+
+     5.22%     0.37%  [.] ext4_mb_mark_context
+            |
+            ---ext4_mb_mark_diskspace_used
+               ext4_mb_new_blocks
+               |          
+                --0.08%--ext4_ext_map_blocks
+                          ext4_map_create_blocks
+                          ext4_map_blocks
+                          ext4_iomap_alloc
+                          ext4_iomap_begin
+                          iomap_iter
+                          __iomap_dio_rw
+                          iomap_dio_rw
+                          ext4_dio_write_iter
+                          ext4_file_write_iter
+                          io_write
+                          __io_issue_sqe
+                          io_issue_sqe
+                          io_wq_submit_work
+                          io_worker_handle_work
+                          io_wq_worker
+                          ret_from_fork
+                          ret_from_fork_asm
+
+     5.22%     0.37%  [.] submit_bio_noacct_nocheck
+            |          
+             --0.08%--submit_bio_noacct
+                       submit_bio
+                       |          
+                        --0.08%--iomap_dio_submit_bio
+                                  iomap_dio_bio_iter_one
+                                  iomap_dio_bio_iter
+                                  __iomap_dio_rw
+                                  iomap_dio_rw
+                                  ext4_dio_write_iter
+                                  ext4_file_write_iter
+                                  io_write
+                                  __io_issue_sqe
+                                  io_issue_sqe
+                                  io_wq_submit_work
+                                  io_worker_handle_work
+                                  io_wq_worker
+                                  ret_from_fork
+                                  ret_from_fork_asm
+
+     4.85%     0.37%  [.] ext4_orphan_add
+            |
+            ---ext4_dio_write_iter
+               ext4_file_write_iter
+               io_write
+               __io_issue_sqe
+               io_issue_sqe
+               io_wq_submit_work
+               io_worker_handle_work
+               io_wq_worker
+               ret_from_fork
+               ret_from_fork_asm
+
+     4.85%     0.00%  [.] __ext4_journal_start_sb
+            |          
+             --0.08%--ext4_dirty_inode
+                       __mark_inode_dirty
+                       file_update_time_flags
+                       file_modified
+                       ext4_dio_write_checks
+                       ext4_dio_write_iter
+                       ext4_file_write_iter
+                       io_write
+                       __io_issue_sqe
+                       io_issue_sqe
+                       io_wq_submit_work
+                       io_worker_handle_work
+                       io_wq_worker
+                       ret_from_fork
+                       ret_from_fork_asm
+
+     4.85%     0.75%  [.] jbd2__journal_start
+            |
+            ---__ext4_journal_start_sb
+               |          
+                --0.08%--ext4_dirty_inode
+                          __mark_inode_dirty
+                          file_update_time_flags
+                          file_modified
+                          ext4_dio_write_checks
+                          ext4_dio_write_iter
+                          ext4_file_write_iter
+                          io_write
+                          __io_issue_sqe
+                          io_issue_sqe
+                          io_wq_submit_work
+                          io_worker_handle_work
+                          io_wq_worker
+                          ret_from_fork
+                          ret_from_fork_asm
+
+     4.85%     0.00%  [.] __submit_bio
+            |
+            ---submit_bio_noacct_nocheck
+               submit_bio_noacct
+               submit_bio
+               |          
+                --0.08%--iomap_dio_submit_bio
+                          iomap_dio_bio_iter_one
+                          iomap_dio_bio_iter
+                          __iomap_dio_rw
+                          iomap_dio_rw
+                          ext4_dio_write_iter
+                          ext4_file_write_iter
+                          io_write
+                          __io_issue_sqe
+                          io_issue_sqe
+                          io_wq_submit_work
+                          io_worker_handle_work
+                          io_wq_worker
+                          ret_from_fork
+                          ret_from_fork_asm
+
+     4.85%     4.85%  [k] _raw_spin_unlock_irqrestore
+     4.48%     1.12%  [.] ext4_orphan_file_add
+            |
+            ---ext4_orphan_add
+               ext4_dio_write_iter
+               ext4_file_write_iter
+               io_write
+               __io_issue_sqe
+               io_issue_sqe
+               io_wq_submit_work
+               io_worker_handle_work
+               io_wq_worker
+               ret_from_fork
+               ret_from_fork_asm
+
+     4.48%     0.00%  [.] jbd2_journal_get_write_access
+            |
+            ---__ext4_journal_get_write_access
+
+     4.10%     0.37%  [.] blk_mq_submit_bio
+            |
+            ---__submit_bio
+               submit_bio_noacct_nocheck
+               submit_bio_noacct
+               submit_bio
+               iomap_dio_submit_bio
+               iomap_dio_bio_iter_one
+               iomap_dio_bio_iter
+               __iomap_dio_rw
+               iomap_dio_rw
+               ext4_dio_write_iter
+               ext4_file_write_iter
+               io_write
+               __io_issue_sqe
+               io_issue_sqe
+               io_wq_submit_work
+               io_worker_handle_work
+               io_wq_worker
+               ret_from_fork
+               ret_from_fork_asm
+
+     3.73%     0.00%  [.] crc32c
+     3.73%     0.75%  [.] do_get_write_access
+            |
+            ---jbd2_journal_get_write_access
+               __ext4_journal_get_write_access
+
+     3.36%     0.37%  [.] bio_iov_iter_get_pages
+            |
+            ---iomap_dio_bio_iter_one
+               iomap_dio_bio_iter
+               __iomap_dio_rw
+               iomap_dio_rw
+               ext4_dio_write_iter
+               ext4_file_write_iter
+               io_write
+               __io_issue_sqe
+               io_issue_sqe
+               io_wq_submit_work
+               io_worker_handle_work
+               io_wq_worker
+               ret_from_fork
+               ret_from_fork_asm
+
+     3.36%     0.00%  [.] __wake_up
+     3.36%     0.37%  [.] ext4_mark_iloc_dirty
+            |
+            ---__ext4_mark_inode_dirty
+
+     3.36%     0.37%  [.] ext4_do_update_inode.isra.0
+
+
+#
+# (Cannot load tips.txt file, please install perf!)
+#

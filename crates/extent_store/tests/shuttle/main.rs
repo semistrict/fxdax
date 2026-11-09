@@ -71,6 +71,8 @@ const OPTIONS: Options = Options {
     open_files: 2,
     view_lag: None,
     view_kept_bytes: None,
+    // fxdax: flushes of either kind, holding their runs or checking them (TASK-301).
+    held_most: 8 << 10,
 };
 /// The chain of a writer of the branch in object storage, whose segments the store closes.
 const WRITER: Chain = Chain::new(BRANCH, 0, 0, None, 0);
@@ -768,9 +770,10 @@ fn failing_during_a_commit() {
     writer.join().unwrap();
     assert!(flusher.join().unwrap().is_err(), "a flush failing succeeded");
     let committed = committer.join().unwrap().map_err(|error| error.to_string());
-    // Saying why: the flush's failure (TASK-165.9).
-    let failed = "the extent store failed: committing the extent store: syncing extents' data: \
-                  the file system crashed";
+    // Saying why: the flush's failure (TASK-165.9), at its first step, appending the records,
+    // which go before the data in a directory that does one thing at a time (TASK-301).
+    let failed = "the extent store failed: committing the extent store: appending commits' \
+                  records: the file system crashed";
     assert!(
         committed == Err(failed.to_owned()),
         "a commit went on over a store that failed: {committed:?}"

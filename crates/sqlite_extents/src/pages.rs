@@ -29,7 +29,7 @@ use crate::window::Contents;
 use anyhow::{Context as _, Error, ensure};
 use futures::StreamExt as _;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use storage_device::{Device, ExtentId};
+use storage_device::{Device, ExtentId, WriteFlags, WriteOptions};
 
 /// The node reads a file's opening keeps in flight.
 const READS_IN_FLIGHT: usize = 32;
@@ -138,6 +138,14 @@ pub(crate) struct Pages {
     /// The window's region that maps the file as of the last commit, if one does (`window`): its
     /// first byte's address, and its length.
     mapped: Option<(usize, u64)>,
+    /// The ranges of chunks commits changed since the region was last mapped, which it maps as
+    /// before them, and how many chunks they hold.
+    stale: Vec<std::ops::Range<u64>>,
+    stale_chunks: u64,
+    /// The chunks those commits wrote, as they wrote them, read from here until the region maps
+    /// them: as a transaction reads again what the one before wrote, the header of the database's
+    /// first page among them.
+    recent: BTreeMap<u64, Box<[u8]>>,
 }
 
 impl Pages {
@@ -155,6 +163,9 @@ impl Pages {
             cut: 0,
             dirty: BTreeMap::new(),
             mapped: None,
+            stale: Vec::new(),
+            stale_chunks: 0,
+            recent: BTreeMap::new(),
         }
     }
 
@@ -286,6 +297,10 @@ impl Pages {
         index: u64,
         out: &mut [u8],
     ) -> Result<(), Error> {
+        if let (Some(chunk), true) = (self.recent.get(&index), index < self.cut) {
+            out.copy_from_slice(chunk);
+            return Ok(());
+        }
         match self.committed(index) {
             HOLE => out.fill(0),
             loc => match self.mapped(index * self.block_size as u64, out.len() as u64) {
@@ -305,10 +320,45 @@ impl Pages {
         self.mapped = mapped.map(|(base, len)| (base.as_ptr() as usize, len));
     }
 
-    /// Where the `len` bytes at `offset` are in the window's memory, if it maps them.
+    /// Where the `len` bytes at `offset` are in the window's memory, if it maps them as the last
+    /// commit has them.
     fn mapped(&self, offset: u64, len: u64) -> Option<*const u8> {
         let (base, mapped) = self.mapped?;
-        (offset + len <= mapped).then(|| (base + offset as usize) as *const u8)
+        let block_size = self.block_size as u64;
+        let chunks = offset / block_size..(offset + len).div_ceil(block_size);
+        let stale =
+            self.stale.iter().any(|range| range.start < chunks.end && chunks.start < range.end);
+        (offset + len <= mapped && !stale).then(|| (base + offset as usize) as *const u8)
+    }
+
+    /// The window's region maps `ranges` of chunks as before the last commit, which changed them,
+    /// until mapped again ([`Pages::take_stale`]): reads of them read what the commits wrote, or go
+    /// to the device, meanwhile. Each chunk is counted once, however many commits changed it, as
+    /// a database's first pages are changed by each.
+    pub fn mark_stale(&mut self, ranges: impl IntoIterator<Item = std::ops::Range<u64>>) {
+        self.stale.extend(ranges);
+        self.stale.sort_by_key(|range| range.start);
+        let mut merged: Vec<std::ops::Range<u64>> = Vec::with_capacity(self.stale.len());
+        for range in self.stale.drain(..) {
+            match merged.last_mut() {
+                Some(last) if range.start <= last.end => last.end = last.end.max(range.end),
+                _ => merged.push(range),
+            }
+        }
+        self.stale_chunks = merged.iter().map(|range| range.end - range.start).sum();
+        self.stale = merged;
+    }
+
+    /// How many chunks the window's region maps as before commits that changed them.
+    pub fn stale_chunks(&self) -> u64 {
+        self.stale_chunks
+    }
+
+    /// The ranges of chunks to map again, which the caller maps as the last commit has them.
+    pub fn take_stale(&mut self) -> Vec<std::ops::Range<u64>> {
+        self.stale_chunks = 0;
+        self.recent.clear();
+        std::mem::take(&mut self.stale)
     }
 
     /// Where the `len` bytes at `offset` are in the window's memory, if it maps them and they
@@ -621,6 +671,7 @@ impl Pages {
     /// changed, which a window mapping the file is to map again.
     pub fn apply(&mut self, plan: Plan) -> Vec<std::ops::Range<u64>> {
         let Plan { extents, max_blocks, placed, released, counts, root, dead, .. } = plan;
+        let cut = self.cut;
         let mut changed: Vec<std::ops::Range<u64>> = Vec::new();
         for index in placed.keys().filter(|(level, _)| *level == 0).map(|(_, index)| *index) {
             match changed.last_mut() {
@@ -680,7 +731,12 @@ impl Pages {
             assert_eq!(found.live as usize, found.owners.len(), "{:?} written whole", found.extent);
         }
         (self.committed_size, self.cut) = (root.size, n);
-        self.dirty.clear();
+        // What it wrote, to read until a window maps it, if one does.
+        let dirty = std::mem::take(&mut self.dirty);
+        if self.mapped.is_some() {
+            self.recent.retain(|index, _| *index < cut.min(n));
+            self.recent.extend(dirty.into_iter().filter(|(index, _)| *index < n));
+        }
         debug_assert_eq!(self.root(), root);
         changed
     }
@@ -711,24 +767,50 @@ impl Plan {
         self.extents.iter().map(|(extent, _)| *extent)
     }
 
-    /// Writes its extents to `device`.
-    pub async fn write(&self, device: &dyn Device) -> Result<(), Error> {
+    /// Writes its extents to `device`, the last write committing `root`, if given, as the device's
+    /// root, its barrier sealing them: one request, not two. With no extents to write, the root
+    /// is committed alone.
+    pub async fn write(&self, device: &dyn Device, root: Option<&[u8]>) -> Result<(), Failure> {
         let block_size = device.block_size() as usize;
         let extent_bytes = self.max_blocks * block_size;
+        let mut writes = Vec::new();
         for ((extent, blocks), data) in self.extents.iter().zip(self.data.chunks(extent_bytes)) {
             assert_eq!(data.len(), *blocks as usize * block_size);
             for (piece, bytes) in data.chunks(WRITE_PIECE).enumerate() {
-                let mut buffer = device.allocate_buffer(bytes.len()).await;
-                buffer.as_mut().copy_from_slice(bytes);
-                let offset = (piece * WRITE_PIECE) as u64;
-                device
-                    .write(*extent, offset, buffer.as_ref())
-                    .await
-                    .with_context(|| format!("writing {extent:?} at {offset}"))?;
+                writes.push((*extent, (piece * WRITE_PIECE) as u64, bytes));
             }
         }
-        Ok(())
+        let last = writes.len().checked_sub(1);
+        for (at, (extent, offset, bytes)) in writes.into_iter().enumerate() {
+            let mut buffer = device.allocate_buffer(bytes.len()).await;
+            buffer.as_mut().copy_from_slice(bytes);
+            let commits = root.filter(|_| Some(at) == last);
+            let options = WriteOptions {
+                flags: commits.map_or(WriteFlags::empty(), |_| WriteFlags::POST_BARRIER),
+                root: commits,
+                ..Default::default()
+            };
+            let written = device.write_with_opts(extent, offset, buffer.as_ref(), options).await;
+            written.map_err(|error| match commits {
+                Some(_) => Failure::Committing(error),
+                None => Failure::Writing(error.context(format!("writing {extent:?} at {offset}"))),
+            })?;
+        }
+        match (root, last) {
+            (Some(root), None) => device.commit_root(root).await.map_err(Failure::Committing),
+            _ => Ok(()),
+        }
     }
+}
+
+/// How a plan's writing failed ([`Plan::write`]).
+#[derive(Debug)]
+pub(crate) enum Failure {
+    /// Writing its extents, before any barrier: the device holds what it held, and what it wrote,
+    /// which no root names.
+    Writing(Error),
+    /// Committing the root: whether the device holds it, its next opening finds.
+    Committing(Error),
 }
 
 #[cfg(test)]
@@ -776,7 +858,7 @@ mod tests {
                 ExtentId::new(storage_device::fake_device::DEFAULT_BRANCH, *next)
             };
             let plan = block_on(self.pages.plan(&self.device, mint, self.max_blocks)).unwrap();
-            block_on(plan.write(&self.device)).unwrap();
+            block_on(plan.write(&self.device, None)).unwrap();
             for extent in &plan.dead {
                 block_on(self.device.free(*extent)).unwrap();
             }

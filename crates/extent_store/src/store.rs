@@ -5,13 +5,14 @@
 //! The store. See the crate's docs.
 
 use crate::dir::{Dir, File, not_found, read_file};
-use crate::durability::{Batch, Durability, Syncs};
+use crate::durability::{Batch, Durability, FileSyncs, Syncs};
 use crate::framed::{Aligned, Framed, Packed, Part, Source, Unpacked, read_aligned};
 use crate::kept::{Kept, KeptExtents};
 use crate::layout::{
     Change, DESCRIPTION, Data, Description, EXTENTS, Extent, Extents, FileKey, KINDS, OPEN_EXTENTS,
     Piece, Place, SEGMENTS, SegmentId, StoreFile, add_piece, branch_dir, create_branch_dirs,
-    encode, extent_path, files_of, list_numbers, open_extent_path, segment_path,
+    encode_salted, extent_path, files_of, list_numbers, log_path, open_extent_path,
+    open_segment_path, segment_path, spare_path,
 };
 use crate::seals;
 use crate::segments::{Behind, Reaped, Segments, Unframed, footer_last};
@@ -20,11 +21,13 @@ use crate::state::{
     Framing, Gate, Life, Locked, OwnFiles, Placement, Readable, Reader, Space, Standing, State,
     Uncommitted, Unreferenced, Writable,
 };
-use crate::sync::{Condvar, Mutex, MutexGuard, rules, spawn_or_return};
+use crate::sync::{Condvar, Mutex, MutexGuard, rules, spawn_or_return, thread};
 use crate::timings::{self, Flush, flush};
 use crate::uploads::Closed;
 use crate::views::{Limits, Sealed, View, Views};
-use crate::wal::{BaseFile, Queue, Queued, Recovered, SegmentLog};
+use crate::wal::{
+    BaseFile, LOG_MAGIC, LogRecord, Queue, Queued, Recovered, Runs, SegmentLog,
+};
 use anyhow::{Context as _, Error, anyhow, bail, ensure};
 use extent_frame::segment::{Chain, Child, Contents, Footer, Location, epoch_of};
 use extent_remote::cache::Cache;
@@ -118,6 +121,10 @@ pub struct Options {
     /// fxdax: how many bytes of frees views may keep, past which the oldest is cut off, if any
     /// limit.
     pub view_kept_bytes: Option<u64>,
+    /// fxdax: the most bytes of runs a flush's commits seal for their records to hold them, and
+    /// the flush to sync its logs alone (`wal::LogRecord`, TASK-301): what a guest's journal, or
+    /// a database's transaction, commits at a time, not a bulk load's.
+    pub held_most: u64,
 }
 
 impl Options {
@@ -140,6 +147,7 @@ impl Default for Options {
             open_files: 64,
             view_lag: None,
             view_kept_bytes: None,
+            held_most: 256 << 10,
         }
     }
 }
@@ -255,9 +263,10 @@ pub struct DirHold<D: Dir> {
 struct Pending<F> {
     /// The files whose data it refers to, and the directories whose entries changed, to sync.
     syncs: Syncs<F>,
-    /// fxdax: its record, its contents, and the segment it is to be appended to the log of, the
-    /// one it was made in, open, or closed since (TASK-165.9).
-    record: (SegmentId, Vec<u8>),
+    /// fxdax: its contents, and the segment whose log its record is to be appended to, the one it
+    /// was made in, open, or closed since (TASK-165.9): recorded by its flush, with the runs it
+    /// sealed checksummed ([`LogRecord`], TASK-301).
+    record: (SegmentId, Contents),
     /// The files of the branch's alone it made unreferenced ([`Unreferenced::doomed`]): they go
     /// once it is durable.
     doomed: Vec<String>,
@@ -268,7 +277,14 @@ struct Pending<F> {
 }
 
 /// fxdax: the logs a flush appends commits' records to, by their segments ([`Store::flush`]).
-type Logs<F> = BTreeMap<SegmentId, SegmentLog<F>>;
+/// fxdax: what flushes keep between them: the logs they append commits' records to, by their
+/// segments, and the raw files a flush holding its commits' runs left unsynced, which the next
+/// flush syncing data syncs too (TASK-301): a commit that seals nothing, as one setting the
+/// capacity, takes a raw file's sync, which a later commit's data written to it needs.
+struct Logs<F> {
+    by_segment: BTreeMap<SegmentId, SegmentLog<F>>,
+    unsynced: Syncs<F>,
+}
 
 /// A write in progress (see [`Store::begin_write`]): its data goes to `file()` at `offset()`.
 /// Dropping it before it is finished abandons it.
@@ -601,7 +617,8 @@ impl<D: Dir> Recovering<D> {
             uncommitted.resize(capacity);
         }
         let open = segments.open_segment();
-        let log = BTreeMap::from([(open, SegmentLog::new(segments.open_log()))]);
+        let log = segments.open_log();
+        let log = BTreeMap::from([(open, SegmentLog::new(log.file, log.salt))]);
         #[cfg(any(test, feature = "audit"))]
         let replay = {
             let lengths = extents.iter().map(|(extent, entry)| (*extent, entry.len)).collect();
@@ -646,7 +663,10 @@ impl<D: Dir> Recovering<D> {
             )),
             committing: SharedLock::new("store commit", Mutex::new(())),
             durability: SharedLock::new("store durability", Mutex::new(Durability::new(epoch))),
-            flushing: SharedLock::new("store flush", Mutex::new(log)),
+            flushing: SharedLock::new(
+                "store flush",
+                Mutex::new(Logs { by_segment: log, unsynced: Syncs::default() }),
+            ),
             base: SharedLock::new("store log base", Mutex::new(base_file)),
             cache,
             idle: Arc::new(Condvar::new()),
@@ -1479,7 +1499,7 @@ impl<D: Dir> Store<D> {
         }
         let Unreferenced { doomed } = state.unreferenced.take();
         state.epoch = epoch;
-        let record = (segment, encode(contents));
+        let record = (segment, contents.clone());
         // Queued while the state is locked, so that commits queue in their order.
         let pending = Pending { syncs, record, doomed, leaving };
         self.durability.with(Mutex::lock).push(epoch, pending);
@@ -2030,24 +2050,51 @@ impl<D: Dir> Store<D> {
         removed
     }
 
-    /// fxdax: removes `raw`, the raw files and logs of segments framed, once their framed files'
+    /// fxdax: removes the raw files and logs of `raw`, segments framed, once their framed files'
     /// entries are durable, which an opening reads their commits from then: their framings synced
-    /// the files, and no flush waits for a framing to sync their directory (TASK-165.9).
-    fn remove_raw(&self, raw: Vec<String>) -> Result<(), Error> {
+    /// the files, and no flush waits for a framing to sync their directory (TASK-165.9). A log the
+    /// branch wants as a spare is renamed one, rather than removed ([`spare_path`], TASK-301): the
+    /// log of a segment to come, written in place, its blocks there.
+    fn remove_raw(&self, raw: Vec<SegmentId>) -> Result<(), Error> {
         if raw.is_empty() {
             return Ok(());
         }
         self.dir.sync_dir(&branch_dir(SEGMENTS, self.branch))?;
         self.dir.barrier()?;
-        self.remove(raw);
+        self.remove(raw.iter().map(|segment| open_segment_path(*segment)));
+        for segment in raw {
+            let (log, spare) = (log_path(segment), spare_path(segment));
+            // A log made before logs had headers holds records no salt tells from a later one's.
+            if self.lock().segments.wants_spare()
+                && let Ok(file) = self.dir.open(&log, false)
+                && let mut header = [0; LOG_MAGIC.len()]
+                && file.read_cached(&mut header, 0).is_ok()
+                && header == *LOG_MAGIC
+            {
+                match self.dir.rename(&log, &spare) {
+                    Ok(()) => {
+                        self.lock().segments.spare(segment);
+                        continue;
+                    }
+                    Err(err) => log::warn!("extent store: keeping {log} as a spare: {err}"),
+                }
+            }
+            self.remove([log]);
+        }
         Ok(())
     }
 
-    /// Makes `commits`, a flush's, durable, in order: their data, then their records in the logs
+    /// Makes `commits`, a flush's, durable, in order: their data, and their records in the logs
     /// of the segments they were made in, open, or closed since; but for the files they made
     /// unreferenced. fxdax: it waits for no framing, those of segments the uploader closes between
     /// commits among them, which held up the turns a daemon makes its guests' commits durable in
     /// (TASK-165.9): an opening closes a segment whose framed file isn't whole again from its log.
+    /// fxdax: in one sync's time, not two (TASK-301, [`LogRecord`]): commits that sealed little
+    /// (`Options::held_most`) hold their runs in their records, and only the logs are synced, as a
+    /// database's write-ahead log is; others' records check their runs, synced at once with them.
+    /// Data first, then records, if the commits stored extents on their own, which no record
+    /// checks. At once, the records go first in a directory that does one thing at a time, as crash
+    /// tests' do: a crash between keeps records whose data it lost.
     fn make_durable(
         &self,
         logs: &mut Logs<D::File>,
@@ -2060,32 +2107,135 @@ impl<D: Dir> Store<D> {
         for pending in commits.iter_mut() {
             syncs.extend(std::mem::take(&mut pending.syncs));
         }
-        timed.synced = syncs.sync_files(&*self.dir)?;
-        let synced = timed.phases.took(flush::DATA, started);
-        syncs.sync_dirs(&*self.dir)?;
-        let synced = timed.phases.took(flush::DIRS, synced);
-        // Each segment's records, in the commits' order, appended and synced at once.
-        let mut at = 0;
-        while at < commits.len() {
-            let segment = commits[at].record.0;
-            let run =
-                commits[at..].iter().take_while(|pending| pending.record.0 == segment).count();
-            let log = match logs.entry(segment) {
-                std::collections::btree_map::Entry::Occupied(log) => log.into_mut(),
-                std::collections::btree_map::Entry::Vacant(vacant) => {
-                    let file = self.lock().segments.log_file(&*self.dir, segment)?;
-                    let end = file.size()?;
-                    vacant.insert(SegmentLog::at(file, end))
+        if syncs.holds_own() {
+            syncs.extend(std::mem::take(&mut logs.unsynced));
+            timed.synced = syncs.sync_files(&*self.dir)?;
+            let synced = timed.phases.took(flush::DATA, started);
+            syncs.sync_dirs(&*self.dir)?;
+            let synced = timed.phases.took(flush::DIRS, synced);
+            let records = self.records(commits, Runs::Synced)?;
+            self.append_records(logs, &records)?;
+            self.dir.barrier()?;
+            timed.phases.took(flush::LOGS, synced);
+        } else {
+            let sealed: u64 =
+                commits.iter().map(|pending| LogRecord::run_bytes(&pending.record.1)).sum();
+            let hold = sealed <= self.options.held_most;
+            // The raw files it leaves unsynced, the next flush syncing data syncs.
+            match hold {
+                true => logs.unsynced.carry(syncs.take_cached()),
+                false => syncs.extend(std::mem::take(&mut logs.unsynced)),
+            }
+            let runs = if hold { Runs::Held(Default::default()) } else { Runs::Checked(Vec::new()) };
+            let records =
+                self.records(commits, runs).context("reading back the runs commits sealed")?;
+            let recorded = timed.phases.took(flush::DATA, started);
+            // What is synced beside the records: the directories alone, if they hold the runs.
+            let sync_data = || -> Result<FileSyncs, Error> {
+                let synced =
+                    if hold { FileSyncs::default() } else { syncs.sync_files(&*self.dir)? };
+                syncs.sync_dirs(&*self.dir)?;
+                Ok(synced)
+            };
+            // Nothing beside the records, as a commit's when the segment holds the runs: no thread.
+            timed.synced = match syncs.holds_any(!hold) {
+                true => self.at_once(|| self.append_records(logs, &records), sync_data)?,
+                false => self.append_records(logs, &records).map(|()| FileSyncs::default())?,
+            };
+            self.dir.barrier()?;
+            timed.phases.took(flush::LOGS, recorded);
+        }
+        // fxdax: the logs of segments whose logs went: no commit made in them is still to come.
+        // Those of segments closed since stay, with where their records end, which their files'
+        // sizes don't say of spares (TASK-301): a flush may yet append commits made in them before
+        // they closed, as one taking those ordered as the uploader closed the segment does.
+        let state = self.lock();
+        logs.by_segment.retain(|segment, _| state.segments.has_log(*segment));
+        Ok(())
+    }
+
+    /// fxdax: runs `first`, and `then`, at once, `then` on a thread of its own; or in turn, on this
+    /// thread, if the directory does one thing at a time, or the host refuses the thread. Not at
+    /// once under Shuttle, which fails an execution that ends with a scoped thread not run, as a
+    /// flush on a thread a test leaves behind would.
+    fn at_once<T: Send>(
+        &self,
+        first: impl FnOnce() -> Result<(), Error>,
+        then: impl FnOnce() -> Result<T, Error> + Send + Copy,
+    ) -> Result<T, Error> {
+        if !self.dir.concurrent() || cfg!(feature = "shuttle") {
+            first()?;
+            return then();
+        }
+        thread::scope(|scope| {
+            let other = thread::Builder::new().spawn_scoped(scope, then);
+            let done = first();
+            let other = match other {
+                Ok(other) => other.join().unwrap_or_else(|panic| std::panic::resume_unwind(panic)),
+                Err(error) => {
+                    log::warn!("extent store: a flush's syncs in turn: {error}");
+                    then()
                 }
             };
-            log.append(commits[at..at + run].iter().map(|pending| pending.record.1.as_slice()))?;
+            done.and(other)
+        })
+    }
+
+    /// fxdax: the records of `commits`, a flush's, by the segments they were made in, in order:
+    /// each the commit's contents, and what `runs` says of the runs it sealed ([`LogRecord`]).
+    fn records(
+        &self,
+        commits: &[Pending<D::File>],
+        runs: Runs,
+    ) -> Result<Vec<(SegmentId, LogRecord)>, Error> {
+        let mut raw: Option<(SegmentId, Arc<D::File>)> = None;
+        let mut records = Vec::with_capacity(commits.len());
+        for Pending { record: (segment, contents), .. } in commits {
+            let record = match runs {
+                Runs::Synced => LogRecord { contents: contents.clone(), runs: Runs::Synced },
+                Runs::Checked(_) | Runs::Held(_) => {
+                    let file = match &raw {
+                        Some((at, file)) if at == segment => file.clone(),
+                        _ => {
+                            let file = self.lock().segments.raw_file(&*self.dir, *segment)?;
+                            raw = Some((*segment, file.clone()));
+                            file
+                        }
+                    };
+                    LogRecord::of(contents.clone(), &*file, matches!(runs, Runs::Held(_)))?
+                }
+            };
+            records.push((*segment, record));
+        }
+        Ok(records)
+    }
+
+    /// fxdax: appends `records` to the logs of their segments, each segment's at once, and syncs
+    /// them.
+    fn append_records(
+        &self,
+        logs: &mut Logs<D::File>,
+        records: &[(SegmentId, LogRecord)],
+    ) -> Result<(), Error> {
+        let mut at = 0;
+        while at < records.len() {
+            let segment = records[at].0;
+            let run = records[at..].iter().take_while(|(of, _)| *of == segment).count();
+            let log = match logs.by_segment.entry(segment) {
+                std::collections::btree_map::Entry::Occupied(log) => log.into_mut(),
+                // Its first records: a flush keeps a segment's log while it has one.
+                std::collections::btree_map::Entry::Vacant(vacant) => {
+                    let log = self.lock().segments.log_file(&*self.dir, segment)?;
+                    vacant.insert(SegmentLog::new(log.file, log.salt))
+                }
+            };
+            // Salted as its log's (`wal::LOG_MAGIC`).
+            let salt = log.salt();
+            let encoded: Vec<Vec<u8>> =
+                records[at..at + run].iter().map(|(_, record)| encode_salted(record, salt)).collect();
+            log.append(encoded.iter().map(Vec::as_slice)).context("appending commits' records")?;
             at += run;
         }
-        self.dir.barrier()?;
-        timed.phases.took(flush::LOGS, synced);
-        // The logs of segments closed since go: no commit made in them is still to come.
-        let open = self.lock().segments.open_segment();
-        logs.retain(|segment, _| *segment == open);
         Ok(())
     }
 

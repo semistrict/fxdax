@@ -354,7 +354,9 @@ fn a_failed_commit_leaves_nothing_behind() {
         let failing = Arc::new(AtomicBool::new(false));
         let fail = failing.clone();
         device.set_op_callback(move |op| match op {
-            Op::Flush if fail.load(Ordering::Relaxed) => Err(anyhow::anyhow!("the device fails")),
+            Op::Flush | Op::PostBarrier if fail.load(Ordering::Relaxed) => {
+                Err(anyhow::anyhow!("the device fails"))
+            }
             _ => Ok(()),
         });
         let mounted = Mounted::new(DeviceHolder::new(device), mode);
@@ -446,8 +448,8 @@ fn mapped_reads_follow_commits() {
     assert_eq!(integrity(&reader), "ok");
 }
 
-/// A commit made while pages are fetched maps nothing again until the last is given back: the
-/// pages fetched read as before meanwhile, and the file reads as committed, from the device.
+/// The window maps what a commit changed again only once no page is fetched: a page fetched
+/// reads as it was meanwhile, and what the commit changed reads as committed, from the device.
 #[test]
 fn a_commit_waits_for_fetched_pages_to_remap() {
     let mounted = Mounted::new(DeviceHolder::new(device()), Mode::Window);
@@ -464,7 +466,7 @@ fn a_commit_waits_for_fetched_pages_to_remap() {
     assert_eq!(volume.fetch("f", 4096, 4096).unwrap(), None, "changed since the last commit");
     volume.sync("f").unwrap();
     assert_eq!(page(), vec![1; 4096], "held as fetched");
-    assert_eq!(volume.fetch("f", 0, 4096).unwrap(), None, "the window is behind");
+    assert_eq!(volume.fetch("f", 4096, 4096).unwrap(), None, "the window is behind");
     let mut read = vec![0; 8192];
     assert_eq!(volume.read("f", 0, &mut read).unwrap(), 8192);
     assert_eq!(read[4096..], [2; 4096]);
@@ -475,4 +477,48 @@ fn a_commit_waits_for_fetched_pages_to_remap() {
     assert_eq!(unsafe { std::slice::from_raw_parts(fetched, 4096) }, [2; 4096]);
     volume.unfetch("f");
     volume.close_file("f");
+}
+
+/// A commit leaving more extents unreferenced than a root names, as a VACUUM emptying a database
+/// does, lists them in an extent of its own: a crash at each barrier leaves the database as of a
+/// transaction, and the device holding what the volume does, those extents freed or to be.
+#[test]
+fn a_commit_freeing_many_extents_lists_them() {
+    both(|mode| {
+        let crashes = Crashes::new(7, 1);
+        let mounted =
+            Mounted::new(DeviceHolder::new(device().record_crashes(crashes.clone())), mode);
+        let connection = mounted.connect("main.db");
+        connection.execute_batch("CREATE TABLE t (k INTEGER PRIMARY KEY, v BLOB)").unwrap();
+        for k in 0..400i64 {
+            connection
+                .execute("INSERT INTO t VALUES (?1, ?2)", params![k, vec![k as u8; 3000]])
+                .unwrap();
+        }
+        let before = rows(&connection);
+        let extents = mounted.volume.extents().unwrap().len();
+        assert!(extents > 64, "{extents} extents");
+        // A crash at each transaction's barrier keeps what the transactions before it committed.
+        crashes.mark(0);
+        connection.execute_batch("DELETE FROM t").unwrap();
+        crashes.mark(1);
+        connection.execute_batch("VACUUM").unwrap();
+        crashes.mark(2);
+        connection.execute("INSERT INTO t VALUES (1, x'01')", []).unwrap();
+        drop(connection);
+        mounted.check_extents();
+
+        let committed = [before, BTreeMap::new(), BTreeMap::new()];
+        let mut marks = Vec::new();
+        for (mark, device) in crashes.take() {
+            let reopened = Mounted::new(DeviceHolder::new(device), mode);
+            reopened.check_extents();
+            let connection = reopened.connect("main.db");
+            assert_eq!(integrity(&connection), "ok", "mark {mark}");
+            assert_eq!(rows(&connection), committed[mark as usize], "mark {mark}");
+            marks.push(mark);
+        }
+        // A barrier a transaction, but VACUUM's two: SQLite syncs the database twice in it.
+        assert_eq!(marks, vec![0, 1, 1, 2]);
+    });
 }

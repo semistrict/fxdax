@@ -31,6 +31,7 @@ const OPTIONS: Options = Options {
     open_files: 2,
     view_lag: None,
     view_kept_bytes: None,
+    held_most: 256 << 10,
 };
 
 /// The chain of a writer of the branch in object storage, whose segments the store closes: that of
@@ -431,10 +432,18 @@ fn commits_reopen_from_their_logs() {
         }
         store.commit(Some(format!("root {sequence}").as_bytes())).unwrap();
     }
-    assert_eq!(dir.list(&of("logs", BRANCH)).unwrap().len(), 1);
+    // The open segment's log, and the log of a segment gone kept as a spare (TASK-301): each
+    // segment opened takes the spare the one before it left.
+    let logs = || {
+        let names = dir.list(&of("logs", BRANCH)).unwrap();
+        let spares = names.iter().filter(|name| name.starts_with("spare-")).count();
+        (names.len() - spares, spares)
+    };
+    assert_eq!(logs(), (1, 1));
     drop(store);
     let store = Store::open(dir.clone(), OPTIONS).unwrap();
-    assert_eq!(dir.list(&of("logs", BRANCH)).unwrap().len(), 1);
+    // The opening's open segment took the spare; the log of the one it closed again went.
+    assert_eq!(logs(), (1, 0));
     assert_eq!(store.root().unwrap(), b"root 199");
     assert_eq!(store.epoch().unwrap(), 200);
     let held: Vec<u64> =
@@ -1412,6 +1421,8 @@ fn raw_files_are_read_through_the_page_cache() {
     settled(&store);
     assert_eq!(of_raw_files(dir.direct()), BTreeMap::new());
     // The copies of the two extents, 4 blocks, and the segment framed, 8; the large extent framed.
+    // The flush reads back none: the commit stored an extent on its own, whose data it syncs
+    // before the records, which hold no runs then (TASK-301).
     let cached = |segments: usize| {
         let kinds = [("open-extents", large), ("open-segments", segments)];
         BTreeMap::from(kinds.map(|(kind, bytes)| (kind.to_owned(), bytes as u64)))
@@ -1422,8 +1433,9 @@ fn raw_files_are_read_through_the_page_cache() {
     drop(store);
     let store = Store::open(dir.clone(), OPTIONS).unwrap();
     assert_eq!(of_raw_files(dir.direct()), BTreeMap::new());
-    // And the open segment left raw, framed: extent 4's block.
-    assert_eq!(of_raw_files(dir.cached()), cached(13 * BLOCK));
+    // And extent 4's block, read back by its flush, whose record holds it (TASK-301), and the
+    // open segment left raw, read once by the opening, which closes it again.
+    assert_eq!(of_raw_files(dir.cached()), cached(14 * BLOCK));
     for (sequence, len) in [(1, 2 * BLOCK), (2, 2 * BLOCK), (3, large), (4, BLOCK)] {
         assert!(read(&store, extent(sequence), 0, len) == pattern(sequence as u8, 0, len));
     }
@@ -1443,14 +1455,16 @@ fn reads_of_raw_files_go_through_the_page_cache() {
     let large = OPTIONS.large_extent as usize;
     store.write(extent(2), 0, &pattern(2, 0, large)).unwrap();
     let view = store.view();
-    assert_eq!(of_raw_files(dir.cached()), BTreeMap::new());
+    // Extent 1's block, read back by the commit's flush, which checksums it (TASK-301).
+    let flushed = BTreeMap::from([("open-segments".to_owned(), BLOCK as u64)]);
+    assert_eq!(of_raw_files(dir.cached()), flushed);
     assert!(read(&store, extent(1), 0, BLOCK) == pattern(1, 0, BLOCK));
     let mut viewed = vec![0; BLOCK];
     store.read_view(&view, extent(1), 0, &mut viewed).unwrap();
     assert!(viewed == pattern(1, 0, BLOCK));
     assert!(read(&store, extent(2), 0, large) == pattern(2, 0, large));
     assert_eq!(of_raw_files(dir.direct()), BTreeMap::new());
-    let kinds = [("open-extents", large), ("open-segments", 2 * BLOCK)];
+    let kinds = [("open-extents", large), ("open-segments", 3 * BLOCK)];
     let cached = BTreeMap::from(kinds.map(|(kind, bytes)| (kind.to_owned(), bytes as u64)));
     assert_eq!(of_raw_files(dir.cached()), cached);
 }
@@ -2672,7 +2686,8 @@ fn logs_failing_in_their_flushes_fail_the_store() {
     let failure = |result: Result<(), anyhow::Error>| result.unwrap_err().to_string();
     assert_eq!(failure(store.flush()), "committing the extent store");
     dir.fail_after(None);
-    let failed = "the extent store failed: committing the extent store: the file system crashed";
+    let failed = "the extent store failed: committing the extent store: appending commits' \
+                  records: the file system crashed";
     assert_eq!(failure(store.commit(None)), failed);
     assert_eq!(failure(store.flush()), failed);
 }

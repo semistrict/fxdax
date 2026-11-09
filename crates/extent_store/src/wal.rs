@@ -13,8 +13,15 @@
 //! - **Each segment's log** of the commits made in it, `logs/<branch>/<n>`, beside its raw data,
 //!   `open-segments/<branch>/<n>`: a record of each commit's contents, as its footer will fold
 //!   them (`extent_frame::segment::Contents`), each hashed, appended and synced by the flush that
-//!   makes the commit durable, after the data it names, whether the segment is open, or closed
-//!   since and being framed: a flush waits for no framing. Its raw data and log go once it is
+//!   makes the commit durable, whether the segment is open, or closed since and being framed: a
+//!   flush waits for no framing. fxdax: a flush that seals little puts the runs its commits
+//!   sealed in their records, and syncs its logs alone, one sync, as a database's write-ahead log
+//!   holds its pages; recovery writes them into the raw data again. Others put the CRC32C of each
+//!   run in the records, and sync the data and append the records at once: recovery stops at the
+//!   first record whose runs the raw data doesn't hold, as at a torn record, a commit whose record
+//!   was made durable before its data was not durable ([`LogRecord`], TASK-301). A flush of
+//!   commits that stored extents on their own, which no record checks, syncs their data first,
+//!   as before. Its raw data and log go once it is
 //!   framed and the commits it names are durable, its framed file their record then.
 //! - **Its base**, `wal`: the branch's commit its first segment goes on from, which the store
 //!   writes, durably, before the segments it acknowledged leave it ([`BaseFile`]): a segment a
@@ -37,7 +44,7 @@
 //! after the branch's end by its commits (`extent_remote::Wal::rebase`), and stamps them anew.
 
 use crate::dir::{Dir, File, not_found, read_file};
-use crate::framed::{Aligned, read_frame, read_whole};
+use crate::framed::{read_frame, read_whole};
 use crate::layout::{
     LOGS, OPEN_SEGMENTS, SEGMENTS, SegmentId, branch_dir, decode, encode, extent_path,
     list_numbers, log_path, open_segment_path, segment_path,
@@ -111,25 +118,195 @@ impl BaseFile {
     }
 }
 
+/// fxdax: a commit's record in its segment's log: its contents, and what makes the runs its
+/// extents were sealed in durable with it (TASK-301): the runs themselves, for a flush that seals
+/// little, which then syncs its log alone, as a database's write-ahead log holds its pages; or the
+/// CRC32C of each, which recovery checks against the segment's raw data, for one whose data it
+/// syncs beside its records. Records of logs written before either are their contents alone,
+/// which nothing checks: their flushes synced the data first.
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct LogRecord {
+    pub contents: Contents,
+    pub runs: Runs,
+}
+
+/// What a [`LogRecord`] holds of the runs its commit sealed, in the order its contents name them
+/// (`Contents::extents`).
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum Runs {
+    /// Nothing: its data was synced before it.
+    Synced,
+    /// The CRC32C of each.
+    Checked(Vec<u32>),
+    /// Their bytes, one after another.
+    Held(Bytes),
+}
+
+/// fxdax: bytes, which bincode writes as a length and the bytes, not a sequence of each byte's
+/// value, as it would a `Vec<u8>`: a record holding a commit's runs encodes as fast as it copies.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct Bytes(pub Vec<u8>);
+
+impl Serialize for Bytes {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_bytes(&self.0)
+    }
+}
+
+impl<'de> Deserialize<'de> for Bytes {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Visitor;
+        impl serde::de::Visitor<'_> for Visitor {
+            type Value = Bytes;
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("bytes")
+            }
+            fn visit_bytes<E: serde::de::Error>(self, bytes: &[u8]) -> Result<Bytes, E> {
+                Ok(Bytes(bytes.to_vec()))
+            }
+            fn visit_byte_buf<E: serde::de::Error>(self, bytes: Vec<u8>) -> Result<Bytes, E> {
+                Ok(Bytes(bytes))
+            }
+        }
+        deserializer.deserialize_byte_buf(Visitor)
+    }
+}
+
+impl LogRecord {
+    /// The record of `contents`, made in a segment whose raw data `raw` is: the runs it sealed
+    /// read back, and held, if `hold`, or checksummed.
+    pub fn of<F: File>(contents: Contents, raw: &F, hold: bool) -> Result<Self, Error> {
+        let mut bytes = Vec::new();
+        let mut crcs = Vec::with_capacity(contents.extents.len());
+        for &(extent, offset, len) in &contents.extents {
+            let start = bytes.len();
+            bytes.resize(start + len as usize, 0);
+            raw.read_cached(&mut bytes[start..], offset)
+                .with_context(|| format!("reading {extent:?}'s run back"))?;
+            if !hold {
+                crcs.push(extent_frame::crc(&bytes[start..]));
+                bytes.truncate(start);
+            }
+        }
+        let runs = if hold { Runs::Held(Bytes(bytes)) } else { Runs::Checked(crcs) };
+        Ok(Self { contents, runs })
+    }
+
+    /// The bytes of the runs `contents` names.
+    pub fn run_bytes(contents: &Contents) -> u64 {
+        contents.extents.iter().map(|&(_, _, len)| len).sum()
+    }
+
+    /// Makes `raw`, its segment's raw data, hold the runs it names, as its commit wrote them:
+    /// those it holds, written into it; whether it does, those it checks, or those synced.
+    fn restore(&self, raw: &mut Vec<u8>) -> bool {
+        let runs = self
+            .contents
+            .extents
+            .iter()
+            .map(|&(_, offset, len)| offset as usize..(offset + len) as usize);
+        match &self.runs {
+            Runs::Synced => true,
+            Runs::Checked(crcs) => {
+                crcs.len() == self.contents.extents.len()
+                    && runs.zip(crcs).all(|(run, &crc)| {
+                        raw.get(run).is_some_and(|run| extent_frame::crc(run) == crc)
+                    })
+            }
+            Runs::Held(Bytes(bytes)) => {
+                let mut at = 0;
+                for run in runs {
+                    if raw.len() < run.end {
+                        raw.resize(run.end, 0);
+                    }
+                    let Some(held) = bytes.get(at..at + run.len()) else { return false };
+                    raw[run.clone()].copy_from_slice(held);
+                    at += run.len();
+                }
+                at == bytes.len()
+            }
+        }
+    }
+
+    /// The records of `bytes`, a log, that are whole: those of any kind; after its header, salted
+    /// as it says, if it has one ([`LOG_MAGIC`]), as a log reused does, whose records from before
+    /// are torn then; or from its start, unsalted, as logs before had them.
+    fn decode(bytes: &[u8]) -> Vec<Self> {
+        let (bytes, salt) = match log_salt(bytes) {
+            Some(salt) => (bytes.get(LOG_RECORDS as usize..).unwrap_or_default(), salt),
+            None => (bytes, 0),
+        };
+        crate::layout::decode_with(bytes, salt, |payload| {
+            bincode::deserialize::<Self>(payload).ok().or_else(|| {
+                let contents = bincode::deserialize::<Contents>(payload).ok()?;
+                Some(Self { contents, runs: Runs::Synced })
+            })
+        })
+        .0
+    }
+}
+
+/// fxdax: what a segment's log starts with: its header, a block, its salt after this, then its
+/// records, each salted with it, so that a log reused, a spare, holding records of another
+/// segment's after them, reads as holding its own alone (TASK-301): a log made ahead of its
+/// records is overwritten as it is appended to, a sync then syncing the records alone, not the
+/// log's size and blocks too, a third of the time on a cloud disk. The header is synced before any
+/// record is appended: a log whose new header a crash lost would read its old one's records.
+pub(crate) const LOG_MAGIC: &[u8; 8] = b"FXLOG\0\0\x01";
+
+/// fxdax: where a segment's log's records start, after its header.
+pub(crate) const LOG_RECORDS: u64 = 4096;
+
+/// fxdax: the header of a segment's log, its records salted with `salt` ([`LOG_MAGIC`]).
+pub(crate) fn log_header(salt: u64) -> Vec<u8> {
+    let mut header = vec![0; LOG_RECORDS as usize];
+    header[..LOG_MAGIC.len()].copy_from_slice(LOG_MAGIC);
+    header[LOG_MAGIC.len()..][..8].copy_from_slice(&salt.to_le_bytes());
+    header
+}
+
+/// fxdax: the salt of the records of `log`, a log's bytes, as its header says, if it has one.
+pub(crate) fn log_salt(log: &[u8]) -> Option<u64> {
+    let salt = log.strip_prefix(LOG_MAGIC)?.get(..8)?;
+    Some(u64::from_le_bytes(salt.try_into().unwrap()))
+}
+
+/// fxdax: a salt for the records of a log of `segment`'s made in `lifetime`, a value of the
+/// opening of the branch that made it ([`crate::segments::Segments::open`]): none another log
+/// had, as a branch whose segments all left numbers its next from 0 again, its epoch past theirs;
+/// and none 0, the salt of logs without headers.
+pub(crate) fn new_salt(lifetime: u64, segment: SegmentId) -> u64 {
+    let mut bytes = [0; 24];
+    bytes[..8].copy_from_slice(&lifetime.to_le_bytes());
+    bytes[8..16].copy_from_slice(&segment.branch.to_le_bytes());
+    bytes[16..].copy_from_slice(&segment.number.to_le_bytes());
+    rapidhash::rapidhash(&bytes) | 1
+}
+
 /// The log of the commits made in a segment ([`log_path`]), open, or closed since: where its next
 /// record goes, which the flushes append, one at a time, in their commits' order.
 pub(crate) struct SegmentLog<F> {
     file: Arc<F>,
     end: u64,
+    salt: u64,
 }
 
 impl<F: File> SegmentLog<F> {
-    /// A segment's log, `file`, empty.
-    pub fn new(file: Arc<F>) -> Self {
-        Self { file, end: 0 }
+    /// A segment's log, `file`, holding no records yet, after its header ([`log_header`]), made or
+    /// reused with it, its records salted with `salt`.
+    pub fn new(file: Arc<F>, salt: u64) -> Self {
+        Self { file, end: LOG_RECORDS, salt }
     }
 
-    /// A segment's log, `file`, holding records to `end`, its size.
-    pub fn at(file: Arc<F>, end: u64) -> Self {
-        Self { file, end }
+    /// The salt of its records.
+    pub fn salt(&self) -> u64 {
+        self.salt
     }
 
-    /// Appends `records`, encoded, after those before, and syncs them.
+    /// Appends `records`, encoded, after those before, and syncs them. fxdax: keeping the log's
+    /// pages in the host's page cache, as the open segment's raw file keeps its (TASK-301): a log is
+    /// appended to and synced again and again, and its next record's append would read its last
+    /// page back from the disk first.
     pub fn append<'a>(&mut self, records: impl IntoIterator<Item = &'a [u8]>) -> Result<(), Error> {
         let start = self.end;
         for record in records {
@@ -137,7 +314,7 @@ impl<F: File> SegmentLog<F> {
             self.end += record.len() as u64;
         }
         if self.end > start {
-            self.file.sync()?;
+            self.file.sync_cached()?;
         }
         Ok(())
     }
@@ -198,13 +375,13 @@ pub(crate) fn recover<D: Dir>(dir: &D, branch: u64) -> Result<Recovered, Error> 
             true => whole_footer(dir, segment, left(number))?,
             false => None,
         };
-        let records = match (&footer, raw.contains(&number)) {
+        let (records, data) = match (&footer, raw.contains(&number)) {
             (None, true) => log_records(dir, segment)?,
-            _ => Vec::new(),
+            _ => (Vec::new(), Vec::new()),
         };
         found.push(match footer {
             Some(footer) => (number, Found::Whole(footer)),
-            None if after_base(&records) => (number, Found::Torn(records)),
+            None if after_base(&records) => (number, Found::Torn(records, data)),
             None => (number, Found::Nothing),
         });
     }
@@ -217,7 +394,7 @@ pub(crate) fn recover<D: Dir>(dir: &D, branch: u64) -> Result<Recovered, Error> 
     for (at, (number, found_here)) in found.iter().enumerate() {
         let number = *number;
         let segment = SegmentId { branch, number };
-        let records = match found_here {
+        let (records, data) = match found_here {
             Found::Whole(footer) => {
                 settled(number)?;
                 segments.push((footer.clone(), number));
@@ -227,7 +404,7 @@ pub(crate) fn recover<D: Dir>(dir: &D, branch: u64) -> Result<Recovered, Error> 
                 gone(number)?;
                 continue;
             }
-            Found::Torn(records) => records,
+            Found::Torn(records, data) => (records, data),
         };
         let last = records.iter().rev().find_map(|record| record.commits.last()).copied();
         let next = found[at + 1..].iter().find_map(|(_, found)| found.first_commit());
@@ -246,7 +423,7 @@ pub(crate) fn recover<D: Dir>(dir: &D, branch: u64) -> Result<Recovered, Error> 
             remove(dir, &segment_path(segment))?;
         }
         let previous = segments.last().map(|(footer, _)| footer);
-        let footer = close_again(dir, segment, previous, records)?;
+        let footer = close_again(dir, segment, previous, records, data)?;
         settled(number)?;
         segments.push((footer, number));
         if !whole {
@@ -292,10 +469,11 @@ fn whole_footer<D: Dir>(dir: &D, segment: SegmentId, left: bool) -> Result<Optio
 }
 
 /// What recovery finds of a segment: its framed file whole; or not, and the records of its log,
-/// holding commits after the WAL's base, to close it again from; or nothing durable.
+/// holding commits after the WAL's base, and its raw data, to close it again from; or nothing
+/// durable.
 enum Found {
     Whole(Footer),
-    Torn(Vec<Contents>),
+    Torn(Vec<Contents>, Vec<u8>),
     Nothing,
 }
 
@@ -304,31 +482,39 @@ impl Found {
     fn first_commit(&self) -> Option<u64> {
         let first = match self {
             Found::Whole(footer) => footer.contents.commits.first(),
-            Found::Torn(records) => records.iter().find_map(|record| record.commits.first()),
+            Found::Torn(records, _) => records.iter().find_map(|record| record.commits.first()),
             Found::Nothing => None,
         };
         first.copied().map(epoch_of)
     }
 }
 
-/// The whole records of the log of `segment`, the commits it holds; none if it has no log.
-fn log_records<D: Dir>(dir: &D, segment: SegmentId) -> Result<Vec<Contents>, Error> {
-    match dir.open(&log_path(segment), false) {
-        Ok(log) => Ok(decode(&read_file(&log)?).0),
-        Err(err) if not_found(&err) => Ok(Vec::new()),
-        Err(err) => Err(err.into()),
-    }
+/// The whole records of the log of `segment`, the commits it holds, up to the first whose runs
+/// its raw data doesn't hold ([`LogRecord`]), and its raw data, with the runs the records hold
+/// written into it; none if it has no log.
+fn log_records<D: Dir>(dir: &D, segment: SegmentId) -> Result<(Vec<Contents>, Vec<u8>), Error> {
+    let records = match dir.open(&log_path(segment), false) {
+        Ok(log) => LogRecord::decode(&read_file(&log)?),
+        Err(err) if not_found(&err) => return Ok((Vec::new(), Vec::new())),
+        Err(err) => return Err(err.into()),
+    };
+    let raw = dir.open(&open_segment_path(segment), true)?;
+    let mut data = vec![0; raw.size()? as usize];
+    raw.read_cached(&mut data, 0)?;
+    let records = records.into_iter().take_while(|record| record.restore(&mut data));
+    Ok((records.map(|record| record.contents).collect(), data))
 }
 
-/// Closes `segment` again, left open, or framed part way, from its raw data and the records of its
-/// log that are whole, which hold a commit at least: framed with a footer of their contents folded,
-/// stamped provisionally, after `last`, the footer before it, if any, and made durable. Returns
-/// its footer.
+/// Closes `segment` again, left open, or framed part way, from its raw data, `data`, and the
+/// records of its log that are whole, which hold a commit at least: framed with a footer of their
+/// contents folded, stamped provisionally, after `last`, the footer before it, if any, and made
+/// durable. Returns its footer.
 fn close_again<D: Dir>(
     dir: &D,
     segment: SegmentId,
     last: Option<&Footer>,
     records: &[Contents],
+    data: &[u8],
 ) -> Result<Footer, Error> {
     let first = records.first().context("a log closed again holds a commit")?;
     let mut chain = match last {
@@ -339,13 +525,10 @@ fn close_again<D: Dir>(
         None => Chain::new(segment.branch, writer_of(first.commits[0]), 0, None, 0),
     };
     let footer = chain.close(fold(segment.branch, records));
-    let raw = dir.open(&open_segment_path(segment), true)?;
-    let mut data = Aligned::new(raw.size()? as usize);
-    raw.read_cached(data.as_mut_slice(), 0)?;
     let path = segment_path(segment);
     remove(dir, &path)?;
     let file = dir.create(&path, true)?;
-    file.write_at(&extent_frame::framed(data.as_slice(), &footer.encode()), 0)?;
+    file.write_at(&extent_frame::framed(data, &footer.encode()), 0)?;
     file.sync()?;
     Ok(footer)
 }
@@ -496,8 +679,14 @@ mod tests {
         let raw = dir.create(&open_segment_path(segment(number)), true).unwrap();
         raw.write_at(&vec![number as u8; (blocks * 4096) as usize], 0).unwrap();
         let log = Arc::new(dir.create(&log_path(segment(number)), false).unwrap());
-        let mut log = SegmentLog::new(log);
-        let records: Vec<Vec<u8>> = records.iter().map(encode).collect();
+        let salt = new_salt(0, segment(number));
+        log.write_at(&log_header(salt), 0).unwrap();
+        let mut log = SegmentLog::new(log, salt);
+        let records = records.iter().map(|contents| {
+            let record = LogRecord { contents: contents.clone(), runs: Runs::Synced };
+            crate::layout::encode_salted(&record, salt)
+        });
+        let records: Vec<Vec<u8>> = records.collect();
         log.append(records.iter().map(Vec::as_slice)).unwrap();
     }
 
