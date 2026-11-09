@@ -1,11 +1,11 @@
 ---
 id: TASK-302
 title: 'One FUSE mount for many stores: branches attached and detached by RPC'
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-09 11:38'
-updated_date: '2026-11-09 13:05'
+updated_date: '2026-11-09 13:22'
 labels:
   - fuse
   - host
@@ -33,9 +33,9 @@ fxdax-mount mounts one store per OS mount. The user wants one host FUSE mount in
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -56,4 +56,12 @@ fxdax-mount mounts one store per OS mount. The user wants one host FUSE mount in
 The first end-to-end run hung on a detach with a file open: telling the kernel to drop the store's name in the root unhashes that dentry alone; a dentry in use under it stays hashed, and once let go of stays cached, holding its parents and every node up the chain, so the kernel never forgets them. Fixed by keeping, in a server of many stores, the names the kernel was given each node under (kept through renames, unlinks and forgets), and invalidating them all on detach; names given while detaching are given for no time (entry_valid 0), so dentries made meanwhile go at their last use. fuse::server::stores_tests checks the names told (after a rename and an rmdir) and the zero validity.
 
 Validation: macOS fxdax 330/330; fuse:: lib tests 7/7 (macOS, Linux); ubu1 (x86_64, non-root, fusermount3) fuse_mount + fuse_differential 8/8, seven runs; OrbStack container (arm64, root) fuse_mount 6/6 alone. ubu1 full workspace (scripts/test.sh clippy workspace): 2399/2452, the 53 failures environmental (46 userfaultfd without vm.unprivileged_userfaultfd, grants/jail tests needing root and other users, extentd tests, a page-cache check on ZFS) but one: fuse_differential's root reading mode 0 once under load, filed TASK-306. scripts/upstream-changes.py --check passes. Go bindings regenerated (go/generate.sh --check passes).
+
+Main CI 42622404140 green at 618ffbcd9 on every job (test (workspace) and pjdfstest-fuse included); it stands in for a ubu1 workspace run as root, which ubu1's non-root user can't make.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+One host FUSE mount serves any number of stores: fxdax-mount --control SOCKET --stores DIR [--bucket URL] MOUNTPOINT, with a gRPC control API (proto/fxdax/mount/v1; fxdax-mount attach/detach/list; Go bindings). Attach takes a branch of the bucket, its lease with it, into DIR/NAME (Storage::take) and shows it at MOUNTPOINT/NAME; Detach takes the name away at once, has the kernel drop every name it holds of the store (the server tracks them through renames, unlinks and forgets), and unmounts it, written back and its lease let go, once the kernel forgets its last node, or at once with force. fuse::Server packs a store's slot in node IDs' and inode numbers' top 16 bits; nothing is made in the root (EPERM) or moved between stores (EXDEV). Verified: fuse::server::stores_tests (5), tests/fuse_mount.rs one_mount_attaches_and_detaches_many_stores (detach with a file open, reattach from the store and from the bucket) on ubu1 and in a Linux container, macOS fxdax 330/330, main CI 42622404140 green. Landed in 43ca59a93.
+<!-- SECTION:FINAL_SUMMARY:END -->
