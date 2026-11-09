@@ -6,7 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-11-08 10:38'
-updated_date: '2026-11-09 00:50'
+updated_date: '2026-11-09 01:35'
 labels:
   - bug
   - flaky
@@ -40,4 +40,6 @@ GCE validation run B (2026-11-08, main 08d444ef7, debug kernel: KCSAN, lockdep; 
 2026-11-08: failed on the release kernel too (GCE fxdax-test-r1001-t1492, n2-standard-16, fxfs-guest-checks-dax seed 1794222176066265452, at the tracepoints commit ad266aff6's parent tree plus it): 268435456 bytes, 240873472 free before, 253026304 after, -12152832 short; reserved 14139932, then 5202908 (the reservation grew -8937024). It passed in the same commit's first release run and its debug run.
 
 2026-11-08, TASK-269 GCE debug round (run-20261108T233114Z-d2a31963, vendor/firecracker fxdax-v1.16.1-r1): failed again in fxfs-guest-checks (seed 1793593445840806806) and fxfs-guest-checks-dax-small (seed 1793647760234740270), same check; fxfs-guest-checks-dax and -dax-delay passed.
+
+2026-11-09: seen on the release kernel too, over virtio-PCI (TASK-267 GCE pcirel5, seed 1794651830648838433): 268435456 bytes, 242372608 free before, 254468096 after, -12095488 short; reserved 13202664, then 4308976 (the reservation grew -8893688). Passed in pcidbg4 and every other PCI round.
 <!-- SECTION:NOTES:END -->
