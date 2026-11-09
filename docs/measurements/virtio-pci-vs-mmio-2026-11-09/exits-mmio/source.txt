@@ -1,0 +1,10 @@
+revision 68afd0eb576325796b14a9a79f2a7e4634bab764
+firecracker 87ddcbefa28f4151dc40c45878d7b06f09ed4604
+changed  M docs/measurements/fs-bench-history.md
+changed ?? "backlog/tasks/task-267 - Firecracker-VMs-on-virtio-PCI-the-extent-device-too-measure-MMIO-vs-PCI-on-GCE.md"
+changed ?? "backlog/tasks/task-268 - aarch64-guests-over-virtio-PCI-verify-then-make-PCI-the-default-there.md"
+changed ?? "backlog/tasks/task-270 - vmm-unit-tests-fail-on-mains-Firecracker-three-assume-upstreams-OR-of-feature-pages-test_set_tsc-fails-under-GCEs-nested-KVM.md"
+changed ?? docs/measurements/gce-fs-bench-2026-11-08T2335Z-54d567eb/
+changed ?? docs/measurements/gce-fs-bench-2026-11-09T0027Z-b31a7b8b/
+changed ?? docs/measurements/gce-fs-bench-2026-11-09T0047Z-529f4b62/
+4c7d7d5fce7eee96b45b33d38bc5f9b06f6df6612487d5b5388f726c1a7a12c3  source.tar.gz

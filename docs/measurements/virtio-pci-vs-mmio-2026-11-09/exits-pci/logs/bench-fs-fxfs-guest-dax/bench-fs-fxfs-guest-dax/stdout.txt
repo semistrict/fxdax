@@ -1,0 +1,3 @@
+OBSERVED mtime-ahead-of-guest-ms -5.334
+RESULT create-fsync ops/s higher 3441.144
+DONE

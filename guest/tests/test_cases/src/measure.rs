@@ -341,7 +341,7 @@ mod guest {
         said.push(format!("guest_faults={}", count("pgfault")));
         said.push(format!("guest_major_faults={}", count("pgmajfault")));
         said.push(format!("guest_memmap={}", count("nr_memmap_pages") * page_size()));
-        if let Some(boot) = boot_ns() {
+        if let Some(boot) = crate::kernel_log::init_started_ns() {
             said.push(format!("guest_boot_ns={boot}"));
         }
         for (name, value) in windows() {
@@ -363,18 +363,6 @@ mod guest {
     fn page_size() -> u64 {
         // SAFETY: A plain system call.
         unsafe { nix::libc::sysconf(nix::libc::_SC_PAGESIZE) as u64 }
-    }
-
-    /// How long the kernel took from its start to running init, as its log's record of it says,
-    /// if the log still has it: `PRIORITY,SEQUENCE,MICROSECONDS,FLAGS;Run INIT as init process`.
-    fn boot_ns() -> Option<u64> {
-        crate::kernel_log::records().iter().find_map(|record| {
-            let (header, message) = record.split_once(';')?;
-            if !(message.starts_with("Run ") && message.trim_end().ends_with(" as init process")) {
-                return None;
-            }
-            Some(header.split(',').nth(2)?.parse::<u64>().ok()? * 1000)
-        })
     }
 
     /// The extent devices' DAX windows, all told: `window`, `window_made` and `window_made_ns`,

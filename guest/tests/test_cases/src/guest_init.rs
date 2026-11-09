@@ -89,8 +89,25 @@ pub fn set_up() -> Init {
         forward(libc::STDOUT_FILENO, (STDOUT_START, STDOUT_END), &console),
         forward(libc::STDERR_FILENO, (STDERR_START, STDERR_END), &console),
     ];
+    say_boot(&console);
     start_watchdog();
     Init { console, forwarded }
+}
+
+/// fxdax: says on the console, beside the kernel's messages, how long the guest took to boot:
+/// its kernel from its start to running init, as the kernel's log has it, and the guest to here,
+/// the agent set up, by CLOCK_BOOTTIME, as `fxdax: boot kernel_ns=K agent_ns=A`; what virtio-PCI's
+/// enumeration costs against MMIO's (TASK-267).
+fn say_boot(mut console: &File) {
+    let mut now = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+    // SAFETY: A plain system call, which fills `now`.
+    if unsafe { libc::clock_gettime(libc::CLOCK_BOOTTIME, &mut now) } != 0 {
+        return;
+    }
+    let agent = now.tv_sec as u64 * 1_000_000_000 + now.tv_nsec as u64;
+    let kernel = crate::kernel_log::init_started_ns()
+        .map_or_else(|| "unknown".to_owned(), |ns| ns.to_string());
+    let _ = writeln!(console, "fxdax: boot kernel_ns={kernel} agent_ns={agent}");
 }
 
 /// fxdax: says where the guest is stuck if the test still runs [`crate::GUEST_WATCHDOG`] seconds

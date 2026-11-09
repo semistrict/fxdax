@@ -1,0 +1,11 @@
+[    0.114858] PCI: Fatal: No config space access function found
+[    0.143308] PCI: System does not support PCI
+[    0.297720] check access for rdinit=/init failed: -2, ignoring
+fxdax: boot kernel_ns=327078000 agent_ns=344836578
+iteration 1/1
+OBSERVED mtime-ahead-of-guest-ms -3.743
+RESULT create-fsync ops/s higher 2781.099
+FXFS create-fsync: device_commits 200, device_commits_ns 22849539, device_write_bytes 1638400, device_writes 400, device_writes_ns 43434970, fsyncs 400, metadata_reserved_bytes 2326196, seal_waits 200, seal_waits_ns 82866, seals 200, seals_ns 24530324
+REQUESTS create-fsync: write 2.00 (100 µs each) per operation
+DONE
+[    0.529625] reboot: Restarting system

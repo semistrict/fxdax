@@ -1,0 +1,18 @@
+{
+ "commit": "68afd0eb576325796b14a9a79f2a7e4634bab764-dirty",
+ "knobs": {
+  "FXDAX_BENCH_CASES": "bench-fs-fxfs-guest bench-fs-fxfs-guest-dax bench-fs-ext4-guest-kernel",
+  "FXDAX_BENCH_GROUPS": "io,files,fsync",
+  "FXDAX_BENCH_ITERATIONS": "3",
+  "FXDAX_BENCH_NOTE": "TASK-267: virtio transport mmio, A/B with the other on this host, same guest kernel and source (Firecracker 87ddcbefa)",
+  "FXDAX_EXTENTD_MEMORY": "8589934592",
+  "FXDAX_GUEST_KERNEL_BUILD": "release",
+  "FXDAX_VIRTIO_TRANSPORT": "mmio"
+ },
+ "rounds": 1,
+ "cases": [
+  "bench-fs-ext4-guest-kernel",
+  "bench-fs-fxfs-guest",
+  "bench-fs-fxfs-guest-dax"
+ ]
+}

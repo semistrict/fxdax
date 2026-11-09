@@ -1,0 +1,100 @@
+OBSERVED mtime-ahead-of-guest-ms -5.447
+RESULT seq-write MiB/s higher 107.203
+RESULT rand-read-cold IOPS higher 11677.833
+RESULT seq-read-cold MiB/s higher 404.423
+RESULT seq-read-warm MiB/s higher 11278.861
+RESULT rand-read-warm IOPS higher 851890.055
+RESULT mmap-seq-read MiB/s higher 9846.154
+OBSERVED mmap-seq-read-faults-per-mib 5.5
+RESULT rand-write IOPS higher 4987.519
+RESULT mmap-rand-read IOPS higher 1307797.101
+RESULT mmap-rand-write IOPS higher 63503.876
+RESULT fsync-append IOPS higher 2938.307
+RESULT sqlite-pread-scan MiB/s higher 160.216
+OBSERVED sqlite-pread-scan-faults-per-mib 2.7
+RESULT sqlite-pread-scan-warm MiB/s higher 2777.586
+OBSERVED sqlite-pread-scan-warm-faults-per-mib 2.6
+RESULT sqlite-mmap-scan MiB/s higher 2808.897
+OBSERVED sqlite-mmap-scan-faults-per-mib 1.7
+RESULT sqlite-mmap-scan-warm MiB/s higher 3002.227
+OBSERVED sqlite-mmap-scan-warm-faults-per-mib 1.7
+RESULT create ops/s higher 77279.866
+RESULT stat-cold ops/s higher 193088.662
+RESULT stat-warm ops/s higher 1395350.135
+RESULT lookup-missing ops/s higher 475696.997
+RESULT readdir ops/s higher 3489962.867
+RESULT read-small-cold ops/s higher 37948.114
+RESULT chmod ops/s higher 475344.702
+RESULT setxattr ops/s higher 203895.006
+RESULT link ops/s higher 105053.493
+RESULT rename ops/s higher 81615.184
+RESULT rename-across ops/s higher 67812.722
+RESULT unlink ops/s higher 187826.072
+RESULT create-fsync ops/s higher 2598.858
+OBSERVED mtime-ahead-of-guest-ms -4.985
+RESULT seq-write MiB/s higher 142.539
+RESULT rand-read-cold IOPS higher 12291.073
+RESULT seq-read-cold MiB/s higher 401.254
+RESULT seq-read-warm MiB/s higher 11481.259
+RESULT rand-read-warm IOPS higher 858091.954
+RESULT mmap-seq-read MiB/s higher 10240.000
+OBSERVED mmap-seq-read-faults-per-mib 5.5
+RESULT rand-write IOPS higher 5499.832
+RESULT mmap-rand-read IOPS higher 1311490.755
+RESULT mmap-rand-write IOPS higher 59795.620
+RESULT fsync-append IOPS higher 2684.142
+RESULT sqlite-pread-scan MiB/s higher 164.488
+OBSERVED sqlite-pread-scan-faults-per-mib 2.7
+RESULT sqlite-pread-scan-warm MiB/s higher 2724.159
+OBSERVED sqlite-pread-scan-warm-faults-per-mib 2.6
+RESULT sqlite-mmap-scan MiB/s higher 2930.746
+OBSERVED sqlite-mmap-scan-faults-per-mib 1.7
+RESULT sqlite-mmap-scan-warm MiB/s higher 3037.165
+OBSERVED sqlite-mmap-scan-warm-faults-per-mib 1.6
+RESULT create ops/s higher 82157.728
+RESULT stat-cold ops/s higher 194723.310
+RESULT stat-warm ops/s higher 1291708.459
+RESULT lookup-missing ops/s higher 503930.659
+RESULT readdir ops/s higher 3758317.627
+RESULT read-small-cold ops/s higher 37134.799
+RESULT chmod ops/s higher 455169.761
+RESULT setxattr ops/s higher 198430.219
+RESULT link ops/s higher 100409.525
+RESULT rename ops/s higher 79706.498
+RESULT rename-across ops/s higher 67157.250
+RESULT unlink ops/s higher 329184.132
+RESULT create-fsync ops/s higher 2487.191
+OBSERVED mtime-ahead-of-guest-ms -5.540
+RESULT seq-write MiB/s higher 140.428
+RESULT rand-read-cold IOPS higher 12020.543
+RESULT seq-read-cold MiB/s higher 399.376
+RESULT seq-read-warm MiB/s higher 11266.867
+RESULT rand-read-warm IOPS higher 855647.676
+RESULT mmap-seq-read MiB/s higher 10240.000
+OBSERVED mmap-seq-read-faults-per-mib 5.5
+RESULT rand-write IOPS higher 5728.671
+RESULT mmap-rand-read IOPS higher 1308081.459
+RESULT mmap-rand-write IOPS higher 59362.319
+RESULT fsync-append IOPS higher 3002.933
+RESULT sqlite-pread-scan MiB/s higher 164.013
+OBSERVED sqlite-pread-scan-faults-per-mib 2.7
+RESULT sqlite-pread-scan-warm MiB/s higher 2759.384
+OBSERVED sqlite-pread-scan-warm-faults-per-mib 2.6
+RESULT sqlite-mmap-scan MiB/s higher 2909.068
+OBSERVED sqlite-mmap-scan-faults-per-mib 1.7
+RESULT sqlite-mmap-scan-warm MiB/s higher 3036.971
+OBSERVED sqlite-mmap-scan-warm-faults-per-mib 1.6
+RESULT create ops/s higher 82390.155
+RESULT stat-cold ops/s higher 194069.376
+RESULT stat-warm ops/s higher 1322215.266
+RESULT lookup-missing ops/s higher 445128.558
+RESULT readdir ops/s higher 3375783.815
+RESULT read-small-cold ops/s higher 37197.943
+RESULT chmod ops/s higher 441375.901
+RESULT setxattr ops/s higher 177808.993
+RESULT link ops/s higher 100084.677
+RESULT rename ops/s higher 79726.745
+RESULT rename-across ops/s higher 65929.407
+RESULT unlink ops/s higher 317358.461
+RESULT create-fsync ops/s higher 2487.600
+DONE

@@ -22,6 +22,18 @@ pub fn records() -> Vec<String> {
     kmsg().map_or_else(Vec::new, read)
 }
 
+/// How long the kernel took from its start to running init, as its log's record of it says,
+/// if the log still has it: `PRIORITY,SEQUENCE,MICROSECONDS,FLAGS;Run INIT as init process`.
+pub fn init_started_ns() -> Option<u64> {
+    records().iter().find_map(|record| {
+        let (header, message) = record.split_once(';')?;
+        if !(message.starts_with("Run ") && message.trim_end().ends_with(" as init process")) {
+            return None;
+        }
+        Some(header.split(',').nth(2)?.parse::<u64>().ok()? * 1000)
+    })
+}
+
 /// fxdax: the guest's stacks, its CPUs', blocked tasks' and every task's (sysrq l, w and t), each
 /// record as "kernel: RECORD": the kernel's hung task reports name only tasks in uninterruptible
 /// sleep, not one looping, or sleeping killably, holding what they wait for (load_during_move's,

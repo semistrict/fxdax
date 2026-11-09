@@ -1,0 +1,9 @@
+[    0.303975] check access for rdinit=/init failed: -2, ignoring
+fxdax: boot kernel_ns=339046000 agent_ns=364715749
+iteration 1/1
+OBSERVED mtime-ahead-of-guest-ms -5.334
+RESULT create-fsync ops/s higher 3441.144
+FXFS create-fsync: device_commits 200, device_commits_ns 14746667, device_write_bytes 1638400, device_writes 400, device_writes_ns 28424162, fsyncs 400, metadata_reserved_bytes 2326196, seal_waits 200, seal_waits_ns 65676, seals 200, seals_ns 16400607
+REQUESTS create-fsync: write 2.00 (58 µs each) per operation
+DONE
+[    0.541431] reboot: Restarting system

@@ -1,0 +1,234 @@
+   Compiling fxdax v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fxdax)
+    Finished `release` profile [optimized] target(s) in 1m 10s
+    Finished `release` profile [optimized] target(s) in 0.18s
+   Compiling fxdax v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fxdax)
+   Compiling vmm v0.1.0 (/var/lib/fxdax-test/bench-tree/vendor/firecracker/src/vmm)
+   Compiling firecracker v1.16.1 (/var/lib/fxdax-test/bench-tree/vendor/firecracker/src/firecracker)
+    Finished `release` profile [optimized] target(s) in 1m 57s
+warning: method `unallowed` is never used
+   --> test_cases/src/differential.rs:194:12
+    |
+156 | impl Differences {
+    | ---------------- method in this implementation
+...
+194 |     pub fn unallowed(&self) -> impl Iterator<Item = (&Difference, &Seen)> {
+    |            ^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+
+running 114 tests
+....................................................................................... 87/114
+...........................
+test result: ok. 114 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 58.94s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Compiling fxdax v0.1.0 (/var/lib/fxdax-test/bench-tree/crates/fxdax)
+   Compiling vmm v0.1.0 (/var/lib/fxdax-test/bench-tree/vendor/firecracker/src/vmm)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 47.54s
+────────────
+ Nextest run ID 0aae67c0-a561-4426-9a17-b48730261c4a with nextest profile: default
+    Starting 25 tests across 1 binary (726 tests skipped)
+        PASS [   0.008s] ( 1/25) vmm devices::virtio::extent::persist::tests::snapshots_of_other_protocols_are_refused
+        PASS [   0.008s] ( 2/25) vmm devices::virtio::extent::device::tests::unxorshift_undoes_the_clocks_xorshift
+        PASS [   0.008s] ( 3/25) vmm devices::virtio::extent::device::tests::a_windows_private_pages_are_not_its_size
+        PASS [   0.008s] ( 4/25) vmm devices::virtio::extent::device::tests::branches_are_not_the_clocks
+        PASS [   0.008s] ( 5/25) vmm devices::virtio::extent::tests::answers_to_shrinks_no_longer_asked_change_nothing
+        PASS [   0.008s] ( 6/25) vmm devices::virtio::extent::device::tests::the_configuration_says_its_version_first
+        PASS [   0.008s] ( 7/25) vmm devices::virtio::extent::device::tests::workers_start_all_or_none
+        PASS [   0.008s] ( 8/25) vmm devices::virtio::extent::device::tests::drivers_take_every_feature_offered
+        PASS [   0.007s] ( 9/25) vmm devices::virtio::extent::window::tests::windows_are_placed_as_their_transport_needs
+        PASS [   0.007s] (10/25) vmm devices::virtio::extent::tests::stats_are_asked_of_guests_that_take_asks
+        PASS [   0.007s] (11/25) vmm devices::virtio::extent::worker::tests::chains_writing_past_u32_are_refused
+        PASS [   0.031s] (12/25) vmm devices::virtio::extent::worker::tests::test_refuses_bad_requests
+        PASS [   0.031s] (13/25) vmm devices::virtio::extent::worker::tests::stats_go_to_the_daemon
+        PASS [   0.038s] (14/25) vmm devices::virtio::extent::worker::tests::test_follows_a_writer
+        PASS [   0.008s] (15/25) vmm vmm_config::extent::tests::test_deserialize
+        PASS [   0.009s] (16/25) vmm devices::virtio::transport::pci::device::tests::test_shm_bar
+        PASS [   0.034s] (17/25) vmm devices::virtio::extent::worker::tests::test_roots_and_info
+        PASS [   0.006s] (18/25) vmm vmm_config::extent::tests::test_insert
+        PASS [   0.006s] (19/25) vmm vstate::vcpu::tests::efaults_given_up_on_tell_where
+        PASS [   0.008s] (20/25) vmm vmm_config::extent::tests::test_insert_invalid
+        PASS [   0.041s] (21/25) vmm devices::virtio::extent::worker::tests::test_writes_and_reads
+        PASS [   0.007s] (22/25) vmm vstate::vcpu::tests::test_exit_code_sent_before_the_exit_event
+        PASS [   0.077s] (23/25) vmm devices::virtio::extent::worker::tests::test_frees_many_in_one_request
+        PASS [   0.077s] (24/25) vmm devices::virtio::extent::worker::tests::test_refuses_many_past_their_most
+        PASS [   9.779s] (25/25) vmm devices::virtio::extent::worker::tests::test_answers_whatever_a_driver_asks
+────────────
+     Summary [   9.788s] 25 tests run: 25 passed, 726 skipped
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.21s
+────────────
+ Nextest run ID fac04471-7362-4a88-9ed7-4ad5ae1f0215 with nextest profile: default
+    Starting 30 tests across 1 binary (721 tests skipped)
+        PASS [   0.073s] ( 1/30) vmm device_manager::pci_mngr::tests::test_device_manager_persistence
+        PASS [   0.063s] ( 2/30) vmm device_manager::persist::tests::test_device_manager_persistence
+        PASS [   0.006s] ( 3/30) vmm devices::virtio::transport::pci::common_config::tests::test_bad_width_reads
+        PASS [   0.005s] ( 4/30) vmm devices::virtio::transport::pci::common_config::tests::test_config_msix_vector
+        PASS [   0.005s] ( 5/30) vmm devices::virtio::transport::pci::common_config::tests::test_device_activated_blocks_transitions
+        PASS [   0.005s] ( 6/30) vmm devices::virtio::transport::pci::common_config::tests::test_device_feature
+        PASS [   0.004s] ( 7/30) vmm devices::virtio::transport::pci::common_config::tests::test_device_status
+        PASS [   0.005s] ( 8/30) vmm devices::virtio::transport::pci::common_config::tests::test_device_status_invalid_transitions
+        PASS [   0.004s] ( 9/30) vmm devices::virtio::transport::pci::common_config::tests::test_driver_feature
+        PASS [   0.004s] (10/30) vmm devices::virtio::transport::pci::common_config::tests::test_num_queues
+        PASS [   0.004s] (11/30) vmm devices::virtio::transport::pci::common_config::tests::test_queue_addresses
+        PASS [   0.004s] (12/30) vmm devices::virtio::transport::pci::common_config::tests::test_queue_enable
+        PASS [   0.004s] (13/30) vmm devices::virtio::transport::pci::common_config::tests::test_queue_msix_vector
+        PASS [   0.004s] (14/30) vmm devices::virtio::transport::pci::common_config::tests::test_queue_notify_off
+        PASS [   0.004s] (15/30) vmm devices::virtio::transport::pci::common_config::tests::test_queue_size
+        PASS [   0.004s] (16/30) vmm devices::virtio::transport::pci::common_config::tests::write_base_regs
+        PASS [   0.023s] (17/30) vmm devices::virtio::transport::pci::device::tests::test_activate_failure_sets_needs_reset
+        PASS [   0.023s] (18/30) vmm devices::virtio::transport::pci::device::tests::test_capabilities
+        PASS [   0.022s] (19/30) vmm devices::virtio::transport::pci::device::tests::test_device_initialization
+        PASS [   0.023s] (20/30) vmm devices::virtio::transport::pci::device::tests::test_failed_reset_blocks_reinitialization
+        PASS [   0.026s] (21/30) vmm devices::virtio::transport::pci::device::tests::test_isr_capability
+        PASS [   0.024s] (22/30) vmm devices::virtio::transport::pci::device::tests::test_no_shared_memory_capabilities
+        PASS [   0.020s] (23/30) vmm devices::virtio::transport::pci::device::tests::test_notification_capability
+        PASS [   0.021s] (24/30) vmm devices::virtio::transport::pci::device::tests::test_pci_configuration_cap
+        PASS [   0.022s] (25/30) vmm devices::virtio::transport::pci::device::tests::test_pci_device_config
+        PASS [   0.005s] (26/30) vmm devices::virtio::transport::pci::device::tests::test_pci_device_ids
+        PASS [   0.021s] (27/30) vmm devices::virtio::transport::pci::device::tests::test_reading_bars
+        PASS [   0.027s] (28/30) vmm devices::virtio::transport::pci::device::tests::test_reset_then_reinitialization
+        PASS [   0.021s] (29/30) vmm devices::virtio::transport::pci::device::tests::test_shared_memory_capabilities
+        PASS [   0.004s] (30/30) vmm devices::virtio::transport::pci::device::tests::test_shm_bar
+────────────
+     Summary [   0.484s] 30 tests run: 30 passed, 721 skipped
+warning: method `unallowed` is never used
+   --> test_cases/src/differential.rs:194:12
+    |
+156 | impl Differences {
+    | ---------------- method in this implementation
+...
+194 |     pub fn unallowed(&self) -> impl Iterator<Item = (&Difference, &Seen)> {
+    |            ^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+[bench-fs-ext4-guest-kernel] ... REPORT (78 s of 5400 s)
+  ext4-guest-kernel (3 iterations)
+
+  workload                     median          min          max  unit
+  seq-write                     192.3        121.5        193.5  MiB/s
+  rand-read-cold              14384.5      13429.5      14720.6  IOPS
+  seq-read-cold                3282.1       1306.1       3657.1  MiB/s
+  seq-read-warm                8493.3       8464.8       8532.2  MiB/s
+  rand-read-warm             939612.7     932640.7     940862.6  IOPS
+  mmap-seq-read                9846.2       9142.9       9846.2  MiB/s
+  rand-write                  14867.5      10008.6      15003.7  IOPS
+  mmap-rand-read            1292980.5    1284010.5    1293528.7  IOPS
+  mmap-rand-write              8623.2       8325.2      11291.5  IOPS
+  fsync-append                  384.8        378.3        402.8  IOPS
+  sqlite-pread-scan            1710.2        609.4       2592.0  MiB/s
+  sqlite-pread-scan-warm       2985.5       2790.3       2993.5  MiB/s
+  sqlite-mmap-scan             2559.6       2407.8       2724.0  MiB/s
+  sqlite-mmap-scan-warm        2943.2       2902.3       2986.6  MiB/s
+  create                      97345.8      87708.6      97938.5  ops/s
+  stat-cold                  307300.9     215316.2     327160.9  ops/s
+  stat-warm                 1289572.1    1285090.2    1381622.9  ops/s
+  lookup-missing             438738.8     371781.2     446723.6  ops/s
+  readdir                   2984264.0    2933837.6    3049845.1  ops/s
+  read-small-cold             15298.0      15246.1      15317.1  ops/s
+  chmod                      733678.7     518646.6     791550.4  ops/s
+  setxattr                   618849.2     604043.8     631472.8  ops/s
+  link                       158597.6     157839.8     159451.3  ops/s
+  rename                     118934.1     111716.7     119757.3  ops/s
+  rename-across              103501.0     103262.0     105068.4  ops/s
+  unlink                     430639.3     428918.0     434352.2  ops/s
+  create-fsync                  361.1        359.4        380.4  ops/s
+  mmap-seq-read-faults-per-mib: [6.6, 6.6, 6.6]
+  mtime-ahead-of-guest-ms: [-6.0, -4.349, -4.835]
+  sqlite-mmap-scan-faults-per-mib: [2.1, 2.1, 2.1]
+  sqlite-mmap-scan-warm-faults-per-mib: [2.1, 2.1, 2.1]
+  sqlite-pread-scan-faults-per-mib: [2.7, 2.7, 2.6]
+  sqlite-pread-scan-warm-faults-per-mib: [2.6, 2.6, 2.6]
+
+(See test artifacts at: /home/ramon/run-20261109T002754Z-d27d8eb8/results/logs/bench-fs-ext4-guest-kernel)
+
+OK - 0/0 passed (1 reports)
+[bench-fs-fxfs-guest] ... REPORT (94 s of 5400 s)
+  fxfs-guest (3 iterations)
+
+  workload                     median          min          max  unit
+  seq-write                     141.4        106.2        142.9  MiB/s
+  rand-read-cold               5074.0       5010.4       5097.7  IOPS
+  seq-read-cold                 917.6        737.8        920.9  MiB/s
+  seq-read-warm                8476.3       8402.8       8634.2  MiB/s
+  rand-read-warm             939852.6     936297.9     943501.2  IOPS
+  mmap-seq-read                9142.9       8827.6       9142.9  MiB/s
+  rand-write                  75502.3      74812.8      76560.7  IOPS
+  mmap-rand-read            1255961.0    1250090.0    1259001.0  IOPS
+  mmap-rand-write              7602.8       7550.2       7805.6  IOPS
+  fsync-append                 2351.3       1674.6       2378.6  IOPS
+  sqlite-pread-scan             322.1        295.8        329.3  MiB/s
+  sqlite-pread-scan-warm       3081.1       3080.5       3117.0  MiB/s
+  sqlite-mmap-scan              828.5        826.8        835.2  MiB/s
+  sqlite-mmap-scan-warm        2873.2       2861.0       2933.4  MiB/s
+  create                      81172.7      77745.7      83487.0  ops/s
+  stat-cold                  195531.7     163685.6     196229.4  ops/s
+  stat-warm                 1336394.6     862115.8    1402559.0  ops/s
+  lookup-missing             482023.4     463842.2     519751.5  ops/s
+  readdir                   3395170.7    3003435.9    3501363.8  ops/s
+  read-small-cold              6671.7       6454.7       6880.6  ops/s
+  chmod                      404873.5     320147.1     422778.9  ops/s
+  setxattr                   175622.4     171484.9     178973.1  ops/s
+  link                        97898.5      95133.1      99685.9  ops/s
+  rename                      80763.6      77063.7      81039.7  ops/s
+  rename-across               67676.9      63980.7      68484.8  ops/s
+  unlink                     179103.9     171905.5     359847.9  ops/s
+  create-fsync                 2163.0       1995.9       2421.9  ops/s
+  mmap-seq-read-faults-per-mib: [13.7, 13.7, 13.7]
+  mtime-ahead-of-guest-ms: [-4.514, -6.747, -5.233]
+  sqlite-mmap-scan-faults-per-mib: [9.6, 9.6, 9.6]
+  sqlite-mmap-scan-warm-faults-per-mib: [9.3, 9.3, 9.3]
+  sqlite-pread-scan-faults-per-mib: [2.7, 2.6, 2.6]
+  sqlite-pread-scan-warm-faults-per-mib: [2.6, 2.6, 2.6]
+
+(See test artifacts at: /home/ramon/run-20261109T002754Z-d27d8eb8/results/logs/bench-fs-fxfs-guest)
+
+OK - 0/0 passed (1 reports)
+[bench-fs-fxfs-guest-dax] ... REPORT (93 s of 5400 s)
+  fxfs-guest-dax (3 iterations)
+
+  workload                     median          min          max  unit
+  seq-write                     140.4        107.2        142.5  MiB/s
+  rand-read-cold              12020.5      11677.8      12291.1  IOPS
+  seq-read-cold                 401.3        399.4        404.4  MiB/s
+  seq-read-warm               11278.9      11266.9      11481.3  MiB/s
+  rand-read-warm             855647.7     851890.1     858092.0  IOPS
+  mmap-seq-read               10240.0       9846.2      10240.0  MiB/s
+  rand-write                   5499.8       4987.5       5728.7  IOPS
+  mmap-rand-read            1308081.5    1307797.1    1311490.8  IOPS
+  mmap-rand-write             59795.6      59362.3      63503.9  IOPS
+  fsync-append                 2938.3       2684.1       3002.9  IOPS
+  sqlite-pread-scan             164.0        160.2        164.5  MiB/s
+  sqlite-pread-scan-warm       2759.4       2724.2       2777.6  MiB/s
+  sqlite-mmap-scan             2909.1       2808.9       2930.7  MiB/s
+  sqlite-mmap-scan-warm        3037.0       3002.2       3037.2  MiB/s
+  create                      82157.7      77279.9      82390.2  ops/s
+  stat-cold                  194069.4     193088.7     194723.3  ops/s
+  stat-warm                 1322215.3    1291708.5    1395350.1  ops/s
+  lookup-missing             475697.0     445128.6     503930.7  ops/s
+  readdir                   3489962.9    3375783.8    3758317.6  ops/s
+  read-small-cold             37197.9      37134.8      37948.1  ops/s
+  chmod                      455169.8     441375.9     475344.7  ops/s
+  setxattr                   198430.2     177809.0     203895.0  ops/s
+  link                       100409.5     100084.7     105053.5  ops/s
+  rename                      79726.7      79706.5      81615.2  ops/s
+  rename-across               67157.2      65929.4      67812.7  ops/s
+  unlink                     317358.5     187826.1     329184.1  ops/s
+  create-fsync                 2487.6       2487.2       2598.9  ops/s
+  mmap-seq-read-faults-per-mib: [5.5, 5.5, 5.5]
+  mtime-ahead-of-guest-ms: [-5.447, -4.985, -5.54]
+  sqlite-mmap-scan-faults-per-mib: [1.7, 1.7, 1.7]
+  sqlite-mmap-scan-warm-faults-per-mib: [1.7, 1.6, 1.6]
+  sqlite-pread-scan-faults-per-mib: [2.7, 2.7, 2.7]
+  sqlite-pread-scan-warm-faults-per-mib: [2.6, 2.6, 2.6]
+
+(See test artifacts at: /home/ramon/run-20261109T002754Z-d27d8eb8/results/logs/bench-fs-fxfs-guest-dax)
+
+OK - 0/0 passed (1 reports)
+Logs: /home/ramon/run-20261109T002754Z-d27d8eb8/results/logs
+Results: /home/ramon/run-20261109T002754Z-d27d8eb8/results

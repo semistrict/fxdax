@@ -113,17 +113,35 @@ if part guest; then
     cargo nextest run --manifest-path "$root/guest/tests/Cargo.toml" -p runner
 fi
 # The VMM's own tests that fxdax adds to, which no other suite reaches: its extent device's
-# (TASK-79.102) and its vCPUs' exits' (TASK-187), on Linux alone, which the VMM builds for, with no
-# KVM. With its fxdax feature, as fxdax builds it (scripts/firecracker-cargo.sh), and those its
-# feature gates: the extent device's, its vCPUs' exits', its MMIO transport's shared memory
-# regions', its features pages' and its signal handlers'. Each extent test serves its store from a
-# daemon in its process, a host's: its stores' branches in a bucket in memory, as of placement 1,
-# which without FXDAX_EXTENTD_REMOTE and FXDAX_EXTENTD_TOKEN fails EIO opening it (TASK-220).
-# userfaultfd-sys's bindgen needs libclang to build it.
+# (TASK-79.102), its vCPUs' exits' (TASK-187) and the PCI transport's shared memory BAR's and device
+# IDs' (TASK-267), on Linux alone, which the VMM builds for, with no KVM. With its fxdax feature, as
+# fxdax builds it (scripts/firecracker-cargo.sh), and those its feature gates: the extent
+# device's, its vCPUs' exits', its MMIO transport's shared memory regions', its features pages' and
+# its signal handlers'. Each extent test serves its store from a daemon in its process, a host's:
+# its stores' branches in a bucket in memory, as of placement 1, which without
+# FXDAX_EXTENTD_REMOTE and FXDAX_EXTENTD_TOKEN fails EIO opening it (TASK-220). userfaultfd-sys's
+# bindgen needs libclang to build it.
 if part firecracker; then
     tests='test(/extent::/) | test(/vcpu::tests::(efaults_|test_exit_code_)/)'
     tests+=' | test(/mmio::tests::test_shm_regions/) | test(/device::tests::test_features_/)'
     tests+=' | test(/signal_handler::/)'
+    tests+=' | test(/transport::pci::device::tests::test_(shm_bar|pci_device_ids)$/)'
     FXDAX_EXTENTD_REMOTE=memory:///vmm FXDAX_EXTENTD_TOKEN=1 \
         "$root/scripts/firecracker-cargo.sh" nextest run -p vmm --lib --features fxdax -E "$tests"
+    # Where KVM is, as on the GCE hosts: the PCI transport's tests and the device managers'
+    # persistence tests, which make VMs, the extent device's window a BAR of its device's over PCI
+    # (TASK-267); with FXDAX_FIRECRACKER_TESTS=all, the vmm crate's whole suite, its integration
+    # tests too, in their place. One at a time, as Firecracker runs them (--test-threads=1): they
+    # share host resources, such as the tap device the persistence tests open by one name.
+    if [[ -w /dev/kvm ]]; then
+        if [[ ${FXDAX_FIRECRACKER_TESTS:-} == all ]]; then
+            FXDAX_EXTENTD_REMOTE=memory:///vmm FXDAX_EXTENTD_TOKEN=1 \
+                "$root/scripts/firecracker-cargo.sh" nextest run -p vmm --features fxdax \
+                --no-fail-fast --test-threads 1
+        else
+            "$root/scripts/firecracker-cargo.sh" nextest run -p vmm --lib --features fxdax \
+                --no-fail-fast --test-threads 1 \
+                -E 'test(/transport::pci::/) | test(/device_manager::(pci_mngr|persist)::/)'
+        fi
+    fi
 fi

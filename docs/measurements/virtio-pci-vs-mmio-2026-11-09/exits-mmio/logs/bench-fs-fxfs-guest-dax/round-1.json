@@ -1,0 +1,22 @@
+{
+  "case": "bench-fs-fxfs-guest-dax",
+  "commit": "68afd0eb576325796b14a9a79f2a7e4634bab764-dirty",
+  "failed_checks": [],
+  "knobs": {
+    "FXDAX_BENCH_CASES": "bench-fs-fxfs-guest bench-fs-fxfs-guest-dax",
+    "FXDAX_BENCH_GROUPS": "fsync",
+    "FXDAX_BENCH_ITERATIONS": "1",
+    "FXDAX_BENCH_NOTE": "TASK-267: KVM exits per request, virtio transport mmio (Firecracker 87ddcbefa)",
+    "FXDAX_BENCH_PERF": "stat:kvm:kvm_exit,kvm:kvm_userspace_exit,kvm:kvm_mmio,kvm:kvm_msi_set_irq",
+    "FXDAX_EXTENTD_MEMORY": "8589934592",
+    "FXDAX_GUEST_KERNEL_BUILD": "release",
+    "FXDAX_VIRTIO_TRANSPORT": "mmio"
+  },
+  "limit_secs": 1800,
+  "outcome": "report",
+  "reason": null,
+  "replay": "FXDAX_WORKSPACE_TESTS=0 FXDAX_E2E_TEST=bench-fs-fxfs-guest-dax FXDAX_BENCH_CASES='bench-fs-fxfs-guest bench-fs-fxfs-guest-dax' FXDAX_BENCH_GROUPS=fsync FXDAX_BENCH_ITERATIONS=1 FXDAX_BENCH_NOTE='TASK-267: KVM exits per request, virtio transport mmio (Firecracker 87ddcbefa)' FXDAX_BENCH_PERF=stat:kvm:kvm_exit,kvm:kvm_userspace_exit,kvm:kvm_mmio,kvm:kvm_msi_set_irq FXDAX_EXTENTD_MEMORY=8589934592 FXDAX_GUEST_KERNEL_BUILD=release FXDAX_VIRTIO_TRANSPORT=mmio scripts/test-gce.sh all",
+  "round": 1,
+  "rounds": 1,
+  "took_secs": 4.203594347
+}

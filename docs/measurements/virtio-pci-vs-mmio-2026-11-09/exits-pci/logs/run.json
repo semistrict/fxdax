@@ -1,0 +1,18 @@
+{
+ "commit": "68afd0eb576325796b14a9a79f2a7e4634bab764-dirty",
+ "knobs": {
+  "FXDAX_BENCH_CASES": "bench-fs-fxfs-guest bench-fs-fxfs-guest-dax",
+  "FXDAX_BENCH_GROUPS": "fsync",
+  "FXDAX_BENCH_ITERATIONS": "1",
+  "FXDAX_BENCH_NOTE": "TASK-267: KVM exits per request, virtio transport pci (Firecracker 87ddcbefa)",
+  "FXDAX_BENCH_PERF": "stat:kvm:kvm_exit,kvm:kvm_userspace_exit,kvm:kvm_mmio,kvm:kvm_msi_set_irq",
+  "FXDAX_EXTENTD_MEMORY": "8589934592",
+  "FXDAX_GUEST_KERNEL_BUILD": "release",
+  "FXDAX_VIRTIO_TRANSPORT": "pci"
+ },
+ "rounds": 1,
+ "cases": [
+  "bench-fs-fxfs-guest",
+  "bench-fs-fxfs-guest-dax"
+ ]
+}

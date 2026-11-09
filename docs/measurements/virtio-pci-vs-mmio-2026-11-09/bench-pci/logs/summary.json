@@ -1,0 +1,53 @@
+{
+ "commit": "68afd0eb576325796b14a9a79f2a7e4634bab764-dirty",
+ "rounds": 1,
+ "status": 0,
+ "failed": [],
+ "cases": [
+  {
+   "case": "bench-fs-ext4-guest-kernel",
+   "outcome": "report",
+   "round": 1,
+   "rounds_passed": 1,
+   "failed_checks": [],
+   "reason": null,
+   "replay": "FXDAX_WORKSPACE_TESTS=0 FXDAX_E2E_TEST=bench-fs-ext4-guest-kernel FXDAX_BENCH_CASES='bench-fs-fxfs-guest bench-fs-fxfs-guest-dax bench-fs-ext4-guest-kernel' FXDAX_BENCH_GROUPS=io,files,fsync FXDAX_BENCH_ITERATIONS=3 FXDAX_BENCH_NOTE='TASK-267: virtio transport pci, A/B with the other on this host, same guest kernel and source (Firecracker 87ddcbefa)' FXDAX_EXTENTD_MEMORY=8589934592 FXDAX_GUEST_KERNEL_BUILD=release FXDAX_VIRTIO_TRANSPORT=pci scripts/test-gce.sh all",
+   "daemons": []
+  },
+  {
+   "case": "bench-fs-fxfs-guest",
+   "outcome": "report",
+   "round": 1,
+   "rounds_passed": 1,
+   "failed_checks": [],
+   "reason": null,
+   "replay": "FXDAX_WORKSPACE_TESTS=0 FXDAX_E2E_TEST=bench-fs-fxfs-guest FXDAX_BENCH_CASES='bench-fs-fxfs-guest bench-fs-fxfs-guest-dax bench-fs-ext4-guest-kernel' FXDAX_BENCH_GROUPS=io,files,fsync FXDAX_BENCH_ITERATIONS=3 FXDAX_BENCH_NOTE='TASK-267: virtio transport pci, A/B with the other on this host, same guest kernel and source (Firecracker 87ddcbefa)' FXDAX_EXTENTD_MEMORY=8589934592 FXDAX_GUEST_KERNEL_BUILD=release FXDAX_VIRTIO_TRANSPORT=pci scripts/test-gce.sh all",
+   "daemons": []
+  },
+  {
+   "case": "bench-fs-fxfs-guest-dax",
+   "outcome": "report",
+   "round": 1,
+   "rounds_passed": 1,
+   "failed_checks": [],
+   "reason": null,
+   "replay": "FXDAX_WORKSPACE_TESTS=0 FXDAX_E2E_TEST=bench-fs-fxfs-guest-dax FXDAX_BENCH_CASES='bench-fs-fxfs-guest bench-fs-fxfs-guest-dax bench-fs-ext4-guest-kernel' FXDAX_BENCH_GROUPS=io,files,fsync FXDAX_BENCH_ITERATIONS=3 FXDAX_BENCH_NOTE='TASK-267: virtio transport pci, A/B with the other on this host, same guest kernel and source (Firecracker 87ddcbefa)' FXDAX_EXTENTD_MEMORY=8589934592 FXDAX_GUEST_KERNEL_BUILD=release FXDAX_VIRTIO_TRANSPORT=pci scripts/test-gce.sh all",
+   "daemons": []
+  }
+ ],
+ "daemon": {
+  "daemon": "extentd",
+  "downloaded": 3164955305,
+  "bucket_read": 3275153408,
+  "store_read": 3764224
+ },
+ "knobs": {
+  "FXDAX_BENCH_CASES": "bench-fs-fxfs-guest bench-fs-fxfs-guest-dax bench-fs-ext4-guest-kernel",
+  "FXDAX_BENCH_GROUPS": "io,files,fsync",
+  "FXDAX_BENCH_ITERATIONS": "3",
+  "FXDAX_BENCH_NOTE": "TASK-267: virtio transport pci, A/B with the other on this host, same guest kernel and source (Firecracker 87ddcbefa)",
+  "FXDAX_EXTENTD_MEMORY": "8589934592",
+  "FXDAX_GUEST_KERNEL_BUILD": "release",
+  "FXDAX_VIRTIO_TRANSPORT": "pci"
+ }
+}

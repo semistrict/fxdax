@@ -1,0 +1,12 @@
+2026-11-09T00:43:15.735564103 [anonymous-instance:fc_vcpu 0] Received a VcpuEvent::Resume message with immediate_exit enabled. immediate_exit was disabled before proceeding
+2026-11-09T00:43:15.735604100 [anonymous-instance:fc_vcpu 1] Received a VcpuEvent::Resume message with immediate_exit enabled. immediate_exit was disabled before proceeding
+2026-11-09T00:43:15.884168003 [anonymous-instance:fc_vcpu 0] vcpu: IO write @ 0x70:0x1 failed: bus_error: MissingAddressRange
+2026-11-09T00:43:15.884236795 [anonymous-instance:fc_vcpu 0] vcpu: IO write @ 0x71:0x1 failed: bus_error: MissingAddressRange
+2026-11-09T00:43:15.885122221 [anonymous-instance:fc_vcpu 0] vcpu: IO write @ 0x70:0x1 failed: bus_error: MissingAddressRange
+2026-11-09T00:43:15.885142544 [anonymous-instance:fc_vcpu 0] vcpu: IO write @ 0x71:0x1 failed: bus_error: MissingAddressRange
+2026-11-09T00:43:16.004120546 [anonymous-instance:fc_vcpu 1] vcpu: IO read @ 0x87:0x1 failed: bus_error: MissingAddressRange
+2026-11-09T00:43:16.031246192 [anonymous-instance:fc_vcpu 1] Cannot acknowledge unknown features page: 2
+2026-11-09T00:43:16.031301953 [anonymous-instance:fc_vcpu 1] Cannot acknowledge unknown features page: 3
+2026-11-09T00:43:16.050787249 [anonymous-instance:fc_vcpu 1] Cannot acknowledge unknown features page: 2
+2026-11-09T00:43:16.050846542 [anonymous-instance:fc_vcpu 1] Cannot acknowledge unknown features page: 3
+2026-11-09T00:44:43.628205792 [anonymous-instance:fc_vcpu 0] Attempt to reset device when not implemented in underlying device

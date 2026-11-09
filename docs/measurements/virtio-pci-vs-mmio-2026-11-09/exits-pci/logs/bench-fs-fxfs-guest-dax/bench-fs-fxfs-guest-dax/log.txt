@@ -1,0 +1,172 @@
+#           time             counts unit events
+     0.100125041                  0      kvm:kvm_exit                                                          
+     0.100125041                  0      kvm:kvm_userspace_exit                                                
+     0.100125041                  0      kvm:kvm_mmio                                                          
+     0.100125041                  0      kvm:kvm_msi_set_irq                                                   
+     0.200336270                  0      kvm:kvm_exit                                                          
+     0.200336270                  0      kvm:kvm_userspace_exit                                                
+     0.200336270                  0      kvm:kvm_mmio                                                          
+     0.200336270                  0      kvm:kvm_msi_set_irq                                                   
+     0.300504274                  0      kvm:kvm_exit                                                          
+     0.300504274                  0      kvm:kvm_userspace_exit                                                
+     0.300504274                  0      kvm:kvm_mmio                                                          
+     0.300504274                  0      kvm:kvm_msi_set_irq                                                   
+     0.400663150                  0      kvm:kvm_exit                                                          
+     0.400663150                  0      kvm:kvm_userspace_exit                                                
+     0.400663150                  0      kvm:kvm_mmio                                                          
+     0.400663150                  0      kvm:kvm_msi_set_irq                                                   
+     0.500826840                  0      kvm:kvm_exit                                                          
+     0.500826840                  0      kvm:kvm_userspace_exit                                                
+     0.500826840                  0      kvm:kvm_mmio                                                          
+     0.500826840                  0      kvm:kvm_msi_set_irq                                                   
+     0.600985269                  0      kvm:kvm_exit                                                          
+     0.600985269                  0      kvm:kvm_userspace_exit                                                
+     0.600985269                  0      kvm:kvm_mmio                                                          
+     0.600985269                  0      kvm:kvm_msi_set_irq                                                   
+     0.701166841                  0      kvm:kvm_exit                                                          
+     0.701166841                  0      kvm:kvm_userspace_exit                                                
+     0.701166841                  0      kvm:kvm_mmio                                                          
+     0.701166841                  0      kvm:kvm_msi_set_irq                                                   
+     0.801337435                  0      kvm:kvm_exit                                                          
+     0.801337435                  0      kvm:kvm_userspace_exit                                                
+     0.801337435                  0      kvm:kvm_mmio                                                          
+     0.801337435                  0      kvm:kvm_msi_set_irq                                                   
+     0.901505200                  0      kvm:kvm_exit                                                          
+     0.901505200                  0      kvm:kvm_userspace_exit                                                
+     0.901505200                  0      kvm:kvm_mmio                                                          
+     0.901505200                  0      kvm:kvm_msi_set_irq                                                   
+     1.001696361                  0      kvm:kvm_exit                                                          
+     1.001696361                  0      kvm:kvm_userspace_exit                                                
+     1.001696361                  0      kvm:kvm_mmio                                                          
+     1.001696361                  0      kvm:kvm_msi_set_irq                                                   
+     1.101882553                  0      kvm:kvm_exit                                                          
+     1.101882553                  0      kvm:kvm_userspace_exit                                                
+     1.101882553                  0      kvm:kvm_mmio                                                          
+     1.101882553                  0      kvm:kvm_msi_set_irq                                                   
+     1.202070799      <not counted>      kvm:kvm_exit                                                          
+     1.202070799      <not counted>      kvm:kvm_userspace_exit                                                
+     1.202070799      <not counted>      kvm:kvm_mmio                                                          
+     1.202070799      <not counted>      kvm:kvm_msi_set_irq                                                   
+     1.302289116      <not counted>      kvm:kvm_exit                                                          
+     1.302289116      <not counted>      kvm:kvm_userspace_exit                                                
+     1.302289116      <not counted>      kvm:kvm_mmio                                                          
+     1.302289116      <not counted>      kvm:kvm_msi_set_irq                                                   
+     1.402499262      <not counted>      kvm:kvm_exit                                                          
+     1.402499262      <not counted>      kvm:kvm_userspace_exit                                                
+     1.402499262      <not counted>      kvm:kvm_mmio                                                          
+     1.402499262      <not counted>      kvm:kvm_msi_set_irq                                                   
+     1.502703263      <not counted>      kvm:kvm_exit                                                          
+     1.502703263      <not counted>      kvm:kvm_userspace_exit                                                
+     1.502703263      <not counted>      kvm:kvm_mmio                                                          
+     1.502703263      <not counted>      kvm:kvm_msi_set_irq                                                   
+     1.602900304                  0      kvm:kvm_exit                                                          
+     1.602900304                  0      kvm:kvm_userspace_exit                                                
+     1.602900304                  0      kvm:kvm_mmio                                                          
+     1.602900304                  0      kvm:kvm_msi_set_irq                                                   
+     1.703084754      <not counted>      kvm:kvm_exit                                                          
+     1.703084754      <not counted>      kvm:kvm_userspace_exit                                                
+     1.703084754      <not counted>      kvm:kvm_mmio                                                          
+     1.703084754      <not counted>      kvm:kvm_msi_set_irq                                                   
+     1.803275220      <not counted>      kvm:kvm_exit                                                          
+     1.803275220      <not counted>      kvm:kvm_userspace_exit                                                
+     1.803275220      <not counted>      kvm:kvm_mmio                                                          
+     1.803275220      <not counted>      kvm:kvm_msi_set_irq                                                   
+     1.903462215      <not counted>      kvm:kvm_exit                                                          
+     1.903462215      <not counted>      kvm:kvm_userspace_exit                                                
+     1.903462215      <not counted>      kvm:kvm_mmio                                                          
+     1.903462215      <not counted>      kvm:kvm_msi_set_irq                                                   
+     2.003659527      <not counted>      kvm:kvm_exit                                                          
+     2.003659527      <not counted>      kvm:kvm_userspace_exit                                                
+     2.003659527      <not counted>      kvm:kvm_mmio                                                          
+     2.003659527      <not counted>      kvm:kvm_msi_set_irq                                                   
+     2.103842983                  0      kvm:kvm_exit                                                          
+     2.103842983                  0      kvm:kvm_userspace_exit                                                
+     2.103842983                  0      kvm:kvm_mmio                                                          
+     2.103842983                  0      kvm:kvm_msi_set_irq                                                   
+     2.204040344      <not counted>      kvm:kvm_exit                                                          
+     2.204040344      <not counted>      kvm:kvm_userspace_exit                                                
+     2.204040344      <not counted>      kvm:kvm_mmio                                                          
+     2.204040344      <not counted>      kvm:kvm_msi_set_irq                                                   
+     2.304228848      <not counted>      kvm:kvm_exit                                                          
+     2.304228848      <not counted>      kvm:kvm_userspace_exit                                                
+     2.304228848      <not counted>      kvm:kvm_mmio                                                          
+     2.304228848      <not counted>      kvm:kvm_msi_set_irq                                                   
+     2.404413986      <not counted>      kvm:kvm_exit                                                          
+     2.404413986      <not counted>      kvm:kvm_userspace_exit                                                
+     2.404413986      <not counted>      kvm:kvm_mmio                                                          
+     2.404413986      <not counted>      kvm:kvm_msi_set_irq                                                   
+     2.504612000      <not counted>      kvm:kvm_exit                                                          
+     2.504612000      <not counted>      kvm:kvm_userspace_exit                                                
+     2.504612000      <not counted>      kvm:kvm_mmio                                                          
+     2.504612000      <not counted>      kvm:kvm_msi_set_irq                                                   
+     2.604799457                  0      kvm:kvm_exit                                                          
+     2.604799457                  0      kvm:kvm_userspace_exit                                                
+     2.604799457                  0      kvm:kvm_mmio                                                          
+     2.604799457                  0      kvm:kvm_msi_set_irq                                                   
+#           time             counts unit events
+     2.704976793      <not counted>      kvm:kvm_exit                                                          
+     2.704976793      <not counted>      kvm:kvm_userspace_exit                                                
+     2.704976793      <not counted>      kvm:kvm_mmio                                                          
+     2.704976793      <not counted>      kvm:kvm_msi_set_irq                                                   
+     2.805159693      <not counted>      kvm:kvm_exit                                                          
+     2.805159693      <not counted>      kvm:kvm_userspace_exit                                                
+     2.805159693      <not counted>      kvm:kvm_mmio                                                          
+     2.805159693      <not counted>      kvm:kvm_msi_set_irq                                                   
+     2.905354472      <not counted>      kvm:kvm_exit                                                          
+     2.905354472      <not counted>      kvm:kvm_userspace_exit                                                
+     2.905354472      <not counted>      kvm:kvm_mmio                                                          
+     2.905354472      <not counted>      kvm:kvm_msi_set_irq                                                   
+     3.005535771      <not counted>      kvm:kvm_exit                                                          
+     3.005535771      <not counted>      kvm:kvm_userspace_exit                                                
+     3.005535771      <not counted>      kvm:kvm_mmio                                                          
+     3.005535771      <not counted>      kvm:kvm_msi_set_irq                                                   
+     3.105760554                  0      kvm:kvm_exit                                                          
+     3.105760554                  0      kvm:kvm_userspace_exit                                                
+     3.105760554                  0      kvm:kvm_mmio                                                          
+     3.105760554                  0      kvm:kvm_msi_set_irq                                                   
+     3.205961410                  0      kvm:kvm_exit                                                          
+     3.205961410                  0      kvm:kvm_userspace_exit                                                
+     3.205961410                  0      kvm:kvm_mmio                                                          
+     3.205961410                  0      kvm:kvm_msi_set_irq                                                   
+     3.306146473                  0      kvm:kvm_exit                                                          
+     3.306146473                  0      kvm:kvm_userspace_exit                                                
+     3.306146473                  0      kvm:kvm_mmio                                                          
+     3.306146473                  0      kvm:kvm_msi_set_irq                                                   
+     3.406349965               3820      kvm:kvm_exit                                                          
+     3.406349965                 68      kvm:kvm_userspace_exit                                                
+     3.406349965                  2      kvm:kvm_mmio                                                          
+     3.406349965                  0      kvm:kvm_msi_set_irq                                                   
+     3.506578586               6578      kvm:kvm_exit                                                          
+     3.506578586                 88      kvm:kvm_userspace_exit                                                
+     3.506578586                202      kvm:kvm_mmio                                                          
+     3.506578586                  0      kvm:kvm_msi_set_irq                                                   
+     3.606786417              10696      kvm:kvm_exit                                                          
+     3.606786417                880      kvm:kvm_userspace_exit                                                
+     3.606786417                 30      kvm:kvm_mmio                                                          
+     3.606786417                  0      kvm:kvm_msi_set_irq                                                   
+     3.706978737               4830      kvm:kvm_exit                                                          
+     3.706978737                667      kvm:kvm_userspace_exit                                                
+     3.706978737                414      kvm:kvm_mmio                                                          
+     3.706978737                  1      kvm:kvm_msi_set_irq                                                   
+     3.807204887               5448      kvm:kvm_exit                                                          
+     3.807204887                111      kvm:kvm_userspace_exit                                                
+     3.807204887                 14      kvm:kvm_mmio                                                          
+     3.807204887                 83      kvm:kvm_msi_set_irq                                                   
+     3.907378595               7452      kvm:kvm_exit                                                          
+     3.907378595                170      kvm:kvm_userspace_exit                                                
+     3.907378595                  1      kvm:kvm_mmio                                                          
+     3.907378595                250      kvm:kvm_msi_set_irq                                                   
+     4.007579005               3520      kvm:kvm_exit                                                          
+     4.007579005                528      kvm:kvm_userspace_exit                                                
+     4.007579005                332      kvm:kvm_mmio                                                          
+     4.007579005                193      kvm:kvm_msi_set_irq                                                   
+[    0.303975] check access for rdinit=/init failed: -2, ignoring
+fxdax: boot kernel_ns=339046000 agent_ns=364715749
+iteration 1/1
+FXFS create-fsync: device_commits 200, device_commits_ns 14746667, device_write_bytes 1638400, device_writes 400, device_writes_ns 28424162, fsyncs 400, metadata_reserved_bytes 2326196, seal_waits 200, seal_waits_ns 65676, seals 200, seals_ns 16400607
+REQUESTS create-fsync: write 2.00 (58 µs each) per operation
+[    0.541431] reboot: Restarting system
+     4.017664763                  0      kvm:kvm_exit                                                          
+     4.017664763                  0      kvm:kvm_userspace_exit                                                
+     4.017664763                  0      kvm:kvm_mmio                                                          
+     4.017664763                  0      kvm:kvm_msi_set_irq                                                   
