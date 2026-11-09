@@ -1000,6 +1000,14 @@ impl FxFilesystem {
         }
     }
 
+    /// fxdax: waits for room in the journal, which only the flush task's compactions make: it is
+    /// started first, as a mount that has committed nothing yet has none, and a wait without it
+    /// never ends (TASK-272).
+    pub(crate) async fn wait_for_journal_space(&self) -> Result<(), Error> {
+        self.maybe_start_flush_task();
+        self.journal.check_journal_space().await
+    }
+
     fn start_clean_transfer_buffer_task(self: &Arc<Self>) {
         let this = self.clone();
         self.background_tasks.spawn(
@@ -1023,8 +1031,7 @@ impl FxFilesystem {
             return Ok((MetadataReservation::Borrowed, None, None));
         }
         if !options.skip_journal_checks {
-            self.maybe_start_flush_task();
-            self.journal.check_journal_space().await?;
+            self.wait_for_journal_space().await?;
         }
 
         // We support three options for metadata space reservation:

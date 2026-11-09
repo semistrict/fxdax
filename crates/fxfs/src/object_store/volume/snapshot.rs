@@ -52,8 +52,9 @@ impl RootVolume {
         // compaction, which flushes the source if it has mutations journaled, and so waits for the
         // flush lock taken below, which the snapshot's transaction, waiting for room with it held,
         // never let go of (TASK-245). That transaction then takes what it needs past the room, as a
-        // store's flush does its own.
-        filesystem.journal().check_journal_space().await?;
+        // store's flush does its own. The journal's flush task started for it, as a transaction
+        // does: after a mount that has committed nothing, none runs to compact (TASK-272).
+        filesystem.wait_for_journal_space().await?;
         // fxdax: the source's commits held back until the snapshot commits, taken before the flush
         // lock: a commit in flight may compact the journal, which flushes the source (TASK-241).
         let _commits = filesystem

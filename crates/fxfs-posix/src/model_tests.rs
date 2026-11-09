@@ -4420,6 +4420,21 @@ fn every_cut_of_a_snapshot_an_unlink_queued_and_a_write() {
     setting.cutting_everywhere().holds(ops);
 }
 
+/// A snapshot, a directory made, a large xattr set on it and a rename into it, every cut of them:
+/// every_cut_of_a_short_sequence waited for room in the journal on it until it panicked
+/// (TASK-272).
+#[test]
+fn every_cut_of_a_snapshot_a_directory_its_xattr_and_a_rename() {
+    let ops = vec![
+        Op::Snapshot,
+        Op::Mkdir(0),
+        Op::SetDirXattr { dir: 2, name: 0, len: 4682, byte: 112 },
+        Op::Rename(12, 2),
+    ];
+    let setting = Setting::awkward(9159821385706884731, ROOMY).with_graveyard_of_seed();
+    setting.cutting_everywhere().holds(ops);
+}
+
 /// A change of mode, owner, group and times, as `Op::SetAttr` asks.
 const CHANGE: Change = Change {
     valid: SET_ANY,
