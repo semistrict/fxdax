@@ -1067,7 +1067,7 @@ mod tests {
                 };
                 assert_eq!(stored.encoding, encoding);
                 bytes[stored.offset as usize + 9] ^= 0x10;
-                bucket.put(&segment, bytes, PutMode::Overwrite).await.unwrap();
+                bucket.put(&segment, bytes.into(), PutMode::Overwrite).await.unwrap();
 
                 let compacting = Options { compact_below: 0.5, ..KEEP };
                 let corrupt = Error::Corrupt("an object's part, by its CRC".into());
@@ -1659,7 +1659,7 @@ mod tests {
         fn put(
             &self,
             key: &str,
-            bytes: Vec<u8>,
+            bytes: bytes::Bytes,
             mode: PutMode,
         ) -> impl Future<Output = Result<Version, BucketError>> + Send {
             let gate = self.wait(matches!(&self.gate, Gate::Put(at) if at == key));
@@ -1761,7 +1761,7 @@ mod tests {
         fn put(
             &self,
             key: &str,
-            bytes: Vec<u8>,
+            bytes: bytes::Bytes,
             mode: PutMode,
         ) -> impl Future<Output = Result<Version, BucketError>> + Send {
             let checkpoint = matches!(layout::kind(key), Kind::Checkpoint { .. });
@@ -2105,7 +2105,11 @@ mod tests {
             if key == self.key && !self.done.swap(true, Ordering::Relaxed) {
                 let record = Record { deleted: true, ..crate::record::Kind::Own.of(0) };
                 let (key, bytes) = (layout::record(self.child), layout::encode(&record));
-                self.bucket.put(&key, bytes, PutMode::Overwrite).now_or_never().unwrap().unwrap();
+                self.bucket
+                    .put(&key, bytes.into(), PutMode::Overwrite)
+                    .now_or_never()
+                    .unwrap()
+                    .unwrap();
             }
             self.bucket.get(key)
         }
@@ -2132,7 +2136,7 @@ mod tests {
         fn put(
             &self,
             key: &str,
-            bytes: Vec<u8>,
+            bytes: bytes::Bytes,
             mode: PutMode,
         ) -> impl Future<Output = Result<Version, BucketError>> + Send {
             self.bucket.put(key, bytes, mode)
@@ -2187,7 +2191,7 @@ mod tests {
         fn put(
             &self,
             key: &str,
-            bytes: Vec<u8>,
+            bytes: bytes::Bytes,
             mode: PutMode,
         ) -> impl Future<Output = Result<Version, BucketError>> + Send {
             self.bucket.put(key, bytes, mode)

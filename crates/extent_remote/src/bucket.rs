@@ -9,6 +9,7 @@
 //! that callers see only answers: a write that landed and then failed, retried into a failed
 //! condition, is recognised by reading the object back.
 
+use bytes::Bytes;
 use std::future::Future;
 
 /// An object's version, which a conditional update names: S3 names it by its ETag, GCS by its
@@ -97,7 +98,7 @@ pub trait Bucket: Send + Sync + 'static {
     fn put(
         &self,
         key: &str,
-        bytes: Vec<u8>,
+        bytes: Bytes,
         mode: PutMode,
     ) -> impl Future<Output = Result<Version, Error>> + Send;
 
@@ -212,8 +213,10 @@ pub(crate) enum Created {
     Exists(Object),
 }
 
-/// Writes `bytes` at `key` unless an object is there.
+/// Writes `bytes` at `key` unless an object is there: held once, however often it is tried
+/// (TASK-317).
 pub(crate) async fn create(bucket: &impl Bucket, key: &str, bytes: Vec<u8>) -> Created {
+    let bytes = Bytes::from(bytes);
     let mut failures = 0;
     loop {
         match bucket.put(key, bytes.clone(), PutMode::Create).await {
@@ -221,7 +224,7 @@ pub(crate) async fn create(bucket: &impl Bucket, key: &str, bytes: Vec<u8>) -> C
             Err(Error::AlreadyExists) => {
                 // Perhaps this one's own write, which landed though its answer was lost.
                 match get(bucket, key).await {
-                    Some(object) if object.bytes == bytes => return Created::Created,
+                    Some(object) if bytes == object.bytes => return Created::Created,
                     Some(object) => return Created::Exists(object),
                     // Deleted since: try again.
                     None => {}
@@ -247,13 +250,14 @@ pub(crate) async fn update(
     bytes: Vec<u8>,
     version: &Version,
 ) -> Updated {
+    let bytes = Bytes::from(bytes);
     let mut failures = 0;
     loop {
         match bucket.put(key, bytes.clone(), PutMode::Update(version.clone())).await {
             Ok(_) => return Updated::Updated,
             Err(Error::Precondition | Error::NotFound) => {
                 return match get(bucket, key).await {
-                    Some(object) if object.bytes == bytes => Updated::Updated,
+                    Some(object) if bytes == object.bytes => Updated::Updated,
                     _ => Updated::Changed,
                 };
             }
@@ -278,13 +282,13 @@ pub(crate) async fn conformance(bucket: &impl Bucket, root: &str) {
     assert_eq!(bucket.head(key).await.map(|meta| meta.size), Err(Error::NotFound));
     assert_eq!(bucket.get_range(key, ByteRange::Bounded(0..1)).await, Err(Error::NotFound));
     assert_eq!(bucket.delete(key).await, Ok(()));
-    let update = bucket.put(key, vec![1], PutMode::Update(none.clone())).await;
+    let update = bucket.put(key, vec![1].into(), PutMode::Update(none.clone())).await;
     assert_eq!(update, Err(Error::Precondition));
 
     // Created once, and read as it was written, whole or by ranges, reading short past its end.
     let written: Vec<u8> = (0..100).collect();
-    let first = bucket.put(key, written.clone(), PutMode::Create).await.unwrap();
-    assert_eq!(bucket.put(key, vec![2], PutMode::Create).await, Err(Error::AlreadyExists));
+    let first = bucket.put(key, written.clone().into(), PutMode::Create).await.unwrap();
+    assert_eq!(bucket.put(key, vec![2].into(), PutMode::Create).await, Err(Error::AlreadyExists));
     let object = bucket.get(key).await.unwrap();
     let meta = (object.meta.key.as_str(), object.meta.size, &object.meta.version);
     assert_eq!((object.bytes, meta), (written, (key.as_str(), 100, &first)));
@@ -295,19 +299,25 @@ pub(crate) async fn conformance(bucket: &impl Bucket, root: &str) {
     assert_eq!(read(ByteRange::Suffix(200)).await, Ok((0..100).collect()));
 
     // Updated only from its version, which an update makes another.
-    assert_eq!(bucket.put(key, vec![3], PutMode::Update(none)).await, Err(Error::Precondition));
-    let second = bucket.put(key, vec![4; 50], PutMode::Update(first.clone())).await.unwrap();
+    assert_eq!(
+        bucket.put(key, vec![3].into(), PutMode::Update(none)).await,
+        Err(Error::Precondition)
+    );
+    let second = bucket.put(key, vec![4; 50].into(), PutMode::Update(first.clone())).await.unwrap();
     assert_ne!(second, first);
-    assert_eq!(bucket.put(key, vec![5], PutMode::Update(first)).await, Err(Error::Precondition));
+    assert_eq!(
+        bucket.put(key, vec![5].into(), PutMode::Update(first)).await,
+        Err(Error::Precondition)
+    );
     let meta = bucket.head(key).await.unwrap();
     assert_eq!((meta.size, meta.version), (50, second.clone()));
     assert_eq!(bucket.get(key).await.unwrap().bytes, vec![4; 50]);
-    bucket.put(key, vec![6; 7], PutMode::Update(second)).await.unwrap();
+    bucket.put(key, vec![6; 7].into(), PutMode::Update(second)).await.unwrap();
 
     // Listed by prefix, in the order of their keys, the prefix a whole segment of them.
     let listed = [format!("{root}/list/b"), format!("{root}/list/a"), format!("{root}/list/c/d")];
     for key in listed.iter().chain([&format!("{root}/listing")]) {
-        bucket.put(key, key.as_bytes().to_vec(), PutMode::Create).await.unwrap();
+        bucket.put(key, key.as_bytes().to_vec().into(), PutMode::Create).await.unwrap();
     }
     let keys: Vec<String> = (bucket.list(&format!("{root}/list/")).await.unwrap().into_iter())
         .map(|meta| meta.key)
@@ -330,7 +340,7 @@ pub(crate) async fn conformance(bucket: &impl Bucket, root: &str) {
     assert_eq!(bucket.head(key).await.map(|meta| meta.size), Err(Error::NotFound));
     assert_eq!(bucket.delete(key).await, Ok(()));
     assert_eq!(bucket.list(&format!("{root}/")).await.map(|list| list.len()), Ok(0));
-    bucket.put(key, vec![8], PutMode::Create).await.unwrap();
+    bucket.put(key, vec![8].into(), PutMode::Create).await.unwrap();
     assert_eq!(bucket.get(key).await.unwrap().bytes, [8]);
     bucket.delete(key).await.unwrap();
 }
@@ -377,7 +387,7 @@ mod tests {
         fn put(
             &self,
             _: &str,
-            _: Vec<u8>,
+            _: bytes::Bytes,
             _: PutMode,
         ) -> impl Future<Output = Result<Version, Error>> + Send {
             std::future::ready(Err(Error::Unavailable))
@@ -434,7 +444,7 @@ mod tests {
         fn put(
             &self,
             key: &str,
-            bytes: Vec<u8>,
+            bytes: Bytes,
             mode: PutMode,
         ) -> impl Future<Output = Result<Version, Error>> + Send {
             self.0.put(key, bytes, mode)
@@ -478,7 +488,7 @@ mod tests {
         let short = long[(tail.end - tail.start) as usize..].to_vec();
         let size = short.len() as u64;
         assert!(size >= crate::object::TAIL);
-        block_on(bucket.put("key", short.clone(), PutMode::Create)).unwrap();
+        block_on(bucket.put("key", short.clone().into(), PutMode::Create)).unwrap();
         let read = block_on(crate::object::tail(&bucket, "key"));
         let past = format!("key: {:?} past its end, at {size} bytes", ByteRange::Bounded(tail));
         assert_eq!(read, Err(crate::Error::Corrupt(past)));

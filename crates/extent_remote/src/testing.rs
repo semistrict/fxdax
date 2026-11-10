@@ -318,10 +318,10 @@ impl Bucket for SimBucket {
     fn put(
         &self,
         key: &str,
-        bytes: Vec<u8>,
+        bytes: bytes::Bytes,
         mode: PutMode,
     ) -> impl Future<Output = Result<Version, Error>> + Send {
-        reply!(self.request(Op::Put(key.to_owned(), bytes, mode)), Version)
+        reply!(self.request(Op::Put(key.to_owned(), bytes.into(), mode)), Version)
     }
 
     fn delete(&self, key: &str) -> impl Future<Output = Result<(), Error>> + Send {
@@ -368,10 +368,10 @@ impl Bucket for Direct {
     fn put(
         &self,
         key: &str,
-        bytes: Vec<u8>,
+        bytes: bytes::Bytes,
         mode: PutMode,
     ) -> impl Future<Output = Result<Version, Error>> + Send {
-        reply!(std::future::ready(self.apply(Op::Put(key.to_owned(), bytes, mode))), Version)
+        reply!(std::future::ready(self.apply(Op::Put(key.to_owned(), bytes.into(), mode))), Version)
     }
 
     fn delete(&self, key: &str) -> impl Future<Output = Result<(), Error>> + Send {
@@ -423,13 +423,13 @@ mod tests {
         let key = layout::segment(2, 4);
         let footer = layout::Chain::new(2, 1, 4, None, 0).close(layout::Contents::default());
         let stale = layout::Segment { data: Vec::new(), footer }.encode();
-        let created = bucket.put(&key, stale, PutMode::Create);
+        let created = bucket.put(&key, stale.into(), PutMode::Create);
         assert_eq!(bucket.waiting(), 0);
         let deleted = bucket.delete(&key);
         bucket.complete(0, Fault::None);
         assert_eq!((block_on(deleted), bucket.waiting()), (Ok(()), 0));
 
-        block_on(Direct(bucket.clone()).put(&key, vec![1], PutMode::Create)).unwrap();
+        block_on(Direct(bucket.clone()).put(&key, vec![1].into(), PutMode::Create)).unwrap();
         let deleted = bucket.delete(&key);
         bucket.complete(0, Fault::None);
         assert_eq!((block_on(deleted), bucket.describe(0)), (Ok(()), format!("put {key}")));
@@ -462,7 +462,8 @@ mod tests {
         }
         pool.run_until_stalled();
         // "theirs" holds another's object before its create lands.
-        block_on(Direct(sim.clone()).put("theirs", b"theirs".to_vec(), PutMode::Create)).unwrap();
+        block_on(Direct(sim.clone()).put("theirs", b"theirs".to_vec().into(), PutMode::Create))
+            .unwrap();
         // The first create of each lands and fails; what follows succeeds.
         let mut first = true;
         while sim.waiting() > 0 {
@@ -483,7 +484,7 @@ mod tests {
 
     impl<B: Bucket> Ranged for B {
         fn put_bytes(&self, key: &str, bytes: Vec<u8>) {
-            block_on(self.put(key, bytes, PutMode::Create)).unwrap();
+            block_on(self.put(key, bytes.into(), PutMode::Create)).unwrap();
         }
 
         fn read(&self, key: &str, range: &ByteRange) -> Result<Vec<u8>, Error> {

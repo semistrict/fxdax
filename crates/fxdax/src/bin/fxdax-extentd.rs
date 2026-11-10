@@ -57,6 +57,10 @@
 //! `FXDAX_EXTENTD_CACHE` naming a directory too, what stores read from the bucket is kept there,
 //! sparse, leaving 4 GiB of its filesystem free, and kept across the daemon's restarts: one daemon
 //! at a time has the directory.
+//! However far behind the bucket its stores fall, what waits for it is on the host's disk, each
+//! store's write-ahead log, bounded by its lag (backlog doc-7, Uploads); what of it the daemon
+//! holds in memory is what it uploads at once, `FXDAX_EXTENTD_UPLOAD_MEMORY` bytes at most (512 MiB
+//! by default, 64 MiB at least: an extent, which goes alone), every store's together (TASK-317).
 //! With `FXDAX_EXTENTD_STATS` naming a file too, the daemon keeps there what it did with the
 //! bucket, its requests by kind and its bytes up and down (`extent_remote::store::Stats::line`),
 //! what the stores' followers are, what serving the stores cost it (`fxdax::stats::Stats`), and
@@ -77,6 +81,8 @@
 fn main() -> anyhow::Result<()> {
     use anyhow::Context;
     fxdax::extentd::logging::to_stderr()?;
+    // fxdax: its large buffers given back as they are freed, before any thread is made (TASK-317).
+    fxdax::extentd::memory::return_large_allocations();
     // fxdax: a panic holding a lock shared beyond one store, which no fence contains, stops the
     // daemon, rather than poison the lock for every user after (TASK-149.24).
     extent_store::shared::abort_on_panics();
@@ -95,6 +101,12 @@ fn main() -> anyhow::Result<()> {
     fxdax::extentd::raise_open_files_limit().context("raising the limit of open files")?;
     // A host of the multi-node system: the bucket and this host's placement token named.
     fxdax::remote::Host::from_env().map_err(anyhow::Error::msg)?;
+    // fxdax: what its uploads may hold at once (TASK-317).
+    if let Some(bytes) = std::env::var_os("FXDAX_EXTENTD_UPLOAD_MEMORY").filter(|b| !b.is_empty()) {
+        let bytes = bytes.to_str().and_then(|bytes| bytes.parse().ok());
+        let bytes = bytes.context("FXDAX_EXTENTD_UPLOAD_MEMORY must be a number of bytes")?;
+        fxdax::remote::set_upload_memory(bytes).map_err(anyhow::Error::msg)?;
+    }
     let mut args = std::env::args().skip(1);
     let socket = args.next().context("usage: fxdax-extentd SOCKET [MEMORY_BYTES]")?;
     if let Some(memory) = args.next() {

@@ -1400,7 +1400,7 @@ mod shuttle_tests {
         fn put(
             &self,
             key: &str,
-            bytes: Vec<u8>,
+            bytes: extent_remote::Bytes,
             mode: PutMode,
         ) -> impl Future<Output = Result<Version, BucketError>> + Send {
             shuttle::thread::yield_now();

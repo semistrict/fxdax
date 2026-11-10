@@ -123,6 +123,8 @@ pub mod faults;
 mod fence;
 mod filesystem;
 pub mod fuse;
+#[cfg(test)]
+mod heap;
 mod host_store;
 mod image;
 pub mod import;

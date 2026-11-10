@@ -164,6 +164,30 @@ pub fn tenants() -> Vec<TenantMemory> {
     memory
 }
 
+/// fxdax: the size from which the C library's allocator maps each allocation on its own, and
+/// unmaps it as it is freed ([`return_large_allocations`], TASK-317).
+pub const MMAP_THRESHOLD: usize = 1 << 20;
+
+/// fxdax: has the C library's allocator give back what the daemon frees of its large buffers at
+/// once, each allocation of [`MMAP_THRESHOLD`] or more mapped on its own (glibc's
+/// `M_MMAP_THRESHOLD`), before any thread but the caller's is made: the segments it frames and
+/// uploads, 32 MiB each, the parts it fetches, of a MiB. By default glibc raises that threshold to
+/// the largest allocation freed, up to 32 MiB, and keeps buffers below it in its arenas, one a
+/// thread at most eight times the CPUs: under an upload backlog on ubu1, 134 of them, 64 MiB
+/// each, held 2.6 GB of anonymous memory the daemon had freed, twice its heap at its peak
+/// (TASK-317), what the host's OOM killer took it for. Nothing elsewhere: another C library's
+/// allocator is left as it is.
+pub fn return_large_allocations() {
+    #[cfg(target_env = "gnu")]
+    {
+        // SAFETY: mallopt changes the allocator's settings, which every allocation after reads.
+        let set = unsafe { libc::mallopt(libc::M_MMAP_THRESHOLD, MMAP_THRESHOLD as libc::c_int) };
+        if set != 1 {
+            log::warn!("extentd: glibc refused M_MMAP_THRESHOLD {MMAP_THRESHOLD}");
+        }
+    }
+}
+
 /// fxdax: the room a tenant's connections share, unless one is set for it ([`set_room`]):
 /// what of its VM processes' requests the daemon holds at once, their stream data and what it has
 /// queued for them, together (TASK-149.35). Each connection has a room of its own too
@@ -297,5 +321,46 @@ impl InFlight {
             }
             less.await;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// The process's anonymous memory resident, in bytes, as /proc says.
+    fn anonymous() -> u64 {
+        let status = std::fs::read_to_string("/proc/self/status").unwrap();
+        let line = status.lines().find_map(|line| line.strip_prefix("RssAnon:")).unwrap();
+        line.trim().trim_end_matches("kB").trim().parse::<u64>().unwrap() << 10
+    }
+
+    /// TASK-317: buffers of a segment's size, written and freed on many threads at once, as the
+    /// daemon frames and uploads segments, leave no memory behind them once
+    /// [`super::return_large_allocations`] has the allocator give them back: glibc's arenas kept
+    /// 2.6 GB of them in the daemon otherwise.
+    #[cfg(target_env = "gnu")]
+    #[test]
+    fn large_buffers_freed_go_back() {
+        const THREADS: usize = 32;
+        const BUFFERS: usize = 8;
+        const SEGMENT: usize = 32 << 20;
+        super::return_large_allocations();
+        let before = anonymous();
+        let threads: Vec<_> = (0..THREADS)
+            .map(|thread| {
+                std::thread::spawn(move || {
+                    for buffer in 0..BUFFERS {
+                        // A segment a little smaller than the most, as a framed one is often.
+                        let mut data = vec![0u8; SEGMENT - buffer * 4096];
+                        data.iter_mut().step_by(4096).for_each(|byte| *byte = thread as u8);
+                        std::hint::black_box(&data);
+                    }
+                })
+            })
+            .collect();
+        for thread in threads {
+            thread.join().unwrap();
+        }
+        let left = anonymous().saturating_sub(before);
+        assert!(left < 16 << 20, "{} MiB of freed buffers resident", left >> 20);
     }
 }

@@ -49,6 +49,10 @@
 //!   {branch}` and `fxdax_extentd_upload_stalls_total{branch}`: for each open store whose commits
 //!   upload, its commits' bytes not yet uploaded, how long the oldest of them has waited, and how
 //!   many commits waited for the lag to shrink (TASK-91.3); its branch in hexadecimal.
+//! - fxdax: `fxdax_extentd_upload_held_bytes`, `fxdax_extentd_upload_held_max_bytes` and
+//!   `fxdax_extentd_upload_memory_bytes`: the bytes of objects the stores' uploads hold in memory,
+//!   every store's together, now and at most, and their budget, `FXDAX_EXTENTD_UPLOAD_MEMORY`
+//!   (`crate::remote::upload_memory`, TASK-317).
 //! - `fxdax_extentd_object_storage_requests_total{request}`,
 //!   `fxdax_extentd_object_storage_uploaded_bytes_total{object}` and
 //!   `fxdax_extentd_object_storage_downloaded_bytes_total`: what the daemon did with its bucket,
@@ -302,6 +306,30 @@ pub fn render() -> String {
         let name = format!("fxdax_extentd_{}_total", name.replace('-', "_"));
         let _ = writeln!(out, "# HELP {name} As the control API's GetStats reports it.");
         let _ = writeln!(out, "# TYPE {name} counter");
+        let _ = writeln!(out, "{name} {value}");
+    }
+
+    // fxdax: what the uploads hold of the objects they upload (TASK-317).
+    let memory = crate::remote::upload_memory();
+    for (name, help, value) in [
+        (
+            "fxdax_extentd_upload_held_bytes",
+            "Bytes of objects the stores' uploads hold in memory now, every store's together.",
+            memory.held,
+        ),
+        (
+            "fxdax_extentd_upload_held_max_bytes",
+            "The most bytes of objects the stores' uploads held in memory at once.",
+            memory.max_held,
+        ),
+        (
+            "fxdax_extentd_upload_memory_bytes",
+            "The most bytes of objects the stores' uploads may hold in memory at once.",
+            memory.budget,
+        ),
+    ] {
+        let _ = writeln!(out, "# HELP {name} {help}");
+        let _ = writeln!(out, "# TYPE {name} gauge");
         let _ = writeln!(out, "{name} {value}");
     }
 

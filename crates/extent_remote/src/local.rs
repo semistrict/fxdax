@@ -226,11 +226,18 @@ mod tests {
         runtime.block_on(async {
             let buckets = [file(dir.path()), file(dir.path())];
             let key = "leases/0000000000000001";
-            let version = buckets[0].put(key, b"first".to_vec(), PutMode::Create).await.unwrap();
+            let version =
+                buckets[0].put(key, b"first".to_vec().into(), PutMode::Create).await.unwrap();
             let updates = (0..32u8).map(|n| {
                 let (bucket, version) = (buckets[usize::from(n % 2)].clone(), version.clone());
                 tokio::spawn(async move {
-                    (n, bucket.put(key, vec![n; 64], PutMode::Update(version)).await.map(|_| ()))
+                    (
+                        n,
+                        bucket
+                            .put(key, vec![n; 64].into(), PutMode::Update(version))
+                            .await
+                            .map(|_| ()),
+                    )
                 })
             });
             let results = futures::future::try_join_all(updates).await.unwrap();
@@ -250,9 +257,9 @@ mod tests {
         let dir = dir.path().join("made/here");
         futures::executor::block_on(async {
             let bucket = file(&dir);
-            let version = bucket.put("a", vec![1], PutMode::Create).await.unwrap();
-            bucket.put("a", vec![2], PutMode::Update(version)).await.unwrap();
-            bucket.put("b", vec![3], PutMode::Create).await.unwrap();
+            let version = bucket.put("a", vec![1].into(), PutMode::Create).await.unwrap();
+            bucket.put("a", vec![2].into(), PutMode::Update(version)).await.unwrap();
+            bucket.put("b", vec![3].into(), PutMode::Create).await.unwrap();
             bucket.delete("b").await.unwrap();
         });
         assert!(dir.join(LOCK).exists());

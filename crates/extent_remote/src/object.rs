@@ -101,7 +101,7 @@ mod tests {
     /// A bucket holding `bytes` at [`KEY`].
     fn holding(bytes: Vec<u8>) -> Arc<SimBucket> {
         let bucket = SimBucket::new();
-        block_on(Direct(bucket.clone()).put(KEY, bytes, PutMode::Create)).unwrap();
+        block_on(Direct(bucket.clone()).put(KEY, bytes.into(), PutMode::Create)).unwrap();
         bucket
     }
 

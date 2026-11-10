@@ -813,7 +813,7 @@ mod tests {
             fn put(
                 &self,
                 key: &str,
-                bytes: Vec<u8>,
+                bytes: bytes::Bytes,
                 mode: PutMode,
             ) -> impl Future<Output = Result<Version, BucketError>> + Send {
                 self.bucket.put(key, bytes, mode)

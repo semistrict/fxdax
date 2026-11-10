@@ -185,7 +185,7 @@ impl extent_remote::Bucket for Cut {
     fn put(
         &self,
         key: &str,
-        bytes: Vec<u8>,
+        bytes: extent_remote::Bytes,
         mode: PutMode,
     ) -> impl Future<Output = Result<Version, BucketError>> + Send {
         self.request(self.bucket.put(key, bytes, mode))

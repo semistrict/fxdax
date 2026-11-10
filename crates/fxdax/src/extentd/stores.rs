@@ -1199,8 +1199,8 @@ impl FollowerStats {
 
 /// fxdax: keeps what `bucket` did, its requests by kind and its bytes up and down
 /// (`extent_remote::store::Stats::line`), what the stores' followers are ([`FollowerStats`]),
-/// what serving the stores cost ([`daemon_line`]) and the requests served
-/// (`super::metrics::requests_line`), while it lives: in the file `FXDAX_EXTENTD_STATS` names, if
+/// what serving the stores cost ([`daemon_line`]), the requests served
+/// (`super::metrics::requests_line`) and what its uploads hold ([`uploads_line`]), while it lives: in the file `FXDAX_EXTENTD_STATS` names, if
 /// it names one, a line each, rewritten whole within [`STATS_POLL`] of each change, which the
 /// bench reports (`scripts/bench-report.py`); and the bucket's in the log every [`STATS_EVERY`]
 /// that it changed. fxdax: what it keeps but the bucket's, it looks at only to keep it in the file
@@ -1224,6 +1224,7 @@ fn watch_stats(bucket: std::sync::Weak<extent_remote::store::Store>) {
                     followers.line(),
                     daemon_line(),
                     super::metrics::requests_line(),
+                    uploads_line(),
                 ];
                 if lines[..] != written[..] {
                     if let Err(err) = write_stats(file, &lines) {
@@ -1241,6 +1242,13 @@ fn watch_stats(bucket: std::sync::Weak<extent_remote::store::Store>) {
     if let Err(err) = watching {
         log::warn!("extentd: watching object storage's stats: {err}");
     }
+}
+
+/// fxdax: what the daemon's uploads hold of the objects they upload, in bytes, now and at most,
+/// and the most they may (`crate::remote::upload_memory`, TASK-317).
+fn uploads_line() -> String {
+    let memory = crate::remote::upload_memory();
+    format!("uploads: held={} max-held={} budget={}", memory.held, memory.max_held, memory.budget)
 }
 
 /// fxdax: what serving the stores cost the daemon (`crate::stats::Stats::named`), as a line of

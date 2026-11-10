@@ -28,7 +28,7 @@
 //!   tenant's memory, and finds none of their bytes in the memory it gets, read whole.
 //! - **The daemon holds no more of mallory's than the protocol's bounds say** (`server::Peer::room`
 //!   each connection), however it floods it (TASK-150.3): the process's heap, counted as it is
-//!   allocated ([`Bounded`]), and a VM process past its room let go. Nor more of the host's disk
+//!   allocated (`crate::heap::Bounded`), and a VM process past its room let go. Nor more of the host's disk
 //!   than its tenant's limit (TASK-94): its writes past it refused with `ENOSPC`, as alice's go on.
 //! - **Nothing of mallory's stays, nor goes**: its every connection ends; every store it named opens
 //!   again (TASK-150.5), every one it wrote commits; no point is taken of a branch it named
@@ -52,18 +52,18 @@ use super::super::server::{QUEUED_ROOM, Tenant, connections, serve, serve_tenant
 use super::super::stores::table;
 use super::super::wire::*;
 use super::{BLOCK, LastWords, control, host, memory, read, within, write};
+use crate::heap::{CASE, LIMIT, held, peak_while};
 use crate::pages::{ArenaId, page_size};
 use crate::{Errno, ExtentId};
 use proptest::prelude::*;
 use proptest::test_runner::{Config, TestRunner};
-use std::alloc::{GlobalAlloc, Layout, System};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::os::fd::{AsFd as _, AsRawFd as _, BorrowedFd, FromRawFd as _, OwnedFd};
 use std::os::unix::ffi::OsStrExt as _;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::ptr::NonNull;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 use zerocopy::IntoBytes as _;
@@ -94,75 +94,6 @@ const FLOOD_READ: u64 = 1 << 20;
 const SLACK: u64 = 256 << 20;
 /// How long anything may take before the case fails: what would otherwise hang for good.
 const WAIT: Duration = Duration::from_secs(60);
-
-/// Counts what the process holds of its heap (`HELD`), and, while a case's [`LIMIT`] is set, aborts
-/// past it, saying the case and where it allocated: as fxfs-posix's corrupt tests bound theirs.
-/// Aborted, as what is asked for past it might be asked for without end, the machine's memory
-/// with it; and so as soon as it is asked for.
-struct Bounded;
-
-static HELD: AtomicUsize = AtomicUsize::new(0);
-/// The most it held since [`peak_while`] last looked.
-static PEAK: AtomicUsize = AtomicUsize::new(0);
-/// The most the heap may hold, or 0, which checks nothing.
-static LIMIT: AtomicUsize = AtomicUsize::new(0);
-/// The case running, as proptest says it.
-static CASE: Mutex<String> = Mutex::new(String::new());
-
-#[global_allocator]
-static ALLOCATOR: Bounded = Bounded;
-
-impl Bounded {
-    fn check(size: usize) {
-        let held = HELD.fetch_add(size, Ordering::Relaxed) + size;
-        PEAK.fetch_max(held, Ordering::Relaxed);
-        let limit = LIMIT.load(Ordering::Relaxed);
-        if limit != 0 && held > limit {
-            // Nothing below may come back here.
-            LIMIT.store(0, Ordering::Relaxed);
-            let backtrace = std::backtrace::Backtrace::force_capture();
-            let case = CASE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            eprintln!("{held} bytes held, of at most {limit}, in {case}:\n{backtrace}");
-            std::process::abort();
-        }
-    }
-}
-
-// SAFETY: this only counts what `System` does.
-unsafe impl GlobalAlloc for Bounded {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        Self::check(layout.size());
-        // SAFETY: As the caller promises.
-        unsafe { System.alloc(layout) }
-    }
-
-    unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
-        Self::check(layout.size());
-        // SAFETY: As the caller promises.
-        unsafe { System.alloc_zeroed(layout) }
-    }
-
-    unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout) {
-        HELD.fetch_sub(layout.size(), Ordering::Relaxed);
-        // SAFETY: As the caller promises.
-        unsafe { System.dealloc(pointer, layout) }
-    }
-
-    unsafe fn realloc(&self, pointer: *mut u8, layout: Layout, size: usize) -> *mut u8 {
-        Self::check(size);
-        HELD.fetch_sub(layout.size(), Ordering::Relaxed);
-        // SAFETY: As the caller promises.
-        unsafe { System.realloc(pointer, layout, size) }
-    }
-}
-
-/// The most the heap held past what it holds now while `work` ran.
-fn peak_while(work: impl FnOnce()) -> u64 {
-    let before = HELD.load(Ordering::Relaxed);
-    PEAK.store(before, Ordering::Relaxed);
-    work();
-    PEAK.load(Ordering::Relaxed).saturating_sub(before) as u64
-}
 
 /// What the daemon holds at most of what a VM process with a window of `window` bytes keeps in
 /// flight, as the protocol bounds it: its requests' stream data, what it queued for it besides,
@@ -1898,8 +1829,7 @@ fn a_compromised_vm_process_harms_no_tenant_beside_it() {
             *CASE.lock().unwrap() = format!("case {case}: {hostiles:#?}");
             // As much as the heap may hold, the rooms of mallory's connections raised as their
             // windows are granted.
-            let limit =
-                HELD.load(Ordering::Relaxed) as u64 + SLACK + hostiles.len() as u64 * room(0);
+            let limit = held() as u64 + SLACK + hostiles.len() as u64 * room(0);
             LIMIT.store(limit as usize, Ordering::Relaxed);
             // Its disk limited a few MiB past what it takes, which its fills reach (TASK-94); but
             // as a connection of its floods, whose write, which its reads read, is to be admitted.
@@ -2318,7 +2248,7 @@ fn page_ins_in_flight_are_bounded() {
     // page-ins wait for the bucket, and of the heap as their fetches answer: each a part, cold.
     let burst = |what: &str, headers: Vec<Header>| {
         super::super::super::cache::evict_least_used(Some(arena), |_| false);
-        let (held, frames) = (HELD.load(Ordering::Relaxed), physmem::arena_bytes(arena));
+        let (before, frames) = (held(), physmem::arena_bytes(arena));
         gated.hold(true);
         let ids: Vec<u64> = headers.iter().map(|header| header.id).collect();
         for header in headers {
@@ -2334,7 +2264,7 @@ fn page_ins_in_flight_are_bounded() {
             }
             paging = now;
         }
-        let heap = HELD.load(Ordering::Relaxed).saturating_sub(held) as u64;
+        let heap = held().saturating_sub(before) as u64;
         let peak = peak_while(|| {
             gated.hold(false);
             for id in &ids {
@@ -2426,7 +2356,7 @@ fn a_tenants_in_flight_data_is_bounded() {
         });
     }
 
-    let held = HELD.load(Ordering::Relaxed);
+    let before = held();
     // Mallory's connections flood at once; their queues fill as far as the tenant's room lets them.
     for n in 0..CONNECTIONS {
         flood(msocket.clone(), mstores.join(format!("store-{n}")));
@@ -2442,7 +2372,7 @@ fn a_tenants_in_flight_data_is_bounded() {
             break;
         }
     }
-    let heap = (HELD.load(Ordering::Relaxed).saturating_sub(held)) >> 20;
+    let heap = (held().saturating_sub(before)) >> 20;
     let (mallory_held, mallory_peak) =
         (mallory.in_flight().held() >> 20, mallory.in_flight().peak() >> 20);
 

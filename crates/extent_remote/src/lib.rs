@@ -53,6 +53,8 @@ pub mod testing;
 
 pub use batch::{Batch, Commit};
 pub use bucket::Bucket;
+/// The bytes a [`Bucket`] writes: shared, so that a write tried again holds them once.
+pub use bytes::Bytes;
 pub use fetch::read;
 pub use layout::Location;
 pub use recovery::{Recovered, State, recover};

@@ -88,6 +88,8 @@ pub struct Budget {
 struct Queues {
     requests: usize,
     bytes: u64,
+    /// fxdax: the most bytes in flight at once (TASK-317).
+    peak: u64,
     tickets: u64,
     /// By [`Priority`].
     waiting: [VecDeque<Waiter>; 2],
@@ -119,6 +121,18 @@ impl Drop for Grant {
 impl Budget {
     pub fn new(limits: Limits) -> Arc<Self> {
         Arc::new(Self { limits, queues: Mutex::default() })
+    }
+
+    /// What it lets go at once.
+    pub fn limits(&self) -> Limits {
+        self.limits
+    }
+
+    /// fxdax: the bytes its requests in flight hold now, and the most they held at once (TASK-317):
+    /// within its limit, but for a request larger than it, which goes alone.
+    pub fn held(&self) -> (u64, u64) {
+        let queues = self.queues.lock().unwrap();
+        (queues.bytes, queues.peak)
     }
 
     /// A place for a request of `bytes`: its ticket, by which [`Budget::promote`] finds it, and the
@@ -161,6 +175,7 @@ impl Budget {
             let waiter = queue.pop_front().unwrap();
             queues.requests += 1;
             queues.bytes += bytes;
+            queues.peak = queues.peak.max(queues.bytes);
             let grant = Grant { budget: Some(self.clone()), bytes };
             // Its reader gave up: its place goes to the next.
             if let Err(mut grant) = waiter.go.send(grant) {
@@ -979,7 +994,7 @@ mod tests {
     /// A bucket holding `bytes` at [`KEY`], its requests completed by the test.
     fn holding(bytes: Vec<u8>) -> Arc<SimBucket> {
         let bucket = SimBucket::new();
-        block_on(Direct(bucket.clone()).put(KEY, bytes, PutMode::Create)).unwrap();
+        block_on(Direct(bucket.clone()).put(KEY, bytes.into(), PutMode::Create)).unwrap();
         bucket
     }
 
@@ -1280,7 +1295,8 @@ mod tests {
         let mut flipped = good.clone();
         flipped[PART as usize + 7] ^= 1;
         let put = |bytes: &[u8]| {
-            block_on(Direct(bucket.clone()).put(KEY, bytes.to_vec(), PutMode::Overwrite)).unwrap();
+            block_on(Direct(bucket.clone()).put(KEY, bytes.to_vec().into(), PutMode::Overwrite))
+                .unwrap();
         };
         let (tail, part) =
             (format!("get {KEY} last {TAIL}"), format!("get {KEY} {PART}..{}", PART + 100));
@@ -1360,7 +1376,7 @@ mod tests {
         std::fs::write(cache.path(KEY), kept).unwrap();
         let mut object = whole(&data);
         flip(&mut object);
-        block_on(Direct(bucket.clone()).put(KEY, object, PutMode::Overwrite)).unwrap();
+        block_on(Direct(bucket.clone()).put(KEY, object.into(), PutMode::Overwrite)).unwrap();
         let read = reads.read(&fetcher(), location(PART), 0, 10, Priority::Demand);
         assert_eq!(complete_all(&bucket, &mut reads), [part.clone(), tail, part]);
         let corrupt = format!("part 0 of {KEY}, by its CRC, twice");
@@ -1476,7 +1492,7 @@ mod tests {
         let mut moved = vec![0; 10];
         moved.extend_from_slice(&data[MOVED.0 as usize..][..MOVED.1 as usize]);
         let moves = layout::with_footer(&moved, &Moves { extents: vec![(EXTENT, to)] });
-        block_on(direct.put(&layout::moves(KEY), moves, PutMode::Create)).unwrap();
+        block_on(direct.put(&layout::moves(KEY), moves.into(), PutMode::Create)).unwrap();
         block_on(direct.delete(KEY)).unwrap();
     }
 
@@ -1498,7 +1514,7 @@ mod tests {
         let direct = Direct(bucket.clone());
         let other: Vec<u8> = data.iter().map(|byte| byte ^ 0x5a).collect();
         let stale = segment(&other, vec![(ExtentId::new(1, 9), MOVED.0, MOVED.1)]);
-        block_on(direct.put(KEY, stale, PutMode::Create)).unwrap();
+        block_on(direct.put(KEY, stale.into(), PutMode::Create)).unwrap();
     }
 
     /// Reads 50 bytes at 100 in [`EXTENT`], at [`MOVED`] in the object at [`KEY`], with `fetcher`.
@@ -1591,10 +1607,10 @@ mod tests {
         let to = Location { key: layout::moves(KEY), offset: 0, len: at.1 };
         let moved = data[at.0 as usize..][..at.1 as usize].to_vec();
         let moves = layout::with_footer(&moved, &Moves { extents: vec![(EXTENT, to)] });
-        block_on(direct.put(&layout::moves(KEY), moves, PutMode::Create)).unwrap();
+        block_on(direct.put(&layout::moves(KEY), moves.into(), PutMode::Create)).unwrap();
         block_on(direct.delete(KEY)).unwrap();
         let stale = segment(&noise(100), vec![(ExtentId::new(1, 9), 0, 100)]);
-        block_on(direct.put(KEY, stale, PutMode::Create)).unwrap();
+        block_on(direct.put(KEY, stale.into(), PutMode::Create)).unwrap();
 
         let (read, asked) = read();
         assert_eq!(read, Some(Ok(want)));
@@ -1663,7 +1679,8 @@ mod tests {
         let checkpoint = layout::checkpoint(1, 3);
         let bytes = crate::checkpoint::encode(&state);
         let bucket = SimBucket::new();
-        block_on(Direct(bucket.clone()).put(&checkpoint, bytes.clone(), PutMode::Create)).unwrap();
+        block_on(Direct(bucket.clone()).put(&checkpoint, bytes.clone().into(), PutMode::Create))
+            .unwrap();
         let dir = tempfile::tempdir().unwrap();
         let cache = Arc::new(Cache::open(dir.path(), 8 * PART, 0).unwrap());
         let fetcher = Fetcher::new(bucket.clone(), limits(8), Memory::new(), Some(cache));
@@ -1680,7 +1697,8 @@ mod tests {
         let fetcher = Fetcher::new(bucket.clone(), limits(8), Memory::new(), None);
         let (gone, _) = bucket.served(fetcher.lookup(&checkpoint, EXTENT));
         assert_eq!(gone, Err(Error::Lost(checkpoint)));
-        block_on(Direct(bucket.clone()).put(KEY, whole(&noise(100)), PutMode::Create)).unwrap();
+        block_on(Direct(bucket.clone()).put(KEY, whole(&noise(100)).into(), PutMode::Create))
+            .unwrap();
         let (none, _) = bucket.served(fetcher.lookup(KEY, EXTENT));
         assert_eq!(none, Err(Error::Corrupt(format!("{KEY} holds no checkpoint"))));
     }
@@ -1755,7 +1773,7 @@ mod tests {
         let bucket = bucket(&data);
         let mut longer = vec![0; 10];
         longer.extend_from_slice(&whole(&data));
-        block_on(Direct(bucket.clone()).put(KEY, longer, PutMode::Overwrite)).unwrap();
+        block_on(Direct(bucket.clone()).put(KEY, longer.into(), PutMode::Overwrite)).unwrap();
         let fetcher = Rc::new(Fetcher::new(bucket.clone(), limits(8), Memory::new(), None));
         let mut reads = Reads::new();
         let read = reads.read(&fetcher, location(100), 0, 10, Priority::Demand);
@@ -1771,7 +1789,7 @@ mod tests {
         let data = noise(100);
         let bucket = bucket(&data);
         let other = "segments/0000000000000001/0000000000000001";
-        block_on(Direct(bucket.clone()).put(other, whole(&data), PutMode::Create)).unwrap();
+        block_on(Direct(bucket.clone()).put(other, whole(&data).into(), PutMode::Create)).unwrap();
         let fetcher = Rc::new(Fetcher::new(bucket.clone(), limits(8), Memory::new(), None));
         let mut reads = Reads::new();
         let mut read = |key: &str| {
@@ -1964,8 +1982,12 @@ mod tests {
         let bucket = SimBucket::new();
         let key = |object: u64| format!("segments/0000000000000001/{object:016x}");
         for object in 0..OBJECTS {
-            block_on(Direct(bucket.clone()).put(&key(object), whole(&data), PutMode::Create))
-                .unwrap();
+            block_on(Direct(bucket.clone()).put(
+                &key(object),
+                whole(&data).into(),
+                PutMode::Create,
+            ))
+            .unwrap();
         }
         let dir = tempfile::tempdir().unwrap();
         let cache = Arc::new(Cache::open(dir.path(), 64 * PART, 0).unwrap());
@@ -2091,12 +2113,12 @@ mod tests {
         let to = Location { key: layout::moves(KEY), offset: 0, len };
         let moved = &data[at as usize..][..len as usize];
         let moves = layout::with_footer(moved, &Moves { extents: vec![(EXTENT, to)] });
-        block_on(direct.put(&layout::moves(KEY), moves, PutMode::Create)).unwrap();
+        block_on(direct.put(&layout::moves(KEY), moves.into(), PutMode::Create)).unwrap();
         block_on(direct.delete(KEY)).unwrap();
         let other: Vec<u8> = data.iter().map(|byte| byte ^ 0x5a).collect();
         let other_extent = ExtentId::new(1, 9);
         let stale = segment(&other, vec![(other_extent, at, len)]);
-        block_on(direct.put(KEY, stale, PutMode::Create)).unwrap();
+        block_on(direct.put(KEY, stale.into(), PutMode::Create)).unwrap();
         memory.tails.lock().unwrap().remove(KEY, None);
         let mut second = Reads::new();
         let theirs = second.read_of(&recreated, other_extent, location, 0, 50, Priority::Demand);
@@ -2129,8 +2151,12 @@ mod tests {
         let bucket = SimBucket::new();
         let key = |object: u64| format!("segments/0000000000000001/{object:016x}");
         for object in 0..4 {
-            block_on(Direct(bucket.clone()).put(&key(object), whole(&data), PutMode::Create))
-                .unwrap();
+            block_on(Direct(bucket.clone()).put(
+                &key(object),
+                whole(&data).into(),
+                PutMode::Create,
+            ))
+            .unwrap();
         }
         let dir = tempfile::tempdir().unwrap();
         let cache = Arc::new(Cache::open(dir.path(), 8 * PART, 0).unwrap());

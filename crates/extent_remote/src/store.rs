@@ -703,7 +703,7 @@ impl Bucket for Store {
     fn put(
         &self,
         key: &str,
-        bytes: Vec<u8>,
+        bytes: bytes::Bytes,
         mode: PutMode,
     ) -> impl Future<Output = Result<Version, Error>> + Send {
         let (store, path) = (self.store.clone(), self.path(key));
@@ -764,20 +764,21 @@ pub async fn probe(bucket: &impl Bucket, nonce: u64) -> Result<(), String> {
     let refused = |what: &str, result: &dyn std::fmt::Debug| {
         format!("the store does not honour conditional writes: {what} gave {result:?}")
     };
-    let created = bucket.put(&key, b"probe".to_vec(), PutMode::Create).await;
+    let created = bucket.put(&key, bytes::Bytes::from_static(b"probe"), PutMode::Create).await;
     let version = created.map_err(|error| format!("creating {key}: {error}"))?;
-    let again = bucket.put(&key, b"again".to_vec(), PutMode::Create).await;
+    let again = bucket.put(&key, bytes::Bytes::from_static(b"again"), PutMode::Create).await;
     if again != Err(Error::AlreadyExists) {
         return Err(refused("a create where an object is", &again));
     }
     // No store makes this ETag; GCS's generation 0 is no object's.
     let other =
         Version { e_tag: Some("\"fxdax-probe\"".to_owned()), version: Some("0".to_owned()) };
-    let stale = bucket.put(&key, b"stale".to_vec(), PutMode::Update(other)).await;
+    let stale = bucket.put(&key, bytes::Bytes::from_static(b"stale"), PutMode::Update(other)).await;
     if stale != Err(Error::Precondition) {
         return Err(refused("an update of another version", &stale));
     }
-    let updated = bucket.put(&key, b"updated".to_vec(), PutMode::Update(version)).await;
+    let updated =
+        bucket.put(&key, bytes::Bytes::from_static(b"updated"), PutMode::Update(version)).await;
     if updated.is_err() {
         return Err(refused("an update of the object's version", &updated));
     }
@@ -974,7 +975,7 @@ pub(crate) mod tests {
         let runtime = tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap();
         let start = std::time::Instant::now();
         runtime.block_on(async {
-            store.put("a", vec![1], PutMode::Create).await.unwrap();
+            store.put("a", vec![1].into(), PutMode::Create).await.unwrap();
             assert_eq!(store.get("a").await.unwrap().bytes, vec![1]);
         });
         let took = start.elapsed();
@@ -1001,7 +1002,7 @@ pub(crate) mod tests {
         let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
         let start = std::time::Instant::now();
         runtime.block_on(async {
-            store.put("a", vec![1, 2, 3, 4], PutMode::Create).await.unwrap();
+            store.put("a", vec![1, 2, 3, 4].into(), PutMode::Create).await.unwrap();
             assert_eq!(store.get("a").await.unwrap().bytes, vec![1, 2, 3, 4]);
             let range = ByteRange::Bounded(1..3);
             assert_eq!(store.get_range("a", range).await.unwrap(), vec![2, 3]);
@@ -1023,7 +1024,7 @@ pub(crate) mod tests {
         futures::executor::block_on(async {
             let writer = Store::new(objects.clone(), "p");
             for key in [&old, &marked, &layout::checkpoint(1, 5)] {
-                writer.put(key, vec![1, 2], PutMode::Create).await.unwrap();
+                writer.put(key, vec![1, 2].into(), PutMode::Create).await.unwrap();
             }
             let unmarked = Store::new(objects.clone(), "p");
             unmarked.get(&marked).await.unwrap();
@@ -1040,8 +1041,8 @@ pub(crate) mod tests {
             let (older, newest) = (Marks { epoch: 6, grace: 0, marked: vec![at(&old)] }, 7);
             let marks = Marks { epoch: newest, grace: 0, marked: vec![at(&marked)] };
             let put = |marks: &Marks| layout::encode(marks);
-            writer.put(&layout::marks(6), put(&older), PutMode::Create).await.unwrap();
-            writer.put(&layout::marks(newest), put(&marks), PutMode::Create).await.unwrap();
+            writer.put(&layout::marks(6), put(&older).into(), PutMode::Create).await.unwrap();
+            writer.put(&layout::marks(newest), put(&marks).into(), PutMode::Create).await.unwrap();
 
             let reader = Store::new(objects.clone(), "p");
             // Its first read reads the marks, alongside: what it reads after, it warns of.
@@ -1074,14 +1075,17 @@ pub(crate) mod tests {
         let store = memory();
         futures::executor::block_on(async {
             let segment = layout::segment(1, 0);
-            let version = store.put(&segment, vec![1; 100], PutMode::Create).await.unwrap();
-            assert!(store.put(&segment, vec![2; 7], PutMode::Create).await.is_err());
-            store.put(&segment, vec![3; 50], PutMode::Update(version)).await.unwrap();
-            store.put(&layout::checkpoint(1, 0), vec![4; 30], PutMode::Create).await.unwrap();
-            store.put(&layout::lease(1), vec![5; 9], PutMode::Overwrite).await.unwrap();
+            let version = store.put(&segment, vec![1; 100].into(), PutMode::Create).await.unwrap();
+            assert!(store.put(&segment, vec![2; 7].into(), PutMode::Create).await.is_err());
+            store.put(&segment, vec![3; 50].into(), PutMode::Update(version)).await.unwrap();
+            store
+                .put(&layout::checkpoint(1, 0), vec![4; 30].into(), PutMode::Create)
+                .await
+                .unwrap();
+            store.put(&layout::lease(1), vec![5; 9].into(), PutMode::Overwrite).await.unwrap();
             let extent = layout::extent(1, 0, storage_device::ExtentId::new(1, 5));
-            store.put(&extent, vec![6; 11], PutMode::Create).await.unwrap();
-            store.put(&layout::moves(&segment), vec![7; 13], PutMode::Create).await.unwrap();
+            store.put(&extent, vec![6; 11].into(), PutMode::Create).await.unwrap();
+            store.put(&layout::moves(&segment), vec![7; 13].into(), PutMode::Create).await.unwrap();
             assert_eq!(store.get(&segment).await.unwrap().bytes.len(), 50);
             let range = ByteRange::Bounded(10..30);
             assert_eq!(store.get_range(&segment, range).await.unwrap().len(), 20);
@@ -1152,7 +1156,7 @@ pub(crate) mod tests {
         fn put(
             &self,
             key: &str,
-            bytes: Vec<u8>,
+            bytes: bytes::Bytes,
             _mode: PutMode,
         ) -> impl Future<Output = Result<Version, Error>> + Send {
             self.0.put(key, bytes, PutMode::Overwrite)
@@ -1203,7 +1207,7 @@ pub(crate) mod tests {
         let store = memory();
         futures::executor::block_on(async {
             for key in ["segments/01/00", "segments/01/01", "segments/02/00", "leases/01"] {
-                store.put(key, key.as_bytes().to_vec(), PutMode::Create).await.unwrap();
+                store.put(key, key.as_bytes().to_vec().into(), PutMode::Create).await.unwrap();
             }
             let listed: Vec<String> = store
                 .list("segments/01/")
@@ -1256,7 +1260,7 @@ pub(crate) mod tests {
             let key = crate::layout::checkpoint(1, seq);
             let bytes = bucket.get(&key).await.unwrap().bytes;
             bucket.delete(&key).await.unwrap();
-            bucket.put(&key, bytes, PutMode::Create).await.unwrap();
+            bucket.put(&key, bytes.into(), PutMode::Create).await.unwrap();
             let before = gets();
             recovery::recover(&*bucket, 1, None).await.unwrap();
             assert_eq!(gets() - before, 1, "a checkpoint written again is read");
@@ -1542,7 +1546,7 @@ pub(crate) mod tests {
             });
             let bucket = s3(&server, "stalled", &client);
             let start = tokio::time::Instant::now();
-            let put = bucket.put("object", noise(32 << 20, 1), PutMode::Create);
+            let put = bucket.put("object", noise(32 << 20, 1).into(), PutMode::Create);
             let put = tokio::time::timeout(10 * client.stall, put).await.expect("the upload ended");
             let took = start.elapsed();
             assert_eq!(put, Err(Error::Unavailable));
@@ -1582,7 +1586,9 @@ pub(crate) mod tests {
                     let start = std::time::Instant::now();
                     let puts = (0..OBJECTS).map(|object| {
                         let (store, body) = (&store, body.clone());
-                        async move { store.put(&format!("{object}"), body, PutMode::Create).await }
+                        async move {
+                            store.put(&format!("{object}"), body.into(), PutMode::Create).await
+                        }
                     });
                     for put in futures::future::join_all(puts).await {
                         put.unwrap();
@@ -1643,7 +1649,7 @@ pub(crate) mod tests {
             let puts = keys
                 .iter()
                 .zip(1..)
-                .map(|(key, seed)| store.put(key, noise(SIZE, seed), PutMode::Create));
+                .map(|(key, seed)| store.put(key, noise(SIZE, seed).into(), PutMode::Create));
             let landed: Vec<bool> =
                 futures::future::join_all(puts).await.iter().map(Result::is_ok).collect();
             let took = start.elapsed();

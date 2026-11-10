@@ -173,7 +173,7 @@ mod tests {
         fn put(
             &self,
             key: &str,
-            bytes: Vec<u8>,
+            bytes: bytes::Bytes,
             mode: PutMode,
         ) -> impl Future<Output = Result<Version, crate::bucket::Error>> + Send {
             self.requests.fetch_add(1, Ordering::Relaxed);
@@ -227,7 +227,7 @@ mod tests {
         let (tail, stored) = (frame.tail(), extent_frame::Parts::of(&bytes).unwrap().stored);
         let table = Table::decode(extent_frame::footer(&bytes).unwrap()).unwrap();
         futures::executor::block_on(async {
-            bucket.put(&key, bytes.clone(), PutMode::Create).await.unwrap();
+            bucket.put(&key, bytes.clone().into(), PutMode::Create).await.unwrap();
             let mut counted = bucket.counted();
             let mut lookup = async |extent: ExtentId| {
                 let found = fetcher.lookup(&key, extent).await;

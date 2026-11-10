@@ -117,9 +117,51 @@ static MEMORY: std::sync::LazyLock<Arc<fetch::Memory>> =
 /// The PUTs of objects a host's stores upload, each holding its object's bytes while it goes:
 /// bounded in bytes, so that a host whose stores are far behind, object storage out of reach for a
 /// while, holds no more than these at once, whatever their number (TASK-79.19); and in number, as
-/// its GETs are.
-static UPLOADS: std::sync::LazyLock<Arc<Budget>> =
-    std::sync::LazyLock::new(|| Budget::new(Limits { requests: 64, bytes: UPLOAD_BYTES }));
+/// its GETs are. fxdax: in bytes, its upload memory ([`set_upload_memory`], TASK-317).
+static UPLOADS: std::sync::LazyLock<Arc<Budget>> = std::sync::LazyLock::new(|| {
+    let bytes = *UPLOAD_MEMORY.get_or_init(|| UPLOAD_BYTES);
+    Budget::new(Limits { requests: 64, bytes })
+});
+
+/// fxdax: the most bytes of objects the host's uploads hold at once ([`UPLOADS`]), as
+/// [`set_upload_memory`] set it, or [`UPLOAD_BYTES`].
+static UPLOAD_MEMORY: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+
+/// fxdax: has the host's uploads hold at most `bytes` of the objects they upload at once
+/// (TASK-317): extentd's `FXDAX_EXTENTD_UPLOAD_MEMORY`. However far behind the bucket its stores
+/// fall, what waits for it is on the host's disk, their write-ahead logs, and what of it is in
+/// memory is what this lets upload at once. Before any store opens; no less than the largest
+/// object a store uploads, an extent's of 64 MiB, which goes alone.
+pub fn set_upload_memory(bytes: u64) -> Result<(), String> {
+    if bytes < crate::ExtentStore::MAX_EXTENT {
+        return Err(format!(
+            "an upload memory of {bytes} bytes: less than an extent's {}",
+            crate::ExtentStore::MAX_EXTENT
+        ));
+    }
+    match UPLOAD_MEMORY.set(bytes) {
+        Ok(()) => Ok(()),
+        Err(_) if UPLOAD_MEMORY.get() == Some(&bytes) => Ok(()),
+        Err(_) => Err("the upload memory is set already, as stores opened".to_owned()),
+    }
+}
+
+/// fxdax: what the host's uploads hold of the objects they upload, in bytes (TASK-317).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct UploadMemory {
+    /// Held now.
+    pub held: u64,
+    /// The most held at once.
+    pub max_held: u64,
+    /// The most they may hold at once ([`set_upload_memory`]).
+    pub budget: u64,
+}
+
+/// fxdax: what the host's uploads hold now, the most they held, and their budget (TASK-317).
+pub fn upload_memory() -> UploadMemory {
+    let (held, max_held) = UPLOADS.held();
+    UploadMemory { held, max_held, budget: UPLOADS.limits().bytes }
+}
 
 /// The runtime every store's uploader, and its fetches, run on (TASK-34): sized by the host, not
 /// by how many stores it serves, as each store waits on object storage mostly, and does its disk
@@ -1389,6 +1431,67 @@ mod tests {
         assert_eq!(extents.iter().map(|(sequence, _)| *sequence).collect::<Vec<_>>(), [1, 2, 3]);
     }
 
+    /// TASK-317: what a store's uploads hold in memory while the bucket takes none of them, however
+    /// far behind they fall, is their budget, the host's upload memory: segments of incompressible
+    /// data, a MiB an extent, each closed by a commit waiting for its upload, twice as many as the
+    /// store uploads at once, which the bucket holds unanswered. What waits is in the store's
+    /// write-ahead log, on disk.
+    #[test]
+    fn uploads_a_bucket_takes_none_of_hold_no_more_than_their_budget() {
+        // Seven segments' room, of 32 MiB and their tails each: more than a framing holds.
+        const BUDGET: u64 = 256 << 20;
+        // What a store's framing holds besides, one segment at a time: its data, and its framed
+        // bytes, twice as they grow (`extent_store::segments`, TASK-325).
+        const FRAMING: u64 = 4 * (32 << 20);
+        // And the heap's own: the store's and the bucket's, and a commit's buffers.
+        const SLACK: u64 = 16 << 20;
+        super::set_upload_memory(BUDGET).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let gated = Arc::new(Gated::new());
+        let bucket = Arc::new(Bucket::new(gated.clone(), ""));
+        let options =
+            extent_store::upload::Options { max_lag: u64::MAX, max_lag_bytes: u64::MAX, ..idle() };
+        let store = Arc::new(
+            kept_in(dir.path().join("store"), (8 << 30, None), &bucket.clone(), options).unwrap(),
+        );
+        // The writer's fence is in; the commits' segments are held.
+        gated.hold.send_replace(Hold::Segments);
+        let segments = 2 * extent_store::upload::IN_FLIGHT;
+        let mut waiting = Vec::new();
+        let data = noise(1, 1 << 20);
+        let heap = crate::heap::peak_while(|| {
+            let mut sequence = 0;
+            for _ in 0..segments {
+                for _ in 0..32 {
+                    sequence += 1;
+                    write(&store, sequence, &data);
+                    store.commit_ordered(None).unwrap();
+                }
+                let committing = store.clone();
+                waiting.push(std::thread::spawn(move || committing.commit(None)));
+            }
+            // As many as the budget lets go at once: seven at least, or more of segments closed
+            // short, as commits waiting close them.
+            let deadline = std::time::Instant::now() + Duration::from_secs(30);
+            let held = || gated.held.load(std::sync::atomic::Ordering::Relaxed);
+            while held() < 7 && std::time::Instant::now() < deadline {
+                std::thread::yield_now();
+            }
+            assert!(held() >= 7, "{} uploads held", held());
+        });
+        let memory = super::upload_memory();
+        let behind = store.remote().unwrap().status().unwrap().pending_bytes;
+        gated.hold.send_replace(Hold::Nothing);
+        for commit in waiting {
+            assert_eq!(commit.join().unwrap(), Ok(()));
+        }
+        eprintln!("heap {} MiB, {memory:?}, {} MiB behind", heap >> 20, behind >> 20);
+        assert!(behind >= (segments as u64) << 25, "{behind} bytes behind");
+        assert_eq!(memory.budget, BUDGET);
+        assert!(memory.max_held <= BUDGET, "{memory:?}");
+        assert!(heap <= BUDGET + FRAMING + SLACK, "{} MiB held", heap >> 20);
+    }
+
     /// Segments upload at once: a commit made while those before it upload goes up with them.
     #[test]
     fn segments_upload_at_once() {
@@ -2293,7 +2396,7 @@ mod tests {
         let mut newer = (extent_remote::layout::FORMAT + 1).to_le_bytes().to_vec();
         newer.extend_from_slice(b"what a later format holds");
         let (key, overwrite) = (extent_remote::layout::record(branch), PutMode::Overwrite);
-        futures::executor::block_on(bucket.put(&key, newer, overwrite)).unwrap();
+        futures::executor::block_on(bucket.put(&key, newer.into(), overwrite)).unwrap();
         let listed = || {
             let listed = futures::executor::block_on(bucket.list("")).unwrap();
             listed.into_iter().map(|meta| (meta.key, meta.version)).collect::<Vec<_>>()

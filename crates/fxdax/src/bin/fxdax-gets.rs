@@ -113,7 +113,7 @@ fn main() -> Result<(), String> {
         .map_err(|err| format!("a runtime: {err}"))?;
     runtime.block_on(async {
         let bytes = incompressible(len as usize);
-        let put = store.put(KEY, bytes, PutMode::Overwrite).await;
+        let put = store.put(KEY, bytes.into(), PutMode::Overwrite).await;
         put.map_err(|err| format!("putting the object: {err:?}"))?;
         // Connections made, and the object where it is read from, before what is measured.
         measure(&store, len, 1 << 20, 16, Duration::from_secs(2)).await?;
