@@ -3,10 +3,11 @@ id: TASK-92.41
 title: >-
   A commit sealing more than a segment's bound of small extents copies them
   under the state lock and seals each in a file of its own
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-10-23 03:10'
-updated_date: '2026-11-10 10:29'
+updated_date: '2026-11-10 16:04'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -34,6 +35,17 @@ TASK-79.2 bounded segments at segment_size + max_extent. A commit sealing more s
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Segments framed in place when none of their parts compresses: the raw file, its tail appended and synced, hard-linked into segments/ (Dir::link), its raw path going once its commits are durable, as before; recovery reads a raw file holding a whole frame by its data.
+2. Format (extent_frame Contents::continued, layout::FORMAT 3, store format 9): a segment's footer names the runs in its data of the commit it ends inside of, which the next segment goes on with (the user's decision: commits spanning segments).
+3. Readers (extent_remote::State::apply_contents) hold a commit's runs begun until a segment ends it, dropped if the next applied neither continues nor ends it (a fence); writers acknowledge only at commit boundaries, so checkpoints and the acknowledged state never hold one begun; Wal::rebase lands only at boundaries; fetch reads continued runs.
+4. The store: a segment filling between commits takes no more writes and waits (Phase::Full, its window kept) for the next commit, which seals what is one run in it in place, closes it with its continuation, the commit's runs there recorded in its log; copies that overflow the open segment fill it and go on in the next; the spill to raw files of their own goes. close_now closes the first full segment if it holds commits. Upload and raw removal wait for the continued commit's durability; local recovery drops a continuation no later segment completes.
+5. Tests: extent_frame, extent_remote (apply, rebase, acknowledge), extent_store (bursts sealed in place, crash rounds through spanning commits, sim, Shuttle); store-bench burst before/after.
+6. doc-7, crate docs; measure on ubu1 (shared-disk, -dax, pgbench, pgbench-dax) A/B vs main.
+<!-- SECTION:PLAN:END -->
 
 ## Implementation Notes
 

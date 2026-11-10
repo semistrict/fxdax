@@ -256,6 +256,11 @@ mod host {
                 kinds.join(" "),
                 gib(written.saturating_sub(stored)),
             );
+            // fxdax: segments whose data was written once, and commits spanning segments
+            // (TASK-310, TASK-92.41).
+            let once = ["segments_framed_in_place", "commits_spanning_segments"]
+                .map(|name| format!("{name}={}", stats.get(name).copied().unwrap_or(0)));
+            eprintln!("shared-disk: {}", once.join(" "));
             eprintln!(
                 "shared-disk: slow_framings={slow} slowest_ms={longest:.1} slow_framing_ms={slow_sum:.0} \
                  framing_count={} flush_slow={} io_stall_some_s={:.1} io_stall_full_s={:.1}",

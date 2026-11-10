@@ -3,7 +3,7 @@ id: doc-7
 title: 'Object storage: how the host keeps branches in S3 and GCS'
 type: specification
 created_date: '2026-10-17 01:31'
-updated_date: '2026-11-10 15:08'
+updated_date: '2026-11-10 16:32'
 ---
 # Object storage: how the host keeps branches in S3 and GCS
 
@@ -42,8 +42,10 @@ checkpoints and segments' footers, and lineage is in the bucket alone.
   segment, raw, and each commit's record to the segment's log, synced by the flush that makes the
   commit durable; a segment closes when full, at the upload interval (1 s), when a commit waits for
   its upload, at a fork, or as the uploader stops, and is framed on a thread of its own, its footer
-  stamped by the writer's chain. Closed segments are the store's **write-ahead log** (WAL): each
-  the very object it will be in the bucket, synced before its PUT. The **uploader**
+  stamped by the writer's chain; in place, if none of its parts compresses, its data written once.
+  One filled between commits waits for the next, which seals in it what is one run there, a commit
+  spanning segments (Segments, TASK-92.41). Closed segments are the store's **write-ahead log**
+  (WAL): each the very object it will be in the bucket, synced before its PUT. The **uploader**
   (`extent_store::upload`) PUTs them, and the extents of their own they name, up to 16 of a store's
   at once (`IN_FLIGHT`, 512 MiB of the host's upload budget over 32 MiB segments) and 64 requests
   for the host, acknowledges them in order after a read of the lease, and moves each acknowledged
@@ -158,9 +160,9 @@ and its frees, and a branch's history can be rebuilt from its segments alone. A 
 Numbers are fixed-width hex, so listings sort.
 
 **Formats** *(added 2026-11-03, TASK-141.2; doc-11, rule 1).* A branch's record says first the
-format of its objects (`layout::FORMAT`, now 2: footers and checkpoints hold the capacity,
-TASK-165.3), so that a reader of any format reads it before the rest: one of another format, newer
-or older, is refused (`Error::Format`, naming the branch and the format) before anything else of
+format of its objects (`layout::FORMAT`, now 3: footers and checkpoints hold the capacity,
+TASK-165.3, and a footer the runs of a commit it goes on with, TASK-92.41), so that a reader of
+any format reads it before the rest: one of another format, newer or older, is refused (`Error::Format`, naming the branch and the format) before anything else of
 the branch is read or written. Every reader of a branch reads its record first: a
 writer taking it, a host attaching it, the collector, whose pass stops, deleting nothing in a
 bucket it can't read. Every framed object (segments, extents on their own, checkpoints, moves)
@@ -194,6 +196,9 @@ its own, or raw where that does not shrink it, at offsets in the object that are
 - the frees committed with it, the branch's own extents and inherited ones;
 - the root, if a commit in it set one, and the branch's next sequence;
 - the forks made at its end: each child's branch, its owner (Forks), and whether it is a point;
+- *added 2026-11-10 (TASK-92.41):* the runs in its data of the commit it goes on with past the
+  commits it ends, if any, by that commit's tag (`Contents::continued`): a commit spanning
+  segments (below);
 - then, as in every object that holds data (segments, extents of their own, compaction's moves,
   checkpoints), a table of each part's stored offset and length, the CRC32C of its stored bytes,
   and its encoding, and a trailer: the lengths of the data, of the parts stored and of the
@@ -218,6 +223,45 @@ and syncs the framed file into the WAL, and its raw file and log go once that is
 the bucket has not acknowledged leaves the host: a free's data stays (`extent_store::kept`) until
 the commit freeing it is acknowledged.
 
+*Added 2026-11-10 (TASK-310, TASK-92.41; the user's decision of 2026-10-23, commits spanning
+segments, not footers naming runs in other objects):*
+
+- **A segment framed in place.** One none of whose 1 MiB parts compresses, no write in progress in
+  it, is framed where it is: its raw file, its tail (footer, table, trailer) appended and synced, is
+  linked into `segments/` as its framed file, the raw name going once its commits are durable, as a
+  raw file does. Its data is written once, as the guest wrote it, not raw and then framed again: a
+  sandbox host's daemon wrote some 2.3 times what its guests did, its framings waiting seconds
+  behind its own writes on a disk its VMs and bucket shared (TASK-310). One that compresses is
+  framed in a copy, as before. A crash before the link is durable leaves the raw file and log,
+  which an opening closes the segment again from.
+- **A commit spanning segments.** A guest writing more than a segment between two commits (a large
+  file before its fsync) fills segments: each, full at a segment and an extent (TASK-79.2), takes no
+  more writes and waits for the next commit, which seals each extent one run in it where it is,
+  copying nothing, and closes it. Its footer names, after what the commits before made in it (the
+  first may hold some), the runs of that commit in its data (`continued`), with the commit's tag;
+  the commit ends in the open segment, whose footer names it, its frees, its root, its extents of
+  their own, and its runs there. Extents not one run where they are (written in pieces with others'
+  between, or across two segments) are copied into the open segment, and past its room into the
+  next, which the commit goes on with in turn. Before, a segment filled holding no commit was set
+  aside and the commit copied every extent in it out, into a file of its own each past the open
+  segment's room (store-bench's burst: 640 own files, each created, framed, synced and uploaded),
+  and one holding commits was closed, the extents written since copied out of it alike. Footers
+  name runs in their own segments alone. Each segment's log holds its part of the commit, a record
+  of its runs, checked or held as any record's runs are (`wal::LogRecord`); recovery drops a
+  continuation no segment after it completes, one after another, to the one ending it: a crash
+  between keeps the commit only whole. The segments upload once the commit is durable, as any
+  segment of its commits, and the uploader's closing between commits closes the first segment
+  filled if it holds commits (its extents written since then copied out by the next commit).
+- **Readers** (`recovery::State::apply_contents`, the one replay) hold the runs a segment goes on
+  with (`State::begun`) and seal them, where they are, as the segment ending the commit is applied,
+  before its own; a segment after them that neither goes on with the commit nor ends it, a later
+  writer's fence, leaves them unsealed: the commit, never acknowledged, never was. **Writers
+  acknowledge only segments that end their commits** (`Writer::acknowledge`), so that what a store
+  lets go of, once acknowledged, the bucket has whole, and no acknowledged state, nor any
+  checkpoint, holds a commit begun. A WAL is put after a branch's end only between commits
+  (`Wal::rebase`): its segments going on with a commit the fence left unended are no end of the
+  branch, and are stamped again after it, with the rest of the commit.
+
 ## Checkpoints
 
 A checkpoint is a table sorted by extent ID, in blocks of 64 KiB with a CRC32C each, a block index
@@ -227,7 +271,8 @@ forks, and each segment's live bytes, which compaction reads. (The simulation ke
 record; TASK-28.6 gives it this format.)
 
 A writer writes one every 64 segments (`upload::CHECKPOINT_EVERY`), on clean shutdown, and as an
-acknowledgement carries forks, which the checkpoint makes, recording there where the collector
+acknowledgement carries forks (each as of the last segment it acknowledged, which ends its commits,
+TASK-92.41), which the checkpoint makes, recording there where the collector
 moved extents, and dropping forks whose children were deleted (32 children's records read at most
 a checkpoint, in turn: TASK-92.4).
 It names the extents moved where they went itself before it writes the checkpoint, only forward
@@ -309,7 +354,8 @@ Each branch's commits go through:
    them, up to 16 segments of a store at once within the host's upload budget (64 requests, its
    upload memory: 512 MiB unless `FXDAX_EXTENTD_UPLOAD_MEMORY` says otherwise; Memory, below).
 5. **Acknowledged:** once every segment before it is uploaded too, and a read of the lease after
-   shows it still the writer's (Fencing). Then `COMMIT_DURABLE` waiters up to it complete, the WAL's
+   shows it still the writer's (Fencing); a segment going on with a commit, with the segment
+   ending it (Segments, TASK-92.41). Then `COMMIT_DURABLE` waiters up to it complete, the WAL's
    base moves past it, durably, and its files leave the store for the host's part cache.
 
 Invariants: what is uploaded never exceeds what is durable locally; a branch's committed segments are

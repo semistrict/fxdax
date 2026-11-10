@@ -3,7 +3,7 @@ id: doc-14
 title: 'Local disk as the bucket''s write-ahead log and cache: one storage engine'
 type: specification
 created_date: '2026-11-05 03:13'
-updated_date: '2026-11-09 09:10'
+updated_date: '2026-11-10 16:32'
 ---
 # Local disk as the bucket's write-ahead log and cache: one storage engine
 
@@ -332,8 +332,9 @@ image's own bucket.
 - Footers and checkpoints gain the capacity; `layout::FORMAT` becomes 2, and a reader refuses
   objects of other formats, older ones too (`Error::Format`).
 - Local stores: a new format, 6 at TASK-165.6, 7 at TASK-165.7 and 8 at TASK-165.9, described
-  above (`extent_store::layout::FORMAT`, "fxdax extent store 8"). Stores of another format are not
-  opened, and nothing converts them.
+  above (`extent_store::layout::FORMAT`, "fxdax extent store 9", whose footers and logs'
+  records name the runs of a commit spanning segments in each it spans, TASK-92.41). Stores of
+  another format are not opened, and nothing converts them.
 
 No migration: nothing uses fxdax yet (AGENTS.md).
 

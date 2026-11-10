@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-09 23:57'
-updated_date: '2026-11-10 15:48'
+updated_date: '2026-11-10 16:04'
 labels:
   - perf
   - extentd
@@ -96,4 +96,6 @@ Bytes: the same with write-behind off. Root cause of the bytes: the large file's
 2026-11-10: on main: 5949ac1f2 (written-bytes stats; fxfs-guest-shared-disk), 90b4d8943 (TASK-329, found by the crash rounds once extents are framed in place), 80e682ed5 (spill once a segment is set aside; large extents that don't compress framed in place), 3a1038195 (backlog). Verified: macOS workspace (2216), sim, Shuttle; ubu1 workspace (2470, target and TMPDIR on ext4), sim, Shuttle; pgbench and pgbench-dax under fxjob --bench meet doc-12's median (82%, 77%). AC #4 in part: the stores write 1.47 times the guests' data on the shared-disk case (2.17 before), 2.55 with the file bucket's copy (3.17); not ~1x: the segments' raw data, a write-ahead log, is still written back and then framed (inherent to raw + framed; framing segments in place, as large extents now are, would remove it when they don't compress), and the spilled extents are a file each, whose syncs (flush data phase, framing own phase) leave the slowest framing at ~11 s with 8 VMs at once, not the old pin's 0.2 s: TASK-92.41's commits spanning segments removes the file per extent. pgbench-dax's longest lag (2.55 s) passes the crash bound on this shared disk, as main's did (up to 8.9 s): TASK-322. ubu1 setup: ~/docs/system-setup.d/143-fxdax_ext4_scratch.sh (zvol rpool/fxdax-scratch, ext4 at /mnt/fxdax-scratch, primarycache=metadata).
 
 CI 42843850345 green at 3a1038195 (all jobs).
+
+2026-11-10 (claude, TASK-92.41's agent): finishing AC #4 by TASK-92.41 (commits spanning segments, replacing the spill) and segments framed in place when they don't compress.
 <!-- SECTION:NOTES:END -->

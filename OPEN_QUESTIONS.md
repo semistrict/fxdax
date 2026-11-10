@@ -8,6 +8,14 @@
 
 # Decisions
 
+## Commits spanning segments, and segments framed in place, how (TASK-92.41, TASK-310, 2026-11-10)
+Your 2026-10-23 choice (commits spanning segments) as built: a segment that fills between commits takes no more writes and waits for the next commit, which seals in place every extent one run in it and closes it, its footer naming those runs as the commit's (`Contents::continued`, branch format 3, store format 9); readers seal them with the segment ending the commit and drop them at a fence; writers acknowledge only segments ending commits. Decided without you:
+- **A filled segment holding commits waits too** (sealing what was written since in place), its commits uploaded by the next commit or the uploader's closing between commits (1 s), which then closes it alone and the next commit copies out what came after. *Instead:* close it at fill as before, copying up to a segment's worth per burst.
+- **A filled segment with no extent's data left closes as a footer alone**, uploaded as a tiny object, rather than being discarded: a spanning commit's segments stay consecutive, which local recovery checks a continuation by. *Undo:* discard it and have the commit's last record name the segments it spans.
+- **Segments are framed in place only when none of their 1 MiB parts compresses**, as large extents are; one compressible part frames the segment in a copy. *Instead:* a threshold (in place unless compression saves an eighth). The shared-disk numbers in TASK-92.41's notes say how often each happened.
+- **The spill to raw files of their own (80e682ed5) is gone**, with `Options::spilled_most`; closings for want of room are gone too, so the Shuttle scenarios of them were rewritten for commits closing filled segments (same rules, `needs_framings_to_end_themselves` now on a spanning commit's segments).
+- **specs/bucket doesn't model it yet** (TASK-149.45); the simulation, the crash rounds (now with extents small enough that segments fill) and extent_remote's tests do.
+
 ## Userfaultfds through /dev/userfaultfd alone, no system call fallback (TASK-308, 2026-11-10)
 fxdax's DAX windows no longer fall back to userfaultfd(2) when /dev/userfaultfd can't be opened: Firecracker's seccomp filter killed the VMM for it ("bad syscall (323)"). A host must grant the device (group or mode, or an ACL), as CI, Lima and ubu1 do; `vm.unprivileged_userfaultfd=1` alone no longer serves even fxdax's in-process tests. An extent device with a window checks the device as it is made, so the VM fails at start, naming it. *Instead:* keep the fallback outside the VMM. *Undoing it:* the `Err` arm in `dax::uffd::open_userfaultfd`.
 
