@@ -351,6 +351,7 @@ mod tests {
     /// which a host's filesystem may keep coarse (before 6.13, or not multigrain): two changes in a
     /// tick leave one, which the other run's may not have had in one.
     #[test]
+    #[ignore = "needs root, to loop-mount a filesystem (script_run::tests::Loop)"]
     fn a_wide_script_on_one_filesystem_twice_agrees() {
         // Bound whole: a pattern's `..` would drop the filesystems, unmounting them.
         let host = on_the_host();
@@ -367,6 +368,7 @@ mod tests {
     /// fxdax: and the hostile mix's (TASK-149.16), its far steps each held to its own filesystem's
     /// largest file.
     #[test]
+    #[ignore = "needs root, to loop-mount a filesystem (script_run::tests::Loop)"]
     fn a_hostile_script_on_one_filesystem_twice_agrees() {
         let host = on_the_host();
         let mut differential = host.differential;
@@ -381,6 +383,7 @@ mod tests {
 
     /// A byte the subject gets wrong is the subject's failure; the reference's, the model's.
     #[test]
+    #[ignore = "needs root, to loop-mount a filesystem (script_run::tests::Loop)"]
     fn a_wrong_byte_is_the_subjects_or_the_references() {
         let write = Op::Write { file: 0, place: Place::At(0), len: 100, data: 1 };
         for (wrong, expected) in [(1, kind::DIFFERS), (0, kind::REFERENCE_DIFFERS)] {
@@ -402,6 +405,7 @@ mod tests {
     /// subject's was left, the two going on alike to the script's end. Root's, as script_run's tests
     /// on filesystems of their own are.
     #[test]
+    #[ignore = "needs root, to loop-mount a filesystem (script_run::tests::Loop)"]
     fn refusals_are_adopted_by_the_reference() {
         let (theirs, ours) = (TempDir::new("reference").unwrap(), TempDir::new("subject").unwrap());
         let room = Loop::new(theirs.path(), 300 << 20, "mkfs.ext4", &["-q", "-F"]);

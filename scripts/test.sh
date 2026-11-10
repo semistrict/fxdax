@@ -109,13 +109,23 @@ if part go; then
     fi
 fi
 # The guest tests' own tests, the host's half and the guest's, which build on Linux alone: their
-# harness's (guest/tests/test_cases/src/vm.rs, script_vm.rs, the runner's) and the guest agent's,
-# some of which mount loop devices, as root, with mkfs.ext4 and mkfs.xfs: CI runs this part as
-# root.
+# harness's (guest/tests/test_cases/src/vm.rs, script_vm.rs, the runner's) and the guest agent's.
+# Those that mount a filesystem of their own on a loop device, with mkfs.ext4 and mkfs.xfs, need
+# root, which nothing unprivileged stands in for (script_run's Loop): ignored, saying so, they
+# run as root alone, as CI runs this part, and a run as another user says it leaves them out
+# (TASK-307).
 if part guest; then
-    cargo nextest run --manifest-path "$root/guest/tests/Cargo.toml" -p test_cases --features host
-    cargo nextest run --manifest-path "$root/guest/tests/Cargo.toml" -p test_cases --features guest
-    cargo nextest run --manifest-path "$root/guest/tests/Cargo.toml" -p runner
+    as_root=()
+    if (( EUID == 0 )); then
+        as_root=(--run-ignored all)
+    else
+        echo "scripts/test.sh: the guest part's tests that loop-mount a filesystem need root, and are left out: run it as root to include them" >&2
+    fi
+    harness=(cargo nextest run --manifest-path "$root/guest/tests/Cargo.toml"
+        ${as_root[@]+"${as_root[@]}"})
+    "${harness[@]}" -p test_cases --features host
+    "${harness[@]}" -p test_cases --features guest
+    "${harness[@]}" -p runner
 fi
 # The VMM's own tests that fxdax adds to, which no other suite reaches: its extent device's
 # (TASK-79.102), its vCPUs' exits' (TASK-187) and the PCI transport's shared memory BAR's and device
@@ -136,16 +146,24 @@ if part firecracker; then
     # persistence tests, which make VMs, the extent device's window a BAR of its device's over PCI
     # (TASK-267); with FXDAX_FIRECRACKER_TESTS=all, the vmm crate's whole suite, its integration
     # tests too, in their place. One at a time, as Firecracker runs them (--test-threads=1): they
-    # share host resources, such as the tap device the persistence tests open by one name.
+    # share host resources, such as the tap device the persistence tests open by one name,
+    # `hostname`: root's to make, or, made persistent and owned by a user (ip tuntap add dev
+    # hostname mode tap user USER), that user's to open. Where neither, they are left out, saying
+    # so (TASK-307).
     if [[ -w /dev/kvm ]]; then
         if [[ ${FXDAX_FIRECRACKER_TESTS:-} == all ]]; then
             FXDAX_EXTENTD_REMOTE=memory:///vmm FXDAX_EXTENTD_TOKEN=1 \
                 "$root/scripts/firecracker-cargo.sh" nextest run -p vmm --features fxdax \
                 --no-fail-fast --test-threads 1
         else
+            kvm_tests='(test(/transport::pci::/) | test(/device_manager::(pci_mngr|persist)::/))'
+            tap=/sys/class/net/hostname/owner
+            if (( EUID != 0 )) && ! [[ -r $tap && $(< "$tap") == "$EUID" ]]; then
+                kvm_tests+=' - test(/::test_device_manager_persistence$/)'
+                echo "scripts/test.sh: the VMM's persistence tests open the tap device hostname, which needs root or one of this user's (ip tuntap add dev hostname mode tap user $(id -un)), and are left out" >&2
+            fi
             "$root/scripts/firecracker-cargo.sh" nextest run -p vmm --lib --features fxdax \
-                --no-fail-fast --test-threads 1 \
-                -E 'test(/transport::pci::/) | test(/device_manager::(pci_mngr|persist)::/)'
+                --no-fail-fast --test-threads 1 -E "$kvm_tests"
         fi
     fi
 fi

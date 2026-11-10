@@ -95,7 +95,7 @@ class Ci(unittest.TestCase):
         self.assertIn("            target\n", job())
         self.assertIn("'vendor/firecracker.lock'", job())
         e2e = (ROOT / "scripts" / "test-e2e.sh").read_text()
-        self.assertIn('FXDAX_TEST_PARTS=firecracker "$root/scripts/test.sh"', e2e)
+        self.assertIn('FXDAX_TEST_PARTS="guest firecracker" "$root/scripts/test.sh"', e2e)
 
     def test_guest_sim_runs_whole_when_what_it_tests_changed_and_nightly(self):
         """The user's decision (2026-11-08): guest/sim's jobs, keeping their names, run whole in CI

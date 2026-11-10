@@ -245,10 +245,11 @@ fi
 # its repository and commit as they build.
 guest_target="$(uname -m)-unknown-linux-musl"
 if [[ -z $build_only$prebuilt ]]; then
-    (cd "$harness" && cargo test -q -p test_cases --features guest)
-    # The VMM's extent device's tests, and its vCPUs' exits', fxdax's, which no other suite reaches
-    # (TASK-79.102, TASK-187): scripts/test.sh's firecracker part, which CI runs too (TASK-220).
-    FXDAX_TEST_PARTS=firecracker "$root/scripts/test.sh"
+    # The harness's own tests, scripts/test.sh's guest part, which as another user than root says
+    # it leaves out those that need root (TASK-307); and the VMM's extent device's tests, and its
+    # vCPUs' exits', fxdax's, which no other suite reaches (TASK-79.102, TASK-187): its firecracker
+    # part, which CI runs too (TASK-220).
+    FXDAX_TEST_PARTS="guest firecracker" "$root/scripts/test.sh"
 fi
 if [[ -z $prebuilt ]]; then
     (cd "$harness" && cargo build -q --target "$guest_target" -p guest-agent)

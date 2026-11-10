@@ -1749,6 +1749,7 @@ pub(crate) mod tests {
     }
 
     #[test]
+    #[ignore = "needs root, to loop-mount a filesystem (script_run::tests::Loop)"]
     fn several_files_script_passes_on_a_filesystem_with_reflinks() {
         let dir = TempDir::new("script").unwrap();
         let xfs = Loop::reflinks(dir.path());
@@ -1767,6 +1768,7 @@ pub(crate) mod tests {
     /// clone (`Model::clone_range`) to the VFS's: each refusal the model says, the kernel makes, and
     /// no other. Through every operation's outcome and the bytes after it.
     #[test]
+    #[ignore = "needs root, to loop-mount a filesystem (script_run::tests::Loop)"]
     fn wide_scripts_pass_on_a_filesystem_with_reflinks() {
         let dir = TempDir::new("script").unwrap();
         let xfs = Loop::reflinks(dir.path());
@@ -1784,6 +1786,7 @@ pub(crate) mod tests {
 
     /// fxdax: and on ext4, with no reflinks, its clones copies of what the model says they take.
     #[test]
+    #[ignore = "needs root, to loop-mount a filesystem (script_run::tests::Loop)"]
     fn wide_scripts_pass_on_a_filesystem_without_reflinks() {
         let dir = TempDir::new("script").unwrap();
         let ext4 = Loop::new(dir.path(), 300 << 20, "mkfs.ext4", &["-q", "-F"]);
@@ -1802,6 +1805,7 @@ pub(crate) mod tests {
     /// the kernel says. XFS's without writes from buffers that fault, which leave what a page held
     /// in a hole (`a_write_stopped_short_in_a_hole_leaves_zeros`).
     #[test]
+    #[ignore = "needs root, to loop-mount a filesystem (script_run::tests::Loop)"]
     fn hostile_scripts_pass_on_xfs_and_ext4() {
         let dir = TempDir::new("script").unwrap();
         let at = |name: &str| {
@@ -1838,6 +1842,7 @@ pub(crate) mod tests {
     /// held before (Linux 6.18 and 7.2's __iomap_write_begin and __iomap_write_end): a kernel's
     /// memory, unless it zeroes pages as it allocates them (init_on_alloc).
     #[test]
+    #[ignore = "needs root, to loop-mount a filesystem (script_run::tests::Loop)"]
     fn a_write_stopped_short_in_a_hole_leaves_zeros() {
         let dir = TempDir::new("script").unwrap();
         let ext4 = Loop::new(dir.path(), 300 << 20, "mkfs.ext4", &["-q", "-F"]);
@@ -1875,6 +1880,7 @@ pub(crate) mod tests {
     /// iomap's direct read finds delayed and fails, EIO ("Direct I/O collision with buffered
     /// writes!", iomap_dio_iter; GCE r860, fxfs-guest-fsx, the reference refusing).
     #[test]
+    #[ignore = "needs root, to loop-mount a filesystem (script_run::tests::Loop)"]
     fn a_direct_read_past_an_append_stopped_short_reads_the_file() {
         let dir = TempDir::new("script").unwrap();
         let ext4 = Loop::reference(dir.path());
@@ -1918,6 +1924,7 @@ pub(crate) mod tests {
 
     /// fxdax: hostile steps, each, on ext4: what each comes to, and what the files hold after.
     #[test]
+    #[ignore = "needs root, to loop-mount a filesystem (script_run::tests::Loop)"]
     fn hostile_steps_come_to_what_the_model_says() {
         let dir = TempDir::new("script").unwrap();
         let ext4 = Loop::new(dir.path(), 300 << 20, "mkfs.ext4", &["-q", "-F"]);
@@ -2004,6 +2011,7 @@ pub(crate) mod tests {
     /// 6.13, its filesystems' times are coarse, and a write in the tick the file was made in leaves
     /// them (the guest's ext4 and Fxfs are multigrain, FS_MGTIME).
     #[test]
+    #[ignore = "needs root, to loop-mount a filesystem (script_run::tests::Loop)"]
     fn a_steps_effect_says_its_outcome_and_the_times_it_changed() {
         let dir = TempDir::new("script").unwrap();
         let xfs = Loop::reflinks(dir.path());
@@ -2055,6 +2063,7 @@ pub(crate) mod tests {
     /// fxdax: a private mapping's stores are its own, the file's as they were; a file reopened is
     /// as it was, and its times too.
     #[test]
+    #[ignore = "needs root, to loop-mount a filesystem (script_run::tests::Loop)"]
     fn private_stores_and_reopens_leave_the_file() {
         let dir = TempDir::new("script").unwrap();
         let ext4 = Loop::new(dir.path(), 300 << 20, "mkfs.ext4", &["-q", "-F"]);
@@ -2084,6 +2093,7 @@ pub(crate) mod tests {
 
     /// fxdax: a byte found differing says what changed it, back through the clone it came by.
     #[test]
+    #[ignore = "needs root, to loop-mount a filesystem (script_run::tests::Loop)"]
     fn a_byte_that_differs_says_what_changed_it() {
         let dir = TempDir::new("script").unwrap();
         let xfs = Loop::reflinks(dir.path());
@@ -2127,6 +2137,7 @@ pub(crate) mod tests {
 
     /// fxdax: a hole SEEK_DATA skips must read as zeros: the model holding data there fails.
     #[test]
+    #[ignore = "needs root, to loop-mount a filesystem (script_run::tests::Loop)"]
     fn a_hole_over_data_fails() {
         let dir = TempDir::new("script").unwrap();
         let ext4 = Loop::new(dir.path(), 300 << 20, "mkfs.ext4", &["-q", "-F"]);
@@ -2142,6 +2153,7 @@ pub(crate) mod tests {
 
     /// A clone onto a longer file: what the VFS says, and the model.
     #[test]
+    #[ignore = "needs root, to loop-mount a filesystem (script_run::tests::Loop)"]
     fn clones_do_as_the_model_says() {
         let dir = TempDir::new("script").unwrap();
         let xfs = Loop::reflinks(dir.path());
@@ -2176,6 +2188,12 @@ pub(crate) mod tests {
     }
 
     /// A filesystem of `len` bytes, by `mkfs` and `args`, on a loop device, mounted in `dir`.
+    ///
+    /// fxdax: root's alone, which mount(8) needs for a loop device: no unprivileged way gives a
+    /// test a kernel's ext4 or XFS of its own (a user namespace mounts neither, and FUSE's, as
+    /// fuse2fs, are not the kernel's, which the tests hold the model to). So every test that makes
+    /// one is ignored, its reason saying so, and runs as root alone, with nextest's `--run-ignored all`,
+    /// as scripts/test.sh's guest part and scripts/test-e2e.sh run them as root (TASK-307).
     pub(crate) struct Loop {
         pub(crate) mountpoint: std::path::PathBuf,
     }
@@ -2198,6 +2216,12 @@ pub(crate) mod tests {
             args: &[&str],
             options: &str,
         ) -> Self {
+            // SAFETY: Has no preconditions.
+            let euid = unsafe { libc::geteuid() };
+            assert_eq!(
+                euid, 0,
+                "a loop device's filesystem needs root: ignore the test, as the others making one are"
+            );
             let (image, mountpoint) = (dir.join("image"), dir.join("mounted"));
             fs::File::create(&image).unwrap().set_len(len).unwrap();
             fs::create_dir(&mountpoint).unwrap();
@@ -2261,6 +2285,7 @@ pub(crate) mod tests {
     /// root, to mount, and mkfs.ext4 or mkfs.xfs: nothing else checks what refusals leave off a
     /// guest.
     #[test]
+    #[ignore = "needs root, to loop-mount a filesystem (script_run::tests::Loop)"]
     fn a_filesystem_with_no_room_refuses_and_leaves_the_files_as_the_model_says() {
         let dir = TempDir::new("script").unwrap();
         let ext4 = Loop::new(dir.path(), 8 << 20, "mkfs.ext4", &["-q", "-F", "-m", "0"]);
@@ -2271,6 +2296,7 @@ pub(crate) mod tests {
 
     /// Clones, on a filesystem with reflinks, where a store to a block a clone shares takes room.
     #[test]
+    #[ignore = "needs root, to loop-mount a filesystem (script_run::tests::Loop)"]
     fn a_filesystem_with_reflinks_and_no_room_refuses_and_leaves_the_files_as_the_model_says() {
         let dir = TempDir::new("script").unwrap();
         let xfs = Loop::reflinks(dir.path());
@@ -2284,6 +2310,7 @@ pub(crate) mod tests {
     /// of holes, nearly fit: 26 refusals where 1,697 is the rule, and none on CI's (run
     /// 42420025615).
     #[test]
+    #[ignore = "needs root, to loop-mount a filesystem (script_run::tests::Loop)"]
     fn a_filesystem_filled_has_the_room_asked_once_the_ballast_closes() {
         let dir = TempDir::new("script").unwrap();
         let xfs = Loop::reflinks(dir.path());
