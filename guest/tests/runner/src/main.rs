@@ -36,6 +36,41 @@ struct Ran {
     chosen: BTreeMap<String, String>,
     /// What a test that ran out of time had to add (`Test::timed_out`).
     said: Option<String>,
+    /// The first report of each of its VMs' kernels that complained, of a test that failed or ran
+    /// out of time (`vm::first_report`, TASK-311).
+    kernel_reports: Vec<KernelReport>,
+}
+
+/// fxdax: the first report of a VM's kernel, on its console, the file `console` of the test's
+/// directory.
+#[derive(Clone, Debug, PartialEq)]
+struct KernelReport {
+    console: String,
+    report: String,
+}
+
+/// fxdax: the first report of each kernel of a test's VMs that complained, on their consoles in its
+/// directory `dir`, saying each to standard error: what went wrong first, which the soft lockups
+/// after an oops push out of a console's tail and a log's (TASK-311).
+fn first_kernel_reports(dir: &Path) -> Vec<KernelReport> {
+    let consoles = consoles(dir).unwrap_or_else(|err| {
+        eprintln!("the consoles in {}: {err}", dir.display());
+        Vec::new()
+    });
+    let reports: Vec<KernelReport> = consoles
+        .iter()
+        .filter_map(|path| {
+            let console =
+                fs::read(path).inspect_err(|err| eprintln!("{}: {err}", path.display())).ok()?;
+            let report = test_cases::vm::first_report(&String::from_utf8_lossy(&console))?;
+            let console = path.file_name()?.to_string_lossy().into_owned();
+            Some(KernelReport { console, report })
+        })
+        .collect();
+    for KernelReport { console, report } in &reports {
+        eprintln!("the first kernel report on {console}:\n{report}");
+    }
+    reports
 }
 
 /// fxdax: the checks a test's guest said failed, as the checks suites' guest says them as it ends,
@@ -316,6 +351,7 @@ fn run_single_test(
                 failed_checks: Vec::new(),
                 chosen: chosen(&test_dir),
                 said,
+                kernel_reports: first_kernel_reports(&test_dir),
             };
             return Ok(TestResult {
                 name: test_case.name.to_string(),
@@ -369,12 +405,13 @@ fn run_single_test(
     // fxdax: before a test that passed has its directory removed. The checks it failed only if it
     // failed: an overrun run passes on its check's failing (TASK-168).
     let failed = if matches!(outcome, TestOutcome::Fail(_)) { said_failed } else { Vec::new() };
-    let ran = Ran {
+    let mut ran = Ran {
         took: elapsed,
         limit: timeout,
         failed_checks: failed,
         chosen: chosen(&test_dir),
         said: None,
+        kernel_reports: Vec::new(),
     };
 
     match &outcome {
@@ -387,6 +424,7 @@ fn run_single_test(
         TestOutcome::Fail(reason) => {
             eprintln!("FAIL ({took}):");
             eprintln!("{reason}");
+            ran.kernel_reports = first_kernel_reports(&test_dir);
         }
         TestOutcome::Skip(reason) => {
             eprintln!("SKIP ({})", reason);
@@ -454,13 +492,24 @@ fn save_stacks(dir: &Path, pid: u32) {
 /// fxdax: fails with what the kernels of a test's VMs complained of on their consoles, the files
 /// `console.txt` and `<name>.console.txt` in its directory `dir` (`vm::complaints`).
 fn consoles_complaints(dir: &Path) -> anyhow::Result<()> {
+    for path in consoles(dir)? {
+        test_cases::vm::complaints(&path).with_context(|| format!("in {}", path.display()))?;
+    }
+    Ok(())
+}
+
+/// fxdax: the consoles of a test's VMs, the files `console.txt` and `<name>.console.txt` in its
+/// directory `dir`, by name.
+fn consoles(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
+    let mut consoles = Vec::new();
     for entry in fs::read_dir(dir)? {
         let path = entry?.path();
         if path.file_name().is_some_and(|name| name.to_string_lossy().ends_with("console.txt")) {
-            test_cases::vm::complaints(&path).with_context(|| format!("in {}", path.display()))?;
+            consoles.push(path);
         }
     }
-    Ok(())
+    consoles.sort();
+    Ok(consoles)
 }
 
 fn write_github_summary(
@@ -508,23 +557,20 @@ fn write_github_summary(
         if let TestOutcome::Fail(reason) = &result.outcome {
             writeln!(file, "**Error:**\n```\n{reason}\n```\n---\n")?;
         }
+        // fxdax: what a VM's kernel said first, which the log's tail below may have lost
+        // (TASK-311).
+        for KernelReport { console, report } in
+            result.ran.iter().flat_map(|ran| &ran.kernel_reports)
+        {
+            writeln!(file, "**The first kernel report on {console}:**\n```\n{report}```\n---\n")?;
+        }
 
         if let TestOutcome::Report(report) = &result.outcome {
             writeln!(file, "{}", report.gh_markdown())?;
         } else if let Some(log_path) = &result.log_path {
             let log_content = fs::read_to_string(log_path).unwrap_or_default();
             writeln!(file, "```")?;
-            // Limit log size to avoid huge summaries (2 MiB limit)
-            const MAX_LOG_SIZE: usize = 2 * 1024 * 1024;
-            let truncated = if log_content.len() > MAX_LOG_SIZE {
-                format!(
-                    "... (truncated, showing last 1 MiB) ...\n{}",
-                    &log_content[log_content.len() - MAX_LOG_SIZE..]
-                )
-            } else {
-                log_content
-            };
-            writeln!(file, "{truncated}")?;
+            writeln!(file, "{}", log_tail(&log_content))?;
             writeln!(file, "```")?;
         }
 
@@ -532,6 +578,24 @@ fn write_github_summary(
     }
 
     Ok(())
+}
+
+/// fxdax: the most of a log a GitHub summary shows, its last bytes: half of the 1 MiB GitHub keeps
+/// of a step's summary, the rest for the error and the kernels' first reports above it.
+const MAX_LOG_SIZE: usize = 512 * 1024;
+
+/// fxdax: the last MAX_LOG_SIZE bytes of `log` at most, from a character's start, saying so if
+/// that isn't all of it: a log's tail at a byte offset in a character panicked.
+fn log_tail(log: &str) -> std::borrow::Cow<'_, str> {
+    if log.len() <= MAX_LOG_SIZE {
+        return log.into();
+    }
+    let mut start = log.len() - MAX_LOG_SIZE;
+    while !log.is_char_boundary(start) {
+        start += 1;
+    }
+    format!("... (truncated, showing the last {} KiB) ...\n{}", MAX_LOG_SIZE >> 10, &log[start..])
+        .into()
 }
 
 /// fxdax: where `runner test` writes its case's outcome as data, and of which round of which run
@@ -559,6 +623,10 @@ fn outcome_json(result: &TestResult, run: &serde_json::Value, round: u32) -> ser
         .filter_map(|(name, value)| Some((name.clone(), value.as_str()?.to_owned())))
         .collect();
     knobs.extend(ran.into_iter().flat_map(|ran| ran.chosen.clone()));
+    let kernel_reports: Vec<serde_json::Value> = (ran.into_iter())
+        .flat_map(|ran| &ran.kernel_reports)
+        .map(|each| serde_json::json!({ "console": each.console, "report": each.report }))
+        .collect();
     serde_json::json!({
         "case": result.name,
         "round": round,
@@ -566,6 +634,7 @@ fn outcome_json(result: &TestResult, run: &serde_json::Value, round: u32) -> ser
         "outcome": outcome,
         "reason": reason,
         "failed_checks": ran.map(|ran| ran.failed_checks.clone()).unwrap_or_default(),
+        "kernel_reports": kernel_reports,
         "took_secs": ran.map(|ran| ran.took.as_secs_f64()),
         "limit_secs": ran.map(|ran| ran.limit.as_secs()),
         "commit": run["commit"],
@@ -865,6 +934,10 @@ mod tests {
             failed_checks: vec!["sparse".to_owned()],
             chosen: [("FXDAX_SEED".to_owned(), "77".to_owned())].into(),
             said: None,
+            kernel_reports: vec![KernelReport {
+                console: "console.txt".to_owned(),
+                report: "[ 2.0] Oops: invalid opcode: 0000 [#1] SMP NOPTI\n".to_owned(),
+            }],
         };
         let result = TestResult {
             name: "fxfs-guest-checks-dax".to_owned(),
@@ -891,6 +964,10 @@ mod tests {
                 "outcome": "fail",
                 "reason": "seed 77: expected exactly \"OK\\n\"",
                 "failed_checks": ["sparse"],
+                "kernel_reports": [{
+                    "console": "console.txt",
+                    "report": "[ 2.0] Oops: invalid opcode: 0000 [#1] SMP NOPTI\n",
+                }],
                 "took_secs": 41.5,
                 "limit_secs": 180,
                 "commit": "abc123",
@@ -906,6 +983,41 @@ mod tests {
                 },
             })
         );
+    }
+
+    /// fxdax: a failed test's first kernel reports are its consoles', each with its file's name,
+    /// those whose kernels complained, in their names' order (TASK-311).
+    #[test]
+    fn a_failed_tests_kernel_reports_are_its_consoles_first() {
+        let dir = tempdir::TempDir::new("reports").unwrap();
+        let oops =
+            "[ 2.0] Oops: invalid opcode: 0000 [#1] SMP NOPTI\n[ 2.0] ---[ end trace 0 ]---\n";
+        let lockup = "[ 3.0] watchdog: BUG: soft lockup - CPU#1 stuck for 22s! [dockerd:9]\n";
+        fs::write(dir.path().join("console.txt"), format!("[ 1.0] booting\n{oops}{lockup}"))
+            .unwrap();
+        fs::write(dir.path().join("base.console.txt"), "[ 1.0] booting\n").unwrap();
+        fs::write(dir.path().join("fork.console.txt"), lockup).unwrap();
+        fs::write(dir.path().join("log.txt"), oops).unwrap();
+        assert_eq!(
+            first_kernel_reports(dir.path()),
+            [
+                KernelReport {
+                    console: "console.txt".to_owned(),
+                    report: format!("[ 1.0] booting\n{oops}")
+                },
+                KernelReport { console: "fork.console.txt".to_owned(), report: lockup.to_owned() },
+            ]
+        );
+    }
+
+    /// fxdax: a log's tail starts at a character, however its bytes fall.
+    #[test]
+    fn a_logs_tail_starts_at_a_character() {
+        assert_eq!(log_tail("short"), "short");
+        let log = format!("{}{}", "é".repeat(MAX_LOG_SIZE / 2), "x");
+        let tail = log_tail(&log);
+        let kept = tail.strip_prefix("... (truncated, showing the last 512 KiB) ...\n").unwrap();
+        assert_eq!(kept, format!("{}x", "é".repeat(MAX_LOG_SIZE / 2 - 1)));
     }
 
     /// fxdax: a case run without a run's record, by hand, and skipped.

@@ -76,7 +76,9 @@ pub struct Vm {
 /// (panic_print's bit 0), runnable ones too: two vCPUs looping in the kernel starve the task they
 /// wait on, which no guest watchdog then runs to name, and the test waited for its timeout
 /// (TASK-113). It says what every CPU is doing before that, as the task holding what the stuck
-/// CPU waits for is on another, whose state the tasks' dump doesn't show (TASK-133).
+/// CPU waits for is on another, whose state the tasks' dump doesn't show (TASK-133). An oops
+/// panics too, as fxdax's kernel is configured to (fxdax.config), rather than leave the locks its
+/// task held held, and every CPU locked up on them (TASK-311).
 const CMDLINE: &str = "console=ttyS0 loglevel=5 reboot=k panic=-1 8250.nr_uarts=1 i8042.noaux i8042.nomux \
      i8042.dumbkbd sysctl.kernel.hung_task_timeout_secs=10 softlockup_panic=1 panic_print=0x1 \
      sysctl.kernel.softlockup_all_cpu_backtrace=1 init=/guest-agent";
@@ -1035,6 +1037,52 @@ mod tests {
         );
     }
 
+    /// TASK-311: a console's first report is its first complaint's, from the lines before it to
+    /// its trace's end, however many soft lockups follow; an oops without "BUG:" a complaint.
+    #[test]
+    fn a_consoles_first_report_is_kept_whole() {
+        let boot: String = (0..20).map(|at| format!("[    0.{at:02}] booting\n")).collect();
+        let oops = "[   27.90] list_del corruption. prev->next should be ffff8880049e5a28, but was ffff8880049e5a00\n\
+                    [   27.90] ------------[ cut here ]------------\n\
+                    [   27.90] kernel BUG at lib/list_debug.c:62!\n\
+                    [   27.90] Oops: invalid opcode: 0000 [#1] SMP NOPTI\n\
+                    [   27.90] CPU: 3 UID: 0 PID: 812 Comm: docker-buildx Not tainted 6.18.54+ #1\n\
+                    [   27.90] RIP: 0010:__list_del_entry_valid_or_report+0xb2/0xc0\n\
+                    [   27.90] Call Trace:\n\
+                    [   27.90]  list_lru_del+0x6a/0x110\n\
+                    [   27.90]  workingset_update_node+0x5c/0x90\n\
+                    [   27.90] ---[ end trace 0000000000000000 ]---\n";
+        let lockups: String = (0..2000)
+            .map(|at| {
+                format!(
+                    "[   {}.00] watchdog: BUG: soft lockup - CPU#{} stuck for 22s! [dockerd:{at}]\n\
+                     [   {}.00]  smp_call_function_many_cond+0x11e/0x4b0\n",
+                    50 + at,
+                    at % 8,
+                    50 + at
+                )
+            })
+            .collect();
+        let console = format!("{boot}{oops}{lockups}");
+        let before: String = (12..20).map(|at| format!("[    0.{at:02}] booting\n")).collect();
+        assert_eq!(first_report(&console), Some(format!("{before}{oops}")));
+        assert_eq!(first_report(&boot), None);
+        // A report with no end, as a panic cuts one off, kept to REPORT_BYTES.
+        let endless = format!("[ 1.0] BUG: unable to handle page fault\n{lockups}");
+        let kept = first_report(&endless).unwrap();
+        assert!(kept.len() <= REPORT_BYTES, "{} bytes kept", kept.len());
+        assert!(kept.starts_with("[ 1.0] BUG: unable to handle page fault\n"), "{kept}");
+        assert!(kept.ends_with("(the rest of the report, past 16 KiB, is in the console)\n"));
+        let dir = tempdir::TempDir::new("console").unwrap();
+        let path = dir.path().join("gpf.console.txt");
+        let gpf = "[ 3.0] Oops: general protection fault, probably for non-canonical address 0xdead000000000122: 0000 [#1] SMP NOPTI";
+        std::fs::write(&path, format!("{gpf}\n")).unwrap();
+        assert_eq!(
+            complaints(&path).map_err(|err| err.to_string()),
+            Err(format!("a kernel complained: {:#?}", vec![gpf]))
+        );
+    }
+
     /// TASK-44.8: a console's complaints fail its test: a WARN_ON's, lockdep's, a KCSAN report of
     /// a race in fxdax's code; not KCSAN's of a race of the rest of the kernel's, nor of the race
     /// looked into (KCSAN_REVIEWED_CHANGE, KCSAN_REVIEWED_PEERS).
@@ -1228,11 +1276,13 @@ fn kcsan_accesses<'a>(report: &[&'a str]) -> Vec<KcsanAccess<'a>> {
         .collect()
 }
 
-/// What a kernel says as it finds itself wrong: a WARN_ON's, a BUG's, lockdep's, KCSAN's, and
-/// a sleep in atomic context.
-const COMPLAINTS: [&str; 7] = [
+/// What a kernel says as it finds itself wrong: a WARN_ON's, a BUG's, an oops' (a BUG()'s, "kernel
+/// BUG at FILE:LINE!" then "Oops: invalid opcode", or a general protection fault's, neither of
+/// which says "BUG:"), lockdep's, KCSAN's, and a sleep in atomic context.
+const COMPLAINTS: [&str; 8] = [
     "WARNING:",
     "BUG:",
+    "Oops:",
     "possible circular locking",
     "possible recursive locking",
     "inconsistent lock state",
@@ -1248,10 +1298,51 @@ const COMPLAINTS: [&str; 7] = [
 pub fn complaints(console: &Path) -> anyhow::Result<()> {
     let console = String::from_utf8_lossy(&std::fs::read(console)?).into_owned();
     let lines: Vec<&str> = console.lines().collect();
-    let mut complained = Vec::new();
-    for (at, line) in lines.iter().enumerate() {
+    let complained: Vec<&str> = complained(&lines).map(|at| lines[at]).collect();
+    anyhow::ensure!(complained.is_empty(), "a kernel complained: {complained:#?}");
+    Ok(())
+}
+
+/// How many of a console's lines before its first complaint [`first_report`] keeps: what a report
+/// says before the line that names it, as a list's corruption does ("list_del corruption. ..."
+/// then BUG()'s "cut here" and "kernel BUG at", before its "Oops:"), or lockdep its ruler.
+const REPORT_BEFORE: usize = 8;
+
+/// The most of a report [`first_report`] keeps, as LangSmith's host keeps of a guest's first fault
+/// report: an oops' registers, its stack and the modules linked, with room to spare.
+const REPORT_BYTES: usize = 16 << 10;
+
+/// fxdax: the first report of a console's kernel, of its first complaint (as [`complaints`] finds
+/// them): from REPORT_BEFORE lines before it to the end of its trace ("---[ end trace ...]---"),
+/// REPORT_BYTES at most. A guest whose task died holding a lock prints its oops once, then soft
+/// lockups for minutes, every CPU's, till a console's tail holds them alone: what went wrong
+/// first is the one report to keep (TASK-311). None if its kernel didn't complain.
+pub fn first_report(console: &str) -> Option<String> {
+    let lines: Vec<&str> = console.lines().collect();
+    let first = complained(&lines).next()?;
+    let cut =
+        format!("(the rest of the report, past {} KiB, is in the console)\n", REPORT_BYTES >> 10);
+    let mut report = String::new();
+    for line in &lines[first.saturating_sub(REPORT_BEFORE)..] {
+        if report.len() + line.len() + 1 + cut.len() > REPORT_BYTES {
+            report.push_str(&cut);
+            break;
+        }
+        report.push_str(line);
+        report.push('\n');
+        if line.contains("---[ end ") {
+            break;
+        }
+    }
+    Some(report)
+}
+
+/// The indices of the lines of a console, `lines`, in which its kernel complains, but for KCSAN's
+/// reports of races that aren't fxdax's code's, or were reviewed (see [`ours`]).
+fn complained<'a>(lines: &'a [&'a str]) -> impl Iterator<Item = usize> + 'a {
+    lines.iter().enumerate().filter_map(|(at, line)| {
         if !COMPLAINTS.iter().any(|complaint| line.contains(complaint)) {
-            continue;
+            return None;
         }
         // "BUG: KCSAN: data-race in FUNCTION[+OFFSET/LENGTH][ / FUNCTION[+...]]", then the
         // report, to a line of '='s: its accesses, each with its stack, and "value changed:
@@ -1277,11 +1368,9 @@ pub fn complaints(console: &Path) -> anyhow::Result<()> {
                     Some(word(old)? ^ word(new)?)
                 });
             if !of_ours || reviewed || changed == Some(KCSAN_REVIEWED_CHANGE) {
-                continue;
+                return None;
             }
         }
-        complained.push(*line);
-    }
-    anyhow::ensure!(complained.is_empty(), "a kernel complained: {complained:#?}");
-    Ok(())
+        Some(at)
+    })
 }

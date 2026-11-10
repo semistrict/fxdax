@@ -174,6 +174,9 @@ grep -q '^CONFIG_SERIAL_8250_CONSOLE=y' "$src/.config"
 # fxdax: fs/fxfs's tracepoints, in tracefs and for BPF (fxdax.config, TASK-44.16).
 grep -q '^CONFIG_FTRACE=y' "$src/.config"
 grep -q '^CONFIG_BPF_EVENTS=y' "$src/.config"
+# fxdax: an oops panics, and a panic resets the VM (fxdax.config, TASK-311).
+grep -q '^CONFIG_PANIC_ON_OOPS=y' "$src/.config"
+grep -q '^CONFIG_PANIC_TIMEOUT=-1' "$src/.config"
 
 # The filesystem's Rust, against a sysroot whose std is the kernel's (guest/rust/std). With
 # FXDAX_GUEST_KERNEL_RUST_CHECKS=1, optimized, but with its debug assertions, and arithmetic that

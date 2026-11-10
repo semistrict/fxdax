@@ -153,6 +153,7 @@ macro_rules! checks {
             writes_across_seals: All, 23 => test_writes_across_seals;
             stats: All, 3 => test_stats;
             tracepoints: All, 3 => test_tracepoints(dax);
+            oops_panics: All, 3 => test_oops_panics;
             log_writes: All, 21 => test_log_writes;
             acls: All, 3 => test_acls;
             xattrs_read_as_written_back: All, 3 => test_xattrs_read_as_written_back;

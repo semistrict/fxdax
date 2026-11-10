@@ -3,9 +3,11 @@ id: TASK-311
 title: >-
   Guest kernel: oops then soft lockups (smp_call_function_many_cond from
   kvm_flush_tlb_multi/wp_page_copy) in 8-vCPU docker-build VMs
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-11-09 23:57'
+updated_date: '2026-11-10 00:07'
 labels:
   - guest-kernel
 dependencies: []
@@ -46,3 +48,12 @@ LangSmith's host now logs 16 KiB from the first fault report, and they will send
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Keep the first oops: vm::first_report (first complaint, its context and trace, 16 KiB at most); the runner prints each console's first report for failed/timed-out tests and records it in the outcome JSON and GitHub summary; 'Oops:' becomes a complaint; log tail cut at a char boundary.
+2. Fail fast: CONFIG_PANIC_ON_OOPS=y and CONFIG_PANIC_TIMEOUT=-1 in fxdax.config (a panic is a crash doc-12 covers; the oops is then the console's last report); build script checks them; fxfs-guest-checks oops_panics checks the booted kernel. No pstore/ramoops: a Firecracker VM's RAM goes with it.
+3. Reproduce on ubu1: 8-vCPU guest, docker build + image export, host CPU contention, release and debug (lockdep/KASAN/DEBUG_LIST) kernels, N rounds.
+4. Root-cause and fix with a test/mutant if reproduced; else leave open with notes on what LangSmith should send.
+<!-- SECTION:PLAN:END -->
