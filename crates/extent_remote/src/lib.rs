@@ -54,6 +54,7 @@ pub mod cache;
 pub mod checkpoint;
 pub mod client;
 pub mod collector;
+pub mod faults;
 pub mod fetch;
 pub mod layout;
 pub mod local;

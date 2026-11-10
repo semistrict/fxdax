@@ -495,9 +495,10 @@ impl Store {
 }
 
 /// The object store at `url`, as [`Store::from_url`] reaches it, and the prefix the URL names in
-/// it: for tests that put themselves between a store and its objects. Each of its requests waits
-/// FXDAX_REMOTE_LATENCY_MS milliseconds more, if set: an object store as far as a host's own may
-/// be, as the sandbox team's RustFS, 25 ms away, which made Fxfs's commits wait (TASK-61, TASK-62).
+/// it: for tests that put themselves between a store and its objects. fxdax: a degraded one, if the
+/// environment says so (`FXDAX_REMOTE_LATENCY_MS`, `FXDAX_REMOTE_FAULTS`: [`crate::faults`]): an
+/// object store as far as a host's own may be, as the sandbox team's RustFS, 25 ms away, which
+/// made Fxfs's commits wait (TASK-61, TASK-62), or one failing for a while (TASK-330.3).
 pub fn object_store_at(url: &str) -> Result<(Arc<dyn ObjectStore>, String), String> {
     object_store_with(url, std::env::vars(), &Client::DEFAULT)
 }
@@ -520,25 +521,11 @@ pub(crate) fn object_store_with(
         }
         _ => cloud(&url, options, client).map_err(|error| format!("{url}: {error}"))?,
     };
-    let latency = match std::env::var("FXDAX_REMOTE_LATENCY_MS") {
-        Ok(ms) if !ms.is_empty() => std::time::Duration::from_millis(
-            ms.parse().map_err(|_| format!("FXDAX_REMOTE_LATENCY_MS={ms} is no count"))?,
-        ),
-        _ => std::time::Duration::ZERO,
+    let store: Arc<dyn ObjectStore> = match crate::faults::Faults::from_env()? {
+        Some(faults) => Arc::new(crate::faults::Faulty::new(Arc::from(store), faults)),
+        None => Arc::from(store),
     };
-    if latency.is_zero() {
-        return Ok((Arc::from(store), path.as_ref().to_owned()));
-    }
-    let config = object_store::throttle::ThrottleConfig {
-        wait_delete_per_call: latency,
-        wait_get_per_call: latency,
-        wait_list_per_call: latency,
-        wait_list_with_delimiter_per_call: latency,
-        wait_put_per_call: latency,
-        ..Default::default()
-    };
-    let throttled = object_store::throttle::ThrottledStore::new(store, config);
-    Ok((Arc::new(throttled), path.as_ref().to_owned()))
+    Ok((store, path.as_ref().to_owned()))
 }
 
 /// The store of a URL of a cloud's, or of memory, and the path it names in it, as
@@ -796,93 +783,6 @@ pub(crate) mod tests {
         assert_eq!(waits, [50, 100, 200, 400, 800, 1600, 3200, 5000, 5000, 5000]);
     }
 
-    /// Objects in memory, whose writes fail while it is full, as a file bucket's on a full disk
-    /// do: with the filesystem's `ENOSPC` behind `object_store`'s error (TASK-314).
-    #[derive(Debug, Default)]
-    pub(crate) struct Full {
-        objects: object_store::memory::InMemory,
-        pub(crate) full: std::sync::atomic::AtomicBool,
-    }
-
-    impl std::fmt::Display for Full {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            write!(f, "Full")
-        }
-    }
-
-    impl Full {
-        fn room(&self) -> object_store::Result<()> {
-            match self.full.load(Ordering::Relaxed) {
-                true => Err(object_store::Error::Generic {
-                    store: "Full",
-                    source: Box::new(std::io::Error::from_raw_os_error(libc::ENOSPC)),
-                }),
-                false => Ok(()),
-            }
-        }
-    }
-
-    #[async_trait::async_trait]
-    impl ObjectStore for Full {
-        async fn put_opts(
-            &self,
-            location: &Path,
-            payload: PutPayload,
-            opts: PutOptions,
-        ) -> object_store::Result<object_store::PutResult> {
-            self.room()?;
-            self.objects.put_opts(location, payload, opts).await
-        }
-
-        async fn put_multipart_opts(
-            &self,
-            location: &Path,
-            opts: object_store::PutMultipartOptions,
-        ) -> object_store::Result<Box<dyn object_store::MultipartUpload>> {
-            self.room()?;
-            self.objects.put_multipart_opts(location, opts).await
-        }
-
-        async fn get_opts(
-            &self,
-            location: &Path,
-            options: GetOptions,
-        ) -> object_store::Result<object_store::GetResult> {
-            self.objects.get_opts(location, options).await
-        }
-
-        fn delete_stream(
-            &self,
-            locations: futures::stream::BoxStream<'static, object_store::Result<Path>>,
-        ) -> futures::stream::BoxStream<'static, object_store::Result<Path>> {
-            self.objects.delete_stream(locations)
-        }
-
-        fn list(
-            &self,
-            prefix: Option<&Path>,
-        ) -> futures::stream::BoxStream<'static, object_store::Result<ObjectMeta>> {
-            self.objects.list(prefix)
-        }
-
-        async fn list_with_delimiter(
-            &self,
-            prefix: Option<&Path>,
-        ) -> object_store::Result<object_store::ListResult> {
-            self.objects.list_with_delimiter(prefix).await
-        }
-
-        async fn copy_opts(
-            &self,
-            from: &Path,
-            to: &Path,
-            options: object_store::CopyOptions,
-        ) -> object_store::Result<()> {
-            self.room()?;
-            self.objects.copy_opts(from, to, options).await
-        }
-    }
-
     /// TASK-314: a bucket whose writes keep failing, its disk full, which `object_store` says only
     /// as a generic error: a create goes again, backing off to 5 s apart, until it lands once the
     /// bucket has room. Its failures are counted, and logged with the filesystem's error, the
@@ -891,9 +791,11 @@ pub(crate) mod tests {
     #[tokio::test(start_paused = true)]
     async fn writes_failing_say_why_until_they_land() {
         let log = crate::marks::captured();
-        let full = Arc::new(Full::default());
-        let store = Arc::new(Store::new(full.clone(), ""));
-        full.full.store(true, Ordering::Relaxed);
+        use crate::faults::{Failing, Fault, Faults, Faulty};
+        let faults = Faults::new(std::time::Duration::ZERO, None);
+        let objects = Arc::new(object_store::memory::InMemory::new());
+        let store = Arc::new(Store::new(Arc::new(Faulty::new(objects, faults.clone())), ""));
+        faults.set(Fault { failing: Failing::NoSpace, ..Fault::default() });
         let key = layout::segment(1, 0);
         let creating = tokio::spawn({
             let (store, key) = (store.clone(), key.clone());
@@ -902,7 +804,7 @@ pub(crate) mod tests {
         tokio::time::sleep(std::time::Duration::from_secs(40)).await;
         assert_eq!(store.get("other").await.map(|object| object.bytes), Err(Error::NotFound));
         tokio::time::sleep(std::time::Duration::from_secs(55)).await;
-        full.full.store(false, Ordering::Relaxed);
+        faults.set(Fault::default());
         assert!(matches!(creating.await.unwrap(), crate::bucket::Created::Created));
         assert_eq!(store.get(&key).await.unwrap().bytes, [1, 2, 3]);
 
@@ -916,7 +818,7 @@ pub(crate) mod tests {
              failed-update=0 failed-overwrite=0 failed-delete=0"
         ));
         let object = format!("object={key}");
-        let enospc = "error=Generic Full error: No space left on device (os error 28)";
+        let enospc = "error=Generic Faulty error: No space left on device (os error 28)";
         let lines: Vec<String> = (log.lock().unwrap().iter())
             .filter(|line| line.contains("object storage"))
             .cloned()
@@ -926,22 +828,22 @@ pub(crate) mod tests {
             [
                 format!(
                     "WARN object storage: create requests failing, retried until they answer: \
-                     {key}: Generic Full error: No space left on device (os error 28) kind=create \
+                     {key}: Generic Faulty error: No space left on device (os error 28) kind=create \
                      {object} {enospc}"
                 ),
                 format!(
                     "WARN object storage: create requests still failing: 13 failed in 31 s, 12 \
-                     since last said; the latest, {key}: Generic Full error: No space left on \
+                     since last said; the latest, {key}: Generic Faulty error: No space left on \
                      device (os error 28) kind=create {object} failed=13 {enospc}"
                 ),
                 format!(
                     "WARN object storage: create requests still failing: 19 failed in 61 s, 6 \
-                     since last said; the latest, {key}: Generic Full error: No space left on \
+                     since last said; the latest, {key}: Generic Faulty error: No space left on \
                      device (os error 28) kind=create {object} failed=19 {enospc}"
                 ),
                 format!(
                     "WARN object storage: create requests still failing: 25 failed in 91 s, 6 \
-                     since last said; the latest, {key}: Generic Full error: No space left on \
+                     since last said; the latest, {key}: Generic Faulty error: No space left on \
                      device (os error 28) kind=create {object} failed=25 {enospc}"
                 ),
                 "INFO object storage: create requests answered again, 25 having failed in 96 s \
@@ -989,8 +891,9 @@ pub(crate) mod tests {
     }
 
     /// TASK-208: so does a file bucket's, its reads whole and ranged as well as its writes:
-    /// object_store's throttle takes a stream, not the file `LocalFileSystem` gives, which it
-    /// panicked on (`unimplemented!`), every read of every pgbench case's bucket.
+    /// object_store's throttle, which put the latency before a bucket until TASK-330.3, took a
+    /// stream, not the file `LocalFileSystem` gives, which it panicked on (`unimplemented!`),
+    /// every read of every pgbench case's bucket.
     #[test]
     fn file_buckets_wait_the_latency_set() {
         // SAFETY: nextest runs each test in a process of its own, whose other threads don't read
@@ -1459,7 +1362,8 @@ pub(crate) mod tests {
     }
 
     /// TASK-208: under FXDAX_REMOTE_LATENCY_MS, a bucket of files conforms, late: its reads, which
-    /// object_store's throttle panicked on (`unimplemented!`), as well as its writes.
+    /// object_store's throttle, before TASK-330.3, panicked on (`unimplemented!`), as well as its
+    /// writes.
     #[test]
     fn file_buckets_conform_late() {
         late();
