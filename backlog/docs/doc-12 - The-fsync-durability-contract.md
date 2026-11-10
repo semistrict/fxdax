@@ -3,7 +3,7 @@ id: doc-12
 title: The fsync durability contract
 type: other
 created_date: '2026-10-31 22:17'
-updated_date: '2026-11-10 12:24'
+updated_date: '2026-11-10 14:51'
 ---
 # What an acknowledged fsync survives (TASK-66)
 
@@ -53,7 +53,7 @@ it stays within the bound.
 | Host reboot or kernel crash, disk kept | what was ordered within the crash bound may go; a prefix stays | kept | **nothing: no test loses a host's page cache (TASK-67)** |
 | Host lost, disk with it, with a remote | the unuploaded lag goes; a prefix stays | kept | the simulation (doc-7, `crashes_anywhere`); **no guest test (TASK-67)** |
 | Host lost, without a remote | everything goes | everything goes | not a recovery case: a store with no remote, or whose bucket is a file bucket beside it (an image's, `<image>.bucket`), lives on one disk; extentd refuses to start without a remote (`FXDAX_EXTENTD_REMOTE`, TASK-45) |
-| The bucket failing for good: out of reach, full, refusing its credentials | kept: waits at the lag bound, then fails nothing (below) | kept: waits | extent_remote's `writes_failing_say_why_until_they_land` (a full disk's `ENOSPC`, logged); fxdax's `commits_wait_at_the_lag_bound_while_the_bucket_is_full`, `commits_wait_at_the_lag_bound` (TASK-314) |
+| The bucket failing for good: out of reach, full, refusing its credentials | kept: waits at the lag bound, then fails nothing (below) | kept: waits | extent_remote's `writes_failing_say_why_until_they_land` (a full disk's `ENOSPC`, logged); fxdax's `commits_wait_at_the_lag_bound_while_the_bucket_is_full`, `commits_wait_at_the_lag_bound` (TASK-314); for minutes, slow, full, then out of service, then answering, VM processes writing all the while: fxdax's `extentd::tests::soak` (5 min in CI, 30 each night), `fxfs-guest-bucket-soak` with guests (TASK-330.3) |
 
 Every row keeps ordering: what survives is a prefix of the commits, never a later commit without an
 earlier one. Filesystems recover by replaying their journal to that prefix. Open-but-unnamed files
@@ -96,6 +96,11 @@ are freed as the store is next mounted.
   frees (doc-7, Uploads, Memory). Before, a backlog held its uploads twice and the allocator kept
   what it freed, 4-6 GB of anonymous memory, and the host's OOM killer took the daemon, every VM
   it served with it.
+  *Added 2026-11-10 (TASK-330.3):* once the bucket answers, every commit made before is uploaded
+  within that retry's 5 s, the upload interval's second, and the time the guests took to write what
+  waited, as the bucket, answering, takes it back at least as fast as it took it before it failed;
+  and the daemon's anonymous memory stays within its budget meanwhile (doc-7, Memory), every
+  sample of it.
 
 ## How a host tells them apart
 

@@ -3,7 +3,7 @@ id: doc-7
 title: 'Object storage: how the host keeps branches in S3 and GCS'
 type: specification
 created_date: '2026-10-17 01:31'
-updated_date: '2026-11-10 13:18'
+updated_date: '2026-11-10 15:08'
 ---
 # Object storage: how the host keeps branches in S3 and GCS
 
@@ -356,6 +356,19 @@ in 134 of glibc's per-thread arenas of 64 MiB, buffers freed; the host's OOM kil
 5-6 GB on a loaded host (TASK-311). After, 666-718 MB at most in two runs, its uploads holding
 510 MiB at most of their 512 MiB, and the run passed in a scope limited to 3 GiB, its 2 GiB extent
 cache included, with no kill.
+
+*Added 2026-11-10 (TASK-330.2):* the daemon holds itself to that sum, its **anonymous memory's
+budget** (`fxdax::extentd::process`): its upload memory, a store's framing and sealing for each
+store written at once, the most so far (twice a segment and an extent, TASK-325's whole-segment
+framing, and a commit's copy of an extent, 288 MiB), its fetches (192 MiB), its
+tenants' rooms, as much as they held at most, and its own (64 MiB). It samples its anonymous
+memory (`RssAnon`) as it keeps its stats, every 200 ms, against that budget as of then, and counts
+the samples past it: the stats line's `process:` (`max-anon`, `anon-budget`, `over-budget`), and
+the metrics `fxdax_extentd_process_anon_bytes`, `_anon_max_bytes`, `_anon_budget_bytes` and
+`_anon_over_budget_total`, what an operator alerts on. A sample past it is memory no part holds, a
+copy no budget counts or what the allocator kept: both of TASK-317's bugs. The guest tests fail a
+run whose daemon passed it (`scripts/budgets.py`), and the daemon's soak against a degraded bucket
+holds it to it (`extentd::tests::soak`, TASK-330.3).
 
 **Recovery on the same host** *(rewritten 2026-11-07; doc-14, Opening a store)* is opening the
 store: its writer takes the branch and fences it; a segment left open is closed again from the
