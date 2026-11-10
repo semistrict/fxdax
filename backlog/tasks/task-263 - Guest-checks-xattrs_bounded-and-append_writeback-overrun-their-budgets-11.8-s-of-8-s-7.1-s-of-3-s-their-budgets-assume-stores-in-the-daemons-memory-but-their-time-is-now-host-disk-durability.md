@@ -7,6 +7,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-11-08 15:35'
+updated_date: '2026-11-10 09:13'
 labels:
   - tests
   - perf
@@ -40,3 +41,9 @@ Ruled out: run order (pgbench before the checks). us-central1-b and us-west1-a b
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Seen again on ubu1 (2026-11-10, branch harness-fixes on main f36453323, non-root, load ~50 from other agents, results on ZFS /home): fxfs-guest-checks-dax-delay failed only append_writeback, 5.36 s of its 3 s budget, 64 fdatasyncs in 4.75 s, the longest 421 ms.
+<!-- SECTION:NOTES:END -->
