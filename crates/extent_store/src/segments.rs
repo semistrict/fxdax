@@ -1073,9 +1073,16 @@ fn frame_segment<D: Dir>(
     let mut data = Aligned::new(len as usize);
     raw.read_cached(data.as_mut_slice(), 0)?;
     let mut packer = extent_frame::Packer::new();
-    let packed = packer.push(data.as_slice());
-    let in_place = quiet && len > 0 && packer.end() > len - len / IN_PLACE_SAVING;
-    if in_place && !packer.raw() {
+    // fxdax: in place at once if a sample of its parts says compressing them saves too little,
+    // compressing no more of them: compressing every part to tell was most of what framings took
+    // with eight VMs framing at once, up to 0.9 s each; else by them all (TASK-310).
+    let sampled = quiet && len > 0 && saves_little(data.as_slice());
+    let packed = match sampled {
+        true => Vec::new(),
+        false => packer.push(data.as_slice()),
+    };
+    let in_place = sampled || (quiet && len > 0 && packer.end() > len - len / IN_PLACE_SAVING);
+    if (in_place && !packer.raw()) || sampled {
         packer = extent_frame::Packer::new();
         packer.push_raw(data.as_slice());
     }
@@ -1124,6 +1131,23 @@ fn write_back<F: File>(file: &F, bytes: &[u8], offset: u64) -> io::Result<()> {
 /// only if none compressed, segments a guest's filesystem fills, a large file's data with its
 /// metadata in a few of their parts, were all framed in copies but for a few.
 const IN_PLACE_SAVING: u64 = 8;
+
+/// fxdax: the parts of a segment's data compressed to sample it by ([`saves_little`]): one in so
+/// many.
+const SAMPLE_EVERY: usize = 8;
+
+/// fxdax: whether a sample of the parts of `data`, a segment's, one in [`SAMPLE_EVERY`], says
+/// compressing them saves less than half of what it must for a framing in a copy
+/// ([`IN_PLACE_SAVING`]): what a segment of a large file's data, which doesn't compress, holds.
+/// One compressing more, or near the bound, is compressed whole to tell (TASK-310).
+fn saves_little(data: &[u8]) -> bool {
+    let part = extent_frame::PART as usize;
+    let sample = data.chunks(part).step_by(SAMPLE_EVERY);
+    let (len, packed) = sample.fold((0, 0), |(len, packed), part| {
+        (len + part.len() as u64, packed + extent_frame::packed_len(part))
+    });
+    len - packed < len / (2 * IN_PLACE_SAVING)
+}
 
 /// fxdax: frames a segment's data, `raw`, its raw file at `raw_path`, its parts stored raw, in
 /// place ([`frame_segment`]): `tail` appended at `end`, the end of its data, and

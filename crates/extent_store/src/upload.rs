@@ -210,7 +210,9 @@ pub struct Options {
     /// fxdax: how long the commits in a segment the guest is filling wait past the interval for
     /// its next commit, which seals what it writes in it in place, before the interval closes it
     /// anyway (`Store::close_now_unless_filling`, TASK-92.41): a commit waiting for its upload
-    /// closes it at once.
+    /// closes it at once. 30 s: eight VMs writing 768 MiB each on one disk with their bucket took
+    /// 10 s and more each, the interval closing the segments they filled at 10 s, their commits
+    /// copying out a segment's worth each.
     pub filling_wait: Duration,
 }
 
@@ -223,7 +225,7 @@ impl Default for Options {
             cache: None,
             token: 0,
             checkpoint_every: CHECKPOINT_EVERY,
-            filling_wait: Duration::from_secs(10),
+            filling_wait: Duration::from_secs(30),
         }
     }
 }

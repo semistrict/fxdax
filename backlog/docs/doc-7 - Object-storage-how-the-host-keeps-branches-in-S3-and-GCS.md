@@ -3,7 +3,7 @@ id: doc-7
 title: 'Object storage: how the host keeps branches in S3 and GCS'
 type: specification
 created_date: '2026-10-17 01:31'
-updated_date: '2026-11-10 16:55'
+updated_date: '2026-11-10 17:11'
 ---
 # Object storage: how the host keeps branches in S3 and GCS
 
@@ -255,7 +255,7 @@ segments, not footers naming runs in other objects):*
   segment of its commits, and the uploader's closing between commits closes the first segment
   filled if it holds commits (its extents written since then copied out by the next commit); its
   interval leaves one the guest is filling (filled, or past 8 MiB written since the last commit)
-  for the next commit, up to 10 s (`upload::Options::filling_wait`), unless a commit waits for
+  for the next commit, up to 30 s (`upload::Options::filling_wait`), unless a commit waits for
   its upload.
 - **Readers** (`recovery::State::apply_contents`, the one replay) hold the runs a segment goes on
   with (`State::begun`) and seal them, where they are, as the segment ending the commit is applied,

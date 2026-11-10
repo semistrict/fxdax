@@ -157,6 +157,17 @@ fn pack_part(data: &[u8], compressor: &mut zstd::bulk::Compressor<'_>) -> Option
     }
 }
 
+/// fxdax: the bytes `part`, a part of an object's data, is stored in: compressed, or raw if that is
+/// no smaller, as [`Packer::push`] stores it. What a store samples a segment's parts by, to tell
+/// whether compressing them is worth writing it again (TASK-310).
+pub fn packed_len(part: &[u8]) -> u64 {
+    if level() == 0 {
+        return part.len() as u64;
+    }
+    let mut compressor = zstd::bulk::Compressor::new(level()).expect("zstd makes a compressor");
+    pack_part(part, &mut compressor).map_or(part.len(), |packed| packed.len()) as u64
+}
+
 /// `data`'s parts, packed: on threads of their own if there are several.
 fn pack_parts(data: &[u8]) -> Vec<Option<Vec<u8>>> {
     let parts: Vec<&[u8]> = data.chunks(PART as usize).collect();
