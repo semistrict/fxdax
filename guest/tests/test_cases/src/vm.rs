@@ -1064,7 +1064,8 @@ mod tests {
             })
             .collect();
         let console = format!("{boot}{oops}{lockups}");
-        let before: String = (12..20).map(|at| format!("[    0.{at:02}] booting\n")).collect();
+        // REPORT_BEFORE lines before the oops' own: the corruption's, BUG()'s and boot's.
+        let before: String = (15..20).map(|at| format!("[    0.{at:02}] booting\n")).collect();
         assert_eq!(first_report(&console), Some(format!("{before}{oops}")));
         assert_eq!(first_report(&boot), None);
         // A report with no end, as a panic cuts one off, kept to REPORT_BYTES.
