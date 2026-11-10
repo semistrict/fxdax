@@ -40,6 +40,8 @@ mod test_fxfs_guest_bigmap;
 // fxdax: what extentd asks of a disk it shares with many VMs and the bucket (TASK-310).
 mod test_fxfs_guest_shared_disk;
 use test_fxfs_guest_shared_disk::TestFxfsGuestSharedDisk;
+mod test_fxfs_guest_bucket_soak;
+use test_fxfs_guest_bucket_soak::TestFxfsGuestBucketSoak;
 use test_fxfs_guest_bigmap::TestFxfsGuestBigmap;
 // fxdax: what a VM costs its host's memory, measured when its guest asks (TASK-164.5).
 mod measure;
@@ -299,6 +301,9 @@ pub fn test_cases() -> Vec<TestCase> {
             &[Tag::Manual],
             Box::new(TestFxfsGuestSharedDisk { dax: true }),
         ),
+        // fxdax: guests writing against a degraded bucket for half an hour, TASK-330's
+        // qualification's (TASK-330.3).
+        TestCase::new("fxfs-guest-bucket-soak", &[Tag::Manual], Box::new(TestFxfsGuestBucketSoak)),
         TestCase::new(
             "fxfs-guest-live-fork",
             &[Tag::Kernel, Tag::Nightly],
