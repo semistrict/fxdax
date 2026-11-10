@@ -851,6 +851,10 @@ impl World {
             cache: None,
             token,
             checkpoint_every: upload::CHECKPOINT_EVERY,
+            // The interval closes a segment filled at once, as the first full one closed between
+            // commits, its commits uploading, is what the world's clock can't wait for
+            // (TASK-92.41).
+            filling_wait: Duration::ZERO,
         };
         let uploads = self.hosts[host].uploads.clone();
         let uploader = Shared::new(options, uploads, intervals.clock());

@@ -207,6 +207,11 @@ pub struct Options {
     /// fxdax: how many segments go between checkpoints, which recoveries start from: the segments
     /// a checkpoint covers are no longer read by them, and the collector may compact them.
     pub checkpoint_every: u64,
+    /// fxdax: how long the commits in a segment the guest is filling wait past the interval for
+    /// its next commit, which seals what it writes in it in place, before the interval closes it
+    /// anyway (`Store::close_now_unless_filling`, TASK-92.41): a commit waiting for its upload
+    /// closes it at once.
+    pub filling_wait: Duration,
 }
 
 impl Default for Options {
@@ -218,6 +223,7 @@ impl Default for Options {
             cache: None,
             token: 0,
             checkpoint_every: CHECKPOINT_EVERY,
+            filling_wait: Duration::from_secs(10),
         }
     }
 }
@@ -781,14 +787,17 @@ impl<D: Dir, B: extent_remote::Bucket> Shared<D, B> {
         // upload, or a fork, or as the interval is up, or the uploader stops; and whether the last
         // took segments, after which the store may hold more closed, which the next takes,
         // closing none for them (TASK-92.15).
-        let (mut close, mut more) = (false, false);
+        // fxdax: and whether a commit waits for it, or a fork, or the uploader stops: closing
+        // whatever it holds, not only once the guest is filling it no more (TASK-92.41).
+        let (mut close, mut more, mut urgent) = (false, false, false);
         loop {
             if let Err(err) = self.observe() {
                 return self.fail(&writer, err);
             }
             let (stop, cut) = {
                 let mut progress = self.progress.lock().unwrap();
-                close |= std::mem::take(&mut progress.wanted);
+                urgent |= std::mem::take(&mut progress.wanted);
+                close |= urgent;
                 (progress.stop, progress.cut)
             };
             // Cut short (TASK-216): what it has in flight, and what it would have taken, the
@@ -797,7 +806,8 @@ impl<D: Dir, B: extent_remote::Bucket> Shared<D, B> {
                 return self.fail(&writer, Failure::msg("the uploader stopped, cut short"));
             }
             if (close || more || stop) && in_flight.len() < IN_FLIGHT {
-                let gathered = blocking(|| self.gather(&writer, &mut in_flight, close || stop));
+                let closing = (close || stop, urgent || stop);
+                let gathered = blocking(|| self.gather(&writer, &mut in_flight, closing));
                 let gathered = match gathered {
                     Ok(gathered) => gathered,
                     Err(err) => match self.after(err, &bucket).await {
@@ -811,6 +821,7 @@ impl<D: Dir, B: extent_remote::Bucket> Shared<D, B> {
                 // Done with once closed; the segments the store had closed taking the room, it
                 // closes the next time.
                 close &= !gathered.closed;
+                urgent &= !gathered.closed;
                 more = gathered.took;
                 if more {
                     continue;
@@ -1021,11 +1032,13 @@ impl<D: Dir, B: extent_remote::Bucket> Shared<D, B> {
     /// store closes its open segment first if fewer wait: for a commit waiting for its upload, a
     /// fork, the interval up, or the uploader stopping; for no other, as the commits no one waits
     /// for wait in it for those, rather than each go in a segment of its own (TASK-92.15).
+    /// fxdax: if not `urgent`, the interval's, the open segment the guest is filling stays open
+    /// for its next commit, up to `Options::filling_wait` (TASK-92.41).
     fn gather(
         &self,
         writer: &Arc<Writer<B>>,
         in_flight: &mut InFlight,
-        close: bool,
+        (close, urgent): (bool, bool),
     ) -> Result<Gathered, Failure> {
         failing!("remote::gather");
         let store = self.store();
@@ -1034,9 +1047,18 @@ impl<D: Dir, B: extent_remote::Bucket> Shared<D, B> {
         // what the closing closed durable too.
         store.flush()?;
         let mut closed = store.closed(room)?;
-        let closing = close && closed.len() < room;
+        let mut closing = close && closed.len() < room;
         if closing {
-            store.close_now()?;
+            let waited = {
+                let progress = self.progress.lock().unwrap();
+                let oldest = progress.seen.front().and_then(|(_, seen)| seen.elapsed().ok());
+                oldest.is_some_and(|waited| waited >= self.options.filling_wait)
+            };
+            match urgent || waited {
+                true => drop(store.close_now()?),
+                // Asked again at the next interval, if the guest still hasn't committed.
+                false => closing = store.close_now_unless_filling()?,
+            }
             store.flush()?;
             closed.extend(store.closed(room - closed.len())?);
         }
@@ -1257,7 +1279,7 @@ mod tests {
         let writer = shared.writer.lock().unwrap().clone().unwrap();
         let mut in_flight = InFlight::default();
         let mut taken = Vec::new();
-        while shared.gather(&writer, &mut in_flight, true).unwrap().took {
+        while shared.gather(&writer, &mut in_flight, (true, true)).unwrap().took {
             taken.push(in_flight.len());
             runtime.block_on(async {
                 while let Some(uploaded) = in_flight.next().await {

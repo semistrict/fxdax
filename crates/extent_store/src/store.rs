@@ -1817,7 +1817,21 @@ impl<D: Dir> Store<D> {
     /// names are durable, as a commit's closing's does: so that opening the branch reads no
     /// segment whose raw file is gone (TASK-92.16). Returns whether it closed.
     pub fn close_now(&self) -> Result<bool, Error> {
-        let Some(number) = self.close_between_commits()? else { return Ok(false) };
+        self.close_now_unless(false)
+    }
+
+    /// fxdax: closes as [`Store::close_now`] does, unless the guest is filling the segment it would
+    /// close (`Segments::filling`): its next commit seals in place what is one run in it, where
+    /// closed now that commit copies all it wrote since out of it (TASK-92.41). What an uploader's
+    /// interval does; a commit waiting for its upload closes it whatever it holds. Returns whether
+    /// it closed.
+    pub fn close_now_unless_filling(&self) -> Result<bool, Error> {
+        self.close_now_unless(true)
+    }
+
+    /// fxdax: [`Store::close_now`], unless `filling` and the guest is filling the segment.
+    fn close_now_unless(&self, filling: bool) -> Result<bool, Error> {
+        let Some(number) = self.close_between_commits(filling)? else { return Ok(false) };
         let mut state = self.lock();
         while state.segments.is_framing(number) {
             state = state.wait(&self.idle);
@@ -1832,11 +1846,14 @@ impl<D: Dir> Store<D> {
     /// behind, and returns it: none if no commit came since it opened, nor fork, or the branch is
     /// closed. fxdax: or the first segment filled since the last commit, holding commits, which
     /// would wait for the next otherwise (`Segments::fill`, TASK-92.41).
-    fn close_between_commits(&self) -> Result<Option<SegmentId>, Error> {
+    fn close_between_commits(&self, unless_filling: bool) -> Result<Option<SegmentId>, Error> {
         let _committing = self.committing.with(Mutex::lock);
         let state = self.state()?;
         // Closed, it changes nothing: its last segment closes when it is next opened.
         if state.standing.is_closed() || !state.segments.has_commits(state.epoch) {
+            return Ok(None);
+        }
+        if unless_filling && state.segments.filling() {
             return Ok(None);
         }
         let mut state = state.hold_writes_while(&self.idle, |state| {

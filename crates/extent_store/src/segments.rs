@@ -159,6 +159,9 @@ pub(crate) struct Segments<F> {
     empty: BTreeSet<SegmentId>,
     /// The segment taking writes.
     open: SegmentId,
+    /// fxdax: the bytes of its data as of the last commit: those after, the writes since
+    /// ([`Segments::filling`]).
+    committed_len: u64,
     /// fxdax: those filled since the last commit, oldest first, which the next closes
     /// ([`Phase::Full`]): the first alone may hold commits, those made before it filled.
     full: Vec<SegmentId>,
@@ -257,6 +260,7 @@ impl<F: File> Segments<F> {
             tracked: segments,
             empty: BTreeSet::new(),
             open,
+            committed_len: 0,
             full: Vec::new(),
             opened: Instant::now(),
             close_wanted: false,
@@ -424,6 +428,16 @@ impl<F: File> Segments<F> {
         !self.full.is_empty()
     }
 
+    /// fxdax: whether the guest is filling the segment a closing between commits would close
+    /// (TASK-92.41): one filled since the last commit, or the open one, past [`FILLING`] written
+    /// since. Its next commit seals in place what is one run in it; closed first, the commit
+    /// copies out all of it, up to a segment and an extent (the shared-disk case's VMs copied a
+    /// segment's worth each, closed so mid-burst by the uploader's interval).
+    pub fn filling(&self) -> bool {
+        let written = self.tracked[&self.open].len.saturating_sub(self.committed_len);
+        self.has_full() || written >= FILLING
+    }
+
     /// Has the next commit close the open segment, whatever it holds.
     pub fn want_close(&mut self) {
         self.close_wanted = true;
@@ -564,6 +578,7 @@ impl<F: File> Segments<F> {
         contents.next_sequence = next_sequence;
         contents.forks = std::mem::take(&mut self.forking);
         self.window.fold(&contents);
+        self.committed_len = self.tracked[&self.open].len;
         records.push((self.open, contents));
         Ok(records)
     }
@@ -603,6 +618,7 @@ impl<F: File> Segments<F> {
         let unframed = self.seal_off(number, (window, last), epoch, next_sequence, written);
         self.tracked.insert(next, Segment::new(phase, 0));
         self.open = next;
+        self.committed_len = 0;
         self.opened = Instant::now();
         self.close_wanted = false;
         Ok(unframed)
@@ -705,6 +721,7 @@ impl<F: File> Segments<F> {
         self.full.push(number);
         self.tracked.insert(next, Segment::new(phase, 0));
         self.open = next;
+        self.committed_len = 0;
         self.opened = Instant::now();
         // What is in it, the commit closing it syncs (`seal_off`); the next's entry with those of
         // segments closed.
@@ -1006,6 +1023,11 @@ impl<F: File> Unframed<F> {
     }
 }
 
+/// fxdax: the bytes written to the open segment since the last commit from which the guest is
+/// filling it ([`Segments::filling`]): more than the flush of a daemon's turn writes at once
+/// ([`WRITTEN_BEHIND_MOST`]), a bulk write's, not a journal's or a database's between its commits.
+pub(crate) const FILLING: u64 = 8 << 20;
+
 /// fxdax: the bytes of the open segment's raw file whose writing back begins at once, written
 /// ([`Segments::write_behind`], TASK-221).
 pub(crate) const WRITE_BEHIND: u64 = 1 << 20;
@@ -1033,10 +1055,11 @@ pub(crate) const WRITTEN_BACK: usize = 1 << 20;
 
 /// fxdax: frames the `len` bytes of a closed segment's data, which its raw file `raw`, at
 /// `raw_path`, holds, with `footer`, into the framed file at `path` in `dir`: counted in
-/// [`segment_closes`]. In place, if `quiet`, no write in progress in it, and none of its parts
-/// compresses, as an object of such parts holds them as they are, where they are: its raw file,
-/// its tail appended, is its framed file, by another name ([`Dir::link`]), its data written once,
-/// as its guest wrote it (TASK-310). A segment's data was written twice, raw, which the host's disk
+/// [`segment_closes`]. In place, if `quiet`, no write in progress in it, and compressing its parts
+/// saves less than an eighth of its data ([`IN_PLACE_SAVING`]), each stored raw then, as an object
+/// of such parts holds them as they are, where they are: its raw file, its tail appended, is its
+/// framed file, by another name ([`Dir::link`]), its data written once, as its guest wrote it
+/// (TASK-310). A segment's data was written twice, raw, which the host's disk
 /// wrote back as the guest wrote it, and framed: as much again as its guest wrote, the disk's
 /// other writers waiting behind it, on a disk VMs share. Or else in a file of its own, as before.
 fn frame_segment<D: Dir>(
@@ -1051,8 +1074,13 @@ fn frame_segment<D: Dir>(
     raw.read_cached(data.as_mut_slice(), 0)?;
     let mut packer = extent_frame::Packer::new();
     let packed = packer.push(data.as_slice());
+    let in_place = quiet && len > 0 && packer.end() > len - len / IN_PLACE_SAVING;
+    if in_place && !packer.raw() {
+        packer = extent_frame::Packer::new();
+        packer.push_raw(data.as_slice());
+    }
     drop(data);
-    let (end, in_place) = (packer.end(), quiet && len > 0 && packer.raw());
+    let end = packer.end();
     let tail = packer.finish(footer);
     let parts = extent_frame::Parts::of_suffix(&tail)?;
     let framed = match in_place {
@@ -1089,8 +1117,16 @@ fn write_back<F: File>(file: &F, bytes: &[u8], offset: u64) -> io::Result<()> {
     file.write_back(offset, bytes.len() as u64)
 }
 
-/// fxdax: frames a segment's data, `raw`, its raw file at `raw_path`, none of whose parts
-/// compresses, in place ([`frame_segment`]): `tail` appended at `end`, the end of its data, and
+/// fxdax: what of a segment's data compressing its parts must save for it to be framed in a copy,
+/// compressed, rather than in place, every part raw ([`frame_segment`], TASK-310): an eighth.
+/// Writing the data again to save less of it, in the bucket and in the host's cache, costs the
+/// host's disk more than it saves, on a disk VMs share with their bucket above all. Framed in place
+/// only if none compressed, segments a guest's filesystem fills, a large file's data with its
+/// metadata in a few of their parts, were all framed in copies but for a few.
+const IN_PLACE_SAVING: u64 = 8;
+
+/// fxdax: frames a segment's data, `raw`, its raw file at `raw_path`, its parts stored raw, in
+/// place ([`frame_segment`]): `tail` appended at `end`, the end of its data, and
 /// the file linked at `path`, its framed file's. Its raw path goes once the commits its footer
 /// names are durable, as a raw file does ([`Segments::raw`]): an opening finding the framed file
 /// torn closes the segment again from its raw file and log, as one framed in a copy. None if `dir`

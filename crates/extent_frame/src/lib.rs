@@ -210,6 +210,19 @@ impl Packer {
         self.stored.iter().all(|stored| stored.encoding == Encoding::Raw)
     }
 
+    /// fxdax: packs `data`, the object's first parts, each stored raw, compressing none, as
+    /// [`Packer::push`] stores those that don't compress: the object's bytes are `data` itself, as
+    /// it is, where it is, which this doesn't return (TASK-310). Whole parts, but for the last.
+    pub fn push_raw(&mut self, data: &[u8]) {
+        assert_eq!(self.end, 0, "raw parts first");
+        for part in data.chunks(PART as usize) {
+            let (offset, len) = (self.end, part.len() as u64);
+            self.stored.push(Stored { offset, len, crc: crc(part), encoding: Encoding::Raw });
+            self.data_len += len;
+            self.end += len;
+        }
+    }
+
     /// Packs `data`, the object's next parts: whole parts, but for the object's last. Returns the
     /// object's next bytes, which follow those returned before.
     pub fn push(&mut self, data: &[u8]) -> Vec<u8> {
@@ -556,6 +569,15 @@ mod tests {
         assert_eq!(empty.len() as u64, TRAILER);
         assert_eq!(super::data(&empty).unwrap(), Vec::<u8>::new());
 
+        // fxdax: its parts stored raw, its bytes its data, then its tail (TASK-310).
+        let mut raw = Packer::new();
+        raw.push_raw(&data);
+        assert!(raw.raw());
+        let mut whole = data.clone();
+        whole.extend_from_slice(&raw.finish(b"footer"));
+        assert_eq!(super::data(&whole).unwrap(), data);
+        assert_eq!(Frame::of(&whole).unwrap().data_len, data.len() as u64);
+
         // Written in pieces, front to back, it is the same object.
         let mut packer = Packer::new();
         let mut pieces = packer.push(&data[..2 * PART as usize]);
@@ -614,6 +636,18 @@ mod tests {
         let empty = framed(&[], b"one");
         assert_eq!(restamp(&empty, b"two").unwrap(), framed(&[], b"two"));
         assert!(restamp(&object[..object.len() - 1], b"cut short").is_err());
+    }
+
+    /// fxdax: a part mostly incompressible, a sixteenth of it compressing, is stored compressed,
+    /// saving less than an eighth: what a store frames in place nonetheless (TASK-310).
+    #[test]
+    fn parts_compressing_little_are_stored_compressed() {
+        let mut data = random(128 << 10);
+        data[..8 << 10].copy_from_slice(&pattern(8 << 10));
+        let mut packer = Packer::new();
+        let packed = packer.push(&data);
+        assert!(!packer.raw(), "stored raw");
+        assert!(packed.len() > data.len() - data.len() / 8, "{} of {}", packed.len(), data.len());
     }
 
     #[test]

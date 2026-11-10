@@ -1312,6 +1312,44 @@ fn bursts_past_a_segment_between_commits_are_sealed_where_they_are() {
     }
 }
 
+/// fxdax: segments compressing their parts would save less than an eighth of are framed in place,
+/// their parts stored raw, as a guest's filesystem fills them, its metadata compressing in a few
+/// parts of a large file's data; those it would save more of are framed in copies, compressed
+/// (TASK-310). Red with segments framed in place only if no part compresses: none was.
+#[test]
+fn segments_compressing_little_are_framed_in_place() {
+    let options = Options { max_extent: OPTIONS.segment_size, ..OPTIONS };
+    let description = Description { block_size: BLOCK as u32, capacity: 4 << 20, branch: BRANCH };
+    for (every, in_place) in [(16, true), (1, false)] {
+        let every = every as u64;
+        let dir = MemDir::new();
+        let store = Store::create(dir.clone(), description, options).unwrap();
+        let (extents, len) = (4 * OPTIONS.segment_size as usize / (2 * BLOCK), 2 * BLOCK);
+        // Every `every`th extent compresses, the first of each segment's.
+        let data = |sequence: u64| match sequence % every == 1 % every {
+            true => pattern(sequence as u8, 0, len),
+            false => noise(sequence, len),
+        };
+        for sequence in 1..=extents as u64 {
+            store.write(extent(sequence), 0, &data(sequence)).unwrap();
+        }
+        let framed = extent_store::segments_framed_in_place();
+        store.close_segment().unwrap();
+        store.commit(None).unwrap();
+        settled(&store);
+        let closed = store.closed(usize::MAX).unwrap().len() as u64;
+        let framed = extent_store::segments_framed_in_place() - framed;
+        assert_eq!(framed, if in_place { closed } else { 0 }, "one in {every} compressing");
+        assert!(closed >= 2, "{closed} segments closed");
+        drop(store);
+        let reopened = Store::open(dir.crash(0), options).unwrap();
+        for sequence in 1..=extents as u64 {
+            let read = read(&reopened, extent(sequence), 0, len);
+            assert!(read == data(sequence), "one in {every} compressing, {sequence}");
+        }
+    }
+}
+
 /// fxdax: extents not one run in a segment filled since the last commit, written in pieces
 /// interleaved with others', or across two segments, are copied by the commit into the open
 /// segment, and past its room into the next, it full in turn, which the commit goes on with: none
@@ -1927,6 +1965,38 @@ fn segments_filled_go_to_the_uploader_with_no_commit_after() {
     for sequence in 0..48 {
         assert!(read(&store, extent(sequence), 0, BLOCK) == block(sequence), "{sequence}");
     }
+}
+
+/// fxdax: an uploader's interval leaves a segment the guest is filling for its next commit, which
+/// seals in place what it wrote there (TASK-92.41): one filled since the last commit, or the open
+/// one past 8 MiB written since; it closes one written little since, as a journal's commits leave
+/// it, and a commit waiting for its upload closes it whatever it holds.
+#[test]
+fn interval_closings_leave_segments_being_filled() {
+    let dir = MemDir::new();
+    let description = Description { block_size: BLOCK as u32, capacity: 64 << 20, branch: BRANCH };
+    let store = Store::create(dir, description, SMALL_SEGMENTS).unwrap();
+    let block = |sequence: u64| pattern(sequence as u8, 0, BLOCK);
+    store.write(extent(0), 0, &block(0)).unwrap();
+    store.commit(None).unwrap();
+    store.write(extent(1), 0, &block(1)).unwrap();
+    assert!(store.close_now_unless_filling().unwrap(), "a segment written little since, open");
+    store.write(extent(2), 0, &block(2)).unwrap();
+    store.commit(None).unwrap();
+    // Past what a segment holds: it fills.
+    for sequence in 3..48 {
+        store.write(extent(sequence), 0, &block(sequence)).unwrap();
+    }
+    assert!(!store.close_now_unless_filling().unwrap(), "a segment filled, closed");
+    assert!(store.close_now().unwrap(), "a segment filled, holding a commit, left open");
+    // The open one, past 8 MiB written since the last commit.
+    let options = Options { max_extent: 16 << 20, large_extent: 16 << 20, ..OPTIONS };
+    let store = Store::create(MemDir::new(), description, options).unwrap();
+    store.write(extent(0), 0, &block(0)).unwrap();
+    store.commit(None).unwrap();
+    store.write(extent(1), 0, &vec![1; 9 << 20]).unwrap();
+    assert!(!store.close_now_unless_filling().unwrap(), "a segment being filled, closed");
+    assert!(store.close_now().unwrap(), "a segment being filled, holding a commit, left open");
 }
 
 /// The open segment takes writes until it holds a segment and an extent, `Options::segment_size`

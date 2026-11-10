@@ -24,8 +24,9 @@
 //!   with zstd, with its footer: what the commits since it opened changed. fxdax: framed on a
 //!   thread of its own, which the commit's flush waits for, not the commit, nor the writes behind
 //!   it; read from its raw file until then. Its raw file goes once that commit is durable. fxdax:
-//!   one none of whose parts compresses is framed in place, its raw file, its tail appended, linked
-//!   as its framed file: its data written once (TASK-310). Between commits, full, holding a segment
+//!   one compressing would save less than an eighth of is framed in place, its parts stored raw,
+//!   its raw file, its tail appended, linked as its framed file: its data written once
+//!   (TASK-310). Between commits, full, holding a segment
 //!   and an extent (`Options::max_extent`), it takes no more writes, which go to the next, so that
 //!   no segment holds more, however much is written between commits (TASK-79.2); fxdax: and it
 //!   waits for the next commit, which seals in place each extent one run in it, as in the open

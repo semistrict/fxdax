@@ -3,7 +3,7 @@ id: doc-7
 title: 'Object storage: how the host keeps branches in S3 and GCS'
 type: specification
 created_date: '2026-10-17 01:31'
-updated_date: '2026-11-10 16:32'
+updated_date: '2026-11-10 16:55'
 ---
 # Object storage: how the host keeps branches in S3 and GCS
 
@@ -42,7 +42,8 @@ checkpoints and segments' footers, and lineage is in the bucket alone.
   segment, raw, and each commit's record to the segment's log, synced by the flush that makes the
   commit durable; a segment closes when full, at the upload interval (1 s), when a commit waits for
   its upload, at a fork, or as the uploader stops, and is framed on a thread of its own, its footer
-  stamped by the writer's chain; in place, if none of its parts compresses, its data written once.
+  stamped by the writer's chain; in place, if compressing saves under an eighth, its data written
+  once.
   One filled between commits waits for the next, which seals in it what is one run there, a commit
   spanning segments (Segments, TASK-92.41). Closed segments are the store's **write-ahead log**
   (WAL): each the very object it will be in the bucket, synced before its PUT. The **uploader**
@@ -226,13 +227,14 @@ the commit freeing it is acknowledged.
 *Added 2026-11-10 (TASK-310, TASK-92.41; the user's decision of 2026-10-23, commits spanning
 segments, not footers naming runs in other objects):*
 
-- **A segment framed in place.** One none of whose 1 MiB parts compresses, no write in progress in
-  it, is framed where it is: its raw file, its tail (footer, table, trailer) appended and synced, is
+- **A segment framed in place.** One compressing its 1 MiB parts would save less than an eighth of,
+  no write in progress in it, is framed where it is, every part stored raw: its raw file, its tail
+  (footer, table, trailer) appended and synced, is
   linked into `segments/` as its framed file, the raw name going once its commits are durable, as a
   raw file does. Its data is written once, as the guest wrote it, not raw and then framed again: a
   sandbox host's daemon wrote some 2.3 times what its guests did, its framings waiting seconds
-  behind its own writes on a disk its VMs and bucket shared (TASK-310). One that compresses is
-  framed in a copy, as before. A crash before the link is durable leaves the raw file and log,
+  behind its own writes on a disk its VMs and bucket shared (TASK-310). One that compresses more is
+  framed in a copy, compressed, as before. A crash before the link is durable leaves the raw file and log,
   which an opening closes the segment again from.
 - **A commit spanning segments.** A guest writing more than a segment between two commits (a large
   file before its fsync) fills segments: each, full at a segment and an extent (TASK-79.2), takes no
@@ -251,7 +253,10 @@ segments, not footers naming runs in other objects):*
   continuation no segment after it completes, one after another, to the one ending it: a crash
   between keeps the commit only whole. The segments upload once the commit is durable, as any
   segment of its commits, and the uploader's closing between commits closes the first segment
-  filled if it holds commits (its extents written since then copied out by the next commit).
+  filled if it holds commits (its extents written since then copied out by the next commit); its
+  interval leaves one the guest is filling (filled, or past 8 MiB written since the last commit)
+  for the next commit, up to 10 s (`upload::Options::filling_wait`), unless a commit waits for
+  its upload.
 - **Readers** (`recovery::State::apply_contents`, the one replay) hold the runs a segment goes on
   with (`State::begun`) and seal them, where they are, as the segment ending the commit is applied,
   before its own; a segment after them that neither goes on with the commit nor ends it, a later
