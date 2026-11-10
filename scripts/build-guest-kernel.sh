@@ -20,6 +20,8 @@
 # one for profiling, FXDAX_GUEST_KERNEL_LOCK_STAT one counting locks' contention,
 # FXDAX_GUEST_KERNEL_DEBUG one checking its locking and races, FXDAX_GUEST_KERNEL_KASAN one checking
 # its memory accesses, FXDAX_GUEST_KERNEL_RUST_CHECKS one whose Rust checks itself.
+# FXDAX_GUEST_KERNEL_JOBS is make's jobs (default: the CPUs), fewer on a host others share (ubu1),
+# its Rust's cargo's CARGO_BUILD_JOBS's.
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -207,7 +209,7 @@ cp "$archive" "$out/"
 # fxdax: the commit the build is of, which the filesystem shows in /proc/fs/fxfs/build
 # (scripts/build-commit.sh, TASK-111.7).
 commit=$("$root/scripts/build-commit.sh")
-make -C "$src" "${make_args[@]}" -j"$(nproc)" KBUILD_BUILD_USER=root KBUILD_BUILD_HOST=fxdax \
+make -C "$src" "${make_args[@]}" -j"${FXDAX_GUEST_KERNEL_JOBS:-$(nproc)}" KBUILD_BUILD_USER=root KBUILD_BUILD_HOST=fxdax \
     FXFS_BUILD_COMMIT="$commit" "$make_target"
 # The kernel's own memcpy, which Rust calls, is in the kernel: not Rust's. nm's listing whole,
 # before grep reads it: errexit stops at nm failing, and nothing stops nm part way.
