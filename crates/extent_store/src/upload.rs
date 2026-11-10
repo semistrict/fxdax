@@ -601,9 +601,7 @@ impl<D: Dir> Remote<D> {
 
 impl<D: Dir> Drop for Remote<D> {
     fn drop(&mut self) {
-        self.shared.progress.lock().unwrap().stop = true;
-        self.shared.changed.notify(usize::MAX);
-        self.shared.wake.notify_one();
+        self.shared.stop();
         if let Some(stopped) = self.stopped.get_mut().unwrap().take() {
             let _ = stopped.recv();
         }
@@ -634,6 +632,13 @@ impl<D: Dir, B: extent_remote::Bucket> Shared<D, B> {
         self.progress.lock().unwrap().uploaded
     }
 
+    /// The epoch of the store's latest commit whose forks are made, their children's records
+    /// and the checkpoint at them in the bucket.
+    #[cfg(all(test, feature = "shuttle"))]
+    pub(crate) fn forked(&self) -> u64 {
+        self.progress.lock().unwrap().forked
+    }
+
     /// The lowest sequence number the store's guest may mint extents' IDs from.
     pub(crate) fn next_sequence(&self) -> u64 {
         self.progress.lock().unwrap().next_sequence
@@ -653,6 +658,14 @@ impl<D: Dir, B: extent_remote::Bucket> Shared<D, B> {
     /// ends.
     pub(crate) fn fork_origin(&self, child: u64) -> Option<Origin> {
         self.forks.lock().unwrap().get(&child).copied()
+    }
+
+    /// Has the uploader stop: once it uploaded what its store made durable, its open segment's
+    /// commits too, unless cut short ([`Remote::cut_short`]).
+    pub(crate) fn stop(&self) {
+        self.progress.lock().unwrap().stop = true;
+        self.changed.notify(usize::MAX);
+        self.wake.notify_one();
     }
 
     /// Waits until the uploader is woken, or `interval` runs out first: whether it was woken.
@@ -1255,5 +1268,435 @@ mod tests {
         let state = runtime.block_on(extent_remote::recover(&*bucket, BRANCH, None)).unwrap().state;
         let sequences: Vec<u64> = state.extents.keys().map(|extent| extent.sequence).collect();
         assert_eq!(sequences, (1..=closed as u64).collect::<Vec<_>>());
+    }
+}
+
+/// fxdax: a store committing, sealing and forking, its uploader uploading what it commits, and
+/// passes of the collector running over the bucket all along (TASK-291.1), under Shuttle, whose
+/// scheduler chooses every interleaving of their threads at each of the store's locks and at each
+/// request to the bucket, and replays a failing one from its seed.
+/// `cargo nextest run -p extent_store --features shuttle --lib shuttle_tests::`.
+#[cfg(all(test, feature = "shuttle"))]
+mod shuttle_tests {
+    use super::*;
+    use crate::{Description, MemDir};
+    use extent_remote::bucket::{ByteRange, Error as BucketError, Meta, Object, PutMode, Version};
+    use extent_remote::collector;
+    use extent_remote::fetch::Limits;
+    use extent_remote::testing::{Direct, SimBucket};
+    use shuttle::scheduler::{PctScheduler, RandomScheduler, Scheduler};
+    use std::collections::BTreeMap;
+    use std::future::Future;
+    use std::sync::atomic::Ordering::SeqCst;
+    use storage_device::ExtentId;
+
+    const BLOCK: usize = 4096;
+    const BRANCH: u64 = 7;
+    /// The branch the writer forks.
+    const CHILD: u64 = BRANCH + 1;
+
+    /// Small segments, so that commits close several, and extents of two blocks or more in
+    /// objects of their own, which upload before the segments naming them (TASK-79.3); flushes of
+    /// two blocks at most held in their log records, larger ones sealed (TASK-301).
+    const STORE: crate::Options = crate::Options {
+        max_extent: 64 << 20,
+        segment_size: 3 * BLOCK as u64,
+        segment_age: Duration::from_secs(3600),
+        large_extent: 2 * BLOCK as u64,
+        open_files: 2,
+        view_lag: None,
+        view_kept_bytes: None,
+        held_most: 2 * BLOCK as u64,
+    };
+
+    /// The collector's passes compact what is mostly dead, and delete at once.
+    const COLLECTING: collector::Options = collector::Options { compact_below: 0.9, grace: 0 };
+
+    /// The schedules each test runs, randomly and by PCT; `SHUTTLE_SOAK` multiplies them.
+    fn runs() -> usize {
+        let soak: usize = std::env::var("SHUTTLE_SOAK").map_or(1, |soak| soak.parse().unwrap());
+        200 * soak
+    }
+
+    /// A bucket in memory whose requests each give Shuttle's scheduler a turn first, as a real
+    /// bucket's round trips let the other threads go on: so that a pass of the collector, the
+    /// uploader and the store interleave at each. Its requests take effect at once, and never fail.
+    /// Its gate, once armed, holds up the next listing of the whole bucket, a pass's of its objects.
+    struct Turns {
+        direct: Direct,
+        gate: Gate,
+    }
+
+    impl Turns {
+        fn new() -> Arc<Self> {
+            Arc::new(Self { direct: Direct(SimBucket::new()), gate: Gate::default() })
+        }
+    }
+
+    /// Holds up a listing of the whole bucket, once armed, until opened.
+    #[derive(Default)]
+    struct Gate {
+        armed: shuttle::sync::atomic::AtomicBool,
+        reached: shuttle::sync::atomic::AtomicBool,
+        open: shuttle::sync::atomic::AtomicBool,
+    }
+
+    impl Gate {
+        fn arm(&self) {
+            self.armed.store(true, SeqCst);
+        }
+
+        /// Waits until a listing held up reaches the gate.
+        fn reached(&self) {
+            until(|| self.reached.load(SeqCst));
+        }
+
+        fn open(&self) {
+            self.open.store(true, SeqCst);
+        }
+
+        /// A listing of `prefix` goes through the gate.
+        fn pass(&self, prefix: &str) {
+            if prefix.is_empty() && self.armed.swap(false, SeqCst) {
+                self.reached.store(true, SeqCst);
+                until(|| self.open.load(SeqCst));
+            }
+        }
+    }
+
+    impl extent_remote::Bucket for Turns {
+        fn get(&self, key: &str) -> impl Future<Output = Result<Object, BucketError>> + Send {
+            shuttle::thread::yield_now();
+            self.direct.get(key)
+        }
+
+        fn get_range(
+            &self,
+            key: &str,
+            range: ByteRange,
+        ) -> impl Future<Output = Result<Vec<u8>, BucketError>> + Send {
+            shuttle::thread::yield_now();
+            self.direct.get_range(key, range)
+        }
+
+        fn head(&self, key: &str) -> impl Future<Output = Result<Meta, BucketError>> + Send {
+            shuttle::thread::yield_now();
+            self.direct.head(key)
+        }
+
+        fn list(
+            &self,
+            prefix: &str,
+        ) -> impl Future<Output = Result<Vec<Meta>, BucketError>> + Send {
+            shuttle::thread::yield_now();
+            self.gate.pass(prefix);
+            self.direct.list(prefix)
+        }
+
+        fn put(
+            &self,
+            key: &str,
+            bytes: Vec<u8>,
+            mode: PutMode,
+        ) -> impl Future<Output = Result<Version, BucketError>> + Send {
+            shuttle::thread::yield_now();
+            self.direct.put(key, bytes, mode)
+        }
+
+        fn delete(&self, key: &str) -> impl Future<Output = Result<(), BucketError>> + Send {
+            shuttle::thread::yield_now();
+            self.direct.delete(key)
+        }
+
+        fn now(&self) -> u64 {
+            self.direct.now()
+        }
+    }
+
+    /// The bytes of the extent at `at`, `blocks` of them.
+    fn pattern(at: u64, blocks: usize) -> Vec<u8> {
+        (0..blocks * BLOCK).map(|i| (i % 251) as u8 ^ at as u8).collect()
+    }
+
+    /// Waits, giving the scheduler turns, for what `receiver` gets: a thread of Shuttle's blocking
+    /// on the channel would hold up every other.
+    fn received<T>(receiver: &std::sync::mpsc::Receiver<T>) -> T {
+        loop {
+            match receiver.try_recv() {
+                Ok(received) => return received,
+                Err(std::sync::mpsc::TryRecvError::Empty) => shuttle::thread::yield_now(),
+                Err(err) => panic!("{err}"),
+            }
+        }
+    }
+
+    /// What the branch `branch`, recovered from `bucket`, holds, if not `holds`, extent by extent.
+    fn differs(
+        bucket: &Arc<Turns>,
+        branch: u64,
+        holds: &BTreeMap<ExtentId, Vec<u8>>,
+    ) -> Result<(), String> {
+        let failed = |err: extent_remote::Error| format!("branch {branch:x}: {err}");
+        let record = shuttle::future::block_on(branch::record(&**bucket, branch));
+        let record = record.map_err(failed)?.ok_or(format!("branch {branch:x}: no record"))?;
+        let recovering = extent_remote::recover(&**bucket, branch, record.origin());
+        let state = shuttle::future::block_on(recovering).map_err(failed)?.state;
+        let held: Vec<&ExtentId> = state.extents.keys().collect();
+        if held != holds.keys().collect::<Vec<_>>() {
+            return Err(format!("branch {branch:x} holds {held:?}, not {:?}", holds.keys()));
+        }
+        for (extent, location) in &state.extents {
+            let read = shuttle::future::block_on(extent_remote::read(bucket, *extent, location));
+            if read.as_ref() != Ok(&holds[extent]) {
+                return Err(format!("branch {branch:x}: {extent:?} reads {read:?}"));
+            }
+        }
+        Ok(())
+    }
+
+    /// Waits, giving the scheduler turns, until `done`.
+    fn until(done: impl Fn() -> bool) {
+        while !done() {
+            shuttle::thread::yield_now();
+        }
+    }
+
+    /// A store of `branch` on a disk of its own, made empty, and its uploader, running on a thread
+    /// of its own as `holder`, whose writer has taken the branch.
+    struct Session {
+        uploader: Arc<Shared<MemDir, Turns>>,
+        running: shuttle::thread::JoinHandle<()>,
+        store: Arc<Store<MemDir>>,
+        branch: u64,
+        /// What the store's extents hold, by their IDs.
+        holds: BTreeMap<ExtentId, Vec<u8>>,
+        /// The first sequence number of its own extents'.
+        next: u64,
+    }
+
+    impl Session {
+        fn open(bucket: &Arc<Turns>, branch: u64, holder: u64) -> Self {
+            let dir = MemDir::new();
+            let description = Description { block_size: BLOCK as u32, capacity: 1 << 30, branch };
+            Store::make(&dir, description, None).unwrap();
+            let recovering = Store::recover_unmade(dir).unwrap();
+            // Its interval never runs out: the writer asks for what it commits.
+            let never: Clock = Arc::new(|_| futures::future::pending().boxed());
+            let options = Options { token: holder, ..Options::default() };
+            let uploader = Shared::new(options, Budget::new(Limits::UNBOUNDED), never);
+            let (started, start) = std::sync::mpsc::channel();
+            let running = {
+                let (uploader, bucket) = (uploader.clone(), bucket.clone());
+                shuttle::thread::spawn(move || {
+                    let running = uploader.run(recovering, STORE, bucket, holder, started);
+                    shuttle::future::block_on(running)
+                })
+            };
+            let store = received(&start).unwrap();
+            store.made().unwrap();
+            let next = uploader.next_sequence();
+            Self { uploader, running, store, branch, holds: BTreeMap::new(), next }
+        }
+
+        fn extent(&self, at: u64) -> ExtentId {
+            ExtentId::new(self.branch, self.next + at)
+        }
+
+        fn write(&mut self, at: u64, blocks: usize) {
+            let bytes = pattern(self.branch ^ at, blocks);
+            self.store.write(self.extent(at), 0, &bytes).unwrap();
+            self.holds.insert(self.extent(at), bytes);
+        }
+
+        fn free(&mut self, extent: ExtentId) {
+            self.store.free(extent).unwrap();
+            self.holds.remove(&extent);
+        }
+
+        /// Asks the uploader for what the store committed.
+        fn ask(&self) {
+            self.uploader.ask(self.store.epoch().unwrap(), false).unwrap();
+        }
+
+        /// The uploader uploads all the store made durable, and stops; and the store closes.
+        fn end(self) -> Result<BTreeMap<ExtentId, Vec<u8>>, String> {
+            let last = self.store.epoch().unwrap();
+            self.uploader.stop();
+            self.running.join().unwrap();
+            drop(self.store);
+            let (failed, uploaded) = (self.uploader.failed(), self.uploader.last_uploaded());
+            if failed != Some(Failure::msg("the uploader stopped")) || uploaded != last {
+                return Err(format!("the uploader: {failed:?}, through {uploaded} of {last}"));
+            }
+            Ok(self.holds)
+        }
+    }
+
+    /// One schedule: the writer writes, frees, commits and forks, asking for uploads; once the
+    /// fork is made, the child's store, on another host, writes, frees what it inherited and
+    /// commits, meanwhile; their uploaders upload; passes of the collector run all along. Then the
+    /// uploaders upload what is left and stop, a last pass runs alone, and each branch, recovered
+    /// from the bucket, holds what its store's last commit left, each extent reading as it was
+    /// written. What went wrong, if anything did.
+    fn collected_while_committing() -> Result<(), String> {
+        let bucket = Turns::new();
+        let mut parent = Session::open(&bucket, BRANCH, 1);
+        // Passes, one after another, for as long as the writers write and their uploads go.
+        let writing = Arc::new(shuttle::sync::atomic::AtomicBool::new(true));
+        let collecting = {
+            let (bucket, writing) = (bucket.clone(), writing.clone());
+            shuttle::thread::spawn(move || {
+                for holder in 100.. {
+                    let pass = collector::collect(&*bucket, holder, &COLLECTING);
+                    shuttle::future::block_on(pass)
+                        .map_err(|err| format!("pass {holder}: {err}"))?;
+                    if !writing.load(SeqCst) {
+                        return Ok::<_, String>(());
+                    }
+                }
+                unreachable!("passes for ever")
+            })
+        };
+
+        parent.write(0, 1);
+        parent.store.commit_ordered(None).unwrap();
+        // Asked for that commit with an extent of its own open, the uploader closes the open
+        // segment between commits: its footer's next sequence number counts the extent, which the
+        // next segment names, its object uploaded first (TASK-79.3).
+        parent.write(1, 3);
+        parent.ask();
+        parent.write(2, 2);
+        parent.free(parent.extent(0));
+        parent.store.commit(None).unwrap();
+        parent.ask();
+        parent.write(3, 1);
+        parent.store.commit_fork(Child { branch: CHILD, owner: 9, point: false }).unwrap();
+        let fork = parent.store.epoch().unwrap();
+        parent.ask();
+        until(|| parent.uploader.forked() >= fork);
+        // The child, made by the fork, whose record the collector may not have read yet: what its
+        // store uploads, it knows nothing of until it reads the record, its segments not those of a
+        // branch it recovered.
+        let mut child = Session::open(&bucket, CHILD, 2);
+        child.holds = parent.holds.clone();
+        child.write(0, 1);
+        child.free(parent.extent(1));
+        child.store.commit_ordered(None).unwrap();
+        child.ask();
+        parent.free(parent.extent(1));
+        parent.write(4, 2);
+        parent.store.commit_ordered(None).unwrap();
+        parent.ask();
+        child.write(1, 3);
+        child.store.commit(None).unwrap();
+        child.ask();
+        parent.free(parent.extent(3));
+        parent.store.commit(None).unwrap();
+        parent.ask();
+        child.free(parent.extent(2));
+        child.write(2, 1);
+        child.store.commit(None).unwrap();
+        child.ask();
+        let parent = parent.end()?;
+        let child = child.end()?;
+        writing.store(false, SeqCst);
+        collecting.join().unwrap()?;
+        let pass = collector::collect(&*bucket, 200, &COLLECTING);
+        shuttle::future::block_on(pass).map_err(|err| format!("the last pass: {err}"))?;
+        differs(&bucket, BRANCH, &parent)?;
+        differs(&bucket, CHILD, &child)
+    }
+
+    /// Runs `schedule` under `scheduler`'s interleavings.
+    fn explore(scheduler: impl Scheduler + 'static, schedule: impl Fn() + Send + Sync + 'static) {
+        let mut config = shuttle::Config::new();
+        config.stack_size = 4 << 20;
+        shuttle::Runner::new(scheduler, config).run(schedule);
+    }
+
+    /// TASK-291.1: whatever the interleaving, what each store committed and its uploader
+    /// acknowledged stays its branch's, the parent's and its fork's child's, the collector running
+    /// all along.
+    ///
+    /// No rule of the collector's off has it lose anything here in thousands of schedules (seven
+    /// tried, `candidates_first` among them): once the branch has a checkpoint of its own, each
+    /// pass lists the records again after recovering what they name, which leaves a pass's loss
+    /// little room between two of its requests. [`listed_while_forking`] holds a pass up there.
+    #[test]
+    fn collection_keeps_what_a_store_commits_meanwhile() {
+        let schedule = || collected_while_committing().unwrap();
+        explore(RandomScheduler::new(runs()), schedule);
+        explore(PctScheduler::new(3, runs()), schedule);
+    }
+
+    /// One schedule: a pass of the collector, held up as it lists the bucket's objects, while the
+    /// store's fork to the child is made and the child's store, opened, commits and its uploader
+    /// uploads its segment. Then the pass goes on, the uploaders upload what is left and stop, a
+    /// last pass runs alone, and each branch, recovered from the bucket, holds what its store's
+    /// last commit left. What went wrong, if anything did.
+    fn listed_while_forking() -> Result<(), String> {
+        let bucket = Turns::new();
+        let mut parent = Session::open(&bucket, BRANCH, 1);
+        parent.write(0, 1);
+        parent.write(1, 3);
+        parent.store.commit_ordered(None).unwrap();
+        parent.ask();
+        let before = parent.store.epoch().unwrap();
+        until(|| parent.uploader.last_uploaded() >= before);
+        parent.store.commit_fork(Child { branch: CHILD, owner: 9, point: false }).unwrap();
+        let fork = parent.store.epoch().unwrap();
+        bucket.gate.arm();
+        let passing = {
+            let bucket = bucket.clone();
+            shuttle::thread::spawn(move || {
+                let pass = collector::collect(&*bucket, 100, &COLLECTING);
+                shuttle::future::block_on(pass).map_err(|err| format!("the pass: {err}"))
+            })
+        };
+        bucket.gate.reached();
+        parent.ask();
+        until(|| parent.uploader.forked() >= fork);
+        let mut child = Session::open(&bucket, CHILD, 2);
+        child.holds = parent.holds.clone();
+        child.write(0, 1);
+        child.free(parent.extent(0));
+        child.store.commit_ordered(None).unwrap();
+        child.ask();
+        let committed = child.store.epoch().unwrap();
+        until(|| child.uploader.last_uploaded() >= committed);
+        bucket.gate.open();
+        passing.join().unwrap()?;
+        let parent = parent.end()?;
+        let child = child.end()?;
+        let pass = collector::collect(&*bucket, 200, &COLLECTING);
+        shuttle::future::block_on(pass).map_err(|err| format!("the last pass: {err}"))?;
+        differs(&bucket, BRANCH, &parent)?;
+        differs(&bucket, CHILD, &child)
+    }
+
+    /// A pass listing the bucket's objects before it reads the branches' records keeps what a
+    /// child, made after the listing began, uploads before it ends: the pass reads the child's
+    /// record, and its recovery names the segment.
+    #[test]
+    fn a_pass_keeps_what_a_child_made_as_it_lists_uploads() {
+        explore(RandomScheduler::new(runs() / 10), || listed_while_forking().unwrap());
+    }
+
+    /// The collector listing the bucket's objects after it read what the branches need, not before:
+    /// a child whose record no pass read, made meanwhile, has its segment listed, which no branch
+    /// the pass recovered names, and deleted.
+    #[test]
+    fn a_pass_keeping_what_a_child_made_as_it_lists_uploads_needs_candidates_first() {
+        let all = extent_remote::Rules::ALL;
+        let off = extent_remote::Rules { candidates_first: false, ..all };
+        explore(RandomScheduler::new(runs() / 10), move || {
+            extent_remote::set_rules(off);
+            let listed = listed_while_forking();
+            extent_remote::set_rules(all);
+            let extent = "ExtentId { branch: 8, sequence: 1099511627776 }";
+            let segment = "segments/0000000000000008/0000000000000001";
+            let lost = format!("branch 8: {extent} reads Err(Lost(\"{extent} in {segment}\"))");
+            assert_eq!(listed, Err(lost));
+        });
     }
 }
