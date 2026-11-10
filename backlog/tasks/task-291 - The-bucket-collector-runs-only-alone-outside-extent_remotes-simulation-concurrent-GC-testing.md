@@ -3,11 +3,11 @@ id: TASK-291
 title: >-
   The bucket collector runs only alone outside extent_remote's simulation:
   concurrent-GC testing
-status: To Do
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-09 08:37'
-updated_date: '2026-11-09 08:37'
+updated_date: '2026-11-10 11:01'
 labels: []
 dependencies:
   - TASK-88
@@ -23,12 +23,24 @@ extent_remote's simulation races collector passes against writers, forks, takeov
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Every subtask is done
+- [x] #1 Every subtask is done
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
 - [ ] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Each subtask's suites ran on macOS and ubu1; the whole workspace is main's CI's run of the push.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+The collector now runs concurrently in four suites besides extent_store's simulation (which TASK-88 moved onto real stores): Shuttle interleavings of a store, its uploader, a fork's child's store and passes (291.1); the kept crash rounds, a pass cut at a random request (291.2, found TASK-318); an image's and its clone's commits from two threads among after_commit passes (291.3); and a proptest model of images' files with passes as an operation (291.4). A hand mutant deleting named segments fails 291.3's and 291.4's tests; candidates_first off fails 291.1's gated twin.
+<!-- SECTION:FINAL_SUMMARY:END -->
