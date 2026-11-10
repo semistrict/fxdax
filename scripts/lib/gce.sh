@@ -4,8 +4,8 @@
 # found in the LICENSE file.
 
 # Kept GCE hosts for the scripts that run fxdax on them, sourced by them:
-# scripts/test-gce.sh, bench-gce.sh, gets-gce.sh, example-gce.sh,
-# mutants-gce.sh, fork-time-gce.sh and migrate-gce.sh. A host is kept, not made
+# scripts/test-gce.sh, bench-gce.sh, gets-gce.sh, mutants-gce.sh,
+# fork-time-gce.sh and migrate-gce.sh. A host is kept, not made
 # for a run: a run reuses one that fits it, stopped or idle, and stops it as it
 # ends, whatever happens, so that its builds (its target directories, its guest
 # kernels', its toolchain and packages) carry over to the next run, which builds

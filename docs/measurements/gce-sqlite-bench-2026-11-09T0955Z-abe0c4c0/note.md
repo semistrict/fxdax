@@ -11,3 +11,5 @@ Findings (both runs agree within 5%):
 - Space: 17.2 MB (image and its bucket) against 11.3 MB.
 
 The reads dominate: the volume keeps no cache of its own, and every page SQLite's cache misses goes to the image, whose uploaded data is read through its bucket's fetcher, about 1 ms a 4 KiB block. Extents are immutable, so a block cache in the volume needs no invalidation (TASK-300).
+
+Built with the extent store's audit, which recounts its state after each critical section (~8% of a one-row commit's CPU, TASK-301): scripts/lib/example-linux-host.sh built the example across the workspace, whose dev-dependencies turned it on, until 70a12ea15; a release build now refuses it (TASK-303).

@@ -1,0 +1,48 @@
+== run 1 threads 1 11:02:59 load 5.97
+large file                   1419 MiB/s   704.71 µs/MiB    0.180 s
+small files                 13736 entry/s    72.80 µs/entry    7.735 s
+replacing them               8727 entry/s   114.58 µs/entry   12.174 s
+whiting them out            25913 entry/s    38.59 µs/entry    3.859 s
+finishing                   68688 dir/s    14.56 µs/dir    0.091 s
+allocator                     572 compactions       11.2 MB    0.106 s
+object stores                1144 compactions      288.9 MB    2.528 s
+== run 1 threads 2 11:03:24 load 5.91
+large file                   1595 MiB/s   627.08 µs/MiB    0.161 s
+small files                 13853 entry/s    72.18 µs/entry    7.670 s
+replacing them               8589 entry/s   116.42 µs/entry   12.370 s
+whiting them out            27068 entry/s    36.94 µs/entry    3.694 s
+finishing                   58820 dir/s    17.00 µs/dir    0.106 s
+allocator                     577 compactions       14.0 MB    0.137 s
+object stores                1154 compactions      292.2 MB    2.652 s
+== run 2 threads 1 11:03:48 load 6.11
+large file                   1553 MiB/s   643.77 µs/MiB    0.165 s
+small files                 13806 entry/s    72.43 µs/entry    7.696 s
+replacing them               9018 entry/s   110.88 µs/entry   11.782 s
+whiting them out            25926 entry/s    38.57 µs/entry    3.857 s
+finishing                   66003 dir/s    15.15 µs/dir    0.095 s
+allocator                     572 compactions       11.2 MB    0.103 s
+object stores                1144 compactions      289.0 MB    2.521 s
+== run 2 threads 2 11:04:12 load 5.36
+large file                   1540 MiB/s   649.14 µs/MiB    0.166 s
+small files                 13777 entry/s    72.59 µs/entry    7.712 s
+replacing them               8476 entry/s   117.97 µs/entry   12.535 s
+whiting them out            27490 entry/s    36.38 µs/entry    3.638 s
+finishing                   64653 dir/s    15.47 µs/dir    0.097 s
+allocator                     576 compactions       13.9 MB    0.135 s
+object stores                1152 compactions      291.5 MB    2.632 s
+== run 3 threads 1 11:04:37 load 5.00
+large file                   1557 MiB/s   642.26 µs/MiB    0.164 s
+small files                 13940 entry/s    71.74 µs/entry    7.622 s
+replacing them               8840 entry/s   113.12 µs/entry   12.019 s
+whiting them out            25602 entry/s    39.06 µs/entry    3.906 s
+finishing                   56240 dir/s    17.78 µs/dir    0.111 s
+allocator                     572 compactions       11.2 MB    0.105 s
+object stores                1144 compactions      289.0 MB    2.531 s
+== run 3 threads 2 11:05:02 load 6.17
+large file                   1225 MiB/s   816.08 µs/MiB    0.209 s
+small files                 13776 entry/s    72.59 µs/entry    7.713 s
+replacing them               8462 entry/s   118.18 µs/entry   12.556 s
+whiting them out            27009 entry/s    37.02 µs/entry    3.702 s
+finishing                   63533 dir/s    15.74 µs/dir    0.098 s
+allocator                     576 compactions       13.9 MB    0.138 s
+object stores                1152 compactions      290.6 MB    2.614 s

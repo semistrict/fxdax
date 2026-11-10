@@ -125,6 +125,19 @@ macro_rules! failpoint {
     };
 }
 
+// fxdax: the audit, a test's, recounts the store's state after each of its critical sections:
+// ~8% of a one-row SQLite commit's CPU (TASK-301). A build without debug assertions is the release
+// profile's, an optimized build's, which measurements are made with, and tests are not (the dev
+// and sim profiles have them): so none has it. Built across the workspace, a binary or an example
+// has it from this crate's own dev-dependency on itself, which cargo unifies with every member's:
+// build its package alone (`cargo build --release -p PACKAGE`), as example runs on GCE had not, and
+// measured every example with it (TASK-303).
+#[cfg(all(feature = "audit", not(debug_assertions)))]
+compile_error!(
+    "extent_store's `audit` in a release build, which measures with it: build the package alone \
+     (`-p PACKAGE`), not across the workspace, whose dev-dependencies turn it on (TASK-303)"
+);
+
 mod dir;
 mod durability;
 pub use durability::{LAG_BUCKETS, Lags, durability_lags};

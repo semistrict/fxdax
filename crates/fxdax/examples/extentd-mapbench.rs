@@ -12,7 +12,8 @@
 //! VMM. Then a database's fsyncs, as the guest's Fxfs makes them on a file it read in (TASK-41,
 //! backlog doc-13): pages of a sealed extent mapped, stored to, each store copying its page into a
 //! private one, and a journal block written with an ordered commit (`WRITE_COMMIT`); each commit's
-//! phases timed (`Stats::commits`). For profiling, with perf on Linux (scripts/example-gce.sh):
+//! phases timed (`Stats::commits`). For profiling, with perf on Linux (`perf record --call-graph fp`;
+//! every build here keeps frame pointers, .cargo/config.toml):
 //!
 //! ```sh
 //! cargo run --release -p fxdax --example extentd-mapbench [MAPS [PAGES [MAPS_PER_COMMIT [maps|fsyncs|faults|all [CONNECTIONS]]]]]

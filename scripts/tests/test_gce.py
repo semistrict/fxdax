@@ -1052,7 +1052,6 @@ class Names(unittest.TestCase):
     # Each driver's results directory, before the time, its machine, and its own settings.
     DRIVERS = {
         "bench-gce.sh": ("gce-fs-bench", "c3-standard-8", {}),
-        "example-gce.sh": ("gce-mapbench", "n2-standard-8", {"FXDAX_EXAMPLE": "mapbench"}),
         "gets-gce.sh": ("gce-gets", "c3-standard-8", {"FXDAX_GETS_BUCKET": "gs://bucket/b"}),
         "mutants-gce.sh": ("gce-mutants", "n2-standard-4", {}),
     }

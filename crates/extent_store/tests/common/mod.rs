@@ -2,8 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-//! What the store's tests and its benchmark (`examples/store-bench.rs`) share of the data they
-//! write.
+//! What the store's tests share of the data they write.
 
 /// Bytes from a xorshift generator, which do not compress: framed, they take as much of the host's
 /// disk as they are. Each seed's its own: the generator's state is the seed's bits over a

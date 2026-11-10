@@ -9,3 +9,5 @@ Findings (two runs, within 5% of each other):
 - 500-update transactions: daemon 16/s against 3/s through the image, 13/s rollback FULL, 22/s WAL FULL.
 - Single-row commits got slower: 130/s (p50 7.5 ms) through the daemon against 340/s through the image and 327-394/s rollback FULL. Each commit is several round trips to the daemon (the extent's write, the durable commit, the frees, the window's MAP_MANY), and the daemon's durable commit; not yet profiled (TASK-301).
 - Bytes on disk for daemon configs count the store's directory, which holds the host's part cache of what was uploaded, and the bucket: not comparable to the others.
+
+Built with the extent store's audit, which recounts its state after each critical section (~8% of a one-row commit's CPU, TASK-301): scripts/lib/example-linux-host.sh built the example across the workspace, whose dev-dependencies turned it on, until 70a12ea15; a release build now refuses it (TASK-303).

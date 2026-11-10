@@ -7,8 +7,11 @@
 //! issues were measured by, before and after their changes. Say:
 //!
 //! ```sh
-//! cargo run --release -p extent_store --example store-bench -- CASE [N]
+//! cargo run --release -p fxdax --example store-bench -- CASE [N]
 //! ```
+//!
+//! fxdax's, not extent_store's, whose examples have the store's audit, from its dev-dependency on
+//! itself, which a release build refuses (TASK-303).
 //!
 //! CASE is one of:
 //!
