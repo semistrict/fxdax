@@ -87,8 +87,11 @@
 //! thousand, the fault thread trimming in place of serving faults (r544: 110,857 private pages
 //! against a budget of some 30,000 runs).
 //!
-//! The userfaultfd must handle faults taken in the kernel, such as KVM's. That needs access to
-//! `/dev/userfaultfd`, or the `vm.unprivileged_userfaultfd` sysctl.
+//! The userfaultfd must handle faults taken in the kernel, such as KVM's. It is made through
+//! `/dev/userfaultfd` alone, which the process needs read and write access to: never by the system
+//! call, `userfaultfd(2)`, which the `vm.unprivileged_userfaultfd` sysctl would allow, as the VMM's
+//! seccomp filter refuses it, killing the process for it, where a device it cannot open is an error
+//! saying so (TASK-308).
 
 use super::{Access, Anew, Faults, Prefault, SecondStage};
 use crate::error::{Errno, Error, Result};
@@ -98,6 +101,7 @@ use futures::stream::FuturesUnordered;
 use std::fs::File;
 use std::io::{Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
+use std::path::Path;
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock, Weak};
@@ -2124,22 +2128,72 @@ fn forget_lift(lift: &Arc<Lift>) {
     lifts.retain(|registered| !Arc::ptr_eq(registered, lift));
 }
 
-/// Opens a userfaultfd that handles faults taken in the kernel as well as in user mode.
-fn open_userfaultfd() -> Result<OwnedFd, Error> {
-    let flags = libc::O_CLOEXEC | libc::O_NONBLOCK;
-    // `/dev/userfaultfd`'s permissions grant handling kernel faults, where the system call needs
-    // the `vm.unprivileged_userfaultfd` sysctl or CAP_SYS_PTRACE.
-    let fd = match File::options().read(true).write(true).open("/dev/userfaultfd") {
-        // SAFETY: Creates a userfaultfd, which is owned below.
-        Ok(dev) => unsafe { libc::ioctl(dev.as_raw_fd(), USERFAULTFD_IOC_NEW as _, flags) },
-        // SAFETY: As above.
-        Err(_) => unsafe { libc::syscall(libc::SYS_userfaultfd, flags) as libc::c_int },
+/// The device userfaultfds are made through, whose permissions grant handling faults taken in the
+/// kernel, where the system call needs the `vm.unprivileged_userfaultfd` sysctl or CAP_SYS_PTRACE
+/// (and the VMM's seccomp filter refuses it).
+const USERFAULTFD_DEVICE: &str = "/dev/userfaultfd";
+
+/// fxdax: whether this process can make the userfaultfds DAX windows take their faults through:
+/// opens `/dev/userfaultfd`, as each window's second stage does, failing as it would, saying what
+/// the host lacks. For a VMM to call as it makes a device with a window, so that a host without it
+/// fails the VM as it is set up, not as its guest activates the device (TASK-308).
+pub fn userfaultfd_accessible() -> Result<(), Error> {
+    open_device(Path::new(USERFAULTFD_DEVICE)).map(drop)
+}
+
+/// Opens the userfaultfd device at `path`, for reading and writing, or says why it can't: which
+/// device, the error, and what gives a process access to it.
+fn open_device(path: &Path) -> Result<File, Error> {
+    File::options().read(true).write(true).open(path).map_err(|err| {
+        let (uid, gid) = host_ids();
+        Error::new(anyhow::anyhow!(
+            "{}: {err}: a DAX window takes its guest's faults, KVM's among them, through it, which \
+             this process (uid {uid}, gid {gid}) needs read and write access to: give it the \
+             device's group or mode (a udev rule: KERNEL==\"userfaultfd\", GROUP=\"kvm\", \
+             MODE=\"0660\"), or an ACL (setfacl -m u:USER:rw), or, in a jail, the device node in \
+             it; vm.unprivileged_userfaultfd serves no VMM, as it is for the userfaultfd(2) system \
+             call, which the VMM's seccomp filter refuses",
+            path.display()
+        ))
+    })
+}
+
+/// This process's effective uid and gid as the host has them, who a device's access is granted
+/// to: a VMM in a user namespace, as the guest tests' runner starts it, is root in its own.
+fn host_ids() -> (u32, u32) {
+    // SAFETY: Neither has preconditions.
+    let (uid, gid) = unsafe { (libc::geteuid(), libc::getegid()) };
+    let outside = |id, map| {
+        let map = std::fs::read_to_string(map).unwrap_or_default();
+        host_id(id, &map).unwrap_or(id)
     };
+    (outside(uid, "/proc/self/uid_map"), outside(gid, "/proc/self/gid_map"))
+}
+
+/// `id` of this user namespace as its parent has it, by the namespace's `map` (uid_map's or
+/// gid_map's lines: `INSIDE OUTSIDE COUNT`), if the map holds it.
+fn host_id(id: u32, map: &str) -> Option<u32> {
+    map.lines().find_map(|line| {
+        let fields: Vec<u64> =
+            line.split_whitespace().map(|field| field.parse().ok()).collect::<Option<_>>()?;
+        let [inside, outside, count] = fields[..] else { return None };
+        let id = u64::from(id);
+        (inside..inside + count).contains(&id).then(|| u32::try_from(outside + id - inside).ok())?
+    })
+}
+
+/// Opens a userfaultfd that handles faults taken in the kernel as well as in user mode, through
+/// `/dev/userfaultfd` alone.
+fn open_userfaultfd() -> Result<OwnedFd, Error> {
+    let device = open_device(Path::new(USERFAULTFD_DEVICE))?;
+    let flags = libc::O_CLOEXEC | libc::O_NONBLOCK;
+    // SAFETY: Creates a userfaultfd, which is owned below.
+    let fd = unsafe { libc::ioctl(device.as_raw_fd(), USERFAULTFD_IOC_NEW as _, flags) };
     if fd < 0 {
-        return Err(Error::new(anyhow::Error::new(std::io::Error::last_os_error()).context(
-            "userfaultfd: handling a guest's faults needs access to /dev/userfaultfd, or \
-             vm.unprivileged_userfaultfd=1",
-        )));
+        let err = std::io::Error::last_os_error();
+        return Err(Error::new(
+            anyhow::Error::new(err).context(format!("{USERFAULTFD_DEVICE}: USERFAULTFD_IOC_NEW")),
+        ));
     }
     // SAFETY: `fd` was just created, and is owned here.
     Ok(unsafe { OwnedFd::from_raw_fd(fd) })
@@ -2162,6 +2216,42 @@ mod tests {
     use super::super::Dax;
     use super::super::tests::TestSource;
     use super::*;
+
+    /// TASK-308: a userfaultfd device the process cannot open is an error naming it, the error and
+    /// what gives access to it, where the system call the VMM's seccomp filter refuses was made in
+    /// its place, killing the VMM ("bad syscall"), which said nothing of the device.
+    #[test]
+    fn a_device_it_cannot_open_says_which_why_and_what_gives_access() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("userfaultfd");
+        let err = open_device(&path).unwrap_err();
+        let (uid, gid) = host_ids();
+        assert_eq!(
+            format!("{err:#}"),
+            format!(
+                "{}: No such file or directory (os error 2): a DAX window takes its guest's faults, \
+                 KVM's among them, through it, which this process (uid {uid}, gid {gid}) needs read \
+                 and write access to: give it the device's group or mode (a udev rule: \
+                 KERNEL==\"userfaultfd\", GROUP=\"kvm\", MODE=\"0660\"), or an ACL (setfacl -m \
+                 u:USER:rw), or, in a jail, the device node in it; vm.unprivileged_userfaultfd \
+                 serves no VMM, as it is for the userfaultfd(2) system call, which the VMM's seccomp \
+                 filter refuses",
+                path.display()
+            )
+        );
+    }
+
+    /// The ids a VMM in a user namespace says are the host's, as its maps have them: the guest
+    /// tests' runner's VMMs are root in theirs, which a device's access is not granted to.
+    #[test]
+    fn ids_in_a_user_namespace_are_said_as_the_host_has_them() {
+        let root_as_ramon = "         0       1000          1\n         1     100000      65536\n";
+        assert_eq!(host_id(0, root_as_ramon), Some(1000));
+        assert_eq!(host_id(7, root_as_ramon), Some(100006));
+        assert_eq!(host_id(65537, root_as_ramon), None);
+        assert_eq!(host_id(1000, "         0          0 4294967295\n"), Some(1000));
+        assert_eq!(host_id(0, ""), None);
+    }
 
     /// The fault thread resolves faults concurrently: a fault waiting for the pager does not hold
     /// up the next, whose page request reaches the pager first.

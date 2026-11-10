@@ -160,7 +160,9 @@ mod volume;
 pub use dax::Prefault;
 pub use dax::failures::{AccessFailures, FailingRun, Failure};
 #[cfg(target_os = "linux")]
-pub use dax::uffd::{describe_windows, guest_access_failed, guest_thread_started};
+pub use dax::uffd::{
+    describe_windows, guest_access_failed, guest_thread_started, userfaultfd_accessible,
+};
 pub use dax::{Access, DaxWindow, SecondStage};
 pub use error::{Errno, Error, Result};
 #[cfg(target_os = "linux")]
