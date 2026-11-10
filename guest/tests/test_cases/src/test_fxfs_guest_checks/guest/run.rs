@@ -49,7 +49,7 @@ impl TestFxfsGuestChecks {
         let guest = Guest::set_up();
         let only = std::env::var("FXDAX_CHECKS").unwrap_or_default();
         let checks = self.checks(&only).unwrap();
-        let scale: f64 = std::env::var(SCALE).map_or(1.0, |scale| scale.parse().unwrap());
+        let scale = scale();
         let mut failed = Vec::new();
         for (_, check) in checks {
             let budget = check.budget.mul_f64(scale);

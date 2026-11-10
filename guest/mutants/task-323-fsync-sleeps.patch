@@ -1,0 +1,23 @@
+# SPDX-License-Identifier: GPL-2.0
+# Copyright 2026 The fxdax Authors.
+#
+# Kernel: release
+# Killer: fxfs-guest-checks-dax append_writeback
+#
+# TASK-323: each fsync sleeps 60 ms before it writes anything back: a slowdown of the guest's own,
+# not of the host's. append_writeback's budget leaves the host's time out (TASK-263), and its syncfs
+# loop keeps the device busy the whole time, so its 64 fdatasyncs' sleeps passed as the host's. Its
+# fdatasyncs alone, each its time but for the device's, find the median at 62.9 ms, of 5 ms
+# (ubu1, 2026-11-10; the budget's guest time 2.06 s of 3 s, which alone would have passed it; a 6 ms
+# sleep's median 11.1 ms). super.c, which guest/sim doesn't build. Put in by hand, not a past bug.
+
+--- a/guest/linux/fs/fxfs/super.c
++++ b/guest/linux/fs/fxfs/super.c
+@@ -2133,6 +2133,7 @@ int fxfs_vfs_fsync(struct file *file, loff_t start, loff_t end, int datasync)
+ 	int err;
+ 
+ 	trace_fxfs_fsync_start(inode->i_ino);
++	msleep(60);
+ 	err = file_write_and_wait_range(file, start, end);
+ 
+ 	/*

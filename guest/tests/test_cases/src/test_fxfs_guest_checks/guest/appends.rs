@@ -121,7 +121,8 @@ pub(super) fn test_append_size() {
 }
 
 /// Background inode writeback must neither restore a size from before truncate nor lose
-/// the last deferred append when fdatasync returns (TASK-92.28).
+/// the last deferred append when fdatasync returns (TASK-92.28). fxdax: and an fdatasync costs the
+/// guest little: its time but for the host's (TASK-323).
 pub(super) fn test_append_writeback() {
     use std::os::unix::fs::FileExt;
     use std::sync::{
@@ -133,6 +134,24 @@ pub(super) fn test_append_writeback() {
     let file = Arc::new(
         fs::OpenOptions::new().create_new(true).read(true).write(true).open(&name).unwrap(),
     );
+    // A round: the file cut, written, appended to a byte at a time, cut again, synced and read.
+    // What it holds, its fdatasync's time, and the host's time meanwhile.
+    let round = |round: u8| {
+        file.set_len(0).unwrap();
+        let mut expected = vec![round; 100];
+        file.write_all_at(&expected, 0).unwrap();
+        for _ in 0..32 {
+            file.write_all_at(&[0xa5], expected.len() as u64).unwrap();
+            expected.push(0xa5);
+        }
+        file.set_len(120).unwrap();
+        expected.truncate(120);
+        let (began, host) = (Instant::now(), busy());
+        file.sync_data().unwrap();
+        let (took, host) = (began.elapsed(), busy() - host);
+        assert_eq!(fs::read(&name).unwrap(), expected);
+        (expected, took, host)
+    };
     let stop = Arc::new(AtomicBool::new(false));
     let syncer = {
         let (file, stop) = (file.clone(), stop.clone());
@@ -142,24 +161,11 @@ pub(super) fn test_append_writeback() {
             }
         })
     };
-    let mut expected = Vec::new();
     let (mut syncing, mut longest) = (Duration::ZERO, Duration::ZERO);
     let host = Host::now();
-    for round in 0..64 {
-        file.set_len(0).unwrap();
-        expected = vec![round as u8; 100];
-        file.write_all_at(&expected, 0).unwrap();
-        for _ in 0..32 {
-            file.write_all_at(&[0xa5], expected.len() as u64).unwrap();
-            expected.push(0xa5);
-        }
-        file.set_len(120).unwrap();
-        expected.truncate(120);
-        let began = Instant::now();
-        file.sync_data().unwrap();
-        let took = began.elapsed();
+    for n in 0..64 {
+        let (_, took, _) = round(n);
         (syncing, longest) = (syncing + took, longest.max(took));
-        assert_eq!(fs::read(&name).unwrap(), expected);
     }
     stop.store(true, Ordering::Relaxed);
     syncer.join().unwrap();
@@ -169,10 +175,48 @@ pub(super) fn test_append_writeback() {
         "append_writeback: 64 fdatasyncs in {syncing:.2?}, the longest {longest:.2?} ({})",
         host.since()
     );
+    // fxdax: the same rounds, alone. An fdatasync's guest time is its time but for the device's
+    // meanwhile, its own requests', whatever the host's disk took for them. Above, the syncfs's
+    // requests are always in flight, so all of the time is the host's, which the budget leaves
+    // out, and a sleep of 60 ms in each fsync passed (TASK-323).
+    let mut expected = Vec::new();
+    let mut guest: Vec<Duration> = (0..ALONE)
+        .map(|n| {
+            let (bytes, took, host) = round(64 + n);
+            expected = bytes;
+            took.saturating_sub(host)
+        })
+        .collect();
+    guest.sort();
+    let (median, longest) = (guest[guest.len() / 2], guest[guest.len() - 1]);
+    eprintln!(
+        "append_writeback: {ALONE} fdatasyncs alone, the guest's time the median {median:.2?}, \
+         the longest {longest:.2?}, all told {:.2?}",
+        guest.iter().sum::<Duration>()
+    );
+    let bound = FDATASYNC.mul_f64(scale());
+    assert!(median <= bound, "an fdatasync's guest time, the median, {median:.2?} of {bound:.2?}");
     drop(file);
     evict(&name);
     assert_eq!(fs::read(&name).unwrap(), expected, "after eviction");
     fs::remove_file(name).unwrap();
+}
+
+/// fxdax: how many of append_writeback's rounds it times alone (TASK-323).
+const ALONE: u8 = 32;
+
+/// fxdax: the most of the guest's time the median of append_writeback's fdatasyncs alone may take,
+/// scaled as the budgets are ([`scale`]): 50 times the most measured. TASK-323, on ubu1, release
+/// kernel, 55 rounds (-dax, -dax-small and -dax-delay, rounds on ZFS and on ext4): the median
+/// 59-103 us, the longest 2.4 ms, all 32 at most 5.8 ms, while the host took 1.3-14.6 s. A sleep in
+/// each fsync of 60 ms made the median 62.9 ms (guest/mutants/task-323-fsync-sleeps.patch), of
+/// 6 ms 11.1 ms. The median, not the sum: in most rounds one or two of the 32 took about 2 ms, the
+/// rest about 0.1 ms.
+const FDATASYNC: Duration = Duration::from_millis(5);
+
+/// fxdax: how long the bound device has had a request in flight, all told (`busy_ns`).
+fn busy() -> Duration {
+    crate::extent_driver::busy().expect("the device bound")
 }
 
 /// fxdax: a file appended to across its chunks while another thread maps it and reads it

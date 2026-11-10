@@ -182,6 +182,12 @@ fn trace_dump(path: &str, page: u64) {
     }
 }
 
+/// fxdax: what scales the checks' budgets, as the host has it ([`SCALE`]), and what else a check
+/// bounds of the guest's time.
+fn scale() -> f64 {
+    std::env::var(SCALE).map_or(1.0, |scale| scale.parse().unwrap())
+}
+
 /// fxdax: what the mount counts ([`crate::guest_fxfs::stats`]), by name.
 fn stats() -> std::collections::BTreeMap<String, u64> {
     crate::guest_fxfs::stats(TAG)
