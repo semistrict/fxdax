@@ -3,7 +3,7 @@ id: doc-12
 title: The fsync durability contract
 type: other
 created_date: '2026-10-31 22:17'
-updated_date: '2026-11-08 14:04'
+updated_date: '2026-11-10 08:31'
 ---
 # What an acknowledged fsync survives (TASK-66)
 
@@ -53,6 +53,7 @@ it stays within the bound.
 | Host reboot or kernel crash, disk kept | what was ordered within the crash bound may go; a prefix stays | kept | **nothing: no test loses a host's page cache (TASK-67)** |
 | Host lost, disk with it, with a remote | the unuploaded lag goes; a prefix stays | kept | the simulation (doc-7, `crashes_anywhere`); **no guest test (TASK-67)** |
 | Host lost, without a remote | everything goes | everything goes | not a recovery case: a store with no remote, or whose bucket is a file bucket beside it (an image's, `<image>.bucket`), lives on one disk; extentd refuses to start without a remote (`FXDAX_EXTENTD_REMOTE`, TASK-45) |
+| The bucket failing for good: out of reach, full, refusing its credentials | kept: waits at the lag bound, then fails nothing (below) | kept: waits | extent_remote's `writes_failing_say_why_until_they_land` (a full disk's `ENOSPC`, logged); fxdax's `commits_wait_at_the_lag_bound_while_the_bucket_is_full`, `commits_wait_at_the_lag_bound` (TASK-314) |
 
 Every row keeps ordering: what survives is a prefix of the commits, never a later commit without an
 earlier one. Filesystems recover by replaying their journal to that prefix. Open-but-unnamed files
@@ -69,6 +70,27 @@ are freed as the store is next mounted.
 - **A `write(2)` cut short** leaves the bytes it copied, as on ext4: nothing it writes moves.
 - **The device's store failing** fails the store: a commit that failed part way leaves it refusing
   what follows (`State::failing`), and the guest's writes and fsyncs return errors.
+- **The bucket failing**, for a while or for good, fails nothing (TASK-314; doc-7, decision 3: as
+  a hard NFS mount hangs). Every request it fails is retried, from 50 ms apart, doubling, to 5 s,
+  until it is answered. Meanwhile the guest's `sync`, `syncfs`, unmount and freeze wait at once,
+  as they wait for *uploaded*; its fsyncs go on, ordered and made durable locally, until the lag
+  reaches its bound (4,096 commits or 1 GiB of write-ahead log), then wait too; its writes go on,
+  and so do its reads of what the host has, but a page-in of what only the bucket holds waits. Its
+  kernel says so as a hang does (`fxfs: Write I/O request blocked for N s`, hung tasks), and
+  nothing returns an error. Once the bucket answers, within 5 s of its next retry, all of it goes
+  on, and nothing was lost: what waited was durable locally all along. *Decided 2026-11-10
+  (TASK-314), the most conservative of the options:* failing commits after a bound instead would
+  give the guest errors for data that is safe on the host's disk, and a guest filesystem that
+  errors on fsync shuts down, or retries what Linux has already dropped from its page cache: a
+  failure that frees the bucket's disk, or renews its credentials, cures, made one that loses
+  data. It is loud instead: extentd logs each kind of request failing as the run of failures
+  starts, a warning naming the bucket's own error (a file bucket's `No space left on device`,
+  S3's `AccessDenied`), then every 30 s with how many failed, and as it answers again
+  (`extent_remote::store`, `FAILING_EVERY`); counts them by kind (the stats line's `failed-NAME`,
+  GetStats' `ObjectStorageStats.failures`, the metric `fxdax_extentd_object_storage_failures_total`),
+  beside how long each store's oldest commit has waited for its upload
+  (`fxdax_extentd_upload_oldest_pending_seconds`), what an operator alerts on; and warns as a
+  commit first waits at the bound.
 
 ## How a host tells them apart
 

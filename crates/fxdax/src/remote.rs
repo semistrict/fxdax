@@ -1092,12 +1092,16 @@ mod tests {
         }
     }
 
-    /// An object store whose requests fail while it is shut, and whose writes wait while they are
-    /// held, go wrong as it is armed to, or reach a copy of its objects once it is severed.
+    /// An object store whose requests fail while it is shut, whose writes fail while it is full,
+    /// and whose writes wait while they are held, go wrong as it is armed to, or reach a copy of
+    /// its objects once it is severed.
     #[derive(Debug)]
     pub(super) struct Gated {
         store: Arc<dyn object_store::ObjectStore>,
         shut: std::sync::atomic::AtomicBool,
+        /// Its writes fail as a file bucket's on a full disk do, `ENOSPC` behind a generic error
+        /// (TASK-314).
+        full: std::sync::atomic::AtomicBool,
         hold: tokio::sync::watch::Sender<Hold>,
         /// The writes waiting.
         held: std::sync::atomic::AtomicUsize,
@@ -1131,6 +1135,7 @@ mod tests {
             Self {
                 store,
                 shut: Default::default(),
+                full: Default::default(),
                 hold: tokio::sync::watch::channel(Hold::Nothing).0,
                 held: Default::default(),
                 went: Default::default(),
@@ -1225,6 +1230,17 @@ mod tests {
             }
         }
 
+        /// Whether it has room for a write: not while full.
+        fn room(&self) -> object_store::Result<()> {
+            match self.full.load(std::sync::atomic::Ordering::Relaxed) {
+                true => Err(object_store::Error::Generic {
+                    store: "gated",
+                    source: Box::new(std::io::Error::from_raw_os_error(libc::ENOSPC)),
+                }),
+                false => Ok(()),
+            }
+        }
+
         /// Waits until `count` writes wait, as they come in other threads, and fails if they
         /// don't within 30 s.
         fn wait_held(&self, count: usize) {
@@ -1258,6 +1274,7 @@ mod tests {
             opts: object_store::PutOptions,
         ) -> object_store::Result<object_store::PutResult> {
             self.check()?;
+            self.room()?;
             let write = self.writes.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             let armed = self.armed.lock().unwrap().take_if(|armed| armed.write == write);
             if let Some(armed) = armed {
@@ -1282,6 +1299,7 @@ mod tests {
             opts: object_store::PutMultipartOptions,
         ) -> object_store::Result<Box<dyn object_store::MultipartUpload>> {
             self.check()?;
+            self.room()?;
             self.reached().put_multipart_opts(location, opts).await
         }
 
@@ -1330,17 +1348,23 @@ mod tests {
         }
     }
 
-    /// While object storage is out of reach, commits go on until the lag reaches its bound, as
-    /// `options` set it, two commits of a block each, then wait; they go on once it is in reach
-    /// again.
-    fn waits_at_the_lag_bound(options: extent_store::upload::Options) {
+    /// While object storage is out of reach, or `failing` otherwise, commits go on until the lag
+    /// reaches its bound, as `options` set it, two commits of a block each, then wait, failing
+    /// nothing, the bucket's failures counted (TASK-314); they go on once it answers again, and
+    /// every commit is uploaded.
+    fn waits_at_the_lag_bound(
+        options: extent_store::upload::Options,
+        failing: fn(&Gated) -> &std::sync::atomic::AtomicBool,
+    ) {
+        use extent_remote::store::Request;
         let dir = tempfile::tempdir().unwrap();
         let gated = Arc::new(Gated::new());
         let bucket = Arc::new(Bucket::new(gated.clone(), ""));
         let store = Arc::new(
             kept_in(dir.path().join("store"), (1 << 30, None), &bucket.clone(), options).unwrap(),
         );
-        gated.shut.store(true, std::sync::atomic::Ordering::Relaxed);
+        let creates_failed = bucket.stats().failures(Request::Create);
+        failing(&gated).store(true, std::sync::atomic::Ordering::Relaxed);
         for sequence in 1..=2 {
             write(&store, sequence, &pattern(sequence as u8, BLOCK));
             store.commit_ordered(None).unwrap();
@@ -1353,11 +1377,12 @@ mod tests {
             })
         };
         let remote = store.remote().unwrap();
-        while remote.stalls() == 0 {
+        while remote.stalls() == 0 || bucket.stats().failures(Request::Create) == creates_failed {
             std::thread::yield_now();
         }
         assert!(!third.is_finished());
-        gated.shut.store(false, std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(remote.failed(), None, "the uploader stopped");
+        failing(&gated).store(false, std::sync::atomic::Ordering::Relaxed);
         assert_eq!(third.join().unwrap(), Ok(()));
         store.commit(None).unwrap();
         let (extents, _) = uploaded(&bucket, store.branch());
@@ -1760,11 +1785,8 @@ mod tests {
     #[test]
     fn commits_wait_at_the_lag_bound() {
         let interval = Duration::from_millis(1);
-        waits_at_the_lag_bound(extent_store::upload::Options {
-            interval,
-            max_lag: 2,
-            ..Default::default()
-        });
+        let options = extent_store::upload::Options { interval, max_lag: 2, ..Default::default() };
+        waits_at_the_lag_bound(options, |gated| &gated.shut);
     }
 
     #[test]
@@ -1775,7 +1797,17 @@ mod tests {
             max_lag_bytes: 2 * BLOCK as u64,
             ..Default::default()
         };
-        waits_at_the_lag_bound(options);
+        waits_at_the_lag_bound(options, |gated| &gated.shut);
+    }
+
+    /// TASK-314: a bucket that keeps failing its writes, its disk full, holds its stores' commits
+    /// at the lag bound, failing none and losing none: as the guest sees it, its fsyncs wait once
+    /// the lag reaches its bound (its syncs at once), until the bucket has room (doc-12).
+    #[test]
+    fn commits_wait_at_the_lag_bound_while_the_bucket_is_full() {
+        let interval = Duration::from_millis(1);
+        let options = extent_store::upload::Options { interval, max_lag: 2, ..Default::default() };
+        waits_at_the_lag_bound(options, |gated| &gated.full);
     }
 
     /// A branch opens on a host without it: an empty store of it takes what the branch holds, and

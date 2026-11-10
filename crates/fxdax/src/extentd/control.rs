@@ -462,6 +462,9 @@ impl Extentd for Control {
                 .map(|upload| (upload.name().to_owned(), bucket.uploaded(upload)))
                 .collect(),
             downloaded_bytes: bucket.downloaded,
+            failures: (Request::ALL.into_iter())
+                .map(|request| (request.name().to_owned(), bucket.failures(request)))
+                .collect(),
         });
         Ok(Response::new(GetStatsResponse {
             maps,

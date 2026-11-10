@@ -76,6 +76,21 @@ Uploaded 121.5 MiB (segments 121.5 MiB, extents 0 B, checkpoints 20.0 KiB, moves
 """,
         )
 
+    def test_failed_requests_are_reported_after_the_bytes(self):
+        failed = STATS.rstrip("\n") + (
+            " failed-get=0 failed-get-range=0 failed-head=0 failed-list=0 failed-create=25 "
+            "failed-update=1 failed-overwrite=0 failed-delete=0\n"
+        )
+        section = report(self.results(failed)).split("downloaded 45.0 KiB.", 1)[1]
+        self.assertEqual(
+            section,
+            """
+
+Failed: 26 requests (create 25, update 1), each retried until answered; extentd.log says why.
+
+""",
+        )
+
     def test_no_stats_no_section(self):
         self.assertNotIn("Object storage", report(self.results(None)))
 

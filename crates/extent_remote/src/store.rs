@@ -12,6 +12,13 @@
 //! A store counts the requests it makes, by kind, those that fail too, which object storage bills,
 //! and the bytes it uploads, by kind of object, and downloads ([`Store::stats`]).
 //!
+//! fxdax: requests that fail, which the helpers of [`crate::bucket`] retry until they answer, it
+//! counts by kind ([`Stats::failures`]) and logs, a warning naming the store's error, the first of
+//! a run of failures of a kind and then every [`FAILING_EVERY`], with how many failed, and once
+//! the kind answers again (TASK-314): a bucket that keeps failing, full, out of reach or refusing
+//! its credentials, stalls its stores' guests' commits at their lag bound (doc-7, decision 3),
+//! which the log says why of.
+//!
 //! fxdax: every reader of a bucket reads it through a store, which warns of reading what the
 //! collector's newest mark-only pass marked ([`crate::marks`], TASK-264): on wherever a marks object
 //! is, as a store reads the newest every [`crate::marks::REFRESH`] alongside a read of its own.
@@ -146,21 +153,119 @@ struct Counts {
     request_ns: [AtomicU64; Request::ALL.len()],
     uploaded: [AtomicU64; Upload::ALL.len()],
     downloaded: AtomicU64,
+    /// fxdax: the requests of each kind that failed, unanswered (TASK-314).
+    failures: [AtomicU64; Request::ALL.len()],
+    /// fxdax: the run of failures of each kind going on, if one is.
+    failing: [Failing; Request::ALL.len()],
+}
+
+/// fxdax: how often a run of failures of requests of a kind is logged again, with how many failed,
+/// after its first (TASK-314).
+pub const FAILING_EVERY: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// fxdax: the run of failures of requests of one kind going on, if one is: since its first, until
+/// one of the kind is answered (TASK-314).
+#[derive(Default)]
+struct Failing {
+    /// Whether one is going on, which an answer looks at alone.
+    on: std::sync::atomic::AtomicBool,
+    run: std::sync::Mutex<Option<Run>>,
+}
+
+struct Run {
+    began: tokio::time::Instant,
+    failed: u64,
+    /// When it was last logged, and how many had failed then.
+    logged: tokio::time::Instant,
+    failed_logged: u64,
+}
+
+impl Failing {
+    /// A request of `request`'s kind, of `object`, failed with `error`, which it logs if it is the
+    /// first of a run, or the run was last logged [`FAILING_EVERY`] ago.
+    fn failed(&self, request: Request, object: &str, error: &object_store::Error) {
+        let now = tokio::time::Instant::now();
+        let mut run = self.run.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        self.on.store(true, Ordering::Relaxed);
+        let kind = request.name();
+        let Some(run) = run.as_mut() else {
+            *run = Some(Run { began: now, failed: 1, logged: now, failed_logged: 1 });
+            let error = cause(error);
+            log::warn!(
+                kind, object, error:%;
+                "object storage: {kind} requests failing, retried until they answer: {object}: \
+                 {error}"
+            );
+            return;
+        };
+        run.failed += 1;
+        if now.duration_since(run.logged) >= FAILING_EVERY {
+            let (failed, since) = (run.failed, now.duration_since(run.began).as_secs());
+            let lately = run.failed - run.failed_logged;
+            (run.logged, run.failed_logged) = (now, run.failed);
+            let error = cause(error);
+            log::warn!(
+                kind, object, failed, error:%;
+                "object storage: {kind} requests still failing: {failed} failed in {since} s, \
+                 {lately} since last said; the latest, {object}: {error}"
+            );
+        }
+    }
+
+    /// A request of `request`'s kind was answered: a run of failures going on ends, which it logs.
+    fn answered(&self, request: Request) {
+        if !self.on.load(Ordering::Relaxed) {
+            return;
+        }
+        let mut run = self.run.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        self.on.store(false, Ordering::Relaxed);
+        if let Some(run) = run.take() {
+            let (kind, failed) = (request.name(), run.failed);
+            let since = run.began.elapsed().as_secs();
+            log::info!(
+                kind, failed;
+                "object storage: {kind} requests answered again, {failed} having failed in \
+                 {since} s"
+            );
+        }
+    }
+}
+
+/// fxdax: what `error` says, and each error it says it came from that it does not say already: a
+/// file bucket's full disk is an `io::Error` behind `object_store`'s own, which may not say it.
+fn cause(error: &object_store::Error) -> String {
+    let mut said = error.to_string();
+    let mut source = std::error::Error::source(error);
+    while let Some(error) = source {
+        let says = error.to_string();
+        if !said.contains(&says) {
+            said = format!("{said}: {says}");
+        }
+        source = error.source();
+    }
+    said
 }
 
 /// What a store did so far: its requests by kind and how long they took, the bytes it uploaded by
-/// kind of object, and the bytes it downloaded.
+/// kind of object, and the bytes it downloaded; fxdax: and the requests that failed, by kind.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Stats {
     pub requests: [u64; Request::ALL.len()],
     pub request_ns: [u64; Request::ALL.len()],
     pub uploaded: [u64; Upload::ALL.len()],
     pub downloaded: u64,
+    pub failures: [u64; Request::ALL.len()],
 }
 
 impl Stats {
     pub fn requests(&self, request: Request) -> u64 {
         self.requests[request as usize]
+    }
+
+    /// fxdax: the requests of kind `request` that failed, unanswered, each retried (TASK-314):
+    /// not those the protocol answers (no object, one there, another version), which are answers.
+    pub fn failures(&self, request: Request) -> u64 {
+        self.failures[request as usize]
     }
 
     /// The nanoseconds the requests of kind `request` took in all, each from its start to its
@@ -175,7 +280,8 @@ impl Stats {
 
     /// The stats as one line, which `scripts/bench-report.py` reads from the extent daemon's log:
     /// `object-store:`, then `NAME=COUNT` for each kind of request, `up-NAME=BYTES` for each kind
-    /// of object, `down=BYTES`, and `NAME-ns=NANOSECONDS` for each kind of request.
+    /// of object, `down=BYTES`, `NAME-ns=NANOSECONDS` for each kind of request, and fxdax's
+    /// `failed-NAME=COUNT` for each kind of request (TASK-314).
     pub fn line(&self) -> String {
         let mut line = "object-store:".to_owned();
         for request in Request::ALL {
@@ -188,6 +294,9 @@ impl Stats {
         for request in Request::ALL {
             line += &format!(" {}-ns={}", request.name(), self.request_ns(request));
         }
+        for request in Request::ALL {
+            line += &format!(" failed-{}={}", request.name(), self.failures(request));
+        }
         line
     }
 }
@@ -196,16 +305,13 @@ impl Counts {
     /// Counts a request of kind `request`, made now, for the object at `path` (or the objects
     /// under it), and, once what it returns is dropped, as the request is answered, how long it
     /// took. fxdax: its span starts, a child of what made the request (TASK-258).
-    fn request(&self, request: Request, path: Option<&Path>) -> Timed<'_> {
+    fn request<'a>(&'a self, request: Request, path: Option<&'a Path>) -> Timed<'a> {
         self.requests[request as usize].fetch_add(1, Ordering::Relaxed);
         let span = crate::trace::Span::start(request.span_name());
         if let Some(path) = path {
             span.set_with(crate::trace::OBJECT_KEY, || path.to_string());
         }
-        // fxdax: what its log record names, if the log takes it (TASK-260).
-        let logged = log::log_enabled!(log::Level::Debug)
-            .then(|| path.map_or_else(String::new, |path| path.to_string()));
-        Timed { counts: self, request, started: std::time::Instant::now(), span, logged }
+        Timed { counts: self, request, started: std::time::Instant::now(), span, path }
     }
 }
 
@@ -216,34 +322,53 @@ struct Timed<'a> {
     request: Request,
     started: std::time::Instant,
     span: crate::trace::Span,
-    /// fxdax: its object, as [`Timed::answered`] logs it, if the log takes it.
-    logged: Option<String>,
+    /// fxdax: its object, or the objects under it, as [`Timed::answered`] logs it.
+    path: Option<&'a Path>,
 }
 
 impl Timed<'_> {
-    /// `answered`, the request's answer, said on its span: its bytes, as `bytes` counts those of
-    /// what it answered, or its error. fxdax: and logged, at debug, with its kind, object, time,
-    /// and bytes or error (TASK-260): in the extent daemon, its log gives the record the guest
-    /// request the work is for, if any (`fxdax::request`).
+    /// `answered`, the request's answer, as branches take it ([`error`]), said on its span: its
+    /// bytes, as `bytes` counts those of what it answered, or its error. fxdax: and logged, at
+    /// debug, with its kind, object, time, and bytes or error (TASK-260): in the extent daemon,
+    /// its log gives the record the guest request the work is for, if any (`fxdax::request`). A
+    /// failure, unanswered, is counted and logged as [`Failing`] says, with the store's error
+    /// (TASK-314); an answer ends a run of them.
     fn answered<T>(
         &self,
-        answered: Result<T, Error>,
+        answered: object_store::Result<T>,
         bytes: impl Fn(&T) -> usize,
     ) -> Result<T, Error> {
         let kind = self.request.name();
+        let object = || self.path.map_or_else(String::new, |path| path.to_string());
+        let answered = answered.map_err(|failure| {
+            let answer = error(&failure);
+            if answer == Error::Unavailable {
+                self.counts.failures[self.request as usize].fetch_add(1, Ordering::Relaxed);
+                self.counts.failing[self.request as usize].failed(
+                    self.request,
+                    &object(),
+                    &failure,
+                );
+            }
+            answer
+        });
+        if !matches!(answered, Err(Error::Unavailable)) {
+            self.counts.failing[self.request as usize].answered(self.request);
+        }
+        let logged = log::log_enabled!(log::Level::Debug).then(object);
         let ms = || self.started.elapsed().as_secs_f64() * 1e3;
         match &answered {
             Ok(answer) => {
                 let bytes = bytes(answer) as u64;
                 self.span.set_count(crate::trace::BYTES, bytes);
-                if let Some(object) = &self.logged {
+                if let Some(object) = &logged {
                     let ms = ms();
                     log::debug!(kind, object:%, ms, bytes; "object storage: {kind} {object}");
                 }
             }
             Err(error) => {
                 self.span.fail(error);
-                if let Some(object) = &self.logged {
+                if let Some(object) = &logged {
                     let ms = ms();
                     log::debug!(
                         kind, object:%, ms, error:%; "object storage: {kind} {object}: {error}"
@@ -288,6 +413,7 @@ impl Store {
             request_ns: self.counts.request_ns.each_ref().map(load),
             uploaded: self.counts.uploaded.each_ref().map(load),
             downloaded: load(&self.counts.downloaded),
+            failures: self.counts.failures.each_ref().map(load),
         }
     }
 
@@ -455,7 +581,7 @@ fn cloud(
 
 /// What a request's failure means to branches. Failures other than the ones the protocol answers
 /// are retried: the store may be unreachable for a while, and branches wait (doc-7, decision 3).
-fn error(error: object_store::Error) -> Error {
+fn error(error: &object_store::Error) -> Error {
     match error {
         object_store::Error::NotFound { .. } => Error::NotFound,
         object_store::Error::AlreadyExists { .. } => Error::AlreadyExists,
@@ -478,9 +604,9 @@ impl Bucket for Store {
         let get = async move {
             let timed = self.counts.request(Request::Get, Some(&path));
             let got = async {
-                let result = store.get_opts(&path, GetOptions::default()).await.map_err(error)?;
+                let result = store.get_opts(&path, GetOptions::default()).await?;
                 let meta = self.meta(result.meta.clone());
-                let bytes = result.bytes().await.map_err(error)?;
+                let bytes = result.bytes().await?;
                 self.counts.downloaded.fetch_add(bytes.len() as u64, Ordering::Relaxed);
                 Ok(Object { bytes: bytes.to_vec(), meta })
             };
@@ -515,14 +641,14 @@ impl Bucket for Store {
                         let GetRange::Suffix(len) = range else { unreachable!() };
                         let _head = self.counts.request(Request::Head, Some(&path));
                         let head = GetOptions { head: true, ..GetOptions::default() };
-                        let size = store.get_opts(&path, head).await.map_err(error)?.meta.size;
+                        let size = store.get_opts(&path, head).await?.meta.size;
                         let range = GetRange::Bounded(size.saturating_sub(len)..size);
                         let options = GetOptions { range: Some(range), ..GetOptions::default() };
-                        store.get_opts(&path, options).await.map_err(error)?
+                        store.get_opts(&path, options).await?
                     }
-                    result => result.map_err(error)?,
+                    result => result?,
                 };
-                let bytes = result.bytes().await.map_err(error)?;
+                let bytes = result.bytes().await?;
                 self.counts.downloaded.fetch_add(bytes.len() as u64, Ordering::Relaxed);
                 Ok(bytes.to_vec())
             };
@@ -538,7 +664,7 @@ impl Bucket for Store {
         let head = async move {
             let timed = self.counts.request(Request::Head, Some(&path));
             let options = GetOptions { head: true, ..GetOptions::default() };
-            let result = store.get_opts(&path, options).await.map_err(error);
+            let result = store.get_opts(&path, options).await;
             timed.answered(result.map(|result| self.meta(result.meta)), |_| 0)
         };
         async move { futures::join!(head, refresh).0 }
@@ -559,7 +685,7 @@ impl Bucket for Store {
             // GCS), which `object_store` does not say: counted as one.
             let timed = self.counts.request(Request::List, path.as_ref());
             let listed = store.list(path.as_ref()).try_collect::<Vec<ObjectMeta>>().await;
-            let listed = timed.answered(listed.map_err(error), |_| 0)?;
+            let listed = timed.answered(listed, |_| 0)?;
             timed.span.set_count(crate::trace::OBJECTS, listed.len() as u64);
             let mut metas: Vec<Meta> = listed.into_iter().map(|meta| self.meta(meta)).collect();
             metas.sort_by(|a, b| a.key.cmp(&b.key));
@@ -593,8 +719,7 @@ impl Bucket for Store {
             let timed = self.counts.request(request, Some(&path));
             let len = bytes.len() as u64;
             let options = PutOptions { mode, ..PutOptions::default() };
-            let result =
-                store.put_opts(&path, PutPayload::from(bytes), options).await.map_err(error);
+            let result = store.put_opts(&path, PutPayload::from(bytes), options).await;
             let result = timed.answered(result, |_| len as usize)?;
             self.counts.uploaded[upload as usize].fetch_add(len, Ordering::Relaxed);
             Ok(Version { e_tag: result.e_tag, version: result.version })
@@ -605,10 +730,12 @@ impl Bucket for Store {
         let (store, path) = (self.store.clone(), self.path(key));
         async move {
             let timed = self.counts.request(Request::Delete, Some(&path));
-            let mut deleted = store.delete_stream(stream::once(async move { Ok(path) }).boxed());
+            let deleting = path.clone();
+            let mut deleted =
+                store.delete_stream(stream::once(async move { Ok(deleting) }).boxed());
             let deleted = match deleted.next().await {
                 Some(Err(object_store::Error::NotFound { .. })) | Some(Ok(_)) | None => Ok(()),
-                Some(Err(other)) => Err(error(other)),
+                Some(Err(other)) => Err(other),
             };
             timed.answered(deleted, |_| 0)
         }
@@ -666,6 +793,161 @@ pub(crate) mod tests {
     fn failed_requests_back_off() {
         let waits: Vec<_> = (1..=10).map(|failures| backoff(failures).as_millis()).collect();
         assert_eq!(waits, [50, 100, 200, 400, 800, 1600, 3200, 5000, 5000, 5000]);
+    }
+
+    /// Objects in memory, whose writes fail while it is full, as a file bucket's on a full disk
+    /// do: with the filesystem's `ENOSPC` behind `object_store`'s error (TASK-314).
+    #[derive(Debug, Default)]
+    pub(crate) struct Full {
+        objects: object_store::memory::InMemory,
+        pub(crate) full: std::sync::atomic::AtomicBool,
+    }
+
+    impl std::fmt::Display for Full {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "Full")
+        }
+    }
+
+    impl Full {
+        fn room(&self) -> object_store::Result<()> {
+            match self.full.load(Ordering::Relaxed) {
+                true => Err(object_store::Error::Generic {
+                    store: "Full",
+                    source: Box::new(std::io::Error::from_raw_os_error(libc::ENOSPC)),
+                }),
+                false => Ok(()),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl ObjectStore for Full {
+        async fn put_opts(
+            &self,
+            location: &Path,
+            payload: PutPayload,
+            opts: PutOptions,
+        ) -> object_store::Result<object_store::PutResult> {
+            self.room()?;
+            self.objects.put_opts(location, payload, opts).await
+        }
+
+        async fn put_multipart_opts(
+            &self,
+            location: &Path,
+            opts: object_store::PutMultipartOptions,
+        ) -> object_store::Result<Box<dyn object_store::MultipartUpload>> {
+            self.room()?;
+            self.objects.put_multipart_opts(location, opts).await
+        }
+
+        async fn get_opts(
+            &self,
+            location: &Path,
+            options: GetOptions,
+        ) -> object_store::Result<object_store::GetResult> {
+            self.objects.get_opts(location, options).await
+        }
+
+        fn delete_stream(
+            &self,
+            locations: futures::stream::BoxStream<'static, object_store::Result<Path>>,
+        ) -> futures::stream::BoxStream<'static, object_store::Result<Path>> {
+            self.objects.delete_stream(locations)
+        }
+
+        fn list(
+            &self,
+            prefix: Option<&Path>,
+        ) -> futures::stream::BoxStream<'static, object_store::Result<ObjectMeta>> {
+            self.objects.list(prefix)
+        }
+
+        async fn list_with_delimiter(
+            &self,
+            prefix: Option<&Path>,
+        ) -> object_store::Result<object_store::ListResult> {
+            self.objects.list_with_delimiter(prefix).await
+        }
+
+        async fn copy_opts(
+            &self,
+            from: &Path,
+            to: &Path,
+            options: object_store::CopyOptions,
+        ) -> object_store::Result<()> {
+            self.room()?;
+            self.objects.copy_opts(from, to, options).await
+        }
+    }
+
+    /// TASK-314: a bucket whose writes keep failing, its disk full, which `object_store` says only
+    /// as a generic error: a create goes again, backing off to 5 s apart, until it lands once the
+    /// bucket has room. Its failures are counted, and logged with the filesystem's error, the
+    /// first at once, then every 30 s with how many failed, and as creates answer again; reads
+    /// answer meanwhile, which ends no run of the creates'.
+    #[tokio::test(start_paused = true)]
+    async fn writes_failing_say_why_until_they_land() {
+        let log = crate::marks::captured();
+        let full = Arc::new(Full::default());
+        let store = Arc::new(Store::new(full.clone(), ""));
+        full.full.store(true, Ordering::Relaxed);
+        let key = layout::segment(1, 0);
+        let creating = tokio::spawn({
+            let (store, key) = (store.clone(), key.clone());
+            async move { crate::bucket::create(&*store, &key, vec![1, 2, 3]).await }
+        });
+        tokio::time::sleep(std::time::Duration::from_secs(40)).await;
+        assert_eq!(store.get("other").await.map(|object| object.bytes), Err(Error::NotFound));
+        tokio::time::sleep(std::time::Duration::from_secs(55)).await;
+        full.full.store(false, Ordering::Relaxed);
+        assert!(matches!(creating.await.unwrap(), crate::bucket::Created::Created));
+        assert_eq!(store.get(&key).await.unwrap().bytes, [1, 2, 3]);
+
+        // Failed at 0 s, 50 ms, 150 ms, ... 3.15 s, 6.35 s, then every 5 s to 91.35 s; landed at
+        // 96.35 s.
+        let stats = store.stats();
+        assert_eq!((stats.requests(Request::Create), stats.failures(Request::Create)), (26, 25));
+        assert_eq!(stats.failures(Request::Get), 0);
+        assert!(stats.line().ends_with(
+            " failed-get=0 failed-get-range=0 failed-head=0 failed-list=0 failed-create=25 \
+             failed-update=0 failed-overwrite=0 failed-delete=0"
+        ));
+        let object = format!("object={key}");
+        let enospc = "error=Generic Full error: No space left on device (os error 28)";
+        let lines: Vec<String> = (log.lock().unwrap().iter())
+            .filter(|line| line.contains("object storage"))
+            .cloned()
+            .collect();
+        assert_eq!(
+            lines,
+            [
+                format!(
+                    "WARN object storage: create requests failing, retried until they answer: \
+                     {key}: Generic Full error: No space left on device (os error 28) kind=create \
+                     {object} {enospc}"
+                ),
+                format!(
+                    "WARN object storage: create requests still failing: 13 failed in 31 s, 12 \
+                     since last said; the latest, {key}: Generic Full error: No space left on \
+                     device (os error 28) kind=create {object} failed=13 {enospc}"
+                ),
+                format!(
+                    "WARN object storage: create requests still failing: 19 failed in 61 s, 6 \
+                     since last said; the latest, {key}: Generic Full error: No space left on \
+                     device (os error 28) kind=create {object} failed=19 {enospc}"
+                ),
+                format!(
+                    "WARN object storage: create requests still failing: 25 failed in 91 s, 6 \
+                     since last said; the latest, {key}: Generic Full error: No space left on \
+                     device (os error 28) kind=create {object} failed=25 {enospc}"
+                ),
+                "INFO object storage: create requests answered again, 25 having failed in 96 s \
+                 kind=create failed=25"
+                    .to_owned(),
+            ]
+        );
     }
     use crate::batch::{Batch, Commit};
     use crate::bucket::Bucket;

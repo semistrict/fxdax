@@ -356,6 +356,22 @@ if ! "$root/scripts/dax-refusals.py" "$results/extentd.log" "${firecracker_logs[
     echo "the DAX window refused a guest's stores: see $results/unexplained-refusals.txt" >&2
     status=1
 fi
+# fxdax: the bucket's requests that kept failing, as the daemon logged them (TASK-314): each is
+# retried until it is answered, holding its guests' commits at the lag bound meanwhile. The run's
+# own file bucket, on tmpfs, fails only once that is full, its cases then hanging until the runner
+# times them out: the run fails, saying so.
+grep -E "object storage: [a-z-]+ requests (failing|still failing)" "$results/extentd.log" \
+    > "$results/bucket-failures.txt" || true
+if [[ -s $results/bucket-failures.txt ]]; then
+    echo "the bucket failed requests, each retried: see $results/bucket-failures.txt; the first:" >&2
+    sed -n 1p "$results/bucket-failures.txt" >&2
+    if [[ -n $bucket_dir ]]; then
+        df -h "$bucket_dir" >&2 || true
+        status=1
+    fi
+else
+    rm "$results/bucket-failures.txt"
+fi
 echo "Logs: $results" >&2
 "$root/scripts/guest_results.py" finish "$results" "$status"
 exit "$status"

@@ -108,6 +108,16 @@ def object_storage(stats):
     uploaded = sum(stats.get(f"up-{kind}", 0) for kind in UPLOADS)
     by_kind = ", ".join(f"{kind} {size(stats.get(f'up-{kind}', 0))}" for kind in UPLOADS)
     lines.append(f"Uploaded {size(uploaded)} ({by_kind}); downloaded {size(stats.get('down', 0))}.")
+    # fxdax: the requests that failed, unanswered, each retried, which extentd.log says why of
+    # (TASK-314); none from a daemon before it counted them.
+    failed = {request: stats.get(f"failed-{request}", 0) for request in CLASSES}
+    if any(failed.values()):
+        by_request = ", ".join(f"{request} {count:,}" for request, count in failed.items() if count)
+        lines.append("")
+        lines.append(
+            f"Failed: {sum(failed.values()):,} requests ({by_request}), each retried until answered; "
+            "extentd.log says why."
+        )
     return lines
 
 

@@ -3,7 +3,7 @@ id: doc-7
 title: 'Object storage: how the host keeps branches in S3 and GCS'
 type: specification
 created_date: '2026-10-17 01:31'
-updated_date: '2026-11-09 09:10'
+updated_date: '2026-11-10 08:31'
 ---
 # Object storage: how the host keeps branches in S3 and GCS
 
@@ -317,8 +317,12 @@ a contiguous prefix; an object is uploaded before anything that names it.
 (`Options::max_lag_bytes`, 1 GiB, what local disk holds until uploaded), and a durable commit waits
 at most the upload interval (1 s) before its segment closes for the uploader; at either bound,
 commits stall (decision 3). A request object storage fails is retried, from 50 ms, doubling, to
-5 s apart (`extent_remote::store`), an ambiguous one resolved by reading back (Fencing); the host
-reports each store's upload progress (`UploadStatus`: what is not yet acknowledged, and since when).
+5 s apart (`extent_remote::store`), for as long as it fails, an ambiguous one resolved by reading
+back (Fencing); the host reports each store's upload progress (`UploadStatus`: what is not yet
+acknowledged, and since when). *Added 2026-11-10 (TASK-314):* the store counts the requests that
+fail by kind and logs each kind's run of failures with the bucket's own error, as it starts, every
+30 s, and as it ends, so that a bucket failing for good (full, out of reach, refusing its
+credentials) says why its guests' commits wait; doc-12 says what the guest sees.
 A writer displaced by a late segment takes the branch again (Fencing); any other failure of its
 writer's stops the uploader, and its commits waiting to be durable fail.
 

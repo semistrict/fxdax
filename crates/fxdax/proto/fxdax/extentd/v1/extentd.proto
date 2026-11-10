@@ -501,6 +501,10 @@ message ObjectStorageStats {
   map<string, uint64> uploaded_bytes = 2;
   // Bytes downloaded.
   uint64 downloaded_bytes = 3;
+  // Requests that failed, unanswered, by kind, as `requests`: each is retried until the bucket
+  // answers it, its error in the daemon's log (TASK-314). Not those the bucket answers with no
+  // object, one there, or another version.
+  map<string, uint64> failures = 4;
 }
 
 // Grants a tenant.

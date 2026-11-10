@@ -351,6 +351,21 @@ pub fn render() -> String {
                 stats.requests(request)
             );
         }
+        let name = "fxdax_extentd_object_storage_failures_total";
+        let _ = writeln!(
+            out,
+            "# HELP {name} Requests to the bucket that failed, unanswered, by kind: each retried, \
+             its error in the log."
+        );
+        let _ = writeln!(out, "# TYPE {name} counter");
+        for request in Request::ALL {
+            let _ = writeln!(
+                out,
+                "{name}{{request=\"{}\"}} {}",
+                request.name(),
+                stats.failures(request)
+            );
+        }
         let name = "fxdax_extentd_object_storage_uploaded_bytes_total";
         let _ = writeln!(out, "# HELP {name} Bytes uploaded to the bucket, by kind of object.");
         let _ = writeln!(out, "# TYPE {name} counter");
