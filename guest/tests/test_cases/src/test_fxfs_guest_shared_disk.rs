@@ -114,18 +114,6 @@ mod host {
         took.fold((0, 0.0, 0.0), |(count, max, sum), ms| (count + 1, max.max(ms), sum + ms))
     }
 
-    /// The `daemon:` line of the daemon's stats file at `path`, its fields by name.
-    fn daemon_stats(path: &Path) -> anyhow::Result<std::collections::BTreeMap<String, u64>> {
-        let kept = std::fs::read_to_string(path)?;
-        let line = kept.lines().find_map(|line| line.strip_prefix("daemon: "));
-        Ok((line.context("no daemon line")?.split(' '))
-            .filter_map(|field| {
-                let (name, value) = field.split_once('=')?;
-                Some((name.to_owned(), value.parse().ok()?))
-            })
-            .collect())
-    }
-
     /// Boots VM `vm` on a new store of its own, served by the daemon at `socket`.
     fn boot(
         test_setup: &TestSetup,
@@ -223,7 +211,7 @@ mod host {
             let (some, full) = io_pressure()?;
             // Its stats file, written within a poll of the last change.
             std::thread::sleep(Duration::from_secs(2));
-            let stats = daemon_stats(&dir.join("extentd-stats.txt"))?;
+            let stats = crate::common::daemon_stats(&dir.join("extentd-stats.txt"))?;
             let log = std::fs::read_to_string(dir.join("extentd.log"))?;
             let (slow, longest, slow_sum) = slow_framings(&log);
             let gib = |bytes: u64| bytes as f64 / (1u64 << 30) as f64;

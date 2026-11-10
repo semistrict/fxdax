@@ -28,7 +28,7 @@
 //! store to a page a copy on the host (fxfs-guest-pgbench-forked, -dax-forked); and so, each VM
 //! kept running once its runs are done, the host's memory measured as each is added
 //! (`crate::measure`): what a VM more costs the host (fxfs-guest-pgbench-density, -dax-density).
-//! FXDAX_PGBENCH_RUNS and FXDAX_PGBENCH_RUN_SECS set the runs, and
+//! FXDAX_PGBENCH_RUNS and FXDAX_PGBENCH_RUN_SECS set the runs, FXDAX_PGBENCH_SCALE its scale, and
 //! FXDAX_PGBENCH_DENSITY_MEMORY_MIB the density cases' VMs' memory (1024). With FXDAX_PGBENCH_COLD
 //! set, the forks' VMs are served by a daemon started once the base's has drained and stopped,
 //! with a part cache of its own, empty, and nothing in memory: a host forking another host's base,
@@ -112,8 +112,11 @@ pub enum Database {
     Density,
 }
 
-/// pgbench's scale: 100,000 accounts a unit.
-const SCALE: u64 = 50;
+/// pgbench's scale, 100,000 accounts a unit: FXDAX_PGBENCH_SCALE, or the sandbox team's 50.
+/// fxfs-guest-sandboxes' short run loads less (TASK-330.1).
+fn scale() -> u64 {
+    count("FXDAX_PGBENCH_SCALE", 50).max(1)
+}
 
 /// The pgbench runs a VM makes, FXDAX_PGBENCH_RUNS, or the sandbox team's five.
 fn runs() -> usize {
@@ -264,7 +267,7 @@ RUN apk add --no-cache postgresql postgresql-contrib perf e2fsprogs
             vm.env(c"FXDAX_PGBENCH_ASYNC=1");
         }
         // fxdax: the runs, as the host has them (TASK-164.5).
-        for var in ["FXDAX_PGBENCH_RUNS", "FXDAX_PGBENCH_RUN_SECS"] {
+        for var in ["FXDAX_PGBENCH_RUNS", "FXDAX_PGBENCH_RUN_SECS", "FXDAX_PGBENCH_SCALE"] {
             if let Ok(value) = std::env::var(var) {
                 vm.env(&CString::new(format!("{var}={value}"))?);
             }
@@ -721,7 +724,7 @@ RUN apk add --no-cache postgresql postgresql-contrib perf e2fsprogs
 
         fn check(self: Box<Self>, stdout: Vec<u8>, test_setup: TestSetup) -> TestOutcome {
             let output = String::from_utf8(stdout).unwrap();
-            let loaded = format!("OK load {}\n", SCALE * 100_000);
+            let loaded = format!("OK load {}\n", scale() * 100_000);
             let ran = format!("OK runs {}\nOK checked\n", runs());
             let expected = match self.database {
                 Database::Made => format!("OK base\n{}", format!("{loaded}{ran}").repeat(vms())),
@@ -1011,11 +1014,11 @@ mod guest {
             as_postgres(&format!("initdb -D {DATA} -A trust --data-checksums"));
             self.start();
             as_postgres(&format!("createdb -h {SOCKET} bench"));
-            as_postgres(&format!("pgbench -h {SOCKET} -i -q -s {SCALE} bench"));
+            as_postgres(&format!("pgbench -h {SOCKET} -i -q -s {} bench", scale()));
             // Every account once: the primary key's build found one twice (TASK-59).
             let query = "select count(*), count(distinct aid) from pgbench_accounts";
             let counted = as_postgres(&format!("psql -h {SOCKET} -At -c '{query}' bench"));
-            let accounts = SCALE * 100_000;
+            let accounts = scale() * 100_000;
             assert_eq!(
                 String::from_utf8_lossy(&counted.stdout).trim(),
                 format!("{accounts}|{accounts}")
@@ -1106,8 +1109,10 @@ mod guest {
                     unmount();
                     println!("OK base");
                 }
-                // Makes the database, then runs pgbench on it.
+                // Makes the database, then runs pgbench on it: on a fork of the base, or on a store
+                // of its own, which has no directory for it yet (fxfs-guest-sandboxes').
                 "load" => {
+                    fs::create_dir_all(DATA).unwrap();
                     prepare();
                     self.load();
                     self.run();

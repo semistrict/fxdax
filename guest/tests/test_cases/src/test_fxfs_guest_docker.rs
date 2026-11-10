@@ -46,7 +46,7 @@ const HELLO: &str = "hello from a container on Fxfs";
 const BUILDX: &str = "/usr/libexec/docker/cli-plugins/docker-buildx";
 
 #[host]
-mod host {
+pub(crate) mod host {
     use super::*;
     use crate::common::{control, fxdax_guest_should_run};
     use crate::vm::Vm;
@@ -125,36 +125,66 @@ mod host {
         Ok(layer(&entries)?)
     }
 
-    /// The root's image: the guest agent, Docker's binaries, the container's archive, and what
-    /// init and the daemons mount on and keep their state in; with `buildx`, Docker's plugin's
-    /// binary, where Docker's CLI finds its plugins.
-    fn root_layer(dir: &Path, buildx: Option<&[u8]>) -> anyhow::Result<Vec<u8>> {
+    /// fxdax: what a root needs of Docker's, each file's path in the root, its contents and its
+    /// permissions, and the directories they are in: Docker's static binaries, in /usr/bin; the
+    /// container's archive, at [`ARCHIVE`]; and with `buildx`, Docker's plugin's binary, where
+    /// Docker's CLI finds its plugins. fxfs-guest-sandboxes' image has them too, over its own
+    /// root's files (TASK-330.1).
+    pub(crate) struct DockerFiles {
+        pub dirs: Vec<&'static str>,
+        pub files: Vec<(String, Vec<u8>, u32)>,
+    }
+
+    impl DockerFiles {
+        pub(crate) fn new(dir: &Path, buildx: Option<Vec<u8>>) -> anyhow::Result<Self> {
+            let mut dirs = vec!["usr", "usr/bin", "images"];
+            let mut files: Vec<(String, Vec<u8>, u32)> = (DOCKER.iter())
+                .map(|name| {
+                    Ok((format!("usr/bin/{name}"), read("FXDAX_DOCKER_STATIC", name)?, 0o755))
+                })
+                .collect::<anyhow::Result<_>>()?;
+            if let Some(buildx) = buildx {
+                dirs.extend([
+                    "usr/libexec",
+                    "usr/libexec/docker",
+                    "usr/libexec/docker/cli-plugins",
+                ]);
+                files.push((BUILDX[1..].to_owned(), buildx, 0o755));
+            }
+            files.push((ARCHIVE[1..].to_owned(), container_archive(dir)?, 0o644));
+            Ok(Self { dirs, files })
+        }
+
+        /// Its directories' and files' entries in a layer.
+        pub(crate) fn entries(&self) -> Vec<Entry<'_>> {
+            let dirs = self.dirs.iter().map(|path| Entry::new(path, Kind::Dir));
+            let files = (self.files.iter())
+                .map(|(path, contents, perm)| Entry::new(path, Kind::File(contents)).perm(*perm));
+            dirs.chain(files).collect()
+        }
+    }
+
+    /// fxdax: Docker's buildx plugin's binary, FXDAX_DOCKER_BUILDX's (TASK-311).
+    pub(crate) fn buildx() -> anyhow::Result<Vec<u8>> {
+        let path =
+            std::env::var_os("FXDAX_DOCKER_BUILDX").context("FXDAX_DOCKER_BUILDX not set")?;
+        std::fs::read(&path).with_context(|| format!("reading {path:?}"))
+    }
+
+    /// The root's image: the guest agent, Docker's files, and what init and the daemons mount on
+    /// and keep their state in; with `buildx`, Docker's plugin's binary.
+    fn root_layer(dir: &Path, buildx: Option<Vec<u8>>) -> anyhow::Result<Vec<u8>> {
         let agent = std::env::var_os("FXDAX_GUEST_AGENT").context("FXDAX_GUEST_AGENT not set")?;
         let agent = std::fs::read(agent)?;
-        let binaries: Vec<(String, Vec<u8>)> = (DOCKER.iter())
-            .map(|name| Ok((format!("usr/bin/{name}"), read("FXDAX_DOCKER_STATIC", name)?)))
-            .collect::<anyhow::Result<_>>()?;
-        let archive = container_archive(dir)?;
+        let docker = DockerFiles::new(dir, buildx)?;
         let mut entries = vec![Entry::new("guest-agent", Kind::File(&agent)).perm(0o755)];
-        let dirs = [
-            "dev", "proc", "sys", "run", "etc", "usr", "usr/bin", "var", "var/lib", "images",
-            "root",
-        ];
+        let dirs = ["dev", "proc", "sys", "run", "etc", "var", "var/lib", "root"];
         entries.extend(dirs.map(|path| Entry::new(path, Kind::Dir)));
-        if let Some(buildx) = buildx {
-            for path in ["usr/libexec", "usr/libexec/docker", "usr/libexec/docker/cli-plugins"] {
-                entries.push(Entry::new(path, Kind::Dir));
-            }
-            entries.push(Entry::new(&BUILDX[1..], Kind::File(buildx)).perm(0o755));
-        }
         entries.push(Entry::new("tmp", Kind::Dir).perm(0o1777));
         entries.push(Entry::new("var/run", Kind::Symlink("../run")));
         entries.push(Entry::new("etc/passwd", Kind::File(b"root:x:0:0:root:/root:/bin/sh\n")));
         entries.push(Entry::new("etc/group", Kind::File(b"root:x:0:\n")));
-        for (path, contents) in &binaries {
-            entries.push(Entry::new(path, Kind::File(contents)).perm(0o755));
-        }
-        entries.push(Entry::new(&ARCHIVE[1..], Kind::File(&archive)));
+        entries.extend(docker.entries());
         Ok(layer(&entries)?)
     }
 
@@ -185,15 +215,8 @@ mod host {
         fn start_vm(self: Box<Self>, test_setup: TestSetup) -> anyhow::Result<()> {
             let dir = &test_setup.tmp_dir;
             let layout = dir.join("root-layout");
-            let buildx = match self.build {
-                true => {
-                    let path = std::env::var_os("FXDAX_DOCKER_BUILDX")
-                        .context("FXDAX_DOCKER_BUILDX not set")?;
-                    Some(std::fs::read(&path).with_context(|| format!("reading {path:?}"))?)
-                }
-                false => None,
-            };
-            oci_layout(&layout, "fxdax/root:docker", &[root_layer(dir, buildx.as_deref())?])?;
+            let buildx = if self.build { Some(buildx()?) } else { None };
+            oci_layout(&layout, "fxdax/root:docker", &[root_layer(dir, buildx)?])?;
             // By the daemon, built for release, as fxdaxctl imports: this harness's debug build
             // takes minutes over Docker's binaries.
             let store = dir.join("root");

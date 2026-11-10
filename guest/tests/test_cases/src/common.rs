@@ -83,6 +83,19 @@ pub fn say_daemon_stats(test_setup: &TestSetup, name: &str) {
     }
 }
 
+/// fxdax: the `daemon:` line of a daemon's stats file at `path`, its fields by name: what
+/// fxfs-guest-shared-disk and fxfs-guest-sandboxes report and check of their daemons' writes.
+pub fn daemon_stats(path: &Path) -> anyhow::Result<std::collections::BTreeMap<String, u64>> {
+    let kept = fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+    let line = kept.lines().find_map(|line| line.strip_prefix("daemon: "));
+    Ok((line.context("no daemon line")?.split(' '))
+        .filter_map(|field| {
+            let (name, value) = field.split_once('=')?;
+            Some((name.to_owned(), value.parse().ok()?))
+        })
+        .collect())
+}
+
 /// fxdax: fails unless the daemon named `name` the test spawned made half its stores' commits
 /// durable within extentd's turn, 50 ms, at least, as its stats file says: doc-12's median
 /// (`durable_lag_within_50ms`, TASK-221).
