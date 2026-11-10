@@ -2565,8 +2565,8 @@ mod acks_tests {
     }
 
     /// TASK-249: a VM process that acknowledges at the pace a slow host lets it, behind a backlog
-    /// that grows faster than it clears, is kept however long it is behind: 300 s, five times
-    /// [`BEHIND`]. The cap of [`BEHIND`] let go of one making a DAX clone of the Linux checkout,
+    /// it clears slowly, the daemon sending more all the while, is kept however long it is behind:
+    /// 300 s, five times [`BEHIND`]. The cap of [`BEHIND`] let go of one making a DAX clone of the Linux checkout,
     /// which went on to finish 100 s behind.
     #[test]
     fn slow_vm_processes_acknowledging_are_kept_however_long_behind() {
