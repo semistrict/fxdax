@@ -20,7 +20,14 @@
 # apart: NAME=VALUE words each side's rounds run with, such as
 # FXDAX_GUEST_CMDLINE=virtio_extent.affine=0. FXDAX_BENCH_CASES, FXDAX_BENCH_GROUPS,
 # FXDAX_BENCH_ITERATIONS (each round's, default 2) and the like are the same for both sides.
-# FXDAX_GUEST_KERNEL_BUILD is the guest kernels' build (default release).
+# FXDAX_GUEST_KERNEL_BUILD is the guest kernels' build (default release). FXDAX_AB_BUILD_NICE is
+# the niceness the sides build at (default 0), the rounds' unchanged: on a host others share, with
+# CARGO_BUILD_JOBS and FXDAX_GUEST_KERNEL_JOBS (scripts/build-guest-kernel.sh) to bound them.
+#
+# On a host of one's own, provisioned already (ubu1), as root, its caller's toolchain and its
+# work where the caller says (scripts/lib/linux-host-setup.sh):
+#   sudo --preserve-env env "PATH=$PATH" "HOME=$HOME" FXDAX_HOST_PROVISIONED=1 \
+#       FXDAX_HOST_WORK=DIR scripts/lib/bench-ab-linux-host.sh TOOLS RESULTS A B ROUNDS A_NAME B_NAME
 set -euo pipefail
 
 # Prints the sides' order of each of ROUNDS rounds, a line each: `a b`, then `b a`, and so on, so
@@ -66,10 +73,12 @@ build() {
     kernel_work="$work/guest-kernel-ab-$side-$kernel_build"
     [[ $kernel_build == debug ]] && debug=1
     echo "Building side $side from $source" >&2
-    env -u RUSTUP_TOOLCHAIN FXDAX_GUEST_KERNEL_WORK="$kernel_work" FXDAX_GUEST_KERNEL_DEBUG=$debug \
-        "$tree/scripts/build-guest-kernel.sh" x86_64 > "$results/guest-kernel-$side.log" 2>&1
+    local nice=(nice -n "${FXDAX_AB_BUILD_NICE:-0}")
+    "${nice[@]}" env -u RUSTUP_TOOLCHAIN FXDAX_GUEST_KERNEL_WORK="$kernel_work" \
+        FXDAX_GUEST_KERNEL_DEBUG=$debug "$tree/scripts/build-guest-kernel.sh" x86_64 \
+        > "$results/guest-kernel-$side.log" 2>&1
     rm -rf "$work/ab-artifacts-$side"
-    FXDAX_E2E_ROOT=$tree FXDAX_E2E_BUILD_ONLY="$work/ab-artifacts-$side" \
+    "${nice[@]}" env FXDAX_E2E_ROOT="$tree" FXDAX_E2E_BUILD_ONLY="$work/ab-artifacts-$side" \
         FXDAX_E2E_RESULTS="$results/build-$side" "$tools/scripts/test-e2e.sh" \
         > "$results/build-$side.log" 2>&1
     cp "$kernel_work/out/x86_64/vmlinux" "$work/ab-artifacts-$side/vmlinux"

@@ -323,6 +323,47 @@ class Network(unittest.TestCase):
         ]
         self.assertEqual((done.returncode, done.stdout.splitlines(), done.stderr), (0, said, ""))
 
+class Provisioned(unittest.TestCase):
+    """A host of one's own, provisioned already (ubu1): FXDAX_HOST_WORK names the work directory,
+    and with FXDAX_HOST_PROVISIONED=1 host_need takes a tool there at the version it is, where it
+    would install the pinned one (TASK-276.6). Here cargo is a fake whose nextest says a version
+    other than the pin, and which fails anything else, an install among them."""
+
+    CARGO = """#!/bin/bash
+[[ $1 == nextest && $2 == --version ]] || { echo "cargo: $*" >&2; exit 3; }
+echo "cargo-nextest 0.0.1"
+"""
+
+    def run_library(self, script, environment):
+        with tempfile.TemporaryDirectory() as directory:
+            cargo = Path(directory) / "cargo"
+            cargo.write_text(self.CARGO)
+            cargo.chmod(0o755)
+            environment = {"PATH": f"{directory}:/usr/bin:/bin", **environment}
+            return subprocess.run(
+                ["/bin/bash", "-c", f'set -euo pipefail; source "$0"; {script}', LIBRARY],
+                env=environment,
+                capture_output=True,
+                text=True,
+            )
+
+    def test_the_work_directory_is_the_callers(self):
+        done = self.run_library('printf %s "$work"', {"FXDAX_HOST_WORK": "/scratch/work"})
+        self.assertEqual((done.returncode, done.stdout, done.stderr), (0, "/scratch/work", ""))
+        done = self.run_library('printf %s "$work"', {})
+        self.assertEqual((done.returncode, done.stdout), (0, "/var/lib/fxdax-test"))
+
+    def test_a_provisioned_hosts_tools_are_taken_as_they_are(self):
+        script = 'host_need cargo-nextest; printf "%s\\n" "${host_needed[@]}"'
+        done = self.run_library(script, {"FXDAX_HOST_PROVISIONED": "1"})
+        self.assertEqual((done.returncode, done.stdout, done.stderr), (0, "cargo-nextest\n", ""))
+
+    def test_another_hosts_tools_are_installed_at_their_pins(self):
+        done = self.run_library("host_need cargo-nextest", {})
+        self.assertEqual(done.returncode, 3)
+        self.assertIn("cargo: install cargo-nextest --version 0.9.143 --locked", done.stderr)
+
+
 class Rust(unittest.TestCase):
     """host_rust: the toolchain the hosts build with, installed unless there and working. A job
     killed as rustup installed it, with its SSH session, left a toolchain with no manifest, and

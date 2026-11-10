@@ -10,8 +10,15 @@
 # (host_record). Sourcing it defines them and does nothing else. The sourcing
 # script sets repo, the source, and results, the directory it writes to. The
 # Lima VM's tree is a host_tree too, in the VM's home (scripts/lib/lima.sh).
+#
+# A host of one's own, provisioned already (ubu1, by its system-setup.d steps),
+# sets FXDAX_HOST_PROVISIONED=1: host_setup checks it and installs nothing, the
+# caller's Rust (PATH, CARGO_HOME, RUSTUP_HOME) is what builds, and host_need
+# takes a tool there at whatever version it is. FXDAX_HOST_WORK names the work
+# directory, where the trees, guest kernels and artifacts go (default
+# /var/lib/fxdax-test).
 
-work=/var/lib/fxdax-test
+work=${FXDAX_HOST_WORK:-/var/lib/fxdax-test}
 # The tools host_need installed, which host_record records.
 host_needed=()
 
@@ -25,6 +32,11 @@ host_setup() {
     test -c /dev/kvm
 
     host_network
+    if [[ ${FXDAX_HOST_PROVISIONED:-} == 1 ]]; then
+        command -v cargo > /dev/null ||
+            { echo "FXDAX_HOST_PROVISIONED: no cargo on PATH" >&2; return 1; }
+        return 0
+    fi
     export DEBIAN_FRONTEND=noninteractive
     # clang's libraries build Firecracker's bindings, libseccomp its seccompiler,
     # podman the root filesystems of guests that need one, and busybox-static the
@@ -145,7 +157,10 @@ host_need() {
                 ;;
             *)
                 pin=$(host_pin "$tool")
-                if [[ "$(host_version "$tool" 2> /dev/null)" != "$tool $pin" ]]; then
+                if [[ ${FXDAX_HOST_PROVISIONED:-} == 1 ]] &&
+                    host_version "$tool" > /dev/null 2>&1; then
+                    :
+                elif [[ "$(host_version "$tool" 2> /dev/null)" != "$tool $pin" ]]; then
                     cargo install "$tool" --version "$pin" --locked
                 fi
                 ;;
