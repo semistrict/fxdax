@@ -1108,15 +1108,20 @@ pub(crate) mod tests {
         );
         assert_eq!(stats.uploaded, [150, 11, 30, 13, 9]);
         assert_eq!(stats.downloaded, 70);
-        // Its line, each kind of request's time after the rest: as of times set here, as each
-        // request's time is its own.
-        let stats = Stats { request_ns: [10, 20, 30, 40, 50, 60, 70, 80], ..stats };
+        // fxdax: what the protocol answers fails no request (TASK-314): the create where an object
+        // was, the get of none.
+        assert_eq!(stats.failures, [0; Request::ALL.len()]);
+        // Its line, each kind of request's time after the rest, then its failures: as of times
+        // and failures set here, as each request's time is its own.
+        let failures = [0, 1, 0, 0, 3, 0, 0, 2];
+        let stats = Stats { request_ns: [10, 20, 30, 40, 50, 60, 70, 80], failures, ..stats };
         assert_eq!(
             stats.line(),
             "object-store: get=2 get-range=1 head=1 list=1 create=5 update=1 overwrite=1 delete=1 \
              up-segments=150 up-extents=11 up-checkpoints=30 up-moves=13 up-other=9 down=70 \
              get-ns=10 get-range-ns=20 head-ns=30 list-ns=40 create-ns=50 update-ns=60 \
-             overwrite-ns=70 delete-ns=80"
+             overwrite-ns=70 delete-ns=80 failed-get=0 failed-get-range=1 failed-head=0 \
+             failed-list=0 failed-create=3 failed-update=0 failed-overwrite=0 failed-delete=2"
         );
     }
 
