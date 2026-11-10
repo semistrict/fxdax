@@ -412,6 +412,16 @@ if [[ -s $results/bucket-failures.txt ]]; then
 else
     rm "$results/bucket-failures.txt"
 fi
+# fxdax: what each extent daemon cost, against its design's budgets (TASK-330.2): its anonymous
+# memory, its uploads' memory, and its disk's writes, each what it says it wrote; and what it wrote
+# for each guest byte, by kind. The run's own daemon's bucket, a file bucket on tmpfs, writes no
+# disk.
+budgets=()
+[[ -z $bucket_dir ]] || budgets=(--bucket-in-memory "$results/extentd-stats.txt")
+if ! "$root/scripts/budgets.py" ${budgets[@]+"${budgets[@]}"} "$results"; then
+    echo "an extent daemon past its budget: see $results/budgets.json" >&2
+    status=1
+fi
 echo "Logs: $results" >&2
 "$root/scripts/guest_results.py" finish "$results" "$status"
 exit "$status"

@@ -553,6 +553,19 @@ root (`crates/fxdax/tests/fuse_differential.rs`, what may differ in its
 sudo scripts/pjdfstest-fuse.py target/debug/fxdax-mount   # Linux
 ```
 
+What the extent daemon costs is a test's assertion too, its budgets the design's (TASK-330): its
+anonymous memory, sampled as its stats are, against the sum of what its design bounds
+(`fxdax::extentd::process`: its upload memory, a framing for each store written, its fetches,
+its tenants' rooms, its own), which its stats' `process:` line and its metrics say; and what it
+writes, by kind, against what it says it wrote. `scripts/test-e2e.sh` fails a run whose daemons
+passed either (`scripts/budgets.py`, which says too what each wrote for each guest byte, by kind);
+a host's store held to what its design writes for a guest's large file and its small files, each
+byte raw once and framed once, a commit's copies a segment's worth at most
+(`remote::write_budgets`); and the daemon against a degraded bucket, slow, full, out of service,
+then answering again, VM processes writing all the while (`extentd::tests::soak`, five minutes in
+CI, half an hour each night in Hunt; with guests, `fxfs-guest-bucket-soak`, by name). Each has a
+past bug put back that it fails (`crates/fxdax/mutants`).
+
 `scripts/test-guest-kernel.sh` builds the guest kernel with Fxfs in it and runs
 the guest tests on it, in Lima on macOS.
 
