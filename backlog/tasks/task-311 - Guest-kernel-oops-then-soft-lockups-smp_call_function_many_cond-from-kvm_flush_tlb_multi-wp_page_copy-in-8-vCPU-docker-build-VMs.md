@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-09 23:57'
-updated_date: '2026-11-10 00:24'
+updated_date: '2026-11-10 07:36'
 labels:
   - guest-kernel
 dependencies: []
@@ -64,4 +64,8 @@ LangSmith's host now logs 16 KiB from the first fault report, and they will send
 Step 1 (0ac368da9, dc66742c): the e2e harness already wrote whole consoles to console.txt; what dropped the first report was everything after it (the log's tail, a reviewer reading the end). vm::first_report now picks each console's first complaint (KCSAN filtering as complaints), 8 lines before it, to '---[ end ', 16 KiB at most; the runner prints it for failed and timed-out tests and records it as kernel_reports in round-K.json and the GitHub summary. 'Oops:' is a complaint now (BUG() and GPF oopses say no 'BUG:'). The GitHub summary's log tail sliced at a byte offset (panics inside a UTF-8 character) and said 1 MiB while keeping 2: fixed, 512 KiB.
 Fail fast, decided: CONFIG_PANIC_ON_OOPS=y and CONFIG_PANIC_TIMEOUT=-1 in fxdax.config. doc-12 counts a guest panic as a crash it covers (synced data kept; fxfs-guest-crash tests it), so panicking costs nothing the contract promises, while running on after an oops leaves the dead task's spinlock held (LangSmith's 4+ min of lockups on all vCPUs, burning the host's CPU) and lets a damaged kernel go on writing Fxfs metadata. Panicked, the oops is the console's last report, so even a tail-only capture keeps it. PANIC_TIMEOUT=-1 because Firecracker's config has 0, which halts with one vCPU busy-looping in panic() forever; a command line's panic=/oops= still override. No pstore/ramoops: a Firecracker VM's RAM goes when it exits, and nothing reads it back. build-guest-kernel.sh checks both options; fxfs-guest-checks' oops_panics checks /proc/sys/kernel/panic_on_oops on the booted kernel.
 Upstream check: mm/list_lru.c's 98733f3f0bec (list_lru_del racing memcg reparenting corrupts lists, Cc stable) is already in Amazon's 6.18.54. Patch 0013 only makes mprotect batches smaller (FPB_RESPECT_DIRTY), no lock or list in it. Filed TASK-312 (runner replay commands name retired test-gce.sh).
+
+Step 2, ubu1 (16 cores, shared with other agents' runs, load 15-65), fxfs-guest-docker-build-dax (8 vCPUs, 2 GiB, BuildKit via buildx 0.38.2, Docker 29.9.1 default store, 8 parallel stages of random files + gzip tar, --load, docker save, tar export, prune, per round):
+- e2e1, release kernel at 7cb78936-, no pinning, 256 MiB/build, 3 builds: pass (93 s; 31/20/21 s a build). Also fxfs-guest-checks-dax (oops_panics PASS) and fxfs-guest-docker-dax pass.
+- t311-kernel-10-1942, release kernel, pinned to host CPUs 0-3 (8 vCPUs on 4), 1024 MiB/build: round 1 timed out at 1200 s, no oops or lockup. Cause: the e2e bucket on /dev/shm (14 GB tmpfs) filled after ~14.8 GB of uploads; extentd retried the failing creates forever without logging the error, and the guest's commit waited at the 1 GiB lag bound (fdatasync and flush-fxfs writeback in fxfs_rt_park; VMM workers idle). Filed TASK-314. Not LangSmith's bug. Later runs put the bucket on disk (FXDAX_EXTENTD_REMOTE=file://~/src/t311-bucket/...).
 <!-- SECTION:NOTES:END -->
