@@ -21,8 +21,9 @@
 // names it. The sqlite group adds rollback-journal and WAL commits, batches, checkpoints,
 // process recovery and reader isolation; it also runs the mmap scan independently of io.
 // The scaling group, which also runs only when named, runs random reads cold and warm, random
-// writes, fsynced appends and metadata operations at each of FXDAX_BENCH_JOBS's jobs at once (1, 2,
-// 4 and 8), with their latencies' percentiles and how the device's queues took their requests;
+// writes (to pages read before, and to pages the guest never read, rand-write-unread), fsynced
+// appends and metadata operations at each of FXDAX_BENCH_JOBS's jobs at once (1, 2, 4 and 8),
+// with their latencies' percentiles and how the device's queues took their requests;
 // FXDAX_BENCH_VCPUS sets the VMs' vCPUs (2), to measure how the filesystems scale (TASK-276).
 // FXDAX_BENCH_SQLITE_TXNS sizes each transaction workload (200 commits). The sqlite-transactions
 // group skips scans; FXDAX_BENCH_SQLITE_WORKLOAD selects one transaction workload by its result
@@ -1734,6 +1735,10 @@ mod guest {
     /// fio's `scale.<job>.0` (TASK-276).
     const SCALE_DIR: &str = "/mnt/bench/scale";
     const SCALE_FILE_SIZE: u64 = 64 << 20;
+    /// fxdax: the files of the random writes to pages never read (`rand-write-unread`), one per job
+    /// of each job count, `unread<jobs>.<job>.0`, whose writes reach a quarter of their pages
+    /// (TASK-276.6).
+    const UNREAD_FILE_SIZE: u64 = 16 << 20;
 
     /// fxdax: the jobs the scaling workloads run at, each in turn: FXDAX_BENCH_JOBS, separated by
     /// commas, or 1, 2, 4 and 8.
@@ -1894,6 +1899,17 @@ mod guest {
         fs::create_dir_all(SCALE_DIR).unwrap();
         // Every job's file laid out once, untimed, as fio would as each job starts.
         fio_jobs("scale", most, SCALE_FILE_SIZE, &["--rw=write", "--bs=1M", "--end_fsync=1"]);
+        // fxdax: and those whose pages the guest never reads through the DAX window before
+        // rand-write-unread writes them, a set for each job count, read in after the drop of caches
+        // below, as a database's files are that a VM opens cold, which the host's memory holds
+        // (another VM's, a base's, read them) and the VM writes at random (TASK-276.6): read once
+        // here as created files are, through the page cache, emptied first (fio's invalidate),
+        // so that the extent daemon's READs bring their extents into its memory.
+        for &jobs in &all {
+            let name = format!("unread{jobs}");
+            fio_jobs(&name, jobs, UNREAD_FILE_SIZE, &["--rw=write", "--bs=1M", "--end_fsync=1"]);
+            fio_jobs(&name, jobs, UNREAD_FILE_SIZE, &["--rw=read", "--bs=1M", "--invalidate=1"]);
+        }
         for &jobs in &all {
             let name = |workload: &str| format!("scale-{workload}-j{jobs}");
             drop_caches();
@@ -1935,6 +1951,18 @@ mod guest {
                     "scale",
                     jobs,
                     SCALE_FILE_SIZE,
+                    &["--rw=randwrite", "--bs=4k", "--io_size=4M", "--end_fsync=1"],
+                )
+            });
+            fio_result(&workload, &job, "write");
+            // fxdax: the same writes to files whose pages nothing read since they were read in,
+            // each write a page's first touch (TASK-276.6).
+            let workload = name("rand-write-unread");
+            let job = scaled(&workload, || {
+                fio_jobs(
+                    &format!("unread{jobs}"),
+                    jobs,
+                    UNREAD_FILE_SIZE,
                     &["--rw=randwrite", "--bs=4k", "--io_size=4M", "--end_fsync=1"],
                 )
             });
