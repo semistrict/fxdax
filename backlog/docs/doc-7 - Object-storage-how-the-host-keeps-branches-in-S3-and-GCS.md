@@ -3,7 +3,7 @@ id: doc-7
 title: 'Object storage: how the host keeps branches in S3 and GCS'
 type: specification
 created_date: '2026-10-17 01:31'
-updated_date: '2026-11-10 12:24'
+updated_date: '2026-11-10 13:18'
 ---
 # Object storage: how the host keeps branches in S3 and GCS
 
@@ -350,11 +350,12 @@ its own and unmaps it as it is freed (`extentd::memory::return_large_allocations
 *Measured on ubu1* (fxfs-guest-docker-build-dax, 8 vCPUs, three builds of 512 MiB; `MEMORY_BYTES`
 2 GiB; a file bucket on disk behind 300 ms a request; commits stalled at the lag bound 8 times,
 extentd in a systemd scope of its own, scripts/test-e2e.sh's `FXDAX_EXTENTD_MEMORY_MAX`): before,
-its anonymous memory reached 4.4 GB, and 4.8 GB idle after the run, its heap 1.3 GB at most
-(heaptrack): its 512 MiB of uploads held twice, a copy for each PUT's try, and 2.6 GB in 134 of
-glibc's per-thread arenas of 64 MiB, buffers freed; the host's OOM killer took it at 5-6 GB on a
-loaded host (TASK-311). After, 718 MB at most, its uploads holding 507 MiB at most of their
-512 MiB, and the run passed in a scope limited to 3.5 GiB, extent cache included.
+its anonymous memory reached 5.9 GB (4.4 GB under heaptrack, and 4.8 GB idle after that run),
+its heap 1.3 GB at most: its 512 MiB of uploads held twice, a copy for each PUT's try, and 2.6 GB
+in 134 of glibc's per-thread arenas of 64 MiB, buffers freed; the host's OOM killer took it at
+5-6 GB on a loaded host (TASK-311). After, 666-718 MB at most in two runs, its uploads holding
+510 MiB at most of their 512 MiB, and the run passed in a scope limited to 3 GiB, its 2 GiB extent
+cache included, with no kill.
 
 **Recovery on the same host** *(rewritten 2026-11-07; doc-14, Opening a store)* is opening the
 store: its writer takes the branch and fences it; a segment left open is closed again from the
