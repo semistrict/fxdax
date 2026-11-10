@@ -1034,7 +1034,9 @@ mod shuttle_tests {
                     let writing = conn.writing.lock().unwrap();
                     let Writing { store, hold } = writing.as_ref().unwrap();
                     store.dirty.store(true, Ordering::SeqCst);
-                    hold.hold().retire(|| drop(store.cuts.fetch_add(1, Ordering::SeqCst)));
+                    hold.hold().retire(|| {
+                        store.cuts.fetch_add(1, Ordering::SeqCst);
+                    });
                 }
                 // The last of it, unless a claim of the store has it as it meets it: it lets the
                 // store go then, outside the table's lock.

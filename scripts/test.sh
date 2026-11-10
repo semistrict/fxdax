@@ -39,10 +39,14 @@ part() { # name: whether FXDAX_TEST_PARTS has it
 }
 
 # Clippy's rules the code keeps (clippy.toml): no blocking call in async code unless allowed, with
-# why (TASK-44.20). First, as it fails at once.
+# why (TASK-44.20); and the compiler's warnings, as errors, the Shuttle builds' too (below), whose
+# code no other build compiles: one went unread in a run's output, a drop of a usize (TASK-287).
+# First, as it fails at once.
 if part clippy; then
     UCD_ZIP="$zip" cargo clippy --manifest-path "$root/Cargo.toml" --workspace --tests -- \
-        -A clippy::all -D clippy::disallowed_methods
+        -A clippy::all -D clippy::disallowed_methods -D warnings
+    cargo clippy --manifest-path "$root/Cargo.toml" -p extent_store -p physmem -p fxdax \
+        -p follower -p follower_sim --features shuttle --tests -- -A clippy::all -D warnings
 fi
 # The simulation of extent_remote's protocol over extent_store's stores (TASK-88): its profiles'
 # soaks, and its rules' seed searches, each until a seed with the rule off finds what the rule
