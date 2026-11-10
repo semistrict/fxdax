@@ -1124,6 +1124,26 @@ mod tests {
             checked("warned.console.txt", warned),
             Err(format!("a kernel complained: {:#?}", vec![warned.trim_end()]))
         );
+        // TASK-335: x86's CPU-vulnerability advisories, of the host's CPU, are none, on GitHub's
+        // AMD runners as anywhere; a WARN_ON's report, the caller's id printed, and the
+        // watchdog's soft lockup, behind its prefix, are.
+        let advisories = "[    0.033593] Speculative Return Stack Overflow: WARNING: See \
+                          https://kernel.org/doc/html/latest/admin-guide/hw-vuln/srso.html for \
+                          mitigation options.\n\
+                          [    0.033601] RETBleed: WARNING: Spectre v2 mitigation leaves CPU \
+                          vulnerable to RETBleed attacks, data leaks possible!\n";
+        assert_eq!(checked("advisories.console.txt", advisories), Ok(()));
+        let caller =
+            "[    3.5][    T1] WARNING: CPU: 0 PID: 1 at fs/fxfs/super.c:9 fxfs_fill+0x1/0x2\n";
+        assert_eq!(
+            checked("caller.console.txt", caller),
+            Err(format!("a kernel complained: {:#?}", vec![caller.trim_end()]))
+        );
+        let lockup = "[   52.1] watchdog: BUG: soft lockup - CPU#3 stuck for 26s! [dockerd:812]\n";
+        assert_eq!(
+            checked("lockup.console.txt", lockup),
+            Err(format!("a kernel complained: {:#?}", vec![lockup.trim_end()]))
+        );
         let theirs = kcsan("alloc_pid / copy_process", "0x1 -> 0x2");
         assert_eq!(checked("theirs.console.txt", &theirs), Ok(()));
         let reviewed = kcsan("fxfs_dax_seal+0x10/0x20 / kthread_is_per_cpu", "0x40000 -> 0x0");
@@ -1320,11 +1340,11 @@ fn kcsan_accesses<'a>(report: &[&'a str]) -> Vec<KcsanAccess<'a>> {
         .collect()
 }
 
-/// What a kernel says as it finds itself wrong: a WARN_ON's, a BUG's, an oops' (a BUG()'s, "kernel
-/// BUG at FILE:LINE!" then "Oops: invalid opcode", or a general protection fault's, neither of
-/// which says "BUG:"), lockdep's, KCSAN's, and a sleep in atomic context.
-const COMPLAINTS: [&str; 8] = [
-    "WARNING:",
+/// What a kernel says as it finds itself wrong, anywhere in a line: a BUG's, after a prefix too
+/// (the watchdog's "watchdog: BUG: soft lockup"), an oops' (a BUG()'s, "kernel BUG at FILE:LINE!"
+/// then "Oops: invalid opcode", or a general protection fault's, neither of which says "BUG:"),
+/// lockdep's, KCSAN's, and a sleep in atomic context; and [`WARNING`], at a message's start.
+const COMPLAINTS: [&str; 7] = [
     "BUG:",
     "Oops:",
     "possible circular locking",
@@ -1333,6 +1353,29 @@ const COMPLAINTS: [&str; 8] = [
     "suspicious RCU usage",
     "sleeping function called from invalid context",
 ];
+
+/// fxdax: what a WARN_ON's report ("WARNING: CPU: N PID: N at FILE:LINE") and lockdep's begin
+/// their message with: a complaint there alone. x86's CPU-vulnerability advisories say it behind
+/// their subsystem's prefix, of the host's CPU, not of the guest's code ("Speculative Return
+/// Stack Overflow: WARNING: See ...", on GitHub's AMD runners), and failed every case there
+/// (TASK-335).
+const WARNING: &str = "WARNING:";
+
+/// fxdax: whether a console's `line` complains ([`COMPLAINTS`], [`WARNING`]).
+fn complains(line: &str) -> bool {
+    message(line).starts_with(WARNING)
+        || COMPLAINTS.iter().any(|complaint| line.contains(complaint))
+}
+
+/// fxdax: the kernel's message on a console's `line`: past its time, "[    1.234] ", and its
+/// caller's, "[    T1] ", if printed.
+fn message(line: &str) -> &str {
+    let mut text = line.trim_start();
+    while let Some((_, rest)) = text.strip_prefix('[').and_then(|rest| rest.split_once(']')) {
+        text = rest.trim_start();
+    }
+    text
+}
 
 /// Fails with the lines of the console at `console` in which its kernel complains, but for
 /// KCSAN's reports of races that aren't fxdax's code's, or were reviewed (see [`ours`]). The
@@ -1385,7 +1428,7 @@ pub fn first_report(console: &str) -> Option<String> {
 /// reports of races that aren't fxdax's code's, or were reviewed (see [`ours`]).
 fn complained<'a>(lines: &'a [&'a str]) -> impl Iterator<Item = usize> + 'a {
     lines.iter().enumerate().filter_map(|(at, line)| {
-        if !COMPLAINTS.iter().any(|complaint| line.contains(complaint)) {
+        if !complains(line) {
             return None;
         }
         // "BUG: KCSAN: data-race in FUNCTION[+OFFSET/LENGTH][ / FUNCTION[+...]]", then the
