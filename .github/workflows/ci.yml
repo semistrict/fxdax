@@ -235,6 +235,51 @@ jobs:
       - name: The Azure tests, against Azurite
         run: scripts/test-azurite.sh --no-fail-fast
 
+  # TASK-330.3: the extent daemon against a degraded bucket, five minutes of it, its VM processes
+  # writing all the while (extentd::tests::soak): its memory within its budget, the bucket's
+  # failures said, commits waiting at the lag bound and none failing, everything uploaded once the
+  # bucket answers, no VM process let go. The workspace's suite leaves it out, as it would outlast
+  # it; Hunt runs it for half an hour each night. On the root disk, which has room for what it
+  # writes, some 7 GiB.
+  soak:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      FXDAX_SOAK_SECS: 300
+    steps:
+      # With vendor/firecracker, whose seccompiler fxdax's tests build with (TASK-149.28).
+      - uses: actions/checkout@v7
+        with:
+          submodules: true
+      - name: Install the build's tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang libseccomp-dev
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+      - uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-${{ runner.os }}-soak-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-${{ runner.os }}-soak-
+      - name: Give the soak's files room
+        run: |
+          sudo mkdir -p /mnt/tmp
+          sudo chown "$USER" /mnt/tmp
+          echo TMPDIR=/mnt/tmp >> "$GITHUB_ENV"
+          df -h /mnt
+      - name: Build
+        run: cargo nextest run -p fxdax --lib --no-run
+      - name: The daemon against a degraded bucket, five minutes
+        run: >-
+          cargo nextest run -p fxdax --lib --run-ignored all --no-capture
+          -E 'test(=extentd::tests::soak::a_degraded_bucket_costs_the_daemon_nothing_it_does_not_bound)'
+
   # guide/: the codebase guide, which cites code by exact snippets. Its build fails when a snippet
   # no longer occurs exactly once in its file, or evidence it cites is gone, so code changes that
   # leave it pointing at nothing fail here, not in a reader's hands.

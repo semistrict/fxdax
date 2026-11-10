@@ -1,0 +1,26 @@
+# A request the bucket fails is neither counted nor logged, only retried, as before TASK-314: a
+# bucket that keeps failing, full or out of service, holds its guests' commits at the lag bound and
+# nothing says why, no failed-NAME in the stats line, no failures in the metrics (TASK-314,
+# TASK-330.3).
+# Kind: failures
+# Killer: extentd::tests::soak::a_degraded_bucket_costs_the_daemon_nothing_it_does_not_bound
+--- a/crates/extent_remote/src/store.rs
++++ b/crates/extent_remote/src/store.rs
+@@ -341,16 +341,7 @@ impl Timed<'_> {
+         let kind = self.request.name();
+         let object = || self.path.map_or_else(String::new, |path| path.to_string());
+         let answered = answered.map_err(|failure| {
+-            let answer = error(&failure);
+-            if answer == Error::Unavailable {
+-                self.counts.failures[self.request as usize].fetch_add(1, Ordering::Relaxed);
+-                self.counts.failing[self.request as usize].failed(
+-                    self.request,
+-                    &object(),
+-                    &failure,
+-                );
+-            }
+-            answer
++            error(&failure)
+         });
+         if !matches!(answered, Err(Error::Unavailable)) {
+             self.counts.failing[self.request as usize].answered(self.request);

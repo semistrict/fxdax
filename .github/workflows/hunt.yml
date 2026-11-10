@@ -6,7 +6,8 @@
 # zloop over 20,000 seeds of interleave and failures it hasn't run, from a first seed that moves
 # with the run's number, fxfs-posix's model and corruption tests at 50 times their cases, and
 # extentd's compromised VM process beside other tenants at 160 times its (TASK-149.17), from seeds
-# of the run's own. CPU alone, no secrets. What failed is kept, a run's artifact, with how to
+# of the run's own; and extentd against a degraded bucket for half an hour (TASK-330.3). CPU alone,
+# no secrets. What failed is kept, a run's artifact, with how to
 # run it again; an open bug's failure, as guest/sim/known-failures and crates/fxfs-posix/known-panics
 # list them, doesn't fail a hunt.
 name: Hunt
@@ -228,4 +229,55 @@ jobs:
         if: always()
         with:
           name: extentd-${{ matrix.shard }}
+          path: hunt
+
+  # TASK-330.3: the extent daemon against a degraded bucket for half an hour, as CI runs it for five
+  # minutes (extentd::tests::soak): its phases six times as long, its VM processes writing as much
+  # while the bucket fails, more slowly.
+  soak:
+    name: extentd soak
+    if: github.event_name == 'schedule' || inputs.extentd
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      FXDAX_SOAK_SECS: 1800
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: true
+      - name: Install the build's tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang libseccomp-dev
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+      - uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: hunt-extentd-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: hunt-extentd-${{ runner.os }}-
+      - name: Give the soak's files room
+        run: |
+          sudo mkdir -p /mnt/tmp
+          sudo chown "$USER" /mnt/tmp
+          echo TMPDIR=/mnt/tmp >> "$GITHUB_ENV"
+      - name: Build
+        run: cargo nextest run -p fxdax --lib --no-run
+      - name: The daemon against a degraded bucket, half an hour
+        run: |
+          mkdir -p hunt
+          cargo nextest run -p fxdax --lib --run-ignored all --no-capture \
+            -E 'test(=extentd::tests::soak::a_degraded_bucket_costs_the_daemon_nothing_it_does_not_bound)' \
+            > hunt/soak.log 2>&1 || status=$?
+          grep -E '^soak: |panicked|PASS|FAIL' hunt/soak.log | tee -a "$GITHUB_STEP_SUMMARY" || true
+          exit ${status:-0}
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: extentd-soak
           path: hunt

@@ -6075,6 +6075,9 @@ mod hostile;
 /// TASK-258: the daemon's spans, exported.
 mod otel;
 
+/// TASK-330.3: the daemon against a degraded bucket, for a long while.
+mod soak;
+
 /// TASK-260: the daemon's log records about a VM process's call for a guest request name the
 /// request, by the guest's number of it, and the store the call is of: refused at once, as a
 /// `WRITE` of a flag no write knows, or deferred, as a `PRIVATE` the window refuses; and a call for
