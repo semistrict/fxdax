@@ -7,6 +7,7 @@ with a temporary directory as the host's work directory; and of the tree the Lim
 run in, which scripts/lib/lima.sh syncs with it, here with a temporary directory as the VM's home,
 where a limactl in its place runs the VM's shell."""
 
+import contextlib
 import os
 import socket
 import subprocess
@@ -251,10 +252,14 @@ class Network(unittest.TestCase):
         listener.bind(("127.0.0.1", 0))
         listener.listen(16)
         held = []
-        accepting = threading.Thread(
-            target=lambda: [held.append(listener.accept()) for _ in range(16)], daemon=True
-        )
-        accepting.start()
+
+        def hold():
+            # Each connection, until the listener closes as the test ends.
+            with contextlib.suppress(OSError):
+                while True:
+                    held.append(listener.accept()[0])
+
+        threading.Thread(target=hold, daemon=True).start()
         port = listener.getsockname()[1]
         with tempfile.TemporaryDirectory() as directory:
             project = Path(directory)
@@ -269,7 +274,12 @@ class Network(unittest.TestCase):
                 '[source.crates-io]\nreplace-with = "silent"\n'
                 f'[source.silent]\nregistry = "sparse+http://127.0.0.1:{port}/"\n'
             )
-            environment = {
+            # rustup's choice of toolchain too, where a host makes it by its environment, with no
+            # default (TASK-279).
+            rustup = {
+                var: os.environ[var] for var in ("RUSTUP_HOME", "RUSTUP_TOOLCHAIN") if var in os.environ
+            }
+            environment = rustup | {
                 "PATH": os.environ["PATH"],
                 "HOME": os.environ["HOME"],
                 "CARGO_HOME": str(project / "cargo-home"),
@@ -289,6 +299,8 @@ class Network(unittest.TestCase):
             )
             took = time.monotonic() - started
         listener.close()
+        for connection in held:
+            connection.close()
         self.assertEqual(done.returncode, 101, done.stderr)
         # Its low-speed limit host_network's, a KiB a second.
         stalled = "transfer too slow: failed to transfer more than 1024 bytes in 2s"
