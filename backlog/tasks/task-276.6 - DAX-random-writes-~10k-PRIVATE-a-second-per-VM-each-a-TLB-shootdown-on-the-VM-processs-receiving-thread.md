@@ -3,9 +3,11 @@ id: TASK-276.6
 title: >-
   DAX random writes: ~10k PRIVATE a second per VM, each a TLB shootdown on the
   VM process's receiving thread
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-11-09 05:12'
+updated_date: '2026-11-10 00:15'
 labels:
   - perf
 dependencies: []
@@ -32,3 +34,14 @@ TASK-276 phase 1 (GCE c3-standard-8, nested KVM): fxfs-guest-dax random 4K write
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. Re-measure on ubu1 (bare-metal KVM, AMD 8945HS): TASK-276's scaling bench, fxfs-guest-dax random 4K writes at 1/2/4/8 jobs and 2/4/8 vCPUs, fxfs-guest cold random reads, ext4 control; perf of the VM process's receiving thread (mmap, fallocate, wp_page_copy shares); numbers into the notes.
+2. (a) The fallocate share: verify what it is (the stage's only fallocate is FALLOC_FL_PUNCH_HOLE of private pages that go, at a MAP or UNMAP over them) and design accordingly: punch only memory nothing maps any more, so that the punch zaps no PTE and flushes nothing.
+3. (b) A MAP names pages, the first touch installs them: map/remap record pages left out, installing nothing; a page's first fault installs it (reinstall), a PRIVATE of a page never installed fills it in place (no mmap, no shootdown). MAP_AHEAD still installs and prefaults what it covers, for reads.
+4. doc-13 (backlog doc update), specs/dax-cow (MAP/UNMAP/eviction racing a first touch, a mutation breaking it), uffd Shuttle tests (a store's first touch racing a MAP over the page, an UNMAP and eviction).
+5. Interleaved A/B on ubu1, 6+ iterations a side, prebuilt artifacts, the exact landed tree; AC #2.
+6. Land on main (CI green), Firecracker series only if the VMM side changes.
+<!-- SECTION:PLAN:END -->
