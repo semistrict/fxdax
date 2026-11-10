@@ -71,12 +71,6 @@ fn cpu() -> std::time::Duration {
     time(usage.ru_utime) + time(usage.ru_stime)
 }
 
-/// The bytes a store writes beyond an extent's data, framing it in a file of its own, in place or
-/// not: its tail, the table of its parts and its trailer (`extent_frame`).
-fn tail(len: usize) -> u64 {
-    (extent_frame::framed(&noise(0, len), &[]).len() - len) as u64
-}
-
 /// The most bytes a framing of `len` bytes of data writes beyond them: each part's entry in the
 /// table, its start aligned, and the trailer (`extent_frame`); its footer, the commits' contents,
 /// is the segment's log's, which the store writes too, at most.
@@ -87,17 +81,16 @@ fn framing_overhead(len: u64) -> u64 {
 
 /// What a host's store writes for a guest's large file and its small files, by kind, is what its
 /// design says: each byte the guest writes once, raw; of a large file written faster than the
-/// store commits, the open segment's worth at most copied out and framed again at each commit,
-/// what was written after it sealed where it was written (TASK-310); each small file, written in
-/// one run of the open segment, never copied, framed once, no larger than it was written. And
+/// store commits, every extent sealed where it was written, in the segments it filled, which its
+/// commit spans, each framed in place, its tail alone written (TASK-92.41, TASK-310); each small
+/// file, written in one run of the open segment, never copied, framed once, no larger than it was
+/// written. And
 /// (Linux) what its process had the kernel write to its disk is what the store says it wrote, each
 /// write a page more than its bytes at most: nothing written twice uncounted.
 #[test]
 fn a_hosts_store_writes_what_its_design_says() {
-    // As the daemon raises it: a burst's extents spilled to raw files of their own hold their
-    // descriptors till its commit (`Options::spilled_most`), past a shell's 1,024.
-    #[cfg(target_os = "linux")]
-    crate::extentd::raise_open_files_limit().unwrap();
+    // fxdax: at the shell's limit of open files, not the daemon's: a burst's extents spilled to
+    // raw files of their own held two each till its commit, past 1,024 (TASK-332).
     let dir = tempfile::tempdir().unwrap();
     let bucket = Arc::new(Bucket::new(Arc::new(object_store::memory::InMemory::new()), "branches"));
     let store = kept_in(dir.path().join("store"), (4 << 30, None), &bucket, idle()).unwrap();
@@ -154,14 +147,14 @@ fn a_hosts_store_writes_what_its_design_says() {
     // extent's own.
     assert_eq!(large.raw, guests);
     assert_eq!(small.raw, (SMALL_FILES * SMALL_FILE) as u64);
-    // The large file: at each commit, the extents in the segment the burst filled, set aside, at
-    // most its limit, copied out, to the open segment or files of their own, and the open segment
-    // framed with them; each extent written after, in a raw file of its own, framed in place, its
-    // tail alone written (`Store::seal_own`). Nothing else.
+    // The large file: each extent one run where it was written, in the segments each burst filled,
+    // its commit spanning them; nothing copied, nor in a file of its own, each segment framed in
+    // place, its tail alone written, as it doesn't compress: one for each segment's worth, and one
+    // for each commit's last, and the open one's (TASK-92.41).
     let limit = options.segment_limit();
-    let extents = BURSTS * extents_per_burst as u64;
     let rewritten = large.copied + large.own + large.framed;
-    let bound = BURSTS * (2 * limit + framing_overhead(limit)) + extents * tail(LARGE_FILES_EXTENT);
+    let segments = guests / options.segment_size + 2 * BURSTS + 1;
+    let bound = segments * framing_overhead(limit);
     assert!(
         rewritten <= bound,
         "the large file's {} MiB rewritten: {} MiB at most, by design",
