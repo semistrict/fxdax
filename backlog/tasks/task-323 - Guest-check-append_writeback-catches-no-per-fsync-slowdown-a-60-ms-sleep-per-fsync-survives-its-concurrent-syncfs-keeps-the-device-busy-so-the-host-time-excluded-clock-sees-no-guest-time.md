@@ -4,11 +4,11 @@ title: >-
   Guest check append_writeback catches no per-fsync slowdown: a 60 ms sleep per
   fsync survives (its concurrent syncfs keeps the device busy, so the
   host-time-excluded clock sees no guest time)
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-10 11:26'
-updated_date: '2026-11-10 13:28'
+updated_date: '2026-11-10 13:54'
 labels:
   - testing
 dependencies: []
@@ -27,15 +27,15 @@ What would catch it: something that bounds the guest's fsync cost directly, for 
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A mutant adding a per-fsync delay in the guest's fsync path (60 ms or less) fails append_writeback
-- [ ] #2 The check still passes 20 rounds on ubu1 on ZFS /home and on the ext4 scratch disk
+- [x] #1 A mutant adding a per-fsync delay in the guest's fsync path (60 ms or less) fails append_writeback
+- [x] #2 The check still passes 20 rounds on ubu1 on ZFS /home and on the ext4 scratch disk
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -56,4 +56,12 @@ What would catch it: something that bounds the guest's fsync cost directly, for 
 - Mutant guest/mutants/task-323-fsync-sleeps.patch, msleep(60) at the start of fxfs_vfs_fsync, its own kernel: FAIL, 'an fdatasync's guest time, the median, 62.92ms of 5.00ms'; budget's guest time 2.06 s of 3 s, which alone would have passed. A hand variant of 6 ms (not committed): FAIL, median 11.05 ms (msleep's jiffies), 0.41 s of 3 s.
 - 20 rounds of fxfs-guest-checks-dax, FXDAX_CHECKS=append_writeback, fxjob --bench, final artifacts: rounds on ZFS /home 20/20 (median 60-86 us, longest 1.78 ms, host up to 14.6 s); on ext4 /mnt/fxdax-scratch 20/20 (median 59-96 us, longest 2.34 ms, host up to 1.29 s).
 - The new phase adds 32 durable fdatasyncs' host time (up to ~7 s on ZFS), well inside HOST_SCALE's 18x a 3 s budget.
+
+Main CI 42825008571 green at 3fa94f82a.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+append_writeback runs 32 more fdatasync rounds after its syncfs race, alone, and bounds the median fdatasync's guest time (its time minus the device's busy_ns meanwhile) at 5 ms, scaled as the budgets are, independent of the host's disk. On ubu1 (release kernel), the unmutated median was 59-103 us and the longest 2.4 ms over 55 rounds, while the host took 1.3-14.6 s. 20/20 rounds of fxfs-guest-checks-dax passed with rounds on ZFS /home, and 20/20 on ext4 /mnt/fxdax-scratch. guest/mutants/task-323-fsync-sleeps.patch (msleep(60) per fsync, Killer: fxfs-guest-checks-dax append_writeback) fails at a median of 62.9 ms, where the budget alone passed it. A 6 ms hand variant fails at 11.1 ms. Main CI 42825008571 green.
+<!-- SECTION:FINAL_SUMMARY:END -->

@@ -3,11 +3,11 @@ id: TASK-320
 title: >-
   fxdax examples are measured with fxdax's failpoints and testing features
   compiled in
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-10 09:49'
-updated_date: '2026-11-10 13:28'
+updated_date: '2026-11-10 13:54'
 labels:
   - bug
   - perf
@@ -24,15 +24,15 @@ crates/fxdax/Cargo.toml has a dev-dependency on itself with features ["failpoint
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A release build of a measured example has neither fail/failpoints nor extent_store/testing, shown by a build check or a guard like TASK-303's
-- [ ] #2 The cost of the failpoints in a measured example is measured once (e.g. extentd-mapbench with and without), and the result recorded
+- [x] #1 A release build of a measured example has neither fail/failpoints nor extent_store/testing, shown by a build check or a guard like TASK-303's
+- [x] #2 The cost of the failpoints in a measured example is measured once (e.g. extentd-mapbench with and without), and the result recorded
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -60,4 +60,12 @@ Changes:
 Measured runs that had them (note.md of each now says so): gce-import-bench-threads-{1,2}-2026-11-08 (failpoints), gce-sqlite-bench-2026-11-09T0955Z, T1038Z and gce-sqlite-commit-profile-2026-11-09T1111Z..T1223Z (failpoints and extent_store testing), ubu1-import-bench-threads-2026-11-10 (both). Of those only import-bench feeds an open decision (TASK-92.47, Options::executor_threads' default): re-measured as ubu1-import-bench-threads-2026-11-10b: two threads still about as fast (small files +3%, large file -10%); filesystem.rs' doc cites it.
 Cost (AC #2): ubu1-mapbench-failpoints-2026-11-10, extentd-mapbench 10 runs each, alternating, fxjob --bench: main 1-3% slower on 12 of 15 request types (map 21.1 against 20.6 us, commit 733.5 against 718.8 us), within run-to-run spread; nothing on copy- or disk-bound ones.
 Tests: macOS scripts/test.sh clippy, workspace (2210/2210), scripts pass. ubu1 (target on ext4): workspace 2461/2463, the two failures the host's: imports_read_what_they_made_from_the_hosts_cache (TASK-316, /tmp tmpfs under the cache floor) and images_dropped_as_their_pass_runs_leave_their_bucket_whole (80 s under load, passes alone in 13 s: filed TASK-328); with the target on ZFS, durable_commits_keep_the_open_segments_pages_cached_on_the_host fails as TASK-315 says. guest part 117+97+8 pass.
+
+Main CI 42825008571 green at 3fa94f82a (Linux and macOS workspace, guest, sim, shuttle, clippy scripts, firecracker).
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+A release build now refuses the fail crate's failpoints (a compile-time assertion in extent_remote on fail::has_failpoints(), whoever turned them on) and extent_remote's and extent_store's testing; tests keep them, as dev and sim have debug assertions. fxdax's examples moved to crates/fxdax-examples, whose dependencies carry fxdax's testing alone, since a package's examples build with its dev-dependencies and fxdax's turn the features on. test-e2e.sh builds a failpoints daemon in the sim profile. Cost: main's extentd-mapbench was 1-3% slower on 12 of 15 request types (ubu1-mapbench-failpoints-2026-11-10). The 13 runs measured with the features say so; import-bench (TASK-92.47's open default) was re-measured without them: two threads are still about as fast. Verified: macOS release/sim check matrix and test.sh (clippy, 2210 tests, scripts); on ubu1, symbols (35 in main's binary, none in the new one), workspace 2461/2463 (failures are the host's: TASK-316, new TASK-328), guest tests, and a sim-profile failpoints e2e round; main CI 42825008571.
+<!-- SECTION:FINAL_SUMMARY:END -->
