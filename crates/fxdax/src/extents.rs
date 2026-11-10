@@ -1305,6 +1305,15 @@ impl ExtentStore {
         self.commit_with(root, Commit::Ordered)
     }
 
+    /// fxdax: closes the open segment at a commit, as a commit waiting for its upload does, and
+    /// returns once every segment closed is framed: for tests of what framing costs (TASK-330.2).
+    #[cfg(test)]
+    pub(crate) fn frame_open_segment(&self) -> Result<()> {
+        self.store.close_segment().map_err(errno)?;
+        self.commit_local(None)?;
+        self.store.closed(0).map(drop).map_err(errno)
+    }
+
     /// Makes the commits ordered so far durable.
     pub fn flush(&self) -> Result<()> {
         self.store.flush().map_err(errno)

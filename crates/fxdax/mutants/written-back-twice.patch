@@ -1,0 +1,18 @@
+# What a file's writing back waits for is written again once written back: the open segment's raw
+# file, past what write-behind keeps begun (TASK-221's 6e5d8b0db, bed99ce0c), and each framed
+# file's pieces, reach the host's disk twice, as TASK-310's write-behind was suspected of, which
+# nothing the store counts says (TASK-330.2).
+# Kind: writes
+# Killer: remote::write_budgets::a_hosts_store_writes_what_its_design_says
+--- a/crates/extent_store/src/dir.rs
++++ b/crates/extent_store/src/dir.rs
+@@ -460,6 +460,9 @@ impl File for HostFile {
+             if done != 0 {
+                 return Err(io::Error::last_os_error());
+             }
++            let mut again = vec![0; len as usize];
++            self.read_cached(&mut again, offset as u64)?;
++            self.write_at(&again, offset as u64)?;
+         }
+         #[cfg(not(target_os = "linux"))]
+         let _ = (offset, len);

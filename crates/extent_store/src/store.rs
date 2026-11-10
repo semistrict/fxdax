@@ -25,9 +25,7 @@ use crate::sync::{Condvar, Mutex, MutexGuard, rules, spawn_or_return, thread};
 use crate::timings::{self, Flush, flush};
 use crate::uploads::Closed;
 use crate::views::{Limits, Sealed, View, Views};
-use crate::wal::{
-    BaseFile, LOG_MAGIC, LogRecord, Queue, Queued, Recovered, Runs, SegmentLog,
-};
+use crate::wal::{BaseFile, LOG_MAGIC, LogRecord, Queue, Queued, Recovered, Runs, SegmentLog};
 use crate::written;
 use anyhow::{Context as _, Error, anyhow, bail, ensure};
 use extent_frame::segment::{Chain, Child, Contents, Footer, Location, epoch_of};
@@ -139,7 +137,7 @@ impl Options {
     /// `max_extent` at most, before writes go to another. A closed segment is read, framed and
     /// uploaded whole, so that this bounds what each takes of memory, however much is written
     /// between commits (TASK-79.2).
-    pub(crate) fn segment_limit(&self) -> u64 {
+    pub fn segment_limit(&self) -> u64 {
         self.segment_size.saturating_add(self.max_extent)
     }
 }
@@ -2211,7 +2209,8 @@ impl<D: Dir> Store<D> {
                 true => logs.unsynced.carry(syncs.take_cached()),
                 false => syncs.extend(std::mem::take(&mut logs.unsynced)),
             }
-            let runs = if hold { Runs::Held(Default::default()) } else { Runs::Checked(Vec::new()) };
+            let runs =
+                if hold { Runs::Held(Default::default()) } else { Runs::Checked(Vec::new()) };
             let records =
                 self.records(commits, runs).context("reading back the runs commits sealed")?;
             let recorded = timed.phases.took(flush::DATA, started);
@@ -2318,8 +2317,10 @@ impl<D: Dir> Store<D> {
             };
             // Salted as its log's (`wal::LOG_MAGIC`).
             let salt = log.salt();
-            let encoded: Vec<Vec<u8>> =
-                records[at..at + run].iter().map(|(_, record)| encode_salted(record, salt)).collect();
+            let encoded: Vec<Vec<u8>> = records[at..at + run]
+                .iter()
+                .map(|(_, record)| encode_salted(record, salt))
+                .collect();
             log.append(encoded.iter().map(Vec::as_slice)).context("appending commits' records")?;
             at += run;
         }

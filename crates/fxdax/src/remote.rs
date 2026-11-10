@@ -225,6 +225,9 @@ mod fork_faults;
 mod restore_faults;
 
 #[cfg(test)]
+mod write_budgets;
+
+#[cfg(test)]
 mod tests {
     use crate::test_data::noise;
     use crate::{ExtentId, ExtentStore, VolatileSlice};

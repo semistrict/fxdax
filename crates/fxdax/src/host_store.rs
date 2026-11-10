@@ -155,7 +155,7 @@ pub(crate) fn bucket_at(path: &Path) -> anyhow::Result<Option<Arc<Bucket>>> {
 
 /// The options stores are opened with: their extents hold at most what the guest's device says
 /// one does (doc-4's `max_extent`).
-fn options() -> Options {
+pub(crate) fn options() -> Options {
     Options { max_extent: crate::ExtentStore::MAX_EXTENT, ..Options::default() }
 }
 

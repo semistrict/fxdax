@@ -1,0 +1,19 @@
+# A large extent in a raw file of its own is framed in a copy, whether its parts compress or not,
+# as before TASK-310: every byte of a guest's large file written twice, raw and again framed,
+# LangSmith's sandbox hosts' daemons writing 2.3 times what their guests did, framings stalling
+# seconds behind it (TASK-310, TASK-330.2).
+# Kind: writes
+# Killer: remote::write_budgets::a_hosts_store_writes_what_its_design_says
+--- a/crates/extent_store/src/store.rs
++++ b/crates/extent_store/src/store.rs
+@@ -1723,10 +1723,6 @@ impl<D: Dir> Store<D> {
+             raw.read_cached(buf, at)?;
+             let end = packer.end();
+             let packed = packer.push(buf);
+-            // As they are, where they are, as those before.
+-            if framed.is_none() && end == at && packed[..] == buf[..] {
+-                continue;
+-            }
+             let file = match &mut framed {
+                 Some(file) => file,
+                 None => {

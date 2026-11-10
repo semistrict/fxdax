@@ -5,10 +5,11 @@
 #
 # Puts each of mutants/*.patch into the tree, a bug of a kind a compromised VM process's test
 # exists to find (TASK-149.17: another tenant's reached, the daemon's memory past its bound, a path
-# left held, commits wedged), runs the test its header names (`# Killer: TEST`, of fxdax's library)
-# against it, and takes it out: killed if the test fails, MISSED if it passes, BROKEN if the patch
-# doesn't apply or the tree doesn't build. This fails unless each is killed. Linux alone, as
-# extentd is.
+# left held, commits wedged), or the resource budgets' and the degraded bucket's soak (TASK-330:
+# bytes written twice, memory held twice, failures unsaid), runs the test its header names
+# (`# Killer: TEST`, of fxdax's library, ignored or not: the soak is) against it, and takes it out:
+# killed if the test fails, MISSED if it passes, BROKEN if the patch doesn't apply or the tree
+# doesn't build. This fails unless each is killed. Linux alone, as extentd is.
 #
 #   mutants.sh [--check] [-c CASES] [NAME...]
 #
@@ -94,14 +95,15 @@ for name in "${names[@]}"; do
     log=$logs/$name.log
     began=$SECONDS
     FXDAX_HOSTILE_CASES=$cases PROPTEST_MAX_SHRINK_ITERS=0 \
-        cargo nextest run -p fxdax --lib --no-fail-fast -E "test(=$killer)" > "$log" 2>&1
+        cargo nextest run -p fxdax --lib --no-fail-fast --run-ignored all -E "test(=$killer)" \
+        > "$log" 2>&1
     status=$?
     patch -s -F0 -R -p1 < "$patch" || { echo "$name: its patch doesn't reverse: the tree has it" >&2; exit 1; }
     case $status in
         0) fate=MISSED; failed=1 ;;
         # What failed: proptest's reason, an allocation past the heap's bound, a signal, or an
         # assertion.
-        100) fate="killed: $(sed -n 's/.*Fail(Reason("\([^"]*\).*/\1/p; s/.*\(bytes held, of at most [0-9]*\).*/\1/p; s/^ *ABORT \(SIG [0-9]*\) .*/\1/p; s/^ *\(assertion .*\)/\1/p' "$log" | head -1)" ;;
+        100) fate="killed: $(sed -n 's/.*Fail(Reason("\([^"]*\).*/\1/p; s/.*\(bytes held, of at most [0-9]*\).*/\1/p; s/^ *ABORT \(SIG [0-9]*\) .*/\1/p; s/^ *\(assertion .*\)/\1/p; /panicked at/{n;s/^ *//p;}' "$log" | head -1)" ;;
         *) fate="BROKEN: exit $status: $(sed -n '/^error/{p;q;}' "$log")"; failed=1 ;;
     esac
     printf '%-40s %-8s %s\n' "$name" "$((SECONDS - began))s" "${fate:0:160}"
