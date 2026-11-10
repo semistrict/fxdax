@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-10 14:00'
-updated_date: '2026-11-10 16:53'
+updated_date: '2026-11-10 17:16'
 labels:
   - testing
 dependencies: []
@@ -62,6 +62,8 @@ Guest case fxfs-guest-bucket-soak (4 VMs, manual), t263 kernel:
 - 1800 s: anon 1.90 GB of 2.95 GB, uploads 1534 of 1536 MiB, fsyncs waited 250 s, none failed, every store uploaded 16-19 s after recovery, no VM let go, disk writes within what was counted.
 CI: ci.yml job 'soak' (300 s, GitHub runner, no KVM needed); hunt.yml job 'soak' (1800 s nightly). The guest case needs KVM, so it runs by name on ubu1 as TASK-330's gate.
 Found and filed: TASK-331 (test-e2e.sh leaves its part cache and /dev/shm bucket when SIGKILLed; 10 GB found on ubu1's /tmp).
+
+Main CI 42859291294 green, its new soak job included (300 s on a GitHub runner: anon 1.77 GB of 3.09 GB, commits waited 47 s, what waited uploaded 4 s after the bucket answered).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary

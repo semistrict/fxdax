@@ -7,7 +7,7 @@ status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-10 14:00'
-updated_date: '2026-11-10 16:53'
+updated_date: '2026-11-10 17:16'
 labels:
   - testing
 dependencies: []
@@ -58,6 +58,8 @@ Verification (ubu1 unless said):
 - Mutants (crates/fxdax/mutants.sh): large-extents-framed-in-copies killed (960 MiB rewritten against 384), written-back-twice killed (1545 MiB written for 1167 counted), uploads-copied-each-try killed by the soak's memory budget (60 MiB past 2944 within 47 s; with guests, 3.1 GB of 2.95 GB).
 - e2e fxfs-guest, -dax, -checks (t263 kernel, prebuilt artifacts): budgets.py passed: anon 264 MiB of 1058, disk 5464 MiB written of 6559 allowed; per guest byte raw 1.0 copied 0.42 framed 0.02 log 0.01.
 - macOS scripts/test.sh passed (2219 workspace tests, sim, shuttle, scripts, clippy, mutants --check). Linux workspace+sim+shuttle passed on ubu1 (2475/2475). scripts/upstream-changes.py --check passes.
+
+Main CI 42859291294 green with these commits (every job).
 <!-- SECTION:NOTES:END -->
 
 ## Final Summary
