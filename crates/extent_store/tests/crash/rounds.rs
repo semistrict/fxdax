@@ -20,10 +20,13 @@ pub const BRANCH: u64 = 3;
 pub const ROUNDS: u64 = 300;
 const STEPS: usize = 200;
 
-/// Small segments, large extents and index files, so that workloads make many of each.
+/// Small segments, large extents and index files, so that workloads make many of each. fxdax:
+/// and extents small enough that a segment fills between commits, holding a segment and an extent
+/// at most, so that commits span segments, sealing extents in those filled (TASK-92.41): with
+/// extents of 64 MiB, none ever filled, and no round made such a commit.
 pub const OPTIONS: Options = Options {
-    max_extent: 64 << 20,
-    segment_size: 48 << 10,
+    max_extent: 48 << 10,
+    segment_size: 16 << 10,
     segment_age: std::time::Duration::from_secs(3600),
     large_extent: 24 << 10,
     open_files: 3,
@@ -31,7 +34,6 @@ pub const OPTIONS: Options = Options {
     view_kept_bytes: None,
     // fxdax: flushes of either kind, holding their runs or checking them (TASK-301).
     held_most: 8 << 10,
-    spilled_most: 2048,
 };
 
 /// What a store holds: its extents' contents, and its root.

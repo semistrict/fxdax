@@ -204,6 +204,12 @@ impl Packer {
         self.end
     }
 
+    /// fxdax: whether every part so far is stored raw, none compressing: the object's bytes so far
+    /// are its data then, as they are (TASK-310).
+    pub fn raw(&self) -> bool {
+        self.stored.iter().all(|stored| stored.encoding == Encoding::Raw)
+    }
+
     /// Packs `data`, the object's next parts: whole parts, but for the object's last. Returns the
     /// object's next bytes, which follow those returned before.
     pub fn push(&mut self, data: &[u8]) -> Vec<u8> {

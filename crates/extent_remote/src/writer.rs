@@ -449,7 +449,11 @@ impl<B: Bucket> Writer<B> {
     }
 
     /// Acknowledges the segments uploaded with every one before them, once the lease shows them
-    /// the branch's. Returns the last segment acknowledged.
+    /// the branch's. Returns the last segment acknowledged. fxdax: to the last that goes on with no
+    /// commit, a commit spanning segments acknowledged with the segment it ends in, not part of
+    /// it (`extent_frame::segment::Continued`, TASK-92.41): what a store lets go of, once
+    /// acknowledged, the bucket has whole, and the state acknowledged, which checkpoints hold,
+    /// holds no commit begun.
     pub async fn acknowledge(&self) -> Result<Option<u64>, Error> {
         let through = {
             let inner = self.inner();
@@ -460,6 +464,7 @@ impl<B: Bucket> Writer<B> {
                 .pending
                 .iter()
                 .take_while(|(_, pending)| pending.objects.is_none())
+                .filter(|(_, pending)| pending.footer.contents.continued.is_none())
                 .map(|(seq, _)| *seq)
                 .last()
         };
@@ -546,6 +551,8 @@ impl<B: Bucket> Writer<B> {
             if inner.state.through.is_none() || inner.state.through <= inner.checkpoint {
                 return Ok(inner.checkpoint);
             }
+            // fxdax: acknowledged, its last segment ends its commits (TASK-92.41).
+            debug_assert!(inner.state.begun.is_none(), "a checkpoint of a commit begun");
             inner.state.clone()
         };
         let seq = state.through.unwrap();
@@ -1078,6 +1085,7 @@ mod tests {
                     next_sequence: 4,
                     forks: vec![],
                     capacity: None,
+                    continued: None,
                 },
             };
             let segment = |footer: &Footer| -> Vec<u8> {

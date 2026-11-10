@@ -12,15 +12,17 @@ use serde::{Deserialize, Serialize};
 use storage_device::ExtentId;
 
 pub use extent_frame::segment::{
-    Chain, Child, Contents, Footer, Location, epoch_of, tag, writer_of,
+    Chain, Child, Contents, Continued, Footer, Location, epoch_of, tag, writer_of,
 };
 
 /// fxdax: the format of a branch's objects, which its record says first
 /// ([`Record::format`](crate::record::Record::format)): a reader refuses a branch of any other,
 /// newer or older, naming it, and reads none of it (doc-11, rule 1; TASK-141.2). 2: a footer holds
 /// its segment's [`Contents`], with the capacity its commits set, and a checkpoint the branch's
-/// capacity (TASK-165.3); nothing reads 1's, as nothing keeps any (AGENTS.md).
-pub const FORMAT: u32 = 2;
+/// capacity (TASK-165.3); nothing reads 1's, as nothing keeps any (AGENTS.md). 3: a commit may
+/// span segments, a footer naming the runs in its data of the commit it goes on with
+/// (`Contents::continued`, TASK-92.41); nothing reads 2's.
+pub const FORMAT: u32 = 3;
 
 pub const BRANCHES: &str = "branches/";
 pub const GC_LEASE: &str = "gc/lease";
@@ -402,6 +404,7 @@ mod tests {
                 next_sequence: 6,
                 forks: vec![Child { branch: 7, owner: 8, point: false }],
                 capacity: Some(1 << 30),
+                continued: None,
             },
         };
         let segment = Segment { data: b"abc".to_vec(), footer: footer.clone() };

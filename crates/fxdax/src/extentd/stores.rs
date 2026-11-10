@@ -1300,10 +1300,16 @@ fn daemon_line() -> String {
         all.named().map(|(kind, bytes)| format!("written_{kind}_bytes={bytes}")).into();
     written.push(format!("written_writes={}", all.writes));
     written.push(format!("stats_written_bytes={}", STATS_WRITTEN.load(Ordering::Relaxed)));
+    // fxdax: and how often they wrote a segment's data once, framing it in place, and made a
+    // commit spanning segments (TASK-310, TASK-92.41).
+    let once = [
+        format!("segments_framed_in_place={}", extent_store::segments_framed_in_place()),
+        format!("commits_spanning_segments={}", extent_store::commits_spanning_segments()),
+    ];
     let io = process_io().map(|(name, bytes)| format!("io_{name}={bytes}"));
     format!(
         "daemon: {} durable_lag_count={} durable_lag_max_us={} durable_lag_p50_ms={} \
-         durable_lag_p99_ms={} durable_lag_within_50ms={} {} {} {} {}",
+         durable_lag_p99_ms={} durable_lag_within_50ms={} {} {} {} {} {}",
         named.join(" "),
         lags.count,
         lags.max_us,
@@ -1313,6 +1319,7 @@ fn daemon_line() -> String {
         buckets.join(" "),
         timed.join(" "),
         written.join(" "),
+        once.join(" "),
         io.join(" ")
     )
 }

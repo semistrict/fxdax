@@ -32,7 +32,6 @@ const OPTIONS: Options = Options {
     view_lag: None,
     view_kept_bytes: None,
     held_most: 256 << 10,
-    spilled_most: 2048,
 };
 
 /// The chain of a writer of the branch in object storage, whose segments the store closes: that of
@@ -971,6 +970,7 @@ fn segments_close_for_the_writer_of_their_chain() {
                 forks: vec![],
                 // Its first commit sets its capacity, which the bucket said none of.
                 capacity: Some(1 << 20),
+                continued: None,
             },
         }
     );
@@ -1255,61 +1255,99 @@ fn incompressible_large_extents_are_framed_in_place() {
 }
 
 /// fxdax: a guest writing more than a segment of small extents between commits, as one writing a
-/// large file before its fsync: once a segment is filled and set aside, holding no commit's data,
-/// the extents opened after are written in raw files of their own, which the commit frames in
-/// place, rather than in segments set aside, which it copies out of, every extent in a file of
-/// its own (TASK-79.2): what it wrote was written twice, the daemon of a sandbox host writing
-/// some 2.3 times what its guests did, framings stalled for seconds behind it (TASK-310). The
-/// commit copies the extents of the first segment set aside alone, a segment's worth at most, not
-/// what came after; then a crash keeps them all. Red with the extents written after in segments
-/// too: the commit copied 396 KB, three segments set aside.
+/// large file before its fsync, after a commit: each segment it fills waits for the next commit,
+/// which seals every extent where it was written, copying nothing and making no file of an
+/// extent's own, and closes them, their footers naming their runs as the commit's, which the open
+/// segment ends (TASK-92.41); none of their parts compressing, each is framed in place, its data
+/// written once (TASK-310). Before, the commit copied out every extent of the segments set aside,
+/// each into a file of its own past the open segment's room: store-bench's burst, 640 own files,
+/// each its own create, frame, sync and upload. Then a crash keeps them all. Red with the extents
+/// in segments filled copied out: 516 KB copied; with segments framed in copies: none in place.
 #[test]
 fn bursts_past_a_segment_between_commits_are_sealed_where_they_are() {
+    use extent_frame::segment::tag;
     let dir = MemDir::new();
-    // Segments set aside once they hold a segment's size and an extent's most, as small here.
+    // Segments full once they hold a segment's size and an extent's most, as small here.
     let options = Options { max_extent: OPTIONS.segment_size, ..OPTIONS };
     let description = Description { block_size: BLOCK as u32, capacity: 4 << 20, branch: BRANCH };
     let store = Store::create(dir.clone(), description, options).unwrap();
+    store.write(extent(1), 0, &noise(1, BLOCK)).unwrap();
+    store.commit(None).unwrap();
     let (extents, len) = (8 * OPTIONS.segment_size as usize / (2 * BLOCK), 2 * BLOCK);
-    for sequence in 1..=extents as u64 {
+    for sequence in 2..=extents as u64 {
         store.write(extent(sequence), 0, &noise(sequence, len)).unwrap();
     }
-    let before = extent_store::written();
+    let before = (extent_store::written(), extent_store::segments_framed_in_place());
+    let (before, framed_before) = before;
+    // The open segment closes with the commit too, which ends in it.
+    store.close_segment().unwrap();
     store.commit(None).unwrap();
+    settled(&store);
     let after = extent_store::written();
     let copied = (after.own + after.copied) - (before.own + before.copied);
-    // The first segment's extents, copied and framed, and a tail for each extent framed in place.
-    let first = (options.segment_size + options.max_extent) as usize / len;
-    let tail = extent_frame::framed(&noise(0, len), &[]).len() - len;
-    assert!(copied <= (first * (len + tail) + (extents - first) * tail) as u64, "copied {copied}");
+    assert_eq!(copied, 0, "copied");
+    assert_eq!((names(&dir, "extents"), names(&dir, "open-extents")), (vec![], vec![]));
+    let closed = store.closed(usize::MAX).unwrap();
+    let continued = |closed: &extent_store::Closed<MemFile>| {
+        let contents = &closed.footer.contents;
+        (contents.commits.clone(), contents.continued.as_ref().map(|c| c.commit))
+    };
+    let mut expected = vec![(vec![], Some(tag(0, 2))); closed.len()];
+    expected[0].0 = vec![tag(0, 1)];
+    expected[closed.len() - 1] = (vec![tag(0, 2)], None);
+    assert_eq!(closed.iter().map(continued).collect::<Vec<_>>(), expected);
+    assert_eq!(closed.len(), 4, "the three segments filled, and the open one");
+    let in_place = extent_store::segments_framed_in_place() - framed_before;
+    assert_eq!(in_place as usize, closed.len(), "framed in place");
+    let framed = after.framed - before.framed;
+    assert!(framed < (closed.len() * BLOCK) as u64, "framed {framed}");
     drop(store);
-    let reopened = Store::open(dir.crash(0), options).unwrap();
-    for sequence in 1..=extents as u64 {
-        assert!(read(&reopened, extent(sequence), 0, len) == noise(sequence, len), "{sequence}");
+    for seed in 0..4 {
+        let reopened = Store::open(dir.crash(seed), options).unwrap();
+        assert_eq!(reopened.epoch().unwrap(), 2, "seed {seed}");
+        for sequence in 2..=extents as u64 {
+            let read = read(&reopened, extent(sequence), 0, len);
+            assert!(read == noise(sequence, len), "seed {seed}, {sequence}");
+        }
     }
 }
 
-/// fxdax: of the extents opened between two commits once a segment was set aside, no more than
-/// `Options::spilled_most` are written in raw files of their own, each open till the commit with
-/// descriptors of the daemon's: those after go to segments, set aside and copied out, as before;
-/// and all read as written (TASK-310).
+/// fxdax: extents not one run in a segment filled since the last commit, written in pieces
+/// interleaved with others', or across two segments, are copied by the commit into the open
+/// segment, and past its room into the next, it full in turn, which the commit goes on with: none
+/// into a file of its own (TASK-92.41); and all read as written, before and after a crash.
 #[test]
-fn spills_past_their_bound_go_to_segments() {
+fn copies_past_the_open_segments_room_go_on_in_the_next() {
     let dir = MemDir::new();
-    let options = Options { max_extent: OPTIONS.segment_size, spilled_most: 4, ..OPTIONS };
+    let options = Options { max_extent: OPTIONS.segment_size, ..OPTIONS };
     let description = Description { block_size: BLOCK as u32, capacity: 4 << 20, branch: BRANCH };
     let store = Store::create(dir.clone(), description, options).unwrap();
-    let (extents, len) = (8 * OPTIONS.segment_size as usize / (2 * BLOCK), 2 * BLOCK);
-    for sequence in 1..=extents as u64 {
-        store.write(extent(sequence), 0, &noise(sequence, len)).unwrap();
+    // Two extents at a time, a block of each in turn: each in pieces, other writes between.
+    let (extents, blocks) = (8 * OPTIONS.segment_size as usize / (2 * BLOCK), 2);
+    let data = |sequence: u64| noise(sequence, blocks * BLOCK);
+    for pair in (1..=extents as u64).step_by(2) {
+        for block in 0..blocks {
+            for sequence in [pair, pair + 1] {
+                let at = block * BLOCK;
+                store.write(extent(sequence), at as u64, &data(sequence)[at..at + BLOCK]).unwrap();
+            }
+        }
     }
-    assert_eq!(names(&dir, "open-extents").len(), 4);
+    let before = extent_store::written();
     store.commit(None).unwrap();
-    // Of the 64, the 4 spilled, and 44 of the 60 the commit copied, those past the 16 the open
-    // segment had room for.
-    assert_eq!(names(&dir, "extents").len(), 48);
+    settled(&store);
+    let after = extent_store::written();
+    assert_eq!(after.own - before.own, 0, "own files written");
+    assert_eq!(after.copied - before.copied, (extents * blocks * BLOCK) as u64, "copied");
+    assert_eq!(names(&dir, "extents"), Vec::<String>::new());
     for sequence in 1..=extents as u64 {
-        assert!(read(&store, extent(sequence), 0, len) == noise(sequence, len), "{sequence}");
+        assert!(read(&store, extent(sequence), 0, blocks * BLOCK) == data(sequence), "{sequence}");
+    }
+    drop(store);
+    let reopened = Store::open(dir.crash(0), options).unwrap();
+    for sequence in 1..=extents as u64 {
+        let read = read(&reopened, extent(sequence), 0, blocks * BLOCK);
+        assert!(read == data(sequence), "{sequence}");
     }
 }
 
@@ -1371,6 +1409,54 @@ fn extents_framed_in_place_survive_crashes_framing_them() {
         }
         drop(store);
         if committed.is_ok() {
+            break;
+        }
+    }
+}
+
+/// fxdax: a commit closing segments filled since the commit before, sealing in them what is one
+/// run there, each framed in place, none of its parts compressing, its raw file linked as its
+/// framed file (TASK-310, TASK-92.41), stopped after each of its operations, as by a crash: the
+/// branch opens, what the commit before made reading as written, and what the commit made reading
+/// as written exactly if the commit is durable.
+#[test]
+fn segments_framed_in_place_survive_crashes_framing_them() {
+    let options = Options { max_extent: OPTIONS.segment_size, ..OPTIONS };
+    let (extents, len) = (3 * OPTIONS.segment_size as usize / (2 * BLOCK), 2 * BLOCK);
+    let first = noise(1, BLOCK);
+    for operations in 0.. {
+        let dir = MemDir::serial();
+        let description =
+            Description { block_size: BLOCK as u32, capacity: 4 << 20, branch: BRANCH };
+        let store = Store::create(dir.clone(), description, options).unwrap();
+        store.write(extent(1), 0, &first).unwrap();
+        store.commit(None).unwrap();
+        for sequence in 2..=extents as u64 {
+            store.write(extent(sequence), 0, &noise(sequence, len)).unwrap();
+        }
+        let framed = extent_store::segments_framed_in_place();
+        dir.fail_after(Some(operations));
+        store.close_segment().unwrap();
+        let committed = store.commit(None);
+        dir.fail_after(None);
+        for seed in 0..4 {
+            let reopened = Store::open(dir.crash(seed), options);
+            let reopened = reopened.unwrap_or_else(|error| {
+                panic!("stopped after {operations} operations, seed {seed}: {error:#}")
+            });
+            let at = format!("stopped after {operations} operations, seed {seed}");
+            assert!(read(&reopened, extent(1), 0, BLOCK) == first, "{at}: extent 1");
+            let durable = reopened.epoch().unwrap() == 2;
+            for sequence in 2..=extents as u64 {
+                let mut read = vec![0; len];
+                let intact = reopened.read(extent(sequence), 0, &mut read).is_ok()
+                    && read == noise(sequence, len);
+                assert_eq!(durable, intact, "{at}: extent {sequence}, durable or not");
+            }
+        }
+        drop(store);
+        if committed.is_ok() {
+            assert!(extent_store::segments_framed_in_place() > framed, "none framed in place");
             break;
         }
     }
@@ -1520,6 +1606,14 @@ impl Dir for Counting {
 
     fn remove(&self, path: &str) -> std::io::Result<()> {
         self.dir.remove(path)
+    }
+
+    fn rename(&self, from: &str, to: &str) -> std::io::Result<()> {
+        self.dir.rename(from, to)
+    }
+
+    fn link(&self, from: &str, to: &str) -> std::io::Result<()> {
+        self.dir.link(from, to)
     }
 
     fn create_dir(&self, path: &str) -> std::io::Result<()> {
@@ -1750,8 +1844,8 @@ fn segment_data(store: &Store<MemDir>, dir: &MemDir) -> Vec<u64> {
 }
 
 /// TASK-189: reading the branch's segments beside the store between writes, as [`segment_data`]
-/// does, reads no framed file a framing has created and not yet written: a write closed the
-/// segment holding a commit's data for want of room, and framed it behind, on a thread of its own.
+/// does, reads no framed file a framing has created and not yet written: a commit closed the
+/// segments writes filled, and framed them behind, on a thread of its own (TASK-92.41).
 /// Each framing waits at the failpoint between its file's creation and its write while the helper
 /// reads: read so, unskipped, the file was empty, `Corrupt("an object's trailer")`, as in CI run
 /// 42105764695. The failpoint is the process's, as nextest gives each test.
@@ -1779,33 +1873,37 @@ fn segments_read_beside_the_store_skip_framed_files_being_written() {
     let (mut seen, mut reads) = (BTreeSet::new(), 0);
     for sequence in 0..48 {
         store.write(extent(sequence), 0, &block(sequence)).unwrap();
+    }
+    // fxdax: the segments filled, framed behind the commit closing them (TASK-92.41).
+    store.commit_ordered(None).unwrap();
+    loop {
         let begun: Vec<u64> = (store.framing().into_iter()).filter(|n| seen.insert(*n)).collect();
+        if begun.is_empty() {
+            break;
+        }
         for _ in &begun {
             waits.recv().unwrap();
-        }
-        if !begun.is_empty() {
             let lens = segment_data(&store, &dir);
             assert!(lens.iter().all(|len| *len <= SEGMENT_LIMIT), "segments of {lens:?}");
             reads += 1;
-        }
-        for _ in &begun {
             go.send(()).unwrap();
         }
     }
     drop(guard);
-    assert!(reads > 0, "no segment framed behind a write");
+    assert!(reads > 1, "no segments framed behind a commit");
     store.commit(None).unwrap();
     for sequence in 0..48 {
         assert!(read(&store, extent(sequence), 0, BLOCK) == block(sequence), "{sequence}");
     }
 }
 
-/// TASK-150.2: a segment a write closed for want of room, holding a commit's data, goes to the
-/// uploader with no commit after it: a flush frames it, as nothing else would until the guest next
-/// commits, which a sync of the store, or a fork, waiting for that commit's upload, may not live to
-/// see. It reads as before, and the next commit finds nothing left to do of it.
+/// TASK-150.2: a segment writes filled, holding a commit's data, goes to the uploader with no
+/// commit after it: the uploader's closing between commits closes it, and frames it, as nothing
+/// else would until the guest next commits, which a sync of the store, or a fork, waiting for that
+/// commit's upload, may not live to see (TASK-92.41). It reads as before, and the next commit
+/// copies out of it what was written since the commit before.
 #[test]
-fn segments_closed_for_room_go_to_the_uploader_with_no_commit_after() {
+fn segments_filled_go_to_the_uploader_with_no_commit_after() {
     let dir = MemDir::new();
     let description = Description { block_size: BLOCK as u32, capacity: 64 << 20, branch: BRANCH };
     let store = Store::create(dir, description, SMALL_SEGMENTS).unwrap();
@@ -1818,6 +1916,8 @@ fn segments_closed_for_room_go_to_the_uploader_with_no_commit_after() {
     }
 
     store.flush().unwrap();
+    assert_eq!(store.closed(8).unwrap().len(), 0, "a segment closed before the uploader's");
+    assert!(store.close_now().unwrap(), "the segment filled, holding the commit, not closed");
     let lasts: Vec<u64> = store.closed(8).unwrap().iter().map(Closed::last).collect();
     assert_eq!(lasts, [1]);
     for sequence in 0..48 {
@@ -1831,11 +1931,10 @@ fn segments_closed_for_room_go_to_the_uploader_with_no_commit_after() {
 
 /// The open segment takes writes until it holds a segment and an extent, `Options::segment_size`
 /// and `Options::max_extent`, between commits: then the next goes to another, which no segment
-/// grows past, however much is written between commits (TASK-79.2). One holding no commit's data
-/// is set aside raw, the extents in it copied out by the next commit, to the open segment while it
-/// has room and to files of their own after; one holding commits' closes, framed behind the
-/// write, as the next commit's flush has it. Every extent reads as written meanwhile, and once
-/// committed, and so after opening the store again.
+/// grows past, however much is written between commits (TASK-79.2). Full, holding commits' data or
+/// not, it waits for the next commit, which seals the extents in it where they are, none in a file
+/// of its own, and closes it, the commit going on past it (TASK-92.41). Every extent reads as
+/// written meanwhile, and once committed, and so after opening the store again.
 #[test]
 fn segments_hold_a_segment_and_an_extent_at_most() {
     let dir = MemDir::new();
@@ -1858,11 +1957,11 @@ fn segments_hold_a_segment_and_an_extent_at_most() {
     check(&store, 0..48);
     let lens = segment_data(&store, &dir);
     assert!(lens.iter().all(|len| *len <= SEGMENT_LIMIT), "segments of {lens:?}");
-    let own = dir.list(&of("extents", BRANCH)).unwrap().len();
-    assert!(own > 0, "no extent sealed in a file of its own");
+    let own = dir.list(&of("extents", BRANCH)).unwrap();
+    assert_eq!(own, Vec::<String>::new(), "extents sealed in files of their own");
 
     // A commit's data in the open segment, then another 192 KiB of blocks: the segment holding it
-    // closes as they come.
+    // fills as they come, and closes with the commit after.
     store.write(extent(96), 0, &block(96)).unwrap();
     store.commit(None).unwrap();
     for sequence in 48..96 {
@@ -1873,7 +1972,7 @@ fn segments_hold_a_segment_and_an_extent_at_most() {
     store.commit(None).unwrap();
     check(&store, 0..97);
     let lasts: Vec<u64> = store.closed(usize::MAX).unwrap().iter().map(Closed::last).collect();
-    assert_eq!(lasts, [1, 2, 3]);
+    assert_eq!(lasts, [1, 1, 3, 3]);
     let lens = segment_data(&store, &dir);
     assert!(lens.iter().all(|len| *len <= SEGMENT_LIMIT), "segments of {lens:?}");
     drop(store);
@@ -1899,8 +1998,9 @@ fn segments_set_aside_leave_the_branch_its_footers() {
 }
 
 /// An extent written again and again between commits takes no segment past a segment and an
-/// extent: its writes go to others, which go once the commit has sealed it (TASK-79.2). It reads
-/// as last written, and once committed, in a file of its own, the open segment being full.
+/// extent: its writes go to others (TASK-79.2). It reads as last written, and once committed,
+/// where it was last written, in the open segment; the segments it filled, no extent's data in
+/// them, closed with the commit, their footers alone (TASK-92.41).
 #[test]
 fn rewrites_take_no_segment_past_a_segment_and_an_extent() {
     let dir = MemDir::new();
@@ -1915,10 +2015,15 @@ fn rewrites_take_no_segment_past_a_segment_and_an_extent() {
     store.commit(None).unwrap();
     settled(&store);
     assert_eq!(read(&store, extent(1), 0, 2 * BLOCK), pattern(63, 0, 2 * BLOCK));
-    assert_eq!(store.place(extent(1)).unwrap(), Some(Place::Own));
-    // The four it filled: three set aside, gone; the last closed by the commit.
+    let place = Place::Run { branch: BRANCH, number: 4, offset: 0 };
+    assert_eq!(store.place(extent(1)).unwrap(), Some(place));
+    let segments: Vec<String> = (0..4).map(|number| format!("{number:016x}")).collect();
     assert_eq!(dir.list(&of("open-segments", BRANCH)).unwrap(), ["0000000000000004"]);
-    assert_eq!(dir.list(&of("segments", BRANCH)).unwrap(), ["0000000000000003"]);
+    assert_eq!(dir.list(&of("segments", BRANCH)).unwrap(), segments);
+    for closed in store.closed(usize::MAX).unwrap() {
+        let data = extent_frame::data(&closed.bytes().unwrap()).unwrap();
+        assert_eq!(data.len(), 0, "segment {}, no extent's data in it, framed", closed.number);
+    }
     let store = reopened(store, &dir);
     assert_eq!(read(&store, extent(1), 0, 2 * BLOCK), pattern(63, 0, 2 * BLOCK));
 }

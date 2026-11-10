@@ -34,6 +34,10 @@ fn recovers_a_prefix_of_its_commits() {
     }
     // The crashes hit commits as well as what came between them.
     assert!(crashes_mid_commit > ROUNDS / 10, "{crashes_mid_commit} crashes in commits");
+    // fxdax: and the workloads' commits spanned segments, sealing extents in those filled between
+    // commits (TASK-92.41): with segments that never filled, none did.
+    let spanning = extent_store::commits_spanning_segments();
+    assert!(spanning > ROUNDS, "{spanning} commits spanned segments in {ROUNDS} rounds");
 }
 
 /// fxdax: a store keeping its branch in a bucket, crashing as its uploader uploads, recovers from
@@ -59,6 +63,13 @@ fn recovers_from_its_bucket_with_and_without_its_disk() {
     assert!(cut > KEPT_ROUNDS / 4, "{cut} rounds cut a pass before the crash");
     assert!(compacted > KEPT_ROUNDS / 10, "{compacted} rounds' passes compacted");
     assert!(deleted > KEPT_ROUNDS / 3, "{deleted} rounds' passes deleted");
+    // fxdax: and commits spanning segments uploaded, acknowledged with the segments ending them,
+    // and recovered (TASK-92.41).
+    let spanning = extent_store::commits_spanning_segments();
+    assert!(
+        spanning > KEPT_ROUNDS / 5,
+        "{spanning} commits spanned segments in {KEPT_ROUNDS} rounds"
+    );
 }
 
 /// fxdax: a store's opening cut by a crash at each of its writes in turn leaves what opens again

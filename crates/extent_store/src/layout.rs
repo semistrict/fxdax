@@ -18,9 +18,10 @@ use storage_device::ExtentId;
 /// location there (TASK-165.8), and holds one branch, no branch records (TASK-165.7); 8 has no
 /// index: its branch is the bucket's, its write-ahead log and its segments' logs of their
 /// commits, and its description names its capacity until a commit sets one, and its placement's
-/// fencing token, if placed (TASK-165.9). A store of another format is refused ([`Format`]):
-/// nothing reads, converts or upgrades it.
-pub(crate) const FORMAT: &str = "fxdax extent store 8";
+/// fencing token, if placed (TASK-165.9); 9's footers and its logs' records name the runs of a
+/// commit spanning segments in each segment it spans (TASK-92.41). A store of another format is
+/// refused ([`Format`]): nothing reads, converts or upgrades it.
+pub(crate) const FORMAT: &str = "fxdax extent store 9";
 
 /// fxdax: the error of a store whose description is of another format than [`FORMAT`], an older
 /// one included: refused, as nothing reads it.

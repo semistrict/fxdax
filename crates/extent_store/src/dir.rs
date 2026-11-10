@@ -21,7 +21,7 @@ pub trait File: Send + Sync + 'static {
 
     /// fxdax: reads as [`File::read_at`] does, but, on Linux, through the host's page cache, which
     /// `read_at` bypasses. The store reads its raw files so: the open segment's, those of segments
-    /// being framed or set aside, and open extents' own. It wrote them lately, through the cache,
+    /// being framed or filled, and open extents' own. It wrote them lately, through the cache,
     /// which holds their pages still, dirty or not yet let go; a read bypassing the cache writes
     /// back the dirty ones it reads first, waiting for the host's disk. Under pgbench's load, a
     /// commit copying the extents written in pieces waited about 4 ms a MiB for it, up to 400 ms,
@@ -90,6 +90,16 @@ pub trait Dir: Send + Sync + 'static {
     /// directory to another, its entry in each is durable once that directory is synced, so that a
     /// crash may leave it at both, or at neither (TASK-310). By default, unsupported.
     fn rename(&self, from: &str, to: &str) -> io::Result<()> {
+        let _ = (from, to);
+        Err(io::Error::from(io::ErrorKind::Unsupported))
+    }
+
+    /// fxdax: makes `to`, which is not there, another name of the file at `from`, which keeps its
+    /// own (a hard link): `to`'s entry durable once its directory is synced. What a segment framed
+    /// in place is put among framed ones by, its raw file then its framed file, the raw name going
+    /// once its commits are durable (TASK-310). By default, unsupported: segments are framed in
+    /// copies then.
+    fn link(&self, from: &str, to: &str) -> io::Result<()> {
         let _ = (from, to);
         Err(io::Error::from(io::ErrorKind::Unsupported))
     }
@@ -270,6 +280,10 @@ impl Dir for HostDir {
 
     fn rename(&self, from: &str, to: &str) -> io::Result<()> {
         std::fs::rename(self.path.join(from), self.path.join(to))
+    }
+
+    fn link(&self, from: &str, to: &str) -> io::Result<()> {
+        std::fs::hard_link(self.path.join(from), self.path.join(to))
     }
 
     fn create_dir(&self, path: &str) -> io::Result<()> {

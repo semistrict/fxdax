@@ -73,7 +73,6 @@ const OPTIONS: Options = Options {
     view_kept_bytes: None,
     // fxdax: flushes of either kind, holding their runs or checking them (TASK-301).
     held_most: 8 << 10,
-    spilled_most: 2048,
 };
 /// The chain of a writer of the branch in object storage, whose segments the store closes.
 const WRITER: Chain = Chain::new(BRANCH, 0, 0, None, 0);
@@ -571,9 +570,10 @@ const ROLLING: Options = Options { max_extent: 4 * BLOCK as u64, ..OPTIONS };
 
 /// One run of writes filling segments between commits, as a VM's requests may (TASK-79.2): a
 /// writer writes extents of two blocks, in segments, while a committer commits and the closer
-/// closes the open segment between commits. The open segment, full, is set aside, or, holding
-/// commits' data, closed, and writes go to the next, while commits seal what was written. Each
-/// extent reads as written, and the store, crashed, opens again holding what its last commit did.
+/// closes the open segment between commits. The open segment, full, waits for the next commit, or
+/// the closer's, holding commits' data, and writes go to the next, while commits seal what was
+/// written, where it is (TASK-92.41). Each extent reads as written, and the store, crashed, opens
+/// again holding what its last commit did.
 fn rolling_over() {
     let dir = MemDir::new();
     let description = Description { block_size: BLOCK as u32, capacity: 1 << 20, branch: BRANCH };
@@ -966,10 +966,10 @@ fn closing_after_a_failed_framing() {
 }
 
 /// A store of the branch, segments laid out as [`ROLLING`] says, whose open segment, its first,
-/// holds a commit's extent, and is full, in a directory that stalls the creation of the segment's
-/// framed file: so that a write finding no room in it closes it, and its framing stalls, as on a
-/// slow disk (TASK-79.2).
-fn framing_for_room_stalls() -> (Stalling, Arc<Store<Stalling>>) {
+/// holds a commit's extent, and those of three written since, and is full, in a directory that
+/// stalls the creation of the segment's framed file: so that the next commit, which seals what it
+/// holds where it is, closes it, and its framing stalls, as on a slow disk (TASK-79.2, TASK-92.41).
+fn framing_at_a_commit_stalls() -> (Stalling, Arc<Store<Stalling>>) {
     let dir = Stalling::new();
     let description = Description { block_size: BLOCK as u32, capacity: 1 << 20, branch: BRANCH };
     let store = Arc::new(Store::create(dir.clone(), description, ROLLING).unwrap());
@@ -983,7 +983,7 @@ fn framing_for_room_stalls() -> (Stalling, Arc<Store<Stalling>>) {
     (dir, store)
 }
 
-/// Reads extents 1 to `last` of a store [`framing_for_room_stalls`] made, and wrote to, through
+/// Reads extents 1 to `last` of a store [`framing_at_a_commit_stalls`] made, and wrote to, through
 /// `store`, which must be as written.
 fn check_rolled(store: &Store<Stalling>, last: u64, failure: &str) {
     for sequence in 1..=last {
@@ -996,60 +996,53 @@ fn check_rolled(store: &Store<Stalling>, last: u64, failure: &str) {
 }
 
 /// One run of a write finding no room in the open segment, which holds a commit's data, and
-/// closes it (TASK-79.2): the segment's framing stalls, but the write waits not for it, nor do the
-/// reads after; the commit after, whose flush waits for it, seals the extents in the segment
-/// elsewhere. Shuttle, whose waits that can't end are deadlocks it reports, finds so.
-fn serving_during_a_framing_for_room() {
-    let (dir, store) = framing_for_room_stalls();
+/// filling it, and a commit after, which seals in it what is one run there and closes it
+/// (TASK-79.2, TASK-92.41): the segment's framing stalls, but the commit waits not for it, nor do
+/// the reads after; the flush after makes the commit durable. Shuttle, whose waits that can't end
+/// are deadlocks it reports, finds so.
+fn serving_during_a_framing_at_a_commit() {
+    let (dir, store) = framing_at_a_commit_stalls();
     store.write(extent(5), 0, &pattern(5, 2 * BLOCK)).unwrap();
+    store.commit_ordered(None).unwrap();
     dir.wait_until_stalled();
-    check_rolled(&store, 5, "a read while a closing for room frames");
+    check_rolled(&store, 5, "a read while a commit's closing of a segment filled frames");
     dir.let_go(Ok(()));
-    store.commit(None).unwrap();
-    check_rolled(&store, 5, "a read once a closing for room framed");
+    store.flush().unwrap();
+    check_rolled(&store, 5, "a read once a commit's closing of a segment filled framed");
     drop(store);
     check_rolled(&Store::open(dir, OPTIONS).unwrap(), 5, "the branch opened again");
 }
 
-/// One run of the branch closing while the framing of a segment a write closed for want of room
-/// stalls (TASK-79.2): the branch's closing waits for it, though no commit came after; another
+/// One run of the branch closing while the framing of a segment filled between commits, which the
+/// commit after closed, stalls (TASK-79.2, TASK-92.41): the branch's closing waits for it; another
 /// store, opening the branch, finds it framed, and holds what the commit made.
-fn closing_during_a_framing_for_room() {
-    let (dir, store) = framing_for_room_stalls();
+fn closing_during_a_framing_at_a_commit() {
+    let (dir, store) = framing_at_a_commit_stalls();
     store.write(extent(5), 0, &pattern(5, 2 * BLOCK)).unwrap();
+    store.commit_ordered(None).unwrap();
     dir.wait_until_stalled();
     let reopening = {
         let (store, dir) = (store.clone(), dir.clone());
         thread::spawn(move || {
             store.close().unwrap();
             let reopened = Store::open(dir, OPTIONS).unwrap();
-            check_rolled(&reopened, 1, "a closing for room raced the branch's closing");
-            let mut read = vec![0; BLOCK];
-            let error = reopened.read(extent(2), 0, &mut read).expect_err("an extent not sealed");
-            assert!(error.downcast_ref::<NoExtent>().is_some(), "{error:#}");
+            check_rolled(&reopened, 5, "a commit's closing of a segment filled raced the closing");
         })
     };
     dir.let_go(Ok(()));
     reopening.join().unwrap();
 }
 
-/// One run of a write closing the open segment for want of room, racing an uploader taking what
-/// a commit in it made (TASK-150.2). Whichever goes first, the uploader, asking once more after,
-/// with no commit to come, has the commit's segment.
-fn uploading_what_a_closing_for_room_closed() {
+/// One run of a write filling the open segment, which holds a commit's data, racing an uploader
+/// taking what the commit made (TASK-150.2): the segment, full, waits for the next commit, but the
+/// uploader's closing between commits closes it (TASK-92.41). Whichever goes first, the uploader,
+/// asking once more after, with no commit to come, has the commit's segment.
+fn uploading_what_a_segment_filled_holds() {
     let dir = MemDir::new();
     let description = Description { block_size: BLOCK as u32, capacity: 1 << 20, branch: BRANCH };
     let store = Arc::new(Store::create(dir, description, ROLLING).unwrap());
     store.write(extent(1), 0, &pattern(1, BLOCK)).unwrap();
     store.commit(None).unwrap();
-    // As an uploader gathers for a commit waiting for it: what is closed, closing the rest.
-    let gather = |store: &Store<MemDir>, taken: &mut Vec<u64>| {
-        store.flush().unwrap();
-        taken.extend(store.closed(8).unwrap().iter().map(|closed| closed.last()));
-        store.close_now().unwrap();
-        store.flush().unwrap();
-        taken.extend(store.closed(8).unwrap().iter().map(|closed| closed.last()));
-    };
     let writer = {
         let store = store.clone();
         thread::spawn(move || {
@@ -1063,6 +1056,44 @@ fn uploading_what_a_closing_for_room_closed() {
     writer.join().unwrap();
     gather(&store, &mut taken);
     assert_eq!(taken, [1], "no commit's segment reached the uploader");
+}
+
+/// As an uploader gathers for a commit waiting for it, adding what it takes to `taken`: what is
+/// closed, closing the rest.
+fn gather(store: &Store<MemDir>, taken: &mut Vec<u64>) {
+    store.flush().unwrap();
+    taken.extend(store.closed(8).unwrap().iter().map(|closed| closed.last()));
+    store.close_now().unwrap();
+    store.flush().unwrap();
+    taken.extend(store.closed(8).unwrap().iter().map(|closed| closed.last()));
+}
+
+/// One run of writes filling segments, and a commit after, which closes them, sealing in them what
+/// is one run in each, racing an uploader taking what the commits made (TASK-92.41): whichever
+/// goes first, the uploader, asking once more after, with no commit to come, has the commit's
+/// segments, those filled and the one it ends in, which a closing between commits closes. A
+/// framing of the segments filled that waited for a commit after, which may never come, would
+/// leave the uploader without them (TASK-150.2, TASK-153.8).
+fn uploading_what_a_spanning_commit_closed() {
+    let dir = MemDir::new();
+    let description = Description { block_size: BLOCK as u32, capacity: 1 << 20, branch: BRANCH };
+    let store = Arc::new(Store::create(dir, description, ROLLING).unwrap());
+    store.write(extent(1), 0, &pattern(1, BLOCK)).unwrap();
+    store.commit(None).unwrap();
+    let writer = {
+        let store = store.clone();
+        thread::spawn(move || {
+            for sequence in 2..9 {
+                store.write(extent(sequence), 0, &pattern(sequence as u8, 2 * BLOCK)).unwrap();
+            }
+            store.commit_ordered(None).unwrap();
+        })
+    };
+    let mut taken = Vec::new();
+    gather(&store, &mut taken);
+    writer.join().unwrap();
+    gather(&store, &mut taken);
+    assert_eq!(taken.last(), Some(&2), "no commit's segment reached the uploader: {taken:?}");
 }
 
 /// One run of a guest's requests while the flush of a commit, its record appended to the open
@@ -1254,22 +1285,29 @@ fn closing_after_a_failed_framing_by_pct() {
 }
 
 #[test]
-fn requests_served_during_a_framing_for_room_by_pct() {
+fn requests_served_during_a_framing_at_a_commit_by_pct() {
     set_rules(Rules::ALL);
-    Runner::new(PctScheduler::new(3, runs()), config()).run(serving_during_a_framing_for_room);
+    Runner::new(PctScheduler::new(3, runs()), config()).run(serving_during_a_framing_at_a_commit);
 }
 
 #[test]
-fn closing_during_a_framing_for_room_by_pct() {
+fn closing_during_a_framing_at_a_commit_by_pct() {
     set_rules(Rules::ALL);
-    Runner::new(PctScheduler::new(3, runs()), config()).run(closing_during_a_framing_for_room);
+    Runner::new(PctScheduler::new(3, runs()), config()).run(closing_during_a_framing_at_a_commit);
 }
 
 #[test]
-fn uploads_of_what_a_closing_for_room_closed_by_pct() {
+fn uploads_of_what_a_segment_filled_holds_by_pct() {
     set_rules(Rules::ALL);
     let scheduler = PctScheduler::new(3, runs());
-    Runner::new(scheduler, config()).run(uploading_what_a_closing_for_room_closed);
+    Runner::new(scheduler, config()).run(uploading_what_a_segment_filled_holds);
+}
+
+#[test]
+fn uploads_of_what_a_spanning_commit_closed_by_pct() {
+    set_rules(Rules::ALL);
+    let scheduler = PctScheduler::new(3, runs());
+    Runner::new(scheduler, config()).run(uploading_what_a_spanning_commit_closed);
 }
 
 #[test]
@@ -1333,9 +1371,10 @@ fn replay() {
         Ok("flushing_during_a_framing") => flushing_during_a_framing,
         Ok("closing_during_a_framing") => closing_during_a_framing,
         Ok("closing_after_a_failed_framing") => closing_after_a_failed_framing,
-        Ok("serving_during_a_framing_for_room") => serving_during_a_framing_for_room,
-        Ok("closing_during_a_framing_for_room") => closing_during_a_framing_for_room,
-        Ok("uploading_what_a_closing_for_room_closed") => uploading_what_a_closing_for_room_closed,
+        Ok("serving_during_a_framing_at_a_commit") => serving_during_a_framing_at_a_commit,
+        Ok("closing_during_a_framing_at_a_commit") => closing_during_a_framing_at_a_commit,
+        Ok("uploading_what_a_segment_filled_holds") => uploading_what_a_segment_filled_holds,
+        Ok("uploading_what_a_spanning_commit_closed") => uploading_what_a_spanning_commit_closed,
         _ => run,
     };
     Runner::new(scheduler, config()).run(scenario);
@@ -1461,13 +1500,14 @@ fn needs_closes_to_wait_for_framings() {
     fails_without(rules, &["raced the branch's closing"], closing_during_a_framing);
 }
 
-/// A closing for want of room framed only by the next commit, as its end was driven by what came
-/// after it (TASK-150.2): an uploader that waits for a commit in the segment closed waits for as
-/// long as no commit comes. A framing that ends itself ends whatever comes (TASK-153.8).
+/// The segments a commit closes past the one it ends in, those filled since the commit before,
+/// framed only by the next commit, as its end was driven by what came after it (TASK-150.2,
+/// TASK-92.41): an uploader that waits for the commit waits for as long as no commit comes. A
+/// framing that ends itself ends whatever comes (TASK-153.8).
 #[test]
 fn needs_framings_to_end_themselves() {
     let rules = Rules { framings_end_themselves: false, ..Rules::ALL };
-    fails_without(rules, &["no commit's segment"], uploading_what_a_closing_for_room_closed);
+    fails_without(rules, &["no commit's segment"], uploading_what_a_spanning_commit_closed);
 }
 
 /// Frees not kept for views: a view's read of an extent its commit holds finds it gone, or, the

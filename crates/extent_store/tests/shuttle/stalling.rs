@@ -107,6 +107,14 @@ impl Dir for Stalling {
         self.dir.remove(path)
     }
 
+    fn rename(&self, from: &str, to: &str) -> io::Result<()> {
+        self.dir.rename(from, to)
+    }
+
+    fn link(&self, from: &str, to: &str) -> io::Result<()> {
+        self.dir.link(from, to)
+    }
+
     fn create_dir(&self, path: &str) -> io::Result<()> {
         self.dir.create_dir(path)
     }

@@ -27,9 +27,11 @@
 //!   commits take, the longest of them, and how long each closing takes (TASK-41.1).
 //! - `burst`: a guest writing N MiB (256) of extents of 256 KiB after a commit, and committing,
 //!   in a directory of the host's: more than a segment and an extent hold, so that the open
-//!   segment fills between commits, and closes, again and again: how long the writes take, the
-//!   longest, and the commit after them, and what it seals in files of their own (TASK-79.2),
-//!   which its flush syncs at once (TASK-92.42).
+//!   segment fills between commits, again and again: how long the writes take, the longest, and
+//!   the commit after them, ordered, durable and framed, what it seals in files of their own
+//!   (TASK-79.2), which its flush syncs at once (TASK-92.42), and the bytes the store wrote for it
+//!   by kind: fxdax: since the commit seals the extents in the segments filled where they are, a
+//!   commit spanning them (TASK-92.41), none copied, none in files of their own.
 //! - `durable`: a guest's durable commits, a hundred of them one after another, each sealing N
 //!   extents (2) in files of their own, in a directory of the host's: how long each commit's flush
 //!   takes, which syncs their files and their directory, as many at once as there are of each,
@@ -221,19 +223,33 @@ fn burst(mib: u64) {
         store.write(extent(sequence), 0, &data(sequence, EXTENT)).unwrap();
         writes.add(started.elapsed());
     }
-    let started = Instant::now();
+    let (started, before) = (Instant::now(), extent_store::written());
     store.commit_ordered(None).unwrap();
     let ordered = started.elapsed();
     store.flush().unwrap();
     let durable = started.elapsed();
+    // Its segments framed: what the uploader takes waits for that.
+    let closed = store.closed(usize::MAX).unwrap().len();
+    let framed = started.elapsed();
+    let after = extent_store::written();
     let own = std::fs::read_dir(temp.path().join(format!("extents/{BRANCH:016x}"))).unwrap();
     writes.print("writes");
+    let ms = |took: Duration| took.as_secs_f64() * 1e3;
     println!(
-        "the commit: ordered in {:.1} ms, durable in {:.1} ms, sealing {} extents in files of \
-         their own",
-        ordered.as_secs_f64() * 1e3,
-        durable.as_secs_f64() * 1e3,
+        "the commit: ordered in {:.1} ms, durable in {:.1} ms, its {closed} segments framed in \
+         {:.1} ms, sealing {} extents in files of their own",
+        ms(ordered),
+        ms(durable),
+        ms(framed),
         own.count()
+    );
+    let mib = |bytes: u64| bytes as f64 / (1 << 20) as f64;
+    println!(
+        "written for it: copied {:.1} MiB, own {:.1} MiB, framed {:.1} MiB, log {:.2} MiB",
+        mib(after.copied - before.copied),
+        mib(after.own - before.own),
+        mib(after.framed - before.framed),
+        mib(after.log - before.log)
     );
 }
 

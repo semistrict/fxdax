@@ -137,9 +137,10 @@ pub struct Rules {
     /// Closing a branch waits for every segment being framed, whatever closed it, a commit no
     /// flush took or one that failed among them (TASK-41.1, TASK-79.99).
     pub close_waits_for_framings: bool,
-    /// A segment closed is framed at once, and its framing ends itself, whatever closed it: a
-    /// closing for want of room waits for no commit after it, which may never come, to frame it,
-    /// as a commit an uploader waits for is in it (TASK-150.2, TASK-153.8).
+    /// A segment closed is framed at once, and its framing ends itself, whatever closed it: those
+    /// filled between commits, which the commit after closes, wait for no commit after that, which
+    /// may never come, to frame them, as the commit an uploader waits for is in them (TASK-150.2,
+    /// TASK-153.8, TASK-92.41).
     pub framings_end_themselves: bool,
     /// A free of an extent sealed before keeps its data while a view older than the free lives.
     pub keep_frees_for_views: bool,

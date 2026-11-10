@@ -215,11 +215,13 @@ mod tests {
         assert_eq!(Record::decode(3, &bytes), Ok(record));
         let mut newer = (FORMAT + 1).to_le_bytes().to_vec();
         newer.extend_from_slice(b"what a later format holds");
-        assert_eq!(Record::decode(3, &newer), Err(Error::Format { branch: 3, format: 3 }));
-        // Format 1's record, whose footers and checkpoints this format reads wrong.
-        let mut older = bytes.clone();
-        older[..4].copy_from_slice(&1u32.to_le_bytes());
-        assert_eq!(Record::decode(3, &older), Err(Error::Format { branch: 3, format: 1 }));
+        assert_eq!(Record::decode(3, &newer), Err(Error::Format { branch: 3, format: FORMAT + 1 }));
+        // Format 1's and 2's records, whose footers and checkpoints this format reads wrong.
+        for format in [1u32, 2] {
+            let mut older = bytes.clone();
+            older[..4].copy_from_slice(&format.to_le_bytes());
+            assert_eq!(Record::decode(3, &older), Err(Error::Format { branch: 3, format }));
+        }
         assert!(matches!(Record::decode(3, &bytes[..3]), Err(Error::Corrupt(_))));
     }
 
@@ -277,7 +279,7 @@ mod tests {
             forking: None,
             claimed: false,
         };
-        let corrupt = "a branch's record of no kind: Flags { format: 2, owner: 9, origin: None, \
+        let corrupt = "a branch's record of no kind: Flags { format: 3, owner: 9, origin: None, \
                        forked: true, deleted: false, point: true, forking: None, claimed: false }";
         let refused = Record::decode(2, &encode(&refused));
         assert_eq!(refused, Err(Error::Corrupt(corrupt.to_owned())));

@@ -316,6 +316,15 @@ impl Dir for MemDir {
         fs.change_dir(from, DirChange::Remove(from_name.to_owned()))
     }
 
+    /// fxdax: `to`'s entry, of `from`'s file, durable as its directory is synced (TASK-310).
+    fn link(&self, from: &str, to: &str) -> io::Result<()> {
+        let (_, to_name) = split(to);
+        let mut fs = self.fs.lock().unwrap();
+        fs.spend()?;
+        let inode = fs.lookup(from)?;
+        fs.change_dir(to, DirChange::Add(to_name.to_owned(), inode))
+    }
+
     fn create_dir(&self, path: &str) -> io::Result<()> {
         let mut fs = self.fs.lock().unwrap();
         fs.spend()?;

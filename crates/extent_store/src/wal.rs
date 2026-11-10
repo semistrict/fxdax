@@ -132,7 +132,7 @@ pub(crate) struct LogRecord {
 }
 
 /// What a [`LogRecord`] holds of the runs its commit sealed, in the order its contents name them
-/// (`Contents::extents`).
+/// (`Contents::runs`: fxdax: those of the commit it goes on with too, TASK-92.41).
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum Runs {
     /// Nothing: its data was synced before it.
@@ -179,7 +179,7 @@ impl LogRecord {
     pub fn of<F: File>(contents: Contents, raw: &F, hold: bool) -> Result<Self, Error> {
         let mut bytes = Vec::new();
         let mut crcs = Vec::with_capacity(contents.extents.len());
-        for &(extent, offset, len) in &contents.extents {
+        for &(extent, offset, len) in contents.runs() {
             let start = bytes.len();
             bytes.resize(start + len as usize, 0);
             raw.read_cached(&mut bytes[start..], offset)
@@ -195,21 +195,18 @@ impl LogRecord {
 
     /// The bytes of the runs `contents` names.
     pub fn run_bytes(contents: &Contents) -> u64 {
-        contents.extents.iter().map(|&(_, _, len)| len).sum()
+        contents.runs().map(|&(_, _, len)| len).sum()
     }
 
     /// Makes `raw`, its segment's raw data, hold the runs it names, as its commit wrote them:
     /// those it holds, written into it; whether it does, those it checks, or those synced.
     fn restore(&self, raw: &mut Vec<u8>) -> bool {
-        let runs = self
-            .contents
-            .extents
-            .iter()
-            .map(|&(_, offset, len)| offset as usize..(offset + len) as usize);
+        let runs =
+            self.contents.runs().map(|&(_, offset, len)| offset as usize..(offset + len) as usize);
         match &self.runs {
             Runs::Synced => true,
             Runs::Checked(crcs) => {
-                crcs.len() == self.contents.extents.len()
+                crcs.len() == self.contents.runs().count()
                     && runs.zip(crcs).all(|(run, &crc)| {
                         raw.get(run).is_some_and(|run| extent_frame::crc(run) == crc)
                     })
@@ -357,9 +354,10 @@ pub(crate) fn recover<D: Dir>(dir: &D, branch: u64) -> Result<Recovered, Error> 
         Ok(())
     };
     // A log's commits the base acknowledged are the bucket's: its framed file left, its raw data
-    // and log a crash brought back, it holds nothing of the log's.
+    // and log a crash brought back, it holds nothing of the log's. fxdax: a commit's record going
+    // on with it past the segment, the commit's (TASK-92.41).
     let after_base = |records: &[Contents]| {
-        let last = records.iter().rev().find_map(|record| record.commits.last().copied());
+        let last = records.iter().rev().find_map(last_commit);
         last.is_some_and(|last| base.is_none_or(|base| epoch_of(last) > epoch_of(base)))
     };
     // A segment holding nothing goes, its framed file's removal durable before its raw data's and
@@ -393,30 +391,72 @@ pub(crate) fn recover<D: Dir>(dir: &D, branch: u64) -> Result<Recovered, Error> 
             None => (number, Found::Nothing),
         });
     }
+    // fxdax: whether the base acknowledged a segment's commits, its whole.
+    let acknowledged =
+        |footer: &Footer| base.is_some_and(|base| footer_last(footer) <= epoch_of(base));
+    // fxdax: whether the commit the segment found at `at` goes on with past it, `commit`, ends:
+    // the segments after it, one after another, each going on with it, to one ending it
+    // (TASK-92.41). A flush appends a commit's records to its segments' logs in their order, the
+    // one ending it last, but checks of their runs against the raw data may stop at any of them.
+    let ended = |at: usize, commit: u64| -> bool {
+        let mut number = found[at].0;
+        for (next, found) in &found[at + 1..] {
+            if *next != number + 1 {
+                return false;
+            }
+            number = *next;
+            match found.goes_on(commit) {
+                Some(true) => return true,
+                Some(false) => {}
+                None => return false,
+            }
+        }
+        false
+    };
     // Each segment, in order: whole, framed; or, its framed file not whole, closed again from its
     // log, which holds the records of the commits made in it that a flush made durable, at least;
     // or holding no durable commit, its files going. One closed again whose log lacks its last
     // commits, the next segment holding commits not following its last, is the last: those after
-    // it go, durably, first (see the module's docs).
+    // it go, durably, first (see the module's docs). fxdax: and one going on with a commit that no
+    // segment after it ends is the last, closed again without it, from its raw data and log, which
+    // stay until the commit is durable: the commit is not.
     let mut segments: Vec<(Footer, u64)> = Vec::new();
     for (at, (number, found_here)) in found.iter().enumerate() {
         let number = *number;
         let segment = SegmentId { branch, number };
-        let (records, data) = match found_here {
-            Found::Whole(footer) => {
-                settled(number)?;
-                segments.push((footer.clone(), number));
-                continue;
-            }
+        let continues = |record: &Contents| record.continued.is_some();
+        let (mut records, data, unended) = match found_here {
+            // One the base acknowledged, whose files' removal a crash undid, goes below: its
+            // commit is the bucket's, whole, whatever is left of the segments after it.
+            Found::Whole(footer) => match &footer.contents.continued {
+                Some(continued) if !acknowledged(footer) && !ended(at, continued.commit) => {
+                    let (records, data) = log_records(dir, segment)?;
+                    (records, data, true)
+                }
+                _ => {
+                    settled(number)?;
+                    segments.push((footer.clone(), number));
+                    continue;
+                }
+            },
             Found::Nothing => {
                 gone(number)?;
                 continue;
             }
-            Found::Torn(records, data) => (records, data),
+            Found::Torn(records, data) => {
+                let continued = records.last().and_then(|record| record.continued.as_ref());
+                let unended = continued.is_some_and(|continued| !ended(at, continued.commit));
+                (records.clone(), data.clone(), unended)
+            }
         };
+        let goes_on = !unended && records.last().is_some_and(continues);
+        if unended && records.last().is_some_and(continues) {
+            records.pop();
+        }
         let last = records.iter().rev().find_map(|record| record.commits.last()).copied();
         let next = found[at + 1..].iter().find_map(|(_, found)| found.first_commit());
-        let whole = next.is_some_and(|next| last.is_some_and(|last| next == epoch_of(last) + 1));
+        let follows = next.is_some_and(|next| last.is_some_and(|last| next == epoch_of(last) + 1));
+        let whole = goes_on || (!unended && follows);
         let after = &found[at + 1..];
         if !whole && !after.is_empty() {
             for (number, _) in after {
@@ -427,11 +467,15 @@ pub(crate) fn recover<D: Dir>(dir: &D, branch: u64) -> Result<Recovered, Error> 
             }
             dir.barrier()?;
         }
+        if !after_base(&records) {
+            gone(number)?;
+            break;
+        }
         if framed.contains(&number) {
             remove(dir, &segment_path(segment))?;
         }
         let previous = segments.last().map(|(footer, _)| footer);
-        let footer = close_again(dir, segment, previous, records, data)?;
+        let footer = close_again(dir, segment, previous, &records, &data)?;
         settled(number)?;
         segments.push((footer, number));
         if !whole {
@@ -440,10 +484,8 @@ pub(crate) fn recover<D: Dir>(dir: &D, branch: u64) -> Result<Recovered, Error> 
     }
     // Those acknowledged by the base, whose files' removal a crash undid, are the bucket's: they
     // go again.
-    let acknowledged = base.map(epoch_of);
-    let (gone, segments): (Vec<_>, Vec<_>) = segments
-        .into_iter()
-        .partition(|(footer, _)| acknowledged.is_some_and(|base| footer_last(footer) <= base));
+    let (gone, segments): (Vec<_>, Vec<_>) =
+        segments.into_iter().partition(|(footer, _)| acknowledged(footer));
     for (footer, number) in gone {
         remove(dir, &segment_path(SegmentId { branch, number }))?;
         for (extent, _) in footer.own() {
@@ -486,6 +528,22 @@ enum Found {
 }
 
 impl Found {
+    /// fxdax: whether it ends `commit`, which the segment before it went on with, or goes on with
+    /// it, ending none: `Some(true)` or `Some(false)`; none if neither (TASK-92.41). Its first
+    /// record, of a log, ends it, or goes on with it.
+    fn goes_on(&self, commit: u64) -> Option<bool> {
+        let first = match self {
+            Found::Whole(footer) => &footer.contents,
+            Found::Torn(records, _) => records.first()?,
+            Found::Nothing => return None,
+        };
+        match (first.ends(commit), first.continues(commit)) {
+            (true, _) => Some(true),
+            (false, true) => Some(false),
+            (false, false) => None,
+        }
+    }
+
     /// The store's epoch of the first commit it holds, if any.
     fn first_commit(&self) -> Option<u64> {
         let first = match self {
@@ -524,23 +582,35 @@ fn close_again<D: Dir>(
     records: &[Contents],
     data: &[u8],
 ) -> Result<Footer, Error> {
-    let first = records.first().context("a log closed again holds a commit")?;
+    let first = records.first().and_then(last_commit);
+    let first = first.context("a log closed again holds a commit")?;
     let mut chain = match last {
         Some(last) => {
             let after = Some((last.seq, last.epoch));
             Chain::new(segment.branch, last.epoch, last.seq + 1, after, last.contents.next_sequence)
         }
-        None => Chain::new(segment.branch, writer_of(first.commits[0]), 0, None, 0),
+        None => Chain::new(segment.branch, writer_of(first), 0, None, 0),
     };
     let footer = chain.close(fold(segment.branch, records));
     let path = segment_path(segment);
     remove(dir, &path)?;
     let file = dir.create(&path, true)?;
+    // fxdax: to the end of its last run: past it, nothing the records name, as a framing in place
+    // cut short leaves the raw file with its tail, torn (TASK-310).
+    let end = footer.contents.runs().map(|&(_, offset, len)| offset + len).max().unwrap_or(0);
+    let data = &data[..(end as usize).min(data.len())];
     let framed = extent_frame::framed(data, &footer.encode());
     file.write_at(&framed, 0)?;
     crate::written::wrote(crate::written::Kind::Framed, framed.len());
     file.sync()?;
     Ok(footer)
+}
+
+/// fxdax: the last commit `record`, a log's record, holds of: the one it goes on with past its
+/// segment, if any, or its last (TASK-92.41).
+fn last_commit(record: &Contents) -> Option<u64> {
+    let continued = record.continued.as_ref().map(|continued| continued.commit);
+    continued.or(record.commits.last().copied())
 }
 
 /// Removes the file at `path` in `dir`, unless it is gone.
@@ -604,7 +674,7 @@ impl Queue {
     ) -> Vec<&Queued> {
         let mut taken = Vec::new();
         for queued in self.segments.iter_mut().filter(|queued| !queued.taken) {
-            let last = queued.footer.contents.commits.last().map_or(0, |&tag| epoch_of(tag));
+            let last = footer_last(&queued.footer);
             if taken.len() == limit || last > durable || framing(queued.number) {
                 break;
             }
@@ -826,6 +896,86 @@ mod tests {
             let recovered = recover(&dir.crash(seed), BRANCH).unwrap();
             assert_eq!(recovered.segments, framed[..1], "seed {seed}");
         }
+    }
+
+    /// fxdax: the record of commit `epoch` going on past its segment, sealing `extent` there at
+    /// `offset`, of a block: a commit spanning segments (TASK-92.41).
+    fn continuing(epoch: u64, extent: u64, offset: u64) -> Contents {
+        let extents = vec![(ExtentId::new(BRANCH, extent), offset, 4096)];
+        let continued = Some(extent_frame::segment::Continued { commit: tag(2, epoch), extents });
+        Contents { continued, ..Contents::default() }
+    }
+
+    /// fxdax: a commit spanning segments whose records, each segment's part of it, are whole, the
+    /// last ending it, is kept, each segment closed again with its part, going on with it, but the
+    /// last; one whose last segment's log lacks its record, ending it, is not: the first closes
+    /// again with the commits before it alone, and those after go (TASK-92.41).
+    #[test]
+    fn commits_spanning_segments_are_kept_whole_or_not_at_all() {
+        let ended = |dir: &MemDir| {
+            create_branch_dirs(dir, BRANCH).unwrap();
+            left_open(dir, 0, 2, &[commit(1, 1, 0), continuing(2, 2, 4096)]);
+            left_open(dir, 1, 1, &[continuing(2, 3, 0)]);
+        };
+        let dir = MemDir::new();
+        ended(&dir);
+        left_open(&dir, 2, 1, &[commit(2, 4, 0), commit(3, 5, 0)]);
+        let recovered = recover(&dir, BRANCH).unwrap().segments;
+        let place = |(footer, number): &(Footer, u64)| {
+            let continued = footer.contents.continued.as_ref().map(|continued| continued.commit);
+            (*number, footer.contents.commits.clone(), continued)
+        };
+        let places: Vec<_> = recovered.iter().map(place).collect();
+        let expected = [
+            (0, vec![tag(2, 1)], Some(tag(2, 2))),
+            (1, vec![], Some(tag(2, 2))),
+            (2, vec![tag(2, 3)], None),
+        ];
+        assert_eq!(places, expected);
+        assert_eq!(recover(&dir, BRANCH).unwrap().segments, recovered, "recovered again");
+
+        let dir = MemDir::new();
+        ended(&dir);
+        left_open(&dir, 2, 1, &[]);
+        let recovered = recover(&dir, BRANCH).unwrap().segments;
+        assert_eq!(recovered.iter().map(place).collect::<Vec<_>>(), [(0, vec![tag(2, 1)], None)]);
+        assert_eq!(files(&dir, SEGMENTS), [0]);
+        assert_eq!((files(&dir, OPEN_SEGMENTS), files(&dir, LOGS)), (vec![], vec![]));
+        // Framed whole, going on with the commit, its raw data and log there: the same.
+        let dir = MemDir::new();
+        ended(&dir);
+        left_open(&dir, 2, 1, &[commit(2, 4, 0)]);
+        let framed = recover(&dir, BRANCH).unwrap().segments;
+        assert_eq!(framed.len(), 3);
+        left_open(&dir, 0, 2, &[commit(1, 1, 0), continuing(2, 2, 4096)]);
+        left_open(&dir, 1, 1, &[continuing(2, 3, 0)]);
+        dir.remove(&segment_path(segment(2))).unwrap();
+        left_open(&dir, 2, 1, &[]);
+        let recovered = recover(&dir, BRANCH).unwrap().segments;
+        assert_eq!(recovered.iter().map(place).collect::<Vec<_>>(), [(0, vec![tag(2, 1)], None)]);
+    }
+
+    /// fxdax: a segment going on with a commit the base acknowledged, its raw data gone, its framed
+    /// file's removal, as it left for the host's cache, and its log's undone by a crash, the segment
+    /// ending the commit gone: it goes, its commit the bucket's, whole, not taken for one going on
+    /// with a commit no segment ends, whose raw data it would close it again from (found by the
+    /// cut openings of the kept crash rounds, TASK-92.41).
+    #[test]
+    fn segments_going_on_with_acknowledged_commits_go() {
+        let dir = MemDir::new();
+        create_branch_dirs(&dir, BRANCH).unwrap();
+        left_open(&dir, 0, 2, &[commit(1, 1, 0), continuing(2, 2, 4096)]);
+        left_open(&dir, 1, 1, &[commit(2, 3, 0)]);
+        assert_eq!(recover(&dir, BRANCH).unwrap().segments.len(), 2);
+        BaseFile::read(&dir).unwrap().0.write(&dir, Some(tag(2, 2))).unwrap();
+        dir.remove(&segment_path(segment(1))).unwrap();
+        // Its log's removal undone too, not its raw data's.
+        left_open(&dir, 0, 2, &[commit(1, 1, 0), continuing(2, 2, 4096)]);
+        dir.remove(&open_segment_path(segment(0))).unwrap();
+        let recovered = recover(&dir, BRANCH).unwrap();
+        assert_eq!(recovered.segments, []);
+        assert_eq!(files(&dir, SEGMENTS), Vec::<u64>::new());
+        assert_eq!((files(&dir, OPEN_SEGMENTS), files(&dir, LOGS)), (vec![], vec![]));
     }
 
     /// Segments 0 to 2 framed whole, from logs of commits 1 and 2, 3, and 4: a flush appends its

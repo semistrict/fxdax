@@ -23,7 +23,6 @@ const OPTIONS: Options = Options {
     view_lag: None,
     view_kept_bytes: None,
     held_most: 256 << 10,
-    spilled_most: 2048,
 };
 
 fn create(path: &Path) -> extent_store::Store<HostDir> {

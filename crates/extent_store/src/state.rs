@@ -262,7 +262,7 @@ impl<F: File> State<F> {
     /// bucket, if into the cache: the extents' own files, those no extent holds nor keeps any more
     /// too, which the segment kept for the bucket (TASK-165.9); the segment's leaves once no
     /// extent's data is in it here, which writes since the last commit may be
-    /// ([`Reaped::Acknowledged`](crate::segments::Reaped)).
+    /// ([`Reaped`](crate::segments::Reaped)).
     pub fn acknowledge(
         &mut self,
         segment: SegmentId,
@@ -612,7 +612,8 @@ impl<F: File> State<F> {
     /// what it spent and its capacity (TASK-165.9's AC #5).
     pub fn closed(&mut self, footer: &extent_frame::segment::Footer) {
         self.replay.apply_contents(footer.seq, footer.epoch, &footer.contents);
-        if !self.uncommitted.is_empty() {
+        // fxdax: nor a commit begun in the footers, which the open segment's ends (TASK-92.41).
+        if !self.uncommitted.is_empty() || self.replay.begun.is_some() {
             return;
         }
         let lengths: BTreeMap<ExtentId, u64> =
@@ -826,11 +827,6 @@ pub(crate) struct Uncommitted<F> {
     /// fxdax: the capacity set since the last commit, which the next sets in the branch's state
     /// as object storage keeps it, its segment's footer saying so (TASK-165.3).
     capacity: Option<u64>,
-    /// fxdax: whether writes since the last commit filled a segment, which was set aside: the
-    /// extents opened from then on until the next commit are written in raw files of their own
-    /// ([`Uncommitted::spill`], TASK-310); and how many were.
-    spilling: bool,
-    spilled: usize,
 }
 
 /// An extent open: where its data goes, and its opening's number, which the writes to it carry;
@@ -845,8 +841,7 @@ struct Open<F> {
 impl<F> Default for Uncommitted<F> {
     fn default() -> Self {
         let (open, changes, overwritten, let_go) = (HashMap::new(), Vec::new(), 0, 0);
-        let (capacity, spilling, spilled) = (None, false, 0);
-        Self { open, openings: 0, changes, overwritten, let_go, capacity, spilling, spilled }
+        Self { open, openings: 0, changes, overwritten, let_go, capacity: None }
     }
 }
 
@@ -907,9 +902,8 @@ impl<F> Uncommitted<F> {
 
     /// fxdax: the bytes writes since the last commit wasted: what the open extents' writes wrote
     /// over, and what those freed, and writes dropped, let go of (TASK-79.2). The next commit takes
-    /// them back: of segments set aside, which it removes, or as dead space, which leaves with the
-    /// segments once acknowledged in the bucket (TASK-165.8); and of raw files, which its flush
-    /// removes.
+    /// them back: as dead space, which leaves with the segments once acknowledged in the bucket
+    /// (TASK-165.8); and of raw files, which its flush removes.
     pub fn wasted(&self) -> u64 {
         self.overwritten + self.let_go
     }
@@ -937,29 +931,6 @@ impl<F> Uncommitted<F> {
         self.changes.push(change);
     }
 
-    /// fxdax: writes since the last commit filled a segment, which was set aside, holding no
-    /// commit's data, for the next commit to copy the extents in it out of (TASK-79.2): the
-    /// extents opened from now on until then are written in raw files of their own, which it seals
-    /// where they are, framed in place if they don't compress (`Store::seal_own`). A guest writing
-    /// more than a segment between commits, as one writing a large file before its fsync, had all
-    /// it wrote set aside so, then copied, each extent in a file of its own: written twice, and
-    /// written back in between, its daemon writing some 2.3 times what its guests did, its framings
-    /// stalled for seconds behind it (TASK-310).
-    pub fn spill(&mut self) {
-        self.spilling = true;
-    }
-
-    /// fxdax: whether an extent opened now is written in a raw file of its own
-    /// ([`Uncommitted::spill`]): if no more than `most` were before it since the last commit.
-    pub fn spills(&self, most: usize) -> bool {
-        self.spilling && self.spilled < most
-    }
-
-    /// fxdax: an extent opened now is written in a raw file of its own ([`Uncommitted::spills`]).
-    pub fn spilled(&mut self) {
-        self.spilled += 1;
-    }
-
     /// fxdax: the branch's capacity is `capacity`, as of the next commit.
     pub fn resize(&mut self, capacity: u64) {
         self.capacity = Some(capacity);
@@ -973,7 +944,6 @@ impl<F> Uncommitted<F> {
     /// The changes since the last commit, for the commit, which seals the extents open.
     pub fn take(&mut self) -> Vec<Change> {
         self.open.clear();
-        (self.spilling, self.spilled) = (false, 0);
         self.overwritten = 0;
         self.let_go = 0;
         std::mem::take(&mut self.changes)

@@ -206,9 +206,10 @@ impl Tail {
     fn of(key: &str, tail: object::Tail) -> Result<Self, Error> {
         let (footer, parts) = (tail.footer(), &tail.parts);
         let (extents, table) = match layout::kind(key) {
+            // fxdax: and those of the commit it goes on with, sealed in it too (TASK-92.41).
             Kind::Segment { .. } => (
-                (Footer::decode(footer)?.contents.extents.into_iter())
-                    .map(|(extent, offset, len)| (extent, (offset, len)))
+                (Footer::decode(footer)?.contents.runs())
+                    .map(|&(extent, offset, len)| (extent, (offset, len)))
                     .collect(),
                 None,
             ),

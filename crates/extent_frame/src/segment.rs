@@ -72,7 +72,8 @@ impl Footer {
 /// number as of them, at least; the forks made at its end, by their children; and the branch's
 /// capacity, the most bytes its extents may hold, if they set it: a resize is a commit's, ordered
 /// with the others, so that the branch has it wherever it is taken, its forks inherit it, and a
-/// point keeps it as it was (TASK-165.3).
+/// point keeps it as it was (TASK-165.3). fxdax: and the runs in its data of the commit it ends
+/// inside of, if it does, which the next segment goes on with ([`Continued`], TASK-92.41).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Contents {
     pub commits: Vec<u64>,
@@ -83,9 +84,52 @@ pub struct Contents {
     pub next_sequence: u64,
     pub forks: Vec<Child>,
     pub capacity: Option<u64>,
+    pub continued: Option<Continued>,
+}
+
+/// fxdax: the runs a commit sealed in a segment's data, past the commits the segment ends, which
+/// the segments after it go on with: a commit spanning segments (TASK-92.41, the user's decision
+/// of 2026-10-23). A guest writing more than a segment between two commits fills segments that
+/// hold no commit; the commit after seals each extent where it was written, in whichever of them
+/// it is one run of, and each of those segments names its runs of the commit, its tag `commit`,
+/// as this; the segment the commit ends in names the commit with the rest of it, its frees, its
+/// root, its extents of their own, as any segment names a commit it ends. Footers name runs in
+/// their own segments alone. A reader holds what a segment continues until the segment that ends
+/// the commit, then seals it with the rest ([`Contents::ends`]); a segment after that neither goes
+/// on with it nor ends it, as a fence a later writer put there, leaves it unsealed: the commit,
+/// never ended, never was. Before, the commit copied every such extent out, into a file of its own
+/// each (TASK-79.2, TASK-310).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Continued {
+    pub commit: u64,
+    pub extents: Vec<(ExtentId, u64, u64)>,
 }
 
 impl Contents {
+    /// fxdax: the runs sealed in its segment's data: those of the commits it ends, then those of
+    /// the commit it goes on with, if any ([`Continued`]).
+    pub fn runs(&self) -> impl Iterator<Item = &(ExtentId, u64, u64)> + '_ {
+        let continued = self.continued.iter().flat_map(|continued| &continued.extents);
+        self.extents.iter().chain(continued)
+    }
+
+    /// fxdax: whether a segment of these contents, following one that went on with commit
+    /// `commit` ([`Continued`]), ends it: it names a commit of `commit`'s writer, `commit` or a
+    /// later one, as the segment a store's commit ends in names its last; one that names none, a
+    /// fence, ends it not, nor does one going on with it.
+    pub fn ends(&self, commit: u64) -> bool {
+        self.commits.last().is_some_and(|&last| {
+            writer_of(last) == writer_of(commit) && epoch_of(last) >= epoch_of(commit)
+        })
+    }
+
+    /// fxdax: whether a segment of these contents, following one that went on with commit
+    /// `commit`, goes on with it too, ending no commit.
+    pub fn continues(&self, commit: u64) -> bool {
+        self.commits.is_empty()
+            && self.continued.as_ref().is_some_and(|continued| continued.commit == commit)
+    }
+
     /// The extents sealed on their own, `branch`'s, and where each is, in segment `seq` of the
     /// writer of lease epoch `epoch`: the object that writer uploaded before it ([`extent_key`]).
     pub fn own_at(
@@ -253,11 +297,41 @@ mod tests {
                     Child { branch: 4, owner: 0x44, point: true },
                 ],
                 capacity: Some(1 << 30),
+                continued: Some(Continued {
+                    commit: tag(4, 13),
+                    extents: vec![(ExtentId { branch: 2, sequence: 14 }, 4096, 8192)],
+                }),
             },
         };
         let bytes = footer.encode();
         assert_eq!(Footer::decode(&bytes).unwrap(), footer);
         assert!(Footer::decode(&bytes[..bytes.len() - 1]).is_err());
+    }
+
+    /// fxdax: a commit a segment goes on with is ended by a segment naming it, or a later commit of
+    /// its writer's, as the segment a store's commit ends in names its last; gone on with by one
+    /// naming no commit and going on with it; and neither by a fence, nor by another writer's
+    /// segment, nor by one going on with another commit (TASK-92.41). A segment's runs are its
+    /// commits', then its continued commit's.
+    #[test]
+    fn continued_commits_end_in_their_writers_segments() {
+        let commit = tag(4, 13);
+        let extent = |sequence| ExtentId { branch: 2, sequence };
+        let continuing = |commit| Contents {
+            continued: Some(Continued { commit, extents: vec![(extent(2), 0, 8)] }),
+            ..Contents::default()
+        };
+        let naming = |last| Contents { commits: vec![last], ..Contents::default() };
+        assert!(naming(commit).ends(commit) && naming(tag(4, 20)).ends(commit));
+        assert!(!naming(tag(4, 12)).ends(commit) && !naming(tag(5, 13)).ends(commit));
+        assert!(!Contents::default().ends(commit) && !continuing(commit).ends(commit));
+        assert!(continuing(commit).continues(commit));
+        assert!(!continuing(tag(4, 14)).continues(commit));
+        assert!(!Contents::default().continues(commit));
+        let both = Contents { commits: vec![tag(4, 12)], ..continuing(commit) };
+        assert!(!both.continues(commit), "a segment ending a commit goes on with none before it");
+        let runs = Contents { extents: vec![(extent(1), 8, 8)], ..continuing(commit) };
+        assert_eq!(runs.runs().collect::<Vec<_>>(), [&(extent(1), 8, 8), &(extent(2), 0, 8)]);
     }
 
     /// A tag holds its writer's epoch above `TAG_SHIFT` and the store's below, each recovered whole.

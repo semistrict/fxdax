@@ -23,22 +23,23 @@
 //!   it is framed as objects in object storage are (`extent_frame`), its data in parts compressed
 //!   with zstd, with its footer: what the commits since it opened changed. fxdax: framed on a
 //!   thread of its own, which the commit's flush waits for, not the commit, nor the writes behind
-//!   it; read from its raw file until then. Its raw file goes once that commit is durable. Between
-//!   commits, full, holding a segment and an extent (`Options::max_extent`), it closes, framed so,
-//!   behind the write that found it full, which the next commit's flush waits for; or, holding no
-//!   commit's data, is set aside, raw, until the next commit has copied what is in it out; and
-//!   writes go to the next, so that no segment holds more, however much is written between
-//!   commits. The next commit copies the extents written since the last out of either, to the open
-//!   segment while it has room, and to files of their own after. fxdax: once one is set aside, the
-//!   extents opened until the next commit are written in raw files of their own, which that commit
-//!   seals where they are, as it seals large ones, rather than copy them out of more set aside
-//!   (TASK-310);
+//!   it; read from its raw file until then. Its raw file goes once that commit is durable. fxdax:
+//!   one none of whose parts compresses is framed in place, its raw file, its tail appended, linked
+//!   as its framed file: its data written once (TASK-310). Between commits, full, holding a segment
+//!   and an extent (`Options::max_extent`), it takes no more writes, which go to the next, so that
+//!   no segment holds more, however much is written between commits (TASK-79.2); fxdax: and it
+//!   waits for the next commit, which seals in place each extent one run in it, as in the open
+//!   segment, and closes it, its footer naming those runs as the commit's, which the segments
+//!   after it go on with, the open one ending it: a commit spanning segments (TASK-92.41). The
+//!   commit copies what is not one run where it is into the open segment, filling it in turn
+//!   past its room. Before, a segment filled was closed, or set aside, holding no commit, and the
+//!   commit copied every extent written since out of it, into files of their own past the open
+//!   segment's room;
 //! - `extents/<branch>/<sequence>`: the branch's extents sealed at `Options::large_extent` or more,
-//!   fxdax: or with no room left in the open segment, in files of their own, framed so; written raw
-//!   in `open-extents/<branch>/<sequence>` until sealed, if large from their first write, or opened
-//!   once a segment was set aside since the last commit. One none of whose parts compresses is
-//!   framed in place, its raw file renamed its framed file, its tail appended: its data written
-//!   once (TASK-310);
+//!   in files of their own, framed so; written raw in `open-extents/<branch>/<sequence>` until
+//!   sealed, if large from their first write. fxdax: one none of whose parts compresses is framed
+//!   in place, its raw file renamed its framed file, its tail appended: its data written once
+//!   (TASK-310);
 //! - `index/<branch>/<n>`: the branch's index, which maps its extents to their data, with its
 //!   root, its one mutable record, its capacity, and its next sequence number: a checkpoint, a
 //!   table in the format of checkpoints in object storage (`extent_frame::table`), then the changes
@@ -50,8 +51,9 @@
 //! bucket does, deleted it.
 //!
 //! **Commits.** A commit is a barrier: it seals the extents written before it, copying each whose
-//! pieces are not one run in the open segment into one there, or into a file of its own if it is
-//! large, and orders what came before it before what comes after. Its durability follows ([`Store::flush`], or
+//! pieces are not one run in the open segment, fxdax: or in a segment filled since the last commit,
+//! into one there, or into a file of its own if it is large, and orders what came before it before
+//! what comes after. Its durability follows ([`Store::flush`], or
 //! [`Store::commit`], which waits for it): commits become durable in order, several at once,
 //! which syncs the data written since the last flush, and the directories whose entries changed,
 //! then writes the commits' deltas to the index and syncs that. Only then does it remove the files
@@ -187,7 +189,7 @@ pub use host::{
 };
 pub use layout::{Description, Format, Place};
 pub use mem::{Io, MemDir, MemFile};
-pub use segments::segment_closes;
+pub use segments::{commits_spanning_segments, segment_closes, segments_framed_in_place};
 #[cfg(feature = "audit")]
 pub use state::AUDIT_FAILED;
 pub use store::{

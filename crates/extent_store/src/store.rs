@@ -15,7 +15,7 @@ use crate::layout::{
     open_segment_path, segment_path, spare_path,
 };
 use crate::seals;
-use crate::segments::{Behind, Reaped, Segments, Unframed, footer_last};
+use crate::segments::{Behind, Segments, Unframed, footer_last};
 use crate::shared::{Shared, SharedLock};
 use crate::state::{
     Framing, Gate, Life, Locked, OwnFiles, Placement, Readable, Reader, Space, Standing, State,
@@ -124,12 +124,6 @@ pub struct Options {
     /// the flush to sync its logs alone (`wal::LogRecord`, TASK-301): what a guest's journal, or
     /// a database's transaction, commits at a time, not a bulk load's.
     pub held_most: u64,
-    /// fxdax: the most extents opened between two commits that are written in raw files of their
-    /// own once a segment was set aside (`Uncommitted::spill`, TASK-310), each open, with two
-    /// descriptors, until the commit: past them, writes go to segments, set aside and copied out by
-    /// the commit, as before. A daemon's descriptors, 524,288 at most on its hosts, bound what its
-    /// stores spill so: 2,048 extents, 2 GiB of the guest's Fxfs's 1 MiB ones, for each of 128.
-    pub spilled_most: usize,
 }
 
 impl Options {
@@ -153,7 +147,6 @@ impl Default for Options {
             view_lag: None,
             view_kept_bytes: None,
             held_most: 256 << 10,
-            spilled_most: 2048,
         }
     }
 }
@@ -271,8 +264,10 @@ struct Pending<F> {
     syncs: Syncs<F>,
     /// fxdax: its contents, and the segment whose log its record is to be appended to, the one it
     /// was made in, open, or closed since (TASK-165.9): recorded by its flush, with the runs it
-    /// sealed checksummed ([`LogRecord`], TASK-301).
-    record: (SegmentId, Contents),
+    /// sealed checksummed ([`LogRecord`], TASK-301). fxdax: one for each segment it spans, in
+    /// their order: what it goes on with past each filled since the last commit, in that one's
+    /// log, then the rest, in the open segment's, where it ends (TASK-92.41).
+    records: Vec<(SegmentId, Contents)>,
     /// The files of the branch's alone it made unreferenced ([`Unreferenced::doomed`]): they go
     /// once it is durable.
     doomed: Vec<String>,
@@ -555,14 +550,17 @@ impl<D: Dir> Recovering<D> {
             extents: (extents.into_iter())
                 .map(|(extent, at)| (extent, Extent { len: at.len, data: Data::Remote(at) }))
                 .collect(),
-            segment: SegmentId { branch, number: 0 },
+            segments: HashMap::new(),
         });
         let mut named_own = BTreeSet::new();
         for (footer, number) in wal.segments() {
-            replay.extents.segment = SegmentId { branch, number: *number };
+            let key = extent_remote::layout::segment(branch, footer.seq);
+            replay.extents.segments.insert(key, SegmentId { branch, number: *number });
             replay.apply_contents(footer.seq, footer.epoch, &footer.contents);
             named_own.extend(footer.own().map(|(extent, _)| extent));
         }
+        // fxdax: a log ends with no commit unended (`wal::recover`, TASK-92.41).
+        ensure!(replay.begun.is_none(), "branch {branch:#x}'s log ends inside a commit");
         let head = wal.head().or(replay.last_commit);
         let epoch = head.map_or(0, epoch_of);
         let restate = replay.capacity.is_none() && fenced.is_some();
@@ -684,18 +682,20 @@ impl<D: Dir> Recovering<D> {
 }
 
 /// fxdax: a branch's extents as a replay of the footers of its write-ahead log places them over
-/// the bucket's ([`Recovering::open`]): sealed in one run of `segment`, the segment applied, or in
-/// files of their own.
+/// the bucket's ([`Recovering::open`]): sealed in one run of a segment of the log, which
+/// `segments` holds by its key in the bucket, or in files of their own. By the run's key, not the
+/// segment applied: a commit spanning segments seals its runs in those before (TASK-92.41).
 struct Local {
     extents: Extents,
-    segment: SegmentId,
+    segments: HashMap<String, SegmentId>,
 }
 
 impl Places for Local {
     fn seal(&mut self, extent: ExtentId, seal: Seal) {
         let entry = match seal {
-            Seal::Run(Location { offset, len, .. }) => {
-                let piece = Piece { segment: self.segment, offset, extent_offset: 0, len };
+            Seal::Run(Location { key, offset, len }) => {
+                let segment = self.segments[&key];
+                let piece = Piece { segment, offset, extent_offset: 0, len };
                 Extent { len, data: Data::Pieces(vec![piece]) }
             }
             Seal::Own(location) => Extent { len: location.len, data: Data::Own },
@@ -1074,10 +1074,7 @@ impl<D: Dir> Store<D> {
             let grows = end.saturating_sub(current.map_or(0, |entry| entry.len));
             let to_segment = match state.uncommitted.placement(extent) {
                 Some(placement) => matches!(placement, Placement::Segment),
-                None => {
-                    end < self.options.large_extent
-                        && !state.uncommitted.spills(self.options.spilled_most)
-                }
+                None => end < self.options.large_extent,
             };
             // fxdax: what it writes over, in a segment, takes room too (TASK-79.2), as the writes
             // that finished left the extent: not its holes (TASK-160.16).
@@ -1094,14 +1091,7 @@ impl<D: Dir> Store<D> {
         let (placement, opening) = match state.uncommitted.opening(extent) {
             Some(opened) => opened,
             None => {
-                // fxdax: or written since a segment was set aside since the last commit
-                // (`Uncommitted::spill`, TASK-310).
-                let spilled = end < self.options.large_extent
-                    && state.uncommitted.spills(self.options.spilled_most);
-                if spilled {
-                    state.uncommitted.spilled();
-                }
-                let placement = if spilled || end >= self.options.large_extent {
+                let placement = if end >= self.options.large_extent {
                     // Raw until it is sealed, when it is framed in its own file.
                     Placement::Own(Arc::new(self.create_raw(extent)?))
                 } else {
@@ -1150,28 +1140,17 @@ impl<D: Dir> Store<D> {
     }
 
     /// fxdax: makes room in the open segment for a write of `len` bytes, if it has none: writes
-    /// go to the next (TASK-79.2). The open segment, full, is set aside, holding no commit's data,
-    /// or else closed, as between commits, and framed behind, a framing that ends itself, whether
-    /// or not a commit comes after ([`Store::frame_behind`], TASK-150.2): holding the state alone,
-    /// so that the write waits neither for a commit in progress, nor for the writes in the
-    /// segment, nor for the framing, as the uploader's closing between commits does
-    /// ([`Store::close_now`]). Those writes go on: their extents are open, which the next commit
-    /// copies out, from the segment's raw file, which reads read until it is framed.
+    /// go to the next (TASK-79.2). The open segment, full, takes no more, and waits for the next
+    /// commit, which seals in place what is one run in it and closes it (`Segments::fill`,
+    /// TASK-92.41): holding the state alone, so that the write waits neither for a commit in
+    /// progress, nor for the writes in the segment, which go on, nor for a framing. Before, it was
+    /// closed then, holding commits, or set aside, and the next commit copied out of it every
+    /// extent written since.
     fn make_room(&self, state: &mut State<D::File>, len: u64) -> Result<(), Error> {
         if state.segments.fits(len, self.options.segment_limit()) {
             return Ok(());
         }
-        if state.segments.has_commits(state.epoch) {
-            let unframed = self.close_open_segment(state, state.epoch)?;
-            match rules().framings_end_themselves {
-                true => self.frame_behind(state, unframed),
-                false => state.deferred.push(unframed),
-            }
-        } else {
-            state.segments.retire(&*self.dir)?;
-            state.uncommitted.spill();
-        }
-        Ok(())
+        state.segments.fill(&*self.dir, state.epoch)
     }
 
     /// Records `write`, done; returns what of the open segment's raw file to write back, if
@@ -1473,30 +1452,38 @@ impl<D: Dir> Store<D> {
         let (changes, capacity) = (state.uncommitted.take(), state.uncommitted.take_capacity());
         // The open segment's footer records them, before the segment closes; fxdax: and its log,
         // unless it closes with them (TASK-165.9).
-        let (segment, next_sequence) = (state.segments.open_segment(), state.next_sequence);
         let changed = (root, capacity);
-        let contents =
-            state.segments.record(epoch, &changes, changed, &state.extents, next_sequence)?;
+        let records =
+            state.segments.record(epoch, &changes, changed, &state.extents, state.next_sequence)?;
         if let Some(root) = root {
             state.root = root.to_vec();
         }
-        self.committed(state, epoch, segment, &contents)
+        self.committed(state, epoch, records)
     }
 
-    /// fxdax: what follows commit `epoch`, whose contents are `contents`, recorded in `segment`,
-    /// the open segment, in the state: the closings for room it frames, the open segment closed if
-    /// it is due, the segments it let go of, and what its flush makes durable, queued.
+    /// fxdax: what follows commit `epoch`, whose contents are `records`, by the segments it spans,
+    /// in the state: the segments filled since the last commit closed and framed, which it sealed
+    /// in, the open segment closed if it is due, the segments it let go of, and what its flush
+    /// makes durable, queued.
     fn committed(
         &self,
         state: &mut State<D::File>,
         epoch: u64,
-        segment: SegmentId,
-        contents: &Contents,
+        records: Vec<(SegmentId, Contents)>,
     ) -> Result<(), Error> {
-        // fxdax: with the rule off, the closings for room since the last commit are framed only
-        // now, by a commit that may never come (TASK-150.2).
+        // fxdax: with the rule off, the segments the last commit closed are framed only now, by a
+        // commit that may never come (TASK-150.2).
         for unframed in std::mem::take(&mut state.deferred) {
             self.frame_behind(state, unframed);
+        }
+        // fxdax: those filled since the last commit, in the order they filled, before the open
+        // one, as the chain stamps them (TASK-92.41).
+        for unframed in state.segments.close_full(epoch, state.next_sequence) {
+            self.enqueue(state, &unframed);
+            match rules().framings_end_themselves {
+                true => self.frame_behind(state, unframed),
+                false => state.deferred.push(unframed),
+            }
         }
         self.close_if_due(state, epoch)?;
         // What its flush syncs, after the closing, whose directories its flush must sync: the
@@ -1504,23 +1491,15 @@ impl<D: Dir> Store<D> {
         let mut syncs = Syncs::default();
         state.own_files.take_syncs(&mut syncs);
         state.segments.take_syncs(&mut syncs);
-        // The segments none of its extents' data is in any more, set aside, or acknowledged in
-        // the bucket: their files go once it is durable, those of the bucket's into the host's
-        // cache (TASK-165.8).
-        let mut leaving = Vec::new();
-        for reaped in state.segments.reap() {
-            match reaped {
-                Reaped::Retired(number) => {
-                    state.unreferenced.doomed.extend(FileKey::Segment(number).paths());
-                }
-                Reaped::Acknowledged(number, key) => leaving.push((segment_path(number), key)),
-            }
-        }
+        // The segments none of its extents' data is in any more, acknowledged in the bucket: their
+        // files go into the host's cache once it is durable (TASK-165.8).
+        let leaving = (state.segments.reap().into_iter())
+            .map(|(number, key)| (segment_path(number), key))
+            .collect();
         let Unreferenced { doomed } = state.unreferenced.take();
         state.epoch = epoch;
-        let record = (segment, contents.clone());
         // Queued while the state is locked, so that commits queue in their order.
-        let pending = Pending { syncs, record, doomed, leaving };
+        let pending = Pending { syncs, records, doomed, leaving };
         self.durability.with(Mutex::lock).push(epoch, pending);
         Ok(())
     }
@@ -1628,9 +1607,10 @@ impl<D: Dir> Store<D> {
     }
 
     /// Seals `extent`, which a commit seals, in one run in the open segment, or in a file of its
-    /// own, framed, if it is large, copying its data there unless it is. fxdax: or if the open
-    /// segment has no room for it, as when the extents written since the last commit filled
-    /// others (TASK-79.2). Returns the bytes it copied, if it copied them.
+    /// own, framed, if it is large, copying its data there unless it is. fxdax: or where it is, if
+    /// one run of a segment filled since the last commit, which the commit goes on with
+    /// (`Segments::fill`, TASK-92.41); a copy past the open segment's room filling it, and going in
+    /// the next. Returns the bytes it copied, if it copied them.
     fn seal(&self, state: &mut State<D::File>, extent: ExtentId) -> Result<u64, Error> {
         let Some(entry) = state.extents.get(&extent).cloned() else {
             // fxdax: opened by a write abandoned, none since: its raw file, if it has one, holds
@@ -1646,7 +1626,6 @@ impl<D: Dir> Store<D> {
             return Ok(0);
         };
         let large = entry.len >= self.options.large_extent;
-        let open = state.segments.open_segment();
         match (&entry.data, state.uncommitted.placement(extent)) {
             (Data::Remote(_), _) => return Ok(0),
             // Written to a raw file of its own, which it is framed from, or in.
@@ -1655,7 +1634,7 @@ impl<D: Dir> Store<D> {
                 return self.seal_own(state, extent, raw, entry.len);
             }
             (Data::Pieces(pieces), _) if !large => {
-                let one_run = matches!(pieces[..], [piece] if piece.segment == open
+                let one_run = matches!(pieces[..], [piece] if state.segments.seals_in(piece.segment)
                     && piece.extent_offset == 0
                     && piece.len == entry.len);
                 if one_run {
@@ -1675,7 +1654,7 @@ impl<D: Dir> Store<D> {
         for piece in pieces {
             state.segments.let_go(piece);
         }
-        let data_now = if large || !state.segments.fits(entry.len, self.options.segment_limit()) {
+        let data_now = if large {
             let data = data.as_slice();
             self.write_own(state, extent, entry.len, |at, buf| {
                 buf.copy_from_slice(&data[at as usize..at as usize + buf.len()]);
@@ -1684,6 +1663,11 @@ impl<D: Dir> Store<D> {
             state.uncommitted.push(Change::MoveOwn { extent });
             Data::Own
         } else {
+            // fxdax: in the next, the open one full, which the commit goes on with past it.
+            if !state.segments.fits(entry.len, self.options.segment_limit()) {
+                state.segments.fill(&*self.dir, state.epoch)?;
+            }
+            let open = state.segments.open_segment();
             let (file, at) = state.segments.append(entry.len);
             file.write_at(data.as_slice(), at)?;
             written::wrote(written::Kind::Copied, data.as_slice().len());
@@ -1801,13 +1785,19 @@ impl<D: Dir> Store<D> {
         epoch: u64,
     ) -> Result<Unframed<D::File>, Error> {
         let unframed = state.segments.close(&*self.dir, epoch, state.next_sequence)?;
+        self.enqueue(state, &unframed);
+        Ok(unframed)
+    }
+
+    /// fxdax: `unframed`, a segment just closed, is a segment of the write-ahead log from now on,
+    /// until acknowledged (TASK-165.9), holding the bytes of its data framed, and of the extents
+    /// stored on their own its footer names.
+    fn enqueue(&self, state: &mut State<D::File>, unframed: &Unframed<D::File>) {
         #[cfg(any(test, feature = "audit"))]
         state.closed(&unframed.footer);
-        // fxdax: a segment of the write-ahead log from now on, until acknowledged (TASK-165.9).
         let own: u64 = unframed.footer.contents.own.iter().map(|(_, len)| len).sum();
-        let bytes = state.segments.len(unframed.number()) + own;
+        let bytes = unframed.len() + own;
         state.wal.push(unframed.number().number, unframed.footer.clone(), bytes);
-        Ok(unframed)
     }
 
     /// Has the next commit close the open segment, whatever it holds: for its data to be uploaded
@@ -1840,7 +1830,8 @@ impl<D: Dir> Store<D> {
 
     /// fxdax: closes the open segment, between commits, as [`Store::close_now`] does, framing it
     /// behind, and returns it: none if no commit came since it opened, nor fork, or the branch is
-    /// closed.
+    /// closed. fxdax: or the first segment filled since the last commit, holding commits, which
+    /// would wait for the next otherwise (`Segments::fill`, TASK-92.41).
     fn close_between_commits(&self) -> Result<Option<SegmentId>, Error> {
         let _committing = self.committing.with(Mutex::lock);
         let state = self.state()?;
@@ -1849,14 +1840,21 @@ impl<D: Dir> Store<D> {
             return Ok(None);
         }
         let mut state = state.hold_writes_while(&self.idle, |state| {
-            rules().close_waits_for_writers && state.segments.open_writers() > 0
+            rules().close_waits_for_writers && state.segments.closing_writers() > 0
         })?;
         // fxdax: and closed while it waited, as before (TASK-83).
         if state.standing.is_closed() {
             return Ok(None);
         }
         let epoch = state.epoch;
-        let unframed = state.failing(|state| self.close_open_segment(state, epoch));
+        let unframed = state.failing(|state| match state.segments.has_full() {
+            true => {
+                let unframed = state.segments.close_first_full(epoch, state.next_sequence);
+                self.enqueue(state, &unframed);
+                Ok(unframed)
+            }
+            false => self.close_open_segment(state, epoch),
+        });
         let unframed = unframed.context("closing the open segment")?;
         let number = unframed.number();
         self.frame_behind(&mut state, unframed);
@@ -2053,16 +2051,9 @@ impl<D: Dir> Store<D> {
             let own: Vec<_> = footer.own().collect();
             let segment = SegmentId { branch: self.branch, number };
             let mut leaving = state.acknowledge(segment, (&key, !queued.restamped), &own);
-            // Those no extent's data is in here any more leave now; those set aside, with the
-            // next commit's flush.
-            for reaped in state.segments.reap() {
-                match reaped {
-                    Reaped::Retired(number) => {
-                        state.unreferenced.doomed.extend(FileKey::Segment(number).paths());
-                    }
-                    Reaped::Acknowledged(number, key) => leaving.push((segment_path(number), key)),
-                }
-            }
+            // Those no extent's data is in here any more leave now.
+            let reaped = state.segments.reap().into_iter();
+            leaving.extend(reaped.map(|(number, key)| (segment_path(number), key)));
             // fxdax: and the raw files and logs of the segments framed whose commits are durable,
             // as those acknowledged are, which no flush may come to remove (TASK-165.9).
             let raw = state.segments.raw(self.durability.with(Mutex::lock).durable());
@@ -2201,8 +2192,8 @@ impl<D: Dir> Store<D> {
             self.dir.barrier()?;
             timed.phases.took(flush::LOGS, synced);
         } else {
-            let sealed: u64 =
-                commits.iter().map(|pending| LogRecord::run_bytes(&pending.record.1)).sum();
+            let records = commits.iter().flat_map(|pending| &pending.records);
+            let sealed: u64 = records.map(|(_, contents)| LogRecord::run_bytes(contents)).sum();
             let hold = sealed <= self.options.held_most;
             // The raw files it leaves unsynced, the next flush syncing data syncs.
             match hold {
@@ -2268,7 +2259,8 @@ impl<D: Dir> Store<D> {
     }
 
     /// fxdax: the records of `commits`, a flush's, by the segments they were made in, in order:
-    /// each the commit's contents, and what `runs` says of the runs it sealed ([`LogRecord`]).
+    /// each the commit's contents, and what `runs` says of the runs it sealed ([`LogRecord`]);
+    /// fxdax: of a commit spanning segments, one in each, in their order (TASK-92.41).
     fn records(
         &self,
         commits: &[Pending<D::File>],
@@ -2276,7 +2268,8 @@ impl<D: Dir> Store<D> {
     ) -> Result<Vec<(SegmentId, LogRecord)>, Error> {
         let mut raw: Option<(SegmentId, Arc<D::File>)> = None;
         let mut records = Vec::with_capacity(commits.len());
-        for Pending { record: (segment, contents), .. } in commits {
+        let spanned = commits.iter().flat_map(|pending| &pending.records);
+        for (segment, contents) in spanned {
             let record = match runs {
                 Runs::Synced => LogRecord { contents: contents.clone(), runs: Runs::Synced },
                 Runs::Checked(_) | Runs::Held(_) => {
@@ -2421,11 +2414,10 @@ impl<D: Dir> Store<D> {
                 state.uncommitted.take_capacity();
                 let epoch = state.epoch + 1;
                 self.publish(state, epoch, None, &[]);
-                let (segment, next_sequence) = (state.segments.open_segment(), state.next_sequence);
-                let changed = (None, Some(capacity));
-                let contents =
+                let (changed, next_sequence) = ((None, Some(capacity)), state.next_sequence);
+                let records =
                     state.segments.record(epoch, &[], changed, &state.extents, next_sequence)?;
-                self.committed(state, epoch, segment, &contents)
+                self.committed(state, epoch, records)
             });
             committed.context("committing the capacity")?;
         }

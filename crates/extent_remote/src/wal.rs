@@ -130,7 +130,14 @@ impl<T> Wal<T> {
     pub fn rebase(&mut self, fenced: &Fenced) -> Result<Vec<(Footer, T)>, Error> {
         let rules = rules();
         let last = if rules.wal_after_fence { fenced.last_commit } else { fenced.recovered };
-        let landed = match self.heads().iter().rposition(|&head| head == last) {
+        // fxdax: none of a commit spanning segments, but those to the one it ends in: the segments
+        // going on with it are no branch's end, the fence having left their commit unended, never
+        // acknowledged (TASK-92.41).
+        let between =
+            |landed: usize| landed == 0 || self.segments[landed - 1].0.contents.continued.is_none();
+        let heads = self.heads();
+        let landed = heads.iter().enumerate().rposition(|(at, &head)| head == last && between(at));
+        let landed = match landed {
             Some(landed) => landed,
             None if self.segments.is_empty() || !rules.wal_follows => 0,
             None => return Err(Error::Diverged),
@@ -149,7 +156,7 @@ impl<T> Wal<T> {
 mod tests {
     use super::*;
     use crate::batch::{Batch, Commit, Data, Unframed};
-    use crate::layout::{self, Contents, child};
+    use crate::layout::{self, Contents, Continued, child};
     use crate::recovery::State;
     use crate::store::Store;
     use crate::{Writer, branch, bucket};
@@ -290,6 +297,44 @@ mod tests {
             assert_eq!(rebase(&second, &mut wal).await, Ok(vec![]));
             assert_eq!(history(&bucket).await, [1, 2]);
             assert_eq!(second.last_commit(), Some(2));
+        });
+    }
+
+    /// fxdax: a log whose commit spans two segments, the first landed, the second not: no segment
+    /// of it landed, the commit unended at the fence, so both are stamped again after it, and land,
+    /// the commit once, its runs in both sealed (TASK-92.41). Taken as landed, the first's runs, the
+    /// fence having left them unsealed, would be lost.
+    #[test]
+    fn logs_of_commits_spanning_segments_land_whole() {
+        futures::executor::block_on(async {
+            let bucket = bucket().await;
+            let first = open(&bucket, 10).await;
+            let mut wal = log(&first);
+            let extent = |sequence| ExtentId::new(1, sequence);
+            let mut close_contents = |contents: Contents| {
+                let footer = first.chain().close(contents);
+                let data = Data::default();
+                let seq = first.add_segment(data.frame(&footer)).unwrap();
+                wal.push(footer, data);
+                seq
+            };
+            let continued = Continued { commit: 1, extents: vec![(extent(1), 0, 4096)] };
+            let seq =
+                close_contents(Contents { continued: Some(continued), ..Contents::default() });
+            let ending = Contents {
+                commits: vec![1],
+                extents: vec![(extent(2), 0, 4096)],
+                next_sequence: 3,
+                ..Contents::default()
+            };
+            close_contents(ending);
+            first.upload(seq).await.unwrap();
+            let second = open(&bucket, 11).await;
+            assert_eq!(second.fenced().chain.next_seq(), seq + 2, "the fence after the first");
+            assert_eq!(rebase(&second, &mut wal).await, Ok(vec![]));
+            assert_eq!(history(&bucket).await, [1]);
+            let sealed: Vec<ExtentId> = second.state().extents.keys().copied().collect();
+            assert_eq!(sealed, [extent(1), extent(2)]);
         });
     }
 

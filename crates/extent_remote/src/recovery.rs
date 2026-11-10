@@ -10,7 +10,10 @@
 //! forked, then the footers of its segments after it, in order, to the first one missing: read by
 //! their objects' tails, which hold them, several at once. A segment that does not follow the last
 //! one applied, which its footer names, is void and skipped: an earlier writer's, landed after a
-//! later one's, or a writer's, landed where one of its before it did not. A state recovered is
+//! later one's, or a writer's, landed where one of its before it did not. fxdax: a commit may span
+//! segments, each naming its runs of it, which a reader holds until the segment ending it, and
+//! drops at one neither going on with it nor ending it, a later writer's fence ([`Begun`],
+//! TASK-92.41). A state recovered is
 //! recovered on by the segments that came since ([`recover_on`]): a writer's, once it holds the
 //! lease, from what it found before.
 //!
@@ -55,6 +58,19 @@ pub struct State<P = Extents> {
     /// The most bytes its extents may hold, as its last commit to set it set it, if one did: its
     /// own, or, before its first, its parent's at the fork (TASK-165.3).
     pub capacity: Option<u64>,
+    /// fxdax: the runs of the commit the segments applied last went on with, which a later segment
+    /// ends, if they did ([`Begun`], TASK-92.41): none in a state a writer acknowledged, nor in
+    /// any checkpoint, as writers acknowledge only segments ending their commits.
+    pub begun: Option<Begun>,
+}
+
+/// fxdax: the runs a commit sealed in segments applied that a later segment ends
+/// (`extent_frame::segment::Continued`, TASK-92.41): sealed with it, where they are, once it does;
+/// or never, if the next segment applied neither goes on with it nor ends it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Begun {
+    pub commit: u64,
+    pub runs: Vec<(ExtentId, Location)>,
 }
 
 /// Where a branch's extents are in the bucket.
@@ -108,6 +124,7 @@ impl<P> State<P> {
             through: None,
             spent: Spent::default(),
             capacity: None,
+            begun: None,
         }
     }
 
@@ -136,6 +153,7 @@ impl<P> State<P> {
             through,
             spent,
             capacity,
+            begun,
         } = self;
         let extents = place(extents);
         State {
@@ -150,6 +168,7 @@ impl<P> State<P> {
             through,
             spent,
             capacity,
+            begun,
         }
     }
 }
@@ -174,8 +193,21 @@ impl<P: Places> State<P> {
     /// its end, and the capacity they set. Every free of the branch's own extents spends it, as the store that freed it
     /// spent it: a footer frees only what a commit held, not what was freed while open
     /// (TASK-160.15), and one sealed and freed within the segment is a free and no seal (TASK-165.3).
+    /// fxdax: first, the runs of a commit the segments before began ([`Begun`]), if this one ends
+    /// it, or holding them on if it goes on with it, or dropping them; then, after its own, holding
+    /// those of the commit it goes on with, if any (TASK-92.41).
     pub fn apply_contents(&mut self, seq: u64, epoch: u64, contents: &Contents) {
         let key = layout::segment(self.branch, seq);
+        match self.begun.take() {
+            Some(begun) if contents.ends(begun.commit) => {
+                for (extent, location) in begun.runs {
+                    self.extents.seal(extent, Seal::Run(location));
+                }
+            }
+            Some(begun) if contents.continues(begun.commit) => self.begun = Some(begun),
+            // Never ended: its writer's, never acknowledged, a later writer fenced.
+            Some(_) | None => {}
+        }
         for &(extent, offset, len) in &contents.extents {
             self.extents.seal(extent, Seal::Run(Location { key: key.clone(), offset, len }));
         }
@@ -198,6 +230,19 @@ impl<P: Places> State<P> {
         self.forks.extend(contents.forks.iter().map(|child| Fork::at(seq, child)));
         if contents.capacity.is_some() {
             self.capacity = contents.capacity;
+        }
+        if let Some(continued) = &contents.continued {
+            let runs = continued
+                .extents
+                .iter()
+                .map(|&(extent, offset, len)| (extent, Location { key: key.clone(), offset, len }));
+            match &mut self.begun {
+                Some(begun) => begun.runs.extend(runs),
+                None => {
+                    let runs = runs.collect();
+                    self.begun = Some(Begun { commit: continued.commit, runs });
+                }
+            }
         }
     }
 }
@@ -730,10 +775,10 @@ mod tests {
     use super::*;
     use crate::batch::{Batch, Commit};
     use crate::branch;
-    use crate::layout::{Child, child};
+    use crate::layout::{Child, Continued, child};
     use crate::store::Store;
     use crate::testing::SimBucket;
-    use crate::writer::Writer;
+    use crate::writer::{Objects, Writer};
     use object_store::memory::InMemory;
     use std::sync::Arc;
 
@@ -832,6 +877,73 @@ mod tests {
                 checkpoints,
             ]
         );
+    }
+
+    /// fxdax: a commit spanning segments (TASK-92.41): the runs each segment going on with it names
+    /// are sealed, where they are, once the segment ending it is applied, and not before; its
+    /// writer acknowledges none of its segments until then. A writer taking the branch with a commit
+    /// begun at its end fences it unended: its runs never sealed, its writer's segments after the
+    /// fence void, the next writer's state and recovery's agreeing.
+    #[test]
+    fn commits_spanning_segments_seal_once_ended() {
+        futures::executor::block_on(async {
+            let bucket = Arc::new(Store::new(Arc::new(InMemory::new()), ""));
+            branch::create(&*bucket, 1, 0).await.unwrap();
+            let writer = Writer::open(bucket.clone(), 1, 10, 0).await.unwrap();
+            let extent = |sequence| ExtentId::new(1, sequence);
+            let tag = |epoch| layout::tag(writer.epoch(), epoch);
+            let landed = async |writer: &Writer<Store>, contents: Contents| {
+                let footer = writer.chain().close(contents);
+                let data = vec![7; 8192];
+                let segment = Segment { data, footer: footer.clone() }.encode().into();
+                let seq = writer.add_segment(Objects { footer, segment, own: Vec::new() }).unwrap();
+                writer.upload(seq).await.unwrap();
+                (seq, writer.acknowledge().await.unwrap())
+            };
+            let continuing = |commit, sequence| Contents {
+                continued: Some(Continued {
+                    commit,
+                    extents: vec![(extent(sequence), 4096, 4096)],
+                }),
+                ..Contents::default()
+            };
+            let fence = writer.state().through;
+            let (first, acked) = landed(&writer, continuing(tag(1), 1)).await;
+            assert_eq!(acked, fence, "a segment going on with a commit, acknowledged");
+            let (second, acked) = landed(&writer, continuing(tag(1), 2)).await;
+            assert_eq!(acked, fence, "a segment going on with a commit, acknowledged");
+            let begun = recover(&*bucket, 1, None).await.unwrap().state;
+            assert_eq!((begun.extents.len(), begun.last_commit), (0, None), "{begun:?}");
+            let ending = Contents {
+                commits: vec![tag(1)],
+                extents: vec![(extent(3), 0, 4096)],
+                next_sequence: 4,
+                ..Contents::default()
+            };
+            let (ends, acked) = landed(&writer, ending).await;
+            assert_eq!(acked, Some(ends));
+            let at = |seq, offset| Location { key: layout::segment(1, seq), offset, len: 4096 };
+            let sealed: Vec<_> = writer.state().extents.into_iter().collect();
+            let expected = vec![
+                (extent(1), at(first, 4096)),
+                (extent(2), at(second, 4096)),
+                (extent(3), at(ends, 0)),
+            ];
+            assert_eq!(sealed, expected);
+            assert_eq!(writer.state().begun, None);
+            let recovered = recover(&*bucket, 1, None).await.unwrap().state;
+            assert_eq!(recovered.extents.into_iter().collect::<Vec<_>>(), expected);
+            assert_eq!(recovered.last_commit, Some(tag(1)));
+
+            // Begun, its writer gone: the next fences it unended.
+            let (begun, _) = landed(&writer, continuing(tag(2), 4)).await;
+            let next = Writer::open(bucket.clone(), 1, 11, 0).await.unwrap();
+            assert_eq!(next.state().through, Some(begun + 1), "the fence after it");
+            assert_eq!(next.state().extents.into_iter().collect::<Vec<_>>(), expected);
+            assert_eq!((next.state().begun, next.state().last_commit), (None, Some(tag(1))));
+            let recovered = recover(&*bucket, 1, None).await.unwrap().state;
+            assert_eq!(recovered, next.state());
+        });
     }
 
     /// TASK-165.3: a branch's capacity is its state, set by its commits, recovered from its
