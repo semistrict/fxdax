@@ -3,9 +3,11 @@ id: TASK-276.7
 title: >-
   Read data copied into fresh guest memory costs the receiving thread a COW
   fault and TLB shootdown each
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-11-09 05:12'
+updated_date: '2026-11-10 12:30'
 labels:
   - perf
 dependencies: []
@@ -31,3 +33,9 @@ TASK-276 phase 1 profile (fxfs-guest, cold random reads, 4 vCPUs): a third of th
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Step 1, bare metal (ubu1, fxjob --bench, main + bench, 4 vCPUs, 8 jobs, perf of the VM process): fxfs-guest cold random reads 8.2k / 13.4k / 19.8k / 25.3k IOPS (j1/j2/j4/j8; ext4 on virtio-blk 23.0k / 53.9k / 52.5k / 48.5k), p50 42 / 49 / 64 / 94 us. The receiving thread ('extentd client') is busy 54% of a CPU at most in any second; of its samples over the case: wp_page_copy 12.5% (the COW of guest pages its read replies are copied into, each a shootdown), munmap 17.96% (each large message's payload, vec![0; len] past musl's mmap threshold, unmapped as the reply drops: TASK-324), memcpy 21%, recvmsg 21%, waiting 12%. Not bound by the thread on bare metal.
+<!-- SECTION:NOTES:END -->
