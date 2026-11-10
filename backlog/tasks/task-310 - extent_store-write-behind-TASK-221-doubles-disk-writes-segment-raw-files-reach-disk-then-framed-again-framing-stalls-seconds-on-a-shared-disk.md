@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-09 23:57'
-updated_date: '2026-11-10 13:25'
+updated_date: '2026-11-10 15:48'
 labels:
   - perf
   - extentd
@@ -54,9 +54,9 @@ Whatever the fix, it must keep doc-12's durability window (TASK-221's ACs).
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Reproduced on ubu1 (non-ZFS disk, many VMs, one shared disk): extentd's bytes written vs guest bytes, slow framings, measured on main
-- [ ] #2 Root cause shown by A/B (write-behind off / 3cb88647e reverted vs main) on the same workload
-- [ ] #3 extentd's stats count bytes written per kind (raw, framed, log)
+- [x] #1 Reproduced on ubu1 (non-ZFS disk, many VMs, one shared disk): extentd's bytes written vs guest bytes, slow framings, measured on main
+- [x] #2 Root cause shown by A/B (write-behind off / 3cb88647e reverted vs main) on the same workload
+- [x] #3 extentd's stats count bytes written per kind (raw, framed, log)
 - [ ] #4 Fixed: extentd writes about 1x guest data plus framing overhead on that workload, slow framings back to old-pin levels, and pgbench durable_lag still meets doc-12's window
 <!-- AC:END -->
 
@@ -92,4 +92,8 @@ Bytes: the same with write-behind off. Root cause of the bytes: the large file's
 - pgbench / pgbench-dax, durable_lag within 50 ms, p99, max: base 62%/68%, 256/256 ms, 4.3/8.9 s (another round at 20G: 64%/72%, 4.1/0.26 s p99, 7.1/57 s max, others' disk busy); fix 82%/77%, 128/128 ms, 0.49/2.55 s; ab (write-behind off) 62%/60%, 256/512 ms, 5.0/5.2 s. Bytes: io_write ~36-38.6 GB per case on every side; cancelled 0.16-4 MB base, 120-270 MB fix, 790-890 MB ab.
 - So write-behind costs no bytes (raw reaches the disk with it off too, by the flushes' syncs and the host's write-back) and keeps the durability window: it stays. The triple write (raw, log, framed for small commits) is not material: logs 0.2 GB of 36 GB under pgbench (runs held in records), 0.02 GiB in the shared-disk case with each small file fsynced. pgbench's raw is 27-29 GB for 1.9-2.0 GB framed: open extents rewritten append to the open segment, dead before framing (TASK-92.41's interleaved/rewritten kinds), written back regardless.
 - doc-12's window does not hold on this shared disk: the crash bound (1 s) is passed by pgbench's max lag on base and by -dax on fix, and the fsync-per-file shared-disk case fails the median on base and fix alike (TASK-322).
+
+2026-11-10: on main: 5949ac1f2 (written-bytes stats; fxfs-guest-shared-disk), 90b4d8943 (TASK-329, found by the crash rounds once extents are framed in place), 80e682ed5 (spill once a segment is set aside; large extents that don't compress framed in place), 3a1038195 (backlog). Verified: macOS workspace (2216), sim, Shuttle; ubu1 workspace (2470, target and TMPDIR on ext4), sim, Shuttle; pgbench and pgbench-dax under fxjob --bench meet doc-12's median (82%, 77%). AC #4 in part: the stores write 1.47 times the guests' data on the shared-disk case (2.17 before), 2.55 with the file bucket's copy (3.17); not ~1x: the segments' raw data, a write-ahead log, is still written back and then framed (inherent to raw + framed; framing segments in place, as large extents now are, would remove it when they don't compress), and the spilled extents are a file each, whose syncs (flush data phase, framing own phase) leave the slowest framing at ~11 s with 8 VMs at once, not the old pin's 0.2 s: TASK-92.41's commits spanning segments removes the file per extent. pgbench-dax's longest lag (2.55 s) passes the crash bound on this shared disk, as main's did (up to 8.9 s): TASK-322. ubu1 setup: ~/docs/system-setup.d/143-fxdax_ext4_scratch.sh (zvol rpool/fxdax-scratch, ext4 at /mnt/fxdax-scratch, primarycache=metadata).
+
+CI 42843850345 green at 3a1038195 (all jobs).
 <!-- SECTION:NOTES:END -->

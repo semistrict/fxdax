@@ -4,9 +4,10 @@ title: >-
   A segment opened on a spare log renames the spare before its header is written
   anew: a crash between leaves the spare's last segment's records under the new
   segment's name
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-11-10 13:48'
+updated_date: '2026-11-10 15:25'
 labels:
   - extent_store
   - crash
@@ -25,7 +26,7 @@ Found by TASK-310 (crash round 270 of extent_store's crash tests, recovers_a_pre
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The crash rounds pass with the header written before the rename; red with the rename first (round 270)
+- [x] #1 The crash rounds pass with the header written before the rename; red with the rename first (round 270)
 <!-- AC:END -->
 
 ## Definition of Done
@@ -34,3 +35,9 @@ Found by TASK-310 (crash round 270 of extent_store's crash tests, recovers_a_pre
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+segments::create_open writes and syncs a spare log's new header at its spare path before renaming it the segment's log (90b4d8943). Verified: extent_store's crash rounds pass; red with the rename first (round 270 of recovers_a_prefix_of_its_commits, pieces past segment 6's data); macOS and ubu1 suites green.
+<!-- SECTION:FINAL_SUMMARY:END -->
