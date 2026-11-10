@@ -4,8 +4,10 @@ title: The suites under CPU starvation
 status: To Do
 assignee: []
 created_date: '2026-11-01 16:54'
+updated_date: '2026-11-10 14:00'
 labels: []
-dependencies: []
+dependencies:
+  - TASK-330
 parent_task_id: TASK-149
 priority: medium
 type: task
