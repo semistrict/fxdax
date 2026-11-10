@@ -67,13 +67,24 @@ if [[ -z ${LIBCLANG_PATH:-} ]] && command -v llvm-config > /dev/null; then
 fi
 if [[ -n ${LIBCLANG_PATH:-} ]]; then export LIBCLANG_PATH; fi
 
+# The directory cargo builds into, run in directory $1 as `$2` (default cargo): its workspace's
+# target directory, CARGO_TARGET_DIR's if set, as cargo metadata says, not a path guessed here, so
+# that a host's target directory of its own (CARGO_TARGET_DIR) is where binaries are taken from
+# (TASK-305). Each build below runs in its workspace's directory, as this does, so that cargo
+# reads the configuration there.
+target_dir() {
+    (cd "$1" && "${2:-cargo}" metadata --format-version 1 --no-deps) |
+        python3 -c 'import json, sys; print(json.load(sys.stdin)["target_directory"])'
+}
+
 # The harness's runner, which boots a VM for each test, and says which cases the arguments select,
 # a selection naming no case failing before anything else is built (TASK-160.29).
 if [[ -n $prebuilt ]]; then
     runner="$prebuilt/runner"
 else
     (cd "$harness" && cargo build -q -p runner)
-    runner="$harness/target/debug/runner"
+    harness_target=$(target_dir "$harness")
+    runner="$harness_target/debug/runner"
 fi
 tests=()
 if [[ -z $build_only ]]; then
@@ -105,18 +116,19 @@ fi
 # (fxfs-guest-soak).
 export FXDAX_E2E_RUN="$results"
 if [[ -z $prebuilt ]]; then
-cargo build --release --manifest-path "$root/Cargo.toml" -p fxdax --bin fxdax-extentd \
-    --bin fxdaxctl ${extentd_features[@]+"${extentd_features[@]}"}
-extentd_bin="$root/target/release/fxdax-extentd"
+(cd "$root" && cargo build --release -p fxdax --bin fxdax-extentd --bin fxdaxctl \
+    ${extentd_features[@]+"${extentd_features[@]}"})
+root_target=$(target_dir "$root")
+extentd_bin="$root_target/release/fxdax-extentd"
 # fxdax: fxdaxctl, beside it, for cases that run it against the daemon (fxfs-guest-stats,
 # TASK-111.4); and the bucket's collector, fxdax-gc, for those that collect their bucket
 # (fxfs-guest-soak).
-export FXDAXCTL_BIN="$root/target/release/fxdaxctl"
-cargo build --release --manifest-path "$root/Cargo.toml" -p extent_remote --bin fxdax-gc
-export FXDAX_GC_BIN="$root/target/release/fxdax-gc"
+export FXDAXCTL_BIN="$root_target/release/fxdaxctl"
+(cd "$root" && cargo build --release -p extent_remote --bin fxdax-gc)
+export FXDAX_GC_BIN="$root_target/release/fxdax-gc"
 # As fxdax builds it, with its fxdax feature (scripts/firecracker-cargo.sh), in the copy of
-# vendor/firecracker that builds in, whose .cargo/config.toml sets its target directory and build
-# environment. FXDAX_FIRECRACKER_SECCOMP builds Firecracker as production does, for musl, which compiles in its
+# vendor/firecracker that builds in, whose .cargo/config.toml sets its target directory, unless
+# CARGO_TARGET_DIR does, and build environment. FXDAX_FIRECRACKER_SECCOMP builds Firecracker as production does, for musl, which compiles in its
 # filter (TASK-50.1): `real`, the default, runs under that; `log` under a copy of it that allows
 # what it would refuse, logging it, which $results/seccomp-log.txt lists afterwards, by thread and
 # system call; `none` for the host's target, with no filter of its own, allowing every system
@@ -124,10 +136,11 @@ export FXDAX_GC_BIN="$root/target/release/fxdax-gc"
 # lacked, and only jailed runs, which ask for it, would have shown it (TASK-164).
 firecracker_cargo="$root/scripts/firecracker-cargo.sh"
 firecracker_dir=$("$firecracker_cargo" --tree)
+firecracker_target=$(target_dir "$root" "$firecracker_cargo")
 case "$seccomp" in
     none)
         "$firecracker_cargo" build --release -p firecracker --features fxdax
-        export FXDAX_FIRECRACKER="$firecracker_dir/build/cargo_target/release/firecracker"
+        export FXDAX_FIRECRACKER="$firecracker_target/release/firecracker"
         ;;
     real | log)
         musl="$(uname -m)-unknown-linux-musl"
@@ -136,7 +149,7 @@ case "$seccomp" in
         musl_cflags="CFLAGS_${musl//-/_}=-idirafter /usr/include -idirafter /usr/include/$(uname -m)-linux-gnu"
         env "$musl_cflags" "$firecracker_cargo" build --release -p firecracker --features fxdax \
             --target "$musl"
-        export FXDAX_FIRECRACKER="$firecracker_dir/build/cargo_target/$musl/release/firecracker"
+        export FXDAX_FIRECRACKER="$firecracker_target/$musl/release/firecracker"
         if [[ $seccomp == log ]]; then
             # The filter the build compiled in: upstream's, with fxdax's rules before each thread's
             # own, as its build.rs puts them (resources/fxdax/README.md).
@@ -168,7 +181,7 @@ fi
 if [[ -n ${FXDAX_FIRECRACKER_JAIL:-} ]]; then
     [[ $seccomp != none ]] || { echo "FXDAX_FIRECRACKER_JAIL needs a seccomp filter" >&2; exit 2; }
     env "$musl_cflags" "$firecracker_cargo" build --release -p jailer --target "$musl"
-    export FXDAX_FIRECRACKER_JAILER="$firecracker_dir/build/cargo_target/$musl/release/jailer"
+    export FXDAX_FIRECRACKER_JAILER="$firecracker_target/$musl/release/jailer"
     export FXDAX_JAIL_UID=64000 FXDAX_JAIL_GID=64000
     sysctl -q vm.unprivileged_userfaultfd=0
     # What the tests make, images and all, the jailed user reaches; but the daemons' sockets,
@@ -239,7 +252,7 @@ if [[ -z $build_only$prebuilt ]]; then
 fi
 if [[ -z $prebuilt ]]; then
     (cd "$harness" && cargo build -q --target "$guest_target" -p guest-agent)
-    export FXDAX_GUEST_AGENT="$harness/target/$guest_target/debug/guest-agent"
+    export FXDAX_GUEST_AGENT="$harness_target/$guest_target/debug/guest-agent"
 fi
 # fxdax: the artifacts, copied for runs to take as they are (FXDAX_E2E_PREBUILT), and what they
 # were built from and as; and nothing run.
