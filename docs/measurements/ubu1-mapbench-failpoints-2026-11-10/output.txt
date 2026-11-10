@@ -1,0 +1,321 @@
+fxjob: waiting for another measurement to finish
+== main 1
+write                2000 requests       70.9 µs mean      388.5 µs max
+commit                250 requests      738.5 µs mean     4126.0 µs max      9.3 µs store    707.0 µs wait
+map                  2000 requests       21.4 µs mean      573.7 µs max      4.1 µs mapping
+unmap                2000 requests       18.6 µs mean       56.6 µs max
+write 4 KiB          2000 requests       21.1 µs mean       46.2 µs max
+read 4 KiB           2000 requests       19.6 µs mean      290.6 µs max
+commit ordered       2000 requests       20.1 µs mean      218.8 µs max      2.7 µs store      0.2 µs wait
+free                 2000 requests       18.1 µs mean      139.9 µs max
+write 128 KiB        2000 requests       66.3 µs mean     1083.4 µs max
+read 128 KiB         2000 requests       43.1 µs mean      304.9 µs max
+commit ordered       2000 requests       22.3 µs mean      850.5 µs max      3.8 µs store      0.3 µs wait
+free                 2000 requests       19.1 µs mean      842.2 µs max
+fsync: copy 1        2000 requests       34.0 µs mean     1385.6 µs max      0.2 µs window      1.0 faults     34.0 µs a fault
+fsync: commit 1      2000 requests       23.7 µs mean      175.7 µs max     12.6 µs window      2.4 µs store      2.3 µs wait
+faults: loads 32     2000 requests      138.1 µs mean     1373.1 µs max      0.9 µs window      1.0 faults    138.1 µs a fault
+== new 1
+write                2000 requests       70.7 µs mean      269.7 µs max
+commit                250 requests      715.2 µs mean     2227.4 µs max      8.7 µs store    684.0 µs wait
+map                  2000 requests       21.5 µs mean      318.6 µs max      3.9 µs mapping
+unmap                2000 requests       18.7 µs mean       45.9 µs max
+write 4 KiB          2000 requests       20.3 µs mean       50.5 µs max
+read 4 KiB           2000 requests       18.5 µs mean       55.0 µs max
+commit ordered       2000 requests       19.0 µs mean       71.8 µs max      2.5 µs store      0.2 µs wait
+free                 2000 requests       17.7 µs mean      146.9 µs max
+write 128 KiB        2000 requests       65.6 µs mean      668.9 µs max
+read 128 KiB         2000 requests       44.5 µs mean     2073.4 µs max
+commit ordered       2000 requests       23.1 µs mean     1012.4 µs max      3.6 µs store      0.3 µs wait
+free                 2000 requests       19.2 µs mean      862.3 µs max
+fsync: copy 1        2000 requests       35.9 µs mean     1386.8 µs max      0.9 µs window      1.0 faults     35.9 µs a fault
+fsync: commit 1      2000 requests       24.2 µs mean      159.0 µs max     14.3 µs window      2.2 µs store      2.3 µs wait
+faults: loads 32     2000 requests      133.9 µs mean     1495.0 µs max      1.4 µs window      1.0 faults    133.9 µs a fault
+== main 2
+write                2000 requests       69.3 µs mean      332.3 µs max
+commit                250 requests      706.1 µs mean     1591.6 µs max      8.5 µs store    675.4 µs wait
+map                  2000 requests       21.0 µs mean      177.1 µs max      3.9 µs mapping
+unmap                2000 requests       18.4 µs mean       63.2 µs max
+write 4 KiB          2000 requests       19.8 µs mean       66.7 µs max
+read 4 KiB           2000 requests       18.1 µs mean       50.6 µs max
+commit ordered       2000 requests       18.6 µs mean       57.8 µs max      2.4 µs store      0.2 µs wait
+free                 2000 requests       16.9 µs mean      144.0 µs max
+write 128 KiB        2000 requests       66.0 µs mean      875.9 µs max
+read 128 KiB         2000 requests       42.0 µs mean      907.4 µs max
+commit ordered       2000 requests       22.3 µs mean      908.8 µs max      3.6 µs store      0.3 µs wait
+free                 2000 requests       19.2 µs mean      904.8 µs max
+fsync: copy 1        2000 requests       34.5 µs mean     1007.8 µs max      1.0 µs window      1.0 faults     34.5 µs a fault
+fsync: commit 1      2000 requests       23.1 µs mean      196.4 µs max     13.6 µs window      2.1 µs store      2.0 µs wait
+faults: loads 32     2000 requests      134.2 µs mean     1234.5 µs max      0.5 µs window      1.0 faults    134.2 µs a fault
+== new 2
+write                2000 requests       71.7 µs mean     1118.6 µs max
+commit                250 requests      738.8 µs mean     1459.0 µs max      8.3 µs store    707.9 µs wait
+map                  2000 requests       21.2 µs mean      186.1 µs max      3.9 µs mapping
+unmap                2000 requests       18.5 µs mean       40.0 µs max
+write 4 KiB          2000 requests       19.8 µs mean       43.4 µs max
+read 4 KiB           2000 requests       18.0 µs mean       36.5 µs max
+commit ordered       2000 requests       18.4 µs mean       48.1 µs max      2.5 µs store      0.2 µs wait
+free                 2000 requests       17.2 µs mean      145.0 µs max
+write 128 KiB        2000 requests       66.4 µs mean      979.2 µs max
+read 128 KiB         2000 requests       42.6 µs mean     1494.1 µs max
+commit ordered       2000 requests       22.9 µs mean      993.2 µs max      3.5 µs store      0.3 µs wait
+free                 2000 requests       19.0 µs mean     1072.0 µs max
+fsync: copy 1        2000 requests       33.9 µs mean      949.5 µs max      0.1 µs window      1.0 faults     33.9 µs a fault
+fsync: commit 1      2000 requests       22.6 µs mean      195.4 µs max     13.9 µs window      1.9 µs store      1.9 µs wait
+faults: loads 32     2000 requests      134.0 µs mean     1158.1 µs max      1.1 µs window      1.0 faults    134.0 µs a fault
+== main 3
+write                2000 requests       70.6 µs mean      241.5 µs max
+commit                250 requests      733.4 µs mean     1581.2 µs max      8.3 µs store    702.8 µs wait
+map                  2000 requests       20.9 µs mean      156.6 µs max      3.7 µs mapping
+unmap                2000 requests       18.2 µs mean       62.8 µs max
+write 4 KiB          2000 requests       21.1 µs mean       46.5 µs max
+read 4 KiB           2000 requests       19.2 µs mean       45.9 µs max
+commit ordered       2000 requests       19.9 µs mean       82.3 µs max      2.8 µs store      0.2 µs wait
+free                 2000 requests       18.1 µs mean      146.5 µs max
+write 128 KiB        2000 requests       65.6 µs mean      324.6 µs max
+read 128 KiB         2000 requests       42.4 µs mean      869.9 µs max
+commit ordered       2000 requests       22.9 µs mean      909.5 µs max      3.8 µs store      0.3 µs wait
+free                 2000 requests       18.7 µs mean      760.0 µs max
+fsync: copy 1        2000 requests       35.0 µs mean     1531.9 µs max      1.3 µs window      1.0 faults     35.0 µs a fault
+fsync: commit 1      2000 requests       23.9 µs mean      253.7 µs max     13.8 µs window      2.2 µs store      2.0 µs wait
+faults: loads 32     2000 requests      136.6 µs mean     1379.0 µs max      1.0 faults    136.6 µs a fault
+== new 3
+write                2000 requests       69.6 µs mean     1037.4 µs max
+commit                250 requests      710.2 µs mean     1214.7 µs max      7.9 µs store    680.7 µs wait
+map                  2000 requests       20.6 µs mean      230.2 µs max      3.6 µs mapping
+unmap                2000 requests       18.0 µs mean       43.5 µs max
+write 4 KiB          2000 requests       20.1 µs mean       35.9 µs max
+read 4 KiB           2000 requests       17.8 µs mean       43.6 µs max
+commit ordered       2000 requests       18.5 µs mean       72.8 µs max      2.1 µs store      0.2 µs wait
+free                 2000 requests       17.1 µs mean      139.6 µs max
+write 128 KiB        2000 requests       65.2 µs mean      984.0 µs max
+read 128 KiB         2000 requests       42.2 µs mean      981.8 µs max
+commit ordered       2000 requests       23.1 µs mean     1996.8 µs max      3.6 µs store      0.3 µs wait
+free                 2000 requests       19.1 µs mean      961.9 µs max
+fsync: copy 1        2000 requests       34.8 µs mean     1602.4 µs max      1.0 µs window      1.0 faults     34.8 µs a fault
+fsync: commit 1      2000 requests       23.3 µs mean      203.7 µs max     13.3 µs window      2.0 µs store      2.0 µs wait
+faults: loads 32     2000 requests      135.7 µs mean     1378.6 µs max      1.0 µs window      1.0 faults    135.7 µs a fault
+== main 4
+write                2000 requests       69.7 µs mean     1467.5 µs max
+commit                250 requests      726.8 µs mean     2117.5 µs max      8.0 µs store    696.3 µs wait
+map                  2000 requests       20.9 µs mean      165.2 µs max      3.6 µs mapping
+unmap                2000 requests       18.5 µs mean       55.3 µs max
+write 4 KiB          2000 requests       20.2 µs mean       72.6 µs max
+read 4 KiB           2000 requests       18.6 µs mean       66.2 µs max
+commit ordered       2000 requests       19.0 µs mean       65.1 µs max      2.5 µs store      0.2 µs wait
+free                 2000 requests       17.6 µs mean       61.7 µs max
+write 128 KiB        2000 requests       64.9 µs mean      395.9 µs max
+read 128 KiB         2000 requests       42.4 µs mean     1445.7 µs max
+commit ordered       2000 requests       21.9 µs mean      164.5 µs max      3.8 µs store      0.4 µs wait
+free                 2000 requests       20.5 µs mean     2417.8 µs max
+fsync: copy 1        2000 requests       36.2 µs mean     1251.5 µs max      0.8 µs window      1.0 faults     36.2 µs a fault
+fsync: commit 1      2000 requests       25.1 µs mean      170.4 µs max     14.7 µs window      2.5 µs store      2.4 µs wait
+faults: loads 32     2000 requests      135.7 µs mean      918.3 µs max      1.0 faults    135.7 µs a fault
+== new 4
+write                2000 requests       68.2 µs mean      308.1 µs max
+commit                250 requests      711.2 µs mean     1622.0 µs max      7.6 µs store    682.2 µs wait
+map                  2000 requests       20.7 µs mean      326.4 µs max      3.5 µs mapping
+unmap                2000 requests       17.9 µs mean       52.4 µs max
+write 4 KiB          2000 requests       19.8 µs mean       65.3 µs max
+read 4 KiB           2000 requests       17.8 µs mean       35.3 µs max
+commit ordered       2000 requests       18.3 µs mean       66.7 µs max      2.3 µs store      0.2 µs wait
+free                 2000 requests       17.0 µs mean      147.4 µs max
+write 128 KiB        2000 requests       66.0 µs mean      677.2 µs max
+read 128 KiB         2000 requests       41.3 µs mean     1676.1 µs max
+commit ordered       2000 requests       23.9 µs mean     1074.1 µs max      3.6 µs store      0.3 µs wait
+free                 2000 requests       19.2 µs mean      193.3 µs max
+fsync: copy 1        2000 requests       35.4 µs mean     1034.5 µs max      0.1 µs window      1.0 faults     35.4 µs a fault
+fsync: commit 1      2000 requests       25.3 µs mean       94.2 µs max     14.1 µs window      2.5 µs store      2.5 µs wait
+faults: loads 32     2000 requests      137.5 µs mean      969.7 µs max      0.4 µs window      1.0 faults    137.5 µs a fault
+== main 5
+write                2000 requests       70.8 µs mean      212.6 µs max
+commit                250 requests      762.2 µs mean     1870.1 µs max      8.3 µs store    730.9 µs wait
+map                  2000 requests       21.3 µs mean      183.7 µs max      3.8 µs mapping
+unmap                2000 requests       18.7 µs mean      155.8 µs max
+write 4 KiB          2000 requests       19.9 µs mean       88.1 µs max
+read 4 KiB           2000 requests       17.9 µs mean       42.2 µs max
+commit ordered       2000 requests       18.4 µs mean       53.0 µs max      2.3 µs store      0.2 µs wait
+free                 2000 requests       17.2 µs mean      144.1 µs max
+write 128 KiB        2000 requests       64.7 µs mean      823.2 µs max
+read 128 KiB         2000 requests       43.3 µs mean     2000.7 µs max
+commit ordered       2000 requests       22.2 µs mean     1000.1 µs max      3.4 µs store      0.3 µs wait
+free                 2000 requests       18.5 µs mean      194.3 µs max
+fsync: copy 1        2000 requests       34.2 µs mean      930.2 µs max      0.3 µs window      1.0 faults     34.2 µs a fault
+fsync: commit 1      2000 requests       23.0 µs mean      240.1 µs max     13.5 µs window      2.0 µs store      2.0 µs wait
+faults: loads 32     2000 requests      141.4 µs mean     1320.5 µs max      0.7 µs window      1.0 faults    141.4 µs a fault
+== new 5
+write                2000 requests       70.6 µs mean      328.1 µs max
+commit                250 requests      727.8 µs mean     1303.7 µs max      8.6 µs store    696.4 µs wait
+map                  2000 requests       20.9 µs mean      166.7 µs max      3.8 µs mapping
+unmap                2000 requests       18.3 µs mean      396.0 µs max
+write 4 KiB          2000 requests       20.1 µs mean      124.8 µs max
+read 4 KiB           2000 requests       18.2 µs mean       60.4 µs max
+commit ordered       2000 requests       18.6 µs mean       74.7 µs max      2.4 µs store      0.2 µs wait
+free                 2000 requests       17.3 µs mean      138.4 µs max
+write 128 KiB        2000 requests       66.2 µs mean      914.0 µs max
+read 128 KiB         2000 requests       41.8 µs mean      873.2 µs max
+commit ordered       2000 requests       21.7 µs mean      817.9 µs max      3.6 µs store      0.3 µs wait
+free                 2000 requests       18.9 µs mean      851.4 µs max
+fsync: copy 1        2000 requests       34.7 µs mean     1142.3 µs max      0.9 µs window      1.0 faults     34.7 µs a fault
+fsync: commit 1      2000 requests       23.7 µs mean      172.5 µs max     13.5 µs window      2.3 µs store      2.1 µs wait
+faults: loads 32     2000 requests      137.7 µs mean     1496.9 µs max      0.7 µs window      1.0 faults    137.7 µs a fault
+== main 6
+write                2000 requests       70.1 µs mean      227.9 µs max
+commit                250 requests      733.6 µs mean     1246.5 µs max      8.7 µs store    701.8 µs wait
+map                  2000 requests       22.2 µs mean     1035.9 µs max      4.0 µs mapping
+unmap                2000 requests       18.9 µs mean      278.1 µs max
+write 4 KiB          2000 requests       20.5 µs mean       85.5 µs max
+read 4 KiB           2000 requests       18.6 µs mean       39.5 µs max
+commit ordered       2000 requests       19.3 µs mean       33.7 µs max      2.5 µs store      0.2 µs wait
+free                 2000 requests       17.7 µs mean      143.9 µs max
+write 128 KiB        2000 requests       67.9 µs mean      376.4 µs max
+read 128 KiB         2000 requests       43.0 µs mean      967.0 µs max
+commit ordered       2000 requests       22.5 µs mean      317.8 µs max      4.0 µs store      0.3 µs wait
+free                 2000 requests       19.1 µs mean      214.2 µs max
+fsync: copy 1        2000 requests       34.4 µs mean     1054.0 µs max      0.2 µs window      1.0 faults     34.4 µs a fault
+fsync: commit 1      2000 requests       25.1 µs mean     1032.9 µs max     13.0 µs window      2.6 µs store      2.4 µs wait
+faults: loads 32     2000 requests      147.1 µs mean     1288.7 µs max      1.0 faults    147.1 µs a fault
+== new 6
+write                2000 requests       67.2 µs mean      197.3 µs max
+commit                250 requests      714.5 µs mean     1905.3 µs max      7.4 µs store    685.6 µs wait
+map                  2000 requests       19.6 µs mean      169.2 µs max      3.2 µs mapping
+unmap                2000 requests       17.4 µs mean       38.6 µs max
+write 4 KiB          2000 requests       19.6 µs mean       61.7 µs max
+read 4 KiB           2000 requests       17.4 µs mean       36.5 µs max
+commit ordered       2000 requests       18.0 µs mean       38.3 µs max      2.2 µs store      0.2 µs wait
+free                 2000 requests       16.8 µs mean      147.3 µs max
+write 128 KiB        2000 requests       68.4 µs mean     3092.5 µs max
+read 128 KiB         2000 requests       43.4 µs mean     3048.3 µs max
+commit ordered       2000 requests       21.8 µs mean      314.8 µs max      3.4 µs store      0.3 µs wait
+free                 2000 requests       19.4 µs mean      879.1 µs max
+fsync: copy 1        2000 requests       33.9 µs mean     1305.7 µs max      0.1 µs window      1.0 faults     33.9 µs a fault
+fsync: commit 1      2000 requests       23.4 µs mean      240.0 µs max     13.5 µs window      2.2 µs store      1.9 µs wait
+faults: loads 32     2000 requests      138.4 µs mean     1129.5 µs max      1.7 µs window      1.0 faults    138.4 µs a fault
+== main 7
+write                2000 requests       68.8 µs mean     1094.5 µs max
+commit                250 requests      757.5 µs mean     1208.9 µs max      8.1 µs store    727.8 µs wait
+map                  2000 requests       20.2 µs mean      162.4 µs max      3.7 µs mapping
+unmap                2000 requests       17.7 µs mean       40.0 µs max
+write 4 KiB          2000 requests       20.1 µs mean       57.1 µs max
+read 4 KiB           2000 requests       18.9 µs mean       35.4 µs max
+commit ordered       2000 requests       19.0 µs mean       83.1 µs max      2.4 µs store      0.2 µs wait
+free                 2000 requests       17.4 µs mean      139.7 µs max
+write 128 KiB        2000 requests       67.6 µs mean     1086.4 µs max
+read 128 KiB         2000 requests       43.4 µs mean      851.7 µs max
+commit ordered       2000 requests       22.4 µs mean      775.9 µs max      3.8 µs store      0.4 µs wait
+free                 2000 requests       18.6 µs mean      207.2 µs max
+fsync: copy 1        2000 requests       35.2 µs mean     2136.8 µs max      0.0 µs window      1.0 faults     35.2 µs a fault
+fsync: commit 1      2000 requests       23.8 µs mean      200.1 µs max     13.3 µs window      2.3 µs store      2.2 µs wait
+faults: loads 32     2000 requests      137.7 µs mean     1086.7 µs max      0.3 µs window      1.0 faults    137.7 µs a fault
+== new 7
+write                2000 requests       68.4 µs mean      205.9 µs max
+commit                250 requests      722.3 µs mean     1422.6 µs max      7.9 µs store    692.4 µs wait
+map                  2000 requests       20.5 µs mean      397.9 µs max      3.6 µs mapping
+unmap                2000 requests       18.4 µs mean     1014.5 µs max
+write 4 KiB          2000 requests       20.2 µs mean       36.9 µs max
+read 4 KiB           2000 requests       18.1 µs mean       76.9 µs max
+commit ordered       2000 requests       18.7 µs mean       77.7 µs max      2.4 µs store      0.2 µs wait
+free                 2000 requests       17.4 µs mean      148.3 µs max
+write 128 KiB        2000 requests       68.1 µs mean     2631.1 µs max
+read 128 KiB         2000 requests       43.6 µs mean      928.1 µs max
+commit ordered       2000 requests       22.0 µs mean      183.1 µs max      3.9 µs store      0.3 µs wait
+free                 2000 requests       18.9 µs mean      194.1 µs max
+fsync: copy 1        2000 requests       34.5 µs mean      842.4 µs max      0.2 µs window      1.0 faults     34.5 µs a fault
+fsync: commit 1      2000 requests       25.1 µs mean      225.2 µs max     13.2 µs window      2.4 µs store      2.4 µs wait
+faults: loads 32     2000 requests      138.4 µs mean     1175.7 µs max      0.8 µs window      1.0 faults    138.4 µs a fault
+== main 8
+write                2000 requests       71.1 µs mean     1367.1 µs max
+commit                250 requests      752.3 µs mean     1735.3 µs max      8.3 µs store    721.5 µs wait
+map                  2000 requests       21.6 µs mean      157.8 µs max      3.9 µs mapping
+unmap                2000 requests       18.8 µs mean       50.9 µs max
+write 4 KiB          2000 requests       20.1 µs mean       47.7 µs max
+read 4 KiB           2000 requests       18.3 µs mean       33.5 µs max
+commit ordered       2000 requests       18.9 µs mean       66.6 µs max      2.5 µs store      0.2 µs wait
+free                 2000 requests       17.4 µs mean      149.8 µs max
+write 128 KiB        2000 requests       67.6 µs mean     2179.9 µs max
+read 128 KiB         2000 requests       44.1 µs mean     1605.8 µs max
+commit ordered       2000 requests       22.5 µs mean      850.9 µs max      3.9 µs store      0.3 µs wait
+free                 2000 requests       19.1 µs mean     1020.1 µs max
+fsync: copy 1        2000 requests       35.7 µs mean     1299.0 µs max      0.1 µs window      1.0 faults     35.7 µs a fault
+fsync: commit 1      2000 requests       24.8 µs mean       89.2 µs max     14.0 µs window      2.5 µs store      2.4 µs wait
+faults: loads 32     2000 requests      134.5 µs mean      945.9 µs max      1.9 µs window      1.0 faults    134.5 µs a fault
+== new 8
+write                2000 requests       66.7 µs mean      202.9 µs max
+commit                250 requests      695.2 µs mean     1235.5 µs max      7.4 µs store    666.1 µs wait
+map                  2000 requests       20.4 µs mean      267.6 µs max      3.3 µs mapping
+unmap                2000 requests       18.6 µs mean     1292.3 µs max
+write 4 KiB          2000 requests       20.2 µs mean       45.0 µs max
+read 4 KiB           2000 requests       18.2 µs mean       84.8 µs max
+commit ordered       2000 requests       18.7 µs mean       74.3 µs max      2.4 µs store      0.2 µs wait
+free                 2000 requests       17.5 µs mean      147.5 µs max
+write 128 KiB        2000 requests       66.9 µs mean     1017.7 µs max
+read 128 KiB         2000 requests       43.1 µs mean     2818.4 µs max
+commit ordered       2000 requests       23.2 µs mean     1992.3 µs max      3.5 µs store      0.3 µs wait
+free                 2000 requests       19.9 µs mean      789.5 µs max
+fsync: copy 1        2000 requests       34.5 µs mean     1441.6 µs max      0.1 µs window      1.0 faults     34.5 µs a fault
+fsync: commit 1      2000 requests       22.9 µs mean      209.5 µs max     13.9 µs window      2.0 µs store      1.9 µs wait
+faults: loads 32     2000 requests      134.3 µs mean     1003.7 µs max      0.6 µs window      1.0 faults    134.3 µs a fault
+== main 9
+write                2000 requests       70.2 µs mean     1894.3 µs max
+commit                250 requests      719.2 µs mean     1818.0 µs max      7.8 µs store    689.5 µs wait
+map                  2000 requests       20.8 µs mean      246.0 µs max      3.7 µs mapping
+unmap                2000 requests       18.2 µs mean       62.4 µs max
+write 4 KiB          2000 requests       20.0 µs mean       54.2 µs max
+read 4 KiB           2000 requests       17.8 µs mean       42.0 µs max
+commit ordered       2000 requests       18.5 µs mean       68.6 µs max      2.4 µs store      0.2 µs wait
+free                 2000 requests       17.0 µs mean      136.6 µs max
+write 128 KiB        2000 requests       65.0 µs mean      324.9 µs max
+read 128 KiB         2000 requests       42.2 µs mean     1605.0 µs max
+commit ordered       2000 requests       21.9 µs mean      808.1 µs max      3.5 µs store      0.3 µs wait
+free                 2000 requests       20.2 µs mean     2062.3 µs max
+fsync: copy 1        2000 requests       36.0 µs mean     1150.2 µs max      0.1 µs window      1.0 faults     36.0 µs a fault
+fsync: commit 1      2000 requests       24.7 µs mean      189.6 µs max     14.1 µs window      2.5 µs store      2.3 µs wait
+faults: loads 32     2000 requests      139.3 µs mean     1642.2 µs max      1.5 µs window      1.0 faults    139.3 µs a fault
+== new 9
+write                2000 requests       69.2 µs mean      191.7 µs max
+commit                250 requests      760.2 µs mean     1986.5 µs max      8.1 µs store    729.9 µs wait
+map                  2000 requests       20.6 µs mean      171.7 µs max      3.6 µs mapping
+unmap                2000 requests       18.0 µs mean       44.1 µs max
+write 4 KiB          2000 requests       19.8 µs mean       35.8 µs max
+read 4 KiB           2000 requests       17.9 µs mean       79.9 µs max
+commit ordered       2000 requests       18.3 µs mean       36.9 µs max      2.4 µs store      0.2 µs wait
+free                 2000 requests       17.1 µs mean      116.7 µs max
+write 128 KiB        2000 requests       68.1 µs mean     1916.9 µs max
+read 128 KiB         2000 requests       44.0 µs mean     2310.4 µs max
+commit ordered       2000 requests       23.3 µs mean      992.3 µs max      3.6 µs store      0.3 µs wait
+free                 2000 requests       20.0 µs mean     1837.3 µs max
+fsync: copy 1        2000 requests       34.5 µs mean     1194.7 µs max      0.1 µs window      1.0 faults     34.5 µs a fault
+fsync: commit 1      2000 requests       23.5 µs mean      172.6 µs max     13.5 µs window      2.1 µs store      2.0 µs wait
+faults: loads 32     2000 requests      137.7 µs mean     1354.5 µs max      1.9 µs window      1.0 faults    137.7 µs a fault
+== main 10
+write                2000 requests       72.1 µs mean     1553.4 µs max
+commit                250 requests      725.3 µs mean     1560.8 µs max      8.6 µs store    693.4 µs wait
+map                  2000 requests       21.5 µs mean      165.9 µs max      4.0 µs mapping
+unmap                2000 requests       18.9 µs mean       58.7 µs max
+write 4 KiB          2000 requests       20.1 µs mean       84.5 µs max
+read 4 KiB           2000 requests       18.2 µs mean       76.2 µs max
+commit ordered       2000 requests       18.7 µs mean       71.1 µs max      2.5 µs store      0.2 µs wait
+free                 2000 requests       17.3 µs mean      144.7 µs max
+write 128 KiB        2000 requests       66.3 µs mean     1330.5 µs max
+read 128 KiB         2000 requests       42.1 µs mean      942.1 µs max
+commit ordered       2000 requests       21.8 µs mean      159.9 µs max      3.8 µs store      0.3 µs wait
+free                 2000 requests       19.6 µs mean      902.4 µs max
+fsync: copy 1        2000 requests       34.8 µs mean     1278.5 µs max      1.1 µs window      1.0 faults     34.8 µs a fault
+fsync: commit 1      2000 requests       23.6 µs mean       88.1 µs max     13.6 µs window      2.2 µs store      2.0 µs wait
+faults: loads 32     2000 requests      133.5 µs mean      937.0 µs max      0.6 µs window      1.0 faults    133.5 µs a fault
+== new 10
+write                2000 requests       69.4 µs mean      237.1 µs max
+commit                250 requests      767.6 µs mean     1982.1 µs max      8.0 µs store    734.9 µs wait
+map                  2000 requests       20.7 µs mean      364.3 µs max      3.5 µs mapping
+unmap                2000 requests       18.0 µs mean       66.6 µs max
+write 4 KiB          2000 requests       19.8 µs mean       38.1 µs max
+read 4 KiB           2000 requests       17.7 µs mean       35.8 µs max
+commit ordered       2000 requests       18.3 µs mean       43.9 µs max      2.3 µs store      0.2 µs wait
+free                 2000 requests       17.0 µs mean      130.5 µs max
+write 128 KiB        2000 requests       66.1 µs mean      282.3 µs max
+read 128 KiB         2000 requests       42.5 µs mean      994.4 µs max
+commit ordered       2000 requests       22.1 µs mean     1014.4 µs max      3.4 µs store      0.3 µs wait
+free                 2000 requests       19.3 µs mean      942.5 µs max
+fsync: copy 1        2000 requests       35.4 µs mean     1000.4 µs max      1.0 µs window      1.0 faults     35.4 µs a fault
+fsync: commit 1      2000 requests       24.0 µs mean      214.6 µs max     14.2 µs window      2.3 µs store      2.1 µs wait
+faults: loads 32     2000 requests      134.8 µs mean     1713.6 µs max      1.2 µs window      1.0 faults    134.8 µs a fault

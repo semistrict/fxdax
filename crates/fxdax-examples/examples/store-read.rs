@@ -7,7 +7,7 @@
 //! a copy.
 //!
 //! ```sh
-//! cargo run -p fxdax --example store-read -- STORE NAME OFFSET LEN
+//! cargo run -p fxdax-examples --example store-read -- STORE NAME OFFSET LEN
 //! ```
 
 use anyhow::Context as _;

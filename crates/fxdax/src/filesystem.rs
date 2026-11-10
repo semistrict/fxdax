@@ -135,10 +135,11 @@ impl Options {
     /// They are separate from the tasks and threads calling the filesystem. The default is 1:
     /// operations mostly wait for one another and the device, and on one thread they wake one
     /// another without waking other threads, which costs a request most of its time otherwise.
-    /// An image's import goes no faster on two (TASK-92.47: on ubu1, 13,800 small files a second
-    /// on either, replacing them 4% slower on two, the large file ~1,500 MiB/s on either;
-    /// docs/measurements/ubu1-import-bench-threads-2026-11-10, built without the extent store's
-    /// audit, which GCE's of 2026-11-08 had, TASK-303).
+    /// An image's import goes no faster on two (TASK-92.47: on ubu1, small files and replacing
+    /// them 3% faster on two, about 15,000 and 9,700 a second on one, the large file 10% slower;
+    /// docs/measurements/ubu1-import-bench-threads-2026-11-10b, built with none of the tests'
+    /// features: GCE's of 2026-11-08 had the extent store's audit, TASK-303, and those and
+    /// ubu1-import-bench-threads-2026-11-10 fxdax's failpoints, TASK-320).
     pub fn executor_threads(&mut self, threads: NonZeroU8) -> &mut Self {
         self.executor_threads = threads;
         self

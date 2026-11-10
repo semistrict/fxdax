@@ -100,8 +100,10 @@ fi
 # call graphs walk (FXDAX_BENCH_PERF). With FXDAX_FAILPOINTS, a daemon whose failpoints it sets (FAILPOINTS, the fail crate's): requests
 # failing or waiting as it says, such as extentd::map=1%return(5) (TASK-44.10); with FXDAX_FAULT_SEED, those of a
 # fork's steps its seed says (fxdax::faults); with FXDAX_EXTENTD_FAILPOINTS=1, one built with them,
-# none set, for cases that set their own daemons' (fxfs-guest-soak, TASK-67).
-extentd_features=()
+# none set, for cases that set their own daemons' (fxfs-guest-soak, TASK-67): in the sim profile
+# (release with debug assertions), a test's build, as a release build, a measurement's, refuses
+# failpoints (extent_remote, TASK-320).
+extentd_features=() extentd_profile=release
 seccomp=${FXDAX_FIRECRACKER_SECCOMP:-real}
 if [[ -n $prebuilt ]]; then
     extentd_bin="$prebuilt/fxdax-extentd"
@@ -110,20 +112,20 @@ if [[ -n $prebuilt ]]; then
     export FXDAX_GUEST_AGENT="$prebuilt/guest-agent"
 fi
 if [[ -z $prebuilt && -n ${FXDAX_FAILPOINTS:-}${FXDAX_FAULT_SEED:-}${FXDAX_EXTENTD_FAILPOINTS:-} ]]; then
-    extentd_features=(--features failpoints)
+    extentd_features=(--features failpoints) extentd_profile=sim
 fi
 # The run's directory, by which a case that goes on from round to round keys what it keeps
 # (fxfs-guest-soak).
 export FXDAX_E2E_RUN="$results"
 if [[ -z $prebuilt ]]; then
-(cd "$root" && cargo build --release -p fxdax --bin fxdax-extentd --bin fxdaxctl \
-    ${extentd_features[@]+"${extentd_features[@]}"})
+(cd "$root" && cargo build --profile "$extentd_profile" -p fxdax --bin fxdax-extentd \
+    --bin fxdaxctl ${extentd_features[@]+"${extentd_features[@]}"})
 root_target=$(target_dir "$root")
-extentd_bin="$root_target/release/fxdax-extentd"
+extentd_bin="$root_target/$extentd_profile/fxdax-extentd"
 # fxdax: fxdaxctl, beside it, for cases that run it against the daemon (fxfs-guest-stats,
 # TASK-111.4); and the bucket's collector, fxdax-gc, for those that collect their bucket
 # (fxfs-guest-soak).
-export FXDAXCTL_BIN="$root_target/release/fxdaxctl"
+export FXDAXCTL_BIN="$root_target/$extentd_profile/fxdaxctl"
 (cd "$root" && cargo build --release -p extent_remote --bin fxdax-gc)
 export FXDAX_GC_BIN="$root_target/release/fxdax-gc"
 # As fxdax builds it, with its fxdax feature (scripts/firecracker-cargo.sh), in the copy of

@@ -7,7 +7,7 @@
 //! over many files. For profiling Fxfs itself, with perf on Linux, say:
 //!
 //! ```sh
-//! cargo run --release -p fxdax --example fxfs-metabench [FILES [JOURNAL_MIB [io]]]
+//! cargo run --release -p fxdax-examples --example fxfs-metabench [FILES [JOURNAL_MIB [io]]]
 //! ```
 //!
 //! JOURNAL_MIB sets the journal's reclaim size, the guest's by default (0). With `io`, the

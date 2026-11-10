@@ -1,0 +1,29 @@
+# fxdax's own: fxdax's examples, its benches and its tools, in a package of their own, so that a
+# release build of one measures fxdax as its daemon has it. A package's examples build with its
+# dev-dependencies, and fxdax's own tests' turn on its failpoints and extent_store's lock
+# instrumentation, which a release build refuses (TASK-320): none here does. fxdax's `testing`
+# alone, for the images import-bench imports (`fxdax::import::testing`), which is code beside the
+# importer, not in it. Say `cargo run --release -p fxdax-examples --example NAME`.
+[package]
+name = "fxdax-examples"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dev-dependencies]
+anyhow.workspace = true
+extent_frame.workspace = true
+extent_store.workspace = true
+# fxfs-metabench's attributes, as Fxfs's API takes them.
+fidl-fuchsia-io.workspace = true
+fuchsia-async.workspace = true
+futures.workspace = true
+fxdax = { path = "../fxdax", features = ["testing"] }
+fxfs.workspace = true
+libc.workspace = true
+storage_device.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true

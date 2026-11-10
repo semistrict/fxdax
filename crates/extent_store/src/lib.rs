@@ -137,6 +137,16 @@ compile_error!(
     "extent_store's `audit` in a release build, which measures with it: build the package alone \
      (`-p PACKAGE`), not across the workspace, whose dev-dependencies turn it on (TASK-303)"
 );
+// fxdax: and its `testing`, tests' panics holding a lock shared beyond one store: each such lock,
+// as it is taken, then takes one process-wide lock to see whether a test asked
+// (shared::testing::panic_if_asked). fxdax's tests' dev-dependency turns it on, and so, in its
+// package, fxdax's examples had it, until they were fxdax-examples' (TASK-320).
+#[cfg(all(feature = "testing", not(debug_assertions)))]
+compile_error!(
+    "extent_store's `testing` in a release build, which measures with it: build fxdax's examples \
+     as fxdax-examples' (`-p fxdax-examples`), a package alone (`-p PACKAGE`), not across the \
+     workspace, whose dev-dependencies turn it on (TASK-320)"
+);
 
 mod dir;
 mod durability;

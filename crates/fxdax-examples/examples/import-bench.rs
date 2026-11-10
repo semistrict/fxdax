@@ -13,7 +13,7 @@
 //!   takes each directory's new attributes, and one that whites each file out (TASK-92.37).
 //!
 //! ```sh
-//! cargo run --release -p fxdax --example import-bench [FILES [LARGE_MIB [KERNEL_MIB [THREADS]]]]
+//! cargo run --release -p fxdax-examples --example import-bench [FILES [LARGE_MIB [KERNEL_MIB [THREADS]]]]
 //! ```
 //!
 //! FILES is how many small files there are (default 20000), LARGE_MIB the large file's size

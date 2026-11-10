@@ -7,7 +7,7 @@
 //! what a guest's crash kept:
 //!
 //! ```sh
-//! cargo run -p fxdax --example store-tree STORE
+//! cargo run -p fxdax-examples --example store-tree STORE
 //! ```
 //!
 //! The store is opened as of its last durable commit, and closed unchanged but for what opening it

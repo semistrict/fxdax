@@ -7,7 +7,7 @@
 //! issues were measured by, before and after their changes. Say:
 //!
 //! ```sh
-//! cargo run --release -p fxdax --example store-bench -- CASE [N]
+//! cargo run --release -p fxdax-examples --example store-bench -- CASE [N]
 //! ```
 //!
 //! fxdax's, not extent_store's, whose examples have the store's audit, from its dev-dependency on

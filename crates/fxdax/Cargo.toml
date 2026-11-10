@@ -20,7 +20,9 @@ shuttle = ["dep:shuttle", "physmem/shuttle"]
 # fork's protocol here and in extent_store and extent_remote (`faults`), which the FAILPOINTS
 # environment variable sets, or FXDAX_FAULT_SEED from a seed: a request of a kind failing or
 # waiting, or a step failing, as configured (TASK-44.10). Without the feature they are nothing:
-# scripts/test-e2e.sh builds the daemon with it for FXDAX_FAILPOINTS. This crate's tests have it.
+# scripts/test-e2e.sh builds the daemon with it for FXDAX_FAILPOINTS, in the sim profile, as a
+# release build refuses it (extent_remote, TASK-320). This crate's tests have it, and so its
+# examples would: they are fxdax-examples'.
 failpoints = ["fail/failpoints"]
 
 [dependencies]
@@ -59,8 +61,6 @@ humantime = "2.4.0"
 
 [dev-dependencies]
 async-trait.workspace = true
-# fxfs-metabench's attributes, as Fxfs's API takes them.
-fidl-fuchsia-io.workspace = true
 fxdax = { path = ".", features = ["failpoints", "testing"] }
 # Panics holding a lock shared beyond one store, in tests that ask (TASK-149.24).
 extent_store = { workspace = true, features = ["testing"] }

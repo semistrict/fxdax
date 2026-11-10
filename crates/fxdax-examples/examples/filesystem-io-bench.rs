@@ -11,7 +11,7 @@
 //! locks they share.
 //!
 //! ```sh
-//! cargo run --release -p fxdax --example filesystem-io-bench [OPS [ROUNDS]]
+//! cargo run --release -p fxdax-examples --example filesystem-io-bench [OPS [ROUNDS]]
 //! ```
 //!
 //! OPS is how many reads, and writes, each thread makes (default 200000), ROUNDS how many times

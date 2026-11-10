@@ -13,7 +13,7 @@
 //! keeps raw, as it does not compress.
 //!
 //! ```sh
-//! cargo run --release -p fxdax --example pagein-bench [MIB [ROUNDS]]
+//! cargo run --release -p fxdax-examples --example pagein-bench [MIB [ROUNDS]]
 //! ```
 //!
 //! MIB is how much data of each kind (default 256), ROUNDS how many times it is read, each of a

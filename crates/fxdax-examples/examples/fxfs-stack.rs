@@ -10,7 +10,7 @@
 //! Markdown table. Only optimized builds say anything about a kernel's, so it runs only in one:
 //!
 //! ```sh
-//! cargo run --release -p fxdax --example fxfs-stack
+//! cargo run --release -p fxdax-examples --example fxfs-stack
 //! ```
 
 use fuchsia_async::LocalExecutor;

@@ -1386,7 +1386,6 @@ dependencies = [
  "extent_remote",
  "extent_store",
  "fail",
- "fidl-fuchsia-io",
  "flate2",
  "fuchsia-async",
  "futures",
@@ -1427,6 +1426,23 @@ dependencies = [
  "tower",
  "url",
  "zerocopy",
+]
+
+[[package]]
+name = "fxdax-examples"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "extent_frame",
+ "extent_store",
+ "fidl-fuchsia-io",
+ "fuchsia-async",
+ "futures",
+ "fxdax",
+ "fxfs",
+ "libc",
+ "storage_device",
+ "tempfile",
 ]
 
 [[package]]

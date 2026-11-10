@@ -14,3 +14,5 @@ of 2026-11-08 (gce-import-bench-threads-{1,2}-2026-11-08) had the audit compiled
 
 Two threads import no faster: small files alike, replacing 4% slower, whiting out 5% faster, the
 large file within the runs' spread. The default, one (`Options::executor_threads`), stands.
+
+Built also with fxdax's failpoints and extent_store's `testing` (`-p fxdax --example` builds with fxdax's dev-dependencies, which turn them on); a release build now refuses them (TASK-320). ubu1-import-bench-threads-2026-11-10b re-measured it without them.

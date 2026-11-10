@@ -16,7 +16,7 @@
 //! every build here keeps frame pointers, .cargo/config.toml):
 //!
 //! ```sh
-//! cargo run --release -p fxdax --example extentd-mapbench [MAPS [PAGES [MAPS_PER_COMMIT [maps|fsyncs|faults|all [CONNECTIONS]]]]]
+//! cargo run --release -p fxdax-examples --example extentd-mapbench [MAPS [PAGES [MAPS_PER_COMMIT [maps|fsyncs|faults|all [CONNECTIONS]]]]]
 //! ```
 //!
 //! PAGES is the pages each map maps (default 32), MAPS_PER_COMMIT how many maps a commit

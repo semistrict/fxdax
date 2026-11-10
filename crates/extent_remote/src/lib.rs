@@ -26,6 +26,27 @@ macro_rules! failpoint {
     };
 }
 
+// fxdax: tests' features, which a measurement must not have: the fail crate's failpoints, whoever
+// turned them on (`fxdax/failpoints`, or a dev-dependency's), each `fail_point!` of this crate's,
+// extent_store's and fxdax's then looking its name up in the fail crate's registry, under its lock;
+// and this crate's `testing`, whose protocol rules are a thread's, looked up at each step. A build
+// without debug assertions is the release profile's, which measurements are made with; tests'
+// are not (the dev and sim profiles have them). Here, as this is the lowest of the crates with
+// failpoints, which every other with them depends on. A package's examples build with its
+// dev-dependencies, and fxdax's own turn its failpoints on: fxdax's examples were measured with
+// them, until they were fxdax-examples' (TASK-320; extent_store's audit is TASK-303).
+const _: () = assert!(
+    cfg!(debug_assertions) || !fail::has_failpoints(),
+    "the fail crate's failpoints in a release build, which measures with them: build fxdax's \
+     examples as fxdax-examples' (`-p fxdax-examples`), a package alone (`-p PACKAGE`), not across \
+     the workspace, and a daemon with failpoints in the sim profile (`--profile sim`) (TASK-320)"
+);
+#[cfg(all(feature = "testing", not(debug_assertions)))]
+compile_error!(
+    "extent_remote's `testing` in a release build, which measures with it: build the package alone \
+     (`-p PACKAGE`), not across the workspace, whose dev-dependencies turn it on (TASK-320)"
+);
+
 pub mod batch;
 pub mod branch;
 pub mod bucket;
