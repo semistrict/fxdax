@@ -16,9 +16,9 @@ use crate::layout::{
     branch_dir, extent_path, held_frees, log_path, open_segment_path, parse_number, segment_path,
     spare_path,
 };
-use crate::wal::{log_header, log_salt, new_salt};
 use crate::store::{Options, Usage};
 use crate::timings::{self, Phases, framing};
+use crate::wal::{log_header, log_salt, new_salt};
 use anyhow::{Context as _, Error, anyhow, bail, ensure};
 use extent_frame::segment::{Chain, Child, Contents, Footer, epoch_of};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
@@ -238,7 +238,8 @@ impl<F: File> Segments<F> {
         }
         let open = SegmentId { branch, number: next };
         let logs = dir.list(&branch_dir(LOGS, branch))?;
-        let spared = logs.iter().filter_map(|name| name.strip_prefix(SPARE)).filter_map(parse_number);
+        let spared =
+            logs.iter().filter_map(|name| name.strip_prefix(SPARE)).filter_map(parse_number);
         let mut spares: Vec<_> = spared.map(|number| SegmentId { branch, number }).collect();
         let lifetime = {
             let mut bytes = [0; 24];
@@ -461,7 +462,8 @@ impl<F: File> Segments<F> {
                 let file = dir.open(&log_path(number), false)?;
                 let mut header = [0; 16];
                 file.read_cached(&mut header, 0)?;
-                let salt = log_salt(&header).ok_or_else(|| anyhow!("{number:?}'s log has no header"))?;
+                let salt =
+                    log_salt(&header).ok_or_else(|| anyhow!("{number:?}'s log has no header"))?;
                 Ok(Log { file: Arc::new(file), salt })
             }
         }
@@ -672,7 +674,11 @@ impl<F: File> Segments<F> {
     pub fn has_log(&self, segment: SegmentId) -> bool {
         let framed = self.raw.iter().any(|(_, number)| *number == segment);
         let phase = self.tracked.get(&segment).map(|segment| &segment.phase);
-        framed || matches!(phase, Some(Phase::Open { .. } | Phase::Framing { .. } | Phase::Failed { .. }))
+        framed
+            || matches!(
+                phase,
+                Some(Phase::Open { .. } | Phase::Framing { .. } | Phase::Failed { .. })
+            )
     }
 
     /// fxdax: whether the branch keeps another spare log ([`SPARES`]).
@@ -913,6 +919,7 @@ fn frame_segment<D: Dir>(
     for (piece, written) in bytes.chunks(WRITTEN_BACK).enumerate() {
         let offset = (piece * WRITTEN_BACK) as u64;
         file.write_at(written, offset)?;
+        crate::written::wrote(crate::written::Kind::Framed, written.len());
         file.write_back(offset, written.len() as u64)?;
     }
     let framed = Framed::new(Arc::new(file), extent_frame::Parts::of(&bytes)?);
@@ -1091,7 +1098,9 @@ fn create_open<D: Dir>(
     };
     // Durable before any record is appended: a crash losing it would leave a spare's header, and
     // the records it salts, its last segment's.
-    log.write_at(&log_header(salt), 0)?;
+    let header = log_header(salt);
+    log.write_at(&header, 0)?;
+    crate::written::wrote(crate::written::Kind::Log, header.len());
     log.sync_cached()?;
     Ok(Phase::Open { raw, log: Log { file: Arc::new(log), salt } })
 }

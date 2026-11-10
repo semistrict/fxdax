@@ -332,8 +332,17 @@ fn keeps_object_storage_and_follower_stats() {
         }
     }
     expected.extend(["own_sync_max_us", "raw_sync_max_us"].map(str::to_owned));
+    // And the bytes its stores wrote, by kind, and the process, as its kernel counts them
+    // (TASK-310).
+    let kinds = ["raw", "copied", "framed", "own", "log"];
+    expected.extend(kinds.map(|kind| format!("written_{kind}_bytes")));
+    expected.extend(["io_write_bytes", "io_cancelled_write_bytes"].map(str::to_owned));
     assert_eq!(names, expected, "{kept}");
     assert_eq!(count(&daemon, "durable_lag_count"), Some(3), "{kept}");
+    // The guest's write, to the open segment, once; its commit's records, in the segment's log.
+    assert_eq!(count(&daemon, "written_raw_bytes"), Some(2 * BLOCK as u64), "{kept}");
+    assert_eq!(count(&daemon, "written_copied_bytes"), Some(0), "{kept}");
+    assert!(count(&daemon, "written_log_bytes") > Some(0), "{kept}");
     // The three commits, each a COMMIT request: a request's time holds its commit's, which
     // holds its phases'.
     let requests = fields(&kept, 3, "requests").unwrap();

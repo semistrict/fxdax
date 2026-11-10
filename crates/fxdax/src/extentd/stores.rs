@@ -1276,9 +1276,15 @@ fn daemon_line() -> String {
         ],
     ]
     .concat();
+    // fxdax: the bytes its stores wrote, by kind, against what the process wrote in all, as the
+    // kernel counts it, and of that, what went before it was written back (TASK-310).
+    let written = extent_store::written()
+        .named()
+        .map(|(kind, bytes)| format!("written_{kind}_bytes={bytes}"));
+    let io = process_io().map(|(name, bytes)| format!("io_{name}={bytes}"));
     format!(
         "daemon: {} durable_lag_count={} durable_lag_max_us={} durable_lag_p50_ms={} \
-         durable_lag_p99_ms={} durable_lag_within_50ms={} {} {}",
+         durable_lag_p99_ms={} durable_lag_within_50ms={} {} {} {} {}",
         named.join(" "),
         lags.count,
         lags.max_us,
@@ -1286,8 +1292,27 @@ fn daemon_line() -> String {
         quantile(0.99),
         lags.within_turn,
         buckets.join(" "),
-        timed.join(" ")
+        timed.join(" "),
+        written.join(" "),
+        io.join(" ")
     )
+}
+
+/// fxdax: what this process wrote, as the kernel counts it (/proc/self/io): the bytes it had
+/// written to its disk, each as it dirtied the page, and of those, the bytes that went unwritten,
+/// their file truncated or removed first; 0 where there is no /proc (TASK-310).
+fn process_io() -> [(&'static str, u64); 2] {
+    let io = std::fs::read_to_string("/proc/self/io").unwrap_or_default();
+    let field = |name: &str| {
+        (io.lines())
+            .find_map(|line| line.strip_prefix(name)?.strip_prefix(": "))
+            .and_then(|value| value.trim().parse().ok())
+            .unwrap_or(0)
+    };
+    [
+        ("write_bytes", field("write_bytes")),
+        ("cancelled_write_bytes", field("cancelled_write_bytes")),
+    ]
 }
 
 /// fxdax: `timed`, of `kind`, as `NAME=COUNT` fields: so many, so many slow, the slowest's

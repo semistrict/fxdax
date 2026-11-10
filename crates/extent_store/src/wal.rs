@@ -112,6 +112,7 @@ impl BaseFile {
         let record = encode(&Slot { serial, base });
         assert!(record.len() as u64 <= SLOT, "a base's record fits its slot");
         file.write_at(&record, (serial % 2) * SLOT).context("writing the WAL's base")?;
+        crate::written::wrote(crate::written::Kind::Log, record.len());
         file.sync().context("syncing the WAL's base")?;
         self.serial = serial;
         Ok(())
@@ -311,6 +312,7 @@ impl<F: File> SegmentLog<F> {
         let start = self.end;
         for record in records {
             self.file.write_at(record, self.end)?;
+            crate::written::wrote(crate::written::Kind::Log, record.len());
             self.end += record.len() as u64;
         }
         if self.end > start {
@@ -534,7 +536,9 @@ fn close_again<D: Dir>(
     let path = segment_path(segment);
     remove(dir, &path)?;
     let file = dir.create(&path, true)?;
-    file.write_at(&extent_frame::framed(data, &footer.encode()), 0)?;
+    let framed = extent_frame::framed(data, &footer.encode());
+    file.write_at(&framed, 0)?;
+    crate::written::wrote(crate::written::Kind::Framed, framed.len());
     file.sync()?;
     Ok(footer)
 }

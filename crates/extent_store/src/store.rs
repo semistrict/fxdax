@@ -25,6 +25,7 @@ use crate::sync::{Condvar, Mutex, MutexGuard, rules, spawn_or_return, thread};
 use crate::timings::{self, Flush, flush};
 use crate::uploads::Closed;
 use crate::views::{Limits, Sealed, View, Views};
+use crate::written;
 use crate::wal::{
     BaseFile, LOG_MAGIC, LogRecord, Queue, Queued, Recovered, Runs, SegmentLog,
 };
@@ -319,6 +320,8 @@ impl<D: Dir> Write<'_, D> {
     /// it.
     pub fn finish(mut self) {
         self.finished = true;
+        // fxdax: counted (TASK-310).
+        written::wrote(written::Kind::Raw, self.len as usize);
         // fxdax: what was written to the open segment, its writing back begun once a MiB or more
         // waits, and waited for once more than WRITTEN_BEHIND_MOST is begun: holding no lock
         // (TASK-221). Failing, it is the flush's sync that fails.
@@ -1669,6 +1672,7 @@ impl<D: Dir> Store<D> {
         } else {
             let (file, at) = state.segments.append(entry.len);
             file.write_at(data.as_slice(), at)?;
+            written::wrote(written::Kind::Copied, data.as_slice().len());
             let pieces =
                 vec![Piece { segment: open, offset: at, extent_offset: 0, len: entry.len }];
             state.uncommitted.push(Change::Move { extent, pieces: pieces.clone() });
@@ -1698,11 +1702,14 @@ impl<D: Dir> Store<D> {
             let buf = &mut data.as_mut_slice()[..(len - at).min(CHUNK) as usize];
             read(at, buf)?;
             let end = packer.end();
-            file.write_at(&packer.push(buf), end)?;
+            let packed = packer.push(buf);
+            file.write_at(&packed, end)?;
+            written::wrote(written::Kind::Own, packed.len());
         }
         let end = packer.end();
         let tail = packer.finish(&[]);
         file.write_at(&tail, end)?;
+        written::wrote(written::Kind::Own, tail.len());
         let parts = extent_frame::Parts::of_suffix(&tail)?;
         let framed = Arc::new(Framed::new(Arc::new(file), parts));
         state.own_files.sealed(extent, framed);

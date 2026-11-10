@@ -170,6 +170,8 @@ pub mod upload;
 mod uploads;
 mod views;
 mod wal;
+mod written;
+pub use written::{Written, written};
 
 pub use dir::{Dir, File, HostDir, HostFile, bypass_page_cache};
 pub use framed::{Aligned, Packed, Part, read_object, read_whole, unpacks};

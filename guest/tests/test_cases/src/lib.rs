@@ -37,6 +37,9 @@ use test_fxfs_guest_pgbench::{
     Database as PgbenchDatabase, Probe, Storage as PgbenchStorage, TestFxfsGuestPgbench,
 };
 mod test_fxfs_guest_bigmap;
+// fxdax: what extentd asks of a disk it shares with many VMs and the bucket (TASK-310).
+mod test_fxfs_guest_shared_disk;
+use test_fxfs_guest_shared_disk::TestFxfsGuestSharedDisk;
 use test_fxfs_guest_bigmap::TestFxfsGuestBigmap;
 // fxdax: what a VM costs its host's memory, measured when its guest asks (TASK-164.5).
 mod measure;
@@ -285,6 +288,16 @@ pub fn test_cases() -> Vec<TestCase> {
             "fxfs-guest-stats",
             &[Tag::Kernel, Tag::Nightly],
             Box::new(TestFxfsGuestStats),
+        ),
+        TestCase::new(
+            "fxfs-guest-shared-disk",
+            &[Tag::Manual],
+            Box::new(TestFxfsGuestSharedDisk { dax: false }),
+        ),
+        TestCase::new(
+            "fxfs-guest-shared-disk-dax",
+            &[Tag::Manual],
+            Box::new(TestFxfsGuestSharedDisk { dax: true }),
         ),
         TestCase::new(
             "fxfs-guest-live-fork",
