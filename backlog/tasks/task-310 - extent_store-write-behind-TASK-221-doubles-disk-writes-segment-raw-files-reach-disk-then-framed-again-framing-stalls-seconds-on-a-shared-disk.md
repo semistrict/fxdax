@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-09 23:57'
-updated_date: '2026-11-10 16:04'
+updated_date: '2026-11-10 20:49'
 labels:
   - perf
   - extentd
@@ -98,4 +98,13 @@ Bytes: the same with write-behind off. Root cause of the bytes: the large file's
 CI 42843850345 green at 3a1038195 (all jobs).
 
 2026-11-10 (claude, TASK-92.41's agent): finishing AC #4 by TASK-92.41 (commits spanning segments, replacing the spill) and segments framed in place when they don't compress.
+
+2026-11-10 (claude, TASK-92.41's agent): AC #4 by TASK-92.41 (commits spanning segments, replacing the spill) and segments framed in place unless compressing saves an eighth (their parts raw, the raw file linked into segments/, its data written once; in-place decided by a sample of one part in eight). Interleaved A/B on ubu1 (ext4 scratch zvol; each run fxjob --bench; main 0a8c2e27b's base 41e13503f vs branch 29eb9131e), 3 rounds a side:
+- fxfs-guest-shared-disk (16 VMs, 8 at once, 768 MiB fsynced + 3,000 x 8 KiB, file bucket on the disk): stores' own writes main 17.0-18.3 GiB (raw 12.49, copied 1.56-1.57, framed 2.53-3.08, own 0.64-1.19), branch 12.67-12.68 GiB (raw 12.49, copied 0.17-0.20, framed 0.00-0.03, own 0): 1.37-1.48x vs 1.02-1.03x the guests' 12.37 GiB; extentd in all 2.46-2.60x vs 2.05x (the rest the bucket's copy and the part cache). Slowest framing 17.3-36.0 s vs 4.6-8.1 s; durable lag p99 32 s vs 8-16 s, max 17-35 s vs 8-11 s; within 50 ms 155-185 vs 159-169 of ~273; secs 126-137 vs 100-118; segments framed in place 158-160 of ~292; 16 commits spanning segments per run.
+- fxfs-guest-shared-disk-dax (first measured: TASK-317's bound holds, no OOM on either side, extentd memory 20 GiB cap): main 2.46-2.52x, stores 17.1-17.4 GiB, slowest framing 13.2-26.0 s; branch 2.05x, stores 12.66-12.67 GiB, slowest framing 2.0-4.7 s; p99 16-32 s vs 4-8 s.
+- The slowest framings left are their file and directory syncs (fdatasync and the directories' fsyncs, 2-4 s each), the disk's queue: io pressure 'some' 22-42 s of the runs; the write phase (read, sample, tail) is 0.1-0.5 s. The target of a slowest framing under 1 s is not met on this shared disk; the old pin's 0.2 s was not on one.
+- fxfs-guest-pgbench, 6 rounds a side: within 50 ms main 57.2-68.9% (mean 62.6), branch 57.3-63.5% (59.9); p99 256 ms both (one main round 512); max 1.9-4.0 s vs 1.3-3.7 s; tps ~3,060 both; copied 4.9-5.4 GB vs 4.4-4.9 GB, own 39-63 MB vs 0. -dax: 57.9-70.1% (62.0) vs 58.3-65.9% (61.3); max 1.1-3.2 s vs 0.9-3.0 s. No difference past the rounds' spread; doc-12's median kept on both. pgbench's segments compress: none framed in place.
+- TASK-322 (FXDAX_SHARED_DISK_FSYNC=1, 3 rounds a side): durable lag p50 8-16 s on main vs 0.26-2 s on the branch, p99 16-32 s vs 8-16 s, within 50 ms 1.4-3.5k vs 0.7-10k of 48.3k; stores 1.37x vs 1.02x. It moves, a lot, but doc-12's 50 ms median still breaks on this disk.
+- Found: TASK-332 (main's spill holds two descriptors per spilled extent: store-bench burst fails at ulimit 1024); gone with the spill.
+Linux (ubu1): workspace 2479 passed, sim 46, shuttle 37+10+6+67+10+18; macOS: workspace 2225, clippy, sim, shuttle green.
 <!-- SECTION:NOTES:END -->

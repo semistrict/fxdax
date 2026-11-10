@@ -7,6 +7,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-11-10 11:01'
+updated_date: '2026-11-10 20:49'
 labels:
   - perf
   - extentd
@@ -35,3 +36,9 @@ Found by TASK-310's fxfs-guest-shared-disk with FXDAX_SHARED_DISK_FSYNC=1 on ubu
 - [ ] #3 Deviations from upstream documented where they occur
 - [ ] #4 cargo nextest run --workspace passes on macOS and Linux
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+2026-11-10 (claude, TASK-92.41): with commits spanning segments and segments framed in place (no own files per extent, no copies), on ubu1's scratch disk with FXDAX_SHARED_DISK_FSYNC=1, 3 interleaved rounds a side under fxjob --bench: durable lag p50 8,192-16,384 ms on main vs 256-2,048 ms on the branch, p99 16-32 s vs 8-16 s, max 12-23 s vs 6-10 s, within 50 ms 1.4-3.5k vs 0.7-10k of 48.3k commits. The median moved down 4-60x but still breaks doc-12's 50 ms on a disk the VMs and their bucket share: the flushes' syncs wait behind the other VMs' writes (12.5 GiB of guest data and as much of the bucket's in ~100 s). check_durable_median still fails the case.
+<!-- SECTION:NOTES:END -->

@@ -431,11 +431,12 @@ impl<'a> Request<'a> {
                 if (!has(WRITE_ROOT) && !root.is_empty()) || root.len() > MAX_ROOT {
                     return Err(Errno::EINVAL);
                 }
-                let after = has(WRITE_COMMIT).then_some(match (has(WRITE_DURABLE), has(WRITE_LOCAL)) {
-                    (true, _) => Commit::Durable,
-                    (false, true) => Commit::Local,
-                    (false, false) => Commit::Ordered,
-                });
+                let after =
+                    has(WRITE_COMMIT).then_some(match (has(WRITE_DURABLE), has(WRITE_LOCAL)) {
+                        (true, _) => Commit::Durable,
+                        (false, true) => Commit::Local,
+                        (false, false) => Commit::Ordered,
+                    });
                 let root = has(WRITE_ROOT).then_some(root);
                 let barriers = WriteBarriers { before: has(WRITE_BARRIER), after, root };
                 Request::Write { extent, offset: args[2], data, barriers }
