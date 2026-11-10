@@ -22,6 +22,7 @@ use crate::wal::{log_header, log_salt, new_salt};
 use anyhow::{Context as _, Error, anyhow, bail, ensure};
 use extent_frame::segment::{Chain, Child, Contents, Footer, epoch_of};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::io;
 use std::sync::Arc;
 use std::time::Instant;
 use storage_device::ExtentId;
@@ -1085,23 +1086,32 @@ fn create_open<D: Dir>(
     salt: u64,
 ) -> Result<Phase<D::File>, Error> {
     let raw = Arc::new(dir.create(&open_segment_path(segment), true)?);
-    // fxdax: its log a spare, if there is one, its header written over the one there (TASK-301).
-    let path = log_path(segment);
-    let reused = spares.pop().map(|spare| dir.rename(&spare_path(spare), &path));
+    // fxdax: its log a spare, if there is one, its header written over the one there (TASK-301):
+    // durable before any record is appended, and before the spare is renamed its log: renamed
+    // first, a crash, or a failure, before the header was durable left the spare's header, and the
+    // records it salts, its last segment's, under this segment's name, which an opening took for
+    // this segment's commits, their runs past its raw data (TASK-310's crash round 270).
+    let (path, header) = (log_path(segment), log_header(salt));
+    let headed = |log: D::File| -> io::Result<D::File> {
+        log.write_at(&header, 0)?;
+        crate::written::wrote(crate::written::Kind::Log, header.len());
+        log.sync_cached()?;
+        Ok(log)
+    };
+    let reused = spares.pop().map(|spare| {
+        let spare = spare_path(spare);
+        let log = headed(dir.open(&spare, false)?)?;
+        dir.rename(&spare, &path)?;
+        Ok::<_, io::Error>(log)
+    });
     let log = match reused {
-        Some(Ok(())) => dir.open(&path, false)?,
+        Some(Ok(log)) => log,
         Some(Err(error)) => {
             log::warn!("extent store: reusing a spare log for {segment:?}: {error}");
-            dir.create(&path, false)?
+            headed(dir.create(&path, false)?)?
         }
-        None => dir.create(&path, false)?,
+        None => headed(dir.create(&path, false)?)?,
     };
-    // Durable before any record is appended: a crash losing it would leave a spare's header, and
-    // the records it salts, its last segment's.
-    let header = log_header(salt);
-    log.write_at(&header, 0)?;
-    crate::written::wrote(crate::written::Kind::Log, header.len());
-    log.sync_cached()?;
     Ok(Phase::Open { raw, log: Log { file: Arc::new(log), salt } })
 }
 
