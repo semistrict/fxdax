@@ -1,12 +1,12 @@
 ---
 id: TASK-316
 title: >-
-  Three workspace tests fail on ubu1, and on main: /tmp is a near-full tmpfs and
+  Two workspace tests fail on ubu1, and on main: /tmp is a near-full tmpfs and
   the host is out of memory
 status: To Do
 assignee: []
 created_date: '2026-11-10 09:05'
-updated_date: '2026-11-10 09:08'
+updated_date: '2026-11-10 09:10'
 labels: []
 dependencies: []
 priority: medium
@@ -42,4 +42,6 @@ Either the tests say what they need of the host (a disk filesystem for TMPDIR, f
 
 <!-- SECTION:NOTES:BEGIN -->
 TMPDIR on ubu1's disk (ZFS, ~/src/t249-tmp): imports_read_what_they_made_from_the_hosts_cache, directories_are_taken_one_at_a_time and serves_hundreds_of_forks_of_a_base pass; durable_commits_keep_the_open_segments_pages_cached_on_the_host still fails '0 of 8 pages cached': ZFS keeps file data in its ARC, not the page cache mincore reads, so the test needs a page-cache filesystem (ext4, xfs) or must say it has none.
+
+durable_commits_keep_the_open_segments_pages_cached_on_the_host is TASK-315's (ZFS, filed meanwhile): left to it. What is left here: imports_read_what_they_made_from_the_hosts_cache (the part cache below its floor on a near-full tmpfs /tmp) and windows_larger_than_the_map_count_read_whole (OOM-killed).
 <!-- SECTION:NOTES:END -->
