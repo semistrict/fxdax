@@ -3264,6 +3264,14 @@ fn metrics_count_requests_as_they_are_served() {
         ],
         [0, 0, 0]
     );
+    // TASK-314: the bucket's requests that failed, by kind: none of a bucket answering all.
+    let failures = |request: &str| {
+        metric(
+            &metrics,
+            &format!("fxdax_extentd_object_storage_failures_total{{request=\"{request}\"}}"),
+        )
+    };
+    assert_eq!([failures("create"), failures("get-range"), failures("update")], [0, 0, 0]);
     assert!(get("/other").starts_with("HTTP/1.1 404 Not Found\r\n"));
     drop(store);
     served.join().unwrap();
