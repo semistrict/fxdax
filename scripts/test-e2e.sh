@@ -294,14 +294,38 @@ cache_dir=
 if [[ -z ${FXDAX_EXTENTD_CACHE+set} ]]; then
     cache_dir=$(mktemp -d "${TMPDIR:-/tmp}/fxdax-e2e-cache.XXXXXX")
 fi
+# fxdax: FXDAX_EXTENTD_MEMORY_MAX runs the daemon in a systemd scope of its own, limited to that
+# many bytes of memory (systemd's MemoryMax, no swap), its cgroup killing it past them, and keeps
+# the most it held, memory.peak, in extentd-memory-peak.txt as the run ends: what the daemon's
+# memory budget is measured against (TASK-317). FXDAX_EXTENTD_WRAP, a command and its arguments,
+# runs the daemon under it, such as a heap profiler (`heaptrack -o DIR/heap`).
+extentd_scope=
+extentd_run=()
+if [[ -n ${FXDAX_EXTENTD_MEMORY_MAX:-} ]]; then
+    extentd_scope="fxdax-e2e-extentd-$$.scope"
+    extentd_run=(systemd-run --scope --quiet --collect --unit="$extentd_scope"
+        -p MemoryMax="$FXDAX_EXTENTD_MEMORY_MAX" -p MemorySwapMax=0 --)
+fi
+read -r -a extentd_wrap <<< "${FXDAX_EXTENTD_WRAP:-}"
+# The most the daemon's scope held, kept before the daemon goes, whose scope goes with it; and the
+# scope stopped, its every process with it, as a wrapper (heaptrack's script) may outlive the kill.
+extentd_peak() {
+    [[ -n $extentd_scope ]] || return 0
+    systemctl show -P MemoryPeak "$extentd_scope" > "$results/extentd-memory-peak.txt" || true
+}
+extentd_stop() {
+    [[ -n $extentd_scope ]] || return 0
+    systemctl stop "$extentd_scope" 2> /dev/null || true
+}
+${extentd_run[@]+"${extentd_run[@]}"} \
 env FXDAX_EXTENTD_REMOTE="${FXDAX_EXTENTD_REMOTE:-file://$bucket_dir}" \
     FXDAX_EXTENTD_CACHE="${FXDAX_EXTENTD_CACHE-$cache_dir}" \
     FXDAX_EXTENTD_TOKEN="${FXDAX_EXTENTD_TOKEN:-1}" \
     FXDAX_EXTENTD_STATS="$results/extentd-stats.txt" FXDAX_EXTENTD_GRPC="$control" \
-    FAILPOINTS="${FXDAX_FAILPOINTS:-}" "$extentd_bin" "$socket" "${FXDAX_EXTENTD_MEMORY:-8589934592}" \
+    FAILPOINTS="${FXDAX_FAILPOINTS:-}" ${extentd_wrap[@]+"${extentd_wrap[@]}"} "$extentd_bin" "$socket" "${FXDAX_EXTENTD_MEMORY:-8589934592}" \
     > "$results/extentd.log" 2>&1 &
 daemon=$!
-trap 'kill "$daemon" 2> /dev/null; rm -f "$socket" "$control"; [[ -z $bucket_dir ]] || rm -r "$bucket_dir"; [[ -z $cache_dir ]] || rm -r "$cache_dir"' EXIT
+trap 'extentd_peak; kill "$daemon" 2> /dev/null; extentd_stop; rm -f "$socket" "$control"; [[ -z $bucket_dir ]] || rm -r "$bucket_dir"; [[ -z $cache_dir ]] || rm -r "$cache_dir"' EXIT
 while [[ ! -S $socket || ! -S $control ]]; do
     if ! kill -0 "$daemon" 2> /dev/null; then
         echo "the extent daemon exited: see $results/extentd.log" >&2
