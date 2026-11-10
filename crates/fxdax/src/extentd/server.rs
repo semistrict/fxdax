@@ -1854,6 +1854,13 @@ struct Watched {
     /// acknowledged, and when that was ([`Acks::behind`]).
     id: u64,
     since: std::time::Instant,
+    /// The last acknowledged as the window its pace is measured over began, and when
+    /// ([`Acks::pace`], TASK-249).
+    paced: u64,
+    paced_at: std::time::Instant,
+    /// The operations it acknowledged over the last whole window of [`BEHIND`]: none until one
+    /// ended.
+    pace: Option<u64>,
 }
 
 impl Acks {
@@ -1902,7 +1909,15 @@ impl Acks {
             return std::time::Duration::ZERO;
         }
         let (acked, id) = (state.acked, state.last_taking);
-        let watched = state.watched.get_or_insert(Watched { acked, answered: now, id, since: now });
+        let watched = state.watched.get_or_insert(Watched {
+            acked,
+            answered: now,
+            id,
+            since: now,
+            paced: acked,
+            paced_at: now,
+            pace: None,
+        });
         if watched.acked != acked {
             watched.acked = acked;
             watched.answered = now;
@@ -1923,11 +1938,29 @@ impl Acks {
         since.map_or(std::time::Duration::ZERO, |since| now.saturating_duration_since(since))
     }
 
+    /// fxdax: how many operations the VM process acknowledged over the last whole window of
+    /// [`BEHIND`] since the watchdog found it with operations taking access away unacknowledged
+    /// ([`Acks::unanswered`]), as of `now`, a window ending as the first look after it does: none
+    /// until one ended, or with nothing unacknowledged (TASK-249). With how many it has yet to
+    /// acknowledge to have made the last taking access away.
+    fn pace(&self, now: std::time::Instant) -> (u64, Option<u64>) {
+        let mut state = self.state.lock().unwrap();
+        let acked = state.acked;
+        let backlog = state.last_taking.saturating_sub(acked);
+        let Some(watched) = state.watched.as_mut() else { return (backlog, None) };
+        if now.saturating_duration_since(watched.paced_at) >= BEHIND {
+            watched.pace = Some(acked - watched.paced);
+            (watched.paced, watched.paced_at) = (acked, now);
+        }
+        (backlog, watched.pace)
+    }
+
     /// fxdax: what the watchdog finds of the VM process's acknowledgements as it looks, at `now`:
-    /// [`Acks::unanswered`], then [`Acks::behind`], which goes by what that found.
+    /// [`Acks::unanswered`], then [`Acks::pace`] and [`Acks::behind`], which go by what that found.
     fn look(&self, now: std::time::Instant) -> Silence {
         let silent = self.unanswered(now);
-        Silence { silent, behind: self.behind(now) }
+        let (backlog, pace) = self.pace(now);
+        Silence { silent, behind: self.behind(now), backlog, pace }
     }
 
     fn close(&self) {
@@ -1941,32 +1974,50 @@ impl Acks {
 }
 
 /// fxdax: what the watchdog found of a VM process's acknowledgements as it looked
-/// ([`Acks::look`]): how long it has acknowledged nothing ([`Acks::unanswered`]) and how long the
-/// operation it waits for has been unacknowledged ([`Acks::behind`]). Said as the daemon lets one
-/// go, it tells the two limits apart: one that stopped, and one acknowledging too slowly to catch
-/// up (TASK-136.1).
+/// ([`Acks::look`]): how long it has acknowledged nothing ([`Acks::unanswered`]), how long the
+/// operation it waits for has been unacknowledged ([`Acks::behind`]), and how many operations it
+/// has yet to acknowledge and acknowledged over the last window ([`Acks::pace`]). Said as the
+/// daemon lets one go, it tells the two limits apart: one that stopped, and one behind that makes
+/// no headway (TASK-136.1, TASK-249).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Silence {
     silent: std::time::Duration,
     behind: std::time::Duration,
+    backlog: u64,
+    pace: Option<u64>,
 }
 
 impl Silence {
-    /// Whether it is past [`UNRESPONSIVE`] silent, or [`BEHIND`] behind: the VM process is to be
-    /// let go.
+    /// Whether it is past [`UNRESPONSIVE`] silent, or past [`BEHIND`] behind at a pace that would
+    /// not catch up within [`CATCHING_UP`]: the VM process is to be let go. One behind that
+    /// acknowledges as fast as a slow host lets it, however long it has been behind, catches up
+    /// within that, and is kept (TASK-249): a cap on how long it may be behind let go of VMs
+    /// acknowledging thousands of operations a second, under a load that kept them behind for
+    /// 100 s.
     fn unresponsive(self) -> bool {
-        self.silent >= UNRESPONSIVE || self.behind >= BEHIND
+        self.silent >= UNRESPONSIVE || (self.behind >= BEHIND && !self.catching_up())
+    }
+
+    /// Whether, at the pace it acknowledged over the last window of [`BEHIND`], it clears its
+    /// backlog within [`CATCHING_UP`]: so too with no window ended yet.
+    fn catching_up(self) -> bool {
+        self.pace.is_none_or(|pace| {
+            u128::from(self.backlog) * BEHIND.as_millis()
+                <= u128::from(pace) * CATCHING_UP.as_millis()
+        })
     }
 }
 
 impl std::fmt::Display for Silence {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let Self { silent, behind } = self;
-        write!(
-            f,
-            "silent for {silent:?} (of {UNRESPONSIVE:?} allowed), behind for {behind:?} (of \
-             {BEHIND:?} allowed)"
-        )
+        let Self { silent, behind, backlog, pace } = self;
+        write!(f, "silent for {silent:?} (of {UNRESPONSIVE:?} allowed), behind for {behind:?}: ")?;
+        write!(f, "{backlog} operations unacknowledged, ")?;
+        match pace {
+            Some(pace) => write!(f, "{pace} acknowledged in the last {BEHIND:?}")?,
+            None => write!(f, "no pace measured yet")?,
+        }
+        write!(f, " (a pace clearing them within {CATCHING_UP:?} allowed)")
     }
 }
 
@@ -1976,11 +2027,19 @@ impl std::fmt::Display for Silence {
 /// what an allocation waits for the pages freed meanwhile, which wait for it, before it fails.
 const UNRESPONSIVE: std::time::Duration = std::time::Duration::from_secs(5);
 
-/// fxdax: how long a VM process that goes on acknowledging may take over a backlog of stage
-/// operations before the daemon lets it go all the same (TASK-148): long past the seconds a burst
-/// of tens of thousands takes on a slow host, where each acknowledgement frees what it waited for,
-/// and what keeps one acknowledging just often enough from holding pages for ever.
+/// fxdax: how long a VM process that goes on acknowledging may be behind, over a backlog of stage
+/// operations, before the daemon looks at its pace (TASK-148, TASK-249): long past the seconds a
+/// burst of tens of thousands takes on a slow host, where each acknowledgement frees what it
+/// waited for. Its pace is measured over windows as long.
 const BEHIND: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// fxdax: how long a VM process behind for [`BEHIND`] may take to clear its backlog, at the pace it
+/// acknowledged over the last [`BEHIND`], before the daemon lets it go (TASK-249): what keeps one
+/// acknowledging just often enough not to be silent from holding every page freed for hours, as
+/// one acknowledging an operation a second, tens of thousands behind, would. Every page freed
+/// meanwhile waits for it, so not much longer. A VM process acknowledging thousands a second
+/// catches up within it from any backlog the daemon queues, being let go only once it stalls.
+const CATCHING_UP: std::time::Duration = std::time::Duration::from_secs(600);
 
 /// fxdax: how long a VM process whose connection went, and that may still reach pages, has to exit,
 /// as one exiting does just after its connection goes, before the daemon lets it go ([`Peer::gone`],
@@ -1993,7 +2052,8 @@ const WATCH_EVERY: std::time::Duration = std::time::Duration::from_secs(1);
 /// fxdax: a connection's VM process, as the daemon depends on it (TASK-79.9): the stage
 /// operations it acknowledges, which the pages it may reach wait for, freed ([`quarantine`]); and
 /// the process itself, which the daemon lets go once it has acknowledged none for
-/// [`UNRESPONSIVE`], or stayed behind for [`BEHIND`] ([`watch`]): its connection shut down, it is killed as the connection goes,
+/// [`UNRESPONSIVE`], or stayed behind for [`BEHIND`] at a pace that would not catch up within
+/// [`CATCHING_UP`] ([`watch`]): its connection shut down, it is killed as the connection goes,
 /// which waits for it to have exited, its mappings of the window gone, before the pages it may
 /// reach go back ([`Peer::gone`]). So too one that closes its connection and lives on, reaching
 /// pages still (TASK-79.100). One the daemon could not kill it refuses as it connects
@@ -2078,8 +2138,8 @@ impl Peer {
     }
 
     /// How it has been silent, if it has acknowledged no operation for [`UNRESPONSIVE`], with one
-    /// taking access away unacknowledged, or left one so for [`BEHIND`], as of `now`, and is to be
-    /// let go.
+    /// taking access away unacknowledged, or left one so for [`BEHIND`] at a pace that would not
+    /// catch up within [`CATCHING_UP`], as of `now`, and is to be let go ([`Silence`]).
     fn unresponsive(&self, now: std::time::Instant) -> Option<Silence> {
         Some(self.acks.look(now)).filter(|silence| silence.unresponsive())
     }
@@ -2480,7 +2540,8 @@ mod acks_tests {
         assert_eq!(acks.unanswered(at(25)), std::time::Duration::from_secs(5));
     }
 
-    /// One acknowledgement every so often holds a backlog no longer than [`BEHIND`].
+    /// A backlog counts as behind from when the watchdog found it until it is cleared, however
+    /// often the VM process acknowledges meanwhile.
     #[test]
     fn a_backlog_counts_as_behind_until_it_is_cleared() {
         let acks = Acks::default();
@@ -2503,20 +2564,94 @@ mod acks_tests {
         acks.acked(next);
     }
 
+    /// TASK-249: a VM process that acknowledges at the pace a slow host lets it, behind a backlog
+    /// that grows faster than it clears, is kept however long it is behind: 300 s, five times
+    /// [`BEHIND`]. The cap of [`BEHIND`] let go of one making a DAX clone of the Linux checkout,
+    /// which went on to finish 100 s behind.
+    #[test]
+    fn slow_vm_processes_acknowledging_are_kept_however_long_behind() {
+        let acks = Acks::default();
+        let start = std::time::Instant::now();
+        let at = |seconds| start + std::time::Duration::from_secs(seconds);
+        let first = next(&acks, true);
+        (0..100_000).for_each(|_| {
+            next(&acks, true);
+        });
+        assert!(!acks.look(at(0)).unresponsive());
+        // 300 acknowledged a second, 100 more sent: the operation the watchdog waits for, the
+        // 100,001st, acknowledged only at 333 s.
+        for second in 1..=300 {
+            (0..100).for_each(|_| {
+                next(&acks, true);
+            });
+            acks.acked(first + second * 300);
+            let silence = acks.look(at(second));
+            assert!(!silence.unresponsive(), "at {second} s: {silence}");
+        }
+        assert_eq!(
+            acks.look(at(300)),
+            Silence {
+                silent: std::time::Duration::ZERO,
+                behind: std::time::Duration::from_secs(300),
+                backlog: 40_000,
+                pace: Some(18_000),
+            }
+        );
+    }
+
+    /// TASK-249, TASK-148: a VM process behind that acknowledges just often enough not to be
+    /// silent, an operation every 4 s against 10,000 outstanding, hours from catching up, is let
+    /// go once behind for [`BEHIND`], its pace measured.
+    #[test]
+    fn stalled_vm_processes_behind_are_let_go() {
+        let acks = Acks::default();
+        let start = std::time::Instant::now();
+        let at = |seconds| start + std::time::Duration::from_secs(seconds);
+        let first = next(&acks, true);
+        (0..10_000).for_each(|_| {
+            next(&acks, true);
+        });
+        assert!(!acks.look(at(0)).unresponsive());
+        for second in 1..60 {
+            acks.acked(first + second / 4);
+            let silence = acks.look(at(second));
+            assert!(!silence.unresponsive(), "at {second} s: {silence}");
+        }
+        acks.acked(first + 15);
+        let stalled = acks.look(at(60));
+        assert!(stalled.unresponsive());
+        assert_eq!(
+            stalled,
+            Silence {
+                silent: std::time::Duration::ZERO,
+                behind: BEHIND,
+                backlog: 9985,
+                pace: Some(16)
+            }
+        );
+    }
+
     /// What the watchdog says as it lets a VM process go tells the two limits apart: one silent,
-    /// and one acknowledging all along that stays behind (TASK-136.1: a publisher was let go
-    /// `silent for 0ns, behind for 60s`, which no log said before).
+    /// and one acknowledging all along that stays behind at a pace that would not catch up
+    /// (TASK-136.1: a publisher was let go `silent for 0ns, behind for 60s`, which no log said
+    /// before; TASK-249).
     #[test]
     fn a_silence_says_which_limit_it_passed() {
         let acks = Acks::default();
         let start = std::time::Instant::now();
         let at = |seconds| start + std::time::Duration::from_secs(seconds);
         let first = next(&acks, true);
-        (0..100).for_each(|_| {
+        (0..10_000).for_each(|_| {
             next(&acks, true);
         });
         let none = std::time::Duration::ZERO;
-        assert_eq!(acks.look(at(0)), Silence { silent: none, behind: none });
+        let found = acks.look(at(0));
+        assert_eq!(found, Silence { silent: none, behind: none, backlog: 10_001, pace: None });
+        assert_eq!(
+            found.to_string(),
+            "silent for 0ns (of 5s allowed), behind for 0ns: 10001 operations unacknowledged, no \
+             pace measured yet (a pace clearing them within 600s allowed)"
+        );
         for second in 1..60 {
             acks.acked(first + second);
             assert!(!acks.look(at(second)).unresponsive());
@@ -2526,13 +2661,15 @@ mod acks_tests {
         assert!(behind.unresponsive());
         assert_eq!(
             behind.to_string(),
-            "silent for 0ns (of 5s allowed), behind for 60s (of 60s allowed)"
+            "silent for 0ns (of 5s allowed), behind for 60s: 9940 operations unacknowledged, 61 \
+             acknowledged in the last 60s (a pace clearing them within 600s allowed)"
         );
         let silent = acks.look(at(66));
         assert!(silent.unresponsive());
         assert_eq!(
             silent.to_string(),
-            "silent for 6s (of 5s allowed), behind for 66s (of 60s allowed)"
+            "silent for 6s (of 5s allowed), behind for 66s: 9940 operations unacknowledged, 61 \
+             acknowledged in the last 60s (a pace clearing them within 600s allowed)"
         );
     }
 
