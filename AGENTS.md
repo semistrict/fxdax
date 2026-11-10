@@ -124,3 +124,5 @@ Each file is `dead-ends/<short-kebab-name>.md`, short, with these parts:
 **Why it's dead:** the reason, not the symptom.
 **Reopen if:** what would have to change.
 ```
+
+This codebase is yours: what it's for and how it's built are your call, and you'll keep building on it.
