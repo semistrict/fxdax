@@ -130,13 +130,17 @@ pub(crate) fn delete(path: &Path) -> Result<(), Error> {
 
 #[cfg(test)]
 mod tests {
+    use super::super::collect::{Pace, quicken};
     use super::super::{Kind, Storage};
     use super::*;
     use crate::{Filesystem, Owner};
     use extent_remote::record::Kind as Record;
     use extent_remote::store::Store as Bucket;
     use futures::executor::block_on;
+    use rand::rngs::StdRng;
+    use rand::{RngExt as _, SeedableRng as _};
     use std::collections::BTreeMap;
+    use std::time::Duration;
     use storage_device::ExtentId;
 
     const OWNER: Owner = Owner { uid: 1000, gid: 100 };
@@ -351,5 +355,154 @@ mod tests {
             (extents, root),
             (BTreeMap::from([(extent(3), 5 * MIB as u64)]), b"root".into())
         );
+    }
+
+    /// Passes as often as one ends, after commits, compacting what is half freed and deleting it
+    /// at once.
+    const BUSY: Pace = Pace {
+        every: Duration::ZERO,
+        options: extent_remote::collector::Options { compact_below: 0.5, grace: 0 },
+    };
+
+    /// The files of a filesystem, by their names: what they hold.
+    type Files = BTreeMap<Vec<u8>, Vec<u8>>;
+
+    /// Checks that `fs` holds `files`, each as long and of the same bytes, and no other.
+    async fn holds(fs: &Filesystem, files: &Files, what: &str) {
+        for (name, contents) in files {
+            let (node, attr) = fs.root().lookup(name).await.unwrap();
+            assert_eq!(attr.size, contents.len() as u64, "{what}: {name:?}'s size");
+            let mut read = vec![0; contents.len()];
+            assert_eq!(node.read(0, &mut read).await.unwrap(), contents.len(), "{what}");
+            assert!(read == *contents, "{what}: {name:?} differs");
+        }
+        let entries = fs.root().entries().await.unwrap().into_iter().map(|entry| entry.name);
+        let mut names: Vec<Vec<u8>> =
+            entries.filter(|name| !matches!(&name[..], b"." | b"..")).collect();
+        names.sort();
+        assert_eq!(names, files.keys().cloned().collect::<Vec<_>>(), "{what}: its files");
+    }
+
+    /// `rounds` rounds, as `seed` says, of files of `fs`, which holds `files`, made, written over
+    /// and past their ends, and removed, each written synced, a commit; and each round's end, the
+    /// files checked. Files of 1 to 6 MiB of noise: those past 4 MiB in objects of their own, the
+    /// rest in segments, which their files' writing over half frees.
+    async fn churn(fs: &Filesystem, files: &mut Files, seed: u64, rounds: usize) {
+        let mut rng = StdRng::seed_from_u64(seed);
+        for round in 0..rounds {
+            for step in 0..4 {
+                let data = crate::test_data::noise(rng.random(), rng.random_range(1..=6) * MIB);
+                let names: Vec<Vec<u8>> = files.keys().cloned().collect();
+                match rng.random_range(0..3) {
+                    0 if !names.is_empty() => {
+                        let name = &names[rng.random_range(0..names.len())];
+                        fs.root().unlink(name).await.unwrap();
+                        files.remove(name);
+                        continue;
+                    }
+                    1 if !names.is_empty() => {
+                        let name = &names[rng.random_range(0..names.len())];
+                        let (node, _) = fs.root().lookup(name).await.unwrap();
+                        let contents = files.get_mut(name).unwrap();
+                        let at = rng.random_range(0..=contents.len() / MIB) * MIB;
+                        node.write(at as u64, &data).await.unwrap();
+                        contents.resize(contents.len().max(at + data.len()), 0);
+                        contents[at..at + data.len()].copy_from_slice(&data);
+                        node.fsync().await.unwrap();
+                    }
+                    _ => {
+                        let name = format!("{seed}-{round}-{step}").into_bytes();
+                        let (node, _) = fs.root().create(&name, 0o644, OWNER).await.unwrap();
+                        node.write(0, &data).await.unwrap();
+                        node.fsync().await.unwrap();
+                        files.insert(name, data);
+                    }
+                }
+            }
+            holds(fs, files, &format!("seed {seed}, round {round}")).await;
+        }
+    }
+
+    /// TASK-291.3: an image and its clone, each written from a thread of its own, commit while
+    /// passes of their bucket's collector start after their commits, as often as one ends, and
+    /// compact and delete at once: after each round each holds what was written to it, the clone
+    /// what it inherited too; and opened again, after a pass alone, the same.
+    #[test]
+    fn passes_run_among_an_image_and_its_clones_commits() {
+        quicken(BUSY);
+        let dir = tempfile::tempdir().unwrap();
+        let (path, clone_path) = (dir.path().join("image"), dir.path().join("clone"));
+        let storage = Storage::create(&path, SIZE).unwrap();
+        let collecting = image(&storage).collecting().unwrap().clone();
+        let mut files = Files::new();
+        let (fs, clone) = block_on(async {
+            let fs = Filesystem::format(storage).await.unwrap();
+            churn(&fs, &mut files, 1, 2).await;
+            let clone = Filesystem::mount(fs.clone_storage_to(&clone_path).await.unwrap());
+            (fs, clone.await.unwrap())
+        });
+        let mut cloned = files.clone();
+        std::thread::scope(|scope| {
+            scope.spawn(|| block_on(churn(&clone, &mut cloned, 2, 6)));
+            block_on(churn(&fs, &mut files, 3, 6));
+        });
+        block_on(async {
+            drop(clone.close().await.unwrap());
+            drop(fs.close().await.unwrap());
+        });
+        // The passes among the commits compacted and deleted.
+        let (passes, collected) = (collecting.passes(), collecting.collected());
+        assert!(passes > 4, "{passes} passes");
+        assert!(collected.compacted > 0 && collected.deleted > 0, "{collected:?}, {passes} passes");
+        drop(collecting);
+        let report = image(&Storage::open(&path).unwrap()).collecting().unwrap().pass_now();
+        assert!(report.deleted > 0, "{report:?}");
+        block_on(async {
+            for (path, files) in [(&path, &files), (&clone_path, &cloned)] {
+                let fs = Filesystem::mount(Storage::open(path).unwrap()).await.unwrap();
+                holds(&fs, files, &format!("{} opened again", path.display())).await;
+                drop(fs.close().await.unwrap());
+            }
+        });
+    }
+
+    /// TASK-291.3: an image and its clone, closed and dropped while a pass of their bucket's
+    /// collector, held up, runs, leave their bucket whole: opened again, each holds what it did,
+    /// and the next pass completes.
+    #[test]
+    fn images_dropped_as_their_pass_runs_leave_their_bucket_whole() {
+        quicken(BUSY);
+        let dir = tempfile::tempdir().unwrap();
+        let (path, clone_path) = (dir.path().join("image"), dir.path().join("clone"));
+        let scenario = fail::FailScenario::setup();
+        let (mut files, mut cloned) = (Files::new(), Files::new());
+        block_on(async {
+            let fs = Filesystem::format(Storage::create(&path, SIZE).unwrap()).await.unwrap();
+            churn(&fs, &mut files, 1, 2).await;
+            let clone = Filesystem::mount(fs.clone_storage_to(&clone_path).await.unwrap());
+            let clone = clone.await.unwrap();
+            cloned = files.clone();
+            churn(&clone, &mut cloned, 2, 1).await;
+            // The next commit's pass held up until both are gone.
+            fail::cfg("collect::pass", "sleep(500)").unwrap();
+            churn(&clone, &mut cloned, 3, 1).await;
+            drop(clone.close().await.unwrap());
+            drop(fs.close().await.unwrap());
+        });
+        scenario.teardown();
+        block_on(async {
+            for (path, files) in [(&path, &files), (&clone_path, &cloned)] {
+                let fs = Filesystem::mount(Storage::open(path).unwrap()).await.unwrap();
+                holds(&fs, files, &format!("{} opened again", path.display())).await;
+                drop(fs.close().await.unwrap());
+            }
+        });
+        let report = image(&Storage::open(&path).unwrap()).collecting().unwrap().pass_now();
+        assert!(report.deleted > 0, "{report:?}");
+        block_on(async {
+            let fs = Filesystem::mount(Storage::open(&clone_path).unwrap()).await.unwrap();
+            holds(&fs, &cloned, "the clone after the pass").await;
+            drop(fs.close().await.unwrap());
+        });
     }
 }
