@@ -353,6 +353,22 @@ mod guest {
             }
             eprintln!("docker build: round {round} in {:.1} s", began.elapsed().as_secs_f64());
         }
+        // What the builds asked of reclaim, and of the shadow nodes' list_lru LangSmith's
+        // locked-up vCPU spun in (workingset_update_node).
+        let vmstat = std::fs::read_to_string("/proc/vmstat").unwrap();
+        let counted = [
+            "workingset_nodes",
+            "workingset_refault_file",
+            "workingset_nodereclaim",
+            "pgscan_kswapd",
+            "pgscan_direct",
+            "pgsteal_kswapd",
+            "pgsteal_direct",
+        ];
+        for line in vmstat.lines().filter(|line| counted.contains(&line.split(' ').next().unwrap()))
+        {
+            eprintln!("docker build: vmstat {line}");
+        }
     }
 
     impl Test for TestFxfsGuestDocker {

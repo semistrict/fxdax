@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-09 23:57'
-updated_date: '2026-11-10 00:07'
+updated_date: '2026-11-10 00:24'
 labels:
   - guest-kernel
 dependencies: []
@@ -57,3 +57,11 @@ LangSmith's host now logs 16 KiB from the first fault report, and they will send
 3. Reproduce on ubu1: 8-vCPU guest, docker build + image export, host CPU contention, release and debug (lockdep/KASAN/DEBUG_LIST) kernels, N rounds.
 4. Root-cause and fix with a test/mutant if reproduced; else leave open with notes on what LangSmith should send.
 <!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Step 1 (0ac368da9, dc66742c): the e2e harness already wrote whole consoles to console.txt; what dropped the first report was everything after it (the log's tail, a reviewer reading the end). vm::first_report now picks each console's first complaint (KCSAN filtering as complaints), 8 lines before it, to '---[ end ', 16 KiB at most; the runner prints it for failed and timed-out tests and records it as kernel_reports in round-K.json and the GitHub summary. 'Oops:' is a complaint now (BUG() and GPF oopses say no 'BUG:'). The GitHub summary's log tail sliced at a byte offset (panics inside a UTF-8 character) and said 1 MiB while keeping 2: fixed, 512 KiB.
+Fail fast, decided: CONFIG_PANIC_ON_OOPS=y and CONFIG_PANIC_TIMEOUT=-1 in fxdax.config. doc-12 counts a guest panic as a crash it covers (synced data kept; fxfs-guest-crash tests it), so panicking costs nothing the contract promises, while running on after an oops leaves the dead task's spinlock held (LangSmith's 4+ min of lockups on all vCPUs, burning the host's CPU) and lets a damaged kernel go on writing Fxfs metadata. Panicked, the oops is the console's last report, so even a tail-only capture keeps it. PANIC_TIMEOUT=-1 because Firecracker's config has 0, which halts with one vCPU busy-looping in panic() forever; a command line's panic=/oops= still override. No pstore/ramoops: a Firecracker VM's RAM goes when it exits, and nothing reads it back. build-guest-kernel.sh checks both options; fxfs-guest-checks' oops_panics checks /proc/sys/kernel/panic_on_oops on the booted kernel.
+Upstream check: mm/list_lru.c's 98733f3f0bec (list_lru_del racing memcg reparenting corrupts lists, Cc stable) is already in Amazon's 6.18.54. Patch 0013 only makes mprotect batches smaller (FPB_RESPECT_DIRTY), no lock or list in it. Filed TASK-312 (runner replay commands name retired test-gce.sh).
+<!-- SECTION:NOTES:END -->
