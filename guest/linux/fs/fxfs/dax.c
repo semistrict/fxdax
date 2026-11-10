@@ -917,10 +917,13 @@ static size_t fxfs_dax_maps_of(struct fxfs_dax *dax, struct fxfs_dax_range *rang
  * page-cache inode's writes read in before their seal, or a growth's copy of the last block, may
  * leave; rebinding private pages, as their writeback left them, is fxfs_dax_rebind_range's, which
  * leaves those whose extent is open private. 0, or a -errno. With the file's semaphore held for
- * writing.
+ * writing. A read's pages are mapped ahead (MAP_AHEAD, `ahead`), which the host installs and maps
+ * for the guest at once; a write's are named alone, which the host installs as they are first
+ * touched, a store's PRIVATE putting its private copy in place of nothing, where a page installed
+ * first took a TLB flush to replace (doc-13, TASK-276.6).
  */
 static long fxfs_dax_map_pages(struct fxfs_dax *dax, struct fxfs *fs, struct fxfs_dax_range *range,
-			       unsigned long first, unsigned long last)
+			       unsigned long first, unsigned long last, bool ahead)
 {
 	loff_t start = fxfs_dax_chunk_start(range);
 	size_t capacity = last - first, n;
@@ -948,7 +951,7 @@ static long fxfs_dax_map_pages(struct fxfs_dax *dax, struct fxfs *fs, struct fxf
 			goto out;
 		}
 		if (!fxfs_dax_any_unsealed(found, count)) {
-			n = fxfs_dax_maps_of(dax, range, found, count, first, last, true, maps);
+			n = fxfs_dax_maps_of(dax, range, found, count, first, last, ahead, maps);
 			ret = fxfs_dax_map_all(dax, range, maps, n, false);
 			if (ret != -EPERM)
 				break;
@@ -1759,8 +1762,9 @@ static struct fxfs_dax_range *fxfs_dax_get_range(struct inode *inode, pgoff_t ch
 		spin_lock(&dax->lock);
 		list_add_tail(&new->list, &dax->used);
 		spin_unlock(&dax->lock);
-		/* Every page of it, zeros past the file's end (doc-13). */
-		mapped = fxfs_dax_map_pages(dax, fxfs_vfs_fs(inode->i_sb), new, 0, new->pages);
+		/* Every page of it, zeros past the file's end (doc-13); ahead, a read's. */
+		mapped = fxfs_dax_map_pages(dax, fxfs_vfs_fs(inode->i_sb), new, 0, new->pages,
+					    slice);
 		err = mapped < 0 ? mapped : 0;
 		/* Its one user, this, which no one else saw, the semaphore held throughout. */
 		if (err) {
@@ -1910,10 +1914,11 @@ static void fxfs_dax_hole(struct iomap *iomap, loff_t length)
  * Before any iomap of such a page, a read's as a write's: a read's hole has a fault map the
  * kernel's zero page, which nothing takes away, no write being new (IOMAP_F_NEW), so that a load
  * read zeros where read(2) read a write's bytes, and a write from the mapping copied them (guest/sim,
- * failures seed 1669). Not a follower's, whose holes have none, as it takes no write.
+ * failures seed 1669). Not a follower's, whose holes have none, as it takes no write. Mapped ahead
+ * if `ahead`, a read's (fxfs_dax_map_pages).
  */
 static int fxfs_dax_map_missing(struct inode *inode, struct fxfs_dax_range *range,
-				unsigned long first, unsigned long last)
+				unsigned long first, unsigned long last, bool ahead)
 {
 	struct fxfs_dax_file *file = range->file;
 	struct fxfs_dax *dax = fxfs_dax_of(inode);
@@ -1932,7 +1937,8 @@ static int fxfs_dax_map_missing(struct inode *inode, struct fxfs_dax_range *rang
 		while (!err &&
 		       (page = fxfs_dax_pages_next_unmapped(range->state, first, last)) < last) {
 			to = fxfs_dax_pages_mapped_run(range->state, page, last);
-			mapped = fxfs_dax_map_pages(dax, fxfs_vfs_fs(inode->i_sb), range, page, to);
+			mapped = fxfs_dax_map_pages(dax, fxfs_vfs_fs(inode->i_sb), range, page, to,
+						    ahead);
 			err = mapped < 0 ? mapped : 0;
 		}
 		up_write(&file->sem);
@@ -1994,7 +2000,8 @@ static int fxfs_dax_iomap_read(struct inode *inode, loff_t pos, loff_t length, u
 		err = fxfs_dax_map_missing(inode, range, page,
 					   min_t(u64, range->pages,
 						 page + DIV_ROUND_UP(offset_in_page(pos) + length,
-								     PAGE_SIZE)));
+								     PAGE_SIZE)),
+					   true);
 		if (err) {
 			fxfs_dax_put_range(dax, range);
 			return err;
@@ -2888,7 +2895,7 @@ static int fxfs_dax_iomap_write(struct inode *inode, loff_t pos, loff_t length,
 	end = min_t(loff_t, end, start + ((loff_t)min(range->pages, first + dax->iomap_pages) <<
 					  PAGE_SHIFT));
 	pages = DIV_ROUND_UP(end - start, PAGE_SIZE) - first;
-	err = fxfs_dax_map_missing(inode, range, first, first + pages);
+	err = fxfs_dax_map_missing(inode, range, first, first + pages, false);
 	if (err)
 		goto put;
 	if (zero) {

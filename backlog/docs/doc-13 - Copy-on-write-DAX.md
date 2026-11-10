@@ -3,7 +3,7 @@ id: doc-13
 title: Copy-on-write DAX
 type: specification
 created_date: '2026-11-04 07:55'
-updated_date: '2026-11-07 09:46'
+updated_date: '2026-11-10 07:41'
 ---
 # Copy-on-write DAX: the window maps sealed extents only; a store gets a private copy
 
@@ -53,7 +53,10 @@ is ever an extent, and nothing mapped is ever open: a seal (`COMMIT`) changes no
    store past it, and that VM alone stops (159, `AccessRefused`, as a refused store does today).
 
 1 and 2 are the host's to enforce; 3 is the guest's one locking rule, replacing the gate; 4 bounds
-memory without asking other VMs anything.
+memory without asking other VMs anything. *TASK-276.6:* a `MAP` names pages, their first touch
+installs them (The host, below): what the VM process installs is the window's page as the window
+names it then, so 1 and 2 are kept by the stage's one lock, which a fault's install and the
+window's changes take; 3 and 4 are the guest's, unchanged.
 
 ## Linux facts that decide it
 
@@ -134,7 +137,10 @@ memory without asking other VMs anything.
   maps them for the guest ahead of its accesses, as `MAP_AHEAD` does; `ENOMEM` past `private_max`.
   For a `write(2)` of many pages not yet private: one round trip, rather than a host fault each.
 - **`MAP`** of an open extent fails `EPERM`, read-only or not (`MAP_WRITE` goes). Every `MAP` is
-  read-only; `ENOMEM` goes from it.
+  read-only; `ENOMEM` goes from it. *TASK-276.6:* a `MAP` names the pages, which the host installs
+  as the guest first touches them; `MAP_AHEAD` installs them, and maps them for the guest, at once,
+  for the guest to read next. The guest sends `MAP_AHEAD` for its reads' ranges alone, a write's
+  pages named, so that a write's `PRIVATE` puts its copy in place of nothing.
 - **Sealing** (`F_SEAL`, `seal_asked`, `SEALED`) goes: nothing a guest holds pins what another
   needs.
 - **`COMMIT`** seals as before; it changes nothing in any window.
@@ -160,6 +166,27 @@ memory without asking other VMs anything.
   is reserved against the tenant's arena as the window is made (OPEN_QUESTIONS.md).
 - **Private pages** are the device's: a source evicting its page skips them; a `MAP` or `UNMAP`
   over one frees it; the device's count and the tenant's are kept with them.
+- **A `MAP` names pages; their first touch installs them** (TASK-276.6, `dax::uffd`). A page the
+  window maps is left out of the VM process's memory, as one past the budget of runs is, until the
+  guest touches it: a load's fault installs it, with the pages around it of memory following on, as
+  the window names them then; a `PRIVATE` of a page never installed, or a store's first touch
+  (its fault goes to the window as a store), fills the private page in place of nothing, no `mmap`
+  and no TLB shootdown, where replacing a page installed costs one of each, every vCPU's and the
+  host's CPUs'. `MAP_AHEAD` installs what it names at once and pre-faults it, as before. Rules
+  (each turned off fails a Shuttle test, and specs/dax-cow has both): a change of pages installed
+  takes their memory away, left out, for the next touch to install as named
+  (`changes_take_away_installed`, the spec's `changesTakeAway`); and a fault installs its page
+  under the lock the window's changes take, as named then, not as it found it before a change
+  (`install_as_named_now`, `installAsNamed`). A change of pages never touched since they were
+  named makes no system call at all.
+- **A private page is filled as its memory object's** (`pwrite`), mapped nowhere but where the
+  window maps it, and **emptied once nothing maps it** (TASK-276.6): a change takes its pages away
+  with one `mmap`, then punches the private ones (`FALLOC_FL_PUNCH_HOLE`), which zaps no page table
+  entry and flushes nothing; a run of private pages alone, nothing installed, is punched in place,
+  one flush. Filled before through a second mapping of the memory (`UFFDIO_COPY`), and punched
+  before the `mmap`, a private page that went cost two flushes besides the `mmap`'s: the
+  `fallocate`s, 13% of the VM process's receiving thread under GCE's DAX random writes, were these
+  punches, not allocation.
 - **What goes:** open extents' sources in windows (`Source::is_open`, the open extent's memory in
   `crate::cache`), the commit's sealing of windows' mappings (`commit_seal_ns`, `make_read_only`),
   the open-page pin budget and its `ENOMEM` (`extentd/memory.rs`, `physmem::pin` for open extents;
@@ -464,6 +491,11 @@ batch.*
   private ahead would be needed instead.
 - Writable DAX deleted outright at stage 4, no flag kept and no A/B batch run (the user,
   2026-11-04). Undoing it: revert batch 2026-11-04e, whose commits dead-ends/writable-dax.md names.
+- A `MAP` names pages, their first touch installs them (TASK-276.6, the user, 2026-11-09), so that
+  a page written before it is read is made private in place of nothing, with no TLB shootdown, as
+  a cold database's pages are. A page read, then written, still takes one: its private copy
+  replaces the shared page the guest's reads installed. Undoing it: `UffdSecondStage::map` and
+  `remap` installing, as `map_ahead` does, and the guest's writes mapping ahead.
 - `private_max` reserved against the tenant at open, not charged as pages come, so that a store
   never waits for memory and no VM asks another to seal. Its default (a quarter of the window is
   the proposal) waits on the density target, the review's open decision 5.

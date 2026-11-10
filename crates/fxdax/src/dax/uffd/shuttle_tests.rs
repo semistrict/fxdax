@@ -7,10 +7,10 @@
 //! memory in, turned off, fails.
 
 use super::super::shuttle_tests::{
-    ATTEMPTS, Event, Guest, Outcome, RUNS, SEALED, byte, reaching, stores_race_frees,
+    ATTEMPTS, Event, Guest, Outcome, RUNS, SEALED, byte, reached, reaching, stores_race_frees,
 };
 use super::super::tests::TestSource;
-use super::super::{Dax, Source as _, Window};
+use super::super::{Dax, DaxWindow, Source as _, Window};
 use super::*;
 use crate::pages::PhysLocation;
 use crate::shuttle_testing::{config, fails_with, runs};
@@ -44,8 +44,9 @@ struct Model {
     /// offsets of it filled: a page of it unfilled faults as anonymous memory (backlog doc-13).
     private: Option<RawFd>,
     filled: BTreeSet<u64>,
-    /// fxdax: where the address space the stage reserves next is.
-    reserved: usize,
+    /// fxdax: the pages of private memory emptied while memory mapped them accessibly, each a TLB
+    /// flush of the process's CPUs and the hypervisor's (TASK-276.6).
+    punched_mapped: usize,
 }
 
 impl Model {
@@ -121,45 +122,32 @@ impl HostMemory for ModelMemory {
         Ok(fd)
     }
 
-    fn reserve(&self, len: usize) -> std::io::Result<usize> {
-        // Where it is doesn't matter to the model, but that it is apart from the rest.
-        let mut model = self.0.lock().unwrap();
-        let addr = (1 << 40) + model.reserved;
-        model.reserved += len.next_multiple_of(1 << 30);
-        Ok(addr)
-    }
-
-    fn unreserve(&self, addr: usize, len: usize) {
-        let mut model = self.0.lock().unwrap();
-        model.pages.retain(|at, _| !(addr..addr + len).contains(at));
-    }
-
-    /// fxdax: a page or a run of them (TASK-164.10).
-    fn fill(&self, addr: usize, bytes: &[u8]) {
+    /// fxdax: a page or a run of them (TASK-164.10), of the private memory alone, through no
+    /// mapping (TASK-276.6).
+    fn fill(&self, fd: RawFd, offset: u64, bytes: &[u8]) {
         let page_size = page_size() as usize;
         let mut model = self.0.lock().unwrap();
-        for (at, bytes) in (addr..).step_by(page_size).zip(bytes.chunks(page_size)) {
-            let page = model.pages[&at];
-            let registered = page.registered & UFFDIO_REGISTER_MODE_MISSING != 0;
-            let Some((fd, offset)) = page.file.filter(|_| registered) else {
+        assert_eq!(model.private, Some(fd), "filled memory other than the private memory");
+        for (at, bytes) in (offset..).step_by(page_size).zip(bytes.chunks(page_size)) {
+            if !model.filled.insert(at) {
                 drop(model);
-                panic!("filled {at:#x}, which isn't registered for missing faults");
-            };
-            if !model.unfilled(&page) {
-                drop(model);
-                panic!("filled {at:#x} twice");
+                panic!("filled private memory at {at:#x} twice");
             }
-            model.filled.insert(offset);
-            // SAFETY: Writes `bytes` to the private memory, whose page it is.
-            let written =
-                unsafe { libc::pwrite(fd, bytes.as_ptr().cast(), bytes.len(), offset as _) };
-            assert_eq!(written, bytes.len() as isize, "{}", std::io::Error::last_os_error());
+            Syscalls::write_at(fd, at, bytes);
         }
     }
 
     fn punch(&self, fd: RawFd, offset: u64, len: usize) {
         let mut model = self.0.lock().unwrap();
-        model.filled.retain(|at| !(offset..offset + len as u64).contains(at));
+        let punched = offset..offset + len as u64;
+        model.filled.retain(|at| !punched.contains(at));
+        let mapped = (model.pages.values())
+            .filter(|page| page.prot != libc::PROT_NONE)
+            .filter(|page| {
+                page.file.is_some_and(|(at_fd, at)| at_fd == fd && punched.contains(&at))
+            })
+            .count();
+        model.punched_mapped += mapped;
         Syscalls::punch_hole(fd, offset, len);
     }
 }
@@ -513,10 +501,11 @@ fn modelled(pages: u64, at_once: bool) -> (ModelMemory, Arc<UffdSecondStage<Mode
     (memory, stage, dax)
 }
 
-/// fxdax: the window's changes made at once leave the host memory as made in steps (TASK-91.16),
-/// with fewer `mmap`s: none for a map of the very pages installed, left in place; one for a map
-/// of other memory, installed over the old; and pages no map covers, as a file's not in memory,
-/// left out. A page a refused store restricted is installed anew, as in steps, which lifts it.
+/// fxdax: the window's changes made at once leave the host memory reading as made in steps
+/// (TASK-91.16), with fewer `mmap`s: none for a map of the very pages installed, left in place;
+/// one for a map of other memory over pages installed, left out, and named; and none for a change
+/// of pages never touched since they were named (TASK-276.6: a map names pages, their first touch
+/// installs them). A page a refused store restricted is taken away with its run, which lifts it.
 fn remaps_end_as_steps_do() {
     let ps = page_size();
     let (steps, steps_stage, mut steps_dax) = modelled(2, false);
@@ -524,26 +513,63 @@ fn remaps_end_as_steps_do() {
     let (sealed, other) = (TestSource::filled(2, 1).source(), TestSource::filled(2, 2).source());
     // Not yet written, it has no page in memory.
     let unwritten = TestSource::paged(2).source();
-    let pages = |memory: &ModelMemory| memory.0.lock().unwrap().pages.clone();
     let maps = |memory: &ModelMemory| memory.0.lock().unwrap().maps;
+    let guests = [(&steps, &steps_stage, &steps_dax), (&at_once, &at_once_stage, &at_once_dax)]
+        .map(|(memory, stage, dax)| HostGuest {
+            memory: memory.clone(),
+            stage: stage.clone(),
+            window: dax.window.clone(),
+            base: 64 * ps as usize,
+        });
+    // What each guest reads of each page, its loads installing them.
+    let reads = || guests.each_ref().map(|guest| [0, ps].map(|offset| load_byte(guest, offset)));
     let mut change = |what: &str, mmaps: usize, make: &dyn Fn(&mut Dax)| {
         let before = maps(&at_once);
         make(&mut steps_dax);
         make(&mut at_once_dax);
-        assert_eq!(pages(&at_once), pages(&steps), "{what}: the memory differs");
         assert_eq!(maps(&at_once) - before, mmaps, "{what}: mmaps");
     };
-    change("sealed", 1, &|dax| dax.map(0, &sealed, 0, 2 * ps));
+    change("sealed", 0, &|dax| dax.map(0, &sealed, 0, 2 * ps));
+    assert_eq!(reads(), [[1, 1]; 2], "sealed");
     change("the same pages", 0, &|dax| dax.map(0, &sealed, 0, 2 * ps));
+    assert_eq!(reads(), [[1, 1]; 2], "the same pages");
     // A store faulted on the second page, which the window refused, as it doesn't copy on write.
     for stage in [&steps_stage, &at_once_stage] {
         let addr = 64 * ps as usize + ps as usize;
         stage.restrict(addr, stage.seen(addr), libc::PROT_READ);
     }
-    // The first page in place, the second, restricted, installed anew.
+    // The run, its second page restricted, left out.
     change("the same, one restricted", 1, &|dax| dax.map(0, &sealed, 0, 2 * ps));
+    assert_eq!(reads(), [[1, 1]; 2], "the same, one restricted");
     change("other memory", 1, &|dax| dax.map(0, &other, 0, 2 * ps));
+    assert_eq!(reads(), [[2, 2]; 2], "other memory");
     change("nothing in memory", 1, &|dax| dax.map(0, &unwritten, 0, 2 * ps));
+    change("nothing in memory, never touched", 0, &|dax| dax.map(0, &other, 0, 2 * ps));
+}
+
+/// fxdax: a vCPU's store of [`STORED`] at `offset` through `guest`, retried as each fault is
+/// resolved.
+fn store_byte(guest: &HostGuest, offset: u64) {
+    for _ in 0..ATTEMPTS {
+        match guest.access(offset, Access::Write, Some(STORED)) {
+            Outcome::Made(read) => return assert_eq!(read, STORED),
+            Outcome::Faulted(fault) => future::block_on(fault).unwrap(),
+            Outcome::Failed => panic!("the vCPU's store at {offset:#x} failed"),
+        }
+    }
+    panic!("the vCPU's store at {offset:#x} never completed");
+}
+
+/// fxdax: what a vCPU's load at `offset` through `guest` reads, retried as each fault is resolved.
+fn load_byte(guest: &HostGuest, offset: u64) -> u8 {
+    for _ in 0..ATTEMPTS {
+        match guest.access(offset, Access::Read, None) {
+            Outcome::Made(read) => return read,
+            Outcome::Faulted(fault) => future::block_on(fault).unwrap(),
+            Outcome::Failed => panic!("the vCPU's load at {offset:#x} failed"),
+        }
+    }
+    panic!("the vCPU's load at {offset:#x} never completed");
 }
 
 #[test]
@@ -589,6 +615,8 @@ fn refusal_races_changes() {
     let sealed = TestSource::filled(1, SEALED).source();
     dax.map(0, &sealed, 0, ps);
     let guest = HostGuest { memory, stage: stage.clone(), window, base };
+    // Installed, as a load first touches it (TASK-276.6), for the change to take away.
+    assert_eq!(load_byte(&guest, 0), SEALED);
 
     let change = thread::spawn(move || dax.map_zeros(0, ps));
     // A store faulted on the page, which the window refused, as it maps it read-only.
@@ -942,6 +970,8 @@ fn stores_to_pages_here_copy_them() {
     let mut shared = None;
     sealed.each_present(0..1, &mut |_, frame| shared = Some(frame.location()));
     let shared = shared.unwrap();
+    // Installed here, as a load first touches it (TASK-276.6).
+    assert_eq!(load_byte(&guest, 0), SEALED);
 
     guest_thread(VCPU);
     match guest.access_by(VCPU, 0, Access::Write, Some(7)) {
@@ -992,10 +1022,12 @@ fn worker_writes_of_pages_here_copy_nothing(vcpu_stores: bool) {
     let telling = Arc::new(Telling { stage: stage.clone(), memory: memory.clone() });
     let (mut dax, _) = super::super::tests::copying(1, 1, Some(telling));
     let window = dax.window.clone();
-    // In memory as it is mapped: installed here at once, write-protected.
+    // In memory as it is mapped: installed here as a vCPU's load first touches it,
+    // write-protected (TASK-276.6).
     let sealed = TestSource::filled(1, SEALED);
     dax.map(0, &sealed.source(), 0, ps);
     let guest = HostGuest { memory, stage: stage.clone(), window: window.clone(), base };
+    assert_eq!(load_byte(&guest, 0), SEALED);
     assert!(stage.pages.lock().unwrap().pages[0].mapped.is_some_and(|mapped| mapped.installed()));
 
     // The worker's write, retried as get_user_pages retries it, until it fails or is made.
@@ -1126,6 +1158,8 @@ fn private_runs_map_at_once() {
     let window = dax.window.clone();
     let base = 64 * ps as usize;
     let guest = HostGuest { memory: memory.clone(), stage, window: window.clone(), base };
+    // The first run installed, as the guest's loads first touch it (TASK-276.6).
+    assert_eq!((0..4).map(|page| load_byte(&guest, page * ps)).collect::<Vec<_>>(), [SEALED; 4]);
     let maps = || memory.0.lock().unwrap().maps;
     let before = maps();
     future::block_on(window.make_private(0, 4 * ps)).unwrap();
@@ -1308,4 +1342,324 @@ fn needs_private_pages_emptied_as_they_go() {
     fails_with("found a private page gone", || {
         Runner::new(RandomScheduler::new(1), config()).run(private_pages_go_with_their_unmaps);
     });
+}
+
+/// fxdax TASK-276.6: what races a store's first touch of a page the window named and the stage
+/// never installed ([`first_stores_race_changes`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Racing {
+    /// The guest's `MAP` of other bytes over the page, which ends its private page, if it has one.
+    Map,
+    /// The guest's `UNMAP` of the page, which ends its private page, if it has one.
+    Unmap,
+    /// The page's source evicting it, which leaves a private page.
+    Evict,
+}
+
+/// What the other extent a [`Racing::Map`] maps holds.
+const OTHER: u8 = 0xd;
+
+/// fxdax TASK-276.6 (backlog doc-13: a `MAP` names pages, their first touch installs them): a
+/// vCPU's store is the first touch of a page of a sealed extent's mapping, which the stage never
+/// installed, on a window that copies on write, while the page is mapped over, unmapped or
+/// evicted (`racing`): its fault goes to the window as a store, which makes the page private in
+/// place of nothing, holding what the window maps there then, or is refused for a page unmapped,
+/// and the store retried. Then a vCPU loads the page, and stores to it again. Checked: the store
+/// is made, in a private page, unless the window maps nothing there by then; what a load reads
+/// after both is what the window says the page holds: the store, while the page is private, else
+/// the bytes it maps, or nothing, an unmapped page's load failing; a private page is the one page
+/// writable here, and a store to it makes no fault; and nothing of the stage's memory faults in a
+/// page of zeros, or takes a store untracked (`HostGuest::access_by`).
+fn first_stores_race_changes(racing: Racing) {
+    let ps = page_size();
+    let (memory, stage, mut dax) = modelled_copying(1);
+    guest_thread(VCPU);
+    let sealed = TestSource::filled(1, SEALED);
+    dax.map(0, &sealed.source(), 0, ps);
+    assert!(stage.pages.lock().unwrap().pages[0].mapped.is_some_and(|mapped| !mapped.installed()));
+    let window = DaxWindow(dax.window.clone());
+    let base = 64 * ps as usize;
+    let guest =
+        Arc::new(HostGuest { memory, stage: stage.clone(), window: dax.window.clone(), base });
+    let storing = guest.clone();
+    let store = thread::spawn(move || {
+        for _ in 0..ATTEMPTS {
+            match storing.access(0, Access::Write, Some(STORED)) {
+                Outcome::Made(read) => return Some(read),
+                Outcome::Faulted(fault) => match future::block_on(fault) {
+                    Ok(()) => thread::yield_now(),
+                    Err(err) => panic!("a store's fault: {err:?}"),
+                },
+                // Unmapped meanwhile: the fault, withheld, fails, as KVM_RUN does.
+                Outcome::Failed => return None,
+            }
+        }
+        panic!("the store never completed");
+    });
+    let other = TestSource::filled(1, OTHER);
+    let change = thread::spawn(move || {
+        match racing {
+            Racing::Map => dax.map(0, &other.source(), 0, ps),
+            Racing::Unmap => dax.unmap(0, ps),
+            Racing::Evict => {
+                let identity = crate::dax::source_identity(&sealed.source());
+                dax.window.unmap_pages_of(identity, &|_| true);
+            }
+        }
+        (dax, other)
+    });
+    let stored = store.join().unwrap();
+    let (_dax, _other) = change.join().unwrap();
+    let private = window.private_pages() == 1;
+    let mapped = window.is_mapped(0);
+    match racing {
+        // An eviction leaves the private page, and maps the page as it was.
+        Racing::Evict => assert_eq!((stored, private), (Some(STORED), true), "evicted"),
+        Racing::Map | Racing::Unmap if private => assert_eq!(stored, Some(STORED), "{racing:?}"),
+        // The store before the change, which ended its private page, or none, unmapped first.
+        Racing::Map | Racing::Unmap => {}
+    }
+    let read = (0..ATTEMPTS).find_map(|_| match guest.access(0, Access::Read, None) {
+        Outcome::Made(read) => Some(Some(read)),
+        Outcome::Faulted(fault) => {
+            future::block_on(fault).unwrap();
+            None
+        }
+        Outcome::Failed => Some(None),
+    });
+    let read = read.expect("a load never completed");
+    let expected = match (private, mapped, racing) {
+        (true, _, _) => Some(STORED),
+        (false, false, _) => None,
+        (false, true, Racing::Map) => Some(OTHER),
+        (false, true, _) => Some(SEALED),
+    };
+    assert_eq!(read, expected, "{racing:?}: a load after the race (private {private})");
+    match private {
+        true => {
+            assert_eq!(guest.writable(), [0], "the private page isn't writable here");
+            match guest.access(0, Access::Write, Some(STORED)) {
+                Outcome::Made(read) => assert_eq!(read, STORED),
+                _ => panic!("a store to the private page faulted, or failed"),
+            }
+        }
+        false => {
+            assert_eq!(guest.writable(), Vec::<u64>::new(), "a page writable but private ones");
+        }
+    }
+    // The store made and the page private still; made, and its copy ended by the change after
+    // it; or refused, the page unmapped first.
+    reached(match (stored, private) {
+        (Some(_), true) => Event::ReadStored,
+        (Some(_), false) => Event::MapEndedCopy,
+        (None, _) => Event::Failed,
+    });
+}
+
+#[test]
+fn first_stores_race_maps_by_pct() {
+    let events = [Event::ReadStored, Event::MapEndedCopy];
+    reaching(
+        || PctScheduler::new(3, runs(RUNS)),
+        || first_stores_race_changes(Racing::Map),
+        &events,
+    );
+}
+
+#[test]
+fn first_stores_race_unmaps_by_pct() {
+    let events = [Event::MapEndedCopy, Event::Failed];
+    reaching(
+        || PctScheduler::new(3, runs(RUNS)),
+        || first_stores_race_changes(Racing::Unmap),
+        &events,
+    );
+}
+
+#[test]
+fn first_stores_race_evictions_by_pct() {
+    reaching(
+        || PctScheduler::new(3, runs(RUNS)),
+        || first_stores_race_changes(Racing::Evict),
+        &[Event::ReadStored],
+    );
+}
+
+#[test]
+fn first_stores_race_maps_randomly() {
+    let events = [Event::ReadStored, Event::MapEndedCopy];
+    reaching(
+        || RandomScheduler::new(runs(RUNS)),
+        || first_stores_race_changes(Racing::Map),
+        &events,
+    );
+}
+
+/// fxdax TASK-276.6: a vCPU's load is the first touch of a page the window named, which the stage
+/// installs, while the window maps other bytes over the page, then unmaps it: each load reads the
+/// page as the window mapped it as the load was made, never older bytes once newer were read;
+/// and once the changes are made, the page reads as the window maps it, not at all once unmapped.
+/// A page installed as a fault found it, after a change named it anew, read the bytes the window
+/// mapped before for good; a change leaving the page installed, the same.
+fn first_loads_race_changes() {
+    let ps = page_size();
+    let (memory, stage, mut dax) = modelled_copying(1);
+    guest_thread(VCPU);
+    let sealed = TestSource::filled(1, SEALED);
+    dax.map(0, &sealed.source(), 0, ps);
+    let base = 64 * ps as usize;
+    let guest = Arc::new(HostGuest { memory, stage, window: dax.window.clone(), base });
+    let loading = guest.clone();
+    let loads = thread::spawn(move || {
+        let mut last = None;
+        for _ in 0..3 {
+            for _ in 0..ATTEMPTS {
+                match loading.access(0, Access::Read, None) {
+                    Outcome::Made(read) => {
+                        let rank = |read: u8| [SEALED, OTHER].iter().position(|&held| held == read);
+                        let ranked = rank(read).unwrap_or_else(|| panic!("a load read {read:#x}"));
+                        assert!(last <= Some(ranked), "a load read {read:#x} after newer bytes");
+                        last = Some(ranked);
+                        break;
+                    }
+                    Outcome::Faulted(fault) => future::block_on(fault).unwrap(),
+                    // Unmapped.
+                    Outcome::Failed => return,
+                }
+                thread::yield_now();
+            }
+            thread::yield_now();
+        }
+    });
+    let other = TestSource::filled(1, OTHER);
+    dax.map(0, &other.source(), 0, ps);
+    assert_eq!(load_byte(&guest, 0), OTHER, "a load after the map read other bytes");
+    dax.unmap(0, ps);
+    loads.join().unwrap();
+    let after = (0..ATTEMPTS).find_map(|_| match guest.access(0, Access::Read, None) {
+        Outcome::Made(read) => Some(Some(read)),
+        Outcome::Faulted(fault) => {
+            future::block_on(fault).unwrap();
+            None
+        }
+        Outcome::Failed => Some(None),
+    });
+    assert_eq!(after, Some(None), "a load of the page unmapped read it");
+}
+
+#[test]
+fn first_loads_race_changes_by_pct() {
+    Runner::new(PctScheduler::new(3, runs(RUNS)), config()).run(first_loads_race_changes);
+}
+
+#[test]
+fn first_loads_race_changes_randomly() {
+    Runner::new(RandomScheduler::new(runs(RUNS)), config()).run(first_loads_race_changes);
+}
+
+/// fxdax TASK-276.6: a change of pages installed leaving their memory as it was, the window's next
+/// page named alone: the stage reads the bytes the window mapped before.
+#[test]
+fn needs_changes_to_take_away_installed() {
+    *RULES.lock().unwrap() = Rules { changes_take_away_installed: false, ..Rules::ALL };
+    fails_with("a load", || {
+        Runner::new(PctScheduler::new(3, runs(10 * RUNS)), config()).run(first_loads_race_changes);
+    });
+}
+
+/// fxdax TASK-276.6: a page installed as a fault found it, its lock let go of meanwhile: a map
+/// between, of other bytes, is undone, the page installed with the bytes mapped before.
+#[test]
+fn needs_installs_as_named_now() {
+    *RULES.lock().unwrap() = Rules { install_as_named_now: false, ..Rules::ALL };
+    fails_with("a load", || {
+        Runner::new(PctScheduler::new(3, runs(10 * RUNS)), config()).run(first_loads_race_changes);
+    });
+}
+
+/// fxdax TASK-276.6 (backlog doc-13: a `MAP` names pages, their first touch installs them): pages
+/// the window maps take no `mmap`, nor does a `PRIVATE` of a page never touched, nor a store's
+/// first touch, each private copy put in place of nothing; a load's first touch installs its run,
+/// one `mmap`; a `PRIVATE` of a page installed, one over it; and the pages read and take stores as
+/// they should. Red with the window's maps installing: an `mmap` a map, and one over each page
+/// made private, the TLB flush of each.
+fn pages_never_touched_change_with_no_mmap() {
+    let ps = page_size();
+    let (memory, stage, mut dax) = modelled_copying(4);
+    guest_thread(VCPU);
+    let sealed = TestSource::filled(4, SEALED).source();
+    let maps = || memory.0.lock().unwrap().maps;
+    let before = maps();
+    dax.map(0, &sealed, 0, 4 * ps);
+    assert_eq!(maps() - before, 0, "a map");
+    let window = dax.window.clone();
+    let base = 64 * ps as usize;
+    let guest =
+        HostGuest { memory: memory.clone(), stage: stage.clone(), window: window.clone(), base };
+    future::block_on(window.make_private(0, ps)).unwrap();
+    assert_eq!(maps() - before, 0, "a PRIVATE of a page never touched");
+    assert!(matches!(guest.access(ps, Access::Write, Some(STORED)), Outcome::Faulted(_)));
+    store_byte(&guest, ps);
+    assert_eq!(maps() - before, 0, "a store's first touch");
+    assert_eq!(load_byte(&guest, 2 * ps), SEALED);
+    assert_eq!(maps() - before, 1, "a load's first touch");
+    future::block_on(window.make_private(3 * ps, ps)).unwrap();
+    assert_eq!(maps() - before, 2, "a PRIVATE of a page installed");
+    assert_eq!(window.private_pages(), 3);
+    assert_eq!(guest.writable(), [0, ps, 3 * ps], "the private pages aren't writable here");
+    for (page, held) in [(0, SEALED), (ps, STORED), (2 * ps, SEALED), (3 * ps, SEALED)] {
+        assert_eq!(load_byte(&guest, page), held, "page {page:#x}");
+    }
+    assert_eq!(stage.taken(), [1, 0], "a change took a page installed away");
+}
+
+#[test]
+fn pages_never_touched_change_with_no_mmap_once() {
+    Runner::new(RandomScheduler::new(1), config()).run(pages_never_touched_change_with_no_mmap);
+}
+
+/// fxdax TASK-276.6: the guest's `UNMAP` of a range of pages installed and private pages among
+/// them takes one `mmap`, and empties the private pages once nothing maps them, which flushes no
+/// TLB; one of a private page alone, nothing installed, empties it in place, where the window
+/// maps it, one flush, with no `mmap`; and one of pages never touched changes nothing of the
+/// memory at all. Red with the private pages emptied first, as they were: each emptied where the
+/// window mapped it, a flush each besides the `mmap`'s.
+fn unmaps_empty_private_pages_unmapped() {
+    let ps = page_size();
+    let (memory, stage, mut dax) = modelled_copying(8);
+    guest_thread(VCPU);
+    // Its pages scattered, a run each, which a load installs alone.
+    let sealed = TestSource::scattered(8, |_| SEALED).source();
+    dax.map(0, &sealed, 0, 8 * ps);
+    let window = dax.window.clone();
+    let base = 64 * ps as usize;
+    let guest = HostGuest { memory: memory.clone(), stage, window: window.clone(), base };
+    // Pages 0 to 3 installed, 0 and 2 of them made private over them; 5 private alone.
+    for page in 0..4 {
+        assert_eq!(load_byte(&guest, page * ps), SEALED);
+    }
+    for page in [0, 2, 5] {
+        future::block_on(window.make_private(page * ps, ps)).unwrap();
+    }
+    let counts = || {
+        let model = memory.0.lock().unwrap();
+        (model.maps, model.punched_mapped, model.filled.len())
+    };
+    let (maps, punched, filled) = counts();
+    assert_eq!(filled, 3);
+    dax.unmap(0, 4 * ps);
+    assert_eq!(counts(), (maps + 1, punched, 1), "an unmap of pages installed and private");
+    dax.unmap(4 * ps, 2 * ps);
+    assert_eq!(counts(), (maps + 1, punched + 1, 0), "an unmap of a private page alone");
+    dax.unmap(6 * ps, 2 * ps);
+    assert_eq!(counts(), (maps + 1, punched + 1, 0), "an unmap of pages never touched");
+    assert_eq!(window.private_pages(), 0);
+    for page in 0..8 {
+        assert!(matches!(guest.access(page * ps, Access::Read, None), Outcome::Faulted(_)));
+    }
+}
+
+#[test]
+fn unmaps_empty_private_pages_unmapped_once() {
+    Runner::new(RandomScheduler::new(1), config()).run(unmaps_empty_private_pages_unmapped);
 }

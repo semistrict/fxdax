@@ -517,13 +517,14 @@ impl RemoteExtentStore {
         self.copying.load(Ordering::Acquire)
     }
 
-    /// fxdax: maps the pages of the window's `len` bytes at `window_offset` that its memory holds
-    /// for the guest ahead of its accesses, through the window's `Prefault`: the pages a guest maps
-    /// read-only to read next (doc-4's `MAP_AHEAD`), which the window leaves to its accesses
-    /// otherwise (TASK-112.1). Without a window, nothing.
+    /// fxdax: maps the pages of the window's `len` bytes at `window_offset` for the guest ahead of
+    /// its accesses: the pages a guest maps read-only to read next (doc-4's `MAP_AHEAD`), installed
+    /// in the VM process's memory, then mapped for the guest through the window's `Prefault`, which
+    /// the window leaves to the guest's first touches otherwise (TASK-112.1, TASK-276.6). Without
+    /// a window, nothing.
     pub fn prefault(&self, window_offset: u64, len: u64) {
         if let Some(stage) = self.client.stage.get() {
-            stage.prefault_installed(window_offset, len);
+            stage.map_ahead(window_offset, len);
         }
     }
 

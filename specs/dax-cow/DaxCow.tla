@@ -36,8 +36,15 @@
 (*   window page mapping it reads zeros from then on.                      *)
 (* - the host: copies on write, at a PRIVATE or at a store to a page not  *)
 (*   private, refusing either past private_max, which stops the VM; seals *)
-(*   (a COMMIT: the journal's, or any fsync's) at any time; and refuses a *)
-(*   MAP of an open extent (EPERM).                                        *)
+(*   (a COMMIT: the journal's, or any fsync's) at any time; refuses a MAP *)
+(*   of an open extent (EPERM); and evicts a page of a sealed extent from *)
+(*   the window, as its cache does, at any time. The VM process installs *)
+(*   what the window names as the guest first touches it (TASK-276.6): a  *)
+(*   MAP names pages, and a load's fault installs the page (`inst`), a    *)
+(*   copy of what the window maps; a store's first touch, a PRIVATE,      *)
+(*   copies what the window names into a private page, nothing installed.*)
+(* - a loader: the guest's loads of the file's pages, each through what   *)
+(*   the VM process installed, or a fault that installs it first.         *)
 (*                                                                         *)
 (* Data are versions: each store writes the next, a punch writes zeros as *)
 (* the next, and a page's copy holds every store before it. A store is to *)
@@ -84,6 +91,14 @@
 (* - bytesFirst: writeback commits after its bytes are written (Fxfs's     *)
 (*   fxfs_write_many), so that a crash shows old or new data, never what   *)
 (*   a new extent held unwritten.                                           *)
+(* - installAsNamed: a load's fault installs the page as the window names *)
+(*   it then, its look and its install one step, under the lock the      *)
+(*   window's changes take (dax::uffd's reinstall): installed as the fault *)
+(*   found it, a change between, a punch's zeros, is undone for good.      *)
+(* - changesTakeAway: a change of what the window maps at a page takes    *)
+(*   away what the VM process installed there, for the next touch to      *)
+(*   install anew (dax::uffd's take_away): a page left installed reads    *)
+(*   what the window mapped before.                                         *)
 (*                                                                         *)
 (* Writeback keeps punches and rebinds out from its swap to its commit,    *)
 (* which doc-13 doesn't say: else one meets a copy whose commit is to come, *)
@@ -103,11 +118,12 @@ CONSTANTS
     PrivateMax,     \* the device's private_max
     MaxStores,      \* the stores, faults' and write(2)s'
     MaxPunches,     \* the punches
+    MaxLoads,       \* the loader's loads
     Rules           \* the protocol's rules in force
 
 AllRules == {"privateAtIomap", "protectByPageTables", "swapFirst", "swapExclusive",
              "rebindExclusive", "rebindAfterSeal", "keepUntilSealed", "countPrivate",
-             "bytesFirst"}
+             "bytesFirst", "installAsNamed", "changesTakeAway"}
 
 ASSUME Rules \subseteq AllRules
 ASSUME PrivateMax \in Nat \ {0}
@@ -123,6 +139,8 @@ VARIABLES
     \* The host.
     win,        \* win[p]: the window's page: [kind: "extent", "zeros", "private", "doomed"
                 \* (an extent's block Fxfs replaced, freed at the next seal) or "freed", data]
+    inst,       \* inst[p]: what the VM process installed at p, a copy of a window page's data,
+                \* or None: named alone, its next touch a fault
     refused,    \* whether the host refused a store or a PRIVATE, which stops the VM
     \* Fxfs.
     file,       \* file[p]: the file's committed block: [state: "hole", "open" or "sealed", data]
@@ -142,15 +160,27 @@ VARIABLES
     \* The storer.
     spc, sPage, sWay, stores,
     \* The other task.
-    wpc, wOp, wPage, floor, buf, punches
+    wpc, wOp, wPage, floor, buf, punches,
+    \* The loader: its page, what its fault found there, and its loads so far.
+    lpc, lPage, lSeen, loads
 
-hostVars == <<win, refused>>
+hostVars == <<win, inst, refused>>
 fxfsVars == <<file, durable>>
 ghostVars == <<latest, next, errors>>
 guestVars == <<pte, dirty, wb, sealing, counted, semX, semR>>
 sVars == <<spc, sPage, sWay, stores>>
 wVars == <<wpc, wOp, wPage, floor, buf, punches>>
-vars == <<hostVars, fxfsVars, ghostVars, guestVars, sVars, wVars>>
+lVars == <<lpc, lPage, lSeen, loads>>
+vars == <<hostVars, fxfsVars, ghostVars, guestVars, sVars, wVars, lVars>>
+
+\* What the VM process installed at no page: it is named alone.
+None == -4
+
+\* What a change of the window's pages, `changed`, leaves the VM process installed: nothing there
+\* (changesTakeAway), for the next touch to install as the window names the page then.
+TakenAway(changed) ==
+    IF "changesTakeAway" \in Rules THEN [p \in Pages |-> IF p \in changed THEN None ELSE inst[p]]
+    ELSE inst
 
 \* The pages the host holds private.
 HostPrivate == Cardinality({p \in Pages : win[p].kind = "private"})
@@ -164,16 +194,20 @@ Store(p) ==
     IF CanStore(p)
     THEN /\ win' = [win EXCEPT ![p] = [kind |-> "private",
                                        data |-> IF win[p].kind = "freed" THEN Torn ELSE next]]
+         /\ inst' = [inst EXCEPT ![p] = None]
          /\ latest' = [latest EXCEPT ![p] = next]
          /\ next' = next + 1
          /\ UNCHANGED refused
     ELSE /\ refused' = TRUE
-         /\ UNCHANGED <<win, latest, next>>
+         /\ UNCHANGED <<win, inst, latest, next>>
 
-\* PRIVATE of p: the host copies it now, what the window maps there, within private_max.
+\* PRIVATE of p: the host copies it now, what the window maps there, within private_max, in place
+\* of what the VM process installed, if anything (MadePrivateInst).
 MadePrivate(p) ==
     IF win[p].kind = "private" THEN win[p]
     ELSE [kind |-> "private", data |-> win[p].data]
+
+MadePrivateInst(p) == [inst EXCEPT ![p] = None]
 
 \* Whether the storer's fault holds p's DAX entry: from before its iomap_begin until it returns.
 EntryHeld(p) == sWay = "fault" /\ sPage = p /\ spc \in {"lock", "begin", "unlock", "entry"}
@@ -194,6 +228,7 @@ SealEffect ==
     /\ sealing' = {}
     /\ win' = [p \in Pages |-> IF win[p].kind = "doomed" THEN [kind |-> "freed", data |-> Zeroed]
                                ELSE win[p]]
+    /\ inst' = TakenAway({p \in Pages : win[p].kind = "doomed"})
 
 -----------------------------------------------------------------------------
 (* The storer. *)
@@ -229,9 +264,10 @@ SBegin ==
     /\ IF "privateAtIomap" \in Rules /\ ~CanStore(sPage)
        THEN /\ refused' = TRUE
             /\ spc' = "stopped"
-            /\ UNCHANGED <<win, pte, dirty, counted>>
+            /\ UNCHANGED <<win, inst, pte, dirty, counted>>
        ELSE /\ win' = IF "privateAtIomap" \in Rules
                       THEN [win EXCEPT ![sPage] = MadePrivate(sPage)] ELSE win
+            /\ inst' = IF "privateAtIomap" \in Rules THEN MadePrivateInst(sPage) ELSE inst
             /\ dirty' = dirty \cup {sPage}
             /\ counted' = IF "countPrivate" \in Rules THEN counted \cup {sPage} ELSE counted
             /\ pte' = IF sWay = "fault" THEN [pte EXCEPT ![sPage] = "rw"] ELSE pte
@@ -276,7 +312,7 @@ SStore ==
             /\ sPage' = 0
             /\ sWay' = "none"
        ELSE /\ spc' = "throttle"
-            /\ UNCHANGED <<win, refused, latest, next, stores, sPage, sWay>>
+            /\ UNCHANGED <<win, inst, refused, latest, next, stores, sPage, sWay>>
     /\ UNCHANGED <<fxfsVars, errors, guestVars, wVars>>
 
 StorerNext == SStart \/ SThrottle \/ SLock \/ SBegin \/ SCopy \/ SUnlock \/ SReturn \/ SStore
@@ -371,7 +407,7 @@ WCommit ==
     /\ sealing' = IF "keepUntilSealed" \in Rules THEN sealing \cup wb ELSE sealing
     /\ wb' = IF "bytesFirst" \in Rules THEN {} ELSE wb
     /\ wpc' = IF "bytesFirst" \in Rules THEN "unlock" ELSE "write"
-    /\ UNCHANGED <<refused, durable, ghostVars, pte, dirty, counted, semX, semR, sVars, wOp,
+    /\ UNCHANGED <<inst, refused, durable, ghostVars, pte, dirty, counted, semX, semR, sVars, wOp,
                    wPage, floor, buf, punches>>
 
 WUnlock ==
@@ -434,6 +470,7 @@ WRbMap ==
     /\ win' = [win EXCEPT ![wPage] =
                   [kind |-> IF file[wPage].state = "hole" THEN "zeros" ELSE "extent",
                    data |-> file[wPage].data]]
+    /\ inst' = TakenAway({wPage})
     /\ counted' = counted \ {wPage}
     /\ wpc' = "unlock"
     /\ UNCHANGED <<refused, fxfsVars, latest, next, pte, dirty, wb, sealing, semX, semR, sVars,
@@ -455,6 +492,7 @@ WPunch ==
          /\ counted' = counted \ {p}
          /\ pte' = [pte EXCEPT ![p] = "none"]
          /\ win' = [win EXCEPT ![p] = [kind |-> "zeros", data |-> next]]
+         /\ inst' = TakenAway({p})
          /\ file' = [file EXCEPT ![p] = [state |-> "hole", data |-> next]]
          /\ latest' = [latest EXCEPT ![p] = next]
     /\ next' = next + 1
@@ -474,6 +512,55 @@ Seal ==
     /\ SealEffect
     /\ UNCHANGED <<refused, ghostVars, pte, dirty, wb, counted, semX, semR, sVars, wVars>>
 
+\* The host's cache evicting a sealed extent's page, or zeros', which the window maps: the window
+\* unmaps it, and maps it again as a fault brings it in, the same bytes; what the VM process
+\* installed goes (changesTakeAway). A private page stays.
+Evict ==
+    /\ \E p \in Pages :
+         /\ win[p].kind \in {"extent", "zeros", "doomed"}
+         /\ inst[p] # None
+         /\ inst' = TakenAway({p})
+    /\ UNCHANGED <<win, refused, fxfsVars, ghostVars, guestVars, sVars, wVars, lVars>>
+
+-----------------------------------------------------------------------------
+(* The loader: the guest's loads, through what the VM process installed, or a fault. *)
+
+LStart ==
+    /\ lpc = "idle" /\ loads < MaxLoads
+    /\ \E p \in Pages : lPage' = p
+    /\ lpc' = "load"
+    /\ UNCHANGED <<hostVars, fxfsVars, ghostVars, guestVars, sVars, wVars, lSeen, loads>>
+
+\* A load of the page: of the private page, the guest's own, or what the VM process installed,
+\* which is to be what the window maps there; or, named alone, a fault, which installs the page as
+\* the window names it (installAsNamed), or looks at it, to install what it found after, and the
+\* load is retried.
+LLoad ==
+    /\ lpc = "load"
+    /\ IF win[lPage].kind = "private" \/ inst[lPage] # None
+       THEN /\ errors' = IF win[lPage].kind # "private" /\ inst[lPage] # win[lPage].data
+                         THEN errors \cup {"a stale load"} ELSE errors
+            /\ loads' = loads + 1
+            /\ lpc' = "idle"
+            /\ UNCHANGED <<inst, lSeen>>
+       ELSE IF "installAsNamed" \in Rules
+            THEN /\ inst' = [inst EXCEPT ![lPage] = win[lPage].data]
+                 /\ UNCHANGED <<errors, loads, lpc, lSeen>>
+            ELSE /\ lSeen' = win[lPage].data
+                 /\ lpc' = "install"
+                 /\ UNCHANGED <<inst, errors, loads>>
+    /\ UNCHANGED <<win, refused, fxfsVars, latest, next, guestVars, sVars, wVars, lPage>>
+
+\* Without installAsNamed: the install of what the fault found, whatever the window maps by now.
+LInstall ==
+    /\ lpc = "install"
+    /\ inst' = [inst EXCEPT ![lPage] = lSeen]
+    /\ lpc' = "load"
+    /\ UNCHANGED <<win, refused, fxfsVars, ghostVars, guestVars, sVars, wVars, lPage, lSeen,
+                   loads>>
+
+LoaderNext == LStart \/ LLoad \/ LInstall
+
 -----------------------------------------------------------------------------
 
 Init ==
@@ -483,6 +570,8 @@ Init ==
                        [state |-> IF p \in holes THEN "hole" ELSE "sealed", data |-> 0]]
          /\ win = [p \in Pages |->
                       [kind |-> IF p \in holes THEN "zeros" ELSE "extent", data |-> 0]]
+    \* Named, as the guest's MAPs left them, none touched yet.
+    /\ inst = [p \in Pages |-> None]
     /\ refused = FALSE
     /\ durable = [p \in Pages |-> 0]
     /\ latest = [p \in Pages |-> 0]
@@ -495,8 +584,9 @@ Init ==
     /\ wpc = "idle" /\ wOp = "none" /\ wPage = 0 /\ punches = 0
     /\ floor = [p \in Pages |-> 0]
     /\ buf = [p \in Pages |-> 0]
+    /\ lpc = "idle" /\ lPage = 0 /\ lSeen = 0 /\ loads = 0
 
-Next == StorerNext \/ OtherNext \/ Seal
+Next == ((StorerNext \/ OtherNext \/ Seal) /\ UNCHANGED lVars) \/ Evict \/ LoaderNext
 
 Spec == Init /\ [][Next]_vars
 
@@ -528,4 +618,9 @@ DirtyImpliesPrivate == \A p \in dirty \cup wb : win[p].kind = "private"
 
 \* At most private_max private pages: the host's to keep, by refusing.
 PrivateWithinMax == HostPrivate <= PrivateMax
+
+\* A load reads what the window maps at the page as it is made, or the guest's private page: never
+\* what the VM process installed of what the window mapped before (installAsNamed,
+\* changesTakeAway).
+NoStaleLoad == "a stale load" \notin errors
 =============================================================================

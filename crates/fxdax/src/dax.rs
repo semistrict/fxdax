@@ -475,7 +475,8 @@ pub(crate) struct Live {
     /// The bytes those ranges span.
     pub mapped_bytes: u64,
     /// The pages they have mapped in their second stages: of those bytes, those the guest reaches
-    /// without a fault.
+    /// without the window, a fault on each, if any, resolved by the stage alone, which may install
+    /// a page as the guest first touches it (`dax::uffd`, TASK-276.6).
     pub pages: u64,
     /// fxdax: of those pages, the private ones of windows that copy on write (backlog doc-13).
     pub private_pages: u64,

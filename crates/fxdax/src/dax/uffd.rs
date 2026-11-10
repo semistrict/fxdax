@@ -19,6 +19,14 @@
 //!   (a memfd, which the process that owns the kernel may share with this one), registered for
 //!   write-protect faults, and write-protected, as the window maps every page read-only.
 //!
+//! fxdax: a page the window maps is installed so as the guest first touches it, not as the window
+//! maps it (backlog doc-13: a `MAP` names pages, their first touch installs them): until then it
+//! is left out, as a page past the budget is (below), which a fault installs as the window names
+//! it then, under the lock the window's changes take. So a change of a page never touched takes
+//! nothing away, and flushes nothing; a page the guest stores to first, made private, has its
+//! private copy put in place of nothing (TASK-276.6). Only what the guest asks for to read next
+//! (doc-4's `MAP_AHEAD`, [`UffdSecondStage::map_ahead`]) is installed ahead of its accesses.
+//!
 //! A fault thread passes the faults to the window, which maps the page (and so maps it here), and
 //! wakes the faulting thread. It resolves faults concurrently, as futures it polls as they make
 //! progress, so that a fault waiting for Fxfs's pager does not hold up the others. A fault the
@@ -79,10 +87,13 @@
 //! runs. Its memory where nothing is installed is not anonymous but its private memory
 //! ([`PrivateMemory`]): an object as large as the window, laid out as the window is, mapped shared
 //! at the window's offsets, of which only the private pages are filled, so that the rest faults as
-//! anonymous memory would. A page made private is filled there, its source's bytes copied in, and
-//! the memory around it mapped over the run installed at it: it merges with the memory around it,
-//! however many private pages there are, one mapping between two runs installed; a trim never
-//! leaves it out, as it leaves out runs alone. Each held its own mapping of an arena's page once,
+//! anonymous memory would. A page made private is filled there, its source's bytes written to the
+//! object, and the memory around it mapped over the run installed at it, if one is: it merges with
+//! the memory around it, however many private pages there are, one mapping between two runs
+//! installed; a trim never leaves it out, as it leaves out runs alone. A private page that goes is
+//! emptied once nothing maps it any more: its memory, written as the object's and never through a
+//! mapping, has no page table entry but where the window maps it, which the change takes away with
+//! the rest, so that emptying it flushes no TLB (TASK-276.6). Each held its own mapping of an arena's page once,
 //! and a VM writing more pages than the budget had them left out and installed again by the
 //! thousand, the fault thread trimming in place of serving faults (r544: 110,857 private pages
 //! against a budget of some 30,000 runs).
@@ -133,7 +144,6 @@ const USERFAULTFD_IOC_NEW: u64 = ioc(IOC_NONE, 0x00, 0);
 const UFFDIO_API: u64 = ioc(IOC_READ_WRITE, 0x3f, size_of::<UffdioApi>());
 const UFFDIO_REGISTER: u64 = ioc(IOC_READ_WRITE, 0x00, size_of::<UffdioRegister>());
 const UFFDIO_WAKE: u64 = ioc(IOC_READ, 0x02, size_of::<UffdioRange>());
-const UFFDIO_COPY: u64 = ioc(IOC_READ_WRITE, 0x03, size_of::<UffdioCopy>());
 const UFFDIO_WRITEPROTECT: u64 = ioc(IOC_READ_WRITE, 0x06, size_of::<UffdioWriteprotect>());
 
 #[repr(C)]
@@ -162,18 +172,6 @@ struct UffdioWriteprotect {
     range: UffdioRange,
     mode: u64,
 }
-
-/// `struct uffdio_copy`.
-#[repr(C)]
-struct UffdioCopy {
-    dst: u64,
-    src: u64,
-    len: u64,
-    mode: u64,
-    copy: i64,
-}
-
-const _: () = assert!(size_of::<UffdioCopy>() == 40);
 
 /// `struct uffd_msg`, for page faults.
 #[repr(C)]
@@ -221,13 +219,12 @@ pub(crate) struct UffdSecondStage<H: HostMemory = Syscalls> {
 
 /// fxdax: the private memory of a window that copies on write (backlog doc-13; see the module
 /// docs): a memory object of the window's size, the window's memory where nothing is installed, at
-/// the window's offsets, which holds the private pages alone.
+/// the window's offsets, which holds the private pages alone. Its pages are filled as the object's
+/// ([`HostMemory::fill`]), mapped only where the window maps them: filled through a mapping of
+/// its own, `UFFDIO_COPY` into it, each page had a page table entry there, which emptying it took
+/// a TLB flush of every CPU of the process's to take away, beside the window's (TASK-276.6).
 pub(crate) struct PrivateMemory {
     fd: OwnedFd,
-    /// Where it is mapped besides, all of it, registered for missing faults: what its pages are
-    /// filled through (`UFFDIO_COPY`, which only fills memory registered so), and nothing
-    /// accesses.
-    view: usize,
 }
 
 /// fxdax: what a second stage is doing to its memory, holding its pages' lock, and since when, in
@@ -650,6 +647,23 @@ impl Pages {
         runs
     }
 
+    /// fxdax: what a change of `range` takes away from its memory ([`UffdSecondStage::take_away`]):
+    /// its pages installed, its private pages, which it ends, private no more, and those it made
+    /// inaccessible or read-only and installed nothing at, which it gives back. Recorded before the
+    /// change counts itself on the pages, which gives back what was withheld.
+    fn take_away(&mut self, range: std::ops::Range<usize>) -> Taking {
+        let installed = self.any_installed(range.clone()) && rules().changes_take_away_installed;
+        let protected = (range.clone())
+            .filter(|&at| {
+                let page = &self.pages[at];
+                (page.withheld || page.restricted)
+                    && !page.private
+                    && !page.mapped.is_some_and(|mapped| mapped.installed())
+            })
+            .collect();
+        Taking { installed, private: self.take_private(range), protected }
+    }
+
     /// fxdax: whether the pages of `range` are each installed, in one run of memory from `phys`
     /// on, none restricted by a fault: what a map of the very same pages there leaves in place
     /// (TASK-91.16).
@@ -667,6 +681,18 @@ impl Pages {
                 })
         })
     }
+}
+
+/// fxdax: what a change takes away from the memory of the pages it changes, which their memory
+/// must hold no more once it is made ([`Pages::take_away`]), as the window's mapping of them ends.
+struct Taking {
+    /// Whether a page of them is installed.
+    installed: bool,
+    /// The runs of private pages among them, to be emptied.
+    private: Vec<std::ops::Range<usize>>,
+    /// The pages among them installed nothing at, private or not, that a fault made inaccessible,
+    /// withheld, or read-only, to be made accessible again.
+    protected: Vec<usize>,
 }
 
 /// What a second stage maps its host memory with.
@@ -700,17 +726,10 @@ pub(crate) trait HostMemory: Send + Sync {
     /// (`memfd_create`).
     fn private_memory(&self, len: usize) -> std::io::Result<OwnedFd>;
 
-    /// fxdax: reserves `len` bytes of address space, inaccessible, where nothing else is.
-    fn reserve(&self, len: usize) -> std::io::Result<usize>;
-
-    /// fxdax: lets go of the `len` bytes of address space at `addr`, which [`reserve`] reserved.
-    ///
-    /// [`reserve`]: HostMemory::reserve
-    fn unreserve(&self, addr: usize, len: usize);
-
-    /// fxdax: fills the page at `addr`, of memory registered for missing faults where nothing is
-    /// filled, with `bytes`, and wakes the threads faulting on it (`UFFDIO_COPY`).
-    fn fill(&self, addr: usize, bytes: &[u8]);
+    /// fxdax: fills the pages of memory object `fd` at `offset`, none filled yet, with `bytes`, as
+    /// the object's (`pwrite`): where they are mapped, accesses find them filled, and nothing maps
+    /// them that didn't.
+    fn fill(&self, fd: RawFd, offset: u64, bytes: &[u8]);
 
     /// fxdax: empties the `len` bytes of memory object `fd` at `offset`: faults on them, where they
     /// are mapped, find them unfilled again (`fallocate`'s `FALLOC_FL_PUNCH_HOLE`).
@@ -768,29 +787,8 @@ impl HostMemory for Syscalls {
         Self::private_memory_fd(len)
     }
 
-    fn reserve(&self, len: usize) -> std::io::Result<usize> {
-        let flags = libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_NORESERVE;
-        // SAFETY: A new mapping, wherever the kernel puts it.
-        let addr = unsafe { libc::mmap(std::ptr::null_mut(), len, libc::PROT_NONE, flags, -1, 0) };
-        if addr == libc::MAP_FAILED {
-            return Err(std::io::Error::last_os_error());
-        }
-        Ok(addr as usize)
-    }
-
-    fn unreserve(&self, addr: usize, len: usize) {
-        // SAFETY: The address space `reserve` reserved, which nothing uses any more.
-        let status = unsafe { libc::munmap(addr as *mut _, len) };
-        assert_eq!(status, 0, "unreserve {addr:#x}: {}", std::io::Error::last_os_error());
-    }
-
-    fn fill(&self, addr: usize, bytes: &[u8]) {
-        let len = bytes.len() as u64;
-        let (dst, src) = (addr as u64, bytes.as_ptr() as u64);
-        let mut copy = UffdioCopy { dst, src, len, mode: 0, copy: 0 };
-        ioctl(&self.uffd, UFFDIO_COPY, &mut copy)
-            .unwrap_or_else(|err| panic!("fill {addr:#x} ({} copied): {err}", copy.copy));
-        assert_eq!(copy.copy, len as i64, "fill {addr:#x}: a short copy");
+    fn fill(&self, fd: RawFd, offset: u64, bytes: &[u8]) {
+        Self::write_at(fd, offset, bytes);
     }
 
     fn punch(&self, fd: RawFd, offset: u64, len: usize) {
@@ -814,6 +812,24 @@ impl Syscalls {
             return Err(std::io::Error::last_os_error());
         }
         Ok(fd)
+    }
+
+    /// fxdax: writes `bytes` to memory object `fd` at `offset` ([`HostMemory::fill`]).
+    fn write_at(fd: RawFd, offset: u64, bytes: &[u8]) {
+        let mut done = 0;
+        while done < bytes.len() {
+            let rest = &bytes[done..];
+            let at = (offset + done as u64) as libc::off_t;
+            // SAFETY: Writes from `rest`, which is as long as said.
+            let written = unsafe { libc::pwrite(fd, rest.as_ptr().cast(), rest.len(), at) };
+            if written < 0 {
+                let err = std::io::Error::last_os_error();
+                assert_eq!(err.kind(), std::io::ErrorKind::Interrupted, "fill {at:#x}: {err}");
+                continue;
+            }
+            assert!(written > 0, "fill {at:#x}: nothing written");
+            done += written as usize;
+        }
     }
 
     /// fxdax: empties the `len` bytes of memory object `fd` at `offset` ([`HostMemory::punch`]).
@@ -857,6 +873,13 @@ pub(crate) struct Rules {
     /// fxdax: a private page that goes is emptied, so that the memory around it, mapped there anew,
     /// faults again rather than holding the private page for good.
     pub private_emptied_as_it_goes: bool,
+    /// fxdax: a change of pages installed takes their memory away, left out, for their next touch
+    /// to install as the window names them then (backlog doc-13: a `MAP` names pages, their first
+    /// touch installs them), rather than leaving what the window mapped before (TASK-276.6).
+    pub changes_take_away_installed: bool,
+    /// fxdax: a page left out is installed as the window names it as it is installed, under the
+    /// lock its changes take, not as a fault found it before a change since (TASK-276.6).
+    pub install_as_named_now: bool,
 }
 
 impl Rules {
@@ -871,6 +894,8 @@ impl Rules {
         failures_lift_worker_restrictions: true,
         private_filled_before_mapped: true,
         private_emptied_as_it_goes: true,
+        changes_take_away_installed: true,
+        install_as_named_now: true,
     };
 }
 
@@ -1147,12 +1172,7 @@ impl<H: HostMemory> UffdSecondStage<H> {
     /// module docs).
     pub(crate) fn copy_on_write(&self) -> Result<(), Error> {
         let fd = self.host.private_memory(self.size).map_err(Error::new)?;
-        let view = self.host.reserve(self.size).map_err(Error::new)?;
-        let memory = Memory::File { fd: fd.as_raw_fd(), offset: 0, shared: true };
-        self.host.map(view, self.size, libc::PROT_READ | libc::PROT_WRITE, memory);
-        self.host.register(view, self.size, UFFDIO_REGISTER_MODE_MISSING);
-        if let Err(private) = self.private.set(PrivateMemory { fd, view }) {
-            self.host.unreserve(private.view, self.size);
+        if self.private.set(PrivateMemory { fd }).is_err() {
             return Err(Error::msg("the window copies on write already"));
         }
         self.leave_out_untouched();
@@ -1192,6 +1212,33 @@ impl<H: HostMemory> UffdSecondStage<H> {
         for run in runs {
             let offset = (run.start * page_size) as u64;
             self.host.punch(private.fd.as_raw_fd(), offset, run.len() * page_size);
+        }
+    }
+
+    /// fxdax: takes away from the memory of the `len` bytes at `addr` what a change of them ends,
+    /// `taking` ([`Pages::take_away`]), leaving each page as one left out is: memory where nothing
+    /// is installed, accessible, registered for missing faults, unfilled. What maps nothing taken
+    /// takes nothing: a page never touched since the window named it, as it installs nothing then
+    /// ([`SecondStage::map`]), changes with no system call at all.
+    ///
+    /// Pages installed are left out with the rest, in one `mmap`, which flushes their TLB entries
+    /// once, and the private pages among them emptied after it, while nothing maps them, which
+    /// flushes nothing (see the module docs); a run of private pages with nothing installed is
+    /// emptied in place, the window's memory there already, one flush. Each emptied before the
+    /// `mmap`, as they once were, took a flush of its own, and of the mapping it was filled through
+    /// another: a guest's `UNMAP` of a range of private pages scattered among pages installed, as
+    /// a fork's database's are, took two TLB flushes a private page (TASK-276.6).
+    fn take_away(&self, addr: usize, len: usize, taking: Taking) {
+        let Taking { installed, private, protected } = taking;
+        if installed || private.len() > 1 {
+            self.leave_out_emptying(addr, len, &private);
+            return;
+        }
+        self.empty_private(&private);
+        let page_size = page_size() as usize;
+        for at in protected {
+            let writable = libc::PROT_READ | libc::PROT_WRITE;
+            self.host.protect(self.base + at * page_size, page_size, writable);
         }
     }
 
@@ -1399,11 +1446,26 @@ impl<H: HostMemory> UffdSecondStage<H> {
         // one, taken as a store, made a private page the guest never counted, and its frozen
         // VM's snapshot was refused (TASK-191, GCE r685, r686, r688).
         let for_worker = access == Access::Write && self.copying() && !is_guests(thread);
-        // A page the window maps, left out past the budget, is installed again, as it was, without
-        // the window; any other fault is the window's to resolve.
-        let reinstalled = !store && self.reinstall(addr);
+        // fxdax: a store of the guest's own to a page not here, on a window that copies on write,
+        // goes to the window as a store, which makes the page private in place of nothing, rather
+        // than installed first, to be stored to and replaced by its private copy, a TLB flush
+        // (backlog doc-13: a store's first touch, TASK-276.6). One private already has nothing to
+        // wait for: it was filled after the fault found it unfilled.
+        let first_store = !store && access == Access::Write && self.copying() && !for_worker;
+        // A page the window maps, left out past the budget, or named and never touched, is
+        // installed, as the window names it, without the window; any other fault is the window's
+        // to resolve.
+        let reinstalled = match first_store {
+            true => self.is_private(addr),
+            false => !store && self.reinstall(addr),
+        };
         if !reinstalled {
             self.resolve_through(window, addr, access, store, for_worker, thread).await;
+            // fxdax: what the window named for the fault installed now, which the access, retried,
+            // finds, rather than faulting again to install it (TASK-276.6).
+            if !store && !first_store {
+                self.reinstall(addr);
+            }
         }
         // Before the worker retries its write, however its page came to be here. fxdax: one
         // installed again, as it was, write-protected, and left writable, took the retried write
@@ -1429,7 +1491,11 @@ impl<H: HostMemory> UffdSecondStage<H> {
         let probes = !self.copying() || for_worker;
         if probes && !reinstalled && !store && access == Access::Write && next < window.size() {
             match window.probe(next).await {
-                Ok(()) | Err(Errno::ENOENT | Errno::EINVAL) => {}
+                // fxdax: installed, as the window names it now (TASK-276.6).
+                Ok(()) => {
+                    self.reinstall(addr + page_size);
+                }
+                Err(Errno::ENOENT | Errno::EINVAL) => {}
                 Err(err) => log::warn!("mapping DAX window offset {next:#x} ahead: {err}"),
             }
         }
@@ -1497,33 +1563,77 @@ impl<H: HostMemory> UffdSecondStage<H> {
         }
     }
 
-    /// fxdax: maps the pages installed of the `len` bytes at `offset` for the guest ahead of its
-    /// accesses (`Prefault`), as the guest asks for the pages it maps to read (doc-4's
-    /// `MAP_AHEAD`): each one's first access otherwise takes the hypervisor a fault, which nested
-    /// virtualization makes dear (TASK-112.1). Pages not installed are left to the guest's
+    /// fxdax: maps the pages of the `len` bytes at `offset` for the guest ahead of its accesses, as
+    /// the guest asks for the pages it maps to read (doc-4's `MAP_AHEAD`): those the window names
+    /// and none installed yet are installed now, as their first faults would install them
+    /// ([`Self::reinstall`]), in runs of memory following on; then each page installed, or
+    /// private, is mapped for the guest (`Prefault`): each one's first access otherwise takes the
+    /// hypervisor a fault, which nested virtualization makes dear (TASK-112.1), and a page not
+    /// installed, a userfaultfd fault besides (backlog doc-13: a `MAP` names pages, their first
+    /// touch installs them, TASK-276.6). Pages the window hasn't named are left to the guest's
     /// faults, which this mustn't wait for: what waits for the daemon's replies may be holding
-    /// them up. Nothing outside the second stage, or without a `Prefault`, is mapped.
-    pub(crate) fn prefault_installed(&self, offset: u64, len: u64) {
-        let Some(prefault) = &self.prefault else { return };
-        let page_size = page_size();
+    /// them up. Nothing outside the second stage is mapped, nor for the guest without a
+    /// `Prefault`.
+    pub(crate) fn map_ahead(&self, offset: u64, len: u64) {
+        let page_size = page_size() as usize;
         let end = offset.saturating_add(len).min(self.size as u64);
         if offset >= end {
             return;
         }
-        let (first, last) = (offset / page_size, end.div_ceil(page_size));
-        let runs: Vec<std::ops::Range<u64>> = {
-            let pages = self.pages.lock().unwrap();
+        let (first, last) = (offset as usize / page_size, (end as usize).div_ceil(page_size));
+        let runs: Vec<std::ops::Range<usize>> = {
+            let mut pages = self.pages.lock().unwrap();
             if pages.released {
                 return;
             }
+            // The runs to install: pages named, left out, that a fault would install as they are.
+            let named = |page: &PageChanges| {
+                !page.withheld
+                    && !page.restricted
+                    && page.mapped.is_some_and(|mapped| !mapped.installed())
+            };
+            let follows = |before: &PageChanges, page: &PageChanges| {
+                matches!((before.mapped, page.mapped), (Some(before), Some(page))
+                    if before.phys.arena == page.phys.arena
+                        && before.phys.offset + page_size as u64 == page.phys.offset)
+            };
+            let mut installs: Vec<std::ops::Range<usize>> = Vec::new();
+            for at in (first..last).filter(|&at| named(&pages.pages[at])) {
+                match installs.last_mut() {
+                    Some(run)
+                        if run.end == at && follows(&pages.pages[at - 1], &pages.pages[at]) =>
+                    {
+                        run.end = at + 1
+                    }
+                    _ => installs.push(at..at + 1),
+                }
+            }
+            if !installs.is_empty() {
+                let now = self.now();
+                let used = pages.tick();
+                let _busy = self.busy.doing(Doing::Reinstall, now);
+                for run in installs {
+                    let phys = pages.pages[run.start].mapped.expect("a page named").phys;
+                    pages.update(run.clone(), |pages| {
+                        for page in pages {
+                            page.made = page.made.wrapping_add(1);
+                            page.changed = now;
+                            if let Some(mapped) = &mut page.mapped {
+                                (mapped.installed, mapped.used) = (1, used);
+                            }
+                        }
+                    });
+                    let addr = self.base + run.start * page_size;
+                    self.install(addr, run.len() * page_size, self.memory(phys));
+                }
+            }
             // fxdax: private pages too, their memory filled here (backlog doc-13).
-            let installed = |at: u64| {
-                let page = &pages.pages[at as usize];
+            let mapped = |page: &PageChanges| {
                 !page.withheld
                     && (page.private || page.mapped.is_some_and(|mapped| mapped.installed()))
             };
-            let mut runs: Vec<std::ops::Range<u64>> = Vec::new();
-            for at in (first..last).filter(|&at| installed(at)) {
+            let mut runs: Vec<std::ops::Range<usize>> = Vec::new();
+            for at in (first..last).filter(|&at| mapped(&pages.pages[at])) {
                 match runs.last_mut() {
                     Some(run) if run.end == at => run.end = at + 1,
                     _ => runs.push(at..at + 1),
@@ -1531,8 +1641,11 @@ impl<H: HostMemory> UffdSecondStage<H> {
             }
             runs
         };
+        self.trim();
+        let Some(prefault) = &self.prefault else { return };
         for run in runs {
-            prefault.prefault(run.start * page_size, (run.end - run.start) * page_size);
+            let (offset, len) = ((run.start * page_size) as u64, (run.len() * page_size) as u64);
+            prefault.prefault(offset, len);
         }
     }
 
@@ -1545,64 +1658,58 @@ impl<H: HostMemory> UffdSecondStage<H> {
 }
 
 impl<H: HostMemory> SecondStage for UffdSecondStage<H> {
+    /// fxdax: names the pages, installing none (backlog doc-13: a `MAP` names pages, their first
+    /// touch installs them, TASK-276.6): what was there is taken away ([`Self::take_away`]),
+    /// and each page left out, as the window names it, for its first fault to install
+    /// ([`Self::reinstall`]), or a `PRIVATE` to fill in place, or the guest's asking to read it
+    /// next to install ahead ([`Self::map_ahead`]). Installed as it was mapped, every page mapped
+    /// took an `mmap` there, and a page the guest then stored to without reading it, a write's,
+    /// took another over it, its TLB flushed on every CPU of the process's and the guest's.
     fn map(&self, offset: u64, phys: crate::pages::PhysLocation, len: u64) {
         let (addr, len) = self.addr(offset, len);
-        let memory = self.memory(phys);
         let range = self.page_range(addr, len);
         let page_size = page_size();
-        self.change(
-            addr,
-            len,
-            |pages| {
-                let used = pages.tick();
-                Self::took(&self.taken.overwritten, pages.any_installed(range.clone()));
-                // fxdax: a private page mapped over goes (backlog doc-13).
-                let private = pages.take_private(range.clone());
-                pages.update(range, |pages| {
-                    for (at, page) in pages.iter_mut().enumerate() {
-                        let offset = phys.offset + at as u64 * page_size;
-                        let phys = crate::pages::PhysLocation { arena: phys.arena, offset };
-                        page.mapped = Some(Mapped { phys, installed: 1, used });
-                        page.restricted = false;
-                    }
-                });
-                private
-            },
-            |private| {
-                self.empty_private(&private);
-                self.install(addr, len, memory)
-            },
-        );
-        self.trim();
+        let name = |pages: &mut Pages| {
+            let used = pages.tick();
+            let taking = pages.take_away(range.clone());
+            Self::took(&self.taken.left_out, taking.installed);
+            pages.update(range, |pages| {
+                for (at, page) in pages.iter_mut().enumerate() {
+                    let offset = phys.offset + at as u64 * page_size;
+                    let phys = crate::pages::PhysLocation { arena: phys.arena, offset };
+                    // Left installed as it was, past the rule, what a fault installs next is it.
+                    let installed = u8::from(page.mapped.is_some_and(|m| m.installed()));
+                    let installed = if taking.installed { 0 } else { installed };
+                    page.mapped = Some(Mapped { phys, installed, used });
+                    page.restricted = false;
+                }
+            });
+            taking
+        };
+        self.change(addr, len, name, |taking| self.take_away(addr, len, taking));
     }
 
     fn unmap(&self, offset: u64, len: u64) {
         let (addr, len) = self.addr(offset, len);
         let range = self.page_range(addr, len);
         let forget = |pages: &mut Pages| {
-            Self::took(&self.taken.left_out, pages.any_installed(range.clone()));
-            // fxdax: the private pages there go (backlog doc-13).
-            let private = pages.take_private(range.clone());
+            let taking = pages.take_away(range.clone());
+            Self::took(&self.taken.left_out, taking.installed);
             pages.update(range, |pages| {
                 pages.iter_mut().for_each(|page| (page.mapped, page.restricted) = (None, false))
             });
-            private
+            taking
         };
-        // fxdax: emptied first, so that an access finds the page gone as soon as it can't reach
-        // it: it faults, to the window, which resolves it as its change left it.
-        self.change(addr, len, forget, |private| {
-            self.empty_private(&private);
-            self.leave_out(addr, len)
-        });
+        self.change(addr, len, forget, |taking| self.take_away(addr, len, taking));
     }
 
     /// fxdax: the window's change of a range it mapped, made at once (TASK-91.16): each map of the
     /// very pages installed where it maps them, as a `MAP` of what a range maps already, leaves
-    /// them in place, the memory staying; another's memory is installed over what was there, in
-    /// one `mmap`; and only what no map covers is left out. Made in steps, each page would be left
-    /// out, then installed again: an unmap of the old memory, flushing the host's TLBs and the
-    /// hypervisor's mappings, then a map, its registration and its protection, then the guest's
-    /// accesses faulting the pages in again.
+    /// them in place, the memory staying; every other page of the range is taken away
+    /// ([`Self::take_away`]), the pages a map covers named, installed as they are first touched
+    /// ([`SecondStage::map`]), the rest mapping nothing. Made in steps, each page would be left
+    /// out, then named again: an unmap of the old memory, flushing the host's TLBs and the
+    /// hypervisor's mappings, then the guest's accesses faulting the pages in again.
     fn remap(&self, offset: u64, len: u64, anew: &[Anew]) {
         let (addr, len) = self.addr(offset, len);
         let range = self.page_range(addr, len);
@@ -1618,58 +1725,57 @@ impl<H: HostMemory> SecondStage for UffdSecondStage<H> {
             .collect();
         let record = |pages: &mut Pages| {
             let used = pages.tick();
-            let in_place: Vec<bool> = (maps.iter())
-                .map(|&(addr, len, phys)| pages.installed_at(self.page_range(addr, len), phys))
-                .collect();
-            for (&(addr, len, _), in_place) in maps.iter().zip(&in_place) {
-                let over = !in_place && pages.any_installed(self.page_range(addr, len));
-                Self::took(&self.taken.overwritten, over);
-            }
-            let installed_before: Vec<bool> = (range.clone())
-                .map(|at| pages.pages[at].mapped.is_some_and(|mapped| mapped.installed()))
-                .collect();
-            // fxdax: the private pages there go, mapped over or left out (backlog doc-13).
-            let private = pages.take_private(range.clone());
-            pages.update(range.clone(), |pages| {
-                pages.iter_mut().for_each(|page| (page.mapped, page.restricted) = (None, false))
-            });
-            let mut covered = vec![false; range.len()];
+            // The pages a map leaves in place, as they are.
+            let mut kept = vec![false; range.len()];
             for &(addr, len, phys) in &maps {
                 let mapping = self.page_range(addr, len);
-                covered[mapping.start - range.start..mapping.end - range.start].fill(true);
+                if pages.installed_at(mapping.clone(), phys) {
+                    kept[mapping.start - range.start..mapping.end - range.start].fill(true);
+                    for page in &mut pages.pages[mapping] {
+                        if let Some(mapped) = &mut page.mapped {
+                            mapped.used = used;
+                        }
+                    }
+                }
+            }
+            // Each run of the rest taken away, and its pages mapping nothing, until named anew.
+            let mut taken: Vec<(std::ops::Range<usize>, Taking)> = Vec::new();
+            let mut at = range.start;
+            while at < range.end {
+                if kept[at - range.start] {
+                    at += 1;
+                    continue;
+                }
+                let start = at;
+                while at < range.end && !kept[at - range.start] {
+                    at += 1;
+                }
+                let taking = pages.take_away(start..at);
+                Self::took(&self.taken.left_out, taking.installed);
+                pages.update(start..at, |pages| {
+                    pages.iter_mut().for_each(|page| (page.mapped, page.restricted) = (None, false))
+                });
+                taken.push((start..at, taking));
+            }
+            for &(addr, len, phys) in &maps {
+                let mapping = self.page_range(addr, len);
+                if kept[mapping.start - range.start] {
+                    continue;
+                }
                 pages.update(mapping, |pages| {
                     for (at, page) in pages.iter_mut().enumerate() {
-                        let offset = phys.offset + at as u64 * page_size as u64;
+                        let offset = phys.offset + (at * page_size) as u64;
                         let phys = crate::pages::PhysLocation { offset, ..phys };
-                        page.mapped = Some(Mapped { phys, installed: 1, used });
+                        page.mapped = Some(Mapped { phys, installed: 0, used });
                     }
                 });
             }
-            // The runs of pages no map covers, which are left out.
-            let mut left_out: Vec<std::ops::Range<usize>> = Vec::new();
-            for (at, covered) in (range.clone()).zip(covered) {
-                match left_out.last_mut() {
-                    _ if covered => {}
-                    Some(run) if run.end == at => run.end = at + 1,
-                    _ => left_out.push(at..at + 1),
-                }
-            }
-            for run in &left_out {
-                let at = run.start - range.start..run.end - range.start;
-                Self::took(&self.taken.left_out, installed_before[at].contains(&true));
-            }
-            (in_place, left_out, private)
+            taken
         };
-        self.change(addr, len, record, |(in_place, left_out, private)| {
-            self.empty_private(&private);
-            // The maps made in place need nothing: their memory stays, as it is.
-            for (&(addr, len, phys), in_place) in maps.iter().zip(in_place) {
-                if !in_place {
-                    self.install(addr, len, self.memory(phys));
-                }
-            }
-            for run in left_out {
-                self.leave_out(self.base + run.start * page_size, run.len() * page_size);
+        self.change(addr, len, record, |taken| {
+            for (run, taking) in taken {
+                let addr = self.base + run.start * page_size;
+                self.take_away(addr, run.len() * page_size, taking);
             }
         });
         for anew in anew {
@@ -1677,7 +1783,6 @@ impl<H: HostMemory> SecondStage for UffdSecondStage<H> {
                 self.window_mapped(offset, len);
             }
         }
-        self.trim();
     }
 
     fn window_mapped(&self, offset: u64, len: u64) {
@@ -1714,7 +1819,9 @@ impl<H: HostMemory> SecondStage for UffdSecondStage<H> {
     /// with no page installed, withheld or restricted maps nothing: the memory there is its private
     /// memory, accessible and registered for missing faults, as a page left out is, which its
     /// filling makes the page's; the map over it unmapped it only to map it again, as
-    /// the pages a guest writes and never read, a database's log's, are.
+    /// the pages a guest writes and never read, a database's log's, are. Pages the window names
+    /// are installed only as the guest first touches them ([`SecondStage::map`]), so a run the
+    /// guest writes before it reads it is such a run: no `mmap`, and no TLB flush (TASK-276.6).
     fn make_private(&self, offset: u64, from: &[Option<crate::pages::PhysLocation>]) {
         let page_size = page_size() as usize;
         let (addr, len) = self.addr(offset, (from.len() * page_size) as u64);
@@ -1752,16 +1859,16 @@ impl<H: HostMemory> SecondStage for UffdSecondStage<H> {
             // The window makes a page private once, until a change of it ends it.
             assert!(!again, "DAX window offset {offset:#x}, {len:#x} bytes, made private again");
             let (memory, writable) = (self.base_memory(addr), libc::PROT_READ | libc::PROT_WRITE);
-            let view = private.view + offset as usize;
+            let fd = private.fd.as_raw_fd();
             if rules().private_filled_before_mapped {
-                self.host.fill(view, &bytes);
+                self.host.fill(fd, offset, &bytes);
             }
             if !in_place {
                 self.host.map(addr, len, writable, memory);
                 self.host.register(addr, len, UFFDIO_REGISTER_MODE_MISSING);
             }
             if !rules().private_filled_before_mapped {
-                self.host.fill(view, &bytes);
+                self.host.fill(fd, offset, &bytes);
             }
             // What faulted on them meanwhile finds them now.
             self.host.wake(addr, len);
@@ -1792,7 +1899,7 @@ fn read_at(fd: RawFd, bytes: &mut [u8], offset: u64) {
 
 impl<H: HostMemory> UffdSecondStage<H> {
     /// The memory of the page at `phys`, which the window maps read-only. Not mapped for the guest
-    /// ahead of its accesses (`Prefault`) but those it asks for ([`Self::prefault_installed`]):
+    /// ahead of its accesses (`Prefault`) but those it asks for ([`Self::map_ahead`]):
     /// mapped for it, the hypervisor's pre-fault took a fifth of the VM process's time changing the
     /// window, and its pages, in the host's page tables, made each later unmap of them flush the
     /// host's and the hypervisor's TLBs on every CPU (TASK-109).
@@ -1832,11 +1939,20 @@ impl<H: HostMemory> UffdSecondStage<H> {
     /// Leaves the `len` bytes at `addr` out: memory registered for missing faults. fxdax: its
     /// private memory, of a window that copies on write, unfilled there.
     fn leave_out(&self, addr: usize, len: usize) {
+        self.leave_out_emptying(addr, len, &[]);
+    }
+
+    /// As [`Self::leave_out`], fxdax: emptying the private pages of `private`, runs of its pages,
+    /// once the memory there is mapped anew, inaccessible, and before it is accessible again: with
+    /// nothing mapping them then, as their own mapping went with the `mmap`, emptying them flushes
+    /// no TLB (see the module docs, TASK-276.6).
+    fn leave_out_emptying(&self, addr: usize, len: usize, private: &[std::ops::Range<usize>]) {
         // The new memory is inaccessible until it is registered, so that an access meanwhile fails
         // rather than faulting in a page of zeros.
         let writable = libc::PROT_READ | libc::PROT_WRITE;
         let prot = if rules().register_before_accessible { libc::PROT_NONE } else { writable };
         self.host.map(addr, len, prot, self.base_memory(addr));
+        self.empty_private(private);
         self.host.register(addr, len, UFFDIO_REGISTER_MODE_MISSING);
         self.host.protect(addr, len, writable);
     }
@@ -1893,10 +2009,19 @@ impl<H: HostMemory> UffdSecondStage<H> {
         }
     }
 
-    /// Installs the page at `addr` again, if the window maps it and it was left out, with those
-    /// left out around it whose memory follows on from it, as it was, and returns whether it did.
-    /// A page installed is counted as used. fxdax: a private page needs nothing (backlog doc-13):
-    /// filled, its fault came before it was, and its access finds it now.
+    /// fxdax: whether the page at `addr` is private (backlog doc-13).
+    fn is_private(&self, addr: usize) -> bool {
+        let at = self.page_range(addr, 1).start;
+        self.pages.lock().unwrap().pages[at].private
+    }
+
+    /// Installs the page at `addr`, if the window maps it and it is left out, with those left out
+    /// around it whose memory follows on from it, as the window names them, and returns whether it
+    /// did. A page installed is counted as used. fxdax: left out past the budget, or named and
+    /// never installed yet (backlog doc-13: a `MAP` names pages, their first touch installs them,
+    /// TASK-276.6), under the lock the window's changes take: a change since the fault found the
+    /// page is what is installed. A private page needs nothing: filled, its fault came before it
+    /// was, and its access finds it now.
     fn reinstall(&self, addr: usize) -> bool {
         let page_size = page_size() as usize;
         let at = self.page_range(addr, 1).start;
@@ -1938,6 +2063,12 @@ impl<H: HostMemory> UffdSecondStage<H> {
             arena: phys.arena,
             offset: phys.offset - ((at - start) * page_size) as u64,
         };
+        // fxdax: with the rule turned off, installed as the fault found it, its lock let go of
+        // meanwhile, whatever a change made of the pages since.
+        if !rules().install_as_named_now {
+            drop(pages);
+            pages = self.pages.lock().unwrap();
+        }
         let now = self.now();
         pages.update(start..end, |pages| {
             for page in pages {
@@ -2026,15 +2157,6 @@ impl<H: HostMemory> UffdSecondStage<H> {
             ));
         }
         said
-    }
-}
-
-impl<H: HostMemory> Drop for UffdSecondStage<H> {
-    fn drop(&mut self) {
-        // fxdax: the private memory's other mapping, its own (backlog doc-13).
-        if let Some(private) = self.private.get() {
-            self.host.unreserve(private.view, self.size);
-        }
     }
 }
 
@@ -2403,10 +2525,11 @@ mod tests {
     }
 
     /// fxdax TASK-112.1: the pages the guest asks for ahead of its reads, of what the window maps,
-    /// are those the hypervisor is told of, the runs of them installed; not those it maps nothing
-    /// at, nor past the window.
+    /// are installed, and are those the hypervisor is told of, the runs of them installed; not
+    /// those it maps nothing at, nor past the window. TASK-276.6: the window's maps install none,
+    /// nor tell the hypervisor of any: a `MAP` names pages, their first touch installs them.
     #[test]
-    fn pages_asked_for_ahead_are_prefaulted_as_installed() {
+    fn pages_asked_for_ahead_are_installed_and_prefaulted() {
         struct Told(Mutex<Vec<(u64, u64)>>);
         impl Prefault for Told {
             fn prefault(&self, offset: u64, len: u64) {
@@ -2436,13 +2559,20 @@ mod tests {
         dax.window.map(0, &file, 0, 2 * ps);
         dax.window.map(3 * ps, &file, 3 * ps, ps);
         assert_eq!(*told.0.lock().unwrap(), []);
+        assert_eq!(stage.installed(), 0, "the window's maps installed pages");
 
-        stage.prefault_installed(0, 4 * ps);
+        stage.map_ahead(0, 4 * ps);
         assert_eq!(std::mem::take(&mut *told.0.lock().unwrap()), [(0, 2 * ps), (3 * ps, ps)]);
-        stage.prefault_installed(2 * ps, 8 * ps);
+        assert_eq!(stage.installed(), 2, "the runs asked for ahead aren't installed");
+        stage.map_ahead(2 * ps, 8 * ps);
         assert_eq!(std::mem::take(&mut *told.0.lock().unwrap()), [(3 * ps, ps)]);
-        stage.prefault_installed(4 * ps, ps);
+        stage.map_ahead(4 * ps, ps);
         assert_eq!(*told.0.lock().unwrap(), []);
+        // SAFETY: The window's memory, installed, which nothing else accesses.
+        let read = |page: u64| unsafe {
+            ((memory as usize + (page * ps) as usize) as *const u8).read_volatile()
+        };
+        assert_eq!([read(0), read(1), read(3)], [7; 3]);
 
         drop(dax);
         // SAFETY: Unmaps the memory, which nothing uses any more.
@@ -2532,9 +2662,11 @@ mod tests {
     }
 
     /// TASK-91.16: the changes that take access away from pages installed are counted by how,
-    /// each a flush of the host's TLBs and the hypervisor's: a map of other memory over them, and
-    /// an unmap. A map where nothing is installed takes nothing away, nor does a map of the very
-    /// same pages, left in place.
+    /// each a flush of the host's TLBs and the hypervisor's: a private page made over them (below,
+    /// `private_pages_made_over_pages_installed_are_counted`), and any other change, which leaves
+    /// them out (TASK-276.6: a map names pages, installing none, and takes away what was there). A
+    /// map where nothing is installed takes nothing away, as one of pages never touched since they
+    /// were mapped does not, nor does a map of the very same pages installed, left in place.
     #[test]
     fn changes_taking_access_from_pages_installed_are_counted() {
         let ps = page_size() as usize;
@@ -2558,21 +2690,29 @@ mod tests {
         dax.window.map(0, &file, 0, (2 * ps) as u64);
         assert_eq!(stage.taken(), [0, 0], "mapped where nothing was");
         let phys = |page: usize| stage.pages.lock().unwrap().pages[page].mapped.unwrap().phys;
-        let first = phys(0);
-        // The first page's own, in place; and the first page's again at the second's.
-        stage.remap(
-            0,
-            (2 * ps) as u64,
-            &[
-                Anew::Map { offset: 0, phys: first, len: ps as u64 },
-                Anew::Map { offset: ps as u64, phys: first, len: ps as u64 },
-            ],
-        );
-        assert_eq!(stage.taken(), [1, 0], "the second page installed over, the first in place");
+        let (first, second) = (phys(0), phys(1));
+        // The first page's own, in place if installed; and `at_second` at the second's.
+        let remap = |at_second| {
+            stage.remap(
+                0,
+                (2 * ps) as u64,
+                &[
+                    Anew::Map { offset: 0, phys: first, len: ps as u64 },
+                    Anew::Map { offset: ps as u64, phys: at_second, len: ps as u64 },
+                ],
+            )
+        };
+        remap(second);
+        assert_eq!(stage.taken(), [0, 0], "pages never touched taken away");
+        // SAFETY: The window's memory, whose faults the fault thread serves.
+        let load = |page: usize| unsafe { ((base + page * ps) as *const u8).read_volatile() };
+        assert_eq!([load(0), load(1)], [1, 1]);
+        remap(first);
+        assert_eq!(stage.taken(), [0, 1], "the second page left out, the first in place");
         stage.unmap(0, (2 * ps) as u64);
-        assert_eq!(stage.taken(), [1, 1], "both left out");
+        assert_eq!(stage.taken(), [0, 2], "the first left out, the second never touched");
         stage.unmap(0, (2 * ps) as u64);
-        assert_eq!(stage.taken(), [1, 1], "nothing installed to leave out");
+        assert_eq!(stage.taken(), [0, 2], "nothing installed to leave out");
 
         drop(dax);
         // SAFETY: Unmaps the memory, which nothing uses any more.
@@ -2781,9 +2921,11 @@ mod tests {
         let stage = unsafe { UffdSecondStage::in_process(base, ps as u64, None) }.unwrap();
         let copying = crate::dax::CopyOnWrite::reserve(crate::pages::ArenaId::DEFAULT, 1).unwrap();
         let (mut dax, window) = Dax::in_host_memory_copying(stage.clone(), Some(copying)).unwrap();
-        // In memory as it is mapped, so installed here at once.
+        // In memory as it is mapped, installed here as a load first touches it.
         let file = TestSource::filled(1, 9);
         dax.map(0, &file.source(), 0, ps as u64);
+        // SAFETY: The window's memory, whose faults the fault thread serves.
+        assert_eq!(unsafe { (base as *const u8).read_volatile() }, 9);
         let installed =
             stage.pages.lock().unwrap().pages[0].mapped.map(|mapped| mapped.installed());
         assert_eq!(installed, Some(true));
@@ -2835,6 +2977,65 @@ mod tests {
             assert_eq!(libc::munmap(memory, ps), 0);
         }
     }
+    /// fxdax TASK-276.6 (backlog doc-13: a `MAP` names pages, their first touch installs them):
+    /// pages the window maps are installed only as they are first touched. A guest's store, its
+    /// first touch of a page, makes the page private in place of nothing, and so does a `PRIVATE`
+    /// of a page never touched: neither takes a page installed away, which the stage counts, each
+    /// a TLB flush, and the window's memory stays one mapping, its private memory's. A load's
+    /// first touch installs its page; a `PRIVATE` of it then takes it away, counted.
+    #[test]
+    fn first_touches_of_pages_named_install_nothing_to_store() {
+        let ps = page_size() as usize;
+        let base = window_memory(3);
+        // SAFETY: Only the test uses the memory, which outlives the window.
+        let stage = unsafe { UffdSecondStage::in_process(base, (3 * ps) as u64, None) }.unwrap();
+        let arena = crate::pages::ArenaId::DEFAULT;
+        let copying = crate::dax::CopyOnWrite::reserve(arena, 3).unwrap();
+        let (mut dax, window) = Dax::in_host_memory_copying(stage.clone(), Some(copying)).unwrap();
+        let file = TestSource::filled(3, 9).source();
+        dax.map(0, &file, 0, (3 * ps) as u64);
+        assert_eq!(stage.installed(), 0, "the window's map installed pages");
+        let mut pipe = [0; 2];
+        // SAFETY: Creates a pipe, which the test closes.
+        assert_eq!(unsafe { libc::pipe(pipe.as_mut_ptr()) }, 0);
+        // A vCPU's store of a byte to the page at `addr`: the pipe's read into it, as the kernel
+        // writes for the guest, on a guest's thread.
+        let store = move |addr: usize| {
+            std::thread::spawn(move || {
+                crate::guest_thread_started();
+                // SAFETY: Writes a byte to the pipe, and reads it into the window's memory.
+                unsafe {
+                    assert_eq!(libc::write(pipe[1], [7u8].as_ptr().cast(), 1), 1);
+                    libc::read(pipe[0], addr as *mut libc::c_void, 1)
+                }
+            })
+            .join()
+            .unwrap()
+        };
+        assert_eq!(store(base), 1, "the store's first touch failed");
+        futures::executor::block_on(window.make_private(ps as u64, ps as u64)).unwrap();
+        assert_eq!(window.private_pages(), 2);
+        assert_eq!(stage.taken(), [0, 0], "a first touch took a page installed away");
+        let mappings = mappings_within(base, 2 * ps);
+        assert_eq!(mappings.len(), 1, "the private pages' mappings: {mappings:#?}");
+        assert!(mappings[0].contains("fxdax-private-pages"), "{mappings:#?}");
+        // SAFETY: The window's memory, whose faults the fault thread serves.
+        let read = |addr: usize| unsafe { std::slice::from_raw_parts(addr as *const u8, ps) };
+        assert_eq!((read(base)[0], read(base)[1], read(base + ps)[0]), (7, 9, 9));
+        assert_eq!(read(base + 2 * ps)[0], 9);
+        assert_eq!(stage.installed(), 1, "a load's first touch installed nothing");
+        futures::executor::block_on(window.make_private((2 * ps) as u64, ps as u64)).unwrap();
+        assert_eq!(stage.taken(), [1, 0], "a PRIVATE over a page installed, uncounted");
+
+        drop(dax);
+        // SAFETY: Closes the pipe and unmaps the memory, which nothing uses any more.
+        unsafe {
+            libc::close(pipe[0]);
+            libc::close(pipe[1]);
+            assert_eq!(libc::munmap(base as *mut libc::c_void, 3 * ps), 0);
+        }
+    }
+
     /// The lines of /proc/self/maps of the mappings in the `len` bytes at `base`.
     fn mappings_within(base: usize, len: usize) -> Vec<String> {
         let maps = std::fs::read_to_string("/proc/self/maps").unwrap();
@@ -2944,6 +3145,11 @@ mod tests {
         let tag = |page: usize| (page % 251) as u8 + 1;
         let file = TestSource::scattered(PAGES as u64, |page| tag(page as usize)).source();
         dax.map(0, &file, 0, size);
+        for page in 0..PAGES {
+            // SAFETY: The window's memory, whose faults the fault thread serves, installed so.
+            assert_eq!(unsafe { ((base + page * ps) as *const u8).read_volatile() }, tag(page));
+        }
+        assert_eq!(stage.installed(), PAGES as u64, "the loads installed no run each");
         for page in (0..PAGES).rev() {
             let (offset, len) = ((page * ps) as u64, ps as u64);
             futures::executor::block_on(window.make_private(offset, len)).unwrap();
@@ -3047,6 +3253,8 @@ mod tests {
         let (mut dax, window) = Dax::in_host_memory_copying(stage.clone(), Some(copying)).unwrap();
         let file = TestSource::filled(2, 7).source();
         dax.map(0, &file, 0, (2 * ps) as u64);
+        // SAFETY: The window's memory, whose faults the fault thread serves, installed so.
+        assert_eq!(unsafe { ((base + ps) as *const u8).read_volatile() }, 7);
         futures::executor::block_on(window.make_private(0, ps as u64)).unwrap();
 
         let told = describe_windows(Some(base + 5));

@@ -1,0 +1,120 @@
+#!/usr/bin/env bpftrace
+// Copyright 2026 The fxdax Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+//
+// What a VM process's changes to its DAX window cost its thread receiving from the extent daemon,
+// `extentd client`, which makes every change in turn (crates/fxdax/src/dax/uffd.rs), and its
+// fault thread's, `dax faults` (TASK-276.6): each second, each system call the threads made, by
+// kind (an mmap by the protection it maps with, an ioctl by its command: userfaultfd's
+// UFFDIO_COPY c028aa03, REGISTER c020aa00, WAKE 8010aa02, WRITEPROTECT c018aa06, KVM's
+// KVM_PRE_FAULT_MEMORY c028aed5, printed in decimal), how many and their microseconds; and the
+// TLB shootdowns among them: the cross-CPU calls they waited for (smp_call_function_many_cond)
+// and KVM's flushes of the vCPUs' TLBs (kvm_flush_remote_tlbs). Run as root beside a case,
+// `bpftrace scripts/dax-stage-syscalls.bt [CPUS] > OUT`, and stop it with SIGINT; the seconds'
+// lines line up with the case's log by the wall clock each starts with. CPUS, a mask, traces the
+// threads on those CPUs alone, as a measurement given CPUs of its own runs (ubu1's fxjob --bench:
+// 0xf0f0, CPUs 4-7 and 12-15, so 61680); none, or 0, every CPU's.
+
+BEGIN
+{
+	printf("each second: the wall clock, then per kind: calls, microseconds\n");
+}
+
+tracepoint:syscalls:sys_enter_mmap
+/(comm == "extentd client" || comm == "dax faults") && ($1 == 0 || ($1 >> cpu) & 1)/
+{
+	@kind[tid] = args.prot == 0 ? "mmap-none" : (args.prot == 1 ? "mmap-ro" : "mmap-rw");
+	@start[tid] = nsecs;
+}
+
+tracepoint:syscalls:sys_enter_fallocate
+/(comm == "extentd client" || comm == "dax faults") && ($1 == 0 || ($1 >> cpu) & 1)/
+{
+	@kind[tid] = "fallocate";
+	@start[tid] = nsecs;
+}
+
+tracepoint:syscalls:sys_enter_mprotect
+/(comm == "extentd client" || comm == "dax faults") && ($1 == 0 || ($1 >> cpu) & 1)/
+{
+	@kind[tid] = "mprotect";
+	@start[tid] = nsecs;
+}
+
+// pwrite64 has no syscall tracepoint here (Linux 7.0, ubu1): its kernel function, as the
+// others' tracepoints are, entered and returned.
+kprobe:ksys_pwrite64
+/(comm == "extentd client" || comm == "dax faults") && ($1 == 0 || ($1 >> cpu) & 1)/
+{
+	@kind[tid] = "pwrite";
+	@start[tid] = nsecs;
+}
+
+tracepoint:syscalls:sys_enter_ioctl
+/(comm == "extentd client" || comm == "dax faults") && ($1 == 0 || ($1 >> cpu) & 1)/
+{
+	@cmd[tid] = args.cmd;
+	@start[tid] = nsecs;
+}
+
+tracepoint:syscalls:sys_exit_mmap,
+tracepoint:syscalls:sys_exit_fallocate,
+tracepoint:syscalls:sys_exit_mprotect,
+kretprobe:ksys_pwrite64
+/@start[tid]/
+{
+	@calls[comm, @kind[tid]] = count();
+	@us[comm, @kind[tid]] = sum((nsecs - @start[tid]) / 1000);
+	@start[tid] = 0;
+}
+
+tracepoint:syscalls:sys_exit_ioctl
+/@start[tid]/
+{
+	@ioctl_calls[comm, @cmd[tid]] = count();
+	@ioctl_us[comm, @cmd[tid]] = sum((nsecs - @start[tid]) / 1000);
+	@start[tid] = 0;
+}
+
+kprobe:smp_call_function_many_cond
+/(comm == "extentd client" || comm == "dax faults") && ($1 == 0 || ($1 >> cpu) & 1)/
+{
+	@ipi_start[tid] = nsecs;
+}
+
+kretprobe:smp_call_function_many_cond
+/@ipi_start[tid]/
+{
+	@calls[comm, "cross-cpu-call"] = count();
+	@us[comm, "cross-cpu-call"] = sum((nsecs - @ipi_start[tid]) / 1000);
+	@ipi_start[tid] = 0;
+}
+
+kprobe:kvm_flush_remote_tlbs
+/(comm == "extentd client" || comm == "dax faults") && ($1 == 0 || ($1 >> cpu) & 1)/
+{
+	@calls[comm, "kvm-flush"] = count();
+}
+
+interval:s:1
+{
+	time("%H:%M:%S\n");
+	print(@calls);
+	print(@us);
+	printf("ioctl by command (hex)\n");
+	print(@ioctl_calls);
+	print(@ioctl_us);
+	clear(@calls);
+	clear(@us);
+	clear(@ioctl_calls);
+	clear(@ioctl_us);
+}
+
+END
+{
+	clear(@start);
+	clear(@kind);
+	clear(@cmd);
+	clear(@ipi_start);
+}

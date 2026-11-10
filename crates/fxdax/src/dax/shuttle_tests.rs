@@ -156,7 +156,7 @@ pub(super) enum Event {
 static REACHED: [std::sync::atomic::AtomicUsize; 8] =
     [const { std::sync::atomic::AtomicUsize::new(0) }; 8];
 
-fn reached(event: Event) {
+pub(super) fn reached(event: Event) {
     REACHED[event as usize].fetch_add(1, Ordering::Relaxed);
 }
 
