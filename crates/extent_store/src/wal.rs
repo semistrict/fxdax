@@ -360,12 +360,18 @@ pub(crate) fn recover<D: Dir>(dir: &D, branch: u64) -> Result<Recovered, Error> 
         let last = records.iter().rev().find_map(|record| record.commits.last().copied());
         last.is_some_and(|last| base.is_none_or(|base| epoch_of(last) > epoch_of(base)))
     };
+    // A segment holding nothing goes, its framed file's removal durable before its raw data's and
+    // log's, as its framing was before they went: a framed file a crash kept without them, which
+    // the next recovery takes as framed whole, unchecked, is whole (TASK-318).
     let gone = |number| -> Result<(), Error> {
         let segment = SegmentId { branch, number };
-        for path in [segment_path(segment), open_segment_path(segment), log_path(segment)] {
-            remove(dir, &path)?;
+        remove(dir, &segment_path(segment))?;
+        if framed.contains(&number) && left(number) {
+            dir.sync_dir(&branch_dir(SEGMENTS, branch))?;
+            dir.barrier()?;
         }
-        Ok(())
+        remove(dir, &open_segment_path(segment))?;
+        remove(dir, &log_path(segment))
     };
     // What each segment holds, in order.
     let mut found = Vec::new();
@@ -784,6 +790,38 @@ mod tests {
         assert_eq!(recovered.segments, framed[1..]);
         assert_eq!(files(&dir, SEGMENTS), [1]);
         assert_eq!((files(&dir, OPEN_SEGMENTS), files(&dir, LOGS)), (vec![], vec![]));
+    }
+
+    /// A segment whose framed file a crash tore, its raw data and log there, the log holding no
+    /// durable commit, goes, its framed file's removal durable before theirs: a crash keeping the
+    /// framed file without them would have the next recovery take it as framed whole, unchecked,
+    /// its parts failing their CRCs as they are read (TASK-318).
+    #[test]
+    fn segments_holding_nothing_go_framed_files_first() {
+        let dir = MemDir::new();
+        create_branch_dirs(&dir, BRANCH).unwrap();
+        left_open(&dir, 0, 1, &[commit(1, 1, 0)]);
+        left_open(&dir, 1, 1, &[commit(2, 2, 0)]);
+        let framed = recover(&dir, BRANCH).unwrap().segments;
+        assert_eq!(framed.iter().map(|(_, number)| *number).collect::<Vec<_>>(), [0, 1]);
+        // Segment 1's framed file torn, its trailer, table and footer whole but not its data; its
+        // raw data and log back, the log holding no record durable.
+        let torn = dir.open(&segment_path(segment(1)), true).unwrap();
+        torn.write_at(&[!1], 0).unwrap();
+        torn.sync().unwrap();
+        left_open(&dir, 1, 1, &[]);
+        for kind in [SEGMENTS, OPEN_SEGMENTS, LOGS] {
+            dir.sync_dir(&branch_dir(kind, BRANCH)).unwrap();
+        }
+        assert_eq!(recover(&dir, BRANCH).unwrap().segments, framed[..1]);
+        // The opening makes its next open segment, whose raw data and log it makes durable.
+        for kind in [OPEN_SEGMENTS, LOGS] {
+            dir.sync_dir(&branch_dir(kind, BRANCH)).unwrap();
+        }
+        for seed in 0..64 {
+            let recovered = recover(&dir.crash(seed), BRANCH).unwrap();
+            assert_eq!(recovered.segments, framed[..1], "seed {seed}");
+        }
     }
 
     /// Segments 0 to 2 framed whole, from logs of commits 1 and 2, 3, and 4: a flush appends its
