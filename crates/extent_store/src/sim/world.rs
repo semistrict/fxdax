@@ -850,6 +850,7 @@ impl World {
             max_lag_bytes: u64::MAX,
             cache: None,
             token,
+            checkpoint_every: upload::CHECKPOINT_EVERY,
         };
         let uploads = self.hosts[host].uploads.clone();
         let uploader = Shared::new(options, uploads, intervals.clock());

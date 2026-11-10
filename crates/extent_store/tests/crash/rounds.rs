@@ -54,9 +54,14 @@ impl std::fmt::Debug for Model {
     }
 }
 
-/// One to `most` blocks of data.
+/// One to `most` blocks of data, which compress, or, half the time, don't: fxdax: the collector
+/// compacts only segments whose stored, compressed, size live data takes little of (TASK-293), so
+/// that the kept rounds' passes compact only what doesn't compress.
 fn random_data(rng: &mut StdRng, most: usize) -> Vec<u8> {
     let blocks = rng.random_range(1..=most);
+    if rng.random_bool(0.5) {
+        return (0..blocks * BLOCK).map(|_| rng.random()).collect();
+    }
     let byte: u8 = rng.random();
     (0..blocks * BLOCK).map(|i| byte ^ (i / BLOCK) as u8).collect()
 }

@@ -10,8 +10,15 @@
 //! late as the last made durable, its write-ahead log following the branch, which the store
 //! taking it fenced. Not a function of its seed alone, as the rounds of `rounds` are: the
 //! uploader's threads interleave with the workload as they will.
+//!
+//! fxdax: passes of the collector run over the bucket all along the workload, compacting, each
+//! after the last, on the host's runtime, as its collector would; one is cut at a random request
+//! of its, as the host dies under it ([`Cut`]); and a full pass runs after the crash, before the
+//! branch is taken and the store opened again (TASK-291.2).
 
 use super::rounds::{BLOCK, BRANCH, Model, OPTIONS, workload};
+use extent_remote::bucket::{ByteRange, Error as BucketError, Meta, Object, PutMode, Version};
+use extent_remote::collector;
 use extent_remote::fetch::{Budget, Limits};
 use extent_remote::store::Store as Bucket;
 use extent_store::upload::{self, Remote, Runtime};
@@ -21,7 +28,9 @@ use rand::rngs::StdRng;
 use rand::{RngExt as _, SeedableRng as _};
 use std::cell::RefCell;
 use std::collections::BTreeMap;
+use std::future::Future;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering::SeqCst};
 use std::time::Duration;
 
 /// How many kept rounds the test runs.
@@ -90,7 +99,10 @@ impl Host {
             handle: self.runtime.handle().clone(),
             uploads: Budget::new(Limits::UNBOUNDED),
         };
-        let options = upload::Options { interval, ..upload::Options::default() };
+        // Checkpoints often, so that the collector's passes find segments recoveries no longer read,
+        // which they compact.
+        let options =
+            upload::Options { interval, checkpoint_every: 4, ..upload::Options::default() };
         upload::open(recovering, OPTIONS, self.bucket(), (holder, options), &runtime)
     }
 
@@ -112,6 +124,130 @@ impl Host {
     }
 }
 
+/// The collector's passes compact what is mostly dead, and delete it at once.
+const COLLECTING: collector::Options = collector::Options { compact_below: 0.9, grace: 0 };
+
+/// The host's bucket, as its collector reaches it: its first so many requests go, and none after,
+/// which never complete, as a dead host's do not. A failing request would be no cut: a pass
+/// retries what fails for ever.
+struct Cut {
+    bucket: Arc<Bucket>,
+    left: AtomicU64,
+}
+
+impl Cut {
+    /// Whether the next request goes.
+    fn goes(&self) -> bool {
+        self.left.try_update(SeqCst, SeqCst, |left| left.checked_sub(1)).is_ok()
+    }
+
+    /// Whether it cut a request.
+    fn cut(&self) -> bool {
+        self.left.load(SeqCst) == 0
+    }
+
+    /// `request`, if it goes; one never completing, if not.
+    fn request<T>(
+        &self,
+        request: impl Future<Output = T> + Send,
+    ) -> impl Future<Output = T> + Send {
+        let goes = self.goes();
+        async move {
+            if !goes {
+                std::future::pending::<()>().await;
+            }
+            request.await
+        }
+    }
+}
+
+impl extent_remote::Bucket for Cut {
+    fn get(&self, key: &str) -> impl Future<Output = Result<Object, BucketError>> + Send {
+        self.request(self.bucket.get(key))
+    }
+
+    fn get_range(
+        &self,
+        key: &str,
+        range: ByteRange,
+    ) -> impl Future<Output = Result<Vec<u8>, BucketError>> + Send {
+        self.request(self.bucket.get_range(key, range))
+    }
+
+    fn head(&self, key: &str) -> impl Future<Output = Result<Meta, BucketError>> + Send {
+        self.request(self.bucket.head(key))
+    }
+
+    fn list(&self, prefix: &str) -> impl Future<Output = Result<Vec<Meta>, BucketError>> + Send {
+        self.request(self.bucket.list(prefix))
+    }
+
+    fn put(
+        &self,
+        key: &str,
+        bytes: Vec<u8>,
+        mode: PutMode,
+    ) -> impl Future<Output = Result<Version, BucketError>> + Send {
+        self.request(self.bucket.put(key, bytes, mode))
+    }
+
+    fn delete(&self, key: &str) -> impl Future<Output = Result<(), BucketError>> + Send {
+        self.request(self.bucket.delete(key))
+    }
+
+    fn now(&self) -> u64 {
+        self.bucket.now()
+    }
+
+    fn pause(&self, failures: u32) -> impl Future<Output = ()> + Send {
+        self.bucket.pause(failures)
+    }
+}
+
+/// Passes of the collector over `cut`, one every `interval`, on a thread of their own, as the
+/// host's collector's, for as long as the host lives: until the pass going is cut, or the host crashes,
+/// which aborts them ([`Passes::abort`]).
+struct Passes {
+    /// What the passes done compacted and deleted.
+    done: Arc<(AtomicU64, AtomicU64)>,
+    abort: futures::future::AbortHandle,
+    thread: std::thread::JoinHandle<Result<Result<(), String>, futures::future::Aborted>>,
+}
+
+impl Passes {
+    fn start(cut: Arc<Cut>, interval: Duration) -> Self {
+        let (abort, registration) = futures::future::AbortHandle::new_pair();
+        let done = Arc::<(AtomicU64, AtomicU64)>::default();
+        let doing = done.clone();
+        // Made on its thread: the passes' future, which the thread alone polls, need not be Send.
+        let thread = std::thread::spawn(move || {
+            let passes = async move {
+                for holder in 100.. {
+                    let pass = collector::collect(&*cut, holder, &COLLECTING).await;
+                    let report = pass.map_err(|err| format!("pass {holder}: {err}"))?;
+                    doing.0.fetch_add(report.compacted as u64, SeqCst);
+                    doing.1.fetch_add(report.deleted as u64, SeqCst);
+                    // The thread's alone: the passes wait for nothing else on it.
+                    std::thread::sleep(interval);
+                }
+                unreachable!("passes for ever")
+            };
+            futures::executor::block_on(futures::future::Abortable::new(passes, registration))
+        });
+        Self { done, abort, thread }
+    }
+
+    /// The host dies with its collector: what its pass going did so far stays in the bucket.
+    /// Returns how many objects the passes done compacted and deleted; or how a pass failed.
+    fn abort(self) -> Result<(u64, u64), String> {
+        self.abort.abort();
+        if let Ok(failed) = self.thread.join().unwrap() {
+            failed?;
+        }
+        Ok((self.done.0.load(SeqCst), self.done.1.load(SeqCst)))
+    }
+}
+
 /// What a round's first crash left: the directory, what each commit began with, the last made
 /// durable, the last the uploader acknowledged, and the first of the workload's.
 struct Crashed {
@@ -120,6 +256,10 @@ struct Crashed {
     durable: usize,
     acknowledged: usize,
     first: usize,
+    /// Whether the host's collector was cut in a pass before the crash.
+    cut: bool,
+    /// How many objects its passes compacted and deleted before.
+    collected: (u64, u64),
 }
 
 const DESCRIPTION: Description =
@@ -136,16 +276,19 @@ fn crashed(host: &Host, round: u64, rng: &mut StdRng, interval: Duration) -> Cra
     // The commits opening it made, the branch's capacity set, hold nothing.
     let first = store.epoch().unwrap() as usize;
     let mut epochs = vec![Model::default(); first + 1];
+    let cut = Arc::new(Cut { bucket: host.bucket(), left: rng.random_range(0..400).into() });
+    let passes = Passes::start(cut.clone(), interval);
     dir.fail_after(Some(rng.random_range(0..600)));
     let (durable, _) = workload(rng, &store, &mut epochs, Model::default(), first);
     let acknowledged = remote.last_uploaded() as usize;
     let dir = dir.crash(round);
+    let collected = passes.abort().unwrap_or_else(|err| panic!("round {round}: {err}"));
     host.crash();
     // The host is gone: its uploader, which stops at the store's failure, or uploads what it
     // has left where none sees it, and its store.
     drop(remote);
     drop(store);
-    Crashed { dir, epochs, durable, acknowledged, first }
+    Crashed { dir, epochs, durable, acknowledged, first, cut: cut.cut(), collected }
 }
 
 /// Opens the store `crashed` left on `host`, as holder `holder`, and checks it holds a prefix of
@@ -181,15 +324,30 @@ fn reopened(
 /// An uploader's interval that uploads nothing a test does not wait for.
 const HOUR: Duration = Duration::from_secs(3600);
 
-/// Round `round` of the kept rounds (see the module's docs). Returns whether its uploader had
-/// acknowledged a commit of the workload's when it crashed, and whether the store opened from its
-/// disk held commits the bucket lacked.
-pub fn kept(round: u64) -> (bool, bool) {
+/// What a round of the kept rounds found: whether its uploader had acknowledged a commit of the
+/// workload's when it crashed, whether the store opened from its disk held commits the bucket
+/// lacked, whether its collector was cut in a pass, and whether its passes compacted and deleted
+/// objects before the crash.
+pub struct Kept {
+    pub acknowledged: bool,
+    pub ahead: bool,
+    pub cut: bool,
+    pub compacted: bool,
+    pub deleted: bool,
+}
+
+/// Round `round` of the kept rounds (see the module's docs).
+pub fn kept(round: u64) -> Kept {
     let host = Host::new();
     let mut rng = StdRng::seed_from_u64(round);
     let interval = Duration::from_millis(rng.random_range(1..=20));
     let crashed = crashed(&host, round, &mut rng, interval);
-    let Crashed { epochs, acknowledged, durable, first, .. } = &crashed;
+    let Crashed { epochs, acknowledged, durable, first, cut, collected, .. } = &crashed;
+
+    // A pass after the crash, over what it left, completes, as the next host's collector's would.
+    let bucket = host.bucket();
+    let pass = collector::collect(&*bucket, 1 << 20, &COLLECTING);
+    host.runtime.block_on(pass).unwrap_or_else(|err| panic!("round {round}: the pass: {err}"));
 
     // Its disk lost, a store of the branch's on another host takes it from the bucket.
     let elsewhere = MemDir::new();
@@ -210,7 +368,14 @@ pub fn kept(round: u64) -> (bool, bool) {
     // Its disk kept, the store opens again: its log follows the branch, which the taking fenced
     // past no commit, and what it made durable it holds.
     let reopened = reopened(&host, round, &crashed, crashed.dir.clone(), 3, (*durable).max(epoch));
-    (acknowledged > first, reopened > epoch)
+    let (compacted, deleted) = (collected.0 > 0, collected.1 > 0);
+    Kept {
+        acknowledged: acknowledged > first,
+        ahead: reopened > epoch,
+        cut: *cut,
+        compacted,
+        deleted,
+    }
 }
 
 /// Round `round` of the cut openings: the store a kept round's first crash left opened again, its

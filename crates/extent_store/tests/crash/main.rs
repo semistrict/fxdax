@@ -38,17 +38,27 @@ fn recovers_a_prefix_of_its_commits() {
 
 /// fxdax: a store keeping its branch in a bucket, crashing as its uploader uploads, recovers from
 /// the bucket alone at least what its uploader acknowledged, and from its disk at least what it
-/// made durable (TASK-165.9's AC #4).
+/// made durable (TASK-165.9's AC #4); the host's collector passing over the bucket all along, cut
+/// in a pass as it crashes, or before, and a full pass after (TASK-291.2).
 #[test]
 fn recovers_from_its_bucket_with_and_without_its_disk() {
-    let (mut uploaded, mut ahead) = (0, 0);
+    let (mut uploaded, mut ahead, mut cut, mut compacted, mut deleted) = (0, 0, 0, 0, 0);
     for round in 0..KEPT_ROUNDS {
-        let (acknowledged, local) = kept(round);
-        (uploaded, ahead) = (uploaded + acknowledged as u64, ahead + local as u64);
+        let found = kept(round);
+        uploaded += found.acknowledged as u64;
+        ahead += found.ahead as u64;
+        cut += found.cut as u64;
+        compacted += found.compacted as u64;
+        deleted += found.deleted as u64;
     }
-    // The crashes hit uploads under way, and stores whose disks held more than the bucket.
+    // The crashes hit uploads under way, and stores whose disks held more than the bucket; the
+    // collector's cuts, passes under way; and its passes compacted and deleted what the stores
+    // had uploaded.
     assert!(uploaded > KEPT_ROUNDS / 4, "{uploaded} rounds acknowledged a commit");
     assert!(ahead > KEPT_ROUNDS / 10, "{ahead} rounds held commits the bucket lacked");
+    assert!(cut > KEPT_ROUNDS / 4, "{cut} rounds cut a pass before the crash");
+    assert!(compacted > KEPT_ROUNDS / 10, "{compacted} rounds' passes compacted");
+    assert!(deleted > KEPT_ROUNDS / 3, "{deleted} rounds' passes deleted");
 }
 
 /// fxdax: a store's opening cut by a crash at each of its writes in turn leaves what opens again

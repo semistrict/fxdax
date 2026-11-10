@@ -70,7 +70,7 @@ pub const IN_FLIGHT: usize = (UPLOAD_BYTES / SEGMENT) as usize;
 /// (`extent_store::Options::segment_size`).
 const SEGMENT: u64 = 32 << 20;
 
-/// How many segments go between checkpoints.
+/// How many segments go between checkpoints, by default ([`Options::checkpoint_every`]).
 pub const CHECKPOINT_EVERY: u64 = 64;
 
 /// The most bytes of objects a host's uploads hold at once: its budget's ([`Runtime::uploads`]).
@@ -204,6 +204,9 @@ pub struct Options {
     pub cache: Option<Arc<Cache>>,
     /// The fencing token of a store never placed: its host's placement's.
     pub token: u64,
+    /// fxdax: how many segments go between checkpoints, which recoveries start from: the segments
+    /// a checkpoint covers are no longer read by them, and the collector may compact them.
+    pub checkpoint_every: u64,
 }
 
 impl Default for Options {
@@ -214,6 +217,7 @@ impl Default for Options {
             max_lag_bytes: 1 << 30,
             cache: None,
             token: 0,
+            checkpoint_every: CHECKPOINT_EVERY,
         }
     }
 }
@@ -846,7 +850,7 @@ impl<D: Dir, B: extent_remote::Bucket> Shared<D, B> {
                 }
             }
             segments += 1;
-            if segments % CHECKPOINT_EVERY == 0
+            if segments % self.options.checkpoint_every == 0
                 && let Err(err) = writer.checkpoint().await
             {
                 log::warn!("fxdax: checkpointing branch {:x}: {err}", writer.branch());
