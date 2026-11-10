@@ -282,6 +282,14 @@ impl Drop for Counted {
     }
 }
 
+/// fxdax: the default tenant, once made ([`default_tenant`]).
+static DEFAULT: OnceLock<Arc<Tenant>> = OnceLock::new();
+
+/// fxdax: the default tenant, if a VM process of its made it ([`default_tenant`]).
+pub(super) fn default_tenant_made() -> Option<Arc<Tenant>> {
+    DEFAULT.get().cloned()
+}
+
 /// fxdax: the default tenant, of the daemon's own socket, which its user's VM processes connect to
 /// (TASK-155), made as the first does, for as long as the daemon runs: nameless, as no granted
 /// tenant is, and limited by no name. Its policy is its own ([`Policy::default_tenant`]); its
@@ -289,7 +297,6 @@ impl Drop for Counted {
 /// holds public bases' pages, which every VM process holds read-only, and nothing of a VM
 /// process's own. `EIO`, logged, if its memory can't be made.
 pub(super) fn default_tenant() -> Result<Arc<Tenant>, Errno> {
-    static DEFAULT: OnceLock<Arc<Tenant>> = OnceLock::new();
     if let Some(tenant) = DEFAULT.get() {
         return Ok(tenant.clone());
     }

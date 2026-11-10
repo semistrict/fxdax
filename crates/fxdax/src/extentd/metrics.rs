@@ -53,6 +53,12 @@
 //!   `fxdax_extentd_upload_memory_bytes`: the bytes of objects the stores' uploads hold in memory,
 //!   every store's together, now and at most, and their budget, `FXDAX_EXTENTD_UPLOAD_MEMORY`
 //!   (`crate::remote::upload_memory`, TASK-317).
+//! - fxdax: `fxdax_extentd_process_cpu_seconds_total`, the daemon's CPU time;
+//!   `fxdax_extentd_process_anon_bytes` and `fxdax_extentd_process_anon_max_bytes`, its anonymous
+//!   memory, as last sampled and at most; `fxdax_extentd_process_anon_budget_bytes`, what its
+//!   design bounds that by, and `fxdax_extentd_process_anon_over_budget_total`, the samples past
+//!   it, what an operator alerts on; `fxdax_extentd_process_shmem_bytes`, its shared memory, the
+//!   extent cache's pages (`super::process`, TASK-330.2).
 //! - `fxdax_extentd_object_storage_requests_total{request}`,
 //!   `fxdax_extentd_object_storage_uploaded_bytes_total{object}` and
 //!   `fxdax_extentd_object_storage_downloaded_bytes_total`: what the daemon did with its bucket,
@@ -330,6 +336,52 @@ pub fn render() -> String {
     ] {
         let _ = writeln!(out, "# HELP {name} {help}");
         let _ = writeln!(out, "# TYPE {name} gauge");
+        let _ = writeln!(out, "{name} {value}");
+    }
+
+    // fxdax: what the process holds and spent, against its budget (TASK-330.2).
+    let process = super::process::last();
+    let series: [(&str, &str, &str, String); 6] = [
+        (
+            "fxdax_extentd_process_cpu_seconds_total",
+            "counter",
+            "The daemon's CPU time, user and system, in seconds.",
+            (process.cpu_ns as f64 / 1e9).to_string(),
+        ),
+        (
+            "fxdax_extentd_process_anon_bytes",
+            "gauge",
+            "The daemon's anonymous memory resident, as last sampled.",
+            process.anon.to_string(),
+        ),
+        (
+            "fxdax_extentd_process_anon_max_bytes",
+            "gauge",
+            "The most anonymous memory the daemon held, of its samples.",
+            process.max_anon.to_string(),
+        ),
+        (
+            "fxdax_extentd_process_anon_budget_bytes",
+            "gauge",
+            "What the daemon's design bounds its anonymous memory by, as last sampled.",
+            process.anon_budget.to_string(),
+        ),
+        (
+            "fxdax_extentd_process_anon_over_budget_total",
+            "counter",
+            "Samples of the daemon's anonymous memory past its budget.",
+            process.over_budget.to_string(),
+        ),
+        (
+            "fxdax_extentd_process_shmem_bytes",
+            "gauge",
+            "The daemon's shared memory resident, its extent cache's pages, as last sampled.",
+            process.shmem.to_string(),
+        ),
+    ];
+    for (name, kind, help, value) in series {
+        let _ = writeln!(out, "# HELP {name} {help}");
+        let _ = writeln!(out, "# TYPE {name} {kind}");
         let _ = writeln!(out, "{name} {value}");
     }
 

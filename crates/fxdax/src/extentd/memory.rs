@@ -164,6 +164,16 @@ pub fn tenants() -> Vec<TenantMemory> {
     memory
 }
 
+/// fxdax: what every tenant's connections have the daemon hold of their VM processes' requests
+/// now, together ([`InFlight`]): the default tenant's, if made, and each granted one's alive.
+pub(super) fn rooms_held() -> u64 {
+    let registry = REGISTRY.lock().unwrap();
+    let granted: u64 = registry.alive().map(|tenant| tenant.in_flight().held()).sum();
+    let default =
+        super::server::default_tenant_made().map_or(0, |tenant| tenant.in_flight().held());
+    granted + default
+}
+
 /// fxdax: the size from which the C library's allocator maps each allocation on its own, and
 /// unmaps it as it is freed ([`return_large_allocations`], TASK-317).
 pub const MMAP_THRESHOLD: usize = 1 << 20;

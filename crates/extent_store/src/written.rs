@@ -35,6 +35,10 @@ pub struct Written {
     pub framed: u64,
     pub own: u64,
     pub log: u64,
+    /// The writes, of every kind, each to a range of a file: what the host's kernel counts the
+    /// pages of, as it dirties them, each write's at most one page more than its bytes take
+    /// (TASK-330.2).
+    pub writes: u64,
 }
 
 impl Written {
@@ -51,10 +55,12 @@ impl Written {
 }
 
 static WRITTEN: [AtomicU64; 5] = [const { AtomicU64::new(0) }; 5];
+static WRITES: AtomicU64 = AtomicU64::new(0);
 
-/// A store of this process's wrote `bytes` of `kind`.
+/// A store of this process's wrote `bytes` of `kind`, in one write.
 pub(crate) fn wrote(kind: Kind, bytes: usize) {
     WRITTEN[kind as usize].fetch_add(bytes as u64, Ordering::Relaxed);
+    WRITES.fetch_add(1, Ordering::Relaxed);
 }
 
 /// The bytes this process's stores wrote since it started, by kind.
@@ -66,5 +72,6 @@ pub fn written() -> Written {
         framed: load(Kind::Framed),
         own: load(Kind::Own),
         log: load(Kind::Log),
+        writes: WRITES.load(Ordering::Relaxed),
     }
 }

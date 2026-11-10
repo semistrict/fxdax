@@ -30,6 +30,7 @@ use extent_remote::cache::Cache;
 use extent_remote::store::Stats;
 use std::borrow::Borrow;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock, Weak};
 
 /// The daemon's stores, by their keys ([`store_key`]): who holds each, a connection writing it or
@@ -1155,6 +1156,9 @@ pub(super) fn use_bucket(bucket: extent_remote::store::Store) {
 /// are logged while they change.
 const STATS_POLL: std::time::Duration = std::time::Duration::from_millis(200);
 const STATS_EVERY: std::time::Duration = std::time::Duration::from_secs(60);
+/// fxdax: how often the stats file is written again for its process's line alone, its CPU time
+/// and memory, which change each poll: what its file says of the process is no older than this.
+const PROCESS_EVERY: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// fxdax: what the stores' followers are (backlog doc-8, TASK-42.7): their views now, and the
 /// most views, commits behind, time behind and bytes of frees kept for them seen since the daemon
@@ -1200,8 +1204,9 @@ impl FollowerStats {
 /// fxdax: keeps what `bucket` did, its requests by kind and its bytes up and down
 /// (`extent_remote::store::Stats::line`), what the stores' followers are ([`FollowerStats`]),
 /// what serving the stores cost ([`daemon_line`]), the requests served
-/// (`super::metrics::requests_line`) and what its uploads hold ([`uploads_line`]), while it lives: in the file `FXDAX_EXTENTD_STATS` names, if
-/// it names one, a line each, rewritten whole within [`STATS_POLL`] of each change, which the
+/// (`super::metrics::requests_line`), what its uploads hold ([`uploads_line`]) and what its process
+/// holds and spent (`super::process::line`, sampled every poll, as the metrics report it, file or
+/// not), while it lives: in the file `FXDAX_EXTENTD_STATS` names, if it names one, a line each, rewritten whole within [`STATS_POLL`] of each change, which the
 /// bench reports (`scripts/bench-report.py`); and the bucket's in the log every [`STATS_EVERY`]
 /// that it changed. fxdax: what it keeps but the bucket's, it looks at only to keep it in the file
 /// (TASK-92.17).
@@ -1212,11 +1217,14 @@ fn watch_stats(bucket: std::sync::Weak<extent_remote::store::Store>) {
         let mut logged = Stats::default();
         let mut followers = FollowerStats::default();
         let mut written = Vec::new();
-        let mut at = std::time::Instant::now();
+        let (mut at, mut at_process) = (std::time::Instant::now(), std::time::Instant::now());
         loop {
             std::thread::sleep(STATS_POLL);
             let Some(bucket) = bucket.upgrade() else { return };
             let stats = bucket.stats();
+            // fxdax: what the process holds, against its budget, whether or not a file keeps it
+            // (TASK-330.2).
+            super::process::sample();
             if let Some(file) = &file {
                 followers.update();
                 let lines = [
@@ -1225,12 +1233,19 @@ fn watch_stats(bucket: std::sync::Weak<extent_remote::store::Store>) {
                     daemon_line(),
                     super::metrics::requests_line(),
                     uploads_line(),
+                    super::process::line(),
                 ];
-                if lines[..] != written[..] {
+                // fxdax: the process's line, its CPU time changing each poll, every
+                // PROCESS_EVERY at most, unless the rest changed (TASK-330.2).
+                let (rest, process) = lines.split_at(lines.len() - 1);
+                let changed = written.get(..rest.len()) != Some(rest)
+                    || (written.last() != process.last() && at_process.elapsed() >= PROCESS_EVERY);
+                if changed {
                     if let Err(err) = write_stats(file, &lines) {
                         log::warn!("extentd: writing {}: {err}", file.display());
                     }
                     written = lines.to_vec();
+                    at_process = std::time::Instant::now();
                 }
             }
             if stats != logged && at.elapsed() >= STATS_EVERY {
@@ -1278,9 +1293,13 @@ fn daemon_line() -> String {
     .concat();
     // fxdax: the bytes its stores wrote, by kind, against what the process wrote in all, as the
     // kernel counts it, and of that, what went before it was written back (TASK-310).
-    let written = extent_store::written()
-        .named()
-        .map(|(kind, bytes)| format!("written_{kind}_bytes={bytes}"));
+    // And the writes they took, each a page more than its bytes at most, as the kernel counts
+    // them; and what the daemon wrote of its own files, this one's (TASK-330.2).
+    let all = extent_store::written();
+    let mut written: Vec<String> =
+        all.named().map(|(kind, bytes)| format!("written_{kind}_bytes={bytes}")).into();
+    written.push(format!("written_writes={}", all.writes));
+    written.push(format!("stats_written_bytes={}", STATS_WRITTEN.load(Ordering::Relaxed)));
     let io = process_io().map(|(name, bytes)| format!("io_{name}={bytes}"));
     format!(
         "daemon: {} durable_lag_count={} durable_lag_max_us={} durable_lag_p50_ms={} \
@@ -1331,12 +1350,22 @@ fn timed_fields<const N: usize>(
     fields
 }
 
-/// fxdax: replaces `file` with `lines`, whole: a reader finds the old lines or the new.
+/// fxdax: replaces `file` with `lines`, whole: a reader finds the old lines or the new. Counted,
+/// in the pages it dirties ([`STATS_WRITTEN`]).
 fn write_stats(file: &std::path::Path, lines: &[String]) -> std::io::Result<()> {
     let new = file.with_extension("new");
-    std::fs::write(&new, lines.join("\n") + "\n")?;
+    let text = lines.join("\n") + "\n";
+    std::fs::write(&new, &text)?;
+    let pages = (text.len() as u64).div_ceil(crate::pages::page_size()) * crate::pages::page_size();
+    STATS_WRITTEN.fetch_add(pages, Ordering::Relaxed);
     std::fs::rename(&new, file)
 }
+
+/// fxdax: the bytes of the pages the daemon's stats file took, written again and again
+/// ([`write_stats`]): what its process's kernel counts it wrote of its own besides its stores',
+/// its bucket's and its cache's, and its log's, which its checks of what it wrote allow
+/// (`scripts/budgets.py`, TASK-330.2).
+static STATS_WRITTEN: AtomicU64 = AtomicU64::new(0);
 
 /// fxdax: how much of its filesystem the cache leaves free.
 const CACHE_FLOOR: u64 = 4 << 30;

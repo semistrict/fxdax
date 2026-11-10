@@ -102,6 +102,7 @@ pub mod memory;
 pub mod metrics;
 pub mod otel;
 mod pool;
+pub mod process;
 pub(crate) mod server;
 mod snapshot;
 mod stores;
