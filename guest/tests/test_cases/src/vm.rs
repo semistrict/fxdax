@@ -1130,7 +1130,7 @@ mod tests {
         assert_eq!(checked("reviewed.console.txt", &reviewed), Ok(()));
         // A folio's flags, which a reviewed peer reads plainly as fxdax's code changes them,
         // marked: its reads finishing (r565, r611), or a page_mkwrite's lock as writeback holds it
-        // (r611).
+        // (r611), each changing the bits its peer's review allows.
         let peer = kcsan_of(
             "folio_batch_move_lru / fxfs_vfs_read_folios+0x1b3/0x1f0",
             &[("write (marked)", "fxfs_vfs_read_folios"), ("read", "folio_batch_move_lru")],
@@ -1165,6 +1165,31 @@ mod tests {
             "0x000fffe00000412d -> 0x000fffe0000041ad",
         );
         assert_eq!(checked("mkwrite-peer.console.txt", &mkwrite), Ok(()));
+        // The same, KCSAN naming zone_stat_mod_folio's read, inlined (TASK-286).
+        let writeback = |change: &str| {
+            kcsan_of(
+                "folio_clear_dirty_for_io / fxfs_vfs_page_mkwrite",
+                &[
+                    ("read-write (marked)", "fxfs_vfs_page_mkwrite"),
+                    ("read", "folio_clear_dirty_for_io"),
+                ],
+                change,
+            )
+        };
+        let waits = writeback("0x000fffe00000412d -> 0x000fffe0000041ad");
+        assert_eq!(checked("writeback-peer.console.txt", &waits), Ok(()));
+        // A page_mkwrite dirtying a folio that writeback holds locked, cleaning it: a race of
+        // fxdax's, whatever its side's marking.
+        let dirties = writeback("0x000fffe00000412d -> 0x000fffe00000413d");
+        assert_eq!(
+            checked("writeback-dirtied.console.txt", &dirties),
+            Err(format!(
+                "a kernel complained: {:#?}",
+                vec![
+                    "[ 1.0] BUG: KCSAN: data-race in folio_clear_dirty_for_io / fxfs_vfs_page_mkwrite"
+                ]
+            ))
+        );
         // fxdax's side plain, or not in the report: a race of its own, whatever its peer.
         let plain = kcsan_of(
             "fxfs_vfs_read_folios / lru_gen_add_folio",
@@ -1205,26 +1230,44 @@ mod tests {
 /// word, read whole (the scheduler's kthread_is_per_cpu, for PF_KTHREAD; mem_cgroup_from_task).
 const KCSAN_REVIEWED_CHANGE: u64 = 0x0004_0000;
 
-/// The functions of the kernel's whose races with fxdax's code KCSAN reports, looked into: each
-/// reads a folio's flags plainly, for a field of the word that doesn't change while the folio is
-/// in the page cache (its zone, its node), as fxdax's code changes the folio's flag bits through
-/// the folio API, atomically, as any filesystem's does. folio_batch_move_lru reads a folio new to
-/// the LRU as the worker that read it (fxfs_vfs_read_folios) marks it uptodate and unlocks it, as
-/// the reads of any filesystem finishing on another thread race it; KCSAN names lru_add for the
-/// same race where it's inlined into folio_batch_move_lru (GCE r565, TASK-168), and
-/// lru_gen_add_folio, the multi-gen LRU's, for its folio_zonenum (r611, r613), and
-/// folios_put_refs, where folio_batch_move_lru puts its batch, for its folio_is_zone_device (r617).
-/// __lruvec_stat_mod_folio reads a folio's node (folio_pgdat) as writeback cleans it, holding its
-/// lock, and a store's page_mkwrite (fxfs_vfs_page_mkwrite) locks it, which sets PG_waiters as it
-/// waits, as filemap_page_mkwrite does (r611). Reviewed only while fxdax's side of the race is
-/// marked: a plain access of its own to a folio's flags would be a race of fxdax's, whichever of
-/// the kernel's functions met it (TASK-44.8.1).
-const KCSAN_REVIEWED_PEERS: [&str; 5] = [
-    "folio_batch_move_lru",
-    "lru_add",
-    "lru_gen_add_folio",
-    "folios_put_refs",
-    "__lruvec_stat_mod_folio",
+/// A folio's flag bits (include/linux/page-flags.h's enum pageflags): its lock, which a holder
+/// releases, and which a task that would take it marks waited for, waiting; and its contents' being
+/// read in.
+const PG_LOCKED: u64 = 1 << 0;
+const PG_UPTODATE: u64 = 1 << 3;
+const PG_WAITERS: u64 = 1 << 7;
+
+/// The functions of the kernel's whose races with fxdax's code KCSAN reports, looked into, each
+/// with the bits of the word that the race may change: each reads a folio's flags plainly, for a
+/// field of the word that doesn't change while the folio is in the page cache (its zone, its
+/// node), as fxdax's code changes the folio's flag bits through the folio API, atomically, as any
+/// filesystem's does.
+///
+/// folio_batch_move_lru reads a folio new to the LRU as the worker that read it
+/// (fxfs_vfs_read_folios) marks it uptodate and unlocks it, waking its waiters, as the reads of
+/// any filesystem finishing on another thread race it; KCSAN names lru_add for the same race where
+/// it's inlined into folio_batch_move_lru (GCE r565, TASK-168), and lru_gen_add_folio, the
+/// multi-gen LRU's, for its folio_zonenum (r611, r613), and folios_put_refs, where
+/// folio_batch_move_lru puts its batch, for its folio_is_zone_device (r617).
+///
+/// Writeback cleans a folio holding its lock (writeback_get_folio; folio_clear_dirty_for_io
+/// asserts it) and, the folio clean, counts it so: __lruvec_stat_mod_folio reads its node
+/// (folio_pgdat, r611), and zone_stat_mod_folio, inlined into folio_clear_dirty_for_io, its zone
+/// (folio_zone, TASK-286). A store's page_mkwrite (fxfs_vfs_page_mkwrite) meanwhile takes the lock,
+/// as filemap_page_mkwrite does, to dirty the folio under it (the exclusion
+/// folio_clear_dirty_for_io's comment asks of a fault handler): its folio_trylock fails, marked,
+/// and it waits, setting PG_waiters. Only the lock's bits change: a dirtying, or any change of the
+/// folio's bits but its lock's, while writeback holds the lock, would be a race of fxdax's.
+///
+/// Reviewed only while fxdax's side of the race is marked: a plain access of its own to a folio's
+/// flags would be a race of fxdax's, whichever of the kernel's functions met it (TASK-44.8.1).
+const KCSAN_REVIEWED_PEERS: [(&str, u64); 6] = [
+    ("folio_batch_move_lru", PG_LOCKED | PG_UPTODATE | PG_WAITERS),
+    ("lru_add", PG_LOCKED | PG_UPTODATE | PG_WAITERS),
+    ("lru_gen_add_folio", PG_LOCKED | PG_UPTODATE | PG_WAITERS),
+    ("folios_put_refs", PG_LOCKED | PG_UPTODATE | PG_WAITERS),
+    ("__lruvec_stat_mod_folio", PG_LOCKED | PG_WAITERS),
+    ("folio_clear_dirty_for_io", PG_LOCKED | PG_WAITERS),
 ];
 
 /// Whether the kernel's function `function` is fxdax's code's: fs/fxfs's, its Rust's
@@ -1357,8 +1400,7 @@ fn complained<'a>(lines: &'a [&'a str]) -> impl Iterator<Item = usize> + 'a {
             let accesses = kcsan_accesses(report);
             let ours_marked = accesses.iter().any(|access| ours(access.function))
                 && accesses.iter().all(|access| access.marked || !ours(access.function));
-            let reviewed =
-                ours_marked && names.iter().any(|function| KCSAN_REVIEWED_PEERS.contains(function));
+            // The bits that changed, if KCSAN saw the word change.
             let changed = report
                 .iter()
                 .filter_map(|line| line.split_once("value changed: "))
@@ -1368,6 +1410,10 @@ fn complained<'a>(lines: &'a [&'a str]) -> impl Iterator<Item = usize> + 'a {
                         |hex: &str| u64::from_str_radix(hex.trim().strip_prefix("0x")?, 16).ok();
                     Some(word(old)? ^ word(new)?)
                 });
+            let reviewed = ours_marked
+                && KCSAN_REVIEWED_PEERS
+                    .iter()
+                    .any(|(peer, bits)| names.contains(peer) && changed.unwrap_or(0) & !bits == 0);
             if !of_ours || reviewed || changed == Some(KCSAN_REVIEWED_CHANGE) {
                 return None;
             }

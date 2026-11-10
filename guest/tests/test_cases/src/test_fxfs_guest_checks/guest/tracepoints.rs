@@ -13,6 +13,8 @@ const TRACING: &str = "/sys/kernel/tracing";
 const MARK: &str = "fxfs-check:";
 /// The kernel's VM_FAULT_ERROR: OOM, SIGBUS, HWPOISON, HWPOISON_LARGE, SIGSEGV and FALLBACK.
 const VM_FAULT_ERROR: i64 = 0x873;
+/// A PMD's order, 2 MiB of 4 KiB pages.
+const PMD_ORDER: usize = 9;
 
 /// An event of the trace: its name and its fields, `key=value`, or a mark's label.
 #[derive(Debug)]
@@ -225,9 +227,21 @@ fn check_pairs(events: &[Event]) {
 /// page loaded, which faults and MAPs the window, and stored to, which faults writable and makes
 /// the window's page private (PRIVATE) within what the MAP mapped, then fsynced, its writeback
 /// writing the page. Every request's events paired by id (check_pairs).
+///
+/// The load's fault is a page's (order 0), alone: the mapping shares its PMD-aligned 2 MiB with a
+/// page of memory stored to first, whose page table the PMD's entry holds. With that entry empty,
+/// the kernel offers a fault of a DAX mapping as a PMD's first (huge_fault, order 9), whatever the
+/// mapping's size, leaving the handler to say whether it fits (__thp_vma_allowable_orders skips
+/// the check in a fault; fs/dax.c's dax_fault_check_fallback makes it): this mapping of 16 pages
+/// falls back, mapping nothing, and the page's fault follows. As many PMD faults as the kernel
+/// tries the fault: under the VMA's lock, then again under the mmap lock, as do_read_fault retries
+/// a mapping with no map_pages (vmf_can_call_fault). Placed where the kernel chose, the mapping
+/// shared its 2 MiB with what had faulted there already, or didn't: the load took a page's fault
+/// alone, or PMD faults first, from run to run (TASK-299).
 pub(super) fn test_tracepoints(dax: bool) {
     const PAGE: usize = 4096;
     const LEN: usize = 16 * PAGE;
+    const PMD: usize = PAGE << PMD_ORDER;
     /// A hole, which makes the file two pieces: no slice of one extent's region, which an extent
     /// another file shares may have mapped already, but a range of its own, which MAPs.
     const HOLE: std::ops::Range<usize> = 8 * PAGE..12 * PAGE;
@@ -250,17 +264,43 @@ pub(super) fn test_tracepoints(dax: bool) {
     if dax {
         read_in_sealed(&name);
         let file = fs::OpenOptions::new().read(true).write(true).open(&name).unwrap();
-        let map = unsafe {
+        // Two PMDs' worth, inaccessible: a PMD-aligned 2 MiB within it, the mapping's, and a page
+        // of memory after it, stored to, its page table the PMD's.
+        let reserved = unsafe {
             libc::mmap(
                 std::ptr::null_mut(),
+                2 * PMD,
+                libc::PROT_NONE,
+                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_NORESERVE,
+                -1,
+                0,
+            )
+        };
+        assert_ne!(reserved, libc::MAP_FAILED, "mmap: {}", std::io::Error::last_os_error());
+        let aligned = (reserved as usize).next_multiple_of(PMD);
+        let map = unsafe {
+            libc::mmap(
+                aligned as *mut libc::c_void,
                 LEN,
                 libc::PROT_READ | libc::PROT_WRITE,
-                libc::MAP_SHARED,
+                libc::MAP_SHARED | libc::MAP_FIXED,
                 file.as_raw_fd(),
                 0,
             )
         };
-        assert_ne!(map, libc::MAP_FAILED, "mmap: {}", std::io::Error::last_os_error());
+        assert_eq!(map as usize, aligned, "mmap: {}", std::io::Error::last_os_error());
+        let memory = unsafe {
+            libc::mmap(
+                (aligned + LEN) as *mut libc::c_void,
+                PAGE,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_FIXED,
+                -1,
+                0,
+            )
+        };
+        assert_eq!(memory as usize, aligned + LEN, "mmap: {}", std::io::Error::last_os_error());
+        unsafe { memory.cast::<u8>().write_volatile(1) };
         let page = unsafe { map.cast::<u8>().add(2 * PAGE) };
         trace.mark("load");
         assert_eq!(unsafe { page.read_volatile() }, data[2 * PAGE]);
@@ -269,7 +309,7 @@ pub(super) fn test_tracepoints(dax: bool) {
         trace.mark("fsync-dax");
         file.sync_all().unwrap();
         trace.mark("end");
-        assert_eq!(unsafe { libc::munmap(map, LEN) }, 0);
+        assert_eq!(unsafe { libc::munmap(reserved, 2 * PMD) }, 0);
     } else {
         trace.mark("end");
     }
@@ -284,10 +324,14 @@ pub(super) fn test_tracepoints(dax: bool) {
     }
 
     let ino_is = |event: &Event| event.number("ino") == ino as i64;
-    // The load: a read fault of page 2, which MAPs the window, read-only, why it does said first.
+    // The load: a read fault of page 2, a page's, the one fault of the load, which MAPs the
+    // window, read-only, why it does said first.
     let load = between(&events, "load", "store");
     let mut at = 0;
-    let fault = next(load, &mut at, "a read fault", |e| e.name == "fxfs_dax_fault_start");
+    let fault_start = |e: &Event| e.name == "fxfs_dax_fault_start";
+    let faults: Vec<&Event> = load.iter().filter(|e| fault_start(e) && ino_is(e)).collect();
+    assert_eq!(faults.len(), 1, "the load's faults: {faults:#?}");
+    let fault = next(load, &mut at, "a read fault", fault_start);
     assert!(ino_is(fault) && fault.number("pgoff") == 2, "{fault:?}");
     assert_eq!((fault.number("order"), fault.number("write")), (0, 0), "{fault:?}");
     // A range's own MAP of all its pages: the data before the hole, zeros for it, the data after
