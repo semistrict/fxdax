@@ -3,11 +3,11 @@ id: TASK-92.41
 title: >-
   A commit sealing more than a segment's bound of small extents copies them
   under the state lock and seals each in a file of its own
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-10-23 03:10'
-updated_date: '2026-11-10 20:49'
+updated_date: '2026-11-10 21:21'
 labels:
   - review-2026-10-21
 dependencies: []
@@ -25,15 +25,15 @@ TASK-79.2 bounded segments at segment_size + max_extent. A commit sealing more s
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A commit after a burst larger than a segment seals the burst's extents where they are, copying nothing and making no file per extent
-- [ ] #2 store-bench's burst case shows it before and after, and object-storage recovery and the collector handle the new format, with tests
+- [x] #1 A commit after a burst larger than a segment seals the burst's extents where they are, copying nothing and making no file per extent
+- [x] #2 store-bench's burst case shows it before and after, and object-storage recovery and the collector handle the new format, with tests
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (Lima)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -63,4 +63,12 @@ Design: a segment that fills between commits takes no more writes and waits (seg
 Tests: extent_frame continued_commits_end_in_their_writers_segments; extent_remote commits_spanning_segments_seal_once_ended (red acknowledging mid-commit), logs_of_commits_spanning_segments_land_whole (red landing mid-commit); extent_store segments_filled_wait_for_the_next_commit, bursts_past_a_segment_between_commits_are_sealed_where_they_are (red: 516 KB copied without in-place sealing in full segments), copies_past_the_open_segments_room_go_on_in_the_next, interval_closings_leave_segments_being_filled, commits_spanning_segments_are_kept_whole_or_not_at_all, segments_going_on_with_acknowledged_commits_go (red: the cut openings' error, below); Shuttle scenarios uploading_what_a_segment_filled_holds and uploading_what_a_spanning_commit_closed (needs_framings_to_end_themselves on it). The crash rounds' OPTIONS now have extents small enough that segments fill between commits (64 MiB extents: none ever filled); they count commits spanning segments: >300 in the prefix rounds, 31 in the kept rounds.
 Found by the crash tests during the work (not on main): openings_cut_at_each_write_open_again (kept rounds, racy) hit a resurrected segment going on with a commit the base had acknowledged, taken for unended, recovery opening its gone raw file: acknowledged segments now skip the continuation check. Blind spot: the deterministic prefix rounds don't acknowledge; the unit test reproduces it deterministically. Structure: one place (wal::recover) decides a continuation's fate, by consecutive segments; fine.
 store-bench burst (256 MiB of 256 KiB extents after a commit, ubu1, fxjob --bench, 3 runs each): main ordered 153-175 ms, durable 405-741 ms, framed 447-782 ms, 640 extents in own files, 96 MiB copied (main needs ulimit -n 65536: TASK-332); branch ordered 21-25 ms, durable 52-56 ms, framed 166-172 ms, no own files, nothing copied, 3 MiB framed (tails and the open segment's compressed copy).
+
+Landed on main as a5dd824c5..ba0c184d2; main CI 42900426848 green (all jobs). DoD #1: Linux on ubu1 (not Lima: AGENTS/user rule), workspace 2479, sim 46, shuttle all passed; macOS 2228 + sim + shuttle + clippy. The collector handles the format through recovery (segments replayed are touched; no checkpoint mid-commit), exercised by the kept crash rounds' passes compacting and deleting while 31 commits spanned segments.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Commits now span segments: a segment filled between commits waits for the next commit, which seals each extent where it was written and closes the filled segments with footers naming their runs of the commit (Contents::continued; branch format 3, store format 9). Readers seal them with the ending segment and drop them at a fence; writers acknowledge, and the WAL lands, only between commits; local recovery keeps a continuation only whole. The spill and its own files are gone. store-bench burst (ubu1): commit durable in 52-56 ms against 405-741 ms, no own files against 640, nothing copied against 96 MiB. On the shared-disk case the stores wrote 1.02x the guests' data against 1.38-1.48x. Verified by new unit, crash-round, sim and Shuttle tests (red where a rule was removed), macOS and Linux suites, and main CI 42900426848.
+<!-- SECTION:FINAL_SUMMARY:END -->

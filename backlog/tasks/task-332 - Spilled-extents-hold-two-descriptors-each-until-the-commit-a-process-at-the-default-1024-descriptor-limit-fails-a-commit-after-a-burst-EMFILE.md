@@ -3,9 +3,10 @@ id: TASK-332
 title: >-
   Spilled extents hold two descriptors each until the commit: a process at the
   default 1024-descriptor limit fails a commit after a burst (EMFILE)
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-11-10 20:31'
+updated_date: '2026-11-10 21:21'
 labels:
   - bug
   - extent_store
@@ -23,7 +24,7 @@ Found running store-bench burst on main (41e13503f) on ubu1, ulimit -n 1024: 'co
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 No store holds a descriptor per extent written between commits past a bound of its process's limit; store-bench burst passes at ulimit -n 1024
+- [x] #1 No store holds a descriptor per extent written between commits past a bound of its process's limit; store-bench burst passes at ulimit -n 1024
 <!-- AC:END -->
 
 ## Definition of Done
@@ -32,3 +33,9 @@ Found running store-bench burst on main (41e13503f) on ubu1, ulimit -n 1024: 'co
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Gone with the spill: TASK-92.41 (a5dd824c5) seals a burst's extents in the segments it fills, holding no descriptor per extent. store-bench burst on ubu1 passes at ulimit -n 1024 (main failed with EMFILE); remote::write_budgets now runs at the shell's limit, its burst of 768 MiB included (89f518bc0). Main CI 42900426848 green.
+<!-- SECTION:FINAL_SUMMARY:END -->

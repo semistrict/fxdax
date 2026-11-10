@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-09 23:57'
-updated_date: '2026-11-10 20:49'
+updated_date: '2026-11-10 21:21'
 labels:
   - perf
   - extentd
@@ -62,9 +62,9 @@ Whatever the fix, it must keep doc-12's durability window (TASK-221's ACs).
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -107,4 +107,6 @@ CI 42843850345 green at 3a1038195 (all jobs).
 - TASK-322 (FXDAX_SHARED_DISK_FSYNC=1, 3 rounds a side): durable lag p50 8-16 s on main vs 0.26-2 s on the branch, p99 16-32 s vs 8-16 s, within 50 ms 1.4-3.5k vs 0.7-10k of 48.3k; stores 1.37x vs 1.02x. It moves, a lot, but doc-12's 50 ms median still breaks on this disk.
 - Found: TASK-332 (main's spill holds two descriptors per spilled extent: store-bench burst fails at ulimit 1024); gone with the spill.
 Linux (ubu1): workspace 2479 passed, sim 46, shuttle 37+10+6+67+10+18; macOS: workspace 2225, clippy, sim, shuttle green.
+
+AC #4, where it stands (main ba0c184d2, CI 42900426848 green): bytes met (stores 1.02-1.03x the guest data plus framing tails, against 1.37-1.48x; 2.05x with the bucket's copy against 2.46-2.60x); pgbench and pgbench-dax keep doc-12's median, no difference past the rounds' spread; slow framings NOT back to the old pin's 0.2 s: 2.0-8.1 s on this shared disk (main 13-36 s), all of it the framings' file and directory syncs behind the disk's queue, as TASK-322's commits wait behind it. Left open for that: what's left is the shared disk's queue, not bytes written twice.
 <!-- SECTION:NOTES:END -->
