@@ -253,9 +253,9 @@ fn run_single_test(
 
     // Prepare rootfs: build from container image if needed, otherwise create empty dir
     let rootfs_dir = test_dir.join("rootfs");
-    if let Some(containerfile) = test_case.rootfs_image() {
+    if let Some(image) = test_case.rootfs_image() {
         use test_cases::rootfs;
-        if let Err(e) = rootfs::prepare_rootfs(containerfile, &rootfs_dir) {
+        if let Err(e) = rootfs::prepare_rootfs(&image, &rootfs_dir) {
             eprintln!("SKIP ({e})");
             return Ok(TestResult {
                 name: test_case.name.to_string(),

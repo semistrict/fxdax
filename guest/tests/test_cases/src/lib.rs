@@ -969,10 +969,11 @@ pub trait Test {
         ShouldRun::Yes
     }
 
-    /// Return Containerfile content if this test needs a custom rootfs image.
+    /// Return the image (its Containerfile, fxdax: and what its build takes from the host) if
+    /// this test needs a custom rootfs image.
     /// The runner will build the image via podman and extract it before launching the VM.
     /// If podman is unavailable, the test is skipped.
-    fn rootfs_image(&self) -> Option<&'static str> {
+    fn rootfs_image(&self) -> Option<rootfs::Image> {
         None
     }
 
@@ -1020,7 +1021,7 @@ impl TestCase {
     }
 
     #[host]
-    pub fn rootfs_image(&self) -> Option<&'static str> {
+    pub fn rootfs_image(&self) -> Option<rootfs::Image> {
         self.test.rootfs_image()
     }
 

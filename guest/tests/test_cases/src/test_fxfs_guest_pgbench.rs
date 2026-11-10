@@ -701,8 +701,8 @@ RUN apk add --no-cache postgresql postgresql-contrib perf e2fsprogs
             fxdax_guest_should_run()
         }
 
-        fn rootfs_image(&self) -> Option<&'static str> {
-            Some(CONTAINERFILE)
+        fn rootfs_image(&self) -> Option<crate::rootfs::Image> {
+            Some(crate::rootfs::Image::new(CONTAINERFILE))
         }
 
         fn timeout_secs(&self) -> u64 {

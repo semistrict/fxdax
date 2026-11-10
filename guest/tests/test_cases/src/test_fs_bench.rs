@@ -156,6 +156,7 @@ mod host {
     use super::*;
 
     use crate::common::{fxdax_guest_should_run, setup_rootfs};
+    use crate::rootfs::{Download, Image};
     use crate::vm::Vm;
     use crate::{ShouldRun, Test, TestOutcome, TestSetup};
     use anyhow::Context as _;
@@ -165,10 +166,21 @@ mod host {
     const CONTAINERFILE: &str = "\
 FROM alpine:3.22
 RUN apk add --no-cache fio gcc make musl-dev e2fsprogs perf postgresql postgresql-contrib sqlite
-RUN wget -q -O /opt/lua-5.4.7.tar.gz https://www.lua.org/ftp/lua-5.4.7.tar.gz \\
-    && echo '9fbf5e28ef86c69858f6d3d34eccc32e911c1a28b4120ff3e84aaa70cfbf1e30  /opt/lua-5.4.7.tar.gz' \\
-    | sha256sum -c
+COPY lua-5.4.7.tar.gz /opt/lua-5.4.7.tar.gz
 ";
+
+    /// fxdax: the build workload's source, from the host's cache: lua.org's, or its mirrors',
+    /// PUC-Rio's and Buildroot's, where lua.org can't be reached; fetched by the build from
+    /// lua.org alone, a timeout there skipped every case (TASK-297).
+    const LUA: Download = Download {
+        name: "lua-5.4.7.tar.gz",
+        sha256: "9fbf5e28ef86c69858f6d3d34eccc32e911c1a28b4120ff3e84aaa70cfbf1e30",
+        sources: &[
+            "https://www.lua.org/ftp/lua-5.4.7.tar.gz",
+            "https://www.tecgraf.puc-rio.br/lua/ftp/lua-5.4.7.tar.gz",
+            "https://sources.buildroot.net/lua/lua-5.4.7.tar.gz",
+        ],
+    };
 
     fn iterations() -> Option<u32> {
         std::env::var("FXDAX_BENCH_ITERATIONS").ok()?.parse().ok()
@@ -693,8 +705,8 @@ RUN wget -q -O /opt/lua-5.4.7.tar.gz https://www.lua.org/ftp/lua-5.4.7.tar.gz \\
             }
         }
 
-        fn rootfs_image(&self) -> Option<&'static str> {
-            Some(CONTAINERFILE)
+        fn rootfs_image(&self) -> Option<Image> {
+            Some(Image { containerfile: CONTAINERFILE, downloads: &[LUA] })
         }
 
         fn timeout_secs(&self) -> u64 {

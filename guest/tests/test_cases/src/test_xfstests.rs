@@ -136,8 +136,8 @@ _scratch_unmount()
             fxdax_guest_should_run()
         }
 
-        fn rootfs_image(&self) -> Option<&'static str> {
-            Some(IMAGE.as_str())
+        fn rootfs_image(&self) -> Option<crate::rootfs::Image> {
+            Some(crate::rootfs::Image::new(IMAGE.as_str()))
         }
 
         fn timeout_secs(&self) -> u64 {

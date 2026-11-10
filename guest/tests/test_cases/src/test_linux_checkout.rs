@@ -236,8 +236,8 @@ RUN git clone --bare --depth 1 --branch v6.18 https://github.com/torvalds/linux 
             fxdax_guest_should_run()
         }
 
-        fn rootfs_image(&self) -> Option<&'static str> {
-            Some(CONTAINERFILE)
+        fn rootfs_image(&self) -> Option<crate::rootfs::Image> {
+            Some(crate::rootfs::Image::new(CONTAINERFILE))
         }
 
         /// The clone alone took 8 to 44 minutes in Lima on a busy host.
