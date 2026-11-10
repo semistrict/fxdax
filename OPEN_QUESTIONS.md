@@ -8,6 +8,12 @@
 
 # Decisions
 
+## Userfaultfds through /dev/userfaultfd alone, no system call fallback (TASK-308, 2026-11-10)
+fxdax's DAX windows no longer fall back to userfaultfd(2) when /dev/userfaultfd can't be opened: Firecracker's seccomp filter killed the VMM for it ("bad syscall (323)"). A host must grant the device (group or mode, or an ACL), as CI, Lima and ubu1 do; `vm.unprivileged_userfaultfd=1` alone no longer serves even fxdax's in-process tests. An extent device with a window checks the device as it is made, so the VM fails at start, naming it. *Instead:* keep the fallback outside the VMM. *Undoing it:* the `Err` arm in `dax::uffd::open_userfaultfd`.
+
+## Harness tests that loop-mount run as root alone (TASK-307, 2026-11-10)
+The 19 script_run/differential tests that make a `Loop` (kernel ext4/XFS on a loop device) are `#[ignore]`d with the reason, and run under root only (`--run-ignored all` in scripts/test.sh's guest part, which CI runs as root); as another user the part says it leaves them out. No unprivileged substitute holds the model to the kernel's filesystems: user namespaces mount neither, fuse2fs is FUSE's. *Undoing it:* drop the attributes and the `as_root` switch.
+
 ## The crash window of an ordered commit is what main achieves (the user, 2026-11-08)
 TASK-221: after a host crash, guest writes answered but not fsync'd may be lost for as long as main's write-behind leaves them; doc-12 and doc-2 promise the window measured on main (GCE, pgbench and pgbench-dax jailed), not 50 ms, and LOST_WITHIN_MS cites it.
 
