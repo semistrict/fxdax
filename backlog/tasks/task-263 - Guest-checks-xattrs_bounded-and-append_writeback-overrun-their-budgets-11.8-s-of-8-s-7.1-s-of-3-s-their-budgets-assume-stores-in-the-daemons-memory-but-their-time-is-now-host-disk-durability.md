@@ -4,11 +4,11 @@ title: >-
   Guest checks: xattrs_bounded and append_writeback overrun their budgets (11.8
   s of 8 s, 7.1 s of 3 s): their budgets assume stores in the daemon's memory,
   but their time is now host-disk durability
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-08 15:35'
-updated_date: '2026-11-10 11:07'
+updated_date: '2026-11-10 11:25'
 labels:
   - tests
   - perf
@@ -38,7 +38,7 @@ Ruled out: run order (pgbench before the checks). us-central1-b and us-west1-a b
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
 - [x] #2 scripts/upstream-changes.py --check passes
 - [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
@@ -71,4 +71,12 @@ Seen again on ubu1 (2026-11-10, branch harness-fixes on main f36453323, non-root
 - Unit tests on ubu1: test_cases guest features, test_fxfs_guest_checks:: 12/12 (new: time_left_out_is_not_spent, the_hosts_time_counts_a_fraction); host features 6/6.
 - AC #1 (why val-A3 and r941's hosts were 4x slower) is moot with GCE retired. The new per-check line (steal, and each request type's count and time) says where any slow run's time goes. On ubu1 it was the host's write and commit requests, not the guest's CPUs (steal ~0).
 - REMOTE_SCALE (5, for GCS) multiplies budgets that now leave out the host's time. Its measurement (r980, append_writeback 10 s of 3 s) was host time, so it may be removable; not changed here.
+
+Main CI 42804968972 green at f09dbd657 (Linux and macOS workspace, guest, sim, shuttle, scripts).
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+A check's budget is of the guest's time: the agent's clock leaves out the time the virtio_extent device has a request in flight (new busy_ns attribute), but for an 18th of it (HOST_SCALE), so that a device that never answers still has its check killed, by name. The suite's limit is SETUP + the budgets twice over + one check's whole host allowance. xattrs_bounded also counts what it asks of the host (>= 1 and <= 1.25 writes per set, no durable commit). Verified on ubu1: 80/80 rounds (20 each of fxfs-guest-checks, -dax, -dax-small, -dax-delay); a per-setxattr guest delay mutant is killed; the overrun suite's hangs is still killed. Limits: append_writeback's budget bounds only hangs, since its syncfs loop keeps the device busy (a per-fsync sleep mutant survives); AC #1 (GCE hosts' slowdown) is moot with GCE retired. Main CI 42804968972 green.
+<!-- SECTION:FINAL_SUMMARY:END -->

@@ -3,11 +3,11 @@ id: TASK-303
 title: >-
   example-gce.sh measured every example with the extent store's audit compiled
   in
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-09 12:36'
-updated_date: '2026-11-10 11:06'
+updated_date: '2026-11-10 11:25'
 labels:
   - bug
 dependencies: []
@@ -29,7 +29,7 @@ scripts/lib/example-linux-host.sh built examples with `cargo build --release --e
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
 - [x] #2 scripts/upstream-changes.py --check passes
 - [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
@@ -56,4 +56,12 @@ scripts/lib/example-linux-host.sh built examples with `cargo build --release --e
 - Runs measured with the audit (2026-11-03 2024404bd, until 70a12ea15), their note.md now say so: gce-import-bench-threads-{1,2}-2026-11-08 (TASK-92.47), gce-sqlite-bench-2026-11-09T0955Z and T1038Z (TASK-298, TASK-300), gce-sqlite-commit-profile-2026-11-09T1111Z, T1114Z, T1156Z, T1208Z, T1212Z, T1217Z, T1221Z, T1223Z (TASK-301). Not: T1236Z and T1241Z (their source had the fix), ubu1-sqlite-2026-11-09 (-p sqlite_extents). Examples before 2026-11-03 predate the audit.
 - Of those, only import-bench feeds an open decision (TASK-92.47, and Filesystem::executor_threads' default of 1, whose doc cites it): re-measured on ubu1 below. TASK-298/300/301 are done; TASK-301's later numbers (T1236Z, T1241Z, ubu1) were without it.
 - Found: fxdax's examples are built with fxdax's own failpoints and testing features (its dev-dependency on itself): TASK-320.
+
+Main CI 42804968972 green at f09dbd657.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+A release build with extent_store's audit now fails to compile (release is what measurements use; tests run in dev and sim). Measured daemons never had it (test-e2e.sh and fork-time build -p fxdax --bin). store-bench, which always had it as extent_store's own example, moved to fxdax. example-gce.sh and lib/example-linux-host.sh are retired (GCE gone; the host half provisioned a disposable root host). The 12 example runs measured with the audit say so in their note.md. import-bench, behind TASK-92.47's open default, was re-measured on ubu1 without the audit: two Fxfs threads still no faster. Verified with release and dev/sim cargo checks on macOS, a release example build on ubu1, and main CI 42804968972. Found TASK-320 (failpoints and testing in fxdax's examples).
+<!-- SECTION:FINAL_SUMMARY:END -->
