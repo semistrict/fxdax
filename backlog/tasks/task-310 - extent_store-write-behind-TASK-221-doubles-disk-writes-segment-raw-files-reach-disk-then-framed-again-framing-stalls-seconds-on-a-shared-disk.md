@@ -3,9 +3,11 @@ id: TASK-310
 title: >-
   extent_store write-behind (TASK-221) doubles disk writes: segment raw files
   reach disk, then framed again; framing stalls seconds on a shared disk
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-11-09 23:57'
+updated_date: '2026-11-10 13:25'
 labels:
   - perf
   - extentd
@@ -64,3 +66,30 @@ Whatever the fix, it must keep doc-12's durability window (TASK-221's ACs).
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. extent_store counts the bytes it writes per kind (raw: guest writes to segments' raw files; copied: sealing's copies into the open segment; framed; own: extents' own files; log: logs and WAL base); extentd's daemon stats line says them, with its /proc/self/io write_bytes and cancelled_write_bytes.
+2. A guest case, fxfs-guest-shared-disk (manual): its own daemon, stores, file bucket and part cache under the case's directory, on one disk; VMs N at a time, each writing a large file with fsync and many small files, reading back, deleting; the host says extentd's bytes written (proc io, per kind) against the guests', slow framings, and the disk's stall time (PSI io, device stat).
+3. ubu1: a system-setup.d step making an ext4 scratch filesystem on a ZFS zvol, the case's directory on it.
+4. Measure main vs write-behind off + 3cb88647e reverted (A/B).
+5. Fix from what the A/B shows; measure again; pgbench and pgbench-dax durable_lag within doc-12's window.
+<!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+2026-11-09 (claude): branch t3/ed8c1326 (b2c9a5421): extent_store::written() counts bytes stores write by kind (raw, copied, framed, own, log); extentd's daemon stats line has written_*_bytes and io_write_bytes / io_cancelled_write_bytes (/proc/self/io); keeps_object_storage_and_follower_stats green on ubu1. Case fxfs-guest-shared-disk[-dax] (manual): its own daemon, stores, file bucket and part cache on one disk; VMs N at a time, each 768 MiB fsynced + 3,000 x 8 KiB files, read back, deleted; says guest vs extentd bytes, by kind, slow framings, PSI io stall, disk writes. ubu1: ~/docs/system-setup.d/143-fxdax_ext4_scratch.sh (rpool/fxdax-scratch zvol, ext4, /mnt/fxdax-scratch). A/B side: branch t310-ab-off (write-behind off; flush waits for framings of segments closed with data since the commit before, 3cb88647e reverted by hand onto TASK-301's flushes). Artifacts built on ubu1 (~/src/t310-arts-main, ~/src/t310-arts-ab, kernel ~/src/t310-kernel). Blocked: Tailscale SSH to ubu1 wants the user's re-authentication check.
+
+2026-11-10 A/B on ubu1 (ext4 on a zvol, /mnt/fxdax-scratch; fxfs-guest-shared-disk, 16 VMs 8 at a time, each 768 MiB fsynced + 3,000 x 8 KiB, no DAX; host shared with other agents, load 40-80, so latencies are noisy, bytes are not):
+- main (2 rounds): extentd write_bytes 38.97 / 39.34 GiB for 12.37 GiB of guest data (3.15x / 3.18x, the file bucket's copy included), cancelled 0.00-0.01; by kind: raw 12.49, own 10.55, framed 2.02-2.30, copied 1.03-1.22, log 0.01, the rest (bucket and part cache) ~12.7. Slow framings 69-72, slowest 11.9-17.1 s, sum 122-197 s; slow flushes 89-111; durable lag max 11.4-15.3 s; I/O stall (PSI some) 61-77 s of 167-178 s.
+- write-behind off + flushes waiting for framings (t310-ab-off, 1 round): 39.13 GiB (3.16x), cancelled 0.20; raw 12.49, own 10.54, framed 2.02, copied 1.39; slow framings 94, slowest 8.1 s, sum 71 s; durable lag max 8.3 s; stall 47 s of 197 s.
+Bytes: the same with write-behind off. Root cause of the bytes: the large file's extents are large (first write past large_extent), written to open extents' own raw files (raw 12.49), which the kernel writes back as the guests write (memory and dirty thresholds, 8 guests at once), then sealed by framing a copy into extents/ (own 10.55): every byte twice. Write-behind isn't involved for them (it writes back segments' raw files only). Fix (5a0a944b9): a large extent none of whose parts compresses is framed in place, its raw file its own file, its tail appended, renamed into extents/.
+
+2026-11-10, isolated (fxjob --bench: cores 4-7 the run's alone, --mem 20G; the disk shared: nvme0n1 wrote 39-86 GB in all during each run, ~half other jobs'). base = main with this task's counters and case (t310-base); fix = 2e16eff5c's code; ab = fix with write-behind off (t310-ab-off).
+- fxfs-guest-shared-disk, 16 VMs 8 at a time: base 39.25 GiB written (3.17x; stores raw 12.49 + own 10.56 + framed 2.26 + copied 1.01, bucket and cache 12.93), 145 s, slow framings 64, slowest 14.1 s, durable lag max 14.3 s, PSI full 27 s, disk busy 121 s. fix 31.54 GiB (2.55x; own 1.00, raw 12.49, framed 2.89, copied 1.57, bucket and cache 13.58), 107 s, slow framings 69, slowest 11.1 s, durable max 9.2 s, PSI full 33 s, disk busy 93 s. Unisolated rounds (load 10-30): base 40.3-40.8 GiB, fix 31.6-32.4 GiB.
+- pgbench / pgbench-dax, durable_lag within 50 ms, p99, max: base 62%/68%, 256/256 ms, 4.3/8.9 s (another round at 20G: 64%/72%, 4.1/0.26 s p99, 7.1/57 s max, others' disk busy); fix 82%/77%, 128/128 ms, 0.49/2.55 s; ab (write-behind off) 62%/60%, 256/512 ms, 5.0/5.2 s. Bytes: io_write ~36-38.6 GB per case on every side; cancelled 0.16-4 MB base, 120-270 MB fix, 790-890 MB ab.
+- So write-behind costs no bytes (raw reaches the disk with it off too, by the flushes' syncs and the host's write-back) and keeps the durability window: it stays. The triple write (raw, log, framed for small commits) is not material: logs 0.2 GB of 36 GB under pgbench (runs held in records), 0.02 GiB in the shared-disk case with each small file fsynced. pgbench's raw is 27-29 GB for 1.9-2.0 GB framed: open extents rewritten append to the open segment, dead before framing (TASK-92.41's interleaved/rewritten kinds), written back regardless.
+- doc-12's window does not hold on this shared disk: the crash bound (1 s) is passed by pgbench's max lag on base and by -dax on fix, and the fsync-per-file shared-disk case fails the median on base and fix alike (TASK-322).
+<!-- SECTION:NOTES:END -->
