@@ -55,6 +55,13 @@ impl TestFxfsGuestChecks {
 /// storage, for a slower host; in the guest's, all that scales them, as the host has it.
 const SCALE: &str = "FXDAX_CHECKS_SCALE";
 
+/// fxdax: how much of a check's time the host may take, as a multiple of its budget: the guest's
+/// clock leaves the host's time out of the budget, but for a [`HOST_SCALE`]th of it (`guest::run`'s
+/// `Clock`, TASK-263), which the suite's limit allows one check whole (`host`'s `timeout_secs`).
+/// On ubu1 a check's host time was 12.2 times its budget at most (append_writeback's 64
+/// fdatasyncs, 36.6 s of 3 s, its runs' directories on ZFS), and half that again.
+const HOST_SCALE: f64 = 18.0;
+
 /// fxdax: how a check's process ended, as the guest's log says after the check's time
 /// (TASK-160.30).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -112,12 +119,14 @@ impl Suites {
 }
 
 /// fxdax: a check of the guest's Fxfs: its name, which suites run it, and its budget, what it may
-/// take on a release guest kernel on GCE's n2-standard-4 with its store in the daemon's memory:
-/// twice the most it took there, in any suite (GCE r560's page cache, r563's DAX), and 3 s at
-/// least, which the host scales for other kernels and storage (`host::TestFxfsGuestChecks::run`).
-/// One that runs on past it, the guest kills, its stacks dumped, and fails by name: rather than
-/// the suite outrunning a limit of its own, which a few slow checks crossed and named none of them
-/// (TASK-168). A suite's limit is its checks' budgets', and more, for its VM's boot.
+/// take of the guest's time on a release guest kernel on GCE's n2-standard-4: twice the most it
+/// took there, in any suite (GCE r560's page cache, r563's DAX), and 3 s at least, which the host
+/// scales for other kernels and storage (`host::TestFxfsGuestChecks::run`). The guest's time is
+/// the time but for what the guest waited for the host, its device's requests in flight, little of
+/// it with stores in the daemon's memory, as the budgets were measured (`guest::run`'s `Clock`,
+/// TASK-263). One that runs on past it, the guest kills, its stacks dumped, and fails by name:
+/// rather than the suite outrunning a limit of its own, which a few slow checks crossed and named
+/// none of them (TASK-168). A suite's limit is its checks' budgets', and more, for its VM's boot.
 #[derive(Debug, PartialEq)]
 pub(crate) struct Check {
     pub(crate) name: &'static str,

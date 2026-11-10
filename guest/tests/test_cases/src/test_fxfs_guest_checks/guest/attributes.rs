@@ -275,9 +275,9 @@ fn fill_until_enospc(name: &str) {
 
 /// fxdax: extended attributes set keep none of the kernel's memory: setxattrs of names of their
 /// own, 64,000 bytes each (Fxfs's most), until twice the guest's memory or the filesystem is full,
-/// end with the OOM killer not run, each written as it is set, and refused (ENOSPC) once the
-/// filesystem is full, which its 256 MiB are first. Kept in memory until written back, they took
-/// the kernel's without bound, which no OOM kill frees (TASK-199).
+/// end with the OOM killer not run, each written as it is set, none made durable on its own, and
+/// refused (ENOSPC) once the filesystem is full, which its 256 MiB are first. Kept in memory until
+/// written back, they took the kernel's without bound, which no OOM kill frees (TASK-199).
 pub(super) fn test_xattrs_bounded() {
     let memory = meminfo("MemTotal") * 1024;
     let killed = vmstat("oom_kill");
@@ -285,7 +285,7 @@ pub(super) fn test_xattrs_bounded() {
     fs::create_dir(&dir.0).unwrap();
     let value = vec![0xa5; 64000];
     let (mut set, mut refused) = (0u64, false);
-    let began = Instant::now();
+    let (began, host) = (Instant::now(), Host::now());
     let enospc = |error: &std::io::Error| error.raw_os_error() == Some(libc::ENOSPC);
     // Fewer than the 448 an object holds too large to keep inline.
     'files: for n in 0.. {
@@ -312,21 +312,34 @@ pub(super) fn test_xattrs_bounded() {
             }
         }
     }
-    let filled = began.elapsed();
+    let (filled, fill_host) = (began.elapsed(), host.since());
     assert_eq!(vmstat("oom_kill"), killed, "OOM kills, after {set} bytes of extended attributes");
     assert!(
         refused,
         "{set} bytes of extended attributes set, of {memory} bytes' memory, none refused"
     );
+    // fxdax: and what each asked of the host: a write, as it is set, and none waited for the
+    // host's disk, made durable by the sync after, not by itself. The host's time is left out of
+    // the budget, which bounds the guest's (TASK-263): what the sets ask of it, this counts.
+    // 4,540 writes for the check's 3,967 sets, the sync's and the removal's among them, in each
+    // of 52 rounds (ubu1, the page cache's and DAX suites).
+    let sets = set / value.len() as u64;
+    let writes = fill_host.writes;
+    assert!(writes >= sets, "{sets} sets: {fill_host}, not one written as each was set");
+    assert!(writes <= sets + sets / 4, "{sets} sets: {fill_host}, more than 1.25 each");
+    assert_eq!(fill_host.durable_commits, 0, "{sets} sets: {fill_host}");
     // fxdax: where its time goes, against its budget (TASK-168): what was set made durable, then
-    // the files removed, and their room freed.
-    let began = Instant::now();
+    // the files removed, and their room freed; and in each what was asked of the host, and what it
+    // took, which the budget leaves out (TASK-263).
+    let (began, host) = (Instant::now(), Host::now());
     unsafe { libc::sync() };
-    let durable = began.elapsed();
+    let (synced, sync_host) = (began.elapsed(), host.since());
+    let host = Host::now();
     let (removed, freed) = dir.remove();
     eprintln!(
-        "xattrs_bounded: {set} bytes set in {filled:.2?}, synced in {durable:.2?}; removed in \
-         {removed:.2?}, synced in {freed:.2?}"
+        "xattrs_bounded: {set} bytes set in {filled:.2?} ({fill_host}), synced in \
+         {synced:.2?} ({sync_host}); removed in {removed:.2?}, synced in {freed:.2?} ({})",
+        host.since()
     );
 }
 

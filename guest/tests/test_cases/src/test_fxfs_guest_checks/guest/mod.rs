@@ -187,6 +187,42 @@ fn stats() -> std::collections::BTreeMap<String, u64> {
     crate::guest_fxfs::stats(TAG)
 }
 
+/// fxdax: what the host was asked and took so far: the device's write requests, the mount's
+/// durable commits, and the host's time, the device's requests in flight (`busy_ns`). What a part
+/// of a check asked of the host, and waited for it, is the difference of two (TASK-263).
+#[derive(Clone, Copy)]
+struct Host {
+    writes: u64,
+    durable_commits: u64,
+    took: Duration,
+}
+
+impl Host {
+    fn now() -> Self {
+        let took = crate::extent_driver::busy().expect("the device bound");
+        let durable_commits = stats()["device_durable_commits"];
+        Self { writes: device_requests("write"), durable_commits, took }
+    }
+
+    /// What was asked of the host since `self`, and what it took.
+    fn since(self) -> Self {
+        let now = Self::now();
+        Self {
+            writes: now.writes - self.writes,
+            durable_commits: now.durable_commits - self.durable_commits,
+            took: now.took - self.took,
+        }
+    }
+}
+
+/// As a part of a check's line says what it asked of the host, and the host took.
+impl std::fmt::Display for Host {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let Self { writes, durable_commits, took } = self;
+        write!(f, "{writes} writes, {durable_commits} durable commits, {took:.2?} the host's")
+    }
+}
+
 fn set_xattr(path: &str, name: &str, value: &[u8]) {
     try_set_xattr(path, name, value).unwrap_or_else(|error| panic!("setxattr: {error}"));
 }

@@ -152,7 +152,7 @@ impl TestFxfsGuestChecks {
     fn random_ops_limit(&self) -> Duration {
         let scale = self.run().map_or(1.0, |(_, scale)| scale);
         let random_ops = CHECKS.iter().find(|check| check.name == "random_ops").unwrap();
-        SETUP + random_ops.budget.mul_f64(scale)
+        SETUP + random_ops.budget.mul_f64(scale * (2.0 + HOST_SCALE))
     }
 }
 
@@ -161,14 +161,21 @@ impl Test for TestFxfsGuestChecks {
         fxdax_guest_should_run()
     }
 
-    /// fxdax: its checks' budgets, scaled, and [`SETUP`]: a limit that grows with its checks.
-    /// The guest ends a run sooner, as a check outruns its budget, unless too stuck to
-    /// (TASK-168). [`SETUP`] alone for a run of no checks it can run, which start_vm fails.
+    /// fxdax: a run's limit: [`SETUP`]; its checks' budgets, scaled, twice over, the second for
+    /// what they wait for the host, which their budgets leave out but for a [`HOST_SCALE`]th of it
+    /// (`guest::run`'s `Clock`, TASK-263); and the most one check may wait for the host,
+    /// [`HOST_SCALE`] times the largest budget, so that the guest ends a check whose device never
+    /// answers, by name, before this does. A run of xattrs_bounded and append_writeback waited 4.5
+    /// times their budgets for the host, on ZFS; most of a whole suite's checks wait little. The
+    /// guest ends a run sooner, as a check outruns its budget, unless too stuck to (TASK-168).
+    /// [`SETUP`] alone for a run of no checks it can run, which start_vm fails.
     fn timeout_secs(&self) -> u64 {
-        let budgets = self.run().map(|(checks, scale)| {
-            checks.iter().map(|(_, check)| check.budget.mul_f64(scale)).sum()
+        let Ok((checks, scale)) = self.run() else { return SETUP.as_secs() };
+        let budgets = checks.iter().map(|(_, check)| check.budget.mul_f64(scale));
+        let (sum, most) = budgets.fold((Duration::ZERO, Duration::ZERO), |(sum, most), budget| {
+            (sum + budget, most.max(budget))
         });
-        (SETUP + budgets.unwrap_or_default()).as_secs()
+        (SETUP + sum * 2 + most.mul_f64(HOST_SCALE)).as_secs()
     }
 
     /// fxdax: names the check the guest was in, after the last its log has the time of.

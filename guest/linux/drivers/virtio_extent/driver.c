@@ -121,6 +121,16 @@ struct virtio_extent {
 	/* The time the requests it has completed took, queued to completed, by type. */
 	atomic64_t request_ns[VIRTIO_EXTENT_T_LAST + 1];
 	/*
+	 * fxdax: the time it has had a request in flight, all told (busy_ns): the guest waiting for
+	 * the host, which its checks' budgets leave out (TASK-263). The requests taken and not yet
+	 * completed, since when it has had one, and the time it had one before, under `busy_lock`,
+	 * which a queue's lock is taken before.
+	 */
+	spinlock_t busy_lock;
+	unsigned int in_flight;
+	u64 busy_since;
+	u64 busy_ns;
+	/*
 	 * fxdax: the time recent requests of each type took, a moving average, to wait for one on
 	 * the CPU only if it takes less than that is worth (vext_wait).
 	 */
@@ -410,6 +420,28 @@ static const struct vext_type {
 	[VIRTIO_EXTENT_T_STATS] = { "stats", vext_args_stats, VEXT_OUT },
 };
 
+/* fxdax: a request taken, in flight until vext_busy_end (`busy_ns`). */
+static void vext_busy_begin(struct virtio_extent *vext)
+{
+	unsigned long flags;
+
+	spin_lock_irqsave(&vext->busy_lock, flags);
+	if (!vext->in_flight++)
+		vext->busy_since = ktime_get_ns();
+	spin_unlock_irqrestore(&vext->busy_lock, flags);
+}
+
+/* fxdax: a request completed, or let go of as the device reset. */
+static void vext_busy_end(struct virtio_extent *vext)
+{
+	unsigned long flags;
+
+	spin_lock_irqsave(&vext->busy_lock, flags);
+	if (!WARN_ON_ONCE(!vext->in_flight) && !--vext->in_flight)
+		vext->busy_ns += ktime_get_ns() - vext->busy_since;
+	spin_unlock_irqrestore(&vext->busy_lock, flags);
+}
+
 /* The row of `req`'s type, or NULL if it has none. */
 static const struct vext_type *vext_type(const struct vext_request *req)
 {
@@ -506,6 +538,8 @@ int virtio_extent_submit(struct virtio_extent *vext, struct vext_request *req)
 
 			atomic64_inc(&vext->requests[req->type]);
 			atomic64_inc(&queue->requests);
+			/* Under the queue's lock, which reaps it: before it can end. */
+			vext_busy_begin(vext);
 			req->queue = queue;
 			spin_unlock_irqrestore(&queue->lock, flags);
 			if (notify)
@@ -548,6 +582,7 @@ static unsigned int vext_reap(struct virtio_extent *vext, struct vext_queue *que
 		req->status = -(int)le32_to_cpu(req->resp.status);
 		if (req->cpu != raw_smp_processor_id())
 			atomic64_inc(&queue->cross);
+		vext_busy_end(vext);
 		sg_free_table(&req->data_sgt);
 		req->done(req);
 		reaped++;
@@ -816,6 +851,23 @@ static ssize_t request_ns_show(struct device *dev, struct device_attribute *attr
 }
 static DEVICE_ATTR_RO(request_ns);
 
+/*
+ * fxdax: the `busy_ns` attribute: how long the device has had a request in flight, all told, the
+ * one in flight so far among it: the guest's time waiting for the host (TASK-263).
+ */
+static ssize_t busy_ns_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	struct virtio_extent *vext = dev_to_virtio(dev)->priv;
+	unsigned long flags;
+	u64 busy;
+
+	spin_lock_irqsave(&vext->busy_lock, flags);
+	busy = vext->busy_ns + (vext->in_flight ? ktime_get_ns() - vext->busy_since : 0);
+	spin_unlock_irqrestore(&vext->busy_lock, flags);
+	return sysfs_emit(buf, "%llu\n", busy);
+}
+static DEVICE_ATTR_RO(busy_ns);
+
 /* The `queues` attribute: how many requests each request queue has taken, a line each. */
 static ssize_t queues_show(struct device *dev, struct device_attribute *attr, char *buf)
 {
@@ -867,6 +919,7 @@ static DEVICE_ATTR_RO(window);
 static struct attribute *vext_attrs[] = {
 	&dev_attr_requests.attr,
 	&dev_attr_request_ns.attr,
+	&dev_attr_busy_ns.attr,
 	&dev_attr_queues.attr,
 	&dev_attr_completions.attr,
 	&dev_attr_window.attr,
@@ -1115,6 +1168,7 @@ static int vext_probe(struct virtio_device *vdev)
 	vext->vdev = vdev;
 	vdev->priv = vext;
 	spin_lock_init(&vext->changed_lock);
+	spin_lock_init(&vext->busy_lock);
 	mutex_init(&vext->open_lock);
 	mutex_init(&vext->stats_lock);
 	INIT_WORK(&vext->stats_work, vext_stats_work);
@@ -1333,6 +1387,7 @@ static int vext_reset_prepare(struct virtio_device *vdev)
 			if (!req)
 				break;
 			req->status = -EIO;
+			vext_busy_end(vext);
 			sg_free_table(&req->data_sgt);
 			req->done(req);
 		}

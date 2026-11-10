@@ -28,3 +28,19 @@ pub fn unbind(device: &str) {
 pub fn bind(device: &str) {
     fs::write(format!("{DRIVER}/bind"), device).unwrap();
 }
+
+/// fxdax: the bound device's attribute `name`, if the driver is bound to one: a check may have
+/// unbound it.
+pub fn attribute(name: &str) -> Option<String> {
+    let entries = fs::read_dir(DRIVER).ok()?.filter_map(Result::ok);
+    let mut devices =
+        entries.filter(|entry| entry.file_name().to_string_lossy().starts_with("virtio"));
+    fs::read_to_string(devices.next()?.path().join(name)).ok()
+}
+
+/// fxdax: how long the bound device has had a request in flight, all told (`busy_ns`): the guest's
+/// time waiting for the host (TASK-263). From 0 at each bind.
+pub fn busy() -> Option<std::time::Duration> {
+    let ns = attribute("busy_ns")?;
+    Some(std::time::Duration::from_nanos(ns.trim().parse().unwrap()))
+}
