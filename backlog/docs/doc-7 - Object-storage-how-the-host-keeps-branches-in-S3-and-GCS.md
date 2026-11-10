@@ -3,7 +3,7 @@ id: doc-7
 title: 'Object storage: how the host keeps branches in S3 and GCS'
 type: specification
 created_date: '2026-10-17 01:31'
-updated_date: '2026-11-10 08:31'
+updated_date: '2026-11-10 12:24'
 ---
 # Object storage: how the host keeps branches in S3 and GCS
 
@@ -48,7 +48,9 @@ checkpoints and segments' footers, and lineage is in the bucket alone.
   at once (`IN_FLIGHT`, 512 MiB of the host's upload budget over 32 MiB segments) and 64 requests
   for the host, acknowledges them in order after a read of the lease, and moves each acknowledged
   file into the host's **part cache** (`Cache::adopt`), or removes it. Commits stall at a lag bound
-  in commits (4,096) and in bytes of WAL (1 GiB).
+  in commits (4,096) and in bytes of WAL (1 GiB). What waits is on the host's disk; of it, the
+  host holds in memory only what it uploads at once, its **upload memory** (512 MiB,
+  `FXDAX_EXTENTD_UPLOAD_MEMORY`), however far behind the bucket is (Uploads, Memory).
 - **Opening a store**, here or anywhere, the first time or after a crash, is one recovery (doc-14,
   Opening a store): its writer takes the branch's lease with the placement's token, recovers the
   branch from the bucket and fences its end; a segment left open is closed again from its log; the
@@ -304,8 +306,8 @@ Each branch's commits go through:
 3. **Closed:** the segment is full or old enough (the lag's time bound).
 4. **Uploaded:** segments and extents of their own upload in parallel, each a single create-only
    PUT (an extent is 64 MiB at most; no multipart upload), extents before the segments that name
-   them, up to 16 segments of a store at once within the host's upload budget (64 requests,
-   512 MiB).
+   them, up to 16 segments of a store at once within the host's upload budget (64 requests, its
+   upload memory: 512 MiB unless `FXDAX_EXTENTD_UPLOAD_MEMORY` says otherwise; Memory, below).
 5. **Acknowledged:** once every segment before it is uploaded too, and a read of the lease after
    shows it still the writer's (Fencing). Then `COMMIT_DURABLE` waiters up to it complete, the WAL's
    base moves past it, durably, and its files leave the store for the host's part cache.
@@ -325,6 +327,34 @@ fail by kind and logs each kind's run of failures with the bucket's own error, a
 credentials) says why its guests' commits wait; doc-12 says what the guest sees.
 A writer displaced by a late segment takes the branch again (Fencing); any other failure of its
 writer's stops the uploader, and its commits waiting to be durable fail.
+
+**Memory** *(added 2026-11-10, TASK-317).* A bucket that takes less than the guests write costs a
+host disk, not memory: what waits is the stores' write-ahead logs, durable on its disk (decision 3),
+within the lag bound, and the uploader takes at most `IN_FLIGHT` segments of a store's at a time,
+reading none until its upload goes. What a host's extent daemon holds in memory for it is bounded
+by its **upload memory**, `FXDAX_EXTENTD_UPLOAD_MEMORY` (512 MiB by default, 64 MiB at least, an
+extent's most, which goes alone), every store's uploads together: each object read only once that
+budget has room for it (`extent_remote::fetch::Budget`), held once while its PUT goes, however
+often it is retried (`Bucket::put` takes `bytes::Bytes`, which each try shares), and let go as it
+lands. Besides, the daemon holds, whatever the backlog, each store's framing of one segment, its
+data and its framed bytes (~2-4 segments' size, TASK-325), the host's fetches (64 MiB in flight,
+64 MiB of tails, 64 MiB of parts recent), its connections' rooms (doc-4) and its extent cache
+(`MEMORY_BYTES`, shared memory). The stats line's `uploads:` says what the uploads hold, the most
+they held and the budget, and so do the metrics `fxdax_extentd_upload_held_bytes`,
+`fxdax_extentd_upload_held_max_bytes` and `fxdax_extentd_upload_memory_bytes`.
+
+What the daemon frees, it gives back: glibc's allocator maps each allocation of 1 MiB or more on
+its own and unmaps it as it is freed (`extentd::memory::return_large_allocations`, mallopt's
+`M_MMAP_THRESHOLD`). By default glibc raises that threshold to the largest buffer freed, up to
+32 MiB, and keeps buffers below it in its arenas, one a thread, up to eight times the CPUs.
+*Measured on ubu1* (fxfs-guest-docker-build-dax, 8 vCPUs, three builds of 512 MiB; `MEMORY_BYTES`
+2 GiB; a file bucket on disk behind 300 ms a request; commits stalled at the lag bound 8 times,
+extentd in a systemd scope of its own, scripts/test-e2e.sh's `FXDAX_EXTENTD_MEMORY_MAX`): before,
+its anonymous memory reached 4.4 GB, and 4.8 GB idle after the run, its heap 1.3 GB at most
+(heaptrack): its 512 MiB of uploads held twice, a copy for each PUT's try, and 2.6 GB in 134 of
+glibc's per-thread arenas of 64 MiB, buffers freed; the host's OOM killer took it at 5-6 GB on a
+loaded host (TASK-311). After, 718 MB at most, its uploads holding 507 MiB at most of their
+512 MiB, and the run passed in a scope limited to 3.5 GiB, extent cache included.
 
 **Recovery on the same host** *(rewritten 2026-11-07; doc-14, Opening a store)* is opening the
 store: its writer takes the branch and fences it; a segment left open is closed again from the

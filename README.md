@@ -331,7 +331,10 @@ punched): that is the daemon, which faults each chunk in as an arena takes it
 and writes pages before mapping them to a VM. So the daemon's cgroup is charged
 for every VM's cached file pages, and the VMs' cgroups are not: give the
 daemon a cgroup of its own whose `memory.max` holds `MEMORY_BYTES` and its heap
-(the stores' metadata, the connections' buffers), and limit tenants through the control API, as cgroups cannot see them apart. A
+(the stores' metadata, the connections' buffers, the uploads in flight), and limit tenants through the control API, as cgroups cannot see them apart.
+A bucket behind costs the heap no more than its upload memory, `FXDAX_EXTENTD_UPLOAD_MEMORY`
+(512 MiB by default): what waits is on the host's disk (backlog doc-7, Uploads, Memory); on ubu1
+a docker build's backlog held the daemon's anonymous memory to 718 MB (TASK-317). A
 memory.max under that is met by the cgroup's OOM killer, not by eviction:
 lower `MEMORY_BYTES` or the total limit instead.
 

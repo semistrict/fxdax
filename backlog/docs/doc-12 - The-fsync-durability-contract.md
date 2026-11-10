@@ -3,7 +3,7 @@ id: doc-12
 title: The fsync durability contract
 type: other
 created_date: '2026-10-31 22:17'
-updated_date: '2026-11-10 08:31'
+updated_date: '2026-11-10 12:24'
 ---
 # What an acknowledged fsync survives (TASK-66)
 
@@ -90,7 +90,12 @@ are freed as the store is next mounted.
   GetStats' `ObjectStorageStats.failures`, the metric `fxdax_extentd_object_storage_failures_total`),
   beside how long each store's oldest commit has waited for its upload
   (`fxdax_extentd_upload_oldest_pending_seconds`), what an operator alerts on; and warns as a
-  commit first waits at the bound.
+  commit first waits at the bound. *Added 2026-11-10 (TASK-317):* meanwhile extentd's memory does
+  not grow with what waits, which is on the host's disk: what it holds of it is what it uploads at
+  once, its upload memory (`FXDAX_EXTENTD_UPLOAD_MEMORY`, 512 MiB), and it gives back what it
+  frees (doc-7, Uploads, Memory). Before, a backlog held its uploads twice and the allocator kept
+  what it freed, 4-6 GB of anonymous memory, and the host's OOM killer took the daemon, every VM
+  it served with it.
 
 ## How a host tells them apart
 
