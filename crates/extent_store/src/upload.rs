@@ -1311,6 +1311,7 @@ mod shuttle_tests {
         view_lag: None,
         view_kept_bytes: None,
         held_most: 2 * BLOCK as u64,
+        spilled_most: 2048,
     };
 
     /// The collector's passes compact what is mostly dead, and delete at once.

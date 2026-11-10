@@ -73,6 +73,7 @@ const OPTIONS: Options = Options {
     view_kept_bytes: None,
     // fxdax: flushes of either kind, holding their runs or checking them (TASK-301).
     held_most: 8 << 10,
+    spilled_most: 2048,
 };
 /// The chain of a writer of the branch in object storage, whose segments the store closes.
 const WRITER: Chain = Chain::new(BRANCH, 0, 0, None, 0);

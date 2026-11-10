@@ -29,10 +29,16 @@
 //!   commit's data, is set aside, raw, until the next commit has copied what is in it out; and
 //!   writes go to the next, so that no segment holds more, however much is written between
 //!   commits. The next commit copies the extents written since the last out of either, to the open
-//!   segment while it has room, and to files of their own after;
+//!   segment while it has room, and to files of their own after. fxdax: once one is set aside, the
+//!   extents opened until the next commit are written in raw files of their own, which that commit
+//!   seals where they are, as it seals large ones, rather than copy them out of more set aside
+//!   (TASK-310);
 //! - `extents/<branch>/<sequence>`: the branch's extents sealed at `Options::large_extent` or more,
 //!   fxdax: or with no room left in the open segment, in files of their own, framed so; written raw
-//!   in `open-extents/<branch>/<sequence>` until sealed, if large from their first write;
+//!   in `open-extents/<branch>/<sequence>` until sealed, if large from their first write, or opened
+//!   once a segment was set aside since the last commit. One none of whose parts compresses is
+//!   framed in place, its raw file renamed its framed file, its tail appended: its data written
+//!   once (TASK-310);
 //! - `index/<branch>/<n>`: the branch's index, which maps its extents to their data, with its
 //!   root, its one mutable record, its capacity, and its next sequence number: a checkpoint, a
 //!   table in the format of checkpoints in object storage (`extent_frame::table`), then the changes

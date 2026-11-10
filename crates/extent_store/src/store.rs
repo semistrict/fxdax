@@ -25,10 +25,10 @@ use crate::sync::{Condvar, Mutex, MutexGuard, rules, spawn_or_return, thread};
 use crate::timings::{self, Flush, flush};
 use crate::uploads::Closed;
 use crate::views::{Limits, Sealed, View, Views};
-use crate::written;
 use crate::wal::{
     BaseFile, LOG_MAGIC, LogRecord, Queue, Queued, Recovered, Runs, SegmentLog,
 };
+use crate::written;
 use anyhow::{Context as _, Error, anyhow, bail, ensure};
 use extent_frame::segment::{Chain, Child, Contents, Footer, Location, epoch_of};
 use extent_remote::cache::Cache;
@@ -126,6 +126,12 @@ pub struct Options {
     /// the flush to sync its logs alone (`wal::LogRecord`, TASK-301): what a guest's journal, or
     /// a database's transaction, commits at a time, not a bulk load's.
     pub held_most: u64,
+    /// fxdax: the most extents opened between two commits that are written in raw files of their
+    /// own once a segment was set aside (`Uncommitted::spill`, TASK-310), each open, with two
+    /// descriptors, until the commit: past them, writes go to segments, set aside and copied out by
+    /// the commit, as before. A daemon's descriptors, 524,288 at most on its hosts, bound what its
+    /// stores spill so: 2,048 extents, 2 GiB of the guest's Fxfs's 1 MiB ones, for each of 128.
+    pub spilled_most: usize,
 }
 
 impl Options {
@@ -149,6 +155,7 @@ impl Default for Options {
             view_lag: None,
             view_kept_bytes: None,
             held_most: 256 << 10,
+            spilled_most: 2048,
         }
     }
 }
@@ -1069,7 +1076,10 @@ impl<D: Dir> Store<D> {
             let grows = end.saturating_sub(current.map_or(0, |entry| entry.len));
             let to_segment = match state.uncommitted.placement(extent) {
                 Some(placement) => matches!(placement, Placement::Segment),
-                None => end < self.options.large_extent,
+                None => {
+                    end < self.options.large_extent
+                        && !state.uncommitted.spills(self.options.spilled_most)
+                }
             };
             // fxdax: what it writes over, in a segment, takes room too (TASK-79.2), as the writes
             // that finished left the extent: not its holes (TASK-160.16).
@@ -1086,7 +1096,14 @@ impl<D: Dir> Store<D> {
         let (placement, opening) = match state.uncommitted.opening(extent) {
             Some(opened) => opened,
             None => {
-                let placement = if end >= self.options.large_extent {
+                // fxdax: or written since a segment was set aside since the last commit
+                // (`Uncommitted::spill`, TASK-310).
+                let spilled = end < self.options.large_extent
+                    && state.uncommitted.spills(self.options.spilled_most);
+                if spilled {
+                    state.uncommitted.spilled();
+                }
+                let placement = if spilled || end >= self.options.large_extent {
                     // Raw until it is sealed, when it is framed in its own file.
                     Placement::Own(Arc::new(self.create_raw(extent)?))
                 } else {
@@ -1154,6 +1171,7 @@ impl<D: Dir> Store<D> {
             }
         } else {
             state.segments.retire(&*self.dir)?;
+            state.uncommitted.spill();
         }
         Ok(())
     }
@@ -1633,12 +1651,10 @@ impl<D: Dir> Store<D> {
         let open = state.segments.open_segment();
         match (&entry.data, state.uncommitted.placement(extent)) {
             (Data::Remote(_), _) => return Ok(0),
-            // Written to a raw file of its own, which it is framed from.
+            // Written to a raw file of its own, which it is framed from, or in.
             (Data::Own, Some(Placement::Own(raw))) => {
                 let raw = raw.clone();
-                self.write_own(state, extent, entry.len, |at, buf| raw.read_cached(buf, at))?;
-                state.unreferenced.doomed.push(open_extent_path(extent));
-                return Ok(entry.len);
+                return self.seal_own(state, extent, raw, entry.len);
             }
             (Data::Pieces(pieces), _) if !large => {
                 let one_run = matches!(pieces[..], [piece] if piece.segment == open
@@ -1683,6 +1699,70 @@ impl<D: Dir> Store<D> {
         Ok(entry.len)
     }
 
+    /// fxdax: seals `extent`, open in `raw`, a raw file of its own, of its `len` bytes, in its own
+    /// file, framed: in place, if none of its parts compresses, as an object of such parts holds
+    /// them as they are, where they are (`extent_frame::Packer`), its raw file that file then, its
+    /// tail appended, renamed; or else in a file of its own, as [`Store::write_own`] frames one,
+    /// the parts before the first that compresses copied there. A large extent's data was written
+    /// twice, in its raw file, which the host's disk wrote back as its guest wrote it, and in the
+    /// framed file: as much again as its guest wrote, its framings and the disk's other writers
+    /// waiting behind it (TASK-310). In place, its bytes don't change, which a read of the raw
+    /// file in progress reads. Returns the bytes it copied: none in place.
+    fn seal_own(
+        &self,
+        state: &mut State<D::File>,
+        extent: ExtentId,
+        raw: Arc<D::File>,
+        len: u64,
+    ) -> Result<u64, Error> {
+        let (raw_path, path) = (open_extent_path(extent), extent_path(extent));
+        let mut packer = extent_frame::Packer::new();
+        let mut data = Aligned::new(len.min(OWN_CHUNK) as usize);
+        // The framed file, once a part compresses.
+        let mut framed: Option<D::File> = None;
+        for at in (0..len).step_by(OWN_CHUNK as usize) {
+            let buf = &mut data.as_mut_slice()[..(len - at).min(OWN_CHUNK) as usize];
+            raw.read_cached(buf, at)?;
+            let end = packer.end();
+            let packed = packer.push(buf);
+            // As they are, where they are, as those before.
+            if framed.is_none() && end == at && packed[..] == buf[..] {
+                continue;
+            }
+            let file = match &mut framed {
+                Some(file) => file,
+                None => {
+                    let file =
+                        self.dir.create(&path, true).with_context(|| format!("creating {path}"))?;
+                    copy_range(&*raw, &file, end)?;
+                    framed.insert(file)
+                }
+            };
+            file.write_at(&packed, end)?;
+            written::wrote(written::Kind::Own, packed.len());
+        }
+        let end = packer.end();
+        let tail = packer.finish(&[]);
+        let parts = extent_frame::Parts::of_suffix(&tail)?;
+        let (file, copied) = match framed {
+            Some(file) => {
+                file.write_at(&tail, end)?;
+                state.unreferenced.doomed.push(raw_path);
+                (Arc::new(file), len)
+            }
+            None => {
+                raw.write_at(&tail, end)?;
+                self.dir
+                    .rename(&raw_path, &path)
+                    .with_context(|| format!("renaming {raw_path}"))?;
+                (raw, 0)
+            }
+        };
+        written::wrote(written::Kind::Own, tail.len());
+        state.own_files.sealed(extent, Arc::new(Framed::new(file, parts)));
+        Ok(copied)
+    }
+
     /// Writes `extent`'s own file, framed, of its `len` bytes, which `read` reads, by ranges, into
     /// buffers: so many parts at a time.
     fn write_own(
@@ -1692,14 +1772,12 @@ impl<D: Dir> Store<D> {
         len: u64,
         mut read: impl FnMut(u64, &mut [u8]) -> io::Result<()>,
     ) -> Result<(), Error> {
-        /// The bytes framed at once.
-        const CHUNK: u64 = 16 * extent_frame::PART;
         let path = extent_path(extent);
         let file = self.dir.create(&path, true).with_context(|| format!("creating {path}"))?;
         let mut packer = extent_frame::Packer::new();
-        let mut data = Aligned::new(len.min(CHUNK) as usize);
-        for at in (0..len).step_by(CHUNK as usize) {
-            let buf = &mut data.as_mut_slice()[..(len - at).min(CHUNK) as usize];
+        let mut data = Aligned::new(len.min(OWN_CHUNK) as usize);
+        for at in (0..len).step_by(OWN_CHUNK as usize) {
+            let buf = &mut data.as_mut_slice()[..(len - at).min(OWN_CHUNK) as usize];
             read(at, buf)?;
             let end = packer.end();
             let packed = packer.push(buf);
@@ -2485,6 +2563,24 @@ impl<D: Dir> Store<D> {
     pub fn epoch(&self) -> Result<u64, Error> {
         Ok(self.state()?.epoch)
     }
+}
+
+/// The bytes of an extent's data framed at once in its own file ([`Store::write_own`],
+/// [`Store::seal_own`]).
+const OWN_CHUNK: u64 = 16 * extent_frame::PART;
+
+/// fxdax: copies the first `len` bytes of `from`, a raw file, into `to`, where they are, so many
+/// at a time: the parts of an extent framed in place before the first that compressed
+/// ([`Store::seal_own`], TASK-310).
+fn copy_range<F: File>(from: &F, to: &F, len: u64) -> Result<(), Error> {
+    let mut data = Aligned::new(len.min(OWN_CHUNK) as usize);
+    for at in (0..len).step_by(OWN_CHUNK as usize) {
+        let buf = &mut data.as_mut_slice()[..(len - at).min(OWN_CHUNK) as usize];
+        from.read_cached(buf, at)?;
+        to.write_at(buf, at)?;
+        written::wrote(written::Kind::Own, buf.len());
+    }
+    Ok(())
 }
 
 /// Removes the files of extents stored on their own of `branch`'s in `dir` that neither `extents`

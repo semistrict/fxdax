@@ -32,6 +32,7 @@ const OPTIONS: Options = Options {
     view_lag: None,
     view_kept_bytes: None,
     held_most: 256 << 10,
+    spilled_most: 2048,
 };
 
 /// The chain of a writer of the branch in object storage, whose segments the store closes: that of
@@ -1210,6 +1211,167 @@ fn raw_files_and_logs_stay_until_their_framed_files_are_synced() {
                 pattern(sequence as u8, 0, BLOCK),
                 "seed {seed}, extent {sequence}"
             );
+        }
+    }
+}
+
+/// fxdax: the bytes the process's stores wrote of extents' own files, framed, since `before`
+/// (`extent_store::written`): the tests of a process are its own (cargo nextest's).
+fn own_written_since(before: extent_store::Written) -> usize {
+    (extent_store::written().own - before.own) as usize
+}
+
+/// fxdax: the names in the branch's directory of `kind`.
+fn names(dir: &MemDir, kind: &str) -> Vec<String> {
+    dir.list(&of(kind, BRANCH)).unwrap()
+}
+
+/// fxdax: a large extent none of whose parts compresses is framed in place: its raw file is its
+/// own file then, its tail appended, renamed, its data written once, as its guest wrote it, not a
+/// second time framed in a file of its own, as a sandbox host's daemon wrote it, some 2.3 times
+/// what its guests wrote, its framings waiting seconds behind (TASK-310). What it wrote of own
+/// files, its tail alone; through a crash after, it reads as written. Red with every large
+/// extent framed in a copy: its data written again.
+#[test]
+fn incompressible_large_extents_are_framed_in_place() {
+    let dir = MemDir::new();
+    let store = create(dir.clone(), 4 << 20);
+    let data = noise(1, 3 * OPTIONS.large_extent as usize + BLOCK);
+    store.write(extent(1), 0, &data).unwrap();
+    let before = extent_store::written();
+    store.commit(None).unwrap();
+    let framed = extent_frame::framed(&data, &[]);
+    assert_eq!(own_written_since(before), framed.len() - data.len());
+    let name = format!("{:016x}", 1);
+    assert_eq!(names(&dir, "open-extents"), Vec::<String>::new());
+    assert_eq!(names(&dir, "extents"), vec![name]);
+    assert!(read(&store, extent(1), 0, data.len()) == data, "extent 1 reads otherwise");
+    drop(store);
+    for seed in 0..16 {
+        let reopened = Store::open(dir.crash(seed), OPTIONS).unwrap();
+        assert_eq!(reopened.epoch().unwrap(), 1, "seed {seed}");
+        assert!(read(&reopened, extent(1), 0, data.len()) == data, "seed {seed}");
+    }
+}
+
+/// fxdax: a guest writing more than a segment of small extents between commits, as one writing a
+/// large file before its fsync: once a segment is filled and set aside, holding no commit's data,
+/// the extents opened after are written in raw files of their own, which the commit frames in
+/// place, rather than in segments set aside, which it copies out of, every extent in a file of
+/// its own (TASK-79.2): what it wrote was written twice, the daemon of a sandbox host writing
+/// some 2.3 times what its guests did, framings stalled for seconds behind it (TASK-310). The
+/// commit copies the extents of the first segment set aside alone, a segment's worth at most, not
+/// what came after; then a crash keeps them all. Red with the extents written after in segments
+/// too: the commit copied 396 KB, three segments set aside.
+#[test]
+fn bursts_past_a_segment_between_commits_are_sealed_where_they_are() {
+    let dir = MemDir::new();
+    // Segments set aside once they hold a segment's size and an extent's most, as small here.
+    let options = Options { max_extent: OPTIONS.segment_size, ..OPTIONS };
+    let description = Description { block_size: BLOCK as u32, capacity: 4 << 20, branch: BRANCH };
+    let store = Store::create(dir.clone(), description, options).unwrap();
+    let (extents, len) = (8 * OPTIONS.segment_size as usize / (2 * BLOCK), 2 * BLOCK);
+    for sequence in 1..=extents as u64 {
+        store.write(extent(sequence), 0, &noise(sequence, len)).unwrap();
+    }
+    let before = extent_store::written();
+    store.commit(None).unwrap();
+    let after = extent_store::written();
+    let copied = (after.own + after.copied) - (before.own + before.copied);
+    // The first segment's extents, copied and framed, and a tail for each extent framed in place.
+    let first = (options.segment_size + options.max_extent) as usize / len;
+    let tail = extent_frame::framed(&noise(0, len), &[]).len() - len;
+    assert!(copied <= (first * (len + tail) + (extents - first) * tail) as u64, "copied {copied}");
+    drop(store);
+    let reopened = Store::open(dir.crash(0), options).unwrap();
+    for sequence in 1..=extents as u64 {
+        assert!(read(&reopened, extent(sequence), 0, len) == noise(sequence, len), "{sequence}");
+    }
+}
+
+/// fxdax: of the extents opened between two commits once a segment was set aside, no more than
+/// `Options::spilled_most` are written in raw files of their own, each open till the commit with
+/// descriptors of the daemon's: those after go to segments, set aside and copied out, as before;
+/// and all read as written (TASK-310).
+#[test]
+fn spills_past_their_bound_go_to_segments() {
+    let dir = MemDir::new();
+    let options = Options { max_extent: OPTIONS.segment_size, spilled_most: 4, ..OPTIONS };
+    let description = Description { block_size: BLOCK as u32, capacity: 4 << 20, branch: BRANCH };
+    let store = Store::create(dir.clone(), description, options).unwrap();
+    let (extents, len) = (8 * OPTIONS.segment_size as usize / (2 * BLOCK), 2 * BLOCK);
+    for sequence in 1..=extents as u64 {
+        store.write(extent(sequence), 0, &noise(sequence, len)).unwrap();
+    }
+    assert_eq!(names(&dir, "open-extents").len(), 4);
+    store.commit(None).unwrap();
+    // Of the 64, the 4 spilled, and 44 of the 60 the commit copied, those past the 16 the open
+    // segment had room for.
+    assert_eq!(names(&dir, "extents").len(), 48);
+    for sequence in 1..=extents as u64 {
+        assert!(read(&store, extent(sequence), 0, len) == noise(sequence, len), "{sequence}");
+    }
+}
+
+/// fxdax: a large extent that compresses is framed in a file of its own, as before, its raw file
+/// gone once its commit is durable; and one whose parts compress past its first 16 MiB, which are
+/// framed in place no more, is too, those copied there as they are ([`Store::seal_own`],
+/// TASK-310): what each wrote of own files, its framed file's bytes.
+#[test]
+fn compressible_large_extents_are_framed_in_copies() {
+    let dir = MemDir::new();
+    let store = create(dir.clone(), 64 << 20);
+    let compressible = pattern(1, 0, 3 * OPTIONS.large_extent as usize + BLOCK);
+    let mut mixed = noise(2, 16 << 20);
+    mixed.extend(pattern(2, 0, 1 << 20));
+    for (sequence, data) in [(1, &compressible), (2, &mixed)] {
+        store.write(extent(sequence), 0, data).unwrap();
+        let before = extent_store::written();
+        store.commit(None).unwrap();
+        let framed = extent_frame::framed(data, &[]);
+        assert!(framed.len() < data.len() + framed.len() / 2, "extent {sequence} compresses");
+        assert_eq!(own_written_since(before), framed.len(), "extent {sequence}");
+    }
+    assert_eq!(names(&dir, "open-extents"), Vec::<String>::new());
+    assert_eq!(names(&dir, "extents"), vec![format!("{:016x}", 1), format!("{:016x}", 2)]);
+    drop(store);
+    let reopened = Store::open(dir.crash(0), OPTIONS).unwrap();
+    for (sequence, data) in [(1, &compressible), (2, &mixed)] {
+        assert!(read(&reopened, extent(sequence), 0, data.len()) == *data, "extent {sequence}");
+    }
+}
+
+/// fxdax: a commit framing a large extent in place, its raw file renamed from one directory to
+/// another (TASK-310), stopped after each of its operations, as by a crash: the branch opens, the
+/// extent a commit before framed in place reading as written, and the commit's extent reading as
+/// written exactly if the commit is durable.
+#[test]
+fn extents_framed_in_place_survive_crashes_framing_them() {
+    let len = 3 * OPTIONS.large_extent as usize + BLOCK;
+    let (first, second) = (noise(1, len), noise(2, len));
+    for operations in 0.. {
+        let dir = MemDir::serial();
+        let store = create(dir.clone(), 4 << 20);
+        store.write(extent(1), 0, &first).unwrap();
+        store.commit(None).unwrap();
+        store.write(extent(2), 0, &second).unwrap();
+        dir.fail_after(Some(operations));
+        let committed = store.commit(None);
+        dir.fail_after(None);
+        for seed in 0..4 {
+            let reopened = Store::open(dir.crash(seed), OPTIONS);
+            let reopened = reopened.unwrap_or_else(|error| {
+                panic!("stopped after {operations} operations, seed {seed}: {error:#}")
+            });
+            let at = format!("stopped after {operations} operations, seed {seed}");
+            assert!(read(&reopened, extent(1), 0, len) == first, "{at}: extent 1");
+            let mut read = vec![0; len];
+            let intact = reopened.read(extent(2), 0, &mut read).is_ok() && read == second;
+            assert_eq!(reopened.epoch().unwrap() == 2, intact, "{at}: extent 2, durable or not");
+        }
+        drop(store);
+        if committed.is_ok() {
+            break;
         }
     }
 }

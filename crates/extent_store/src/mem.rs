@@ -297,13 +297,23 @@ impl Dir for MemDir {
         fs.change_dir(path, DirChange::Remove(name.to_owned()))
     }
 
+    /// fxdax: within a directory, at once; from one to another, its removal from the one and its
+    /// entry in the other each durable as its directory is synced (TASK-310).
     fn rename(&self, from: &str, to: &str) -> io::Result<()> {
         let ((dir, from_name), (to_dir, to_name)) = (split(from), split(to));
-        assert_eq!(dir, to_dir, "a rename within a directory");
         let mut fs = self.fs.lock().unwrap();
         fs.spend()?;
         let inode = fs.lookup(from)?;
-        fs.change_dir(from, DirChange::Rename(from_name.to_owned(), to_name.to_owned(), inode))
+        if dir == to_dir {
+            let rename = DirChange::Rename(from_name.to_owned(), to_name.to_owned(), inode);
+            return fs.change_dir(from, rename);
+        }
+        // Nothing changes if `to` is there.
+        if fs.lookup(to).is_ok() {
+            return Err(io::Error::new(io::ErrorKind::AlreadyExists, format!("{to} exists")));
+        }
+        fs.change_dir(to, DirChange::Add(to_name.to_owned(), inode))?;
+        fs.change_dir(from, DirChange::Remove(from_name.to_owned()))
     }
 
     fn create_dir(&self, path: &str) -> io::Result<()> {

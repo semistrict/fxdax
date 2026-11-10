@@ -31,6 +31,7 @@ pub const OPTIONS: Options = Options {
     view_kept_bytes: None,
     // fxdax: flushes of either kind, holding their runs or checking them (TASK-301).
     held_most: 8 << 10,
+    spilled_most: 2048,
 };
 
 /// What a store holds: its extents' contents, and its root.

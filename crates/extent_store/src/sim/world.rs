@@ -164,6 +164,9 @@ fn store_options() -> crate::Options {
         view_kept_bytes: None,
         // Flushes of either kind: records holding their runs, and checking them (TASK-301).
         held_most: 2 * BLOCK,
+        // Extents spilled in raw files of their own once a segment is set aside, and, past a few,
+        // in segments again (TASK-310).
+        spilled_most: 4,
     }
 }
 
