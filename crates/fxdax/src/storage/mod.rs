@@ -9,6 +9,8 @@ mod gate;
 mod image;
 mod io;
 mod kept;
+#[cfg(test)]
+mod model_tests;
 
 use crate::error::{Error, Result};
 use crate::executor::Executor;

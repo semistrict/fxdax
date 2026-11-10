@@ -130,7 +130,8 @@ pub(crate) fn delete(path: &Path) -> Result<(), Error> {
 
 #[cfg(test)]
 mod tests {
-    use super::super::collect::{Pace, quicken};
+    use super::super::collect::quicken;
+    use super::super::model_tests::{BUSY, Files, holds};
     use super::super::{Kind, Storage};
     use super::*;
     use crate::{Filesystem, Owner};
@@ -140,7 +141,6 @@ mod tests {
     use rand::rngs::StdRng;
     use rand::{RngExt as _, SeedableRng as _};
     use std::collections::BTreeMap;
-    use std::time::Duration;
     use storage_device::ExtentId;
 
     const OWNER: Owner = Owner { uid: 1000, gid: 100 };
@@ -355,32 +355,6 @@ mod tests {
             (extents, root),
             (BTreeMap::from([(extent(3), 5 * MIB as u64)]), b"root".into())
         );
-    }
-
-    /// Passes as often as one ends, after commits, compacting what is half freed and deleting it
-    /// at once.
-    const BUSY: Pace = Pace {
-        every: Duration::ZERO,
-        options: extent_remote::collector::Options { compact_below: 0.5, grace: 0 },
-    };
-
-    /// The files of a filesystem, by their names: what they hold.
-    type Files = BTreeMap<Vec<u8>, Vec<u8>>;
-
-    /// Checks that `fs` holds `files`, each as long and of the same bytes, and no other.
-    async fn holds(fs: &Filesystem, files: &Files, what: &str) {
-        for (name, contents) in files {
-            let (node, attr) = fs.root().lookup(name).await.unwrap();
-            assert_eq!(attr.size, contents.len() as u64, "{what}: {name:?}'s size");
-            let mut read = vec![0; contents.len()];
-            assert_eq!(node.read(0, &mut read).await.unwrap(), contents.len(), "{what}");
-            assert!(read == *contents, "{what}: {name:?} differs");
-        }
-        let entries = fs.root().entries().await.unwrap().into_iter().map(|entry| entry.name);
-        let mut names: Vec<Vec<u8>> =
-            entries.filter(|name| !matches!(&name[..], b"." | b"..")).collect();
-        names.sort();
-        assert_eq!(names, files.keys().cloned().collect::<Vec<_>>(), "{what}: its files");
     }
 
     /// `rounds` rounds, as `seed` says, of files of `fs`, which holds `files`, made, written over
