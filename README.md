@@ -566,6 +566,20 @@ then answering again, VM processes writing all the while (`extentd::tests::soak`
 CI, half an hour each night in Hunt; with guests, `fxfs-guest-bucket-soak`, by name). Each has a
 past bug put back that it fails (`crates/fxdax/mutants`).
 
+And fxdax runs as LangSmith's sandboxes' CI does, whose runs found bugs ours didn't (TASK-330.1):
+two extent daemons and their S3 bucket (RustFS, in a container) on one ext4 disk, many VMs at
+once on fewer CPUs than they have vCPUs, building and exporting Docker images, running pgbench,
+working git repositories and writing large and small files, each guest timing a sandbox's commands
+all the while. It fails on a guest kernel's report, a VM let go, a framing past a second, a command
+past its budget, or a daemon past its own; LangSmith's pin's double writes, put back, fail it
+(`crates/fxdax/mutants/framed-in-copies.patch`). It runs on GitHub's runners' nested KVM
+(`.github/workflows/sandboxes.yml`), by hand for now: the short mode goes on every push once
+main's framings pass (TASK-310, TASK-336), the long one nightly once it fits a runner (TASK-330.5):
+
+```sh
+scripts/sandboxes.sh [short|long]   # Linux (KVM); FXDAX_SANDBOX_DISK, ext4, holds it all
+```
+
 `scripts/test-guest-kernel.sh` builds the guest kernel with Fxfs in it and runs
 the guest tests on it, in Lima on macOS.
 

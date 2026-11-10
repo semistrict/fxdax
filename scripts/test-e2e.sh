@@ -208,9 +208,18 @@ elif [[ -n ${FXDAX_GUEST_HUGE_PAGES:-} ]]; then
 fi
 # fxfs-guest-docker-dax's Docker, its static binaries (Apache-2.0), downloaded once, and BusyBox,
 # its containers' image, the host's static one (busybox-static); fxfs-guest-docker-build-dax's
-# too, and Docker's buildx plugin (Apache-2.0), which builds with BuildKit (TASK-311).
-if [[ -z ${FXDAX_DOCKER_STATIC:-} && ( " ${tests[*]} " == *" fxfs-guest-docker-dax "* ||
-    " ${tests[*]} " == *" fxfs-guest-docker-build-dax "* ) ]]; then
+# too, and Docker's buildx plugin (Apache-2.0), which builds with BuildKit (TASK-311); and
+# fxfs-guest-sandboxes', whose builders build so (TASK-330.1).
+builds=" fxfs-guest-docker-build-dax fxfs-guest-sandboxes "
+selected() { # CASE...: whether the run selects one of the CASEs
+    local case
+    for case in "$@"; do
+        [[ " ${tests[*]} " != *" $case "* ]] || return 0
+    done
+    return 1
+}
+# shellcheck disable=SC2086 # the cases, a word each
+if [[ -z ${FXDAX_DOCKER_STATIC:-} ]] && selected fxfs-guest-docker-dax $builds; then
     docker_version=29.9.1
     case $(uname -m) in
         x86_64) docker_sha256=c158ecc55adb3afb01bbd3539ed3b997d20c26dbdc418080506cc1bf5243ff57 ;;
@@ -227,7 +236,8 @@ if [[ -z ${FXDAX_DOCKER_STATIC:-} && ( " ${tests[*]} " == *" fxfs-guest-docker-d
     fi
     export FXDAX_DOCKER_STATIC="$docker_dir" FXDAX_BUSYBOX="${FXDAX_BUSYBOX:-/bin/busybox}"
 fi
-if [[ -z ${FXDAX_DOCKER_BUILDX:-} && " ${tests[*]} " == *" fxfs-guest-docker-build-dax "* ]]; then
+# shellcheck disable=SC2086 # the cases, a word each
+if [[ -z ${FXDAX_DOCKER_BUILDX:-} ]] && selected $builds; then
     buildx_version=0.38.2
     case $(uname -m) in
         x86_64) buildx_arch=amd64 buildx_sha256=7992ec09413b80ff57ba4e081f56fc833d7bac1d5e71143c6c809e7e6065f6d6 ;;

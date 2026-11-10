@@ -1,0 +1,119 @@
+# Copyright 2026 The fxdax Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+# TASK-330.1: sandboxes as LangSmith's CI runs them, which found TASK-310 and TASK-311 where our
+# suites didn't (scripts/sandboxes.sh, guest/tests' fxfs-guest-sandboxes): two extent daemons and
+# an S3 bucket (RustFS, Apache-2.0) on the runner's one ext4 disk, many VMs at once, more vCPUs
+# than its 4 CPUs, building and exporting Docker images, running pgbench, working git repositories
+# and writing LangSmith's own load. It fails on a guest kernel's report, a VM let go, a framing
+# past a second, a sandbox's command past its budget, or a daemon past its own
+# (scripts/budgets.py). Both modes run by hand (workflow_dispatch) for now: the short one, minutes,
+# goes on every push from ci.yml once main passes it, its framings past a second on the runner's
+# disk and CPUs today (TASK-310, TASK-336); the long one in the nightly once it fits a runner,
+# whose 16 GB it ran out of (TASK-330.5). GitHub's runners have KVM, nested,
+# which their user is given here. The guest kernel is kept between runs by what it's built from
+# (scripts/guest-kernel-key.sh).
+name: Sandboxes
+
+on:
+  workflow_call:
+    inputs:
+      mode:
+        description: scripts/sandboxes.sh's mode, short or long
+        type: string
+        default: short
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: scripts/sandboxes.sh's mode
+        type: choice
+        options: [short, long]
+        default: short
+
+jobs:
+  sandboxes:
+    name: sandboxes (${{ inputs.mode }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: ${{ inputs.mode == 'long' && 300 || 120 }}
+    steps:
+      # With vendor/firecracker, the VMM the guests boot in.
+      - uses: actions/checkout@v7
+        with:
+          submodules: true
+      - name: Let the runner's user have KVM and userfaultfd
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"
+          KERNEL=="userfaultfd", GROUP="kvm", MODE="0666"' |
+              sudo tee /etc/udev/rules.d/99-fxdax-kvm.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          sudo udevadm trigger --name-match=userfaultfd
+          ls -l /dev/kvm /dev/userfaultfd
+      # What builds the guest kernel, Firecracker and its seccomp filters, and makes the guests'
+      # root images (scripts/lib/linux-host-setup.sh's, as a host's).
+      - name: Install the build's tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang libclang-dev llvm pkg-config musl-tools e2fsprogs podman \
+            libseccomp-dev busybox-static flex bison bc cpio libelf-dev libssl-dev
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+      - name: The guest kernel's key
+        id: kernel
+        run: echo "key=$(scripts/guest-kernel-key.sh)" >> "$GITHUB_OUTPUT"
+      # The kernel, 40 MB, kept as soon as it's built, not as the job ends well: a run that fails,
+      # as one may on its checks, would build it again, a quarter of an hour. Not the cargo
+      # builds' 3-4 GB, a dozen minutes to build: the repository's caches are at GitHub's 10 GB
+      # already, and one more of them would have the others' evicted.
+      - uses: actions/cache/restore@v6
+        id: kernel-cache
+        with:
+          path: ~/guest-kernel/vmlinux
+          key: guest-kernel-${{ steps.kernel.outputs.key }}
+      - name: Build the guest kernel
+        if: steps.kernel-cache.outputs.cache-hit != 'true'
+        run: |
+          FXDAX_GUEST_KERNEL_WORK=~/guest-kernel-work scripts/build-guest-kernel.sh x86_64
+          mkdir -p ~/guest-kernel
+          cp ~/guest-kernel-work/out/x86_64/vmlinux ~/guest-kernel/
+      - uses: actions/cache/save@v6
+        if: steps.kernel-cache.outputs.cache-hit != 'true'
+        with:
+          path: ~/guest-kernel/vmlinux
+          key: guest-kernel-${{ steps.kernel.outputs.key }}
+      # What the run boots and serves it with, built once: the guest tests' own tests are CI's
+      # guest part's, which scripts/test-e2e.sh runs first unless its artifacts are prebuilt.
+      - name: Build the run's artifacts
+        run: FXDAX_E2E_BUILD_ONLY="$HOME/sandboxes-artifacts" scripts/test-e2e.sh
+      # As root, as the guest part's tests run: podman makes the guests' root images. The host's
+      # memory, swap, I/O and CPU every 30 s, and its largest processes' every minute, in this
+      # log, which outlives a runner that runs out of them: the long mode's went down 6-7 minutes
+      # in, its artifacts with it.
+      - name: scripts/sandboxes.sh ${{ inputs.mode }}
+        run: |
+          vmstat -w -t 30 &
+          while ps -eo rss,comm --sort=-rss --no-headers | sed -n 1,8p | tr '\n' ' '; do
+            echo; sleep 60
+          done &
+          mkdir -p ~/sandboxes
+          sudo --preserve-env env "PATH=$PATH" "HOME=$HOME" \
+            "FXDAX_E2E_PREBUILT=$HOME/sandboxes-artifacts" \
+            "FXDAX_GUEST_KERNEL=$HOME/guest-kernel/vmlinux" "FXDAX_SANDBOX_DISK=$HOME/sandboxes" \
+            "FXDAX_E2E_RESULTS=$HOME/sandboxes/results" scripts/sandboxes.sh "$MODE"
+        env:
+          MODE: ${{ inputs.mode }}
+      # What it said, but for its stores, images and caches, which a failed run keeps: the
+      # runner's user's, as root's guest roots' directories aren't readable to it.
+      - name: Give the results to the runner's user
+        if: always()
+        run: sudo chown -R "$USER" ~/sandboxes
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: sandboxes-${{ inputs.mode }}
+          path: |
+            ~/sandboxes/results/**/*.txt
+            ~/sandboxes/results/**/*.log
+            ~/sandboxes/results/**/*.json

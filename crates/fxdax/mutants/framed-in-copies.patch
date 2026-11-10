@@ -1,0 +1,34 @@
+# LangSmith's pin's write-behind regression put back (TASK-310, between 6a513509a and 96c7808b8):
+# every closed segment and every large extent framed in a copy, whatever compressing its parts
+# saves, as then. Write-behind writes a segment's raw file back as its guest writes it, so the
+# host's disk wrote each guest byte twice, raw and framed, as much again as the guests wrote, and
+# framings' writes queued behind the raw files' on a disk the VMs and the bucket share: their
+# framings took 3.3-9.6 s, their sandboxes' commands seconds, their tests timed out. Main frames
+# them in place when compressing saves less than an eighth (TASK-310, TASK-92.41), their data
+# written once. The sandboxes' run, their topology, fails: its hosts' stores write 1.83-1.91
+# times their guests' bytes, past 1.5, and frame for up to 2.3 s, past a second (TASK-330.1).
+# Kind: writes
+# Killer: scripts/sandboxes.sh short
+--- a/crates/extent_store/src/segments.rs
++++ b/crates/extent_store/src/segments.rs
+@@ -1070,6 +1070,7 @@ fn frame_segment<D: Dir>(
+     footer: &[u8],
+ ) -> Result<Arc<Framed<D::File>>, Error> {
+     let started = Instant::now();
++    let quiet = false && quiet;
+     let mut data = Aligned::new(len as usize);
+     raw.read_cached(data.as_mut_slice(), 0)?;
+     let mut packer = extent_frame::Packer::new();
+--- a/crates/extent_store/src/store.rs
++++ b/crates/extent_store/src/store.rs
+@@ -1707,10 +1707,6 @@ impl<D: Dir> Store<D> {
+             raw.read_cached(buf, at)?;
+             let end = packer.end();
+             let packed = packer.push(buf);
+-            // As they are, where they are, as those before.
+-            if framed.is_none() && end == at && packed[..] == buf[..] {
+-                continue;
+-            }
+             let file = match &mut framed {
+                 Some(file) => file,
+                 None => {

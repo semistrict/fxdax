@@ -42,7 +42,10 @@ mod test_fxfs_guest_shared_disk;
 use test_fxfs_guest_shared_disk::TestFxfsGuestSharedDisk;
 mod test_fxfs_guest_bucket_soak;
 use test_fxfs_guest_bucket_soak::TestFxfsGuestBucketSoak;
+// fxdax: sandboxes as LangSmith's CI runs them, two hosts and a bucket on one disk (TASK-330.1).
+mod test_fxfs_guest_sandboxes;
 use test_fxfs_guest_bigmap::TestFxfsGuestBigmap;
+use test_fxfs_guest_sandboxes::TestFxfsGuestSandboxes;
 // fxdax: what a VM costs its host's memory, measured when its guest asks (TASK-164.5).
 mod measure;
 mod test_fxfs_guest_daemon_lost;
@@ -304,6 +307,9 @@ pub fn test_cases() -> Vec<TestCase> {
         // fxdax: guests writing against a degraded bucket for half an hour, TASK-330's
         // qualification's (TASK-330.3).
         TestCase::new("fxfs-guest-bucket-soak", &[Tag::Manual], Box::new(TestFxfsGuestBucketSoak)),
+        // fxdax: sandboxes as LangSmith's CI runs them, TASK-330's qualification's, which
+        // scripts/sandboxes.sh runs with the S3 server it needs (TASK-330.1).
+        TestCase::new("fxfs-guest-sandboxes", &[Tag::Manual], Box::new(TestFxfsGuestSandboxes)),
         TestCase::new(
             "fxfs-guest-live-fork",
             &[Tag::Kernel, Tag::Nightly],
