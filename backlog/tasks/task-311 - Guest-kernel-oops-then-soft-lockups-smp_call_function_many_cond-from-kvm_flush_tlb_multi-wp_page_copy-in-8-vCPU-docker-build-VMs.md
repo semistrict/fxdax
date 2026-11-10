@@ -3,11 +3,11 @@ id: TASK-311
 title: >-
   Guest kernel: oops then soft lockups (smp_call_function_many_cond from
   kvm_flush_tlb_multi/wp_page_copy) in 8-vCPU docker-build VMs
-status: In Progress
+status: To Do
 assignee:
   - '@claude'
 created_date: '2026-11-09 23:57'
-updated_date: '2026-11-10 07:36'
+updated_date: '2026-11-10 09:19'
 labels:
   - guest-kernel
 dependencies: []
@@ -37,8 +37,8 @@ LangSmith's host now logs 16 KiB from the first fault report, and they will send
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 fxdax's own VM console capture keeps the first oops (the first report, not only the tail)
-- [ ] #2 Attempted reproduction on ubu1: 8-vCPU guest, docker build plus image export under host CPU contention, debug kernel (lockdep, KASAN), N rounds recorded
+- [x] #1 fxdax's own VM console capture keeps the first oops (the first report, not only the tail)
+- [x] #2 Attempted reproduction on ubu1: 8-vCPU guest, docker build plus image export under host CPU contention, debug kernel (lockdep, KASAN), N rounds recorded
 - [ ] #3 Root cause identified from the first oops (ours or LangSmith's) and fixed, with a test or mutant that catches it
 <!-- AC:END -->
 
@@ -68,4 +68,18 @@ Upstream check: mm/list_lru.c's 98733f3f0bec (list_lru_del racing memcg reparent
 Step 2, ubu1 (16 cores, shared with other agents' runs, load 15-65), fxfs-guest-docker-build-dax (8 vCPUs, 2 GiB, BuildKit via buildx 0.38.2, Docker 29.9.1 default store, 8 parallel stages of random files + gzip tar, --load, docker save, tar export, prune, per round):
 - e2e1, release kernel at 7cb78936-, no pinning, 256 MiB/build, 3 builds: pass (93 s; 31/20/21 s a build). Also fxfs-guest-checks-dax (oops_panics PASS) and fxfs-guest-docker-dax pass.
 - t311-kernel-10-1942, release kernel, pinned to host CPUs 0-3 (8 vCPUs on 4), 1024 MiB/build: round 1 timed out at 1200 s, no oops or lockup. Cause: the e2e bucket on /dev/shm (14 GB tmpfs) filled after ~14.8 GB of uploads; extentd retried the failing creates forever without logging the error, and the guest's commit waited at the 1 GiB lag bound (fdatasync and flush-fxfs writeback in fxfs_rt_park; VMM workers idle). Filed TASK-314. Not LangSmith's bug. Later runs put the bucket on disk (FXDAX_EXTENTD_REMOTE=file://~/src/t311-bucket/...).
+
+- t311-kernel-10-0236, release kernel, CPUs 0-3, 512 MiB/build, bucket on disk: rounds 1-2 pass (211 s, 359 s; builds 105-127 s each under contention); round 3 ended by the host's global OOM killer taking extentd (27 GB host, swap full: another agent's 8 VMs and 20 GiB daemon beside two of my runs at 8 GiB daemon caps). Environment, not the bug. Later runs: one at a time, FXDAX_EXTENTD_MEMORY=2 GiB.
+
+- sequence (each run alone, CPUs 0-3, 512 MiB/build, daemon at 2 GiB, bucket on disk), ubu1 at load ~150 with eight agents:
+  - release t311-kernel-10-0258: round 1 pass (456 s); round 2 ended by the host's global OOM killer taking extentd (journal 03:13:29, 'tailscaled invoked oom-killer'; the guest had writes blocked 10 s on the way).
+  - debug (lockdep, KCSAN, DEBUG_LIST) t311-kernel-debug-5-0313: round 1 pass (572 s); round 2 ended the same way at 58 s. Earlier t311-kernel-debug-5-0239: round 1 pass (744 s), round 2 killed in the 02:54 OOM. Only KCSAN report seen: virtqueue_get_buf_ctx_split in vext_reap (the reviewed device-written used index), no complaint.
+
+- KASAN (+KFENCE, lockdep) t311-kernel-kasan-3-0326: 2 builds clean (575 s, 433 s), no KASAN report; extentd then taken by the host OOM killer.
+- release t311-kernel-10-0349: rounds 1-2 pass (767 s, 497 s), round 3 extentd OOM-killed (04:18, anon-rss 6.1 GB past its 2 GiB budget: filed TASK-317).
+Tally: 31 builds with a full export (release 23, debug 6, KASAN 2), 8 vCPUs on 4 host CPUs for all but the first 3, at ubu1 load 15-150. No oops, no list corruption, no soft lockup, no complaint but the reviewed KCSAN read in vext_reap. LangSmith hit 2 in 17; at that rate 23 clean release builds happen ~5% of the time, so this lowers the odds that it is easy to hit here without ruling it out. Every failed round was the environment: /dev/shm bucket full (TASK-314: it hung silently), or the host's global OOM killer taking extentd.
+
+Not reproduced, so no root cause. Reading the stacks: the spinning vCPU holds IRQs off in list_lru_del under workingset_update_node (filemap_add_folio, i_pages lock), and the dead task is docker-buildx, the process that writes an exported tar, in make_task_dead. The likeliest story is a list-corruption BUG (CONFIG_LIST_HARDENED + BUG_ON_DATA_CORRUPTION are on in the release config) inside the shadow-node list_lru, with the lru lock held. Fxfs's C never touches i_pages or the shadow LRU itself (it uses filemap/invalidate helpers; page-cache inodes get large folios up to FXFS_IO_MAX; an inode becomes DAX only as it is read in, fxfs_dax_set_inode). Upstream's known list_lru corruption on memcg reparenting (98733f3f0bec) is already in Amazon's 6.18.54. Patch 0013 only narrows mprotect batches. virtio_extent's interrupt path (vext_done -> vext_reap under the queue lock, IRQs off) touches no page cache.
+
+What LangSmith should send when it recurs (their host now keeps 16 KiB from the first fault report): (1) that first report whole, from the line before 'cut here' or 'BUG:'/'Oops:' to '---[ end trace'; with a guest kernel at or after 0ac368da9 the kernel panics on the oops (CONFIG_PANIC_ON_OOPS) and that report is the console's last, so even a tail keeps it; (2) the guest kernel's /proc/fs/fxfs/build or the fxdax commit it was built from, and its command line (panic=/oops= override the config); (3) the VM's vCPUs, memory and DAX window, and which filesystem holds Docker's data-root and the export's destination (Fxfs page cache, Fxfs DAX, or ext4/overlay elsewhere); (4) Docker/buildx versions and storage driver (overlay2 or the containerd image store); (5) the export command. With the report: run fxfs-guest-docker-build-dax with their shape, and the KASAN kernel, to get a UAF report naming the freed object.
 <!-- SECTION:NOTES:END -->
