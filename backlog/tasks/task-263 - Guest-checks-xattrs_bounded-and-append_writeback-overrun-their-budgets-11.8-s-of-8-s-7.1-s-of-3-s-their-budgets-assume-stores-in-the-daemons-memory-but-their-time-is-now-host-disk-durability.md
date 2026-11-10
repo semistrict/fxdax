@@ -8,7 +8,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-08 15:35'
-updated_date: '2026-11-10 11:06'
+updated_date: '2026-11-10 11:07'
 labels:
   - tests
   - perf
@@ -49,7 +49,7 @@ Ruled out: run order (pgbench before the checks). us-central1-b and us-west1-a b
 1. What the budgets bound: TASK-168's per-check hang detector, set at twice a check's time with stores in the daemon's memory, i.e. of the guest's own work (the host's requests then took little). Neither check is a perf check; their own regressions are asserted (TASK-199: OOM kills, ENOSPC; TASK-92.28: sizes).
 2. Leave the host's time out: the virtio_extent driver counts how long the device has had a request in flight (busy_ns, in-flight time included, overlap once); the agent's per-check clock (guest/run.rs Clock) is wall time minus that. A budget then bounds the guest's work and its waits on anything but the device. (First tried durable commits alone, via an fxfs-linux counter: on ubu1 under load 40-150 non-durable writes alone took xattrs_bounded's fill from 0.6 s to 5.8 s, and one round overran; replaced.)
 3. Count what the host is asked: xattrs_bounded's fill makes at least one write per set, at most 1.25, and no durable commit (4,540 writes, 4 commits, 17 frees for 3,967 sets in all 52 rounds). append_writeback's counts vary with its syncfs loop: its guest-time budget stays its bound.
-4. The suite's limit, the backstop for a device that never answers, allows each check HOST_SCALE (6) times its budget of host time.
+4. The host's time counts an 18th (HOST_SCALE, from the 12.2x measured on ZFS), so the guest kills, by name, a check whose device never answers; the suite's limit is SETUP + the budgets twice over + one check's whole host allowance (18x the largest budget). (A fixed multiple per check, first tried at 6x, was too small on ZFS and would have made a whole suite's limit ~2 h at 18x.)
 5. Phase and PASS/FAIL lines say what each phase asked of the host and took; each check's line says steal and per-type requests.
 6. Verify on ubu1: run_to unit tests; 20 rounds of both checks in fxfs-guest-checks, -dax, -dax-small, -dax-delay; hand mutants: a guest-side delay per setxattr / per fsync overruns the budgets; setxattr borrowing its room (TASK-199-like) fails xattrs_bounded; the overrun suite's hangs still overruns.
 <!-- SECTION:PLAN:END -->
