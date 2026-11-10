@@ -8,10 +8,29 @@
 //! the DAX window. containerd imports the image and runs a container of it, its snapshots overlayfs
 //! over Fxfs; then Docker, through that containerd, loads it and runs one, its overlay2 layers on
 //! Fxfs too.
+//!
+//! fxfs-guest-docker-build-dax (TASK-311) builds, as LangSmith's CI builders do: on 8 vCPUs, with
+//! BuildKit (Docker's buildx plugin, FXDAX_DOCKER_BUILDX names it), stages in parallel writing
+//! FXDAX_DOCKER_BUILD_MIB MiB of files between them (default 256), more than the guest's memory
+//! keeps as it builds and exports: the image loaded into Docker's store, saved, and exported as
+//! a tar of its files, FXDAX_DOCKER_BUILDS times (default 3), each round's stages anew. Two of 17 such
+//! builds oopsed there, then locked up. FXDAX_DOCKER_BUILD_CPUS, a host CPU list such as `0-3`,
+//! runs the VM on those CPUs alone: its vCPUs then preempt each other, as on a host with no CPU
+//! to spare.
 
 use macros::{guest, host};
 
-pub struct TestFxfsGuestDocker;
+pub struct TestFxfsGuestDocker {
+    /// fxdax: whether the guest builds an image and exports it, rather than runs containers of
+    /// one it loads (TASK-311).
+    pub build: bool,
+}
+
+/// fxdax: the build's VM's vCPUs, as LangSmith's builders have, and its stages, one a vCPU.
+const BUILD_VCPUS: u8 = 8;
+/// fxdax: the build's settings, from the host's environment, in the guest's.
+const BUILDS: &str = "FXDAX_DOCKER_BUILDS";
+const BUILD_MIB: &str = "FXDAX_DOCKER_BUILD_MIB";
 
 /// The container image's name, as containerd and Docker name it.
 const IMAGE: &str = "docker.io/fxdax/busybox:1";
@@ -20,6 +39,9 @@ const ARCHIVE: &str = "/images/busybox.tar";
 /// What the containers say.
 #[cfg_attr(feature = "host", allow(dead_code))]
 const HELLO: &str = "hello from a container on Fxfs";
+/// Where Docker's CLI finds its buildx plugin.
+#[cfg_attr(feature = "guest", allow(dead_code))]
+const BUILDX: &str = "/usr/libexec/docker/cli-plugins/docker-buildx";
 
 #[host]
 mod host {
@@ -102,8 +124,9 @@ mod host {
     }
 
     /// The root's image: the guest agent, Docker's binaries, the container's archive, and what
-    /// init and the daemons mount on and keep their state in.
-    fn root_layer(dir: &Path) -> anyhow::Result<Vec<u8>> {
+    /// init and the daemons mount on and keep their state in; with `buildx`, Docker's plugin's
+    /// binary, where Docker's CLI finds its plugins.
+    fn root_layer(dir: &Path, buildx: Option<&[u8]>) -> anyhow::Result<Vec<u8>> {
         let agent = std::env::var_os("FXDAX_GUEST_AGENT").context("FXDAX_GUEST_AGENT not set")?;
         let agent = std::fs::read(agent)?;
         let binaries: Vec<(String, Vec<u8>)> = (DOCKER.iter())
@@ -111,9 +134,17 @@ mod host {
             .collect::<anyhow::Result<_>>()?;
         let archive = container_archive(dir)?;
         let mut entries = vec![Entry::new("guest-agent", Kind::File(&agent)).perm(0o755)];
-        let dirs =
-            ["dev", "proc", "sys", "run", "etc", "usr", "usr/bin", "var", "var/lib", "images"];
+        let dirs = [
+            "dev", "proc", "sys", "run", "etc", "usr", "usr/bin", "var", "var/lib", "images",
+            "root",
+        ];
         entries.extend(dirs.map(|path| Entry::new(path, Kind::Dir)));
+        if let Some(buildx) = buildx {
+            for path in ["usr/libexec", "usr/libexec/docker", "usr/libexec/docker/cli-plugins"] {
+                entries.push(Entry::new(path, Kind::Dir));
+            }
+            entries.push(Entry::new(&BUILDX[1..], Kind::File(buildx)).perm(0o755));
+        }
         entries.push(Entry::new("tmp", Kind::Dir).perm(0o1777));
         entries.push(Entry::new("var/run", Kind::Symlink("../run")));
         entries.push(Entry::new("etc/passwd", Kind::File(b"root:x:0:0:root:/root:/bin/sh\n")));
@@ -125,30 +156,63 @@ mod host {
         Ok(layer(&entries)?)
     }
 
+    /// The build's store: room for its rounds' files, layers and archives.
+    const BUILD_CAPACITY: u64 = 16 << 30;
+
+    /// The CPUs of a CPU list as the kernel writes one: `0-3,8,10-11`.
+    fn cpu_list(list: &str) -> anyhow::Result<Vec<usize>> {
+        let mut cpus = Vec::new();
+        for range in list.split(',') {
+            let (first, last) = range.split_once('-').unwrap_or((range, range));
+            cpus.extend(first.parse::<usize>()?..=last.parse::<usize>()?);
+        }
+        Ok(cpus)
+    }
+
     impl Test for TestFxfsGuestDocker {
         fn should_run(&self) -> ShouldRun {
             fxdax_guest_should_run()
         }
 
-        /// The import of Docker's binaries, and the daemons' starting, take minutes.
+        /// The import of Docker's binaries, and the daemons' starting, take minutes; a build's
+        /// rounds take minutes more.
         fn timeout_secs(&self) -> u64 {
-            300
+            if self.build { 1200 } else { 300 }
         }
 
         fn start_vm(self: Box<Self>, test_setup: TestSetup) -> anyhow::Result<()> {
             let dir = &test_setup.tmp_dir;
             let layout = dir.join("root-layout");
-            oci_layout(&layout, "fxdax/root:docker", &[root_layer(dir)?])?;
+            let buildx = match self.build {
+                true => {
+                    let path = std::env::var_os("FXDAX_DOCKER_BUILDX")
+                        .context("FXDAX_DOCKER_BUILDX not set")?;
+                    Some(std::fs::read(&path).with_context(|| format!("reading {path:?}"))?)
+                }
+                false => None,
+            };
+            oci_layout(&layout, "fxdax/root:docker", &[root_layer(dir, buildx.as_deref())?])?;
             // By the daemon, built for release, as fxdaxctl imports: this harness's debug build
             // takes minutes over Docker's binaries.
             let store = dir.join("root");
+            let capacity = if self.build { BUILD_CAPACITY } else { CAPACITY };
             let extentd = std::env::var_os("FXDAX_EXTENTD").context("FXDAX_EXTENTD not set")?;
-            control(Path::new(&extentd))?.import_image(&store, CAPACITY, &layout, None)?;
+            control(Path::new(&extentd))?.import_image(&store, capacity, &layout, None)?;
 
-            let mut vm = Vm::new(2, 2048)?;
+            let mut vm = if self.build { Vm::new(BUILD_VCPUS, 2048)? } else { Vm::new(2, 2048)? };
             vm.guest_kernel()?;
-            vm.extent_store("root", &store, CAPACITY, crate::common::dax_window(WINDOW)?)?;
+            vm.extent_store("root", &store, capacity, crate::common::dax_window(WINDOW)?)?;
             vm.fxfs_root("root");
+            if self.build {
+                for name in [BUILDS, BUILD_MIB] {
+                    if let Ok(value) = std::env::var(name) {
+                        vm.env(&std::ffi::CString::new(format!("{name}={value}"))?);
+                    }
+                }
+                if let Ok(cpus) = std::env::var("FXDAX_DOCKER_BUILD_CPUS") {
+                    vm.cpus(&cpu_list(&cpus).context("FXDAX_DOCKER_BUILD_CPUS is a CPU list")?);
+                }
+            }
             vm.enter(&dir.join("rootfs"), &test_setup.test_case)
         }
 
@@ -220,6 +284,77 @@ mod guest {
         assert_eq!(ret, 0, "mount /run: {}", std::io::Error::last_os_error());
     }
 
+    /// A setting of the build's, `name`, from the guest's environment, or `default`.
+    fn setting(name: &str, default: u64) -> u64 {
+        match std::env::var(name) {
+            Ok(value) => value.parse().unwrap_or_else(|_| panic!("{name}={value}: a count")),
+            Err(_) => default,
+        }
+    }
+
+    /// The build's Dockerfile: `stages` stages from BusyBox's image, run at once, each writing
+    /// `files` files of `kib` KiB of random bytes, the round's, then a gzipped tar of them, each
+    /// step a container, and a cgroup, of its own; the image their files together, and the round
+    /// it was built in, which makes every round's stages anew (ROUND, a build argument).
+    fn dockerfile(stages: u64, files: u64, kib: u64) -> String {
+        let busybox = "/bin/busybox";
+        let mut dockerfile = format!("FROM {IMAGE} AS base\n");
+        for stage in 0..stages {
+            dockerfile += &format!(
+                "FROM base AS s{stage}\n\
+                 ARG ROUND\n\
+                 RUN --network=none {busybox} mkdir /out && i=0 && while [ $i -lt {files} ]; do \
+                 {busybox} dd if=/dev/urandom of=/out/f$i bs=1024 count={kib} 2>/dev/null || exit 1; \
+                 i=$((i+1)); done && echo $ROUND > /out/round\n\
+                 RUN --network=none {busybox} tar -c /out | {busybox} gzip -1 > /out.tgz\n"
+            );
+        }
+        dockerfile += "FROM base\nARG ROUND\n";
+        for stage in 0..stages {
+            dockerfile += &format!("COPY --from=s{stage} /out /s{stage}\n");
+            dockerfile += &format!("COPY --from=s{stage} /out.tgz /s{stage}.tgz\n");
+        }
+        dockerfile += "RUN --network=none echo $ROUND > /built\n";
+        dockerfile
+    }
+
+    /// Builds the image FXDAX_DOCKER_BUILDS times, through dockerd's BuildKit, and exports it each
+    /// time: loaded into Docker's store, saved, and as a tar of its files; then runs it, which
+    /// says the round it was built in, and lets go of the round's images, archives and cache.
+    fn build(logs: &[&str]) {
+        let stages = u64::from(BUILD_VCPUS);
+        let kib_per_stage = setting(BUILD_MIB, 256) * 1024 / stages;
+        const FILE_KIB: u64 = 64;
+        std::fs::create_dir("/build").unwrap();
+        let dockerfile = dockerfile(stages, kib_per_stage / FILE_KIB, FILE_KIB);
+        std::fs::write("/build/Dockerfile", dockerfile).unwrap();
+        for round in 1..=setting(BUILDS, 3) {
+            let began = Instant::now();
+            let tag = format!("fxdax/built:{round}");
+            let arg = format!("ROUND={round}");
+            let build = ["buildx", "build", "--progress=plain", "--build-arg", &arg];
+            let mut load = build.to_vec();
+            load.extend(["--tag", &tag, "--load", "/build"]);
+            run("docker", &load, logs);
+            run("docker", &["save", "--output", "/tmp/built.tar", &tag], logs);
+            let mut export = build.to_vec();
+            export.extend(["--output", "type=tar,dest=/tmp/built-files.tar", "/build"]);
+            run("docker", &export, logs);
+            let said = run(
+                "docker",
+                &["run", "--rm", "--network", "none", &tag, "/bin/busybox", "cat", "/built"],
+                logs,
+            );
+            assert_eq!(said, format!("{round}\n"), "the image of round {round}");
+            run("docker", &["image", "rm", &tag], logs);
+            run("docker", &["buildx", "prune", "--all", "--force"], logs);
+            for archive in ["/tmp/built.tar", "/tmp/built-files.tar"] {
+                std::fs::remove_file(archive).unwrap();
+            }
+            eprintln!("docker build: round {round} in {:.1} s", began.elapsed().as_secs_f64());
+        }
+    }
+
     impl Test for TestFxfsGuestDocker {
         fn in_guest(self: Box<Self>) {
             // The root is Fxfs, and the daemons keep their state on it.
@@ -247,39 +382,44 @@ mod guest {
                 all.extend(args);
                 run("ctr", &all, &[containerd_log])
             };
-            ctr(&["images", "import", ARCHIVE]);
-            let said = ctr(&["run", "--rm", IMAGE, "hello", "/bin/busybox", "echo", HELLO]);
-            assert_eq!(said, format!("{HELLO}\n"), "containerd's container");
+            if !self.build {
+                ctr(&["images", "import", ARCHIVE]);
+                let said = ctr(&["run", "--rm", IMAGE, "hello", "/bin/busybox", "echo", HELLO]);
+                assert_eq!(said, format!("{HELLO}\n"), "containerd's container");
+            }
 
             let dockerd_log = "/tmp/dockerd.log";
-            let _dockerd = start(
-                "dockerd",
-                &[
-                    "--containerd",
-                    CONTAINERD,
-                    "--data-root",
-                    "/var/lib/docker",
-                    "--storage-driver",
-                    "overlay2",
-                    "--iptables=false",
-                    "--ip6tables=false",
-                    "--bridge=none",
-                ],
-                dockerd_log,
-                "/run/docker.sock",
-            );
+            let mut dockerd = vec![
+                "--containerd",
+                CONTAINERD,
+                "--data-root",
+                "/var/lib/docker",
+                "--iptables=false",
+                "--ip6tables=false",
+                "--bridge=none",
+            ];
+            // A build's in Docker's own default store, as a builder's is.
+            if !self.build {
+                dockerd.extend(["--storage-driver", "overlay2"]);
+            }
+            let _dockerd = start("dockerd", &dockerd, dockerd_log, "/run/docker.sock");
             let logs = [dockerd_log, containerd_log];
             let loaded = run("docker", &["load", "--input", ARCHIVE], &logs);
-            // "Loaded image: NAME", or "Loaded image ID: ID".
-            let image = loaded.lines().filter_map(|line| line.split(": ").nth(1)).last().unwrap();
-            let said = run(
-                "docker",
-                &["run", "--rm", "--network", "none", image, "/bin/busybox", "echo", HELLO],
-                &logs,
-            );
-            assert_eq!(said, format!("{HELLO}\n"), "Docker's container");
-            let driver = run("docker", &["info", "--format", "{{.Driver}}"], &logs);
-            assert_eq!(driver, "overlay2\n");
+            if self.build {
+                build(&logs);
+            } else {
+                // "Loaded image: NAME", or "Loaded image ID: ID".
+                let image =
+                    loaded.lines().filter_map(|line| line.split(": ").nth(1)).last().unwrap();
+                let said = run(
+                    "docker",
+                    &["run", "--rm", "--network", "none", image, "/bin/busybox", "echo", HELLO],
+                    &logs,
+                );
+                assert_eq!(said, format!("{HELLO}\n"), "Docker's container");
+                let driver = run("docker", &["info", "--format", "{{.Driver}}"], &logs);
+                assert_eq!(driver, "overlay2\n");
+            }
             // overlayfs's work over Fxfs left it consistent (TASK-50.6.1).
             let inconsistent: Vec<String> = crate::kernel_log::records()
                 .into_iter()

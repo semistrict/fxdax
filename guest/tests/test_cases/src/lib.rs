@@ -750,7 +750,13 @@ pub fn test_cases() -> Vec<TestCase> {
         TestCase::new(
             "fxfs-guest-docker-dax",
             &[Tag::E2e, Tag::Nightly],
-            Box::new(TestFxfsGuestDocker),
+            Box::new(TestFxfsGuestDocker { build: false }),
+        ),
+        // fxdax: LangSmith's builds, on 8 vCPUs, which oopsed 2 in 17 times (TASK-311).
+        TestCase::new(
+            "fxfs-guest-docker-build-dax",
+            &[Tag::Manual],
+            Box::new(TestFxfsGuestDocker { build: true }),
         ),
         TestCase::new(
             "extent-guest",

@@ -192,8 +192,10 @@ elif [[ -n ${FXDAX_GUEST_HUGE_PAGES:-} ]]; then
     echo "FXDAX_GUEST_HUGE_PAGES is 2M or unset" >&2; exit 2
 fi
 # fxfs-guest-docker-dax's Docker, its static binaries (Apache-2.0), downloaded once, and BusyBox,
-# its containers' image, the host's static one (busybox-static).
-if [[ -z ${FXDAX_DOCKER_STATIC:-} && " ${tests[*]} " == *" fxfs-guest-docker-dax "* ]]; then
+# its containers' image, the host's static one (busybox-static); fxfs-guest-docker-build-dax's
+# too, and Docker's buildx plugin (Apache-2.0), which builds with BuildKit (TASK-311).
+if [[ -z ${FXDAX_DOCKER_STATIC:-} && ( " ${tests[*]} " == *" fxfs-guest-docker-dax "* ||
+    " ${tests[*]} " == *" fxfs-guest-docker-build-dax "* ) ]]; then
     docker_version=29.9.1
     case $(uname -m) in
         x86_64) docker_sha256=c158ecc55adb3afb01bbd3539ed3b997d20c26dbdc418080506cc1bf5243ff57 ;;
@@ -209,6 +211,22 @@ if [[ -z ${FXDAX_DOCKER_STATIC:-} && " ${tests[*]} " == *" fxfs-guest-docker-dax
         rm "$docker_dir.tgz"
     fi
     export FXDAX_DOCKER_STATIC="$docker_dir" FXDAX_BUSYBOX="${FXDAX_BUSYBOX:-/bin/busybox}"
+fi
+if [[ -z ${FXDAX_DOCKER_BUILDX:-} && " ${tests[*]} " == *" fxfs-guest-docker-build-dax "* ]]; then
+    buildx_version=0.38.2
+    case $(uname -m) in
+        x86_64) buildx_arch=amd64 buildx_sha256=7992ec09413b80ff57ba4e081f56fc833d7bac1d5e71143c6c809e7e6065f6d6 ;;
+        aarch64) buildx_arch=arm64 buildx_sha256=46c0f334772de3cb0b341cc415caf7339fb5cfc8b8438ebcb5a10e7f23800d36 ;;
+    esac
+    buildx="${XDG_CACHE_HOME:-$HOME/.cache}/fxdax/docker-buildx-$buildx_version"
+    if [[ ! -x $buildx ]]; then
+        mkdir -p "$(dirname "$buildx")"
+        curl -fsSL -o "$buildx.download" "https://github.com/docker/buildx/releases/download/v$buildx_version/buildx-v$buildx_version.linux-$buildx_arch"
+        echo "$buildx_sha256  $buildx.download" | sha256sum --check --quiet
+        chmod +x "$buildx.download"
+        mv "$buildx.download" "$buildx"
+    fi
+    export FXDAX_DOCKER_BUILDX="$buildx"
 fi
 # The harness's guest agent, a static binary each guest runs as its init. pjdfstest's cases take
 # its repository and commit as they build.
