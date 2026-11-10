@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-09 05:12'
-updated_date: '2026-11-10 00:15'
+updated_date: '2026-11-10 09:44'
 labels:
   - perf
 dependencies: []
@@ -45,3 +45,11 @@ TASK-276 phase 1 (GCE c3-standard-8, nested KVM): fxfs-guest-dax random 4K write
 5. Interleaved A/B on ubu1, 6+ iterations a side, prebuilt artifacts, the exact landed tree; AC #2.
 6. Land on main (CI green), Firecracker series only if the VMM side changes.
 <!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Findings before measuring (2026-11-10): the receiving thread's fallocate (13% on GCE) is the stage's one fallocate, FALLOC_FL_PUNCH_HOLE of private pages a MAP or UNMAP ends, not allocation: each punch zapped two page-table entries, the window's and the fill view's (UFFDIO_COPY), a TLB flush each, besides the change's mmap. The GCE profile spanned the whole case, so most of it is likely the scale dir's final rm -rf (scripts/dax-stage-syscalls.bt to confirm on ubu1). And the TASK-276 bench's rand-write writes pages its rand-read-warm read whole before: each write's PRIVATE replaces a page installed, one shootdown, which lazy install cannot remove; scale-rand-write-unread added for the cold case (pages never read).
+
+Done (branch task-276.6, Firecracker fxdax-v1.16.1-dax-fill b4f4f9d78): a MAP names pages, the first touch installs them (dax::uffd map/remap install nothing; reinstall at first fault under the pages' lock; a guest store's first touch goes to the window as a store; map_ahead installs and prefaults for MAP_AHEAD; the guest maps ahead for reads alone). Private pages filled by pwrite64 (seccomp: +pwrite64, -UFFDIO_COPY), emptied after the change's mmap took them away (one mmap per change, punches flush nothing; a lone private run punched in place). Tests: uffd units 34/34 on ubu1; Shuttle 54/54 (store and load first touches racing MAP, UNMAP, eviction; rules changes_take_away_installed, install_as_named_now each failing when off); specs/dax-cow DaxCowLoads + NoInstallAsNamed, NoChangesTakeAway, all 14 models pass; macOS workspace 2204/2204 and scripts 260/260; firecracker-series-check ok both ways for every commit to b4f4f9d78. doc-13 updated.
+<!-- SECTION:NOTES:END -->
