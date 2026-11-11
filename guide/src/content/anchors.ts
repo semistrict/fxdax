@@ -29,7 +29,7 @@ export const anchors = {
   dev_commit_root: { path: "guest/rust/fxfs-linux/src/device.rs", snippet: "async fn commit_root(&self, root: &[u8]) -> Result<(), Error>", note: "Ordered like the device's other commits; durable only while a sync wants it." },
   device_submit: { path: "guest/linux/fs/fxfs/device.c", snippet: "int fxfs_device_submit(struct fxfs_device *dev, const struct fxfs_device_op *op,", note: "The guest C side of a device request." },
   virtio_submit: { path: "guest/linux/drivers/virtio_extent/driver.c", snippet: "int virtio_extent_submit(struct virtio_extent *vext, struct vext_request *req)", note: "Onto a virtqueue, one per CPU." },
-  vmm_handle: { path: "vendor/firecracker/src/vmm/src/devices/virtio/extent/worker.rs", snippet: "pub(super) async fn handle(store: &RemoteExtentStore, notices: &Notices, buffers: Buffers) -> u32", note: "Firecracker's worker serving one guest request through the daemon." },
+  vmm_handle: { path: "vendor/firecracker/src/vmm/src/devices/virtio/extent/worker.rs", snippet: "pub(super) async fn handle(", note: "Firecracker's worker serving one guest request through the daemon." },
   vmm_window: { path: "vendor/firecracker/src/vmm/src/devices/virtio/extent/window.rs", snippet: "pub(super) struct DaxWindow", note: "The DAX window in the VM process: guest physical addresses and the host memory KVM maps there." },
   remote_store: { path: "crates/fxdax/src/extentd/client.rs", snippet: "pub struct RemoteExtentStore", note: "The VMM's handle on its store in extentd." },
   remote_commit: { path: "crates/fxdax/src/extentd/client.rs", snippet: "pub fn commit(&self, root: Option<&[u8]>) -> Result<()>", note: "COMMIT with COMMIT_DURABLE, over the daemon socket." },

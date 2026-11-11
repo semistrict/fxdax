@@ -26,6 +26,9 @@ ORDER = [
     "ext4-dax-pmem",
     "fxfs-guest",
     "fxfs-guest-dax",
+    # With the extent device's cache_type Unsafe: durable commits answered once ordered, as the
+    # sandboxes' JuiceFS image drives drop flushes (TASK-363).
+    "fxfs-guest-dax-unsafe",
     "fxfs-guest-dax-followed",
     "fxfs-guest-dax-followed-idle",
     "fxfs-guest-dax-fork-cold",
@@ -48,6 +51,8 @@ BASELINES = {
     "ext4-pmem": ["ext4-guest-kernel"],
     "fxfs-guest": ["ext4-dax-pmem", "ext4-guest-kernel"],
     "fxfs-guest-dax": ["ext4-dax-pmem", "ext4-guest-kernel"],
+    # Unsafe against unsafe: ext4 on a loop image cached unsafely, the setup TASK-350 compares with.
+    "fxfs-guest-dax-unsafe": ["ext4-loop-unsafe", "fxfs-guest-dax"],
     # A writer with followers attached, reading or not, against one alone (TASK-42.7).
     "fxfs-guest-dax-followed": ["fxfs-guest-dax"],
     "fxfs-guest-dax-followed-idle": ["fxfs-guest-dax"],
