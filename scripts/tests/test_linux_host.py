@@ -462,7 +462,8 @@ class Kernels(unittest.TestCase):
     kernels on the host (FXDAX_HOST_KERNELS), taken from there if one was built from the same
     sources. Here a source tree of the kernel's inputs and one that isn't, whose
     build-guest-kernel.sh is a fake that says what it built and where, its kernel naming the
-    sources' text; cargo a fake whose metadata names guest/rust's packages of the workspace's own;
+    sources' text; cargo a fake whose metadata, run in the tree's root (scripts/guest-kernel-key.sh),
+    names guest/rust's packages of the workspace's own;
     and flock fake_flock.py."""
 
     BUILD = """#!/bin/bash
@@ -474,8 +475,8 @@ cat "$(dirname "$0")/../guest/linux/fs.c" "$(dirname "$0")/../crates/fxfs/lib.rs
 """
     CARGO = """#!/bin/bash
 [[ $1 == metadata ]] || { echo "cargo: $*" >&2; exit 3; }
-echo '{"packages": [{"source": null, "manifest_path": "'"$PWD"'/fxfs-linux/Cargo.toml"},
-    {"source": null, "manifest_path": "'"$PWD"'/../../crates/fxfs/Cargo.toml"},
+echo '{"packages": [{"source": null, "manifest_path": "'"$PWD"'/guest/rust/fxfs-linux/Cargo.toml"},
+    {"source": null, "manifest_path": "'"$PWD"'/guest/rust/../../crates/fxfs/Cargo.toml"},
     {"source": "registry+https://github.com/rust-lang/crates.io-index",
      "manifest_path": "/registry/serde/Cargo.toml"}]}'
 """

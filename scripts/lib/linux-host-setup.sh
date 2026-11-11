@@ -262,28 +262,13 @@ host_kernel_build() {
         "$repo/scripts/build-guest-kernel.sh" x86_64 > "$log" 2>&1
 }
 
-# host_kernel_key KIND prints the key of the guest kernel of KIND built from the source, a digest of
-# what builds it: KIND, guest/linux (the series, its files and the configurations), guest/rust and
-# every package of the workspace's own its Rust builds from, the workspace's Cargo.toml they inherit
-# from, and the scripts that build it. Not the commit, which the kernel reports
-# (scripts/build-commit.sh): one built from the same sources at another commit reports that one's.
+# host_kernel_key KIND prints the key of the guest kernel of KIND built from the source: KIND, and
+# the key of what builds it (scripts/guest-kernel-key.sh, this tree's, as the source may be of a
+# commit before it).
 host_kernel_key() {
-    local packages
-    packages=$(cd "$repo/guest/rust" &&
-        env -u RUSTUP_TOOLCHAIN cargo metadata --format-version 1 --locked |
-        python3 -c 'import json, os, sys
-root = os.path.realpath(sys.argv[1])
-for package in json.load(sys.stdin)["packages"]:
-    if package["source"] is None:
-        print(os.path.relpath(os.path.dirname(os.path.realpath(package["manifest_path"])), root))' \
-            "$repo") || return
-    {
-        echo "$1"
-        # shellcheck disable=SC2086 # The packages are paths separated by lines.
-        cd "$repo" && find Cargo.toml guest/linux guest/rust $packages scripts/build-guest-kernel.sh \
-            scripts/build-guest-sysroot.sh \( -name target -o -name '*.o' -o -name '.*.cmd' \
-            -o -name '*.a' \) -prune -o -type f -print0 | LC_ALL=C sort -zu | xargs -0 sha256sum
-    } | sha256sum | cut -c1-16
+    local sources
+    sources=$("$(dirname "${BASH_SOURCE[0]}")/../guest-kernel-key.sh" "$repo") || return
+    echo "$1-${sources:0:16}"
 }
 
 # host_record prints what the run ran on: the host, its CPU and memory, Rust,
