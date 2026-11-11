@@ -527,7 +527,7 @@ impl<D: Dir> Recovering<D> {
         ensure!(state.branch == branch, "branch {branch:#x} opened as {:#x}", state.branch);
         // fxdax: what the bucket acknowledged goes into the host's cache by a rename, which can't
         // cross filesystems: a store elsewhere than the cache is refused, not left to read every
-        // segment back from the bucket (TASK-355).
+        // segment back from the bucket (TASK-359).
         if let (Some(cache), Some(here)) = (&cache, dir.host_path("")) {
             use std::os::unix::fs::MetadataExt as _;
             let device = |path: &std::path::Path| {

@@ -337,7 +337,7 @@ fi
 # production's daemon does (FXDAX_EXTENTD_CACHE, doc-7), unless FXDAX_EXTENTD_CACHE says
 # otherwise, empty for none; not this process's, which the cases' own daemons would share
 # (TASK-164.12). In the results' directory, where the cases make their stores: a store goes into
-# the cache by renames, which a store on another filesystem than the cache's refuses (TASK-355).
+# the cache by renames, which a store on another filesystem than the cache's refuses (TASK-359).
 bucket_dir=
 if [[ -z ${FXDAX_EXTENTD_REMOTE:-} ]]; then
     bucket_dir=$(mktemp -d /dev/shm/fxdax-e2e-bucket.XXXXXX)

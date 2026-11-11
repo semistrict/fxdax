@@ -3234,7 +3234,7 @@ fn a_dropped_log_stays_dropped_through_a_crash() {
     }
 }
 
-/// TASK-355: a store whose directory is on another filesystem than the host's cache is refused
+/// TASK-359: a store whose directory is on another filesystem than the host's cache is refused
 /// as it opens: what the bucket acknowledged goes into the cache by renames, which can't cross
 /// filesystems, and every read of it would go to the bucket. On Linux, /dev/shm (tmpfs) and the
 /// target directory (on disk) are two.
@@ -3247,6 +3247,7 @@ fn stores_elsewhere_than_the_hosts_cache_are_refused() {
     let device = |path: &std::path::Path| std::fs::metadata(path).unwrap().dev();
     assert_ne!(device(cached.path()), device(temp.path()), "two filesystems");
     let cache = Arc::new(extent_remote::cache::Cache::open(cached.path(), 1 << 20, 0).unwrap());
+    let cache_dir = cache.dir().to_owned();
     let dir = HostDir::new(temp.path(), true).unwrap();
     let description = Description { block_size: BLOCK as u32, capacity: 1 << 20, branch: BRANCH };
     Store::make(&dir, description, None).unwrap();
@@ -3258,7 +3259,7 @@ fn stores_elsewhere_than_the_hosts_cache_are_refused() {
             "the store at {}/ is on another filesystem than the host's cache at {}: the store's \
              segments go into the cache by renaming them",
             temp.path().display(),
-            cached.path().display()
+            cache_dir.display()
         )
     );
 }
