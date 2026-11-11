@@ -4,7 +4,7 @@ title: 'Bench: fsync-heavy small transactions'
 status: To Do
 assignee: []
 created_date: '2026-11-11 10:56'
-updated_date: '2026-11-11 11:01'
+updated_date: '2026-11-11 13:47'
 labels: []
 dependencies:
   - TASK-350.1
@@ -21,8 +21,8 @@ Every fxdax fsync is a guest Fxfs commit and an ordered COMMIT; pgbench measured
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 pgbench (scale 50, -c 4 -j 2), SQLite in rollback and WAL journal modes with synchronous=FULL, and apt installing a fixed package set, against the loop-device baseline (TASK-350.1) with cache_type Writeback and Unsafe
-- [ ] #2 Reports tps / time and guest CPU split
+- [ ] #1 Reports tps / time and guest CPU split
+- [ ] #2 pgbench (scale 50, -c 4 -j 2), SQLite in rollback and WAL journal modes with synchronous=FULL, and apt installing a fixed package set, against the loop-device baseline with cache_type Unsafe, as production runs (TASK-350.1)
 <!-- AC:END -->
 
 ## Definition of Done

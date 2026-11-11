@@ -4,7 +4,7 @@ title: 'Bench: cold sequential scans of data on local disk'
 status: To Do
 assignee: []
 created_date: '2026-11-11 10:56'
-updated_date: '2026-11-11 11:01'
+updated_date: '2026-11-11 13:47'
 labels: []
 dependencies:
   - TASK-350.1
@@ -22,8 +22,7 @@ Cold DAX reads ran 453 MiB/s against 3,325 MiB/s for ext4 on virtio-blk, sqlite-
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
 - [ ] #1 Sequential reads of a multi-GiB file, a tar of a large tree and a SQLite table scan, cold (host caches, daemon cache and guest page cache dropped; fxdax's data in its local part cache), fxdax with and without DAX against the loop-device baseline (TASK-350.1)
-- [ ] #2 Also fxdax with the data only in the bucket (part cache emptied), against the same baseline
-- [ ] #3 Reports MiB/s and host CPU per GiB read
+- [ ] #2 Reports MiB/s and host CPU per GiB read
 <!-- AC:END -->
 
 ## Definition of Done

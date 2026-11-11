@@ -4,7 +4,7 @@ title: 'Bench: sync, syncfs and fsfreeze waiting for the bucket'
 status: To Do
 assignee: []
 created_date: '2026-11-11 10:56'
-updated_date: '2026-11-11 11:01'
+updated_date: '2026-11-11 13:47'
 labels: []
 dependencies:
   - TASK-350.1
@@ -31,3 +31,9 @@ sync, syncfs, unmount and freeze ask for COMMIT_DURABLE, which waits for the upl
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Baseline with cache_type Unsafe, as production (user, 2026-11-11): there sync, syncfs and freeze cost nothing beyond the guest.
+<!-- SECTION:NOTES:END -->
