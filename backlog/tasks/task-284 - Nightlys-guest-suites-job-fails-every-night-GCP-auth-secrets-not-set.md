@@ -3,11 +3,11 @@ id: TASK-284
 title: >-
   Nightly's guest suites on GitHub's own KVM runners, no GCP: no GCE host, no
   GCS bucket, no GCP secrets
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-09 07:26'
-updated_date: '2026-11-11 10:44'
+updated_date: '2026-11-11 15:15'
 labels:
   - ci
 dependencies: []
@@ -24,16 +24,16 @@ The user, 2026-11-11: do not use GCP. Nightly's guest-suites job therefore runs 
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 nightly.yml uses no GCP: no google-github-actions, no gcloud, no GCE/GCS variables or secrets
-- [ ] #2 A dispatched Nightly runs the whole nightly suite (runner list --tag nightly) on GitHub's runners and passes, known failures checked as before
-- [ ] #3 ci.yml's and nightly.yml's comments describe where VMs actually run
+- [x] #1 nightly.yml uses no GCP: no google-github-actions, no gcloud, no GCE/GCS variables or secrets
+- [x] #2 A dispatched Nightly runs the whole nightly suite (runner list --tag nightly) on GitHub's runners and passes, known failures checked as before
+- [x] #3 ci.yml's and nightly.yml's comments describe where VMs actually run
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
 - [ ] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -51,4 +51,12 @@ The user, 2026-11-11: do not use GCP. Nightly's guest-suites job therefore runs 
 
 <!-- SECTION:NOTES:BEGIN -->
 Run 42981086953: every jailed case with a socket failed EACCES, results in the runner's home (0750) -> work dir /mnt/nightly; test-e2e.sh now fails fast if the jailed user can't reach the results (its own mktemp default, 0700, had the same flaw: now 0755). Run 42989250162: still EACCES for API sockets, which go in TMPDIR (0755, the runner's) -> 1777, and test-e2e.sh checks TMPDIR is the jailed user's to write in (verified on ubu1: 0755 fails the check, 1777 passes). xfstests (both, ~70-90 min a part on GitHub) failed on generic/211 and 679, reached since TASK-149.25's sized scratch and never run since (no nightly): filed TASK-348 (211, SIGBUS overwriting through a mapping on a full copy-on-write Fxfs) and TASK-349 (679, fallocate's unwritten extents, the known class); both listed in KNOWN_FAILURES with reasons. TASK-347 filed: xfstests' image fetch from git.kernel.org 502'd once. Blind spot: jailed runs on hosts other than GCE never ran; the reach checks now fail them fast. ubu1: guest part 122+99+8 passed (shard tests).
+
+Rebased onto main once TASK-330.1 landed. Nightly 43005951347 (7e4b73533) and 43023717997 (rebased, 4f9884108): green, 67 of 67 nightly cases passed in 8 parts, none skipped (pjdfstest and xfstests both ways ran), run.json's knobs: FXDAX_FIRECRACKER_JAIL=1, seccomp real, FXDAX_EXTENTD_REMOTE=s3://fxdax/e2e. Parts' times: 5-10 min but parts 3 and 4 (xfstests, ~1h45-2h15), within the jobs' 330 min. CI 43023721722 on the rebased branch: every job green but the workspace part's extent_store::crash recovers_from_its_bucket_with_and_without_its_disk, TASK-341, which fails main's CI too (43006118431); an earlier branch CI hit TASK-343 (noted there). No workspace crate changed. scripts/upstream-changes.py --check passes. DoD #1 left unchecked: Linux's workspace suite isn't green on main (TASK-341), unrelated to this change.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Nightly's guest suites run on GitHub's runners with no GCP: guest-build builds the artifacts (the jailer now among them) and the kernel once; guest-suites, 8 parts (runner list --shard K/N, every Nth case from the Kth), run test-e2e-rustfs.sh --tag nightly as root, jailed under the real seccomp filter, branches in RustFS on the runner, results as artifacts. RustFS's start is scripts/lib/rustfs.sh's, shared by test-rustfs.sh, test-e2e-rustfs.sh and sandboxes.sh; runner set-up and the kernel cache are composite actions shared with sandboxes.yml; test-e2e.sh sources the pjdfstest pin and fails fast if the jailed user can't reach the results or write TMPDIR. Comments in ci.yml/nightly.yml no longer say VMs need GCE; OPEN_QUESTIONS' GCP-secrets question gone. Verified: dispatched Nightly 43023717997 on the rebased branch green, 67/67 cases; scripts' tests and the guest part (ubu1) pass. Found and filed: TASK-347 (xfstests' git.kernel.org fetch), TASK-348 (generic/211 SIGBUS), TASK-349 (generic/679); 211 and 679 listed as known.
+<!-- SECTION:FINAL_SUMMARY:END -->
