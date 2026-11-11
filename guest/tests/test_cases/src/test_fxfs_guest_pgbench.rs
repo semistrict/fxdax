@@ -594,10 +594,10 @@ RUN apk add --no-cache postgresql postgresql-contrib perf e2fsprogs
                 ("FXDAX_EXTENTD_STATS", stats.as_os_str()),
                 ("FXDAX_EXTENTD_METRICS", OsStr::new(&metrics_at)),
             ];
-            // As much memory as the sandbox team's daemon has: with its default, 1 GiB, the guest's
-            // working set, a 2 GiB window's, didn't fit, and faults paged in and unpacked again
-            // what was evicted, slower as the database grew.
-            let daemon_memory = Some(8 << 30);
+            // Its memory a page cache of the host's free memory, as production's (TASK-358): with a
+            // fixed 1 GiB, the guest's working set, a 2 GiB window's, didn't fit, and faults paged
+            // in and unpacked again what was evicted, slower as the database grew.
+            let daemon_memory = None;
             let mut daemon =
                 crate::common::spawn_daemon(test_setup, &socket, "extentd", &env, daemon_memory)?;
             let base = dir.join("base");

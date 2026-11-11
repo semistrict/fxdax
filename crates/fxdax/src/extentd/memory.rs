@@ -20,8 +20,20 @@ use std::sync::{Arc, Mutex, Weak};
 
 /// The tenants alive, and their limits, under one lock, so that a tenant made as its limit is set
 /// is limited as it was set.
-static REGISTRY: Mutex<Registry> =
-    Mutex::new(Registry { tenants: Vec::new(), limits: None, rooms: None });
+static REGISTRY: Mutex<Registry> = Mutex::new(Registry {
+    tenants: Vec::new(),
+    limits: None,
+    rooms: None,
+    weights: None,
+    total: None,
+});
+
+/// fxdax: what the governor allows every tenant's memory together, as the host's free memory goes
+/// ([`super::governor`], TASK-358): unlimited for a daemon not governed.
+static GOVERNED: AtomicU64 = AtomicU64::new(u64::MAX);
+
+/// fxdax: a tenant's weight unless it is set: each tenant alike.
+pub const DEFAULT_WEIGHT: u64 = 1;
 
 struct Registry {
     /// The tenants alive, which may outlive their grants, while their VM processes do: a tenant
@@ -33,6 +45,11 @@ struct Registry {
     limits: Option<HashMap<String, u64>>,
     /// fxdax: the tenants' rooms ([`InFlight`]), in bytes, by name, as their limits are.
     rooms: Option<HashMap<String, u64>>,
+    /// fxdax: the tenants' weights, by name, as their limits are ([`set_weight`], TASK-358).
+    weights: Option<HashMap<String, u64>>,
+    /// fxdax: the limit on every tenant's memory together the control API set, if it did, which
+    /// the governor's allowance lowers further ([`govern`]).
+    total: Option<u64>,
 }
 
 impl Registry {
@@ -42,6 +59,20 @@ impl Registry {
 
     fn limit(&self, name: &str) -> Option<u64> {
         self.limits.as_ref().and_then(|limits| limits.get(name).copied())
+    }
+
+    fn weight(&self, name: &str) -> u64 {
+        self.weights
+            .as_ref()
+            .and_then(|weights| weights.get(name).copied())
+            .unwrap_or(DEFAULT_WEIGHT)
+    }
+
+    /// Limits every tenant's memory together to the least of the control API's limit and the
+    /// governor's allowance.
+    fn apply_total(&self) {
+        let cap = self.total.unwrap_or(u64::MAX).min(GOVERNED.load(Ordering::Relaxed));
+        physmem::set_total_cap((cap != u64::MAX).then_some(cap));
     }
 }
 
@@ -82,7 +113,9 @@ pub fn set_limit(tenant: Option<&str>, bytes: Option<u64>) -> Result<(), Errno> 
         return Err(Errno::EINVAL);
     }
     let Some(name) = tenant else {
-        physmem::set_total_cap(bytes);
+        let mut registry = REGISTRY.lock().unwrap();
+        registry.total = bytes;
+        registry.apply_total();
         return Ok(());
     };
     super::grants::check_name(name)?;
@@ -96,6 +129,60 @@ pub fn set_limit(tenant: Option<&str>, bytes: Option<u64>) -> Result<(), Errno> 
         physmem::set_arena_cap(tenant.arena(), bytes);
     }
     Ok(())
+}
+
+/// fxdax: weighs the tenant `tenant`'s memory, alive now or granted later, against the others' as
+/// the host's memory runs low (TASK-358): the governor evicts each tenant first down to its share of
+/// what it allows by weight, a tenant within its share kept, then any tenant's, least recently used
+/// first. Every tenant's weight is [`DEFAULT_WEIGHT`] until set, such as to the memory its VMs are
+/// given.
+pub fn set_weight(tenant: &str, weight: u64) -> Result<(), Errno> {
+    super::grants::check_name(tenant)?;
+    let mut registry = REGISTRY.lock().unwrap();
+    registry.weights.get_or_insert_with(HashMap::new).insert(tenant.to_owned(), weight);
+    Ok(())
+}
+
+/// fxdax: the governor's look at the host's memory (TASK-358): every tenant's memory together
+/// limited to `allowance` bytes, and held past it, evicted at once: each tenant past its share by
+/// weight down to it ([`super::governor::shares`]), then any tenant's, least recently used first.
+pub fn govern(allowance: u64) {
+    GOVERNED.store(allowance, Ordering::Relaxed);
+    let weighted: Vec<(String, u64)> = {
+        let registry = REGISTRY.lock().unwrap();
+        registry.apply_total();
+        if physmem::arenas_bytes() <= allowance {
+            return;
+        }
+        let mut names: Vec<String> =
+            registry.alive().map(|tenant| tenant.name().to_owned()).collect();
+        names.sort();
+        names.dedup();
+        names.into_iter().map(|name| (name.clone(), registry.weight(&name))).collect()
+    };
+    for (name, share) in super::governor::shares(allowance, &weighted) {
+        if held_by(&name) > share
+            && let Err(err) = shrink(Some(&name), share)
+            && err != Errno::ENOENT
+        {
+            log::error!("extentd: shrinking a tenant's memory to its share: {err}");
+        }
+    }
+    if physmem::arenas_bytes() > allowance
+        && let Err(err) = shrink(None, allowance)
+    {
+        log::error!("extentd: shrinking the daemon's memory to the host's: {err}");
+    }
+}
+
+/// What the tenants alive named `name` hold.
+fn held_by(name: &str) -> u64 {
+    let registry = REGISTRY.lock().unwrap();
+    registry
+        .alive()
+        .filter(|tenant| tenant.name() == name)
+        .map(|tenant| physmem::arena_bytes(tenant.arena()))
+        .sum()
 }
 
 /// Evicts clean pages, those asked for longest ago first, of the tenant `tenant`'s, or of any, until

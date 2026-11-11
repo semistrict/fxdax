@@ -9,8 +9,12 @@
 //! fxdax-extentd SOCKET [MEMORY_BYTES]
 //! ```
 //!
-//! MEMORY_BYTES is how much memory its kernel takes at most, for the sealed extents it caches,
-//! whose pages VMs' DAX windows map read-only: the kernel's default otherwise (1 GiB). A store's
+//! Its memory, which the sealed extents it caches are kept in, and VMs' DAX windows map read-only,
+//! is a page cache (`fxdax::extentd::governor`, TASK-358): as much of the host's as is free, less a
+//! headroom (`FXDAX_EXTENTD_HEADROOM` bytes, by default a sixteenth of the host's memory, 1 GiB at
+//! least), given back as the host's free memory falls, each tenant kept its share by weight
+//! (`SetMemoryWeight`). MEMORY_BYTES, if given, fixes it at that instead, ungoverned, as a test's
+//! daemon may have it. A store's
 //! private pages, which copy-on-write DAX gives a VM's stores, are of the VM's memory, not of it
 //! (backlog doc-13). Out of it, or past a limit the control API sets, the daemon evicts the cached
 //! extents asked for longest ago, and fails what it cannot make room for with ENOMEM, rather than
@@ -112,6 +116,12 @@ fn main() -> anyhow::Result<()> {
     if let Some(memory) = args.next() {
         let memory: u64 = memory.parse().context("MEMORY_BYTES must be a number")?;
         fxdax::pages::configure(fxdax::pages::Config::with_memory(memory))?;
+    } else {
+        // fxdax: its memory a page cache, as large as the host's, governed by what is free
+        // (TASK-358).
+        let memory = fxdax::extentd::governor::memory_bytes().map_err(anyhow::Error::msg)?;
+        fxdax::pages::configure(fxdax::pages::Config::with_memory(memory))?;
+        fxdax::extentd::governor::start().map_err(anyhow::Error::msg)?;
     }
     let listener = fxdax::extentd::bind_owner_only(&socket)
         .with_context(|| format!("listening at {socket}"))?;

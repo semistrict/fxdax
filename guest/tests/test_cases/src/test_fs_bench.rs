@@ -513,12 +513,12 @@ COPY lua-5.4.7.tar.gz /opt/lua-5.4.7.tar.gz
                 vm.env(&CString::new(format!("{var}={value}"))?);
             }
         }
-        // fxdax: the extent daemon's memory, which the working-set workloads size their files by
-        // (TASK-350.2): FXDAX_EXTENTD_MEMORY, as scripts/test-e2e.sh gives the daemon it, or its
-        // default, 8 GiB. Every case gets it, the baselines too, so that each reads files of the
-        // same sizes.
+        // fxdax: what the working-set workloads size their files by (TASK-350.2): the extent
+        // daemon's fixed memory, FXDAX_EXTENTD_MEMORY, if it has one, or 1 GiB, its old default,
+        // a daemon whose memory is a page cache having no size of its own (TASK-358). Every case
+        // gets it, the baselines too, so that each reads files of the same sizes.
         let daemon_memory =
-            std::env::var("FXDAX_EXTENTD_MEMORY").unwrap_or_else(|_| (8u64 << 30).to_string());
+            std::env::var("FXDAX_EXTENTD_MEMORY").unwrap_or_else(|_| (1u64 << 30).to_string());
         vm.env(&CString::new(format!("FXDAX_BENCH_DAEMON_MEMORY={daemon_memory}"))?);
         // The compiler finds the assembler and linker through PATH.
         vm.env(c"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin");

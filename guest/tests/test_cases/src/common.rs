@@ -116,13 +116,6 @@ pub fn check_durable_median(test_setup: &TestSetup, name: &str) -> anyhow::Resul
     Ok(())
 }
 
-/// fxdax: the memory a test's extent daemon takes at most unless its case says (`MEMORY_BYTES`),
-/// the sandbox team's daemon's: room for what its VMs read again, as a host's page cache holds a
-/// virtio-pmem image's (TASK-227). The daemon's own default, 1 GiB, held 1 GiB of a 1.54 GB Linux
-/// tree, which its warm reread through an 8 GiB window paged in again, 13.15 s; 8 GiB, 600 ms
-/// (GCE r880, r881). A bound, not a reservation: the daemon takes pages as it caches them.
-pub const DAEMON_MEMORY: u64 = 8 << 30;
-
 /// fxdax: the most bytes a DAX window has, the extent daemon's (`extentd::wire::MAX_WINDOW`): what
 /// it keeps for a window grows with the pages it maps, which it bounds so (TASK-150.3).
 pub const MAX_DAX_WINDOW: u64 = 64 << 30;
@@ -168,7 +161,8 @@ fn window_bytes(window: Window, given: Option<&str>, meminfo: &str) -> anyhow::R
 
 /// An extent daemon of the test's own, FXDAX_EXTENTD_BIN, serving at `socket`, and its control API
 /// beside it ([`control`]), once this returns, with `env` in its environment, and `memory` bytes of
-/// memory if given, [`DAEMON_MEMORY`] otherwise, logging to `<name>.log` in the test's directory.
+/// memory if given; otherwise, as production's, its memory a page cache of what of the host's is
+/// free (TASK-358). It logs to `<name>.log` in the test's directory.
 /// fxdax: it keeps what its stores read from their bucket in a part cache of its own,
 /// `<name>-cache` in the test's directory, as production's daemon keeps it on the host's disk
 /// (`FXDAX_EXTENTD_CACHE`, doc-7), unless `env` or this process says otherwise, empty for none: one
@@ -198,7 +192,9 @@ pub fn spawn_daemon(
     };
     let mut command = std::process::Command::new(bin);
     command.arg(socket).env("FXDAX_EXTENTD_GRPC", socket.with_extension("control"));
-    command.arg(memory.unwrap_or(DAEMON_MEMORY).to_string());
+    if let Some(memory) = memory {
+        command.arg(memory.to_string());
+    }
     if !named("FXDAX_EXTENTD_REMOTE") {
         let bucket = test_setup.tmp_dir.join(format!("{name}.bucket"));
         command.env("FXDAX_EXTENTD_REMOTE", format!("file://{}/", bucket.display()));

@@ -330,9 +330,8 @@ fi
 # as of placement 1 unless one is named; what it did with it scripts/bench-report.py reports. Not
 # one in the daemon's memory: the cases open the stores it made in processes of their own (fxdax's
 # Storage), which keep a store's branch in the bucket its description names (TASK-165.6). Its
-# kernel takes FXDAX_EXTENTD_MEMORY bytes at most, if set, or 8 GiB, the sandbox team's daemon's
-# (guest/tests' common::DAEMON_MEMORY): its own default, 1 GiB, held too little of what VMs read
-# again (TASK-227).
+# memory is FXDAX_EXTENTD_MEMORY bytes, if set; otherwise, as production's, a page cache of what
+# of the host's memory, and the run's cgroup's, is free (TASK-358).
 # fxdax: what its stores read from the bucket it keeps in a part cache of its own on disk, as
 # production's daemon does (FXDAX_EXTENTD_CACHE, doc-7), unless FXDAX_EXTENTD_CACHE says
 # otherwise, empty for none; not this process's, which the cases' own daemons would share
@@ -374,7 +373,7 @@ env FXDAX_EXTENTD_REMOTE="${FXDAX_EXTENTD_REMOTE:-file://$bucket_dir}" \
     FXDAX_EXTENTD_CACHE="${FXDAX_EXTENTD_CACHE-$cache_dir}" \
     FXDAX_EXTENTD_TOKEN="${FXDAX_EXTENTD_TOKEN:-1}" \
     FXDAX_EXTENTD_STATS="$results/extentd-stats.txt" FXDAX_EXTENTD_GRPC="$control" \
-    FAILPOINTS="${FXDAX_FAILPOINTS:-}" ${extentd_wrap[@]+"${extentd_wrap[@]}"} "$extentd_bin" "$socket" "${FXDAX_EXTENTD_MEMORY:-8589934592}" \
+    FAILPOINTS="${FXDAX_FAILPOINTS:-}" ${extentd_wrap[@]+"${extentd_wrap[@]}"} "$extentd_bin" "$socket" ${FXDAX_EXTENTD_MEMORY:+"$FXDAX_EXTENTD_MEMORY"} \
     > "$results/extentd.log" 2>&1 &
 daemon=$!
 trap 'extentd_peak; kill "$daemon" 2> /dev/null; extentd_stop; rm -f "$socket" "$control"; [[ -z $bucket_dir ]] || rm -r "$bucket_dir"; [[ -z $cache_dir ]] || rm -r "$cache_dir"' EXIT

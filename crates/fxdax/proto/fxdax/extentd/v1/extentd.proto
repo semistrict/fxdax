@@ -148,6 +148,12 @@ service Extentd {
   // would take more fails, with ENOMEM, which the VM's guest sees as an I/O error, and the daemon
   // goes on. A limit under what is held holds as pages are freed: ShrinkMemory frees them now.
   rpc SetMemoryLimit(SetMemoryLimitRequest) returns (SetMemoryLimitResponse);
+  // Weighs a tenant's memory against the others' (TASK-358). The daemon's memory is a page cache:
+  // as much of the host's as is free, less a headroom; as the host's free memory falls, the daemon
+  // gives it back, evicting each tenant first down to its share by weight of what it may still
+  // hold, a tenant within its share kept, then any, least recently used first. Every tenant weighs
+  // 1 until set, such as to the memory its sandboxes are given.
+  rpc SetMemoryWeight(SetMemoryWeightRequest) returns (SetMemoryWeightResponse);
   // Sets the room a tenant's VM processes' connections share (TASK-149.35): what of their
   // requests the daemon holds at once, their data in the stream and what it queued for them, which
   // each connection's own room bounds too. A request past it waits for room. By default 8 GiB a
@@ -549,6 +555,18 @@ message SetMemoryLimitRequest {
 
 // The limit is set.
 message SetMemoryLimitResponse {}
+
+// Weighs a tenant's memory.
+message SetMemoryWeightRequest {
+  // The tenant, alive now or granted later, until its weight is set again (INVALID_ARGUMENT for a
+  // malformed name).
+  string tenant = 1;
+  // Its weight: 0 for no share kept under pressure.
+  uint64 weight = 2;
+}
+
+// The weight is set.
+message SetMemoryWeightResponse {}
 
 // Sets the room of a tenant's connections.
 message SetTenantRoomRequest {

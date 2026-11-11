@@ -533,6 +533,14 @@ impl Extentd for Control {
         reply(memory::set_limit(tenant.as_deref(), bytes).map(|()| SetMemoryLimitResponse {}))
     }
 
+    async fn set_memory_weight(
+        &self,
+        request: Request<SetMemoryWeightRequest>,
+    ) -> Result<Response<SetMemoryWeightResponse>, Status> {
+        let SetMemoryWeightRequest { tenant, weight } = request.into_inner();
+        reply(memory::set_weight(&tenant, weight).map(|()| SetMemoryWeightResponse {}))
+    }
+
     async fn set_tenant_room(
         &self,
         request: Request<SetTenantRoomRequest>,
@@ -765,6 +773,14 @@ impl Client {
             SetMemoryLimitRequest { tenant: tenant.unwrap_or_default().to_owned(), bytes };
         let what = format!("limiting the memory of {}", tenant.unwrap_or("every tenant"));
         self.call(what, |mut c| async move { c.set_memory_limit(request).await }).map(drop)
+    }
+
+    /// fxdax: weighs the memory of the tenant `tenant` against the others' (`SetMemoryWeight`,
+    /// TASK-358).
+    pub fn set_memory_weight(&self, tenant: &str, weight: u64) -> Result<(), crate::Error> {
+        let request = SetMemoryWeightRequest { tenant: tenant.to_owned(), weight };
+        let what = format!("weighing the memory of {tenant}");
+        self.call(what, |mut c| async move { c.set_memory_weight(request).await }).map(drop)
     }
 
     /// fxdax: sets the room the connections of the tenant `tenant`, or of every tenant without one,

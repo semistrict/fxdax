@@ -31,7 +31,7 @@
 //! (`FXDAX_E2E_TEST=linux-checkout-fxfs-dax scripts/test-host.sh`), and
 //! scripts/linux-checkout-report.py makes tables of what they said. FXDAX_LINUX_CHECKOUT_WINDOW
 //! sets the DAX window's bytes (as large as the data, [`crate::common::dax_window`]), and
-//! FXDAX_LINUX_CHECKOUT_EXTENTD_MEMORY the daemon's ([`crate::common::DAEMON_MEMORY`]): each
+//! FXDAX_LINUX_CHECKOUT_EXTENTD_MEMORY the daemon's (by default, a page cache of the host's free memory, TASK-358): each
 //! larger than the tree, its warm reread finds it all still there, as ext4's finds the host's page
 //! cache; a window or memory smaller than the tree, 1 GiB, finds nothing of it the second time
 //! (GCE r870 and r881: 25.6 s against 600 ms, TASK-227). ext4's disk, and its pmem device, is an 8 GiB image file, the host's page cache

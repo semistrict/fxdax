@@ -4960,6 +4960,48 @@ fn shrinks_return_once_the_pages_they_evict_are_free() {
     assert_eq!((shrinking.join().unwrap(), unmapped), (Ok(CHUNK), vec![vec![0, CHUNK]]));
 }
 
+/// TASK-358: the governor, the host's memory running low, evicts each tenant down to its share by
+/// weight of what it allows: of two tenants of 4 chunks each, weighing 3 and 1, allowed 4 chunks
+/// together, the heavier keeps 3, the lighter 1.
+#[test]
+fn the_governor_shares_memory_by_weight() {
+    use super::wire::*;
+    const CHUNK: u64 = physmem::CHUNK_SIZE as u64;
+    host();
+    let dir = tempfile::tempdir().unwrap();
+    let mut kept = Vec::new();
+    for (name, weight) in [("heavy", 3), ("light", 1)] {
+        super::memory::set_weight(name, weight).unwrap();
+        let tenant_dir = dir.path().join(name);
+        std::fs::create_dir(&tenant_dir).unwrap();
+        let tenant = super::server::Tenant::new(name, &tenant_dir).unwrap();
+        let socket = tenant_dir.join("extentd.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        std::thread::spawn(move || super::server::serve_tenant(listener, tenant));
+        let (sender, mut receiver, stream, branch) =
+            raw_connection(&socket, &tenant_dir.join("store"), 1 << 26);
+        let mut served = |header: Header, payload: &[u8]| {
+            let reply = call(&sender, &mut receiver, header, payload);
+            assert_eq!(reply.header.status, 0, "request {}", header.kind);
+            reply
+        };
+        for sequence in 1..=4 {
+            let written = Header::new(WRITE, sequence).with_args(&[branch, sequence, 0]);
+            served(written, &pattern(sequence as u8, CHUNK as usize));
+        }
+        served(Header::new(COMMIT, 5).with_flags(COMMIT_DURABLE), &[]);
+        for sequence in 1..=4 {
+            let read = Header::new(READ, 5 + sequence).with_args(&[branch, sequence, 0, CHUNK]);
+            assert_eq!(served(read, &[]).payload, pattern(sequence as u8, CHUNK as usize));
+        }
+        assert_eq!(super::memory::shrink(Some(name), u64::MAX), Ok(4 * CHUNK), "{name}");
+        kept.push((sender, receiver, stream));
+    }
+    super::memory::govern(4 * CHUNK);
+    let held = |name| super::memory::shrink(Some(name), u64::MAX).unwrap();
+    assert_eq!((held("heavy"), held("light")), (3 * CHUNK, CHUNK));
+}
+
 /// TASK-79.35: the daemon's metrics are served on through a failure to accept a scrape's
 /// connection, as with as many files open as it may (EMFILE): once files close.
 #[test]

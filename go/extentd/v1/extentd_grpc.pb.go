@@ -90,27 +90,28 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	Extentd_CreateStore_FullMethodName    = "/fxdax.extentd.v1.Extentd/CreateStore"
-	Extentd_ImportImage_FullMethodName    = "/fxdax.extentd.v1.Extentd/ImportImage"
-	Extentd_ForkStore_FullMethodName      = "/fxdax.extentd.v1.Extentd/ForkStore"
-	Extentd_DeleteStore_FullMethodName    = "/fxdax.extentd.v1.Extentd/DeleteStore"
-	Extentd_DropStore_FullMethodName      = "/fxdax.extentd.v1.Extentd/DropStore"
-	Extentd_ResizeStore_FullMethodName    = "/fxdax.extentd.v1.Extentd/ResizeStore"
-	Extentd_PlaceStore_FullMethodName     = "/fxdax.extentd.v1.Extentd/PlaceStore"
-	Extentd_MakePublic_FullMethodName     = "/fxdax.extentd.v1.Extentd/MakePublic"
-	Extentd_AttachBase_FullMethodName     = "/fxdax.extentd.v1.Extentd/AttachBase"
-	Extentd_SyncStore_FullMethodName      = "/fxdax.extentd.v1.Extentd/SyncStore"
-	Extentd_StatStore_FullMethodName      = "/fxdax.extentd.v1.Extentd/StatStore"
-	Extentd_ListStores_FullMethodName     = "/fxdax.extentd.v1.Extentd/ListStores"
-	Extentd_GetStats_FullMethodName       = "/fxdax.extentd.v1.Extentd/GetStats"
-	Extentd_GetSnapshot_FullMethodName    = "/fxdax.extentd.v1.Extentd/GetSnapshot"
-	Extentd_Grant_FullMethodName          = "/fxdax.extentd.v1.Extentd/Grant"
-	Extentd_Revoke_FullMethodName         = "/fxdax.extentd.v1.Extentd/Revoke"
-	Extentd_SetMemoryLimit_FullMethodName = "/fxdax.extentd.v1.Extentd/SetMemoryLimit"
-	Extentd_SetTenantRoom_FullMethodName  = "/fxdax.extentd.v1.Extentd/SetTenantRoom"
-	Extentd_ShrinkMemory_FullMethodName   = "/fxdax.extentd.v1.Extentd/ShrinkMemory"
-	Extentd_SetDiskLimit_FullMethodName   = "/fxdax.extentd.v1.Extentd/SetDiskLimit"
-	Extentd_GetTenantDisk_FullMethodName  = "/fxdax.extentd.v1.Extentd/GetTenantDisk"
+	Extentd_CreateStore_FullMethodName     = "/fxdax.extentd.v1.Extentd/CreateStore"
+	Extentd_ImportImage_FullMethodName     = "/fxdax.extentd.v1.Extentd/ImportImage"
+	Extentd_ForkStore_FullMethodName       = "/fxdax.extentd.v1.Extentd/ForkStore"
+	Extentd_DeleteStore_FullMethodName     = "/fxdax.extentd.v1.Extentd/DeleteStore"
+	Extentd_DropStore_FullMethodName       = "/fxdax.extentd.v1.Extentd/DropStore"
+	Extentd_ResizeStore_FullMethodName     = "/fxdax.extentd.v1.Extentd/ResizeStore"
+	Extentd_PlaceStore_FullMethodName      = "/fxdax.extentd.v1.Extentd/PlaceStore"
+	Extentd_MakePublic_FullMethodName      = "/fxdax.extentd.v1.Extentd/MakePublic"
+	Extentd_AttachBase_FullMethodName      = "/fxdax.extentd.v1.Extentd/AttachBase"
+	Extentd_SyncStore_FullMethodName       = "/fxdax.extentd.v1.Extentd/SyncStore"
+	Extentd_StatStore_FullMethodName       = "/fxdax.extentd.v1.Extentd/StatStore"
+	Extentd_ListStores_FullMethodName      = "/fxdax.extentd.v1.Extentd/ListStores"
+	Extentd_GetStats_FullMethodName        = "/fxdax.extentd.v1.Extentd/GetStats"
+	Extentd_GetSnapshot_FullMethodName     = "/fxdax.extentd.v1.Extentd/GetSnapshot"
+	Extentd_Grant_FullMethodName           = "/fxdax.extentd.v1.Extentd/Grant"
+	Extentd_Revoke_FullMethodName          = "/fxdax.extentd.v1.Extentd/Revoke"
+	Extentd_SetMemoryLimit_FullMethodName  = "/fxdax.extentd.v1.Extentd/SetMemoryLimit"
+	Extentd_SetMemoryWeight_FullMethodName = "/fxdax.extentd.v1.Extentd/SetMemoryWeight"
+	Extentd_SetTenantRoom_FullMethodName   = "/fxdax.extentd.v1.Extentd/SetTenantRoom"
+	Extentd_ShrinkMemory_FullMethodName    = "/fxdax.extentd.v1.Extentd/ShrinkMemory"
+	Extentd_SetDiskLimit_FullMethodName    = "/fxdax.extentd.v1.Extentd/SetDiskLimit"
+	Extentd_GetTenantDisk_FullMethodName   = "/fxdax.extentd.v1.Extentd/GetTenantDisk"
 )
 
 // ExtentdClient is the client API for Extentd service.
@@ -189,6 +190,12 @@ type ExtentdClient interface {
 	// would take more fails, with ENOMEM, which the VM's guest sees as an I/O error, and the daemon
 	// goes on. A limit under what is held holds as pages are freed: ShrinkMemory frees them now.
 	SetMemoryLimit(ctx context.Context, in *SetMemoryLimitRequest, opts ...grpc.CallOption) (*SetMemoryLimitResponse, error)
+	// Weighs a tenant's memory against the others' (TASK-358). The daemon's memory is a page cache:
+	// as much of the host's as is free, less a headroom; as the host's free memory falls, the daemon
+	// gives it back, evicting each tenant first down to its share by weight of what it may still
+	// hold, a tenant within its share kept, then any, least recently used first. Every tenant weighs
+	// 1 until set, such as to the memory its sandboxes are given.
+	SetMemoryWeight(ctx context.Context, in *SetMemoryWeightRequest, opts ...grpc.CallOption) (*SetMemoryWeightResponse, error)
 	// Sets the room a tenant's VM processes' connections share (TASK-149.35): what of their
 	// requests the daemon holds at once, their data in the stream and what it queued for them, which
 	// each connection's own room bounds too. A request past it waits for room. By default 8 GiB a
@@ -386,6 +393,16 @@ func (c *extentdClient) SetMemoryLimit(ctx context.Context, in *SetMemoryLimitRe
 	return out, nil
 }
 
+func (c *extentdClient) SetMemoryWeight(ctx context.Context, in *SetMemoryWeightRequest, opts ...grpc.CallOption) (*SetMemoryWeightResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SetMemoryWeightResponse)
+	err := c.cc.Invoke(ctx, Extentd_SetMemoryWeight_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *extentdClient) SetTenantRoom(ctx context.Context, in *SetTenantRoomRequest, opts ...grpc.CallOption) (*SetTenantRoomResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(SetTenantRoomResponse)
@@ -502,6 +519,12 @@ type ExtentdServer interface {
 	// would take more fails, with ENOMEM, which the VM's guest sees as an I/O error, and the daemon
 	// goes on. A limit under what is held holds as pages are freed: ShrinkMemory frees them now.
 	SetMemoryLimit(context.Context, *SetMemoryLimitRequest) (*SetMemoryLimitResponse, error)
+	// Weighs a tenant's memory against the others' (TASK-358). The daemon's memory is a page cache:
+	// as much of the host's as is free, less a headroom; as the host's free memory falls, the daemon
+	// gives it back, evicting each tenant first down to its share by weight of what it may still
+	// hold, a tenant within its share kept, then any, least recently used first. Every tenant weighs
+	// 1 until set, such as to the memory its sandboxes are given.
+	SetMemoryWeight(context.Context, *SetMemoryWeightRequest) (*SetMemoryWeightResponse, error)
 	// Sets the room a tenant's VM processes' connections share (TASK-149.35): what of their
 	// requests the daemon holds at once, their data in the stream and what it queued for them, which
 	// each connection's own room bounds too. A request past it waits for room. By default 8 GiB a
@@ -579,6 +602,9 @@ func (UnimplementedExtentdServer) Revoke(context.Context, *RevokeRequest) (*Revo
 }
 func (UnimplementedExtentdServer) SetMemoryLimit(context.Context, *SetMemoryLimitRequest) (*SetMemoryLimitResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method SetMemoryLimit not implemented")
+}
+func (UnimplementedExtentdServer) SetMemoryWeight(context.Context, *SetMemoryWeightRequest) (*SetMemoryWeightResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SetMemoryWeight not implemented")
 }
 func (UnimplementedExtentdServer) SetTenantRoom(context.Context, *SetTenantRoomRequest) (*SetTenantRoomResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method SetTenantRoom not implemented")
@@ -919,6 +945,24 @@ func _Extentd_SetMemoryLimit_Handler(srv interface{}, ctx context.Context, dec f
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Extentd_SetMemoryWeight_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SetMemoryWeightRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ExtentdServer).SetMemoryWeight(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Extentd_SetMemoryWeight_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ExtentdServer).SetMemoryWeight(ctx, req.(*SetMemoryWeightRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _Extentd_SetTenantRoom_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(SetTenantRoomRequest)
 	if err := dec(in); err != nil {
@@ -1065,6 +1109,10 @@ var Extentd_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "SetMemoryLimit",
 			Handler:    _Extentd_SetMemoryLimit_Handler,
+		},
+		{
+			MethodName: "SetMemoryWeight",
+			Handler:    _Extentd_SetMemoryWeight_Handler,
 		},
 		{
 			MethodName: "SetTenantRoom",

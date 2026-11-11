@@ -96,6 +96,7 @@ pub mod control;
 mod device;
 pub mod disk;
 pub mod drain;
+pub mod governor;
 mod grants;
 pub mod logging;
 pub mod memory;

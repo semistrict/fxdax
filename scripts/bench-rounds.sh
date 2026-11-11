@@ -17,6 +17,7 @@
 #
 # The cases' artifacts are built once, first, into RESULTS/artifacts (FXDAX_E2E_BUILD_ONLY), and
 # every run boots those (FXDAX_E2E_PREBUILT): no run builds, nor runs the harness's own tests.
+# Each run may hold FXDAX_ROUNDS_MEM (16G) of memory, page cache and the extent daemon's together.
 # Each run's extent daemon keeps its bucket on disk, in RESULTS/CASE/round-K/bucket, removed once
 # it is done, unless FXDAX_EXTENTD_REMOTE names one: test-e2e.sh's default, on tmpfs, counts
 # against the run's memory limit, and a working set of gigabytes overran it (TASK-350).
@@ -84,7 +85,7 @@ for ((round = 1; round <= rounds; round++)); do
         sudo sh -c 'echo 3 > /proc/sys/vm/drop_caches'
         load_before=$(load) arc_before=$(arc_bytes) started=$(date -u +%FT%TZ)
         outcome=ok
-        fxjob --bench --mem 8G --name "rounds-$case-$round" -- \
+        fxjob --bench --mem "${FXDAX_ROUNDS_MEM:-16G}" --name "rounds-$case-$round" -- \
             sudo env "PATH=$PATH" "HOME=$HOME" "${passed[@]}" \
             "FXDAX_E2E_PREBUILT=$artifacts" "FXDAX_E2E_RESULTS=$out/e2e" "FXDAX_BENCH_RESULTS=$out" \
             "FXDAX_EXTENTD_REMOTE=${FXDAX_EXTENTD_REMOTE:-file://$out/bucket}" \
