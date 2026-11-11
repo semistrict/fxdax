@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-11 07:26'
-updated_date: '2026-11-11 15:13'
+updated_date: '2026-11-11 15:16'
 labels:
   - extentd
   - testing
@@ -70,4 +70,6 @@ Validation with the fix (t276x-343, b95832a0), all on ubu1 tmpfs under fxjob --m
 - A first run of seeds 54 and 55 together failed both at once, about 1420 s in, with "a connection of mallory's never ended: Timeout", as ubu1's load went from about 4 to 35. Run one after the other on a quieter host, both passed.
 - The earlier "didn't commit" failures (seed 55 case 811 on main with debugging, seed 54 case 907 on ZFS) didn't recur. Filed as TASK-357, with the timeouts.
 - extent_store: cargo nextest run -p extent_store passed on macOS, 226 tests. segments_of_noise_then_holes_are_framed_compressed fails with the old saves_little ("framed in place") and passes with the fix.
+
+Also in CI's workspace part on TASK-284's branch (CI run 43005967237, 2026-11-11, before this fix; no extentd change there): a_compromised_vm_process_harms_no_tenant_beside_it failed.
 <!-- SECTION:NOTES:END -->
