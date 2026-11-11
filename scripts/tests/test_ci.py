@@ -180,6 +180,8 @@ class Nightly(unittest.TestCase):
         # Where the jailed VMs' user reaches, binding their sockets beside the cases' logs: in the
         # runner's home, its user's alone, every case with one failed, EACCES (run 42981086953).
         self.assertIn("      WORK: /mnt/nightly\n", suites)
+        self.assertIn('chmod 1777 "$WORK/tmp"', suites)
+        self.assertIn('"TMPDIR=$WORK/tmp"', suites)
         self.assertNotIn("$HOME/nightly", suites)
         run = re.search(r"- name: The guest suites, part .*?\n(.*?)\n      # ", suites,
                         re.DOTALL).group(1)

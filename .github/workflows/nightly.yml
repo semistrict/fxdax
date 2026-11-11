@@ -71,11 +71,13 @@ jobs:
         with:
           name: guest-artifacts
       # In /mnt, which the jailed VMs' user reaches, unlike the runner's home, its user's alone:
-      # the VMs bind their sockets beside the cases' logs.
+      # the VMs bind their sockets beside the cases' logs, and their API's in the temporary
+      # directory, everyone's to write in, as /tmp is.
       - name: Unpack the artifacts
         run: |
           sudo mkdir -p "$WORK/tmp"
           sudo chown -R "$USER" "$WORK"
+          chmod 1777 "$WORK/tmp"
           tar -C "$WORK" -xf guest.tar
           rm guest.tar
           cat "$WORK/artifacts/artifacts.txt"

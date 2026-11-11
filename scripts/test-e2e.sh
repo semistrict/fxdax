@@ -207,12 +207,16 @@ fi
 if [[ -n ${FXDAX_FIRECRACKER_JAIL:-} && -z $build_only ]]; then
     [[ $seccomp != none ]] || { echo "FXDAX_FIRECRACKER_JAIL needs a seccomp filter" >&2; exit 2; }
     export FXDAX_JAIL_UID=64000 FXDAX_JAIL_GID=64000
-    # The jailed user binds its VM's sockets in the cases' directories, under the results: one it
-    # can't reach failed every case with one, EACCES (TASK-284: results in a GitHub runner's home,
-    # its user's alone).
-    if ! setpriv --reuid="$FXDAX_JAIL_UID" --regid="$FXDAX_JAIL_GID" --clear-groups \
-        test -x "$results"; then
-        echo "$results is out of the jailed user's reach ($FXDAX_JAIL_UID): FXDAX_FIRECRACKER_JAIL needs results it can reach" >&2
+    # The jailed user binds its VM's sockets in the cases' directories, under the results, and
+    # their APIs' in the temporary directory: one it can't reach, or write in, failed every case
+    # with one, EACCES (TASK-284: GitHub runs' in the runner's home, its user's alone).
+    jailed() { setpriv --reuid="$FXDAX_JAIL_UID" --regid="$FXDAX_JAIL_GID" --clear-groups "$@"; }
+    if ! jailed test -x "$results"; then
+        echo "$results is out of the jailed user's reach ($FXDAX_JAIL_UID)" >&2
+        exit 2
+    fi
+    if ! jailed test -w "${TMPDIR:-/tmp}" -a -x "${TMPDIR:-/tmp}"; then
+        echo "${TMPDIR:-/tmp} isn't the jailed user's to write in ($FXDAX_JAIL_UID)" >&2
         exit 2
     fi
     sysctl -q vm.unprivileged_userfaultfd=0
