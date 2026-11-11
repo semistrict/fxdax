@@ -123,7 +123,11 @@ RUN apk add --no-cache e2fsprogs
             detached(&name, &image)
         }
 
-        fn check(self: Box<Self>, stdout: Vec<u8>, _test_setup: TestSetup) -> TestOutcome {
+        fn check(self: Box<Self>, stdout: Vec<u8>, test_setup: TestSetup) -> TestOutcome {
+            // The image goes, whatever the outcome; the loop device went with the VMs.
+            if let Err(err) = std::fs::remove_file(test_setup.tmp_dir.join("disk.img")) {
+                return TestOutcome::Fail(format!("removing the loop device's image: {err}"));
+            }
             let output = String::from_utf8_lossy(&stdout);
             // say_out begins its line anew.
             let expected = "\nWRITTEN\nOK\n";

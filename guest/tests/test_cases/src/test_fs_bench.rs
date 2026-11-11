@@ -837,6 +837,13 @@ COPY lua-5.4.7.tar.gz /opt/lua-5.4.7.tar.gz
         }
 
         fn check(self: Box<Self>, stdout: Vec<u8>, test_setup: TestSetup) -> TestOutcome {
+            // fxdax: the loop cases' image goes, whatever the outcome, its loop device gone with
+            // the VM (TASK-350.1).
+            if matches!(self.backend, Backend::Ext4Loop | Backend::Ext4LoopUnsafe)
+                && let Err(err) = std::fs::remove_file(test_setup.tmp_dir.join("ext4.img"))
+            {
+                return TestOutcome::Fail(format!("removing the loop device's image: {err}"));
+            }
             let stdout = String::from_utf8_lossy(&stdout);
             if !stdout.lines().any(|line| line == "DONE") {
                 return TestOutcome::Fail(format!("the guest did not finish: {stdout}"));
