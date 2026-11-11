@@ -707,6 +707,12 @@ fn remove<D: Dir>(dir: &D, path: &str) -> Result<(), Error> {
     }
 }
 
+/// fxdax: what putting the queue after a branch's end found ([`Queue::rebase`]): the numbers of
+/// its segments landed; the chain after the rest, stamped anew; and the first of the rest, by its
+/// number, with its footer as it landed, if it ends the branch's last commit and goes on with the
+/// next.
+pub(crate) type Rebased = (Vec<u64>, Chain, Option<(u64, Footer)>);
+
 /// A segment of the WAL, closed, and not yet acknowledged: its number, its footer, stamped by its
 /// writer's chain, and, if its writer's chain stamped it anew after a takeover, which its framed
 /// file says not, so ([`Queue`]); the bytes of its data and of the extents stored on their own it
@@ -773,12 +779,17 @@ impl Queue {
     /// Puts the queue after the branch's end, as a writer taking the branch again found it,
     /// `fenced`, by commits (`extent_remote::Wal::rebase`): returns the numbers of its segments
     /// that landed, the first, to be acknowledged; the rest are stamped anew, to be taken again,
-    /// and the chain after the last of them, which the open segment's footer goes on from.
-    /// `Diverged` if another writer's commits moved the branch past it.
-    pub fn rebase(&mut self, fenced: &Fenced) -> Result<(Vec<u64>, Chain), extent_remote::Error> {
+    /// and the chain after the last of them, which the open segment's footer goes on from. fxdax:
+    /// and the first of the rest, by its number and its footer before, if it landed, ending the
+    /// branch's last commit, and goes on with the next ([`extent_remote::Rebased::ended`],
+    /// TASK-345). `Diverged` if another writer's commits moved the branch past it.
+    pub fn rebase(&mut self, fenced: &Fenced) -> Result<Rebased, extent_remote::Error> {
         let queued = self.segments.iter().map(|queued| (queued.footer.clone(), queued.number));
         let mut wal = extent_remote::Wal::of(self.base, queued);
-        let landed = wal.rebase(fenced)?.into_iter().map(|(_, number)| number).collect();
+        let extent_remote::Rebased { landed, ended } = wal.rebase(fenced)?;
+        let landed = landed.into_iter().map(|(_, number)| number).collect();
+        let first = wal.segments().next().map(|(_, number)| *number);
+        let ended = ended.map(|footer| (first.expect("the segment ending the branch"), footer));
         let mut chain = fenced.chain;
         let stamped: BTreeMap<u64, &Footer> =
             wal.segments().map(|(footer, number)| (*number, footer)).collect();
@@ -789,7 +800,14 @@ impl Queue {
             queued.footer = footer.clone();
             queued.taken = false;
         }
-        Ok((landed, chain))
+        Ok((landed, chain, ended))
+    }
+
+    /// fxdax: the commits of its first segment, through `base`, landed, though the segment goes
+    /// on with the next commit, stamped again with that alone (TASK-345): the queue goes on from
+    /// them.
+    pub fn landed_ending(&mut self, base: Option<u64>) {
+        self.base = base;
     }
 
     /// The first segment, if any.

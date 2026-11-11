@@ -941,7 +941,10 @@ impl World {
 
     /// `branch`'s store on `host` did not open, for `failure`: its log diverged, another writer's
     /// commits past it, which `fxdaxctl take` drops, and it opens again with none; else its guest
-    /// goes.
+    /// goes. fxdax: a log diverged must have: the branch's last commit is neither one of its
+    /// commits nor its base. Before, every divergence was taken as one, which hid a log whose
+    /// segment ending one commit and going on with the next landed alone, its next commit, durable,
+    /// dropped (TASK-345).
     fn refused(&mut self, host: usize, branch: u64, failure: Failure) {
         trace!("host {host}: {branch:x}'s store refused: {failure}");
         let session = self.hosts[host].sessions.remove(&branch).unwrap();
@@ -953,6 +956,17 @@ impl World {
                 Ok(recovering) => recovering,
                 Err(err) => return self.violation(format!("branch {branch:x}'s store: {err:#}")),
             };
+            let origin = self.branches[&branch].origin;
+            let direct = Direct(self.bucket.clone());
+            if let Ok(recovered) = block_on(recovery::recover(&direct, branch, origin))
+                && recovering.holds_commit(recovered.state.last_commit)
+            {
+                let last = recovered.state.last_commit;
+                return self.violation(format!(
+                    "branch {branch:x}'s log diverged, though the branch's last commit, {last:x?}, \
+                     is the log's"
+                ));
+            }
             if let Err(err) = recovering.drop_wal() {
                 return self.violation(format!("dropping branch {branch:x}'s log: {err:#}"));
             }

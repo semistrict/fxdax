@@ -80,7 +80,7 @@ pub use bytes::Bytes;
 pub use fetch::read;
 pub use layout::Location;
 pub use recovery::{Recovered, State, recover};
-pub use wal::{Fenced, Wal};
+pub use wal::{Fenced, Rebased, Wal};
 pub use writer::{Body, Objects, Writer};
 
 /// Extent IDs' sequence numbers carry the epoch of the writer that minted them above this bit,
@@ -286,6 +286,11 @@ pub struct Rules {
     /// end since recovery found it, the log's own segments among them, not as recovery found it.
     /// TLA+: `specs/bucket/mutations/NoWalAfterFence.cfg`.
     pub wal_after_fence: bool,
+    /// fxdax: that last commit may be the last of a segment of the log's going on with the next
+    /// commit, landed alone: the log keeps it, stamped again with its continuation alone, rather
+    /// than diverging, though no other writer moved the branch on (`Wal::rebase`, TASK-345).
+    /// TLA+: `specs/bucket/mutations/NoWalContinues.cfg`.
+    pub wal_continues: bool,
 }
 
 impl Rules {
@@ -321,6 +326,7 @@ impl Rules {
         deletions_fence: true,
         wal_follows: true,
         wal_after_fence: true,
+        wal_continues: true,
     };
 }
 

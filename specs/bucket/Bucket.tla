@@ -155,6 +155,11 @@
 (* - walBetweenCommits (NoWalBetweenCommits): a WAL is put after the       *)
 (*   branch only between commits: the segments taken out as landed end     *)
 (*   every commit they go on with (Wal::rebase's `between`).               *)
+(* - walContinues (NoWalContinues): a WAL whose segment ending the         *)
+(*   branch's last commit and going on with the next landed alone, those   *)
+(*   after it not, is put after the branch too: that segment restamped     *)
+(*   after the fence with its continuation alone, then the rest            *)
+(*   (Wal::rebase, TASK-345).                                              *)
 (* - wholeCommitsKept (NoWholeCommitsKept): a host's local recovery keeps  *)
 (*   a commit spanning segments only if consecutive segments end it, and   *)
 (*   closes the first again without it otherwise (extent_store's           *)
@@ -198,9 +203,9 @@
 (* spans three segments at most, two going on with it, each a run of one   *)
 (* extent, the one ending it holding nothing else (the code's may hold its *)
 (* frees and more). A segment ends a commit and goes on with the next only *)
-(* with "spanOn" in Can, which no model has: Wal::rebase finds a WAL       *)
-(* diverged whose segment doing so landed alone, though no other writer    *)
-(* moved the branch on (TASK-345); with it, TLC finds that at once. Not    *)
+(* with "spanOn" in Can (BucketSpans has it): without walContinues,        *)
+(* Wal::rebase finds a WAL diverged whose segment doing so landed alone,   *)
+(* though no other writer moved the branch on (TASK-345). Not              *)
 (* modelled: the collector's grace period (correctness does not depend on  *)
 (* it, doc-7) and its compaction threshold (it compacts any object it may, *)
 (* by choice), and creates failing.                                        *)
@@ -230,7 +235,7 @@ AllRules == {"acksAfterLease", "fence", "continuity", "epochSequences", "records
              "movesTakenFirst", "leasesByTakings", "passesFencedStop", "recoveriesByOrigins",
              "recordsKept", "deletionsFence", "deletionsDoneByOthers", "walFollows",
              "walAfterFence", "spansHeld", "spansFenced", "acksBetweenCommits",
-             "walBetweenCommits", "wholeCommitsKept"}
+             "walBetweenCommits", "wholeCommitsKept", "walContinues"}
 
 AllCan == {"commit", "mint", "seg", "own", "free", "fork", "point", "restore", "unfork",
            "contest", "delete", "deletePoints", "place", "checkpoint", "collect", "compact",
@@ -650,9 +655,13 @@ Fencing(s) == ~s.fenced \/ s.seq <= s.top
 \* By commits, as Wal::heads has them: the WAL's first k segments are taken out if the guest's
 \* last commit as of them is the branch's, and they end no commit begun, unless no such k but 0
 \* is, the WAL's base (walBetweenCommits): segments going on with a commit are no branch's end,
-\* the fence having left their commit unended. The WAL's segments replayed over the state after
-\* the fence must end every commit they go on with, or the store refuses to open (store.rs:
-\* "log ends inside a commit"), its local recovery having kept a commit begun.
+\* the fence having left their commit unended. If none is, the branch's last commit may be the
+\* one a segment of the WAL's ends going on with the next, landed alone (walContinues): the
+\* segments before it are taken out, and it is restamped with its continuation alone, its commit
+\* and what that sealed, freed and forked dropped, the branch holding them, then the rest
+\* (TASK-345). The WAL's segments replayed over the state after the fence must end every commit
+\* they go on with, or the store refuses to open (store.rs: "log ends inside a commit"), its
+\* local recovery having kept a commit begun.
 Opened(h, b, s) ==
     LET floor == IF R("epochSequences") THEN <<s.epoch, 0>> ELSE <<0, 0>>
         next == Max2(s.st.next, floor)
@@ -660,10 +669,16 @@ Opened(h, b, s) ==
         head == IF R("walAfterFence") THEN s.st.head ELSE s.pre
         base == IF ws = <<>> THEN 0 ELSE commits[SegCommit(ws[1].o)].parent
         at == {k \in 0..Len(ws) : HeadAt(ws, base, k) = head /\ Between(ws, k)}
-        k == IF at = {} THEN 0 ELSE Max(at)
-        A == SubSeq(ws, 1, k)
-        Rs == SubSeq(ws, k + 1, Len(ws))
-        keep == Rs # <<>> /\ (at # {} \/ ~R("walFollows"))
+        on == {k \in 1..Len(ws) : ws[k].o.commit = head /\ ws[k].o.cont # None}
+        cont == at = {} /\ on # {} /\ R("walFollows") /\ R("walContinues")
+        k == IF at # {} THEN Max(at) ELSE IF cont THEN Max(on) - 1 ELSE 0
+        A == SubSeq(ws, 1, IF cont THEN k + 1 ELSE k)
+        Rest == SubSeq(ws, k + 1, Len(ws))
+        Rs == IF cont
+              THEN <<[Rest[1] EXCEPT !.o.commit = 0, !.o.ext = None, !.o.own = None,
+                                     !.o.free = None, !.o.fork = None]>> \o Tail(Rest)
+              ELSE Rest
+        keep == Rs # <<>> /\ (at # {} \/ cont \/ ~R("walFollows"))
         new == IF keep THEN Restamp(Rs, s.seq, s.epoch, s.st.last, next) ELSE <<>>
     IN IF (R("epochSequences") /\ ~Leased(s, b)) \/ s.seq + Len(new) > Segs
        THEN /\ ses' = [ses EXCEPT ![h][b] = [s EXCEPT !.pc = "stopped"]]

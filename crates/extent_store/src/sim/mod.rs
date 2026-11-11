@@ -129,6 +129,7 @@ fn one() {
             "deletions_fence" => rules.deletions_fence = false,
             "wal_follows" => rules.wal_follows = false,
             "wal_after_fence" => rules.wal_after_fence = false,
+            "wal_continues" => rules.wal_continues = false,
             other => panic!("no rule {other}"),
         }
     }
@@ -437,6 +438,23 @@ test_needs!(logs_need_to_follow, wal_follows, wals());
 // A host's log put after the branch's end as recovery found it, not after the fence: its own
 // segment, landed in between, applied twice.
 test_needs!(logs_need_the_end_after_the_fence, wal_after_fence, wals());
+
+/// fxdax: logs as [`wals`] makes them, their guests writing a segment's worth or more between
+/// commits, most of them: commits spanning segments, the first of which may end the commit before,
+/// landing alone as a host crashes or a writer takes the branch over (TASK-92.41, TASK-345).
+fn spanning_wals() -> Profile {
+    let mut profile = wals();
+    profile.weights.write = 18;
+    profile.weights.commit = 4;
+    profile
+}
+
+test_holds!(spanning_logs_put_after_takeovers, spanning_wals());
+
+// fxdax: a host's log whose segment ending a commit and going on with the next landed alone,
+// diverged, though the branch's last commit is the log's: `take` drops the next commit, durable
+// on the host (TASK-345).
+test_needs!(logs_need_to_continue_a_segment_landed_alone, wal_continues, spanning_wals());
 
 /// Forks that fail and are deleted, as their hosts' cleanups delete them, those crashing partway
 /// and going on, while their segments land or not, the parents' next writers give them records,

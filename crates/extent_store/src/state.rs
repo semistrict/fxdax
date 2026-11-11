@@ -269,11 +269,52 @@ impl<F: File> State<F> {
         (key, cached): (&str, bool),
         own: &[(ExtentId, Location)],
     ) -> Vec<(String, Option<String>)> {
+        let sealed = self.segments.acknowledge(segment, cached.then_some(key));
+        self.into_bucket(segment, (key, cached), sealed, own, |_| true)
+    }
+
+    /// fxdax: the commits segment `segment` ends landed in the bucket, in the object at `key`, its
+    /// footer naming `extents` sealed in it and `own` stored on their own, though it goes on with
+    /// the next commit, stamped again with that alone, not yet acknowledged
+    /// (`extent_remote::Wal::rebase`, TASK-345): those extents, held or kept, are the bucket's
+    /// from now on, read there, as acknowledging the segment would make them, and the files of those
+    /// stored on their own leave for the host's cache. Returns those, by their paths, with their
+    /// keys. The segment's file stays, holding what it goes on with; once acknowledged, stamped
+    /// again, its extents are the rest.
+    pub fn landed_ending(
+        &mut self,
+        segment: SegmentId,
+        key: &str,
+        extents: &[ExtentId],
+        own: &[(ExtentId, Location)],
+    ) -> Vec<(String, Option<String>)> {
+        let in_segment = |extent: &ExtentId| {
+            self.extents.get(extent).is_some_and(|entry| match &entry.data {
+                Data::Pieces(pieces) => matches!(pieces[..], [piece] if piece.segment == segment),
+                _ => false,
+            })
+        };
+        let sealed: Vec<ExtentId> = extents.iter().copied().filter(in_segment).collect();
+        self.into_bucket(segment, (key, true), sealed, own, |extent| extents.contains(extent))
+    }
+
+    /// fxdax: `sealed`, extents sealed in segment `segment`, one run each, those kept in it that
+    /// `named` names, and `own`, stored on their own, are read in the bucket from now on, in the
+    /// object at `key`, or where `own` says ([`State::acknowledge`]). Returns the files that leave,
+    /// by their paths, with their keys in the bucket, if into the host's cache, as `cached` says.
+    fn into_bucket(
+        &mut self,
+        segment: SegmentId,
+        (key, cached): (&str, bool),
+        sealed: impl IntoIterator<Item = ExtentId>,
+        own: &[(ExtentId, Location)],
+        named: impl Fn(&ExtentId) -> bool,
+    ) -> Vec<(String, Option<String>)> {
         let in_bucket = |len, piece: &Piece| {
             Data::Remote(Location { key: key.to_owned(), offset: piece.offset, len })
         };
         let cached_key = |key: &str| cached.then(|| key.to_owned());
-        for extent in self.segments.acknowledge(segment, cached_key(key).as_deref()) {
+        for extent in sealed {
             let entry =
                 self.extents.get_mut(&extent).expect("an extent sealed in a segment is held");
             let Data::Pieces(pieces) = &entry.data else {
@@ -301,7 +342,7 @@ impl<F: File> State<F> {
             own.iter().map(|(extent, location)| (*extent, location)).collect();
         // What it keeps of extents freed is read there too.
         let mut kept = Vec::new();
-        for (extent, held) in self.kept.entries_mut() {
+        for (extent, held) in self.kept.entries_mut().filter(|(extent, _)| named(extent)) {
             let placed = match &held.entry.data {
                 Data::Pieces(pieces) => match pieces[..] {
                     [piece] if piece.segment == segment => Some(in_bucket(held.entry.len, &piece)),

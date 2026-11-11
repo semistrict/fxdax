@@ -34,7 +34,7 @@ use extent_frame::segment::{Chain, Child, Contents, Footer, Location, epoch_of};
 use extent_remote::cache::Cache;
 use extent_remote::recovery::{Places, Seal};
 use extent_remote::trace;
-use extent_remote::wal::{Fenced, Wal};
+use extent_remote::wal::{Fenced, Rebased, Wal};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io;
 use std::sync::Arc;
@@ -453,6 +453,15 @@ impl<D: Dir> Recovering<D> {
         self.wal.base
     }
 
+    /// fxdax: whether `commit`, a branch's last, is its write-ahead log's base or one of its
+    /// commits: a branch whose last commit is never moved on from the log, which then diverged
+    /// not ([`extent_remote::Error::Diverged`], TASK-345).
+    pub fn holds_commit(&self, commit: Option<u64>) -> bool {
+        let wal = self.wal();
+        let mut commits = wal.segments().flat_map(|(footer, _)| &footer.contents.commits);
+        commit == wal.base() || commit.is_some_and(|commit| commits.any(|&own| own == commit))
+    }
+
     /// The write-ahead log, as its directory holds it: stamped as it was.
     fn wal(&self) -> Wal<u64> {
         Wal::of(self.wal.base, self.wal.segments.iter().cloned())
@@ -521,28 +530,34 @@ impl<D: Dir> Recovering<D> {
             recovered.segments.iter().map(|(footer, number)| (*number, footer.clone())).collect();
         let mut wal = Wal::of(recovered.base, recovered.segments);
         let mut base_file = recovered.base_file;
-        let (landed, chain) = match &fenced {
+        let (Rebased { landed, ended }, chain) = match &fenced {
             Some(fenced) => {
-                let landed = wal.rebase(fenced)?;
+                let rebased = wal.rebase(fenced)?;
                 base_file.write(&*dir, wal.base())?;
                 // Its footers from now on follow those stamped anew.
                 let mut chain = fenced.chain;
                 for (footer, _) in wal.segments() {
                     chain = chain.admit(footer).expect("a log rebased follows the writer's chain");
                 }
-                (landed, chain)
+                (rebased, chain)
             }
             None => {
                 ensure!(wal.is_empty(), "the store of point {branch:#x} holds commits of its own");
-                (Vec::new(), Chain::new(branch, 0, 0, None, 0))
+                (Rebased { landed: Vec::new(), ended: None }, Chain::new(branch, 0, 0, None, 0))
             }
         };
         // What landed is the bucket's: into the host's cache, as an acknowledgement's files go.
+        // fxdax: and the files of the extents stored on their own of the commits a segment ending
+        // the branch ends, which goes on, stamped again with what it goes on with alone; the
+        // extents sealed in it, those commits', the bucket's state holds there (TASK-345).
         let mut leaving = Vec::new();
         for (footer, number) in landed {
             let segment = SegmentId { branch, number };
             let key = extent_remote::layout::segment(branch, footer.seq);
             leaving.push((segment_path(segment), Some(key)));
+            leaving.extend(footer.own().map(|(extent, at)| (extent_path(extent), Some(at.key))));
+        }
+        if let Some(footer) = &ended {
             leaving.extend(footer.own().map(|(extent, at)| (extent_path(extent), Some(at.key))));
         }
         leave(&*dir, cache.as_deref(), leaving);
@@ -2013,15 +2028,51 @@ impl<D: Dir> Store<D> {
     /// goes on from them. As opening the store does, live: what the guest committed stays the
     /// store's. Fails `Diverged` if another writer's commits moved the branch past the log.
     pub fn rebase(&self, fenced: &Fenced) -> Result<(), Error> {
-        let landed = {
+        let (landed, ended) = {
             let mut state = self.state()?;
-            let (landed, chain) = state.wal.rebase(fenced)?;
+            let (landed, chain, ended) = state.wal.rebase(fenced)?;
             state.segments.set_chain(chain);
-            landed
+            (landed, ended)
         };
         for number in landed {
             self.acknowledged(number)?;
         }
+        if let Some((number, footer)) = ended {
+            self.landed_ending(number, &footer)?;
+        }
+        Ok(())
+    }
+
+    /// fxdax: the commits segment `number`, the first of the write-ahead log, ends landed in the
+    /// bucket, as `footer`, its footer as it landed, names them, though it goes on with the next
+    /// commit, stamped again with that alone (`extent_remote::Wal::rebase`, TASK-345): as
+    /// [`Store::acknowledged`] does of a segment's commits, the log's base, the last of them, is
+    /// durable first; then their extents are read in the bucket, in the object that landed, their
+    /// own files leaving for the host's cache, and their frees are the bucket's. The segment stays
+    /// the log's first, its file with it. Its extents read where it was stamped again instead,
+    /// once acknowledged, would be read in an object whose data the branch holds no more of but
+    /// what it goes on with, which the collector may compact away.
+    fn landed_ending(&self, number: u64, footer: &Footer) -> Result<(), Error> {
+        let mut base = self.base.with(Mutex::lock);
+        let last = footer.contents.commits.last().copied();
+        if let Err(err) = base.write(&*self.dir, last) {
+            let err = err.context("recording an acknowledgement");
+            self.lock().fail(&err);
+            return Err(err);
+        }
+        let leaving = {
+            let mut state = self.state()?;
+            let state = &mut *state;
+            state.wal.landed_ending(last);
+            state.release_kept(last.map_or(0, epoch_of));
+            state.trim_kept(&self.views.keeping(), state.epoch);
+            let key = extent_remote::layout::segment(self.branch, footer.seq);
+            let extents: Vec<ExtentId> = footer.contents.extents.iter().map(|run| run.0).collect();
+            let own: Vec<_> = footer.own().collect();
+            let segment = SegmentId { branch: self.branch, number };
+            state.landed_ending(segment, &key, &extents, &own)
+        };
+        leave(&*self.dir, self.cache.as_deref(), leaving);
         Ok(())
     }
 
