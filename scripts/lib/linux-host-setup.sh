@@ -6,17 +6,19 @@
 # What the scripts that run fxdax on an x86-64 Linux KVM host, as
 # root (scripts/lib/*-linux-host.sh), share, sourced by them: provisioning the
 # host (host_setup), the tree each builds in (host_tree), the tools it needs,
-# at the versions pinned here (host_need), and the record of the host it ran on
-# (host_record). Sourcing it defines them and does nothing else. The sourcing
-# script sets repo, the source, and results, the directory it writes to. The
-# Lima VM's tree is a host_tree too, in the VM's home (scripts/lib/lima.sh).
+# at the versions pinned here (host_need), the guest kernel it builds
+# (host_kernel), and the record of the host it ran on (host_record). Sourcing it
+# defines them and does nothing else. The sourcing script sets repo, the source,
+# and results, the directory it writes to. The Lima VM's tree is a host_tree
+# too, in the VM's home (scripts/lib/lima.sh).
 #
 # A host of one's own, provisioned already (ubu1, by its system-setup.d steps),
 # sets FXDAX_HOST_PROVISIONED=1: host_setup checks it and installs nothing, the
 # caller's Rust (PATH, CARGO_HOME, RUSTUP_HOME) is what builds, and host_need
 # takes a tool there at whatever version it is. FXDAX_HOST_WORK names the work
 # directory, where the trees, guest kernels and artifacts go (default
-# /var/lib/fxdax-test).
+# /var/lib/fxdax-test), and FXDAX_HOST_KERNELS a cache of guest kernels that
+# outlasts it (host_kernel): scripts/lib/host.sh's runs set all three.
 
 work=${FXDAX_HOST_WORK:-/var/lib/fxdax-test}
 # The tools host_need installed, which host_record records.
@@ -192,6 +194,96 @@ host_tree() {
         --exclude /vendor/firecracker/build --exclude /.by-content "$repo/" "$tree/"
     touch "$tree/.by-content"
     repo=$tree
+}
+
+# host_kernel KIND [WORK] builds fxdax's x86-64 guest kernel of KIND from the source
+# (scripts/build-guest-kernel.sh): release; debug (lockdep, KCSAN, DEBUG_ATOMIC_SLEEP); kasan
+# (KASAN, KFENCE, lockdep); coverage (gcov of fs/fxfs); or rust-checks (its Rust's debug
+# assertions and overflow checks). It builds in the work directory WORK (default
+# $work/guest-kernel-KIND), at niceness host_build_nice (default 0), its log
+# host_kernel_log (default RESULTS/guest-kernel.log), and points host_kernel_image at the
+# kernel and host_kernel_work at where it was built. The kernel's Rust builds on guest/rust's own
+# toolchain, not the host's.
+#
+# With FXDAX_HOST_KERNELS naming a cache of kernels, as on a host whose runs' work directories
+# come and go (scripts/lib/host.sh), it takes the kernel of KIND built from the same sources
+# (host_kernel_key) from there, if one was, a copy in WORK; else it builds it in the cache's work
+# directory of KIND, which keeps the last kernel's build, so that only what changed since builds,
+# and keeps it, with the last few others. One build of a KIND at a time. A coverage kernel builds in
+# WORK alone, as its counts are read against its build's notes (scripts/guest-coverage.py).
+host_kernel() {
+    local kind=$1 kernel_work=${2:-$work/guest-kernel-$1} channel key cache built old
+    local log=${host_kernel_log:-$results/guest-kernel.log}
+    local debug=0 kasan=0 coverage=0 rust_checks=0
+    case $kind in
+        release) ;;
+        debug) debug=1 ;;
+        kasan) kasan=1 ;;
+        coverage) coverage=1 ;;
+        rust-checks) rust_checks=1 ;;
+        *) echo "host_kernel: a kernel is release, debug, kasan, coverage or rust-checks" >&2; return 2 ;;
+    esac
+    channel=$(sed -n 's/^channel = "\(.*\)"$/\1/p' "$repo/guest/rust/rust-toolchain.toml")
+    rustup toolchain install "$channel" --component rust-src --profile minimal > /dev/null || return
+    if [[ -z ${FXDAX_HOST_KERNELS:-} || $kind == coverage ]]; then
+        host_kernel_build "$kernel_work" || return
+        # shellcheck disable=SC2034 # The sourcing scripts read them.
+        host_kernel_work=$kernel_work host_kernel_image=$kernel_work/out/x86_64/vmlinux
+        return 0
+    fi
+    key=$(host_kernel_key "$kind") || return
+    cache=$FXDAX_HOST_KERNELS/$kind
+    built=$cache/built/$key/vmlinux
+    mkdir -p "$cache/built" "$kernel_work" || return
+    exec 7> "$cache.lock"
+    flock 7 || return
+    if [[ -f $built ]]; then
+        echo "The $kind guest kernel of these sources, $key, built before: $built" > "$log"
+    else
+        host_kernel_build "$cache/work" || return
+        mkdir -p "$(dirname "$built")" || return
+        cp "$cache/work/out/x86_64/vmlinux" "$built.new" && mv "$built.new" "$built" || return
+        # The last few, each a kernel's image alone.
+        while read -r old; do
+            rm -r -- "${cache:?}/built/$old" || return
+        done < <(ls -1t "$cache/built" | sed -n '5,$p')
+    fi
+    cp "$built" "$kernel_work/vmlinux" || return
+    exec 7>&-
+    # shellcheck disable=SC2034 # The sourcing scripts read them.
+    host_kernel_work=$cache/work host_kernel_image=$kernel_work/vmlinux
+}
+
+# host_kernel_build WORK builds host_kernel's kernel in the work directory WORK.
+host_kernel_build() {
+    nice -n "${host_build_nice:-0}" env -u RUSTUP_TOOLCHAIN FXDAX_GUEST_KERNEL_WORK="$1" \
+        FXDAX_GUEST_KERNEL_DEBUG="$debug" FXDAX_GUEST_KERNEL_KASAN="$kasan" \
+        FXDAX_GUEST_KERNEL_COVERAGE="$coverage" FXDAX_GUEST_KERNEL_RUST_CHECKS="$rust_checks" \
+        "$repo/scripts/build-guest-kernel.sh" x86_64 > "$log" 2>&1
+}
+
+# host_kernel_key KIND prints the key of the guest kernel of KIND built from the source, a digest of
+# what builds it: KIND, guest/linux (the series, its files and the configurations), guest/rust and
+# every package of the workspace's own its Rust builds from, the workspace's Cargo.toml they inherit
+# from, and the scripts that build it. Not the commit, which the kernel reports
+# (scripts/build-commit.sh): one built from the same sources at another commit reports that one's.
+host_kernel_key() {
+    local packages
+    packages=$(cd "$repo/guest/rust" &&
+        env -u RUSTUP_TOOLCHAIN cargo metadata --format-version 1 --locked |
+        python3 -c 'import json, os, sys
+root = os.path.realpath(sys.argv[1])
+for package in json.load(sys.stdin)["packages"]:
+    if package["source"] is None:
+        print(os.path.relpath(os.path.dirname(os.path.realpath(package["manifest_path"])), root))' \
+            "$repo") || return
+    {
+        echo "$1"
+        # shellcheck disable=SC2086 # The packages are paths separated by lines.
+        cd "$repo" && find Cargo.toml guest/linux guest/rust $packages scripts/build-guest-kernel.sh \
+            scripts/build-guest-sysroot.sh \( -name target -o -name '*.o' -o -name '.*.cmd' \
+            -o -name '*.a' \) -prune -o -type f -print0 | LC_ALL=C sort -zu | xargs -0 sha256sum
+    } | sha256sum | cut -c1-16
 }
 
 # host_record prints what the run ran on: the host, its CPU and memory, Rust,

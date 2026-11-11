@@ -519,7 +519,7 @@ The backlog (`backlog/`, managed with Backlog.md) tracks what remains.
 ```sh
 scripts/test.sh          # macOS or Linux
 scripts/test-linux.sh    # Linux, in a Lima VM
-scripts/test-gce.sh      # x86-64 Linux with KVM, on a kept GCE host, reused
+scripts/test-host.sh     # x86-64 Linux with KVM, on a host of one's own over ssh (ubu1)
 ```
 
 `scripts/lima-setup.sh` creates the Lima VM the Linux scripts use on macOS, and
@@ -589,9 +589,10 @@ scripts/sandboxes.sh [short|long]   # Linux (KVM); FXDAX_SANDBOX_DISK, ext4, hol
 `scripts/test-guest-kernel.sh` builds the guest kernel with Fxfs in it and runs
 the guest tests on it, in Lima on macOS.
 
-`scripts/test-gce.sh` runs them too, and copies the logs back. It creates a
-labelled n2 host with nested KVM, which deletes itself after 8 hours, and
-`all` always deletes it (`scripts/lib/gce.sh`).
+`scripts/test-host.sh` runs them too, on a Linux host of one's own over ssh
+(`FXDAX_HOST`, ubu1 by default): in a worktree there of a commit origin has,
+under `fxjob`, copying the results back and removing the worktree
+(`scripts/lib/host.sh`).
 
 The protocols whose bugs are rare interleavings have TLA+ specs, which TLC
 model-checks exhaustively over small bounds (`specs/`): live read-only
@@ -622,12 +623,12 @@ spreads and ratios to ext4. The guests' root filesystem is an Alpine image
 built with podman.
 
 ```sh
-scripts/bench-gce.sh       # x86-64 Linux with KVM, on a kept GCE host, reused
+scripts/bench-host.sh      # x86-64 Linux with KVM, on a host of one's own (ubu1)
 scripts/bench.sh           # this host, Linux
 scripts/bench-linux.sh     # Linux, in a Lima VM
 ```
 
-`scripts/bench-gce.sh` keeps its results in `docs/measurements`, with the host
+`scripts/bench-host.sh` keeps its results in `docs/measurements`, with the host
 and the source it measured.
 
 For SQLite, set `FXDAX_BENCH_GROUPS=sqlite`. This compares cold and warm scans

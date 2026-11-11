@@ -28,7 +28,7 @@
 //! log's `memory:` lines. The guest's timings are lines of standard output, `measure ROLE NAME
 //! VALUE UNIT`, which the log keeps; a memory stage whose name ends in `-pinned` is measured after
 //! dropping the guest's caches. In no suite, for what it takes: each case runs by name
-//! (`FXDAX_E2E_TEST=linux-checkout-fxfs-dax scripts/test-gce.sh`), and
+//! (`FXDAX_E2E_TEST=linux-checkout-fxfs-dax scripts/test-host.sh`), and
 //! scripts/linux-checkout-report.py makes tables of what they said. FXDAX_LINUX_CHECKOUT_WINDOW
 //! sets the DAX window's bytes (as large as the data, [`crate::common::dax_window`]), and
 //! FXDAX_LINUX_CHECKOUT_EXTENTD_MEMORY the daemon's ([`crate::common::DAEMON_MEMORY`]): each

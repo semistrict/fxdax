@@ -3,7 +3,7 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-"""Compares two sides of an A/B of the fs bench (scripts/bench-gce.sh), each one or more of its
+"""Compares two sides of an A/B of the fs bench (scripts/bench-ab-host.sh), each one or more of its
 results directories, as rounds alternating between the two make them: each workload's values
 pooled across a side's directories and cases, their medians and ranges, how many times slower B
 is than A (above 1, B is slower), and whether the two ranges overlap, which a difference within

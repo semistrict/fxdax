@@ -22,7 +22,7 @@
 # that finished. FXDAX_MUTANTS_JOBS mutants build and run at once (default 3).
 # It takes about a day for all four crates: extent_remote's simulation takes
 # some 77 s a mutant, and the whole sweep has some 3,600 mutants. Run it on a
-# host of its own (scripts/mutants-gce.sh), in shards: FXDAX_MUTANTS_SHARD=K/N
+# host of its own (scripts/mutants-host.sh), in shards: FXDAX_MUTANTS_SHARD=K/N
 # runs the Kth of N (cargo-mutants' --shard), and the Shuttle pass over its
 # missed.
 # FXDAX_MUTANTS_LIST names a file of mutants, one a line as `cargo mutants --list`

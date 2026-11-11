@@ -36,7 +36,7 @@ otherwise. A store or bucket format change means its stores are made again, not 
 
 1. **Cordon the host.** Have the scheduler place no new VMs on it.
 2. **Move its VMs off, or stop them.** Move each by snapshot and restore through the bucket, as
-   `scripts/migrate-gce.sh` does, to a host whose build has the VM's formats (above); the
+   `scripts/migrate-host.sh` does, to a host whose build has the VM's formats (above); the
    integrator guide's "Restoring a snapshot" has the calls. Stop a VM whose tenant accepts that.
    Followers go with or after their writer. When the host is empty, its daemon's `/metrics` says
    `fxdax_extentd_connections 0`.

@@ -12,8 +12,9 @@
 #
 # - FXDAX_BUILD_COMMIT, if set, as it is;
 # - else, in a git checkout of the tree, its commit, with -dirty if a tracked file differs from it;
-# - else source-revision.txt at the tree's root, which the source a GCE run ships carries, as this
-#   script printed it where the run was started (scripts/lib/gce.sh): the host's copy has no .git;
+# - else source-revision.txt at the tree's root, which a host run's worktree carries, as this script
+#   printed it there (scripts/lib/host-remote.sh): the host scripts' copies of it have no .git
+#   (host_tree);
 # - else `unknown`.
 set -euo pipefail
 

@@ -24,7 +24,7 @@
 # artifacts: the runner, the guest agent, the extent daemon, fxdaxctl, fxdax-gc and Firecracker;
 # it runs no test, and, under a seccomp filter, Firecracker's jailer. FXDAX_E2E_PREBUILT=DIR runs
 # the cases with DIR's artifacts, building nothing, nor running the VMM's tests first: so that an
-# A/B of two trees (scripts/bench-ab-gce.sh) alternates between their builds, each made once, its
+# A/B of two trees (scripts/bench-ab-host.sh) alternates between their builds, each made once, its
 # rounds the cases' time alone (TASK-276), and jobs of a matrix share one build, jailed as
 # FXDAX_FIRECRACKER_JAIL says (the nightly's, TASK-284). Neither takes
 # FXDAX_FIRECRACKER_SECCOMP=log, whose filter is built per run.

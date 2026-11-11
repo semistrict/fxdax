@@ -19,17 +19,10 @@ A run's results directory (test-e2e.sh's FXDAX_E2E_RESULTS) holds:
   case's; `daemon`, the run's), from its stats file (FXDAX_EXTENTD_STATS: the run's
   extentd-stats.txt, a case's daemon's NAME-stats.txt in its directory).
 
-With FXDAX_RESULTS_BUCKET naming a prefix of a bucket (gs://bucket/prefix), each round's case, the
-summary and, as the run ends, its logs are uploaded there as they are written, so that a host lost
-mid-run keeps its finished cases: run.json, summary.json, cases/CASE.tar.gz (the case's directory,
-as scripts/lib/gce.sh's gce_fetch takes it) and logs.tar.gz (the files beside them). `fetch` gets
-them back.
-
     guest_results.py start RESULTS ROUNDS CASE...   (test-e2e.sh, before its first case)
     guest_results.py ended RESULTS CASE             (after each round of a case)
     guest_results.py finish RESULTS STATUS          (as it exits)
     guest_results.py report RESULTS                 how each case went; exits 1 unless the run passed
-    guest_results.py fetch PREFIX RESULTS           what a bucket kept of a run
 """
 
 import json
@@ -37,18 +30,13 @@ import os
 import re
 import subprocess
 import sys
-import tarfile
-import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 # The variables that say where a run writes, or where its kernel is, not how it runs: not knobs.
 # FXDAX_GUEST_KERNEL is one only where FXDAX_GUEST_KERNEL_BUILD says how to build it, as
 # scripts/lib/test-linux-host.sh does.
-WHERE = {"FXDAX_E2E_RESULTS", "FXDAX_BENCH_RESULTS", "FXDAX_COVERAGE", "FXDAX_RESULTS_BUCKET"}
-# What a case's directory holds that isn't results: the guests' root filesystems, their images,
-# and jails, as gce_fetch leaves them out.
-NOT_RESULTS = re.compile(r"(^|/)(rootfs|jail)(/|$)|rootfs\.ext4$")
+WHERE = {"FXDAX_E2E_RESULTS", "FXDAX_BENCH_RESULTS", "FXDAX_COVERAGE"}
 FAILED = {"fail", "timeout"}
 
 
@@ -139,39 +127,6 @@ def summarize(results, status=None):
     return summary
 
 
-def archive(results, paths, into):
-    """Writes to `into` a gzipped tar of `paths`, as relative to `results`, and of what lies under
-    them that is results: no sockets, nor what NOT_RESULTS names."""
-    with tarfile.open(into, mode="w:gz") as tar:
-        for path in paths:
-            for each in [path, *sorted(path.rglob("*"))] if path.is_dir() else [path]:
-                name = str(each.relative_to(results))
-                if NOT_RESULTS.search(name) or not (each.is_file() or each.is_dir()):
-                    continue
-                tar.add(each, arcname=name, recursive=False)
-    return into
-
-
-def upload(results, objects):
-    """Uploads `objects` under FXDAX_RESULTS_BUCKET, if set: each a name there, and the paths of
-    `results` it is, a file of them or an archive of several (`archive`). A failure says so, and
-    the run goes on, its results on its host."""
-    bucket = os.environ.get("FXDAX_RESULTS_BUCKET", "").rstrip("/")
-    if not bucket:
-        return
-    with tempfile.TemporaryDirectory() as staging:
-        for name, paths in objects:
-            if name.endswith(".tar.gz"):
-                file = archive(results, paths, Path(staging) / name.replace("/", "_"))
-            else:
-                [file] = paths
-            done = subprocess.run(["gcloud", "storage", "cp", "--quiet", str(file),
-                                   f"{bucket}/{name}"], capture_output=True, text=True)
-            if done.returncode != 0:
-                print(f"guest_results: uploading {name} to {bucket}: {done.stderr.strip()}",
-                      file=sys.stderr)
-
-
 def start(results, rounds, cases):
     commit = subprocess.run([ROOT / "scripts" / "build-commit.sh", ROOT], check=True,
                             capture_output=True, text=True).stdout.strip()
@@ -179,35 +134,14 @@ def start(results, rounds, cases):
     write(results / "run.json", {"commit": commit, "knobs": knobs(os.environ), "rounds": rounds,
                                  "cases": cases})
     summarize(results)
-    upload(results, [("run.json", [results / "run.json"]),
-                     ("summary.json", [results / "summary.json"])])
 
 
 def ended(results, case):
     summarize(results)
-    upload(results, [(f"cases/{case}.tar.gz", [results / case]),
-                     ("summary.json", [results / "summary.json"])])
 
 
 def finish(results, status):
     summarize(results, status)
-    logs = [path for path in sorted(results.iterdir()) if path.is_file()]
-    upload(results, [("logs.tar.gz", logs), ("summary.json", [results / "summary.json"])])
-
-
-def fetch(prefix, results):
-    """Gets what the bucket's `prefix` kept of a run into `results`, as the host had it."""
-    results.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory() as staging:
-        subprocess.run(["gcloud", "storage", "cp", "--recursive", "--quiet", prefix.rstrip("/"),
-                        staging], check=True)
-        [kept] = Path(staging).iterdir()
-        for path in sorted(kept.rglob("*")):
-            if path.name.endswith(".tar.gz"):
-                with tarfile.open(path) as tar:
-                    tar.extractall(results, filter="data")
-            elif path.is_file():
-                path.replace(results / path.name)
 
 
 def load(results):
@@ -275,8 +209,6 @@ def main(argv):
             return 1
         print("\n".join(report(summary)))
         return 0 if summary["status"] == 0 else 1
-    elif command == "fetch" and len(args) == 2:
-        fetch(args[0], Path(args[1]))
     else:
         sys.exit(__doc__)
     return 0

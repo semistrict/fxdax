@@ -3,29 +3,27 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-# The gate a change to the guest's DAX code passes before it is pushed (TASK-119.8): on two GCE
-# test hosts (scripts/test-gce.sh create), HEAD's DAX suites, rounds of each, the checks with
-# delays injected (fxfs-guest-checks-dax-delay) and on a small window (-small), the crash test and
-# its variant killing its process (-killed),
-# and pgbench-dax-forked, on a base's database, whose files are DAX and whose stores copy on write,
-# whose data is checked and whose write path's latencies stay under their ceilings
-# (scripts/pgbench-probes.py): a database made in the run is files created in the mount, which the
-# page cache writes (doc-13); and every hand mutant (guest/mutants) killed by the killer its header
-# names: first, before either host runs anything, the simulator's, in minutes
-# (guest/sim/mutants.sh, through guest/sim/linux.sh, so on Linux with KERNEL and BUILD set, or in
-# a container elsewhere); then, on the second host, those that need a real kernel
-# (scripts/guest-mutants-gce.py), each's killer within FXDAX_GATE_MUTANT_ROUNDS rounds (default 3).
-# A pass is recorded as a note on HEAD (`git notes --ref=dax-gate`), which scripts/hooks/pre-push
-# asks for of a push changing the guest's DAX code: `git config core.hooksPath scripts/hooks`
-# installs it.
+# The gate a change to the guest's DAX code passes before it is pushed (TASK-119.8): two runs of
+# HEAD, a commit origin has, at once on a Linux host of one's own (scripts/test-host.sh;
+# FXDAX_HOST, ubu1 by default). The first runs HEAD's DAX suites, rounds of each: the checks with
+# delays injected (fxfs-guest-checks-dax-delay) and on a small window (-small), and the crash test
+# and its variant killing its process (-killed). The second runs pgbench-dax-forked, on a base's
+# database, whose files are DAX and whose stores copy on write, whose data is checked and whose
+# write path's latencies stay under their ceilings (scripts/pgbench-probes.py): a database made in
+# the run is files created in the mount, which the page cache writes (doc-13); then every hand
+# mutant (guest/mutants) that needs a real kernel (scripts/guest-mutants-host.py), each killed by
+# the killer its header names within FXDAX_GATE_MUTANT_ROUNDS rounds (default 3). Before either run
+# starts, the simulator's mutants, in minutes (guest/sim/mutants.sh, through guest/sim/linux.sh, so
+# on Linux with KERNEL and BUILD set, or in a container elsewhere). A pass is recorded as a note on
+# HEAD (`git notes --ref=dax-gate`), which scripts/hooks/pre-push asks for of a push changing the
+# guest's DAX code: `git config core.hooksPath scripts/hooks` installs it.
 #
-# Usage: dax-gate.sh HOST_A HOST_B [ZONE] — the hosts' zone (default: us-east4-a).
+# Usage: dax-gate.sh
 # FXDAX_GATE_ROUNDS is the suites' rounds (default 5). Results go to /tmp/fxdax-gate-<commit>.
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/.." && pwd)
-(( $# >= 2 )) || { sed -n '6,23p' "$0" >&2; exit 2; }
-host_a=$1 host_b=$2 zone=${3:-us-east4-a}
+(( $# == 0 )) || { sed -n '6,22p' "$0" >&2; exit 2; }
 rounds=${FXDAX_GATE_ROUNDS:-5}
 mutant_rounds=${FXDAX_GATE_MUTANT_ROUNDS:-3}
 
@@ -40,7 +38,7 @@ mkdir -p "$results"
 echo "dax-gate: $commit, results in $results"
 
 # The simulator's mutants, each killed in seconds or not at all: what it misses fails the gate
-# before the hosts spend hours.
+# before the host spends hours.
 if ! guest/sim/linux.sh ./mutants.sh > "$results/sim-mutants.txt" 2>&1; then
     echo "dax-gate: FAILED: the simulator's mutants ($results/sim-mutants.txt):" >&2
     grep -vE '^(fate|killed|none) ' "$results/sim-mutants.txt" >&2 || true
@@ -48,24 +46,24 @@ if ! guest/sim/linux.sh ./mutants.sh > "$results/sim-mutants.txt" 2>&1; then
 fi
 echo "dax-gate: the simulator's mutants killed"
 
-export FXDAX_GCE_ZONE=$zone FXDAX_WORKSPACE_TESTS=0 FXDAX_GUEST_KERNEL_BUILD=release
+export FXDAX_HOST_COMMIT=$commit FXDAX_WORKSPACE_TESTS=0 FXDAX_GUEST_KERNEL_BUILD=release
 
-# Host A: the suites, rounds of each (`runner list --tag dax-gate`).
+# The first run: the suites, rounds of each (`runner list --tag dax-gate`).
 FXDAX_E2E_TEST="--tag dax-gate" FXDAX_E2E_ROUNDS=$rounds \
-    scripts/test-gce.sh run "$host_a" "$results/suites" > "$results/suites.log" 2>&1 &
+    scripts/test-host.sh "$results/suites" > "$results/suites.log" 2>&1 &
 suites_pid=$!
 
-# Host B: pgbench-dax-forked, then the mutants that need a real kernel, each its killer's case.
+# The second: pgbench-dax-forked, then the mutants that need a real kernel, each its killer's case.
 (
     FXDAX_E2E_TEST=fxfs-guest-pgbench-dax-forked FXDAX_E2E_ROUNDS=1 \
-        scripts/test-gce.sh run "$host_b" "$results/pgbench" > "$results/pgbench.log" 2>&1
+        scripts/test-host.sh "$results/pgbench" > "$results/pgbench.log" 2>&1
     echo "pgbench-dax-forked passed"
     pgbench=$results/pgbench/e2e/fxfs-guest-pgbench-dax-forked/fxfs-guest-pgbench-dax-forked
     scripts/pgbench-probes.py "$pgbench/run.console.txt"
     FXDAX_E2E_ROUNDS=$mutant_rounds \
-        scripts/guest-mutants-gce.py "$host_b" "$zone" "$results/mutants" > "$results/mutants.txt"
-) > "$results/host-b.log" 2>&1 &
-host_b_pid=$!
+        scripts/guest-mutants-host.py "$results/mutants" > "$results/mutants.txt"
+) > "$results/second.log" 2>&1 &
+second_pid=$!
 
 # What failed: each run's cases, as its summary has them (scripts/guest_results.py).
 failed=0
@@ -74,8 +72,8 @@ if ! wait "$suites_pid"; then
     scripts/guest_results.py report "$results/suites/e2e" >&2 || true
     failed=1
 fi
-if ! wait "$host_b_pid"; then
-    echo "dax-gate: FAILED: host B ($results/host-b.log); pgbench-dax-forked:" >&2
+if ! wait "$second_pid"; then
+    echo "dax-gate: FAILED: the second run ($results/second.log); pgbench-dax-forked:" >&2
     scripts/guest_results.py report "$results/pgbench/e2e" >&2 || true
     failed=1
 fi

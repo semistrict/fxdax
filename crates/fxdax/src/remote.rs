@@ -1706,11 +1706,11 @@ mod tests {
     /// by the tails of its segments, which hold their footers, a window of them at once, not by
     /// the segments whole. The bucket, which the lost host's store probed, it probes not again.
     /// TASK-165.11: what a durable commit, an open, a fork and a fork's first open cost on a real
-    /// bucket, FXDAX_PHASES_BUCKET's (`gs://bucket/prefix`, under a prefix of the run's own), by
+    /// bucket, FXDAX_PHASES_BUCKET's (`s3://bucket/prefix`, under a prefix of the run's own), by
     /// phase: each one's time, and the bucket's requests it made, by kind, their count and time
     /// (`Stats::request_ns`), the rest local (closing and framing the segment, flushing). A
     /// measurement, not a check: ignored, run on a host that reaches the bucket, as
-    /// scripts/test-gce.sh runs it with FXDAX_GCE_STORAGE set, `FXDAX_TEST_PARTS=workspace` and
+    /// scripts/test-host.sh runs it with `FXDAX_TEST_PARTS=workspace` and
     /// `FXDAX_TEST_ARGS='--run-ignored only --no-capture bucket_round_trips_by_phase'`. Each
     /// operation is a line, `PHASE ...`.
     #[test]

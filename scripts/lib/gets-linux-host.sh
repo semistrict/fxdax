@@ -4,7 +4,7 @@
 # found in the LICENSE file.
 
 # Measure ranged GETs from object storage (fxdax-gets) on an x86-64
-# Linux host, as root, into RESULTS/gets.md (scripts/gets-gce.sh).
+# Linux host, as root, into RESULTS/gets.md (scripts/gets-host.sh).
 #
 # Usage: gets-linux-host.sh SOURCE RESULTS URL OBJECT_MIB SECS
 set -euo pipefail

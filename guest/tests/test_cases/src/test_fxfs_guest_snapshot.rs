@@ -14,7 +14,7 @@
 //!   restore names a point and a store it doesn't have here, so it takes the point's branch from
 //!   the bucket, and forks the store from it. The bucket is FXDAX_EXTENTD_REMOTE's, if set, or one
 //!   in the daemon's memory. With FXDAX_MIGRATE_PHASE, it runs on two hosts (TASK-28.11,
-//!   scripts/migrate-gce.sh): `source` snapshots the VM, its store's branch in the bucket, and
+//!   scripts/migrate-host.sh): `source` snapshots the VM, its store's branch in the bucket, and
 //!   leaves the snapshot, its memory and the VM's root filesystem in FXDAX_MIGRATE_BUNDLE; then
 //!   `target`, on another host, which has nothing of the store, restores it from there, at the
 //!   same paths, the root filesystem's too, which the restored VM goes on reading.

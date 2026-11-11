@@ -2,9 +2,9 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-"""Tests of scripts/perf-gate-gce.sh, the sandbox team's performance gate, and copy-on-write DAX's,
-on a GCE host: run in a copy of the scripts whose test-gce.sh is a fake, which says how it was run
-and writes the logs the gate reads."""
+"""Tests of scripts/perf-gate-host.sh, the sandbox team's performance gate, and copy-on-write DAX's,
+on a Linux host of one's own: run in a copy of the scripts whose test-host.sh is a fake, which says
+how it was run and writes the logs the gate reads."""
 
 import json
 import shutil
@@ -15,7 +15,7 @@ from pathlib import Path
 
 import script
 
-# The fake test-gce.sh: records its arguments and the variables the gate sets, and writes each case
+# The fake test-host.sh: records its arguments and the variables the gate sets, and writes each case
 # it is to run, those of the suite FXDAX_E2E_TEST tags as the runner has them, a log as the case's
 # would be, or fails if FAKE_FAIL names its results. A pgbench
 # case's: a VM a run of tps 100, every VM after the first one a run of tps 80, as
@@ -25,12 +25,12 @@ import script
 # cold reads at 100 MiB/s without DAX, 400 with it, its guest's cache grown by a quarter of its
 # file without DAX, and the host's memory at each step, its 200 MiB of writes costing the host
 # 200 MiB.
-FAKE_TEST_GCE = r"""#!/usr/bin/env bash
+FAKE_TEST_HOST = r"""#!/usr/bin/env bash
 set -euo pipefail
-results=$3
+results=$1
 echo "$* E2E_TEST=$FXDAX_E2E_TEST VMS=${FXDAX_PGBENCH_VMS:-} RUNS=${FXDAX_PGBENCH_RUNS:-} \
 ROUNDS=$FXDAX_E2E_ROUNDS WORKSPACE=$FXDAX_WORKSPACE_TESTS KERNEL=$FXDAX_GUEST_KERNEL_BUILD \
-JAIL=${FXDAX_FIRECRACKER_JAIL:-}" >> "$CALLS"
+JAIL=${FXDAX_FIRECRACKER_JAIL:-} BENCH=$FXDAX_HOST_BENCH" >> "$CALLS"
 mib=1048576
 case $FXDAX_E2E_TEST in
     "--tag perf-single") cases="fxfs-guest-pgbench fxfs-guest-pgbench-dax pgbench-ext4-dax-pmem
@@ -87,40 +87,39 @@ SINGLE = "--tag perf-single"
 DENSITY = "--tag perf-density"
 
 
-class PerfGateGce(unittest.TestCase):
+class PerfGateHost(unittest.TestCase):
     def setUp(self):
         self.root = Path(tempfile.mkdtemp())
         scripts = self.root / "scripts"
         scripts.mkdir()
-        for name in ["perf-gate-gce.sh", "pgbench-gate.py", "pgbench-steps.py"]:
+        for name in ["perf-gate-host.sh", "pgbench-gate.py", "pgbench-steps.py"]:
             shutil.copy2(script.SCRIPTS / name, scripts / name)
-        fake = scripts / "test-gce.sh"
-        fake.write_text(FAKE_TEST_GCE)
+        fake = scripts / "test-host.sh"
+        fake.write_text(FAKE_TEST_HOST)
         fake.chmod(0o755)
         self.calls = self.root / "calls.txt"
         self.results = self.root / "results"
 
     def gate(self, *args, phases=(), **environment):
         return subprocess.run(
-            [self.root / "scripts" / "perf-gate-gce.sh", *args, "fxdax-test-r1", self.results,
-             *phases],
+            [self.root / "scripts" / "perf-gate-host.sh", *args, self.results, *phases],
             env={"PATH": "/usr/bin:/bin", "CALLS": str(self.calls), **environment},
             capture_output=True, text=True)
 
     def test_the_cases_then_the_density_run_then_the_gate(self):
         gated = self.gate()
         self.assertEqual(self.calls.read_text().splitlines(), [
-            f"run fxdax-test-r1 {self.results}/single E2E_TEST={SINGLE} VMS= RUNS= "
-            "ROUNDS=1 WORKSPACE=0 KERNEL=release JAIL=1",
-            f"run fxdax-test-r1 {self.results}/density E2E_TEST={DENSITY} VMS=3 "
-            "RUNS=2 ROUNDS=1 WORKSPACE=0 KERNEL=release JAIL=1",
+            f"{self.results}/single E2E_TEST={SINGLE} VMS= RUNS= "
+            "ROUNDS=1 WORKSPACE=0 KERNEL=release JAIL=1 BENCH=1",
+            f"{self.results}/density E2E_TEST={DENSITY} VMS=3 "
+            "RUNS=2 ROUNDS=1 WORKSPACE=0 KERNEL=release JAIL=1 BENCH=1",
         ])
         # Each density run's last VM at 80 tps against its first's 100.
         self.assertEqual((gated.returncode, gated.stderr), (1, "".join(
             f"failed: density of {case}: 0.8 under 0.9\n"
             for case in ["no-dax-density", "dax-density"])))
         report = json.loads((self.results / "gate.json").read_text())
-        self.assertEqual(report["host"], "nested")
+        self.assertEqual(report["host"], "bare-metal")
         self.assertEqual(report["tps"]["dax"], [[[100.0]]])
         self.assertEqual(report["tps"]["dax-density"], [[[100.0], [80.0], [80.0]]])
         self.assertEqual(report["tps"]["ext4-dax-pmem"], [[[100.0]]])
@@ -157,13 +156,13 @@ class PerfGateGce(unittest.TestCase):
             ("bigmap-written-memory", "bigmap-dax", True),
         ])
 
-    def test_a_bare_metal_host_with_the_gates_passing(self):
-        gated = self.gate("--bare-metal", FXDAX_GATE_DENSITY="0.8", FXDAX_PERF_GATE_VMS="2",
+    def test_a_nested_host_with_the_gates_passing(self):
+        gated = self.gate("--nested", FXDAX_GATE_DENSITY="0.8", FXDAX_PERF_GATE_VMS="2",
                           FXDAX_PERF_GATE_DENSITY_RUNS="3", FXDAX_GUEST_KERNEL_BUILD="debug")
         self.assertEqual((gated.returncode, gated.stderr), (0, ""))
         self.assertIn("VMS=2 RUNS=3 ROUNDS=1 WORKSPACE=0 KERNEL=debug JAIL=1",
                       self.calls.read_text().splitlines()[1])
-        self.assertEqual(json.loads((self.results / "gate.json").read_text())["host"], "bare-metal")
+        self.assertEqual(json.loads((self.results / "gate.json").read_text())["host"], "nested")
 
     def test_a_failed_run_fails_it_after_the_gate(self):
         gated = self.gate(FXDAX_GATE_DENSITY="0.8", FAKE_FAIL="single")
@@ -177,10 +176,10 @@ class PerfGateGce(unittest.TestCase):
         self.assertEqual(self.gate(phases=["single"], FXDAX_FIRECRACKER_JAIL="").returncode, 0)
         self.assertEqual(self.gate(phases=["density"]).returncode, 0)
         self.assertEqual(self.calls.read_text().splitlines(), [
-            f"run fxdax-test-r1 {self.results}/single E2E_TEST={SINGLE} VMS= RUNS= "
-            "ROUNDS=1 WORKSPACE=0 KERNEL=release JAIL=",
-            f"run fxdax-test-r1 {self.results}/density E2E_TEST={DENSITY} VMS=3 "
-            "RUNS=2 ROUNDS=1 WORKSPACE=0 KERNEL=release JAIL=1",
+            f"{self.results}/single E2E_TEST={SINGLE} VMS= RUNS= "
+            "ROUNDS=1 WORKSPACE=0 KERNEL=release JAIL= BENCH=1",
+            f"{self.results}/density E2E_TEST={DENSITY} VMS=3 "
+            "RUNS=2 ROUNDS=1 WORKSPACE=0 KERNEL=release JAIL=1 BENCH=1",
         ])
         self.assertFalse((self.results / "gate.json").exists())
         gated = self.gate(phases=["gate"], FXDAX_GATE_DENSITY="0.8")
@@ -191,9 +190,9 @@ class PerfGateGce(unittest.TestCase):
         self.assertEqual(report["bigmap"]["bigmap-dax"]["written_memory_per_byte"], 1.0)
 
     def test_its_usage(self):
-        for args in [["fxdax-test-r1"], ["fxdax-test-r1", "results", "bigmap"]]:
-            usage = subprocess.run([script.SCRIPTS / "perf-gate-gce.sh", *args],
+        for args in [[], ["results", "bigmap"]]:
+            usage = subprocess.run([script.SCRIPTS / "perf-gate-host.sh", *args],
                                    capture_output=True, text=True)
             self.assertEqual(usage.returncode, 2)
-            self.assertRegex(usage.stderr, r"Usage: .*perf-gate-gce.sh \[--bare-metal\] INSTANCE "
+            self.assertRegex(usage.stderr, r"Usage: .*perf-gate-host.sh \[--nested\] "
                                            r"RESULTS \[single\|density\|gate\]\.\.\.\n$")

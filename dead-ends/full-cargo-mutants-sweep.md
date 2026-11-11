@@ -9,5 +9,5 @@ shard 0 of 6 done, shard 1 stopped at 312 mutants, 2 and 3 partial, 4 and 5 not 
 mutant on fxdax and ~4 min on extent_remote, 2-3 jobs per n2-standard-8.
 **Why it's dead:** Too slow, with production asks first: stopped by the user on 2026-10-19.
 Cargo-mutants also can't run both feature sets at once, so Shuttle tests need a second pass.
-**Reopen if:** Production asks are done. To resume: shards 2-5 with scripts/mutants-gce.sh, then
+**Reopen if:** Production asks are done. To resume: shards 2-5 with scripts/mutants-host.sh, then
 fxdax's triage. TASK-44.19 does this by hand for the guest's C.

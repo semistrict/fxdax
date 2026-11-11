@@ -3,7 +3,7 @@
 # found in the LICENSE file.
 
 """Tests of the fs bench's A/B on a host (TASK-276): scripts/lib/bench-ab-linux-host.sh's order of
-the sides' rounds, scripts/bench-ab-gce.sh's sides, and scripts/test-e2e.sh's modes of artifacts
+the sides' rounds, scripts/bench-ab-host.sh's sides, and scripts/test-e2e.sh's modes of artifacts
 built once and runs of them, which refuse what they can't serve before anything is built."""
 
 import subprocess
@@ -35,19 +35,19 @@ class Rounds(unittest.TestCase):
 
 class Sides(unittest.TestCase):
     def side(self, spec):
-        # The driver's function alone, without its sourcing of gce.sh, which asks gcloud.
-        driver = (SCRIPTS / "bench-ab-gce.sh").read_text()
+        # The driver's function alone, without its sourcing of host.sh, which names a run.
+        driver = (SCRIPTS / "bench-ab-host.sh").read_text()
         start = driver.index("side() {")
         function = driver[start:driver.index("\n}\n", start) + 3]
         return bash(f"{function}\nside '{spec}'")
 
-    def test_a_side_is_a_name_and_a_tree(self):
-        self.assertEqual(self.side("base=/src/fxdax base"), (0, "base /src/fxdax base\n", ""))
+    def test_a_side_is_a_name_and_a_commit(self):
+        self.assertEqual(self.side("base=origin/main~3"), (0, "base origin/main~3\n", ""))
 
     def test_a_side_without_a_name_is_refused(self):
-        status, _, err = self.side("/src/fxdax")
-        self.assertEqual(status, 2)
-        self.assertIn("a side is NAME=TREE", err)
+        self.assertEqual(self.side("origin/main"), (2, "", "a side is NAME=COMMIT, NAME in "
+                                                         "lower-case letters, digits and -: "
+                                                         "origin/main\n"))
 
 
 class Artifacts(unittest.TestCase):

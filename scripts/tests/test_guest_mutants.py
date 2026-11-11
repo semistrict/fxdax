@@ -3,7 +3,7 @@
 # found in the LICENSE file.
 
 """Tests of guest/mutants, the hand mutants of the guest's code, and of
-scripts/guest-mutants-gce.py, which runs those that need a real kernel (TASK-160.32)."""
+scripts/guest-mutants-host.py, which runs those that need a real kernel (TASK-160.32)."""
 
 import tempfile
 import unittest
@@ -11,7 +11,7 @@ from pathlib import Path
 
 import script
 
-guest_mutants = script.load("guest-mutants-gce")
+guest_mutants = script.load("guest-mutants-host")
 KNOWN = guest_mutants.runs()
 
 

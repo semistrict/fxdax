@@ -2,11 +2,19 @@
 
 # Decisions
 
+## Linux runs on ubu1, without a crash's core stacks (TASK-344, 2026-11-11)
+The user said no GCP; every GCE driver became a `scripts/*-host.sh` driver of a physical host over ssh (ubu1), a run a worktree of a pushed commit under `fxjob`. Decided without you:
+- **A run runs a commit origin has, not the working tree:** a tree that changes what it tracks is refused unless `FXDAX_HOST_COMMIT` names the commit; A/B sides and fork-time's trees are commits (`NAME=COMMIT`), not directories. *Instead:* ship the tree as GCE did, or push to the host's clone directly.
+- **The guest tests' results bucket (`FXDAX_RESULTS_BUCKET`, uploads by gcloud) is gone:** a physical host keeps a run's results, and `resume` fetches them. *Undoing it:* git history of scripts/guest_results.py.
+- **On a shared host the core pattern is left alone** (`FXDAX_HOST_PROVISIONED`): it is every process's there, so a crash's stacks aren't kept in the results (TASK-346). *Instead:* collect cores through apport or systemd-coredump.
+- **Guest kernels come from a cache on the host keyed by their sources** (`host_kernel`), the commit a reused one reports its builder's.
+- **soak-workloads-host.sh runs its groups one after another**, as other agents share the host, where GCE ran a host per group at once.
+
 ## The nightly's guest suites on GitHub's runners, in parts by place (TASK-284, 2026-11-11)
 Your rule (no GCP) as built: nightly.yml builds the artifacts and kernel once (guest-build), then a matrix of 8 jobs runs `--tag nightly --shard K/N` each, as root, jailed under the real seccomp filter, branches in RustFS on the runner. Decided without you:
 - **A part is every Nth case from the Kth, as registered** (`runner list --shard`), not balanced by measured times: no list of names nor of durations to keep, and a new case lands in a part by itself. *Instead:* parts balanced by each case's recorded time (summary.json). *Undo:* drop `--shard` and the matrix.
 - **Prebuilt artifacts hold the jailer** (built under a seccomp filter), so a jailed run takes them; FXDAX_FIRECRACKER_JAIL with artifacts built without a filter is refused.
-- **The OPEN_QUESTIONS entry asking you for GCP secrets is gone**, as is everything GCP in nightly.yml; scripts/*-gce.sh stay.
+- **The OPEN_QUESTIONS entry asking you for GCP secrets is gone**, as is everything GCP in nightly.yml; TASK-344 ported scripts/*-gce.sh to ubu1 and removed them.
 
 ## A log whose segment ending one commit and going on with the next landed alone goes on (TASK-345, 2026-11-11)
 A segment that fills after a commit, before the next, ends that commit and goes on with the next (`Contents::continued`, TASK-92.41). Landed alone, its host crashing or its writer displaced, the branch's last commit is the one it ends, and `Wal::rebase` found no place between commits: `Diverged`, though no other writer moved the branch on, the store refusing to open until `fxdaxctl take` dropped the next commit, durable on the host. Specs/bucket found it with `spanOn`, the crash rounds (round 45) about one run in ten on main. Decided without you:
@@ -41,7 +49,7 @@ TASK-221: after a host crash, guest writes answered but not fsync'd may be lost 
 TASK-224 stays To Do, not scheduled.
 
 ## The nightly's migrate check is dropped (the user, 2026-11-08)
-TASK-141.4's AC #2 (scripts/migrate-gce.sh off and back nightly) is dropped; the task closes on its other criteria.
+TASK-141.4's AC #2 (a migration off and back nightly) is dropped; the task closes on its other criteria.
 
 ## Experiment branches deleted (the user, 2026-11-08)
 Branches and worktrees never meant for main (TASK-133's late pre-fault, t227-prof/t229-measure, exp/79.8-repro, night/evacuate, wip/task-112-5-on-119, zircon-removal-*, r3/*, r7/dax, perf-*, decay, lockup) are deleted outright; SHAs the backlog and dead-ends cite from them no longer resolve.
@@ -56,7 +64,7 @@ Asked to drive the backlog to closed, the sweeps left tasks that are real work o
 - **Low-priority features stay open, Low:** TASK-72, 73, 75, 76, 143, 145, 223, 226, 33 (lowered from Medium), 96 (frozen), 78 (needs Azure credentials).
 - **Testing techniques: the best value first.** Start TASK-149.40 (the model test's last operation kinds), 149.13 (recovery-path coverage), 149.19 (suites under CPU starvation). Keep 149.4, 149.10, 44.5, 44.7 and 44.16 open.
 - **Performance and refactors: do the top ones.** Do TASK-92.55 (fork open flat in the base's size), 92.41 (commits spanning segments) and 136.6/136.7 (attaching a repo on lookup, following git fetch). Keep 88, 90, 164.11.1, 164.11.2, 26.9, 26.18.7, 91.5, 91.8 and 91.15 open.
-- **Judgement calls, as recommended:** close TASK-149.22, 44.1, 92.30 and 92.31 as won't fix. Do 149.24 (extentd aborts on a panic under a shared lock), 142's measurement, and 193 and 238 on a kept GCE host.
+- **Judgement calls, as recommended:** close TASK-149.22, 44.1, 92.30 and 92.31 as won't fix. Do 149.24 (extentd aborts on a panic under a shared lock), 142's measurement, and 193 and 238 on ubu1.
 
 ## A tenant's disk is its directory's; the part cache is no tenant's (TASK-94, 2026-11-07)
 
@@ -194,10 +202,9 @@ Decisions made without you, still yours to confirm or overturn. Each is a line o
 - **CI runs scripts/test.sh, a part a job;** open bugs' failures are listed in known-failures files, not failed on; a nightly `hunt.yml`. TASK-160.27, 2026-11-03.
 - **A Linux-sized checkout is measured by `linux-checkout-{ext4,ext4-pmem,fxfs,fxfs-dax}`, tagged `manual`,** not the old branch's `fxfs-guest-linux-checkout(-dax)`. ext4 joined it as the baseline, since overlayfs was dropped. A measurement suite would be the other choice; the cases take 1.5-9 min each on GCE. *Undoing it:* rename the cases in guest/tests/test_cases/src/lib.rs. TASK-136.1, 2026-11-07.
 - **TASK-144 is closed, its d_type fixed with a record lookup per regular-file entry** (56fdf6b12), which its AC wanted to avoid. generic/401 passes, and TASK-230's kept listings make a warm walk of Linux's 6,059 directories 62 ms against ext4-pmem's 83. A descriptor of its own per kind of node would avoid the lookup, at the cost of a format change. *Undoing it:* TASK-144 back to To Do. TASK-149.20.1, 2026-11-07.
-- **GCE hosts may land outside the zones asked for:** FXDAX_GCE_REGIONS limits regions, and gce_create tries every zone of each (r962 went to us-east1-b, r873 to us-central1-a). Nothing limits zones; a list of them would be the change. 2026-11-07.
 - **Orphans the replay discarded names, of a writer's range between two others, stay: TASK-149.41.1 is won't fix, the user's decision (2026-11-07).** It's a space leak only, rare (0-13 extents per about 4,100 replays of cuts during replays in the hunts), with no data loss. fxfs-posix's model test counts these extents apart and still fails on any orphan in a window a mount sought; pinned sequences assert none. The fixes weighed were replay's verify taking a missing extent for a mismatch, the super-block recording the orphans (a format change), and windows per range. *Undoing it:* reopen TASK-149.41.1 and have the second replays call holds_no_orphans again. TASK-149.41.
 - **Guest cases are selected by tags;** `manual` for those no suite runs; the nightly runs 50. TASK-160.29, 2026-11-05.
-- **Guest test results as data** (`round-K.json`, `run.json`, `summary.json`, uploads to `FXDAX_RESULTS_BUCKET`). TASK-160.31, 2026-11-05.
+- **Guest test results as data** (`round-K.json`, `run.json`, `summary.json`). TASK-160.31, 2026-11-05.
 - **fsx against ext4 in one guest:** the model is the oracle of bytes and errnos, ext4 held to it as Fxfs is; ext4 says which times a step changes, compared (`differential::ALLOWED` empty); a clone on ext4 is a copy of what the model's VFS rules say it takes; failures shrunk in the guest, replayed once from a boot; -faults-dax in soak-sanitized alone. TASK-44.15, 2026-11-06.
 - **fsx's reference ext4 mounts `nodelalloc`;** a far step's outcome is each filesystem's own (by its largest file, `Options::largest`), not compared across them; host XFS runs skip writes from faulting buffers (its iomap's stale bytes); a write from a file's own mapping writes the same bytes or bytes apart, never overlapping ones, whose copy is memcpy's, undefined (the guest's x86 copy and the host's arm64 copy differed, GCE r868). TASK-149.16, 2026-11-07.
 - **Fxfs's DAX mappings aren't `VM_MIXEDMAP`,** so a fork copies none of their PTEs; mremap's and mprotect's batching filed (TASK-149.42). TASK-149.16, 2026-11-07.
@@ -205,7 +212,6 @@ Decisions made without you, still yours to confirm or overturn. Each is a line o
 - **Each guest check runs in a process of its own;** the overrun suite runs the page cache's checks after two made to fail. TASK-160.30, 2026-11-05.
 - **A budget per guest check,** a suite's limit their sum plus 30 s. TASK-168, 2026-11-05.
 - **fxfs-guest-soak:** a soak round is a runner round, its state kept by the run outside the results (/var/tmp, not tmpfs /tmp); stores are checked by a guest on each, not the host's fsck (which would take the branch's lease); its daemons are built with failpoints; a store whose upload the failpoint failed may see EIO (remote.rs stops its uploader for good); no bucket latency on file buckets until TASK-208; the cache's growth is reported, not failed on. TASK-67, 2026-11-06.
-- **The GCE quota stays at 32.** The user's decision, 2026-11-06.
 - **The daemon-killed crash test allows a file found short or empty, as lost, only if its fsync returned within doc-12's crash bound, 500 ms, before the kill** (`CRASH_LOSS_BOUND_MS`, set from the case's longest lags, main's 60-81 ms, TASK-165.9's up to 288 ms; strict otherwise), and the pgbench cases check doc-12's 50 ms median (`durable_lag_within_50ms`): a guest's COMMIT is answered once ordered, and main fails the old check alike (GCE r733). TASK-165.9, TASK-221, 2026-11-06.
 
 ## Repository

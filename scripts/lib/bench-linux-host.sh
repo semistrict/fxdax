@@ -3,9 +3,9 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-# Benchmark fxdax against ext4 on virtio-blk (scripts/bench.sh) on a disposable
-# x86-64 Linux KVM host, as root, writing the measurements, the guests' logs
-# and the comparison to RESULTS.
+# Benchmark fxdax against ext4 on virtio-blk (scripts/bench.sh) on an x86-64
+# Linux KVM host, as root (scripts/bench-host.sh drives it), writing the
+# measurements, the guests' logs and the comparison to RESULTS.
 #
 # Usage: bench-linux-host.sh SOURCE RESULTS [ITERATIONS]
 #
@@ -25,15 +25,8 @@ host_need cargo-nextest
 case ${FXDAX_GUEST_KERNEL_BUILD:-} in
     '') ;;
     release | debug)
-        kernel_work="$work/guest-kernel-$FXDAX_GUEST_KERNEL_BUILD"
-        kernel_debug=0
-        [[ $FXDAX_GUEST_KERNEL_BUILD == debug ]] && kernel_debug=1
-        channel=$(sed -n 's/^channel = "\(.*\)"$/\1/p' "$repo/guest/rust/rust-toolchain.toml")
-        rustup toolchain install "$channel" --component rust-src --profile minimal > /dev/null
-        env -u RUSTUP_TOOLCHAIN FXDAX_GUEST_KERNEL_WORK="$kernel_work" \
-            FXDAX_GUEST_KERNEL_DEBUG=$kernel_debug "$repo/scripts/build-guest-kernel.sh" x86_64 \
-            > "$results/guest-kernel.log" 2>&1
-        export FXDAX_GUEST_KERNEL="$kernel_work/out/x86_64/vmlinux"
+        host_kernel "$FXDAX_GUEST_KERNEL_BUILD"
+        export FXDAX_GUEST_KERNEL=$host_kernel_image
         sha256sum "$FXDAX_GUEST_KERNEL" > "$results/guest-kernel.txt"
         ;;
     *) echo "FXDAX_GUEST_KERNEL_BUILD is release or debug" >&2; exit 2 ;;

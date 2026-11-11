@@ -4,8 +4,8 @@
 
 Write a large batch of changes before compiling or testing anything: several features or
 fixes, days of work, each still its own commit. Then compile once, fix what the compiler finds,
-build the guest kernel once if the batch touches it, and run the tests once, on GCE
-(`scripts/test-gce.sh`; Linux tests run there, not in Lima).
+build the guest kernel once if the batch touches it, and run the tests once, on ubu1
+(`scripts/test-host.sh`; Linux tests run there, not in Lima).
 
 A batch is several backlog tasks worked through one after another, in one worktree, by one agent.
 It does not mean tasks run in parallel: subagents or worktrees side by side each pay for their own
@@ -13,7 +13,7 @@ compiles and test runs, which a batch exists to pay once. Pick the batch's tasks
 all their changes, and only then compile.
 
 Do not alternate "write one change, compile, test, write the next". A compile of this workspace,
-a guest kernel build and a GCE round each take minutes; paying them per change wastes most of
+a guest kernel build and a host run each take minutes; paying them per change wastes most of
 the time. Rust's compiler catches most of what a per-change build would, all at once at the end
 of a batch.
 
@@ -21,28 +21,30 @@ of a batch.
   with few fixes.
 - Write the tests for each change with it, in the same batch.
 - Then: `cargo build` (or `cargo check`) once, `cargo clippy`, the macOS suite
-  (`scripts/test.sh`), and one GCE run of the workspace and the guest cases.
-- While a batch's GCE run goes, write the next batch rather than wait for it.
+  (`scripts/test.sh`), and one ubu1 run of the workspace and the guest cases.
+- While a batch's ubu1 run goes, write the next batch rather than wait for it.
 - Measure a change on its own only when isolating it is the point of the measurement (an A/B on
   one host).
 
-### GCE hosts are kept
+### Linux runs go to ubu1, never GCP
 
-The user's rule (2026-11-08): reuse a kept GCE host, stop it when done, never delete one per run.
-The drivers do this (`scripts/lib/gce.sh`): `all` takes a stopped or idle host of the run's kind
-(`fxdax-keep-<machine>-<zone>-<n>`), claims it so no other run shares it, and stops it at the
-end, pass or fail. A kept host keeps its `target/`, guest kernel builds and toolchain, so a run
-builds only what changed, and none of a fresh host's setup (r940, r980, r990) can fail it; a
-stopped one holds no vCPU quota. Pass the run number as `FXDAX_GCE_RUN` (e.g. `r1040`), not in a
-host name. A host the old scripts made (`fxdax-test-...`) joins the pool, keeping its name, by
-`scripts/test-gce.sh adopt NAME` once stopped: it checks the host fits, clears its
-`--max-run-duration` deletion (only possible while stopped) and labels it. `delete` only a host
-broken beyond repair.
+The user's rule (2026-11-11): no GCP in any form, CI included. Every Linux run goes to ubu1, a
+physical host others' agents share, through the `scripts/*-host.sh` drivers
+(`scripts/lib/host.sh`; `FXDAX_HOST` names another host): `test-host.sh`, `bench-host.sh`,
+`bench-ab-host.sh`, `perf-gate-host.sh`, `soak-host.sh`, `soak-workloads-host.sh`,
+`mutants-host.sh`, `guest-mutants-host.py`, `gets-host.sh`, `migrate-host.sh`,
+`fork-time-host.sh`. A run is a worktree there of a commit origin has (push first; HEAD of a clean
+tree by default, `FXDAX_HOST_COMMIT` names another), its own target directories, its job under
+`fxjob` (`--bench` for measurements), results copied back, worktree removed. Guest kernels come
+from a cache on the host keyed by their sources (`host_kernel`). A driver stopped mid-run leaves
+the job running: `DRIVER resume RUN RESULTS` fetches it, `DRIVER cancel RUN` ends it. Pass the run
+number as `FXDAX_HOST_RUN` (e.g. `r1040`). ubu1's setup is its `~/docs/system-setup.d` steps: what a
+run needs installed goes there as a step, never into a run.
 
 ## Commit in batches, only what compiled and passed its tests
 
 Commit a batch once it has compiled and its unit tests have run and passed (the workspace's
-`cargo nextest`, and the GCE run for what only runs on Linux): never a change that has not been
+`cargo nextest`, and the ubu1 run for what only runs on Linux): never a change that has not been
 compiled and tested. A batch may still be several commits, one logical change each, made together
 after the batch's test run.
 

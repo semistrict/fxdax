@@ -197,7 +197,7 @@ macro_rules! tags {
 }
 
 tags! {
-    /// scripts/test-e2e.sh's cases unless it is told others, which scripts/test-gce.sh runs
+    /// scripts/test-e2e.sh's cases unless it is told others, which scripts/test-host.sh runs
     /// unless FXDAX_E2E_TEST says otherwise: the guest's Fxfs, its crash tests and checks, and
     /// pgbench, with a DAX window and without, in minutes.
     E2e = "e2e",
@@ -206,22 +206,22 @@ tags! {
     /// The nightly's (.github/workflows/nightly.yml), as production runs them: e2e's and
     /// kernel's, every other case cheap enough on a release kernel, and xfstests.
     Nightly = "nightly",
-    /// scripts/dax-gate.sh's suites, rounds of each, on its first host.
+    /// scripts/dax-gate.sh's suites, rounds of each, in its first run.
     DaxGate = "dax-gate",
-    /// scripts/soak-workloads-gce.sh's crash group: the VM stopped mid-workload.
+    /// scripts/soak-workloads-host.sh's crash group: the VM stopped mid-workload.
     SoakCrash = "soak-crash",
-    /// scripts/soak-workloads-gce.sh's checks group: with delays and on a small window.
+    /// scripts/soak-workloads-host.sh's checks group: with delays and on a small window.
     SoakChecks = "soak-checks",
-    /// scripts/soak-workloads-gce.sh's sanitized group, on the debug kernel.
+    /// scripts/soak-workloads-host.sh's sanitized group, on the debug kernel.
     SoakSanitized = "soak-sanitized",
-    /// scripts/soak-workloads-gce.sh's replicas group: followers, snapshots and migrations.
+    /// scripts/soak-workloads-host.sh's replicas group: followers, snapshots and migrations.
     SoakReplicas = "soak-replicas",
-    /// scripts/soak-workloads-gce.sh's mixed group: VMs on forks of a base under mixed load for
+    /// scripts/soak-workloads-host.sh's mixed group: VMs on forks of a base under mixed load for
     /// hours, through VMs, the daemon and the host crashing and uploads failing.
     SoakMixed = "soak-mixed",
-    /// scripts/perf-gate-gce.sh's cases of one VM each.
+    /// scripts/perf-gate-host.sh's cases of one VM each.
     PerfSingle = "perf-single",
-    /// scripts/perf-gate-gce.sh's density run, VMs on forks of one base.
+    /// scripts/perf-gate-host.sh's density run, VMs on forks of one base.
     PerfDensity = "perf-density",
     /// scripts/bench.sh's cases unless FXDAX_BENCH_CASES says others.
     Bench = "bench",

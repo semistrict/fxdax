@@ -3,7 +3,7 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-"""The guest's hand mutants that need a real kernel, run on a GCE test host (TASK-44.19,
+"""The guest's hand mutants that need a real kernel, run on a Linux host of one's own (TASK-44.19,
 TASK-160.32).
 
 Every past bug put back is a patch of guest/mutants, whose header names its killer and the kernel
@@ -11,19 +11,20 @@ it needs (guest/mutants/README.md). guest/sim/mutants.sh runs those of the simul
 seconds; these are the rest, each a guest kernel's (release, debug, or kasan), its killer a guest
 case, and the check of it that fails if the case is a checks suite:
 
-    scripts/guest-mutants-gce.py HOST ZONE RESULTS [MUTANT...]
-    scripts/guest-mutants-gce.py --check
+    scripts/guest-mutants-host.py RESULTS [MUTANT...]
+    scripts/guest-mutants-host.py --check
 
-runs each (or those named) on HOST, made with scripts/test-gce.sh create: in a worktree of HEAD
-with its patch in, scripts/test-gce.sh runs its killer's case alone, of its checks the killer's
-alone (FXDAX_CHECKS), FXDAX_E2E_ROUNDS times, on a guest kernel of its kind built from the
-worktree; the host keeps its kernel's build directory, so each mutant recompiles fs/fxfs alone. It
-writes each run's results under RESULTS, prints each mutant's fate, and exits 1 unless each was
-killed. A mutant is killed only if its killer failed, as the run's summary says
-(scripts/guest_results.py); MISSED if not; BROKEN if the run failed otherwise, as a build that
-doesn't compile or a host lost, which says nothing of the killer. One whose killer is `none` isn't
-run. FXDAX_MUTANT_KERNEL is the kernel of every mutant, in place of each's own; the other FXDAX_*
-settings reach the host as scripts/test-gce.sh says.
+runs each (or those named) as a run of scripts/test-host.sh on its host (FXDAX_HOST, ubu1 by
+default): in a worktree there of HEAD, which origin has, with the mutant's patch in
+(FXDAX_HOST_PATCH, scripts/lib/host.sh), its killer's case alone, of its checks the killer's alone
+(FXDAX_CHECKS), FXDAX_E2E_ROUNDS times, on a guest kernel of its kind built from the worktree; the
+host keeps its kernels' builds (host_kernel, scripts/lib/linux-host-setup.sh), so each mutant
+recompiles fs/fxfs alone. It writes each run's results under RESULTS, prints each mutant's fate,
+and exits 1 unless each was killed. A mutant is killed only if its killer failed, as the run's
+summary says (scripts/guest_results.py); MISSED if not; BROKEN if the run failed otherwise, as a
+build that doesn't compile or a host lost, which says nothing of the killer. One whose killer is
+`none` isn't run. FXDAX_MUTANT_KERNEL is the kernel of every mutant, in place of each's own; the
+other FXDAX_* settings reach the host as scripts/test-host.sh says.
 
 --check runs nothing: every mutant's header names a kernel and a killer there is, and each of these
 patches applies to the sources as they are, as CI checks, and those of guest/sim's model of Fxfs
@@ -36,7 +37,6 @@ import os
 import re
 import subprocess
 import sys
-import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -49,7 +49,7 @@ SIM = ROOT / "guest" / "sim"
 CASES = ROOT / "guest" / "tests" / "test_cases" / "src" / "lib.rs"
 CHECKS = ROOT / "guest" / "tests" / "test_cases" / "src" / "test_fxfs_guest_checks" / "mod.rs"
 # The kernels a mutant may need: the simulator; guest/sim's model of Fxfs alone, beside Fxfs, as
-# crates/fxfs-sim-diff runs it (TASK-149.29); or a guest kernel scripts/test-gce.sh's host builds
+# crates/fxfs-sim-diff runs it (TASK-149.29); or a guest kernel scripts/test-host.sh's host builds
 # (FXDAX_GUEST_KERNEL_BUILD).
 KERNELS = {"sim", "model", "release", "debug", "kasan"}
 # Where the model's killers are, its #[test]s.
@@ -165,28 +165,19 @@ def fate(status, summary, killer):
     return "killed", f"{case} {ran['outcome']}: {said}"
 
 
-def run(host, zone, results, each, kernel):
-    """Runs the mutant `each` on `host`: its fate, and what its run said."""
+def run(commit, results, each, kernel):
+    """Runs the mutant `each`, its patch applied to `commit`, on the host: its fate, and what its
+    run said."""
     case, *check = each.killer
-    with tempfile.TemporaryDirectory(prefix="fxdax-mutant-") as scratch:
-        tree = Path(scratch) / "tree"
-        subprocess.run(["git", "-C", ROOT, "worktree", "add", "-q", "--detach", tree, "HEAD"],
-                       check=True)
-        try:
-            subprocess.run(["git", "-C", tree, "submodule", "update", "--init", "-q",
-                            "vendor/firecracker"], check=True)
-            subprocess.run(["git", "-C", tree, "apply", each.path], check=True)
-            env = dict(os.environ, FXDAX_GCE_ZONE=zone, FXDAX_WORKSPACE_TESTS="0",
-                       FXDAX_GUEST_KERNEL_BUILD=kernel, FXDAX_E2E_TEST=case)
-            env.pop("FXDAX_CHECKS", None)
-            env.update({"FXDAX_CHECKS": check[0]} if check else {})
-            out = Path(results) / each.name
-            with open(Path(results) / f"{each.name}.log", "w") as log:
-                ran = subprocess.run([tree / "scripts/test-gce.sh", "run", host, out], env=env,
-                                     stdout=log, stderr=subprocess.STDOUT, cwd=tree)
-            return fate(ran.returncode, guest_results.load(out / "e2e"), each.killer)
-        finally:
-            subprocess.run(["git", "-C", ROOT, "worktree", "remove", "--force", tree], check=True)
+    env = dict(os.environ, FXDAX_HOST_COMMIT=commit, FXDAX_HOST_PATCH=str(each.path),
+               FXDAX_WORKSPACE_TESTS="0", FXDAX_GUEST_KERNEL_BUILD=kernel, FXDAX_E2E_TEST=case)
+    env.pop("FXDAX_CHECKS", None)
+    env.update({"FXDAX_CHECKS": check[0]} if check else {})
+    out = Path(results) / each.name
+    with open(Path(results) / f"{each.name}.log", "w") as log:
+        ran = subprocess.run([ROOT / "scripts" / "test-host.sh", out], env=env, stdout=log,
+                             stderr=subprocess.STDOUT)
+    return fate(ran.returncode, guest_results.load(out / "e2e"), each.killer)
 
 
 def main():
@@ -196,21 +187,28 @@ def main():
             print(line, file=sys.stderr)
         print(f"mutants: {len(mutants())} checked, {len(broken)} broken")
         raise SystemExit(1 if broken else 0)
-    if len(sys.argv) < 4:
+    if len(sys.argv) < 2 or sys.argv[1].startswith("-"):
         raise SystemExit(__doc__)
-    host, zone, results, names = sys.argv[1], sys.argv[2], sys.argv[3], set(sys.argv[4:])
+    results, names = sys.argv[1], set(sys.argv[2:])
     chosen = [each for each in mutants() if each.real and (not names or each.name in names)]
     unknown = names - {each.name for each in chosen}
     if unknown:
         raise SystemExit(f"no mutant of a real kernel is named {', '.join(sorted(unknown))}")
     Path(results).mkdir(parents=True, exist_ok=True)
+    # Every mutant of the one commit, HEAD's, whose tree changes nothing it tracks: the mutants' own
+    # patches are what each run changes (scripts/lib/host.sh's host_commit).
+    if subprocess.run(["git", "-C", ROOT, "status", "--porcelain", "--untracked-files=no"],
+                      capture_output=True, text=True, check=True).stdout:
+        raise SystemExit(f"{ROOT} changes what it tracks, which would not run: commit and push it")
+    commit = subprocess.run(["git", "-C", ROOT, "rev-parse", "HEAD"], capture_output=True,
+                            text=True, check=True).stdout.strip()
     survived = 0
     for each in chosen:
         if not each.killer:
             print(f"none {each.name}: nothing kills it: see its header", flush=True)
             continue
         kernel = os.environ.get("FXDAX_MUTANT_KERNEL") or each.kernel
-        ended, said = run(host, zone, results, each, kernel)
+        ended, said = run(commit, results, each, kernel)
         survived += ended != "killed"
         print(f"{ended} {each.name} ({' '.join(each.killer)}, {kernel}): {said}", flush=True)
     raise SystemExit(1 if survived else 0)

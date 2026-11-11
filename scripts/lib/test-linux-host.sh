@@ -53,26 +53,11 @@ case ${FXDAX_GUEST_KERNEL_BUILD:-} in
     '') ;;
     release | debug | kasan | coverage | rust-checks)
         echo "== guest kernel ($FXDAX_GUEST_KERNEL_BUILD)" >&2
-        # Each kind in a work directory of its own, as their configurations differ. The kernel's
-        # Rust builds on guest/rust's own toolchain, not the host's.
-        kernel_work="$work/guest-kernel-$FXDAX_GUEST_KERNEL_BUILD"
-        kernel_debug=0 kernel_kasan=0 kernel_coverage=0 kernel_rust_checks=0
-        [[ $FXDAX_GUEST_KERNEL_BUILD == debug ]] && kernel_debug=1
-        [[ $FXDAX_GUEST_KERNEL_BUILD == kasan ]] && kernel_kasan=1
-        [[ $FXDAX_GUEST_KERNEL_BUILD == coverage ]] && kernel_coverage=1
-        [[ $FXDAX_GUEST_KERNEL_BUILD == rust-checks ]] && kernel_rust_checks=1
-        channel=$(sed -n 's/^channel = "\(.*\)"$/\1/p' "$repo/guest/rust/rust-toolchain.toml")
-        rustup toolchain install "$channel" --component rust-src --profile minimal > /dev/null
-        if ! env -u RUSTUP_TOOLCHAIN FXDAX_GUEST_KERNEL_WORK="$kernel_work" \
-            FXDAX_GUEST_KERNEL_DEBUG=$kernel_debug FXDAX_GUEST_KERNEL_KASAN=$kernel_kasan \
-            FXDAX_GUEST_KERNEL_COVERAGE=$kernel_coverage \
-            FXDAX_GUEST_KERNEL_RUST_CHECKS=$kernel_rust_checks \
-            "$repo/scripts/build-guest-kernel.sh" x86_64 \
-            > "$results/guest-kernel.log" 2>&1; then
+        if ! host_kernel "$FXDAX_GUEST_KERNEL_BUILD"; then
             echo "guest kernel: failed, see guest-kernel.log" >&2
             exit 1
         fi
-        export FXDAX_GUEST_KERNEL="$kernel_work/out/x86_64/vmlinux"
+        export FXDAX_GUEST_KERNEL=$host_kernel_image
         # Its kind, which the guest tests' time limits scale by (TASK-168).
         export FXDAX_GUEST_KERNEL_BUILD
         sha256sum "$FXDAX_GUEST_KERNEL" > "$results/guest-kernel.txt"
@@ -88,19 +73,17 @@ if [[ ${FXDAX_GUEST_KERNEL_BUILD:-} == coverage ]]; then
 fi
 # A crash leaves a core, whose threads' stacks the results keep, and only those, as the host goes
 # with the core: a VMM died of SIGSEGV in a soak, and nothing said where (2026-10-31). Private
-# memory alone (coredump_filter): a guest's and a daemon's arenas are shared.
+# memory alone (coredump_filter): a guest's and a daemon's arenas are shared. Not on a host of
+# one's own (FXDAX_HOST_PROVISIONED), whose core pattern is that of every process there, others'
+# runs' too, and its own setup's.
 cores="$results/cores"
 mkdir -p "$cores"
-sysctl -q -w kernel.core_pattern="$cores/core.%p"
-ulimit -c unlimited
-echo 0x11 > /proc/self/coredump_filter
-echo "== guest tests" >&2
-# With FXDAX_RESULTS_BUCKET, a prefix of a bucket the run's results go to as each case ends, as they
-# are here (scripts/guest_results.py), by gcloud, as the host's service account.
-if [[ -n ${FXDAX_RESULTS_BUCKET:-} ]]; then
-    command -v gcloud > /dev/null || snap install google-cloud-cli --classic > /dev/null ||
-        echo "no gcloud: the guest tests' results stay here alone" >&2
+if [[ ${FXDAX_HOST_PROVISIONED:-} != 1 ]]; then
+    sysctl -q -w kernel.core_pattern="$cores/core.%p"
+    ulimit -c unlimited
+    echo 0x11 > /proc/self/coredump_filter
 fi
+echo "== guest tests" >&2
 tracer=
 if [[ -n ${FXDAX_HOST_TRACE:-} ]]; then
     host_need bpftrace
@@ -111,9 +94,8 @@ if [[ -n ${FXDAX_HOST_TRACE:-} ]]; then
     tracer=$!
 fi
 e2e_status=0
-FXDAX_E2E_RESULTS="$results/e2e" \
-    FXDAX_RESULTS_BUCKET="${FXDAX_RESULTS_BUCKET:+${FXDAX_RESULTS_BUCKET%/}/e2e}" \
-    "$repo/scripts/test-e2e.sh" "$@" > "$results/e2e.log" 2>&1 || e2e_status=$?
+FXDAX_E2E_RESULTS="$results/e2e" "$repo/scripts/test-e2e.sh" "$@" > "$results/e2e.log" 2>&1 ||
+    e2e_status=$?
 echo "guest tests: exit $e2e_status" >&2
 # The tracer prints its maps as it is interrupted.
 if [[ -n $tracer ]]; then
@@ -127,7 +109,7 @@ for core in "$cores"/core.*; do
     rm "$core"
 done
 if [[ -n ${FXDAX_COVERAGE:-} ]]; then
-    "$repo/scripts/guest-coverage.py" "$FXDAX_COVERAGE" "$(dirname "$(find "$kernel_work" \
+    "$repo/scripts/guest-coverage.py" "$FXDAX_COVERAGE" "$(dirname "$(find "$host_kernel_work" \
         -path '*/fs/fxfs/dax.gcno' -print -quit)")" "$results/coverage" ||
         echo "guest coverage: failed" >&2
 fi

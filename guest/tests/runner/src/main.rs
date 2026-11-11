@@ -645,14 +645,15 @@ fn outcome_json(result: &TestResult, run: &serde_json::Value, round: u32) -> ser
     })
 }
 
-/// fxdax: the command that runs `case` again on a GCE host as it ran, its knobs `knobs`.
+/// fxdax: the command that runs `case` again on a host as it ran (scripts/test-host.sh), its knobs
+/// `knobs`.
 fn replay(case: &str, knobs: &BTreeMap<String, String>) -> String {
     let mut words = vec!["FXDAX_WORKSPACE_TESTS=0".to_owned(), format!("FXDAX_E2E_TEST={case}")];
     let others = knobs
         .iter()
         .filter(|(name, _)| !["FXDAX_WORKSPACE_TESTS", "FXDAX_E2E_TEST"].contains(&name.as_str()));
     words.extend(others.map(|(name, value)| format!("{name}={}", shell_word(value))));
-    words.push("scripts/test-gce.sh all".to_owned());
+    words.push("scripts/test-host.sh".to_owned());
     words.join(" ")
 }
 
@@ -982,7 +983,7 @@ mod tests {
                 "commit": "abc123",
                 "replay": "FXDAX_WORKSPACE_TESTS=0 FXDAX_E2E_TEST=fxfs-guest-checks-dax \
                     FXDAX_E2E_ROUNDS=5 FXDAX_GUEST_CMDLINE='fxfs.follow_apply_delay_us=200 quiet' \
-                    FXDAX_SEED=77 scripts/test-gce.sh all",
+                    FXDAX_SEED=77 scripts/test-host.sh",
                 "knobs": {
                     "FXDAX_E2E_ROUNDS": "5",
                     "FXDAX_E2E_TEST": "--tag dax-gate",
@@ -1050,7 +1051,7 @@ mod tests {
         );
         assert_eq!(
             outcome["replay"],
-            "FXDAX_WORKSPACE_TESTS=0 FXDAX_E2E_TEST=runner-deadlock scripts/test-gce.sh all"
+            "FXDAX_WORKSPACE_TESTS=0 FXDAX_E2E_TEST=runner-deadlock scripts/test-host.sh"
         );
     }
 }

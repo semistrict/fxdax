@@ -16,7 +16,7 @@
 #
 # Usage: fork-time-linux-host.sh SOURCE RESULTS LABEL=TREE...
 set -euo pipefail
-# SOURCE, this script's tree, is the host scripts' first argument (gce_host_command); the trees
+# SOURCE, this script's tree, is the host scripts' first argument (host_command); the trees
 # timed are the LABEL=TREEs.
 : "${1:?source required}"
 results=${2:?results directory required}

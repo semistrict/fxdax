@@ -25,7 +25,7 @@ def tags():
 
 def named():
     """The suites the scripts and workflows name, `--tag NAME`, but for one a script makes of its
-    own names, as soak-workloads-gce.sh's `soak-$group`, which test_soak_workloads.py checks."""
+    own names, as soak-workloads-host.sh's `soak-$group`, which test_soak_workloads.py checks."""
     return {name for path in RUNNERS
             for name in re.findall(r"--tag ([a-z0-9-]+)(?![A-Za-z0-9$-])", path.read_text())}
 

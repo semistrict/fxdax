@@ -5,7 +5,7 @@
 """Reports the pgbench cases' runs step by step, as the sandbox team's harness does (TASK-91.8).
 
 Reads each pgbench case's log under the results directories given (test_fxfs_guest_pgbench.rs's,
-`.../CASE/CASE/log.txt`, as scripts/test-gce.sh and scripts/bench-gce.sh keep them), and its
+`.../CASE/CASE/log.txt`, as scripts/test-host.sh and scripts/bench-host.sh keep them), and its
 daemon's samples beside it (samples.txt, which the host writes every 2 s of the loading VM's life,
 the store cases' alone). For each case:
 

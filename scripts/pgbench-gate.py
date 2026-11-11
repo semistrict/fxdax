@@ -2,11 +2,11 @@
 # Copyright 2026 The fxdax Authors. All rights reserved.
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
-"""Gates a GCE run of pgbench and of DAX's cases on throughput and memory.
+"""Gates a run of pgbench and of DAX's cases on throughput and memory.
 
 The sandbox team's pgbench (TASK-131.5), and copy-on-write DAX's cases (TASK-164.5): DAX copies
 on write, the only DAX since writable DAX was deleted (doc-13, dead-ends/writable-dax.md). Reads the
-cases' logs of scripts/test-gce.sh results directories (e2e/CASE/CASE/log.txt, or each round's,
+cases' logs of scripts/test-host.sh results directories (e2e/CASE/CASE/log.txt, or each round's,
 round-K/CASE/log.txt), each directory's rounds after the last's:
 
 - pgbench's (test_fxfs_guest_pgbench.rs): their runs' tps in order, RUNS a VM as the guest's output
@@ -233,7 +233,7 @@ def results(lines):
 
 
 def logs(results_dir, case):
-    """The logs of `case` in `results_dir`, a test-gce.sh results directory: each round's, in
+    """The logs of `case` in `results_dir`, a test-host.sh results directory: each round's, in
     order: its artifacts' (round-K/CASE/log.txt), or, of a round that passed, whose artifacts
     aren't kept, its whole log (round-K.log), which has its console and its guest's output both."""
     root = Path(results_dir) / "e2e" / case

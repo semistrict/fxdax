@@ -11,6 +11,7 @@ import contextlib
 import os
 import socket
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -454,6 +455,127 @@ fi
             done = self.host_rust(home, ["bin/rustc", self.MANIFEST])
         calls = ["rustup target add x86_64-unknown-linux-musl", "rustup component add clippy"]
         self.assertEqual(done, (0, "", calls))
+
+
+class Kernels(unittest.TestCase):
+    """host_kernel, a run's guest kernel: built in the run's work directory, or with a cache of
+    kernels on the host (FXDAX_HOST_KERNELS), taken from there if one was built from the same
+    sources. Here a source tree of the kernel's inputs and one that isn't, whose
+    build-guest-kernel.sh is a fake that says what it built and where, its kernel naming the
+    sources' text; cargo a fake whose metadata names guest/rust's packages of the workspace's own;
+    and flock fake_flock.py."""
+
+    BUILD = """#!/bin/bash
+echo "built $(basename "$FXDAX_GUEST_KERNEL_WORK") debug=$FXDAX_GUEST_KERNEL_DEBUG \\
+coverage=$FXDAX_GUEST_KERNEL_COVERAGE" >> "$CALLS"
+mkdir -p "$FXDAX_GUEST_KERNEL_WORK/out/x86_64"
+cat "$(dirname "$0")/../guest/linux/fs.c" "$(dirname "$0")/../crates/fxfs/lib.rs" \\
+    > "$FXDAX_GUEST_KERNEL_WORK/out/x86_64/vmlinux"
+"""
+    CARGO = """#!/bin/bash
+[[ $1 == metadata ]] || { echo "cargo: $*" >&2; exit 3; }
+echo '{"packages": [{"source": null, "manifest_path": "'"$PWD"'/fxfs-linux/Cargo.toml"},
+    {"source": null, "manifest_path": "'"$PWD"'/../../crates/fxfs/Cargo.toml"},
+    {"source": "registry+https://github.com/rust-lang/crates.io-index",
+     "manifest_path": "/registry/serde/Cargo.toml"}]}'
+"""
+
+    def setUp(self):
+        self.directory = Path(tempfile.mkdtemp())
+        self.repo = self.directory / "repo"
+        for name, text in {
+            "Cargo.toml": "[workspace]\n",
+            "guest/linux/fs.c": "fs\n",
+            "guest/rust/rust-toolchain.toml": '[toolchain]\nchannel = "nightly-2026-10-12"\n',
+            "guest/rust/fxfs-linux/Cargo.toml": "[package]\n",
+            "crates/fxfs/Cargo.toml": "[package]\n",
+            "crates/fxfs/lib.rs": "fxfs\n",
+            # The VMM's, which the kernel isn't built of.
+            "crates/fxdax/lib.rs": "vmm\n",
+            "scripts/build-guest-kernel.sh": self.BUILD,
+            "scripts/build-guest-sysroot.sh": "",
+        }.items():
+            path = self.repo / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text)
+            path.chmod(0o755)
+        tools = self.directory / "bin"
+        tools.mkdir()
+        for name, text in {
+            "cargo": self.CARGO,
+            "rustup": "#!/bin/sh\n",
+            "flock": f'#!/bin/sh\nexec {sys.executable} {SCRIPTS / "tests" / "fake_flock.py"} "$@"\n',
+        }.items():
+            (tools / name).write_text(text)
+            (tools / name).chmod(0o755)
+        self.calls = self.directory / "calls"
+        self.calls.write_text("")
+        self.cache = self.directory / "kernels"
+
+    def kernel(self, kind, work, cached=True):
+        """host_kernel KIND's builds, a run's work directory `work`, with the cache if `cached`:
+        its status and errors, what it built, and its kernel's path and text."""
+        built_before = self.calls.read_text()
+        done = subprocess.run(
+            ["/bin/bash", "-c", 'set -euo pipefail; source "$0"; repo=$2 results=$PWD/results; '
+             'mkdir -p "$results"; host_kernel "$1"; printf %s "$host_kernel_image"', LIBRARY, kind,
+             self.repo],
+            env={"PATH": f"{self.directory / 'bin'}:/usr/bin:/bin:/sbin", "CALLS": str(self.calls),
+                 "FXDAX_HOST_WORK": str(self.directory / work),
+                 **({"FXDAX_HOST_KERNELS": str(self.cache)} if cached else {})},
+            capture_output=True, text=True, cwd=self.directory,
+        )
+        built = self.calls.read_text()[len(built_before):].splitlines()
+        image = Path(done.stdout) if done.stdout else None
+        return done.returncode, done.stderr, built, image, image.read_text() if image else None
+
+    def test_without_a_cache_a_kernel_builds_in_the_runs_work_directory(self):
+        status, errors, built, image, text = self.kernel("debug", "w1", cached=False)
+        self.assertEqual((status, errors, built), (0, "", ["built guest-kernel-debug debug=1 coverage=0"]))
+        self.assertEqual((image, text), (self.directory / "w1/guest-kernel-debug/out/x86_64/vmlinux",
+                                         "fs\nfxfs\n"))
+
+    def test_a_kernel_of_the_same_sources_is_built_once(self):
+        first = self.kernel("release", "w1")
+        self.assertEqual(first[:3], (0, "", ["built work debug=0 coverage=0"]))
+        self.assertEqual(first[3:], (self.directory / "w1/guest-kernel-release/vmlinux", "fs\nfxfs\n"))
+        # Another run's: the same sources, but for what the kernel isn't built of.
+        (self.repo / "crates" / "fxdax" / "lib.rs").write_text("another vmm\n")
+        second = self.kernel("release", "w2")
+        self.assertEqual(second[:3], (0, "", []))
+        self.assertEqual(second[3:], (self.directory / "w2/guest-kernel-release/vmlinux", "fs\nfxfs\n"))
+        # A change to its Rust, of a package of the workspace's own: built again, in the cache's
+        # work directory, as the last was.
+        (self.repo / "crates" / "fxfs" / "lib.rs").write_text("fxfs changed\n")
+        third = self.kernel("release", "w3")
+        self.assertEqual(third[2:], (["built work debug=0 coverage=0"],
+                                     self.directory / "w3/guest-kernel-release/vmlinux",
+                                     "fs\nfxfs changed\n"))
+
+    def test_each_kind_is_a_kernel_of_its_own(self):
+        self.assertEqual(self.kernel("release", "w1")[2], ["built work debug=0 coverage=0"])
+        self.assertEqual(self.kernel("debug", "w2")[2], ["built work debug=1 coverage=0"])
+        self.assertEqual(sorted(path.name for path in self.cache.iterdir()),
+                         ["debug", "debug.lock", "release", "release.lock"])
+
+    def test_a_coverage_kernel_is_never_taken_from_the_cache(self):
+        # Its counts are read against its own build's notes.
+        for work in ["w1", "w2"]:
+            self.assertEqual(self.kernel("coverage", work)[2:4], (
+                ["built guest-kernel-coverage debug=0 coverage=1"],
+                self.directory / work / "guest-kernel-coverage/out/x86_64/vmlinux"))
+
+    def test_the_cache_keeps_the_last_four(self):
+        for n in range(6):
+            (self.repo / "guest" / "linux" / "fs.c").write_text(f"fs {n}\n")
+            self.assertEqual(self.kernel("release", f"w{n}")[0], 0)
+        self.assertEqual(len(list((self.cache / "release" / "built").iterdir())), 4)
+
+    def test_no_such_kind(self):
+        status, errors, built, _, _ = self.kernel("fast", "w1")
+        self.assertEqual((status, built), (2, []))
+        self.assertEqual(errors, "host_kernel: a kernel is release, debug, kasan, coverage or "
+                                 "rust-checks\n")
 
 
 if __name__ == "__main__":

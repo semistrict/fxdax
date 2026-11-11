@@ -3,8 +3,8 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-# An A/B of the fs bench (scripts/bench.sh) on a disposable x86-64 Linux KVM host, as root
-# (scripts/bench-ab-gce.sh drives it, TASK-276): each side's tree built once, in a tree of its own
+# An A/B of the fs bench (scripts/bench.sh) on an x86-64 Linux KVM host, as root
+# (scripts/bench-ab-host.sh drives it, TASK-276): each side's tree built once, in a tree of its own
 # (host_tree), into artifacts of its own, the guest kernel among them (test-e2e.sh's
 # FXDAX_E2E_BUILD_ONLY); then ROUNDS rounds, each of both sides, A B, then B A, and so on, each a
 # run of the bench against its side's artifacts, building nothing (FXDAX_E2E_PREBUILT), so that
@@ -23,11 +23,6 @@
 # FXDAX_GUEST_KERNEL_BUILD is the guest kernels' build (default release). FXDAX_AB_BUILD_NICE is
 # the niceness the sides build at (default 0), the rounds' unchanged: on a host others share, with
 # CARGO_BUILD_JOBS and FXDAX_GUEST_KERNEL_JOBS (scripts/build-guest-kernel.sh) to bound them.
-#
-# On a host of one's own, provisioned already (ubu1), as root, its caller's toolchain and its
-# work where the caller says (scripts/lib/linux-host-setup.sh):
-#   sudo --preserve-env env "PATH=$PATH" "HOME=$HOME" FXDAX_HOST_PROVISIONED=1 \
-#       FXDAX_HOST_WORK=DIR scripts/lib/bench-ab-linux-host.sh TOOLS RESULTS A B ROUNDS A_NAME B_NAME
 set -euo pipefail
 
 # Prints the sides' order of each of ROUNDS rounds, a line each: `a b`, then `b a`, and so on, so
@@ -57,8 +52,8 @@ unset FXDAX_GUEST_KERNEL_BUILD
 iterations=${FXDAX_BENCH_ITERATIONS:-2}
 read -ra a_env <<< "${FXDAX_AB_A_ENV:-}"
 read -ra b_env <<< "${FXDAX_AB_B_ENV:-}"
-channel=$(sed -n 's/^channel = "\(.*\)"$/\1/p' "$tools/guest/rust/rust-toolchain.toml")
-rustup toolchain install "$channel" --component rust-src --profile minimal > /dev/null
+# The sides' builds' niceness, their guest kernels' too (host_kernel).
+host_build_nice=${FXDAX_AB_BUILD_NICE:-0}
 
 # Each side's tree, by side, which build makes.
 declare -A trees
@@ -66,22 +61,18 @@ declare -A trees
 # Builds side SIDE from SOURCE once: its tree, trees[SIDE], its guest kernel and its artifacts, in
 # $work/ab-artifacts-SIDE.
 build() {
-    local side=$1 source=$2 tree kernel_work debug=0
+    local side=$1 source=$2 tree
     repo=$source
     host_tree "bench-ab-$side"
     tree=$repo
-    kernel_work="$work/guest-kernel-ab-$side-$kernel_build"
-    [[ $kernel_build == debug ]] && debug=1
     echo "Building side $side from $source" >&2
-    local nice=(nice -n "${FXDAX_AB_BUILD_NICE:-0}")
-    "${nice[@]}" env -u RUSTUP_TOOLCHAIN FXDAX_GUEST_KERNEL_WORK="$kernel_work" \
-        FXDAX_GUEST_KERNEL_DEBUG=$debug "$tree/scripts/build-guest-kernel.sh" x86_64 \
-        > "$results/guest-kernel-$side.log" 2>&1
+    host_kernel_log=$results/guest-kernel-$side.log \
+        host_kernel "$kernel_build" "$work/guest-kernel-ab-$side-$kernel_build"
     rm -rf "$work/ab-artifacts-$side"
-    "${nice[@]}" env FXDAX_E2E_ROOT="$tree" FXDAX_E2E_BUILD_ONLY="$work/ab-artifacts-$side" \
-        FXDAX_E2E_RESULTS="$results/build-$side" "$tools/scripts/test-e2e.sh" \
-        > "$results/build-$side.log" 2>&1
-    cp "$kernel_work/out/x86_64/vmlinux" "$work/ab-artifacts-$side/vmlinux"
+    nice -n "$host_build_nice" env FXDAX_E2E_ROOT="$tree" \
+        FXDAX_E2E_BUILD_ONLY="$work/ab-artifacts-$side" FXDAX_E2E_RESULTS="$results/build-$side" \
+        "$tools/scripts/test-e2e.sh" > "$results/build-$side.log" 2>&1
+    cp "$host_kernel_image" "$work/ab-artifacts-$side/vmlinux"
     sha256sum "$work/ab-artifacts-$side/vmlinux" >> "$work/ab-artifacts-$side/artifacts.txt"
     cp "$work/ab-artifacts-$side/artifacts.txt" "$results/artifacts-$side.txt"
     trees[$side]=$tree

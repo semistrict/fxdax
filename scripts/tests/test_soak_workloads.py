@@ -2,7 +2,7 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-"""Tests of scripts/soak-workloads-gce.sh, which soaks the guest suites on GCE hosts."""
+"""Tests of scripts/soak-workloads-host.sh, which soaks the guest suites on a host of one's own."""
 
 import re
 import subprocess
@@ -13,7 +13,7 @@ from pathlib import Path
 import test_guest_tags
 
 ROOT = Path(__file__).resolve().parent.parent.parent
-SOAK = ROOT / "scripts" / "soak-workloads-gce.sh"
+SOAK = ROOT / "scripts" / "soak-workloads-host.sh"
 
 
 class SoakWorkloads(unittest.TestCase):
@@ -23,7 +23,7 @@ class SoakWorkloads(unittest.TestCase):
         self.assertEqual(groups, ["crash", "checks", "sanitized", "replicas", "mixed"])
         self.assertEqual({f"soak-{group}" for group in groups} - test_guest_tags.tags(), set())
 
-    def test_a_group_unknown_makes_no_host(self):
+    def test_a_group_unknown_runs_nothing(self):
         with tempfile.TemporaryDirectory() as results:
             run = subprocess.run(
                 [SOAK, results, "crash", "lunch"], capture_output=True, text=True
