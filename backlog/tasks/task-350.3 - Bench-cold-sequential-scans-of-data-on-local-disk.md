@@ -4,6 +4,7 @@ title: 'Bench: cold sequential scans of data on local disk'
 status: To Do
 assignee: []
 created_date: '2026-11-11 10:56'
+updated_date: '2026-11-11 10:59'
 labels: []
 dependencies:
   - TASK-350.1
@@ -15,7 +16,7 @@ ordinal: 707000
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-Cold DAX reads ran 453 MiB/s against 3,325 MiB/s for ext4 on virtio-blk, sqlite-pread-scan 284 against 2,617 MiB/s (docs/measurements/gce-fs-bench-2026-10-31-refresh); without DAX random cold reads fell to 3,173 IOPS. The sandboxes' path for the same data is NBD over JuiceFS's local block cache, never measured against it.
+Cold DAX reads ran 453 MiB/s against 3,325 MiB/s for ext4 on virtio-blk, sqlite-pread-scan 284 against 2,617 MiB/s (docs/measurements/gce-fs-bench-2026-10-31-refresh); without DAX random cold reads fell to 3,173 IOPS. The baseline's path for the same data is a virtio-blk image file read through JuiceFS's FUSE mount from its local block cache, never measured against it.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria

@@ -4,6 +4,7 @@ title: 'Bench: sync, syncfs and fsfreeze waiting for the bucket'
 status: To Do
 assignee: []
 created_date: '2026-11-11 10:56'
+updated_date: '2026-11-11 10:59'
 labels: []
 dependencies:
   - TASK-350.1
@@ -15,7 +16,7 @@ ordinal: 709000
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-sync, syncfs, unmount and freeze ask for COMMIT_DURABLE, which waits for the upload and a lease read: about 80 ms on GCS in region (docs/measurements/gcs-round-trips-2026-11-08.md). In the sandboxes' setup they end at ext4's journal with no flush. append_writeback (fdatasyncs beside a syncfs loop) ran 3.3x slower on GCS than on a file bucket.
+sync, syncfs, unmount and freeze ask for COMMIT_DURABLE, which waits for the upload and a lease read: about 80 ms on GCS in region (docs/measurements/gcs-round-trips-2026-11-08.md). On the JuiceFS baseline they reach ext4's journal and a flush of the drive, which is an fsync on the FUSE mount with cache_type Writeback and nothing with Unsafe. append_writeback (fdatasyncs beside a syncfs loop) ran 3.3x slower on GCS than on a file bucket.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria
