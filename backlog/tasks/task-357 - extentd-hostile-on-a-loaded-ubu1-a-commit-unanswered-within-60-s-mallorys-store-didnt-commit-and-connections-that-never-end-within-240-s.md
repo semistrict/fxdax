@@ -6,6 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-11-11 14:39'
+updated_date: '2026-11-11 15:16'
 labels:
   - extentd
   - testing
@@ -38,3 +39,9 @@ The same seeds passed all 1920 cases elsewhere: seed 55 on tmpfs before TASK-92.
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+2026-11-11 (claude, TASK-341/345's Linux run on ubu1, load average 12-17): a_compromised_vm_process_harms_no_tenant_beside_it failed after 361 s at hostile.rs:1862, alice = Err(Timeout) in WAIT * 4; the same build alone passed in 14 s.
+<!-- SECTION:NOTES:END -->

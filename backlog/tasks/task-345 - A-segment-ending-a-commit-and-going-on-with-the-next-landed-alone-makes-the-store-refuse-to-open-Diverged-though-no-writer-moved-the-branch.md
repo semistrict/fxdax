@@ -3,10 +3,11 @@ id: TASK-345
 title: >-
   A segment ending a commit and going on with the next, landed alone, makes the
   store refuse to open (Diverged) though no writer moved the branch
-status: To Do
-assignee: []
+status: Done
+assignee:
+  - '@claude'
 created_date: '2026-11-11 07:59'
-updated_date: '2026-11-11 08:02'
+updated_date: '2026-11-11 15:15'
 labels:
   - extentd
   - tla
@@ -37,16 +38,16 @@ Blind spot: extent_store's simulation (sim/world.rs, fn refused) takes every Div
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Wal::rebase puts a WAL after a branch whose last commit ends in a landed segment going on with the WAL's next commit: no Diverged, the next commit kept whole and applied once
-- [ ] #2 An extent_remote wal test of that segment landed alone, red on main
-- [ ] #3 extent_store's simulation fails a Diverged whose branch's last commit is the log's own or its base
-- [ ] #4 specs/bucket: BucketSpans's Can includes spanOn and holds, its Opened modelling the fix
+- [x] #1 Wal::rebase puts a WAL after a branch whose last commit ends in a landed segment going on with the WAL's next commit: no Diverged, the next commit kept whole and applied once
+- [x] #2 An extent_remote wal test of that segment landed alone, red on main
+- [x] #3 extent_store's simulation fails a Diverged whose branch's last commit is the log's own or its base
+- [x] #4 specs/bucket: BucketSpans's Can includes spanOn and holds, its Opened modelling the fix
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
 - [ ] #1 cargo nextest run --workspace passes on macOS and Linux (ubu1, under fxjob)
-- [ ] #2 scripts/upstream-changes.py --check passes
+- [x] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
@@ -54,4 +55,12 @@ Blind spot: extent_store's simulation (sim/world.rs, fn refused) takes every Div
 
 <!-- SECTION:NOTES:BEGIN -->
 2026-11-11 (TASK-149.45's agent): the fix sketched above, modelled in a scratch copy of specs/bucket (Opened: a landed prefix may end at a segment whose last commit is the branch's and that goes on with the next; that segment restamped after the fence with its continuation alone, commit/ext/own/free/fork dropped, then the rest), holds over BucketSpans.cfg with "spanOn" added to Can: 5,675,698 distinct states, 2 min, no violation; and over the 1-host trace's model. specs/bucket keeps "spanOn" in no model until this lands (its header says so); add it to BucketSpans's Can with the fix.
+
+2026-11-11 (claude): Wal::rebase finds, when no place between commits has the branch's last commit, the segment ending it and going on with the next: it takes the segments before it as landed and keeps it, stamped again after the fence with its continuation alone (commits, extents, own, frees, root, capacity, forks dropped; next_sequence kept), then the rest; Rebased { landed, ended } gives its footer as it landed. Rules::wal_continues. extent_store: Store::open leaves the ended segment's own files for the cache (the bucket's state holds its commits' extents); Store::rebase, live, writes the base past its commits first, then State::landed_ending places those extents where they landed (else they'd be read in the restamped object, whose data the branch holds no more of but the continuation's). Tests: extent_remote wal::tests::logs_whose_segment_ending_a_commit_and_going_on_landed_alone_go_on (red with the rule off: Diverged); extent_store tests/store.rs logs_whose_segment_ending_a_commit_and_going_on_landed_alone_go_on (live rebase; red without landed_ending: commit 1's extent left in the segment). Simulation: World::refused fails a Diverged whose branch's last commit is the log's or its base; spanning_wals profile (writes 18, commits 4) holds 200 seeds and finds the bug at seed 170 in 27 s with wal_continues off (sim::logs_need_to_continue_a_segment_landed_alone; the wals profile needed 1060 s). The sim's 200 seeds don't reach the live path (a panicking mutant passed): the store test covers it. specs/bucket: rule walContinues, Opened models the fix, BucketSpans's Can has spanOn: holds, 5,675,698 distinct states, 122 s; mutations/NoWalContinues (1 host, Segs 4) violates NoErrors; every mutation's Rules list has walContinues; scripts/check-tla.sh: all 81 green. TASK-338's uploader grouping on TASK-310's branch (first segment landed last) was a workaround for this, dropped there now. Crash tests 30/30 on ubu1 (round 45 had failed them).
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Wal::rebase keeps a landed segment ending the branch's last commit and going on with the next, restamped with its continuation alone; the store reads that commit's extents where they landed; the sim fails false divergences; specs/bucket's BucketSpans covers spanOn and holds.
+<!-- SECTION:FINAL_SUMMARY:END -->

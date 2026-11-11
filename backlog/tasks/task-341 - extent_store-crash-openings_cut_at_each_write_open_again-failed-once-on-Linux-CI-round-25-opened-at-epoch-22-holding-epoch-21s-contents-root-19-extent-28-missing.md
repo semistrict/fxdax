@@ -4,10 +4,11 @@ title: >-
   extent_store::crash openings_cut_at_each_write_open_again failed once on Linux
   CI: round 25 opened at epoch 22 holding epoch 21's contents (root 19, extent
   28 missing)
-status: To Do
-assignee: []
+status: Done
+assignee:
+  - '@claude'
 created_date: '2026-11-11 01:22'
-updated_date: '2026-11-11 11:06'
+updated_date: '2026-11-11 15:15'
 labels:
   - extent_store
   - durability
@@ -40,4 +41,16 @@ Reproduced on ubu1 with main 7e1740cb7's extent_store (no TASK-330.1 change in i
 Third and fourth Linux CI hits on t330-land (run 42979578798, its reruns): openings_cut_at_each_write_open_again, 'round 25: at epoch 23'. It now fails most Linux CI runs: every push's CI is a coin toss until it's fixed.
 
 Main's own CI now: run 43006118431 (main 394119d9d) failed on both crash tests at once, recovers_from_its_bucket_with_and_without_its_disk 'round 25: at epoch 23' and openings_cut_at_each_write_open_again 'round 25: at epoch 22'; every other job green. Main's CI is red until this is fixed.
+
+2026-11-11 (claude): root causes, three, all found by TASK-310's crash rounds first and fixed here apart from TASK-310's framing changes.
+1. Round 25/28 (kept.rs:318, an epoch claimed without its contents): recovery kept a later commit past an earlier one not durable: a log refusing a record's runs, a segment past the base holding no record nor whole framed file, or a log not following the last commit kept, ended nothing; and an opening stopped part way removed the refusing segment first. wal::recover now ends what it keeps at each, removing the later segments first, durably (15d7a65ce; TASK-334's rules; tests logs_following_a_commit_lost_go, logs_following_the_base_are_kept, logs_past_commits_no_segment_holds_go, logs_refusing_a_record_after_whole_ones_end_what_is_kept, commits_whose_runs_a_log_refuses_go, ..._whatever_a_recovery_stopped_left, each red without its rule).
+2. Round 81 (opened at epoch 4, 8 durable): a spare log, renamed from segment 3's log and then renamed segment 6's, neither rename durable, was kept by a crash under 3's name holding 6's header and records, which recovery read as 3's commits. A log's header now names its segment (LOG_MAGIC v2: salt, branch, number), and a log whose header names another holds none of its commits; store format 10 (22193d7f3; test logs_of_other_segments_hold_none_of_their_names, red without it).
+3. Round 45 (kept.rs:308, Diverged): TASK-345, fixed with it.
+Proof: crash tests (cargo nextest run -p extent_store --test crash, all three) 30 runs of 30 green on ubu1 under fxjob with the final code (main failed about 1 run in 3; 25 of 25 green with 1 and 2 alone, round 45 then seen once on macOS). macOS scripts/test.sh green (2239 workspace, sim 48, shuttle 37); Linux workspace on ubu1 2495 of 2497, the two failures TASK-315 (ZFS page cache, every ubu1 run) and TASK-360 (hostile timeout under load, passes alone in 14 s), neither in this code; upstream-changes --check passes; specs: check-tla.sh all 81 green.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Recovery ends what it keeps at the first commit not durable (refused runs, an empty segment past the base, a log not following), removing later segments first; logs' headers name their segments (format 10); with TASK-345's rebase fix. Crash tests 30/30 on ubu1 (main ~1 in 3 failed).
+<!-- SECTION:FINAL_SUMMARY:END -->

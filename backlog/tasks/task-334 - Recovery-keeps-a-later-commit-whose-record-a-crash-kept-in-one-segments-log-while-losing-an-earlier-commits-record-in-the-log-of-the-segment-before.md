@@ -3,11 +3,11 @@ id: TASK-334
 title: >-
   Recovery keeps a later commit whose record a crash kept in one segment's log
   while losing an earlier commit's record in the log of the segment before
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-10 22:11'
-updated_date: '2026-11-11 02:22'
+updated_date: '2026-11-11 15:15'
 labels:
   - durability
   - extentd
@@ -25,14 +25,14 @@ Found by TASK-310's Shuttle crash rounds (crash::crashes_recover_prefixes_of_the
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A segment closed again whose log's first commit is past the one after the last commit kept goes, with those after it, durably; a deterministic test of recovery (two logs, the later one's record kept) is red without it
-- [ ] #2 The Shuttle and serial crash rounds pass
+- [x] #1 A segment closed again whose log's first commit is past the one after the last commit kept goes, with those after it, durably; a deterministic test of recovery (two logs, the later one's record kept) is red without it
+- [x] #2 The Shuttle and serial crash rounds pass
 <!-- AC:END -->
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
 - [ ] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
-- [ ] #2 scripts/upstream-changes.py --check passes
+- [x] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
@@ -44,4 +44,12 @@ Found by TASK-310's Shuttle crash rounds (crash::crashes_recover_prefixes_of_the
 Also (same rounds, rarer): a commit spanning two segments, its record in the second's log whole and its runs there durable, its record in the first's checking runs the first's raw data didn't hold (a crash before the flush's data sync, at once with its records, was durable): log_records now says whether it refused a record, and such a segment, and those after it, go (wal::tests::commits_whose_runs_a_log_refuses_go, red without it). Also: a leftover the base acknowledged, its raw file back without its log, no longer breaks the run of trusted framed files (segments_acknowledged_brought_back_break_no_whole_run; crash::openings_cut_at_each_write_open_again hit it).
 
 Also, the opening-cut rounds (crash::openings_cut_at_each_write_open_again, round 28, traced): (a) recovery's removal of the segments a refused log ends removed that segment first; an opening stopped part way left its raw file without its log, which the next took as gone durable, and kept the later segment's commit 3 without commits 1-2's extents. Now the later segments go first, durably, then it (cut). (b) a segment with its raw file or log there, past those the base acknowledged, holding no record and no whole framed file, held no durable commit (the flush that would have made one durable syncs its entries), so it ends what is kept too: the crash may lose its log's entry or its record while keeping a later segment's record of a commit spanning both. Test: wal::tests::commits_whose_runs_a_log_refuses_go_whatever_a_recovery_stopped_left (recovery stopped after each operation, 8 crash seeds each), red without either rule.
+
+2026-11-11 (claude): AC #1's rules landed on main with TASK-341 (15d7a65ce), ahead of TASK-310; the trust in whole framed files only up to the first that isn't, and the leftover that breaks no whole run, come with TASK-310's framing change, which needs them. Crash rounds: 30/30 on ubu1.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Recovery ends what it keeps at a log not following the last commit kept (or the base), a log refusing a record's runs, or an empty segment past the base, removing later segments first, durably; landed with TASK-341.
+<!-- SECTION:FINAL_SUMMARY:END -->
