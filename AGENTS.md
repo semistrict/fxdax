@@ -66,6 +66,10 @@ Check the file before starting work: an answer may be there. As soon as the user
 
 The user's rule (2026-11-05), not a phase: fxdax never migrates data. On-disk, bucket and wire formats change whenever that's the better design, and the new code refuses the old format (`Error::Format` and its kind) rather than reading, converting or upgrading it: no migration code, no compatibility shim, no dual-format reader, nothing kept to read old data, and no task or plan step proposing one. Don't trade a design down to avoid a format change.
 
+## No silent fallbacks to a costlier path: fail hard
+
+The user's rule (2026-11-11): when the cheap way of doing something can't work, fail hard (refuse to start or open, return the error) so the setup gets fixed. Never fall back, silently or with only a log line, to a way that costs vastly more: a copy where a rename failed, the bucket where a local file was meant to serve, a slow path on an unexpected error. Check such a precondition up front where it can be checked (two directories on one filesystem, a cache usable), and treat an existing warn-and-carry-on path that degrades performance as a bug. Found by TASK-350: the host cache's rename of uploaded WAL segments failed across filesystems (EXDEV), a warning hid it, and every read past the daemon's memory went to the bucket, ~30 ms each.
+
 ## Every bug exposes a blind spot: close it, then look around it
 
 A bug or crash, however it was found and whoever caused it, shows code the tests don't exercise

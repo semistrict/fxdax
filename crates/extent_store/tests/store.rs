@@ -3233,3 +3233,32 @@ fn a_dropped_log_stays_dropped_through_a_crash() {
         assert_eq!(reopened.extents().unwrap(), [(extent(3), BLOCK as u64)], "seed {seed}");
     }
 }
+
+/// TASK-355: a store whose directory is on another filesystem than the host's cache is refused
+/// as it opens: what the bucket acknowledged goes into the cache by renames, which can't cross
+/// filesystems, and every read of it would go to the bucket. On Linux, /dev/shm (tmpfs) and the
+/// target directory (on disk) are two.
+#[cfg(target_os = "linux")]
+#[test]
+fn stores_elsewhere_than_the_hosts_cache_are_refused() {
+    use std::os::unix::fs::MetadataExt as _;
+    let cached = tempfile::tempdir_in("/dev/shm").unwrap();
+    let temp = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
+    let device = |path: &std::path::Path| std::fs::metadata(path).unwrap().dev();
+    assert_ne!(device(cached.path()), device(temp.path()), "two filesystems");
+    let cache = Arc::new(extent_remote::cache::Cache::open(cached.path(), 1 << 20, 0).unwrap());
+    let dir = HostDir::new(temp.path(), true).unwrap();
+    let description = Description { block_size: BLOCK as u32, capacity: 1 << 20, branch: BRANCH };
+    Store::make(&dir, description, None).unwrap();
+    let opening = Opening { cache: Some(cache), ..Opening::new(BRANCH) };
+    let refused = Store::recover_unmade(dir).unwrap().open(OPTIONS, opening).err().unwrap();
+    assert_eq!(
+        refused.to_string(),
+        format!(
+            "the store at {}/ is on another filesystem than the host's cache at {}: the store's \
+             segments go into the cache by renaming them",
+            temp.path().display(),
+            cached.path().display()
+        )
+    );
+}

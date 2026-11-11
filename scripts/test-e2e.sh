@@ -336,14 +336,15 @@ fi
 # fxdax: what its stores read from the bucket it keeps in a part cache of its own on disk, as
 # production's daemon does (FXDAX_EXTENTD_CACHE, doc-7), unless FXDAX_EXTENTD_CACHE says
 # otherwise, empty for none; not this process's, which the cases' own daemons would share
-# (TASK-164.12).
+# (TASK-164.12). In the results' directory, where the cases make their stores: a store goes into
+# the cache by renames, which a store on another filesystem than the cache's refuses (TASK-355).
 bucket_dir=
 if [[ -z ${FXDAX_EXTENTD_REMOTE:-} ]]; then
     bucket_dir=$(mktemp -d /dev/shm/fxdax-e2e-bucket.XXXXXX)
 fi
 cache_dir=
 if [[ -z ${FXDAX_EXTENTD_CACHE+set} ]]; then
-    cache_dir=$(mktemp -d "${TMPDIR:-/tmp}/fxdax-e2e-cache.XXXXXX")
+    cache_dir=$(mktemp -d "$results/.extentd-cache.XXXXXX")
 fi
 # fxdax: FXDAX_EXTENTD_MEMORY_MAX runs the daemon in a systemd scope of its own, limited to that
 # many bytes of memory (systemd's MemoryMax, no swap), its cgroup killing it past them, and keeps

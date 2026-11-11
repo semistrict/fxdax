@@ -525,6 +525,24 @@ impl<D: Dir> Recovering<D> {
         let StoreFile { block_size, branch, bucket, capacity, .. } = file;
         let Opening { state, fenced, cache } = opening;
         ensure!(state.branch == branch, "branch {branch:#x} opened as {:#x}", state.branch);
+        // fxdax: what the bucket acknowledged goes into the host's cache by a rename, which can't
+        // cross filesystems: a store elsewhere than the cache is refused, not left to read every
+        // segment back from the bucket (TASK-355).
+        if let (Some(cache), Some(here)) = (&cache, dir.host_path("")) {
+            use std::os::unix::fs::MetadataExt as _;
+            let device = |path: &std::path::Path| {
+                std::fs::metadata(path)
+                    .map(|metadata| metadata.dev())
+                    .with_context(|| format!("{}", path.display()))
+            };
+            ensure!(
+                device(&here)? == device(cache.dir())?,
+                "the store at {} is on another filesystem than the host's cache at {}: the \
+                 store's segments go into the cache by renaming them",
+                here.display(),
+                cache.dir().display()
+            );
+        }
         // Stamped as the directory holds them: those the rebase stamps anew upload so.
         let stamped: BTreeMap<u64, Footer> =
             recovered.segments.iter().map(|(footer, number)| (*number, footer.clone())).collect();

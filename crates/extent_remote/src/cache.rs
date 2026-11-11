@@ -289,6 +289,11 @@ impl Cache {
         self.files.path(key)
     }
 
+    /// The directory the cache keeps its objects in.
+    pub fn dir(&self) -> &Path {
+        &self.files.dir
+    }
+
     /// The tail of the object at `key`, if it is kept, checked against its CRCs: one that fails
     /// is dropped, its object with it.
     pub fn tail(&self, key: &str) -> io::Result<Option<object::Tail>> {
