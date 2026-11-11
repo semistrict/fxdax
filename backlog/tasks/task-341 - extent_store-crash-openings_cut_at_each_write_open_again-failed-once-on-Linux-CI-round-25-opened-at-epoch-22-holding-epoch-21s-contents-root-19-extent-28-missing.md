@@ -7,6 +7,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-11-11 01:22'
+updated_date: '2026-11-11 07:45'
 labels:
   - extent_store
   - durability
@@ -28,3 +29,9 @@ CI run 42935580033, test (workspace) job 130244855227 (branch t330-land at d0beb
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Again, CI run 42979578798 (t330-land rebased on main dfd9eb484), test (workspace) job 130386571778: extent_store::crash recovers_from_its_bucket_with_and_without_its_disk failed at the same kept.rs:318, 'round 25: at epoch 23', the same contents, (28, 5, 14245) missing, root 'root 23'. The rounds' contents are the same each run (the same extents, round 25 both times), so the cut or the timing varies. Two failures in two consecutive Linux CI runs of the crash tests.
+<!-- SECTION:NOTES:END -->
