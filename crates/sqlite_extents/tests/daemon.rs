@@ -13,28 +13,31 @@ use futures::executor::block_on;
 use rusqlite::{Connection, OpenFlags, params};
 use sqlite_extents::{Options, Registration, Volume, daemon, register};
 use std::os::unix::net::UnixListener;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use storage_device::DeviceHolder;
 
 /// A daemon on a thread of this process, as a host of the multi-node system runs it: a bucket in
-/// its memory, placement 1. Its socket is in `dir`.
-fn serve(dir: &Path) -> std::path::PathBuf {
+/// its memory, placement 1. Its socket is in a directory of its own in the system's temporary
+/// directory, which lives as long as the one returned: a socket's path is short (SUN_LEN), and one
+/// under the target directory of a checkout deep in a host's scratch disk was not (TASK-344).
+fn serve() -> (tempfile::TempDir, PathBuf) {
     // SAFETY: before this process starts any other thread.
     unsafe {
         std::env::set_var("FXDAX_EXTENTD_REMOTE", "memory:///sqlite-extents");
         std::env::set_var("FXDAX_EXTENTD_TOKEN", "1");
     }
-    let socket = dir.join("extentd.sock");
+    let sockets = tempfile::tempdir().unwrap();
+    let socket = sockets.path().join("extentd.sock");
     let listener = UnixListener::bind(&socket).unwrap();
     std::thread::spawn(move || fxdax::extentd::serve(listener));
-    socket
+    (sockets, socket)
 }
 
 #[test]
 fn a_database_on_the_daemon_reads_in_place_and_survives_reopening() {
     let dir = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
-    let socket = serve(dir.path());
+    let (_sockets, socket) = serve();
     let store = dir.path().join("store");
 
     for round in 0..2i64 {
@@ -123,7 +126,7 @@ impl Mounted {
 #[test]
 fn a_fork_of_a_store_and_the_store_go_their_own_ways() {
     let dir = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
-    let socket = serve(dir.path());
+    let (_sockets, socket) = serve();
     let (path, forked) = (dir.path().join("store"), dir.path().join("fork"));
     let parent = Mounted::new(&socket, &path, "fxdax-daemon-parent");
     let mut parent_rows = common::fill(&parent.connection);
