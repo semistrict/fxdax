@@ -3,9 +3,10 @@ id: TASK-363.1
 title: >-
   Main's CI red after fbf7be9e3: test_bench_results lacks fxfs-guest-dax-unsafe;
   the guide's vmm_handle anchor no longer matches worker.rs
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-11-11 17:59'
+updated_date: '2026-11-11 19:41'
 labels:
   - bug
   - ci
@@ -23,8 +24,8 @@ Main CI 43069997544 at fbf7be9e3 (TASK-363's extent devices with cache_type Unsa
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 test_bench_results passes with fxfs-guest-dax-unsafe named, in ORDER too
-- [ ] #2 The guide's vmm_handle anchor matches worker.rs again; main's CI green
+- [x] #1 test_bench_results passes with fxfs-guest-dax-unsafe named, in ORDER too
+- [x] #2 The guide's vmm_handle anchor matches worker.rs again; main's CI green
 <!-- AC:END -->
 
 ## Definition of Done
@@ -33,3 +34,9 @@ Main CI 43069997544 at fbf7be9e3 (TASK-363's extent devices with cache_type Unsa
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Fixed in cf8fe5a62. The firecracker-forward job's failure had a third cause, worse than the two in the description: 07c1d9c16 (a backlog commit, TASK-344's) put vendor/firecracker back from TASK-363's b8b1a9b07 to r6's 323b5a5, so main ran without TASK-363's Unsafe cache in the VMM. vendor/firecracker is back at b8b1a9b07. bench_results names fxfs-guest-dax-unsafe in ORDER, in the test's list, and with ext4-loop-unsafe then fxfs-guest-dax as its baselines. The vmm_handle anchor is 'pub(super) async fn handle(', since its parameters now span lines. Checked: scripts' tests 289 OK, guide check 62 anchors matching, firecracker-forward against fbf7be9e3 and origin/main. b8b1a9b07 is on the fork's fxdax-v1.16.1-extent-unsafe branch, not yet under a fxdax-v1.16.1-rN tag: that is TASK-363's.
+<!-- SECTION:NOTES:END -->
