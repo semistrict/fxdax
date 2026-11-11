@@ -6,11 +6,12 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-11-11 23:29'
+updated_date: '2026-11-11 23:47'
 labels:
   - extentd
   - flake
 dependencies: []
-priority: medium
+priority: high
 type: bug
 ordinal: 753000
 ---
@@ -32,3 +33,9 @@ Main CI 43117460854 (0e044dea5, the first full CI with TASK-310's e2cbf7ec4), ma
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+2026-11-11: failed again on the rerun of main CI 43117460854's macos (workspace) (same line, (2, 1)): on GitHub's macOS runner every time so far, 0 of 6 locally. Main is red on it.
+<!-- SECTION:NOTES:END -->
