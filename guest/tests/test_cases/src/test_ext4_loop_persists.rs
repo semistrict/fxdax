@@ -125,10 +125,12 @@ RUN apk add --no-cache e2fsprogs
 
         fn check(self: Box<Self>, stdout: Vec<u8>, _test_setup: TestSetup) -> TestOutcome {
             let output = String::from_utf8_lossy(&stdout);
-            if output == "WRITTEN\nOK\n" {
+            // say_out begins its line anew.
+            let expected = "\nWRITTEN\nOK\n";
+            if output == expected {
                 TestOutcome::Pass
             } else {
-                TestOutcome::Fail(format!("expected \"WRITTEN\\nOK\\n\", got {output:?}"))
+                TestOutcome::Fail(format!("expected {expected:?}, got {output:?}"))
             }
         }
     }
