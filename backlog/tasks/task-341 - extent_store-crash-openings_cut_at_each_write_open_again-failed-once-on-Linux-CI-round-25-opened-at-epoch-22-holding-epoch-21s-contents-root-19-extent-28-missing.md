@@ -7,7 +7,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-11-11 01:22'
-updated_date: '2026-11-11 10:07'
+updated_date: '2026-11-11 11:06'
 labels:
   - extent_store
   - durability
@@ -38,4 +38,6 @@ Again, CI run 42979578798 (t330-land rebased on main dfd9eb484), test (workspace
 Reproduced on ubu1 with main 7e1740cb7's extent_store (no TASK-330.1 change in it): cargo nextest run -p extent_store --test crash, 3 runs, one failed: recovers_from_its_bucket_with_and_without_its_disk, 'round 81: at epoch 10' (kept.rs:318). About 1 in 3 runs of the crash tests here, 3 of 4 Linux CI runs of t330-land. Main's own CI passed it in its last runs by luck.
 
 Third and fourth Linux CI hits on t330-land (run 42979578798, its reruns): openings_cut_at_each_write_open_again, 'round 25: at epoch 23'. It now fails most Linux CI runs: every push's CI is a coin toss until it's fixed.
+
+Main's own CI now: run 43006118431 (main 394119d9d) failed on both crash tests at once, recovers_from_its_bucket_with_and_without_its_disk 'round 25: at epoch 23' and openings_cut_at_each_write_open_again 'round 25: at epoch 22'; every other job green. Main's CI is red until this is fixed.
 <!-- SECTION:NOTES:END -->
