@@ -13,7 +13,8 @@
 (* The bucket holds, per branch: segments, dense and create-only, each a   *)
 (* footer naming the segment it follows (`after`), its writer's epoch, one *)
 (* commit (or none: a fence), an extent sealed into it or stored on its    *)
-(* own, an extent freed, the branch's next sequence number, and a fork;    *)
+(* own, an extent freed, the branch's next sequence number, a fork, and    *)
+(* the run of a commit it goes on with, which a later segment ends;        *)
 (* extents stored on their own, at keys naming their writer's epoch and    *)
 (* the segment that names them; checkpoints, a state as of a segment;      *)
 (* records; leases, with their placement's fencing token; and the          *)
@@ -31,24 +32,31 @@
 (* after the fence, if the branch's last commit is one of the WAL's or the *)
 (* commit the WAL started from; otherwise the WAL diverged, and is         *)
 (* dropped, as `fxdaxctl take` drops it. A commit is a segment of the WAL, *)
-(* stamped by the chain; an upload creates its extent of its own, then     *)
-(* puts it in flight; an acknowledgement takes the WAL's prefix created,   *)
-(* after a read of the lease; then the children of its forks get their     *)
-(* records. A host crashes keeping its WALs or losing them. Placements     *)
-(* give hosts fencing tokens. Branches are deleted by their placements     *)
-(* (the lease ended, then the record, the children recorded), failed forks *)
-(* by their hosts (delete_fork), points forked by restores (the child's    *)
-(* record, the point read, the record made); other branches take forks'    *)
-(* children's IDs. One collector runs passes: the listing and the records, *)
-(* the live branches recovered, the records again, then compaction and     *)
-(* deletion.                                                               *)
+(* stamped by the chain; or, spanning segments (TASK-92.41), segments      *)
+(* going on with it, a run of it in each, then the one it ends in. Readers *)
+(* hold such runs until that one, and drop them at a segment neither going *)
+(* on with the commit nor ending it, a fence; writers acknowledge, and     *)
+(* WALs land, only between commits. An upload creates its extent of its    *)
+(* own, then puts it in flight; an acknowledgement takes the WAL's prefix  *)
+(* created, after a read of the lease; then the children of its forks get  *)
+(* their records. A host crashes keeping its WALs, to their last durable   *)
+(* commits with "cut" (local recovery keeping commits whole), or losing    *)
+(* them. Placements give hosts fencing tokens. Branches are deleted by     *)
+(* their placements (the lease ended, then the record, the children        *)
+(* recorded), failed forks by their hosts (delete_fork), points forked by  *)
+(* restores (the child's record, the point read, the record made); other   *)
+(* branches take forks' children's IDs. One collector runs passes: the     *)
+(* listing and the records, the live branches recovered, the records       *)
+(* again, then compaction and deletion.                                    *)
 (*                                                                         *)
 (* Each rule is a member of Rules; specs/bucket/mutations removes one      *)
 (* each, and must find the violation it prevents (each mutation's model    *)
 (* says which, and how). The first 28 are the fields of extent_remote's    *)
-(* `Rules` (crates/extent_remote/src/lib.rs); then one the code holds      *)
-(* with no field (TASK-178); the last two doc-14's, its last two fields    *)
-(* too (TASK-165.5, crates/extent_remote/src/wal.rs):                      *)
+(* `Rules` (crates/extent_remote/src/lib.rs); then one the code holds with *)
+(* no field (TASK-178); then two doc-14's, its last two fields too         *)
+(* (TASK-165.5, crates/extent_remote/src/wal.rs); the last five those of   *)
+(* commits spanning segments, which the code holds with no field           *)
+(* (TASK-92.41, TASK-149.45):                                              *)
 (*                                                                         *)
 (* - acksAfterLease (NoAcksAfterLease): a writer acknowledges a segment    *)
 (*   only once a read of its lease after the creates shows it still its.   *)
@@ -134,6 +142,24 @@
 (* - walAfterFence (NoWalAfterFence): that last commit is the branch's     *)
 (*   after the fence, which may have applied the WAL's own segments,       *)
 (*   landed since recovery.                                                *)
+(* - spansHeld (NoSpansHeld): readers hold the runs of a commit a segment  *)
+(*   goes on with (Contents::continued) until a segment ends it, then seal *)
+(*   them with it (State::apply_contents, State::begun).                   *)
+(* - spansFenced (NoSpansFenced): they drop them at a segment applied that *)
+(*   neither goes on with the commit nor ends it, a later writer's fence:  *)
+(*   the commit, never ended, never was.                                   *)
+(* - acksBetweenCommits (NoAcksBetweenCommits): a writer acknowledges      *)
+(*   segments only to the last going on with no commit                     *)
+(*   (Writer::acknowledge), so that its WAL keeps a commit whole until the *)
+(*   bucket has it whole.                                                  *)
+(* - walBetweenCommits (NoWalBetweenCommits): a WAL is put after the       *)
+(*   branch only between commits: the segments taken out as landed end     *)
+(*   every commit they go on with (Wal::rebase's `between`).               *)
+(* - wholeCommitsKept (NoWholeCommitsKept): a host's local recovery keeps  *)
+(*   a commit spanning segments only if consecutive segments end it, and   *)
+(*   closes the first again without it otherwise (extent_store's           *)
+(*   wal::recover): a store whose log ends inside a commit refuses to      *)
+(*   open.                                                                 *)
 (*                                                                         *)
 (* Where this differs from doc-14 and the code, by what TLC found:         *)
 (*                                                                         *)
@@ -168,7 +194,13 @@
 (*                                                                         *)
 (* Can bounds what happens: each kind of step needs its name in it, so     *)
 (* that a model checks some at a time and a mutation only what it needs.   *)
-(* Moves go two hops at most: a segment's, then those moves'. Not          *)
+(* Moves go two hops at most: a segment's, then those moves'. A commit     *)
+(* spans three segments at most, two going on with it, each a run of one   *)
+(* extent, the one ending it holding nothing else (the code's may hold its *)
+(* frees and more). A segment ends a commit and goes on with the next only *)
+(* with "spanOn" in Can, which no model has: Wal::rebase finds a WAL       *)
+(* diverged whose segment doing so landed alone, though no other writer    *)
+(* moved the branch on (TASK-345); with it, TLC finds that at once. Not    *)
 (* modelled: the collector's grace period (correctness does not depend on  *)
 (* it, doc-7) and its compaction threshold (it compacts any object it may, *)
 (* by choice), and creates failing.                                        *)
@@ -197,11 +229,12 @@ AllRules == {"acksAfterLease", "fence", "continuity", "epochSequences", "records
              "recordsRelisted", "recordsOwned", "extentKeysNameSegments", "waysFromSeals",
              "movesTakenFirst", "leasesByTakings", "passesFencedStop", "recoveriesByOrigins",
              "recordsKept", "deletionsFence", "deletionsDoneByOthers", "walFollows",
-             "walAfterFence"}
+             "walAfterFence", "spansHeld", "spansFenced", "acksBetweenCommits",
+             "walBetweenCommits", "wholeCommitsKept"}
 
 AllCan == {"commit", "mint", "seg", "own", "free", "fork", "point", "restore", "unfork",
            "contest", "delete", "deletePoints", "place", "checkpoint", "collect", "compact",
-           "compactMoves", "crash", "disk", "staleTake", "overlap"}
+           "compactMoves", "crash", "disk", "staleTake", "overlap", "span", "spanOn", "cut"}
 
 ASSUME Rules \subseteq AllRules
 ASSUME Can \subseteq AllCan
@@ -231,7 +264,7 @@ VARIABLES
     \* The collector.
     gc,         \* gc[i]: pass i, whose lease epoch is i: the collector's lease is the last's
     \* What happened.
-    commits,    \* commits[t]: [branch, parent, seal, free]: its branch, the commit before it, what
+    commits,    \* commits[t]: [branch, parent, seals, free]: its branch, the commit before it, what
                 \* it sealed and freed
     nextTag,
     acked,      \* acked[b]: the commits a writer of b acknowledged
@@ -278,24 +311,55 @@ Record(kind, origin, point, o, base) ==
 ChildOf(r, o) == r.kind # "root" /\ r.owner = Owner(o)
 
 \* A state: its extents' locations, its last commit, the last segment applied <<s, epoch>>, its
-\* next sequence number, its forks, the highest epoch applied, the last segment read, and,
-\* not in the bucket's bytes, the commits applied and whether one was applied twice.
+\* next sequence number, its forks, the highest epoch applied, the last segment read, the runs
+\* of the commit the segments applied last went on with (State::begun: [commit, runs], runs the
+\* locations of its extents; or None), and, not in the bucket's bytes, the commits applied and
+\* whether one was applied twice.
 Fresh == [ext |-> Nothing, head |-> 0, last |-> <<>>, next |-> <<0, 0>>, forks |-> {},
-          epoch |-> 0, through |-> -1, hist |-> {}, dup |-> FALSE]
+          epoch |-> 0, through |-> -1, begun |-> None, hist |-> {}, dup |-> FALSE]
 
-\* A fork's child's state before its segments: what it inherits.
+\* A fork's child's state before its segments: what it inherits (State::inheriting: no runs
+\* begun).
 Inherit(st) == [Fresh EXCEPT !.ext = st.ext, !.head = st.head, !.hist = st.hist]
 
 \* Whether a reader applies segment o after st: it follows the last applied (continuity).
 Follows(st, o) == o.after = st.last \/ ~R("continuity")
 
-\* st, segment s of b, whose object is o, applied: unless it is void.
+\* Whether segment o, following one that went on with commit t, ends it (Contents::ends): it
+\* names it. The code's names a commit of t's writer, t or a later one, the last of those its
+\* segment ends; here a segment ends one commit at most, and a commit's segments are its writer's,
+\* one after another, so that the one after t's last continuation names t.
+Ends(o, t) == o.commit = t
+\* Whether it goes on with t, ending no commit (Contents::continues).
+Continues(o, t) == o.commit = 0 /\ o.cont # None /\ o.cont.commit = t
+
+\* The locations f, those of g sealed over them.
+Over(f, g) == [x \in DOMAIN f \cup DOMAIN g |-> IF x \in DOMAIN g THEN g[x] ELSE f[x]]
+
+\* st, segment s of b, whose object is o, applied: unless it is void. First the runs of the commit
+\* the segments before went on with: sealed, if o ends it; held on, if o goes on with it; else
+\* dropped (spansFenced), its writer's, never acknowledged, a later writer fenced. Then o's own;
+\* then, if o goes on with a commit, its run held until a segment ends it (spansHeld)
+\* (State::apply_contents).
 Apply(st, b, s, o) ==
     IF ~Follows(st, o) THEN [st EXCEPT !.through = s]
-    ELSE LET e1 == IF o.ext # None THEN Put(st.ext, o.ext, <<"seg", b, s>>) ELSE st.ext
+    ELSE LET bg == st.begun
+             ended == bg # None /\ Ends(o, bg.commit)
+             held == IF bg = None \/ ended THEN None
+                     ELSE IF Continues(o, bg.commit) \/ ~R("spansFenced") THEN bg
+                     ELSE None
+             e0 == IF ended THEN Over(st.ext, bg.runs) ELSE st.ext
+             e1 == IF o.ext # None THEN Put(e0, o.ext, <<"seg", b, s>>) ELSE e0
              e2 == IF o.own # None THEN Put(e1, o.own, <<"own", b, o.epoch, s>>) ELSE e1
              e3 == IF o.free # None /\ o.free \in DOMAIN e2 THEN Drop(e2, o.free) ELSE e2
-         IN [st EXCEPT !.ext = e3,
+             run == IF o.cont = None THEN Nothing ELSE Put(Nothing, o.cont.ext, <<"seg", b, s>>)
+             \* Without spansHeld, a continuation's run sealed at once.
+             e4 == IF R("spansHeld") THEN e3 ELSE Over(e3, run)
+             begun == IF o.cont = None \/ ~R("spansHeld") THEN held
+                      ELSE IF held = None THEN [commit |-> o.cont.commit, runs |-> run]
+                      ELSE [held EXCEPT !.runs = Over(@, run)]
+         IN [st EXCEPT !.ext = e4,
+                       !.begun = begun,
                        !.head = IF o.commit # 0 THEN o.commit ELSE st.head,
                        !.hist = IF o.commit # 0 THEN st.hist \cup {o.commit} ELSE st.hist,
                        !.dup = st.dup \/ o.commit \in st.hist,
@@ -401,9 +465,13 @@ Hops == 2
 Key(b, s, d) == IF d = 0 THEN <<"seg", b, s>> ELSE <<"moves", b, s, d>>
 Depth(loc) == IF loc[1] = "seg" THEN 0 ELSE loc[4]
 
+\* Whether segment o's footer names a run of x in its data: of a commit it ends, or of the one it
+\* goes on with (Contents::runs).
+Runs(o, x) == o.ext = x \/ (o.cont # None /\ o.cont.ext = x)
+
 \* Whether the object d hops from segment s of b names x: the segment's footer, or the moves' map.
 Names(b, s, d, x) ==
-    IF d = 0 THEN seg[b][s] # None /\ seg[b][s].ext = x
+    IF d = 0 THEN seg[b][s] # None /\ Runs(seg[b][s], x)
     ELSE moves[b][s][d] # None /\ x \in moves[b][s][d]
 
 \* Whether a reader of extent x at loc reads x's bytes: where the footer of the object at its key
@@ -414,7 +482,7 @@ Readable(x, loc) ==
     ELSE LET b == loc[2]
              s == loc[3]
              d == Depth(loc)
-         IN IF d = 0 /\ seg[b][s] # None /\ ~R("footers") THEN seg[b][s].ext = x
+         IN IF d = 0 /\ seg[b][s] # None /\ ~R("footers") THEN Runs(seg[b][s], x)
             ELSE Names(b, s, d, x) \/ (d < Hops /\ Names(b, s, d + 1, x))
 
 RECURSIVE Followed(_, _, _, _)
@@ -457,8 +525,8 @@ RECURSIVE MadeBy(_, _)
 MadeBy(p, held) ==
     IF p = <<>> THEN held
     ELSE LET c == commits[p[1]]
-             sealed == IF c.seal = None THEN held ELSE held \cup {c.seal}
-         IN MadeBy(Tail(p), IF c.free = None THEN sealed ELSE sealed \ {c.free})
+         IN MadeBy(Tail(p), IF c.free = None THEN held \cup c.seals
+                            ELSE (held \cup c.seals) \ {c.free})
 
 Made == UNION {makers[b] : b \in Branches}
 
@@ -527,7 +595,8 @@ Open(h, b) ==
            s == [gen |-> gen + 1, pc |-> "start", epoch |-> e, token |-> tok[h][b],
                  origin |-> rec[b].origin, st |-> Fresh, ck |-> -1, at |-> 0, pre |-> 0,
                  fenced |-> FALSE, top |-> -1, seq |-> 0, last |-> <<>>, next |-> <<0, 0>>,
-                 up |-> {}, done |-> {}, open |-> {}, recorded |-> {}, ckd |-> -1, ckp |-> None]
+                 up |-> {}, done |-> {}, open |-> {}, recorded |-> {}, ckd |-> -1, ckp |-> None,
+                 durable |-> None]
        IN /\ lease' = [lease EXCEPT ![b] = [epoch |-> e, token |-> tok[h][b], holder |-> gen + 1]]
           /\ ses' = [ses EXCEPT ![h][b] = IF rec[b].deleted THEN [s EXCEPT !.pc = "stopped"]
                                           ELSE Started(s, b)]
@@ -552,6 +621,17 @@ Restamp(Rs, q, e, last, next) ==
     ELSE LET o == [Rs[1].o EXCEPT !.epoch = e, !.after = last, !.next = Max2(@, next)]
          IN <<[s |-> q, o |-> o]>> \o Restamp(Tail(Rs), q + 1, e, <<q, e>>, o.next)
 
+\* The first commit segment o is of: the one it ends, or the one it goes on with.
+SegCommit(o) == IF o.commit # 0 THEN o.commit ELSE o.cont.commit
+
+\* The guest's last commit as of the first k segments of the WAL ws, whose base is base
+\* (Wal::heads): the last any of them makes, or base.
+HeadAt(ws, base, k) ==
+    LET C == {i \in 1..k : ws[i].o.commit # 0} IN IF C = {} THEN base ELSE ws[Max(C)].o.commit
+
+\* Whether the WAL's first k segments end every commit they go on with (walBetweenCommits).
+Between(ws, k) == k = 0 \/ ws[k].o.cont = None \/ ~R("walBetweenCommits")
+
 \* Whether the fence of a writer whose session is s goes on: it has not created its fence, or
 \* not filled the gaps to the last segment listed.
 Fencing(s) == ~s.fenced \/ s.seq <= s.top
@@ -566,29 +646,46 @@ Fencing(s) == ~s.fenced \/ s.seq <= s.top
 \* memory alone (TASK-165.9): a crash after finds them stamped as before, which the next opening
 \* restamps by the same commits, its own chain, and Max2 with a later floor, to what this would
 \* have: so the WAL here holds them restamped.
+\*
+\* By commits, as Wal::heads has them: the WAL's first k segments are taken out if the guest's
+\* last commit as of them is the branch's, and they end no commit begun, unless no such k but 0
+\* is, the WAL's base (walBetweenCommits): segments going on with a commit are no branch's end,
+\* the fence having left their commit unended. The WAL's segments replayed over the state after
+\* the fence must end every commit they go on with, or the store refuses to open (store.rs:
+\* "log ends inside a commit"), its local recovery having kept a commit begun.
 Opened(h, b, s) ==
     LET floor == IF R("epochSequences") THEN <<s.epoch, 0>> ELSE <<0, 0>>
         next == Max2(s.st.next, floor)
         ws == wal[h][b]
         head == IF R("walAfterFence") THEN s.st.head ELSE s.pre
-        base == IF ws = <<>> THEN 0 ELSE commits[ws[1].o.commit].parent
-        at == {i \in DOMAIN ws : ws[i].o.commit = head}
+        base == IF ws = <<>> THEN 0 ELSE commits[SegCommit(ws[1].o)].parent
+        at == {k \in 0..Len(ws) : HeadAt(ws, base, k) = head /\ Between(ws, k)}
         k == IF at = {} THEN 0 ELSE Max(at)
         A == SubSeq(ws, 1, k)
         Rs == SubSeq(ws, k + 1, Len(ws))
-        keep == Rs # <<>> /\ (at # {} \/ head = base \/ ~R("walFollows"))
+        keep == Rs # <<>> /\ (at # {} \/ ~R("walFollows"))
         new == IF keep THEN Restamp(Rs, s.seq, s.epoch, s.st.last, next) ELSE <<>>
     IN IF (R("epochSequences") /\ ~Leased(s, b)) \/ s.seq + Len(new) > Segs
        THEN /\ ses' = [ses EXCEPT ![h][b] = [s EXCEPT !.pc = "stopped"]]
+            /\ UNCHANGED <<wal, acked, errors>>
+       ELSE IF ApplyAll(s.st, b, new).begun # None
+       THEN /\ ses' = [ses EXCEPT ![h][b] = [s EXCEPT !.pc = "stopped"]]
+            /\ errors' = errors \cup {"a store's log ends inside a commit"}
             /\ UNCHANGED <<wal, acked>>
        ELSE /\ wal' = [wal EXCEPT ![h][b] = new]
             /\ acked' = [acked EXCEPT ![b] = @ \cup CommitsOf(A)]
             /\ ses' = [ses EXCEPT ![h][b] =
                          [s EXCEPT !.pc = IF Unrecorded(s.st, {}) THEN "record" ELSE "ready",
+                                   !.durable = {new[i].s : i \in DOMAIN new},
                                    !.seq = s.seq + Len(new),
                                    !.last = IF new = <<>> THEN s.st.last
                                             ELSE <<new[Len(new)].s, s.epoch>>,
                                    !.next = IF new = <<>> THEN next ELSE new[Len(new)].o.next]]
+            \* Diverged, the WAL dropped, though no other writer's commit moved the branch on: its
+            \* last is one of the WAL's, or the WAL's base.
+            /\ errors' = IF Rs # <<>> /\ ~keep /\ head \in CommitsOf(ws) \cup {base}
+                         THEN errors \cup {"a WAL diverged from a branch holding its commits"}
+                         ELSE errors
 
 \* Recovery's segments, to the first missing; then the checkpoints, listed again
 \* (newestCheckpoint); then the segments, listed, where the fence goes.
@@ -603,13 +700,13 @@ RecoverRead(h, b) ==
     IN /\ s # None /\ s.pc = "read"
        /\ IF R("newestCheckpoint") /\ newest # s.ck THEN
              /\ ses' = [ses EXCEPT ![h][b].pc = "start"]
-             /\ UNCHANGED <<wal, acked>>
+             /\ UNCHANGED <<wal, acked, errors>>
           ELSE IF Fencing(s2) THEN
              /\ ses' = [ses EXCEPT ![h][b] = s2]
-             /\ UNCHANGED <<wal, acked>>
+             /\ UNCHANGED <<wal, acked, errors>>
           ELSE Opened(h, b, s2)
        /\ UNCHANGED <<bucketVars, tok, proc, gc, countVars>>
-       /\ UNCHANGED <<commits, nextTag, minted, twice, makers, doomed, taken, placed, errors>>
+       /\ UNCHANGED <<commits, nextTag, minted, twice, makers, doomed, taken, placed>>
 
 \* The fence: an empty segment of the writer's at the branch's end, what landed there first
 \* applied before it, and the gaps to the last listed filled; then the writer opened.
@@ -617,19 +714,20 @@ Fence(h, b) ==
     LET s == ses[h][b]
         q == s.seq
         f == [epoch |-> s.epoch, after |-> s.st.last, commit |-> 0, ext |-> None, own |-> None,
-              free |-> None, next |-> s.st.next, fork |-> None]
+              free |-> None, next |-> s.st.next, fork |-> None, cont |-> None]
         o == IF seg[b][q] = None THEN f ELSE seg[b][q]
         s2 == [s EXCEPT !.fenced = (@ \/ seg[b][q] = None), !.st = Apply(s.st, b, q, o),
                         !.seq = q + 1]
     IN /\ s # None /\ s.pc = "fence" /\ q < Segs
        /\ IF seg[b][q] # None /\ seg[b][q].epoch > s.epoch THEN
              /\ Stopped(h, b)
-             /\ UNCHANGED <<seg, wal, acked>>
+             /\ UNCHANGED <<seg, wal, acked, errors>>
           ELSE /\ seg' = [seg EXCEPT ![b][q] = o]
-               /\ IF Fencing(s2) THEN ses' = [ses EXCEPT ![h][b] = s2] /\ UNCHANGED <<wal, acked>>
+               /\ IF Fencing(s2) THEN
+                     ses' = [ses EXCEPT ![h][b] = s2] /\ UNCHANGED <<wal, acked, errors>>
                   ELSE Opened(h, b, s2)
        /\ UNCHANGED <<own, ckpt, rec, lease, moves, inflight, tok, proc, gc, countVars>>
-       /\ UNCHANGED <<commits, nextTag, minted, twice, makers, doomed, taken, placed, errors>>
+       /\ UNCHANGED <<commits, nextTag, minted, twice, makers, doomed, taken, placed>>
 
 \* The children of the forks acknowledged get their records (record_forks), one at a time.
 RecordForks(h, b) ==
@@ -666,40 +764,71 @@ Mint(h, b) ==
        /\ UNCHANGED <<gen, takes, passes, places, crashes>>
 
 \* What a commit does, besides committing: seal an open extent into its segment or on its own,
-\* free an extent its guest holds, or fork the branch (a point, or not) to a child with no record.
+\* free an extent its guest holds, fork the branch (a point, or not) to a child with no record,
+\* or seal one or two open extents where they were written, in segments filled since the last
+\* commit that go on with it, one each, the commit ending in the next (a commit spanning
+\* segments: TASK-92.41, segments::Phase::Full). With "spanOn", the first of those segments may
+\* be the WAL's last, ending the commit before, not uploaded: it filled after that commit, before
+\* this one (Segments::record: "the first alone may hold commits, those made before it filled").
 Ops(h, b) ==
     LET s == ses[h][b]
         v == View(h, b)
-        op(k, x, c, p) == [k |-> k, x |-> x, c |-> c, point |-> p]
+        op(k, x, c, p) == [k |-> k, x |-> x, c |-> c, point |-> p, xs |-> <<>>, on |-> FALSE]
+        span(xs, on) == [k |-> "span", x |-> None, c |-> 0, point |-> FALSE, xs |-> xs, on |-> on]
+        ws == wal[h][b]
+        ons == {FALSE} \cup (IF /\ "spanOn" \in Can /\ ws # <<>>
+                                 /\ ws[Len(ws)].s \notin s.up /\ ws[Len(ws)].o.cont = None
+                              THEN {TRUE} ELSE {})
         kinds == (IF "fork" \in Can THEN {FALSE} ELSE {})
                  \cup (IF "point" \in Can THEN {TRUE} ELSE {})
+        open == IF "span" \in Can THEN s.open ELSE {}
     IN (IF "commit" \in Can THEN {op("plain", None, 0, FALSE)} ELSE {})
        \cup {op("seg", x, 0, FALSE) : x \in IF "seg" \in Can THEN s.open ELSE {}}
        \cup {op("own", x, 0, FALSE) : x \in IF "own" \in Can THEN s.open ELSE {}}
        \cup {op("free", x, 0, FALSE) : x \in IF "free" \in Can THEN DOMAIN v.ext ELSE {}}
        \cup {op("fork", None, c, p) : c \in {c \in Branches \ {b, Root} : rec[c] = None},
                                       p \in kinds}
+       \cup {span(<<x>>, on) : x \in open, on \in ons}
+       \cup {span(<<x, y>>, on) : <<x, y>> \in {p \in open \X open : p[1] # p[2]}, on \in ons}
 
-\* A commit: a segment of the WAL, stamped by the chain.
+\* A commit: segments of the WAL, stamped by the chain: those going on with it, if it spans
+\* segments (Contents::continued, each naming the commit and its run there), the first perhaps
+\* the WAL's last, then the one it ends in.
 Commit(h, b) ==
     LET s == ses[h][b]
         t == nextTag
-    IN /\ Ready(h, b) /\ t <= MaxCommits /\ s.seq < Segs
+        ws == wal[h][b]
+    IN /\ Ready(h, b) /\ t <= MaxCommits
        /\ \E op \in Ops(h, b) :
-            LET f == [child |-> op.c, owner |-> <<"fork", t>>, point |-> op.point]
-                o == [epoch |-> s.epoch, after |-> s.last, commit |-> t,
+            LET on == IF op.on THEN 1 ELSE 0
+                n == Len(op.xs) - on
+                f == [child |-> op.c, owner |-> <<"fork", t>>, point |-> op.point]
+                cont(i) == [commit |-> t, ext |-> op.xs[i]]
+                part(i) == [s |-> s.seq + i - 1,
+                            o |-> [epoch |-> s.epoch,
+                                   after |-> IF i = 1 THEN s.last ELSE <<s.seq + i - 2, s.epoch>>,
+                                   commit |-> 0, ext |-> None, own |-> None, free |-> None,
+                                   next |-> s.next, fork |-> None, cont |-> cont(i + on)]]
+                before == IF op.on THEN [ws EXCEPT ![Len(ws)].o.cont = cont(1)] ELSE ws
+                o == [epoch |-> s.epoch,
+                      after |-> IF n = 0 THEN s.last ELSE <<s.seq + n - 1, s.epoch>>,
+                      commit |-> t,
                       ext |-> IF op.k = "seg" THEN op.x ELSE None,
                       own |-> IF op.k = "own" THEN op.x ELSE None,
                       free |-> IF op.k = "free" THEN op.x ELSE None,
                       next |-> s.next,
-                      fork |-> IF op.k = "fork" THEN f ELSE None]
-            IN /\ wal' = [wal EXCEPT ![h][b] = Append(@, [s |-> s.seq, o |-> o])]
+                      fork |-> IF op.k = "fork" THEN f ELSE None,
+                      cont |-> None]
+                xs == {op.xs[i] : i \in DOMAIN op.xs}
+            IN /\ s.seq + n < Segs
+               /\ wal' = [wal EXCEPT ![h][b] = before \o [i \in 1..n |-> part(i)]
+                                                 \o <<[s |-> s.seq + n, o |-> o]>>]
                /\ ses' = [ses EXCEPT ![h][b] =
-                            [s EXCEPT !.seq = @ + 1, !.last = <<s.seq, s.epoch>>,
-                                      !.open = @ \ {op.x}]]
+                            [s EXCEPT !.seq = @ + n + 1, !.last = <<s.seq + n, s.epoch>>,
+                                      !.open = @ \ ({op.x} \cup xs)]]
                /\ commits' = [commits EXCEPT ![t] = [branch |-> b, parent |-> View(h, b).head,
-                                                      seal |-> IF op.k \in {"seg", "own"}
-                                                               THEN op.x ELSE None,
+                                                      seals |-> IF op.k \in {"seg", "own"}
+                                                                THEN {op.x} ELSE xs,
                                                       free |-> o.free]]
                \* Without recordsAfterAck, the child's record at once.
                /\ rec' = IF op.k = "fork" /\ ~R("recordsAfterAck")
@@ -738,11 +867,15 @@ Land(m) ==
        /\ UNCHANGED <<own, ckpt, rec, lease, moves, wal, tok, proc, gc, truthVars, countVars>>
 
 \* The acknowledgement of the WAL's prefix created, once a read of the lease shows it the
-\* writer's (acksAfterLease): its commits told durable, its forks' children to be recorded.
+\* writer's (acksAfterLease): its commits told durable, its forks' children to be recorded. To
+\* the last segment going on with no commit (acksBetweenCommits, Writer::acknowledge): a commit
+\* spanning segments is acknowledged with the one it ends in, so that the state acknowledged,
+\* which checkpoints hold, holds no commit begun, and the WAL keeps it whole.
 Ack(h, b) ==
     LET s == ses[h][b]
         ws == wal[h][b]
-        n == Max({k \in 0..Len(ws) : \A i \in 1..k : ws[i].s \in s.done})
+        n == Max({k \in 0..Len(ws) : /\ \A i \in 1..k : ws[i].s \in s.done
+                                     /\ k = 0 \/ ws[k].o.cont = None \/ ~R("acksBetweenCommits")})
         P == SubSeq(ws, 1, n)
     IN /\ Ready(h, b) /\ n > 0
        /\ IF R("acksAfterLease") /\ ~Leased(s, b) THEN
@@ -801,11 +934,34 @@ WriterNext ==
 -----------------------------------------------------------------------------
 (* Hosts and placements. *)
 
-\* A host crashes: its writers and its other work stop; its WALs stay, or the disk is lost.
+\* The lengths a crash may cut h's WAL of b to, with "cut": its commits to the last a flush made
+\* durable, at least those of every segment uploaded, which waited for theirs (uploads.rs's tag:
+\* a segment going on with a commit, for that commit), and those durable before the writer's
+\* session (its WAL as it opened; all of it, if it has not). Local recovery (wal::recover) keeps a
+\* commit spanning segments only whole, if consecutive segments end it, and closes the first
+\* again without it otherwise (wholeCommitsKept): the WAL is cut between commits, as a flush
+\* appends a commit's records to its segments' logs one after another, a crash stopping it, or
+\* their checks against the raw data, at any of them.
+Cuts(h, b) ==
+    LET ws == wal[h][b]
+        s == ses[h][b]
+        up == IF s = None \/ s.durable = None THEN Len(ws)
+              ELSE Max({0} \cup {i \in DOMAIN ws : ws[i].s \in s.up \cup s.durable})
+        whole(k) == k = 0 \/ ws[k].o.cont = None
+        lo == Min({k \in up..Len(ws) : whole(k)} \cup {Len(ws)})
+    IN IF "cut" \in Can
+       THEN {k \in lo..Len(ws) : whole(k) \/ ~R("wholeCommitsKept")}
+       ELSE {Len(ws)}
+
+\* A host crashes: its writers and its other work stop; its WALs stay, or the disk is lost; with
+\* "cut", each to its last durable commit.
 Crash(h) ==
     /\ "crash" \in Can /\ crashes < MaxCrashes
-    /\ \E lose \in IF "disk" \in Can THEN {FALSE, TRUE} ELSE {FALSE} :
-          wal' = [wal EXCEPT ![h] = [b \in Branches |-> IF lose THEN <<>> ELSE @[b]]]
+    /\ \E lose \in IF "disk" \in Can THEN {FALSE, TRUE} ELSE {FALSE},
+          cut \in [Branches -> 0..Segs] :
+          /\ \A b \in Branches : cut[b] \in Cuts(h, b)
+          /\ wal' = [wal EXCEPT ![h] = [b \in Branches |-> IF lose THEN <<>>
+                                                           ELSE SubSeq(@[b], 1, cut[b])]]
     /\ ses' = [ses EXCEPT ![h] = [b \in Branches |-> None]]
     /\ proc' = [proc EXCEPT ![h] = None]
     /\ crashes' = crashes + 1
@@ -944,7 +1100,7 @@ ProcStep(h) ==
                            THEN [seg EXCEPT ![b][got.end] =
                                    [epoch |-> Final, after |-> got.st.last, commit |-> 0,
                                     ext |-> None, own |-> None, free |-> None,
-                                    next |-> got.st.next, fork |-> None]]
+                                    next |-> got.st.next, fork |-> None, cont |-> None]]
                            ELSE seg
                  /\ UNCHANGED <<own, ckpt, lease, moves, inflight>>
             [] q.op = "unfork" /\ q.pc = "read" ->
@@ -1240,7 +1396,7 @@ Init ==
     /\ tok = [h \in Hosts |-> [b \in Branches |-> 0]]
     /\ proc = [h \in Hosts |-> None]
     /\ gc = [i \in 1..MaxPasses |-> GcIdle]
-    /\ commits = [t \in 1..MaxCommits |-> [branch |-> 0, parent |-> 0, seal |-> None,
+    /\ commits = [t \in 1..MaxCommits |-> [branch |-> 0, parent |-> 0, seals |-> {},
                                              free |-> None]]
     /\ nextTag = 1
     /\ acked = [b \in Branches |-> {}]
@@ -1321,6 +1477,7 @@ DeletedOnlyByDeletes ==
 \* One making, not deleted, is told it made each branch.
 OneMaker == \A b \in Branches : Cardinality(makers[b] \ doomed) <= 1
 
-\* Nothing failed that must not: a pass of the collector, a deletion, a WAL rebased.
+\* Nothing failed that must not: a pass of the collector, a deletion, a WAL rebased, a store opened
+\* (its log ending inside a commit), a WAL diverging from a branch whose last commit is its own.
 NoErrors == errors = {}
 =============================================================================
