@@ -1500,8 +1500,11 @@ fn child_changes_its_window() {
     assert_eq!(unsafe { memory.as_ptr().read_volatile() }, pattern(3, 1)[0]);
     // Unmapped, which the daemon waits for.
     store.unmap(0, ps).unwrap();
-    // Mapped anew, with its page in memory, which the window maps at once.
+    // Mapped anew, with its page in memory, which the window maps at once, and the VM process
+    // installs as a load first touches it (TASK-276.6).
     store.map(extent, 0, ps, 0).unwrap();
+    // SAFETY: The window's memory, whose faults the store serves.
+    assert_eq!(unsafe { memory.as_ptr().read_volatile() }, pattern(3, 1)[0]);
     // fxdax: made private, a run of a page, over the page installed (TASK-164.10).
     store.make_private(0, ps).unwrap();
     let [ops, ns, overwritten, left_out] = store.stage_counts().costs;
