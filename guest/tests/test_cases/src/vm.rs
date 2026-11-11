@@ -1036,7 +1036,7 @@ mod tests {
         let console = dir.join(format!("{}.console.txt", program[0]));
         std::fs::write(&console, "the guest's panic\n").unwrap();
         let child = std::process::Command::new(program[0]).args(&program[1..]).spawn().unwrap();
-        Firecracker { child, api: dir.join("api"), console }
+        Firecracker { child, api: dir.join("api"), console, loops: Vec::new() }
     }
 
     /// TASK-79.59: a VM that exits before its guest connects is an error at once, which names its

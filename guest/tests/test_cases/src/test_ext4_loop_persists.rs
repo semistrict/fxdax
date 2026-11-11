@@ -95,7 +95,8 @@ RUN apk add --no-cache e2fsprogs
             if !crate::vm::has_vmm() {
                 return ShouldRun::No("FXDAX_FIRECRACKER does not name fxdax's Firecracker");
             }
-            if !nix::unistd::geteuid().is_root() {
+            // SAFETY: a plain system call, which cannot fail.
+            if unsafe { nix::libc::geteuid() } != 0 {
                 return ShouldRun::No("attaching a loop device needs root");
             }
             ShouldRun::Yes
