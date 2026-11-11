@@ -6,12 +6,16 @@
 # Rounds of guest test cases on this Linux host, a shared one (ubu1), each case run once a round,
 # the cases' order reversed every other round (A B, B A, ...), so that what drifts on the host
 # over the hours moves every case alike (TASK-350). Each run is a scripts/test-e2e.sh of the one
-# case, as root (its cases attach loop devices), measured on cores of its own: `fxjob --bench`.
-# Before each run it waits for the host's 1-minute load to fall below FXDAX_ROUNDS_MAX_LOAD
-# (default 16) and drops the host's caches, the page cache and what of ZFS's ARC can go; and it
-# records, in RESULTS/runs.tsv, each run's round, case, outcome, the load and the ARC's size
-# before and after. A run whose load after passed the bound is marked `loaded`: its numbers are
-# not to be reported, and the round to be run again.
+# case, as root (its cases attach loop devices), as a measurement: `fxjob --bench`, which gives
+# it cores, most of the L3, memory bandwidth and memory of its own whatever else the host runs,
+# or fails the run (ubu1's system-setup.d/146-fxdax_cgroups.sh). So a run doesn't wait for the
+# host to be quiet: what the rest of the host does reaches it only through what isolation can't
+# split, the disks (ZFS schedules its own IO) and the kernel's shared locks. Before each run it
+# drops the host's caches, the page cache and what of ZFS's ARC can go; and it records, in
+# RESULTS/runs.tsv, each run's round, case, outcome, the host's load and the ARC's size before
+# and after, and the time the run's tasks stalled (pressure stall information of
+# fxdax-bench.slice, in ms, `some`) waiting on CPU, memory and IO: what a run's numbers are
+# read against.
 #
 #   scripts/bench-rounds.sh RESULTS ROUNDS CASE...
 #
@@ -33,7 +37,6 @@ results=$1 rounds=$2
 shift 2
 cases=("$@")
 [[ $rounds =~ ^[1-9][0-9]*$ ]] || { echo "ROUNDS is a count" >&2; exit 2; }
-max_load=${FXDAX_ROUNDS_MAX_LOAD:-16}
 mkdir -p "$results"
 results=$(cd "$results" && pwd)
 command -v fxjob > /dev/null || { echo "fxjob not found: this runs on a host with fxjob (ubu1)" >&2; exit 2; }
@@ -43,14 +46,11 @@ arc_bytes() {
     awk '$1 == "size" { print $3 }' /proc/spl/kstat/zfs/arcstats 2> /dev/null || echo -
 }
 
-# Waits for the load to fall below the bound, saying so once a minute.
-wait_for_quiet() {
-    local waited=0
-    while awk -v now="$(load)" -v max="$max_load" 'BEGIN { exit !(now >= max) }'; do
-        (( waited % 60 == 0 )) && echo "waiting for the load ($(load)) to fall below $max_load" >&2
-        sleep 10
-        waited=$((waited + 10))
-    done
+# The time, in µs, fxdax-bench.slice's tasks have stalled on RESOURCE (cpu, memory, io), some
+# of them at least.
+bench=/sys/fs/cgroup/user.slice/user-$(id -u).slice/user@$(id -u).service/fxdax.slice/fxdax-bench.slice
+stalled() {
+    sed -n 's/^some .*total=//p' "$bench/$1.pressure"
 }
 
 # The FXDAX_* variables of this environment, as env's NAME=VALUE words.
@@ -68,7 +68,8 @@ fxjob --name rounds-build --mem 8G -- nice -n 19 \
 sudo chown -R "$(id -u):$(id -g)" "$repo" "$HOME/.cargo" "$HOME/.rustup" "$results"
 
 [[ -f $results/runs.tsv ]] ||
-    printf 'round\tcase\toutcome\tload_before\tload_after\tarc_before\tarc_after\tstarted\n' \
+    printf 'round\tcase\toutcome\tload_before\tload_after\tarc_before\tarc_after\tstarted\t%s\n' \
+        'cpu_stall_ms	memory_stall_ms	io_stall_ms' \
         > "$results/runs.tsv"
 status=0
 for ((round = 1; round <= rounds; round++)); do
@@ -80,10 +81,11 @@ for ((round = 1; round <= rounds; round++)); do
     for case in "${order[@]}"; do
         out=$results/$case/round-$round
         mkdir -p "$out"
-        wait_for_quiet
         sync
         sudo sh -c 'echo 3 > /proc/sys/vm/drop_caches'
         load_before=$(load) arc_before=$(arc_bytes) started=$(date -u +%FT%TZ)
+        stalls_before=()
+        for resource in cpu memory io; do stalls_before+=("$(stalled "$resource")"); done
         outcome=ok
         fxjob --bench --mem "${FXDAX_ROUNDS_MEM:-16G}" --name "rounds-$case-$round" -- \
             sudo env "PATH=$PATH" "HOME=$HOME" "${passed[@]}" \
@@ -91,16 +93,19 @@ for ((round = 1; round <= rounds; round++)); do
             "FXDAX_EXTENTD_REMOTE=${FXDAX_EXTENTD_REMOTE:-file://$out/bucket}" \
             "$repo/scripts/test-e2e.sh" "$case" > "$out/run.log" 2>&1 || outcome=failed
         load_after=$(load)
+        stalls=()
+        i=0
+        for resource in cpu memory io; do
+            stalls+=($(( ($(stalled "$resource") - stalls_before[i]) / 1000 )))
+            i=$((i + 1))
+        done
         # The run's own bucket, on disk: what it held is no result.
         sudo rm -r -f "$out/bucket"
-        if [[ $outcome == ok ]] &&
-            awk -v now="$load_after" -v max="$max_load" 'BEGIN { exit !(now >= max) }'; then
-            outcome=loaded
-        fi
         [[ $outcome == ok ]] || status=1
-        printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$round" "$case" "$outcome" "$load_before" \
-            "$load_after" "$arc_before" "$(arc_bytes)" "$started" >> "$results/runs.tsv"
-        echo "round $round $case: $outcome (load $load_before -> $load_after)" >&2
+        printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$round" "$case" "$outcome" \
+            "$load_before" "$load_after" "$arc_before" "$(arc_bytes)" "$started" "${stalls[@]}" \
+            >> "$results/runs.tsv"
+        echo "round $round $case: $outcome (stalled ms: cpu ${stalls[0]}, memory ${stalls[1]}, io ${stalls[2]})" >&2
     done
 done
 sudo chown -R "$(id -u):$(id -g)" "$results"
