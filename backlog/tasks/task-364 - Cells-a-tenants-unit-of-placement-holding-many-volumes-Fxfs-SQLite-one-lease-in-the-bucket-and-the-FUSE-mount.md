@@ -6,6 +6,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-11-11 20:12'
+updated_date: '2026-11-11 20:26'
 labels:
   - fuse
   - host
@@ -26,7 +27,11 @@ Today the bucket is flat per prefix and keyed by branch (doc-7: `leases/<branch>
     tenants/<tenant>/cells/<cell>/volumes/<volume>/...   (the branch objects of doc-7)
     MOUNT/<tenant>/<cell>/<volume>/
 
-Name types `CellId`, `cell::...`, never a bare `Cell` (Rust's `std::cell::Cell`). No migration: the flat layout is refused by format (AGENTS.md). Open in design, decided by the worker and recorded in OPEN_QUESTIONS.md: forks (a volume's fork within its cell or into another; a whole cell forked at one point, which its single writer can cut consistently), whether commits may span a cell's volumes, and per-tenant GC prefixes vs cross-tenant forks. Related: TASK-96 (frozen standalone store layer: leases, placement, naming), TASK-302, TASK-73, doc-7.
+Name types `CellId`, `cell::...`, never a bare `Cell` (Rust's `std::cell::Cell`). No migration: the flat layout is refused by format (AGENTS.md).
+
+Garbage collection is settled by the code, not open: `fxdax-gc` runs one per bucket prefix and lists every object under it (`extent_remote::collector`), and a fork names its parent's data by full key (`extent_frame::segment::Location::key`), so tenants are sub-prefixes inside the one collector's prefix and forks may cross cells and tenants. A collector per tenant prefix would delete what another tenant's fork needs: not done.
+
+Design work for the worker: a volume's fork within its cell or into another; a whole cell forked at one point (its single writer can cut it consistently); whether a commit may span a cell's volumes. Related: TASK-96 (frozen standalone store layer: leases, placement, naming), TASK-302, TASK-73, doc-7.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria
