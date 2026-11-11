@@ -8,12 +8,21 @@ downloads, a slow mirror took 40 minutes of the workspace part's 90, which its t
 (run 42089880804, TASK-172)."""
 
 import re
+import shutil
+import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 CI = ROOT / ".github" / "workflows" / "ci.yml"
 APT_INSTALL = ROOT / ".github" / "actions" / "apt-install" / "action.yml"
+# GitHub's ubuntu-24.04 image's /etc/apt/apt-mirrors.txt (probe run 43052221835).
+IMAGE_MIRRORS = ("http://azure.archive.ubuntu.com/ubuntu/\tpriority:1\n"
+                 "https://archive.ubuntu.com/ubuntu/\tpriority:2\n"
+                 "https://security.ubuntu.com/ubuntu/\tpriority:3\n")
+UBUNTU_COM = ["azure.archive.ubuntu.com", "archive.ubuntu.com", "security.ubuntu.com"]
+FALLBACKS = ["mirrors.edge.kernel.org", "mirrors.mit.edu"]
 TEST_SH = ROOT / "scripts" / "test.sh"
 # The packages only some parts' tests run, and the parts: Coccinelle's spatch, which the scripts'
 # tests run (test_cocci_guest.py); mkfs.xfs, which the guest tests' own do; libclang, which the
@@ -225,10 +234,72 @@ class AptInstall(unittest.TestCase):
         self.assertEqual(users, ["actions/guest-host/action.yml", "workflows/ci.yml",
                                  "workflows/hunt.yml", "workflows/nightly.yml"])
 
-    def test_it_falls_back_to_mirrors_outside_ubuntu_com_and_fails_on_any_index(self):
-        text = APT_INSTALL.read_text()
-        mirrors = re.findall(r"^ +(https://\S+/ubuntu/) \d+", text, re.MULTILINE)
-        self.assertEqual(mirrors, ["https://mirrors.edge.kernel.org/ubuntu/",
-                                   "https://mirrors.mit.edu/ubuntu/"])
-        self.assertIn("sudo apt-get update -o APT::Update::Error-Mode=any\n", text)
-        self.assertIn("exit 1", text)
+    def install(self, resolves, sources=None, update_status=0):
+        """Runs apt-install.sh for clang and lld on the image's mirror list, with the names in
+        `resolves` alone resolving, `sources` for ubuntu.sources, and apt-get's update ending with
+        `update_status`: its status and output, the mirror list it leaves, and what apt-get was
+        asked, a line a call."""
+        directory = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, directory)
+        bin_ = directory / "bin"
+        bin_.mkdir()
+        mirrors, ubuntu_sources = directory / "apt-mirrors.txt", directory / "ubuntu.sources"
+        mirrors.write_text(IMAGE_MIRRORS)
+        ubuntu_sources.write_text(sources or f"Types: deb\nURIs: mirror+file:{mirrors}\n")
+        (directory / "resolves").write_text("".join(f"{name}\n" for name in resolves))
+        for name, script in {
+            "sudo": '"$@"\n',
+            "getent": 'grep -qx "$2" "$FAKE/resolves"\n',
+            "apt-get": 'echo "$*" >> "$FAKE/apt-get"\n[ "$1" != update ] || exit "$UPDATE"\n',
+        }.items():
+            (bin_ / name).write_text("#!/bin/bash\n" + script)
+            (bin_ / name).chmod(0o755)
+        done = subprocess.run(
+            ["/bin/bash", APT_INSTALL.parent / "apt-install.sh", "clang", "lld"],
+            env={"PATH": f"{bin_}:/usr/bin:/bin", "FAKE": str(directory), "UPDATE": str(update_status),
+                 "FXDAX_APT_MIRRORS": str(mirrors), "FXDAX_APT_SOURCES": str(ubuntu_sources)},
+            capture_output=True, text=True)
+        asked = directory / "apt-get"
+        return (done.returncode, done.stdout, mirrors.read_text(),
+                asked.read_text() if asked.exists() else "")
+
+    def test_ubuntu_coms_mirrors_first_when_they_resolve(self):
+        status, _, mirrors, asked = self.install(UBUNTU_COM + FALLBACKS)
+        self.assertEqual(status, 0)
+        self.assertEqual(sorted(mirrors.splitlines()), sorted([
+            "http://azure.archive.ubuntu.com/ubuntu/\tpriority:1",
+            "https://archive.ubuntu.com/ubuntu/\tpriority:2",
+            "https://security.ubuntu.com/ubuntu/\tpriority:3",
+            "https://mirrors.edge.kernel.org/ubuntu/\tpriority:10",
+            "https://mirrors.mit.edu/ubuntu/\tpriority:11",
+        ]))
+        self.assertEqual(asked, "update -o APT::Update::Error-Mode=any\ninstall -y clang lld\n")
+
+    def test_names_that_dont_resolve_are_dropped_so_apt_waits_on_none(self):
+        """2026-11-11: no ubuntu.com name resolved on GitHub's runners for hours."""
+        status, out, mirrors, asked = self.install(FALLBACKS)
+        self.assertEqual(status, 0)
+        self.assertEqual(sorted(mirrors.splitlines()), [
+            "https://mirrors.edge.kernel.org/ubuntu/\tpriority:10",
+            "https://mirrors.mit.edu/ubuntu/\tpriority:11",
+        ])
+        for name in UBUNTU_COM:
+            self.assertIn(f"::warning::{name} doesn't resolve: apt won't try it\n", out)
+        self.assertEqual(asked, "update -o APT::Update::Error-Mode=any\ninstall -y clang lld\n")
+
+    def test_no_name_resolving_fails_before_apt(self):
+        status, out, mirrors, asked = self.install([])
+        self.assertEqual((status, mirrors, asked), (1, IMAGE_MIRRORS, ""))
+        self.assertIn("::error::none of the Ubuntu mirrors' names resolve\n", out)
+
+    def test_an_image_whose_apt_lists_no_mirror_file_fails(self):
+        """Mirrors listed where apt never looks would protect nothing."""
+        status, out, mirrors, asked = self.install(
+            UBUNTU_COM, sources="URIs: http://archive.ubuntu.com/ubuntu/\n")
+        self.assertEqual((status, mirrors, asked), (1, IMAGE_MIRRORS, ""))
+        self.assertIn("::error::the runner's apt doesn't fetch through", out)
+
+    def test_an_update_failing_fails_the_install(self):
+        """apt's update's failure, an index no mirror served, is the action's."""
+        status, _, _, asked = self.install(UBUNTU_COM + FALLBACKS, update_status=100)
+        self.assertEqual((status, asked), (100, "update -o APT::Update::Error-Mode=any\n"))

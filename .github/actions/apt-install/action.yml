@@ -10,10 +10,13 @@
 # 2026-11-11 the runners' resolver (Azure's, 168.63.129.16) answered none of those names for hours,
 # but kernel.org's and Microsoft's at once, and every Linux job failed here (main runs 43034685461
 # to 43047616995). Retries can't outlast that; mirrors under other names can: kernel.org's and
-# MIT's, listed after the image's own, which a job reaches only as all of those fail. apt checks
-# what any mirror serves against the Ubuntu archive's key (Signed-By), as it checks Azure's.
+# MIT's, listed after the image's own. apt checks what any mirror serves against the Ubuntu
+# archive's key (Signed-By), as it checks Azure's. A mirror whose name doesn't resolve is dropped
+# from the list first: apt's mirror method tries the list in order for every file, its lookups
+# timing out after 20 s each, a minute or more a file before it reached kernel.org's, and an
+# install of a few dozen packages took most of an hour.
 # An index no mirror serves fails the update itself (APT::Update::Error-Mode=any), not an install
-# from indices stale or absent after it.
+# from indices stale or absent after it. What it runs: apt-install.sh, beside it.
 name: apt install
 description: Install Ubuntu's packages, from mirrors outside ubuntu.com when its names don't resolve
 
@@ -30,18 +33,5 @@ runs:
       env:
         PACKAGES: ${{ inputs.packages }}
       run: |
-        mirrors=/etc/apt/apt-mirrors.txt
-        # The image changed how apt finds its archive: these mirrors would be listed where apt
-        # never looks, and protect nothing.
-        if ! grep -q "mirror+file:$mirrors" /etc/apt/sources.list.d/ubuntu.sources; then
-            echo "::error::the runner's apt doesn't fetch through $mirrors; .github/actions/apt-install's fallback mirrors don't apply"
-            exit 1
-        fi
-        if ! grep -q mirrors.edge.kernel.org "$mirrors"; then
-            printf '%s\tpriority:%s\n' \
-                https://mirrors.edge.kernel.org/ubuntu/ 10 \
-                https://mirrors.mit.edu/ubuntu/ 11 | sudo tee -a "$mirrors"
-        fi
-        sudo apt-get update -o APT::Update::Error-Mode=any
         # shellcheck disable=SC2086 # the packages, one word each
-        sudo apt-get install -y $PACKAGES
+        "$GITHUB_ACTION_PATH/apt-install.sh" $PACKAGES
