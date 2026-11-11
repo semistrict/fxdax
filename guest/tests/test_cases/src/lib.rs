@@ -848,6 +848,12 @@ pub fn test_cases() -> Vec<TestCase> {
         TestCase::new("ext4-loop-persists", &[Tag::Nightly], Box::new(TestExt4LoopPersists)),
         #[cfg(any(feature = "host", target_os = "linux"))]
         TestCase::new(
+            "bench-fs-fxfs-guest-dax-unsafe",
+            &[Tag::Bench],
+            Box::new(TestFsBench { backend: BenchBackend::FxfsGuestDaxUnsafe }),
+        ),
+        #[cfg(any(feature = "host", target_os = "linux"))]
+        TestCase::new(
             "bench-fs-ext4-loop",
             &[Tag::Bench],
             Box::new(TestFsBench { backend: BenchBackend::Ext4Loop }),

@@ -173,6 +173,13 @@ impl Vm {
         devices.last_mut().expect("the device added")["read_only"] = true.into();
     }
 
+    /// fxdax: has the extent-store device added last answer the guest's asks for durability once
+    /// ordered (`cache_type` Unsafe, TASK-363), as a drive whose flushes the host drops does.
+    pub fn extent_store_unsafe(&mut self) {
+        let devices = self.config["extent"].as_array_mut().expect("an array");
+        devices.last_mut().expect("a device added")["cache_type"] = "Unsafe".into();
+    }
+
     /// Adds an extent-store device as [`Vm::extent_store`] does, served by the extent daemon at
     /// `extentd`.
     pub fn extent_store_served(

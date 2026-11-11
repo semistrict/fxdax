@@ -84,6 +84,9 @@ pub enum Backend {
     FxfsGuest,
     /// The guest kernel's Fxfs on an extent-store device, mapping files from its DAX window.
     FxfsGuestDax,
+    /// fxdax: as `FxfsGuestDax`, its device answering the guest's asks for durability once ordered
+    /// (`cache_type` Unsafe, TASK-363), as production's image drives drop their flushes.
+    FxfsGuestDaxUnsafe,
     /// fxdax: as `FxfsGuestDax`, booted on a fork of a base image whose data the extent daemon
     /// serving it has in memory already: the daemon that served the base.
     FxfsGuestDaxForkWarm,
@@ -681,6 +684,7 @@ COPY lua-5.4.7.tar.gz /opt/lua-5.4.7.tar.gz
                 Backend::Ext4Pmem => "ext4-pmem",
                 Backend::FxfsGuest => "fxfs-guest",
                 Backend::FxfsGuestDax => "fxfs-guest-dax",
+                Backend::FxfsGuestDaxUnsafe => "fxfs-guest-dax-unsafe",
                 Backend::FxfsGuestDaxForkWarm => "fxfs-guest-dax-fork-warm",
                 Backend::FxfsGuestDaxForkCold => "fxfs-guest-dax-fork-cold",
                 Backend::FxfsGuestDaxForkProfiled => "fxfs-guest-dax-fork-profiled",
@@ -714,6 +718,7 @@ COPY lua-5.4.7.tar.gz /opt/lua-5.4.7.tar.gz
             match self.backend {
                 Backend::FxfsGuest
                 | Backend::FxfsGuestDax
+                | Backend::FxfsGuestDaxUnsafe
                 | Backend::FxfsGuestDaxForkWarm
                 | Backend::FxfsGuestDaxForkCold
                 | Backend::FxfsGuestDaxForkProfiled
@@ -786,15 +791,18 @@ COPY lua-5.4.7.tar.gz /opt/lua-5.4.7.tar.gz
             vm.guest_kernel()?;
             // The filesystem's device in the guest, for those on one.
             let device = match self.backend {
-                Backend::FxfsGuest | Backend::FxfsGuestDax => {
+                Backend::FxfsGuest | Backend::FxfsGuestDax | Backend::FxfsGuestDaxUnsafe => {
                     // A new store, which the guest's Fxfs formats as it mounts it.
                     let store = test_setup.tmp_dir.join("extents");
-                    let window = if self.backend == Backend::FxfsGuestDax {
-                        crate::common::dax_window(crate::common::Window::Large)?
-                    } else {
+                    let window = if self.backend == Backend::FxfsGuest {
                         0
+                    } else {
+                        crate::common::dax_window(crate::common::Window::Large)?
                     };
                     vm.extent_store("bench", &store, IMAGE_SIZE, window)?;
+                    if self.backend == Backend::FxfsGuestDaxUnsafe {
+                        vm.extent_store_unsafe();
+                    }
                     None
                 }
                 // The base's store, new, or a fork of it.
@@ -2442,7 +2450,9 @@ mod guest {
                     run("mkfs.ext4", &["-q", "-F", &device]);
                     mount(&device, "ext4", "");
                 }
-                Backend::FxfsGuest | Backend::FxfsGuestDax => mount("bench", "fxfs", ""),
+                Backend::FxfsGuest | Backend::FxfsGuestDax | Backend::FxfsGuestDaxUnsafe => {
+                    mount("bench", "fxfs", "")
+                }
                 // fxdax: the writer runs the workloads once its followers have started; they read,
                 // or only follow.
                 Backend::FxfsGuestDaxFollowed | Backend::FxfsGuestDaxFollowedIdle => {
