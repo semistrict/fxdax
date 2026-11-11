@@ -18,8 +18,8 @@
 #
 # A run's directory DIR, named for the run (run-..., host_run_name), holds tree, a worktree of
 # COMMIT of the host's clone REPO (a path in the home, or absolute), and trees/LABEL, one of each
-# other COMMIT; results, the host script's results, and work, its work directory (FXDAX_HOST_WORK),
-# where it builds, its target directories its own; what the driver copied there (patch,
+# other COMMIT, which the host script builds in, each its target directories its own; results, the
+# host script's results, and work, its work directory (FXDAX_HOST_WORK); what the driver copied there (patch,
 # guest-kernel); and job, the job's command, which the driver copied there too, its log, its pid,
 # its exit status and its lock, which the job holds as long as it runs.
 #

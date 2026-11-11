@@ -18,7 +18,7 @@
 # A run is a directory on the host, RUN under FXDAX_HOST_SCRATCH (default
 # /mnt/fxdax-scratch/fxdax-host), RUN the run's name (host_run): a worktree of the commit run, which
 # origin has (host_commit), its vendor/firecracker checked out; the results; and the work
-# directory, where the host script builds, its target directories its own
+# directory; the host script builds in the worktree, its target directories its own
 # (scripts/lib/host-remote.sh, which does what a run does there). Its job, the host script
 # (host_command), runs apart from the SSH session, under fxjob, in a cgroup of its own and within
 # FXDAX_HOST_MEM (default 12G), and with fxjob --bench, alone and on CPUs of its own, if it is a
@@ -185,7 +185,7 @@ host_command() {
             given+=("$name=${!name}")
         fi
     done
-    given+=(FXDAX_HOST_PROVISIONED=1 "FXDAX_HOST_WORK=$host_dir/work"
+    given+=(FXDAX_HOST_PROVISIONED=1 FXDAX_HOST_IN_PLACE=1 "FXDAX_HOST_WORK=$host_dir/work"
         "FXDAX_HOST_KERNELS=$host_scratch/kernels")
     if [[ -n ${FXDAX_GUEST_KERNEL:-} ]]; then
         given+=("FXDAX_GUEST_KERNEL=$host_dir/guest-kernel")
@@ -213,8 +213,10 @@ host_command() {
     done
     if (( nice )); then printf 'nice -n %d ' "$nice"; fi
     # shellcheck disable=SC2016 # For the host's shell to expand.
+    # Root's git, in the user's worktrees, which it would refuse as another's (safe.directory).
     printf '%s' 'sudo env PATH="$HOME/.cargo/bin:$PATH" HOME="$HOME"' " CARGO_BUILD_JOBS=$jobs" \
-        " NEXTEST_TEST_THREADS=$jobs" \
+        " NEXTEST_TEST_THREADS=$jobs GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory" \
+        " GIT_CONFIG_VALUE_0='*'" \
         ${assignments[@]+"${assignments[@]/#/ }"}
     printf ' %q' timeout --signal=TERM --kill-after=30s "${FXDAX_HOST_LIMIT:-$limit}" bash \
         "$host_dir/tree/scripts/lib/$script" "$host_dir/tree" "$host_dir/results" "$@"

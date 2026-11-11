@@ -17,8 +17,9 @@
 # caller's Rust (PATH, CARGO_HOME, RUSTUP_HOME) is what builds, and host_need
 # takes a tool there at whatever version it is. FXDAX_HOST_WORK names the work
 # directory, where the trees, guest kernels and artifacts go (default
-# /var/lib/fxdax-test), and FXDAX_HOST_KERNELS a cache of guest kernels that
-# outlasts it (host_kernel): scripts/lib/host.sh's runs set all three.
+# /var/lib/fxdax-test), FXDAX_HOST_KERNELS a cache of guest kernels that
+# outlasts it (host_kernel), and FXDAX_HOST_IN_PLACE=1 has each tree build where
+# it is (host_tree): scripts/lib/host.sh's runs set all four.
 
 work=${FXDAX_HOST_WORK:-/var/lib/fxdax-test}
 # The tools host_need installed, which host_record records.
@@ -186,7 +187,13 @@ host_need() {
 # .by-content in the tree records. A copy into the tree by other means that
 # deletes what the source lacks, as the scripts' own before (rsync -a --delete),
 # deletes it.
+#
+# With FXDAX_HOST_IN_PLACE=1, the source is a tree of the run's own, a worktree
+# whose target directories are its own and go with it (scripts/lib/host.sh's
+# runs): it builds in place, keeping its .git, which the scripts' tests read
+# (git ls-files), and repo stays.
 host_tree() {
+    if [[ ${FXDAX_HOST_IN_PLACE:-} == 1 ]]; then return 0; fi
     local tree="$work/$1" compare=--checksum
     mkdir -p "$tree"
     if [[ ! -e $tree/.by-content ]]; then compare=--ignore-times; fi

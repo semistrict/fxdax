@@ -142,6 +142,23 @@ class Tree(Synced, unittest.TestCase):
         self.assertGreaterEqual(int((work / "t" / "src" / "changed.rs").stat().st_mtime), start)
 
 
+class InPlace(unittest.TestCase):
+    def test_a_runs_own_tree_builds_where_it_is(self):
+        """A host run's worktree (scripts/lib/host.sh, FXDAX_HOST_IN_PLACE=1) is its own, its
+        target directories too: host_tree copies nothing, and repo stays, its .git with it."""
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "source"
+            write(source / ".git", "gitdir: elsewhere\n", CHECKED_OUT)
+            done = subprocess.run(
+                ["/bin/bash", "-c",
+                 'set -euo pipefail; source "$0"; work=$1 repo=$2; host_tree t; printf %s "$repo"',
+                 LIBRARY, Path(directory) / "work", source],
+                env={"PATH": "/usr/bin:/bin", "FXDAX_HOST_IN_PLACE": "1"},
+                capture_output=True, text=True)
+            self.assertEqual((done.returncode, done.stdout, done.stderr), (0, str(source), ""))
+            self.assertFalse((Path(directory) / "work").exists())
+
+
 class Lima(Synced, unittest.TestCase):
     """The Lima VM's tree, ~/fxdax-test, which scripts/lib/lima.sh syncs before it runs a script
     there, from a checkout of its own."""
