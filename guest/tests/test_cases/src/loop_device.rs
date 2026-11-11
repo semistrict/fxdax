@@ -92,11 +92,7 @@ impl LoopDevice {
         for _ in 0..16 {
             // SAFETY: an ioctl of no argument on the control device this function opened.
             let number = unsafe { libc::ioctl(control.as_raw_fd(), LOOP_CTL_GET_FREE as _) };
-            anyhow::ensure!(
-                number >= 0,
-                "LOOP_CTL_GET_FREE: {}",
-                std::io::Error::last_os_error()
-            );
+            anyhow::ensure!(number >= 0, "LOOP_CTL_GET_FREE: {}", std::io::Error::last_os_error());
             let path = PathBuf::from(format!("/dev/loop{number}"));
             let device = OpenOptions::new()
                 .read(true)
@@ -141,8 +137,9 @@ impl LoopDevice {
             }
             let error = std::io::Error::last_os_error();
             if error.raw_os_error() != Some(libc::EBUSY) {
-                return Err(error)
-                    .with_context(|| format!("attaching {} to {}", path.display(), image.display()));
+                return Err(error).with_context(|| {
+                    format!("attaching {} to {}", path.display(), image.display())
+                });
             }
         }
         anyhow::bail!("no loop device was free for {} in 16 tries", image.display())
@@ -157,8 +154,8 @@ impl LoopDevice {
     pub fn direct_io(&self) -> anyhow::Result<bool> {
         let name = self.path.file_name().context("a loop device has a name")?;
         let dio = Path::new("/sys/block").join(name).join("loop/dio");
-        let dio = std::fs::read_to_string(&dio)
-            .with_context(|| format!("reading {}", dio.display()))?;
+        let dio =
+            std::fs::read_to_string(&dio).with_context(|| format!("reading {}", dio.display()))?;
         Ok(dio.trim() == "1")
     }
 }

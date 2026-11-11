@@ -28,6 +28,11 @@
 // FXDAX_BENCH_SQLITE_TXNS sizes each transaction workload (200 commits). The sqlite-transactions
 // group skips scans; FXDAX_BENCH_SQLITE_WORKLOAD selects one transaction workload by its result
 // name (such as sqlite-wal-normal-batch100), keeping the recovery and snapshot checks.
+// fxdax: the working-set group, run only when named, reads 4 KiB at random from files of half,
+// one, two and four times the extent daemon's memory (FXDAX_EXTENTD_MEMORY, as test-e2e.sh gives
+// it), IOPS and latencies once the caches settle (TASK-350.2); the sync group, also only when
+// named, writes 4 KiB and then syncs, syncfs's or freezes and thaws the filesystem,
+// FXDAX_BENCH_SYNCS times each (50) (TASK-350.5).
 // FXDAX_BENCH_FILES sets how many files the metadata workloads make (2000), and
 // FXDAX_BENCH_PGBENCH_SECS how long pgbench's transactions run (20), and FXDAX_BENCH_PGBENCH_SCALE
 // the scale of its database (10, about 160 MiB). With
@@ -502,11 +507,19 @@ COPY lua-5.4.7.tar.gz /opt/lua-5.4.7.tar.gz
             "FXDAX_BENCH_PGBENCH_SCALE",
             "FXDAX_BENCH_WATCHDOG_SECS",
             "FXDAX_BENCH_JOBS",
+            "FXDAX_BENCH_SYNCS",
         ] {
             if let Ok(value) = std::env::var(var) {
                 vm.env(&CString::new(format!("{var}={value}"))?);
             }
         }
+        // fxdax: the extent daemon's memory, which the working-set workloads size their files by
+        // (TASK-350.2): FXDAX_EXTENTD_MEMORY, as scripts/test-e2e.sh gives the daemon it, or its
+        // default, 8 GiB. Every case gets it, the baselines too, so that each reads files of the
+        // same sizes.
+        let daemon_memory =
+            std::env::var("FXDAX_EXTENTD_MEMORY").unwrap_or_else(|_| (8u64 << 30).to_string());
+        vm.env(&CString::new(format!("FXDAX_BENCH_DAEMON_MEMORY={daemon_memory}"))?);
         // The compiler finds the assembler and linker through PATH.
         vm.env(c"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin");
         vm.env(c"HOME=/root");
@@ -1092,14 +1105,22 @@ mod guest {
     struct Rates {
         iops: f64,
         bytes_per_sec: f64,
+        /// fxdax: the median and 99th percentile of its operations' completion latencies, in
+        /// microseconds, where it had any (TASK-350.2).
+        p50_us: Option<f64>,
+        p99_us: Option<f64>,
     }
 
     impl Rates {
         /// The rates of fio's JSON of a job's direction (`jobs[].read`, `jobs[].write`).
         fn of(direction: &serde_json::Value) -> Self {
+            let percentile =
+                |p: &str| direction["clat_ns"]["percentile"][p].as_f64().map(|ns| ns / 1000.0);
             Self {
                 iops: direction["iops"].as_f64().expect("fio's iops"),
                 bytes_per_sec: direction["bw_bytes"].as_f64().expect("fio's bw_bytes"),
+                p50_us: percentile("50.000000"),
+                p99_us: percentile("99.000000"),
             }
         }
     }
@@ -1183,6 +1204,108 @@ mod guest {
         });
         result("fsync-append", "IOPS", true, job.write.iops);
         fs::remove_file(&log).unwrap();
+    }
+
+    /// fxdax: the working sets' sizes, as multiples of the extent daemon's memory (TASK-350.2):
+    /// half of it, all of it, and two and four times it.
+    const WORKING_SETS: [(&str, f64); 4] = [("0.5x", 0.5), ("1x", 1.0), ("2x", 2.0), ("4x", 4.0)];
+    /// fxdax: how long each working set's random reads run, once they have run as long again to
+    /// settle (fio's ramp): what they reach once the caches hold what they can of the set.
+    const WORKING_SET_RUNTIME: &str = "--runtime=30";
+    const WORKING_SET_RAMP: &str = "--ramp_time=30";
+
+    /// fxdax: random 4 KiB reads over working sets sized by the extent daemon's memory, which is a
+    /// DAX guest's only cache of its files, and whose misses read and decompress a whole part each
+    /// (TASK-350.2). Each set is a file written whole and synced, the guest's caches then dropped;
+    /// its reads, uniform over the file, run until the caches settle, then are measured: IOPS and
+    /// their latencies' median and 99th percentile.
+    fn working_set_workloads() {
+        let memory: u64 = std::env::var("FXDAX_BENCH_DAEMON_MEMORY")
+            .expect("FXDAX_BENCH_DAEMON_MEMORY: the host sets it")
+            .parse()
+            .expect("FXDAX_BENCH_DAEMON_MEMORY is a count of bytes");
+        let file = format!("{MNT}/working-set");
+        for (name, multiple) in WORKING_SETS {
+            let size = ((memory as f64 * multiple) as u64).next_multiple_of(1 << 20);
+            fio_on(&file, size, &["--rw=write", "--bs=1M", "--end_fsync=1"]);
+            drop_caches();
+            let job = fio_on(
+                &file,
+                size,
+                &[
+                    "--rw=randread",
+                    "--bs=4k",
+                    "--time_based",
+                    WORKING_SET_RAMP,
+                    WORKING_SET_RUNTIME,
+                ],
+            );
+            let workload = format!("ws-{name}-rand-read");
+            result(&workload, "IOPS", true, job.read.iops);
+            let p50 = job.read.p50_us.expect("fio's read latencies");
+            let p99 = job.read.p99_us.expect("fio's read latencies");
+            result(&format!("{workload}-p50"), "us", false, p50);
+            result(&format!("{workload}-p99"), "us", false, p99);
+            println!("OBSERVED {workload}-bytes {size}");
+            fs::remove_file(&file).unwrap();
+        }
+    }
+
+    /// fxdax: how many times the sync workloads write and sync: FXDAX_BENCH_SYNCS, or 50.
+    fn syncs() -> u64 {
+        std::env::var("FXDAX_BENCH_SYNCS").ok().and_then(|n| n.parse().ok()).unwrap_or(50)
+    }
+
+    /// fxdax: a 4 KiB write, then the whole filesystem made durable, again and again, three ways
+    /// (TASK-350.5): sync(2), syncfs(2) on the file, and a freeze and thaw of the filesystem
+    /// (FIFREEZE, FITHAW), as a snapshot's tooling does. fxdax's wait for its bucket, where ext4
+    /// on a disk whose flushes the host drops waits for nothing past the guest. Each reports its
+    /// rounds per second.
+    fn sync_workloads() {
+        use std::os::fd::AsRawFd;
+        use std::os::unix::fs::FileExt;
+        // linux/fs.h's _IOWR('X', 119, int) and _IOWR('X', 120, int).
+        const FIFREEZE: libc::c_ulong = 0xC004_5877;
+        const FITHAW: libc::c_ulong = 0xC004_5878;
+        let path = format!("{MNT}/synced");
+        let file =
+            fs::OpenOptions::new().create(true).truncate(true).write(true).open(&path).unwrap();
+        let mount = fs::File::open(MNT).unwrap();
+        let block = [0x5au8; 4096];
+        let syncs = syncs();
+        {
+            let ways: [(&str, &dyn Fn()); 3] = [
+                ("sync", &|| unsafe { libc::sync() }),
+                ("syncfs", &|| {
+                    // SAFETY: a plain system call on a file this function holds open.
+                    let ret = unsafe { libc::syncfs(file.as_raw_fd()) };
+                    assert_eq!(ret, 0, "syncfs: {}", std::io::Error::last_os_error());
+                }),
+                ("freeze", &|| {
+                    let fd = mount.as_raw_fd();
+                    // SAFETY: ioctls without arguments on the mount's root this function holds open.
+                    let frozen = unsafe { libc::ioctl(fd, FIFREEZE as _, 0) };
+                    assert_eq!(frozen, 0, "FIFREEZE: {}", std::io::Error::last_os_error());
+                    let thawed = unsafe { libc::ioctl(fd, FITHAW as _, 0) };
+                    assert_eq!(thawed, 0, "FITHAW: {}", std::io::Error::last_os_error());
+                }),
+            ];
+            for (name, sync) in ways {
+                let start = Instant::now();
+                for i in 0..syncs {
+                    file.write_all_at(&block, i * 4096).unwrap();
+                    sync();
+                }
+                result(
+                    &format!("{name}-loop"),
+                    "ops/s",
+                    true,
+                    syncs as f64 / start.elapsed().as_secs_f64(),
+                );
+            }
+        }
+        drop(file);
+        fs::remove_file(&path).unwrap();
     }
 
     /// fxdax: the page faults the guest took so far (`/proc/vmstat`'s pgfault).
@@ -1885,7 +2008,10 @@ mod guest {
             .collect();
         if !taken.is_empty() {
             eprintln!("QUEUES {workload}: {taken:?}");
-            println!("OBSERVED {workload}-queues-used {}", taken.iter().filter(|n| **n > 0).count());
+            println!(
+                "OBSERVED {workload}-queues-used {}",
+                taken.iter().filter(|n| **n > 0).count()
+            );
         }
         if let (Some(before), Some(after)) = (done, completions()) {
             let delta = |name: &str| {
@@ -1943,7 +2069,12 @@ mod guest {
             drop_caches();
             let workload = name("rand-read-cold");
             let job = scaled(&workload, || {
-                fio_jobs("scale", jobs, SCALE_FILE_SIZE, &["--rw=randread", "--bs=4k", "--io_size=8M"])
+                fio_jobs(
+                    "scale",
+                    jobs,
+                    SCALE_FILE_SIZE,
+                    &["--rw=randread", "--bs=4k", "--io_size=8M"],
+                )
             });
             fio_result(&workload, &job, "read");
             // Each file read whole first: the random reads then find it cached.
@@ -1967,7 +2098,13 @@ mod guest {
                 "scale",
                 1,
                 SCALE_FILE_SIZE,
-                &["--rw=randread", "--bs=4k", "--io_size=8M", "--ioengine=io_uring", "--iodepth=16"],
+                &[
+                    "--rw=randread",
+                    "--bs=4k",
+                    "--io_size=8M",
+                    "--ioengine=io_uring",
+                    "--iodepth=16",
+                ],
             )
         });
         fio_result(workload, &job, "read");
@@ -2362,6 +2499,13 @@ mod guest {
                 // fxdax: the scaling workloads run only when named, as pgbench does (TASK-276).
                 if groups.split(',').any(|g| g == "scaling") {
                     scaling_workloads();
+                }
+                // fxdax: so too the working sets' and the syncs' (TASK-350).
+                if groups.split(',').any(|g| g == "working-set") {
+                    working_set_workloads();
+                }
+                if groups.split(',').any(|g| g == "sync") {
+                    sync_workloads();
                 }
                 // pgbench runs only when named, which keeps a run of every other group short.
                 if groups.split(',').any(|g| g == "pgbench")

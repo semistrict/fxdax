@@ -55,8 +55,7 @@ RUN apk add --no-cache e2fsprogs
         vm.env(&CString::new(format!("{DEVICE}={guest}"))?);
         vm.env(&CString::new(format!("{ROLE}={role}"))?);
         vm.root_image(&format!("{role}.rootfs.ext4"));
-        let firecracker =
-            vm.spawn_api(root, &test_setup.test_case, role, &Vm::api_socket(role))?;
+        let firecracker = vm.spawn_api(root, &test_setup.test_case, role, &Vm::api_socket(role))?;
         let (status, console) = firecracker.wait()?;
         crate::vm::split_console(std::fs::File::open(&console)?)?;
         anyhow::ensure!(status.success(), "the {role} VM exited {status}");

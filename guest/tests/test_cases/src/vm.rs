@@ -346,8 +346,9 @@ impl Vm {
         let console_path = dir.join("console.txt");
         let mut child = spawn(&args, &console_path, &cpus)?;
         let code = match kill_on {
-            Some(line) => kill_on_line(&mut child, &console_path, &line, kill_instead)?
-                .map_or(0, exit_code),
+            Some(line) => {
+                kill_on_line(&mut child, &console_path, &line, kill_instead)?.map_or(0, exit_code)
+            }
             None => exit_code(child.wait()?),
         };
         split_console(std::fs::File::open(&console_path)?)?;
