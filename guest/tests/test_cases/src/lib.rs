@@ -131,8 +131,13 @@ mod extent_driver;
 mod sqlite;
 #[cfg(any(feature = "host", target_os = "linux"))]
 mod test_fs_bench;
+// fxdax: the loop-device baseline's disk keeps what a guest fsyncs (TASK-350.1).
+#[cfg(any(feature = "host", target_os = "linux"))]
+mod test_ext4_loop_persists;
 #[cfg(any(feature = "host", target_os = "linux"))]
 use test_fs_bench::{Backend as BenchBackend, TestFsBench};
+#[cfg(any(feature = "host", target_os = "linux"))]
+use test_ext4_loop_persists::TestExt4LoopPersists;
 
 pub enum TestOutcome {
     Pass,
@@ -419,6 +424,16 @@ pub fn test_cases() -> Vec<TestCase> {
             "pgbench-ext4-blk-writeback",
             &[Tag::PerfSingle],
             Box::new(TestFxfsGuestPgbench::on(PgbenchStorage::Ext4BlkWriteback)),
+        ),
+        TestCase::new(
+            "pgbench-ext4-loop-writeback",
+            &[Tag::PerfSingle],
+            Box::new(TestFxfsGuestPgbench::on(PgbenchStorage::Ext4LoopWriteback)),
+        ),
+        TestCase::new(
+            "pgbench-ext4-loop-unsafe",
+            &[Tag::PerfSingle],
+            Box::new(TestFxfsGuestPgbench::on(PgbenchStorage::Ext4LoopUnsafe)),
         ),
         TestCase::new(
             "fxfs-guest-pgbench-forked",
@@ -799,6 +814,20 @@ pub fn test_cases() -> Vec<TestCase> {
             Box::new(TestFsBench { backend: BenchBackend::Ext4GuestKernel }),
         ),
         #[cfg(any(feature = "host", target_os = "linux"))]
+        TestCase::new("ext4-loop-persists", &[Tag::Nightly], Box::new(TestExt4LoopPersists)),
+        #[cfg(any(feature = "host", target_os = "linux"))]
+        TestCase::new(
+            "bench-fs-ext4-loop",
+            &[Tag::Bench],
+            Box::new(TestFsBench { backend: BenchBackend::Ext4Loop }),
+        ),
+        #[cfg(any(feature = "host", target_os = "linux"))]
+        TestCase::new(
+            "bench-fs-ext4-loop-unsafe",
+            &[Tag::Bench],
+            Box::new(TestFsBench { backend: BenchBackend::Ext4LoopUnsafe }),
+        ),
+        #[cfg(any(feature = "host", target_os = "linux"))]
         TestCase::new(
             "bench-fs-ext4-dax-pmem",
             &[Tag::Bench],
@@ -925,6 +954,8 @@ mod shared_volumes;
 
 #[cfg(feature = "host")]
 pub mod vm;
+#[cfg(feature = "host")]
+pub mod loop_device;
 
 #[cfg(all(feature = "guest", target_os = "linux"))]
 pub mod guest_init;

@@ -13,6 +13,7 @@
 //! to this process's standard output, and the rest, the agent's standard error and what the kernel
 //! says, to its standard error. Firecracker logs to its own file there too.
 
+use crate::loop_device::{LoopDevice, LoopIo};
 use anyhow::{Context, ensure};
 use std::ffi::{CStr, CString, OsStr};
 use std::path::{Path, PathBuf};
@@ -66,6 +67,8 @@ pub struct Vm {
     stops_with: Option<i32>,
     /// fxdax: a process killed at that line in place of the VM process.
     kill_instead: Option<u32>,
+    /// fxdax: the loop devices its disks are on, held until the VM is done ([`Vm::loop_disk`]).
+    loops: Vec<LoopDevice>,
 }
 
 /// The guest kernel's command line, before the guest's environment and the test's name: the
@@ -115,6 +118,7 @@ impl Vm {
             kill_on: None,
             stops_with: None,
             kill_instead: None,
+            loops: Vec::new(),
         })
     }
 
@@ -237,6 +241,35 @@ impl Vm {
         Ok(device)
     }
 
+    /// fxdax: as [`Vm::disk_cached`], on a loop device over the raw `image`, attached as `io`
+    /// says, as a VM host's local disk images are (TASK-350.1). Says on standard error how: the
+    /// device, whether it bypasses the page cache, the image's filesystem, and the cache mode.
+    /// The device, which the VM holds, clears itself once the VM and this process are done.
+    pub fn loop_disk(
+        &mut self,
+        id: &str,
+        image: &Path,
+        cache: DiskCache,
+        io: LoopIo,
+    ) -> anyhow::Result<String> {
+        ensure!(
+            std::env::var_os("FXDAX_FIRECRACKER_JAILER").is_none(),
+            "a jailed Firecracker sees no loop device"
+        );
+        let device = LoopDevice::attach(image, io)?;
+        eprintln!(
+            "fxdax: disk {id} on {} over {} on {}, direct I/O {}, cache_type {}",
+            device.path().display(),
+            image.display(),
+            crate::loop_device::filesystem_type(image)?,
+            device.direct_io()?,
+            cache.name(),
+        );
+        let guest = self.disk_cached(id, device.path(), cache)?;
+        self.loops.push(device);
+        Ok(guest)
+    }
+
     /// Adds a virtio-vsock device, of which the guest is CID 3, and whose connections from the
     /// guest to the host (CID 2) on port P reach the Unix socket `uds_P` on the host, as
     /// Firecracker has them. `uds` must be short: Unix sockets' paths are at most 107 bytes.
@@ -299,11 +332,12 @@ impl Vm {
 
     /// Boots the guest, with `root` as its root filesystem, running the guest agent there
     /// (`common::setup_rootfs` copies it) for `test_case`. It returns only if the VM cannot boot.
-    pub fn enter(self, root: &Path, test_case: &str) -> anyhow::Result<()> {
+    pub fn enter(mut self, root: &Path, test_case: &str) -> anyhow::Result<()> {
         let dir = root.parent().context("the root has no parent")?.to_owned();
         let cpus = self.cpus.clone();
         let (kill_on, kill_instead) = (self.kill_on.clone(), self.kill_instead);
         let stops_with = self.stops_with;
+        let loops = std::mem::take(&mut self.loops);
         let config = self.prepare(root, test_case)?;
         let config_path = dir.join("firecracker.json");
         std::fs::write(&config_path, serde_json::to_vec_pretty(&config)?)?;
@@ -317,6 +351,8 @@ impl Vm {
             None => exit_code(child.wait()?),
         };
         split_console(std::fs::File::open(&console_path)?)?;
+        // Firecracker's done with them: they clear themselves.
+        drop(loops);
         match stops_with {
             Some(expected) if code == expected => std::process::exit(0),
             Some(expected) => panic!("the VM process exited with {code}, not {expected}"),
@@ -333,7 +369,7 @@ impl Vm {
     /// Boots the guest as [`Vm::enter`] does, but in a Firecracker the test drives through its
     /// API, at `api`, whose files in the root's parent directory are named after `name`.
     pub fn spawn_api(
-        self,
+        mut self,
         root: &Path,
         test_case: &str,
         name: &str,
@@ -341,10 +377,13 @@ impl Vm {
     ) -> anyhow::Result<Firecracker> {
         let dir = root.parent().context("the root has no parent")?.to_owned();
         let cpus = self.cpus.clone();
+        let loops = std::mem::take(&mut self.loops);
         let config = self.prepare(root, test_case)?;
         let config_path = dir.join(format!("{name}.json"));
         std::fs::write(&config_path, serde_json::to_vec_pretty(&config)?)?;
-        Firecracker::spawn(&dir, name, api, Some(&config_path), &cpus)
+        let mut firecracker = Firecracker::spawn(&dir, name, api, Some(&config_path), &cpus)?;
+        firecracker.loops = loops;
+        Ok(firecracker)
     }
 
     /// Makes an ext4 image of `root`, and returns Firecracker's configuration, booting from it;
@@ -426,6 +465,9 @@ pub struct Firecracker {
     child: std::process::Child,
     api: PathBuf,
     console: PathBuf,
+    /// fxdax: the loop devices its disks are on, held as long as it is ([`Vm::loop_disk`]).
+    #[expect(dead_code, reason = "never read: held, they stay attached as long as it runs")]
+    loops: Vec<LoopDevice>,
 }
 
 impl Firecracker {
@@ -445,7 +487,7 @@ impl Firecracker {
         args.extend(log_args(&dir.join(format!("{name}.log"))));
         let console = dir.join(format!("{name}.console.txt"));
         let child = spawn(&args, &console, cpus)?;
-        let this = Self { child, api: api.to_owned(), console };
+        let this = Self { child, api: api.to_owned(), console, loops: Vec::new() };
         // Once it listens.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         while std::os::unix::net::UnixStream::connect(api).is_err() {

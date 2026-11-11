@@ -64,6 +64,12 @@ use macros::{guest, host};
 pub enum Backend {
     /// ext4 on a virtio-blk disk, with fxdax's guest kernel, which the guest's Fxfs compares with.
     Ext4GuestKernel,
+    /// fxdax: ext4 on a virtio-blk disk on a loop device over a raw image file, as a VM host's
+    /// local disk images are, each flush a host fsync (cache_type Writeback): the baseline fxdax
+    /// is measured against where it should lose (TASK-350.1).
+    Ext4Loop,
+    /// fxdax: as `Ext4Loop`, its flushes dropped (cache_type Unsafe).
+    Ext4LoopUnsafe,
     /// ext4 with DAX on writable virtio-pmem, with fxdax's guest kernel: storage as memory.
     Ext4DaxPmem,
     /// ext4 on the same virtio-pmem without DAX, its files in the page cache: what DAX on pmem
@@ -157,8 +163,9 @@ mod host {
     use super::*;
 
     use crate::common::{fxdax_guest_should_run, setup_rootfs};
+    use crate::loop_device::LoopIo;
     use crate::rootfs::{Download, Image};
-    use crate::vm::Vm;
+    use crate::vm::{DiskCache, Vm};
     use crate::{ShouldRun, Test, TestOutcome, TestSetup};
     use anyhow::Context as _;
     use std::collections::BTreeMap;
@@ -655,6 +662,8 @@ COPY lua-5.4.7.tar.gz /opt/lua-5.4.7.tar.gz
         fn name(&self) -> &'static str {
             match self.backend {
                 Backend::Ext4GuestKernel => "ext4-guest-kernel",
+                Backend::Ext4Loop => "ext4-loop",
+                Backend::Ext4LoopUnsafe => "ext4-loop-unsafe",
                 Backend::Ext4DaxPmem => "ext4-dax-pmem",
                 Backend::Ext4Pmem => "ext4-pmem",
                 Backend::FxfsGuest => "fxfs-guest",
@@ -699,6 +708,8 @@ COPY lua-5.4.7.tar.gz /opt/lua-5.4.7.tar.gz
                 | Backend::FxfsGuestDaxFollowed
                 | Backend::FxfsGuestDaxFollowedIdle => fxdax_guest_should_run(),
                 Backend::Ext4GuestKernel
+                | Backend::Ext4Loop
+                | Backend::Ext4LoopUnsafe
                 | Backend::Ext4DaxPmem
                 | Backend::Ext4Pmem
                 | Backend::Ext4DaxPmemFork
@@ -806,6 +817,16 @@ COPY lua-5.4.7.tar.gz /opt/lua-5.4.7.tar.gz
                     let image = test_setup.tmp_dir.join("ext4.img");
                     std::fs::File::create(&image)?.set_len(IMAGE_SIZE)?;
                     Some(vm.disk("bench", &image)?)
+                }
+                Backend::Ext4Loop | Backend::Ext4LoopUnsafe => {
+                    let image = test_setup.tmp_dir.join("ext4.img");
+                    std::fs::File::create(&image)?.set_len(IMAGE_SIZE)?;
+                    let cache = if self.backend == Backend::Ext4Loop {
+                        DiskCache::Writeback
+                    } else {
+                        DiskCache::Unsafe
+                    };
+                    Some(vm.loop_disk("bench", &image, cache, LoopIo::Buffered)?)
                 }
             };
             if let Some(device) = device {
@@ -2272,7 +2293,7 @@ mod guest {
                 crate::kernel_log::print();
             }));
             match self.backend {
-                Backend::Ext4GuestKernel => {
+                Backend::Ext4GuestKernel | Backend::Ext4Loop | Backend::Ext4LoopUnsafe => {
                     let device = bench_device();
                     run("mkfs.ext4", &["-q", "-F", &device]);
                     mount(&device, "ext4", "");

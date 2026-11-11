@@ -86,6 +86,11 @@ pub enum Storage {
     /// fxdax: as `Ext4BlkUnsafe`, each flush a host fsync (cache_type Writeback): its durable
     /// counterpart (TASK-91.8).
     Ext4BlkWriteback,
+    /// fxdax: as `Ext4BlkWriteback`, the copy on a loop device, as a VM host's local disk images
+    /// are (TASK-350.1).
+    Ext4LoopWriteback,
+    /// fxdax: as `Ext4LoopWriteback`, its flushes dropped (cache_type Unsafe).
+    Ext4LoopUnsafe,
 }
 
 /// What a run of pgbench's first is probed for (TASK-91.14).
@@ -142,6 +147,7 @@ fn count(name: &str, default: u64) -> u64 {
 mod host {
     use super::*;
     use crate::common::{fxdax_guest_should_run, setup_rootfs};
+    use crate::loop_device::LoopIo;
     use crate::vm::{DiskCache, Firecracker, Vm};
     use crate::{ShouldRun, Test, TestOutcome, TestSetup};
     use anyhow::Context;
@@ -221,6 +227,8 @@ RUN apk add --no-cache postgresql postgresql-contrib perf e2fsprogs
         /// fxdax: the image at `image`, on a writable virtio-blk disk whose flushes go as `cache`
         /// has them, which the guest mounts ext4 on (TASK-91.8).
         Blk(&'a Path, DiskCache),
+        /// fxdax: as `Blk`, the disk on a loop device over the image (TASK-350.1).
+        Loop(&'a Path, DiskCache),
     }
 
     /// fxdax: the device a case's ext4 images are on (TASK-91.8).
@@ -230,6 +238,8 @@ RUN apk add --no-cache postgresql postgresql-contrib perf e2fsprogs
         Pmem,
         /// A writable virtio-blk disk, its flushes as the cache has them.
         Blk(DiskCache),
+        /// fxdax: the same on a loop device (TASK-350.1).
+        Loop(DiskCache),
     }
 
     impl Image {
@@ -238,6 +248,7 @@ RUN apk add --no-cache postgresql postgresql-contrib perf e2fsprogs
             match self {
                 Image::Pmem => Device::Pmem(image),
                 Image::Blk(cache) => Device::Blk(image, cache),
+                Image::Loop(cache) => Device::Loop(image, cache),
             }
         }
     }
@@ -258,6 +269,10 @@ RUN apk add --no-cache postgresql postgresql-contrib perf e2fsprogs
             }
             Device::Blk(image, cache) => {
                 let device = vm.disk_cached("pgbench", image, cache)?;
+                vm.env(&CString::new(format!("FXDAX_PGBENCH_BLK={device}"))?);
+            }
+            Device::Loop(image, cache) => {
+                let device = vm.loop_disk("pgbench", image, cache, LoopIo::Buffered)?;
                 vm.env(&CString::new(format!("FXDAX_PGBENCH_BLK={device}"))?);
             }
         }
@@ -524,6 +539,12 @@ RUN apk add --no-cache postgresql postgresql-contrib perf e2fsprogs
                 }
                 Storage::Ext4BlkWriteback => {
                     Self::run_images(test_setup, &root, Image::Blk(DiskCache::Writeback))
+                }
+                Storage::Ext4LoopWriteback => {
+                    Self::run_images(test_setup, &root, Image::Loop(DiskCache::Writeback))
+                }
+                Storage::Ext4LoopUnsafe => {
+                    Self::run_images(test_setup, &root, Image::Loop(DiskCache::Unsafe))
                 }
             }
         }

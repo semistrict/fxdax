@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-11 10:55'
-updated_date: '2026-11-11 11:01'
+updated_date: '2026-11-11 12:29'
 labels: []
 dependencies: []
 parent_task_id: TASK-350
@@ -35,3 +35,13 @@ Every scenario under TASK-350 compares against this (user, 2026-11-11: no JuiceF
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. crate test_cases: loop_device.rs attaches a free loop device over an image (LOOP_CONFIGURE, LO_FLAGS_AUTOCLEAR; buffered or direct I/O), so it detaches itself once the test process and Firecracker close it, whatever the outcome.
+2. Vm::loop_disk: a virtio-blk disk on such a device, held by the Vm/Firecracker; says device, dio, backing fs and cache_type on stderr.
+3. Cases: bench-fs-ext4-loop (Writeback), bench-fs-ext4-loop-unsafe; pgbench-ext4-loop-writeback, pgbench-ext4-loop-unsafe.
+4. ext4-loop-persists: guest fsyncs a file and resets unsynced; a second VM on the same loop device reads it whole; the host checks the device detached.
+5. Prove on ubu1 as root under fxjob: ext4-loop-persists, one iteration of bench-fs-ext4-loop and pgbench-ext4-loop-writeback.
+<!-- SECTION:PLAN:END -->
