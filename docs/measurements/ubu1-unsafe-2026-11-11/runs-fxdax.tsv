@@ -1,0 +1,4 @@
+round	case	outcome	load_before	load_after	arc_before	arc_after	started	cpu_stall_ms	memory_stall_ms	io_stall_ms
+1	bench-fs-fxfs-guest-dax-unsafe	ok	55.81	8.96	337266232	4239089256	2026-11-11T21:30:01Z	87005	535	64724
+2	bench-fs-fxfs-guest-dax-unsafe	ok	8.96	14.95	792736040	4134228968	2026-11-11T22:02:29Z	6926	936	31746
+3	bench-fs-fxfs-guest-dax-unsafe	ok	14.96	19.24	416375448	4057270016	2026-11-11T22:27:49Z	4518	26	45985

@@ -1,0 +1,7 @@
+round	case	outcome	load_before	load_after	arc_before	arc_after	started	cpu_stall_ms	memory_stall_ms	io_stall_ms
+1	bench-fs-ext4-loop-unsafe	ok	14.60	11.26	331749664	3409648192	2026-11-11T19:57:06Z	3325	5435	9785
+1	bench-fs-fxfs-guest-dax-unsafe	failed	11.26	13.61	887851520	2257707544	2026-11-11T20:04:21Z	3201	0	10460
+2	bench-fs-fxfs-guest-dax-unsafe	failed	13.61	12.70	797085672	2240097568	2026-11-11T20:10:46Z	3331	0	9598
+2	bench-fs-ext4-loop-unsafe	ok	12.70	10.61	843372344	2866679664	2026-11-11T20:16:58Z	88399	10418	51511
+3	bench-fs-ext4-loop-unsafe	ok	10.61	7.98	774803944	2841009848	2026-11-11T20:29:34Z	3249	3926	25633
+3	bench-fs-fxfs-guest-dax-unsafe	failed	7.98	17.18	889065120	1686427264	2026-11-11T20:37:56Z	232183	51123	117103
