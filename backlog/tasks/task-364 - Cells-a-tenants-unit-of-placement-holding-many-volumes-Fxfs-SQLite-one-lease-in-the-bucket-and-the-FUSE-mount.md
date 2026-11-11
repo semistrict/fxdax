@@ -3,10 +3,11 @@ id: TASK-364
 title: >-
   Cells: a tenant's unit of placement, holding many volumes (Fxfs, SQLite), one
   lease, in the bucket and the FUSE mount
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-11-11 20:12'
-updated_date: '2026-11-11 20:26'
+updated_date: '2026-11-11 22:52'
 labels:
   - fuse
   - host
@@ -50,3 +51,13 @@ Design work for the worker: a volume's fork within its cell or into another; a w
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Decided by the user 2026-11-11: (1) one log per cell: the cell is the branch, each volume a named root in it; commits may span volumes; uploads, recovery, lease and fencing are the cell's. (2) Forks: whole cell -> new cell only (O(1), any tenant); no single-volume forks, no forks into an existing cell. Formats break freely (no migration).
+
+Revised by the user 2026-11-11 after the store's single-client assumptions surfaced (one commit seals every open extent of a branch; one shared extent-ID sequence; orphan sweeps; frees and capacity per branch): **one log per volume**. Each volume stays a branch as today, store core untouched; a cell is one lease shared by its volumes' writers, a record listing its volumes, and a key prefix. A whole-cell fork: the holding host pauses commits on every volume and forks each at one cut. Cell keys: random cell IDs in keys (tenants/<t>/cells/<id>/), names separate.
+
+The user 2026-11-11: cells have no names, IDs only (no name index, no hashed names): tenants/<t>/cells/<id>/, MOUNT/<t>/<id>/<volume>/; callers keep their own mapping. Volumes are named in their cell's record only.
+<!-- SECTION:NOTES:END -->
