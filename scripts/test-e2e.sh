@@ -15,8 +15,8 @@
 # case's, and drops the passing rounds' but for what their guests said, in
 # round-K.log there, which measurements repeated round by round need (pgbench's
 # tps). Each round's outcome is kept as data, in round-K.json there, and the run's in summary.json
-# and run.json beside the cases' (scripts/guest_results.py, which says what each holds), uploaded
-# under FXDAX_RESULTS_BUCKET, a prefix of a bucket, if set, as each round ends. Firecracker runs under its production seccomp filter (FXDAX_FIRECRACKER_SECCOMP, real by
+# and run.json beside the cases' (scripts/guest_results.py, which says what each holds).
+# Firecracker runs under its production seccomp filter (FXDAX_FIRECRACKER_SECCOMP, real by
 # default; log, or none), and FXDAX_FIRECRACKER_JAIL=1 in its jailer's jail, as an unprivileged
 # user (see below).
 #

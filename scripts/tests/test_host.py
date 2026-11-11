@@ -21,6 +21,7 @@ import sys
 import tarfile
 import tempfile
 import unittest
+import weakref
 from pathlib import Path
 
 from script import SCRIPTS
@@ -293,8 +294,9 @@ class Fleet:
     directory runs are made in on the hosts (FXDAX_HOST_SCRATCH)."""
 
     def __init__(self, state=None):
-        # As git names it, its links resolved (macOS's /var).
+        # As git names it, its links resolved (macOS's /var); removed with the fleet.
         self.directory = Path(tempfile.mkdtemp()).resolve()
+        weakref.finalize(self, shutil.rmtree, self.directory, True)
         (self.directory / "state.json").write_text(json.dumps(state or {}))
         (self.directory / "calls").write_text("")
         (self.directory / "bin").mkdir()
