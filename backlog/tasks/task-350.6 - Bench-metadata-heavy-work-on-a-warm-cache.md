@@ -4,6 +4,7 @@ title: 'Bench: metadata-heavy work on a warm cache'
 status: To Do
 assignee: []
 created_date: '2026-11-11 10:56'
+updated_date: '2026-11-11 11:01'
 labels: []
 dependencies:
   - TASK-350.1
@@ -20,7 +21,7 @@ Fxfs in the guest trails ext4 by 1.5-2x on metadata: unlink 2.15x, find cold 2.0
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 npm install of a fixed lockfile, rm -rf of the result, git status and git checkout on a large repository (e.g. Linux), find over it, warm and cold, against the JuiceFS baseline
+- [ ] #1 npm install of a fixed lockfile, rm -rf of the result, git status and git checkout on a large repository (e.g. Linux), find over it, warm and cold, against the loop-device baseline (TASK-350.1)
 - [ ] #2 Reports time and guest CPU per workload
 <!-- AC:END -->
 

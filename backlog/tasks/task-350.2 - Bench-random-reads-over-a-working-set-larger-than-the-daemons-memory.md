@@ -4,6 +4,7 @@ title: 'Bench: random reads over a working set larger than the daemon''s memory'
 status: To Do
 assignee: []
 created_date: '2026-11-11 10:56'
+updated_date: '2026-11-11 11:01'
 labels: []
 dependencies:
   - TASK-350.1
@@ -20,7 +21,7 @@ With DAX the daemon's memory is the guest's only file cache, and a page-in decom
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Random 4 KiB reads (fio, and a database doing point lookups) over working sets of 0.5x, 1x, 2x and 4x the tenant's daemon memory, guest RAM equal in both cases, fxdax with DAX and without, against the JuiceFS baseline
+- [ ] #1 Random 4 KiB reads (fio, and a database doing point lookups) over working sets of 0.5x, 1x, 2x and 4x the tenant's daemon memory, guest RAM equal in both cases, fxdax with DAX and without, against the loop-device baseline (TASK-350.1)
 - [ ] #2 Reports IOPS, p50/p99 latency, and per miss: bytes decompressed and host CPU
 <!-- AC:END -->
 

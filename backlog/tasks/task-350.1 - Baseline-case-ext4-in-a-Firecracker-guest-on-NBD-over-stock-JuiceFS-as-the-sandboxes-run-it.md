@@ -1,13 +1,13 @@
 ---
 id: TASK-350.1
 title: >-
-  Baseline case: ext4 in a Firecracker guest on a disk image file on a stock
-  JuiceFS FUSE mount
+  Baseline case: ext4 in a Firecracker guest on a loop device over a local image
+  file
 status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-11 10:55'
-updated_date: '2026-11-11 10:59'
+updated_date: '2026-11-11 11:01'
 labels: []
 dependencies: []
 parent_task_id: TASK-350
@@ -18,16 +18,15 @@ ordinal: 705000
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-Every scenario under TASK-350 compares against this. The user (2026-11-11): the baseline is VM block device files on a FUSE mount of vanilla JuiceFS, not juicebox's in-process library and NBD server. So: the stock juicefs binary (latest release, v1.4.2 on 2026-11-11, Apache-2.0) formatted with 4 MiB blocks and no compression, mounted with its default options (no writeback), its block cache on the host's ext4 scratch disk; PostgreSQL (PostgreSQL License) for metadata and the bucket on the same local RustFS (Apache-2.0) the fxdax case uses, both in containers; an image file on the mount given to Firecracker as a virtio-blk drive, ext4 in the guest. Guest RAM, vCPUs and kernel match the fxdax case's, so the guest's own page cache is what that setup gives it.
+Every scenario under TASK-350 compares against this (user, 2026-11-11: no JuiceFS; local files, loop-mounted). A raw image file on ubu1's local ZFS, attached with losetup, the loop device given to Firecracker as a virtio-blk drive, ext4 in the guest. Guest RAM, vCPUs and kernel match the fxdax case's. The existing ext4-guest-kernel case (guest/tests/test_cases/src/test_fs_bench.rs, Backend::Ext4GuestKernel) gives Firecracker an image file directly; this one goes through a loop device. Loop devices need root, as the e2e suite's loop-mount tests do.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A bench case (e.g. ext4-juicefs-fuse) boots a Firecracker guest with ext4 on a virtio-blk drive whose image is a file on a stock JuiceFS FUSE mount, and runs the existing fs-bench and pgbench workloads on ubu1
-- [ ] #2 The drive runs with Firecracker cache_type Writeback (guest flushes reach JuiceFS as fsync) and, as a variant, Unsafe (flushes dropped); each run records which
-- [ ] #3 The JuiceFS version, format and mount options, cache size and location are recorded with each run
-- [ ] #4 Bucket latency is the same setting as fxdax's FXDAX_REMOTE_LATENCY_MS (applied to both systems' requests) and metadata latency is configurable (default ~1 ms, a managed PostgreSQL's); defaults recorded
-- [ ] #5 A test in the repo checks the case: a file fsync'd in the guest is read back after the VM restarts on the same image, with the JuiceFS mount remounted in between
+- [ ] #1 A bench case (e.g. ext4-loop) boots a Firecracker guest with ext4 on a virtio-blk drive backed by a loop device over a local image file, and runs the existing fs-bench and pgbench workloads on ubu1
+- [ ] #2 The drive runs with Firecracker cache_type Writeback (guest flushes reach the file as fsync) and, as a variant, Unsafe; the loop device's direct-I/O setting, the backing filesystem and the cache mode are recorded with each run
+- [ ] #3 The case tears down its loop device and image whatever the outcome
+- [ ] #4 A test in the repo checks the case: a file fsync'd in the guest is read back after the VM restarts on the same loop device
 <!-- AC:END -->
 
 ## Definition of Done
