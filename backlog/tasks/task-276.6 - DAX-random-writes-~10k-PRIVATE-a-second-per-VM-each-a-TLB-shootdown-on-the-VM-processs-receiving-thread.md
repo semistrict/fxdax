@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-09 05:12'
-updated_date: '2026-11-10 12:30'
+updated_date: '2026-11-11 02:08'
 labels:
   - perf
 dependencies: []
@@ -24,8 +24,8 @@ TASK-276 phase 1 (GCE c3-standard-8, nested KVM): fxfs-guest-dax random 4K write
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 A measured design that cuts the stage changes (or their shootdowns) per DAX write, keeping doc-13 rules and the uffd Shuttle tests
-- [ ] #2 fxfs-guest-dax random writes scale past 12k IOPS with jobs on the TASK-276 bench
+- [x] #1 A measured design that cuts the stage changes (or their shootdowns) per DAX write, keeping doc-13 rules and the uffd Shuttle tests
+- [x] #2 fxfs-guest-dax random writes scale past 12k IOPS with jobs on the TASK-276 bench
 <!-- AC:END -->
 
 ## Definition of Done
@@ -58,4 +58,9 @@ Step 1, bare metal (2026-11-10): ubu1 (AMD Ryzen 9 8945HS, 8 cores/16 threads, K
 - unread pages (scale-rand-write-unread): 2 vCPUs 13.1k / 25.0k / 20.1k / 18.5k; 4 vCPUs 14.2k / 23.5k / 22.9k / 22.7k; 8 vCPUs 11.6k / 21.1k / 19.4k / 15.4k; p99 at 4 vCPUs j4/j8 4.4 / 10.9 ms.
 So on bare metal the writes scale past 12k with jobs on main already: GCE's 10-12k plateau is nested virtualization's price for the shootdowns. What plateaus at 33-41k is not the receiving thread: its samples (perf, 999 Hz, 4 vCPUs, 8 jobs) peak at 26% of a CPU in any second under DAX writes, 54% under fxfs-guest's cold reads. The unread writes' plateau, with ms p99s, is the daemon side: their pages aren't in extentd's memory (nothing read them), so each PRIVATE brings its source page in from the store first, where read pages' are cached.
 Profile (4 vCPUs, j8, perf of the VM process, scripts/dax-stage-syscalls.bt on the bench CPUs): the rand-write j8 second, 8,192 PRIVATEs, each an mmap over the page installed (8,495 mmaps, 116 ms, 14 us each), 13,154 cross-CPU calls (20 ms) and 8,192 KVM remote flushes; the unread writes' second, 8,184 PRIVATEs and 247 mmaps (their pages not in memory, so not installed: filled in place already on main); fallocate 0 during writes, and 12,801 (94 ms) with 5,654 PROT_NONE mmaps in one second at the case's end, the unlinks' UNMAPs of private pages: the punches, as the code said. Shootdown batching: not designed, as the cap it would lift is nested-only here; options for nested hosts stay open for the user.
+
+The change, measured (2026-11-10, ubu1, fxjob --bench; docs/measurements/dax-lazy-install-2026-11-10.md): an interleaved A/B, main 7e1740cb7 with the bench (83c212a7b) against the branch as it lands (9e338efa2, Firecracker 323b5a5af, fxdax-v1.16.1-r6), 3 rounds x 2 iterations, 4 vCPUs, ext4 the control: 11 real differences, all improvements, all writes to pages the guest never read (extents in extentd's memory): 13.2k / 24.4k / 25.4k / 25.4k -> 17.1k / 34.7k / 42.1k / 41.9k IOPS at 1/2/4/8 jobs, p99 0.60 / 1.16 / 1.99 ms -> 0.11 / 0.23 / 0.53 ms (j2/j4/j8). Writes to pages read before, and everything else, within drift. Traced: main's unread writes 8,380 mmaps over installed pages and 8,184 KVM flushes in their second, the branch's 134 and 0; the closing UNMAPs' 12,801 punches 32,883 cross-CPU calls and 13,122 KVM flushes on main, 6 and 321 on the branch. The earlier pre-rebase A/B agreed (9 real, all improvements).
+The bench's first unread variant found the pages not in extentd's memory (nothing had read them), which main already filled in place: changed to read them first through the page cache, as files created in the mount are, so that extentd holds them.
+AC #2 on bare metal: the writes scale past 12k with jobs (main and branch alike, 15k at 1 job to 39-41k at 4). Nested KVM was not re-measured (GCE retired): there, writes to pages read before still take a shootdown each, which only batching would cut; options not designed, the user's to decide.
+Tests on the landed tree: guest e2e 18/18 (e2e suite, fxfs-guest-snapshot-dax, fxfs-guest-pgbench-dax-forked) from its own git worktree and kernel; the VMM's tests (test_config_space_as_upstream); Shuttle part; dax units 36/36 (windows_larger_than_the_map_count_read_whole needs >8 GiB on ubu1: TASK-342); firecracker-series-check ok both ways, 18 commits; macOS workspace 2,228, Shuttle, scripts 266; specs/dax-cow 14 models; upstream-changes.py --check. An earlier e2e run's failures were the run's: a kernel built from an rsync'd tree (build commit unknown) and budgets before TASK-263's fix (append_writeback 4.9 s of 3 s, TASK-263's symptom, fixed on main).
 <!-- SECTION:NOTES:END -->

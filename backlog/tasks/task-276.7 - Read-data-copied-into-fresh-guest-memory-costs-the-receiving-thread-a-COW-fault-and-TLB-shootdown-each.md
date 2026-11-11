@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-09 05:12'
-updated_date: '2026-11-10 12:30'
+updated_date: '2026-11-11 02:08'
 labels:
   - perf
 dependencies: []
@@ -24,7 +24,7 @@ TASK-276 phase 1 profile (fxfs-guest, cold random reads, 4 vCPUs): a third of th
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Measured whether populating guest memory writable (or completing reads off the receiving thread) removes the shootdowns from the reply path, and done if it pays
+- [x] #1 Measured whether populating guest memory writable (or completing reads off the receiving thread) removes the shootdowns from the reply path, and done if it pays
 <!-- AC:END -->
 
 ## Definition of Done
@@ -38,4 +38,6 @@ TASK-276 phase 1 profile (fxfs-guest, cold random reads, 4 vCPUs): a third of th
 
 <!-- SECTION:NOTES:BEGIN -->
 Step 1, bare metal (ubu1, fxjob --bench, main + bench, 4 vCPUs, 8 jobs, perf of the VM process): fxfs-guest cold random reads 8.2k / 13.4k / 19.8k / 25.3k IOPS (j1/j2/j4/j8; ext4 on virtio-blk 23.0k / 53.9k / 52.5k / 48.5k), p50 42 / 49 / 64 / 94 us. The receiving thread ('extentd client') is busy 54% of a CPU at most in any second; of its samples over the case: wp_page_copy 12.5% (the COW of guest pages its read replies are copied into, each a shootdown), munmap 17.96% (each large message's payload, vec![0; len] past musl's mmap threshold, unmapped as the reply drops: TASK-324), memcpy 21%, recvmsg 21%, waiting 12%. Not bound by the thread on bare metal.
+
+Measured (2026-11-10, ubu1 bare metal, fxjob --bench, the branch's build): an interleaved A/B, the guest booted with init_on_alloc=1 (every page it allocates written by it, so that no guest page is the host's zero page when a READ reply is copied in) against the default, fxfs-guest and ext4 the control, 4 vCPUs, 3 rounds x 2 iterations: 0 real differences; cold reads j1/j2/j4/j8 7.25k/11.7k/18.0k/19.9k against 6.94k/12.0k/18.8k/19.9k IOPS, qd16 48.2k/46.6k, p50s within drift. And a profile of it (8 jobs) left the receiving thread's wp_page_copy at 11.7% (12.5% without): the COW faults are not of pages fresh to the guest, so populating guest memory writable would not remove them either, and would make every VM's RAM resident at boot (2 GiB a bench VM; doc-13's density, hundreds of forks a host) for nothing shown. Completing replies off the receiving thread moves the faults to the queues' workers, a wake-up each request that TASK-41 removed, and the thread is not bound on bare metal (54% busy at most in any second). Decision: neither done. What the faulted pages are is TASK-340; the larger shootdown on the reply path, munmap of large payloads (18%), is TASK-324.
 <!-- SECTION:NOTES:END -->

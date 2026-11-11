@@ -3,7 +3,7 @@ id: doc-13
 title: Copy-on-write DAX
 type: specification
 created_date: '2026-11-04 07:55'
-updated_date: '2026-11-10 07:41'
+updated_date: '2026-11-11 01:59'
 ---
 # Copy-on-write DAX: the window maps sealed extents only; a store gets a private copy
 
@@ -414,6 +414,12 @@ private.
   rewritten every ~5 minutes, is more than `private_max` keeps. The perf gate's `forked-dax` is 0.8
   since. What could cut it further, the VMM's request path and a page made private without
   replacing its mapping, is TASK-164.11's, for later.
+- **Measured, TASK-276.6 (docs/measurements/dax-lazy-install-2026-11-10.md, ubu1, bare metal):**
+  random 4 KiB writes to pages the guest never read, of extents the host's memory holds, +29% to
+  +66% IOPS at 1-8 jobs (25.4k to 41.9k at 8, p99 2.0 ms to 0.53 ms), each PRIVATE filled in place
+  of nothing; writes to pages its reads installed unchanged, a shootdown each still. On bare metal
+  main's writes scaled past GCE's 10-12k already (36-41k at 4-8 jobs, the receiving thread 26% busy
+  at most): that plateau was nested virtualization's price for the shootdowns.
 - **Reads:** unchanged; files written in this mount read through the page cache until evicted.
 - **Memory per VM:** guest page cache for created files (balloon free-page reporting returns what
   they free, Firecracker's balloon has it), private pages ≤ `private_max` on the host, shared

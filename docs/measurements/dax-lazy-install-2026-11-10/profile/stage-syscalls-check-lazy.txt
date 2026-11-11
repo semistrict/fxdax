@@ -1,0 +1,1520 @@
+Attached 16 probes
+each second: the wall clock, then per kind: calls, microseconds
+08:24:40
+ioctl by command (hex)
+08:24:41
+ioctl by command (hex)
+08:24:42
+ioctl by command (hex)
+08:24:43
+ioctl by command (hex)
+08:24:44
+ioctl by command (hex)
+08:24:45
+ioctl by command (hex)
+08:24:46
+ioctl by command (hex)
+08:24:47
+ioctl by command (hex)
+08:24:48
+ioctl by command (hex)
+08:24:49
+ioctl by command (hex)
+08:24:50
+ioctl by command (hex)
+08:24:51
+ioctl by command (hex)
+08:24:52
+ioctl by command (hex)
+08:24:53
+ioctl by command (hex)
+08:24:54
+ioctl by command (hex)
+08:24:55
+ioctl by command (hex)
+08:24:56
+ioctl by command (hex)
+08:24:57
+ioctl by command (hex)
+08:24:58
+ioctl by command (hex)
+08:24:59
+ioctl by command (hex)
+08:25:00
+ioctl by command (hex)
+08:25:01
+ioctl by command (hex)
+08:25:02
+ioctl by command (hex)
+08:25:03
+ioctl by command (hex)
+08:25:04
+ioctl by command (hex)
+08:25:05
+ioctl by command (hex)
+08:25:06
+ioctl by command (hex)
+08:25:07
+ioctl by command (hex)
+08:25:08
+ioctl by command (hex)
+08:25:09
+ioctl by command (hex)
+08:25:10
+ioctl by command (hex)
+08:25:11
+ioctl by command (hex)
+08:25:12
+ioctl by command (hex)
+08:25:13
+ioctl by command (hex)
+08:25:14
+ioctl by command (hex)
+08:25:15
+ioctl by command (hex)
+08:25:16
+ioctl by command (hex)
+08:25:17
+ioctl by command (hex)
+08:25:18
+ioctl by command (hex)
+08:25:19
+ioctl by command (hex)
+08:25:20
+ioctl by command (hex)
+08:25:21
+ioctl by command (hex)
+08:25:22
+ioctl by command (hex)
+08:25:23
+ioctl by command (hex)
+08:25:24
+ioctl by command (hex)
+08:25:25
+ioctl by command (hex)
+08:25:26
+ioctl by command (hex)
+08:25:27
+ioctl by command (hex)
+08:25:28
+ioctl by command (hex)
+08:25:29
+ioctl by command (hex)
+08:25:30
+ioctl by command (hex)
+08:25:31
+ioctl by command (hex)
+08:25:32
+ioctl by command (hex)
+08:25:33
+ioctl by command (hex)
+08:25:34
+ioctl by command (hex)
+08:25:35
+ioctl by command (hex)
+08:25:36
+ioctl by command (hex)
+08:25:37
+ioctl by command (hex)
+08:25:38
+ioctl by command (hex)
+08:25:39
+ioctl by command (hex)
+08:25:40
+ioctl by command (hex)
+08:25:41
+ioctl by command (hex)
+08:25:42
+ioctl by command (hex)
+08:25:43
+ioctl by command (hex)
+08:25:44
+ioctl by command (hex)
+08:25:45
+ioctl by command (hex)
+08:25:46
+ioctl by command (hex)
+08:25:47
+ioctl by command (hex)
+08:25:48
+ioctl by command (hex)
+08:25:49
+ioctl by command (hex)
+08:25:50
+ioctl by command (hex)
+08:25:51
+ioctl by command (hex)
+08:25:52
+ioctl by command (hex)
+08:25:53
+ioctl by command (hex)
+08:25:54
+ioctl by command (hex)
+08:25:55
+ioctl by command (hex)
+08:25:56
+ioctl by command (hex)
+08:25:57
+ioctl by command (hex)
+08:25:58
+ioctl by command (hex)
+08:25:59
+ioctl by command (hex)
+08:26:00
+ioctl by command (hex)
+08:26:01
+ioctl by command (hex)
+08:26:02
+ioctl by command (hex)
+08:26:03
+ioctl by command (hex)
+08:26:04
+ioctl by command (hex)
+08:26:05
+ioctl by command (hex)
+08:26:06
+ioctl by command (hex)
+08:26:07
+ioctl by command (hex)
+08:26:08
+ioctl by command (hex)
+08:26:09
+ioctl by command (hex)
+08:26:10
+ioctl by command (hex)
+08:26:11
+ioctl by command (hex)
+08:26:12
+ioctl by command (hex)
+08:26:13
+ioctl by command (hex)
+08:26:14
+ioctl by command (hex)
+08:26:15
+ioctl by command (hex)
+08:26:16
+ioctl by command (hex)
+08:26:17
+ioctl by command (hex)
+08:26:18
+ioctl by command (hex)
+08:26:19
+ioctl by command (hex)
+08:26:20
+ioctl by command (hex)
+08:26:21
+ioctl by command (hex)
+08:26:22
+ioctl by command (hex)
+08:26:23
+ioctl by command (hex)
+08:26:24
+ioctl by command (hex)
+08:26:25
+ioctl by command (hex)
+08:26:26
+ioctl by command (hex)
+08:26:27
+ioctl by command (hex)
+08:26:28
+ioctl by command (hex)
+08:26:29
+ioctl by command (hex)
+08:26:30
+ioctl by command (hex)
+08:26:31
+ioctl by command (hex)
+08:26:32
+ioctl by command (hex)
+08:26:33
+ioctl by command (hex)
+08:26:34
+ioctl by command (hex)
+08:26:35
+ioctl by command (hex)
+08:26:36
+ioctl by command (hex)
+08:26:37
+ioctl by command (hex)
+08:26:38
+ioctl by command (hex)
+08:26:39
+ioctl by command (hex)
+08:26:40
+ioctl by command (hex)
+08:26:41
+ioctl by command (hex)
+08:26:42
+ioctl by command (hex)
+08:26:43
+ioctl by command (hex)
+08:26:44
+ioctl by command (hex)
+08:26:45
+ioctl by command (hex)
+08:26:46
+ioctl by command (hex)
+08:26:47
+ioctl by command (hex)
+08:26:48
+ioctl by command (hex)
+08:26:49
+@calls[dax faults, mprotect]: 2
+@calls[dax faults, mmap-rw]: 2
+@calls[extentd client, mprotect]: 2
+@calls[extentd client, mmap-rw]: 3
+@calls[extentd client, cross-cpu-call]: 10
+@us[extentd client, mprotect]: 15
+@us[extentd client, cross-cpu-call]: 17
+@us[dax faults, mmap-rw]: 26
+@us[dax faults, mprotect]: 34
+@us[extentd client, mmap-rw]: 34
+ioctl by command (hex)
+08:26:50
+@calls[extentd client, kvm-flush]: 1
+@calls[extentd client, mmap-none]: 1
+@calls[dax faults, mprotect]: 1
+@calls[extentd client, mmap-ro]: 1
+@calls[dax faults, cross-cpu-call]: 2
+@calls[extentd client, mprotect]: 2
+@calls[extentd client, cross-cpu-call]: 6
+@us[dax faults, cross-cpu-call]: 9
+@us[extentd client, mprotect]: 14
+@us[dax faults, mprotect]: 16
+@us[extentd client, mmap-ro]: 26
+@us[extentd client, cross-cpu-call]: 37
+@us[extentd client, mmap-none]: 59
+ioctl by command (hex)
+@ioctl_calls[dax faults, 18446744071563160066]: 1
+@ioctl_calls[extentd client, 18446744072637426182]: 1
+@ioctl_calls[extentd client, 18446744072637950464]: 2
+@ioctl_us[dax faults, 18446744071563160066]: 7
+@ioctl_us[extentd client, 18446744072637950464]: 10
+@ioctl_us[extentd client, 18446744072637426182]: 11
+08:26:51
+ioctl by command (hex)
+08:26:52
+@calls[dax faults, mprotect]: 2
+@calls[dax faults, mmap-rw]: 2
+@calls[extentd client, mprotect]: 2
+@calls[extentd client, mmap-rw]: 3
+@calls[extentd client, cross-cpu-call]: 14
+@us[extentd client, mprotect]: 11
+@us[dax faults, mmap-rw]: 22
+@us[extentd client, cross-cpu-call]: 22
+@us[extentd client, mmap-rw]: 25
+@us[dax faults, mprotect]: 26
+ioctl by command (hex)
+08:26:53
+@calls[extentd client, kvm-flush]: 1
+@calls[extentd client, mmap-none]: 1
+@calls[dax faults, mprotect]: 1
+@calls[extentd client, mmap-ro]: 1
+@calls[dax faults, kvm-flush]: 1
+@calls[dax faults, cross-cpu-call]: 2
+@calls[extentd client, mprotect]: 2
+@calls[extentd client, cross-cpu-call]: 5
+@us[dax faults, cross-cpu-call]: 16
+@us[extentd client, mprotect]: 27
+@us[dax faults, mprotect]: 40
+@us[extentd client, cross-cpu-call]: 43
+@us[extentd client, mmap-ro]: 44
+@us[extentd client, mmap-none]: 82
+ioctl by command (hex)
+@ioctl_calls[dax faults, 18446744071563160066]: 1
+@ioctl_calls[extentd client, 18446744072637426182]: 1
+@ioctl_calls[extentd client, 18446744072637950464]: 2
+@ioctl_us[dax faults, 18446744071563160066]: 8
+@ioctl_us[extentd client, 18446744072637426182]: 13
+@ioctl_us[extentd client, 18446744072637950464]: 15
+08:26:54
+ioctl by command (hex)
+08:26:55
+@calls[dax faults, mprotect]: 2
+@calls[dax faults, mmap-rw]: 2
+@calls[extentd client, mprotect]: 2
+@calls[extentd client, mmap-rw]: 3
+@calls[extentd client, cross-cpu-call]: 8
+@us[extentd client, mprotect]: 15
+@us[extentd client, cross-cpu-call]: 16
+@us[dax faults, mprotect]: 22
+@us[dax faults, mmap-rw]: 26
+@us[extentd client, mmap-rw]: 31
+ioctl by command (hex)
+08:26:56
+@calls[dax faults, cross-cpu-call]: 1
+@calls[extentd client, kvm-flush]: 1
+@calls[extentd client, mmap-none]: 1
+@calls[dax faults, mprotect]: 1
+@calls[extentd client, mmap-ro]: 1
+@calls[extentd client, mprotect]: 2
+@calls[extentd client, cross-cpu-call]: 7
+@us[dax faults, cross-cpu-call]: 4
+@us[dax faults, mprotect]: 10
+@us[extentd client, mprotect]: 24
+@us[extentd client, cross-cpu-call]: 35
+@us[extentd client, mmap-ro]: 39
+@us[extentd client, mmap-none]: 71
+ioctl by command (hex)
+@ioctl_calls[dax faults, 18446744071563160066]: 1
+@ioctl_calls[extentd client, 18446744072637426182]: 1
+@ioctl_calls[extentd client, 18446744072637950464]: 2
+@ioctl_us[extentd client, 18446744072637426182]: 11
+@ioctl_us[dax faults, 18446744071563160066]: 13
+@ioctl_us[extentd client, 18446744072637950464]: 13
+08:26:57
+ioctl by command (hex)
+08:26:58
+@calls[dax faults, mprotect]: 2
+@calls[dax faults, mmap-rw]: 2
+@calls[extentd client, mprotect]: 2
+@calls[extentd client, mmap-rw]: 3
+@calls[extentd client, cross-cpu-call]: 12
+@us[dax faults, mprotect]: 17
+@us[dax faults, mmap-rw]: 19
+@us[extentd client, mmap-rw]: 20
+@us[extentd client, cross-cpu-call]: 20
+@us[extentd client, mprotect]: 24
+ioctl by command (hex)
+08:26:59
+@calls[dax faults, cross-cpu-call]: 1
+@calls[extentd client, kvm-flush]: 1
+@calls[extentd client, mmap-none]: 1
+@calls[dax faults, mprotect]: 1
+@calls[extentd client, mmap-ro]: 1
+@calls[extentd client, mprotect]: 2
+@calls[extentd client, cross-cpu-call]: 6
+@us[dax faults, cross-cpu-call]: 5
+@us[extentd client, mprotect]: 14
+@us[dax faults, mprotect]: 16
+@us[extentd client, cross-cpu-call]: 41
+@us[extentd client, mmap-ro]: 46
+@us[extentd client, mmap-none]: 53
+ioctl by command (hex)
+@ioctl_calls[dax faults, 18446744071563160066]: 1
+@ioctl_calls[extentd client, 18446744072637426182]: 1
+@ioctl_calls[extentd client, 18446744072637950464]: 2
+@ioctl_us[extentd client, 18446744072637426182]: 6
+@ioctl_us[dax faults, 18446744071563160066]: 7
+@ioctl_us[extentd client, 18446744072637950464]: 7
+08:27:00
+ioctl by command (hex)
+08:27:01
+@calls[dax faults, mprotect]: 2
+@calls[dax faults, mmap-rw]: 2
+@calls[extentd client, mprotect]: 2
+@calls[extentd client, mmap-rw]: 3
+@calls[extentd client, cross-cpu-call]: 9
+@us[extentd client, cross-cpu-call]: 16
+@us[dax faults, mprotect]: 17
+@us[extentd client, mprotect]: 18
+@us[extentd client, mmap-rw]: 22
+@us[dax faults, mmap-rw]: 23
+ioctl by command (hex)
+08:27:02
+@calls[dax faults, cross-cpu-call]: 1
+@calls[extentd client, kvm-flush]: 1
+@calls[extentd client, mmap-none]: 1
+@calls[dax faults, mprotect]: 1
+@calls[extentd client, mmap-ro]: 1
+@calls[extentd client, mprotect]: 2
+@calls[extentd client, cross-cpu-call]: 6
+@us[dax faults, cross-cpu-call]: 5
+@us[dax faults, mprotect]: 9
+@us[extentd client, mprotect]: 9
+@us[extentd client, cross-cpu-call]: 22
+@us[extentd client, mmap-none]: 30
+@us[extentd client, mmap-ro]: 33
+ioctl by command (hex)
+@ioctl_calls[dax faults, 18446744071563160066]: 1
+@ioctl_calls[extentd client, 18446744072637426182]: 1
+@ioctl_calls[extentd client, 18446744072637950464]: 2
+@ioctl_us[extentd client, 18446744072637426182]: 5
+@ioctl_us[dax faults, 18446744071563160066]: 5
+@ioctl_us[extentd client, 18446744072637950464]: 7
+08:27:03
+ioctl by command (hex)
+08:27:04
+@calls[dax faults, mprotect]: 2
+@calls[dax faults, mmap-rw]: 2
+@calls[extentd client, mprotect]: 2
+@calls[extentd client, mmap-rw]: 4
+@calls[extentd client, cross-cpu-call]: 11
+@us[extentd client, mprotect]: 9
+@us[extentd client, mmap-rw]: 12
+@us[dax faults, mprotect]: 14
+@us[extentd client, cross-cpu-call]: 17
+@us[dax faults, mmap-rw]: 22
+ioctl by command (hex)
+08:27:05
+@calls[extentd client, kvm-flush]: 1
+@calls[extentd client, mmap-none]: 1
+@calls[dax faults, mprotect]: 1
+@calls[extentd client, mmap-ro]: 1
+@calls[dax faults, cross-cpu-call]: 2
+@calls[extentd client, mprotect]: 2
+@calls[extentd client, cross-cpu-call]: 5
+@us[dax faults, cross-cpu-call]: 8
+@us[dax faults, mprotect]: 16
+@us[extentd client, mprotect]: 22
+@us[extentd client, mmap-ro]: 34
+@us[extentd client, cross-cpu-call]: 50
+@us[extentd client, mmap-none]: 94
+ioctl by command (hex)
+@ioctl_calls[dax faults, 18446744071563160066]: 1
+@ioctl_calls[extentd client, 18446744072637426182]: 1
+@ioctl_calls[extentd client, 18446744072637950464]: 2
+@ioctl_us[extentd client, 18446744072637426182]: 5
+@ioctl_us[dax faults, 18446744071563160066]: 7
+@ioctl_us[extentd client, 18446744072637950464]: 19
+08:27:06
+@calls[extentd client, mprotect]: 2
+@calls[extentd client, mmap-rw]: 3
+@us[extentd client, mmap-rw]: 17
+@us[extentd client, mprotect]: 21
+ioctl by command (hex)
+08:27:07
+@calls[dax faults, mprotect]: 2
+@calls[dax faults, mmap-rw]: 2
+@calls[extentd client, cross-cpu-call]: 11
+@us[dax faults, mprotect]: 17
+@us[extentd client, cross-cpu-call]: 20
+@us[dax faults, mmap-rw]: 25
+ioctl by command (hex)
+08:27:08
+@calls[dax faults, cross-cpu-call]: 1
+@calls[extentd client, kvm-flush]: 1
+@calls[extentd client, mmap-none]: 1
+@calls[dax faults, mprotect]: 1
+@calls[extentd client, mmap-ro]: 1
+@calls[extentd client, mprotect]: 2
+@calls[extentd client, cross-cpu-call]: 5
+@us[dax faults, cross-cpu-call]: 6
+@us[dax faults, mprotect]: 16
+@us[extentd client, mprotect]: 26
+@us[extentd client, mmap-ro]: 57
+@us[extentd client, cross-cpu-call]: 57
+@us[extentd client, mmap-none]: 116
+ioctl by command (hex)
+@ioctl_calls[dax faults, 18446744071563160066]: 1
+@ioctl_calls[extentd client, 18446744072637426182]: 1
+@ioctl_calls[extentd client, 18446744072637950464]: 2
+@ioctl_us[dax faults, 18446744071563160066]: 7
+@ioctl_us[extentd client, 18446744072637426182]: 15
+@ioctl_us[extentd client, 18446744072637950464]: 22
+08:27:09
+@calls[dax faults, mprotect]: 2
+@calls[dax faults, mmap-rw]: 2
+@calls[extentd client, mprotect]: 2
+@calls[extentd client, mmap-rw]: 3
+@us[extentd client, mprotect]: 12
+@us[dax faults, mmap-rw]: 18
+@us[dax faults, mprotect]: 24
+@us[extentd client, mmap-rw]: 32
+ioctl by command (hex)
+08:27:10
+@calls[extentd client, cross-cpu-call]: 11
+@us[extentd client, cross-cpu-call]: 22
+ioctl by command (hex)
+08:27:11
+@calls[extentd client, kvm-flush]: 1
+@calls[extentd client, mmap-none]: 1
+@calls[dax faults, mprotect]: 1
+@calls[extentd client, mmap-ro]: 1
+@calls[dax faults, cross-cpu-call]: 2
+@calls[extentd client, mprotect]: 2
+@calls[extentd client, cross-cpu-call]: 7
+@us[dax faults, cross-cpu-call]: 10
+@us[dax faults, mprotect]: 16
+@us[extentd client, mprotect]: 17
+@us[extentd client, mmap-ro]: 20
+@us[extentd client, cross-cpu-call]: 25
+@us[extentd client, mmap-none]: 53
+ioctl by command (hex)
+@ioctl_calls[dax faults, 18446744071563160066]: 1
+@ioctl_calls[extentd client, 18446744072637426182]: 1
+@ioctl_calls[extentd client, 18446744072637950464]: 2
+@ioctl_us[extentd client, 18446744072637426182]: 5
+@ioctl_us[dax faults, 18446744071563160066]: 6
+@ioctl_us[extentd client, 18446744072637950464]: 8
+08:27:12
+@calls[dax faults, mprotect]: 2
+@calls[dax faults, mmap-rw]: 2
+@calls[extentd client, mprotect]: 2
+@calls[extentd client, mmap-rw]: 3
+@calls[extentd client, cross-cpu-call]: 9
+@us[extentd client, cross-cpu-call]: 16
+@us[extentd client, mprotect]: 18
+@us[extentd client, mmap-rw]: 22
+@us[dax faults, mmap-rw]: 23
+@us[dax faults, mprotect]: 25
+ioctl by command (hex)
+08:27:13
+ioctl by command (hex)
+08:27:14
+@calls[dax faults, cross-cpu-call]: 1
+@calls[extentd client, kvm-flush]: 1
+@calls[extentd client, mmap-none]: 1
+@calls[dax faults, mprotect]: 1
+@calls[extentd client, mmap-ro]: 1
+@calls[extentd client, mprotect]: 2
+@calls[extentd client, cross-cpu-call]: 6
+@us[dax faults, cross-cpu-call]: 4
+@us[dax faults, mprotect]: 14
+@us[extentd client, mprotect]: 22
+@us[extentd client, mmap-ro]: 40
+@us[extentd client, cross-cpu-call]: 47
+@us[extentd client, mmap-none]: 73
+ioctl by command (hex)
+@ioctl_calls[dax faults, 18446744071563160066]: 1
+@ioctl_calls[extentd client, 18446744072637426182]: 1
+@ioctl_calls[extentd client, 18446744072637950464]: 2
+@ioctl_us[dax faults, 18446744071563160066]: 6
+@ioctl_us[extentd client, 18446744072637426182]: 10
+@ioctl_us[extentd client, 18446744072637950464]: 10
+08:27:15
+@calls[dax faults, mprotect]: 2
+@calls[dax faults, mmap-rw]: 2
+@calls[extentd client, mprotect]: 2
+@calls[extentd client, mmap-rw]: 3
+@calls[extentd client, cross-cpu-call]: 10
+@us[extentd client, mprotect]: 12
+@us[dax faults, mprotect]: 14
+@us[extentd client, cross-cpu-call]: 17
+@us[dax faults, mmap-rw]: 19
+@us[extentd client, mmap-rw]: 25
+ioctl by command (hex)
+08:27:16
+ioctl by command (hex)
+08:27:17
+@calls[dax faults, cross-cpu-call]: 1
+@calls[extentd client, kvm-flush]: 1
+@calls[extentd client, mmap-none]: 1
+@calls[dax faults, mprotect]: 1
+@calls[extentd client, mmap-ro]: 1
+@calls[extentd client, mprotect]: 2
+@calls[extentd client, cross-cpu-call]: 7
+@us[dax faults, cross-cpu-call]: 5
+@us[dax faults, mprotect]: 10
+@us[extentd client, mprotect]: 14
+@us[extentd client, mmap-ro]: 36
+@us[extentd client, cross-cpu-call]: 37
+@us[extentd client, mmap-none]: 62
+ioctl by command (hex)
+@ioctl_calls[dax faults, 18446744071563160066]: 1
+@ioctl_calls[extentd client, 18446744072637426182]: 1
+@ioctl_calls[extentd client, 18446744072637950464]: 2
+@ioctl_us[dax faults, 18446744071563160066]: 4
+@ioctl_us[extentd client, 18446744072637426182]: 10
+@ioctl_us[extentd client, 18446744072637950464]: 10
+08:27:18
+@calls[dax faults, mprotect]: 2
+@calls[dax faults, mmap-rw]: 2
+@calls[extentd client, mprotect]: 2
+@calls[extentd client, mmap-rw]: 3
+@calls[extentd client, cross-cpu-call]: 11
+@us[dax faults, mprotect]: 16
+@us[extentd client, mprotect]: 16
+@us[dax faults, mmap-rw]: 18
+@us[extentd client, cross-cpu-call]: 19
+@us[extentd client, mmap-rw]: 38
+ioctl by command (hex)
+08:27:19
+@calls[dax faults, cross-cpu-call]: 1
+@calls[extentd client, kvm-flush]: 1
+@calls[extentd client, mmap-none]: 1
+@calls[dax faults, mprotect]: 1
+@calls[extentd client, mmap-ro]: 1
+@calls[extentd client, mprotect]: 2
+@calls[extentd client, cross-cpu-call]: 6
+@us[dax faults, cross-cpu-call]: 7
+@us[dax faults, mprotect]: 16
+@us[extentd client, mprotect]: 16
+@us[extentd client, mmap-ro]: 24
+@us[extentd client, cross-cpu-call]: 55
+@us[extentd client, mmap-none]: 73
+ioctl by command (hex)
+@ioctl_calls[dax faults, 18446744071563160066]: 1
+@ioctl_calls[extentd client, 18446744072637426182]: 1
+@ioctl_calls[extentd client, 18446744072637950464]: 2
+@ioctl_us[extentd client, 18446744072637426182]: 6
+@ioctl_us[dax faults, 18446744071563160066]: 7
+@ioctl_us[extentd client, 18446744072637950464]: 9
+08:27:20
+ioctl by command (hex)
+08:27:21
+@calls[dax faults, mprotect]: 2
+@calls[dax faults, mmap-rw]: 2
+@calls[extentd client, mprotect]: 2
+@calls[extentd client, mmap-rw]: 3
+@calls[extentd client, cross-cpu-call]: 7
+@us[extentd client, cross-cpu-call]: 14
+@us[extentd client, mprotect]: 18
+@us[dax faults, mprotect]: 21
+@us[dax faults, mmap-rw]: 23
+@us[extentd client, mmap-rw]: 31
+ioctl by command (hex)
+08:27:22
+@calls[dax faults, cross-cpu-call]: 1
+@calls[extentd client, kvm-flush]: 1
+@calls[extentd client, mmap-none]: 1
+@calls[dax faults, mprotect]: 1
+@calls[extentd client, mmap-ro]: 1
+@calls[extentd client, mprotect]: 2
+@calls[extentd client, cross-cpu-call]: 8
+@us[dax faults, cross-cpu-call]: 6
+@us[dax faults, mprotect]: 7
+@us[extentd client, mprotect]: 7
+@us[extentd client, mmap-ro]: 21
+@us[extentd client, cross-cpu-call]: 49
+@us[extentd client, mmap-none]: 51
+ioctl by command (hex)
+@ioctl_calls[dax faults, 18446744071563160066]: 1
+@ioctl_calls[extentd client, 18446744072637426182]: 1
+@ioctl_calls[extentd client, 18446744072637950464]: 2
+@ioctl_us[dax faults, 18446744071563160066]: 3
+@ioctl_us[extentd client, 18446744072637950464]: 6
+@ioctl_us[extentd client, 18446744072637426182]: 7
+08:27:23
+ioctl by command (hex)
+08:27:24
+@calls[dax faults, mprotect]: 2
+@calls[dax faults, mmap-rw]: 2
+@calls[extentd client, mprotect]: 2
+@calls[extentd client, mmap-rw]: 3
+@calls[extentd client, cross-cpu-call]: 11
+@us[extentd client, mprotect]: 12
+@us[dax faults, mmap-rw]: 20
+@us[extentd client, cross-cpu-call]: 20
+@us[dax faults, mprotect]: 22
+@us[extentd client, mmap-rw]: 23
+ioctl by command (hex)
+08:27:25
+@calls[extentd client, kvm-flush]: 1
+@calls[extentd client, mmap-none]: 1
+@calls[dax faults, mprotect]: 1
+@calls[extentd client, mmap-ro]: 1
+@calls[dax faults, cross-cpu-call]: 2
+@calls[extentd client, mprotect]: 2
+@calls[extentd client, cross-cpu-call]: 6
+@us[dax faults, cross-cpu-call]: 8
+@us[dax faults, mprotect]: 17
+@us[extentd client, mprotect]: 21
+@us[extentd client, mmap-ro]: 40
+@us[extentd client, cross-cpu-call]: 42
+@us[extentd client, mmap-none]: 64
+ioctl by command (hex)
+@ioctl_calls[dax faults, 18446744071563160066]: 1
+@ioctl_calls[extentd client, 18446744072637426182]: 1
+@ioctl_calls[extentd client, 18446744072637950464]: 2
+@ioctl_us[dax faults, 18446744071563160066]: 7
+@ioctl_us[extentd client, 18446744072637950464]: 11
+@ioctl_us[extentd client, 18446744072637426182]: 20
+08:27:26
+ioctl by command (hex)
+08:27:27
+@calls[dax faults, mprotect]: 2
+@calls[dax faults, mmap-rw]: 2
+@calls[extentd client, mprotect]: 2
+@calls[extentd client, mmap-rw]: 3
+@calls[extentd client, cross-cpu-call]: 15
+@us[dax faults, mmap-rw]: 17
+@us[extentd client, cross-cpu-call]: 21
+@us[extentd client, mprotect]: 23
+@us[extentd client, mmap-rw]: 24
+@us[dax faults, mprotect]: 25
+ioctl by command (hex)
+08:27:28
+@calls[extentd client, kvm-flush]: 1
+@calls[extentd client, mmap-none]: 1
+@calls[dax faults, mprotect]: 1
+@calls[extentd client, mmap-ro]: 1
+@calls[dax faults, kvm-flush]: 1
+@calls[dax faults, cross-cpu-call]: 2
+@calls[extentd client, mprotect]: 2
+@calls[extentd client, cross-cpu-call]: 7
+@us[dax faults, cross-cpu-call]: 13
+@us[extentd client, cross-cpu-call]: 20
+@us[extentd client, mprotect]: 22
+@us[dax faults, mprotect]: 32
+@us[extentd client, mmap-none]: 36
+@us[extentd client, mmap-ro]: 43
+ioctl by command (hex)
+@ioctl_calls[dax faults, 18446744071563160066]: 1
+@ioctl_calls[extentd client, 18446744072637426182]: 1
+@ioctl_calls[extentd client, 18446744072637950464]: 2
+@ioctl_us[dax faults, 18446744071563160066]: 8
+@ioctl_us[extentd client, 18446744072637950464]: 13
+@ioctl_us[extentd client, 18446744072637426182]: 16
+08:27:29
+ioctl by command (hex)
+08:27:30
+@calls[dax faults, mprotect]: 2
+@calls[dax faults, mmap-rw]: 2
+@calls[extentd client, mprotect]: 2
+@calls[extentd client, mmap-rw]: 3
+@calls[extentd client, cross-cpu-call]: 7
+@us[dax faults, mprotect]: 14
+@us[extentd client, cross-cpu-call]: 14
+@us[extentd client, mprotect]: 15
+@us[extentd client, mmap-rw]: 22
+@us[dax faults, mmap-rw]: 28
+ioctl by command (hex)
+08:27:31
+@calls[dax faults, cross-cpu-call]: 1
+@calls[extentd client, kvm-flush]: 1
+@calls[extentd client, mmap-none]: 1
+@calls[dax faults, mprotect]: 1
+@calls[extentd client, mmap-ro]: 1
+@calls[extentd client, mprotect]: 2
+@calls[extentd client, cross-cpu-call]: 7
+@us[dax faults, cross-cpu-call]: 5
+@us[dax faults, mprotect]: 8
+@us[extentd client, mprotect]: 12
+@us[extentd client, mmap-ro]: 22
+@us[extentd client, cross-cpu-call]: 22
+@us[extentd client, mmap-none]: 30
+ioctl by command (hex)
+@ioctl_calls[dax faults, 18446744071563160066]: 1
+@ioctl_calls[extentd client, 18446744072637426182]: 1
+@ioctl_calls[extentd client, 18446744072637950464]: 2
+@ioctl_us[dax faults, 18446744071563160066]: 4
+@ioctl_us[extentd client, 18446744072637426182]: 7
+@ioctl_us[extentd client, 18446744072637950464]: 7
+08:27:32
+ioctl by command (hex)
+08:27:33
+@calls[dax faults, mprotect]: 2
+@calls[dax faults, mmap-rw]: 2
+@calls[extentd client, mprotect]: 2
+@calls[extentd client, mmap-rw]: 3
+@calls[extentd client, cross-cpu-call]: 9
+@us[dax faults, mprotect]: 13
+@us[extentd client, mprotect]: 13
+@us[extentd client, cross-cpu-call]: 18
+@us[dax faults, mmap-rw]: 23
+@us[extentd client, mmap-rw]: 28
+ioctl by command (hex)
+08:27:34
+@calls[dax faults, cross-cpu-call]: 1
+@calls[extentd client, kvm-flush]: 1
+@calls[extentd client, mmap-none]: 1
+@calls[dax faults, mprotect]: 1
+@calls[extentd client, mmap-ro]: 1
+@calls[extentd client, mprotect]: 2
+@calls[extentd client, cross-cpu-call]: 7
+@us[dax faults, cross-cpu-call]: 7
+@us[dax faults, mprotect]: 16
+@us[extentd client, mprotect]: 19
+@us[extentd client, mmap-ro]: 43
+@us[extentd client, cross-cpu-call]: 60
+@us[extentd client, mmap-none]: 64
+ioctl by command (hex)
+@ioctl_calls[dax faults, 18446744071563160066]: 1
+@ioctl_calls[extentd client, 18446744072637426182]: 1
+@ioctl_calls[extentd client, 18446744072637950464]: 2
+@ioctl_us[dax faults, 18446744071563160066]: 7
+@ioctl_us[extentd client, 18446744072637950464]: 11
+@ioctl_us[extentd client, 18446744072637426182]: 43
+08:27:35
+@calls[dax faults, mprotect]: 2
+@calls[dax faults, mmap-rw]: 2
+@calls[extentd client, mprotect]: 2
+@calls[extentd client, mmap-rw]: 3
+@us[extentd client, mprotect]: 13
+@us[dax faults, mmap-rw]: 23
+@us[extentd client, mmap-rw]: 34
+@us[dax faults, mprotect]: 35
+ioctl by command (hex)
+08:27:36
+@calls[extentd client, cross-cpu-call]: 14
+@us[extentd client, cross-cpu-call]: 21
+ioctl by command (hex)
+08:27:37
+@calls[dax faults, cross-cpu-call]: 1
+@calls[extentd client, kvm-flush]: 1
+@calls[extentd client, mmap-none]: 1
+@calls[dax faults, mprotect]: 1
+@calls[extentd client, mmap-ro]: 1
+@calls[extentd client, mprotect]: 2
+@calls[extentd client, cross-cpu-call]: 8
+@us[dax faults, cross-cpu-call]: 5
+@us[dax faults, mprotect]: 8
+@us[extentd client, mprotect]: 21
+@us[extentd client, cross-cpu-call]: 32
+@us[extentd client, mmap-ro]: 49
+@us[extentd client, mmap-none]: 53
+ioctl by command (hex)
+@ioctl_calls[dax faults, 18446744071563160066]: 1
+@ioctl_calls[extentd client, 18446744072637426182]: 1
+@ioctl_calls[extentd client, 18446744072637950464]: 2
+@ioctl_us[dax faults, 18446744071563160066]: 4
+@ioctl_us[extentd client, 18446744072637426182]: 11
+@ioctl_us[extentd client, 18446744072637950464]: 15
+08:27:38
+@calls[dax faults, mprotect]: 2
+@calls[dax faults, mmap-rw]: 2
+@calls[extentd client, mprotect]: 2
+@calls[extentd client, mmap-rw]: 3
+@us[extentd client, mprotect]: 13
+@us[dax faults, mprotect]: 17
+@us[dax faults, mmap-rw]: 19
+@us[extentd client, mmap-rw]: 29
+ioctl by command (hex)
+08:27:39
+@calls[extentd client, cross-cpu-call]: 12
+@us[extentd client, cross-cpu-call]: 22
+ioctl by command (hex)
+08:27:40
+@calls[dax faults, cross-cpu-call]: 1
+@calls[extentd client, kvm-flush]: 1
+@calls[extentd client, mmap-none]: 1
+@calls[dax faults, mprotect]: 1
+@calls[extentd client, mmap-ro]: 1
+@calls[extentd client, mprotect]: 2
+@calls[extentd client, cross-cpu-call]: 6
+@us[dax faults, cross-cpu-call]: 4
+@us[dax faults, mprotect]: 8
+@us[extentd client, mprotect]: 25
+@us[extentd client, cross-cpu-call]: 44
+@us[extentd client, mmap-ro]: 57
+@us[extentd client, mmap-none]: 71
+ioctl by command (hex)
+@ioctl_calls[dax faults, 18446744071563160066]: 1
+@ioctl_calls[extentd client, 18446744072637426182]: 1
+@ioctl_calls[extentd client, 18446744072637950464]: 2
+@ioctl_us[dax faults, 18446744071563160066]: 5
+@ioctl_us[extentd client, 18446744072637950464]: 16
+@ioctl_us[extentd client, 18446744072637426182]: 18
+08:27:41
+@calls[dax faults, mprotect]: 2
+@calls[dax faults, mmap-rw]: 2
+@calls[extentd client, mprotect]: 2
+@calls[extentd client, mmap-rw]: 3
+@us[extentd client, mprotect]: 13
+@us[dax faults, mprotect]: 15
+@us[dax faults, mmap-rw]: 17
+@us[extentd client, mmap-rw]: 25
+ioctl by command (hex)
+08:27:42
+@calls[extentd client, cross-cpu-call]: 11
+@us[extentd client, cross-cpu-call]: 22
+ioctl by command (hex)
+08:27:43
+@calls[dax faults, cross-cpu-call]: 1
+@calls[extentd client, kvm-flush]: 1
+@calls[extentd client, mmap-none]: 1
+@calls[dax faults, mprotect]: 1
+@calls[extentd client, mmap-ro]: 1
+@calls[extentd client, mprotect]: 2
+@calls[extentd client, cross-cpu-call]: 6
+@us[dax faults, cross-cpu-call]: 6
+@us[dax faults, mprotect]: 8
+@us[extentd client, mprotect]: 21
+@us[extentd client, cross-cpu-call]: 27
+@us[extentd client, mmap-ro]: 40
+@us[extentd client, mmap-none]: 49
+ioctl by command (hex)
+@ioctl_calls[dax faults, 18446744071563160066]: 1
+@ioctl_calls[extentd client, 18446744072637426182]: 1
+@ioctl_calls[extentd client, 18446744072637950464]: 2
+@ioctl_us[dax faults, 18446744071563160066]: 5
+@ioctl_us[extentd client, 18446744072637426182]: 11
+@ioctl_us[extentd client, 18446744072637950464]: 12
+08:27:44
+@calls[dax faults, mprotect]: 2
+@calls[dax faults, mmap-rw]: 2
+@calls[extentd client, mprotect]: 2
+@calls[extentd client, mmap-rw]: 3
+@us[extentd client, mprotect]: 11
+@us[dax faults, mprotect]: 18
+@us[extentd client, mmap-rw]: 23
+@us[dax faults, mmap-rw]: 26
+ioctl by command (hex)
+08:27:45
+@calls[extentd client, cross-cpu-call]: 9
+@us[extentd client, cross-cpu-call]: 16
+ioctl by command (hex)
+08:27:46
+@calls[dax faults, cross-cpu-call]: 1
+@calls[extentd client, kvm-flush]: 1
+@calls[extentd client, mmap-none]: 1
+@calls[dax faults, mprotect]: 1
+@calls[extentd client, mmap-ro]: 1
+@calls[extentd client, mprotect]: 2
+@calls[extentd client, cross-cpu-call]: 7
+@us[dax faults, cross-cpu-call]: 6
+@us[dax faults, mprotect]: 16
+@us[extentd client, mprotect]: 24
+@us[extentd client, mmap-ro]: 39
+@us[extentd client, cross-cpu-call]: 39
+@us[extentd client, mmap-none]: 65
+ioctl by command (hex)
+@ioctl_calls[dax faults, 18446744071563160066]: 1
+@ioctl_calls[extentd client, 18446744072637426182]: 1
+@ioctl_calls[extentd client, 18446744072637950464]: 2
+@ioctl_us[dax faults, 18446744071563160066]: 7
+@ioctl_us[extentd client, 18446744072637426182]: 11
+@ioctl_us[extentd client, 18446744072637950464]: 13
+08:27:47
+ioctl by command (hex)
+08:27:48
+ioctl by command (hex)
+08:27:49
+@calls[extentd client, mprotect]: 14
+@calls[extentd client, mmap-rw]: 21
+@us[extentd client, mprotect]: 50
+@us[extentd client, mmap-rw]: 67
+ioctl by command (hex)
+08:27:50
+@calls[extentd client, mprotect]: 2
+@calls[extentd client, mmap-rw]: 3
+@calls[extentd client, cross-cpu-call]: 782
+@us[extentd client, mmap-rw]: 10
+@us[extentd client, mprotect]: 15
+@us[extentd client, cross-cpu-call]: 2598
+ioctl by command (hex)
+08:27:51
+@calls[extentd client, cross-cpu-call]: 1329
+@us[extentd client, cross-cpu-call]: 5363
+ioctl by command (hex)
+08:27:52
+@calls[extentd client, mmap-rw]: 4
+@calls[extentd client, cross-cpu-call]: 1399
+@us[extentd client, mmap-rw]: 25
+@us[extentd client, cross-cpu-call]: 6148
+ioctl by command (hex)
+08:27:53
+@calls[extentd client, cross-cpu-call]: 1197
+@us[extentd client, cross-cpu-call]: 6098
+ioctl by command (hex)
+08:27:54
+@calls[extentd client, mmap-rw]: 1
+@calls[extentd client, cross-cpu-call]: 1271
+@us[extentd client, mmap-rw]: 8
+@us[extentd client, cross-cpu-call]: 5642
+ioctl by command (hex)
+08:27:55
+@calls[extentd client, cross-cpu-call]: 1286
+@us[extentd client, cross-cpu-call]: 6169
+ioctl by command (hex)
+08:27:56
+@calls[extentd client, mmap-rw]: 3
+@calls[extentd client, cross-cpu-call]: 1245
+@us[extentd client, mmap-rw]: 21
+@us[extentd client, cross-cpu-call]: 5434
+ioctl by command (hex)
+08:27:57
+ioctl by command (hex)
+08:27:58
+ioctl by command (hex)
+08:27:59
+@calls[extentd client, mmap-rw]: 5
+@calls[extentd client, cross-cpu-call]: 527
+@us[extentd client, mmap-rw]: 26
+@us[extentd client, cross-cpu-call]: 1127
+ioctl by command (hex)
+08:28:00
+@calls[extentd client, cross-cpu-call]: 28
+@us[extentd client, cross-cpu-call]: 88
+ioctl by command (hex)
+08:28:01
+ioctl by command (hex)
+08:28:02
+@calls[extentd client, mmap-rw]: 61
+@calls[extentd client, cross-cpu-call]: 63
+@us[extentd client, cross-cpu-call]: 385
+@us[extentd client, mmap-rw]: 676
+ioctl by command (hex)
+08:28:03
+@calls[extentd client, mmap-rw]: 228
+@calls[extentd client, cross-cpu-call]: 254
+@us[extentd client, cross-cpu-call]: 1074
+@us[extentd client, mmap-rw]: 2585
+ioctl by command (hex)
+08:28:04
+@calls[extentd client, mmap-rw]: 152
+@calls[extentd client, cross-cpu-call]: 166
+@us[extentd client, cross-cpu-call]: 763
+@us[extentd client, mmap-rw]: 2566
+ioctl by command (hex)
+08:28:05
+@calls[extentd client, mmap-rw]: 114
+@calls[extentd client, cross-cpu-call]: 141
+@us[extentd client, cross-cpu-call]: 613
+@us[extentd client, mmap-rw]: 2099
+ioctl by command (hex)
+08:28:06
+@calls[extentd client, mmap-rw]: 131
+@calls[extentd client, cross-cpu-call]: 149
+@us[extentd client, cross-cpu-call]: 680
+@us[extentd client, mmap-rw]: 2320
+ioctl by command (hex)
+08:28:07
+@calls[extentd client, mmap-rw]: 82
+@calls[extentd client, cross-cpu-call]: 86
+@us[extentd client, cross-cpu-call]: 389
+@us[extentd client, mmap-rw]: 1453
+ioctl by command (hex)
+08:28:08
+@calls[extentd client, mprotect]: 2
+@calls[extentd client, mmap-rw]: 115
+@calls[extentd client, cross-cpu-call]: 165
+@us[extentd client, mprotect]: 10
+@us[extentd client, cross-cpu-call]: 1031
+@us[extentd client, mmap-rw]: 1976
+ioctl by command (hex)
+@ioctl_calls[extentd client, 1075883638]: 3
+@ioctl_us[extentd client, 1075883638]: 98
+08:28:09
+@calls[extentd client, mmap-rw]: 255
+@calls[extentd client, cross-cpu-call]: 412
+@us[extentd client, cross-cpu-call]: 2231
+@us[extentd client, mmap-rw]: 4738
+ioctl by command (hex)
+08:28:10
+@calls[extentd client, mmap-rw]: 251
+@calls[extentd client, cross-cpu-call]: 623
+@us[extentd client, cross-cpu-call]: 3462
+@us[extentd client, mmap-rw]: 3978
+ioctl by command (hex)
+08:28:11
+@calls[extentd client, mmap-rw]: 262
+@calls[extentd client, cross-cpu-call]: 579
+@us[extentd client, cross-cpu-call]: 3168
+@us[extentd client, mmap-rw]: 4216
+ioctl by command (hex)
+08:28:12
+@calls[extentd client, mmap-rw]: 237
+@calls[extentd client, cross-cpu-call]: 652
+@us[extentd client, cross-cpu-call]: 3440
+@us[extentd client, mmap-rw]: 3781
+ioctl by command (hex)
+08:28:13
+@calls[extentd client, mmap-rw]: 186
+@calls[extentd client, cross-cpu-call]: 197
+@us[extentd client, cross-cpu-call]: 1024
+@us[extentd client, mmap-rw]: 3076
+ioctl by command (hex)
+08:28:14
+@calls[extentd client, mmap-rw]: 189
+@calls[extentd client, cross-cpu-call]: 267
+@us[extentd client, cross-cpu-call]: 1131
+@us[extentd client, mmap-rw]: 3115
+ioctl by command (hex)
+08:28:15
+@calls[extentd client, mmap-rw]: 47
+@calls[extentd client, cross-cpu-call]: 76
+@us[extentd client, cross-cpu-call]: 324
+@us[extentd client, mmap-rw]: 867
+ioctl by command (hex)
+08:28:16
+ioctl by command (hex)
+08:28:17
+@calls[extentd client, cross-cpu-call]: 23
+@us[extentd client, cross-cpu-call]: 67
+ioctl by command (hex)
+@ioctl_calls[extentd client, 1075883638]: 3
+@ioctl_us[extentd client, 1075883638]: 52
+08:28:18
+@calls[extentd client, cross-cpu-call]: 4
+@calls[extentd client, mprotect]: 4
+@calls[extentd client, mmap-rw]: 6
+@us[extentd client, cross-cpu-call]: 42
+@us[extentd client, mprotect]: 77
+@us[extentd client, mmap-rw]: 106
+ioctl by command (hex)
+@ioctl_calls[extentd client, 1075883638]: 1
+@ioctl_us[extentd client, 1075883638]: 28
+08:28:19
+@calls[extentd client, mmap-rw]: 5
+@calls[extentd client, cross-cpu-call]: 660
+@us[extentd client, mmap-rw]: 75
+@us[extentd client, cross-cpu-call]: 2437
+ioctl by command (hex)
+08:28:20
+@calls[extentd client, mmap-rw]: 303
+@calls[extentd client, cross-cpu-call]: 796
+@us[extentd client, mmap-rw]: 4328
+@us[extentd client, cross-cpu-call]: 5681
+ioctl by command (hex)
+08:28:21
+@calls[extentd client, mmap-rw]: 482
+@calls[extentd client, cross-cpu-call]: 986
+@us[extentd client, cross-cpu-call]: 5963
+@us[extentd client, mmap-rw]: 6185
+ioctl by command (hex)
+08:28:22
+@calls[extentd client, mmap-rw]: 335
+@calls[extentd client, cross-cpu-call]: 508
+@us[extentd client, cross-cpu-call]: 2886
+@us[extentd client, mmap-rw]: 5142
+ioctl by command (hex)
+08:28:23
+@calls[extentd client, mmap-rw]: 669
+@calls[extentd client, cross-cpu-call]: 833
+@us[extentd client, cross-cpu-call]: 7002
+@us[extentd client, mmap-rw]: 9248
+ioctl by command (hex)
+08:28:24
+@calls[extentd client, mmap-rw]: 633
+@calls[extentd client, cross-cpu-call]: 1064
+@us[extentd client, cross-cpu-call]: 5427
+@us[extentd client, mmap-rw]: 9038
+ioctl by command (hex)
+08:28:25
+@calls[extentd client, mmap-rw]: 494
+@calls[extentd client, cross-cpu-call]: 510
+@us[extentd client, cross-cpu-call]: 3381
+@us[extentd client, mmap-rw]: 8261
+ioctl by command (hex)
+08:28:26
+@calls[extentd client, mmap-rw]: 614
+@calls[extentd client, cross-cpu-call]: 642
+@us[extentd client, cross-cpu-call]: 3780
+@us[extentd client, mmap-rw]: 9285
+ioctl by command (hex)
+08:28:27
+@calls[extentd client, mmap-rw]: 554
+@calls[extentd client, cross-cpu-call]: 613
+@us[extentd client, cross-cpu-call]: 3349
+@us[extentd client, mmap-rw]: 7886
+ioctl by command (hex)
+08:28:28
+@calls[extentd client, mmap-rw]: 343
+@calls[extentd client, cross-cpu-call]: 366
+@us[extentd client, cross-cpu-call]: 2148
+@us[extentd client, mmap-rw]: 5351
+ioctl by command (hex)
+08:28:29
+@calls[extentd client, mmap-rw]: 84
+@calls[extentd client, cross-cpu-call]: 260
+@us[extentd client, cross-cpu-call]: 891
+@us[extentd client, mmap-rw]: 1610
+ioctl by command (hex)
+08:28:30
+@calls[extentd client, mmap-rw]: 94
+@calls[extentd client, cross-cpu-call]: 182
+@us[extentd client, cross-cpu-call]: 625
+@us[extentd client, mmap-rw]: 1385
+ioctl by command (hex)
+@ioctl_calls[extentd client, 1075883638]: 3
+@ioctl_us[extentd client, 1075883638]: 63
+08:28:31
+@calls[extentd client, mprotect]: 4
+@calls[extentd client, mmap-rw]: 6
+@calls[extentd client, cross-cpu-call]: 20
+@us[extentd client, mprotect]: 12
+@us[extentd client, mmap-rw]: 27
+@us[extentd client, cross-cpu-call]: 57
+ioctl by command (hex)
+@ioctl_calls[extentd client, 1075883638]: 4
+@ioctl_us[extentd client, 1075883638]: 111
+08:28:32
+@calls[extentd client, mprotect]: 6
+@calls[extentd client, mmap-rw]: 12
+@calls[extentd client, cross-cpu-call]: 331
+@us[extentd client, mprotect]: 25
+@us[extentd client, mmap-rw]: 92
+@us[extentd client, cross-cpu-call]: 1564
+ioctl by command (hex)
+@ioctl_calls[extentd client, 1075883638]: 6
+@ioctl_us[extentd client, 1075883638]: 113
+08:28:33
+@calls[extentd client, mmap-rw]: 139
+@calls[extentd client, cross-cpu-call]: 1173
+@us[extentd client, mmap-rw]: 1719
+@us[extentd client, cross-cpu-call]: 5312
+ioctl by command (hex)
+08:28:34
+@calls[extentd client, mmap-rw]: 149
+@calls[extentd client, cross-cpu-call]: 1113
+@us[extentd client, mmap-rw]: 1779
+@us[extentd client, cross-cpu-call]: 5616
+ioctl by command (hex)
+08:28:35
+@calls[extentd client, mmap-rw]: 125
+@calls[extentd client, cross-cpu-call]: 1049
+@us[extentd client, mmap-rw]: 1583
+@us[extentd client, cross-cpu-call]: 5653
+ioctl by command (hex)
+08:28:36
+@calls[extentd client, mmap-rw]: 20
+@calls[extentd client, cross-cpu-call]: 321
+@us[extentd client, mmap-rw]: 232
+@us[extentd client, cross-cpu-call]: 1197
+ioctl by command (hex)
+08:28:37
+ioctl by command (hex)
+08:28:38
+ioctl by command (hex)
+08:28:39
+@calls[extentd client, mmap-rw]: 120
+@calls[extentd client, cross-cpu-call]: 1143
+@us[extentd client, mmap-rw]: 1354
+@us[extentd client, cross-cpu-call]: 5277
+ioctl by command (hex)
+08:28:40
+@calls[extentd client, mmap-rw]: 102
+@calls[extentd client, cross-cpu-call]: 888
+@us[extentd client, mmap-rw]: 1622
+@us[extentd client, cross-cpu-call]: 4308
+ioctl by command (hex)
+08:28:41
+@calls[extentd client, mmap-rw]: 199
+@calls[extentd client, cross-cpu-call]: 219
+@us[extentd client, cross-cpu-call]: 1159
+@us[extentd client, mmap-rw]: 3332
+ioctl by command (hex)
+08:28:42
+@calls[extentd client, mmap-rw]: 147
+@calls[extentd client, cross-cpu-call]: 247
+@us[extentd client, cross-cpu-call]: 1107
+@us[extentd client, mmap-rw]: 2559
+ioctl by command (hex)
+08:28:43
+@calls[extentd client, mmap-rw]: 217
+@calls[extentd client, cross-cpu-call]: 436
+@us[extentd client, cross-cpu-call]: 1826
+@us[extentd client, mmap-rw]: 3508
+ioctl by command (hex)
+08:28:44
+@calls[extentd client, mmap-rw]: 169
+@calls[extentd client, cross-cpu-call]: 181
+@us[extentd client, cross-cpu-call]: 900
+@us[extentd client, mmap-rw]: 2566
+ioctl by command (hex)
+08:28:45
+@calls[extentd client, mmap-rw]: 145
+@calls[extentd client, cross-cpu-call]: 157
+@us[extentd client, cross-cpu-call]: 813
+@us[extentd client, mmap-rw]: 2308
+ioctl by command (hex)
+08:28:46
+@calls[extentd client, mmap-rw]: 5
+@calls[extentd client, cross-cpu-call]: 15
+@us[extentd client, cross-cpu-call]: 56
+@us[extentd client, mmap-rw]: 106
+ioctl by command (hex)
+08:28:47
+@calls[extentd client, cross-cpu-call]: 42
+@us[extentd client, cross-cpu-call]: 178
+ioctl by command (hex)
+@ioctl_calls[extentd client, 1075883638]: 5
+@ioctl_us[extentd client, 1075883638]: 104
+08:28:48
+ioctl by command (hex)
+08:28:49
+@calls[extentd client, mmap-rw]: 314
+@calls[extentd client, cross-cpu-call]: 336
+@us[extentd client, cross-cpu-call]: 1795
+@us[extentd client, mmap-rw]: 3518
+ioctl by command (hex)
+08:28:50
+@calls[extentd client, mmap-rw]: 564
+@calls[extentd client, cross-cpu-call]: 604
+@us[extentd client, cross-cpu-call]: 2895
+@us[extentd client, mmap-rw]: 6597
+ioctl by command (hex)
+08:28:51
+@calls[extentd client, mmap-rw]: 554
+@calls[extentd client, cross-cpu-call]: 594
+@us[extentd client, cross-cpu-call]: 2714
+@us[extentd client, mmap-rw]: 6390
+ioctl by command (hex)
+08:28:52
+@calls[extentd client, mmap-rw]: 431
+@calls[extentd client, cross-cpu-call]: 473
+@us[extentd client, cross-cpu-call]: 2617
+@us[extentd client, mmap-rw]: 6069
+ioctl by command (hex)
+08:28:53
+@calls[extentd client, mmap-rw]: 353
+@calls[extentd client, cross-cpu-call]: 384
+@us[extentd client, cross-cpu-call]: 1832
+@us[extentd client, mmap-rw]: 5662
+ioctl by command (hex)
+08:28:54
+@calls[extentd client, mmap-rw]: 87
+@calls[extentd client, cross-cpu-call]: 125
+@us[extentd client, cross-cpu-call]: 545
+@us[extentd client, mmap-rw]: 1534
+ioctl by command (hex)
+08:28:55
+@calls[extentd client, cross-cpu-call]: 14
+@us[extentd client, cross-cpu-call]: 30
+ioctl by command (hex)
+08:28:56
+@calls[extentd client, cross-cpu-call]: 27
+@us[extentd client, cross-cpu-call]: 73
+ioctl by command (hex)
+@ioctl_calls[extentd client, 1075883638]: 6
+@ioctl_us[extentd client, 1075883638]: 159
+08:28:57
+@calls[extentd client, mmap-rw]: 326
+@calls[extentd client, cross-cpu-call]: 478
+@us[extentd client, cross-cpu-call]: 1971
+@us[extentd client, mmap-rw]: 4079
+ioctl by command (hex)
+08:28:58
+@calls[extentd client, mmap-rw]: 436
+@calls[extentd client, cross-cpu-call]: 605
+@us[extentd client, cross-cpu-call]: 2176
+@us[extentd client, mmap-rw]: 4829
+ioctl by command (hex)
+08:28:59
+@calls[extentd client, mmap-rw]: 467
+@calls[extentd client, cross-cpu-call]: 493
+@us[extentd client, cross-cpu-call]: 2314
+@us[extentd client, mmap-rw]: 4568
+ioctl by command (hex)
+08:29:00
+@calls[extentd client, mmap-rw]: 307
+@calls[extentd client, cross-cpu-call]: 327
+@us[extentd client, cross-cpu-call]: 1378
+@us[extentd client, mmap-rw]: 3131
+ioctl by command (hex)
+08:29:01
+@calls[extentd client, cross-cpu-call]: 28
+@us[extentd client, cross-cpu-call]: 66
+ioctl by command (hex)
+@ioctl_calls[extentd client, 1075883638]: 3
+@ioctl_us[extentd client, 1075883638]: 100
+08:29:02
+ioctl by command (hex)
+08:29:03
+ioctl by command (hex)
+08:29:04
+ioctl by command (hex)
+08:29:05
+ioctl by command (hex)
+08:29:06
+ioctl by command (hex)
+08:29:07
+ioctl by command (hex)
+08:29:08
+ioctl by command (hex)
+08:29:09
+ioctl by command (hex)
+08:29:10
+ioctl by command (hex)
+08:29:11
+ioctl by command (hex)
+08:29:12
+@calls[dax faults, mprotect]: 2
+@calls[dax faults, mmap-rw]: 2
+@calls[extentd client, mprotect]: 2
+@calls[extentd client, mmap-rw]: 3
+@us[dax faults, mprotect]: 4
+@us[dax faults, mmap-rw]: 5
+@us[extentd client, mprotect]: 17
+@us[extentd client, mmap-rw]: 22
+ioctl by command (hex)
+08:29:13
+@calls[extentd client, mmap-rw]: 2
+@calls[extentd client, cross-cpu-call]: 1644
+@us[extentd client, mmap-rw]: 22
+@us[extentd client, cross-cpu-call]: 4066
+ioctl by command (hex)
+08:29:14
+@calls[extentd client, mmap-rw]: 1
+@calls[extentd client, cross-cpu-call]: 344
+@us[extentd client, mmap-rw]: 8
+@us[extentd client, cross-cpu-call]: 769
+ioctl by command (hex)
+08:29:15
+@calls[extentd client, cross-cpu-call]: 365
+@us[extentd client, cross-cpu-call]: 1156
+ioctl by command (hex)
+08:29:16
+@calls[extentd client, mmap-rw]: 128
+@calls[extentd client, cross-cpu-call]: 304
+@us[extentd client, cross-cpu-call]: 704
+@us[extentd client, mmap-rw]: 743
+ioctl by command (hex)
+08:29:17
+ioctl by command (hex)
+08:29:18
+@calls[dax faults, kvm-flush]: 10
+@calls[extentd client, cross-cpu-call]: 28
+@calls[dax faults, mmap-rw]: 130
+@calls[dax faults, cross-cpu-call]: 153
+@calls[dax faults, mmap-ro]: 518
+@calls[dax faults, mprotect]: 1035
+@us[extentd client, cross-cpu-call]: 137
+@us[dax faults, cross-cpu-call]: 510
+@us[dax faults, mmap-rw]: 622
+@us[dax faults, mprotect]: 4781
+@us[dax faults, mmap-ro]: 11856
+ioctl by command (hex)
+@ioctl_calls[dax faults, 18446744071563160066]: 517
+@ioctl_calls[dax faults, 18446744072637426182]: 518
+@ioctl_calls[dax faults, 18446744072637950464]: 518
+@ioctl_us[dax faults, 18446744071563160066]: 1521
+@ioctl_us[dax faults, 18446744072637950464]: 2380
+@ioctl_us[dax faults, 18446744072637426182]: 2611
+08:29:19
+@calls[extentd client, cross-cpu-call]: 5
+@calls[dax faults, kvm-flush]: 20
+@calls[dax faults, mmap-rw]: 138
+@calls[dax faults, cross-cpu-call]: 153
+@calls[dax faults, mmap-ro]: 2711
+@calls[dax faults, mprotect]: 5418
+@us[extentd client, cross-cpu-call]: 29
+@us[dax faults, cross-cpu-call]: 370
+@us[dax faults, mmap-rw]: 508
+@us[dax faults, mprotect]: 27638
+@us[dax faults, mmap-ro]: 31070
+ioctl by command (hex)
+@ioctl_calls[dax faults, 18446744071563160066]: 2707
+@ioctl_calls[dax faults, 18446744072637426182]: 2711
+@ioctl_calls[dax faults, 18446744072637950464]: 2711
+@ioctl_us[dax faults, 18446744071563160066]: 3742
+@ioctl_us[dax faults, 18446744072637426182]: 7193
+@ioctl_us[dax faults, 18446744072637950464]: 14865
+08:29:20
+ioctl by command (hex)
+08:29:21
+ioctl by command (hex)
+08:29:22
+ioctl by command (hex)
+08:29:23
+@calls[extentd client, kvm-flush]: 8192
+@calls[extentd client, mmap-rw]: 8607
+@calls[extentd client, cross-cpu-call]: 13171
+@us[extentd client, cross-cpu-call]: 15605
+@us[extentd client, mmap-rw]: 84258
+ioctl by command (hex)
+@ioctl_calls[extentd client, 18446744072637950464]: 8192
+@ioctl_calls[extentd client, 18446744072640048853]: 16376
+@ioctl_calls[extentd client, 18446744071563160066]: 16376
+@ioctl_us[extentd client, 18446744071563160066]: 155
+@ioctl_us[extentd client, 18446744072637950464]: 5864
+@ioctl_us[extentd client, 18446744072640048853]: 43442
+08:29:24
+@calls[extentd client, mmap-rw]: 134
+@calls[extentd client, cross-cpu-call]: 897
+@us[extentd client, mmap-rw]: 1020
+@us[extentd client, cross-cpu-call]: 2656
+ioctl by command (hex)
+08:29:25
+@calls[extentd client, mmap-rw]: 16
+@calls[extentd client, mmap-none]: 320
+@calls[extentd client, mprotect]: 320
+@calls[extentd client, kvm-flush]: 321
+@calls[extentd client, cross-cpu-call]: 8111
+@calls[extentd client, fallocate]: 12801
+@us[extentd client, mmap-rw]: 128
+@us[extentd client, mprotect]: 3483
+@us[extentd client, cross-cpu-call]: 7372
+@us[extentd client, fallocate]: 29304
+@us[extentd client, mmap-none]: 48318
+ioctl by command (hex)
+@ioctl_calls[extentd client, 18446744072637950464]: 320
+@ioctl_us[extentd client, 18446744072637950464]: 362
+
+
+@calls[dax faults, cross-cpu-call]: 1
+@calls[extentd client, cross-cpu-call]: 6
+@us[dax faults, cross-cpu-call]: 10
+@us[extentd client, cross-cpu-call]: 20

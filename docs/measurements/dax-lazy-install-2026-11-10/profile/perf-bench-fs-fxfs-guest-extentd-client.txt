@@ -1,0 +1,1734 @@
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 999  of event 'cpu/cycles/P'
+# Event count (approx.): 4653125963
+#
+# Children      Self  Symbol                                                                                                                                      
+# ........  ........  ............................................................................................................................................
+#
+    64.16%     0.00%  [.] start
+    64.16%     0.00%  [.] <std::sys::thread::unix::Thread>::new::thread_start
+            |
+            ---start
+
+    64.16%     0.00%  [.] <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+            |
+            ---<std::sys::thread::unix::Thread>::new::thread_start
+               start
+
+    64.16%     0.00%  [.] <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+            |
+            ---<alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+               <std::sys::thread::unix::Thread>::new::thread_start
+               start
+
+    64.16%     0.00%  [.] core::ops::function::FnOnce::call_once{{vtable.shim}}
+            |
+            ---<alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+               <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+               <std::sys::thread::unix::Thread>::new::thread_start
+               start
+
+    64.16%     0.00%  [.] std::sys::backtrace::__rust_begin_short_backtrace
+            |
+            ---core::ops::function::FnOnce::call_once{{vtable.shim}}
+               <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+               <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+               <std::sys::thread::unix::Thread>::new::thread_start
+               start
+
+    64.16%     0.00%  [.] core::ops::function::FnOnce::call_once{{vtable.shim}}
+            |
+            ---std::sys::backtrace::__rust_begin_short_backtrace
+               core::ops::function::FnOnce::call_once{{vtable.shim}}
+               <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+               <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+               <std::sys::thread::unix::Thread>::new::thread_start
+               start
+
+    60.07%     0.19%  [.] entry_SYSCALL_64_after_hwframe
+            |          
+             --2.59%--entry_SYSCALL_64_after_hwframe
+                       |          
+                       |--1.58%--sccp
+                       |          |          
+                       |          |--0.94%--fxdax::extentd::client::Client::receive
+                       |          |          core::ops::function::FnOnce::call_once{{vtable.shim}}
+                       |          |          std::sys::backtrace::__rust_begin_short_backtrace
+                       |          |          core::ops::function::FnOnce::call_once{{vtable.shim}}
+                       |          |          <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+                       |          |          <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+                       |          |          <std::sys::thread::unix::Thread>::new::thread_start
+                       |          |          start
+                       |          |          
+                       |          |--0.38%--core::ops::function::FnOnce::call_once{{vtable.shim}}
+                       |          |          std::sys::backtrace::__rust_begin_short_backtrace
+                       |          |          core::ops::function::FnOnce::call_once{{vtable.shim}}
+                       |          |          <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+                       |          |          <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+                       |          |          <std::sys::thread::unix::Thread>::new::thread_start
+                       |          |          start
+                       |          |          
+                       |           --0.23%--<vmm::devices::virtio::transport::pci::device::VirtioInterruptMsix as vmm::devices::virtio::transport::VirtioInterrupt>::trigger
+                       |                     async_task::raw::RawTask<F,T,S,M>::run
+                       |                     fxdax::extentd::client::Client::receive
+                       |                     core::ops::function::FnOnce::call_once{{vtable.shim}}
+                       |                     std::sys::backtrace::__rust_begin_short_backtrace
+                       |                     core::ops::function::FnOnce::call_once{{vtable.shim}}
+                       |                     <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+                       |                     <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+                       |                     <std::sys::thread::unix::Thread>::new::thread_start
+                       |                     start
+                       |          
+                       |--0.77%--__syscall2 (inlined)
+                       |          __munmap
+                       |          
+                        --0.17%--__syscall6 (inlined)
+                                  |          
+                                   --0.15%--__mmap
+                                             |          
+                                              --0.14%--0
+
+    59.32%     0.78%  [.] do_syscall_64
+            |          
+             --2.53%--do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       |          
+                       |--1.55%--sccp
+                       |          |          
+                       |          |--0.92%--fxdax::extentd::client::Client::receive
+                       |          |          core::ops::function::FnOnce::call_once{{vtable.shim}}
+                       |          |          std::sys::backtrace::__rust_begin_short_backtrace
+                       |          |          core::ops::function::FnOnce::call_once{{vtable.shim}}
+                       |          |          <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+                       |          |          <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+                       |          |          <std::sys::thread::unix::Thread>::new::thread_start
+                       |          |          start
+                       |          |          
+                       |          |--0.38%--core::ops::function::FnOnce::call_once{{vtable.shim}}
+                       |          |          std::sys::backtrace::__rust_begin_short_backtrace
+                       |          |          core::ops::function::FnOnce::call_once{{vtable.shim}}
+                       |          |          <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+                       |          |          <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+                       |          |          <std::sys::thread::unix::Thread>::new::thread_start
+                       |          |          start
+                       |          |          
+                       |           --0.22%--<vmm::devices::virtio::transport::pci::device::VirtioInterruptMsix as vmm::devices::virtio::transport::VirtioInterrupt>::trigger
+                       |                     async_task::raw::RawTask<F,T,S,M>::run
+                       |                     fxdax::extentd::client::Client::receive
+                       |                     core::ops::function::FnOnce::call_once{{vtable.shim}}
+                       |                     std::sys::backtrace::__rust_begin_short_backtrace
+                       |                     core::ops::function::FnOnce::call_once{{vtable.shim}}
+                       |                     <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+                       |                     <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+                       |                     <std::sys::thread::unix::Thread>::new::thread_start
+                       |                     start
+                       |          
+                       |--0.77%--__syscall2 (inlined)
+                       |          __munmap
+                       |          
+                        --0.15%--__syscall6 (inlined)
+                                  |          
+                                   --0.13%--__mmap
+
+    55.86%     0.09%  [.] x64_sys_call
+            |          
+             --2.41%--x64_sys_call
+                       |          
+                        --2.40%--do_syscall_64
+                                  entry_SYSCALL_64_after_hwframe
+                                  |          
+                                  |--1.48%--sccp
+                                  |          |          
+                                  |          |--0.90%--fxdax::extentd::client::Client::receive
+                                  |          |          core::ops::function::FnOnce::call_once{{vtable.shim}}
+                                  |          |          std::sys::backtrace::__rust_begin_short_backtrace
+                                  |          |          core::ops::function::FnOnce::call_once{{vtable.shim}}
+                                  |          |          <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+                                  |          |          <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+                                  |          |          <std::sys::thread::unix::Thread>::new::thread_start
+                                  |          |          start
+                                  |          |          
+                                  |          |--0.36%--core::ops::function::FnOnce::call_once{{vtable.shim}}
+                                  |          |          std::sys::backtrace::__rust_begin_short_backtrace
+                                  |          |          core::ops::function::FnOnce::call_once{{vtable.shim}}
+                                  |          |          <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+                                  |          |          <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+                                  |          |          <std::sys::thread::unix::Thread>::new::thread_start
+                                  |          |          start
+                                  |          |          
+                                  |           --0.18%--<vmm::devices::virtio::transport::pci::device::VirtioInterruptMsix as vmm::devices::virtio::transport::VirtioInterrupt>::trigger
+                                  |                     async_task::raw::RawTask<F,T,S,M>::run
+                                  |                     fxdax::extentd::client::Client::receive
+                                  |                     core::ops::function::FnOnce::call_once{{vtable.shim}}
+                                  |                     std::sys::backtrace::__rust_begin_short_backtrace
+                                  |                     core::ops::function::FnOnce::call_once{{vtable.shim}}
+                                  |                     <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+                                  |                     <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+                                  |                     <std::sys::thread::unix::Thread>::new::thread_start
+                                  |                     start
+                                  |          
+                                   --0.76%--__syscall2 (inlined)
+                                             __munmap
+
+    38.53%     0.43%  [.] fxdax::extentd::client::Client::receive
+            |          
+             --1.66%--fxdax::extentd::client::Client::receive
+                       core::ops::function::FnOnce::call_once{{vtable.shim}}
+                       std::sys::backtrace::__rust_begin_short_backtrace
+                       core::ops::function::FnOnce::call_once{{vtable.shim}}
+                       <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+                       <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+                       <std::sys::thread::unix::Thread>::new::thread_start
+                       start
+
+    37.40%     0.20%  [.] sccp
+            |          
+             --1.61%--sccp
+                       |          
+                       |--0.95%--fxdax::extentd::client::Client::receive
+                       |          core::ops::function::FnOnce::call_once{{vtable.shim}}
+                       |          std::sys::backtrace::__rust_begin_short_backtrace
+                       |          core::ops::function::FnOnce::call_once{{vtable.shim}}
+                       |          <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+                       |          <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+                       |          <std::sys::thread::unix::Thread>::new::thread_start
+                       |          start
+                       |          
+                       |--0.38%--core::ops::function::FnOnce::call_once{{vtable.shim}}
+                       |          std::sys::backtrace::__rust_begin_short_backtrace
+                       |          core::ops::function::FnOnce::call_once{{vtable.shim}}
+                       |          <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+                       |          <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+                       |          <std::sys::thread::unix::Thread>::new::thread_start
+                       |          start
+                       |          
+                        --0.25%--<vmm::devices::virtio::transport::pci::device::VirtioInterruptMsix as vmm::devices::virtio::transport::VirtioInterrupt>::trigger
+                                  async_task::raw::RawTask<F,T,S,M>::run
+                                  fxdax::extentd::client::Client::receive
+                                  core::ops::function::FnOnce::call_once{{vtable.shim}}
+                                  std::sys::backtrace::__rust_begin_short_backtrace
+                                  core::ops::function::FnOnce::call_once{{vtable.shim}}
+                                  <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+                                  <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+                                  <std::sys::thread::unix::Thread>::new::thread_start
+                                  start
+
+    27.81%     0.20%  [.] sock_recvmsg
+            |          
+             --1.19%--sock_recvmsg
+                       |          
+                       |--0.83%--____sys_recvmsg
+                       |          ___sys_recvmsg
+                       |          __sys_recvmsg
+                       |          __x64_sys_recvmsg
+                       |          x64_sys_call
+                       |          do_syscall_64
+                       |          entry_SYSCALL_64_after_hwframe
+                       |          sccp
+                       |          fxdax::extentd::client::Client::receive
+                       |          core::ops::function::FnOnce::call_once{{vtable.shim}}
+                       |          std::sys::backtrace::__rust_begin_short_backtrace
+                       |          core::ops::function::FnOnce::call_once{{vtable.shim}}
+                       |          <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+                       |          <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+                       |          <std::sys::thread::unix::Thread>::new::thread_start
+                       |          start
+                       |          
+                        --0.36%--__sys_recvfrom
+                                  __x64_sys_recvfrom
+                                  x64_sys_call
+                                  do_syscall_64
+                                  entry_SYSCALL_64_after_hwframe
+                                  sccp
+                                  core::ops::function::FnOnce::call_once{{vtable.shim}}
+                                  std::sys::backtrace::__rust_begin_short_backtrace
+                                  core::ops::function::FnOnce::call_once{{vtable.shim}}
+                                  <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+                                  <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+                                  <std::sys::thread::unix::Thread>::new::thread_start
+                                  start
+
+    27.71%     0.10%  [.] unix_stream_recvmsg
+            |          
+             --1.19%--unix_stream_recvmsg
+                       |          
+                        --1.19%--sock_recvmsg
+                                  |          
+                                  |--0.83%--____sys_recvmsg
+                                  |          ___sys_recvmsg
+                                  |          __sys_recvmsg
+                                  |          __x64_sys_recvmsg
+                                  |          x64_sys_call
+                                  |          do_syscall_64
+                                  |          entry_SYSCALL_64_after_hwframe
+                                  |          sccp
+                                  |          fxdax::extentd::client::Client::receive
+                                  |          core::ops::function::FnOnce::call_once{{vtable.shim}}
+                                  |          std::sys::backtrace::__rust_begin_short_backtrace
+                                  |          core::ops::function::FnOnce::call_once{{vtable.shim}}
+                                  |          <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+                                  |          <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+                                  |          <std::sys::thread::unix::Thread>::new::thread_start
+                                  |          start
+                                  |          
+                                   --0.36%--__sys_recvfrom
+                                             __x64_sys_recvfrom
+                                             x64_sys_call
+                                             do_syscall_64
+                                             entry_SYSCALL_64_after_hwframe
+                                             sccp
+                                             core::ops::function::FnOnce::call_once{{vtable.shim}}
+                                             std::sys::backtrace::__rust_begin_short_backtrace
+                                             core::ops::function::FnOnce::call_once{{vtable.shim}}
+                                             <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+                                             <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+                                             <std::sys::thread::unix::Thread>::new::thread_start
+                                             start
+
+    27.39%     1.09%  [.] unix_stream_read_generic
+            |          
+             --1.14%--unix_stream_read_generic
+                       |          
+                        --1.14%--unix_stream_recvmsg
+                                  sock_recvmsg
+                                  |          
+                                  |--0.78%--____sys_recvmsg
+                                  |          ___sys_recvmsg
+                                  |          __sys_recvmsg
+                                  |          __x64_sys_recvmsg
+                                  |          x64_sys_call
+                                  |          do_syscall_64
+                                  |          entry_SYSCALL_64_after_hwframe
+                                  |          sccp
+                                  |          fxdax::extentd::client::Client::receive
+                                  |          core::ops::function::FnOnce::call_once{{vtable.shim}}
+                                  |          std::sys::backtrace::__rust_begin_short_backtrace
+                                  |          core::ops::function::FnOnce::call_once{{vtable.shim}}
+                                  |          <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+                                  |          <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+                                  |          <std::sys::thread::unix::Thread>::new::thread_start
+                                  |          start
+                                  |          
+                                   --0.36%--__sys_recvfrom
+                                             __x64_sys_recvfrom
+                                             x64_sys_call
+                                             do_syscall_64
+                                             entry_SYSCALL_64_after_hwframe
+                                             sccp
+                                             core::ops::function::FnOnce::call_once{{vtable.shim}}
+                                             std::sys::backtrace::__rust_begin_short_backtrace
+                                             core::ops::function::FnOnce::call_once{{vtable.shim}}
+                                             <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+                                             <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+                                             <std::sys::thread::unix::Thread>::new::thread_start
+                                             start
+
+    25.90%     0.43%  [.] asm_exc_page_fault
+            |          
+             --1.10%--asm_exc_page_fault
+                       |          
+                       |--0.62%--memcpy
+                       |          core::ops::function::FnOnce::call_once{{vtable.shim}}
+                       |          std::sys::backtrace::__rust_begin_short_backtrace
+                       |          core::ops::function::FnOnce::call_once{{vtable.shim}}
+                       |          <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+                       |          <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+                       |          <std::sys::thread::unix::Thread>::new::thread_start
+                       |          start
+                       |          
+                        --0.28%--_copy_to_iter
+                                  simple_copy_to_iter
+                                  __skb_datagram_iter
+                                  skb_copy_datagram_iter
+                                  unix_stream_read_actor
+                                  unix_stream_read_generic
+                                  unix_stream_recvmsg
+                                  sock_recvmsg
+                                  __sys_recvfrom
+                                  __x64_sys_recvfrom
+                                  x64_sys_call
+                                  do_syscall_64
+                                  entry_SYSCALL_64_after_hwframe
+                                  sccp
+                                  core::ops::function::FnOnce::call_once{{vtable.shim}}
+                                  std::sys::backtrace::__rust_begin_short_backtrace
+                                  core::ops::function::FnOnce::call_once{{vtable.shim}}
+                                  <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+                                  <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+                                  <std::sys::thread::unix::Thread>::new::thread_start
+                                  start
+
+    24.45%     0.40%  [.] exc_page_fault
+            |          
+             --1.04%--exc_page_fault
+                       asm_exc_page_fault
+                       |          
+                       |--0.59%--memcpy
+                       |          core::ops::function::FnOnce::call_once{{vtable.shim}}
+                       |          std::sys::backtrace::__rust_begin_short_backtrace
+                       |          core::ops::function::FnOnce::call_once{{vtable.shim}}
+                       |          <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+                       |          <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+                       |          <std::sys::thread::unix::Thread>::new::thread_start
+                       |          start
+                       |          
+                        --0.27%--_copy_to_iter
+                                  simple_copy_to_iter
+                                  __skb_datagram_iter
+                                  skb_copy_datagram_iter
+                                  unix_stream_read_actor
+                                  unix_stream_read_generic
+                                  unix_stream_recvmsg
+                                  sock_recvmsg
+                                  __sys_recvfrom
+                                  __x64_sys_recvfrom
+                                  x64_sys_call
+                                  do_syscall_64
+                                  entry_SYSCALL_64_after_hwframe
+                                  sccp
+                                  core::ops::function::FnOnce::call_once{{vtable.shim}}
+                                  std::sys::backtrace::__rust_begin_short_backtrace
+                                  core::ops::function::FnOnce::call_once{{vtable.shim}}
+                                  <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+                                  <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+                                  <std::sys::thread::unix::Thread>::new::thread_start
+                                  start
+
+    23.94%     0.77%  [.] do_user_addr_fault
+            |          
+             --1.00%--do_user_addr_fault
+                       exc_page_fault
+                       asm_exc_page_fault
+                       |          
+                       |--0.57%--memcpy
+                       |          core::ops::function::FnOnce::call_once{{vtable.shim}}
+                       |          std::sys::backtrace::__rust_begin_short_backtrace
+                       |          core::ops::function::FnOnce::call_once{{vtable.shim}}
+                       |          <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+                       |          <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+                       |          <std::sys::thread::unix::Thread>::new::thread_start
+                       |          start
+                       |          
+                        --0.25%--_copy_to_iter
+                                  simple_copy_to_iter
+                                  __skb_datagram_iter
+                                  skb_copy_datagram_iter
+                                  unix_stream_read_actor
+                                  unix_stream_read_generic
+                                  unix_stream_recvmsg
+                                  sock_recvmsg
+                                  __sys_recvfrom
+                                  __x64_sys_recvfrom
+                                  x64_sys_call
+                                  do_syscall_64
+                                  entry_SYSCALL_64_after_hwframe
+                                  sccp
+                                  core::ops::function::FnOnce::call_once{{vtable.shim}}
+                                  std::sys::backtrace::__rust_begin_short_backtrace
+                                  core::ops::function::FnOnce::call_once{{vtable.shim}}
+                                  <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+                                  <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+                                  <std::sys::thread::unix::Thread>::new::thread_start
+                                  start
+
+    21.64%     0.31%  [.] handle_mm_fault
+            |          
+             --0.92%--handle_mm_fault
+                       do_user_addr_fault
+                       exc_page_fault
+                       asm_exc_page_fault
+                       |          
+                       |--0.55%--memcpy
+                       |          core::ops::function::FnOnce::call_once{{vtable.shim}}
+                       |          std::sys::backtrace::__rust_begin_short_backtrace
+                       |          core::ops::function::FnOnce::call_once{{vtable.shim}}
+                       |          <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+                       |          <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+                       |          <std::sys::thread::unix::Thread>::new::thread_start
+                       |          start
+                       |          
+                        --0.21%--_copy_to_iter
+                                  simple_copy_to_iter
+                                  __skb_datagram_iter
+                                  skb_copy_datagram_iter
+                                  unix_stream_read_actor
+                                  unix_stream_read_generic
+                                  unix_stream_recvmsg
+                                  sock_recvmsg
+                                  __sys_recvfrom
+                                  __x64_sys_recvfrom
+                                  x64_sys_call
+                                  do_syscall_64
+                                  entry_SYSCALL_64_after_hwframe
+                                  sccp
+                                  core::ops::function::FnOnce::call_once{{vtable.shim}}
+                                  std::sys::backtrace::__rust_begin_short_backtrace
+                                  core::ops::function::FnOnce::call_once{{vtable.shim}}
+                                  <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+                                  <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+                                  <std::sys::thread::unix::Thread>::new::thread_start
+                                  start
+
+    21.06%     6.24%  [.] memcpy
+            |          
+             --0.83%--memcpy
+                       |          
+                       |--0.66%--core::ops::function::FnOnce::call_once{{vtable.shim}}
+                       |          std::sys::backtrace::__rust_begin_short_backtrace
+                       |          core::ops::function::FnOnce::call_once{{vtable.shim}}
+                       |          <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+                       |          <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+                       |          <std::sys::thread::unix::Thread>::new::thread_start
+                       |          start
+                       |          
+                        --0.17%--async_task::raw::RawTask<F,T,S,M>::run
+                                  fxdax::extentd::client::Client::receive
+                                  core::ops::function::FnOnce::call_once{{vtable.shim}}
+                                  std::sys::backtrace::__rust_begin_short_backtrace
+                                  core::ops::function::FnOnce::call_once{{vtable.shim}}
+                                  <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+                                  <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+                                  <std::sys::thread::unix::Thread>::new::thread_start
+                                  start
+
+    20.95%     0.00%  [.] __x64_sys_recvmsg
+            |
+            ---x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               sccp
+               fxdax::extentd::client::Client::receive
+               core::ops::function::FnOnce::call_once{{vtable.shim}}
+               std::sys::backtrace::__rust_begin_short_backtrace
+               core::ops::function::FnOnce::call_once{{vtable.shim}}
+               <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+               <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+               <std::sys::thread::unix::Thread>::new::thread_start
+               start
+
+    20.95%     0.11%  [.] __sys_recvmsg
+            |          
+             --0.90%--__sys_recvmsg
+                       __x64_sys_recvmsg
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       sccp
+                       fxdax::extentd::client::Client::receive
+                       core::ops::function::FnOnce::call_once{{vtable.shim}}
+                       std::sys::backtrace::__rust_begin_short_backtrace
+                       core::ops::function::FnOnce::call_once{{vtable.shim}}
+                       <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+                       <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+                       <std::sys::thread::unix::Thread>::new::thread_start
+                       start
+
+    20.94%     1.24%  [.] __handle_mm_fault
+            |          
+             --0.86%--__handle_mm_fault
+                       |          
+                        --0.86%--handle_mm_fault
+                                  do_user_addr_fault
+                                  exc_page_fault
+                                  asm_exc_page_fault
+                                  |          
+                                  |--0.52%--memcpy
+                                  |          core::ops::function::FnOnce::call_once{{vtable.shim}}
+                                  |          std::sys::backtrace::__rust_begin_short_backtrace
+                                  |          core::ops::function::FnOnce::call_once{{vtable.shim}}
+                                  |          <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+                                  |          <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+                                  |          <std::sys::thread::unix::Thread>::new::thread_start
+                                  |          start
+                                  |          
+                                   --0.20%--_copy_to_iter
+                                             simple_copy_to_iter
+                                             __skb_datagram_iter
+                                             skb_copy_datagram_iter
+                                             unix_stream_read_actor
+                                             unix_stream_read_generic
+                                             unix_stream_recvmsg
+                                             sock_recvmsg
+                                             __sys_recvfrom
+                                             __x64_sys_recvfrom
+                                             x64_sys_call
+                                             do_syscall_64
+                                             entry_SYSCALL_64_after_hwframe
+                                             sccp
+                                             core::ops::function::FnOnce::call_once{{vtable.shim}}
+                                             std::sys::backtrace::__rust_begin_short_backtrace
+                                             core::ops::function::FnOnce::call_once{{vtable.shim}}
+                                             <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+                                             <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+                                             <std::sys::thread::unix::Thread>::new::thread_start
+                                             start
+
+    20.76%     0.40%  [.] ___sys_recvmsg
+            |          
+             --0.88%--___sys_recvmsg
+                       __sys_recvmsg
+                       __x64_sys_recvmsg
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       sccp
+                       fxdax::extentd::client::Client::receive
+                       core::ops::function::FnOnce::call_once{{vtable.shim}}
+                       std::sys::backtrace::__rust_begin_short_backtrace
+                       core::ops::function::FnOnce::call_once{{vtable.shim}}
+                       <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+                       <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+                       <std::sys::thread::unix::Thread>::new::thread_start
+                       start
+
+    19.98%     0.31%  [.] handle_pte_fault
+            |          
+             --0.85%--handle_pte_fault
+                       |          
+                        --0.84%--__handle_mm_fault
+                                  handle_mm_fault
+                                  do_user_addr_fault
+                                  exc_page_fault
+                                  asm_exc_page_fault
+                                  |          
+                                  |--0.51%--memcpy
+                                  |          core::ops::function::FnOnce::call_once{{vtable.shim}}
+                                  |          std::sys::backtrace::__rust_begin_short_backtrace
+                                  |          core::ops::function::FnOnce::call_once{{vtable.shim}}
+                                  |          <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+                                  |          <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+                                  |          <std::sys::thread::unix::Thread>::new::thread_start
+                                  |          start
+                                  |          
+                                   --0.20%--_copy_to_iter
+                                             simple_copy_to_iter
+                                             __skb_datagram_iter
+                                             skb_copy_datagram_iter
+                                             unix_stream_read_actor
+                                             unix_stream_read_generic
+                                             unix_stream_recvmsg
+                                             sock_recvmsg
+                                             __sys_recvfrom
+                                             __x64_sys_recvfrom
+                                             x64_sys_call
+                                             do_syscall_64
+                                             entry_SYSCALL_64_after_hwframe
+                                             sccp
+                                             core::ops::function::FnOnce::call_once{{vtable.shim}}
+                                             std::sys::backtrace::__rust_begin_short_backtrace
+                                             core::ops::function::FnOnce::call_once{{vtable.shim}}
+                                             <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+                                             <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+                                             <std::sys::thread::unix::Thread>::new::thread_start
+                                             start
+
+    19.81%     0.23%  [.] ____sys_recvmsg
+            |          
+             --0.85%--____sys_recvmsg
+                       ___sys_recvmsg
+                       __sys_recvmsg
+                       __x64_sys_recvmsg
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       sccp
+                       fxdax::extentd::client::Client::receive
+                       core::ops::function::FnOnce::call_once{{vtable.shim}}
+                       std::sys::backtrace::__rust_begin_short_backtrace
+                       core::ops::function::FnOnce::call_once{{vtable.shim}}
+                       <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+                       <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+                       <std::sys::thread::unix::Thread>::new::thread_start
+                       start
+
+    17.96%     0.10%  [.] __munmap
+            |          
+             --0.77%--__munmap
+
+    17.78%     0.00%  [.] __syscall2 (inlined)
+            |
+            ---__munmap
+
+    17.68%     0.00%  [.] __x64_sys_munmap
+            |
+            ---x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               __syscall2 (inlined)
+               __munmap
+
+    17.68%     0.00%  [.] __vm_munmap
+            |
+            ---__x64_sys_munmap
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               __syscall2 (inlined)
+               __munmap
+
+    17.16%     0.10%  [.] do_vmi_munmap
+            |          
+             --0.74%--do_vmi_munmap
+                       __vm_munmap
+                       __x64_sys_munmap
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       __syscall2 (inlined)
+                       __munmap
+
+    17.16%     0.21%  [.] do_vmi_align_munmap
+            |          
+             --0.73%--do_vmi_align_munmap
+                       do_vmi_munmap
+                       __vm_munmap
+                       __x64_sys_munmap
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       __syscall2 (inlined)
+                       __munmap
+
+    15.07%     0.00%  [.] vms_complete_munmap_vmas
+            |
+            ---do_vmi_align_munmap
+               do_vmi_munmap
+               __vm_munmap
+               __x64_sys_munmap
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               __syscall2 (inlined)
+               __munmap
+
+    14.31%     0.00%  [.] unmap_region
+            |
+            ---vms_complete_munmap_vmas
+               do_vmi_align_munmap
+               do_vmi_munmap
+               __vm_munmap
+               __x64_sys_munmap
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               __syscall2 (inlined)
+               __munmap
+
+    14.14%     0.41%  [.] flush_tlb_mm_range
+            |          
+             --0.59%--flush_tlb_mm_range
+                       |          
+                       |--0.38%--ptep_clear_flush
+                       |          wp_page_copy
+                       |          do_wp_page
+                       |          handle_pte_fault
+                       |          __handle_mm_fault
+                       |          handle_mm_fault
+                       |          do_user_addr_fault
+                       |          exc_page_fault
+                       |          asm_exc_page_fault
+                       |          |          
+                       |           --0.27%--memcpy
+                       |                     core::ops::function::FnOnce::call_once{{vtable.shim}}
+                       |                     std::sys::backtrace::__rust_begin_short_backtrace
+                       |                     core::ops::function::FnOnce::call_once{{vtable.shim}}
+                       |                     <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+                       |                     <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+                       |                     <std::sys::thread::unix::Thread>::new::thread_start
+                       |                     start
+                       |          
+                        --0.21%--tlb_flush_mmu_tlbonly
+                                  tlb_finish_mmu
+                                  unmap_region
+                                  vms_complete_munmap_vmas
+                                  do_vmi_align_munmap
+                                  do_vmi_munmap
+                                  __vm_munmap
+                                  __x64_sys_munmap
+                                  x64_sys_call
+                                  do_syscall_64
+                                  entry_SYSCALL_64_after_hwframe
+                                  __syscall2 (inlined)
+                                  __munmap
+
+    14.07%     0.90%  [.] async_task::raw::RawTask<F,T,S,M>::run
+            |          
+             --0.58%--async_task::raw::RawTask<F,T,S,M>::run
+                       |          
+                        --0.58%--fxdax::extentd::client::Client::receive
+                                  core::ops::function::FnOnce::call_once{{vtable.shim}}
+                                  std::sys::backtrace::__rust_begin_short_backtrace
+                                  core::ops::function::FnOnce::call_once{{vtable.shim}}
+                                  <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+                                  <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+                                  <std::sys::thread::unix::Thread>::new::thread_start
+                                  start
+
+    13.93%     0.00%  [.] native_flush_tlb_multi
+            |
+            ---flush_tlb_mm_range
+               |          
+               |--0.39%--ptep_clear_flush
+               |          wp_page_copy
+               |          do_wp_page
+               |          handle_pte_fault
+               |          __handle_mm_fault
+               |          handle_mm_fault
+               |          do_user_addr_fault
+               |          exc_page_fault
+               |          asm_exc_page_fault
+               |          |          
+               |           --0.29%--memcpy
+               |                     core::ops::function::FnOnce::call_once{{vtable.shim}}
+               |                     std::sys::backtrace::__rust_begin_short_backtrace
+               |                     core::ops::function::FnOnce::call_once{{vtable.shim}}
+               |                     <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+               |                     <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+               |                     <std::sys::thread::unix::Thread>::new::thread_start
+               |                     start
+               |          
+                --0.21%--tlb_flush_mmu_tlbonly
+                          tlb_finish_mmu
+                          unmap_region
+                          vms_complete_munmap_vmas
+                          do_vmi_align_munmap
+                          do_vmi_munmap
+                          __vm_munmap
+                          __x64_sys_munmap
+                          x64_sys_call
+                          do_syscall_64
+                          entry_SYSCALL_64_after_hwframe
+                          __syscall2 (inlined)
+                          __munmap
+
+    12.47%     0.39%  [.] wp_page_copy
+            |          
+             --0.52%--wp_page_copy
+                       do_wp_page
+                       handle_pte_fault
+                       __handle_mm_fault
+                       handle_mm_fault
+                       do_user_addr_fault
+                       exc_page_fault
+                       asm_exc_page_fault
+                       |          
+                       |--0.38%--memcpy
+                       |          core::ops::function::FnOnce::call_once{{vtable.shim}}
+                       |          std::sys::backtrace::__rust_begin_short_backtrace
+                       |          core::ops::function::FnOnce::call_once{{vtable.shim}}
+                       |          <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+                       |          <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+                       |          <std::sys::thread::unix::Thread>::new::thread_start
+                       |          start
+                       |          
+                        --0.14%--_copy_to_iter
+                                  simple_copy_to_iter
+                                  __skb_datagram_iter
+                                  skb_copy_datagram_iter
+                                  unix_stream_read_actor
+                                  unix_stream_read_generic
+                                  unix_stream_recvmsg
+                                  sock_recvmsg
+                                  __sys_recvfrom
+                                  __x64_sys_recvfrom
+                                  x64_sys_call
+                                  do_syscall_64
+                                  entry_SYSCALL_64_after_hwframe
+                                  sccp
+                                  core::ops::function::FnOnce::call_once{{vtable.shim}}
+                                  std::sys::backtrace::__rust_begin_short_backtrace
+                                  core::ops::function::FnOnce::call_once{{vtable.shim}}
+                                  <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+                                  <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+                                  <std::sys::thread::unix::Thread>::new::thread_start
+                                  start
+
+    12.47%     0.10%  [.] do_wp_page
+            |          
+             --0.53%--do_wp_page
+                       handle_pte_fault
+                       __handle_mm_fault
+                       handle_mm_fault
+                       do_user_addr_fault
+                       exc_page_fault
+                       asm_exc_page_fault
+                       |          
+                       |--0.40%--memcpy
+                       |          core::ops::function::FnOnce::call_once{{vtable.shim}}
+                       |          std::sys::backtrace::__rust_begin_short_backtrace
+                       |          core::ops::function::FnOnce::call_once{{vtable.shim}}
+                       |          <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+                       |          <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+                       |          <std::sys::thread::unix::Thread>::new::thread_start
+                       |          start
+                       |          
+                        --0.14%--_copy_to_iter
+                                  simple_copy_to_iter
+                                  __skb_datagram_iter
+                                  skb_copy_datagram_iter
+                                  unix_stream_read_actor
+                                  unix_stream_read_generic
+                                  unix_stream_recvmsg
+                                  sock_recvmsg
+                                  __sys_recvfrom
+                                  __x64_sys_recvfrom
+                                  x64_sys_call
+                                  do_syscall_64
+                                  entry_SYSCALL_64_after_hwframe
+                                  sccp
+                                  core::ops::function::FnOnce::call_once{{vtable.shim}}
+                                  std::sys::backtrace::__rust_begin_short_backtrace
+                                  core::ops::function::FnOnce::call_once{{vtable.shim}}
+                                  <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+                                  <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+                                  <std::sys::thread::unix::Thread>::new::thread_start
+                                  start
+
+    12.47%     0.09%  [.] schedule
+            |          
+             --0.53%--schedule
+                       |          
+                        --0.50%--schedule_timeout
+                                  unix_stream_data_wait
+                                  unix_stream_read_generic
+                                  unix_stream_recvmsg
+                                  sock_recvmsg
+                                  |          
+                                   --0.49%--____sys_recvmsg
+                                             ___sys_recvmsg
+                                             __sys_recvmsg
+                                             __x64_sys_recvmsg
+                                             x64_sys_call
+                                             do_syscall_64
+                                             entry_SYSCALL_64_after_hwframe
+                                             sccp
+                                             fxdax::extentd::client::Client::receive
+                                             core::ops::function::FnOnce::call_once{{vtable.shim}}
+                                             std::sys::backtrace::__rust_begin_short_backtrace
+                                             core::ops::function::FnOnce::call_once{{vtable.shim}}
+                                             <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+                                             <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+                                             <std::sys::thread::unix::Thread>::new::thread_start
+                                             start
+
+    12.39%     0.60%  [.] unix_stream_data_wait
+            |          
+             --0.51%--unix_stream_data_wait
+                       unix_stream_read_generic
+                       unix_stream_recvmsg
+                       sock_recvmsg
+                       |          
+                        --0.50%--____sys_recvmsg
+                                  ___sys_recvmsg
+                                  __sys_recvmsg
+                                  __x64_sys_recvmsg
+                                  x64_sys_call
+                                  do_syscall_64
+                                  entry_SYSCALL_64_after_hwframe
+                                  sccp
+                                  fxdax::extentd::client::Client::receive
+                                  core::ops::function::FnOnce::call_once{{vtable.shim}}
+                                  std::sys::backtrace::__rust_begin_short_backtrace
+                                  core::ops::function::FnOnce::call_once{{vtable.shim}}
+                                  <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+                                  <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+                                  <std::sys::thread::unix::Thread>::new::thread_start
+                                  start
+
+    12.38%     0.31%  [.] __schedule
+            |          
+             --0.52%--__schedule
+                       schedule
+                       |          
+                        --0.49%--schedule_timeout
+                                  unix_stream_data_wait
+                                  unix_stream_read_generic
+                                  unix_stream_recvmsg
+                                  sock_recvmsg
+                                  |          
+                                   --0.48%--____sys_recvmsg
+                                             ___sys_recvmsg
+                                             __sys_recvmsg
+                                             __x64_sys_recvmsg
+                                             x64_sys_call
+                                             do_syscall_64
+                                             entry_SYSCALL_64_after_hwframe
+                                             sccp
+                                             fxdax::extentd::client::Client::receive
+                                             core::ops::function::FnOnce::call_once{{vtable.shim}}
+                                             std::sys::backtrace::__rust_begin_short_backtrace
+                                             core::ops::function::FnOnce::call_once{{vtable.shim}}
+                                             <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+                                             <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+                                             <std::sys::thread::unix::Thread>::new::thread_start
+                                             start
+
+    11.73%     6.01%  [.] smp_call_function_many_cond
+            |          
+             --0.46%--smp_call_function_many_cond
+                       |          
+                        --0.34%--on_each_cpu_cond_mask
+                                  native_flush_tlb_multi
+                                  flush_tlb_mm_range
+                                  |          
+                                   --0.24%--ptep_clear_flush
+                                             wp_page_copy
+                                             do_wp_page
+                                             handle_pte_fault
+                                             __handle_mm_fault
+                                             handle_mm_fault
+                                             do_user_addr_fault
+                                             exc_page_fault
+                                             asm_exc_page_fault
+                                             |          
+                                              --0.16%--memcpy
+                                                        core::ops::function::FnOnce::call_once{{vtable.shim}}
+                                                        std::sys::backtrace::__rust_begin_short_backtrace
+                                                        core::ops::function::FnOnce::call_once{{vtable.shim}}
+                                                        <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+                                                        <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+                                                        <std::sys::thread::unix::Thread>::new::thread_start
+                                                        start
+
+    11.56%     0.00%  [.] schedule_timeout
+            |          
+             --0.50%--schedule_timeout
+                       unix_stream_data_wait
+                       unix_stream_read_generic
+                       unix_stream_recvmsg
+                       sock_recvmsg
+                       |          
+                        --0.49%--____sys_recvmsg
+                                  ___sys_recvmsg
+                                  __sys_recvmsg
+                                  __x64_sys_recvmsg
+                                  x64_sys_call
+                                  do_syscall_64
+                                  entry_SYSCALL_64_after_hwframe
+                                  sccp
+                                  fxdax::extentd::client::Client::receive
+                                  core::ops::function::FnOnce::call_once{{vtable.shim}}
+                                  std::sys::backtrace::__rust_begin_short_backtrace
+                                  core::ops::function::FnOnce::call_once{{vtable.shim}}
+                                  <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+                                  <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+                                  <std::sys::thread::unix::Thread>::new::thread_start
+                                  start
+
+    10.91%     0.00%  [.] on_each_cpu_cond_mask
+            |
+            ---native_flush_tlb_multi
+               flush_tlb_mm_range
+               |          
+               |--0.32%--ptep_clear_flush
+               |          wp_page_copy
+               |          do_wp_page
+               |          handle_pte_fault
+               |          __handle_mm_fault
+               |          handle_mm_fault
+               |          do_user_addr_fault
+               |          exc_page_fault
+               |          asm_exc_page_fault
+               |          |          
+               |           --0.22%--memcpy
+               |                     core::ops::function::FnOnce::call_once{{vtable.shim}}
+               |                     std::sys::backtrace::__rust_begin_short_backtrace
+               |                     core::ops::function::FnOnce::call_once{{vtable.shim}}
+               |                     <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+               |                     <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+               |                     <std::sys::thread::unix::Thread>::new::thread_start
+               |                     start
+               |          
+                --0.15%--tlb_flush_mmu_tlbonly
+                          tlb_finish_mmu
+                          unmap_region
+                          vms_complete_munmap_vmas
+                          do_vmi_align_munmap
+                          do_vmi_munmap
+                          __vm_munmap
+                          __x64_sys_munmap
+                          x64_sys_call
+                          do_syscall_64
+                          entry_SYSCALL_64_after_hwframe
+                          __syscall2 (inlined)
+                          __munmap
+
+    10.51%     0.00%  [.] 0000000000000000
+    10.14%     0.11%  [.] unix_stream_read_actor
+            |          
+             --0.43%--unix_stream_read_actor
+                       unix_stream_read_generic
+                       unix_stream_recvmsg
+                       sock_recvmsg
+                       |          
+                        --0.32%--__sys_recvfrom
+                                  __x64_sys_recvfrom
+                                  x64_sys_call
+                                  do_syscall_64
+                                  entry_SYSCALL_64_after_hwframe
+                                  sccp
+                                  core::ops::function::FnOnce::call_once{{vtable.shim}}
+                                  std::sys::backtrace::__rust_begin_short_backtrace
+                                  core::ops::function::FnOnce::call_once{{vtable.shim}}
+                                  <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+                                  <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+                                  <std::sys::thread::unix::Thread>::new::thread_start
+                                  start
+
+     9.95%     0.00%  [.] skb_copy_datagram_iter
+            |
+            ---unix_stream_read_actor
+               unix_stream_read_generic
+               unix_stream_recvmsg
+               sock_recvmsg
+               |          
+                --0.32%--__sys_recvfrom
+                          __x64_sys_recvfrom
+                          x64_sys_call
+                          do_syscall_64
+                          entry_SYSCALL_64_after_hwframe
+                          sccp
+                          core::ops::function::FnOnce::call_once{{vtable.shim}}
+                          std::sys::backtrace::__rust_begin_short_backtrace
+                          core::ops::function::FnOnce::call_once{{vtable.shim}}
+                          <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+                          <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+                          <std::sys::thread::unix::Thread>::new::thread_start
+                          start
+
+     9.87%     0.00%  [.] __skb_datagram_iter
+            |          
+             --0.42%--skb_copy_datagram_iter
+                       unix_stream_read_actor
+                       unix_stream_read_generic
+                       unix_stream_recvmsg
+                       sock_recvmsg
+                       |          
+                        --0.32%--__sys_recvfrom
+                                  __x64_sys_recvfrom
+                                  x64_sys_call
+                                  do_syscall_64
+                                  entry_SYSCALL_64_after_hwframe
+                                  sccp
+                                  core::ops::function::FnOnce::call_once{{vtable.shim}}
+                                  std::sys::backtrace::__rust_begin_short_backtrace
+                                  core::ops::function::FnOnce::call_once{{vtable.shim}}
+                                  <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+                                  <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+                                  <std::sys::thread::unix::Thread>::new::thread_start
+                                  start
+
+     9.38%     2.84%  [.] _copy_to_iter
+            |          
+             --0.34%--_copy_to_iter
+                       simple_copy_to_iter
+                       __skb_datagram_iter
+                       skb_copy_datagram_iter
+                       unix_stream_read_actor
+                       unix_stream_read_generic
+                       unix_stream_recvmsg
+                       sock_recvmsg
+                       |          
+                        --0.28%--__sys_recvfrom
+                                  __x64_sys_recvfrom
+                                  x64_sys_call
+                                  do_syscall_64
+                                  entry_SYSCALL_64_after_hwframe
+                                  sccp
+                                  core::ops::function::FnOnce::call_once{{vtable.shim}}
+                                  std::sys::backtrace::__rust_begin_short_backtrace
+                                  core::ops::function::FnOnce::call_once{{vtable.shim}}
+                                  <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+                                  <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+                                  <std::sys::thread::unix::Thread>::new::thread_start
+                                  start
+
+     9.27%     0.22%  [.] simple_copy_to_iter
+            |          
+             --0.39%--simple_copy_to_iter
+                       __skb_datagram_iter
+                       skb_copy_datagram_iter
+                       unix_stream_read_actor
+                       unix_stream_read_generic
+                       unix_stream_recvmsg
+                       sock_recvmsg
+                       |          
+                        --0.31%--__sys_recvfrom
+                                  __x64_sys_recvfrom
+                                  x64_sys_call
+                                  do_syscall_64
+                                  entry_SYSCALL_64_after_hwframe
+                                  sccp
+                                  core::ops::function::FnOnce::call_once{{vtable.shim}}
+                                  std::sys::backtrace::__rust_begin_short_backtrace
+                                  core::ops::function::FnOnce::call_once{{vtable.shim}}
+                                  <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+                                  <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+                                  <std::sys::thread::unix::Thread>::new::thread_start
+                                  start
+
+     9.16%     0.00%  [.] ptep_clear_flush
+            |
+            ---wp_page_copy
+               do_wp_page
+               handle_pte_fault
+               __handle_mm_fault
+               handle_mm_fault
+               do_user_addr_fault
+               exc_page_fault
+               asm_exc_page_fault
+               |          
+                --0.29%--memcpy
+                          core::ops::function::FnOnce::call_once{{vtable.shim}}
+                          std::sys::backtrace::__rust_begin_short_backtrace
+                          core::ops::function::FnOnce::call_once{{vtable.shim}}
+                          <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+                          <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+                          <std::sys::thread::unix::Thread>::new::thread_start
+                          start
+
+     8.98%     0.00%  [.] tlb_finish_mmu
+            |          
+             --0.38%--unmap_region
+                       vms_complete_munmap_vmas
+                       do_vmi_align_munmap
+                       do_vmi_munmap
+                       __vm_munmap
+                       __x64_sys_munmap
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       __syscall2 (inlined)
+                       __munmap
+
+     8.51%     0.20%  [.] __sys_recvfrom
+            |          
+             --0.36%--__sys_recvfrom
+                       __x64_sys_recvfrom
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       sccp
+                       core::ops::function::FnOnce::call_once{{vtable.shim}}
+                       std::sys::backtrace::__rust_begin_short_backtrace
+                       core::ops::function::FnOnce::call_once{{vtable.shim}}
+                       <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+                       <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+                       <std::sys::thread::unix::Thread>::new::thread_start
+                       start
+
+     8.40%     0.00%  [.] __x64_sys_recvfrom
+            |
+            ---x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               sccp
+               core::ops::function::FnOnce::call_once{{vtable.shim}}
+               std::sys::backtrace::__rust_begin_short_backtrace
+               core::ops::function::FnOnce::call_once{{vtable.shim}}
+               <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+               <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+               <std::sys::thread::unix::Thread>::new::thread_start
+               start
+
+     6.92%     0.18%  [.] <vmm::devices::virtio::transport::pci::device::VirtioInterruptMsix as vmm::devices::virtio::transport::VirtioInterrupt>::trigger
+            |          
+             --0.29%--<vmm::devices::virtio::transport::pci::device::VirtioInterruptMsix as vmm::devices::virtio::transport::VirtioInterrupt>::trigger
+                       async_task::raw::RawTask<F,T,S,M>::run
+                       fxdax::extentd::client::Client::receive
+                       core::ops::function::FnOnce::call_once{{vtable.shim}}
+                       std::sys::backtrace::__rust_begin_short_backtrace
+                       core::ops::function::FnOnce::call_once{{vtable.shim}}
+                       <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+                       <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+                       <std::sys::thread::unix::Thread>::new::thread_start
+                       start
+
+     5.90%     0.30%  [.] do_anonymous_page
+            |          
+             --0.25%--do_anonymous_page
+                       handle_pte_fault
+                       __handle_mm_fault
+                       handle_mm_fault
+                       do_user_addr_fault
+                       exc_page_fault
+                       asm_exc_page_fault
+
+     5.36%     0.63%  [.] dequeue_entities
+            |          
+             --0.21%--dequeue_entities
+                       |          
+                        --0.19%--dequeue_task_fair
+                                  dequeue_task
+                                  try_to_block_task.constprop.0.isra.0
+                                  __schedule
+                                  schedule
+                                  |          
+                                   --0.18%--schedule_timeout
+                                             unix_stream_data_wait
+                                             unix_stream_read_generic
+                                             unix_stream_recvmsg
+                                             sock_recvmsg
+                                             ____sys_recvmsg
+                                             ___sys_recvmsg
+                                             __sys_recvmsg
+                                             __x64_sys_recvmsg
+                                             x64_sys_call
+                                             do_syscall_64
+                                             entry_SYSCALL_64_after_hwframe
+                                             sccp
+                                             fxdax::extentd::client::Client::receive
+                                             core::ops::function::FnOnce::call_once{{vtable.shim}}
+                                             std::sys::backtrace::__rust_begin_short_backtrace
+                                             core::ops::function::FnOnce::call_once{{vtable.shim}}
+                                             <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+                                             <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+                                             <std::sys::thread::unix::Thread>::new::thread_start
+                                             start
+
+     4.88%     0.67%  [.] folios_put_refs
+            |          
+             --0.18%--folios_put_refs
+                       |          
+                        --0.15%--free_pages_and_swap_cache
+                                  __tlb_batch_free_encoded_pages
+                                  tlb_finish_mmu
+                                  unmap_region
+                                  vms_complete_munmap_vmas
+                                  do_vmi_align_munmap
+                                  do_vmi_munmap
+                                  __vm_munmap
+                                  __x64_sys_munmap
+                                  x64_sys_call
+                                  do_syscall_64
+                                  entry_SYSCALL_64_after_hwframe
+                                  __syscall2 (inlined)
+                                  __munmap
+
+     4.88%     0.00%  [.] tlb_flush_mmu_tlbonly
+            |
+            ---tlb_finish_mmu
+               unmap_region
+               vms_complete_munmap_vmas
+               do_vmi_align_munmap
+               do_vmi_munmap
+               __vm_munmap
+               __x64_sys_munmap
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               __syscall2 (inlined)
+               __munmap
+
+     4.86%     0.00%  [.] dequeue_task
+            |          
+             --0.21%--try_to_block_task.constprop.0.isra.0
+                       __schedule
+                       schedule
+                       |          
+                        --0.19%--schedule_timeout
+                                  unix_stream_data_wait
+                                  unix_stream_read_generic
+                                  unix_stream_recvmsg
+                                  sock_recvmsg
+                                  ____sys_recvmsg
+                                  ___sys_recvmsg
+                                  __sys_recvmsg
+                                  __x64_sys_recvmsg
+                                  x64_sys_call
+                                  do_syscall_64
+                                  entry_SYSCALL_64_after_hwframe
+                                  sccp
+                                  fxdax::extentd::client::Client::receive
+                                  core::ops::function::FnOnce::call_once{{vtable.shim}}
+                                  std::sys::backtrace::__rust_begin_short_backtrace
+                                  core::ops::function::FnOnce::call_once{{vtable.shim}}
+                                  <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+                                  <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+                                  <std::sys::thread::unix::Thread>::new::thread_start
+                                  start
+
+     4.81%     0.22%  [.] dequeue_task_fair
+            |          
+             --0.20%--dequeue_task_fair
+                       dequeue_task
+                       try_to_block_task.constprop.0.isra.0
+                       __schedule
+                       schedule
+                       |          
+                        --0.18%--schedule_timeout
+                                  unix_stream_data_wait
+                                  unix_stream_read_generic
+                                  unix_stream_recvmsg
+                                  sock_recvmsg
+                                  ____sys_recvmsg
+                                  ___sys_recvmsg
+                                  __sys_recvmsg
+                                  __x64_sys_recvmsg
+                                  x64_sys_call
+                                  do_syscall_64
+                                  entry_SYSCALL_64_after_hwframe
+                                  sccp
+                                  fxdax::extentd::client::Client::receive
+                                  core::ops::function::FnOnce::call_once{{vtable.shim}}
+                                  std::sys::backtrace::__rust_begin_short_backtrace
+                                  core::ops::function::FnOnce::call_once{{vtable.shim}}
+                                  <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+                                  <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+                                  <std::sys::thread::unix::Thread>::new::thread_start
+                                  start
+
+     4.77%     0.11%  [.] try_to_block_task.constprop.0.isra.0
+            |          
+             --0.20%--try_to_block_task.constprop.0.isra.0
+                       __schedule
+                       schedule
+                       |          
+                        --0.19%--schedule_timeout
+                                  unix_stream_data_wait
+                                  unix_stream_read_generic
+                                  unix_stream_recvmsg
+                                  sock_recvmsg
+                                  ____sys_recvmsg
+                                  ___sys_recvmsg
+                                  __sys_recvmsg
+                                  __x64_sys_recvmsg
+                                  x64_sys_call
+                                  do_syscall_64
+                                  entry_SYSCALL_64_after_hwframe
+                                  sccp
+                                  fxdax::extentd::client::Client::receive
+                                  core::ops::function::FnOnce::call_once{{vtable.shim}}
+                                  std::sys::backtrace::__rust_begin_short_backtrace
+                                  core::ops::function::FnOnce::call_once{{vtable.shim}}
+                                  <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+                                  <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+                                  <std::sys::thread::unix::Thread>::new::thread_start
+                                  start
+
+     4.37%     1.04%  [k] dequeue_entity
+            |          
+             --0.14%--dequeue_entity
+                       dequeue_entities
+                       |          
+                        --0.13%--dequeue_task_fair
+                                  dequeue_task
+                                  try_to_block_task.constprop.0.isra.0
+                                  __schedule
+                                  schedule
+                                  |          
+                                   --0.13%--schedule_timeout
+                                             unix_stream_data_wait
+                                             unix_stream_read_generic
+                                             unix_stream_recvmsg
+                                             sock_recvmsg
+                                             ____sys_recvmsg
+                                             ___sys_recvmsg
+                                             __sys_recvmsg
+                                             __x64_sys_recvmsg
+                                             x64_sys_call
+                                             do_syscall_64
+                                             entry_SYSCALL_64_after_hwframe
+                                             sccp
+                                             fxdax::extentd::client::Client::receive
+                                             core::ops::function::FnOnce::call_once{{vtable.shim}}
+                                             std::sys::backtrace::__rust_begin_short_backtrace
+                                             core::ops::function::FnOnce::call_once{{vtable.shim}}
+                                             <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+                                             <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+                                             <std::sys::thread::unix::Thread>::new::thread_start
+                                             start
+
+     4.33%     0.10%  [.] unmap_vmas
+            |          
+             --0.18%--unmap_vmas
+                       unmap_region
+                       vms_complete_munmap_vmas
+                       do_vmi_align_munmap
+                       do_vmi_munmap
+                       __vm_munmap
+                       __x64_sys_munmap
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       __syscall2 (inlined)
+                       __munmap
+
+     4.33%     0.91%  [.] calloc
+            |          
+             --0.15%--calloc
+                       |          
+                        --0.13%--0
+
+     4.24%     0.29%  [.] ksys_write
+            |          
+             --0.17%--ksys_write
+                       __x64_sys_write
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       sccp
+                       <vmm::devices::virtio::transport::pci::device::VirtioInterruptMsix as vmm::devices::virtio::transport::VirtioInterrupt>::trigger
+                       async_task::raw::RawTask<F,T,S,M>::run
+                       fxdax::extentd::client::Client::receive
+                       core::ops::function::FnOnce::call_once{{vtable.shim}}
+                       std::sys::backtrace::__rust_begin_short_backtrace
+                       core::ops::function::FnOnce::call_once{{vtable.shim}}
+                       <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+                       <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+                       <std::sys::thread::unix::Thread>::new::thread_start
+                       start
+
+     4.06%     0.33%  [.] __wake_up_common
+            |          
+             --0.16%--__wake_up_common
+
+     4.05%     0.00%  [.] __x64_sys_write
+            |
+            ---x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               sccp
+               <vmm::devices::virtio::transport::pci::device::VirtioInterruptMsix as vmm::devices::virtio::transport::VirtioInterrupt>::trigger
+               async_task::raw::RawTask<F,T,S,M>::run
+               fxdax::extentd::client::Client::receive
+               core::ops::function::FnOnce::call_once{{vtable.shim}}
+               std::sys::backtrace::__rust_begin_short_backtrace
+               core::ops::function::FnOnce::call_once{{vtable.shim}}
+               <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+               <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+               <std::sys::thread::unix::Thread>::new::thread_start
+               start
+
+     3.97%     0.00%  [.] trace_call_bpf
+     3.91%     0.00%  [.] __tlb_batch_free_encoded_pages
+            |
+            ---tlb_finish_mmu
+               unmap_region
+               vms_complete_munmap_vmas
+               do_vmi_align_munmap
+               do_vmi_munmap
+               __vm_munmap
+               __x64_sys_munmap
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               __syscall2 (inlined)
+               __munmap
+
+     3.91%     0.10%  [.] free_pages_and_swap_cache
+            |          
+             --0.16%--free_pages_and_swap_cache
+                       __tlb_batch_free_encoded_pages
+                       tlb_finish_mmu
+                       unmap_region
+                       vms_complete_munmap_vmas
+                       do_vmi_align_munmap
+                       do_vmi_munmap
+                       __vm_munmap
+                       __x64_sys_munmap
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       __syscall2 (inlined)
+                       __munmap
+
+     3.91%     0.00%  [.] mal0_clear (inlined)
+            |
+            ---calloc
+               |          
+                --0.16%--0
+
+     3.84%     0.10%  [k] vfs_write
+            |          
+             --0.16%--vfs_write
+                       ksys_write
+                       __x64_sys_write
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       sccp
+                       <vmm::devices::virtio::transport::pci::device::VirtioInterruptMsix as vmm::devices::virtio::transport::VirtioInterrupt>::trigger
+                       async_task::raw::RawTask<F,T,S,M>::run
+                       fxdax::extentd::client::Client::receive
+                       core::ops::function::FnOnce::call_once{{vtable.shim}}
+                       std::sys::backtrace::__rust_begin_short_backtrace
+                       core::ops::function::FnOnce::call_once{{vtable.shim}}
+                       <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+                       <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+                       <std::sys::thread::unix::Thread>::new::thread_start
+                       start
+
+     3.72%     0.09%  [.] unmap_single_vma
+            |          
+             --0.16%--unmap_single_vma
+                       unmap_vmas
+                       unmap_region
+                       vms_complete_munmap_vmas
+                       do_vmi_align_munmap
+                       do_vmi_munmap
+                       __vm_munmap
+                       __x64_sys_munmap
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       __syscall2 (inlined)
+                       __munmap
+
+     3.71%     0.25%  [.] unmap_page_range
+            |          
+             --0.15%--unmap_page_range
+                       unmap_single_vma
+                       unmap_vmas
+                       unmap_region
+                       vms_complete_munmap_vmas
+                       do_vmi_align_munmap
+                       do_vmi_munmap
+                       __vm_munmap
+                       __x64_sys_munmap
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       __syscall2 (inlined)
+                       __munmap
+
+     3.59%     0.00%  [.] consume_skb
+            |
+            ---unix_stream_read_generic
+               unix_stream_recvmsg
+               sock_recvmsg
+               |          
+                --0.14%--____sys_recvmsg
+                          ___sys_recvmsg
+                          __sys_recvmsg
+                          __x64_sys_recvmsg
+                          x64_sys_call
+                          do_syscall_64
+                          entry_SYSCALL_64_after_hwframe
+                          sccp
+                          fxdax::extentd::client::Client::receive
+                          core::ops::function::FnOnce::call_once{{vtable.shim}}
+                          std::sys::backtrace::__rust_begin_short_backtrace
+                          core::ops::function::FnOnce::call_once{{vtable.shim}}
+                          <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+                          <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+                          <std::sys::thread::unix::Thread>::new::thread_start
+                          start
+
+     3.57%     0.00%  [.] pick_next_task
+            |
+            ---__schedule
+               schedule
+               |          
+                --0.14%--schedule_timeout
+                          unix_stream_data_wait
+                          unix_stream_read_generic
+                          unix_stream_recvmsg
+                          sock_recvmsg
+                          |          
+                           --0.13%--____sys_recvmsg
+                                     ___sys_recvmsg
+                                     __sys_recvmsg
+                                     __x64_sys_recvmsg
+                                     x64_sys_call
+                                     do_syscall_64
+                                     entry_SYSCALL_64_after_hwframe
+                                     sccp
+                                     fxdax::extentd::client::Client::receive
+                                     core::ops::function::FnOnce::call_once{{vtable.shim}}
+                                     std::sys::backtrace::__rust_begin_short_backtrace
+                                     core::ops::function::FnOnce::call_once{{vtable.shim}}
+                                     <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+                                     <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+                                     <std::sys::thread::unix::Thread>::new::thread_start
+                                     start
+
+     3.53%     0.00%  [.] zap_pmd_range.isra.0
+            |
+            ---unmap_page_range
+               unmap_single_vma
+               unmap_vmas
+               unmap_region
+               vms_complete_munmap_vmas
+               do_vmi_align_munmap
+               do_vmi_munmap
+               __vm_munmap
+               __x64_sys_munmap
+               x64_sys_call
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               __syscall2 (inlined)
+               __munmap
+
+     3.52%     0.21%  [.] alloc_pages_mpol
+            |          
+             --0.14%--alloc_pages_mpol
+
+     3.47%     0.00%  [.] __mmap
+            |          
+             --0.15%--0
+
+     3.47%     0.00%  [.] __syscall6 (inlined)
+            |
+            ---__mmap
+               |          
+                --0.15%--0
+
+     3.47%     0.10%  [.] __pick_next_task
+            |          
+             --0.15%--__pick_next_task
+                       pick_next_task
+                       __schedule
+                       schedule
+
+     3.46%     0.21%  [.] zap_pte_range
+            |          
+             --0.14%--zap_pte_range
+                       zap_pmd_range.isra.0
+                       unmap_page_range
+                       unmap_single_vma
+                       unmap_vmas
+                       unmap_region
+                       vms_complete_munmap_vmas
+                       do_vmi_align_munmap
+                       do_vmi_munmap
+                       __vm_munmap
+                       __x64_sys_munmap
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       __syscall2 (inlined)
+                       __munmap
+
+     3.42%     0.30%  [.] eventfd_write
+            |          
+             --0.13%--eventfd_write
+                       vfs_write
+                       ksys_write
+                       __x64_sys_write
+                       x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       sccp
+                       <vmm::devices::virtio::transport::pci::device::VirtioInterruptMsix as vmm::devices::virtio::transport::VirtioInterrupt>::trigger
+                       async_task::raw::RawTask<F,T,S,M>::run
+                       fxdax::extentd::client::Client::receive
+                       core::ops::function::FnOnce::call_once{{vtable.shim}}
+                       std::sys::backtrace::__rust_begin_short_backtrace
+                       core::ops::function::FnOnce::call_once{{vtable.shim}}
+                       <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::drop::Drop>::drop (inlined)
+                       <alloc::boxed::Box<dyn core::ops::function::FnOnce<(), Output = ()> + core::marker::Send> as core::ops::function::FnOnce<()>>::call_once (inlined)
+                       <std::sys::thread::unix::Thread>::new::thread_start
+                       start
+
+     3.15%     1.73%  [.] __libc_free
+     3.02%     0.41%  [.] cleanup_module
+
+
+#
+# (Cannot load tips.txt file, please install perf!)
+#
