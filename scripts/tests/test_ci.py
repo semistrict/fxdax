@@ -177,11 +177,15 @@ class Nightly(unittest.TestCase):
         self.assertEqual([int(part) for part in parts.split(",")], list(range(1, count + 1)))
         self.assertIn("SHARD: ${{ matrix.part }}/${{ strategy.job-total }}", suites)
         self.assertIn("fail-fast: false", suites)
+        # Where the jailed VMs' user reaches, binding their sockets beside the cases' logs: in the
+        # runner's home, its user's alone, every case with one failed, EACCES (run 42981086953).
+        self.assertIn("      WORK: /mnt/nightly\n", suites)
+        self.assertNotIn("$HOME/nightly", suites)
         run = re.search(r"- name: The guest suites, part .*?\n(.*?)\n      # ", suites,
                         re.DOTALL).group(1)
         for want in ["FXDAX_FIRECRACKER_JAIL=1", "FXDAX_FIRECRACKER_SECCOMP=real",
-                     '"FXDAX_E2E_PREBUILT=$HOME/guest/artifacts"',
-                     '"FXDAX_GUEST_KERNEL=$HOME/guest/vmlinux"', "sudo --preserve-env",
+                     '"FXDAX_E2E_PREBUILT=$WORK/artifacts"', '"FXDAX_GUEST_KERNEL=$WORK/vmlinux"',
+                     '"FXDAX_E2E_RESULTS=$WORK/results"', "sudo --preserve-env",
                      'scripts/test-e2e-rustfs.sh --tag nightly --shard "$SHARD"']:
             self.assertIn(want, run)
         # Its results uploaded however it ends, the run's step stopped in time for that.

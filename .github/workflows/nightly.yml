@@ -63,42 +63,46 @@ jobs:
         part: [1, 2, 3, 4, 5, 6, 7, 8]
     env:
       SHARD: ${{ matrix.part }}/${{ strategy.job-total }}
+      WORK: /mnt/nightly
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/guest-host
       - uses: actions/download-artifact@v8
         with:
           name: guest-artifacts
+      # In /mnt, which the jailed VMs' user reaches, unlike the runner's home, its user's alone:
+      # the VMs bind their sockets beside the cases' logs.
       - name: Unpack the artifacts
         run: |
-          mkdir -p ~/guest ~/nightly/tmp
-          tar -C ~/guest -xf guest.tar
+          sudo mkdir -p "$WORK/tmp"
+          sudo chown -R "$USER" "$WORK"
+          tar -C "$WORK" -xf guest.tar
           rm guest.tar
-          cat ~/guest/artifacts/artifacts.txt
+          cat "$WORK/artifacts/artifacts.txt"
       # The host's memory, swap, I/O and CPU every minute, in this log, which outlives a runner
       # that runs out of them.
       - name: The guest suites, part ${{ env.SHARD }}
         timeout-minutes: 300
         run: |
           vmstat -w -t 60 &
-          sudo --preserve-env env "PATH=$PATH" "HOME=$HOME" "TMPDIR=$HOME/nightly/tmp" \
-            "FXDAX_E2E_PREBUILT=$HOME/guest/artifacts" "FXDAX_GUEST_KERNEL=$HOME/guest/vmlinux" \
+          sudo --preserve-env env "PATH=$PATH" "HOME=$HOME" "TMPDIR=$WORK/tmp" \
+            "FXDAX_E2E_PREBUILT=$WORK/artifacts" "FXDAX_GUEST_KERNEL=$WORK/vmlinux" \
             FXDAX_FIRECRACKER_JAIL=1 FXDAX_FIRECRACKER_SECCOMP=real \
-            "FXDAX_E2E_RESULTS=$HOME/nightly/results" \
+            "FXDAX_E2E_RESULTS=$WORK/results" \
             scripts/test-e2e-rustfs.sh --tag nightly --shard "$SHARD"
       # What the cases said, but for their stores, images and caches: the runner's user's, as
       # root's guest roots' directories aren't readable to it.
       - name: Give the results to the runner's user
         if: always()
-        run: sudo chown -R "$USER" ~/nightly
+        run: sudo chown -R "$USER" "$WORK"
       - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: guest-suites-${{ matrix.part }}
           path: |
-            ~/nightly/results/**/*.txt
-            ~/nightly/results/**/*.log
-            ~/nightly/results/**/*.json
+            /mnt/nightly/results/**/*.txt
+            /mnt/nightly/results/**/*.log
+            /mnt/nightly/results/**/*.json
 
   # guest/sim's 3,000 seeds, as CI runs them when what they test changed (TASK-149.14).
   guest-sim:

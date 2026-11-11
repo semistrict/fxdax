@@ -43,8 +43,14 @@ selectors=("$@")
 if (( ${#selectors[@]} == 0 )); then
     selectors=(--tag e2e)
 fi
-results=${FXDAX_E2E_RESULTS:-$(mktemp -d "${TMPDIR:-/tmp}/fxdax-e2e.XXXXXX")}
-mkdir -p "$results"
+if [[ -n ${FXDAX_E2E_RESULTS:-} ]]; then
+    results=$FXDAX_E2E_RESULTS
+    mkdir -p "$results"
+else
+    # Reachable by others, as a jailed VM's user must reach it (below), unlike mktemp's own.
+    results=$(mktemp -d "${TMPDIR:-/tmp}/fxdax-e2e.XXXXXX")
+    chmod 755 "$results"
+fi
 results=$(cd "$results" && pwd)
 build_only=${FXDAX_E2E_BUILD_ONLY:-} prebuilt=${FXDAX_E2E_PREBUILT:-}
 if [[ -n $build_only && -n $prebuilt ]]; then
@@ -201,6 +207,14 @@ fi
 if [[ -n ${FXDAX_FIRECRACKER_JAIL:-} && -z $build_only ]]; then
     [[ $seccomp != none ]] || { echo "FXDAX_FIRECRACKER_JAIL needs a seccomp filter" >&2; exit 2; }
     export FXDAX_JAIL_UID=64000 FXDAX_JAIL_GID=64000
+    # The jailed user binds its VM's sockets in the cases' directories, under the results: one it
+    # can't reach failed every case with one, EACCES (TASK-284: results in a GitHub runner's home,
+    # its user's alone).
+    if ! setpriv --reuid="$FXDAX_JAIL_UID" --regid="$FXDAX_JAIL_GID" --clear-groups \
+        test -x "$results"; then
+        echo "$results is out of the jailed user's reach ($FXDAX_JAIL_UID): FXDAX_FIRECRACKER_JAIL needs results it can reach" >&2
+        exit 2
+    fi
     sysctl -q vm.unprivileged_userfaultfd=0
     # What the tests make, images and all, the jailed user reaches; but the daemons' sockets,
     # their user's alone (TASK-155), which it is given once they serve.

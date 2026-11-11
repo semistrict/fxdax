@@ -1,12 +1,12 @@
 # Open questions
 
-## The nightly needs GCP credentials in GitHub (2026-11-02)
-
-`.github/workflows/nightly.yml` never ran: its YAML didn't parse (fixed in a1e079306). Now it parses, it needs the repository's `GCP_WORKLOAD_IDENTITY_PROVIDER` and `GCP_SERVICE_ACCOUNT` secrets and its `FXDAX_GCE_PROJECT` and `FXDAX_NIGHTLY_BUCKET` variables, none of which is set. Granting GitHub access to the GCP project is yours.
-**Recommended:** a workload identity pool for `semistrict/fxdax` and a service account allowed to make and delete GCE instances and write the nightly bucket.
-**Until then:** each nightly fails at its auth step; TASK-69's runs stay manual.
-
 # Decisions
+
+## The nightly's guest suites on GitHub's runners, in parts by place (TASK-284, 2026-11-11)
+Your rule (no GCP) as built: nightly.yml builds the artifacts and kernel once (guest-build), then a matrix of 8 jobs runs `--tag nightly --shard K/N` each, as root, jailed under the real seccomp filter, branches in RustFS on the runner. Decided without you:
+- **A part is every Nth case from the Kth, as registered** (`runner list --shard`), not balanced by measured times: no list of names nor of durations to keep, and a new case lands in a part by itself. *Instead:* parts balanced by each case's recorded time (summary.json). *Undo:* drop `--shard` and the matrix.
+- **Prebuilt artifacts hold the jailer** (built under a seccomp filter), so a jailed run takes them; FXDAX_FIRECRACKER_JAIL with artifacts built without a filter is refused.
+- **The OPEN_QUESTIONS entry asking you for GCP secrets is gone**, as is everything GCP in nightly.yml; scripts/*-gce.sh stay.
 
 ## The sandboxes' run on GitHub's runners, and its writes budget (TASK-330.1, 2026-11-10)
 - **CI runs guests on GitHub's own runners** (`.github/workflows/sandboxes.yml`, both modes by hand for now): ubuntu-24.04 has KVM, nested under Hyper-V on 4 AMD EPYC vCPUs, 16 GB and one ext4 disk, which is the topology LangSmith's CI has; its user is given `/dev/kvm` and `/dev/userfaultfd` by a udev rule. The guest kernel builds in 12 min there and is cached by what it's built from (`scripts/guest-kernel-key.sh`). *Instead:* a self-hosted runner on ubu1 (a registration token, and PRs' code on a shared box). *Undo:* drop the two `sandboxes` jobs; `scripts/sandboxes.sh` runs anywhere with KVM.
@@ -36,7 +36,7 @@ TASK-221: after a host crash, guest writes answered but not fsync'd may be lost 
 TASK-224 stays To Do, not scheduled.
 
 ## The nightly's migrate check is dropped (the user, 2026-11-08)
-TASK-141.4's AC #2 (scripts/migrate-gce.sh off and back nightly) is dropped; the task closes on its other criteria. The nightly's GCP credentials (above) are still open.
+TASK-141.4's AC #2 (scripts/migrate-gce.sh off and back nightly) is dropped; the task closes on its other criteria.
 
 ## Experiment branches deleted (the user, 2026-11-08)
 Branches and worktrees never meant for main (TASK-133's late pre-fault, t227-prof/t229-measure, exp/79.8-repro, night/evacuate, wip/task-112-5-on-119, zircon-removal-*, r3/*, r7/dax, perf-*, decay, lockup) are deleted outright; SHAs the backlog and dead-ends cite from them no longer resolve.
