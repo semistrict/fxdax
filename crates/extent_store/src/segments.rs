@@ -503,10 +503,10 @@ impl<F: File> Segments<F> {
             ) => Ok(log.clone()),
             _ => {
                 let file = dir.open(&log_path(number), false)?;
-                let mut header = [0; 16];
+                let mut header = [0; crate::wal::LOG_HEADER];
                 file.read_cached(&mut header, 0)?;
-                let salt =
-                    log_salt(&header).ok_or_else(|| anyhow!("{number:?}'s log has no header"))?;
+                let salt = log_salt(&header, number)
+                    .ok_or_else(|| anyhow!("{number:?}'s log has no header of its own"))?;
                 Ok(Log { file: Arc::new(file), salt })
             }
         }
@@ -1380,7 +1380,7 @@ fn create_open<D: Dir>(
     // first, a crash, or a failure, before the header was durable left the spare's header, and the
     // records it salts, its last segment's, under this segment's name, which an opening took for
     // this segment's commits, their runs past its raw data (TASK-310's crash round 270).
-    let (path, header) = (log_path(segment), log_header(salt));
+    let (path, header) = (log_path(segment), log_header(salt, segment));
     let headed = |log: D::File| -> io::Result<D::File> {
         log.write_at(&header, 0)?;
         crate::written::wrote(crate::written::Kind::Log, header.len());

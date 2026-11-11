@@ -228,14 +228,12 @@ impl LogRecord {
         }
     }
 
-    /// The records of `bytes`, a log, that are whole: those of any kind; after its header, salted
-    /// as it says, if it has one ([`LOG_MAGIC`]), as a log reused does, whose records from before
-    /// are torn then; or from its start, unsalted, as logs before had them.
-    fn decode(bytes: &[u8]) -> Vec<Self> {
-        let (bytes, salt) = match log_salt(bytes) {
-            Some(salt) => (bytes.get(LOG_RECORDS as usize..).unwrap_or_default(), salt),
-            None => (bytes, 0),
-        };
+    /// The records of `bytes`, `segment`'s log, that are whole: those of any kind, after its
+    /// header, salted as it says ([`LOG_MAGIC`]), as a log reused does, whose records from before
+    /// are torn then; none if its header isn't `segment`'s ([`log_salt`]).
+    fn decode(bytes: &[u8], segment: SegmentId) -> Vec<Self> {
+        let Some(salt) = log_salt(bytes, segment) else { return Vec::new() };
+        let bytes = bytes.get(LOG_RECORDS as usize..).unwrap_or_default();
         crate::layout::decode_with(bytes, salt, |payload| {
             bincode::deserialize::<Self>(payload).ok().or_else(|| {
                 let contents = bincode::deserialize::<Contents>(payload).ok()?;
@@ -252,29 +250,42 @@ impl LogRecord {
 /// records is overwritten as it is appended to, a sync then syncing the records alone, not the
 /// log's size and blocks too, a third of the time on a cloud disk. The header is synced before any
 /// record is appended: a log whose new header a crash lost would read its old one's records.
-pub(crate) const LOG_MAGIC: &[u8; 8] = b"FXLOG\0\0\x01";
+/// fxdax: after the salt, the segment the log is of, the branch's then the number: a spare is
+/// renamed a log, and was renamed a spare, neither rename durable until a flush syncs the
+/// directory of logs, so a crash may keep it under its last segment's name, holding the new
+/// one's header and records, which an opening took for the last one's commits (TASK-341, found by
+/// TASK-310's crash rounds, round 81); a log whose header names another segment holds none of
+/// its own.
+pub(crate) const LOG_MAGIC: &[u8; 8] = b"FXLOG\0\0\x02";
 
 /// fxdax: where a segment's log's records start, after its header.
 pub(crate) const LOG_RECORDS: u64 = 4096;
 
-/// fxdax: the header of a segment's log, its records salted with `salt` ([`LOG_MAGIC`]).
-pub(crate) fn log_header(salt: u64) -> Vec<u8> {
+/// fxdax: the bytes of a log's header ([`LOG_MAGIC`]) that say anything.
+pub(crate) const LOG_HEADER: usize = LOG_MAGIC.len() + 3 * 8;
+
+/// fxdax: the header of `segment`'s log, its records salted with `salt` ([`LOG_MAGIC`]).
+pub(crate) fn log_header(salt: u64, segment: SegmentId) -> Vec<u8> {
     let mut header = vec![0; LOG_RECORDS as usize];
+    let fields = [salt, segment.branch, segment.number].map(u64::to_le_bytes);
     header[..LOG_MAGIC.len()].copy_from_slice(LOG_MAGIC);
-    header[LOG_MAGIC.len()..][..8].copy_from_slice(&salt.to_le_bytes());
+    header[LOG_MAGIC.len()..LOG_HEADER].copy_from_slice(fields.as_flattened());
     header
 }
 
-/// fxdax: the salt of the records of `log`, a log's bytes, as its header says, if it has one.
-pub(crate) fn log_salt(log: &[u8]) -> Option<u64> {
-    let salt = log.strip_prefix(LOG_MAGIC)?.get(..8)?;
-    Some(u64::from_le_bytes(salt.try_into().unwrap()))
+/// fxdax: the salt of the records of `log`, `segment`'s log's bytes, as its header says, if it
+/// has one, and it is `segment`'s.
+pub(crate) fn log_salt(log: &[u8], segment: SegmentId) -> Option<u64> {
+    let fields = log.strip_prefix(LOG_MAGIC)?.get(..LOG_HEADER - LOG_MAGIC.len())?;
+    let [salt, branch, number] =
+        [0, 1, 2].map(|at| u64::from_le_bytes(fields[at * 8..][..8].try_into().unwrap()));
+    (SegmentId { branch, number } == segment).then_some(salt)
 }
 
 /// fxdax: a salt for the records of a log of `segment`'s made in `lifetime`, a value of the
 /// opening of the branch that made it ([`crate::segments::Segments::open`]): none another log
 /// had, as a branch whose segments all left numbers its next from 0 again, its epoch past theirs;
-/// and none 0, the salt of logs without headers.
+/// and none 0, the salt of logs before they had headers.
 pub(crate) fn new_salt(lifetime: u64, segment: SegmentId) -> u64 {
     let mut bytes = [0; 24];
     bytes[..8].copy_from_slice(&lifetime.to_le_bytes());
@@ -633,7 +644,7 @@ fn log_records<D: Dir>(
     segment: SegmentId,
 ) -> Result<(Vec<Contents>, Vec<u8>, bool), Error> {
     let records = match dir.open(&log_path(segment), false) {
-        Ok(log) => LogRecord::decode(&read_file(&log)?),
+        Ok(log) => LogRecord::decode(&read_file(&log)?, segment),
         Err(err) if not_found(&err) => return Ok((Vec::new(), Vec::new(), false)),
         Err(err) => return Err(err.into()),
     };
@@ -833,9 +844,15 @@ mod tests {
     fn left_open(dir: &MemDir, number: u64, blocks: u64, records: &[Contents]) {
         let raw = dir.create(&open_segment_path(segment(number)), true).unwrap();
         raw.write_at(&vec![number as u8; (blocks * 4096) as usize], 0).unwrap();
+        logged(dir, number, number, records);
+    }
+
+    /// Writes segment `number`'s log as segment `of`'s log, of `records`, its header and records
+    /// `of`'s: a spare reused for `of` that a crash left under `number`'s name.
+    fn logged(dir: &MemDir, number: u64, of: u64, records: &[Contents]) {
         let log = Arc::new(dir.create(&log_path(segment(number)), false).unwrap());
-        let salt = new_salt(0, segment(number));
-        log.write_at(&log_header(salt), 0).unwrap();
+        let salt = new_salt(0, segment(of));
+        log.write_at(&log_header(salt, segment(of)), 0).unwrap();
         let mut log = SegmentLog::new(log, salt);
         let records = records.iter().map(|contents| {
             let record = LogRecord { contents: contents.clone(), runs: Runs::Synced };
@@ -1219,6 +1236,26 @@ mod tests {
         let last: Vec<u64> =
             recovered.segments.iter().map(|(footer, _)| footer_last(footer)).collect();
         assert_eq!(last, [2, 3, 4]);
+        assert_eq!((files(&dir, OPEN_SEGMENTS), files(&dir, LOGS)), (vec![], vec![]));
+    }
+
+    /// fxdax: a log whose header is another segment's holds none of its segment's commits: a spare,
+    /// renamed from segment 3's log, then renamed segment 6's, neither rename durable, its header
+    /// and records then 6's, which a crash kept under 3's name. Read as 3's, its commits were kept
+    /// with segment 3's raw data, which holds none of their runs (TASK-341, TASK-310's crash
+    /// rounds, round 81).
+    #[test]
+    fn logs_of_other_segments_hold_none_of_their_names() {
+        let dir = MemDir::new();
+        framed_three(&dir);
+        let raw = dir.create(&open_segment_path(segment(3)), true).unwrap();
+        raw.write_at(&[3; 4096], 0).unwrap();
+        logged(&dir, 3, 6, &[commit(5, 5, 0)]);
+        let recovered = recover(&dir, BRANCH).unwrap();
+        let last: Vec<u64> =
+            recovered.segments.iter().map(|(footer, _)| footer_last(footer)).collect();
+        assert_eq!(last, [2, 3, 4]);
+        assert_eq!(files(&dir, SEGMENTS), [0, 1, 2]);
         assert_eq!((files(&dir, OPEN_SEGMENTS), files(&dir, LOGS)), (vec![], vec![]));
     }
 

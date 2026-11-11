@@ -25,7 +25,9 @@ use crate::sync::{Condvar, Mutex, MutexGuard, rules, spawn_or_return, thread};
 use crate::timings::{self, Flush, flush};
 use crate::uploads::Closed;
 use crate::views::{Limits, Sealed, View, Views};
-use crate::wal::{BaseFile, LOG_MAGIC, LogRecord, Queue, Queued, Recovered, Runs, SegmentLog};
+use crate::wal::{
+    BaseFile, LOG_HEADER, LogRecord, Queue, Queued, Recovered, Runs, SegmentLog, log_salt,
+};
 use crate::written;
 use anyhow::{Context as _, Error, anyhow, bail, ensure};
 use extent_frame::segment::{Chain, Child, Contents, Footer, Location, epoch_of};
@@ -2155,12 +2157,12 @@ impl<D: Dir> Store<D> {
         self.remove(raw.iter().map(|segment| open_segment_path(*segment)));
         for segment in raw {
             let (log, spare) = (log_path(segment), spare_path(segment));
-            // A log made before logs had headers holds records no salt tells from a later one's.
+            // A log without a header of its own holds records no salt tells from a later one's.
             if self.lock().segments.wants_spare()
                 && let Ok(file) = self.dir.open(&log, false)
-                && let mut header = [0; LOG_MAGIC.len()]
+                && let mut header = [0; LOG_HEADER]
                 && file.read_cached(&mut header, 0).is_ok()
-                && header == *LOG_MAGIC
+                && log_salt(&header, segment).is_some()
             {
                 match self.dir.rename(&log, &spare) {
                     Ok(()) => {
