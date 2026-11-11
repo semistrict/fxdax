@@ -38,4 +38,6 @@ Main CI 43117460854 (0e044dea5, the first full CI with TASK-310's e2cbf7ec4), ma
 
 <!-- SECTION:NOTES:BEGIN -->
 2026-11-11: failed again on the rerun of main CI 43117460854's macos (workspace) (same line, (2, 1)): on GitHub's macOS runner every time so far, 0 of 6 locally. Main is red on it.
+
+Correction (TASK-310's session, which owns this): the CI value was (1, 2), one live log and two spares, not (2, 1); the race predates TASK-310, which widened it. Its fix (test settles the store before counting) is theirs to push.
 <!-- SECTION:NOTES:END -->
