@@ -8,7 +8,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-10 14:00'
-updated_date: '2026-11-11 07:26'
+updated_date: '2026-11-11 10:32'
 labels:
   - testing
 dependencies: []
@@ -71,4 +71,6 @@ The repository's Actions caches are at 10.6 GB, past GitHub's 10 GB: the kernel'
 Sizing for GitHub's 16 GB runner, found by the long mode taking it down (vmstat and RSS now in the job's log): VMs builder 1.5 GiB / pgbench 1 / git 0.5 / writer 0.75 (7.5 GiB at once), daemons 3 GiB each (4 GiB: caches climbed to 2.9 GB each and the runner ran out; 2 GiB: windows refused, ENOMEM pinning their private pages), DAX windows root 1 GiB / own stores 512 MiB. Long mode: 8 at once of 32 (LangSmith's controlled shape), more work each. Writes check now over the run (both hosts) at 1.5 (a host's own ratio follows its roles' mix: 1.39 for one left with pgbench's copies).
 Final sizes, verified: ubu1 short main x2: round 1 failed one framing (1,233 ms) and nothing else, round 2 passed every check; writes 1.16x both; no VM failed. Mutant through mutants.sh: killed in 346 s, 'framings: host-b ... 1343.3 ms' and 'writes: 1.80 times, past 1.5'. GitHub short (run 42944951179): every VM well, commands <= 382 ms, writes 1.19x, one framing 1,211 ms: fails as main does. GitHub long: the runner lost 66 min in, no log (TASK-330.5); being run whole on ubu1.
 Other flakes met in this task's CI runs, filed: TASK-339 (macOS: forks_read_what_they_inherited_compacted_twice) and TASK-341 (Linux: extent_store::crash openings_cut_at_each_write_open_again, an opening at epoch 22 holding epoch 21's contents); each passed on rerun. Final CI on the code (run 42951885432) green.
+
+Rebased onto main dfd9eb484 (its TASK-276.6 DAX changes, guest dax.c included): a fresh kernel (FXDAX_GUEST_KERNEL_JOBS=4) and artifacts on ubu1, short mode PASSED every check: slowest framing 368/325 ms, stores 1.19x, commands <= 41 ms, daemons' anon 712/722 MiB, VMs 85.5 s. CI on the rebased code (run 42979578798) green after reruns of TASK-341's flake, main's (reproduced on ubu1 with main's extent_store, 1 in 3 runs). Landed on main. Left In Progress: AC #1's pass on main is not steady, the framing check flapping past 1 s on ubu1's disk and on GitHub's runner (TASK-310, TASK-336); the short mode goes in ci.yml and the long in nightly.yml once they pass (TASK-330.5 for the long's size).
 <!-- SECTION:NOTES:END -->
