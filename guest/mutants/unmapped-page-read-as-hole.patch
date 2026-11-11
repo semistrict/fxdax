@@ -13,7 +13,7 @@
 
 --- a/guest/linux/fs/fxfs/dax.c
 +++ b/guest/linux/fs/fxfs/dax.c
-@@ -1817,18 +1817,6 @@
+@@ -1817,19 +1817,6 @@
  		up_read(&file->sem);
  		fxfs_dax_put_range(dax, range);
  		return -EIO;
@@ -24,7 +24,8 @@
 -		err = fxfs_dax_map_missing(inode, range, page,
 -					   min_t(u64, range->pages,
 -						 page + DIV_ROUND_UP(offset_in_page(pos) + length,
--								     PAGE_SIZE)));
+-								     PAGE_SIZE)),
+-					   true);
 -		if (err) {
 -			fxfs_dax_put_range(dax, range);
 -			return err;

@@ -39,7 +39,9 @@ describe("the repo's evidence", () => {
     const daxCow = evidence.mutations.filter((m) => m.spec === "dax-cow");
     expect(daxCow.map((m) => [m.name, m.removed, m.expect])).toEqual([
       ["NoBytesFirst", ["bytesFirst"], "CrashOldOrNew"],
+      ["NoChangesTakeAway", ["changesTakeAway"], "NoStaleLoad"],
       ["NoCountPrivate", ["countPrivate"], "NoRefusal"],
+      ["NoInstallAsNamed", ["installAsNamed"], "NoStaleLoad"],
       ["NoKeepUntilSealed", ["keepUntilSealed"], "NoOpenMap"],
       ["NoPrivateAtIomap", ["privateAtIomap"], "NoLostStore"],
       ["NoProtectByPageTables", ["protectByPageTables"], "CleanInFxfs"],
@@ -58,7 +60,7 @@ describe("the repo's evidence", () => {
   test("dax-cow's spec gives every rule its description, and its invariants their bodies", () => {
     const spec = evidence.specs.find((s) => s.spec === "dax-cow");
     expect(Object.keys(spec?.rules ?? {}).sort()).toEqual(
-      ["bytesFirst", "countPrivate", "keepUntilSealed", "privateAtIomap", "protectByPageTables", "rebindAfterSeal", "rebindExclusive", "swapExclusive", "swapFirst"],
+      ["bytesFirst", "changesTakeAway", "countPrivate", "installAsNamed", "keepUntilSealed", "privateAtIomap", "protectByPageTables", "rebindAfterSeal", "rebindExclusive", "swapExclusive", "swapFirst"],
     );
     expect(spec?.invariants.NoLostStore).toBe("NoLostStore == \\A p \\in Pages : win[p].data = latest[p]");
     expect(spec?.definitions.WSwap).toBe("The dirty set swapped out for an empty one; the semaphore downgraded, held shared to the commit.");
