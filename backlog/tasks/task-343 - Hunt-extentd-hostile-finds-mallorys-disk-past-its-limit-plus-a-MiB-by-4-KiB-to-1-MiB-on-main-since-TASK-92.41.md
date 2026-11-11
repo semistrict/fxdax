@@ -3,9 +3,11 @@ id: TASK-343
 title: >-
   Hunt: extentd hostile finds mallory's disk past its limit plus a MiB (by 4 KiB
   to 1 MiB), on main since TASK-92.41
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-11-11 07:26'
+updated_date: '2026-11-11 07:26'
 labels:
   - extentd
   - testing
