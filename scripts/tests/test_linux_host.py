@@ -98,6 +98,8 @@ class Tree(Synced, unittest.TestCase):
                 work,
                 source,
             ],
+            # Not the environment of a host run's, whose trees build in place (InPlace).
+            env={"PATH": os.environ["PATH"]},
             capture_output=True,
             text=True,
         )
