@@ -24,11 +24,11 @@ runs:
         sudo udevadm trigger --name-match=userfaultfd
         ls -l /dev/kvm /dev/userfaultfd
     - name: Install the build's tools
-      shell: bash
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y clang libclang-dev llvm pkg-config musl-tools e2fsprogs podman \
-          libseccomp-dev busybox-static flex bison bc cpio libelf-dev libssl-dev
+      uses: ./.github/actions/apt-install
+      with:
+        packages: >-
+          clang libclang-dev llvm pkg-config musl-tools e2fsprogs podman libseccomp-dev
+          busybox-static flex bison bc cpio libelf-dev libssl-dev
     - uses: dtolnay/rust-toolchain@stable
       with:
         targets: x86_64-unknown-linux-musl

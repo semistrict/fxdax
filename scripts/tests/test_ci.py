@@ -13,6 +13,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 CI = ROOT / ".github" / "workflows" / "ci.yml"
+APT_INSTALL = ROOT / ".github" / "actions" / "apt-install" / "action.yml"
 TEST_SH = ROOT / "scripts" / "test.sh"
 # The packages only some parts' tests run, and the parts: Coccinelle's spatch, which the scripts'
 # tests run (test_cocci_guest.py); mkfs.xfs, which the guest tests' own do; libclang, which the
@@ -40,8 +41,9 @@ def parts():
 
 def packages():
     """Each part's packages: those every part installs, and its own (matrix.include's)."""
-    install = re.search(r"sudo apt-get install -y ((?:.*\\\n)*.*)$", job(), re.MULTILINE)
-    common = set(install.group(1).replace("\\", " ").split()) - {"${{", "matrix.packages", "}}"}
+    install = re.search(r"uses: \./\.github/actions/apt-install\n *with:\n *packages: (.*)$", job(),
+                        re.MULTILINE)
+    common = set(install.group(1).split()) - {"${{", "matrix.packages", "}}"}
     own = dict(re.findall(r"^          - parts: (.+)\n            packages: (.+)$", job(),
                           re.MULTILINE))
     return {part: common | set(own.get(part, "").split()) for part in parts()}
@@ -203,3 +205,30 @@ class Nightly(unittest.TestCase):
         self.assertIn('FXDAX_EXTENTD_REMOTE=s3://fxdax/e2e "$root/scripts/test-e2e.sh" "$@"',
                       script)
         self.assertIn("rustfs_start", script)
+
+
+class AptInstall(unittest.TestCase):
+    """Every job installs Ubuntu's packages through .github/actions/apt-install, which reaches mirrors
+    outside ubuntu.com when its names don't resolve, as for hours on 2026-11-11 (TASK-360)."""
+
+    def test_every_workflow_and_action_installs_through_it(self):
+        github = ROOT / ".github"
+        users = []
+        for path in sorted([*github.glob("workflows/*.yml"), *github.glob("actions/*/action.yml")]):
+            if path == APT_INSTALL:
+                continue
+            text = path.read_text()
+            self.assertNotIn("apt-get", text, path)
+            self.assertNotRegex(text, r"\bapt (install|update)\b", path)
+            if "actions/apt-install" in text:
+                users.append(path.relative_to(github).as_posix())
+        self.assertEqual(users, ["actions/guest-host/action.yml", "workflows/ci.yml",
+                                 "workflows/hunt.yml", "workflows/nightly.yml"])
+
+    def test_it_falls_back_to_mirrors_outside_ubuntu_com_and_fails_on_any_index(self):
+        text = APT_INSTALL.read_text()
+        mirrors = re.findall(r"^ +(https://\S+/ubuntu/) \d+", text, re.MULTILINE)
+        self.assertEqual(mirrors, ["https://mirrors.edge.kernel.org/ubuntu/",
+                                   "https://mirrors.mit.edu/ubuntu/"])
+        self.assertIn("sudo apt-get update -o APT::Update::Error-Mode=any\n", text)
+        self.assertIn("exit 1", text)

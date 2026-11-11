@@ -73,9 +73,9 @@ jobs:
         # Firecracker's seccompiler links; and the part's own (matrix.packages). No protoc, which protox stands in for
         # (crates/fxdax/build.rs), nor libclang, which no bindgen of fxdax's workspace or the guest
         # tests' needs: the VMM's alone, its part's own.
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y clang elfutils sqlite3 fuse3 libseccomp-dev ${{ matrix.packages }}
+        uses: ./.github/actions/apt-install
+        with:
+          packages: clang elfutils sqlite3 fuse3 libseccomp-dev ${{ matrix.packages }}
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-unknown-linux-musl
@@ -179,9 +179,9 @@ jobs:
       # pjdfstest's build (autotools, a C compiler) and prove (perl's), fuse3 for /dev/fuse's
       # helpers, clang as every part builds with.
       - name: Install the build's tools
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y clang fuse3 autoconf automake gcc make perl
+        uses: ./.github/actions/apt-install
+        with:
+          packages: clang fuse3 autoconf automake gcc make perl
       - uses: dtolnay/rust-toolchain@stable
       - uses: actions/cache@v6
         with:
@@ -217,9 +217,9 @@ jobs:
           submodules: true
       # libseccomp, which Firecracker's seccompiler links, a dependency of fxdax's tests.
       - name: Install the build's tools
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y clang libseccomp-dev
+        uses: ./.github/actions/apt-install
+        with:
+          packages: clang libseccomp-dev
       - uses: dtolnay/rust-toolchain@stable
       - uses: taiki-e/install-action@v2
         with:
@@ -254,9 +254,9 @@ jobs:
         with:
           submodules: true
       - name: Install the build's tools
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y clang libseccomp-dev
+        uses: ./.github/actions/apt-install
+        with:
+          packages: clang libseccomp-dev
       - uses: dtolnay/rust-toolchain@stable
       - uses: taiki-e/install-action@v2
         with:
@@ -353,9 +353,9 @@ jobs:
           fi
       - name: Install the build's tools
         if: steps.moved.outputs.moved == 'true'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y clang libclang-dev libseccomp-dev
+        uses: ./.github/actions/apt-install
+        with:
+          packages: clang libclang-dev libseccomp-dev
       # The series' history, down to the upstream release it is on (vendor/firecracker.base, by
       # commit: the fork need have no tag of it), and its toolchain with clippy.
       - name: Fetch the series
@@ -388,7 +388,9 @@ jobs:
           FXDAX_GUEST_SIM: ${{ inputs.guest-sim }}
         run: echo "scope=$(scripts/guest-sim-scope.py "$BASE")" | tee -a "$GITHUB_OUTPUT"
       - name: Install the build's tools
-        run: sudo apt-get update && sudo apt-get install -y clang lld llvm
+        uses: ./.github/actions/apt-install
+        with:
+          packages: clang lld llvm
       - uses: actions/cache@v6
         with:
           path: target/sim-kernel
@@ -429,7 +431,9 @@ jobs:
           FXDAX_GUEST_SIM: ${{ inputs.guest-sim }}
         run: echo "scope=$(scripts/guest-sim-scope.py "$BASE")" | tee -a "$GITHUB_OUTPUT"
       - name: Install the build's tools
-        run: sudo apt-get update && sudo apt-get install -y clang lld llvm
+        uses: ./.github/actions/apt-install
+        with:
+          packages: clang lld llvm
       - uses: actions/cache@v6
         with:
           path: target/sim-kernel

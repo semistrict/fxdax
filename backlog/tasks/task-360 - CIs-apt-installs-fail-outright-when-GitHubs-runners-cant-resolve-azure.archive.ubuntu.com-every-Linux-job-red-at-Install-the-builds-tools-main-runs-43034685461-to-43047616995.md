@@ -4,9 +4,11 @@ title: >-
   CI's apt installs fail outright when GitHub's runners can't resolve
   azure.archive.ubuntu.com: every Linux job red at 'Install the build's tools'
   (main runs 43034685461 to 43047616995)
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-11-11 15:32'
+updated_date: '2026-11-11 15:54'
 labels:
   - ci
 dependencies: []
