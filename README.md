@@ -543,6 +543,12 @@ Each case is in suites, which the scripts run it by: `scripts/test-e2e.sh --tag 
 by name, `--tag e2e` if none (the runner's `list --help` names the suites). A run's outcomes are
 data, a round's in `CASE/round-K.json` and the run's in `summary.json` (`scripts/guest_results.py`).
 
+`scripts/test-e2e-rustfs.sh` runs them with their branches in an S3 bucket on the host (RustFS, in
+a container), as production keeps them in object storage. The nightly suite (`--tag nightly`)
+runs so every night on GitHub's runners, whose nested KVM boots the guests
+(`.github/workflows/nightly.yml`), Firecracker in its jailer under its seccomp filter: built once,
+then a matrix of jobs, each a part of the suite (`runner list --tag nightly --shard K/N`).
+
 FUSE mounts (`crates/fxdax/src/fuse`) have their server fuzzed with random and
 malformed requests (`fuse/server/fuzz_tests.rs`), and on Linux random file
 system calls on a mount compared with the same on tmpfs, as the user and as

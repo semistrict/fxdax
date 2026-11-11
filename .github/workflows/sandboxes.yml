@@ -11,9 +11,8 @@
 # (scripts/budgets.py). Both modes run by hand (workflow_dispatch) for now: the short one, minutes,
 # goes on every push from ci.yml once main passes it, its framings past a second on the runner's
 # disk and CPUs today (TASK-310, TASK-336); the long one in the nightly once it fits a runner,
-# whose 16 GB it ran out of (TASK-330.5). GitHub's runners have KVM, nested,
-# which their user is given here. The guest kernel is kept between runs by what it's built from
-# (scripts/guest-kernel-key.sh).
+# whose 16 GB it ran out of (TASK-330.5). On a runner made a host of guests, the guest kernel kept
+# between runs by what it's built from (.github/actions' guest-host and guest-kernel).
 name: Sandboxes
 
 on:
@@ -41,48 +40,9 @@ jobs:
       - uses: actions/checkout@v7
         with:
           submodules: true
-      - name: Let the runner's user have KVM and userfaultfd
-        run: |
-          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"
-          KERNEL=="userfaultfd", GROUP="kvm", MODE="0666"' |
-              sudo tee /etc/udev/rules.d/99-fxdax-kvm.rules
-          sudo udevadm control --reload-rules
-          sudo udevadm trigger --name-match=kvm
-          sudo udevadm trigger --name-match=userfaultfd
-          ls -l /dev/kvm /dev/userfaultfd
-      # What builds the guest kernel, Firecracker and its seccomp filters, and makes the guests'
-      # root images (scripts/lib/linux-host-setup.sh's, as a host's).
-      - name: Install the build's tools
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y clang libclang-dev llvm pkg-config musl-tools e2fsprogs podman \
-            libseccomp-dev busybox-static flex bison bc cpio libelf-dev libssl-dev
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: x86_64-unknown-linux-musl
-      - name: The guest kernel's key
+      - uses: ./.github/actions/guest-host
+      - uses: ./.github/actions/guest-kernel
         id: kernel
-        run: echo "key=$(scripts/guest-kernel-key.sh)" >> "$GITHUB_OUTPUT"
-      # The kernel, 40 MB, kept as soon as it's built, not as the job ends well: a run that fails,
-      # as one may on its checks, would build it again, a quarter of an hour. Not the cargo
-      # builds' 3-4 GB, a dozen minutes to build: the repository's caches are at GitHub's 10 GB
-      # already, and one more of them would have the others' evicted.
-      - uses: actions/cache/restore@v6
-        id: kernel-cache
-        with:
-          path: ~/guest-kernel/vmlinux
-          key: guest-kernel-${{ steps.kernel.outputs.key }}
-      - name: Build the guest kernel
-        if: steps.kernel-cache.outputs.cache-hit != 'true'
-        run: |
-          FXDAX_GUEST_KERNEL_WORK=~/guest-kernel-work scripts/build-guest-kernel.sh x86_64
-          mkdir -p ~/guest-kernel
-          cp ~/guest-kernel-work/out/x86_64/vmlinux ~/guest-kernel/
-      - uses: actions/cache/save@v6
-        if: steps.kernel-cache.outputs.cache-hit != 'true'
-        with:
-          path: ~/guest-kernel/vmlinux
-          key: guest-kernel-${{ steps.kernel.outputs.key }}
       # What the run boots and serves it with, built once: the guest tests' own tests are CI's
       # guest part's, which scripts/test-e2e.sh runs first unless its artifacts are prebuilt.
       - name: Build the run's artifacts
@@ -100,10 +60,11 @@ jobs:
           mkdir -p ~/sandboxes
           sudo --preserve-env env "PATH=$PATH" "HOME=$HOME" \
             "FXDAX_E2E_PREBUILT=$HOME/sandboxes-artifacts" \
-            "FXDAX_GUEST_KERNEL=$HOME/guest-kernel/vmlinux" "FXDAX_SANDBOX_DISK=$HOME/sandboxes" \
+            "FXDAX_GUEST_KERNEL=$VMLINUX" "FXDAX_SANDBOX_DISK=$HOME/sandboxes" \
             "FXDAX_E2E_RESULTS=$HOME/sandboxes/results" scripts/sandboxes.sh "$MODE"
         env:
           MODE: ${{ inputs.mode }}
+          VMLINUX: ${{ steps.kernel.outputs.vmlinux }}
       # What it said, but for its stores, images and caches, which a failed run keeps: the
       # runner's user's, as root's guest roots' directories aren't readable to it.
       - name: Give the results to the runner's user

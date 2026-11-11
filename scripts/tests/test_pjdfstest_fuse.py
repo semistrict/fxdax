@@ -58,11 +58,14 @@ class PjdfstestFuseTest(unittest.TestCase):
     def test_the_pin_is_the_guest_cases(self):
         self.assertEqual(fuse.pin(), ("https://github.com/pjd/pjdfstest",
                                       "85a8aea9e685999ef0540392fd80535f873d7ff7"))
-        # Its one owner, which every run of pjdfstest sources.
-        for script in ["test-guest-kernel.sh", "lib/test-linux-host.sh"]:
-            text = (SCRIPTS / script).read_text()
-            self.assertIn("pjdfstest.sh\"", text, script)
-            self.assertNotIn("85a8aea9", text, script)
+        # Its one owner, which the script that builds the guest's cases sources (TASK-284: GitHub's
+        # runs of test-e2e.sh's artifacts, built without it, skipped pjdfstest's cases); and none
+        # of the scripts that run test-e2e.sh pins it.
+        e2e = (SCRIPTS / "test-e2e.sh").read_text()
+        self.assertIn('source "$root/scripts/lib/pjdfstest.sh"', e2e)
+        self.assertLess(e2e.index("pjdfstest.sh"), e2e.index("cargo build -q -p runner"))
+        for script in ["test-e2e.sh", "test-guest-kernel.sh", "lib/test-linux-host.sh"]:
+            self.assertNotIn("85a8aea9", (SCRIPTS / script).read_text(), script)
 
     def test_every_known_failure_has_a_task(self):
         fuse.known(fuse.KNOWN.read_text())

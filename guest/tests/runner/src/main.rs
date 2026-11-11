@@ -13,7 +13,9 @@ use std::panic::catch_unwind;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use tempdir::TempDir;
-use test_cases::{Report, ShouldRun, Tag, Test, TestCase, TestOutcome, TestSetup, test_cases};
+use test_cases::{
+    Report, Shard, ShouldRun, Tag, Test, TestCase, TestOutcome, TestSetup, test_cases,
+};
 
 struct TestResult {
     name: String,
@@ -803,6 +805,10 @@ enum CliCommand {
         tags: Vec<Tag>,
         /// The cases of these names
         names: Vec<String>,
+        /// Of those, part K of N alone: every Nth from the Kth, as registered, so that N jobs
+        /// run them together
+        #[arg(long, value_name = "K/N")]
+        shard: Option<Shard>,
     },
 }
 
@@ -814,8 +820,11 @@ fn tag_parser() -> impl clap::builder::TypedValueParser<Value = Tag> {
 }
 
 /// fxdax: `runner list`'s, which fails if it selects nothing: a run of no cases passes.
-fn list(names: &[String], tags: &[Tag]) -> anyhow::Result<()> {
-    let cases = test_cases::select(test_cases(), names, tags).map_err(anyhow::Error::msg)?;
+fn list(names: &[String], tags: &[Tag], shard: Option<Shard>) -> anyhow::Result<()> {
+    let mut cases = test_cases::select(test_cases(), names, tags).map_err(anyhow::Error::msg)?;
+    if let Some(shard) = shard {
+        cases = shard.of(cases);
+    }
     anyhow::ensure!(!cases.is_empty(), "no test case selected: name cases, or --tag a suite");
     for case in cases {
         println!("{}", case.name);
@@ -849,7 +858,7 @@ fn main() -> anyhow::Result<()> {
 
     match command {
         CliCommand::StartVm { test_case, tmp_dir } => start_vm(TestSetup { test_case, tmp_dir }),
-        CliCommand::List { tags, names } => list(&names, &tags),
+        CliCommand::List { tags, names, shard } => list(&names, &tags, shard),
         CliCommand::Test { test_case, base_dir, keep_all, github_summary, outcome, run, round } => {
             let record = outcome.map(|outcome| Record { outcome, run, round });
             run_tests(&test_case, base_dir, keep_all, github_summary, record)

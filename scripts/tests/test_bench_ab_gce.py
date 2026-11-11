@@ -64,12 +64,26 @@ class Artifacts(unittest.TestCase):
             (status, err), (2, "FXDAX_E2E_BUILD_ONLY and FXDAX_E2E_PREBUILT: one or the other\n"))
 
     def test_prebuilt_artifacts_take_no_build_per_run(self):
-        status, _, err = self.e2e(FXDAX_E2E_PREBUILT="/b", FXDAX_FIRECRACKER_SECCOMP="log")
-        self.assertEqual(
-            (status, err),
-            (2, "prebuilt artifacts take no FXDAX_FIRECRACKER_SECCOMP=log nor FXDAX_FIRECRACKER_JAIL\n"))
-        status, _, _ = self.e2e(FXDAX_E2E_BUILD_ONLY="/a", FXDAX_FIRECRACKER_JAIL="1")
-        self.assertEqual(status, 2)
+        for mode in ["FXDAX_E2E_PREBUILT", "FXDAX_E2E_BUILD_ONLY"]:
+            status, _, err = self.e2e(**{mode: "/b"}, FXDAX_FIRECRACKER_SECCOMP="log")
+            self.assertEqual(
+                (status, err), (2, "prebuilt artifacts take no FXDAX_FIRECRACKER_SECCOMP=log\n"),
+                mode)
+
+    def test_prebuilt_artifacts_are_jailed_by_their_own_jailer(self):
+        """TASK-284: artifacts built under a seccomp filter hold the jailer, which a jailed run of
+        them takes; those built with none hold none, and a jailed run of them is refused."""
+        unjailed = tempfile.mkdtemp()
+        (Path(unjailed) / "artifacts.txt").write_text("seccomp none\n")
+        status, _, err = self.e2e(FXDAX_E2E_PREBUILT=unjailed, FXDAX_FIRECRACKER_JAIL="1")
+        self.assertEqual((status, err), (2, f"{unjailed} holds no jailer, built with no seccomp "
+                                            "filter: FXDAX_FIRECRACKER_JAIL needs one\n"))
+        text = (SCRIPTS / "test-e2e.sh").read_text()
+        self.assertIn('export FXDAX_FIRECRACKER_JAILER="$prebuilt/jailer"', text)
+        self.assertIn('if [[ -n $build_only || -n ${FXDAX_FIRECRACKER_JAIL:-} ]]; then\n'
+                      '            env "$musl_cflags" "$firecracker_cargo" build --release -p jailer',
+                      text)
+        self.assertIn("artifacts+=(jailer)", text)
 
     def test_a_directory_of_no_artifacts_is_refused(self):
         empty = tempfile.mkdtemp()

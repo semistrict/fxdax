@@ -43,9 +43,6 @@ if [[ ${FXDAX_WORKSPACE_TESTS:-1} != 0 ]]; then
     echo "fxdax tests: exit $status" >&2
 fi
 
-# The pjdfstest (BSD-2-Clause) commit the pjdfstest cases build.
-source "$(dirname "${BASH_SOURCE[0]}")/pjdfstest.sh"
-
 if [[ ${FXDAX_GUEST_TESTS:-1} == 0 ]]; then
     exit "$status"
 fi

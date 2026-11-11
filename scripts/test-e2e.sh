@@ -22,10 +22,12 @@
 #
 # fxdax: FXDAX_E2E_BUILD_ONLY=DIR builds what the cases run, and copies it into DIR, as its
 # artifacts: the runner, the guest agent, the extent daemon, fxdaxctl, fxdax-gc and Firecracker;
-# it runs no test. FXDAX_E2E_PREBUILT=DIR runs the cases with DIR's artifacts, building nothing,
-# nor running the VMM's tests first: so that an A/B of two trees (scripts/bench-ab-gce.sh)
-# alternates between their builds, each made once, its rounds the cases' time alone (TASK-276).
-# Neither takes FXDAX_FIRECRACKER_SECCOMP=log or FXDAX_FIRECRACKER_JAIL, which build per run.
+# it runs no test, and, under a seccomp filter, Firecracker's jailer. FXDAX_E2E_PREBUILT=DIR runs
+# the cases with DIR's artifacts, building nothing, nor running the VMM's tests first: so that an
+# A/B of two trees (scripts/bench-ab-gce.sh) alternates between their builds, each made once, its
+# rounds the cases' time alone (TASK-276), and jobs of a matrix share one build, jailed as
+# FXDAX_FIRECRACKER_JAIL says (the nightly's, TASK-284). Neither takes
+# FXDAX_FIRECRACKER_SECCOMP=log, whose filter is built per run.
 # FXDAX_E2E_ROOT names the tree whose code it builds and boots, and whose helpers it runs (default:
 # this script's), so that this script's modes serve a tree of before them, an A/B's base.
 #
@@ -49,12 +51,16 @@ if [[ -n $build_only && -n $prebuilt ]]; then
     echo "FXDAX_E2E_BUILD_ONLY and FXDAX_E2E_PREBUILT: one or the other" >&2
     exit 2
 fi
-if [[ -n $build_only$prebuilt && ( ${FXDAX_FIRECRACKER_SECCOMP:-} == log || -n ${FXDAX_FIRECRACKER_JAIL:-} ) ]]; then
-    echo "prebuilt artifacts take no FXDAX_FIRECRACKER_SECCOMP=log nor FXDAX_FIRECRACKER_JAIL" >&2
+if [[ -n $build_only$prebuilt && ${FXDAX_FIRECRACKER_SECCOMP:-} == log ]]; then
+    echo "prebuilt artifacts take no FXDAX_FIRECRACKER_SECCOMP=log" >&2
     exit 2
 fi
 if [[ -n $prebuilt && ! -f $prebuilt/artifacts.txt ]]; then
     echo "$prebuilt holds no artifacts (FXDAX_E2E_BUILD_ONLY makes them)" >&2
+    exit 2
+fi
+if [[ -n $prebuilt && -n ${FXDAX_FIRECRACKER_JAIL:-} && ! -x $prebuilt/jailer ]]; then
+    echo "$prebuilt holds no jailer, built with no seccomp filter: FXDAX_FIRECRACKER_JAIL needs one" >&2
     exit 2
 fi
 
@@ -76,6 +82,10 @@ target_dir() {
     (cd "$1" && "${2:-cargo}" metadata --format-version 1 --no-deps) |
         python3 -c 'import json, sys; print(json.load(sys.stdin)["target_directory"])'
 }
+
+# The pjdfstest (BSD-2-Clause) commit pjdfstest-fxfs-guest's cases build, which the runner and the
+# guest agent take as they are built: without it, they skip.
+source "$root/scripts/lib/pjdfstest.sh"
 
 # The harness's runner, which boots a VM for each test, and says which cases the arguments select,
 # a selection naming no case failing before anything else is built (TASK-160.29).
@@ -110,6 +120,9 @@ if [[ -n $prebuilt ]]; then
     export FXDAXCTL_BIN="$prebuilt/fxdaxctl" FXDAX_GC_BIN="$prebuilt/fxdax-gc"
     export FXDAX_FIRECRACKER="$prebuilt/firecracker"
     export FXDAX_GUEST_AGENT="$prebuilt/guest-agent"
+    if [[ -n ${FXDAX_FIRECRACKER_JAIL:-} ]]; then
+        export FXDAX_FIRECRACKER_JAILER="$prebuilt/jailer"
+    fi
 fi
 if [[ -z $prebuilt && -n ${FXDAX_FAILPOINTS:-}${FXDAX_FAULT_SEED:-}${FXDAX_EXTENTD_FAILPOINTS:-} ]]; then
     extentd_features=(--features failpoints) extentd_profile=sim
@@ -152,6 +165,11 @@ case "$seccomp" in
         env "$musl_cflags" "$firecracker_cargo" build --release -p firecracker --features fxdax \
             --target "$musl"
         export FXDAX_FIRECRACKER="$firecracker_target/$musl/release/firecracker"
+        # Its jailer, for jailed runs of this build, or of its artifacts.
+        if [[ -n $build_only || -n ${FXDAX_FIRECRACKER_JAIL:-} ]]; then
+            env "$musl_cflags" "$firecracker_cargo" build --release -p jailer --target "$musl"
+            export FXDAX_FIRECRACKER_JAILER="$firecracker_target/$musl/release/jailer"
+        fi
         if [[ $seccomp == log ]]; then
             # The filter the build compiled in: upstream's, with fxdax's rules before each thread's
             # own, as its build.rs puts them (resources/fxdax/README.md).
@@ -180,10 +198,8 @@ fi
 # FXDAX_FIRECRACKER_JAIL=1 runs each Firecracker as production does (TASK-50.1, TASK-50.4): in
 # the jail Firecracker's jailer makes, as an unprivileged user (64000), with /dev/userfaultfd in
 # the jail and vm.unprivileged_userfaultfd off; under a seccomp filter, for musl.
-if [[ -n ${FXDAX_FIRECRACKER_JAIL:-} ]]; then
+if [[ -n ${FXDAX_FIRECRACKER_JAIL:-} && -z $build_only ]]; then
     [[ $seccomp != none ]] || { echo "FXDAX_FIRECRACKER_JAIL needs a seccomp filter" >&2; exit 2; }
-    env "$musl_cflags" "$firecracker_cargo" build --release -p jailer --target "$musl"
-    export FXDAX_FIRECRACKER_JAILER="$firecracker_target/$musl/release/jailer"
     export FXDAX_JAIL_UID=64000 FXDAX_JAIL_GID=64000
     sysctl -q vm.unprivileged_userfaultfd=0
     # What the tests make, images and all, the jailed user reaches; but the daemons' sockets,
@@ -271,12 +287,17 @@ fi
 # were built from and as; and nothing run.
 if [[ -n $build_only ]]; then
     mkdir -p "$build_only"
+    artifacts=(runner guest-agent fxdax-extentd fxdaxctl fxdax-gc firecracker)
     cp "$runner" "$FXDAX_GUEST_AGENT" "$extentd_bin" "$FXDAXCTL_BIN" "$FXDAX_GC_BIN" \
         "$FXDAX_FIRECRACKER" "$build_only/"
+    if [[ -n ${FXDAX_FIRECRACKER_JAILER:-} ]]; then
+        cp "$FXDAX_FIRECRACKER_JAILER" "$build_only/"
+        artifacts+=(jailer)
+    fi
     {
         echo "source $(cat "$root/source-revision.txt" 2> /dev/null || echo unknown)"
         echo "seccomp $seccomp"
-        (cd "$build_only" && sha256sum runner guest-agent fxdax-extentd fxdaxctl fxdax-gc firecracker)
+        (cd "$build_only" && sha256sum "${artifacts[@]}")
     } > "$build_only/artifacts.txt"
     echo "Artifacts: $build_only" >&2
     exit 0

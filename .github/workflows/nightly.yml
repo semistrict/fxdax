@@ -2,15 +2,16 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-# The guest suites, as production runs them: on a disposable GCE host with nested KVM
-# (scripts/test-gce.sh), Firecracker in its jailer under its seccomp filter, and branches kept in
-# real object storage. The nightly suite (`runner list --tag nightly`): the default suite's cases
-# and the guest kernel's, which it lacked (followers, snapshots, volumes, pjdfstest), the
-# others cheap on a release kernel (TASK-160.29), and xfstests' generic/quick with DAX and without,
-# its known failures checked (TASK-149.20.1). Needs the repository's GCP_WORKLOAD_IDENTITY_PROVIDER and GCP_SERVICE_ACCOUNT
-# secrets, and its FXDAX_GCE_PROJECT and FXDAX_NIGHTLY_BUCKET (gs://bucket/prefix) variables. And
-# guest/sim whole, which CI runs whole only when what it tests changed (scripts/guest-sim-scope.py):
-# 3,000 seeds of each of its seeded tests, and its sweep, every call of every run of one failing.
+# The guest suites, as production runs them, on GitHub's runners, which have KVM (TASK-284):
+# Firecracker in its jailer under its seccomp filter, and branches kept in object storage, an S3
+# bucket on the runner (RustFS, scripts/test-e2e-rustfs.sh). The nightly suite (`runner list --tag
+# nightly`): the default suite's cases and the guest kernel's, which it lacked (followers,
+# snapshots, volumes, pjdfstest), the others cheap on a release kernel (TASK-160.29), and xfstests'
+# generic/quick with DAX and without, its known failures checked (TASK-149.20.1). Built once, its
+# artifacts and kernel shared by a matrix of jobs, each a part of the suite (`--shard K/N`), within
+# a runner's time and its 16 GB; their results each job's artifact. And guest/sim whole, which CI
+# runs whole only when what it tests changed (scripts/guest-sim-scope.py): 3,000 seeds of each of
+# its seeded tests, and its sweep, every call of every run of one failing.
 name: Nightly
 
 on:
@@ -19,38 +20,85 @@ on:
   workflow_dispatch:
 
 jobs:
-  guest-suites:
+  # What the suite boots and serves its guests with, built once for its parts: the guest tests'
+  # own tests are CI's guest part's, which scripts/test-e2e.sh runs first unless its artifacts are
+  # prebuilt. Firecracker for musl under its real seccomp filter, and its jailer.
+  guest-build:
     runs-on: ubuntu-24.04
-    timeout-minutes: 480
-    permissions:
-      contents: read
-      id-token: write
+    timeout-minutes: 120
+    steps:
+      # With vendor/firecracker, the VMM the guests boot in.
+      - uses: actions/checkout@v7
+        with:
+          submodules: true
+      - uses: ./.github/actions/guest-host
+      - uses: ./.github/actions/guest-kernel
+        id: kernel
+      # In a tarball, which keeps their modes, as an artifact's files alone don't.
+      - name: Build the suite's artifacts
+        run: |
+          FXDAX_E2E_BUILD_ONLY="$HOME/guest/artifacts" scripts/test-e2e.sh
+          cp "$VMLINUX" ~/guest/vmlinux
+          tar -C ~/guest -cf ~/guest.tar .
+        env:
+          VMLINUX: ${{ steps.kernel.outputs.vmlinux }}
+      - uses: actions/upload-artifact@v7
+        with:
+          name: guest-artifacts
+          path: ~/guest.tar
+          retention-days: 3
+
+  # The suite's parts, a job each, every Nth case from the Kth (`runner list --shard`), so that
+  # none outlasts a runner's 6 h nor shares its 16 GB with more than its part, whichever way the
+  # suite grows; more parts if one does. Each as root, as the guest part's tests run: podman makes
+  # the guests' root images, and the jailer's jail is root's to make.
+  guest-suites:
+    name: guest-suites (${{ matrix.part }}/${{ strategy.job-total }})
+    needs: guest-build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 330
+    strategy:
+      fail-fast: false
+      matrix:
+        part: [1, 2, 3, 4, 5, 6, 7, 8]
     env:
-      FXDAX_GCE_PROJECT: ${{ vars.FXDAX_GCE_PROJECT }}
-      FXDAX_GCE_ZONE: us-west1-b
-      FXDAX_GCE_STORAGE: '1'
-      FXDAX_EXTENTD_REMOTE: ${{ vars.FXDAX_NIGHTLY_BUCKET }}
-      FXDAX_RESULTS_BUCKET: ${{ vars.FXDAX_NIGHTLY_BUCKET }}/results
-      FXDAX_FIRECRACKER_JAIL: '1'
-      FXDAX_FIRECRACKER_SECCOMP: real
-      FXDAX_WORKSPACE_TESTS: '0'
-      FXDAX_E2E_TEST: --tag nightly
+      SHARD: ${{ matrix.part }}/${{ strategy.job-total }}
     steps:
       - uses: actions/checkout@v7
-      - name: Fetch Firecracker
-        run: git submodule update --init
-      - uses: google-github-actions/auth@v3
+      - uses: ./.github/actions/guest-host
+      - uses: actions/download-artifact@v8
         with:
-          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
-          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
-      - uses: google-github-actions/setup-gcloud@v3
-      - name: Run the guest suites
-        run: scripts/test-gce.sh all "fxdax-test-nightly-$GITHUB_RUN_ID" results
+          name: guest-artifacts
+      - name: Unpack the artifacts
+        run: |
+          mkdir -p ~/guest ~/nightly/tmp
+          tar -C ~/guest -xf guest.tar
+          rm guest.tar
+          cat ~/guest/artifacts/artifacts.txt
+      # The host's memory, swap, I/O and CPU every minute, in this log, which outlives a runner
+      # that runs out of them.
+      - name: The guest suites, part ${{ env.SHARD }}
+        timeout-minutes: 300
+        run: |
+          vmstat -w -t 60 &
+          sudo --preserve-env env "PATH=$PATH" "HOME=$HOME" "TMPDIR=$HOME/nightly/tmp" \
+            "FXDAX_E2E_PREBUILT=$HOME/guest/artifacts" "FXDAX_GUEST_KERNEL=$HOME/guest/vmlinux" \
+            FXDAX_FIRECRACKER_JAIL=1 FXDAX_FIRECRACKER_SECCOMP=real \
+            "FXDAX_E2E_RESULTS=$HOME/nightly/results" \
+            scripts/test-e2e-rustfs.sh --tag nightly --shard "$SHARD"
+      # What the cases said, but for their stores, images and caches: the runner's user's, as
+      # root's guest roots' directories aren't readable to it.
+      - name: Give the results to the runner's user
+        if: always()
+        run: sudo chown -R "$USER" ~/nightly
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: results
-          path: results
+          name: guest-suites-${{ matrix.part }}
+          path: |
+            ~/nightly/results/**/*.txt
+            ~/nightly/results/**/*.log
+            ~/nightly/results/**/*.json
 
   # guest/sim's 3,000 seeds, as CI runs them when what they test changed (TASK-149.14).
   guest-sim:

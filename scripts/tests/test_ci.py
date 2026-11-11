@@ -125,6 +125,15 @@ class Ci(unittest.TestCase):
         self.assertIn('guest/sim/sweep.sh -d "$BUILD/sweep"',
                       workflow_job(nightly, "guest-sim-sweep"))
 
+    def test_no_comment_says_vms_need_gce(self):
+        """TASK-284: VMs boot on GitHub's runners, which have KVM; no GCP anywhere (the user,
+        2026-11-11). ci.yml's header said they ran on GCE."""
+        for name in ["ci.yml", "nightly.yml", "sandboxes.yml"]:
+            text = (ROOT / ".github" / "workflows" / name).read_text()
+            self.assertNotRegex(text, r"(?i)\bgce\b|gcloud|google", name)
+        self.assertIn("No guest\n# kernels nor VMs, which boot on GitHub's runners too",
+                      CI.read_text())
+
     def test_macos_runs_what_compiles_for_macos(self):
         """TASK-149.20.2: the macos job runs scripts/test.sh's workspace and Shuttle parts on a
         macOS runner, a part a job, every failure: what fxdax compiles for macOS alone (physmem's
@@ -137,3 +146,54 @@ class Ci(unittest.TestCase):
         self.assertIn("FXDAX_TEST_PARTS: ${{ matrix.parts }}", macos)
         self.assertIn("run: scripts/test.sh --no-fail-fast", macos)
         self.assertIn("submodules: true", macos)
+
+
+class Nightly(unittest.TestCase):
+    """TASK-284: the nightly's guest suites, on GitHub's runners, as production runs them, with no
+    GCP: every night they failed at GCP's authentication, its secrets never set, so they never ran.
+    """
+
+    def setUp(self):
+        self.text = (ROOT / ".github" / "workflows" / "nightly.yml").read_text()
+
+    def test_it_uses_no_gcp(self):
+        for gcp in ["google-github-actions", "gcloud", "GCE", "GCP", "gs://", "id-token",
+                    "test-gce.sh", "secrets."]:
+            self.assertNotIn(gcp, self.text)
+
+    def test_the_suite_is_built_once_for_its_parts(self):
+        build = workflow_job(self.text, "guest-build")
+        self.assertIn("uses: ./.github/actions/guest-host", build)
+        self.assertIn("uses: ./.github/actions/guest-kernel", build)
+        self.assertIn('FXDAX_E2E_BUILD_ONLY="$HOME/guest/artifacts" scripts/test-e2e.sh', build)
+        self.assertIn("submodules: true", build)
+        self.assertIn("name: guest-artifacts", build)
+
+    def test_its_parts_run_the_suite_as_production_runs_it(self):
+        suites = workflow_job(self.text, "guest-suites")
+        self.assertIn("needs: guest-build", suites)
+        parts = re.search(r"^        part: \[(.*)\]$", suites, re.MULTILINE).group(1)
+        count = len(parts.split(","))
+        self.assertEqual([int(part) for part in parts.split(",")], list(range(1, count + 1)))
+        self.assertIn("SHARD: ${{ matrix.part }}/${{ strategy.job-total }}", suites)
+        self.assertIn("fail-fast: false", suites)
+        run = re.search(r"- name: The guest suites, part .*?\n(.*?)\n      # ", suites,
+                        re.DOTALL).group(1)
+        for want in ["FXDAX_FIRECRACKER_JAIL=1", "FXDAX_FIRECRACKER_SECCOMP=real",
+                     '"FXDAX_E2E_PREBUILT=$HOME/guest/artifacts"',
+                     '"FXDAX_GUEST_KERNEL=$HOME/guest/vmlinux"', "sudo --preserve-env",
+                     'scripts/test-e2e-rustfs.sh --tag nightly --shard "$SHARD"']:
+            self.assertIn(want, run)
+        # Its results uploaded however it ends, the run's step stopped in time for that.
+        step = int(re.search(r"^        timeout-minutes: (\d+)$", suites, re.MULTILINE).group(1))
+        job = int(re.search(r"^    timeout-minutes: (\d+)$", suites, re.MULTILINE).group(1))
+        self.assertLess(step, job)
+        self.assertLessEqual(job, 360)
+        self.assertIn("      - uses: actions/upload-artifact@v7\n        if: always()\n", suites)
+        self.assertIn("name: guest-suites-${{ matrix.part }}", suites)
+
+    def test_the_bucket_is_rustfs_on_the_runner(self):
+        script = (ROOT / "scripts" / "test-e2e-rustfs.sh").read_text()
+        self.assertIn('FXDAX_EXTENTD_REMOTE=s3://fxdax/e2e "$root/scripts/test-e2e.sh" "$@"',
+                      script)
+        self.assertIn("rustfs_start", script)

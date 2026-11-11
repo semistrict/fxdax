@@ -71,13 +71,20 @@ class HealthyContainer(unittest.TestCase):
         self.assertLess(self.took, 5)
 
     def test_the_servers_scripts_wait_for_their_health_and_probe_nothing(self):
-        for name, health in [
-            ("test-rustfs.sh", "'curl -fsS -o /dev/null http://127.0.0.1:9000/health/ready'"),
-            ("test-azurite.sh", "'nc -z 127.0.0.1 10000'"),
+        for name, call in [
+            ("lib/rustfs.sh", "local health='curl -fsS -o /dev/null "
+                              "http://127.0.0.1:9000/health/ready'\n"
+                              '    rustfs_server="$(healthy_container "$rustfs_engine" "$health"'),
+            ("test-azurite.sh", "healthy_container \"$engine\" 'nc -z 127.0.0.1 10000'"),
         ]:
             text = (SCRIPTS / name).read_text()
-            self.assertIn(f'healthy_container "$engine" {health}', text, name)
+            self.assertIn(call, text, name)
             self.assertNotIn("--retry", text, name)
+        # The scripts that keep what they test in RustFS's bucket start it so, through the lib.
+        for name in ["test-rustfs.sh", "test-e2e-rustfs.sh"]:
+            text = (SCRIPTS / name).read_text()
+            self.assertIn('source "$root/scripts/lib/rustfs.sh"', text, name)
+            self.assertNotIn("healthy_container", text, name)
 
 
 if __name__ == "__main__":

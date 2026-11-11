@@ -249,6 +249,37 @@ pub fn select(
         .collect())
 }
 
+/// fxdax: one of a run's parts, the `index`th of `count` (`runner list --shard K/N`): a
+/// selection's every `count`th case from its `index`th, as registered. The parts of a selection
+/// are it, each case in one of them, and a case's part is its place's alone, so that jobs of a
+/// matrix, each a part, run a suite together, no list of names kept (TASK-284).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Shard {
+    index: usize,
+    count: usize,
+}
+
+impl std::str::FromStr for Shard {
+    type Err = String;
+
+    /// `K/N`, the `K`th part of `N`, from 1.
+    fn from_str(text: &str) -> Result<Shard, String> {
+        let number = |part: &str| part.parse::<usize>().ok();
+        match text.split_once('/').and_then(|(index, count)| Some((number(index)?, number(count)?)))
+        {
+            Some((index, count)) if 1 <= index && index <= count => Ok(Shard { index, count }),
+            _ => Err(format!("a shard is K/N, its Kth part of N, 1 <= K <= N: not {text}")),
+        }
+    }
+}
+
+impl Shard {
+    /// The cases of `cases` in this part.
+    pub fn of(self, cases: Vec<TestCase>) -> Vec<TestCase> {
+        cases.into_iter().skip(self.index - 1).step_by(self.count).collect()
+    }
+}
+
 pub fn test_cases() -> Vec<TestCase> {
     // Register your test here, with the suites it is in (fxdax: TASK-160.29):
     vec![
@@ -1175,5 +1206,42 @@ mod tests {
             select(&["fxfs-guest-dax", "fxfs-guest-nope"], &[]),
             Err("no such test case: fxfs-guest-nope".to_string())
         );
+    }
+
+    /// fxdax: a suite's parts are it, each case in one part, every Nth from the Kth (TASK-284).
+    #[test]
+    fn a_suites_parts_are_it_each_case_in_one() {
+        let nightly = || select(test_cases(), &[], &[Tag::Nightly]).unwrap();
+        let whole = names_of(nightly());
+        let parts: Vec<Vec<&str>> = (1..=4)
+            .map(|index| names_of(format!("{index}/4").parse::<Shard>().unwrap().of(nightly())))
+            .collect();
+        for (index, part) in parts.iter().enumerate() {
+            let expected: Vec<&str> = whole.iter().copied().skip(index).step_by(4).collect();
+            assert_eq!(part, &expected, "part {}", index + 1);
+        }
+        let mut joined: Vec<&str> = parts.concat();
+        let mut sorted_whole = whole.clone();
+        joined.sort_unstable();
+        sorted_whole.sort_unstable();
+        assert_eq!(joined, sorted_whole);
+        assert_eq!(names_of("1/1".parse::<Shard>().unwrap().of(nightly())), whole);
+        assert_eq!(
+            names_of("2/3".parse::<Shard>().unwrap().of(select(test_cases(), &[], &[Tag::PerfDensity]).unwrap())),
+            vec!["fxfs-guest-pgbench-dax-density"]
+        );
+    }
+
+    /// fxdax: a shard is K/N, 1 <= K <= N.
+    #[test]
+    fn a_shard_is_its_part_of_a_count() {
+        assert_eq!("3/8".parse(), Ok(Shard { index: 3, count: 8 }));
+        for bad in ["0/4", "5/4", "4", "a/4", "1/0", "1/4/2", ""] {
+            assert_eq!(
+                bad.parse::<Shard>(),
+                Err(format!("a shard is K/N, its Kth part of N, 1 <= K <= N: not {bad}")),
+                "{bad}"
+            );
+        }
     }
 }

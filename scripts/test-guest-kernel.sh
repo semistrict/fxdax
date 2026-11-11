@@ -22,7 +22,5 @@ results=$(cd "$results" && pwd)
 built=$("$root/scripts/build-guest-kernel.sh" | tail -1)
 cp "$built" "$results/"
 
-# The pjdfstest (BSD-2-Clause) commit pjdfstest-fxfs-guest builds.
-source "$root/scripts/lib/pjdfstest.sh"
 FXDAX_GUEST_KERNEL="$results/$(basename "$built")" FXDAX_E2E_RESULTS="$results" \
     "$root/scripts/test-e2e.sh" --tag kernel

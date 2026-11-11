@@ -3,7 +3,9 @@
 # found in the LICENSE file.
 
 # Does it compile, and do its tests pass: scripts/test.sh, as on a laptop, a part a job. No guest
-# kernels nor VMs, which need nested KVM and run on GCE (scripts/test-gce.sh).
+# kernels nor VMs, which boot on GitHub's runners too, as they have KVM, in workflows of their own:
+# the nightly's guest suites (nightly.yml) and the sandboxes (sandboxes.yml); elsewhere on a Linux
+# host with KVM (scripts/test-e2e.sh).
 name: CI
 
 on:
@@ -42,7 +44,7 @@ jobs:
         # their own; the guest tests' own, a workspace of their own; the Go client, its generated
         # code checked against the .proto, and its tests against the daemon, which it builds
         # (TASK-219); the VMM's own that fxdax adds to, vendor/firecracker's workspace, which ran
-        # on GCE alone and broke unseen there (TASK-220); the rest, minutes.
+        # on hosts of guests alone and broke unseen there (TASK-220); the rest, minutes.
         parts: [workspace, sim, shuttle, clippy scripts, guest, go, firecracker]
         # What a part's tests run beyond what every part builds with: Coccinelle, whose rules the
         # scripts' tests check; xfsprogs, for the guest tests' own of reflinks; libclang, which the
@@ -65,7 +67,7 @@ jobs:
         with:
           submodules: true
       - name: Install the build's tools
-        # elfutils' eu-stack and sqlite3, which tests run, as on the GCE hosts
+        # elfutils' eu-stack and sqlite3, which tests run, as on hosts of guests
         # (scripts/lib/linux-host-setup.sh); fuse3's fusermount3, which mounts the FUSE tests'
         # stores for the runner's user (crates/fxdax/tests/fuse_mount.rs); libseccomp, which
         # Firecracker's seccompiler links; and the part's own (matrix.packages). No protoc, which protox stands in for
@@ -115,8 +117,8 @@ jobs:
           sudo chown "$USER" /mnt/tmp
           echo TMPDIR=/mnt/tmp >> "$GITHUB_ENV"
           df -h /tmp /mnt
-      # Every failure, not the first alone: a run is long. The guest tests' own as root, as on the
-      # GCE hosts: some mount a loop device, to hold a script's model to a kernel's filesystem.
+      # Every failure, not the first alone: a run is long. The guest tests' own as root, as on hosts
+      # of guests: some mount a loop device, to hold a script's model to a kernel's filesystem.
       - name: scripts/test.sh
         run: |
           if [[ $FXDAX_TEST_PARTS == guest ]]; then
@@ -127,8 +129,8 @@ jobs:
 
   # pjdfstest (BSD-2-Clause) on FUSE mounts of new stores, as root, in a directory of the mount
   # and from its root: the host's Node layer, fxfs-posix under it and fxdax::fuse's server held to
-  # POSIX's permissions, owners, times and errnos, which the guest's pjdfstest case checks only on
-  # GCE (TASK-149.38). Failures but scripts/pjdfstest-fuse-known's fail it. A debug build, its
+  # POSIX's permissions, owners, times and errnos, which the guest's pjdfstest case checks only in
+  # the nightly (TASK-149.38). Failures but scripts/pjdfstest-fuse-known's fail it. A debug build, its
   # assertions and overflow checks on.
   # The workspace's suite and the Shuttle suites on macOS, scripts/test.sh's parts as a Mac runs
   # them: what fxdax compiles for macOS alone, and its tests, ran on laptops alone, so a regression

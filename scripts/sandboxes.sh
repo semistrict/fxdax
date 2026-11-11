@@ -12,9 +12,8 @@
 #
 # short (the default) is for every push, minutes; long, eight VMs at once of 32, for nightly. The disk is FXDAX_SANDBOX_DISK's
 # (default: TMPDIR's), which must be ext4: the run's directory there holds the bucket's data, which
-# RustFS (github.com/rustfs/rustfs, Apache-2.0), in a container (docker or podman,
-# scripts/lib/containers.sh), serves, and scripts/test-e2e.sh's results (FXDAX_E2E_RESULTS, by
-# default in the run's directory), the case's stores and the daemons' part caches among them. What
+# RustFS serves (scripts/test-e2e-rustfs.sh, which runs the case), and scripts/test-e2e.sh's
+# results (FXDAX_E2E_RESULTS, by default in the run's directory), the case's stores and the daemons' part caches among them. What
 # test-e2e.sh takes from the environment passes through (FXDAX_GUEST_KERNEL, FXDAX_E2E_PREBUILT).
 # The bucket's data goes at the end, and the run's directory with it unless it holds the results.
 #
@@ -38,36 +37,20 @@ bucket_data="$work/bucket"
 mkdir "$bucket_data"
 results=${FXDAX_E2E_RESULTS:-$work/results}
 
-image="${FXDAX_RUSTFS_IMAGE:-rustfs/rustfs:1.0.4}"
-port="$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')"
-# Test credentials, for this server alone.
-export AWS_ACCESS_KEY_ID=fxdaxtest AWS_SECRET_ACCESS_KEY=fxdaxtestsecret
-export AWS_REGION=us-east-1 AWS_DEFAULT_REGION=us-east-1
-export AWS_ENDPOINT="http://127.0.0.1:$port" AWS_ALLOW_HTTP=true
-source "$root/scripts/lib/containers.sh"
-engine="$(container_engine)" || exit 2
-# Its objects on the disk, as LangSmith's RustFS kept them beside the hosts' stores, as this user's,
-# its container run as this user. Ready once its readiness endpoint says so (scripts/test-rustfs.sh).
-server="$(healthy_container "$engine" 'curl -fsS -o /dev/null http://127.0.0.1:9000/health/ready' \
-    -p "127.0.0.1:$port:9000" --user "$(id -u):$(id -g)" -v "$bucket_data:/data" \
-    -e RUSTFS_VOLUMES=/data \
-    -e RUSTFS_ACCESS_KEY="$AWS_ACCESS_KEY_ID" -e RUSTFS_SECRET_KEY="$AWS_SECRET_ACCESS_KEY" \
-    "$image")" || exit 2
 cleanup() {
-    "$engine" stop "$server" > /dev/null || true
     rm -r "$bucket_data"
     # The run's directory, and what a case that failed left in it, its daemons' sockets among
     # them, unless it holds the results.
     [[ $results == "$work"/* ]] || rm -r "$work"
 }
 trap cleanup EXIT
-curl -fsS -X PUT --aws-sigv4 "aws:amz:$AWS_REGION:s3" \
-    --user "$AWS_ACCESS_KEY_ID:$AWS_SECRET_ACCESS_KEY" "$AWS_ENDPOINT/fxdax" || exit 2
 
+# Its bucket's objects on the disk, as LangSmith's RustFS kept them beside the hosts' stores
+# (scripts/test-e2e-rustfs.sh).
 status=0
-TMPDIR="$work" FXDAX_E2E_RESULTS="$results" FXDAX_EXTENTD_REMOTE=s3://fxdax/sandboxes \
+TMPDIR="$work" FXDAX_E2E_RESULTS="$results" FXDAX_RUSTFS_DATA="$bucket_data" \
     FXDAX_SANDBOX_BUCKET_DIR="$bucket_data" FXDAX_SANDBOX_MODE="$mode" \
-    "$root/scripts/test-e2e.sh" fxfs-guest-sandboxes || status=$?
+    "$root/scripts/test-e2e-rustfs.sh" fxfs-guest-sandboxes || status=$?
 # What the case said of its run, and each check it failed, from its log: the runner says only
 # that it failed.
 find "$results" -name log.txt -path '*fxfs-guest-sandboxes*' -exec grep -h '^sandboxes: ' {} + >&2 ||
