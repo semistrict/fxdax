@@ -4,11 +4,11 @@ title: >-
   CI's apt installs fail outright when GitHub's runners can't resolve
   azure.archive.ubuntu.com: every Linux job red at 'Install the build's tools'
   (main runs 43034685461 to 43047616995)
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-11 15:32'
-updated_date: '2026-11-11 16:41'
+updated_date: '2026-11-11 18:00'
 labels:
   - ci
 dependencies: []
@@ -30,9 +30,9 @@ ordinal: 745000
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (ubu1, under fxjob)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (ubu1, under fxjob)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -59,4 +59,14 @@ Proof:
 - Every job passed except test (clippy scripts), on TASK-361's two tests, which already fail on main. guest-sim was still running at landing.
 - Sandboxes 43055727871: guest-host's nested apt-install passed in 52 s, then the kernel built.
 - scripts/tests/test_ci.py AptInstall drives apt-install.sh with fake getent, sudo and apt-get. It covers all resolving, ubuntu.com unresolved (dropped, warned), none resolving (fails before apt), no mirror file (fails), update failing (install not run), and no apt-get anywhere in .github but the action.
+
+Landed: b34bdc96e, 0e1807880. Main CI 43069997544: every Linux job's 'Install the build's tools' passed. Its only failures are TASK-363.1's (guide, clippy scripts' bench registry). scripts/upstream-changes.py --check passes; no Rust changed.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Every apt step in the workflows and in guest-host now goes through .github/actions/apt-install (apt-install.sh). GitHub's image already falls back across three mirrors and retries once, but all three are under ubuntu.com, whose names Azure's resolver stopped answering for hours. The action drops mirrors whose names don't resolve, appends kernel.org's and MIT's (checked against the Ubuntu archive key), and fails its update on any index not fetched. If no mirror resolves, or the image stops using the mirror file, it fails loudly.
+
+Verified: proved during the outage by CI 43055722986 (installs in about 52 s from kernel.org) and Sandboxes 43055727871 (nested in guest-host). test_ci.py drives the script with fakes.
+<!-- SECTION:FINAL_SUMMARY:END -->

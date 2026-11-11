@@ -3,11 +3,11 @@ id: TASK-343
 title: >-
   Hunt: extentd hostile finds mallory's disk past its limit plus a MiB (by 4 KiB
   to 1 MiB), on main since TASK-92.41
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-11 07:26'
-updated_date: '2026-11-11 15:16'
+updated_date: '2026-11-11 18:00'
 labels:
   - extentd
   - testing
@@ -37,9 +37,9 @@ The previous Hunt, 42746736395 on 94f63b137 (2026-11-10), passed. Between them c
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -72,4 +72,20 @@ Validation with the fix (t276x-343, b95832a0), all on ubu1 tmpfs under fxjob --m
 - extent_store: cargo nextest run -p extent_store passed on macOS, 226 tests. segments_of_noise_then_holes_are_framed_compressed fails with the old saves_little ("framed in place") and passes with the fix.
 
 Also in CI's workspace part on TASK-284's branch (CI run 43005967237, 2026-11-11, before this fix; no extentd change there): a_compromised_vm_process_harms_no_tenant_beside_it failed.
+
+Landed: 95881f717 (fix and tests), with backlog commits. Main CI 43069997544 at fbf7be9e3, which includes it: macos (workspace), test (workspace), test (shuttle), test (sim), soak, object-stores and the rest passed. Only guide and test (clippy scripts) failed, on TASK-363's changes (TASK-363.1). Earlier, 43060784936 at 744b4b855 passed every job but clippy scripts (TASK-361, since fixed). scripts/upstream-changes.py --check passes.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Root cause: saves_little sampled one MiB part in eight, which for segments under 9 MiB was part 0 alone. A hostile VM process's segment held 3 MiB of noise followed by 2.6 MB of holes from its sparse extents' commit. The sample saw only the noise, so the segment was framed in place, raw, and the holes, which no admitted write paid for, took mallory's disk past its limit plus a MiB.
+
+Fix: count zero blocks exactly; if they reach a sixteenth of the segment, compress it whole, which frames it in a copy; otherwise sample an eighth of every part.
+
+Tests: two regression tests, segments.rs's unit test and tests/store.rs's segments_of_noise_then_holes_are_framed_compressed, both red on the old code. The hostile disk check names the files grown when it fails, and its MiB is justified: holes in a raw segment stay under a seventh of the case's admitted bytes, under 4/7 MiB.
+
+Verified: Hunt's seeds 53-56 pass at 1920 cases on ubu1. CI's workspace jobs pass on macOS and Linux.
+
+Filed: TASK-355 (ZFS st_blocks lag over-admits) and TASK-357 (hostile waits outrun by host stalls).
+<!-- SECTION:FINAL_SUMMARY:END -->
