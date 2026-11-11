@@ -420,11 +420,25 @@ fn extents_the_bucket_holds_are_held_without_their_data() {
 }
 
 /// fxdax: commits append their records to the open segment's log, its alone, and the store opened
-/// again holds them all (TASK-165.9).
+/// again holds them all (TASK-165.9). The logs of the segments the commits closed go once their
+/// framed files are durable, after the commits return (framings run off them, TASK-165.9, and
+/// make their framed files durable on a thread of the store's, TASK-310): counted once the store
+/// settled. Here none is made durable until the commits are made, as on a busy disk; counted at
+/// once, as the test did, the closed segments' logs were still there, (12, 0), and on a CI
+/// runner two had gone together, two spares kept, (1, 2); so too before TASK-310 with framings
+/// as slow (TASK-370).
 #[test]
 fn commits_reopen_from_their_logs() {
+    use std::sync::Mutex;
+    use std::sync::mpsc::channel;
     let dir = MemDir::new();
     let store = create(dir.clone(), 64 << 20);
+    let (go, gone) = channel::<()>();
+    let gone = Mutex::new(gone);
+    let held = fail::FailGuard::with_callback("segments::making_durable", move || {
+        let _ = gone.lock().unwrap().recv();
+    })
+    .unwrap();
     for sequence in 0..200 {
         store.write(extent(sequence), 0, &pattern(sequence as u8, 0, BLOCK)).unwrap();
         if sequence % 3 == 0 {
@@ -432,18 +446,21 @@ fn commits_reopen_from_their_logs() {
         }
         store.commit(Some(format!("root {sequence}").as_bytes())).unwrap();
     }
-    // The open segment's log, and the log of a segment gone kept as a spare (TASK-301): each
-    // segment opened takes the spare the one before it left.
+    drop((go, held));
+    settled(&store);
+    // The open segment's log, and the logs of segments gone kept as spares, two at most (TASK-301):
+    // a segment opened takes a spare. The closed segments' logs went together once settled, their
+    // framed files durable at last: two kept.
     let logs = || {
         let names = dir.list(&of("logs", BRANCH)).unwrap();
         let spares = names.iter().filter(|name| name.starts_with("spare-")).count();
         (names.len() - spares, spares)
     };
-    assert_eq!(logs(), (1, 1));
+    assert_eq!(logs(), (1, 2));
     drop(store);
     let store = Store::open(dir.clone(), OPTIONS).unwrap();
-    // The opening's open segment took the spare; the log of the one it closed again went.
-    assert_eq!(logs(), (1, 0));
+    // The opening's open segment took a spare; the log of the one it closed again went.
+    assert_eq!(logs(), (1, 1));
     assert_eq!(store.root().unwrap(), b"root 199");
     assert_eq!(store.epoch().unwrap(), 200);
     let held: Vec<u64> =
