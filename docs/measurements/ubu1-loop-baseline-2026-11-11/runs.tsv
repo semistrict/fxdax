@@ -1,0 +1,7 @@
+round	case	outcome	load_before	load_after	arc_before	arc_after	started
+1	bench-fs-ext4-loop-unsafe	ok	3.46	3.24	791271160	3827641680	2026-11-11T14:25:21Z
+1	bench-fs-fxfs-guest-dax	ok	3.24	3.24	876232512	3725667232	2026-11-11T14:27:31Z
+2	bench-fs-fxfs-guest-dax	ok	3.24	2.94	872837792	3613480448	2026-11-11T14:31:01Z
+2	bench-fs-ext4-loop-unsafe	ok	2.94	3.82	871520008	3832600744	2026-11-11T14:34:31Z
+3	bench-fs-ext4-loop-unsafe	ok	3.82	3.84	876261440	3731919712	2026-11-11T14:36:39Z
+3	bench-fs-fxfs-guest-dax	ok	3.84	3.52	841771776	3407829752	2026-11-11T14:38:47Z
