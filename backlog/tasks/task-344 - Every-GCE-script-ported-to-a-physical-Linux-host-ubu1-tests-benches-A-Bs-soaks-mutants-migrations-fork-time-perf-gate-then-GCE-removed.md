@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-11 07:29'
-updated_date: '2026-11-11 07:38'
+updated_date: '2026-11-11 16:14'
 labels:
   - testing
   - ci
@@ -63,3 +63,11 @@ nightly.yml's guest-suites is TASK-284's, not this task's.
 6. Docs: AGENTS.md, README, docs, comments naming GCE scripts.
 7. Prove each entry point with one short real run on ubu1; macOS suite, ubu1 suite under fxjob, upstream-changes --check, CI.
 <!-- SECTION:PLAN:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Built: scripts/lib/host.sh (client) + scripts/lib/host-remote.sh (host half, sent over ssh as bash -s), replacing lib/gce.sh. A run = /mnt/fxdax-scratch/fxdax-host/RUN on FXDAX_HOST (ubu1): worktree of a commit origin has (fetched on demand), vendor/firecracker initialised, optional FXDAX_HOST_PATCH, trees/LABEL for other commits; the trees build in place (FXDAX_HOST_IN_PLACE), their own target dirs; job detached (setsid/nohup) under fxjob (--bench for timed drivers), as root with the user's Rust, CARGO_BUILD_JOBS/NEXTEST_TEST_THREADS/FXDAX_GUEST_KERNEL_JOBS=4, nice 19 for work; waited on by flock of the job's lock, reconnecting; results back by tar over ssh; run dir and worktrees removed whatever happens; resume/cancel for a driver stopped mid-run; leftover root processes of the job's scope reaped (TASK-353 for fxjob itself). Guest kernels: host_kernel in linux-host-setup.sh, cached on the host by scripts/guest-kernel-key.sh (now content-based, shared with CI's sandboxes cache). Drivers: test/bench/bench-ab/perf-gate/soak/soak-workloads/mutants/gets/migrate/fork-time-host.sh, guest-mutants-host.py, dax-gate.sh. Removed: the 11 GCE drivers, lib/gce.sh, gce-host-startup.sh, test_gce.py, fake_gcloud.py, the GCS results bucket (guest_results.py upload/fetch, its 2 tests). Tests: test_host.py (58, fake_ssh.py + fake_flock.py), test_bench_ab_host.py, test_perf_gate_host.py, test_linux_host Kernels/InPlace, test_soak_workloads cap tests, test_bench_history host runs. ubu1 setup: step 147-fxdax_host_runs.sh (linux-perf, bpftrace, cargo-mutants 27.1.0); the GCE startup's lease/poweroff/ready marker/needrestart were a disposable host's and are not ported (reasons in the step's header).
+
+Proving runs on ubu1 (2026-11-11): test-host (fxfs-guest-dax pass, built the release kernel into the cache); bench-host (bench-fs-ext4-guest-kernel metadata, 1 iteration, kernel reused from cache); bench-ab-host (same-build A/B, then two commits HEAD~/HEAD in place, 1 round); perf-gate-host (all 11 cases pass both runs, gate ran; bigmap-read 3.53x < 4.0 -> TASK-352); soak-host (1024:2:2048, 1 round: driver ran, case timed out -> TASK-351); soak-workloads-host (crash group, FXDAX_SOAK_CAP=1: 3/3 pass); mutants-host (extent_frame shard 0/100: 3 caught, 1 unviable; twice); guest-mutants-host.py (task-230-create-keeps-listing killed by listings_follow_changes); gets-host (file:// 16 MiB, 1 s; twice); migrate-host (source and target phases pass, held bundle/bucket removed); fork-time-host (16x1 MiB base, 2 forks). Full Linux suite on ubu1 under fxjob via test-host.sh FXDAX_GUEST_TESTS=0: workspace 2488/2488 and every cargo part green; scripts part 277 OK after fixes (sqlite_extents socket path > SUN_LEN in deep trees; host_tree copy lacked .git -> in-place builds). macOS: clippy+workspace 2228/2228, scripts 283 OK. upstream-changes --check passes. Also fixed TASK-361 (main's 2 red scripts tests) to get CI green.
+<!-- SECTION:NOTES:END -->
