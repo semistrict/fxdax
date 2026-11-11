@@ -49,6 +49,7 @@ BASE = [
     f"PATH={HOST_HOME}/.cargo/bin:/usr/bin:/bin",
     f"HOME={HOST_HOME}",
     "CARGO_BUILD_JOBS=4",
+    "NEXTEST_TEST_THREADS=4",
     "FXDAX_GUEST_KERNEL_JOBS=4",
     "FXDAX_HOST_KERNELS=/mnt/fxdax-scratch/fxdax-host/kernels",
     "FXDAX_HOST_PROVISIONED=1",
@@ -226,6 +227,7 @@ class HostCommand(unittest.TestCase):
             "test-linux-host.sh")
         self.assertEqual(nice, ["nice", "-n", "5"])
         self.assertIn("CARGO_BUILD_JOBS=2", sent)
+        self.assertIn("NEXTEST_TEST_THREADS=2", sent)
         # The kernel's jobs the caller's, as it named them.
         self.assertIn("FXDAX_GUEST_KERNEL_JOBS=3", sent)
         self.assertNotIn("FXDAX_GUEST_KERNEL_JOBS=2", sent)
@@ -810,6 +812,45 @@ class Resume(unittest.TestCase):
                          (2, "", "Name the run, run-...\n"))
         self.assertEqual(fleet.run_driver("test-host.sh", "resume", "run-x"),
                          (2, "", f"Usage: {fleet.origin}/scripts/test-host.sh resume RUN RESULTS\n"))
+
+
+class Reap(unittest.TestCase):
+    """host-remote.sh's reap: what is left of a job's scope once it ends, root's processes among
+    it, which the user's systemd manager can't kill. Here processes of this machine's, and a
+    directory of processes (FXDAX_HOST_PROC) whose cgroup files place them, a process's entry
+    gone as sudo's kill kills it, as /proc's goes."""
+
+    SUDO = """#!/bin/bash
+[[ $1 == kill ]] || exit 3
+for pid in "${@:3}"; do rm -r "$FXDAX_HOST_PROC/$pid"; done
+exec "$@"
+"""
+
+    def test_what_is_left_of_a_jobs_scope_is_killed_and_no_other(self):
+        directory = Path(tempfile.mkdtemp())
+        (directory / "bin").mkdir()
+        (directory / "bin" / "sudo").write_text(self.SUDO)
+        (directory / "bin" / "sudo").chmod(0o755)
+        processes = {}
+        for scope in ["fxjob-run-x-41.scope", "fxjob-run-x-41.scope", "fxjob-run-xy-7.scope"]:
+            process = subprocess.Popen([sys.executable, "-c", "import signal; signal.pause()"])
+            self.addCleanup(process.wait)
+            self.addCleanup(process.kill)
+            processes[process] = scope
+            (directory / "proc" / str(process.pid)).mkdir(parents=True)
+            (directory / "proc" / str(process.pid) / "cgroup").write_text(
+                f"0::/user.slice/user-1000.slice/user@1000.service/fxdax.slice/{scope}\n")
+        done = subprocess.run(
+            ["/bin/bash", SCRIPTS / "lib" / "host-remote.sh", "reap", "run-x"],
+            env={"PATH": f"{directory / 'bin'}:/usr/bin:/bin",
+                 "FXDAX_HOST_PROC": str(directory / "proc")},
+            capture_output=True, text=True)
+        self.assertEqual((done.returncode, done.stderr), (0, ""))
+        for process, scope in processes.items():
+            if scope == "fxjob-run-x-41.scope":
+                self.assertEqual(process.wait(timeout=10), -9)
+            else:
+                self.assertIsNone(process.poll())
 
 
 class Names(unittest.TestCase):

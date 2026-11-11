@@ -13,6 +13,7 @@
 #   bash -s -- log DIR
 #   bash -s -- fetch DIR
 #   bash -s -- cancel DIR
+#   bash -s -- reap NAME
 #   bash -s -- clean DIR REPO
 #
 # A run's directory DIR, named for the run (run-..., host_run_name), holds tree, a worktree of
@@ -38,6 +39,13 @@
 # (rootfs, their images, and jails), which aren't results, and some of whose files (setuid
 # binaries) no one may read, and parts caches. cancel ends the job, and clean removes the run's
 # directory, its worktrees with it, once no job runs there.
+#
+# reap NAME kills what is left of the job NAME's processes, those in fxjob's scope of it, root's
+# among them, which the user's systemd manager can neither stop nor kill: a job its memory limit
+# killed (the kernel's OOM killer took one process, the manager failed to stop the rest) ran on as
+# root, nextest and its tests, in a run's directory removed under it (TASK-344's first Linux suite
+# on ubu1). The job runs it once fxjob returns, before its status, and cancel after its signal.
+# FXDAX_HOST_PROC names the processes' directory (default /proc), for the tests.
 set -euo pipefail
 
 # The job's command runs as root, sudo's, with the user's Rust (scripts/lib/host.sh's
@@ -50,6 +58,22 @@ give_back() {
             sudo find "$place" ! -user "$(id -u)" -exec chown -h "$(id -u):$(id -g)" {} +
         fi
     done
+}
+
+# reap NAME kills the processes left in the scope of the job NAME, each process's cgroup naming it
+# (fxjob-NAME-PID.scope), and succeeds once none is left.
+reap() {
+    local name=$1 proc=${FXDAX_HOST_PROC:-/proc} pids tries
+    for (( tries = 0; tries < 30; tries++ )); do
+        pids=$(grep -l -- "/fxjob-$name-[0-9]*\.scope\$" "$proc"/[0-9]*/cgroup 2> /dev/null |
+            sed 's|.*/\([0-9]*\)/cgroup$|\1|') || true
+        if [[ -z $pids ]]; then return 0; fi
+        # shellcheck disable=SC2086 # Pids, a line each.
+        sudo kill -KILL $pids 2> /dev/null || true
+        sleep 1
+    done
+    echo "reap: processes of $name outlived it: $pids" >&2
+    return 1
 }
 
 # running DIR succeeds if a job holds DIR's lock: it runs.
@@ -122,14 +146,15 @@ launch() {
     # The lock is fd 9's, which the job's shell inherits and holds until it has written the
     # status, and nothing it runs inherits: a daemon left behind holds no run's lock.
     # shellcheck disable=SC2016 # For the job's shell.
-    setsid nohup bash -c "$(declare -f give_back)"'
-        job=$1
-        shift
+    setsid nohup bash -c "$(declare -f give_back reap)"'
+        job=$1 name=$2
+        shift 2
         status=0
         "$@" 9>&- || status=$?
+        reap "$name" 9>&- || status=1
         give_back 9>&- || echo "giving back ~/.cargo and ~/.rustup failed" >&2
         echo "$status" > "$job/status"' \
-        job "$job" "${fxjob[@]}" -- bash "$job/command" > "$job/log" 2>&1 < /dev/null &
+        job "$job" "$name" "${fxjob[@]}" -- bash "$job/command" > "$job/log" 2>&1 < /dev/null &
     echo "$!" > "$job/pid"
 }
 
@@ -151,10 +176,12 @@ wait_job() {
 cancel() {
     local dir=$1
     if running "$dir"; then
-        # The job's process group (setsid), sudo's command among it, which sudo hands the signal.
+        # The job's process group (setsid), sudo's command among it, which sudo hands the signal;
+        # then what is left of its scope, root's processes in a session of sudo's own.
         sudo kill -TERM -- "-$(< "$dir/job/pid")"
         flock "$dir/job/lock" true
     fi
+    reap "$(basename "$dir")"
 }
 
 clean() {
@@ -182,6 +209,7 @@ case ${1:-} in
             -czf - -C "$2/results" .
         ;;
     cancel) cancel "$2" ;;
+    reap) reap "$2" ;;
     clean) shift; clean "$@" ;;
     *) echo "host-remote.sh: no such action: ${1:-}" >&2; exit 2 ;;
 esac < /dev/null

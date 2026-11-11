@@ -22,10 +22,11 @@
 # (scripts/lib/host-remote.sh, which does what a run does there). Its job, the host script
 # (host_command), runs apart from the SSH session, under fxjob, in a cgroup of its own and within
 # FXDAX_HOST_MEM (default 12G), and with fxjob --bench, alone and on CPUs of its own, if it is a
-# measurement (host_bench=1); as root, as its tests need, with the user's Rust; its builds at most
-# FXDAX_HOST_JOBS jobs at once (default 4), a non-measurement's at niceness FXDAX_HOST_NICE (default
-# 19); its guest kernels taken from the host's cache of those built from the same sources
-# (host_kernel, scripts/lib/linux-host-setup.sh). The driver waits for the job, reconnecting,
+# measurement (host_bench=1); as root, as its tests need, with the user's Rust; its builds, and
+# nextest's tests, at most FXDAX_HOST_JOBS at once (default 4), a non-measurement's at niceness
+# FXDAX_HOST_NICE (default 19); its guest kernels taken from the host's cache of those built from
+# the same sources (host_kernel, scripts/lib/linux-host-setup.sh); and nothing of it left running
+# once it ends, root's processes too (host-remote.sh's reap). The driver waits for the job, reconnecting,
 # fetches the results, and removes the run's directory, its worktrees with it, whatever happens:
 # but for a job whose driver stopped waiting for it, which runs on, for the driver's `resume` to
 # wait for again and fetch, or its `cancel` to end (host_actions).
@@ -213,6 +214,7 @@ host_command() {
     if (( nice )); then printf 'nice -n %d ' "$nice"; fi
     # shellcheck disable=SC2016 # For the host's shell to expand.
     printf '%s' 'sudo env PATH="$HOME/.cargo/bin:$PATH" HOME="$HOME"' " CARGO_BUILD_JOBS=$jobs" \
+        " NEXTEST_TEST_THREADS=$jobs" \
         ${assignments[@]+"${assignments[@]/#/ }"}
     printf ' %q' timeout --signal=TERM --kill-after=30s "${FXDAX_HOST_LIMIT:-$limit}" bash \
         "$host_dir/tree/scripts/lib/$script" "$host_dir/tree" "$host_dir/results" "$@"
