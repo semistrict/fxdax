@@ -23,9 +23,9 @@
 # runs every group, or those named, each in RESULTS/GROUP, and prints how each went, and each case
 # of its suite, from its summary (scripts/guest_results.py): its rounds, or the round it failed in,
 # its checks failed, and the command that replays it. FXDAX_SOAK_ROUNDS scales each group's rounds
-# by a factor (1 by default), and every FXDAX_* setting scripts/test-host.sh takes reaches the
-# host. Each run is of the commit scripts/test-host.sh runs (scripts/lib/host.sh's
-# FXDAX_HOST_COMMIT, HEAD by default).
+# by a factor (1 by default), FXDAX_SOAK_CAP caps them (for a short check of the soak itself), and
+# every FXDAX_* setting scripts/test-host.sh takes reaches the host. Each run is of the commit
+# scripts/test-host.sh runs (scripts/lib/host.sh's FXDAX_HOST_COMMIT, HEAD by default).
 set -euo pipefail
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 results=${1:?usage: soak-workloads-host.sh RESULTS [GROUP...]}
@@ -39,16 +39,19 @@ for group in "${groups[@]}"; do
 done
 factor=${FXDAX_SOAK_ROUNDS:-1}
 [[ $factor =~ ^[1-9][0-9]*$ ]] || { echo "FXDAX_SOAK_ROUNDS is a factor" >&2; exit 2; }
+cap=${FXDAX_SOAK_CAP:-}
+[[ -z $cap || $cap =~ ^[1-9][0-9]*$ ]] || { echo "FXDAX_SOAK_CAP is a count" >&2; exit 2; }
 
 # Runs `group`'s suite: its rounds, its kernel, its seconds of following. The mixed group's, some
 # 5 minutes a round, its daemons built to fail uploads.
 soak() {
-    local group=$1 rounds=$2 kernel=$3 seconds=$4 own=()
+    local group=$1 rounds=$(($2 * factor)) kernel=$3 seconds=$4 own=()
+    if [[ -n $cap ]] && (( rounds > cap )); then rounds=$cap; fi
     if [[ $group == mixed ]]; then
         own=(FXDAX_EXTENTD_FAILPOINTS=1)
     fi
     env ${own[@]+"${own[@]}"} FXDAX_WORKSPACE_TESTS=0 FXDAX_E2E_TEST="--tag soak-$group" \
-        FXDAX_E2E_ROUNDS=$((rounds * factor)) FXDAX_GUEST_KERNEL_BUILD=$kernel \
+        FXDAX_E2E_ROUNDS=$rounds FXDAX_GUEST_KERNEL_BUILD=$kernel \
         FXDAX_FOLLOW_SECONDS=$seconds \
         "$repo/scripts/test-host.sh" "$results/$group" > "$results/$group.log" 2>&1
 }
