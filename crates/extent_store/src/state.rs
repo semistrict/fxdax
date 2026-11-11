@@ -37,6 +37,7 @@ use std::collections::HashSet;
 use std::collections::{BTreeMap, HashMap};
 use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
+use std::time::Instant;
 use storage_device::{ExtentId, NoExtent};
 
 /// An open branch's state. See the module's docs.
@@ -111,15 +112,36 @@ impl extent_remote::recovery::Places for Lengths {
 }
 
 /// fxdax: the segments closed whose framings are yet to run, in the order they closed, and whether
-/// a framer runs them, one after another (`wal`'s docs, TASK-165.9).
+/// a framer runs them, one after another (`wal`'s docs, TASK-165.9); and those it framed, written,
+/// not yet durable, since when the first of them waits, and whether a thread makes them durable,
+/// together (`segments::make_durable`, TASK-310).
 pub(crate) struct Framing<F> {
     pub queue: std::collections::VecDeque<Unframed<F>>,
     pub running: bool,
+    pub written: Vec<(SegmentId, Arc<Framed<F>>)>,
+    pub since: Option<Instant>,
+    pub syncing: bool,
 }
 
 impl<F> Default for Framing<F> {
     fn default() -> Self {
-        Self { queue: std::collections::VecDeque::new(), running: false }
+        let queue = std::collections::VecDeque::new();
+        Self { queue, running: false, written: Vec::new(), since: None, syncing: false }
+    }
+}
+
+impl<F> Framing<F> {
+    /// fxdax: segment `number`'s framing wrote `framed`, to be made durable.
+    pub fn wrote(&mut self, number: SegmentId, framed: Arc<Framed<F>>) {
+        self.written.push((number, framed));
+        self.since.get_or_insert_with(Instant::now);
+    }
+
+    /// fxdax: the segments framed, written, to be made durable together, and since when the first
+    /// of them waits: none left.
+    pub fn take_written(&mut self) -> (Vec<(SegmentId, Arc<Framed<F>>)>, Instant) {
+        let since = self.since.take().unwrap_or_else(Instant::now);
+        (std::mem::take(&mut self.written), since)
     }
 }
 

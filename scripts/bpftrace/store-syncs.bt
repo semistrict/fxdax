@@ -1,0 +1,80 @@
+#!/usr/bin/env bpftrace
+// Copyright 2026 The fxdax Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+//
+// What the extent daemon's syncs wait on, by what each syncs (TASK-310): every fsync and
+// fdatasync of extentd's on ext4 (ext4_sync_file: the kernel calls a file system's fsync without
+// vfs_fsync_range), by whose file it is (a store's, the file bucket's or the part cache's), the
+// kind of file or directory, its directory's name in the layout (segments, open-segments, logs,
+// extents, the store's own directory), whether a datasync, and the thread's name (a framer's is
+// its starter's: extentd io for a commit's, fxdax remote for the uploader's closing); a histogram
+// of each kind's, and each past 100 ms as it ends, with its thread, how many names the file has
+// (2: a segment framed in place, its raw file linked among framed ones) and its size. And ext4's
+// journal commits past 50 ms, phase by phase (jbd2_run_stats), which every sync of a file or
+// directory with metadata to commit waits for.
+//
+//   sudo bpftrace -q -o TRACE scripts/bpftrace/store-syncs.bt
+
+config = {
+	max_map_keys = 65536
+}
+
+BEGIN
+{
+	@start = nsecs;
+}
+
+fentry:vmlinux:ext4_sync_file
+/strncmp(curtask->group_leader->comm, "fxdax-extentd", 13) == 0 ||
+ strncmp(curtask->group_leader->comm, "extentd", 7) == 0/
+{
+	@began[tid] = nsecs;
+}
+
+fexit:vmlinux:ext4_sync_file
+/@began[tid] != 0/
+{
+	$us = (nsecs - @began[tid]) / 1000;
+	$dentry = args.file->f_path.dentry;
+	$inode = $dentry->d_inode;
+	$dir = ($inode->i_mode & 0xf000) == 0x4000;
+	// A directory's kind is its parent's name (segments/<branch>: segments); a file's, its
+	// grandparent's (segments/<branch>/<n>); the store's own files (wal, store), their parent's.
+	// Whose: a store's, the directory above (store-N), or the daemon's file bucket's
+	// (extentd.bucket/segments/<branch>/<n>#<writer>) or part cache's (extentd-cache).
+	$parent = $dir ? $dentry->d_parent : $dentry->d_parent->d_parent;
+	$kind = str($parent->d_name.name);
+	$above = str($parent->d_parent->d_name.name);
+	$whose = strncmp($above, "extentd.bucket", 14) == 0 ? "bucket" :
+		(strncmp($above, "extentd-cache", 13) == 0 ? "cache" : "store");
+	@sync_us[$whose, $dir ? "dir" : "file", $kind, args.datasync] = hist($us);
+	@sync_count[$whose, $dir ? "dir" : "file", $kind, comm] = count();
+	@sync_sum_ms[$whose, $dir ? "dir" : "file", $kind, comm] = sum($us / 1000);
+	if ($us > 100000) {
+		printf("sync %s %s %s/%s datasync %d nlink %d size %d by %s tid %d at %d ms took %d ms\n",
+		       $whose, $dir ? "dir" : "file", $kind, str($dentry->d_name.name), args.datasync,
+		       $inode->__i_nlink, $inode->i_size, comm, tid,
+		       (@began[tid] - @start) / 1000000, $us / 1000);
+	}
+	@began[tid] = 0;
+}
+
+// Times in jiffies (CONFIG_HZ 1000 on Ubuntu's kernels: ms).
+tracepoint:jbd2:jbd2_run_stats
+{
+	$all = args.running + args.locked + args.flushing + args.logging;
+	@commit_ms = hist($all);
+	if ($all > 50 || args.wait > 50) {
+		printf("commit %d at %d ms: wait %d, request_delay %d, running %d, locked %d, flushing %d, logging %d; handles %d, blocks %d\n",
+		       args.tid, (nsecs - @start) / 1000000, args.wait, args.request_delay,
+		       args.running, args.locked, args.flushing, args.logging,
+		       args.handle_count, args.blocks);
+	}
+}
+
+END
+{
+	clear(@began);
+	clear(@start);
+}

@@ -17,8 +17,9 @@
 //! wrote; what the daemon wrote, as its kernel counts it (/proc/PID/io's `write_bytes`, and of
 //! those `cancelled_write_bytes`, gone before written back), and by kind, as its stats say
 //! (`written_*_bytes`); its framings past extentd's turn, which its log warns of, how many, the
-//! longest and their sum; the time the host's tasks stalled on I/O (/proc/pressure/io's `some`
-//! and `full`); and the case's disk's writes and busy time (its block device's stat). A
+//! longest and their sum, and so of its makings of the segments framed durable, together, apart
+//! from their framings (TASK-310); the time the host's tasks stalled on I/O (/proc/pressure/io's
+//! `some` and `full`); and the case's disk's writes and busy time (its block device's stat). A
 //! measurement: it fails only if a VM does, or its daemon's stores lose half their commits'
 //! durability within 50 ms, doc-12's median.
 
@@ -103,11 +104,13 @@ mod host {
         Some((*fields.get(6)?, *fields.get(9)?))
     }
 
-    /// The daemon's framings past extentd's turn, as its log `log` warns of them: how many, the
-    /// longest's milliseconds, and the milliseconds of all.
-    fn slow_framings(log: &str) -> (u64, f64, f64) {
+    /// What of the daemon's past extentd's turn its log `log` warns of, each line saying `what`
+    /// then how long it took: how many, the longest's milliseconds, and the milliseconds of all.
+    /// Its framings (`extent store: framing `); fxdax: and its makings of segments framed durable
+    /// (`segments framed durable`, TASK-310).
+    fn slow(log: &str, what: &str) -> (u64, f64, f64) {
         let took = log.lines().filter_map(|line| {
-            let (_, after) = line.split_once("extent store: framing ")?;
+            let (_, after) = line.split_once(what)?;
             let (_, after) = after.split_once(" took ")?;
             after.split_once(" ms")?.0.parse::<f64>().ok()
         });
@@ -213,7 +216,8 @@ mod host {
             std::thread::sleep(Duration::from_secs(2));
             let stats = crate::common::daemon_stats(&dir.join("extentd-stats.txt"))?;
             let log = std::fs::read_to_string(dir.join("extentd.log"))?;
-            let (slow, longest, slow_sum) = slow_framings(&log);
+            let (slow, longest, slow_sum) = self::slow(&log, "extent store: framing ");
+            let durable = self::slow(&log, "segments framed durable");
             let gib = |bytes: u64| bytes as f64 / (1u64 << 30) as f64;
             let delta = |name: &str| {
                 after.get(name).copied().unwrap_or(0) - io.get(name).copied().unwrap_or(0)
@@ -249,6 +253,17 @@ mod host {
             let once = ["segments_framed_in_place", "commits_spanning_segments"]
                 .map(|name| format!("{name}={}", stats.get(name).copied().unwrap_or(0)));
             eprintln!("shared-disk: {}", once.join(" "));
+            // fxdax: the framings' syncs, made apart, for segments framed meanwhile together
+            // (TASK-310).
+            eprintln!(
+                "shared-disk: slow_durable={} slowest_durable_ms={:.1} slow_durable_ms={:.0} \
+                 durable_count={} durable_segments={}",
+                durable.0,
+                durable.1,
+                durable.2,
+                stats.get("durable_count").copied().unwrap_or(0),
+                stats.get("durable_segments").copied().unwrap_or(0),
+            );
             eprintln!(
                 "shared-disk: slow_framings={slow} slowest_ms={longest:.1} slow_framing_ms={slow_sum:.0} \
                  framing_count={} flush_slow={} io_stall_some_s={:.1} io_stall_full_s={:.1}",

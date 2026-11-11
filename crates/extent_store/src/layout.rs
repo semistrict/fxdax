@@ -172,10 +172,23 @@ pub(crate) fn spare_path(segment: SegmentId) -> String {
     format!("{}/{SPARE}{:016x}", branch_dir(LOGS, segment.branch), segment.number)
 }
 
-/// The numbers of the files in `path`, in order; fxdax: but spare logs, which hold none.
+/// fxdax: the prefix of the names of segments' framed files being made durable, in a branch's
+/// directory of segments: renamed to theirs once their raw files' and logs' entries are durable
+/// (`segments::make_durable`, TASK-310), so that no framed file's entry is durable before those;
+/// an opening removes any left.
+pub(crate) const FRAMING: &str = "framing-";
+
+/// fxdax: the path of `segment`'s framed file being made durable ([`FRAMING`]).
+pub(crate) fn framing_path(segment: SegmentId) -> String {
+    format!("{}/{FRAMING}{:016x}", branch_dir(SEGMENTS, segment.branch), segment.number)
+}
+
+/// The numbers of the files in `path`, in order; fxdax: but spare logs, which hold none, and
+/// framed files being made durable ([`FRAMING`]).
 pub(crate) fn list_numbers<D: Dir>(dir: &D, path: &str) -> Result<Vec<u64>, Error> {
     let mut numbers = Vec::new();
-    for name in dir.list(path)?.into_iter().filter(|name| !name.starts_with(SPARE)) {
+    let named = |name: &String| !name.starts_with(SPARE) && !name.starts_with(FRAMING);
+    for name in dir.list(path)?.into_iter().filter(named) {
         numbers.push(parse_number(&name).ok_or_else(|| anyhow!("{path}/{name} is no file"))?);
     }
     numbers.sort_unstable();

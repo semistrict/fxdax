@@ -1285,7 +1285,10 @@ fn daemon_line() -> String {
     let timed = [
         timed_fields("flush", &timings.flushes, &extent_store::FLUSH_PHASES),
         timed_fields("framing", &timings.framings, &extent_store::FRAMING_PHASES),
+        // fxdax: and making the segments framed durable, so many at a time (TASK-310).
+        timed_fields("durable", &timings.durable, &extent_store::DURABLE_PHASES),
         vec![
+            format!("durable_segments={}", timings.durable_segments),
             format!("own_sync_max_us={}", timings.own_sync_max_us),
             format!("raw_sync_max_us={}", timings.raw_sync_max_us),
         ],

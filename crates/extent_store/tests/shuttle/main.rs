@@ -866,7 +866,7 @@ fn framing_stalls() -> (Stalling, Arc<Store<Stalling>>) {
     let store = Arc::new(Store::create(dir.clone(), description, OPTIONS).unwrap());
     store.write(extent(1), 0, &pattern(1, BLOCK)).unwrap();
     store.commit(None).unwrap();
-    dir.arm(Op::Create, &format!("segments/{BRANCH:016x}/{:016x}", 0));
+    dir.arm(Op::Create, &format!("segments/{BRANCH:016x}/framing-{:016x}", 0));
     (dir, store)
 }
 
@@ -979,7 +979,7 @@ fn framing_at_a_commit_stalls() -> (Stalling, Arc<Store<Stalling>>) {
     for sequence in 2..5 {
         store.write(extent(sequence), 0, &pattern(sequence as u8, 2 * BLOCK)).unwrap();
     }
-    dir.arm(Op::Create, &format!("segments/{BRANCH:016x}/{:016x}", 0));
+    dir.arm(Op::Create, &format!("segments/{BRANCH:016x}/framing-{:016x}", 0));
     (dir, store)
 }
 

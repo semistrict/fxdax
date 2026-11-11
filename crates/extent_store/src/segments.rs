@@ -13,11 +13,11 @@ use crate::durability::Syncs;
 use crate::framed::{Aligned, Files, Framed, Source, read_parts};
 use crate::layout::{
     Change, Data, EXTENTS, Extents, LOGS, OPEN_SEGMENTS, Piece, SEGMENTS, SPARE, SegmentId,
-    branch_dir, extent_path, held_frees, log_path, open_segment_path, parse_number, segment_path,
-    spare_path,
+    branch_dir, extent_path, framing_path, held_frees, log_path, open_segment_path, parse_number,
+    segment_path, spare_path,
 };
 use crate::store::{Options, Usage};
-use crate::timings::{self, Phases, framing};
+use crate::timings::{self, Phases, durable, framing};
 use crate::wal::{log_header, log_salt, new_salt};
 use anyhow::{Context as _, Error, anyhow, bail, ensure};
 use extent_frame::segment::{Chain, Child, Contents, Continued, Footer, epoch_of};
@@ -188,11 +188,15 @@ pub(crate) struct Segments<F> {
     /// before, which the next commit's flush syncs (TASK-165.9); and those filled since, which the
     /// commit closing them seals extents in (TASK-92.41).
     closed_unsynced: Vec<Arc<F>>,
-    /// Whether a segment closed since the last commit, which syncs the directories of segments,
-    /// the framed file's, and of open ones, the next's.
+    /// Whether a segment closed since the last commit, which syncs the directories of open
+    /// segments and of logs, the next's raw file's and log's entries. fxdax: its framed file's,
+    /// its framing makes durable (`make_durable`, TASK-310).
     closed_since: bool,
     /// fxdax: the segments whose framings are running, each of which ends itself (TASK-153.8).
     framing: BTreeSet<SegmentId>,
+    /// fxdax: the segments opened whose raw files' and logs' entries no making of segments framed
+    /// durable has made durable since ([`Segments::unsynced_entries`], TASK-310).
+    unsynced_entries: BTreeSet<SegmentId>,
     /// fxdax: the segments framed whose raw files and logs are still there, each with the last
     /// commit its footer names: they go once that commit is durable, so that an opening finding it
     /// not durable closes the segment again from them (`wal::recover`, TASK-92.16, TASK-165.9).
@@ -272,6 +276,7 @@ impl<F: File> Segments<F> {
             closed_unsynced: Vec::new(),
             closed_since: false,
             framing: BTreeSet::new(),
+            unsynced_entries: BTreeSet::new(),
             raw: Vec::new(),
             spares,
             lifetime,
@@ -617,6 +622,7 @@ impl<F: File> Segments<F> {
         let last = Some(epoch);
         let unframed = self.seal_off(number, (window, last), epoch, next_sequence, written);
         self.tracked.insert(next, Segment::new(phase, 0));
+        self.unsynced_entries.insert(next);
         self.open = next;
         self.committed_len = 0;
         self.opened = Instant::now();
@@ -720,6 +726,7 @@ impl<F: File> Segments<F> {
         segment.phase = Phase::Full { raw: raw.clone(), log: log.clone(), window };
         self.full.push(number);
         self.tracked.insert(next, Segment::new(phase, 0));
+        self.unsynced_entries.insert(next);
         self.open = next;
         self.committed_len = 0;
         self.opened = Instant::now();
@@ -763,6 +770,26 @@ impl<F: File> Segments<F> {
     pub fn framing_begun(&mut self, number: SegmentId) {
         debug_assert!(self.is_framing(number), "{number:?}, being framed, was closed");
         self.framing.insert(number);
+    }
+
+    /// fxdax: the segments opened whose raw files' and logs' entries no sync has made durable
+    /// yet, which a making of segments framed durable syncs first, before their framed files'
+    /// entries ([`make_durable`]). An opening reads a framed file whose raw file and log are gone
+    /// unchecked, whole, and one whose raw file or log is gone as durable, as those go once it is
+    /// (`wal::recover`); one whose entries were never durable, a crash may keep the framed file's
+    /// entry and lose those, the framed file torn, read as whole, or following one lost (TASK-310's
+    /// crash rounds). The flush after a segment closes syncs the next one's entries, a commit made
+    /// in it durable then; nothing waits for that flush to frame a segment. Each framing synced the
+    /// directory of raw files after its framed file, making the raw files' entries of the segments
+    /// opened since durable before the next framing made theirs; then each synced them first if
+    /// none had, on a disk VMs share 0.7-3.8 s, the slowest part of a framing left.
+    pub fn unsynced_entries(&self) -> BTreeSet<SegmentId> {
+        self.unsynced_entries.clone()
+    }
+
+    /// fxdax: the entries of `synced`, segments opened, are durable now.
+    pub fn entries_synced(&mut self, synced: &BTreeSet<SegmentId>) {
+        self.unsynced_entries.retain(|number| !synced.contains(number));
     }
 
     /// fxdax: where segment `number` is in its life, for why a commit's sealing copies the extents
@@ -861,7 +888,10 @@ impl<F: File> Segments<F> {
     /// Adds to `syncs` what the next commit's flush syncs of the segments': the open segment's
     /// file, if it was written since the last commit, keeping its pages in the host's page cache,
     /// as they go with it once it is framed and removed (TASK-92.23); and if one closed since, the
-    /// directories of segments, of open ones and of their logs.
+    /// directories of open segments and of their logs. fxdax: not that of framed ones, whose
+    /// framings make their entries durable (`make_durable`): the commit needs none of them, and
+    /// each directory's sync was a journal commit of the host's file system's and a flush of its
+    /// disk's cache more for the commits' durability to wait for (TASK-310).
     pub fn take_syncs(&mut self, syncs: &mut Syncs<F>) {
         if std::mem::take(&mut self.written) {
             let Phase::Open { raw, .. } = &self.tracked[&self.open].phase else {
@@ -873,7 +903,7 @@ impl<F: File> Segments<F> {
             syncs.cached(raw);
         }
         if std::mem::take(&mut self.closed_since) {
-            for kind in [SEGMENTS, OPEN_SEGMENTS, LOGS] {
+            for kind in [OPEN_SEGMENTS, LOGS] {
                 syncs.dir(branch_dir(kind, self.open.branch));
             }
         }
@@ -986,11 +1016,12 @@ impl<F: File> Unframed<F> {
         self.len
     }
 
-    /// Frames it in its framed file in `dir`, made durable with its entry and the directory of
-    /// raw files', and returns that: the commit that closed it, whose data is in it, is durable
-    /// once it is, and its raw file may go once the commits its footer names are too. fxdax: the
-    /// files of the extents stored on their own its footer names are durable first, so that a
-    /// framed file a crash leaves whole names none torn (TASK-165.9).
+    /// Frames it in its framed file in `dir`, and returns that, written, not yet durable, under a
+    /// name of its own until it is ([`framing_path`]): what [`make_durable`] makes durable, with
+    /// its entry, together with others framed meanwhile, syncing nothing itself (TASK-310). Its raw
+    /// file may go once it is, and the commits its footer names are too. fxdax: the files of the
+    /// extents stored on their own its footer names are durable first, so that a framed file a
+    /// crash leaves whole names none torn (TASK-165.9).
     pub fn frame<D: Dir<File = F>>(self, dir: &D) -> Result<Arc<Framed<F>>, Error> {
         // fxdax: timed, phase by phase (TASK-165.9).
         let mut phases = Phases::default();
@@ -1007,20 +1038,65 @@ impl<F: File> Unframed<F> {
         own.sync(dir)?;
         let synced = phases.took(framing::OWN, started);
         let footer = self.footer.encode();
-        let (path, raw_path) = (segment_path(self.number), open_segment_path(self.number));
+        let (path, raw_path) = (framing_path(self.number), open_segment_path(self.number));
         let raw = (raw_path.as_str(), &self.raw);
         let framed = frame_segment(dir, &path, raw, (self.len, self.quiet), &footer)?;
-        let written = phases.took(framing::WRITE, synced);
-        framed.file.sync()?;
-        let synced = phases.took(framing::SYNC, written);
-        for kind in [SEGMENTS, OPEN_SEGMENTS] {
-            dir.sync_dir(&branch_dir(kind, self.number.branch))?;
-        }
-        dir.barrier()?;
-        phases.took(framing::DIRS, synced);
+        phases.took(framing::WRITE, synced);
         timings::framed(self.number, phases);
         Ok(framed)
     }
+}
+
+/// fxdax: makes `framed`, segments of `branch` framed since the last such call, whose framings
+/// wrote them, the oldest written at `since`, durable together: each framed file synced, several
+/// at once, then renamed its segment's ([`framing_path`]), and the directory of framed files, their
+/// entries, synced once for them all (TASK-310); first, if `entries`, the directories of raw files
+/// and logs, for the segments opened since they were last synced ([`Segments::unsynced_entries`]),
+/// so that no framed file's entry is durable before its raw file's and log's. Each framing synced
+/// its own file, then the directories of framed and of raw files, one after another: three syncs,
+/// each a journal commit of the host's file system and a flush of its disk's cache, whose queue a
+/// disk VMs share keeps full, 2-4 s each with eight VMs writing at once, the framings after it
+/// waiting (TASK-92.41's A/B on ubu1). The segments' framings end once it returns: what waits for
+/// their framed files to be durable waits for that (the uploader, a closing between commits, a
+/// branch's closing), and their raw files and logs go no sooner, as before. A crash meanwhile may
+/// keep any of the framed files whole, each torn or not as the others are, under its own name or
+/// its segment's: an opening removes the first, and reads one whole only while those before it
+/// are whole too, checking each whose raw file is still there, and closes again from its raw file
+/// and log any after the first that isn't (`wal::recover`).
+pub(crate) fn make_durable<D: Dir>(
+    dir: &D,
+    branch: u64,
+    (framed, entries): (&[(SegmentId, Arc<Framed<D::File>>)], bool),
+    since: Instant,
+) -> Result<(), Error> {
+    // Where the segments are framed, written, not yet durable: their framings still running.
+    fail::fail_point!("segments::making_durable");
+    let mut phases = Phases::default();
+    let started = phases.took(durable::WAIT, since);
+    if entries {
+        let mut opened = Syncs::default();
+        for kind in [OPEN_SEGMENTS, LOGS] {
+            opened.dir(branch_dir(kind, branch));
+        }
+        opened.sync_dirs(dir)?;
+    }
+    let synced = phases.took(durable::ENTRIES, started);
+    let mut syncs = Syncs::default();
+    for (_, framed) in framed {
+        syncs.file(framed.file.clone());
+    }
+    syncs.dir(branch_dir(SEGMENTS, branch));
+    syncs.sync_files(dir)?;
+    let synced = phases.took(durable::FILES, synced);
+    for &(number, _) in framed {
+        let (from, to) = (framing_path(number), segment_path(number));
+        dir.rename(&from, &to).with_context(|| format!("renaming {from} {to}"))?;
+    }
+    syncs.sync_dirs(dir)?;
+    dir.barrier()?;
+    phases.took(durable::DIRS, synced);
+    timings::made_durable(branch, framed.len(), phases);
+    Ok(())
 }
 
 /// fxdax: the bytes written to the open segment since the last commit from which the guest is
@@ -1512,6 +1588,14 @@ mod tests {
         assert!(saves_little(&few), "noise, but for four blocks of zeros");
     }
 
+    /// `unframed`, framed and made durable, as a store's framings make it ([`make_durable`]).
+    fn framed_durably(dir: &MemDir, unframed: Unframed<MemFile>) -> Arc<Framed<MemFile>> {
+        let number = unframed.number();
+        let framed = unframed.frame(dir).unwrap();
+        make_durable(dir, BRANCH, (&[(number, framed.clone())], false), Instant::now()).unwrap();
+        framed
+    }
+
     /// Writes a block of `byte`s to the open segment, which holds it, and returns its piece.
     fn write(segments: &mut Segments<MemFile>, byte: u8) -> Piece {
         let (number, file, at) = segments.reserve(BLOCK);
@@ -1550,7 +1634,7 @@ mod tests {
         assert!(Arc::ptr_eq(&read, &raw));
         drop((read, raw));
 
-        let framed = unframed.frame(&dir).unwrap();
+        let framed = framed_durably(&dir, unframed);
         segments.framed(segment(0), framed.clone());
         assert!(!segments.is_framing(segment(0)));
         let Source::Framed(read) = segments.source(&dir, segment(0)).unwrap() else {
@@ -1566,7 +1650,7 @@ mod tests {
         let unframed = segments.close(&dir, 2, 0).unwrap();
         assert!(first.upgrade().is_some());
         drop(reading);
-        segments.framed(segment(1), unframed.frame(&dir).unwrap());
+        segments.framed(segment(1), framed_durably(&dir, unframed));
 
         // Idle, it closed as the next was framed, the least lately read; that being framed and the
         // open one stay open.
@@ -1629,7 +1713,7 @@ mod tests {
         let unwritten = segments.close(&dir, 3, 0).unwrap();
         let reap = |segments: &mut Segments<MemFile>| segments.reap();
         for (number, unframed) in [(0, empty), (1, holding), (2, unwritten)] {
-            segments.framed(segment(number), unframed.frame(&dir).unwrap());
+            segments.framed(segment(number), framed_durably(&dir, unframed));
         }
         // Not acknowledged, they stay.
         assert_eq!(reap(&mut segments), []);
@@ -1711,15 +1795,31 @@ mod tests {
         assert_eq!(syncs.files().1.len(), 3, "the raw files of the two filled and the open one");
         for unframed in closed {
             let number = unframed.number();
-            segments.framed(number, unframed.frame(&dir).unwrap());
+            segments.framed(number, framed_durably(&dir, unframed));
         }
         assert_eq!(data(&mut segments, &dir, segment(0))[BLOCK as usize], 2);
     }
 
+    /// fxdax: a segment opened has its entries unsynced until a making of segments framed durable
+    /// that began after it opened syncs them; one opened since stays so (TASK-310).
+    #[test]
+    fn entries_stay_unsynced_until_synced_after_they_were_made() {
+        let dir = MemDir::new();
+        let mut segments = opened(&dir, 64);
+        write(&mut segments, 1);
+        drop(segments.close(&dir, 1, 0).unwrap());
+        let synced = segments.unsynced_entries();
+        assert_eq!(synced, BTreeSet::from([segment(1)]));
+        write(&mut segments, 2);
+        drop(segments.close(&dir, 2, 0).unwrap());
+        segments.entries_synced(&synced);
+        assert_eq!(segments.unsynced_entries(), BTreeSet::from([segment(2)]));
+    }
+
     /// A commit syncs the open segment's file if it was written since the last commit, keeping
-    /// its pages cached (TASK-92.23), and the directories of segments and of open ones if one
-    /// closed; fxdax: and the raw file of one closed, if written since, which its commits' records
-    /// name the data of (TASK-165.9).
+    /// its pages cached (TASK-92.23), and the directories of open segments and of logs if one
+    /// closed, but not of framed ones, which framings sync (TASK-310); fxdax: and the raw file of
+    /// one closed, if written since, which its commits' records name the data of (TASK-165.9).
     #[test]
     fn only_written_open_segments_are_synced() {
         let dir = MemDir::new();
@@ -1736,11 +1836,7 @@ mod tests {
         assert_eq!(syncs(&mut segments), ((0, 0), vec![]));
         write(&mut segments, 2);
         segments.close(&dir, 1, 0).unwrap();
-        let dirs = vec![
-            branch_dir(LOGS, BRANCH),
-            branch_dir(OPEN_SEGMENTS, BRANCH),
-            branch_dir(SEGMENTS, BRANCH),
-        ];
+        let dirs = vec![branch_dir(LOGS, BRANCH), branch_dir(OPEN_SEGMENTS, BRANCH)];
         assert_eq!(syncs(&mut segments), ((0, 1), dirs));
         segments.append(BLOCK);
         assert_eq!(syncs(&mut segments), ((0, 1), vec![]));

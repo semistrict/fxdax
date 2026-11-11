@@ -676,6 +676,9 @@ fn closed_segments_and_sealed_extents_are_compressed() {
     store.commit(None).unwrap();
     reads(&store);
 
+    // Framed on a thread of its own, made durable on another: its framed file's size counts once
+    // its framing ends, which the commit waits not for (TASK-310).
+    store.closed(0).unwrap();
     let usage = store.usage().unwrap();
     let in_segments: u64 = contents[..3].iter().map(|(_, data)| data.len() as u64).sum();
     assert_eq!((usage.segment_bytes, usage.own_bytes), (in_segments, 18 * mib as u64));
@@ -709,7 +712,10 @@ fn compressible_data_takes_less_disk() {
 /// fxdax: a segment a commit closes is that commit's record once framed, its framing having made
 /// its framed file, which holds the commit's data, durable: a crash after leaves the branch as of
 /// that commit, though no flush made it durable, the framed file read, its raw file gone once
-/// opened (TASK-165.9). Before, a crash closes it again from its log (`wal`'s tests).
+/// opened (TASK-165.9). Before, a crash closes it again from its log (`wal`'s tests). The next
+/// segment's raw file and log, made as it closed, are durable with the next flush, which syncs
+/// their directories, not with the framing (TASK-310): a crash before may keep them or not, and
+/// the opening opens the segment after the last it finds.
 #[test]
 fn segments_closed_by_commits_are_their_records_once_framed() {
     for seed in 0..16 {
@@ -722,11 +728,16 @@ fn segments_closed_by_commits_are_their_records_once_framed() {
         store.commit_ordered(Some(b"two")).unwrap();
         let crashed = dir.crash(seed);
         drop(store);
+        let next = format!("{:016x}", 1);
+        let kept = ["open-segments", "logs"]
+            .iter()
+            .any(|kind| crashed.list(&of(kind, BRANCH)).unwrap().contains(&next));
         let store = Store::open(crashed.clone(), OPTIONS).unwrap();
         assert_eq!(store.root().unwrap(), b"two", "seed {seed}");
         assert_eq!(read(&store, extent(1), 0, 3 * BLOCK), pattern(1, 0, 3 * BLOCK));
         assert_eq!(read(&store, extent(2), 0, BLOCK), pattern(2, 0, BLOCK));
-        assert_eq!(crashed.list(&of("open-segments", BRANCH)).unwrap(), ["0000000000000002"]);
+        let open = format!("{:016x}", if kept { 2 } else { 1 });
+        assert_eq!(crashed.list(&of("open-segments", BRANCH)).unwrap(), [open], "seed {seed}");
     }
 }
 
@@ -1549,6 +1560,138 @@ fn segments_framed_in_place_survive_crashes_framing_them() {
     }
 }
 
+/// fxdax: segments one commit closes, framed one after another, then made durable together, their
+/// framed files synced, then their directory, once
+/// (`segments::make_durable`, TASK-310), stopped after each of the commit's operations, as by a
+/// crash, which may keep any of the framed files whole and any torn, a later one's whole and an
+/// earlier one's not: the branch opens, what the commit before made reading as written, and what
+/// the commit made reading as written exactly if it is durable: an opening taking the last's
+/// footer, whole, the commit's record, though a crash lost the first's, which it closed again
+/// without the commit, whose record its log lacked, read the commit with its runs there lost; and
+/// one taking a framed file whose raw file's entry was never durable, a crash keeping its entry,
+/// as unchecked, read it torn (`wal::recover`, `Segments::unsynced_entries`). Whole, the
+/// commit made its segments durable together, at once.
+#[test]
+fn segments_made_durable_together_survive_crashes_making_them_durable() {
+    let options = Options { max_extent: OPTIONS.segment_size, ..OPTIONS };
+    let len = 2 * BLOCK;
+    let per_segment = OPTIONS.segment_size as usize / len;
+    // Six segments' worth, of bytes that compress: framed in copies of a few blocks each, which a
+    // crash keeps whole, or not, as often (`MemDir::crash`), where a segment framed in place, a
+    // segment's data unsynced, it never keeps whole (segments_framed_in_place_survive_...'s).
+    let extents = 6 * per_segment as u64;
+    let data = |sequence: u64| pattern(sequence as u8, 0, len);
+    let first = noise(1, BLOCK);
+    for operations in 0.. {
+        let dir = MemDir::serial();
+        let description =
+            Description { block_size: BLOCK as u32, capacity: 4 << 20, branch: BRANCH };
+        let store = Store::create(dir.clone(), description, options).unwrap();
+        store.write(extent(1), 0, &first).unwrap();
+        store.commit(None).unwrap();
+        for sequence in 2..2 + extents {
+            store.write(extent(sequence), 0, &data(sequence)).unwrap();
+        }
+        let before = extent_store::timings();
+        dir.fail_after(Some(operations));
+        store.close_segment().unwrap();
+        let committed = store.commit(None);
+        dir.fail_after(None);
+        for seed in 0..16 {
+            let reopened = Store::open(dir.crash(seed), options);
+            let reopened = reopened.unwrap_or_else(|error| {
+                panic!("stopped after {operations} operations, seed {seed}: {error:#}")
+            });
+            let at = format!("stopped after {operations} operations, seed {seed}");
+            assert!(read(&reopened, extent(1), 0, BLOCK) == first, "{at}: extent 1");
+            let durable = reopened.epoch().unwrap() == 2;
+            for sequence in 2..2 + extents {
+                let mut read = vec![0; len];
+                let intact =
+                    reopened.read(extent(sequence), 0, &mut read).is_ok() && read == data(sequence);
+                assert_eq!(durable, intact, "{at}: extent {sequence}, durable or not");
+            }
+        }
+        drop(store);
+        if committed.is_ok() {
+            let after = extent_store::timings();
+            let batches = after.durable.count - before.durable.count;
+            let segments = after.durable_segments - before.durable_segments;
+            assert_eq!(batches, 1, "the commit's segments made durable apart");
+            // Three filled, a segment and an extent each, then the open one.
+            assert_eq!(segments, 4, "segments made durable");
+            break;
+        }
+    }
+}
+
+/// fxdax: a segment's framing waits for no other's syncs: while the segments framed before it
+/// are being made durable, held there, it is framed, its framed file written, and it is made
+/// durable after, with those framed meanwhile; neither is durable, nor its raw file and log gone,
+/// before it is (TASK-310). Each sync of a framing waited for those before it, on a disk VMs
+/// share seconds each.
+#[test]
+fn framings_wait_for_no_other_framings_syncs() {
+    use std::sync::Mutex;
+    use std::sync::mpsc::channel;
+    let dir = MemDir::new();
+    let store = create(dir.clone(), 64 << 20);
+    store.write(extent(1), 0, &pattern(1, 0, BLOCK)).unwrap();
+    store.commit(None).unwrap();
+    store.flush().unwrap();
+    let before = extent_store::timings();
+    // Each framing, as it makes its framed file; each making durable, held until told to go.
+    let (framing, framings) = channel();
+    let framing = Mutex::new(framing);
+    let _framing = fail::FailGuard::with_callback("segments::framing", move || {
+        let _ = framing.lock().unwrap().send(());
+    })
+    .unwrap();
+    let (holding, held) = channel();
+    let (go, gone) = channel::<()>();
+    let (holding, gone) = (Mutex::new(holding), Mutex::new(gone));
+    let _durable = fail::FailGuard::with_callback("segments::making_durable", move || {
+        let _ = holding.lock().unwrap().send(());
+        let _ = gone.lock().unwrap().recv();
+    })
+    .unwrap();
+    store.write(extent(2), 0, &pattern(2, 0, BLOCK)).unwrap();
+    store.close_segment().unwrap();
+    store.commit(None).unwrap();
+    framings.recv().unwrap();
+    held.recv().unwrap();
+    // Segment 0 being made durable, held: segment 1 closes, and is framed meanwhile.
+    store.write(extent(3), 0, &pattern(3, 0, BLOCK)).unwrap();
+    store.close_segment().unwrap();
+    store.commit(None).unwrap();
+    framings.recv().unwrap();
+    assert_eq!(store.framing(), [0, 1], "framed, neither durable yet");
+    let raw = |number: u64| {
+        let name = format!("{number:016x}");
+        let held = |kind: &str| dir.list(&of(kind, BRANCH)).unwrap().contains(&name);
+        held("open-segments") && held("logs")
+    };
+    assert!(raw(0) && raw(1), "a raw file or log went before its framed file was durable");
+    drop(go);
+    settled(&store);
+    assert!(store.framing().is_empty(), "framings still running, settled");
+    assert!(!raw(0) && !raw(1), "a raw file or log stayed, its framed file durable");
+    let after = extent_store::timings();
+    assert_eq!(after.durable.count - before.durable.count, 2, "segment 1 waited for segment 0");
+    assert_eq!(after.durable_segments - before.durable_segments, 2);
+    for seed in 0..16 {
+        let reopened = Store::open(dir.crash(seed), OPTIONS).unwrap();
+        assert_eq!(reopened.epoch().unwrap(), 3, "seed {seed}");
+        for sequence in 1..=3 {
+            assert_eq!(
+                read(&reopened, extent(sequence), 0, BLOCK),
+                pattern(sequence as u8, 0, BLOCK),
+                "seed {seed}, extent {sequence}"
+            );
+        }
+    }
+}
+
 /// The files the process has open.
 fn open_fds() -> usize {
     std::fs::read_dir("/dev/fd").unwrap().count()
@@ -1895,12 +2038,6 @@ const SMALL_SEGMENTS: Options = Options { max_extent: 64 << 10, ..OPTIONS };
 /// The most bytes of data a segment of [`SMALL_SEGMENTS`] holds: a segment's, and an extent's.
 const SEGMENT_LIMIT: u64 = 128 << 10;
 
-/// The names of `store`'s segments being framed, in its branch's directories: their framed files
-/// may not be written yet ([`Store::framing`], TASK-189).
-fn framing(store: &Store<MemDir>) -> BTreeSet<String> {
-    store.framing().into_iter().map(|number| format!("{number:016x}")).collect()
-}
-
 /// fxdax: the bytes of `store`'s segments' data no extent is in, no write being in progress, and
 /// of the frees it keeps for the bucket alone, until acknowledged there (TASK-165.9).
 fn dead_bytes(store: &Store<MemDir>) -> u64 {
@@ -1911,13 +2048,12 @@ fn dead_bytes(store: &Store<MemDir>) -> u64 {
 /// The bytes of data of each of the branch's segments in `dir`, `store`'s: open ones' raw files,
 /// closed ones' framed data. Not the framed file of a segment being framed behind what closed it,
 /// which may not be written yet, and whose raw file holds its data until its framing ends
-/// ([`Store::framing`], TASK-189).
-fn segment_data(store: &Store<MemDir>, dir: &MemDir) -> Vec<u64> {
-    let framing = framing(store);
+/// (TASK-189): named its own until it is durable (`framing-`, TASK-310).
+fn segment_data(dir: &MemDir) -> Vec<u64> {
     let mut lens = Vec::new();
     for kind in ["open-segments", "segments"] {
         for name in dir.list(&of(kind, BRANCH)).unwrap() {
-            if kind == "segments" && framing.contains(&name) {
+            if name.starts_with("framing-") {
                 continue;
             }
             let file = dir.open(&format!("{}/{name}", of(kind, BRANCH)), true).unwrap();
@@ -1970,7 +2106,7 @@ fn segments_read_beside_the_store_skip_framed_files_being_written() {
         }
         for _ in &begun {
             waits.recv().unwrap();
-            let lens = segment_data(&store, &dir);
+            let lens = segment_data(&dir);
             assert!(lens.iter().all(|len| *len <= SEGMENT_LIMIT), "segments of {lens:?}");
             reads += 1;
             go.send(()).unwrap();
@@ -2137,13 +2273,13 @@ fn segments_hold_a_segment_and_an_extent_at_most() {
     // 192 KiB of blocks, no commit's data with them.
     for sequence in 0..48 {
         store.write(extent(sequence), 0, &block(sequence)).unwrap();
-        let lens = segment_data(&store, &dir);
+        let lens = segment_data(&dir);
         assert!(lens.iter().all(|len| *len <= SEGMENT_LIMIT), "segments of {lens:?}");
     }
     check(&store, 0..48);
     store.commit(None).unwrap();
     check(&store, 0..48);
-    let lens = segment_data(&store, &dir);
+    let lens = segment_data(&dir);
     assert!(lens.iter().all(|len| *len <= SEGMENT_LIMIT), "segments of {lens:?}");
     let own = dir.list(&of("extents", BRANCH)).unwrap();
     assert_eq!(own, Vec::<String>::new(), "extents sealed in files of their own");
@@ -2154,14 +2290,14 @@ fn segments_hold_a_segment_and_an_extent_at_most() {
     store.commit(None).unwrap();
     for sequence in 48..96 {
         store.write(extent(sequence), 0, &block(sequence)).unwrap();
-        let lens = segment_data(&store, &dir);
+        let lens = segment_data(&dir);
         assert!(lens.iter().all(|len| *len <= SEGMENT_LIMIT), "segments of {lens:?}");
     }
     store.commit(None).unwrap();
     check(&store, 0..97);
     let lasts: Vec<u64> = store.closed(usize::MAX).unwrap().iter().map(Closed::last).collect();
     assert_eq!(lasts, [1, 1, 3, 3]);
-    let lens = segment_data(&store, &dir);
+    let lens = segment_data(&dir);
     assert!(lens.iter().all(|len| *len <= SEGMENT_LIMIT), "segments of {lens:?}");
     drop(store);
     check(&Store::open(dir.clone(), SMALL_SEGMENTS).unwrap(), 0..97);
@@ -2196,7 +2332,7 @@ fn rewrites_take_no_segment_past_a_segment_and_an_extent() {
     let store = Store::create(dir.clone(), description, SMALL_SEGMENTS).unwrap();
     for seed in 0..64 {
         store.write(extent(1), 0, &pattern(seed, 0, 2 * BLOCK)).unwrap();
-        let lens = segment_data(&store, &dir);
+        let lens = segment_data(&dir);
         assert!(lens.iter().all(|len| *len <= SEGMENT_LIMIT), "segments of {lens:?}");
     }
     assert_eq!(read(&store, extent(1), 0, 2 * BLOCK), pattern(63, 0, 2 * BLOCK));

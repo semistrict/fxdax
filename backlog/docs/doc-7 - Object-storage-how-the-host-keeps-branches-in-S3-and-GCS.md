@@ -3,7 +3,7 @@ id: doc-7
 title: 'Object storage: how the host keeps branches in S3 and GCS'
 type: specification
 created_date: '2026-10-17 01:31'
-updated_date: '2026-11-10 17:11'
+updated_date: '2026-11-11 13:35'
 ---
 # Object storage: how the host keeps branches in S3 and GCS
 
@@ -257,6 +257,24 @@ segments, not footers naming runs in other objects):*
   interval leaves one the guest is filling (filled, or past 8 MiB written since the last commit)
   for the next commit, up to 30 s (`upload::Options::filling_wait`), unless a commit waits for
   its upload.
+- **Framed segments made durable together, off their framings** *(TASK-310)*. A framing reads,
+  frames and writes its segment under a name of its own (`segments/<b>/framing-<n>`), syncing
+  nothing, then hands it to a thread of the store's that makes the segments framed meanwhile
+  durable at once: the directories of raw files and logs first, if a segment opened since they were
+  synced; their framed files synced together; each renamed its segment's; the directory of framed
+  files synced once. The segment's framing ends only then, so the uploader, a closing between
+  commits and a branch's closing wait for it durable as before, and its raw file and log go no
+  sooner. Each framing had synced its file, then the directories of framed and raw files, one
+  after another, the next framing waiting: on a disk VMs share, each sync a journal commit and a
+  flush of the disk's cache behind the others' writes, 0.3-1.4 s each with eight VMs writing. No
+  flush syncs the directory of framed files. Recovery doesn't rely on framings being durable one
+  after another: it removes `framing-` files; a whole framed file is its segment's record only
+  while every segment before it is whole; after the first that isn't, a segment whose raw file and
+  log are both still there is closed again from them; and what is kept ends at a log refusing a
+  record's runs, at a segment holding no durable commit, or at a log not following the last commit
+  kept (TASK-334): the commits a flush made durable are in the logs. A spanning commit's segments
+  are let go of together once the last is acknowledged (TASK-338); one ending a commit and going
+  on with the next, landed alone, a rebase stamps again with its continuation alone (TASK-345).
 - **Readers** (`recovery::State::apply_contents`, the one replay) hold the runs a segment goes on
   with (`State::begun`) and seal them, where they are, as the segment ending the commit is applied,
   before its own; a segment after them that neither goes on with the commit nor ends it, a later

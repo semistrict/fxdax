@@ -16,11 +16,19 @@ use std::time::Instant;
 pub const FLUSH_PHASES: [&str; 6] = ["wait", "data", "dirs", "logs", "gone", "raw"];
 
 /// The phases of a framing ([`crate::Store::framing`]): syncing the extents stored on their own
-/// its footer names; reading its raw data and writing its framed file, written back as it goes;
-/// syncing the framed file; and syncing the directories of segments.
-pub const FRAMING_PHASES: [&str; 4] = ["own", "write", "sync", "dirs"];
+/// its footer names; and reading its raw data and writing its framed file, written back as it
+/// goes. fxdax: its framed file is made durable after, with others framed meanwhile
+/// ([`DURABLE_PHASES`], TASK-310).
+pub const FRAMING_PHASES: [&str; 2] = ["own", "write"];
 
-/// Something timed, phase by phase, in microseconds: [`FLUSH_PHASES`] or [`FRAMING_PHASES`].
+/// fxdax: the phases of making segments framed durable together (`segments::make_durable`,
+/// TASK-310): the time the first of them waited for it, framed; syncing the directories of raw
+/// files and logs, if segments opened since they were; syncing their framed files; and renaming
+/// them theirs and syncing the directory of framed files.
+pub const DURABLE_PHASES: [&str; 4] = ["wait", "entries", "files", "dirs"];
+
+/// Something timed, phase by phase, in microseconds: [`FLUSH_PHASES`], [`FRAMING_PHASES`] or
+/// [`DURABLE_PHASES`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Phases<const N: usize> {
     pub us: [u64; N],
@@ -92,12 +100,16 @@ impl<const N: usize> Timed<N> {
     }
 }
 
-/// How long this process's stores' flushes and framings took; and, of the files flushes synced,
-/// how long the longest sync of an extent's own file, and of a segment's raw file, took.
+/// How long this process's stores' flushes and framings took; fxdax: and making their segments
+/// framed durable, so many at a time, `durable_segments` of them in all (TASK-310); and, of the
+/// files flushes synced, how long the longest sync of an extent's own file, and of a segment's raw
+/// file, took.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Timings {
     pub flushes: Timed<6>,
-    pub framings: Timed<4>,
+    pub framings: Timed<2>,
+    pub durable: Timed<4>,
+    pub durable_segments: u64,
     pub own_sync_max_us: u64,
     pub raw_sync_max_us: u64,
 }
@@ -106,6 +118,8 @@ pub struct Timings {
 static TIMINGS: Mutex<Timings> = Mutex::new(Timings {
     flushes: Timed::NONE,
     framings: Timed::NONE,
+    durable: Timed::NONE,
+    durable_segments: 0,
     own_sync_max_us: 0,
     raw_sync_max_us: 0,
 });
@@ -129,15 +143,12 @@ pub(crate) fn flushed(branch: u64, flush: &Flush) {
     let Flush { phases, commits, synced } = flush;
     if phases.total_us() > 50_000 {
         let ms = |us: u64| us as f64 / 1000.0;
-        let named = FLUSH_PHASES.iter().zip(phases.us);
-        let named: Vec<String> =
-            named.map(|(phase, us)| format!("{phase} {:.1}", ms(us))).collect();
         log::warn!(
             "extent store: branch {branch:#x}'s flush of {commits} commits took {:.1} ms ({} ms); \
              synced {} own extents' files, the longest {:.1} ms, and {} raw files, the longest \
              {:.1} ms",
             ms(phases.total_us()),
-            named.join(", "),
+            named(&FLUSH_PHASES, *phases),
             synced.files,
             ms(synced.longest_file_us),
             synced.cached,
@@ -150,20 +161,42 @@ pub(crate) fn flushed(branch: u64, flush: &Flush) {
     timings.raw_sync_max_us = timings.raw_sync_max_us.max(synced.longest_cached_us);
 }
 
+/// `phases`, named by `names`, as a slow flush's or framing's warning says them.
+fn named<const N: usize>(names: &[&str; N], phases: Phases<N>) -> String {
+    let named = names.iter().zip(phases.us);
+    let named: Vec<String> =
+        named.map(|(phase, us)| format!("{phase} {:.1}", us as f64 / 1000.0)).collect();
+    named.join(", ")
+}
+
 /// A framing of a store of this process's, of `segment`, took `phases`: one past extentd's turn
 /// said as it happens, as a slow flush is ([`flushed`]).
-pub(crate) fn framed(segment: impl std::fmt::Debug, phases: Phases<4>) {
+pub(crate) fn framed(segment: impl std::fmt::Debug, phases: Phases<2>) {
     if phases.total_us() > 50_000 {
-        let named = FRAMING_PHASES.iter().zip(phases.us);
-        let named: Vec<String> =
-            named.map(|(phase, us)| format!("{phase} {:.1}", us as f64 / 1000.0)).collect();
         log::warn!(
             "extent store: framing {segment:?} took {:.1} ms ({} ms)",
             phases.total_us() as f64 / 1000.0,
-            named.join(", ")
+            named(&FRAMING_PHASES, phases)
         );
     }
     TIMINGS.lock().unwrap().framings.record(phases);
+}
+
+/// fxdax: making `segments` segments of branch `branch` framed durable together took `phases`
+/// (`segments::make_durable`, TASK-310): past extentd's turn, said as it happens, as a slow
+/// framing is ([`framed`]).
+pub(crate) fn made_durable(branch: u64, segments: usize, phases: Phases<4>) {
+    if phases.total_us() > 50_000 {
+        log::warn!(
+            "extent store: making branch {branch:#x}'s {segments} segments framed durable took \
+             {:.1} ms ({} ms)",
+            phases.total_us() as f64 / 1000.0,
+            named(&DURABLE_PHASES, phases)
+        );
+    }
+    let mut timings = TIMINGS.lock().unwrap();
+    timings.durable.record(phases);
+    timings.durable_segments += segments as u64;
 }
 
 #[cfg(test)]
@@ -199,6 +232,12 @@ pub(crate) mod flush {
 pub(crate) mod framing {
     pub const OWN: usize = 0;
     pub const WRITE: usize = 1;
-    pub const SYNC: usize = 2;
+}
+
+/// fxdax: the indices of [`DURABLE_PHASES`].
+pub(crate) mod durable {
+    pub const WAIT: usize = 0;
+    pub const ENTRIES: usize = 1;
+    pub const FILES: usize = 2;
     pub const DIRS: usize = 3;
 }

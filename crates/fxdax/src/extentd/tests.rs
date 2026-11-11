@@ -320,10 +320,12 @@ fn keeps_object_storage_and_follower_stats() {
     expected.extend(lags.map(str::to_owned));
     expected.extend((0..15).map(|bucket| format!("durable_lag_le_{}ms", 1 << bucket)));
     expected.push("durable_lag_gt_16384ms".to_owned());
-    // And how long its flushes and framings took, phase by phase.
-    let phases: [(&str, &[&str]); 2] = [
+    // And how long its flushes and framings took, phase by phase; and making the segments framed
+    // durable, how many (TASK-310).
+    let phases: [(&str, &[&str]); 3] = [
         ("flush", &["wait", "data", "dirs", "logs", "gone", "raw"]),
-        ("framing", &["own", "write", "sync", "dirs"]),
+        ("framing", &["own", "write"]),
+        ("durable", &["wait", "entries", "files", "dirs"]),
     ];
     for (kind, phases) in phases {
         expected.extend(["count", "slow"].map(|field| format!("{kind}_{field}")));
@@ -331,7 +333,7 @@ fn keeps_object_storage_and_follower_stats() {
             expected.extend(phases.iter().map(|phase| format!("{kind}_{which}_{phase}_us")));
         }
     }
-    expected.extend(["own_sync_max_us", "raw_sync_max_us"].map(str::to_owned));
+    expected.extend(["durable_segments", "own_sync_max_us", "raw_sync_max_us"].map(str::to_owned));
     // And the bytes its stores wrote, by kind, and the process, as its kernel counts them
     // (TASK-310).
     let kinds = ["raw", "copied", "framed", "own", "log"];
