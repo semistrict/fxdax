@@ -17,6 +17,9 @@
 #
 # The cases' artifacts are built once, first, into RESULTS/artifacts (FXDAX_E2E_BUILD_ONLY), and
 # every run boots those (FXDAX_E2E_PREBUILT): no run builds, nor runs the harness's own tests.
+# Each run's extent daemon keeps its bucket on disk, in RESULTS/CASE/round-K/bucket, removed once
+# it is done, unless FXDAX_EXTENTD_REMOTE names one: test-e2e.sh's default, on tmpfs, counts
+# against the run's memory limit, and a working set of gigabytes overran it (TASK-350).
 # Each run's results go to RESULTS/CASE/round-K: test-e2e.sh's logs, and the fs bench's report as
 # JSON (FXDAX_BENCH_RESULTS), which scripts/bench-ab.py compares, a side's directories its cases'
 # round directories. The environment's FXDAX_* variables pass to every run (sudo drops them
@@ -42,7 +45,7 @@ arc_bytes() {
 # Waits for the load to fall below the bound, saying so once a minute.
 wait_for_quiet() {
     local waited=0
-    while awk -v load="$(load)" -v max="$max_load" 'BEGIN { exit !(load >= max) }'; do
+    while awk -v now="$(load)" -v max="$max_load" 'BEGIN { exit !(now >= max) }'; do
         (( waited % 60 == 0 )) && echo "waiting for the load ($(load)) to fall below $max_load" >&2
         sleep 10
         waited=$((waited + 10))
@@ -81,13 +84,16 @@ for ((round = 1; round <= rounds; round++)); do
         sudo sh -c 'echo 3 > /proc/sys/vm/drop_caches'
         load_before=$(load) arc_before=$(arc_bytes) started=$(date -u +%FT%TZ)
         outcome=ok
-        fxjob --bench --name "rounds-$case-$round" -- \
+        fxjob --bench --mem 8G --name "rounds-$case-$round" -- \
             sudo env "PATH=$PATH" "HOME=$HOME" "${passed[@]}" \
             "FXDAX_E2E_PREBUILT=$artifacts" "FXDAX_E2E_RESULTS=$out/e2e" "FXDAX_BENCH_RESULTS=$out" \
+            "FXDAX_EXTENTD_REMOTE=${FXDAX_EXTENTD_REMOTE:-file://$out/bucket}" \
             "$repo/scripts/test-e2e.sh" "$case" > "$out/run.log" 2>&1 || outcome=failed
         load_after=$(load)
+        # The run's own bucket, on disk: what it held is no result.
+        sudo rm -r -f "$out/bucket"
         if [[ $outcome == ok ]] &&
-            awk -v load="$load_after" -v max="$max_load" 'BEGIN { exit !(load >= max) }'; then
+            awk -v now="$load_after" -v max="$max_load" 'BEGIN { exit !(now >= max) }'; then
             outcome=loaded
         fi
         [[ $outcome == ok ]] || status=1
