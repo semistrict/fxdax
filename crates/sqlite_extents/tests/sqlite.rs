@@ -4,6 +4,8 @@
 
 //! SQLite on volumes on fake devices (TASK-296).
 
+mod common;
+
 use futures::executor::block_on;
 use rusqlite::{Connection, OpenFlags, params};
 use sqlite_extents::{Contents, Options, Registration, Run, Volume, Window, register};
@@ -189,6 +191,36 @@ fn a_database_reads_back_once_opened_again() {
         assert_eq!(integrity(&connection), "ok");
         assert_eq!(rows(&connection), expected);
         reopened.check_extents();
+    });
+}
+
+/// A fork of a volume's device, as of its last commit, holds the volume as it was; the fork and
+/// the volume then change apart, each freeing what it no longer references, the fork what it
+/// inherited, and each holds just what it references, before and after opening again.
+#[test]
+fn forks_and_their_parents_go_their_own_ways() {
+    both(|mode| {
+        let parent = Mounted::new(DeviceHolder::new(device()), mode);
+        let connection = parent.connect("main.db");
+        let mut parent_rows = common::fill(&connection);
+        let fork = Mounted::new(parent.volume.device().fork(7).expect("a fork"), mode);
+        let forked = fork.connect("main.db");
+        let mut fork_rows = parent_rows.clone();
+        common::check(&forked, &fork_rows);
+
+        common::change_parent(&connection, &mut parent_rows);
+        common::change_fork(&forked, &mut fork_rows);
+        common::check(&connection, &parent_rows);
+        common::check(&forked, &fork_rows);
+        drop((connection, forked));
+        parent.check_extents();
+        fork.check_extents();
+
+        for (mounted, rows) in [(parent, parent_rows), (fork, fork_rows)] {
+            let reopened = Mounted::new(mounted.snapshot(), mode);
+            common::check(&reopened.connect("main.db"), &rows);
+            reopened.check_extents();
+        }
     });
 }
 
