@@ -3,11 +3,11 @@ id: TASK-276.6
 title: >-
   DAX random writes: ~10k PRIVATE a second per VM, each a TLB shootdown on the
   VM process's receiving thread
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-09 05:12'
-updated_date: '2026-11-11 02:08'
+updated_date: '2026-11-11 07:25'
 labels:
   - perf
 dependencies: []
@@ -30,9 +30,9 @@ TASK-276 phase 1 (GCE c3-standard-8, nested KVM): fxfs-guest-dax random 4K write
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Plan
@@ -63,4 +63,12 @@ The change, measured (2026-11-10, ubu1, fxjob --bench; docs/measurements/dax-laz
 The bench's first unread variant found the pages not in extentd's memory (nothing had read them), which main already filled in place: changed to read them first through the page cache, as files created in the mount are, so that extentd holds them.
 AC #2 on bare metal: the writes scale past 12k with jobs (main and branch alike, 15k at 1 job to 39-41k at 4). Nested KVM was not re-measured (GCE retired): there, writes to pages read before still take a shootdown each, which only batching would cut; options not designed, the user's to decide.
 Tests on the landed tree: guest e2e 18/18 (e2e suite, fxfs-guest-snapshot-dax, fxfs-guest-pgbench-dax-forked) from its own git worktree and kernel; the VMM's tests (test_config_space_as_upstream); Shuttle part; dax units 36/36 (windows_larger_than_the_map_count_read_whole needs >8 GiB on ubu1: TASK-342); firecracker-series-check ok both ways, 18 commits; macOS workspace 2,228, Shuttle, scripts 266; specs/dax-cow 14 models; upstream-changes.py --check. An earlier e2e run's failures were the run's: a kernel built from an rsync'd tree (build commit unknown) and budgets before TASK-263's fix (append_writeback 4.9 s of 3 s, TASK-263's symptom, fixed on main).
+
+Landed at main aaba26d2b (with 87eb8b8c4: the unmapped-page-read-as-hole mutant and the guide's traces of the two new mutations; aaba26d2b: extentd's vm_processes_tell_the_daemon_what_their_windows_cost touches its page before its PRIVATE, as a map installs nothing now). Main CI 42949975927 green, every job. Firecracker fxdax-v1.16.1-r6 (323b5a5af) on r5.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+A MAP now names pages and their first touch installs them (dax::uffd), so a page written before it is read, of extents the host's memory holds, is made private in place of nothing: no mmap, no TLB shootdown. Private pages are filled by pwrite (Firecracker fxdax-v1.16.1-r6's seccomp) and emptied once the change's mmap took them away, so the punches GCE's 13% fallocate was flush nothing. Measured on ubu1 (bare metal, fxjob --bench, interleaved A/B of the landed tree, 3x2): random writes to unread pages +29/+42/+66/+65% at 1/2/4/8 jobs (25.4k -> 41.9k at 8, p99 2.0 -> 0.53 ms), 11 real differences, no regression. On bare metal main's DAX random writes already scale past 12k (15k -> 41k), the receiving thread 26% busy at most: GCE's 10-12k cap was nested KVM's shootdown cost, which writes to pages read before still pay (batching left to the user). Tests: Shuttle (first touches racing MAP/UNMAP/eviction, two new rules), uffd units, specs/dax-cow (DaxCowLoads, two mutations), guest e2e 18/18, series check, main CI 42949975927.
+<!-- SECTION:FINAL_SUMMARY:END -->

@@ -3,11 +3,11 @@ id: TASK-276.7
 title: >-
   Read data copied into fresh guest memory costs the receiving thread a COW
   fault and TLB shootdown each
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-09 05:12'
-updated_date: '2026-11-11 02:08'
+updated_date: '2026-11-11 07:25'
 labels:
   - perf
 dependencies: []
@@ -29,9 +29,9 @@ TASK-276 phase 1 profile (fxfs-guest, cold random reads, 4 vCPUs): a third of th
 
 ## Definition of Done
 <!-- DOD:BEGIN -->
-- [ ] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
-- [ ] #2 scripts/upstream-changes.py --check passes
-- [ ] #3 Deviations from upstream documented where they occur
+- [x] #1 cargo nextest run --workspace passes on macOS and Linux (GCE, scripts/test-gce.sh)
+- [x] #2 scripts/upstream-changes.py --check passes
+- [x] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
 
 ## Implementation Notes
@@ -41,3 +41,9 @@ Step 1, bare metal (ubu1, fxjob --bench, main + bench, 4 vCPUs, 8 jobs, perf of 
 
 Measured (2026-11-10, ubu1 bare metal, fxjob --bench, the branch's build): an interleaved A/B, the guest booted with init_on_alloc=1 (every page it allocates written by it, so that no guest page is the host's zero page when a READ reply is copied in) against the default, fxfs-guest and ext4 the control, 4 vCPUs, 3 rounds x 2 iterations: 0 real differences; cold reads j1/j2/j4/j8 7.25k/11.7k/18.0k/19.9k against 6.94k/12.0k/18.8k/19.9k IOPS, qd16 48.2k/46.6k, p50s within drift. And a profile of it (8 jobs) left the receiving thread's wp_page_copy at 11.7% (12.5% without): the COW faults are not of pages fresh to the guest, so populating guest memory writable would not remove them either, and would make every VM's RAM resident at boot (2 GiB a bench VM; doc-13's density, hundreds of forks a host) for nothing shown. Completing replies off the receiving thread moves the faults to the queues' workers, a wake-up each request that TASK-41 removed, and the thread is not bound on bare metal (54% busy at most in any second). Decision: neither done. What the faulted pages are is TASK-340; the larger shootdown on the reply path, munmap of large payloads (18%), is TASK-324.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Measured, not done: on bare metal (ubu1) the receiving thread is not bound under fxfs-guest's cold reads (54% busy at most), and a guest booted with init_on_alloc=1 neither removed its copy-on-write faults (wp_page_copy 12.5% -> 11.7%) nor moved any read's IOPS or latency past drift (interleaved A/B, 3x2): the faulted pages aren't fresh to the guest, so populating guest memory writable, which would make every VM's RAM resident at boot, would not help; completing replies off the thread would only move the faults and add a wake-up a request. Which pages they are: TASK-340; the larger reply-path shootdown, munmap of large payloads (18%): TASK-324. docs/measurements/dax-lazy-install-2026-11-10.md.
+<!-- SECTION:FINAL_SUMMARY:END -->
