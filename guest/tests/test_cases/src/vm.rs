@@ -466,7 +466,6 @@ pub struct Firecracker {
     api: PathBuf,
     console: PathBuf,
     /// fxdax: the loop devices its disks are on, held as long as it is ([`Vm::loop_disk`]).
-    #[expect(dead_code, reason = "never read: held, they stay attached as long as it runs")]
     loops: Vec<LoopDevice>,
 }
 
