@@ -1350,6 +1350,55 @@ fn segments_compressing_little_are_framed_in_place() {
     }
 }
 
+/// fxdax TASK-343: a segment holding noise, then extents' holes, as Hunt's hostile VM process's
+/// did (3 MiB of its fills' noise, then 2.6 MB of zeros its sparse extents' commit sealed in one run
+/// each), is framed in a copy, compressed, its holes taking nothing; not in place, raw, which kept
+/// the holes, bytes no write of the tenant's was admitted for, on its disk past its limit (Hunt
+/// run 42949975683). Red with in-place framing decided by every eighth MiB part's compression: the
+/// first part alone, of noise. Its extents read as written, before and after a crash.
+#[test]
+fn segments_of_noise_then_holes_are_framed_compressed() {
+    const MIB: usize = 1 << 20;
+    let options = Options {
+        max_extent: 8 * MIB as u64,
+        segment_size: 8 * MIB as u64,
+        large_extent: 8 * MIB as u64,
+        ..OPTIONS
+    };
+    let description = Description { block_size: BLOCK as u32, capacity: 64 << 20, branch: BRANCH };
+    let dir = MemDir::new();
+    let store = Store::create(dir.clone(), description, options).unwrap();
+    for sequence in 1..=3 {
+        store.write(extent(sequence), 0, &noise(sequence, MIB)).unwrap();
+    }
+    // A block at the end of each of three extents of a MiB: a MiB's hole before each.
+    for sequence in 4..=6 {
+        store.write(extent(sequence), (MIB - BLOCK) as u64, &noise(sequence, BLOCK)).unwrap();
+    }
+    let framed = extent_store::segments_framed_in_place();
+    store.close_segment().unwrap();
+    store.commit(None).unwrap();
+    settled(&store);
+    assert!(!store.closed(usize::MAX).unwrap().is_empty(), "no segment closed");
+    assert_eq!(extent_store::segments_framed_in_place() - framed, 0, "framed in place");
+    let expect = |sequence: u64| match sequence {
+        1..=3 => noise(sequence, MIB),
+        _ => {
+            let mut held = vec![0; MIB - BLOCK];
+            held.extend(noise(sequence, BLOCK));
+            held
+        }
+    };
+    for sequence in 1..=6 {
+        assert!(read(&store, extent(sequence), 0, MIB) == expect(sequence), "{sequence}");
+    }
+    drop(store);
+    let reopened = Store::open(dir.crash(0), options).unwrap();
+    for sequence in 1..=6 {
+        assert!(read(&reopened, extent(sequence), 0, MIB) == expect(sequence), "{sequence}");
+    }
+}
+
 /// fxdax: extents not one run in a segment filled since the last commit, written in pieces
 /// interleaved with others', or across two segments, are copied by the commit into the open
 /// segment, and past its room into the next, it full in turn, which the commit goes on with: none

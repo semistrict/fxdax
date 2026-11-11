@@ -81,6 +81,46 @@ const BOB_MARK: [u8; 8] = *b"BOB\xb0\xb0\xb0\xb0\x0b";
 const LAST: u64 = u64::MAX - 1;
 /// The extents of the point mallory's VM manager made for it, a MiB each.
 const GIVEN_EXTENTS: u64 = 12;
+/// TASK-343: the bytes of the filesystem's blocks each file under `dir` takes, by path, as
+/// `disk::count` counts them.
+fn files_taking(dir: &Path) -> BTreeMap<PathBuf, u64> {
+    use std::os::unix::fs::MetadataExt as _;
+    let mut files = BTreeMap::new();
+    let mut dirs = vec![dir.to_owned()];
+    while let Some(dir) = dirs.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+        for entry in entries.flatten() {
+            let Ok(meta) = entry.metadata() else { continue };
+            if meta.is_dir() {
+                dirs.push(entry.path());
+            } else {
+                files.insert(entry.path(), meta.blocks() * 512);
+            }
+        }
+    }
+    files
+}
+
+/// TASK-343: the files of `after` that grew past `before`, or are new, largest growth first, with
+/// their bytes: what a case's disk check names as taking what it took.
+fn grown_since(before: &BTreeMap<PathBuf, u64>, after: &BTreeMap<PathBuf, u64>) -> String {
+    let mut grown: Vec<(u64, &PathBuf, u64)> = (after.iter())
+        .filter_map(|(path, &bytes)| {
+            let was = before.get(path).copied().unwrap_or(0);
+            (bytes > was).then(|| (bytes - was, path, bytes))
+        })
+        .collect();
+    grown.sort_by(|a, b| b.0.cmp(&a.0));
+    let gone: u64 = (before.iter())
+        .filter(|(path, _)| !after.contains_key(*path))
+        .map(|(_, bytes)| bytes)
+        .sum();
+    let listed: Vec<String> = (grown.iter().take(24))
+        .map(|(by, path, bytes)| format!("{} +{by} ({bytes})", path.display()))
+        .collect();
+    format!("{} grown, {gone} bytes gone: {}", grown.len(), listed.join(", "))
+}
+
 /// The extent a flood reads, its own, and how much of it each read asks for.
 const FLOOD_EXTENT: u64 = 0xf100d;
 /// The first of the extents mallory fills its disk with (TASK-94).
@@ -1834,6 +1874,7 @@ fn a_compromised_vm_process_harms_no_tenant_beside_it() {
             // Its disk limited a few MiB past what it takes, which its fills reach (TASK-94); but
             // as a connection of its floods, whose write, which its reads read, is to be admitted.
             let (taken, _) = disk::count(Some("mallory")).unwrap();
+            let files_before = files_taking(&vms);
             let flooding = hostiles.iter().any(|hostile| hostile.flood);
             let disk_limit = (!flooding).then_some(taken + FILL_ROOM);
             disk::set_limit(Some("mallory"), disk_limit).unwrap();
@@ -1905,12 +1946,19 @@ fn a_compromised_vm_process_harms_no_tenant_beside_it() {
             let stayed = connections().saturating_sub(connected);
             prop_assert!(ended.is_ok(), "{stayed} connections of mallory's stayed");
             // It took no more of the host's disk than its limit, whatever it said: what was
-            // admitted, and what its stores' own work adds beside it, their logs and segments
-            // closed, a MiB at most (TASK-94).
+            // admitted, and what its stores' own work adds beside it, a MiB at most (TASK-94).
+            // That work: their logs, branches and segments' tails, tens of KiB; and their
+            // extents' holes, zeros a commit seals with them, admitted for no write. A segment
+            // holding them is framed in a copy, compressed, where they take nothing, unless
+            // compressing it saves under an eighth of it (`extent_store`'s `IN_PLACE_SAVING`),
+            // framed in place, raw: its holes under an eighth of it, a seventh of the rest of it,
+            // written and admitted; under 4/7 MiB of the case's `FILL_ROOM` (TASK-343).
             let (counted, _) = disk::count(Some("mallory")).unwrap();
             prop_assert!(
                 disk_limit.is_none_or(|limit| counted <= limit + (1 << 20)),
-                "mallory's disk takes {counted} bytes, past its limit of {disk_limit:?}"
+                "mallory's disk takes {counted} bytes, past its limit of {disk_limit:?}, from \
+                 {taken} as the case began; the files grown since: {}",
+                grown_since(&files_before, &files_taking(&vms))
             );
             disk::set_limit(Some("mallory"), None).unwrap();
             for status in seen.iter().flat_map(|seen| &seen.filled) {

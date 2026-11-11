@@ -1132,21 +1132,44 @@ fn write_back<F: File>(file: &F, bytes: &[u8], offset: u64) -> io::Result<()> {
 /// metadata in a few of their parts, were all framed in copies but for a few.
 const IN_PLACE_SAVING: u64 = 8;
 
-/// fxdax: the parts of a segment's data compressed to sample it by ([`saves_little`]): one in so
-/// many.
+/// fxdax: the pieces of a segment's data compressed to sample it by ([`saves_little`]): one in so
+/// many, of [`SAMPLE`] bytes each, spread over all of it.
 const SAMPLE_EVERY: usize = 8;
 
-/// fxdax: whether a sample of the parts of `data`, a segment's, one in [`SAMPLE_EVERY`], says
-/// compressing them saves less than half of what it must for a framing in a copy
-/// ([`IN_PLACE_SAVING`]): what a segment of a large file's data, which doesn't compress, holds.
-/// One compressing more, or near the bound, is compressed whole to tell (TASK-310).
+/// fxdax: the bytes of each piece of a segment's data its sample compresses ([`saves_little`]): an
+/// eighth of a part, so that every part has its share sampled (TASK-343).
+const SAMPLE: usize = (extent_frame::PART / 8) as usize;
+
+/// fxdax: the blocks of a segment's data [`saves_little`] finds zeros in, every one of them.
+const ZERO_BLOCK: usize = 4096;
+
+/// fxdax: whether `data`, a segment's, saves too little compressed for a framing in a copy, by a
+/// look at it short of compressing it: its blocks of zeros under half of what a copy must save
+/// ([`IN_PLACE_SAVING`]), and a sample of its pieces, one in [`SAMPLE_EVERY`], spread over the
+/// whole of it, compressing by under that too; what a segment of a large file's data, which
+/// doesn't compress, holds. One saving more, or near the bound, is compressed whole to tell
+/// (TASK-310).
+///
+/// The zeros counted exactly, as the store writes them of its own: an extent's holes, sealed in
+/// one run with it, which no guest's write wrote, nor a tenant's disk admitted (TASK-94). Sampled
+/// a part in eight, 1 MiB each, the first part alone of a segment under 9 MiB, the sample took a
+/// segment of a hostile VM process's 3 MiB of noise, then 2.6 MB of its extents' holes, for one
+/// that saves nothing: framed in place, raw, the holes took its tenant's disk past its limit by
+/// what a copy, compressed, takes none of (TASK-343, Hunt run 42949975683).
 fn saves_little(data: &[u8]) -> bool {
-    let part = extent_frame::PART as usize;
-    let sample = data.chunks(part).step_by(SAMPLE_EVERY);
-    let (len, packed) = sample.fold((0, 0), |(len, packed), part| {
-        (len + part.len() as u64, packed + extent_frame::packed_len(part))
+    let len = data.len() as u64;
+    let zeros: u64 = (data.chunks(ZERO_BLOCK))
+        .filter(|block| block.iter().all(|&byte| byte == 0))
+        .map(|block| block.len() as u64)
+        .sum();
+    if zeros >= len / (2 * IN_PLACE_SAVING) {
+        return false;
+    }
+    let sample = data.chunks(SAMPLE).step_by(SAMPLE_EVERY);
+    let (sampled, packed) = sample.fold((0, 0), |(len, packed), piece| {
+        (len + piece.len() as u64, packed + extent_frame::packed_len(piece))
     });
-    len - packed < len / (2 * IN_PLACE_SAVING)
+    sampled - packed < sampled / (2 * IN_PLACE_SAVING)
 }
 
 /// fxdax: frames a segment's data, `raw`, its raw file at `raw_path`, its parts stored raw, in
@@ -1451,6 +1474,42 @@ mod tests {
         create_branch_dirs(dir, BRANCH).unwrap();
         let chain = Chain::new(BRANCH, 0, 0, None, 0);
         Segments::open(dir, (BRANCH, BTreeMap::new()), (0, 0, chain), open_files).unwrap()
+    }
+
+    /// `len` bytes that don't compress, of `seed`'s.
+    fn noise(seed: u64, len: usize) -> Vec<u8> {
+        let mut state = seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1;
+        (0..len)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                state as u8
+            })
+            .collect()
+    }
+
+    /// TASK-343: a segment's look short of compressing it sees all of it: a segment of 3 MiB of
+    /// noise, then holes, an extent's zeros, as Hunt's hostile VM process made one, saves much
+    /// compressed, as do zeros at every offset no sample piece reaches; one of noise alone, or with
+    /// a few blocks of zeros, saves little. Red with every eighth MiB part sampled: the first only
+    /// of a segment under 9 MiB, noise, so it saved little, and was framed in place, raw.
+    #[test]
+    fn segments_holding_holes_save_much_compressed() {
+        const MIB: usize = 1 << 20;
+        let mut holes = noise(1, 3 * MIB);
+        holes.resize(6 * MIB, 0);
+        assert!(!saves_little(&holes), "3 MiB of noise, then 3 MiB of zeros");
+        // Zeros past each part's sampled piece, where no sample reaches.
+        let mut unsampled = noise(2, 8 * MIB);
+        for part in unsampled.chunks_mut(MIB) {
+            part[SAMPLE..SAMPLE + MIB / 4].fill(0);
+        }
+        assert!(!saves_little(&unsampled), "a quarter of each part zeros, unsampled");
+        assert!(saves_little(&noise(3, 6 * MIB)), "noise");
+        let mut few = noise(4, 6 * MIB);
+        few[..4 * BLOCK as usize].fill(0);
+        assert!(saves_little(&few), "noise, but for four blocks of zeros");
     }
 
     /// Writes a block of `byte`s to the open segment, which holds it, and returns its piece.
