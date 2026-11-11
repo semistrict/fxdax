@@ -18,6 +18,10 @@ ORDER = [
     "fxdax-nodax",
     "virtiofs-passthrough",
     "ext4-guest-kernel",
+    # ext4 on a loop device over a local image file, and with the image's writes cached unsafely:
+    # the sandboxes' setup TASK-350 measures fxdax against.
+    "ext4-loop",
+    "ext4-loop-unsafe",
     "ext4-pmem",
     "ext4-dax-pmem",
     "fxfs-guest",

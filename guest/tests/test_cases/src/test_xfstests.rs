@@ -102,7 +102,7 @@ _scratch_unmount()
         "generic/796",
         "generic/797",
         // fxdax: reached once scratch filesystems had sizes (TASK-149.25), first run by the
-        // nightly on GitHub's runners (TASK-284, TASK-349).
+        // nightly on GitHub's runners (TASK-349).
         "generic/679",
         // Nor room: a write to what fallocate covered finds none on a full filesystem, as 274's
         // does (`fxfs_data_fallocate`; GCE r945, TASK-149.25).

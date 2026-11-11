@@ -4,9 +4,11 @@ title: >-
   scripts' tests fail on main: test_bench_results's filesystem registry lacks
   ext4-loop and ext4-loop-unsafe, and test_check_exclusions finds
   test_xfstests.rs's known failures citing TASK-284, now done
-status: To Do
-assignee: []
+status: Done
+assignee:
+  - '@claude'
 created_date: '2026-11-11 15:32'
+updated_date: '2026-11-11 17:08'
 labels:
   - testing
   - ci
@@ -24,7 +26,7 @@ ordinal: 746000
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Both tests pass on main
+- [x] #1 Both tests pass on main
 <!-- AC:END -->
 
 ## Definition of Done
@@ -33,3 +35,18 @@ ordinal: 746000
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Fixed:
+- bench_results.ORDER and test_bench_results's registry name ext4-loop and ext4-loop-unsafe, after ext4-guest-kernel, as test_fs_bench.rs's Backend lists them. They keep the default baseline, ext4-virtio-blk; what TASK-350 compares them with is its call.
+- test_xfstests.rs's comment on generic/679 cites only TASK-349 (open) for the nightly's first run, not TASK-284 (done).
+python3 -m unittest discover -s scripts/tests: 278 tests OK on macOS.
+<!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Registered TASK-350's ext4-loop filesystems in bench_results.ORDER and the test's registry. Made the xfstests known failure cite its open task only. scripts' tests pass (278).
+<!-- SECTION:FINAL_SUMMARY:END -->

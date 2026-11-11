@@ -35,6 +35,8 @@ class Registry(unittest.TestCase):
             names,
             [
                 "ext4-guest-kernel",
+                "ext4-loop",
+                "ext4-loop-unsafe",
                 "ext4-dax-pmem",
                 "ext4-pmem",
                 "fxfs-guest",
