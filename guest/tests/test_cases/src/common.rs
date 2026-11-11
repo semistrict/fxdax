@@ -96,6 +96,132 @@ pub fn daemon_stats(path: &Path) -> anyhow::Result<std::collections::BTreeMap<St
         .collect())
 }
 
+/// fxdax: what a process cost its host, as its kernel counts it, whatever the process says of
+/// itself: what an A/B of two pins compares of their daemons, a pin's daemon from before it
+/// counted its own writes and memory among them (TASK-330.4).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct ProcessCosts {
+    /// What its kernel wrote to disks for it (/proc/PID/io's `write_bytes`).
+    pub disk_written: u64,
+    /// The most memory it held at once (/proc/PID/status's `VmHWM`).
+    pub peak_rss: u64,
+    /// Its CPU time, its user and system time, in seconds (/proc/PID/stat's).
+    pub cpu_secs: f64,
+}
+
+impl ProcessCosts {
+    /// The process `pid`'s, as it runs.
+    pub fn of(pid: u32) -> anyhow::Result<Self> {
+        let read = |file: &str| {
+            let path = format!("/proc/{pid}/{file}");
+            fs::read_to_string(&path).with_context(|| format!("reading {path}"))
+        };
+        Self::parse(&read("io")?, &read("status")?, &read("stat")?, clock_ticks())
+    }
+
+    /// From a process's /proc files, `io`, `status` and `stat`, and its kernel's clock ticks a
+    /// second, `ticks`.
+    fn parse(io: &str, status: &str, stat: &str, ticks: f64) -> anyhow::Result<Self> {
+        let field = |text: &str, name: &str| -> anyhow::Result<u64> {
+            let line = text.lines().find_map(|line| line.strip_prefix(name)?.strip_prefix(':'));
+            let value = line.with_context(|| format!("no {name}"))?.trim();
+            Ok(value.trim_end_matches(" kB").trim().parse()?)
+        };
+        // Past the command's parentheses, which may hold spaces: state is the third field, utime
+        // the fourteenth, stime the fifteenth.
+        let after = &stat[stat.rfind(')').context("no command in stat")? + 2..];
+        let fields: Vec<&str> = after.split(' ').collect();
+        let ticked = |at: usize| -> anyhow::Result<f64> {
+            Ok(fields.get(at - 3).context("a short stat")?.parse::<u64>()? as f64)
+        };
+        Ok(Self {
+            disk_written: field(io, "write_bytes")?,
+            peak_rss: field(status, "VmHWM")? << 10,
+            cpu_secs: (ticked(14)? + ticked(15)?) / ticks,
+        })
+    }
+}
+
+fn clock_ticks() -> f64 {
+    // SAFETY: sysconf reads a constant of the system's.
+    (unsafe { nix::libc::sysconf(nix::libc::_SC_CLK_TCK) }) as f64
+}
+
+/// fxdax: a case's measurements, in the fs bench's shape (test_fs_bench.rs), which
+/// scripts/bench-ab.py compares two sides' rounds of (TASK-330.4): each a workload of one value
+/// a run, its unit and whether higher is better; and the checks the case failed, how many of each
+/// kind and what each said. [`Measured::save`] writes them to FXDAX_BENCH_RESULTS, if set, as
+/// `bench-CASE.json`.
+#[derive(serde::Serialize)]
+pub struct Measured {
+    case: String,
+    backend: String,
+    results: Vec<Measure>,
+    failures: std::collections::BTreeMap<String, u32>,
+    failed: Vec<String>,
+}
+
+#[derive(serde::Serialize)]
+struct Measure {
+    workload: String,
+    unit: &'static str,
+    higher_is_better: bool,
+    values: Vec<f64>,
+}
+
+impl Measured {
+    pub fn new(case: &str) -> Self {
+        Self {
+            case: case.to_owned(),
+            backend: case.to_owned(),
+            results: Vec::new(),
+            failures: Default::default(),
+            failed: Vec::new(),
+        }
+    }
+
+    /// Records `workload`'s `value`, in `unit`, lower better.
+    pub fn lower(&mut self, workload: impl Into<String>, unit: &'static str, value: f64) {
+        self.record(workload.into(), unit, false, value);
+    }
+
+    /// Records `workload`'s `value`, in `unit`, higher better.
+    pub fn higher(&mut self, workload: impl Into<String>, unit: &'static str, value: f64) {
+        self.record(workload.into(), unit, true, value);
+    }
+
+    fn record(&mut self, workload: String, unit: &'static str, higher_is_better: bool, value: f64) {
+        self.results.push(Measure { workload, unit, higher_is_better, values: vec![value] });
+    }
+
+    /// Records a check failed, of `kind`, saying `said`.
+    pub fn failed(&mut self, kind: &str, said: impl Into<String>) {
+        *self.failures.entry(kind.to_owned()).or_default() += 1;
+        self.failed.push(said.into());
+    }
+
+    /// Whether a check failed.
+    pub fn has_failed(&self) -> bool {
+        !self.failed.is_empty()
+    }
+
+    /// Records a process's costs ([`ProcessCosts`]), each a workload named `name.` and the cost.
+    pub fn costs(&mut self, name: &str, costs: ProcessCosts) {
+        let (gib, mib) = ((1u64 << 30) as f64, (1u64 << 20) as f64);
+        self.lower(format!("{name}.disk_written"), "GiB", costs.disk_written as f64 / gib);
+        self.lower(format!("{name}.peak_rss"), "MiB", costs.peak_rss as f64 / mib);
+        self.lower(format!("{name}.cpu"), "s", costs.cpu_secs);
+    }
+
+    /// Writes them to FXDAX_BENCH_RESULTS, if set.
+    pub fn save(&self) -> anyhow::Result<()> {
+        let Some(dir) = std::env::var_os("FXDAX_BENCH_RESULTS") else { return Ok(()) };
+        let path = Path::new(&dir).join(format!("bench-{}.json", self.case));
+        let json = serde_json::to_string_pretty(self)?;
+        fs::write(&path, json).with_context(|| format!("writing {}", path.display()))
+    }
+}
+
 /// fxdax: fails unless the daemon named `name` the test spawned made half its stores' commits
 /// durable within extentd's turn, 50 ms, at least, as its stats file says: doc-12's median
 /// (`durable_lag_within_50ms`, TASK-221).
@@ -305,6 +431,22 @@ pub fn copy_dir(from: &Path, to: &Path) -> anyhow::Result<()> {
 mod tests {
     use super::*;
     use std::ffi::OsStr;
+
+    /// TASK-330.4: a process's costs are its kernel's counts, its command's spaces and all.
+    #[test]
+    fn a_processs_costs_read_from_its_proc_files() {
+        let io = "rchar: 10\nwchar: 20\nsyscr: 1\nsyscw: 2\nread_bytes: 4096\nwrite_bytes: 8192\n\
+                  cancelled_write_bytes: 0\n";
+        let status =
+            "Name:\tfxdax-extentd\nVmPeak:\t  900 kB\nVmHWM:\t    512 kB\nVmRSS:\t 400 kB\n";
+        let stat = "42 (fxdax extentd) S 1 42 42 0 -1 4194560 100 0 0 0 250 50 0 0 20 0 9 0";
+        let costs = ProcessCosts::parse(io, status, stat, 100.0).unwrap();
+        assert_eq!(costs, ProcessCosts { disk_written: 8192, peak_rss: 512 << 10, cpu_secs: 3.0 });
+        assert_eq!(
+            format!("{:#}", ProcessCosts::parse("rchar: 1\n", status, stat, 100.0).unwrap_err()),
+            "no write_bytes"
+        );
+    }
 
     /// TASK-164.12: a test's daemon keeps a part cache of its own in the test's directory, as
     /// production's does, unless FXDAX_EXTENTD_CACHE is said, by the daemon's environment or this

@@ -14,8 +14,9 @@
 //! directory is on, names its bucket (FXDAX_EXTENTD_REMOTE, an `s3://` URL, and the server's
 //! address and credentials, AWS_*) and its data's directory (FXDAX_SANDBOX_BUCKET_DIR), which this
 //! checks is on the case's disk. FXDAX_SANDBOX_MODE says how much: `short` (the default), eight
-//! VMs at once, minutes, for every push to main; or `long`, eight at once of thirty-two, each
-//! doing more, for a nightly (.github/workflows/sandboxes.yml).
+//! VMs at once, minutes, for every push to main (.github/workflows/sandboxes.yml); or `long`,
+//! LangSmith's controlled load's sixteen, eight at a time, each doing more, by hand on ubu1 before
+//! each pin handed to LangSmith (scripts/qualify.sh, TASK-330.5).
 //!
 //! Each host imports the sandboxes' image once, as a base: an Alpine root with PostgreSQL and git,
 //! Docker's static binaries and its buildx plugin, and a BusyBox image to build from; each VM
@@ -119,7 +120,7 @@ const COMMANDS: [(&str, &[&str]); 3] = [
 mod host {
     use super::*;
 
-    use crate::common::{control, fxdax_guest_should_run, setup_rootfs};
+    use crate::common::{Measured, ProcessCosts, control, fxdax_guest_should_run, setup_rootfs};
     use crate::test_fxfs_guest_docker::host::{DockerFiles, buildx};
     use crate::vm::{Firecracker, Vm};
     use crate::{ShouldRun, Test, TestOutcome, TestSetup};
@@ -143,18 +144,6 @@ RUN apk add --no-cache postgresql postgresql-contrib git
     const ROOT_CAPACITY: u64 = 16 * GIB;
     /// A VM's own store's, for its database, repository or files.
     const DATA_CAPACITY: u64 = 8 * GIB;
-    /// A builder's root's DAX window, and the window of a VM's own store, when it has one: what a
-    /// sandbox maps, not the host's memory, of which eight windows at once were refused (ENOMEM,
-    /// fxfs-guest-shared-disk-dax). Each window's private pages, half its pages, are pinned in its
-    /// daemon's memory, [`DAEMON_MEMORY`], as it is made, out of what the daemon can evict: a
-    /// host's builder's and its two own stores' with windows at once, 1 GiB.
-    const ROOT_WINDOW: u64 = GIB;
-    const DATA_WINDOW: u64 = GIB / 2;
-    /// Each daemon's memory: its extent cache's bound, and its windows' private pages'. Two of
-    /// 4 GiB filled their caches towards it over the long mode's run, 2.9 GB each 6 minutes in,
-    /// and beside eight guests ran a CI runner's 16 GB and its swap out; at 2 GiB, a daemon's
-    /// cache under eight guests' writes left no room to pin a window's pages in (ENOMEM).
-    const DAEMON_MEMORY: u64 = 3 * GIB;
 
     /// How much a run does: FXDAX_SANDBOX_MODE's.
     struct Mode {
@@ -164,6 +153,16 @@ RUN apk add --no-cache postgresql postgresql-contrib git
         vms: usize,
         /// What each role does, in its guest's environment.
         settings: fn(Role) -> Vec<(&'static str, String)>,
+        /// Each role's vCPUs, a builder's as LangSmith's builders have, and its memory, in MiB.
+        shape: fn(Role) -> (u8, u32),
+        /// Each daemon's memory: its extent cache's bound, and its windows' private pages'.
+        daemon_memory: u64,
+        /// A builder's root's DAX window, and the window of a VM's own store, when it has one:
+        /// what a sandbox maps, not the host's memory, of which eight windows at once were
+        /// refused (ENOMEM, fxfs-guest-shared-disk-dax). Each window's private pages, half its
+        /// pages, are pinned in its daemon's memory as it is made, out of what the daemon can
+        /// evict: a host's builder's and its own stores' with windows at once, half of these.
+        windows: (u64, u64),
         timeout_secs: u64,
     }
 
@@ -185,9 +184,11 @@ RUN apk add --no-cache postgresql postgresql-contrib git
         settings.iter().map(|(var, value)| (*var, value.to_string())).collect()
     }
 
-    /// A VM's vCPUs, by its role, a builder's as LangSmith's builders have; and its memory, in
-    /// MiB: 7.5 GiB for eight at once, of a CI runner's 16 GB.
-    fn shape(role: Role) -> (u8, u32) {
+    /// The short mode's VMs: 7.5 GiB for eight at once, beside two daemons of 3 GiB, on a CI
+    /// runner of 16 GB, of which a run of minutes touches a part. Daemons of 4 GiB filled their
+    /// caches to 2.9 GB each 6 minutes in and ran the runner's memory and swap out; at 2 GiB, a
+    /// daemon's cache under eight guests' writes left no room to pin a window's pages in (ENOMEM).
+    fn short_shape(role: Role) -> (u8, u32) {
         match role {
             Role::Builder => (8, 1536),
             Role::Pgbench => (2, 1024),
@@ -196,7 +197,21 @@ RUN apk add --no-cache postgresql postgresql-contrib git
         }
     }
 
-    /// The long mode: for a nightly, LangSmith's writers, three builds a builder, pgbench on 5 M
+    /// The long mode's VMs: 5.5 GiB for eight at once, beside two daemons of 2 GiB, RustFS and the
+    /// stores' page cache, within the 16 GiB a measurement has on ubu1 (fxjob --bench, TASK-330.5):
+    /// a run of a quarter hour touches every page it has, and with the short mode's sizes, its
+    /// guests' 7.5 GiB, its daemons' 3 GiB caches full and RustFS's 1 GB, a daemon was killed for
+    /// memory at 16 GiB and again at 18 GiB, the hosts' every job's.
+    fn long_shape(role: Role) -> (u8, u32) {
+        match role {
+            Role::Builder => (8, 1024),
+            Role::Pgbench => (2, 768),
+            Role::Git => (2, 512),
+            Role::Writer => (2, 512),
+        }
+    }
+
+    /// The long mode: before a pin, LangSmith's writers, three builds a builder, pgbench on 5 M
     /// accounts, the sandbox team's, three times.
     fn long(role: Role) -> Vec<(&'static str, String)> {
         let settings: &[(&str, u64)] = match role {
@@ -216,15 +231,30 @@ RUN apk add --no-cache postgresql postgresql-contrib git
 
     fn mode() -> anyhow::Result<Mode> {
         match std::env::var("FXDAX_SANDBOX_MODE").as_deref() {
-            Err(_) | Ok("short") => {
-                Ok(Mode { name: "short", at_once: 8, vms: 8, settings: short, timeout_secs: 1200 })
-            }
-            // LangSmith's controlled load's shape, 8 VMs at a time of 32 here, each doing more:
-            // 16 at once, even at 9 GiB of guests, ran a CI runner's 16 GB and its swap out
-            // (vmstat: free under 200 MB, 3 GB swapped) and the runner went down.
-            Ok("long") => {
-                Ok(Mode { name: "long", at_once: 8, vms: 32, settings: long, timeout_secs: 7200 })
-            }
+            Err(_) | Ok("short") => Ok(Mode {
+                name: "short",
+                at_once: 8,
+                vms: 8,
+                settings: short,
+                shape: short_shape,
+                daemon_memory: 3 * GIB,
+                windows: (GIB, GIB / 2),
+                timeout_secs: 1200,
+            }),
+            // LangSmith's controlled load's shape (TASK-310): 16 VMs, 8 at a time, each doing more
+            // than a short run's; on ubu1 by hand before each pin (TASK-330.5).
+            Ok("long") => Ok(Mode {
+                name: "long",
+                at_once: 8,
+                vms: 16,
+                settings: long,
+                shape: long_shape,
+                // Windows of the short mode's, 1 GiB and 512 MiB, were refused by daemons of 2 GiB
+                // whose caches eight guests' writes filled (ENOMEM, 2 a host).
+                daemon_memory: 2 * GIB,
+                windows: (GIB / 2, GIB / 4),
+                timeout_secs: 7200,
+            }),
             Ok(other) => bail!("FXDAX_SANDBOX_MODE is short or long, not {other:?}"),
         }
     }
@@ -295,14 +325,15 @@ RUN apk add --no-cache postgresql postgresql-contrib git
         let name = sandbox.name();
         let fork = dir.join(format!("{name}.root"));
         control(&host.socket)?.fork_store(&host.base, &fork)?;
-        let (vcpus, memory) = shape(sandbox.role);
+        let (vcpus, memory) = (mode.shape)(sandbox.role);
         let mut machine = Vm::new(vcpus, memory)?;
         machine.guest_kernel()?;
-        let root_window = if sandbox.role == Role::Builder { ROOT_WINDOW } else { 0 };
+        let (root_window, data_window) = mode.windows;
+        let root_window = if sandbox.role == Role::Builder { root_window } else { 0 };
         machine.extent_store_served("root", &fork, ROOT_CAPACITY, root_window, &host.socket);
         machine.fxfs_root("root");
         if sandbox.role != Role::Builder {
-            let window = if sandbox.dax { DATA_WINDOW } else { 0 };
+            let window = if sandbox.dax { data_window } else { 0 };
             let data = dir.join(format!("{name}.data"));
             machine.extent_store_served("extents", &data, DATA_CAPACITY, window, &host.socket);
         }
@@ -343,14 +374,29 @@ RUN apk add --no-cache postgresql postgresql-contrib git
             .collect()
     }
 
-    /// Ends `sandbox`'s VM, `firecracker`: what its guest said, or why it failed.
+    /// What a run found of its VMs as they ended: the checks they failed, each role's longest
+    /// VM, which says where a run's time went (TASK-330.5), and each command's slowest.
+    #[derive(Default)]
+    struct Tally {
+        failed: Vec<String>,
+        longest: std::collections::BTreeMap<&'static str, f64>,
+        slowest: std::collections::BTreeMap<String, u64>,
+    }
+
+    /// Ends `sandbox`'s VM, `firecracker`, booted at `booted`: what its guest said, or why it
+    /// failed, and how long it ran, into `tally`.
     fn finish(
         firecracker: Firecracker,
         sandbox: &Sandbox,
-        failed: &mut Vec<String>,
+        booted: Instant,
+        tally: &mut Tally,
     ) -> anyhow::Result<()> {
         let name = sandbox.name();
         let (status, console) = firecracker.wait()?;
+        let ran = booted.elapsed().as_secs_f64();
+        eprintln!("sandboxes: {name}: ran {ran:.1} s");
+        let longest = tally.longest.entry(sandbox.role.name()).or_default();
+        *longest = longest.max(ran);
         // Its API's socket, which Firecracker leaves.
         let api = Vm::api_socket(&name);
         std::fs::remove_file(&api).with_context(|| format!("removing {}", api.display()))?;
@@ -358,11 +404,11 @@ RUN apk add --no-cache postgresql postgresql-contrib git
             crate::vm::without_kernel_lines(&crate::vm::guest_stdout(&std::fs::read(&console)?));
         let ok = format!("OK sandbox {}", sandbox.role.name());
         if !status.success() || !said.lines().any(|line| line == ok) {
-            failed.push(format!("vm: {name} exited {status}, saying {said:?}"));
+            tally.failed.push(format!("vm: {name} exited {status}, saying {said:?}"));
             return Ok(());
         }
         let Some(commands) = commands(&said) else {
-            failed.push(format!("vm: {name} said nothing of its commands: {said:?}"));
+            tally.failed.push(format!("vm: {name} said nothing of its commands: {said:?}"));
             return Ok(());
         };
         let report: Vec<String> = (commands.iter())
@@ -370,8 +416,10 @@ RUN apk add --no-cache postgresql postgresql-contrib git
             .collect();
         eprintln!("sandboxes: {name}: commands {}", report.join(" "));
         for (command, _, slowest) in commands {
+            let most = tally.slowest.entry(command.clone()).or_default();
+            *most = (*most).max(slowest);
             if slowest > COMMAND_BUDGET_MS {
-                failed.push(format!(
+                tally.failed.push(format!(
                     "commands: {name}'s {command} took {slowest} ms, its budget {COMMAND_BUDGET_MS} ms"
                 ));
             }
@@ -379,11 +427,34 @@ RUN apk add --no-cache postgresql postgresql-contrib git
         Ok(())
     }
 
+    /// What host `host`'s stores wrote, as its daemon's stats file in `dir` counts it (TASK-310):
+    /// its guests' bytes, raw, and its stores' in all.
+    fn host_writes(dir: &Path, host: &str) -> anyhow::Result<(u64, u64)> {
+        let stats = crate::common::daemon_stats(&dir.join(format!("{host}-stats.txt")))?;
+        let kind = |kind: &str| stats.get(&format!("written_{kind}_bytes")).copied();
+        let raw = kind("raw").context(
+            "no written_raw_bytes in its stats: it counts no writes, as before TASK-310",
+        )?;
+        let written: u64 =
+            ["raw", "copied", "framed", "own", "log"].into_iter().filter_map(kind).sum();
+        eprintln!(
+            "sandboxes: {host}: guest_gib={:.2} stores_written_gib={:.2} ratio={:.2} \
+             segments_framed_in_place={}",
+            raw as f64 / GIB as f64,
+            written as f64 / GIB as f64,
+            written as f64 / raw.max(1) as f64,
+            stats.get("segments_framed_in_place").copied().unwrap_or(0),
+        );
+        Ok((raw, written))
+    }
+
     impl TestFxfsGuestSandboxes {
-        fn run(&self, test_setup: &TestSetup) -> anyhow::Result<()> {
+        /// Runs the sandboxes, saying what it measured in `measured` and the checks they failed,
+        /// as it fails then.
+        fn run(&self, test_setup: &TestSetup, measured: &mut Measured) -> anyhow::Result<()> {
             let mode = mode()?;
             let dir = &test_setup.tmp_dir;
-            let mut failed = Vec::new();
+            let mut tally = Tally::default();
             // The topology: the bucket an S3 server's, its data on the case's disk.
             let remote = std::env::var("FXDAX_EXTENTD_REMOTE").unwrap_or_default();
             ensure!(
@@ -398,7 +469,7 @@ RUN apk add --no-cache postgresql postgresql-contrib git
                 let (disk, bucket) =
                     (std::fs::metadata(dir)?.dev(), std::fs::metadata(&bucket_dir)?.dev());
                 if disk != bucket {
-                    failed.push(format!(
+                    tally.failed.push(format!(
                         "topology: the bucket's data, {bucket_dir:?}, is on another disk than the \
                          case's, {}",
                         dir.display()
@@ -421,7 +492,7 @@ RUN apk add --no-cache postgresql postgresql-contrib git
                     &socket,
                     name,
                     &env,
-                    Some(DAEMON_MEMORY),
+                    Some(mode.daemon_memory),
                 )?;
                 let base = dir.join(format!("{name}.base"));
                 let imported = Instant::now();
@@ -432,92 +503,130 @@ RUN apk add --no-cache postgresql postgresql-contrib git
             let sandboxes: Vec<Sandbox> = (0..mode.vms).map(Sandbox::nth).collect();
             let cpus = host_cpus()?;
             let vcpus: usize = (sandboxes.iter().take(mode.at_once))
-                .map(|sandbox| usize::from(shape(sandbox.role).0))
+                .map(|sandbox| usize::from((mode.shape)(sandbox.role).0))
                 .sum();
             eprintln!(
                 "sandboxes: {} mode, {} VMs, {} at once, {vcpus} vCPUs at once on {cpus} CPUs",
                 mode.name, mode.vms, mode.at_once
             );
             if vcpus <= cpus {
-                failed
+                tally
+                    .failed
                     .push(format!("topology: {vcpus} vCPUs at once on {cpus} CPUs: no overcommit"));
             }
             let started = Instant::now();
             let (mut running, mut next) = (Vec::new(), 0);
             while next < sandboxes.len() || !running.is_empty() {
                 while next < sandboxes.len() && running.len() < mode.at_once {
-                    running.push((next, boot(test_setup, &root, &hosts, &sandboxes[next], &mode)?));
+                    let sandbox = &sandboxes[next];
+                    eprintln!(
+                        "sandboxes: {} on {} booted at {:.1} s",
+                        sandbox.name(),
+                        hosts[sandbox.host].name,
+                        started.elapsed().as_secs_f64()
+                    );
+                    let firecracker = boot(test_setup, &root, &hosts, sandbox, &mode)?;
+                    running.push((next, firecracker, Instant::now()));
                     next += 1;
                 }
                 std::thread::sleep(Duration::from_millis(100));
                 let mut still = Vec::new();
-                for (at, mut firecracker) in running {
+                for (at, mut firecracker, booted) in running {
                     match firecracker.running()? {
-                        true => still.push((at, firecracker)),
-                        false => finish(firecracker, &sandboxes[at], &mut failed)?,
+                        true => still.push((at, firecracker, booted)),
+                        false => finish(firecracker, &sandboxes[at], booted, &mut tally)?,
                     }
                 }
                 running = still;
             }
-            eprintln!("sandboxes: the VMs ran in {:.1} s", started.elapsed().as_secs_f64());
+            let ran = started.elapsed().as_secs_f64();
+            eprintln!("sandboxes: the VMs ran in {ran:.1} s");
+            measured.lower("sandboxes.vms", "s", ran);
+            for (role, longest) in &tally.longest {
+                measured.lower(format!("sandboxes.vm.{role}"), "s", *longest);
+            }
+            for (command, slowest) in &tally.slowest {
+                measured.lower(format!("sandboxes.command.{command}"), "ms", *slowest as f64);
+            }
             // Their stats files, written within a poll of the last change.
             std::thread::sleep(Duration::from_secs(2));
-            let (mut guests, mut stores) = (0, 0);
+            let (mut guests, mut stores, mut counted) = (0, 0, true);
+            let (mut framings, mut costs) = (Vec::new(), Vec::new());
             for host in &mut hosts {
                 let log = std::fs::read_to_string(dir.join(format!("{}.log", host.name)))?;
                 let let_go: Vec<&str> =
                     log.lines().filter(|line| line.contains("letting a VM process go")).collect();
                 if !let_go.is_empty() {
-                    failed.push(format!("let go: {} let VM processes go: {let_go:#?}", host.name));
+                    tally
+                        .failed
+                        .push(format!("let go: {} let VM processes go: {let_go:#?}", host.name));
                 }
-                let framings = slow_framings(&log);
-                let slowest = framings.iter().copied().fold(0.0, f64::max);
-                let over = framings.iter().filter(|&&ms| ms > FRAMING_BUDGET_MS).count();
+                let slow = slow_framings(&log);
+                let slowest = slow.iter().copied().fold(0.0, f64::max);
+                let over = slow.iter().filter(|&&ms| ms > FRAMING_BUDGET_MS).count();
                 eprintln!(
                     "sandboxes: {}: slow_framings={} slowest_ms={slowest:.1} sum_ms={:.0} over_budget={over}",
                     host.name,
-                    framings.len(),
-                    framings.iter().sum::<f64>(),
+                    slow.len(),
+                    slow.iter().sum::<f64>(),
                 );
                 if over > 0 {
-                    failed.push(format!(
+                    tally.failed.push(format!(
                         "framings: {} framed {over} segments slower than {FRAMING_BUDGET_MS} ms, the \
                          slowest {slowest:.1} ms",
                         host.name
                     ));
                 }
-                let stats =
-                    crate::common::daemon_stats(&dir.join(format!("{}-stats.txt", host.name)))?;
-                let kind = |kind: &str| stats.get(&format!("written_{kind}_bytes")).copied();
-                let raw = kind("raw").context("no written_raw_bytes")?;
-                let written: u64 =
-                    ["raw", "copied", "framed", "own", "log"].into_iter().filter_map(kind).sum();
-                let ratio = written as f64 / raw.max(1) as f64;
-                eprintln!(
-                    "sandboxes: {}: guest_gib={:.2} stores_written_gib={:.2} ratio={ratio:.2} \
-                     segments_framed_in_place={}",
-                    host.name,
-                    raw as f64 / GIB as f64,
-                    written as f64 / GIB as f64,
-                    stats.get("segments_framed_in_place").copied().unwrap_or(0),
-                );
-                (guests, stores) = (guests + raw, stores + written);
+                framings.extend(slow);
+                match host_writes(dir, host.name) {
+                    Ok((raw, written)) => (guests, stores) = (guests + raw, stores + written),
+                    Err(err) => {
+                        counted = false;
+                        tally.failed.push(format!("writes: {}'s daemon: {err:#}", host.name));
+                    }
+                }
                 crate::common::say_daemon_stats(test_setup, host.name);
+                // What its kernel counted of it, as any pin's daemon is counted (TASK-330.4).
+                let cost = ProcessCosts::of(host.daemon.id())?;
+                eprintln!("sandboxes: {}: {cost:?}", host.name);
+                costs.push(cost);
                 host.daemon.kill()?;
                 host.daemon.wait()?;
             }
-            let ratio = stores as f64 / guests.max(1) as f64;
-            eprintln!("sandboxes: the stores wrote {ratio:.2} times what the guests did");
-            if ratio > WRITES_BUDGET {
-                failed.push(format!(
-                    "writes: the stores wrote {ratio:.2} times what the guests did, past \
-                     {WRITES_BUDGET}"
-                ));
+            measured.lower("sandboxes.framings.slow", "count", framings.len() as f64);
+            let slowest = framings.iter().copied().fold(0.0, f64::max);
+            measured.lower("sandboxes.framings.slowest", "ms", slowest);
+            measured.lower("sandboxes.framings.sum", "s", framings.iter().sum::<f64>() / 1000.0);
+            let disk_written: u64 = costs.iter().map(|cost| cost.disk_written).sum();
+            measured.costs(
+                "sandboxes.daemons",
+                ProcessCosts {
+                    disk_written,
+                    peak_rss: costs.iter().map(|cost| cost.peak_rss).max().unwrap_or(0),
+                    cpu_secs: costs.iter().map(|cost| cost.cpu_secs).sum(),
+                },
+            );
+            if counted {
+                let ratio = stores as f64 / guests.max(1) as f64;
+                eprintln!("sandboxes: the stores wrote {ratio:.2} times what the guests did");
+                measured.higher("sandboxes.guests.written", "GiB", guests as f64 / GIB as f64);
+                measured.lower("sandboxes.stores.per_guest_byte", "x", ratio);
+                let disk = disk_written as f64 / guests.max(1) as f64;
+                measured.lower("sandboxes.daemons.disk_per_guest_byte", "x", disk);
+                if ratio > WRITES_BUDGET {
+                    tally.failed.push(format!(
+                        "writes: the stores wrote {ratio:.2} times what the guests did, past \
+                         {WRITES_BUDGET}"
+                    ));
+                }
             }
-            for failure in &failed {
+            for failure in &tally.failed {
                 eprintln!("sandboxes: check failed: {failure}");
+                let kind = failure.split_once(':').map_or("check", |(kind, _)| kind);
+                measured.failed(kind, failure.clone());
             }
-            ensure!(failed.is_empty(), "{} checks failed", failed.len());
+            let failed = tally.failed.len();
+            ensure!(failed == 0, "{failed} checks failed");
             // Passed: its stores, caches and image go, gigabytes of them; its logs stay.
             for entry in std::fs::read_dir(dir)? {
                 let path = entry?.path();
@@ -551,11 +660,21 @@ RUN apk add --no-cache postgresql postgresql-contrib git
         }
 
         fn start_vm(self: Box<Self>, test_setup: TestSetup) -> anyhow::Result<()> {
-            if let Err(err) = self.run(&test_setup) {
+            // What it measured, and why it failed, for an A/B of two pins (TASK-330.4): its
+            // checks', or else the error it stopped at.
+            let mut measured = Measured::new(&test_setup.test_case);
+            let ran = self.run(&test_setup, &mut measured);
+            if let Err(err) = &ran {
+                eprintln!("{err:#}");
+                if !measured.has_failed() {
+                    measured.failed("error", format!("{err:#}"));
+                }
+            }
+            if let Err(err) = measured.save() {
                 eprintln!("{err:#}");
                 std::process::exit(1);
             }
-            std::process::exit(0);
+            std::process::exit(if ran.is_ok() { 0 } else { 1 });
         }
 
         fn check(self: Box<Self>, _stdout: Vec<u8>, _test_setup: TestSetup) -> TestOutcome {

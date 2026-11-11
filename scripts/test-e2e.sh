@@ -27,7 +27,11 @@
 # A/B of two trees (scripts/bench-ab-host.sh) alternates between their builds, each made once, its
 # rounds the cases' time alone (TASK-276), and jobs of a matrix share one build, jailed as
 # FXDAX_FIRECRACKER_JAIL says (the nightly's, TASK-284). Neither takes
-# FXDAX_FIRECRACKER_SECCOMP=log, whose filter is built per run.
+# FXDAX_FIRECRACKER_SECCOMP=log, whose filter is built per run. With FXDAX_E2E_PREBUILT,
+# FXDAX_E2E_HARNESS=DIR takes the harness, the runner and the guest agent, from DIR's artifacts,
+# and what it tests, the extent daemon and its tools and Firecracker, from FXDAX_E2E_PREBUILT's:
+# so that one harness, a tree's whose cases a pin from before them lacks, drives two pins' builds
+# alike, a qualification's A/B (scripts/qualify.sh, TASK-330.4).
 # FXDAX_E2E_ROOT names the tree whose code it builds and boots, and whose helpers it runs (default:
 # this script's), so that this script's modes serve a tree of before them, an A/B's base.
 #
@@ -65,6 +69,15 @@ if [[ -n $prebuilt && ! -f $prebuilt/artifacts.txt ]]; then
     echo "$prebuilt holds no artifacts (FXDAX_E2E_BUILD_ONLY makes them)" >&2
     exit 2
 fi
+harness_artifacts=${FXDAX_E2E_HARNESS:-$prebuilt}
+if [[ -n ${FXDAX_E2E_HARNESS:-} && -z $prebuilt ]]; then
+    echo "FXDAX_E2E_HARNESS goes with FXDAX_E2E_PREBUILT, whose artifacts it drives" >&2
+    exit 2
+fi
+if [[ -n ${FXDAX_E2E_HARNESS:-} && ! -f $FXDAX_E2E_HARNESS/artifacts.txt ]]; then
+    echo "$FXDAX_E2E_HARNESS holds no artifacts (FXDAX_E2E_BUILD_ONLY makes them)" >&2
+    exit 2
+fi
 if [[ -n $prebuilt && -n ${FXDAX_FIRECRACKER_JAIL:-} && ! -x $prebuilt/jailer ]]; then
     echo "$prebuilt holds no jailer, built with no seccomp filter: FXDAX_FIRECRACKER_JAIL needs one" >&2
     exit 2
@@ -96,7 +109,7 @@ source "$root/scripts/lib/pjdfstest.sh"
 # The harness's runner, which boots a VM for each test, and says which cases the arguments select,
 # a selection naming no case failing before anything else is built (TASK-160.29).
 if [[ -n $prebuilt ]]; then
-    runner="$prebuilt/runner"
+    runner="$harness_artifacts/runner"
 else
     (cd "$harness" && cargo build -q -p runner)
     harness_target=$(target_dir "$harness")
@@ -125,7 +138,7 @@ if [[ -n $prebuilt ]]; then
     extentd_bin="$prebuilt/fxdax-extentd"
     export FXDAXCTL_BIN="$prebuilt/fxdaxctl" FXDAX_GC_BIN="$prebuilt/fxdax-gc"
     export FXDAX_FIRECRACKER="$prebuilt/firecracker"
-    export FXDAX_GUEST_AGENT="$prebuilt/guest-agent"
+    export FXDAX_GUEST_AGENT="$harness_artifacts/guest-agent"
     if [[ -n ${FXDAX_FIRECRACKER_JAIL:-} ]]; then
         export FXDAX_FIRECRACKER_JAILER="$prebuilt/jailer"
     fi

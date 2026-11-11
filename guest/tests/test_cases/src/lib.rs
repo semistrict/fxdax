@@ -985,6 +985,9 @@ compile_error!("Cannot enable both guest and host in the same binary!");
 mod common;
 
 #[cfg(feature = "host")]
+mod faulty_s3;
+
+#[cfg(feature = "host")]
 pub mod rootfs;
 
 mod shared_volumes;

@@ -8,33 +8,24 @@
 # than its 4 CPUs, building and exporting Docker images, running pgbench, working git repositories
 # and writing LangSmith's own load. It fails on a guest kernel's report, a VM let go, a framing
 # past a second, a sandbox's command past its budget, or a daemon past its own
-# (scripts/budgets.py). Both modes run by hand (workflow_dispatch) for now: the short one, minutes,
+# (scripts/budgets.py). The short mode, minutes, runs here by hand (workflow_dispatch) for now, and
 # goes on every push from ci.yml once main passes it, its framings past a second on the runner's
-# disk and CPUs today (TASK-310, TASK-336); the long one in the nightly once it fits a runner,
-# whose 16 GB it ran out of (TASK-330.5). On a runner made a host of guests, the guest kernel kept
-# between runs by what it's built from (.github/actions' guest-host and guest-kernel).
+# disk and CPUs today (TASK-310, TASK-336). The long mode runs on ubu1 alone, by hand, before each
+# pin handed to LangSmith (scripts/qualify.sh, TASK-330.4): it ran a 16 GB runner out of memory at
+# every size tried, and nobody pays for a larger one (TASK-330.5). On a runner made a host of
+# guests, the guest kernel kept between runs by what it's built from (.github/actions' guest-host
+# and guest-kernel).
 name: Sandboxes
 
 on:
   workflow_call:
-    inputs:
-      mode:
-        description: scripts/sandboxes.sh's mode, short or long
-        type: string
-        default: short
   workflow_dispatch:
-    inputs:
-      mode:
-        description: scripts/sandboxes.sh's mode
-        type: choice
-        options: [short, long]
-        default: short
 
 jobs:
   sandboxes:
-    name: sandboxes (${{ inputs.mode }})
+    name: sandboxes (short)
     runs-on: ubuntu-24.04
-    timeout-minutes: ${{ inputs.mode == 'long' && 300 || 120 }}
+    timeout-minutes: 120
     steps:
       # With vendor/firecracker, the VMM the guests boot in.
       - uses: actions/checkout@v7
@@ -47,23 +38,16 @@ jobs:
       # guest part's, which scripts/test-e2e.sh runs first unless its artifacts are prebuilt.
       - name: Build the run's artifacts
         run: FXDAX_E2E_BUILD_ONLY="$HOME/sandboxes-artifacts" scripts/test-e2e.sh
-      # As root, as the guest part's tests run: podman makes the guests' root images. The host's
-      # memory, swap, I/O and CPU every 30 s, and its largest processes' every minute, in this
-      # log, which outlives a runner that runs out of them: the long mode's went down 6-7 minutes
-      # in, its artifacts with it.
-      - name: scripts/sandboxes.sh ${{ inputs.mode }}
+      # As root, as the guest part's tests run: podman makes the guests' root images. What the
+      # runner spends, every 30 s, goes in the results (resources.log, scripts/lib/resources.sh).
+      - name: scripts/sandboxes.sh short
         run: |
-          vmstat -w -t 30 &
-          while ps -eo rss,comm --sort=-rss --no-headers | sed -n 1,8p | tr '\n' ' '; do
-            echo; sleep 60
-          done &
           mkdir -p ~/sandboxes
           sudo --preserve-env env "PATH=$PATH" "HOME=$HOME" \
             "FXDAX_E2E_PREBUILT=$HOME/sandboxes-artifacts" \
             "FXDAX_GUEST_KERNEL=$VMLINUX" "FXDAX_SANDBOX_DISK=$HOME/sandboxes" \
-            "FXDAX_E2E_RESULTS=$HOME/sandboxes/results" scripts/sandboxes.sh "$MODE"
+            "FXDAX_E2E_RESULTS=$HOME/sandboxes/results" scripts/sandboxes.sh short
         env:
-          MODE: ${{ inputs.mode }}
           VMLINUX: ${{ steps.kernel.outputs.vmlinux }}
       # What it said, but for its stores, images and caches, which a failed run keeps: the
       # runner's user's, as root's guest roots' directories aren't readable to it.
@@ -73,7 +57,7 @@ jobs:
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: sandboxes-${{ inputs.mode }}
+          name: sandboxes-short
           path: |
             ~/sandboxes/results/**/*.txt
             ~/sandboxes/results/**/*.log

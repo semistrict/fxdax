@@ -543,8 +543,8 @@ Each case is in suites, which the scripts run it by: `scripts/test-e2e.sh --tag 
 by name, `--tag e2e` if none (the runner's `list --help` names the suites). A run's outcomes are
 data, a round's in `CASE/round-K.json` and the run's in `summary.json` (`scripts/guest_results.py`).
 
-`scripts/test-e2e-rustfs.sh` runs them with their branches in an S3 bucket on the host (RustFS, in
-a container), as production keeps them in object storage. The nightly suite (`--tag nightly`)
+`scripts/test-e2e-rustfs.sh` runs them with their branches in an S3 bucket on the host (RustFS, a
+process of its release's binary), as production keeps them in object storage. The nightly suite (`--tag nightly`)
 runs so every night on GitHub's runners, whose nested KVM boots the guests
 (`.github/workflows/nightly.yml`), Firecracker in its jailer under its seccomp filter: built once,
 then a matrix of jobs, each a part of the suite (`runner list --tag nightly --shard K/N`).
@@ -573,18 +573,44 @@ CI, half an hour each night in Hunt; with guests, `fxfs-guest-bucket-soak`, by n
 past bug put back that it fails (`crates/fxdax/mutants`).
 
 And fxdax runs as LangSmith's sandboxes' CI does, whose runs found bugs ours didn't (TASK-330.1):
-two extent daemons and their S3 bucket (RustFS, in a container) on one ext4 disk, many VMs at
-once on fewer CPUs than they have vCPUs, building and exporting Docker images, running pgbench,
-working git repositories and writing large and small files, each guest timing a sandbox's commands
-all the while. It fails on a guest kernel's report, a VM let go, a framing past a second, a command
-past its budget, or a daemon past its own; LangSmith's pin's double writes, put back, fail it
-(`crates/fxdax/mutants/framed-in-copies.patch`). It runs on GitHub's runners' nested KVM
-(`.github/workflows/sandboxes.yml`), by hand for now: the short mode goes on every push once
-main's framings pass (TASK-310, TASK-336), the long one nightly once it fits a runner (TASK-330.5):
+two extent daemons and their S3 bucket (RustFS, a process of its release's binary) on one ext4
+disk, many VMs at once on fewer CPUs than they have vCPUs, building and exporting Docker images,
+running pgbench, working git repositories and writing large and small files, each guest timing a
+sandbox's commands all the while. It fails on a guest kernel's report, a VM let go, a framing past
+a second, a command past its budget, or a daemon past its own; LangSmith's pin's double writes,
+put back, fail it (`crates/fxdax/mutants/framed-in-copies.patch`). The short mode, eight VMs,
+minutes, runs on GitHub's runners' nested KVM (`.github/workflows/sandboxes.yml`), by hand until
+main's framings pass it (TASK-310, TASK-336), then on every push. The long mode is LangSmith's
+controlled load, 16 VMs eight at a time, each doing more: it runs on ubu1 alone, by hand, in the
+qualification before each pin (below), as no CI runner has its memory (TASK-330.5). Each run keeps
+what the host and the run spent every 30 s (`resources.log`):
 
 ```sh
 scripts/sandboxes.sh [short|long]   # Linux (KVM); FXDAX_SANDBOX_DISK, ext4, holds it all
 ```
+
+### Before a pin goes to LangSmith
+
+LangSmith runs fxdax at a commit they take, their pin (96c7808b8 as of 2026-11-11, TASK-310), and
+bump it now and then. Before a candidate is offered, it is qualified against their pin on ubu1,
+alone there (`fxjob --bench`), the two interleaved, A B then B A (TASK-330.4):
+
+```sh
+FXDAX_AB_SUITE=qualify FXDAX_AB_ROUNDS=2 FXDAX_AB_A=pin=96c7808b8 \
+    FXDAX_AB_B=candidate=origin/main scripts/bench-ab-host.sh
+```
+
+Each round of each side is the qualification (`scripts/qualify.sh`): the sandboxes' long mode,
+then the bucket soak (`fxfs-guest-bucket-soak`, 30 minutes: RustFS's bucket, through a proxy of
+the case's own, slow, full, out of service and answering again, guests writing all the while),
+every daemon held to its budgets (`scripts/budgets.py`). One harness, the tree's that runs it,
+drives both sides' builds, their extent daemons, Firecrackers and guest kernels
+(`scripts/test-e2e.sh`'s `FXDAX_E2E_HARNESS`), so that a pin from before the qualification's cases
+meets the same cases, bucket and faults as the candidate; and what it measures of each daemon is
+its kernel's count (disk written, peak memory, CPU), whatever the daemon says of itself.
+`docs/measurements/ubu1-qualify-ab-*/ab.md` says every metric, those that moved (their rounds'
+ranges apart), and each side's failed checks. A candidate goes to LangSmith when its side passes
+every check and nothing moved the wrong way that the change didn't mean to move.
 
 `scripts/test-guest-kernel.sh` builds the guest kernel with Fxfs in it and runs
 the guest tests on it, in Lima on macOS.

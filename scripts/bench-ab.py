@@ -16,6 +16,10 @@ real only where the two sides' ranges don't overlap and it is larger than the co
 that workload (TASK-276): the rounds interleave the sides on one host, and what still moves the
 control moves the others as much.
 
+Without one, it says too which workloads moved, their ranges apart, and lists those one side
+alone measured. And each side's failures: of each kind, how many of its directories (its rounds)
+had one, and what each said, if they say (a qualification's checks, scripts/qualify.sh, TASK-330.4).
+
 Usage: scripts/bench-ab.py [--control CASE] A_NAME A_DIR... -- B_NAME B_DIR...
 """
 
@@ -101,13 +105,19 @@ def described(values):
 
 
 def table(a_name, a_dirs, b_name, b_dirs):
-    (a, kinds), (b, _) = pooled(a_dirs), pooled(b_dirs)
+    (a, kinds), (b, b_kinds) = pooled(a_dirs), pooled(b_dirs)
     lines = [
         f"| Workload | Unit | {a_name} | {b_name} | {b_name} vs {a_name} | Ranges overlap |",
         "|---|---|---|---|---|---|",
     ]
+    # A's workloads, then those B alone measured.
+    kinds.update((workload, kind) for workload, kind in b_kinds.items() if workload not in kinds)
     for workload, (unit, higher_is_better) in kinds.items():
-        if workload not in b:
+        if workload not in a or workload not in b:
+            lines.append(
+                f"| {workload} | {unit} | {described(a[workload]) if workload in a else '-'} | "
+                f"{described(b[workload]) if workload in b else '-'} | - | - |"
+            )
             continue
         a_median, b_median = statistics.median(a[workload]), statistics.median(b[workload])
         slower = a_median / b_median if higher_is_better else b_median / a_median
@@ -116,6 +126,43 @@ def table(a_name, a_dirs, b_name, b_dirs):
             f"| {workload} | {unit} | {described(a[workload])} | {described(b[workload])} | "
             f"{slower:.2f}× | {'yes' if overlap else 'no'} |"
         )
+    return "\n".join(lines)
+
+
+def moved(a_dirs, b_dirs):
+    """The workloads both sides measured whose ranges are apart."""
+    (a, _), (b, _) = pooled(a_dirs), pooled(b_dirs)
+    return [workload for workload in a if workload in b and not overlap(a[workload], b[workload])]
+
+
+def failures(directories):
+    """Of each kind of failure in `directories`' results, how many of the directories had one; and
+    what each failure said, by directory."""
+    rounds, said = {}, []
+    for directory in directories:
+        kinds = set()
+        for path in sorted(Path(directory).glob("bench-*.json")):
+            report = json.loads(path.read_text())
+            kinds.update(kind for kind, count in report.get("failures", {}).items() if count)
+            said.extend(f"{Path(directory).name}: {text}" for text in report.get("failed", []))
+        for kind in kinds:
+            rounds[kind] = rounds.get(kind, 0) + 1
+    return rounds, said
+
+
+def failure_table(a_name, a_dirs, b_name, b_dirs):
+    """Each side's failures (`failures`), a table of their kinds, then what each said; empty if
+    neither side failed."""
+    (a, a_said), (b, b_said) = failures(a_dirs), failures(b_dirs)
+    if not a and not b:
+        return ""
+    lines = [f"| Failed | {a_name} | {b_name} |", "|---|---|---|"]
+    for kind in sorted(set(a) | set(b)):
+        lines.append(f"| {kind} | {a.get(kind, 0)} of {len(a_dirs)} | "
+                     f"{b.get(kind, 0)} of {len(b_dirs)} |")
+    said = a_said + b_said
+    if said:
+        lines += [""] + [f"- {text}" for text in said]
     return "\n".join(lines)
 
 
@@ -132,6 +179,10 @@ def main():
         print(control_table(a_name, a_dirs, b_name, b_dirs, control))
     else:
         print(table(a_name, a_dirs, b_name, b_dirs))
+        print(f"\nMoved, their ranges apart: {', '.join(moved(a_dirs, b_dirs)) or 'none'}.")
+    failed = failure_table(a_name, a_dirs, b_name, b_dirs)
+    if failed:
+        print(f"\n{failed}")
 
 
 if __name__ == "__main__":

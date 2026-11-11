@@ -3241,12 +3241,16 @@ name = "test_cases"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "bytes",
  "extent_remote",
  "extent_store",
  "follower_history",
  "futures",
  "fxdax",
  "fxfs-automount",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
  "macros",
  "nix 0.29.0",
  "serde",

@@ -3,17 +3,20 @@
 // found in the LICENSE file.
 
 //! fxdax: guests writing all the while against a degraded bucket (TASK-330.3): the case's daemon,
-//! its own, keeps its stores' branches in a file bucket in the case's directory, which degrades as
-//! the case says, through a file of faults (`FXDAX_REMOTE_FAULTS`, `extent_remote::faults`):
-//! answering, then slow (300 ms a request), then full (its writes failing with `ENOSPC`), then out
-//! of service (every request failing, 503), then answering again, 300 ms a request, each a
-//! fraction of FXDAX_BUCKET_SOAK_SECS (1,800: the qualification's; 300 for a short run).
-//! FXDAX_BUCKET_SOAK_VMS
+//! its own, keeps its stores' branches in an S3 server's bucket (RustFS, scripts/test-e2e-rustfs.sh
+//! starts it), through a proxy that degrades it as the case says ([`crate::faulty_s3`]):
+//! answering, then slow (300 ms a request), then full (its writes failing, 507), then out of
+//! service (every request failing, 503), then answering again, 300 ms a request, each a fraction
+//! of FXDAX_BUCKET_SOAK_SECS (1,800, the qualification's; 1,200 at least, so that the bucket is out
+//! of service longer than its S3 client retries a request, about a minute). Through a proxy, not
+//! the daemon's own faults (`FXDAX_REMOTE_FAULTS`), so that a pin's daemon from before them meets
+//! the same bucket, a qualification's A/B comparing them (TASK-330.4). FXDAX_BUCKET_SOAK_VMS
 //! VMs (4), each on a store of its own, write files of 16 MiB that don't compress and fsync each,
 //! deleting each once 16 newer are written, at the rate that writes past every store's lag bound
 //! while the bucket fails, until the run's end; then sync, every commit uploaded, and exit. As
 //! `fxdax::extentd::tests::soak` does with VM processes of its own in CI, in seconds a phase, this
-//! does with guests' kernels and their Fxfs, the daemon a process of its own. It fails unless:
+//! does with guests' kernels and their Fxfs, the daemon a process of its own. It fails, saying each
+//! check that failed, unless:
 //!
 //! - the daemon's anonymous memory stays within its budget, every sample of it (its stats'
 //!   `process:` line, `over-budget`), its upload memory set to 1.5 GiB, as much as its uploads hold
@@ -47,13 +50,15 @@ const KEPT: u64 = 16;
 mod host {
     use super::*;
 
-    use crate::common::{fxdax_guest_should_run, setup_rootfs};
+    use crate::common::{Measured, ProcessCosts, fxdax_guest_should_run, setup_rootfs};
+    use crate::faulty_s3::FaultyS3;
     use crate::vm::{Firecracker, Vm};
     use crate::{ShouldRun, Test, TestOutcome, TestSetup};
     use anyhow::{Context, ensure};
+    use extent_remote::faults::Fault;
     use std::ffi::CString;
     use std::path::Path;
-    use std::time::{Duration, Instant, SystemTime};
+    use std::time::{Duration, Instant};
 
     /// The daemon's memory, its extent cache's: the guests' files' worth and more.
     const DAEMON_MEMORY: u64 = 2 << 30;
@@ -65,6 +70,9 @@ mod host {
     /// their commits stall there, and past the host's upload memory.
     const WRITTEN_WHILE_FAILING: u64 = 6 << 30;
     const VM_MEMORY_MIB: u32 = 1024;
+    /// The shortest run: its bucket out of service, a tenth of it, past the two minutes its S3
+    /// client may take to give a request up, retrying (`object_store`'s retries, about a minute).
+    const MIN_SECS: u64 = 1200;
 
     /// The phases, each a fraction of the run, and what the bucket does through it, as
     /// `extent_remote::faults::Fault`'s words say it, answering again as slowly as before it
@@ -128,21 +136,56 @@ mod host {
         machine.spawn_api(root, &test_setup.test_case, &name, &Vm::api_socket(&name))
     }
 
+    /// What's wrong with the daemon's memory, by its stats' `process:` line, `process`: a sample
+    /// past its budget, or no budget weighed, as a daemon's from before TASK-330.2.
+    fn memory(process: &std::collections::BTreeMap<String, u64>) -> Option<String> {
+        match process.get("over-budget") {
+            None => {
+                Some("its stats have no process: line: it weighs no memory against a budget".into())
+            }
+            Some(0) => None,
+            Some(_) => Some(format!("its anonymous memory past its budget: {process:?}")),
+        }
+    }
+
+    /// What a guest said of its writes, `wrote MIB MiB in N files, the longest fsync MS ms`: its
+    /// MiB and its longest fsync's ms.
+    fn writes(said: &str) -> Option<(u64, u64)> {
+        let (mib, rest) = said.strip_prefix("wrote ")?.split_once(" MiB in ")?;
+        let fsync = rest.split_once("the longest fsync ")?.1.strip_suffix(" ms")?;
+        Some((mib.parse().ok()?, fsync.parse().ok()?))
+    }
+
     impl TestFxfsGuestBucketSoak {
-        fn run(&self, test_setup: &TestSetup) -> anyhow::Result<()> {
+        /// Runs the soak, saying what it measured in `measured`, the checks that failed among it,
+        /// as it fails then.
+        fn run(&self, test_setup: &TestSetup, measured: &mut Measured) -> anyhow::Result<()> {
             let secs = count("FXDAX_BUCKET_SOAK_SECS", 1800)?;
             let vms = count("FXDAX_BUCKET_SOAK_VMS", 4)?;
+            ensure!(
+                secs >= MIN_SECS,
+                "FXDAX_BUCKET_SOAK_SECS={secs}: {MIN_SECS} at least, the bucket out of service \
+                 longer than its client retries a request"
+            );
+            let remote = std::env::var("FXDAX_EXTENTD_REMOTE").unwrap_or_default();
+            ensure!(
+                remote.starts_with("s3://"),
+                "FXDAX_EXTENTD_REMOTE is {remote:?}, not an S3 server's bucket: \
+                 scripts/test-e2e-rustfs.sh starts one"
+            );
+            let server =
+                std::env::var("AWS_ENDPOINT").context("AWS_ENDPOINT names no S3 server")?;
+            let bucket = FaultyS3::start(&server)?;
             let run = Duration::from_secs(secs);
             let root = setup_rootfs(test_setup)?;
             let dir = &test_setup.tmp_dir;
-            let (faults, stats) = (dir.join("bucket-faults"), dir.join("extentd-stats.txt"));
-            std::fs::write(&faults, "")?;
+            let stats = dir.join("extentd-stats.txt");
             // Short, as a Unix socket's path is.
             let sockets = tempdir::TempDir::new("fxdax-bucket-soak")?;
             let socket = sockets.path().join("extentd.sock");
-            let upload_memory = UPLOAD_MEMORY.to_string();
+            let (upload_memory, endpoint) = (UPLOAD_MEMORY.to_string(), bucket.endpoint());
             let env = [
-                ("FXDAX_REMOTE_FAULTS", faults.as_os_str()),
+                ("AWS_ENDPOINT", endpoint.as_ref()),
                 ("FXDAX_EXTENTD_UPLOAD_MEMORY", upload_memory.as_ref()),
             ];
             let mut daemon = crate::common::spawn_daemon(
@@ -162,43 +205,47 @@ mod host {
                 running.push(boot(test_setup, &root, &socket, store, (vm, rate, secs))?);
             }
             let began = Instant::now();
-            let mut failed_before = 0;
+            let mut failed = Vec::new();
+            let (mut failed_before, mut memory_said) = (0, false);
             let mut syncs = Vec::new();
             for (name, fraction, words, fails) in PHASES {
-                std::fs::write(&faults, words)?;
+                bucket.set(Fault::parse(words).map_err(anyhow::Error::msg)?);
                 eprintln!("bucket-soak: at {:?}, the bucket {name}: {words}", began.elapsed());
                 if name == "answering again" {
                     // Every store's commits made so far uploaded, each sync says, within the bound.
-                    let since = (Instant::now(), SystemTime::now());
+                    let since = Instant::now();
                     for store in &stores {
                         let (socket, store) = (socket.clone(), store.clone());
                         syncs.push(std::thread::spawn(move || {
                             let synced = crate::common::control(&socket)?.sync_store(&store);
                             synced.with_context(|| format!("syncing {}", store.display()))?;
-                            anyhow::Ok(since.0.elapsed())
+                            anyhow::Ok(since.elapsed())
                         }));
                     }
                 }
                 let ends = Instant::now() + run.mul_f64(fraction);
                 while Instant::now() < ends {
                     std::thread::sleep(Duration::from_secs(1));
+                    // Said once, the first sample past it, or that none is weighed.
                     let process = stats_line(&stats, "process");
-                    ensure!(
-                        process.get("over-budget") == Some(&0),
-                        "the daemon's anonymous memory past its budget: {process:?}"
-                    );
+                    if !memory_said {
+                        if let Some(problem) = memory(&process) {
+                            failed.push(format!("memory: {problem}"));
+                            memory_said = true;
+                        }
+                    }
                     for (vm, firecracker) in running.iter_mut().enumerate() {
                         ensure!(firecracker.running()?, "VM {vm} ended before the run did");
                     }
                 }
-                let failed = failures(&stats);
-                if fails {
-                    ensure!(failed > failed_before, "the bucket {name}, and no failure said");
+                let said = failures(&stats);
+                if fails && said <= failed_before {
+                    failed.push(format!("failures: the bucket {name}, and no failure said"));
                 }
-                failed_before = failed;
+                failed_before = said;
                 let process = stats_line(&stats, "process");
                 eprintln!(
-                    "bucket-soak: {name}: {failed} failures said, anonymous memory {} MiB at most, \
+                    "bucket-soak: {name}: {said} failures said, anonymous memory {} MiB at most, \
                      its budget {} MiB",
                     process.get("max-anon").copied().unwrap_or(0) >> 20,
                     process.get("anon-budget").copied().unwrap_or(0) >> 20,
@@ -207,19 +254,33 @@ mod host {
             // Within doc-12's bound of the bucket answering again.
             let bound = Duration::from_secs(6)
                 + Duration::from_secs_f64(WRITTEN_WHILE_FAILING as f64 / (vms * rate) as f64);
+            let mut latest = Duration::ZERO;
             for (vm, synced) in syncs.into_iter().enumerate() {
                 let took = synced.join().unwrap()?;
                 eprintln!("bucket-soak: store {vm} uploaded {took:?} after the bucket answered");
-                ensure!(took <= bound, "store {vm} uploaded {took:?} after, past {bound:?}");
+                if took > bound {
+                    failed.push(format!(
+                        "uploads: store {vm} uploaded {took:?} after, past {bound:?}"
+                    ));
+                }
+                latest = latest.max(took);
             }
+            measured.lower("soak.uploaded_after_answering", "s", latest.as_secs_f64());
+            let (mut written_mib, mut longest_fsync_ms) = (0, 0);
             for (vm, firecracker) in running.into_iter().enumerate() {
                 let (status, console) = firecracker.wait()?;
                 let said = crate::vm::without_kernel_lines(&crate::vm::guest_stdout(
                     &std::fs::read(&console)?,
                 ));
-                ensure!(status.success(), "VM {vm} exited {status}, saying {said:?}");
                 let wrote = said.lines().find_map(|line| line.strip_prefix("OK "));
-                eprintln!("bucket-soak: VM {vm}: {}", wrote.context("said nothing of its writes")?);
+                match wrote.and_then(writes) {
+                    Some((mib, fsync_ms)) if status.success() => {
+                        eprintln!("bucket-soak: VM {vm}: {}", wrote.unwrap_or_default());
+                        written_mib += mib;
+                        longest_fsync_ms = longest_fsync_ms.max(fsync_ms);
+                    }
+                    _ => failed.push(format!("vm: VM {vm} exited {status}, saying {said:?}")),
+                }
                 let image = dir.join(format!("vm-{vm}.rootfs.ext4"));
                 std::fs::remove_file(&image)?;
             }
@@ -228,10 +289,26 @@ mod host {
             let log = std::fs::read_to_string(dir.join("extentd.log"))?;
             let let_go = |line: &&str| line.contains("letting a VM process go");
             let let_go: Vec<&str> = log.lines().filter(let_go).collect();
-            ensure!(let_go.is_empty(), "the daemon let VM processes go: {let_go:#?}");
+            if !let_go.is_empty() {
+                failed.push(format!("let go: the daemon let VM processes go: {let_go:#?}"));
+            }
+            measured.higher("soak.guests.written", "MiB", written_mib as f64);
+            measured.lower("soak.guests.longest_fsync", "ms", longest_fsync_ms as f64);
+            let process = stats_line(&stats, "process");
+            if let Some(anon) = process.get("max-anon") {
+                measured.lower("soak.daemon.max_anon", "MiB", (anon >> 20) as f64);
+            }
             crate::common::say_daemon_stats(test_setup, "extentd");
+            // What its kernel counted of it, as any pin's daemon is counted (TASK-330.4).
+            measured.costs("soak.daemon", ProcessCosts::of(daemon.id())?);
             daemon.kill()?;
             daemon.wait()?;
+            for failure in &failed {
+                eprintln!("bucket-soak: check failed: {failure}");
+                let kind = failure.split_once(':').map_or("check", |(kind, _)| kind);
+                measured.failed(&format!("soak.{kind}"), failure.clone());
+            }
+            ensure!(failed.is_empty(), "{} checks failed", failed.len());
             Ok(())
         }
     }
@@ -249,15 +326,38 @@ mod host {
         }
 
         fn start_vm(self: Box<Self>, test_setup: TestSetup) -> anyhow::Result<()> {
-            if let Err(err) = self.run(&test_setup) {
+            // What it measured, and why it failed, for an A/B of two pins (TASK-330.4).
+            let mut measured = Measured::new(&test_setup.test_case);
+            let ran = self.run(&test_setup, &mut measured);
+            if let Err(err) = &ran {
+                eprintln!("{err:#}");
+                if !measured.has_failed() {
+                    measured.failed("soak.error", format!("{err:#}"));
+                }
+            }
+            if let Err(err) = measured.save() {
                 eprintln!("{err:#}");
                 std::process::exit(1);
             }
-            std::process::exit(0);
+            std::process::exit(if ran.is_ok() { 0 } else { 1 });
         }
 
         fn check(self: Box<Self>, _stdout: Vec<u8>, _test_setup: TestSetup) -> TestOutcome {
             TestOutcome::Pass
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        /// TASK-330.4: what a guest says of its writes reads back as its MiB and its longest
+        /// fsync, and a line of another shape as nothing.
+        #[test]
+        fn a_guests_writes_read_back() {
+            let said = "wrote 1536 MiB in 96 files, the longest fsync 250 ms";
+            assert_eq!(writes(said), Some((1536, 250)));
+            assert_eq!(writes("wrote 1536 MiB in 96 files"), None);
         }
     }
 }

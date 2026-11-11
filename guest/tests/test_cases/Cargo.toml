@@ -4,11 +4,15 @@ edition = "2024"
 
 [features]
 host = [
+    "bytes",
     "fxdax",
     "extent_remote",
     "extent_store",
     "follower_history",
     "futures",
+    "http-body-util",
+    "hyper",
+    "hyper-util",
     "serde",
     "serde_json",
     "tokio",
@@ -35,6 +39,11 @@ futures = { version = "0.3.34", optional = true }
 extent_store = { path = "../../../crates/extent_store", optional = true }
 # fxdax's buckets, which fxfs-guest-soak measures (TASK-67), and the runtime it lists them on.
 extent_remote = { path = "../../../crates/extent_remote", optional = true }
-tokio = { version = "1", optional = true, features = ["rt", "time", "net"] }
+tokio = { version = "1", optional = true, features = ["rt", "time", "net", "sync", "macros"] }
 # fxdax's history checker of followers (TASK-42.1), which the followers' torture test's host runs.
 follower_history = { path = "../../../crates/follower_history", optional = true }
+# The S3 proxy a soak degrades its bucket through, in front of RustFS (TASK-330.4).
+hyper = { version = "1.12.0", features = ["server", "client", "http1"], optional = true }
+http-body-util = { version = "0.1.5", optional = true }
+bytes = { version = "1.12.1", optional = true }
+hyper-util = { version = "0.1.21", features = ["tokio"], optional = true }

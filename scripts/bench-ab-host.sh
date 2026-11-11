@@ -25,10 +25,25 @@
 # the commit this tree's scripts run (scripts/lib/host.sh's FXDAX_HOST_COMMIT), the sides' commits'
 # code what they build and boot. The results go to docs/measurements/HOST-fs-bench-ab-<time>-<mark>
 # unless named; each side's record in RESULTS/NAME/source.txt.
+#
+# FXDAX_AB_SUITE=qualify runs the qualification in place of the fs bench (scripts/qualify.sh,
+# TASK-330.4): LangSmith's pin as side A, the candidate as B, before the candidate is handed to
+# them, ab.md each metric that moved and each side's failed checks (README's testing section says
+# how). Its harness this tree's, the same for both sides (scripts/lib/bench-ab-linux-host.sh);
+# FXDAX_QUALIFY_SANDBOXES and FXDAX_QUALIFY_SOAK_SECS size each round; its results go to
+# docs/measurements/HOST-qualify-ab-<time>-<mark>, and its job may take 12 h in a cgroup of 16 GiB,
+# the most a measurement has on ubu1 (FXDAX_HOST_LIMIT, FXDAX_HOST_MEM).
 set -euo pipefail
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 source "$repo/scripts/lib/host.sh"
-limit=8h
+suite=${FXDAX_AB_SUITE:-fs}
+case $suite in
+    fs) limit=8h kind=fs-bench-ab ;;
+    # The sandboxes' long mode, a quarter hour a round, and the soak's half hour, in the memory the
+    # long mode is sized for (TASK-330.5).
+    qualify) limit=12h kind=qualify-ab; export FXDAX_HOST_MEM=${FXDAX_HOST_MEM:-16G} ;;
+    *) echo "FXDAX_AB_SUITE is fs or qualify" >&2; exit 2 ;;
+esac
 host_bench=1
 export FXDAX_AB_BUILD_NICE=${FXDAX_AB_BUILD_NICE:-19}
 
@@ -49,7 +64,7 @@ finish() {
 host_after=finish
 host_actions "$@"
 (( $# <= 1 )) || { echo "Usage: $0 [RESULTS] | resume RUN RESULTS | cancel RUN" >&2; exit 2; }
-results=${1:-$repo/docs/measurements/$(host_label)-fs-bench-ab-$(date -u +%Y-%m-%dT%H%MZ)-$host_mark}
+results=${1:-$repo/docs/measurements/$(host_label)-$kind-$(date -u +%Y-%m-%dT%H%MZ)-$host_mark}
 
 a=$(side "${FXDAX_AB_A:?FXDAX_AB_A names side A, NAME=COMMIT}")
 b=$(side "${FXDAX_AB_B:?FXDAX_AB_B names side B, NAME=COMMIT}")

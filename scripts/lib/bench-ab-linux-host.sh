@@ -12,6 +12,13 @@
 # round's results go to RESULTS/NAME-rN, and scripts/bench-ab.py's comparison of the sides to
 # RESULTS/ab.md, the control FXDAX_AB_CONTROL's case (default ext4-guest-kernel; empty: none).
 #
+# With FXDAX_AB_SUITE=qualify (default fs, the bench), each round is the qualification instead
+# (scripts/qualify.sh, TASK-330.4), of LangSmith's pin against a candidate: its harness, the
+# runner and the guest agent, this tree's for both sides (test-e2e.sh's FXDAX_E2E_HARNESS), as a
+# pin from before the qualification's cases lacks them; what each side builds, its extent daemon,
+# its Firecracker and its guest kernel, what it tests. No control by default: what moves, and
+# each side's failed checks, ab.md says (scripts/bench-ab.py).
+#
 # Usage: bench-ab-linux-host.sh TOOLS RESULTS A_SOURCE B_SOURCE ROUNDS A_NAME B_NAME
 #
 # TOOLS is the tree whose scripts run, this one's: the sides' trees may be of before them (an
@@ -50,6 +57,8 @@ kernel_build=${FXDAX_GUEST_KERNEL_BUILD:-release}
     { echo "FXDAX_GUEST_KERNEL_BUILD is release or debug" >&2; exit 2; }
 unset FXDAX_GUEST_KERNEL_BUILD
 iterations=${FXDAX_BENCH_ITERATIONS:-2}
+suite=${FXDAX_AB_SUITE:-fs}
+[[ $suite == fs || $suite == qualify ]] || { echo "FXDAX_AB_SUITE is fs or qualify" >&2; exit 2; }
 read -ra a_env <<< "${FXDAX_AB_A_ENV:-}"
 read -ra b_env <<< "${FXDAX_AB_B_ENV:-}"
 # The sides' builds' niceness, their guest kernels' too (host_kernel).
@@ -88,8 +97,29 @@ else
     build b "$b_source"
 fi
 
+# The qualification's harness, this tree's, the same for both sides: a side of this tree's own
+# revision built it already.
+harness=
+if [[ $suite == qualify ]]; then
+    for side in a b; do
+        if cmp -s "$tools/source-revision.txt" "${trees[$side]}/source-revision.txt"; then
+            harness=$work/ab-artifacts-$side
+            break
+        fi
+    done
+    if [[ -z $harness ]]; then
+        harness=$work/ab-harness
+        echo "Building the harness from $tools" >&2
+        nice -n "$host_build_nice" env FXDAX_E2E_BUILD_ONLY="$harness" \
+            FXDAX_E2E_RESULTS="$results/build-harness" "$tools/scripts/test-e2e.sh" \
+            > "$results/build-harness.log" 2>&1
+    fi
+    cp "$harness/artifacts.txt" "$results/artifacts-harness.txt"
+fi
+
 {
     host_record
+    echo "Suite $suite${harness:+, the harness of $(sed -n 's/^source //p' "$harness/artifacts.txt")}"
     echo "A $a_name: $a_source ${a_env[*]:-}"
     echo "B $b_name: $b_source ${b_env[*]:-}"
 } > "$results/host.txt"
@@ -102,6 +132,13 @@ round() {
         name=$b_name env=(${b_env[@]+"${b_env[@]}"}); fi
     set -- ${env[@]+"${env[@]}"}
     echo "Round $round: $name" >&2
+    if [[ $suite == qualify ]]; then
+        env "$@" FXDAX_E2E_PREBUILT="$work/ab-artifacts-$side" FXDAX_E2E_HARNESS="$harness" \
+            FXDAX_GUEST_KERNEL="$work/ab-artifacts-$side/vmlinux" \
+            "$tools/scripts/qualify.sh" "$results/$name-r$round" > "$results/$name-r$round.md" \
+            2> "$results/$name-r$round.log"
+        return
+    fi
     env "$@" FXDAX_E2E_ROOT="${trees[$side]}" FXDAX_E2E_PREBUILT="$work/ab-artifacts-$side" \
         FXDAX_GUEST_KERNEL="$work/ab-artifacts-$side/vmlinux" \
         FXDAX_BENCH_RESULTS="$results/$name-r$round" \
@@ -117,6 +154,7 @@ while read -r first second; do
 done < <(ab_order "$rounds")
 
 control=${FXDAX_AB_CONTROL-ext4-guest-kernel}
+if [[ $suite == qualify ]]; then control=${FXDAX_AB_CONTROL-}; fi
 sides=()
 for (( r = 1; r <= rounds; r++ )); do sides+=("$results/$a_name-r$r"); done
 sides+=(-- "$b_name")
