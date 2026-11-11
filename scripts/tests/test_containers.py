@@ -71,15 +71,14 @@ class HealthyContainer(unittest.TestCase):
         self.assertLess(self.took, 5)
 
     def test_the_servers_scripts_wait_for_their_health_and_probe_nothing(self):
-        for name, call in [
-            ("lib/rustfs.sh", "local health='curl -fsS -o /dev/null "
-                              "http://127.0.0.1:9000/health/ready'\n"
-                              '    rustfs_server="$(healthy_container "$rustfs_engine" "$health"'),
-            ("test-azurite.sh", "healthy_container \"$engine\" 'nc -z 127.0.0.1 10000'"),
-        ]:
-            text = (SCRIPTS / name).read_text()
-            self.assertIn(call, text, name)
-            self.assertNotIn("--retry", text, name)
+        text = (SCRIPTS / "test-azurite.sh").read_text()
+        self.assertIn("healthy_container \"$engine\" 'nc -z 127.0.0.1 10000'", text)
+        self.assertNotIn("--retry", text)
+        # RustFS is a process of its release's binary, not a container, whose readiness it asks
+        # directly, each probe once (TASK-330.5).
+        text = (SCRIPTS / "lib" / "rustfs.sh").read_text()
+        self.assertNotIn("container_engine", text)
+        self.assertIn('curl -fsS -o /dev/null --max-time 2 "$AWS_ENDPOINT/health/ready"', text)
         # The scripts that keep what they test in RustFS's bucket start it so, through the lib.
         for name in ["test-rustfs.sh", "test-e2e-rustfs.sh"]:
             text = (SCRIPTS / name).read_text()

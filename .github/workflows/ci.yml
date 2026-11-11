@@ -204,7 +204,8 @@ jobs:
   # vendor/firecracker only goes forward: b781ff302 took main's back to before F_SEAL, and nothing
   # here builds Firecracker to notice (TASK-166).
   # The tests over real object stores, which the workspace's run ignores as they need a server:
-  # RustFS's S3 (Apache-2.0) and Azurite's Azure Blob Storage (MIT), each in a container, as
+  # RustFS's S3 (Apache-2.0), a process of its release's binary, and Azurite's Azure Blob Storage
+  # (MIT), in a container, as
   # scripts/test-rustfs.sh and scripts/test-azurite.sh start them. Nothing ran them until
   # TASK-149.20, which found `fxdaxctl take` of a new copy at a later placement refused there.
   object-stores:
