@@ -15,6 +15,8 @@
 #
 #   scripts/bench-rounds.sh RESULTS ROUNDS CASE...
 #
+# The cases' artifacts are built once, first, into RESULTS/artifacts (FXDAX_E2E_BUILD_ONLY), and
+# every run boots those (FXDAX_E2E_PREBUILT): no run builds, nor runs the harness's own tests.
 # Each run's results go to RESULTS/CASE/round-K: test-e2e.sh's logs, and the fs bench's report as
 # JSON (FXDAX_BENCH_RESULTS), which scripts/bench-ab.py compares, a side's directories its cases'
 # round directories. The environment's FXDAX_* variables pass to every run (sudo drops them
@@ -53,6 +55,14 @@ while IFS= read -r name; do
     passed+=("$name=${!name}")
 done < <(compgen -e | grep '^FXDAX_' || true)
 
+# Built as root, as the runs boot it, then given back.
+artifacts=$results/artifacts
+fxjob --name rounds-build --mem 8G -- nice -n 19 \
+    sudo env "PATH=$PATH" "HOME=$HOME" "${passed[@]}" "FXDAX_E2E_BUILD_ONLY=$artifacts" \
+    "$repo/scripts/test-e2e.sh" "${cases[@]}" > "$results/build.log" 2>&1 ||
+    { echo "building failed: $results/build.log" >&2; exit 1; }
+sudo chown -R "$(id -u):$(id -g)" "$repo" "$HOME/.cargo" "$HOME/.rustup" "$results"
+
 [[ -f $results/runs.tsv ]] ||
     printf 'round\tcase\toutcome\tload_before\tload_after\tarc_before\tarc_after\tstarted\n' \
         > "$results/runs.tsv"
@@ -73,7 +83,7 @@ for ((round = 1; round <= rounds; round++)); do
         outcome=ok
         fxjob --bench --name "rounds-$case-$round" -- \
             sudo env "PATH=$PATH" "HOME=$HOME" "${passed[@]}" \
-            "FXDAX_E2E_RESULTS=$out/e2e" "FXDAX_BENCH_RESULTS=$out" \
+            "FXDAX_E2E_PREBUILT=$artifacts" "FXDAX_E2E_RESULTS=$out/e2e" "FXDAX_BENCH_RESULTS=$out" \
             "$repo/scripts/test-e2e.sh" "$case" > "$out/run.log" 2>&1 || outcome=failed
         load_after=$(load)
         if [[ $outcome == ok ]] &&
