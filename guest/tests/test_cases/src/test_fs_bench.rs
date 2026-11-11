@@ -1211,8 +1211,8 @@ mod guest {
     const WORKING_SETS: [(&str, f64); 4] = [("0.5x", 0.5), ("1x", 1.0), ("2x", 2.0), ("4x", 4.0)];
     /// fxdax: how long each working set's random reads run, once they have run as long again to
     /// settle (fio's ramp): what they reach once the caches hold what they can of the set.
-    const WORKING_SET_RUNTIME: &str = "--runtime=30";
-    const WORKING_SET_RAMP: &str = "--ramp_time=30";
+    const WORKING_SET_RUNTIME: &str = "--runtime=10";
+    const WORKING_SET_RAMP: &str = "--ramp_time=10";
 
     /// fxdax: random 4 KiB reads over working sets sized by the extent daemon's memory, which is a
     /// DAX guest's only cache of its files, and whose misses read and decompress a whole part each
