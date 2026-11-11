@@ -27,6 +27,13 @@ class Rounds(unittest.TestCase):
         status, out, _ = bash(f"source {host}; ab_order 4")
         self.assertEqual((status, out), (0, "a b\nb a\na b\nb a\n"))
 
+    def test_a_phase_is_the_build_or_the_rounds(self):
+        """The driver builds the sides as work, then runs the rounds as a measurement, each a phase
+        of the host script (FXDAX_AB_PHASE); another phase is refused before anything runs."""
+        host = SCRIPTS / "lib" / "bench-ab-linux-host.sh"
+        status, _, err = bash(f"{host} /t /r a b 2 a b", {"FXDAX_AB_PHASE": "measure"})
+        self.assertEqual((status, err), (2, "FXDAX_AB_PHASE is build or rounds, or unset for both\n"))
+
     def test_sourced_it_does_nothing_but_define(self):
         host = SCRIPTS / "lib" / "bench-ab-linux-host.sh"
         status, out, err = bash(f"source {host}; echo sourced")

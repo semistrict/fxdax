@@ -933,6 +933,12 @@ class Drivers(unittest.TestCase):
         self.assertEqual((results / "base" / "source.txt").read_text().splitlines()[0],
                          f"revision {base}")
         self.assertIn("FXDAX_AB_BUILD_NICE=19", (results / "ran.txt").read_text().splitlines())
+        # Its sides built as work, then its rounds alone measured, jobs of one run.
+        self.assertIn("FXDAX_AB_PHASE=rounds", (results / "ran.txt").read_text().splitlines())
+        calls = (fleet.home("ubu1") / "fxjob-calls").read_text().splitlines()
+        self.assertEqual([("--bench" in call, f"--name {run}" in call) for call in calls],
+                         [(False, True), (True, True)])
+        self.assertTrue((results / "remote-build.log").exists())
         # B the same tree: A's, built once.
         status, _, errors = fleet.run_driver(
             "bench-ab-host.sh", str(fleet.directory / "same"),

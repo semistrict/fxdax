@@ -55,7 +55,10 @@ host_mark=$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')
 # What a run's name looks like, for those given one (host_actions).
 host_run_pattern='^run-([a-z0-9]+-)?[0-9]{8}T[0-9]{6}Z-[0-9a-f]{8}$'
 # Whether the run is a measurement, which fxjob --bench runs alone: a timed driver's always, any
-# other's with FXDAX_HOST_BENCH=1 (as scripts/perf-gate-host.sh's runs of test-host.sh).
+# other's with FXDAX_HOST_BENCH=1 (as scripts/perf-gate-host.sh's runs of test-host.sh). A run may
+# hold several jobs, one after another, each host_job's: a driver runs one of them as work, its
+# builds, by `host_bench=0 host_job ...`, so that compiling holds no measurement's cores
+# (scripts/bench-ab-host.sh's sides).
 host_bench=${FXDAX_HOST_BENCH:-0}
 [[ $host_bench =~ ^[01]$ ]] || { echo "FXDAX_HOST_BENCH is 0 or 1" >&2; exit 2; }
 # Where the run stands: '' (nothing of it on the host), prepared (its directory made), launched

@@ -4,12 +4,13 @@
 # found in the LICENSE file.
 
 # An A/B of the fs bench on an x86-64 Linux host of one's own, over ssh (FXDAX_HOST, ubu1 by
-# default; scripts/lib/host.sh), as one measurement there, alone and on CPUs of its own (fxjob
-# --bench; scripts/lib/bench-ab-linux-host.sh, TASK-276): each side's commit built there once, in a
-# worktree of its own, into artifacts of its own, then ROUNDS rounds of both sides interleaved, A B,
-# then B A, against those artifacts, so that what drifts on the host over the hours moves both
-# alike and no round rebuilds anything; then scripts/bench-ab.py's comparison, the ext4 case the
-# control, into RESULTS/ab.md.
+# default; scripts/lib/host.sh; scripts/lib/bench-ab-linux-host.sh, TASK-276): each side's commit
+# built there once, in a worktree of its own, into artifacts of its own, as ordinary work (fxjob),
+# then, as a measurement, alone and on CPUs of its own (fxjob --bench), which no build takes, ROUNDS
+# rounds of both sides interleaved, A B, then B A, against those artifacts, so that what drifts on
+# the host over the hours moves both alike and no round rebuilds anything; then scripts/bench-ab.py's
+# comparison, the ext4 case the control, into RESULTS/ab.md. A driver stopped while the sides
+# build leaves a `resume` the build's results alone: run it again.
 #
 #   scripts/bench-ab-host.sh [RESULTS]
 #   scripts/bench-ab-host.sh resume RUN RESULTS | cancel RUN
@@ -83,8 +84,15 @@ fi
 status=0
 host_start "${sides[@]}"
 echo "Results: $results" >&2
-host_job bench-ab-linux-host.sh "$host_dir/trees/$a_name" "$b_source" "$rounds" "$a_name" \
-    "$b_name" > "$results/remote.log" 2>&1 || status=$?
+# The sides built as work, beside others' (remote-build.log); then the rounds alone measured: a
+# build under fxjob --bench held the measurements' cores and memory from everyone else's for as
+# long as it compiled, an hour on 4 cores.
+host_bench=0 host_job FXDAX_AB_PHASE=build bench-ab-linux-host.sh "$host_dir/trees/$a_name" \
+    "$b_source" "$rounds" "$a_name" "$b_name" > "$results/remote-build.log" 2>&1 || status=$?
+if (( status == 0 )); then
+    host_job FXDAX_AB_PHASE=rounds bench-ab-linux-host.sh "$host_dir/trees/$a_name" "$b_source" \
+        "$rounds" "$a_name" "$b_name" > "$results/remote.log" 2>&1 || status=$?
+fi
 if [[ $host_state == ended ]]; then
     host_fetch || status=$?
 fi

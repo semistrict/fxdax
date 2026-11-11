@@ -21,6 +21,11 @@
 #
 # Usage: bench-ab-linux-host.sh TOOLS RESULTS A_SOURCE B_SOURCE ROUNDS A_NAME B_NAME
 #
+# FXDAX_AB_PHASE is what of it runs: `build` builds the sides (and the qualification's harness)
+# into the work directory, and stops; `rounds` runs the rounds of what a build there made, and
+# compares them; unset, both. scripts/bench-ab-host.sh runs the build as work and the rounds alone
+# as a measurement (fxjob --bench), so that compiling takes no measurement's cores.
+#
 # TOOLS is the tree whose scripts run, this one's: the sides' trees may be of before them (an
 # A/B's base), and build and boot their own code (test-e2e.sh's FXDAX_E2E_ROOT). B_SOURCE `same`
 # is A's tree, built once, for an A/B of one build that FXDAX_AB_A_ENV and FXDAX_AB_B_ENV tell
@@ -44,6 +49,9 @@ ab_order() {
 # Sourced, as by the scripts' tests, it defines its functions and does nothing else.
 [[ ${BASH_SOURCE[0]} == "$0" ]] || return 0
 
+phase=${FXDAX_AB_PHASE:-all}
+[[ $phase == all || $phase == build || $phase == rounds ]] ||
+    { echo "FXDAX_AB_PHASE is build or rounds, or unset for both" >&2; exit 2; }
 tools=$(cd "${1:?tools required}" && pwd)
 results=${2:?results directory required}
 a_source=${3:?A source required} b_source=${4:?B source required}
@@ -87,42 +95,72 @@ build() {
     trees[$side]=$tree
 }
 
-build a "$a_source"
-if [[ $b_source == same ]]; then
-    trees[b]=${trees[a]}
-    mkdir -p "$work/ab-artifacts-b"
-    cp -a "$work/ab-artifacts-a/." "$work/ab-artifacts-b/"
-    cp "$results/artifacts-a.txt" "$results/artifacts-b.txt"
-else
-    build b "$b_source"
-fi
-
-# The qualification's harness, this tree's, the same for both sides: a side of this tree's own
-# revision built it already.
+# What a build made, which the rounds run: each side's tree, and the harness.
+built=$work/ab-built
 harness=
-if [[ $suite == qualify ]]; then
-    for side in a b; do
-        if cmp -s "$tools/source-revision.txt" "${trees[$side]}/source-revision.txt"; then
-            harness=$work/ab-artifacts-$side
-            break
-        fi
-    done
-    if [[ -z $harness ]]; then
-        harness=$work/ab-harness
-        echo "Building the harness from $tools" >&2
-        nice -n "$host_build_nice" env FXDAX_E2E_BUILD_ONLY="$harness" \
-            FXDAX_E2E_RESULTS="$results/build-harness" "$tools/scripts/test-e2e.sh" \
-            > "$results/build-harness.log" 2>&1
-    fi
-    cp "$harness/artifacts.txt" "$results/artifacts-harness.txt"
-fi
 
-{
-    host_record
-    echo "Suite $suite${harness:+, the harness of $(sed -n 's/^source //p' "$harness/artifacts.txt")}"
-    echo "A $a_name: $a_source ${a_env[*]:-}"
-    echo "B $b_name: $b_source ${b_env[*]:-}"
-} > "$results/host.txt"
+# Builds both sides (build), and the qualification's harness, this tree's, the same for both
+# sides, which a side of this tree's own revision built already; and records what it made, in
+# $built and the results' host.txt.
+build_sides() {
+    local side
+    build a "$a_source"
+    if [[ $b_source == same ]]; then
+        trees[b]=${trees[a]}
+        mkdir -p "$work/ab-artifacts-b"
+        cp -a "$work/ab-artifacts-a/." "$work/ab-artifacts-b/"
+        cp "$results/artifacts-a.txt" "$results/artifacts-b.txt"
+    else
+        build b "$b_source"
+    fi
+
+    if [[ $suite == qualify ]]; then
+        for side in a b; do
+            if cmp -s "$tools/source-revision.txt" "${trees[$side]}/source-revision.txt"; then
+                harness=$work/ab-artifacts-$side
+                break
+            fi
+        done
+        if [[ -z $harness ]]; then
+            harness=$work/ab-harness
+            echo "Building the harness from $tools" >&2
+            nice -n "$host_build_nice" env FXDAX_E2E_BUILD_ONLY="$harness" \
+                FXDAX_E2E_RESULTS="$results/build-harness" "$tools/scripts/test-e2e.sh" \
+                > "$results/build-harness.log" 2>&1
+        fi
+        cp "$harness/artifacts.txt" "$results/artifacts-harness.txt"
+    fi
+
+    {
+        host_record
+        echo "Suite $suite${harness:+, the harness of $(sed -n 's/^source //p' "$harness/artifacts.txt")}"
+        echo "A $a_name: $a_source ${a_env[*]:-}"
+        echo "B $b_name: $b_source ${b_env[*]:-}"
+    } > "$results/host.txt"
+    printf 'a %s\nb %s\nharness %s\n' "${trees[a]}" "${trees[b]}" "$harness" > "$built"
+}
+
+# Reads what a build made from $built.
+load_build() {
+    local key value
+    [[ -f $built ]] || { echo "$work holds no build: FXDAX_AB_PHASE=build first" >&2; exit 2; }
+    while read -r key value; do
+        case $key in
+            a | b) trees[$key]=$value ;;
+            harness) harness=$value ;;
+        esac
+    done < "$built"
+}
+
+if [[ $phase == rounds ]]; then
+    load_build
+else
+    build_sides
+fi
+if [[ $phase == build ]]; then
+    echo "Built in ${SECONDS}s." | tee -a "$results/host.txt"
+    exit 0
+fi
 
 # Runs side SIDE's round ROUND, with its name and its environment's words.
 round() {
