@@ -57,7 +57,8 @@ trap cleanup EXIT
 # Its bucket's objects on the disk, as LangSmith's RustFS kept them beside the hosts' stores
 # (scripts/test-e2e-rustfs.sh).
 status=0
-TMPDIR="$work" FXDAX_E2E_RESULTS="$results" FXDAX_RUSTFS_DATA="$bucket_data" \
+# TMPDIR left as it is, short: the cases' sockets are there (the runner refuses a long one).
+FXDAX_E2E_RESULTS="$results" FXDAX_RUSTFS_DATA="$bucket_data" \
     FXDAX_RUSTFS_LOG="$results/rustfs.log" \
     FXDAX_SANDBOX_BUCKET_DIR="$bucket_data" FXDAX_SANDBOX_MODE="$mode" \
     "$root/scripts/test-e2e-rustfs.sh" fxfs-guest-sandboxes || status=$?

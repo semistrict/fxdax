@@ -853,6 +853,27 @@ struct Cli {
     command: Option<CliCommand>,
 }
 
+/// fxdax: the longest temporary directory the cases' sockets may be in. They put their sockets
+/// there, Firecracker's APIs, vsocks, their daemons' control sockets and tenants', as its path is
+/// short, which a socket's must be (107 bytes, SUN_LEN): names of up to 60 bytes, such as
+/// `fxdax-PID-sandbox-15-writer.api` and a vsock's `_PORT`, under a directory of this many.
+const MAX_TMPDIR: usize = 40;
+
+/// fxdax: refuses a temporary directory, `dir`, too long for the cases' sockets ([`MAX_TMPDIR`]):
+/// every case then fails, each as its own sockets do, or not at all where it has none, and a run
+/// whose TMPDIR was a host run's results' (scripts/sandboxes.sh's) compared nothing for hours,
+/// its sandboxes' daemons unable to listen (TASK-330.4).
+fn sockets_fit(dir: &std::path::Path) -> anyhow::Result<()> {
+    let length = dir.as_os_str().len();
+    anyhow::ensure!(
+        length <= MAX_TMPDIR,
+        "the temporary directory {} is {length} bytes, past the {MAX_TMPDIR} the cases' sockets \
+         fit under (SUN_LEN): set TMPDIR to a shorter one, such as /tmp",
+        dir.display()
+    );
+    Ok(())
+}
+
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     let command = cli.command.unwrap_or_default();
@@ -861,6 +882,7 @@ fn main() -> anyhow::Result<()> {
         CliCommand::StartVm { test_case, tmp_dir } => start_vm(TestSetup { test_case, tmp_dir }),
         CliCommand::List { tags, names, shard } => list(&names, &tags, shard),
         CliCommand::Test { test_case, base_dir, keep_all, github_summary, outcome, run, round } => {
+            sockets_fit(&std::env::temp_dir())?;
             let record = outcome.map(|outcome| Record { outcome, run, round });
             run_tests(&test_case, base_dir, keep_all, github_summary, record)
         }
@@ -869,7 +891,24 @@ fn main() -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Host, Isolation, isolation, on_path};
+    use super::{Host, Isolation, MAX_TMPDIR, isolation, on_path, sockets_fit};
+    use std::path::Path;
+
+    /// TASK-330.4: a temporary directory too long for the cases' sockets is refused before any
+    /// case runs, saying so; /tmp, and one of the limit's length, are not.
+    #[test]
+    fn a_temporary_directory_too_long_for_sockets_is_refused() {
+        assert!(sockets_fit(Path::new("/tmp")).is_ok());
+        assert!(sockets_fit(Path::new(&format!("/{}", "t".repeat(MAX_TMPDIR - 1)))).is_ok());
+        let long = "/mnt/fxdax-scratch/fxdax-host/run-r3305-20261112T014517Z-8434a7ea/results";
+        assert_eq!(
+            sockets_fit(Path::new(long)).unwrap_err().to_string(),
+            format!(
+                "the temporary directory {long} is 73 bytes, past the 40 the cases' sockets fit \
+                 under (SUN_LEN): set TMPDIR to a shorter one, such as /tmp"
+            )
+        );
+    }
 
     /// A Linux host as root with every command, FXDAX_EXTENTD_REMOTE `remote`.
     fn host(remote: Option<&str>) -> Host {
