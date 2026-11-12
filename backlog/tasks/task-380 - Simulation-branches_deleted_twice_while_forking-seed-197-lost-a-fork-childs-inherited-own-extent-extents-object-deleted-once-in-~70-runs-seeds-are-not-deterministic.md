@@ -7,6 +7,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-11-12 10:55'
+updated_date: '2026-11-12 12:00'
 labels:
   - bug
   - simulation
@@ -83,3 +84,9 @@ Not reproduced since: 0 failures in ~70 more runs of the same test binary on the
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+2026-11-12: also on main CI 43206378171 (3a9c5181e) and 43210500870 (0c2d489a4), test (sim): branches_deleted_twice_while_forking, ExtentId { branch: 2, sequence: 2199023255553 } in tenants/.../extents/... 'is gone'.
+<!-- SECTION:NOTES:END -->
