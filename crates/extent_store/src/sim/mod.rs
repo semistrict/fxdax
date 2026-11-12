@@ -32,10 +32,42 @@ fn violations(seed: u64, profile: Profile) -> (Vec<String>, String) {
     (world.violations, description)
 }
 
+/// `seeds`, as many again as `SIM_SOAK` says (1 by default) from their start.
+fn soaked(seeds: Range<u64>) -> Range<u64> {
+    let soak: u64 = std::env::var("SIM_SOAK").map_or(1, |soak| soak.parse().unwrap());
+    seeds.start..seeds.start + (seeds.end - seeds.start) * soak
+}
+
+/// What a run of `seed` asked of the bucket, and the violations it found.
+fn replay(seed: u64, profile: Profile) -> (Vec<String>, Vec<String>) {
+    let mut world = World::new(seed, profile);
+    world.run();
+    (world.journal(), world.violations)
+}
+
+/// Runs each of `seeds` twice, expecting the same requests of the bucket, in the same order, each
+/// giving the same, and the same violations: a seed replays as it ran, so that one that fails can
+/// be run again to debug it (TASK-380). `SIM_SOAK` multiplies how many.
+fn replays(profile: Profile, seeds: Range<u64>) {
+    for seed in soaked(seeds) {
+        let (first, second) = (replay(seed, profile), replay(seed, profile));
+        let at = first.0.iter().zip(&second.0).position(|(first, second)| first != second);
+        let at = at.unwrap_or(first.0.len().min(second.0.len()));
+        assert!(
+            first == second,
+            "seed {seed} ran two ways: request {at} of {} and {}: {:?} and {:?}, after {:#?}",
+            first.0.len(),
+            second.0.len(),
+            first.0.get(at),
+            second.0.get(at),
+            &first.0[at.saturating_sub(8)..at],
+        );
+    }
+}
+
 /// Runs `seeds`, failing at the first that finds a violation. `SIM_SOAK` multiplies how many.
 fn holds(profile: Profile, seeds: Range<u64>) {
-    let soak: u64 = std::env::var("SIM_SOAK").map_or(1, |soak| soak.parse().unwrap());
-    for seed in seeds.start..seeds.start + (seeds.end - seeds.start) * soak {
+    for seed in soaked(seeds) {
         let (found, description) = violations(seed, profile);
         assert!(found.is_empty(), "seed {seed}: {found:#?}\n{description}");
     }
@@ -162,6 +194,24 @@ fn one() {
     };
     let count = std::env::var("SIM_SEEDS").map_or(1, |count| count.parse().unwrap());
     holds(profile, seed..seed + count);
+}
+
+/// Seeds of every profile replay as they ran.
+#[test]
+fn seeds_replay() {
+    let profiles = [
+        Profile::default(),
+        deleted_forking(),
+        deleted_bases(),
+        restores(),
+        forked_wals(),
+        late_checkpoints(),
+        recreated(),
+        failed_forks(),
+    ];
+    for profile in profiles {
+        replays(profile, 0..20);
+    }
 }
 
 /// Everything, at the default rates.

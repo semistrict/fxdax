@@ -504,6 +504,11 @@ impl World {
         world
     }
 
+    /// What the run asked of the bucket, in order ([`SimBucket::journal`]).
+    pub fn journal(&self) -> Vec<String> {
+        self.bucket.journal()
+    }
+
     /// Runs the profile's steps, then lets everything finish and checks that no garbage is left.
     pub fn run(&mut self) {
         for _ in 0..self.profile.steps {
@@ -1838,6 +1843,7 @@ impl World {
                 return;
             }
             self.bucket.complete(0, Fault::None);
+            trace!("{}", self.bucket.journal().last().unwrap());
         }
     }
 
@@ -2112,6 +2118,7 @@ impl World {
             Fault::None
         };
         self.bucket.complete(index, fault);
+        trace!("{}", self.bucket.journal().last().unwrap());
     }
 
     /// Spawns `task`, counted among the [`World::tasks`] until it is done or aborted, by where

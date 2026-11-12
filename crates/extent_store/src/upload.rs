@@ -320,6 +320,27 @@ pub(crate) struct Shared<D: Dir, B: extent_remote::Bucket = Bucket> {
     uploads: Arc<Budget>,
     /// When its interval is up ([`Clock`]).
     clock: Clock,
+    /// The holders of its takings after the first, and the owners of what it makes: from the
+    /// first taking's holder on ([`Shared::holder`]).
+    holders: Mutex<Holders>,
+}
+
+/// The holders an uploader's takings of its branch's lease after the first take, and the owners of
+/// what it makes, each to differ from every other taking's or maker's: a sequence the first
+/// taking's holder, which its caller drew, seeds (SplitMix64, a bijection of its state, which steps
+/// by an odd constant), as unlikely to meet another's as a draw of their own; and the same in a
+/// run of a seed of the simulation as in the next, whose seed draws the first (TASK-380).
+#[derive(Default)]
+struct Holders(u64);
+
+impl Holders {
+    fn next(&mut self) -> u64 {
+        self.0 = self.0.wrapping_add(0x9e37_79b9_7f4a_7c15);
+        let mut z = self.0;
+        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        z ^ (z >> 31)
+    }
 }
 
 /// What an uploader's interval runs out on: a sleep of the host's runtime's, or, in the
@@ -545,7 +566,7 @@ impl<D: Dir> Remote<D> {
             (Some(origin), true) => Kind::Point(origin),
             (Some(origin), false) => Kind::Fork(origin),
         };
-        let (holder, token) = (rand::random(), self.shared.options.token);
+        let (holder, token) = (self.shared.holder(), self.shared.options.token);
         let deleting =
             branch::delete_fork(&*self.bucket, child.branch, forked, child.owner, holder, token);
         if !block_on(deleting)?? {
@@ -643,7 +664,13 @@ impl<D: Dir, B: extent_remote::Bucket> Shared<D, B> {
             options,
             uploads,
             clock,
+            holders: Mutex::default(),
         })
+    }
+
+    /// A holder, or an owner, of the uploader's own, after its first taking's ([`Holders`]).
+    fn holder(&self) -> u64 {
+        self.holders.lock().unwrap().next()
     }
 
     /// The epoch of the store's latest commit uploaded and acknowledged.
@@ -776,6 +803,7 @@ impl<D: Dir, B: extent_remote::Bucket> Shared<D, B> {
         started: std::sync::mpsc::Sender<Result<Arc<Store<D>>, Failure>>,
     ) {
         let interval = self.options.interval;
+        self.holders.lock().unwrap().0 = holder;
         let writer = match self.start(recovering, options, &bucket, holder).await {
             Ok(writer) => {
                 started.send(Ok(self.store().clone())).unwrap();
@@ -918,7 +946,7 @@ impl<D: Dir, B: extent_remote::Bucket> Shared<D, B> {
             }
             None => {
                 failing!("remote::create_branch");
-                branch::create(&**bucket, branch, rand::random()).await?;
+                branch::create(&**bucket, branch, self.holder()).await?;
                 None
             }
             Some(record) if record.is_point() => {
@@ -1027,7 +1055,7 @@ impl<D: Dir, B: extent_remote::Bucket> Shared<D, B> {
         let record = record(&**bucket, branch).await?.ok_or(extent_remote::Error::NoBranch)?;
         let recovered = extent_remote::recover(&**bucket, branch, record.origin()).await?;
         let token = *self.token.get().expect("a writer took the branch before");
-        let holder = rand::random();
+        let holder = self.holder();
         let writer =
             Writer::open_recovered(bucket.clone(), record, recovered, holder, token).await?;
         let writer = Arc::new(writer.uploading_within(self.uploads.clone()));

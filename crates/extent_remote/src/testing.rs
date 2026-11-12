@@ -58,6 +58,8 @@ struct Inner {
     held: BTreeMap<Branch, u64>,
     /// The creates held, out of the queue, each until an object at its key is deleted.
     parked: Vec<Request>,
+    /// Each request completed, in order, and what it gave ([`SimBucket::journal`]).
+    journal: Vec<String>,
 }
 
 /// How a request the simulation completes fails.
@@ -117,11 +119,17 @@ impl SimBucket {
     pub fn complete(&self, index: usize, fault: Fault) {
         let mut inner = self.inner.lock().unwrap();
         let request = inner.queue.swap_remove(index);
+        let asked = request.op.describe();
         let result = match fault {
             Fault::Before => Err(Error::Unavailable),
             Fault::None => inner.apply(request.op),
             Fault::After => inner.apply(request.op).and(Err(Error::Unavailable)),
         };
+        let gave = match &result {
+            Ok(_) => "done".to_owned(),
+            Err(error) => format!("{error:?}"),
+        };
+        inner.journal.push(format!("{asked} {fault:?}: {gave}"));
         drop(inner);
         // Its maker may have gone; it took effect regardless.
         let _ = request.reply.send(result);
@@ -130,15 +138,14 @@ impl SimBucket {
     /// What waiting request `index` asks: `get KEY START..END` for a ranged read, `get KEY last N`
     /// for its end, and the operation and key for the others.
     pub fn describe(&self, index: usize) -> String {
-        match &self.inner.lock().unwrap().queue[index].op {
-            Op::GetRange(key, ByteRange::Bounded(range)) => format!("get {key} {range:?}"),
-            Op::GetRange(key, ByteRange::Suffix(n)) => format!("get {key} last {n}"),
-            Op::Get(key) => format!("get {key}"),
-            Op::Head(key) => format!("head {key}"),
-            Op::List(prefix) => format!("list {prefix}"),
-            Op::Put(key, ..) => format!("put {key}"),
-            Op::Delete(key) => format!("delete {key}"),
-        }
+        self.inner.lock().unwrap().queue[index].op.describe_key()
+    }
+
+    /// Every request completed, in the order they were, each as [`SimBucket::describe`] says,
+    /// a put's with a hash of its bytes, and how it failed, if it did: what a run of a seed of a
+    /// simulation asked of the bucket, which another run of that seed must ask the same.
+    pub fn journal(&self) -> Vec<String> {
+        self.inner.lock().unwrap().journal.clone()
     }
 
     /// Runs `future`, completing its requests as they come, none failing: what it gives, and what
@@ -189,6 +196,35 @@ impl SimBucket {
     /// The keys of every object.
     pub fn keys(&self) -> Vec<String> {
         self.inner.lock().unwrap().objects.keys().cloned().collect()
+    }
+}
+
+impl Op {
+    /// The operation and its key ([`SimBucket::describe`]).
+    fn describe_key(&self) -> String {
+        match self {
+            Op::GetRange(key, ByteRange::Bounded(range)) => format!("get {key} {range:?}"),
+            Op::GetRange(key, ByteRange::Suffix(n)) => format!("get {key} last {n}"),
+            Op::Get(key) => format!("get {key}"),
+            Op::Head(key) => format!("head {key}"),
+            Op::List(prefix) => format!("list {prefix}"),
+            Op::Put(key, ..) => format!("put {key}"),
+            Op::Delete(key) => format!("delete {key}"),
+        }
+    }
+
+    /// As [`Op::describe_key`], a put's with a hash of its bytes and its mode, as the journal
+    /// keeps it: SipHash of fixed keys, the same in every process.
+    fn describe(&self) -> String {
+        use std::hash::{DefaultHasher, Hasher as _};
+        match self {
+            Op::Put(key, bytes, mode) => {
+                let mut hasher = DefaultHasher::new();
+                hasher.write(bytes);
+                format!("put {key} {:016x} {mode:?}", hasher.finish())
+            }
+            op => op.describe_key(),
+        }
     }
 }
 
