@@ -4,9 +4,11 @@ title: >-
   A write filling the open segment syncs the next segment's log header holding
   the store's state lock: 0.4-1.4 s per fill on a disk VMs share, every write
   and read of the store waiting
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-11-10 21:40'
+updated_date: '2026-11-12 07:46'
 labels:
   - perf
   - extentd
@@ -34,3 +36,9 @@ Found by TASK-310's sync trace (scripts/bpftrace/store-syncs.bt) on ubu1's share
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+2026-11-12 (claude): with TASK-369, local only: Segments::to_prepare/prepared and Preparation::prepare. A 'store opener' thread writes and syncs the next segment's log header off the state lock, under a spare's name (one made anew gets a number with the top bit set, so no segment's spare can take its name). The opening renames it to its log, syncing nothing; it falls back to the old inline path while a preparation runs. Test: segments::tests::segments_open_with_their_logs_prepared_syncing_nothing, red without it. macOS suite green, crash tests 10/10 on ubu1. Waits on TASK-371 and its re-measure, like TASK-369.
+<!-- SECTION:NOTES:END -->

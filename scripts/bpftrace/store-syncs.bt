@@ -7,17 +7,21 @@
 // fdatasync of extentd's on ext4 (ext4_sync_file: the kernel calls a file system's fsync without
 // vfs_fsync_range), by whose file it is (a store's, the file bucket's or the part cache's), the
 // kind of file or directory, its directory's name in the layout (segments, open-segments, logs,
-// extents, the store's own directory), whether a datasync, and the thread's name (a framer's is
-// its starter's: extentd io for a commit's, fxdax remote for the uploader's closing); a histogram
-// of each kind's, and each past 100 ms as it ends, with its thread, how many names the file has
-// (2: a segment framed in place, its raw file linked among framed ones) and its size. And ext4's
-// journal commits past 50 ms, phase by phase (jbd2_run_stats), which every sync of a file or
-// directory with metadata to commit waits for.
+// extents, the store's own directory), whether a datasync, and the thread's name (the store's own
+// threads are named: store framer, store durable, store opener; a flush's, extentd flush); a
+// histogram of each kind's, and each past 100 ms as it ends, with its thread, how many names the
+// file has (2: a segment framed in place, its raw file linked among framed ones) and its size.
+// fxdax: and of each kind's time, how much it waited for ext4's journal to commit
+// (jbd2_log_wait_commit), which a sync of a file or directory with metadata to commit does,
+// behind every other file's data the commit writes first (data=ordered); and the lives of the
+// stores' logs: those made anew, spares taken as logs, logs kept as spares (TASK-369). And ext4's
+// journal commits past 50 ms, phase by phase (jbd2_run_stats).
 //
-//   sudo bpftrace -q -o TRACE scripts/bpftrace/store-syncs.bt [DIR]
+//   sudo bpftrace -q -o TRACE scripts/bpftrace/store-syncs.bt [CGROUP]
 //
-// With DIR, only the syncs of files under a directory of that name (a guest case's results, its
-// daemon's stores and bucket): other daemons on the host, other agents' runs, left out (TASK-369).
+// With CGROUP, only the daemons whose cgroup is in the one of that name, as fxdax-bench.slice for
+// the one run `fxjob --bench` holds the bench for at a time (its scope in that slice): other
+// daemons on the host, other agents' runs, left out (TASK-369).
 
 config = {
 	max_map_keys = 65536
@@ -29,25 +33,34 @@ BEGIN
 }
 
 fentry:vmlinux:ext4_sync_file
-/strncmp(curtask->group_leader->comm, "fxdax-extentd", 13) == 0 ||
- strncmp(curtask->group_leader->comm, "extentd", 7) == 0/
+/(strncmp(curtask->group_leader->comm, "fxdax-extentd", 13) == 0 ||
+  strncmp(curtask->group_leader->comm, "extentd", 7) == 0) &&
+ ($# == 0 || strncmp(str(curtask->cgroups->dfl_cgrp->kn->__parent->name), str($1), 64) == 0)/
 {
 	@began[tid] = nsecs;
+	@journal[tid] = 0;
+}
+
+// The journal commits a sync waits for, while it does.
+fentry:vmlinux:jbd2_log_wait_commit
+/@began[tid] != 0/
+{
+	@waiting[tid] = nsecs;
+}
+
+fexit:vmlinux:jbd2_log_wait_commit
+/@waiting[tid] != 0/
+{
+	@journal[tid] += nsecs - @waiting[tid];
+	@waiting[tid] = 0;
 }
 
 fexit:vmlinux:ext4_sync_file
 /@began[tid] != 0/
 {
 	$us = (nsecs - @began[tid]) / 1000;
+	$journal_us = @journal[tid] / 1000;
 	$dentry = args.file->f_path.dentry;
-	$ours = $# == 0 ? 1 : 0;
-	$up = $dentry;
-	unroll(8) {
-		$up = $up->d_parent;
-		if (strncmp(str($up->d_name.name), str($1), 64) == 0) {
-			$ours = 1;
-		}
-	}
 	$inode = $dentry->d_inode;
 	$dir = ($inode->i_mode & 0xf000) == 0x4000;
 	// A directory's kind is its parent's name (segments/<branch>: segments); a file's, its
@@ -63,20 +76,40 @@ fexit:vmlinux:ext4_sync_file
 	$above = str($parent->d_parent->d_name.name);
 	$whose = strncmp($above, "extentd.bucket", 14) == 0 ? "bucket" :
 		(strncmp($above, "extentd-cache", 13) == 0 ? "cache" : "store");
-	if (!$ours) {
-		@began[tid] = 0;
-		return;
-	}
 	@sync_us[$whose, $dir ? "dir" : "file", $kind, args.datasync] = hist($us);
 	@sync_count[$whose, $dir ? "dir" : "file", $kind, comm] = count();
 	@sync_sum_ms[$whose, $dir ? "dir" : "file", $kind, comm] = sum($us / 1000);
+	@journal_sum_ms[$whose, $dir ? "dir" : "file", $kind, comm] = sum($journal_us / 1000);
+	if ($journal_us > 0) {
+		@journal_count[$whose, $dir ? "dir" : "file", $kind, comm] = count();
+	}
 	if ($us > 100000) {
-		printf("sync %s %s %s/%s datasync %d nlink %d size %d by %s tid %d at %d ms took %d ms\n",
+		printf("sync %s %s %s/%s datasync %d nlink %d size %d by %s tid %d at %d ms took %d ms, journal %d ms\n",
 		       $whose, $dir ? "dir" : "file", $kind, str($dentry->d_name.name), args.datasync,
 		       $inode->__i_nlink, $inode->i_size, comm, tid,
-		       (@began[tid] - @start) / 1000000, $us / 1000);
+		       (@began[tid] - @start) / 1000000, $us / 1000, $journal_us / 1000);
 	}
 	@began[tid] = 0;
+}
+
+// The stores' logs (logs/<branch>/<n>, and spare-<n> beside them), by the extent daemons' own
+// relative paths: made anew; a spare taken as a segment's log; a segment's kept as a spare.
+tracepoint:syscalls:sys_enter_openat
+/(strncmp(curtask->group_leader->comm, "fxdax-extentd", 13) == 0 ||
+  strncmp(curtask->group_leader->comm, "extentd", 7) == 0) &&
+ ($# == 0 || strncmp(str(curtask->cgroups->dfl_cgrp->kn->__parent->name), str($1), 64) == 0) &&
+ (args.flags & 0x40) != 0 && strcontains(str(args.filename), "logs/")/
+{
+	@logs_made[strcontains(str(args.filename), "spare-") ? "under a spare's name" : "as a log", comm] = count();
+}
+
+tracepoint:syscalls:sys_enter_renameat2
+/(strncmp(curtask->group_leader->comm, "fxdax-extentd", 13) == 0 ||
+  strncmp(curtask->group_leader->comm, "extentd", 7) == 0) &&
+ ($# == 0 || strncmp(str(curtask->cgroups->dfl_cgrp->kn->__parent->name), str($1), 64) == 0) &&
+ strcontains(str(args.oldname), "logs/")/
+{
+	@logs_renamed[strcontains(str(args.oldname), "spare-") ? "spare taken as a log" : "log kept as a spare", comm] = count();
 }
 
 // Times in jiffies (CONFIG_HZ 1000 on Ubuntu's kernels: ms).
@@ -95,5 +128,7 @@ tracepoint:jbd2:jbd2_run_stats
 END
 {
 	clear(@began);
+	clear(@journal);
+	clear(@waiting);
 	clear(@start);
 }
