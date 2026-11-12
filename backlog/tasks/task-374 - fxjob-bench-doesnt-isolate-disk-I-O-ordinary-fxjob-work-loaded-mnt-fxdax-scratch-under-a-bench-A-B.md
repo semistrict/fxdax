@@ -3,10 +3,11 @@ id: TASK-374
 title: >-
   fxjob --bench doesn't isolate disk I/O: ordinary fxjob work loaded
   /mnt/fxdax-scratch under a bench A/B
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-11-12 07:45'
-updated_date: '2026-11-12 07:46'
+updated_date: '2026-11-12 08:06'
 labels:
   - testing
   - bug
@@ -32,6 +33,14 @@ On ubu1 (2026-11-12), TASK-369's disk loader (loader.sh: dd of 1 GiB random with
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Plan
+
+<!-- SECTION:PLAN:BEGIN -->
+1. fxjob --bench caps fxdax-work.slice's IO on /mnt/fxdax-scratch (io.max through the user's manager: 64M/2000 read, 32M/1000 write) after isolating, and lifts it in its EXIT trap; fails if the scratch disk isn't mounted. fxjob ps shows each slice's io.max.
+2. Rolled out with TASK-353 in one run of step 146.
+3. Prove: a 256 MiB dd conv=fsync loop as work beside a short fxjob --bench queued behind run-r3305; loader rates and io.stat before, during and after.
+<!-- SECTION:PLAN:END -->
 
 ## Implementation Notes
 
