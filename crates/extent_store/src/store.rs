@@ -15,7 +15,7 @@ use crate::layout::{
     open_extent_path, open_segment_path, segment_path, spare_path,
 };
 use crate::seals;
-use crate::segments::{self, Behind, Segments, Unframed, footer_last};
+use crate::segments::{self, Behind, Preparation, Segments, Unframed, footer_last};
 use crate::shared::{Shared, SharedLock};
 use crate::state::{
     Framing, Gate, Life, Locked, OwnFiles, Placement, Readable, Reader, Space, Standing, State,
@@ -289,6 +289,9 @@ struct Pending<F> {
     /// there if they are the objects there: they leave for the host's cache with its flush
     /// (TASK-165.8).
     leaving: Vec<(String, Option<String>)>,
+    /// fxdax: the segments opened whose raw files' and logs' entries its syncs make durable
+    /// (`Segments::take_syncs`, TASK-369).
+    entries: BTreeSet<SegmentId>,
 }
 
 /// fxdax: the logs a flush appends commits' records to, by their segments ([`Store::flush`]).
@@ -469,7 +472,7 @@ impl<D: Dir> Framer<D> {
             return false;
         }
         let syncer = self.clone();
-        spawn_or_return((), move |()| syncer.make_written_durable()).is_some()
+        spawn_or_return("store durable", (), move |()| syncer.make_written_durable()).is_some()
     }
 
     /// The thread making the segments framed durable: those written since it last did, together,
@@ -478,7 +481,8 @@ impl<D: Dir> Framer<D> {
         let mut state = self.lock();
         while !state.framing.written.is_empty() {
             let (written, since) = state.framing.take_written();
-            let entries = state.segments.unsynced_entries();
+            let entries =
+                state.segments.unsynced_entries(written.iter().map(|(number, _)| *number));
             let whole = state.standing.whole();
             drop(state);
             let durable = whole.and_then(|()| self.make_durable(&written, &entries, since));
@@ -504,7 +508,8 @@ impl<D: Dir> Framer<D> {
         state.framing.running = false;
         if !state.framing.syncing && !state.framing.written.is_empty() {
             let (written, since) = state.framing.take_written();
-            let entries = state.segments.unsynced_entries();
+            let entries =
+                state.segments.unsynced_entries(written.iter().map(|(number, _)| *number));
             let whole = state.standing.whole();
             let durable = whole.and_then(|()| self.make_durable(&written, &entries, since));
             Self::made_durable(state, written, &entries, &durable);
@@ -538,6 +543,18 @@ impl<D: Dir> Framer<D> {
         for (number, framed) in written {
             framing_ended(state, number, durable.as_ref().map(|()| framed));
         }
+    }
+}
+
+/// fxdax: removes the spare log `spare` names, if any, one the branch keeps no more
+/// (`Segments::prepared`, TASK-333).
+fn remove_spare<D: Dir>(dir: &D, spare: Option<SegmentId>) {
+    let Some(spare) = spare else { return };
+    let path = spare_path(spare);
+    if let Err(err) = dir.remove(&path)
+        && !not_found(&err)
+    {
+        log::warn!("extent store: failed to remove {path}: {err}");
     }
 }
 
@@ -831,7 +848,8 @@ impl<D: Dir> Recovering<D> {
             replay
         };
         let views = Views::new(epoch, &root);
-        Ok(Store {
+        let point = fenced.is_none();
+        let store = Store {
             dir,
             block_size,
             branch,
@@ -876,7 +894,13 @@ impl<D: Dir> Recovering<D> {
             cache,
             idle: Arc::new(Condvar::new()),
             views,
-        })
+        };
+        // fxdax: the next segment's log, ahead of its writes; none for a point's store, which
+        // takes none (TASK-333).
+        if !point {
+            store.prepare_next(&mut store.lock());
+        }
+        Ok(store)
     }
 }
 
@@ -1364,7 +1388,53 @@ impl<D: Dir> Store<D> {
         if state.segments.fits(len, self.options.segment_limit()) {
             return Ok(());
         }
-        state.segments.fill(&*self.dir, state.epoch)
+        state.segments.fill(&*self.dir, state.epoch)?;
+        self.prepare_next(state);
+        Ok(())
+    }
+
+    /// fxdax: prepares the log of the segment after the open one, off the state lock, on a thread
+    /// of its own, unless it is or is being (`Segments::to_prepare`, TASK-333): the segment's
+    /// opening takes it, syncing nothing, where it wrote and synced its header holding the state
+    /// lock, every write and read of the store, and its flushes, waiting 0.1-1.4 s behind the
+    /// host's journal on a disk VMs share. Here, holding it, as before, if the directory does one
+    /// thing at a time, or the host refuses the thread.
+    fn prepare_next(&self, state: &mut State<D::File>) {
+        let Some(preparation) = state.segments.to_prepare() else { return };
+        let preparation = match self.dir.concurrent() {
+            true => {
+                let opener = Framer {
+                    dir: self.dir.clone(),
+                    branch: self.branch.id,
+                    state: self.state.clone(),
+                    idle: self.idle.clone(),
+                };
+                let prepare = move |preparation: Preparation| {
+                    let prepared = preparation.prepare(&*opener.dir);
+                    let stale = opener.lock().segments.prepared(prepared);
+                    remove_spare(&*opener.dir, stale);
+                    opener.idle.notify_all();
+                };
+                match spawn_or_return("store opener", preparation, prepare) {
+                    None => return,
+                    Some(preparation) => preparation,
+                }
+            }
+            false => preparation,
+        };
+        let prepared = preparation.prepare(&*self.dir);
+        remove_spare(&*self.dir, state.segments.prepared(prepared));
+    }
+
+    /// fxdax: waits for the preparation of the next segment's log to end, if one runs
+    /// ([`Store::prepare_next`]): its file there, under a spare's name, until the segment opens,
+    /// as what counts the store's files counts it (TASK-333).
+    pub fn prepared(&self) -> Result<(), Error> {
+        let mut state = self.lock();
+        while state.segments.preparing() {
+            state = state.wait(&self.idle);
+        }
+        Ok(())
     }
 
     /// Records `write`, done; returns what of the open segment's raw file to write back, if
@@ -1706,7 +1776,7 @@ impl<D: Dir> Store<D> {
         // next segment's raw file's and log's entries durable before a commit made in it.
         let mut syncs = Syncs::default();
         state.own_files.take_syncs(&mut syncs);
-        state.segments.take_syncs(&mut syncs);
+        let entries = state.segments.take_syncs(&mut syncs);
         // The segments none of its extents' data is in any more, acknowledged in the bucket: their
         // files go into the host's cache once it is durable (TASK-165.8).
         let leaving = (state.segments.reap().into_iter())
@@ -1715,7 +1785,7 @@ impl<D: Dir> Store<D> {
         let Unreferenced { doomed } = state.unreferenced.take();
         state.epoch = epoch;
         // Queued while the state is locked, so that commits queue in their order.
-        let pending = Pending { syncs, records, doomed, leaving };
+        let pending = Pending { syncs, records, doomed, leaving, entries };
         self.durability.with(Mutex::lock).push(epoch, pending);
         Ok(())
     }
@@ -1879,6 +1949,7 @@ impl<D: Dir> Store<D> {
             // fxdax: in the next, the open one full, which the commit goes on with past it.
             if !state.segments.fits(entry.len, self.options.segment_limit()) {
                 state.segments.fill(&*self.dir, state.epoch)?;
+                self.prepare_next(state);
             }
             let open = state.segments.open_segment();
             let (file, at) = state.segments.append(entry.len);
@@ -1999,6 +2070,7 @@ impl<D: Dir> Store<D> {
     ) -> Result<Unframed<D::File>, Error> {
         let unframed = state.segments.close(&*self.dir, epoch, state.next_sequence)?;
         self.enqueue(state, &unframed);
+        self.prepare_next(state);
         Ok(unframed)
     }
 
@@ -2129,7 +2201,7 @@ impl<D: Dir> Store<D> {
         };
         if self.dir.concurrent() {
             let thread = framer.clone();
-            if spawn_or_return((), move |()| thread.frame_queued()).is_none() {
+            if spawn_or_return("store framer", (), move |()| thread.frame_queued()).is_none() {
                 return;
             }
         }
@@ -2366,6 +2438,11 @@ impl<D: Dir> Store<D> {
                     return Err(error);
                 }
                 self.durability.with(Mutex::lock).finish(last);
+                // fxdax: the entries of the segments opened its syncs made durable: no making of
+                // them durable syncs them again (TASK-369).
+                let entries =
+                    commits.iter().flat_map(|pending| &pending.entries).copied().collect();
+                self.lock().segments.entries_synced(&entries);
                 // The files the commits let go of go, once they are durable; fxdax: those of the
                 // bucket's, into the host's cache (TASK-165.8).
                 let started = Instant::now();

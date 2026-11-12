@@ -14,7 +14,10 @@
 // journal commits past 50 ms, phase by phase (jbd2_run_stats), which every sync of a file or
 // directory with metadata to commit waits for.
 //
-//   sudo bpftrace -q -o TRACE scripts/bpftrace/store-syncs.bt
+//   sudo bpftrace -q -o TRACE scripts/bpftrace/store-syncs.bt [DIR]
+//
+// With DIR, only the syncs of files under a directory of that name (a guest case's results, its
+// daemon's stores and bucket): other daemons on the host, other agents' runs, left out (TASK-369).
 
 config = {
 	max_map_keys = 65536
@@ -37,17 +40,33 @@ fexit:vmlinux:ext4_sync_file
 {
 	$us = (nsecs - @began[tid]) / 1000;
 	$dentry = args.file->f_path.dentry;
+	$ours = $# == 0 ? 1 : 0;
+	$up = $dentry;
+	unroll(8) {
+		$up = $up->d_parent;
+		if (strncmp(str($up->d_name.name), str($1), 64) == 0) {
+			$ours = 1;
+		}
+	}
 	$inode = $dentry->d_inode;
 	$dir = ($inode->i_mode & 0xf000) == 0x4000;
 	// A directory's kind is its parent's name (segments/<branch>: segments); a file's, its
 	// grandparent's (segments/<branch>/<n>); the store's own files (wal, store), their parent's.
 	// Whose: a store's, the directory above (store-N), or the daemon's file bucket's
 	// (extentd.bucket/segments/<branch>/<n>#<writer>) or part cache's (extentd-cache).
-	$parent = $dir ? $dentry->d_parent : $dentry->d_parent->d_parent;
+	// (An if, not a ternary: bpftrace 0.25 reads a ternary's pointer as 0.)
+	$parent = $dentry->d_parent;
+	if (!$dir) {
+		$parent = $parent->d_parent;
+	}
 	$kind = str($parent->d_name.name);
 	$above = str($parent->d_parent->d_name.name);
 	$whose = strncmp($above, "extentd.bucket", 14) == 0 ? "bucket" :
 		(strncmp($above, "extentd-cache", 13) == 0 ? "cache" : "store");
+	if (!$ours) {
+		@began[tid] = 0;
+		return;
+	}
 	@sync_us[$whose, $dir ? "dir" : "file", $kind, args.datasync] = hist($us);
 	@sync_count[$whose, $dir ? "dir" : "file", $kind, comm] = count();
 	@sync_sum_ms[$whose, $dir ? "dir" : "file", $kind, comm] = sum($us / 1000);

@@ -74,6 +74,9 @@ pub struct Io {
     /// fxdax: the most bytes a file held written, but neither written back ([`File::write_back`])
     /// nor synced since, at any time: what a sync of it would have had to write (TASK-165.9).
     pub most_unwritten: u64,
+    /// fxdax: the syncs of directories, and of files (TASK-369, TASK-333).
+    pub synced_dirs: u64,
+    pub synced_files: u64,
 }
 
 #[derive(Clone, Default)]
@@ -357,6 +360,7 @@ impl Dir for MemDir {
         let entries = fs.dirs.get(path).ok_or_else(|| not_found(path))?.clone();
         fs.durable_dirs.insert(path.to_owned(), entries);
         fs.dir_changes.remove(path);
+        fs.io.synced_dirs += 1;
         Ok(())
     }
 
@@ -415,6 +419,7 @@ impl File for MemFile {
         inode.durable = inode.data.clone();
         inode.writes.clear();
         inode.unwritten = 0;
+        fs.io.synced_files += 1;
         Ok(())
     }
 

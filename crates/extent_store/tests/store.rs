@@ -448,19 +448,23 @@ fn commits_reopen_from_their_logs() {
     }
     drop((go, held));
     settled(&store);
-    // The open segment's log, and the logs of segments gone kept as spares, two at most (TASK-301):
-    // a segment opened takes a spare. The closed segments' logs went together once settled, their
+    store.prepared().unwrap();
+    // The open segment's log, and under spares' names the logs of segments gone kept as spares,
+    // two at most (TASK-301), and the next segment's, prepared (TASK-333): a segment opened takes
+    // the one prepared, else a spare. The closed segments' logs went together once settled, their
     // framed files durable at last: two kept.
     let logs = || {
         let names = dir.list(&of("logs", BRANCH.id)).unwrap();
         let spares = names.iter().filter(|name| name.starts_with("spare-")).count();
         (names.len() - spares, spares)
     };
-    assert_eq!(logs(), (1, 2));
+    assert_eq!(logs(), (1, 3));
     drop(store);
     let store = Store::open(dir.clone(), OPTIONS).unwrap();
-    // The opening's open segment took a spare; the log of the one it closed again went.
-    assert_eq!(logs(), (1, 1));
+    store.prepared().unwrap();
+    // The opening's open segment took a spare, the next's prepared of another; the log of the
+    // one it closed again went.
+    assert_eq!(logs(), (1, 2));
     assert_eq!(store.root().unwrap(), b"root 199");
     assert_eq!(store.epoch().unwrap(), 200);
     let held: Vec<u64> =
@@ -1725,6 +1729,37 @@ fn framings_wait_for_no_other_framings_syncs() {
                 "seed {seed}, extent {sequence}"
             );
         }
+    }
+}
+
+/// fxdax: making a segment's framed file durable syncs the directories of raw files and logs only
+/// for its own entries, and only if no flush synced them since it opened: the commit's flush after
+/// a segment opens syncs them, and says so. So a closing costs its commit's flush those two, and
+/// the making durable the directory of framed files alone, made durable here before that flush,
+/// the next segment's entries unsynced then, which its own don't need. Synced again for every
+/// segment whose entries no making had synced, the one just opened always among them, both cost a
+/// journal commit more each closing, behind which pgbench-dax's flushes waited seconds on a disk
+/// VMs share (TASK-369): 5 a closing, not 3; red so with the flush's marking left out, or every
+/// segment's synced.
+#[test]
+fn segments_made_durable_sync_no_entries_a_flush_synced() {
+    let dir = MemDir::new();
+    let store = create(dir.clone(), 64 << 20);
+    store.write(extent(1), 0, &pattern(1, 0, BLOCK)).unwrap();
+    store.commit(None).unwrap();
+    settled(&store);
+    for sequence in 2..6 {
+        store.write(extent(sequence), 0, &pattern(sequence as u8, 0, BLOCK)).unwrap();
+        store.commit(None).unwrap();
+        settled(&store);
+        let before = dir.io().synced_dirs;
+        store.close_segment().unwrap();
+        store.commit_ordered(None).unwrap();
+        // Framed and made durable, then the commit's flush.
+        store.closed(0).unwrap();
+        store.flush().unwrap();
+        let synced = dir.io().synced_dirs - before;
+        assert_eq!(synced, 3, "closing after extent {sequence}: directories synced");
     }
 }
 

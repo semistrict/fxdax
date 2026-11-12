@@ -49,6 +49,11 @@ pub(crate) mod thread {
             Self
         }
 
+        /// Names the thread, as std's does: Shuttle's threads have none.
+        pub(crate) fn name(self, _name: String) -> Self {
+            self
+        }
+
         /// Starts a thread running `f`, as Shuttle's `spawn` does, or returns the host's refusal.
         #[track_caller]
         pub(crate) fn spawn<F, T>(self, f: F) -> std::io::Result<JoinHandle<T>>
@@ -77,10 +82,13 @@ pub(crate) mod thread {
     }
 }
 
-/// Runs `run` of `work` on a thread of its own, as `thread::spawn` does; or gives `work` back, if
-/// the host refuses one, where `thread::spawn` panics, through whatever locks the caller holds,
-/// poisoning them: for work that must be done, which the caller then does itself (TASK-79.80).
+/// Runs `run` of `work` on a thread of its own, named `name`, as `thread::spawn` does; or gives
+/// `work` back, if the host refuses one, where `thread::spawn` panics, through whatever locks the
+/// caller holds, poisoning them: for work that must be done, which the caller then does itself
+/// (TASK-79.80). fxdax: named, so that a trace of the host's syncs tells its thread's from the
+/// thread that started it, whose name it had (TASK-369).
 pub(crate) fn spawn_or_return<T: Send + 'static>(
+    name: &str,
     work: T,
     run: impl FnOnce(T) + Send + 'static,
 ) -> Option<T> {
@@ -88,7 +96,7 @@ pub(crate) fn spawn_or_return<T: Send + 'static>(
     // if there is none, the caller's.
     let job = Arc::new(Mutex::new(Some(work)));
     let theirs = job.clone();
-    let spawned = thread::Builder::new().spawn(move || {
+    let spawned = thread::Builder::new().name(name.to_owned()).spawn(move || {
         let work = theirs.lock().unwrap().take();
         run(work.expect("a thread runs what its caller has not"));
     });
