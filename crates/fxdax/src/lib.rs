@@ -153,6 +153,8 @@ mod store_requests;
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 mod store_table;
 #[cfg(test)]
+mod test_checkpoints;
+#[cfg(test)]
 mod test_data;
 #[cfg(target_os = "linux")]
 pub mod thread;

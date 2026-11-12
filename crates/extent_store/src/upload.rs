@@ -863,10 +863,13 @@ impl<D: Dir, B: extent_remote::Bucket> Shared<D, B> {
                 }
             }
             segments += 1;
-            if segments % self.options.checkpoint_every == 0
-                && let Err(err) = writer.checkpoint().await
-            {
-                log::warn!("fxdax: checkpointing branch {:x}: {err}", writer.branch());
+            if segments % self.options.checkpoint_every == 0 {
+                // A test's: the checkpoint landing late, after the commits it covers returned, as on
+                // a loaded host, which a collector's pass then runs beside (TASK-339).
+                fail::fail_point!("remote::checkpointing");
+                if let Err(err) = writer.checkpoint().await {
+                    log::warn!("fxdax: checkpointing branch {:x}: {err}", writer.branch());
+                }
             }
         }
     }

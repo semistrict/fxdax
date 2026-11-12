@@ -2384,13 +2384,16 @@ mod tests {
         assert_eq!(std::fs::read_dir(&segments).unwrap().count(), 0, "segments left in the store");
         assert_eq!(read(&follower, a, 0, BLOCK), Ok(pattern(1, BLOCK)));
         // Commits, each of a segment, until the uploader checkpoints the branch, which then holds
-        // the history the collector goes by: an extent written, and freed by the next.
-        for sequence in 2..2 + extent_store::upload::CHECKPOINT_EVERY {
-            write(&store, id(&store, sequence), 0, &pattern(sequence as u8, BLOCK)).unwrap();
+        // the history the collector goes by: an extent written, and freed by the next; the
+        // checkpoint in the bucket before the collector lists it (TASK-339).
+        crate::test_checkpoints::after(&store, store.bucket(), || {
+            for sequence in 2..2 + extent_store::upload::CHECKPOINT_EVERY {
+                write(&store, id(&store, sequence), 0, &pattern(sequence as u8, BLOCK)).unwrap();
+                store.commit(None).unwrap();
+                store.free(id(&store, sequence)).unwrap();
+            }
             store.commit(None).unwrap();
-            store.free(id(&store, sequence)).unwrap();
-        }
-        store.commit(None).unwrap();
+        });
         let options = extent_remote::collector::Options { compact_below: 0.5, grace: 0 };
         let collected = extent_remote::collector::collect(&**store.bucket(), 1, &options);
         let report = futures::executor::block_on(collected).unwrap();

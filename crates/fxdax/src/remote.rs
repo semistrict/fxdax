@@ -229,6 +229,7 @@ mod write_budgets;
 
 #[cfg(test)]
 mod tests {
+    use crate::test_checkpoints::checkpointed;
     use crate::test_data::noise;
     use crate::{ExtentId, ExtentStore, VolatileSlice};
     use extent_remote::cache::Cache;
@@ -467,16 +468,11 @@ mod tests {
         for sequence in 4..=16 {
             store.free(ExtentId { branch, sequence }).unwrap();
         }
-        let checkpointed = || {
-            for _ in 0..extent_store::upload::CHECKPOINT_EVERY {
-                store.commit(None).unwrap();
-            }
-        };
-        checkpointed();
+        checkpointed(&store, &bucket);
         // The segment compacted, 1 to 3 into its moves; the writer's checkpoint follows them; the
         // segment goes.
         assert_eq!(collect(1).compacted, 1);
-        checkpointed();
+        checkpointed(&store, &bucket);
         collect(2);
         let keys: Vec<String> =
             futures::executor::block_on(extent_remote::Bucket::list(&*bucket, ""))
@@ -509,6 +505,23 @@ mod tests {
     /// into moves, then into moves of moves, the segment and the first moves gone.
     #[test]
     fn forks_read_what_they_inherited_compacted_twice() {
+        inherited_compacted_twice();
+    }
+
+    /// TASK-339: [`forks_read_what_they_inherited_compacted_twice`] with the fork's checkpoint
+    /// landing a second after the commits it covers returned, as on a loaded CI runner: it is what
+    /// the collector frees the segment and the first moves by, and the collections waited for
+    /// nothing of it (moves/segments/ still listed after collect(4), main's macOS CI); now they
+    /// wait for it ([`checkpointed`](crate::test_checkpoints::checkpointed)).
+    #[test]
+    fn forks_read_what_they_inherited_compacted_twice_their_checkpoint_late() {
+        let scenario = fail::FailScenario::setup();
+        fail::cfg("remote::checkpointing", "sleep(1000)").unwrap();
+        inherited_compacted_twice();
+        scenario.teardown();
+    }
+
+    fn inherited_compacted_twice() {
         const EXTENT: usize = 64 * BLOCK;
         let dir = tempfile::tempdir().unwrap();
         let bucket = Arc::new(Bucket::new(Arc::new(InMemory::new()), ""));
@@ -540,9 +553,7 @@ mod tests {
         // It frees 2 and 3, and its writer checkpoints, naming 1 in the moves.
         child.free(ExtentId { branch, sequence: 2 }).unwrap();
         child.free(ExtentId { branch, sequence: 3 }).unwrap();
-        for _ in 0..extent_store::upload::CHECKPOINT_EVERY {
-            child.commit(None).unwrap();
-        }
+        checkpointed(&child, &bucket);
         // The segment goes, no state naming it there; the moves are compacted, then go too.
         collect(3);
         collect(4);
@@ -590,19 +601,14 @@ mod tests {
             store.free(ExtentId { branch, sequence }).unwrap();
         }
         // Its writer checkpoints, as every so many segments, each commit here one.
-        let checkpointed = || {
-            for _ in 0..extent_store::upload::CHECKPOINT_EVERY {
-                store.commit(None).unwrap();
-            }
-        };
-        checkpointed();
+        checkpointed(&store, &bucket);
         // The segment compacted: 1 to 3 in its moves.
         assert_eq!(collect(1).compacted, 1);
         // The store frees 2 and 3, and its writer checkpoints, as every so many segments, naming 1
         // in the moves, which hold a third of what they did.
         store.free(ExtentId { branch, sequence: 2 }).unwrap();
         store.free(ExtentId { branch, sequence: 3 }).unwrap();
-        checkpointed();
+        checkpointed(&store, &bucket);
         // A follower of the store, which reads what the store names.
         let follower = store.follow();
         // The segment goes, no state naming it there; the moves are compacted, then go too.
