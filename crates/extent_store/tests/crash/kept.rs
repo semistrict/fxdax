@@ -14,7 +14,8 @@
 //! fxdax: passes of the collector run over the bucket all along the workload, compacting, each
 //! after the last, on the host's runtime, as its collector would; one is cut at a random request
 //! of its, as the host dies under it ([`Cut`]); and a full pass runs after the crash, before the
-//! branch is taken and the store opened again (TASK-291.2).
+//! branch is taken and the store opened again (TASK-291.2). Once it was, passes run alone, and
+//! leave nothing they should have collected (TASK-390).
 
 use super::rounds::{BLOCK, BRANCH, Model, OPTIONS, workload};
 use extent_remote::bucket::{ByteRange, Error as BucketError, Meta, Object, PutMode, Version};
@@ -368,6 +369,7 @@ pub fn kept(round: u64) -> Kept {
     // Its disk kept, the store opens again: its log follows the branch, which the taking fenced
     // past no commit, and what it made durable it holds.
     let reopened = reopened(&host, round, &crashed, crashed.dir.clone(), 3, (*durable).max(epoch));
+    collected_alone(&host, round);
     let (compacted, deleted) = (collected.0 > 0, collected.1 > 0);
     Kept {
         acknowledged: acknowledged > first,
@@ -376,6 +378,25 @@ pub fn kept(round: u64) -> Kept {
         compacted,
         deleted,
     }
+}
+
+/// How many passes, alone, [`collected_alone`] lets run before one does nothing.
+const PASSES_ALONE: u64 = 8;
+
+/// Runs passes over `host`'s bucket, alone, every store gone, until one does nothing, and checks
+/// they left nothing they should have collected, garbage or objects mostly freed, uncompacted: the
+/// space the round's commits freed comes back, not only what they hold stays (TASK-390).
+fn collected_alone(host: &Host, round: u64) {
+    let bucket = host.bucket();
+    let quiet = (0..PASSES_ALONE).any(|pass| {
+        let pass = collector::collect(&*bucket, (2 << 20) + pass, &COLLECTING);
+        let report =
+            host.runtime.block_on(pass).unwrap_or_else(|err| panic!("round {round}: {err}"));
+        report == collector::Report::default()
+    });
+    assert!(quiet, "round {round}: {PASSES_ALONE} passes alone each did something");
+    let left = extent_remote::testing::uncollected(&*bucket, COLLECTING.compact_below);
+    assert_eq!(host.runtime.block_on(left), Vec::<String>::new(), "round {round}");
 }
 
 /// Round `round` of the cut openings: the store a kept round's first crash left opened again, its

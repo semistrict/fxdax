@@ -43,7 +43,8 @@ fn recovers_a_prefix_of_its_commits() {
 /// fxdax: a store keeping its branch in a bucket, crashing as its uploader uploads, recovers from
 /// the bucket alone at least what its uploader acknowledged, and from its disk at least what it
 /// made durable (TASK-165.9's AC #4); the host's collector passing over the bucket all along, cut
-/// in a pass as it crashes, or before, and a full pass after (TASK-291.2).
+/// in a pass as it crashes, or before, and a full pass after (TASK-291.2); then passes alone,
+/// which leave nothing they should have collected (TASK-390).
 #[test]
 fn recovers_from_its_bucket_with_and_without_its_disk() {
     let (mut uploaded, mut ahead, mut cut, mut compacted, mut deleted) = (0, 0, 0, 0, 0);

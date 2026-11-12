@@ -168,6 +168,19 @@ impl Collecting {
             extent_store::upload::block_on(collector.collect(&*self.bucket, rand::random()));
         collected.unwrap().unwrap()
     }
+
+    /// Runs passes as [`Collecting::pass_now`] does until one does nothing, every image of the
+    /// bucket closed, and says what they left that they should have collected
+    /// ([`extent_remote::testing::uncollected`]): the space freed comes back (TASK-390).
+    #[cfg(test)]
+    pub(crate) fn collected_alone(&self) -> Vec<String> {
+        const PASSES: usize = 8;
+        let quiet = (0..PASSES).any(|_| self.pass_now() == Report::default());
+        assert!(quiet, "{PASSES} passes alone each did something");
+        let left =
+            extent_remote::testing::uncollected(&*self.bucket, self.pace.options.compact_below);
+        extent_store::upload::block_on(left).unwrap()
+    }
 }
 
 impl Drop for Collecting {

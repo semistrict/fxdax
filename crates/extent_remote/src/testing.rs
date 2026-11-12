@@ -13,7 +13,7 @@ use crate::bucket::{Bucket, ByteRange, Error, Meta, Object, PutMode, Version};
 use crate::layout::{self, Branch, Kind};
 pub use crate::moves::{Moved, MovesMaps};
 use futures::channel::oneshot;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
@@ -418,6 +418,116 @@ impl Bucket for Direct {
     fn now(&self) -> u64 {
         self.0.now()
     }
+}
+
+/// fxdax: what the collector should have collected of `bucket` and left (TASK-390), once
+/// passes ran alone, of `compact_below`, past the grace period, the branches' writers all done:
+/// each a line, `garbage left: KEY`, an object no live branch needs, or `left uncompacted: KEY, ...`,
+/// one a live branch names whose live extents take less than `compact_below` of its data, its
+/// moves not written. The live branches are those whose records say so, recovered as their
+/// records say they were made; one that fails to recover is passed over, as a claim's may.
+///
+/// It works out what the live branches need as doc-7 says, not as the collector does, so that a
+/// collector that keeps or compacts too little of what is freed fails it, as one that loses what is
+/// live fails the tests' reads: the space a pass frees, not only what it keeps, is checked. It
+/// was the simulation's end checks; TASK-293's compressed segments, never compacted, went unseen
+/// by every test outside it.
+pub async fn uncollected(bucket: &impl Bucket, compact_below: f64) -> Vec<String> {
+    use crate::layout::{Location, Origin};
+    use crate::record::Kind as Made;
+    use storage_device::ExtentId;
+    let keys: BTreeSet<String> =
+        crate::bucket::list(bucket, "").await.into_iter().map(|meta| meta.key).collect();
+    let mut maps = MovesMaps::default();
+    let mut needed = BTreeSet::from([layout::GC_LEASE.to_owned()]);
+    let mut touched = BTreeSet::new();
+    let mut named: BTreeMap<String, BTreeMap<ExtentId, u64>> = BTreeMap::new();
+    for key in &keys {
+        let Kind::Record { branch } = layout::kind(key) else { continue };
+        let Ok(Some(record)) = crate::branch::record(bucket, branch).await else { continue };
+        // Deleted branches' records stay (TASK-174).
+        if record.deleted {
+            if !record.may_drop() {
+                needed.insert(key.clone());
+            }
+            continue;
+        }
+        needed.insert(key.clone());
+        needed.insert(layout::lease(branch));
+        let (origin, point): (Option<Origin>, bool) = match record.kind {
+            Made::Root | Made::Own => (None, false),
+            Made::Fork(origin) | Made::Claim(origin) | Made::Forking { origin, .. } => {
+                (Some(origin), false)
+            }
+            Made::Point(origin) => (Some(origin), true),
+        };
+        let Ok(recovered) = crate::recovery::recover(bucket, branch, origin).await else {
+            continue;
+        };
+        touched.extend(recovered.touched.iter().cloned());
+        needed.extend(recovered.touched);
+        // Its writer may name its extents anywhere on their ways from where they were sealed,
+        // unless its state is from a checkpoint of the writer holding its lease (TASK-175).
+        let lease = crate::branch::lease_epoch(bucket, &layout::lease(branch)).await.ok();
+        let behind = lease != recovered.checkpointer;
+        // Its fences, which a writer taken over must find; and, while a writer takes it over,
+        // its lease of an epoch past its state's, all its segments (TASK-371).
+        if crate::rules().fences_kept {
+            let fences = recovered.state.fences.iter();
+            needed.extend(fences.map(|&seq| layout::segment(branch, seq)));
+        }
+        if crate::rules().takeovers_kept && lease.is_some_and(|lease| lease > recovered.state.epoch)
+        {
+            let prefix = layout::segments(branch);
+            needed.extend(keys.iter().filter(|key| key.starts_with(&prefix)).cloned());
+        }
+        for (&extent, location) in &recovered.state.extents {
+            needed.insert(location.key.clone());
+            named.entry(location.key.clone()).or_default().insert(extent, location.len);
+            let mut key = location.key.as_str();
+            while let Kind::Moves { from } = layout::kind(key)
+                && behind
+            {
+                needed.insert(key.to_owned());
+                key = from;
+            }
+            // Its readers follow the moves of what its state names, until a checkpoint records
+            // where they went: as a point's do for as long as it lives, as it has no writer to
+            // record them, and a branch's whose writer has not checkpointed since.
+            let mut at: Location = location.clone();
+            while keys.contains(&layout::moves(&at.key)) {
+                let Ok(Moved::To(to)) = maps.moved(bucket, extent, &at.key).await else { break };
+                needed.insert(layout::moves(&at.key));
+                needed.insert(to.key.clone());
+                if point {
+                    named.entry(to.key.clone()).or_default().insert(extent, to.len);
+                }
+                at = to;
+            }
+        }
+    }
+    let mut left = Vec::new();
+    for key in &keys {
+        // fxdax: cells' objects stay, as their branches' records do, their epochs fencing their
+        // volumes' leases; and blocks of object IDs taken, for good (TASK-364).
+        let kept = matches!(layout::kind(key), Kind::Cell { .. } | Kind::ObjectIds { .. });
+        if !kept && !needed.contains(key) {
+            left.push(format!("garbage left: {key}"));
+        }
+    }
+    for (key, extents) in named {
+        let compactable = matches!(layout::kind(&key), Kind::Segment { .. } | Kind::Moves { .. });
+        if !compactable || touched.contains(&key) || keys.contains(&layout::moves(&key)) {
+            continue;
+        }
+        let Some(object) = crate::bucket::get(bucket, &key).await else { continue };
+        let Ok(data) = layout::data(&object.bytes) else { continue };
+        let used: u64 = extents.values().sum();
+        if (used as f64) < compact_below * data.len() as f64 {
+            left.push(format!("left uncompacted: {key}, {used} of its {} bytes live", data.len()));
+        }
+    }
+    left
 }
 
 #[cfg(test)]

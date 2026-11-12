@@ -1897,75 +1897,6 @@ impl World {
         }
     }
 
-    /// The places the way to `extent` at `location` goes through, of a bucket holding `keys`: as a
-    /// point's goes for as long as it lives, as it has no writer to record moves in a checkpoint.
-    fn way(
-        direct: &Direct,
-        maps: &mut MovesMaps,
-        keys: &BTreeSet<String>,
-        extent: ExtentId,
-        location: &extent_remote::Location,
-    ) -> Vec<extent_remote::Location> {
-        let mut way = Vec::new();
-        let mut at = location.clone();
-        while keys.contains(&layout::moves(&at.key)) {
-            match block_on(maps.moved(direct, extent, &at.key)) {
-                Ok(Moved::To(to)) => {
-                    way.push(to.clone());
-                    at = to;
-                }
-                _ => break,
-            }
-        }
-        way
-    }
-
-    /// Checks that the collectors compacted what they could (TASK-44.1): no object a live branch
-    /// names, which recovering none reads, has its live extents take less than `compact_below` of
-    /// its data, unless its moves are written, which the branches' next checkpoints record.
-    fn check_compacted(&mut self) {
-        use layout::{self, Kind};
-        let direct = Direct(self.bucket.clone());
-        let keys: BTreeSet<String> = self.bucket.keys().into_iter().collect();
-        let mut maps = MovesMaps::default();
-        let mut touched = BTreeSet::new();
-        let mut named: BTreeMap<String, BTreeMap<ExtentId, u64>> = BTreeMap::new();
-        for branch in self.live() {
-            let origin = self.branches[&branch].origin;
-            let Ok(recovered) = block_on(recovery::recover(&direct, sim_branch(branch), origin))
-            else {
-                continue;
-            };
-            touched.extend(recovered.touched);
-            for (&extent, location) in &recovered.state.extents {
-                named.entry(location.key.clone()).or_default().insert(extent, location.len);
-                if self.branches[&branch].point {
-                    for place in Self::way(&direct, &mut maps, &keys, extent, location) {
-                        named.entry(place.key).or_default().insert(extent, place.len);
-                    }
-                }
-            }
-        }
-        for (key, extents) in named {
-            let compactable =
-                matches!(layout::kind(&key), Kind::Segment { .. } | Kind::Moves { .. });
-            if !compactable || touched.contains(&key) || keys.contains(&layout::moves(&key)) {
-                continue;
-            }
-            let Ok(object) = block_on(extent_remote::bucket::Bucket::get(&direct, &key)) else {
-                continue;
-            };
-            let Ok(data) = layout::data(&object.bytes) else { continue };
-            let used: u64 = extents.values().sum();
-            if (used as f64) < self.profile.options.compact_below * data.len() as f64 {
-                self.violation(format!(
-                    "left uncompacted: {key}, {used} of its {} bytes live",
-                    data.len()
-                ));
-            }
-        }
-    }
-
     /// What the bucket holds and what the live branches name, for a failure's message.
     pub fn describe(&self) -> String {
         let direct = Direct(self.bucket.clone());
@@ -2032,72 +1963,13 @@ impl World {
         text
     }
 
-    /// Checks that the bucket holds only what live branches need: their records and leases, what
-    /// recovering them reads, and the objects holding their extents.
-    fn check_garbage(&mut self) {
+    /// Checks that the bucket holds only what live branches need, compacted as the collectors
+    /// could (TASK-44.1): [`extent_remote::testing::uncollected`], its live branches by their records.
+    fn check_collected(&mut self) {
         let direct = Direct(self.bucket.clone());
-        let mut needed = BTreeSet::from([layout::GC_LEASE.to_owned()]);
-        let keys: BTreeSet<String> = self.bucket.keys().into_iter().collect();
-        let mut maps = MovesMaps::default();
-        for branch in self.live() {
-            needed.insert(layout::record(sim_branch(branch)));
-            needed.insert(layout::lease(sim_branch(branch)));
-            let origin = self.branches[&branch].origin;
-            let Ok(recovered) = block_on(recovery::recover(&direct, sim_branch(branch), origin))
-            else {
-                continue;
-            };
-            needed.extend(recovered.touched);
-            // Its writer may name its extents anywhere on their ways from where they were sealed,
-            // unless its state is from a checkpoint of the writer holding its lease (TASK-175).
-            let lease =
-                block_on(branch::lease_epoch(&direct, &layout::lease(sim_branch(branch)))).ok();
-            let behind = lease != recovered.checkpointer;
-            // Its fences, which a writer taken over must find; and, while a writer takes it over,
-            // its lease of an epoch past its state's, all its segments (TASK-371).
-            if rules().fences_kept {
-                let fences = recovered.state.fences.iter();
-                needed.extend(fences.map(|&seq| layout::segment(sim_branch(branch), seq)));
-            }
-            if rules().takeovers_kept && lease.is_some_and(|lease| lease > recovered.state.epoch) {
-                let prefix = layout::segments(sim_branch(branch));
-                needed.extend(keys.iter().filter(|key| key.starts_with(&prefix)).cloned());
-            }
-            for (extent, location) in &recovered.state.extents {
-                needed.insert(location.key.clone());
-                let mut key = location.key.as_str();
-                while let layout::Kind::Moves { from } = layout::kind(key)
-                    && behind
-                {
-                    needed.insert(key.to_owned());
-                    key = from;
-                }
-                if !self.branches[&branch].point {
-                    continue;
-                }
-                for place in Self::way(&direct, &mut maps, &keys, *extent, location) {
-                    needed.insert(layout::moves(&place.key));
-                    needed.insert(place.key);
-                }
-            }
-        }
-        for key in self.bucket.keys() {
-            // Deleted branches' records stay (TASK-174).
-            if let layout::Kind::Record { branch } = layout::kind(&key)
-                && let Ok(Some(record)) = block_on(branch::record(&direct, branch))
-                && record.deleted
-                && !record.may_drop()
-            {
-                continue;
-            }
-            // fxdax: cells' objects stay, as their branches' records do, their epochs fencing
-            // their volumes' leases; and blocks of object IDs taken, for good (TASK-364).
-            if let layout::Kind::Cell { .. } | layout::Kind::ObjectIds { .. } = layout::kind(&key) {
-                continue;
-            }
-            if !needed.contains(&key) {
-                self.violation(format!("garbage left: {key}"));
-            }
+        let compact_below = self.profile.options.compact_below;
+        for left in block_on(extent_remote::testing::uncollected(&direct, compact_below)) {
+            self.violation(left);
         }
     }
 
@@ -2517,7 +2389,6 @@ impl World {
         }
         self.check_woken();
         self.check();
-        self.check_garbage();
-        self.check_compacted();
+        self.check_collected();
     }
 }

@@ -13,7 +13,8 @@
 //! alone with no grace period, and after each commit, as often as passes end, compacting what is
 //! half freed and deleting it at once ([`BUSY`]). Each operation reads back what it changed; a
 //! remount compares every file of the image, and the sequence's end every file of every image,
-//! then again opened anew after a pass alone.
+//! then again opened anew after passes alone, which leave nothing they should have collected
+//! (TASK-390).
 //!
 //! Seeded by proptest, which says the sequence if one fails, shrunk. FXDAX_COLLECT_MODEL_CASES
 //! asks for more sequences than 4: each takes seconds, in remounts and clones, which wait for the
@@ -250,7 +251,8 @@ impl Images {
         }
     }
 
-    /// Closes every image, collects alone, and checks each, opened anew, holds what it did.
+    /// Closes every image, collects alone, leaving nothing to collect, and checks each, opened
+    /// anew, holds what it did.
     fn end(self) {
         let Self { mounted, collecting, .. } = self;
         let mut closed = Vec::new();
@@ -259,7 +261,7 @@ impl Images {
             drop(block_on(fs.close()).unwrap());
             closed.push((path, files));
         }
-        collecting.pass_now();
+        assert_eq!(collecting.collected_alone(), Vec::<String>::new(), "collected alone");
         drop(collecting);
         for (path, files) in closed {
             let fs = block_on(Filesystem::mount(Storage::open(&path).unwrap())).unwrap();
