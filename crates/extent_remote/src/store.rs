@@ -775,6 +775,7 @@ pub async fn probe(bucket: &impl Bucket, nonce: u64) -> Result<(), String> {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use crate::layout::test_branch;
 
     /// Requests that failed wait from 50 ms, doubling, to at most 5 s.
     #[test]
@@ -796,7 +797,7 @@ pub(crate) mod tests {
         let objects = Arc::new(object_store::memory::InMemory::new());
         let store = Arc::new(Store::new(Arc::new(Faulty::new(objects, faults.clone())), ""));
         faults.set(Fault { failing: Failing::NoSpace, ..Fault::default() });
-        let key = layout::segment(1, 0);
+        let key = layout::segment(test_branch(1), 0);
         let creating = tokio::spawn({
             let (store, key) = (store.clone(), key.clone());
             async move { crate::bucket::create(&*store, &key, vec![1, 2, 3]).await }
@@ -922,11 +923,12 @@ pub(crate) mod tests {
         use crate::layout::{Marked, Marks};
         let log = crate::marks::captured();
         let objects: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
-        let (old, marked) = (layout::checkpoint(1, 3), layout::checkpoint(1, 4));
+        let (old, marked) =
+            (layout::checkpoint(test_branch(1), 3), layout::checkpoint(test_branch(1), 4));
         let warned = || -> Vec<String> { log.lock().unwrap().clone() };
         futures::executor::block_on(async {
             let writer = Store::new(objects.clone(), "p");
-            for key in [&old, &marked, &layout::checkpoint(1, 5)] {
+            for key in [&old, &marked, &layout::checkpoint(test_branch(1), 5)] {
                 writer.put(key, vec![1, 2].into(), PutMode::Create).await.unwrap();
             }
             let unmarked = Store::new(objects.clone(), "p");
@@ -949,7 +951,7 @@ pub(crate) mod tests {
 
             let reader = Store::new(objects.clone(), "p");
             // Its first read reads the marks, alongside: what it reads after, it warns of.
-            reader.head(&layout::checkpoint(1, 5)).await.unwrap();
+            reader.head(&layout::checkpoint(test_branch(1), 5)).await.unwrap();
             assert_eq!(reader.stats().requests(Request::List), 0);
             assert_eq!(reader.stats().requests(Request::Head), 1);
             reader.get(&old).await.unwrap();
@@ -965,7 +967,8 @@ pub(crate) mod tests {
         let reached = |request: &str| {
             format!(
                 "WARN extent_remote: {request} {marked}: {saying} (gc/marks/0000000000000007) \
-                 key={marked} kind=Checkpoint {{ branch: 1, seq: 4 }} request={request} marks=7"
+                 key={marked} kind=Checkpoint {{ branch: Branch {{ cell: Cell {{ tenant: 1, id: \
+                 1 }}, id: 1 }}, seq: 4 }} request={request} marks=7"
             )
         };
         assert_eq!(warned(), [reached("head"), reached("get-range"), reached("get")]);
@@ -977,22 +980,26 @@ pub(crate) mod tests {
     fn counts_requests_and_bytes() {
         let store = memory();
         futures::executor::block_on(async {
-            let segment = layout::segment(1, 0);
+            let segment = layout::segment(test_branch(1), 0);
             let version = store.put(&segment, vec![1; 100].into(), PutMode::Create).await.unwrap();
             assert!(store.put(&segment, vec![2; 7].into(), PutMode::Create).await.is_err());
             store.put(&segment, vec![3; 50].into(), PutMode::Update(version)).await.unwrap();
             store
-                .put(&layout::checkpoint(1, 0), vec![4; 30].into(), PutMode::Create)
+                .put(&layout::checkpoint(test_branch(1), 0), vec![4; 30].into(), PutMode::Create)
                 .await
                 .unwrap();
-            store.put(&layout::lease(1), vec![5; 9].into(), PutMode::Overwrite).await.unwrap();
-            let extent = layout::extent(1, 0, storage_device::ExtentId::new(1, 5));
+            store
+                .put(&layout::lease(test_branch(1)), vec![5; 9].into(), PutMode::Overwrite)
+                .await
+                .unwrap();
+            let extent =
+                layout::extent(layout::TEST_CELL, 1, 0, storage_device::ExtentId::new(1, 5));
             store.put(&extent, vec![6; 11].into(), PutMode::Create).await.unwrap();
             store.put(&layout::moves(&segment), vec![7; 13].into(), PutMode::Create).await.unwrap();
             assert_eq!(store.get(&segment).await.unwrap().bytes.len(), 50);
             let range = ByteRange::Bounded(10..30);
             assert_eq!(store.get_range(&segment, range).await.unwrap().len(), 20);
-            assert!(store.get(&layout::segment(1, 9)).await.is_err());
+            assert!(store.get(&layout::segment(test_branch(1), 9)).await.is_err());
             store.head(&segment).await.unwrap();
             store.list("segments/").await.unwrap();
             store.delete(&segment).await.unwrap();
@@ -1140,8 +1147,8 @@ pub(crate) mod tests {
     fn recoveries_share_the_checkpoints_they_decode() {
         let bucket = memory();
         futures::executor::block_on(async {
-            branch::create(&*bucket, 1, 0).await.unwrap();
-            let writer = Writer::open(bucket.clone(), 1, 10, 1).await.unwrap();
+            branch::create(&*bucket, test_branch(1), 0).await.unwrap();
+            let writer = Writer::open(bucket.clone(), test_branch(1), 10, 1).await.unwrap();
             let extent = ExtentId::new(1, writer.chain().next_sequence());
             let commit = Commit { tag: 1, extents: vec![(extent, vec![1])], ..Commit::default() };
             let seq = add(&writer, commit);
@@ -1153,19 +1160,19 @@ pub(crate) mod tests {
             let mut states = Vec::new();
             for _ in 0..2 {
                 let before = gets();
-                states.push(recovery::recover(&*bucket, 1, None).await.unwrap().state);
+                states.push(recovery::recover(&*bucket, test_branch(1), None).await.unwrap().state);
                 read.push(gets() - before);
             }
             assert_eq!(read, [1, 0], "the checkpoint's GETs, by recovery");
             assert_eq!(states[0], states[1]);
             assert_eq!(states[0].extents.keys().copied().collect::<Vec<_>>(), [extent]);
             // Written again, it is another object.
-            let key = crate::layout::checkpoint(1, seq);
+            let key = crate::layout::checkpoint(test_branch(1), seq);
             let bytes = bucket.get(&key).await.unwrap().bytes;
             bucket.delete(&key).await.unwrap();
             bucket.put(&key, bytes.into(), PutMode::Create).await.unwrap();
             let before = gets();
-            recovery::recover(&*bucket, 1, None).await.unwrap();
+            recovery::recover(&*bucket, test_branch(1), None).await.unwrap();
             assert_eq!(gets() - before, 1, "a checkpoint written again is read");
         });
     }
@@ -1179,8 +1186,8 @@ pub(crate) mod tests {
     /// then what it and its fork freed, reclaimed.
     pub(crate) async fn branch_lifecycle(bucket: Arc<impl Bucket>, root: u64) {
         let child = root + 1;
-        branch::create(&*bucket, root, 0).await.unwrap();
-        let first = Writer::open(bucket.clone(), root, 10, 1).await.unwrap();
+        branch::create(&*bucket, test_branch(root), 0).await.unwrap();
+        let first = Writer::open(bucket.clone(), test_branch(root), 10, 1).await.unwrap();
         let small = ExtentId::new(root, first.chain().next_sequence());
         let large = ExtentId::new(root, small.sequence + 1);
         let commit = Commit {
@@ -1192,8 +1199,9 @@ pub(crate) mod tests {
         let seq = add(&first, commit);
         first.upload(seq).await.unwrap();
         assert_eq!(first.acknowledge().await, Ok(Some(seq)));
-        let forking =
-            Batch::default().fork(crate::layout::child(child), &mut first.chain()).frame();
+        let forking = Batch::default()
+            .fork(crate::layout::child(test_branch(child)), &mut first.chain())
+            .frame();
         let fork = first.add_segment(forking).unwrap();
         first.upload(fork).await.unwrap();
         first.acknowledge().await.unwrap();
@@ -1202,7 +1210,7 @@ pub(crate) mod tests {
         first.acknowledge().await.unwrap();
         assert_eq!(first.checkpoint().await, Ok(Some(seq)));
         // Looked up a block at a time, by ranged reads, by a host's fetcher.
-        let checkpoint = crate::layout::checkpoint(root, seq);
+        let checkpoint = crate::layout::checkpoint(test_branch(root), seq);
         let tail = crate::object::tail(&*bucket, &checkpoint).await.unwrap().unwrap();
         let table = crate::checkpoint::Table::decode(tail.footer()).unwrap();
         assert_eq!(table.state().last_commit, Some(2));
@@ -1213,7 +1221,7 @@ pub(crate) mod tests {
         assert_eq!(fetcher.lookup(&checkpoint, small).await, Ok(None));
 
         // Another writer takes the branch; the first one's next segment is not the branch's.
-        let second = Writer::open(bucket.clone(), root, 11, 2).await.unwrap();
+        let second = Writer::open(bucket.clone(), test_branch(root), 11, 2).await.unwrap();
         let seq = add(&first, Commit { tag: 3, frees: vec![large], ..Commit::default() });
         let taken = match first.upload(seq).await {
             Ok(()) => first.acknowledge().await.map(|_| ()),
@@ -1222,11 +1230,15 @@ pub(crate) mod tests {
         assert_eq!(taken, Err(BranchError::Fenced));
         assert_eq!(second.state().last_commit, Some(2));
 
-        let state = recovery::recover(&*bucket, root, None).await.unwrap().state;
+        let state = recovery::recover(&*bucket, test_branch(root), None).await.unwrap().state;
         assert_eq!(state.extents.keys().copied().collect::<Vec<_>>(), [large]);
-        let origin = Some(Origin { parent: root, at: fork });
-        assert_eq!(branch::record(&*bucket, child).await.unwrap().unwrap().origin(), origin);
-        let inherited = recovery::recover(&*bucket, child, origin).await.unwrap().state;
+        let origin = Some(Origin { parent: test_branch(root), at: fork });
+        assert_eq!(
+            branch::record(&*bucket, test_branch(child)).await.unwrap().unwrap().origin(),
+            origin
+        );
+        let inherited =
+            recovery::recover(&*bucket, test_branch(child), origin).await.unwrap().state;
         assert_eq!(inherited.extents.keys().copied().collect::<Vec<_>>(), [small, large]);
 
         // The collector keeps what the child inherited, though the parent freed it.
@@ -1243,7 +1255,7 @@ pub(crate) mod tests {
         second.upload(seq).await.unwrap();
         second.acknowledge().await.unwrap();
         second.checkpoint().await.unwrap();
-        let heir = Writer::open(bucket.clone(), child, 12, 1).await.unwrap();
+        let heir = Writer::open(bucket.clone(), test_branch(child), 12, 1).await.unwrap();
         let seq = add(&heir, Commit { tag: 1, frees: vec![small, large], ..Commit::default() });
         heir.upload(seq).await.unwrap();
         heir.acknowledge().await.unwrap();
@@ -1413,8 +1425,8 @@ pub(crate) mod tests {
         runtime().block_on(async {
             let server = S3Server::start(Some(RATE));
             let bucket = s3(&server, "slow", &client);
-            branch::create(&*bucket, 1, 0).await.unwrap();
-            let writer = Writer::open(bucket.clone(), 1, 10, 1).await.unwrap();
+            branch::create(&*bucket, test_branch(1), 0).await.unwrap();
+            let writer = Writer::open(bucket.clone(), test_branch(1), 10, 1).await.unwrap();
             let seqs: Vec<u64> = (1..=SEGMENTS)
                 .map(|tag| {
                     let sequence = writer.chain().next_sequence();

@@ -57,11 +57,11 @@ struct Hosts {
     copies: Vec<Option<Arc<ExtentStore>>>,
     /// The store the point was taken of, and its branch.
     source: Option<ExtentStore>,
-    point: u64,
+    point: crate::Branch,
     /// What the point holds, and its root.
     held: Vec<(ExtentId, Vec<u8>)>,
     /// The forks made, by their branches, with their stores' paths.
-    children: Arc<Mutex<Vec<(u64, PathBuf)>>>,
+    children: Arc<Mutex<Vec<(crate::Branch, PathBuf)>>>,
     /// Whether a host died.
     dead: Arc<AtomicBool>,
     /// Whether the point was deleted.
@@ -74,7 +74,10 @@ fn copy_at(host: usize, disk: &Path) -> PathBuf {
 }
 
 /// The bytes the point's extents hold, as `bucket` has them for the fork `child`.
-fn in_bucket(bucket: &Arc<Bucket>, child: u64) -> Result<Vec<(ExtentId, Vec<u8>)>, String> {
+fn in_bucket(
+    bucket: &Arc<Bucket>,
+    child: crate::Branch,
+) -> Result<Vec<(ExtentId, Vec<u8>)>, String> {
     block_on(async {
         let record = branch::record(&**bucket, child).await.map_err(|err| err.to_string())?;
         let origin = record.ok_or("no record")?.origin();
@@ -105,7 +108,7 @@ impl Hosts {
         let source = source.unwrap();
         let lens = [fork_faults::BLOCK, 4 << 20];
         let held = commit(&source, 1, &lens, b"root");
-        let point = crate::host_store::new_branch();
+        let point = crate::host_store::new_alone();
         source.point(disks[0].join("point"), point).unwrap();
         for (extent, _) in &held {
             source.free(*extent).unwrap();
@@ -114,7 +117,7 @@ impl Hosts {
         // Another fork, gone: a checkpoint past the point's, so that only the point keeps that, and
         // what the point names is all gone once nothing keeps it: its state too, not just its data.
         let later = disks[0].join("later");
-        source.fork(&later, crate::host_store::new_branch()).unwrap();
+        source.fork(&later, crate::host_store::new_alone()).unwrap();
         ExtentStore::delete(&later, Some(&bucket)).unwrap();
 
         let mut copies = Vec::new();
@@ -163,12 +166,12 @@ impl Hosts {
 
     /// Asserts the fork `child` holds what the point held, in the bucket, and, its store at
     /// `path`, opened, reads it and goes on.
-    fn check_fork(&self, child: u64, path: &Path, case: &str) {
+    fn check_fork(&self, child: crate::Branch, path: &Path, case: &str) {
         let mut read = in_bucket(&self.bucket, child).unwrap_or_else(|err| panic!("{case}: {err}"));
         read.sort();
         let mut held = self.held.clone();
         held.sort();
-        assert!(read == held, "{case}: fork {child:x} holds other extents");
+        assert!(read == held, "{case}: fork {child} holds other extents");
         naming(path, &self.bucket);
         let store = reopened(path, options()).unwrap();
         assert_eq!(store.root(), Ok(b"root".to_vec()), "{case}");
@@ -181,7 +184,7 @@ impl Hosts {
     /// gave: the child noted, if made.
     fn restore(&mut self, host: usize, name: &str) -> Result<(), Option<Errno>> {
         let path = self.disks[host].join(name);
-        let child = crate::host_store::new_branch();
+        let child = crate::host_store::new_alone();
         let copy = self.copies[host].as_ref().expect("a host's copy");
         let forked = copy.fork(&path, child).map_err(|err| err.errno());
         if forked.is_ok() {
@@ -214,7 +217,7 @@ impl Hosts {
                         (copies.clone(), bucket.clone(), children.clone());
                     let raced = std::thread::spawn(move || {
                         for (copy, disk) in copies {
-                            let child = crate::host_store::new_branch();
+                            let child = crate::host_store::new_alone();
                             let path = disk.join("raced");
                             copy.fork(&path, child).unwrap();
                             children.lock().unwrap().push((child, path));
@@ -286,7 +289,7 @@ impl Hosts {
         let case = format!("host {host}, {fault:?}, {leftover:?}");
         let guard = fault.and_then(|fault| self.arm(host, fault));
         let handle = self.disks[host].join("child");
-        let child = crate::host_store::new_branch();
+        let child = crate::host_store::new_alone();
         let forked = self.copies[host].as_ref().unwrap().fork(&handle, child);
         let forked = forked.map_err(|err| err.errno());
         drop(guard);
@@ -311,7 +314,7 @@ impl Hosts {
     fn settle(
         mut self,
         host: usize,
-        child: u64,
+        child: crate::Branch,
         forked: Result<(), Option<Errno>>,
         leftover: Leftover,
         case: &str,
@@ -375,7 +378,7 @@ impl Hosts {
         Self::collect(&self.bucket, case);
         for (child, _) in &children {
             let read = in_bucket(&self.bucket, *child).map(|read| read.len());
-            assert_eq!(read, Ok(self.held.len() + 1), "{case}: {child:x}");
+            assert_eq!(read, Ok(self.held.len() + 1), "{case}: {child}");
         }
 
         // Everything deleted, nothing is left of it.
@@ -395,6 +398,17 @@ impl Hosts {
                 Kind::Record { branch } => !block_on(branch::record(&*self.bucket, branch))
                     .unwrap()
                     .is_some_and(|record| record.deleted),
+                // fxdax: a cell's object stays, as its branches' records do, its epoch fencing
+                // its volumes' leases (TASK-364): left over only if it names a live branch.
+                Kind::Cell { cell } => {
+                    let object = block_on(extent_remote::cell::read(&*self.bucket, cell));
+                    let object = object.unwrap().expect("a cell listed");
+                    object.volumes.values().any(|volume| {
+                        let branch = extent_remote::layout::Branch { cell, id: volume.branch };
+                        let record = block_on(branch::record(&*self.bucket, branch)).unwrap();
+                        record.is_some_and(|record| !record.deleted)
+                    })
+                }
                 Kind::GcLease | Kind::Marks { .. } => false,
                 _ => true,
             })
@@ -459,7 +473,7 @@ fn restores_take_their_steps_in_order() {
         })
         .collect();
     let copy = hosts.copies[1].as_ref().unwrap();
-    copy.fork(hosts.disks[1].join("child"), crate::host_store::new_branch()).unwrap();
+    copy.fork(hosts.disks[1].join("child"), crate::host_store::new_alone()).unwrap();
     drop(guards);
     assert_eq!(*steps.lock().unwrap(), RESTORE_STEPS);
 }

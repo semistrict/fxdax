@@ -5,10 +5,12 @@
 //! What a store keeps in its directory. See the crate's docs.
 
 use crate::dir::Dir;
-use anyhow::{Context as _, Error, anyhow, ensure};
+use anyhow::{Context as _, Error, anyhow, bail, ensure};
+use extent_frame::segment::Branch;
 #[cfg(test)]
 use extent_frame::segment::Contents;
 use extent_frame::segment::Location;
+use extent_remote::cell::Kind;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use storage_device::ExtentId;
@@ -20,9 +22,10 @@ use storage_device::ExtentId;
 /// commits, and its description names its capacity until a commit sets one, and its placement's
 /// fencing token, if placed (TASK-165.9); 9's footers and its logs' records name the runs of a
 /// commit spanning segments in each segment it spans (TASK-92.41); 10's logs' headers name their
-/// segments, and every log has one (`wal::LOG_MAGIC`, TASK-341). A store of another format is
+/// segments, and every log has one (`wal::LOG_MAGIC`, TASK-341); 11's description names its branch
+/// with its tenant's cell, `TENANT/CELL/ID` in hexadecimal (TASK-364). A store of another format is
 /// refused ([`Format`]): nothing reads, converts or upgrades it.
-pub(crate) const FORMAT: &str = "fxdax extent store 10";
+pub(crate) const FORMAT: &str = "fxdax extent store 11";
 
 /// fxdax: the error of a store whose description is of another format than [`FORMAT`], an older
 /// one included: refused, as nothing reads it.
@@ -39,7 +42,7 @@ pub struct Format {
 pub struct Description {
     pub block_size: u32,
     pub capacity: u64,
-    pub branch: u64,
+    pub branch: Branch,
 }
 
 /// The store's description, its `store` file: its format, block size, and branch; and fxdax: the
@@ -51,10 +54,21 @@ pub struct Description {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct StoreFile {
     pub block_size: u32,
-    pub branch: u64,
+    pub branch: Branch,
     pub bucket: Option<String>,
     pub capacity: u64,
     pub token: Option<u64>,
+    /// fxdax: the volume of its branch's cell it is, if it is kept in a bucket: its name there,
+    /// and its kind (TASK-364).
+    pub volume: Option<Volume>,
+}
+
+/// fxdax: what a store kept in a bucket is of its branch's cell: a volume, of a name and a kind
+/// (`extent_remote::cell`, TASK-364).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Volume {
+    pub name: String,
+    pub kind: Kind,
 }
 
 /// The fields of a text of lines of `key value`, after its first, which is `first`.
@@ -82,17 +96,29 @@ impl StoreFile {
         }
         let fields = fields(text, FORMAT)?;
         let token = fields.contains_key("token").then(|| number(&fields, "token")).transpose()?;
+        let volume = match (fields.get("volume"), fields.get("kind")) {
+            (None, None) => None,
+            (Some(name), Some(kind)) => {
+                ensure!(extent_remote::cell::valid_name(name), "bad volume {name:?}");
+                let kind = Kind::named(kind).ok_or_else(|| anyhow!("bad kind {kind:?}"))?;
+                Some(Volume { name: name.clone(), kind })
+            }
+            _ => bail!("a volume needs a name and a kind"),
+        };
         Ok(Self {
             block_size: number(&fields, "block_size")?.try_into().context("bad block_size")?,
-            branch: number(&fields, "branch")?,
+            branch: (fields.get("branch").ok_or_else(|| anyhow!("no branch"))?)
+                .parse()
+                .map_err(|err: String| anyhow!("bad branch: {err}"))?,
             bucket: fields.get("bucket").cloned(),
             capacity: number(&fields, "capacity")?,
             token,
+            volume,
         })
     }
 
     pub(crate) fn text(&self) -> String {
-        let Self { block_size, branch, bucket, capacity, token } = self;
+        let Self { block_size, branch, bucket, capacity, token, volume } = self;
         let mut text = format!("{FORMAT}\nblock_size {block_size}\nbranch {branch}\n");
         text += &format!("capacity {capacity}\n");
         if let Some(url) = bucket {
@@ -100,6 +126,9 @@ impl StoreFile {
         }
         if let Some(token) = token {
             text += &format!("token {token}\n");
+        }
+        if let Some(Volume { name, kind }) = volume {
+            text += &format!("volume {name}\nkind {}\n", kind.name());
         }
         text
     }
@@ -498,10 +527,14 @@ mod tests {
     fn descriptions() {
         let file = StoreFile {
             block_size: 4096,
-            branch: u64::MAX,
+            branch: Branch {
+                cell: extent_frame::segment::Cell { tenant: 0xa, id: u64::MAX },
+                id: u64::MAX,
+            },
             bucket: None,
             capacity: 1,
             token: None,
+            volume: None,
         };
         assert_eq!(StoreFile::parse(&file.text()).unwrap(), file);
         // fxdax: a host's store names its bucket (TASK-165.6), and a placed one its placement's
@@ -511,7 +544,7 @@ mod tests {
         assert_eq!(StoreFile::parse(&kept.text()).unwrap(), kept);
         // fxdax: older formats are refused, by their format (TASK-165.6), the index's last
         // (TASK-165.9).
-        for older in ["fxdax extent store 2", "fxdax extent store 6", "fxdax extent store 7"] {
+        for older in ["fxdax extent store 2", "fxdax extent store 7", "fxdax extent store 10"] {
             let refused = StoreFile::parse(&format!("{older}\nblock_size 4096\nbranch 1\n"));
             let found = refused.unwrap_err().downcast::<Format>().unwrap().found;
             assert_eq!(found, older);
@@ -519,6 +552,25 @@ mod tests {
         let capacity = "capacity 4096\n";
         assert!(StoreFile::parse(&format!("{FORMAT}\nblock_size 4096\n{capacity}")).is_err());
         assert!(StoreFile::parse(&format!("{FORMAT}\nblock_size 4096\nbranch 1\n")).is_err());
+        // fxdax: its branch is named with its cell, as the bucket names it (TASK-364).
+        let text = file.text();
+        assert!(text.contains("\nbranch a/ffffffffffffffff/ffffffffffffffff\n"), "{text}");
+        let bare = format!("{FORMAT}\nblock_size 4096\nbranch 1\n{capacity}");
+        let refused = StoreFile::parse(&bare).unwrap_err().to_string();
+        assert_eq!(refused, "bad branch: no branch, TENANT/CELL/ID in hexadecimal: 1");
+        // fxdax: a store kept in a bucket names the volume of its cell it is, by name and kind.
+        let volume = Some(Volume { name: "db".into(), kind: Kind::Sqlite });
+        let named = StoreFile { volume, ..kept.clone() };
+        assert!(named.text().ends_with("volume db\nkind sqlite\n"));
+        assert_eq!(StoreFile::parse(&named.text()).unwrap(), named);
+        for (wrong, refused) in [
+            ("volume db\n", "a volume needs a name and a kind"),
+            ("volume db\nkind ext4\n", "bad kind \"ext4\""),
+            ("volume a/b\nkind fxfs\n", "bad volume \"a/b\""),
+        ] {
+            let text = format!("{}{wrong}", kept.text());
+            assert_eq!(StoreFile::parse(&text).unwrap_err().to_string(), refused, "{wrong}");
+        }
     }
 
     #[test]

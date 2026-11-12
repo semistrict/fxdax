@@ -19,7 +19,7 @@ use storage_device::ExtentId;
 
 const BLOCK: usize = 4096;
 const MIB: usize = 1 << 20;
-const BRANCH: u64 = 7;
+const BRANCH: extent_remote::layout::Branch = extent_remote::layout::test_branch(7);
 
 /// Segments of a few parts, and extents on their own from 8 MiB.
 const OPTIONS: Options = Options {
@@ -34,7 +34,7 @@ const OPTIONS: Options = Options {
 };
 
 fn extent(sequence: u64) -> ExtentId {
-    ExtentId::new(BRANCH, sequence)
+    ExtentId::new(BRANCH.id, sequence)
 }
 
 /// Bytes each their offset modulo 251, plus `seed`: they compress.
@@ -162,7 +162,7 @@ fn flipped_bytes_fail_reads_and_seals_of_open_extents_in_closed_segments() {
     store.write(extent(2), 0, &noise(2, BLOCK)).unwrap();
     assert!(store.close_now().unwrap());
     store.write(extent(2), BLOCK as u64, &noise(3, BLOCK)).unwrap();
-    let segment = format!("segments/{BRANCH:016x}/{:016x}", 0);
+    let segment = format!("segments/{:016x}/{:016x}", BRANCH.id, 0);
     let bytes = extent_store::read_whole(&dir.open(&segment, true).unwrap()).unwrap();
     let part = Parts::of(&bytes).unwrap().stored[0];
     assert_eq!(part.encoding, Encoding::Raw);

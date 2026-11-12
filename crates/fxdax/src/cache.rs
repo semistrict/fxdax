@@ -815,7 +815,7 @@ impl CachedExtent {
     /// TASK-258): its reads, from the store or the bucket, its children.
     fn page_in_span(&self, pages: &Range<u64>) -> trace::Span {
         let span = trace::Span::start("cache.page_in");
-        span.set_branch(self.extent.branch);
+        span.set_with(trace::BRANCH, || format!("{:x}", self.extent.branch));
         span.set_count(trace::EXTENT, self.extent.sequence);
         span.set_count(trace::ARENA, u64::from(self.arena.0));
         span.set_count(trace::BYTES, (pages.end - pages.start) * page_size());

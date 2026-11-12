@@ -6,6 +6,11 @@
 
 use std::process::Command;
 
+/// Branch `id` of tenant 1's cell 1, the tests'.
+fn test_branch(id: u64) -> extent_remote::layout::Branch {
+    extent_remote::layout::Branch { cell: extent_remote::layout::Cell { tenant: 1, id: 1 }, id }
+}
+
 fn gc(args: &[&str]) -> std::process::Output {
     Command::new(env!("CARGO_BIN_EXE_fxdax-gc")).args(args).output().unwrap()
 }
@@ -25,7 +30,7 @@ fn lists_and_deletes_branches() {
     let out = gc(&["memory:///", "--branches"]);
     assert_eq!(String::from_utf8_lossy(&out.stdout), "");
     assert!(out.status.success());
-    let out = gc(&["memory:///", "--delete-branch", "ff"]);
+    let out = gc(&["memory:///", "--delete-branch", "1/1/ff"]);
     assert_eq!(String::from_utf8_lossy(&out.stderr), "");
     assert!(out.status.success());
 }
@@ -46,8 +51,8 @@ fn collects_a_file_bucket() {
     let url = url::Url::from_directory_path(dir.path()).unwrap().to_string();
     futures::executor::block_on(async {
         let bucket = Arc::new(Store::from_url(&url).unwrap());
-        branch::create(&*bucket, 1, 0).await.unwrap();
-        let writer = Writer::open(bucket, 1, 10, 1).await.unwrap();
+        branch::create(&*bucket, test_branch(1), 0).await.unwrap();
+        let writer = Writer::open(bucket, test_branch(1), 10, 1).await.unwrap();
         let extent = ExtentId::new(1, writer.chain().next_sequence());
         let written =
             Commit { tag: 1, extents: vec![(extent, vec![7; 4096])], ..Commit::default() };
@@ -74,17 +79,18 @@ fn collects_a_file_bucket() {
             .collect::<Vec<_>>()
     });
     let left: Vec<&str> = left.iter().map(String::as_str).collect();
+    let at = "tenants/0000000000000001/cells/0000000000000001";
     let branch = "0000000000000001";
     // The writer's fence too, which a writer taken over must find (TASK-371).
     let kept = [
-        format!("branches/{branch}"),
-        format!("checkpoints/{branch}/0000000000000002"),
-        format!("leases/{branch}"),
-        format!("segments/{branch}/0000000000000000"),
+        format!("{at}/branches/{branch}"),
+        format!("{at}/checkpoints/{branch}/0000000000000002"),
+        format!("{at}/leases/{branch}"),
+        format!("{at}/segments/{branch}/0000000000000000"),
     ];
     assert_eq!(left, kept);
     let out = gc(&[&url, "--branches"]);
-    assert_eq!(String::from_utf8_lossy(&out.stdout), "1\n");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "1/1/1\n");
 }
 
 /// TASK-264: a dry run over a bucket on the host's filesystem lists what a pass would delete,
@@ -102,8 +108,8 @@ fn dry_runs_and_mark_only_passes_delete_nothing() {
     let url = url::Url::from_directory_path(dir.path()).unwrap().to_string();
     futures::executor::block_on(async {
         let bucket = Arc::new(Store::from_url(&url).unwrap());
-        branch::create(&*bucket, 1, 0).await.unwrap();
-        let writer = Writer::open(bucket, 1, 10, 1).await.unwrap();
+        branch::create(&*bucket, test_branch(1), 0).await.unwrap();
+        let writer = Writer::open(bucket, test_branch(1), 10, 1).await.unwrap();
         let extent = ExtentId::new(1, writer.chain().next_sequence());
         let written =
             Commit { tag: 1, extents: vec![(extent, vec![7; 4096])], ..Commit::default() };
@@ -130,7 +136,8 @@ fn dry_runs_and_mark_only_passes_delete_nothing() {
     let before = files();
     let out = gc(&[&url, "--dry-run", "--grace", "0"]);
     let branch = "0000000000000001";
-    let segment = |seq: u64| format!("segments/{branch}/{seq:016x}");
+    let segment =
+        |seq: u64| format!("tenants/{branch}/cells/{branch}/segments/{branch}/{seq:016x}");
     // Not the fence, which the collector keeps (TASK-371).
     let (fence, holding, freeing) = (segment(0), segment(1), segment(2));
     let listed = String::from_utf8_lossy(&out.stdout).into_owned();
@@ -171,13 +178,14 @@ fn dry_runs_and_mark_only_passes_delete_nothing() {
     assert_eq!(String::from_utf8_lossy(&out.stderr), "fxdax-gc: deleted 2, compacted 0\n");
     let names: Vec<String> = files().into_iter().map(|(name, _)| name).collect();
     // The bucket's lock, no object, then the objects.
+    let at = "tenants/0000000000000001/cells/0000000000000001";
     let kept = [
         extent_remote::local::LOCK.to_owned(),
-        format!("branches/{branch}"),
-        format!("checkpoints/{branch}/0000000000000002"),
         "gc/lease".to_owned(),
         "gc/marks/0000000000000001".to_owned(),
-        format!("leases/{branch}"),
+        format!("{at}/branches/{branch}"),
+        format!("{at}/checkpoints/{branch}/0000000000000002"),
+        format!("{at}/leases/{branch}"),
         fence,
     ];
     assert_eq!(names, kept);
@@ -202,7 +210,7 @@ fn without_a_bucket_prints_its_usage() {
     let usage = "usage: fxdax-gc URL [--mark-only] [--every SECONDS] [--grace SECONDS] \
                  [--compact-below FRACTION] | fxdax-gc URL --dry-run [--grace SECONDS] \
                  [--compact-below FRACTION] | fxdax-gc URL --branches [--held FILE] | \
-                 fxdax-gc URL --delete-branch ID (--mark-only deletes nothing, writing \
+                 fxdax-gc URL --delete-branch TENANT/CELL/ID (--mark-only deletes nothing, writing \
                  gc/marks/EPOCH: the bucket grows; --dry-run writes nothing, and finds less than \
                  a pass deletes)";
     assert_eq!(String::from_utf8_lossy(&out.stderr), format!("Error: {usage:?}\n"));

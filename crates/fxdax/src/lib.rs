@@ -169,6 +169,8 @@ pub use dax::uffd::{
 };
 pub use dax::{Access, DaxWindow, SecondStage};
 pub use error::{Errno, Error, Result};
+/// fxdax: where a branch is: its tenant's cell, and its ID there (TASK-364).
+pub use extent_remote::layout::{Branch, Cell};
 #[cfg(target_os = "linux")]
 pub use extentd::{DaemonConnection, RemoteDevice, RemoteExtentStore};
 pub use extents::{

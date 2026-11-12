@@ -1013,7 +1013,7 @@ impl Opening<'_> {
         let follower = matches!(opened, Phase::Following);
         let key = store_key(path);
         drop(self.0.named.set(key.to_string_lossy().into()));
-        self.0.report.opened(key, store.branch(), follower);
+        self.0.report.opened(key, store.branch().id, follower);
         assert!(self.0.store.set(store).is_ok(), "a connection opened a second store");
         let was = std::mem::replace(&mut *self.0.phase.with(Mutex::lock), opened);
         assert!(matches!(was, Phase::Opening), "a connection opened a store not opening one");
@@ -1359,8 +1359,11 @@ impl Connection {
                 // fxdax: a snapshot's point, refused while the window holds private pages, whose
                 // bytes no extent holds (ExtentStore::point, TASK-203). Each refusal says why
                 // here, as the VMM's error can't (TASK-92.14).
+                // fxdax: the one volume of a new cell of the store's tenant, of the ID the guest
+                // gives (TASK-364).
+                let child = crate::host_store::fork_of(store.branch(), *branch);
                 let forked =
-                    if *quiescent { store.point(path, *branch) } else { store.fork(path, *branch) };
+                    if *quiescent { store.point(path, child) } else { store.fork(path, child) };
                 if let Err(err) = &forked
                     && err.errno() == Some(Errno::EBUSY)
                 {
@@ -1496,7 +1499,7 @@ impl Connection {
         let store = Arc::new(follower);
         let (epoch, sender, told) = (store.epoch()?, self.peer.sender.clone(), store.clone());
         self.start_behind(move |stopped| tell_commits(told, epoch, sender, stopped));
-        let branch = store.branch();
+        let branch = store.branch().id;
         opening.opened(path, store, Phase::Following);
         Ok(branch)
     }
@@ -1548,7 +1551,7 @@ impl Connection {
         let opening = self.opening()?;
         let hold = stores::hold_to_write(&store_key(path), self.this.clone()).await?;
         // fxdax: a store it makes, within its tenant's disk (TASK-94).
-        let makes = matches!(how, codec::Opening::Create(_) | codec::Opening::ForkFrom { .. });
+        let makes = matches!(how, codec::Opening::Create(..) | codec::Opening::ForkFrom { .. });
         let _admitted = match makes && !path.exists() {
             true => self.tenant.admit_to_disk(super::disk::STORE_MADE)?,
             false => None,
@@ -1562,7 +1565,7 @@ impl Connection {
         store.access().may_write()?;
         let flushed = store.clone();
         self.start_behind(move |stopped| flush_behind(flushed, stopped));
-        let branch = store.branch();
+        let branch = store.branch().id;
         // fxdax: should its VM process go, and a writer wait for its store to close, the store's
         // uploader stops at once rather than upload what it holds first (TASK-216).
         if let Some(cut_short) = store.cut_short() {
@@ -1584,7 +1587,7 @@ impl Connection {
         // fxdax: a restore's store there already, which the snapshot was taken of or an earlier
         // restore forked, holds the point's state, or is refused, as it is (TASK-194).
         let mut there = None;
-        if let codec::Opening::ForkFrom { from, branch, capacity } = how
+        if let codec::Opening::ForkFrom { from, capacity, .. } = how
             && path.exists()
             && !crate::host_store::unmade(path)
         {
@@ -1592,7 +1595,7 @@ impl Connection {
                 Some((store, _)) => store,
                 None => Arc::new(open_store(path, None, Some(arena))?),
             };
-            stores::at_point(from, *branch, *capacity, path, &store).await?;
+            stores::at_point(from, *capacity, path, &store).await?;
             there = Some(store);
         }
         if let Some(store) = stores::take_over(hold, arena)? {
@@ -1602,13 +1605,13 @@ impl Connection {
             (Some(store), _) => store,
             // fxdax: or where a store's making was left unmade, its host crashing, which is no
             // store: removed first, as deleting it would (TASK-79.84).
-            (None, codec::Opening::ForkFrom { from, branch, capacity }) => {
+            (None, codec::Opening::ForkFrom { from, capacity, .. }) => {
                 stores::removed_if_unmade(path)?;
-                stores::fork_from(from, *branch, *capacity, path).await?;
+                stores::fork_from(from, *capacity, path).await?;
                 Arc::new(open_store(path, None, Some(arena))?)
             }
-            (None, codec::Opening::Create(capacity)) => {
-                Arc::new(open_store(path, Some(*capacity), Some(arena))?)
+            (None, codec::Opening::Create(capacity, kind)) => {
+                Arc::new(open_store(path, Some((*capacity, *kind)), Some(arena))?)
             }
             (None, _) => Arc::new(open_store(path, None, Some(arena))?),
         };

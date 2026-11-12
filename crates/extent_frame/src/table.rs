@@ -36,7 +36,10 @@ pub struct Entry {
 pub struct Footer {
     /// The rest of the state, as its writer encoded it.
     pub rest: Vec<u8>,
-    /// The keys of the objects the entries name.
+    /// The keys of the objects the entries name: stored each as what it shares with the one before
+    /// it and the rest ([`front_coded`]), as a branch's keys share their cell's prefix and their
+    /// kind's, and most their branch's (TASK-364).
+    #[serde(with = "front_coded")]
     pub keys: Vec<String>,
     pub blocks: Vec<Block>,
 }
@@ -86,6 +89,46 @@ pub fn encode<'a>(
     flush(&mut block, &mut first, &mut data);
     let footer = bincode::serialize(&Footer { rest, keys, blocks }).expect("footers serialize");
     crate::framed(&data, &footer)
+}
+
+/// fxdax: keys stored front-coded: each as the length of what it shares with the one before it, and
+/// the rest of it.
+mod front_coded {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    pub fn serialize<S: Serializer>(keys: &[String], serializer: S) -> Result<S::Ok, S::Error> {
+        let mut before = "";
+        let coded: Vec<(u32, &str)> = keys
+            .iter()
+            .map(|key| {
+                let shared = shared(before, key);
+                before = key;
+                (shared as u32, &key[shared..])
+            })
+            .collect();
+        coded.serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Vec<String>, D::Error> {
+        let coded = Vec::<(u32, String)>::deserialize(deserializer)?;
+        let mut keys: Vec<String> = Vec::with_capacity(coded.len());
+        for (shared, rest) in coded {
+            let before = keys.last().map_or("", String::as_str);
+            let Some(shared) = before.get(..shared as usize) else {
+                return Err(serde::de::Error::custom("a key sharing more than the one before it"));
+            };
+            keys.push(format!("{shared}{rest}"));
+        }
+        Ok(keys)
+    }
+
+    /// The length of what `one` and `other` start with alike, on a character's boundary.
+    fn shared(one: &str, other: &str) -> usize {
+        let alike = one.bytes().zip(other.bytes()).take_while(|(a, b)| a == b).count();
+        (0..=alike).rev().find(|&at| other.is_char_boundary(at)).unwrap_or(0)
+    }
 }
 
 fn corrupt(what: &str) -> Corrupt {
@@ -171,6 +214,26 @@ mod tests {
         let mut bytes = encoded(&entries(3000));
         bytes[100] ^= 1;
         assert!(decode(&bytes).is_err());
+    }
+
+    /// fxdax: a footer's keys read back as they were, whatever they share, a character split or
+    /// not; stored each as the rest of what the one before it has, they cost little more than what
+    /// sets them apart (TASK-364). A footer naming a key sharing more than the one before it has
+    /// is refused.
+    #[test]
+    fn footers_keys_are_stored_front_coded() {
+        let prefix = "tenants/0000000000000001/cells/0000000000000002/segments/0000000000000003/";
+        let mut keys: Vec<String> = (0..1000).map(|n| format!("{prefix}{n:016x}")).collect();
+        keys.extend(["".into(), "é1".into(), "é2".into(), "e".into(), "ée".into(), prefix.into()]);
+        let footer = Footer { rest: b"rest".to_vec(), keys: keys.clone(), blocks: Vec::new() };
+        let bytes = bincode::serialize(&footer).unwrap();
+        assert_eq!(Footer::decode(&bytes), Ok(footer));
+        let plain: usize = keys.iter().map(String::len).sum();
+        assert!(bytes.len() < plain / 4, "{} bytes of {plain}", bytes.len());
+        let lying = (Vec::<u8>::new(), vec![(0u32, "ab".to_owned()), (3, "c".to_owned())]);
+        let lying = bincode::serialize(&(lying.0, lying.1, Vec::<Block>::new())).unwrap();
+        let refused = "a table's footer: a key sharing more than the one before it";
+        assert_eq!(Footer::decode(&lying), Err(Corrupt(refused.into())));
     }
 
     /// One entry is found by the footer and its block alone.

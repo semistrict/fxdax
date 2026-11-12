@@ -1804,7 +1804,9 @@ fn a_compromised_vm_process_harms_no_tenant_beside_it() {
     given.commit(Some(b"given")).unwrap();
     drop(given);
     let point = vms.join("point");
-    control(super::super::stores::create(point, STORE_BYTES, Some(given_branch), None)).unwrap();
+    let given =
+        (super::branch_at(&dir.path().join("given")), (None, extent_remote::cell::Kind::Fxfs));
+    control(super::super::stores::create(point, STORE_BYTES, given.0, given.1)).unwrap();
 
     // Alice, on a thread of her own, her guest's, doing what each case asks of her.
     let (asking, asked) = std::sync::mpsc::channel::<Vec<AliceOp>>();
@@ -2231,23 +2233,33 @@ fn page_ins_in_flight_are_bounded() {
         for sequence in 1..=EXTENTS {
             let data = super::pattern(sequence as u8, MIB as usize);
             store
-                .write(ExtentId { branch, sequence }, 0, &[VolatileSlice::from(&data[..])])
+                .write(
+                    ExtentId { branch: branch.id, sequence },
+                    0,
+                    &[VolatileSlice::from(&data[..])],
+                )
                 .unwrap();
         }
         store.commit(None).unwrap();
         branch
     };
     let store = RemoteExtentStore::connect(&socket, &path, 1 << 30).unwrap();
-    store.fork_quiescent(&point, branch + 1).unwrap();
+    store.fork_quiescent(&point, branch.id + 1).unwrap();
     drop(store);
+    // Its VM manager makes the point's store on the other host first: a snapshot names its point's
+    // branch by its ID alone (TASK-364).
     let elsewhere = dir.path().join("elsewhere");
     std::fs::create_dir(&elsewhere).unwrap();
+    let point_branch = super::branch_at(&point);
+    let made = (None, extent_remote::cell::Kind::Fxfs);
+    control(super::super::stores::create(elsewhere.join("point"), 1 << 30, point_branch, made))
+        .unwrap();
     let restored = elsewhere.join("store");
     let forked = RemoteExtentStore::connect_forked(
         &socket,
         &restored,
         elsewhere.join("point"),
-        branch + 1,
+        branch.id + 1,
         1 << 30,
     );
     drop(forked.unwrap());
@@ -2282,7 +2294,7 @@ fn page_ins_in_flight_are_bounded() {
     assert_eq!(answer(2), 0);
     for sequence in 1..=EXTENTS {
         let mapped = Header::new(MAP, 2 + sequence).with_args(&[
-            branch,
+            branch.id,
             sequence,
             0,
             MIB,
@@ -2327,7 +2339,7 @@ fn page_ins_in_flight_are_bounded() {
     });
     // A page of each, through the stream.
     let reads = (1..=EXTENTS).map(|sequence| {
-        Header::new(READ, 2000 + sequence).with_args(&[branch, sequence, 0, page_size()])
+        Header::new(READ, 2000 + sequence).with_args(&[branch.id, sequence, 0, page_size()])
     });
     let held = [burst("faults", faults.collect()), burst("reads", reads.collect())];
     // A connection's page-ins, each a part and those it reads ahead, as many at once as it

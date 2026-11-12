@@ -58,7 +58,7 @@
 //! delete, less what a pass would delete only for compacting it, a grace period after.
 
 use crate::bucket::{self, Bucket, ByteRange, Meta, Version};
-use crate::layout::{self, Kind, Location, Marked, Marks, Moves, Origin};
+use crate::layout::{self, Branch, Kind, Location, Marked, Marks, Moves, Origin};
 use crate::moves::{Moved, MovesMaps};
 use crate::record::Record;
 use crate::recovery::{self, Checkpoints, Layered, Layers, Recovered, State};
@@ -269,11 +269,11 @@ impl Collector {
     /// The branches' records, read many at once, but those read before at the versions listed. A
     /// deleted branch's children got theirs before it was marked deleted, so listing them again
     /// after reading them finds those of any it read deleted.
-    async fn records(&mut self, bucket: &impl Bucket) -> Result<BTreeMap<u64, Record>, Error> {
+    async fn records(&mut self, bucket: &impl Bucket) -> Result<BTreeMap<Branch, Record>, Error> {
         let mut records = BTreeMap::new();
         loop {
             let listed =
-                bucket::list(bucket, layout::BRANCHES).await.into_iter().filter_map(|meta| {
+                bucket::list(bucket, layout::TENANTS).await.into_iter().filter_map(|meta| {
                     match layout::kind(&meta.key) {
                         Kind::Record { branch } if !records.contains_key(&branch) => {
                             Some((branch, meta))
@@ -382,11 +382,11 @@ async fn fenced(bucket: &impl Bucket, epoch: u64) -> Result<bool, Error> {
 /// as deleted, writing nothing.
 async fn abandon(
     bucket: &impl Bucket,
-    records: &mut BTreeMap<u64, Record>,
+    records: &mut BTreeMap<Branch, Record>,
     writes: Writes,
 ) -> Result<(), Error> {
-    let gone = |point: u64| records.get(&point).is_none_or(|record| record.deleted);
-    let abandoned: Vec<u64> = (records.iter())
+    let gone = |point: Branch| records.get(&point).is_none_or(|record| record.deleted);
+    let abandoned: Vec<Branch> = (records.iter())
         .filter(|(_, record)| !record.deleted && record.forking().is_some_and(gone))
         .map(|(&child, _)| child)
         .collect();
@@ -407,7 +407,7 @@ async fn abandon(
 async fn read_record(
     bucket: &impl Bucket,
     known: &BTreeMap<String, (String, Record)>,
-    branch: u64,
+    branch: Branch,
     meta: &Meta,
 ) -> Result<Option<(Option<String>, Record)>, Error> {
     if let Some(listed) = &meta.version.e_tag
@@ -441,14 +441,14 @@ async fn listing(bucket: &impl Bucket) -> BTreeMap<String, Meta> {
 /// writing its record so if `writes` says so.
 async fn recover_live(
     bucket: &impl Bucket,
-    records: &BTreeMap<u64, Record>,
+    records: &BTreeMap<Branch, Record>,
     live: &mut Live,
     writes: Writes,
 ) -> Result<bool, Error> {
     let checkpoints = Checkpoints::new(bucket, CHECKPOINTS_KEPT);
     let mut checkpointed = false;
     // Forks made at the same segment next to each other, in the same rounds.
-    let mut queue: BTreeSet<(Option<Origin>, u64)> = records
+    let mut queue: BTreeSet<(Option<Origin>, Branch)> = records
         .iter()
         .filter(|(_, record)| !record.deleted)
         .map(|(&branch, record)| (record.origin(), branch))
@@ -527,9 +527,9 @@ fn behind(recovered: &Recovered<Layers>, lease: u64) -> bool {
 #[derive(Default)]
 struct Live {
     /// Those recovered, or being, by the origins they were recovered from: each once by each.
-    taken: BTreeSet<(u64, Option<Origin>)>,
+    taken: BTreeSet<(Branch, Option<Origin>)>,
     /// Where each recovery of each ended.
-    branches: BTreeMap<u64, Vec<Ended>>,
+    branches: BTreeMap<Branch, Vec<Ended>>,
     /// What recovering them read.
     touched: BTreeSet<String>,
     /// Where the extents they name are: each place once, however many of them name it there.
@@ -568,7 +568,7 @@ impl Ended {
     async fn lands(
         &self,
         bucket: &impl Bucket,
-        branch: u64,
+        branch: Branch,
         seq: u64,
         writer: Option<(u64, u64)>,
     ) -> Result<bool, Error> {
@@ -598,7 +598,7 @@ struct Inherited {
 impl Live {
     /// Whether `branch` was recovered, or is being, from `origin`: or from any, without the rule
     /// that a branch is recovered by each origin it is named by (TASK-173).
-    fn recovered(&self, branch: u64, origin: Option<Origin>) -> bool {
+    fn recovered(&self, branch: Branch, origin: Option<Origin>) -> bool {
         match rules().recoveries_by_origins {
             true => self.taken.contains(&(branch, origin)),
             false => self.taken.range((branch, None)..).next().is_some_and(|&(b, _)| b == branch),
@@ -607,7 +607,7 @@ impl Live {
 
     /// Takes the recovery of `branch` from `origin`, unless it was taken: returns whether it was
     /// not.
-    fn take(&mut self, branch: u64, origin: Option<Origin>) -> bool {
+    fn take(&mut self, branch: Branch, origin: Option<Origin>) -> bool {
         !self.recovered(branch, origin) && self.taken.insert((branch, origin))
     }
 
@@ -736,9 +736,9 @@ async fn trailer_len(bucket: &impl Bucket, meta: &Meta) -> Result<Option<u64>, E
 /// What a pass found: every object listed, and what the live branches need of them.
 struct Pass {
     objects: BTreeMap<String, Meta>,
-    records: BTreeMap<u64, Record>,
+    records: BTreeMap<Branch, Record>,
     /// Where each recovery of each live branch ended.
-    branches: BTreeMap<u64, Vec<Ended>>,
+    branches: BTreeMap<Branch, Vec<Ended>>,
     /// What recovering the live branches read.
     touched: BTreeSet<String>,
     /// The objects holding the extents the live branches name, and those extents in them.
@@ -753,7 +753,7 @@ impl Pass {
     async fn new(
         bucket: &impl Bucket,
         objects: BTreeMap<String, Meta>,
-        records: BTreeMap<u64, Record>,
+        records: BTreeMap<Branch, Record>,
         live: Live,
     ) -> Result<Self, Error> {
         let Live { branches, touched, located, behind, .. } = live;
@@ -799,7 +799,7 @@ impl Pass {
 
     /// fxdax: whether segment `seq` of `branch` stays whatever covers it, by any recovery of the
     /// branch ([`Ended::keeps`], TASK-371).
-    fn keeps(&self, branch: u64, seq: u64) -> bool {
+    fn keeps(&self, branch: Branch, seq: u64) -> bool {
         self.branches.get(&branch).into_iter().flatten().any(|ended| ended.keeps(seq))
     }
 
@@ -927,8 +927,9 @@ impl Pass {
                     !self.records.get(&branch).is_some_and(|record| !record.deleted)
                 }
                 // The collector's own: its lease, and its marks, which a mark-only pass never
-                // deletes, and an operator removes (TASK-264).
-                Kind::GcLease | Kind::Marks { .. } | Kind::Unknown => false,
+                // deletes, and an operator removes (TASK-264). fxdax: a cell's object, which says
+                // who holds it, stays as its records do (TASK-364).
+                Kind::GcLease | Kind::Marks { .. } | Kind::Cell { .. } | Kind::Unknown => false,
             };
             if goes {
                 doomed.push(meta);
@@ -943,6 +944,7 @@ mod tests {
     use super::*;
     use crate::batch::{Batch, Commit};
     use crate::bucket::{ByteRange, Created, Error as BucketError, Object, PutMode, Version};
+    use crate::layout::test_branch;
     use crate::layout::{Child, child};
     use crate::store::Store;
     use crate::testing::{Direct, SimBucket};
@@ -981,8 +983,8 @@ mod tests {
     fn extents_minted_and_freed_go_and_those_ahead_of_their_segments_stay() {
         block_on(async {
             let bucket = store();
-            branch::create(&*bucket, 1, 0).await.unwrap();
-            let writer = Writer::open(bucket.clone(), 1, 10, 0).await.unwrap();
+            branch::create(&*bucket, test_branch(1), 0).await.unwrap();
+            let writer = Writer::open(bucket.clone(), test_branch(1), 10, 0).await.unwrap();
             let first = writer.chain().next_sequence();
             let (freed, kept) = (ExtentId::new(1, first), ExtentId::new(1, first + 1));
             let own = vec![(freed.sequence, b"freed".to_vec()), (kept.sequence, b"kept".to_vec())];
@@ -990,7 +992,8 @@ mod tests {
             let gone = writer.location(freed).unwrap().key;
             commit(&writer, Commit { tag: 2, frees: vec![freed], ..Commit::default() }).await;
             let (seq, next) = (writer.chain().next_seq(), writer.chain().next_sequence());
-            let ahead = layout::extent(writer.epoch(), seq, ExtentId::new(1, next));
+            let ahead =
+                layout::extent(layout::TEST_CELL, writer.epoch(), seq, ExtentId::new(1, next));
             let bytes = layout::with_footer(b"ahead", &());
             assert!(matches!(bucket::create(&*bucket, &ahead, bytes).await, Created::Created));
 
@@ -999,7 +1002,7 @@ mod tests {
             assert_eq!(report, Report { deleted: 1, compacted: 0 });
             let left: Vec<_> = before.into_iter().filter(|key| *key != gone).collect();
             assert_eq!(keys(&*bucket).await, left);
-            assert!(left.contains(&ahead) && left.contains(&layout::record(1)));
+            assert!(left.contains(&ahead) && left.contains(&layout::record(test_branch(1))));
         });
     }
 
@@ -1009,20 +1012,23 @@ mod tests {
     fn passes_stop_at_branches_of_newer_formats() {
         block_on(async {
             let bucket = store();
-            branch::create(&*bucket, 1, 0).await.unwrap();
-            let writer = Writer::open(bucket.clone(), 1, 10, 0).await.unwrap();
+            branch::create(&*bucket, test_branch(1), 0).await.unwrap();
+            let writer = Writer::open(bucket.clone(), test_branch(1), 10, 0).await.unwrap();
             let freed = ExtentId::new(1, writer.chain().next_sequence());
             let own = vec![(freed.sequence, b"freed".to_vec())];
             commit(&writer, Commit { tag: 1, own, ..Commit::default() }).await;
             commit(&writer, Commit { tag: 2, frees: vec![freed], ..Commit::default() }).await;
             let mut newer = (layout::FORMAT + 1).to_le_bytes().to_vec();
             newer.extend_from_slice(b"what a later format holds");
-            let created = bucket::create(&*bucket, &layout::record(2), newer).await;
+            let created = bucket::create(&*bucket, &layout::record(test_branch(2)), newer).await;
             assert!(matches!(created, Created::Created));
 
             let before = keys(&*bucket).await;
             let refused = collect(&*bucket, 1, &KEEP).await;
-            assert_eq!(refused, Err(Error::Format { branch: 2, format: layout::FORMAT + 1 }));
+            assert_eq!(
+                refused,
+                Err(Error::Format { branch: test_branch(2), format: layout::FORMAT + 1 })
+            );
             assert_eq!(keys(&*bucket).await, before);
         });
     }
@@ -1051,8 +1057,8 @@ mod tests {
     /// committed after one past it in sequence, once a pass ran and then the segment landed.
     async fn extent_ahead_of_its_segment_read() -> Result<Vec<u8>, Error> {
         let bucket = store();
-        branch::create(&*bucket, 1, 0).await.unwrap();
-        let writer = Writer::open(bucket.clone(), 1, 10, 0).await.unwrap();
+        branch::create(&*bucket, test_branch(1), 0).await.unwrap();
+        let writer = Writer::open(bucket.clone(), test_branch(1), 10, 0).await.unwrap();
         let first = writer.chain().next_sequence();
         let (late, early) = (ExtentId::new(1, first), ExtentId::new(1, first + 1));
         let extents = vec![(early, b"early".to_vec())];
@@ -1068,10 +1074,10 @@ mod tests {
         assert!(matches!(created, Created::Created));
 
         collect(&*bucket, 1, &KEEP).await.unwrap();
-        let segment = layout::segment(1, writer.chain().next_seq());
+        let segment = layout::segment(test_branch(1), writer.chain().next_seq());
         let created = bucket::create(&*bucket, &segment, objects.segment.read().unwrap()).await;
         assert!(matches!(created, Created::Created));
-        let recovered = recovery::recover(&*bucket, 1, None).await.unwrap();
+        let recovered = recovery::recover(&*bucket, test_branch(1), None).await.unwrap();
         let location = &recovered.state.extents[&late];
         crate::read(&bucket, late, location).await
     }
@@ -1082,8 +1088,8 @@ mod tests {
     fn objects_are_compacted_once() {
         block_on(async {
             let bucket = store();
-            branch::create(&*bucket, 1, 0).await.unwrap();
-            let writer = Writer::open(bucket.clone(), 1, 10, 0).await.unwrap();
+            branch::create(&*bucket, test_branch(1), 0).await.unwrap();
+            let writer = Writer::open(bucket.clone(), test_branch(1), 10, 0).await.unwrap();
             let first = writer.chain().next_sequence();
             let (small, large) = (ExtentId::new(1, first), ExtentId::new(1, first + 1));
             let large_bytes: Vec<u8> = (0..20_000u32).map(|i| (i * 7 % 251) as u8).collect();
@@ -1098,7 +1104,7 @@ mod tests {
             assert_eq!(report.compacted, 1);
             let after = keys(&*bucket).await;
             assert!(after.contains(&segment) && after.contains(&layout::moves(&segment)));
-            assert!(after.contains(&layout::record(1)));
+            assert!(after.contains(&layout::record(test_branch(1))));
             let report = collect(&*bucket, 2, &compacting).await.unwrap();
             assert_eq!(report, Report { deleted: 0, compacted: 0 });
             assert_eq!(keys(&*bucket).await, after);
@@ -1115,8 +1121,8 @@ mod tests {
     fn compressed_objects_are_compacted_by_their_data() {
         block_on(async {
             let bucket = store();
-            branch::create(&*bucket, 1, 0).await.unwrap();
-            let writer = Writer::open(bucket.clone(), 1, 10, 0).await.unwrap();
+            branch::create(&*bucket, test_branch(1), 0).await.unwrap();
+            let writer = Writer::open(bucket.clone(), test_branch(1), 10, 0).await.unwrap();
             let first = writer.chain().next_sequence();
             let (kept, freed) = (ExtentId::new(1, first), ExtentId::new(1, first + 1));
             let extents = vec![(kept, vec![b'k'; 4096]), (freed, vec![b'f'; 8192])];
@@ -1146,8 +1152,8 @@ mod tests {
         for compressible in [true, false] {
             block_on(async {
                 let bucket = store();
-                branch::create(&*bucket, 1, 0).await.unwrap();
-                let writer = Writer::open(bucket.clone(), 1, 10, 0).await.unwrap();
+                branch::create(&*bucket, test_branch(1), 0).await.unwrap();
+                let writer = Writer::open(bucket.clone(), test_branch(1), 10, 0).await.unwrap();
                 let first = writer.chain().next_sequence();
                 let (kept, freed) = (ExtentId::new(1, first), ExtentId::new(1, first + 1));
                 // The kept extent's bytes compress, or not; the freed one's don't, from a xorshift
@@ -1221,15 +1227,15 @@ mod tests {
     /// in turn, and passes run until they delete nothing more.
     async fn read_past_a_late_checkpoint() -> Result<Vec<u8>, Error> {
         let bucket = store();
-        branch::create(&*bucket, 1, 0).await.unwrap();
-        let before = Writer::open(bucket.clone(), 1, 10, 0).await.unwrap();
+        branch::create(&*bucket, test_branch(1), 0).await.unwrap();
+        let before = Writer::open(bucket.clone(), test_branch(1), 10, 0).await.unwrap();
         let Compacted { kept, moved, sealed } = compacted(&*bucket, &before).await;
         let later = ExtentId::new(1, before.chain().next_sequence());
         let extents = vec![(later, b"later".to_vec())];
         commit(&before, Commit { tag: 3, extents, ..Commit::default() }).await;
 
         // The next writer recovers the branch from the checkpoint before the compaction.
-        let writer = Writer::open(bucket.clone(), 1, 11, 0).await.unwrap();
+        let writer = Writer::open(bucket.clone(), test_branch(1), 11, 0).await.unwrap();
         assert_eq!(writer.location(kept).unwrap().key, sealed);
         // The writer taken over, unaware, checkpoints its last segment, past that checkpoint,
         // following the moves.
@@ -1267,8 +1273,8 @@ mod tests {
     async fn read_as_a_checkpoint_lands() -> Result<Vec<u8>, Error> {
         let direct = Arc::new(Direct(SimBucket::new()));
         let bucket = Arc::new(Hooked::new(direct.clone(), Hook::Checkpointed));
-        branch::create(&*bucket, 1, 0).await.unwrap();
-        let writer = Arc::new(Writer::open(bucket.clone(), 1, 10, 0).await.unwrap());
+        branch::create(&*bucket, test_branch(1), 0).await.unwrap();
+        let writer = Arc::new(Writer::open(bucket.clone(), test_branch(1), 10, 0).await.unwrap());
         let Compacted { kept, moved, .. } = compacted(&*bucket, &writer).await;
         commit(&writer, Commit { tag: 3, frees: vec![moved], ..Commit::default() }).await;
         let named = Arc::new(Mutex::new(None));
@@ -1346,7 +1352,7 @@ mod tests {
         crate::set_rules(rules);
         let recovered = block_on(recover_as_a_fork_checkpoints());
         crate::set_rules(crate::Rules::ALL);
-        assert_eq!(recovered, Err(Error::Lost(layout::record(1))));
+        assert_eq!(recovered, Err(Error::Lost(layout::record(test_branch(1)))));
     }
 
     /// The extents a fork's recovery finds, its parent deleted, the fork's writer checkpointing and
@@ -1355,26 +1361,33 @@ mod tests {
         use crate::layout::{Contents, Origin, Segment};
         use crate::writer::Objects;
         let direct = Arc::new(Direct(SimBucket::new()));
-        let bucket = Arc::new(Hooked::new(direct.clone(), Hook::Getting(layout::record(1), 1)));
-        branch::create(&*bucket, 1, 0).await.unwrap();
-        let parent = Writer::open(bucket.clone(), 1, 10, 0).await.unwrap();
+        let bucket =
+            Arc::new(Hooked::new(direct.clone(), Hook::Getting(layout::record(test_branch(1)), 1)));
+        branch::create(&*bucket, test_branch(1), 0).await.unwrap();
+        let parent = Writer::open(bucket.clone(), test_branch(1), 10, 0).await.unwrap();
         let extent = ExtentId::new(1, parent.chain().next_sequence());
         let extents = vec![(extent, b"held".to_vec())];
         commit(&parent, Commit { tag: 1, extents, ..Commit::default() }).await;
-        let footer =
-            parent.chain().close(Contents { forks: vec![child(2)], ..Contents::default() });
+        let footer = parent
+            .chain()
+            .close(Contents { forks: vec![child(test_branch(2))], ..Contents::default() });
         let segment = Segment { data: Vec::new(), footer: footer.clone() }.encode().into();
         let at = parent.add_segment(Objects { footer, segment, own: Vec::new() }).unwrap();
         parent.upload(at).await.unwrap();
         parent.acknowledge().await.unwrap();
-        branch::delete(&*bucket, 1, 11, u64::MAX).await.unwrap();
-        let forked = Arc::new(Writer::open(bucket.clone(), 2, 12, 0).await.unwrap());
+        branch::delete(&*bucket, test_branch(1), 11, u64::MAX).await.unwrap();
+        let forked = Arc::new(Writer::open(bucket.clone(), test_branch(2), 12, 0).await.unwrap());
         let passing = direct.clone();
         *bucket.then.lock().unwrap() = Some(Box::new(move || {
             forked.checkpoint().now_or_never().unwrap().unwrap();
             collect(&*passing, 1, &KEEP).now_or_never().unwrap().unwrap();
         }));
-        let recovered = recovery::recover(&*bucket, 2, Some(Origin { parent: 1, at })).await?;
+        let recovered = recovery::recover(
+            &*bucket,
+            test_branch(2),
+            Some(Origin { parent: test_branch(1), at }),
+        )
+        .await?;
         Ok(recovered.state.extents.keys().copied().collect())
     }
 
@@ -1395,30 +1408,39 @@ mod tests {
         use crate::layout::{Contents, Segment};
         use crate::writer::Objects;
         let direct = Arc::new(Direct(SimBucket::new()));
-        branch::create(&*direct, 1, 0).await.unwrap();
-        let parent = Writer::open(direct.clone(), 1, 10, 0).await.unwrap();
+        branch::create(&*direct, test_branch(1), 0).await.unwrap();
+        let parent = Writer::open(direct.clone(), test_branch(1), 10, 0).await.unwrap();
         let extent = ExtentId::new(1, parent.chain().next_sequence());
         let extents = vec![(extent, b"held".to_vec())];
         commit(&parent, Commit { tag: 1, extents, ..Commit::default() }).await;
-        let footer =
-            parent.chain().close(Contents { forks: vec![child(2)], ..Contents::default() });
+        let footer = parent
+            .chain()
+            .close(Contents { forks: vec![child(test_branch(2))], ..Contents::default() });
         let segment = Segment { data: Vec::new(), footer: footer.clone() }.encode().into();
         let at = parent.add_segment(Objects { footer, segment, own: Vec::new() }).unwrap();
         parent.upload(at).await.unwrap();
         parent.acknowledge().await.unwrap();
         commit(&parent, Commit { tag: 2, frees: vec![extent], ..Commit::default() }).await;
         parent.checkpoint().await.unwrap();
-        Writer::open(direct.clone(), 2, 11, 0).await.unwrap().checkpoint().await.unwrap();
+        Writer::open(direct.clone(), test_branch(2), 11, 0)
+            .await
+            .unwrap()
+            .checkpoint()
+            .await
+            .unwrap();
         let passing = direct.clone();
         let bucket = Meanwhile {
             bucket: direct,
-            branch: 2,
+            branch: test_branch(2),
             meanwhile: std::sync::Mutex::new(Some(move || {
-                branch::delete(&*passing, 2, 13, u64::MAX).now_or_never().unwrap().unwrap();
+                branch::delete(&*passing, test_branch(2), 13, u64::MAX)
+                    .now_or_never()
+                    .unwrap()
+                    .unwrap();
                 collect(&*passing, 1, &KEEP).now_or_never().unwrap().unwrap();
             })),
         };
-        branch::delete(&bucket, 2, 12, u64::MAX).await
+        branch::delete(&bucket, test_branch(2), 12, u64::MAX).await
     }
 
     /// TASK-179: a writer of a branch deleted meanwhile, whose lease the collector removed and a
@@ -1449,21 +1471,24 @@ mod tests {
         use crate::layout::{Contents, Segment};
         use crate::writer::Objects;
         let bucket = store();
-        branch::create(&*bucket, 1, 0).await.unwrap();
-        let writer = Writer::open(bucket.clone(), 1, 10, 0).await.unwrap();
+        branch::create(&*bucket, test_branch(1), 0).await.unwrap();
+        let writer = Writer::open(bucket.clone(), test_branch(1), 10, 0).await.unwrap();
         let footer =
-            writer.chain().close(Contents { forks: vec![child(2)], ..Contents::default() });
+            writer.chain().close(Contents { forks: vec![child(test_branch(2))], ..Contents::default() });
         let segment = Segment { data: Vec::new(), footer: footer.clone() }.encode().into();
         let seq = writer.add_segment(Objects { footer, segment, own: Vec::new() }).unwrap();
         writer.upload(seq).await.unwrap();
-        let record = branch::record(&*bucket, 1).await.unwrap().unwrap();
-        let before = recovery::recover(&*bucket, 1, None).await.unwrap();
-        branch::delete(&*bucket, 1, 11, u64::MAX).await.unwrap();
+        let record = branch::record(&*bucket, test_branch(1)).await.unwrap().unwrap();
+        let before = recovery::recover(&*bucket, test_branch(1), None).await.unwrap();
+        branch::delete(&*bucket, test_branch(1), 11, u64::MAX).await.unwrap();
         collect(&*bucket, 1, &KEEP).await.unwrap();
-        assert!(!keys(&*bucket).await.contains(&layout::lease(1)));
+        assert!(!keys(&*bucket).await.contains(&layout::lease(test_branch(1))));
         let taken = Writer::open_recovered(bucket.clone(), record, before, 12, 0).await;
         assert_eq!(taken.err(), Some(Error::Deleted));
-        assert_eq!(branch::lease_epoch(&*bucket, &layout::lease(1)).await, Ok(writer.epoch()));
+        assert_eq!(
+            branch::lease_epoch(&*bucket, &layout::lease(test_branch(1))).await,
+            Ok(writer.epoch())
+        );
         writer.acknowledge().await
     }
 
@@ -1496,9 +1521,9 @@ mod tests {
     async fn create_where_a_successor_fenced()
     -> (Result<(), Error>, Result<Option<u64>, Error>, Option<u64>) {
         let bucket = store();
-        branch::create(&*bucket, 1, 0).await.unwrap();
-        let taken = Writer::open(bucket.clone(), 1, 10, 0).await.unwrap();
-        let successor = Writer::open(bucket.clone(), 1, 11, 0).await.unwrap();
+        branch::create(&*bucket, test_branch(1), 0).await.unwrap();
+        let taken = Writer::open(bucket.clone(), test_branch(1), 10, 0).await.unwrap();
+        let successor = Writer::open(bucket.clone(), test_branch(1), 11, 0).await.unwrap();
         commit(&successor, Commit { tag: 2, ..Commit::default() }).await;
         successor.checkpoint().await.unwrap();
         collect(&*bucket, 1, &KEEP).await.unwrap();
@@ -1507,7 +1532,7 @@ mod tests {
         let seq = taken.add_segment(objects).unwrap();
         let uploaded = taken.upload(seq).await;
         let acknowledged = taken.acknowledge().await;
-        let last = recovery::recover(&*bucket, 1, None).await.unwrap().state.last_commit;
+        let last = recovery::recover(&*bucket, test_branch(1), None).await.unwrap().state.last_commit;
         (uploaded, acknowledged, last)
     }
 
@@ -1536,12 +1561,12 @@ mod tests {
     /// landed, was acknowledged and checkpointed, and a pass ran.
     async fn take_over_past_a_pass() -> Option<u64> {
         let direct = Arc::new(Direct(SimBucket::new()));
-        branch::create(&*direct, 1, 0).await.unwrap();
-        let last = Writer::open(direct.clone(), 1, 10, 0).await.unwrap();
+        branch::create(&*direct, test_branch(1), 0).await.unwrap();
+        let last = Writer::open(direct.clone(), test_branch(1), 10, 0).await.unwrap();
         let objects =
             Batch::from(Commit { tag: 1, ..Commit::default() }).close(&mut last.chain()).frame();
         let seq = last.add_segment(objects).unwrap();
-        let taking = Arc::new(Hooked::new(direct.clone(), Hook::Listing(layout::segments(1), 1)));
+        let taking = Arc::new(Hooked::new(direct.clone(), Hook::Listing(layout::segments(test_branch(1)), 1)));
         let passing = direct.clone();
         *taking.then.lock().unwrap() = Some(Box::new(move || {
             last.upload(seq).now_or_never().unwrap().unwrap();
@@ -1549,7 +1574,7 @@ mod tests {
             last.checkpoint().now_or_never().unwrap().unwrap();
             collect(&*passing, 1, &KEEP).now_or_never().unwrap().unwrap();
         }));
-        let taken = Writer::open(taking.clone(), 1, 11, 0).await.unwrap();
+        let taken = Writer::open(taking.clone(), test_branch(1), 11, 0).await.unwrap();
         assert!(taking.then.lock().unwrap().is_none(), "the pass ran");
         taken.state().last_commit
     }
@@ -1570,7 +1595,7 @@ mod tests {
         crate::set_rules(crate::Rules { passes_fenced_stop: false, ..crate::Rules::ALL });
         let passed = block_on(pass_fenced_as_a_point_goes());
         crate::set_rules(crate::Rules::ALL);
-        let lost = Error::Lost("branch 4: what its recovery starts from keeps going".into());
+        let lost = Error::Lost("branch 1/1/4: what its recovery starts from keeps going".into());
         assert_eq!(passed, Err(lost));
     }
 
@@ -1581,12 +1606,12 @@ mod tests {
         use crate::layout::{Contents, Origin, Segment};
         use crate::writer::Objects;
         let direct = Arc::new(Direct(SimBucket::new()));
-        branch::create(&*direct, 1, 0).await.unwrap();
-        let writer = Writer::open(direct.clone(), 1, 10, 0).await.unwrap();
+        branch::create(&*direct, test_branch(1), 0).await.unwrap();
+        let writer = Writer::open(direct.clone(), test_branch(1), 10, 0).await.unwrap();
         let extent = ExtentId::new(1, writer.chain().next_sequence());
         let extents = vec![(extent, b"held".to_vec())];
         commit(&writer, Commit { tag: 1, extents, ..Commit::default() }).await;
-        let point = Child { branch: 3, owner: 0x33, point: true };
+        let point = Child { branch: test_branch(3), owner: 0x33, point: true };
         let footer = writer.chain().close(Contents { forks: vec![point], ..Contents::default() });
         let segment = Segment { data: Vec::new(), footer: footer.clone() }.encode().into();
         let at = writer.add_segment(Objects { footer, segment, own: Vec::new() }).unwrap();
@@ -1594,14 +1619,19 @@ mod tests {
         writer.acknowledge().await.unwrap();
         commit(&writer, Commit { tag: 2, frees: vec![extent], ..Commit::default() }).await;
         writer.checkpoint().await.unwrap();
-        let bucket = Hooked::new(direct.clone(), Hook::Listing(layout::BRANCHES.into(), 2));
+        let bucket = Hooked::new(direct.clone(), Hook::Listing(layout::TENANTS.into(), 2));
         *bucket.then.lock().unwrap() = Some(Box::new(move || {
-            let origin = Origin { parent: 1, at };
-            branch::delete(&*direct, 3, 11, u64::MAX).now_or_never().unwrap().unwrap();
+            let origin = Origin { parent: test_branch(1), at };
+            branch::delete(&*direct, test_branch(3), 11, u64::MAX).now_or_never().unwrap().unwrap();
             collect(&*direct, 2, &KEEP).now_or_never().unwrap().unwrap();
             let left = keys(&*direct).now_or_never().unwrap();
-            assert!(!left.contains(&layout::segment(1, at)), "the point's state stayed");
-            let forked = branch::fork_point(&*direct, 4, 3, origin, 0x44).now_or_never().unwrap();
+            assert!(
+                !left.contains(&layout::segment(test_branch(1), at)),
+                "the point's state stayed"
+            );
+            let forked = branch::fork_point(&*direct, test_branch(4), test_branch(3), origin, 0x44)
+                .now_or_never()
+                .unwrap();
             assert_eq!(forked, Err(Error::Deleted));
         }));
         collect(&bucket, 1, &KEEP).await
@@ -1628,7 +1658,7 @@ mod tests {
         crate::set_rules(crate::Rules { recoveries_by_origins: false, ..crate::Rules::ALL });
         let passed = block_on(pass_as_a_child_is_restored());
         crate::set_rules(crate::Rules::ALL);
-        let lost = Error::Lost("branch 3: what its recovery starts from keeps going".into());
+        let lost = Error::Lost("branch 1/1/3: what its recovery starts from keeps going".into());
         assert_eq!(passed, Err(lost));
     }
 
@@ -1652,28 +1682,37 @@ mod tests {
             seq
         }
         let direct = Arc::new(Direct(SimBucket::new()));
-        branch::create(&*direct, PARENT, 0).await.unwrap();
-        let writer = Writer::open(direct.clone(), PARENT, 10, 0).await.unwrap();
+        branch::create(&*direct, test_branch(PARENT), 0).await.unwrap();
+        let writer = Writer::open(direct.clone(), test_branch(PARENT), 10, 0).await.unwrap();
         // A commit after the writer's fence, which the collector keeps (TASK-371): what the
         // restore's child needs that a pass may delete.
         commit(&writer, Commit { tag: 1, ..Commit::default() }).await;
         let restoring = direct.clone();
         let meanwhile = move || {
             let work = async {
-                let point = Child { branch: POINT, owner: 0x22, point: true };
+                let point = Child { branch: test_branch(POINT), owner: 0x22, point: true };
                 let at = fork(&writer, point).await;
-                let origin = Origin { parent: PARENT, at };
-                branch::fork_point(&*restoring, CHILD, POINT, origin, 0x33).await.unwrap();
-                fork(&writer, Child { branch: CHILD, owner: 0x34, point: false }).await;
-                assert!(writer.refused(CHILD));
-                branch::delete(&*restoring, POINT, 20, 0).await.unwrap();
+                let origin = Origin { parent: test_branch(PARENT), at };
+                branch::fork_point(
+                    &*restoring,
+                    test_branch(CHILD),
+                    test_branch(POINT),
+                    origin,
+                    0x33,
+                )
+                .await
+                .unwrap();
+                fork(&writer, Child { branch: test_branch(CHILD), owner: 0x34, point: false })
+                    .await;
+                assert!(writer.refused(test_branch(CHILD)));
+                branch::delete(&*restoring, test_branch(POINT), 20, 0).await.unwrap();
                 writer.checkpoint().await.unwrap();
             };
             work.now_or_never().expect("a direct bucket answers at once");
         };
         let during = Meanwhile {
             bucket: direct.clone(),
-            branch: PARENT,
+            branch: test_branch(PARENT),
             meanwhile: Mutex::new(Some(meanwhile)),
         };
         let now = Options { compact_below: 0.0, grace: 0 };
@@ -1699,8 +1738,11 @@ mod tests {
         crate::set_rules(crate::Rules { records_kept: false, ..crate::Rules::ALL });
         let (record, passed) = block_on(record_a_fork_to_a_deleted_root());
         crate::set_rules(crate::Rules::ALL);
-        let made = crate::record::Kind::Fork(Origin { parent: 1, at: 1 }).of(0x22);
-        assert_eq!((record, passed), (Some(made), Err(Error::Lost(layout::record(1)))));
+        let made = crate::record::Kind::Fork(Origin { parent: test_branch(1), at: 1 }).of(0x22);
+        assert_eq!(
+            (record, passed),
+            (Some(made), Err(Error::Lost(layout::record(test_branch(1)))))
+        );
     }
 
     /// Child 2's record, and what a pass gives, once the writer of branch 1 forked to 2, which a
@@ -1711,13 +1753,14 @@ mod tests {
         const PARENT: u64 = 1;
         const CHILD: u64 = 2;
         let direct = Arc::new(Direct(SimBucket::new()));
-        let (slow, open) = Gated::new(direct.clone(), Gate::Put(layout::record(CHILD)));
+        let (slow, open) =
+            Gated::new(direct.clone(), Gate::Put(layout::record(test_branch(CHILD))));
         let slow = Arc::new(slow);
-        branch::create(&*direct, PARENT, 0).await.unwrap();
-        let writer = Writer::open(slow, PARENT, 10, 0).await.unwrap();
-        branch::create(&*direct, CHILD, 0x21).await.unwrap();
-        branch::delete(&*direct, CHILD, 11, 0).await.unwrap();
-        let forked = Child { branch: CHILD, owner: 0x22, point: false };
+        branch::create(&*direct, test_branch(PARENT), 0).await.unwrap();
+        let writer = Writer::open(slow, test_branch(PARENT), 10, 0).await.unwrap();
+        branch::create(&*direct, test_branch(CHILD), 0x21).await.unwrap();
+        branch::delete(&*direct, test_branch(CHILD), 11, 0).await.unwrap();
+        let forked = Child { branch: test_branch(CHILD), owner: 0x22, point: false };
         let footer = writer.chain().close(Contents { forks: vec![forked], ..Contents::default() });
         let segment = Segment { data: Vec::new(), footer: footer.clone() }.encode().into();
         let at = writer.add_segment(Objects { footer, segment, own: Vec::new() }).unwrap();
@@ -1725,12 +1768,12 @@ mod tests {
         // The lease read, the fork's child's record waits.
         let mut acknowledging = Box::pin(writer.acknowledge());
         assert!((&mut acknowledging).now_or_never().is_none());
-        branch::delete(&*direct, PARENT, 12, 0).await.unwrap();
+        branch::delete(&*direct, test_branch(PARENT), 12, 0).await.unwrap();
         let now = Options { compact_below: 0.0, grace: 0 };
         collect(&*direct, 1, &now).await.unwrap();
         open.send(()).unwrap();
         assert_eq!((&mut acknowledging).now_or_never(), Some(Ok(Some(at))));
-        let record = branch::record(&*direct, CHILD).await.unwrap();
+        let record = branch::record(&*direct, test_branch(CHILD)).await.unwrap();
         (record, collect(&*direct, 2, &now).await)
     }
 
@@ -1755,8 +1798,8 @@ mod tests {
         crate::set_rules(crate::Rules { deletions_fence: false, ..crate::Rules::ALL });
         let landed = block_on(delete_twice_as_a_fork_lands());
         crate::set_rules(crate::Rules::ALL);
-        let child = crate::record::Kind::Fork(Origin { parent: 1, at: 2 }).of(0);
-        let lost = Error::Lost("branch 2: what its recovery starts from keeps going".into());
+        let child = crate::record::Kind::Fork(Origin { parent: test_branch(1), at: 2 }).of(0);
+        let lost = Error::Lost("branch 1/1/2: what its recovery starts from keeps going".into());
         assert_eq!(landed, (Ok(()), Some(child), Err(lost)));
     }
 
@@ -1769,19 +1812,23 @@ mod tests {
         const PARENT: u64 = 1;
         const CHILD: u64 = 2;
         let direct = Arc::new(Direct(SimBucket::new()));
-        branch::create(&*direct, PARENT, 0).await.unwrap();
-        let writer = Arc::new(Writer::open(direct.clone(), PARENT, 10, 0).await.unwrap());
+        branch::create(&*direct, test_branch(PARENT), 0).await.unwrap();
+        let writer =
+            Arc::new(Writer::open(direct.clone(), test_branch(PARENT), 10, 0).await.unwrap());
         commit(&writer, Commit { tag: 1, ..Commit::default() }).await;
-        let footer =
-            writer.chain().close(Contents { forks: vec![child(CHILD)], ..Contents::default() });
+        let footer = writer
+            .chain()
+            .close(Contents { forks: vec![child(test_branch(CHILD))], ..Contents::default() });
         let segment = Segment { data: Vec::new(), footer: footer.clone() }.encode().into();
         let at = writer.add_segment(Objects { footer, segment, own: Vec::new() }).unwrap();
         // The second deletion, the lease ended and the record read live, waits to recover.
-        let (gated, open) = Gated::new(direct.clone(), Gate::List(layout::checkpoints(PARENT)));
+        let (gated, open) =
+            Gated::new(direct.clone(), Gate::List(layout::checkpoints(test_branch(PARENT))));
         let gated = Arc::new(gated);
-        let mut second = Box::pin(async move { branch::delete(&*gated, PARENT, 12, 0).await });
+        let mut second =
+            Box::pin(async move { branch::delete(&*gated, test_branch(PARENT), 12, 0).await });
         assert!((&mut second).now_or_never().is_none());
-        branch::delete(&*direct, PARENT, 11, 0).await.unwrap();
+        branch::delete(&*direct, test_branch(PARENT), 11, 0).await.unwrap();
         // Before the pass deletes, as it reads the collector's lease again.
         let pass = Hooked::new(direct.clone(), Hook::Getting(layout::GC_LEASE.into(), 2));
         let landed = Arc::new(Mutex::new(None));
@@ -1794,7 +1841,7 @@ mod tests {
         let now = Options { compact_below: 0.0, grace: 0 };
         collect(&pass, 1, &now).await.unwrap();
         let landed = landed.lock().unwrap().take().expect("the pass deleted nothing");
-        let record = branch::record(&*direct, CHILD).await.unwrap();
+        let record = branch::record(&*direct, test_branch(CHILD)).await.unwrap();
         (landed, record, collect(&*direct, 2, &now).await)
     }
 
@@ -1991,8 +2038,8 @@ mod tests {
     fn moves_outlive_what_they_are_of() {
         block_on(async {
             let bucket = store();
-            branch::create(&*bucket, 1, 0).await.unwrap();
-            let writer = Writer::open(bucket.clone(), 1, 10, 0).await.unwrap();
+            branch::create(&*bucket, test_branch(1), 0).await.unwrap();
+            let writer = Writer::open(bucket.clone(), test_branch(1), 10, 0).await.unwrap();
             let first = writer.chain().next_sequence();
             let (small, large) = (ExtentId::new(1, first), ExtentId::new(1, first + 1));
             let extents = vec![(small, b"small".to_vec()), (large, vec![7; 20_000])];
@@ -2022,9 +2069,12 @@ mod tests {
             counts.filter(|&count| count > 0).collect()
         };
         let whole = |asked: &str| asked.split(' ').count() == 2;
+        let at = |asked: &str, kind: &str| {
+            asked.strip_prefix("get ").is_some_and(|key| key.contains(&format!("/{kind}/")))
+        };
         [
-            counted(&|asked| asked.starts_with("get branches/")),
-            counted(&|asked| asked.starts_with("get checkpoints/") && whole(asked)),
+            counted(&|asked| at(asked, "branches")),
+            counted(&|asked| at(asked, "checkpoints") && whole(asked)),
             counted(&|asked| asked.starts_with("delete ")),
         ]
     }
@@ -2036,14 +2086,14 @@ mod tests {
         use crate::layout::{Chain, Contents, Segment};
         use crate::writer::Objects;
         let (writer, _) = bucket.served(async {
-            branch::create(&**bucket, 1, 0).await.unwrap();
-            Writer::open(bucket.clone(), 1, 10, 0).await.unwrap()
+            branch::create(&**bucket, test_branch(1), 0).await.unwrap();
+            Writer::open(bucket.clone(), test_branch(1), 10, 0).await.unwrap()
         });
         let first = writer.chain().next_sequence();
         let extents = (0..20).map(|n| (ExtentId::new(1, first + n), vec![n as u8; 8])).collect();
         let own: Vec<_> = (20..23).map(|n| (first + n, vec![n as u8; 16])).collect();
         let frees = own.iter().map(|(sequence, _)| ExtentId::new(1, *sequence)).collect();
-        let children = (2..2 + forks + deleted).map(child).collect();
+        let children = (2..2 + forks + deleted).map(|id| child(test_branch(id))).collect();
         let segments: [Box<dyn FnOnce(&mut Chain) -> Objects>; 3] = [
             Box::new(|chain| {
                 let commit = Commit { tag: 1, extents, own, ..Commit::default() };
@@ -2065,7 +2115,7 @@ mod tests {
         }
         bucket.served(writer.checkpoint()).0.unwrap();
         for child in 2 + forks..2 + forks + deleted {
-            bucket.served(branch::delete(&**bucket, child, 20, 0)).0.unwrap();
+            bucket.served(branch::delete(&**bucket, test_branch(child), 20, 0)).0.unwrap();
         }
     }
 
@@ -2090,7 +2140,7 @@ mod tests {
         assert_eq!(passes, [[vec![9], vec![1], vec![9]], [vec![], vec![1], vec![]]]);
 
         // The fork deleted: its lease and its deletion's fence go.
-        bucket.served(branch::delete(&*bucket, 2, 20, 0)).0.unwrap();
+        bucket.served(branch::delete(&*bucket, test_branch(2), 20, 0)).0.unwrap();
         let (report, rounds) = bucket.served_in_rounds(collector.collect(&*bucket, 3));
         report.unwrap();
         assert_eq!(asked(&rounds), [vec![1], vec![1], vec![2]]);
@@ -2109,15 +2159,17 @@ mod tests {
         let bucket = store();
         let children = 2..2 + RECOVERIES_AT_ONCE as u64 + 1;
         let (extents, held_in) = block_on(async {
-            branch::create(&*bucket, 1, 0).await.unwrap();
-            let base = Writer::open(bucket.clone(), 1, 10, 0).await.unwrap();
+            branch::create(&*bucket, test_branch(1), 0).await.unwrap();
+            let base = Writer::open(bucket.clone(), test_branch(1), 10, 0).await.unwrap();
             let sequence = base.chain().next_sequence();
             let extents: Vec<_> = (0..3).map(|n| ExtentId::new(1, sequence + n)).collect();
             let own = extents.iter().map(|extent| (extent.sequence, b"held".to_vec())).collect();
             let held_in = base.chain().next_seq();
             commit(&base, Commit { tag: 1, own, ..Commit::default() }).await;
-            let forks =
-                Contents { forks: children.clone().map(child).collect(), ..Contents::default() };
+            let forks = Contents {
+                forks: children.clone().map(|id| child(test_branch(id))).collect(),
+                ..Contents::default()
+            };
             let footer = base.chain().close(forks);
             let segment = Segment { data: Vec::new(), footer: footer.clone() }.encode().into();
             let seq = base.add_segment(Objects { footer, segment, own: Vec::new() }).unwrap();
@@ -2127,7 +2179,8 @@ mod tests {
             commit(&base, Commit { tag: 2, frees: extents.clone(), ..Commit::default() }).await;
             base.checkpoint().await.unwrap();
             for child in children.clone() {
-                let writer = Writer::open(bucket.clone(), child, 10 + child, 0).await.unwrap();
+                let writer =
+                    Writer::open(bucket.clone(), test_branch(child), 10 + child, 0).await.unwrap();
                 let held = match child {
                     _ if child == children.start => Some(extents[1]),
                     _ if child == children.end - 1 => Some(extents[2]),
@@ -2142,7 +2195,9 @@ mod tests {
         let kept = |keys: &[String]| -> Vec<bool> {
             extents
                 .iter()
-                .map(|&extent| keys.contains(&layout::extent(1, held_in, extent)))
+                .map(|&extent| {
+                    keys.contains(&layout::extent(layout::TEST_CELL, 1, held_in, extent))
+                })
                 .collect()
         };
         assert_eq!(kept(&block_on(keys(&*bucket))), [true, true, true]);
@@ -2160,13 +2215,13 @@ mod tests {
         use crate::writer::Objects;
         let bucket = store();
         let (extent, held_in) = block_on(async {
-            branch::create(&*bucket, 1, 0).await.unwrap();
-            let base = Writer::open(bucket.clone(), 1, 10, 0).await.unwrap();
+            branch::create(&*bucket, test_branch(1), 0).await.unwrap();
+            let base = Writer::open(bucket.clone(), test_branch(1), 10, 0).await.unwrap();
             let extent = ExtentId::new(1, base.chain().next_sequence());
             let held_in = base.chain().next_seq();
             let own = vec![(extent.sequence, b"held".to_vec())];
             commit(&base, Commit { tag: 1, own, ..Commit::default() }).await;
-            let forks = Contents { forks: vec![child(2)], ..Contents::default() };
+            let forks = Contents { forks: vec![child(test_branch(2))], ..Contents::default() };
             let footer = base.chain().close(forks);
             let segment = Segment { data: Vec::new(), footer: footer.clone() }.encode().into();
             let seq = base.add_segment(Objects { footer, segment, own: Vec::new() }).unwrap();
@@ -2176,21 +2231,28 @@ mod tests {
             commit(&base, Commit { tag: 2, frees: vec![extent], ..Commit::default() }).await;
             base.checkpoint().await.unwrap();
             // Its host took it, at a placement later than any since, and went.
-            let lease = layout::lease(2);
+            let lease = layout::lease(test_branch(2));
             branch::take_lease(&*bucket, &lease, 11, 7).await.unwrap();
             (extent, held_in)
         });
-        let kept = || block_on(keys(&*bucket)).contains(&layout::extent(1, held_in, extent));
+        let kept = || {
+            block_on(keys(&*bucket)).contains(&layout::extent(
+                layout::TEST_CELL,
+                1,
+                held_in,
+                extent,
+            ))
+        };
         block_on(collect(&*bucket, 1, &KEEP)).unwrap();
         assert!(kept(), "what the fork inherited went while it is live");
 
         let live = block_on(branch::live(&*bucket)).unwrap();
-        assert_eq!(live.keys().copied().collect::<Vec<_>>(), [1, 2]);
-        block_on(branch::delete(&*bucket, 2, 12, u64::MAX)).unwrap();
+        assert_eq!(live.keys().copied().collect::<Vec<_>>(), [test_branch(1), test_branch(2)]);
+        block_on(branch::delete(&*bucket, test_branch(2), 12, u64::MAX)).unwrap();
         block_on(collect(&*bucket, 2, &KEEP)).unwrap();
         assert!(!kept(), "what the fork inherited stayed once it was deleted");
         let live = block_on(branch::live(&*bucket)).unwrap();
-        assert_eq!(live.keys().copied().collect::<Vec<_>>(), [1]);
+        assert_eq!(live.keys().copied().collect::<Vec<_>>(), [test_branch(1)]);
     }
 
     /// TASK-79.82: a fork's child recovers from the origin its record names, not from a parent
@@ -2206,7 +2268,7 @@ mod tests {
         const CHILD: u64 = 3;
         /// Forks `writer`'s branch to `CHILD`, of `owner`: at the segment it returns.
         async fn fork(writer: &Writer<Store>, owner: u64) -> u64 {
-            let forked = Child { branch: CHILD, owner, point: false };
+            let forked = Child { branch: test_branch(CHILD), owner, point: false };
             let forks = Contents { forks: vec![forked], ..Contents::default() };
             let footer = writer.chain().close(forks);
             let segment = Segment { data: Vec::new(), footer: footer.clone() }.encode().into();
@@ -2218,9 +2280,9 @@ mod tests {
         let bucket = store();
         let (extent, held_in) = block_on(async {
             for branch in [REFUSED, PARENT].into_iter().chain(10..30) {
-                branch::create(&*bucket, branch, 0).await.unwrap();
+                branch::create(&*bucket, test_branch(branch), 0).await.unwrap();
             }
-            let parent = Writer::open(bucket.clone(), PARENT, 10, 0).await.unwrap();
+            let parent = Writer::open(bucket.clone(), test_branch(PARENT), 10, 0).await.unwrap();
             let extent = ExtentId::new(PARENT, parent.chain().next_sequence());
             let held_in = parent.chain().next_seq();
             let own = vec![(extent.sequence, b"held".to_vec())];
@@ -2229,16 +2291,16 @@ mod tests {
             parent.checkpoint().await.unwrap();
             commit(&parent, Commit { tag: 2, frees: vec![extent], ..Commit::default() }).await;
             parent.checkpoint().await.unwrap();
-            let refused = Writer::open(bucket.clone(), REFUSED, 11, 0).await.unwrap();
+            let refused = Writer::open(bucket.clone(), test_branch(REFUSED), 11, 0).await.unwrap();
             fork(&refused, 0x31).await;
-            assert!(refused.refused(CHILD));
+            assert!(refused.refused(test_branch(CHILD)));
             refused.checkpoint().await.unwrap();
-            let record = branch::record(&*bucket, CHILD).await.unwrap().unwrap();
-            assert_eq!(record.origin(), Some(Origin { parent: PARENT, at }));
+            let record = branch::record(&*bucket, test_branch(CHILD)).await.unwrap().unwrap();
+            assert_eq!(record.origin(), Some(Origin { parent: test_branch(PARENT), at }));
             (extent, held_in)
         });
         block_on(collect(&*bucket, 1, &KEEP)).unwrap();
-        let key = layout::extent(1, held_in, extent);
+        let key = layout::extent(layout::TEST_CELL, 1, held_in, extent);
         assert!(block_on(keys(&*bucket)).contains(&key), "what the child inherited went");
     }
 
@@ -2255,8 +2317,8 @@ mod tests {
         const FORKS: u64 = 100;
         let bucket = Arc::new(Direct(SimBucket::new()));
         block_on(async {
-            branch::create(&*bucket, 1, 0).await.unwrap();
-            let writer = Writer::open(bucket.clone(), 1, 10, 0).await.unwrap();
+            branch::create(&*bucket, test_branch(1), 0).await.unwrap();
+            let writer = Writer::open(bucket.clone(), test_branch(1), 10, 0).await.unwrap();
             let first = writer.chain().next_sequence();
             let extents =
                 (0..EXTENTS).map(|n| (ExtentId::new(1, first + n), n.to_le_bytes().to_vec()));
@@ -2266,7 +2328,7 @@ mod tests {
             writer.upload(seq).await.unwrap();
             writer.acknowledge().await.unwrap();
             let footer = writer.chain().close(Contents {
-                forks: (2..2 + FORKS).map(child).collect(),
+                forks: (2..2 + FORKS).map(|id| child(test_branch(id))).collect(),
                 ..Contents::default()
             });
             let segment = Segment { data: Vec::new(), footer: footer.clone() };
@@ -2296,7 +2358,7 @@ mod tests {
     struct DeletedAt {
         bucket: Direct,
         key: String,
-        child: u64,
+        child: Branch,
         done: AtomicBool,
     }
 
@@ -2355,7 +2417,7 @@ mod tests {
     /// having listed the records, as it starts to read that branch's state.
     struct Meanwhile<F> {
         bucket: Arc<Direct>,
-        branch: u64,
+        branch: Branch,
         meanwhile: std::sync::Mutex<Option<F>>,
     }
 
@@ -2439,8 +2501,8 @@ mod tests {
         const POINT: u64 = 2;
         const RESTORED: u64 = 3;
         let writer = block_on(async {
-            branch::create(&*direct, 1, 0).await.unwrap();
-            Arc::new(Writer::open(direct.clone(), 1, 10, 0).await.unwrap())
+            branch::create(&*direct, test_branch(1), 0).await.unwrap();
+            Arc::new(Writer::open(direct.clone(), test_branch(1), 10, 0).await.unwrap())
         });
         let extent = ExtentId::new(1, writer.chain().next_sequence());
         let extents = vec![(extent, b"held".to_vec())];
@@ -2460,7 +2522,7 @@ mod tests {
                         .add_segment(
                             batch
                                 .fork(
-                                    Child { branch: POINT, owner: 0, point: true },
+                                    Child { branch: test_branch(POINT), owner: 0, point: true },
                                     &mut writer.chain(),
                                 )
                                 .frame(),
@@ -2468,9 +2530,17 @@ mod tests {
                         .unwrap();
                     writer.upload(seq).await.unwrap();
                     writer.acknowledge().await.unwrap();
-                    let origin = Origin { parent: 1, at: seq };
-                    branch::fork_point(&*direct, RESTORED, POINT, origin, 0).await.unwrap();
-                    branch::delete(&*direct, POINT, 20, 0).await.unwrap();
+                    let origin = Origin { parent: test_branch(1), at: seq };
+                    branch::fork_point(
+                        &*direct,
+                        test_branch(RESTORED),
+                        test_branch(POINT),
+                        origin,
+                        0,
+                    )
+                    .await
+                    .unwrap();
+                    branch::delete(&*direct, test_branch(POINT), 20, 0).await.unwrap();
                     let frees = vec![extent];
                     let batch = Batch::from(Commit { tag: 3, frees, ..Commit::default() });
                     let seq = writer.add_segment(batch.close(&mut writer.chain()).frame()).unwrap();
@@ -2483,14 +2553,16 @@ mod tests {
         };
         let during = Meanwhile {
             bucket: direct.clone(),
-            branch: 1,
+            branch: test_branch(1),
             meanwhile: std::sync::Mutex::new(Some(meanwhile)),
         };
         let now = Options { compact_below: 0.0, grace: 0 };
         block_on(collect(&during, 1, &now)).unwrap();
         block_on(async {
-            let record = branch::record(&*direct, RESTORED).await.unwrap();
-            let recovered = recovery::recover(&*direct, RESTORED, record.unwrap().origin()).await?;
+            let record = branch::record(&*direct, test_branch(RESTORED)).await.unwrap();
+            let recovered =
+                recovery::recover(&*direct, test_branch(RESTORED), record.unwrap().origin())
+                    .await?;
             crate::read(&direct, extent, &recovered.state.extents[&extent]).await
         })
     }
@@ -2500,24 +2572,24 @@ mod tests {
     #[test]
     fn branches_lost_fail_the_pass_unless_deleted() {
         // Branch 2, forked from 1, which has no record; and a segment of no branch.
-        let origin = Origin { parent: 1, at: 0 };
-        let stray = layout::segment(3, 0);
+        let origin = Origin { parent: test_branch(1), at: 0 };
+        let stray = layout::segment(test_branch(3), 0);
         let sim = SimBucket::new();
         let direct = Direct(sim.clone());
         block_on(async {
-            branch::record_fork(&direct, child(2), origin).await.unwrap();
+            branch::record_fork(&direct, child(test_branch(2)), origin).await.unwrap();
             let bytes = layout::with_footer(b"", &());
             assert!(matches!(bucket::create(&direct, &stray, bytes).await, Created::Created));
         });
         let before = block_on(keys(&direct));
-        let lost = Error::Lost(layout::record(1));
+        let lost = Error::Lost(layout::record(test_branch(1)));
         assert_eq!(block_on(collect(&direct, 1, &KEEP)), Err(lost));
         assert_eq!(block_on(keys(&direct)), before);
 
         let deleting = DeletedAt {
             bucket: Direct(sim),
-            key: layout::record(1),
-            child: 2,
+            key: layout::record(test_branch(1)),
+            child: test_branch(2),
             done: AtomicBool::new(false),
         };
         let report = block_on(collect(&deleting, 2, &KEEP)).unwrap();
@@ -2541,8 +2613,8 @@ mod tests {
     /// all covered by a checkpoint, and an extent stored on its own, freed. The segment of the
     /// small extent is mostly freed: a pass compacting below half compacts it.
     async fn garbage(bucket: &Arc<Store>) {
-        branch::create(&**bucket, 1, 0).await.unwrap();
-        let writer = Writer::open(bucket.clone(), 1, 10, 0).await.unwrap();
+        branch::create(&**bucket, test_branch(1), 0).await.unwrap();
+        let writer = Writer::open(bucket.clone(), test_branch(1), 10, 0).await.unwrap();
         collect(&**bucket, 1, &KEEP).await.unwrap();
         let first = writer.chain().next_sequence();
         let (small, large, own) =
@@ -2560,8 +2632,13 @@ mod tests {
     /// its own; not the segment of the small extent, which is live, nor the fence, which the
     /// collector keeps (TASK-371).
     fn garbage_doomed() -> Vec<String> {
-        let own = layout::extent(1, 1, ExtentId::new(1, (1 << crate::EPOCH_SHIFT) + 2));
-        vec![own, layout::segment(1, 2)]
+        let own = layout::extent(
+            layout::TEST_CELL,
+            1,
+            1,
+            ExtentId::new(1, (1 << crate::EPOCH_SHIFT) + 2),
+        );
+        vec![own, layout::segment(test_branch(1), 2)]
     }
 
     /// TASK-264: a dry run writes nothing, not even the collector's lease, and compacts nothing; it
@@ -2580,7 +2657,7 @@ mod tests {
             assert_eq!(doomed, garbage_doomed());
             let compactable: Vec<String> =
                 dry.compactable.into_iter().map(|meta| meta.key).collect();
-            assert_eq!(compactable, [layout::segment(1, 1)]);
+            assert_eq!(compactable, [layout::segment(test_branch(1), 1)]);
             assert!(!dry.fenced);
 
             let keys_before = keys(&*bucket).await;
@@ -2600,7 +2677,7 @@ mod tests {
     fn dry_runs_a_pass_ran_during_say_so() {
         block_on(async {
             let direct = Arc::new(Direct(SimBucket::new()));
-            branch::create(&*direct, 1, 0).await.unwrap();
+            branch::create(&*direct, test_branch(1), 0).await.unwrap();
             // As the dry run reads the lease again, at its end.
             let during = Hooked::new(direct.clone(), Hook::Getting(layout::GC_LEASE.into(), 2));
             let passing = direct.clone();
@@ -2652,7 +2729,7 @@ mod tests {
             };
             let mut more: Vec<String> = after.iter().map(|(meta, _)| meta.key.clone()).collect();
             more.retain(|key| !listed.contains_key(key));
-            let moved = layout::moves(&layout::segment(1, 1));
+            let moved = layout::moves(&layout::segment(test_branch(1), 1));
             assert_eq!(more, [layout::marks(2), moved]);
             let left: Vec<_> = kept(&after)
                 .into_iter()
@@ -2666,7 +2743,7 @@ mod tests {
             let marked: Vec<String> =
                 next.marks.unwrap().marked.into_iter().map(|marked| marked.key).collect();
             let mut expected = garbage_doomed();
-            expected.push(layout::segment(1, 1));
+            expected.push(layout::segment(test_branch(1), 1));
             expected.sort();
             assert_eq!(marked, expected);
 
@@ -2690,8 +2767,8 @@ mod tests {
         let memory: Arc<dyn object_store::ObjectStore> = Arc::new(InMemory::new());
         let bucket = Arc::new(Store::new(memory.clone(), ""));
         let (late, key) = block_on(async {
-            branch::create(&*bucket, 1, 0).await.unwrap();
-            let writer = Writer::open(bucket.clone(), 1, 10, 0).await.unwrap();
+            branch::create(&*bucket, test_branch(1), 0).await.unwrap();
+            let writer = Writer::open(bucket.clone(), test_branch(1), 10, 0).await.unwrap();
             let first = writer.chain().next_sequence();
             let (late, early) = (ExtentId::new(1, first), ExtentId::new(1, first + 1));
             let extents = vec![(early, b"early".to_vec())];
@@ -2714,7 +2791,7 @@ mod tests {
             let marked: Vec<String> =
                 marking.unwrap().marks.unwrap().marked.into_iter().map(|m| m.key).collect();
             assert_eq!(marked, [key.as_str()]);
-            let segment = layout::segment(1, writer.chain().next_seq());
+            let segment = layout::segment(test_branch(1), writer.chain().next_seq());
             let created = bucket::create(&*bucket, &segment, objects.segment.read().unwrap()).await;
             assert!(matches!(created, Created::Created));
             (late, key.clone())
@@ -2727,7 +2804,7 @@ mod tests {
 
         let reader = Arc::new(Store::new(memory.clone(), ""));
         let read = block_on(async {
-            let recovered = recovery::recover(&*reader, 1, None).await.unwrap();
+            let recovered = recovery::recover(&*reader, test_branch(1), None).await.unwrap();
             crate::read(&reader, late, &recovered.state.extents[&late]).await
         });
         assert_eq!(read, Ok(b"late".to_vec()));

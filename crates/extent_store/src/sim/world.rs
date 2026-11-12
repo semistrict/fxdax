@@ -148,6 +148,13 @@ impl Default for Profile {
 
 /// The block size of the hosts' stores: small, so that a few blocks make an extent, and segments
 /// of a few extents close, full, between commits.
+/// fxdax: the simulation's branch `id`: the one volume of a cell of its own, as a store made alone,
+/// or a fork, is (TASK-364).
+fn sim_branch(id: u64) -> extent_remote::layout::Branch {
+    let cell = extent_remote::layout::Cell { tenant: 1, id };
+    extent_remote::layout::Branch { cell, id }
+}
+
 const BLOCK: u64 = 512;
 
 /// How the hosts' stores keep their branches: in segments of a few extents, those of three blocks
@@ -492,7 +499,7 @@ impl World {
             violations: Vec::new(),
         };
         let (root, owner) = (world.id(), world.id());
-        block_on(branch::create(&Direct(world.bucket.clone()), root, owner)).unwrap();
+        block_on(branch::create(&Direct(world.bucket.clone()), sim_branch(root), owner)).unwrap();
         world.branches.insert(root, Branch::forked(None, None, false, owner));
         world
     }
@@ -808,8 +815,12 @@ impl World {
     fn disk(&mut self, host: usize, branch: u64) -> &mut Disk {
         if !self.hosts[host].disks.contains_key(&branch) {
             let dir = MemDir::serial();
-            let description = Description { block_size: BLOCK as u32, capacity: CAPACITY, branch };
-            Store::make(&dir, description, Some("sim:///")).unwrap();
+            let description = Description {
+                block_size: BLOCK as u32,
+                capacity: CAPACITY,
+                branch: sim_branch(branch),
+            };
+            Store::make(&dir, description, Some("sim:///"), None).unwrap();
             let lineage = self.id();
             self.lineages.insert(lineage, BTreeMap::new());
             self.hosts[host].disks.insert(branch, Disk { dir, made: false, lineage });
@@ -958,7 +969,7 @@ impl World {
             };
             let origin = self.branches[&branch].origin;
             let direct = Direct(self.bucket.clone());
-            if let Ok(recovered) = block_on(recovery::recover(&direct, branch, origin))
+            if let Ok(recovered) = block_on(recovery::recover(&direct, sim_branch(branch), origin))
                 && recovering.holds_commit(recovered.state.last_commit)
             {
                 let last = recovered.state.last_commit;
@@ -993,7 +1004,11 @@ impl World {
             {
                 return Ok(Some(commit));
             }
-            at = self.branches.get(&of).and_then(|found| found.origin).map(|origin| origin.parent);
+            at = self
+                .branches
+                .get(&of)
+                .and_then(|found| found.origin)
+                .map(|origin| origin.parent.id);
         }
         Err(format!("branch {branch:x} names commit {tag:#x}, which no guest made"))
     }
@@ -1278,7 +1293,7 @@ impl World {
         let session = &self.hosts[host].sessions[&branch];
         let (store, uploader, parent) =
             (session.store.clone().unwrap(), session.uploader.clone(), session.guest.head);
-        let forked = Child { branch: child, owner, point };
+        let forked = Child { branch: sim_branch(child), owner, point };
         let before = match store.epoch() {
             Ok(before) => before,
             Err(err) => return self.store_failed(host, branch, err),
@@ -1310,7 +1325,7 @@ impl World {
                 open == takeover
             })
             .filter(|&(&branch, _)| {
-                matches!(block_on(branch::record(&direct, branch)), Ok(Some(_)))
+                matches!(block_on(branch::record(&direct, sim_branch(branch))), Ok(Some(_)))
             })
             .map(|(&branch, _)| branch)
             .collect();
@@ -1338,7 +1353,7 @@ impl World {
                 host.sessions.get(&branch)?.uploader.writer().map(|writer| writer.epoch())
             });
             if let Some(epoch) = writers.max() {
-                self.bucket.hold(branch, epoch);
+                self.bucket.hold(sim_branch(branch), epoch);
             }
         }
         self.start_session(host, branch, None);
@@ -1394,7 +1409,7 @@ impl World {
     /// The fork's child `child` as its making's guest knows it, wherever it is: a branch, or set
     /// aside while a restore or a root takes its ID; none once one of those took it.
     fn fork_child(&mut self, child: &Child) -> Option<&mut Branch> {
-        let id = child.branch;
+        let id = child.branch.id;
         let restore = self.restores.get_mut(&id).and_then(|restore| restore.taken.as_mut());
         let unfork = self.unforks.get_mut(&id).and_then(|unfork| unfork.taken.as_mut());
         [self.branches.get_mut(&id), restore, unfork, self.usurped.get_mut(&id)]
@@ -1410,7 +1425,7 @@ impl World {
         let mut found = Branch::forked(Some(origin), base, false, owner);
         found.deleting = true;
         self.branches.insert(child, found);
-        let forked = Kind::Forking { origin, point };
+        let forked = Kind::Forking { origin, point: sim_branch(point) };
         self.unforks.insert(child, Unfork { forked, owner, running: None, taken });
         self.spawn_unfork(child);
     }
@@ -1422,7 +1437,7 @@ impl World {
         (self.branches.iter())
             .filter(|(_, found)| found.point)
             .filter_map(|(&point, _)| {
-                let record = block_on(branch::record(&direct, point)).ok()??;
+                let record = block_on(branch::record(&direct, sim_branch(point))).ok()??;
                 Some((point, record.origin()?))
             })
             .collect()
@@ -1459,7 +1474,9 @@ impl World {
         (self.branches.iter())
             .filter(|(_, found)| found.origin.is_some() && !found.point && !found.deleting)
             .filter(|(child, found)| found.acked.is_empty() && found.taken == 0 && !held(child))
-            .filter(|&(&child, _)| matches!(block_on(branch::record(&direct, child)), Ok(None)))
+            .filter(|&(&child, _)| {
+                matches!(block_on(branch::record(&direct, sim_branch(child))), Ok(None))
+            })
             .map(|(&child, _)| child)
             .collect()
     }
@@ -1469,7 +1486,9 @@ impl World {
         let Restore { point, origin, owner, .. } = self.restores[&child];
         let (bucket, events) = (self.bucket.clone(), self.events.clone());
         let running = self.spawn(async move {
-            let result = branch::fork_point(&*bucket, child, point, origin, owner).await;
+            let result =
+                branch::fork_point(&*bucket, sim_branch(child), sim_branch(point), origin, owner)
+                    .await;
             events.borrow_mut().push(Event::Restored { child, result });
         });
         self.restores.get_mut(&child).unwrap().running = Some(running);
@@ -1485,7 +1504,7 @@ impl World {
         let holder = self.id();
         let (bucket, events) = (self.bucket.clone(), self.events.clone());
         self.spawn(async move {
-            let result = Writer::open(bucket, point, holder, holder).await.map(drop);
+            let result = Writer::open(bucket, sim_branch(point), holder, holder).await.map(drop);
             events.borrow_mut().push(Event::PointTaken { point, result });
         });
     }
@@ -1534,7 +1553,7 @@ impl World {
             .filter(|(_, found)| found.origin.is_some() && found.acked.is_empty())
             .filter(|(branch, found)| !found.deleting && found.taken == 0 && !held(branch))
             .filter(|&(&branch, _)| {
-                !self.branches.values().any(|child| forked(child.origin, branch))
+                !self.branches.values().any(|child| forked(child.origin, sim_branch(branch)))
             })
             .map(|(&branch, _)| branch)
             .collect();
@@ -1567,7 +1586,8 @@ impl World {
         let holder = self.id();
         let (bucket, events) = (self.bucket.clone(), self.events.clone());
         let running = self.spawn(async move {
-            let result = branch::delete_fork(&*bucket, child, forked, owner, holder, 0).await;
+            let result =
+                branch::delete_fork(&*bucket, sim_branch(child), forked, owner, holder, 0).await;
             events.borrow_mut().push(Event::Unforked { child, result });
         });
         self.unforks.get_mut(&child).unwrap().running = Some(running);
@@ -1581,10 +1601,11 @@ impl World {
         let (forks, owner) = (self.id(), self.id());
         let (bucket, events) = (self.bucket.clone(), self.events.clone());
         self.spawn(async move {
-            let deleting = branch::delete_fork(&*bucket, child, Kind::Own, forks, holder, 0);
+            let deleting =
+                branch::delete_fork(&*bucket, sim_branch(child), Kind::Own, forks, holder, 0);
             let taking = async {
-                branch::create(&*bucket, child, owner).await?;
-                branch::take_lease(&*bucket, &layout::lease(child), other, 0).await
+                branch::create(&*bucket, sim_branch(child), owner).await?;
+                branch::take_lease(&*bucket, &layout::lease(sim_branch(child)), other, 0).await
             };
             let (deleted, taken) = futures::join!(deleting, taking);
             events.borrow_mut().push(Event::Contested { child, owner, deleted, taken });
@@ -1600,8 +1621,8 @@ impl World {
         let (bucket, events) = (self.bucket.clone(), self.events.clone());
         self.spawn(async move {
             let (taken, also) = futures::join!(
-                branch::create_forked(&*bucket, child, first),
-                branch::create_forked(&*bucket, child, second)
+                branch::create_forked(&*bucket, sim_branch(child), first),
+                branch::create_forked(&*bucket, sim_branch(child), second)
             );
             events
                 .borrow_mut()
@@ -1623,9 +1644,9 @@ impl World {
         let (owner, holder) = (self.id(), self.id());
         let (bucket, events) = (self.bucket.clone(), self.events.clone());
         self.spawn(async move {
-            let created = branch::create(&*bucket, child, owner).await;
+            let created = branch::create(&*bucket, sim_branch(child), owner).await;
             let deleted = match created {
-                Ok(()) => Some(branch::delete(&*bucket, child, holder, 0).await),
+                Ok(()) => Some(branch::delete(&*bucket, sim_branch(child), holder, 0).await),
                 Err(_) => None,
             };
             events.borrow_mut().push(Event::Usurped { child, owner, created, deleted });
@@ -1638,7 +1659,8 @@ impl World {
         let holder = self.id();
         let (bucket, events) = (self.bucket.clone(), self.events.clone());
         self.spawn(async move {
-            let result = branch::delete_fork(&*bucket, child, Kind::Own, owner, holder, 0).await;
+            let result =
+                branch::delete_fork(&*bucket, sim_branch(child), Kind::Own, owner, holder, 0).await;
             events.borrow_mut().push(Event::Untwinned { child, result });
         });
     }
@@ -1657,7 +1679,10 @@ impl World {
             .filter(|&(&branch, _)| {
                 !bases
                     || self.branches.values().any(|child| {
-                        live(child) && child.origin.is_some_and(|origin| origin.parent == branch)
+                        live(child)
+                            && child
+                                .origin
+                                .is_some_and(|origin| origin.parent == sim_branch(branch))
                     })
             })
             .map(|(&branch, _)| branch)
@@ -1693,7 +1718,7 @@ impl World {
         let holder = self.id();
         let (bucket, events) = (self.bucket.clone(), self.events.clone());
         self.spawn(async move {
-            let result = match branch::delete(&*bucket, branch, holder, token).await {
+            let result = match branch::delete(&*bucket, sim_branch(branch), holder, token).await {
                 // A fork whose segment never made it: no branch.
                 Err(Error::NoBranch) => Ok(()),
                 result => result,
@@ -1822,7 +1847,10 @@ impl World {
         self.branches
             .keys()
             .copied()
-            .filter(|&id| matches!(block_on(branch::record(&direct, id)), Ok(Some(record)) if !record.deleted))
+            .filter(|&id| {
+                let record = block_on(branch::record(&direct, sim_branch(id)));
+                matches!(record, Ok(Some(record)) if !record.deleted)
+            })
             .collect()
     }
 
@@ -1898,7 +1926,8 @@ impl World {
         let mut named: BTreeMap<String, BTreeMap<ExtentId, u64>> = BTreeMap::new();
         for branch in self.live() {
             let origin = self.branches[&branch].origin;
-            let Ok(recovered) = block_on(recovery::recover(&direct, branch, origin)) else {
+            let Ok(recovered) = block_on(recovery::recover(&direct, sim_branch(branch), origin))
+            else {
                 continue;
             };
             touched.extend(recovered.touched);
@@ -1937,7 +1966,7 @@ impl World {
         let mut text = String::new();
         for branch in self.live() {
             let origin = self.branches[&branch].origin;
-            match block_on(recovery::recover(&direct, branch, origin)) {
+            match block_on(recovery::recover(&direct, sim_branch(branch), origin)) {
                 Ok(recovered) => {
                     let keys: BTreeSet<_> =
                         recovered.state.extents.values().map(|location| &location.key).collect();
@@ -2005,25 +2034,26 @@ impl World {
         let keys: BTreeSet<String> = self.bucket.keys().into_iter().collect();
         let mut maps = MovesMaps::default();
         for branch in self.live() {
-            needed.insert(layout::record(branch));
-            needed.insert(layout::lease(branch));
+            needed.insert(layout::record(sim_branch(branch)));
+            needed.insert(layout::lease(sim_branch(branch)));
             let origin = self.branches[&branch].origin;
-            let Ok(recovered) = block_on(recovery::recover(&direct, branch, origin)) else {
+            let Ok(recovered) = block_on(recovery::recover(&direct, sim_branch(branch), origin))
+            else {
                 continue;
             };
             needed.extend(recovered.touched);
             // Its writer may name its extents anywhere on their ways from where they were sealed,
             // unless its state is from a checkpoint of the writer holding its lease (TASK-175).
-            let lease = block_on(branch::lease_epoch(&direct, &layout::lease(branch))).ok();
+            let lease = block_on(branch::lease_epoch(&direct, &layout::lease(sim_branch(branch)))).ok();
             let behind = lease != recovered.checkpointer;
             // Its fences, which a writer taken over must find; and, while a writer takes it over,
             // its lease of an epoch past its state's, all its segments (TASK-371).
             if rules().fences_kept {
                 let fences = recovered.state.fences.iter();
-                needed.extend(fences.map(|&seq| layout::segment(branch, seq)));
+                needed.extend(fences.map(|&seq| layout::segment(sim_branch(branch), seq)));
             }
             if rules().takeovers_kept && lease.is_some_and(|lease| lease > recovered.state.epoch) {
-                let prefix = layout::segments(branch);
+                let prefix = layout::segments(sim_branch(branch));
                 needed.extend(keys.iter().filter(|key| key.starts_with(&prefix)).cloned());
             }
             for (extent, location) in &recovered.state.extents {
@@ -2051,6 +2081,11 @@ impl World {
                 && record.deleted
                 && !record.may_drop()
             {
+                continue;
+            }
+            // fxdax: cells' objects stay, as their branches' records do, their epochs fencing
+            // their volumes' leases (TASK-364).
+            if let layout::Kind::Cell { .. } = layout::kind(&key) {
                 continue;
             }
             if !needed.contains(&key) {
@@ -2127,7 +2162,7 @@ impl World {
         while let Some((seq, epoch)) = at
             && recovered.checkpoint.is_none_or(|checkpoint| seq > checkpoint)
         {
-            let (after, commits) = match footers.entry((branch, seq, epoch)) {
+            let (after, commits) = match footers.entry((branch.id, seq, epoch)) {
                 Entry::Occupied(known) => known.into_mut(),
                 Entry::Vacant(unknown) => {
                     let key = layout::segment(branch, seq);
@@ -2146,7 +2181,7 @@ impl World {
         }
         applied.reverse();
         let tags = applied.concat().into_iter();
-        tags.map(|tag| Ok(self.truth_of(branch, Some(tag))?.unwrap())).collect()
+        tags.map(|tag| Ok(self.truth_of(branch.id, Some(tag))?.unwrap())).collect()
     }
 
     /// Checks that every live branch holds what its commits made, up to one of its own, past
@@ -2159,10 +2194,13 @@ impl World {
         // Nothing writes a point: no segment of its, no checkpoint, no lease but its deletion's.
         for (&id, _) in self.branches.iter().filter(|(_, branch)| branch.point) {
             let written = |prefix: String| keys.iter().any(|key| key.starts_with(&prefix));
-            if written(layout::segments(id)) || written(layout::checkpoints(id)) {
+            if written(layout::segments(sim_branch(id)))
+                || written(layout::checkpoints(sim_branch(id)))
+            {
                 violations.push(format!("point {id:x} was written"));
             }
-            if let Some(object) = block_on(extent_remote::bucket::get(&*direct, &layout::lease(id)))
+            if let Some(object) =
+                block_on(extent_remote::bucket::get(&*direct, &layout::lease(sim_branch(id))))
                 && layout::Lease::decode(&object.bytes)
                     .is_ok_and(|lease| lease.epoch != layout::Lease::FINAL)
             {
@@ -2174,7 +2212,7 @@ impl World {
             if self.unforks.contains_key(&id) {
                 continue;
             }
-            let record = match block_on(branch::record(&*direct, id)) {
+            let record = match block_on(branch::record(&*direct, sim_branch(id))) {
                 Ok(Some(record)) if !record.deleted => record,
                 Ok(Some(_)) if !branch.deleting => {
                     violations
@@ -2196,28 +2234,44 @@ impl World {
             if record.forking().is_some() {
                 violations.push(format!("branch {id:x}, told made, is being made still"));
             }
-            // No placement took it back from a later one.
-            match block_on(extent_remote::bucket::get(&*direct, &layout::lease(id))) {
-                Some(object) => match layout::Lease::decode(&object.bytes) {
-                    Ok(lease) if lease.token < branch.taken => violations.push(format!(
-                        "branch {id:x}'s lease is an earlier placement's: token {} after {}",
-                        lease.token, branch.taken
-                    )),
-                    Ok(_) => {}
-                    Err(error) => violations.push(format!("branch {id:x}'s lease: {error}")),
-                },
-                None if branch.taken > 0 => {
+            // No placement took it back from a later one. fxdax: a placement takes the branch's cell,
+            // and its lease with the cell's epoch, which no taking of the cell by a later
+            // placement lowers (TASK-364).
+            let cell = block_on(extent_remote::cell::read(&*direct, sim_branch(id).cell));
+            let lease =
+                block_on(extent_remote::branch::lease(&*direct, &layout::lease(sim_branch(id))));
+            match (cell, lease) {
+                (Ok(Some(cell)), Ok(Some(lease))) => {
+                    if cell.token < branch.taken {
+                        violations.push(format!(
+                            "branch {id:x}'s cell is an earlier placement's: token {} after {}",
+                            cell.token, branch.taken
+                        ));
+                    }
+                    // A deletion's lease, final, is taken with the highest token there is.
+                    if lease.epoch != layout::Lease::FINAL && lease.token > cell.epoch {
+                        violations.push(format!(
+                            "branch {id:x}'s lease was taken at epoch {} of its cell, of epoch {}",
+                            lease.token, cell.epoch
+                        ));
+                    }
+                }
+                (Ok(_), Ok(None)) if branch.taken > 0 => {
                     violations.push(format!("branch {id:x}, taken, has no lease"));
                 }
-                None => {}
-            }
-            let recovered = match block_on(recovery::recover(&*direct, id, record.origin())) {
-                Ok(recovered) => recovered,
-                Err(error) => {
-                    violations.push(format!("branch {id:x}: {error}"));
-                    continue;
+                (Ok(_), Ok(_)) => {}
+                (Err(error), _) | (_, Err(error)) => {
+                    violations.push(format!("branch {id:x}'s cell or lease: {error}"));
                 }
-            };
+            }
+            let recovered =
+                match block_on(recovery::recover(&*direct, sim_branch(id), record.origin())) {
+                    Ok(recovered) => recovered,
+                    Err(error) => {
+                        violations.push(format!("branch {id:x}: {error}"));
+                        continue;
+                    }
+                };
             let state = &recovered.state;
             // Every acknowledged segment's objects exist: what recovering the branch read, and
             // what holds each extent it names, or the moves that say where that went.
@@ -2308,7 +2362,7 @@ impl World {
                 else {
                     continue;
                 };
-                let lease = block_on(branch::lease_epoch(&*direct, &layout::lease(id)));
+                let lease = block_on(branch::lease_epoch(&*direct, &layout::lease(sim_branch(id))));
                 if writer.stopped().is_some() || lease != Ok(writer.epoch()) {
                     continue;
                 }

@@ -82,14 +82,20 @@ impl Table {
 mod tests {
     use super::*;
     use crate::bucket::{Bucket, ByteRange, Meta, Object, PutMode, Version};
+    use crate::layout::test_branch;
     use crate::testing::{Direct, SimBucket};
     use std::future::Future;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     fn state(extents: u64) -> State {
-        let mut state = State::new(3);
+        state_in(extents, 1000)
+    }
+
+    /// A state of `extents` extents, `per_object` in each object.
+    fn state_in(extents: u64, per_object: u64) -> State {
+        let mut state = State::new(test_branch(3));
         for sequence in 0..extents {
-            let key = layout::segment(3, sequence / 1000);
+            let key = layout::segment(test_branch(3), sequence / per_object);
             let location = Location { key, offset: sequence * 4096, len: 4096 };
             state.extents.insert(ExtentId::new(3, sequence), location);
         }
@@ -207,14 +213,15 @@ mod tests {
     /// checkpoint's tail, which holds its table, once, with one ranged read, and a second, of the
     /// tail whole, if it is longer than the first read, as that of 2,000,000 extents is; then, for
     /// each lookup, the parts of its data the one block that would hold the extent's entry is in:
-    /// not the checkpoint whole.
+    /// not the checkpoint whole. Its keys front-coded (TASK-364), a tail that long names more
+    /// objects than a thousand extents' each.
     #[test]
     fn lookups_read_one_block() {
         use crate::fetch::{Budget, Fetcher, Limits, Memory};
         use crate::object::TAIL;
-        let state = state(2_000_000);
+        let state = state_in(2_000_000, 250);
         let bytes = encode(&state);
-        let key = layout::checkpoint(3, 7);
+        let key = layout::checkpoint(test_branch(3), 7);
         let bucket = Counting {
             bucket: Direct(SimBucket::new()),
             requests: AtomicU64::new(0),

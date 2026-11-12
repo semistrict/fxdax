@@ -47,10 +47,12 @@ use std::time::{Duration, Instant};
 use storage_device::ExtentId;
 
 const BLOCK: usize = 4096;
-const BRANCH: u64 = 1;
+/// The benchmark's branch: of a cell of no tenant's (TASK-364).
+const BRANCH: extent_store::Branch =
+    extent_store::Branch { cell: extent_store::Cell { tenant: 0, id: 1 }, id: 1 };
 
 fn extent(sequence: u64) -> ExtentId {
-    ExtentId::new(BRANCH, sequence)
+    ExtentId::new(BRANCH.id, sequence)
 }
 
 fn create<D: Dir>(dir: D, options: Options) -> Store<D> {
@@ -232,7 +234,7 @@ fn burst(mib: u64) {
     let closed = store.closed(usize::MAX).unwrap().len();
     let framed = started.elapsed();
     let after = extent_store::written();
-    let own = std::fs::read_dir(temp.path().join(format!("extents/{BRANCH:016x}"))).unwrap();
+    let own = std::fs::read_dir(temp.path().join(format!("extents/{:016x}", BRANCH.id))).unwrap();
     writes.print("writes");
     let ms = |took: Duration| took.as_secs_f64() * 1e3;
     println!(
@@ -274,7 +276,7 @@ fn durable(files: u64) {
         store.flush().unwrap();
         flushes.add(started.elapsed());
     }
-    let own = std::fs::read_dir(temp.path().join(format!("extents/{BRANCH:016x}"))).unwrap();
+    let own = std::fs::read_dir(temp.path().join(format!("extents/{:016x}", BRANCH.id))).unwrap();
     flushes.print(&format!("flushes of commits sealing {files} extents in files of their own"));
     println!("{} extents in files of their own", own.count());
 }

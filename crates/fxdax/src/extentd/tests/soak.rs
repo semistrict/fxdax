@@ -268,7 +268,7 @@ fn a_degraded_bucket_costs_the_daemon_nothing_it_does_not_bound() {
         if name == "out of service" {
             // Its commits waited at the lag bound, every store's.
             for (branch, status) in &statuses {
-                assert!(status.stalls > 0, "{branch:x}: no commit waited at the lag bound");
+                assert!(status.stalls > 0, "{branch}: no commit waited at the lag bound");
             }
         }
     }

@@ -48,7 +48,8 @@
 //! - `fxdax_extentd_upload_pending_bytes{branch}`, `fxdax_extentd_upload_oldest_pending_seconds
 //!   {branch}` and `fxdax_extentd_upload_stalls_total{branch}`: for each open store whose commits
 //!   upload, its commits' bytes not yet uploaded, how long the oldest of them has waited, and how
-//!   many commits waited for the lag to shrink (TASK-91.3); its branch in hexadecimal.
+//!   many commits waited for the lag to shrink (TASK-91.3); its branch as `TENANT/CELL/ID`, in
+//!   hexadecimal (TASK-364).
 //! - fxdax: `fxdax_extentd_upload_held_bytes`, `fxdax_extentd_upload_held_max_bytes` and
 //!   `fxdax_extentd_upload_memory_bytes`: the bytes of objects the stores' uploads hold in memory,
 //!   every store's together, now and at most, and their budget, `FXDAX_EXTENTD_UPLOAD_MEMORY`
@@ -413,8 +414,7 @@ pub fn render() -> String {
         let _ = writeln!(out, "# HELP fxdax_extentd_{name} {help}");
         let _ = writeln!(out, "# TYPE fxdax_extentd_{name} {kind}");
         for (branch, status) in &uploads {
-            let _ =
-                writeln!(out, "fxdax_extentd_{name}{{branch=\"{branch:x}\"}} {}", value(status));
+            let _ = writeln!(out, "fxdax_extentd_{name}{{branch=\"{branch}\"}} {}", value(status));
         }
     }
 

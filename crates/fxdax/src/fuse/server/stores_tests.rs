@@ -292,16 +292,16 @@ fn a_store_detached_by_force_is_unmounted_at_once() {
     block_on(server.unmount()).unwrap();
 }
 
-/// What attaching and detaching refuse: a name taken, a name no directory holds, a name not
-/// attached; a store that fails to open leaves its name free; a server of one filesystem attaches
-/// none; and once the kernel destroys the mount, none is attached.
+/// What attaching and detaching refuse: a name taken, a path of a name no directory holds, a
+/// name not attached; a store that fails to open leaves its name free; a server of one
+/// filesystem attaches none; and once the kernel destroys the mount, none is attached.
 #[test]
 fn attaching_and_detaching_refuse_what_they_cant_do() {
     let (server, _notified) = stores();
     let errno = |attached: Result<(), Error>| attached.unwrap_err().errno();
     block_on(server.attach("a", filesystem())).unwrap();
     assert_eq!(errno(block_on(server.attach("a", filesystem()))), Some(Errno::EEXIST));
-    for name in ["", ".", "..", "a/b"] {
+    for name in ["", ".", "..", "b/", "/b", "b/../c"] {
         assert_eq!(
             errno(block_on(server.attach(name, filesystem()))),
             Some(Errno::EINVAL),
@@ -334,4 +334,100 @@ fn attaching_and_detaching_are_send() {
     let (server, _notified) = stores();
     send(server.attach("a", filesystem()));
     send(server.detach("a", false));
+}
+
+/// fxdax: stores attached at paths are under directories of the server's own, one a name a path
+/// goes through, made as the first store under it is attached and gone with the last: as a host's
+/// mount shows cells' volumes at `TENANT/CELL/VOLUME` (TASK-364). Those directories are the
+/// server's, `OWNER`'s, 0755, given for no time, nothing made in them nor moved in or out of them;
+/// each store's root's parent is the directory it is in. A path through a store's root, or ending
+/// at a directory of the server's, or another store's, is refused; one with an empty name too.
+#[test]
+fn stores_attached_at_paths_are_under_directories_of_the_servers() {
+    let (server, _notified) = stores();
+    let root = root_object();
+    block_on(server.attach("t/c/root", filesystem())).unwrap();
+    block_on(server.attach("t/c/data", filesystem())).unwrap();
+    block_on(server.attach("u/d/root", filesystem())).unwrap();
+    let names = |attached: Vec<Attached>| -> Vec<String> {
+        attached.into_iter().map(|attached| attached.name).collect()
+    };
+    assert_eq!(names(server.attached()), ["t/c/root", "t/c/data", "u/d/root"]);
+
+    let t = lookup(&server, ROOT_ID, "t").unwrap();
+    assert_eq!((t.nodeid >> SLOT_SHIFT, t.entry_valid, t.attr.ino), (0, 0, t.nodeid));
+    let c = lookup(&server, t.nodeid, "c").unwrap();
+    let u = lookup(&server, ROOT_ID, "u").unwrap();
+    assert!([t.nodeid, c.nodeid, u.nodeid].iter().all(|&id| id != ROOT_ID) && t.nodeid != c.nodeid);
+    let attr = getattr(&server, c.nodeid).unwrap().attr;
+    assert_eq!(
+        (attr.ino, attr.mode, attr.uid, attr.gid),
+        (c.nodeid, FileType::Directory.mode_bits() | 0o755, OWNER.uid, OWNER.gid)
+    );
+    let (data, store) =
+        (lookup(&server, c.nodeid, "data").unwrap(), lookup(&server, c.nodeid, "root").unwrap());
+    assert_eq!((store.nodeid, data.nodeid), (id(1, root), id(2, root)));
+    assert_eq!(
+        readdir(&server, ROOT_ID),
+        [
+            (".".into(), ROOT_ID),
+            ("..".into(), ROOT_ID),
+            ("t".into(), t.nodeid),
+            ("u".into(), u.nodeid)
+        ]
+    );
+    assert_eq!(
+        readdir(&server, c.nodeid),
+        [
+            (".".into(), c.nodeid),
+            ("..".into(), t.nodeid),
+            ("data".into(), id(2, root)),
+            ("root".into(), id(1, root))
+        ]
+    );
+    // A store's root is in its cell's directory.
+    let listed = readdir(&server, store.nodeid);
+    assert_eq!(listed[..2], [(".".into(), id(1, root)), ("..".into(), c.nodeid)]);
+
+    for (dir, name) in [(ROOT_ID, "x"), (t.nodeid, "x"), (c.nodeid, "x")] {
+        assert_eq!(mkdir(&server, dir, name).unwrap_err(), Errno::EPERM);
+    }
+    assert_eq!(rename(&server, (c.nodeid, "root"), (c.nodeid, "other")), Err(Errno::EPERM));
+    assert_eq!(rename(&server, (t.nodeid, "c"), (u.nodeid, "c")), Err(Errno::EPERM));
+    let x = mkdir(&server, store.nodeid, "x").unwrap();
+    assert_eq!(rename(&server, (store.nodeid, "x"), (data.nodeid, "x")), Err(Errno::EXDEV));
+    assert_eq!(rename(&server, (store.nodeid, "x"), (c.nodeid, "x")), Err(Errno::EXDEV));
+
+    for (taken, refused) in [
+        ("t/c/root/deeper", Errno::EEXIST),
+        ("t/c", Errno::EEXIST),
+        ("t/c/root", Errno::EEXIST),
+        ("t//root", Errno::EINVAL),
+        ("t/c/", Errno::EINVAL),
+    ] {
+        let attached = block_on(server.attach(taken, filesystem()));
+        assert_eq!(attached.map_err(|err| err.errno()), Err(Some(refused)), "{taken}");
+    }
+    assert_eq!(names(server.attached()), ["t/c/root", "t/c/data", "u/d/root"]);
+
+    // The last store under a directory gone, it goes, and its parents with it; the others stay.
+    forget(&server, x.nodeid, 1);
+    forget(&server, store.nodeid, 1);
+    block_on(server.detach("t/c/root", false)).unwrap();
+    assert_eq!(listed_names(&readdir(&server, c.nodeid)), [".", "..", "data"]);
+    forget(&server, data.nodeid, 1);
+    block_on(server.detach("t/c/data", false)).unwrap();
+    assert_eq!(listed_names(&readdir(&server, ROOT_ID)), [".", "..", "u"]);
+    assert_eq!(getattr(&server, c.nodeid).unwrap_err(), Errno::ESTALE);
+    assert_eq!(getattr(&server, t.nodeid).unwrap_err(), Errno::ESTALE);
+    assert_eq!(lookup(&server, ROOT_ID, "t").unwrap().nodeid, 0);
+    // Attached again under it, a directory of a node ID of its own, never one before.
+    block_on(server.attach("t/c/root", filesystem())).unwrap();
+    let again = lookup(&server, ROOT_ID, "t").unwrap();
+    assert!(again.nodeid != t.nodeid && again.nodeid != c.nodeid && again.nodeid != u.nodeid);
+    block_on(server.unmount()).unwrap();
+
+    fn listed_names(listed: &[(String, u64)]) -> Vec<&str> {
+        listed.iter().map(|(name, _)| name.as_str()).collect()
+    }
 }

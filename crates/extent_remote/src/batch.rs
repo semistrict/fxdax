@@ -11,7 +11,7 @@
 //! planned by the lengths of the extents they seal ([`Plan`]), whose objects read their data only
 //! as they upload ([`objects`]).
 
-use crate::layout::{self, Chain, Child, Contents, Footer, Segment};
+use crate::layout::{self, Branch, Chain, Child, Contents, Footer, Segment};
 use crate::writer::{Body, Objects};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
@@ -123,10 +123,11 @@ impl Plan {
 
     /// Its footer's contents, as `branch`'s: what its commits sealed that none of them freed, and
     /// what they freed that a commit before held.
-    fn contents(self, branch: u64) -> Contents {
+    fn contents(self, branch: Branch) -> Contents {
         let Self { mut contents, extents, own, frees, .. } = self;
         let in_data = extents.iter().map(|&((extent, ..), by)| (extent, by));
-        let on_own = own.iter().map(|&((sequence, _), by)| (ExtentId::new(branch, sequence), by));
+        let on_own =
+            own.iter().map(|&((sequence, _), by)| (ExtentId::new(branch.id, sequence), by));
         let sealed: HashMap<ExtentId, usize> = in_data.chain(on_own).collect();
         let mut freed = HashSet::new();
         for (extent, by) in frees {
@@ -148,7 +149,7 @@ impl Plan {
             .collect();
         contents.own = (own.into_iter())
             .map(|(sealed, _)| sealed)
-            .filter(|&(sequence, _)| held(&ExtentId::new(branch, sequence)))
+            .filter(|&(sequence, _)| held(&ExtentId::new(branch.id, sequence)))
             .collect();
         contents
     }
@@ -302,6 +303,7 @@ impl Data {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::layout::test_branch;
     use crate::layout::{Footer, child};
 
     /// The next sequence number the footer of `commit`'s segment, closed on `chain`, names.
@@ -315,7 +317,7 @@ mod tests {
     #[test]
     fn writers_mint_past_what_their_commits_seal() {
         let first = 5 << crate::EPOCH_SHIFT;
-        let mut chain = Chain::new(1, 5, 1, Some((0, 5)), first);
+        let mut chain = Chain::new(test_branch(1), 5, 1, Some((0, 5)), first);
         let extents = vec![(ExtentId::new(1, first + 3), b"in".to_vec())];
         assert_eq!(
             next_sequence(Commit { tag: 1, extents, ..Commit::default() }, &mut chain),
@@ -341,7 +343,7 @@ mod tests {
     /// a fork is at its end.
     #[test]
     fn batches_frame_their_commits() {
-        let mut chain = Chain::new(1, 2, 0, None, 0);
+        let mut chain = Chain::new(test_branch(1), 2, 0, None, 0);
         let (small, large, freed) = (ExtentId::new(1, 3), ExtentId::new(1, 4), ExtentId::new(1, 1));
         let mut batch = Batch::default();
         assert!(batch.is_empty());
@@ -354,14 +356,14 @@ mod tests {
         batch.commit(Commit { tag: 8, own, frees, root, capacity, ..Commit::default() });
         batch.commit(Commit { tag: 9, ..Commit::default() });
         assert!(!batch.is_empty());
-        let objects = batch.fork(child(9), &mut chain).frame();
+        let objects = batch.fork(child(test_branch(9)), &mut chain).frame();
         let segment = objects.segment.read().unwrap();
         let footer: Footer = layout::footer(&segment).unwrap();
         assert_eq!(footer, objects.footer);
         assert_eq!((footer.seq, footer.epoch, footer.after), (0, 2, None));
         assert_eq!(footer.contents.commits, [7, 8, 9]);
         assert_eq!(footer.contents.extents, [(small, 0, 5)]);
-        let key = layout::extent(2, footer.seq, large);
+        let key = layout::extent(layout::TEST_CELL, 2, footer.seq, large);
         assert_eq!(
             footer.own().collect::<Vec<_>>(),
             [(large, layout::Location { key: key.clone(), offset: 0, len: 5 })]
@@ -369,7 +371,7 @@ mod tests {
         let contents = footer.contents;
         assert_eq!(
             (contents.frees, contents.root, contents.forks, contents.capacity),
-            (vec![freed], Some(b"two".to_vec()), vec![child(9)], Some(2 << 20))
+            (vec![freed], Some(b"two".to_vec()), vec![child(test_branch(9))], Some(2 << 20))
         );
         assert_eq!(layout::data(&segment).unwrap(), b"small");
         let [(own_key, own)] = &objects.own[..] else {
@@ -387,7 +389,7 @@ mod tests {
     /// is freed as it is.
     #[test]
     fn batches_free_what_a_commit_before_held() {
-        let mut chain = Chain::new(1, 2, 0, None, 0);
+        let mut chain = Chain::new(test_branch(1), 2, 0, None, 0);
         let (small, large, other) = (ExtentId::new(1, 3), ExtentId::new(1, 4), ExtentId::new(1, 5));
         let (written, inherited, kept) =
             (ExtentId::new(1, 6), ExtentId::new(9, 4), ExtentId::new(1, 7));
@@ -401,7 +403,7 @@ mod tests {
         let objects = batch.close(&mut chain).frame();
         let footer = objects.footer;
         assert_eq!(footer.contents.extents, [(kept, 5, 4)]);
-        let key = layout::extent(2, 0, other);
+        let key = layout::extent(layout::TEST_CELL, 2, 0, other);
         assert_eq!(
             footer.own().collect::<Vec<_>>(),
             [(other, layout::Location { key: key.clone(), offset: 0, len: 5 })]
@@ -431,7 +433,7 @@ mod tests {
             root: root.clone(),
             capacity: Some(1 << 20),
         };
-        let chain = Chain::new(1, 2, 0, None, 0);
+        let chain = Chain::new(test_branch(1), 2, 0, None, 0);
         let batch = Batch::from(commit).close(&mut chain.clone()).frame();
         let mut plan = Plan::default();
         for (extent, own) in [(small, false), (other, false), (large, true)] {

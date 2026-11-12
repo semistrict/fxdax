@@ -66,8 +66,10 @@ impl Host {
 /// one a later placement holds, which a placement cut off takes back no more, or one another
 /// writer moved on from this host's write-ahead log, which the store opens no more until
 /// `fxdaxctl take` drops it, `ESTALE`; a branch, or a point, gone, `ENOENT`; a fork's child's ID
-/// taken, `EEXIST`; a branch of a newer format, `ENOTSUP`. None for what the store failed to read
-/// or write, here or in object storage, which is the caller's `EIO`, logged.
+/// taken, `EEXIST`; a branch of a newer format, `ENOTSUP`. fxdax: a cell, or a volume of one,
+/// gone, `ENOENT`; a volume's name taken, `EEXIST`, or no volume's, `EINVAL` (TASK-364). None for
+/// what the store failed to read or write, here or in object storage, which is the caller's `EIO`,
+/// logged.
 pub(crate) fn errno(failure: &Failure) -> Option<crate::Errno> {
     use crate::Errno;
     use extent_remote::Error;
@@ -76,8 +78,10 @@ pub(crate) fn errno(failure: &Failure) -> Option<crate::Errno> {
             Some(Errno::EROFS)
         }
         Failure::Remote(Error::Stale | Error::Diverged) => Some(Errno::ESTALE),
-        Failure::Remote(Error::NoBranch) | Failure::PointDeleted => Some(Errno::ENOENT),
-        Failure::Remote(Error::ChildTaken(_)) => Some(Errno::EEXIST),
+        Failure::Remote(Error::NoBranch | Error::NoCell | Error::NoVolume(_))
+        | Failure::PointDeleted => Some(Errno::ENOENT),
+        Failure::Remote(Error::ChildTaken(_) | Error::VolumeExists(_)) => Some(Errno::EEXIST),
+        Failure::Remote(Error::VolumeName(_)) => Some(Errno::EINVAL),
         // A branch of a newer format than this host reads, until it is upgraded (doc-11).
         Failure::Remote(Error::Format { .. }) => Some(Errno::ENOTSUP),
         Failure::Remote(Error::Lost(_) | Error::Corrupt(_) | Error::Read(_))
@@ -253,11 +257,11 @@ mod tests {
     /// in `bucket`, its uploader uploading as `keeping` says.
     pub(super) fn kept_in(
         path: impl AsRef<std::path::Path>,
-        (capacity, branch): (u64, Option<u64>),
+        (capacity, branch): (u64, Option<crate::Branch>),
         bucket: &Arc<Bucket>,
         keeping: extent_store::upload::Options,
     ) -> Result<ExtentStore, crate::Error> {
-        let branch = branch.unwrap_or_else(crate::host_store::new_branch);
+        let branch = branch.unwrap_or_else(crate::host_store::new_alone);
         ExtentStore::create_kept_with(path, capacity, branch, &url_of(bucket), keeping)
     }
 
@@ -303,7 +307,7 @@ mod tests {
     }
 
     fn write(store: &ExtentStore, sequence: u64, data: &[u8]) -> ExtentId {
-        let extent = ExtentId { branch: store.branch(), sequence };
+        let extent = ExtentId { branch: store.branch().id, sequence };
         store.write(extent, 0, &[VolatileSlice::from(data)]).unwrap();
         extent
     }
@@ -312,7 +316,7 @@ mod tests {
     pub(super) type Uploaded = (Vec<(u64, Vec<u8>)>, Option<Vec<u8>>);
 
     /// The branch's extents and root, read back from `bucket`.
-    pub(super) fn uploaded(bucket: &Arc<Bucket>, branch: u64) -> Uploaded {
+    pub(super) fn uploaded(bucket: &Arc<Bucket>, branch: crate::Branch) -> Uploaded {
         futures::executor::block_on(async {
             let state = recover(&**bucket, branch, None).await.unwrap().state;
             let mut extents = Vec::new();
@@ -345,8 +349,8 @@ mod tests {
         write(&store, 3, &large);
         write(&store, 4, &pattern(4, BLOCK));
         store.commit_ordered(None).unwrap();
-        store.free(ExtentId { branch, sequence: 1 }).unwrap();
-        store.free(ExtentId { branch, sequence: 4 }).unwrap();
+        store.free(ExtentId { branch: branch.id, sequence: 1 }).unwrap();
+        store.free(ExtentId { branch: branch.id, sequence: 4 }).unwrap();
         store.commit(Some(b"second")).unwrap();
         assert_eq!(
             uploaded(&bucket, branch),
@@ -354,8 +358,24 @@ mod tests {
         );
         // Extent 4, written and freed between two uploads, never was.
         let keys = futures::executor::block_on(extent_remote::Bucket::list(&*bucket, "")).unwrap();
-        assert_eq!(keys.iter().filter(|meta| meta.key.starts_with("extents/")).count(), 1);
-        let segments = keys.iter().filter(|meta| meta.key.starts_with("segments/")).count();
+        assert_eq!(
+            keys.iter()
+                .filter(|meta| matches!(
+                    extent_remote::layout::kind(&meta.key),
+                    extent_remote::layout::Kind::Extent { .. }
+                ))
+                .count(),
+            1
+        );
+        let segments = keys
+            .iter()
+            .filter(|meta| {
+                matches!(
+                    extent_remote::layout::kind(&meta.key),
+                    extent_remote::layout::Kind::Segment { .. }
+                )
+            })
+            .count();
 
         // Opened again, the store's uploader finds the branch as it left it.
         drop(store);
@@ -368,7 +388,12 @@ mod tests {
         let keys = futures::executor::block_on(extent_remote::Bucket::list(&*bucket, "")).unwrap();
         // Its fence, and nothing more.
         assert_eq!(
-            keys.iter().filter(|meta| meta.key.starts_with("segments/")).count(),
+            keys.iter()
+                .filter(|meta| matches!(
+                    extent_remote::layout::kind(&meta.key),
+                    extent_remote::layout::Kind::Segment { .. }
+                ))
+                .count(),
             segments + 1
         );
         write(&store, 5, &pattern(5, BLOCK));
@@ -387,8 +412,7 @@ mod tests {
         use extent_remote::{Batch, Commit, Writer};
         let dir = tempfile::tempdir().unwrap();
         let bucket = Arc::new(Bucket::new(Arc::new(InMemory::new()), ""));
-        let (branch, token) =
-            (crate::host_store::new_branch(), crate::host_store::token().unwrap());
+        let (branch, token) = (crate::host_store::new_alone(), crate::host_store::token().unwrap());
         // The writer before, its two segments in flight.
         let before = futures::executor::block_on(async {
             branch::create(&*bucket, branch, 1).await.unwrap();
@@ -466,7 +490,7 @@ mod tests {
         }
         store.commit(None).unwrap();
         for sequence in 4..=16 {
-            store.free(ExtentId { branch, sequence }).unwrap();
+            store.free(ExtentId { branch: branch.id, sequence }).unwrap();
         }
         checkpointed(&store, &bucket);
         // The segment compacted, 1 to 3 into its moves; the writer's checkpoint follows them; the
@@ -480,8 +504,8 @@ mod tests {
                 .into_iter()
                 .map(|meta| meta.key)
                 .collect();
-        let moves = format!("moves/segments/{branch:016x}/");
-        let first = format!("segments/{branch:016x}/{:016x}", 1);
+        let moves = format!("moves/{}", extent_remote::layout::segments(branch));
+        let first = extent_remote::layout::segment(branch, 1);
         assert!(keys.iter().any(|key| key.starts_with(&moves)), "{keys:?}");
         assert!(!keys.contains(&first), "{keys:?}");
         // The host dies: its disk copied as it is, its cache not, its store cut off.
@@ -492,7 +516,7 @@ mod tests {
         let opened = reopened(&restarted, idle()).unwrap();
         let mut data = vec![0; EXTENT];
         let read = opened.read(
-            ExtentId { branch, sequence: 1 },
+            ExtentId { branch: branch.id, sequence: 1 },
             0,
             &mut [crate::VolatileSliceMut::from(&mut data[..])],
         );
@@ -540,19 +564,19 @@ mod tests {
         }
         parent.commit(None).unwrap();
         for sequence in 4..=16 {
-            parent.free(ExtentId { branch, sequence }).unwrap();
+            parent.free(ExtentId { branch: branch.id, sequence }).unwrap();
         }
         parent.commit(None).unwrap();
         let child = dir.path().join("child");
-        parent.fork(&child, branch + 1).unwrap();
+        parent.fork(&child, crate::host_store::fork_of(branch, branch.id + 1)).unwrap();
         drop(parent);
         crate::host_store::delete(&path, Some(&bucket), crate::host_store::token).unwrap();
         // The fork's store, open all along: the segment compacted, 1 to 3 in its moves.
         let child = reopened(&child, idle()).unwrap();
         assert_eq!(collect(1).compacted, 1);
         // It frees 2 and 3, and its writer checkpoints, naming 1 in the moves.
-        child.free(ExtentId { branch, sequence: 2 }).unwrap();
-        child.free(ExtentId { branch, sequence: 3 }).unwrap();
+        child.free(ExtentId { branch: branch.id, sequence: 2 }).unwrap();
+        child.free(ExtentId { branch: branch.id, sequence: 3 }).unwrap();
         checkpointed(&child, &bucket);
         // The segment goes, no state naming it there; the moves are compacted, then go too.
         collect(3);
@@ -562,14 +586,20 @@ mod tests {
                 .unwrap()
                 .into_iter()
                 .map(|meta| meta.key)
-                .filter(|key| key.starts_with("moves/") || key.starts_with("segments/"))
+                .filter(|key| {
+                    key.starts_with("moves/")
+                        || matches!(
+                            extent_remote::layout::kind(key),
+                            extent_remote::layout::Kind::Segment { .. }
+                        )
+                })
                 .collect();
-        let once = format!("moves/segments/{branch:016x}/");
-        let twice = format!("moves/moves/segments/{branch:016x}/");
+        let once = format!("moves/{}", extent_remote::layout::segments(branch));
+        let twice = format!("moves/moves/{}", extent_remote::layout::segments(branch));
         assert!(keys.iter().any(|key| key.starts_with(&twice)), "{keys:?}");
         assert!(!keys.iter().any(|key| key.starts_with(&once)), "{keys:?}");
         let mut data = vec![0; EXTENT];
-        let extent = ExtentId { branch, sequence: 1 };
+        let extent = ExtentId { branch: branch.id, sequence: 1 };
         let read = child.read(extent, 0, &mut [crate::VolatileSliceMut::from(&mut data[..])]);
         assert_eq!(read.map(|()| data == noise(1, EXTENT)), Ok(true));
     }
@@ -598,7 +628,7 @@ mod tests {
         }
         store.commit(None).unwrap();
         for sequence in 4..=16 {
-            store.free(ExtentId { branch, sequence }).unwrap();
+            store.free(ExtentId { branch: branch.id, sequence }).unwrap();
         }
         // Its writer checkpoints, as every so many segments, each commit here one.
         checkpointed(&store, &bucket);
@@ -606,8 +636,8 @@ mod tests {
         assert_eq!(collect(1).compacted, 1);
         // The store frees 2 and 3, and its writer checkpoints, as every so many segments, naming 1
         // in the moves, which hold a third of what they did.
-        store.free(ExtentId { branch, sequence: 2 }).unwrap();
-        store.free(ExtentId { branch, sequence: 3 }).unwrap();
+        store.free(ExtentId { branch: branch.id, sequence: 2 }).unwrap();
+        store.free(ExtentId { branch: branch.id, sequence: 3 }).unwrap();
         checkpointed(&store, &bucket);
         // A follower of the store, which reads what the store names.
         let follower = store.follow();
@@ -619,14 +649,20 @@ mod tests {
                 .unwrap()
                 .into_iter()
                 .map(|meta| meta.key)
-                .filter(|key| key.starts_with("moves/") || key.starts_with("segments/"))
+                .filter(|key| {
+                    key.starts_with("moves/")
+                        || matches!(
+                            extent_remote::layout::kind(key),
+                            extent_remote::layout::Kind::Segment { .. }
+                        )
+                })
                 .collect();
-        let twice = format!("moves/moves/segments/{branch:016x}/");
-        let once = format!("moves/segments/{branch:016x}/");
+        let twice = format!("moves/moves/{}", extent_remote::layout::segments(branch));
+        let once = format!("moves/{}", extent_remote::layout::segments(branch));
         assert!(keys.iter().any(|key| key.starts_with(&twice)), "{keys:?}");
         assert!(!keys.iter().any(|key| key.starts_with(&once)), "{keys:?}");
         // The store, open all along, reads it there, and so does its follower.
-        let extent = ExtentId { branch, sequence: 1 };
+        let extent = ExtentId { branch: branch.id, sequence: 1 };
         let reads = |store: &ExtentStore| {
             let mut data = vec![0; EXTENT];
             let read = store.read(extent, 0, &mut [crate::VolatileSliceMut::from(&mut data[..])]);
@@ -636,7 +672,7 @@ mod tests {
     }
 
     /// The footers of `branch`'s segments in `bucket`, in order.
-    fn footers(bucket: &Bucket, branch: u64) -> Vec<extent_remote::layout::Footer> {
+    fn footers(bucket: &Bucket, branch: crate::Branch) -> Vec<extent_remote::layout::Footer> {
         use extent_remote::layout;
         futures::executor::block_on(async {
             let listed = extent_remote::Bucket::list(bucket, &layout::segments(branch)).await;
@@ -690,8 +726,14 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let bucket = Arc::new(Bucket::new(Arc::new(InMemory::new()), ""));
         let path = dir.path().join("store");
-        let opened =
-            crate::host_store::create_unmade(&path, 1 << 30, 7, Some(&url_of(&bucket)), options);
+        let opened = crate::host_store::create_unmade(
+            &path,
+            1 << 30,
+            extent_remote::layout::test_branch(7),
+            extent_remote::cell::Kind::Fxfs,
+            Some(&url_of(&bucket)),
+            options,
+        );
         let opened = opened.unwrap();
         let store = &opened.store;
         store.write(super::ExtentId::new(7, 1), 0, &pattern(1, EXTENT)).unwrap();
@@ -745,8 +787,15 @@ mod tests {
         };
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("store");
-        let branch = crate::host_store::new_branch();
-        let opened = crate::host_store::create(&path, 1 << 30, branch, idle()).unwrap();
+        let branch = crate::host_store::new_alone();
+        let opened = crate::host_store::create(
+            &path,
+            1 << 30,
+            branch,
+            extent_remote::cell::Kind::Fxfs,
+            idle(),
+        )
+        .unwrap();
         let crate::host_store::Opened { store, remote, .. } = opened;
         assert!(!free(&path), "taken while the store is open");
         store.close().unwrap();
@@ -824,7 +873,7 @@ mod tests {
 
         // The store's files of `kind`, by their contents.
         let files = |kind: &str| -> Vec<Vec<u8>> {
-            let path = dir.path().join("store").join(kind).join(format!("{branch:016x}"));
+            let path = dir.path().join("store").join(kind).join(format!("{:016x}", branch.id));
             let mut files: Vec<_> = std::fs::read_dir(path)
                 .unwrap()
                 .map(|entry| std::fs::read(entry.unwrap().path()).unwrap())
@@ -875,7 +924,7 @@ mod tests {
         let written =
             [(1, pattern(1, BLOCK)), (2, pattern(2, 4 << 20)), (3, pattern(3, 2 * BLOCK))];
         for (sequence, data) in written {
-            let extent = ExtentId { branch, sequence };
+            let extent = ExtentId { branch: branch.id, sequence };
             let mut read = vec![0; data.len()];
             store.read(extent, 0, &mut [crate::VolatileSliceMut::from(&mut read[..])]).unwrap();
             assert!(read == data, "extent {sequence} reads other data");
@@ -896,7 +945,8 @@ mod tests {
         // Stored on its own, raw, as it doesn't compress.
         let extent = write(&store, 1, &noise(1, 4 << 20));
         store.commit_ordered(None).unwrap();
-        let path = dir.path().join(format!("store/extents/{branch:016x}/{:016x}", extent.sequence));
+        let path =
+            dir.path().join(format!("store/extents/{:016x}/{:016x}", branch.id, extent.sequence));
         let mut bytes = std::fs::read(&path).unwrap();
         let stored = extent_frame::Parts::of(&bytes).unwrap().stored[1];
         assert_eq!(stored.encoding, extent_frame::Encoding::Raw);
@@ -1019,7 +1069,11 @@ mod tests {
             &extent_remote::layout::lease(store.branch()),
         ));
         let lease = extent_remote::layout::Lease::decode(&lease.unwrap().bytes).unwrap();
-        assert_eq!(lease.token, 9);
+        // fxdax: its cell taken with the host's token, its branch's lease with the cell's epoch
+        // (TASK-364).
+        let cell = extent_remote::cell::read(&*bucket, store.branch().cell);
+        let cell = futures::executor::block_on(cell).unwrap().unwrap();
+        assert_eq!((cell.token, cell.holder, cell.epoch, lease.token), (9, 9, 1, 1));
     }
 
     /// TASK-165.9: a store whose bucket acknowledged commits of its branch, opened where the
@@ -1100,7 +1154,12 @@ mod tests {
             use extent_remote::layout::{Kind, kind};
             match self {
                 Hold::Nothing => false,
-                Hold::Segments => key.starts_with("segments/"),
+                Hold::Segments => {
+                    matches!(
+                        extent_remote::layout::kind(key),
+                        extent_remote::layout::Kind::Segment { .. }
+                    )
+                }
                 Hold::SegmentsFrom(from) => {
                     matches!(kind(key), Kind::Segment { seq, .. } if seq >= *from)
                 }
@@ -1632,7 +1691,7 @@ mod tests {
         // never acknowledged: lost sooner, the disk would go as the uploader writes to it, which
         // runs on, forgotten (TASK-165.9: the write-ahead log's segments, before a marker).
         let last = lost.committed().unwrap();
-        let segments = dir.path().join("lost").join(format!("segments/{branch:016x}"));
+        let segments = dir.path().join("lost").join(format!("segments/{:016x}", branch.id));
         let framed = || -> Vec<u64> {
             let files = std::fs::read_dir(&segments).into_iter().flatten();
             let bytes = files.filter_map(|file| std::fs::read(file.unwrap().path()).ok());
@@ -1657,7 +1716,7 @@ mod tests {
                 .unwrap();
         assert_eq!(taken.root(), Ok(b"durable".to_vec()));
         let mut data = vec![0; BLOCK];
-        let durable = ExtentId { branch, sequence: 1 };
+        let durable = ExtentId { branch: branch.id, sequence: 1 };
         taken.read(durable, 0, &mut [crate::VolatileSliceMut::from(&mut data[..])]).unwrap();
         assert_eq!(data, pattern(1, BLOCK));
         let info = taken.info().unwrap();
@@ -1748,7 +1807,7 @@ mod tests {
             phases.entry(phase).or_default().push(took);
         };
         let base = dir.path().join("base");
-        let branch = crate::host_store::new_branch();
+        let branch = crate::host_store::new_alone();
         let mut store = None;
         measure("create", &mut || {
             let made = ExtentStore::create_kept_with(&base, 1 << 30, branch, &url, idle());
@@ -1766,7 +1825,7 @@ mod tests {
         let store = reopened(&base, idle()).unwrap();
         let forks: Vec<_> = (0..10).map(|fork| dir.path().join(format!("fork-{fork}"))).collect();
         for fork in &forks {
-            let child = crate::host_store::new_branch();
+            let child = crate::host_store::new_alone();
             measure("fork", &mut || store.fork(fork, child).unwrap());
         }
         drop(store);
@@ -1856,15 +1915,17 @@ mod tests {
             .map(|seq| sizes[&layout::segment(branch, seq)].min(extent_remote::object::TAIL))
             .sum();
         let (record, lease) = (sizes[&layout::record(branch)], sizes[&layout::lease(branch)]);
-        // The record, before the lease and after; the lease, taken, and read again once the fence
-        // is in. The segments' tails: one, then two, then four at once, the last two past the
+        let cell = sizes[&layout::cell(branch.cell)];
+        // The record, before the lease and after; fxdax: its cell's object, held, read alone, its
+        // holder's as it was and naming the branch (TASK-364); the lease, taken, and read again
+        // once the fence is in. The segments' tails: one, then two, then four at once, the last two past the
         // end; and the first past the end again, once the lease is taken. The checkpoints listed
         // as each of those finds the end, and the segments as the fence goes in.
         assert_eq!(
             (asked, after.downloaded - before.downloaded),
             (
                 vec![
-                    ("get", 4),
+                    ("get", 5),
                     ("get-range", 8),
                     ("head", 0),
                     ("list", 4),
@@ -1873,11 +1934,11 @@ mod tests {
                     ("overwrite", 0),
                     ("delete", 0),
                 ],
-                tails + 2 * record + 2 * lease
+                tails + 2 * record + 2 * lease + cell
             )
         );
         let mut data = vec![0; 1 << 20];
-        let extent = ExtentId { branch, sequence: 4 };
+        let extent = ExtentId { branch: branch.id, sequence: 4 };
         taken.read(extent, 0, &mut [crate::VolatileSliceMut::from(&mut data[..])]).unwrap();
         assert_eq!(data, noise(4, 1 << 20));
     }
@@ -1942,7 +2003,7 @@ mod tests {
                 .unwrap();
         assert_eq!(second.root(), Ok(b"root".to_vec()));
         let mut data = vec![0; 4 << 20];
-        let extent = ExtentId { branch, sequence: 2 };
+        let extent = ExtentId { branch: branch.id, sequence: 2 };
         second.read(extent, 0, &mut [crate::VolatileSliceMut::from(&mut data[..])]).unwrap();
         assert_eq!(data, large);
         let info = second.info().unwrap();
@@ -1956,7 +2017,7 @@ mod tests {
         let first = reopened(dir.path().join("first"), idle()).unwrap();
         assert_eq!(first.root(), Ok(b"root".to_vec()));
         let mut data = vec![0; BLOCK];
-        let extent = ExtentId { branch, sequence };
+        let extent = ExtentId { branch: branch.id, sequence };
         first.read(extent, 0, &mut [crate::VolatileSliceMut::from(&mut data[..])]).unwrap();
         assert_eq!(data, pattern(3, BLOCK));
         drop(first);
@@ -1992,7 +2053,7 @@ mod tests {
             store: Some("/stores/vm1".into()),
         };
         let mut data = vec![0; BLOCK];
-        let extent = ExtentId { branch, sequence: 1 };
+        let extent = ExtentId { branch: branch.id, sequence: 1 };
         within_now(Some(request), || {
             second.read(extent, 0, &mut [crate::VolatileSliceMut::from(&mut data[..])]).unwrap()
         });
@@ -2015,7 +2076,7 @@ mod tests {
     fn open_racing(
         path: std::path::PathBuf,
         gated: &Arc<Gated>,
-        branch: u64,
+        branch: crate::Branch,
         meanwhile: impl FnOnce(),
     ) -> Result<ExtentStore, crate::Error> {
         gated.hold.send_replace(Hold::Key(extent_remote::layout::lease(branch)));
@@ -2028,11 +2089,13 @@ mod tests {
 
     /// The directory of a store of `branch` at `path`, its branch kept in `bucket`, made whole, and
     /// not opened: what opening takes the branch into, as the bucket holds it.
-    fn made_for(path: &std::path::Path, branch: u64, bucket: &Arc<Bucket>) {
+    fn made_for(path: &std::path::Path, branch: crate::Branch, bucket: &Arc<Bucket>) {
         std::fs::create_dir(path).unwrap();
         let description =
             extent_store::Description { block_size: BLOCK as u32, capacity: 1 << 30, branch };
-        extent_store::create_host(path, description, &url_of(bucket), true).unwrap();
+        let volume =
+            extent_store::Volume { name: "root".into(), kind: extent_remote::cell::Kind::Fxfs };
+        extent_store::create_host(path, description, &url_of(bucket), volume, true).unwrap();
         extent_store::made_host(path).unwrap();
     }
 
@@ -2058,7 +2121,7 @@ mod tests {
         let second = second.unwrap();
         assert_eq!(second.root(), Ok(b"meanwhile".to_vec()));
         let mut data = vec![0; BLOCK];
-        let written = ExtentId { branch, sequence: 2 };
+        let written = ExtentId { branch: branch.id, sequence: 2 };
         second.read(written, 0, &mut [crate::VolatileSliceMut::from(&mut data[..])]).unwrap();
         assert_eq!(data, pattern(2, BLOCK));
         assert_eq!(
@@ -2143,13 +2206,15 @@ mod tests {
         let extent = write(&source, 1, &pattern(1, BLOCK));
         source.commit(Some(b"root")).unwrap();
         let path = dir.path().join("point");
-        source.point(&path, source.branch() + 1).unwrap();
+        source
+            .point(&path, crate::host_store::fork_of(source.branch(), source.branch().id + 1))
+            .unwrap();
         drop(source);
 
         let point = reopened(&path, idle()).unwrap();
         assert_eq!(point.access().role, crate::StoreRole::Point);
         let capacity = point.info().unwrap().capacity;
-        let own = ExtentId { branch: point.branch(), sequence: 1 };
+        let own = ExtentId { branch: point.branch().id, sequence: 1 };
         let refused = [
             ("set_capacity", point.set_capacity(2 * capacity)),
             ("write", point.write(own, 0, &[VolatileSlice::from(&pattern(2, BLOCK)[..])])),
@@ -2163,7 +2228,12 @@ mod tests {
         }
         assert_eq!(point.info().unwrap().capacity, capacity);
         assert_eq!(point.root().unwrap(), b"root");
-        point.fork(dir.path().join("fork"), point.branch() + 1).unwrap();
+        point
+            .fork(
+                dir.path().join("fork"),
+                crate::host_store::fork_of(point.branch(), point.branch().id + 1),
+            )
+            .unwrap();
         point.make_public().unwrap();
     }
 
@@ -2178,7 +2248,7 @@ mod tests {
         let own = write(&parent, 2, &large);
         // Committed, not yet durable: the fork makes it so, and uploads it, first.
         parent.commit_ordered(Some(b"root")).unwrap();
-        let child = parent.branch() + 1;
+        let child = crate::host_store::fork_of(parent.branch(), parent.branch().id + 1);
         let checkpoints = || {
             let prefix = extent_remote::layout::checkpoints(parent.branch());
             futures::executor::block_on(extent_remote::Bucket::list(&*bucket, &prefix)).unwrap()
@@ -2196,8 +2266,8 @@ mod tests {
         assert_eq!(origin.parent, parent.branch());
         let inherited = |state: &extent_remote::State| {
             let parents = [
-                format!("segments/{:016x}/", parent.branch()),
-                format!("extents/{:016x}/", parent.branch()),
+                extent_remote::layout::segments(parent.branch()),
+                extent_remote::layout::extents(parent.branch()),
             ];
             state
                 .extents
@@ -2253,7 +2323,7 @@ mod tests {
         let segment = |seq| extent_remote::layout::segment(branch, seq);
         let (forking, next) = (segment(2), segment(3));
         gated.hold.send_replace(Hold::Key(forking));
-        let child = branch + 1;
+        let child = crate::host_store::fork_of(branch, branch.id + 1);
         let fork = {
             let (parent, path) = (parent.clone(), dir.path().join("child"));
             std::thread::spawn(move || parent.fork(path, child))
@@ -2331,7 +2401,7 @@ mod tests {
         first.commit(None).unwrap();
         let footers = footers(&bucket, branch);
         let last = footers.last().unwrap();
-        let freed = storage_device::ExtentId::new(branch, sealed.sequence);
+        let freed = storage_device::ExtentId::new(branch.id, sealed.sequence);
         let contents = &last.contents;
         let (commits, extents) = (contents.commits.len(), contents.extents.len());
         assert_eq!((commits, extents, &contents.frees), (1, 0, &vec![freed]));
@@ -2416,7 +2486,7 @@ mod tests {
         let refused = taken.err().unwrap();
         let format = extent_remote::layout::FORMAT;
         let named = format!(
-            "branch {branch:x} is of format {}, which this reader, of format {format}, doesn't \
+            "branch {branch} is of format {}, which this reader, of format {format}, doesn't \
              read",
             format + 1
         );
@@ -2431,7 +2501,7 @@ mod tests {
         parent: &ExtentStore,
         bucket: &Arc<Bucket>,
         path: &std::path::Path,
-        child: u64,
+        child: crate::Branch,
     ) -> extent_remote::record::Record {
         write(parent, 1, &pattern(1, BLOCK));
         parent.commit(Some(b"root")).unwrap();
@@ -2449,7 +2519,7 @@ mod tests {
         let bucket = Arc::new(Bucket::new(Arc::new(InMemory::new()), ""));
         let parent =
             kept_in(dir.path().join("parent"), (1 << 30, None), &bucket.clone(), idle()).unwrap();
-        let child = parent.branch() + 1;
+        let child = crate::host_store::fork_of(parent.branch(), parent.branch().id + 1);
         forked(&parent, &bucket, &dir.path().join("child"), child);
         let again = dir.path().join("again");
         let forked = parent.fork(&again, child);
@@ -2508,21 +2578,21 @@ mod tests {
         let taken = taken.unwrap();
         assert_eq!(taken.root(), Ok(b"root".to_vec()));
         let mut data = vec![0; BLOCK];
-        let extent = ExtentId { branch, sequence: 1 };
+        let extent = ExtentId { branch: branch.id, sequence: 1 };
         taken.read(extent, 0, &mut [crate::VolatileSliceMut::from(&mut data[..])]).unwrap();
         assert_eq!(data, pattern(1, BLOCK));
         // The crashed host's fork, its writer reaching the bucket no more, fails, finding nothing
         // at its path, and deletes nothing there.
         let forked = fork.join().unwrap().map_err(|err| err.to_string());
-        let unmade = format!("forking to branch {child:x}: making its store");
+        let unmade = format!("forking to branch {child}: making its store");
         assert_eq!((forked, path.exists()), (Err(unmade), false));
         let record = futures::executor::block_on(branch::record(&*bucket, child)).unwrap();
         assert_eq!(record.map(|record| record.deleted), Some(false));
     }
 
     /// Why a fork to `child` fails, its writer finding its branch taken.
-    fn taken_over(child: u64) -> Result<(), String> {
-        Err(format!("forking branch {child:x}: another writer took the branch"))
+    fn taken_over(child: crate::Branch) -> Result<(), String> {
+        Err(format!("forking to branch {child}: another writer took the branch"))
     }
 
     /// The host whose disk is at `from`, crashed, restarted with its disk as the crash left it at
@@ -2558,8 +2628,8 @@ mod tests {
         memory: Arc<dyn object_store::ObjectStore>,
         gated: Arc<Gated>,
         next: Arc<Gated>,
-        branch: u64,
-        child: u64,
+        branch: crate::Branch,
+        child: crate::Branch,
     }
 
     /// A writer taking a branch, in a thread of its own: what it gives.
@@ -2592,7 +2662,7 @@ mod tests {
             let forking = extent_remote::layout::segment(branch, 2);
             gated.hold.send_replace(Hold::Key(forking.clone()));
             next.hold.send_replace(Hold::Key(forking));
-            let child = branch + 1;
+            let child = crate::host_store::fork_of(branch, branch.id + 1);
             let fork = {
                 let path = dir.join("child");
                 std::thread::spawn(move || parent.fork(path, child))
@@ -2701,7 +2771,7 @@ mod tests {
 
     /// The store of another branch, `branch`, at `path`, attached to `bucket`, holding an extent
     /// and a root: what a guest may name as its fork's child.
-    fn others(path: &std::path::Path, bucket: &Arc<Bucket>, branch: u64) -> ExtentStore {
+    fn others(path: &std::path::Path, bucket: &Arc<Bucket>, branch: crate::Branch) -> ExtentStore {
         let others = kept_in(path, (1 << 30, Some(branch)), &bucket.clone(), idle()).unwrap();
         write(&others, 1, &pattern(3, BLOCK));
         others.commit(Some(b"other")).unwrap();
@@ -2735,7 +2805,7 @@ mod tests {
         let bucket = Arc::new(Bucket::new(Arc::new(InMemory::new()), ""));
         let parent =
             kept_in(dir.path().join("parent"), (1 << 30, None), &bucket.clone(), idle()).unwrap();
-        let other = parent.branch() + 1;
+        let other = crate::host_store::fork_of(parent.branch(), parent.branch().id + 1);
         let others = others(&dir.path().join("other"), &bucket, other);
         write(&parent, 1, &pattern(1, BLOCK));
         parent.commit(Some(b"root")).unwrap();
@@ -2759,7 +2829,7 @@ mod tests {
         dir: &std::path::Path,
         gated: &Arc<Gated>,
         path: &std::path::Path,
-    ) -> (u64, u64, Forking) {
+    ) -> (crate::Branch, crate::Branch, Forking) {
         let parent = Arc::new(
             kept_in(
                 dir.join("parent"),
@@ -2773,7 +2843,7 @@ mod tests {
         write(&parent, 1, &pattern(1, BLOCK));
         parent.commit(Some(b"root")).unwrap();
         gated.hold.send_replace(Hold::Key(extent_remote::layout::segment(branch, 2)));
-        let child = branch + 1;
+        let child = crate::host_store::fork_of(branch, branch.id + 1);
         let fork = {
             let path = path.to_owned();
             std::thread::spawn(move || parent.fork(path, child))
@@ -2784,8 +2854,8 @@ mod tests {
 
     /// Why a fork to `child` fails whose parent's writer, giving the child its record, found it
     /// another branch's.
-    fn anothers(child: u64) -> Result<(), String> {
-        Err(format!("forking to branch {child:x}: another branch has its ID"))
+    fn anothers(child: crate::Branch) -> Result<(), String> {
+        Err(format!("forking to branch {child}: another branch has its ID"))
     }
 
     /// TASK-79.82: a fork whose child's ID another branch took in object storage while the fork
@@ -2830,7 +2900,7 @@ mod tests {
             kept_in(dir.path().join("parent"), (1 << 30, None), &bucket.clone(), idle()).unwrap();
         write(&parent, 1, &pattern(1, BLOCK));
         parent.commit(Some(b"root")).unwrap();
-        let child = parent.branch() + 1;
+        let child = crate::host_store::fork_of(parent.branch(), parent.branch().id + 1);
         let path = dir.path().join("child");
         let flushed = fail::FailGuard::new("fork::flushed", "return").unwrap();
         let forked = parent.fork(&path, child).map_err(|err| format!("{err:#}"));
@@ -2849,7 +2919,7 @@ mod tests {
         let parents = futures::executor::block_on(recover(&*bucket, parent.branch(), None));
         assert_eq!(parents.unwrap().state.forks, []);
         let unflushed = format!(
-            "forking branch {child:x}: the fork to branch {child:#x} failed once its commit was \
+            "forking to branch {child}: the fork to branch {child} failed once its commit was \
              made: failpoint fork::flushed"
         );
         assert_eq!(forked, Err(unflushed));

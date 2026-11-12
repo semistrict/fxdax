@@ -8,9 +8,10 @@
 //! a fork ([`Store::commit_fork`]).
 
 use crate::dir::{Dir as _, HostDir};
-use crate::layout::{DESCRIPTION, Description, StoreFile};
+use crate::layout::{DESCRIPTION, Description, StoreFile, Volume};
 use crate::store::{Store, UNMADE};
 use anyhow::{Context as _, Error};
+use extent_frame::segment::Branch;
 use std::path::Path;
 
 /// Makes a new store at `path`, which must be a directory holding no store, as `description`
@@ -18,14 +19,16 @@ use std::path::Path;
 /// as every host's store's does (TASK-165.6); it is unmade until its maker says it is whole
 /// ([`Store::made`], TASK-196). Its description is made last: until it is durable, the directory
 /// is no store, whatever else is in it. Opening it takes its branch in the bucket
-/// ([`Store::recover`], `crate::upload`).
+/// ([`Store::recover`], `crate::upload`), and its branch's cell, of which it is `volume`
+/// (TASK-364).
 pub fn create_host(
     path: &Path,
     description: Description,
     bucket: &str,
+    volume: Volume,
     direct: bool,
 ) -> Result<(), Error> {
-    Store::make(&HostDir::new(path, direct)?, description, Some(bucket))
+    Store::make(&HostDir::new(path, direct)?, description, Some(bucket), Some(volume))
 }
 
 /// fxdax: the store at `path` is whole, as its maker made it ([`Store::made`], TASK-196): the file
@@ -81,7 +84,7 @@ pub fn host_token(path: &Path) -> Result<Option<u64>, Error> {
 /// called for nothing. It fails while another process has the store open, or this one.
 pub fn delete_host(
     path: &Path,
-    before: impl FnOnce(u64) -> Result<(), Error>,
+    before: impl FnOnce(Branch) -> Result<(), Error>,
 ) -> Result<(), Error> {
     if !path.join(DESCRIPTION).exists() {
         return remove_store(path);
@@ -218,7 +221,7 @@ fn remove(removed: std::io::Result<()>) -> std::io::Result<()> {
 }
 
 /// The branch of the store at `path`, as its description names it.
-pub fn host_branch(path: &Path) -> Result<u64, Error> {
+pub fn host_branch(path: &Path) -> Result<Branch, Error> {
     Ok(store_file(path)?.branch)
 }
 
@@ -295,10 +298,23 @@ mod tests {
     fn stored(temp: &Path) -> PathBuf {
         let path = temp.join("store");
         std::fs::create_dir(&path).unwrap();
-        let description = Description { block_size: BLOCK as u32, capacity: 1 << 20, branch: 3 };
-        create_host(&path, description, BUCKET, true).unwrap();
+        let description = Description {
+            block_size: BLOCK as u32,
+            capacity: 1 << 20,
+            branch: extent_remote::layout::test_branch(3),
+        };
+        create_host(
+            &path,
+            description,
+            BUCKET,
+            crate::Volume { name: "root".into(), kind: extent_remote::cell::Kind::Fxfs },
+            true,
+        )
+        .unwrap();
         let store = Store::recover_unmade(HostDir::new(&path, true).unwrap()).unwrap();
-        let store = store.open(Options::default(), crate::Opening::new(3)).unwrap();
+        let store = store
+            .open(Options::default(), crate::Opening::new(extent_remote::layout::test_branch(3)))
+            .unwrap();
         store.made().unwrap();
         store.write(ExtentId::new(3, 0), 0, &[7; BLOCK]).unwrap();
         store.commit(None).unwrap();
@@ -336,11 +352,14 @@ mod tests {
         assert!(refused.is_err() && path.join(DESCRIPTION).exists(), "{refused:?}");
         drop(opened);
         let stopped = delete_host(&path, |branch| Err(anyhow!("stopped at {branch}")));
-        assert_eq!(stopped.map_err(|err| err.to_string()), Err("stopped at 3".to_owned()));
+        assert_eq!(stopped.map_err(|err| err.to_string()), Err("stopped at 1/1/3".to_owned()));
         assert!(open(&path).is_ok(), "a store stopped opens no more");
         let called = std::cell::Cell::new(None);
         delete_host(&path, |branch| Ok(called.set(Some(branch)))).unwrap();
-        assert_eq!((called.get(), path.exists()), (Some(3), false));
+        assert_eq!(
+            (called.get(), path.exists()),
+            (Some(extent_remote::layout::test_branch(3)), false)
+        );
     }
 
     /// TASK-79.77: a deletion stopped at any step is finished by deleting again, which leaves

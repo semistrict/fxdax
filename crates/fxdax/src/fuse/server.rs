@@ -5,8 +5,11 @@
 //! The FUSE server: a request's bytes in, its reply's out, whatever carries them.
 //!
 //! A server serves one filesystem, whose root is the mount's ([`Server::new`]); or many stores'
-//! (TASK-302), each attached by name in a root directory of the server's own, and detached again
+//! (TASK-302), each attached at a path in directories of the server's own, and detached again
 //! ([`Server::stores`], [`Server::attach`], [`Server::detach`]): one mount, however many stores.
+//! fxdax: a store's path is names, its last its own and those before it directories of the
+//! server's, made as a store is attached under them and gone once none is: a host's mount of
+//! cells' volumes attaches each at `TENANT/CELL/VOLUME` (TASK-364).
 //!
 //! Node IDs and inode numbers say whose node is whose:
 //!
@@ -15,13 +18,14 @@
 //! - Many stores' are a store's slot, from 1, in the top 16 bits, and the object ID in the low 48,
 //!   so that no two stores' nodes share one: `EOVERFLOW` for an object ID of more bits, which
 //!   fxdax's Fxfs, numbering a volume's objects in turn, doesn't reach. Inode numbers are node IDs;
-//!   the root directory of stores is FUSE's root ID. A slot is used again once the kernel has
+//!   the root directory of stores is FUSE's root ID, and the server's other directories are of
+//!   slot 0, each its own, never one another had before. A slot is used again once the kernel has
 //!   forgotten every node of the store detached from it.
 //!
-//! The root directory of stores is the server's: nothing is made, removed or renamed in it, but by
-//! attaching and detaching (`EPERM`), and nothing moves between it and a store, or between stores
-//! (`EXDEV`). The kernel looks its names up again each time (they and their absence are cached for
-//! no time).
+//! The directories of stores are the server's: nothing is made, removed or renamed in them, but by
+//! attaching and detaching (`EPERM`), and nothing moves between them and a store, or between
+//! stores (`EXDEV`). The kernel looks their names up again each time (they and their absence are
+//! cached for no time).
 //!
 //! The kernel drops a dentry only when it is told to by name ([`Notifier`]), or when it is short
 //! of memory: a store detached waits for it to forget every node of the store, so the server keeps
@@ -85,7 +89,7 @@ enum Shape {
     Many { owner: Owner, made: SystemTime, notify: Notifier },
 }
 
-/// The filesystems served: one's in slot 0, or many stores', by slot, from 1, and by name.
+/// The filesystems served: one's in slot 0, or many stores', by slot, from 1, and by path.
 #[derive(Default)]
 struct Stores {
     slots: BTreeMap<u16, Slot>,
@@ -93,11 +97,102 @@ struct Stores {
     /// Whether the server serves no more: the kernel destroyed the mount, or it was closed. No
     /// store is attached then.
     closed: bool,
+    /// Many stores': the directories of the server's own, by node ID, the root's among them.
+    dirs: BTreeMap<u64, Dir>,
+    /// The node ID the next directory made takes: never one a directory had before, which the
+    /// kernel may hold yet.
+    next_dir: u64,
 }
 
 struct Slot {
+    /// Its path, as it was attached at.
     name: String,
+    /// The directory of the server's its root is in, and its name there.
+    dir: u64,
+    leaf: String,
     state: State,
+}
+
+/// fxdax: a directory of the server's own, of many stores': the root of stores, or one a path a
+/// store is attached at goes through, as `TENANT/CELL/VOLUME` goes through `TENANT` and
+/// `TENANT/CELL` (TASK-364).
+struct Dir {
+    /// Its parent's node ID: the root's is its own.
+    parent: u64,
+    /// Its name in its parent.
+    name: String,
+    entries: BTreeMap<String, Entry>,
+}
+
+/// What a name in a directory of the server's names.
+#[derive(Clone, Copy)]
+enum Entry {
+    Dir(u64),
+    Store(u16),
+}
+
+impl Stores {
+    /// Many stores', of none yet: the root directory alone.
+    fn many() -> Self {
+        let root = Dir { parent: ROOT_ID, name: String::new(), entries: BTreeMap::new() };
+        Self { dirs: BTreeMap::from([(ROOT_ID, root)]), next_dir: ROOT_ID + 1, ..Self::default() }
+    }
+
+    /// Puts `slot` at `path`, the directories it goes through made where missing: returns the
+    /// directory it is in, and its name there. `EEXIST` if a store has a name the path goes
+    /// through, or a directory its last.
+    fn put(&mut self, path: &[&str], slot: u16) -> Result<(u64, String)> {
+        let (leaf, through) = path.split_last().ok_or(Errno::EINVAL)?;
+        let mut dir = ROOT_ID;
+        for name in through {
+            dir = match self.dirs[&dir].entries.get(*name) {
+                Some(Entry::Dir(sub)) => *sub,
+                Some(Entry::Store(_)) => return Err(Errno::EEXIST),
+                None => {
+                    let made = self.next_dir;
+                    self.next_dir += 1;
+                    let sub = Dir { parent: dir, name: (*name).into(), entries: BTreeMap::new() };
+                    self.dirs.insert(made, sub);
+                    let parent = self.dirs.get_mut(&dir).expect("a directory made before");
+                    parent.entries.insert((*name).into(), Entry::Dir(made));
+                    made
+                }
+            };
+        }
+        let entries = &mut self.dirs.get_mut(&dir).expect("a directory").entries;
+        if entries.contains_key(*leaf) {
+            return Err(Errno::EEXIST);
+        }
+        entries.insert((*leaf).into(), Entry::Store(slot));
+        Ok((dir, (*leaf).into()))
+    }
+
+    /// Whether the directory `dir` of the server's shows: whether a store attached is under it, not
+    /// one being attached or detached alone, which are gone from the mount already.
+    fn shows(&self, dir: u64) -> bool {
+        self.dirs.get(&dir).is_some_and(|of| {
+            of.entries.values().any(|entry| match *entry {
+                Entry::Dir(sub) => self.shows(sub),
+                Entry::Store(slot) => matches!(self.slots[&slot].state, State::Attached(_)),
+            })
+        })
+    }
+
+    /// Takes the store in `slot` away from its path, and its name: the directories of the
+    /// server's that no store is under any more go.
+    fn remove(&mut self, slot: u16) {
+        let Some(gone) = self.slots.remove(&slot) else { return };
+        self.names.remove(&gone.name);
+        let (mut dir, mut name) = (gone.dir, gone.leaf);
+        while let Some(of) = self.dirs.get_mut(&dir) {
+            of.entries.remove(&name);
+            if dir == ROOT_ID || !of.entries.is_empty() {
+                break;
+            }
+            let empty = self.dirs.remove(&dir).expect("a directory");
+            (dir, name) = (empty.parent, empty.name);
+        }
+    }
 }
 
 enum State {
@@ -199,11 +294,18 @@ impl Nodes {
     }
 }
 
-/// What a node ID names: the root directory of stores, or a node of the filesystem in a slot.
+/// What a node ID names: a directory of the server's own, of many stores', or a node of the
+/// filesystem in a slot.
 #[derive(Clone)]
 enum Target {
-    Stores,
+    Stores(u64),
     Node(u16, Node),
+}
+
+/// What a lookup found: a node of the filesystem in a slot, or a directory of the server's own.
+enum Found {
+    Node(u16, (Node, Attr)),
+    Stores(u64),
 }
 
 #[derive(Default)]
@@ -231,7 +333,8 @@ impl Server {
     /// A server of `fs`, whose root is the mount's.
     pub fn new(fs: Filesystem) -> Self {
         let root = fs.root().clone();
-        let slot = Slot { name: String::new(), state: State::Attached(Arc::new(fs)) };
+        let state = State::Attached(Arc::new(fs));
+        let slot = Slot { name: String::new(), dir: ROOT_ID, leaf: String::new(), state };
         let stores = Stores { slots: BTreeMap::from([(0, slot)]), ..Stores::default() };
         Self::of(Shape::One { root }, stores)
     }
@@ -241,7 +344,7 @@ impl Server {
     /// server writes, as a detach does.
     pub fn stores(owner: Owner, notify: Notifier) -> Self {
         let shape = Shape::Many { owner, made: SystemTime::now(), notify };
-        Self::of(shape, Stores::default())
+        Self::of(shape, Stores::many())
     }
 
     fn of(shape: Shape, stores: Stores) -> Self {
@@ -273,12 +376,14 @@ impl Server {
         }
     }
 
-    /// Attaches the filesystem `open` gives at `name` in the root directory of a server of many
-    /// stores, once it is open: `name` is taken from the start, and a store attached as `open` is
-    /// awaited fails. Fails with `EINVAL` for a name no directory holds, `EEXIST` for a name
-    /// another store has, `EBUSY` for one another store is being attached or detached at,
-    /// `ENOSPC` with every slot taken, `ENOTCONN` once the server serves no more, `ENOTSUP` for a
-    /// server of one filesystem; and as `open` does.
+    /// Attaches the filesystem `open` gives at `name` in a server of many stores, once it is
+    /// open: a path of names separated by `/`, the last the store's root's and those before it
+    /// directories of the server's own, made as needed. `name` is taken from the start, and a
+    /// store attached as `open` is awaited fails. Fails with `EINVAL` for a name no directory
+    /// holds, `EEXIST` for a path another store has, or one going through another store's,
+    /// `EBUSY` for one another store is being attached or detached at, `ENOSPC` with every slot
+    /// taken, `ENOTCONN` once the server serves no more, `ENOTSUP` for a server of one filesystem;
+    /// and as `open` does.
     pub async fn attach(
         &self,
         name: &str,
@@ -287,7 +392,9 @@ impl Server {
         if !matches!(self.shape, Shape::Many { .. }) {
             return Err(Errno::ENOTSUP.into());
         }
-        valid_name(name.as_bytes())?;
+        for component in name.split('/') {
+            valid_name(component.as_bytes())?;
+        }
         let reserved = self.reserve(name)?;
         let fs = Arc::new(open.await?);
         match reserved.attach(fs.clone()) {
@@ -319,7 +426,10 @@ impl Server {
         let slot = (1..=u16::MAX)
             .find(|slot| !stores.slots.contains_key(slot) && !held.contains(slot))
             .ok_or(Errno::ENOSPC)?;
-        stores.slots.insert(slot, Slot { name: name.to_owned(), state: State::Opening });
+        let path: Vec<&str> = name.split('/').collect();
+        let (dir, leaf) = stores.put(&path, slot)?;
+        let reserved = Slot { name: name.to_owned(), dir, leaf, state: State::Opening };
+        stores.slots.insert(slot, reserved);
         stores.names.insert(name.to_owned(), slot);
         Ok(Reserved { server: self, slot: Some(slot) })
     }
@@ -373,9 +483,7 @@ impl Server {
         }
         let unmounted = fs.unmount().await;
         drop(fs);
-        let mut stores = self.stores.lock().unwrap();
-        stores.slots.remove(&slot);
-        stores.names.remove(name);
+        self.stores.lock().unwrap().remove(slot);
         self.nodes.lock().unwrap().detaching.remove(&slot);
         unmounted
     }
@@ -535,14 +643,20 @@ impl Server {
         }
     }
 
-    /// What the node ID `nodeid` names: the mount's root, or a node the kernel holds a lookup of.
-    /// Any other is one the kernel forgot, or never had: `ESTALE`.
+    /// What the node ID `nodeid` names: the mount's root, a directory of the server's own, or a
+    /// node the kernel holds a lookup of. Any other is one the kernel forgot, or never had, or a
+    /// directory of the server's gone: `ESTALE`.
     fn target(&self, nodeid: u64) -> Result<Target> {
-        if nodeid == ROOT_ID {
-            return Ok(match &self.shape {
-                Shape::One { root } => Target::Node(0, root.clone()),
-                Shape::Many { .. } => Target::Stores,
-            });
+        match &self.shape {
+            Shape::One { root } if nodeid == ROOT_ID => return Ok(Target::Node(0, root.clone())),
+            Shape::Many { .. } if self.slot_of(nodeid) == 0 => {
+                let stores = self.stores.lock().unwrap();
+                return match stores.dirs.contains_key(&nodeid) {
+                    true => Ok(Target::Stores(nodeid)),
+                    false => Err(Errno::ESTALE),
+                };
+            }
+            _ => {}
         }
         let nodes = self.nodes.lock().unwrap();
         let looked = nodes.looked.get(&nodeid);
@@ -554,7 +668,7 @@ impl Server {
     /// `stores` if it is the root directory of stores, which the request can't be of.
     fn node(&self, nodeid: u64, stores: Errno) -> Result<(u16, Node)> {
         match self.target(nodeid)? {
-            Target::Stores => Err(stores),
+            Target::Stores(_) => Err(stores),
             Target::Node(slot, node) => Ok((slot, node)),
         }
     }
@@ -566,13 +680,13 @@ impl Server {
         slot.state.filesystem().cloned().ok_or(Errno::ENOTCONN)
     }
 
-    /// The attributes of the root directory of stores.
-    fn stores_attr(&self) -> Attr {
+    /// The attributes of the directory of the server's own whose node ID is `dir`.
+    fn stores_attr(&self, dir: u64) -> Attr {
         let Shape::Many { owner, made, .. } = &self.shape else {
-            unreachable!("only a server of many stores has a root of its own")
+            unreachable!("only a server of many stores has directories of its own")
         };
         Attr {
-            inode: Inode(ROOT_ID),
+            inode: Inode(dir),
             size: 0,
             blocks: 0,
             atime: *made,
@@ -588,23 +702,28 @@ impl Server {
         }
     }
 
-    /// Looks `name` up in the directory `dir`: a node of its store, or the root directory of a
-    /// store attached at `name` in the root directory of stores. Returns the node's store's slot.
-    async fn lookup_in(&self, dir: &Target, name: &[u8]) -> Result<(u16, (Node, Attr))> {
+    /// Looks `name` up in the directory `dir`: a node of its store; or, in a directory of the
+    /// server's own, another of those, or the root directory of a store attached there.
+    async fn lookup_in(&self, dir: &Target, name: &[u8]) -> Result<Found> {
         match dir {
-            Target::Node(slot, dir) => Ok((*slot, dir.lookup(name).await?)),
-            Target::Stores => {
+            Target::Node(slot, dir) => Ok(Found::Node(*slot, dir.lookup(name).await?)),
+            Target::Stores(dir) => {
                 let name = std::str::from_utf8(name).map_err(|_| Errno::ENOENT)?;
                 let (slot, root) = {
                     let stores = self.stores.lock().unwrap();
-                    let slot = *stores.names.get(name).ok_or(Errno::ENOENT)?;
+                    let entries = &stores.dirs.get(dir).ok_or(Errno::ENOENT)?.entries;
+                    let slot = match entries.get(name).ok_or(Errno::ENOENT)? {
+                        Entry::Dir(sub) if stores.shows(*sub) => return Ok(Found::Stores(*sub)),
+                        Entry::Dir(_) => return Err(Errno::ENOENT),
+                        Entry::Store(slot) => *slot,
+                    };
                     let State::Attached(fs) = &stores.slots[&slot].state else {
                         return Err(Errno::ENOENT);
                     };
                     (slot, fs.root().clone())
                 };
                 let attr = root.getattr().await?;
-                Ok((slot, (root, attr)))
+                Ok(Found::Node(slot, (root, attr)))
             }
         }
     }
@@ -720,14 +839,19 @@ impl Server {
         let [name] = strings(body.rest())?;
         let dir = self.target(header.nodeid)?;
         match self.lookup_in(&dir, name).await {
-            Ok((slot, found)) => {
+            Ok(Found::Node(slot, found)) => {
                 Ok(self.entry(slot, (header.nodeid, name), found)?.as_bytes().to_vec())
             }
-            // A missing name is an entry without a node, which the kernel caches, but in the root
-            // directory of stores, where a store may be attached at it any time.
+            // A directory of the server's own, which comes and goes as stores do: given for no
+            // time, looked up again each time.
+            Ok(Found::Stores(sub)) => {
+                Ok(entry_out(sub, sub, 0, &self.stores_attr(sub)).as_bytes().to_vec())
+            }
+            // A missing name is an entry without a node, which the kernel caches, but in the
+            // directories of stores, where a store may be attached at it any time.
             Err(Errno::ENOENT) => {
                 let valid = match dir {
-                    Target::Stores => 0,
+                    Target::Stores(_) => 0,
                     Target::Node(..) => TIMEOUT_SECS,
                 };
                 Ok(EntryOut { entry_valid: valid, ..Default::default() }.as_bytes().to_vec())
@@ -738,7 +862,7 @@ impl Server {
 
     async fn getattr(&self, header: &InHeader) -> Result<Vec<u8>> {
         let (attr, inode) = match self.target(header.nodeid)? {
-            Target::Stores => (self.stores_attr(), ROOT_ID),
+            Target::Stores(dir) => (self.stores_attr(dir), dir),
             Target::Node(slot, node) => {
                 let attr = node.getattr().await?;
                 let inode = self.inode(slot, attr.inode.0)?;
@@ -883,7 +1007,7 @@ impl Server {
                     self.nodes.lock().unwrap().renamed(from, to, exchange);
                 }
             }
-            (Target::Stores, Target::Stores) => return Err(Errno::EPERM),
+            (Target::Stores(_), Target::Stores(_)) => return Err(Errno::EPERM),
             _ => return Err(Errno::EXDEV),
         }
         Ok(Vec::new())
@@ -925,7 +1049,7 @@ impl Server {
     /// holds no blocks of its own.
     async fn statfs(&self, header: &InHeader) -> Result<Vec<u8>> {
         let out = match self.target(header.nodeid)? {
-            Target::Stores => Kstatfs {
+            Target::Stores(_) => Kstatfs {
                 bsize: STORES_BLOCK_SIZE,
                 frsize: STORES_BLOCK_SIZE,
                 namelen: crate::filesystem::NAME_MAX as u32,
@@ -978,7 +1102,7 @@ impl Server {
     async fn listxattr(&self, header: &InHeader, body: &mut Body<'_>) -> Result<Vec<u8>> {
         let GetxattrIn { size, .. } = body.read()?;
         let names = match self.target(header.nodeid)? {
-            Target::Stores => Vec::new(),
+            Target::Stores(_) => Vec::new(),
             Target::Node(_, node) => node.listxattr().await?,
         };
         // Each name NUL-terminated, as listxattr(2) lists them.
@@ -996,7 +1120,7 @@ impl Server {
     async fn opendir(&self, header: &InHeader) -> Result<Vec<u8>> {
         let (open, open_flags) = match self.target(header.nodeid)? {
             // Stores come and go: the kernel caches none of its entries.
-            Target::Stores => (self.open_stores(), 0),
+            Target::Stores(dir) => (self.open_stores(dir)?, 0),
             Target::Node(slot, dir) => {
                 let open = self.open_dir(header.nodeid, slot, dir).await?;
                 // The mount is the directory's only writer, so the kernel may cache its entries.
@@ -1010,19 +1134,28 @@ impl Server {
         Ok(OpenOut { fh, open_flags, padding: 0 }.as_bytes().to_vec())
     }
 
-    /// The root directory of stores, opened: its entries the stores attached.
-    fn open_stores(&self) -> OpenDir {
+    /// The directory of the server's own whose node ID is `dir`, opened: its entries the
+    /// directories of the server's in it and the stores attached there. `ESTALE` once it is gone.
+    fn open_stores(&self, dir: u64) -> Result<OpenDir> {
         let stores = self.stores.lock().unwrap();
-        let entries = (stores.slots.iter())
-            .filter_map(|(&slot, attached)| {
-                let State::Attached(fs) = &attached.state else { return None };
-                // Object IDs too large fail as they are looked up.
-                let inode = self.inode(slot, fs.root().inode().0).unwrap_or(0);
-                let name = attached.name.clone().into_bytes();
+        let of = stores.dirs.get(&dir).ok_or(Errno::ESTALE)?;
+        let entries = (of.entries.iter())
+            .filter_map(|(name, entry)| {
+                let inode = match *entry {
+                    Entry::Dir(sub) if stores.shows(sub) => sub,
+                    Entry::Dir(_) => return None,
+                    Entry::Store(slot) => {
+                        let State::Attached(fs) = &stores.slots[&slot].state else { return None };
+                        // Object IDs too large fail as they are looked up.
+                        self.inode(slot, fs.root().inode().0).unwrap_or(0)
+                    }
+                };
+                let name = name.clone().into_bytes();
                 Some(DirEntry { inode: Inode(inode), file_type: FileType::Directory, name })
             })
             .collect();
-        OpenDir { dir: Target::Stores, nodeid: ROOT_ID, inode: ROOT_ID, parent: ROOT_ID, entries }
+        let target = Target::Stores(dir);
+        Ok(OpenDir { dir: target, nodeid: dir, inode: dir, parent: of.parent, entries })
     }
 
     /// The directory `dir` of the store in `slot`, whose node ID is `nodeid`, opened.
@@ -1033,8 +1166,11 @@ impl Server {
         }
         let inode = self.inode(slot, dir.inode().0)?;
         let parent = match dir.parent()? {
-            // A store's root, which is its own parent, is in the root directory of stores.
-            parent if parent == dir.inode() && matches!(self.shape, Shape::Many { .. }) => ROOT_ID,
+            // A store's root, which is its own parent, is in a directory of the server's own.
+            parent if parent == dir.inode() && matches!(self.shape, Shape::Many { .. }) => {
+                let stores = self.stores.lock().unwrap();
+                stores.slots.get(&slot).map_or(ROOT_ID, |slot| slot.dir)
+            }
             parent => self.inode(slot, parent.0)?,
         };
         Ok(OpenDir { dir: Target::Node(slot, dir), nodeid, inode, parent, entries })
@@ -1070,7 +1206,8 @@ impl Server {
                     // The kernel takes these from its own dentries.
                     0 | 1 => EntryOut::default(),
                     _ => match self.lookup_in(&open.dir, &entry.name).await {
-                        Ok((slot, found)) => {
+                        Ok(Found::Stores(sub)) => entry_out(sub, sub, 0, &self.stores_attr(sub)),
+                        Ok(Found::Node(slot, found)) => {
                             match self.entry(slot, (open.nodeid, &entry.name), found) {
                                 Ok(found) => {
                                     entry.inode = Inode(found.attr.ino);
@@ -1145,10 +1282,7 @@ impl Reserved<'_> {
 impl Drop for Reserved<'_> {
     fn drop(&mut self) {
         let Some(slot) = self.slot else { return };
-        let mut stores = self.server.stores.lock().unwrap();
-        if let Some(given_back) = stores.slots.remove(&slot) {
-            stores.names.remove(&given_back.name);
-        }
+        self.server.stores.lock().unwrap().remove(slot);
     }
 }
 

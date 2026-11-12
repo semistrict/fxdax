@@ -15,6 +15,7 @@ use super::grants::Grants;
 use super::memory;
 use super::stores;
 use crate::Errno;
+use extent_remote::cell::Kind;
 use proto::extentd_client::ExtentdClient;
 use proto::extentd_server::{Extentd, ExtentdServer};
 use proto::*;
@@ -249,7 +250,9 @@ fn stat_response(state: stores::StoreState) -> StatStoreResponse {
         since.elapsed().map_or(0, |waited| waited.as_millis() as u64)
     };
     StatStoreResponse {
-        branch: state.branch,
+        branch: state.branch.id,
+        tenant: state.branch.cell.tenant,
+        cell: state.branch.cell.id,
         capacity: state.info.capacity,
         used: state.info.used,
         available: state.info.available,
@@ -266,6 +269,11 @@ fn stat_response(state: stores::StoreState) -> StatStoreResponse {
         pending_upload_bytes: upload.pending_bytes,
         oldest_pending_ms: upload.oldest_pending.map_or(0, waited),
     }
+}
+
+/// The branch a response names by its tenant, cell and ID (TASK-364).
+fn branched(tenant: u64, cell: u64, id: u64) -> crate::Branch {
+    crate::Branch { cell: crate::Cell { tenant, id: cell }, id }
 }
 
 fn reply<T>(done: Result<T, Errno>) -> Result<Response<T>, Status> {
@@ -291,21 +299,37 @@ impl Extentd for Control {
         &self,
         request: Request<CreateStoreRequest>,
     ) -> Result<Response<CreateStoreResponse>, Status> {
-        let CreateStoreRequest { path: store, capacity, branch, token } = request.into_inner();
+        let CreateStoreRequest { path: store, capacity, branch, token, tenant, cell, kind } =
+            request.into_inner();
         let store = path(store)?;
-        let branch = stores::create(store, capacity, Some(branch), token).await;
-        reply(branch.map(|branch| CreateStoreResponse { branch }))
+        let kind = match VolumeKind::try_from(kind) {
+            Ok(VolumeKind::Fxfs) => Kind::Fxfs,
+            Ok(VolumeKind::Sqlite) => Kind::Sqlite,
+            Err(_) => return Err(status(Errno::EINVAL)),
+        };
+        let branch = crate::Branch { cell: crate::Cell { tenant, id: cell }, id: branch };
+        let made = stores::create(store, capacity, branch, (token, kind)).await;
+        reply(made.map(|made| CreateStoreResponse {
+            branch: made.id,
+            tenant: made.cell.tenant,
+            cell: made.cell.id,
+        }))
     }
 
     async fn import_image(
         &self,
         request: Request<ImportImageRequest>,
     ) -> Result<Response<ImportImageResponse>, Status> {
-        let ImportImageRequest { path: store, capacity, image, reference } = request.into_inner();
+        let ImportImageRequest { path: store, capacity, image, reference, tenant } =
+            request.into_inner();
         let (store, image) = (path(store)?, path(image)?);
         let reference = Some(reference).filter(|reference| !reference.is_empty());
-        let branch = stores::import(store, capacity, image, reference).await;
-        reply(branch.map(|branch| ImportImageResponse { branch }))
+        let made = stores::import(store, capacity, image, reference, tenant).await;
+        reply(made.map(|made| ImportImageResponse {
+            branch: made.id,
+            tenant: made.cell.tenant,
+            cell: made.cell.id,
+        }))
     }
 
     async fn fork_store(
@@ -315,7 +339,11 @@ impl Extentd for Control {
         let ForkStoreRequest { from, to, branch, point } = request.into_inner();
         let (from, to) = (path(from)?, path(to)?);
         let forked = stores::fork(from, to, branch, point).await;
-        reply(forked.map(|branch| ForkStoreResponse { branch }))
+        reply(forked.map(|forked| ForkStoreResponse {
+            branch: forked.id,
+            tenant: forked.cell.tenant,
+            cell: forked.cell.id,
+        }))
     }
 
     async fn delete_store(
@@ -605,61 +633,76 @@ impl Client {
         Ok(Self { runtime, client })
     }
 
-    /// Makes an empty store at `path` of `capacity` bytes, of a new branch or `branch`, placed at
-    /// `token` if given, and returns its branch (`CreateStore`).
+    /// Makes an empty store at `path` of `capacity` bytes, of `branch`, an Fxfs volume of its cell:
+    /// of a new cell if its cell's ID is 0, and a new branch there if its ID is; placed at `token`
+    /// if given; and returns its branch (`CreateStore`, TASK-364).
     pub fn create_store(
         &self,
         path: &Path,
         capacity: u64,
-        branch: Option<u64>,
+        branch: crate::Branch,
         token: Option<u64>,
-    ) -> Result<u64, crate::Error> {
-        let request =
-            CreateStoreRequest { path: name(path)?, capacity, branch: branch.unwrap_or(0), token };
+    ) -> Result<crate::Branch, crate::Error> {
+        let request = CreateStoreRequest {
+            path: name(path)?,
+            capacity,
+            branch: branch.id,
+            token,
+            tenant: branch.cell.tenant,
+            cell: branch.cell.id,
+            kind: VolumeKind::Fxfs.into(),
+        };
         let response = self
             .call(format!("making the store at {}", path.display()), |mut c| async move {
                 c.create_store(request).await
             })?;
-        Ok(response.branch)
+        Ok(branched(response.tenant, response.cell, response.branch))
     }
 
     /// Makes a store at `path` of `capacity` bytes holding the container image at `image`, the one
-    /// `reference` names in it if given, and returns its branch (`ImportImage`).
+    /// `reference` names in it if given, the one volume of a new cell of no tenant's, and returns
+    /// its branch (`ImportImage`).
     pub fn import_image(
         &self,
         path: &Path,
         capacity: u64,
         image: &Path,
         reference: Option<&str>,
-    ) -> Result<u64, crate::Error> {
+    ) -> Result<crate::Branch, crate::Error> {
         let request = ImportImageRequest {
             path: name(path)?,
             capacity,
             image: name(image)?,
             reference: reference.unwrap_or_default().to_owned(),
+            tenant: crate::host_store::NO_TENANT,
         };
         let response = self.call(format!("importing {}", image.display()), |mut c| async move {
             c.import_image(request).await
         })?;
-        Ok(response.branch)
+        Ok(branched(response.tenant, response.cell, response.branch))
     }
 
     /// Forks the store at `from` to a new branch at `to`, and returns the branch (`ForkStore`).
-    pub fn fork_store(&self, from: &Path, to: &Path) -> Result<u64, crate::Error> {
+    pub fn fork_store(&self, from: &Path, to: &Path) -> Result<crate::Branch, crate::Error> {
         self.fork_or_point(from, to, false)
     }
 
     /// Makes a point of the store at `from`, at `to`, and returns its branch (`ForkStore` with
     /// `point`): which any number of hosts fork at once, from copies of it (TASK-158).
-    pub fn point_store(&self, from: &Path, to: &Path) -> Result<u64, crate::Error> {
+    pub fn point_store(&self, from: &Path, to: &Path) -> Result<crate::Branch, crate::Error> {
         self.fork_or_point(from, to, true)
     }
 
-    fn fork_or_point(&self, from: &Path, to: &Path, point: bool) -> Result<u64, crate::Error> {
+    fn fork_or_point(
+        &self,
+        from: &Path,
+        to: &Path,
+        point: bool,
+    ) -> Result<crate::Branch, crate::Error> {
         let request = ForkStoreRequest { from: name(from)?, to: name(to)?, branch: 0, point };
         let what = format!("forking the store at {} to {}", from.display(), to.display());
         let response = self.call(what, |mut c| async move { c.fork_store(request).await })?;
-        Ok(response.branch)
+        Ok(branched(response.tenant, response.cell, response.branch))
     }
 
     /// Deletes the store at `path` (`DeleteStore`).

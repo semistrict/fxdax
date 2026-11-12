@@ -141,18 +141,65 @@ Settled with the user on 2026-10-16:
 
 ## Layout
 
-Per bucket prefix, for every branch of every lineage:
+*Rewritten 2026-11-11 (TASK-364, format 5):* every branch is a volume of a tenant's **cell**, and
+its objects are under the cell's prefix, `tenants/<tenant>/cells/<cell>/`, the tenant and the cell
+each an ID in 16 hexadecimal digits, which callers keep the meaning of. The flat layout before it,
+`segments/<branch>/...` at the bucket's root, is refused by format (`layout::FORMAT` 5): nothing
+reads it.
+
+Per bucket prefix, `<C>` a cell's prefix `tenants/<tenant>/cells/<cell>/`:
 
 | Key | What | Written |
 |---|---|---|
-| `segments/<branch>/<seq>` | sealed extents and a footer; `seq` dense from 0 | create-only, by the branch's writers |
-| `extents/<branch>/<epoch>.<seq>.<sequence>` | an extent of 4 MiB or more, raw, uploaded by the writer of `epoch` before its segment `seq`, which names it: the key is the writer's declaration of what may yet name it, which the collector goes by (Garbage collection) | create-only, before the segment naming it |
-| `checkpoints/<branch>/<seq>` | the branch's state as of segment `seq` | create-only, by the branch's writers |
-| `branches/<branch>` | the format of the branch's objects, first; its owner; where it was forked from, whether it is a fork's, whether deleted, whether a point, whether its fork of a point is being made, whether a failed fork's claim | create; updated with a condition |
-| `leases/<branch>` | the writer's epoch, who took it, and its placement's fencing token | created, then updated with a condition |
+| `<C>cell` | the cell's object: who holds it, at what epoch, by which placement's fencing token, its volumes by name (each a branch of the cell's, and a kind: `fxfs` or `sqlite`), whether it was deleted (Cells) | created, then updated with a condition |
+| `<C>segments/<branch>/<seq>` | sealed extents and a footer; `seq` dense from 0 | create-only, by the branch's writers |
+| `<C>extents/<branch>/<epoch>.<seq>.<sequence>` | an extent of 4 MiB or more, raw, uploaded by the writer of `epoch` before its segment `seq`, which names it: the key is the writer's declaration of what may yet name it, which the collector goes by (Garbage collection) | create-only, before the segment naming it |
+| `<C>checkpoints/<branch>/<seq>` | the branch's state as of segment `seq` | create-only, by the branch's writers |
+| `<C>branches/<branch>` | the format of the branch's objects, first; its owner; where it was forked from, whether it is a fork's, whether deleted, whether a point, whether its fork of a point is being made, whether a failed fork's claim | create; updated with a condition |
+| `<C>leases/<branch>` | the writer's epoch, who took it, and the token it was taken with: its cell's epoch (Cells) | created, then updated with a condition |
 | `gc/lease` | the collector's epoch | likewise |
 | `gc/marks/<epoch>` | what the mark-only pass of that epoch would have deleted, each object's key, size, version and time as listed (Garbage collection) | create-only, by the collector; removed by an operator |
 | `moves/<key>` | the live extents of the object at `key`, compacted, and where in it each is | create-only, by the collector |
+
+A branch is named by its cell and its ID (`layout::Branch`, displayed `TENANT/CELL/ID`): footers,
+fork children (`Child`) and origins (`Origin`) name branches so, so that recovery and the collector
+reach a parent or a child in another cell, or another tenant's. An extent's ID names its branch by
+the ID alone, so a fork's child takes no ID of a branch its parent holds extents of, its parent's
+own among them (`extent_store::Inherited`). Branch IDs are unique within their cells by their
+records' conditional creates. The collector lists `tenants/` whole for the records it reads again
+(Garbage collection). A checkpoint's table stores its keys front-coded (`extent_frame::table`), as
+a branch's keys share their cell's prefix and their kind's.
+
+### Cells
+
+A cell is a tenant's unit of placement: one host at a time holds it, and writes every volume of
+it, each a branch of its own with a log, a lease and uploads of its own (one log per volume, the
+user's choice of 2026-11-11, over one log per cell, which would have had the store multiplex
+volumes). Taking a cell is one compare-and-swap of its object (`extent_remote::cell::take`): the
+epoch after its last taking's, refused to a placement of a lower token than the one holding it
+(`Stale`), refused once deleted. A volume's writer takes its branch's lease with the cell's epoch as
+its token (`extent_store::upload`): a later taking of the cell, elsewhere, takes the volumes' leases
+from it as any later writer does, and its writers learn of it at their next upload; it takes none
+back, its epoch lower. So a cell moves whole, fenced by the branches' own leases, which cells change
+nothing of (specs/bucket's model holds as it is). Every process of the host holding a cell takes it
+as one holder, its placement's token, so that a second taking by that holder goes on at its epoch
+rather than fencing the first: the extent daemon serving a cell's volumes to VMs and a FUSE mount
+showing others share it.
+
+A writer's opening of a store takes its cell (not a point's, which no writer takes and any
+number of hosts open), making it if it has no object yet (a new branch, or a fork's child), and
+has it hold its volume, named as its description says (`volume NAME`, `kind KIND`) unless the cell
+names its branch already: a volume's name is its branch's from its first, whatever directory a
+store of it is taken into. All in one compare-and-swap of the cell's object (`cell::hold`), a read
+alone when nothing changes. Only the holder changes a cell's volumes, conditional on the epoch and
+holder it took it at (`Fenced` otherwise). Deleting a branch takes its cell first, deletes the
+branch with the cell's epoch, and takes its volume out of the cell. A cell's object stays, as
+branches' records do: its epoch fences its volumes' leases, so made anew at epoch 1 it would leave
+a branch whose lease a higher epoch took unopenable.
+
+A store made alone, a VM's disk or an image, is the one volume of a new cell; a fork of one is the
+one volume of a new cell of its tenant's. Forking a cell of several volumes whole, at one cut, is
+the next step (TASK-364.1).
 
 doc-2's separate `index/` deltas and `frees/` objects are gone: a segment's footer is its delta,
 and its frees, and a branch's history can be rebuilt from its segments alone. A batch with no data
@@ -161,9 +208,9 @@ and its frees, and a branch's history can be rebuilt from its segments alone. A 
 Numbers are fixed-width hex, so listings sort.
 
 **Formats** *(added 2026-11-03, TASK-141.2; doc-11, rule 1).* A branch's record says first the
-format of its objects (`layout::FORMAT`, now 4: footers and checkpoints hold the capacity,
-TASK-165.3, a footer the runs of a commit it goes on with, TASK-92.41, and a checkpoint the
-branch's fences, TASK-371), so that a reader of
+format of its objects (`layout::FORMAT`, now 5: footers and checkpoints hold the capacity,
+TASK-165.3, a footer the runs of a commit it goes on with, TASK-92.41, a checkpoint the branch's
+fences, TASK-371, and a branch's objects are under its cell's prefix, TASK-364), so that a reader of
 any format reads it before the rest: one of another format, newer or older, is refused (`Error::Format`, naming the branch and the format) before anything else of
 the branch is read or written. Every reader of a branch reads its record first: a
 writer taking it, a host attaching it, the collector, whose pass stops, deleting nothing in a

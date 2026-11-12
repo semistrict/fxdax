@@ -2,12 +2,14 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-// The control API of a host FUSE mount of many stores (TASK-302): `fxdax-mount --control SOCKET
-// --stores DIR MOUNTPOINT` serves one FUSE mount, whose root directory holds the stores attached
-// to it, each at its name, however many: one OS mount, not one per store. Attach takes a branch
-// of the mount's bucket, its lease with it, into a store at DIR/NAME, and shows its filesystem at
-// MOUNTPOINT/NAME; Detach writes it back and lets its lease go, so that a VM, or another mount,
-// may take the branch.
+// The control API of a host FUSE mount of many stores (TASK-302), of tenants' cells (TASK-364):
+// `fxdax-mount --control SOCKET --stores DIR MOUNTPOINT` serves one FUSE mount, however many
+// stores: one OS mount, not one per store. Attach takes a cell of the mount's bucket, as its
+// holder, and every Fxfs volume of it into a store at DIR/TENANT/CELL/VOLUME, its lease with it,
+// each shown at MOUNTPOINT/TENANT/CELL/VOLUME, TENANT and CELL in 16 hexadecimal digits as the
+// bucket's keys have them; Detach writes them back, so that a VM, or another mount, may take the
+// cell. A cell's other volumes are not shown: its SQLite volumes' databases open through
+// sqlite_extents' VFS alone, and its volumes VMs attach are theirs, on the same host.
 //
 // It is served over a Unix socket, the mounting user's alone, mode 0600 whatever its umask, as
 // every caller may do everything.
@@ -19,11 +21,12 @@
 // RESOURCE_EXHAUSTED, ETIMEDOUT DEADLINE_EXCEEDED, EBUSY, ESTALE, ENOTSUP and EROFS
 // FAILED_PRECONDITION, EIO and others INTERNAL.
 //
-// Calls block for as long as their work takes: an attach while its store recovers, a detach until
-// the kernel lets the store go. A caller bounds them with deadlines; one that gives up does not
+// Calls block for as long as their work takes: an attach while its stores recover, a detach until
+// the kernel lets the stores go. A caller bounds them with deadlines; one that gives up does not
 // stop the work, which completes, or fails, on its own.
 //
-// Compatibility: v1 only grows, as the extent daemon's does.
+// Compatibility: cells changed v1 outright (TASK-364: formats break, no caller is kept); it only
+// grows from here.
 
 syntax = "proto3";
 
@@ -34,66 +37,101 @@ option go_package = "github.com/semistrict/fxdax/go/mount/v1;mountv1";
 
 // The control API of a FUSE mount of many stores.
 service Mount {
-  // Attaches a branch of the mount's bucket at a name in the mount's root directory: takes it
-  // into a store at DIR/NAME, its lease with it, and shows its filesystem at MOUNTPOINT/NAME. A
-  // store at DIR/NAME already, as one detached left, is opened again: it must be of the branch
-  // (ALREADY_EXISTS otherwise). ALREADY_EXISTS if a store is attached at the name; EBUSY if one is
-  // being attached or detached there; ESTALE if a later placement holds the branch.
+  // Attaches a cell of the mount's bucket: takes it, as its holder, and every Fxfs volume of it
+  // into a store at DIR/TENANT/CELL/VOLUME, opened again where one is, its lease with it, each
+  // shown at MOUNTPOINT/TENANT/CELL/VOLUME. A cell of 0 is a new one, of no volumes yet.
+  // ALREADY_EXISTS if the cell is attached; EBUSY if it is being attached or detached; NOT_FOUND if
+  // the bucket has no such cell; ESTALE if a later placement holds it. A cell attached part way
+  // detaches what it attached, at once, and fails.
   rpc Attach(AttachRequest) returns (AttachResponse);
-  // Detaches the store attached at a name: the name goes from the mount's root at once; the store
-  // is unmounted, what is dirty written back, and its lease let go, once the kernel has let go of
-  // every file and directory of it, as once whatever has one open, or as its current directory,
-  // lets it go: the call returns then. NOT_FOUND if none is attached there; EBUSY if one is being
-  // attached or detached there. DIR/NAME stays, to attach again.
+  // Makes a new Fxfs volume of a cell attached: a new branch of it, its filesystem empty, its
+  // root directory the mounting user's, in a store at DIR/TENANT/CELL/NAME, shown at
+  // MOUNTPOINT/TENANT/CELL/NAME. NOT_FOUND if the cell is not attached; ALREADY_EXISTS if it has
+  // a volume of the name; INVALID_ARGUMENT for a name no volume has.
+  rpc CreateVolume(CreateVolumeRequest) returns (CreateVolumeResponse);
+  // Detaches a cell: its volumes go from the mount at once; each store is unmounted, what is
+  // dirty written back, once the kernel has let go of every file and directory of it, as once
+  // whatever has one open, or as its current directory, lets it go: the call returns then.
+  // NOT_FOUND if the cell is not attached; EBUSY if it is being attached or detached. DIR stays,
+  // to attach again.
   rpc Detach(DetachRequest) returns (DetachResponse);
-  // The stores attached, and those being detached.
+  // The cells attached, and their volumes shown.
   rpc List(ListRequest) returns (ListResponse);
 }
 
-// What to attach, and where.
+// What to attach.
 message AttachRequest {
-  // The name in the mount's root, and of the store's directory in DIR: a file name, UTF-8, not
-  // "." or "..", with no "/" (INVALID_ARGUMENT otherwise).
-  string name = 1;
-  // The branch to take, or 0 for a new branch, whose filesystem is made empty, its root
-  // directory the mounting user's.
-  uint64 branch = 2;
-  // The most bytes the store holds, if it is made: as its branch's VMs' disks hold.
-  uint64 capacity = 3;
-  // The fencing token of the placement to take the branch's lease at, if any: as CreateStore's.
-  optional uint64 token = 4;
+  // The tenant.
+  uint64 tenant = 1;
+  // Its cell, or 0 for a new cell of the tenant's.
+  uint64 cell = 2;
+  // The fencing token of the placement to take the cell at, if any: as CreateStore's.
+  optional uint64 token = 3;
 }
 
 // What was attached.
 message AttachResponse {
-  // The branch attached: the one asked for, or the new one made.
+  // The cell: the one asked for, or the new one made.
+  uint64 cell = 1;
+  // Its volumes shown, by name.
+  repeated Volume volumes = 2;
+}
+
+// What volume to make, and in what cell.
+message CreateVolumeRequest {
+  // The tenant.
+  uint64 tenant = 1;
+  // Its cell, attached.
+  uint64 cell = 2;
+  // Its name in the cell, and the mount: 1 to 64 ASCII letters, digits, '.', '_' or '-', not
+  // starting with '.' (INVALID_ARGUMENT otherwise).
+  string name = 3;
+  // The most bytes its store holds: as VMs' disks hold.
+  uint64 capacity = 4;
+}
+
+// The volume made.
+message CreateVolumeResponse {
+  // Its branch, a new one of the cell's.
   uint64 branch = 1;
 }
 
 // What to detach.
 message DetachRequest {
-  // The name it is attached at.
-  string name = 1;
-  // Unmount the store at once, without waiting for the kernel to let go of it: files and
-  // directories of it still open fail with ENOTCONN from then on.
-  bool force = 2;
+  // The tenant.
+  uint64 tenant = 1;
+  // Its cell, attached.
+  uint64 cell = 2;
+  // Unmount its stores at once, without waiting for the kernel to let go of them: files and
+  // directories of them still open fail with ENOTCONN from then on.
+  bool force = 3;
 }
 
-// A store detached.
+// A cell detached.
 message DetachResponse {}
 
 // No more than the call.
 message ListRequest {}
 
-// The stores attached.
+// The cells attached.
 message ListResponse {
-  // By name.
-  repeated Attached stores = 1;
+  // By tenant, then cell.
+  repeated AttachedCell cells = 1;
 }
 
-// A store attached.
-message Attached {
-  // The name it is attached at.
+// A cell attached.
+message AttachedCell {
+  // The tenant.
+  uint64 tenant = 1;
+  // Its cell.
+  uint64 cell = 2;
+  // Its volumes shown, by name.
+  repeated Volume volumes = 3;
+}
+
+// A volume of a cell, shown in the mount.
+message Volume {
+  // Its name in the cell.
   string name = 1;
   // The branch its store holds.
   uint64 branch = 2;

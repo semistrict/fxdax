@@ -122,7 +122,7 @@ fn default_sampler() -> Result<Option<Sampler>, String> {
 /// (`metrics::span_name`); nothing while spans are off, at the cost of a load.
 pub(super) fn request_span(
     header: &Header,
-    branch: Option<u64>,
+    branch: Option<crate::Branch>,
     guest: Option<&crate::request::RequestId>,
 ) -> extent_remote::trace::Span {
     use extent_remote::trace::{self, Span};

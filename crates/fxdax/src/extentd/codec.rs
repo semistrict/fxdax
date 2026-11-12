@@ -23,6 +23,7 @@ use super::wire::*;
 use crate::pages::{ArenaId, PhysLocation};
 use crate::{Access, Commit, Errno, ExtentId, ExtentInfo, MappingContents};
 use crate::{WindowMapping, WriteBarriers};
+use extent_remote::cell::Kind;
 use std::borrow::Cow;
 use std::num::NonZeroU64;
 use std::os::fd::{AsFd, BorrowedFd};
@@ -95,8 +96,9 @@ pub(crate) enum Request<'a> {
 pub(crate) enum Opening {
     /// To write, if it exists (no flags).
     Existing,
-    /// To write, created with this many bytes of capacity if it doesn't exist ([`OPEN_CREATE`]).
-    Create(u64),
+    /// To write, created with this many bytes of capacity if it doesn't exist ([`OPEN_CREATE`]),
+    /// a volume of this kind of its new cell ([`OPEN_SQLITE`], TASK-364).
+    Create(u64, Kind),
     /// To write, forked from the store at `from` if it doesn't exist, of branch `branch` and
     /// `capacity` bytes, which the daemon takes from its bucket if it doesn't exist either
     /// ([`OPEN_FORK_FROM`]).
@@ -189,7 +191,7 @@ impl<'a> Encoded<'a> {
 /// The flags requests of `kind` know: `EINVAL` for a kind no request is of.
 fn known_flags(kind: u32) -> Result<u32, Errno> {
     Ok(match kind {
-        OPEN => OPEN_CREATE | OPEN_FORK_FROM | OPEN_READ_ONLY,
+        OPEN => OPEN_CREATE | OPEN_FORK_FROM | OPEN_READ_ONLY | OPEN_SQLITE,
         READ => READ_TRANSFER,
         WRITE => {
             WRITE_BARRIER | WRITE_COMMIT | WRITE_DURABLE | WRITE_LOCAL | WRITE_TRANSFER | WRITE_ROOT
@@ -258,8 +260,9 @@ impl<'a> Request<'a> {
                 let path = path.as_os_str().as_bytes();
                 let mut open = match opening {
                     Opening::Existing => message(0, [0; 5]).carrying(path),
-                    Opening::Create(capacity) => {
-                        message(OPEN_CREATE, [*capacity, 0, 0, 0, 0]).carrying(path)
+                    Opening::Create(capacity, kind) => {
+                        let flags = OPEN_CREATE | flag(*kind == Kind::Sqlite, OPEN_SQLITE);
+                        message(flags, [*capacity, 0, 0, 0, 0]).carrying(path)
                     }
                     Opening::ForkFrom { from, branch, capacity } => {
                         let from = [&[0][..], from.as_os_str().as_bytes()].concat();
@@ -384,7 +387,10 @@ impl<'a> Request<'a> {
             OPEN => {
                 let (named, opening) = match flags {
                     0 => (&payload[..], Opening::Existing),
-                    OPEN_CREATE => (&payload[..], Opening::Create(args[0])),
+                    OPEN_CREATE => (&payload[..], Opening::Create(args[0], Kind::Fxfs)),
+                    flags if flags == OPEN_CREATE | OPEN_SQLITE => {
+                        (&payload[..], Opening::Create(args[0], Kind::Sqlite))
+                    }
                     OPEN_READ_ONLY => (&payload[..], Opening::ReadOnly),
                     OPEN_FORK_FROM => {
                         let nul = payload.iter().position(|byte| *byte == 0);
@@ -1024,7 +1030,8 @@ mod tests {
         let open = |opening| Request::Open { path: path.clone(), opening };
         vec![
             open(Opening::Existing),
-            open(Opening::Create(a)),
+            open(Opening::Create(a, Kind::Fxfs)),
+            open(Opening::Create(a, Kind::Sqlite)),
             open(Opening::ForkFrom { from, branch: b, capacity: a }),
             open(Opening::ReadOnly),
             read(d % (MAX_PAYLOAD + 1), ReadInto::Reply),
@@ -1311,7 +1318,7 @@ mod tests {
             |kind, flags, args: &[u64]| Header::new(kind, 0).with_args(args).with_flags(flags);
         let cases: Vec<(Request<'_>, Header, Vec<u8>)> = vec![
             (
-                Request::Open { path: "s".into(), opening: Opening::Create(4096) },
+                Request::Open { path: "s".into(), opening: Opening::Create(4096, Kind::Fxfs) },
                 header(OPEN, OPEN_CREATE, &[4096, 0, 0, 0, VERSION]),
                 b"s".to_vec(),
             ),
@@ -1617,7 +1624,7 @@ mod tests {
     fn the_wire_is_its_version() {
         /// The version, and the fingerprint of the wire it is. A change to the wire is a new
         /// version, both changed together, never the fingerprint alone.
-        const WIRE: (u64, u64) = (5, 0x468a_ac45_20b7_9da3);
+        const WIRE: (u64, u64) = (6, 0x95bb_5555_9d83_050c);
         let fingerprint = fingerprint();
         assert_eq!(
             (VERSION, fingerprint),

@@ -10,7 +10,7 @@
 //! fxdax-gc URL [--mark-only] [--every SECONDS] [--grace SECONDS] [--compact-below FRACTION]
 //! fxdax-gc URL --dry-run [--grace SECONDS] [--compact-below FRACTION]
 //! fxdax-gc URL --branches [--held FILE]
-//! fxdax-gc URL --delete-branch ID
+//! fxdax-gc URL --delete-branch TENANT/CELL/ID
 //! ```
 //!
 //! URL names the bucket (`s3://bucket/prefix`, `gs://bucket/prefix`, `az://container/prefix`),
@@ -35,11 +35,11 @@
 //!
 //! The collector keeps what every live branch inherited, whether or not a host holds the branch,
 //! which only hosts know. `--branches` lists the live branches, one a line, a fork's after the
-//! branch and the segment it forked at, all in hexadecimal, but those FILE names, as
-//! `fxdaxctl stat` calls them, separated by white space: with FILE naming every branch every host
-//! holds, those left are no host's, or newer than FILE. `--delete-branch` deletes one, whichever
-//! host took it last, which stops writing if there is one, and the next pass frees what only it
-//! held (TASK-79.85).
+//! branch and the segment it forked at, each branch as TENANT/CELL/ID, all in hexadecimal, but
+//! those FILE names, as `fxdaxctl stat` calls them, separated by white space: with FILE naming
+//! every branch every host holds, those left are no host's, or newer than FILE. `--delete-branch`
+//! deletes one, whichever host took it last, which stops writing if there is one, and the next pass
+//! frees what only it held (TASK-79.85).
 
 use extent_remote::branch;
 use extent_remote::bucket::Meta;
@@ -55,7 +55,7 @@ fn usage() -> String {
     "usage: fxdax-gc URL [--mark-only] [--every SECONDS] [--grace SECONDS] \
      [--compact-below FRACTION] | fxdax-gc URL --dry-run [--grace SECONDS] \
      [--compact-below FRACTION] | \
-     fxdax-gc URL --branches [--held FILE] | fxdax-gc URL --delete-branch ID \
+     fxdax-gc URL --branches [--held FILE] | fxdax-gc URL --delete-branch TENANT/CELL/ID \
      (--mark-only deletes nothing, writing gc/marks/EPOCH: the bucket grows; \
      --dry-run writes nothing, and finds less than a pass deletes)"
         .into()
@@ -76,7 +76,7 @@ enum Command {
     /// Lists the live branches, but those a file names.
     Branches { held: Option<PathBuf> },
     /// Deletes a branch.
-    DeleteBranch(u64),
+    DeleteBranch(layout::Branch),
 }
 
 /// What a pass does with what no live branch needs (TASK-264).
@@ -97,9 +97,7 @@ fn parse(mut args: impl Iterator<Item = String>) -> Result<Args, String> {
     let command = match args.as_slice() {
         ["--branches"] => Command::Branches { held: None },
         ["--branches", "--held", file] => Command::Branches { held: Some(file.into()) },
-        ["--delete-branch", branch] => {
-            Command::DeleteBranch(u64::from_str_radix(branch, 16).map_err(|_| usage())?)
-        }
+        ["--delete-branch", branch] => Command::DeleteBranch(branch.parse().map_err(|_| usage())?),
         flags => parse_collect(flags)?,
     };
     Ok(Args { url, command })
@@ -132,18 +130,18 @@ fn parse_collect(flags: &[&str]) -> Result<Command, String> {
 }
 
 /// The branches `text` names, in hexadecimal, separated by white space.
-fn held_branches(text: &str) -> Result<BTreeSet<u64>, String> {
-    let branch = |word| u64::from_str_radix(word, 16).map_err(|_| format!("no branch: {word}"));
+fn held_branches(text: &str) -> Result<BTreeSet<layout::Branch>, String> {
+    let branch = |word: &str| word.parse();
     text.split_whitespace().map(branch).collect()
 }
 
 /// What `--branches` prints of `live`, but those `held`.
-fn listed(live: &BTreeMap<u64, Record>, held: &BTreeSet<u64>) -> String {
+fn listed(live: &BTreeMap<layout::Branch, Record>, held: &BTreeSet<layout::Branch>) -> String {
     let listed = live.iter().filter(|(branch, _)| !held.contains(branch));
     listed
         .map(|(branch, record)| match record.origin() {
-            Some(origin) => format!("{branch:x} {:x} {:x}\n", origin.parent, origin.at),
-            None => format!("{branch:x}\n"),
+            Some(origin) => format!("{branch} {} {:x}\n", origin.parent, origin.at),
+            None => format!("{branch}\n"),
         })
         .collect()
 }
@@ -356,12 +354,16 @@ mod tests {
     #[test]
     fn dry_runs_list_what_goes_and_say_it_is_less() {
         let meta = |key: String, size| Meta { key, version: Version::default(), size, modified: 0 };
-        let doomed = vec![meta(layout::segment(1, 2), 100), meta(layout::lease(3), 20)];
-        let compactable = vec![meta(layout::segment(1, 4), 7)];
+        let doomed =
+            vec![meta(layout::segment(branch(1), 2), 100), meta(layout::lease(branch(3)), 20)];
+        let compactable = vec![meta(layout::segment(branch(1), 4), 7)];
         let (listed, summary) = dry_run(&DryRun { doomed, compactable, fenced: false });
-        let expected = "segments/0000000000000001/0000000000000002 segment 100 delete\n\
-                        leases/0000000000000003 lease 20 delete\n\
-                        segments/0000000000000001/0000000000000004 segment 7 compact\n";
+        let at = "tenants/0000000000000001/cells/0000000000000002/";
+        let expected = format!(
+            "{at}segments/0000000000000001/0000000000000002 segment 100 delete\n\
+             {at}leases/0000000000000003 lease 20 delete\n\
+             {at}segments/0000000000000001/0000000000000004 segment 7 compact\n"
+        );
         assert_eq!(listed, expected);
         assert_eq!(
             summary,
@@ -405,8 +407,13 @@ mod tests {
         );
     }
 
+    /// Branch `id` of tenant 1's cell 2.
+    fn branch(id: u64) -> layout::Branch {
+        layout::Branch { cell: layout::Cell { tenant: 1, id: 2 }, id }
+    }
+
     /// TASK-79.85: an operator lists what no host holds, and deletes a branch, by IDs as
-    /// `fxdaxctl stat` says them.
+    /// `fxdaxctl stat` says them: TENANT/CELL/ID, in hexadecimal.
     #[test]
     fn branches_are_listed_and_deleted_by_their_hexadecimal_ids() {
         let url = "u".to_owned();
@@ -415,29 +422,31 @@ mod tests {
         let command = Command::Branches { held: Some("hosts".into()) };
         let args = parsed(&["u", "--branches", "--held", "hosts"]);
         assert_eq!(args, Ok(Args { url: url.clone(), command }));
-        let args = parsed(&["u", "--delete-branch", "ff"]);
-        assert_eq!(args, Ok(Args { url, command: Command::DeleteBranch(0xff) }));
+        let args = parsed(&["u", "--delete-branch", "1/2/ff"]);
+        assert_eq!(args, Ok(Args { url, command: Command::DeleteBranch(branch(0xff)) }));
     }
 
     /// TASK-79.85: a list names the live branches but those held, a fork's with where it forked.
     #[test]
     fn lists_leave_out_what_is_held() {
         let base = Kind::Root.of(0);
-        let fork = Kind::Fork(Origin { parent: 0xa, at: 0x10 }).of(0);
-        let live = BTreeMap::from([(0xa, base), (0xb, fork), (0xc, fork)]);
-        let held = held_branches("c\n").unwrap();
-        assert_eq!(listed(&live, &held), "a\nb a 10\n");
-        assert_eq!(held_branches("c x"), Err("no branch: x".to_owned()));
+        let fork = Kind::Fork(Origin { parent: branch(0xa), at: 0x10 }).of(0);
+        let live = BTreeMap::from([(branch(0xa), base), (branch(0xb), fork), (branch(0xc), fork)]);
+        let held = held_branches("1/2/c\n").unwrap();
+        assert_eq!(listed(&live, &held), "1/2/a\n1/2/b 1/2/a 10\n");
+        let refused = "no branch, TENANT/CELL/ID in hexadecimal: x".to_owned();
+        assert_eq!(held_branches("1/2/c x"), Err(refused));
     }
 
     #[test]
     fn other_command_lines_get_the_usage() {
-        let lines: [&[&str]; 11] = [
+        let lines: [&[&str]; 12] = [
             &[],
             &["u", "--every"],
             &["u", "--every", "soon"],
             &["u", "--fast", "1"],
             &["u", "--delete-branch", "branch"],
+            &["u", "--delete-branch", "ff"],
             &["u", "--branches", "--held"],
             &["u", "--mark-only", "--dry-run"],
             &["u", "--mark-only", "--mark-only"],

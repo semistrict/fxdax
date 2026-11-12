@@ -199,6 +199,7 @@ impl<T> Wal<T> {
 mod tests {
     use super::*;
     use crate::batch::{Batch, Commit, Data, Unframed};
+    use crate::layout::test_branch;
     use crate::layout::{self, Contents, Continued, child};
     use crate::recovery::State;
     use crate::store::Store;
@@ -214,13 +215,13 @@ mod tests {
     /// A bucket holding branch 1, a root.
     async fn bucket() -> Arc<Store> {
         let bucket = memory();
-        branch::create(&*bucket, 1, 0).await.unwrap();
+        branch::create(&*bucket, test_branch(1), 0).await.unwrap();
         bucket
     }
 
     /// A writer of branch 1, a host's, taking it over as `holder`.
     async fn open(bucket: &Arc<Store>, holder: u64) -> Writer<Store> {
-        Writer::open(bucket.clone(), 1, holder, 0).await.unwrap()
+        Writer::open(bucket.clone(), test_branch(1), holder, 0).await.unwrap()
     }
 
     /// An empty log of the branch `writer` just took.
@@ -262,10 +263,11 @@ mod tests {
     /// The commits branch 1's segments make, in the order its readers apply them, skipping those
     /// that are void: each once, if its history is whole.
     async fn history(bucket: &Arc<Store>) -> Vec<u64> {
-        let mut state = State::new(1);
+        let mut state = State::new(test_branch(1));
         let mut commits = Vec::new();
         for seq in 0.. {
-            let Some(object) = bucket::get(&**bucket, &layout::segment(1, seq)).await else {
+            let Some(object) = bucket::get(&**bucket, &layout::segment(test_branch(1), seq)).await
+            else {
                 return commits;
             };
             let footer = layout::Segment::footer(&object.bytes).unwrap();
@@ -473,7 +475,7 @@ mod tests {
             let second = open(&bucket, 11).await;
             assert_eq!(wal.rebase(&second.fenced()).map(|rebased| rebased.landed.len()), Ok(0));
             let (footer, _) = wal.segments().next().unwrap();
-            let key = layout::extent(second.epoch(), footer.seq, own);
+            let key = layout::extent(layout::TEST_CELL, second.epoch(), footer.seq, own);
             assert_eq!(footer.own().map(|(_, location)| location.key).collect::<Vec<_>>(), [key]);
             assert_eq!(footer.contents.next_sequence, second.chain().next_sequence());
             assert_eq!(rebase(&second, &mut wal).await, Ok(vec![]));
@@ -550,7 +552,8 @@ mod tests {
             let first = open(&bucket, 10).await;
             let mut wal = log(&first);
             let seq = close(&first, &mut wal, commit(1));
-            let Unframed { footer, data } = Batch::default().fork(child(2), &mut first.chain());
+            let Unframed { footer, data } =
+                Batch::default().fork(child(test_branch(2)), &mut first.chain());
             first.add_segment(data.frame(&footer)).unwrap();
             wal.push(footer, data);
             close(&first, &mut wal, commit(3));
@@ -558,7 +561,7 @@ mod tests {
             let second = open(&bucket, 11).await;
             let landed = wal.rebase(&second.fenced()).unwrap().landed;
             let forks: Vec<_> = landed.iter().map(|(f, _)| f.contents.forks.clone()).collect();
-            assert_eq!(forks, [vec![], vec![child(2)]]);
+            assert_eq!(forks, [vec![], vec![child(test_branch(2))]]);
             let commits: Vec<_> = wal.segments().map(|(f, _)| f.contents.commits.clone()).collect();
             assert_eq!(commits, [vec![3]]);
         });
@@ -568,7 +571,7 @@ mod tests {
     /// commit they make, or, those making none, the base before.
     #[test]
     fn acknowledged_segments_leave_the_log() {
-        let mut chain = Chain::new(1, 2, 5, Some((4, 2)), 0);
+        let mut chain = Chain::new(test_branch(1), 2, 5, Some((4, 2)), 0);
         let mut wal = Wal::new(Some(7));
         let mut push = |commits: Vec<u64>| {
             wal.push(chain.close(Contents { commits, ..Contents::default() }), ());

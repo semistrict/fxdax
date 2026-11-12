@@ -51,6 +51,7 @@ pub mod batch;
 pub mod branch;
 pub mod bucket;
 pub mod cache;
+pub mod cell;
 pub mod checkpoint;
 pub mod client;
 pub mod collector;
@@ -114,8 +115,8 @@ pub enum Error {
     /// A fork's child has a record naming another origin: another branch has the ID the fork's
     /// guest gave it, which that branch took while the fork was made (TASK-79.82). The fork failed;
     /// its parent's branch is as sound as before.
-    #[error("branch {0:x} has another origin")]
-    ChildTaken(u64),
+    #[error("branch {0} has another origin")]
+    ChildTaken(layout::Branch),
     /// Something a branch needs is gone.
     #[error("lost: {0}")]
     Lost(String),
@@ -124,10 +125,10 @@ pub enum Error {
     /// The branch's record says its objects are of another format than this one's, newer or
     /// older, which reads none of them (doc-11, rule 1; TASK-141.2, TASK-165.3).
     #[error(
-        "branch {branch:x} is of format {format}, which this reader, of format {ours}, doesn't read",
+        "branch {branch} is of format {format}, which this reader, of format {ours}, doesn't read",
         ours = layout::FORMAT
     )]
-    Format { branch: u64, format: u32 },
+    Format { branch: layout::Branch, format: u32 },
     /// What a writer was to upload, it could not read where it is kept: a store's file.
     #[error("reading {0}")]
     Read(String),
@@ -137,6 +138,20 @@ pub enum Error {
     /// `fxdaxctl take` drops the log (doc-14, Opening a store).
     #[error("another writer's commits moved the branch on from the write-ahead log's")]
     Diverged,
+    /// fxdax: the cell has no object: no such cell (TASK-364).
+    #[error("no such cell")]
+    NoCell,
+    /// fxdax: the cell has a volume of that name already.
+    #[error("the cell has a volume {0} already")]
+    VolumeExists(String),
+    /// fxdax: no volume may have that name ([`cell::valid_name`]).
+    #[error(
+        "{0:?} names no volume: 1 to 64 letters, digits, '.', '_' or '-', not starting with '.'"
+    )]
+    VolumeName(String),
+    /// fxdax: the cell has no volume of that name.
+    #[error("the cell has no volume {0}")]
+    NoVolume(String),
 }
 
 impl From<extent_frame::Corrupt> for Error {

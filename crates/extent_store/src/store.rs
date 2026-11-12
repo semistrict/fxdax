@@ -10,9 +10,9 @@ use crate::framed::{Aligned, Framed, Packed, Part, Source, Unpacked, read_aligne
 use crate::kept::{Kept, KeptExtents};
 use crate::layout::{
     Change, DESCRIPTION, Data, Description, EXTENTS, Extent, Extents, FileKey, KINDS, OPEN_EXTENTS,
-    Piece, Place, SEGMENTS, SegmentId, StoreFile, add_piece, branch_dir, create_branch_dirs,
-    encode_salted, extent_path, files_of, list_numbers, log_path, open_extent_path,
-    open_segment_path, segment_path, spare_path,
+    Piece, Place, SEGMENTS, SegmentId, StoreFile, Volume, add_piece, branch_dir,
+    create_branch_dirs, encode_salted, extent_path, files_of, list_numbers, log_path,
+    open_extent_path, open_segment_path, segment_path, spare_path,
 };
 use crate::seals;
 use crate::segments::{self, Behind, Segments, Unframed, footer_last};
@@ -30,7 +30,7 @@ use crate::wal::{
 };
 use crate::written;
 use anyhow::{Context as _, Error, anyhow, bail, ensure};
-use extent_frame::segment::{Chain, Child, Contents, Footer, Location, epoch_of};
+use extent_frame::segment::{Branch, Chain, Child, Contents, Footer, Location, epoch_of};
 use extent_remote::cache::Cache;
 use extent_remote::recovery::{Places, Seal};
 use extent_remote::trace;
@@ -51,11 +51,17 @@ pub struct NoSpace;
 /// segments elsewhere, as an uploader does, may have taken, and whose fork it makes there, so that
 /// the child is to be deleted there as a fork made is (TASK-79.82).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
-#[error("the fork to branch {child:#x} failed once its commit was made")]
+#[error("the fork to branch {child} failed once its commit was made")]
 pub struct ForkCommitted {
     /// The fork's child.
-    pub child: u64,
+    pub child: Branch,
 }
+
+/// fxdax: the error of a fork whose child's ID is the branch's, or that of a branch whose extents
+/// the branch holds: its child's extents' IDs would be theirs (TASK-364).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("the fork's child {0} has the ID of its parent's or of a branch it inherits from")]
+pub struct Inherited(pub Branch);
 
 /// The error of a capacity smaller than what the store holds: its extents' bytes, and those that
 /// writes in progress may add.
@@ -200,7 +206,13 @@ pub struct Store<D: Dir> {
     /// Its directory, which its framings share.
     dir: Arc<D>,
     block_size: u32,
-    branch: u64,
+    branch: Branch,
+    /// fxdax: the IDs of the branches whose extents it held as it opened, its own among them: no
+    /// fork's child takes one, as an extent's ID names its branch by its ID alone, and branches
+    /// are unique by theirs only within their cells (TASK-364).
+    lineage: BTreeSet<u64>,
+    /// fxdax: the volume of its branch's cell it is, if its description names one (TASK-364).
+    volume: Option<Volume>,
     /// fxdax: the URL of the bucket its branch is kept in, if its description names one.
     bucket: Option<String>,
     /// Its directory, taken for this process ([`Dir::take`]), and claimed for its opening
@@ -556,7 +568,7 @@ impl Opening {
     /// writer's chain from its first segment, of lease epoch 0. Its store's write-ahead log
     /// follows only if it never had anything acknowledged ([`extent_remote::Error::Diverged`]):
     /// a store of the store's own tests, of a bucket it never reaches.
-    pub fn new(branch: u64) -> Self {
+    pub fn new(branch: Branch) -> Self {
         let chain = Chain::new(branch, 0, 0, None, 0);
         let fenced = Fenced { recovered: None, last_commit: None, chain };
         Self { state: extent_remote::State::new(branch), fenced: Some(fenced), cache: None }
@@ -576,7 +588,7 @@ pub struct Recovering<D: Dir> {
 
 impl<D: Dir> Recovering<D> {
     /// The branch.
-    pub fn branch(&self) -> u64 {
+    pub fn branch(&self) -> Branch {
         self.file.branch
     }
 
@@ -588,6 +600,11 @@ impl<D: Dir> Recovering<D> {
     /// The fencing token of its placement, if it was placed (TASK-39.7).
     pub fn token(&self) -> Option<u64> {
         self.file.token
+    }
+
+    /// fxdax: the volume of its branch's cell it is, if its description names one (TASK-364).
+    pub fn volume(&self) -> Option<&Volume> {
+        self.file.volume.as_ref()
     }
 
     /// The branch's commit its write-ahead log goes on from: the last the bucket acknowledged of
@@ -632,11 +649,11 @@ impl<D: Dir> Recovering<D> {
         let dir = &*self.dir;
         let branch = self.file.branch;
         for (footer, number) in std::mem::take(&mut self.wal.segments) {
-            let segment = SegmentId { branch, number };
+            let segment = SegmentId { branch: branch.id, number };
             self.remove_files([segment_path(segment)], &footer);
         }
         for kind in [SEGMENTS, EXTENTS] {
-            dir.sync_dir(&branch_dir(kind, branch))?;
+            dir.sync_dir(&branch_dir(kind, branch.id))?;
         }
         self.wal.base_file.write(dir, None)?;
         dir.barrier()?;
@@ -665,9 +682,9 @@ impl<D: Dir> Recovering<D> {
     /// another segment opens, past them. A point's store holds its state alone, and no log.
     pub fn open(self, options: Options, opening: Opening) -> Result<Store<D>, Error> {
         let Self { dir, taken, claim, file, wal: recovered } = self;
-        let StoreFile { block_size, branch, bucket, capacity, .. } = file;
+        let StoreFile { block_size, branch, bucket, capacity, volume, .. } = file;
         let Opening { state, fenced, cache } = opening;
-        ensure!(state.branch == branch, "branch {branch:#x} opened as {:#x}", state.branch);
+        ensure!(state.branch == branch, "branch {branch} opened as {}", state.branch);
         // fxdax: what the bucket acknowledged goes into the host's cache by a rename, which can't
         // cross filesystems: a store elsewhere than the cache is refused, not left to read every
         // segment back from the bucket (TASK-359).
@@ -703,7 +720,7 @@ impl<D: Dir> Recovering<D> {
                 (rebased, chain)
             }
             None => {
-                ensure!(wal.is_empty(), "the store of point {branch:#x} holds commits of its own");
+                ensure!(wal.is_empty(), "the store of point {branch} holds commits of its own");
                 (Rebased { landed: Vec::new(), ended: None }, Chain::new(branch, 0, 0, None, 0))
             }
         };
@@ -713,7 +730,7 @@ impl<D: Dir> Recovering<D> {
         // extents sealed in it, those commits', the bucket's state holds there (TASK-345).
         let mut leaving = Vec::new();
         for (footer, number) in landed {
-            let segment = SegmentId { branch, number };
+            let segment = SegmentId { branch: branch.id, number };
             let key = extent_remote::layout::segment(branch, footer.seq);
             leaving.push((segment_path(segment), Some(key)));
             leaving.extend(footer.own().map(|(extent, at)| (extent_path(extent), Some(at.key))));
@@ -733,12 +750,12 @@ impl<D: Dir> Recovering<D> {
         let mut named_own = BTreeSet::new();
         for (footer, number) in wal.segments() {
             let key = extent_remote::layout::segment(branch, footer.seq);
-            replay.extents.segments.insert(key, SegmentId { branch, number: *number });
+            replay.extents.segments.insert(key, SegmentId { branch: branch.id, number: *number });
             replay.apply_contents(footer.seq, footer.epoch, &footer.contents);
             named_own.extend(footer.own().map(|(extent, _)| extent));
         }
         // fxdax: a log ends with no commit unended (`wal::recover`, TASK-92.41).
-        ensure!(replay.begun.is_none(), "branch {branch:#x}'s log ends inside a commit");
+        ensure!(replay.begun.is_none(), "branch {branch}'s log ends inside a commit");
         let head = wal.head().or(replay.last_commit);
         let epoch = head.map_or(0, epoch_of);
         let restate = replay.capacity.is_none() && fenced.is_some();
@@ -747,22 +764,24 @@ impl<D: Dir> Recovering<D> {
         // Past every extent of its own the branch holds: fxfs looks for what a crash left below
         // it (`Allocator::open`). Not the footers' next sequence, which their writers stamped
         // past their own floors (`Chain::close`), the next floor being the uploader's to say.
-        let own = extents.keys().filter(|extent| extent.branch == branch);
+        let own = extents.keys().filter(|extent| extent.branch == branch.id);
         let next_sequence = own.map(|extent| extent.sequence + 1).max().unwrap_or(0);
         let root = root.unwrap_or_default();
-        remove_unheld(&*dir, branch, &extents, &named_own)?;
+        remove_unheld(&*dir, branch.id, &extents, &named_own)?;
 
         // The segments it holds extents' data in, with the bytes of it each holds, and its own
         // extents' files. They must be there.
         let mut tracked: BTreeMap<SegmentId, u64> = BTreeMap::new();
         for (_, number) in wal.segments() {
-            tracked.insert(SegmentId { branch, number: *number }, 0);
+            tracked.insert(SegmentId { branch: branch.id, number: *number }, 0);
         }
         let (mut stored, mut own_stored) = (0, 0);
         let mut own_sizes = HashMap::new();
+        let mut lineage = BTreeSet::from([branch.id]);
         for (extent, entry) in &extents {
+            lineage.insert(extent.branch);
             stored += entry.len;
-            if extent.branch == branch {
+            if extent.branch == branch.id {
                 own_stored += entry.len;
             }
             match &entry.data {
@@ -781,7 +800,7 @@ impl<D: Dir> Recovering<D> {
             }
         }
         let opened = (epoch, recovered.next, chain);
-        let mut segments = Segments::open(&*dir, (branch, tracked), opened, options.open_files)?;
+        let mut segments = Segments::open(&*dir, (branch.id, tracked), opened, options.open_files)?;
         // fxdax: the sealed extents in each, read in the bucket once it is acknowledged there
         // (TASK-165.8).
         for (extent, entry) in &extents {
@@ -791,7 +810,7 @@ impl<D: Dir> Recovering<D> {
         for (footer, number) in wal.segments() {
             let restamped = stamped.get(number) != Some(footer);
             let own: u64 = footer.contents.own.iter().map(|(_, len)| len).sum();
-            let bytes = segments.len(SegmentId { branch, number: *number }) + own;
+            let bytes = segments.len(SegmentId { branch: branch.id, number: *number }) + own;
             queued.push(Queued::new(*number, footer.clone(), restamped, bytes));
         }
         let mut uncommitted = Uncommitted::default();
@@ -816,7 +835,9 @@ impl<D: Dir> Recovering<D> {
             dir,
             block_size,
             branch,
+            lineage,
             bucket,
+            volume,
             opened: SharedLock::new("store opening", Mutex::new(Some((claim, taken)))),
             unpacked: Unpacked::default(),
             options,
@@ -832,7 +853,7 @@ impl<D: Dir> Recovering<D> {
                     uncommitted,
                     gate: Gate::default(),
                     segments,
-                    own_files: OwnFiles::new(branch, own_sizes, options.open_files),
+                    own_files: OwnFiles::new(branch.id, own_sizes, options.open_files),
                     unreferenced: Unreferenced::default(),
                     wal: Queue::new(wal.base(), queued),
                     point: fenced.is_none(),
@@ -913,10 +934,16 @@ fn leave<D: Dir>(dir: &D, cache: Option<&Cache>, leaving: Vec<(String, Option<St
 impl<D: Dir> Store<D> {
     /// fxdax: makes a new store's directory in `dir`, which holds no store, as `description`
     /// describes, its description naming `bucket`, the URL of the bucket its branch is kept in,
-    /// if given ([`Store::bucket`]); unmade until its maker says it is whole ([`Store::made`]).
+    /// if given ([`Store::bucket`]), and `volume`, the volume of its branch's cell it is, if given
+    /// ([`Store::volume`], TASK-364); unmade until its maker says it is whole ([`Store::made`]).
     /// The description is made last: until it is durable, the directory is no store either. Its
     /// branch is the bucket's, which opening it takes ([`Store::recover`]).
-    pub fn make(dir: &D, description: Description, bucket: Option<&str>) -> Result<(), Error> {
+    pub fn make(
+        dir: &D,
+        description: Description,
+        bucket: Option<&str>,
+        volume: Option<Volume>,
+    ) -> Result<(), Error> {
         let Description { block_size, capacity, branch } = description;
         ensure!(
             block_size.is_power_of_two() && block_size as usize <= crate::framed::ALIGNMENT,
@@ -928,11 +955,12 @@ impl<D: Dir> Store<D> {
             for path in KINDS {
                 dir.create_dir(path).with_context(|| format!("creating {path}"))?;
             }
-            create_branch_dirs(dir, branch)?;
+            create_branch_dirs(dir, branch.id)?;
             dir.create(UNMADE, false)?.sync()?;
             let file = dir.create(DESCRIPTION, false)?;
             let bucket = bucket.map(str::to_owned);
-            let text = StoreFile { block_size, branch, bucket, capacity, token: None }.text();
+            let described = StoreFile { block_size, branch, bucket, capacity, token: None, volume };
+            let text = described.text();
             file.write_at(text.as_bytes(), 0)?;
             file.sync()?;
             dir.sync_dir("")?;
@@ -959,7 +987,7 @@ impl<D: Dir> Store<D> {
     /// it: one whose branch the bucket holds nothing of ([`Opening::new`]), as the store's own
     /// tests' are.
     pub fn create(dir: D, description: Description, options: Options) -> Result<Self, Error> {
-        Self::make(&dir, description, None)?;
+        Self::make(&dir, description, None, None)?;
         let store = Self::recover_unmade(dir)?.open(options, Opening::new(description.branch))?;
         store.made()?;
         Ok(store)
@@ -1035,13 +1063,18 @@ impl<D: Dir> Store<D> {
         self.bucket.as_deref()
     }
 
+    /// fxdax: the volume of its branch's cell it is, as its description names it (TASK-364).
+    pub fn volume(&self) -> Option<&Volume> {
+        self.volume.as_ref()
+    }
+
     /// fxdax: holds the store's directory taken for this process until what it returns is dropped,
     /// as the store open does: for what outlives the store's closing and still writes in the
     /// directory, as its uploader does as it stops (TASK-129). Fails once it is closed.
     pub fn hold_dir(&self) -> Result<DirHold<D>, Error> {
         let opened = self.opened.with(Mutex::lock);
         let (_, taken) =
-            opened.as_ref().ok_or_else(|| anyhow!("branch {:#x} is closed", self.branch))?;
+            opened.as_ref().ok_or_else(|| anyhow!("branch {} is closed", self.branch))?;
         Ok(DirHold { _taken: taken.clone() })
     }
 
@@ -1051,6 +1084,9 @@ impl<D: Dir> Store<D> {
     /// the commit. Returns the commit's epoch. One that fails once its commit was made fails with
     /// [`ForkCommitted`]: the segment names the fork, as a host crashing then would leave it.
     pub fn commit_fork(&self, child: Child) -> Result<u64, Error> {
+        if self.lineage.contains(&child.branch.id) {
+            bail!(Inherited(child.branch));
+        }
         let committing = self.committing.with(Mutex::lock);
         self.writable()?.segments.close_for_fork(child);
         self.commit_locked(&committing, None)?;
@@ -1183,7 +1219,7 @@ impl<D: Dir> Store<D> {
         len: u64,
     ) -> Result<Write<'_, D>, Error> {
         self.check_io(offset, len)?;
-        if extent.branch != self.branch {
+        if extent.branch != self.branch.id {
             bail!(OtherBranch(extent));
         }
         // Not while a commit, or a closing between commits, waits for the writes in progress.
@@ -1203,7 +1239,7 @@ impl<D: Dir> Store<D> {
         len: u64,
     ) -> Result<Option<Write<'_, D>>, Error> {
         self.check_io(offset, len)?;
-        if extent.branch != self.branch {
+        if extent.branch != self.branch.id {
             bail!(OtherBranch(extent));
         }
         let state = self.writable()?;
@@ -1527,10 +1563,10 @@ impl<D: Dir> Store<D> {
         }
         let Some(entry) = state.extents.remove(&extent) else { return Ok(()) };
         // fxdax: sealed, the branch's own is written no more (TASK-79.6).
-        if placement.is_none() && extent.branch == self.branch {
+        if placement.is_none() && extent.branch == self.branch.id {
             state.spent.insert(extent.sequence);
         }
-        state.space.removed(entry.len, extent.branch == self.branch);
+        state.space.removed(entry.len, extent.branch == self.branch.id);
         state.uncommitted.push(Change::Free(extent));
         // A sealed one's data stays until the uploader has what it needs of it, and until the
         // commit that frees it decides whether views keep it. fxdax: an open one's goes at once:
@@ -1711,7 +1747,7 @@ impl<D: Dir> Store<D> {
         }
         if copied > 8 << 20 {
             log::warn!(
-                "extent store: branch {:#x}'s commit sealed {} extents, copying {copies} of them, \
+                "extent store: branch {}'s commit sealed {} extents, copying {copies} of them, \
                  {} KiB, the largest {} KiB",
                 self.branch,
                 sealing.len(),
@@ -1720,7 +1756,7 @@ impl<D: Dir> Store<D> {
             );
         }
         if let Some(why) = why {
-            why.log(self.branch, state.epoch);
+            why.log(self.branch.id, state.epoch);
         }
         span.set_count(trace::EXTENTS, sealing.len() as u64);
         span.set_count(trace::BYTES, copied);
@@ -2087,7 +2123,7 @@ impl<D: Dir> Store<D> {
         }
         let framer = Framer {
             dir: self.dir.clone(),
-            branch: self.branch,
+            branch: self.branch.id,
             state: self.state.clone(),
             idle: self.idle.clone(),
         };
@@ -2119,7 +2155,7 @@ impl<D: Dir> Store<D> {
     pub fn framing(&self) -> Vec<u64> {
         let state = self.lock();
         let framing = state.segments.framings().iter();
-        let ours = framing.filter(|segment| segment.branch == self.branch);
+        let ours = framing.filter(|segment| segment.branch == self.branch.id);
         ours.map(|segment| segment.number).collect()
     }
 
@@ -2154,14 +2190,14 @@ impl<D: Dir> Store<D> {
         let state = &mut *state;
         // fxdax: and framed: its framed file is what is uploaded.
         let segments = &state.segments;
-        let framing = |number| segments.is_framing(SegmentId { branch: self.branch, number });
+        let framing = |number| segments.is_framing(SegmentId { branch: self.branch.id, number });
         let taken: Vec<(u64, Footer, bool)> = (state.wal.take(self.uploadable(), framing, limit))
             .into_iter()
             .map(|queued| (queued.number, queued.footer.clone(), queued.restamped))
             .collect();
         let mut closed = Vec::with_capacity(taken.len());
         for (number, footer, restamped) in taken {
-            let segment = SegmentId { branch: self.branch, number };
+            let segment = SegmentId { branch: self.branch.id, number };
             let file = self.segment_file(state, segment)?.file().clone();
             let mut own = Vec::with_capacity(footer.contents.own.len());
             for (extent, location) in footer.own() {
@@ -2220,7 +2256,7 @@ impl<D: Dir> Store<D> {
             let key = extent_remote::layout::segment(self.branch, footer.seq);
             let extents: Vec<ExtentId> = footer.contents.extents.iter().map(|run| run.0).collect();
             let own: Vec<_> = footer.own().collect();
-            let segment = SegmentId { branch: self.branch, number };
+            let segment = SegmentId { branch: self.branch.id, number };
             state.landed_ending(segment, &key, &extents, &own)
         };
         leave(&*self.dir, self.cache.as_deref(), leaving);
@@ -2276,7 +2312,7 @@ impl<D: Dir> Store<D> {
                 let footer = &queued.footer;
                 let key = extent_remote::layout::segment(self.branch, footer.seq);
                 let own: Vec<_> = footer.own().collect();
-                let segment = SegmentId { branch: self.branch, number: queued.number };
+                let segment = SegmentId { branch: self.branch.id, number: queued.number };
                 leaving.extend(state.acknowledge(segment, (&key, !queued.restamped), &own));
             }
             // Those no extent's data is in here any more leave now.
@@ -2309,7 +2345,7 @@ impl<D: Dir> Store<D> {
             let mut timed = Flush::default();
             timed.phases.took(flush::WAIT, asked);
             let flushed = self.flush_locked(&mut logs, &mut timed);
-            timings::flushed(self.branch, &timed);
+            timings::flushed(self.branch.id, &timed);
             span.set_count(trace::COMMITS, timed.commits as u64);
             flushed
         })
@@ -2912,7 +2948,11 @@ mod tests {
             config.stack_size = 4 << 20;
             let scheduler = shuttle::scheduler::RandomScheduler::new(1);
             shuttle::Runner::new(scheduler, config).run(|| {
-                let description = Description { block_size: 4096, capacity: 1 << 20, branch: 1 };
+                let description = Description {
+                    block_size: 4096,
+                    capacity: 1 << 20,
+                    branch: extent_remote::layout::test_branch(1),
+                };
                 let store =
                     Store::create(crate::MemDir::new(), description, Options::default()).unwrap();
                 let _committing = store.committing.with(Mutex::lock);
@@ -2940,7 +2980,11 @@ mod tests {
             let scheduler = shuttle::scheduler::RandomScheduler::new(10);
             shuttle::Runner::new(scheduler, config).run(|| {
                 let dir = crate::MemDir::new();
-                let description = Description { block_size: 4096, capacity: 1 << 20, branch: 1 };
+                let description = Description {
+                    block_size: 4096,
+                    capacity: 1 << 20,
+                    branch: extent_remote::layout::test_branch(1),
+                };
                 let store = Store::create(dir.clone(), description, Options::default()).unwrap();
                 let extent = |sequence| ExtentId::new(1, sequence);
                 store.write(extent(0), 0, &[1; 4096]).unwrap();
@@ -2969,7 +3013,11 @@ mod tests {
     /// view follows record none, and a view's records go once it does.
     #[test]
     fn sealed_records_are_for_views() {
-        let description = Description { block_size: 4096, capacity: 1 << 20, branch: 1 };
+        let description = Description {
+            block_size: 4096,
+            capacity: 1 << 20,
+            branch: extent_remote::layout::test_branch(1),
+        };
         let store = Store::create(crate::MemDir::new(), description, Options::default()).unwrap();
         // Whether extent `sequence` is recorded as sealed after commit `epoch`.
         let sealed_after = |sequence, epoch| {
@@ -2996,7 +3044,11 @@ mod tests {
     #[test]
     #[should_panic(expected = "the bytes the extents hold")]
     fn audits_find_counts_drifted() {
-        let description = Description { block_size: 4096, capacity: 1 << 20, branch: 1 };
+        let description = Description {
+            block_size: 4096,
+            capacity: 1 << 20,
+            branch: extent_remote::layout::test_branch(1),
+        };
         let store = Store::create(crate::MemDir::new(), description, Options::default()).unwrap();
         store.write(ExtentId::new(1, 1), 0, &[1; 4096]).unwrap();
         store.state.with(Mutex::lock).space.added(4096, true);

@@ -82,9 +82,9 @@ struct World {
     bucket: Arc<Bucket>,
     gated: Arc<Gated>,
     parent: Option<ExtentStore>,
-    branch: u64,
+    branch: crate::Branch,
     /// The child of the fork.
-    child: u64,
+    child: crate::Branch,
     /// The parent's extents, with their data.
     held: Vec<(ExtentId, Vec<u8>)>,
     other: ExtentStore,
@@ -101,7 +101,9 @@ fn mint(store: &ExtentStore, count: u64) -> Vec<ExtentId> {
     let info = store.info().unwrap();
     let first = info.next_sequence.max(info.sequence_floor);
     assert!(first >= 1 << EPOCH_SHIFT, "a guest mints from its writer's floor: {info:?}");
-    (first..first + count).map(|sequence| ExtentId { branch: store.branch(), sequence }).collect()
+    (first..first + count)
+        .map(|sequence| ExtentId { branch: store.branch().id, sequence })
+        .collect()
 }
 
 fn write(store: &ExtentStore, extent: ExtentId, data: &[u8]) {
@@ -179,7 +181,7 @@ impl World {
             gated,
             parent: Some(parent),
             branch,
-            child: crate::host_store::new_branch(),
+            child: crate::host_store::new_alone(),
             held,
             other,
             other_held,
@@ -283,12 +285,12 @@ impl World {
     }
 
     /// The child's record, if it has one.
-    fn record(&self, child: u64) -> Option<extent_remote::record::Record> {
+    fn record(&self, child: crate::Branch) -> Option<extent_remote::record::Record> {
         block_on(branch::record(&*self.bucket, child)).unwrap()
     }
 
     /// The branches live in the bucket.
-    fn live(&self) -> Vec<u64> {
+    fn live(&self) -> Vec<crate::Branch> {
         block_on(branch::live(&*self.bucket)).unwrap().into_keys().collect()
     }
 
@@ -296,7 +298,7 @@ impl World {
     /// host died, or whose cleanup failed, leaves standing, which an operator finds so, and
     /// deletes, whichever placement took it last, as `fxdax-gc --branches` and `--delete-branch`
     /// do. Only the fork's child may be one, and only if the fork failed.
-    fn delete_orphans(&self, named: &[u64], failed: bool, case: &str) {
+    fn delete_orphans(&self, named: &[crate::Branch], failed: bool, case: &str) {
         let orphans: Vec<_> =
             self.live().into_iter().filter(|live| !named.contains(live)).collect();
         if orphans.is_empty() {
@@ -381,7 +383,7 @@ impl World {
             children.push(path.clone());
             unchecked.push((path.clone(), b"later"));
         }
-        let retried = crate::host_store::new_branch();
+        let retried = crate::host_store::new_alone();
         assert_eq!(
             parent.fork(self.path("retried"), retried).map_err(|err| err.to_string()),
             Ok(()),
@@ -436,7 +438,8 @@ impl World {
                             .record(branch)
                             .is_some_and(|record| record.deleted && !record.may_drop())
                 }
-                Kind::GcLease | Kind::Marks { .. } => false,
+                // A cell's object stays, as its records do (TASK-364).
+                Kind::GcLease | Kind::Marks { .. } | Kind::Cell { .. } => false,
                 Kind::Moves { .. } | Kind::Unknown => true,
             })
             .collect();

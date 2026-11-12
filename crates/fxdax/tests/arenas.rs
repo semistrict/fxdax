@@ -19,7 +19,7 @@ fn stores_hold_their_arenas() {
     let path = dir.path().join("store");
     let ps = fxdax::pages::page_size();
     let store = ExtentStore::create(&path, 1 << 24).unwrap();
-    let extent = ExtentId { branch: store.branch(), sequence: 1 };
+    let extent = ExtentId { branch: store.branch().id, sequence: 1 };
     let bytes = vec![0xa5; ps as usize];
     store.write(extent, 0, &[VolatileSlice::from(&bytes[..])]).unwrap();
     store.commit(None).unwrap();

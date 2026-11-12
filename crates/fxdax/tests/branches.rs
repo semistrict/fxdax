@@ -77,11 +77,11 @@ fn forks_and_takes_branches_in(url: &str) {
     let path = |name: &str| dir.path().join(name);
 
     // Made by fxdaxctl, naming the bucket at `url`.
-    let made = format!("{:x}", rand::random::<u64>().max(1));
+    let made = format!("0/1/{:x}", rand::random::<u64>().max(1));
     branch(&url, &["take", path("parent").to_str().unwrap(), &(1u64 << 30).to_string(), &made]);
     let parent = attached(&path("parent"));
     let data = pattern(7, 5 << 20);
-    let extent = ExtentId { branch: parent.branch(), sequence: 1 };
+    let extent = ExtentId { branch: parent.branch().id, sequence: 1 };
     parent.write(extent, 0, &[VolatileSlice::from(&data[..])]).unwrap();
     parent.commit(Some(b"root")).unwrap();
     let parent_branch = parent.branch();
@@ -89,7 +89,7 @@ fn forks_and_takes_branches_in(url: &str) {
 
     let child =
         branch(&url, &["fork", path("parent").to_str().unwrap(), path("child").to_str().unwrap()]);
-    let child_branch = u64::from_str_radix(&child, 16).unwrap();
+    let child_branch: fxdax::Branch = child.trim().parse().unwrap();
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let record = runtime.block_on(extent_remote::branch::record(&*bucket, child_branch));
     assert_eq!(record.unwrap().unwrap().origin().map(|origin| origin.parent), Some(parent_branch));
@@ -98,7 +98,10 @@ fn forks_and_takes_branches_in(url: &str) {
     assert_eq!(read(&forked, extent, data.len()), data);
     drop(forked);
 
-    branch(&url, &["take", path("elsewhere").to_str().unwrap(), &(1u64 << 30).to_string(), &child]);
+    branch(
+        &url,
+        &["take", path("elsewhere").to_str().unwrap(), &(1u64 << 30).to_string(), child.trim()],
+    );
     let elsewhere = attached(&path("elsewhere"));
     assert_eq!(elsewhere.root().unwrap(), b"root");
     assert_eq!(read(&elsewhere, extent, data.len()), data);
@@ -146,11 +149,11 @@ fn places_and_syncs_stores_in(url: &str) {
     let path = |name: &str| dir.path().join(name).to_str().unwrap().to_owned();
 
     // Made by fxdaxctl, naming the bucket at `url`.
-    let made = format!("{:x}", rand::random::<u64>().max(1));
+    let made = format!("0/1/{:x}", rand::random::<u64>().max(1));
     branch(&url, &["take", &path("first"), &(1u64 << 30).to_string(), &made]);
     let store = ExtentStore::open(path("first")).unwrap();
     let branch_id = store.branch();
-    let extent = ExtentId { branch: branch_id, sequence: 1 };
+    let extent = ExtentId { branch: branch_id.id, sequence: 1 };
     store.write(extent, 0, &[VolatileSlice::from(&pattern(3, 1 << 20)[..])]).unwrap();
     store.commit(Some(b"synced")).unwrap();
     drop(store);
@@ -161,7 +164,7 @@ fn places_and_syncs_stores_in(url: &str) {
     assert_eq!(state.root, Some(b"synced".to_vec()));
 
     let capacity = (1u64 << 30).to_string();
-    let hex = format!("{branch_id:x}");
+    let hex = branch_id.to_string();
     // Refused as it takes the branch's lease, which a later placement holds, leaving nothing
     // (TASK-165.9: before, it took the branch and its sync was refused); taken placed later, its
     // lease taken with that placement's token as it is made (TASK-149.20).

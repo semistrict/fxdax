@@ -7,6 +7,7 @@
 //! the commit it was as of, which its readers may be reading from, and no later batch advances its
 //! view, or applies anything.
 
+use crate::BRANCH;
 use crate::device::ViewDevice;
 use crate::model::{NAMES, Op, Writer};
 use extent_store::{Description, MemDir, Options as StoreOptions, Store, View};
@@ -29,7 +30,7 @@ struct Following {
 }
 
 async fn following() -> Following {
-    let description = Description { block_size: 4096, capacity: 64 << 20, branch: 1 };
+    let description = Description { block_size: 4096, capacity: 64 << 20, branch: BRANCH };
     let store = Store::create(MemDir::new(), description, StoreOptions::default()).unwrap();
     let store = Arc::new(store);
     let writer = Writer::new(store.clone()).await;

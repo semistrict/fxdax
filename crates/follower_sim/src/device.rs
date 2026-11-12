@@ -93,7 +93,7 @@ impl<D: Dir + 'static> Device for StoreDevice<D> {
     }
 
     fn branch(&self) -> u64 {
-        self.description.branch
+        self.description.branch.id
     }
 
     async fn next_sequence(&self) -> Result<u64, Error> {
@@ -217,7 +217,7 @@ impl<D: Dir + 'static> Device for ViewDevice<D> {
     }
 
     fn branch(&self) -> u64 {
-        self.description.branch
+        self.description.branch.id
     }
 
     async fn next_sequence(&self) -> Result<u64, Error> {

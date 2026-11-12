@@ -15,7 +15,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use storage_device::{ExtentId, SealedExtent};
 
 pub const BLOCK: usize = 4096;
-pub const BRANCH: u64 = 3;
+pub const BRANCH: extent_remote::layout::Branch = extent_remote::layout::test_branch(3);
 /// How many recovering rounds the tests run.
 pub const ROUNDS: u64 = 300;
 const STEPS: usize = 200;
@@ -87,7 +87,7 @@ pub fn workload(
         let result = match rng.random_range(0..14) {
             // A new extent, small or large.
             0..=3 => {
-                let extent = ExtentId::new(branch, next_sequence);
+                let extent = ExtentId::new(branch.id, next_sequence);
                 next_sequence += 1;
                 let data = random_data(rng, 8);
                 let result = store.write(extent, 0, &data);

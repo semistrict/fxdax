@@ -70,7 +70,7 @@ fn public_bases_are_shared_read_only() {
     let base_path = dir.path().join("base");
     let base = ExtentStore::create(&base_path, 1 << 24).unwrap();
     let base_bytes = pattern(3);
-    let extent = ExtentId { branch: base.branch(), sequence: 1 };
+    let extent = ExtentId { branch: base.branch().id, sequence: 1 };
     base.write(extent, 0, &[fxdax::VolatileSlice::from(&base_bytes[..])]).unwrap();
     base.commit(None).unwrap();
     base.make_public().unwrap();
@@ -79,7 +79,10 @@ fn public_bases_are_shared_read_only() {
     // A fork is the bucket's (TASK-165.7), made by the uploader its opening took the branch with.
     let base = ExtentStore::open(&base_path).unwrap();
     for (fork, branch) in forks.iter().zip(1..) {
-        base.fork(fork, base.branch() + branch).unwrap();
+        // Each the one volume of a cell of its own (TASK-364).
+        let child =
+            base.branch().in_cell(base.branch().cell.id + branch, base.branch().id + branch);
+        base.fork(fork, child).unwrap();
     }
     drop(base);
 

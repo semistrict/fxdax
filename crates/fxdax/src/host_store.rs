@@ -23,10 +23,11 @@
 use crate::error::{Errno, Error};
 use crate::faults::failpoint;
 use anyhow::Context as _;
-use extent_remote::layout::Child;
+use extent_remote::cell;
+use extent_remote::layout::{Branch, Cell, Child};
 use extent_remote::store::Store as Bucket;
 use extent_store::upload::{self, Failure, Remote};
-use extent_store::{Description, HostDir, Options, Recovering, Store};
+use extent_store::{Description, HostDir, Options, Recovering, Store, Volume};
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -39,10 +40,40 @@ pub(crate) const BLOCK_SIZE: u32 = 4096;
 /// extent cache (`crate::cache`) caches their pages already.
 const DIRECT: bool = true;
 
-/// A new store's branch, or a fork's: random, so that stores made apart, and the forks of one,
-/// mint extent IDs of their own (backlog doc-4).
-pub(crate) fn new_branch() -> u64 {
-    rand::random::<u64>().max(1)
+/// The tenant of stores made for no tenant of the host's (TASK-364): the fxdax CLI's images, an
+/// ungranted caller's stores, tests'.
+pub(crate) const NO_TENANT: u64 = 0;
+
+/// A new cell of `tenant`'s, for a store made alone or a fork (TASK-364): random, so that cells
+/// made apart are apart.
+pub(crate) fn new_cell(tenant: u64) -> Cell {
+    Cell { tenant, id: rand::random::<u64>().max(1) }
+}
+
+/// A new store's branch in `cell`, or a fork's: random, so that stores made apart, and the forks of
+/// one, mint extent IDs of their own (backlog doc-4).
+pub(crate) fn new_branch(cell: Cell) -> Branch {
+    Branch { cell, id: rand::random::<u64>().max(1) }
+}
+
+/// The child `id` of a fork of `parent`: the one volume of a new cell of its tenant's.
+pub(crate) fn fork_of(parent: Branch, id: u64) -> Branch {
+    parent.in_cell(new_cell(parent.cell.tenant).id, id)
+}
+
+/// A new store's branch, the one volume of a new cell of no tenant's ([`NO_TENANT`]).
+pub(crate) fn new_alone() -> Branch {
+    new_branch(new_cell(NO_TENANT))
+}
+
+/// The volume of its cell the store at `path` is, of `kind`: named as its directory is, which must
+/// be a name a volume may have (`extent_remote::cell::valid_name`), else `EINVAL`.
+pub(crate) fn volume_at(path: &Path, kind: cell::Kind) -> Result<Volume, Failure> {
+    let name = path.file_name().and_then(|name| name.to_str()).unwrap_or_default();
+    match cell::valid_name(name) {
+        true => Ok(Volume { name: name.to_owned(), kind }),
+        false => Err(extent_remote::Error::VolumeName(name.to_owned()).into()),
+    }
 }
 
 /// What the name of the directory beside a store's that is its own file bucket ends with, where no
@@ -160,17 +191,18 @@ pub(crate) fn options() -> Options {
 }
 
 /// Makes a new store at `path`, which must not exist, holding at most `capacity` bytes, of
-/// `branch`, kept in this host's bucket, or a file bucket of its own ([`bucket_for`]), and opens
-/// it, its uploader as `keeping` says ([`open`]): whole, as made. Its directory entry is as
-/// durable as it is. A store that is not made whole is removed; what is at `path` already is left
-/// as it is.
+/// `branch`, kept in this host's bucket, or a file bucket of its own ([`bucket_for`]), a volume of
+/// `kind` of its branch's cell named as its directory is ([`volume_at`]), and opens it, its
+/// uploader as `keeping` says ([`open`]): whole, as made. Its directory entry is as durable as it
+/// is. A store that is not made whole is removed; what is at `path` already is left as it is.
 pub(crate) fn create(
     path: &Path,
     capacity: u64,
-    branch: u64,
+    branch: Branch,
+    kind: cell::Kind,
     keeping: upload::Options,
 ) -> Result<Opened, Failure> {
-    let opened = create_unmade(path, capacity, branch, None, keeping)?;
+    let opened = create_unmade(path, capacity, branch, kind, None, keeping)?;
     opened.made()?;
     Ok(opened)
 }
@@ -182,16 +214,18 @@ pub(crate) fn create(
 pub(crate) fn create_unmade(
     path: &Path,
     capacity: u64,
-    branch: u64,
+    branch: Branch,
+    kind: cell::Kind,
     bucket: Option<&str>,
     keeping: upload::Options,
 ) -> Result<Opened, Failure> {
+    let volume = volume_at(path, kind)?;
     std::fs::create_dir(path)
         .map_err(|err| Failure::local(err, format!("creating {}", path.display())))?;
     let made = || -> Result<Opened, Failure> {
         let description = Description { block_size: BLOCK_SIZE, capacity, branch };
         let bucket = bucket.map_or_else(|| bucket_for(path), |bucket| Ok(bucket.to_owned()))?;
-        extent_store::create_host(path, description, &bucket, DIRECT)?;
+        extent_store::create_host(path, description, &bucket, volume, DIRECT)?;
         let parent = path.parent().filter(|parent| !parent.as_os_str().is_empty());
         let synced = std::fs::File::open(parent.unwrap_or(Path::new(".")))
             .and_then(|parent| parent.sync_all());
@@ -229,7 +263,7 @@ pub(crate) fn take(path: &Path, keeping: upload::Options) -> Result<Opened, Fail
         Err(Failure::Remote(extent_remote::Error::Diverged)) => {
             let mut recovering = Store::recover(host_dir(path)?)?;
             log::warn!(
-                "fxdax: dropping {}'s write-ahead log: another writer moved branch {:x} past it",
+                "fxdax: dropping {}'s write-ahead log: another writer moved branch {} past it",
                 path.display(),
                 recovering.branch()
             );
@@ -254,7 +288,7 @@ fn opened(recovering: Recovering<HostDir>, keeping: upload::Options) -> Result<O
 
 /// The path of the directory `recovering` is of, for what fails of it.
 fn recovering_path(recovering: &Recovering<HostDir>) -> String {
-    format!("branch {:x}'s store", recovering.branch())
+    format!("branch {}'s store", recovering.branch())
 }
 
 /// Whether `path` is a directory a store's making, or a fork's, left unmade, its host crashing:
@@ -322,8 +356,8 @@ fn fork_in<H>(
     let failed = |err: Failure| match err {
         Failure::Remote(extent_remote::Error::ChildTaken(_)) => taken(branch),
         Failure::PointDeleted => anyhow::Error::new(Errno::ENOENT)
-            .context(format!("forking to branch {branch:x}: the point was deleted")),
-        err => anyhow::anyhow!("forking branch {branch:x}: {err}"),
+            .context(format!("forking to branch {branch}: the point was deleted")),
+        err => anyhow::anyhow!("forking to branch {branch}: {err}"),
     };
     if !remote.child_free(branch).map_err(|err| Error::new(failed(err)))? {
         return Err(Error::new(taken(branch)));
@@ -339,7 +373,7 @@ fn fork_in<H>(
             match committed {
                 Ok(epoch) => remote.forked(epoch, child).map_err(failed),
                 Err(err) if err.downcast_ref::<extent_store::ForkCommitted>().is_some() => {
-                    Err(err.context(format!("forking branch {branch:x}")))
+                    Err(err.context(format!("forking to branch {branch}")))
                 }
                 // It made nothing.
                 Err(err) => return Err(Error::new(err)),
@@ -349,41 +383,44 @@ fn fork_in<H>(
     let made = made.and_then(|()| {
         failpoint!("fork::recorded");
         make_child(store, path, branch, prepare)
-            .with_context(|| format!("forking to branch {branch:x}: making its store"))?;
+            .with_context(|| format!("forking to branch {branch}: making its store"))?;
         failpoint!("fork::made");
         Ok(())
     });
     let Err(err) = made else { return Ok(()) };
     // Leave no fork whose store went behind, as the fork's alone: its segment may land yet.
     if let Err(why) = remote.unfork(child) {
-        log::warn!("fxdax: leaving branch {branch:x}, whose fork failed: {why}");
+        log::warn!("fxdax: leaving branch {branch}, whose fork failed: {why}");
     }
     Err(Error::new(err))
 }
 
 /// The error of a fork to `branch`, whose ID another branch has in the bucket.
-fn taken(branch: u64) -> anyhow::Error {
-    let refused = format!("forking to branch {branch:x}: another branch has its ID");
+fn taken(branch: Branch) -> anyhow::Error {
+    let refused = format!("forking to branch {branch}: another branch has its ID");
     anyhow::Error::new(Errno::EEXIST).context(refused)
 }
 
 /// Makes the store of `branch`, a fork of `parent`'s branch the bucket has the record of, in the
 /// directory at `path`, made empty: `prepare` writes into it first; then the store's directory, of
-/// the parent's capacity, naming the parent's bucket, whole. It holds nothing of its own: opening
-/// it recovers the child from the bucket, as any store's opening does (TASK-165.9).
+/// the parent's capacity, naming the parent's bucket, the volume of its cell the parent is of its
+/// own, whole (TASK-364). It holds nothing of its own: opening it recovers the child from the
+/// bucket, as any store's opening does (TASK-165.9), and holds its cell, making it.
 fn make_child(
     parent: &Store<HostDir>,
     path: &Path,
-    branch: u64,
+    branch: Branch,
     prepare: impl FnOnce(&Path) -> anyhow::Result<()>,
 ) -> anyhow::Result<()> {
     prepare(path)?;
     let capacity = parent.description().capacity;
-    let url = parent.bucket().map(str::to_owned);
-    let url =
-        url.ok_or_else(|| anyhow::anyhow!("{} names no bucket", parent.dir().path().display()))?;
+    let named = || anyhow::anyhow!("{} names no bucket", parent.dir().path().display());
+    let url = parent.bucket().map(str::to_owned).ok_or_else(named)?;
+    let volume = parent.volume().cloned().ok_or_else(|| {
+        anyhow::anyhow!("{} is no volume of a cell", parent.dir().path().display())
+    })?;
     let description = Description { block_size: BLOCK_SIZE, capacity, branch };
-    extent_store::create_host(path, description, &url, DIRECT)?;
+    extent_store::create_host(path, description, &url, volume, DIRECT)?;
     extent_store::made_host(path)?;
     let parent = path.parent().filter(|parent| !parent.as_os_str().is_empty());
     std::fs::File::open(parent.unwrap_or(Path::new(".")))?.sync_all()?;
@@ -421,7 +458,7 @@ pub(crate) fn delete(
 /// no store, goes, `elsewhere` called for nothing.
 pub(crate) fn delete_with(
     path: &Path,
-    elsewhere: impl Fn(&Path, u64) -> Result<(), Failure>,
+    elsewhere: impl Fn(&Path, Branch) -> Result<(), Failure>,
 ) -> Result<(), Error> {
     if !path.exists() {
         return Err(Errno::ENOENT.into());
@@ -453,7 +490,17 @@ mod tests {
     fn stores_unmade_open_not() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("store");
-        drop(create_unmade(&path, MIB, 3, None, keeping().unwrap()).unwrap());
+        drop(
+            create_unmade(
+                &path,
+                MIB,
+                extent_remote::layout::test_branch(3),
+                cell::Kind::Fxfs,
+                None,
+                keeping().unwrap(),
+            )
+            .unwrap(),
+        );
         assert!(unmade(&path));
         let refused = open(&path, keeping().unwrap()).err().unwrap();
         let Failure::Local(refused) = refused else { panic!("{refused}") };
@@ -462,7 +509,7 @@ mod tests {
         assert!(!unmade(&path));
         assert_eq!(
             open(&path, keeping().unwrap()).map(|opened| opened.store.description().branch).ok(),
-            Some(3)
+            Some(extent_remote::layout::test_branch(3))
         );
     }
 
@@ -483,8 +530,16 @@ mod tests {
 
         // Where no host's bucket is, as in this test's process.
         let (made, fork) = (dir.path().join("made"), dir.path().join("fork"));
-        let Opened { store, bucket, remote } = create(&made, MIB, 3, keeping().unwrap()).unwrap();
-        let child = Child { branch: 4, owner: 1, point: false };
+        let Opened { store, bucket, remote } = create(
+            &made,
+            MIB,
+            extent_remote::layout::test_branch(3),
+            cell::Kind::Fxfs,
+            keeping().unwrap(),
+        )
+        .unwrap();
+        let forked = fork_of(store.description().branch, 4);
+        let child = Child { branch: forked, owner: 1, point: false };
         super::fork(&store, &remote, &fork, child, |_| Ok(()), ()).unwrap();
         let own = dir.path().canonicalize().unwrap().join("made.bucket");
         let url = format!("file://{}/", own.display());
@@ -494,13 +549,15 @@ mod tests {
         assert!(keeps_own_bucket(&store), "a store's own bucket is a host's");
         // The bucket is this process's one of its URL, whose objects are in its directory.
         assert!(Arc::ptr_eq(&bucket, &self::bucket(&url).unwrap()));
-        assert!(own.join("branches").exists(), "{:?}", std::fs::read_dir(&own).unwrap());
+        // fxdax: under its cell's prefix (TASK-364).
+        let cell = own.join(store.description().branch.cell.prefix());
+        assert!(cell.join("branches").exists(), "{:?}", std::fs::read_dir(&own).unwrap());
         // The store deleted, its fork's branch lives on in it.
         drop(remote);
         drop(store);
         delete(&made, Some(&bucket), || Ok(1)).unwrap();
         assert!(!made.exists() && own.exists());
-        let record = futures::executor::block_on(extent_remote::branch::record(&*bucket, 4));
+        let record = futures::executor::block_on(extent_remote::branch::record(&*bucket, forked));
         assert_eq!(record.unwrap().map(|record| record.deleted), Some(false));
     }
 
@@ -510,7 +567,16 @@ mod tests {
     fn older_stores_are_refused_by_their_format() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("store");
-        drop(create(&path, MIB, 3, keeping().unwrap()).unwrap());
+        drop(
+            create(
+                &path,
+                MIB,
+                extent_remote::layout::test_branch(3),
+                cell::Kind::Fxfs,
+                keeping().unwrap(),
+            )
+            .unwrap(),
+        );
         let description = path.join("store");
         let text = std::fs::read_to_string(&description).unwrap();
         let older: String = std::iter::once("fxdax extent store 5")

@@ -13,7 +13,7 @@ use std::path::Path;
 use storage_device::ExtentId;
 
 const BLOCK: usize = 4096;
-const BRANCH: u64 = 7;
+const BRANCH: extent_remote::layout::Branch = extent_remote::layout::test_branch(7);
 const OPTIONS: Options = Options {
     max_extent: 64 << 20,
     segment_size: 64 << 10,
@@ -28,7 +28,14 @@ const OPTIONS: Options = Options {
 fn create(path: &Path) -> extent_store::Store<HostDir> {
     std::fs::create_dir(path).unwrap();
     let description = Description { block_size: BLOCK as u32, capacity: 1 << 20, branch: BRANCH };
-    create_host(path, description, "memory:///host", false).unwrap();
+    create_host(
+        path,
+        description,
+        "memory:///host",
+        extent_store::Volume { name: "root".into(), kind: extent_remote::cell::Kind::Fxfs },
+        false,
+    )
+    .unwrap();
     let store = Store::recover_unmade(HostDir::new(path, false).unwrap()).unwrap();
     let store = store.open(OPTIONS, Opening::new(BRANCH)).unwrap();
     store.made().unwrap();
@@ -83,10 +90,17 @@ fn stores_unmade_refuse_to_open() {
     let path = dir.path().join("store");
     std::fs::create_dir(&path).unwrap();
     let description = Description { block_size: BLOCK as u32, capacity: 1 << 20, branch: BRANCH };
-    create_host(&path, description, "memory:///host", false).unwrap();
+    create_host(
+        &path,
+        description,
+        "memory:///host",
+        extent_store::Volume { name: "root".into(), kind: extent_remote::cell::Kind::Fxfs },
+        false,
+    )
+    .unwrap();
     let making = Store::recover_unmade(HostDir::new(&path, false).unwrap()).unwrap();
     let store = making.open(OPTIONS, Opening::new(BRANCH)).unwrap();
-    store.write(ExtentId::new(BRANCH, 1), 0, &[1; BLOCK]).unwrap();
+    store.write(ExtentId::new(BRANCH.id, 1), 0, &[1; BLOCK]).unwrap();
     store.commit(None).unwrap();
     // Its maker gone, part way.
     drop(store);
@@ -97,7 +111,7 @@ fn stores_unmade_refuse_to_open() {
     store.made().unwrap();
     drop(store);
     let store = open_host(&path).unwrap();
-    assert_eq!(store.extent(ExtentId::new(BRANCH, 1)).unwrap(), Some((BLOCK as u64, false)));
+    assert_eq!(store.extent(ExtentId::new(BRANCH.id, 1)).unwrap(), Some((BLOCK as u64, false)));
 }
 
 /// fxdax: a store's placement's token is its description's, placed durably, which opening it
@@ -123,7 +137,7 @@ fn deleting_stores() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("store");
     let store = create(&path);
-    store.write(ExtentId::new(BRANCH, 1), 0, &[1; BLOCK]).unwrap();
+    store.write(ExtentId::new(BRANCH.id, 1), 0, &[1; BLOCK]).unwrap();
     store.commit(None).unwrap();
     drop(store);
     let deleted = std::cell::Cell::new(None);

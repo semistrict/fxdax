@@ -18,6 +18,7 @@ use crate::{
     Access, Commit, ExtentId, ExtentInfo, MappingContents, Prefault, SecondStage, VolatileSlice,
     VolatileSliceMut, WindowMapping, WriteBarriers,
 };
+use extent_remote::cell::Kind;
 use futures::channel::oneshot;
 use futures::future::BoxFuture;
 use std::borrow::Cow;
@@ -680,7 +681,18 @@ impl DaemonConnection {
 
     /// The store at `store`, created with `capacity` bytes if it doesn't exist.
     pub fn open(self, store: impl AsRef<Path>, capacity: u64) -> Result<RemoteExtentStore, Error> {
-        self.opening(store.as_ref(), Opening::Create(capacity))
+        self.opening(store.as_ref(), Opening::Create(capacity, Kind::Fxfs))
+    }
+
+    /// fxdax: the store at `store`, as [`DaemonConnection::open`] has it, made, if it doesn't
+    /// exist, a SQLite volume of its new cell, which the sqlite_extents VFS alone opens, rather
+    /// than an Fxfs one (TASK-364).
+    pub fn open_sqlite(
+        self,
+        store: impl AsRef<Path>,
+        capacity: u64,
+    ) -> Result<RemoteExtentStore, Error> {
+        self.opening(store.as_ref(), Opening::Create(capacity, Kind::Sqlite))
     }
 
     /// The store at `store`, forked from the store at `from` if it doesn't exist: of a VM restored

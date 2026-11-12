@@ -48,11 +48,11 @@ use crate::{Dir, DirHold, File, Opening, Recovering, Store, read_object};
 use event_listener::{Event, Listener as _};
 use extent_remote::cache::Cache;
 use extent_remote::fetch::Budget;
-use extent_remote::layout::{Chain, Child, Origin, epoch_of};
+use extent_remote::layout::{Branch, Chain, Child, Origin, epoch_of};
 use extent_remote::record::{Kind, Record};
 use extent_remote::store::Store as Bucket;
 use extent_remote::wal::Fenced;
-use extent_remote::{Body, Objects, Writer, branch};
+use extent_remote::{Body, Objects, Writer, branch, cell};
 use futures::StreamExt as _;
 use futures::future::{BoxFuture, Either, FutureExt as _};
 use futures::stream::FuturesOrdered;
@@ -123,8 +123,15 @@ pub fn block_on<F: std::future::Future>(future: F) -> Result<F::Output, Failure>
 /// the collector reclaims what no other branch inherited from it, as its forks' branches live on
 /// (TASK-39.4). Deleting it again does nothing. A later placement's branch, whose token is higher,
 /// is not deleted (`extent_remote::Error::Stale`, TASK-45.1).
-pub fn delete_branch(bucket: &Bucket, branch: u64, token: u64) -> Result<(), Failure> {
-    Ok(block_on(branch::delete(bucket, branch, rand::random(), token))??)
+///
+/// fxdax: its lease ended at its cell's epoch, a placement a later one took the cell from deleting
+/// nothing (`Stale`), and the cell's other volumes' writers going on; then the volume naming it is
+/// taken out of the cell (`extent_remote::cell::forget`, TASK-364).
+pub fn delete_branch(bucket: &Bucket, branch: Branch, token: u64) -> Result<(), Failure> {
+    Ok(block_on(async {
+        branch::delete(bucket, branch, rand::random(), token).await?;
+        cell::forget(bucket, branch.cell, branch.id).await
+    })??)
 }
 
 /// Why uploading stopped, or a branch could not be uploaded to, or opened: the error as it was,
@@ -301,7 +308,7 @@ pub(crate) struct Shared<D: Dir, B: extent_remote::Bucket = Bucket> {
     point: std::sync::OnceLock<Point>,
     /// The origins of the forks of the segments the uploader took, by their children: what a fork
     /// that fails deletes its child by (TASK-165.7).
-    forks: Mutex<std::collections::BTreeMap<u64, Origin>>,
+    forks: Mutex<std::collections::BTreeMap<Branch, Origin>>,
     progress: Mutex<Progress>,
     /// Notified as the progress changes: what waits for uploads listens to it, blocking or not
     /// (TASK-43.6).
@@ -329,7 +336,7 @@ fn blocking<T>(work: impl FnOnce() -> T) -> T {
 
 /// A point a store holds: its branch, and what its record names.
 struct Point {
-    branch: u64,
+    branch: Branch,
     origin: Origin,
 }
 
@@ -543,7 +550,7 @@ impl<D: Dir> Remote<D> {
             branch::delete_fork(&*self.bucket, child.branch, forked, child.owner, holder, token);
         if !block_on(deleting)?? {
             log::warn!(
-                "fxdax: leaving branch {:x} in object storage, another's: a fork to its ID failed \
+                "fxdax: leaving branch {} in object storage, another's: a fork to its ID failed \
                  here",
                 child.branch
             );
@@ -555,7 +562,7 @@ impl<D: Dir> Remote<D> {
     /// branch, before the fork's commit: unless another branch has it, as a guest may give any,
     /// whose record its parent's writers, finding it another's, would fail on for ever. One GET of
     /// the child's record.
-    pub fn child_free(&self, child: u64) -> Result<bool, Failure> {
+    pub fn child_free(&self, child: Branch) -> Result<bool, Failure> {
         let found = block_on(branch::record(&*self.bucket, child))??;
         failing!("remote::child_free");
         Ok(found.is_none())
@@ -668,7 +675,7 @@ impl<D: Dir, B: extent_remote::Bucket> Shared<D, B> {
 
     /// Where the fork to `child` is in the branch, once the uploader took the segment its commit
     /// ends.
-    pub(crate) fn fork_origin(&self, child: u64) -> Option<Origin> {
+    pub(crate) fn fork_origin(&self, child: Branch) -> Option<Origin> {
         self.forks.lock().unwrap().get(&child).copied()
     }
 
@@ -831,7 +838,7 @@ impl<D: Dir, B: extent_remote::Bucket> Shared<D, B> {
                 if stop && in_flight.is_empty() {
                     // A checkpoint on clean shutdown (doc-7, Checkpoints).
                     if let Err(err) = writer.checkpoint().await {
-                        log::warn!("fxdax: checkpointing branch {:x}: {err}", writer.branch());
+                        log::warn!("fxdax: checkpointing branch {}: {err}", writer.branch());
                     }
                     return self.fail(&writer, Failure::msg("the uploader stopped"));
                 }
@@ -868,7 +875,7 @@ impl<D: Dir, B: extent_remote::Bucket> Shared<D, B> {
                 // a loaded host, which a collector's pass then runs beside (TASK-339).
                 fail::fail_point!("remote::checkpointing");
                 if let Err(err) = writer.checkpoint().await {
-                    log::warn!("fxdax: checkpointing branch {:x}: {err}", writer.branch());
+                    log::warn!("fxdax: checkpointing branch {}: {err}", writer.branch());
                 }
             }
         }
@@ -878,7 +885,7 @@ impl<D: Dir, B: extent_remote::Bucket> Shared<D, B> {
     fn fail(&self, writer: &Writer<B>, err: Failure) {
         let mut progress = self.progress.lock().unwrap();
         if !progress.stop {
-            log::error!("fxdax: uploading branch {:x}: {err}", writer.branch());
+            log::error!("fxdax: uploading branch {}: {err}", writer.branch());
         }
         progress.failed = Some(err);
         self.changed.notify(usize::MAX);
@@ -936,7 +943,26 @@ impl<D: Dir, B: extent_remote::Bucket> Shared<D, B> {
                 Some((record, recovered))
             }
         };
-        let token = recovering.token().unwrap_or(self.options.token);
+        // fxdax: a branch deleted takes no writer, whatever placement holds its cell.
+        if let Some((record, _)) = &found
+            && record.deleted
+        {
+            return Err(extent_remote::Error::Deleted.into());
+        }
+        // fxdax: its cell, held by this placement, whose epoch is the token the branch's lease is
+        // taken with: a later taking of the cell, elsewhere, fences its writer (TASK-364). A
+        // branch whose cell has no object yet, new or a fork's child, makes it; one deleted takes
+        // no writer (`Deleted`). The store, a volume of its cell, is one of its volumes from now
+        // on, under the name its description gives it unless the cell names its branch already:
+        // all in one compare-and-swap of the cell's object, a read alone when nothing changes. Not
+        // a point's, which no writer takes, and any number of hosts open at once.
+        let placement = recovering.token().unwrap_or(self.options.token);
+        let volume = recovering.volume().map(|volume| {
+            (volume.name.as_str(), cell::Volume { branch: branch.id, kind: volume.kind })
+        });
+        let holding = cell::hold(&**bucket, branch.cell, (placement, placement), true, volume);
+        let (held, _) = holding.await?;
+        let token = held.epoch;
         // Its state, once it holds the lease, recovered on from what was found before.
         let writer = match found {
             None => Writer::open(bucket.clone(), branch, holder, token).await?,
@@ -1007,7 +1033,7 @@ impl<D: Dir, B: extent_remote::Bucket> Shared<D, B> {
         let writer = Arc::new(writer.uploading_within(self.uploads.clone()));
         let fenced = writer.fenced();
         blocking(|| store.rebase(&fenced))?;
-        log::warn!("fxdax: branch {branch:x} displaced, taken again at epoch {}", writer.epoch());
+        log::warn!("fxdax: branch {branch} displaced, taken again at epoch {}", writer.epoch());
         self.took(&writer, token);
         Ok(writer)
     }
@@ -1017,14 +1043,14 @@ impl<D: Dir, B: extent_remote::Bucket> Shared<D, B> {
     async fn point(
         &self,
         bucket: &Arc<B>,
-        branch: u64,
+        branch: Branch,
         record: Record,
     ) -> Result<extent_remote::State, Failure> {
         if record.deleted {
             return Err(Failure::PointDeleted);
         }
         let Kind::Point(origin) = record.kind else {
-            return Err(Failure::msg(format!("branch {branch:x} is no point")));
+            return Err(Failure::msg(format!("branch {branch} is no point")));
         };
         let state = extent_remote::recover(&**bucket, branch, Some(origin)).await?.state;
         let _ = self.point.set(Point { branch, origin });
@@ -1070,7 +1096,7 @@ impl<D: Dir, B: extent_remote::Bucket> Shared<D, B> {
         let mut segments = Vec::with_capacity(closed.len());
         for closed in closed {
             let (number, tag) = (closed.number, closed.tag());
-            let forks: Vec<u64> =
+            let forks: Vec<Branch> =
                 closed.footer.contents.forks.iter().map(|forked| forked.branch).collect();
             let own = closed.own.iter().map(|(key, file)| Ok((key.clone(), stored(file)?)));
             let own = own.collect::<Result<_, Failure>>()?;
@@ -1135,7 +1161,7 @@ impl<D: Dir, B: extent_remote::Bucket> Shared<D, B> {
 /// state of a fork not made.
 async fn record<B: extent_remote::Bucket>(
     bucket: &B,
-    branch: u64,
+    branch: Branch,
 ) -> Result<Option<Record>, Failure> {
     let found = branch::record(bucket, branch).await?;
     let Some(point) = found.as_ref().filter(|record| !record.deleted).and_then(Record::forking)
@@ -1235,7 +1261,7 @@ mod tests {
     use extent_remote::fetch::Limits;
     use storage_device::ExtentId;
 
-    const BRANCH: u64 = 7;
+    const BRANCH: extent_remote::layout::Branch = extent_remote::layout::test_branch(7);
 
     /// TASK-92.52: a stall says what it waits for: the bytes past the lag bound, which a stall over
     /// it waits on, and the commits not uploaded and the oldest's age, which a slow upload shows.
@@ -1255,6 +1281,53 @@ mod tests {
         );
     }
 
+    /// TASK-364: a store opened takes its branch's cell, making it for a new branch, and is its
+    /// volume from then on; its branch's lease is taken with the cell's epoch. A later placement's
+    /// taking of the cell, and of the branch's lease with the epoch it took it at, fences the
+    /// store's writer: its next commit's upload fails, and a placement of a lower token takes the
+    /// cell back no more.
+    #[test]
+    fn stores_take_their_cells_and_are_fenced_with_them() {
+        let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
+        let host =
+            Runtime { handle: runtime.handle().clone(), uploads: Budget::new(Limits::UNBOUNDED) };
+        let bucket = Arc::new(Bucket::new(Arc::new(object_store::memory::InMemory::new()), ""));
+        let dir = MemDir::new();
+        let description = Description { block_size: 4096, capacity: 1 << 30, branch: BRANCH };
+        let volume = crate::Volume { name: "root".into(), kind: cell::Kind::Fxfs };
+        Store::make(&dir, description, Some("memory:///cells"), Some(volume)).unwrap();
+        let options = Options { token: 5, ..Options::default() };
+        let recovering = Store::recover_unmade(dir).unwrap();
+        let (store, remote) =
+            open(recovering, crate::Options::default(), bucket.clone(), (1, options), &host)
+                .unwrap();
+        store.made().unwrap();
+        let object = runtime.block_on(cell::read(&*bucket, BRANCH.cell)).unwrap().unwrap();
+        assert_eq!((object.epoch, object.holder, object.token), (1, 5, 5));
+        let root = cell::Volume { branch: BRANCH.id, kind: cell::Kind::Fxfs };
+        assert_eq!(object.volumes, std::collections::BTreeMap::from([("root".to_owned(), root)]));
+        let key = extent_remote::layout::lease(BRANCH);
+        let lease = runtime.block_on(branch::lease(&*bucket, &key)).unwrap().unwrap();
+        assert_eq!((lease.epoch, lease.token), (1, 1));
+
+        store.write(ExtentId::new(BRANCH.id, 1), 0, &[1; 4096]).unwrap();
+        store.commit(None).unwrap();
+        remote.wait_uploaded(store.epoch().unwrap()).unwrap();
+        // Another placement takes the cell, and the branch's lease with the cell's epoch.
+        let taken = runtime.block_on(async {
+            let (held, _) = cell::hold(&*bucket, BRANCH.cell, (6, 6), false, None).await.unwrap();
+            branch::take_lease(&*bucket, &key, 0x66, held.epoch).await.unwrap();
+            held
+        });
+        assert_eq!(taken.epoch, 2);
+        store.write(ExtentId::new(BRANCH.id, 2), 0, &[2; 4096]).unwrap();
+        store.commit(None).unwrap();
+        let fenced = remote.wait_uploaded(store.epoch().unwrap());
+        assert!(matches!(fenced, Err(Failure::Remote(extent_remote::Error::Fenced))), "{fenced:?}");
+        let back = runtime.block_on(cell::hold(&*bucket, BRANCH.cell, (5, 5), false, None));
+        assert_eq!(back.map(|(held, _)| held), Err(extent_remote::Error::Stale));
+    }
+
     /// TASK-79.19: a gather takes no more of the segments the store closed than may upload at once,
     /// with those uploading; the rest it leaves in the store, until those it took are uploaded.
     #[test]
@@ -1265,7 +1338,7 @@ mod tests {
         let bucket = Arc::new(Bucket::new(Arc::new(object_store::memory::InMemory::new()), ""));
         let dir = MemDir::new();
         let description = Description { block_size: 4096, capacity: 1 << 30, branch: BRANCH };
-        Store::make(&dir, description, Some("memory:///gathers")).unwrap();
+        Store::make(&dir, description, Some("memory:///gathers"), None).unwrap();
         // Its uploader uploads nothing it is not asked to within the hour: the test gathers.
         let options = Options { interval: Duration::from_secs(3600), ..Options::default() };
         let recovering = Store::recover_unmade(dir).unwrap();
@@ -1276,7 +1349,7 @@ mod tests {
         // Each commit closes its segment.
         let closed = 2 * IN_FLIGHT + 1;
         for sequence in 1..=closed as u64 {
-            store.write(ExtentId::new(BRANCH, sequence), 0, &[sequence as u8; 4096]).unwrap();
+            store.write(ExtentId::new(BRANCH.id, sequence), 0, &[sequence as u8; 4096]).unwrap();
             store.close_segment().unwrap();
             store.commit(None).unwrap();
         }
@@ -1322,9 +1395,9 @@ mod shuttle_tests {
     use storage_device::ExtentId;
 
     const BLOCK: usize = 4096;
-    const BRANCH: u64 = 7;
+    const BRANCH: extent_remote::layout::Branch = extent_remote::layout::test_branch(7);
     /// The branch the writer forks.
-    const CHILD: u64 = BRANCH + 1;
+    const CHILD: extent_remote::layout::Branch = extent_remote::layout::test_branch(BRANCH.id + 1);
 
     /// Small segments, so that commits close several, and extents of two blocks or more in
     /// objects of their own, which upload before the segments naming them (TASK-79.3); flushes of
@@ -1464,22 +1537,22 @@ mod shuttle_tests {
     /// What the branch `branch`, recovered from `bucket`, holds, if not `holds`, extent by extent.
     fn differs(
         bucket: &Arc<Turns>,
-        branch: u64,
+        branch: Branch,
         holds: &BTreeMap<ExtentId, Vec<u8>>,
     ) -> Result<(), String> {
-        let failed = |err: extent_remote::Error| format!("branch {branch:x}: {err}");
+        let failed = |err: extent_remote::Error| format!("branch {branch}: {err}");
         let record = shuttle::future::block_on(branch::record(&**bucket, branch));
-        let record = record.map_err(failed)?.ok_or(format!("branch {branch:x}: no record"))?;
+        let record = record.map_err(failed)?.ok_or(format!("branch {branch}: no record"))?;
         let recovering = extent_remote::recover(&**bucket, branch, record.origin());
         let state = shuttle::future::block_on(recovering).map_err(failed)?.state;
         let held: Vec<&ExtentId> = state.extents.keys().collect();
         if held != holds.keys().collect::<Vec<_>>() {
-            return Err(format!("branch {branch:x} holds {held:?}, not {:?}", holds.keys()));
+            return Err(format!("branch {branch} holds {held:?}, not {:?}", holds.keys()));
         }
         for (extent, location) in &state.extents {
             let read = shuttle::future::block_on(extent_remote::read(bucket, *extent, location));
             if read.as_ref() != Ok(&holds[extent]) {
-                return Err(format!("branch {branch:x}: {extent:?} reads {read:?}"));
+                return Err(format!("branch {branch}: {extent:?} reads {read:?}"));
             }
         }
         Ok(())
@@ -1498,7 +1571,7 @@ mod shuttle_tests {
         uploader: Arc<Shared<MemDir, Turns>>,
         running: shuttle::thread::JoinHandle<()>,
         store: Arc<Store<MemDir>>,
-        branch: u64,
+        branch: Branch,
         /// What the store's extents hold, by their IDs.
         holds: BTreeMap<ExtentId, Vec<u8>>,
         /// The first sequence number of its own extents'.
@@ -1506,10 +1579,10 @@ mod shuttle_tests {
     }
 
     impl Session {
-        fn open(bucket: &Arc<Turns>, branch: u64, holder: u64) -> Self {
+        fn open(bucket: &Arc<Turns>, branch: Branch, holder: u64) -> Self {
             let dir = MemDir::new();
             let description = Description { block_size: BLOCK as u32, capacity: 1 << 30, branch };
-            Store::make(&dir, description, None).unwrap();
+            Store::make(&dir, description, None, None).unwrap();
             let recovering = Store::recover_unmade(dir).unwrap();
             // Its interval never runs out: the writer asks for what it commits.
             let never: Clock = Arc::new(|_| futures::future::pending().boxed());
@@ -1530,11 +1603,11 @@ mod shuttle_tests {
         }
 
         fn extent(&self, at: u64) -> ExtentId {
-            ExtentId::new(self.branch, self.next + at)
+            ExtentId::new(self.branch.id, self.next + at)
         }
 
         fn write(&mut self, at: u64, blocks: usize) {
-            let bytes = pattern(self.branch ^ at, blocks);
+            let bytes = pattern(self.branch.id ^ at, blocks);
             self.store.write(self.extent(at), 0, &bytes).unwrap();
             self.holds.insert(self.extent(at), bytes);
         }
@@ -1725,8 +1798,9 @@ mod shuttle_tests {
             let listed = listed_while_forking();
             extent_remote::set_rules(all);
             let extent = "ExtentId { branch: 8, sequence: 1099511627776 }";
-            let segment = "segments/0000000000000008/0000000000000001";
-            let lost = format!("branch 8: {extent} reads Err(Lost(\"{extent} in {segment}\"))");
+            let segment = extent_remote::layout::segment(CHILD, 1);
+            let lost =
+                format!("branch {CHILD}: {extent} reads Err(Lost(\"{extent} in {segment}\"))");
             assert_eq!(listed, Err(lost));
         });
     }

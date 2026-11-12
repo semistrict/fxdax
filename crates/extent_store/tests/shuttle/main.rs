@@ -60,7 +60,7 @@ mod stalling;
 use stalling::{Op, Stalling};
 
 const BLOCK: usize = 4096;
-const BRANCH: u64 = 7;
+const BRANCH: extent_remote::layout::Branch = extent_remote::layout::test_branch(7);
 /// Small segments, so that commits and the closer close several, and an extent of four blocks in
 /// a file of its own.
 const OPTIONS: Options = Options {
@@ -89,7 +89,7 @@ fn check(holds: bool, failure: impl FnOnce() -> String) -> Result<(), String> {
 }
 
 fn extent(sequence: u64) -> ExtentId {
-    ExtentId::new(BRANCH, sequence)
+    ExtentId::new(BRANCH.id, sequence)
 }
 
 /// Bytes each their offset modulo 251, plus `seed`.
@@ -111,7 +111,7 @@ enum Step {
 }
 
 /// The branch the writer forks.
-const CHILD: u64 = BRANCH + 1;
+const CHILD: extent_remote::layout::Branch = extent_remote::layout::test_branch(BRANCH.id + 1);
 
 const STEPS: &[Step] = &[
     Step::Write(1, 1),
@@ -504,7 +504,7 @@ impl Bucket {
 
 /// fxdax: the key in the bucket of the object `closed`, a segment closed, is: its writer's.
 fn bucket_key<F>(closed: &extent_store::Closed<F>) -> String {
-    format!("segments/{:016x}/{:016x}", closed.footer.branch, closed.footer.seq)
+    extent_remote::layout::segment(closed.footer.branch, closed.footer.seq)
 }
 
 /// One run of writes racing commits, as a VM's requests may: a writer writes extents, in segments
@@ -825,7 +825,7 @@ fn closing_during_a_commit() {
     closer.join().unwrap();
     let committed = committer.join().unwrap().map_err(|error| error.to_string());
     assert!(
-        committed == Err(format!("branch {BRANCH:#x} is closed")),
+        committed == Err(format!("branch {BRANCH} is closed")),
         "a commit went on over a branch closed: {committed:?}"
     );
 }
@@ -866,7 +866,7 @@ fn framing_stalls() -> (Stalling, Arc<Store<Stalling>>) {
     let store = Arc::new(Store::create(dir.clone(), description, OPTIONS).unwrap());
     store.write(extent(1), 0, &pattern(1, BLOCK)).unwrap();
     store.commit(None).unwrap();
-    dir.arm(Op::Create, &format!("segments/{BRANCH:016x}/framing-{:016x}", 0));
+    dir.arm(Op::Create, &format!("segments/{:016x}/framing-{:016x}", BRANCH.id, 0));
     (dir, store)
 }
 
@@ -979,7 +979,7 @@ fn framing_at_a_commit_stalls() -> (Stalling, Arc<Store<Stalling>>) {
     for sequence in 2..5 {
         store.write(extent(sequence), 0, &pattern(sequence as u8, 2 * BLOCK)).unwrap();
     }
-    dir.arm(Op::Create, &format!("segments/{BRANCH:016x}/framing-{:016x}", 0));
+    dir.arm(Op::Create, &format!("segments/{:016x}/framing-{:016x}", BRANCH.id, 0));
     (dir, store)
 }
 

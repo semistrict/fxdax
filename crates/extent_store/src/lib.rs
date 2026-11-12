@@ -183,19 +183,21 @@ mod written;
 pub use written::{Written, written};
 
 pub use dir::{Dir, File, HostDir, HostFile, bypass_page_cache};
+/// fxdax: where a store's branch is: its tenant's cell, and its ID there (TASK-364).
+pub use extent_frame::segment::{Branch, Cell};
 pub use framed::{Aligned, Packed, Part, read_object, read_whole, unpacks};
 pub use host::{
     create_host, delete_host, host_branch, host_bucket, host_token, made_host, place_host,
     unmade_host,
 };
-pub use layout::{Description, Format, Place};
+pub use layout::{Description, Format, Place, Volume};
 pub use mem::{Io, MemDir, MemFile};
 pub use segments::{commits_spanning_segments, segment_closes, segments_framed_in_place};
 #[cfg(feature = "audit")]
 pub use state::AUDIT_FAILED;
 pub use store::{
-    DirHold, ForkCommitted, Info, NoSpace, Opening, Options, Recovering, RemoteData, Spent, Store,
-    TooLong, TooSmall, Unaligned, Unmade, Usage, Write,
+    DirHold, ForkCommitted, Info, Inherited, NoSpace, Opening, Options, Recovering, RemoteData,
+    Spent, Store, TooLong, TooSmall, Unaligned, Unmade, Usage, Write,
 };
 pub use sync::Rules;
 #[cfg(feature = "shuttle")]

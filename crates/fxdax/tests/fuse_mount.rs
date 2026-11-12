@@ -377,11 +377,12 @@ fn fxdax_mount_command(args: &[&str]) -> String {
     String::from_utf8(output.stdout).unwrap()
 }
 
-/// One mount of many stores (TASK-302): branches attached through its control socket are
-/// directories of its root, each a filesystem of its own (nothing renamed between them, nothing
-/// made in the root); a store detached goes, written back and its lease let go, so that it
-/// attaches again from its store, or as its branch taken from the bucket into another; a store
-/// with a file open is detached once the file is closed.
+/// One mount of many stores (TASK-302), of tenants' cells (TASK-364): a cell attached through its
+/// control socket shows each Fxfs volume of it at TENANT/CELL/VOLUME, a filesystem of its own
+/// (nothing renamed between them, nothing made in the mount's directories of its own); its cell's
+/// objects in the bucket under its tenant's prefix. A cell detached goes, written back, so that it
+/// attaches again from its stores, or, those gone, from the bucket; a volume with a file open is
+/// detached once the file is closed.
 #[test]
 fn one_mount_attaches_and_detaches_many_stores() {
     let dir = tempfile::tempdir().unwrap();
@@ -389,58 +390,98 @@ fn one_mount_attaches_and_detaches_many_stores() {
     let socket = socket.to_str().unwrap();
     assert_eq!(names(&m), Vec::<String>::new());
     let capacity = STORE_SIZE.to_string();
-    let attach = |name: &str, branch: &str| {
-        fxdax_mount_command(&["attach", socket, name, branch, &capacity]).trim().to_owned()
+    let (one, two) = ("0000000000000001", "0000000000000002");
+    // A new cell of each tenant's, of no volumes: nothing shown.
+    let attach = |tenant: &str, cell: &str| {
+        fxdax_mount_command(&["attach", socket, tenant, cell]).lines().map(str::to_owned).collect()
     };
-    let a = attach("a", "0");
-    let b = attach("b", "0");
-    assert_ne!(a, b);
-    assert_eq!(names(&m), ["a", "b"]);
-    std::fs::write(m.join("a/file"), "in a").unwrap();
-    std::fs::write(m.join("b/file"), "in b").unwrap();
-    assert_eq!(std::fs::read_to_string(m.join("a/file")).unwrap(), "in a");
-    assert_eq!(std::fs::read_to_string(m.join("b/file")).unwrap(), "in b");
-    let renamed = std::fs::rename(m.join("a/file"), m.join("b/moved")).unwrap_err();
-    assert_eq!(renamed.raw_os_error(), Some(libc::EXDEV));
-    let made = std::fs::create_dir(m.join("c")).unwrap_err();
-    assert_eq!(made.raw_os_error(), Some(libc::EPERM));
+    let new: Vec<String> = attach("1", "0");
+    let a = new[0].clone();
+    let new: Vec<String> = attach("2", "0");
+    let b = new[0].clone();
+    assert_eq!(names(&m), Vec::<String>::new());
+    let volume = |tenant: &str, cell: &str, name: &str| {
+        let made = ["create-volume", socket, tenant, cell, name, &capacity];
+        fxdax_mount_command(&made).trim().to_owned()
+    };
+    let (root, data, other) =
+        (volume("1", &a, "root"), volume("1", &a, "data"), volume("2", &b, "root"));
+    assert_eq!(names(&m), [one, two]);
+    assert_eq!(names(&m.join(one)), [a.as_str()]);
+    assert_eq!(names(&m.join(one).join(&a)), ["data", "root"]);
+    assert_eq!(names(&m.join(two).join(&b)), ["root"]);
+    let (at_a, at_b) = (m.join(one).join(&a), m.join(two).join(&b));
+    std::fs::write(at_a.join("root/file"), "in root").unwrap();
+    std::fs::write(at_a.join("data/file"), "in data").unwrap();
+    std::fs::write(at_b.join("root/file"), "in b").unwrap();
+    assert_eq!(std::fs::read_to_string(at_a.join("root/file")).unwrap(), "in root");
+    assert_eq!(std::fs::read_to_string(at_b.join("root/file")).unwrap(), "in b");
+    for (from, to) in [
+        (at_a.join("root/file"), at_a.join("data/moved")),
+        (at_a.join("root/file"), at_b.join("root/moved")),
+    ] {
+        assert_eq!(std::fs::rename(&from, &to).unwrap_err().raw_os_error(), Some(libc::EXDEV));
+    }
+    for made in [m.join("c"), m.join(one).join("c"), at_a.join("c")] {
+        let refused = std::fs::create_dir(&made).unwrap_err();
+        assert_eq!(refused.raw_os_error(), Some(libc::EPERM), "{}", made.display());
+    }
     assert_ne!(
-        std::fs::metadata(m.join("a/file")).unwrap().ino(),
-        std::fs::metadata(m.join("b/file")).unwrap().ino()
+        std::fs::metadata(at_a.join("root/file")).unwrap().ino(),
+        std::fs::metadata(at_a.join("data/file")).unwrap().ino()
     );
-    assert_eq!(fxdax_mount_command(&["list", socket]), format!("a {a}\nb {b}\n"));
+    let listed = format!("{one} {a}\n  data {data}\n  root {root}\n{two} {b}\n  root {other}\n");
+    assert_eq!(fxdax_mount_command(&["list", socket]), listed);
+    // The cells' objects are under their tenants' prefixes: their cells' objects, and their
+    // volumes' branches.
+    let bucket = dir.path().join("bucket");
+    let cell_a = bucket.join(format!("tenants/{one}/cells/{a}"));
+    assert!(cell_a.join("cell").exists(), "no cell object at {}", cell_a.display());
+    let mut branches = vec![data.clone(), root.clone()];
+    branches.sort();
+    assert_eq!(names(&cell_a.join("branches")), branches);
+    assert!(bucket.join(format!("tenants/{two}/cells/{b}/branches/{other}")).exists());
 
-    // Detached, and attached again from its store; then from the bucket, into another.
-    fxdax_mount_command(&["detach", socket, "a"]);
-    assert_eq!(names(&m), ["b"]);
-    assert_eq!(attach("a", &a), a);
-    assert_eq!(std::fs::read_to_string(m.join("a/file")).unwrap(), "in a");
-    fxdax_mount_command(&["detach", socket, "a"]);
-    assert_eq!(attach("again", &a), a);
-    assert_eq!(names(&m), ["again", "b"]);
-    assert_eq!(std::fs::read_to_string(m.join("again/file")).unwrap(), "in a");
+    // Detached, and attached again from its stores; the other cell detached, its stores gone,
+    // then attached again from the bucket.
+    fxdax_mount_command(&["detach", socket, "1", &a]);
+    assert_eq!(names(&m), [two]);
+    let again: Vec<String> = attach("1", &a);
+    assert_eq!(again, [a.clone(), format!("data {data}"), format!("root {root}")]);
+    assert_eq!(std::fs::read_to_string(at_a.join("data/file")).unwrap(), "in data");
+    assert_eq!(std::fs::read_to_string(at_a.join("root/file")).unwrap(), "in root");
+    fxdax_mount_command(&["detach", socket, "2", &b]);
+    std::fs::remove_dir_all(dir.path().join("stores").join(two)).unwrap();
+    let again: Vec<String> = attach("2", &b);
+    assert_eq!(again, [b.clone(), format!("root {other}")]);
+    assert_eq!(std::fs::read_to_string(at_b.join("root/file")).unwrap(), "in b");
 
-    // A file open holds the store until it is closed.
-    let open = std::fs::File::open(m.join("b/file")).unwrap();
+    // A file open holds its volume, and its cell's detach, until it is closed.
+    let open = std::fs::File::open(at_a.join("data/file")).unwrap();
     let mut detach = KillOnDrop(
         Command::new(env!("CARGO_BIN_EXE_fxdax-mount"))
-            .args(["detach", socket, "b"])
+            .args(["detach", socket, "1", &a])
             .stderr(Stdio::piped())
             .spawn()
             .unwrap(),
     );
-    while fxdax_mount_command(&["list", socket]) != format!("again {a}\nb {b} detaching\n") {}
-    assert_eq!(names(&m), ["again"]);
+    let detaching = format!("{one} {a}\n  data {data} detaching\n{two} {b}\n  root {other}\n");
+    while fxdax_mount_command(&["list", socket]) != detaching {}
+    assert_eq!(names(&m), [two]);
     assert!(detach.0.try_wait().unwrap().is_none(), "detached with a file open");
     drop(open);
     assert!(detach.0.wait().unwrap().success());
-    assert_eq!(fxdax_mount_command(&["list", socket]), format!("again {a}\n"));
+    assert_eq!(fxdax_mount_command(&["list", socket]), format!("{two} {b}\n  root {other}\n"));
 
     terminate(child, &m);
     // Each store is whole, and holds what was written.
     block_on(async {
-        for (name, file) in [("again", "in a"), ("b", "in b")] {
-            let store = dir.path().join("stores").join(name);
+        let stores = dir.path().join("stores");
+        for (store, file) in [
+            (stores.join(one).join(&a).join("root"), "in root"),
+            (stores.join(one).join(&a).join("data"), "in data"),
+            (stores.join(two).join(&b).join("root"), "in b"),
+        ] {
             let storage = Storage::open(&store).unwrap().check().await.unwrap();
             let fs = Filesystem::mount(storage).await.unwrap();
             assert_eq!(contents(fs.root(), b"file").await, file.as_bytes());

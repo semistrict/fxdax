@@ -86,6 +86,12 @@ fn sigterm_closes_every_store_durable_and_uploaded() {
     let second_socket = other.join("extentd.sock");
     let _second = daemon(&second_socket, &bucket, 2);
     let point: PathBuf = other.join("point");
+    // TASK-364: its VM manager makes the point's store there first, of the branch its tenant, cell
+    // and ID name, as a snapshot names it by its ID alone; taken from the bucket.
+    let full = extent_store::host_branch(&path).unwrap();
+    // SAFETY: The test's own process, whose other threads read no environment meanwhile.
+    unsafe { std::env::set_var("FXDAX_EXTENTD_REMOTE", format!("file://{}", bucket.display())) };
+    ExtentStore::take(&point, 1 << 28, full, Some(2)).unwrap();
     let restored = other.join("restored");
     let restored =
         RemoteExtentStore::connect_forked(&second_socket, &restored, &point, branch, 1 << 28);

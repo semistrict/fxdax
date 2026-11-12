@@ -68,6 +68,11 @@
 // each says it means; a caller ignores fields it doesn't know of. A call an older daemon lacks
 // fails with UNIMPLEMENTED. Errnos keep their codes. A change that breaks a caller is v2, served
 // beside v1 until callers move.
+//
+// Cells (TASK-364): every branch is a volume of a tenant's cell, kept under the cell's prefix in
+// the bucket, and a host takes a cell whole, its volumes' leases with it. A branch is named by its
+// tenant, its cell and its ID: `tenant`, `cell` and `branch` beside one another. Tenants and cells
+// are IDs alone, which the caller keeps the meaning of.
 
 syntax = "proto3";
 
@@ -185,12 +190,31 @@ message CreateStoreRequest {
   // last writer's of the branch to take, or the take fails (FAILED_PRECONDITION, ESTALE). A point
   // has no writer, and needs none.
   optional uint64 token = 4;
+  // The tenant whose cell the branch is a volume of.
+  uint64 tenant = 5;
+  // The cell, or 0 for a new one: the store is a new volume of it, named as `path`'s last name
+  // is, unless it takes a branch it has.
+  uint64 cell = 6;
+  // What the volume holds, which says what opens it.
+  VolumeKind kind = 7;
+}
+
+// What a volume of a cell holds.
+enum VolumeKind {
+  // An Fxfs filesystem: a VM's disk, or a host's mount's.
+  VOLUME_KIND_FXFS = 0;
+  // A database of sqlite_extents, which its VFS alone opens.
+  VOLUME_KIND_SQLITE = 1;
 }
 
 // The store made.
 message CreateStoreResponse {
   // Its branch: the one taken, or the new one.
   uint64 branch = 1;
+  // Its tenant.
+  uint64 tenant = 2;
+  // Its cell: the one named, or the new one.
+  uint64 cell = 3;
 }
 
 // Makes a store of a container image.
@@ -205,12 +229,18 @@ message ImportImageRequest {
   string image = 3;
   // The image in the layout to import, by its reference; empty for its only image.
   string reference = 4;
+  // The tenant of the new cell the store is the one volume of.
+  uint64 tenant = 5;
 }
 
 // The store made.
 message ImportImageResponse {
   // Its branch, a new one.
   uint64 branch = 1;
+  // Its tenant.
+  uint64 tenant = 2;
+  // Its cell, a new one, of which it is the one volume.
+  uint64 cell = 3;
 }
 
 // Forks a store.
@@ -225,7 +255,8 @@ message ForkStoreRequest {
   // if its commit was made; its host crashing part way, `to` is left unmade, which DeleteStore of
   // `to` deletes, and the fork stands or never was, as the bucket has it.
   string to = 2;
-  // The fork's branch, or 0 for a new one.
+  // The fork's branch, or 0 for a new one: the one volume of a new cell of `from`'s tenant
+  // (TASK-364).
   uint64 branch = 3;
   // Whether the fork is a point (TASK-158): a name of `from`'s state as it is, which any number of
   // hosts read and fork at once, and none writes, as a snapshot's is. Forks of it on another host:
@@ -239,6 +270,10 @@ message ForkStoreRequest {
 message ForkStoreResponse {
   // Its branch.
   uint64 branch = 1;
+  // Its tenant: `from`'s.
+  uint64 tenant = 2;
+  // Its cell, a new one, of which it is the one volume.
+  uint64 cell = 3;
 }
 
 // Deletes a store.
@@ -357,6 +392,10 @@ message StatStoreResponse {
   // How long the oldest commit not yet in the bucket has waited, in milliseconds, to within the
   // uploader's interval (a second): 0 if none waits.
   uint64 oldest_pending_ms = 16;
+  // The tenant whose cell its branch is a volume of (TASK-364).
+  uint64 tenant = 17;
+  // The cell its branch is a volume of.
+  uint64 cell = 18;
 }
 
 // Asks for the stores the daemon serves.

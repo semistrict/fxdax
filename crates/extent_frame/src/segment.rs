@@ -19,12 +19,70 @@ pub struct Location {
     pub len: u64,
 }
 
+/// fxdax: a tenant's cell, its unit of placement: one host at a time writes all the branches in it,
+/// under its one lease, and keeps them under its prefix in the bucket (TASK-364). Tenants and cells
+/// are IDs alone; what they stand for, their callers keep.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct Cell {
+    pub tenant: u64,
+    pub id: u64,
+}
+
+impl Cell {
+    /// The prefix of the keys of the cell's objects: `tenants/<tenant>/cells/<id>/`.
+    pub fn prefix(self) -> String {
+        format!("tenants/{:016x}/cells/{:016x}/", self.tenant, self.id)
+    }
+}
+
+/// fxdax: where a branch is: its cell, and its ID, which no other branch its extents are inherited
+/// from or by has: an extent's ID names its branch by the ID alone (TASK-364).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct Branch {
+    pub cell: Cell,
+    pub id: u64,
+}
+
+impl Branch {
+    /// The branch `id` of cell `cell` of this one's tenant: where a fork of this one goes, a cell
+    /// of its own (TASK-364).
+    pub fn in_cell(self, cell: u64, id: u64) -> Self {
+        Self { cell: Cell { tenant: self.cell.tenant, id: cell }, id }
+    }
+}
+
+/// A branch as operators read and write it: `TENANT/CELL/ID`, each in hexadecimal.
+impl std::fmt::Display for Branch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:x}/{:x}/{:x}", self.cell.tenant, self.cell.id, self.id)
+    }
+}
+
+impl std::str::FromStr for Branch {
+    type Err = String;
+
+    /// The branch `TENANT/CELL/ID` names, each in hexadecimal, as it is displayed.
+    fn from_str(text: &str) -> Result<Self, String> {
+        let hex = |word: &str| u64::from_str_radix(word, 16).ok();
+        let parsed = match text.split('/').collect::<Vec<_>>()[..] {
+            [tenant, cell, id] => (hex(tenant), hex(cell), hex(id)),
+            _ => (None, None, None),
+        };
+        match parsed {
+            (Some(tenant), Some(cell), Some(id)) => {
+                Ok(Self { cell: Cell { tenant, id: cell }, id })
+            }
+            _ => Err(format!("no branch, TENANT/CELL/ID in hexadecimal: {text}")),
+        }
+    }
+}
+
 /// fxdax: a fork made at a segment's end: its child's branch, the child's owner, which every
 /// record of the child names, whoever writes it (TASK-79.82, TASK-153.9), and whether the child is
 /// a point: a name of the branch's state there, which nothing writes (doc-7, Points).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct Child {
-    pub branch: u64,
+    pub branch: Branch,
     pub owner: u64,
     pub point: bool,
 }
@@ -34,7 +92,7 @@ pub struct Child {
 /// set the root, or forks.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Footer {
-    pub branch: u64,
+    pub branch: Branch,
     pub seq: u64,
     /// The epoch of its writer's lease.
     pub epoch: u64,
@@ -134,13 +192,13 @@ impl Contents {
     /// writer of lease epoch `epoch`: the object that writer uploaded before it ([`extent_key`]).
     pub fn own_at(
         &self,
-        branch: u64,
+        branch: Branch,
         epoch: u64,
         seq: u64,
     ) -> impl Iterator<Item = (ExtentId, Location)> + '_ {
         self.own.iter().map(move |&(sequence, len)| {
-            let extent = ExtentId { branch, sequence };
-            (extent, Location { key: extent_key(epoch, seq, extent), offset: 0, len })
+            let extent = ExtentId { branch: branch.id, sequence };
+            (extent, Location { key: extent_key(branch.cell, epoch, seq, extent), offset: 0, len })
         })
     }
 }
@@ -153,7 +211,7 @@ impl Contents {
 /// only if its chain would have stamped it so.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Chain {
-    branch: u64,
+    branch: Branch,
     epoch: u64,
     /// The number of the next segment.
     next_seq: u64,
@@ -168,7 +226,7 @@ impl Chain {
     /// `next_seq` and follows `after`; the footers it stamps name `next_sequence`, the writer's
     /// floor, as the branch's next sequence number at least.
     pub const fn new(
-        branch: u64,
+        branch: Branch,
         epoch: u64,
         next_seq: u64,
         after: Option<(u64, u64)>,
@@ -177,7 +235,7 @@ impl Chain {
         Self { branch, epoch, next_seq, after, next_sequence }
     }
 
-    pub fn branch(&self) -> u64 {
+    pub fn branch(&self) -> Branch {
         self.branch
     }
 
@@ -228,7 +286,7 @@ impl Chain {
         let wanted = (self.branch, self.next_seq, self.epoch, self.after);
         if (footer.branch, footer.seq, footer.epoch, footer.after) != wanted {
             return Err(Corrupt(format!(
-                "a segment of branch {:x}, number {}, epoch {}, after {:?}, not {wanted:?}",
+                "a segment of branch {}, number {}, epoch {}, after {:?}, not {wanted:?}",
                 footer.branch, footer.seq, footer.epoch, footer.after
             )));
         }
@@ -268,20 +326,34 @@ pub fn writer_of(tag: u64) -> u64 {
 /// `epoch` before its segment `seq`, whose footer names it. fxdax: the segment's number tells the
 /// collector whether the object is ahead of its segment, which may yet land, or a landed one's,
 /// which no state naming it frees it: what the branch's next sequence number can't tell, as its
-/// extents are committed in no order of their sequence numbers (TASK-79.3).
-pub fn extent_key(epoch: u64, seq: u64, extent: ExtentId) -> String {
-    format!("extents/{:016x}/{epoch:016x}.{seq:016x}.{:016x}", extent.branch, extent.sequence)
+/// extents are committed in no order of their sequence numbers (TASK-79.3). Under the prefix of
+/// `cell`, its branch's (TASK-364).
+pub fn extent_key(cell: Cell, epoch: u64, seq: u64, extent: ExtentId) -> String {
+    format!(
+        "{}extents/{:016x}/{epoch:016x}.{seq:016x}.{:016x}",
+        cell.prefix(),
+        extent.branch,
+        extent.sequence
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// The cell of the tests' branches.
+    const CELL: Cell = Cell { tenant: 1, id: 2 };
+
+    /// Branch `id` of `CELL`.
+    const fn branch(id: u64) -> Branch {
+        Branch { cell: CELL, id }
+    }
+
     /// A footer decodes as it was encoded: a store's segments and the bucket's objects hold them.
     #[test]
     fn footers_decode_as_encoded() {
         let footer = Footer {
-            branch: 2,
+            branch: branch(2),
             seq: 9,
             epoch: 4,
             after: Some((7, 3)),
@@ -293,8 +365,12 @@ mod tests {
                 root: Some(b"root".to_vec()),
                 next_sequence: 13,
                 forks: vec![
-                    Child { branch: 3, owner: 0x33, point: false },
-                    Child { branch: 4, owner: 0x44, point: true },
+                    Child { branch: branch(3), owner: 0x33, point: false },
+                    Child {
+                        branch: Branch { cell: Cell { tenant: 5, id: 6 }, id: 4 },
+                        owner: 0x44,
+                        point: true,
+                    },
                 ],
                 capacity: Some(1 << 30),
                 continued: Some(Continued {
@@ -334,6 +410,19 @@ mod tests {
         assert_eq!(runs.runs().collect::<Vec<_>>(), [&(extent(1), 8, 8), &(extent(2), 0, 8)]);
     }
 
+    /// fxdax: a branch reads as it displays, `TENANT/CELL/ID` in hexadecimal; anything else is no
+    /// branch.
+    #[test]
+    fn branches_parse_as_they_display() {
+        let branch = Branch { cell: Cell { tenant: 0xa, id: 0xbc }, id: 0x123 };
+        assert_eq!(branch.to_string(), "a/bc/123");
+        assert_eq!("a/bc/123".parse(), Ok(branch));
+        for wrong in ["123", "a/bc", "a/bc/123/4", "a/bc/xyz", ""] {
+            let refused = format!("no branch, TENANT/CELL/ID in hexadecimal: {wrong}");
+            assert_eq!(wrong.parse::<Branch>(), Err(refused));
+        }
+    }
+
     /// A tag holds its writer's epoch above `TAG_SHIFT` and the store's below, each recovered whole.
     #[test]
     fn tags_hold_both_epochs() {
@@ -352,7 +441,7 @@ mod tests {
     #[test]
     fn chains_number_and_link_what_they_close() {
         let own = ExtentId { branch: 2, sequence: 7 };
-        let mut chain = Chain::new(2, 4, 9, Some((8, 3)), 100);
+        let mut chain = Chain::new(branch(2), 4, 9, Some((8, 3)), 100);
         let contents = Contents {
             commits: vec![tag(4, 1)],
             extents: vec![(ExtentId { branch: 2, sequence: 6 }, 0, 4096)],
@@ -363,7 +452,7 @@ mod tests {
         assert_eq!(
             chain.close(contents),
             Footer {
-                branch: 2,
+                branch: branch(2),
                 seq: 9,
                 epoch: 4,
                 after: Some((8, 3)),
@@ -382,7 +471,7 @@ mod tests {
         let third = chain.close(Contents { next_sequence: 150, ..Contents::default() });
         assert_eq!(place(&third), (11, Some((10, 4)), 200));
         let place = (chain.branch(), chain.epoch(), chain.next_seq(), chain.after());
-        assert_eq!((place, chain.next_sequence()), ((2, 4, 12, Some((11, 4))), 200));
+        assert_eq!((place, chain.next_sequence()), ((branch(2), 4, 12, Some((11, 4))), 200));
         assert_eq!(chain.tag(5), tag(4, 5));
     }
 
@@ -391,60 +480,70 @@ mod tests {
     /// on from none.
     #[test]
     fn chains_admit_only_what_they_would_close() {
-        let start = Chain::new(2, 4, 9, Some((8, 3)), 100);
+        let start = Chain::new(branch(2), 4, 9, Some((8, 3)), 100);
         let mut closing = start;
         let footer = closing.close(Contents { own: vec![(7, 512)], ..Contents::default() });
         assert_eq!(start.admit(&footer), Ok(closing));
         // A footer of another place than the next the chain closes: refused, saying both.
-        let misplaced =
-            |place: &str| format!("a segment of branch {place}, not (2, 9, 4, Some((8, 3)))");
+        let misplaced = |place: &str| {
+            format!("a segment of branch {place}, not {:?}", (branch(2), 9, 4, Some((8, 3))))
+        };
         for (wrong, refused) in [
             (
-                Footer { branch: 3, ..footer.clone() },
-                misplaced("3, number 9, epoch 4, after Some((8, 3))"),
+                Footer { branch: branch(3), ..footer.clone() },
+                misplaced("1/2/3, number 9, epoch 4, after Some((8, 3))"),
+            ),
+            (
+                Footer {
+                    branch: Branch { cell: Cell { tenant: 1, id: 3 }, ..branch(2) },
+                    ..footer.clone()
+                },
+                misplaced("1/3/2, number 9, epoch 4, after Some((8, 3))"),
             ),
             (
                 Footer { seq: 10, ..footer.clone() },
-                misplaced("2, number 10, epoch 4, after Some((8, 3))"),
+                misplaced("1/2/2, number 10, epoch 4, after Some((8, 3))"),
             ),
             (
                 Footer { epoch: 5, ..footer.clone() },
-                misplaced("2, number 9, epoch 5, after Some((8, 3))"),
+                misplaced("1/2/2, number 9, epoch 5, after Some((8, 3))"),
             ),
             (
                 Footer { after: Some((8, 4)), ..footer },
-                misplaced("2, number 9, epoch 4, after Some((8, 4))"),
+                misplaced("1/2/2, number 9, epoch 4, after Some((8, 4))"),
             ),
         ] {
             assert_eq!(start.admit(&wrong), Err(Corrupt(refused)), "{wrong:?}");
         }
-        assert_eq!(start, Chain::new(2, 4, 9, Some((8, 3)), 100));
+        assert_eq!(start, Chain::new(branch(2), 4, 9, Some((8, 3)), 100));
     }
 
     /// A footer's extents of their own are the branch's, at the keys of its writer's epoch and its
     /// number: wherever it was closed, no other.
     #[test]
     fn footers_name_their_own_extents_at_their_writers_keys() {
-        let mut chain = Chain::new(2, 4, 9, Some((8, 3)), 100);
+        let mut chain = Chain::new(branch(2), 4, 9, Some((8, 3)), 100);
         let footer = chain.close(Contents { own: vec![(7, 512), (5, 8)], ..Contents::default() });
         let (seven, five) =
             (ExtentId { branch: 2, sequence: 7 }, ExtentId { branch: 2, sequence: 5 });
         assert_eq!(
             footer.own().collect::<Vec<_>>(),
             [
-                (seven, Location { key: extent_key(4, 9, seven), offset: 0, len: 512 }),
-                (five, Location { key: extent_key(4, 9, five), offset: 0, len: 8 }),
+                (seven, Location { key: extent_key(CELL, 4, 9, seven), offset: 0, len: 512 }),
+                (five, Location { key: extent_key(CELL, 4, 9, five), offset: 0, len: 8 }),
             ]
         );
     }
 
-    /// The keys of extents stored on their own: by branch, then the writer's epoch, the segment
-    /// that names them, and sequence, in fixed-width hex, so that a listing is in that order.
+    /// The keys of extents stored on their own: under their cell's prefix, by tenant and cell; then
+    /// by branch, the writer's epoch, the segment that names them, and sequence, in fixed-width
+    /// hex, so that a listing is in that order.
     #[test]
-    fn extent_keys_order_by_branch_epoch_segment_and_sequence() {
-        let key = extent_key(7, 0x2a, ExtentId { branch: 2, sequence: 0x1f });
-        let expected =
-            "extents/0000000000000002/0000000000000007.000000000000002a.000000000000001f";
+    fn extent_keys_order_by_cell_branch_epoch_segment_and_sequence() {
+        let cell = Cell { tenant: 0xa, id: 0xc };
+        let key = extent_key(cell, 7, 0x2a, ExtentId { branch: 2, sequence: 0x1f });
+        let expected = "tenants/000000000000000a/cells/000000000000000c/extents/\
+                        0000000000000002/0000000000000007.000000000000002a.000000000000001f";
         assert_eq!(key, expected);
     }
 }

@@ -74,8 +74,9 @@ impl Header {
 /// moves. `the_wire_is_its_version` (codec.rs) fails on a change to the wire without a new one.
 /// Version 4: a request may say the guest request it is a call for ([`REQUEST`], TASK-260).
 /// Version 5: a commit may complete once durable on the host's disk ([`COMMIT_LOCAL`],
-/// [`WRITE_LOCAL`], TASK-301).
-pub(crate) const VERSION: u64 = 5;
+/// [`WRITE_LOCAL`], TASK-301). Version 6: an [`OPEN`] may make a SQLite volume of its cell
+/// ([`OPEN_SQLITE`], TASK-364), and stores are cells' volumes, in their cells' prefixes.
+pub(crate) const VERSION: u64 = 6;
 
 /// fxdax: a flag of any request, which says the guest request it is a call for, the guest's
 /// number of it (`crate::request`, TASK-260): little-endian, not 0, in the first
@@ -255,6 +256,9 @@ pub(crate) const STAGE_COUNTS_EVERY: std::time::Duration = std::time::Duration::
 pub(crate) const OPEN_CREATE: u32 = 1 << 0;
 pub(crate) const OPEN_FORK_FROM: u32 = 1 << 1;
 pub(crate) const OPEN_READ_ONLY: u32 = 1 << 2;
+/// fxdax: with [`OPEN_CREATE`], the store made is a SQLite volume of its cell, which the
+/// sqlite_extents VFS alone opens, not an Fxfs one (TASK-364).
+pub(crate) const OPEN_SQLITE: u32 = 1 << 3;
 pub(crate) const MAP_ZEROS: u32 = 1 << 1;
 pub(crate) const FORK_QUIESCENT: u32 = 1 << 0;
 pub(crate) const MAPPING_ZEROS: u64 = 1 << 1;

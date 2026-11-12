@@ -220,7 +220,7 @@ impl Tail {
                 None,
             ),
             Kind::Extent { branch, sequence, .. } => (
-                HashMap::from([(ExtentId::new(branch, sequence), (0, parts.frame.data_len))]),
+                HashMap::from([(ExtentId::new(branch.id, sequence), (0, parts.frame.data_len))]),
                 None,
             ),
             Kind::Checkpoint { .. } => (HashMap::new(), Some(Table::decode(footer)?)),
@@ -950,6 +950,7 @@ impl<B: Bucket> Fetching<B> {
 mod tests {
     use super::*;
     use crate::bucket::PutMode;
+    use crate::layout::test_branch;
     use crate::layout::{self, Frame, Moves};
     use crate::object::TAIL;
     use crate::testing::{Direct, Fault, SimBucket};
@@ -958,7 +959,8 @@ mod tests {
     use std::cell::RefCell;
     use std::rc::Rc;
 
-    const KEY: &str = "segments/0000000000000001/0000000000000000";
+    const KEY: &str = "tenants/0000000000000001/cells/0000000000000001/\
+                       segments/0000000000000001/0000000000000000";
 
     /// Bytes that compress.
     fn pattern(len: u64) -> Vec<u8> {
@@ -983,7 +985,7 @@ mod tests {
     /// length.
     fn segment(data: &[u8], extents: Vec<(ExtentId, u64, u64)>) -> Vec<u8> {
         let contents = layout::Contents { extents, ..layout::Contents::default() };
-        let footer = layout::Chain::new(1, 1, 0, None, 0).close(contents);
+        let footer = layout::Chain::new(test_branch(1), 1, 0, None, 0).close(contents);
         layout::Segment { data: data.to_vec(), footer }.encode()
     }
 
@@ -1674,10 +1676,10 @@ mod tests {
     /// holds no table.
     #[test]
     fn lookups_read_blocks_of_checkpoints_by_their_parts() {
-        let mut state = crate::recovery::State::new(1);
+        let mut state = crate::recovery::State::new(test_branch(1));
         let location = Location { key: KEY.into(), offset: 7, len: 9 };
         state.extents.insert(EXTENT, location.clone());
-        let checkpoint = layout::checkpoint(1, 3);
+        let checkpoint = layout::checkpoint(test_branch(1), 3);
         let bytes = crate::checkpoint::encode(&state);
         let bucket = SimBucket::new();
         block_on(Direct(bucket.clone()).put(&checkpoint, bytes.clone().into(), PutMode::Create))
@@ -1789,7 +1791,7 @@ mod tests {
     fn tails_are_kept_for_each_object() {
         let data = noise(100);
         let bucket = bucket(&data);
-        let other = "segments/0000000000000001/0000000000000001";
+        let other = &layout::segment(test_branch(1), 1);
         block_on(Direct(bucket.clone()).put(other, whole(&data).into(), PutMode::Create)).unwrap();
         let fetcher = Rc::new(Fetcher::new(bucket.clone(), limits(8), Memory::new(), None));
         let mut reads = Reads::new();
@@ -1812,7 +1814,7 @@ mod tests {
         // last; then another read in flight: the other's tail, used least recently, goes, then
         // the first read in flight.
         let kept = |key: &str| fetcher.shared.memory.tails.lock().unwrap().kept.contains_key(key);
-        let key = |number: u64| format!("segments/0000000000000002/{number:016x}");
+        let key = |number: u64| layout::segment(test_branch(2), number as u64);
         let reading = TAILS / TAIL;
         for number in 0..reading - 1 {
             drop(fetcher.shared.tail(&key(number)));
@@ -1981,7 +1983,7 @@ mod tests {
         const OBJECTS: u64 = 4097;
         let data = noise(100);
         let bucket = SimBucket::new();
-        let key = |object: u64| format!("segments/0000000000000001/{object:016x}");
+        let key = |object: u64| layout::segment(test_branch(1), object as u64);
         for object in 0..OBJECTS {
             block_on(Direct(bucket.clone()).put(
                 &key(object),
@@ -2150,7 +2152,7 @@ mod tests {
         const PARTS: u64 = 24;
         let data = noise(PARTS * PART);
         let bucket = SimBucket::new();
-        let key = |object: u64| format!("segments/0000000000000001/{object:016x}");
+        let key = |object: u64| layout::segment(test_branch(1), object as u64);
         for object in 0..4 {
             block_on(Direct(bucket.clone()).put(
                 &key(object),
@@ -2186,7 +2188,7 @@ mod tests {
         let fetchers = host(&SimBucket::new(), &cache, 2);
         for (fetcher, branch) in fetchers.iter().zip(2..) {
             for number in 0..TAILS / TAIL {
-                drop(fetcher.shared.tail(&format!("segments/{branch:016x}/{number:016x}")));
+                drop(fetcher.shared.tail(&layout::segment(test_branch(branch), number as u64)));
             }
         }
         let (_, tails) = held(&fetchers);
@@ -2412,7 +2414,7 @@ mod tests {
         let fetcher = Fetcher::new(bucket, limits(8), Memory::new(), Some(cache))
             .reading_ahead(reads.spawn());
         let streams = || fetcher.streams.lock().unwrap().len();
-        let key = |number: usize| format!("segments/0000000000000001/{number:016x}");
+        let key = |number: usize| layout::segment(test_branch(1), number as u64);
         for number in 0..STREAMS {
             fetcher.read_ahead(&key(number), 0, 0);
         }

@@ -2,6 +2,17 @@
 
 # Decisions
 
+## Cells: what TASK-364 decided without you (2026-11-11)
+You chose tenant → cell → volume, one log per volume, cells and tenants by ID, whole-cell forks. Decided without you:
+- **A cell's holder is its placement's fencing token.** Every process of a host (extentd, fxdax-mount) takes a cell as that holder, so a second taking joins the epoch held instead of fencing the first: a cell's volumes split between VMs and a FUSE mount on one host share one lease. *Instead:* a host identity of its own, persisted.
+- **A volume's branch lease is taken with its cell's epoch as its token**, so a later taking of the cell fences every volume through the branch leases as they are; Bucket.tla is unchanged. *Instead:* one lease object per cell that writers check, which would change the spec.
+- **A volume is named, at its branch's first opening, as its store's directory** (`volume`/`kind` lines in the store's description), the name its branch's from then on whatever directory a store of it is taken into, and must be a valid name (letters, digits, `.`, `_`, `-`, ≤ 64, not starting with `.`), else `EINVAL`.
+- **Stores made alone (VM disks, images, the CLI's) are the one volume of a new cell of tenant 0**; a fork goes into a new cell of its parent's tenant, a guest-named child ID kept. Branch IDs are unique within a cell; a fork's child may not take the ID of any branch its parent holds extents of (`extent_store::Inherited`).
+- **A restore on another host than its snapshot's needs the point's store made first** (`CreateStore` with its tenant, cell and branch): the wire's `OPEN_FORK_FROM` names the point's branch by its ID alone, which no longer locates it, and is `ENOENT` if the point's store isn't on the host. *Instead:* carry tenant and cell in the VM wire protocol and Firecracker's snapshot.
+- **Cell objects are never collected**, as branch records aren't. *Undoing it:* a collector rule for deleted cells whose branches are all gone.
+- **The FUSE mount's control API (`fxdax/mount/v1`) changed outright** to Attach/CreateVolume/Detach/List of cells; extentd's v1 only grew (`tenant`, `cell`, `kind` beside `branch`). SQLite volumes are made with the wire's new `OPEN_SQLITE` flag, and the mount leaves them unshown.
+- **Checkpoint tables store keys front-coded**, as cell prefixes doubled every key's length.
+
 ## The pre-pin qualification: one harness for both pins, faults in front of the bucket (TASK-330.4, TASK-330.5, 2026-11-11)
 Your decisions (long mode on ubu1 by hand before each pin, 16 VMs eight at a time; RustFS a process in the run's cgroup; faults in a proxy) as built. Decided without you:
 - **The A/B's harness is the tree running it, for both sides**: the runner and guest agent from this tree, each side's extent daemon, Firecracker and guest kernel from its own build (`FXDAX_E2E_HARNESS`). LangSmith's pin predates every qualification case, so its own harness has nothing to run. The harness's control calls are gRPC, compatible both ways (fields only added since 96c7808b8). *Instead:* backport the cases onto the pin. *Undo:* `FXDAX_AB_SUITE=qualify` and the harness mode.

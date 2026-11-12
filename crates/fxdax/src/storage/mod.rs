@@ -17,6 +17,7 @@ use crate::executor::Executor;
 use crate::filesystem::DEFAULT_EXECUTOR_THREADS;
 use crate::host_store;
 use anyhow::Context as _;
+use extent_remote::layout::Branch;
 use fxfs::filesystem::FxFilesystem;
 use fxfs::fsck::errors::FsckIssue;
 use fxfs::fsck::{FsckOptions, fsck_volume_with_options, fsck_with_options};
@@ -88,22 +89,23 @@ impl Storage {
     /// clones share and which outlives it; or, on a host of fxdax's system, in the host's bucket
     /// (`FXDAX_EXTENTD_REMOTE`).
     pub fn create(path: impl AsRef<Path>, size: u64) -> Result<Self, Error> {
-        Self::make(path.as_ref(), size, true, Self::keeping()?)
+        Self::make(path.as_ref(), (size, host_store::NO_TENANT), true, Self::keeping()?)
     }
 
-    /// fxdax: the image at `path` of `branch`, kept in the bucket at `bucket` (TASK-302), its
-    /// branch, and whether that is new, holding nothing. If no image is at `path`, or what an image's making left unmade, a new one of
-    /// `capacity` bytes holding what the branch holds in the bucket, its lease taken, as
-    /// `fxdaxctl take` takes a branch: with `token`'s placement, which it is placed at, if given,
-    /// as `Storage::open` takes leases otherwise. `branch` 0 is a new branch, which holds nothing:
-    /// a filesystem must be formatted on it. If an image is at `path`, it is opened as
-    /// [`Storage::open`] opens it, and must be of `branch`, unless that is 0: `EEXIST` otherwise.
+    /// fxdax: the image at `path` of `branch`, kept in the bucket at `bucket` (TASK-302), an Fxfs
+    /// volume of its branch's cell named as its directory is (TASK-364). If no image is at `path`,
+    /// or what an image's making left unmade, a new one of `capacity` bytes holding what the
+    /// branch holds in the bucket, its lease taken, as `fxdaxctl take` takes a branch, and its
+    /// cell held: with `token`'s placement, which it is placed at, if given, as `Storage::open`
+    /// takes leases otherwise. A branch the bucket has nothing of holds nothing: a filesystem must
+    /// be formatted on it. If an image is at `path`, it is opened as [`Storage::open`] opens it,
+    /// and must be of `branch`: `EEXIST` otherwise.
     pub fn take(
         path: impl AsRef<Path>,
-        (branch, capacity): (u64, u64),
+        (branch, capacity): (Branch, u64),
         bucket: &str,
         token: Option<u64>,
-    ) -> Result<(Self, u64, bool), Error> {
+    ) -> Result<Self, Error> {
         let path = path.as_ref();
         // What a making that died part way left is no store: its directory goes, not the branch,
         // which may be another's, as the extent daemon's `CreateStore` has it (TASK-196).
@@ -112,16 +114,12 @@ impl Storage {
                 .with_context(|| format!("removing {}, a store unmade", path.display()))
                 .map_err(Error::new)?;
         }
-        let new = branch == 0 && !path.exists();
         if !path.exists() {
-            let branch = match branch {
-                0 => host_store::new_branch(),
-                branch => branch,
-            };
             let keeping = Self::keeping()?;
             let keeping =
                 extent_store::upload::Options { token: token.unwrap_or(keeping.token), ..keeping };
-            let opened = host_store::create_unmade(path, capacity, branch, Some(bucket), keeping)?;
+            let kept = (extent_remote::cell::Kind::Fxfs, Some(bucket), keeping);
+            let opened = host_store::create_unmade(path, capacity, branch, kept.0, kept.1, kept.2)?;
             opened.made().map_err(Error::new)?;
             // Closed before it is placed, as `CreateStore` places a store, and opened again.
             drop(opened);
@@ -130,30 +128,30 @@ impl Storage {
             }
         }
         let found = extent_store::host_branch(path).map_err(Error::new)?;
-        if branch != 0 && found != branch {
-            let error =
-                anyhow::anyhow!("{} holds branch {found:x}, not {branch:x}", path.display());
+        if found != branch {
+            let error = anyhow::anyhow!("{} holds branch {found}, not {branch}", path.display());
             return Err(Error::new(error.context(crate::Errno::EEXIST)));
         }
-        Ok((Self::open(path)?, found, new))
+        Self::open(path)
     }
 
     /// fxdax: a new image at `path`, as [`Storage::create`] makes it, unmade until its maker says
     /// it is whole ([`Storage::made`]): what opens it before, or after its maker died part way,
     /// finds no store (TASK-196). As an import makes one, filling it first.
     pub fn create_unmade(path: impl AsRef<Path>, size: u64) -> Result<Self, Error> {
-        Self::make(path.as_ref(), size, false, Self::keeping()?)
+        Self::make(path.as_ref(), (size, host_store::NO_TENANT), false, Self::keeping()?)
     }
 
-    /// fxdax: a new image at `path`, as [`Storage::create_unmade`] makes it, its branch kept as
-    /// `keeping` says: as the extent daemon's stores keep theirs, with the host's cache of the
-    /// bucket's objects, for an import the daemon makes (TASK-237).
+    /// fxdax: a new image at `path`, as [`Storage::create_unmade`] makes it, the one volume of a
+    /// new cell of `tenant`'s (TASK-364), its branch kept as `keeping` says: as the extent daemon's
+    /// stores keep theirs, with the host's cache of the bucket's objects, for an import the daemon
+    /// makes (TASK-237).
     pub(crate) fn create_unmade_keeping(
         path: impl AsRef<Path>,
-        size: u64,
+        (size, tenant): (u64, u64),
         keeping: extent_store::upload::Options,
     ) -> Result<Self, Error> {
-        Self::make(path.as_ref(), size, false, keeping)
+        Self::make(path.as_ref(), (size, tenant), false, keeping)
     }
 
     /// How an image this process makes, where no host's daemon serves it, keeps its branch
@@ -173,11 +171,11 @@ impl Storage {
         host_store::unmade(path.as_ref())
     }
 
-    /// A new image at `path`, as [`Storage::create`] makes it, whole if `whole`, its branch kept
-    /// as `keeping` says.
+    /// A new image at `path`, as [`Storage::create`] makes it, the one volume of a new cell of
+    /// `tenant`'s, whole if `whole`, its branch kept as `keeping` says.
     fn make(
         path: &Path,
-        size: u64,
+        (size, tenant): (u64, u64),
         whole: bool,
         keeping: extent_store::upload::Options,
     ) -> Result<Self, Error> {
@@ -185,7 +183,8 @@ impl Storage {
             return Err(Error::msg("the image is smaller than a block"));
         }
         let writes = Arc::new(WriteGate::default());
-        let made = (size, host_store::new_branch(), whole);
+        let branch = host_store::new_branch(host_store::new_cell(tenant));
+        let made = (size, branch, whole);
         let device =
             ImageDevice::create(path, made, keeping, writes.clone()).map_err(Error::new)?;
         Ok(Self::image(path.to_owned(), writes, device))

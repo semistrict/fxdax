@@ -18,7 +18,7 @@ use std::sync::Arc;
 use storage_device::{ExtentId, NoExtent, OtherBranch, SealedExtent};
 
 const BLOCK: usize = 4096;
-const BRANCH: u64 = 7;
+const BRANCH: extent_remote::layout::Branch = extent_remote::layout::test_branch(7);
 /// The most bytes an extent holds: doc-4's `max_extent`, the store's default.
 const MAX_EXTENT: u64 = 64 << 20;
 
@@ -39,7 +39,7 @@ const OPTIONS: Options = Options {
 const WRITER: Chain = Chain::new(BRANCH, 0, 0, None, 0);
 
 fn extent(sequence: u64) -> ExtentId {
-    ExtentId::new(BRANCH, sequence)
+    ExtentId::new(BRANCH.id, sequence)
 }
 
 /// The branch's directory of `kind` (`segments`, `extents`, `index`).
@@ -74,7 +74,7 @@ fn created_on(
     chain: Chain,
 ) -> Store<MemDir> {
     let description = Description { block_size: BLOCK as u32, capacity, branch: BRANCH };
-    Store::make(&dir, description, None).unwrap();
+    Store::make(&dir, description, None, None).unwrap();
     let store = opened_on(dir, state, chain);
     store.made().unwrap();
     store
@@ -170,8 +170,8 @@ fn writes_once() {
     assert!(!store.has_open().unwrap());
     error_is(store.write(extent(1), 2 * BLOCK as u64, &[3; BLOCK]), SealedExtent(extent(1)));
     error_is(
-        store.write(ExtentId::new(BRANCH + 1, 1), 0, &[3; BLOCK]),
-        OtherBranch(ExtentId::new(BRANCH + 1, 1)),
+        store.write(ExtentId::new(BRANCH.id + 1, 1), 0, &[3; BLOCK]),
+        OtherBranch(ExtentId::new(BRANCH.id + 1, 1)),
     );
     assert!(store.write(extent(2), 1, &[3; BLOCK]).is_err(), "unaligned");
     assert_eq!(read(&store, extent(1), 0, 2 * BLOCK), [[1; BLOCK], [2; BLOCK]].concat());
@@ -253,12 +253,12 @@ fn frees_remove_files() {
     settled(&store);
     // The first segment, closed, and the next, open.
     let segments = || {
-        let count = |kind| dir.list(&of(kind, BRANCH)).unwrap().len();
+        let count = |kind| dir.list(&of(kind, BRANCH.id)).unwrap().len();
         (count("segments"), count("open-segments"))
     };
     assert_eq!(segments(), (1, 1));
-    assert_eq!(dir.list(&of("extents", BRANCH)).unwrap(), vec!["0000000000000010"]);
-    assert_eq!(dir.list(&of("open-extents", BRANCH)).unwrap(), Vec::<String>::new());
+    assert_eq!(dir.list(&of("extents", BRANCH.id)).unwrap(), vec!["0000000000000010"]);
+    assert_eq!(dir.list(&of("open-extents", BRANCH.id)).unwrap(), Vec::<String>::new());
 
     for sequence in 0..=16 {
         store.free(extent(sequence)).unwrap();
@@ -266,16 +266,16 @@ fn frees_remove_files() {
     // fxdax: not until the frees are committed, and the segment is acknowledged in the bucket,
     // the write-ahead log keeping it until then (TASK-165.9).
     assert_eq!(segments(), (1, 1));
-    assert_eq!(dir.list(&of("extents", BRANCH)).unwrap().len(), 1);
+    assert_eq!(dir.list(&of("extents", BRANCH.id)).unwrap().len(), 1);
     store.commit(None).unwrap();
     assert_eq!(segments(), (1, 1));
-    assert_eq!(dir.list(&of("extents", BRANCH)).unwrap().len(), 1);
+    assert_eq!(dir.list(&of("extents", BRANCH.id)).unwrap().len(), 1);
     error_is(store.read(extent(16), 0, &mut [0; BLOCK]), NoExtent(extent(16)));
     let closed = closed_one(&store);
     store.acknowledged(closed.number).unwrap();
     store.commit(None).unwrap();
     assert_eq!(segments(), (0, 1));
-    assert_eq!(dir.list(&of("extents", BRANCH)).unwrap(), Vec::<String>::new());
+    assert_eq!(dir.list(&of("extents", BRANCH.id)).unwrap(), Vec::<String>::new());
 }
 
 /// fxdax: a commit that fills the open segment closes it, and leaves its framing to a thread of
@@ -290,7 +290,7 @@ fn segments_close_framed_by_the_commits_flush() {
         store.write(extent(sequence), 0, &pattern(sequence as u8, 0, BLOCK)).unwrap();
     }
     store.commit_ordered(None).unwrap();
-    let count = |kind| dir.list(&of(kind, BRANCH)).unwrap().len();
+    let count = |kind| dir.list(&of(kind, BRANCH.id)).unwrap().len();
     // Closed, and the next open: its raw file stays until the commit is durable.
     assert_eq!(count("open-segments"), 2);
     let reads = || (0..17).map(|sequence| read(&store, extent(sequence), 0, BLOCK));
@@ -343,7 +343,7 @@ fn the_write_ahead_log_keeps_freed_data_until_acknowledged() {
     let blocks: Vec<_> = (1..=16).map(|sequence| (extent(sequence), BLOCK as u64)).collect();
     assert_eq!(written, blocks);
     let own = Location {
-        key: extent_key(WRITER.epoch(), writing.footer.seq, extent(17)),
+        key: extent_key(BRANCH.cell, WRITER.epoch(), writing.footer.seq, extent(17)),
         offset: 0,
         len: 32 << 10,
     };
@@ -366,8 +366,8 @@ fn the_write_ahead_log_keeps_freed_data_until_acknowledged() {
     let data = extent_frame::data(&writing.bytes().unwrap()).unwrap();
     assert_eq!(&data[2 * BLOCK..3 * BLOCK], &pattern(3, 0, BLOCK)[..]);
     store.commit(None).unwrap();
-    assert_eq!(dir.list(&of("extents", BRANCH)).unwrap().len(), 1);
-    let segments = dir.list(&of("segments", BRANCH)).unwrap().len();
+    assert_eq!(dir.list(&of("extents", BRANCH.id)).unwrap().len(), 1);
+    let segments = dir.list(&of("segments", BRANCH.id)).unwrap().len();
 
     // Acknowledged, they go.
     for closed in [writing, freeing] {
@@ -375,8 +375,8 @@ fn the_write_ahead_log_keeps_freed_data_until_acknowledged() {
     }
     assert_eq!(store.wal_bytes().unwrap(), 0);
     store.commit(None).unwrap();
-    assert_eq!(dir.list(&of("extents", BRANCH)).unwrap(), Vec::<String>::new());
-    assert!(dir.list(&of("segments", BRANCH)).unwrap().len() < segments);
+    assert_eq!(dir.list(&of("extents", BRANCH.id)).unwrap(), Vec::<String>::new());
+    assert!(dir.list(&of("segments", BRANCH.id)).unwrap().len() < segments);
 }
 
 /// fxdax: where in the bucket an extent of `len` bytes is: at `offset` in the object at `key`.
@@ -395,7 +395,7 @@ fn extents_the_bucket_holds_are_held_without_their_data() {
     let other = bucket_location("extents/0000000000000008/1.2.9", 0, BLOCK as u64);
     let mut state = extent_remote::State::new(BRANCH);
     state.extents.insert(extent(5), location.clone());
-    state.extents.insert(ExtentId::new(BRANCH + 1, 9), other);
+    state.extents.insert(ExtentId::new(BRANCH.id + 1, 9), other);
     state.next_sequence = 6;
     let check = |store: &Store<MemDir>| {
         assert_eq!(store.extent(extent(5)).unwrap(), Some((3 * BLOCK as u64, false)));
@@ -452,7 +452,7 @@ fn commits_reopen_from_their_logs() {
     // a segment opened takes a spare. The closed segments' logs went together once settled, their
     // framed files durable at last: two kept.
     let logs = || {
-        let names = dir.list(&of("logs", BRANCH)).unwrap();
+        let names = dir.list(&of("logs", BRANCH.id)).unwrap();
         let spares = names.iter().filter(|name| name.starts_with("spare-")).count();
         (names.len() - spares, spares)
     };
@@ -551,7 +551,7 @@ fn sealed_extents_are_one_run_each() {
     let places = store.places().unwrap();
     for (extent, len, place) in &places[..3] {
         let Place::Run { branch, offset, .. } = place else { panic!("{extent:?} is {place:?}") };
-        assert_eq!((*branch, offset % BLOCK as u64), (BRANCH, 0), "{extent:?} at {offset}");
+        assert_eq!((*branch, offset % BLOCK as u64), (BRANCH.id, 0), "{extent:?} at {offset}");
         assert!(*len > 0);
     }
     assert_eq!(places[3], (extent(4), (32 << 10) + BLOCK as u64, Place::Own));
@@ -581,8 +581,8 @@ fn closed_segments_hold_the_branchs_history() {
     let store = create(dir.clone(), 64 << 20);
     // Closed, and open.
     let segments = || {
-        dir.list(&of("segments", BRANCH)).unwrap().len()
-            + dir.list(&of("open-segments", BRANCH)).unwrap().len()
+        dir.list(&of("segments", BRANCH.id)).unwrap().len()
+            + dir.list(&of("open-segments", BRANCH.id)).unwrap().len()
     };
     store.write(extent(0), 0, &pattern(0, 0, BLOCK)).unwrap();
     store.commit(Some(b"one")).unwrap();
@@ -610,7 +610,7 @@ fn closed_segments_hold_the_branchs_history() {
     // A run's data is in its segment, framed, where its footer says.
     let (_, _, place) = state.3.iter().find(|(id, ..)| *id == extent(40)).unwrap();
     let Place::Run { number, offset, .. } = *place else { panic!("{place:?}") };
-    let file = dir.open(&format!("{}/{number:016x}", of("segments", BRANCH)), true).unwrap();
+    let file = dir.open(&format!("{}/{number:016x}", of("segments", BRANCH.id)), true).unwrap();
     let mut bytes = vec![0; extent_store::File::size(&file).unwrap() as usize];
     extent_store::File::read_at(&file, &mut bytes, 0).unwrap();
     let data = extent_frame::data(&bytes).unwrap();
@@ -628,7 +628,13 @@ fn closed_segments_hold_the_branchs_history() {
 
     // At a fork.
     store.write(extent(51), 0, &pattern(51, 0, BLOCK)).unwrap();
-    store.commit_fork(Child { branch: BRANCH + 1, owner: 0, point: false }).unwrap();
+    store
+        .commit_fork(Child {
+            branch: extent_remote::layout::test_branch(BRANCH.id + 1),
+            owner: 0,
+            point: false,
+        })
+        .unwrap();
     let places = store.places().unwrap();
     let (reopened, _) = reopened_state(store, &dir);
     assert_eq!(reopened.3, places);
@@ -748,13 +754,13 @@ fn segments_closed_by_commits_are_their_records_once_framed() {
         let next = format!("{:016x}", 1);
         let kept = ["open-segments", "logs"]
             .iter()
-            .any(|kind| crashed.list(&of(kind, BRANCH)).unwrap().contains(&next));
+            .any(|kind| crashed.list(&of(kind, BRANCH.id)).unwrap().contains(&next));
         let store = Store::open(crashed.clone(), OPTIONS).unwrap();
         assert_eq!(store.root().unwrap(), b"two", "seed {seed}");
         assert_eq!(read(&store, extent(1), 0, 3 * BLOCK), pattern(1, 0, 3 * BLOCK));
         assert_eq!(read(&store, extent(2), 0, BLOCK), pattern(2, 0, BLOCK));
         let open = format!("{:016x}", if kept { 2 } else { 1 });
-        assert_eq!(crashed.list(&of("open-segments", BRANCH)).unwrap(), [open], "seed {seed}");
+        assert_eq!(crashed.list(&of("open-segments", BRANCH.id)).unwrap(), [open], "seed {seed}");
     }
 }
 
@@ -850,7 +856,7 @@ fn segments_closed_between_commits_survive_failures_framing_them() {
 #[test]
 fn segments_closed_between_commits_keep_their_raw_files_until_a_commit_after_is_durable() {
     use extent_frame::segment::{Footer, tag};
-    let path = |kind| format!("{}/{:016x}", of(kind, BRANCH), 0);
+    let path = |kind| format!("{}/{:016x}", of(kind, BRANCH.id), 0);
     for seed in 0..16 {
         let dir = MemDir::serial();
         let store = create(dir.clone(), 1 << 20);
@@ -958,11 +964,11 @@ fn segments_close_for_the_writer_of_their_chain() {
     let store =
         created_on(dir.clone(), 1 << 20, state, Chain::new(BRANCH, 3, 5, Some((4, 3)), 100));
     drop(store);
-    let other = extent_remote::State::new(BRANCH + 1);
-    let opening = Opening::new(BRANCH + 1);
+    let other = extent_remote::State::new(extent_remote::layout::test_branch(BRANCH.id + 1));
+    let opening = Opening::new(extent_remote::layout::test_branch(BRANCH.id + 1));
     let refused =
         Store::recover(dir.clone()).unwrap().open(OPTIONS, Opening { state: other, ..opening });
-    assert_eq!(refused.err().unwrap().to_string(), "branch 0x7 opened as 0x8");
+    assert_eq!(refused.err().unwrap().to_string(), "branch 1/1/7 opened as 1/1/8");
     let store = opened_on(
         dir.clone(),
         extent_remote::State::new(BRANCH),
@@ -980,7 +986,7 @@ fn segments_close_for_the_writer_of_their_chain() {
     store.flush().unwrap();
     let closed = store.closed(usize::MAX).unwrap();
     let [first] = &closed[..] else { panic!("{} segments closed", closed.len()) };
-    let own = Location { key: extent_key(3, 5, extent(2)), offset: 0, len: 32 << 10 };
+    let own = Location { key: extent_key(BRANCH.cell, 3, 5, extent(2)), offset: 0, len: 32 << 10 };
     assert_eq!(
         first.footer,
         Footer {
@@ -1013,13 +1019,26 @@ fn segments_close_for_the_writer_of_their_chain() {
 
     // The next follows it; a fork's names the fork.
     store.write(extent(3), 0, &pattern(3, 0, BLOCK)).unwrap();
-    store.commit_fork(Child { branch: BRANCH + 1, owner: 0, point: false }).unwrap();
+    store
+        .commit_fork(Child {
+            branch: extent_remote::layout::test_branch(BRANCH.id + 1),
+            owner: 0,
+            point: false,
+        })
+        .unwrap();
     let closed = store.closed(usize::MAX).unwrap();
     let [second] = &closed[..] else { panic!("{} segments closed", closed.len()) };
     assert_eq!((second.footer.seq, second.footer.after), (6, Some((5, 3))));
     assert_eq!(
         (second.footer.contents.commits.clone(), second.footer.contents.forks.clone()),
-        (vec![tag(3, 2)], vec![Child { branch: BRANCH + 1, owner: 0, point: false }])
+        (
+            vec![tag(3, 2)],
+            vec![Child {
+                branch: extent_remote::layout::test_branch(BRANCH.id + 1),
+                owner: 0,
+                point: false
+            }]
+        )
     );
 
     // Freed, its extents' data goes once released, but the segment stays until uploaded.
@@ -1135,7 +1154,7 @@ fn framings_write_back_as_they_go() {
     store.close_segment().unwrap();
     store.commit(None).unwrap();
     store.closed(0).unwrap();
-    let framed = dir.open(&format!("{}/{:016x}", of("segments", BRANCH), 0), true).unwrap();
+    let framed = dir.open(&format!("{}/{:016x}", of("segments", BRANCH.id), 0), true).unwrap();
     let size = framed.size().unwrap();
     assert!(size > 8 << 20, "the framed segment holds 8 MiB of noise, not {size} bytes");
     assert_eq!(dir.io().most_unwritten, 1 << 20);
@@ -1224,7 +1243,7 @@ fn raw_files_and_logs_stay_until_their_framed_files_are_synced() {
     let (go, guard) = framing_held(&store);
     store.flush().unwrap();
     let name = format!("{:016x}", 0);
-    let held = |kind: &str| dir.list(&of(kind, BRANCH)).unwrap().contains(&name);
+    let held = |kind: &str| dir.list(&of(kind, BRANCH.id)).unwrap().contains(&name);
     assert!(held("open-segments") && held("logs"), "segment 0's raw file or log went, unframed");
     go.send(()).unwrap();
     drop(guard);
@@ -1251,7 +1270,7 @@ fn own_written_since(before: extent_store::Written) -> usize {
 
 /// fxdax: the names in the branch's directory of `kind`.
 fn names(dir: &MemDir, kind: &str) -> Vec<String> {
-    dir.list(&of(kind, BRANCH)).unwrap()
+    dir.list(&of(kind, BRANCH.id)).unwrap()
 }
 
 /// fxdax: a large extent none of whose parts compresses is framed in place: its raw file is its
@@ -1685,7 +1704,7 @@ fn framings_wait_for_no_other_framings_syncs() {
     assert_eq!(store.framing(), [0, 1], "framed, neither durable yet");
     let raw = |number: u64| {
         let name = format!("{number:016x}");
-        let held = |kind: &str| dir.list(&of(kind, BRANCH)).unwrap().contains(&name);
+        let held = |kind: &str| dir.list(&of(kind, BRANCH.id)).unwrap().contains(&name);
         held("open-segments") && held("logs")
     };
     assert!(raw(0) && raw(1), "a raw file or log went before its framed file was durable");
@@ -2037,7 +2056,7 @@ fn durable_commits_keep_the_open_segments_pages_cached_on_the_host() {
         store.write(extent(sequence), 0, &pattern(sequence as u8, 0, BLOCK)).unwrap();
         store.commit(None).unwrap();
     }
-    let path = |kind| temp.path().join(of(kind, BRANCH)).join(format!("{:016x}", 0));
+    let path = |kind| temp.path().join(of(kind, BRANCH.id)).join(format!("{:016x}", 0));
     let (written, cached) =
         ((8 * BLOCK).div_ceil(page_size()), cached_pages(&path("open-segments")));
     assert!(cached > written / 2, "{cached} of the open segment's {written} pages cached");
@@ -2069,11 +2088,11 @@ fn dead_bytes(store: &Store<MemDir>) -> u64 {
 fn segment_data(dir: &MemDir) -> Vec<u64> {
     let mut lens = Vec::new();
     for kind in ["open-segments", "segments"] {
-        for name in dir.list(&of(kind, BRANCH)).unwrap() {
+        for name in dir.list(&of(kind, BRANCH.id)).unwrap() {
             if name.starts_with("framing-") {
                 continue;
             }
-            let file = dir.open(&format!("{}/{name}", of(kind, BRANCH)), true).unwrap();
+            let file = dir.open(&format!("{}/{name}", of(kind, BRANCH.id)), true).unwrap();
             let mut bytes = vec![0; file.size().unwrap() as usize];
             file.read_at(&mut bytes, 0).unwrap();
             let data = if kind == "segments" { extent_frame::data(&bytes).unwrap() } else { bytes };
@@ -2298,7 +2317,7 @@ fn segments_hold_a_segment_and_an_extent_at_most() {
     check(&store, 0..48);
     let lens = segment_data(&dir);
     assert!(lens.iter().all(|len| *len <= SEGMENT_LIMIT), "segments of {lens:?}");
-    let own = dir.list(&of("extents", BRANCH)).unwrap();
+    let own = dir.list(&of("extents", BRANCH.id)).unwrap();
     assert_eq!(own, Vec::<String>::new(), "extents sealed in files of their own");
 
     // A commit's data in the open segment, then another 192 KiB of blocks: the segment holding it
@@ -2332,7 +2351,7 @@ fn segments_set_aside_leave_the_branch_its_footers() {
     for sequence in 0..48 {
         store.write(extent(sequence), 0, &pattern(sequence as u8, 0, BLOCK)).unwrap();
     }
-    assert_eq!(dir.list(&of("segments", BRANCH)).unwrap(), Vec::<String>::new());
+    assert_eq!(dir.list(&of("segments", BRANCH.id)).unwrap(), Vec::<String>::new());
     let state = closed_state(&store);
     assert_eq!(state.0, 1);
     assert_eq!(reopened_state(store, &dir).0, state);
@@ -2356,11 +2375,11 @@ fn rewrites_take_no_segment_past_a_segment_and_an_extent() {
     store.commit(None).unwrap();
     settled(&store);
     assert_eq!(read(&store, extent(1), 0, 2 * BLOCK), pattern(63, 0, 2 * BLOCK));
-    let place = Place::Run { branch: BRANCH, number: 4, offset: 0 };
+    let place = Place::Run { branch: BRANCH.id, number: 4, offset: 0 };
     assert_eq!(store.place(extent(1)).unwrap(), Some(place));
     let segments: Vec<String> = (0..4).map(|number| format!("{number:016x}")).collect();
-    assert_eq!(dir.list(&of("open-segments", BRANCH)).unwrap(), ["0000000000000004"]);
-    assert_eq!(dir.list(&of("segments", BRANCH)).unwrap(), segments);
+    assert_eq!(dir.list(&of("open-segments", BRANCH.id)).unwrap(), ["0000000000000004"]);
+    assert_eq!(dir.list(&of("segments", BRANCH.id)).unwrap(), segments);
     for closed in store.closed(usize::MAX).unwrap() {
         let data = extent_frame::data(&closed.bytes().unwrap()).unwrap();
         assert_eq!(data.len(), 0, "segment {}, no extent's data in it, framed", closed.number);
@@ -2536,8 +2555,8 @@ fn dead_space_the_uploader_lets_go_takes_none_of_the_room() {
 fn data_files(dir: &MemDir) -> u64 {
     let mut bytes = 0;
     for kind in ["segments", "open-segments", "extents", "open-extents"] {
-        for name in dir.list(&of(kind, BRANCH)).unwrap() {
-            let file = dir.open(&format!("{}/{name}", of(kind, BRANCH)), true).unwrap();
+        for name in dir.list(&of(kind, BRANCH.id)).unwrap() {
+            let file = dir.open(&format!("{}/{name}", of(kind, BRANCH.id)), true).unwrap();
             bytes += file.size().unwrap();
         }
     }
@@ -2665,7 +2684,7 @@ fn segments_no_branch_holds_go_as_branches_open() {
     drop(store);
     let store = Store::open(dir.clone(), SMALL_SEGMENTS).unwrap();
     assert_eq!(store.extents().unwrap(), [(extent(1), BLOCK as u64)]);
-    let segments = dir.list(&of("segments", BRANCH)).unwrap();
+    let segments = dir.list(&of("segments", BRANCH.id)).unwrap();
     assert_eq!(segments, ["0000000000000000"]);
     assert_eq!(read(&store, extent(1), 0, BLOCK), pattern(1, 0, BLOCK));
 }
@@ -2740,8 +2759,8 @@ fn writes_finishing_after_their_extents_free_are_dropped() {
     store.commit(None).unwrap();
     let store = reopened(store, &dir);
     assert_eq!(store.extents().unwrap(), []);
-    assert_eq!(dir.list(&of("open-extents", BRANCH)).unwrap(), Vec::<String>::new());
-    assert_eq!(dir.list(&of("extents", BRANCH)).unwrap(), Vec::<String>::new());
+    assert_eq!(dir.list(&of("open-extents", BRANCH.id)).unwrap(), Vec::<String>::new());
+    assert_eq!(dir.list(&of("extents", BRANCH.id)).unwrap(), Vec::<String>::new());
 }
 
 /// Extents freed while open, and written anew, are held by the commit that seals them: the footer
@@ -2789,7 +2808,7 @@ fn abandoned_writes_leave_no_raw_files() {
     let store = create(dir.clone(), 1 << 20);
     drop(store.begin_write(extent(1), 0, 40 << 10).unwrap());
     store.commit(None).unwrap();
-    assert_eq!(dir.list(&of("open-extents", BRANCH)).unwrap(), Vec::<String>::new());
+    assert_eq!(dir.list(&of("open-extents", BRANCH.id)).unwrap(), Vec::<String>::new());
     store.write(extent(1), 0, &pattern(1, 0, 40 << 10)).unwrap();
     store.commit(None).unwrap();
     assert_eq!(read(&store, extent(1), 0, 40 << 10), pattern(1, 0, 40 << 10));
@@ -2804,7 +2823,7 @@ fn abandoned_writes_leave_no_raw_files_to_writes_before_the_flush() {
     let store = create(dir.clone(), 1 << 20);
     drop(store.begin_write(extent(1), 0, 40 << 10).unwrap());
     store.commit_ordered(None).unwrap();
-    assert_eq!(dir.list(&of("open-extents", BRANCH)).unwrap(), Vec::<String>::new());
+    assert_eq!(dir.list(&of("open-extents", BRANCH.id)).unwrap(), Vec::<String>::new());
     store.write(extent(1), 0, &pattern(1, 0, 40 << 10)).unwrap();
     store.commit(None).unwrap();
     assert!(read(&store, extent(1), 0, 40 << 10) == pattern(1, 0, 40 << 10), "other data");
@@ -2827,7 +2846,7 @@ fn large_extents_freed_open_are_written_anew_at_once() {
     assert_eq!(store.place(extent(1)).unwrap(), Some(Place::Own));
     let store = reopened(store, &dir);
     assert!(read(&store, extent(1), 0, 40 << 10) == pattern(2, 0, 40 << 10), "other data");
-    assert_eq!(dir.list(&of("open-extents", BRANCH)).unwrap(), Vec::<String>::new());
+    assert_eq!(dir.list(&of("open-extents", BRANCH.id)).unwrap(), Vec::<String>::new());
 }
 
 /// A write in flight to a large extent freed meanwhile, which the extent's next write placed in a
@@ -2861,7 +2880,7 @@ fn branches_opened_again_after_a_failure_leave_no_raw_files() {
     dir.fail_after(None);
     drop(store);
     let store = Store::open(dir.clone(), OPTIONS).unwrap();
-    assert_eq!(dir.list(&of("open-extents", BRANCH)).unwrap(), Vec::<String>::new());
+    assert_eq!(dir.list(&of("open-extents", BRANCH.id)).unwrap(), Vec::<String>::new());
     store.write(extent(1), 0, &pattern(2, 0, 40 << 10)).unwrap();
     store.commit(None).unwrap();
     assert_eq!(read(&store, extent(1), 0, 40 << 10), pattern(2, 0, 40 << 10));
@@ -2995,7 +3014,7 @@ fn places_of_extents() {
     store.write(extent(6), BLOCK as u64, &[6; BLOCK]).unwrap();
     assert_eq!(
         store.place(extent(1)).unwrap(),
-        Some(Place::Run { branch: BRANCH, number: 0, offset: 0 })
+        Some(Place::Run { branch: BRANCH.id, number: 0, offset: 0 })
     );
     assert_eq!(store.place(extent(2)).unwrap(), Some(Place::Pieces));
     // Not from its start.
@@ -3004,7 +3023,7 @@ fn places_of_extents() {
     assert_eq!(store.place(extent(5)).unwrap(), None);
     assert_eq!(
         store.place(extent(6)).unwrap(),
-        Some(Place::Run { branch: BRANCH, number: 0, offset: 5 * BLOCK as u64 })
+        Some(Place::Run { branch: BRANCH.id, number: 0, offset: 5 * BLOCK as u64 })
     );
 }
 
@@ -3077,7 +3096,7 @@ fn files_freed_between_commits_go_across_closings() {
     // Nothing committed since: nothing to close.
     assert!(!store.close_now().unwrap());
     store.commit(None).unwrap();
-    assert_eq!(dir.list(&of("open-extents", BRANCH)).unwrap(), Vec::<String>::new());
+    assert_eq!(dir.list(&of("open-extents", BRANCH.id)).unwrap(), Vec::<String>::new());
 }
 
 /// A commit lists an extent it wrote in two writes once, at its length: its segment's footer names
@@ -3103,11 +3122,31 @@ fn forks_give_their_commits_epoch() {
     let store = create(MemDir::new(), 1 << 20);
     store.write(extent(1), 0, &[1; BLOCK]).unwrap();
     store.commit(None).unwrap();
-    let forked = Child { branch: BRANCH + 1, owner: 0, point: false };
+    let forked =
+        Child { branch: extent_remote::layout::test_branch(BRANCH.id + 1), owner: 0, point: false };
     assert_eq!(store.commit_fork(forked).unwrap(), 2);
     assert_eq!(store.epoch().unwrap(), 2);
     let forking = closed_one(&store);
     assert_eq!((forking.last(), forking.footer.contents.forks.clone()), (2, vec![forked]));
+}
+
+/// fxdax: a fork's child in another cell takes no ID of a branch its parent holds extents of, its
+/// parent's own among them: an extent's ID names its branch by the ID alone (TASK-364). It is
+/// refused before anything is committed.
+#[test]
+fn forks_take_no_id_of_their_lineage() {
+    let store = create(MemDir::new(), 1 << 20);
+    store.write(extent(1), 0, &[1; BLOCK]).unwrap();
+    store.commit(None).unwrap();
+    let elsewhere = extent_remote::layout::Cell { tenant: 9, id: 9 };
+    let child = extent_remote::layout::Branch { cell: elsewhere, id: BRANCH.id };
+    let forked = Child { branch: child, owner: 0, point: false };
+    let refused = store.commit_fork(forked).unwrap_err();
+    assert_eq!(refused.downcast_ref(), Some(&extent_store::Inherited(child)));
+    assert_eq!(store.epoch().unwrap(), 1);
+    let other =
+        Child { branch: extent_remote::layout::Branch { id: BRANCH.id + 1, ..child }, ..forked };
+    assert_eq!(store.commit_fork(other).unwrap(), 2);
 }
 
 /// With segments closing as soon as they are old, an empty one closes not: a commit that wrote
@@ -3161,7 +3200,7 @@ fn extents_written_in_runs_seal_where_they_are() {
     let sealed = dir.io();
     assert_eq!((sealed.read - before.read, sealed.written - before.written), (0, 0));
     let runs = [(1, 0), (2, MIB as u64)].map(|(sequence, offset)| {
-        (extent(sequence), MIB as u64, Place::Run { branch: BRANCH, number: 0, offset })
+        (extent(sequence), MIB as u64, Place::Run { branch: BRANCH.id, number: 0, offset })
     });
     assert_eq!(store.places().unwrap(), runs);
     store.flush().unwrap();
@@ -3183,7 +3222,7 @@ fn extents_larger_than_a_framing_chunk_seal_whole() {
     store.commit(None).unwrap();
     assert_eq!(store.usage().unwrap().own_bytes, data.len() as u64);
     // Its file frames its data, no more.
-    let file = dir.open(&format!("{}/{:016x}", of("extents", BRANCH), 1), true).unwrap();
+    let file = dir.open(&format!("{}/{:016x}", of("extents", BRANCH.id), 1), true).unwrap();
     let mut framed = vec![0; file.size().unwrap() as usize];
     file.read_at(&mut framed, 0).unwrap();
     assert_eq!(extent_frame::data(&framed).unwrap().len(), data.len());
@@ -3335,7 +3374,7 @@ fn parts_read_again_are_unpacked_once() {
 /// and opened again (TASK-49).
 #[test]
 fn stores_tell_their_own_bytes_from_those_inherited() {
-    let parent = BRANCH + 1;
+    let parent = BRANCH.id + 1;
     let dir = MemDir::new();
     let mut state = extent_remote::State::new(BRANCH);
     for (sequence, blocks) in [(1, 2), (2, 3)] {
@@ -3403,7 +3442,7 @@ fn stores_elsewhere_than_the_hosts_cache_are_refused() {
     let cache_dir = cache.dir().to_owned();
     let dir = HostDir::new(temp.path(), true).unwrap();
     let description = Description { block_size: BLOCK as u32, capacity: 1 << 20, branch: BRANCH };
-    Store::make(&dir, description, None).unwrap();
+    Store::make(&dir, description, None, None).unwrap();
     let opening = Opening { cache: Some(cache), ..Opening::new(BRANCH) };
     let refused = Store::recover_unmade(dir).unwrap().open(OPTIONS, opening).err().unwrap();
     assert_eq!(

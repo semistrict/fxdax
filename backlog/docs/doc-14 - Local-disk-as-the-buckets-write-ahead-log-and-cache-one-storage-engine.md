@@ -65,7 +65,7 @@ Per store directory (one branch, `<b>` its ID; `extent_store::layout`):
 
 | Path | What | Lives until |
 |---|---|---|
-| `store` | the description (`layout::FORMAT`, local format 8): block size, the branch, the bucket's URL, the placement's fencing token, the capacity a store takes before a commit of its branch sets one | the store is deleted |
+| `store` | the description (`layout::FORMAT`, local format 11): block size, the branch, as `TENANT/CELL/ID` (TASK-364), the bucket's URL, the placement's fencing token, the capacity a store takes before a commit of its branch sets one, and the volume of its cell it is, by name and kind (`volume`, `kind`), which its opening adds to the cell | the store is deleted |
 | `unmade` | a marker `Store::make` writes before anything else, which its maker removes once the store is whole; opening refuses a store holding it (TASK-196) | the store is whole |
 | `open-segments/<b>/<n>` | the open segment's data, raw: pieces of open extents and the runs commits sealed | it closes and its framed file is synced |
 | `logs/<b>/<n>` | the commits made in it: one record per commit (its `Contents`, below), each hashed, appended and synced by the flush that makes the commit durable, whether the segment is open or being framed | as above |

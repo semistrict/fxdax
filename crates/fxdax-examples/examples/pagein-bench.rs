@@ -63,14 +63,14 @@ fn round(mib: u64, mask: u8) -> (f64, f64) {
     let dir = tempfile::tempdir().unwrap();
     let store = ExtentStore::create(dir.path().join("store"), 2 * extents * len).unwrap();
     for sequence in 1..=extents {
-        let extent = ExtentId { branch: store.branch(), sequence };
+        let extent = ExtentId { branch: store.branch().id, sequence };
         let bytes = data(sequence, len as usize, mask);
         store.write(extent, 0, &[VolatileSlice::from(&bytes[..])]).unwrap();
     }
     let window = store.create_dax_window(extents * len, None).unwrap();
     store.commit(None).unwrap();
     for sequence in 1..=extents {
-        let extent = ExtentId { branch: store.branch(), sequence };
+        let extent = ExtentId { branch: store.branch().id, sequence };
         store.map(extent, 0, len, (sequence - 1) * len).unwrap();
     }
     let (start, cpu) = (Instant::now(), cpu_micros());

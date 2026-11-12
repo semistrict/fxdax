@@ -12,7 +12,7 @@ use std::time::Duration;
 use storage_device::{ExtentId, NoExtent};
 
 const BLOCK: usize = 4096;
-const BRANCH: u64 = 7;
+const BRANCH: extent_remote::layout::Branch = extent_remote::layout::test_branch(7);
 
 /// Small segments and large extents, so that tests make several of each.
 const OPTIONS: Options = Options {
@@ -27,7 +27,7 @@ const OPTIONS: Options = Options {
 };
 
 fn extent(sequence: u64) -> ExtentId {
-    ExtentId::new(BRANCH, sequence)
+    ExtentId::new(BRANCH.id, sequence)
 }
 
 /// `blocks` blocks of bytes each their offset modulo 251, plus `seed`.
@@ -95,7 +95,7 @@ fn views_read_frees_acknowledged_in_the_bucket() {
     store.flush().unwrap();
     let closed = store.closed(usize::MAX).unwrap();
     let keys: Vec<String> = (closed.iter())
-        .map(|closed| format!("segments/{:016x}/{:016x}", closed.footer.branch, closed.footer.seq))
+        .map(|closed| extent_remote::layout::segment(closed.footer.branch, closed.footer.seq))
         .collect();
     for closed in &closed {
         store.acknowledged(closed.number).unwrap();

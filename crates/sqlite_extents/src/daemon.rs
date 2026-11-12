@@ -29,10 +29,13 @@ pub fn open(
     window: u64,
     options: Options,
 ) -> Result<Arc<Volume>, Error> {
-    let store =
-        RemoteExtentStore::connect(socket, store, capacity).map_err(Error::new).with_context(
-            || format!("opening {} on the daemon at {}", store.display(), socket.display()),
-        )?;
+    // A SQLite volume of its cell, if the daemon makes it (TASK-364): one the FUSE mounts of its
+    // cell leave be, as no filesystem's.
+    let opened = fxdax::DaemonConnection::connect(socket)
+        .and_then(|daemon| daemon.open_sqlite(store, capacity));
+    let store = opened.map_err(Error::new).with_context(|| {
+        format!("opening {} on the daemon at {}", store.display(), socket.display())
+    })?;
     let store = Arc::new(store);
     let window = DaemonWindow::new(store.clone(), window)?;
     let device = DeviceHolder::new(RemoteDevice::new(store)?);

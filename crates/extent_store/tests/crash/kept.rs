@@ -269,7 +269,7 @@ const DESCRIPTION: Description =
 /// in a random workload, as `rng` says, as its file system fails from a random point on.
 fn crashed(host: &Host, round: u64, rng: &mut StdRng, interval: Duration) -> Crashed {
     let dir = MemDir::new();
-    Store::make(&dir, DESCRIPTION, Some(URL)).unwrap();
+    Store::make(&dir, DESCRIPTION, Some(URL), None).unwrap();
     let (store, remote) =
         host.open(Store::recover_unmade(dir.clone()).unwrap(), 1, interval).unwrap();
     store.made().unwrap();
@@ -351,7 +351,7 @@ pub fn kept(round: u64) -> Kept {
 
     // Its disk lost, a store of the branch's on another host takes it from the bucket.
     let elsewhere = MemDir::new();
-    Store::make(&elsewhere, DESCRIPTION, Some(URL)).unwrap();
+    Store::make(&elsewhere, DESCRIPTION, Some(URL), None).unwrap();
     let recovering = Store::recover_unmade(elsewhere).unwrap();
     let (taken, remote) = host.open(recovering, 2, interval).unwrap();
     taken.made().unwrap();

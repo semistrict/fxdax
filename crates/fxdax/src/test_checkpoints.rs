@@ -14,7 +14,7 @@ use extent_remote::store::Store as Bucket;
 use std::time::{Duration, Instant};
 
 /// The newest checkpoint of `branch` that `bucket` lists, by its sequence number.
-pub(crate) fn newest(bucket: &Bucket, branch: u64) -> Option<u64> {
+pub(crate) fn newest(bucket: &Bucket, branch: crate::Branch) -> Option<u64> {
     let prefix = extent_remote::layout::checkpoints(branch);
     let listed = futures::executor::block_on(extent_remote::Bucket::list(bucket, &prefix));
     (listed.unwrap().iter())
@@ -31,7 +31,7 @@ pub(crate) fn after(store: &ExtentStore, bucket: &Bucket, commits: impl FnOnce()
     while newest(bucket, store.branch()) <= before {
         assert!(
             Instant::now() < deadline,
-            "branch {:x}'s writer checkpointed nothing past {before:?} within 60 s",
+            "branch {}'s writer checkpointed nothing past {before:?} within 60 s",
             store.branch()
         );
         std::thread::sleep(Duration::from_millis(10));

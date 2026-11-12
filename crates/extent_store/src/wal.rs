@@ -58,7 +58,7 @@ use crate::layout::{
 };
 use crate::segments::{fold, footer_last, segment_footer};
 use anyhow::{Context as _, Error};
-use extent_frame::segment::{Chain, Contents, Footer, epoch_of, writer_of};
+use extent_frame::segment::{Branch, Chain, Contents, Footer, epoch_of, writer_of};
 use extent_remote::wal::Fenced;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -351,16 +351,16 @@ pub(crate) struct Recovered {
 /// is whole, in order, and each whose framed file is not that its log closes again, holding
 /// commits, to the last durable commit; and nothing else of segments: raw data, logs and framed
 /// files torn, closed again or holding nothing durable, go.
-pub(crate) fn recover<D: Dir>(dir: &D, branch: u64) -> Result<Recovered, Error> {
+pub(crate) fn recover<D: Dir>(dir: &D, branch: Branch) -> Result<Recovered, Error> {
     let (base_file, base) = BaseFile::read(dir)?;
     let listed = |kind| -> Result<BTreeSet<u64>, Error> {
-        Ok(list_numbers(dir, &branch_dir(kind, branch))?.into_iter().collect())
+        Ok(list_numbers(dir, &branch_dir(kind, branch.id))?.into_iter().collect())
     };
     // fxdax: framed files a crash stopped being made durable, named their own: their segments are
     // closed again from their raw files and logs, which stay until they are (TASK-310).
-    for name in dir.list(&branch_dir(SEGMENTS, branch))? {
+    for name in dir.list(&branch_dir(SEGMENTS, branch.id))? {
         if name.starts_with(FRAMING) {
-            remove(dir, &format!("{}/{name}", branch_dir(SEGMENTS, branch)))?;
+            remove(dir, &format!("{}/{name}", branch_dir(SEGMENTS, branch.id)))?;
         }
     }
     let (framed, raw, logs) = (listed(SEGMENTS)?, listed(OPEN_SEGMENTS)?, listed(LOGS)?);
@@ -370,8 +370,8 @@ pub(crate) fn recover<D: Dir>(dir: &D, branch: u64) -> Result<Recovered, Error> 
     // log go.
     let settled = |number| -> Result<(), Error> {
         if left(number) {
-            let segment = SegmentId { branch, number };
-            dir.sync_dir(&branch_dir(SEGMENTS, branch))?;
+            let segment = SegmentId { branch: branch.id, number };
+            dir.sync_dir(&branch_dir(SEGMENTS, branch.id))?;
             dir.barrier()?;
             remove(dir, &open_segment_path(segment))?;
             remove(dir, &log_path(segment))?;
@@ -389,10 +389,10 @@ pub(crate) fn recover<D: Dir>(dir: &D, branch: u64) -> Result<Recovered, Error> 
     // log's, as its framing was before they went: a framed file a crash kept without them, which
     // the next recovery takes as framed whole, unchecked, is whole (TASK-318).
     let gone = |number| -> Result<(), Error> {
-        let segment = SegmentId { branch, number };
+        let segment = SegmentId { branch: branch.id, number };
         remove(dir, &segment_path(segment))?;
         if framed.contains(&number) && left(number) {
-            dir.sync_dir(&branch_dir(SEGMENTS, branch))?;
+            dir.sync_dir(&branch_dir(SEGMENTS, branch.id))?;
             dir.barrier()?;
         }
         remove(dir, &open_segment_path(segment))?;
@@ -422,7 +422,7 @@ pub(crate) fn recover<D: Dir>(dir: &D, branch: u64) -> Result<Recovered, Error> 
     let mut ending = BTreeSet::new();
     let mut past_base = base.is_none();
     for number in numbers {
-        let segment = SegmentId { branch, number };
+        let segment = SegmentId { branch: branch.id, number };
         let again = broken && raw.contains(&number) && logs.contains(&number);
         let footer = match framed.contains(&number) && !again {
             true => whole_footer(dir, segment, left(number))?,
@@ -488,7 +488,7 @@ pub(crate) fn recover<D: Dir>(dir: &D, branch: u64) -> Result<Recovered, Error> 
     let mut segments: Vec<(Footer, u64)> = Vec::new();
     for (at, (number, found_here)) in found.iter().enumerate() {
         let number = *number;
-        let segment = SegmentId { branch, number };
+        let segment = SegmentId { branch: branch.id, number };
         let continues = |record: &Contents| record.continued.is_some();
         // fxdax: those from `from` on go, durably, before any is closed again: those after it
         // first, then it, whose files say why they go, a log refusing a record or a commit past
@@ -497,7 +497,7 @@ pub(crate) fn recover<D: Dir>(dir: &D, branch: u64) -> Result<Recovered, Error> 
         let cut = |from: usize| -> Result<(), Error> {
             let synced = || -> Result<(), Error> {
                 for kind in [SEGMENTS, OPEN_SEGMENTS, LOGS] {
-                    dir.sync_dir(&branch_dir(kind, branch))?;
+                    dir.sync_dir(&branch_dir(kind, branch.id))?;
                 }
                 dir.barrier().map_err(Error::from)
             };
@@ -573,7 +573,7 @@ pub(crate) fn recover<D: Dir>(dir: &D, branch: u64) -> Result<Recovered, Error> 
             remove(dir, &segment_path(segment))?;
         }
         let previous = segments.last().map(|(footer, _)| footer);
-        let footer = close_again(dir, segment, previous, &records, &data)?;
+        let footer = close_again(dir, branch, segment, previous, &records, &data)?;
         settled(number)?;
         segments.push((footer, number));
         if !whole {
@@ -585,7 +585,7 @@ pub(crate) fn recover<D: Dir>(dir: &D, branch: u64) -> Result<Recovered, Error> 
     let (gone, segments): (Vec<_>, Vec<_>) =
         segments.into_iter().partition(|(footer, _)| acknowledged(footer));
     for (footer, number) in gone {
-        remove(dir, &segment_path(SegmentId { branch, number }))?;
+        remove(dir, &segment_path(SegmentId { branch: branch.id, number }))?;
         for (extent, _) in footer.own() {
             remove(dir, &extent_path(extent))?;
         }
@@ -687,10 +687,11 @@ fn log_records<D: Dir>(
 
 /// Closes `segment` again, left open, or framed part way, from its raw data, `data`, and the
 /// records of its log that are whole, which hold a commit at least: framed with a footer of their
-/// contents folded, stamped provisionally, after `last`, the footer before it, if any, and made
-/// durable. Returns its footer.
+/// contents folded, stamped provisionally as `branch`'s, after `last`, the footer before it, if
+/// any, and made durable. Returns its footer.
 fn close_again<D: Dir>(
     dir: &D,
+    branch: Branch,
     segment: SegmentId,
     last: Option<&Footer>,
     records: &[Contents],
@@ -701,9 +702,9 @@ fn close_again<D: Dir>(
     let mut chain = match last {
         Some(last) => {
             let after = Some((last.seq, last.epoch));
-            Chain::new(segment.branch, last.epoch, last.seq + 1, after, last.contents.next_sequence)
+            Chain::new(branch, last.epoch, last.seq + 1, after, last.contents.next_sequence)
         }
-        None => Chain::new(segment.branch, writer_of(first), 0, None, 0),
+        None => Chain::new(branch, writer_of(first), 0, None, 0),
     };
     let footer = chain.close(fold(segment.branch, records));
     let path = segment_path(segment);
@@ -880,17 +881,17 @@ mod tests {
     use extent_frame::segment::{Continued, tag};
     use storage_device::ExtentId;
 
-    const BRANCH: u64 = 7;
+    const BRANCH: extent_remote::layout::Branch = extent_remote::layout::test_branch(7);
 
     fn segment(number: u64) -> SegmentId {
-        SegmentId { branch: BRANCH, number }
+        SegmentId { branch: BRANCH.id, number }
     }
 
     /// A commit of epoch `epoch`, sealing `extent` at `offset`, of a block.
     fn commit(epoch: u64, extent: u64, offset: u64) -> Contents {
         Contents {
             commits: vec![tag(2, epoch)],
-            extents: vec![(ExtentId::new(BRANCH, extent), offset, 4096)],
+            extents: vec![(ExtentId::new(BRANCH.id, extent), offset, 4096)],
             next_sequence: extent + 1,
             ..Contents::default()
         }
@@ -920,7 +921,7 @@ mod tests {
     }
 
     fn files(dir: &MemDir, kind: &'static str) -> Vec<u64> {
-        list_numbers(dir, &branch_dir(kind, BRANCH)).unwrap()
+        list_numbers(dir, &branch_dir(kind, BRANCH.id)).unwrap()
     }
 
     /// The base is the last written, whole: a writing torn leaves the one before; none before the
@@ -946,7 +947,7 @@ mod tests {
     #[test]
     fn segments_left_open_close_again_from_their_logs() {
         let dir = MemDir::new();
-        create_branch_dirs(&dir, BRANCH).unwrap();
+        create_branch_dirs(&dir, BRANCH.id).unwrap();
         left_open(&dir, 3, 2, &[commit(5, 10, 0), commit(6, 11, 4096)]);
         // A torn record after them.
         let log = dir.open(&log_path(segment(3)), false).unwrap();
@@ -958,7 +959,7 @@ mod tests {
         };
         assert_eq!(footer.contents.commits, [tag(2, 6)]);
         let extents =
-            [(ExtentId::new(BRANCH, 10), 0, 4096), (ExtentId::new(BRANCH, 11), 4096, 4096)];
+            [(ExtentId::new(BRANCH.id, 10), 0, 4096), (ExtentId::new(BRANCH.id, 11), 4096, 4096)];
         assert_eq!(footer.contents.extents, extents);
         assert_eq!((footer.contents.next_sequence, recovered.next), (12, 5));
         assert_eq!(files(&dir, SEGMENTS), [3]);
@@ -975,7 +976,7 @@ mod tests {
     #[test]
     fn segments_framed_part_way_close_again() {
         let dir = MemDir::new();
-        create_branch_dirs(&dir, BRANCH).unwrap();
+        create_branch_dirs(&dir, BRANCH.id).unwrap();
         left_open(&dir, 0, 1, &[commit(1, 1, 0)]);
         let footer = recover(&dir, BRANCH).unwrap().segments.remove(0).0;
         // Framed whole, its raw data and log still there.
@@ -998,7 +999,7 @@ mod tests {
     #[test]
     fn segments_acknowledged_brought_back_are_no_logs() {
         let dir = MemDir::new();
-        create_branch_dirs(&dir, BRANCH).unwrap();
+        create_branch_dirs(&dir, BRANCH.id).unwrap();
         left_open(&dir, 0, 1, &[commit(1, 1, 0)]);
         recover(&dir, BRANCH).unwrap();
         left_open(&dir, 1, 1, &[commit(2, 2, 0)]);
@@ -1022,7 +1023,7 @@ mod tests {
     #[test]
     fn segments_holding_nothing_go_framed_files_first() {
         let dir = MemDir::new();
-        create_branch_dirs(&dir, BRANCH).unwrap();
+        create_branch_dirs(&dir, BRANCH.id).unwrap();
         left_open(&dir, 0, 1, &[commit(1, 1, 0)]);
         left_open(&dir, 1, 1, &[commit(2, 2, 0)]);
         let framed = recover(&dir, BRANCH).unwrap().segments;
@@ -1034,12 +1035,12 @@ mod tests {
         torn.sync().unwrap();
         left_open(&dir, 1, 1, &[]);
         for kind in [SEGMENTS, OPEN_SEGMENTS, LOGS] {
-            dir.sync_dir(&branch_dir(kind, BRANCH)).unwrap();
+            dir.sync_dir(&branch_dir(kind, BRANCH.id)).unwrap();
         }
         assert_eq!(recover(&dir, BRANCH).unwrap().segments, framed[..1]);
         // The opening makes its next open segment, whose raw data and log it makes durable.
         for kind in [OPEN_SEGMENTS, LOGS] {
-            dir.sync_dir(&branch_dir(kind, BRANCH)).unwrap();
+            dir.sync_dir(&branch_dir(kind, BRANCH.id)).unwrap();
         }
         for seed in 0..64 {
             let recovered = recover(&dir.crash(seed), BRANCH).unwrap();
@@ -1050,7 +1051,7 @@ mod tests {
     /// fxdax: the record of commit `epoch` going on past its segment, sealing `extent` there at
     /// `offset`, of a block: a commit spanning segments (TASK-92.41).
     fn continuing(epoch: u64, extent: u64, offset: u64) -> Contents {
-        let extents = vec![(ExtentId::new(BRANCH, extent), offset, 4096)];
+        let extents = vec![(ExtentId::new(BRANCH.id, extent), offset, 4096)];
         let continued = Some(extent_frame::segment::Continued { commit: tag(2, epoch), extents });
         Contents { continued, ..Contents::default() }
     }
@@ -1062,7 +1063,7 @@ mod tests {
     #[test]
     fn commits_spanning_segments_are_kept_whole_or_not_at_all() {
         let ended = |dir: &MemDir| {
-            create_branch_dirs(dir, BRANCH).unwrap();
+            create_branch_dirs(dir, BRANCH.id).unwrap();
             left_open(dir, 0, 2, &[commit(1, 1, 0), continuing(2, 2, 4096)]);
             left_open(dir, 1, 1, &[continuing(2, 3, 0)]);
         };
@@ -1112,7 +1113,7 @@ mod tests {
     #[test]
     fn segments_going_on_with_acknowledged_commits_go() {
         let dir = MemDir::new();
-        create_branch_dirs(&dir, BRANCH).unwrap();
+        create_branch_dirs(&dir, BRANCH.id).unwrap();
         left_open(&dir, 0, 2, &[commit(1, 1, 0), continuing(2, 2, 4096)]);
         left_open(&dir, 1, 1, &[commit(2, 3, 0)]);
         assert_eq!(recover(&dir, BRANCH).unwrap().segments.len(), 2);
@@ -1131,7 +1132,7 @@ mod tests {
     /// commits' records to the logs of the segments they were made in, being framed or open, so
     /// that each segment left torn closes again (TASK-165.9).
     fn framed_three(dir: &MemDir) -> Vec<(Footer, u64)> {
-        create_branch_dirs(dir, BRANCH).unwrap();
+        create_branch_dirs(dir, BRANCH.id).unwrap();
         left_open(dir, 0, 1, &[commit(1, 1, 0), commit(2, 2, 0)]);
         left_open(dir, 1, 1, &[commit(3, 3, 0)]);
         left_open(dir, 2, 1, &[commit(4, 4, 0)]);
@@ -1219,7 +1220,7 @@ mod tests {
         let continued = Contents {
             continued: Some(Continued {
                 commit: tag(2, 5),
-                extents: vec![(ExtentId::new(BRANCH, 5), 0, 4096)],
+                extents: vec![(ExtentId::new(BRANCH.id, 5), 0, 4096)],
             }),
             ..Contents::default()
         };

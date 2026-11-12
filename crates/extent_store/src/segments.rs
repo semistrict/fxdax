@@ -1539,17 +1539,17 @@ mod tests {
     use crate::{MemDir, MemFile};
 
     const BLOCK: u64 = 4096;
-    const BRANCH: u64 = 7;
+    const BRANCH: extent_remote::layout::Branch = extent_remote::layout::test_branch(7);
 
     fn segment(number: u64) -> SegmentId {
-        SegmentId { branch: BRANCH, number }
+        SegmentId { branch: BRANCH.id, number }
     }
 
     /// The segments of a branch with none closed, `open_files` of whose files stay open.
     fn opened(dir: &MemDir, open_files: usize) -> Segments<MemFile> {
-        create_branch_dirs(dir, BRANCH).unwrap();
+        create_branch_dirs(dir, BRANCH.id).unwrap();
         let chain = Chain::new(BRANCH, 0, 0, None, 0);
-        Segments::open(dir, (BRANCH, BTreeMap::new()), (0, 0, chain), open_files).unwrap()
+        Segments::open(dir, (BRANCH.id, BTreeMap::new()), (0, 0, chain), open_files).unwrap()
     }
 
     /// `len` bytes that don't compress, of `seed`'s.
@@ -1592,7 +1592,7 @@ mod tests {
     fn framed_durably(dir: &MemDir, unframed: Unframed<MemFile>) -> Arc<Framed<MemFile>> {
         let number = unframed.number();
         let framed = unframed.frame(dir).unwrap();
-        make_durable(dir, BRANCH, (&[(number, framed.clone())], false), Instant::now()).unwrap();
+        make_durable(dir, BRANCH.id, (&[(number, framed.clone())], false), Instant::now()).unwrap();
         framed
     }
 
@@ -1674,9 +1674,9 @@ mod tests {
     fn footers_chain_from_their_writers_chain() {
         use extent_frame::segment::tag;
         let dir = MemDir::new();
-        create_branch_dirs(&dir, BRANCH).unwrap();
+        create_branch_dirs(&dir, BRANCH.id).unwrap();
         let chain = Chain::new(BRANCH, 3, 5, Some((4, 3)), 100);
-        let segments = Segments::open(&dir, (BRANCH, BTreeMap::new()), (0, 2, chain), 64);
+        let segments = Segments::open(&dir, (BRANCH.id, BTreeMap::new()), (0, 2, chain), 64);
         let mut segments = segments.unwrap();
         assert_eq!(segments.open_segment(), segment(2));
         let close = |segments: &mut Segments<MemFile>, epoch| {
@@ -1744,7 +1744,7 @@ mod tests {
         use extent_frame::segment::tag;
         let dir = MemDir::new();
         let mut segments = opened(&dir, 64);
-        let (first, second) = (ExtentId::new(BRANCH, 1), ExtentId::new(BRANCH, 2));
+        let (first, second) = (ExtentId::new(BRANCH.id, 1), ExtentId::new(BRANCH.id, 2));
         let mut extents = Extents::new();
         let mut commit = |segments: &mut Segments<MemFile>, epoch, extent, piece: Piece| {
             let data = Data::Pieces(vec![piece]);
@@ -1836,7 +1836,7 @@ mod tests {
         assert_eq!(syncs(&mut segments), ((0, 0), vec![]));
         write(&mut segments, 2);
         segments.close(&dir, 1, 0).unwrap();
-        let dirs = vec![branch_dir(LOGS, BRANCH), branch_dir(OPEN_SEGMENTS, BRANCH)];
+        let dirs = vec![branch_dir(LOGS, BRANCH.id), branch_dir(OPEN_SEGMENTS, BRANCH.id)];
         assert_eq!(syncs(&mut segments), ((0, 1), dirs));
         segments.append(BLOCK);
         assert_eq!(syncs(&mut segments), ((0, 1), vec![]));

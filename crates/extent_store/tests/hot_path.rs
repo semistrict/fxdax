@@ -13,14 +13,14 @@ use std::time::Instant;
 use storage_device::ExtentId;
 
 const BLOCK: usize = 4096;
-const BRANCH: u64 = 7;
+const BRANCH: extent_remote::layout::Branch = extent_remote::layout::test_branch(7);
 /// The extents the store holds, and as many it keeps, freed.
 const EXTENTS: u64 = 20_000;
 /// The rounds of each call timed, over every extent.
 const ROUNDS: u32 = 5;
 
 fn extent(sequence: u64) -> ExtentId {
-    ExtentId::new(BRANCH, sequence)
+    ExtentId::new(BRANCH.id, sequence)
 }
 
 /// The nanoseconds a call of `call` took, on average, over `calls` calls.

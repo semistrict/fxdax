@@ -10,7 +10,7 @@
 //! is asked of it here, not of its flags where it is read; and every change of one goes through
 //! [`crate::branch`]'s one transition.
 
-use crate::layout::{FORMAT, Origin, decode};
+use crate::layout::{Branch, FORMAT, Origin, decode};
 use crate::{Error, rules};
 use serde::{Deserialize, Serialize};
 
@@ -36,7 +36,7 @@ pub enum Kind {
     /// A fork of `point`, naming the point's origin as its own, until the fork is made
     /// ([`crate::branch::fork_point`]): until then it holds nothing, and nothing relies on it. The
     /// collector gives it up once that point is deleted ([`crate::branch::abandon`]).
-    Forking { origin: Origin, point: u64 },
+    Forking { origin: Origin, point: Branch },
     /// A failed fork's deletion's claim of its child, from what its host knew of the fork, not its
     /// parent's writers from an acknowledged segment ([`crate::branch::delete_fork`]): what it
     /// names may have gone before it landed, no record or state keeping that, so that recovering
@@ -84,7 +84,7 @@ impl Record {
     /// The record of `branch` that `bytes` encode, unless it is of another format than this one,
     /// newer or older, which its first bytes say ([`Error::Format`]), or its flags say no [`Kind`]
     /// ([`Error::Corrupt`]).
-    pub fn decode(branch: u64, bytes: &[u8]) -> Result<Self, Error> {
+    pub fn decode(branch: Branch, bytes: &[u8]) -> Result<Self, Error> {
         let format: u32 = decode(bytes.get(..4).unwrap_or(bytes))?;
         if format != FORMAT {
             return Err(Error::Format { branch, format });
@@ -103,7 +103,7 @@ impl Record {
     }
 
     /// The point it is being forked from, until the fork is made ([`Kind::Forking`]).
-    pub fn forking(&self) -> Option<u64> {
+    pub fn forking(&self) -> Option<Branch> {
         match self.kind {
             Kind::Forking { point, .. } => Some(point),
             _ => None,
@@ -153,7 +153,7 @@ struct Flags {
     forked: bool,
     deleted: bool,
     point: bool,
-    forking: Option<u64>,
+    forking: Option<Branch>,
     claimed: bool,
 }
 
@@ -204,6 +204,7 @@ impl TryFrom<Flags> for Record {
 mod tests {
     use super::*;
     use crate::layout::encode;
+    use crate::layout::test_branch;
 
     /// A record says its format first: one of another format, newer or older, is refused, naming
     /// it, whatever follows, which this format doesn't read (TASK-141.2, TASK-165.3).
@@ -212,17 +213,23 @@ mod tests {
         let record = Kind::Own.of(7);
         let bytes = encode(&record);
         assert_eq!(&bytes[..4], &FORMAT.to_le_bytes());
-        assert_eq!(Record::decode(3, &bytes), Ok(record));
+        assert_eq!(Record::decode(test_branch(3), &bytes), Ok(record));
         let mut newer = (FORMAT + 1).to_le_bytes().to_vec();
         newer.extend_from_slice(b"what a later format holds");
-        assert_eq!(Record::decode(3, &newer), Err(Error::Format { branch: 3, format: FORMAT + 1 }));
+        assert_eq!(
+            Record::decode(test_branch(3), &newer),
+            Err(Error::Format { branch: test_branch(3), format: FORMAT + 1 })
+        );
         // Format 1's and 2's records, whose footers and checkpoints this format reads wrong.
         for format in [1u32, 2] {
             let mut older = bytes.clone();
             older[..4].copy_from_slice(&format.to_le_bytes());
-            assert_eq!(Record::decode(3, &older), Err(Error::Format { branch: 3, format }));
+            assert_eq!(
+                Record::decode(test_branch(3), &older),
+                Err(Error::Format { branch: test_branch(3), format })
+            );
         }
-        assert!(matches!(Record::decode(3, &bytes[..3]), Err(Error::Corrupt(_))));
+        assert!(matches!(Record::decode(test_branch(3), &bytes[..3]), Err(Error::Corrupt(_))));
     }
 
     /// TASK-160.14: every combination of a record's six flags (whether it names an origin, is a
@@ -231,7 +238,7 @@ mod tests {
     /// kind encodes decodes back to it.
     #[test]
     fn records_decode_to_the_kinds_their_flags_say() {
-        let origin = Origin { parent: 1, at: 7 };
+        let origin = Origin { parent: test_branch(1), at: 7 };
         let mut decoded = Vec::new();
         for bits in 0..64u8 {
             let flag = |bit: u8| bits & (1 << bit) != 0;
@@ -242,17 +249,17 @@ mod tests {
                 forked: flag(1),
                 deleted: flag(2),
                 point: flag(3),
-                forking: flag(4).then_some(5),
+                forking: flag(4).then_some(test_branch(5)),
                 claimed: flag(5),
             };
-            let said = Record::decode(2, &encode(&flags)).ok();
+            let said = Record::decode(test_branch(2), &encode(&flags)).ok();
             if let Some(record) = said {
                 assert_eq!(Flags::from(record), flags, "{record:?}");
-                assert_eq!(Record::decode(2, &encode(&record)), Ok(record));
+                assert_eq!(Record::decode(test_branch(2), &encode(&record)), Ok(record));
                 decoded.push((bits, record.kind, record.deleted));
             }
         }
-        let forking = Kind::Forking { origin, point: 5 };
+        let forking = Kind::Forking { origin, point: test_branch(5) };
         // Bits: origin 1, forked 2, deleted 4, point 8, forking 16, claimed 32.
         let kinds = [
             (0, Kind::Root, false),
@@ -283,7 +290,7 @@ mod tests {
             "a branch's record of no kind: Flags {{ format: {FORMAT}, owner: 9, origin: None, \
              forked: true, deleted: false, point: true, forking: None, claimed: false }}"
         );
-        let refused = Record::decode(2, &encode(&refused));
+        let refused = Record::decode(test_branch(2), &encode(&refused));
         assert_eq!(refused, Err(Error::Corrupt(corrupt)));
     }
 }

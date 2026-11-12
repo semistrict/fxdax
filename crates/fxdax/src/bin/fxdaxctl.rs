@@ -34,7 +34,8 @@
 //! this host's (`FXDAX_EXTENTD_REMOTE`) and its placement's fencing token (`FXDAX_EXTENTD_TOKEN`),
 //! and refuse otherwise (`fxdax::remote::Host`, TASK-45).
 //!
-//! `take` makes an empty store at DIR, of CAPACITY bytes, of BRANCH (hex): once extentd opens it,
+//! `take` makes an empty store at DIR, of CAPACITY bytes, of BRANCH (`TENANT/CELL/ID`, each in hex,
+//! a volume of its cell named as DIR is, TASK-364): once extentd opens it,
 //! with `FXDAX_EXTENTD_REMOTE` naming the branch's bucket, it takes what the branch holds there,
 //! whose data it fetches as it is read; placed at TOKEN, if given, as `place` places it. A
 //! snapshot's point it reads, taking no lease, as any number of hosts do at once. `place`
@@ -112,7 +113,7 @@ enum Command {
     Take {
         dir: PathBuf,
         capacity: u64,
-        branch: u64,
+        branch: fxdax::Branch,
         token: Option<u64>,
     },
     Place {
@@ -188,7 +189,7 @@ impl Command {
             ["take", dir, size, branch, ref rest @ ..] if rest.len() <= 1 => Self::Take {
                 dir: dir.into(),
                 capacity: capacity(size)?,
-                branch: u64::from_str_radix(branch, 16).context("BRANCH must be hex")?,
+                branch: branch.parse().map_err(anyhow::Error::msg).context("BRANCH")?,
                 token: rest.first().map(|rest| token(rest)).transpose()?,
             },
             ["place", dir, given] => Self::Place { dir: dir.into(), token: token(given)? },
@@ -227,7 +228,7 @@ impl Command {
         let daemon = fxdax::extentd::control::Client::connect(socket)?;
         match self {
             Self::Take { dir, capacity, branch, token } => {
-                daemon.create_store(&dir, capacity, Some(branch), token)?;
+                daemon.create_store(&dir, capacity, branch, token)?;
             }
             Self::Place { dir, token } => daemon.place_store(&dir, token)?,
             Self::Sync { dir } => daemon.sync_store(&dir)?,
@@ -235,10 +236,10 @@ impl Command {
                 daemon.import_image(&dir, capacity, &image, reference.as_deref())?;
             }
             Self::Fork { src, dst, point: false } => {
-                println!("{:x}", daemon.fork_store(&src, &dst)?);
+                println!("{}", daemon.fork_store(&src, &dst)?);
             }
             Self::Fork { src, dst, point: true } => {
-                println!("{:x}", daemon.point_store(&src, &dst)?);
+                println!("{}", daemon.point_store(&src, &dst)?);
             }
             Self::Delete { dir } => daemon.delete_store(&dir)?,
             Self::Drop { dir } => daemon.drop_store(&dir)?,
@@ -248,8 +249,9 @@ impl Command {
             Self::Attach { dir, base } => daemon.attach_base(&dir, &base)?,
             Self::Stat { dir } => {
                 let stat = daemon.stat_store(&dir)?;
+                let cell = fxdax::Cell { tenant: stat.tenant, id: stat.cell };
                 let lines = stat_lines(
-                    stat.branch,
+                    fxdax::Branch { cell, id: stat.branch },
                     stat.capacity,
                     stat.used,
                     stat.available,
@@ -318,13 +320,16 @@ impl Command {
             }
             Self::Fork { src, dst, point } => {
                 let store = ExtentStore::open(&src)?;
-                let branch = rand::random::<u64>().max(1);
+                // The one volume of a new cell of the store's tenant's (TASK-364).
+                let tenant = store.branch().cell.tenant;
+                let cell = fxdax::Cell { tenant, id: rand::random::<u64>().max(1) };
+                let branch = fxdax::Branch { cell, id: rand::random::<u64>().max(1) };
                 if point {
                     store.point(&dst, branch)?;
                 } else {
                     store.fork(&dst, branch)?;
                 }
-                println!("{branch:x}");
+                println!("{branch}");
             }
             Self::Delete { dir } => {
                 let bucket = ExtentStore::bucket_at(&dir)?;
@@ -375,7 +380,7 @@ impl Command {
 /// What `stat` prints, one `name value` a line; whether the store is open, if known.
 #[allow(clippy::too_many_arguments)]
 fn stat_lines(
-    branch: u64,
+    branch: fxdax::Branch,
     capacity: u64,
     used: u64,
     available: u64,
@@ -385,7 +390,7 @@ fn stat_lines(
     open: Option<bool>,
 ) -> String {
     let mut lines = format!(
-        "branch {branch:x}\ncapacity {capacity}\nused {used}\navailable {available}\nown {own}\n\
+        "branch {branch}\ncapacity {capacity}\nused {used}\navailable {available}\nown {own}\n\
          inherited {inherited}\npublic {public}\n"
     );
     if let Some(open) = open {

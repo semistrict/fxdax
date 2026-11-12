@@ -15,6 +15,7 @@
 //! ([`Span::around`]). It ends as it drops, its attributes and its status set on it as it goes
 //! ([`Span::set`], [`Span::fail`]).
 
+use crate::layout::Branch;
 use futures::future::Either;
 use opentelemetry::context::{FutureExt as _, WithContext};
 use opentelemetry::trace::{Status, TraceContextExt as _, Tracer as _};
@@ -143,8 +144,8 @@ impl Span {
     }
 
     /// Sets its attribute [`BRANCH`] to `branch`, in hexadecimal, as store paths name branches.
-    pub fn set_branch(&self, branch: u64) {
-        self.set_with(BRANCH, || format!("{branch:x}"));
+    pub fn set_branch(&self, branch: Branch) {
+        self.set_with(BRANCH, || format!("{branch}"));
     }
 
     /// Says the operation failed, with `error`, its status an error's.

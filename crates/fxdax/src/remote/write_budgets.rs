@@ -99,7 +99,7 @@ fn a_hosts_store_writes_what_its_design_says() {
     let mut sequence = 0;
     let mut next = || {
         sequence += 1;
-        ExtentId { branch, sequence }
+        ExtentId { branch: branch.id, sequence }
     };
     #[cfg(target_os = "linux")]
     let (start, io_before) = (extent_store::written(), io_written());

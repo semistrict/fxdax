@@ -207,6 +207,7 @@ pub(crate) fn captured() -> std::sync::Arc<std::sync::Mutex<Vec<String>>> {
 mod tests {
     use super::*;
     use crate::layout::Marked;
+    use crate::layout::test_branch;
 
     fn meta(key: &str, e_tag: &str) -> Meta {
         let version = Version { e_tag: Some(e_tag.to_owned()), version: None };
@@ -225,13 +226,15 @@ mod tests {
     #[test]
     fn marks_held_are_of_their_object() {
         let watch = Watch::new();
-        let segment = layout::segment(1, 2);
+        let segment = layout::segment(test_branch(1), 2);
         let of = meta(&layout::marks(7), "a");
         let marked = vec![Marked::of(&meta(&segment, "s"))];
         watch.hold(Some((&of, Marks { epoch: 7, grace: 0, marked })));
         assert!(watch.any.load(Ordering::Relaxed));
         assert!(watch.held.read().unwrap().keys.contains(segment.as_str()));
-        assert!(!watch.held.read().unwrap().keys.contains(layout::segment(1, 3).as_str()));
+        assert!(
+            !watch.held.read().unwrap().keys.contains(layout::segment(test_branch(1), 3).as_str())
+        );
         assert_eq!([watch.holds(&of), watch.holds(&meta(&layout::marks(7), "b"))], [true, false]);
         watch.hold(None);
         assert!(!watch.any.load(Ordering::Relaxed));

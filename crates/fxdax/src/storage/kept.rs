@@ -16,7 +16,8 @@ use crate::error::{Error, anyhow_of};
 use crate::host_store::{self, Opened};
 use crate::remote;
 use extent_remote::cache::Cache;
-use extent_remote::layout::Child;
+use extent_remote::cell::Kind;
+use extent_remote::layout::{Branch, Child};
 use extent_store::upload::{self, Remote};
 use extent_store::{HostDir, Store};
 use std::path::Path;
@@ -44,11 +45,11 @@ impl Kept {
     /// from (TASK-237); elsewhere, with none ([`host_store::keeping`]).
     pub fn create(
         dir: &Path,
-        (capacity, branch, whole): (u64, u64, bool),
+        (capacity, branch, whole): (u64, Branch, bool),
         keeping: upload::Options,
     ) -> anyhow::Result<Self> {
         let cache = keeping.cache.clone();
-        let opened = host_store::create_unmade(dir, capacity, branch, None, keeping);
+        let opened = host_store::create_unmade(dir, capacity, branch, Kind::Fxfs, None, keeping);
         let opened = opened.map_err(anyhow_of)?;
         if whole {
             opened.made()?;
@@ -105,11 +106,13 @@ impl Kept {
         Ok(self.remote.wait_uploaded(self.store.epoch()?)?)
     }
 
-    /// Forks the store's branch, as of its last commit, to a new branch, whose handle is a new
-    /// directory at `path`, in its bucket too ([`host_store::fork`]): `held` is let go of once the
-    /// fork's commit is made.
+    /// Forks the store's branch, as of its last commit, to a new branch, the one volume of a new
+    /// cell of its tenant's (TASK-364), whose handle is a new directory at `path`, in its bucket
+    /// too ([`host_store::fork`]): `held` is let go of once the fork's commit is made.
     pub fn fork<H>(&self, path: &Path, held: H) -> Result<(), Error> {
-        let child = Child { branch: host_store::new_branch(), owner: rand::random(), point: false };
+        let id = host_store::new_alone().id;
+        let branch = host_store::fork_of(self.store.description().branch, id);
+        let child = Child { branch, owner: rand::random(), point: false };
         host_store::fork(&self.store, &self.remote, path, child, |_| Ok(()), held)
     }
 
@@ -168,7 +171,7 @@ mod tests {
 
     /// The extents `branch`'s state in `bucket` holds, by their lengths, those it inherited too,
     /// and its root.
-    fn kept(bucket: &Bucket, branch: u64) -> (BTreeMap<ExtentId, u64>, Vec<u8>) {
+    fn kept(bucket: &Bucket, branch: crate::Branch) -> (BTreeMap<ExtentId, u64>, Vec<u8>) {
         let recovered = extent_store::upload::block_on(async {
             let record = extent_remote::branch::record(bucket, branch).await?;
             extent_remote::recover(bucket, branch, record.and_then(|record| record.origin())).await
@@ -305,7 +308,14 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("store");
         let keeping = host_store::keeping().unwrap();
-        let made = host_store::create_unmade(&path, SIZE, 7, Some("memory:///host"), keeping);
+        let made = host_store::create_unmade(
+            &path,
+            SIZE,
+            extent_remote::layout::test_branch(7),
+            extent_remote::cell::Kind::Fxfs,
+            Some("memory:///host"),
+            keeping,
+        );
         made.unwrap().made().unwrap();
         let image = Kept::open(&path).unwrap();
         assert!(image.collecting().is_none());
@@ -313,7 +323,10 @@ mod tests {
         image.store().commit(None).unwrap();
         image.committed().unwrap();
         image.wait_uploaded().unwrap();
-        assert_eq!(kept(&bucket_of(&path), 7).0, BTreeMap::from([(ExtentId::new(7, 1), 4096)]));
+        assert_eq!(
+            kept(&bucket_of(&path), extent_remote::layout::test_branch(7)).0,
+            BTreeMap::from([(ExtentId::new(7, 1), 4096)])
+        );
     }
 
     /// TASK-165.6: what an image freed, uploaded, and checkpointed as its uploader stops, a pass of
@@ -322,7 +335,12 @@ mod tests {
     fn the_collector_reclaims_what_images_freed() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("image");
-        let image = Kept::create(&path, (SIZE, 7, true), host_store::keeping().unwrap()).unwrap();
+        let image = Kept::create(
+            &path,
+            (SIZE, extent_remote::layout::test_branch(7), true),
+            host_store::keeping().unwrap(),
+        )
+        .unwrap();
         let extent = |sequence| ExtentId::new(7, sequence);
         // Each stored on its own, in its bucket: 5 MiB, past the size for it.
         let data = crate::test_data::noise(1, 5 * MIB);
@@ -350,7 +368,7 @@ mod tests {
         assert!(report.deleted >= 3, "{report:?}");
         let after = bucket_bytes(&own);
         assert!(after < 6 * MIB as u64, "{after} bytes");
-        let (extents, root) = kept(&bucket_of(&path), 7);
+        let (extents, root) = kept(&bucket_of(&path), extent_remote::layout::test_branch(7));
         assert_eq!(
             (extents, root),
             (BTreeMap::from([(extent(3), 5 * MIB as u64)]), b"root".into())

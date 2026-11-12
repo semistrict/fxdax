@@ -4,14 +4,15 @@
 
 //! Mounts stores' filesystems on the host with FUSE (`fxdax::fuse`, TASK-222): an image, an
 //! imported base, or a VM's store, which nothing else has open, read and written as any
-//! filesystem is. One store at a mount point; or any number in one mount, attached and detached
-//! through its control socket (TASK-302).
+//! filesystem is. One store at a mount point; or any number in one mount, tenants' cells attached
+//! and detached through its control socket (TASK-302, TASK-364).
 //!
 //! ```sh
 //! fxdax-mount [--allow-other] [--new CAPACITY] STORE MOUNTPOINT
 //! fxdax-mount [--allow-other] --control SOCKET --stores DIR [--bucket URL] MOUNTPOINT
-//! fxdax-mount attach SOCKET NAME BRANCH CAPACITY [TOKEN]
-//! fxdax-mount detach [--force] SOCKET NAME
+//! fxdax-mount attach SOCKET TENANT CELL [TOKEN]
+//! fxdax-mount create-volume SOCKET TENANT CELL NAME CAPACITY
+//! fxdax-mount detach [--force] SOCKET TENANT CELL
 //! fxdax-mount list SOCKET
 //! ```
 //!
@@ -21,16 +22,21 @@
 //! branch kept in a file bucket in its directory, or in the host's bucket on a host of fxdax's
 //! system (`FXDAX_EXTENTD_REMOTE`), as `fxdax::Storage::create` keeps it.
 //!
-//! With `--control`, MOUNTPOINT is a directory of stores, none at first, and SOCKET, made the
-//! mounting user's alone (mode 0600), serves its control API (`proto/fxdax/mount/v1/mount.proto`),
-//! which the commands below call. `attach` takes BRANCH (hex; 0 for a new branch, its filesystem
-//! made empty) of the bucket at URL (default: the host's, `FXDAX_EXTENTD_REMOTE`) into a store at
-//! DIR/NAME of CAPACITY bytes, its lease with it, at the placement whose fencing token is TOKEN if
-//! given; or opens the store at DIR/NAME again; and shows its filesystem at MOUNTPOINT/NAME, and
-//! prints the branch. `detach` takes NAME away at once, and returns once the store is unmounted,
-//! written back and its lease let go: once nothing has a file of it open, or a directory of it as
-//! its current one; with `--force`, at once, what is open of it failing from then on. `list`
-//! prints the stores attached, a line each: NAME BRANCH, and `detaching` for one being detached.
+//! With `--control`, MOUNTPOINT is a directory of tenants' cells' volumes, none at first, and
+//! SOCKET, made the mounting user's alone (mode 0600), serves its control API
+//! (`proto/fxdax/mount/v1/mount.proto`), which the commands below call. TENANT and CELL are
+//! hexadecimal. `attach` takes CELL (0 for a new one, of no volumes) of the bucket at URL (default:
+//! the host's, `FXDAX_EXTENTD_REMOTE`), at the placement whose fencing token is TOKEN if given, and
+//! every Fxfs volume of it into a store at DIR/TENANT/CELL/VOLUME, its lease with it, or opens the
+//! store there again; shows each at MOUNTPOINT/TENANT/CELL/VOLUME, TENANT and CELL in 16
+//! hexadecimal digits; and prints the cell, then each volume, NAME BRANCH, a line each. The
+//! cell's other volumes, its SQLite databases and what VMs attach, are not shown. `create-volume`
+//! makes a new Fxfs volume NAME of a cell attached, of CAPACITY bytes, its filesystem empty, and
+//! prints its branch. `detach` takes the cell's volumes away at once, and returns once their
+//! stores are unmounted and written back: once nothing has a file of them open, or a directory of
+//! them as its current one; with `--force`, at once, what is open of them failing from then on.
+//! `list` prints the cells attached, a line each, TENANT CELL, and under each its volumes, NAME
+//! BRANCH, and `detaching` for one being detached.
 //!
 //! Mounted, it prints MOUNTPOINT on standard output, and serves until it is unmounted: by `umount`
 //! or `fusermount3 -u`, or lazily on SIGINT or SIGTERM, once nothing uses it. Then it closes the
@@ -48,8 +54,9 @@
 #[cfg(target_os = "linux")]
 const USAGE: &str = "usage: fxdax-mount [--allow-other] [--new CAPACITY] STORE MOUNTPOINT
        fxdax-mount [--allow-other] --control SOCKET --stores DIR [--bucket URL] MOUNTPOINT
-       fxdax-mount attach SOCKET NAME BRANCH CAPACITY [TOKEN]
-       fxdax-mount detach [--force] SOCKET NAME
+       fxdax-mount attach SOCKET TENANT CELL [TOKEN]
+       fxdax-mount create-volume SOCKET TENANT CELL NAME CAPACITY
+       fxdax-mount detach [--force] SOCKET TENANT CELL
        fxdax-mount list SOCKET";
 
 #[cfg(target_os = "linux")]
@@ -64,13 +71,23 @@ fn main() -> anyhow::Result<()> {
         u64::from_str_radix(given, 16).with_context(|| format!("{what} must be hex? {USAGE}"))
     };
     match words.as_slice() {
-        ["attach", socket, name, branch, capacity, rest @ ..] if rest.len() <= 1 => {
-            let branch = hex("BRANCH", branch)?;
-            let capacity = capacity.parse().with_context(|| format!("CAPACITY? {USAGE}"))?;
+        ["attach", socket, tenant, cell, rest @ ..] if rest.len() <= 1 => {
+            let cell = fxdax::Cell { tenant: hex("TENANT", tenant)?, id: hex("CELL", cell)? };
             let token = rest.first().map(|token| token.parse()).transpose();
             let token = token.with_context(|| format!("TOKEN? {USAGE}"))?;
-            let attached = control(socket)?.attach(name, (branch, capacity), token);
-            println!("{:016x}", attached.map_err(|err| anyhow::anyhow!("{err:?}"))?);
+            let attached = control(socket)?.attach(cell, token);
+            let (cell, volumes) = attached.map_err(|err| anyhow::anyhow!("{err:?}"))?;
+            println!("{:016x}", cell.id);
+            for volume in volumes {
+                println!("{} {:016x}", volume.name, volume.branch);
+            }
+            Ok(())
+        }
+        ["create-volume", socket, tenant, cell, name, capacity] => {
+            let cell = fxdax::Cell { tenant: hex("TENANT", tenant)?, id: hex("CELL", cell)? };
+            let capacity = capacity.parse().with_context(|| format!("CAPACITY? {USAGE}"))?;
+            let made = control(socket)?.create_volume(cell, name, capacity);
+            println!("{:016x}", made.map_err(|err| anyhow::anyhow!("{err:?}"))?.id);
             Ok(())
         }
         ["detach", rest @ ..] => {
@@ -78,13 +95,17 @@ fn main() -> anyhow::Result<()> {
                 ["--force", rest @ ..] => (true, rest),
                 rest => (false, rest),
             };
-            let [socket, name] = rest else { anyhow::bail!(USAGE) };
-            control(socket)?.detach(name, force).map_err(|err| anyhow::anyhow!("{err:?}"))
+            let [socket, tenant, cell] = rest else { anyhow::bail!(USAGE) };
+            let cell = fxdax::Cell { tenant: hex("TENANT", tenant)?, id: hex("CELL", cell)? };
+            control(socket)?.detach(cell, force).map_err(|err| anyhow::anyhow!("{err:?}"))
         }
         ["list", socket] => {
-            for store in control(socket)?.list().map_err(|err| anyhow::anyhow!("{err:?}"))? {
-                let detaching = if store.detaching { " detaching" } else { "" };
-                println!("{} {:016x}{detaching}", store.name, store.branch);
+            for cell in control(socket)?.list().map_err(|err| anyhow::anyhow!("{err:?}"))? {
+                println!("{:016x} {:016x}", cell.tenant, cell.cell);
+                for volume in cell.volumes {
+                    let detaching = if volume.detaching { " detaching" } else { "" };
+                    println!("  {} {:016x}{detaching}", volume.name, volume.branch);
+                }
             }
             Ok(())
         }

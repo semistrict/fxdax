@@ -42,15 +42,33 @@ impl Daemon {
         RemoteExtentStore::connect(&self.vms, path, capacity).unwrap()
     }
 
+    /// Makes a store at `path` of `branch`, an Fxfs volume of its cell: a new cell if its cell's
+    /// ID is 0, a new branch there if its ID is (TASK-364).
     pub fn create(
         &mut self,
         path: &Path,
-        branch: u64,
+        branch: fxdax::Branch,
         token: Option<u64>,
-    ) -> Result<u64, tonic::Status> {
-        let request = CreateStoreRequest { path: name(path), capacity: CAPACITY, branch, token };
-        let response = self.runtime.block_on(self.client.create_store(request))?;
-        Ok(response.into_inner().branch)
+    ) -> Result<fxdax::Branch, tonic::Status> {
+        let request = CreateStoreRequest {
+            path: name(path),
+            capacity: CAPACITY,
+            branch: branch.id,
+            token,
+            tenant: branch.cell.tenant,
+            cell: branch.cell.id,
+            kind: 0,
+        };
+        let response = self.runtime.block_on(self.client.create_store(request))?.into_inner();
+        let cell = fxdax::Cell { tenant: response.tenant, id: response.cell };
+        Ok(fxdax::Branch { cell, id: response.branch })
+    }
+
+    /// The branch of the store at `path`, in its cell, as StatStore says it (TASK-364).
+    pub fn branch(&mut self, path: &Path) -> Result<fxdax::Branch, tonic::Status> {
+        let stat = self.stat(path)?;
+        let cell = fxdax::Cell { tenant: stat.tenant, id: stat.cell };
+        Ok(fxdax::Branch { cell, id: stat.branch })
     }
 
     pub fn stat(&mut self, path: &Path) -> Result<StatStoreResponse, tonic::Status> {
@@ -58,18 +76,25 @@ impl Daemon {
         Ok(self.runtime.block_on(self.client.stat_store(request))?.into_inner())
     }
 
-    pub fn fork(&mut self, from: &Path, to: &Path) -> Result<u64, tonic::Status> {
+    pub fn fork(&mut self, from: &Path, to: &Path) -> Result<fxdax::Branch, tonic::Status> {
         self.fork_store(from, to, false)
     }
 
     /// Makes a point of the store at `from`, at `to` (ForkStore's `point`).
-    pub fn point(&mut self, from: &Path, to: &Path) -> Result<u64, tonic::Status> {
+    pub fn point(&mut self, from: &Path, to: &Path) -> Result<fxdax::Branch, tonic::Status> {
         self.fork_store(from, to, true)
     }
 
-    fn fork_store(&mut self, from: &Path, to: &Path, point: bool) -> Result<u64, tonic::Status> {
+    fn fork_store(
+        &mut self,
+        from: &Path,
+        to: &Path,
+        point: bool,
+    ) -> Result<fxdax::Branch, tonic::Status> {
         let request = ForkStoreRequest { from: name(from), to: name(to), branch: 0, point };
-        Ok(self.runtime.block_on(self.client.fork_store(request))?.into_inner().branch)
+        let response = self.runtime.block_on(self.client.fork_store(request))?.into_inner();
+        let cell = fxdax::Cell { tenant: response.tenant, id: response.cell };
+        Ok(fxdax::Branch { cell, id: response.branch })
     }
 
     pub fn resize(&mut self, path: &Path, capacity: u64) -> Result<(), tonic::Status> {
@@ -102,14 +127,17 @@ impl Daemon {
         self.runtime.block_on(self.client.drop_store(request)).map(drop)
     }
 
-    pub fn import(&mut self, path: &Path, image: &Path) -> Result<u64, tonic::Status> {
+    pub fn import(&mut self, path: &Path, image: &Path) -> Result<fxdax::Branch, tonic::Status> {
         let request = ImportImageRequest {
             path: name(path),
             capacity: CAPACITY,
             image: name(image),
             reference: String::new(),
+            tenant: 0,
         };
-        Ok(self.runtime.block_on(self.client.import_image(request))?.into_inner().branch)
+        let response = self.runtime.block_on(self.client.import_image(request))?.into_inner();
+        let cell = fxdax::Cell { tenant: response.tenant, id: response.cell };
+        Ok(fxdax::Branch { cell, id: response.branch })
     }
 
     /// Grants `tenant`, whose stores are in `dir`, its socket, given to `uid`, if named.
@@ -187,6 +215,9 @@ impl Daemon {
         self.runtime.block_on(self.client.get_stats(GetStatsRequest {})).unwrap().into_inner()
     }
 }
+
+/// A branch to make anew: of a new cell of no tenant's, a new ID there (TASK-364).
+pub const NEW: fxdax::Branch = fxdax::Branch { cell: fxdax::Cell { tenant: 0, id: 0 }, id: 0 };
 
 pub const CAPACITY: u64 = 1 << 26;
 

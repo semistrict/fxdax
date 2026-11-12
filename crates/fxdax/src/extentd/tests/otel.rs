@@ -22,11 +22,11 @@ fn provider(exporter: &InMemorySpanExporter) -> SdkTracerProvider {
 
 /// Writes 2 blocks, reads them back and commits them durably, in a store a daemon serves, as a VM
 /// process would: returns the store's branch.
-fn write_read_commit() -> u64 {
+fn write_read_commit() -> crate::Branch {
     let dir = tempfile::tempdir().unwrap();
     let (store, served) = connect(&dir.path().join("store"), 1 << 20);
-    let branch = store.branch();
-    let extent = ExtentId { branch, sequence: 1 };
+    let branch = super::branch_at(&dir.path().join("store"));
+    let extent = ExtentId { branch: branch.id, sequence: 1 };
     // TASK-260: the write for the guest's request 42.
     let guest =
         std::num::NonZeroU64::new(42).map(|guest| crate::request::RequestId { guest, store: None });
@@ -78,7 +78,8 @@ fn spans_trace_requests_commits_and_uploads() {
     let branch = write_read_commit();
     provider.force_flush().unwrap();
     let spans = exporter.get_finished_spans().unwrap();
-    let hex = Value::from(format!("{branch:x}"));
+    // fxdax: as `TENANT/CELL/ID`, in hexadecimal (TASK-364).
+    let hex = Value::from(branch.to_string());
 
     let opened = the(&spans, "extentd.open");
     assert_eq!(children(&spans, opened), BTreeSet::from(["store.create".to_owned()]));

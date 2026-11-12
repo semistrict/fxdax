@@ -59,7 +59,7 @@ impl ImageDevice {
     /// device, whose writes, frees and commits go through `writes`.
     pub fn create(
         dir: &Path,
-        made: (u64, u64, bool),
+        made: (u64, extent_remote::layout::Branch, bool),
         keeping: extent_store::upload::Options,
         writes: Arc<WriteGate>,
     ) -> Result<Self, Error> {
@@ -279,7 +279,7 @@ impl Device for ImageDevice {
     }
 
     fn branch(&self) -> u64 {
-        self.description.branch
+        self.description.branch.id
     }
 
     async fn next_sequence(&self) -> Result<u64, Error> {
@@ -325,7 +325,7 @@ mod tests {
 
     const BLOCK: u32 = crate::host_store::BLOCK_SIZE;
     const MIB: usize = 1 << 20;
-    const BRANCH: u64 = 7;
+    const BRANCH: crate::Branch = extent_remote::layout::test_branch(7);
 
     /// A device on a new image holding `capacity` bytes, in a new directory, and the image.
     fn device(capacity: u64) -> (ImageDevice, PathBuf, tempfile::TempDir) {
@@ -337,7 +337,7 @@ mod tests {
     }
 
     fn extent(sequence: u64) -> ExtentId {
-        ExtentId::new(BRANCH, sequence)
+        ExtentId::new(BRANCH.id, sequence)
     }
 
     /// Bytes each their offset modulo 251, from `offset`.
@@ -367,7 +367,7 @@ mod tests {
     fn reads_what_was_written() {
         let (device, _, _dir) = device(64 * MIB as u64);
         assert_eq!(device.block_count(), 64 * MIB as u64 / BLOCK as u64);
-        assert_eq!(device.branch(), BRANCH);
+        assert_eq!(device.branch(), BRANCH.id);
         block_on(async {
             // Many at once, which all complete, and one large enough for a file of its own.
             let data: Vec<Vec<u8>> = (0..16).map(|i| pattern(i * MIB, MIB)).collect();
@@ -419,7 +419,8 @@ mod tests {
             device.flush().await.unwrap();
             for (extent, data, encoding) in &contents {
                 // The middle of its fourth part's stored bytes: of its data at 3.5 MiB, if raw.
-                let path = image.join(format!("extents/{BRANCH:016x}/{:016x}", extent.sequence));
+                let path =
+                    image.join(format!("extents/{:016x}/{:016x}", BRANCH.id, extent.sequence));
                 let mut bytes = std::fs::read(&path).unwrap();
                 let stored = extent_frame::Parts::of(&bytes).unwrap().stored[3];
                 assert_eq!(stored.encoding, *encoding);

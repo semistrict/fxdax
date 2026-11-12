@@ -25,8 +25,9 @@ use crate::extents::Opening;
 use crate::pages::Arena;
 use crate::store_requests::{self, Capacity, Close};
 use crate::store_table::{self, StoreTable, Writer as _};
-use crate::{Errno, ExtentInfo, ExtentStore};
+use crate::{Branch, Errno, ExtentInfo, ExtentStore};
 use extent_remote::cache::Cache;
+use extent_remote::cell::Kind;
 use extent_remote::store::Stats;
 use std::borrow::Borrow;
 use std::path::{Path, PathBuf};
@@ -460,12 +461,13 @@ fn open_by_connection(path: &Path) -> Option<Arc<ExtentStore>> {
     }
 }
 
-/// The store at `path`, created with `capacity` bytes if given and it doesn't exist, keeping its
-/// branch in the daemon's bucket, and its own extents' pages in `arena`, which it holds, or in the
-/// default arena, without one ([`ExtentStore::open_in`]).
+/// The store at `path`, created with `capacity` bytes if given and it doesn't exist, a volume of
+/// the kind given of a new cell of no tenant's (TASK-364), keeping its branch in the daemon's
+/// bucket, and its own extents' pages in `arena`, which it holds, or in the default arena, without
+/// one ([`ExtentStore::open_in`]).
 pub(super) fn open_store(
     path: &Path,
-    capacity: Option<u64>,
+    capacity: Option<(u64, Kind)>,
     arena: Option<&Arc<Arena>>,
 ) -> Result<ExtentStore, Errno> {
     let arena = arena.cloned();
@@ -473,8 +475,9 @@ pub(super) fn open_store(
     let store = attached(path, |keeping| {
         let opening = Opening { arena: own, profiled: true, keeping };
         match capacity {
-            Some(capacity) if !path.exists() => {
-                ExtentStore::create_with(path, capacity, crate::host_store::new_branch(), opening)
+            Some((capacity, kind)) if !path.exists() => {
+                let branch = crate::host_store::new_alone();
+                ExtentStore::create_kind_with(path, capacity, (branch, kind), opening)
             }
             _ => ExtentStore::open_with(path, opening),
         }
@@ -620,9 +623,9 @@ pub(super) fn errno_of(what: std::fmt::Arguments<'_>, err: crate::Error) -> Errn
 pub(super) async fn create(
     path: PathBuf,
     capacity: u64,
-    branch: Option<u64>,
-    token: Option<u64>,
-) -> Result<u64, Errno> {
+    branch: Branch,
+    (token, kind): (Option<u64>, Kind),
+) -> Result<Branch, Errno> {
     let held = hold(&path).await?;
     blocking(move || {
         // Let go of once the work is done, though the call may give up on it before.
@@ -632,10 +635,17 @@ pub(super) async fn create(
         if path.exists() {
             return Err(Errno::EEXIST);
         }
-        let branch =
-            branch.filter(|branch| *branch != 0).unwrap_or_else(crate::host_store::new_branch);
+        // fxdax: a cell of 0 is a new one, and a branch of 0 a new one in it (TASK-364).
+        let cell = match branch.cell.id {
+            0 => crate::host_store::new_cell(branch.cell.tenant),
+            _ => branch.cell,
+        };
+        let branch = match branch.id {
+            0 => crate::host_store::new_branch(cell),
+            id => Branch { cell, id },
+        };
         attached(&path, |keeping| {
-            ExtentStore::create_placed(&path, (capacity, branch, token), keeping)
+            ExtentStore::create_placed(&path, (capacity, branch, token), kind, keeping)
         })?;
         Ok(branch)
     })
@@ -643,13 +653,15 @@ pub(super) async fn create(
 }
 
 /// Makes a store at `path`, which must not exist (`EEXIST`), of `capacity` bytes, holding a
-/// filesystem of the container image at `image` (`fxdax::import::store`), and returns its branch.
+/// filesystem of the container image at `image` (`fxdax::import::store`), the one volume of a new
+/// cell of `tenant`'s (TASK-364), and returns its branch.
 pub(super) async fn import(
     path: PathBuf,
     capacity: u64,
     image: PathBuf,
     reference: Option<String>,
-) -> Result<u64, Errno> {
+    tenant: u64,
+) -> Result<Branch, Errno> {
     let held = hold(&path).await?;
     blocking(move || {
         let _held = held;
@@ -662,7 +674,7 @@ pub(super) async fn import(
         // As the daemon's stores keep their branches: with the host's cache, which what the bucket
         // acknowledged of the image goes into and the import's check reads (TASK-237).
         let imported = (image.as_path(), reference.as_deref());
-        let made = crate::import::store_keeping(&path, capacity, imported, keeping()?);
+        let made = crate::import::store_keeping(&path, (capacity, tenant), imported, keeping()?);
         futures::executor::block_on(made)
             .map_err(|err| errno_of(format_args!("importing {}", image.display()), err))?;
         Ok(open_here(&path)?.branch())
@@ -674,13 +686,11 @@ pub(super) async fn import(
 /// the daemon's bucket: what the branch holds there.
 /// fxdax: a store of `branch` there whose write-ahead log another writer's commits moved its branch
 /// past is opened as the branch is, the log dropped (`ExtentStore::take_with`, TASK-165.9).
-fn take_store(path: &Path, branch: u64, capacity: u64) -> Result<ExtentStore, Errno> {
-    if !path.exists() && branch == 0 {
-        return Err(Errno::ENOENT);
-    }
+fn take_store(path: &Path, branch: Option<Branch>, capacity: u64) -> Result<ExtentStore, Errno> {
     let branch = match branch {
-        0 => extent_store::host_branch(path).map_err(|_| Errno::ENOENT)?,
-        branch => branch,
+        Some(branch) => branch,
+        None if !path.exists() => return Err(Errno::ENOENT),
+        None => extent_store::host_branch(path).map_err(|_| Errno::ENOENT)?,
     };
     attached(path, |keeping| {
         let opening = Opening { arena: None, profiled: false, keeping };
@@ -705,43 +715,39 @@ pub(super) fn removed_if_unmade(path: &Path) -> Result<(), Errno> {
 /// a branch of its own, which the VM restored from the snapshot opens (TASK-39.1). fxdax: restores
 /// of one snapshot, a zygote's, fork its point at once, as it is, kept open for them ([`point`],
 /// TASK-92.5); a connection having it open makes it busy (`EBUSY`), unless its VM process is gone.
-/// A point that doesn't exist is taken from the daemon's bucket, a store of `branch` of
-/// `capacity` bytes, as on another host than the snapshot's: read, as any number of hosts do at
-/// once, and written by none (doc-7, Points). Its waits hold no thread; its fork blocks. A store
+/// A point that doesn't exist here is `ENOENT`: a snapshot's VM names its point's branch by its ID
+/// alone, which locates no branch now that branches are their cells' (TASK-364), so a restore on
+/// another host than the snapshot's has the point's store made first (`CreateStore` of its tenant,
+/// cell and branch), whose branch is read, as any number of hosts do at once, and written by none
+/// (doc-7, Points). Its waits hold no thread; its fork blocks. A store
 /// that is no point, kept open since an earlier restore whose fork fails, as once another host, or
 /// this one's fxdaxctl, took its branch, which fences it, is let go of, and opened anew for a fork
 /// once more, which takes the branch back, as each restore's did before stores were kept open: a
 /// restore fails only if the store it opened fails it.
-pub(super) async fn fork_from(
-    from: &Path,
-    branch: u64,
-    capacity: u64,
-    path: &Path,
-) -> Result<(), Errno> {
-    match fork_point(from, branch, capacity, path).await {
+pub(super) async fn fork_from(from: &Path, capacity: u64, path: &Path) -> Result<(), Errno> {
+    match fork_point(from, capacity, path).await {
         (Err(errno), Opened::Before) if errno != Errno::EEXIST => {
             // What a crash left at `path` goes first, as before any restore's.
             removed_if_unmade(path)?;
-            fork_point(from, branch, capacity, path).await.0
+            fork_point(from, capacity, path).await.0
         }
         (forked, _) => forked,
     }
 }
 
 /// fxdax: `Ok` if `store`, at a restore's `path` already, holds what the point at `from` does
-/// ([`ExtentStore::holds_what`]), the point taken from the bucket, of `branch` and `capacity`
-/// bytes, as [`fork_from`] takes it: the store the snapshot was taken of, written nothing since,
-/// or a fork of the point an earlier restore made, its VM having written nothing (TASK-194).
-/// `EEXIST` otherwise, logged: its guest, of the snapshot's memory, would read extents freed since
-/// and commit over what was written since. Nothing of the store is changed.
+/// ([`ExtentStore::holds_what`]), the point opened as [`fork_from`] opens it: the store the
+/// snapshot was taken of, written nothing since, or a fork of the point an earlier restore made,
+/// its VM having written nothing (TASK-194). `EEXIST` otherwise, logged: its guest, of the
+/// snapshot's memory, would read extents freed since and commit over what was written since.
+/// Nothing of the store is changed.
 pub(super) async fn at_point(
     from: &Path,
-    branch: u64,
     capacity: u64,
     path: &Path,
     store: &ExtentStore,
 ) -> Result<(), Errno> {
-    let (point, _) = point(from, branch, capacity).await?;
+    let (point, _) = point(from, capacity).await?;
     if store.holds_what(&point.store)? {
         return Ok(());
     }
@@ -756,17 +762,15 @@ pub(super) async fn at_point(
 
 /// fxdax: forks the point at `from` to `path`, as [`fork_from`] does, once: and says when the
 /// point was opened. A point whose fork fails is let go of ([`let_go_failed`]).
-async fn fork_point(
-    from: &Path,
-    branch: u64,
-    capacity: u64,
-    path: &Path,
-) -> (Result<(), Errno>, Opened) {
-    let (point, opened) = match point(from, branch, capacity).await {
+async fn fork_point(from: &Path, capacity: u64, path: &Path) -> (Result<(), Errno>, Opened) {
+    let (point, opened) = match point(from, capacity).await {
         Ok(point) => point,
         Err(errno) => return (Err(errno), Opened::Now),
     };
-    let forked = point.store.fork(path, crate::host_store::new_branch()).map_err(|err| {
+    // fxdax: the one volume of a new cell of the point's tenant (TASK-364).
+    let tenant = point.store.branch().cell.tenant;
+    let child = crate::host_store::new_branch(crate::host_store::new_cell(tenant));
+    let forked = point.store.fork(path, child).map_err(|err| {
         errno_of(format_args!("forking {} to {}", from.display(), path.display()), err)
     });
     let failed = Arc::downgrade(&point);
@@ -787,13 +791,13 @@ enum Opened {
     Before,
 }
 
-/// fxdax: the point at `from` for a restore to fork, of `branch` and `capacity` bytes if the
-/// daemon takes it from its bucket ([`take_store`]), which forks fork at once (TASK-92.5): the
-/// point kept open, if one is ([`kept`]); or, under the daemon's hold of its path, which no
-/// connection opens it meanwhile, the store followers have open, forked as it is, held until the
-/// fork is done; or the point opened, kept open from then on ([`keep`]). And when it was opened.
-/// A restore waiting for another's opening of it holds no thread.
-async fn point(from: &Path, branch: u64, capacity: u64) -> Result<(Arc<HeldStore>, Opened), Errno> {
+/// fxdax: the point at `from` for a restore to fork, of `capacity` bytes if the daemon takes its
+/// branch from its bucket into the store there ([`take_store`]), which forks fork at once
+/// (TASK-92.5): the point kept open, if one is ([`kept`]); or, under the daemon's hold of its path,
+/// which no connection opens it meanwhile, the store followers have open, forked as it is, held
+/// until the fork is done; or the point opened, kept open from then on ([`keep`]). And when it was
+/// opened. A restore waiting for another's opening of it holds no thread.
+async fn point(from: &Path, capacity: u64) -> Result<(Arc<HeldStore>, Opened), Errno> {
     if let Some(point) = kept(&store_key(from)) {
         return Ok((point, Opened::Before));
     }
@@ -805,7 +809,7 @@ async fn point(from: &Path, branch: u64, capacity: u64) -> Result<(Arc<HeldStore
     if let Some((store, _)) = hold.instance() {
         return Ok((Arc::new(HeldStore::new(store, Some(hold))), Opened::Now));
     }
-    Ok((keep(&hold, take_store(from, branch, capacity)?), Opened::Now))
+    Ok((keep(&hold, take_store(from, None, capacity)?), Opened::Now))
 }
 
 /// Forks the store at `from` to a new branch, `branch`, at `to`: live, if a connection has it
@@ -827,11 +831,17 @@ pub(super) async fn fork(
     to: PathBuf,
     branch: u64,
     point: bool,
-) -> Result<u64, Errno> {
+) -> Result<Branch, Errno> {
     let _child = hold_to_fork(&to).await?;
     let key = store_key(&from);
     let named = branch != 0;
-    let new = || if named { branch } else { crate::host_store::new_branch() };
+    // fxdax: the one volume of a new cell of the store's tenant (TASK-364).
+    let from_branch = extent_store::host_branch(&from).map_err(|_| Errno::ENOENT)?;
+    let cell = crate::host_store::new_cell(from_branch.cell.tenant);
+    let new = || match named {
+        true => Branch { cell, id: branch },
+        false => crate::host_store::new_branch(cell),
+    };
     let was_kept = kept(&key).is_some();
     let first = new();
     match fork_held(&from, &to, first, point, &key).await {
@@ -849,7 +859,7 @@ pub(super) async fn fork(
 async fn fork_held(
     from: &Path,
     to: &Path,
-    branch: u64,
+    branch: Branch,
     point: bool,
     key: &Path,
 ) -> Result<(), Errno> {
@@ -1020,7 +1030,7 @@ pub(super) async fn make_public(path: PathBuf, generation: bool) -> Result<(), E
 /// What the store at `path` is, and holds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct StoreState {
-    pub branch: u64,
+    pub branch: Branch,
     pub info: ExtentInfo,
     /// Whose the bytes its extents hold are (TASK-49).
     pub bytes: crate::StoreBytes,
@@ -1091,7 +1101,7 @@ fn open_instances() -> Vec<Arc<ExtentStore>> {
 
 /// The branches of the stores open for connections whose commits upload now, and what their
 /// uploaders have left to do (`metrics`, TASK-91.3).
-pub(super) fn upload_statuses() -> Vec<(u64, extent_store::upload::UploadStatus)> {
+pub(super) fn upload_statuses() -> Vec<(Branch, extent_store::upload::UploadStatus)> {
     (open_instances().iter())
         .filter_map(|store| Some((store.branch(), store.upload_status().ok()??)))
         .collect()

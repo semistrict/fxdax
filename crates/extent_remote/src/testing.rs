@@ -10,7 +10,7 @@
 //! crate's own tests do.
 
 use crate::bucket::{Bucket, ByteRange, Error, Meta, Object, PutMode, Version};
-use crate::layout::{self, Kind};
+use crate::layout::{self, Branch, Kind};
 pub use crate::moves::{Moved, MovesMaps};
 use futures::channel::oneshot;
 use std::collections::BTreeMap;
@@ -55,7 +55,7 @@ struct Inner {
     queue: Vec<Request>,
     /// The writers whose creates of segments are held ([`SimBucket::hold`]): of each branch, those
     /// of this lease epoch and before.
-    held: BTreeMap<u64, u64>,
+    held: BTreeMap<Branch, u64>,
     /// The creates held, out of the queue, each until an object at its key is deleted.
     parked: Vec<Request>,
 }
@@ -97,7 +97,7 @@ impl SimBucket {
     /// when it waits again: a writer taken over, whose creates are in flight while the next one's
     /// segments take their places, which the collector compacts and deletes, landing then
     /// (TASK-79.18).
-    pub fn hold(&self, branch: u64, epoch: u64) {
+    pub fn hold(&self, branch: Branch, epoch: u64) {
         let inner = &mut *self.inner.lock().unwrap();
         let held = inner.held.entry(branch).or_default();
         *held = (*held).max(epoch);
@@ -387,6 +387,7 @@ impl Bucket for Direct {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::layout::test_branch;
     use futures::executor::block_on;
 
     /// TASK-79.40: the simulation refuses the ranged reads `object_store` refuses, as it does, as
@@ -419,9 +420,10 @@ mod tests {
     #[test]
     fn held_creates_wait_for_objects_at_their_keys_to_be_deleted() {
         let bucket = SimBucket::new();
-        bucket.hold(2, 1);
-        let key = layout::segment(2, 4);
-        let footer = layout::Chain::new(2, 1, 4, None, 0).close(layout::Contents::default());
+        bucket.hold(test_branch(2), 1);
+        let key = layout::segment(test_branch(2), 4);
+        let footer =
+            layout::Chain::new(test_branch(2), 1, 4, None, 0).close(layout::Contents::default());
         let stale = layout::Segment { data: Vec::new(), footer }.encode();
         let created = bucket.put(&key, stale.into(), PutMode::Create);
         assert_eq!(bucket.waiting(), 0);

@@ -104,19 +104,19 @@ fn read(store: &ExtentStore, extent: ExtentId) -> Vec<u8> {
 fn stores_are_deleted_while_their_forks_live(fxdaxctl: Fxdaxctl, dir: &Path) {
     let (path, fork) = (dir.join("store"), dir.join("fork"));
     let store = ExtentStore::create(&path, 1 << 24).unwrap();
-    let extent = ExtentId { branch: store.branch(), sequence: 1 };
+    let extent = ExtentId { branch: store.branch().id, sequence: 1 };
     store.write(extent, 0, &[VolatileSlice::from(&[7; BLOCK][..])]).unwrap();
     store.commit(None).unwrap();
     drop(store);
     let printed = fxdaxctl.run(&[Path::new("fork"), &path, &fork]).unwrap();
-    let branch = u64::from_str_radix(printed.trim(), 16).unwrap();
+    let branch: fxdax::Branch = printed.trim().parse().unwrap();
 
     fxdaxctl.run(&[Path::new("delete"), &path]).unwrap();
     assert!(!path.exists(), "the store's directory stayed");
     let forked = ExtentStore::open(&fork).unwrap();
     assert_eq!(forked.branch(), branch);
     assert_eq!(read(&forked, extent), [7; BLOCK]);
-    let own = ExtentId { branch, sequence: 1 };
+    let own = ExtentId { branch: branch.id, sequence: 1 };
     forked.write(own, 0, &[VolatileSlice::from(&[9; BLOCK][..])]).unwrap();
     forked.commit(None).unwrap();
     drop(forked);
@@ -138,7 +138,7 @@ fn stores_are_deleted_while_their_forks_live(fxdaxctl: Fxdaxctl, dir: &Path) {
 /// of, and a second finds nothing there.
 fn copies_are_dropped(fxdaxctl: Fxdaxctl, dir: &Path) {
     let path = dir.join("taken");
-    let (take, capacity, branch) = (Path::new("take"), Path::new("16777216"), Path::new("ab"));
+    let (take, capacity, branch) = (Path::new("take"), Path::new("16777216"), Path::new("0/1/ab"));
     fxdaxctl.run(&[take, &path, capacity, branch]).unwrap();
     assert!(path.exists(), "nothing was taken");
     fxdaxctl.run(&[Path::new("drop"), &path]).unwrap();
@@ -227,7 +227,7 @@ fn images_imported_where_no_daemon_is_fork_there() {
     };
     run(&[&"import", &base, &"67108864", &image]).unwrap();
     let printed = run(&[&"fork", &base, &fork]).unwrap();
-    let branch = u64::from_str_radix(printed.trim(), 16).unwrap();
+    let branch: fxdax::Branch = printed.trim().parse().unwrap();
     assert_eq!(ExtentStore::open(&fork).unwrap().branch(), branch);
     // The file `hello` of the store at `path`, as its filesystem has it.
     let hello = |path: &Path| {
@@ -284,7 +284,7 @@ fn commands_through_the_daemon() {
     assert!(base.is_public());
     // The fork's store names its branch, which deleting the store that took it deleted in the
     // bucket: it opens no more (TASK-165.9: opening takes the branch's lease).
-    assert_eq!(format!("{:x}", extent_store::host_branch(&fork).unwrap()), branch);
+    assert_eq!(extent_store::host_branch(&fork).unwrap().to_string(), branch);
     let refused = ExtentStore::open(&fork).err().and_then(|err| err.errno());
     assert_eq!(refused, Some(fxdax::Errno::EROFS));
 }
@@ -525,7 +525,7 @@ fn existing_stores_change_only_with_a_bucket_and_a_token() {
     Fxdaxctl::with_env(&[]).run(&import).unwrap();
     let taken = dir.path().join("taken");
     Fxdaxctl::with_env(&[])
-        .run(&[Path::new("take"), &taken, Path::new("67108864"), Path::new("1f")])
+        .run(&[Path::new("take"), &taken, Path::new("67108864"), Path::new("0/1/1f")])
         .unwrap();
     assert!(ExtentStore::open(&imported).is_ok() && taken.exists());
 

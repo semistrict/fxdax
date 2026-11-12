@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use storage_device::ExtentId;
 
 pub use extent_frame::segment::{
-    Chain, Child, Contents, Continued, Footer, Location, epoch_of, tag, writer_of,
+    Branch, Cell, Chain, Child, Contents, Continued, Footer, Location, epoch_of, tag, writer_of,
 };
 
 /// fxdax: the format of a branch's objects, which its record says first
@@ -23,49 +23,62 @@ pub use extent_frame::segment::{
 /// span segments, a footer naming the runs in its data of the commit it goes on with
 /// (`Contents::continued`, TASK-92.41); nothing reads 2's. 4: a checkpoint names the branch's
 /// fences, which the collector keeps ([`State::fences`](crate::recovery::State::fences),
-/// TASK-371); nothing reads 3's.
-pub const FORMAT: u32 = 4;
+/// TASK-371); nothing reads 3's. 5: a branch's objects are under its tenant's cell's prefix, and
+/// footers, forks and origins name branches with their cells ([`Branch`], TASK-364); nothing reads
+/// 4's.
+pub const FORMAT: u32 = 5;
 
-pub const BRANCHES: &str = "branches/";
+/// fxdax: the prefix of every tenant's cells' objects: all the bucket's branches (TASK-364).
+pub const TENANTS: &str = "tenants/";
 pub const GC_LEASE: &str = "gc/lease";
 /// fxdax: where the collector's mark-only passes write what they would delete ([`marks`]).
 pub const GC_MARKS: &str = "gc/marks/";
 const MOVES: &str = "moves/";
 
-pub fn segments(branch: u64) -> String {
-    format!("segments/{branch:016x}/")
+pub fn segments(branch: Branch) -> String {
+    format!("{}segments/{:016x}/", branch.cell.prefix(), branch.id)
 }
 
 /// Segment `seq` of `branch`: `seq` counts from 0 without gaps.
-pub fn segment(branch: u64, seq: u64) -> String {
+pub fn segment(branch: Branch, seq: u64) -> String {
     format!("{}{seq:016x}", segments(branch))
 }
 
-pub fn extents(branch: u64) -> String {
-    format!("extents/{branch:016x}/")
+pub fn extents(branch: Branch) -> String {
+    format!("{}extents/{:016x}/", branch.cell.prefix(), branch.id)
 }
 
-/// The object of an extent stored on its own, uploaded by the writer of epoch `epoch` before its
-/// segment `seq`, which names it.
-pub fn extent(epoch: u64, seq: u64, extent: ExtentId) -> String {
-    extent_frame::segment::extent_key(epoch, seq, extent)
+/// The object of an extent of `cell`'s stored on its own, uploaded by the writer of epoch `epoch`
+/// before its segment `seq`, which names it.
+pub fn extent(cell: Cell, epoch: u64, seq: u64, extent: ExtentId) -> String {
+    extent_frame::segment::extent_key(cell, epoch, seq, extent)
 }
 
-pub fn checkpoints(branch: u64) -> String {
-    format!("checkpoints/{branch:016x}/")
+pub fn checkpoints(branch: Branch) -> String {
+    format!("{}checkpoints/{:016x}/", branch.cell.prefix(), branch.id)
 }
 
 /// The checkpoint of `branch` as of its segment `seq`.
-pub fn checkpoint(branch: u64, seq: u64) -> String {
+pub fn checkpoint(branch: Branch, seq: u64) -> String {
     format!("{}{seq:016x}", checkpoints(branch))
 }
 
-pub fn record(branch: u64) -> String {
-    format!("{BRANCHES}{branch:016x}")
+/// fxdax: the prefix of the records of `cell`'s branches.
+pub fn records(cell: Cell) -> String {
+    format!("{}branches/", cell.prefix())
 }
 
-pub fn lease(branch: u64) -> String {
-    format!("leases/{branch:016x}")
+pub fn record(branch: Branch) -> String {
+    format!("{}{:016x}", records(branch.cell), branch.id)
+}
+
+pub fn lease(branch: Branch) -> String {
+    format!("{}leases/{:016x}", branch.cell.prefix(), branch.id)
+}
+
+/// fxdax: the object of `cell` itself: who holds it, and its volumes ([`crate::cell`]).
+pub fn cell(cell: Cell) -> String {
+    format!("{}cell", cell.prefix())
 }
 
 /// What the collector made of the object at `key` when it compacted it: the extents of it that were
@@ -100,24 +113,28 @@ pub fn further(key: &str, later: &str) -> bool {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind<'a> {
     Segment {
-        branch: u64,
+        branch: Branch,
         seq: u64,
     },
     Extent {
-        branch: u64,
+        branch: Branch,
         epoch: u64,
         seq: u64,
         sequence: u64,
     },
     Checkpoint {
-        branch: u64,
+        branch: Branch,
         seq: u64,
     },
     Record {
-        branch: u64,
+        branch: Branch,
     },
     Lease {
-        branch: u64,
+        branch: Branch,
+    },
+    /// fxdax: a cell's own object ([`cell`]).
+    Cell {
+        cell: Cell,
     },
     GcLease,
     /// fxdax: a mark-only pass's marks ([`marks`]): the collector's own, never a candidate.
@@ -139,6 +156,7 @@ impl Kind<'_> {
             Self::Checkpoint { .. } => "checkpoint",
             Self::Record { .. } => "record",
             Self::Lease { .. } => "lease",
+            Self::Cell { .. } => "cell",
             Self::GcLease => "gc-lease",
             Self::Marks { .. } => "marks",
             Self::Moves { .. } => "moves",
@@ -149,11 +167,6 @@ impl Kind<'_> {
 
 fn hex(text: &str) -> Option<u64> {
     (text.len() == 16).then(|| u64::from_str_radix(text, 16).ok()).flatten()
-}
-
-fn pair(text: &str, separator: char) -> Option<(u64, u64)> {
-    let (a, b) = text.split_once(separator)?;
-    Some((hex(a)?, hex(b)?))
 }
 
 pub fn kind(key: &str) -> Kind<'_> {
@@ -167,27 +180,34 @@ pub fn kind(key: &str) -> Kind<'_> {
         if let Some(from) = key.strip_prefix(MOVES) {
             return Some(Kind::Moves { from });
         }
-        if let Some(rest) = key.strip_prefix(BRANCHES) {
-            return Some(Kind::Record { branch: hex(rest)? });
+        let (tenant, rest) = key.strip_prefix(TENANTS)?.split_once('/')?;
+        let (id, rest) = rest.strip_prefix("cells/")?.split_once('/')?;
+        let cell = Cell { tenant: hex(tenant)?, id: hex(id)? };
+        let branch = |id| Some(Branch { cell, id: hex(id)? });
+        if rest == "cell" {
+            return Some(Kind::Cell { cell });
         }
-        if let Some(rest) = key.strip_prefix("leases/") {
-            return Some(Kind::Lease { branch: hex(rest)? });
+        if let Some(rest) = rest.strip_prefix("branches/") {
+            return Some(Kind::Record { branch: branch(rest)? });
         }
-        if let Some(rest) = key.strip_prefix("segments/") {
-            let (branch, seq) = pair(rest, '/')?;
-            return Some(Kind::Segment { branch, seq });
+        if let Some(rest) = rest.strip_prefix("leases/") {
+            return Some(Kind::Lease { branch: branch(rest)? });
         }
-        if let Some(rest) = key.strip_prefix("checkpoints/") {
-            let (branch, seq) = pair(rest, '/')?;
-            return Some(Kind::Checkpoint { branch, seq });
+        if let Some(rest) = rest.strip_prefix("segments/") {
+            let (id, seq) = rest.split_once('/')?;
+            return Some(Kind::Segment { branch: branch(id)?, seq: hex(seq)? });
         }
-        if let Some(rest) = key.strip_prefix("extents/") {
-            let (branch, rest) = rest.split_once('/')?;
+        if let Some(rest) = rest.strip_prefix("checkpoints/") {
+            let (id, seq) = rest.split_once('/')?;
+            return Some(Kind::Checkpoint { branch: branch(id)?, seq: hex(seq)? });
+        }
+        if let Some(rest) = rest.strip_prefix("extents/") {
+            let (id, rest) = rest.split_once('/')?;
             let [epoch, seq, sequence] = rest.split('.').collect::<Vec<_>>()[..] else {
                 return None;
             };
             let (epoch, seq, sequence) = (hex(epoch)?, hex(seq)?, hex(sequence)?);
-            return Some(Kind::Extent { branch: hex(branch)?, epoch, seq, sequence });
+            return Some(Kind::Extent { branch: branch(id)?, epoch, seq, sequence });
         }
         None
     };
@@ -197,7 +217,7 @@ pub fn kind(key: &str) -> Kind<'_> {
 /// A fork of a branch, made at the end of the commits of its segment `at`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Fork {
-    pub child: u64,
+    pub child: Branch,
     pub at: u64,
     /// Whether its child is a point ([`Kind::Point`](crate::record::Kind::Point)).
     pub point: bool,
@@ -223,15 +243,25 @@ pub struct Segment {
 /// The child of a fork to `branch`, a branch, of no owner: tests', which name no two children
 /// alike.
 #[cfg(test)]
-pub(crate) fn child(branch: u64) -> Child {
+pub(crate) fn child(branch: Branch) -> Child {
     Child { branch, owner: 0, point: false }
+}
+
+/// fxdax: the cell of tests' branches, of tenant 1.
+#[cfg(any(test, feature = "testing"))]
+pub const TEST_CELL: Cell = Cell { tenant: 1, id: 1 };
+
+/// fxdax: tests' branch `id`, of [`TEST_CELL`].
+#[cfg(any(test, feature = "testing"))]
+pub const fn test_branch(id: u64) -> Branch {
+    Branch { cell: TEST_CELL, id }
 }
 
 /// Where a branch was forked from: ordered by its parent, then its segment, so that the forks made
 /// at one segment sort together.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct Origin {
-    pub parent: u64,
+    pub parent: Branch,
     pub at: u64,
 }
 
@@ -353,35 +383,73 @@ mod tests {
     use super::*;
 
     /// A branch's extents stored on their own, whichever writer uploaded them, are under its
-    /// prefix, and no other branch's are.
+    /// prefix, and no other branch's are, of its cell or another.
     #[test]
     fn extents_are_under_their_branchs_prefix() {
-        assert_eq!(extents(0x12), "extents/0000000000000012/");
+        let branch = test_branch(0x12);
+        let elsewhere = Cell { tenant: 1, id: 2 };
+        let expected = "tenants/0000000000000001/cells/0000000000000001/extents/0000000000000012/";
+        assert_eq!(extents(branch), expected);
         for epoch in [1, 7] {
-            assert!(extent(epoch, 3, ExtentId::new(0x12, 5)).starts_with(&extents(0x12)));
+            let key = extent(TEST_CELL, epoch, 3, ExtentId::new(0x12, 5));
+            assert!(key.starts_with(&extents(branch)));
         }
-        assert!(!extent(1, 3, ExtentId::new(0x13, 5)).starts_with(&extents(0x12)));
+        assert!(!extent(TEST_CELL, 1, 3, ExtentId::new(0x13, 5)).starts_with(&extents(branch)));
+        assert!(!extent(elsewhere, 1, 3, ExtentId::new(0x12, 5)).starts_with(&extents(branch)));
+    }
+
+    /// fxdax: every object of a branch, and its cell's own, is under the cell's prefix, by tenant
+    /// then cell (TASK-364).
+    #[test]
+    fn a_cells_objects_are_under_its_tenants_prefix() {
+        let cell = Cell { tenant: 0xa, id: 0xc };
+        let branch = Branch { cell, id: 3 };
+        let prefix = "tenants/000000000000000a/cells/000000000000000c/";
+        assert_eq!(cell.prefix(), prefix);
+        for key in [
+            segment(branch, 7),
+            extent(cell, 2, 4, ExtentId::new(3, 9)),
+            checkpoint(branch, 7),
+            record(branch),
+            lease(branch),
+            self::cell(cell),
+        ] {
+            assert!(key.starts_with(prefix) && key.starts_with(TENANTS), "{key}");
+        }
+        assert_eq!(record(branch), format!("{prefix}branches/0000000000000003"));
+        assert!(record(branch).starts_with(&records(cell)));
     }
 
     #[test]
     fn kinds() {
+        let cell = Cell { tenant: 0xa, id: 0xc };
+        let branch = Branch { cell, id: 3 };
         let id = ExtentId::new(3, 9);
-        assert_eq!(kind(&segment(3, 7)), Kind::Segment { branch: 3, seq: 7 });
-        let own = Kind::Extent { branch: 3, epoch: 2, seq: 4, sequence: 9 };
-        assert_eq!(kind(&extent(2, 4, id)), own);
+        assert_eq!(kind(&segment(branch, 7)), Kind::Segment { branch, seq: 7 });
+        let own = Kind::Extent { branch, epoch: 2, seq: 4, sequence: 9 };
+        assert_eq!(kind(&extent(cell, 2, 4, id)), own);
         // A key naming no segment declares nothing: no extent's.
-        let earlier = "extents/0000000000000003/0000000000000002.0000000000000009";
-        assert_eq!(kind(earlier), Kind::Unknown);
-        assert_eq!(kind(&checkpoint(3, 7)), Kind::Checkpoint { branch: 3, seq: 7 });
-        assert_eq!(kind(&record(3)), Kind::Record { branch: 3 });
-        assert_eq!(kind(&lease(3)), Kind::Lease { branch: 3 });
+        let earlier =
+            format!("{}extents/0000000000000003/0000000000000002.0000000000000009", cell.prefix());
+        assert_eq!(kind(&earlier), Kind::Unknown);
+        assert_eq!(kind(&checkpoint(branch, 7)), Kind::Checkpoint { branch, seq: 7 });
+        assert_eq!(kind(&record(branch)), Kind::Record { branch });
+        assert_eq!(kind(&lease(branch)), Kind::Lease { branch });
+        assert_eq!(kind(&self::cell(cell)), Kind::Cell { cell });
         assert_eq!(kind(GC_LEASE), Kind::GcLease);
         assert_eq!(kind(&marks(0x2a)), Kind::Marks { epoch: 0x2a });
         assert_eq!(marks(0x2a), "gc/marks/000000000000002a");
         assert_eq!(kind("gc/marks/2a"), Kind::Unknown);
-        let from = segment(3, 7);
+        let from = segment(branch, 7);
         assert_eq!(kind(&moves(&from)), Kind::Moves { from: &from });
-        assert_eq!(kind("segments/3/7"), Kind::Unknown);
+        // The layout before cells, and keys of cells' prefixes malformed, are no objects of a
+        // branch.
+        assert_eq!(kind("segments/0000000000000003/0000000000000007"), Kind::Unknown);
+        assert_eq!(kind("branches/0000000000000003"), Kind::Unknown);
+        assert_eq!(kind("tenants/a/cells/000000000000000c/cell"), Kind::Unknown);
+        assert_eq!(kind("tenants/000000000000000a/cell/000000000000000c/cell"), Kind::Unknown);
+        let short = format!("{}segments/0000000000000003/7", cell.prefix());
+        assert_eq!(kind(&short), Kind::Unknown);
     }
 
     #[test]
@@ -393,7 +461,7 @@ mod tests {
     #[test]
     fn segments_hold_their_footers() {
         let footer = Footer {
-            branch: 1,
+            branch: test_branch(1),
             seq: 2,
             epoch: 3,
             after: Some((1, 3)),
@@ -404,7 +472,7 @@ mod tests {
                 frees: vec![ExtentId::new(1, 1)],
                 root: Some(b"root".to_vec()),
                 next_sequence: 6,
-                forks: vec![Child { branch: 7, owner: 8, point: false }],
+                forks: vec![Child { branch: test_branch(7), owner: 8, point: false }],
                 capacity: Some(1 << 30),
                 continued: None,
             },

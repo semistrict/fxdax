@@ -12,7 +12,7 @@
 
 mod common;
 
-use common::daemon::{CAPACITY, Daemon, failure, name, write};
+use common::daemon::{CAPACITY, Daemon, NEW, failure, name, write};
 use common::pattern;
 use fxdax::Errno;
 use fxdax::extentd::control::proto::*;
@@ -34,17 +34,19 @@ fn stores_through_the_control_api() {
     let (base, fork, taken) =
         (dir.path().join("base"), dir.path().join("fork"), dir.path().join("taken"));
 
-    let branch = daemon.create(&base, 0, None).unwrap();
-    assert_ne!(branch, 0);
+    let branch = daemon.create(&base, NEW, None).unwrap();
+    assert_ne!(branch.id, 0);
     let vm = daemon.open(&base, CAPACITY);
-    assert_eq!(vm.branch(), branch);
+    assert_eq!(vm.branch(), branch.id);
     write(&vm, &pattern(1), b"base");
     drop(vm);
     let stat = daemon.stat(&base).unwrap();
     assert_eq!(
         stat,
         StatStoreResponse {
-            branch,
+            branch: branch.id,
+            tenant: branch.cell.tenant,
+            cell: branch.cell.id,
             capacity: CAPACITY,
             used: 64 << 10,
             available: CAPACITY - (64 << 10),
@@ -73,7 +75,7 @@ fn stores_through_the_control_api() {
     let forked = daemon.fork(&base, &fork).unwrap();
     assert_ne!(forked, branch);
     let stat = daemon.stat(&fork).unwrap();
-    assert_eq!((stat.branch, stat.used, stat.public), (forked, 64 << 10, false));
+    assert_eq!((stat.branch, stat.used, stat.public), (forked.id, 64 << 10, false));
     // TASK-49: all it holds, it inherited.
     assert_eq!((stat.own, stat.inherited), (0, 64 << 10));
     daemon.make_public(&base).unwrap();
@@ -146,19 +148,19 @@ fn open_stores_are_their_vms() {
     assert_eq!(failure(daemon.delete(&store)), busy);
     assert_eq!(failure(daemon.make_public(&store)), busy);
     assert_eq!(failure(daemon.place(&store, 1)), busy);
-    assert_eq!(failure(daemon.create(&store, 0, None)), busy);
+    assert_eq!(failure(daemon.create(&store, NEW, None)), busy);
     // Grown at once, as its VM process sees.
     daemon.resize(&store, 2 * CAPACITY).unwrap();
     assert_eq!(vm.info().unwrap().capacity, 2 * CAPACITY);
     // Forked live: nothing is open on it.
     let branch = daemon.fork(&store, &fork).unwrap();
-    assert_eq!(daemon.stat(&fork).unwrap().branch, branch);
+    assert_eq!(daemon.branch(&fork).unwrap(), branch);
 
-    assert_eq!(failure(daemon.create(&fork, 0, None)), (Code::AlreadyExists, Errno::EEXIST));
+    assert_eq!(failure(daemon.create(&fork, NEW, None)), (Code::AlreadyExists, Errno::EEXIST));
     let none = dir.path().join("none");
     assert_eq!(failure(daemon.stat(&none)), (Code::NotFound, Errno::ENOENT));
     assert_eq!(
-        failure(daemon.create(Path::new(""), 0, None)),
+        failure(daemon.create(Path::new(""), NEW, None)),
         (Code::InvalidArgument, Errno::EINVAL)
     );
     // Synced as its VM process goes on.
@@ -182,7 +184,7 @@ fn imports_images() {
     let store = dir.path().join("store");
 
     let branch = daemon.import(&store, &image).unwrap();
-    assert_eq!(daemon.stat(&store).unwrap().branch, branch);
+    assert_eq!(daemon.branch(&store).unwrap(), branch);
     assert_eq!(failure(daemon.import(&store, &image)), (Code::AlreadyExists, Errno::EEXIST));
 
     let size = futures::executor::block_on(async {
@@ -217,7 +219,7 @@ fn imports_that_fail_leave_no_store() {
     );
     assert!(!store.exists(), "the store is left half made");
     let branch = daemon.import(&store, &whole).unwrap();
-    assert_eq!(daemon.stat(&store).unwrap().branch, branch);
+    assert_eq!(daemon.branch(&store).unwrap(), branch);
 }
 
 /// A fork of a branch this host never had: the branch's store taken from object storage
@@ -236,18 +238,19 @@ fn forks_of_branches_never_had_here() {
         (dir.path().join("written"), dir.path().join("taken"), dir.path().join("fork"));
     // Another host's: written, synced, and gone from here.
     let vm = daemon.open(&written, CAPACITY);
-    let branch = vm.branch();
     write(&vm, &pattern(7), b"elsewhere");
     drop(vm);
     daemon.sync(&written).unwrap();
+    // As the VM manager keeps it: its tenant, its cell and its ID (TASK-364).
+    let branch = daemon.branch(&written).unwrap();
     std::fs::remove_dir_all(&written).unwrap();
 
     assert_eq!(daemon.create(&taken, branch, Some(2)).unwrap(), branch);
     let forked = daemon.fork(&taken, &fork).unwrap();
     let vm = daemon.open(&fork, CAPACITY);
-    assert_eq!(vm.branch(), forked);
+    assert_eq!(vm.branch(), forked.id);
     assert_eq!(vm.root().unwrap(), b"elsewhere");
-    let extent = fxdax::ExtentId { branch, sequence: 1 };
+    let extent = fxdax::ExtentId { branch: branch.id, sequence: 1 };
     let mut read = vec![0; 64 << 10];
     vm.read(extent, 0, &mut [fxdax::VolatileSliceMut::from(&mut read[..])]).unwrap();
     assert!(read == pattern(7), "the fork reads other bytes");
@@ -263,7 +266,7 @@ fn shrinks_waiting_for_their_guests_hold_no_threads() {
     let dir = tempfile::tempdir().unwrap();
     let mut daemon = Daemon::new(dir.path());
     let idle = dir.path().join("idle");
-    daemon.create(&idle, 0, None).unwrap();
+    daemon.create(&idle, NEW, None).unwrap();
     let count = fxdax::extentd::control::BLOCKING_THREADS + 16;
     let asked = Arc::new(AtomicUsize::new(0));
     let (vms, paths): (Vec<_>, Vec<_>) = (0..count)
