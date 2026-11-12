@@ -25,3 +25,11 @@ seq-write 3.0×, create-fsync 2.6×, fsync-append 2.5×, setxattr 2.4×, stat-pa
 pgbench-init 2.0×, pgbench-tps 1.8×, find-cold 1.9×, rand-read-cold 1.6×.
 
 fxdax ahead where the working set passes the guest's memory: ws-2x 3.6×, ws-4x 4.2× faster.
+
+## Correction (2026-11-12): sync alone
+
+The sync group run alone (branch commit e48bfc57, `FXDAX_BENCH_GROUPS=sync`, one round) gave
+fxdax Unsafe sync 3,470/s, syncfs 3,255/s, freeze 507/s: sync is 1.5x behind ext4 Unsafe's
+5,314/s, not 74x. The 72/s above came after the io, metadata and working-set groups, whose
+leftover work sync(2), unlike syncfs, waits for: 50 rounds at 14 ms is 0.7 s in all. That cause is
+not confirmed. The durable case's 3/s is TASK-371.
