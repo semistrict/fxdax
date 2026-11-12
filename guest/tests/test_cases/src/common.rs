@@ -147,6 +147,47 @@ fn clock_ticks() -> f64 {
     (unsafe { nix::libc::sysconf(nix::libc::_SC_CLK_TCK) }) as f64
 }
 
+/// fxdax: the memory limit nearest this process in its cgroups (memory.max, its own cgroup's or
+/// the nearest ancestor's that sets one), and what that cgroup holds now that reclaim can't take
+/// back (memory.stat's anon and shmem: no swap takes them): what the kernel's OOM killer goes by.
+/// None where no cgroup sets a limit.
+pub fn cgroup_memory() -> Option<(u64, u64)> {
+    let cgroup = fs::read_to_string("/proc/self/cgroup").ok()?;
+    let mut dir = Path::new("/sys/fs/cgroup")
+        .join(cgroup.lines().find_map(|line| line.strip_prefix("0::"))?.trim_start_matches('/'));
+    loop {
+        if let Ok(max) = fs::read_to_string(dir.join("memory.max")) {
+            let stat = fs::read_to_string(dir.join("memory.stat")).ok()?;
+            if let Some(held) = unreclaimable(&max, &stat) {
+                return Some(held);
+            }
+        }
+        // The root's, which sets none, is the last.
+        if dir == Path::new("/sys/fs/cgroup") || !dir.pop() {
+            return None;
+        }
+    }
+}
+
+/// A cgroup's limit, `max` (memory.max's, `max` for none), and what of it its `stat`
+/// (memory.stat's) says reclaim can't take back: None for no limit.
+fn unreclaimable(max: &str, stat: &str) -> Option<(u64, u64)> {
+    let max = max.trim().parse().ok()?;
+    let field = |name: &str| {
+        let value = stat.lines().find_map(|line| line.strip_prefix(name)?.strip_prefix(' '));
+        value.and_then(|value| value.trim().parse::<u64>().ok()).unwrap_or(0)
+    };
+    Some((max, field("anon") + field("shmem")))
+}
+
+/// fxdax: the memory process `pid` holds now (/proc/PID/status's `VmRSS`), 0 if it says none.
+pub fn resident(pid: u32) -> u64 {
+    let status = fs::read_to_string(format!("/proc/{pid}/status")).unwrap_or_default();
+    let kib = status.lines().find_map(|line| line.strip_prefix("VmRSS:"));
+    kib.and_then(|kib| kib.trim().trim_end_matches(" kB").trim().parse::<u64>().ok()).unwrap_or(0)
+        << 10
+}
+
 /// fxdax: a case's measurements, in the fs bench's shape (test_fs_bench.rs), which
 /// scripts/bench-ab.py compares two sides' rounds of (TASK-330.4): each a workload of one value
 /// a run, its unit and whether higher is better; and the checks the case failed, how many of each
@@ -431,6 +472,15 @@ pub fn copy_dir(from: &Path, to: &Path) -> anyhow::Result<()> {
 mod tests {
     use super::*;
     use std::ffi::OsStr;
+
+    /// TASK-330.4: a cgroup's limit and what reclaim can't take back of what it holds, its anon
+    /// and shmem; none without a limit.
+    #[test]
+    fn a_cgroups_unreclaimable_memory_reads_from_its_files() {
+        let stat = "anon 1000\nfile 9000\nkernel 5\nshmem 200\nfile_dirty 7\n";
+        assert_eq!(unreclaimable("17179869184\n", stat), Some((17179869184, 1200)));
+        assert_eq!(unreclaimable("max\n", stat), None);
+    }
 
     /// TASK-330.4: a process's costs are its kernel's counts, its command's spaces and all.
     #[test]

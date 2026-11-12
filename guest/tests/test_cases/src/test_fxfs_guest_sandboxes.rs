@@ -120,7 +120,10 @@ const COMMANDS: [(&str, &[&str]); 3] = [
 mod host {
     use super::*;
 
-    use crate::common::{Measured, ProcessCosts, control, fxdax_guest_should_run, setup_rootfs};
+    use crate::common::{
+        Measured, ProcessCosts, cgroup_memory, control, fxdax_guest_should_run, resident,
+        setup_rootfs,
+    };
     use crate::test_fxfs_guest_docker::host::{DockerFiles, buildx};
     use crate::vm::{Firecracker, Vm};
     use crate::{ShouldRun, Test, TestOutcome, TestSetup};
@@ -427,6 +430,40 @@ RUN apk add --no-cache postgresql postgresql-contrib git
         Ok(())
     }
 
+    /// What's left of the run's memory before the OOM killer ends it: past reclaim, its cgroup's
+    /// limit less this, [`OOM_HEADROOM`].
+    const OOM_HEADROOM: u64 = GIB;
+
+    /// Whether the run is about to run out of memory, `hosts`' daemons among what holds it: what
+    /// its cgroup holds past reclaim within [`OOM_HEADROOM`] of its limit ([`cgroup_memory`]),
+    /// and then a failed check saying so, and each daemon's memory.
+    fn out_of_memory(hosts: &[Host]) -> Option<String> {
+        let (max, held) = cgroup_memory()?;
+        if held + OOM_HEADROOM <= max {
+            return None;
+        }
+        let daemons: Vec<String> = (hosts.iter())
+            .map(|host| format!("{} {} MiB", host.name, resident(host.daemon.id()) >> 20))
+            .collect();
+        Some(format!(
+            "memory: the run's memory ran out: {} MiB held past reclaim of its {} MiB, its daemons \
+             holding {}",
+            held >> 20,
+            max >> 20,
+            daemons.join(" and ")
+        ))
+    }
+
+    /// Says each check `failed`, and records it in `measured`, by its kind, the words before its
+    /// first colon.
+    fn say_failures(failed: &[String], measured: &mut Measured) {
+        for failure in failed {
+            eprintln!("sandboxes: check failed: {failure}");
+            let kind = failure.split_once(':').map_or("check", |(kind, _)| kind);
+            measured.failed(kind, failure.clone());
+        }
+    }
+
     /// What host `host`'s stores wrote, as its daemon's stats file in `dir` counts it (TASK-310):
     /// its guests' bytes, raw, and its stores' in all.
     fn host_writes(dir: &Path, host: &str) -> anyhow::Result<(u64, u64)> {
@@ -530,6 +567,17 @@ RUN apk add --no-cache postgresql postgresql-contrib git
                     next += 1;
                 }
                 std::thread::sleep(Duration::from_millis(100));
+                if let Some(problem) = out_of_memory(&hosts) {
+                    // Stopped by its own word, not the OOM killer's, which took the run's every
+                    // process with it, and an A/B's next rounds too (TASK-330.4: LangSmith's pin's
+                    // daemon at 5 GB, TASK-317's growth).
+                    tally.failed.push(problem);
+                    for (_, firecracker, _) in running {
+                        firecracker.kill()?;
+                    }
+                    say_failures(&tally.failed, measured);
+                    bail!("the run's memory ran out: stopped");
+                }
                 let mut still = Vec::new();
                 for (at, mut firecracker, booted) in running {
                     match firecracker.running()? {
@@ -620,11 +668,7 @@ RUN apk add --no-cache postgresql postgresql-contrib git
                     ));
                 }
             }
-            for failure in &tally.failed {
-                eprintln!("sandboxes: check failed: {failure}");
-                let kind = failure.split_once(':').map_or("check", |(kind, _)| kind);
-                measured.failed(kind, failure.clone());
-            }
+            say_failures(&tally.failed, measured);
             let failed = tally.failed.len();
             ensure!(failed == 0, "{failed} checks failed");
             // Passed: its stores, caches and image go, gigabytes of them; its logs stay.
