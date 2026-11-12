@@ -57,7 +57,7 @@
 //! ([`Collector::dry_run`]) writes nothing at all, the lease neither: it says what a pass would
 //! delete, less what a pass would delete only for compacting it, a grace period after.
 
-use crate::bucket::{self, Bucket, Meta};
+use crate::bucket::{self, Bucket, ByteRange, Meta, Version};
 use crate::layout::{self, Kind, Location, Marked, Marks, Moves, Origin};
 use crate::moves::{Moved, MovesMaps};
 use crate::record::Record;
@@ -70,6 +70,9 @@ use storage_device::ExtentId;
 
 /// How many branches' records a pass reads at once.
 const RECORDS_AT_ONCE: usize = 32;
+
+/// How many objects' trailers a pass reads at once, to learn their data's lengths.
+const TRAILERS_AT_ONCE: usize = 32;
 
 /// How many branches a pass recovers at once.
 const RECOVERIES_AT_ONCE: usize = 16;
@@ -116,8 +119,7 @@ pub struct DryRun {
     /// What a pass would delete, as listed, in the order of their keys; less what it would compact
     /// and so delete a grace period after.
     pub doomed: Vec<Meta>,
-    /// What a pass would compact, by their listed sizes, which count their footers, as listed:
-    /// what it deletes too, a grace period after, once no state's way to an extent goes through it.
+    /// What a pass would compact, as listed: what it deletes too, a grace period after, once no state's way to an extent goes through it.
     pub compactable: Vec<Meta>,
     /// Whether a pass took the collector's lease while it ran: what it read may be older than what
     /// that pass, deleting since, read, and what it found is no more than a guess.
@@ -141,11 +143,12 @@ pub struct Collector {
     options: Options,
     /// The records read, by their keys, with the versions they were read at.
     records: BTreeMap<String, (String, Record)>,
+    lengths: Lengths,
 }
 
 impl Collector {
     pub fn new(options: Options) -> Self {
-        Self { options, records: BTreeMap::new() }
+        Self { options, records: BTreeMap::new(), lengths: Lengths::default() }
     }
 
     /// One pass, as `holder`, which must differ from every other pass's.
@@ -155,7 +158,7 @@ impl Collector {
             return Ok(Report::default());
         };
         let mut report = Report::default();
-        pass.compact(bucket, &self.options, &mut report).await?;
+        pass.compact(bucket, &self.options, &mut self.lengths, &mut report).await?;
         let doomed = pass.doomed(bucket, &self.options).await?;
         // A pass a later one took the lease from stops.
         if fenced(bucket, epoch).await? {
@@ -186,7 +189,7 @@ impl Collector {
             return Ok(Marking::default());
         };
         let mut report = Report::default();
-        pass.compact(bucket, &self.options, &mut report).await?;
+        pass.compact(bucket, &self.options, &mut self.lengths, &mut report).await?;
         let doomed = pass.doomed(bucket, &self.options).await?;
         if fenced(bucket, epoch).await? {
             return Ok(Marking { report, ..Marking::default() });
@@ -213,7 +216,7 @@ impl Collector {
             return Ok(DryRun { fenced: true, ..DryRun::default() });
         };
         let doomed = pass.doomed(bucket, &self.options).await?.into_iter().cloned().collect();
-        let compactable = pass.compactable(bucket, &self.options).await?;
+        let compactable = pass.compactable(bucket, &self.options, &mut self.lengths).await?;
         let compactable = compactable.into_iter().map(|(meta, _)| meta.clone()).collect();
         Ok(DryRun { doomed, compactable, fenced: fenced(bucket, epoch).await? })
     }
@@ -259,6 +262,7 @@ impl Collector {
         if !early {
             objects = listing(bucket).await;
         }
+        self.lengths.retain(&objects);
         Ok(Some(Pass::new(bucket, objects, records, live).await?))
     }
 
@@ -651,10 +655,68 @@ impl Live {
     }
 }
 
-/// Whether `extents`, live in an object of `size` bytes, take less than `options`' fraction of it.
-fn below(extents: &BTreeMap<ExtentId, Location>, options: &Options, size: usize) -> bool {
+/// Whether `extents`, live in an object of `len` bytes of data, take less than `options`' fraction
+/// of it.
+fn below(extents: &BTreeMap<ExtentId, Location>, options: &Options, len: u64) -> bool {
     let used: u64 = extents.values().map(|location| location.len).sum();
-    (used as f64) < options.compact_below * size as f64
+    (used as f64) < options.compact_below * len as f64
+}
+
+/// The lengths of the data of the objects a pass may compact, as their trailers say, by their keys,
+/// with the versions and sizes they were listed at: read once each, as they never change, and
+/// forgotten once they are gone. The live extents of an object are measured against its data,
+/// which its listed size, compressed (TASK-29), may be far below: before, a mostly dead segment
+/// whose data compressed was never compacted (TASK-293).
+#[derive(Default)]
+struct Lengths(BTreeMap<String, (Version, u64, u64)>);
+
+impl Lengths {
+    /// The length of the data of the object `meta` lists, if it is still there.
+    fn known(&self, meta: &Meta) -> Option<u64> {
+        let (version, size, len) = self.0.get(&meta.key)?;
+        (*version == meta.version && *size == meta.size).then_some(*len)
+    }
+
+    /// Learns the lengths of the data of the objects `metas` list, those not known yet, from their
+    /// trailers, many at once.
+    async fn learn(&mut self, bucket: &impl Bucket, metas: &[&Meta]) -> Result<(), Error> {
+        let unknown = metas.iter().filter(|meta| self.known(meta).is_none());
+        let reads = futures::stream::iter(unknown)
+            .map(|meta| async move { (meta, trailer_len(bucket, meta).await) })
+            .buffer_unordered(TRAILERS_AT_ONCE)
+            .collect::<Vec<_>>()
+            .await;
+        for (meta, len) in reads {
+            if let Some(len) = len? {
+                self.0.insert(meta.key.clone(), (meta.version.clone(), meta.size, len));
+            }
+        }
+        Ok(())
+    }
+
+    /// Forgets those of objects no longer listed as they were.
+    fn retain(&mut self, objects: &BTreeMap<String, Meta>) {
+        self.0.retain(|key, (version, size, _)| {
+            objects.get(key).is_some_and(|meta| meta.version == *version && meta.size == *size)
+        });
+    }
+}
+
+/// The length of the data of the object `meta` lists, as its trailer says, if it is still there.
+async fn trailer_len(bucket: &impl Bucket, meta: &Meta) -> Result<Option<u64>, Error> {
+    let range = ByteRange::Suffix(layout::TRAILER);
+    let Some(trailer) = bucket::get_range(bucket, &meta.key, range).await? else {
+        return Ok(None);
+    };
+    let frame = layout::Frame::of_trailer(&trailer)?;
+    if frame.size() != meta.size {
+        let (key, size) = (&meta.key, meta.size);
+        return Err(Error::Corrupt(format!(
+            "{key}: {size} bytes, {} by its trailer",
+            frame.size()
+        )));
+    }
+    Ok(Some(frame.data_len))
 }
 
 /// What a pass found: every object listed, and what the live branches need of them.
@@ -741,32 +803,34 @@ impl Pass {
         Ok(false)
     }
 
-    /// The objects mostly freed, as their listed sizes say, which counts their footers: those
-    /// [`Pass::compact`] reads, to compact those whose data says so too. With the live extents of
-    /// each, which take less than `options`' fraction of it.
+    /// The objects mostly freed, as the lengths of their data say ([`Lengths`]): those
+    /// [`Pass::compact`] compacts. With the live extents of each, which take less than `options`'
+    /// fraction of it.
     async fn compactable(
         &self,
         bucket: &impl Bucket,
         options: &Options,
+        lengths: &mut Lengths,
     ) -> Result<Vec<(&Meta, &BTreeMap<ExtentId, Location>)>, Error> {
-        let mut compactable = Vec::new();
+        let mut ours = Vec::new();
         for (key, extents) in &self.named {
-            let ours = match layout::kind(key) {
+            let collectable = match layout::kind(key) {
                 kind @ Kind::Segment { .. } => {
                     !self.touched.contains(key) && !self.may_land(bucket, kind).await?
                 }
                 Kind::Moves { .. } => true,
                 _ => false,
             };
-            let meta = &self.objects[key];
-            if ours
-                && !self.objects.contains_key(&layout::moves(key))
-                && below(extents, options, meta.size as usize)
-            {
-                compactable.push((meta, extents));
+            if collectable && !self.objects.contains_key(&layout::moves(key)) {
+                ours.push((&self.objects[key], extents));
             }
         }
-        Ok(compactable)
+        lengths.learn(bucket, &ours.iter().map(|(meta, _)| *meta).collect::<Vec<_>>()).await?;
+        // Those gone since they were listed, whose lengths it could not learn, are not compacted.
+        ours.retain(|(meta, extents)| {
+            lengths.known(meta).is_some_and(|len| below(extents, options, len))
+        });
+        Ok(ours)
     }
 
     /// Compacts the objects mostly freed: copies the live extents of each to its moves.
@@ -774,17 +838,14 @@ impl Pass {
         &self,
         bucket: &impl Bucket,
         options: &Options,
+        lengths: &mut Lengths,
         report: &mut Report,
     ) -> Result<(), Error> {
-        for (meta, extents) in self.compactable(bucket, options).await? {
+        for (meta, extents) in self.compactable(bucket, options, lengths).await? {
             let (key, moves) = (&meta.key, layout::moves(&meta.key));
-            let below = |size| below(extents, options, size);
             let Some(object) = bucket::get(bucket, key).await else { continue };
             // Its data, checked: compacting copies none that is corrupt under new CRCs.
             let object_data = layout::data(&object.bytes)?;
-            if !below(object_data.len()) {
-                continue;
-            }
             let mut data = Vec::new();
             let mut entries = Vec::new();
             for (&extent, location) in extents {
@@ -1024,6 +1085,36 @@ mod tests {
         });
     }
 
+    /// TASK-293: a segment whose data compresses, its live extent a third of its data but more than
+    /// half its stored bytes, is compacted: the collector measures what is live against its data,
+    /// not its stored size, as it did before, leaving it uncompacted for as long as the extent
+    /// lived.
+    #[test]
+    fn compressed_objects_are_compacted_by_their_data() {
+        block_on(async {
+            let bucket = store();
+            branch::create(&*bucket, 1, 0).await.unwrap();
+            let writer = Writer::open(bucket.clone(), 1, 10, 0).await.unwrap();
+            let first = writer.chain().next_sequence();
+            let (kept, freed) = (ExtentId::new(1, first), ExtentId::new(1, first + 1));
+            let extents = vec![(kept, vec![b'k'; 4096]), (freed, vec![b'f'; 8192])];
+            commit(&writer, Commit { tag: 1, extents, ..Commit::default() }).await;
+            let segment = writer.location(kept).unwrap().key;
+            commit(&writer, Commit { tag: 2, frees: vec![freed], ..Commit::default() }).await;
+            writer.checkpoint().await.unwrap();
+            let stored = bucket.head(&segment).await.unwrap().size;
+            assert!(stored < 2 * 4096, "{segment}: {stored} bytes stored");
+
+            let compacting = Options { compact_below: 0.5, ..KEEP };
+            let report = collect(&*bucket, 1, &compacting).await.unwrap();
+            assert_eq!(report.compacted, 1);
+            let after = keys(&*bucket).await;
+            assert!(after.contains(&segment) && after.contains(&layout::moves(&segment)));
+            let location = writer.location(kept).unwrap();
+            assert_eq!(crate::read(&bucket, kept, &location).await.unwrap(), vec![b'k'; 4096]);
+        });
+    }
+
     /// fxdax: an object a byte was flipped in, in storage, is compacted to no moves, where its
     /// extents would be under CRCs of their own: the pass fails, and the object stays, as its
     /// extents' reads fail (TASK-153.11). In a part stored compressed, the kept extent's bytes
@@ -1038,7 +1129,7 @@ mod tests {
                 let first = writer.chain().next_sequence();
                 let (kept, freed) = (ExtentId::new(1, first), ExtentId::new(1, first + 1));
                 // The kept extent's bytes compress, or not; the freed one's don't, from a xorshift
-                // generator, so that the object is large enough to compact either way.
+                // generator, so that the part is stored raw where the kept one's don't either.
                 let mut state = 0x9e37_79b9_7f4a_7c15_u64;
                 let mut bytes = |len: u32, compressible: bool| -> Vec<u8> {
                     (0..len)
@@ -1184,19 +1275,11 @@ mod tests {
     async fn compacted<B: Bucket>(bucket: &B, writer: &Writer<B>) -> Compacted {
         let first = writer.chain().next_sequence();
         let [kept, moved, freed] = [0, 1, 2].map(|i| ExtentId::new(1, first + i));
-        // Bytes that don't compress, so that the objects' sizes are their extents'.
-        let mut state = 0x9e37_79b9_7f4a_7c15_u64;
-        let mut noise = || -> Vec<u8> {
-            (0..20_000)
-                .map(|_| {
-                    state ^= state << 13;
-                    state ^= state >> 7;
-                    state ^= state << 17;
-                    state as u8
-                })
-                .collect()
-        };
-        let extents = vec![(kept, b"kept".to_vec()), (moved, noise()), (freed, noise())];
+        let extents = vec![
+            (kept, b"kept".to_vec()),
+            (moved, vec![b'm'; 20_000]),
+            (freed, vec![b'f'; 20_000]),
+        ];
         commit(writer, Commit { tag: 1, extents, ..Commit::default() }).await;
         let sealed = writer.location(kept).unwrap().key;
         commit(writer, Commit { tag: 2, frees: vec![freed], ..Commit::default() }).await;

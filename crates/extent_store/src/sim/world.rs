@@ -1922,10 +1922,7 @@ impl World {
             };
             let Ok(data) = layout::data(&object.bytes) else { continue };
             let used: u64 = extents.values().sum();
-            // Below the bound of its data and of its stored size, which the collector takes for
-            // its data's first, though a compressed object stores less (TASK-293).
-            let size = data.len().min(object.bytes.len());
-            if (used as f64) < self.profile.options.compact_below * size as f64 {
+            if (used as f64) < self.profile.options.compact_below * data.len() as f64 {
                 self.violation(format!(
                     "left uncompacted: {key}, {used} of its {} bytes live",
                     data.len()
