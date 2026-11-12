@@ -8,12 +8,13 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-12 01:53'
-updated_date: '2026-11-12 09:38'
+updated_date: '2026-11-12 09:52'
 labels:
   - bug
   - extentd
   - performance
-dependencies: []
+dependencies:
+  - TASK-369
 priority: high
 type: bug
 ordinal: 754000
@@ -69,4 +70,6 @@ Measured (ubu1, 2026-11-12, tree 6df0a95a0 = this change before its rebase, gues
 - Locally (macOS, file bucket at 25 ms, bucket_round_trips_by_phase): a durable commit's median 75.7 -> 45.1 ms, get 1 -> 0.
 AC #4 (25/s) not met: the bucket part is one round trip; what remains is the local flush (TASK-369, TASK-322's queue), and the run's contention. To re-measure in a quiet window and once TASK-369 lands.
 Checks: extent_store 242/242 (sim needs-tests: fences_kept seed 0 of recreated(), takeovers_kept seed 1702 of late_checkpoints(), forks_after_lease of deleted_bases(); each loses an acknowledged commit, or a child's segments, without its rule), extent_remote 210, fxfs-posix 102, fxdax remote:: 68, TLA+ all 83 models (scripts/check-tla.sh), scripts' Python 305, guide's anchors check.
+
+Re-run on main 3037d0772, bench lock, IO cap in force (2026-11-12 09:43Z, ~/src/fxdax-t350-results/t371b): bench-fs-fxfs-guest-dax sync 6.1/s, syncfs 8.3/s, freeze 3.3/s; CPU stall 0.05 s, IO stall 6.4 s. Still one durable commit a sync and 6 bucket GETs the whole run, creates 36 ms each; the daemon waits ~145 ms a durable commit. Where the rest goes (78b94e218, durable_commits_through_the_daemon, a guest round's requests through the daemon at 25 ms): median 37.0 ms with the store on ubu1's ZFS home (one round trip + 12 ms, ~27 syncs/s), 116.9 ms (76-543) on /mnt/fxdax-scratch, ext4 on a zvol, where the bench's stores are; the store alone there (bucket_round_trips_by_phase, no writes between commits) 40 ms. So the writes' growing raw files make the flush's fdatasyncs wait for ext4 journal commits: TASK-369's finding #1. AC #4 waits on that (dependency TASK-369).
 <!-- SECTION:NOTES:END -->
