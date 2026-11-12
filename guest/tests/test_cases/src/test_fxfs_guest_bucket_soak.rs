@@ -199,12 +199,16 @@ mod host {
             let rate = (WRITTEN_WHILE_FAILING as f64 / (vms as f64 * failing * secs as f64)) as u64;
             eprintln!("bucket-soak: {secs} s, {vms} VMs writing {} MiB/s each", rate >> 20);
             let stores: Vec<_> = (0..vms).map(|vm| dir.join(format!("store-{vm}"))).collect();
+            // Each VM's, and when it booted: its guest writes for the run's seconds from its own
+            // start, after its boot, and may end once they're up, before the phases do (TASK-386).
             let mut running = Vec::new();
             for (vm, store) in stores.iter().enumerate() {
+                let booted = Instant::now();
                 let vm = vm as u64;
-                running.push(boot(test_setup, &root, &socket, store, (vm, rate, secs))?);
+                running.push((boot(test_setup, &root, &socket, store, (vm, rate, secs))?, booted));
             }
             let began = Instant::now();
+            let mut ended = 0.0;
             let mut failed = Vec::new();
             let (mut failed_before, mut memory_said) = (0, false);
             let mut syncs = Vec::new();
@@ -223,9 +227,12 @@ mod host {
                         }));
                     }
                 }
-                let ends = Instant::now() + run.mul_f64(fraction);
+                // From the run's start, so that a phase running over doesn't push the next ones
+                // later, past the guests' end (TASK-386).
+                ended += fraction;
+                let ends = began + run.mul_f64(ended);
                 while Instant::now() < ends {
-                    std::thread::sleep(Duration::from_secs(1));
+                    std::thread::sleep(Duration::from_secs(1).min(ends.saturating_duration_since(Instant::now())));
                     // Said once, the first sample past it, or that none is weighed.
                     let process = stats_line(&stats, "process");
                     if !memory_said {
@@ -234,8 +241,11 @@ mod host {
                             memory_said = true;
                         }
                     }
-                    for (vm, firecracker) in running.iter_mut().enumerate() {
-                        ensure!(firecracker.running()?, "VM {vm} ended before the run did");
+                    for (vm, (firecracker, booted)) in running.iter_mut().enumerate() {
+                        ensure!(
+                            firecracker.running()? || booted.elapsed() >= run,
+                            "VM {vm} ended before the run did"
+                        );
                     }
                 }
                 let said = failures(&stats);
@@ -267,7 +277,7 @@ mod host {
             }
             measured.lower("soak.uploaded_after_answering", "s", latest.as_secs_f64());
             let (mut written_mib, mut longest_fsync_ms) = (0, 0);
-            for (vm, firecracker) in running.into_iter().enumerate() {
+            for (vm, (firecracker, _)) in running.into_iter().enumerate() {
                 let (status, console) = firecracker.wait()?;
                 let said = crate::vm::without_kernel_lines(&crate::vm::guest_stdout(
                     &std::fs::read(&console)?,
