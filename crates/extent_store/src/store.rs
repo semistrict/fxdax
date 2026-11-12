@@ -848,7 +848,6 @@ impl<D: Dir> Recovering<D> {
             replay
         };
         let views = Views::new(epoch, &root);
-        let point = fenced.is_none();
         let store = Store {
             dir,
             block_size,
@@ -895,11 +894,6 @@ impl<D: Dir> Recovering<D> {
             idle: Arc::new(Condvar::new()),
             views,
         };
-        // fxdax: the next segment's log, ahead of its writes; none for a point's store, which
-        // takes none (TASK-333).
-        if !point {
-            store.prepare_next(&mut store.lock());
-        }
         Ok(store)
     }
 }
@@ -2429,6 +2423,7 @@ impl<D: Dir> Store<D> {
         // A store that failed makes nothing more durable.
         drop(self.state()?);
         let batch = self.durability.with(Mutex::lock).take();
+        let appended = batch.is_some();
         let durable = match batch {
             None => self.durability.with(Mutex::lock).durable(),
             Some(Batch { last, mut commits }) => {
@@ -2462,6 +2457,13 @@ impl<D: Dir> Store<D> {
         let raw = self.state()?.segments.raw(durable);
         self.remove_raw(raw);
         timed.phases.took(flush::RAW, started);
+        // fxdax: and the next segment's log prepared, ahead of its opening (TASK-333): by a flush
+        // that made commits durable, a store that writes, not as a store opens. A store never
+        // written to, as a fork's that only reads, takes none: every fork a daemon served took
+        // the next segment's log, and a file held open (serves_hundreds_of_forks_of_a_base).
+        if appended {
+            self.prepare_next(&mut *self.state()?);
+        }
         Ok(())
     }
 

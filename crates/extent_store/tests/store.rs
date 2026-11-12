@@ -1763,6 +1763,25 @@ fn segments_made_durable_sync_no_entries_a_flush_synced() {
     }
 }
 
+/// fxdax: a store prepares the next segment's log once a flush made commits durable, a store that
+/// writes, not as it opens (TASK-333): one that only reads, as a fork a daemon serves, prepares
+/// none, nor holds a file open for it, its flushes making nothing durable. Every fork the daemon
+/// served took one, and a file held open (`serves_hundreds_of_forks_of_a_base`).
+#[test]
+fn stores_that_only_read_prepare_no_log() {
+    let dir = MemDir::new();
+    let store = create(dir.clone(), 64 << 20);
+    let logs = || dir.list(&of("logs", BRANCH.id)).unwrap().len();
+    // Its open segment's log alone, flushed, nothing durable.
+    store.flush().unwrap();
+    store.prepared().unwrap();
+    assert_eq!(logs(), 1, "the next segment's log prepared, nothing durable");
+    store.write(extent(1), 0, &pattern(1, 0, BLOCK)).unwrap();
+    store.commit(None).unwrap();
+    store.prepared().unwrap();
+    assert_eq!(logs(), 2, "the next segment's log not prepared, a commit durable");
+}
+
 /// The files the process has open.
 fn open_fds() -> usize {
     std::fs::read_dir("/dev/fd").unwrap().count()
