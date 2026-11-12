@@ -2,10 +2,15 @@
 
 # Decisions
 
+## Writes take turns once one fails; a CPU budget per guest MiB in the qualification (TASK-382, 2026-11-12)
+Main's soak daemon spent 1.55x the pin's CPU (TASK-330.4's A/B). Profiled on ubu1 (perf, both sides alike, as work beside others' jobs, writes capped): 68% of main's CPU was in the full and out-of-service phases, every upload in flight (2.7x the pin's PUT-time) sending its object whole to the failing bucket again and again: the kernel's socket copies and the pages it zeroed for them. Decided without you:
+- **Once a write of a kind fails, writes of that kind take turns** (`extent_remote::store`'s `Turns`): one probe, after the backoff of the failures in a row (50 ms to 5 s), until one lands; then one more in flight per write answered (TCP slow start), no turns from 64 on. Reads take none. In the same environment the soak's daemon CPU went 1,582 s -> 173 s, catch-up after the bucket answered 212-245 s -> 41-44 s. *Instead:* release every waiting write at the first answer, which RustFS on a slow disk refused (503 SlowDown) until the soak ran out of time; or drop `object_store`'s own retries. *Undo:* the `turn()` call in `Store::put`.
+- **A CPU budget per guest MiB for each part** (`scripts/qualify-budgets.py`'s `CPU_BUDGETS`): 20 ms for the sandboxes (main 14.4-14.6 in the A/B's clean rounds) and 20 ms for the soak (main 24.3-25.5 before, the pin 16.2; the fix 11.2 even as plain work on a loaded ubu1). Set from the A/B's measurements under `fxjob --bench` and mine as work, not from a qualification of the fix under `--bench`, which I didn't take: the next qualification A/B says whether 20 is tight enough. *Undo:* the dict.
 ## Writers' creates as their fencing need the collector to keep strays too (TASK-383, 2026-11-12)
 
 - **Fix: `strays_kept`**, the collector keeps every segment a state read that is not of its fence's epoch (void, or a late fence of an earlier epoch), counted in `State::fences`; checkpoint FORMAT 5 -> 6. Undo: drop the rule; then TASK-371's "creates are the fencing" loses acknowledged commits as seed 453 did.
 - **Structure, for you:** since TASK-371 (no lease read after a durable commit's create), the invariant "every position a writer taken over may still create at stays occupied while it lives" is held by three collector rules (`fences_kept`, `takeovers_kept`, `strays_kept`), each found by a lost acknowledged commit. If another hole appears, the alternative is to state it once: keep every segment from the first fence of an epoch whose writer may live to the branch's end; or restore the lease read for commits (a round trip each, TASK-371's cost).
+
 
 ## Concurrent deletions read the record again before recording children (TASK-380, 2026-11-12)
 

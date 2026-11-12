@@ -64,6 +64,43 @@ class Budgets(unittest.TestCase):
         ])
         self.assertEqual(report["failures"], {})
 
+    def test_each_parts_daemons_cpu_for_each_guest_mib_is_measured_against_its_budget(self):
+        """TASK-382: the CPU a part's daemons spent for each MiB their guests wrote, all its
+        daemons' together, is a measurement, and past the part's budget a failure: main's soak
+        daemon spent 1.55 times the pin's, and nothing said so."""
+        written = {"raw": 1000 * MIB, "copied": 0, "framed": 0, "own": 0, "log": 0}
+        ms = 1_000_000
+        within = qualify_budgets.CPU_BUDGETS["sandboxes"] * 1000 * ms
+        self.part("sandboxes",
+                  daemon("host-a-stats.txt", checks=[("memory", True, "ok")],
+                         figures={"max_anon": MIB, "cpu_ns": within // 2, "written": written,
+                                  "io_write_bytes": 1000 * MIB}),
+                  daemon("host-b-stats.txt", checks=[("memory", True, "ok")],
+                         figures={"max_anon": MIB, "cpu_ns": within, "written": written,
+                                  "io_write_bytes": 1000 * MIB}))
+        past = (qualify_budgets.CPU_BUDGETS["soak"] + 1) * 1000 * ms
+        self.part("soak",
+                  daemon("extentd-stats.txt", checks=[("memory", True, "ok")],
+                         figures={"max_anon": MIB, "cpu_ns": past, "written": written,
+                                  "io_write_bytes": 1000 * MIB}))
+        status, said, report = self.summary("sandboxes", "soak")
+        cpu = {entry["workload"]: entry["values"] for entry in report["results"]
+               if entry["workload"].endswith(".cpu_per_guest_mib")}
+        sandboxes = qualify_budgets.CPU_BUDGETS["sandboxes"] * 0.75
+        soak = qualify_budgets.CPU_BUDGETS["soak"] + 1
+        self.assertEqual(cpu, {"budgets.sandboxes.cpu_per_guest_mib": [sandboxes],
+                               "budgets.soak.cpu_per_guest_mib": [soak]})
+        self.assertEqual((status, report["failures"]), (1, {"budgets.cpu": 1}))
+        self.assertEqual(said, f"budgets: soak: cpu: its daemons spent {soak:.1f} ms of CPU for "
+                               f"each MiB their guests wrote, budget "
+                               f"{qualify_budgets.CPU_BUDGETS['soak']} ms\n")
+
+    def test_a_part_with_no_cpu_budget_is_refused(self):
+        with self.assertRaises(SystemExit) as refused:
+            qualify_budgets.main([str(self.results), "soak", "nightly"])
+        self.assertEqual(str(refused.exception),
+                         "qualify-budgets.py: no CPU budget for nightly: CPU_BUDGETS")
+
     def test_a_budget_passed_and_a_daemon_that_says_none_fail(self):
         """A pin's daemon from before TASK-330.2 says nothing its budgets weigh: no check passes it,
         and the summary says so rather than nothing."""

@@ -607,7 +607,10 @@ FXDAX_AB_SUITE=qualify FXDAX_AB_ROUNDS=2 FXDAX_AB_A=pin=96c7808b8 \
 Each round of each side is the qualification (`scripts/qualify.sh`): the sandboxes' long mode,
 then the bucket soak (`fxfs-guest-bucket-soak`, 30 minutes: RustFS's bucket, through a proxy of
 the case's own, slow, full, out of service and answering again, guests writing all the while),
-every daemon held to its budgets (`scripts/budgets.py`). One harness, the tree's that runs it,
+every daemon held to its budgets (`scripts/budgets.py`), and each part's daemons to a budget of
+CPU time for each MiB their guests wrote (`scripts/qualify-budgets.py`'s `CPU_BUDGETS`, TASK-382:
+main's soak daemon once spent 1.55 times the pin's, its uploads all sending their objects again
+and again to the failing bucket, and nothing said so). One harness, the tree's that runs it,
 drives both sides' builds, their extent daemons, Firecrackers and guest kernels
 (`scripts/test-e2e.sh`'s `FXDAX_E2E_HARNESS`), so that a pin from before the qualification's cases
 meets the same cases, bucket and faults as the candidate; and what it measures of each daemon is
