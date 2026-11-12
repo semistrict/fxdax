@@ -7,6 +7,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-11-11 00:57'
+updated_date: '2026-11-12 03:17'
 labels:
   - testing
   - extent_remote
@@ -28,3 +29,9 @@ CI run 42932581818 (branch t330-land at cd307c317, macos (workspace) job 1302348
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+2026-11-12: again on main CI 43145010141 (09fa51f08), macos (workspace), crates/fxdax/src/remote.rs:559.
+<!-- SECTION:NOTES:END -->
