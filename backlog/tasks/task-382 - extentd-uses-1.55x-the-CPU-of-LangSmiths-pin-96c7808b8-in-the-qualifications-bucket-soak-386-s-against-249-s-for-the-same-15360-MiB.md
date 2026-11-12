@@ -3,9 +3,11 @@ id: TASK-382
 title: >-
   extentd uses 1.55x the CPU of LangSmith's pin (96c7808b8) in the
   qualification's bucket soak: 386 s against 249 s for the same 15,360 MiB
-status: To Do
-assignee: []
+status: In Progress
+assignee:
+  - '@claude'
 created_date: '2026-11-12 11:36'
+updated_date: '2026-11-12 11:36'
 labels:
   - performance
   - bug
