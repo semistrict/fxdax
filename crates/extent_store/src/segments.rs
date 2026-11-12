@@ -40,8 +40,11 @@ enum Phase<F> {
     /// fxdax: closed by commit `last`, its data being framed off the commit, on a thread of its
     /// own, which ends the framing itself ([`Segments::framed`], TASK-153.8): read from its raw
     /// file, which stays open, until then; its commits' records still appended to its log by the
-    /// flushes that make them durable, which wait for no framing (TASK-165.9).
-    Framing { raw: Arc<F>, log: Log<F>, last: u64 },
+    /// flushes that make them durable, which wait for no framing (TASK-165.9). fxdax: its framed
+    /// file `written`, whole, once the framing wrote it, being made durable then, which the
+    /// uploader waits for no more (TASK-384): the bucket's object is what makes its commits
+    /// durable, its raw file and log holding them here until it is.
+    Framing { raw: Arc<F>, log: Log<F>, last: u64, written: Option<Arc<Framed<F>>> },
     /// fxdax: its framing failed, which failed the store: read from its raw file, which stays.
     Failed { raw: Arc<F>, log: Log<F>, error: String },
     /// Closed, a segment of the write-ahead log until acknowledged in the bucket. Its framed file,
@@ -204,9 +207,10 @@ pub(crate) struct Segments<F> {
     /// fxdax: the spare logs, by the segments they were the logs of ([`spare_path`]), which the
     /// next segments' logs are, rather than files made anew (TASK-301).
     spares: Vec<SegmentId>,
-    /// fxdax: the next segment's log, prepared off the store's state lock, if it is, and whether
-    /// a preparation runs ([`Segments::to_prepare`], TASK-333).
-    prepared: Option<Prepared<F>>,
+    /// fxdax: the next segment's raw file and log, prepared off the store's state lock, if they
+    /// are, there under their names, and whether a preparation runs ([`Segments::to_prepare`],
+    /// TASK-333, TASK-384).
+    prepared: Option<Placed<F>>,
     preparing: bool,
     /// fxdax: what the salts of the logs this opening of the branch makes are of ([`new_salt`]).
     lifetime: u64,
@@ -259,7 +263,8 @@ impl<F: File> Segments<F> {
             }
             rapidhash::rapidhash(&bytes)
         };
-        let phase = create_open(dir, open, (&mut spares, &mut None), new_salt(lifetime, open))?;
+        let (phase, _) =
+            create_open(dir, open, (&mut spares, &mut None), new_salt(lifetime, open))?;
         for kind in [OPEN_SEGMENTS, LOGS] {
             dir.sync_dir(&branch_dir(kind, branch))?;
         }
@@ -616,7 +621,7 @@ impl<F: File> Segments<F> {
         debug_assert!(self.full.is_empty(), "{number:?} closes before those filled before it");
         let next = SegmentId { number: number.number + 1, ..number };
         let salt = new_salt(self.lifetime, next);
-        let phase = create_open(dir, next, (&mut self.spares, &mut self.prepared), salt)?;
+        let (phase, synced) = create_open(dir, next, (&mut self.spares, &mut self.prepared), salt)?;
         // Nothing fails from here on.
         let window =
             std::mem::replace(&mut self.window, Window::starting(number.branch, epoch + 1));
@@ -629,7 +634,9 @@ impl<F: File> Segments<F> {
         let last = Some(epoch);
         let unframed = self.seal_off(number, (window, last), epoch, next_sequence, written);
         self.tracked.insert(next, Segment::new(phase, 0));
-        self.unsynced_entries.insert(next);
+        if !synced {
+            self.unsynced_entries.insert(next);
+        }
         self.open = next;
         self.committed_len = 0;
         self.opened = Instant::now();
@@ -697,7 +704,7 @@ impl<F: File> Segments<F> {
             Phase::Open { raw, log } | Phase::Full { raw, log, .. } => (raw.clone(), log.clone()),
             _ => unreachable!("{number:?}, closing, is open or full"),
         };
-        segment.phase = Phase::Framing { raw: raw.clone(), log, last: epoch };
+        segment.phase = Phase::Framing { raw: raw.clone(), log, last: epoch, written: None };
         debug_assert!(
             segment.live > 0 || footer.contents.runs().next().is_none(),
             "{number:?} names runs, holding none"
@@ -724,7 +731,7 @@ impl<F: File> Segments<F> {
         let number = self.open;
         let next = SegmentId { number: number.number + 1, ..number };
         let salt = new_salt(self.lifetime, next);
-        let phase = create_open(dir, next, (&mut self.spares, &mut self.prepared), salt)?;
+        let (phase, synced) = create_open(dir, next, (&mut self.spares, &mut self.prepared), salt)?;
         let window =
             std::mem::replace(&mut self.window, Window::starting(number.branch, epoch + 1));
         let segment = self.tracked.get_mut(&number).unwrap();
@@ -734,7 +741,9 @@ impl<F: File> Segments<F> {
         segment.phase = Phase::Full { raw: raw.clone(), log: log.clone(), window };
         self.full.push(number);
         self.tracked.insert(next, Segment::new(phase, 0));
-        self.unsynced_entries.insert(next);
+        if !synced {
+            self.unsynced_entries.insert(next);
+        }
         self.open = next;
         self.committed_len = 0;
         self.opened = Instant::now();
@@ -760,6 +769,44 @@ impl<F: File> Segments<F> {
         self.files.insert(number, framed);
         self.raw.push((closed, number));
         self.framing.remove(&number);
+    }
+
+    /// fxdax: segment `number`, being framed, has its framed file `framed` written, whole, being
+    /// made durable from now on, which the uploader takes it without waiting for (TASK-384): read
+    /// from its raw file still, as its framed file is not yet named its own.
+    pub fn written(&mut self, number: SegmentId, framed: Arc<Framed<F>>) {
+        let segment = self.tracked.get_mut(&number).expect("a segment being framed is tracked");
+        let Phase::Framing { written, .. } = &mut segment.phase else {
+            unreachable!("{number:?}, written, was being framed")
+        };
+        *written = Some(framed);
+    }
+
+    /// fxdax: whether segment `number`'s framing is writing its framed file still: the uploader
+    /// takes it once it wrote it, not waiting for it to be made durable (TASK-384).
+    pub fn is_writing(&self, number: SegmentId) -> bool {
+        matches!(
+            self.tracked.get(&number),
+            Some(Segment { phase: Phase::Framing { written: None, .. }, .. })
+        )
+    }
+
+    /// fxdax: segment `number`'s framed file, which the uploader uploads: one written, being made
+    /// durable (TASK-384), or a closed one's.
+    pub fn framed_file<D: Dir<File = F>>(
+        &mut self,
+        dir: &D,
+        number: SegmentId,
+    ) -> Result<Arc<Framed<F>>, Error> {
+        if let Some(Segment { phase: Phase::Framing { written: Some(framed), .. }, .. }) =
+            self.tracked.get(&number)
+        {
+            return Ok(framed.clone());
+        }
+        match self.source(dir, number)? {
+            Source::Framed(framed) => Ok(framed),
+            Source::Raw(..) => bail!("{number:?} is not framed"),
+        }
     }
 
     /// fxdax: segment `number`'s framing failed, for `error`, which failed the store: it is read
@@ -878,32 +925,91 @@ impl<F: File> Segments<F> {
         Some(Preparation { segment: next, spare, salt: new_salt(self.lifetime, next) })
     }
 
-    /// fxdax: a preparation ended, as `prepared` says: the next segment's log, prepared, if it is
-    /// still the next's. One prepared for a segment opened meanwhile, with a log of its own, the
-    /// next's then, is a spare, as is the spare a failed one took, if the branch keeps another
-    /// ([`SPARES`]); else returned, its spare's name to remove.
-    pub fn prepared(
+    /// fxdax: a preparation's log is made, as `prepared` says: if it is still the next segment's,
+    /// placed in `dir`, there under its name, beside the next segment's raw file, the spare raw
+    /// file renamed, or a file made anew: changes to directories, which sync nothing, here,
+    /// holding the state, so that no opening of the segment makes them meanwhile (TASK-384).
+    /// Returns what of the preparation is left: the entries of the segment placed, to make durable
+    /// ([`Segments::placed_synced`]), the preparation running until then; or, one prepared for a
+    /// segment opened meanwhile, with a log of its own, the next's then, a spare, as is the spare a
+    /// failed one took, if the branch keeps another ([`SPARES`]), else its spare's name to remove,
+    /// the preparation ended.
+    pub fn prepared<D: Dir<File = F>>(
         &mut self,
+        dir: &D,
         prepared: Result<Prepared<F>, (Option<SegmentId>, Error)>,
-    ) -> Option<SegmentId> {
-        self.preparing = false;
+    ) -> Preparing {
         let next = SegmentId { number: self.open.number + 1, ..self.open };
         let spare = match prepared {
             Ok(prepared) if prepared.segment == next => {
-                self.prepared = Some(prepared);
-                return None;
+                let spare = prepared.spare;
+                match self.place_prepared(dir, prepared) {
+                    Ok(placed) => {
+                        self.prepared = Some(placed);
+                        return Preparing::Placed(next);
+                    }
+                    Err(error) => {
+                        log::warn!("extent store: placing {next:?}'s raw file and log: {error:#}");
+                        spare
+                    }
+                }
             }
             Ok(stale) => stale.spare,
             Err((spare, error)) => {
                 log::warn!("extent store: preparing {next:?}'s log: {error:#}");
-                spare?
+                self.preparing = false;
+                let Some(spare) = spare else { return Preparing::Ended(None) };
+                spare
             }
         };
+        self.preparing = false;
         if self.wants_spare() {
             self.spares.push(spare);
-            return None;
+            return Preparing::Ended(None);
         }
-        Some(spare)
+        Preparing::Ended(Some(spare))
+    }
+
+    /// fxdax: places `prepared`, the next segment's log, prepared, there under its name in `dir`,
+    /// beside the segment's raw file, made anew. Fails leaving the log a spare, under its spare's
+    /// name, and no raw file of the segment's.
+    fn place_prepared<D: Dir<File = F>>(
+        &self,
+        dir: &D,
+        prepared: Prepared<F>,
+    ) -> Result<Placed<F>, Error> {
+        let Prepared { segment, spare, file, salt } = prepared;
+        let raw = dir.create(&open_segment_path(segment), true)?;
+        let (from, to) = (spare_path(spare), log_path(segment));
+        if let Err(error) = dir.rename(&from, &to) {
+            let path = open_segment_path(segment);
+            if let Err(err) = dir.remove(&path) {
+                log::warn!("extent store: removing {path}: {err}");
+            }
+            return Err(Error::new(error).context(format!("renaming {from} {to}")));
+        }
+        Ok(Placed { segment, raw, log: file, salt, synced: false })
+    }
+
+    /// fxdax: the entries of segment `segment`, placed ([`Segments::prepared`]), were made durable,
+    /// or not, as `synced` says, which ends the preparation: the segment, opened meanwhile, needs
+    /// no flush to sync them, nor, opening later, does it (TASK-384).
+    pub fn placed_synced(&mut self, segment: SegmentId, synced: bool) {
+        self.preparing = false;
+        if !synced {
+            return;
+        }
+        match &mut self.prepared {
+            Some(placed) if placed.segment == segment => placed.synced = true,
+            _ => {
+                self.unsynced_entries.remove(&segment);
+            }
+        }
+    }
+
+    /// fxdax: the next segment, if its raw file and log are placed ahead of it (TASK-384).
+    pub fn placed(&self) -> Option<SegmentId> {
+        self.prepared.as_ref().map(|placed| placed.segment)
     }
 
     /// fxdax: whether the next segment's log is being prepared ([`Segments::to_prepare`]).
@@ -967,7 +1073,9 @@ impl<F: File> Segments<F> {
         for raw in self.closed_unsynced.drain(..) {
             syncs.cached(raw);
         }
-        if !std::mem::take(&mut self.closed_since) {
+        // fxdax: none if the segments opened since had theirs made durable as they were placed
+        // (TASK-384).
+        if !std::mem::take(&mut self.closed_since) || self.unsynced_entries.is_empty() {
             return BTreeSet::new();
         }
         for kind in [OPEN_SEGMENTS, LOGS] {
@@ -1512,13 +1620,36 @@ pub(crate) fn fold(branch: u64, commits: &[Contents]) -> Contents {
 
 /// fxdax: a segment's log made ahead of the segment, off the store's state lock: a spare log,
 /// `spare`'s by its name, or a file made anew under `spare`'s name, its header `segment`'s, its
-/// records salted `salt`, synced ([`Preparation::prepare`], TASK-333). The segment opening takes
-/// it, renamed its log, a change to a directory, which syncs nothing ([`create_open`]).
+/// records salted `salt`, synced ([`Preparation::prepare`], TASK-333). Placed, if the segment is
+/// still the next, renamed its log, beside its raw file ([`Segments::prepared`]).
 pub(crate) struct Prepared<F> {
     segment: SegmentId,
     spare: SegmentId,
     file: F,
     salt: u64,
+}
+
+/// fxdax: the next segment's raw file and log, made ahead of it, there under their names, which
+/// its opening takes, changing no directory ([`create_open`]); their entries made durable off the
+/// store's state lock, `synced` once they are, as no commit then waits for (TASK-384). An opening
+/// that renamed them, or made them, there, left their entries to the commits' next flush to sync,
+/// each a commit of the host's journal that a durable commit waited for, one per segment opened.
+pub(crate) struct Placed<F> {
+    segment: SegmentId,
+    raw: F,
+    log: F,
+    salt: u64,
+    synced: bool,
+}
+
+/// fxdax: what of a preparation is left once its log is made ([`Segments::prepared`]).
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Preparing {
+    /// The segment's raw file and log placed, their entries to make durable, the preparation
+    /// running until then ([`Segments::placed_synced`]).
+    Placed(SegmentId),
+    /// The preparation ended, a spare log's name to remove, if it left one the branch keeps not.
+    Ended(Option<SegmentId>),
 }
 
 /// fxdax: the bit set in the number naming a log a preparation made anew ([`Preparation::prepare`]),
@@ -1572,29 +1703,22 @@ fn write_header<F: File>(log: &F, salt: u64, segment: SegmentId) -> io::Result<(
     log.sync_cached()
 }
 
-/// fxdax: the phase of a new open segment, `segment`, whose raw file and log it makes in `dir`:
-/// its log the one prepared for it, if any, else a spare, or a file made anew, its header written
-/// and synced here.
+/// fxdax: the phase of a new open segment, `segment`, whose raw file and log it makes in `dir`,
+/// and whether their entries are durable: the raw file and log placed for it, if any, its log's
+/// header durable, their entries too once their preparation synced them (TASK-333, TASK-384);
+/// else a raw file made anew, and its log a spare, or a file made anew, its header written and
+/// synced here.
 fn create_open<D: Dir>(
     dir: &D,
     segment: SegmentId,
-    (spares, prepared): (&mut Vec<SegmentId>, &mut Option<Prepared<D::File>>),
+    (spares, placed): (&mut Vec<SegmentId>, &mut Option<Placed<D::File>>),
     salt: u64,
-) -> Result<Phase<D::File>, Error> {
-    let raw = Arc::new(dir.create(&open_segment_path(segment), true)?);
-    // fxdax: its log prepared, its header durable, renamed its log (TASK-333).
-    if let Some(ready) = prepared.take_if(|ready| ready.segment == segment && ready.salt == salt) {
-        let (from, to) = (spare_path(ready.spare), log_path(segment));
-        match dir.rename(&from, &to) {
-            Ok(()) => {
-                return Ok(Phase::Open { raw, log: Log { file: Arc::new(ready.file), salt } });
-            }
-            Err(error) => {
-                log::warn!("extent store: taking {from} as {to}: {error}");
-                spares.push(ready.spare);
-            }
-        }
+) -> Result<(Phase<D::File>, bool), Error> {
+    if let Some(ready) = placed.take_if(|ready| ready.segment == segment && ready.salt == salt) {
+        let (raw, log) = (Arc::new(ready.raw), Log { file: Arc::new(ready.log), salt });
+        return Ok((Phase::Open { raw, log }, ready.synced));
     }
+    let raw = Arc::new(dir.create(&open_segment_path(segment), true)?);
     // fxdax: its log a spare, if there is one, its header written over the one there (TASK-301):
     // durable before any record is appended, and before the spare is renamed its log: renamed
     // first, a crash, or a failure, before the header was durable left the spare's header, and the
@@ -1619,7 +1743,7 @@ fn create_open<D: Dir>(
         }
         None => headed(dir.create(&path, false)?)?,
     };
-    Ok(Phase::Open { raw, log: Log { file: Arc::new(log), salt } })
+    Ok((Phase::Open { raw, log: Log { file: Arc::new(log), salt } }, false))
 }
 
 /// The store's epoch of the last commit of the segment whose footer is `footer`. fxdax: the one it
@@ -1956,9 +2080,16 @@ mod tests {
             log.read_cached(&mut header, 0).unwrap();
             crate::wal::log_salt(&header, segment(number)).is_some()
         };
+        // Made, then placed, its entries made durable, as the store's opener does.
+        let prepare = |segments: &mut Segments<MemFile>, preparation: Preparation| match segments
+            .prepared(&dir, preparation.prepare(&dir))
+        {
+            Preparing::Placed(placed) => segments.placed_synced(placed, true),
+            Preparing::Ended(stale) => assert_eq!(stale, None),
+        };
         let preparation = segments.to_prepare().expect("the next's log to prepare");
         assert!(segments.to_prepare().is_none(), "one at a time");
-        segments.prepared(preparation.prepare(&dir));
+        prepare(&mut segments, preparation);
         assert!(segments.to_prepare().is_none(), "the next's prepared");
         write(&mut segments, 1);
         let before = dir.io().synced_files;
@@ -1972,10 +2103,10 @@ mod tests {
         segments.fill(&dir, 1).unwrap();
         assert_eq!(dir.io().synced_files - before, 1, "the header's sync, nothing prepared");
         assert!(headed(2), "segment 2's log, its header its own");
-        segments.prepared(preparation.prepare(&dir));
+        prepare(&mut segments, preparation);
         assert_eq!(segments.spares.len(), 1, "segment 2's, prepared late, a spare");
         let preparation = segments.to_prepare().expect("segment 3's log to prepare");
-        segments.prepared(preparation.prepare(&dir));
+        prepare(&mut segments, preparation);
         write(&mut segments, 3);
         segments.fill(&dir, 1).unwrap();
         assert!(headed(3), "segment 3's log, of the spare, its header its own");

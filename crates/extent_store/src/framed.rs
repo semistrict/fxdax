@@ -236,13 +236,6 @@ impl<F> Clone for Source<F> {
 }
 
 impl<F: File> Source<F> {
-    pub(crate) fn file(&self) -> &Arc<F> {
-        match self {
-            Self::Raw(file) => file,
-            Self::Framed(framed) => &framed.file,
-        }
-    }
-
     /// The parts of where `len` bytes at `at` in its data are, to `parts`: unpacked lately, as
     /// `unpacked` keeps them, or not. fxdax: fails with [`Corrupt`] if they are past its data, as
     /// an index would place them that names another file made at its path (TASK-79.38). A framed

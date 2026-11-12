@@ -1113,10 +1113,12 @@ impl<D: Dir, B: extent_remote::Bucket> Shared<D, B> {
                 let oldest = progress.seen.front().and_then(|(_, seen)| seen.elapsed().ok());
                 oldest.is_some_and(|waited| waited >= self.options.filling_wait)
             };
+            // fxdax: until its framed file is written, not durable, which its upload waits for no
+            // more (TASK-384). Asked again at the next interval, if the guest still hasn't
+            // committed.
             match urgent || waited {
-                true => drop(store.close_now()?),
-                // Asked again at the next interval, if the guest still hasn't committed.
-                false => closing = store.close_now_unless_filling()?,
+                true => drop(store.close_for_upload(false)?),
+                false => closing = store.close_for_upload(true)?,
             }
             store.flush()?;
             closed.extend(store.closed(room - closed.len())?);

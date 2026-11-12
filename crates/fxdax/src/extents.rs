@@ -1354,7 +1354,7 @@ impl ExtentStore {
     pub(crate) fn frame_open_segment(&self) -> Result<()> {
         self.store.close_segment().map_err(errno)?;
         self.commit_local(None)?;
-        self.store.closed(0).map(drop).map_err(errno)
+        self.store.wait_framed().map_err(errno)
     }
 
     /// Makes the commits ordered so far durable.
@@ -2992,7 +2992,7 @@ mod tests {
         // no commit waits for (TASK-165.9).
         store.store.close_segment().unwrap();
         committed_here(&store);
-        store.store.closed(0).unwrap();
+        store.store.wait_framed().unwrap();
         store.map(extent, 0, len as u64, 0).unwrap();
         let counted = stats::stats();
         // From its end, so that nothing is read ahead.

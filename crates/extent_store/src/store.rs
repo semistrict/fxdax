@@ -9,13 +9,13 @@ use crate::durability::{Batch, Durability, FileSyncs, Syncs};
 use crate::framed::{Aligned, Framed, Packed, Part, Source, Unpacked, read_aligned};
 use crate::kept::{Kept, KeptExtents};
 use crate::layout::{
-    Change, DESCRIPTION, Data, Description, EXTENTS, Extent, Extents, FileKey, KINDS, OPEN_EXTENTS,
-    Piece, Place, SEGMENTS, SegmentId, StoreFile, Volume, add_piece, branch_dir,
-    create_branch_dirs, encode_salted, extent_path, files_of, list_numbers, log_path,
+    Change, DESCRIPTION, Data, Description, EXTENTS, Extent, Extents, FileKey, KINDS, LOGS,
+    OPEN_EXTENTS, OPEN_SEGMENTS, Piece, Place, SEGMENTS, SegmentId, StoreFile, Volume, add_piece,
+    branch_dir, create_branch_dirs, encode_salted, extent_path, files_of, list_numbers, log_path,
     open_extent_path, open_segment_path, segment_path, spare_path,
 };
 use crate::seals;
-use crate::segments::{self, Behind, Preparation, Segments, Unframed, footer_last};
+use crate::segments::{self, Behind, Preparation, Preparing, Segments, Unframed, footer_last};
 use crate::shared::{Shared, SharedLock};
 use crate::state::{
     Framing, Gate, Life, Locked, OwnFiles, Placement, Readable, Reader, Space, Standing, State,
@@ -467,7 +467,10 @@ impl<D: Dir> Framer<D> {
                 return false;
             }
         };
+        state.segments.written(number, framed.clone());
         state.framing.wrote(number, framed);
+        // fxdax: the uploader, which takes it now (TASK-384).
+        self.idle.notify_all();
         if std::mem::replace(&mut state.framing.syncing, true) {
             return false;
         }
@@ -491,6 +494,7 @@ impl<D: Dir> Framer<D> {
             self.idle.notify_all();
         }
         state.framing.syncing = false;
+        self.idle.notify_all();
     }
 
     /// On the caller's thread, holding `state`, as before TASK-41, if the directory's I/O is its
@@ -501,7 +505,10 @@ impl<D: Dir> Framer<D> {
         while let Some(unframed) = state.framing.queue.pop_front() {
             let number = unframed.number();
             match state.standing.whole().and_then(|()| unframed.frame(&*self.dir)) {
-                Ok(framed) => state.framing.wrote(number, framed),
+                Ok(framed) => {
+                    state.segments.written(number, framed.clone());
+                    state.framing.wrote(number, framed);
+                }
                 Err(error) => framing_ended(state, number, Err(&error)),
             }
         }
@@ -542,6 +549,23 @@ impl<D: Dir> Framer<D> {
         }
         for (number, framed) in written {
             framing_ended(state, number, durable.as_ref().map(|()| framed));
+        }
+    }
+}
+
+/// fxdax: makes the entries of `branch`'s raw files and logs durable in `dir`, those of the next
+/// segment's, placed ahead of it, among them, off its commits (TASK-384): returns whether it did,
+/// a flush syncing them otherwise, as it syncs those of a segment opened unplaced.
+fn sync_entries<D: Dir>(dir: &D, branch: u64) -> bool {
+    let mut syncs = Syncs::default();
+    for kind in [OPEN_SEGMENTS, LOGS] {
+        syncs.dir(branch_dir(kind, branch));
+    }
+    match syncs.sync_dirs(dir).and_then(|()| dir.barrier().map_err(Error::from)) {
+        Ok(()) => true,
+        Err(err) => {
+            log::warn!("extent store: making the next segment's entries durable: {err:#}");
+            false
         }
     }
 }
@@ -1394,26 +1418,37 @@ impl<D: Dir> Store<D> {
         Ok(())
     }
 
+    /// fxdax: what frames the store's segments, and prepares its next segment's log, off its
+    /// commits ([`Framer`]).
+    fn framer(&self) -> Framer<D> {
+        let (dir, state, idle) = (self.dir.clone(), self.state.clone(), self.idle.clone());
+        Framer { dir, branch: self.branch.id, state, idle }
+    }
+
     /// fxdax: prepares the log of the segment after the open one, off the state lock, on a thread
     /// of its own, unless it is or is being (`Segments::to_prepare`, TASK-333): the segment's
     /// opening takes it, syncing nothing, where it wrote and synced its header holding the state
     /// lock, every write and read of the store, and its flushes, waiting 0.1-1.4 s behind the
-    /// host's journal on a disk VMs share. Here, holding it, as before, if the directory does one
-    /// thing at a time, or the host refuses the thread.
+    /// host's journal on a disk VMs share. fxdax: placed there under its name, beside the
+    /// segment's raw file, holding the state, then their entries made durable, holding nothing
+    /// (`Segments::prepared`, TASK-384): the commits made in the segment, opened, then wait for no
+    /// sync of the directories of raw files and logs, which each segment's opening cost the next
+    /// flush, a commit of the host's journal a durable commit waited for. Here, holding it, as
+    /// before, if the directory does one thing at a time, or the host refuses the thread.
     fn prepare_next(&self, state: &mut State<D::File>) {
         let Some(preparation) = state.segments.to_prepare() else { return };
         let preparation = match self.dir.concurrent() {
             true => {
-                let opener = Framer {
-                    dir: self.dir.clone(),
-                    branch: self.branch.id,
-                    state: self.state.clone(),
-                    idle: self.idle.clone(),
-                };
+                let opener = self.framer();
                 let prepare = move |preparation: Preparation| {
                     let prepared = preparation.prepare(&*opener.dir);
-                    let stale = opener.lock().segments.prepared(prepared);
-                    remove_spare(&*opener.dir, stale);
+                    let preparing = opener.lock().segments.prepared(&*opener.dir, prepared);
+                    if let Preparing::Placed(segment) = preparing {
+                        let synced = sync_entries(&*opener.dir, segment.branch);
+                        opener.lock().segments.placed_synced(segment, synced);
+                    } else if let Preparing::Ended(stale) = preparing {
+                        remove_spare(&*opener.dir, stale);
+                    }
                     opener.idle.notify_all();
                 };
                 match spawn_or_return("store opener", preparation, prepare) {
@@ -1424,12 +1459,27 @@ impl<D: Dir> Store<D> {
             false => preparation,
         };
         let prepared = preparation.prepare(&*self.dir);
-        remove_spare(&*self.dir, state.segments.prepared(prepared));
+        match state.segments.prepared(&*self.dir, prepared) {
+            Preparing::Placed(segment) => {
+                let synced = sync_entries(&*self.dir, segment.branch);
+                state.segments.placed_synced(segment, synced);
+            }
+            Preparing::Ended(stale) => remove_spare(&*self.dir, stale),
+        }
+    }
+
+    /// fxdax: the number of the next segment, if its raw file and log are there, under their
+    /// names, ahead of it, its preparation's ([`Store::prepare_next`], TASK-384): what reads the
+    /// directory beside the store, as a test does, finds them holding nothing, as an opening
+    /// would, which removes them.
+    pub fn placed(&self) -> Option<u64> {
+        self.lock().segments.placed().map(|segment| segment.number)
     }
 
     /// fxdax: waits for the preparation of the next segment's log to end, if one runs
-    /// ([`Store::prepare_next`]): its file there, under a spare's name, until the segment opens,
-    /// as what counts the store's files counts it (TASK-333).
+    /// ([`Store::prepare_next`]): its raw file and log there, under their names, their entries
+    /// durable, until the segment opens, as what counts the store's files counts them (TASK-333,
+    /// TASK-384).
     pub fn prepared(&self) -> Result<(), Error> {
         let mut state = self.lock();
         while state.segments.preparing() {
@@ -2115,6 +2165,19 @@ impl<D: Dir> Store<D> {
         self.close_now_unless(true)
     }
 
+    /// fxdax: closes as [`Store::close_now`] does, `unless_filling` as
+    /// [`Store::close_now_unless_filling`] does, for the uploader: until its framing wrote its
+    /// framed file, which it uploads, not until the framing made it durable, which its raw file
+    /// and log stand for meanwhile, until the commits its footer names are (TASK-384). A durable
+    /// commit waited, one after another, for the segment's framed file synced, the directory of
+    /// framed files after it, each a commit of the host's journal, before its upload began.
+    /// Returns whether it closed.
+    pub fn close_for_upload(&self, unless_filling: bool) -> Result<bool, Error> {
+        let Some(number) = self.close_between_commits(unless_filling)? else { return Ok(false) };
+        self.wait_for_writings([number]).context("closing the open segment")?;
+        Ok(true)
+    }
+
     /// fxdax: [`Store::close_now`], unless `filling` and the guest is filling the segment.
     fn close_now_unless(&self, filling: bool) -> Result<bool, Error> {
         let Some(number) = self.close_between_commits(filling)? else { return Ok(false) };
@@ -2194,12 +2257,7 @@ impl<D: Dir> Store<D> {
         if state.framing.queue.is_empty() || std::mem::replace(&mut state.framing.running, true) {
             return;
         }
-        let framer = Framer {
-            dir: self.dir.clone(),
-            branch: self.branch.id,
-            state: self.state.clone(),
-            idle: self.idle.clone(),
-        };
+        let framer = self.framer();
         if self.dir.concurrent() {
             let thread = framer.clone();
             if spawn_or_return("store framer", (), move |()| thread.frame_queued()).is_none() {
@@ -2241,6 +2299,43 @@ impl<D: Dir> Store<D> {
         self.durability.with(Mutex::lock).durable()
     }
 
+    /// fxdax: waits, holding no lock, for the framings of segment `number` and those before it to
+    /// end, their framed files durable, which the uploader waits for no more before it uploads
+    /// them (TASK-384): fails if one failed.
+    fn wait_framed_through(&self, number: u64) -> Result<(), Error> {
+        let framing =
+            |segment: &SegmentId| segment.branch == self.branch.id && segment.number <= number;
+        let mut state = self.lock();
+        while state.segments.framings().iter().any(framing) {
+            state = state.wait(&self.idle);
+        }
+        let segment = SegmentId { branch: self.branch.id, number };
+        match state.segments.framing_failure(segment) {
+            Some(error) => bail!("framing segment {number:#x}: {error}"),
+            None => Ok(()),
+        }
+    }
+
+    /// fxdax: waits, holding no lock, for every framing running to end, its framed file durable,
+    /// or failed, which it fails then: what reads the directory beside the store, as a test does,
+    /// finds the segments framed then named their own, their raw files and logs going with the next
+    /// flush, if their commits are durable. The uploader waits for no more than their framed files
+    /// written (`Store::closed`, TASK-384).
+    pub fn wait_framed(&self) -> Result<(), Error> {
+        let framing = self.state()?.segments.framings().clone();
+        let mut state = self.lock();
+        // And the thread making them durable done with them.
+        while framing.iter().any(|&number| state.segments.is_framing(number))
+            || state.framing.syncing
+        {
+            state = state.wait(&self.idle);
+        }
+        match framing.iter().find_map(|&number| state.segments.framing_failure(number)) {
+            Some(error) => bail!("framing a segment: {error}"),
+            None => Ok(()),
+        }
+    }
+
     /// fxdax: `state`, once no segment is being framed ([`Store::frame_behind`]), which it let go
     /// of meanwhile.
     fn framed<'a>(&self, mut state: Locked<'a, D::File>) -> Locked<'a, D::File> {
@@ -2255,23 +2350,25 @@ impl<D: Dir> Store<D> {
     /// ([`Store::acknowledged`]): the rest it takes later, their files not opened meanwhile. Only
     /// those whose commits are durable ([`Store::uploadable`]). Those being framed it waits for,
     /// holding no lock: each framing ends itself, whatever comes next, which may be nothing, as
-    /// after a write that closed one for want of room (TASK-150.2, TASK-153.8).
+    /// after a write that closed one for want of room (TASK-150.2, TASK-153.8). fxdax: until it
+    /// wrote their framed files, not until it made them durable, which their raw files and logs
+    /// stand for meanwhile, until the commits their footers name are (TASK-384).
     pub fn closed(&self, limit: usize) -> Result<Vec<Closed<D::File>>, Error> {
         let framing = self.state()?.segments.framings().clone();
-        self.wait_for_framings(framing)?;
+        self.wait_for_writings(framing)?;
         let mut state = self.state()?;
         let state = &mut *state;
         // fxdax: and framed: its framed file is what is uploaded.
         let segments = &state.segments;
-        let framing = |number| segments.is_framing(SegmentId { branch: self.branch.id, number });
-        let taken: Vec<(u64, Footer, bool)> = (state.wal.take(self.uploadable(), framing, limit))
+        let writing = |number| segments.is_writing(SegmentId { branch: self.branch.id, number });
+        let taken: Vec<(u64, Footer, bool)> = (state.wal.take(self.uploadable(), writing, limit))
             .into_iter()
             .map(|queued| (queued.number, queued.footer.clone(), queued.restamped))
             .collect();
         let mut closed = Vec::with_capacity(taken.len());
         for (number, footer, restamped) in taken {
             let segment = SegmentId { branch: self.branch.id, number };
-            let file = self.segment_file(state, segment)?.file().clone();
+            let file = state.segments.framed_file(&*self.dir, segment)?.file.clone();
             let mut own = Vec::with_capacity(footer.contents.own.len());
             for (extent, location) in footer.own() {
                 let file = state.own_files.file(&*self.dir, extent)?;
@@ -2354,7 +2451,14 @@ impl<D: Dir> Store<D> {
     /// data is in it here (TASK-165.8). The frees of its commits are the bucket's to keep. The
     /// log's base, its last commit from now on, is durable first, so that the store opened again
     /// puts what is left of the log after the branch (TASK-165.9).
+    ///
+    /// fxdax: once its framing ended, its framed file durable, which its upload waited for no
+    /// more, but for its framed file written (TASK-384): its upload and the syncs making it
+    /// durable here go on at once, the bucket's round trip mostly the longer; and once it is
+    /// acknowledged, its files leave as before, its framed file named its own, into the host's
+    /// cache, where reads of its extents in the bucket find it, and its raw file and log go.
     pub fn acknowledged(&self, number: u64) -> Result<(), Error> {
+        self.wait_framed_through(number)?;
         let mut base = self.base.with(Mutex::lock);
         let after = {
             let state = self.state()?;
@@ -2665,15 +2769,16 @@ impl<D: Dir> Store<D> {
         Ok(())
     }
 
-    /// fxdax: waits, holding no lock, for the framings of `segments` to end, each of which ends
-    /// itself ([`Store::frame_behind`]): fails if one failed.
-    fn wait_for_framings(
+    /// fxdax: waits, holding no lock, for the framings of `segments` to write their framed files,
+    /// or end, each of which ends itself ([`Store::frame_behind`]): fails if one failed. Not for
+    /// them to make the framed files durable, which the uploader waits for no more (TASK-384).
+    fn wait_for_writings(
         &self,
         segments: impl IntoIterator<Item = SegmentId>,
     ) -> Result<(), Error> {
         let segments: Vec<SegmentId> = segments.into_iter().collect();
         let mut state = self.lock();
-        while segments.iter().any(|&number| state.segments.is_framing(number)) {
+        while segments.iter().any(|&number| state.segments.is_writing(number)) {
             state = state.wait(&self.idle);
         }
         match segments.iter().find_map(|&number| state.segments.framing_failure(number)) {
