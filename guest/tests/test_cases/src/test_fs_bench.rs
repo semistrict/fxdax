@@ -1298,18 +1298,19 @@ mod guest {
                     assert_eq!(thawed, 0, "FITHAW: {}", std::io::Error::last_os_error());
                 }),
             ];
+            // Observed, as the metadata workloads are: the device's requests per round, and
+            // where the guest's time went, with FXDAX_BENCH_GUEST_PERF set.
             for (name, sync) in ways {
-                let start = Instant::now();
-                for i in 0..syncs {
-                    file.write_all_at(&block, i * 4096).unwrap();
-                    sync();
-                }
-                result(
-                    &format!("{name}-loop"),
-                    "ops/s",
-                    true,
-                    syncs as f64 / start.elapsed().as_secs_f64(),
-                );
+                let workload = format!("{name}-loop");
+                let secs = observed(&workload, syncs as usize, || {
+                    let start = Instant::now();
+                    for i in 0..syncs {
+                        file.write_all_at(&block, i * 4096).unwrap();
+                        sync();
+                    }
+                    start.elapsed().as_secs_f64()
+                });
+                result(&workload, "ops/s", true, syncs as f64 / secs);
             }
         }
         drop(file);
