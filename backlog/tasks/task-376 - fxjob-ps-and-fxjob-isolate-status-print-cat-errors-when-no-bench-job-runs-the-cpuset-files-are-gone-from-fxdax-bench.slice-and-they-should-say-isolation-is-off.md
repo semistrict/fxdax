@@ -7,6 +7,7 @@ title: >-
 status: To Do
 assignee: []
 created_date: '2026-11-12 09:39'
+updated_date: '2026-11-12 13:07'
 labels:
   - bug
   - ubu1
@@ -33,3 +34,9 @@ ubu1, 2026-11-12, step 146 (system-setup.d/146-fxdax_cgroups.sh): with no fxjob 
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+TASK-381 (duplicate) adds the cause: after a manager reload, fxdax.slice's subtree has no cpuset controller until a measurement runs, so the cpuset files fxjob ps and fxjob-isolate status read are missing.
+<!-- SECTION:NOTES:END -->

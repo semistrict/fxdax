@@ -4,9 +4,10 @@ title: >-
   fxjob ps and fxjob-isolate status print cat errors when no measurement has run
   since the manager reloaded: fxdax.slice's subtree has no cpuset controller
   then
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-11-12 11:16'
+updated_date: '2026-11-12 13:07'
 labels:
   - bug
   - ubu1
@@ -33,3 +34,9 @@ Seen on ubu1 2026-11-12 06:15 EST, right after r3305 (a --bench job) ended, whil
 - [ ] #2 scripts/upstream-changes.py --check passes
 - [ ] #3 Deviations from upstream documented where they occur
 <!-- DOD:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Duplicate of TASK-376 (same symptom, filed the same day; this one names the cause: fxdax.slice's subtree has no cpuset controller until a measurement runs). Folded into TASK-376.
+<!-- SECTION:NOTES:END -->
