@@ -3,11 +3,11 @@ id: TASK-383
 title: >-
   Simulation: stale_creates_landing_past_deletions seed 453 (SIM_SOAK=5) loses
   branch 2's acknowledged commits 27-29
-status: In Progress
+status: Done
 assignee:
   - '@claude'
 created_date: '2026-11-12 12:39'
-updated_date: '2026-11-12 14:13'
+updated_date: '2026-11-12 15:20'
 labels:
   - bug
   - simulation
@@ -26,8 +26,8 @@ Found 2026-11-12 by TASK-380's soak, once seeds replay (16b9f306a): extent_store
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 The seed's loss understood and its rule or code fixed, with a direct test that loses the commits without the fix
-- [ ] #2 The profile passes at SIM_SOAK=20
+- [x] #1 The seed's loss understood and its rule or code fixed, with a direct test that loses the commits without the fix
+- [x] #2 The profile passes at SIM_SOAK=20
 <!-- AC:END -->
 
 ## Definition of Done
@@ -53,4 +53,12 @@ Model: specs/bucket allowed it but its configs never had three takings with chec
 Fix: rule strays_kept (straysKept): State::fences also counts strays, every segment read not of the epoch of the fence before it (void, or applied of a lower epoch); the collector keeps them with the fences. Checkpoints carry them: FORMAT 5 -> 6. BucketStrays holds (7,117,696 states); mutation NoStraysKept finds NoAckedLost (10 s). Direct tests: collector::tests writers_taken_over_find_void_segments_before_their_successors_fences_kept and ..._find_late_fences_..., each with a rule-off twin that acknowledges a commit the branch lacks. sim: takeovers_need_strays_kept finds seed 453 with the rule off; stale_creates_landing_past_deletions always runs seed 453 (test_holds! takes found seeds).
 
 Blind spot: TLA+ bounds (two takings) and seeds that didn't replay; the sim's 200 seeds per profile miss 1-in-~1000 cases (seed 453 only at SIM_SOAK>=3). Structure: TASK-371 made correctness depend on what the collector keeps below fences (fences_kept, takeovers_kept, now strays_kept): three rules for one invariant, 'every position a live writer taken over may create at stays occupied'. Noted in OPEN_QUESTIONS.md for the user.
+
+Validation: macOS nextest extent_remote+extent_store 425/425; SIM_SOAK=50 of stale_creates_landing_past_deletions (10,000 seeds + 453) 0 failures; every sim test (53) at SIM_SOAK=5 passes; all 57 TLA+ models and mutations pass (BucketStrays holds 7,117,696 states, NoStraysKept finds NoAckedLost). Main CI 43242709864 on 45511d952: all 17 jobs green.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Root cause: since TASK-371 a writer's creates are its fencing, and the collector deleted strays (segments read past a fence that are not its writer's: void ones, or an earlier writer's late fence). A writer taken over then created its next segment in a stray's place, below its successor's fence, and acknowledged commits no history held. Fix: rule strays_kept; State::fences counts strays and the collector keeps them; checkpoint FORMAT 6. specs/bucket gained straysKept, BucketStrays and NoStraysKept. Seed 453 always runs. Verified by two direct tests with rule-off twins, 10,000 sim seeds, all sim tests at SIM_SOAK=5, all TLA+ models, and green main CI.
+<!-- SECTION:FINAL_SUMMARY:END -->
