@@ -18,6 +18,11 @@
 # under CASE@VAR=VALUE...), as fxfs-guest-shared-disk@FXDAX_SHARED_DISK_FSYNC=1; OUT short enough
 # for the daemon's control socket in each run's directory (checked first). FXDAX_GUEST_KERNEL
 # names the guest kernel. A run that fails is kept, said, and the rounds go on.
+#
+# FXDAX_AB_LOADER, a shell command, runs beside each run, inside its `fxjob --bench` job, killed
+# with its process group as the run ends: load the rounds bear, as other VMs' writes on the host's disk
+# (TASK-369). Inside the job, as the bench holds no disk for itself: a loader run as other work
+# loads whatever measurement holds the bench meanwhile.
 set -euo pipefail
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 (( $# >= 5 )) || { sed -n '6,17p' "$0" >&2; exit 2; }
@@ -47,9 +52,17 @@ run() {
     local results=$out/$spec/$name-$round
     mkdir -p "$results"
     echo "ab: round $round, $spec, $name" >&2
+    local command=("$repo/scripts/test-e2e.sh" "$case")
+    if [[ -n ${FXDAX_AB_LOADER:-} ]]; then
+        # shellcheck disable=SC2016 # expanded by the job's shell
+        command=(bash -c 'setsid bash -c "$FXDAX_AB_LOADER" & loader=$!
+            "$@"; status=$?
+            kill -- -"$loader" 2> /dev/null; wait "$loader" 2> /dev/null
+            exit "$status"' loaded "${command[@]}")
+    fi
     if ! env "${env[@]}" FXDAX_E2E_PREBUILT="$artifacts" FXDAX_E2E_RESULTS="$results" \
         fxjob --bench --name "ab-$name-$round" --mem "${FXDAX_AB_MEM:-20G}" -- \
-        "$repo/scripts/test-e2e.sh" "$case" > "$results/run.log" 2>&1; then
+        "${command[@]}" > "$results/run.log" 2>&1; then
         echo "ab: round $round, $spec, $name failed: $results/run.log" >&2
     fi
     if [[ -z ${FXDAX_AB_KEEP_DATA:-} ]]; then
