@@ -148,6 +148,17 @@ class Refusals(unittest.TestCase):
         self.assertEqual((status, err), (2, f"{harness} holds no artifacts (FXDAX_E2E_BUILD_ONLY "
                                             "makes them)\n"))
 
+    def test_the_daemons_sockets_are_short_whatever_the_results_path(self):
+        """TASK-330.4: a host run's results nested deeper passed a socket path's 107 bytes, and
+        test-e2e.sh's daemon exited at once, the sandboxes' run with it, on both sides of an A/B.
+        Its sockets are in a directory of their own under /tmp: their paths' length is fixed."""
+        text = (SCRIPTS / "test-e2e.sh").read_text()
+        self.assertIn('sockets=$(mktemp -d /tmp/fxdax-e2e-sockets.XXXXXX)', text)
+        self.assertIn('socket="$sockets/extentd.sock"\ncontrol="$sockets/extentd.control"', text)
+        longest = len("/tmp/fxdax-e2e-sockets.XXXXXX/extentd.control")
+        self.assertLess(longest, 107)
+        self.assertNotIn('"$results/extentd.sock"', text)
+
     def test_qualify_takes_a_sandboxes_mode_and_a_soaks_seconds(self):
         results = tempfile.mkdtemp()
         status, _, err = bash(f"{SCRIPTS / 'qualify.sh'} {results}",

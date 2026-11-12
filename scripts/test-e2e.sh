@@ -37,9 +37,9 @@
 #
 # The guests' extent stores are served by fxdax's extent daemon, which this
 # starts, as FXDAX_EXTENTD tells the tests; its control API is beside it, at
-# extentd.control. FXDAX_EXTENTD_MEMORY caps its memory, in bytes. LIBCLANG_PATH names libclang's
-# directory where llvm-config cannot, and DAX needs access to /dev/userfaultfd
-# (see the README).
+# extentd.control, in a directory of their own under /tmp. FXDAX_EXTENTD_MEMORY
+# caps its memory, in bytes. LIBCLANG_PATH names libclang's directory where
+# llvm-config cannot, and DAX needs access to /dev/userfaultfd (see the README).
 set -euo pipefail
 root=$(cd "${FXDAX_E2E_ROOT:-$(dirname "$0")/..}" && pwd)
 harness="$root/guest/tests"
@@ -333,12 +333,14 @@ if [[ -n $build_only ]]; then
     echo "Artifacts: $build_only" >&2
     exit 0
 fi
-socket="$results/extentd.sock"
-control="$results/extentd.control"
-if [[ -e $socket || -e $control ]]; then
-    echo "$socket exists: a daemon may be running" >&2
-    exit 2
-fi
+# Its sockets in a directory of their own under /tmp, not the results': a socket's path is
+# 107 bytes at most (SUN_LEN), which a host run's results nested deeper passed, and the daemon
+# exited ("listening at .../results/main-r1/sandboxes/extentd.control: path must be shorter than
+# SUN_LEN", TASK-330.4's A/B). Reachable by others, as a jailed VM's user must reach the socket.
+sockets=$(mktemp -d /tmp/fxdax-e2e-sockets.XXXXXX)
+chmod 755 "$sockets"
+socket="$sockets/extentd.sock"
+control="$sockets/extentd.control"
 # A host keeps stores in a bucket, FXDAX_EXTENTD_REMOTE's or a file bucket in memory, on tmpfs,
 # as of placement 1 unless one is named; what it did with it scripts/bench-report.py reports. Not
 # one in the daemon's memory: the cases open the stores it made in processes of their own (fxdax's
@@ -389,7 +391,7 @@ env FXDAX_EXTENTD_REMOTE="${FXDAX_EXTENTD_REMOTE:-file://$bucket_dir}" \
     FAILPOINTS="${FXDAX_FAILPOINTS:-}" ${extentd_wrap[@]+"${extentd_wrap[@]}"} "$extentd_bin" "$socket" ${FXDAX_EXTENTD_MEMORY:+"$FXDAX_EXTENTD_MEMORY"} \
     > "$results/extentd.log" 2>&1 &
 daemon=$!
-trap 'extentd_peak; kill "$daemon" 2> /dev/null; extentd_stop; rm -f "$socket" "$control"; [[ -z $bucket_dir ]] || rm -r "$bucket_dir"; [[ -z $cache_dir ]] || rm -r "$cache_dir"' EXIT
+trap 'extentd_peak; kill "$daemon" 2> /dev/null; extentd_stop; rm -r "$sockets"; [[ -z $bucket_dir ]] || rm -r "$bucket_dir"; [[ -z $cache_dir ]] || rm -r "$cache_dir"' EXIT
 while [[ ! -S $socket || ! -S $control ]]; do
     if ! kill -0 "$daemon" 2> /dev/null; then
         echo "the extent daemon exited: see $results/extentd.log" >&2
