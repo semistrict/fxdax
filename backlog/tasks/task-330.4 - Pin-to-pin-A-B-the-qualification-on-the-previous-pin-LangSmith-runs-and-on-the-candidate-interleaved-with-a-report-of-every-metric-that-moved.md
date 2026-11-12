@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-10 14:00'
-updated_date: '2026-11-12 04:08'
+updated_date: '2026-11-12 07:45'
 labels:
   - testing
 dependencies: []
@@ -53,4 +53,6 @@ LangSmith bumps pins (6a513509a to 96c7808b8 went bad). Before a pin is offered,
 2026-11-12 (claude): first A/B, 96c7808b8 vs main 3e0d6d1f6 (TASK-310 in), 2 rounds, builds as work: its sandboxes' part ran on NEITHER side: test-e2e.sh's daemon's control socket path, in the host run's nested results, passed SUN_LEN and the daemon exited at once; qualify.sh exited 1 and the A/B went on 4 rounds comparing the soak alone. Fixed: sockets under /tmp (c85e0ee13); a part that left no result is now a failed check, PART.not-run, qualify.sh exit 3, bench-ab.py failing the comparison and the A/B stopping (6c34c4678). Its soak, 1,800 s, through the proxy, both sides 2 rounds: pin's daemon wrote 30.24 GiB to disk vs main's 15.20 (0.50x) for the guests' 15,360 MiB each; peak RSS 3,950 vs 1,628 MiB (0.41x); CPU 243 vs 379 s (main 1.56x); uploads caught up 27.9 vs 24.4 s after answering, longest fsync ~252 s both; the pin failed 'no failure said' for the full and out-of-service phases (TASK-314) and weighs no memory budget (TASK-330.2), every round. Rerunning whole.
 
 2026-11-12 (claude): third A/B (96c7808b8 vs main 09fa51f08): its sandboxes now started on ubu1's long paths (short TMPDIR, ce48681ac); 2 min 41 s into the pin's first round the kernel OOM-killed the pin's host-b extentd in the run's 16 GiB scope (anon 2.97 GB + shmem 2.11 GB, against main's 3.25 GB peak in the same mode: TASK-317's growth in the pin), and systemd stopped the scope, the A/B with it (status 143). Fixed: the sandboxes case stops itself as its cgroup's memory past reclaim (anon + shmem) comes within 1 GiB of the nearest limit, a failed check naming its daemons' memory, its VMs killed, so the round fails and the A/B goes on (a9264a871).
+
+2026-11-12 (claude): fourth A/B (96c7808b8 vs main 0ee1bdb58, run-r3305-20261112T043728Z-8d65a41d). Contaminated: TASK-369's loader (scope fxjob-t369-loader-1808752, ordinary work, 1 GiB rewritten with fsync in a loop on the same /mnt/fxdax-scratch NVMe, ~186 MB/s) ran 01:54:30-02:45:16 EST, beside round 1: pin-r1 (01:54:28-02:27:37) wholly, main-r1's sandboxes part (02:27:37-~02:44) wholly and its soak's first minute. fxjob --bench isolates CPU, cache and memory bandwidth, not the disk. Their framing, durable-lag, command-latency, duration and throughput numbers don't count; pass/fail on memory and correctness stands: the pin's sandboxes stopped by the memory guard (15,365 MiB past reclaim of 16,384, its daemons 4,328 and 4,652 MiB: TASK-317's growth), main's 16 VMs each doing its role with daemons peaking at 3.29/3.24 GB, stores 1.20x the guests' bytes. Round 2 (main then pin) runs after the loader; one more round (pin then main) after it, so the table compares two clean rounds a side, both orders.
 <!-- SECTION:NOTES:END -->

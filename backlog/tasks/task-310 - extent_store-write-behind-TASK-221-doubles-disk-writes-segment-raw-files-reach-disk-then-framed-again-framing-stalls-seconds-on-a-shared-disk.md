@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-09 23:57'
-updated_date: '2026-11-12 07:44'
+updated_date: '2026-11-12 07:45'
 labels:
   - perf
   - extentd
@@ -119,4 +119,6 @@ AC #4, where it stands (main ba0c184d2, CI 42900426848 green): bytes met (stores
 2026-11-11 (claude): final A/B on ubu1 (main cf757b22e, with TASK-341/345, vs this branch; one guest kernel built from main; fxjob --bench, interleaved; 3 rounds of the shared-disk cases, 6 of pgbench). Slowest framing, median (range): shared-disk 564 (438-918) vs main 964 (805-1042); shared-disk-dax 460 (448-647) vs 742 (464-1844); shared-disk fsync 470 (388-1057) vs 1501 (1459-1560); pgbench 129 (104-180) vs 740 (186-5521); pgbench-dax 145 (110-171) vs 1068 (178-1431). 35 of 36 branch runs under 1 s (the one at 1.06 s, fsync round 1, under other agents' load). What's left of a slow framing is its write phase alone (own 0.0 ms, write 0.4-0.6 s on the shared disk: reading, compressing, writing on a contended disk; TASK-336); no sync. Durable lag (TASK-322): median unchanged everywhere (p50 16-32 ms shared-disk, 128 ms fsync on both sides: doc-12's 50 ms median still broken there, TASK-322; 64 ms pgbench on both); within 50 ms shared-disk 75.7% vs 67.3%, fsync 22.1% vs 20.7%; p99 shared-disk 1024 vs 2048. Regression: pgbench-dax's tail (p99 1152 vs 256 ms, slowest flush 4.6 s vs 1.4 s median), filed TASK-369. Every pgbench run passed its own durability check on both sides. Bytes: extentd wrote 25.4 GiB on both sides of shared-disk (raw 1.0, framed 0.002-0.005 per guest byte). One branch shared-disk round (2) hung 2.5 h: fxdax.slice at its 18 GiB limit with another agent's job (t358-b, OOM-killed at 13:37), the daemon paging in from its cache at 1.6 s a read; not counted as a hang of this code. The uploader's landing of a spanning commit's first segment last (TASK-338's first fix) is dropped: TASK-345's rebase follows such a segment landed alone; the acknowledgement hold stays. Tests: macOS scripts/test.sh green; Linux workspace on ubu1 2502/2503 (TASK-315 alone); crash tests 10/10.
 
 2026-11-12 (TASK-330.4's agent, for reference): the qualification's sandboxes long mode on main 0ee1bdb58 (TASK-310 in; ubu1, fxjob --bench, 16 GiB, LangSmith's 16 VMs eight at a time): framings over 1 s host-a 18 (slowest 4,720.8 ms, 791 slow ones, sum 178 s), host-b 7 (slowest 5,952.0 ms, 783, 169 s); before TASK-310 (04280b595's run, same mode): 60/59, slowest 14.9/7.4 s. Stores 1.20x the guests' bytes; daemons' peak RSS 3.29/3.24 GB.
+
+2026-11-12, correction (TASK-330.4's agent): the framing numbers in the note above (18/7 over 1 s, slowest 4.7/6.0 s) came from a round wholly overlapped by TASK-369's disk loader (fxjob-t369-loader-1808752, 01:54:30-02:45:16 EST, ~186 MB/s of fsynced rewrites on the same /mnt/fxdax-scratch NVMe): don't count them. Clean rounds follow in TASK-330.4's A/B.
 <!-- SECTION:NOTES:END -->
