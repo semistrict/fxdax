@@ -366,6 +366,20 @@ pub(crate) fn recover<D: Dir>(dir: &D, branch: Branch) -> Result<Recovered, Erro
     let (framed, raw, logs) = (listed(SEGMENTS)?, listed(OPEN_SEGMENTS)?, listed(LOGS)?);
     let numbers: BTreeSet<u64> = framed.iter().chain(&raw).chain(&logs).copied().collect();
     let left = |number| raw.contains(&number) || logs.contains(&number);
+    // fxdax: the logs that are their segments' own, their headers naming them: one renamed a spare
+    // and taken as another segment's log, which a crash brought back under its old name, holds none
+    // of its segment's records, and says nothing of whether its segment was made durable: a
+    // segment the base acknowledged, its files' removal undone, its log a spare taken since, read as
+    // one past the base whose raw file and log are both there, broke the run of segments framed
+    // whole, those after it closed again from their raw files and logs, which they hold no more,
+    // their commits lost (TASK-369, the Shuttle rounds, with the next segment's log prepared from a
+    // spare as soon as it opens).
+    let mut own = BTreeSet::new();
+    for &number in &logs {
+        if own_log(dir, SegmentId { branch: branch.id, number })? {
+            own.insert(number);
+        }
+    }
     // What a segment holds is in its framed file, durably, or nothing durable is: its raw data and
     // log go.
     let settled = |number| -> Result<(), Error> {
@@ -423,7 +437,7 @@ pub(crate) fn recover<D: Dir>(dir: &D, branch: Branch) -> Result<Recovered, Erro
     let mut past_base = base.is_none();
     for number in numbers {
         let segment = SegmentId { branch: branch.id, number };
-        let again = broken && raw.contains(&number) && logs.contains(&number);
+        let again = broken && raw.contains(&number) && own.contains(&number);
         let footer = match framed.contains(&number) && !again {
             true => whole_footer(dir, segment, left(number))?,
             false => None,
@@ -440,7 +454,7 @@ pub(crate) fn recover<D: Dir>(dir: &D, branch: Branch) -> Result<Recovered, Erro
         };
         // Not whole, and not one the base acknowledged, whose removal a crash undid: one whose
         // raw file or log is gone was durable, as they go only then.
-        let lost = raw.contains(&number) && logs.contains(&number);
+        let lost = raw.contains(&number) && own.contains(&number);
         broken |= footer.is_none() && lost && (records.is_empty() || after_base(&records));
         let holds_nothing = past_base && records.is_empty();
         if footer.is_none() && left(number) && (refusing.contains(&number) || holds_nothing) {
@@ -614,6 +628,21 @@ fn whole_footer<D: Dir>(dir: &D, segment: SegmentId, left: bool) -> Result<Optio
         file.sync()?;
     }
     Ok(footer.filter(|_| whole))
+}
+
+/// fxdax: whether `segment`'s log is its own: there, its header naming it (`LOG_MAGIC`).
+fn own_log<D: Dir>(dir: &D, segment: SegmentId) -> Result<bool, Error> {
+    let log = match dir.open(&log_path(segment), false) {
+        Ok(log) => log,
+        Err(err) if not_found(&err) => return Ok(false),
+        Err(err) => return Err(err.into()),
+    };
+    if log.size()? < LOG_HEADER as u64 {
+        return Ok(false);
+    }
+    let mut header = [0; LOG_HEADER];
+    log.read_cached(&mut header, 0)?;
+    Ok(log_salt(&header, segment).is_some())
 }
 
 /// fxdax: the store's epoch of the first commit `records`, a segment's log's, hold: the first a
@@ -1304,6 +1333,33 @@ mod tests {
             recovered.segments.iter().map(|(footer, _)| footer_last(footer)).collect();
         assert_eq!(last, [2, 3, 4]);
         assert_eq!(files(&dir, SEGMENTS), [0, 1, 2]);
+        assert_eq!((files(&dir, OPEN_SEGMENTS), files(&dir, LOGS)), (vec![], vec![]));
+    }
+
+    /// fxdax: a segment the base acknowledged, its framed file gone, its raw file and log back, a
+    /// crash undoing their removal, its log a spare taken since as another segment's, breaks no run
+    /// of segments framed whole: those after it are read framed, though their raw files and logs are
+    /// back too, their logs spares taken since. Its log taken for its own, holding no record, it
+    /// broke the run, and the segments after it were closed again from logs holding none of their
+    /// records, commits the uploader had lost (TASK-369, the Shuttle rounds, round
+    /// writer_closer_and_uploader_randomly's: "uploaded commit 3 before durable").
+    #[test]
+    fn logs_taken_since_break_no_run_of_whole_segments() {
+        let dir = MemDir::new();
+        framed_three(&dir);
+        let (mut base, _) = BaseFile::read(&dir).unwrap();
+        base.write(&dir, Some(tag(2, 2))).unwrap();
+        dir.remove(&segment_path(segment(0))).unwrap();
+        for (number, of) in [(0, 9), (1, 8)] {
+            let raw = dir.create(&open_segment_path(segment(number)), true).unwrap();
+            raw.write_at(&[number as u8; 4096], 0).unwrap();
+            logged(&dir, number, of, &[]);
+        }
+        let recovered = recover(&dir, BRANCH).unwrap();
+        let last: Vec<u64> =
+            recovered.segments.iter().map(|(footer, _)| footer_last(footer)).collect();
+        assert_eq!(last, [3, 4]);
+        assert_eq!(files(&dir, SEGMENTS), [1, 2]);
         assert_eq!((files(&dir, OPEN_SEGMENTS), files(&dir, LOGS)), (vec![], vec![]));
     }
 

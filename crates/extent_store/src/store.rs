@@ -1174,6 +1174,13 @@ impl<D: Dir> Store<D> {
             if rules().close_waits_for_framings {
                 state = self.framed(state);
             }
+            // fxdax: and for the next segment's log being prepared, which writes a spare's header
+            // and room: a store opening the branch again meanwhile, taking the spare as a log, would
+            // have its header written over, another segment's, its records then none of its own
+            // (TASK-333, the Shuttle rounds closing after a failed framing).
+            while state.segments.preparing() {
+                state = state.wait(&self.idle);
+            }
             state.standing.close();
             // Their raw files, of commits durable, go as a flush's would.
             let raw = match state.standing.failed() {
