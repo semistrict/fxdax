@@ -1,0 +1,45 @@
+[
+ {
+  "daemon": "fxfs-guest-bucket-soak/fxfs-guest-bucket-soak/extentd-stats.txt",
+  "checks": [
+   {
+    "budget": "memory",
+    "passed": true,
+    "says": "anonymous memory 1589.3 MiB at most, budget 2947.9 MiB; 0 samples past it, by 0.0 MiB at most"
+   },
+   {
+    "budget": "uploads",
+    "passed": true,
+    "says": "uploads held 1528.7 MiB at most, budget 1536.0 MiB"
+   },
+   {
+    "budget": "disk",
+    "passed": true,
+    "says": "the kernel wrote 15562.1 MiB for it, it says 32802.1 MiB at most: stores 15519.3 MiB, pages 201.0 MiB, stats 35.4 MiB, log 0.1 MiB, bucket 17045.5 MiB, cache 0.7 MiB"
+   }
+  ],
+  "figures": {
+   "max_anon": 1666510848,
+   "anon_budget": 3091136544,
+   "max_shmem": 5758976,
+   "cpu_ns": 376678307000,
+   "written": {
+    "raw": 16200089600,
+    "copied": 62914560,
+    "framed": 4056920,
+    "own": 0,
+    "log": 6134128
+   },
+   "io_write_bytes": 16318029824,
+   "per_guest_byte": {
+    "raw": 1.0,
+    "copied": 0.004,
+    "framed": 0.0,
+    "own": 0.0,
+    "log": 0.0,
+    "io": 1.007
+   },
+   "cpu_ns_per_request": 7656063
+  }
+ }
+]

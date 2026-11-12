@@ -1,0 +1,12 @@
+[
+ {
+  "daemon": "fxfs-guest-sandboxes/fxfs-guest-sandboxes/host-a-stats.txt",
+  "checks": [],
+  "figures": {}
+ },
+ {
+  "daemon": "fxfs-guest-sandboxes/fxfs-guest-sandboxes/host-b-stats.txt",
+  "checks": [],
+  "figures": {}
+ }
+]

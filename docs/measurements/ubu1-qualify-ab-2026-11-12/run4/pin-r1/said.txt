@@ -1,0 +1,42 @@
+sandboxes: host-a imported the image in 3.633813525s
+sandboxes: host-b imported the image in 3.824918178s
+sandboxes: long mode, 16 VMs, 8 at once, 28 vCPUs at once on 8 CPUs
+sandboxes: sandbox-0-builder on host-a booted at 0.0 s
+sandboxes: sandbox-1-pgbench on host-b booted at 0.3 s
+sandboxes: sandbox-2-git on host-a booted at 0.4 s
+sandboxes: sandbox-3-writer on host-b booted at 0.6 s
+sandboxes: sandbox-4-builder on host-b booted at 0.7 s
+sandboxes: sandbox-5-pgbench on host-a booted at 0.9 s
+sandboxes: sandbox-6-git on host-b booted at 1.1 s
+sandboxes: sandbox-7-writer on host-a booted at 1.2 s
+sandboxes: sandbox-3-writer: ran 86.4 s
+sandboxes: sandbox-8-builder on host-a booted at 87.1 s
+sandboxes: sandbox-2-git: ran 87.6 s
+sandboxes: sandbox-9-pgbench on host-b booted at 88.1 s
+sandboxes: sandbox-7-writer: ran 87.6 s
+sandboxes: sandbox-10-git on host-a booted at 89.0 s
+sandboxes: sandbox-6-git: ran 90.5 s
+sandboxes: sandbox-11-writer on host-b booted at 91.7 s
+sandboxes: check failed: memory: the run's memory ran out: 15365 MiB held past reclaim of its 16384 MiB, its daemons holding host-a 4328 MiB and host-b 4652 MiB
+bucket-soak: 1800 s, 4 VMs writing 2 MiB/s each
+bucket-soak: at 82.353µs, the bucket answering: latency-ms=0 failing=not
+bucket-soak: answering: 0 failures said, anonymous memory 0 MiB at most, its budget 0 MiB
+bucket-soak: at 180.924341149s, the bucket slow: latency-ms=300 failing=not
+bucket-soak: slow: 0 failures said, anonymous memory 0 MiB at most, its budget 0 MiB
+bucket-soak: at 541.070412184s, the bucket full: latency-ms=0 failing=no-space
+bucket-soak: full: 0 failures said, anonymous memory 0 MiB at most, its budget 0 MiB
+bucket-soak: at 1081.178542283s, the bucket out of service: latency-ms=0 failing=unavailable
+bucket-soak: out of service: 0 failures said, anonymous memory 0 MiB at most, its budget 0 MiB
+bucket-soak: at 1261.21275891s, the bucket answering again: latency-ms=300 failing=not
+bucket-soak: answering again: 0 failures said, anonymous memory 0 MiB at most, its budget 0 MiB
+bucket-soak: store 0 uploaded 60.67227776s after the bucket answered
+bucket-soak: store 1 uploaded 46.924958291s after the bucket answered
+bucket-soak: store 2 uploaded 47.013054728s after the bucket answered
+bucket-soak: store 3 uploaded 48.729979564s after the bucket answered
+bucket-soak: VM 0: wrote 3840 MiB in 240 files, the longest fsync 257197 ms
+bucket-soak: VM 1: wrote 3840 MiB in 240 files, the longest fsync 253289 ms
+bucket-soak: VM 2: wrote 3840 MiB in 240 files, the longest fsync 253953 ms
+bucket-soak: VM 3: wrote 3840 MiB in 240 files, the longest fsync 255846 ms
+bucket-soak: check failed: memory: its stats have no process: line: it weighs no memory against a budget
+bucket-soak: check failed: failures: the bucket full, and no failure said
+bucket-soak: check failed: failures: the bucket out of service, and no failure said

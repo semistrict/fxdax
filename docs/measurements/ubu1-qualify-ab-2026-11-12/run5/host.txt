@@ -1,0 +1,10 @@
+Linux ubu1 7.0.0-43-generic #43-Ubuntu SMP PREEMPT_DYNAMIC Fri Oct 23 13:25:25 UTC 2026 x86_64 GNU/Linux
+model name	: AMD Ryzen 9 8945HS w/ Radeon 780M Graphics
+cpus 16
+MemTotal:       29056644 kB
+rustc 1.99.1 (58cf8f9c3 2026-10-13)
+Suite qualify, the harness of 8f090e37afcfcc5d66a1d8ea8030b56a2f87fbf0
+A pin: /mnt/fxdax-scratch/fxdax-host/run-r3305-20261112T093102Z-e0589420/trees/pin 
+B main: /mnt/fxdax-scratch/fxdax-host/run-r3305-20261112T093102Z-e0589420/trees/main 
+Built in 1522s.
+Took 4615s.

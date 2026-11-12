@@ -1,0 +1,149 @@
+{
+  "case": "fxfs-guest-sandboxes",
+  "backend": "fxfs-guest-sandboxes",
+  "results": [
+    {
+      "workload": "sandboxes.vms",
+      "unit": "s",
+      "higher_is_better": false,
+      "values": [
+        792.818660437
+      ]
+    },
+    {
+      "workload": "sandboxes.vm.builder",
+      "unit": "s",
+      "higher_is_better": false,
+      "values": [
+        770.134731804
+      ]
+    },
+    {
+      "workload": "sandboxes.vm.git",
+      "unit": "s",
+      "higher_is_better": false,
+      "values": [
+        107.583969691
+      ]
+    },
+    {
+      "workload": "sandboxes.vm.pgbench",
+      "unit": "s",
+      "higher_is_better": false,
+      "values": [
+        615.410674974
+      ]
+    },
+    {
+      "workload": "sandboxes.vm.writer",
+      "unit": "s",
+      "higher_is_better": false,
+      "values": [
+        81.755511259
+      ]
+    },
+    {
+      "workload": "sandboxes.command.cat",
+      "unit": "ms",
+      "higher_is_better": false,
+      "values": [
+        69.0
+      ]
+    },
+    {
+      "workload": "sandboxes.command.echo",
+      "unit": "ms",
+      "higher_is_better": false,
+      "values": [
+        60.0
+      ]
+    },
+    {
+      "workload": "sandboxes.command.uname",
+      "unit": "ms",
+      "higher_is_better": false,
+      "values": [
+        62.0
+      ]
+    },
+    {
+      "workload": "sandboxes.framings.slow",
+      "unit": "count",
+      "higher_is_better": false,
+      "values": [
+        1398.0
+      ]
+    },
+    {
+      "workload": "sandboxes.framings.slowest",
+      "unit": "ms",
+      "higher_is_better": false,
+      "values": [
+        4704.1
+      ]
+    },
+    {
+      "workload": "sandboxes.framings.sum",
+      "unit": "s",
+      "higher_is_better": false,
+      "values": [
+        277.7206999999998
+      ]
+    },
+    {
+      "workload": "sandboxes.daemons.disk_written",
+      "unit": "GiB",
+      "higher_is_better": false,
+      "values": [
+        90.52875518798828
+      ]
+    },
+    {
+      "workload": "sandboxes.daemons.peak_rss",
+      "unit": "MiB",
+      "higher_is_better": false,
+      "values": [
+        3091.33984375
+      ]
+    },
+    {
+      "workload": "sandboxes.daemons.cpu",
+      "unit": "s",
+      "higher_is_better": false,
+      "values": [
+        1116.48
+      ]
+    },
+    {
+      "workload": "sandboxes.guests.written",
+      "unit": "GiB",
+      "higher_is_better": true,
+      "values": [
+        75.91967391967773
+      ]
+    },
+    {
+      "workload": "sandboxes.stores.per_guest_byte",
+      "unit": "x",
+      "higher_is_better": false,
+      "values": [
+        1.1897385238461464
+      ]
+    },
+    {
+      "workload": "sandboxes.daemons.disk_per_guest_byte",
+      "unit": "x",
+      "higher_is_better": false,
+      "values": [
+        1.1924281350808594
+      ]
+    }
+  ],
+  "failures": {
+    "framings": 2
+  },
+  "failed": [
+    "framings: host-a framed 10 segments slower than 1000 ms, the slowest 1549.6 ms",
+    "framings: host-b framed 12 segments slower than 1000 ms, the slowest 4704.1 ms"
+  ]
+}

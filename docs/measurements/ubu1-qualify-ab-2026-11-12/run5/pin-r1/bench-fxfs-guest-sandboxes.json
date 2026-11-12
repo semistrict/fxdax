@@ -1,0 +1,11 @@
+{
+  "case": "fxfs-guest-sandboxes",
+  "backend": "fxfs-guest-sandboxes",
+  "results": [],
+  "failures": {
+    "memory": 1
+  },
+  "failed": [
+    "memory: the run's memory ran out: 15420 MiB held past reclaim of its 16384 MiB, its daemons holding host-a 4326 MiB and host-b 5569 MiB"
+  ]
+}

@@ -1,0 +1,41 @@
+== sandboxes (long)
+[fxfs-guest-sandboxes] ... WARNING: running fxfs-guest-sandboxes without network isolation: FXDAX_EXTENTD_REMOTE names a bucket over the network.
+WARNING: cleanup process 3862256 did not exit after SIGTERM, sending SIGKILL
+WARNING: cleanup process 3862403 did not exit after SIGTERM, sending SIGKILL
+FAIL (103 s of 7200 s):
+the test's host side exited with exit status: 1; see its log
+(See test artifacts at: /mnt/fxdax-scratch/fxdax-host/run-r3305-20261112T043728Z-8d65a41d/results/pin-r2/sandboxes/fxfs-guest-sandboxes)
+Error: 
+fxfs-guest-sandboxes: failed in round 1 of 1: see /mnt/fxdax-scratch/fxdax-host/run-r3305-20261112T043728Z-8d65a41d/results/pin-r2/sandboxes/fxfs-guest-sandboxes
+Logs: /mnt/fxdax-scratch/fxdax-host/run-r3305-20261112T043728Z-8d65a41d/results/pin-r2/sandboxes
+sandboxes: host-a imported the image in 1.950722852s
+sandboxes: host-b imported the image in 1.939129737s
+sandboxes: long mode, 16 VMs, 8 at once, 28 vCPUs at once on 8 CPUs
+sandboxes: sandbox-0-builder on host-a booted at 0.0 s
+sandboxes: sandbox-1-pgbench on host-b booted at 0.1 s
+sandboxes: sandbox-2-git on host-a booted at 0.2 s
+sandboxes: sandbox-3-writer on host-b booted at 0.3 s
+sandboxes: sandbox-4-builder on host-b booted at 0.3 s
+sandboxes: sandbox-5-pgbench on host-a booted at 0.4 s
+sandboxes: sandbox-6-git on host-b booted at 0.5 s
+sandboxes: sandbox-7-writer on host-a booted at 0.6 s
+sandboxes: sandbox-3-writer: ran 46.5 s
+sandboxes: sandbox-3-writer: commands echo=45/19ms uname=45/11ms cat=45/7ms
+sandboxes: sandbox-8-builder on host-a booted at 46.9 s
+sandboxes: sandbox-7-writer: ran 46.8 s
+sandboxes: sandbox-7-writer: commands echo=45/28ms uname=45/4ms cat=45/19ms
+sandboxes: sandbox-9-pgbench on host-b booted at 47.5 s
+sandboxes: check failed: memory: the run's memory ran out: 15379 MiB held past reclaim of its 16384 MiB, its daemons holding host-a 4326 MiB and host-b 4839 MiB
+sandboxes (long): exit 1, results in /mnt/fxdax-scratch/fxdax-host/run-r3305-20261112T043728Z-8d65a41d/results/pin-r2/sandboxes
+== bucket soak (1800 s)
+[fxfs-guest-bucket-soak] ... WARNING: running fxfs-guest-bucket-soak without network isolation: FXDAX_EXTENTD_REMOTE names a bucket over the network.
+FAIL (1807 s of 2400 s):
+the test's host side exited with exit status: 1; see its log
+(See test artifacts at: /mnt/fxdax-scratch/fxdax-host/run-r3305-20261112T043728Z-8d65a41d/results/pin-r2/soak/fxfs-guest-bucket-soak)
+Error: 
+fxfs-guest-bucket-soak: failed in round 1 of 1: see /mnt/fxdax-scratch/fxdax-host/run-r3305-20261112T043728Z-8d65a41d/results/pin-r2/soak/fxfs-guest-bucket-soak
+Logs: /mnt/fxdax-scratch/fxdax-host/run-r3305-20261112T043728Z-8d65a41d/results/pin-r2/soak
+budgets: sandboxes/fxfs-guest-sandboxes/fxfs-guest-sandboxes/host-a-stats.txt: says nothing its budgets weigh
+budgets: sandboxes/fxfs-guest-sandboxes/fxfs-guest-sandboxes/host-b-stats.txt: says nothing its budgets weigh
+budgets: soak/fxfs-guest-bucket-soak/fxfs-guest-bucket-soak/extentd-stats.txt: says nothing its budgets weigh
+qualify: exit 1, results in /mnt/fxdax-scratch/fxdax-host/run-r3305-20261112T043728Z-8d65a41d/results/pin-r2

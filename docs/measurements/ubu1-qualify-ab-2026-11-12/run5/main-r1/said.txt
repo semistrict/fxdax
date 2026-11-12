@@ -1,0 +1,66 @@
+bucket-soak: 1800 s, 4 VMs writing 2 MiB/s each
+bucket-soak: at 80.82µs, the bucket answering: latency-ms=0 failing=not
+bucket-soak: answering: 0 failures said, anonymous memory 99 MiB at most, its budget 2945 MiB
+bucket-soak: at 180.04170141s, the bucket slow: latency-ms=300 failing=not
+bucket-soak: slow: 0 failures said, anonymous memory 119 MiB at most, its budget 2945 MiB
+bucket-soak: at 540.126517261s, the bucket full: latency-ms=0 failing=no-space
+bucket-soak: full: 3927 failures said, anonymous memory 1148 MiB at most, its budget 2945 MiB
+bucket-soak: at 1080.251302678s, the bucket out of service: latency-ms=0 failing=unavailable
+bucket-soak: out of service: 5315 failures said, anonymous memory 1148 MiB at most, its budget 2945 MiB
+bucket-soak: at 1260.292712988s, the bucket answering again: latency-ms=300 failing=not
+bucket-soak: answering again: 5315 failures said, anonymous memory 1589 MiB at most, its budget 2947 MiB
+bucket-soak: store 0 uploaded 19.12862305s after the bucket answered
+bucket-soak: store 1 uploaded 20.927375152s after the bucket answered
+bucket-soak: store 2 uploaded 15.689793405s after the bucket answered
+bucket-soak: store 3 uploaded 20.090173022s after the bucket answered
+bucket-soak: VM 0: wrote 3840 MiB in 240 files, the longest fsync 247419 ms
+bucket-soak: VM 1: wrote 3840 MiB in 240 files, the longest fsync 250969 ms
+bucket-soak: VM 2: wrote 3840 MiB in 240 files, the longest fsync 247211 ms
+bucket-soak: VM 3: wrote 3840 MiB in 240 files, the longest fsync 248996 ms
+sandboxes: host-a imported the image in 2.963638239s
+sandboxes: host-b imported the image in 2.678378136s
+sandboxes: long mode, 16 VMs, 8 at once, 28 vCPUs at once on 8 CPUs
+sandboxes: sandbox-0-builder on host-a booted at 0.0 s
+sandboxes: sandbox-1-pgbench on host-b booted at 0.1 s
+sandboxes: sandbox-2-git on host-a booted at 0.2 s
+sandboxes: sandbox-3-writer on host-b booted at 0.3 s
+sandboxes: sandbox-4-builder on host-b booted at 0.4 s
+sandboxes: sandbox-5-pgbench on host-a booted at 0.5 s
+sandboxes: sandbox-6-git on host-b booted at 0.6 s
+sandboxes: sandbox-7-writer on host-a booted at 0.7 s
+sandboxes: sandbox-7-writer: ran 38.2 s
+sandboxes: sandbox-8-builder on host-a booted at 39.1 s
+sandboxes: sandbox-3-writer: ran 39.2 s
+sandboxes: sandbox-9-pgbench on host-b booted at 39.6 s
+sandboxes: sandbox-6-git: ran 48.8 s
+sandboxes: sandbox-10-git on host-a booted at 49.6 s
+sandboxes: sandbox-2-git: ran 49.6 s
+sandboxes: sandbox-11-writer on host-b booted at 49.9 s
+sandboxes: sandbox-11-writer: ran 53.6 s
+sandboxes: sandbox-12-builder on host-b booted at 103.7 s
+sandboxes: sandbox-10-git: ran 100.2 s
+sandboxes: sandbox-13-pgbench on host-a booted at 149.9 s
+sandboxes: sandbox-5-pgbench: ran 532.1 s
+sandboxes: sandbox-14-git on host-b booted at 532.7 s
+sandboxes: sandbox-1-pgbench: ran 581.6 s
+sandboxes: sandbox-15-writer on host-a booted at 581.9 s
+sandboxes: sandbox-9-pgbench: ran 605.1 s
+sandboxes: sandbox-14-git: ran 122.0 s
+sandboxes: sandbox-13-pgbench: ran 516.1 s
+sandboxes: sandbox-15-writer: ran 88.2 s
+sandboxes: sandbox-0-builder: ran 783.7 s
+sandboxes: sandbox-8-builder: ran 745.3 s
+sandboxes: sandbox-4-builder: ran 784.4 s
+sandboxes: sandbox-12-builder: ran 698.7 s
+sandboxes: the VMs ran in 803.2 s
+sandboxes: host-a: slow_framings=701 slowest_ms=1220.8 sum_ms=136837 over_budget=4
+sandboxes: host-a: guest_gib=37.32 stores_written_gib=44.85 ratio=1.20 segments_framed_in_place=458
+sandboxes: host-a: ProcessCosts { disk_written: 48257515520, peak_rss: 3242033152, cpu_secs: 518.72 }
+sandboxes: host-b: slow_framings=701 slowest_ms=1640.1 sum_ms=141021 over_budget=10
+sandboxes: host-b: guest_gib=37.86 stores_written_gib=45.39 ratio=1.20 segments_framed_in_place=426
+sandboxes: host-b: ProcessCosts { disk_written: 48837107712, peak_rss: 3280007168, cpu_secs: 606.51 }
+sandboxes: the stores wrote 1.20 times what the guests did
+sandboxes: check failed: vm: sandbox-6-git exited exit status: 0, saying ""
+sandboxes: check failed: vm: sandbox-2-git exited exit status: 0, saying ""
+sandboxes: check failed: framings: host-a framed 4 segments slower than 1000 ms, the slowest 1220.8 ms
+sandboxes: check failed: framings: host-b framed 10 segments slower than 1000 ms, the slowest 1640.1 ms

@@ -1,0 +1,90 @@
+== sandboxes (long)
+[fxfs-guest-sandboxes] ... WARNING: running fxfs-guest-sandboxes without network isolation: FXDAX_EXTENTD_REMOTE names a bucket over the network.
+FAIL (822 s of 7200 s):
+the test's host side exited with exit status: 1; see its log
+(See test artifacts at: /mnt/fxdax-scratch/fxdax-host/run-r3305-20261112T043728Z-8d65a41d/results/main-r2/sandboxes/fxfs-guest-sandboxes)
+Error: 
+fxfs-guest-sandboxes: failed in round 1 of 1: see /mnt/fxdax-scratch/fxdax-host/run-r3305-20261112T043728Z-8d65a41d/results/main-r2/sandboxes/fxfs-guest-sandboxes
+fxfs-guest-sandboxes/fxfs-guest-sandboxes/host-a-stats.txt: memory: ok: anonymous memory 943.8 MiB at most, budget 3077.9 MiB; 0 samples past it, by 0.0 MiB at most
+fxfs-guest-sandboxes/fxfs-guest-sandboxes/host-a-stats.txt: uploads: ok: uploads held 511.8 MiB at most, budget 512.0 MiB
+fxfs-guest-sandboxes/fxfs-guest-sandboxes/host-a-stats.txt: disk: ok: the kernel wrote 45928.8 MiB for it, it says 105271.1 MiB at most: stores 45823.1 MiB, pages 2985.2 MiB, stats 14.8 MiB, log 0.7 MiB, bucket 31638.9 MiB, cache 24808.4 MiB
+fxfs-guest-sandboxes/fxfs-guest-sandboxes/host-a-stats.txt: written for each guest byte: raw 1.0 copied 0.139 framed 0.037 own 0.0 log 0.01 io 1.189
+fxfs-guest-sandboxes/fxfs-guest-sandboxes/host-b-stats.txt: memory: ok: anonymous memory 966.8 MiB at most, budget 3076.7 MiB; 0 samples past it, by 0.0 MiB at most
+fxfs-guest-sandboxes/fxfs-guest-sandboxes/host-b-stats.txt: uploads: ok: uploads held 511.0 MiB at most, budget 512.0 MiB
+fxfs-guest-sandboxes/fxfs-guest-sandboxes/host-b-stats.txt: disk: ok: the kernel wrote 46772.6 MiB for it, it says 113879.6 MiB at most: stores 46669.3 MiB, pages 3145.1 MiB, stats 14.8 MiB, log 0.8 MiB, bucket 31687.6 MiB, cache 32362.0 MiB
+fxfs-guest-sandboxes/fxfs-guest-sandboxes/host-b-stats.txt: written for each guest byte: raw 1.0 copied 0.143 framed 0.041 own 0.0 log 0.009 io 1.196
+Logs: /mnt/fxdax-scratch/fxdax-host/run-r3305-20261112T043728Z-8d65a41d/results/main-r2/sandboxes
+sandboxes: host-a imported the image in 3.252022978s
+sandboxes: host-b imported the image in 3.319253304s
+sandboxes: long mode, 16 VMs, 8 at once, 28 vCPUs at once on 8 CPUs
+sandboxes: sandbox-0-builder on host-a booted at 0.0 s
+sandboxes: sandbox-1-pgbench on host-b booted at 0.1 s
+sandboxes: sandbox-2-git on host-a booted at 0.3 s
+sandboxes: sandbox-3-writer on host-b booted at 0.4 s
+sandboxes: sandbox-4-builder on host-b booted at 0.5 s
+sandboxes: sandbox-5-pgbench on host-a booted at 0.7 s
+sandboxes: sandbox-6-git on host-b booted at 0.9 s
+sandboxes: sandbox-7-writer on host-a booted at 1.1 s
+sandboxes: sandbox-3-writer: ran 26.2 s
+sandboxes: sandbox-3-writer: commands echo=25/10ms uname=25/3ms cat=25/1ms
+sandboxes: sandbox-8-builder on host-a booted at 26.7 s
+sandboxes: sandbox-7-writer: ran 26.5 s
+sandboxes: sandbox-7-writer: commands echo=25/18ms uname=25/2ms cat=25/1ms
+sandboxes: sandbox-9-pgbench on host-b booted at 27.7 s
+sandboxes: sandbox-2-git: ran 104.7 s
+sandboxes: sandbox-2-git: commands echo=102/15ms uname=102/24ms cat=102/14ms
+sandboxes: sandbox-10-git on host-a booted at 105.1 s
+sandboxes: sandbox-6-git: ran 106.1 s
+sandboxes: sandbox-6-git: commands echo=104/25ms uname=104/15ms cat=104/11ms
+sandboxes: sandbox-11-writer on host-b booted at 107.1 s
+sandboxes: sandbox-11-writer: ran 33.0 s
+sandboxes: sandbox-11-writer: commands echo=31/27ms uname=31/6ms cat=31/6ms
+sandboxes: sandbox-12-builder on host-b booted at 140.5 s
+sandboxes: sandbox-10-git: ran 107.6 s
+sandboxes: sandbox-10-git: commands echo=105/17ms uname=105/7ms cat=105/9ms
+sandboxes: sandbox-13-pgbench on host-a booted at 213.2 s
+sandboxes: sandbox-5-pgbench: ran 467.6 s
+sandboxes: sandbox-5-pgbench: commands echo=463/23ms uname=463/18ms cat=463/26ms
+sandboxes: sandbox-14-git on host-b booted at 468.5 s
+sandboxes: sandbox-14-git: ran 94.1 s
+sandboxes: sandbox-14-git: commands echo=92/57ms uname=92/9ms cat=92/16ms
+sandboxes: sandbox-15-writer on host-a booted at 563.1 s
+sandboxes: sandbox-1-pgbench: ran 563.8 s
+sandboxes: sandbox-1-pgbench: commands echo=558/34ms uname=558/32ms cat=558/15ms
+sandboxes: sandbox-9-pgbench: ran 615.4 s
+sandboxes: sandbox-9-pgbench: commands echo=593/41ms uname=593/15ms cat=593/30ms
+sandboxes: sandbox-15-writer: ran 81.8 s
+sandboxes: sandbox-15-writer: commands echo=76/34ms uname=76/13ms cat=76/22ms
+sandboxes: sandbox-13-pgbench: ran 446.7 s
+sandboxes: sandbox-13-pgbench: commands echo=440/43ms uname=440/23ms cat=440/28ms
+sandboxes: sandbox-0-builder: ran 757.6 s
+sandboxes: sandbox-0-builder: commands echo=739/54ms uname=739/40ms cat=739/32ms
+sandboxes: sandbox-4-builder: ran 770.1 s
+sandboxes: sandbox-4-builder: commands echo=762/60ms uname=762/36ms cat=762/30ms
+sandboxes: sandbox-8-builder: ran 744.2 s
+sandboxes: sandbox-8-builder: commands echo=736/37ms uname=736/62ms cat=736/69ms
+sandboxes: sandbox-12-builder: ran 652.0 s
+sandboxes: sandbox-12-builder: commands echo=646/38ms uname=646/37ms cat=646/37ms
+sandboxes: the VMs ran in 792.8 s
+sandboxes: host-a: slow_framings=684 slowest_ms=1549.6 sum_ms=136926 over_budget=10
+sandboxes: host-a: guest_gib=37.71 stores_written_gib=44.75 ratio=1.19 segments_framed_in_place=455
+sandboxes: host-a: ProcessCosts { disk_written: 48159834112, peak_rss: 3241504768, cpu_secs: 493.52 }
+sandboxes: host-b: slow_framings=714 slowest_ms=4704.1 sum_ms=140795 over_budget=12
+sandboxes: host-b: guest_gib=38.21 stores_written_gib=45.58 ratio=1.19 segments_framed_in_place=441
+sandboxes: host-b: ProcessCosts { disk_written: 49044676608, peak_rss: 3236945920, cpu_secs: 622.96 }
+sandboxes: the stores wrote 1.19 times what the guests did
+sandboxes: check failed: framings: host-a framed 10 segments slower than 1000 ms, the slowest 1549.6 ms
+sandboxes: check failed: framings: host-b framed 12 segments slower than 1000 ms, the slowest 4704.1 ms
+sandboxes (long): exit 1, results in /mnt/fxdax-scratch/fxdax-host/run-r3305-20261112T043728Z-8d65a41d/results/main-r2/sandboxes
+== bucket soak (1800 s)
+[fxfs-guest-bucket-soak] ... WARNING: running fxfs-guest-bucket-soak without network isolation: FXDAX_EXTENTD_REMOTE names a bucket over the network.
+OK (1808 s of 2400 s)
+(See test artifacts at: /mnt/fxdax-scratch/fxdax-host/run-r3305-20261112T043728Z-8d65a41d/results/main-r2/soak/fxfs-guest-bucket-soak)
+
+OK - 1/1 passed
+fxfs-guest-bucket-soak/fxfs-guest-bucket-soak/extentd-stats.txt: memory: ok: anonymous memory 1587.8 MiB at most, budget 2947.9 MiB; 0 samples past it, by 0.0 MiB at most
+fxfs-guest-bucket-soak/fxfs-guest-bucket-soak/extentd-stats.txt: uploads: ok: uploads held 1510.6 MiB at most, budget 1536.0 MiB
+fxfs-guest-bucket-soak/fxfs-guest-bucket-soak/extentd-stats.txt: disk: ok: the kernel wrote 15575.2 MiB for it, it says 32829.3 MiB at most: stores 15532.7 MiB, pages 201.1 MiB, stats 35.2 MiB, log 0.1 MiB, bucket 17059.5 MiB, cache 0.7 MiB
+fxfs-guest-bucket-soak/fxfs-guest-bucket-soak/extentd-stats.txt: written for each guest byte: raw 1.0 copied 0.005 framed 0.0 own 0.0 log 0.0 io 1.008
+Logs: /mnt/fxdax-scratch/fxdax-host/run-r3305-20261112T043728Z-8d65a41d/results/main-r2/soak
+qualify: exit 1, results in /mnt/fxdax-scratch/fxdax-host/run-r3305-20261112T043728Z-8d65a41d/results/main-r2

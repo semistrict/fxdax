@@ -1,0 +1,13 @@
+{
+ "case": "budgets",
+ "backend": "budgets",
+ "results": [],
+ "failures": {
+  "budgets.unreported": 3
+ },
+ "failed": [
+  "sandboxes/fxfs-guest-sandboxes/fxfs-guest-sandboxes/host-a-stats.txt: says nothing its budgets weigh",
+  "sandboxes/fxfs-guest-sandboxes/fxfs-guest-sandboxes/host-b-stats.txt: says nothing its budgets weigh",
+  "soak/fxfs-guest-bucket-soak/fxfs-guest-bucket-soak/extentd-stats.txt: says nothing its budgets weigh"
+ ]
+}

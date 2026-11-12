@@ -7,7 +7,7 @@ status: In Progress
 assignee:
   - '@claude'
 created_date: '2026-11-11 07:25'
-updated_date: '2026-11-11 21:33'
+updated_date: '2026-11-12 11:35'
 labels:
   - testing
   - ci
@@ -26,7 +26,7 @@ TASK-330.1's .github/workflows/sandboxes.yml runs scripts/sandboxes.sh on GitHub
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
 - [ ] #1 scripts/sandboxes.sh long finishes on ubu1 under fxjob --bench in about an hour at LangSmith's shape, and passes on main
-- [ ] #2 The README's testing section and TASK-330.4's pre-pin procedure say to run it on ubu1 before each pin; nightly.yml does not call it
+- [x] #2 The README's testing section and TASK-330.4's pre-pin procedure say to run it on ubu1 before each pin; nightly.yml does not call it
 <!-- AC:END -->
 
 ## Definition of Done
@@ -56,4 +56,6 @@ Still to do: it ran over 2 hours on ubu1 without finishing. Find out why (conten
 
 2026-11-11 (claude): why it never finished: memory, not work or a stuck VM. Run on ubu1 under fxjob --bench (8 CPUs) with main's sizes and the new resources.log: the run's cgroup sat at its 16 GiB max (28,547 memory.max events) and the kernel OOM-killed an extentd 3-4 min in (memcg of the run): guests 7.5 GiB at once, each daemon ~4 GB RSS (3.1 GB shmem cache + 0.8 GB anon), RustFS ~1 GB, page cache; one builder's DAX window refused (ENOMEM). The 2 h+ run at 15.1 of 16 GB was this pressure without the kill: reclaim and compaction (kcompactd 42 CPU-min host-wide). At 20 GiB the job was killed again, by fxdax.slice's own 18 GiB max (every fxdax job's; a measurement has 16 GiB at most, system-setup.d/146). Not contention: other agents' jobs were on their own CPUs; RustFS, in Docker, ran outside the run's cgroup and CPUs (now a process inside it, user's decision).
 Sized to fit 16 GiB at LangSmith's shape (2 hosts, 16 VMs 8 at a time, 8-vCPU builders, 28 vCPUs on 8 CPUs): the long mode's own VM sizes (builder 1 GiB, pgbench 768 MiB, git and writer 512 MiB: 5.5 GiB at once), daemons 2 GiB, DAX windows half the short mode's (root 512 MiB, own stores 256 MiB: at the short mode's, daemons of 2 GiB refused 2 windows a host, ENOMEM). Run 4 (ubu1, fxjob --bench --mem 16G): every VM did its role, VMs 807 s (builders 670-795 s for 3 builds of 512 MiB, pgbench 551-652 s, git 64-123 s, writers 45-62 s), no OOM (cgroup at its max, reclaiming), budgets ok (anon 991 MiB of 3,078), stores 1.20x the guests' bytes, daemons 48.8/48.6 GB written to disk; failed only the framing check (60/59 framings past 1 s, slowest 14.9/7.4 s), TASK-310's remainder. ~14 min, not an hour: at its write rate (the daemons ~97 GB to disk in 14 min) an hour's bucket, never collected in a run, would pass the 251 GB scratch disk.
+
+2026-11-12 (claude): in the qualification A/B's clean rounds (main 0ee1bdb58, TASK-310 in), the long mode ran whole in 798 s of VMs (~15 min with setup) within 16 GiB, every VM its role but two git VMs lost to a harness race (fixed), and failed only the framing check (4-12 a host past 1 s, slowest 1.2-4.7 s). AC #1's 'passes on main' waits on TASK-310's remainder; AC #2 (README, procedure, no nightly) is done.
 <!-- SECTION:NOTES:END -->

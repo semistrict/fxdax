@@ -1,0 +1,40 @@
+{
+ "case": "budgets",
+ "backend": "budgets",
+ "results": [
+  {
+   "workload": "budgets.sandboxes.max_anon",
+   "unit": "MiB",
+   "higher_is_better": false,
+   "values": [
+    1046.523
+   ]
+  },
+  {
+   "workload": "budgets.sandboxes.io_per_guest_byte",
+   "unit": "x",
+   "higher_is_better": false,
+   "values": [
+    1.204
+   ]
+  },
+  {
+   "workload": "budgets.soak.max_anon",
+   "unit": "MiB",
+   "higher_is_better": false,
+   "values": [
+    1451.973
+   ]
+  },
+  {
+   "workload": "budgets.soak.io_per_guest_byte",
+   "unit": "x",
+   "higher_is_better": false,
+   "values": [
+    1.007
+   ]
+  }
+ ],
+ "failures": {},
+ "failed": []
+}

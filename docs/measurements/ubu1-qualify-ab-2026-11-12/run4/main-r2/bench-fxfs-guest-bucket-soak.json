@@ -1,0 +1,64 @@
+{
+  "case": "fxfs-guest-bucket-soak",
+  "backend": "fxfs-guest-bucket-soak",
+  "results": [
+    {
+      "workload": "soak.uploaded_after_answering",
+      "unit": "s",
+      "higher_is_better": false,
+      "values": [
+        22.526299972
+      ]
+    },
+    {
+      "workload": "soak.guests.written",
+      "unit": "MiB",
+      "higher_is_better": true,
+      "values": [
+        15360.0
+      ]
+    },
+    {
+      "workload": "soak.guests.longest_fsync",
+      "unit": "ms",
+      "higher_is_better": false,
+      "values": [
+        251259.0
+      ]
+    },
+    {
+      "workload": "soak.daemon.max_anon",
+      "unit": "MiB",
+      "higher_is_better": false,
+      "values": [
+        1587.0
+      ]
+    },
+    {
+      "workload": "soak.daemon.disk_written",
+      "unit": "GiB",
+      "higher_is_better": false,
+      "values": [
+        15.210132598876953
+      ]
+    },
+    {
+      "workload": "soak.daemon.peak_rss",
+      "unit": "MiB",
+      "higher_is_better": false,
+      "values": [
+        1639.91015625
+      ]
+    },
+    {
+      "workload": "soak.daemon.cpu",
+      "unit": "s",
+      "higher_is_better": false,
+      "values": [
+        394.48
+      ]
+    }
+  ],
+  "failures": {},
+  "failed": []
+}

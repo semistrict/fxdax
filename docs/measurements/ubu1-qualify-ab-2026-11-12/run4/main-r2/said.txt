@@ -1,0 +1,64 @@
+bucket-soak: 1800 s, 4 VMs writing 2 MiB/s each
+bucket-soak: at 80.058µs, the bucket answering: latency-ms=0 failing=not
+bucket-soak: answering: 0 failures said, anonymous memory 68 MiB at most, its budget 2944 MiB
+bucket-soak: at 180.045803879s, the bucket slow: latency-ms=300 failing=not
+bucket-soak: slow: 0 failures said, anonymous memory 150 MiB at most, its budget 2944 MiB
+bucket-soak: at 540.132261194s, the bucket full: latency-ms=0 failing=no-space
+bucket-soak: full: 3928 failures said, anonymous memory 1113 MiB at most, its budget 2944 MiB
+bucket-soak: at 1080.415035664s, the bucket out of service: latency-ms=0 failing=unavailable
+bucket-soak: out of service: 5309 failures said, anonymous memory 1113 MiB at most, its budget 2944 MiB
+bucket-soak: at 1260.5057399s, the bucket answering again: latency-ms=300 failing=not
+bucket-soak: answering again: 5309 failures said, anonymous memory 1587 MiB at most, its budget 2947 MiB
+bucket-soak: store 0 uploaded 22.526299972s after the bucket answered
+bucket-soak: store 1 uploaded 22.135652593s after the bucket answered
+bucket-soak: store 2 uploaded 17.288114425s after the bucket answered
+bucket-soak: store 3 uploaded 15.445179498s after the bucket answered
+bucket-soak: VM 0: wrote 3840 MiB in 240 files, the longest fsync 250175 ms
+bucket-soak: VM 1: wrote 3840 MiB in 240 files, the longest fsync 251259 ms
+bucket-soak: VM 2: wrote 3840 MiB in 240 files, the longest fsync 248039 ms
+bucket-soak: VM 3: wrote 3840 MiB in 240 files, the longest fsync 247958 ms
+sandboxes: host-a imported the image in 3.252022978s
+sandboxes: host-b imported the image in 3.319253304s
+sandboxes: long mode, 16 VMs, 8 at once, 28 vCPUs at once on 8 CPUs
+sandboxes: sandbox-0-builder on host-a booted at 0.0 s
+sandboxes: sandbox-1-pgbench on host-b booted at 0.1 s
+sandboxes: sandbox-2-git on host-a booted at 0.3 s
+sandboxes: sandbox-3-writer on host-b booted at 0.4 s
+sandboxes: sandbox-4-builder on host-b booted at 0.5 s
+sandboxes: sandbox-5-pgbench on host-a booted at 0.7 s
+sandboxes: sandbox-6-git on host-b booted at 0.9 s
+sandboxes: sandbox-7-writer on host-a booted at 1.1 s
+sandboxes: sandbox-3-writer: ran 26.2 s
+sandboxes: sandbox-8-builder on host-a booted at 26.7 s
+sandboxes: sandbox-7-writer: ran 26.5 s
+sandboxes: sandbox-9-pgbench on host-b booted at 27.7 s
+sandboxes: sandbox-2-git: ran 104.7 s
+sandboxes: sandbox-10-git on host-a booted at 105.1 s
+sandboxes: sandbox-6-git: ran 106.1 s
+sandboxes: sandbox-11-writer on host-b booted at 107.1 s
+sandboxes: sandbox-11-writer: ran 33.0 s
+sandboxes: sandbox-12-builder on host-b booted at 140.5 s
+sandboxes: sandbox-10-git: ran 107.6 s
+sandboxes: sandbox-13-pgbench on host-a booted at 213.2 s
+sandboxes: sandbox-5-pgbench: ran 467.6 s
+sandboxes: sandbox-14-git on host-b booted at 468.5 s
+sandboxes: sandbox-14-git: ran 94.1 s
+sandboxes: sandbox-15-writer on host-a booted at 563.1 s
+sandboxes: sandbox-1-pgbench: ran 563.8 s
+sandboxes: sandbox-9-pgbench: ran 615.4 s
+sandboxes: sandbox-15-writer: ran 81.8 s
+sandboxes: sandbox-13-pgbench: ran 446.7 s
+sandboxes: sandbox-0-builder: ran 757.6 s
+sandboxes: sandbox-4-builder: ran 770.1 s
+sandboxes: sandbox-8-builder: ran 744.2 s
+sandboxes: sandbox-12-builder: ran 652.0 s
+sandboxes: the VMs ran in 792.8 s
+sandboxes: host-a: slow_framings=684 slowest_ms=1549.6 sum_ms=136926 over_budget=10
+sandboxes: host-a: guest_gib=37.71 stores_written_gib=44.75 ratio=1.19 segments_framed_in_place=455
+sandboxes: host-a: ProcessCosts { disk_written: 48159834112, peak_rss: 3241504768, cpu_secs: 493.52 }
+sandboxes: host-b: slow_framings=714 slowest_ms=4704.1 sum_ms=140795 over_budget=12
+sandboxes: host-b: guest_gib=38.21 stores_written_gib=45.58 ratio=1.19 segments_framed_in_place=441
+sandboxes: host-b: ProcessCosts { disk_written: 49044676608, peak_rss: 3236945920, cpu_secs: 622.96 }
+sandboxes: the stores wrote 1.19 times what the guests did
+sandboxes: check failed: framings: host-a framed 10 segments slower than 1000 ms, the slowest 1549.6 ms
+sandboxes: check failed: framings: host-b framed 12 segments slower than 1000 ms, the slowest 4704.1 ms

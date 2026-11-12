@@ -1,0 +1,88 @@
+[
+ {
+  "daemon": "fxfs-guest-sandboxes/fxfs-guest-sandboxes/host-a-stats.txt",
+  "checks": [
+   {
+    "budget": "memory",
+    "passed": true,
+    "says": "anonymous memory 1004.3 MiB at most, budget 2790.6 MiB; 0 samples past it, by 0.0 MiB at most"
+   },
+   {
+    "budget": "uploads",
+    "passed": true,
+    "says": "uploads held 511.4 MiB at most, budget 512.0 MiB"
+   },
+   {
+    "budget": "disk",
+    "passed": true,
+    "says": "the kernel wrote 46021.9 MiB for it, it says 109479.3 MiB at most: stores 45929.7 MiB, pages 2916.7 MiB, stats 15.1 MiB, log 0.8 MiB, bucket 32040.6 MiB, cache 28576.4 MiB"
+   }
+  ],
+  "figures": {
+   "max_anon": 1053052928,
+   "anon_budget": 2926113152,
+   "max_shmem": 2160005120,
+   "cpu_ns": 518735094000,
+   "written": {
+    "raw": 40067284992,
+    "copied": 6099701760,
+    "framed": 1622425641,
+    "own": 0,
+    "log": 371412023
+   },
+   "io_write_bytes": 48257511424,
+   "per_guest_byte": {
+    "raw": 1.0,
+    "copied": 0.152,
+    "framed": 0.04,
+    "own": 0.0,
+    "log": 0.009,
+    "io": 1.204
+   },
+   "cpu_ns_per_request": 274702
+  }
+ },
+ {
+  "daemon": "fxfs-guest-sandboxes/fxfs-guest-sandboxes/host-b-stats.txt",
+  "checks": [
+   {
+    "budget": "memory",
+    "passed": true,
+    "says": "anonymous memory 976.4 MiB at most, budget 3078.9 MiB; 0 samples past it, by 0.0 MiB at most"
+   },
+   {
+    "budget": "uploads",
+    "passed": true,
+    "says": "uploads held 511.5 MiB at most, budget 512.0 MiB"
+   },
+   {
+    "budget": "disk",
+    "passed": true,
+    "says": "the kernel wrote 46574.7 MiB for it, it says 115720.6 MiB at most: stores 46474.5 MiB, pages 3094.4 MiB, stats 15.0 MiB, log 0.8 MiB, bucket 31705.1 MiB, cache 34430.8 MiB"
+   }
+  ],
+  "figures": {
+   "max_anon": 1023832064,
+   "anon_budget": 3228418128,
+   "max_shmem": 2162294784,
+   "cpu_ns": 606528062000,
+   "written": {
+    "raw": 40649048064,
+    "copied": 6032322560,
+    "framed": 1675238381,
+    "own": 0,
+    "log": 375452880
+   },
+   "io_write_bytes": 48837103616,
+   "per_guest_byte": {
+    "raw": 1.0,
+    "copied": 0.148,
+    "framed": 0.041,
+    "own": 0.0,
+    "log": 0.009,
+    "io": 1.201
+   },
+   "cpu_ns_per_request": 293163
+  }
+ }
+]
